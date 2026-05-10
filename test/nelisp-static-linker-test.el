@@ -33,6 +33,7 @@
     (add-to-list 'load-path lisp-dir)))
 
 (require 'nelisp-static-linker)
+(require 'nelisp-elf-write)
 
 ;; ---- helpers ----
 
@@ -774,6 +775,335 @@ fixture code."
          (out (nelisp-link-apply-reloc bytes reloc tab #x400000)))
     (should (equal out
                    (nelisp-link-test--ub #xE8 #x07 0 0 0 #xC3)))))
+
+;; ============================================================
+;; §93.c — layout + top-level driver + e2e exec
+;; ============================================================
+
+;; ---- §93.c (1) layout compute ----
+
+(ert-deftest nelisp-link-compute-layout-single-unit-text-only ()
+  ;; 1 text-only unit: phnum = 1, text-off = 64 + 56 = 120 = 0x78.
+  ;; text VA = 0x400000 + 0x78 = 0x400078.
+  (let* ((u (nelisp-link-test--unit
+             "a.o" :text (nelisp-link-test--bytes 7)))
+         (c (nelisp-link-combine-sections (list u)))
+         (layout (nelisp-link--compute-layout c)))
+    (should (= (cdr (assq 'text layout)) #x400078))
+    (should (= (cdr (assq 'rodata layout)) (+ #x400078 7)))))
+
+(ert-deftest nelisp-link-compute-layout-two-unit-stack-back-to-back ()
+  ;; 2 text-only units: text-size = 7 + 4 = 11; rodata VA sits right
+  ;; after, no rw segment so data/bss collapse to rx-end.
+  (let* ((ua (nelisp-link-test--unit
+              "a.o" :text (nelisp-link-test--bytes 7)))
+         (ub (nelisp-link-test--unit
+              "b.o" :text (nelisp-link-test--bytes 4)))
+         (c (nelisp-link-combine-sections (list ua ub)))
+         (layout (nelisp-link--compute-layout c)))
+    (should (= (cdr (assq 'text layout)) #x400078))
+    (should (= (cdr (assq 'rodata layout)) (+ #x400078 11)))
+    (should (= (cdr (assq 'data layout)) (+ #x400078 11)))
+    (should (= (cdr (assq 'bss layout)) (+ #x400078 11)))))
+
+(ert-deftest nelisp-link-compute-layout-with-rw-segment-page-aligned ()
+  ;; .data present -> phnum = 2; text-off = 64 + 112 = 176 = 0xB0.
+  ;; text-size = 8, rodata empty, rx-end = text-off + 8 = 184.
+  ;; data-off aligned up to 0x1000 = 4096; data VA = 0x400000 + 4096.
+  ;; bss VA = data VA + data-size.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 8)
+             :data (nelisp-link-test--bytes 4)
+             :bss 16))
+         (c (nelisp-link-combine-sections (list u)))
+         (layout (nelisp-link--compute-layout c)))
+    (should (= (cdr (assq 'text layout)) #x4000B0))
+    (should (= (cdr (assq 'rodata layout)) (+ #x4000B0 8)))
+    (should (= (cdr (assq 'data layout)) #x401000))
+    (should (= (cdr (assq 'bss layout)) (+ #x401000 4)))))
+
+(ert-deftest nelisp-link-compute-layout-three-unit-no-overlap ()
+  ;; 3 units with text + rodata: verify VAs don't overlap.
+  (let* ((ua (nelisp-link-test--unit
+              "a.o" :text (nelisp-link-test--bytes 16)
+              :rodata (nelisp-link-test--bytes 8)))
+         (ub (nelisp-link-test--unit
+              "b.o" :text (nelisp-link-test--bytes 8)))
+         (uc (nelisp-link-test--unit
+              "c.o" :text (nelisp-link-test--bytes 4)
+              :rodata (nelisp-link-test--bytes 12)))
+         (c (nelisp-link-combine-sections (list ua ub uc)))
+         (layout (nelisp-link--compute-layout c)))
+    ;; text-size = 28; rodata follows immediately, size = 20.
+    (should (= (cdr (assq 'text layout)) #x400078))
+    (should (= (cdr (assq 'rodata layout)) (+ #x400078 28)))
+    ;; rodata range = [+28, +48); data starts at rx-end = +48 (no rw).
+    (should (= (cdr (assq 'data layout)) (+ #x400078 48)))))
+
+(ert-deftest nelisp-link-compute-layout-respects-base-va ()
+  ;; Caller can override the default base VA.
+  (let* ((u (nelisp-link-test--unit
+             "a.o" :text (nelisp-link-test--bytes 4)))
+         (c (nelisp-link-combine-sections (list u)))
+         (layout (nelisp-link--compute-layout c #x800000 #x1000)))
+    (should (= (cdr (assq 'text layout)) (+ #x800000 #x78)))))
+
+;; ---- §93.c (2) symtab export ----
+
+(ert-deftest nelisp-link-export-symtab-shape ()
+  ;; Build a 1-unit linker run and verify exported symtab is a list
+  ;; of plists with the expected keys and section-relative `:value'.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 16)
+             :symbols (list (nelisp-link-symbol "_start" 0)
+                            (nelisp-link-symbol "_inner" 4))))
+         (c (nelisp-link-combine-sections (list u)))
+         (layout (nelisp-link--compute-layout c))
+         (r (nelisp-link-units-2pass (list u) layout))
+         (syms (nelisp-link--export-symtab
+                (plist-get r :symtab) layout)))
+    (should (= (length syms) 2))
+    (let ((start (cl-find "_start" syms :key (lambda (s)
+                                               (plist-get s :name))
+                          :test #'equal))
+          (inner (cl-find "_inner" syms :key (lambda (s)
+                                               (plist-get s :name))
+                          :test #'equal)))
+      (should start)
+      (should (= (plist-get start :value) 0))
+      (should (eq (plist-get start :section) 'text))
+      (should (eq (plist-get start :bind) 'global))
+      (should (= (plist-get inner :value) 4)))))
+
+(ert-deftest nelisp-link-export-symtab-preserves-bind-weak ()
+  ;; A WEAK symbol should round-trip through export with :bind 'weak.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 8)
+             :symbols (list (nelisp-link-symbol
+                             "soft" 0 :bind 'weak))))
+         (c (nelisp-link-combine-sections (list u)))
+         (layout (nelisp-link--compute-layout c))
+         (r (nelisp-link-units-2pass (list u) layout))
+         (syms (nelisp-link--export-symtab
+                (plist-get r :symtab) layout))
+         (soft (car syms)))
+    (should (equal (plist-get soft :name) "soft"))
+    (should (eq (plist-get soft :bind) 'weak))))
+
+(ert-deftest nelisp-link-export-symtab-section-rodata ()
+  ;; A symbol defined in rodata should export with :value =
+  ;; intra-section offset and :section 'rodata.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 4)
+             :rodata (nelisp-link-test--bytes 16)
+             :symbols (list (nelisp-link-symbol
+                             "msg" 8 :section 'rodata
+                             :type 'object))))
+         (c (nelisp-link-combine-sections (list u)))
+         (layout (nelisp-link--compute-layout c))
+         (r (nelisp-link-units-2pass (list u) layout))
+         (syms (nelisp-link--export-symtab
+                (plist-get r :symtab) layout))
+         (msg (car syms)))
+    (should (equal (plist-get msg :name) "msg"))
+    (should (eq (plist-get msg :section) 'rodata))
+    (should (eq (plist-get msg :type) 'object))
+    (should (= (plist-get msg :value) 8))))
+
+;; ---- §93.c (3) top-level driver: unit binary properties ----
+
+(ert-deftest nelisp-link-units-writes-file ()
+  ;; nelisp-link-units returns FILE-PATH and writes an executable
+  ;; ELF.  Smoke check: file exists, +x bit set, starts with `\177ELF'.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             ;; mov eax, 60; syscall  = sys_exit(0) (= rdi defaults
+             ;; non-deterministic, but used here only for byte-level
+             ;; shape checks, not exec).
+             :text (unibyte-string #xb8 #x3c #x00 #x00 #x00
+                                   #x0f #x05)
+             :symbols (list (nelisp-link-symbol "_start" 0))))
+         (path (make-temp-file "nelisp-link-units-shape-")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units path (list u))
+          (should (file-exists-p path))
+          (let ((modes (file-modes path)))
+            (should (/= 0 (logand modes #o100))))
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert-file-contents-literally path nil 0 4)
+            (should (equal (buffer-string)
+                           (unibyte-string #x7f ?E ?L ?F)))))
+      (when (file-exists-p path) (delete-file path)))))
+
+(ert-deftest nelisp-link-units-defaults-entry-sym-to-_start ()
+  ;; When ENTRY-SYM is omitted, "_start" must exist or the linker
+  ;; raises an unresolved-symbol signal.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 4)
+             :symbols (list (nelisp-link-symbol "main" 0))))
+         (path (make-temp-file "nelisp-link-units-noent-")))
+    (unwind-protect
+        (should-error
+         (nelisp-link-units path (list u))
+         :type 'nelisp-link--unresolved-symbol)
+      (when (file-exists-p path) (delete-file path)))))
+
+;; ---- §93.c (4) THE e2e exec test (= the Phase 47 critical gate) ----
+
+(defun nelisp-link-test--e2e-units ()
+  "Construct the §93.c e2e 2-unit fixture.
+Returns the list of compile units.  Unit \"main.o\" emits a `call
+helper' + `mov eax, 60' + `syscall' sequence (12 bytes); unit
+\"helper.o\" emits `mov rdi, 0' + `ret' (8 bytes).  helper is
+called BEFORE the exit syscall so it can pre-set rdi = 0 (= exit
+code), then control returns to main and the syscall fires.  The
+pc32 reloc at main offset 1 points at helper with addend 0 (= per
+§93.a P = section-va + offset + 4 convention, A = 0 emits a CALL
+disp that targets symbol value directly)."
+  (let ((main (nelisp-link-test--unit
+               "main.o"
+               :text (unibyte-string
+                      ;; call helper (rel32 placeholder)
+                      #xE8 #x00 #x00 #x00 #x00
+                      ;; mov eax, 60  (= __NR_exit)
+                      #xB8 #x3C #x00 #x00 #x00
+                      ;; syscall
+                      #x0F #x05)
+               :symbols (list (nelisp-link-symbol "_start" 0))
+               :relocs (list (nelisp-link-reloc
+                              1 'pc32 "helper" 0))))
+        (helper (nelisp-link-test--unit
+                 "helper.o"
+                 :text (unibyte-string
+                        ;; mov rdi, 0  (= REX.W mov, imm32)
+                        #x48 #xC7 #xC7 #x00 #x00 #x00 #x00
+                        ;; ret
+                        #xC3)
+                 :symbols (list (nelisp-link-symbol "helper" 0)))))
+    (list main helper)))
+
+(ert-deftest nelisp-link-e2e-multi-unit-exec-exit-0 ()
+  "THE Phase 47 critical gate: link 2 units, exec, expect exit 0.
+This is the chain validation for the entire Phase 47 spike (= Doc
+91 ELF writer + Doc 92 assembler shape + Doc 93 static linker)."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (let ((m (or (and (boundp 'system-configuration)
+                                      system-configuration) "")))
+                      (string-match-p "x86_64" m))))
+  (let* ((units (nelisp-link-test--e2e-units))
+         (path "/tmp/nelisp-link-e2e-test"))
+    (when (file-exists-p path) (delete-file path))
+    (nelisp-link-units path units)
+    (should (file-exists-p path))
+    (set-file-modes path #o755)
+    (let ((rc (call-process path nil nil nil)))
+      (should (= rc 0)))))
+
+(ert-deftest nelisp-link-e2e-binary-has-ehdr-with-x86_64 ()
+  "The e2e binary's ELF header announces ET_EXEC + EM_X86_64."
+  (let* ((units (nelisp-link-test--e2e-units))
+         (path (make-temp-file "nelisp-link-e2e-hdr-")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units path units)
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert-file-contents-literally path)
+            (let ((bytes (buffer-string)))
+              ;; e_type @ 0x10 = ET_EXEC (= 2).
+              (should (= (aref bytes #x10) 2))
+              (should (= (aref bytes #x11) 0))
+              ;; e_machine @ 0x12 = EM_X86_64 (= 0x3E).
+              (should (= (aref bytes #x12) #x3E))
+              (should (= (aref bytes #x13) 0)))))
+      (when (file-exists-p path) (delete-file path)))))
+
+(ert-deftest nelisp-link-units-e2e-symtab-has-start-and-helper ()
+  "Both `_start' and `helper' should be present as global symbols."
+  (let* ((units (nelisp-link-test--e2e-units))
+         (combined (nelisp-link-combine-sections units))
+         (layout (nelisp-link--compute-layout combined))
+         (result (nelisp-link-units-2pass units layout))
+         (tab (plist-get result :symtab)))
+    (should (nelisp-link-symtab-lookup tab "_start"))
+    (should (nelisp-link-symtab-lookup tab "helper"))
+    ;; _start at offset 0 of main.o which is first in combined text.
+    (should (= (plist-get (nelisp-link-symtab-lookup tab "_start")
+                          :value)
+               (cdr (assq 'text layout))))
+    ;; helper is at offset 12 of combined text (after main's 12 bytes).
+    (should (= (plist-get (nelisp-link-symtab-lookup tab "helper")
+                          :value)
+               (+ (cdr (assq 'text layout)) 12)))))
+
+(ert-deftest nelisp-link-units-e2e-reloc-applied-correctly ()
+  "The CALL displacement in main.o should be patched to reach helper.
+S = helper VA = text-VA + 12; P_link = text-VA + 1 + 4 = text-VA
++ 5.  d = S + addend - P_link = 12 + 0 - 5 = 7.  bytes at offset
+1..4 should be `07 00 00 00'.  CPU then computes target =
+patch_addr + 4 + disp = (text-VA + 5) + 7 = text-VA + 12 = helper."
+  (let* ((units (nelisp-link-test--e2e-units))
+         (combined (nelisp-link-combine-sections units))
+         (layout (nelisp-link--compute-layout combined))
+         (result (nelisp-link-units-2pass units layout))
+         (text (cdr (assq 'text (plist-get result :bytes)))))
+    (should (= (aref text 0) #xE8))
+    (should (= (aref text 1) #x07))
+    (should (= (aref text 2) #x00))
+    (should (= (aref text 3) #x00))
+    (should (= (aref text 4) #x00))))
+
+;; ---- §93.c (5) end-to-end with .rodata ----
+
+(ert-deftest nelisp-link-units-with-rodata-binary-shape ()
+  "Linker can emit a binary that references a .rodata constant.
+The text contains a `lea rsi, [rip + disp]' (= 7 bytes) plus
+`mov eax, 60; syscall' (= 7 bytes); rodata holds a 6-byte string.
+Reloc is pc32 with addend -4 at text offset 3 (= disp32 within
+the lea)."
+  (let* ((rodata-bytes (unibyte-string ?h ?e ?l ?l ?o ?\n))
+         (u (nelisp-link-test--unit
+             "a.o"
+             :text (unibyte-string
+                    ;; lea rsi, [rip + disp32]   (7 bytes; disp @ +3)
+                    #x48 #x8D #x35 #x00 #x00 #x00 #x00
+                    ;; mov eax, 60
+                    #xB8 #x3C #x00 #x00 #x00
+                    ;; syscall
+                    #x0F #x05)
+             :rodata rodata-bytes
+             :symbols (list (nelisp-link-symbol "_start" 0)
+                            (nelisp-link-symbol "msg" 0
+                                                :section 'rodata
+                                                :type 'object
+                                                :size 6))
+             :relocs (list (nelisp-link-reloc
+                            3 'pc32 "msg" -4))))
+         (path (make-temp-file "nelisp-link-rodata-")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units path (list u))
+          (should (file-exists-p path))
+          ;; Check the rodata bytes survive into the file (= they
+          ;; live immediately after .text in the loaded image).
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert-file-contents-literally path)
+            (let* ((bytes (buffer-string))
+                   ;; text-off = 0x78, text-size = 14, rodata-off =
+                   ;; 0x78 + 14 = 0x86.
+                   (ro-pos (+ #x78 14)))
+              (should (equal (substring bytes ro-pos
+                                        (+ ro-pos 6))
+                             (unibyte-string ?h ?e ?l ?l ?o ?\n))))))
+      (when (file-exists-p path) (delete-file path)))))
 
 (provide 'nelisp-static-linker-test)
 

@@ -1,4 +1,4 @@
-;;; nelisp-static-linker.el --- Doc 93 §93.a + §93.b static linker  -*- lexical-binding: t; -*-
+;;; nelisp-static-linker.el --- Doc 93 §93.a + §93.b + §93.c static linker  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -27,12 +27,14 @@
 ;; §93.a ships the relocation-core slice (= byte-stream patch math +
 ;; symbol-table struct).  §93.b layers section combine, 2-pass symtab
 ;; merge, WEAK symbol handling, and the partial driver
-;; `nelisp-link-units-2pass' on top -- the multi-unit ELF-writer
-;; orchestrator (`nelisp-link-units') still lands in §93.c.  §93.b
-;; entry points: `nelisp-link-unit-make' (compile-unit struct),
-;; `nelisp-link-combine-sections', `nelisp-link--collect-defined-
-;; symbols', `nelisp-link--resolve-relocs', and the partial driver
-;; `nelisp-link-units-2pass'.
+;; `nelisp-link-units-2pass' on top.  §93.c adds the top-level
+;; orchestrator `nelisp-link-units' that wires the 2-pass driver into
+;; Doc 91 `nelisp-elf-write-binary' so a list of compile units is
+;; emitted as an executable ELF binary.  §93.c entry points:
+;; `nelisp-link--compute-layout' (= section VA layout matching the
+;; ELF writer's internal placement), `nelisp-link--export-symtab' (=
+;; symtab -> ELF writer `:symbols' plist list), and
+;; `nelisp-link-units' (= full driver returning FILE-PATH).
 ;;
 ;; Symbol table shape:
 ;;   (:name S :value VA :size N :section SEC :bind global|local|weak
@@ -470,6 +472,158 @@ Signals `nelisp-link--duplicate-symbol' on STRONG collisions and
                  units combined section-layout symtab)))
     (list :bytes bytes :symtab symtab
           :section-offsets combined)))
+
+;; ---- §93.c (1) layout compute ----
+
+(defconst nelisp-link--default-base-va #x400000
+  "Default ET_EXEC load base VA (= matches Doc 91 ELF writer).")
+
+(defconst nelisp-link--default-page-size #x1000
+  "Default page size used for RW segment alignment.")
+
+(defconst nelisp-link--ehdr-size 64
+  "Size of an ELF64 Ehdr in bytes (= Doc 91 fixed constant).")
+
+(defconst nelisp-link--phdr-size 56
+  "Size of an ELF64 Phdr in bytes (= Doc 91 fixed constant).")
+
+(defun nelisp-link--align-up (n alignment)
+  "Round N up to the next multiple of ALIGNMENT."
+  (let ((rem (mod n alignment)))
+    (if (zerop rem) n (+ n (- alignment rem)))))
+
+(defun nelisp-link--section-len (combined section-name)
+  "Return the byte length of SECTION-NAME in COMBINED.
+COMBINED is the alist returned by `nelisp-link-combine-sections'.
+For `bss', the stored payload is an integer size; for the byte-
+bearing sections it is a string/vector whose `length' is returned.
+Returns 0 if the section entry is absent."
+  (let* ((entry (cdr (assq section-name combined)))
+         (bytes (and entry (plist-get entry :bytes))))
+    (cond ((null bytes) 0)
+          ((eq section-name 'bss) bytes)
+          (t (length bytes)))))
+
+(defun nelisp-link--compute-layout (combined &optional base-va page-size)
+  "Compute section VA layout matching the Doc 91 ELF writer.
+COMBINED is the alist returned by `nelisp-link-combine-sections'.
+BASE-VA defaults to `nelisp-link--default-base-va' (= #x400000),
+PAGE-SIZE defaults to `nelisp-link--default-page-size' (= 4 KB).
+Returns an alist `((SECTION-NAME . VA) ...)' covering `text',
+`rodata', `data', `bss'.  Placement strategy mirrors
+`nelisp-elf--build-rich': Ehdr + Phdrs precede `.text', `.rodata'
+follows `.text' in the same RX segment, `.data' starts on a fresh
+page (= RW segment), `.bss' immediately follows `.data'.  PHNUM =
+2 when either `.data' or `.bss' is non-empty (= matches the writer)."
+  (let* ((bv (or base-va nelisp-link--default-base-va))
+         (ps (or page-size nelisp-link--default-page-size))
+         (text-size   (nelisp-link--section-len combined 'text))
+         (rodata-size (nelisp-link--section-len combined 'rodata))
+         (data-size   (nelisp-link--section-len combined 'data))
+         (bss-size    (nelisp-link--section-len combined 'bss))
+         (have-rw     (or (> data-size 0) (> bss-size 0)))
+         (phnum       (if have-rw 2 1))
+         (text-off    (+ nelisp-link--ehdr-size
+                         (* nelisp-link--phdr-size phnum)))
+         (text-va     (+ bv text-off))
+         (rodata-off  (+ text-off text-size))
+         (rodata-va   (+ bv rodata-off))
+         (rx-end      (+ rodata-off rodata-size))
+         (data-off    (and have-rw (nelisp-link--align-up rx-end ps)))
+         (data-va     (and have-rw (+ bv data-off)))
+         (bss-va      (and have-rw (+ data-va data-size))))
+    (list (cons 'text text-va)
+          (cons 'rodata rodata-va)
+          (cons 'data (or data-va (+ bv rx-end)))
+          (cons 'bss (or bss-va (+ bv rx-end))))))
+
+;; ---- §93.c (2) symtab export to ELF writer shape ----
+
+(defun nelisp-link--export-symtab (symtab section-layout)
+  "Convert SYMTAB hash table into ELF writer `:symbols' plist list.
+SYMTAB is the merged symbol table produced by §93.b pass 1; each
+entry has `:value' set to the symbol's absolute VA.  The Doc 91
+ELF writer's rich path adds its own `section-vaddr' to the
+supplied `:value' field, so this helper converts each VA back into
+a section-relative byte offset using SECTION-LAYOUT (= alist
+`((SECTION-NAME . VA) ...)').  Each output entry preserves
+`:name', `:size', `:section', `:bind', `:type', and uses
+section-offset for `:value'.  Symbols are returned in
+deterministic order (= sorted by name)."
+  (let (names)
+    (maphash (lambda (k _v) (push k names)) symtab)
+    (setq names (sort names #'string<))
+    (mapcar
+     (lambda (name)
+       (let* ((sym (gethash name symtab))
+              (section (or (plist-get sym :section) 'text))
+              (sec-va (or (cdr (assq section section-layout))
+                          (signal 'nelisp-link-error
+                                  (list :export-unknown-section
+                                        section name))))
+              (va (plist-get sym :value))
+              (offset (- va sec-va)))
+         (list :name name
+               :value offset
+               :size (or (plist-get sym :size) 0)
+               :section section
+               :bind (or (plist-get sym :bind) 'global)
+               :type (or (plist-get sym :type) 'func))))
+     names)))
+
+;; ---- §93.c (3) top-level driver ----
+
+(defun nelisp-link--bytes-or-empty (bytes-alist section-name)
+  "Return the BYTES-ALIST entry for SECTION-NAME, or empty string."
+  (let ((b (cdr (assq section-name bytes-alist))))
+    (cond ((null b) "")
+          ((stringp b) b)
+          (t (nelisp-link--vec->ubstring b)))))
+
+(defun nelisp-link-units (file-path units
+                                    &optional entry-sym section-layout
+                                    machine)
+  "Link UNITS and emit an executable ELF binary to FILE-PATH.
+UNITS is a list of compile-unit plists (= `nelisp-link-unit-make').
+ENTRY-SYM is the entry-point symbol name; defaults to `\"_start\"'.
+SECTION-LAYOUT is an alist `((SECTION-NAME . VA) ...)'; when nil
+it is computed by `nelisp-link--compute-layout' from the combined
+sections so the linker's reloc patches match the ELF writer's
+internal placement.  MACHINE is the arch tag forwarded to the ELF
+writer (= `x86_64' / `aarch64' / integer); defaults to `x86_64'.
+Pipeline: combine sections (§93.b), compute layout (§93.c), run
+2-pass symtab + reloc resolution (§93.b), export symtab to ELF
+writer shape (§93.c), then call `nelisp-elf-write-binary' with
+`:text' / `:rodata' / `:data' / `:bss-size' / `:symbols' /
+`:entry-sym' / `:machine'.  `:relocs' is intentionally omitted (=
+relocs are fully resolved into the bytes already, so the writer
+must NOT emit a `.rela.text' section).  Returns FILE-PATH."
+  (require 'nelisp-elf-write)
+  (let* ((combined (nelisp-link-combine-sections units))
+         (layout (or section-layout
+                     (nelisp-link--compute-layout combined)))
+         (link-result (nelisp-link-units-2pass units layout))
+         (bytes (plist-get link-result :bytes))
+         (symtab (plist-get link-result :symtab))
+         (symbols (nelisp-link--export-symtab symtab layout))
+         (text (nelisp-link--bytes-or-empty bytes 'text))
+         (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
+         (data (nelisp-link--bytes-or-empty bytes 'data))
+         (bss-size (or (cdr (assq 'bss bytes)) 0))
+         (entry (or entry-sym "_start"))
+         (mach (or machine 'x86_64))
+         (plist (list :text text
+                      :rodata rodata
+                      :data data
+                      :bss-size bss-size
+                      :symbols symbols
+                      :entry-sym entry
+                      :machine mach)))
+    (unless (nelisp-link-symtab-lookup symtab entry)
+      (signal 'nelisp-link--unresolved-symbol (list entry :entry)))
+    (declare-function nelisp-elf-write-binary "nelisp-elf-write" (path s))
+    (nelisp-elf-write-binary file-path plist)
+    file-path))
 
 (provide 'nelisp-static-linker)
 

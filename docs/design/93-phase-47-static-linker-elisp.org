@@ -37,10 +37,27 @@
   Multi-unit ELF orchestrator (=nelisp-link-units= →
   =nelisp-elf-write-binary= delegation) + exec test still
   §93.c-deferred
-- *§93.c DEFERRED*: multi-unit ELF writer orchestrator (=
-  =nelisp-link-units= top-level + =nelisp-link--compute-layout= layout
-  resolution + Doc 91 =nelisp-elf-write-binary= delegation + exec test
-  L5 / L6) (= Doc 93 §7.3)
+- *§93.c SHIPPED*: =lisp/nelisp-static-linker.el= delta ~155 elisp
+  LOC (= total ~628 LOC) + =test/nelisp-static-linker-test.el= +15
+  ert (= total 58 ert).  Adds layout compute
+  (=nelisp-link--compute-layout=, mirrors the Doc 91
+  =nelisp-elf--build-rich= internal placement so reloc patches against
+  the linker's section-VA layout match the ELF writer's emitted VAs),
+  symtab export (=nelisp-link--export-symtab=, converts absolute-VA
+  symtab back to section-offset =:value= for the Doc 91 =:symbols=
+  consumer), and top-level driver =nelisp-link-units= which combines
+  sections, computes layout, runs §93.b 2-pass, exports the symtab,
+  then calls =nelisp-elf-write-binary= with =:relocs= intentionally
+  omitted (= relocs already fully resolved into the bytes).  The
+  Phase 47 critical gate is the e2e exec test
+  =nelisp-link-e2e-multi-unit-exec-exit-0=: 2 hand-emitted x86_64
+  compile units (= main.o calls helper.o which sets =rdi=0= then
+  RETs into main's =exit= syscall), linked, written, exec'd,
+  =EXIT=0=.  =objdump -d= confirms cross-unit =call 0x400084
+  <helper>= resolution.  58/58 ert green, byte-compile 0 warning,
+  =make compile= exit 0.  Out of scope (= §93.d+ candidates): PIE /
+  PLT / dynamic linking, multi-segment RW with non-trivial alignment
+  beyond page rounding
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.3 / §5.1 /
   §6.1)
 - *Sister docs*: Doc 91 (= elisp ELF writer, ~500 elisp), Doc 92 (=
