@@ -257,22 +257,12 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
             s
         })
         .unwrap_or_else(|| "./".into());
-    let dd_value = Sexp::Str(parent_dir.clone());
-    env.set_value("default-directory", dd_value.clone())?;
-    // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
-    #[cfg(feature = "env-shadow-verify")]
-    env::verify_elisp_mirror_set_value(&env, "default-directory", &dd_value);
-    let lfn_value = Sexp::Str(src_path.to_string());
-    env.set_value("load-file-name", lfn_value.clone())?;
-    #[cfg(feature = "env-shadow-verify")]
-    env::verify_elisp_mirror_set_value(&env, "load-file-name", &lfn_value);
+    env.set_value("default-directory", Sexp::Str(parent_dir.clone()))?;
+    env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?;
     // Single-element `load-path' = the source file's directory.  Users
     // who want extra search roots can `(setq load-path (cons "..."
     // load-path))' inside the source.
-    let lp_value = Sexp::cons(Sexp::Str(parent_dir), Sexp::Nil);
-    env.set_value("load-path", lp_value.clone())?;
-    #[cfg(feature = "env-shadow-verify")]
-    env::verify_elisp_mirror_set_value(&env, "load-path", &lp_value);
+    env.set_value("load-path", Sexp::cons(Sexp::Str(parent_dir), Sexp::Nil))?;
     let forms = read_all_via_elisp(input, &mut env)?;
     let mut last = Sexp::Nil;
     for f in &forms {
@@ -341,13 +331,7 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             Ok(form.clone())
         }
         // Plain symbols evaluate via the value cell.
-        Sexp::Symbol(name) => {
-            // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
-            let rust_result = env.lookup_value(name);
-            #[cfg(feature = "env-shadow-verify")]
-            env::verify_elisp_mirror_lookup_value(env, name, &rust_result);
-            rust_result
-        }
+        Sexp::Symbol(name) => env.lookup_value(name),
         // Cons → function application.
         Sexp::Cons(b) => apply_combiner(&b.car, &b.cdr, env),
     }

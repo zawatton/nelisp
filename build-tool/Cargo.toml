@@ -29,13 +29,13 @@ path = "src/lib.rs"
 default = []
 image-baker = []
 # Doc 86 §86.3.b / Doc 89 §4.2 (2026-05-10) — env shadow path verify.
-# When enabled, Tier 3 env ops (= `symbol-value' / `set' / `boundp' /
-# `fboundp' / `symbol-function' / `fset' / `defalias' / `makunbound' /
-# `fmakunbound', plus `set_value' / `lookup_value' callsites in
-# `eval/mod.rs' / `eval/special_forms.rs') ALSO compute the result via
-# the slim shim primitive's logic from `eval/env_shim.rs' and compare.
-# On divergence: panic in tests, log a warning in production.  Default
-# builds compile zero bytes from the verify block (= +0 LOC production).
+# Retired 2026-05-10 in §86.3.c switch-over: the slim shim primitive
+# IS now the canonical path (= reads / writes the same `Env::globals'
+# HashMap via `eval/env_shim.rs'), so the verify comparison would be
+# tautologically equal.  Feature kept declared as an empty alias for
+# CI workflow compatibility — workflows that pass
+# `--features env-shadow-verify' continue to build cleanly without it
+# affecting the binary.
 env-shadow-verify = []
 
 [[bin]]
