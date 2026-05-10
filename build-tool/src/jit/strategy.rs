@@ -141,8 +141,13 @@ pub(crate) fn bi_ash_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let n = crate::eval::builtins::as_int("ash", &args[0])?;
     let count = crate::eval::builtins::as_int("ash", &args[1])?;
     if (-62..=62).contains(&count) {
-        let arith = &super::unified_jit().arith;
-        return Ok(Sexp::Int((arith.ash)(n, count)));
+        // Phase 7.1.6.c: call the `nl_jit_arith_ash' trampoline directly
+        // (= the deleted Cranelift `JitArith::ash' fn-ptr's replacement).
+        // Caller is contractually responsible for the `[-62, +62]'
+        // bounds-check, which the conditional above enforces.
+        return Ok(Sexp::Int(unsafe {
+            super::arith::nl_jit_arith_ash(n, count)
+        }));
     }
     let r = if count >= 0 {
         if count >= 63 { 0 } else { n.wrapping_shl(count as u32) }

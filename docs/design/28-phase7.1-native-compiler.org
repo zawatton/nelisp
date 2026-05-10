@@ -883,6 +883,88 @@ bench gate: 既存 =fib(30) ≧ 30x= / =fact-iter(20) ≧ 20x= 軸で Cranelift
 baseline 比 ≧ 1.0x.  fib / fact-iter は arith hot path なので *gate 自体
 が takeover validation*.
 
+**** 3.6.c.SHIPPED Phase 7.1.6.c actual delta (2026-05-10)
+
+Phase 7.1.6.c (本 commit, 2026-05-10): arith cluster Cranelift wrapper
+deletion.  7.1.6.a.2 cons / 7.1.6.b access takeover の pattern を arith
+cluster (= 12 primitive: 3 wrapping arith / 5 signed cmp / 3 bitwise /
+=ash=) に mirror 適用.
+
+cons / access と structurally 異なる点: arith は 7.1.6.c 着手時点で *Rust
+trampoline body を持たなかった* (= Cranelift IR =iadd= / =isub= / etc.
+が直接の implementation).  したがって本 commit は (a) 12 plain Rust
+trampoline (=nl_jit_arith_*=) を新規追加 + (b) Cranelift IR builder /
+=JitArith= struct / 配線を全削除、を併行実行する.  Cranelift IR の
+semantics は新 trampoline body に 1-to-1 mirror (= =wrapping_add= で
+=iadd=、=(a == b) as i64= で =icmp Equal= + =uextend= 等).
+
+actual changes:
+1. =build-tool/src/jit/arith.rs= の 12 Cranelift IR builder
+   (=declare_binop= 11 + =declare_ash= 1) + =JitArith= / =ArithIds=
+   struct + =register_symbols= / =declare_funcs= / =collect_funcs= 配線
+   削除.  代替として 12 plain Rust trampoline (=nl_jit_arith_add2=,
+   =sub2=, =mul2=, =eq2=, =lt2=, =gt2=, =le2=, =ge2=, =logior2=,
+   =logand2=, =logxor2=, =ash=) を =#[no_mangle] pub unsafe extern "C"
+   fn(i64, i64) -> i64= shape で追加.  各 trampoline body は Cranelift
+   IR と etcd semantic mirror で wrapping i64 / 0/1 cmp / 直接 bitwise
+   op / =ash= 符号分岐を 2-3 行で実装.
+2. =.cargo/config.toml= は 7.1.6.a.2 で既に追加済、arith trampolines は
+   そのまま継承 (= 追加変更なし、=nm -D target/debug/nelisp= で 12 全
+   symbol が =T= entry として export 済確認済).
+3. =build-tool/src/jit/mod.rs= の =UnifiedJit::arith= field +
+   =arith::register_symbols= / =declare_funcs= / =collect_funcs= 呼出
+   削除.  併せて 7.1.6.a.2 / .b で全 caller を失った =declare_helper_call=
+   shared helper も削除 (= 残った predicate / syscall は bespoke IR
+   shape を直接 build するので不要).
+4. =build-tool/src/jit/bridge.rs= =unified_fn_ptr= の 12 arith name
+   resolution を =u.arith.add= 経由から =super::arith::nl_jit_arith_add2
+   as *const u8= 直接参照に置換 (substrate.el の bootstrap path
+   =nl-jit-call-i64-i64 "nelisp_jit_*"= 維持のため必須).
+5. =build-tool/src/jit/strategy.rs::bi_ash_impl= 内の =u.arith.ash=
+   呼出を =unsafe { super::arith::nl_jit_arith_ash(n, count) }= 直接
+   呼出に置換 (= 7.1.6.a.2 の =u.cons.car= → 直接 trampoline 呼出と同パターン).
+6. =test/nelisp-cc-stage81-poc-test.el= に 7.1.6.c dlsym 統合 smoke 1 件
+   追加 — 12 arith trampoline 全 =:resolved= 確認 (=
+   =nelisp-cc-stage81-poc-7.1.6.c-dlsym-resolves-arith-cluster=)、
+   standalone =target/debug/nelisp= bin 経由で =skip-unless= guarded.
+   :not-found passthru smoke は 7.1.6.a.2 のものを共用.
+
+actual Rust LOC delta (per =git diff --stat baseline -- '*.rs' 'Cargo.*'=):
+| 箇所                            | +/-                          |
+|---------------------------------+------------------------------|
+| =build-tool/src/jit/arith.rs=   | 437 行変更 (大幅削除)         |
+| =build-tool/src/jit/bridge.rs=  | 34 行変更                    |
+| =build-tool/src/jit/mod.rs=     | 111 行変更                   |
+| =build-tool/src/jit/strategy.rs= | 9 行変更                    |
+| *合計*                          | *+226 / -365 = net -139 Rust* |
+
+加えて =test/nelisp-cc-stage81-poc-test.el= +53 LOC elisp.
+
+*Design target との差*: 設計 §3.6.c plan は arith.rs 全削除 (-354) を
+articulate していたが、7.1.6.a.2 / .b と同じく =lisp/nelisp-jit-
+substrate.el= bootstrap path 維持のため trampolines + bridge 配線は
+維持.  arith は cons / access と異なり pre-existing Rust trampoline が
+無く Cranelift IR が implementation だったため、Cranelift wrapper layer
+削除に併せて 12 plain Rust trampoline を新規追加して dlsym + bridge
+両方の resolution path を確立.  substrate.el bootstrap の dlsym 化 (=
+Phase 7.1.6.a.3 と同等の arith 版) で残り =-50〜-100 Rust= を回収する
+追加 plan は articulate 可.
+
+gate 達成状況:
+- 全 ERT (2351 / 2351 PASS、328 skipped、0 unexpected) ✓ (= +1 vs 7.1.6.b baseline 2350 = 新 arith dlsym smoke)
+- cargo test --lib jit (81/81 PASS) ✓
+- cargo test --lib image (17/17 PASS、default + image-baker 両方) ✓
+- cargo build (default + image-baker feature) clean ✓
+- arith cluster dlsym 統合 smoke (1/1 PASS、binary 経由で 12 全 trampoline 実 resolve 確認) ✓
+- 3-軸 bench: 7.1.6.a.2 / .b baseline finding と同様、=make bench-actual=
+  baseline は =anvil-runtime= の pattern mismatch で build 不可 — perf
+  gate carry-forward.
+
+dlsym evidence: =target/debug/nelisp eval '(nelisp-cc--dlsym-resolve "nl_jit_arith_<name>")'=
+returns =(:resolved . ADDR)= with non-zero ADDR for all 12
+=nl_jit_arith_*= symbols (= add2/sub2/mul2/eq2/lt2/gt2/le2/ge2/logior2/
+logand2/logxor2/ash) on local =target/debug/nelisp=.
+
 **** 3.6.c.AUDIT-RECORD-CLUSTER (2026-05-10) — no-op finding
 
 別 agent session が「Phase 7.1.6.c = record cluster takeover」と framing

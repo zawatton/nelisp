@@ -16,74 +16,28 @@
 //!      `nelisp-cc--dlsym-resolve' link pass.
 //!
 //! Phase 7.1.6.a.2 deleted the cons cluster's Cranelift wrapper page
-//! entirely; cons trampolines are now reached via path (2) only, so
-//! [`UnifiedJit`] holds 4 sub-modules (arith / access / predicate /
-//! syscall) instead of the original 5.
+//! entirely; cons trampolines are now reached via path (2) only.
+//! Phase 7.1.6.b deleted the access cluster on the same pattern.
+//! Phase 7.1.6.c (this commit) deletes the arith cluster — but unlike
+//! cons / access, arith had no pre-existing Rust trampoline body, so
+//! the deletion is paired with the introduction of 12 plain Rust
+//! `nl_jit_arith_*' trampolines (see `jit::arith') that mirror the
+//! deleted Cranelift IR semantics 1-to-1.  As a result [`UnifiedJit`]
+//! now holds 2 sub-modules (predicate / syscall) instead of the
+//! original 5.
 
 use std::sync::OnceLock;
 
-use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
 
-/// Shared helper used by the access cluster (Phase 7.1.6.a.2 left
-/// access as the only consumer; cons / predicate / syscall trampolines
-/// have either been deleted or use bespoke IR shapes): declare an
-/// `(i64 × N_PARAMS) -> i64' imported helper (= HELPER_NAME, must be
-/// `JITBuilder::symbol'-registered before this is called) and a
-/// `Linkage::Local' JIT entry (= JIT_NAME) whose body forwards all N
-/// i64 args to the helper and returns the helper's i64 result.
-///
-/// Returns the entry's FuncId so the caller can `get_finalized_function'
-/// it after `module.finalize_definitions()'.
-pub(super) fn declare_helper_call(
-    module: &mut JITModule,
-    jit_name: &str,
-    helper_name: &str,
-    n_params: usize,
-) -> FuncId {
-    let mut import_sig = module.make_signature();
-    for _ in 0..n_params {
-        import_sig.params.push(AbiParam::new(types::I64));
-    }
-    import_sig.returns.push(AbiParam::new(types::I64));
-    let helper_id = module
-        .declare_function(helper_name, Linkage::Import, &import_sig)
-        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", helper_name, e));
-
-    let mut entry_sig = module.make_signature();
-    for _ in 0..n_params {
-        entry_sig.params.push(AbiParam::new(types::I64));
-    }
-    entry_sig.returns.push(AbiParam::new(types::I64));
-    let entry_id = module
-        .declare_function(jit_name, Linkage::Local, &entry_sig)
-        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", jit_name, e));
-
-    let mut ctx = module.make_context();
-    ctx.func.signature = entry_sig;
-
-    let mut fbcx = FunctionBuilderContext::new();
-    {
-        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
-        let block = fb.create_block();
-        fb.append_block_params_for_function_params(block);
-        fb.switch_to_block(block);
-        fb.seal_block(block);
-        let params: Vec<Value> = fb.block_params(block).to_vec();
-        let helper_local = module.declare_func_in_func(helper_id, fb.func);
-        let inst = fb.ins().call(helper_local, &params);
-        let ret_val = fb.inst_results(inst)[0];
-        fb.ins().return_(&[ret_val]);
-        fb.finalize();
-    }
-
-    module
-        .define_function(entry_id, &mut ctx)
-        .unwrap_or_else(|e| panic!("cranelift: define_function {}: {}", jit_name, e));
-    module.clear_context(&mut ctx);
-    entry_id
-}
+// Phase 7.1.6.a.2 / 7.1.6.b / 7.1.6.c removed all callers of
+// `declare_helper_call' (= the shared `(i64 × N) -> i64' helper-call
+// IR builder).  Cons / access / arith trampolines now stand alone as
+// `#[no_mangle] extern "C"' Rust functions resolved via dlsym + the
+// `bridge::unified_fn_ptr' name table; no Cranelift wrapper page is
+// constructed for them anymore.  The remaining `predicate' and
+// `syscall' clusters use bespoke IR shapes that don't need this
+// helper either.
 
 mod access;
 mod arith;
@@ -146,7 +100,6 @@ mod syscall;
 /// bridge (nelisp-cc compiled code) or via `bridge::unified_fn_ptr'
 /// (substrate.el bootstrap), bypassing `UnifiedJit' entirely.
 pub(super) struct UnifiedJit {
-    pub(in crate::jit) arith: arith::JitArith,
     // Phase 7.1.6.a.2 (Doc 28 §3.6.a): cons cluster JIT wrappers
     // deleted (= `JitCons' / `register_symbols' / `declare_funcs' /
     // `collect_funcs' all gone).  The 5 `nl_jit_cons_*' trampolines
@@ -164,6 +117,21 @@ pub(super) struct UnifiedJit {
     // and by `bridge::unified_fn_ptr' for substrate.el bootstrap
     // paths.  The `length' inline-NIL fast path is now handled by
     // the trampoline body's `tag == SEXP_TAG_NIL' arm.
+    //
+    // Phase 7.1.6.c (Doc 28 §3.6.c): arith cluster JIT wrappers
+    // deleted on the same pattern (= `JitArith' / `register_symbols'
+    // / `declare_funcs' / `collect_funcs' / `declare_binop' /
+    // `declare_ash' all gone).  Unlike cons / access there were no
+    // pre-existing Rust trampolines for arith — the Cranelift IR was
+    // the implementation — so 12 plain `nl_jit_arith_*' trampolines
+    // are introduced in this commit (see `jit::arith') that mirror
+    // the deleted Cranelift IR semantics 1-to-1.  These are
+    // `#[no_mangle] extern "C"' symbols resolved by the dlsym bridge
+    // for nelisp-cc compiled hot paths, and by `bridge::unified_fn_ptr'
+    // for substrate.el bootstrap paths.  Compiled hot paths emit the
+    // host arithmetic instruction inline via the existing nelisp-cc
+    // SSA opcodes (`ssa-iadd' / `ssa-isub' / etc.), bypassing both
+    // the bridge and the dlsym call.
     pub(in crate::jit) predicate: predicate::JitPredicate,
     pub(in crate::jit) syscall: syscall::JitSyscall,
 }
@@ -178,24 +146,28 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         // imported `nl_jit_*' symbols.
         let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
             .expect("cranelift_jit: host ISA must resolve");
-        arith::register_symbols(&mut builder);
         // Phase 7.1.6.a.2: cons::register_symbols deleted (= no
         // Cranelift wrapper page for cons; trampolines are reached
         // either via dlsym from nelisp-cc compiled code or via
         // `bridge::unified_fn_ptr' for substrate.el bootstrap).
         // Phase 7.1.6.b: access::register_symbols deleted on the same
         // pattern (= no Cranelift wrapper page for access cluster).
+        // Phase 7.1.6.c: arith::register_symbols deleted on the same
+        // pattern (= no Cranelift wrapper page for arith cluster;
+        // 12 plain `nl_jit_arith_*' trampolines reachable via dlsym
+        // / bridge — `arith' module had no imported helpers so this
+        // call was a no-op pre-7.1.6.c anyway).
         predicate::register_symbols(&mut builder);
         syscall::register_symbols(&mut builder);
 
-        // Step 2: one JITModule for all 4 submodules.
+        // Step 2: one JITModule for the remaining 2 submodules.
         let mut module = JITModule::new(builder);
 
         // Step 3: each submodule declares + defines its JIT entries
         // on the shared module.  FuncIds carry forward to step 5.
-        let arith_ids = arith::declare_funcs(&mut module);
         // Phase 7.1.6.a.2: cons::declare_funcs deleted.
         // Phase 7.1.6.b: access::declare_funcs deleted.
+        // Phase 7.1.6.c: arith::declare_funcs deleted.
         let predicate_ids = predicate::declare_funcs(&mut module);
         let syscall_ids = syscall::declare_funcs(&mut module);
 
@@ -205,9 +177,9 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
             .expect("cranelift: finalize_definitions");
 
         // Step 5: fetch function pointers per submodule.
-        let arith = arith::collect_funcs(&module, arith_ids);
         // Phase 7.1.6.a.2: cons::collect_funcs deleted.
         // Phase 7.1.6.b: access::collect_funcs deleted.
+        // Phase 7.1.6.c: arith::collect_funcs deleted.
         let predicate = predicate::collect_funcs(&module, predicate_ids);
         let syscall = syscall::collect_funcs(&module, syscall_ids);
 
@@ -217,6 +189,7 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
 
         // Phase 7.1.6.a.2: `cons' field deleted from UnifiedJit.
         // Phase 7.1.6.b: `access' field deleted from UnifiedJit.
-        UnifiedJit { arith, predicate, syscall }
+        // Phase 7.1.6.c: `arith' field deleted from UnifiedJit.
+        UnifiedJit { predicate, syscall }
     })
 }
