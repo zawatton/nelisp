@@ -48,7 +48,11 @@
          "ANVIL_EL_DIR"
          "/home/madblack-21/.emacs.d/external-packages/anvil.el"))
        (server-id
-        (anvil-runtime-shell--env "ANVIL_SERVER_ID" "default"))
+        ;; Default `emacs-eval' matches the constant used by every
+        ;; GREEN-bucket anvil-* module's `--server-id'.  Tools register
+        ;; into that bucket, so the dispatch must look them up there.
+        ;; Override via ANVIL_SERVER_ID once getenv reads OS env.
+        (anvil-runtime-shell--env "ANVIL_SERVER_ID" "emacs-eval"))
        (init-el (concat nelisp-emacs-dir "/src/emacs-init.el"))
        (stub-el (concat nelisp-emacs-dir "/src/emacs-stub.el"))
        (stdio-el (concat nelisp-emacs-dir "/src/emacs-stdio.el"))
@@ -73,6 +77,28 @@
   (load stdio-el nil t)
   (when (fboundp 'emacs-stdio-install-stdin-shim)
     (emacs-stdio-install-stdin-shim))
+
+  ;; `help-function-arglist' polyfill — emacs-stub-bulk.el ships a
+  ;; nil-returning placeholder, but anvil-server.el's tool dispatcher
+  ;; uses the arglist to validate provided params (= every supplied
+  ;; param becomes "Unexpected" when the polyfill returns nil).
+  ;; NeLisp standalone wraps user defuns as `(closure ENV ARGS BODY)',
+  ;; so we extract ARGS by case on the head symbol.  Unconditional
+  ;; `defun' overrides whatever bulk wired in.
+  (defun help-function-arglist (function &optional _preserve-names)
+    (let ((fn (if (symbolp function)
+                  (symbol-function function)
+                function)))
+      (cond
+       ((and (consp fn) (eq (car fn) 'closure))
+        (car (cdr (cdr fn))))
+       ((and (consp fn) (eq (car fn) 'lambda))
+        (car (cdr fn)))
+       ((and (consp fn) (eq (car fn) 'macro))
+        (help-function-arglist (cdr fn) _preserve-names))
+       ((and (vectorp fn) (>= (length fn) 1))
+        (aref fn 0))
+       (t nil))))
 
   ;; Phase B5 Final B Stage 1b — regex-free overrides for the framing
   ;; helpers anvil-server.el uses.  Standalone NeLisp ships only
@@ -195,6 +221,63 @@ Uses CR-strip to recognise lines that are CRLF artefacts as blank."
                   (string-empty-p (anvil-server--strip-trailing-cr line)))
         (setq line (ignore-errors (read-from-minibuffer ""))))
       line))
+
+  ;; Optional tool-module load+enable chain.  `ANVIL_TOOL_MODULES' is a
+  ;; comma-separated list of anvil-* module basenames (e.g.
+  ;; "anvil-discovery,anvil-sqlite,anvil-bench") that the driver should
+  ;; load from ANVIL_EL_DIR and call <name>-enable on, so their MCP tool
+  ;; registrations land in the active server registry before the stdio
+  ;; loop begins.  GREEN-bucket modules per the standalone gap analysis
+  ;; (= no Emacs-only deps) are the safe targets for now.
+  ;; Default = GREEN-bucket subset of anvil-* modules verified to
+  ;; load+enable on the standalone substrate.  `anvil-bench' was
+  ;; originally GREEN per the gap analysis but pulls `subr-x' /
+  ;; `benchmark' / `profiler' that the standalone doesn't ship — kept
+  ;; out of the default until those polyfill stubs land.
+  ;; ANVIL_TOOL_MODULES env var is honoured when NeLisp's
+  ;; process-environment stops being a stub-empty (Phase 1.6 keeps it
+  ;; nil so getenv returns nil regardless of OS env), but for now the
+  ;; default carries the actual list.
+  (let* ((modules-env (anvil-runtime-shell--env
+                       "ANVIL_TOOL_MODULES"
+                       "anvil-discovery,anvil-sqlite")))
+    (when (fboundp 'nelisp--write-stderr-line)
+      (nelisp--write-stderr-line
+       (concat "[shell-loop] ANVIL_TOOL_MODULES="
+               (if (> (length modules-env) 0) modules-env "<empty>"))))
+    (when (> (length modules-env) 0)
+      (dolist (name (split-string modules-env "," t))
+        (let* ((trimmed (if (fboundp 'string-trim) (string-trim name) name))
+               (file (concat anvil-el-dir "/" trimmed ".el"))
+               (enable-sym (intern (concat trimmed "-enable"))))
+          (when (fboundp 'nelisp--write-stderr-line)
+            (nelisp--write-stderr-line
+             (concat "[shell-loop] loading " file)))
+          ;; Wrap each module's load + enable so a single bad module
+          ;; (= unmet substrate dep, missing helper) skips instead of
+          ;; aborting the whole driver before run-batch-stdio is reached.
+          (condition-case err
+              (progn
+                (load file nil t)
+                (when (fboundp 'nelisp--write-stderr-line)
+                  (nelisp--write-stderr-line
+                   (concat "[shell-loop] " (symbol-name enable-sym)
+                           " fboundp=" (if (fboundp enable-sym) "t" "nil"))))
+                (when (fboundp enable-sym)
+                  (funcall enable-sym)))
+            (error
+             (when (fboundp 'nelisp--write-stderr-line)
+               (nelisp--write-stderr-line
+                (concat "[shell-loop] " trimmed
+                        " load/enable ERR: " (format "%S" err))))))))))
+  (when (fboundp 'nelisp--write-stderr-line)
+    (let ((bucket (and (boundp 'anvil-server--tools)
+                       (gethash server-id anvil-server--tools))))
+      (nelisp--write-stderr-line
+       (concat "[shell-loop] pre-loop registry keys="
+               (if bucket
+                   (format "%S" (hash-table-keys bucket))
+                 "<no-bucket>")))))
 
   ;; `anvil-server-run-batch-stdio' itself calls `anvil-server-start'
   ;; on entry, so we MUST NOT call it here (= duplicate call signals
