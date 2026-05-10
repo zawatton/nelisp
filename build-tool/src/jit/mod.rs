@@ -1,29 +1,24 @@
 //! Phase 5 — Cranelift JIT lowering for hot-path primitives.
 //!
-//! Stage 5.0 (2026-05-07, Doc 62) — scaffold only.
+//! Doc 77b Stage b.5 (2026-05-09) — the original Stage 5.0
+//! `lower_entries' registry has been removed; the eval loop
+//! (`build-tool/src/eval/mod.rs::apply_builtin') now forwards every
+//! call directly to `eval::builtins::dispatch'.  Lowered primitives
+//! are reachable via two paths:
 //!
-//! This module hosts the `lower_entries` registry that maps a
-//! primitive name (e.g. `nelisp--syscall`, `nelisp--add2`, `car`) to
-//! a JIT-compiled lowering of that primitive.  The eval loop
-//! (`build-tool/src/eval/mod.rs`) consults `lower_entries` BEFORE the
-//! generic `dispatch` for every call site:
+//!   1. `nl-jit-call-*' bridge primitives (re-exported below from
+//!      [`bridge`]) that elisp wrappers in
+//!      `lisp/nelisp-jit-strategy.el' invoke by name; `unified_fn_ptr'
+//!      maps `nelisp_jit_*' names to the matching field in
+//!      [`UnifiedJit`].
+//!   2. dlsym-resolved `nl_jit_*' trampolines (Phase 7.1.6.a.2) that
+//!      nelisp-cc compiled code calls directly via the
+//!      `nelisp-cc--dlsym-resolve' link pass.
 //!
-//! ```text
-//!   call site name → lower_entries.get(name)
-//!     ├─ Some(jit_fn) → jit_fn(args, env)        (= JIT path)
-//!     └─ None         → dispatch(name, args, env) (= fallback)
-//! ```
-//!
-//! In Stage 5.0 the registry is intentionally **empty**; the eval-loop
-//! hook is wired so subsequent stages (5.1〜5.5) can plug their lower
-//! entries in without further plumbing changes.  All existing
-//! primitives continue to flow through the dispatch fallback, giving
-//! us a no-op build with the JIT scaffold present.
-//!
-//! The 5 lowering submodules each follow the same pattern: a
-//! `register(&mut HashMap<...>)` entry-point that the global builder
-//! calls once at startup.  A submodule with no lowerings yet (= all
-//! 5 today) is a no-op.
+//! Phase 7.1.6.a.2 deleted the cons cluster's Cranelift wrapper page
+//! entirely; cons trampolines are now reached via path (2) only, so
+//! [`UnifiedJit`] holds 4 sub-modules (arith / access / predicate /
+//! syscall) instead of the original 5.
 
 use std::sync::OnceLock;
 
@@ -31,12 +26,13 @@ use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-/// Shared helper used by Stage 5.1 syscall + 5.3 cons + 5.4 access +
-/// 5.5 predicate trampolines: declare an `(i64 × N_PARAMS) -> i64'
-/// imported helper (= HELPER_NAME, must be `JITBuilder::symbol'-
-/// registered before this is called) and a `Linkage::Local' JIT entry
-/// (= JIT_NAME) whose body forwards all N i64 args to the helper and
-/// returns the helper's i64 result.
+/// Shared helper used by the access cluster (Phase 7.1.6.a.2 left
+/// access as the only consumer; cons / predicate / syscall trampolines
+/// have either been deleted or use bespoke IR shapes): declare an
+/// `(i64 × N_PARAMS) -> i64' imported helper (= HELPER_NAME, must be
+/// `JITBuilder::symbol'-registered before this is called) and a
+/// `Linkage::Local' JIT entry (= JIT_NAME) whose body forwards all N
+/// i64 args to the helper and returns the helper's i64 result.
 ///
 /// Returns the entry's FuncId so the caller can `get_finalized_function'
 /// it after `module.finalize_definitions()'.
@@ -91,46 +87,31 @@ pub(super) fn declare_helper_call(
 
 mod access;
 mod arith;
-// Doc 77b Stage b.5 (2026-05-09): the former `mod bench;' (=
-// `build-tool/src/jit/bench.rs', 268 LOC of `#[ignore]' Rust benches
-// covering Doc 62 §4.2 dispatcher-bypass speedup measurements) was
-// migrated to elisp ERT under `test/nelisp-jit-bench-test.el'.  The
-// elisp port talks to the same JIT entries through the Stage b.2
-// `nl-jit-call-*' bridge primitives, so the speedup methodology is
-// preserved verbatim while the Rust core sheds the dependency on
-// `Env' construction inside `#[cfg(test)]'.
-//
-// Doc 77b Stage b.2 (2026-05-09): `nl-jit-call-*' bridge primitives
-// that elisp wrappers (= future replacements for the `lowered_X' Rust
-// fns shipped earlier in Doc 62 Stage C-Phase1) call to invoke JIT
-// entries by name.  Wired into `eval::builtins::dispatch' as the
-// 3 `nl-jit-call-*' built-ins via the re-exports below — keeping
-// the module itself `pub(super)' avoids leaking `UnifiedJit' field
-// types into the crate-public surface.
+// `bridge': `nl-jit-call-*' primitives that elisp wrappers in
+// `lisp/nelisp-jit-strategy.el' call to invoke JIT entries by name
+// (= the 7 re-exports below, wired into `eval::builtins::dispatch'
+// as the corresponding builtins).  See `bridge.rs' header for the
+// 3 calling shapes (i64/i64, ptr/ptr, 7×i64).
 pub(super) mod bridge;
-pub use bridge::{
+pub(crate) use bridge::{
     bi_nl_jit_call_i64_i64, bi_nl_jit_call_out_1, bi_nl_jit_call_out_1i,
     bi_nl_jit_call_out_2, bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr,
     bi_nl_jit_call_syscall,
 };
 mod cons;
-// Doc 77b Stage b.1 (2026-05-09): JIT IR DSL interpreter.  No
-// integration with `UnifiedJit` yet — the module is parallel to the
-// existing `declare_X_inline` helpers.  Stage b.3 will switch the
-// 5 `declare_X_inline` callers to go through `dsl::build_rule' on
-// elisp-authored Sexp rules.  Until then the AST + parser + builder
-// have no production callers, only `#[cfg(test)]' coverage; allow
-// `dead_code` here so the b.1 ship is warning-clean.
+// `dsl': Stage b.1 JIT IR DSL interpreter (Doc 77b).  No production
+// caller yet — Stage b.3 will switch `declare_X_inline' callers to
+// use `dsl::build_rule' on elisp-authored Sexp rules.  Test-only
+// coverage today, hence `#[allow(dead_code)]'.
 #[allow(dead_code)]
 mod dsl;
 mod predicate;
-// Doc 77b Stage b.4 (2026-05-09): Rust helper primitives backing
-// the elisp wrappers in `lisp/nelisp-jit-strategy.el'.  Holds the
-// multi-variant fall-through bodies (= length / aref / aset / elt)
-// + arith Float helpers + bitwise Int helpers + bool conversion +
-// syscall-nr resolver.  See `strategy.rs' header for the surface.
+// `strategy': Rust helper primitives (Stage b.4) backing the elisp
+// wrappers in `lisp/nelisp-jit-strategy.el' — arith Float helpers,
+// bitwise Int helpers, slim length / aref / aset fall-throughs, and
+// the syscall-nr resolver.  See `strategy.rs' header for the surface.
 mod strategy;
-pub use strategy::{
+pub(crate) use strategy::{
     bi_add2_float, bi_ash_impl, bi_bool_vector_len, bi_char_table_aref,
     bi_char_table_aset, bi_int_eq_zero, bi_logand2_impl, bi_logior2_impl,
     bi_logxor2_impl, bi_mul2_float, bi_mut_str_len, bi_mut_str_set_codepoint,
@@ -141,15 +122,12 @@ mod syscall;
 
 /// Doc 77 Stage 2-prep (2026-05-09) — unified JITModule.
 ///
-/// Pre-Doc-77 each submodule (arith / cons / access / predicate /
-/// syscall) owned its own `OnceLock<JitX>' which built a separate
-/// `JITModule' on first access.  That meant 5 `mmap' pages, 5
-/// independent symbol namespaces, and Stage 3's "JIT fn calls JIT fn"
-/// pattern was structurally infeasible (= each module's `FuncId'
-/// only resolves within its own JITModule).
-///
-/// Stage 2-prep consolidates the 5 modules into one shared
-/// `JITBuilder' / `JITModule' built at first `unified_jit()' access:
+/// Pre-Doc-77 each submodule owned its own `OnceLock<JitX>' which
+/// built a separate `JITModule' on first access (= one `mmap' page +
+/// independent symbol namespace per submodule, blocking the "JIT fn
+/// calls JIT fn" pattern).  Stage 2-prep consolidates the submodules
+/// into one shared `JITBuilder' / `JITModule' built at first
+/// `unified_jit()' access:
 ///
 /// 1. Each submodule registers its imported helper symbols on a
 ///    *shared* `JITBuilder' via `register_symbols(&mut JITBuilder)'.
@@ -161,20 +139,17 @@ mod syscall;
 ///    `collect_funcs(&JITModule, ids) -> JitX'.
 /// 6. `Box::leak(module)' once to keep executable pages alive.
 ///
-/// Net effect: 5x → 1x mmap, single FuncId namespace.  Submodule
-/// `jit() -> &'static JitX' now returns `&unified_jit().x'.
+/// Phase 7.1.6.a.2 (2026-05-10) reduced the cluster count from 5 to
+/// 4 by deleting the cons Cranelift wrapper page; the 5
+/// `nl_jit_cons_*' trampolines now live in `jit::cons' as
+/// `#[no_mangle] extern "C"' symbols resolved either via the dlsym
+/// bridge (nelisp-cc compiled code) or via `bridge::unified_fn_ptr'
+/// (substrate.el bootstrap), bypassing `UnifiedJit' entirely.
 pub(super) struct UnifiedJit {
-    pub(super) arith: arith::JitArith,
-    // Phase 7.1.6.a.2 (Doc 28 §3.6.a): cons cluster JIT wrappers
-    // deleted (= `JitCons' / `register_symbols' / `declare_funcs' /
-    // `collect_funcs' all gone).  The 5 `nl_jit_cons_*' trampolines
-    // stay in `jit::cons' as `#[no_mangle] extern "C"' symbols
-    // resolved by the dlsym bridge for nelisp-cc compiled hot paths,
-    // and by `bridge::unified_fn_ptr' for substrate.el bootstrap
-    // paths (= same trampoline body, no Cranelift wrapper).
-    pub(super) access: access::JitAccess,
-    pub(super) predicate: predicate::JitPredicate,
-    pub(super) syscall: syscall::JitSyscall,
+    pub(in crate::jit) arith: arith::JitArith,
+    pub(in crate::jit) access: access::JitAccess,
+    pub(in crate::jit) predicate: predicate::JitPredicate,
+    pub(in crate::jit) syscall: syscall::JitSyscall,
 }
 
 static UNIFIED_JIT: OnceLock<UnifiedJit> = OnceLock::new();
@@ -188,21 +163,16 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
             .expect("cranelift_jit: host ISA must resolve");
         arith::register_symbols(&mut builder);
-        // Phase 7.1.6.a.2: cons::register_symbols deleted (= no
-        // Cranelift wrapper page for cons; trampolines are reached
-        // either via dlsym from nelisp-cc compiled code or via
-        // `bridge::unified_fn_ptr' for substrate.el bootstrap).
         access::register_symbols(&mut builder);
         predicate::register_symbols(&mut builder);
         syscall::register_symbols(&mut builder);
 
-        // Step 2: one JITModule for all 5 submodules.
+        // Step 2: one JITModule for all 4 submodules.
         let mut module = JITModule::new(builder);
 
         // Step 3: each submodule declares + defines its JIT entries
         // on the shared module.  FuncIds carry forward to step 5.
         let arith_ids = arith::declare_funcs(&mut module);
-        // Phase 7.1.6.a.2: cons::declare_funcs deleted.
         let access_ids = access::declare_funcs(&mut module);
         let predicate_ids = predicate::declare_funcs(&mut module);
         let syscall_ids = syscall::declare_funcs(&mut module);
@@ -214,7 +184,6 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
 
         // Step 5: fetch function pointers per submodule.
         let arith = arith::collect_funcs(&module, arith_ids);
-        // Phase 7.1.6.a.2: cons::collect_funcs deleted.
         let access = access::collect_funcs(&module, access_ids);
         let predicate = predicate::collect_funcs(&module, predicate_ids);
         let syscall = syscall::collect_funcs(&module, syscall_ids);
@@ -223,12 +192,6 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         // lifetime by leaking the JITModule.
         Box::leak(Box::new(module));
 
-        UnifiedJit {
-            arith,
-            // Phase 7.1.6.a.2: `cons' field deleted from UnifiedJit.
-            access,
-            predicate,
-            syscall,
-        }
+        UnifiedJit { arith, access, predicate, syscall }
     })
 }
