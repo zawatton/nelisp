@@ -28,6 +28,15 @@ path = "src/lib.rs"
 # image' CLI subcommand likewise becomes opt-in.
 default = []
 image-baker = []
+# Doc 86 §86.3.b / Doc 89 §4.2 (2026-05-10) — env shadow path verify.
+# When enabled, Tier 3 env ops (= `symbol-value' / `set' / `boundp' /
+# `fboundp' / `symbol-function' / `fset' / `defalias' / `makunbound' /
+# `fmakunbound', plus `set_value' / `lookup_value' callsites in
+# `eval/mod.rs' / `eval/special_forms.rs') ALSO compute the result via
+# the slim shim primitive's logic from `eval/env_shim.rs' and compare.
+# On divergence: panic in tests, log a warning in production.  Default
+# builds compile zero bytes from the verify block (= +0 LOC production).
+env-shadow-verify = []
 
 [[bin]]
 name = "nelisp"
