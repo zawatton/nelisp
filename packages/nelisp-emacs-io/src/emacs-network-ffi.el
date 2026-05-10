@@ -82,8 +82,24 @@ Returns the FFI integer / pointer / etc. as a Lisp value."
 (defconst emacs-network-ffi-AF_UNIX 1
   "Address family: UNIX domain socket (Linux).")
 
+(defconst emacs-network-ffi-AF_INET 2
+  "Address family: IPv4 (Linux, macOS, BSD).")
+
 (defconst emacs-network-ffi-SOCK_STREAM 1
   "Socket type: connection-oriented byte stream.")
+
+(defconst emacs-network-ffi-INADDR_ANY 0
+  "IPv4 wildcard address (= bind on every local interface).")
+
+(defconst emacs-network-ffi-INADDR_LOOPBACK #x7F000001
+  "IPv4 loopback address 127.0.0.1 in host byte order.")
+
+(defconst emacs-network-ffi-SOL_SOCKET 1
+  "setsockopt level: socket-layer options.")
+
+(defconst emacs-network-ffi-SO_REUSEADDR 2
+  "setsockopt option: allow rebinding a socket whose previous close
+left it in TIME_WAIT — necessary for TCP listener restarts.")
 
 (defconst emacs-network-ffi-O_NONBLOCK 2048    ; 04000 octal
   "fcntl O_NONBLOCK flag (Linux).")
@@ -105,6 +121,9 @@ Returns the FFI integer / pointer / etc. as a Lisp value."
 
 (defconst emacs-network-ffi--sockaddr-un-size 110
   "sizeof(struct sockaddr_un) on Linux (= 2 byte family + 108 byte path).")
+
+(defconst emacs-network-ffi--sockaddr-in-size 16
+  "sizeof(struct sockaddr_in) (= 2 family + 2 port BE + 4 addr BE + 8 zero).")
 
 
 ;;;; --- struct sockaddr_un marshalling -----------------------------------
@@ -132,6 +151,85 @@ Layout (Linux):
       ;; zeroed buffer, so unused bytes are already 0).
       (nl-ffi-write-bytes-at buf 2 path)
       (cons buf (+ 2 path-len 1)))))
+
+
+;;;; --- struct sockaddr_in marshalling (Phase 7b TCP) -------------------
+
+(defun emacs-network-ffi--parse-ipv4 (host)
+  "Parse HOST (= string `\"a.b.c.d\"` or symbol `'local`) into a 32-bit
+integer in host byte order.  Returns nil on malformed input.  Calls
+`inet_pton' via FFI to handle the conversion (= avoids hand-rolling
+the dot-quad parser and matches the semantics emacsclient uses)."
+  (cond
+   ((eq host 'local) emacs-network-ffi-INADDR_LOOPBACK)
+   ((or (null host) (eq host t) (eq host 'any)) emacs-network-ffi-INADDR_ANY)
+   ((stringp host)
+    ;; inet_pton(AF_INET, "a.b.c.d", &out) → 1 on success, 0 on bad input.
+    ;; The 4-byte network-order address is written into `out'; we read
+    ;; it back as a u32 (network = big-endian).
+    (let* ((out (nl-ffi-malloc 4))
+           (rc (emacs-network-ffi--call
+                "inet_pton"
+                [:sint32 :sint32 :string :pointer]
+                emacs-network-ffi-AF_INET host out)))
+      (let ((result
+             (cond
+              ((and (integerp rc) (= rc 1))
+               ;; Read network-order bytes b0 b1 b2 b3, convert to host
+               ;; (= just reverse since we are LE).
+               (let ((b0 (logand 255 (nl-ffi-read-i16 out 0)))
+                     (b1 (logand 255 (ash (nl-ffi-read-i16 out 0) -8)))
+                     (b2 (logand 255 (nl-ffi-read-i16 out 2)))
+                     (b3 (logand 255 (ash (nl-ffi-read-i16 out 2) -8))))
+                 (+ (ash b0 24) (ash b1 16) (ash b2 8) b3)))
+              (t nil))))
+        (nl-ffi-free out)
+        result)))
+   (t nil)))
+
+(defsubst emacs-network-ffi--htons (port)
+  "Convert PORT (host byte order, 0..65535) to network byte order
+(= big-endian).  Just byte-swap a 16-bit value."
+  (let ((lo (logand port 255))
+        (hi (logand 255 (ash port -8))))
+    (logior (ash lo 8) hi)))
+
+(defsubst emacs-network-ffi--htonl (addr)
+  "Convert 32-bit ADDR (host byte order) to network byte order."
+  (let ((b0 (logand 255 addr))
+        (b1 (logand 255 (ash addr -8)))
+        (b2 (logand 255 (ash addr -16)))
+        (b3 (logand 255 (ash addr -24))))
+    (logior (ash b0 24) (ash b1 16) (ash b2 8) b3)))
+
+(defun emacs-network-ffi--make-sockaddr-in (host port)
+  "Allocate + populate `struct sockaddr_in' for HOST + PORT.
+HOST: nil / t / `any` → `INADDR_ANY`; `local` → 127.0.0.1; string →
+parsed via `inet_pton'.  PORT: 1..65535 in host byte order.
+Returns (PTR . LEN) — caller `nl-ffi-free's PTR.
+
+Layout (Linux x86_64 / arm64):
+  offset 0 .. 1   sin_family = AF_INET (host byte order uint16)
+  offset 2 .. 3   sin_port   = port (network byte order uint16)
+  offset 4 .. 7   sin_addr   = address (network byte order uint32)
+  offset 8 .. 15  sin_zero[8] = padding (zeroed by nl-ffi-malloc)
+  total: 16 bytes."
+  (let ((addr-host (emacs-network-ffi--parse-ipv4 host)))
+    (unless addr-host
+      (error "emacs-network-ffi: cannot parse HOST %S as IPv4" host))
+    (unless (and (integerp port) (>= port 0) (<= port 65535))
+      (error "emacs-network-ffi: PORT must be 0..65535, got %S" port))
+    (let* ((port-be (emacs-network-ffi--htons port))
+           (addr-be (emacs-network-ffi--htonl addr-host))
+           (buf (nl-ffi-malloc emacs-network-ffi--sockaddr-in-size)))
+      (nl-ffi-write-i16 buf 0 emacs-network-ffi-AF_INET)
+      ;; sin_port: 16-bit network byte order.  Already byte-swapped above,
+      ;; so write as a u16 little-endian and the bytes land BE.
+      (nl-ffi-write-i16 buf 2 port-be)
+      ;; sin_addr: 32-bit network byte order.  htonl produced the
+      ;; correct byte sequence for direct little-endian write.
+      (nl-ffi-write-i32 buf 4 addr-be)
+      (cons buf emacs-network-ffi--sockaddr-in-size))))
 
 
 ;;;; --- libc errno (read via __errno_location) ---------------------------
@@ -243,6 +341,44 @@ Returns 0 on success, -1 on error.  Pair with
               fd ptr len)))
     (nl-ffi-free ptr)
     rc))
+
+(defun emacs-network-ffi--bind-inet (fd host port)
+  "FFI: int bind(fd, struct sockaddr_in{host,port}, sizeof).
+Returns 0 on success, -1 on error.  Phase 7b TCP entry."
+  (let* ((addr (emacs-network-ffi--make-sockaddr-in host port))
+         (ptr (car addr))
+         (len (cdr addr))
+         (rc (emacs-network-ffi--call
+              "bind"
+              [:sint32 :sint32 :pointer :sint32]
+              fd ptr len)))
+    (nl-ffi-free ptr)
+    rc))
+
+(defun emacs-network-ffi--connect-inet (fd host port)
+  "FFI: int connect(fd, struct sockaddr_in{host,port}, sizeof).
+Returns 0 on success, -1 on error.  Phase 7b TCP client."
+  (let* ((addr (emacs-network-ffi--make-sockaddr-in host port))
+         (ptr (car addr))
+         (len (cdr addr))
+         (rc (emacs-network-ffi--call
+              "connect"
+              [:sint32 :sint32 :pointer :sint32]
+              fd ptr len)))
+    (nl-ffi-free ptr)
+    rc))
+
+(defun emacs-network-ffi--setsockopt-int (fd level optname value)
+  "FFI: int setsockopt(fd, level, optname, &value, sizeof(int)).
+Used for `SO_REUSEADDR' on TCP listeners.  Returns 0 on success."
+  (let* ((buf (nl-ffi-malloc 4)))
+    (nl-ffi-write-i32 buf 0 value)
+    (let ((rc (emacs-network-ffi--call
+               "setsockopt"
+               [:sint32 :sint32 :sint32 :sint32 :pointer :sint32]
+               fd level optname buf 4)))
+      (nl-ffi-free buf)
+      rc)))
 
 (defun emacs-network-ffi--recv (fd max-bytes &optional flags)
   "FFI: ssize_t recv(int sockfd, void *buf, size_t len, int flags).
@@ -374,6 +510,74 @@ Fd is left in non-blocking mode (= consumer poll-driven)."
           (let ((errno (emacs-network-ffi--errno)))
             (emacs-network-ffi--close fd)
             `(:error ,(format "connect(%s) failed: errno=%d" path errno))))
+         (t
+          (emacs-network-ffi--set-nonblocking fd)
+          fd)))))))
+
+
+;;;; --- Phase 7b TCP wrappers -------------------------------------------
+
+(defun emacs-network-ffi-server-tcp (host port &optional backlog)
+  "Open + bind + listen on TCP HOST:PORT.
+
+HOST: nil / t / `any` → bind on every interface (`INADDR_ANY`);
+`local` → 127.0.0.1; string → parsed via `inet_pton'.
+PORT: 1..65535 in host byte order.
+BACKLOG defaults to 16.
+
+Sets `SO_REUSEADDR' so listener restarts do not trip
+TIME_WAIT.  Fd is left in non-blocking mode.
+
+Returns the server fd on success, `(:error STRING)' on failure."
+  (let ((backlog* (or backlog 16))
+        (fd (emacs-network-ffi--socket
+             emacs-network-ffi-AF_INET
+             emacs-network-ffi-SOCK_STREAM
+             0)))
+    (cond
+     ((or (not (integerp fd)) (< fd 0))
+      `(:error ,(format "socket() failed: errno=%d"
+                        (emacs-network-ffi--errno))))
+     (t
+      (emacs-network-ffi--setsockopt-int
+       fd emacs-network-ffi-SOL_SOCKET emacs-network-ffi-SO_REUSEADDR 1)
+      (let ((rc-bind (emacs-network-ffi--bind-inet fd host port)))
+        (cond
+         ((not (zerop (or rc-bind -1)))
+          (let ((errno (emacs-network-ffi--errno)))
+            (emacs-network-ffi--close fd)
+            `(:error ,(format "bind(%s:%d) failed: errno=%d"
+                              host port errno))))
+         (t
+          (let ((rc-listen (emacs-network-ffi--listen fd backlog*)))
+            (cond
+             ((not (zerop (or rc-listen -1)))
+              (let ((errno (emacs-network-ffi--errno)))
+                (emacs-network-ffi--close fd)
+                `(:error ,(format "listen() failed: errno=%d" errno))))
+             (t
+              (emacs-network-ffi--set-nonblocking fd)
+              fd))))))))))
+
+(defun emacs-network-ffi-client-tcp (host port)
+  "Open + connect to a TCP HOST:PORT.
+Returns the client fd on success, `(:error STRING)' on failure."
+  (let ((fd (emacs-network-ffi--socket
+             emacs-network-ffi-AF_INET
+             emacs-network-ffi-SOCK_STREAM
+             0)))
+    (cond
+     ((or (not (integerp fd)) (< fd 0))
+      `(:error ,(format "socket() failed: errno=%d"
+                        (emacs-network-ffi--errno))))
+     (t
+      (let ((rc (emacs-network-ffi--connect-inet fd host port)))
+        (cond
+         ((not (zerop (or rc -1)))
+          (let ((errno (emacs-network-ffi--errno)))
+            (emacs-network-ffi--close fd)
+            `(:error ,(format "connect(%s:%d) failed: errno=%d"
+                              host port errno))))
          (t
           (emacs-network-ffi--set-nonblocking fd)
           fd)))))))
