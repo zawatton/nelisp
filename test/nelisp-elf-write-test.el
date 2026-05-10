@@ -1,4 +1,4 @@
-;;; nelisp-elf-write-test.el --- ERT tests for ELF writer §91.a  -*- lexical-binding: t; -*-
+;;; nelisp-elf-write-test.el --- ERT tests for ELF writer §91.a-c  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,11 +8,13 @@
 
 ;;; Commentary:
 
-;; Doc 91 §91.a — pure-elisp ert tests for the `nelisp-elf-write'
-;; module.  Exercises (1) byte/int conversion helpers, (2) Ehdr +
-;; Phdr serialisers in isolation, and (3) the `minimal-exit-0'
-;; orchestrator end-to-end including a `chmod +x' / exec smoke test
-;; and a `readelf -h' cross-check when the host has it.
+;; Doc 91 §91.a + §91.b + §91.c — pure-elisp ert tests for the
+;; `nelisp-elf-write' module.  Exercises (1) byte/int conversion
+;; helpers, (2) Ehdr + Phdr / Shdr / sym / rela serialisers in
+;; isolation, (3) the `minimal-exit-0' + rich-plist orchestrators
+;; end-to-end including `chmod +x' / exec smoke tests + `readelf'
+;; cross-checks, and (4) the §91.c multi-PT_LOAD + .bss NOBITS
+;; emission and the `hello-world-write' corpus #2 binary.
 
 ;;; Code:
 
@@ -582,6 +584,310 @@ documented offset and round-trips through the reader."
             ;; readelf prints the column "Info" - look for ".symtab"
             ;; and verify the listing exists (= structural OK).
             (should (string-match-p "\\.symtab" out))))
+      (ignore-errors (delete-file path)))))
+
+;; ====================================================================
+;; §91.c — multi PT_LOAD + .bss NOBITS + corpus #2 hello-world-write
+;; ====================================================================
+
+(defun nelisp-elf-write-test--rich-rw-plist (&optional bss-size)
+  "Return a rich plist exercising .text + .rodata + .data (+ optional .bss)."
+  (list :text (unibyte-string #xb8 #x3c #x00 #x00 #x00 #x0f #x05)
+        :rodata (unibyte-string ?h ?i ?\n)
+        :data (unibyte-string #x41 #x42 #x43 #x44)
+        :bss-size (or bss-size 0)
+        :symbols (list (list :name "_start" :value 0 :size 7
+                             :section 'text :bind 'global :type 'func))
+        :entry-sym "_start"))
+
+;; ---------------------------------------------------------------- multi-PT_LOAD
+
+(ert-deftest nelisp-elf-write-multi-ehdr-phnum ()
+  "When :data is non-empty, Ehdr.phnum equals 2 (= RX + RW segments)."
+  (let ((path (make-temp-file "nelisp-elf-mphdr-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rich-rw-plist))
+          (let ((bytes (nelisp-elf-write-test--read-file-bytes path)))
+            (should (= (nelisp-elf--read-le16 bytes 56) 2))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-multi-no-rw-keeps-phnum-1 ()
+  "Absent :data and zero :bss-size keeps the single-segment layout."
+  (let ((path (make-temp-file "nelisp-elf-phnum1-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path
+           (list :text (unibyte-string #xb8 #x3c #x00 #x00 #x00 #x0f #x05)
+                 :rodata (unibyte-string ?h ?i ?\n)
+                 :symbols (list (list :name "_start" :value 0 :size 7
+                                      :section 'text :bind 'global
+                                      :type 'func))
+                 :entry-sym "_start"))
+          (let ((bytes (nelisp-elf-write-test--read-file-bytes path)))
+            (should (= (nelisp-elf--read-le16 bytes 56) 1))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-multi-rw-page-aligned ()
+  "The RW PT_LOAD lives on a fresh 4 KiB page after the RX segment."
+  (let ((path (make-temp-file "nelisp-elf-page-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rich-rw-plist))
+          (let* ((bytes (nelisp-elf-write-test--read-file-bytes path))
+                 ;; Phdr[0] starts at offset 64; Phdr[1] at 64 + 56.
+                 (phdr1 (+ 64 56))
+                 (rw-type   (nelisp-elf--read-le32 bytes phdr1))
+                 (rw-flags  (nelisp-elf--read-le32 bytes (+ phdr1 4)))
+                 (rw-offset (nelisp-elf--read-le64 bytes (+ phdr1 8)))
+                 (rw-vaddr  (nelisp-elf--read-le64 bytes (+ phdr1 16))))
+            (should (= rw-type 1))                     ; PT_LOAD
+            (should (= rw-flags 6))                    ; PF_R | PF_W
+            (should (zerop (mod rw-offset #x1000)))    ; page-aligned
+            (should (= rw-offset #x1000))
+            (should (= rw-vaddr #x401000))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-multi-rx-phdr-still-readable ()
+  "Multi-segment emission preserves the RX PT_LOAD flags / vaddr."
+  (let ((path (make-temp-file "nelisp-elf-rxflags-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rich-rw-plist))
+          (let* ((bytes (nelisp-elf-write-test--read-file-bytes path))
+                 (phdr0 64)
+                 (rx-type  (nelisp-elf--read-le32 bytes phdr0))
+                 (rx-flags (nelisp-elf--read-le32 bytes (+ phdr0 4)))
+                 (rx-vaddr (nelisp-elf--read-le64 bytes (+ phdr0 16))))
+            (should (= rx-type 1))                     ; PT_LOAD
+            (should (= rx-flags 5))                    ; PF_R | PF_X
+            (should (= rx-vaddr #x400000))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-multi-readelf-l ()
+  "`readelf -l' reports two non-overlapping PT_LOADs with RW + RE flags."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-readelf-l-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rich-rw-plist))
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-l" path)))))
+            (should (string-match-p "LOAD" out))
+            (should (string-match-p "R E" out))
+            (should (string-match-p "RW" out))))
+      (ignore-errors (delete-file path)))))
+
+;; ---------------------------------------------------------------- .bss NOBITS
+
+(ert-deftest nelisp-elf-write-bss-memsz-exceeds-filesz ()
+  "With :bss-size > 0, the RW PT_LOAD's p_memsz exceeds p_filesz by bss size."
+  (let ((path (make-temp-file "nelisp-elf-bss-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rich-rw-plist 100))
+          (let* ((bytes (nelisp-elf-write-test--read-file-bytes path))
+                 (phdr1 (+ 64 56))
+                 (filesz (nelisp-elf--read-le64 bytes (+ phdr1 32)))
+                 (memsz  (nelisp-elf--read-le64 bytes (+ phdr1 40))))
+            (should (= filesz 4))                       ; .data only
+            (should (= memsz (+ 4 100)))                ; .data + .bss
+            (should (> memsz filesz))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-bss-without-data ()
+  "An :bss-size with no :data still produces a RW PT_LOAD (= filesz 0)."
+  (let ((path (make-temp-file "nelisp-elf-bss-only-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path
+           (list :text (unibyte-string #xb8 #x3c #x00 #x00 #x00 #x0f #x05)
+                 :bss-size 64
+                 :symbols (list (list :name "_start" :value 0 :size 7
+                                      :section 'text :bind 'global
+                                      :type 'func))
+                 :entry-sym "_start"))
+          (let* ((bytes (nelisp-elf-write-test--read-file-bytes path))
+                 (phdr1 (+ 64 56))
+                 (filesz (nelisp-elf--read-le64 bytes (+ phdr1 32)))
+                 (memsz  (nelisp-elf--read-le64 bytes (+ phdr1 40))))
+            (should (= filesz 0))
+            (should (= memsz 64))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-bss-readelf-S-nobits ()
+  "`readelf -S' lists .bss as NOBITS when :bss-size is non-zero."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-bss-S-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rich-rw-plist 200))
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-S" path)))))
+            (should (string-match-p "\\.bss" out))
+            (should (string-match-p "NOBITS" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-bss-readelf-l-memsz-greater ()
+  "`readelf -l' shows the RW segment's MemSiz > FileSiz when .bss is set."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-bss-l-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rich-rw-plist 500))
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-l" path)))))
+            ;; The RW row has FileSiz 0x4 + MemSiz 0x1f8 (= 500 + 4 = 504).
+            (should (string-match-p "0x00000000000001f8" out))))
+      (ignore-errors (delete-file path)))))
+
+;; ---------------------------------------------------------------- corpus #2
+
+(ert-deftest nelisp-elf-write-hello-world-write-elf-shape ()
+  "The hello-world-write corpus emits a valid ELF64 EXEC x86-64 file."
+  (let ((path (make-temp-file "nelisp-elf-corpus2-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary path 'hello-world-write)
+          (let ((bytes (nelisp-elf-write-test--read-file-bytes path)))
+            (should (equal (substring bytes 0 4)
+                           (unibyte-string #x7F #x45 #x4C #x46)))
+            (should (= (aref bytes 4) 2))                  ; ELFCLASS64
+            (should (= (aref bytes 5) 1))                  ; ELFDATA2LSB
+            (should (= (nelisp-elf--read-le16 bytes 16) 2)) ; ET_EXEC
+            (should (= (nelisp-elf--read-le16 bytes 18) 62)) ; EM_X86_64
+            ;; phnum = 1 (= RX only, no .data / no .bss).
+            (should (= (nelisp-elf--read-le16 bytes 56) 1))
+            ;; .text begins at offset 0x78 (= 64 + 56).
+            (should (= (aref bytes #x78) #x48))            ; and rsp, -16
+            (should (= (aref bytes (+ #x78 1)) #x83))
+            ;; sys_write opcode at offset 0x78 + 21 = #x8d.
+            (should (= (aref bytes (+ #x78 21)) #xb8))
+            (should (= (aref bytes (+ #x78 22)) #x01))     ; eax = 1
+            ;; syscall at offset 0x78 + 26.
+            (should (= (aref bytes (+ #x78 26)) #x0f))
+            (should (= (aref bytes (+ #x78 27)) #x05))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-hello-world-write-rodata-bytes ()
+  "The corpus #2 .rodata holds exactly `hello\\n' (= 6 bytes)."
+  (let ((path (make-temp-file "nelisp-elf-corpus2-msg-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary path 'hello-world-write)
+          (let* ((bytes (nelisp-elf-write-test--read-file-bytes path))
+                 ;; .rodata starts at offset 0x78 + 37 = 0x9d.
+                 (off (+ #x78 37)))
+            (should (= (aref bytes off) ?h))
+            (should (= (aref bytes (+ off 1)) ?e))
+            (should (= (aref bytes (+ off 2)) ?l))
+            (should (= (aref bytes (+ off 3)) ?l))
+            (should (= (aref bytes (+ off 4)) ?o))
+            (should (= (aref bytes (+ off 5)) ?\n))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-hello-world-write-exec-stdout ()
+  "The corpus #2 binary, when exec'd, prints `hello\\n' and exits 0."
+  (skip-unless (memq system-type '(gnu/linux gnu)))
+  (skip-unless (string-match-p "x86_64\\|amd64"
+                               (or (and (boundp 'system-configuration)
+                                        system-configuration)
+                                   "")))
+  (let ((path (make-temp-file "nelisp-elf-corpus2-exec-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary path 'hello-world-write)
+          (set-file-modes path #o755)
+          (let* ((out-buf (generate-new-buffer " *corpus2-out*"))
+                 (rc (call-process path nil out-buf nil)))
+            (unwind-protect
+                (progn
+                  (should (eq rc 0))
+                  (with-current-buffer out-buf
+                    (should (equal (buffer-string) "hello\n"))))
+              (kill-buffer out-buf))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-hello-world-write-readelf-h ()
+  "`readelf -h' confirms the corpus #2 is a valid ELF64 EXEC binary."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-corpus2-readelf-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary path 'hello-world-write)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-h" path)))))
+            (should (string-match-p "ELF64" out))
+            (should (string-match-p "EXEC" out))
+            (should (string-match-p "X86-64" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-hello-world-write-text-size-constant ()
+  "The corpus #2 .text routine has the documented 37-byte size."
+  (should (= nelisp-elf--hello-write-text-size 37))
+  (should (= (length nelisp-elf--hello-write-msg) 6))
+  ;; The internal text emitter produces exactly 37 bytes.
+  (let ((bytes (nelisp-elf--hello-write-emit-text 6 #x400078 #x40009d)))
+    (should (= (length bytes) 37))))
+
+(ert-deftest nelisp-elf-write-hello-world-write-rel32-baked ()
+  "The lea rel32 bytes in corpus #2 .text match the .rodata vaddr offset."
+  (let* ((bytes (nelisp-elf--hello-write-emit-text 6 #x400078 #x40009d))
+         ;; rel32 byte position = offset 12 (after `48 8d 35').
+         (b0 (aref bytes 12))
+         (b1 (aref bytes 13))
+         (b2 (aref bytes 14))
+         (b3 (aref bytes 15)))
+    ;; rel32 = 0x40009d - (0x400078 + 16) = 0x40009d - 0x400088 = 0x15 = 21
+    (should (= b0 #x15))
+    (should (= b1 #x00))
+    (should (= b2 #x00))
+    (should (= b3 #x00))))
+
+(ert-deftest nelisp-elf-write-encode-le32-bytes-negative ()
+  "`nelisp-elf--encode-le32-bytes' encodes -1 as 0xFF 0xFF 0xFF 0xFF."
+  (let ((s (nelisp-elf--encode-le32-bytes -1)))
+    (should (= (length s) 4))
+    (should (cl-every (lambda (b) (= b #xFF)) (append s nil))))
+  (let ((s (nelisp-elf--encode-le32-bytes #x12345678)))
+    (should (= (aref s 0) #x78))
+    (should (= (aref s 3) #x12))))
+
+(ert-deftest nelisp-elf-write-multi-bss-symbol-binding ()
+  "A symbol whose :section is `bss' resolves to the .bss base vaddr."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-bsym-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path
+           (list :text (unibyte-string #xb8 #x3c #x00 #x00 #x00 #x0f #x05)
+                 :data (unibyte-string #x01 #x02 #x03 #x04)
+                 :bss-size 16
+                 :symbols
+                 (list (list :name "_start" :value 0 :size 7
+                             :section 'text :bind 'global :type 'func)
+                       (list :name "buf" :value 0 :size 16
+                             :section 'bss :bind 'global :type 'object))
+                 :entry-sym "_start"))
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-s" path)))))
+            (should (string-match-p "buf" out))
+            (should (string-match-p "OBJECT" out))))
       (ignore-errors (delete-file path)))))
 
 (provide 'nelisp-elf-write-test)

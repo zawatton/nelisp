@@ -8,14 +8,18 @@
 
 ;;; Commentary:
 
-;; Doc 91 §91.a + §91.b — pure-elisp ELF writer.
+;; Doc 91 §91.a + §91.b + §91.c — pure-elisp ELF writer.
 ;;
 ;; Pure-elisp emitter for ELF64 binaries.  §91.a shipped the
 ;; byte-int helpers + Ehdr + Phdr writers + a minimal `exit(0)'
 ;; orchestrator.  §91.b adds section headers (Shdr), string tables
 ;; (.shstrtab / .strtab), the symbol table (.symtab) and relocation
 ;; entries (.rela.text) — everything needed to emit an ELF that
-;; `readelf -s' and `nm' can introspect.
+;; `readelf -s' and `nm' can introspect.  §91.c adds multi-PT_LOAD
+;; emission (RX + RW segments on separate pages), `.bss' NOBITS
+;; handling (= `p_filesz < p_memsz') and a second corpus binary
+;; (`hello-world-write') that exercises `write(2)' + `exit(2)' via
+;; two raw syscalls.
 ;;
 ;; Layout produced by `nelisp-elf-write-binary' for the
 ;; `minimal-exit-0' preset (see Brian Raiter's "Teensy ELF" tutorial):
@@ -459,6 +463,94 @@ includes both headers in the loaded image (= Teensy ELF pattern)."
       (nelisp-elf--write-bytes (current-buffer) text)
       (buffer-substring-no-properties (point-min) (point-max)))))
 
+;; ---- §91.c hello-world-write corpus #2 ----
+
+(defconst nelisp-elf--hello-write-msg
+  (unibyte-string ?h ?e ?l ?l ?o ?\n)
+  "The `hello\\n' message bytes written by the corpus #2 binary.
+Length = 6 (= `h' `e' `l' `l' `o' `\\n').")
+
+(defconst nelisp-elf--hello-write-text-size 37
+  "Length in bytes of the corpus #2 `_start' routine (= 37).
+Computed so the orchestrator can place .rodata immediately after
+.text without any relocation pass.")
+
+(defun nelisp-elf--encode-le32-bytes (v)
+  "Return the unsigned 32-bit value V as a 4-byte little-endian string.
+Negative values are sign-extended into the low 32 bits and emitted
+as their two's-complement representation."
+  (let ((u (if (< v 0) (logand (+ v (ash 1 32)) #xFFFFFFFF) v)))
+    (unibyte-string (logand u #xff)
+                    (logand (ash u -8) #xff)
+                    (logand (ash u -16) #xff)
+                    (logand (ash u -24) #xff))))
+
+(defun nelisp-elf--hello-write-emit-text (msg-len text-vaddr rodata-vaddr)
+  "Return self-contained corpus #2 `_start' bytes with a baked rel32.
+MSG-LEN is the .rodata buffer length.  TEXT-VADDR is the runtime
+virtual address of `_start' (= start of .text).  RODATA-VADDR is
+the runtime virtual address of the message buffer (= start of
+.rodata).  The rel32 is computed relative to the byte after the
+`lea' instruction (= TEXT-VADDR + 16) per the AMD64 ABI.
+
+Layout returned (= 37 bytes total = 4+5+3+4+5+5+2+2+5+2):
+  off  0  48 83 e4 f0          and  rsp, -16
+  off  4  bf 01 00 00 00       mov  edi, 1
+  off  9  48 8d 35 RR RR RR RR lea  rsi, [rip+REL]
+  off 16  ba LL 00 00 00       mov  edx, LEN
+  off 21  b8 01 00 00 00       mov  eax, 1
+  off 26  0f 05                syscall
+  off 28  31 ff                xor  edi, edi
+  off 30  b8 3c 00 00 00       mov  eax, 60
+  off 35  0f 05                syscall
+
+Doc 91 §91.c writes this corpus directly (= no Doc 92 / Doc 94
+runtime dependency) so the §91.c smoke test can prove the full
+ELF chain on its own."
+  (let* ((next-after-lea (+ text-vaddr 16))
+         (rel32 (- rodata-vaddr next-after-lea))
+         (len-imm (logand msg-len #xffffffff)))
+    (concat
+     (unibyte-string #x48 #x83 #xe4 #xf0)         ; and rsp, -16
+     (unibyte-string #xbf #x01 #x00 #x00 #x00)    ; mov edi, 1
+     (unibyte-string #x48 #x8d #x35)              ; lea rsi, [rip+
+     (nelisp-elf--encode-le32-bytes rel32)        ;   rel32]
+     (unibyte-string #xba)                        ; mov edx, imm32
+     (nelisp-elf--encode-le32-bytes len-imm)
+     (unibyte-string #xb8 #x01 #x00 #x00 #x00)    ; mov eax, 1
+     (unibyte-string #x0f #x05)                   ; syscall
+     (unibyte-string #x31 #xff)                   ; xor edi, edi
+     (unibyte-string #xb8 #x3c #x00 #x00 #x00)    ; mov eax, 60
+     (unibyte-string #x0f #x05))))                ; syscall
+
+(defun nelisp-elf--build-hello-world-write ()
+  "Build the corpus #2 hello-world-write binary, return unibyte string.
+Uses the rich-plist path with a single PT_LOAD (RX) — no .data /
+no .bss — so the binary is the minimum that exercises a non-trivial
+two-syscall program on x86_64 Linux."
+  (let* ((vaddr-base nelisp-elf--minimal-vaddr-base)
+         (text-off   (+ nelisp-elf--ehdr-size nelisp-elf--phdr-size))
+         (text-vaddr (+ vaddr-base text-off))
+         (msg-len    (length nelisp-elf--hello-write-msg))
+         (rodata-off (+ text-off nelisp-elf--hello-write-text-size))
+         (rodata-vaddr (+ vaddr-base rodata-off))
+         (text-bytes (nelisp-elf--hello-write-emit-text
+                      msg-len text-vaddr rodata-vaddr)))
+    (unless (= (length text-bytes) nelisp-elf--hello-write-text-size)
+      (error "nelisp-elf: hello-world-write .text drift (got %d expected %d)"
+             (length text-bytes) nelisp-elf--hello-write-text-size))
+    (nelisp-elf--build-rich
+     (list :text text-bytes
+           :rodata nelisp-elf--hello-write-msg
+           :symbols
+           (list (list :name "_start" :value 0
+                       :size nelisp-elf--hello-write-text-size
+                       :section 'text :bind 'global :type 'func)
+                 (list :name "msg" :value 0
+                       :size msg-len :section 'rodata
+                       :bind 'local :type 'object))
+           :entry-sym "_start"))))
+
 ;; ---- §91.b rich-plist orchestrator ----
 
 (defun nelisp-elf--align-up (n align)
@@ -479,59 +571,104 @@ includes both headers in the loaded image (= Teensy ELF pattern)."
         (setq found sym)))
     found))
 
-(defun nelisp-elf--section-vaddr (sec text-vaddr rodata-vaddr)
+(defun nelisp-elf--section-vaddr (sec text-vaddr rodata-vaddr
+                                      &optional data-vaddr bss-vaddr)
   "Map section keyword SEC to its loaded virtual address.
-SEC = `text' / `rodata'.  TEXT-VADDR and RODATA-VADDR are the
-respective loaded addresses computed by the layout pass."
+SEC = `text' / `rodata' / `data' / `bss'.  Each of TEXT-VADDR,
+RODATA-VADDR, DATA-VADDR, BSS-VADDR is the runtime virtual address
+chosen for that section by the layout pass.  DATA-VADDR and
+BSS-VADDR may be nil when the respective sections are absent."
   (cond
    ((eq sec 'text)   text-vaddr)
    ((eq sec 'rodata) rodata-vaddr)
+   ((eq sec 'data)
+    (or data-vaddr
+        (error "nelisp-elf: symbol references data but :data is empty")))
+   ((eq sec 'bss)
+    (or bss-vaddr
+        (error "nelisp-elf: symbol references bss but :bss-size is nil")))
    (t (error "nelisp-elf: cannot map section %S to a vaddr" sec))))
 
-(defun nelisp-elf--section-shndx (sec text-shndx rodata-shndx)
-  "Map section keyword SEC to its Shdr table index."
+(defun nelisp-elf--section-shndx (sec text-shndx rodata-shndx
+                                      &optional data-shndx bss-shndx)
+  "Map section keyword SEC to its Shdr table index.
+DATA-SHNDX and BSS-SHNDX may be nil when the respective sections
+are absent from the rich-plist input."
   (cond
    ((eq sec 'text)   text-shndx)
    ((eq sec 'rodata)
     (or rodata-shndx
         (error "nelisp-elf: symbol references rodata but :rodata is empty")))
+   ((eq sec 'data)
+    (or data-shndx
+        (error "nelisp-elf: symbol references data but :data is empty")))
+   ((eq sec 'bss)
+    (or bss-shndx
+        (error "nelisp-elf: symbol references bss but :bss-size is nil")))
    (t (error "nelisp-elf: cannot map section %S to an shndx" sec))))
 
 (defun nelisp-elf--build-rich (plist)
   "Build an ET_EXEC ELF64 binary from PLIST, return unibyte string.
 PLIST keys: :text (= unibyte bytes, required), :rodata (= bytes),
+:data (= bytes, §91.c), :bss-size (= integer, §91.c),
 :symbols (= list of plists with :name :value :size :section :bind
 :type), :relocs (= list of plists with :section :offset :symbol :type
 :addend), :entry-sym (= entry-point symbol name, required).  Sections
 .symtab / .strtab / .shstrtab are always emitted; .rela.text is
-emitted only when :relocs is non-empty."
+emitted only when :relocs is non-empty.  When :data and/or :bss-size
+is present, the loader image is split into an RX PT_LOAD (= .text +
+.rodata) and a separate page-aligned RW PT_LOAD (= .data + .bss) per
+Doc 91 §91.c."
   (let* ((text     (or (plist-get plist :text)
                        (error "nelisp-elf: :text is required")))
          (rodata   (plist-get plist :rodata))
+         (data     (plist-get plist :data))
+         (bss-size (or (plist-get plist :bss-size) 0))
          (symbols  (plist-get plist :symbols))
          (relocs   (plist-get plist :relocs))
          (entry-sym (or (plist-get plist :entry-sym)
                         (error "nelisp-elf: :entry-sym is required")))
          (have-rodata (and rodata (> (length rodata) 0)))
+         (have-data   (and data (> (length data) 0)))
+         (have-bss    (> bss-size 0))
+         (have-rw     (or have-data have-bss))
          (have-rela   (and relocs (> (length relocs) 0)))
          (text-size   (length text))
          (rodata-size (if have-rodata (length rodata) 0))
+         (data-size   (if have-data (length data) 0))
          (vaddr-base  nelisp-elf--minimal-vaddr-base)
-         ;; Layout: Ehdr + Phdr at offset 0, then .text, then .rodata
-         ;; (both in the PT_LOAD segment).  Non-alloc sections follow.
+         (page-size   #x1000)
+         ;; ---- RX segment layout (= Ehdr + Phdrs + .text + .rodata).
+         (phnum      (if have-rw 2 1))
          (phdr-off   nelisp-elf--ehdr-size)
-         (text-off   (+ phdr-off nelisp-elf--phdr-size))
+         (text-off   (+ phdr-off (* nelisp-elf--phdr-size phnum)))
          (rodata-off (+ text-off text-size))
          (text-vaddr   (+ vaddr-base text-off))
          (rodata-vaddr (+ vaddr-base rodata-off))
-         (segment-end (+ rodata-off rodata-size))
-         ;; Non-alloc sections (= 8-byte aligned for SYMTAB / RELA).
-         (shstrtab-off (nelisp-elf--align-up segment-end 1))
+         (rx-segment-end (+ rodata-off rodata-size))
+         ;; ---- RW segment layout (= .data + .bss on a fresh page).
+         (data-off   (and have-rw
+                          (nelisp-elf--align-up rx-segment-end page-size)))
+         (data-vaddr (and have-rw (+ vaddr-base data-off)))
+         (bss-off    (and have-bss (+ data-off data-size)))
+         (bss-vaddr  (and have-bss (+ data-vaddr data-size)))
+         (rw-filesz  (and have-rw data-size))
+         (rw-memsz   (and have-rw (+ data-size bss-size)))
+         ;; Non-alloc sections start after .data bytes on disk (the
+         ;; .bss section is NOBITS so it contributes 0 file bytes).
+         (non-alloc-base (if have-rw
+                             (+ data-off data-size)
+                           rx-segment-end))
+         (shstrtab-off (nelisp-elf--align-up non-alloc-base 1))
          ;; Build .shstrtab + indices.
          (shstrtab (nelisp-elf-strtab-make))
          (sh-name-text     (nelisp-elf-strtab-add shstrtab ".text"))
          (sh-name-rodata   (when have-rodata
                              (nelisp-elf-strtab-add shstrtab ".rodata")))
+         (sh-name-data     (when have-data
+                             (nelisp-elf-strtab-add shstrtab ".data")))
+         (sh-name-bss      (when have-bss
+                             (nelisp-elf-strtab-add shstrtab ".bss")))
          (sh-name-shstrtab (nelisp-elf-strtab-add shstrtab ".shstrtab"))
          (sh-name-strtab   (nelisp-elf-strtab-add shstrtab ".strtab"))
          (sh-name-symtab   (nelisp-elf-strtab-add shstrtab ".symtab"))
@@ -588,6 +725,8 @@ emitted only when :relocs is non-empty."
          (idx 1)
          (text-shndx idx)
          (rodata-shndx (and have-rodata (setq idx (1+ idx)) idx))
+         (data-shndx   (and have-data   (setq idx (1+ idx)) idx))
+         (bss-shndx    (and have-bss    (setq idx (1+ idx)) idx))
          (shstrtab-shndx (progn (setq idx (1+ idx)) idx))
          (strtab-shndx (progn (setq idx (1+ idx)) idx))
          (symtab-shndx (progn (setq idx (1+ idx)) idx))
@@ -601,10 +740,12 @@ emitted only when :relocs is non-empty."
          (entry-section (or (plist-get entry-sym-entry :section) 'text))
          (entry-offset  (or (plist-get entry-sym-entry :value)  0))
          (entry (+ (nelisp-elf--section-vaddr
-                    entry-section text-vaddr rodata-vaddr)
+                    entry-section text-vaddr rodata-vaddr
+                    data-vaddr bss-vaddr)
                    entry-offset))
-         (segment-filesz segment-end)
-         (segment-memsz  segment-end))
+         ;; RX segment image covers everything up to end of rodata.
+         (rx-segment-filesz rx-segment-end)
+         (rx-segment-memsz  rx-segment-end))
     (with-temp-buffer
       (set-buffer-multibyte nil)
       ;; ---- Ehdr ----
@@ -615,10 +756,10 @@ emitted only when :relocs is non-empty."
              :entry     entry
              :phoff     phdr-off
              :shoff     shoff
-             :phnum     1
+             :phnum     phnum
              :shnum     shnum
              :shstrndx  shstrtab-shndx))
-      ;; ---- Phdr[0]: PT_LOAD covering everything up to .rodata ----
+      ;; ---- Phdr[0]: PT_LOAD R+X covering Ehdr + Phdrs + .text + .rodata
       (nelisp-elf-write-phdr
        (current-buffer)
        (list :type   nelisp-elf--pt-load
@@ -626,9 +767,21 @@ emitted only when :relocs is non-empty."
              :offset 0
              :vaddr  vaddr-base
              :paddr  vaddr-base
-             :filesz segment-filesz
-             :memsz  segment-memsz
-             :align  #x1000))
+             :filesz rx-segment-filesz
+             :memsz  rx-segment-memsz
+             :align  page-size))
+      ;; ---- Phdr[1]: PT_LOAD R+W for .data + .bss (NOBITS) ----
+      (when have-rw
+        (nelisp-elf-write-phdr
+         (current-buffer)
+         (list :type   nelisp-elf--pt-load
+               :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-w)
+               :offset data-off
+               :vaddr  data-vaddr
+               :paddr  data-vaddr
+               :filesz rw-filesz
+               :memsz  rw-memsz
+               :align  page-size)))
       ;; ---- .text ----
       (unless (= (point) (1+ text-off))
         (error "nelisp-elf: .text offset drift (point=%d expected=%d)"
@@ -637,6 +790,12 @@ emitted only when :relocs is non-empty."
       ;; ---- .rodata ----
       (when have-rodata
         (nelisp-elf--write-bytes (current-buffer) rodata))
+      ;; ---- .data (= RW segment, on a fresh page) ----
+      (when have-data
+        (let ((pad (- data-off (1- (point)))))
+          (when (> pad 0) (nelisp-elf--write-pad (current-buffer) pad)))
+        (nelisp-elf--write-bytes (current-buffer) data))
+      ;; .bss contributes no file bytes — it is NOBITS.
       ;; ---- .shstrtab ----
       (let ((pad (- shstrtab-off (1- (point)))))
         (when (> pad 0) (nelisp-elf--write-pad (current-buffer) pad)))
@@ -657,9 +816,11 @@ emitted only when :relocs is non-empty."
                (type  (or (plist-get sym :type) 'notype))
                (name-off (cdr (assoc nm sym-name-offsets)))
                (shndx (nelisp-elf--section-shndx
-                       sect text-shndx rodata-shndx))
+                       sect text-shndx rodata-shndx
+                       data-shndx bss-shndx))
                (vaddr (nelisp-elf--section-vaddr
-                       sect text-vaddr rodata-vaddr))
+                       sect text-vaddr rodata-vaddr
+                       data-vaddr bss-vaddr))
                (value (+ vaddr (or (plist-get sym :value) 0))))
           (nelisp-elf-write-sym
            (current-buffer)
@@ -722,6 +883,30 @@ emitted only when :relocs is non-empty."
                :offset    rodata-off
                :size      rodata-size
                :addralign 8)))
+      ;; Shdr[data] (if present).
+      (when have-data
+        (nelisp-elf-write-shdr
+         (current-buffer)
+         (list :name      sh-name-data
+               :type      nelisp-elf--sht-progbits
+               :flags     (logior nelisp-elf--shf-write
+                                  nelisp-elf--shf-alloc)
+               :addr      data-vaddr
+               :offset    data-off
+               :size      data-size
+               :addralign 8)))
+      ;; Shdr[bss] (if present) — SHT_NOBITS, no file footprint.
+      (when have-bss
+        (nelisp-elf-write-shdr
+         (current-buffer)
+         (list :name      sh-name-bss
+               :type      nelisp-elf--sht-nobits
+               :flags     (logior nelisp-elf--shf-write
+                                  nelisp-elf--shf-alloc)
+               :addr      bss-vaddr
+               :offset    bss-off
+               :size      bss-size
+               :addralign 8)))
       ;; Shdr[shstrtab].
       (nelisp-elf-write-shdr
        (current-buffer)
@@ -766,22 +951,33 @@ emitted only when :relocs is non-empty."
 ;;;###autoload
 (defun nelisp-elf-write-binary (file-path sections)
   "Emit a static-linked ELF64 executable to FILE-PATH.
-SECTIONS is either the symbol `minimal-exit-0' (= §91.a Teensy-ELF
-shortcut) or a plist that drives the §91.b rich path:
+SECTIONS is one of the named sentinels (`minimal-exit-0' for the
+§91.a Teensy-ELF shortcut, `hello-world-write' for the §91.c
+corpus #2 sample that prints `hello\\n' via `write(2)' and exits)
+or a plist that drives the §91.b/§91.c rich path:
   :text       unibyte bytes (= machine code; required).
   :rodata     unibyte bytes (= constants).
+  :data       unibyte bytes (= initialised writable data, §91.c).
+  :bss-size   integer (= NOBITS zero-fill size in bytes, §91.c).
   :symbols    list of plists with keys :name :value :size :section
               :bind :type (= STB_LOCAL/GLOBAL/WEAK keyword,
               STT_NOTYPE/OBJECT/FUNC/SECTION keyword).
+              :section is `text' / `rodata' / `data' / `bss'.
   :relocs     list of plists with keys :section :offset :symbol :type
               :addend (= pc32 / abs64 / plt32 keyword).
   :entry-sym  symbol name resolved to e_entry (required for rich path).
+
+When :data or :bss-size is present the loader image splits into two
+PT_LOAD segments — one RX (= .text + .rodata) and one RW page-aligned
+(= .data + .bss, with .bss declared NOBITS).
 
 The file is written with mode #o755 (= +x bit set)."
   (let ((bytes
          (cond
           ((eq sections 'minimal-exit-0)
            (nelisp-elf--build-minimal-exit-0))
+          ((eq sections 'hello-world-write)
+           (nelisp-elf--build-hello-world-write))
           ((listp sections)
            (nelisp-elf--build-rich sections))
           (t

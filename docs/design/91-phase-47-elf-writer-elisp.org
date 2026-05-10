@@ -817,3 +817,55 @@ acceptance: 現実的 elisp source size (= ~2 MB AOT image) で実用速度
   corpus #2)
 - Multi-section reloc routing (= =.rela.data= 等)
 - 性能 tuning (= §7.1 / §91.d 担当)
+
+* §91.c SHIPPED (2026-05-11)
+
+** Scope delivered
+
+§91.c は §91.b の ET_EXEC skeleton に **writable data 領域** と
+**non-trivial 2-syscall corpus** を積み増した:
+
+1. =nelisp-elf--build-rich= 内 multi-PT_LOAD 化 = =:data= / =:bss-size= の
+   どちらかが non-nil なら RX (= =.text= + =.rodata=) + RW (= =.data= +
+   =.bss=) の 2 PT_LOAD を emit。RW segment は =0x1000= page-aligned に
+   別ページへ配置 (= =vaddr-base + 0x1000= 起点)
+2. =.bss= NOBITS handling = =sh_type = 8= / =sh_flags = WRITE | ALLOC= /
+   =sh_offset= は =.data= 直後の論理 offset。RW PT_LOAD の =p_memsz= は
+   =data-size + bss-size=、=p_filesz= は =data-size= のみ (= zero-fill は
+   loader の仕事)
+3. =nelisp-elf--section-vaddr= / =nelisp-elf--section-shndx= に =data= /
+   =bss= section kind を追加 (= shndx 解決 + vaddr 解決)
+4. =nelisp-elf--build-hello-world-write= = corpus #2 builder。RIP-relative
+   =lea rsi, [rip+rel32]= の rel32 を builder 内で baked 計算 (= Doc 92
+   /assembler/ にも Doc 94 /crt0/ にも依存しない、self-contained)
+5. =nelisp-elf-write-binary 'hello-world-write= sentinel を public API に
+   追加。exec すると stdout に =hello\n= を書き、exit code 0 で終了
+
+** Verification
+
+| layer | tool                          | result                                                   |
+|-------+-------------------------------+----------------------------------------------------------|
+| L0    | =make compile= (= warn-as-err) | clean (= RC 0)                                           |
+| L1-2  | ert 51 / 51 pass              | 34 既存 + 17 §91.c new                                   |
+| L3    | corpus #2 exec smoke          | =/tmp/nelisp-elf-test-c= stdout = =hello= / EXIT=0       |
+| L4    | =readelf -l= multi-seg        | 2 PT_LOAD、=R E= + =RW=、non-overlapping (= 0x400000 / 0x401000) |
+| L4    | =readelf -S= NOBITS           | =.bss NOBITS WA= 表示、=.data PROGBITS WA= 並走           |
+
+** Files
+
+- =lisp/nelisp-elf-write.el= = 821 → 1017 LOC (+196)
+- =test/nelisp-elf-write-test.el= = 589 → 895 LOC (+306)
+- 計 +502 LOC、Doc 91 §8 §91.c 試算 (+150 elisp + +80 ert = +230) を
+  約 2x 上回るが、corpus #2 の self-contained 化 (= rel32 計算 +
+  encode-le32-bytes helper) と multi-PT_LOAD layout 内 conditional
+  branching (= =have-data= / =have-bss= / =have-rw= の各 path) で
+  避けがたい増分
+
+** Deferrals to §91.d
+
+- 性能 tuning (= §7.1 chunk-build pattern、1 MB ELF emit < 5 sec)
+- aarch64 EM_AARCH64 corpus (= 現状 EM_X86_64 のみ smoke 済)
+- =.rela.data= / =.rela.rodata= multi-section reloc routing (= 現状
+  =.rela.text= のみ)
+- =:segments= explicit-control API (= 現状は =:data= / =:bss-size= の
+  存在で auto-derive、3+ segment の明示 layout は §91.d で検討)
