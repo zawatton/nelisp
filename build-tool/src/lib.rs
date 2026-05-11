@@ -78,6 +78,10 @@ pub mod elisp_cc_spike {
         // Returns `result_slot' for caller ergonomics.  Defined in
         // `lisp/nelisp-cc-truncate-int.el'.
         fn nelisp_truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
+        // Doc 100 Tier A wear-test #1 — `(nl-int-neg N)'.  Reads the
+        // i64 payload at `*arg0' and writes `Sexp::Int(0 - n)' into
+        // `*result_slot'.  Defined in `lisp/nelisp-cc-int-neg.el'.
+        fn nelisp_int_neg(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -115,5 +119,20 @@ pub mod elisp_cc_spike {
     ///   unmodified, so callers that read them must initialize first.
     pub unsafe fn truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp {
         nelisp_truncate_int(arg0, result_slot)
+    }
+
+    /// Doc 100 Tier A wear-test #1 — `(nl-int-neg N)' via elisp.
+    ///
+    /// `arg0' must point at a valid `Sexp::Int' value; `result_slot'
+    /// must point at a 32-byte writable Sexp slot.  Writes
+    /// `Sexp::Int(0 - n)' into the slot and returns its pointer.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`truncate_int`].  `i64::MIN' negation
+    /// silently wraps to `i64::MIN' (= two's-complement overflow);
+    /// callers that care must clamp.
+    pub unsafe fn int_neg(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp {
+        nelisp_int_neg(arg0, result_slot)
     }
 }

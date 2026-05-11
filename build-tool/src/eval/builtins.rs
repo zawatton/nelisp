@@ -272,6 +272,9 @@ pub fn install_builtins(env: &mut Env) {
         // Linux x86_64 only — other targets get a stub arm that
         // signals `arith-error' (= the build chain isn't wired).
         "nl-fact-i64",
+        // Doc 100 Tier A wear-test #1 — `(nl-int-neg N)' = `(- N)'.
+        // Elisp-only builtin; body in `lisp/nelisp-cc-int-neg.el'.
+        "nl-int-neg",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -453,6 +456,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // is a Sexp-unwrap / Sexp-wrap shim around the extern "C"
         // call.  See `bi_nl_fact_i64' for the range check.
         "nl-fact-i64" => bi_nl_fact_i64(args),
+        // Doc 100 Tier A wear-test #1 — `(nl-int-neg N)'.  Body in
+        // `lisp/nelisp-cc-int-neg.el'; this arm is the caller-owned-
+        // slot setup + Sexp-tag check.
+        "nl-int-neg" => bi_nl_int_neg(args),
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /
@@ -1305,6 +1312,39 @@ fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_nl_fact_i64(_args: &[Sexp]) -> Result<Sexp, EvalError> {
     Err(EvalError::Internal(
         "nl-fact-i64: not available on this target (linux-x86_64 only in v1)".into(),
+    ))
+}
+
+/// (nl-int-neg N) — Doc 100 Tier A wear-test #1.
+///
+/// Returns `(- N)' for any `Sexp::Int' input.  The body lives in
+/// `lisp/nelisp-cc-int-neg.el' and only there — this Rust arm is a
+/// type check + caller-owned-slot setup + extern "C" call.  Two's-
+/// complement overflow: `(nl-int-neg i64::MIN)' returns `i64::MIN'
+/// (= same as `-i64::MIN' in two's complement).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn bi_nl_int_neg(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-int-neg", args, 1, Some(1))?;
+    if !matches!(args[0], Sexp::Int(_)) {
+        return Err(EvalError::WrongType {
+            expected: "integer".into(),
+            got: args[0].clone(),
+        });
+    }
+    let mut result_slot: Sexp = Sexp::Nil;
+    unsafe {
+        crate::elisp_cc_spike::int_neg(
+            &args[0] as *const Sexp,
+            &mut result_slot as *mut Sexp,
+        );
+    }
+    Ok(result_slot)
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+fn bi_nl_int_neg(_args: &[Sexp]) -> Result<Sexp, EvalError> {
+    Err(EvalError::Internal(
+        "nl-int-neg: not available on this target (linux-x86_64 only in v1)".into(),
     ))
 }
 
