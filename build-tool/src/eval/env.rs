@@ -273,16 +273,25 @@ impl Env {
         // `nelisp--env-globals-*' primitives at load time without a
         // chicken-and-egg gap.  See `eval/env_shim.rs' for the bodies.
         super::env_shim::install_env_shim_primitives(&mut env);
+        // Doc 98 §98.3 (2026-05-11): boot path switched from form-shim
+        // re-eval (`decode_image' → `reader::read_all' → `eval')
+        // to frozen-heap direct decode (`decode_v3_into' = globals
+        // streamed straight into `env.globals').  The baker now
+        // emits proper node-pool images via `iterative_bake_one'
+        // (`nelisp-baker --frozen-heap'), so `FALLBACK_FORMS' is
+        // empty and `reader/' is no longer reachable from boot.
         for (name, image_bytes) in STDLIB_IMAGES {
-            let forms = match image::decode_image(image_bytes) {
-                Ok(forms) => forms,
+            let fallback = match image::decode_v3_into(&mut env, image_bytes) {
+                Ok(f) => f,
                 Err(e) => panic!("{} image decode failed: {}", name, e),
             };
-            for form in &forms {
-                if let Err(e) = super::eval(form, &mut env) {
-                    panic!("{} bootstrap failed: {}", name, e);
-                }
-            }
+            assert!(
+                fallback.is_empty(),
+                "{} image has non-empty FALLBACK_FORMS ({} forms) — \
+                 rebake with `make bake-images' (= --frozen-heap)",
+                name,
+                fallback.len()
+            );
         }
         // Phase 7 Stage 7.4.e.2 (Doc 70) — default ON post-bootstrap.
         // Stage 7.4.d で発見した frame-capture leak は Stage 7.4.e.1

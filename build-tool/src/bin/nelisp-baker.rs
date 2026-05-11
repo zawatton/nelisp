@@ -197,18 +197,15 @@ fn main() -> ExitCode {
     }
 
     let mut mismatches = Vec::new();
-    // Doc 98 §98.2 — `--frozen-heap' switches to the iterative driver
-    // that shares ONE `Env::new_global_no_stdlib' across all
-    // STDLIB_FILES so each emitted image carries only the diff of
-    // that file's contribution (= proper frozen-heap node-pool, no
-    // FALLBACK_FORMS section).  Without the flag, the legacy per-
-    // file form-shim path (`compile_elisp_to_image' = source stashed
-    // in FALLBACK_FORMS) is retained for backward compatibility.
-    let mut frozen_env: Option<Env> = if frozen_heap {
-        Some(Env::new_global_no_stdlib())
-    } else {
-        None
-    };
+    // Doc 98 §98.3 (2026-05-11): frozen-heap is now the only bake
+    // strategy.  Share ONE accumulating env across all STDLIB_FILES
+    // so each per-file image encodes only the diff of that file's
+    // contribution.  `--frozen-heap' is kept as a no-op flag for
+    // backward compatibility with CI scripts; the old form-shim
+    // mode (`compile_elisp_to_image') was retired together with
+    // `reader_read_all'.
+    let _ = frozen_heap;
+    let mut env = Env::new_global_no_stdlib();
     for name in STDLIB_FILES {
         let src_path = lisp_dir.join(name);
         let img_path = lisp_dir.join(format!("{}.image", name));
@@ -219,21 +216,11 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        let bytes = if let Some(env) = frozen_env.as_mut() {
-            match image::iterative_bake_one(env, &source) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("nelisp-baker: frozen-heap bake {} failed: {}", name, e);
-                    return ExitCode::from(7);
-                }
-            }
-        } else {
-            match image::compile_elisp_to_image(&source) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("nelisp-baker: bake {} failed: {}", name, e);
-                    return ExitCode::from(7);
-                }
+        let bytes = match image::iterative_bake_one(&mut env, &source) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("nelisp-baker: bake {} failed: {}", name, e);
+                return ExitCode::from(7);
             }
         };
         if check_only {

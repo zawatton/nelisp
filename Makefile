@@ -71,7 +71,7 @@ clean:
 # instead — exits non-zero if a `.el' was edited without rebake.
 bake-images:
 	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
-	./target/release/nelisp-baker
+	./target/release/nelisp-baker --frozen-heap
 	@if [ "$$NELISP_VERIFY_ELISP" = "1" ]; then \
 	  $(MAKE) verify-elisp-fixtures; \
 	else \
@@ -80,7 +80,7 @@ bake-images:
 
 bake-check:
 	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
-	./target/release/nelisp-baker --check
+	./target/release/nelisp-baker --frozen-heap --check
 
 # Doc 95 §95.e CI integration: emit the hand-picked NELIMG v3 envelope
 # fixture corpus via the elisp serializer (`nelisp-sexp-bake-dump-

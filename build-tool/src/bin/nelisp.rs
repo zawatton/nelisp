@@ -13,20 +13,17 @@
 //!   exec FILE                   load + eval FILE silently (no final-
 //!                               value print — for stdio servers)
 //!   -                           read from stdin and eval
-//!   eval-image IMG              decode IMG (NELIMG\\0\\x01 sexp
-//!                               image) and evaluate, print the last
-//!                               value
 //!
 //! Architecture invariants (post Doc 28 §3.6 cluster takeover +
 //! §3.7.b Cranelift全削除):
-//! - The `eval/' + `reader/' + `bridge/' + `image/' Rust modules are
-//!   the boot-interpreter substrate.  All hot paths beyond the boot
-//!   interpreter are emitted by the elisp-side `nelisp-cc' native
-//!   compiler; this binary never references the JIT directly.
-//! - `compile-image' is feature-gated behind `image-baker' and lives
-//!   in the dev-tooling `nelisp-baker' binary (= `make bake-images'
-//!   / `cargo run --bin nelisp-baker --features image-baker').  The
-//!   production `nelisp' binary deliberately does not parse it.
+//! - The `eval/' + `bridge/' + `image/' Rust modules are the boot-
+//!   interpreter substrate.  All hot paths beyond the boot interpreter
+//!   are emitted by the elisp-side `nelisp-cc' native compiler; this
+//!   binary never references the JIT directly.  Doc 98 §98.3
+//!   (2026-05-11) removed `reader/' from the production binary —
+//!   boot uses frozen-heap `decode_v3_into' directly from the
+//!   `lisp/*.image' node-pool; the Rust reader survives only in
+//!   the `image-baker' feature for `nelisp-baker'.
 
 use std::fs;
 use std::io::{self, Read};
@@ -34,7 +31,6 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use nelisp_build_tool::eval::{eval_str, eval_str_all};
-use nelisp_build_tool::image;
 use nelisp_build_tool::eval::sexp::fmt_sexp;
 
 const USAGE: &str = "usage: nelisp --version
@@ -42,11 +38,11 @@ const USAGE: &str = "usage: nelisp --version
        nelisp -l FILE                   # load FILE and print the last result
        nelisp exec FILE                 # load FILE silently (no final-value print)
        nelisp -                         # read from stdin and print the last result
-       nelisp eval-image IMG            # decode IMG and evaluate, print result
 
-Note: `compile-image SRC IMG' lives in the dev-tooling `nelisp-baker'
-binary behind the `image-baker' feature (= `make bake-images' /
-`cargo run --bin nelisp-baker --features image-baker').";
+Note: image manipulation (compile-image / eval-image) lives in the
+dev-tooling `nelisp-baker' binary behind the `image-baker' feature
+(= `make bake-images' / `cargo run --bin nelisp-baker --features
+image-baker').";
 
 #[derive(Debug)]
 enum Command {
@@ -58,7 +54,6 @@ enum Command {
     /// reply corrupts the wire.  Errors still go to stderr and set exit 1.
     ExecFile(String),
     LoadStdin,
-    EvalImage(String),
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -73,7 +68,6 @@ where
         [_, flag, path] if flag == "-l" || flag == "--load" => Ok(Command::LoadFile(path.clone())),
         [_, mode, path] if mode == "exec" => Ok(Command::ExecFile(path.clone())),
         [_, flag] if flag == "-" => Ok(Command::LoadStdin),
-        [_, mode, image] if mode == "eval-image" => Ok(Command::EvalImage(image.clone())),
         _ => Err(USAGE.to_string()),
     }
 }
@@ -114,27 +108,6 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
             run_eval_all(&buf)
-        }
-        Command::EvalImage(image) => run_eval_image(&image),
-    }
-}
-
-fn run_eval_image(image_path: &str) -> ExitCode {
-    let bytes = match fs::read(Path::new(image_path)) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("nelisp: cannot read {}: {}", image_path, e);
-            return ExitCode::from(1);
-        }
-    };
-    match image::eval_image(&bytes) {
-        Ok(value) => {
-            println!("{}", fmt_sexp(&value));
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("nelisp: eval-image: {}", e);
-            ExitCode::from(7)
         }
     }
 }
@@ -227,17 +200,10 @@ mod tests {
 
     #[test]
     fn rejects_compile_image() {
-        // `compile-image' lives in the dev-tooling `nelisp-baker' bin
-        // under the `image-baker' feature; the production `nelisp'
-        // binary deliberately does not parse it.
+        // `compile-image' / `eval-image' both live in the dev-tooling
+        // `nelisp-baker' bin under the `image-baker' feature; the
+        // production `nelisp' binary deliberately does not parse them.
         assert!(parse_args(["nelisp", "compile-image", "boot.el", "/tmp/img.bin"]).is_err());
-    }
-
-    #[test]
-    fn parses_eval_image() {
-        match parse_args(["nelisp", "eval-image", "/tmp/img.bin"]).unwrap() {
-            Command::EvalImage(p) => assert_eq!(p, "/tmp/img.bin"),
-            other => panic!("unexpected: {:?}", other),
-        }
+        assert!(parse_args(["nelisp", "eval-image", "/tmp/img.bin"]).is_err());
     }
 }

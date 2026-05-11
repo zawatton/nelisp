@@ -27,7 +27,7 @@
 //! still surfaces `BadMagic` for any caller still sitting on v2 bytes
 //! (regression-locked by `doc75_stage9_4_decode_rejects_v2_magic`).
 
-use crate::eval::{self, Env, EvalError};
+use crate::eval::{Env, EvalError};
 use crate::eval::env::SymbolEntry;
 use crate::eval::error::ReadError;
 use crate::eval::nlboolvector::NlBoolVectorRef;
@@ -90,10 +90,6 @@ pub enum ImageError {
     BadNodeIndex(u32),
     /// Doc 75 v3: KIND byte unknown (= not 0x01 frozen-heap).
     UnknownKind(u8),
-    /// Doc 73 Stage 8.4 + Doc 75 Stage 9.5: production decoder hit a
-    /// non-empty fallback-forms section but the reader module is gated
-    /// out (= default build without `image-baker` feature).
-    FallbackRequiresImageBaker,
     Read(ReadError),
     Eval(EvalError),
 }
@@ -110,11 +106,6 @@ impl fmt::Display for ImageError {
             ImageError::LengthOverflow => f.write_str("image length exceeds ABI u32 field"),
             ImageError::BadNodeIndex(i) => write!(f, "node index {} out of bounds", i),
             ImageError::UnknownKind(k) => write!(f, "unknown image kind byte 0x{k:02x}"),
-            ImageError::FallbackRequiresImageBaker => f.write_str(
-                "image fallback-forms section is non-empty but the reader \
-                 module is gated out (= rebuild with `--features image-baker' \
-                 or re-bake the image with the current toolchain)",
-            ),
             ImageError::Read(e) => write!(f, "reader error: {}", e),
             ImageError::Eval(e) => write!(f, "eval error: {}", e),
         }
@@ -133,27 +124,6 @@ impl From<EvalError> for ImageError {
     fn from(value: EvalError) -> Self {
         ImageError::Eval(value)
     }
-}
-
-/// Compile an Elisp source string into a NELIMG v3 image.
-///
-/// Gated behind the `image-baker` feature (= Doc 72 Stage 7.7.c.2)
-/// so the production `nelisp` binary doesn't drag the encoder + its
-/// reader dependency into its build graph.  `nelisp-baker' (= the
-/// Stage 7.7.a baker bin) requires this feature via Cargo.toml's
-/// `required-features`.
-///
-/// Implementation: stashes the source text as a single fallback-form
-/// entry inside an empty-env v3 image; `eval_image' drives the
-/// strategy-C re-eval path on decode (= Doc 75 §1.5).  The
-/// `reader::read_all' call up front exists so callers see parse
-/// errors at bake time instead of at decode time.
-#[cfg(any(test, feature = "image-baker"))]
-pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
-    // Validate the source parses now so bake time reports parse
-    // errors immediately rather than deferring them to decode.
-    let _ = reader::read_all(source)?;
-    encode_v3_with_fallback(&Env::empty(), &[source.to_string()])
 }
 
 /// Doc 98 §98.1/§98.2 — *real* Stage 9.5 iterative baker driver.
@@ -1070,65 +1040,6 @@ unsafe fn write_record_type_tag(handle: &NlRecordRef, val: Sexp) {
     std::ptr::write(tag_ptr, val);
 }
 
-/// Top-level decoder for the `nelisp` binary's `eval-image` subcommand
-/// and the Phase 4.6 ERTs.  Reads the v3 image's fallback-form section
-/// (= the strategy-C re-eval list written by `compile_elisp_to_image`)
-/// and returns the parsed `Sexp` forms ready for evaluation.
-///
-/// Maps "image bytes → parsed forms" without dragging an [`Env`] into
-/// scope, complementing [`decode_v3_into`] (= "image bytes → populated
-/// env + fallback list") on the boot path.
-pub fn decode_image(bytes: &[u8]) -> Result<Vec<Sexp>, ImageError> {
-    let mut env = Env::empty();
-    let fallback = decode_v3_into(&mut env, bytes)?;
-    let mut forms = Vec::new();
-    for src in &fallback {
-        forms.extend(reader_read_all(src)?);
-    }
-    Ok(forms)
-}
-
-pub fn eval_image(bytes: &[u8]) -> Result<Sexp, ImageError> {
-    let forms = decode_image(bytes)?;
-    eval_forms(&forms)
-}
-
-pub fn eval_forms(forms: &[Sexp]) -> Result<Sexp, ImageError> {
-    let mut env = Env::new_global();
-    let mut last = Sexp::Nil;
-    for form in forms {
-        last = eval::eval(form, &mut env)?;
-    }
-    Ok(last)
-}
-
-/// Internal helper: parse every top-level form in `source` via the
-/// crate-local Rust reader.  Lives here so `decode_image' (= the
-/// production `nelisp eval-image' entrypoint) can call it without
-/// pulling `crate::reader' into the gated import set.
-///
-/// Doc 73 Stage 8.4 + Doc 75 Stage 9.5 reconciliation: the reader
-/// module is gated behind `image-baker` for default builds.  Production
-/// `.image' files should have empty fallback-forms sections (= all
-/// content represented in the frozen heap by Stage 9.5 re-bake), so an
-/// empty-source fast path returns Ok without invoking the reader.  Any
-/// non-empty fallback form in default builds means a `.image' was
-/// produced by an older toolchain or a non-stdlib path; we surface a
-/// clear error rather than silently parsing nothing.
-fn reader_read_all(source: &str) -> Result<Vec<Sexp>, ImageError> {
-    #[cfg(any(test, feature = "image-baker"))]
-    {
-        Ok(crate::reader::read_all(source)?)
-    }
-    #[cfg(not(any(test, feature = "image-baker")))]
-    {
-        if source.is_empty() {
-            Ok(Vec::new())
-        } else {
-            Err(ImageError::FallbackRequiresImageBaker)
-        }
-    }
-}
 
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -1182,46 +1093,6 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
     use crate::eval::sexp::fmt_sexp;
-
-    #[test]
-    fn phase4_6a_header_and_version_are_checked() {
-        // Bad-magic / unsupported-version checks fire on the v3 magic
-        // / version fields read by `decode_image' (= the v3 frozen-
-        // heap container).
-        assert!(matches!(decode_image(b"not-image"), Err(ImageError::BadMagic)));
-
-        let mut image = compile_elisp_to_image("1").unwrap();
-        // u32 version sits immediately after the 8-byte v3 magic.
-        image[8..12].copy_from_slice(&999u32.to_le_bytes());
-        assert!(matches!(
-            decode_image(&image),
-            Err(ImageError::UnsupportedVersion(999))
-        ));
-    }
-
-    #[test]
-    fn phase4_6d_bootstrap_el_compiles_to_image_and_evaluates() {
-        let bootstrap = r#"
-          (defun bootstrap-add (x) (+ x 1))
-          (defun bootstrap-main ()
-            (let ((cell (cons 1 2))
-                  (vec (vector "image" 41)))
-              (setcar cell (bootstrap-add (car cell)))
-              (list (car cell) (aref vec 0) (bootstrap-add (aref vec 1)))))
-          (bootstrap-main)
-        "#;
-        let image = compile_elisp_to_image(bootstrap).unwrap();
-        let value = eval_image(&image).unwrap();
-        assert_eq!(fmt_sexp(&value), "(2 \"image\" 42)");
-    }
-
-    #[test]
-    fn phase4_6e_image_forms_are_real_elisp_values_before_eval() {
-        let image = compile_elisp_to_image("(quote (1 . [2 3]))").unwrap();
-        let forms = decode_image(&image).unwrap();
-        assert_eq!(fmt_sexp(&forms[0]), "'(1 . [2 3])");
-        assert_eq!(fmt_sexp(&eval_forms(&forms).unwrap()), "(1 . [2 3])");
-    }
 
     // ---- Doc 75 v3 Stage 9.3 (2026-05-10) — NELIMG v3 frozen-heap encoder ----
 
