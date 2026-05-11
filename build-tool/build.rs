@@ -59,17 +59,23 @@ fn main() {
 fn link_elisp_cc_spike(manifest_dir: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
     let script = repo_root.join("scripts").join("compile-elisp-objects.el");
-    let source = repo_root
-        .join("lisp")
-        .join("nelisp-cc-spike-noop.el");
     let compiler_src = repo_root
         .join("lisp")
         .join("nelisp-phase47-compiler.el");
 
-    // Re-run when the elisp source / script / compiler changes.
+    // Re-run when any elisp source the manifest can consume changes.
+    // Keep this list in sync with `compile-elisp-objects-manifest' in
+    // `scripts/compile-elisp-objects.el'.
+    let manifest_sources = ["nelisp-cc-spike-noop.el", "nelisp-cc-fact-i64.el"];
+
     println!("cargo:rerun-if-changed={}", script.display());
-    println!("cargo:rerun-if-changed={}", source.display());
     println!("cargo:rerun-if-changed={}", compiler_src.display());
+    for src in &manifest_sources {
+        println!(
+            "cargo:rerun-if-changed={}",
+            repo_root.join("lisp").join(src).display()
+        );
+    }
 
     // Emacs is the build tool here — gated so users without Emacs see
     // a friendly skip rather than a cryptic exec failure.  The spike
@@ -108,26 +114,36 @@ fn link_elisp_cc_spike(manifest_dir: &str) {
         );
     }
 
-    // Wrap the produced `.o' into a static archive via `ar' so cargo
-    // can take a single `-lstatic=...' instead of one rustc-link-arg
-    // per object.  The archive lives in OUT_DIR so cargo cleans it
-    // automatically across builds.
-    let obj_path = elisp_obj_dir.join("nelisp_spike_noop.o");
-    if !obj_path.exists() {
+    // Collect every `.o' the orchestrator wrote into the dir and
+    // bundle them into a single static archive via `ar rcs'.  Cargo
+    // takes a single `-lstatic=...' that covers the whole manifest;
+    // adding a new entry to `compile-elisp-objects-manifest' costs
+    // zero extra build.rs lines.  Order is sorted for determinism
+    // across filesystem traversal quirks.
+    let mut obj_paths: Vec<std::path::PathBuf> = std::fs::read_dir(&elisp_obj_dir)
+        .unwrap_or_else(|e| panic!("read_dir {}: {}", elisp_obj_dir.display(), e))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("o"))
+        .collect();
+    if obj_paths.is_empty() {
         panic!(
-            "expected elisp-compiled object missing: {} (orchestrator may have failed silently)",
-            obj_path.display()
+            "no .o files in {} after orchestrator run (manifest empty? silent failure?)",
+            elisp_obj_dir.display()
         );
     }
+    obj_paths.sort();
     let ar = which_or_skip("ar").unwrap_or_else(|| "ar".to_string());
     let archive = std::path::Path::new(&out_dir).join("libnelisp_elisp_spike.a");
     // `ar rcs' replaces / creates the archive in one step; remove any
     // stale .a first so we don't accumulate orphan members across rebuilds.
     let _ = std::fs::remove_file(&archive);
-    let status = std::process::Command::new(&ar)
-        .arg("rcs")
-        .arg(&archive)
-        .arg(&obj_path)
+    let mut cmd = std::process::Command::new(&ar);
+    cmd.arg("rcs").arg(&archive);
+    for p in &obj_paths {
+        cmd.arg(p);
+    }
+    let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("ar failed to spawn: {}", e));
     if !status.success() {

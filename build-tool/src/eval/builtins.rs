@@ -266,6 +266,12 @@ pub fn install_builtins(env: &mut Env) {
         // Standalone NeLisp wires `nelisp-cc-runtime-resolve-symbol-function'
         // to call this at startup.
         "nelisp-cc--dlsym-resolve",
+        // Doc 99 §99.C — first elisp-only builtin.  The Rust dispatch
+        // arm is a Sexp-unwrap / Sexp-wrap shim around the extern "C"
+        // call to `nelisp_fact_i64' (= `lisp/nelisp-cc-fact-i64.el').
+        // Linux x86_64 only — other targets get a stub arm that
+        // signals `arith-error' (= the build chain isn't wired).
+        "nl-fact-i64",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -442,6 +448,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-gc-walk-children" => crate::eval::rc_primitives::bi_nl_gc_walk_children(args),
         "nl-gc-buffered-decs" => crate::eval::rc_primitives::bi_nl_gc_buffered_decs(args),
         "nl-gc-finalize" => crate::eval::rc_primitives::bi_nl_gc_finalize(args),
+        // Doc 99 §99.C — first elisp-only builtin.  The body lives in
+        // `lisp/nelisp-cc-fact-i64.el' (Phase 47-compiled); this arm
+        // is a Sexp-unwrap / Sexp-wrap shim around the extern "C"
+        // call.  See `bi_nl_fact_i64' for the range check.
+        "nl-fact-i64" => bi_nl_fact_i64(args),
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /
@@ -1232,6 +1243,42 @@ fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
             got: other.clone(),
         }),
     }
+}
+
+/// (nl-fact-i64 N) — Doc 99 §99.C first elisp-only builtin.
+///
+/// Computes `N!' via the Phase-47-compiled `nelisp_fact_i64' function
+/// in `lisp/nelisp-cc-fact-i64.el'.  The Rust dispatch arm is purely
+/// a Sexp-unwrap / range-check / Sexp-wrap shim — the algorithmic
+/// body lives nowhere except the elisp source.
+///
+/// Range invariant: 0 ≤ N ≤ 20.  `21!' (= 51090942171709440000) does
+/// not fit in i64, so the elisp body's recursion would silently
+/// overflow.  Out-of-range inputs signal `arith-error' so the elisp
+/// caller can `condition-case' around the failure.
+///
+/// Non-Linux / non-x86_64 targets get a stub arm that signals
+/// `arith-error' with a clear message — the build chain only emits
+/// the `.o' on those targets so the symbol isn't linked.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-fact-i64", args, 1, Some(1))?;
+    let n = as_int("nl-fact-i64", &args[0])?;
+    if !(0..=20).contains(&n) {
+        return Err(EvalError::Internal(format!(
+            "nl-fact-i64: argument {} out of i64-safe range 0..=20",
+            n
+        )));
+    }
+    let result = crate::elisp_cc_spike::fact_i64(n);
+    Ok(Sexp::Int(result))
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+fn bi_nl_fact_i64(_args: &[Sexp]) -> Result<Sexp, EvalError> {
+    Err(EvalError::Internal(
+        "nl-fact-i64: not available on this target (linux-x86_64 only in v1)".into(),
+    ))
 }
 
 /// (read-stdin-bytes LIMIT) — block-read up to LIMIT bytes from fd 0.

@@ -55,6 +55,11 @@ pub mod reader;
 pub mod elisp_cc_spike {
     extern "C" {
         fn nelisp_spike_noop() -> i64;
+        // Doc 99 §99.C — recursive i64 factorial from
+        // `lisp/nelisp-cc-fact-i64.el'.  N must satisfy 0 ≤ N ≤ 20
+        // (= the fixnum-safe range for i64); the elisp body itself
+        // doesn't range-check, so callers in safe Rust must clamp.
+        fn nelisp_fact_i64(n: i64) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -63,5 +68,13 @@ pub mod elisp_cc_spike {
     /// static archive → cargo link) terminates in a callable symbol.
     pub fn probe() -> i64 {
         unsafe { nelisp_spike_noop() }
+    }
+
+    /// Doc 99 §99.C — i64 factorial implemented in elisp.  Wraps the
+    /// `nelisp_fact_i64' extern.  The caller is responsible for the
+    /// 0..=20 range invariant; the Rust shim in `eval::builtins'
+    /// enforces it before calling.
+    pub fn fact_i64(n: i64) -> i64 {
+        unsafe { nelisp_fact_i64(n) }
     }
 }

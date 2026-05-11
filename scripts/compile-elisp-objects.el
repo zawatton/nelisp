@@ -44,7 +44,10 @@
 (defconst compile-elisp-objects-manifest
   '((nelisp-cc-spike-noop
      :source-var nelisp-cc-spike-noop--source
-     :output "nelisp_spike_noop.o"))
+     :output "nelisp_spike_noop.o")
+    (nelisp-cc-fact-i64
+     :source-var nelisp-cc-fact-i64--source
+     :output "nelisp_fact_i64.o"))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding

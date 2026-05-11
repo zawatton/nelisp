@@ -1159,21 +1159,37 @@ drift (= a Doc 92 emitter invariant violation)."
         (nelisp-phase47-compiler--emit-defun d buf))
       (let* ((text-bytes (nelisp-asm-x86_64-resolve-fixups buf))
              (labels (nelisp-asm-x86_64-buffer-labels buf))
-             ;; Each label → GLOBAL STT_FUNC symbol.  `:value' is
-             ;; the byte offset within `.text' (= relocatable, no
-             ;; vaddr baking, ET_REL convention).
+             ;; Only the user-defined defun names should appear as
+             ;; GLOBAL FUNC symbols.  The control-flow helper labels
+             ;; emitted by `--emit-if' / `--emit-while' / `--emit-cond'
+             ;; (= `if-N-else' / `while-N-end' / etc.) are purely
+             ;; intra-`.text' jump targets resolved in-buffer by
+             ;; `resolve-fixups'; exposing them as global symbols
+             ;; would pollute the linker's symbol space and risk
+             ;; collision if multiple `.o' files happen to pick the
+             ;; same label-counter value.
+             (exported-names
+              (mapcar (lambda (d)
+                        (let ((nm (plist-get d :name)))
+                          (if (stringp nm) nm (symbol-name nm))))
+                      defuns))
              (symbols
-              (mapcar
-               (lambda (cell)
-                 (let ((nm (car cell))
-                       (pos (cdr cell)))
-                   (list :name (if (stringp nm) nm (symbol-name nm))
-                         :value pos
-                         :size 0
-                         :section 'text
-                         :bind 'global
-                         :type 'func)))
-               (reverse labels))))
+              (delq nil
+                    (mapcar
+                     (lambda (cell)
+                       (let* ((nm (car cell))
+                              (pos (cdr cell))
+                              (nm-str (if (stringp nm)
+                                          nm
+                                        (symbol-name nm))))
+                         (when (member nm-str exported-names)
+                           (list :name nm-str
+                                 :value pos
+                                 :size 0
+                                 :section 'text
+                                 :bind 'global
+                                 :type 'func))))
+                     (reverse labels)))))
         (nelisp-elf-write-binary
          file-path
          (list :e-type 'rel
