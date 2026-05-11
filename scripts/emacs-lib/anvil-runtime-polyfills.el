@@ -77,6 +77,29 @@
   (provide 'subr-x))
 
 
+;; --- subr.el cherry-pick polyfills ----------------------------------
+
+;; `apply-partially' lives in vendor/emacs-lisp/subr.el but loading the
+;; whole subr.el pulls many primitives standalone NeLisp can't satisfy.
+;; Cherry-pick the function — it's a 2-liner — so that
+;; `anvil-server--make-encoded-handler' (= the registration path that
+;; wraps every `(anvil-server-register-tools ...)' handler) doesn't trip
+;; on `void-function: apply-partially' and silently leave every tool
+;; unregistered.  Reason this matters: the symbol returned from
+;; `--make-encoded-handler' is what gets passed into
+;; `anvil-server-register-tool', whose `(functionp handler)' gate then
+;; rejects it because `fset' never ran.
+(unless (fboundp 'apply-partially)
+  (defun apply-partially (fun &rest args)
+    "Return a function that is a partial application of FUN to ARGS.
+ARGS is a list of the first N arguments to pass to FUN.
+The result is a new function which does the same as FUN, except that
+the first N arguments are fixed at the values with which this function
+was called."
+    (lambda (&rest args2)
+      (apply fun (append args args2)))))
+
+
 ;; --- env info vars --------------------------------------------------
 
 ;; anvil-bench reports `emacs-version' / `system-type' in tool result
