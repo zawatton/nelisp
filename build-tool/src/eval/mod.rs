@@ -49,6 +49,7 @@ pub mod nlvector;
 pub mod quit;
 pub mod rc_primitives;
 pub mod sexp;
+pub mod sexp_abi_assert;
 pub mod special_forms;
 
 pub use env::{Env, Frame, SymbolEntry};

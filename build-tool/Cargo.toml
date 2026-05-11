@@ -52,6 +52,13 @@ name = "nelisp-baker"
 path = "src/bin/nelisp-baker.rs"
 required-features = ["image-baker"]
 
+# Doc 100 v2 §100.B (2026-05-12) — Sexp ABI layout dump driver.
+# Prints the Rust-side `ABI_EXPORT' rows in `NAME=VALUE' form so the
+# `make sexp-abi-check' target can diff against `nelisp-sexp--abi-export'.
+[[bin]]
+name = "sexp-abi-emit"
+path = "src/bin/sexp-abi-emit.rs"
+
 [dependencies]
 # Sweep 6 (2026-04-30): the previous nelisp-runtime path dependency
 # (Doc 47 Stage 6d) was carried for `nelisp_runtime::image::*' wire-

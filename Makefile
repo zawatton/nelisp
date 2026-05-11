@@ -82,6 +82,23 @@ bake-check:
 	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
 	./target/release/nelisp-baker --frozen-heap --check
 
+# Doc 100 v2 §100.B (2026-05-12) — Sexp ABI cross-side drift gate.
+# Builds the `sexp-abi-emit' driver to print the Rust-side `ABI_EXPORT'
+# rows, dumps the elisp-side `nelisp-sexp--abi-export' alist to the
+# same `NAME=VALUE' form, and diffs the two.  Drift fails the build.
+# Pairs with the compile-time `const _: ()' assertions in
+# `build-tool/src/eval/sexp_abi_assert.rs' — together they guarantee
+# Phase 47-compiled `.o' objects (`lisp/nelisp-cc-*.el') see the same
+# byte layout the Rust evaluator sees.
+sexp-abi-check:
+	cargo build --release --manifest-path build-tool/Cargo.toml --bin sexp-abi-emit
+	@mkdir -p target/sexp-abi-check
+	./target/release/sexp-abi-emit > target/sexp-abi-check/rust.txt
+	$(EMACS) --batch -Q -L lisp -l nelisp-sexp-layout \
+	  --eval '(with-temp-file "target/sexp-abi-check/elisp.txt" (dolist (e nelisp-sexp--abi-export) (insert (format "%s=%d\n" (car e) (cdr e)))))'
+	@diff -u target/sexp-abi-check/elisp.txt target/sexp-abi-check/rust.txt \
+	  && echo "sexp-abi-check: Rust and elisp constants match"
+
 # Doc 95 §95.e CI integration: emit the hand-picked NELIMG v3 envelope
 # fixture corpus via the elisp serializer (`nelisp-sexp-bake-dump-
 # fixture'), then run each through the Rust baker's `--verify-elisp-
