@@ -169,14 +169,22 @@ Provided so the eventloop can build pollfd arrays."
   (defun process-send-string (process string)
     "Polyfill: send STRING to PROCESS via libc `send'.
 Loops on partial writes / EAGAIN until all bytes are accepted by
-the kernel.  Returns nil; signals on hard error (= ECONNRESET / EPIPE)."
+the kernel.  Returns nil; signals on hard error (= ECONNRESET / EPIPE).
+
+Perf (2026-05-12): the common case is that `send(2)' accepts the
+whole STRING in one syscall (UNIX socket buffer is ~200 kB).  The
+prior unconditional `(substring string i n)' allocation on every
+iteration cost ~3 s on 20 kB payloads in NeLisp standalone because
+the runtime's `substring' walks/copies the source byte-by-byte.
+Fast-path: when no bytes have been sent yet, pass STRING in as-is;
+only fall through to `substring' on the rare partial-write retry."
     (unless (emacs-process-events--processp process)
       (signal 'wrong-type-argument (list 'processp process)))
     (let ((fd (process-id-fd process))
           (i 0)
           (n (length string)))
       (while (< i n)
-        (let* ((chunk (substring string i n))
+        (let* ((chunk (if (= i 0) string (substring string i n)))
                (sent (emacs-network-ffi--send fd chunk 0)))
           (cond
            ((and (integerp sent) (> sent 0)) (setq i (+ i sent)))
@@ -188,8 +196,6 @@ the kernel.  Returns nil; signals on hard error (= ECONNRESET / EPIPE)."
               (cond
                ((or (= errno emacs-network-ffi-EAGAIN)
                     (= errno emacs-network-ffi-EINTR))
-                ;; Retry with a brief yield so the eventloop can
-                ;; drain the kernel send buffer.
                 (when (fboundp 'sit-for) (sit-for 0.001)))
                (t (signal 'file-error
                           (list (format "process-send-string: errno=%d"
