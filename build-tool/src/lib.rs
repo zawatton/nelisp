@@ -53,6 +53,17 @@ pub mod reader;
 // build step entirely (see `build.rs::link_elisp_cc_spike').
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod elisp_cc_spike {
+    use crate::eval::sexp::Sexp;
+
+    // Sexp is `#[repr(C, u8)]` (see `eval/sexp.rs:57' + the assertions
+    // in `eval/sexp_abi_assert.rs') so passing it across an extern "C"
+    // boundary by raw pointer is sound — the elisp `.o' only touches
+    // bytes at the offsets `nelisp-sexp--offset-*' name (= 0 for tag,
+    // 8 for the i64 payload of Sexp::Int).  Rust's `improper_ctypes'
+    // lint is conservative because Sexp's variants embed a `String'
+    // (which is not `#[repr(C)]'), so the lint trips even though we
+    // never pass a Sexp by value.
+    #[allow(improper_ctypes)]
     extern "C" {
         fn nelisp_spike_noop() -> i64;
         // Doc 99 §99.C — recursive i64 factorial from
@@ -60,6 +71,13 @@ pub mod elisp_cc_spike {
         // (= the fixnum-safe range for i64); the elisp body itself
         // doesn't range-check, so callers in safe Rust must clamp.
         fn nelisp_fact_i64(n: i64) -> i64;
+        // Doc 100 §100.C — `(truncate INT)' Int arm.  Reads the i64
+        // payload at `*arg0' (must be `Sexp::Int' — caller's
+        // precondition, not checked here) and writes a fresh
+        // `Sexp::Int' with the same payload into `*result_slot'.
+        // Returns `result_slot' for caller ergonomics.  Defined in
+        // `lisp/nelisp-cc-truncate-int.el'.
+        fn nelisp_truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -76,5 +94,26 @@ pub mod elisp_cc_spike {
     /// enforces it before calling.
     pub fn fact_i64(n: i64) -> i64 {
         unsafe { nelisp_fact_i64(n) }
+    }
+
+    /// Doc 100 §100.C — `(truncate INT)' Int arm, elisp-compiled.
+    ///
+    /// `arg0' must point at a valid `Sexp::Int' value; `result_slot'
+    /// must point at a 32-byte writable Sexp slot.  The elisp body
+    /// reads the i64 payload of `*arg0' and writes `Sexp::Int(same)'
+    /// into `*result_slot'.  No allocation, no Rust helpers — every
+    /// memory access is a single `disp8' load / store emitted by
+    /// Phase 47's `sexp-int-unwrap' / `sexp-int-make' grammar forms.
+    ///
+    /// # Safety
+    ///
+    /// - `arg0' must be a non-null pointer to an initialized `Sexp::Int'.
+    /// - `result_slot' must be a non-null, properly aligned 32-byte
+    ///   writable region (= `&mut MaybeUninit<Sexp>' or
+    ///   `&mut Sexp::Nil' both work).  The elisp body writes bytes
+    ///   `[0, 1)` and `[8, 16)` only; the remaining bytes are left
+    ///   unmodified, so callers that read them must initialize first.
+    pub unsafe fn truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp {
+        nelisp_truncate_int(arg0, result_slot)
     }
 }

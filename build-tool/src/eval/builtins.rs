@@ -1228,14 +1228,41 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 /// `(truncate X)' — return X truncated toward zero as an integer.
+///
 /// For a Float argument we cast via `as i64' (= the same trunc-toward-
 /// zero semantics the previous `bi_format' used inline for `%d FLOAT').
-/// For an Int argument we return it unchanged.  Added in Rust-min
-/// batch 6m so the elisp `format' dispatcher can coerce float→int
-/// for `%d/%i/%x/%X/%o/%b' without needing a privileged float-cast.
+/// Added in Rust-min batch 6m so the elisp `format' dispatcher can
+/// coerce float→int for `%d/%i/%x/%X/%o/%b' without needing a
+/// privileged float-cast.
+///
+/// Doc 100 v2 §100.C (2026-05-12): the Int arm now routes through the
+/// Phase 47-compiled `nelisp_truncate_int' function in
+/// `lisp/nelisp-cc-truncate-int.el'.  The Rust side here is a thin
+/// dispatch + caller-owned-slot setup; the actual identity body
+/// (= unwrap + re-wrap with same payload) lives in elisp.  No Rust
+/// algorithmic line survives the swap for the Int variant.
 fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("truncate", args, 1, Some(1))?;
     match &args[0] {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        Sexp::Int(_) => {
+            // Doc 100 §100.C: route the Int identity through the
+            // elisp `.o'.  The slot is a stack-local Sexp::Nil; the
+            // elisp body writes tag=SEXP_TAG_INT + i64 payload into
+            // bytes [0, 16) of the slot.  Padding bytes [1, 8) +
+            // unused tail [16, 32) remain whatever the Nil
+            // initialization left them as, which is sound because
+            // Sexp::Int reads neither.
+            let mut result_slot: Sexp = Sexp::Nil;
+            unsafe {
+                crate::elisp_cc_spike::truncate_int(
+                    &args[0] as *const Sexp,
+                    &mut result_slot as *mut Sexp,
+                );
+            }
+            Ok(result_slot)
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         Sexp::Int(n) => Ok(Sexp::Int(*n)),
         Sexp::Float(x) => Ok(Sexp::Int(*x as i64)),
         other => Err(EvalError::WrongType {

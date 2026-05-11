@@ -47,7 +47,11 @@
      :output "nelisp_spike_noop.o")
     (nelisp-cc-fact-i64
      :source-var nelisp-cc-fact-i64--source
-     :output "nelisp_fact_i64.o"))
+     :output "nelisp_fact_i64.o")
+    ;; Doc 100 §100.C — first real bi_* swap: `(truncate INT)' Int arm.
+    (nelisp-cc-truncate-int
+     :source-var nelisp-cc-truncate-int--source
+     :output "nelisp_truncate_int.o"))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding
