@@ -1,516 +1,435 @@
-#+TITLE: Doc 100 — Phase 47 Sexp::Int ABI MVP (= first §99.D real swap)
+#+TITLE: Doc 100 v2 — Phase 47 Sexp::Int ABI MVP (= elisp-side Sexp layout)
 #+AUTHOR: NeLisp design
-#+DATE: 2026-05-11
+#+DATE: 2026-05-12
 
 * Status
 
-- *State*: DRAFT 2026-05-11
+- *State*: DRAFT v2 2026-05-12
 - *Parent*: Doc 99 (= Phase 47 → eval loop wiring master plan, §99.A-C
   SHIPPED 2026-05-11; §99.D rollout queue opens here)
-- *Sibling*: Doc 90 §3.1-§3.3 (= D1/D2/D3 deferrals whose unlock 条件
-  is "Phase 47 + eval loop wired", now partially met by §99.A-C)
+- *Sibling*: Doc 90 §3.1-§3.3 (= D1/D2/D3 deferrals)
 - *Dependents (future)*:
-  - Doc 101 — Sexp::Cons ABI (= unlocks D2 parse_let_binding + D3
-    bind_formals)
-  - Doc 102 — Sexp::Symbol / Sexp::Str ABI (= unlocks D1 env.rs 19
-    methods)
-- *Scope*: design only.  Implementation is 3 sub-stages (§100.A
-  Phase 47 extern-call grammar + ELF extern relocations / §100.B
-  Rust FFI helper crate `elisp_abi' / §100.C first real swap =
-  =bi_truncate= Int branch).  Each ships as its own commit.
+  - Doc 101 — Sexp::Cons / Symbol / Str layout extensions
+- *Scope*: design only.  Implementation is 2 sub-stages (§100.B Phase
+  47 grammar gains Sexp-layout-aware ops / §100.C first real swap =
+  =bi_truncate= Int branch via pure-elisp `.o' with no Rust helper).
+
+** v2 rewrite note (2026-05-12)
+
+v1 of this doc chose ABI Option C (= opaque-handle + Rust `elisp_abi'
+helper crate, 6+ `extern "C"' helpers exposed from Rust).  *That
+direction was wrong*: it added ~250 LOC of Rust runtime support to
+enable elisp `.o' files, which is the opposite of the pure-elisp goal
+(Doc 99 §0.2 Arch C / §4.1 "single source of truth").  Every swap
+under Option C would have *added* Rust LOC instead of reducing it.
+
+v2 reverts to Doc 99 §2.2 *Option B* (= elisp `.o' files read the
+production `Sexp' enum's `#[repr(C, u8)]' layout directly via byte-
+offset memory access).  Phase 47 gains Sexp-layout-aware grammar
+forms that compile to direct memory reads; the layout knowledge lives
+inside the Phase 47 compiler (= elisp source under `lisp/'), not as
+Rust helpers.  No new Rust modules are introduced.  Every swap reduces
+Rust LOC monotonically.
+
+The §100.A commit (cab01038, Phase 47 `extern-call' grammar + ELF
+SHN_UNDEF / PLT32 wire-up) is *kept* — `extern-call' remains useful
+for elisp `.o' ↔ elisp `.o' cross-unit calls.  Only v1's §100.B (Rust
+helper crate) and §100.C (Rust shim swap) were discarded; v2 redesigns
+those as elisp-only work.
 
 * §0 TL;DR
 
 ** §0.1 What §99.C left unfinished
 
 §99.A-C (commits ca217eb8 / 9775a3a4 / d687f743, 2026-05-11) shipped
-the *infrastructure* for elisp source → ET_REL `.o' → static archive
-→ link → C-callable symbol.  Verified end-to-end via
-=bi_nl_fact_i64= (= cargo test `nelisp_fact_i64_matches_rust_reference'
-+ `nelisp_fact_i64_known_values' 2/2 green, range 0..=20! all
-match).
+the infrastructure for elisp source → ET_REL `.o' → static archive →
+link → C-callable symbol.  Verified end-to-end via `bi_nl_fact_i64'
+(= cargo probe 2/2 PASS for 0..=20!).
 
-But the §99.C swap pattern is *i64-only*: every elisp-compiled
-function exports `extern "C" fn(i64, i64, ...) -> i64'.  The Rust
-`bi_*' shim does Sexp-unwrap → i64 → call → i64 → Sexp-wrap.
+But the §99.C path is *raw-i64 only*: every elisp-compiled function
+exports `extern "C" fn(i64, ..., i64) -> i64'.  The Rust shim
+unwraps `Sexp::Int(n)' to i64 before calling, then wraps the i64
+return into `Sexp::Int(_)' afterward.  Anything that needs to inspect
+`Sexp' structure (= cons-pair, symbol identity, list spine) requires
+a Sexp-typed ABI boundary.
 
-This means §99.C's machinery is *useful only for purely-numeric
-unary/binary builtins on i64 fixnums*.  None of Doc 90's D1/D2/D3
-targets fit that shape:
+** §0.2 The two architectural directions, redux
 
-| Doc 90 deferral | Target                           | Inputs              | Sexp variants needed |
-|-----------------+----------------------------------+---------------------+----------------------|
-| D1              | =env.rs= 19 methods              | symbol + value pair | Symbol / Cons / Vector |
-| D2              | =parse_let_binding=              | cons-pair           | Cons                 |
-| D3              | =bind_formals=                   | cons-chain + values | Cons / Vector        |
+Doc 99 §2.2 considered:
 
-Doc 100 closes that gap by introducing the *first* Sexp-typed ABI
-boundary: =Sexp::Int= (= fixnum-only).  Cons / Vector / Symbol /
-Str are deferred to Doc 101+ (= one variant per follow-up doc).
+*Option A (by-pointer)*: pass `Sexp' as a raw byte struct via `*const
+Sexp' across the ABI; elisp `.o' reads field offsets directly.
 
-** §0.2 Why start with Sexp::Int when D1/D2/D3 all need Cons
+*Option B (by-Sexp-list)*: pass a single `Sexp' value (= the args
+cons-chain) + `Env*' through the FFI; elisp `.o' destructures the
+list via known layout, the result is returned as a `Sexp' value.
 
-Three reasons:
+A third option emerged in v1 of this doc:
 
-1. *ABI fragility is the load-bearing risk* (Doc 99 §5.1).  Picking
-   the simplest payload (= i64 fixnum) lets us prove the ABI shape
-   in isolation, *before* layering on the heap-pointer +
-   refcount story that Cons / Str carry.  If the ABI is wrong, we
-   want to discover that with a 3-line builtin, not a 100-line one.
+*Option C (opaque-handle + helpers)*: elisp `.o' sees `Sexp' as `void*';
+all reads / writes go through Rust-exported helpers like
+`nl_sexp_int_unwrap'.  Trade-off: opaque vs layout, costs +Rust LOC.
 
-2. *=bi_truncate= Int branch is a degenerate-but-real swap target*.
-   It's a unary function on `Sexp::Int → Sexp::Int' with identity
-   semantics (`Sexp::Int(n) => Ok(Sexp::Int(*n))').  Trivial enough
-   that any test failure points at the ABI, not at the algorithm.
-   Real enough that it lives in production `eval/builtins.rs:1236'
-   and is exercised by `(truncate N)' from elisp `format'.
+Doc 100 v2 picks *Option B* per Doc 99's original direction.  Option C
+violates the pure-elisp goal and is rejected (see "v2 rewrite note").
+Option A and Option B differ only in arg-passing convention (= struct
+vs cons-chain); v2 picks Option B because the cons-chain shape matches
+how elisp natively passes argument lists.  For the §100 MVP (= unary
+function with one Sexp arg) we further simplify by passing the single
+`*const Sexp' directly without wrapping in a cons-chain; Doc 101 will
+introduce the full cons-chain shape when the first list-walking swap
+lands.
 
-3. *Phase 47 grammar today is i64-only* (Doc 97 §97.b/c).  Adding
-   Cons / Vector / Str support requires Phase 47 to gain heap
-   allocation + tagged-pointer arithmetic + GC root registration
-   semantics.  None of those are in scope for an ABI MVP.  Sexp::Int
-   needs only one new grammar form (= `extern-call') + one new
-   relocation type emission (= R_X86_64_PLT32 against SHN_UNDEF).
+** §0.3 The pragmatic incremental path
 
-** §0.3 The incremental path
+| Stage    | Scope                                                                          | Effect |
+|----------+--------------------------------------------------------------------------------+--------|
+| §100.A   | (SHIPPED cab01038) Phase 47 `extern-call' grammar + ELF SHN_UNDEF / PLT32 | unblock |
+| §100.B   | Sexp-layout document + Phase 47 grammar ops (= `sexp-tag', `sexp-int-unwrap', `sexp-int-make') that compile to direct memory access + CI drift gate | spike  |
+| §100.C   | First real swap: =bi_truncate= Int branch via pure-elisp `.o', net Rust LOC negative | proof  |
+| §100.D   | (= deferred to Doc 101) Sexp::Cons / Symbol / Str layout ops + first list-walking swap | extend |
 
-| Stage    | Scope                                                                   | Effect       |
-|----------+-------------------------------------------------------------------------+--------------|
-| §100.A   | Phase 47 grammar `extern-call' + ELF writer SHN_UNDEF / PLT32 wire-up  | unblock      |
-| §100.B   | Rust =elisp_abi= crate exporting `nl_sexp_int_new' + `_unwrap' + `_is_int' | spike        |
-| §100.C   | First real swap: =bi_truncate= Int branch via elisp `nelisp_truncate_int' | proof        |
-| §100.D   | (deferred to Doc 101) Sexp::Cons ABI                                    | D2/D3 unlock |
-| §100.E   | (deferred to Doc 102) Sexp::Symbol + Str ABI                            | D1 unlock    |
-
-§100.A-C is the *Sexp::Int spike*: ~3-4 days of focused work, proves
-the Sexp-typed ABI end-to-end with one trivial function.  §100.D-E
-(= Doc 101/102) reuse §100.A-C's machinery — same `extern-call'
-grammar, same FFI helper pattern, just more variants.
+§100.B-C is the *spike*: ~3-4 days of focused work, proves the
+elisp-only Sexp ABI end-to-end with one trivial swap that *removes*
+the Rust body and replaces it with an elisp source whose machine code
+reads Sexp bytes directly.  No Rust helper crate.
 
 ** §0.4 Scope of Doc 100
 
-This document specifies §100.A〜§100.C in implementation-ready
-detail.  §100.D / §100.E sketches are deliberately thin — they
-become standalone Doc 101 / Doc 102 once §100.C ships and the
-ABI shape is empirically validated.
+This document specifies §100.A〜§100.C in implementation-ready detail.
+§100.D is referenced as queued; its design lands as Doc 101 once
+§100.B-C's layout-aware grammar is empirically validated.
 
 * §1 Background
 
-** §1.1 Where §99.C's i64 ABI hits its ceiling
+** §1.1 Why elisp `.o' must read Sexp directly
 
-The §99.C spike (= `bi_nl_fact_i64' / `nelisp_fact_i64') works
-because factorial's full state fits in one i64 register: arg in
-RDI, return in RAX, no Sexp values cross the FFI boundary.  The
-Rust shim handles all Sexp-aware logic *before* calling the elisp
-`.o':
+The first real swap target (= `bi_truncate' Int branch) is:
 
 #+begin_src rust
-  // build-tool/src/eval/builtins.rs:1262 — §99.C shim shape.
-  fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
-      require_arity("nl-fact-i64", args, 1, Some(1))?;
-      let n = as_int("nl-fact-i64", &args[0])?;          // Sexp → i64
-      if !(0..=20).contains(&n) { ... }                  // range check
-      let result = crate::elisp_cc_spike::fact_i64(n);   // i64 → i64 across FFI
-      Ok(Sexp::Int(result))                              // i64 → Sexp
-  }
+  // build-tool/src/eval/builtins.rs:1239 (pre-§100.C)
+  Sexp::Int(n) => Ok(Sexp::Int(*n)),
 #+end_src
 
-This pattern handles *every*  builtin whose only meaningful state
-is a fixnum.  But anything that needs to inspect cons-pair
-structure, dispatch on symbol identity, or build a result list
-inside the elisp body cannot use it.  =bind_formals= would have to
-unwrap the entire arglist + cons-chain in Rust before calling the
-elisp `.o', which leaves almost nothing for the elisp side to
-implement (= defeats the swap).
+This is identity on `Sexp::Int(n)'.  To swap this body into elisp,
+the elisp `.o' must:
 
-** §1.2 What the Phase 47 chain already supports
+1. Receive the input `Sexp' value (= or a pointer to it).
+2. (Optional) Decide it's an `Int' variant (= read the tag byte).
+3. Extract the i64 payload.
+4. Construct a fresh `Sexp::Int(n)' for the return.
 
-Doc 97 §97.b/c shipped these forms:
+Option B realizes this in elisp by Phase 47 emitting code that:
+- Reads `Sexp''s tag byte at offset 0 to check `Int' tag (= 2 per
+  the Sexp enum's `#[repr(C, u8)]' declaration ordering).
+- Reads the i64 payload at the variant's body offset.
+- Constructs a new `Sexp::Int' value by writing tag byte + payload
+  into a caller-provided 32-byte slot.
 
-- `(defun NAME (PARAMS...) BODY)' — SysV AMD64 callee with up to 6
-  args in RDI/RSI/RDX/RCX/R8/R9
-- `(NAME ARG ...)' — *self-recursive* call resolved by the
-  defun-alist; emits direct `call' with rel32 fixup resolved by
-  `nelisp-asm-x86_64-resolve-fixups' against in-buffer label
-- `(if T E1 E2)' / `(while T BODY)' / `(cond ...)' / `(and/or)'
-- arithmetic `+ - *' and comparisons `< > <= >= ='
+No Rust helpers are involved.  The Sexp layout becomes a *frozen
+contract* between Rust and Phase 47, enforced by:
+- =docs/arch/sexp-abi.md= — canonical byte-offset spec
+- Rust-side `const _: () = assert!(std::mem::offset_of!(...) == N);'
+  on every Sexp field offset / variant tag
+- Phase 47 compiler reads the same offsets via `defconst' in elisp
 
-Crucially absent: *cross-translation-unit calls*.  Every `call'
-instruction emitted today resolves *within* a single Phase 47 input
-buffer.  When the parser sees `(foo-name 42)' and `foo-name' is
-*not* in `defuns', it signals `:not-value-expr' (see
-=nelisp-phase47-compiler.el:331=).
+** §1.2 The Sexp memory layout
 
-The ELF writer (Doc 91) already defines the constants for external
-references — `nelisp-elf--shn-undef = 0' /
-`nelisp-elf--r-x86-64-plt32 = 4' — but the compiler has no code
-path that registers a symbol as undefined.  Today's symtab
-contains only `STT_FUNC' + `SHN_LOCAL_TEXT' entries.
-
-** §1.3 The Sexp enum at runtime
-
-=build-tool/src/eval/sexp.rs:58= declares:
+=build-tool/src/eval/sexp.rs:54-58=:
 
 #+begin_src rust
   #[derive(Debug, Clone, PartialEq)]
   #[repr(C, u8)]
   pub enum Sexp {
-      Nil,                       // 0
-      T,                         // 1
-      Int(i64),                  // 2 + i64 payload
-      Float(f64),                // 3 + f64 payload
-      Symbol(String),            // 4 + heap String
-      Str(String),               // 5 + heap String
-      MutStr(NlStrRef),          // 6 + refcounted handle
-      Cons(NlConsBoxRef),        // 7 + refcounted handle
-      Vector(NlVectorRef),       // 8 + refcounted handle
-      // ... (record / hash-table / etc. retired in Doc 50)
+      Nil,                  // tag 0
+      T,                    // tag 1
+      Int(i64),             // tag 2 + 8-byte payload
+      Float(f64),           // tag 3 + 8-byte payload
+      Symbol(String),       // tag 4 + 24-byte String
+      Str(String),          // tag 5 + 24-byte String
+      MutStr(NlStrRef),     // tag 6 + 8-byte handle
+      Cons(NlConsBoxRef),   // tag 7 + 8-byte handle
+      Vector(NlVectorRef),  // tag 8 + 8-byte handle
   }
 #+end_src
 
-Variants are heterogeneous in size: `Int' = 8-byte payload,
-`Symbol' = 24-byte `String', `Cons' = 8-byte ref-handle.  Rust's
-`#[repr(C, u8)]' pads every variant to the largest payload (=
-the `String' variants today), so a `Sexp' value is currently
-~32 bytes per slot.
+With `#[repr(C, u8)]':
+- Total size = 1 byte tag + alignment padding + max-payload size.
+- Largest payload = `String' (24 bytes on x86_64) → total slot size
+  is 32 bytes after alignment.
+- Tag byte at offset 0; payload begins at offset 8 (= 7-byte padding
+  for 8-byte alignment of the largest payload).
 
-Doc 99 §5.1 flags this layout as *load-bearing fragility*: any
-field reorder or variant add would silently invalidate every
-compiled `.o'.  An ABI that pins the byte layout is exposed to
-that risk; an ABI that goes through *helpers* is not.
+The MVP only touches `Sexp::Int':
+- tag byte at offset 0 must equal `2'.
+- i64 payload at offset 8 holds the value.
+- Total Sexp slot is 32 bytes; the `Sexp::Int' variant uses bytes
+  [0, 16); the remaining [16, 32) are unused but reserved by the
+  enum layout.
 
-* §2 ABI design (= Sexp::Int MVP)
+** §1.3 Why a frozen layout is the right risk trade
 
-** §2.1 The three candidate schemes
+Doc 99 §5.1 flagged "ABI layout fragility" as the load-bearing risk.
+v2's response: *make the layout a versioned, CI-enforced contract*.
 
-We considered three shapes for the Sexp-typed FFI boundary:
+- =docs/arch/sexp-abi.md= becomes the source of truth (= human-
+  readable byte-offset table per variant).
+- Rust side: `const _: () = assert!(std::mem::offset_of!(...) == N);'
+  in =build-tool/src/eval/sexp_abi_assert.rs= test module + tag-value
+  constants re-exported as `pub const SEXP_TAG_INT: u8 = 2;'.
+- Phase 47 side: =lisp/nelisp-sexp-layout.el= holds the same offsets
+  as `defconst nelisp-sexp--tag-int 2' / `defconst nelisp-sexp--offset-int-payload 8'.
+- CI gate: a `make sexp-abi-check' target runs `cargo run --bin
+  sexp-abi-emit' that prints the Rust-computed offsets, diffs against
+  the elisp constants, fails on drift.
 
-*Option A — repr(C) Sexp pass-through (direct)*
+This trade keeps the elisp `.o' simple (= direct memory access, no
+indirection) and surfaces layout changes at CI time, not at the next
+elisp swap's first run.
 
-#+begin_src c
-  // elisp .o sees `Sexp' as a 32-byte struct; reads tag byte + payload directly.
-  Sexp nelisp_truncate_int(Sexp arg);
-#+end_src
+* §2 ABI design (= Sexp::Int MVP, elisp-side layout)
 
-- Pros: 0 helper-call overhead; closest to "real" elisp semantics
-- Cons:
-  - Doc 99 §5.1 layout fragility — Phase 47 must emit exact byte
-    offsets matching Rust's `#[repr(C, u8)]'
-  - Sexp variants are heterogeneous; the elisp .o would need to
-    know all their sizes, not just Int's
-  - Phase 47 grammar today has no struct-passing convention; adding
-    one is a substantial extension
+** §2.1 The chosen scheme: Option B (by-Sexp-list, simplified for MVP)
 
-*Option B — i64 + tag byte separately (= unwrap at ABI boundary)*
+Per Doc 99 §2.2 Option B, the full-form ABI passes:
+- arg #1 (RDI per SysV AMD64) = `Sexp*' to a cons-chain `(arg1 arg2 ...)'.
+- arg #2 (RSI) = `Env*' (= pointer to current evaluator env; ignored
+  by pure functions).
+- return (RAX) = `Sexp*' (= pointer to the result Sexp value).
 
-#+begin_src c
-  // Pass each Sexp as 2 args: tag byte + i64 payload.  Return likewise.
-  void nelisp_truncate_int(uint8_t tag_in, int64_t payload_in,
-                            uint8_t *tag_out, int64_t *payload_out);
-#+end_src
+For the §100 MVP (= unary pure `bi_truncate' Int branch), we
+*simplify* by passing the single argument directly + a caller-owned
+result slot.  Doc 101 will introduce the cons-chain shape when the
+first list-walking swap requires it.
 
-- Pros: no struct layout dependency at all; Phase 47 stays in
-  scalar/i64 land (= no grammar extension needed beyond `extern-call')
-- Cons:
-  - Doesn't extend to non-Int variants (Cons handle / Str heap
-    pointer don't fit in one i64 cleanly)
-  - When Doc 101 adds Cons we'd rewrite the ABI; defeats the
-    "MVP that scales" property
-  - 2 args per logical Sexp = burns half the SysV arg-reg budget
+MVP signature:
+- arg #1 (RDI) = `*const Sexp' to the single input Sexp.
+- arg #2 (RSI) = `*mut Sexp' to a caller-provided 32-byte result slot.
+- (env passed but unused — for forward compat with Doc 101.)
+- return (RAX) = the result slot pointer (= same as RSI, returned for
+  caller ergonomics).
 
-*Option C — opaque Sexp handle + FFI helpers (= this doc's choice)*
+For =bi_truncate= specifically:
+- input = pointer to `Sexp::Int(n)' the Rust shim borrows.
+- result slot = 32-byte stack-local `Sexp::Nil' the Rust shim provides.
+- elisp body writes tag = 2, payload = n into the slot.
 
-#+begin_src c
-  // elisp .o sees `Sexp' as `void *' (= opaque handle).
-  // Helpers (= Rust extern "C") create / inspect / unwrap handles.
-  extern void *nl_sexp_int_new(int64_t n);
-  extern int64_t nl_sexp_int_unwrap(const void *h);
-  extern int32_t nl_sexp_is_int(const void *h);
-  // .... extends to nl_sexp_cons_new / nl_sexp_cons_car etc. in Doc 101.
-
-  void *nelisp_truncate_int(const void *h_in);
-#+end_src
-
-- Pros:
-  - *Opaque*: Sexp layout can change in Rust without breaking any
-    `.o'; only the helper signatures are load-bearing
-  - *Extensible*: Doc 101 adds `nl_sexp_cons_new' / `_car' / `_cdr'
-    helpers; the elisp .o gains new ops without rewriting existing ones
-  - *Naturally compatible with future GC*: helpers can register
-    roots without changing the calling convention
-  - Phase 47 needs only ONE new grammar form (= `extern-call') and
-    ONE new relocation type emission (= R_X86_64_PLT32 against
-    SHN_UNDEF) — both already partially present in the ELF writer
-- Cons:
-  - Per-Sexp ops cost a function call (= ~2-5 ns on modern x86)
-  - The helper API surface grows linearly with covered Sexp variants
-  - Allocation per result handle (= until §2.4 ownership rules
-    introduce a free-list / arena)
-
-*Decision*: Option C.  Reasons:
-1. Layout fragility (Doc 99 §5.1) is the single biggest design
-   risk; Option C eliminates it.
-2. The ABI must extend to Cons/Str/Symbol within the next 2-3 docs;
-   Option C extends linearly, Option B doesn't extend, Option A
-   compounds the fragility.
-3. For Sexp::Int specifically, the per-op overhead is negligible
-   compared to actual builtin work — `bi_truncate' does ~5 ns of
-   useful work either way; an extra 5 ns on FFI boundary is in the
-   noise.
-
-** §2.2 The Sexp::Int MVP API surface (Rust side)
-
-New crate module: =build-tool/src/elisp_abi.rs=.  All functions
-=#[no_mangle] pub extern "C"= so the linker exposes them to the
-elisp `.o' via PLT32 references:
+The Rust shim becomes:
 
 #+begin_src rust
-  /// Allocate a fresh Sexp::Int handle.
-  /// Returns Box::into_raw — caller takes ownership and MUST eventually
-  /// pass the handle to `nl_sexp_drop' or transfer it to another
-  /// consumer.  For v0 the only caller paths are elisp .o (= consumed
-  /// via the Rust shim's `Box::from_raw') and the shim itself.
-  #[no_mangle]
-  pub extern "C" fn nl_sexp_int_new(n: i64) -> *mut Sexp {
-      Box::into_raw(Box::new(Sexp::Int(n)))
-  }
-
-  /// Read the i64 payload of an Sexp::Int handle.
-  /// Pre-condition (= UB if violated): h must point to a live
-  /// Sexp::Int variant.  The elisp `.o' MUST call `nl_sexp_is_int(h)'
-  /// first when the type is not known at compile-time.
-  /// MVP semantics: returns 0 for any non-Int variant (= defensive),
-  /// but callers should treat that as a bug.
-  #[no_mangle]
-  pub extern "C" fn nl_sexp_int_unwrap(h: *const Sexp) -> i64 {
-      let s = unsafe { &*h };
-      match s {
-          Sexp::Int(n) => *n,
-          _ => 0,
-      }
-  }
-
-  /// 1 if h points to an Sexp::Int variant, 0 otherwise.
-  /// Returns int32_t to match SysV AMD64 ABI for `bool'-like values.
-  #[no_mangle]
-  pub extern "C" fn nl_sexp_is_int(h: *const Sexp) -> i32 {
-      let s = unsafe { &*h };
-      matches!(s, Sexp::Int(_)) as i32
-  }
-
-  /// Drop a handle.  Called by the elisp `.o' when it abandons an
-  /// argument handle without returning it, OR by the Rust shim when
-  /// taking ownership and re-wrapping into the public `Sexp' API.
-  ///
-  /// MVP: simple `Box::from_raw'.  Doc 101 will extend this to handle
-  /// refcounted variants (Cons / MutStr / Vector).
-  #[no_mangle]
-  pub extern "C" fn nl_sexp_drop(h: *mut Sexp) {
-      if !h.is_null() {
-          unsafe { drop(Box::from_raw(h)) };
+  fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
+      require_arity("truncate", args, 1, Some(1))?;
+      match &args[0] {
+          Sexp::Int(_) => {
+              // §100.C: route through Phase 47-compiled elisp .o.
+              // Stack-local result slot; elisp body writes into it.
+              let mut result_slot: Sexp = Sexp::Nil;
+              unsafe {
+                  crate::elisp_cc_spike::truncate_int(
+                      &args[0] as *const Sexp,
+                      &mut result_slot as *mut Sexp,
+                  );
+              }
+              Ok(result_slot)
+          }
+          Sexp::Float(x) => Ok(Sexp::Int(*x as i64)),
+          other => Err(EvalError::WrongType { ... }),
       }
   }
 #+end_src
 
-*Total surface*: 4 functions, ~60 LOC.
+Note: the Rust shim does NOT call any Rust helpers (= no `nl_sexp_*'
+nonsense).  The only Rust code added is a 3-LOC `extern "C"'
+declaration and a thin wrapper inside `elisp_cc_spike' module — no
+new module file, no symbol-retention scaffolding.
 
-** §2.3 The Phase 47 grammar extension
+** §2.2 The Phase 47 grammar extension
 
-One new value-producing form: =(extern-call SYM ARG ...)=.
+Three new value-producing forms, all compiling to direct memory access:
 
-- SYM is a symbol whose name becomes an SHN_UNDEF entry in the
-  output `.o''s symtab.
-- ARG... are existing value forms (= i64-producing).
-- Up to 6 args (= SysV register budget).
-- Result is in RAX (= caller treats it as `*mut Sexp', which on
-  x86_64 is also pointer-sized = i64-compatible).
-- No type checking at parse time — the elisp author is responsible
-  for matching the C signature.  An ABI mismatch becomes a runtime
-  SEGV, not a compile-time error, in v0.
+*1. `(sexp-tag H)' — read the tag byte*
 
-IR shape added to =parse-value=:
+Emits `movzx rax, byte ptr [rdi]` (= 1-byte read from offset 0, zero-
+extend to i64 in RAX).  Result is the tag byte (`0' for Nil, `2' for
+Int, etc.).  Used for runtime variant dispatch.
+
+*2. `(sexp-int-unwrap H)' — read the i64 payload of an Int*
+
+Pre-condition: `H' must point to a `Sexp::Int(_)' variant.  No check —
+caller validates with `sexp-tag' first (or omits when input type is
+statically known).
+
+Emits `mov rax, [rdi + 8]` (= 8-byte read from payload offset).
+
+*3. `(sexp-int-make SLOT N)' — write Sexp::Int(N) into SLOT*
+
+Two-arg writer: SLOT is a `*mut Sexp', N is an i64.  Emits:
+- `mov byte [rdi], 2'             (= tag = SEXP_TAG_INT)
+- `mov [rdi + 8], rsi'             (= payload = N)
+- (`mov rax, rdi'                  (= return slot pointer))
+
+Returns slot pointer in rax (= same value as RDI).  The bytes [1, 8)
+(= padding) and [16, 32) (= unused tail of the slot) are left
+unmodified — Sexp::Int doesn't use them and Rust's `Sexp::Drop'
+correctly handles a partially-initialized slot as long as the tag is
+set.
+
+** §2.3 The `nelisp_truncate_int' elisp source
 
 #+begin_src elisp
-  (:kind extern-call :name SYM :args (IR ...))
+  ;; lisp/nelisp-cc-truncate-int.el
+  (defconst nelisp-cc-truncate-int--source
+    '(defun nelisp_truncate_int (arg0 result-slot)
+       ;; arg0:        *const Sexp pointing at a Sexp::Int(n)
+       ;; result-slot: *mut Sexp pointing at a 32-byte caller-owned slot
+       ;; Read i64 payload of arg0, write Sexp::Int with that payload
+       ;; into result-slot, return result-slot.
+       (sexp-int-make result-slot (sexp-int-unwrap arg0))))
 #+end_src
 
-Code-gen (=--emit-extern-call=):
+The function body is one composed expression.  No `let' / `progn' /
+control flow is needed.  Phase 47 v1 grammar already handles this
+shape; §100.B's three new ops (`sexp-tag', `sexp-int-unwrap',
+`sexp-int-make') slot in as new value-producing forms in `parse-value'.
 
-1. Emit code for each ARG in RDI/RSI/.../R9 order (= identical to
-   intra-unit `call' IR).
-2. Emit `call rel32' with placeholder zero in the rel32 field.
-3. Record a fixup with `:kind 'extern-plt32', `:symbol SYM',
-   `:offset <buf-offset-of-rel32-field>'.
-4. Result is in RAX (= caller-saved per ABI; cooperate with
-   existing register-spilling code as if it were a regular call).
+** §2.4 Memory management (= no allocator on elisp side)
 
-** §2.4 Ownership / lifetime rules (v0)
+The caller-owned-slot pattern means:
+- Args are pointers to existing Sexp values (= owned by Rust caller).
+- Result is written into a caller-provided slot.
+- *No allocation happens in the elisp `.o'*.
 
-MVP ownership is *transfer-only* (= no refcount, no GC root
-registration):
+For Doc 100 Int MVP, this fully eliminates the allocator question.
+Doc 101+ will face the same question for fresh Cons construction; the
+design space is laid out in §5.3.
 
-- *Input arguments* — the Rust shim allocates each arg handle via
-  `Box::into_raw' before calling the elisp `.o'.  Caller transfers
-  ownership to callee; the elisp `.o' is responsible for dropping
-  each arg (via `nl_sexp_drop') if it doesn't consume the handle.
-- *Return value* — the elisp `.o' allocates a fresh handle via
-  `nl_sexp_int_new' (or whichever variant constructor) and returns
-  it.  The Rust shim takes ownership via `Box::from_raw' and
-  re-wraps as a public `Sexp'.
-- *No retention* — the elisp `.o' MUST NOT keep handles past the
-  call return.  No global state, no static refs.  This is enforced
-  by the language (= no `static' / `global' forms in Phase 47 v1).
+** §2.5 ELF / linker mechanics (= unchanged from §100.A)
 
-This is wasteful for the identity-case (`bi_truncate(Int(n)) → Int(n)'
-allocates twice when it could pass through).  Doc 101 will introduce
-*handle move-in/move-out* semantics that let the elisp side return
-its input unchanged.  v0 keeps it simple.
+§100.A (SHIPPED cab01038) already added `extern-call' grammar +
+SHN_UNDEF + PLT32 relocation emission.  Doc 100 §100.B-C don't use
+`extern-call' (= MVP body has no extern symbol references).  The
+§100.B grammar additions compile to *direct memory access*
+instructions, not extern calls.  No new relocation type, no new ELF
+section, no new linker behavior.
 
-** §2.5 ELF / linker mechanics
-
-Phase 47 chain → ET_REL `.o' with extern symbol references:
-
-1. The compiler collects every `extern-call' form's SYM name during
-   parse, accumulates a set =extern-syms=.
-2. After defun emit, before `resolve-fixups', each extern fixup
-   recorded in step (3) of §2.3 stays *unresolved* in the buffer
-   (= rel32 field remains 0).
-3. ELF writer:
-   - Adds one symtab entry per name in =extern-syms= with
-     `st_shndx = SHN_UNDEF', `st_info = STB_GLOBAL | STT_NOTYPE',
-     `st_value = 0', `st_size = 0'.
-   - Adds one `.rela.text' relocation per extern fixup with
-     `r_info = (sym_idx << 32) | R_X86_64_PLT32', `r_offset' =
-     fixup buffer offset, `r_addend = -4' (= standard for PLT32
-     `call' instructions).
-4. `ld' at static-link time matches each SHN_UNDEF symbol against
-   the Rust `.rlib`'s exported `nl_sexp_int_new' / `_unwrap' /
-   `_is_int' / `_drop' globals.  Standard linker-resolution flow.
-
-Rust side keep-alive: each helper carries
-`#[used] #[no_mangle] pub extern "C"' so cargo doesn't strip it
-during dead-code elimination.  The elisp `.o''s PLT32 reference
-*should* be enough to retain the symbol at link time, but `#[used]'
-guards against the build edge-cases where the `.rlib' is processed
-before the elisp `.o' is added to the link line.
+The elisp `.o' produced by §100.C contains:
+- 1 STT_FUNC global symbol (`nelisp_truncate_int') at .text offset 0
+- ~9 bytes of `.text' (= prologue + 3 mov instructions + ret)
+- NO relocations (= every memory access is RIP-relative-zero from the
+  arg-reg, no external symbol references)
 
 * §3 Stage breakdown
 
-** §3.A Stage 100.A — Phase 47 extern-call grammar + ELF extern relocations (~2 days)
+** §3.A Stage 100.A — Phase 47 extern-call grammar (SHIPPED cab01038)
+
+Already shipped 2026-05-11.  Doc 100 v2 retains this commit unchanged.
+The grammar form is unused by §100.B-C but remains available for
+future inter-`.o' calls.
+
+** §3.B Stage 100.B — Sexp-layout grammar + frozen layout doc (~2-3 days)
 
 *Scope*:
 
-1. Add =:kind 'extern-call= IR node + =parse-value= dispatch arm
-   for `(extern-call SYM ARG...)' in =nelisp-phase47-compiler.el=.
-2. Add =--emit-extern-call= helper that lays out args in SysV regs,
-   emits `call' with a placeholder, records an extern fixup.
-3. Track =extern-syms= during compile; expose via
-   =nelisp-phase47-compile-to-object= so the ELF writer sees the
-   set.
-4. Extend =nelisp-elf--build-rel= (Doc 99 §99.A) to accept extern
-   symbols + emit SHN_UNDEF symtab entries + R_X86_64_PLT32
-   relocations.
-5. Update Phase 47 `:object-mode-bad-top-form' validator to accept
-   `extern-call' in nested positions (= it's a value form, not a
-   top-level form).
-
-*LOC delta*: +120〜+180 elisp across
-=nelisp-phase47-compiler.el= and =nelisp-elf-write.el=.
-
-*Verification gate*:
-
-- New ert =nelisp-phase47-extern-call-smoke= — compile
-  `(defun probe () (extern-call host_returns_99))', `ld' link against
-  a hand-written `host.o' that defines `host_returns_99' returning
-  99, exec the result, EXIT=99 ✓.
-- New ert =nelisp-elf-write-rel-extern-symbol= — verify the writer
-  emits `SHN_UNDEF' for an unresolved name and the relocation has
-  correct `r_info' / `r_offset' / `r_addend'.
-- `readelf -r OUT.o' shows the expected `R_X86_64_PLT32' entry.
-
-*Why it's correct*: SHN_UNDEF + PLT32 is the standard
-GAS/clang-emitted shape for any external function call on
-x86_64-Linux.  We're not inventing a new pattern; we're enabling
-the ELF writer to emit what it already has constants for.
-
-** §3.B Stage 100.B — Rust =elisp_abi= helper crate (~1 day)
-
-*Scope*:
-
-1. Add =build-tool/src/elisp_abi.rs= with the 4 functions specified
-   in §2.2.
-2. Wire `pub mod elisp_abi;' into =build-tool/src/lib.rs=.
-3. Add a probe test =build-tool/tests/elisp_abi_smoke.rs= that
-   exercises each helper directly from Rust (= no elisp `.o'
-   yet), verifies create/unwrap/is_int/drop semantics.
-4. Confirm that =cargo build --release= retains the symbols in the
-   final binary (= `nm target/release/nelisp | grep nl_sexp_int_new'
-   shows them).  Add `#[used]` if dead-code elimination strips them.
-
-*LOC delta*: +60 Rust (elisp_abi.rs) + +40 Rust (probe test) + ~5
-LOC lib.rs glue.
-
-*Verification gate*:
-
-- `cargo test --release elisp_abi_smoke' — 4/4 passes.
-- `nm target/release/nelisp | grep -E "nl_sexp_int_(new|unwrap|is_int)|nl_sexp_drop"' — 4 symbols present.
-- =cargo build --release= produces a binary within ±10 KB of
-  pre-change baseline.
-
-*Why it's correct*: These functions touch no shared state, no GC,
-no allocator other than `Box'.  Their correctness is mechanically
-verifiable by the probe test.  Linkage retention is verified by
-`nm'.
-
-** §3.C Stage 100.C — First real swap: =bi_truncate= Int branch (~2 days)
-
-*Scope*:
-
-1. Add =lisp/nelisp-cc-truncate-int.el= containing:
+1. Add =docs/arch/sexp-abi.md= — canonical byte-offset table per
+   `Sexp' variant with tag values, payload offsets, total slot size.
+2. Add =lisp/nelisp-sexp-layout.el= with `defconst' constants matching
+   the Rust layout:
    #+begin_src elisp
-     (defconst nelisp-cc-truncate-int--source
-       '(defun nelisp_truncate_int (h)
-          ;; Identity: caller guarantees h points at Sexp::Int.
-          (extern-call nl_sexp_int_new
-                       (extern-call nl_sexp_int_unwrap h))))
+     (defconst nelisp-sexp--tag-nil   0)
+     (defconst nelisp-sexp--tag-t     1)
+     (defconst nelisp-sexp--tag-int   2)
+     (defconst nelisp-sexp--tag-float 3)
+     ;; ...
+     (defconst nelisp-sexp--offset-tag         0)
+     (defconst nelisp-sexp--offset-int-payload 8)
+     (defconst nelisp-sexp--slot-size         32)
    #+end_src
-2. Add the feature to =scripts/compile-elisp-objects.el='s
-   =compile-elisp-objects-manifest= as a 3rd entry.
-3. Wire =build-tool/src/elisp_cc_spike.rs='s `extern "C"' block
-   with `fn nelisp_truncate_int(h: *const Sexp) -> *mut Sexp'.
-4. Rewrite =bi_truncate='s Int arm in =build-tool/src/eval/builtins.rs=
-   to allocate an arg handle, call the elisp `.o', take ownership
-   of the result, and re-wrap.  Float arm + WrongType error stay
-   in Rust (= not in MVP scope).
-5. New probe test =build-tool/tests/elisp_cc_truncate_int_probe.rs=
-   cross-checking elisp result against `Sexp::Int(*n)' identity for
-   a representative set (= positive, negative, zero, i64::MIN+1,
-   i64::MAX).
+3. Add 3 new value forms to =lisp/nelisp-phase47-compiler.el='s
+   `parse-value' dispatch:
+   - `(sexp-tag H)' → IR `(:kind sexp-tag :ptr IR)' → emit
+     `movzx rax, byte [rdi]'.
+   - `(sexp-int-unwrap H)' → IR `(:kind sexp-int-unwrap :ptr IR)' →
+     emit `mov rax, [rdi + 8]'.
+   - `(sexp-int-make SLOT N)' → IR `(:kind sexp-int-make :slot IR :val IR)'
+     → emit `mov byte [rdi], 2; mov [rdi+8], rsi; mov rax, rdi'.
+4. Add Rust-side CI assertion: =build-tool/src/eval/sexp_abi_assert.rs=
+   containing `const _: () = assert!(std::mem::offset_of!(...))' for
+   every offset Phase 47 depends on, plus `pub const SEXP_TAG_INT: u8 = 2;'
+   etc. that the assertion references.
+5. Add `make sexp-abi-check' target running a small Rust binary that
+   diffs Rust-computed offsets against the elisp `defconst' values.
 
-*LOC delta*: +20 elisp (= the new spike feature) + ~25 Rust (=
-shim rewrite for Int branch + probe test).  Net ~0 — the Int
-branch was 1 line of Rust before.  The *machinery* expansion is
-what matters, not LOC.
+*LOC delta*:
+- =docs/arch/sexp-abi.md=                     : +100 (new, markdown)
+- =lisp/nelisp-sexp-layout.el=                : +50 (new)
+- =lisp/nelisp-phase47-compiler.el=           : +120 (3 new emit ops + IR + parse)
+- =build-tool/src/eval/sexp_abi_assert.rs=    : +40 (new const_assert! block)
+- =Makefile=                                  : +5 (sexp-abi-check target)
+
+*Net Rust*: *+40* (= CI assertion module only).  All the algorithmic
+work is elisp.
 
 *Verification gate*:
 
-- New probe 5/5 PASS across the test int range.
-- `cargo test --lib -- --test-threads=1' 679/679 + 5 new = 684/684
-  PASS (= no regression in existing Sexp::Int handling).
+- `make sexp-abi-check' green (= layout offsets match between Rust
+  and elisp).
+- New ert `nelisp-phase47-compiler/sexp-int-unwrap-smoke' — emit a
+  function that reads a Sexp::Int's payload, link via host.o that
+  embeds a Sexp::Int(42) at a known address, exec → EXIT=42.
+- New ert `nelisp-phase47-compiler/sexp-int-make-smoke' — emit a
+  function that writes Sexp::Int(99) into a caller slot, verify tag
+  byte + payload via post-call memory inspection in a Rust test.
+
+** §3.C Stage 100.C — First real swap: =bi_truncate= Int branch (~1-2 days)
+
+*Scope*:
+
+1. Add =lisp/nelisp-cc-truncate-int.el= containing the §2.3 source.
+2. Add to =scripts/compile-elisp-objects.el= manifest as 3rd entry.
+3. Add a thin `extern "C"' declaration to =build-tool/src/lib.rs=
+   `elisp_cc_spike' module (= no new module file, no helper crate):
+   #+begin_src rust
+     extern "C" {
+         fn nelisp_truncate_int(
+             arg0: *const Sexp,
+             result_slot: *mut Sexp,
+         ) -> *mut Sexp;
+     }
+     pub unsafe fn truncate_int(arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
+         nelisp_truncate_int(arg0, slot)
+     }
+   #+end_src
+4. Rewrite =bi_truncate='s Int arm in =build-tool/src/eval/builtins.rs=
+   per §2.1 (= shim allocates stack-local result slot, calls elisp `.o',
+   returns slot value).
+5. Probe test =build-tool/tests/elisp_cc_truncate_int_probe.rs= with
+   signed-extreme cases (= 5+ tests).
+
+*LOC delta*:
+- =lisp/nelisp-cc-truncate-int.el=                  : +40 (new, elisp-only body)
+- =scripts/compile-elisp-objects.el=                : +5 (manifest entry)
+- =build-tool/src/lib.rs=                            : +15 (extern + wrapper, NO helper crate)
+- =build-tool/src/eval/builtins.rs=                  : ~+10 / -2 (= shim replaces 1-line body)
+- =build-tool/tests/elisp_cc_truncate_int_probe.rs= : +80 (new)
+
+*Net Rust algorithm-bearing code*: −2 LOC (= the original `Ok(Sexp::Int(*n))'
+line gone, replaced by a shim that delegates to elisp).  Algorithm
+itself now lives only in elisp source.  Plus +95 LOC of test
+scaffolding (= once-per-swap, decreases as later swaps reuse the
+pattern).
+
+Crucially: *no new Rust helper crate, no `elisp_abi.rs', no opaque-handle
+helpers*.  The elisp `.o' is fully self-contained — it reads Sexp tag
+byte + i64 payload directly via `mov [rdi]' / `mov [rdi+8]' instructions
+Phase 47 emits from the layout constants in =lisp/nelisp-sexp-layout.el=.
+
+*Verification gate*:
+
+- New probe 5/5 PASS.
+- `cargo test --release --lib' — 679 + N PASS (= no regression).
+- `cargo test --release --test elisp_cc_spike_probe / elisp_cc_fact_i64_probe' — §99.B/C still PASS.
 - Production smoke: `bin/nelisp eval "(truncate 42)"' → `42'.
-- Production smoke: `bin/nelisp eval "(truncate -7)"' → `-7'.
-- The =nelisp_fact_i64= probe (§99.C) still passes (= proves the
-  i64 ABI path is not regressed by adding the Sexp ABI path next
-  to it).
-
-*Why it's the right first swap*:
-
-- Smallest possible Sexp-typed function (= identity on Int).
-- Exercises every piece of the §100.A-B machinery: grammar form,
-  extern relocation, helper resolution, ownership transfer.
-- Failure mode is *crisp*: if the result differs from input, the
-  ABI is wrong.  If a SEGV, the relocation is wrong.  If link
-  fails, the symbol export is wrong.
+- `make sexp-abi-check' green (= layout invariant intact).
 
 * §4 Verification gates (cumulative)
 
@@ -518,121 +437,106 @@ what matters, not LOC.
 
 | Stage  | Gate                                                          |
 |--------+---------------------------------------------------------------|
-| §100.A | ert `extern-call-smoke' + `readelf -r' shows PLT32 entry      |
-| §100.B | `cargo test elisp_abi_smoke' 4/4 + `nm' shows 4 symbols       |
-| §100.C | probe 5/5 + `cargo test --lib' 684/684 + production smoke     |
+| §100.A | SHIPPED 2026-05-11 (cab01038, 4 ert + 222 elisp existing)     |
+| §100.B | `make sexp-abi-check' + 2 new ert smoke tests                 |
+| §100.C | probe 5/5 + cargo test --lib no regression + production smoke |
 
 ** §4.2 Cumulative gate (= ship-ready)
 
 After §100.C:
 
 1. =make test= green (= full elisp + Rust suite).
-2. =cargo build --release= produces a binary that:
-   - Statically links =libnelisp_elisp_spike.a= (= §99.B archive)
-     containing both `nelisp_spike_noop.o' / `nelisp_fact_i64.o'
-     (= §99.B/C) AND the new `nelisp_truncate_int.o' (= §100.C).
-   - Exports `nl_sexp_int_new' / `_unwrap' / `_is_int' / `_drop'.
-   - Resolves the elisp `.o''s PLT32 references at link time, not
-     runtime.
-3. =bi_truncate= Int branch is the first production builtin path
-   whose algorithmic correctness depends on a Phase 47-compiled
-   `.o' that crosses an Sexp-typed ABI boundary.
-4. Doc 90 §3.4 D1/D2/D3 status flips from "blocked on Sexp ABI" to
-   "ready for variant-specific docs (= 101/102)".
+2. =make sexp-abi-check= green (= layout drift gate).
+3. =cargo build --release= clean.
+4. =bi_truncate= Int branch is the first production builtin path whose
+   algorithm lives only in elisp source (= `nelisp-cc-truncate-int.el')
+   and runs as Phase 47-emitted machine code with NO Rust helper crate
+   on the call path.
+5. Per-swap Rust LOC delta is *negative for algorithm-bearing code*
+   (= the original Rust body is gone, only a thin extern wrapper
+   remains in `elisp_cc_spike').  Doc 99 §4.1 single-source-of-truth
+   invariant is satisfied for `bi_truncate''s Int branch.
 
 * §5 Risks / unknowns
 
-** §5.1 Memory leak on partial-eval / unwind
+** §5.1 Sexp layout drift between Rust and Phase 47
 
-The v0 ownership rule (= callee always drops or returns) is
-fragile in the face of mid-call unwinds (= `signal' / `panic').
-If the elisp `.o' calls a helper that signals via env-side
-mechanism, partially-built handles leak.
+*The* load-bearing risk.  If `Sexp''s variant order or payload size
+changes without updating =lisp/nelisp-sexp-layout.el= + recompiling
+the elisp `.o' files, the elisp `.o' will read wrong byte offsets and
+silently return garbage.
 
-*Mitigation*: v0 elisp .o source has no error-signaling paths (=
-the only ops are `extern-call' to helpers that return success
-always).  Doc 101's Cons ABI will introduce `nl_sexp_drop_all'
-helpers + a per-call arena that auto-drains on return regardless
-of unwind state.
+*Mitigation*: =make sexp-abi-check= is the CI gate.  It must run
+before every release / merge to main.  Implementation: a tiny Rust
+binary prints the `offset_of!' values, the Makefile diffs against the
+elisp constants.  CI failure on drift is loud + immediate.
 
-** §5.2 Phase 47 grammar collision with future macro forms
+** §5.2 Phase 47 grammar growth pressure
 
-`extern-call' name collision risk: if a future elisp source
-contains a function literally named `extern-call', the parser
-ambiguates.  Probability low (= names with hyphens + verb-ish are
-not typical in current `lisp/*.el'), but worth guarding.
+Each new Sexp variant we cover (= Cons in Doc 101, Symbol/Str in
+Doc 102) adds 3-5 new grammar forms (= tag-check + accessor + constructor
++ predicate).  By the time Doc 102 ships, Phase 47 grammar will have
+~30+ Sexp-specific forms.
 
-*Mitigation*: §100.A reserves `extern-call' as a Phase 47 special
-form name; the validator signals
-`:reserved-name-as-function-name' if a `defun' tries to define it.
+*Mitigation*: this is intentional — the grammar growth replaces Rust
+LOC monotonically.  Net cross-language LOC across Rust + elisp goes
+down per swap; the grammar growth is one-time infrastructure.
 
-** §5.3 Linker order: `.rlib' vs static archive
+** §5.3 Allocator for fresh Sexp::Cons (= deferred to Doc 101)
 
-`cargo' typically lists `.rlib' files after `cargo:rustc-link-lib=static=...'
-archives, which means PLT32 references in elisp `.o' to Rust-exported
-helpers *should* resolve.  But linker behavior depends on
-`-Wl,--as-needed' / `--start-group' flags Cargo may emit by
-default.
+Caller-owned-slot eliminates the allocator question for Doc 100 Int
+MVP.  Cons construction (= Doc 101) will need to allocate `NlConsBox'
+instances.  Two paths:
+1. Add `nl_alloc_consbox' as a single Rust helper (= violates pure-
+   elisp goal *but* the function body is trivial, ~5 LOC).
+2. Add a pure-elisp arena allocator (= mmap + bump pointer, ~100 LOC
+   elisp).
 
-*Mitigation*: §100.B verifies resolution with `nm' + an integration
-test before §100.C lands.  If link ordering is wrong, the fix is
-likely a `println!("cargo:rustc-link-arg=-Wl,--start-group");' /
-`--end-group' pair around the static archive in `build.rs'.
+Doc 101 will pick one.  Even path 1 is far cleaner than v1's
+`elisp_abi' crate's 4 helpers + symbol-retention scaffolding — a
+single 5-LOC allocator helper is a much smaller pure-elisp violation
+than a full opaque-handle protocol.
 
-** §5.4 Sexp variant layout drift over time
+** §5.4 Caller-owned-slot lifetime invariants
 
-This ABI is *opaque* in v0 (= elisp `.o' only touches handles via
-helpers).  But Doc 101 will face the same Sexp-layout question for
-Cons (= 1 helper call per car/cdr access is acceptable for D2/D3
-but a Cons-heavy elisp body would regress vs Rust).  Future docs
-may want to opt into Option A (= direct layout) for hot Cons code.
+The Rust shim provides a stack-local `Sexp::Nil' slot, hands a pointer
+to elisp, expects the elisp body to write into it.  If the elisp body
+writes past the 32-byte slot (= a buggy grammar emit), it corrupts
+the Rust stack.
 
-*Mitigation*: Doc 101 will benchmark per-Cons-access overhead on
-D2/D3-shaped workloads.  If unacceptable, escalate to a hybrid (=
-hot-path Cons via direct layout + Doc 99 §5.1 frozen-layout
-CI gate, cold-path via helpers).
+*Mitigation*: Phase 47's grammar ops emit fixed-size writes (= 1-byte
+tag + 8-byte payload = 9 bytes total, well under 32-byte slot).  An
+ert test verifies the emit's max write offset matches the documented
+Sexp variant's footprint.
 
 * §6 References
 
 ** §6.1 Parent docs
 
-- =docs/design/99-phase-47-eval-loop-wiring.org= §2.2 (= ABI Option
-  A/B discussion), §3.D (= unlock rollout), §5.1 (= layout
-  fragility risk being avoided here)
-- =docs/design/97-phase-47-sexp-to-asm-compiler.org= §97.b/c (=
-  current Phase 47 grammar)
-- =docs/design/91-phase-47-elf-writer-elisp.org= (= ELF writer
-  primitives, SHN_UNDEF / PLT32 constants already defined)
+- =docs/design/99-phase-47-eval-loop-wiring.org= §2.2 (= Option B
+  picked here), §3.D (= unlock rollout), §5.1 (= layout fragility CI
+  gate planned)
+- =docs/design/97-phase-47-sexp-to-asm-compiler.org= §97.b/c (= current
+  Phase 47 grammar)
 - =docs/design/90-phase-2-postship-audit.org= §3.1-§3.3 (= D1/D2/D3
-  deferrals whose unlock 条件 is opened here)
+  deferrals unlocked progressively by Doc 100/101/102)
 
 ** §6.2 Memory entries (= context)
 
-- `project_doc_99_phases_a_b_c_shipped' — §99.A/B/C commit
-  references + the 6-step swap pattern template (= Sexp-ABI version
-  of which is derived in this doc)
-- `feedback_nelisp_perf_not_elisp_interpreter' — Phase 47 perf
-  envelope (= native cc, not interpreted)
-- `project_phase_47_spike_validated' — Doc 85 spike + production
-  baseline
+- `project_doc_99_phases_a_b_c_shipped' — §99 SHIPPED state
+- `feedback_elisp_exec_path_shadow_breaks_call_process' — pitfall
+  noted during §100.A test development
 
 ** §6.3 Code references
 
-- =build-tool/src/eval/sexp.rs:58-130= — =Sexp= enum definition
-  (= the layout this doc avoids depending on)
-- =build-tool/src/eval/builtins.rs:1236-1244= — current
-  =bi_truncate= Rust body
-- =build-tool/src/eval/builtins.rs:1262-1283= — §99.C
-  =bi_nl_fact_i64= shim (= i64 ABI template)
-- =lisp/nelisp-cc-fact-i64.el= — §99.C source (= i64 ABI elisp
-  template)
-- =lisp/nelisp-phase47-compiler.el:1155= — "v1 has none" comment
-  explicitly anticipating extern PLT32 emission landing
-- =lisp/nelisp-elf-write.el:105-108= — `R_X86_64_PC32' / `_PLT32'
-  / `SHN_UNDEF' constants already defined
+- =build-tool/src/eval/sexp.rs:54-58= — `Sexp' enum + `#[repr(C, u8)]'
+- =lisp/nelisp-phase47-compiler.el:1155= — comment that §100.A
+  resolved ("v1 has none" → §100.A enabled PLT32 emission)
+- =lisp/nelisp-elf-write.el:105-108= — relocation type constants
+  (= used by §100.A; §100.B doesn't add new types)
 
-** §6.4 Commit references (= future, fill as §100.A-C ship)
+** §6.4 Commit references
 
-- §100.A — TBD
+- §100.A — cab01038 (SHIPPED 2026-05-11)
 - §100.B — TBD
 - §100.C — TBD
