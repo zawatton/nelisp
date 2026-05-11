@@ -164,9 +164,20 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--syscall-bind-inet6-scoped",
         "nelisp--syscall-connect-inet6-scoped",
         "nelisp--syscall-accept-inet6-scoped",
-        // symbol / function cells + dispatch core.
-        "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
-        "defalias", "fset", "set", "fmakunbound", "makunbound",
+        // symbol / function cells + dispatch core.  Doc 98 §98.4
+        // (2026-05-11): the 7 user-visible Tier 3 names whose elisp
+        // wrappers in `nelisp-stdlib-env-shim.el' route through the
+        // `nelisp--env-globals-*' slim primitives (= `symbol-value' /
+        // `fboundp' / `boundp' / `defalias' / `set' / `fmakunbound' /
+        // `makunbound') are no longer installed here — their dispatch
+        // arms were dead code post-env-shim load and the env-shim
+        // boot file creates the entries via direct
+        // `nelisp--env-globals-set-function' anyway.  `symbol-function'
+        // + `fset' stay because env-shim's own bake reads them via
+        // `(symbol-function 'nelisp--shim-X)' / `(fset ...)' before
+        // their elisp wrappers are installed.
+        "symbol-function", "funcall", "apply", "eval",
+        "fset",
         "macroexpand-1",
         // print/error slivers — `signal' is the unwind primitive.
         // `nelisp--write-stderr-line' / `-write-stdout-bytes' back the
@@ -318,15 +329,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         //    registered builtin path below since the arms were retired
         //    before reaching this match block in Doc 76 Stage G.
         // ---- symbol / function ----
-        "symbol-value" => bi_symbol_value(args, env),
+        // Doc 98 §98.4 (2026-05-11): 7 Tier 3 arms removed
+        // (symbol-value / fboundp / boundp / defalias / set /
+        // fmakunbound / makunbound) — see install_builtins comment
+        // above for rationale.  Only symbol-function + fset remain
+        // because env-shim's own bake needs them before the elisp
+        // wrappers are wired.
         "symbol-function" => bi_symbol_function(args, env),
-        "fboundp" => bi_fboundp(args, env),
-        "boundp" => bi_boundp(args, env),
-        "defalias" => bi_defalias(args, env),
         "fset" => bi_fset(args, env),
-        "set" => bi_set(args, env),
-        "fmakunbound" => bi_fmakunbound(args, env),
-        "makunbound" => bi_makunbound(args, env),
         "macroexpand-1" => bi_macroexpand_1(args, env),
         // ---- Phase 7 Stage 7.4.a/c/e (Doc 68/70) — apply/closure/env
         // primitives + `use_elisp_apply' takeover + apply-lambda-inner ----
@@ -856,16 +866,11 @@ syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
 // ---------- symbol / function ----------
 
-fn bi_symbol_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("symbol-value", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Symbol(s) => env.lookup_value(s),
-        other => Err(EvalError::WrongType {
-            expected: "symbolp".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// Doc 98 §98.4 (2026-05-11): bi_symbol_value retired together with
+// bi_fboundp / bi_boundp / bi_defalias / bi_set / bi_fmakunbound /
+// bi_makunbound.  All seven were dead-code post-env-shim load — the
+// elisp `nelisp--shim-*' wrappers in `nelisp-stdlib-env-shim.el'
+// route through the `nelisp--env-globals-*' slim primitives.
 
 fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("symbol-function", args, 1, Some(1))?;
@@ -888,67 +893,13 @@ fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
     }
 }
 
-fn bi_fboundp(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("fboundp", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Symbol(s) => Ok(if env.is_fbound(s) { Sexp::T } else { Sexp::Nil }),
-        _ => Ok(Sexp::Nil),
-    }
-}
-
-fn bi_boundp(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("boundp", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Symbol(s) => Ok(if env.is_bound(s) { Sexp::T } else { Sexp::Nil }),
-        _ => Ok(Sexp::Nil),
-    }
-}
-
-/// `(defalias SYMBOL DEFINITION &optional DOCSTRING)` — set the
-/// function cell of SYMBOL to DEFINITION.  Mirrors `fset' in current
-/// nelisp; the optional DOCSTRING argument is accepted for API parity
-/// with host Emacs but discarded (= we have no doc-cell yet).
-fn bi_defalias(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("defalias", args, 2, Some(3))?;
-    let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol".into(),
-            got: other.clone(),
-        }),
-    };
-    // If DEFINITION is a symbol, follow the function-cell chain so
-    // the alias resolves to a callable form.  If it's a lambda /
-    // closure / builtin sentinel, store as-is.
-    let def = match &args[1] {
-        Sexp::Symbol(s) => env.lookup_function(s)?,
-        other => other.clone(),
-    };
-    env.set_function(&name, def);
-    Ok(args[0].clone())
-}
-
-/// `(set SYMBOL VALUE)` — store VALUE in the value cell of SYMBOL.
-/// Required by Stage 7.3.d (Doc 67) elisp `defvar' / `defconst'
-/// macros that previously bypassed via Rust `sf_defvar' /
-/// `sf_defconst' (which directly called `env.set_value').  Returns
-/// VALUE (= host Emacs contract).
-fn bi_set(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("set", args, 2, Some(2))?;
-    let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol".into(),
-            got: other.clone(),
-        }),
-    };
-    env.set_value(&name, args[1].clone())?;
-    Ok(args[1].clone())
-}
-
-/// `(fset SYMBOL DEFINITION)` — same as `defalias' but without the
-/// optional docstring slot.  Returns DEFINITION (= host Emacs
-/// contract).
+/// `(fset SYMBOL DEFINITION)` — install DEFINITION in the function
+/// cell of SYMBOL.  Doc 98 §98.4 (2026-05-11): the last surviving
+/// Rust function-cell setter — env-shim's own bake needs it for the
+/// 60+ `(fset 'NAME ...)' installs in `nelisp-jit-substrate.el' /
+/// `nelisp-jit-strategy.el' before its own elisp wrappers are
+/// wired.  `defalias' was retired in the same commit (the optional
+/// docstring slot was always discarded).
 fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("fset", args, 2, Some(2))?;
     let name = match &args[0] {
@@ -966,19 +917,9 @@ fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(def)
 }
 
-/// `(fmakunbound SYMBOL)` — clear the function cell of SYMBOL.
-fn bi_fmakunbound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("fmakunbound", args, 1, Some(1))?;
-    let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol".into(),
-            got: other.clone(),
-        }),
-    };
-    env.clear_function(&name);
-    Ok(args[0].clone())
-}
+// Doc 98 §98.4 (2026-05-11): bi_fmakunbound retired together with
+// the other 6 user-visible Tier 3 names — see install_builtins
+// comment above.
 
 /// `(macroexpand-1 FORM &optional ENV)` — expand FORM by ONE level if
 /// its head is a macro; otherwise return FORM unchanged.  ENV is
@@ -1138,19 +1079,8 @@ fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError
     super::apply_lambda_inner(captured, formals, &body_vec, &args_vec, env)
 }
 
-/// `(makunbound SYMBOL)` — clear the value cell of SYMBOL.
-fn bi_makunbound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("makunbound", args, 1, Some(1))?;
-    let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol".into(),
-            got: other.clone(),
-        }),
-    };
-    env.clear_value(&name);
-    Ok(args[0].clone())
-}
+// Doc 98 §98.4 (2026-05-11): bi_makunbound retired — see
+// install_builtins comment above for full list of 7 removed arms.
 
 /// Resolve `arg` to a callable: a symbol points to its function cell,
 /// a quoted lambda `(lambda ...)` / `(closure ...)` / `(builtin ...)`
