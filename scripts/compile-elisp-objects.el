@@ -110,8 +110,20 @@ stale artifacts across feature combinations)."
              (script-dir (and this (file-name-directory this)))
              (repo-root (and script-dir
                              (file-name-as-directory
-                              (expand-file-name ".." script-dir)))))
+                             (expand-file-name ".." script-dir)))))
         (expand-file-name "target/elisp-objects" repo-root))))
+
+(defun compile-elisp-objects--target-arch ()
+  "Return the Phase 47 target arch symbol for this batch run.
+Defaults to `x86_64' when `NELISP_PHASE47_TARGET_ARCH' is unset.
+Signals a clear error on unsupported values."
+  (pcase (or (getenv "NELISP_PHASE47_TARGET_ARCH") "x86_64")
+    ("x86_64" 'x86_64)
+    ("aarch64" 'aarch64)
+    (other
+     (error
+      "compile-elisp-objects: unsupported NELISP_PHASE47_TARGET_ARCH %S (expected x86_64 or aarch64)"
+      other))))
 
 (defun compile-elisp-objects-emit-all ()
   "Compile every manifest entry to its output `.o' file.
@@ -119,6 +131,7 @@ Returns the list of absolute paths written.  Used by
 `build-tool/build.rs' as the `-f' callback (= no args, exits the
 batch process via the outer `emacs --batch' driver)."
   (let* ((out-dir (compile-elisp-objects--out-dir))
+         (arch (compile-elisp-objects--target-arch))
          (written nil))
     (unless (file-directory-p out-dir)
       (make-directory out-dir t))
@@ -135,7 +148,7 @@ batch process via the outer `emacs --batch' driver)."
         (let ((sexp (symbol-value src-var)))
           (message "[compile-elisp-objects] %s -> %s"
                    feature out-path)
-          (nelisp-phase47-compile-to-object sexp out-path)
+          (nelisp-phase47-compile-to-object sexp out-path :arch arch)
           (push out-path written))))
     (nreverse written)))
 

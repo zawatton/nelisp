@@ -23,8 +23,10 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR must be set by cargo");
     let out_path = std::path::Path::new(&manifest_dir)
@@ -51,12 +53,12 @@ fn main() {
     // the result in a static archive, and link it into the final
     // `nelisp' binary.  Linux x86_64 only for the spike — other
     // targets skip silently so cross-compiles don't break.
-    if target_os == "linux" && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
-        link_elisp_cc_spike(&manifest_dir);
+    if target_os == "linux" && (target_arch == "x86_64" || target_arch == "aarch64") {
+        link_elisp_cc_spike(&manifest_dir, &target_arch);
     }
 }
 
-fn link_elisp_cc_spike(manifest_dir: &str) {
+fn link_elisp_cc_spike(manifest_dir: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
     let script = repo_root.join("scripts").join("compile-elisp-objects.el");
     let compiler_src = repo_root
@@ -111,6 +113,7 @@ fn link_elisp_cc_spike(manifest_dir: &str) {
         .arg("-f")
         .arg("compile-elisp-objects-emit-all")
         .env("NELISP_ELISP_OBJECTS_DIR", &elisp_obj_dir)
+        .env("NELISP_PHASE47_TARGET_ARCH", target_arch)
         .status()
         .unwrap_or_else(|e| panic!("emacs --batch failed to spawn: {}", e));
     if !status.success() {
