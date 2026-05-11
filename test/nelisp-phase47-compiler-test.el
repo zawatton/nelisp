@@ -493,6 +493,255 @@ Caller is responsible for `delete-file' on cleanup."
       (should (equal (plist-get r :stdout) "fn\n"))
       (should (= (plist-get r :exit) 2)))))
 
+;; ---- §T.6 §97.c parser tests — control flow + comparisons ----
+
+(ert-deftest nelisp-phase47-compiler/parse-if-imm-branches ()
+  "Parse `(if 1 7 9)' to an if IR node with imm THEN/ELSE."
+  (let ((ir (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
+    (let* ((vnode (plist-get ir :value)))
+      (should (eq (plist-get vnode :kind) 'if))
+      (should (eq (plist-get (plist-get vnode :test) :kind) 'imm))
+      (should (= (plist-get (plist-get vnode :then) :value) 7))
+      (should (= (plist-get (plist-get vnode :else) :value) 9)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-cmp-ops ()
+  "Each of `< > <= >= =' parses to a `:kind cmp' node with right op."
+  (dolist (op '(< > <= >= =))
+    (let* ((ir (nelisp-phase47-compiler--parse
+                (list 'exit (list op 3 5))))
+           (vnode (plist-get ir :value)))
+      (should (eq (plist-get vnode :kind) 'cmp))
+      (should (eq (plist-get vnode :op) op)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-cmp-arity ()
+  "Comparison with wrong arg count signals."
+  (should-error
+   (nelisp-phase47-compiler--parse '(exit (< 1)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/parse-while-body-list ()
+  "`(while T B1 B2 B3)' captures all three body forms."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq (while 1 0 0 0) (exit 0))))
+         (forms (plist-get ir :forms))
+         (while-node (car forms)))
+    (should (eq (plist-get while-node :kind) 'while))
+    (should (= (length (plist-get while-node :body)) 3))))
+
+(ert-deftest nelisp-phase47-compiler/parse-cond-clauses ()
+  "`(cond (P1 B1) (t B2))' parses with `always' sentinel."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(exit (cond ((= 1 2) 9) (t 5)))))
+         (vnode (plist-get ir :value))
+         (clauses (plist-get vnode :clauses)))
+    (should (eq (plist-get vnode :kind) 'cond))
+    (should (= (length clauses) 2))
+    (should (eq (plist-get (car (car clauses)) :kind) 'cmp))
+    (should (eq (car (cadr clauses)) 'always))))
+
+(ert-deftest nelisp-phase47-compiler/parse-cond-empty-errors ()
+  "`(cond)' with no clauses signals."
+  (should-error
+   (nelisp-phase47-compiler--parse '(exit (cond)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/parse-logic-and-or ()
+  "`(and 1 2)' and `(or 0 5)' both parse to `:kind logic' nodes."
+  (let* ((ir1 (nelisp-phase47-compiler--parse '(exit (and 1 2))))
+         (ir2 (nelisp-phase47-compiler--parse '(exit (or 0 5)))))
+    (should (eq (plist-get (plist-get ir1 :value) :kind) 'logic))
+    (should (eq (plist-get (plist-get ir1 :value) :op) 'and))
+    (should (eq (plist-get (plist-get ir2 :value) :op) 'or))))
+
+(ert-deftest nelisp-phase47-compiler/parse-logic-empty-errors ()
+  "`(and)' / `(or)' with no operands signal."
+  (should-error
+   (nelisp-phase47-compiler--parse '(exit (and)))
+   :type 'nelisp-phase47-compiler-error)
+  (should-error
+   (nelisp-phase47-compiler--parse '(exit (or)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/parse-control-flow-stable-ids ()
+  "Two compiles in a row reset the label counter (= deterministic)."
+  (let ((nelisp-phase47-compiler--label-counter 0))
+    (let* ((ir1 (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
+      (should (eq (plist-get (plist-get ir1 :value) :id) 'if-1))))
+  (let ((nelisp-phase47-compiler--label-counter 0))
+    (let* ((ir2 (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
+      (should (eq (plist-get (plist-get ir2 :value) :id) 'if-1)))))
+
+;; ---- §T.7 §97.c emit pass-1/pass-2 invariance ----
+
+(ert-deftest nelisp-phase47-compiler/emit-if-pass-parity ()
+  "if/else byte-length is identical across pass-1 and pass-2."
+  (let* ((nelisp-phase47-compiler--label-counter 0)
+         (ir (nelisp-phase47-compiler--parse '(exit (if 1 7 9))))
+         (collected (nelisp-phase47-compiler--collect-strings ir))
+         (pass1 (nelisp-phase47-compiler--pass ir nil (car collected) 0))
+         (size1 (nelisp-asm-x86_64-buffer-pos pass1)))
+    (setq nelisp-phase47-compiler--label-counter 0)
+    (let* ((ir2 (nelisp-phase47-compiler--parse '(exit (if 1 7 9))))
+           (pass2 (nelisp-phase47-compiler--pass
+                   ir2 nil (car collected) #x401000))
+           (size2 (nelisp-asm-x86_64-buffer-pos pass2)))
+      (should (= size1 size2)))))
+
+(ert-deftest nelisp-phase47-compiler/emit-while-pass-parity ()
+  "while loop emits the same byte-count across both passes."
+  (let* ((nelisp-phase47-compiler--label-counter 0)
+         (ir (nelisp-phase47-compiler--parse
+              '(seq (while 0 0) (exit 0))))
+         (collected (nelisp-phase47-compiler--collect-strings ir))
+         (pass1 (nelisp-phase47-compiler--pass ir nil (car collected) 0))
+         (size1 (nelisp-asm-x86_64-buffer-pos pass1)))
+    (setq nelisp-phase47-compiler--label-counter 0)
+    (let* ((ir2 (nelisp-phase47-compiler--parse
+                 '(seq (while 0 0) (exit 0))))
+           (pass2 (nelisp-phase47-compiler--pass
+                   ir2 nil (car collected) #x401000))
+           (size2 (nelisp-asm-x86_64-buffer-pos pass2)))
+      (should (= size1 size2)))))
+
+;; ---- §T.8 §97.c e2e smoke (= the production gate) ----
+
+(ert-deftest nelisp-phase47-compiler/e2e-if-then ()
+  "`(exit (if 1 7 0))' exits 7."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "if-then"
+    (nelisp-phase47-compile-sexp '(seq (exit (if 1 7 0))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 7)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-if-else ()
+  "`(exit (if 0 7 99))' exits 99."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "if-else"
+    (nelisp-phase47-compile-sexp '(seq (exit (if 0 7 99))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 99)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-cmp-lt ()
+  "`(exit (if (< 3 5) 1 2))' exits 1."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "cmp-lt"
+    (nelisp-phase47-compile-sexp '(seq (exit (if (< 3 5) 1 2))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 1)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-cmp-gt-false ()
+  "`(exit (if (> 3 5) 1 2))' exits 2."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "cmp-gt"
+    (nelisp-phase47-compile-sexp '(seq (exit (if (> 3 5) 1 2))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 2)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-cmp-eq ()
+  "`(exit (if (= 4 4) 11 22))' exits 11."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "cmp-eq"
+    (nelisp-phase47-compile-sexp '(seq (exit (if (= 4 4) 11 22))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 11)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-and-all-truthy ()
+  "`(exit (and 1 2 3))' exits 3 (= last operand)."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "and"
+    (nelisp-phase47-compile-sexp '(seq (exit (and 1 2 3))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 3)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-and-short-circuit ()
+  "`(exit (and 1 0 3))' exits 0 (= short-circuit at 2nd term)."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "and-sc"
+    (nelisp-phase47-compile-sexp '(seq (exit (and 1 0 3))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 0)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-or-first-truthy ()
+  "`(exit (or 0 5 7))' exits 5 (= first non-zero short-circuits)."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "or"
+    (nelisp-phase47-compile-sexp '(seq (exit (or 0 5 7))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 5)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-cond-second-match ()
+  "`(cond ((= 1 2) 9) ((= 3 3) 7) (t 5))' exits 7."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "cond"
+    (nelisp-phase47-compile-sexp
+     '(seq (exit (cond ((= 1 2) 9) ((= 3 3) 7) (t 5)))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 7)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-cond-fallthrough ()
+  "`(cond ((= 1 2) 9) (t 5))' takes the t clause and exits 5."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "cond-t"
+    (nelisp-phase47-compile-sexp
+     '(seq (exit (cond ((= 1 2) 9) (t 5)))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 5)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-factorial-recursive ()
+  "Recursive factorial (= the Doc 97.c §6 production gate)."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "fact"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun fact (n)
+             (if (= n 0) 1 (* n (fact (- n 1)))))
+           (exit (fact 5)))
+     path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 120)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-nested-if ()
+  "Nested ifs compute (if (< 2 5) (if (= 7 7) 42 1) 0) = 42."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "nested-if"
+    (nelisp-phase47-compile-sexp
+     '(seq (exit (if (< 2 5) (if (= 7 7) 42 1) 0))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 42)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-if-with-call ()
+  "`if' inside a defun composes with call returns: max(3,7) = 7."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "max"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun maxf (a b) (if (> a b) a b))
+           (exit (maxf 3 7)))
+     path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 7)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-cmp-le-ge ()
+  "`<=' and `>=' boundaries: `(if (<= 5 5) 1 0)' = 1, etc."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "le-eq"
+    (nelisp-phase47-compile-sexp
+     '(seq (exit (if (<= 5 5) (if (>= 5 5) 42 0) 0))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 42)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here

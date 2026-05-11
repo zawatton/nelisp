@@ -606,6 +606,67 @@ records a fixup at the placeholder offset."
      buf (unibyte-string #xE9 0 0 0 0))
     (nelisp-asm-x86_64-emit-fixup buf slot label)))
 
+(defun nelisp-asm-x86_64-jz-rel32 (buf label)
+  "Emit `JZ rel32' (opcode 0x0F 0x84) with a fixup against LABEL.
+Writes 0x0F 0x84 + 4 zero placeholder bytes (6 bytes total),
+then records a fixup at the placeholder offset.  Jump is taken
+when the previous flag-setting instruction (= typically `cmp')
+left ZF=1."
+  (let ((slot (+ 2 (nelisp-asm-x86_64-buffer-pos buf))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string #x0F #x84 0 0 0 0))
+    (nelisp-asm-x86_64-emit-fixup buf slot label)))
+
+(defun nelisp-asm-x86_64-jnz-rel32 (buf label)
+  "Emit `JNZ rel32' (opcode 0x0F 0x85) with a fixup against LABEL.
+Writes 0x0F 0x85 + 4 zero placeholder bytes (6 bytes total),
+then records a fixup at the placeholder offset.  Jump is taken
+when ZF=0."
+  (let ((slot (+ 2 (nelisp-asm-x86_64-buffer-pos buf))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string #x0F #x85 0 0 0 0))
+    (nelisp-asm-x86_64-emit-fixup buf slot label)))
+
+(defun nelisp-asm-x86_64-cmp-reg-reg (buf dst src)
+  "Emit `CMP DST, SRC' (MR form, 64-bit, opcode 0x39, 3 bytes).
+Sets flags according to (DST - SRC) without modifying DST.
+Used by Doc 97.c comparison + control-flow emitters."
+  (nelisp-asm-x86_64--emit-mr buf #x39 dst src))
+
+(defconst nelisp-asm-x86_64--setcc-opcodes
+  '((setl  . #x9C)
+    (setg  . #x9F)
+    (setle . #x9E)
+    (setge . #x9D)
+    (sete  . #x94)
+    (setne . #x95))
+  "Map setCC mnemonic -> second opcode byte for `0F XX' form.
+Used by `nelisp-asm-x86_64-setcc-al' to materialise comparison
+results from the flag register into AL.")
+
+(defun nelisp-asm-x86_64-setcc-al (buf cc)
+  "Emit `SETcc AL' = 0x0F + opcode + ModR/M C0 (3 bytes).
+CC is one of `setl' / `setg' / `setle' / `setge' / `sete' /
+`setne'.  Writes 0 or 1 into AL based on the flag register;
+caller is responsible for a prior flag-setting instruction
+(= `cmp' / `test') and for zero-extending AL afterwards via
+`nelisp-asm-x86_64-movzx-eax-al' if a wider result is needed."
+  (let ((cell (assq cc nelisp-asm-x86_64--setcc-opcodes)))
+    (unless cell
+      (signal 'nelisp-asm-x86_64-error (list :unknown-setcc cc)))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string #x0F (cdr cell) #xC0))))
+
+(defun nelisp-asm-x86_64-movzx-eax-al (buf)
+  "Emit `MOVZX EAX, AL' = 0x0F 0xB6 0xC0 (3 bytes).
+Zero-extends AL into EAX; because the CPU implicitly zero-
+extends 32-bit writes into the full 64-bit RAX, this also
+clears the high 32 bits of RAX.  Used after `setcc-al' to
+turn the 0/1 byte into a proper 64-bit integer for the
+Doc 97.c comparison emitters."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x0F #xB6 #xC0)))
+
 ;; ---- §92.d benchmark helper (= chunk-build perf gate) ----
 
 (defun nelisp-asm-x86_64-benchmark-emit (buf nbytes)

@@ -526,9 +526,48 @@ Deferred to Doc 97.c / 97.d:
 
 ** §6.3 Doc 97.c — control flow
 
-Adds =(if COND THEN ELSE)= via =cmp= + =jne rel32= (= Doc 92 already
-has =cmp-imm32= and a fixup-based =jmp-rel32=; need to add =jne= /
-=je= variants).  =(while COND BODY)= follows the same pattern.
+*Status*: SHIPPED 2026-05-11 on =agent-doc-97c-impl= branch.
+
+Adds the following source-language forms:
+- =(if TEST THEN ELSE)= — TEST != 0 ? THEN : ELSE.
+- =(while TEST BODY...)= — loop while TEST != 0, returns 0 at exit.
+- =(cond (P1 B1) ... (t Bn))= — first matching clause; =t= = always.
+- =(< A B)= / =(> A B)= / =(<= A B)= / =(>= A B)= / =(= A B)= — signed
+  integer comparison producing 0 or 1.
+- =(and EXPR ...)= — short-circuit AND, returns first 0 or last value.
+- =(or EXPR ...)= — short-circuit OR, returns first non-0 or 0.
+
+Encoding additions in =lisp/nelisp-asm-x86_64.el=:
+- =jz-rel32 BUF LABEL= (= =0F 84= + fixup, 6 bytes).
+- =jnz-rel32 BUF LABEL= (= =0F 85= + fixup, 6 bytes).
+- =cmp-reg-reg BUF DST SRC= (= MR-form, opcode =0x39=, 3 bytes).
+- =setcc-al BUF CC= (= =0F XX C0= for setl/setg/setle/setge/sete/setne).
+- =movzx-eax-al BUF= (= =0F B6 C0=, zero-extends AL into RAX).
+
+Compiler-side additions in =lisp/nelisp-phase47-compiler.el=:
+- New IR kinds: =:kind cmp / if / while / cond / logic= (= and/or).
+- Parse-time =--label-counter= ensures every control-flow node gets a
+  unique label id; both passes see identical names, preserving the
+  pass-1/pass-2 byte invariant.
+- Param-spill prologue: each defun pushes its incoming arg-regs onto
+  the stack at entry, and =:kind ref= reads from =[rbp - 8*(slot+1)]=
+  via a 4-byte =mov rax, [rbp+disp8]= encoding.  This makes recursive
+  composition (= factorial) safe by isolating param liveness from
+  caller-saved arg-reg clobbers across nested calls.
+
+Smoke gates (= all green):
+- =(seq (exit (if 1 7 0)))= → EXIT=7
+- =(seq (exit (if 0 7 99)))= → EXIT=99
+- =(seq (exit (if (< 3 5) 1 2)))= → EXIT=1
+- =(seq (defun fact (n) (if (= n 0) 1 (* n (fact (- n 1))))) (exit (fact 5)))= → EXIT=120
+- =(seq (exit (and 1 2 3)))= → EXIT=3
+- =(seq (exit (or 0 5 7)))= → EXIT=5
+- =(seq (exit (cond ((= 1 2) 9) ((= 3 3) 7) (t 5))))= → EXIT=7
+
+Deferred to Doc 97.d:
+- Tail call optimisation for recursive functions.
+- 7+ positional args (= stack-spill at call site).
+- Heap allocation + dynamic typing (= unchanged from §6.4).
 
 ** §6.4 Doc 97.d — heap + dynamic typing
 
@@ -569,5 +608,7 @@ Status flow:
   agent-doc-97-impl branch.
 - SHIPPED 2026-05-11: All ert cases green, all three smoke
   demonstrations exec to expected stdout / exit code.
-- Doc 97.b not yet scheduled (= awaiting Phase 47 production gate
-  decision: does v1 ship before or after Doc 96 lands on develop?).
+- 97.b SHIPPED 2026-05-11: defun + call + return values + runtime
+  arithmetic on parameters, 39/39 ert.
+- 97.c SHIPPED 2026-05-11: if / while / cond / comparisons /
+  short-circuit and/or + recursive factorial, 64/64 ert.
