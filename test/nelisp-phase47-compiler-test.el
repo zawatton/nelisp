@@ -742,6 +742,103 @@ Caller is responsible for `delete-file' on cleanup."
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
 
+;; ====================================================================
+;; Doc 99 §99.B — `nelisp-phase47-compile-to-object' (ET_REL emit)
+;; ====================================================================
+
+(defun nelisp-phase47-compiler-test--read-bytes (path)
+  "Return raw unibyte bytes of PATH."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (let ((coding-system-for-read 'no-conversion))
+      (insert-file-contents-literally path))
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-smoke ()
+  "Compile `(defun nelisp_spike_noop () 42)' to an ET_REL .o.
+Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
+  (let ((path (make-temp-file "nelisp-doc99-obj-smoke-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun nelisp_spike_noop () 42)
+           path)
+          (let ((bytes (nelisp-phase47-compiler-test--read-bytes path)))
+            ;; ELF magic + class + endian.
+            (should (equal (substring bytes 0 4)
+                           (unibyte-string #x7F #x45 #x4C #x46)))
+            ;; e_type = ET_REL (1), e_machine = EM_X86_64 (62).
+            (should (= (nelisp-elf--read-le16 bytes 16) 1))
+            (should (= (nelisp-elf--read-le16 bytes 18) 62))
+            ;; e_entry = 0 (= linker decides), e_phnum = 0.
+            (should (zerop (nelisp-elf--read-le64 bytes 24)))
+            (should (zerop (nelisp-elf--read-le16 bytes 56)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-readelf-s ()
+  "`readelf -s' lists `nelisp_spike_noop' as GLOBAL FUNC in the .o."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc99-obj-syms-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun nelisp_spike_noop () 42)
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-s" path)))))
+            (should (string-match-p "nelisp_spike_noop" out))
+            (should (string-match-p "FUNC" out))
+            (should (string-match-p "GLOBAL" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-multiple-defuns ()
+  "Multiple defuns inside a `seq' each become a GLOBAL FUNC symbol."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc99-obj-multi-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq (defun answer () 42)
+                 (defun negone () (- 0 1)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-s" path)))))
+            (should (string-match-p "answer" out))
+            (should (string-match-p "negone" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-rejects-write ()
+  "`(defun foo () (write \"hi\"))' rejected — spike disallows strings."
+  (let ((path (make-temp-file "nelisp-doc99-obj-rej-w-" nil ".o")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object
+          '(defun foo () (write "hi"))
+          path)
+         :type 'nelisp-phase47-compiler-error)
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-rejects-non-defun ()
+  "`(exit 0)' is rejected — top form must be defun or seq-of-defuns."
+  (let ((path (make-temp-file "nelisp-doc99-obj-rej-nd-" nil ".o")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object '(exit 0) path)
+         :type 'nelisp-phase47-compiler-error)
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-rejects-mixed-seq ()
+  "`(seq (defun foo () 42) (exit 0))' is rejected — seq must be all defuns."
+  (let ((path (make-temp-file "nelisp-doc99-obj-rej-mix-" nil ".o")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object
+          '(seq (defun foo () 42) (exit 0)) path)
+         :type 'nelisp-phase47-compiler-error)
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here

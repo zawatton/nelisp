@@ -45,6 +45,108 @@ fn main() {
         std::fs::write(&out_path, &body)
             .unwrap_or_else(|e| panic!("write {} failed: {}", out_path.display(), e));
     }
+
+    // Doc 99 §99.B spike — compile `lisp/nelisp-cc-spike-noop.el' to a
+    // C-callable ET_REL via `scripts/compile-elisp-objects.el', wrap
+    // the result in a static archive, and link it into the final
+    // `nelisp' binary.  Linux x86_64 only for the spike — other
+    // targets skip silently so cross-compiles don't break.
+    if target_os == "linux" && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
+        link_elisp_cc_spike(&manifest_dir);
+    }
+}
+
+fn link_elisp_cc_spike(manifest_dir: &str) {
+    let repo_root = std::path::Path::new(manifest_dir).join("..");
+    let script = repo_root.join("scripts").join("compile-elisp-objects.el");
+    let source = repo_root
+        .join("lisp")
+        .join("nelisp-cc-spike-noop.el");
+    let compiler_src = repo_root
+        .join("lisp")
+        .join("nelisp-phase47-compiler.el");
+
+    // Re-run when the elisp source / script / compiler changes.
+    println!("cargo:rerun-if-changed={}", script.display());
+    println!("cargo:rerun-if-changed={}", source.display());
+    println!("cargo:rerun-if-changed={}", compiler_src.display());
+
+    // Emacs is the build tool here — gated so users without Emacs see
+    // a friendly skip rather than a cryptic exec failure.  The spike
+    // is single-entry so a skip just disables the §99.B probe test.
+    let emacs = match which_or_skip("emacs") {
+        Some(p) => p,
+        None => {
+            println!("cargo:warning=skipping §99.B elisp-object link: emacs not on PATH");
+            return;
+        }
+    };
+
+    let out_dir = std::env::var("OUT_DIR")
+        .expect("OUT_DIR must be set by cargo");
+    let elisp_obj_dir = std::path::Path::new(&out_dir).join("elisp-objects");
+    std::fs::create_dir_all(&elisp_obj_dir)
+        .unwrap_or_else(|e| panic!("create_dir_all {}: {}", elisp_obj_dir.display(), e));
+
+    let status = std::process::Command::new(&emacs)
+        .arg("--batch")
+        .arg("-Q")
+        .arg("-L")
+        .arg(repo_root.join("lisp"))
+        .arg("-l")
+        .arg(&script)
+        .arg("-f")
+        .arg("compile-elisp-objects-emit-all")
+        .env("NELISP_ELISP_OBJECTS_DIR", &elisp_obj_dir)
+        .status()
+        .unwrap_or_else(|e| panic!("emacs --batch failed to spawn: {}", e));
+    if !status.success() {
+        panic!(
+            "compile-elisp-objects-emit-all exited with {} (script={})",
+            status,
+            script.display()
+        );
+    }
+
+    // Wrap the produced `.o' into a static archive via `ar' so cargo
+    // can take a single `-lstatic=...' instead of one rustc-link-arg
+    // per object.  The archive lives in OUT_DIR so cargo cleans it
+    // automatically across builds.
+    let obj_path = elisp_obj_dir.join("nelisp_spike_noop.o");
+    if !obj_path.exists() {
+        panic!(
+            "expected elisp-compiled object missing: {} (orchestrator may have failed silently)",
+            obj_path.display()
+        );
+    }
+    let ar = which_or_skip("ar").unwrap_or_else(|| "ar".to_string());
+    let archive = std::path::Path::new(&out_dir).join("libnelisp_elisp_spike.a");
+    // `ar rcs' replaces / creates the archive in one step; remove any
+    // stale .a first so we don't accumulate orphan members across rebuilds.
+    let _ = std::fs::remove_file(&archive);
+    let status = std::process::Command::new(&ar)
+        .arg("rcs")
+        .arg(&archive)
+        .arg(&obj_path)
+        .status()
+        .unwrap_or_else(|e| panic!("ar failed to spawn: {}", e));
+    if !status.success() {
+        panic!("ar rcs {} exited with {}", archive.display(), status);
+    }
+
+    println!("cargo:rustc-link-search=native={}", out_dir);
+    println!("cargo:rustc-link-lib=static=nelisp_elisp_spike");
+}
+
+fn which_or_skip(prog: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let cand = dir.join(prog);
+        if cand.is_file() {
+            return Some(cand.to_string_lossy().into_owned());
+        }
+    }
+    None
 }
 
 fn emit_linux_table() -> String {

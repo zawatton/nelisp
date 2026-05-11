@@ -1086,6 +1086,102 @@ drift (= a Doc 92 emitter invariant violation)."
       (nelisp-elf-write-binary file-path sections))
     file-path))
 
+;; ---- Doc 99 §99.B: ET_REL emit path (= elisp → .o for C linkage) ----
+;;
+;; `nelisp-phase47-compile-to-object' is the sibling of `-compile-sexp'
+;; that emits a relocatable object instead of a static-linked executable.
+;; The defun names become global STT_FUNC symbols callable from C via
+;; the SysV AMD64 ABI (= return value in rax).  No `_start' is emitted.
+;;
+;; Spike scope (= Doc 99 §99.B): defun bodies must NOT reference strings
+;; (= no `write' forms) because v1 still bakes rodata vaddrs into pass-2
+;; code rather than emitting R_X86_64_PC32 relocations against `.rodata'.
+;; Lifting that constraint is Stage 99.C+ work — for §99.B we only need
+;; pure-int return values to prove the cargo-build wiring end-to-end.
+
+;;;###autoload
+(cl-defun nelisp-phase47-compile-to-object
+    (sexp file-path &key (arch 'x86_64))
+  "Compile SEXP (= one or more defuns) to an ET_REL .o at FILE-PATH.
+
+SEXP must be either a single `(defun NAME (PARAMS...) BODY)' form or
+a `(seq (defun ...) ...)' wrapping multiple defuns.  Each defun
+becomes a GLOBAL STT_FUNC symbol named after the defun (= symbol-name
+of the elisp identifier, with underscores preserved for C linkage).
+
+ARCH defaults to `x86_64'.  v1 signals
+`nelisp-phase47-compiler-error' for any other ARCH (= aarch64
+deferred to Stage 99.A follow-up).
+
+Spike scope: defun bodies must not reference strings.  Signals
+`nelisp-phase47-compiler-error' with `:object-mode-no-strings' if
+the IR contains a `write' node, because rodata vaddr baking does
+not survive linker relocation in v1.
+
+Returns FILE-PATH on success.  Signals on parse error, free symbol
+reference, out-of-range integer, or any pass-1/pass-2 byte-length
+drift (= a Doc 92 emitter invariant violation)."
+  (unless (eq arch 'x86_64)
+    (signal 'nelisp-phase47-compiler-error
+            (list :unsupported-arch arch)))
+  (let* ((nelisp-phase47-compiler--label-counter 0)
+         (ir (nelisp-phase47-compiler--parse sexp nil))
+         (collected (nelisp-phase47-compiler--collect-strings ir))
+         (rodata-bytes (cdr collected))
+         (defuns (nelisp-phase47-compiler--collect-defuns ir)))
+    (unless (zerop (length rodata-bytes))
+      (signal 'nelisp-phase47-compiler-error
+              (list :object-mode-no-strings
+                    :rodata-bytes (length rodata-bytes))))
+    (unless defuns
+      (signal 'nelisp-phase47-compiler-error
+              (list :object-mode-needs-defuns sexp)))
+    ;; Validate top-level shape: either a single defun, or a seq of
+    ;; defun forms (the parser tolerates seq + main body, but for
+    ;; object output we reject anything that would emit a `_start'.)
+    (pcase (plist-get ir :kind)
+      ('defun nil)
+      ('seq
+       (dolist (f (plist-get ir :forms))
+         (unless (eq (plist-get f :kind) 'defun)
+           (signal 'nelisp-phase47-compiler-error
+                   (list :object-mode-non-defun-form f)))))
+      (other
+       (signal 'nelisp-phase47-compiler-error
+               (list :object-mode-bad-top-form other))))
+    ;; Emit pass: only the defuns, no main `_start' body.  We reuse
+    ;; the existing emit-defun helper and call `resolve-fixups' so
+    ;; intra-`.text' cross-defun calls bake their rel32 in place
+    ;; (= the linker only sees external R_X86_64_PC32 / R_X86_64_PLT32
+    ;; entries when we eventually emit them; v1 has none).
+    (let* ((buf (nelisp-asm-x86_64-make-buffer)))
+      (dolist (d defuns)
+        (nelisp-phase47-compiler--emit-defun d buf))
+      (let* ((text-bytes (nelisp-asm-x86_64-resolve-fixups buf))
+             (labels (nelisp-asm-x86_64-buffer-labels buf))
+             ;; Each label → GLOBAL STT_FUNC symbol.  `:value' is
+             ;; the byte offset within `.text' (= relocatable, no
+             ;; vaddr baking, ET_REL convention).
+             (symbols
+              (mapcar
+               (lambda (cell)
+                 (let ((nm (car cell))
+                       (pos (cdr cell)))
+                   (list :name (if (stringp nm) nm (symbol-name nm))
+                         :value pos
+                         :size 0
+                         :section 'text
+                         :bind 'global
+                         :type 'func)))
+               (reverse labels))))
+        (nelisp-elf-write-binary
+         file-path
+         (list :e-type 'rel
+               :text text-bytes
+               :symbols symbols
+               :machine arch))
+        file-path))))
+
 (provide 'nelisp-phase47-compiler)
 
 ;;; nelisp-phase47-compiler.el ends here

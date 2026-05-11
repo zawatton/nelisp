@@ -42,3 +42,26 @@ pub(crate) mod jit;
 // source on the way to its v3 image, plus the reader's own ERTs.
 #[cfg(any(test, feature = "image-baker"))]
 pub mod reader;
+
+// Doc 99 §99.B spike — C-callable function compiled from elisp by the
+// Phase 47 chain.  `build.rs' runs `scripts/compile-elisp-objects.el'
+// to produce `target/<...>/elisp-objects/nelisp_spike_noop.o' and
+// links it into the crate via `cargo:rustc-link-lib=static=...'.
+// This module gives the symbol a Rust home so cargo doesn't dead-code-
+// eliminate it from the final binary and `cargo test' can probe the
+// round-trip end-to-end.  Linux x86_64 only — other targets skip the
+// build step entirely (see `build.rs::link_elisp_cc_spike').
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod elisp_cc_spike {
+    extern "C" {
+        fn nelisp_spike_noop() -> i64;
+    }
+
+    /// Doc 99 §99.B probe — call the elisp-compiled function and return
+    /// its result.  Used by `tests/elisp_cc_spike_probe.rs' to prove the
+    /// build chain (elisp source → Phase 47 compile → ET_REL .o → ar
+    /// static archive → cargo link) terminates in a callable symbol.
+    pub fn probe() -> i64 {
+        unsafe { nelisp_spike_noop() }
+    }
+}
