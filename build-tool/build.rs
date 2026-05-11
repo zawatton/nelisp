@@ -49,16 +49,23 @@ fn main() {
     }
 
     // Doc 99 §99.B spike — compile `lisp/nelisp-cc-spike-noop.el' to a
-    // C-callable ET_REL via `scripts/compile-elisp-objects.el', wrap
-    // the result in a static archive, and link it into the final
-    // `nelisp' binary.  Linux x86_64 only for the spike — other
-    // targets skip silently so cross-compiles don't break.
-    if target_os == "linux" && (target_arch == "x86_64" || target_arch == "aarch64") {
-        link_elisp_cc_spike(&manifest_dir, &target_arch);
+    // C-callable ELF / Mach-O object via `scripts/compile-elisp-objects.el',
+    // wrap the result in a static archive, and link it into the final
+    // `nelisp' binary.  §100.D Stage 2/3 extends the matrix to:
+    //   linux + x86_64    (ELF + SysV AMD64, §100.C/D Stage 1)
+    //   linux + aarch64   (ELF + AAPCS,      §100.D Stage 2)
+    //   macos + aarch64   (Mach-O + AAPCS,   §100.D Stage 3)
+    // Other targets fall through to the Rust trampoline path until
+    // their object-format / asm support lands.
+    let supported = (target_os == "linux"
+        && (target_arch == "x86_64" || target_arch == "aarch64"))
+        || (target_os == "macos" && target_arch == "aarch64");
+    if supported {
+        link_elisp_cc_spike(&manifest_dir, &target_os, &target_arch);
     }
 }
 
-fn link_elisp_cc_spike(manifest_dir: &str, target_arch: &str) {
+fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
     let script = repo_root.join("scripts").join("compile-elisp-objects.el");
     let compiler_src = repo_root
@@ -114,6 +121,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_arch: &str) {
         .arg("compile-elisp-objects-emit-all")
         .env("NELISP_ELISP_OBJECTS_DIR", &elisp_obj_dir)
         .env("NELISP_PHASE47_TARGET_ARCH", target_arch)
+        .env("NELISP_PHASE47_TARGET_OS", target_os)
         .status()
         .unwrap_or_else(|e| panic!("emacs --batch failed to spawn: {}", e));
     if !status.success() {

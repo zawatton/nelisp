@@ -34,14 +34,21 @@ use crate::eval::builtins::{as_int, require_arity};
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 
-// Doc 100 §100.D Stage 1 — on linux-x86_64 the 12 `nl_jit_arith_*'
-// trampolines live in Phase-47-compiled elisp `.o' files instead of
-// `super::arith'.  The `arith_link' submodule provides a single
-// import alias so `unified_fn_ptr's match below stays platform-
-// neutral: linux-x86_64 binds the extern symbols emitted by
-// `scripts/compile-elisp-objects.el', other targets fall back to
-// the legacy Rust trampolines.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+// Doc 100 §100.D Stage 1-3 — the 12 `nl_jit_arith_*' trampolines now
+// live exclusively in Phase-47-compiled elisp `.o' files (no Rust
+// `super::arith' module anymore).  `arith_link' just `extern "C"'-
+// declares the names so the linker resolves them against the static
+// archive built by `build.rs::link_elisp_cc_spike'.  Supported targets:
+//   linux + x86_64   (ELF, §100.C/D Stage 1)
+//   linux + aarch64  (ELF, §100.D Stage 2)
+//   macos + aarch64  (Mach-O, §100.D Stage 3)
+// Other targets fall through the `link_elisp_cc_spike' gate in
+// build.rs and consequently fail to link nelisp_jit_* — the bin is
+// not supported on those targets in v1.0 anyway.
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", target_arch = "aarch64"),
+))]
 mod arith_link {
     extern "C" {
         pub fn nelisp_jit_add2(a: i64, b: i64) -> i64;
@@ -59,22 +66,28 @@ mod arith_link {
     }
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+// Unsupported targets: stub `arith_link' so `unified_fn_ptr's match
+// arms still compile.  The bin is not functional on these targets
+// (= `build.rs::link_elisp_cc_spike' bails out before emitting the
+// elisp archive), so reaching these stubs at runtime should be
+// impossible — they exist purely to keep `cargo check' clean.
+#[cfg(not(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", target_arch = "aarch64"),
+)))]
 mod arith_link {
-    pub use super::super::arith::{
-        nl_jit_arith_add2 as nelisp_jit_add2,
-        nl_jit_arith_ash as nelisp_jit_ash,
-        nl_jit_arith_eq2 as nelisp_jit_eq2,
-        nl_jit_arith_ge2 as nelisp_jit_ge2,
-        nl_jit_arith_gt2 as nelisp_jit_gt2,
-        nl_jit_arith_le2 as nelisp_jit_le2,
-        nl_jit_arith_logand2 as nelisp_jit_logand2,
-        nl_jit_arith_logior2 as nelisp_jit_logior2,
-        nl_jit_arith_logxor2 as nelisp_jit_logxor2,
-        nl_jit_arith_lt2 as nelisp_jit_lt2,
-        nl_jit_arith_mul2 as nelisp_jit_mul2,
-        nl_jit_arith_sub2 as nelisp_jit_sub2,
-    };
+    pub unsafe extern "C" fn nelisp_jit_add2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_sub2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_mul2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_eq2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_lt2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_gt2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_le2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_ge2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_logior2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_logand2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_logxor2(_: i64, _: i64) -> i64 { 0 }
+    pub unsafe extern "C" fn nelisp_jit_ash(_: i64, _: i64) -> i64 { 0 }
 }
 
 // Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —

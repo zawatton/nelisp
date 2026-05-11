@@ -1449,7 +1449,7 @@ drift (= a Doc 92 emitter invariant violation)."
 
 ;;;###autoload
 (cl-defun nelisp-phase47-compile-to-object
-    (sexp file-path &key (arch 'x86_64))
+    (sexp file-path &key (arch 'x86_64) (format 'elf))
   "Compile SEXP (= one or more defuns) to an ET_REL .o at FILE-PATH.
 
 SEXP must be either a single `(defun NAME (PARAMS...) BODY)' form or
@@ -1585,13 +1585,36 @@ drift (= a Doc 92 emitter invariant violation)."
                               :type 'notype))
                       extern-names))
              (all-symbols (append symbols extern-symbol-plists)))
-        (nelisp-elf-write-binary
-         file-path
-         (list :e-type 'rel
-               :text text-bytes
-               :symbols all-symbols
-               :relocs relocs
-               :machine arch))
+        (pcase format
+          ('elf
+           (nelisp-elf-write-binary
+            file-path
+            (list :e-type 'rel
+                  :text text-bytes
+                  :symbols all-symbols
+                  :relocs relocs
+                  :machine arch)))
+          ('mach-o
+           ;; Doc 100 §100.D Stage 3: macOS uses Mach-O instead of
+           ;; ELF.  Reloc surface trimmed because Mach-O writer v1
+           ;; does not emit relocation entries — the 12 jit_arith
+           ;; trampolines have no external relocs, so this is sound
+           ;; for the §100.D Stage 1-3 swap set.
+           (unless (eq arch 'aarch64)
+             (signal 'nelisp-phase47-compiler-error
+                     (list :mach-o-only-supports-aarch64 arch)))
+           (when relocs
+             (signal 'nelisp-phase47-compiler-error
+                     (list :mach-o-no-reloc-support relocs)))
+           (require 'nelisp-mach-o-write)
+           (nelisp-mach-o-write-binary
+            file-path
+            (list :text text-bytes
+                  :symbols all-symbols
+                  :machine arch)))
+          (other
+           (signal 'nelisp-phase47-compiler-error
+                   (list :unknown-output-format other))))
         file-path))))
 
 (provide 'nelisp-phase47-compiler)

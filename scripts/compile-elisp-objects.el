@@ -125,6 +125,16 @@ Signals a clear error on unsupported values."
       "compile-elisp-objects: unsupported NELISP_PHASE47_TARGET_ARCH %S (expected x86_64 or aarch64)"
       other))))
 
+(defun compile-elisp-objects--target-format ()
+  "Return the Phase 47 output format symbol for this batch run.
+Looks at `NELISP_PHASE47_TARGET_OS' (forwarded by `build.rs')
+and picks `'mach-o' for macOS, `'elf' otherwise (= linux + the
+default).  Doc 100 §100.D Stage 3 added Mach-O support for
+macos-aarch64; other OS / format combinations stay on ELF."
+  (pcase (or (getenv "NELISP_PHASE47_TARGET_OS") "linux")
+    ("macos" 'mach-o)
+    (_ 'elf)))
+
 (defun compile-elisp-objects-emit-all ()
   "Compile every manifest entry to its output `.o' file.
 Returns the list of absolute paths written.  Used by
@@ -132,6 +142,7 @@ Returns the list of absolute paths written.  Used by
 batch process via the outer `emacs --batch' driver)."
   (let* ((out-dir (compile-elisp-objects--out-dir))
          (arch (compile-elisp-objects--target-arch))
+         (format (compile-elisp-objects--target-format))
          (written nil))
     (unless (file-directory-p out-dir)
       (make-directory out-dir t))
@@ -148,7 +159,8 @@ batch process via the outer `emacs --batch' driver)."
         (let ((sexp (symbol-value src-var)))
           (message "[compile-elisp-objects] %s -> %s"
                    feature out-path)
-          (nelisp-phase47-compile-to-object sexp out-path :arch arch)
+          (nelisp-phase47-compile-to-object sexp out-path
+                                            :arch arch :format format)
           (push out-path written))))
     (nreverse written)))
 
