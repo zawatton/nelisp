@@ -347,6 +347,32 @@ zero or more complete frames, dispatches each via
                    (format "%S" (hash-table-keys bucket))
                  "<no-bucket>")))))
 
+  ;; Perf (2026-05-11): pre-warm the `tools/list' response cache so the
+  ;; first incoming client request returns instantly instead of paying
+  ;; the full ~35 s `json-encode' cost (Claude Code's /mcp handshake
+  ;; has a 30 s timeout — a cold tools/list would blow past it).  The
+  ;; cache lives in `anvil-server--tools-list-cache' (added in
+  ;; anvil-server.el alongside `anvil-server--handle-tools-list').
+  (when (and (fboundp 'anvil-server--handle-tools-list)
+             (boundp 'anvil-server--tools-list-cache))
+    (when (fboundp 'nelisp--write-stderr-line)
+      (nelisp--write-stderr-line
+       "[server-loop] pre-warming tools/list cache"))
+    (condition-case err
+        (let ((unused (anvil-server--handle-tools-list 0 server-id)))
+          (ignore unused)
+          (when (fboundp 'nelisp--write-stderr-line)
+            (nelisp--write-stderr-line
+             (format "[server-loop] tools/list cache pre-warmed (%d bytes)"
+                     (length (or (gethash server-id
+                                          anvil-server--tools-list-cache)
+                                 ""))))))
+      (error
+       (when (fboundp 'nelisp--write-stderr-line)
+         (nelisp--write-stderr-line
+          (concat "[server-loop] tools/list pre-warm ERR: "
+                  (format "%S" err)))))))
+
   (when (fboundp 'nelisp--write-stderr-line)
     (nelisp--write-stderr-line
      (concat "[server-loop] binding socket " socket-path)))
