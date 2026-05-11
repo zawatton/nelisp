@@ -90,6 +90,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-asm-arm64)
 (require 'nelisp-asm-x86_64)
 (require 'nelisp-elf-write)
 (require 'nelisp-sexp-layout)
@@ -128,6 +129,11 @@ deferred to Doc 97.c.")
 Bound fresh to 0 by `nelisp-phase47-compile-sexp' before parsing
 each top-level form so the generated label names are reproducible
 within one compile but never collide between control-flow nodes.")
+
+(defvar nelisp-phase47-compiler--arch 'x86_64
+  "Target arch bound by the public compile entry points before emit.
+Emit helpers consult this dynvar to pick the x86_64 or aarch64 code
+path while sharing the same parsed IR.")
 
 (defun nelisp-phase47-compiler--gensym (prefix)
   "Return a fresh symbol `PREFIX-N' for control-flow labelling.
@@ -688,6 +694,32 @@ Uses `emit-bytes' for the 0F-prefix opcode form."
     (nelisp-asm-x86_64-emit-bytes
      buf (unibyte-string rex #x0F #xAF modrm))))
 
+(defun nelisp-phase47-compiler--emit-aarch64-unsupported (kind &optional detail)
+  "Signal that KIND is not yet emitted on aarch64 in Phase 47.
+DETAIL carries the offending IR node or operator when useful."
+  (signal 'nelisp-phase47-compiler-error
+          (list :unsupported-aarch64-emit kind
+                :detail detail)))
+
+(defun nelisp-phase47-compiler--arm64-emit-word (buf word)
+  "Append one 32-bit little-endian instruction WORD to arm64 BUF."
+  (nelisp-asm-arm64--emit-word buf word))
+
+(defun nelisp-phase47-compiler--arm64-emit-ldur (buf dst base imm9)
+  "Emit `LDUR DST, [BASE, #IMM9]' into BUF.
+IMM9 is a signed unscaled byte offset in the range -256..255."
+  (unless (and (integerp imm9) (<= -256 imm9) (<= imm9 255))
+    (signal 'nelisp-phase47-compiler-error
+            (list :arm64-ldur-imm9-out-of-range imm9)))
+  (let* ((t-reg (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n-reg (logand (nelisp-asm-arm64--reg-num base) #x1F))
+         (imm9-u (logand imm9 #x1FF)))
+    (nelisp-phase47-compiler--arm64-emit-word
+     buf (logior #xF8400000
+                 (ash imm9-u 12)
+                 (ash n-reg 5)
+                 t-reg))))
+
 (defun nelisp-phase47-compiler--emit-ref-load (buf slot)
   "Emit `mov rax, [rbp - 8*(SLOT+1)]' (= 4 bytes, fixed).
 Used by `:kind ref' to load a spilled parameter off the local
@@ -699,87 +731,128 @@ range for the current Doc 97 arity cap."
   (unless (and (integerp slot) (<= 0 slot 5))
     (signal 'nelisp-phase47-compiler-error
             (list :ref-slot-out-of-range slot)))
-  (let* ((disp (- (* 8 (1+ slot))))
-         (disp8 (logand disp #xFF)))
-    (nelisp-asm-x86_64-emit-bytes
-     buf (unibyte-string #x48 #x8B #x45 disp8))))
+  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (let ((disp (- (* 16 (1+ slot)))))
+        (nelisp-phase47-compiler--arm64-emit-ldur buf 'x0 'x29 disp))
+    (let* ((disp (- (* 8 (1+ slot))))
+           (disp8 (logand disp #xFF)))
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #x48 #x8B #x45 disp8)))))
 
 (defun nelisp-phase47-compiler--emit-value (node buf)
   "Emit code that computes value NODE into rax.
 NODE is one of `imm' / `ref' / `arith' / `call' / `cmp' / `if' /
 `while' / `cond' / `logic'.  All variants preserve callee-saved
-registers (= we use only rax + r10 + r11 for scratch and the arg
+  registers (= we use only rax + r10 + r11 for scratch and the arg
 regs rdi..r9 which are caller-saved anyway)."
-  (pcase (plist-get node :kind)
-    ('imm
-     ;; mov rax, imm32                                = 7 bytes
-     (nelisp-asm-x86_64-mov-imm32 buf 'rax (plist-get node :value)))
-    ('ref
-     ;; mov rax, [rbp - 8*(slot+1)] — read spilled param off stack.
-     ;; The defun prologue pushed each incoming arg-reg in order
-     ;; right after `push rbp; mov rbp, rsp', so slot 0 sits at
-     ;; [rbp-8], slot 1 at [rbp-16], ..., slot 5 at [rbp-48].
-     (nelisp-phase47-compiler--emit-ref-load buf
-                                             (plist-get node :slot)))
-    ('arith
-     (nelisp-phase47-compiler--emit-arith node buf))
-    ('shift
-     (nelisp-phase47-compiler--emit-shift node buf))
-    ('call
-     (nelisp-phase47-compiler--emit-call node buf))
-    ('extern-call
-     (nelisp-phase47-compiler--emit-extern-call node buf))
-    ('sexp-tag
-     (nelisp-phase47-compiler--emit-sexp-tag node buf))
-    ('sexp-int-unwrap
-     (nelisp-phase47-compiler--emit-sexp-int-unwrap node buf))
-    ('sexp-int-make
-     (nelisp-phase47-compiler--emit-sexp-int-make node buf))
-    ('cmp
-     (nelisp-phase47-compiler--emit-cmp node buf))
-    ('if
-     (nelisp-phase47-compiler--emit-if node buf))
-    ('while
-     (nelisp-phase47-compiler--emit-while node buf))
-    ('cond
-     (nelisp-phase47-compiler--emit-cond node buf))
-    ('logic
-     (nelisp-phase47-compiler--emit-logic node buf))
-    (kind
-     (signal 'nelisp-phase47-compiler-error
-             (list :unknown-value-kind kind)))))
+  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (pcase (plist-get node :kind)
+        ('imm
+         (nelisp-asm-arm64-mov-imm64 buf 'x0 (plist-get node :value)))
+        ('ref
+         (nelisp-phase47-compiler--emit-ref-load buf
+                                                 (plist-get node :slot)))
+        ('arith
+         (nelisp-phase47-compiler--emit-arith node buf))
+        ('shift
+         (nelisp-phase47-compiler--emit-shift node buf))
+        ('cmp
+         (nelisp-phase47-compiler--emit-cmp node buf))
+        ('if
+         (nelisp-phase47-compiler--emit-if node buf))
+        ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
+             'while 'cond 'logic)
+         (nelisp-phase47-compiler--emit-aarch64-unsupported
+          (plist-get node :kind) node))
+        (kind
+         (signal 'nelisp-phase47-compiler-error
+                 (list :unknown-value-kind kind))))
+    (pcase (plist-get node :kind)
+      ('imm
+       ;; mov rax, imm32                                = 7 bytes
+       (nelisp-asm-x86_64-mov-imm32 buf 'rax (plist-get node :value)))
+      ('ref
+       ;; mov rax, [rbp - 8*(slot+1)] — read spilled param off stack.
+       ;; The defun prologue pushed each incoming arg-reg in order
+       ;; right after `push rbp; mov rbp, rsp', so slot 0 sits at
+       ;; [rbp-8], slot 1 at [rbp-16], ..., slot 5 at [rbp-48].
+       (nelisp-phase47-compiler--emit-ref-load buf
+                                               (plist-get node :slot)))
+      ('arith
+       (nelisp-phase47-compiler--emit-arith node buf))
+      ('shift
+       (nelisp-phase47-compiler--emit-shift node buf))
+      ('call
+       (nelisp-phase47-compiler--emit-call node buf))
+      ('extern-call
+       (nelisp-phase47-compiler--emit-extern-call node buf))
+      ('sexp-tag
+       (nelisp-phase47-compiler--emit-sexp-tag node buf))
+      ('sexp-int-unwrap
+       (nelisp-phase47-compiler--emit-sexp-int-unwrap node buf))
+      ('sexp-int-make
+       (nelisp-phase47-compiler--emit-sexp-int-make node buf))
+      ('cmp
+       (nelisp-phase47-compiler--emit-cmp node buf))
+      ('if
+       (nelisp-phase47-compiler--emit-if node buf))
+      ('while
+       (nelisp-phase47-compiler--emit-while node buf))
+      ('cond
+       (nelisp-phase47-compiler--emit-cond node buf))
+      ('logic
+       (nelisp-phase47-compiler--emit-logic node buf))
+      (kind
+       (signal 'nelisp-phase47-compiler-error
+               (list :unknown-value-kind kind))))))
 
 (defun nelisp-phase47-compiler--emit-arith (node buf)
   "Emit a runtime arithmetic op, result in rax.
 Strategy: evaluate B into rax, push, evaluate A into rax, pop into
 r10, then OP rax, r10.  Push/pop are byte-fixed so pass invariance
 holds.  r10 is caller-saved per SysV AND not in the arg-reg list so
-the scratch never aliases a parameter register (= the bug seen in
+  the scratch never aliases a parameter register (= the bug seen in
 chained calls where rcx held both `d' param and a scratch value)."
   (let ((op (plist-get node :op))
         (a (plist-get node :a))
         (b (plist-get node :b)))
-    ;; Compute B -> rax.
-    (nelisp-phase47-compiler--emit-value b buf)
-    ;; push rax (save B on stack).
-    (nelisp-asm-x86_64-push buf 'rax)
-    ;; Compute A -> rax.
-    (nelisp-phase47-compiler--emit-value a buf)
-    ;; pop r10 (= recover B into r10; r10 not in arg-regs).
-    (nelisp-asm-x86_64-pop buf 'r10)
-    (cond
-     ((eq op '+) (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10))
-     ((eq op '-) (nelisp-asm-x86_64-sub-reg-reg buf 'rax 'r10))
-     ((eq op '*)
-      (nelisp-phase47-compiler--imul-reg-reg buf 'rax 'r10))
-     ;; Doc 100 §100.D bitwise binops.  Same MR-form shape as ADD/SUB,
-     ;; just a different opcode byte.
-     ((eq op 'logior) (nelisp-asm-x86_64-or-reg-reg buf 'rax 'r10))
-     ((eq op 'logand) (nelisp-asm-x86_64-and-reg-reg buf 'rax 'r10))
-     ((eq op 'logxor) (nelisp-asm-x86_64-xor-reg-reg buf 'rax 'r10))
-     (t
-      (signal 'nelisp-phase47-compiler-error
-              (list :unknown-arith-op op))))))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (progn
+          (nelisp-phase47-compiler--emit-value b buf)
+          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+          (nelisp-phase47-compiler--emit-value a buf)
+          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (cond
+           ((eq op '+) (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x9))
+           ((eq op '-) (nelisp-asm-arm64-sub-reg-reg buf 'x0 'x0 'x9))
+           ((eq op '*) (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9))
+           ((eq op 'logior) (nelisp-asm-arm64-orr-reg-reg buf 'x0 'x0 'x9))
+           ((eq op 'logand) (nelisp-asm-arm64-and-reg-reg buf 'x0 'x0 'x9))
+           ((eq op 'logxor) (nelisp-asm-arm64-eor-reg-reg buf 'x0 'x0 'x9))
+           (t
+            (signal 'nelisp-phase47-compiler-error
+                    (list :unknown-arith-op op)))))
+      ;; Compute B -> rax.
+      (nelisp-phase47-compiler--emit-value b buf)
+      ;; push rax (save B on stack).
+      (nelisp-asm-x86_64-push buf 'rax)
+      ;; Compute A -> rax.
+      (nelisp-phase47-compiler--emit-value a buf)
+      ;; pop r10 (= recover B into r10; r10 not in arg-regs).
+      (nelisp-asm-x86_64-pop buf 'r10)
+      (cond
+       ((eq op '+) (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10))
+       ((eq op '-) (nelisp-asm-x86_64-sub-reg-reg buf 'rax 'r10))
+       ((eq op '*)
+        (nelisp-phase47-compiler--imul-reg-reg buf 'rax 'r10))
+       ;; Doc 100 §100.D bitwise binops.  Same MR-form shape as ADD/SUB,
+       ;; just a different opcode byte.
+       ((eq op 'logior) (nelisp-asm-x86_64-or-reg-reg buf 'rax 'r10))
+       ((eq op 'logand) (nelisp-asm-x86_64-and-reg-reg buf 'rax 'r10))
+       ((eq op 'logxor) (nelisp-asm-x86_64-xor-reg-reg buf 'rax 'r10))
+       (t
+        (signal 'nelisp-phase47-compiler-error
+                (list :unknown-arith-op op)))))))
 
 (defun nelisp-phase47-compiler--emit-shift (node buf)
   "Emit a variable-count shift NODE; result in rax (Doc 100 §100.D).
@@ -800,22 +873,34 @@ live parameter register in the surrounding defun."
   (let ((op (plist-get node :op))
         (a (plist-get node :a))
         (b (plist-get node :b)))
-    ;; Compute B -> rax.
-    (nelisp-phase47-compiler--emit-value b buf)
-    ;; push rax (save B on stack).
-    (nelisp-asm-x86_64-push buf 'rax)
-    ;; Compute A -> rax.
-    (nelisp-phase47-compiler--emit-value a buf)
-    ;; pop r10 (= recover B into r10).
-    (nelisp-asm-x86_64-pop buf 'r10)
-    ;; mov rcx, r10 (= count into rcx; cl = rcx[0:8]).
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'r10)
-    (cond
-     ((eq op 'shl) (nelisp-asm-x86_64-shl-rax-cl buf))
-     ((eq op 'sar) (nelisp-asm-x86_64-sar-rax-cl buf))
-     (t
-      (signal 'nelisp-phase47-compiler-error
-              (list :unknown-shift-op op))))))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (progn
+          (nelisp-phase47-compiler--emit-value b buf)
+          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+          (nelisp-phase47-compiler--emit-value a buf)
+          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (cond
+           ((eq op 'shl) (nelisp-asm-arm64-lslv buf 'x0 'x0 'x9))
+           ((eq op 'sar) (nelisp-asm-arm64-asrv buf 'x0 'x0 'x9))
+           (t
+            (signal 'nelisp-phase47-compiler-error
+                    (list :unknown-shift-op op)))))
+      ;; Compute B -> rax.
+      (nelisp-phase47-compiler--emit-value b buf)
+      ;; push rax (save B on stack).
+      (nelisp-asm-x86_64-push buf 'rax)
+      ;; Compute A -> rax.
+      (nelisp-phase47-compiler--emit-value a buf)
+      ;; pop r10 (= recover B into r10).
+      (nelisp-asm-x86_64-pop buf 'r10)
+      ;; mov rcx, r10 (= count into rcx; cl = rcx[0:8]).
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'r10)
+      (cond
+       ((eq op 'shl) (nelisp-asm-x86_64-shl-rax-cl buf))
+       ((eq op 'sar) (nelisp-asm-x86_64-sar-rax-cl buf))
+       (t
+        (signal 'nelisp-phase47-compiler-error
+                (list :unknown-shift-op op)))))))
 
 (defun nelisp-phase47-compiler--emit-call (node buf)
   "Emit a SysV AMD64 call to NODE's named function.
@@ -951,27 +1036,41 @@ opcode reads the right combination.")
 Strategy: compute B -> rax -> push, compute A -> rax, pop r10 (=
 B), cmp rax, r10 (= computes A - B flag set), then setCC al +
 movzx eax, al to materialise the boolean into rax.  Uses r10 to
-avoid arg-reg aliasing inside chained calls, mirroring the
-Doc 97.b arith convention."
+  avoid arg-reg aliasing inside chained calls, mirroring the
+  Doc 97.b arith convention."
   (let* ((op (plist-get node :op))
          (a (plist-get node :a))
          (b (plist-get node :b))
          (cc (cdr (or (assq op nelisp-phase47-compiler--cmp-setcc)
                       (signal 'nelisp-phase47-compiler-error
                               (list :unknown-cmp-op op))))))
-    ;; Compute B -> rax, save on stack.
-    (nelisp-phase47-compiler--emit-value b buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    ;; Compute A -> rax.
-    (nelisp-phase47-compiler--emit-value a buf)
-    ;; Recover B into r10.
-    (nelisp-asm-x86_64-pop buf 'r10)
-    ;; cmp rax, r10                          (= A - B sets flags)
-    (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
-    ;; setCC al
-    (nelisp-asm-x86_64-setcc-al buf cc)
-    ;; movzx eax, al                         (= zero-extends to rax)
-    (nelisp-asm-x86_64-movzx-eax-al buf)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (let ((arm64-cc
+               (pcase op
+                 ('= 'eq)
+                 ('< 'lt)
+                 ('> 'gt)
+                 ('<= 'le)
+                 ('>= 'ge))))
+          (nelisp-phase47-compiler--emit-value b buf)
+          (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+          (nelisp-phase47-compiler--emit-value a buf)
+          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
+          (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'x9)
+          (nelisp-asm-arm64-cset buf 'x0 arm64-cc))
+      ;; Compute B -> rax, save on stack.
+      (nelisp-phase47-compiler--emit-value b buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      ;; Compute A -> rax.
+      (nelisp-phase47-compiler--emit-value a buf)
+      ;; Recover B into r10.
+      (nelisp-asm-x86_64-pop buf 'r10)
+      ;; cmp rax, r10                          (= A - B sets flags)
+      (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
+      ;; setCC al
+      (nelisp-asm-x86_64-setcc-al buf cc)
+      ;; movzx eax, al                         (= zero-extends to rax)
+      (nelisp-asm-x86_64-movzx-eax-al buf))))
 
 (defun nelisp-phase47-compiler--emit-if (node buf)
   "Emit `if' branching code; result in rax.
@@ -988,14 +1087,24 @@ holds across the two-pass orchestration):
   (let* ((id (plist-get node :id))
          (else-lbl (intern (format "%s-else" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value (plist-get node :test) buf)
-    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-    (nelisp-asm-x86_64-jz-rel32 buf else-lbl)
-    (nelisp-phase47-compiler--emit-value (plist-get node :then) buf)
-    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
-    (nelisp-asm-x86_64-define-label buf else-lbl)
-    (nelisp-phase47-compiler--emit-value (plist-get node :else) buf)
-    (nelisp-asm-x86_64-define-label buf end-lbl)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (progn
+          (nelisp-phase47-compiler--emit-value (plist-get node :test) buf)
+          (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
+          (nelisp-asm-arm64-b-cond buf 'eq else-lbl)
+          (nelisp-phase47-compiler--emit-value (plist-get node :then) buf)
+          (nelisp-asm-arm64-b buf end-lbl)
+          (nelisp-asm-arm64-define-label buf else-lbl)
+          (nelisp-phase47-compiler--emit-value (plist-get node :else) buf)
+          (nelisp-asm-arm64-define-label buf end-lbl))
+      (nelisp-phase47-compiler--emit-value (plist-get node :test) buf)
+      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+      (nelisp-asm-x86_64-jz-rel32 buf else-lbl)
+      (nelisp-phase47-compiler--emit-value (plist-get node :then) buf)
+      (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+      (nelisp-asm-x86_64-define-label buf else-lbl)
+      (nelisp-phase47-compiler--emit-value (plist-get node :else) buf)
+      (nelisp-asm-x86_64-define-label buf end-lbl))))
 
 (defun nelisp-phase47-compiler--emit-while (node buf)
   "Emit `while' loop; result = 0 (in rax) after loop exits.
@@ -1192,18 +1301,32 @@ param-spill area in one shot regardless of arity."
   (let* ((name (plist-get defun-ir :name))
          (param-regs (plist-get defun-ir :param-regs))
          (body (plist-get defun-ir :body)))
-    (nelisp-asm-x86_64-define-label buf name)
-    ;; Prologue: push rbp; mov rbp, rsp; push each param reg.
-    (nelisp-asm-x86_64-push buf 'rbp)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rbp 'rsp)
-    (dolist (preg param-regs)
-      (nelisp-asm-x86_64-push buf preg))
-    ;; Body — value walked into rax.
-    (nelisp-phase47-compiler--emit-value body buf)
-    ;; Epilogue: deallocate param spill via mov rsp, rbp; pop rbp; ret.
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'rbp)
-    (nelisp-asm-x86_64-pop buf 'rbp)
-    (nelisp-asm-x86_64-ret buf)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (let ((arg-regs '(x0 x1 x2 x3 x4 x5)))
+          (nelisp-asm-arm64-define-label buf name)
+          ;; Save LR for forward compatibility, then establish x29.
+          (nelisp-asm-arm64-str-pre-sp-16 buf 'x30)
+          (nelisp-asm-arm64-str-pre-sp-16 buf 'x29)
+          (nelisp-asm-arm64-mov-reg-reg buf 'x29 'sp)
+          (dotimes (i (length param-regs))
+            (nelisp-asm-arm64-str-pre-sp-16 buf (nth i arg-regs)))
+          (nelisp-phase47-compiler--emit-value body buf)
+          (nelisp-asm-arm64-mov-reg-reg buf 'sp 'x29)
+          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x29)
+          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x30)
+          (nelisp-asm-arm64-ret buf))
+      (nelisp-asm-x86_64-define-label buf name)
+      ;; Prologue: push rbp; mov rbp, rsp; push each param reg.
+      (nelisp-asm-x86_64-push buf 'rbp)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rbp 'rsp)
+      (dolist (preg param-regs)
+        (nelisp-asm-x86_64-push buf preg))
+      ;; Body — value walked into rax.
+      (nelisp-phase47-compiler--emit-value body buf)
+      ;; Epilogue: deallocate param spill via mov rsp, rbp; pop rbp; ret.
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'rbp)
+      (nelisp-asm-x86_64-pop buf 'rbp)
+      (nelisp-asm-x86_64-ret buf))))
 
 ;; ---- §97.6 orchestrator ----
 
@@ -1267,6 +1390,7 @@ drift (= a Doc 92 emitter invariant violation)."
     (signal 'nelisp-phase47-compiler-error
             (list :unsupported-arch arch)))
   (let* ((nelisp-phase47-compiler--label-counter 0)
+         (nelisp-phase47-compiler--arch arch)
          (ir (nelisp-phase47-compiler--parse sexp nil))
          (collected (nelisp-phase47-compiler--collect-strings ir))
          (str-offsets (car collected))
@@ -1334,8 +1458,8 @@ becomes a GLOBAL STT_FUNC symbol named after the defun (= symbol-name
 of the elisp identifier, with underscores preserved for C linkage).
 
 ARCH defaults to `x86_64'.  v1 signals
-`nelisp-phase47-compiler-error' for any other ARCH (= aarch64
-deferred to Stage 99.A follow-up).
+`nelisp-phase47-compiler-error' for any other ARCH outside
+`(x86_64 aarch64)'.
 
 Spike scope: defun bodies must not reference strings.  Signals
 `nelisp-phase47-compiler-error' with `:object-mode-no-strings' if
@@ -1345,10 +1469,11 @@ not survive linker relocation in v1.
 Returns FILE-PATH on success.  Signals on parse error, free symbol
 reference, out-of-range integer, or any pass-1/pass-2 byte-length
 drift (= a Doc 92 emitter invariant violation)."
-  (unless (eq arch 'x86_64)
+  (unless (memq arch '(x86_64 aarch64))
     (signal 'nelisp-phase47-compiler-error
             (list :unsupported-arch arch)))
   (let* ((nelisp-phase47-compiler--label-counter 0)
+         (nelisp-phase47-compiler--arch arch)
          (ir (nelisp-phase47-compiler--parse sexp nil))
          (collected (nelisp-phase47-compiler--collect-strings ir))
          (rodata-bytes (cdr collected))
@@ -1378,17 +1503,25 @@ drift (= a Doc 92 emitter invariant violation)."
     ;; intra-`.text' cross-defun calls bake their rel32 in place
     ;; (= the linker only sees external R_X86_64_PC32 / R_X86_64_PLT32
     ;; entries when we eventually emit them; v1 has none).
-    (let* ((buf (nelisp-asm-x86_64-make-buffer)))
+    (let* ((buf (if (eq arch 'aarch64)
+                    (nelisp-asm-arm64-make-buffer)
+                  (nelisp-asm-x86_64-make-buffer))))
       (dolist (d defuns)
         (nelisp-phase47-compiler--emit-defun d buf))
-      (let* ((text-bytes (nelisp-asm-x86_64-resolve-fixups buf))
-             (labels (nelisp-asm-x86_64-buffer-labels buf))
+      (let* ((text-bytes (if (eq arch 'aarch64)
+                             (nelisp-asm-arm64-resolve-fixups buf)
+                           (nelisp-asm-x86_64-resolve-fixups buf)))
+             (labels (if (eq arch 'aarch64)
+                         (nelisp-asm-arm64-buffer-labels buf)
+                       (nelisp-asm-x86_64-buffer-labels buf)))
              ;; Doc 100 §100.A: extract external relocs (= plt32 ones
              ;; emitted by `--emit-extern-call').  Each surfaced reloc
              ;; must also have a matching SHN_UNDEF symtab entry in
              ;; the output `.o', or the ELF writer's reloc lookup
              ;; loop signals `relocation references unknown symbol'.
-             (relocs (nelisp-asm-x86_64-extract-relocs buf))
+             (relocs (if (eq arch 'aarch64)
+                         (nelisp-asm-arm64-buffer-relocs buf)
+                       (nelisp-asm-x86_64-extract-relocs buf)))
              (extern-names
               (delete-dups
                (mapcar (lambda (r) (plist-get r :symbol))
@@ -1409,23 +1542,35 @@ drift (= a Doc 92 emitter invariant violation)."
                         (let ((nm (plist-get d :name)))
                           (if (stringp nm) nm (symbol-name nm))))
                       defuns))
+             (label-positions
+              (let (acc)
+                (dolist (cell labels)
+                  (let* ((nm (car cell))
+                         (nm-str (if (stringp nm) nm (symbol-name nm))))
+                    (when (member nm-str exported-names)
+                      (push (cons nm-str (cdr cell)) acc))))
+                (sort acc (lambda (a b) (< (cdr a) (cdr b))))))
+             (label-size-map
+              (let ((pairs label-positions)
+                    (acc nil))
+                (while pairs
+                  (let* ((cur (car pairs))
+                         (next (cadr pairs))
+                         (start (cdr cur))
+                         (end (if next (cdr next) (length text-bytes))))
+                    (push (cons (car cur) (- end start)) acc))
+                  (setq pairs (cdr pairs)))
+                acc))
              (symbols
-              (delq nil
-                    (mapcar
-                     (lambda (cell)
-                       (let* ((nm (car cell))
-                              (pos (cdr cell))
-                              (nm-str (if (stringp nm)
-                                          nm
-                                        (symbol-name nm))))
-                         (when (member nm-str exported-names)
-                           (list :name nm-str
-                                 :value pos
-                                 :size 0
-                                 :section 'text
-                                 :bind 'global
-                                 :type 'func))))
-                     (reverse labels))))
+              (mapcar
+               (lambda (cell)
+                 (list :name (car cell)
+                       :value (cdr cell)
+                       :size (or (cdr (assoc (car cell) label-size-map)) 0)
+                       :section 'text
+                       :bind 'global
+                       :type 'func))
+               label-positions))
              ;; SHN_UNDEF / STB_GLOBAL / STT_NOTYPE entries for every
              ;; extern symbol the `.text' relocs reference.  Position-
              ;; independent ordering keeps the debug output stable

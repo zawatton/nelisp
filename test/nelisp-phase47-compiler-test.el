@@ -25,6 +25,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'nelisp-cc-jit-arith)
 (require 'nelisp-phase47-compiler)
 
 ;; ---- §T.0 helpers ----
@@ -830,6 +831,98 @@ Caller is responsible for `delete-file' on cleanup."
       (insert-file-contents-literally path))
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun nelisp-phase47-compiler-test--elf-section-header (bytes index)
+  "Return plist for section header INDEX in ELF BYTES."
+  (let* ((shoff (nelisp-elf--read-le64 bytes 40))
+         (shentsize (nelisp-elf--read-le16 bytes 58))
+         (base (+ shoff (* index shentsize))))
+    (list :name-off (nelisp-elf--read-le32 bytes base)
+          :type (nelisp-elf--read-le32 bytes (+ base 4))
+          :offset (nelisp-elf--read-le64 bytes (+ base 24))
+          :size (nelisp-elf--read-le64 bytes (+ base 32))
+          :link (nelisp-elf--read-le32 bytes (+ base 40))
+          :entsize (nelisp-elf--read-le64 bytes (+ base 56)))))
+
+(defun nelisp-phase47-compiler-test--elf-cstring (bytes start)
+  "Read a NUL-terminated string from BYTES at START."
+  (let ((end start))
+    (while (and (< end (length bytes))
+                (not (zerop (aref bytes end))))
+      (setq end (1+ end)))
+    (substring bytes start end)))
+
+(defun nelisp-phase47-compiler-test--elf-find-section (bytes name)
+  "Return plist for section NAME in ELF BYTES, or nil."
+  (let* ((shnum (nelisp-elf--read-le16 bytes 60))
+         (shstrndx (nelisp-elf--read-le16 bytes 62))
+         (shstr (nelisp-phase47-compiler-test--elf-section-header bytes
+                                                                  shstrndx))
+         (shstr-off (plist-get shstr :offset))
+         (found nil)
+         (i 0))
+    (while (and (< i shnum) (null found))
+      (let* ((shdr (nelisp-phase47-compiler-test--elf-section-header bytes i))
+             (sec-name
+              (nelisp-phase47-compiler-test--elf-cstring
+               bytes (+ shstr-off (plist-get shdr :name-off)))))
+        (when (equal sec-name name)
+          (setq found shdr)))
+      (setq i (1+ i)))
+    found))
+
+(defun nelisp-phase47-compiler-test--elf-symbols (bytes)
+  "Return the emitted ELF symbol table from BYTES as plists."
+  (let* ((symtab (or (nelisp-phase47-compiler-test--elf-find-section
+                      bytes ".symtab")
+                     (error ".symtab not found")))
+         (strtab-index (plist-get symtab :link))
+         (strtab (nelisp-phase47-compiler-test--elf-section-header
+                  bytes strtab-index))
+         (sym-off (plist-get symtab :offset))
+         (sym-size (plist-get symtab :size))
+         (ent-size (plist-get symtab :entsize))
+         (str-off (plist-get strtab :offset))
+         (count (/ sym-size ent-size))
+         (i 0)
+         (acc nil))
+    (while (< i count)
+      (let* ((base (+ sym-off (* i ent-size)))
+             (name-off (nelisp-elf--read-le32 bytes base))
+             (name (nelisp-phase47-compiler-test--elf-cstring
+                    bytes (+ str-off name-off))))
+        (push (list :name name
+                    :value (nelisp-elf--read-le64 bytes (+ base 8))
+                    :size (nelisp-elf--read-le64 bytes (+ base 16))
+                    :shndx (nelisp-elf--read-le16 bytes (+ base 6)))
+              acc))
+      (setq i (1+ i)))
+    (nreverse acc)))
+
+(defun nelisp-phase47-compiler-test--find-symbol (bytes name)
+  "Return symbol plist for NAME in ELF BYTES."
+  (or (cl-find-if (lambda (sym)
+                    (equal (plist-get sym :name) name))
+                  (nelisp-phase47-compiler-test--elf-symbols bytes))
+      (error "symbol %s not found" name)))
+
+(defun nelisp-phase47-compiler-test--assert-aarch64-object-symbol (src expected-name)
+  "Compile SRC to an aarch64 ELF object and assert EXPECTED-NAME exists."
+  (let ((path (make-temp-file "nelisp-phase47-arm64-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object src path :arch 'aarch64)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (sym (nelisp-phase47-compiler-test--find-symbol
+                       bytes expected-name)))
+            (should (equal (substring bytes 0 4)
+                           (unibyte-string #x7F #x45 #x4C #x46)))
+            (should (= (nelisp-elf--read-le16 bytes 16) 1))
+            (should (= (nelisp-elf--read-le16 bytes 18) 183))
+            (should (zerop (nelisp-elf--read-le64 bytes 24)))
+            (should (> (plist-get sym :size) 0))
+            (should (zerop (plist-get sym :value)))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-compiler/object-mode-smoke ()
   "Compile `(defun nelisp_spike_noop () 42)' to an ET_REL .o.
 Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
@@ -913,6 +1006,65 @@ Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
          (nelisp-phase47-compile-to-object
           '(seq (defun foo () 42) (exit 0)) path)
          :type 'nelisp-phase47-compiler-error)
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-add2 ()
+  "AArch64 ET_REL emit: arithmetic trampoline exports `nelisp_jit_add2'."
+  (nelisp-phase47-compiler-test--assert-aarch64-object-symbol
+   nelisp-cc-jit-arith-add2--source
+   "nelisp_jit_add2"))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-eq2 ()
+  "AArch64 ET_REL emit: comparison trampoline exports `nelisp_jit_eq2'."
+  (nelisp-phase47-compiler-test--assert-aarch64-object-symbol
+   nelisp-cc-jit-arith-eq2--source
+   "nelisp_jit_eq2"))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-logior2 ()
+  "AArch64 ET_REL emit: bitwise trampoline exports `nelisp_jit_logior2'."
+  (nelisp-phase47-compiler-test--assert-aarch64-object-symbol
+   nelisp-cc-jit-arith-logior2--source
+   "nelisp_jit_logior2"))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-ash ()
+  "AArch64 ET_REL emit: if+shift trampoline exports `nelisp_jit_ash'."
+  (nelisp-phase47-compiler-test--assert-aarch64-object-symbol
+   nelisp-cc-jit-arith-ash--source
+   "nelisp_jit_ash"))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-all-jit-arith-trampolines ()
+  "All 12 Doc 100 §100.D trampoline defuns compile to one aarch64 ET_REL."
+  (let ((path (make-temp-file "nelisp-doc100-arm64-jit-all-" nil ".o"))
+        (sources (list nelisp-cc-jit-arith-add2--source
+                       nelisp-cc-jit-arith-sub2--source
+                       nelisp-cc-jit-arith-mul2--source
+                       nelisp-cc-jit-arith-eq2--source
+                       nelisp-cc-jit-arith-lt2--source
+                       nelisp-cc-jit-arith-gt2--source
+                       nelisp-cc-jit-arith-le2--source
+                       nelisp-cc-jit-arith-ge2--source
+                       nelisp-cc-jit-arith-logior2--source
+                       nelisp-cc-jit-arith-logand2--source
+                       nelisp-cc-jit-arith-logxor2--source
+                       nelisp-cc-jit-arith-ash--source))
+        (names '("nelisp_jit_add2" "nelisp_jit_sub2" "nelisp_jit_mul2"
+                 "nelisp_jit_eq2" "nelisp_jit_lt2" "nelisp_jit_gt2"
+                 "nelisp_jit_le2" "nelisp_jit_ge2" "nelisp_jit_logior2"
+                 "nelisp_jit_logand2" "nelisp_jit_logxor2" "nelisp_jit_ash")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           (cons 'seq sources) path :arch 'aarch64)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (symbols (nelisp-phase47-compiler-test--elf-symbols bytes)))
+            (should (= (nelisp-elf--read-le16 bytes 18) 183))
+            (dolist (name names)
+              (let ((sym (cl-find-if (lambda (entry)
+                                       (equal (plist-get entry :name) name))
+                                     symbols)))
+                (should sym)
+                (should (> (plist-get sym :size) 0))
+                (should (<= 0 (plist-get sym :value)))))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-compiler/extern-call-rejects-missing-symbol ()
