@@ -216,14 +216,16 @@ shadow would mask codegen bugs."
 
 (defun nelisp-asm-arm64-emit-fixup (buf slot-offset label type)
   "Record a 4-byte arm64 branch fixup at SLOT-OFFSET against LABEL.
-TYPE is one of `b26' / `bl26'.  The slot holds a 32-bit
-instruction word whose low 26 bits encode `(target - slot) >> 2'.
-Resolution computes the imm26 at finalize time and ORs it into
-the existing constant base already written (= 0x14000000 for B,
-0x94000000 for BL).  The caller is responsible for emitting the
-4-byte placeholder (= base only, imm26 = 0) before recording the
-fixup."
-  (unless (memq type '(b26 bl26))
+TYPE is one of `b26' / `bl26' / `b19'.  The first two share a
+26-bit immediate field at the low end of the instruction word
+(= base 0x14000000 for B, 0x94000000 for BL).  `b19' is for
+`B.cond' instructions (= base 0x54000000) where the 19-bit signed
+byte-offset / 4 lives in bits [23:5] of the word.  Resolution
+computes the appropriate imm field at finalize time and ORs it
+into the existing constant base already written; the caller is
+responsible for emitting the 4-byte placeholder (= base only,
+imm field = 0) before recording the fixup."
+  (unless (memq type '(b26 bl26 b19))
     (signal 'nelisp-asm-arm64-error
             (list :unknown-fixup-type type)))
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
@@ -297,6 +299,7 @@ O(total-bytes))."
     (dolist (fix fixups)
       (let* ((slot  (nth 0 fix))
              (label (nth 1 fix))
+             (type  (or (nth 2 fix) 'b26))
              (cell  (assq label labels)))
         (unless cell
           (signal 'nelisp-asm-arm64-error
@@ -305,15 +308,33 @@ O(total-bytes))."
           (unless (zerop (logand disp #x3))
             (signal 'nelisp-asm-arm64-error
                     (list :branch-misaligned disp :at-slot slot)))
-          (let ((imm26 (ash disp -2)))
-            (unless (and (>= imm26 (- (ash 1 25)))
-                         (<  imm26 (ash 1 25)))
-              (signal 'nelisp-asm-arm64-error
-                      (list :branch-out-of-range disp :at-slot slot)))
-            (let* ((cur  (nelisp-asm-arm64--read-word-le vec slot))
-                   (new  (logior cur
-                                 (logand imm26 #x3FFFFFF))))
-              (nelisp-asm-arm64--write-word-le vec slot new))))))
+          (pcase type
+            ((or 'b26 'bl26)
+             (let ((imm26 (ash disp -2)))
+               (unless (and (>= imm26 (- (ash 1 25)))
+                            (<  imm26 (ash 1 25)))
+                 (signal 'nelisp-asm-arm64-error
+                         (list :branch-out-of-range disp :at-slot slot)))
+               (let* ((cur  (nelisp-asm-arm64--read-word-le vec slot))
+                      (new  (logior cur
+                                    (logand imm26 #x3FFFFFF))))
+                 (nelisp-asm-arm64--write-word-le vec slot new))))
+            ('b19
+             ;; Doc 100 §100.D Stage 2: B.cond imm19 patches bits
+             ;; [23:5] of the instruction word.  imm19 is a signed
+             ;; 19-bit byte-offset / 4 (= ±1 MiB / 4-aligned).
+             (let ((imm19 (ash disp -2)))
+               (unless (and (>= imm19 (- (ash 1 18)))
+                            (<  imm19 (ash 1 18)))
+                 (signal 'nelisp-asm-arm64-error
+                         (list :bcond-out-of-range disp :at-slot slot)))
+               (let* ((cur  (nelisp-asm-arm64--read-word-le vec slot))
+                      (field (ash (logand imm19 #x7FFFF) 5))
+                      (new  (logior cur field)))
+                 (nelisp-asm-arm64--write-word-le vec slot new))))
+            (other
+             (signal 'nelisp-asm-arm64-error
+                     (list :unknown-fixup-type other :at-slot slot)))))))
     (let ((patched (apply #'unibyte-string (append vec nil))))
       ;; Collapse chunk list to a single materialized chunk so
       ;; subsequent `buffer-bytes' calls return the patched form.
