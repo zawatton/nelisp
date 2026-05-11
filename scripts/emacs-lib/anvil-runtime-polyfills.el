@@ -99,6 +99,38 @@ was called."
     (lambda (&rest args2)
       (apply fun (append args args2)))))
 
+;; `functionp' on standalone NeLisp's `lisp/nelisp-stdlib.el' only
+;; recognises cons-form lambdas (`(lambda ...)' / `(closure ...)' /
+;; `(builtin ...)') and returns nil for any symbol — including
+;; uninterned symbols whose function cell is bound via `fset'.
+;; `anvil-server--make-encoded-handler' returns precisely such an
+;; uninterned symbol and `anvil-server-register-tool''s
+;; `(unless (functionp handler) (error ...))' gate rejects it,
+;; so every `:server-id'-scoped tool batch silently fails.
+;;
+;; Override unconditionally (= shadow the stdlib defun) so symbol
+;; handlers register correctly.  `defun' is a no-op on host Emacs where
+;; the native `functionp' already handles symbols, but we still run
+;; through `unless (anvil-runtime-polyfills--functionp-ok-p)' so the
+;; host implementation stays canonical.
+(defun anvil-runtime-polyfills--functionp-ok-p ()
+  "Return non-nil when the running `functionp' already recognises symbols
+with bound function cells (= host Emacs / future NeLisp with the fix)."
+  (let ((s (make-symbol "anvil-runtime-polyfills--probe")))
+    (fset s (lambda (x) x))
+    (functionp s)))
+(unless (anvil-runtime-polyfills--functionp-ok-p)
+  (defun functionp (x)
+    "Return t if X is callable.  Polyfill (2026-05-11): extends the
+standalone NeLisp `lisp/nelisp-stdlib.el' impl to recognise any
+symbol whose function cell is bound (interned or uninterned)."
+    (cond
+     ((and (consp x) (memq (car x) '(lambda closure builtin))) t)
+     ;; `fboundp' signals `wrong-type-argument' for nil even though
+     ;; `(symbolp nil) = t', so guard explicitly.
+     ((and x (symbolp x) (fboundp x)) t)
+     (t nil))))
+
 
 ;; --- env info vars --------------------------------------------------
 
