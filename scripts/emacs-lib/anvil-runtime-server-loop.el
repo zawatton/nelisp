@@ -110,14 +110,32 @@
         (substring s 0 (1- (length s)))
       s))
 
+  (defun anvil-server-mcp-utf8-byte-length (s)
+    "Return the UTF-8 byte length of S (pure-Elisp, no FFI).
+NeLisp `length' returns the character count for multibyte strings;
+the MCP `Content-Length' header / `send(2)' both want the byte
+count of the UTF-8 encoding.  Compute it by summing per-codepoint
+widths (1 / 2 / 3 / 4 bytes).  Avoids the libc-malloc + strlen
+round-trip an earlier FFI variant used (= heap-corruption / busy-
+loop hazard at ~20 kB JSON responses)."
+    (let ((n 0) (i 0) (len (length s)))
+      (while (< i len)
+        (let ((c (aref s i)))
+          (cond
+           ((< c #x80)    (setq n (1+ n)))
+           ((< c #x800)   (setq n (+ n 2)))
+           ((< c #x10000) (setq n (+ n 3)))
+           (t             (setq n (+ n 4)))))
+        (setq i (1+ i)))
+      n))
+
   (defun anvil-server-mcp-frame-encode (body)
     "Emit `Content-Length: N\r\n\r\nBODY'.
-N is the byte length of BODY (= ASCII-clean JSON for MCP)."
-    (let* ((bytes (if (fboundp 'encode-coding-string)
-                      (encode-coding-string body 'utf-8 t)
-                    body))
-           (n (length bytes)))
-      (concat "Content-Length: " (number-to-string n) "\r\n\r\n" body)))
+N is the UTF-8 byte length of BODY (= what the MCP wire expects).
+Byte count comes from `anvil-server-mcp-utf8-byte-length' (pure
+Elisp)."
+    (let ((byte-len (anvil-server-mcp-utf8-byte-length body)))
+      (concat "Content-Length: " (number-to-string byte-len) "\r\n\r\n" body)))
 
   ;; --- tool-module load chain (same as shell-loop default) ---
   (let* ((modules-env (anvil-runtime-server--env
@@ -227,6 +245,11 @@ zero or more complete frames, dispatches each via
                                      :phase 'header
                                      :body-len 0)
                                anvil-mcp--state-by-fd))))
+      (when (fboundp 'nelisp--write-stderr-line)
+        (nelisp--write-stderr-line
+         (format "[mcp-filter] fd=%d chunk=%d bytes phase=%S buflen-before=%d"
+                 fd (length chunk) (plist-get state :phase)
+                 (length (plist-get state :buffer)))))
       (plist-put state :buffer
                  (concat (plist-get state :buffer) chunk))
       (let ((keep-draining t))
@@ -262,6 +285,11 @@ zero or more complete frames, dispatches each via
                   (plist-put state :phase 'header)
                   (plist-put state :body-len 0)
                   (plist-put state :buffer rest)
+                  (when (fboundp 'nelisp--write-stderr-line)
+                    (nelisp--write-stderr-line
+                     (format "[mcp-filter] fd=%d dispatch body[%d]: %S"
+                             fd n
+                             (substring body 0 (min 120 (length body))))))
                   (let ((response
                          (condition-case err
                              (anvil-server-process-jsonrpc body server-id)
@@ -271,6 +299,11 @@ zero or more complete frames, dispatches each via
                              (replace-regexp-in-string
                               "\"" "\\\\\""
                               (format "%S" err)))))))
+                    (when (fboundp 'nelisp--write-stderr-line)
+                      (nelisp--write-stderr-line
+                       (format "[mcp-filter] fd=%d response stringp=%S len=%d"
+                               fd (stringp response)
+                               (if (stringp response) (length response) -1))))
                     (when (and (stringp response) (> (length response) 0))
                       (let ((framed
                              (anvil-server-mcp-frame-encode response)))
