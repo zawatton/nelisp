@@ -277,6 +277,244 @@
     (should-error (nelisp-asm-arm64-add-imm b 'x0 'x0 #x1000)
                   :type 'nelisp-asm-arm64-error)))
 
+;; ---- Doc 100 §100.D Stage 2 reg-reg / cmp / cset / bitwise / shift ----
+
+(ert-deftest nelisp-asm-arm64-add-reg-reg-x0-x0-x1 ()
+  ;; ADD x0, x0, x1 = 0x8B000000 | (1<<16) | (0<<5) | 0 = 0x8B010000
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-add-reg-reg b 'x0 'x0 'x1)))
+                 (nelisp-asm-arm64-test--word #x8B010000))))
+
+(ert-deftest nelisp-asm-arm64-add-reg-reg-x10-x2-x7 ()
+  ;; ADD x10, x2, x7 = 0x8B000000 | (7<<16) | (2<<5) | 10 = 0x8B07004A
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-add-reg-reg b 'x10 'x2 'x7)))
+                 (nelisp-asm-arm64-test--word #x8B07004A))))
+
+(ert-deftest nelisp-asm-arm64-sub-reg-reg-x0-x1-x0 ()
+  ;; SUB x0, x1, x0 = 0xCB000000 | (0<<16) | (1<<5) | 0 = 0xCB000020
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-sub-reg-reg b 'x0 'x1 'x0)))
+                 (nelisp-asm-arm64-test--word #xCB000020))))
+
+(ert-deftest nelisp-asm-arm64-sub-reg-reg-x29-x29-x10 ()
+  ;; SUB x29, x29, x10 = 0xCB000000 | (10<<16) | (29<<5) | 29 = 0xCB0A03BD
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-sub-reg-reg b 'x29 'x29 'x10)))
+                 (nelisp-asm-arm64-test--word #xCB0A03BD))))
+
+(ert-deftest nelisp-asm-arm64-mul-reg-reg-x0-x0-x1 ()
+  ;; MUL x0, x0, x1 = 0x9B007C00 | (1<<16) | (0<<5) | 0 = 0x9B017C00
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-mul-reg-reg b 'x0 'x0 'x1)))
+                 (nelisp-asm-arm64-test--word #x9B017C00))))
+
+(ert-deftest nelisp-asm-arm64-mul-reg-reg-x10-x2-x7 ()
+  ;; MUL x10, x2, x7 = 0x9B007C00 | (7<<16) | (2<<5) | 10 = 0x9B077C4A
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-mul-reg-reg b 'x10 'x2 'x7)))
+                 (nelisp-asm-arm64-test--word #x9B077C4A))))
+
+(ert-deftest nelisp-asm-arm64-and-reg-reg-x0-x1-x2 ()
+  ;; AND x0, x1, x2 = 0x8A000000 | (2<<16) | (1<<5) | 0 = 0x8A020020
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-and-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x8A020020))))
+
+(ert-deftest nelisp-asm-arm64-and-reg-reg-x29-x29-x10 ()
+  ;; AND x29, x29, x10 = 0x8A000000 | (10<<16) | (29<<5) | 29 = 0x8A0A03BD
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-and-reg-reg b 'x29 'x29 'x10)))
+                 (nelisp-asm-arm64-test--word #x8A0A03BD))))
+
+(ert-deftest nelisp-asm-arm64-orr-reg-reg-x0-x0-x1 ()
+  ;; ORR x0, x0, x1 = 0xAA000000 | (1<<16) | (0<<5) | 0 = 0xAA010000
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-orr-reg-reg b 'x0 'x0 'x1)))
+                 (nelisp-asm-arm64-test--word #xAA010000))))
+
+(ert-deftest nelisp-asm-arm64-orr-reg-reg-x10-x2-x7 ()
+  ;; ORR x10, x2, x7 = 0xAA000000 | (7<<16) | (2<<5) | 10 = 0xAA07004A
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-orr-reg-reg b 'x10 'x2 'x7)))
+                 (nelisp-asm-arm64-test--word #xAA07004A))))
+
+(ert-deftest nelisp-asm-arm64-eor-reg-reg-x0-x1-x2 ()
+  ;; EOR x0, x1, x2 = 0xCA000000 | (2<<16) | (1<<5) | 0 = 0xCA020020
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-eor-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #xCA020020))))
+
+(ert-deftest nelisp-asm-arm64-eor-reg-reg-x29-x29-x10 ()
+  ;; EOR x29, x29, x10 = 0xCA000000 | (10<<16) | (29<<5) | 29 = 0xCA0A03BD
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-eor-reg-reg b 'x29 'x29 'x10)))
+                 (nelisp-asm-arm64-test--word #xCA0A03BD))))
+
+(ert-deftest nelisp-asm-arm64-cmp-reg-reg-x0-x1 ()
+  ;; CMP x0, x1 = 0xEB00001F | (1<<16) | (0<<5) = 0xEB01001F
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-cmp-reg-reg b 'x0 'x1)))
+                 (nelisp-asm-arm64-test--word #xEB01001F))))
+
+(ert-deftest nelisp-asm-arm64-cmp-reg-reg-x29-x10 ()
+  ;; CMP x29, x10 = 0xEB00001F | (10<<16) | (29<<5) = 0xEB0A03BF
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-cmp-reg-reg b 'x29 'x10)))
+                 (nelisp-asm-arm64-test--word #xEB0A03BF))))
+
+(ert-deftest nelisp-asm-arm64-cset-x0-eq ()
+  ;; CSET x0, eq = 0x9A9F07E0 | ((0 xor 1)<<12) | 0 = 0x9A9F17E0
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-cset b 'x0 'eq)))
+                 (nelisp-asm-arm64-test--word #x9A9F17E0))))
+
+(ert-deftest nelisp-asm-arm64-cset-x1-ne ()
+  ;; CSET x1, ne = 0x9A9F07E0 | ((1 xor 1)<<12) | 1 = 0x9A9F07E1
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-cset b 'x1 'ne)))
+                 (nelisp-asm-arm64-test--word #x9A9F07E1))))
+
+(ert-deftest nelisp-asm-arm64-cset-x2-lt ()
+  ;; CSET x2, lt = 0x9A9F07E0 | ((11 xor 1)<<12) | 2 = 0x9A9FA7E2
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-cset b 'x2 'lt)))
+                 (nelisp-asm-arm64-test--word #x9A9FA7E2))))
+
+(ert-deftest nelisp-asm-arm64-cset-x3-ge ()
+  ;; CSET x3, ge = 0x9A9F07E0 | ((10 xor 1)<<12) | 3 = 0x9A9FB7E3
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-cset b 'x3 'ge)))
+                 (nelisp-asm-arm64-test--word #x9A9FB7E3))))
+
+(ert-deftest nelisp-asm-arm64-cset-x10-lo ()
+  ;; CSET x10, lo = 0x9A9F07E0 | ((3 xor 1)<<12) | 10 = 0x9A9F27EA
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-cset b 'x10 'lo)))
+                 (nelisp-asm-arm64-test--word #x9A9F27EA))))
+
+(ert-deftest nelisp-asm-arm64-cset-x11-hs ()
+  ;; CSET x11, hs = 0x9A9F07E0 | ((2 xor 1)<<12) | 11 = 0x9A9F37EB
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-cset b 'x11 'hs)))
+                 (nelisp-asm-arm64-test--word #x9A9F37EB))))
+
+(ert-deftest nelisp-asm-arm64-cset-x29-gt ()
+  ;; CSET x29, gt = 0x9A9F07E0 | ((12 xor 1)<<12) | 29 = 0x9A9FD7FD
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-cset b 'x29 'gt)))
+                 (nelisp-asm-arm64-test--word #x9A9FD7FD))))
+
+(ert-deftest nelisp-asm-arm64-cset-x7-le ()
+  ;; CSET x7, le = 0x9A9F07E0 | ((13 xor 1)<<12) | 7 = 0x9A9FC7E7
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-cset b 'x7 'le)))
+                 (nelisp-asm-arm64-test--word #x9A9FC7E7))))
+
+(ert-deftest nelisp-asm-arm64-lslv-x0-x1-x2 ()
+  ;; LSLV x0, x1, x2 = 0x9AC02000 | (2<<16) | (1<<5) | 0 = 0x9AC22020
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-lslv b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x9AC22020))))
+
+(ert-deftest nelisp-asm-arm64-lslv-x29-x29-x0 ()
+  ;; LSLV x29, x29, x0 = 0x9AC02000 | (0<<16) | (29<<5) | 29 = 0x9AC023BD
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-lslv b 'x29 'x29 'x0)))
+                 (nelisp-asm-arm64-test--word #x9AC023BD))))
+
+(ert-deftest nelisp-asm-arm64-asrv-x0-x1-x2 ()
+  ;; ASRV x0, x1, x2 = 0x9AC02800 | (2<<16) | (1<<5) | 0 = 0x9AC22820
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-asrv b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x9AC22820))))
+
+(ert-deftest nelisp-asm-arm64-asrv-x29-x29-x0 ()
+  ;; ASRV x29, x29, x0 = 0x9AC02800 | (0<<16) | (29<<5) | 29 = 0x9AC02BBD
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-asrv b 'x29 'x29 'x0)))
+                 (nelisp-asm-arm64-test--word #x9AC02BBD))))
+
+(ert-deftest nelisp-asm-arm64-b-cond-eq-placeholder-and-fixup ()
+  ;; B.eq foo emits the base word with imm19 = 0 and records a b19 fixup.
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-b-cond b 'eq 'foo)
+    (should (equal (nelisp-asm-arm64-buffer-bytes b)
+                   (nelisp-asm-arm64-test--word #x54000000)))
+    (should (equal (nelisp-asm-arm64-buffer-fixups b)
+                   '((0 foo b19))))))
+
+(ert-deftest nelisp-asm-arm64-b-cond-lt-after-nop-placeholder-and-fixup ()
+  ;; B.lt foo at slot 4 keeps imm19 clear in the placeholder and records b19.
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-nop b)
+    (nelisp-asm-arm64-b-cond b 'lt 'foo)
+    (should (equal (nelisp-asm-arm64-buffer-bytes b)
+                   (concat (nelisp-asm-arm64-test--word #xD503201F)
+                           (nelisp-asm-arm64-test--word #x5400000B))))
+    (should (equal (nelisp-asm-arm64-buffer-fixups b)
+                   '((4 foo b19))))))
+
+(ert-deftest nelisp-asm-arm64-str-pre-sp-16-x0 ()
+  ;; STR x0, [sp, #-16]! = 0xF81F0FE0 | 0 = 0xF81F0FE0
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-str-pre-sp-16 b 'x0)))
+                 (nelisp-asm-arm64-test--word #xF81F0FE0))))
+
+(ert-deftest nelisp-asm-arm64-str-pre-sp-16-x10 ()
+  ;; STR x10, [sp, #-16]! = 0xF81F0FE0 | 10 = 0xF81F0FEA
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-str-pre-sp-16 b 'x10)))
+                 (nelisp-asm-arm64-test--word #xF81F0FEA))))
+
+(ert-deftest nelisp-asm-arm64-str-pre-sp-16-x29 ()
+  ;; STR x29, [sp, #-16]! = 0xF81F0FE0 | 29 = 0xF81F0FFD
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-str-pre-sp-16 b 'x29)))
+                 (nelisp-asm-arm64-test--word #xF81F0FFD))))
+
+(ert-deftest nelisp-asm-arm64-ldr-post-sp-16-x0 ()
+  ;; LDR x0, [sp], #16 = 0xF84107E0 | 0 = 0xF84107E0
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-ldr-post-sp-16 b 'x0)))
+                 (nelisp-asm-arm64-test--word #xF84107E0))))
+
+(ert-deftest nelisp-asm-arm64-ldr-post-sp-16-x10 ()
+  ;; LDR x10, [sp], #16 = 0xF84107E0 | 10 = 0xF84107EA
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-ldr-post-sp-16 b 'x10)))
+                 (nelisp-asm-arm64-test--word #xF84107EA))))
+
+(ert-deftest nelisp-asm-arm64-ldr-post-sp-16-x29 ()
+  ;; LDR x29, [sp], #16 = 0xF84107E0 | 29 = 0xF84107FD
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-arm64-ldr-post-sp-16 b 'x29)))
+                 (nelisp-asm-arm64-test--word #xF84107FD))))
+
 ;; ---- label + fixup (= imm26 resolution) ----
 
 (ert-deftest nelisp-asm-arm64-bl-to-immediately-following-label ()
