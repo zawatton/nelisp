@@ -56,14 +56,18 @@ fi
 if command -v socat >/dev/null 2>&1 ; then
     exec socat -T 0 STDIO UNIX-CONNECT:"$SOCKET"
 elif command -v nc >/dev/null 2>&1 ; then
-    NC_FLAGS=(-U)
-    if nc -h 2>&1 | grep -q -- '-N' ; then
-        NC_FLAGS+=(-N)
-    fi
+    # `-N' (= shutdown socket on stdin EOF) is intentionally OFF.  When
+    # Claude Code spawns this bridge and feeds initialize, it sometimes
+    # closes the bridge's stdin before reading the response — `-N' then
+    # tears the socket down before the daemon's process-send-string
+    # call lands, producing EPIPE (errno=32) in the daemon log and
+    # "Failed to reconnect" on the client.  `stdbuf -o0' is what gets
+    # the response bytes to the client promptly; the bridge process
+    # itself exits when the MCP client kills it at session teardown.
     if command -v stdbuf >/dev/null 2>&1 ; then
-        exec stdbuf -i0 -o0 -e0 nc "${NC_FLAGS[@]}" "$SOCKET"
+        exec stdbuf -i0 -o0 -e0 nc -U "$SOCKET"
     else
-        exec nc "${NC_FLAGS[@]}" "$SOCKET"
+        exec nc -U "$SOCKET"
     fi
 else
     echo "anvil-runtime-stdio: need \`socat' or OpenBSD \`nc' for UNIX-socket bridge" >&2
