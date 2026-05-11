@@ -956,6 +956,253 @@ correctly."
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
+;; ---- Doc 100 v2 §100.B Sexp ABI direct-access ops ----
+
+(ert-deftest nelisp-phase47-compiler/sexp-tag-parse-shape ()
+  "Doc 100 §100.B: (sexp-tag PTR) parses to (:kind sexp-tag :ptr REF)."
+  (let* ((sexp '(defun probe (p) (sexp-tag p)))
+         (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
+    ;; Top-level program is a seq containing one defun.
+    (should (eq (plist-get program :kind) 'seq))
+    (let* ((forms (plist-get program :forms))
+           (defun-node (car forms))
+           (body (plist-get defun-node :body)))
+      (should (eq (plist-get body :kind) 'sexp-tag))
+      (should (eq (plist-get (plist-get body :ptr) :kind) 'ref)))))
+
+(ert-deftest nelisp-phase47-compiler/sexp-int-unwrap-parse-shape ()
+  "Doc 100 §100.B: (sexp-int-unwrap PTR) parses to (:kind sexp-int-unwrap :ptr REF)."
+  (let* ((sexp '(defun probe (p) (sexp-int-unwrap p)))
+         (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
+    (let* ((defun-node (car (plist-get program :forms)))
+           (body (plist-get defun-node :body)))
+      (should (eq (plist-get body :kind) 'sexp-int-unwrap))
+      (should (eq (plist-get (plist-get body :ptr) :kind) 'ref)))))
+
+(ert-deftest nelisp-phase47-compiler/sexp-int-make-parse-shape ()
+  "Doc 100 §100.B: (sexp-int-make SLOT N) parses to (:kind sexp-int-make :slot :val)."
+  (let* ((sexp '(defun probe (slot n) (sexp-int-make slot n)))
+         (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
+    (let* ((defun-node (car (plist-get program :forms)))
+           (body (plist-get defun-node :body)))
+      (should (eq (plist-get body :kind) 'sexp-int-make))
+      (should (eq (plist-get (plist-get body :slot) :kind) 'ref))
+      (should (eq (plist-get (plist-get body :val) :kind) 'ref)))))
+
+(ert-deftest nelisp-phase47-compiler/sexp-abi-ops-reject-bad-arity ()
+  "Doc 100 §100.B: each Sexp ABI op rejects wrong-arity invocations."
+  (dolist (case '(((defun p () (sexp-tag))           :sexp-tag-arity)
+                  ((defun p (a b) (sexp-tag a b))    :sexp-tag-arity)
+                  ((defun p () (sexp-int-unwrap))    :sexp-int-unwrap-arity)
+                  ((defun p () (sexp-int-make))      :sexp-int-make-arity)
+                  ((defun p (a) (sexp-int-make a))   :sexp-int-make-arity)))
+    (let ((bad (car case))
+          (expected-tag (cadr case)))
+      (condition-case err
+          (progn
+            (nelisp-phase47-compiler--parse (list 'seq bad))
+            (ert-fail (list :expected-error case)))
+        (nelisp-phase47-compiler-error
+         (should (eq (car (cdr err)) expected-tag)))))))
+
+(ert-deftest nelisp-phase47-compiler/sexp-tag-emit-bytes ()
+  "Doc 100 §100.B: (sexp-tag PTR) emits the documented byte sequence.
+The expected tail of the .text body is `48 89 C7 48 0F B6 07' (=
+mov rdi, rax + movzx rax, byte ptr [rdi]) — what `--emit-sexp-tag'
+appends after the `:ptr' sub-expression has computed into rax."
+  (let* ((sexp '(seq (defun probe (p) (sexp-tag p))))
+         (path (make-temp-file "nelisp-doc100-sexp-tag-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object sexp path)
+          (let* ((bytes (with-temp-buffer
+                          (set-buffer-multibyte nil)
+                          (insert-file-contents-literally path)
+                          (buffer-string)))
+                 ;; The 7-byte tail before the `ret' (= 0xC3) and any
+                 ;; ELF trailer.  Match the substring anywhere in .text.
+                 (needle (unibyte-string #x48 #x89 #xC7
+                                         #x48 #x0F #xB6 #x07)))
+            (should (string-search needle bytes))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/sexp-int-unwrap-emit-bytes ()
+  "Doc 100 §100.B: (sexp-int-unwrap PTR) emits `mov rdi,rax + mov rax,[rdi+8]'.
+Expected tail: `48 89 C7 48 8B 47 08'."
+  (let* ((sexp '(seq (defun probe (p) (sexp-int-unwrap p))))
+         (path (make-temp-file "nelisp-doc100-sexp-unwrap-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object sexp path)
+          (let* ((bytes (with-temp-buffer
+                          (set-buffer-multibyte nil)
+                          (insert-file-contents-literally path)
+                          (buffer-string)))
+                 (needle (unibyte-string #x48 #x89 #xC7
+                                         #x48 #x8B #x47 #x08)))
+            (should (string-search needle bytes))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/sexp-int-make-emit-bytes ()
+  "Doc 100 §100.B: (sexp-int-make SLOT N) emits the 3-instr writer sequence.
+Expected substring (= the tail before `ret'):
+  C6 07 02         mov byte [rdi], 2     (SEXP_TAG_INT)
+  48 89 77 08      mov [rdi+8], rsi
+  48 89 F8         mov rax, rdi"
+  (let* ((sexp '(seq (defun probe (slot n) (sexp-int-make slot n))))
+         (path (make-temp-file "nelisp-doc100-sexp-make-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object sexp path)
+          (let* ((bytes (with-temp-buffer
+                          (set-buffer-multibyte nil)
+                          (insert-file-contents-literally path)
+                          (buffer-string)))
+                 (needle (unibyte-string #xC6 #x07 #x02
+                                         #x48 #x89 #x77 #x08
+                                         #x48 #x89 #xF8)))
+            (should (string-search needle bytes))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/sexp-int-unwrap-e2e-exec ()
+  "Doc 100 §100.B: probe.o reads a host-provided Sexp::Int(42) → EXIT=42.
+
+host.o lays out at `int_value' a 16-byte block:
+  off 0:  02                tag byte = SEXP_TAG_INT
+  off 1-7: 00 ...            padding
+  off 8:  2A 00 00 00 ...    i64 payload = 42 little-endian
+The `_start' entry calls `probe' with rdi=&int_value, then exits
+with rax (= the unwrapped payload) as the status code."
+  (skip-unless (and (executable-find "ld")
+                    (eq system-type 'gnu/linux)))
+  (let* ((probe-path (make-temp-file "nelisp-doc100-unwrap-probe-" nil ".o"))
+         (host-path (make-temp-file "nelisp-doc100-unwrap-host-" nil ".o"))
+         (bin-path (make-temp-file "nelisp-doc100-unwrap-bin-" nil ""))
+         ;; .data: 16-byte Sexp::Int(42).
+         (data-bytes
+          (concat
+           (unibyte-string 2 0 0 0 0 0 0 0)
+           (unibyte-string 42 0 0 0 0 0 0 0)))
+         ;; .text: _start sets up rdi = address of `int_value', calls
+         ;; probe, then `mov rdi, rax; mov eax, 60; syscall'.
+         (host-text
+          (concat
+           ;; 48 8D 3D 00 00 00 00   lea rdi, [rip + int_value]
+           ;;   reloc PC32 @ offset 3 against `int_value' addend -4
+           (unibyte-string #x48 #x8D #x3D 0 0 0 0)
+           ;; E8 00 00 00 00         call probe (reloc PC32 @ offset 8 (= +1 from cur))
+           (unibyte-string #xE8 0 0 0 0)
+           ;; 48 89 C7               mov rdi, rax
+           (unibyte-string #x48 #x89 #xC7)
+           ;; B8 3C 00 00 00         mov eax, 60
+           (unibyte-string #xB8 #x3C 0 0 0)
+           ;; 0F 05                  syscall
+           (unibyte-string #x0F #x05))))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe (p) (sexp-int-unwrap p))
+           probe-path)
+          (nelisp-elf-write-binary
+           host-path
+           (list :e-type 'rel
+                 :text host-text
+                 :data data-bytes
+                 :symbols (list
+                           (list :name "int_value" :value 0
+                                 :size 16 :section 'data
+                                 :bind 'global :type 'object)
+                           (list :name "_start" :value 0
+                                 :size (length host-text)
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "probe" :section 'undef
+                                 :bind 'global :type 'notype))
+                 :relocs (list
+                          (list :section 'text :offset 3
+                                :symbol "int_value" :type 'pc32 :addend -4)
+                          (list :section 'text :offset 8
+                                :symbol "probe" :type 'plt32 :addend -4))))
+          (let ((ld-status
+                 (call-process "ld" nil nil nil
+                               "-o" bin-path probe-path host-path)))
+            (should (zerop ld-status)))
+          (set-file-modes bin-path #o755)
+          (let ((exit-status
+                 (call-process bin-path nil nil nil)))
+            (should (= exit-status 42))))
+      (ignore-errors (delete-file probe-path))
+      (ignore-errors (delete-file host-path))
+      (ignore-errors (delete-file bin-path)))))
+
+(ert-deftest nelisp-phase47-compiler/sexp-int-make-unwrap-e2e-exec ()
+  "Doc 100 §100.B: probe writes Sexp::Int(77) into a host slot, reads back → EXIT=77.
+
+probe.o's body is `(sexp-int-unwrap (sexp-int-make slot 77))' (=
+write the literal 77 into the caller-provided 32-byte slot at rdi,
+then read it back via the same slot pointer).  host.o reserves a
+32-byte aligned `.bss' slot, passes its address to probe, and exits
+with rax (= the round-tripped 77) as status."
+  (skip-unless (and (executable-find "ld")
+                    (eq system-type 'gnu/linux)))
+  (let* ((probe-path (make-temp-file "nelisp-doc100-make-probe-" nil ".o"))
+         (host-path (make-temp-file "nelisp-doc100-make-host-" nil ".o"))
+         (bin-path (make-temp-file "nelisp-doc100-make-bin-" nil ""))
+         ;; Initialize the slot with non-zero bytes so we know the
+         ;; sexp-int-make actually wrote.  16 bytes = tag + payload
+         ;; portion (the unused tail [16,32) is not read by unwrap).
+         (data-bytes
+          (concat (make-string 16 #xFF)
+                  (make-string 16 #xFF)))
+         (host-text
+          (concat
+           ;; 48 8D 3D 00 00 00 00   lea rdi, [rip + slot]
+           (unibyte-string #x48 #x8D #x3D 0 0 0 0)
+           ;; E8 00 00 00 00         call probe
+           (unibyte-string #xE8 0 0 0 0)
+           ;; 48 89 C7               mov rdi, rax
+           (unibyte-string #x48 #x89 #xC7)
+           ;; B8 3C 00 00 00         mov eax, 60
+           (unibyte-string #xB8 #x3C 0 0 0)
+           ;; 0F 05                  syscall
+           (unibyte-string #x0F #x05))))
+    (unwind-protect
+        (progn
+          ;; The probe body is a single value form: (sexp-int-unwrap
+          ;; (sexp-int-make p 77)) — the slot pointer flows into make,
+          ;; make returns slot, unwrap reads back the payload.
+          (nelisp-phase47-compile-to-object
+           '(defun probe (p) (sexp-int-unwrap (sexp-int-make p 77)))
+           probe-path)
+          (nelisp-elf-write-binary
+           host-path
+           (list :e-type 'rel
+                 :text host-text
+                 :data data-bytes
+                 :symbols (list
+                           (list :name "slot" :value 0 :size 32
+                                 :section 'data :bind 'global :type 'object)
+                           (list :name "_start" :value 0
+                                 :size (length host-text)
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "probe" :section 'undef
+                                 :bind 'global :type 'notype))
+                 :relocs (list
+                          (list :section 'text :offset 3
+                                :symbol "slot" :type 'pc32 :addend -4)
+                          (list :section 'text :offset 8
+                                :symbol "probe" :type 'plt32 :addend -4))))
+          (let ((ld-status
+                 (call-process "ld" nil nil nil
+                               "-o" bin-path probe-path host-path)))
+            (should (zerop ld-status)))
+          (set-file-modes bin-path #o755)
+          (let ((exit-status
+                 (call-process bin-path nil nil nil)))
+            (should (= exit-status 77))))
+      (ignore-errors (delete-file probe-path))
+      (ignore-errors (delete-file host-path))
+      (ignore-errors (delete-file bin-path)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here

@@ -514,6 +514,100 @@ DST is the ModR/M.rm operand, SRC is the ModR/M.reg operand."
   "Emit `MOV DST, SRC' (MR form, 64-bit, opcode 0x89)."
   (nelisp-asm-x86_64--emit-mr buf #x89 dst src))
 
+;; ---- Doc 100 v2 §100.B Sexp ABI direct-access ops ----
+;;
+;; Four memory-access primitives the Phase 47 compiler uses when it
+;; emits direct loads / stores against a Sexp value held in a caller-
+;; provided register pointer.  Each maps to a single x86_64 instruction
+;; against `[base]' or `[base + imm8]'.  No SIB byte: `rsp' / `r12' as
+;; the base register would trigger SIB-required encoding (= ModR/M.rm
+;; = 100), which Doc 100 §100.B does not need.  All callers pass `rdi'
+;; or `rsi' as base.  See `docs/arch/sexp-abi.md' §5.
+
+(defun nelisp-asm-x86_64-movzx-reg-byte-mem (buf dst base)
+  "Emit `MOVZX DST, BYTE PTR [BASE]' = REX.W + 0F B6 ModR/M (4 bytes).
+Zero-extends the byte at `[base]' into the 64-bit DST.  Base must
+not be `rsp' / `r12' (= SIB-required, not modelled here)."
+  (when (memq base '(rsp r12))
+    (signal 'nelisp-asm-x86_64-error
+            (list :movzx-rsp-r12-needs-sib base)))
+  (let* ((rex (nelisp-asm-x86_64--rex
+               1
+               (nelisp-asm-x86_64--reg-ext dst)
+               0
+               (nelisp-asm-x86_64--reg-ext base)))
+         (modrm (nelisp-asm-x86_64--modrm
+                 0
+                 (nelisp-asm-x86_64--reg-low3 dst)
+                 (nelisp-asm-x86_64--reg-low3 base))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string rex #x0F #xB6 modrm))))
+
+(defun nelisp-asm-x86_64-mov-reg-mem-disp8 (buf dst base disp)
+  "Emit `MOV DST, QWORD PTR [BASE + DISP]' = REX.W + 8B ModR/M + disp8 (4 bytes).
+DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
+`rsp' / `r12' (= SIB-required, not modelled here)."
+  (when (memq base '(rsp r12))
+    (signal 'nelisp-asm-x86_64-error
+            (list :mov-rsp-r12-base-needs-sib base)))
+  (unless (and (integerp disp) (<= -128 disp 127))
+    (signal 'nelisp-asm-x86_64-error
+            (list :disp8-out-of-range disp)))
+  (let* ((rex (nelisp-asm-x86_64--rex
+               1
+               (nelisp-asm-x86_64--reg-ext dst)
+               0
+               (nelisp-asm-x86_64--reg-ext base)))
+         (modrm (nelisp-asm-x86_64--modrm
+                 1
+                 (nelisp-asm-x86_64--reg-low3 dst)
+                 (nelisp-asm-x86_64--reg-low3 base))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string rex #x8B modrm (logand disp #xFF)))))
+
+(defun nelisp-asm-x86_64-mov-mem-imm8 (buf base imm)
+  "Emit `MOV BYTE PTR [BASE], IMM8' = [REX.B] + C6 /0 ModR/M + imm8.
+2 bytes (no REX) for base in rax-rdi, 3 bytes with REX.B for r8-r15.
+IMM is the unsigned byte value [0, 255] (= one of the
+`SEXP_TAG_*' constants in practice)."
+  (when (memq base '(rsp r12))
+    (signal 'nelisp-asm-x86_64-error
+            (list :mov-rsp-r12-base-needs-sib base)))
+  (unless (and (integerp imm) (<= 0 imm 255))
+    (signal 'nelisp-asm-x86_64-error
+            (list :imm8-out-of-range imm)))
+  (let* ((ext (nelisp-asm-x86_64--reg-ext base))
+         (modrm (nelisp-asm-x86_64--modrm
+                 0 0 (nelisp-asm-x86_64--reg-low3 base)))
+         (prefix (if (zerop ext)
+                     (unibyte-string)
+                   (unibyte-string (nelisp-asm-x86_64--rex 0 0 0 1)))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (concat prefix
+                 (unibyte-string #xC6 modrm (logand imm #xFF))))))
+
+(defun nelisp-asm-x86_64-mov-mem-reg-disp8 (buf base disp src)
+  "Emit `MOV QWORD PTR [BASE + DISP], SRC' = REX.W + 89 ModR/M + disp8 (4 bytes).
+DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
+`rsp' / `r12' (= SIB-required, not modelled here)."
+  (when (memq base '(rsp r12))
+    (signal 'nelisp-asm-x86_64-error
+            (list :mov-rsp-r12-base-needs-sib base)))
+  (unless (and (integerp disp) (<= -128 disp 127))
+    (signal 'nelisp-asm-x86_64-error
+            (list :disp8-out-of-range disp)))
+  (let* ((rex (nelisp-asm-x86_64--rex
+               1
+               (nelisp-asm-x86_64--reg-ext src)
+               0
+               (nelisp-asm-x86_64--reg-ext base)))
+         (modrm (nelisp-asm-x86_64--modrm
+                 1
+                 (nelisp-asm-x86_64--reg-low3 src)
+                 (nelisp-asm-x86_64--reg-low3 base))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string rex #x89 modrm (logand disp #xFF)))))
+
 (defun nelisp-asm-x86_64-add-reg-reg (buf dst src)
   "Emit `ADD DST, SRC' (MR form, 64-bit, opcode 0x01)."
   (nelisp-asm-x86_64--emit-mr buf #x01 dst src))

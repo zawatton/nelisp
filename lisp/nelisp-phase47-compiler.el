@@ -92,6 +92,7 @@
 (require 'cl-lib)
 (require 'nelisp-asm-x86_64)
 (require 'nelisp-elf-write)
+(require 'nelisp-sexp-layout)
 
 (define-error 'nelisp-phase47-compiler-error
   "Doc 97 Phase 47 Sexp compiler error")
@@ -317,6 +318,39 @@ functions `((NAME . ARITY) ...)'."
                              (nelisp-phase47-compiler--parse-value
                               e env fenv defuns))
                            args))))
+   ;; Doc 100 v2 §100.B Sexp ABI direct-access ops.  Each maps to a
+   ;; fixed instruction template against `[base]' / `[base + 8]', with
+   ;; the byte offset coming from `nelisp-sexp--offset-*' constants
+   ;; defined in `lisp/nelisp-sexp-layout.el'.
+   ;;
+   ;; (sexp-tag PTR)            — read tag byte at offset 0,
+   ;;                              zero-extended to i64 in rax.
+   ;; (sexp-int-unwrap PTR)     — read i64 payload at offset 8 in rax.
+   ;; (sexp-int-make SLOT N)    — write Sexp::Int(N) into SLOT,
+   ;;                              return SLOT pointer in rax.
+   ((and (consp sexp) (eq (car sexp) 'sexp-tag))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-tag-arity sexp)))
+    (list :kind 'sexp-tag
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'sexp-int-unwrap))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-int-unwrap-arity sexp)))
+    (list :kind 'sexp-int-unwrap
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'sexp-int-make))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-int-make-arity sexp)))
+    (list :kind 'sexp-int-make
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)
+          :val (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)))
    ;; (extern-call SYM ARG...) — Doc 100 §100.A call into a C-callable
    ;; extern symbol.  SYM becomes an SHN_UNDEF entry in the output .o's
    ;; symtab; the rel32 placeholder gets an R_X86_64_PLT32 relocation
@@ -670,6 +704,12 @@ regs rdi..r9 which are caller-saved anyway)."
      (nelisp-phase47-compiler--emit-call node buf))
     ('extern-call
      (nelisp-phase47-compiler--emit-extern-call node buf))
+    ('sexp-tag
+     (nelisp-phase47-compiler--emit-sexp-tag node buf))
+    ('sexp-int-unwrap
+     (nelisp-phase47-compiler--emit-sexp-int-unwrap node buf))
+    ('sexp-int-make
+     (nelisp-phase47-compiler--emit-sexp-int-make node buf))
     ('cmp
      (nelisp-phase47-compiler--emit-cmp node buf))
     ('if
@@ -765,6 +805,67 @@ args are rejected at parse time."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf (symbol-name name) -4 'text)))
+
+;; ---- Doc 100 v2 §100.B Sexp ABI direct-access emit ----
+
+(defun nelisp-phase47-compiler--emit-sexp-tag (node buf)
+  "Emit `movzx rax, byte ptr [rdi]' after computing NODE's :ptr into rdi.
+Result: the tag byte at offset `nelisp-sexp--offset-tag' (= 0)
+zero-extended to a 64-bit value in rax.  See `docs/arch/sexp-abi.md'
+§5.1."
+  (let ((ptr (plist-get node :ptr)))
+    ;; Compute :ptr into rax, then move into rdi as the base register.
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)))
+
+(defun nelisp-phase47-compiler--emit-sexp-int-unwrap (node buf)
+  "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr into rdi.
+Result: the i64 payload of a `Sexp::Int(n)' value, read from offset
+`nelisp-sexp--offset-int-payload' (= 8).  No tag check — caller
+must ensure :ptr points at a `Sexp::Int' variant.  See
+`docs/arch/sexp-abi.md' §5.2."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-sexp--offset-int-payload)))
+
+(defun nelisp-phase47-compiler--emit-sexp-int-make (node buf)
+  "Emit the 3-instruction `Sexp::Int' constructor sequence into a caller slot.
+NODE's :slot is the `*mut Sexp' destination, :val is the i64 payload.
+Both sub-expressions are evaluated in turn and pushed; the saved
+values are then popped into rdi (= slot) and rsi (= payload) before
+the writes happen.  Emits, in order:
+
+  mov byte ptr [rdi], `nelisp-sexp--tag-int'  (= SEXP_TAG_INT)
+  mov qword ptr [rdi + `nelisp-sexp--offset-payload'], rsi
+  mov rax, rdi
+
+The bytes at `[rdi + 1, rdi + 8)' (= padding) and
+`[rdi + 16, rdi + 32)' (= unused tail of the 32-byte Sexp slot) are
+left unmodified — `Sexp::Int' does not use them and Rust's drop
+glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
+§5.3."
+  (let ((slot (plist-get node :slot))
+        (val (plist-get node :val)))
+    ;; Evaluate :slot then :val and push each result so the standard
+    ;; pop-into-arg-reg dance places slot in rdi, val in rsi.  This
+    ;; mirrors `--emit-call' / `--emit-extern-call' so future arg
+    ;; expressions that themselves clobber rdi/rsi don't race.
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value val buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Pop in reverse push order: last pushed (= val) → rsi, first
+    ;; pushed (= slot) → rdi.
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Write tag byte, payload, then return the slot pointer.
+    (nelisp-asm-x86_64-mov-mem-imm8 buf 'rdi nelisp-sexp--tag-int)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rdi nelisp-sexp--offset-payload 'rsi)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)))
 
 ;; ---- §97.c emit — comparisons + control flow ----
 
