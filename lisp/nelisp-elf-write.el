@@ -59,6 +59,7 @@
 (defconst nelisp-elf--ev-current 1 "ELF version EV_CURRENT.")
 (defconst nelisp-elf--ei-osabi-sysv 0 "ELFOSABI_NONE / SYSV.")
 
+(defconst nelisp-elf--et-rel  1 "ET_REL (= relocatable object, Doc 99 §99.A).")
 (defconst nelisp-elf--et-exec 2 "ET_EXEC.")
 (defconst nelisp-elf--et-dyn 3 "ET_DYN.")
 
@@ -1059,13 +1060,297 @@ Doc 91 §91.c."
              :entsize   nelisp-elf--rela-size)))
     (nelisp-elf-buffer-bytes cbuf)))
 
+;; ---- Doc 99 §99.A ET_REL builder (= relocatable object output) ----
+;;
+;; ET_REL output drops the program-header / PT_LOAD machinery that ET_EXEC
+;; requires.  No segments, no entry-point baking — `ld' resolves both at
+;; link time.  Section addresses are 0 (relocatable), symbol values are
+;; section-relative offsets, and relocations use the same section-relative
+;; offsets without any vaddr baking.  The result is byte-compatible with
+;; system `ld' / `gcc' on x86_64 + aarch64 Linux.
+
+(defun nelisp-elf--build-rel (plist)
+  "Build an ET_REL ELF64 relocatable object from PLIST, return unibyte string.
+PLIST is the same shape `nelisp-elf--build-rich' accepts (= :text /
+:rodata / :data / :bss-size / :symbols / :relocs / :machine), minus
+:entry-sym (= ET_REL has no entry point — the linker resolves it).
+Sections .symtab / .strtab / .shstrtab are always emitted; .rela.text
+is emitted only when :relocs is non-empty.  Symbol :value fields are
+treated as section-relative offsets (= no vaddr-base addition)."
+  (let* ((text     (or (plist-get plist :text)
+                       (error "nelisp-elf: :text is required")))
+         (rodata   (plist-get plist :rodata))
+         (data     (plist-get plist :data))
+         (bss-size (or (plist-get plist :bss-size) 0))
+         (symbols  (plist-get plist :symbols))
+         (relocs   (plist-get plist :relocs))
+         (machine-arg (or (plist-get plist :machine) 'x86_64))
+         (machine-em
+          (cond
+           ((or (eq machine-arg 'x86_64) (eq machine-arg 'x86-64))
+            nelisp-elf--em-x86-64)
+           ((or (eq machine-arg 'aarch64) (eq machine-arg 'arm64))
+            nelisp-elf--em-aarch64)
+           ((integerp machine-arg) machine-arg)
+           (t (error "nelisp-elf: invalid :machine %S" machine-arg))))
+         (have-rodata (and rodata (> (length rodata) 0)))
+         (have-data   (and data (> (length data) 0)))
+         (have-bss    (> bss-size 0))
+         (have-rela   (and relocs (> (length relocs) 0)))
+         (text-size   (length text))
+         (rodata-size (if have-rodata (length rodata) 0))
+         (data-size   (if have-data (length data) 0))
+         ;; ---- File layout (= no Phdrs, sections start after Ehdr).
+         (text-off    nelisp-elf--ehdr-size)
+         (rodata-off  (+ text-off text-size))
+         (data-off    (+ rodata-off rodata-size))
+         (after-data  (+ data-off data-size))
+         ;; .bss is NOBITS — no file footprint.
+         (non-alloc-base after-data)
+         (shstrtab-off non-alloc-base)
+         ;; Build .shstrtab + indices.
+         (shstrtab (nelisp-elf-strtab-make))
+         (sh-name-text     (nelisp-elf-strtab-add shstrtab ".text"))
+         (sh-name-rodata   (when have-rodata
+                             (nelisp-elf-strtab-add shstrtab ".rodata")))
+         (sh-name-data     (when have-data
+                             (nelisp-elf-strtab-add shstrtab ".data")))
+         (sh-name-bss      (when have-bss
+                             (nelisp-elf-strtab-add shstrtab ".bss")))
+         (sh-name-shstrtab (nelisp-elf-strtab-add shstrtab ".shstrtab"))
+         (sh-name-strtab   (nelisp-elf-strtab-add shstrtab ".strtab"))
+         (sh-name-symtab   (nelisp-elf-strtab-add shstrtab ".symtab"))
+         (sh-name-rela     (when have-rela
+                             (nelisp-elf-strtab-add shstrtab ".rela.text")))
+         (shstrtab-bytes (nelisp-elf-strtab-bytes shstrtab))
+         (shstrtab-size  (length shstrtab-bytes))
+         (strtab-off (+ shstrtab-off shstrtab-size))
+         ;; Build .strtab from the user-provided symbol names.
+         (strtab (nelisp-elf-strtab-make))
+         (sym-name-offsets
+          (mapcar (lambda (sym)
+                    (cons (plist-get sym :name)
+                          (nelisp-elf-strtab-add
+                           strtab (plist-get sym :name))))
+                  symbols))
+         (strtab-bytes (nelisp-elf-strtab-bytes strtab))
+         (strtab-size  (length strtab-bytes))
+         (symtab-off (nelisp-elf--align-up
+                      (+ strtab-off strtab-size) 8))
+         (sym-count (1+ (length symbols)))
+         (symtab-size (* nelisp-elf--sym-size sym-count))
+         (local-count
+          (let ((c 1))
+            (dolist (sym symbols)
+              (when (memq (or (plist-get sym :bind) 'local) '(local 0))
+                (setq c (1+ c))))
+            c))
+         (ordered-symbols
+          (let (locals globals)
+            (dolist (sym symbols)
+              (if (memq (or (plist-get sym :bind) 'local) '(local 0))
+                  (push sym locals)
+                (push sym globals)))
+            (append (nreverse locals) (nreverse globals))))
+         (rela-off (when have-rela
+                     (nelisp-elf--align-up
+                      (+ symtab-off symtab-size) 8)))
+         (rela-size (when have-rela
+                      (* nelisp-elf--rela-size (length relocs))))
+         (after-rela (if have-rela
+                         (+ rela-off rela-size)
+                       (+ symtab-off symtab-size)))
+         (shoff (nelisp-elf--align-up after-rela 8))
+         ;; Section indices: 0 = NULL, then in emit order.
+         (idx 1)
+         (text-shndx idx)
+         (rodata-shndx (and have-rodata (setq idx (1+ idx)) idx))
+         (data-shndx   (and have-data   (setq idx (1+ idx)) idx))
+         (bss-shndx    (and have-bss    (setq idx (1+ idx)) idx))
+         (shstrtab-shndx (progn (setq idx (1+ idx)) idx))
+         (strtab-shndx (progn (setq idx (1+ idx)) idx))
+         (symtab-shndx (progn (setq idx (1+ idx)) idx))
+         (_rela-shndx (and have-rela (setq idx (1+ idx)) idx))
+         (shnum (1+ idx))
+         (cbuf (nelisp-elf-make-buffer)))
+    ;; ---- Ehdr (= ET_REL: no phdrs, no entry).
+    (nelisp-elf-write-ehdr
+     cbuf
+     (list :type      nelisp-elf--et-rel
+           :machine   machine-em
+           :entry     0
+           :phoff     0
+           :shoff     shoff
+           :phentsize 0
+           :phnum     0
+           :shnum     shnum
+           :shstrndx  shstrtab-shndx))
+    ;; ---- .text
+    (unless (= (nelisp-elf-buffer-length cbuf) text-off)
+      (error "nelisp-elf: .text offset drift (length=%d expected=%d)"
+             (nelisp-elf-buffer-length cbuf) text-off))
+    (nelisp-elf--write-bytes cbuf text)
+    ;; ---- .rodata
+    (when have-rodata
+      (nelisp-elf--write-bytes cbuf rodata))
+    ;; ---- .data
+    (when have-data
+      (nelisp-elf--write-bytes cbuf data))
+    ;; ---- .shstrtab
+    (let ((pad (- shstrtab-off (nelisp-elf-buffer-length cbuf))))
+      (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+    (nelisp-elf--write-bytes cbuf shstrtab-bytes)
+    ;; ---- .strtab
+    (let ((pad (- strtab-off (nelisp-elf-buffer-length cbuf))))
+      (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+    (nelisp-elf--write-bytes cbuf strtab-bytes)
+    ;; ---- .symtab (= STN_UNDEF + user symbols, locals first).
+    (let ((pad (- symtab-off (nelisp-elf-buffer-length cbuf))))
+      (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+    (nelisp-elf-write-sym cbuf '(:name 0 :info 0))
+    (dolist (sym ordered-symbols)
+      (let* ((nm    (plist-get sym :name))
+             (sect  (or (plist-get sym :section) 'text))
+             (bind  (or (plist-get sym :bind) 'local))
+             (type  (or (plist-get sym :type) 'notype))
+             (name-off (cdr (assoc nm sym-name-offsets)))
+             (shndx (nelisp-elf--section-shndx
+                     sect text-shndx rodata-shndx
+                     data-shndx bss-shndx))
+             ;; ET_REL: symbol value is section-relative offset (= no vaddr).
+             (value (or (plist-get sym :value) 0)))
+        (nelisp-elf-write-sym
+         cbuf
+         (list :name  name-off
+               :info  (nelisp-elf-sym-info
+                       (nelisp-elf--sym-bind-code bind)
+                       (nelisp-elf--sym-type-code type))
+               :other 0
+               :shndx shndx
+               :value value
+               :size  (or (plist-get sym :size) 0)))))
+    ;; ---- .rela.text (optional)
+    (when have-rela
+      (let ((pad (- rela-off (nelisp-elf-buffer-length cbuf))))
+        (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+      (dolist (rel relocs)
+        (let* ((rsym (plist-get rel :symbol))
+               (rtype (plist-get rel :type))
+               (sym-idx
+                (or (let ((i 1) found)
+                      (dolist (s ordered-symbols)
+                        (when (and (not found)
+                                   (equal (plist-get s :name) rsym))
+                          (setq found i))
+                        (setq i (1+ i)))
+                      found)
+                    (error "nelisp-elf: relocation references unknown symbol %S"
+                           rsym))))
+          (nelisp-elf-write-rela
+           cbuf
+           (list :offset (or (plist-get rel :offset) 0)
+                 :info   (nelisp-elf-rela-info
+                          sym-idx
+                          (nelisp-elf--reloc-type-code rtype))
+                 :addend (or (plist-get rel :addend) 0))))))
+    ;; ---- Shdr table.
+    (let ((pad (- shoff (nelisp-elf-buffer-length cbuf))))
+      (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+    ;; Shdr[0] = SHT_NULL.
+    (nelisp-elf-write-shdr cbuf '(:type 0))
+    ;; Shdr[text] (= addr 0, relocatable).
+    (nelisp-elf-write-shdr
+     cbuf
+     (list :name      sh-name-text
+           :type      nelisp-elf--sht-progbits
+           :flags     (logior nelisp-elf--shf-alloc
+                              nelisp-elf--shf-execinstr)
+           :addr      0
+           :offset    text-off
+           :size      text-size
+           :addralign 16))
+    (when have-rodata
+      (nelisp-elf-write-shdr
+       cbuf
+       (list :name      sh-name-rodata
+             :type      nelisp-elf--sht-progbits
+             :flags     nelisp-elf--shf-alloc
+             :addr      0
+             :offset    rodata-off
+             :size      rodata-size
+             :addralign 8)))
+    (when have-data
+      (nelisp-elf-write-shdr
+       cbuf
+       (list :name      sh-name-data
+             :type      nelisp-elf--sht-progbits
+             :flags     (logior nelisp-elf--shf-write
+                                nelisp-elf--shf-alloc)
+             :addr      0
+             :offset    data-off
+             :size      data-size
+             :addralign 8)))
+    (when have-bss
+      (nelisp-elf-write-shdr
+       cbuf
+       (list :name      sh-name-bss
+             :type      nelisp-elf--sht-nobits
+             :flags     (logior nelisp-elf--shf-write
+                                nelisp-elf--shf-alloc)
+             :addr      0
+             ;; SHT_NOBITS sh_offset is conceptually "after the file
+             ;; data" — we point it at after-data so readers that
+             ;; sanity-check the value see a monotonic layout.
+             :offset    after-data
+             :size      bss-size
+             :addralign 8)))
+    (nelisp-elf-write-shdr
+     cbuf
+     (list :name      sh-name-shstrtab
+           :type      nelisp-elf--sht-strtab
+           :offset    shstrtab-off
+           :size      shstrtab-size
+           :addralign 1))
+    (nelisp-elf-write-shdr
+     cbuf
+     (list :name      sh-name-strtab
+           :type      nelisp-elf--sht-strtab
+           :offset    strtab-off
+           :size      strtab-size
+           :addralign 1))
+    (nelisp-elf-write-shdr
+     cbuf
+     (list :name      sh-name-symtab
+           :type      nelisp-elf--sht-symtab
+           :offset    symtab-off
+           :size      symtab-size
+           :link      strtab-shndx
+           :info      local-count
+           :addralign 8
+           :entsize   nelisp-elf--sym-size))
+    (when have-rela
+      (nelisp-elf-write-shdr
+       cbuf
+       (list :name      sh-name-rela
+             :type      nelisp-elf--sht-rela
+             :offset    rela-off
+             :size      rela-size
+             :link      symtab-shndx
+             :info      text-shndx
+             :addralign 8
+             :entsize   nelisp-elf--rela-size)))
+    (nelisp-elf-buffer-bytes cbuf)))
+
 ;;;###autoload
 (defun nelisp-elf-write-binary (file-path sections)
-  "Emit a static-linked ELF64 executable to FILE-PATH.
+  "Emit an ELF64 binary to FILE-PATH.
 SECTIONS is one of the named sentinels (`minimal-exit-0' for the
 §91.a Teensy-ELF shortcut, `hello-world-write' for the §91.c
 corpus #2 sample that prints `hello\\n' via `write(2)' and exits)
 or a plist that drives the §91.b/§91.c rich path:
+  :e-type     `exec' (default — ET_EXEC, statically-linked executable)
+              or `rel' (Doc 99 §99.A — ET_REL relocatable object that
+              system `ld' can link).
   :text       unibyte bytes (= machine code; required).
   :rodata     unibyte bytes (= constants).
   :data       unibyte bytes (= initialised writable data, §91.c).
@@ -1074,14 +1359,18 @@ or a plist that drives the §91.b/§91.c rich path:
               :bind :type (= STB_LOCAL/GLOBAL/WEAK keyword,
               STT_NOTYPE/OBJECT/FUNC/SECTION keyword).
               :section is `text' / `rodata' / `data' / `bss'.
+              For ET_REL :value is section-relative; for ET_EXEC
+              the loader bakes in the vaddr base.
   :relocs     list of plists with keys :section :offset :symbol :type
               :addend (= pc32 / abs64 / plt32 keyword).
-  :entry-sym  symbol name resolved to e_entry (required for rich path).
+  :entry-sym  symbol name resolved to e_entry (required for ET_EXEC,
+              ignored for ET_REL — `ld' picks the entry at link time).
   :machine    arch tag, `x86_64' (default) / `aarch64' / integer EM_* code.
 
-When :data or :bss-size is present the loader image splits into two
-PT_LOAD segments — one RX (= .text + .rodata) and one RW page-aligned
-(= .data + .bss, with .bss declared NOBITS).
+When :data or :bss-size is present the ET_EXEC loader image splits
+into two PT_LOAD segments — one RX (= .text + .rodata) and one RW
+page-aligned (= .data + .bss, with .bss declared NOBITS).  The ET_REL
+path emits no program headers at all.
 
 The file is written with mode #o755 (= +x bit set)."
   (let ((bytes
@@ -1091,7 +1380,9 @@ The file is written with mode #o755 (= +x bit set)."
           ((eq sections 'hello-world-write)
            (nelisp-elf--build-hello-world-write))
           ((listp sections)
-           (nelisp-elf--build-rich sections))
+           (if (eq (plist-get sections :e-type) 'rel)
+               (nelisp-elf--build-rel sections)
+             (nelisp-elf--build-rich sections)))
           (t
            (error
             "nelisp-elf-write-binary: invalid SECTIONS arg %S"

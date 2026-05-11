@@ -1040,6 +1040,193 @@ CI variance."
           (should (< elapsed 5.0)))
       (ignore-errors (delete-file path)))))
 
+;; ====================================================================
+;; Doc 99 §99.A — ET_REL relocatable-object output
+;; ====================================================================
+
+(defun nelisp-elf-write-test--rel-exit-42-plist ()
+  "Return an ET_REL plist with `_start' = `mov rax,60; mov rdi,42; syscall'.
+Used by the §99.A smoke + ld-can-link tests.  Total 12 bytes of .text."
+  (list :e-type 'rel
+        :text (unibyte-string #xb8 #x3c #x00 #x00 #x00     ; mov eax, 60
+                              #xbf #x2a #x00 #x00 #x00     ; mov edi, 42
+                              #x0f #x05)                   ; syscall
+        :symbols (list (list :name "_start" :value 0 :size 12
+                             :section 'text :bind 'global :type 'func))))
+
+(ert-deftest nelisp-elf-write-rel-smoke ()
+  "ET_REL output: ehdr reports ET_REL, phnum=0, entry=0, _start symbol present."
+  (let ((path (make-temp-file "nelisp-elf-rel-smoke-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rel-exit-42-plist))
+          (let ((bytes (nelisp-elf-write-test--read-file-bytes path)))
+            ;; ELF magic + class + endian.
+            (should (equal (substring bytes 0 4)
+                           (unibyte-string #x7F #x45 #x4C #x46)))
+            (should (= (aref bytes 4) 2))                   ; ELFCLASS64
+            (should (= (aref bytes 5) 1))                   ; ELFDATA2LSB
+            ;; e_type = ET_REL (1), e_machine = EM_X86_64 (62).
+            (should (= (nelisp-elf--read-le16 bytes 16) 1))
+            (should (= (nelisp-elf--read-le16 bytes 18) 62))
+            ;; e_entry = 0 (= linker decides), e_phoff = 0, e_phnum = 0.
+            (should (zerop (nelisp-elf--read-le64 bytes 24)))
+            (should (zerop (nelisp-elf--read-le64 bytes 32)))
+            (should (zerop (nelisp-elf--read-le16 bytes 56)))
+            ;; shoff must be non-zero, shnum >= 5 (NULL + text + 3 tables).
+            (should (> (nelisp-elf--read-le64 bytes 40) 0))
+            (should (>= (nelisp-elf--read-le16 bytes 60) 5))
+            ;; .text starts right after Ehdr at offset 64 with mov eax,60.
+            (should (= (aref bytes 64) #xb8))
+            (should (= (aref bytes (+ 64 10)) #x0f))
+            (should (= (aref bytes (+ 64 11)) #x05))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-rel-readelf-h ()
+  "`readelf -h' confirms the emitted .o is ET_REL (= `Relocatable file')."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-rel-readelf-h-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rel-exit-42-plist))
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-h" path)))))
+            (should (string-match-p "Relocatable" out))
+            (should (string-match-p "Number of program headers:[ \t]*0" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-rel-readelf-s ()
+  "`readelf -s' on the ET_REL output lists `_start' as STT_FUNC."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-rel-readelf-s-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path (nelisp-elf-write-test--rel-exit-42-plist))
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-s" path)))))
+            (should (string-match-p "_start" out))
+            (should (string-match-p "FUNC" out))
+            (should (string-match-p "GLOBAL" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-rel-ld-can-link ()
+  "`ld <emitted.o> -o <prog>' produces an executable that exits 42.
+Validates that the ET_REL output is byte-compatible with system `ld'."
+  (skip-unless (executable-find "ld"))
+  (skip-unless (memq system-type '(gnu/linux gnu)))
+  (skip-unless (string-match-p "x86_64\\|amd64"
+                               (or (and (boundp 'system-configuration)
+                                        system-configuration)
+                                   "")))
+  (let ((obj-path  (make-temp-file "nelisp-elf-rel-ld-"     nil ".o"))
+        (exe-path  (make-temp-file "nelisp-elf-rel-ld-exe-" nil "")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           obj-path (nelisp-elf-write-test--rel-exit-42-plist))
+          (let ((rc (call-process "ld" nil nil nil
+                                  obj-path "-o" exe-path)))
+            (should (eq rc 0)))
+          (set-file-modes exe-path #o755)
+          (let ((rc (call-process exe-path nil nil nil)))
+            (should (eq rc 42))))
+      (ignore-errors (delete-file obj-path))
+      (ignore-errors (delete-file exe-path)))))
+
+(ert-deftest nelisp-elf-write-rel-symbol-value-is-section-relative ()
+  "ET_REL symbol .st_value holds the section-relative offset (= 0 for _start)
+with no vaddr-base addition (= contrast with ET_EXEC, which bakes #x400000+).
+Reads the .symtab back from the emitted bytes and compares with ET_EXEC."
+  (let ((rel-path  (make-temp-file "nelisp-elf-rel-symval-"  nil ".o"))
+        (exec-path (make-temp-file "nelisp-elf-exec-symval-" nil "")))
+    (unwind-protect
+        (let* ((sym-plist (list :name "_start" :value 0 :size 7
+                                :section 'text :bind 'global :type 'func))
+               (text (unibyte-string #xb8 #x3c #x00 #x00 #x00 #x0f #x05)))
+          (nelisp-elf-write-binary
+           rel-path
+           (list :e-type 'rel :text text :symbols (list sym-plist)))
+          (nelisp-elf-write-binary
+           exec-path
+           (list :text text :symbols (list sym-plist)
+                 :entry-sym "_start"))
+          ;; Both files are small enough to parse the Shdr table for
+          ;; .symtab and read the second symbol's value field.
+          (let ((rel-val  (nelisp-elf-write-test--read-start-sym-value
+                          rel-path))
+                (exec-val (nelisp-elf-write-test--read-start-sym-value
+                           exec-path)))
+            (should (zerop rel-val))             ; section-relative
+            (should (= exec-val (+ #x400000 (+ 64 56)))))) ; vaddr-baked
+      (ignore-errors (delete-file rel-path))
+      (ignore-errors (delete-file exec-path)))))
+
+(defun nelisp-elf-write-test--read-start-sym-value (path)
+  "Return the st_value of the second `.symtab' entry (= _start) from PATH.
+Walks the Shdr table to locate `.symtab' + `.shstrtab' and reads
+`st_value' from `.symtab[1]' (entry 0 is the reserved STN_UNDEF)."
+  (let* ((bytes (nelisp-elf-write-test--read-file-bytes path))
+         (shoff (nelisp-elf--read-le64 bytes 40))
+         (shnum (nelisp-elf--read-le16 bytes 60))
+         (shentsize (nelisp-elf--read-le16 bytes 58))
+         (shstrndx (nelisp-elf--read-le16 bytes 62))
+         (shstrtab-shdr-off (+ shoff (* shstrndx shentsize)))
+         (shstrtab-off (nelisp-elf--read-le64 bytes
+                                              (+ shstrtab-shdr-off 24)))
+         (symtab-off nil)
+         (i 0))
+    (while (and (< i shnum) (null symtab-off))
+      (let* ((shdr-off (+ shoff (* i shentsize)))
+             (name-off (nelisp-elf--read-le32 bytes shdr-off))
+             (name-start (+ shstrtab-off name-off))
+             ;; Extract null-terminated name.
+             (end name-start))
+        (while (and (< end (length bytes))
+                    (not (zerop (aref bytes end))))
+          (setq end (1+ end)))
+        (when (equal (substring bytes name-start end) ".symtab")
+          (setq symtab-off (nelisp-elf--read-le64 bytes (+ shdr-off 24)))))
+      (setq i (1+ i)))
+    (unless symtab-off
+      (error ".symtab not found in %s" path))
+    ;; Symbol 0 = STN_UNDEF; symbol 1 layout per Elf64_Sym:
+    ;; name(4) info(1) other(1) shndx(2) value(8) size(8)
+    (nelisp-elf--read-le64 bytes (+ symtab-off
+                                    nelisp-elf--sym-size
+                                    8))))
+
+(ert-deftest nelisp-elf-write-rel-with-relocation ()
+  "ET_REL output with one `pc32' reloc: readelf -r shows R_X86_64_PC32 against `msg'."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-rel-reloc-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path
+           (list :e-type 'rel
+                 :text (unibyte-string #xb8 #x3c #x00 #x00 #x00 #x0f #x05)
+                 :rodata (unibyte-string #x68 #x65 #x6c #x6c #x6f #x00)
+                 :symbols (list (list :name "_start" :value 0 :size 7
+                                      :section 'text :bind 'global
+                                      :type 'func)
+                                (list :name "msg" :value 0 :size 6
+                                      :section 'rodata :bind 'local
+                                      :type 'object))
+                 :relocs (list (list :section 'text :offset 1
+                                     :symbol "msg" :type 'pc32
+                                     :addend -4))))
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "-r" path)))))
+            (should (string-match-p "R_X86_64_PC32" out))
+            (should (string-match-p "msg" out))))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-elf-write-test)
 
 ;;; nelisp-elf-write-test.el ends here
