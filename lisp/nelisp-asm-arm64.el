@@ -517,3 +517,152 @@ emitted byte count is the smallest multiple of 4 >= NBYTES
 (provide 'nelisp-asm-arm64)
 
 ;;; nelisp-asm-arm64.el ends here
+
+;; ---- Doc 100 §100.D Stage 2 reg-reg / cmp / cset / bitwise / shift ----
+;;
+;; The 10 helpers below cover the AArch64 instructions Phase 47 needs
+;; to emit a defun whose body is one of the 12 elisp `nelisp_jit_*'
+;; trampoline sources (= add2 / sub2 / mul2 / 5 signed comparisons /
+;; 3 bitwise / `ash').  Encoding strategy mirrors the existing
+;; mov-imm / add-imm helpers — each instruction word is built by
+;; OR-ing fixed opcode bits with the variable register / immediate
+;; fields, then handed to `--emit-word'.
+
+(defun nelisp-asm-arm64-add-reg-reg (buf dst lhs rhs)
+  "Emit `ADD Xd, Xn, Xm' (shifted-register form, LSL #0).
+Base 0x8B000000 | (Xm << 16) | (Xn << 5) | Xd."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x8B000000 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-sub-reg-reg (buf dst lhs rhs)
+  "Emit `SUB Xd, Xn, Xm' (shifted-register form, LSL #0).
+Base 0xCB000000 | (Xm << 16) | (Xn << 5) | Xd."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xCB000000 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-mul-reg-reg (buf dst lhs rhs)
+  "Emit `MUL Xd, Xn, Xm' (= alias for MADD Xd, Xn, Xm, XZR).
+Base 0x9B007C00 | (Xm << 16) | (Xn << 5) | Xd (Ra field fixed = 31)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9B007C00 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-and-reg-reg (buf dst lhs rhs)
+  "Emit `AND Xd, Xn, Xm' (shifted-register).
+Base 0x8A000000 | (Xm << 16) | (Xn << 5) | Xd."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x8A000000 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-orr-reg-reg (buf dst lhs rhs)
+  "Emit `ORR Xd, Xn, Xm' (shifted-register).
+Base 0xAA000000 | (Xm << 16) | (Xn << 5) | Xd."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xAA000000 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-eor-reg-reg (buf dst lhs rhs)
+  "Emit `EOR Xd, Xn, Xm' (shifted-register, = bitwise XOR).
+Base 0xCA000000 | (Xm << 16) | (Xn << 5) | Xd."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xCA000000 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-cmp-reg-reg (buf lhs rhs)
+  "Emit `CMP Xn, Xm' (= SUBS XZR, Xn, Xm).
+Updates NZCV flags; result discarded into XZR.
+Base 0xEB00001F | (Xm << 16) | (Xn << 5)."
+  (let* ((n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xEB00001F (ash m 16) (ash n 5)))))
+
+(defconst nelisp-asm-arm64--cond-codes
+  '((eq . #x0) (ne . #x1) (hs . #x2) (cs . #x2) (lo . #x3) (cc . #x3)
+    (mi . #x4) (pl . #x5) (vs . #x6) (vc . #x7) (hi . #x8) (ls . #x9)
+    (ge . #xA) (lt . #xB) (gt . #xC) (le . #xD) (al . #xE))
+  "AArch64 4-bit condition code map.  Used by `cset' (= CSINC with
+inverted cond) and `b.cond'.")
+
+(defun nelisp-asm-arm64--cond-num (cond-sym)
+  "Return the 4-bit cond code for COND-SYM, or signal on unknown."
+  (let ((cell (assq cond-sym nelisp-asm-arm64--cond-codes)))
+    (unless cell
+      (signal 'nelisp-asm-arm64-error
+              (list :unknown-cond-code cond-sym)))
+    (cdr cell)))
+
+(defun nelisp-asm-arm64-cset (buf dst cond-sym)
+  "Emit `CSET Xd, COND' (= CSINC Xd, XZR, XZR, INVERT(COND)).
+Materialises the COND flag as 1 (true) or 0 (false) in Xd.
+Encoding: 0x9A9F07E0 | (invert_cond << 12) | Xd.
+`invert_cond' = cond XOR 1 — toggles the low bit so that the
+CSINC's `else' arm fires when COND is true."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (cond-bits (nelisp-asm-arm64--cond-num cond-sym))
+         (inv (logxor cond-bits 1)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9A9F07E0 (ash (logand inv #xF) 12) d))))
+
+(defun nelisp-asm-arm64-lslv (buf dst lhs rhs)
+  "Emit `LSLV Xd, Xn, Xm' (= logical-left shift by register).
+Base 0x9AC02000 | (Xm << 16) | (Xn << 5) | Xd.  Only the low 6
+bits of Xm are honoured by hardware (= shift count mod 64)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9AC02000 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-asrv (buf dst lhs rhs)
+  "Emit `ASRV Xd, Xn, Xm' (= arithmetic-right shift by register).
+Base 0x9AC02800 | (Xm << 16) | (Xn << 5) | Xd.  Sign bit replicates
+into the high bits; shift count uses Xm[5:0] (= mod 64)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9AC02800 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-b-cond (buf cond-sym label)
+  "Emit `B.cond LABEL' with a fixup against LABEL.
+Writes a 4-byte placeholder = base 0x54000000 | cond (imm19 field
+= 0), then records a `b19' fixup at the placeholder offset.
+`resolve-fixups' patches imm19 = `(label-pos - slot) >> 2' into
+bits [23:5] of the placeholder word.  The branch displacement
+must fit in a signed 19-bit byte offset (= ±1 MiB) and be 4-byte
+aligned."
+  (let* ((cond-bits (nelisp-asm-arm64--cond-num cond-sym))
+         (slot (nelisp-asm-arm64-buffer-pos buf)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x54000000 (logand cond-bits #xF)))
+    (nelisp-asm-arm64-emit-fixup buf slot label 'b19)))
+
+(defun nelisp-asm-arm64-str-pre-sp-16 (buf src)
+  "Emit `STR Xn, [SP, #-16]!' (= push Xn, pre-index SP -= 16).
+Base 0xF81F0FE0 | Xt.  Stack stays 16-byte aligned per AAPCS."
+  (let* ((t-reg (logand (nelisp-asm-arm64--reg-num src) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF81F0FE0 t-reg))))
+
+(defun nelisp-asm-arm64-ldr-post-sp-16 (buf dst)
+  "Emit `LDR Xn, [SP], #16' (= pop Xn, post-index SP += 16).
+Base 0xF84107E0 | Xt.  Stack stays 16-byte aligned per AAPCS."
+  (let* ((t-reg (logand (nelisp-asm-arm64--reg-num dst) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF84107E0 t-reg))))
+
