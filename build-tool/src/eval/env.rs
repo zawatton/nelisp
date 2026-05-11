@@ -43,7 +43,7 @@ pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>
 /// list of even length).  We only need it for `(put SYM PROP VAL)` /
 /// `(get SYM PROP)`-shaped code paths the bootstrap may reach; it is
 /// initialised to `nil`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SymbolEntry {
     pub value: Option<Sexp>,
     pub function: Option<Sexp>,
@@ -318,6 +318,57 @@ impl Env {
             delegation_depth: 0,
         }
     }
+    /// Doc 98 §98.1 — globals-only environment with built-ins +
+    /// env_shim primitives installed but the STDLIB_IMAGES decode
+    /// loop skipped.  The iterative baker (= `image::iterative_bake_one')
+    /// uses this as its accumulating starting point so successive
+    /// `iterative_bake_one' calls accumulate global state file-by-file.
+    /// `use_elisp_apply' is kept `false' because the elisp dispatcher
+    /// (`nelisp--apply-fn') is itself defined inside stdlib (= position
+    /// 22 in STDLIB_IMAGES).
+    pub fn new_global_no_stdlib() -> Self {
+        let mut env = Env {
+            globals: HashMap::new(),
+            frames: Vec::new(),
+            max_recursion: 1024,
+            current_recursion: 0,
+            extern_builtins: HashMap::new(),
+            use_elisp_apply: false,
+            delegation_depth: 0,
+        };
+        env.intern_constant("nil", Sexp::Nil);
+        env.intern_constant("t", Sexp::T);
+        super::builtins::install_builtins(&mut env);
+        super::env_shim::install_env_shim_primitives(&mut env);
+        env
+    }
+
+    /// Doc 98 §98.2 — return an `Env::empty'-shaped clone whose
+    /// `globals' map carries every entry that changed vs. `before':
+    /// either a new key (= absent in `before') OR a mutated entry
+    /// (= present but `SymbolEntry' no longer equal).  Used by
+    /// `image::iterative_bake_one' to encode the per-file diff of
+    /// an accumulating baker env.  Equality uses derived
+    /// `SymbolEntry: PartialEq', which falls through to
+    /// `Sexp: PartialEq' (= structural).  The encoder reads only
+    /// `globals'; lighter fields stay defaulted.
+    pub fn globals_diff_view(
+        &self,
+        before: &std::collections::HashMap<String, SymbolEntry>,
+    ) -> Env {
+        let mut diff = Env::empty();
+        for (k, v) in &self.globals {
+            let changed = match before.get(k) {
+                None => true,
+                Some(prev) => prev != v,
+            };
+            if changed {
+                diff.globals.insert(k.clone(), v.clone());
+            }
+        }
+        diff
+    }
+
 
     /// Register `f' as an externally-supplied builtin under `name'.
     /// After this call, evaluating `(NAME ARG...)` in elisp invokes

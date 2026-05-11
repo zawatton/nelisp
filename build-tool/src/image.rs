@@ -156,6 +156,50 @@ pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
     encode_v3_with_fallback(&Env::empty(), &[source.to_string()])
 }
 
+/// Doc 98 §98.1/§98.2 — *real* Stage 9.5 iterative baker driver.
+///
+/// Unlike [`compile_elisp_to_image`] (= form-shim wrapper that just
+/// stashes the source verbatim into the FALLBACK_FORMS section),
+/// this driver actually evaluates the source into the caller-owned
+/// `env' and encodes the *diff* of new globals (= both new keys and
+/// mutated entries) as a frozen-heap node-pool image.  Successive
+/// calls accumulate state in `env', matching the STDLIB_IMAGES
+/// bootstrap order.
+///
+/// Strategy:
+///
+/// 1. Snapshot `env.globals' (full SymbolEntry map, not just keys —
+///    `(fset 'cons LAMBDA)' on a Rust-builtin name MUST be captured
+///    as a mutation even though the key already exists).
+/// 2. Parse `source' with the Rust reader.
+/// 3. `eval' each form against `env' so top-level `defvar' / `defun'
+///    / `defmacro' / `fset' / `setq' calls populate `env.globals'.
+/// 4. Build a `globals_diff_view' against the snapshot — new keys
+///    PLUS entries whose `SymbolEntry: PartialEq' no longer matches.
+/// 5. `encode_v3' (= no fallback) → bytes.
+///
+/// The caller's `env' is left in its post-eval cumulative state so
+/// the next file can reuse already-defined symbols.
+#[cfg(any(test, feature = "image-baker"))]
+pub fn iterative_bake_one(
+    env: &mut Env,
+    source: &str,
+) -> Result<Vec<u8>, ImageError> {
+    // Doc 98 §98.2 — snapshot full SymbolEntry state, not just keys,
+    // so function-cell overrides on Rust-builtin names (= `fset' on
+    // `cons' et al.) are detected as mutations and encoded into the
+    // diff.
+    let before: std::collections::HashMap<String, crate::eval::SymbolEntry> =
+        env.globals.clone();
+    let forms = reader::read_all(source)?;
+    for form in &forms {
+        crate::eval::eval(form, env)?;
+    }
+    let diff = env.globals_diff_view(&before);
+    encode_v3(&diff)
+}
+
+
 /// Doc 75 v3 Stage 9.3.b (2026-05-10): NELIMG v3 frozen-heap *encoder*
 /// — full Phase A-E DAG-dedup payload encoder.
 ///
@@ -1500,4 +1544,81 @@ mod tests {
             other => panic!("expected Cons, got {:?}", other),
         }
     }
+
+    // ---- Doc 98 §98.1+§98.2 — iterative_bake_one tests ----
+
+    /// Doc 98 §98.2 roundtrip:
+    /// `iterative_bake_one' the first stdlib file (= jit-substrate),
+    /// then `decode_v3' the bytes into a fresh env and assert the
+    /// decoded `globals' map carries exactly the diff (= new keys +
+    /// mutated entries, modulo HashMap order).
+    #[test]
+    fn doc98_stage9_5_iterative_bake_one_roundtrips_jit_substrate() {
+        use std::collections::HashSet;
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../lisp/nelisp-jit-substrate.el"),
+        )
+        .expect("nelisp-jit-substrate.el should be readable from CARGO_MANIFEST_DIR");
+
+        let mut env = Env::new_global_no_stdlib();
+        let before = env.globals.clone();
+        let bytes = iterative_bake_one(&mut env, &source).expect("bake should succeed");
+
+        let mut expected_keys: HashSet<String> = HashSet::new();
+        for (k, v) in &env.globals {
+            let changed = match before.get(k) {
+                None => true,
+                Some(prev) => prev != v,
+            };
+            if changed {
+                expected_keys.insert(k.clone());
+            }
+        }
+        assert!(!expected_keys.is_empty(),
+            "jit-substrate should introduce at least one global change");
+
+        let decoded = decode_v3(&bytes).expect("decode_v3 should succeed");
+        let decoded_keys: HashSet<String> = decoded.globals.keys().cloned().collect();
+        assert_eq!(decoded_keys, expected_keys,
+            "decoded globals must match encoded diff (modulo order)");
+    }
+
+    /// Doc 98 §98.2 residue counting:
+    /// Every top-level form in `nelisp-jit-substrate.el' produces a
+    /// global change (= new key or function-cell mutation).  Residue
+    /// 0 is the §98.2 baseline — §98.1's key-only diff was 5 because
+    /// it dropped the fset of cons / car / cdr / setcar / setcdr.
+    #[test]
+    fn doc98_stage9_5_iterative_bake_one_residue_count_jit_substrate() {
+        let source = std::fs::read_to_string(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../lisp/nelisp-jit-substrate.el"),
+        )
+        .expect("nelisp-jit-substrate.el should be readable from CARGO_MANIFEST_DIR");
+
+        let forms = reader::read_all(&source).expect("parse should succeed");
+        let n_forms = forms.len();
+
+        let mut env = Env::new_global_no_stdlib();
+        let before = env.globals.clone();
+        let _bytes = iterative_bake_one(&mut env, &source).expect("bake should succeed");
+        let mut changed = 0usize;
+        for (k, v) in &env.globals {
+            let differs = match before.get(k) {
+                None => true,
+                Some(prev) => prev != v,
+            };
+            if differs {
+                changed += 1;
+            }
+        }
+        let residue = n_forms.saturating_sub(changed);
+
+        eprintln!(
+            "doc98 stage9.5 residue (jit-substrate): \
+             read {n_forms} forms, changed {changed} globals, residue {residue}"
+        );
+        assert_eq!(residue, 0,
+            "jit-substrate residue: every top-level form should produce a global change");
+    }
+
 }

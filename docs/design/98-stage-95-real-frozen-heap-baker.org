@@ -1,0 +1,538 @@
+#+TITLE: Doc 98 — Stage 9.5-real: iterative bootstrap frozen-heap baker
+#+AUTHOR: NeLisp design (Claude Opus 4.7 + zawatton 2026-05-11 session)
+#+DATE: 2026-05-11
+
+* Status
+
+- *State*: DRAFT 2026-05-11 — design only, implementation queued for
+  next session.  Driven by 2026-05-11 session diagnostic that Doc 90
+  audit's 4 deferrals + Stage B reader/ 全消滅 + Stage C image.rs 全消滅
+  all three blocked on the same prerequisite: a real frozen-heap baker
+  that evaluates source into env globals (= empty fallback section).
+- *Parent*: Doc 75 §3.5 (= Stage 9.5 "SHIPPED 2026-05-10" form-shim) /
+  Doc 90 (= Phase 2 post-ship audit, 4 hot-path deferrals)
+- *Sister*: Doc 89 §10.1 (= hot-path policy preservation rationale)
+- *Unlocks*: reader/ 全消滅 (-1,679 LOC), Doc 90 4 deferrals
+  (-436〜-807 LOC), image.rs encoder dead code (-500〜-800 LOC).
+  Cumulative: -2,500〜-3,500 Rust LOC across multi-stage ship.
+- *OOS for THIS doc*: implementation (= each Stage 98.x ships its own
+  sub-stage); Phase 3 D-B Cranelift replacement (= Doc 77c, separate);
+  Phase 47 native self-compile of nelisp itself (= separate, future).
+
+* §0 TL;DR
+
+** §0.1 What Stage 9.5 actually shipped (= the gap)
+
+Doc 75 §3.5 marked Stage 9.5 as SHIPPED 2026-05-10.  The actual change
+was a rewire of =compile_elisp_to_image=:
+
+#+begin_src rust
+pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
+    encode_v3_with_fallback(&Env::empty(), &[source.to_string()])
+}
+#+end_src
+
+This wraps =source= as a single strategy-C fallback form inside an
+NELIMG v3 envelope with an *empty* node pool (= =&Env::empty()=
+contributes 0 globals).  The wire format is v3, but the semantics are
+unchanged from the v2 form-list era: the boot path still has to parse
++ re-eval source strings.
+
+** §0.2 What "real" Stage 9.5 means
+
+A frozen-heap image with *non-empty node pool + empty fallback*.  At
+boot, =decode_v3_into= populates =env.globals= directly from the node
+pool, no re-parse, no re-eval.  This requires:
+
+1. Baker must *evaluate* source into a populated =Env=, not stash raw
+   strings.
+2. Baker must iterate the STDLIB chain (= each file builds on prior
+   files' env state) — the first file boots from builtins-only env,
+   each subsequent file boots from the prior cumulative env.
+3. =Env::new_global= must consume frozen-heap images via
+   =decode_v3_into(&mut env, bytes)= directly, NOT via =decode_image=
+   (which currently discards the decoded env via =Env::empty()=).
+
+** §0.3 Why this is the *common* prerequisite
+
+3 distinct migration tracks blocked on Stage 9.5-real in the 2026-05-11
+session:
+
+| Track                            | Surface block             | Common cause                |
+|----------------------------------+---------------------------+-----------------------------|
+| Doc 90 deferral 2 (parse_let)    | void-function during boot | env-shim loads at pos 4     |
+|                                  |                           | (= jit-substrate position 1 |
+|                                  |                           | uses =let= before shim live) |
+| Stage B reader/ 全消滅          | prod binary panic         | non-empty fallback in .image |
+| Stage C image.rs 全消滅          | hot-path on every boot    | decoder needed for fallback  |
+
+All three resolve once images carry full frozen-heap node pool + empty
+fallback section.  reader/ becomes dispensable, env-shim ordering
+becomes irrelevant (= shim functions are already in globals at boot),
+image.rs decoder becomes a pure deserializer of pre-evaluated state.
+
+** §0.4 Scope of Doc 98 sub-stages
+
+| Stage    | Scope                                           | ETA      | Rust LOC delta (per-commit)    |
+|----------+-------------------------------------------------+----------+--------------------------------|
+| §98.1    | Infrastructure (= new_global_no_stdlib +        | 1 day    | +200〜+300 (= necessarily +)   |
+|          |   iterative_bake_one + roundtrip test)          |          |                                |
+| §98.2    | Baker bin driver + rebake all 25 stdlib images  | 0.5 day  | ~0 (= disk byte churn only)    |
+| §98.3    | new_global decode cutover + reader/ deletion    | 0.5 day  | *-1,679* (= the big payoff)    |
+| §98.4    | Doc 90 4 deferrals consumption                  | 1 day    | -436〜-807                     |
+| §98.5    | image.rs encoder dead code cleanup              | 0.5 day  | -300〜-500                     |
+| *Total*  |                                                 | 3.5 days | *-2,200〜-2,700 net*           |
+
+* §1 Background
+
+** §1.1 NELIMG v3 wire format (= current state)
+
+Per Doc 75 §3.3.1 (SHIPPED), the v3 wire format is:
+
+#+begin_example
+NELIMG\0\x03                  (8 byte magic)
+u32  IMAGE_ABI_VERSION = 3
+u8   KIND              = 0x01 (= frozen-heap)
+u32  N_NODES
+[N_NODES] { u8 NODE_TAG ; payload ... ; child refs = u32 NODE_INDEX }
+u32  N_GLOBALS
+[N_GLOBALS] { NAME ; FLAGS ; [value_idx, function_idx, plist_idx] }
+u32  N_FALLBACK_FORMS
+[N_FALLBACK_FORMS] { source_text }
+#+end_example
+
+The current baker writes:
+- =N_NODES= = 0 (empty pool)
+- =N_GLOBALS= = 0
+- =N_FALLBACK_FORMS= = 1 (the entire source text)
+
+Real Stage 9.5 baker will write:
+- =N_NODES= = ~1000-5000 (= reachable Sexps from env globals)
+- =N_GLOBALS= = ~200-500 (= defun / defvar / defmacro etc.)
+- =N_FALLBACK_FORMS= = 0 (= ideal) or small residue (= side-effect
+  forms that don't show up as env globals, e.g., =(provide 'X)=)
+
+** §1.2 Existing encoder is ready
+
+=encode_v3= / =encode_v3_with_fallback= (= image.rs lines 205, 214)
+are already implemented.  They walk =env.globals=, intern reachable
+Sexps via box-pointer dedupe + structural atom dedupe, emit NODE_INDEX-
+referenced records.  The encoder is callable with any populated =Env=.
+
+What's missing is a *driver* that populates Env iteratively + invokes
+the encoder per-file with the *diff* of globals.
+
+** §1.3 Strategy-C fallback semantics (= what to do with them)
+
+Doc 75 §1.5 articulated strategy-C as "re-eval source at boot for
+forms that capture lexical context which can't be serialised as a
+closure".  Common examples:
+
+1. =(provide 'feature)= — registers feature name in env.features
+2. =(autoload 'sym "file")= — sets up lazy-load metadata
+3. =(eval-when-compile ...)= — host-Emacs compile-time only
+4. closures with non-empty captured env (= rare in stdlib)
+
+Strategy: either capture these as additional env state (= extend env
+schema), or keep them as small fallback forms.  Practical baker should
+*minimize* fallback to forms that genuinely can't be serialised.
+Initial pilot: accept any residue as fallback, count it, articulate in
+§98.1 roundtrip test.  If residue is large (= > a few forms per file),
+revisit schema.
+
+* §2 Current state inventory
+
+** §2.1 Rust LOC budget (= 2026-05-11 grep / wc)
+
+| Region                            | LOC   | Stage 9.5-real impact                    |
+|-----------------------------------+-------+------------------------------------------|
+| =image.rs= total                  | 1,503 | encoder/decoder + Reader struct          |
+| =image.rs= image-baker gated      | ~900  | (counted from #[cfg] markers)            |
+| =image.rs= unconditional decoder  | ~600  | hot-path on boot, stays                  |
+| =reader/{lexer,parser,mod}.rs=    | 1,679 | dispensable post-§98.3                   |
+| =eval/special_forms.rs::parse_let_binding= | 30 | Doc 90 D2, dispensable post-§98.3 |
+| =eval/mod.rs::bind_formals=        | 100   | Doc 90 D3, dispensable post-§98.3        |
+| =eval/env.rs= 19 method bodies     | ~547  | Doc 90 D1, dispensable post-§98.3        |
+| =eval/builtins.rs= Tier 3 arms 12  | ~130  | Doc 90 D4, dispensable post-§98.3        |
+
+Sum dispensable post-Stage 9.5-real: ~2,486〜2,486+360 = up to 2,800 LOC.
+
+** §2.2 Existing infrastructure
+
+| Component                        | Status   | Location                          |
+|----------------------------------+----------+-----------------------------------|
+| =encode_v3= / =_with_fallback=   | SHIPPED  | =image.rs:205, 214=                |
+| =decode_v3= / =_into=            | SHIPPED  | =image.rs:332, 345=                |
+| =NodeTable= intern               | SHIPPED  | =image.rs:629= (NodeTable impl)    |
+| =Env::new_global= STDLIB loop    | SHIPPED  | =eval/env.rs:143=                  |
+| =Env::empty=                     | SHIPPED  | =eval/env.rs= (post-new_global)    |
+| =install_env_shim_primitives=    | SHIPPED  | =eval/env_shim.rs=                 |
+| =compile_elisp_to_image= shim    | SHIPPED  | =image.rs:152= (the gap to fix)    |
+| =nelisp-baker= bin               | SHIPPED  | =bin/nelisp-baker.rs:121=          |
+| Iterative driver                 | MISSING  | (to add in §98.1)                  |
+| Env diff helper                  | MISSING  | (to add in §98.1)                  |
+| new_global frozen-heap decode    | PARTIAL  | =decode_image= discards env state  |
+
+** §2.3 Bootstrap order constraints
+
+=STDLIB_IMAGES= order (per =env.rs:163=):
+
+1. nelisp-jit-substrate.el       (= cond / when / let macros self-boot)
+2. nelisp-syscall-table.el       (= auto-generated syscall numbers)
+3. nelisp-jit-strategy.el        (= 24 jit-strategy fset overrides)
+4. nelisp-stdlib-env-shim.el     (= Tier 0 env shim)
+5. nelisp-stdlib-eval-special.el (= cond / when / cl-defun macros)
+6. nelisp-stdlib-error.el        (= condition system)
+7. nelisp-stdlib.el              (= main stdlib body)
+8. nelisp-stdlib-list.el
+9. nelisp-stdlib-hof.el
+10. nelisp-stdlib-search.el
+11. nelisp-stdlib-plist-str.el
+12. nelisp-stdlib-format.el
+13. nelisp-stdlib-prn.el
+14. nelisp-stdlib-misc.el
+15. nelisp-stdlib-equal.el
+16. nelisp-stdlib-hash.el
+17. nelisp-stdlib-gc.el
+18. nelisp-stdlib-os.el
+19. nelisp-pcase.el              (= pcase macros)
+20. nelisp-cl-macros.el          (= cl-defun / cl-defstruct)
+21. nelisp-stdlib-reader.el      (= elisp reader impl)
+22. nelisp-stdlib-eval-core.el   (= apply-fn / bind-formals shim)
+23. nelisp-stdlib-time.el
+24. nelisp-stdlib-math.el
+25. nelisp-stdlib-regex.el
+
+The baker must iterate in this exact order.  First file uses Rust
+reader (= bootstrap reader, only path available before elisp reader
+is loaded).  After file 21 (=nelisp-stdlib-reader.el=) is baked,
+remaining files COULD use elisp reader via
+=eval::read_all_via_elisp=, but for baker simplicity, Rust reader can
+be used throughout (= baker is feature-gated dev tool, doesn't ship
+in prod binary).
+
+* §3 Stage breakdown
+
+** §3.1 Stage 98.1 — infrastructure (= ~1 day)
+
+*Scope*:
+1. Add =Env::new_global_no_stdlib() -> Self= constructor that
+   installs builtins + env_shim primitives but skips the STDLIB_IMAGES
+   loop.  Used by the iterative baker as its starting point.
+2. Add =image::iterative_bake_one(env, source) -> Result<Vec<u8>, ImageError>=
+   in =image.rs= behind =image-baker= feature:
+   - Snapshot =env.globals= keys before eval
+   - Call =reader::read_all(source)= to parse (= bootstrap reader path)
+   - For each form, =eval::eval(form, &mut env)= (mutates env)
+   - Compute keys-added (= post - pre)
+   - Build =Env_diff= containing only added globals
+   - Call =encode_v3(&env_diff)= → bytes
+   - Return bytes; caller's =env= retains cumulative state for next call
+3. Cargo unit test: roundtrip 1 file (= e.g., =nelisp-jit-substrate.el=):
+   - =env = Env::new_global_no_stdlib()=
+   - =bytes = iterative_bake_one(&mut env, &fs::read("lisp/nelisp-jit-substrate.el"))=
+   - =env2 = Env::new_global_no_stdlib()=
+   - =decode_v3_into(&mut env2, &bytes)=
+   - Assert: env.globals subset == env2.globals (= modulo ordering)
+4. Cargo unit test: count fallback residue (= how many forms didn't
+   make it into env globals?).  Articulate residue count in test
+   assertion (= will inform §98.2 strategy).
+
+*LOC delta*: +200〜+300 Rust (infrastructure functions + tests).
+
+*Per-commit rule check*: This stage *violates* the "net Rust decrease
+per commit" rule by design — investment toward §98.3's -1,679 payoff.
+User pre-approval at Doc 98 acceptance is the gate.  Sub-tasks:
+
+| Sub-task                          | LOC   | Net    |
+|-----------------------------------+-------+--------|
+| =new_global_no_stdlib= constructor | +20  | +20    |
+| =iterative_bake_one= function     | +100  | +120   |
+| Env diff helper                   | +40   | +160   |
+| Cargo tests (roundtrip + residue) | +120  | +280   |
+
+*Verification gates*:
+- =cargo build --features image-baker --release= → clean
+- New cargo test pass
+- Roundtrip env equality for at least 1 stdlib file (= jit-substrate)
+- Residue count documented in test output
+
+** §3.2 Stage 98.2 — baker driver + rebake (= ~0.5 day)
+
+*Scope*:
+1. Add =--frozen-heap= flag to =nelisp-baker= bin:
+   - Loops through =STDLIB_FILES= in order
+   - Maintains cumulative =env= across files (= iterative bootstrap)
+   - Calls =iterative_bake_one(env, source)= per file
+   - Writes resulting bytes to =lisp/{name}.image=
+2. Run =make bake-images NELISP_FROZEN_HEAP=1= once to regenerate all
+   25 stdlib images.
+3. Git commit the new .image files.
+
+*LOC delta*: ~0 (= flag handling, ~30 LOC; disk byte churn doesn't
+count toward Rust LOC).
+
+*Sub-tasks*:
+
+| Sub-task                          | LOC | Net   |
+|-----------------------------------+-----+-------|
+| =--frozen-heap= flag parser       | +20 | +20   |
+| Iterative driver loop             | +30 | +50   |
+| Per-file image write              | +5  | +55   |
+| =Makefile= target update          | (no Rust) | +55 |
+| Rebake all 25 stdlib images       | (disk binary churn) | +55 |
+
+*Verification gates*:
+- =nelisp-baker --frozen-heap --check= reports no mismatch after
+  rebake (= disk bytes match newly-baked frozen-heap mode)
+- Each rebaked image's =N_FALLBACK_FORMS= is *0* (or articulated
+  residue count)
+- =cargo build --release= still produces valid prod binary
+
+** §3.3 Stage 98.3 — new_global cutover + reader/ deletion (= ~0.5 day)
+
+*Scope*:
+1. Modify =Env::new_global= to use =image::decode_v3_into(&mut env, image_bytes)=
+   directly instead of =image::decode_image(image_bytes) → eval loop=:
+
+   #+begin_src rust
+   for (name, image_bytes) in STDLIB_IMAGES {
+       match image::decode_v3_into(&mut env, image_bytes) {
+           Ok(fallback) => {
+               // fallback should be empty post-§98.2 frozen-heap rebake;
+               // any residue gets re-eval'd via Rust reader as a
+               // safety net.  Once stable, fallback handling can be
+               // removed entirely.
+               for src in &fallback {
+                   for form in reader::read_all(src)? {
+                       eval(form, &mut env)?;
+                   }
+               }
+           }
+           Err(e) => panic!("{} decode failed: {}", name, e),
+       }
+   }
+   #+end_src
+
+2. Smoke test: =./target/release/nelisp eval '(+ 1 2)'= must return =3=
+   (= prod binary now boots from frozen-heap images, no reader needed
+   for cold path).
+
+3. Verify cargo test suite green.
+
+4. Once verified, delete =build-tool/src/reader/{lexer,parser,mod}.rs=
+   and the =pub mod reader= line in =lib.rs=.
+
+5. Update =image::reader_read_all= (= the helper called from
+   =decode_image=) to always-error on non-empty source (= reader/
+   no longer exists to fall back to).  This effectively retires the
+   strategy-C source-stash path entirely.
+
+6. Update =image::compile_elisp_to_image= to call =iterative_bake_one=
+   path (= the new frozen-heap default).
+
+*LOC delta*: *-1,679 Rust* (= reader/* deletion) minus ~+20 (= comment
+updates + cfg cleanup) = *-1,659 net*.
+
+*Per-commit rule check*: BIG payoff stage — reverses Stage 98.1's
+infrastructure investment and then some.  Atomic commit recommended
+(= rebake + new_global swap + reader/ delete in one ship).  If sliced,
+the intermediate state between =new_global= swap and =reader/= delete
+is functional (= reader/ retained as safety net), so 2-commit split is
+acceptable:
+- 98.3.a: =new_global= cutover + rebake verify (+20 net)
+- 98.3.b: =reader/= deletion (-1,679 net)
+
+*Verification gates*:
+- =cargo build --release= → clean
+- =cargo build --features image-baker --release= → clean
+- =cargo test --release --lib= → all green
+- =./target/release/nelisp eval '(+ 1 2)'= → "3"
+- =make test= (= emacs --batch ert) → no new failures vs baseline 258
+
+** §3.4 Stage 98.4 — Doc 90 4 deferrals consumption (= ~1 day)
+
+*Scope*: with Stage 98.3 shipped, bootstrap reorg is implicit (= env
+is fully populated by node pool decode before any =eval= happens).
+The 4 Doc 90 deferrals can now consume their elisp shims:
+
+| Deferral | Target                                | LOC      | Owner file                  |
+|----------+---------------------------------------+----------+-----------------------------|
+| D2       | =parse_let_binding= → elisp shim      | -30      | =eval/special_forms.rs=     |
+| D3       | =bind_formals= → elisp shim           | -100     | =eval/mod.rs=               |
+| D1       | env.rs 19 method bodies → elisp shim  | -176〜-547 | =eval/env.rs=             |
+| D4       | Tier 3 dispatch arm 12 → elisp shim   | -130     | =eval/builtins.rs=          |
+
+Each deferral becomes a 1-commit pair (= primitive add + Rust dispatch
+delete).  No bootstrap fallback needed because by the time =parse_let_binding=
+is invoked at runtime, env-shim's =nelisp--parse-let-binding= is
+already loaded (= it was in the frozen-heap image, available from
+boot byte 0).
+
+*LOC delta*: -436〜-807 net across 4 commits.
+
+*Sub-stages*:
+
+| Sub-stage | Scope                            | LOC      |
+|-----------+----------------------------------+----------|
+| 98.4.a    | D2 parse_let_binding             | -30      |
+| 98.4.b    | D3 bind_formals                  | -100     |
+| 98.4.c    | D1 env.rs 19 method (full slim)  | -547     |
+| 98.4.d    | D4 Tier 3 dispatch arm 12        | -130     |
+
+*Verification gates*:
+- Each sub-stage individually green on cargo test + make test
+- net Rust LOC ≤ 0 per commit
+- =./target/release/nelisp eval EXAMPLE_FOR_EACH_DEFERRAL= → expected value
+
+** §3.5 Stage 98.5 — image.rs encoder dead code cleanup (= ~0.5 day)
+
+*Scope*: with Stage 98.3 removing the strategy-C source-stash path,
+=encode_v3_with_fallback= is only ever called with empty fallback.
+Simplification candidates:
+
+| Function                          | LOC | Cleanup                                  |
+|-----------------------------------+-----+------------------------------------------|
+| =encode_v3_with_fallback=          | ~95 | Drop =fallback_forms= parameter         |
+| =write_v3_string= (= fallback only) | ~25 | Inline into =encode_v3= or delete        |
+| =compile_elisp_to_image= shim      | ~8  | Becomes thin wrapper over iterative path |
+| =ImageError::FallbackRequiresImageBaker= | ~5 | Delete (= no more strategy-C error)    |
+| =reader_read_all= helper           | ~15 | Delete (= no fallback to parse)          |
+| =decode_image= fallback loop       | ~10 | Delete (= empty fallback always)         |
+
+*LOC delta*: -300〜-500 net.
+
+*Verification gates*:
+- =cargo build --features image-baker --release= clean
+- =cargo test --release --lib image::= all green
+- =nelisp-baker --frozen-heap= still produces byte-identical images
+
+* §4 Per-commit LOC delta budget articulation
+
+User =feedback_rust_core_minimization_principle= (= 2026-04-30) rule:
+"every commit must net-decrease Rust LOC, primitive 追加と Rust dispatch
+削除を必ず同 commit で対にする".
+
+Doc 98's Stage 98.1 *violates* this rule by design (= +300 LOC
+infrastructure with no offsetting deletion).  Justification:
+
+1. The +300 is *infrastructure investment* toward an atomic large-
+   delta payoff (= §98.3 -1,679).
+2. Cumulative across §98.1〜§98.5: *-2,200〜-2,700 net* (= 7-9x rule
+   compliance over the bundle).
+3. Sliced commit boundaries are unavoidable — atomic single-commit
+   for "infrastructure + rebake + new_global cutover + reader delete +
+   4 deferrals + encoder cleanup" would be a >100-file commit that's
+   un-reviewable.
+4. user pre-approval at Doc 98 acceptance gates the rule waiver.
+
+Memory entry =feedback_rust_core_minimization_principle= recommends
+recording such planned violations explicitly so future bisects find
+the rationale.  Each commit message in §98.1〜§98.2 should reference
+"Doc 98 §4 articulated rule waiver".
+
+* §5 Risks / unknowns
+
+** §5.1 Strategy-C residue (= fallback non-emptiness)
+
+Some stdlib forms may not be capturable as env globals:
+- =(provide 'X)= (= unless env.features schema is extended)
+- closures with captured non-empty env at top level (= probably zero
+  in stdlib but unverified)
+- =(eval-when-compile ...)= (= host-Emacs-only; possibly nil at runtime)
+
+§98.1 roundtrip test articulates residue count.  Mitigation options:
+- Extend Env schema to capture =features=, =autoload=, etc.
+- Keep small residue (= 1-5 forms per file) as fallback
+- Synthesize equivalent forms at decode time
+
+** §5.2 NlConsBox identity at decode-time
+
+The encoder dedupes by box-pointer identity.  Decoder rebuilds via
+=NlConsBox::new(empty)= placeholders + fill pass.  Any encoder/decoder
+mismatch on identity semantics will cause "looks the same" globals to
+silently diverge.
+
+§98.1 roundtrip test must compare via =Sexp::equal_structural= not
+=Sexp::eq= to verify identity is preserved.
+
+** §5.3 Order-dependent iteration
+
+The iterative baker relies on STDLIB_FILES order being identical at
+bake and boot.  Doc 75 §3.5 already established this invariant
+(=STDLIB_FILES in baker = STDLIB_IMAGES in env.rs=, kept in sync by
+manual review).  §98.2 driver should assert order parity explicitly.
+
+** §5.4 cargo test runs use STDLIB_IMAGES at test time
+
+Cargo tests construct =Env::new_global()= which loads STDLIB_IMAGES.
+After §98.2 rebake, these images are frozen-heap.  Tests should
+continue to work because they're testing eval/special form semantics
+against the post-load env — they don't care whether env was populated
+via fallback re-eval or frozen-heap decode.
+
+Risk: some tests may rely on side effects of fallback re-eval (= e.g.,
+=(message ...)= side effects during boot).  §98.1 cargo test set
+should be a canary.
+
+* §6 Verification gates
+
+** §6.1 Per-stage gates (= recap)
+
+| Stage  | Gate                                                            |
+|--------+-----------------------------------------------------------------|
+| §98.1  | =cargo test --features image-baker --lib= roundtrip green       |
+| §98.2  | =nelisp-baker --frozen-heap --check= no mismatch + 0 fallback   |
+| §98.3  | =./target/release/nelisp eval '(+ 1 2)'= → "3" + tests green    |
+| §98.4  | Per-deferral: net Rust LOC ≤ 0 + cargo + make test stable       |
+| §98.5  | =cargo build --features image-baker= clean + image byte-id      |
+
+** §6.2 Cumulative gates
+
+Post-§98.5:
+- Default =cargo build --release= produces a working =nelisp= binary
+  that boots without =reader/= (= reader source files deleted)
+- =./target/release/nelisp -l examples/some-file.el= works end-to-end
+- =make test= unexpected count ≤ baseline 258 (= no new regression)
+- =cargo test --release --lib= green
+- =du -k build-tool/src/= shows net Rust LOC reduction matching budget
+
+* §7 References
+
+** §7.1 Parent docs
+
+- Doc 75 (Phase 9 frozen heap, "SHIPPED" 2026-05-10 but actual stage 9.5
+  is the form-shim wrapper, not real frozen heap encoding)
+- Doc 90 (Phase 2 post-ship audit, 4 hot-path deferrals)
+- Doc 89 §10.1 (hot-path policy preservation rationale)
+
+** §7.2 Memory entries
+
+- =feedback_rust_core_minimization_principle= (= 2026-04-30 user rule)
+- =feedback_define_completion_before_dispatch= (= 2026-05-09)
+- =feedback_doc90_deferrals_blocked_by_stage95= (= 2026-05-11, this
+  session's diagnostic)
+- =project_nelisp_100_percent_elisp_commitment= (= 2026-05-09 final
+  target)
+
+** §7.3 Code references
+
+- =build-tool/src/image.rs:152= — =compile_elisp_to_image= (the gap)
+- =build-tool/src/image.rs:214= — =encode_v3_with_fallback= (encoder)
+- =build-tool/src/image.rs:345= — =decode_v3_into= (decoder)
+- =build-tool/src/eval/env.rs:143= — =new_global= (STDLIB loop)
+- =build-tool/src/eval/env.rs:280= — eval loop on fallback forms
+- =build-tool/src/bin/nelisp-baker.rs:121= — baker bin main
+- =build-tool/src/lib.rs:56= — reader module gate
+- =docs/design/75-phase-9-frozen-heap.org= — Phase 9 master plan
+- =docs/design/90-phase-2-postship-audit.org= — Phase 2 deferrals
+
+** §7.4 Commit references (= future)
+
+| Stage  | Commit hash (= target) |
+|--------+------------------------|
+| §98.1  | TBD                    |
+| §98.2  | TBD                    |
+| §98.3  | TBD                    |
+| §98.4  | TBD                    |
+| §98.5  | TBD                    |

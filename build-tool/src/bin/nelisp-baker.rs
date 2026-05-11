@@ -122,6 +122,7 @@ fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let mut lisp_dir: Option<PathBuf> = None;
     let mut check_only = false;
+    let mut frozen_heap = false;
     let mut verify_fixtures: Vec<PathBuf> = Vec::new();
     let mut in_verify_mode = false;
     while let Some(arg) = args.next() {
@@ -134,6 +135,7 @@ fn main() -> ExitCode {
                 }
             },
             "--check" => check_only = true,
+            "--frozen-heap" => frozen_heap = true,
             "--verify-elisp-fixtures" => {
                 in_verify_mode = true;
                 // Remaining args are fixture paths.
@@ -143,7 +145,7 @@ fn main() -> ExitCode {
             }
             "--help" | "-h" => {
                 println!(
-                    "usage: nelisp-baker [--lisp-dir DIR] [--check]\n\
+                    "usage: nelisp-baker [--lisp-dir DIR] [--check] [--frozen-heap]\n\
                           nelisp-baker --verify-elisp-fixtures FIXTURE [FIXTURE...]"
                 );
                 return ExitCode::SUCCESS;
@@ -195,6 +197,18 @@ fn main() -> ExitCode {
     }
 
     let mut mismatches = Vec::new();
+    // Doc 98 §98.2 — `--frozen-heap' switches to the iterative driver
+    // that shares ONE `Env::new_global_no_stdlib' across all
+    // STDLIB_FILES so each emitted image carries only the diff of
+    // that file's contribution (= proper frozen-heap node-pool, no
+    // FALLBACK_FORMS section).  Without the flag, the legacy per-
+    // file form-shim path (`compile_elisp_to_image' = source stashed
+    // in FALLBACK_FORMS) is retained for backward compatibility.
+    let mut frozen_env: Option<Env> = if frozen_heap {
+        Some(Env::new_global_no_stdlib())
+    } else {
+        None
+    };
     for name in STDLIB_FILES {
         let src_path = lisp_dir.join(name);
         let img_path = lisp_dir.join(format!("{}.image", name));
@@ -205,11 +219,21 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        let bytes = match image::compile_elisp_to_image(&source) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("nelisp-baker: bake {} failed: {}", name, e);
-                return ExitCode::from(7);
+        let bytes = if let Some(env) = frozen_env.as_mut() {
+            match image::iterative_bake_one(env, &source) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("nelisp-baker: frozen-heap bake {} failed: {}", name, e);
+                    return ExitCode::from(7);
+                }
+            }
+        } else {
+            match image::compile_elisp_to_image(&source) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("nelisp-baker: bake {} failed: {}", name, e);
+                    return ExitCode::from(7);
+                }
             }
         };
         if check_only {
