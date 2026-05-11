@@ -111,31 +111,59 @@
       s))
 
   (defun anvil-server-mcp-utf8-byte-length (s)
-    "Return the UTF-8 byte length of S (pure-Elisp, no FFI).
-NeLisp `length' returns the character count for multibyte strings;
-the MCP `Content-Length' header / `send(2)' both want the byte
-count of the UTF-8 encoding.  Compute it by summing per-codepoint
-widths (1 / 2 / 3 / 4 bytes).  Avoids the libc-malloc + strlen
-round-trip an earlier FFI variant used (= heap-corruption / busy-
-loop hazard at ~20 kB JSON responses)."
-    (let ((n 0) (i 0) (len (length s)))
-      (while (< i len)
-        (let ((c (aref s i)))
-          (cond
-           ((< c #x80)    (setq n (1+ n)))
-           ((< c #x800)   (setq n (+ n 2)))
-           ((< c #x10000) (setq n (+ n 3)))
-           (t             (setq n (+ n 4)))))
-        (setq i (1+ i)))
-      n))
+    "Return the UTF-8 byte length of S.
+The MCP `Content-Length' header / `send(2)' both want the byte
+count of the UTF-8 encoding (NeLisp `length' returns char count
+for multibyte strings).  Standalone NeLisp ships a fast C
+primitive `string-bytes' that returns the byte count directly;
+host Emacs has the same primitive natively.
+
+Perf (2026-05-12): the prior pure-elisp impl walked every aref
+inside an interpreted while loop.  On the 20 kB `tools/list'
+response that was ~8 s per call — twice per request (once in
+`anvil-server-mcp-frame-encode', once again deeper in
+`emacs-network-ffi--send'), 16 s of overhead in the wire path.
+`string-bytes' completes the same computation in microseconds."
+    (if (fboundp 'string-bytes)
+        (string-bytes s)
+      ;; Fallback for runtimes without `string-bytes' (e.g. an old
+      ;; NeLisp build before the primitive landed).
+      (let ((n 0) (i 0) (len (length s)))
+        (while (< i len)
+          (let ((c (aref s i)))
+            (cond
+             ((< c #x80)    (setq n (1+ n)))
+             ((< c #x800)   (setq n (+ n 2)))
+             ((< c #x10000) (setq n (+ n 3)))
+             (t             (setq n (+ n 4)))))
+          (setq i (1+ i)))
+        n)))
 
   (defun anvil-server-mcp-frame-encode (body)
     "Emit `Content-Length: N\r\n\r\nBODY'.
 N is the UTF-8 byte length of BODY (= what the MCP wire expects).
-Byte count comes from `anvil-server-mcp-utf8-byte-length' (pure
-Elisp)."
+Retained for callers that need a single framed string; the wire
+path in this server-loop prefers `anvil-server-mcp-frame-send'
+which avoids the BODY-sized concat."
     (let ((byte-len (anvil-server-mcp-utf8-byte-length body)))
       (concat "Content-Length: " (number-to-string byte-len) "\r\n\r\n" body)))
+
+  (defun anvil-server-mcp-frame-send (proc body)
+    "Send the MCP `Content-Length: N\\r\\n\\r\\nBODY' frame to PROC.
+
+Perf (2026-05-12): `frame-encode' produces a single string by
+concatenating the header + BODY.  In NeLisp standalone `concat'
+on a 20 kB BODY takes ~3 s because the runtime walks/copies the
+source byte-by-byte.  This split-send variant writes the header
+first (tiny string), then BODY (the large existing string —
+already in memory, no copy).  Saves the 3 s concat on every wire
+response."
+    (let* ((byte-len (anvil-server-mcp-utf8-byte-length body))
+           (header (concat "Content-Length: "
+                           (number-to-string byte-len)
+                           "\r\n\r\n")))
+      (process-send-string proc header)
+      (process-send-string proc body)))
 
   ;; --- tool-module load chain (same as shell-loop default) ---
   (let* ((modules-env (anvil-runtime-server--env
@@ -305,9 +333,7 @@ zero or more complete frames, dispatches each via
                                fd (stringp response)
                                (if (stringp response) (length response) -1))))
                     (when (and (stringp response) (> (length response) 0))
-                      (let ((framed
-                             (anvil-server-mcp-frame-encode response)))
-                        (process-send-string proc framed))))
+                      (anvil-server-mcp-frame-send proc response)))
                   (setq keep-draining t)))))
            (t nil))))))
 

@@ -412,23 +412,29 @@ a Lisp string.  Returns:
 
 (defun emacs-network-ffi--utf8-byte-length (s)
   "Return the UTF-8 byte length of S as a non-negative integer.
-Pure Elisp (no FFI, no heap alloc).  NeLisp `length' returns the
-character count for multibyte strings; `send(2)' and the various
-length-prefixed wire formats want the raw byte count of the UTF-8
-encoding.  Summing per-codepoint widths (1 / 2 / 3 / 4 bytes) is
-cheap for the response sizes we deal with (<= 200 kB) and avoids
-the heap-corruption / busy-loop hazard observed with a libc-malloc
-+ strlen round-trip variant."
-  (let ((n 0) (i 0) (len (length s)))
-    (while (< i len)
-      (let ((c (aref s i)))
-        (cond
-         ((< c #x80)    (setq n (1+ n)))
-         ((< c #x800)   (setq n (+ n 2)))
-         ((< c #x10000) (setq n (+ n 3)))
-         (t             (setq n (+ n 4)))))
-      (setq i (1+ i)))
-    n))
+`send(2)' and the various length-prefixed wire formats want the raw
+byte count of the UTF-8 encoding (NeLisp `length' returns char count
+for multibyte strings).  Standalone NeLisp ships a fast C primitive
+`string-bytes' that returns the byte count directly; host Emacs has
+the same primitive natively.
+
+Perf (2026-05-12): the prior pure-elisp impl walked every aref in
+an interpreted while loop and was the second 8-9 s component of the
+wire layer on 20 kB MCP responses.  `string-bytes' completes the
+same computation in microseconds.  The pure-elisp arm survives as
+a fallback for runtimes that lack the primitive."
+  (if (fboundp 'string-bytes)
+      (string-bytes s)
+    (let ((n 0) (i 0) (len (length s)))
+      (while (< i len)
+        (let ((c (aref s i)))
+          (cond
+           ((< c #x80)    (setq n (1+ n)))
+           ((< c #x800)   (setq n (+ n 2)))
+           ((< c #x10000) (setq n (+ n 3)))
+           (t             (setq n (+ n 4)))))
+        (setq i (1+ i)))
+      n)))
 
 (defun emacs-network-ffi--send (fd str &optional flags)
   "FFI: ssize_t send(int sockfd, const void *buf, size_t len, int flags).
