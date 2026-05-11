@@ -51,11 +51,7 @@
     ;; Doc 100 §100.C — first real bi_* swap: `(truncate INT)' Int arm.
     (nelisp-cc-truncate-int
      :source-var nelisp-cc-truncate-int--source
-     :output "nelisp_truncate_int.o")
-    ;; Doc 100 Tier A wear-test #1: `(nl-int-neg N)' = `(- N)'.
-    (nelisp-cc-int-neg
-     :source-var nelisp-cc-int-neg--source
-     :output "nelisp_int_neg.o"))
+     :output "nelisp_truncate_int.o"))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding
