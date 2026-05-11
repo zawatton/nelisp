@@ -317,6 +317,30 @@ functions `((NAME . ARITY) ...)'."
                              (nelisp-phase47-compiler--parse-value
                               e env fenv defuns))
                            args))))
+   ;; (extern-call SYM ARG...) — Doc 100 §100.A call into a C-callable
+   ;; extern symbol.  SYM becomes an SHN_UNDEF entry in the output .o's
+   ;; symtab; the rel32 placeholder gets an R_X86_64_PLT32 relocation
+   ;; that the linker resolves at static-link time against another
+   ;; object (typically a Rust `.rlib' exporting `#[no_mangle] pub
+   ;; extern "C"' helpers).  Up to 6 args, all i64-shaped.
+   ((and (consp sexp) (eq (car sexp) 'extern-call))
+    (when (< (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :extern-call-needs-symbol sexp)))
+    (let* ((name (nth 1 sexp))
+           (args (nthcdr 2 sexp)))
+      (unless (symbolp name)
+        (signal 'nelisp-phase47-compiler-error
+                (list :extern-call-name-not-symbol name)))
+      (when (> (length args) (length nelisp-phase47-compiler--arg-regs))
+        (signal 'nelisp-phase47-compiler-error
+                (list :extern-call-too-many-args name (length args))))
+      (list :kind 'extern-call
+            :name name
+            :args (mapcar (lambda (a)
+                            (nelisp-phase47-compiler--parse-value
+                             a env fenv defuns))
+                          args))))
    ;; Function call (= head is a defined function name).
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
@@ -644,6 +668,8 @@ regs rdi..r9 which are caller-saved anyway)."
      (nelisp-phase47-compiler--emit-arith node buf))
     ('call
      (nelisp-phase47-compiler--emit-call node buf))
+    ('extern-call
+     (nelisp-phase47-compiler--emit-extern-call node buf))
     ('cmp
      (nelisp-phase47-compiler--emit-cmp node buf))
     ('if
@@ -708,6 +734,37 @@ Strategy:
       (nelisp-asm-x86_64-pop buf r))
     ;; call <NAME> — intra-text rel32 resolved at finalize time.
     (nelisp-asm-x86_64-call-rel32 buf name)))
+
+(defun nelisp-phase47-compiler--emit-extern-call (node buf)
+  "Emit a SysV AMD64 call to an extern symbol NODE (= Doc 100 §100.A).
+Same strategy as `--emit-call' but emits the `call' opcode bytes
+directly + records a `plt32' reloc against an external symbol
+instead of an intra-text label fixup.  The ELF writer's
+`.rela.text' machinery surfaces the reloc for `ld' to resolve
+against the final linked binary (= typically a Rust `.rlib'
+exporting matching `#[no_mangle] pub extern \"C\"' helpers).
+
+Unlike `--emit-call' the target name is NOT validated against the
+compile-time defuns alist; the parser already accepted SYM as a
+bare symbol literal under `(extern-call SYM ...)'.  Out-of-budget
+args are rejected at parse time."
+  (let* ((name (plist-get node :name))
+         (args (plist-get node :args))
+         (n (length args))
+         (regs (cl-subseq nelisp-phase47-compiler--arg-regs 0 n)))
+    ;; Push each evaluated arg.
+    (dolist (a args)
+      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-asm-x86_64-push buf 'rax))
+    ;; Pop into arg-regs in reverse (= last pushed first popped).
+    (dolist (r (reverse regs))
+      (nelisp-asm-x86_64-pop buf r))
+    ;; Emit the `call rel32' opcode (0xE8) + 4-byte zero placeholder
+    ;; + record a PLT32 reloc at the placeholder offset.  Section is
+    ;; `text' (default) since we are inside an `.text' defun body.
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf (symbol-name name) -4 'text)))
 
 ;; ---- §97.c emit — comparisons + control flow ----
 
@@ -1159,6 +1216,18 @@ drift (= a Doc 92 emitter invariant violation)."
         (nelisp-phase47-compiler--emit-defun d buf))
       (let* ((text-bytes (nelisp-asm-x86_64-resolve-fixups buf))
              (labels (nelisp-asm-x86_64-buffer-labels buf))
+             ;; Doc 100 §100.A: extract external relocs (= plt32 ones
+             ;; emitted by `--emit-extern-call').  Each surfaced reloc
+             ;; must also have a matching SHN_UNDEF symtab entry in
+             ;; the output `.o', or the ELF writer's reloc lookup
+             ;; loop signals `relocation references unknown symbol'.
+             (relocs (nelisp-asm-x86_64-extract-relocs buf))
+             (extern-names
+              (delete-dups
+               (mapcar (lambda (r) (plist-get r :symbol))
+                       (cl-remove-if-not
+                        (lambda (r) (eq (plist-get r :type) 'plt32))
+                        relocs))))
              ;; Only the user-defined defun names should appear as
              ;; GLOBAL FUNC symbols.  The control-flow helper labels
              ;; emitted by `--emit-if' / `--emit-while' / `--emit-cond'
@@ -1189,12 +1258,27 @@ drift (= a Doc 92 emitter invariant violation)."
                                  :section 'text
                                  :bind 'global
                                  :type 'func))))
-                     (reverse labels)))))
+                     (reverse labels))))
+             ;; SHN_UNDEF / STB_GLOBAL / STT_NOTYPE entries for every
+             ;; extern symbol the `.text' relocs reference.  Position-
+             ;; independent ordering keeps the debug output stable
+             ;; across runs; ld doesn't care about symtab order.
+             (extern-symbol-plists
+              (mapcar (lambda (nm)
+                        (list :name nm
+                              :value 0
+                              :size 0
+                              :section 'undef
+                              :bind 'global
+                              :type 'notype))
+                      extern-names))
+             (all-symbols (append symbols extern-symbol-plists)))
         (nelisp-elf-write-binary
          file-path
          (list :e-type 'rel
                :text text-bytes
-               :symbols symbols
+               :symbols all-symbols
+               :relocs relocs
                :machine arch))
         file-path))))
 

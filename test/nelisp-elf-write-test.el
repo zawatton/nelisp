@@ -1227,6 +1227,50 @@ Walks the Shdr table to locate `.symtab' + `.shstrtab' and reads
             (should (string-match-p "msg" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-elf-write-rel-extern-symbol ()
+  "Doc 100 §100.A: ET_REL writer accepts :section 'undef + emits PLT32 reloc.
+A symbol with `:section 'undef' becomes SHN_UNDEF / STB_GLOBAL /
+STT_NOTYPE in the symtab (= the standard linker shape for an
+unresolved extern reference).  A reloc with `:type 'plt32' against
+that symbol emits R_X86_64_PLT32 in `.rela.text', which `ld'
+resolves at static-link time."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-elf-rel-extern-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path
+           ;; .text contents (= 10 bytes): push rbp; mov rbp, rsp;
+           ;; call <ext>; pop rbp; ret.  The `call' opcode lives at
+           ;; offset 4 so the rel32 placeholder begins at offset 5.
+           (list :e-type 'rel
+                 :text (concat
+                        (unibyte-string #x55)
+                        (unibyte-string #x48 #x89 #xE5)
+                        (unibyte-string #xE8 0 0 0 0)
+                        (unibyte-string #x5D)
+                        (unibyte-string #xC3))
+                 :symbols (list
+                           (list :name "probe" :value 0 :size 10
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "ext_helper" :section 'undef
+                                 :bind 'global :type 'notype))
+                 :relocs (list
+                          (list :section 'text :offset 5
+                                :symbol "ext_helper" :type 'plt32
+                                :addend -4))))
+          (let ((rs-out (with-output-to-string
+                          (with-current-buffer standard-output
+                            (call-process "readelf" nil t nil "-r" path))))
+                (ss-out (with-output-to-string
+                          (with-current-buffer standard-output
+                            (call-process "readelf" nil t nil "-s" path)))))
+            (should (string-match-p "R_X86_64_PLT32" rs-out))
+            (should (string-match-p "ext_helper" rs-out))
+            ;; SHN_UNDEF symbol shows up as `UND' in readelf -s output.
+            (should (string-match-p "UND[ \t]+ext_helper" ss-out))))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-elf-write-test)
 
 ;;; nelisp-elf-write-test.el ends here

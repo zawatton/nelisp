@@ -692,7 +692,12 @@ BSS-VADDR may be nil when the respective sections are absent."
                                       &optional data-shndx bss-shndx)
   "Map section keyword SEC to its Shdr table index.
 DATA-SHNDX and BSS-SHNDX may be nil when the respective sections
-are absent from the rich-plist input."
+are absent from the rich-plist input.
+
+`undef' maps to SHN_UNDEF (= 0); used by Doc 100 §100.A extern
+symbol entries so callers can register an SHN_UNDEF / STB_GLOBAL /
+STT_NOTYPE symbol that the linker resolves against another
+object."
   (cond
    ((eq sec 'text)   text-shndx)
    ((eq sec 'rodata)
@@ -704,6 +709,7 @@ are absent from the rich-plist input."
    ((eq sec 'bss)
     (or bss-shndx
         (error "nelisp-elf: symbol references bss but :bss-size is nil")))
+   ((eq sec 'undef) nelisp-elf--shn-undef)
    (t (error "nelisp-elf: cannot map section %S to an shndx" sec))))
 
 (defun nelisp-elf--build-rich (plist)
