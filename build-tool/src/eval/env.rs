@@ -141,25 +141,14 @@ impl Env {
     /// Construct a globals-only environment with all built-ins
     /// installed.  Equivalent to GNU Emacs' empty-buffer top-level.
     pub fn new_global() -> Self {
-        // Phase 7 Stage 7.7.b (2026-05-08, Doc 72): bootstrap stdlib is
-        // now AOT-baked — each `lisp/*.el' has a sibling `*.image'
-        // produced by `make bake-images' (= `nelisp-baker' running
-        // `image::compile_elisp_to_image' on the source).  At startup
-        // we `image::decode_image' the embedded bytes and feed the
-        // resulting `Sexp` forms straight to `eval'.
-        //
-        // Doc 75 v3 Stage 9.5 (2026-05-10): the wire format under
-        // `decode_image' switched from v2 form-list to v3 frozen-heap
-        // (= `decode_v3_into' returns the strategy-C fallback source
-        // list, which is then read + eval'd here).  STDLIB_IMAGES
-        // entries themselves are bytes the baker wrote — env.rs is
-        // format-agnostic via `image::decode_image'.
-        //
-        // Order is identical to the pre-Stage-7.7.b STDLIB_SOURCES list
-        // (= upstream history preserved in git).  Each comment kept
-        // there is now folded into the corresponding `.el' file's
-        // own header so future readers can look there for the dep
-        // ordering rationale.
+        // Bootstrap stdlib (Doc 72 Stage 7.7.b → Doc 98 §98.3):
+        // each `lisp/*.el' has a sibling `*.image' produced by
+        // `make bake-images' (= `nelisp-baker' running
+        // `image::iterative_bake_one' on the source).  At startup
+        // `image::decode_v3_into' streams the frozen-heap globals
+        // straight into `env.globals' — no eval, no reader.  Load
+        // order mirrors the pre-Stage-7.7.b STDLIB_SOURCES list
+        // (= dep ordering rationale per-file in each `.el' header).
         const STDLIB_IMAGES: &[(&str, &[u8])] = &[
             // Doc 80 Stage 80.1 (2026-05-09): Pre-stdlib elisp
             // substrate (`cond' / `when' / `unless' / `defmacro'

@@ -1,39 +1,34 @@
-//! Phase 7 Stage 7.7.a (Doc 72) — STDLIB elisp → AOT image baker.
+//! STDLIB elisp → AOT image baker (Doc 72 Stage 7.7.a; rewritten
+//! by Doc 98 §98.2/§98.3).
 //!
-//! Reads each `lisp/*.el` listed in `STDLIB_FILES` (= 1:1 mirror of
-//! `Env::new_global`'s STDLIB_SOURCES) and emits a sibling
-//! `lisp/*.image` file produced by `image::compile_elisp_to_image`.
+//! Reads each `lisp/*.el' listed in `STDLIB_FILES' (= 1:1 mirror of
+//! `Env::new_global'`s `STDLIB_IMAGES') and emits a sibling
+//! `lisp/*.image' file produced by `image::iterative_bake_one'.
+//! The baker shares ONE `Env::new_global_no_stdlib' across all files
+//! so each emitted image carries only the diff of `env.globals'
+//! that the file added — frozen-heap node-pool with empty
+//! `FALLBACK_FORMS' section.  Production boot
+//! (`Env::new_global' → `image::decode_v3_into') streams those
+//! diffs straight into env, never touching the Rust reader.
 //!
-//! Why a dedicated binary: Stage 7.7.b will swap `Env::new_global`'s
-//! `reader::read_all(include_str!(...))` to `image::decode_image
-//! (include_bytes!(...))`, which removes the Rust reader from the
-//! production startup path.  The `.image` files must therefore exist
-//! at compile time of the main `nelisp` binary, so the bake step runs
-//! ahead of `cargo build` (= `make bake-images`, see Makefile).
-//!
-//! The baker itself uses the Rust reader internally
-//! (`compile_elisp_to_image` → `reader::read_all`).  That is fine:
-//! Stage 7.7.c gates the Rust reader behind `cfg(test, feature =
-//! "rust-reader")`, and the baker compiles with the feature on (= the
-//! baker is dev-tooling, not production runtime).
+//! `--frozen-heap` is preserved as a no-op flag for backward
+//! compatibility with CI scripts; the legacy per-file form-shim
+//! mode (= `compile_elisp_to_image' / `decode_image' / fallback
+//! re-eval) was retired together with its reader entrypoints.
 //!
 //! CLI:
 //!
-//!     nelisp-baker [--lisp-dir DIR] [--check]
+//!     nelisp-baker [--lisp-dir DIR] [--check] [--frozen-heap]
 //!     nelisp-baker --verify-elisp-fixtures FIXTURE [FIXTURE...]
 //!
-//! `--lisp-dir` defaults to the workspace's `lisp/` directory
-//! (resolved via `CARGO_MANIFEST_DIR/../lisp`).  `--check` runs the
-//! bake but compares against on-disk bytes instead of overwriting; non-
-//! zero exit means a `.el` was edited without rebaking.
+//! `--check` compares freshly-baked bytes against on-disk; non-zero
+//! exit means a `.el' was edited without rebaking.
 //!
-//! `--verify-elisp-fixtures FIXTURE [FIXTURE...]` (Doc 95 §95.e):
-//! each FIXTURE is a NELIMG v3 envelope produced by
-//! `nelisp-sexp-bake-dump-fixture' on the elisp side.  Decodes the
-//! fixture, re-encodes via `encode_v3_with_fallback', and exits non-
-//! zero on byte divergence.  This is the cross-implementation byte-
-//! identity gate for `make bake-images NELISP_BAKE_VIA_DSL=1' (= the
-//! elisp serializer and the Rust serializer agree on the wire).
+//! `--verify-elisp-fixtures' (Doc 95 §95.e) decodes elisp-produced
+//! NELIMG v3 fixtures, re-encodes via `encode_v3_with_fallback',
+//! and exits non-zero on byte divergence — the cross-implementation
+//! gate that the elisp serializer in `lisp/nelisp-sexp-dsl.el' and
+//! the Rust encoder agree on the wire.
 
 use nelisp_build_tool::eval::Env;
 use nelisp_build_tool::image;

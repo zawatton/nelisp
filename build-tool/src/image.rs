@@ -1,10 +1,11 @@
-//! NELIMG image format (Doc 75 v3 frozen-heap, post-Stage 9.6).
+//! NELIMG v3 frozen-heap image format (Doc 75; Doc 98 §98.3 retired
+//! the form-shim / fallback re-eval path).
 //!
-//! An image is a header + frozen-heap payload describing every reachable
-//! Elisp value as a deduped node graph plus a side-channel of strategy-C
-//! fallback source forms.  Decoding it reconstitutes the same value
-//! universe the Rust Elisp evaluator executes, so `bootstrap.el → image
-//! → eval` proves out without a second object model.
+//! An image is a header + frozen-heap payload describing every
+//! reachable Elisp value as a deduped node graph + the `env.globals'
+//! map.  Decoding via `decode_v3_into' streams the globals straight
+//! into a caller-owned `Env' — production boot
+//! (`Env::new_global') no longer evaluates source on the boot path.
 //!
 //! # Wire format
 //!
@@ -18,14 +19,15 @@
 //!   u32 N_FALLBACK_FORMS, [u32 src_len, utf8] × N
 //! ```
 //!
-//! ## History
+//! The `FALLBACK_FORMS' section is always zero-length on the
+//! production boot path (= `iterative_bake_one' emits empty
+//! fallback); it survives in the wire format only for the
+//! `--verify-elisp-fixtures' cross-impl byte-identity gate (Doc 95
+//! §95.e) which still exercises fallback-bearing fixtures generated
+//! by the elisp Sexp DSL.
 //!
-//! The pre-Stage-9.5 v2 form-list container (= `magic + 0x02`, payload
-//! = `[u32 len, [TAG_*, payload]] × len`) was deleted by Doc 75 Stage
-//! 9.5 once the v3 frozen-heap encoder + decoder shipped.  Stage 9.6
-//! polished the remaining v2 archaeology out of the docs.  The decoder
-//! still surfaces `BadMagic` for any caller still sitting on v2 bytes
-//! (regression-locked by `doc75_stage9_4_decode_rejects_v2_magic`).
+//! Pre-Stage-9.5 v2 form-list bytes still receive a clean `BadMagic'
+//! (regression-locked by `doc75_stage9_4_decode_rejects_v2_magic').
 
 use crate::eval::{Env, EvalError};
 use crate::eval::env::SymbolEntry;
