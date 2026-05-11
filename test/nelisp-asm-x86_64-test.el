@@ -231,6 +231,39 @@
                   (lambda (b) (nelisp-asm-x86_64-sub-reg-reg b 'rsp 'rbp)))
                  (nelisp-asm-x86_64-test--ub #x48 #x29 #xEC))))
 
+;; ---- Doc 100 §100.D bitwise + shift helpers ----
+
+(ert-deftest nelisp-asm-x86_64-or-rax-r10 ()
+  ;; `or rax, r10' MR opcode 0x09, src=r10 sets REX.R, rm=rax=0,
+  ;; reg=r10.low3=2 -> 4C 09 D0
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-or-reg-reg b 'rax 'r10)))
+                 (nelisp-asm-x86_64-test--ub #x4C #x09 #xD0))))
+
+(ert-deftest nelisp-asm-x86_64-and-rax-r10 ()
+  ;; `and rax, r10' MR 0x21 -> 4C 21 D0
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-and-reg-reg b 'rax 'r10)))
+                 (nelisp-asm-x86_64-test--ub #x4C #x21 #xD0))))
+
+(ert-deftest nelisp-asm-x86_64-xor-rax-r10 ()
+  ;; `xor rax, r10' MR 0x31 -> 4C 31 D0
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-xor-reg-reg b 'rax 'r10)))
+                 (nelisp-asm-x86_64-test--ub #x4C #x31 #xD0))))
+
+(ert-deftest nelisp-asm-x86_64-shl-rax-cl ()
+  ;; `shl rax, cl' = 48 D3 E0 (REX.W + D3 /4 ModR/M)
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-shl-rax-cl b)))
+                 (nelisp-asm-x86_64-test--ub #x48 #xD3 #xE0))))
+
+(ert-deftest nelisp-asm-x86_64-sar-rax-cl ()
+  ;; `sar rax, cl' = 48 D3 F8 (REX.W + D3 /7 ModR/M)
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-sar-rax-cl b)))
+                 (nelisp-asm-x86_64-test--ub #x48 #xD3 #xF8))))
+
 (ert-deftest nelisp-asm-x86_64-add-imm32-rax-1 ()
   ;; `add rax, 1' = 48 81 c0 01 00 00 00
   (should (equal (nelisp-asm-x86_64-test--bytes

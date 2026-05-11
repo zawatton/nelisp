@@ -616,6 +616,42 @@ DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
   "Emit `SUB DST, SRC' (MR form, 64-bit, opcode 0x29)."
   (nelisp-asm-x86_64--emit-mr buf #x29 dst src))
 
+;; ---- Doc 100 §100.D bitwise + shift helpers (= nl_jit_arith_*
+;; swap) ----
+;;
+;; Three reg-reg bitwise binops mirror ADD/SUB/MUL: each is one
+;; opcode byte in the MR form, all 3 bytes total with REX.W.
+;; Shifts are special — x86_64 SHL/SAR by register require the count
+;; in CL, so the helpers fix RAX as the destination and CL as the
+;; (implicit) count source.  Phase 47 wires the count into RCX via
+;; an existing `mov-reg-reg' before calling these.
+
+(defun nelisp-asm-x86_64-or-reg-reg (buf dst src)
+  "Emit `OR DST, SRC' (MR form, 64-bit, opcode 0x09)."
+  (nelisp-asm-x86_64--emit-mr buf #x09 dst src))
+
+(defun nelisp-asm-x86_64-and-reg-reg (buf dst src)
+  "Emit `AND DST, SRC' (MR form, 64-bit, opcode 0x21)."
+  (nelisp-asm-x86_64--emit-mr buf #x21 dst src))
+
+(defun nelisp-asm-x86_64-xor-reg-reg (buf dst src)
+  "Emit `XOR DST, SRC' (MR form, 64-bit, opcode 0x31)."
+  (nelisp-asm-x86_64--emit-mr buf #x31 dst src))
+
+(defun nelisp-asm-x86_64-shl-rax-cl (buf)
+  "Emit `SHL RAX, CL' = REX.W + D3 /4 + ModR/M=0xE0 (3 bytes).
+Logical-left shift; the count is implicit in CL (= low 8 bits of
+RCX) per x86_64 ISA."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x48 #xD3 #xE0)))
+
+(defun nelisp-asm-x86_64-sar-rax-cl (buf)
+  "Emit `SAR RAX, CL' = REX.W + D3 /7 + ModR/M=0xF8 (3 bytes).
+Arithmetic-right shift; the count is implicit in CL and the sign
+bit replicates into the high bits."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x48 #xD3 #xF8)))
+
 (defun nelisp-asm-x86_64--emit-imm32-binop (buf reg imm subop)
   "Internal: emit 64-bit `OP REG, IMM32' (opcode 0x81 with /SUBOP).
 SUBOP selects the operation: 0=ADD, 5=SUB, 7=CMP, 1=OR, 4=AND."

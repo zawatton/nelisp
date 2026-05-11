@@ -478,6 +478,82 @@ Caller is responsible for `delete-file' on cleanup."
      path)
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 13)))))
+;; ---- Doc 100 §100.D bitwise + shift grammar ----
+
+(ert-deftest nelisp-phase47-compiler/parse-bitwise-ops ()
+  "Each of `logior logand logxor' parses to a `:kind arith' node."
+  (dolist (op '(logior logand logxor))
+    (let* ((ir (nelisp-phase47-compiler--parse
+                (list 'defun 'f '(a b) (list op 'a 'b))))
+           (body (plist-get ir :body)))
+      (should (eq (plist-get body :kind) 'arith))
+      (should (eq (plist-get body :op) op)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-shift-ops ()
+  "`(shl N C)' / `(sar N C)' parse to a `:kind shift' node."
+  (dolist (op '(shl sar))
+    (let* ((ir (nelisp-phase47-compiler--parse
+                (list 'defun 'f '(n c) (list op 'n 'c))))
+           (body (plist-get ir :body)))
+      (should (eq (plist-get body :kind) 'shift))
+      (should (eq (plist-get body :op) op)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-shift-arity ()
+  "Shift with wrong arg count signals."
+  (should-error
+   (nelisp-phase47-compiler--parse '(exit (shl 1)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/e2e-defun-logior ()
+  "Doc 100 §100.D — `(logior 12 3)' = 15 via or-reg-reg inline emit."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "ior"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun ior (a b) (logior a b)) (exit (ior 12 3))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 15)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-defun-logand ()
+  "Doc 100 §100.D — `(logand 14 7)' = 6 via and-reg-reg inline emit."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "iand"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun iand (a b) (logand a b)) (exit (iand 14 7))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 6)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-defun-logxor ()
+  "Doc 100 §100.D — `(logxor 12 10)' = 6 via xor-reg-reg inline emit."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "ixor"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun ixor (a b) (logxor a b)) (exit (ixor 12 10))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 6)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-defun-shl ()
+  "Doc 100 §100.D — `(shl 1 3)' = 8 via shl rax, cl after mov rcx, r10."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "shleft"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun shleft (n c) (shl n c)) (exit (shleft 1 3))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 8)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-defun-sar ()
+  "Doc 100 §100.D — `(sar 256 4)' = 16 via sar rax, cl after mov rcx, r10."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "shright"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun shright (n c) (sar n c)) (exit (shright 256 4))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 16)))))
+
 
 (ert-deftest nelisp-phase47-compiler/e2e-defun-write-and-exit ()
   "Function with side-effect `write' + computed exit code."

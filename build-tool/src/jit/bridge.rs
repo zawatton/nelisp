@@ -34,6 +34,49 @@ use crate::eval::builtins::{as_int, require_arity};
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 
+// Doc 100 §100.D Stage 1 — on linux-x86_64 the 12 `nl_jit_arith_*'
+// trampolines live in Phase-47-compiled elisp `.o' files instead of
+// `super::arith'.  The `arith_link' submodule provides a single
+// import alias so `unified_fn_ptr's match below stays platform-
+// neutral: linux-x86_64 binds the extern symbols emitted by
+// `scripts/compile-elisp-objects.el', other targets fall back to
+// the legacy Rust trampolines.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod arith_link {
+    extern "C" {
+        pub fn nelisp_jit_add2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_sub2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_mul2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_eq2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_lt2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_gt2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_le2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_ge2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_logior2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_logand2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_logxor2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_ash(n: i64, c: i64) -> i64;
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+mod arith_link {
+    pub use super::super::arith::{
+        nl_jit_arith_add2 as nelisp_jit_add2,
+        nl_jit_arith_ash as nelisp_jit_ash,
+        nl_jit_arith_eq2 as nelisp_jit_eq2,
+        nl_jit_arith_ge2 as nelisp_jit_ge2,
+        nl_jit_arith_gt2 as nelisp_jit_gt2,
+        nl_jit_arith_le2 as nelisp_jit_le2,
+        nl_jit_arith_logand2 as nelisp_jit_logand2,
+        nl_jit_arith_logior2 as nelisp_jit_logior2,
+        nl_jit_arith_logxor2 as nelisp_jit_logxor2,
+        nl_jit_arith_lt2 as nelisp_jit_lt2,
+        nl_jit_arith_mul2 as nelisp_jit_mul2,
+        nl_jit_arith_sub2 as nelisp_jit_sub2,
+    };
+}
+
 // Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
 // `UnifiedJit' struct + `unified_jit()' OnceLock are gone now that
 // every cluster (cons / access / arith / predicate / syscall) goes
@@ -75,18 +118,18 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // nelisp-cc compiled hot paths skip this bridge entirely and
         // emit the host arithmetic instruction inline via existing
         // SSA opcodes (no `:ssa-call-primitive' detour needed).
-        "nelisp_jit_add2" => super::arith::nl_jit_arith_add2 as *const u8,
-        "nelisp_jit_sub2" => super::arith::nl_jit_arith_sub2 as *const u8,
-        "nelisp_jit_mul2" => super::arith::nl_jit_arith_mul2 as *const u8,
-        "nelisp_jit_eq2" => super::arith::nl_jit_arith_eq2 as *const u8,
-        "nelisp_jit_lt2" => super::arith::nl_jit_arith_lt2 as *const u8,
-        "nelisp_jit_gt2" => super::arith::nl_jit_arith_gt2 as *const u8,
-        "nelisp_jit_le2" => super::arith::nl_jit_arith_le2 as *const u8,
-        "nelisp_jit_ge2" => super::arith::nl_jit_arith_ge2 as *const u8,
-        "nelisp_jit_logior2" => super::arith::nl_jit_arith_logior2 as *const u8,
-        "nelisp_jit_logand2" => super::arith::nl_jit_arith_logand2 as *const u8,
-        "nelisp_jit_logxor2" => super::arith::nl_jit_arith_logxor2 as *const u8,
-        "nelisp_jit_ash" => super::arith::nl_jit_arith_ash as *const u8,
+        "nelisp_jit_add2" => arith_link::nelisp_jit_add2 as *const u8,
+        "nelisp_jit_sub2" => arith_link::nelisp_jit_sub2 as *const u8,
+        "nelisp_jit_mul2" => arith_link::nelisp_jit_mul2 as *const u8,
+        "nelisp_jit_eq2" => arith_link::nelisp_jit_eq2 as *const u8,
+        "nelisp_jit_lt2" => arith_link::nelisp_jit_lt2 as *const u8,
+        "nelisp_jit_gt2" => arith_link::nelisp_jit_gt2 as *const u8,
+        "nelisp_jit_le2" => arith_link::nelisp_jit_le2 as *const u8,
+        "nelisp_jit_ge2" => arith_link::nelisp_jit_ge2 as *const u8,
+        "nelisp_jit_logior2" => arith_link::nelisp_jit_logior2 as *const u8,
+        "nelisp_jit_logand2" => arith_link::nelisp_jit_logand2 as *const u8,
+        "nelisp_jit_logxor2" => arith_link::nelisp_jit_logxor2 as *const u8,
+        "nelisp_jit_ash" => arith_link::nelisp_jit_ash as *const u8,
         // ---- cons (5) ----
         // Phase 7.1.6.a.2 (Doc 28 §3.6.a): resolve cons names directly
         // to the `#[no_mangle] extern "C"' trampolines now that the

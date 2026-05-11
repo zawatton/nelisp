@@ -78,6 +78,25 @@ pub mod elisp_cc_spike {
         // Returns `result_slot' for caller ergonomics.  Defined in
         // `lisp/nelisp-cc-truncate-int.el'.
         fn nelisp_truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
+        // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
+        // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
+        // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
+        // declarations also pin the symbols into the test binary's
+        // link line (= the rlib's `bridge::arith_link' extern block
+        // alone gets DCE'd by `--gc-sections' before integration
+        // tests can call them).
+        pub fn nelisp_jit_add2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_sub2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_mul2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_eq2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_lt2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_gt2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_le2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_ge2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_logior2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_logand2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_logxor2(a: i64, b: i64) -> i64;
+        pub fn nelisp_jit_ash(n: i64, c: i64) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -116,4 +135,25 @@ pub mod elisp_cc_spike {
     pub unsafe fn truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp {
         nelisp_truncate_int(arg0, result_slot)
     }
+
+    /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the
+    /// 12 elisp-compiled jit/arith trampolines.  Used by
+    /// `tests/elisp_cc_jit_arith_probe.rs' to assert every member of
+    /// the `.o' archive resolves and computes the expected i64 result.
+    /// `unified_fn_ptr` in `jit/bridge.rs` resolves the same symbols
+    /// at runtime via the `arith_link' submodule, but those
+    /// references alone get DCE'd in test-bin builds; surfacing the
+    /// externs through `pub fn' here pins the link.
+    pub fn jit_add2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_add2(a, b) } }
+    pub fn jit_sub2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_sub2(a, b) } }
+    pub fn jit_mul2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_mul2(a, b) } }
+    pub fn jit_eq2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_eq2(a, b) } }
+    pub fn jit_lt2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_lt2(a, b) } }
+    pub fn jit_gt2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_gt2(a, b) } }
+    pub fn jit_le2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_le2(a, b) } }
+    pub fn jit_ge2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_ge2(a, b) } }
+    pub fn jit_logior2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_logior2(a, b) } }
+    pub fn jit_logand2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_logand2(a, b) } }
+    pub fn jit_logxor2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_logxor2(a, b) } }
+    pub fn jit_ash(n: i64, c: i64) -> i64 { unsafe { nelisp_jit_ash(n, c) } }
 }

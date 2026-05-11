@@ -66,7 +66,14 @@ fn link_elisp_cc_spike(manifest_dir: &str) {
     // Re-run when any elisp source the manifest can consume changes.
     // Keep this list in sync with `compile-elisp-objects-manifest' in
     // `scripts/compile-elisp-objects.el'.
-    let manifest_sources = ["nelisp-cc-spike-noop.el", "nelisp-cc-fact-i64.el"];
+    let manifest_sources = [
+        "nelisp-cc-spike-noop.el",
+        "nelisp-cc-fact-i64.el",
+        // Doc 100 §100.C — `bi_truncate' Int swap.
+        "nelisp-cc-truncate-int.el",
+        // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
+        "nelisp-cc-jit-arith.el",
+    ];
 
     println!("cargo:rerun-if-changed={}", script.display());
     println!("cargo:rerun-if-changed={}", compiler_src.display());

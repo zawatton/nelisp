@@ -225,12 +225,32 @@ functions `((NAME . ARITY) ...)'."
         (list :kind 'ref :var sexp
               :reg (plist-get info :reg)
               :slot (plist-get info :slot)))))
-   ;; Arithmetic with at least one non-constant operand.
-   ((and (consp sexp) (memq (car sexp) '(+ - *)))
+   ;; Arithmetic with at least one non-constant operand.  Doc 100
+   ;; §100.D extends the op set with 3 bitwise binops (logior /
+   ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
+   ;; the same MR-form emit shape so no new IR kind is needed.
+   ((and (consp sexp) (memq (car sexp) '(+ - * logior logand logxor)))
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :arith-arity (car sexp) sexp)))
     (list :kind 'arith
+          :op (car sexp)
+          :a (nelisp-phase47-compiler--parse-value
+              (nth 1 sexp) env fenv defuns)
+          :b (nelisp-phase47-compiler--parse-value
+              (nth 2 sexp) env fenv defuns)))
+   ;; Doc 100 §100.D shifts — variable count goes through CL, so the
+   ;; emit shape differs from `arith' (= an extra mov rcx, r10 before
+   ;; the shift opcode).  Only signed-extending arithmetic shift
+   ;; (`sar') and logical-left shift (`shl') are needed for the `ash'
+   ;; swap; `ash' is composed in elisp as
+   ;;   (if (< c 0) (sar n (- 0 c)) (shl n c))
+   ;; so unsigned-right (`shr') is not required.
+   ((and (consp sexp) (memq (car sexp) '(shl sar)))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :shift-arity (car sexp) sexp)))
+    (list :kind 'shift
           :op (car sexp)
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -588,6 +608,9 @@ defun bodies too so functions can call `write'."
                ('arith
                 (walk (plist-get node :a))
                 (walk (plist-get node :b)))
+               ('shift
+                (walk (plist-get node :a))
+                (walk (plist-get node :b)))
                ('call
                 (mapc #'walk (plist-get node :args)))
                ('cmp
@@ -700,6 +723,8 @@ regs rdi..r9 which are caller-saved anyway)."
                                              (plist-get node :slot)))
     ('arith
      (nelisp-phase47-compiler--emit-arith node buf))
+    ('shift
+     (nelisp-phase47-compiler--emit-shift node buf))
     ('call
      (nelisp-phase47-compiler--emit-call node buf))
     ('extern-call
@@ -747,9 +772,50 @@ chained calls where rcx held both `d' param and a scratch value)."
      ((eq op '-) (nelisp-asm-x86_64-sub-reg-reg buf 'rax 'r10))
      ((eq op '*)
       (nelisp-phase47-compiler--imul-reg-reg buf 'rax 'r10))
+     ;; Doc 100 §100.D bitwise binops.  Same MR-form shape as ADD/SUB,
+     ;; just a different opcode byte.
+     ((eq op 'logior) (nelisp-asm-x86_64-or-reg-reg buf 'rax 'r10))
+     ((eq op 'logand) (nelisp-asm-x86_64-and-reg-reg buf 'rax 'r10))
+     ((eq op 'logxor) (nelisp-asm-x86_64-xor-reg-reg buf 'rax 'r10))
      (t
       (signal 'nelisp-phase47-compiler-error
               (list :unknown-arith-op op))))))
+
+(defun nelisp-phase47-compiler--emit-shift (node buf)
+  "Emit a variable-count shift NODE; result in rax (Doc 100 §100.D).
+Strategy mirrors `--emit-arith' for the operand evaluation but
+diverges at the final op: x86_64 SHL / SAR by a variable count
+require the count to live in CL (= low 8 bits of RCX).  Sequence:
+
+  <emit B>            -> rax           (= count)
+  push rax            (save count on stack)
+  <emit A>            -> rax           (= value)
+  pop r10             (count into r10)
+  mov rcx, r10        (count into rcx so cl carries the low byte)
+  shl/sar rax, cl
+
+RCX is caller-saved per SysV and not in the arg-reg list (= same
+property `--emit-arith' relies on for r10), so it cannot alias a
+live parameter register in the surrounding defun."
+  (let ((op (plist-get node :op))
+        (a (plist-get node :a))
+        (b (plist-get node :b)))
+    ;; Compute B -> rax.
+    (nelisp-phase47-compiler--emit-value b buf)
+    ;; push rax (save B on stack).
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Compute A -> rax.
+    (nelisp-phase47-compiler--emit-value a buf)
+    ;; pop r10 (= recover B into r10).
+    (nelisp-asm-x86_64-pop buf 'r10)
+    ;; mov rcx, r10 (= count into rcx; cl = rcx[0:8]).
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'r10)
+    (cond
+     ((eq op 'shl) (nelisp-asm-x86_64-shl-rax-cl buf))
+     ((eq op 'sar) (nelisp-asm-x86_64-sar-rax-cl buf))
+     (t
+      (signal 'nelisp-phase47-compiler-error
+              (list :unknown-shift-op op))))))
 
 (defun nelisp-phase47-compiler--emit-call (node buf)
   "Emit a SysV AMD64 call to NODE's named function.
@@ -1096,7 +1162,7 @@ skipped here — they're emitted separately by the orchestrator."
       ('call
        ;; Statement-context call discards rax.
        (nelisp-phase47-compiler--emit-call ir buf))
-      ((or 'if 'while 'cond 'logic 'cmp 'arith)
+      ((or 'if 'while 'cond 'logic 'cmp 'arith 'shift)
        ;; §97.c: value-producing control-flow / comparison form
        ;; reached statement position (= `seq' child, top-level).
        ;; Emit the value compute; rax is discarded by the

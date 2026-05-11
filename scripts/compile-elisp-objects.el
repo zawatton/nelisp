@@ -51,7 +51,48 @@
     ;; Doc 100 §100.C — first real bi_* swap: `(truncate INT)' Int arm.
     (nelisp-cc-truncate-int
      :source-var nelisp-cc-truncate-int--source
-     :output "nelisp_truncate_int.o"))
+     :output "nelisp_truncate_int.o")
+    ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
+    ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
+    ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'
+    ;; resolves at link time.  Linux-x86_64 only — non-linux / non-
+    ;; x86_64 build paths keep the legacy Rust trampolines for now.
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-add2--source
+     :output "nelisp_jit_add2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-sub2--source
+     :output "nelisp_jit_sub2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-mul2--source
+     :output "nelisp_jit_mul2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-eq2--source
+     :output "nelisp_jit_eq2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-lt2--source
+     :output "nelisp_jit_lt2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-gt2--source
+     :output "nelisp_jit_gt2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-le2--source
+     :output "nelisp_jit_le2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-ge2--source
+     :output "nelisp_jit_ge2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-logior2--source
+     :output "nelisp_jit_logior2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-logand2--source
+     :output "nelisp_jit_logand2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-logxor2--source
+     :output "nelisp_jit_logxor2.o")
+    (nelisp-cc-jit-arith
+     :source-var nelisp-cc-jit-arith-ash--source
+     :output "nelisp_jit_ash.o"))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding

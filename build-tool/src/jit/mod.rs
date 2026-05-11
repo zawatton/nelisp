@@ -19,6 +19,13 @@
 //!      table).
 
 mod access;
+// Doc 100 §100.D Stage 1 — on linux-x86_64 the 12 `nl_jit_arith_*'
+// trampolines are replaced by Phase-47-compiled elisp `.o' files
+// (= `lisp/nelisp-cc-jit-arith.el' + `compile-elisp-objects.el'
+// manifest entries), so the Rust module is excluded from the build
+// on that target.  Other targets keep the legacy Rust trampolines
+// until ARM64 / non-Linux Phase 47 codegen lands (= Stage 2).
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 mod arith;
 mod box_accessor;
 // `bridge': `nl-jit-call-*' primitives that elisp wrappers in
