@@ -1,0 +1,707 @@
+#+TITLE: Doc 110 — Phase 47 f64 ABI (= xmm0 / d0 register class)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-12
+
+* Status
+
+- *State*: DRAFT 2026-05-12
+- *Parent*: Doc 100 v2 (= Phase 47 Sexp::Int ABI MVP, §100.A-D
+  SHIPPED 2026-05-11/12).  Doc 110 reuses Doc 100's 5-step swap
+  pattern verbatim; only the register class + instruction set
+  differs.
+- *Sibling track*: Doc 102-109 reserved for env.rs deletion roadmap
+  (= =project_env_rs_long_term_deletion_roadmap= memory).  Doc 110
+  is parallel capability expansion; it does not touch env.rs.
+- *Dependents (future)*: Doc 111+ if extern-call ABI gains f64
+  argument / return support beyond §3.F's narrow libm carve-out.
+- *Scope*: design only.  Implementation is 6 sub-stages (§110.A x86_64
+  register class / §110.B x86_64 arithmetic emit / §110.C x86_64
+  compare / §110.D aarch64 emit / §110.E float.rs swap / §110.F
+  math.rs swap).
+
+** Why this DRAFT exists (= 2026-05-12 audit triggered it)
+
+Post-§100.D audit (= =feedback_phase47_capability_exhausted= memory)
+found that under current Phase 47 i64-only ABI, the remaining
+=build-tool/src/jit/*.rs= and =build-tool/src/eval/builtins.rs= Rust
+LOC are *all* blocked by ABI gaps: f64 register class, extern-call
+ABI, syscall ABI, or refcount/clone semantics (pre-check #3
+blockers).  The arith.rs 12-trampoline swap (§100.D Stage 2/3) was
+the last large-block deletion available without ABI expansion.
+
+Doc 110 chooses the *cheapest unlock with the largest immediate
+deletion target*: f64 register class.  Unlocks =jit/float.rs= (20
+LOC) + =jit/math.rs= (29 LOC) = *−49 LOC Rust* after full ship.  The
+extern-call / syscall directions would yield more but cost
+substantially more elisp scaffolding (= variable-shape signature
+handling, errno plumbing).  Doc 110 is the smallest viable next swap
+capability.
+
+* §0 TL;DR
+
+** §0.1 What §100.D left unfinished
+
+§100.D Stage 2/3 (= commit ae4bb08a, 2026-05-12) shipped 12
+=nl_jit_arith_*= trampolines as Phase 47-compiled =.o= files and
+*deleted* =build-tool/src/jit/arith.rs= (= −181 LOC) on three target
+triples (linux-x86_64, linux-aarch64, macos-aarch64).
+
+But §100.D path is =extern "C" fn(i64, i64) -> i64= only — every
+trampoline argument and return rides general-purpose registers (rdi,
+rsi, rax on x86_64; x0, x1, x0 on aarch64).  The f64-shaped
+trampolines in =jit/float.rs= (8 fns) + =jit/math.rs= (3 fns) cannot
+be swapped under §100.D's ABI because:
+
+1. Their arguments arrive in xmm0/xmm1 (x86_64) or d0/d1 (aarch64),
+   not in rdi/rsi or x0/x1.  Phase 47's =arg-regs= constant
+   (=lisp/nelisp-phase47-compiler.el= line 121) is GP-only.
+2. f64 arithmetic uses SSE2 / NEON instructions that Phase 47's
+   =asm-x86_64.el= + =asm-arm64.el= helpers do not encode.  See
+   =lisp/nelisp-asm-x86_64.el:103= which explicitly states "Covers
+   only integer GPRs — xmm/ymm/zmm extension is out of scope".
+3. The mixed-return shapes (= =nl_jit_float_eq_eps= takes f64 args
+   but returns i64 in rax) require coordinated register class
+   handling within a single function body.
+
+** §0.2 The f64 ABI gap
+
+Three architectural directions exist:
+
+*Option A (extern-call only)*: keep f64 trampolines in Rust, but
+expose them via Phase 47's existing =extern-call= grammar.  Elisp
+=.o= cannot *be* the trampoline; it can only call into the Rust
+one.  Net Rust delta: 0 (= trampoline stays).  *Rejected* — defeats
+the purpose.
+
+*Option B (full f64 register class)*: teach Phase 47 about xmm /
+NEON register class.  Add f64 arg / return ABI, f64 arithmetic emit,
+f64 compare emit, f64 → i64 / i64 → f64 cast.  Elisp =.o= becomes
+the trampoline directly.  Net Rust delta: −49 LOC after §110.E + F.
+*Chosen*.
+
+*Option C (mixed: GP-stash, SSE in epilogue)*: smuggle f64 values
+through GP registers (= rax holds the i64 bit-pattern of the f64,
+then movq rax, xmm0 just before return).  This avoids most asm
+encoding work but produces obscure code paths Phase 47 readers will
+hate, and breaks for any f64 arithmetic intermediate (= you can't
+ADDSD across a GP value).  *Rejected* — would only work for
+=nl_jit_float_float= (= identity) and nothing else.
+
+** §0.3 The pragmatic incremental path
+
+Doc 110 follows Doc 100 §3 stage breakdown methodology:
+
+| Stage  | Scope                                       | Rust LOC delta  | session count |
+|--------+---------------------------------------------+-----------------+---------------|
+| §110.A | x86_64 f64 register class + MOVSD           | 0               | 1             |
+| §110.B | x86_64 f64 arithmetic emit (ADD/SUB/MUL/DIV)| 0               | 1             |
+| §110.C | x86_64 f64 compare (UCOMISD + SETcc)        | 0               | 1             |
+| §110.D | aarch64 f64 emit (full FADD/FCMP family)    | 0               | 1-2           |
+| §110.E | float.rs swap (= 8 trampolines)             | *−20*           | 1             |
+| §110.F | math.rs swap (= 3 trampolines + libm extern)| *−29*           | 1-2           |
+
+Total estimate: 6-8 sessions, *−49 LOC Rust* net algorithm-bearing,
+~+300 LOC elisp scaffolding (= one-time, shared across §110.E + F +
+future f64 work).
+
+Sessions §110.A through §110.D have Rust LOC delta = *0* — pure
+elisp scaffolding sessions.  Per CLAUDE.md =Rust 追加が許容される範囲=
+exception (c), elisp grammar additions are *not* counted against the
+"Rust additions ≤ 5 LOC" budget; only Rust additions are.  The
+scaffolding sessions remain CLAUDE.md-compliant because they add no
+Rust code.
+
+** §0.4 Scope of Doc 110
+
+In scope:
+- =extern "C" fn(f64, f64) -> f64=                  (= 4 ops: add/sub/mul/div in float.rs)
+- =extern "C" fn(f64, f64) -> i64=                  (= 4 ops: eq-eps/lt/gt/le/ge in float.rs)
+- =extern "C" fn(f64) -> f64=                       (= 3 ops in math.rs)
+- Phase 47 register class enumeration (GP vs xmm vs NEON)
+- Frozen f64 → i64 cast semantics (= IEEE 754 truncation)
+
+Out of scope (= Doc 111+):
+- =extern "C" fn(*const Sexp, ...) -> ...=  with f64 fields
+- Vector-typed args (= 128-bit xmm, 256-bit ymm)
+- f32 ABI (= keep all NeLisp floats as f64; no single-precision
+  path).  Elisp =float= is always double-precision.
+
+* §1 Background
+
+** §1.1 Why elisp `.o' cannot use f64 today
+
+Phase 47's emit pipeline picks ABI registers from a single GP-only
+table at =lisp/nelisp-phase47-compiler.el= line 121:
+
+#+begin_src elisp
+  (defconst nelisp-phase47-compiler--arg-regs
+    '((x86_64 . (rdi rsi rdx rcx r8 r9))
+      (aarch64 . (x0 x1 x2 x3 x4 x5 x6 x7))))
+#+end_src
+
+When the compiler emits =(defun fn (a b) BODY)= it walks =arg-regs=
+in order, binding parameter =a= to =rdi= and =b= to =rsi= on
+x86_64.  There is no f64-aware variant — the parameter type is
+inferred from grammar use (= =(+ a b)= treats =a=, =b= as i64), and
+the register pool offers no xmm members.
+
+Even if the compiler were taught to emit MOVSD instead of MOV, the
+arg binding step would still hand back =rdi=, and =MOVSD xmm0,
+xmm_rdi= is meaningless (= no such instruction exists; the encoding
+demands xmm0..15 source).
+
+** §1.2 The SysV AMD64 f64 ABI
+
+For the trampoline signatures in =jit/float.rs= + =jit/math.rs= on
+linux-x86_64, the relevant SysV AMD64 ABI rules are:
+
+| Element                      | Register   | Notes                          |
+|------------------------------+------------+--------------------------------|
+| 1st-8th f64 argument         | xmm0..xmm7 | Caller-saved (= scratch)       |
+| f64 return                   | xmm0       | Same register class as args    |
+| i64 return (mixed shape)     | rax        | f64 args still in xmm0/xmm1    |
+| Stack alignment at call      | 16-byte    | Per ABI                        |
+
+For =extern "C" fn(f64, f64) -> f64= specifically:
+- =a= arrives in xmm0
+- =b= arrives in xmm1
+- result returns in xmm0
+
+For =extern "C" fn(f64, f64) -> i64= (= comparison shape):
+- =a= in xmm0, =b= in xmm1
+- result returns in rax (= GP register)
+- No interaction between xmm and rax inputs — the function can do
+  UCOMISD xmm0, xmm1 then SETcc al + MOVZX rax, al.
+
+For =extern "C" fn(f64) -> f64= (= unary shape):
+- =x= in xmm0, result in xmm0
+
+** §1.3 The aarch64 AAPCS f64 ABI
+
+aarch64 vector / FP register ABI rules:
+
+| Element                      | Register | Notes                              |
+|------------------------------+----------+------------------------------------|
+| 1st-8th f64 argument         | v0..v7   | Lower 64 bits = "d0..d7"           |
+| f64 return                   | v0 (d0)  |                                    |
+| i64 return (mixed shape)     | x0       | f64 args still in d0/d1            |
+
+The =vN= register is a 128-bit SIMD/FP register; for scalar f64 we
+address its lower 64-bit slice as =dN=.  AArch64 encodes scalar f64
+arithmetic via the SIMD&FP instruction subset (= FADD/FSUB/FMUL/FDIV
+with the =.D= operand suffix in the canonical mnemonic, but the
+machine encoding identifies double via the =ftype= field).
+
+** §1.4 What 49 LOC are at stake
+
+The swap targets in detail:
+
+*=jit/float.rs= (= 20 LOC body, 11 LOC #[no_mangle] + comments)*
+
+#+begin_src rust
+  pub extern "C" fn nl_jit_float_add(a: f64, b: f64) -> f64 { a + b }
+  pub extern "C" fn nl_jit_float_sub(a: f64, b: f64) -> f64 { a - b }
+  pub extern "C" fn nl_jit_float_mul(a: f64, b: f64) -> f64 { a * b }
+  pub extern "C" fn nl_jit_float_div(a: f64, b: f64) -> f64 { a / b }
+  pub extern "C" fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64 {
+      if (a - b).abs() < 1e-15 { 1 } else { 0 }
+  }
+  pub extern "C" fn nl_jit_float_lt(a: f64, b: f64) -> i64 { (a < b) as i64 }
+  pub extern "C" fn nl_jit_float_gt(a: f64, b: f64) -> i64 { (a > b) as i64 }
+  pub extern "C" fn nl_jit_float_le(a: f64, b: f64) -> i64 { (a <= b) as i64 }
+  pub extern "C" fn nl_jit_float_ge(a: f64, b: f64) -> i64 { (a >= b) as i64 }
+#+end_src
+
+Pure compute: no allocation, no refcount, no clone, no syscall.  All
+8 fit Phase 47 swap rules once f64 ABI lands.
+
+*=jit/math.rs= (= 29 LOC body)*
+
+#+begin_src rust
+  pub extern "C" fn nl_jit_float_float(x: f64) -> f64 { x }
+  pub extern "C" fn nl_jit_float_exp(x: f64) -> f64 { x.exp() }
+  pub extern "C" fn nl_jit_float_log(x: f64) -> f64 { x.ln() }
+#+end_src
+
+=nl_jit_float_float= is identity — trivially swappable.
+=nl_jit_float_exp= / =nl_jit_float_log= delegate to Rust libm via
+=f64::exp= / =f64::ln=.  Swap requires Phase 47 =extern-call=
+grammar to support f64 args + f64 return (= §100.A extern-call is
+i64-only; §110.F extends it).  The libm symbols (=exp=, =log=) are
+already linked into the binary via std's libm dependency, so the
+=.o= can name them directly.
+
+* §2 ABI design
+
+** §2.1 Register class model
+
+Add to =lisp/nelisp-phase47-compiler.el=:
+
+#+begin_src elisp
+  (defconst nelisp-phase47-compiler--reg-class-alist
+    '((x86_64
+       (gp  . (rdi rsi rdx rcx r8 r9))
+       (xmm . (xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)))
+      (aarch64
+       (gp . (x0 x1 x2 x3 x4 x5 x6 x7))
+       (fp . (d0 d1 d2 d3 d4 d5 d6 d7))))
+    "Register class → ordered argument register list per arch.
+  CLASS is `gp' for integer / pointer args, `xmm' (x86_64) or `fp'
+  (aarch64) for f64 args.  Position N within a class names that
+  class's Nth argument; classes are independent so a function with
+  signature `(int, f64, int)' uses (rdi, xmm0, rsi) on x86_64
+  (= per SysV AMD64 §3.2.3).")
+#+end_src
+
+The existing =arg-regs= constant is retained as a thin alias for
+the =gp= class (= avoids touching i64-only call sites).  New f64
+emit goes through the class-aware lookup.
+
+** §2.2 Phase 47 grammar additions
+
+Add 7 new value / IR forms to =nelisp-phase47-compiler--parse-value=
+dispatch:
+
+*1. =(f64 LITERAL-OR-VAR)= — value form*
+
+Materialize a value as f64.  LITERAL-OR-VAR is either:
+- An elisp =float= literal (= =1e-15= etc.) — embedded in rodata,
+  loaded via =movsd xmm0, [rip + offset]=.
+- A parameter symbol already bound to an xmm register — passthrough.
+
+IR: =(:kind f64 :form 'literal :value FLOAT)= or
+=(:kind f64 :form 'param :reg SYM)=.
+
+*2-5. =(f64-add A B)=, =(f64-sub A B)=, =(f64-mul A B)=, =(f64-div A B)=*
+
+Standard f64 arithmetic.  IR: =(:kind f64-binop :op ADD|SUB|MUL|DIV
+:lhs IR :rhs IR)=.
+
+Emit (x86_64):
+#+begin_src
+  ; lhs in xmm0, rhs in xmm1 (per usual 2-input convention)
+  ADDSD xmm0, xmm1    ; (or SUBSD/MULSD/DIVSD)
+  ; result in xmm0
+#+end_src
+
+Emit (aarch64):
+#+begin_src
+  ; lhs in d0, rhs in d1
+  FADD d0, d0, d1     ; (or FSUB/FMUL/FDIV)
+  ; result in d0
+#+end_src
+
+*6. =(f64-cmp A B :op LT|GT|LE|GE|EQ-EPS)= → i64 0/1*
+
+Compare two f64 values, materialize result as i64 0/1 in rax (x86_64)
+or x0 (aarch64).
+
+IR: =(:kind f64-cmp :op OP :lhs IR :rhs IR)=.
+
+Emit (x86_64):
+#+begin_src
+  ; lhs in xmm0, rhs in xmm1
+  UCOMISD xmm0, xmm1   ; sets ZF/PF/CF per IEEE 754 unordered-aware compare
+  SETcc al             ; cc per :op (= setb / seta / setbe / setae / sete)
+  MOVZX rax, al        ; zero-extend to i64
+#+end_src
+
+For =:EQ-EPS= specifically: emit a small inline sequence
+=SUBSD xmm0, xmm1; ANDPS xmm0, [abs-mask]; COMISD xmm0, [eps-1e-15];=
+=SETB al; MOVZX rax, al= where =abs-mask= is the 64-bit mask
+=0x7FFF_FFFF_FFFF_FFFF= and =eps-1e-15= is =1e-15= as f64, both in
+rodata.
+
+Emit (aarch64):
+#+begin_src
+  ; lhs in d0, rhs in d1
+  FCMP d0, d1          ; sets NZCV flags
+  CSET x0, cc          ; condition code per :op
+#+end_src
+
+*7. =(f64-call EXTERN-NAME ARG)= — unary libm shape*
+
+Call an externally-linked f64 → f64 function (= libm =exp=, =log=).
+
+IR: =(:kind f64-call :name STRING :arg IR)=.
+
+Emit (x86_64): direct =CALL exp= via PLT32 relocation (= reuses
+§100.A SHN_UNDEF / R_X86_64_PLT32 wiring).  =xmm0= holds the arg on
+call; SysV ABI guarantees =xmm0= holds return on resume.  Local
+xmm spill before the call only required if intermediate f64
+results are live across the call (= rare for the 3-LOC libm cases).
+
+Emit (aarch64): =BL exp= via R_AARCH64_CALL26 relocation (= same as
+§100.D ARM64 path).  =d0= holds arg / return.
+
+** §2.3 Mixed-return ABI (= float-in, int-out)
+
+For =nl_jit_float_eq_eps= / =lt/gt/le/ge=: the elisp =(defun)= body
+ends with a =(f64-cmp ...)= form whose IR materializes the result in
+rax (x86_64) or x0 (aarch64).  The function epilogue then returns
+from rax/x0 (= unchanged from §100.D arith.rs return convention).
+
+No additional ABI work needed beyond §2.2.6 — the f64-cmp emit
+already terminates in a GP register, which the existing epilogue
+already returns.
+
+** §2.4 Stack alignment + spill policy
+
+§110.A-F do *not* introduce xmm spill (= the 8 float.rs + 3 math.rs
+trampolines are all ≤ 2-arg, ≤ 1-temp, fitting entirely in
+xmm0/xmm1 without spilling).  Spill is deferred to a future Doc 112
+when complex f64 expressions arrive.
+
+Stack alignment at call (= 16-byte boundary) is preserved by the
+existing Phase 47 prologue (= already enforces 16-byte alignment for
+GP-only code).  =CALL exp= within =(f64-call)= works without
+additional pad insertion.
+
+** §2.5 ELF / Mach-O / linker mechanics
+
+Reuses §100.A + §100.D infrastructure:
+- ELF: =SHN_UNDEF= entry + =R_X86_64_PLT32= relocation for libm
+  externs.  Phase 47's existing relocation emit handles the
+  encoding once symbol name + addend are filled in.
+- Mach-O 64: =N_UNDF= entry + =X86_64_RELOC_BRANCH= for libm
+  externs.  Phase 47's §100.D Mach-O writer covers this.
+- AArch64: =R_AARCH64_CALL26= for BL targets.
+
+The libm symbol names (=exp=, =log=) link against the C library
+that =bin/nelisp= already loads — no new dependency.
+
+** §2.6 Rodata for f64 literals
+
+f64 literals (= =1e-15= and the abs-mask) live in the section that
+§100.A established for elisp string rodata.  Add an 8-byte alignment
+constraint when emitting f64 entries (= existing string entries are
+1-byte aligned).  Emit:
+
+#+begin_src
+  .section .rodata
+  .align 8
+  nelisp_cc_f64_eps_1e_15:    .double 1e-15
+  nelisp_cc_f64_abs_mask:     .quad 0x7FFFFFFFFFFFFFFF
+#+end_src
+
+* §3 Stage breakdown
+
+** §3.A Stage 110.A — x86_64 f64 register class + MOVSD (~1 session)
+
+*Scope*:
+
+1. Add =nelisp-phase47-compiler--reg-class-alist= (§2.1) to
+   =lisp/nelisp-phase47-compiler.el=.
+2. Extend =nelisp-asm-x86_64.el= with xmm register encoding helpers:
+   =(asm-x86-64-movsd-reg-reg DST SRC)= (= F2 0F 10 /r),
+   =(asm-x86-64-movsd-rip-load DST DISP32)= (= F2 0F 10 /r mod=00 rm=101).
+3. Extend =nelisp-phase47-compiler--emit-value= to dispatch =(f64
+   :form 'literal)= → emit rodata entry + RIP-relative MOVSD.
+4. Add 8-byte rodata alignment support to the rodata serializer.
+
+*LOC delta*:
+- =lisp/nelisp-phase47-compiler.el=          : +50 (= reg-class + emit-value f64 arm)
+- =lisp/nelisp-asm-x86_64.el=                : +40 (= movsd helpers)
+- =lisp/nelisp-cc-f64-smoke.el=              : +20 (new, smoke test source)
+- =test/nelisp-phase47-compiler-f64-tests.el=: +60 (new, 5+ smoke tests)
+
+*Net Rust*: *0* (= no Rust changes).
+
+*Verification gate*:
+- New ert =phase47/f64-literal-load-smoke= — emit a function returning
+  =1e-15= as f64; link via host.o; exec → result equals =1e-15= bitwise.
+- =make sexp-abi-check= still green.
+- =cargo test --release --lib= unchanged.
+
+** §3.B Stage 110.B — x86_64 f64 arithmetic emit (~1 session)
+
+*Scope*:
+
+1. Add =asm-x86-64-addsd-reg-reg / subsd / mulsd / divsd= helpers to
+   =lisp/nelisp-asm-x86_64.el=.
+2. Extend =nelisp-phase47-compiler--emit-value= to dispatch
+   =(f64-binop :op ADD|SUB|MUL|DIV)= → emit ADDSD / SUBSD / MULSD /
+   DIVSD between xmm0 and xmm1 (= 2-operand convention).
+3. Extend the =(defun)= prologue to map f64-typed parameters to xmm
+   registers (= via grammar annotation =(defun fn ((a :type f64) (b
+   :type f64)) ...)= or via type inference from =(f64-binop)=
+   reachability).
+
+*LOC delta*:
+- =lisp/nelisp-asm-x86_64.el=                : +30 (= 4 binop helpers)
+- =lisp/nelisp-phase47-compiler.el=          : +40 (= parse + emit + param typing)
+- =test/nelisp-phase47-compiler-f64-tests.el*: +80 (= 4 ops × 2 cases each)
+
+*Net Rust*: *0*.
+
+*Verification gate*:
+- New erts =phase47/f64-add-smoke= etc. for each op — emit
+  =(defun fn ((a :type f64) (b :type f64)) (f64-add a b))= → call
+  with f64 args via a Rust test harness → result equals =a + b=
+  bit-for-bit.
+
+** §3.C Stage 110.C — x86_64 f64 compare + flag → GP (~1 session)
+
+*Scope*:
+
+1. Add =asm-x86-64-ucomisd-reg-reg= + =asm-x86-64-setcc-byte= +
+   =asm-x86-64-movzx-rax-al= helpers.
+2. Extend =nelisp-phase47-compiler--emit-value= to dispatch
+   =(f64-cmp :op OP)= → emit UCOMISD + SETcc + MOVZX sequence per
+   §2.2.6.
+3. =:EQ-EPS= specifically: handle abs-mask rodata entry + 2-step
+   compare (= SUBSD + ANDPS + UCOMISD against eps).
+
+*LOC delta*:
+- =lisp/nelisp-asm-x86_64.el=                : +35 (= ucomisd + setcc + movzx + andps)
+- =lisp/nelisp-phase47-compiler.el=          : +50 (= f64-cmp parse + emit + 6 cmp variants)
+- =test/nelisp-phase47-compiler-f64-tests.el*: +100 (= 6 ops × edge cases)
+
+*Net Rust*: *0*.
+
+*Verification gate*:
+- erts =phase47/f64-lt-smoke=, =/f64-eq-eps-smoke= etc. — emit
+  comparison functions, call with boundary cases (=1e-15= exactly,
+  =0.0= vs =-0.0=, NaN), assert 0/1 result.
+
+** §3.D Stage 110.D — aarch64 f64 emit (~1-2 sessions)
+
+*Scope*:
+
+1. Extend =lisp/nelisp-asm-arm64.el= with =asm-arm64-fmov-reg-reg=,
+   =asm-arm64-fadd / fsub / fmul / fdiv=, =asm-arm64-fcmp=,
+   =asm-arm64-cset-reg-cond= helpers.
+2. Extend Phase 47 emit dispatch to use AArch64 SIMD&FP encoding when
+   =nelisp-phase47-compiler--arch= is =aarch64=.
+3. Add rodata-load equivalent (= =LDR d0, [rip + disp]=-style via
+   PC-relative literal pool).
+
+*LOC delta*:
+- =lisp/nelisp-asm-arm64.el=                 : +80 (= 6+ FP helpers)
+- =lisp/nelisp-phase47-compiler.el=          : +30 (= aarch64 arm of f64 emit dispatch)
+- =test/nelisp-phase47-compiler-f64-tests.el*: +0 (= existing tests reused with arch override)
+
+*Net Rust*: *0*.
+
+*Verification gate*:
+- All §110.A-C erts pass with =NELISP_PHASE47_TARGET_ARCH=aarch64= via
+  cross-arch objdump round-trip (= same pattern as §100.D Stage D
+  ARM64 verification).
+
+** §3.E Stage 110.E — float.rs swap (~1 session, *−20 LOC*)
+
+*Scope*:
+
+1. Add =lisp/nelisp-cc-jit-float.el= with 9 =defconst= entries (= 1
+   per trampoline, mirroring §100.D arith.rs layout):
+   #+begin_src elisp
+     (defconst nelisp-cc-jit-float-add--source
+       '(defun nelisp_jit_float_add ((a :type f64) (b :type f64) :return f64)
+          (f64-add a b)))
+     ;; ...
+   #+end_src
+2. Add 9 manifest entries to =scripts/compile-elisp-objects.el=.
+3. Add 9 =#[allow(improper_ctypes)] extern "C"= declarations to
+   =build-tool/src/lib.rs= =elisp_cc_spike= module + 9
+   =pub fn float_*= wrappers (= DCE pin pattern from §100.D).
+4. Switch =build-tool/src/jit/bridge.rs= =float_link= dispatch from
+   the Rust =nl_jit_float_*= trampolines to the elisp-emitted
+   =nelisp_jit_float_*= symbols.
+5. Delete =build-tool/src/jit/float.rs= (= −20 LOC).
+6. Remove =mod float;= from =build-tool/src/jit/mod.rs=.
+7. New cargo probe test =build-tool/tests/elisp_cc_jit_float_probe.rs=
+   covering ≥ 8 cases per op.
+
+*LOC delta*:
+- =lisp/nelisp-cc-jit-float.el=            : +120 (new, 9 defconst)
+- =scripts/compile-elisp-objects.el=         : +27 (= 9 manifest entries)
+- =build-tool/src/lib.rs=                    : +30 (= 9 extern + 9 pub fn wrappers)
+- =build-tool/src/jit/bridge.rs=             : ~10 (= dispatch table swap, neutral)
+- =build-tool/src/jit/float.rs=              : *−20* (DELETED)
+- =build-tool/src/jit/mod.rs=                : −1 (mod float; gone)
+- =build-tool/tests/elisp_cc_jit_float_probe.rs=: +120 (new)
+
+*Net Rust algorithm-bearing code*: *−20 LOC* (= float.rs DELETED).
+
+*Verification gate*:
+- elisp_cc_jit_float_probe.rs 8+ PASS.
+- =cargo build --release= clean on linux-x86_64 + linux-aarch64 +
+  macos-aarch64.
+- Production smoke: =bin/nelisp eval '(+ 1.5 2.5)'= → =4.0= via the
+  elisp-compiled =nelisp_jit_float_add=.
+
+** §3.F Stage 110.F — math.rs swap (~1-2 sessions, *−29 LOC*)
+
+*Scope*:
+
+1. Extend §100.A =extern-call= grammar to accept f64 arg + f64
+   return (= add =:arg-class=, =:return-class= keywords) — see §2.2.7.
+2. Add =lisp/nelisp-cc-jit-math.el= with 3 =defconst= entries:
+   #+begin_src elisp
+     (defconst nelisp-cc-jit-math-float--source
+       '(defun nelisp_jit_float_float ((x :type f64) :return f64) x))
+     (defconst nelisp-cc-jit-math-exp--source
+       '(defun nelisp_jit_float_exp ((x :type f64) :return f64)
+          (f64-call "exp" x)))
+     (defconst nelisp-cc-jit-math-log--source
+       '(defun nelisp_jit_float_log ((x :type f64) :return f64)
+          (f64-call "log" x)))
+   #+end_src
+3. Manifest + bridge dispatch + Rust extern pin (= same pattern as
+   §110.E).
+4. Delete =build-tool/src/jit/math.rs= (= −29 LOC).
+5. Probe test =elisp_cc_jit_math_probe.rs= with 4+ cases per op
+   (= 0.0, 1.0, =-1e-15=, =1e15=, NaN propagation).
+
+*LOC delta*:
+- =lisp/nelisp-cc-jit-math.el=             : +50 (new)
+- =scripts/compile-elisp-objects.el=         : +9 (= 3 manifest entries)
+- =lisp/nelisp-phase47-compiler.el=          : +30 (= f64-call extern dispatch)
+- =build-tool/src/lib.rs=                    : +12 (= 3 extern + 3 pub fn)
+- =build-tool/src/jit/bridge.rs=             : ~5
+- =build-tool/src/jit/math.rs=               : *−29* (DELETED)
+- =build-tool/src/jit/mod.rs=                : −1
+- =build-tool/tests/elisp_cc_jit_math_probe.rs=: +100 (new)
+
+*Net Rust algorithm-bearing code*: *−29 LOC* (= math.rs DELETED).
+
+*Verification gate*:
+- elisp_cc_jit_math_probe.rs 12+ PASS.
+- libm symbols (=exp=, =log=) resolve at link time on all 3 targets.
+- Production smoke: =bin/nelisp eval '(exp 1.0)'= → =2.718...= via
+  elisp-compiled wrapper.
+
+* §4 Verification gates (cumulative)
+
+** §4.1 Per-stage gates (recap)
+
+| Stage  | Gate                                                       |
+|--------+------------------------------------------------------------|
+| §110.A | f64 literal load smoke + no Rust regression                |
+| §110.B | 4 arithmetic ops × 2 cases each, bit-exact results         |
+| §110.C | 6 compare ops × edge cases (= NaN, ±0, exact-eps)          |
+| §110.D | All §110.A-C erts green with aarch64 cross-arch override   |
+| §110.E | float.rs DELETED + probe 8+ PASS + 3-target build green    |
+| §110.F | math.rs DELETED + probe 12+ PASS + libm resolution         |
+
+** §4.2 Cumulative gate (= ship-ready, post-§110.F)
+
+After §110.F:
+
+1. =make test-all= green (= full elisp + Rust suite, including new
+   f64 erts).
+2. =cargo build --release= clean on linux-x86_64, linux-aarch64,
+   macos-aarch64.
+3. =build-tool/src/jit/float.rs= + =math.rs= no longer exist
+   (= verified via =git ls-files= grep).
+4. Production smoke chain: =bin/nelisp eval '(* 1.5 (exp 0.0))'= → =1.5=.
+5. Net Rust LOC physical reduction: *−49 LOC* (= float.rs 20 +
+   math.rs 29).  Per CLAUDE.md =Rust 削減が唯一の評価軸=, this is
+   the success metric.
+
+* §5 Risks / unknowns
+
+** §5.1 Register pressure with mixed-class function bodies
+
+Functions like =nl_jit_float_eq_eps= use xmm0 + xmm1 + rax
+simultaneously.  Phase 47's existing register allocator tracks GP
+liveness only; teaching it about xmm liveness is a structural
+change.
+
+*Mitigation*: §110.A introduces explicit per-class allocators (=
+GP allocator and xmm allocator are independent because the
+classes' register sets don't overlap).  Liveness analysis runs per
+class.  Verified bit-exact via §110.C ert tests before §110.E ships.
+
+** §5.2 NaN handling in =:EQ-EPS=
+
+=UCOMISD= sets PF on NaN inputs; the SETcc / setnp / setpe choice
+affects whether NaN compares as not-equal-but-not-less-or-greater.
+Rust's =(a - b).abs() < 1e-15= treats NaN inputs as never equal
+(= NaN comparisons return false).  The elisp emit must match.
+
+*Mitigation*: §110.C smoke tests include NaN cases.  Use
+=COMISD= + check PF + ZF = bit-exact match of Rust semantics.
+
+** §5.3 aarch64 cross-arch verification
+
+§110.D ships f64 emit but linux-x86_64 hosts cannot directly execute
+aarch64 binaries.  Same constraint as §100.D Stage 2/3 — use
+=aarch64-linux-gnu-objdump= to verify instruction encoding + a
+qemu-user smoke run (= optional, behind feature flag).
+
+*Mitigation*: identical to §100.D Stage D verification.  CI matrix
+covers actual aarch64 via release-qualification.yml.
+
+** §5.4 IEEE 754 subnormal handling
+
+Some i64↔f64 casts handle subnormals differently across CPUs.  =FTZ=
+/ =DAZ= MXCSR flags affect SSE behavior.
+
+*Mitigation*: §110.E+F do not introduce i64↔f64 casts (= float.rs
+and math.rs don't use them).  Defer to Doc 112+ if needed.
+
+** §5.5 LOC estimate accuracy
+
+§100.D Stage 2/3 estimated ~280 LOC elisp scaffolding for ARM64 +
+Mach-O; actuals were within ~15% (= confirms our methodology).  Doc
+110 estimates ~300 LOC elisp scaffolding total across §110.A-F.
+
+*Mitigation*: per-stage LOC estimate is a budget, not a promise.
+Each stage commit records actuals; deviations >25% trigger a DRAFT
+revision before the next stage.
+
+** §5.6 What if Phase 47 reveals a fundamental design issue at §110.B?
+
+E.g., the existing IR data structures (= =(:kind ...)= plists)
+don't accommodate per-node register class.
+
+*Mitigation*: §110.A is the design-validation stage — its single
+literal-load smoke proves the register class model end-to-end before
+§110.B-F commit to it.  If §110.A reveals a design issue, this DRAFT
+gets a v2 rewrite before further code lands (= same protocol as
+Doc 100 v1 → v2).
+
+* §6 Out of scope
+
+- *f32 / single-precision*: Elisp =float= is always f64 in NeLisp.
+  No path covers SSE2 single-precision SS variants (= ADDSS etc.)
+  or AArch64 single-precision FP encoding.
+
+- *Vector / SIMD operations*: 128-bit xmm vector ops (= ADDPS etc.)
+  are not introduced.  Future Doc 112+ if vector compute reaches
+  Phase 47.
+
+- *Long double / x87*: x87 80-bit FP stack is not introduced.  All
+  Doc 110 paths use SSE2 scalar double, not x87.
+
+- *f64 in Sexp pointer args*: =extern "C" fn(*const Sexp, ...)=
+  signatures where one field is f64 stay out of scope (= the Sexp
+  layout itself doesn't expose unboxed f64 fields; =Sexp::Float= is
+  read via =sexp-float-unwrap= which is a future Doc 101 grammar
+  form, not Doc 110).
+
+- *Vector loads / SIMD GP register interop*: =MOVQ rax, xmm0= and
+  similar bit-pattern transfer is not introduced (= rejected as
+  Option C in §0.2).
+
+- *Doc 102-109 env.rs deletion*: parallel track, unrelated capability
+  expansion.  Doc 110 ships independently and does not depend on or
+  block Doc 102+.
+
+* §7 References
+
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= — parent doc + 5-step
+  swap pattern (§100.C truncate-int).
+- =build-tool/src/jit/float.rs= — §3.E swap target body (20 LOC).
+- =build-tool/src/jit/math.rs= — §3.F swap target body (29 LOC).
+- =lisp/nelisp-phase47-compiler.el= line 121 — current =arg-regs=
+  constant (= GP-only) replaced by §2.1 reg-class-alist.
+- =lisp/nelisp-asm-x86_64.el= line 103 — explicit "GP only" scope
+  declaration that §110.A-C expand.
+- =feedback_phase47_capability_exhausted= memory — 2026-05-12 audit
+  that motivated this DRAFT.
+- =project_doc_100_d_stage2_3_shipped= memory — §100.D pattern that
+  §110.E + F replicate.
+- =project_env_rs_long_term_deletion_roadmap= memory — parallel
+  track confirmation (= Doc 110 does not block / dependency).
