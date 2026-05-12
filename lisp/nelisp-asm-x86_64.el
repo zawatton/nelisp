@@ -667,12 +667,16 @@ DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
 ;; once these primitives have ert byte coverage.  No callsite from
 ;; `nelisp-phase47-compiler.el' uses these helpers yet.
 
-(defun nelisp-asm-x86_64--emit-sse2-scalar-double-rr (buf opcode dst src)
-  "Internal: emit a `F2 [REX?] 0F OPCODE ModR/M' SSE2 scalar-double xmm-xmm op.
-DST is ModR/M.reg (= xmm sink for arithmetic / load); SRC is
-ModR/M.rm (= xmm source).  Shared skeleton for MOVSD / ADDSD /
-SUBSD / MULSD / DIVSD / UCOMISD register-form encodings.  REX
-elided when both regs are xmm0-xmm7."
+(defun nelisp-asm-x86_64--emit-sse2-rr (buf prefix opcode dst src)
+  "Internal: emit `PREFIX [REX?] 0F OPCODE ModR/M' SSE2 xmm-xmm op.
+PREFIX is the mandatory single-byte SSE2 prefix (= F2 scalar
+double, F3 scalar single, 66 packed double, omitted for packed
+single).  OPCODE is the second escape byte (= the opcode after
+0F).  DST is ModR/M.reg, SRC is ModR/M.rm.  REX elided when both
+xmm regs are in the xmm0-xmm7 bank.
+
+Used by MOVSD / ADDSD / SUBSD / MULSD / DIVSD (prefix=F2) and
+UCOMISD (prefix=66) to share the register-form encoding skeleton."
   (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext dst))
          (ext-b (nelisp-asm-x86_64--xmm-reg-ext src))
          (need-rex (or (= ext-r 1) (= ext-b 1)))
@@ -685,9 +689,15 @@ elided when both regs are xmm0-xmm7."
                  (nelisp-asm-x86_64--xmm-reg-low3 dst)
                  (nelisp-asm-x86_64--xmm-reg-low3 src))))
     (nelisp-asm-x86_64--append-bytes
-     buf (concat (unibyte-string #xF2)
+     buf (concat (unibyte-string prefix)
                  rex
                  (unibyte-string #x0F opcode modrm)))))
+
+(defun nelisp-asm-x86_64--emit-sse2-scalar-double-rr (buf opcode dst src)
+  "Internal: SCALAR-DOUBLE shorthand for `--emit-sse2-rr' with F2 prefix.
+Retained as a thin alias so existing MOVSD / ADDSD callers stay
+expressive.  Equivalent to `(--emit-sse2-rr buf #xF2 opcode dst src)'."
+  (nelisp-asm-x86_64--emit-sse2-rr buf #xF2 opcode dst src))
 
 (defun nelisp-asm-x86_64-movsd-reg-reg (buf dst src)
   "Emit `MOVSD DST, SRC' (xmm-to-xmm) = F2 [REX?] 0F 10 ModR/M.
@@ -820,6 +830,51 @@ Multiplies DST's f64 by SRC's f64; result in DST."
 Divides DST's f64 by SRC's f64; result in DST.  Division-by-zero
 behaviour follows IEEE 754 (= ±inf or NaN, not a trap)."
   (nelisp-asm-x86_64--emit-sse2-scalar-double-rr buf #x5E dst src))
+
+;; ---- Doc 110 §110.C f64 compare + boolean materialise ----
+;;
+;; UCOMISD sets EFLAGS by comparing the lower 64-bit f64 of two xmm
+;; regs (= QNaN-quiet variant; COMISD raises #IA on SNaN).  Note
+;; the prefix is 66 (packed-double convention) not F2 — Intel
+;; historical naming; UCOMISD still operates on scalar lower 64
+;; bits regardless of the packed-double mnemonic family.
+;;
+;; SETcc r8 stores 0 or 1 in the low byte of a GP register based
+;; on the matched condition code; we wire it only to AL because
+;; the downstream MOVZX RAX, AL widens to the 64-bit return slot
+;; expected by the §3.E `extern "C" fn(f64, f64) -> i64' shape.
+;;
+;; UCOMISD flag map (Intel SDM Vol 2A §3.2 UCOMISD):
+;;   ordered greater (a > b)  : ZF=0 PF=0 CF=0  → SETA  yields 1
+;;   ordered less    (a < b)  : ZF=0 PF=0 CF=1  → SETB  yields 1
+;;   ordered equal   (a == b) : ZF=1 PF=0 CF=0  → SETE  yields 1
+;;   unordered (NaN involved) : ZF=1 PF=1 CF=1  → all of SETB/SETBE/SETE yield 1
+;;
+;; NaN-correct compares (= match Rust `<' / `=' which treat any
+;; NaN as not-less-and-not-equal) need a 2-instruction sequence
+;; that gates on PF.  §110.A asm layer surfaces the primitive
+;; SETcc opcodes; the NaN-aware sequencing happens at the §110.C
+;; compiler emit stage (= one ert in the future
+;; `phase47-compiler-f64-cmp' family per cmp variant covers the
+;; pairwise emit decision).
+
+(defun nelisp-asm-x86_64-ucomisd-reg-reg (buf dst src)
+  "Emit `UCOMISD DST, SRC' (xmm-to-xmm) = 66 [REX?] 0F 2E ModR/M.
+Compares lower-64-bit f64 of DST vs. SRC and sets EFLAGS (= ZF,
+PF, CF; OF and SF are cleared).  Result is consumed by a following
+`nelisp-asm-x86_64-setcc-al' (= 0F 9X C0); the xmm registers
+themselves are not modified.
+
+UCOMISD flag map (Intel SDM Vol 2A §3.2 UCOMISD):
+  ordered greater (a > b)  : ZF=0 PF=0 CF=0  → SETA  yields 1
+  ordered less    (a < b)  : ZF=0 PF=0 CF=1  → SETB  yields 1
+  ordered equal   (a == b) : ZF=1 PF=0 CF=0  → SETE  yields 1
+  unordered (NaN involved) : ZF=1 PF=1 CF=1  → SETB / SETBE / SETE
+                                                each yield 1
+NaN-correct compares need the §110.C compiler emit to also test
+PF (= 1 indicates unordered) via SETNP and AND with the primary
+cc result so Rust's `(NaN OP x) == false' semantics are matched."
+  (nelisp-asm-x86_64--emit-sse2-rr buf #x66 #x2E dst src))
 
 (defun nelisp-asm-x86_64-add-reg-reg (buf dst src)
   "Emit `ADD DST, SRC' (MR form, 64-bit, opcode 0x01)."
@@ -977,22 +1032,42 @@ Used by Doc 97.c comparison + control-flow emitters."
   (nelisp-asm-x86_64--emit-mr buf #x39 dst src))
 
 (defconst nelisp-asm-x86_64--setcc-opcodes
-  '((setl  . #x9C)
-    (setg  . #x9F)
-    (setle . #x9E)
-    (setge . #x9D)
-    (sete  . #x94)
-    (setne . #x95))
+  '(;; Signed comparisons — Doc 97.c GP-int cmp result materialise.
+    (setl  . #x9C)   ; SF != OF (a < b signed)
+    (setg  . #x9F)   ; ZF=0 and SF == OF (a > b signed)
+    (setle . #x9E)   ; ZF=1 or SF != OF
+    (setge . #x9D)   ; SF == OF
+    (sete  . #x94)   ; ZF=1 (a == b)
+    (setne . #x95)   ; ZF=0 (a != b)
+    ;; Unsigned / f64 comparisons — Doc 110 §110.C UCOMISD result
+    ;; materialise.  UCOMISD sets CF/PF/ZF using unsigned-arithmetic
+    ;; conventions even for f64 inputs, so the SETB / SETA family
+    ;; reads cleanly off the EFLAGS bits per Intel SDM Vol 2A §3.2.
+    (setb  . #x92)   ; CF=1 (a < b unsigned / f64 below)
+    (setae . #x93)   ; CF=0 (a >= b unsigned / f64 above-or-equal)
+    (setbe . #x96)   ; CF=1 or ZF=1 (a <= b unsigned / f64 below-or-equal)
+    (seta  . #x97)   ; CF=0 and ZF=0 (a > b unsigned / f64 above)
+    ;; NaN-aware helpers — PF=1 indicates unordered (= NaN involved).
+    ;; Doc 110 §110.C compiler emit pairs SETNP with the primary
+    ;; cc result to mask out unordered cases per Rust comparison
+    ;; semantics.
+    (setp  . #x9A)   ; PF=1 (unordered)
+    (setnp . #x9B))  ; PF=0 (ordered)
   "Map setCC mnemonic -> second opcode byte for `0F XX' form.
 Used by `nelisp-asm-x86_64-setcc-al' to materialise comparison
-results from the flag register into AL.")
+results from the flag register into AL.  Coverage spans Doc 97.c
+signed-GP cc set + Doc 110 §110.C unsigned / f64 cc set + the
+NaN-aware PF helpers.")
 
 (defun nelisp-asm-x86_64-setcc-al (buf cc)
   "Emit `SETcc AL' = 0x0F + opcode + ModR/M C0 (3 bytes).
-CC is one of `setl' / `setg' / `setle' / `setge' / `sete' /
-`setne'.  Writes 0 or 1 into AL based on the flag register;
-caller is responsible for a prior flag-setting instruction
-(= `cmp' / `test') and for zero-extending AL afterwards via
+CC is any key in `nelisp-asm-x86_64--setcc-opcodes' — Doc 97.c
+signed cc (`setl' / `setg' / `setle' / `setge' / `sete' /
+`setne'), Doc 110 §110.C unsigned-/f64 cc (`setb' / `setae' /
+`setbe' / `seta'), or NaN helper (`setp' / `setnp').  Writes 0
+or 1 into AL based on the flag register; caller is responsible
+for a prior flag-setting instruction (= `cmp' / `ucomisd' /
+`test') and for zero-extending AL afterwards via
 `nelisp-asm-x86_64-movzx-eax-al' if a wider result is needed."
   (let ((cell (assq cc nelisp-asm-x86_64--setcc-opcodes)))
     (unless cell

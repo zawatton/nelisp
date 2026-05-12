@@ -557,6 +557,261 @@
               (nelisp-asm-x86_64-movsd-reg-reg b 'xmm0 'xmm1)))
            (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x10 #xC1))))
 
+;; ---- §110.C.1 (1) UCOMISD reg-reg ----
+;;
+;; UCOMISD switches the SSE2 prefix from F2 (= scalar double for
+;; MOVSD/ADDSD family) to 66 (= packed-double encoding family).
+;; The shared `--emit-sse2-rr' skeleton parametrises the prefix
+;; so the same ModR/M + REX policy applies.
+
+;; UCOMISD xmm0, xmm1 — 66 0F 2E C1
+;; Prefix discrimination from MOVSD/ADDSD: 0x66 (packed-double) vs
+;; the 0xF2 (scalar-double) shared by the arith family.  Confirms
+;; the parametrised `--emit-sse2-rr' skeleton doesn't silently
+;; revert to the F2 default for the comparison opcode.
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-xmm0-xmm1-prefix-66 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'xmm1)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x0F #x2E #xC1))))
+
+;; And explicitly assert NOT-F2 to pin the prefix discriminator:
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-prefix-not-f2 ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--bytes
+                (lambda (b)
+                  (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'xmm1)))))
+    (should (= (aref bytes 0) #x66))
+    (should-not (= (aref bytes 0) #xF2))))
+
+;; UCOMISD xmm1, xmm0 — 66 0F 2E C8
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-xmm1-xmm0 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm1 'xmm0)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x0F #x2E #xC8))))
+
+;; UCOMISD xmm8, xmm0 — 66 44 0F 2E C0 (= REX.R)
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-xmm8-xmm0 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm8 'xmm0)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x44 #x0F #x2E #xC0))))
+
+;; UCOMISD xmm0, xmm8 — 66 41 0F 2E C0 (= REX.B)
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-xmm0-xmm8 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'xmm8)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x41 #x0F #x2E #xC0))))
+
+;; UCOMISD xmm15, xmm15 — 66 45 0F 2E FF
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-xmm15-xmm15 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm15 'xmm15)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x45 #x0F #x2E #xFF))))
+
+;; ucomisd length invariants (4 bytes no REX, 5 with)
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-pos-4-no-rex ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'xmm1)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 4))))
+
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-pos-5-with-rex ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'xmm8)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 5))))
+
+;; Unknown reg signals
+(ert-deftest nelisp-asm-x86_64-f64/ucomisd-unknown-errors ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (should-error (nelisp-asm-x86_64-ucomisd-reg-reg b 'rax 'xmm0)
+                  :type 'nelisp-asm-x86_64-error)
+    (should-error (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'rax)
+                  :type 'nelisp-asm-x86_64-error)))
+
+;; ---- §110.C.1 (2) SETcc AL ----
+;;
+;; Each cc produces `0F 9X C0' where X is the cc-specific low
+;; nibble.  ModR/M = C0 fixes the target as AL (= ModR/M.rm = 0
+;; with mod=11; the /0 in the SDM table is don't-care for SETcc
+;; since the opcode encodes the condition itself).
+
+;; SETB AL — 0F 92 C0 (= CF=1, a < b unsigned)
+(ert-deftest nelisp-asm-x86_64-f64/setb-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'setb)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x92 #xC0))))
+
+;; SETAE AL — 0F 93 C0
+(ert-deftest nelisp-asm-x86_64-f64/setae-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'setae)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x93 #xC0))))
+
+;; SETE AL — 0F 94 C0
+(ert-deftest nelisp-asm-x86_64-f64/sete-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'sete)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x94 #xC0))))
+
+;; SETNE AL — 0F 95 C0
+(ert-deftest nelisp-asm-x86_64-f64/setne-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'setne)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x95 #xC0))))
+
+;; SETBE AL — 0F 96 C0
+(ert-deftest nelisp-asm-x86_64-f64/setbe-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'setbe)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x96 #xC0))))
+
+;; SETA AL — 0F 97 C0
+(ert-deftest nelisp-asm-x86_64-f64/seta-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'seta)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x97 #xC0))))
+
+;; SETP AL — 0F 9A C0 (= unordered helper)
+(ert-deftest nelisp-asm-x86_64-f64/setp-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'setp)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x9A #xC0))))
+
+;; SETNP AL — 0F 9B C0
+(ert-deftest nelisp-asm-x86_64-f64/setnp-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'setnp)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x9B #xC0))))
+
+;; Signed variants (= unused by f64 path but encoded for completeness)
+(ert-deftest nelisp-asm-x86_64-f64/setl-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'setl)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x9C #xC0))))
+
+(ert-deftest nelisp-asm-x86_64-f64/setge-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-setcc-al b 'setge)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x9D #xC0))))
+
+;; Unknown cc signals
+(ert-deftest nelisp-asm-x86_64-f64/setcc-unknown-errors ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (should-error (nelisp-asm-x86_64-setcc-al b 'set-bogus)
+                  :type 'nelisp-asm-x86_64-error)))
+
+;; All 12 cc keys produce 3-byte encodings
+(ert-deftest nelisp-asm-x86_64-f64/setcc-all-3-bytes ()
+  (dolist (cc '(setb setae sete setne setbe seta
+                     setp setnp setl setge setle setg))
+    (let ((b (nelisp-asm-x86_64-make-buffer)))
+      (nelisp-asm-x86_64-setcc-al b cc)
+      (should (= (nelisp-asm-x86_64-buffer-pos b) 3)))))
+
+;; ---- §110.C.1 (3) MOVZX EAX, AL (= existing helper, doc-110 reuse) ----
+;;
+;; The pre-existing `movzx-eax-al' helper (line 1091) is reused for
+;; f64 cmp result widening.  Encoding is `0F B6 C0' (3 bytes, no
+;; REX) — exploits the AMD64 rule that 32-bit writes implicitly
+;; zero-extend into the full 64-bit register, so EAX-extension
+;; automatically clears RAX[63:32].  Shorter + cheaper than the
+;; explicit `REX.W + MOVZX rax, al' encoding (4 bytes).
+
+(ert-deftest nelisp-asm-x86_64-f64/movzx-eax-al-reuse ()
+  ;; Reaffirm the existing helper produces the expected 3-byte
+  ;; encoding (= Doc 110 §110.C will call it through the same
+  ;; entry point).
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b) (nelisp-asm-x86_64-movzx-eax-al b)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #xB6 #xC0))))
+
+(ert-deftest nelisp-asm-x86_64-f64/movzx-eax-al-pos-3 ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-movzx-eax-al b)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 3))))
+
+;; ---- §110.C.1 (4) end-to-end compare sequence byte-check ----
+;;
+;; The §110.E float.rs swap will emit the canonical 3-instruction
+;; sequence for each compare op:
+;;   UCOMISD xmm0, xmm1   ; flags ← cmp(a, b)
+;;   SETcc al             ; al ← (flags match cc) ? 1 : 0
+;;   MOVZX eax, al        ; rax ← zext(al)  (= 32-bit zext implicitly
+;;                         ;  clears RAX[63:32])
+;;
+;; For `(a < b)' (= SETB), the byte sequence is:
+;;   66 0F 2E C1   ; UCOMISD xmm0, xmm1   (4 bytes)
+;;   0F 92 C0      ; SETB al              (3 bytes)
+;;   0F B6 C0      ; MOVZX eax, al        (3 bytes)
+;; = 10 bytes total.  This ert pins the canonical byte layout so a
+;; future swap that depends on it can't silently drift.
+
+(ert-deftest nelisp-asm-x86_64-f64/cmp-lt-sequence-bytes ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--bytes
+                (lambda (b)
+                  (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'xmm1)
+                  (nelisp-asm-x86_64-setcc-al        b 'setb)
+                  (nelisp-asm-x86_64-movzx-eax-al    b)))))
+    (should (= (length bytes) 10))
+    (should (equal bytes
+                   (nelisp-asm-x86_64-f64-test--ub
+                    #x66 #x0F #x2E #xC1     ; UCOMISD xmm0, xmm1
+                    #x0F #x92 #xC0          ; SETB al
+                    #x0F #xB6 #xC0)))))     ; MOVZX eax, al
+
+;; Same shape with SETA (= a > b ordered)
+(ert-deftest nelisp-asm-x86_64-f64/cmp-gt-sequence-bytes ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--bytes
+                (lambda (b)
+                  (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'xmm1)
+                  (nelisp-asm-x86_64-setcc-al        b 'seta)
+                  (nelisp-asm-x86_64-movzx-eax-al    b)))))
+    (should (= (length bytes) 10))
+    (should (equal bytes
+                   (nelisp-asm-x86_64-f64-test--ub
+                    #x66 #x0F #x2E #xC1
+                    #x0F #x97 #xC0
+                    #x0F #xB6 #xC0)))))
+
+;; NaN-aware sequence preview for `(a == b)' Rust semantics:
+;;   UCOMISD xmm0, xmm1   ; flags
+;;   SETE al              ; al = ZF
+;;   SETNP cl             ; (= not implemented; §110.C compiler emit
+;;                          will need an AL/CL combo via a NaN mask)
+;; For the asm layer we only ensure each individual primitive emits
+;; correctly; the masking logic lives in the compiler stage.
+
+(ert-deftest nelisp-asm-x86_64-f64/setnp-sequence-bytes ()
+  ;; UCOMISD + SETNP al sequence — gives 1 when ordered (no NaN).
+  ;; Used in NaN-aware compare to AND with the primary cc result.
+  (let ((bytes (nelisp-asm-x86_64-f64-test--bytes
+                (lambda (b)
+                  (nelisp-asm-x86_64-ucomisd-reg-reg b 'xmm0 'xmm1)
+                  (nelisp-asm-x86_64-setcc-al        b 'setnp)))))
+    (should (= (length bytes) 7))
+    (should (equal bytes
+                   (nelisp-asm-x86_64-f64-test--ub
+                    #x66 #x0F #x2E #xC1
+                    #x0F #x9B #xC0)))))
+
 (provide 'nelisp-asm-x86_64-f64-test)
 
 ;;; nelisp-asm-x86_64-f64-test.el ends here
