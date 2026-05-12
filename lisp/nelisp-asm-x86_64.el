@@ -120,6 +120,44 @@ Signals `nelisp-asm-x86_64-error' if REG is unknown."
   "Return 1 when REG is r8-r15 (= REX.R / REX.B set), else 0."
   (if (>= (nelisp-asm-x86_64--reg-num reg) 8) 1 0))
 
+;; ---- Doc 110 §110.A xmm register table (= SSE2 / f64 ABI) ----
+;;
+;; Kept as a SEPARATE table from the GP `--reg' alist so that the
+;; type discipline holds: passing an xmm symbol to a GP helper (or
+;; vice versa) signals `:unknown-register' immediately instead of
+;; emitting silently-wrong encoding bytes.  Encoding is identical to
+;; the GP scheme — low 3 bits land in ModR/M.reg / .rm, bit 3 lights
+;; up REX.R / REX.B.  REX.W is irrelevant for xmm ops (the xmm
+;; register width is fixed at 128 bits regardless of REX.W).
+
+(defconst nelisp-asm-x86_64--xmm-reg
+  '((xmm0 . 0)  (xmm1 . 1)  (xmm2 . 2)  (xmm3 . 3)
+    (xmm4 . 4)  (xmm5 . 5)  (xmm6 . 6)  (xmm7 . 7)
+    (xmm8 . 8)  (xmm9 . 9)  (xmm10 . 10) (xmm11 . 11)
+    (xmm12 . 12) (xmm13 . 13) (xmm14 . 14) (xmm15 . 15))
+  "x86_64 SSE / xmm 128-bit register encoding map.
+Doc 110 §110.A f64 ABI groundwork.  Each cell is `(NAME . N)' where
+N is the 4-bit xmm register number: low 3 bits go in ModR/M.reg /
+.rm, bit 3 in REX.R / REX.B.")
+
+(defun nelisp-asm-x86_64--xmm-reg-num (reg)
+  "Return the 4-bit xmm register number for REG.
+Signals `nelisp-asm-x86_64-error' with key `:unknown-xmm-register'
+when REG is not in `nelisp-asm-x86_64--xmm-reg'."
+  (let ((cell (assq reg nelisp-asm-x86_64--xmm-reg)))
+    (unless cell
+      (signal 'nelisp-asm-x86_64-error
+              (list :unknown-xmm-register reg)))
+    (cdr cell)))
+
+(defsubst nelisp-asm-x86_64--xmm-reg-low3 (reg)
+  "Return xmm REG's low 3 bits (= ModR/M.reg / .rm field)."
+  (logand (nelisp-asm-x86_64--xmm-reg-num reg) 7))
+
+(defsubst nelisp-asm-x86_64--xmm-reg-ext (reg)
+  "Return 1 when xmm REG is xmm8-xmm15 (= REX.R / REX.B set), else 0."
+  (if (>= (nelisp-asm-x86_64--xmm-reg-num reg) 8) 1 0))
+
 ;; ---- REX prefix + ModR/M (= §92.a (3) + (4)) ----
 
 (defsubst nelisp-asm-x86_64--rex (w r x b)
@@ -607,6 +645,133 @@ DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
                  (nelisp-asm-x86_64--reg-low3 base))))
     (nelisp-asm-x86_64--append-bytes
      buf (unibyte-string rex #x89 modrm (logand disp #xFF)))))
+
+;; ---- Doc 110 §110.A f64 register-class MOVSD helpers ----
+;;
+;; SSE2 scalar-double `MOVSD' instruction in three forms used by the
+;; §110.A-F f64 ABI roll-out: register-to-register move, load from
+;; `[base + disp8]', store to `[base + disp8]', and load from
+;; `[rip + disp32]' (for f64 literals embedded in `.rodata').
+;;
+;; All forms share the `F2 0F 10 /r' (load) or `F2 0F 11 /r' (store)
+;; opcode skeleton.  The mandatory `F2' prefix discriminates SSE2
+;; scalar-double from the other variants of `MOV[A-Z]+'.  REX.W is
+;; *not* set (xmm width is fixed at 128 bits; REX.W has no effect on
+;; xmm operations).  REX.R / REX.B turn on only when an xmm dst /
+;; src is in `xmm8-xmm15' or a GP base is in `r8-r15'.  When all
+;; extension bits would be zero the REX byte is elided entirely (= 4
+;; bytes for reg-reg vs. 5 with REX, etc.).
+;;
+;; The §110.A.1 set covers the asm-layer encodings only; the Phase
+;; 47 compiler's `(f64 ...)' parse and emit dispatch land in §110.B
+;; once these primitives have ert byte coverage.  No callsite from
+;; `nelisp-phase47-compiler.el' uses these helpers yet.
+
+(defun nelisp-asm-x86_64-movsd-reg-reg (buf dst src)
+  "Emit `MOVSD DST, SRC' (xmm-to-xmm) = F2 [REX?] 0F 10 ModR/M.
+4 bytes when both regs are xmm0-xmm7, 5 with REX.  DST and SRC
+must both be xmm symbols (= members of
+`nelisp-asm-x86_64--xmm-reg')."
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext dst))
+         (ext-b (nelisp-asm-x86_64--xmm-reg-ext src))
+         (need-rex (or (= ext-r 1) (= ext-b 1)))
+         (rex (if need-rex
+                  (unibyte-string
+                   (nelisp-asm-x86_64--rex 0 ext-r 0 ext-b))
+                ""))
+         (modrm (nelisp-asm-x86_64--modrm
+                 3
+                 (nelisp-asm-x86_64--xmm-reg-low3 dst)
+                 (nelisp-asm-x86_64--xmm-reg-low3 src))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (concat (unibyte-string #xF2)
+                 rex
+                 (unibyte-string #x0F #x10 modrm)))))
+
+(defun nelisp-asm-x86_64-movsd-xmm-mem-disp8 (buf dst base disp)
+  "Emit `MOVSD DST, QWORD PTR [BASE + DISP]' = F2 [REX?] 0F 10 ModR/M disp8.
+DST is an xmm register; BASE is a GP register that must not be
+`rsp' / `r12' (= SIB-required encoding, not modelled here).  DISP
+must fit in a signed 8-bit value [-128, 127].  5 bytes without REX,
+6 with."
+  (when (memq base '(rsp r12))
+    (signal 'nelisp-asm-x86_64-error
+            (list :movsd-rsp-r12-base-needs-sib base)))
+  (unless (and (integerp disp) (<= -128 disp 127))
+    (signal 'nelisp-asm-x86_64-error
+            (list :disp8-out-of-range disp)))
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext dst))
+         (ext-b (nelisp-asm-x86_64--reg-ext base))
+         (need-rex (or (= ext-r 1) (= ext-b 1)))
+         (rex (if need-rex
+                  (unibyte-string
+                   (nelisp-asm-x86_64--rex 0 ext-r 0 ext-b))
+                ""))
+         (modrm (nelisp-asm-x86_64--modrm
+                 1
+                 (nelisp-asm-x86_64--xmm-reg-low3 dst)
+                 (nelisp-asm-x86_64--reg-low3 base))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (concat (unibyte-string #xF2)
+                 rex
+                 (unibyte-string #x0F #x10 modrm (logand disp #xFF))))))
+
+(defun nelisp-asm-x86_64-movsd-mem-disp8-xmm (buf base disp src)
+  "Emit `MOVSD QWORD PTR [BASE + DISP], SRC' = F2 [REX?] 0F 11 ModR/M disp8.
+Reverse of `movsd-xmm-mem-disp8' — stores SRC's lower 64 bits at
+the memory location.  Same SIB / disp8 / REX rules apply.  Used to
+spill an xmm value to a `[rbp + disp]' stack slot."
+  (when (memq base '(rsp r12))
+    (signal 'nelisp-asm-x86_64-error
+            (list :movsd-rsp-r12-base-needs-sib base)))
+  (unless (and (integerp disp) (<= -128 disp 127))
+    (signal 'nelisp-asm-x86_64-error
+            (list :disp8-out-of-range disp)))
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext src))
+         (ext-b (nelisp-asm-x86_64--reg-ext base))
+         (need-rex (or (= ext-r 1) (= ext-b 1)))
+         (rex (if need-rex
+                  (unibyte-string
+                   (nelisp-asm-x86_64--rex 0 ext-r 0 ext-b))
+                ""))
+         (modrm (nelisp-asm-x86_64--modrm
+                 1
+                 (nelisp-asm-x86_64--xmm-reg-low3 src)
+                 (nelisp-asm-x86_64--reg-low3 base))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (concat (unibyte-string #xF2)
+                 rex
+                 (unibyte-string #x0F #x11 modrm (logand disp #xFF))))))
+
+(defun nelisp-asm-x86_64-movsd-xmm-rip-disp32 (buf dst disp32)
+  "Emit `MOVSD DST, QWORD PTR [RIP + DISP32]' = F2 [REX?] 0F 10 ModR/M disp32.
+Loads 8 bytes at the address `RIP + DISP32', where RIP is the
+address of the NEXT instruction (= 4 bytes past the disp32 itself).
+DST is an xmm register.  DISP32 must fit signed 32-bit.  Callers
+that need a forward fixup to an as-yet-unresolved `.rodata' offset
+should pass DISP32 = 0 and use the buffer's reloc / fixup
+machinery to patch the disp32 slot post-finalize."
+  (unless (and (integerp disp32) (<= (- (ash 1 31)) disp32 (1- (ash 1 31))))
+    (signal 'nelisp-asm-x86_64-error
+            (list :disp32-out-of-range disp32)))
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext dst))
+         (need-rex (= ext-r 1))
+         (rex (if need-rex
+                  (unibyte-string
+                   (nelisp-asm-x86_64--rex 0 ext-r 0 0))
+                ""))
+         ;; mod=00, reg=dst.low3, rm=101 (= RIP-relative in 64-bit
+         ;; mode; the rm=101+mod=00 combination is documented in
+         ;; Intel SDM Vol 2A §2.2.1.6 "RIP-Relative Addressing").
+         (modrm (nelisp-asm-x86_64--modrm
+                 0
+                 (nelisp-asm-x86_64--xmm-reg-low3 dst)
+                 5)))
+    (nelisp-asm-x86_64--append-bytes
+     buf (concat (unibyte-string #xF2)
+                 rex
+                 (unibyte-string #x0F #x10 modrm)
+                 (nelisp-asm-x86_64--imm32-bytes disp32)))))
 
 (defun nelisp-asm-x86_64-add-reg-reg (buf dst src)
   "Emit `ADD DST, SRC' (MR form, 64-bit, opcode 0x01)."
