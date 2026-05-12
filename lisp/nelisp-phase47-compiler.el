@@ -124,6 +124,14 @@ Equals Ehdr(64) + Phdr(56) = 120 = 0x78.")
 Doc 97.b supports up to 6 args; stack spill for 7+ args is
 deferred to Doc 97.c.")
 
+(defconst nelisp-phase47-compiler--xmm-arg-regs
+  '(xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)
+  "SysV AMD64 / aarch64 floating-point argument registers (positional 1..8).
+Doc 110 §110.A f64 ABI groundwork.  Names map to the x86_64 xmm
+register table; aarch64 emit translates to d0..d7 via a parallel
+table when that arch lands the f64 emit pass (Doc 110 §110.D).
+Doc 110 MVP supports up to 8 f64 args.")
+
 (defvar nelisp-phase47-compiler--label-counter 0
   "Parse-time monotonic counter for control-flow label uniqueness.
 Bound fresh to 0 by `nelisp-phase47-compile-sexp' before parsing
@@ -223,14 +231,17 @@ functions `((NAME . ARITY) ...)'."
                 (list :free-symbol sexp
                       :env-keys (mapcar #'car env)
                       :params (mapcar #'car fenv))))
-      ;; FENV cell is `(sym . (:reg R :slot S))' so the ref node
-      ;; carries both the incoming arg-reg (= used at call sites
-      ;; for documentation) and the rbp-relative spill slot (=
-      ;; used by `--emit-value' to read the stable copy).
+      ;; FENV cell is `(sym . (:reg R :slot S :class CLASS))' so the
+      ;; ref node carries the incoming arg-reg (= used at call sites
+      ;; for documentation), the rbp-relative spill slot (= used
+      ;; by `--emit-value' / `--emit-f64-ref-load' to read the
+      ;; stable copy) and the reg class (= gp or f64, picks the
+      ;; load instruction MOV vs MOVSD).
       (let ((info (cdr pcell)))
         (list :kind 'ref :var sexp
               :reg (plist-get info :reg)
-              :slot (plist-get info :slot)))))
+              :slot (plist-get info :slot)
+              :class (or (plist-get info :class) 'gp)))))
    ;; Arithmetic with at least one non-constant operand.  Doc 100
    ;; §100.D extends the op set with 3 bitwise binops (logior /
    ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
@@ -240,6 +251,22 @@ functions `((NAME . ARITY) ...)'."
       (signal 'nelisp-phase47-compiler-error
               (list :arith-arity (car sexp) sexp)))
     (list :kind 'arith
+          :op (car sexp)
+          :a (nelisp-phase47-compiler--parse-value
+              (nth 1 sexp) env fenv defuns)
+          :b (nelisp-phase47-compiler--parse-value
+              (nth 2 sexp) env fenv defuns)))
+   ;; Doc 110 §110.E.1 f64 arithmetic — flat binop form only
+   ;; (`f64-add' / `f64-sub' / `f64-mul' / `f64-div').  Each arm
+   ;; is `(f64-OP A B)' where A, B are themselves value-producing
+   ;; IR (= ref to f64 param at MVP; nested binops are deferred
+   ;; until xmm spill machinery lands in Doc 112).  Result class
+   ;; = f64; produced in xmm0 by `--emit-f64-binop'.
+   ((and (consp sexp) (memq (car sexp) '(f64-add f64-sub f64-mul f64-div)))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :f64-binop-arity (car sexp) sexp)))
+    (list :kind 'f64-binop
           :op (car sexp)
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -521,32 +548,66 @@ Returns one of:
                          body new-env fenv defuns)))
           (list :kind 'let :var var :value val :body body-ir)))))
    ;; (defun NAME (PARAMS...) BODY)
+   ;;
+   ;; Doc 110 §110.E.1: PARAMS accept either bare symbols (= GP /
+   ;; i64 class, existing) or annotated plists `(SYM :type f64)'
+   ;; (= xmm register class).  Mixed-class defuns are rejected at
+   ;; MVP scope — all params must share one class.  The defun's
+   ;; class governs which reg pool the prologue allocates from
+   ;; (`--arg-regs' for GP, `--xmm-arg-regs' for f64).
    ((and (consp sexp) (eq (car sexp) 'defun))
     (unless (>= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :defun-arity sexp)))
     (let* ((name (nth 1 sexp))
-           (params (nth 2 sexp))
+           (param-forms (nth 2 sexp))
            (body (nth 3 sexp))
-           (arity (length params)))
-      (when (> arity (length nelisp-phase47-compiler--arg-regs))
+           (arity (length param-forms))
+           ;; Extract (sym . class) pairs.  Class is `gp' for bare
+           ;; symbols (= legacy / i64) and `f64' for `(SYM :type f64)'.
+           (param-pairs
+            (mapcar
+             (lambda (p)
+               (cond
+                ((symbolp p) (cons p 'gp))
+                ((and (consp p) (= (length p) 3)
+                      (symbolp (car p))
+                      (eq (nth 1 p) :type)
+                      (memq (nth 2 p) '(gp f64)))
+                 (cons (car p) (nth 2 p)))
+                (t (signal 'nelisp-phase47-compiler-error
+                           (list :defun-param-shape p)))))
+             param-forms))
+           (params (mapcar #'car param-pairs))
+           (classes (mapcar #'cdr param-pairs))
+           (uniform-class (car classes)))
+      (unless (cl-every (lambda (c) (eq c uniform-class)) classes)
         (signal 'nelisp-phase47-compiler-error
-                (list :defun-too-many-params name arity)))
-      (unless (cl-every #'symbolp params)
-        (signal 'nelisp-phase47-compiler-error
-                (list :defun-params-not-symbols params)))
-      (let* ((param-regs (cl-subseq
-                          nelisp-phase47-compiler--arg-regs 0 arity))
-             ;; FENV: each param maps to plist `(:reg R :slot S)'
+                (list :defun-mixed-param-classes name classes)))
+      (let* ((max-arity
+              (length (if (eq uniform-class 'f64)
+                          nelisp-phase47-compiler--xmm-arg-regs
+                        nelisp-phase47-compiler--arg-regs))))
+        (when (> arity max-arity)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :defun-too-many-params name arity uniform-class))))
+      (let* ((reg-pool (if (eq uniform-class 'f64)
+                           nelisp-phase47-compiler--xmm-arg-regs
+                         nelisp-phase47-compiler--arg-regs))
+             (param-regs (cl-subseq reg-pool 0 arity))
+             ;; FENV: each param maps to plist
+             ;;   `(:reg R :slot S :class CLASS)'
              ;; where SLOT is the param's 0-based index, used by
              ;; `--emit-value' to compute the rbp-relative spill
-             ;; offset `-8*(slot+1)'.
+             ;; offset `-8*(slot+1)'.  CLASS gates which load
+             ;; instruction the `ref' emitter uses (`mov' for gp,
+             ;; `movsd' for f64).
              (new-fenv
               (let ((idx -1))
                 (cl-mapcar
                  (lambda (p r)
                    (setq idx (1+ idx))
-                   (cons p (list :reg r :slot idx)))
+                   (cons p (list :reg r :slot idx :class uniform-class)))
                  params param-regs)))
              ;; Body is a value-producing expression (= implicit return).
              (body-ir (nelisp-phase47-compiler--parse-value
@@ -555,6 +616,7 @@ Returns one of:
               :name name
               :params params
               :param-regs param-regs
+              :param-class uniform-class
               :body body-ir))))
    ;; Bare call in statement position (= side-effect; value discarded).
    ((and (consp sexp) (symbolp (car sexp))
@@ -722,12 +784,12 @@ IMM9 is a signed unscaled byte offset in the range -256..255."
 
 (defun nelisp-phase47-compiler--emit-ref-load (buf slot)
   "Emit `mov rax, [rbp - 8*(SLOT+1)]' (= 4 bytes, fixed).
-Used by `:kind ref' to load a spilled parameter off the local
-frame.  Encoding: REX.W (= 0x48), MOV r64, r/m64 opcode (= 0x8B),
-ModR/M = mod=01 reg=000 (rax) rm=101 (rbp) = 0x45, then disp8 =
-(- 8*(SLOT+1)) as a signed byte.  SLOT ranges over 0..5 so the
-displacement is always in disp8 range; signals if SLOT is out of
-range for the current Doc 97 arity cap."
+Used by `:kind ref' (GP class) to load a spilled parameter off
+the local frame.  Encoding: REX.W (= 0x48), MOV r64, r/m64 opcode
+(= 0x8B), ModR/M = mod=01 reg=000 (rax) rm=101 (rbp) = 0x45, then
+disp8 = (- 8*(SLOT+1)) as a signed byte.  SLOT ranges over 0..5
+so the displacement is always in disp8 range; signals if SLOT is
+out of range for the current Doc 97 arity cap."
   (unless (and (integerp slot) (<= 0 slot 5))
     (signal 'nelisp-phase47-compiler-error
             (list :ref-slot-out-of-range slot)))
@@ -739,12 +801,86 @@ range for the current Doc 97 arity cap."
       (nelisp-asm-x86_64-emit-bytes
        buf (unibyte-string #x48 #x8B #x45 disp8)))))
 
+(defun nelisp-phase47-compiler--emit-f64-ref-load (buf slot xmm-dst)
+  "Emit `movsd XMM-DST, [rbp - 8*(SLOT+1)]' for an f64-class ref.
+Doc 110 §110.E.1 — loads a spilled f64 parameter from the local
+frame into XMM-DST.  Mirrors `--emit-ref-load' shape but uses
+MOVSD instead of MOV, and a caller-supplied xmm destination so
+the binop emitter can place leaves into xmm0 / xmm1
+independently.  SLOT must be in 0..7 (= f64 ABI arity cap)."
+  (unless (and (integerp slot) (<= 0 slot 7))
+    (signal 'nelisp-phase47-compiler-error
+            (list :f64-ref-slot-out-of-range slot)))
+  (when (eq nelisp-phase47-compiler--arch 'aarch64)
+    (signal 'nelisp-phase47-compiler-error
+            (list :f64-ref-load-aarch64-not-yet :slot slot)))
+  (let ((disp (- (* 8 (1+ slot)))))
+    (nelisp-asm-x86_64-movsd-xmm-mem-disp8 buf xmm-dst 'rbp disp)))
+
+(defun nelisp-phase47-compiler--emit-f64-binop (node buf)
+  "Emit a flat f64-class binop NODE (Doc 110 §110.E.1).
+Result lands in xmm0 — bypassing the rax convention used by the
+GP `--emit-value' contract.  Strategy at MVP scope is `flat-only':
+
+  1. Evaluate B into xmm1 directly (= MUST be a leaf ref or
+     literal; nested binops would clobber xmm0 mid-flight and
+     are rejected with a clear signal).
+  2. Evaluate A into xmm0 directly (= same constraint).
+  3. ADDSD/SUBSD/MULSD/DIVSD xmm0, xmm1 → result in xmm0.
+
+This avoids the xmm spill / fill dance the GP path uses
+(`push rax; ...; pop r10') because xmm has no single-byte push
+opcode + would force a 16-byte stack alignment per call.  Doc
+112 (= xmm spill) re-enables nested binops; until then the
+parser must reject anything that would force xmm spill."
+  (let ((op (plist-get node :op))
+        (a (plist-get node :a))
+        (b (plist-get node :b)))
+    (when (eq nelisp-phase47-compiler--arch 'aarch64)
+      (signal 'nelisp-phase47-compiler-error
+              (list :f64-binop-aarch64-not-yet op)))
+    (nelisp-phase47-compiler--emit-f64-leaf-into b buf 'xmm1)
+    (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
+    (cond
+     ((eq op 'f64-add)
+      (nelisp-asm-x86_64-addsd-reg-reg buf 'xmm0 'xmm1))
+     ((eq op 'f64-sub)
+      (nelisp-asm-x86_64-subsd-reg-reg buf 'xmm0 'xmm1))
+     ((eq op 'f64-mul)
+      (nelisp-asm-x86_64-mulsd-reg-reg buf 'xmm0 'xmm1))
+     ((eq op 'f64-div)
+      (nelisp-asm-x86_64-divsd-reg-reg buf 'xmm0 'xmm1))
+     (t
+      (signal 'nelisp-phase47-compiler-error
+              (list :unknown-f64-binop op))))))
+
+(defun nelisp-phase47-compiler--emit-f64-leaf-into (node buf xmm-dst)
+  "Emit code that places f64-class NODE into XMM-DST.
+MVP flat-only constraint: NODE must be `:kind ref' with `:class
+f64' (= a direct f64 parameter reference).  Nested f64-binops
+are rejected so the xmm0/xmm1 register schedule stays trivial
+until xmm spill machinery lands."
+  (let ((kind (plist-get node :kind)))
+    (cond
+     ((and (eq kind 'ref) (eq (plist-get node :class) 'f64))
+      (nelisp-phase47-compiler--emit-f64-ref-load
+       buf (plist-get node :slot) xmm-dst))
+     ((eq kind 'f64-binop)
+      (signal 'nelisp-phase47-compiler-error
+              (list :nested-f64-binop-needs-doc-112 node)))
+     (t
+      (signal 'nelisp-phase47-compiler-error
+              (list :f64-leaf-shape-unsupported kind node))))))
+
 (defun nelisp-phase47-compiler--emit-value (node buf)
-  "Emit code that computes value NODE into rax.
+  "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
 NODE is one of `imm' / `ref' / `arith' / `call' / `cmp' / `if' /
-`while' / `cond' / `logic'.  All variants preserve callee-saved
-  registers (= we use only rax + r10 + r11 for scratch and the arg
-regs rdi..r9 which are caller-saved anyway)."
+`while' / `cond' / `logic' / `f64-binop'.  Most variants preserve
+callee-saved registers (= we use only rax + r10 + r11 for scratch
+and the arg regs rdi..r9 which are caller-saved anyway).
+Doc 110 §110.E.1 f64 nodes (`f64-binop' + `ref' with :class f64)
+return their result in xmm0 instead of rax — caller must know
+the node's class to consume the result correctly."
   (if (eq nelisp-phase47-compiler--arch 'aarch64)
       (pcase (plist-get node :kind)
         ('imm
@@ -761,7 +897,7 @@ regs rdi..r9 which are caller-saved anyway)."
         ('if
          (nelisp-phase47-compiler--emit-if node buf))
         ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
-             'while 'cond 'logic)
+             'while 'cond 'logic 'f64-binop)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (plist-get node :kind) node))
         (kind
@@ -772,12 +908,17 @@ regs rdi..r9 which are caller-saved anyway)."
        ;; mov rax, imm32                                = 7 bytes
        (nelisp-asm-x86_64-mov-imm32 buf 'rax (plist-get node :value)))
       ('ref
-       ;; mov rax, [rbp - 8*(slot+1)] — read spilled param off stack.
-       ;; The defun prologue pushed each incoming arg-reg in order
-       ;; right after `push rbp; mov rbp, rsp', so slot 0 sits at
-       ;; [rbp-8], slot 1 at [rbp-16], ..., slot 5 at [rbp-48].
-       (nelisp-phase47-compiler--emit-ref-load buf
-                                               (plist-get node :slot)))
+       ;; gp class → `mov rax, [rbp - 8*(slot+1)]'; f64 class →
+       ;; `movsd xmm0, [rbp - 8*(slot+1)]'.  Both read the spilled
+       ;; param from the frame slot allocated by the prologue;
+       ;; `:class' on the ref node dispatches the instruction.
+       (if (eq (plist-get node :class) 'f64)
+           (nelisp-phase47-compiler--emit-f64-ref-load
+            buf (plist-get node :slot) 'xmm0)
+         (nelisp-phase47-compiler--emit-ref-load
+          buf (plist-get node :slot))))
+      ('f64-binop
+       (nelisp-phase47-compiler--emit-f64-binop node buf))
       ('arith
        (nelisp-phase47-compiler--emit-arith node buf))
       ('shift
@@ -1285,24 +1426,37 @@ skipped here — they're emitted separately by the orchestrator."
   "Emit a single function definition into BUF.
 The function's label is defined at the entry point; the prologue
 saves rbp + every incoming param register onto the stack, the
-body computes the return value into rax, the epilogue restores
-rsp + rbp and `ret's.
+body computes the return value into rax (= GP class) or xmm0
+(= Doc 110 §110.E.1 f64 class), the epilogue restores rsp + rbp
+and `ret's.
 
-§97.c rationale (= why params spill to memory): callees freely
+GP class rationale (= why params spill to memory): callees freely
 clobber the SysV arg registers (rdi..r9 are caller-saved), so a
 function that calls back into itself or any other function would
 lose its own params if they only lived in arg-regs.  Spilling at
 prologue and re-reading from `[rbp - 8*(slot+1)]' on every `ref'
 makes recursive composition (= factorial) work.  Each `push' is
 fixed-width (= 1 byte for low regs, 2 bytes for r8/r9) so the
-two-pass byte invariant is preserved per defun.  The matching
-epilogue uses `mov rsp, rbp' (= 3 bytes) to deallocate the
-param-spill area in one shot regardless of arity."
+two-pass byte invariant is preserved per defun.
+
+f64 class rationale (Doc 110 §110.E.1): xmm0-xmm7 are caller-saved
+in SysV AMD64 (same as rdi..r9), so the same spill argument
+applies.  But xmm has no single-byte push opcode — instead the
+prologue allocates the full spill area in one `SUB rsp, 8*N'
+(= 7 bytes, fixed) and then writes each xmm via `MOVSD [rbp -
+8*(slot+1)], xmmN' (= 5 bytes each).  The epilogue's `mov rsp,
+rbp; pop rbp; ret' tears the frame down identically to the GP
+path.  Return value lands in xmm0 implicitly (= the SysV f64
+return reg, untouched by epilogue)."
   (let* ((name (plist-get defun-ir :name))
          (param-regs (plist-get defun-ir :param-regs))
+         (param-class (or (plist-get defun-ir :param-class) 'gp))
          (body (plist-get defun-ir :body)))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
         (let ((arg-regs '(x0 x1 x2 x3 x4 x5)))
+          (when (eq param-class 'f64)
+            (signal 'nelisp-phase47-compiler-error
+                    (list :f64-defun-aarch64-not-yet name)))
           (nelisp-asm-arm64-define-label buf name)
           ;; Save LR for forward compatibility, then establish x29.
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x30)
@@ -1316,12 +1470,30 @@ param-spill area in one shot regardless of arity."
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x30)
           (nelisp-asm-arm64-ret buf))
       (nelisp-asm-x86_64-define-label buf name)
-      ;; Prologue: push rbp; mov rbp, rsp; push each param reg.
+      ;; Prologue: push rbp; mov rbp, rsp; spill each param reg.
       (nelisp-asm-x86_64-push buf 'rbp)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rbp 'rsp)
-      (dolist (preg param-regs)
-        (nelisp-asm-x86_64-push buf preg))
-      ;; Body — value walked into rax.
+      (cond
+       ;; GP class — existing per-param `push reg' path.
+       ((eq param-class 'gp)
+        (dolist (preg param-regs)
+          (nelisp-asm-x86_64-push buf preg)))
+       ;; f64 class — one bulk `sub rsp, 8*arity', then per-param
+       ;; `movsd [rbp - 8*(slot+1)], xmmN'.
+       ((eq param-class 'f64)
+        (let* ((arity (length param-regs))
+               (frame-bytes (* 8 arity))
+               (slot-idx -1))
+          (when (> arity 0)
+            (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))
+          (dolist (xreg param-regs)
+            (setq slot-idx (1+ slot-idx))
+            (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+             buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
+       (t
+        (signal 'nelisp-phase47-compiler-error
+                (list :unknown-defun-param-class param-class))))
+      ;; Body — value walked into rax (gp class) or xmm0 (f64 class).
       (nelisp-phase47-compiler--emit-value body buf)
       ;; Epilogue: deallocate param spill via mov rsp, rbp; pop rbp; ret.
       (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'rbp)

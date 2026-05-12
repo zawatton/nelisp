@@ -812,6 +812,163 @@
                     #x66 #x0F #x2E #xC1
                     #x0F #x9B #xC0)))))
 
+;; ---- §110.E.1 (1) Phase 47 compiler f64 integration smoke ----
+;;
+;; End-to-end compile of `(defun fn ((a :type f64) (b :type f64))
+;;   (f64-add a b))' via parse-stmt + emit-defun.  Pin canonical
+;; byte layout so the integration's two-pass invariant is locked
+;; in before §110.E.2 ships the float.rs swap proper.
+
+(require 'nelisp-phase47-compiler)
+
+(defun nelisp-asm-x86_64-f64-test--compile-defun (sexp)
+  "Compile SEXP (= a `(defun ...)' form) and return its emitted bytes.
+Uses the Phase 47 compiler entry points directly (= no ELF
+wrapping) so byte-level assertions can pin the prologue / body /
+epilogue layout."
+  (let* ((nelisp-phase47-compiler--arch 'x86_64)
+         (nelisp-phase47-compiler--label-counter 0)
+         (ir (nelisp-phase47-compiler--parse-stmt sexp nil nil nil))
+         (buf (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-phase47-compiler--emit-defun ir buf)
+    (nelisp-asm-x86_64-buffer-bytes buf)))
+
+;; Parser accepts annotated f64 params and tags FENV cells.
+(ert-deftest nelisp-asm-x86_64-f64/parser-accepts-typed-params ()
+  (let ((ir (nelisp-phase47-compiler--parse-stmt
+             '(defun fn ((a :type f64) (b :type f64)) (f64-add a b))
+             nil nil nil)))
+    (should (eq (plist-get ir :kind) 'defun))
+    (should (eq (plist-get ir :param-class) 'f64))
+    (should (equal (plist-get ir :params) '(a b)))
+    (should (equal (plist-get ir :param-regs) '(xmm0 xmm1)))))
+
+;; Parser rejects mixed-class params.
+(ert-deftest nelisp-asm-x86_64-f64/parser-rejects-mixed-class ()
+  (should-error
+   (nelisp-phase47-compiler--parse-stmt
+    '(defun fn ((a :type f64) b) (f64-add a b))
+    nil nil nil)
+   :type 'nelisp-phase47-compiler-error))
+
+;; Parser rejects unknown class (= only `f64' / `gp' supported).
+(ert-deftest nelisp-asm-x86_64-f64/parser-rejects-unknown-class ()
+  (should-error
+   (nelisp-phase47-compiler--parse-stmt
+    '(defun fn ((a :type wat)) (f64-add a a))
+    nil nil nil)
+   :type 'nelisp-phase47-compiler-error))
+
+;; (f64-add) etc. parse to :kind f64-binop.
+(ert-deftest nelisp-asm-x86_64-f64/parser-f64-binop-shape ()
+  (let* ((ir (nelisp-phase47-compiler--parse-stmt
+              '(defun fn ((a :type f64) (b :type f64)) (f64-add a b))
+              nil nil nil))
+         (body (plist-get ir :body)))
+    (should (eq (plist-get body :kind) 'f64-binop))
+    (should (eq (plist-get body :op) 'f64-add))))
+
+;; Nested f64-binop rejected at emit time (= MVP scope).
+(ert-deftest nelisp-asm-x86_64-f64/emit-rejects-nested-f64-binop ()
+  ;; Parsing succeeds — nesting is a structural feature of the IR.
+  ;; The rejection lands at emit-defun -> emit-f64-binop ->
+  ;; emit-f64-leaf-into, which checks each leaf's shape.
+  (should-error
+   (nelisp-asm-x86_64-f64-test--compile-defun
+    '(defun fn ((a :type f64) (b :type f64))
+       (f64-add (f64-add a b) a)))
+   :type 'nelisp-phase47-compiler-error))
+
+;; Canonical byte layout for `(defun fn ((a :type f64) (b :type f64))
+;;   (f64-add a b))'.
+;;
+;; Prologue (21 bytes):
+;;   55                       ; push rbp
+;;   48 89 E5                 ; mov rbp, rsp
+;;   48 81 EC 10 00 00 00     ; sub rsp, 16
+;;   F2 0F 11 45 F8           ; movsd [rbp - 8], xmm0   (= spill param 0)
+;;   F2 0F 11 4D F0           ; movsd [rbp - 16], xmm1  (= spill param 1)
+;; Body (14 bytes):
+;;   F2 0F 10 4D F0           ; movsd xmm1, [rbp - 16]  (= eval B)
+;;   F2 0F 10 45 F8           ; movsd xmm0, [rbp - 8]   (= eval A)
+;;   F2 0F 58 C1              ; addsd xmm0, xmm1
+;; Epilogue (5 bytes):
+;;   48 89 EC                 ; mov rsp, rbp
+;;   5D                       ; pop rbp
+;;   C3                       ; ret
+;; Total = 40 bytes.
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-add-canonical-bytes ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-add a b)))))
+    (should (= (length bytes) 40))
+    (should (equal bytes
+                   (nelisp-asm-x86_64-f64-test--ub
+                    ;; Prologue
+                    #x55                          ; push rbp
+                    #x48 #x89 #xE5                ; mov rbp, rsp
+                    #x48 #x81 #xEC #x10 #x00 #x00 #x00  ; sub rsp, 16
+                    #xF2 #x0F #x11 #x45 #xF8      ; movsd [rbp-8], xmm0
+                    #xF2 #x0F #x11 #x4D #xF0      ; movsd [rbp-16], xmm1
+                    ;; Body: eval B → xmm1, eval A → xmm0, addsd
+                    #xF2 #x0F #x10 #x4D #xF0      ; movsd xmm1, [rbp-16]
+                    #xF2 #x0F #x10 #x45 #xF8      ; movsd xmm0, [rbp-8]
+                    #xF2 #x0F #x58 #xC1           ; addsd xmm0, xmm1
+                    ;; Epilogue
+                    #x48 #x89 #xEC                ; mov rsp, rbp
+                    #x5D                          ; pop rbp
+                    #xC3)))))                     ; ret
+
+;; (f64-sub / f64-mul / f64-div) — body byte differs at the ADDSD-
+;; family opcode position; prologue + epilogue + leaf loads are
+;; identical to add.
+;;
+;; Byte index 33 is the OPCODE position within the trailing 4-byte
+;; ADDSD-family instruction:
+;;   prologue (21 bytes) ends at index 20
+;;   movsd xmm1, [...]   (5 bytes) → indices 21..25
+;;   movsd xmm0, [...]   (5 bytes) → indices 26..30
+;;   F2 0F OPCODE C1     (4 bytes) → indices 31..34
+;;     byte 31 = F2 prefix
+;;     byte 32 = 0F escape
+;;     byte 33 = OPCODE  (58 = ADDSD, 5C = SUBSD, 59 = MULSD, 5E = DIVSD)
+;;     byte 34 = ModR/M (C1 = mod=11 reg=000 [xmm0] rm=001 [xmm1])
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-sub-body-opcode ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-sub a b)))))
+    (should (= (length bytes) 40))
+    (should (= (aref bytes 33) #x5C))))
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-mul-body-opcode ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-mul a b)))))
+    (should (= (length bytes) 40))
+    (should (= (aref bytes 33) #x59))))
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-div-body-opcode ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-div a b)))))
+    (should (= (length bytes) 40))
+    (should (= (aref bytes 33) #x5E))))
+
+;; GP path unchanged — `(defun fn (a b) (+ a b))' still compiles to
+;; the legacy `push rdi / push rsi / mov rax via spill / add via
+;; r10' sequence with no f64 contamination.
+(ert-deftest nelisp-asm-x86_64-f64/gp-defun-unchanged ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn (a b) (+ a b)))))
+    ;; First byte after `push rbp; mov rbp, rsp' (= 4 bytes) is
+    ;; the first param push: `push rdi' = 0x57.  Confirms the GP
+    ;; arm of the param-class dispatch fires for bare-symbol
+    ;; params.
+    (should (= (aref bytes 0) #x55))   ; push rbp
+    (should (= (aref bytes 4) #x57)))) ; push rdi (= GP param 0)
+
 (provide 'nelisp-asm-x86_64-f64-test)
 
 ;;; nelisp-asm-x86_64-f64-test.el ends here
