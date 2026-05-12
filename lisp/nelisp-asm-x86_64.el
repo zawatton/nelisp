@@ -667,11 +667,12 @@ DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
 ;; once these primitives have ert byte coverage.  No callsite from
 ;; `nelisp-phase47-compiler.el' uses these helpers yet.
 
-(defun nelisp-asm-x86_64-movsd-reg-reg (buf dst src)
-  "Emit `MOVSD DST, SRC' (xmm-to-xmm) = F2 [REX?] 0F 10 ModR/M.
-4 bytes when both regs are xmm0-xmm7, 5 with REX.  DST and SRC
-must both be xmm symbols (= members of
-`nelisp-asm-x86_64--xmm-reg')."
+(defun nelisp-asm-x86_64--emit-sse2-scalar-double-rr (buf opcode dst src)
+  "Internal: emit a `F2 [REX?] 0F OPCODE ModR/M' SSE2 scalar-double xmm-xmm op.
+DST is ModR/M.reg (= xmm sink for arithmetic / load); SRC is
+ModR/M.rm (= xmm source).  Shared skeleton for MOVSD / ADDSD /
+SUBSD / MULSD / DIVSD / UCOMISD register-form encodings.  REX
+elided when both regs are xmm0-xmm7."
   (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext dst))
          (ext-b (nelisp-asm-x86_64--xmm-reg-ext src))
          (need-rex (or (= ext-r 1) (= ext-b 1)))
@@ -686,7 +687,14 @@ must both be xmm symbols (= members of
     (nelisp-asm-x86_64--append-bytes
      buf (concat (unibyte-string #xF2)
                  rex
-                 (unibyte-string #x0F #x10 modrm)))))
+                 (unibyte-string #x0F opcode modrm)))))
+
+(defun nelisp-asm-x86_64-movsd-reg-reg (buf dst src)
+  "Emit `MOVSD DST, SRC' (xmm-to-xmm) = F2 [REX?] 0F 10 ModR/M.
+4 bytes when both regs are xmm0-xmm7, 5 with REX.  DST and SRC
+must both be xmm symbols (= members of
+`nelisp-asm-x86_64--xmm-reg')."
+  (nelisp-asm-x86_64--emit-sse2-scalar-double-rr buf #x10 dst src))
 
 (defun nelisp-asm-x86_64-movsd-xmm-mem-disp8 (buf dst base disp)
   "Emit `MOVSD DST, QWORD PTR [BASE + DISP]' = F2 [REX?] 0F 10 ModR/M disp8.
@@ -772,6 +780,46 @@ machinery to patch the disp32 slot post-finalize."
                  rex
                  (unibyte-string #x0F #x10 modrm)
                  (nelisp-asm-x86_64--imm32-bytes disp32)))))
+
+;; ---- Doc 110 §110.B f64 arithmetic (= ADDSD / SUBSD / MULSD / DIVSD) ----
+;;
+;; Four SSE2 scalar-double arithmetic ops sharing the
+;; `--emit-sse2-scalar-double-rr' skeleton.  Each emits
+;; `F2 [REX?] 0F OPCODE ModR/M' against two xmm registers; the
+;; result lands in DST.  Used by §110.E float.rs swap (= nl_jit_
+;; float_add / _sub / _mul / _div trampolines).
+;;
+;; Intel SDM opcodes (Vol 2A):
+;;   ADDSD xmm1, xmm2/m64 = F2 0F 58 /r
+;;   SUBSD xmm1, xmm2/m64 = F2 0F 5C /r
+;;   MULSD xmm1, xmm2/m64 = F2 0F 59 /r
+;;   DIVSD xmm1, xmm2/m64 = F2 0F 5E /r
+;;
+;; Reg-reg form only — memory-source variants land in a later stage
+;; when xmm spill / fill is wired (= Doc 112, currently out of
+;; scope per Doc 110 §0.4).
+
+(defun nelisp-asm-x86_64-addsd-reg-reg (buf dst src)
+  "Emit `ADDSD DST, SRC' (xmm-to-xmm) = F2 [REX?] 0F 58 ModR/M.
+Adds SRC's f64 to DST's f64 in IEEE 754 double precision; result
+lands in DST.  Both regs must be xmm symbols."
+  (nelisp-asm-x86_64--emit-sse2-scalar-double-rr buf #x58 dst src))
+
+(defun nelisp-asm-x86_64-subsd-reg-reg (buf dst src)
+  "Emit `SUBSD DST, SRC' (xmm-to-xmm) = F2 [REX?] 0F 5C ModR/M.
+Subtracts SRC's f64 from DST's f64; result in DST."
+  (nelisp-asm-x86_64--emit-sse2-scalar-double-rr buf #x5C dst src))
+
+(defun nelisp-asm-x86_64-mulsd-reg-reg (buf dst src)
+  "Emit `MULSD DST, SRC' (xmm-to-xmm) = F2 [REX?] 0F 59 ModR/M.
+Multiplies DST's f64 by SRC's f64; result in DST."
+  (nelisp-asm-x86_64--emit-sse2-scalar-double-rr buf #x59 dst src))
+
+(defun nelisp-asm-x86_64-divsd-reg-reg (buf dst src)
+  "Emit `DIVSD DST, SRC' (xmm-to-xmm) = F2 [REX?] 0F 5E ModR/M.
+Divides DST's f64 by SRC's f64; result in DST.  Division-by-zero
+behaviour follows IEEE 754 (= ±inf or NaN, not a trap)."
+  (nelisp-asm-x86_64--emit-sse2-scalar-double-rr buf #x5E dst src))
 
 (defun nelisp-asm-x86_64-add-reg-reg (buf dst src)
   "Emit `ADD DST, SRC' (MR form, 64-bit, opcode 0x01)."

@@ -377,6 +377,186 @@
     (nelisp-asm-x86_64-movsd-xmm-rip-disp32 b 'xmm8 0)
     (should (= (nelisp-asm-x86_64-buffer-pos b) 9))))
 
+;; ---- §110.B (1) ADDSD reg-reg ----
+;;
+;; F2 0F 58 ModR/M — ModR/M same as MOVSD reg-reg, only opcode byte
+;; differs.  Coverage focuses on (a) baseline reg+reg with no REX,
+;; (b) commutation (dst ↔ src), (c) REX.R, (d) REX.B, (e) self-op
+;; degenerate case.
+
+;; ADDSD xmm0, xmm1 — F2 0F 58 C1
+(ert-deftest nelisp-asm-x86_64-f64/addsd-xmm0-xmm1 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-addsd-reg-reg b 'xmm0 'xmm1)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x58 #xC1))))
+
+;; ADDSD xmm1, xmm0 — F2 0F 58 C8
+(ert-deftest nelisp-asm-x86_64-f64/addsd-xmm1-xmm0 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-addsd-reg-reg b 'xmm1 'xmm0)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x58 #xC8))))
+
+;; ADDSD xmm0, xmm0 — F2 0F 58 C0 (= self-op)
+(ert-deftest nelisp-asm-x86_64-f64/addsd-xmm0-xmm0 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-addsd-reg-reg b 'xmm0 'xmm0)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x58 #xC0))))
+
+;; ADDSD xmm8, xmm0 — F2 44 0F 58 C0 (= REX.R)
+(ert-deftest nelisp-asm-x86_64-f64/addsd-xmm8-xmm0 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-addsd-reg-reg b 'xmm8 'xmm0)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x44 #x0F #x58 #xC0))))
+
+;; ADDSD xmm0, xmm8 — F2 41 0F 58 C0 (= REX.B)
+(ert-deftest nelisp-asm-x86_64-f64/addsd-xmm0-xmm8 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-addsd-reg-reg b 'xmm0 'xmm8)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x41 #x0F #x58 #xC0))))
+
+;; ---- §110.B (2) SUBSD reg-reg (= opcode 0x5C) ----
+
+;; SUBSD xmm0, xmm1 — F2 0F 5C C1
+(ert-deftest nelisp-asm-x86_64-f64/subsd-xmm0-xmm1 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-subsd-reg-reg b 'xmm0 'xmm1)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x5C #xC1))))
+
+;; SUBSD xmm15, xmm15 — F2 45 0F 5C FF (= REX.R + REX.B)
+(ert-deftest nelisp-asm-x86_64-f64/subsd-xmm15-xmm15 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-subsd-reg-reg b 'xmm15 'xmm15)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x45 #x0F #x5C #xFF))))
+
+;; ---- §110.B (3) MULSD reg-reg (= opcode 0x59) ----
+
+;; MULSD xmm0, xmm1 — F2 0F 59 C1
+(ert-deftest nelisp-asm-x86_64-f64/mulsd-xmm0-xmm1 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-mulsd-reg-reg b 'xmm0 'xmm1)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x59 #xC1))))
+
+;; MULSD xmm8, xmm15 — F2 45 0F 59 C7 (= REX.R + REX.B,
+;;   reg=000 (xmm8.low3), rm=111 (xmm15.low3) → 0xC7)
+(ert-deftest nelisp-asm-x86_64-f64/mulsd-xmm8-xmm15 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-mulsd-reg-reg b 'xmm8 'xmm15)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x45 #x0F #x59 #xC7))))
+
+;; ---- §110.B (4) DIVSD reg-reg (= opcode 0x5E) ----
+
+;; DIVSD xmm0, xmm1 — F2 0F 5E C1
+(ert-deftest nelisp-asm-x86_64-f64/divsd-xmm0-xmm1 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-divsd-reg-reg b 'xmm0 'xmm1)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x5E #xC1))))
+
+;; DIVSD xmm7, xmm7 — F2 0F 5E FF (= max-low3 self-op, no REX)
+(ert-deftest nelisp-asm-x86_64-f64/divsd-xmm7-xmm7 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-divsd-reg-reg b 'xmm7 'xmm7)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x5E #xFF))))
+
+;; ---- §110.B (5) byte-length invariants for arith ops ----
+
+(ert-deftest nelisp-asm-x86_64-f64/addsd-pos-4-no-rex ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-addsd-reg-reg b 'xmm0 'xmm1)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 4))))
+
+(ert-deftest nelisp-asm-x86_64-f64/addsd-pos-5-with-rex ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-addsd-reg-reg b 'xmm8 'xmm0)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 5))))
+
+;; ---- §110.B (6) Unknown-reg signal coverage for arith ops ----
+
+(ert-deftest nelisp-asm-x86_64-f64/addsd-unknown-errors ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (should-error (nelisp-asm-x86_64-addsd-reg-reg b 'rax 'xmm0)
+                  :type 'nelisp-asm-x86_64-error)
+    (should-error (nelisp-asm-x86_64-addsd-reg-reg b 'xmm0 'rax)
+                  :type 'nelisp-asm-x86_64-error)))
+
+(ert-deftest nelisp-asm-x86_64-f64/divsd-unknown-errors ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (should-error (nelisp-asm-x86_64-divsd-reg-reg b 'xmm0 'r8)
+                  :type 'nelisp-asm-x86_64-error)))
+
+;; ---- §110.B (7) opcode discrimination cross-check ----
+;;
+;; Sanity: with the same xmm-xmm operands, the 4 arith ops produce
+;; bytes that differ in exactly one position (= the opcode at
+;; offset 2).  Catches accidental opcode collisions if the shared
+;; skeleton ever regresses.
+
+(ert-deftest nelisp-asm-x86_64-f64/arith-opcode-discrimination ()
+  (let* ((bs (lambda (op)
+               (nelisp-asm-x86_64-f64-test--bytes
+                (lambda (b)
+                  (funcall op b 'xmm0 'xmm1)))))
+         (add (funcall bs #'nelisp-asm-x86_64-addsd-reg-reg))
+         (sub (funcall bs #'nelisp-asm-x86_64-subsd-reg-reg))
+         (mul (funcall bs #'nelisp-asm-x86_64-mulsd-reg-reg))
+         (div (funcall bs #'nelisp-asm-x86_64-divsd-reg-reg)))
+    ;; All 4 ops emit 4 bytes for xmm0/xmm1.
+    (should (= (length add) 4))
+    (should (= (length sub) 4))
+    (should (= (length mul) 4))
+    (should (= (length div) 4))
+    ;; Byte 0..1 (= F2 0F prefix), byte 3 (= ModR/M) identical.
+    (dolist (x (list sub mul div))
+      (should (= (aref add 0) (aref x 0)))
+      (should (= (aref add 1) (aref x 1)))
+      (should (= (aref add 3) (aref x 3))))
+    ;; Byte 2 (= opcode) is the discriminator.
+    (should (= (aref add 2) #x58))
+    (should (= (aref sub 2) #x5C))
+    (should (= (aref mul 2) #x59))
+    (should (= (aref div 2) #x5E))
+    ;; All opcodes are distinct.
+    (let ((ops (list (aref add 2) (aref sub 2)
+                     (aref mul 2) (aref div 2))))
+      (should (= (length (delete-dups (copy-sequence ops)))
+                 4)))))
+
+;; ---- §110.B (8) MOVSD vs ADDSD share skeleton — encoding fidelity ----
+;;
+;; The §110.A.1 refactor extracted `--emit-sse2-scalar-double-rr'
+;; from `movsd-reg-reg' and now ADDSD-family also uses it.  Confirm
+;; MOVSD opcode = 0x10 remains stable post-refactor (= ensures the
+;; refactor didn't accidentally rebind the opcode in the shared
+;; emitter).
+
+(ert-deftest nelisp-asm-x86_64-f64/movsd-after-refactor-stable ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-movsd-reg-reg b 'xmm0 'xmm1)))
+           (nelisp-asm-x86_64-f64-test--ub #xF2 #x0F #x10 #xC1))))
+
 (provide 'nelisp-asm-x86_64-f64-test)
 
 ;;; nelisp-asm-x86_64-f64-test.el ends here
