@@ -92,7 +92,36 @@
      :output "nelisp_jit_logxor2.o")
     (nelisp-cc-jit-arith
      :source-var nelisp-cc-jit-arith-ash--source
-     :output "nelisp_jit_ash.o"))
+     :output "nelisp_jit_ash.o")
+    ;; Doc 110 §110.E.2.a — `jit/float.rs' 4 arithmetic trampoline
+    ;; swaps (add / sub / mul / div).  Each entry emits one `.o'
+    ;; exporting one `nl_jit_float_*' symbol that the linker
+    ;; resolves into the static archive against the Rust extern
+    ;; in `build-tool/src/jit/bridge.rs::float_link'.  The 5
+    ;; comparison trampolines (eq_eps / lt / gt / le / ge) need
+    ;; §110.C compiler integration and ship in §110.E.2.b.
+    ;;
+    ;; `:requires-arch x86_64' — Stage 2.a only ships the x86_64
+    ;; f64 emit path; aarch64 f64 emit ships in §110.D and removes
+    ;; the gate.  Until then, building on aarch64 skips these
+    ;; entries and the Rust trampolines stay live (gated by an
+    ;; inverse `#[cfg]' in `build-tool/src/jit/float.rs').
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-add--source
+     :output "nl_jit_float_add.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-sub--source
+     :output "nl_jit_float_sub.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-mul--source
+     :output "nl_jit_float_mul.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-div--source
+     :output "nl_jit_float_div.o"
+     :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding
@@ -139,7 +168,14 @@ macos-aarch64; other OS / format combinations stay on ELF."
   "Compile every manifest entry to its output `.o' file.
 Returns the list of absolute paths written.  Used by
 `build-tool/build.rs' as the `-f' callback (= no args, exits the
-batch process via the outer `emacs --batch' driver)."
+batch process via the outer `emacs --batch' driver).
+
+Each manifest entry may specify a `:requires-arch SYM' keyword
+(Doc 110 §110.E.2.a) — when present and the current target arch
+does not match SYM, the entry is silently skipped.  This lets
+Stage 2.a ship the x86_64 f64 swap entries while aarch64 builds
+fall through to the Rust trampolines that remain in
+`build-tool/src/jit/float.rs' under an inverse cfg gate."
   (let* ((out-dir (compile-elisp-objects--out-dir))
          (arch (compile-elisp-objects--target-arch))
          (format (compile-elisp-objects--target-format))
@@ -151,17 +187,23 @@ batch process via the outer `emacs --batch' driver)."
              (props   (cdr entry))
              (src-var (plist-get props :source-var))
              (output  (plist-get props :output))
+             (requires-arch (plist-get props :requires-arch))
              (out-path (expand-file-name output out-dir)))
-        (require feature)
-        (unless (boundp src-var)
-          (error "compile-elisp-objects: %S has no :source-var %S"
-                 feature src-var))
-        (let ((sexp (symbol-value src-var)))
-          (message "[compile-elisp-objects] %s -> %s"
-                   feature out-path)
-          (nelisp-phase47-compile-to-object sexp out-path
-                                            :arch arch :format format)
-          (push out-path written))))
+        (cond
+         ((and requires-arch (not (eq requires-arch arch)))
+          (message "[compile-elisp-objects] skipping %s -> %s (= requires %S, building %S)"
+                   feature output requires-arch arch))
+         (t
+          (require feature)
+          (unless (boundp src-var)
+            (error "compile-elisp-objects: %S has no :source-var %S"
+                   feature src-var))
+          (let ((sexp (symbol-value src-var)))
+            (message "[compile-elisp-objects] %s -> %s"
+                     feature out-path)
+            (nelisp-phase47-compile-to-object sexp out-path
+                                              :arch arch :format format)
+            (push out-path written))))))
     (nreverse written)))
 
 (provide 'compile-elisp-objects)

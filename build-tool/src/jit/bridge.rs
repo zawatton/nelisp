@@ -90,6 +90,30 @@ mod arith_link {
     pub unsafe extern "C" fn nelisp_jit_ash(_: i64, _: i64) -> i64 { 0 }
 }
 
+// Doc 110 §110.E.2.a — `jit/float.rs' 4 arithmetic trampoline swaps
+// (add / sub / mul / div) now live in Phase-47-compiled elisp `.o'
+// files for linux-x86_64.  `float_link' mirrors `arith_link' shape:
+// `extern "C"' decls so the linker resolves the names against the
+// static archive built by `build.rs::link_elisp_cc_spike'.
+//
+// Stage 2.a is narrower than the arith Stage 2/3 (= 3-target
+// coverage) because §110.D aarch64 f64 emit hasn't shipped yet.
+// On aarch64 / non-supported targets the dispatch falls through
+// to `super::float::nl_jit_float_*' (= the Rust trampolines stay
+// alive under an inverse cfg gate in `jit/float.rs').  The 5
+// comparison trampolines (eq_eps / lt / gt / le / ge) keep using
+// the Rust path even on linux-x86_64 until §110.C compiler
+// integration ships in §110.E.2.b.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod float_link {
+    extern "C" {
+        pub fn nl_jit_float_add(a: f64, b: f64) -> f64;
+        pub fn nl_jit_float_sub(a: f64, b: f64) -> f64;
+        pub fn nl_jit_float_mul(a: f64, b: f64) -> f64;
+        pub fn nl_jit_float_div(a: f64, b: f64) -> f64;
+    }
+}
+
 // Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
 // `UnifiedJit' struct + `unified_jit()' OnceLock are gone now that
 // every cluster (cons / access / arith / predicate / syscall) goes
@@ -221,13 +245,29 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
             super::syscall::nl_jit_syscall_supported_p as *const u8
         }
         // ---- float (8) ---- Doc 84 §84.1, xmm-marshalling Float trampolines.
+        // Doc 110 §110.E.2.a (2026-05-13) — add / sub / mul / div
+        // dispatch to elisp-compiled `.o' symbols on linux-x86_64;
+        // other targets keep the Rust trampolines in `jit/float.rs'.
+        // eq_eps / lt / gt / le / ge stay Rust until §110.E.2.b.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_add" => float_link::nl_jit_float_add as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_add" => super::float::nl_jit_float_add as *const u8,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_sub" => float_link::nl_jit_float_sub as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_sub" => super::float::nl_jit_float_sub as *const u8,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_mul" => float_link::nl_jit_float_mul as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_mul" => super::float::nl_jit_float_mul as *const u8,
         // Doc 86 §86.1.b (2026-05-10): `/' migrated to elisp via this
         // binary trampoline (= same `:trampoline-binary-float-arith'
         // ABI as add/sub/mul); division-by-zero check + integer-trunc
         // gating live in `lisp/nelisp-stdlib.el' `(defun / ...)'.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_div" => float_link::nl_jit_float_div as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_div" => super::float::nl_jit_float_div as *const u8,
         "nl_jit_float_eq_eps" => super::float::nl_jit_float_eq_eps as *const u8,
         "nl_jit_float_lt" => super::float::nl_jit_float_lt as *const u8,

@@ -4,12 +4,25 @@
 //! xmm0/xmm1 (d0/d1) and return f64 in xmm0 (d0) or i64 in rax (x0).
 //! Resolved by `nl-jit-call-float-{float,cmp}' bridges (see `bridge.rs').
 //! Epsilon for `=` is hardcoded `1e-15' (matches `bi_num_eq2_float').
+//!
+//! Doc 110 §110.E.2.a (2026-05-13) — add / sub / mul / div bodies
+//! cfg-gated to `not(linux-x86_64)' because the linux-x86_64 build
+//! pulls those symbols from Phase-47-compiled elisp `.o' files (=
+//! `lisp/nelisp-cc-jit-float.el' + the static archive built by
+//! `build.rs::link_elisp_cc_spike').  On every other supported
+//! target (= linux-aarch64, macos-aarch64) the Rust trampolines
+//! stay live until §110.D ships aarch64 f64 emit.  Defining both
+//! would yield a duplicate `nl_jit_float_*' symbol at link time.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 #[no_mangle] pub extern "C" fn nl_jit_float_add(a: f64, b: f64) -> f64 { a + b }
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 #[no_mangle] pub extern "C" fn nl_jit_float_sub(a: f64, b: f64) -> f64 { a - b }
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 #[no_mangle] pub extern "C" fn nl_jit_float_mul(a: f64, b: f64) -> f64 { a * b }
 // Doc 86 §86.1.b (2026-05-10) — `/' migrated to elisp via this binary
 // trampoline.  Division-by-zero check stays in elisp (= the bridge's
 // `num_pair' Float promotion is what enforces wrong-type already).
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 #[no_mangle] pub extern "C" fn nl_jit_float_div(a: f64, b: f64) -> f64 { a / b }
 #[no_mangle] pub extern "C" fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64 {
     if (a - b).abs() < 1e-15 { 1 } else { 0 }

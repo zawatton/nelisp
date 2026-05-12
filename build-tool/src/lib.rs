@@ -97,6 +97,17 @@ pub mod elisp_cc_spike {
         pub fn nelisp_jit_logand2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_logxor2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_ash(n: i64, c: i64) -> i64;
+        // Doc 110 §110.E.2.a — `jit/float.rs' 4 arithmetic trampoline
+        // swaps (add / sub / mul / div).  Defined in
+        // `lisp/nelisp-cc-jit-float.el'; wired to `unified_fn_ptr' via
+        // the `float_link' module in `jit/bridge.rs'.  These decls
+        // also pin the symbols into the integration test binary's
+        // link line (= the rlib's `float_link' extern block alone
+        // gets DCE'd by `--gc-sections' before tests can call them).
+        pub fn nl_jit_float_add(a: f64, b: f64) -> f64;
+        pub fn nl_jit_float_sub(a: f64, b: f64) -> f64;
+        pub fn nl_jit_float_mul(a: f64, b: f64) -> f64;
+        pub fn nl_jit_float_div(a: f64, b: f64) -> f64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -156,4 +167,15 @@ pub mod elisp_cc_spike {
     pub fn jit_logand2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_logand2(a, b) } }
     pub fn jit_logxor2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_logxor2(a, b) } }
     pub fn jit_ash(n: i64, c: i64) -> i64 { unsafe { nelisp_jit_ash(n, c) } }
+
+    /// Doc 110 §110.E.2.a probes — thin safe wrappers around the 4
+    /// elisp-compiled `jit/float.rs' replacements (add / sub / mul /
+    /// div).  Used by `tests/elisp_cc_jit_float_probe.rs' to assert
+    /// every member of the `.o' archive resolves and computes the
+    /// expected f64 result.  The comparison trampolines (eq_eps /
+    /// lt / gt / le / ge) keep their Rust impl until §110.E.2.b.
+    pub fn jit_float_add(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_add(a, b) } }
+    pub fn jit_float_sub(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_sub(a, b) } }
+    pub fn jit_float_mul(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_mul(a, b) } }
+    pub fn jit_float_div(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_div(a, b) } }
 }
