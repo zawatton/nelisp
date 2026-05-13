@@ -25,7 +25,7 @@
 //! enforces); set-function never errors on existing entries; clear-*
 //! is a no-op when the entry is absent.
 
-use super::env::{Env, SymbolEntry};
+use super::env::Env;
 use super::error::EvalError;
 use super::sexp::Sexp;
 
@@ -81,60 +81,41 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     // write to the elisp mirror via `env.mirror_set_*' so elisp-driven
     // mutations stay in sync.  Both paths fall back to the Rust HashMap
     // during early bootstrap (= globals_record still Sexp::Nil).
+    // Doc 102 Phase 8 Sprint B — mirror is the sole source of truth.
+    // env_shim primitives are dormant during early bootstrap
+    // (`install_env_shim_primitives' only registers; production callers
+    // are STDLIB elisp invoked after `install_globals_record').
     match op {
         "get-value" => env
             .mirror_lookup_value(&name)
-            .or_else(|| env.globals.get(&name).and_then(|e| e.value.clone()))
             .ok_or(EvalError::UnboundVariable(name)),
         "set-value" => {
             let v = args[2].clone();
-            env.globals.entry(name.clone()).or_default().value = Some(v.clone());
             env.mirror_set_value(&name, v.clone());
             Ok(v)
         }
         "get-function" => env
             .mirror_lookup_function(&name)
-            .or_else(|| env.globals.get(&name).and_then(|e| e.function.clone()))
             .ok_or(EvalError::UnboundFunction(name)),
         "set-function" => {
             let def = args[2].clone();
-            env.globals.entry(name.clone()).or_default().function = Some(def.clone());
             env.mirror_set_function(&name, def.clone());
             Ok(def)
         }
         "clear-value" => {
-            if let Some(e) = env.globals.get_mut(&name) {
-                e.value = None;
-            }
-            // Doc 102 Phase 8 Sprint Session 6 — sprint-introduced
-            // mirror was missing the clear path; `is-bound' below
-            // checks mirror first and would otherwise still see the
-            // entry.
             env.mirror_clear_value(&name);
             Ok(args[1].clone())
         }
         "clear-function" => {
-            if let Some(e) = env.globals.get_mut(&name) {
-                e.function = None;
-            }
             env.mirror_clear_function(&name);
             Ok(args[1].clone())
         }
-        "is-bound" => Ok(bool_sexp(
-            env.mirror_is_bound(&name)
-                || matches!(env.globals.get(&name), Some(SymbolEntry { value: Some(_), .. })),
-        )),
-        "is-fbound" => Ok(bool_sexp(
-            env.mirror_is_fbound(&name)
-                || matches!(env.globals.get(&name), Some(SymbolEntry { function: Some(_), .. })),
-        )),
-        "is-constant" => Ok(bool_sexp(matches!(
-            env.globals.get(&name),
-            Some(SymbolEntry { constant: true, .. })
-        ))),
+        "is-bound" => Ok(bool_sexp(env.mirror_is_bound(&name))),
+        "is-fbound" => Ok(bool_sexp(env.mirror_is_fbound(&name))),
+        "is-constant" => Ok(bool_sexp(env.mirror_is_constant(&name))),
         "set-constant" => {
             let truthy = !matches!(args[2], Sexp::Nil);
-            env.globals.entry(name).or_default().constant = truthy;
+            env.mirror_set_constant(&name, truthy);
             Ok(bool_sexp(truthy))
         }
         other => Err(EvalError::Internal(format!(
