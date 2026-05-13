@@ -34,8 +34,8 @@
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::{
-    jit_float_add, jit_float_div, jit_float_ge, jit_float_gt, jit_float_le, jit_float_lt,
-    jit_float_mul, jit_float_sub,
+    jit_float_add, jit_float_div, jit_float_eq_eps, jit_float_ge, jit_float_gt, jit_float_le,
+    jit_float_lt, jit_float_mul, jit_float_sub,
 };
 
 // ---- ADDSD coverage ----
@@ -221,6 +221,83 @@ fn float_cmp_nan_is_false() {
     assert_eq!(jit_float_gt(nan, nan), 0);
     assert_eq!(jit_float_le(nan, nan), 0);
     assert_eq!(jit_float_ge(nan, nan), 0);
+}
+
+// ---- §110.C.2.b — EQ-EPS coverage ----
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_eq_eps_within_tolerance() {
+    // Equal values → within 1e-15
+    assert_eq!(jit_float_eq_eps(0.0, 0.0), 1);
+    assert_eq!(jit_float_eq_eps(1.0, 1.0), 1);
+    assert_eq!(jit_float_eq_eps(-3.14, -3.14), 1);
+    // Just below tolerance
+    assert_eq!(jit_float_eq_eps(1.0, 1.0 + 0.5e-15), 1);
+    assert_eq!(jit_float_eq_eps(1.0 + 0.5e-15, 1.0), 1);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_eq_eps_outside_tolerance() {
+    assert_eq!(jit_float_eq_eps(1.0, 2.0), 0);
+    assert_eq!(jit_float_eq_eps(1.0, 1.0 + 2e-15), 0);
+    assert_eq!(jit_float_eq_eps(1.0 + 2e-15, 1.0), 0);
+    assert_eq!(jit_float_eq_eps(1e10, 1e10 + 1.0), 0);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_eq_eps_nan_is_false() {
+    let nan = f64::NAN;
+    for v in [1.0_f64, 0.0, -1.0, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(jit_float_eq_eps(nan, v), 0, "eq-eps(NaN, {})", v);
+        assert_eq!(jit_float_eq_eps(v, nan), 0, "eq-eps({}, NaN)", v);
+    }
+    assert_eq!(jit_float_eq_eps(nan, nan), 0);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_eq_eps_infinity_handling() {
+    // +inf vs +inf: a - b = NaN (inf - inf), abs(NaN) = NaN, NaN
+    // comparisons unordered → return 0 per Rust `(NaN OP x) =
+    // false'.  Matches Rust's `(a - b).abs() < 1e-15' which
+    // returns false for inf vs inf (since the abs is NaN).
+    assert_eq!(jit_float_eq_eps(f64::INFINITY, f64::INFINITY), 0);
+    // +inf vs -inf: a - b = +inf, abs = +inf, +inf < 1e-15 is false
+    assert_eq!(jit_float_eq_eps(f64::INFINITY, f64::NEG_INFINITY), 0);
+    // +inf vs finite: a - b = +inf, abs = +inf, < 1e-15 false
+    assert_eq!(jit_float_eq_eps(f64::INFINITY, 0.0), 0);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_eq_eps_matches_rust() {
+    // Bit-exact agreement with Rust's `(a - b).abs() < 1e-15'.
+    // The elisp body hardcodes the f64 bit pattern for 1e-15 (=
+    // 0x3CD203AF9EE75616) so any drift between the elisp constant
+    // and Rust's compile-time literal surfaces immediately.
+    let samples: [(f64, f64); 9] = [
+        (0.0, 0.0),
+        (-0.0, 0.0),
+        (1e-16, 0.0),   // below eps → eq
+        (1e-14, 0.0),   // above eps → ne
+        (1.0, 1.0),
+        (1.0, 1.0 + 1e-16),
+        (1.0, 1.0 + 1e-14),
+        (-3.14, -3.14),
+        (1e15, 1e15),
+    ];
+    for (a, b) in samples {
+        let want = if (a - b).abs() < 1e-15 { 1 } else { 0 };
+        assert_eq!(
+            jit_float_eq_eps(a, b),
+            want,
+            "eq-eps({}, {}) — Rust expected {}",
+            a, b, want
+        );
+    }
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

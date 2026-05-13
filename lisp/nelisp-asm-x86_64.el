@@ -831,6 +831,61 @@ Divides DST's f64 by SRC's f64; result in DST.  Division-by-zero
 behaviour follows IEEE 754 (= ±inf or NaN, not a trap)."
   (nelisp-asm-x86_64--emit-sse2-scalar-double-rr buf #x5E dst src))
 
+(defun nelisp-asm-x86_64-andpd-reg-reg (buf dst src)
+  "Emit `ANDPD DST, SRC' (xmm-to-xmm) = 66 [REX?] 0F 54 ModR/M.
+Packed-double bitwise AND.  Doc 110 §110.C.2.b reuses this for
+the abs-mask step of EQ-EPS (= `|a-b|' via `xmm0 AND
+0x7FFFFFFFFFFFFFFF' to clear the sign bit of the lower 64-bit
+half).  Operates on the full 128-bit xmm width but only the
+lower 64 bits matter for our f64 use case — the upper 64 of
+the mask register are 0 after `MOVQ xmm, r64', so ANDing
+zero against anything gives zero in the upper half."
+  (nelisp-asm-x86_64--emit-sse2-rr buf #x66 #x54 dst src))
+
+(defun nelisp-asm-x86_64-movq-xmm-r64 (buf xmm-dst gp-src)
+  "Emit `MOVQ XMM-DST, GP-SRC' = 66 REX.W [REX.R/B?] 0F 6E ModR/M.
+Doc 110 §110.C.2.b — GP-to-xmm 64-bit value transfer used to
+materialise f64 immediates (= bit pattern in r10, transferred
+to xmm1 for ANDPD / UCOMISD).  REX.W = 1 selects the 64-bit
+operand width; the upper 64 bits of XMM-DST are zero-extended."
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext xmm-dst))
+         (ext-b (nelisp-asm-x86_64--reg-ext gp-src))
+         (rex (nelisp-asm-x86_64--rex 1 ext-r 0 ext-b))
+         (modrm (nelisp-asm-x86_64--modrm
+                 3
+                 (nelisp-asm-x86_64--xmm-reg-low3 xmm-dst)
+                 (nelisp-asm-x86_64--reg-low3 gp-src))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string #x66 rex #x0F #x6E modrm))))
+
+(defun nelisp-asm-x86_64-and-r8-r8 (buf dst src)
+  "Emit 8-bit `AND DST, SRC' = 20 ModR/M.
+Doc 110 §110.C.2.b — used to AND the SETB result with SETNP
+result for NaN-aware EQ-EPS (= mask out the unordered case so
+NaN compares yield 0, matching Rust semantics).  DST and SRC
+must be one of the low-byte registers `al', `cl', `dl', `bl';
+the encoding REX-less so the legacy 8-bit register set is in
+play (= cannot mix with `sil' / `dil' / R8B..R15B which need
+REX prefix to disambiguate from AH..BH).  ModR/M reg field
+holds SRC, rm holds DST per Intel SDM `AND r/m8, r8'."
+  (let ((legal '(al cl dl bl)))
+    (unless (memq dst legal)
+      (signal 'nelisp-asm-x86_64-error
+              (list :and-r8-dst-not-legacy dst)))
+    (unless (memq src legal)
+      (signal 'nelisp-asm-x86_64-error
+              (list :and-r8-src-not-legacy src))))
+  (let* ((low-byte-num
+          (lambda (r)
+            (cond ((eq r 'al) 0) ((eq r 'cl) 1)
+                  ((eq r 'dl) 2) ((eq r 'bl) 3))))
+         (modrm (nelisp-asm-x86_64--modrm
+                 3
+                 (funcall low-byte-num src)
+                 (funcall low-byte-num dst))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string #x20 modrm))))
+
 ;; ---- Doc 110 §110.C f64 compare + boolean materialise ----
 ;;
 ;; UCOMISD sets EFLAGS by comparing the lower 64-bit f64 of two xmm
@@ -1068,12 +1123,31 @@ signed cc (`setl' / `setg' / `setle' / `setge' / `sete' /
 or 1 into AL based on the flag register; caller is responsible
 for a prior flag-setting instruction (= `cmp' / `ucomisd' /
 `test') and for zero-extending AL afterwards via
-`nelisp-asm-x86_64-movzx-eax-al' if a wider result is needed."
-  (let ((cell (assq cc nelisp-asm-x86_64--setcc-opcodes)))
-    (unless cell
+`nelisp-asm-x86_64-movzx-eax-al' if a wider result is needed.
+
+Thin wrapper around `nelisp-asm-x86_64-setcc-byte-r8' targeting
+AL (= legacy reg-low byte for rax)."
+  (nelisp-asm-x86_64-setcc-byte-r8 buf cc 'al))
+
+(defun nelisp-asm-x86_64-setcc-byte-r8 (buf cc r8)
+  "Emit `SETcc R8' = 0x0F + opcode + ModR/M (3 bytes, no REX).
+R8 must be one of the legacy low-byte registers `al' / `cl' /
+`dl' / `bl' (= ModR/M.rm 0..3 without REX).  Modern low-byte
+registers `sil' / `dil' / `bpl' / `spl' / R8B-R15B would need
+REX prefix to disambiguate from AH..BH and are deferred until
+needed.  Doc 110 §110.C.2.b uses this for `SETNP cl' alongside
+`SETB al' to build the NaN mask for EQ-EPS."
+  (let* ((legal-r8 '((al . 0) (cl . 1) (dl . 2) (bl . 3)))
+         (r8-cell (assq r8 legal-r8))
+         (cc-cell (assq cc nelisp-asm-x86_64--setcc-opcodes)))
+    (unless r8-cell
+      (signal 'nelisp-asm-x86_64-error
+              (list :setcc-r8-not-legacy r8)))
+    (unless cc-cell
       (signal 'nelisp-asm-x86_64-error (list :unknown-setcc cc)))
-    (nelisp-asm-x86_64--append-bytes
-     buf (unibyte-string #x0F (cdr cell) #xC0))))
+    (let ((modrm (nelisp-asm-x86_64--modrm 3 0 (cdr r8-cell))))
+      (nelisp-asm-x86_64--append-bytes
+       buf (unibyte-string #x0F (cdr cc-cell) modrm)))))
 
 (defun nelisp-asm-x86_64-movzx-eax-al (buf)
   "Emit `MOVZX EAX, AL' = 0x0F 0xB6 0xC0 (3 bytes).

@@ -139,6 +139,13 @@
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-ge--source
      :output "nl_jit_float_ge.o"
+     :requires-arch x86_64)
+    ;; Doc 110 §110.C.2.b — EQ-EPS (= `(a-b).abs() < 1e-15').
+    ;; Uses the SUBSD + ANDPD + UCOMISD + SETB/SETNP/AND mask
+    ;; sequence emitted by `--emit-f64-eq-eps'.
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-eq-eps--source
+     :output "nl_jit_float_eq_eps.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

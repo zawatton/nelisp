@@ -118,6 +118,10 @@ mod float_link {
         pub fn nl_jit_float_gt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_le(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_ge(a: f64, b: f64) -> i64;
+        // Doc 110 §110.C.2.b — EQ-EPS trampoline.  Compiled body
+        // uses SUBSD + ANDPD abs-mask + UCOMISD vs 1e-15 + SETB
+        // ANDed with SETNP for NaN-aware Rust semantics.
+        pub fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64;
     }
 }
 
@@ -276,6 +280,11 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nl_jit_float_div" => float_link::nl_jit_float_div as *const u8,
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_div" => super::float::nl_jit_float_div as *const u8,
+        // Doc 110 §110.C.2.b (2026-05-13) — EQ-EPS dispatches to
+        // elisp `.o' on linux-x86_64; other targets keep Rust.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_eq_eps" => float_link::nl_jit_float_eq_eps as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_eq_eps" => super::float::nl_jit_float_eq_eps as *const u8,
         // Doc 110 §110.C.2.a (2026-05-13) — 4 ordered compares dispatch
         // to elisp `.o' on linux-x86_64; other targets keep Rust.

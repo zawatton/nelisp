@@ -24,10 +24,13 @@
 // `num_pair' Float promotion is what enforces wrong-type already).
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 #[no_mangle] pub extern "C" fn nl_jit_float_div(a: f64, b: f64) -> f64 { a / b }
-// EQ-EPS stays Rust on every target until §110.C.2.b ships
-// rodata + ANDPD abs-mask + NaN-aware SETB/SETNP/AND sequence
-// (= the 4 ingredients the elisp emit needs for IEEE 754 NaN
-// correctness on the within-1e-15 predicate).
+// Doc 110 §110.C.2.b (2026-05-13) — EQ-EPS shipped to elisp on
+// linux-x86_64 via the inline-imm64 + MOVQ + ANDPD path (=
+// avoids the rodata section growth `.rodata' would require).
+// Other supported targets keep the Rust impl until §110.D ships
+// aarch64 f64 emit.  Defining both would yield a duplicate
+// `nl_jit_float_eq_eps' symbol at link time.
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 #[no_mangle] pub extern "C" fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64 {
     if (a - b).abs() < 1e-15 { 1 } else { 0 }
 }

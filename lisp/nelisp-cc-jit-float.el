@@ -97,6 +97,22 @@ Matches Rust `(a <= b) as i64' including NaN → 0.")
   "Phase 47 source for `nl_jit_float_ge' f64 trampoline.
 Matches Rust `(a >= b) as i64' including NaN → 0.")
 
+;; Doc 110 §110.C.2.b — EQ-EPS (= `(a-b).abs() < 1e-15') with
+;; NaN-aware Rust semantics.  Uses the multi-instruction sequence
+;; emitted by `--emit-f64-eq-eps' (= SUBSD + ANDPD abs-mask +
+;; UCOMISD against 1e-15 + SETB/SETNP/AND mask + MOVZX) so the
+;; defun body fits the single `:kind f64-cmp :op f64-eq-eps' IR
+;; shape that the §110.C.2 dispatch already accepts.
+
+(defconst nelisp-cc-jit-float-eq-eps--source
+  '(defun nl_jit_float_eq_eps ((a :type f64) (b :type f64))
+     (f64-eq-eps a b))
+  "Phase 47 source for `nl_jit_float_eq_eps' f64 trampoline.
+Matches Rust `if (a - b).abs() < 1e-15 { 1 } else { 0 }'
+including NaN → 0.  The 1e-15 bit pattern lives in
+`nelisp-phase47-compiler--f64-1e-15-bits' so it stays
+cross-checkable against Rust's own `1e-15_f64.to_bits()'.")
+
 (provide 'nelisp-cc-jit-float)
 
 ;;; nelisp-cc-jit-float.el ends here

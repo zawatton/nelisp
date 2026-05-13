@@ -115,6 +115,10 @@ pub mod elisp_cc_spike {
         pub fn nl_jit_float_gt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_le(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_ge(a: f64, b: f64) -> i64;
+        // Doc 110 §110.C.2.b — EQ-EPS trampoline.  Returns 1 iff
+        // `(a - b).abs() < 1e-15' AND both inputs are ordered (=
+        // not NaN), matching the Rust float.rs body bit-for-bit.
+        pub fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -196,4 +200,9 @@ pub mod elisp_cc_spike {
     pub fn jit_float_gt(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_gt(a, b) } }
     pub fn jit_float_le(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_le(a, b) } }
     pub fn jit_float_ge(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_ge(a, b) } }
+
+    /// Doc 110 §110.C.2.b probe — thin safe wrapper for EQ-EPS.
+    /// Result: 1 iff `(a - b).abs() < 1e-15' AND ordered.
+    /// NaN inputs return 0.
+    pub fn jit_float_eq_eps(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_eq_eps(a, b) } }
 }

@@ -274,12 +274,15 @@ functions `((NAME . ARITY) ...)'."
               (nth 2 sexp) env fenv defuns)))
    ;; Doc 110 §110.C.2.a — flat f64 ordered comparison (NaN →
    ;; false matching Rust's `<' / `>' / `<=' / `>=' semantics).
-   ;; Result is i64 0 or 1 produced in rax (= GP convention,
-   ;; bridges to the `extern "C" fn(f64, f64) -> i64' float.rs
-   ;; trampoline shape).  EQ-EPS is deferred to §110.C.2.b
-   ;; because it needs rodata for the 1e-15 literal + an ANDPD
-   ;; abs-mask + a NaN-aware SETB/SETNP/AND sequence.
-   ((and (consp sexp) (memq (car sexp) '(f64-lt f64-gt f64-le f64-ge)))
+   ;; Doc 110 §110.C.2.b — `f64-eq-eps' (= `(a - b).abs() <
+   ;; 1e-15') uses a different emit sequence (SUBSD + ANDPD
+   ;; abs-mask + UCOMISD vs 1e-15 + SETB/SETNP AND mask) but
+   ;; shares the `:kind f64-cmp' IR shape with the ordered
+   ;; cases.  Result is i64 0 or 1 produced in rax (= GP
+   ;; convention, bridges to the `extern \"C\" fn(f64, f64) ->
+   ;; i64' float.rs trampoline shape).
+   ((and (consp sexp)
+         (memq (car sexp) '(f64-lt f64-gt f64-le f64-ge f64-eq-eps)))
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :f64-cmp-arity (car sexp) sexp)))
@@ -923,25 +926,90 @@ ships in §110.C.2.b."
     ;; reuses the placed leaves without re-eval.
     (nelisp-phase47-compiler--emit-f64-leaf-into b buf 'xmm1)
     (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
-    (let ((ucomisd-args
-           (cond
-            ;; LT / LE: compare b vs a (= swap order so SETA / SETAE
-            ;; tests "b above a ordered" = "a below b ordered").
-            ((memq op '(f64-lt f64-le)) (list 'xmm1 'xmm0))
-            ;; GT / GE: compare a vs b directly.
-            ((memq op '(f64-gt f64-ge)) (list 'xmm0 'xmm1))
-            (t (signal 'nelisp-phase47-compiler-error
-                       (list :unknown-f64-cmp-op op)))))
-          (setcc-mnemonic
-           (cond
-            ((memq op '(f64-lt f64-gt)) 'seta)   ; strict ordered above
-            ((memq op '(f64-le f64-ge)) 'setae)  ; ordered above-or-equal
-            (t (signal 'nelisp-phase47-compiler-error
-                       (list :unknown-f64-cmp-op op))))))
-      (nelisp-asm-x86_64-ucomisd-reg-reg
-       buf (nth 0 ucomisd-args) (nth 1 ucomisd-args))
-      (nelisp-asm-x86_64-setcc-al buf setcc-mnemonic)
-      (nelisp-asm-x86_64-movzx-eax-al buf))))
+    (cond
+     ((eq op 'f64-eq-eps)
+      (nelisp-phase47-compiler--emit-f64-eq-eps buf))
+     (t
+      (let ((ucomisd-args
+             (cond
+              ;; LT / LE: compare b vs a (= swap order so SETA / SETAE
+              ;; tests "b above a ordered" = "a below b ordered").
+              ((memq op '(f64-lt f64-le)) (list 'xmm1 'xmm0))
+              ;; GT / GE: compare a vs b directly.
+              ((memq op '(f64-gt f64-ge)) (list 'xmm0 'xmm1))
+              (t (signal 'nelisp-phase47-compiler-error
+                         (list :unknown-f64-cmp-op op)))))
+            (setcc-mnemonic
+             (cond
+              ((memq op '(f64-lt f64-gt)) 'seta)   ; strict ordered above
+              ((memq op '(f64-le f64-ge)) 'setae)  ; ordered above-or-equal
+              (t (signal 'nelisp-phase47-compiler-error
+                         (list :unknown-f64-cmp-op op))))))
+        (nelisp-asm-x86_64-ucomisd-reg-reg
+         buf (nth 0 ucomisd-args) (nth 1 ucomisd-args))
+        (nelisp-asm-x86_64-setcc-al buf setcc-mnemonic)
+        (nelisp-asm-x86_64-movzx-eax-al buf))))))
+
+;; Doc 110 §110.C.2.b — EQ-EPS (= `(a - b).abs() < 1e-15') constants.
+;; The 1e-15 bit pattern is the IEEE 754 double-precision representation
+;; of the f64 literal `1e-15' (= the abs tolerance hardcoded in
+;; `build-tool/src/jit/float.rs::nl_jit_float_eq_eps' as `1e-15').
+;; Verified by `tests/elisp_cc_jit_float_probe.rs::float_eq_eps_*' against
+;; Rust's own `1e-15_f64' so any drift between the two surfaces in CI.
+
+(defconst nelisp-phase47-compiler--f64-1e-15-bits
+  #x3CD203AF9EE75616
+  "IEEE 754 double-precision bit pattern for the f64 literal `1e-15'.
+Sign=0, biased exponent = 0x3CD (= 973 unbiased -50, so 2^-50 *
+mantissa), mantissa = 0x203AF9EE75616.  Cross-verified against
+Rust's `1e-15_f64.to_bits()' by the §110.C.2.b probe.")
+
+(defconst nelisp-phase47-compiler--f64-abs-mask
+  #x7FFFFFFFFFFFFFFF
+  "IEEE 754 double-precision sign-clear mask (= clear bit 63).
+ANDed against `(a - b)' produces `|a - b|' for the EQ-EPS
+predicate.  NaN inputs propagate through (= NaN bit pattern with
+sign cleared is still NaN), so the subsequent UCOMISD against
+1e-15 sets PF=1 → the SETNP cl branch masks the result to 0.")
+
+(defun nelisp-phase47-compiler--emit-f64-eq-eps (buf)
+  "Emit the EQ-EPS body sequence (Doc 110 §110.C.2.b).
+Pre: xmm0 holds A, xmm1 holds B (caller is `--emit-f64-cmp').
+Post: rax holds 1 iff |A - B| < 1e-15 AND ordered (= match Rust
+`(a - b).abs() < 1e-15' including NaN → 0).
+
+Avoids `.rodata' entirely — the abs-mask and 1e-15 constants
+are materialised via `MOV r10, imm64' + `MOVQ xmm1, r10'.  Cost
+~63 bytes of body vs ~30 with rodata, traded against not needing
+the ELF writer to grow a `.rodata' section + R_X86_64_PC32
+relocations.  Rodata path is future Doc 112 work.
+
+Sequence:
+
+  SUBSD xmm0, xmm1            ; xmm0 = a - b
+  MOV   r10, 0x7FFFFFFFFFFFFFFF
+  MOVQ  xmm1, r10             ; xmm1 = abs-mask (low 64)
+  ANDPD xmm0, xmm1            ; xmm0 = |a - b| (sign bit cleared)
+  MOV   r10, <bits-of-1e-15>
+  MOVQ  xmm1, r10
+  UCOMISD xmm0, xmm1          ; flags = cmp(|a-b|, 1e-15)
+  SETB  al                    ; al = 1 if CF=1 (below OR unordered)
+  SETNP cl                    ; cl = 1 if PF=0 (ordered)
+  AND   al, cl                ; al &= cl (= ordered AND below)
+  MOVZX eax, al               ; rax = zext(al)"
+  (nelisp-asm-x86_64-subsd-reg-reg buf 'xmm0 'xmm1)
+  (nelisp-asm-x86_64-mov-imm64 buf 'r10
+                                nelisp-phase47-compiler--f64-abs-mask)
+  (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'r10)
+  (nelisp-asm-x86_64-andpd-reg-reg buf 'xmm0 'xmm1)
+  (nelisp-asm-x86_64-mov-imm64 buf 'r10
+                                nelisp-phase47-compiler--f64-1e-15-bits)
+  (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'r10)
+  (nelisp-asm-x86_64-ucomisd-reg-reg buf 'xmm0 'xmm1)
+  (nelisp-asm-x86_64-setcc-al buf 'setb)
+  (nelisp-asm-x86_64-setcc-byte-r8 buf 'setnp 'cl)
+  (nelisp-asm-x86_64-and-r8-r8 buf 'al 'cl)
+  (nelisp-asm-x86_64-movzx-eax-al buf))
 
 (defun nelisp-phase47-compiler--emit-value (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).

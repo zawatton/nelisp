@@ -1104,6 +1104,248 @@ epilogue layout."
        (f64-lt (f64-add a b) a)))
    :type 'nelisp-phase47-compiler-error))
 
+;; ---- §110.C.2.b (1) ANDPD reg-reg ----
+;;
+;; 66 0F 54 ModR/M.  Used for the abs-mask step of EQ-EPS (=
+;; `xmm0 AND 0x7FFFFFFFFFFFFFFF' clears the sign bit of the low
+;; 64-bit half).
+
+(ert-deftest nelisp-asm-x86_64-f64/andpd-xmm0-xmm1 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-andpd-reg-reg b 'xmm0 'xmm1)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x0F #x54 #xC1))))
+
+(ert-deftest nelisp-asm-x86_64-f64/andpd-xmm8-xmm0 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-andpd-reg-reg b 'xmm8 'xmm0)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x44 #x0F #x54 #xC0))))
+
+(ert-deftest nelisp-asm-x86_64-f64/andpd-pos-4 ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-andpd-reg-reg b 'xmm0 'xmm1)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 4))))
+
+;; ---- §110.C.2.b (2) MOVQ xmm, r64 ----
+;;
+;; 66 REX.W [REX.R/B?] 0F 6E ModR/M.  Transfers a 64-bit GP value
+;; into the low 64 bits of an xmm register, zero-extending the
+;; upper 64.  Used to materialise f64 immediates without going
+;; through `.rodata' for the §110.C.2.b EQ-EPS swap.
+
+;; MOVQ xmm0, rax — 66 48 0F 6E C0
+;;   REX.W=1, no R or B (xmm0 / rax both low-bank) → 0x48
+;;   ModR/M: mod=11, reg=000 (xmm0), rm=000 (rax) = 0xC0
+(ert-deftest nelisp-asm-x86_64-f64/movq-xmm0-rax ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-movq-xmm-r64 b 'xmm0 'rax)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x48 #x0F #x6E #xC0))))
+
+;; MOVQ xmm1, r10 — 66 49 0F 6E CA
+;;   REX.W=1, REX.B=1 (r10) → 0x49
+;;   ModR/M: mod=11, reg=001 (xmm1), rm=010 (r10.low3) = 0xCA
+(ert-deftest nelisp-asm-x86_64-f64/movq-xmm1-r10 ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-movq-xmm-r64 b 'xmm1 'r10)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x49 #x0F #x6E #xCA))))
+
+;; MOVQ xmm8, rax — 66 4C 0F 6E C0 (= REX.R=1 for xmm8, no B)
+(ert-deftest nelisp-asm-x86_64-f64/movq-xmm8-rax ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-movq-xmm-r64 b 'xmm8 'rax)))
+           (nelisp-asm-x86_64-f64-test--ub #x66 #x4C #x0F #x6E #xC0))))
+
+(ert-deftest nelisp-asm-x86_64-f64/movq-xmm-r64-pos-5 ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-movq-xmm-r64 b 'xmm0 'rax)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 5))))
+
+;; ---- §110.C.2.b (3) AND r8, r8 (8-bit AND) ----
+;;
+;; 20 ModR/M.  Used to combine SETB and SETNP into the EQ-EPS
+;; NaN mask (= ordered AND below = match Rust semantics).
+
+;; AND al, cl — 20 C8 (= mod=11, reg=001 [cl], rm=000 [al])
+(ert-deftest nelisp-asm-x86_64-f64/and-al-cl ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-and-r8-r8 b 'al 'cl)))
+           (nelisp-asm-x86_64-f64-test--ub #x20 #xC8))))
+
+;; AND cl, al — 20 C1 (mod=11, reg=000 [al], rm=001 [cl])
+(ert-deftest nelisp-asm-x86_64-f64/and-cl-al ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-and-r8-r8 b 'cl 'al)))
+           (nelisp-asm-x86_64-f64-test--ub #x20 #xC1))))
+
+;; Rejects non-legacy byte regs (= dil/sil/r8b etc.)
+(ert-deftest nelisp-asm-x86_64-f64/and-r8-rejects-modern-byte ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (should-error (nelisp-asm-x86_64-and-r8-r8 b 'dil 'al)
+                  :type 'nelisp-asm-x86_64-error)
+    (should-error (nelisp-asm-x86_64-and-r8-r8 b 'al 'dil)
+                  :type 'nelisp-asm-x86_64-error)))
+
+(ert-deftest nelisp-asm-x86_64-f64/and-r8-pos-2 ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-and-r8-r8 b 'al 'cl)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 2))))
+
+;; ---- §110.C.2.b (4) SETcc byte-r8 generalized ----
+;;
+;; New generalized `setcc-byte-r8' for targeting cl / dl / bl in
+;; addition to the existing `setcc-al' wrapper.
+
+;; SETB al via the generalized path — same bytes as setcc-al
+(ert-deftest nelisp-asm-x86_64-f64/setcc-byte-al-setb ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-setcc-byte-r8 b 'setb 'al)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x92 #xC0))))
+
+;; SETNP cl — 0F 9B C1
+(ert-deftest nelisp-asm-x86_64-f64/setcc-byte-cl-setnp ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-setcc-byte-r8 b 'setnp 'cl)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x9B #xC1))))
+
+;; SETE dl — 0F 94 C2
+(ert-deftest nelisp-asm-x86_64-f64/setcc-byte-dl-sete ()
+  (should (equal
+           (nelisp-asm-x86_64-f64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-setcc-byte-r8 b 'sete 'dl)))
+           (nelisp-asm-x86_64-f64-test--ub #x0F #x94 #xC2))))
+
+(ert-deftest nelisp-asm-x86_64-f64/setcc-byte-rejects-unknown-reg ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (should-error (nelisp-asm-x86_64-setcc-byte-r8 b 'setb 'dil)
+                  :type 'nelisp-asm-x86_64-error)
+    (should-error (nelisp-asm-x86_64-setcc-byte-r8 b 'setb 'r8b)
+                  :type 'nelisp-asm-x86_64-error)))
+
+;; ---- §110.C.2.b f64-eq-eps integration smoke ----
+
+(ert-deftest nelisp-asm-x86_64-f64/parser-f64-eq-eps-shape ()
+  (let* ((ir (nelisp-phase47-compiler--parse-stmt
+              '(defun fn ((a :type f64) (b :type f64)) (f64-eq-eps a b))
+              nil nil nil))
+         (body (plist-get ir :body)))
+    (should (eq (plist-get body :kind) 'f64-cmp))
+    (should (eq (plist-get body :op) 'f64-eq-eps))))
+
+;; Total byte length:
+;;   prologue 21 + body 63 + epilogue 5 = 89 bytes
+;; Body (63 bytes):
+;;   2 × MOVSD load              =  10
+;;   SUBSD xmm0, xmm1            =   4
+;;   MOV r10, imm64 (abs-mask)   =  10
+;;   MOVQ xmm1, r10              =   5
+;;   ANDPD xmm0, xmm1            =   4
+;;   MOV r10, imm64 (1e-15 bits) =  10
+;;   MOVQ xmm1, r10              =   5
+;;   UCOMISD xmm0, xmm1          =   4
+;;   SETB al                     =   3
+;;   SETNP cl                    =   3
+;;   AND al, cl                  =   2
+;;   MOVZX eax, al               =   3
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-eq-eps-byte-length ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-eq-eps a b)))))
+    (should (= (length bytes) 89))))
+
+;; Spot-check key bytes in the body to lock the canonical
+;; sequence in place:
+;;   byte 23 (= prologue 21 + leaf-B 5 + leaf-A 5 - 8) ... let me
+;;   recompute below.
+;;
+;; Layout after prologue (= bytes 0..20):
+;;   21..25  movsd xmm1, [rbp-16]
+;;   26..30  movsd xmm0, [rbp-8]
+;;   31..34  subsd xmm0, xmm1       (F2 0F 5C C1)
+;;   35..44  mov r10, abs-mask      (49 BA 8b 8b 8b 8b 8b 8b 8b 8b)
+;;             little-endian: FF FF FF FF FF FF FF 7F
+;;   45..49  movq xmm1, r10         (66 49 0F 6E CA)
+;;   50..53  andpd xmm0, xmm1       (66 0F 54 C1)
+;;   54..63  mov r10, 1e-15 bits    (49 BA 16 56 e7 9e af 03 d2 3c)
+;;   64..68  movq xmm1, r10         (66 49 0F 6E CA)
+;;   69..72  ucomisd xmm0, xmm1     (66 0F 2E C1)
+;;   73..75  setb al                (0F 92 C0)
+;;   76..78  setnp cl               (0F 9B C1)
+;;   79..80  and al, cl             (20 C8)
+;;   81..83  movzx eax, al          (0F B6 C0)
+;;   84..88  epilogue (mov rsp,rbp; pop rbp; ret)
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-eq-eps-key-instructions ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-eq-eps a b)))))
+    ;; SUBSD opcode at body-start + 8 (after 2 MOVSD loads)
+    (should (= (aref bytes 31) #xF2))  ; F2 prefix
+    (should (= (aref bytes 33) #x5C))  ; SUBSD opcode
+    ;; MOV r10, imm64 starts at byte 35: REX.W+R.B (= 0x49)
+    (should (= (aref bytes 35) #x49))  ; REX
+    (should (= (aref bytes 36) #xBA))  ; MOV r10 opcode (= B8 + 2)
+    ;; abs-mask low byte (= 0xFF) at byte 37 (little-endian)
+    (should (= (aref bytes 37) #xFF))
+    (should (= (aref bytes 38) #xFF))
+    (should (= (aref bytes 39) #xFF))
+    (should (= (aref bytes 40) #xFF))
+    (should (= (aref bytes 41) #xFF))
+    (should (= (aref bytes 42) #xFF))
+    (should (= (aref bytes 43) #xFF))
+    (should (= (aref bytes 44) #x7F))  ; abs-mask high byte
+    ;; MOVQ xmm1, r10 at byte 45
+    (should (= (aref bytes 45) #x66))
+    (should (= (aref bytes 46) #x49))
+    (should (= (aref bytes 49) #xCA))  ; ModR/M
+    ;; ANDPD xmm0, xmm1 at byte 50
+    (should (= (aref bytes 50) #x66))
+    (should (= (aref bytes 52) #x54))  ; ANDPD opcode
+    (should (= (aref bytes 53) #xC1))
+    ;; 1e-15 bit pattern at bytes 56..63 (= after `49 BA' prefix
+    ;; at 54..55).  Little-endian 0x3CD203AF9EE75616:
+    ;;   0x16 0x56 0xE7 0x9E 0xAF 0x03 0xD2 0x3C
+    (should (= (aref bytes 54) #x49))
+    (should (= (aref bytes 55) #xBA))
+    (should (= (aref bytes 56) #x16))
+    (should (= (aref bytes 57) #x56))
+    (should (= (aref bytes 58) #xE7))
+    (should (= (aref bytes 59) #x9E))
+    (should (= (aref bytes 60) #xAF))
+    (should (= (aref bytes 61) #x03))
+    (should (= (aref bytes 62) #xD2))
+    (should (= (aref bytes 63) #x3C))  ; 1e-15 high byte
+    ;; SETB al + SETNP cl + AND al,cl + MOVZX at the tail
+    (should (= (aref bytes 73) #x0F))
+    (should (= (aref bytes 74) #x92))  ; SETB
+    (should (= (aref bytes 75) #xC0))  ; AL
+    (should (= (aref bytes 76) #x0F))
+    (should (= (aref bytes 77) #x9B))  ; SETNP
+    (should (= (aref bytes 78) #xC1))  ; CL
+    (should (= (aref bytes 79) #x20))  ; AND opcode
+    (should (= (aref bytes 80) #xC8))  ; al, cl ModR/M
+    (should (= (aref bytes 81) #x0F))
+    (should (= (aref bytes 82) #xB6))  ; MOVZX
+    (should (= (aref bytes 83) #xC0))))
+
 (provide 'nelisp-asm-x86_64-f64-test)
 
 ;;; nelisp-asm-x86_64-f64-test.el ends here
