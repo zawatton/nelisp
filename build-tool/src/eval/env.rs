@@ -110,30 +110,14 @@ pub struct Env {
     /// `builtins::dispatch' fallback consults this map before
     /// surfacing `EvalError::UnboundFunction`.
     pub extern_builtins: HashMap<String, ExternBuiltin>,
-    /// Phase 7 Stage 7.4.c (Doc 68 §2.7) — takeover flag for the
-    /// elisp-side `nelisp--apply-fn' dispatch.  When `true',
-    /// `eval/mod.rs::apply_combiner' delegates the plain-function and
-    /// lambda-head paths to elisp instead of invoking the Rust
-    /// `apply_function' helpers directly.  Stage 7.4.e (Doc 70):
-    /// default is `true' once bootstrap completes (= elisp dispatch
-    /// is the runtime path).  Set the `NELISP_USE_RUST_APPLY' env var
-    /// to a non-empty value to keep Rust dispatch as an escape hatch.
-    /// Runtime-mutable via the `nelisp--set-use-elisp-apply' builtin
-    /// so ERT can flip it inside a single subprocess.
+    /// Stage 7.4.c takeover flag — `true' routes apply_combiner's
+    /// plain-fn / lambda-head paths through elisp `nelisp--apply-fn'
+    /// (= default post-bootstrap; flip via `NELISP_USE_RUST_APPLY'
+    /// env var or the `nelisp--set-use-elisp-apply' builtin).
     pub use_elisp_apply: bool,
-    /// Phase 7 Stage 7.4.c (Doc 68 §2.7) — re-entry guard for the
-    /// elisp-apply takeover.  Counts active `delegate_to_elisp_apply'
-    /// frames; when > 0 the apply_combiner skips its delegate gate so
-    /// that the dispatcher's own machinery (= helpers, predicates,
-    /// macro expansion phases, the elisp defuns they internally
-    /// invoke like `consp' / `null' / `nth') runs through the Rust
-    /// `apply_function' path without recursing back through itself.
-    /// Trade-off: only the *outermost* user-level call is exercised
-    /// through the elisp dispatcher.  Cross-equivalence ERT verifies
-    /// that one entry through the elisp path computes the same final
-    /// value as Rust dispatch would; deep / recursive coverage is
-    /// Stage 7.4.d's default-flip job (= every user-entry-point call
-    /// flows through elisp by default).
+    /// Re-entry guard for the elisp-apply takeover; when > 0 the
+    /// dispatcher uses Rust direct-apply to avoid recursing back into
+    /// the elisp `nelisp--apply-fn' through its own helpers.
     pub delegation_depth: u32,
 }
 
@@ -417,16 +401,17 @@ impl Env {
 
     /// Walk the lexical frames inside-out, then fall through to the
     /// global value cell.  Used by symbol evaluation.
+    /// Innermost-first lexical frame walk (Doc 102 §3.b helper).
+    fn find_frame_cell(&self, name: &str) -> Option<&FrameCell> {
+        self.frames.iter().rev().find_map(|f| f.get(name))
+    }
+
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
-        for frame in self.frames.iter().rev() {
-            if let Some(cell) = frame.get(name) {
-                return Ok(cell.value.clone());
-            }
+        if let Some(cell) = self.find_frame_cell(name) {
+            return Ok(cell.value.clone());
         }
         match self.globals.get(name) {
-            Some(SymbolEntry {
-                value: Some(v), ..
-            }) => Ok(v.clone()),
+            Some(SymbolEntry { value: Some(v), .. }) => Ok(v.clone()),
             _ => Err(EvalError::UnboundVariable(name.to_string())),
         }
     }
@@ -437,26 +422,16 @@ impl Env {
     /// rejected.  Lexical writes go through the FrameCell so any
     /// closure that captured the same cell sees the new value.
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
-        if let Some(entry) = self.globals.get(name) {
-            if entry.constant {
-                return Err(EvalError::SettingConstant(name.to_string()));
-            }
+        if matches!(self.globals.get(name), Some(SymbolEntry { constant: true, .. })) {
+            return Err(EvalError::SettingConstant(name.to_string()));
         }
-        for frame in self.frames.iter().rev() {
-            if let Some(cell) = frame.get(name) {
-                // SAFETY: `value' is owned (= caller-evaluated, no
-                // outstanding `&Sexp' borrow into the cell's slot).
-                // Same Phase A.2.1 setcar discipline applies — the
-                // eval loop never holds a `&Sexp' alias into a frame
-                // slot across a `set_value' call.
-                unsafe { cell.set_value(value.clone()) };
-                return Ok(value);
-            }
+        if let Some(cell) = self.find_frame_cell(name) {
+            // SAFETY: `value' is owned, no outstanding `&Sexp' borrow
+            // into the cell's slot (Phase A.2.1 setcar discipline).
+            unsafe { cell.set_value(value.clone()) };
+            return Ok(value);
         }
-        let entry = self
-            .globals
-            .entry(name.to_string())
-            .or_insert_with(SymbolEntry::new);
+        let entry = self.globals.entry(name.to_string()).or_insert_with(SymbolEntry::new);
         entry.value = Some(value.clone());
         Ok(value)
     }
@@ -548,17 +523,12 @@ impl Env {
     /// `boundp` — true iff `name` resolves in any lexical frame or
     /// has a global value cell.
     pub fn is_bound(&self, name: &str) -> bool {
-        for frame in self.frames.iter().rev() {
-            if frame.contains_key(name) {
-                return true;
-            }
+        if self.find_frame_cell(name).is_some() {
+            return true;
         }
         matches!(
             self.globals.get(name),
-            Some(SymbolEntry {
-                value: Some(_),
-                ..
-            })
+            Some(SymbolEntry { value: Some(_), .. })
         )
     }
 
@@ -584,19 +554,18 @@ impl Env {
     /// closures, fixed 2026-05-06; storage migrated to layout-pinned
     /// NlCellRef in Phase A.4, 2026-05-09).
     pub fn capture_lexical(&self) -> Sexp {
+        // Single-pass: walk frames innermost-first for first-occurrence
+        // dedup (= innermost binding wins); `push_captured' consumes
+        // the result order-independently.
+        let mut acc = Sexp::Nil;
         let mut seen = std::collections::HashSet::new();
-        let mut entries: Vec<(String, FrameCell)> = Vec::new();
         for frame in self.frames.iter().rev() {
             for (k, cell) in frame {
                 if seen.insert(k.clone()) {
-                    entries.push((k.clone(), cell.clone()));
+                    let pair = Sexp::cons(Sexp::Symbol(k.clone()), Sexp::Cell(cell.clone()));
+                    acc = Sexp::cons(pair, acc);
                 }
             }
-        }
-        let mut acc = Sexp::Nil;
-        for (k, cell) in entries.into_iter().rev() {
-            let pair = Sexp::cons(Sexp::Symbol(k), Sexp::Cell(cell));
-            acc = Sexp::cons(pair, acc);
         }
         acc
     }
@@ -607,44 +576,26 @@ impl Env {
     /// shared with the original frame; otherwise the value is wrapped
     /// in a fresh cell (= legacy alist input still works).
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
+        // Closure write-through: when value is `Sexp::Cell', install the
+        // SAME Rc so the closure shares the originating frame's slot.
         let mut frame: Frame = HashMap::new();
-        let mut cur: Sexp = alist.clone();
-        loop {
-            let next = match &cur {
-                Sexp::Nil => break,
-                Sexp::Cons(outer) => {
-                    let car_inner = outer.car.clone();
-                    if let Sexp::Cons(inner) = &car_inner {
-                        if let Sexp::Symbol(s) = &inner.car {
-                            // Closure write-through: when value is a
-                            // `Sexp::Cell`, install the SAME Rc so the
-                            // closure shares the originating frame's
-                            // slot; otherwise wrap in a fresh cell.
-                            let value_inner = inner.cdr.clone();
-                            let cell = match value_inner {
-                                Sexp::Cell(c) => c,
-                                v => FrameCell::new(v),
-                            };
-                            frame.insert(s.clone(), cell);
-                        } else {
-                            return Err(EvalError::Internal(
-                                "closure env entry name not a symbol".into(),
-                            ));
-                        }
-                    } else {
-                        return Err(EvalError::Internal(
-                            "closure env entry not a cons".into(),
-                        ));
-                    }
-                    outer.cdr.clone()
-                }
-                _ => {
-                    return Err(EvalError::Internal(
-                        "closure env not a proper list".into(),
-                    ))
-                }
+        let mut cur = alist;
+        while let Sexp::Cons(outer) = cur {
+            let Sexp::Cons(inner) = &outer.car else {
+                return Err(EvalError::Internal("closure env entry not a cons".into()));
             };
-            cur = next;
+            let Sexp::Symbol(s) = &inner.car else {
+                return Err(EvalError::Internal("closure env entry name not a symbol".into()));
+            };
+            let cell = match &inner.cdr {
+                Sexp::Cell(c) => c.clone(),
+                v => FrameCell::new(v.clone()),
+            };
+            frame.insert(s.clone(), cell);
+            cur = &outer.cdr;
+        }
+        if !matches!(cur, Sexp::Nil) {
+            return Err(EvalError::Internal("closure env not a proper list".into()));
         }
         self.frames.push(frame);
         Ok(())
