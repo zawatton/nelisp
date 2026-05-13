@@ -1,40 +1,22 @@
-//! Special form dispatcher — Phase 8.0.2 (Doc 44 §3.3 LOCKED).
-//!
-//! Special forms differ from ordinary functions in that they decide
-//! themselves whether (and when) to evaluate each argument.  The
-//! evaluator in `super::eval` calls [`apply_special`] before any
-//! generic argument evaluation; if the head symbol matches one of the
-//! known special forms, control transfers here.
-//!
-//! Per-form notes are inline.  All forms return `Ok(Some(value))` on
-//! success, `Ok(None)` if the head is not a known special form (so
-//! the dispatcher falls through to function/macro lookup), and
-//! `Err(EvalError)` on invalid syntax / sub-form failure.
+//! Special-form dispatcher — head-controlled argument evaluation.
+//! [`apply_special`] returns `Ok(Some(v))' on match, `Ok(None)' to
+//! fall through to function/macro lookup, `Err' on syntax error.
 
 use super::env::Env;
 use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
 use super::{eval, eval_arg_list, list_elements};
 
-/// Dispatch a special form by name.  Returns `Ok(None)` when `name`
-/// is not a special form so the evaluator can continue with function
-/// lookup; returns `Ok(Some(value))` when the form was handled.
+/// Dispatch the 13 Tier 1 irreducible special forms.  Tier 2 forms
+/// (`cond' / `when' / `defvar' / `dolist' / etc.) are elisp macros
+/// in `lisp/nelisp-stdlib-eval-special.el' — they reach this
+/// function as `Ok(None)' and the caller falls through to macro
+/// expansion.
 pub fn apply_special(
     name: &str,
     args: &Sexp,
     env: &mut Env,
 ) -> Result<Option<Sexp>, EvalError> {
-    // Phase 7 Stage 7.3.d (Doc 67 §3.4) — only the 13 Tier 1
-    // irreducible special forms remain here.  All Tier 2 forms
-    // (cond / when / unless / and / or / prog1 / prog2 /
-    //  save-excursion / save-restriction / setq-default /
-    //  defvar / defvar-local / defconst / defcustom / defgroup /
-    //  dolist / dotimes / push / pop / defun / defmacro / cl-defun)
-    // have been migrated to elisp macros installed by
-    // lisp/nelisp-stdlib-eval-special.el (= STDLIB_SOURCES Layer A
-    // 1番目).  When `apply_special' returns Ok(None), the caller
-    // falls through to fcell lookup in `apply_combiner', expanding
-    // the macro and re-evaluating the expansion.
     let result = match name {
         "quote" => sf_quote(args)?,
         "function" => sf_function(args, env)?,
@@ -106,22 +88,21 @@ fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
-fn extract_lambda_args(lam: &Sexp) -> Result<Sexp, EvalError> {
+fn lambda_rest(lam: &Sexp) -> Result<(Sexp, Sexp), EvalError> {
     if let Sexp::Cons(outer) = lam {
         if let Sexp::Cons(rest) = &outer.cdr {
-            return Ok(rest.car.clone());
+            return Ok((rest.car.clone(), rest.cdr.clone()));
         }
     }
-    Err(EvalError::Internal("lambda has no formals".into()))
+    Err(EvalError::Internal("malformed lambda".into()))
+}
+
+fn extract_lambda_args(lam: &Sexp) -> Result<Sexp, EvalError> {
+    Ok(lambda_rest(lam)?.0)
 }
 
 fn extract_lambda_body(lam: &Sexp) -> Result<Sexp, EvalError> {
-    if let Sexp::Cons(outer) = lam {
-        if let Sexp::Cons(rest) = &outer.cdr {
-            return Ok(rest.cdr.clone());
-        }
-    }
-    Err(EvalError::Internal("lambda has no body".into()))
+    Ok(lambda_rest(lam)?.1)
 }
 
 // ---------- if ----------
@@ -151,61 +132,51 @@ fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 // ---------- let / let* ----------
 
 fn sf_let(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (let ((VAR VALUE) ...) BODY...) — value forms eval'd in *outer* env.
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "let".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
-    let bindings = list_elements(&parts[0])?;
-    let mut values = Vec::with_capacity(bindings.len());
-    for b in &bindings {
-        let (name, val) = parse_let_binding(b, env, /* eval_in_outer = */ true)?;
-        values.push((name, val));
-    }
-    env.push_frame();
-    for (name, val) in values {
-        env.bind_local(&name, val);
-    }
-    let result = eval_body(&parts[1..], env);
-    env.pop_frame();
-    result
+    sf_let_common(args, env, "let", /*sequential=*/ false)
 }
 
 fn sf_let_star(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (let* ((VAR VALUE) ...) BODY...) — sequential bind.
+    sf_let_common(args, env, "let*", /*sequential=*/ true)
+}
+
+fn sf_let_common(args: &Sexp, env: &mut Env, name: &str, sequential: bool) -> Result<Sexp, EvalError> {
     let parts = args_vec(args)?;
     if parts.is_empty() {
         return Err(EvalError::WrongNumberOfArguments {
-            function: "let*".into(),
+            function: name.into(),
             expected: "≥1".into(),
             got: 0,
         });
     }
     let bindings = list_elements(&parts[0])?;
+    // `let' evaluates values in the OUTER env first (= before push);
+    // `let*' evaluates inside the growing frame.
+    let pre_evaluated = if sequential {
+        None
+    } else {
+        let mut values = Vec::with_capacity(bindings.len());
+        for b in &bindings {
+            values.push(parse_let_binding(b, env)?);
+        }
+        Some(values)
+    };
     env.push_frame();
-    for b in &bindings {
-        match parse_let_binding(b, env, /* eval_in_outer = */ false) {
-            Ok((name, val)) => env.bind_local(&name, val),
-            Err(e) => {
-                env.pop_frame();
-                return Err(e);
+    let result = (|| -> Result<Sexp, EvalError> {
+        if let Some(values) = pre_evaluated {
+            for (n, v) in values { env.bind_local(&n, v); }
+        } else {
+            for b in &bindings {
+                let (n, v) = parse_let_binding(b, env)?;
+                env.bind_local(&n, v);
             }
         }
-    }
-    let result = eval_body(&parts[1..], env);
+        eval_body(&parts[1..], env)
+    })();
     env.pop_frame();
     result
 }
 
-fn parse_let_binding(
-    b: &Sexp,
-    env: &mut Env,
-    _eval_in_outer: bool,
-) -> Result<(String, Sexp), EvalError> {
+fn parse_let_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
     match b {
         Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
         Sexp::Cons(_) => {
@@ -336,26 +307,19 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         Sexp::Symbol(s) if s == "nil" => None,
         Sexp::Symbol(s) => Some(s.clone()),
         Sexp::Nil => None,
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbol or nil".into(),
-                got: other.clone(),
-            })
-        }
+        other => return Err(EvalError::WrongType {
+            expected: "symbol or nil".into(),
+            got: other.clone(),
+        }),
     };
     let protected = &parts[1];
     let handlers: Vec<Sexp> = parts.iter().skip(2).cloned().collect();
     match eval(protected, env) {
         Ok(v) => Ok(v),
-        // `throw' is a control-flow primitive, not an error — let it
-        // pass through `condition-case' so the matching `catch'
-        // upstream can handle it.  Real Emacs has the same rule:
-        // `condition-case' only catches conditions in `error-conditions',
-        // and `no-catch' (= an unhandled `throw') is NOT a subtype of
-        // `error' unless the handler clause explicitly names it.
+        // `throw' is control flow, not error — pass through so the
+        // upstream `catch' can handle it.  Explicit `no-catch'
+        // handler clause catches it here (= Emacs parity).
         Err(EvalError::UncaughtThrow { tag, value }) => {
-            // Allow an explicit `(no-catch ...)' clause to catch it,
-            // matching Emacs' parity.  Otherwise re-raise.
             for handler in &handlers {
                 let h_parts = list_elements(handler)?;
                 if h_parts.is_empty() {
@@ -440,20 +404,13 @@ fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let mut cleanup_err: Option<EvalError> = None;
     for cleanup in parts.iter().skip(1) {
         if let Err(e) = eval(cleanup, env) {
-            // First cleanup error wins; subsequent cleanups still run.
             if cleanup_err.is_none() {
                 cleanup_err = Some(e);
             }
         }
     }
-    // Real Emacs: a cleanup-form failure (= newer error / throw) takes
-    // precedence over the body's failure, because it reflects the most
-    // recent control-flow state.  When cleanups all succeed, the body's
-    // own outcome (= success or original error) is returned unchanged.
-    match cleanup_err {
-        Some(ce) => Err(ce),
-        None => body_result,
-    }
+    // Cleanup error takes precedence over body's outcome (Emacs parity).
+    cleanup_err.map_or(body_result, Err)
 }
 
 // ---------- progn ----------
@@ -466,16 +423,6 @@ fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     }
     Ok(last)
 }
-
-// ---------- pcase removed: see lisp/nelisp-pcase.el ----------
-//
-// Rust-min migration 2026-05-06: pcase was historically a special
-// form here (`sf_pcase' + `pcase_match_binding') with a restricted
-// pattern grammar (literal / quote / cons / keyword).  Moving it to
-// elisp unlocks the richer Emacs grammar (or / and / pred / guard /
-// backquote / let) without growing the Rust core.  The elisp
-// implementation is loaded as part of `Env::new_global'
-// `STDLIB_SOURCES' so it's defined before any consumer parses.
 
 // ---------- catch / throw ----------
 
@@ -517,55 +464,26 @@ fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let value = eval(&parts[1], env)?;
     Err(EvalError::UncaughtThrow { tag, value })
 }
-/// `eq` semantics for `Sexp`.  Symbols match by name, integers by
-/// value, `nil`/`t` by identity, everything else by structural
-/// equality (close enough for the bootstrap; full pointer-eq would
-/// need an arena).
+/// `eq' — symbols by name, integers by value, heap types by
+/// ptr_eq (= same allocation, so cyclic graphs don't recurse).
 pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
     match (a, b) {
         (Sexp::Nil, Sexp::Nil) | (Sexp::T, Sexp::T) => true,
         (Sexp::Int(x), Sexp::Int(y)) => x == y,
         (Sexp::Symbol(x), Sexp::Symbol(y)) => x == y,
-        // Heap types: identity = Rc::ptr_eq (= same allocation).  Per
-        // the type docs on Sexp, every `Rc<RefCell<...>>'-backed
-        // variant has cell identity so `(eq x x)' / `(memq w list)' /
-        // `(assq k alist)' / cl-defstruct slot equality work as
-        // they do in host Emacs.  Without this, walking a tree of
-        // shared cons cells (e.g. window parent/children pointers)
-        // would compare structurally — which on a cyclic graph
-        // recurses forever.
-        // Doc 77c Phase A.2.1: cons identity is now box-pointer
-        // equality on the single `NlConsBoxRef' (= replaces the
-        // legacy two-Rc::ptr_eq AND, since the box owns car+cdr as
-        // a single allocation).
-        (Sexp::Cons(a), Sexp::Cons(b)) => {
-            crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b)
-        }
+        (Sexp::Cons(a), Sexp::Cons(b)) => crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b),
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
-        (Sexp::CharTable(a), Sexp::CharTable(b)) => {
-            crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b)
-        }
-        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
-            crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
-        }
-        // Records (Doc 50 stage 4 / Phase A.4.5): identity through the
-        // single NlRecord allocation.  Two records are `eq' iff they
-        // share the same heap cell — hash-tables and cl-defstruct
-        // values rely on this for mutation-aware sharing.
-        (Sexp::Record(a), Sexp::Record(b)) => {
-            crate::eval::nlrecord::NlRecordRef::ptr_eq(a, b)
-        }
-        // Strings + floats: bootstrap subset uses structural eq
-        // (close enough — Emacs treats short interned strings + small
-        // fixnums similarly; full impl would need an interner).
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b),
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b),
+        (Sexp::Record(a), Sexp::Record(b)) => crate::eval::nlrecord::NlRecordRef::ptr_eq(a, b),
+        // Strings + floats: bootstrap structural eq.
         (Sexp::Str(x), Sexp::Str(y)) => x == y,
         (Sexp::Float(x), Sexp::Float(y)) => x.to_bits() == y.to_bits(),
         _ => false,
     }
 }
 
-/// Re-export `eval_arg_list` for tests if needed.
 #[allow(dead_code)]
 pub(crate) fn _eval_args(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     eval_arg_list(args, env)
