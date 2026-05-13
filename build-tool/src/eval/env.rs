@@ -1,7 +1,6 @@
-//! Symbol table (= `HashMap<String, SymbolEntry>`) + lexical frame stack
-//! (= `Vec<HashMap<String, FrameCell>>`).  Two-cell symbol model (value /
-//! function); lambdas are `(closure CAPTURED-ENV ARGS BODY...)' with the
-//! captured-env as a `((name . cell) ...)' alist.  See Doc 44 §3.3 + §4.
+//! Symbol table + lexical frame stack.  Two-cell symbol model (value /
+//! function); lambdas are `(closure CAPTURED-ENV ARGS BODY...)'.  See
+//! Doc 44 §3.3 + §4.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -11,8 +10,7 @@ use crate::image;
 use super::error::EvalError;
 use super::sexp::Sexp;
 
-/// Host-crate-registered builtin closure (= same shape as internal
-/// `bi_*' helpers).  `Rc' because `Env' is single-threaded.
+/// Host-crate-registered builtin closure.  `Rc' because `Env' is single-threaded.
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
 /// Symbol's two cells (Elisp value/function dichotomy) + plist + constant flag.
@@ -25,20 +23,13 @@ pub struct SymbolEntry {
     pub constant: bool,
 }
 
-impl SymbolEntry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// Write-through cell — `setq' through the captured copy mutates the
-/// originating let-binding's slot (= layout-pinned NlCellRef).
+/// Write-through cell — captured-closure `setq' mutates the originating
+/// let-binding's slot (= layout-pinned NlCellRef).
 pub type FrameCell = crate::eval::nlcell::NlCellRef;
 pub type Frame = HashMap<String, FrameCell>;
 
-/// Runtime environment: globals + lexical frame stack + recursion
-/// guard + host-crate extern-builtin registry + Stage 7.4.c apply
-/// takeover flags.
+/// Runtime environment: globals + lexical frame stack + recursion guard
+/// + extern-builtin registry + Stage 7.4.c apply takeover flags.
 pub struct Env {
     pub globals: HashMap<String, SymbolEntry>,
     /// Innermost frame is last.
@@ -53,11 +44,8 @@ pub struct Env {
 }
 
 impl Env {
-    /// Zero-state Env with no globals / frames / extern builtins.  The
-    /// `Env::new_global` / `empty` / `new_global_no_stdlib` ctors are
-    /// thin wrappers that pick `max_recursion` and run the rest of the
-    /// startup pipeline.  Doc 102 Phase 6 (option a): all three ctors
-    /// share this one literal site so adding a field touches one place.
+    /// Zero-state Env — the 3 public ctors share this one literal site so
+    /// adding a field touches one place (Doc 102 Phase 6 option a).
     fn fresh(max_recursion: u32) -> Self {
         Env {
             globals: HashMap::new(),
@@ -70,15 +58,14 @@ impl Env {
         }
     }
 
-    /// Construct a globals-only environment with all built-ins
-    /// installed.  Equivalent to GNU Emacs' empty-buffer top-level.
+    /// Globals-only environment with all built-ins installed (= GNU
+    /// Emacs' empty-buffer top-level equivalent).
+    ///
+    /// STDLIB_IMAGES are frozen-heap `.image' files baked by `nelisp-baker'.
+    /// Load-order rationale lives in `nelisp-baker.rs' STDLIB_FILES + each
+    /// `.el' header.  `decode_v3_into' streams straight into `env.globals'
+    /// (no eval, no reader — Doc 98 §98.3).
     pub fn new_global() -> Self {
-        // STDLIB_IMAGES: frozen-heap `.image' files baked by
-        // `nelisp-baker' from `lisp/*.el'.  Load-order rationale
-        // (= which file depends on which) lives in `nelisp-baker.rs'
-        // STDLIB_FILES + each `.el' file header.  `decode_v3_into'
-        // streams globals straight into `env.globals' — no eval, no
-        // reader (Doc 98 §98.3).
         const STDLIB_IMAGES: &[(&str, &[u8])] = &[
             ("nelisp-jit-substrate.el", include_bytes!("../../../lisp/nelisp-jit-substrate.el.image")),
             ("nelisp-syscall-table.el", include_bytes!("../../../lisp/nelisp-syscall-table.el.image")),
@@ -108,21 +95,9 @@ impl Env {
             ("nelisp-stdlib-fast-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-fast-hash.el.image")),
             ("nelisp-env.el", include_bytes!("../../../lisp/nelisp-env.el.image")),
         ];
-        // max_recursion=1024: elisp-apply takeover (~10-15 eval frames
-        // per outermost user-level call) + macro expansion overhead;
-        // bounded under cargo test's 2MB thread stack (see
-        // `recursion_depth_guard').  `use_elisp_apply' stays off during
-        // bootstrap (= dispatcher in `nelisp-stdlib-eval-core.el' not
-        // loaded yet); flipped on after STDLIB decode.
-        let mut env = Env::fresh(1024);
-        // `nil` and `t` self-evaluate; mark them constant so that
-        // (setq nil 1) is a hard error per Elisp.
-        env.intern_constant("nil", Sexp::Nil);
-        env.intern_constant("t", Sexp::T);
-        super::builtins::install_builtins(&mut env);
-        // env shim primitives installed AFTER builtins, BEFORE the
-        // stdlib loop, so the shim file can `funcall' them at load.
-        super::env_shim::install_env_shim_primitives(&mut env);
+        // max_recursion=1024 bounds eval-loop nesting under cargo test's
+        // 2MB thread stack (see `recursion_depth_guard').
+        let mut env = Env::install_stage0(1024);
         for (name, image_bytes) in STDLIB_IMAGES {
             let fallback = match image::decode_v3_into(&mut env, image_bytes) {
                 Ok(f) => f,
@@ -136,25 +111,30 @@ impl Env {
                 fallback.len()
             );
         }
-        // Elisp dispatch ON post-bootstrap; escape hatch
-        // `NELISP_USE_RUST_APPLY' env var keeps Rust dispatch.
+        // Elisp dispatch ON post-bootstrap; `NELISP_USE_RUST_APPLY' env
+        // var pins Rust dispatch as escape hatch.
         env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY")
             .map(|v| v.is_empty())
             .unwrap_or(true);
         env
     }
 
-    /// Empty env (= no built-ins).  For error-path tests; most callers
-    /// want [`Env::new_global`].
+    /// Empty env (= no built-ins).  For error-path tests.
     pub fn empty() -> Self {
         Env::fresh(256)
     }
 
-    /// Baker accumulator env — built-ins + env_shim installed but
-    /// STDLIB_IMAGES decode loop skipped.  Used by
-    /// `image::iterative_bake_one' to accumulate per-file state.
+    /// Baker accumulator env — built-ins + env_shim installed but no
+    /// STDLIB images decoded.  Used by `image::iterative_bake_one'.
     pub fn new_global_no_stdlib() -> Self {
-        let mut env = Env::fresh(1024);
+        Env::install_stage0(1024)
+    }
+
+    /// Stage 0 bootstrap: fresh env + intern nil/t + install builtins +
+    /// install env_shim primitives.  Common to `new_global' and
+    /// `new_global_no_stdlib'; the former additionally decodes STDLIB.
+    fn install_stage0(max_recursion: u32) -> Self {
+        let mut env = Env::fresh(max_recursion);
         env.intern_constant("nil", Sexp::Nil);
         env.intern_constant("t", Sexp::T);
         super::builtins::install_builtins(&mut env);
@@ -162,22 +142,16 @@ impl Env {
         env
     }
 
-    /// Per-file globals diff vs. `before' (= new key OR mutated
-    /// entry).  Used by `image::iterative_bake_one'.
-    pub fn globals_diff_view(
-        &self,
-        before: &std::collections::HashMap<String, SymbolEntry>,
-    ) -> Env {
+    /// Per-file globals diff vs. `before' (= new key OR mutated entry).
+    /// Used by `image::iterative_bake_one'.
+    pub fn globals_diff_view(&self, before: &HashMap<String, SymbolEntry>) -> Env {
         let mut diff = Env::empty();
-        for (k, v) in &self.globals {
-            let changed = match before.get(k) {
-                None => true,
-                Some(prev) => prev != v,
-            };
-            if changed {
-                diff.globals.insert(k.clone(), v.clone());
-            }
-        }
+        diff.globals = self
+            .globals
+            .iter()
+            .filter(|(k, v)| before.get(*k).map_or(true, |prev| prev != *v))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         diff
     }
 
@@ -197,10 +171,7 @@ impl Env {
 
     /// Mark `name` as a self-evaluating constant bound to `value`.
     pub fn intern_constant(&mut self, name: &str, value: Sexp) {
-        let entry = self
-            .globals
-            .entry(name.to_string())
-            .or_insert_with(SymbolEntry::new);
+        let entry = self.globals.entry(name.to_string()).or_default();
         entry.value = Some(value);
         entry.constant = true;
     }
@@ -220,61 +191,42 @@ impl Env {
         }
     }
 
-    /// `setq' / `set' — mutate innermost frame slot, else update
-    /// globals; constants rejected; lexical writes go through the
-    /// FrameCell so captured closures see the new value.
+    /// `setq' / `set' — innermost frame slot if lexically bound (write-
+    /// through cell, so closures observe), else globals.  Constants raise.
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
         if matches!(self.globals.get(name), Some(SymbolEntry { constant: true, .. })) {
             return Err(EvalError::SettingConstant(name.to_string()));
         }
         if let Some(cell) = self.find_frame_cell(name) {
-            // SAFETY: `value' is owned, no outstanding `&Sexp' borrow
-            // into the cell's slot (Phase A.2.1 setcar discipline).
+            // SAFETY: `value' owned; no outstanding `&Sexp' borrow into
+            // the cell's slot (Phase A.2.1 setcar discipline).
             unsafe { cell.set_value(value.clone()) };
             return Ok(value);
         }
-        let entry = self.globals.entry(name.to_string()).or_insert_with(SymbolEntry::new);
-        entry.value = Some(value.clone());
+        self.globals.entry(name.to_string()).or_default().value = Some(value.clone());
         Ok(value)
     }
 
-    /// Look up `name` in the function cell.  No lexical fallback —
-    /// Elisp `funcall` always goes through the global function slot.
+    /// Look up `name` in the function cell.  No lexical fallback (Elisp
+    /// `funcall' always goes through the global function slot).
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
         match self.globals.get(name) {
-            Some(SymbolEntry {
-                function: Some(f), ..
-            }) => Ok(f.clone()),
+            Some(SymbolEntry { function: Some(f), .. }) => Ok(f.clone()),
             _ => Err(EvalError::UnboundFunction(name.to_string())),
         }
     }
 
     /// `defun' / `defalias' — write the function cell.
     pub fn set_function(&mut self, name: &str, func: Sexp) {
-        self.globals
-            .entry(name.to_string())
-            .or_insert_with(SymbolEntry::new)
-            .function = Some(func);
-    }
-
-    /// `fmakunbound' — drop the function cell.
-    pub fn clear_function(&mut self, name: &str) {
-        if let Some(e) = self.globals.get_mut(name) {
-            e.function = None;
-        }
-    }
-
-    /// `makunbound' — drop the value cell; constant flag preserved.
-    pub fn clear_value(&mut self, name: &str) {
-        if let Some(e) = self.globals.get_mut(name) {
-            e.value = None;
-        }
+        self.globals.entry(name.to_string()).or_default().function = Some(func);
     }
 
     /// `defvar' / `defconst' — install value only if unbound (Elisp
-    /// idempotence); IS_CONSTANT=true marks `defconst'.
+    /// idempotence); IS_CONSTANT=true marks `defconst'.  Doc 102 Phase 7:
+    /// `makunbound' / `fmakunbound' Rust helpers retired (zero callsites;
+    /// elisp routes through `nelisp--env-globals-op').
     pub fn defvar(&mut self, name: &str, value: Sexp, is_constant: bool) {
-        let entry = self.globals.entry(name.to_string()).or_insert_with(SymbolEntry::new);
+        let entry = self.globals.entry(name.to_string()).or_default();
         if entry.value.is_none() {
             entry.value = Some(value);
         }
@@ -292,58 +244,35 @@ impl Env {
         self.frames.pop();
     }
 
-    /// `let' / `let*' / lambda formals — bind NAME→VALUE in the
-    /// innermost frame; if no frame, fall through to the global slot
-    /// so top-level `(setq x 1)' works.  Each binding wraps a fresh
-    /// FrameCell so closures capturing NAME share the cell.
+    /// `let' / `let*' / lambda formals — bind NAME→VALUE in innermost
+    /// frame (= fresh FrameCell so closures share the slot); falls
+    /// through to the global slot when no frame is active.
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if let Some(frame) = self.frames.last_mut() {
             frame.insert(name.to_string(), FrameCell::new(value));
         } else {
-            self.globals
-                .entry(name.to_string())
-                .or_insert_with(SymbolEntry::new)
-                .value = Some(value);
+            self.globals.entry(name.to_string()).or_default().value = Some(value);
         }
     }
 
-    /// `boundp` — true iff `name` resolves in any lexical frame or
-    /// has a global value cell.
+    /// `boundp` — true iff `name` resolves in any frame or has a global value.
     pub fn is_bound(&self, name: &str) -> bool {
-        if self.find_frame_cell(name).is_some() {
-            return true;
-        }
-        matches!(
-            self.globals.get(name),
-            Some(SymbolEntry { value: Some(_), .. })
-        )
+        self.find_frame_cell(name).is_some()
+            || matches!(self.globals.get(name), Some(SymbolEntry { value: Some(_), .. }))
     }
 
     /// `fboundp` — true iff `name` has a global function cell.
     pub fn is_fbound(&self, name: &str) -> bool {
-        matches!(
-            self.globals.get(name),
-            Some(SymbolEntry {
-                function: Some(_),
-                ..
-            })
-        )
+        matches!(self.globals.get(name), Some(SymbolEntry { function: Some(_), .. }))
     }
 
-    /// Capture the current lexical frames as a flat alist so a
-    /// `lambda` can keep its closure environment as plain [`Sexp`]
-    /// data.  Inner frames take precedence over outer.
-    ///
-    /// Each captured slot is wrapped in `Sexp::Cell` carrying the
-    /// **same** [`NlCellRef`](crate::eval::nlcell::NlCellRef) as the
-    /// original frame entry, so `setq' inside the closure mutates the
-    /// cell visible at the originating let-binding (= write-through
-    /// closures, fixed 2026-05-06; storage migrated to layout-pinned
-    /// NlCellRef in Phase A.4, 2026-05-09).
+    /// Capture lexical frames as a flat `((name . cell) ...)` alist for
+    /// closure construction.  Each slot is wrapped in `Sexp::Cell`
+    /// carrying the same `NlCellRef` as the originating frame entry, so
+    /// closure `setq' writes through to the let-binding's slot.
     pub fn capture_lexical(&self) -> Sexp {
-        // Single-pass: walk frames innermost-first for first-occurrence
-        // dedup (= innermost binding wins); `push_captured' consumes
-        // the result order-independently.
+        // Innermost-first dedup so the innermost binding wins;
+        // `push_captured' consumes the result order-independently.
         let mut acc = Sexp::Nil;
         let mut seen = std::collections::HashSet::new();
         for frame in self.frames.iter().rev() {
@@ -357,14 +286,10 @@ impl Env {
         acc
     }
 
-    /// Push a frame populated from a captured-env alist (the inverse
-    /// of [`Env::capture_lexical`]).  When a captured value is wrapped
-    /// in `Sexp::Cell`, the same `Rc` is reinstalled so mutation is
-    /// shared with the original frame; otherwise the value is wrapped
-    /// in a fresh cell (= legacy alist input still works).
+    /// Push a frame from a captured-env alist (inverse of `capture_lexical').
+    /// When a captured value is `Sexp::Cell', the same `Rc` is reinstalled
+    /// (= write-through); otherwise a fresh cell wraps the value.
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
-        // Closure write-through: when value is `Sexp::Cell', install the
-        // SAME Rc so the closure shares the originating frame's slot.
         let mut frame: Frame = HashMap::new();
         let mut cur = alist;
         while let Sexp::Cons(outer) = cur {

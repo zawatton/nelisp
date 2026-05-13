@@ -85,7 +85,7 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
             let v = args[2].clone();
             env.globals
                 .entry(name)
-                .or_insert_with(SymbolEntry::new)
+                .or_insert_with(SymbolEntry::default)
                 .value = Some(v.clone());
             Ok(v)
         }
@@ -97,7 +97,7 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
             let def = args[2].clone();
             env.globals
                 .entry(name)
-                .or_insert_with(SymbolEntry::new)
+                .or_insert_with(SymbolEntry::default)
                 .function = Some(def.clone());
             Ok(def)
         }
@@ -129,7 +129,7 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
             let truthy = !matches!(args[2], Sexp::Nil);
             env.globals
                 .entry(name)
-                .or_insert_with(SymbolEntry::new)
+                .or_insert_with(SymbolEntry::default)
                 .constant = truthy;
             Ok(bool_sexp(truthy))
         }
