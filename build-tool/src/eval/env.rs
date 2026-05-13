@@ -41,6 +41,12 @@ pub struct Env {
     /// through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
     pub use_elisp_apply: bool,
     pub delegation_depth: u32,
+    /// Doc 102 Phase 8 sprint — elisp-side mirror of `globals' as a
+    /// `nelisp-env' record (see `lisp/nelisp-env.el').  `Sexp::Nil' until
+    /// `new_global' constructs it after STDLIB decode.  Session 1 (this
+    /// commit) just allocates; sessions 2-5 migrate callsites + delete
+    /// the Rust `HashMap'.
+    pub globals_record: Sexp,
 }
 
 impl Env {
@@ -55,6 +61,7 @@ impl Env {
             extern_builtins: HashMap::new(),
             use_elisp_apply: false,
             delegation_depth: 0,
+            globals_record: Sexp::Nil,
         }
     }
 
@@ -116,12 +123,29 @@ impl Env {
         env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY")
             .map(|v| v.is_empty())
             .unwrap_or(true);
+        // Doc 102 Phase 8 sprint Session 1 — construct the elisp-side
+        // env mirror.  Future sessions migrate callsites to read/write
+        // through this record, then delete the Rust `globals' HashMap.
+        env.install_globals_record();
         env
     }
 
     /// Empty env (= no built-ins).  For error-path tests.
     pub fn empty() -> Self {
         Env::fresh(256)
+    }
+
+    /// Doc 102 Phase 8 sprint Session 1 — invoke elisp `nelisp-env-make'
+    /// (= `lisp/nelisp-env.el', loaded during STDLIB decode) and store the
+    /// resulting nelisp-env record into `globals_record'.  Session 1
+    /// only constructs; sessions 2-5 migrate callsites + populate the
+    /// elisp record with the Rust HashMap's contents.
+    fn install_globals_record(&mut self) {
+        let make_fn = self
+            .lookup_function("nelisp-env-make")
+            .expect("nelisp-env-make not loaded (= nelisp-env.el missing from STDLIB)");
+        self.globals_record = super::apply_function(&make_fn, &[], self)
+            .expect("nelisp-env-make failed at bootstrap");
     }
 
     /// Baker accumulator env — built-ins + env_shim installed but no
@@ -311,5 +335,25 @@ impl Env {
         }
         self.frames.push(frame);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase8_session1_globals_record_is_nelisp_env_after_bootstrap() {
+        // Doc 102 Phase 8 Sprint Session 1 — verify `new_global' installs
+        // a fresh `nelisp-env' record into `globals_record'.  Sessions 2-5
+        // mirror the Rust HashMap contents into it then delete the HashMap.
+        let env = Env::new_global();
+        match &env.globals_record {
+            Sexp::Record(r) => match &r.type_tag {
+                Sexp::Symbol(s) => assert_eq!(s, "nelisp-env"),
+                other => panic!("globals_record type tag is not a symbol: {:?}", other),
+            },
+            other => panic!("globals_record is not a Record: {:?}", other),
+        }
     }
 }
