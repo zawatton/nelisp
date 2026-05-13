@@ -76,29 +76,30 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         return Ok(env.capture_lexical());
     }
     let name = sym_arg(&args[1])?;
+    // Doc 102 Phase 8 sprint Session 5 — reads route through Rust-direct
+    // `Env::mirror_lookup_*' (no `apply_function' detour); writes dual-
+    // write to the elisp mirror via `env.mirror_set_*' so elisp-driven
+    // mutations stay in sync.  Both paths fall back to the Rust HashMap
+    // during early bootstrap (= globals_record still Sexp::Nil).
     match op {
-        "get-value" => match env.globals.get(&name) {
-            Some(SymbolEntry { value: Some(v), .. }) => Ok(v.clone()),
-            _ => Err(EvalError::UnboundVariable(name)),
-        },
+        "get-value" => env
+            .mirror_lookup_value(&name)
+            .or_else(|| env.globals.get(&name).and_then(|e| e.value.clone()))
+            .ok_or(EvalError::UnboundVariable(name)),
         "set-value" => {
             let v = args[2].clone();
-            env.globals
-                .entry(name)
-                .or_insert_with(SymbolEntry::default)
-                .value = Some(v.clone());
+            env.globals.entry(name.clone()).or_default().value = Some(v.clone());
+            env.mirror_set_value(&name, v.clone());
             Ok(v)
         }
-        "get-function" => match env.globals.get(&name) {
-            Some(SymbolEntry { function: Some(f), .. }) => Ok(f.clone()),
-            _ => Err(EvalError::UnboundFunction(name)),
-        },
+        "get-function" => env
+            .mirror_lookup_function(&name)
+            .or_else(|| env.globals.get(&name).and_then(|e| e.function.clone()))
+            .ok_or(EvalError::UnboundFunction(name)),
         "set-function" => {
             let def = args[2].clone();
-            env.globals
-                .entry(name)
-                .or_insert_with(SymbolEntry::default)
-                .function = Some(def.clone());
+            env.globals.entry(name.clone()).or_default().function = Some(def.clone());
+            env.mirror_set_function(&name, def.clone());
             Ok(def)
         }
         "clear-value" => {
@@ -113,24 +114,21 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
             }
             Ok(args[1].clone())
         }
-        "is-bound" => Ok(bool_sexp(matches!(
-            env.globals.get(&name),
-            Some(SymbolEntry { value: Some(_), .. })
-        ))),
-        "is-fbound" => Ok(bool_sexp(matches!(
-            env.globals.get(&name),
-            Some(SymbolEntry { function: Some(_), .. })
-        ))),
+        "is-bound" => Ok(bool_sexp(
+            env.mirror_is_bound(&name)
+                || matches!(env.globals.get(&name), Some(SymbolEntry { value: Some(_), .. })),
+        )),
+        "is-fbound" => Ok(bool_sexp(
+            env.mirror_is_fbound(&name)
+                || matches!(env.globals.get(&name), Some(SymbolEntry { function: Some(_), .. })),
+        )),
         "is-constant" => Ok(bool_sexp(matches!(
             env.globals.get(&name),
             Some(SymbolEntry { constant: true, .. })
         ))),
         "set-constant" => {
             let truthy = !matches!(args[2], Sexp::Nil);
-            env.globals
-                .entry(name)
-                .or_insert_with(SymbolEntry::default)
-                .constant = truthy;
+            env.globals.entry(name).or_default().constant = truthy;
             Ok(bool_sexp(truthy))
         }
         other => Err(EvalError::Internal(format!(
