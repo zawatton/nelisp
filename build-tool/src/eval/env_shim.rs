@@ -106,12 +106,18 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
             if let Some(e) = env.globals.get_mut(&name) {
                 e.value = None;
             }
+            // Doc 102 Phase 8 Sprint Session 6 — sprint-introduced
+            // mirror was missing the clear path; `is-bound' below
+            // checks mirror first and would otherwise still see the
+            // entry.
+            env.mirror_clear_value(&name);
             Ok(args[1].clone())
         }
         "clear-function" => {
             if let Some(e) = env.globals.get_mut(&name) {
                 e.function = None;
             }
+            env.mirror_clear_function(&name);
             Ok(args[1].clone())
         }
         "is-bound" => Ok(bool_sexp(
