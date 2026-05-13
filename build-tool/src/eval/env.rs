@@ -137,15 +137,55 @@ impl Env {
 
     /// Doc 102 Phase 8 sprint Session 1 — invoke elisp `nelisp-env-make'
     /// (= `lisp/nelisp-env.el', loaded during STDLIB decode) and store the
-    /// resulting nelisp-env record into `globals_record'.  Session 1
-    /// only constructs; sessions 2-5 migrate callsites + populate the
-    /// elisp record with the Rust HashMap's contents.
+    /// resulting nelisp-env record into `globals_record'.  Session 2 also
+    /// populates the elisp env with the Rust HashMap's contents.
     fn install_globals_record(&mut self) {
         let make_fn = self
             .lookup_function("nelisp-env-make")
             .expect("nelisp-env-make not loaded (= nelisp-env.el missing from STDLIB)");
         self.globals_record = super::apply_function(&make_fn, &[], self)
             .expect("nelisp-env-make failed at bootstrap");
+        self.populate_globals_record();
+    }
+
+    /// Doc 102 Phase 8 sprint Session 2 — mirror the Rust `globals'
+    /// HashMap into the elisp `globals_record'.  Called once after the
+    /// elisp record is constructed.  Session 3-4 migrate read/write
+    /// callsites to use the mirror; session 5 deletes the Rust HashMap.
+    /// Skips the constant flag (session 3 fills it once `nelisp-env-
+    /// set-constant' lands or via direct record-set).
+    fn populate_globals_record(&mut self) {
+        let set_value_fn = self
+            .lookup_function("nelisp-env-set-value")
+            .expect("nelisp-env-set-value not loaded");
+        let set_function_fn = self
+            .lookup_function("nelisp-env-set-function")
+            .expect("nelisp-env-set-function not loaded");
+        // Snapshot keys to avoid mutable-borrow conflict during the
+        // apply_function loop (= apply_function takes `&mut env').
+        let snapshot: Vec<(String, SymbolEntry)> =
+            self.globals.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let record = self.globals_record.clone();
+        for (name, entry) in snapshot {
+            // `nelisp--fast-hash' uses `aref' / `length' on the key, so
+            // pass the symbol name as a Sexp::Str (not Sexp::Symbol).
+            if let Some(v) = entry.value {
+                super::apply_function(
+                    &set_value_fn,
+                    &[record.clone(), Sexp::Str(name.clone()), v],
+                    self,
+                )
+                .expect("nelisp-env-set-value failed at populate");
+            }
+            if let Some(f) = entry.function {
+                super::apply_function(
+                    &set_function_fn,
+                    &[record.clone(), Sexp::Str(name), f],
+                    self,
+                )
+                .expect("nelisp-env-set-function failed at populate");
+            }
+        }
     }
 
     /// Baker accumulator env — built-ins + env_shim installed but no
@@ -345,8 +385,7 @@ mod tests {
     #[test]
     fn phase8_session1_globals_record_is_nelisp_env_after_bootstrap() {
         // Doc 102 Phase 8 Sprint Session 1 — verify `new_global' installs
-        // a fresh `nelisp-env' record into `globals_record'.  Sessions 2-5
-        // mirror the Rust HashMap contents into it then delete the HashMap.
+        // a fresh `nelisp-env' record into `globals_record'.
         let env = Env::new_global();
         match &env.globals_record {
             Sexp::Record(r) => match &r.type_tag {
@@ -355,5 +394,43 @@ mod tests {
             },
             other => panic!("globals_record is not a Record: {:?}", other),
         }
+    }
+
+    #[test]
+    fn phase8_session2_globals_record_mirrors_rust_hashmap_sentinels() {
+        // Doc 102 Phase 8 Sprint Session 2 — verify the populated elisp env
+        // mirror contains the same key sentinels as the Rust HashMap.
+        // Spot-checks `car' (= function cell, ~1000 stdlib fns), `t' (=
+        // value + constant), and `make-hash-table' (= function cell, mid-
+        // STDLIB load order) — together prove that builtins, intern-
+        // constant, and STDLIB image decode all reached the mirror.
+        let mut env = Env::new_global();
+        let lookup_fn = env
+            .lookup_function("nelisp-env-lookup-function")
+            .expect("nelisp-env-lookup-function not loaded");
+        let record = env.globals_record.clone();
+        for name in &["car", "make-hash-table"] {
+            let result = super::super::apply_function(
+                &lookup_fn,
+                &[record.clone(), Sexp::Str((*name).into())],
+                &mut env,
+            );
+            assert!(
+                result.is_ok(),
+                "mirror missing function `{}': {:?}",
+                name,
+                result.err()
+            );
+        }
+        // `t' is a value-cell entry (= intern_constant path).
+        let lookup_value_fn = env
+            .lookup_function("nelisp-env-lookup-value")
+            .expect("nelisp-env-lookup-value not loaded");
+        let t_result = super::super::apply_function(
+            &lookup_value_fn,
+            &[record, Sexp::Str("t".into())],
+            &mut env,
+        );
+        assert!(matches!(t_result, Ok(Sexp::T)), "mirror missing `t': {:?}", t_result);
     }
 }
