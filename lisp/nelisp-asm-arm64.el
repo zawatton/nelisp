@@ -687,3 +687,152 @@ Base 0xF84107E0 | Xt.  Stack stays 16-byte aligned per AAPCS."
     (nelisp-asm-arm64--emit-word
      buf (logior #xF84107E0 t-reg))))
 
+;; ---- Doc 110 §110.D AArch64 SIMD/FP scalar-double helpers ----
+;;
+;; D-register encoding mirrors the X register table: low 5 bits land
+;; in the Rn / Rm / Rd fields.  No REX-equivalent — AArch64 always
+;; uses 5-bit register fields regardless of operand class.  Kept as
+;; a separate table from `--reg' so passing a GP symbol to a D-only
+;; helper signals immediately rather than emitting wrong encoding.
+
+(defconst nelisp-asm-arm64--fp-reg
+  '((d0 . 0)   (d1 . 1)   (d2 . 2)   (d3 . 3)
+    (d4 . 4)   (d5 . 5)   (d6 . 6)   (d7 . 7)
+    (d8 . 8)   (d9 . 9)   (d10 . 10) (d11 . 11)
+    (d12 . 12) (d13 . 13) (d14 . 14) (d15 . 15)
+    (d16 . 16) (d17 . 17) (d18 . 18) (d19 . 19)
+    (d20 . 20) (d21 . 21) (d22 . 22) (d23 . 23)
+    (d24 . 24) (d25 . 25) (d26 . 26) (d27 . 27)
+    (d28 . 28) (d29 . 29) (d30 . 30) (d31 . 31))
+  "AArch64 scalar f64 (= D-register) encoding map.
+Doc 110 §110.D f64 ABI groundwork.  Each cell is `(NAME . N)'
+where N is the 5-bit register number.  D-registers alias the
+lower 64 bits of the V SIMD vector registers; scalar f64
+encoding uses the D mnemonic.")
+
+(defun nelisp-asm-arm64--fp-reg-num (reg)
+  "Return the 5-bit f64 register number for REG.
+Signals `nelisp-asm-arm64-error' with `:unknown-fp-register' when
+REG is not in `nelisp-asm-arm64--fp-reg'."
+  (let ((cell (assq reg nelisp-asm-arm64--fp-reg)))
+    (unless cell
+      (signal 'nelisp-asm-arm64-error
+              (list :unknown-fp-register reg)))
+    (cdr cell)))
+
+;; Helper for f64 binop emit — bits 31..21 are constant for FADD /
+;; FSUB / FMUL / FDIV (scalar double), only the 4-bit opcode field
+;; at bits 15..12 differs.  Base shape:
+;;   0001 1110 011 mmmmm OPCODE 10 nnnnn ddddd
+;;   = 0x1E60_0800 | (OPCODE << 12) | (m << 16) | (n << 5) | d
+;; Opcode field: 0000 FMUL / 0001 FDIV / 0010 FADD / 0011 FSUB.
+
+(defun nelisp-asm-arm64--emit-fp-binop (buf opcode4 dst lhs rhs)
+  "Internal: emit a `FADD / FSUB / FMUL / FDIV Dd, Dn, Dm' word.
+OPCODE4 is the 4-bit op selector at bits 15..12.  Bits 11..10 are
+fixed `10' for these data-processing 2-source FP instructions."
+  (let* ((d (nelisp-asm-arm64--fp-reg-num dst))
+         (n (nelisp-asm-arm64--fp-reg-num lhs))
+         (m (nelisp-asm-arm64--fp-reg-num rhs))
+         (word (logior #x1E600800
+                       (ash (logand opcode4 #xF) 12)
+                       (ash (logand m #x1F) 16)
+                       (ash (logand n #x1F) 5)
+                       (logand d #x1F))))
+    (nelisp-asm-arm64--emit-word buf word)))
+
+(defun nelisp-asm-arm64-fmul-reg-reg (buf dst lhs rhs)
+  "Emit `FMUL Dd, Dn, Dm' (scalar double-precision multiply).
+Base 0x1E600800 | (m<<16) | (n<<5) | d."
+  (nelisp-asm-arm64--emit-fp-binop buf #x0 dst lhs rhs))
+
+(defun nelisp-asm-arm64-fdiv-reg-reg (buf dst lhs rhs)
+  "Emit `FDIV Dd, Dn, Dm' (scalar double-precision divide).
+Base 0x1E601800.  Division-by-zero produces ±inf / NaN per IEEE 754."
+  (nelisp-asm-arm64--emit-fp-binop buf #x1 dst lhs rhs))
+
+(defun nelisp-asm-arm64-fadd-reg-reg (buf dst lhs rhs)
+  "Emit `FADD Dd, Dn, Dm' (scalar double-precision add).
+Base 0x1E602800."
+  (nelisp-asm-arm64--emit-fp-binop buf #x2 dst lhs rhs))
+
+(defun nelisp-asm-arm64-fsub-reg-reg (buf dst lhs rhs)
+  "Emit `FSUB Dd, Dn, Dm' (scalar double-precision subtract).
+Base 0x1E603800."
+  (nelisp-asm-arm64--emit-fp-binop buf #x3 dst lhs rhs))
+
+(defun nelisp-asm-arm64-fabs-reg-reg (buf dst src)
+  "Emit `FABS Dd, Dn' (scalar double-precision absolute value).
+Encoding:
+  0001 1110 011 00000 1 10000 nnnnn ddddd
+  = 0x1E60C000 | (n << 5) | d
+Used by Doc 110 §110.D EQ-EPS to clear the sign bit of `(a - b)'
+without going through bitmask materialisation (= AArch64 advantage
+over x86_64's ANDPD path)."
+  (let* ((d (nelisp-asm-arm64--fp-reg-num dst))
+         (n (nelisp-asm-arm64--fp-reg-num src)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x1E60C000 (ash (logand n #x1F) 5) (logand d #x1F)))))
+
+(defun nelisp-asm-arm64-fcmp-reg-reg (buf lhs rhs)
+  "Emit `FCMP Dn, Dm' (scalar double-precision compare).
+Sets NZCV flags; xmm registers unchanged.  Encoding:
+  0001 1110 011 mmmmm 001000 nnnnn 00000
+  = 0x1E602000 | (m << 16) | (n << 5)
+For NaN inputs FCMP sets `V=1' (= unordered) so the standard
+ordered conds (`gt' / `ge' / `mi' / `lt') yield 0 — caller picks
+the right cond when materialising via `cset'."
+  (let* ((n (nelisp-asm-arm64--fp-reg-num lhs))
+         (m (nelisp-asm-arm64--fp-reg-num rhs)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x1E602000
+                 (ash (logand m #x1F) 16)
+                 (ash (logand n #x1F) 5)))))
+
+(defun nelisp-asm-arm64-fmov-d-from-x (buf dst src)
+  "Emit `FMOV Dd, Xn' (= GP→FP 64-bit transfer).
+Encoding (= Conversion between floating-point and integer):
+  1001 1110 011 00111 000000 nnnnn ddddd
+  = 0x9E670000 | (n << 5) | d
+Used by Doc 110 §110.D EQ-EPS to materialise the 1e-15 bit
+pattern (= constructed in Xn via MOV/MOVK) into Dn for FCMP."
+  (let* ((d (nelisp-asm-arm64--fp-reg-num dst))
+         (n (logand (nelisp-asm-arm64--reg-num src) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9E670000 (ash n 5) (logand d #x1F)))))
+
+(defun nelisp-asm-arm64-stur-d-base-disp (buf src base imm9)
+  "Emit `STUR Dt, [Xn, #IMM9]' (= unscaled store of low 8 bytes).
+SRC is the Dt source, BASE is the Xn base register, IMM9 is the
+signed 9-bit unscaled byte offset (= [-256, 255]).  Encoding:
+  1111 1100 000 imm9 00 nnnnn ttttt
+  = 0xFC000000 | ((imm9 & 0x1FF) << 12) | (n << 5) | t
+Used by Doc 110 §110.D defun prologue to spill f64 params to the
+local frame.  BASE may be SP or any X-register; alignment is the
+caller's responsibility."
+  (unless (and (integerp imm9) (<= -256 imm9 255))
+    (signal 'nelisp-asm-arm64-error
+            (list :stur-d-imm9-out-of-range imm9)))
+  (let* ((t-reg (nelisp-asm-arm64--fp-reg-num src))
+         (n-reg (logand (nelisp-asm-arm64--reg-num base) #x1F))
+         (imm9-u (logand imm9 #x1FF)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xFC000000 (ash imm9-u 12) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-ldur-d-base-disp (buf dst base imm9)
+  "Emit `LDUR Dt, [Xn, #IMM9]' (= unscaled load of low 8 bytes).
+DST is the Dt destination.  IMM9 same constraints as STUR above.
+Encoding:
+  1111 1100 010 imm9 00 nnnnn ttttt
+  = 0xFC400000 | ((imm9 & 0x1FF) << 12) | (n << 5) | t
+Used by Doc 110 §110.D `--emit-f64-ref-load' to read a spilled
+f64 param from `[x29 - 8*(slot+1)]'."
+  (unless (and (integerp imm9) (<= -256 imm9 255))
+    (signal 'nelisp-asm-arm64-error
+            (list :ldur-d-imm9-out-of-range imm9)))
+  (let* ((t-reg (nelisp-asm-arm64--fp-reg-num dst))
+         (n-reg (logand (nelisp-asm-arm64--reg-num base) #x1F))
+         (imm9-u (logand imm9 #x1FF)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xFC400000 (ash imm9-u 12) (ash n-reg 5) t-reg))))
+

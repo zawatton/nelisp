@@ -821,21 +821,21 @@ out of range for the current Doc 97 arity cap."
       (nelisp-asm-x86_64-emit-bytes
        buf (unibyte-string #x48 #x8B #x45 disp8)))))
 
-(defun nelisp-phase47-compiler--emit-f64-ref-load (buf slot xmm-dst)
-  "Emit `movsd XMM-DST, [rbp - 8*(SLOT+1)]' for an f64-class ref.
-Doc 110 §110.E.1 — loads a spilled f64 parameter from the local
-frame into XMM-DST.  Mirrors `--emit-ref-load' shape but uses
-MOVSD instead of MOV, and a caller-supplied xmm destination so
-the binop emitter can place leaves into xmm0 / xmm1
-independently.  SLOT must be in 0..7 (= f64 ABI arity cap)."
+(defun nelisp-phase47-compiler--emit-f64-ref-load (buf slot fp-dst)
+  "Emit code that loads a spilled f64 parameter into FP-DST.
+Doc 110 §110.E.1 / §110.D — `FP-DST' is `xmm0' / `xmm1' on
+x86_64 (= MOVSD load from `[rbp - 8*(slot+1)]') and `d0' / `d1'
+on aarch64 (= LDUR D load from `[x29 - 16*(slot+1)]', 16-byte
+stride matching the GP path that uses `str-pre-sp-16').  SLOT
+must be in 0..7 (= f64 ABI arity cap)."
   (unless (and (integerp slot) (<= 0 slot 7))
     (signal 'nelisp-phase47-compiler-error
             (list :f64-ref-slot-out-of-range slot)))
-  (when (eq nelisp-phase47-compiler--arch 'aarch64)
-    (signal 'nelisp-phase47-compiler-error
-            (list :f64-ref-load-aarch64-not-yet :slot slot)))
-  (let ((disp (- (* 8 (1+ slot)))))
-    (nelisp-asm-x86_64-movsd-xmm-mem-disp8 buf xmm-dst 'rbp disp)))
+  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (let ((disp (- (* 16 (1+ slot)))))
+        (nelisp-asm-arm64-ldur-d-base-disp buf fp-dst 'x29 disp))
+    (let ((disp (- (* 8 (1+ slot)))))
+      (nelisp-asm-x86_64-movsd-xmm-mem-disp8 buf fp-dst 'rbp disp))))
 
 (defun nelisp-phase47-compiler--emit-f64-binop (node buf)
   "Emit a flat f64-class binop NODE (Doc 110 §110.E.1).
@@ -853,26 +853,39 @@ This avoids the xmm spill / fill dance the GP path uses
 opcode + would force a 16-byte stack alignment per call.  Doc
 112 (= xmm spill) re-enables nested binops; until then the
 parser must reject anything that would force xmm spill."
-  (let ((op (plist-get node :op))
-        (a (plist-get node :a))
-        (b (plist-get node :b)))
-    (when (eq nelisp-phase47-compiler--arch 'aarch64)
-      (signal 'nelisp-phase47-compiler-error
-              (list :f64-binop-aarch64-not-yet op)))
-    (nelisp-phase47-compiler--emit-f64-leaf-into b buf 'xmm1)
-    (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
-    (cond
-     ((eq op 'f64-add)
-      (nelisp-asm-x86_64-addsd-reg-reg buf 'xmm0 'xmm1))
-     ((eq op 'f64-sub)
-      (nelisp-asm-x86_64-subsd-reg-reg buf 'xmm0 'xmm1))
-     ((eq op 'f64-mul)
-      (nelisp-asm-x86_64-mulsd-reg-reg buf 'xmm0 'xmm1))
-     ((eq op 'f64-div)
-      (nelisp-asm-x86_64-divsd-reg-reg buf 'xmm0 'xmm1))
-     (t
-      (signal 'nelisp-phase47-compiler-error
-              (list :unknown-f64-binop op))))))
+  (let* ((op (plist-get node :op))
+         (a (plist-get node :a))
+         (b (plist-get node :b))
+         (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64))
+         (xmm0 (if aarch64-p 'd0 'xmm0))
+         (xmm1 (if aarch64-p 'd1 'xmm1)))
+    (nelisp-phase47-compiler--emit-f64-leaf-into b buf xmm1)
+    (nelisp-phase47-compiler--emit-f64-leaf-into a buf xmm0)
+    (if aarch64-p
+        (cond
+         ((eq op 'f64-add)
+          (nelisp-asm-arm64-fadd-reg-reg buf 'd0 'd0 'd1))
+         ((eq op 'f64-sub)
+          (nelisp-asm-arm64-fsub-reg-reg buf 'd0 'd0 'd1))
+         ((eq op 'f64-mul)
+          (nelisp-asm-arm64-fmul-reg-reg buf 'd0 'd0 'd1))
+         ((eq op 'f64-div)
+          (nelisp-asm-arm64-fdiv-reg-reg buf 'd0 'd0 'd1))
+         (t
+          (signal 'nelisp-phase47-compiler-error
+                  (list :unknown-f64-binop op))))
+      (cond
+       ((eq op 'f64-add)
+        (nelisp-asm-x86_64-addsd-reg-reg buf 'xmm0 'xmm1))
+       ((eq op 'f64-sub)
+        (nelisp-asm-x86_64-subsd-reg-reg buf 'xmm0 'xmm1))
+       ((eq op 'f64-mul)
+        (nelisp-asm-x86_64-mulsd-reg-reg buf 'xmm0 'xmm1))
+       ((eq op 'f64-div)
+        (nelisp-asm-x86_64-divsd-reg-reg buf 'xmm0 'xmm1))
+       (t
+        (signal 'nelisp-phase47-compiler-error
+                (list :unknown-f64-binop op)))))))
 
 (defun nelisp-phase47-compiler--emit-f64-leaf-into (node buf xmm-dst)
   "Emit code that places f64-class NODE into XMM-DST.
@@ -915,20 +928,41 @@ SETA tests `CF=0 AND ZF=0' → 0; SETAE tests `CF=0' → 0.  Both
 yield 0, matching Rust's `(NaN OP x) = false' rule.  NaN-aware
 EQ-EPS is more involved (needs PF mask AND-ed with SETB) and
 ships in §110.C.2.b."
-  (let ((op (plist-get node :op))
-        (a (plist-get node :a))
-        (b (plist-get node :b)))
-    (when (eq nelisp-phase47-compiler--arch 'aarch64)
-      (signal 'nelisp-phase47-compiler-error
-              (list :f64-cmp-aarch64-not-yet op)))
-    ;; Operand placement: A → xmm0, B → xmm1 (= same convention as
-    ;; `--emit-f64-binop'); the UCOMISD operand-order swap below
-    ;; reuses the placed leaves without re-eval.
-    (nelisp-phase47-compiler--emit-f64-leaf-into b buf 'xmm1)
-    (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
+  (let* ((op (plist-get node :op))
+         (a (plist-get node :a))
+         (b (plist-get node :b))
+         (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64))
+         (fp0 (if aarch64-p 'd0 'xmm0))
+         (fp1 (if aarch64-p 'd1 'xmm1)))
+    ;; Operand placement: A → fp0, B → fp1 (= same convention as
+    ;; `--emit-f64-binop').  Comparison ops then swap operand order
+    ;; for LT / LE (= the AArch64 / x86_64 trick that makes SETA /
+    ;; CSET-GT inherently NaN-correct).
+    (nelisp-phase47-compiler--emit-f64-leaf-into b buf fp1)
+    (nelisp-phase47-compiler--emit-f64-leaf-into a buf fp0)
     (cond
      ((eq op 'f64-eq-eps)
       (nelisp-phase47-compiler--emit-f64-eq-eps buf))
+     (aarch64-p
+      ;; FCMP + CSET with operand-swap for LT / LE — same NaN-mask
+      ;; trick as x86_64 (= compare b vs a, materialise via GT / GE
+      ;; condition codes which inherently yield 0 on unordered
+      ;; because V=1 + Z=1 from NaN make N!=V and Z=1 both false).
+      (let ((fcmp-args
+             (cond
+              ((memq op '(f64-lt f64-le)) (list fp1 fp0))  ; swap
+              ((memq op '(f64-gt f64-ge)) (list fp0 fp1))  ; direct
+              (t (signal 'nelisp-phase47-compiler-error
+                         (list :unknown-f64-cmp-op op)))))
+            (cset-cond
+             (cond
+              ((memq op '(f64-lt f64-gt)) 'gt)
+              ((memq op '(f64-le f64-ge)) 'ge)
+              (t (signal 'nelisp-phase47-compiler-error
+                         (list :unknown-f64-cmp-op op))))))
+        (nelisp-asm-arm64-fcmp-reg-reg
+         buf (nth 0 fcmp-args) (nth 1 fcmp-args))
+        (nelisp-asm-arm64-cset buf 'x0 cset-cond)))
      (t
       (let ((ucomisd-args
              (cond
@@ -973,43 +1007,56 @@ sign cleared is still NaN), so the subsequent UCOMISD against
 1e-15 sets PF=1 → the SETNP cl branch masks the result to 0.")
 
 (defun nelisp-phase47-compiler--emit-f64-eq-eps (buf)
-  "Emit the EQ-EPS body sequence (Doc 110 §110.C.2.b).
-Pre: xmm0 holds A, xmm1 holds B (caller is `--emit-f64-cmp').
-Post: rax holds 1 iff |A - B| < 1e-15 AND ordered (= match Rust
-`(a - b).abs() < 1e-15' including NaN → 0).
+  "Emit the EQ-EPS body sequence (Doc 110 §110.C.2.b / §110.D).
+Pre: xmm0 (x86_64) / d0 (aarch64) holds A, xmm1 / d1 holds B
+(caller is `--emit-f64-cmp').  Post: rax / x0 holds 1 iff
+|A - B| < 1e-15 AND ordered (= match Rust `(a - b).abs() < 1e-15'
+including NaN → 0).
 
-Avoids `.rodata' entirely — the abs-mask and 1e-15 constants
-are materialised via `MOV r10, imm64' + `MOVQ xmm1, r10'.  Cost
-~63 bytes of body vs ~30 with rodata, traded against not needing
-the ELF writer to grow a `.rodata' section + R_X86_64_PC32
-relocations.  Rodata path is future Doc 112 work.
+Avoids `.rodata' entirely on both archs — the 1e-15 constant is
+materialised via inline `imm64' + GP→FP transfer.  Cost on
+x86_64 ~63 body bytes, on aarch64 ~52 (= 4-instr MOV/MOVK
+chain + 1 FMOV + FCMP + CSET).  Rodata path is future Doc 112
+work.
 
-Sequence:
+x86_64 sequence:
+  SUBSD xmm0, xmm1; MOV r10,abs-mask; MOVQ xmm1,r10; ANDPD;
+  MOV r10,1e-15; MOVQ; UCOMISD; SETB al; SETNP cl; AND al,cl;
+  MOVZX eax, al
 
-  SUBSD xmm0, xmm1            ; xmm0 = a - b
-  MOV   r10, 0x7FFFFFFFFFFFFFFF
-  MOVQ  xmm1, r10             ; xmm1 = abs-mask (low 64)
-  ANDPD xmm0, xmm1            ; xmm0 = |a - b| (sign bit cleared)
-  MOV   r10, <bits-of-1e-15>
-  MOVQ  xmm1, r10
-  UCOMISD xmm0, xmm1          ; flags = cmp(|a-b|, 1e-15)
-  SETB  al                    ; al = 1 if CF=1 (below OR unordered)
-  SETNP cl                    ; cl = 1 if PF=0 (ordered)
-  AND   al, cl                ; al &= cl (= ordered AND below)
-  MOVZX eax, al               ; rax = zext(al)"
-  (nelisp-asm-x86_64-subsd-reg-reg buf 'xmm0 'xmm1)
-  (nelisp-asm-x86_64-mov-imm64 buf 'r10
-                                nelisp-phase47-compiler--f64-abs-mask)
-  (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'r10)
-  (nelisp-asm-x86_64-andpd-reg-reg buf 'xmm0 'xmm1)
-  (nelisp-asm-x86_64-mov-imm64 buf 'r10
-                                nelisp-phase47-compiler--f64-1e-15-bits)
-  (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'r10)
-  (nelisp-asm-x86_64-ucomisd-reg-reg buf 'xmm0 'xmm1)
-  (nelisp-asm-x86_64-setcc-al buf 'setb)
-  (nelisp-asm-x86_64-setcc-byte-r8 buf 'setnp 'cl)
-  (nelisp-asm-x86_64-and-r8-r8 buf 'al 'cl)
-  (nelisp-asm-x86_64-movzx-eax-al buf))
+aarch64 sequence (= FABS replaces the ANDPD abs-mask dance; the
+FCMP swap + CSET GT inherently yields 0 on NaN, so no SETNP-AND
+mask is needed):
+  FSUB d0, d0, d1            ; d0 = a - b
+  FABS d0, d0                ; d0 = |a - b|
+  MOV  x10, #1e-15 (= 4-instr MOV/MOVK chain)
+  FMOV d1, x10               ; d1 = 1e-15
+  FCMP d1, d0                ; flags reflect 1e-15 vs |a-b|
+  CSET x0, gt                ; x0 = 1 iff 1e-15 > |a-b| ordered"
+  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (progn
+        (nelisp-asm-arm64-fsub-reg-reg buf 'd0 'd0 'd1)
+        (nelisp-asm-arm64-fabs-reg-reg buf 'd0 'd0)
+        (nelisp-asm-arm64-mov-imm64
+         buf 'x10 nelisp-phase47-compiler--f64-1e-15-bits)
+        (nelisp-asm-arm64-fmov-d-from-x buf 'd1 'x10)
+        ;; FCMP d1, d0 then CSET x0, gt (= 1 iff 1e-15 > |a-b|
+        ;; ordered, with NaN giving V=1 → GT cond false).
+        (nelisp-asm-arm64-fcmp-reg-reg buf 'd1 'd0)
+        (nelisp-asm-arm64-cset buf 'x0 'gt))
+    (nelisp-asm-x86_64-subsd-reg-reg buf 'xmm0 'xmm1)
+    (nelisp-asm-x86_64-mov-imm64 buf 'r10
+                                  nelisp-phase47-compiler--f64-abs-mask)
+    (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'r10)
+    (nelisp-asm-x86_64-andpd-reg-reg buf 'xmm0 'xmm1)
+    (nelisp-asm-x86_64-mov-imm64 buf 'r10
+                                  nelisp-phase47-compiler--f64-1e-15-bits)
+    (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'r10)
+    (nelisp-asm-x86_64-ucomisd-reg-reg buf 'xmm0 'xmm1)
+    (nelisp-asm-x86_64-setcc-al buf 'setb)
+    (nelisp-asm-x86_64-setcc-byte-r8 buf 'setnp 'cl)
+    (nelisp-asm-x86_64-and-r8-r8 buf 'al 'cl)
+    (nelisp-asm-x86_64-movzx-eax-al buf)))
 
 (defun nelisp-phase47-compiler--emit-value (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
@@ -1025,8 +1072,13 @@ the node's class to consume the result correctly."
         ('imm
          (nelisp-asm-arm64-mov-imm64 buf 'x0 (plist-get node :value)))
         ('ref
-         (nelisp-phase47-compiler--emit-ref-load buf
-                                                 (plist-get node :slot)))
+         ;; GP class → LDUR Xn (existing path); f64 class → LDUR Dn
+         ;; into d0 (= default destination for top-level body ref).
+         (if (eq (plist-get node :class) 'f64)
+             (nelisp-phase47-compiler--emit-f64-ref-load
+              buf (plist-get node :slot) 'd0)
+           (nelisp-phase47-compiler--emit-ref-load
+            buf (plist-get node :slot))))
         ('arith
          (nelisp-phase47-compiler--emit-arith node buf))
         ('shift
@@ -1035,8 +1087,12 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-cmp node buf))
         ('if
          (nelisp-phase47-compiler--emit-if node buf))
+        ('f64-binop
+         (nelisp-phase47-compiler--emit-f64-binop node buf))
+        ('f64-cmp
+         (nelisp-phase47-compiler--emit-f64-cmp node buf))
         ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
-             'while 'cond 'logic 'f64-binop 'f64-cmp)
+             'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (plist-get node :kind) node))
         (kind
@@ -1594,17 +1650,35 @@ return reg, untouched by epilogue)."
          (param-class (or (plist-get defun-ir :param-class) 'gp))
          (body (plist-get defun-ir :body)))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
-        (let ((arg-regs '(x0 x1 x2 x3 x4 x5)))
-          (when (eq param-class 'f64)
-            (signal 'nelisp-phase47-compiler-error
-                    (list :f64-defun-aarch64-not-yet name)))
+        (let ((gp-arg-regs '(x0 x1 x2 x3 x4 x5))
+              (fp-arg-regs '(d0 d1 d2 d3 d4 d5 d6 d7)))
           (nelisp-asm-arm64-define-label buf name)
           ;; Save LR for forward compatibility, then establish x29.
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x30)
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x29)
           (nelisp-asm-arm64-mov-reg-reg buf 'x29 'sp)
-          (dotimes (i (length param-regs))
-            (nelisp-asm-arm64-str-pre-sp-16 buf (nth i arg-regs)))
+          (cond
+           ((eq param-class 'gp)
+            (dotimes (i (length param-regs))
+              (nelisp-asm-arm64-str-pre-sp-16 buf (nth i gp-arg-regs))))
+           ((eq param-class 'f64)
+            ;; Allocate `arity*16' bytes (= 16-byte slot per f64
+            ;; param matching the GP path's `str-pre-sp-16'
+            ;; 16-byte stride).  Each f64 param spills via STUR D
+            ;; at `[x29 - 16*(slot+1)]'.  AAPCS stack stays 16-
+            ;; byte aligned because every slot is a multiple of 16.
+            (let* ((arity (length param-regs))
+                   (frame-bytes (* 16 arity)))
+              (when (> arity 0)
+                (nelisp-asm-arm64-sub-imm buf 'sp 'sp frame-bytes))
+              (dotimes (i arity)
+                (let ((slot-idx i)
+                      (dreg (nth i fp-arg-regs)))
+                  (nelisp-asm-arm64-stur-d-base-disp
+                   buf dreg 'x29 (- (* 16 (1+ slot-idx))))))))
+           (t
+            (signal 'nelisp-phase47-compiler-error
+                    (list :unknown-defun-param-class param-class))))
           (nelisp-phase47-compiler--emit-value body buf)
           (nelisp-asm-arm64-mov-reg-reg buf 'sp 'x29)
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x29)

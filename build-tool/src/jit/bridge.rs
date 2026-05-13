@@ -90,21 +90,26 @@ mod arith_link {
     pub unsafe extern "C" fn nelisp_jit_ash(_: i64, _: i64) -> i64 { 0 }
 }
 
-// Doc 110 §110.E.2.a — `jit/float.rs' 4 arithmetic trampoline swaps
-// (add / sub / mul / div) now live in Phase-47-compiled elisp `.o'
-// files for linux-x86_64.  `float_link' mirrors `arith_link' shape:
+// Doc 110 §110.E.2.b — `jit/float.rs's 9 trampolines (add / sub /
+// mul / div / eq-eps / lt / gt / le / ge) now live exclusively in
+// Phase-47-compiled elisp `.o' files (= `lisp/nelisp-cc-jit-
+// float.el's defconsts).  `float_link' mirrors `arith_link' shape:
 // `extern "C"' decls so the linker resolves the names against the
 // static archive built by `build.rs::link_elisp_cc_spike'.
 //
-// Stage 2.a is narrower than the arith Stage 2/3 (= 3-target
-// coverage) because §110.D aarch64 f64 emit hasn't shipped yet.
-// On aarch64 / non-supported targets the dispatch falls through
-// to `super::float::nl_jit_float_*' (= the Rust trampolines stay
-// alive under an inverse cfg gate in `jit/float.rs').  The 5
-// comparison trampolines (eq_eps / lt / gt / le / ge) keep using
-// the Rust path even on linux-x86_64 until §110.C compiler
-// integration ships in §110.E.2.b.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+// Three supported targets after §110.D shipped aarch64 f64 emit:
+//   linux + x86_64   (ELF, SSE2: MOVSD / ADDSD / UCOMISD / ANDPD)
+//   linux + aarch64  (ELF, AArch64 SIMD/FP: FADD / FCMP / FABS)
+//   macos + aarch64  (Mach-O, same AArch64 SIMD/FP)
+// Other targets fall through the `link_elisp_cc_spike' gate in
+// build.rs and consequently fail to link nelisp_jit_float_*; the
+// stub `float_link' below makes `unified_fn_ptr's match arms
+// compile cleanly there (the bin is not functional on those
+// targets in v1).
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", target_arch = "aarch64"),
+))]
 mod float_link {
     extern "C" {
         pub fn nl_jit_float_add(a: f64, b: f64) -> f64;
@@ -113,16 +118,39 @@ mod float_link {
         pub fn nl_jit_float_div(a: f64, b: f64) -> f64;
         // Doc 110 §110.C.2.a — 4 ordered compare trampolines.
         // Bodies compiled from `lisp/nelisp-cc-jit-float.el' using
-        // the §110.C compiler emit path (UCOMISD + SETcc + MOVZX).
+        // the §110.C compiler emit path (UCOMISD + SETcc + MOVZX
+        // on x86_64; FCMP + CSET on aarch64).
         pub fn nl_jit_float_lt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_gt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_le(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_ge(a: f64, b: f64) -> i64;
         // Doc 110 §110.C.2.b — EQ-EPS trampoline.  Compiled body
-        // uses SUBSD + ANDPD abs-mask + UCOMISD vs 1e-15 + SETB
-        // ANDed with SETNP for NaN-aware Rust semantics.
+        // uses SUBSD + ANDPD abs-mask + UCOMISD on x86_64, FSUB +
+        // FABS + FCMP + CSET-GT on aarch64.
         pub fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64;
     }
+}
+
+// Unsupported targets: stub `float_link' so `unified_fn_ptr's match
+// arms still compile.  The bin is not functional on these targets
+// (= `build.rs::link_elisp_cc_spike' bails out before emitting the
+// elisp archive), so reaching these stubs at runtime should be
+// impossible — they exist purely to keep `cargo check' clean on
+// every Rust-supported target.
+#[cfg(not(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", target_arch = "aarch64"),
+)))]
+mod float_link {
+    pub unsafe extern "C" fn nl_jit_float_add(_: f64, _: f64) -> f64 { 0.0 }
+    pub unsafe extern "C" fn nl_jit_float_sub(_: f64, _: f64) -> f64 { 0.0 }
+    pub unsafe extern "C" fn nl_jit_float_mul(_: f64, _: f64) -> f64 { 0.0 }
+    pub unsafe extern "C" fn nl_jit_float_div(_: f64, _: f64) -> f64 { 0.0 }
+    pub unsafe extern "C" fn nl_jit_float_lt(_: f64, _: f64) -> i64 { 0 }
+    pub unsafe extern "C" fn nl_jit_float_gt(_: f64, _: f64) -> i64 { 0 }
+    pub unsafe extern "C" fn nl_jit_float_le(_: f64, _: f64) -> i64 { 0 }
+    pub unsafe extern "C" fn nl_jit_float_ge(_: f64, _: f64) -> i64 { 0 }
+    pub unsafe extern "C" fn nl_jit_float_eq_eps(_: f64, _: f64) -> i64 { 0 }
 }
 
 // Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
@@ -255,56 +283,22 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nelisp_jit_syscall_supported_p" => {
             super::syscall::nl_jit_syscall_supported_p as *const u8
         }
-        // ---- float (8) ---- Doc 84 §84.1, xmm-marshalling Float trampolines.
-        // Doc 110 §110.E.2.a (2026-05-13) — add / sub / mul / div
-        // dispatch to elisp-compiled `.o' symbols on linux-x86_64;
-        // other targets keep the Rust trampolines in `jit/float.rs'.
-        // eq_eps / lt / gt / le / ge stay Rust until §110.E.2.b.
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        // ---- float (9) ---- Doc 110 §110.E.2.b: all 9 float.rs
+        // trampolines (add / sub / mul / div / eq-eps / lt / gt /
+        // le / ge) wholly replaced by elisp `.o' files on all 3
+        // supported targets.  Dispatch always goes through
+        // `float_link' — the module is `extern "C"' on supported
+        // targets and stubbed (= zero-returning) on unsupported
+        // ones (= same shape as `arith_link').
         "nl_jit_float_add" => float_link::nl_jit_float_add as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_add" => super::float::nl_jit_float_add as *const u8,
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         "nl_jit_float_sub" => float_link::nl_jit_float_sub as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_sub" => super::float::nl_jit_float_sub as *const u8,
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         "nl_jit_float_mul" => float_link::nl_jit_float_mul as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_mul" => super::float::nl_jit_float_mul as *const u8,
-        // Doc 86 §86.1.b (2026-05-10): `/' migrated to elisp via this
-        // binary trampoline (= same `:trampoline-binary-float-arith'
-        // ABI as add/sub/mul); division-by-zero check + integer-trunc
-        // gating live in `lisp/nelisp-stdlib.el' `(defun / ...)'.
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         "nl_jit_float_div" => float_link::nl_jit_float_div as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_div" => super::float::nl_jit_float_div as *const u8,
-        // Doc 110 §110.C.2.b (2026-05-13) — EQ-EPS dispatches to
-        // elisp `.o' on linux-x86_64; other targets keep Rust.
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         "nl_jit_float_eq_eps" => float_link::nl_jit_float_eq_eps as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_eq_eps" => super::float::nl_jit_float_eq_eps as *const u8,
-        // Doc 110 §110.C.2.a (2026-05-13) — 4 ordered compares dispatch
-        // to elisp `.o' on linux-x86_64; other targets keep Rust.
-        // EQ-EPS stays Rust on every target until §110.C.2.b.
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         "nl_jit_float_lt" => float_link::nl_jit_float_lt as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_lt" => super::float::nl_jit_float_lt as *const u8,
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         "nl_jit_float_gt" => float_link::nl_jit_float_gt as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_gt" => super::float::nl_jit_float_gt as *const u8,
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         "nl_jit_float_le" => float_link::nl_jit_float_le as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_le" => super::float::nl_jit_float_le as *const u8,
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         "nl_jit_float_ge" => float_link::nl_jit_float_ge as *const u8,
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        "nl_jit_float_ge" => super::float::nl_jit_float_ge as *const u8,
         // ---- box accessor (6) ---- Doc 84 §84.3 (2026-05-10).
         "nl_jit_mut_str_len" => super::box_accessor::nl_jit_mut_str_len as *const u8,
         "nl_jit_bool_vector_len" => super::box_accessor::nl_jit_bool_vector_len as *const u8,

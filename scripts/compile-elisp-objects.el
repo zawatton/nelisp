@@ -109,44 +109,44 @@
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-add--source
      :output "nl_jit_float_add.o"
-     :requires-arch x86_64)
+     :requires-arch (x86_64 aarch64))
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-sub--source
      :output "nl_jit_float_sub.o"
-     :requires-arch x86_64)
+     :requires-arch (x86_64 aarch64))
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-mul--source
      :output "nl_jit_float_mul.o"
-     :requires-arch x86_64)
+     :requires-arch (x86_64 aarch64))
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-div--source
      :output "nl_jit_float_div.o"
-     :requires-arch x86_64)
+     :requires-arch (x86_64 aarch64))
     ;; Doc 110 §110.C.2.a — 4 ordered comparison trampolines.
     ;; eq_eps stays Rust until §110.C.2.b (= rodata + NaN mask).
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-lt--source
      :output "nl_jit_float_lt.o"
-     :requires-arch x86_64)
+     :requires-arch (x86_64 aarch64))
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-gt--source
      :output "nl_jit_float_gt.o"
-     :requires-arch x86_64)
+     :requires-arch (x86_64 aarch64))
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-le--source
      :output "nl_jit_float_le.o"
-     :requires-arch x86_64)
+     :requires-arch (x86_64 aarch64))
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-ge--source
      :output "nl_jit_float_ge.o"
-     :requires-arch x86_64)
+     :requires-arch (x86_64 aarch64))
     ;; Doc 110 §110.C.2.b — EQ-EPS (= `(a-b).abs() < 1e-15').
     ;; Uses the SUBSD + ANDPD + UCOMISD + SETB/SETNP/AND mask
     ;; sequence emitted by `--emit-f64-eq-eps'.
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-eq-eps--source
      :output "nl_jit_float_eq_eps.o"
-     :requires-arch x86_64))
+     :requires-arch (x86_64 aarch64)))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding
@@ -215,7 +215,10 @@ fall through to the Rust trampolines that remain in
              (requires-arch (plist-get props :requires-arch))
              (out-path (expand-file-name output out-dir)))
         (cond
-         ((and requires-arch (not (eq requires-arch arch)))
+         ((and requires-arch
+               (cond ((symbolp requires-arch) (not (eq requires-arch arch)))
+                     ((listp requires-arch) (not (memq arch requires-arch)))
+                     (t t)))
           (message "[compile-elisp-objects] skipping %s -> %s (= requires %S, building %S)"
                    feature output requires-arch arch))
          (t

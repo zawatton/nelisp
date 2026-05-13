@@ -41,7 +41,14 @@ pub(crate) use bridge::{
     bi_nl_jit_call_syscall,
 };
 mod cons;
-mod float;
+// Doc 110 §110.E.2.b (2026-05-13) — `jit/float.rs's 9 trampolines
+// (add / sub / mul / div / eq-eps / lt / gt / le / ge) wholly
+// replaced by Phase-47-compiled elisp `.o' files emitted from
+// `lisp/nelisp-cc-jit-float.el' on all 3 supported targets
+// (linux-x86_64 / linux-aarch64 / macos-aarch64).  `mod float;'
+// is therefore deleted — see `bridge.rs::float_link' for the
+// extern declarations the linker resolves against the elisp `.o'
+// static archive.
 // Doc 87 §86.1.f (2026-05-10): hash / math / regex / time trampolines.
 mod hash;
 mod math;
