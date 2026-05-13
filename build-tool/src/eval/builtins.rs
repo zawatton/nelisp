@@ -346,13 +346,21 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "macroexpand-1" => bi_macroexpand_1(args, env),
         // ---- Phase 7 Stage 7.4.a/c/e (Doc 68/70) — apply/closure/env
         // primitives + `use_elisp_apply' takeover + apply-lambda-inner ----
-        "nelisp--push-frame" => bi_push_frame(args, env),
-        "nelisp--pop-frame" => bi_pop_frame(args, env),
-        "nelisp--push-captured" => bi_push_captured(args, env),
-        "nelisp--bind-local" => bi_bind_local(args, env),
+        "nelisp--push-frame" => bi_frame_op("push-frame", args, env),
+        "nelisp--pop-frame" => bi_frame_op("pop-frame", args, env),
+        "nelisp--push-captured" => bi_frame_op("push-captured", args, env),
+        "nelisp--bind-local" => bi_frame_op("bind-local", args, env),
         "nelisp--apply-builtin-dispatch" => bi_apply_builtin_dispatch(args, env),
-        "nelisp--set-use-elisp-apply" => bi_set_use_elisp_apply(args, env),
-        "nelisp--get-use-elisp-apply" => bi_get_use_elisp_apply(args, env),
+        "nelisp--set-use-elisp-apply" => {
+            require_arity("nelisp--set-use-elisp-apply", args, 1, Some(1))?;
+            let truthy = !matches!(args[0], Sexp::Nil);
+            env.use_elisp_apply = truthy;
+            Ok(if truthy { Sexp::T } else { Sexp::Nil })
+        }
+        "nelisp--get-use-elisp-apply" => {
+            require_arity("nelisp--get-use-elisp-apply", args, 0, Some(0))?;
+            Ok(if env.use_elisp_apply { Sexp::T } else { Sexp::Nil })
+        }
         "nelisp--apply-lambda-inner" => bi_apply_lambda_inner(args, env),
         // ---- core dispatch + signal ----
         "funcall" => bi_funcall(args, env),
@@ -978,75 +986,47 @@ fn bi_macroexpand_1(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     super::apply_function(inner, &arg_forms, env)
 }
 
-// ---- Phase 7 Stage 7.4.a — apply/call/closure/env elisp 化用 補助 builtins ----
-//
-// Doc 68 §2.4 で定めた 5 件。Stage 7.4.b で install される
-// `lisp/nelisp-stdlib-eval-core.el' の elisp 側 `nelisp--apply-fn' /
-// `nelisp--apply-closure' / `nelisp--bind-formals' が Rust frame stack
-// を操作するための薄いラッパ。Stage 7.4.a の段階では Rust 側 ERT のみ
-// が呼ぶ (= dormant、elisp 本体が install される前から primitive 自体は
-// 利用可能にしておく)。
-
-/// `(nelisp--push-frame)` — push a fresh empty lexical frame onto the
-/// stack.  Returns t.  Pair with `nelisp--pop-frame'.
-fn bi_push_frame(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--push-frame", args, 0, Some(0))?;
-    env.push_frame();
-    Ok(Sexp::T)
+// Doc 102 Phase 3.a (2026-05-13): 4 frame primitives' bodies merged.
+// Each dispatch arm calls `bi_frame_op(OP, args, env)' with its
+// matching tag.  Elisp `defun' wrappers would break frame semantics
+// (= the wrapper itself pushes a frame, making `bind-local' target
+// the wrapper instead of the caller's innermost frame).
+fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    match op {
+        "push-frame" => {
+            require_arity("nelisp--push-frame", args, 0, Some(0))?;
+            env.push_frame();
+            Ok(Sexp::T)
+        }
+        "pop-frame" => {
+            require_arity("nelisp--pop-frame", args, 0, Some(0))?;
+            env.pop_frame();
+            Ok(Sexp::T)
+        }
+        "push-captured" => {
+            require_arity("nelisp--push-captured", args, 1, Some(1))?;
+            env.push_captured(&args[0])?;
+            Ok(Sexp::T)
+        }
+        "bind-local" => {
+            require_arity("nelisp--bind-local", args, 2, Some(2))?;
+            let name = match &args[0] {
+                Sexp::Symbol(s) => s.clone(),
+                other => return Err(EvalError::WrongType {
+                    expected: "symbol".into(),
+                    got: other.clone(),
+                }),
+            };
+            env.bind_local(&name, args[1].clone());
+            Ok(args[1].clone())
+        }
+        _ => unreachable!("op verified at dispatch arm"),
+    }
 }
 
-/// `(nelisp--pop-frame)` — pop the innermost lexical frame.  Returns t.
-/// Silently no-ops on under-pop (= matches `Env::pop_frame' contract).
-fn bi_pop_frame(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--pop-frame", args, 0, Some(0))?;
-    env.pop_frame();
-    Ok(Sexp::T)
-}
-
-/// `(nelisp--push-captured ALIST)` — push a frame populated from a
-/// captured-env alist of `((NAME . CELL) ...)' shape.  Used by
-/// `nelisp--apply-closure' to install the closure's captured lexical
-/// scope before the formal-param binding frame.  Returns t.
-fn bi_push_captured(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--push-captured", args, 1, Some(1))?;
-    env.push_captured(&args[0])?;
-    Ok(Sexp::T)
-}
-
-/// `(nelisp--bind-local NAME VALUE)` — bind NAME to VALUE in the
-/// innermost lexical frame.  Returns VALUE.  Mirrors `Env::bind_local'
-/// semantics: if no frame exists, the binding falls through to the
-/// global value slot (= top-level setq behaviour).
-fn bi_bind_local(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--bind-local", args, 2, Some(2))?;
-    let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol".into(),
-            got: other.clone(),
-        }),
-    };
-    env.bind_local(&name, args[1].clone());
-    Ok(args[1].clone())
-}
-
-/// `(nelisp--set-use-elisp-apply T-OR-NIL)` — flip the Stage 7.4.c
-/// takeover flag at runtime.  Returns the new value (= the arg
-/// converted to t/nil).  Used by ERT to exercise both Rust dispatch
-/// and elisp dispatch within a single subprocess.
-fn bi_set_use_elisp_apply(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--set-use-elisp-apply", args, 1, Some(1))?;
-    let truthy = !matches!(args[0], Sexp::Nil);
-    env.use_elisp_apply = truthy;
-    Ok(if truthy { Sexp::T } else { Sexp::Nil })
-}
-
-/// `(nelisp--get-use-elisp-apply)` — read the current Stage 7.4.c
-/// takeover flag.  Returns t/nil.
-fn bi_get_use_elisp_apply(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--get-use-elisp-apply", args, 0, Some(0))?;
-    Ok(if env.use_elisp_apply { Sexp::T } else { Sexp::Nil })
-}
+// `bi_set_use_elisp_apply' / `bi_get_use_elisp_apply' (Stage 7.4.c
+// takeover flag accessors) inlined directly into the dispatch arms
+// below — too small to justify separate fn definitions.
 
 /// `(nelisp--apply-builtin-dispatch NAME ARGS)` — direct dispatch to
 /// the builtin registry by name.  ARGS is a proper list whose elements
