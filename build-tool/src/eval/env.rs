@@ -392,6 +392,105 @@ impl Env {
     /// Push a frame from a captured-env alist (inverse of `capture_lexical').
     /// When a captured value is `Sexp::Cell', the same `Rc` is reinstalled
     /// (= write-through); otherwise a fresh cell wraps the value.
+    // ---- Doc 102 Phase 8 sprint Session 4 — mirror read accessors ----
+    // Session 5 wires these into `lookup_value' / `lookup_function' /
+    // `is_bound' / `is_fbound' bodies, then deletes the Rust HashMap.
+    // Marked `dead_code' here because Session 4 ships the accessors +
+    // unit tests only; production callsites are still on the HashMap.
+    #[allow(dead_code)]
+    /// Doc 102 Phase 8 sprint Session 4 — fast read from the elisp env
+    /// mirror via Rust-direct `Sexp::Record' walk.  No `apply_function'
+    /// (= no FNV-1a interpreted loop overhead).  Returns the symbol-entry
+    /// record's `Sexp::Record', or None if the key is absent.
+    ///
+    /// Layout (= `lisp/nelisp-env.el' + `nelisp-stdlib-fast-hash.el'):
+    ///   globals_record = Sexp::Record(`nelisp-env')
+    ///     slots[0] = Sexp::Record(`fast-hash-table')
+    ///       slots[0] = Sexp::Int (= bucket count, power-of-2)
+    ///       slots[1] = Sexp::Vector (= buckets, each elt an alist)
+    ///       slots[2] = Sexp::Int (= entry count)
+    ///   Bucket alist cell: (Sexp::Cons (Sexp::Str . Sexp::Record(`symbol-entry')))
+    ///   Symbol entry slots: [value, function, plist, constant]
+    pub(crate) fn mirror_lookup_entry(env_record: &Sexp, name: &str) -> Option<Sexp> {
+        let env_rec = match env_record {
+            Sexp::Record(r) => r,
+            _ => return None,
+        };
+        let ht_rec = match env_rec.slots.get(0)? {
+            Sexp::Record(r) => r,
+            _ => return None,
+        };
+        let bucket_count = match ht_rec.slots.get(0)? {
+            Sexp::Int(n) => *n as u32,
+            _ => return None,
+        };
+        let buckets = match ht_rec.slots.get(1)? {
+            Sexp::Vector(v) => v,
+            _ => return None,
+        };
+        let h = mirror_fnv1a(name);
+        // power-of-2 fast path matches `nelisp--fast-hash--hash'.
+        let idx = (if bucket_count & (bucket_count - 1) == 0 {
+            h & (bucket_count - 1)
+        } else {
+            h % bucket_count
+        }) as usize;
+        let bucket = buckets.value.get(idx)?;
+        let mut cur = bucket;
+        while let Sexp::Cons(c) = cur {
+            if let Sexp::Cons(pair) = &c.car {
+                if let Sexp::Str(k) = &pair.car {
+                    if k == name {
+                        return Some(pair.cdr.clone());
+                    }
+                }
+            }
+            cur = &c.cdr;
+        }
+        None
+    }
+
+    #[allow(dead_code)]
+    /// Doc 102 Phase 8 sprint Session 4 — value-cell read.  Returns None
+    /// when the entry is absent OR holds `nelisp--unbound-marker'.
+    /// Session 5 swaps `Env::lookup_value' to call this.
+    pub(crate) fn mirror_lookup_value(env_record: &Sexp, name: &str) -> Option<Sexp> {
+        let entry = Env::mirror_lookup_entry(env_record, name)?;
+        let entry_rec = match &entry {
+            Sexp::Record(r) => r,
+            _ => return None,
+        };
+        let cell = entry_rec.slots.get(0)?;
+        if mirror_is_unbound_marker(cell) { None } else { Some(cell.clone()) }
+    }
+
+    #[allow(dead_code)]
+    /// Doc 102 Phase 8 sprint Session 4 — function-cell read.  Session 5
+    /// swaps `Env::lookup_function' to call this.
+    pub(crate) fn mirror_lookup_function(env_record: &Sexp, name: &str) -> Option<Sexp> {
+        let entry = Env::mirror_lookup_entry(env_record, name)?;
+        let entry_rec = match &entry {
+            Sexp::Record(r) => r,
+            _ => return None,
+        };
+        let cell = entry_rec.slots.get(1)?;
+        if mirror_is_unbound_marker(cell) { None } else { Some(cell.clone()) }
+    }
+
+    #[allow(dead_code)]
+    /// Doc 102 Phase 8 sprint Session 4 — `boundp' equivalent against
+    /// the elisp env mirror.
+    pub(crate) fn mirror_is_bound(env_record: &Sexp, name: &str) -> bool {
+        Env::mirror_lookup_value(env_record, name).is_some()
+    }
+
+    #[allow(dead_code)]
+    /// Doc 102 Phase 8 sprint Session 4 — `fboundp' equivalent against
+    /// the elisp env mirror.
+    pub(crate) fn mirror_is_fbound(env_record: &Sexp, name: &str) -> bool {
+        Env::mirror_lookup_function(env_record, name).is_some()
+    }
+
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let mut frame: Frame = HashMap::new();
         let mut cur = alist;
@@ -415,6 +514,27 @@ impl Env {
         self.frames.push(frame);
         Ok(())
     }
+}
+
+#[allow(dead_code)]
+/// Doc 102 Phase 8 sprint Session 4 — FNV-1a 32-bit hash matching the
+/// elisp `nelisp--fast-hash--hash' (iterates Unicode codepoints).
+/// Native Rust replacement for the interpreted hash loop.
+pub(crate) fn mirror_fnv1a(s: &str) -> u32 {
+    let mut h: u32 = 0x811C9DC5;
+    for c in s.chars() {
+        h ^= c as u32;
+        h = h.wrapping_mul(0x01000193);
+    }
+    h
+}
+
+#[allow(dead_code)]
+/// Doc 102 Phase 8 sprint Session 4 — sentinel detector matching
+/// `nelisp--unbound-marker'.  NeLisp's Sexp::Symbol is by-value (no
+/// uninterned distinction at Sexp level), so name comparison suffices.
+fn mirror_is_unbound_marker(v: &Sexp) -> bool {
+    matches!(v, Sexp::Symbol(s) if s == "nelisp--unbound-marker")
 }
 
 #[cfg(test)]
@@ -516,5 +636,48 @@ mod tests {
         );
         assert!(matches!(&result, Ok(v) if *v == sentinel),
                 "mirror did not observe post-bootstrap set_function: {:?}", result);
+    }
+
+    #[test]
+    fn phase8_session4_rust_direct_lookup_function_matches_rust_hashmap() {
+        // Doc 102 Phase 8 Sprint Session 4 — Rust-direct mirror_lookup_*
+        // accessors return the same Sexp the Rust HashMap holds.  Spot-
+        // checks `car' / `cdr' / `eq' / `make-hash-table' covering
+        // builtins + STDLIB-loaded functions.
+        let env = Env::new_global();
+        for name in &["car", "cdr", "eq", "make-hash-table"] {
+            let rust_side = env.lookup_function(name).expect(name);
+            let mirror_side = Env::mirror_lookup_function(&env.globals_record, name)
+                .unwrap_or_else(|| panic!("mirror missing function `{}'", name));
+            assert_eq!(rust_side, mirror_side, "mismatch for `{}'", name);
+        }
+    }
+
+    #[test]
+    fn phase8_session4_rust_direct_lookup_value_returns_t_for_constant_t() {
+        // `t' is interned with value Sexp::T + constant flag.  Verify
+        // the mirror returns Sexp::T (not the unbound-marker sentinel).
+        let env = Env::new_global();
+        let v = Env::mirror_lookup_value(&env.globals_record, "t")
+            .expect("mirror missing value for `t'");
+        assert!(matches!(v, Sexp::T));
+    }
+
+    #[test]
+    fn phase8_session4_rust_direct_is_fbound_matches_rust() {
+        let env = Env::new_global();
+        // Present in env: `car'.  Absent: invented name.
+        assert!(Env::mirror_is_fbound(&env.globals_record, "car"));
+        assert!(!Env::mirror_is_fbound(&env.globals_record, "doc-102-session-4-absent-fn"));
+    }
+
+    #[test]
+    fn phase8_session4_fnv1a_matches_elisp_hash_loop() {
+        // FNV-1a 32-bit reference vectors (= ASCII inputs, same algorithm
+        // as `nelisp--fast-hash--hash').  Confirms the Rust port matches
+        // the elisp implementation bit-for-bit.
+        assert_eq!(mirror_fnv1a(""), 0x811C9DC5);
+        assert_eq!(mirror_fnv1a("a"), 0xE40C292C);
+        assert_eq!(mirror_fnv1a("foobar"), 0xBF9CF968);
     }
 }
