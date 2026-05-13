@@ -71,7 +71,69 @@
 
 (setq nelisp--global-env nil)
 
-;;;; --- 2. Slim primitive wrappers (1:1 with Rust env_shim.rs) -------
+;;;; --- 2a. Doc 102 Phase 2.c — 11 elisp delegates over the generic Rust primitive
+;;
+;; The 11 user-visible `nelisp--env-globals-*' names were Rust extern-
+;; builtins (`bi_*' in `build-tool/src/eval/env_shim.rs') through Doc 86
+;; §86.3.a.  Doc 102 Phase 2.c (2026-05-13) consolidated those 11 `bi_*'
+;; into ONE generic dispatcher `nelisp--env-globals-op OP NAME &optional
+;; ARG' (= ~-83 LOC Rust net).  The 11 names below are now elisp
+;; `defun's that each forward to the generic OP — so existing callers
+;; (`nelisp--global-env-*' wrappers in §2b, `nelisp--shim-*' wrappers
+;; in §4, and the `fset' loop in §5) see the same names with the same
+;; arity and contract.
+;;
+;; Tier 1 substrate constraint: `nelisp-stdlib-env-shim.el' loads
+;; BEFORE `nelisp-stdlib.el', so convenience predicates aren't live
+;; yet.  Bodies forward to the Rust primitive directly without
+;; coercion / type-check beyond what the Rust side already enforces
+;; (= `sym_arg' there signals `wrong-type-argument' on non-symbol).
+
+(defun nelisp--env-globals-get-value (sym)
+  "Doc 102 §2.c — return the value cell of SYM via the generic OP."
+  (nelisp--env-globals-op 'get-value sym))
+
+(defun nelisp--env-globals-set-value (sym val)
+  "Doc 102 §2.c — overwrite the value cell of SYM with VAL."
+  (nelisp--env-globals-op 'set-value sym val))
+
+(defun nelisp--env-globals-get-function (sym)
+  "Doc 102 §2.c — return the function cell of SYM."
+  (nelisp--env-globals-op 'get-function sym))
+
+(defun nelisp--env-globals-set-function (sym def)
+  "Doc 102 §2.c — overwrite the function cell of SYM with DEF."
+  (nelisp--env-globals-op 'set-function sym def))
+
+(defun nelisp--env-globals-clear-value (sym)
+  "Doc 102 §2.c — drop the value cell of SYM."
+  (nelisp--env-globals-op 'clear-value sym))
+
+(defun nelisp--env-globals-clear-function (sym)
+  "Doc 102 §2.c — drop the function cell of SYM."
+  (nelisp--env-globals-op 'clear-function sym))
+
+(defun nelisp--env-globals-is-bound (sym)
+  "Doc 102 §2.c — t iff SYM has a global value cell."
+  (nelisp--env-globals-op 'is-bound sym))
+
+(defun nelisp--env-globals-is-fbound (sym)
+  "Doc 102 §2.c — t iff SYM has a global function cell."
+  (nelisp--env-globals-op 'is-fbound sym))
+
+(defun nelisp--env-globals-is-constant (sym)
+  "Doc 102 §2.c — t iff SYM is flagged as a constant."
+  (nelisp--env-globals-op 'is-constant sym))
+
+(defun nelisp--env-globals-set-constant (sym flag)
+  "Doc 102 §2.c — set the constant flag of SYM to FLAG."
+  (nelisp--env-globals-op 'set-constant sym flag))
+
+(defun nelisp--env-globals-capture-lexical ()
+  "Doc 102 §2.c — capture the current lexical frames as alist."
+  (nelisp--env-globals-op 'capture-lexical))
+
+;;;; --- 2b. Slim primitive wrappers (1:1 with the §2a elisp delegates) -
 ;;
 ;; The 11 `nelisp--global-env-*' wrappers carry forward from §86.3.a.
 ;; They remain `defun' (= not `defalias') so future hooks can adjust

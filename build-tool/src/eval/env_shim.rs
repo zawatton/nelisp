@@ -1,76 +1,42 @@
-//! Doc 86 §86.3.a / Doc 89 Option C — Tier 0 env shim primitives.
+//! Tier 0 env shim — globals-only access primitive (Doc 86 §86.3 →
+//! Doc 102 Phase 2.c, 2026-05-13).
 //!
-//! This module exposes 11 slim primitives that wrap the canonical Rust
-//! `Env::globals` HashMap so the elisp shim
-//! (`lisp/nelisp-stdlib-env-shim.el`) can read / write the global
-//! environment without bypassing the canonical Rust state.
+//! Exposes ONE generic Rust primitive — `nelisp--env-globals-op OP
+//! NAME &optional ARG' — that wraps the canonical `Env::globals'
+//! HashMap so the elisp shim (`lisp/nelisp-stdlib-env-shim.el') can
+//! read / write the global environment without bypassing the
+//! canonical Rust state.  Doc 102 Phase 2.c consolidated the
+//! pre-existing 11 individual `bi_*' primitives into this single
+//! dispatcher; the 11 user-visible names (`nelisp--env-globals-
+//! get-value' / `set-value' / …) live as elisp `defun's that
+//! delegate via the matching OP tag.
 //!
-//! Why a separate module: Doc 86 §86.3 builds toward an elisp-side
-//! `nelisp--global-env` mirror that — over §86.3.b shadow path and
-//! §86.3.c switch-over — replaces direct `Env::globals` access from
-//! `eval/mod.rs`, `eval/special_forms.rs`, and `eval/builtins.rs`
-//! Tier 3 dispatch arms.  The precursor stage (= §86.3.a) only adds
-//! the slim primitives + an empty elisp shim file; existing callsites
-//! remain on the Tier 0 fast path.
+//! OP tags + arity (NAME omitted = capture-lexical, otherwise NAME is
+//! a symbol; ARG required for the 3 `set-*' ops):
+//!   get-value / set-value          — value cell read / write
+//!   get-function / set-function    — function cell read / write
+//!   clear-value / clear-function   — drop the cell (= makunbound /
+//!                                    fmakunbound)
+//!   is-bound / is-fbound           — t / nil predicates (globals only)
+//!   is-constant / set-constant     — constant flag predicate / setter
+//!   capture-lexical                — snapshot frames as alist (0-arg)
 //!
-//! Why `register_extern_builtin` (= not `install_builtins` + `dispatch`):
-//! `eval/builtins.rs` is being concurrently edited by the Doc 86 §86.1.b
-//! agent (= `install_builtins` names table + dispatch arm).  Routing
-//! these primitives through the extern-builtin registry avoids a
-//! merge collision while reusing the same `(builtin NAME)` sentinel
-//! plumbing — `Env::register_extern_builtin` automatically writes the
-//! sentinel into the function cell, so elisp `(funcall NAME ARG...)`
-//! sees them as ordinary builtins.
-//!
-//! Naming convention: each primitive uses the `nelisp--env-globals-`
-//! prefix to make it clear they touch the canonical `Env::globals`
-//! HashMap directly (= bypass the lexical frame stack, no `setq`
-//! semantics).  The elisp shim's user-visible API (= `boundp` /
-//! `fboundp` / `defvar` etc.) is layered on top in §86.3.b.
-//!
-//! Per Doc 89 §3.2 / §3.3 the 11 primitives are:
-//!
-//! | primitive                            | role                      |
-//! |--------------------------------------+---------------------------|
-//! | `nelisp--env-globals-get-value`      | `lookup_value` (globals)  |
-//! | `nelisp--env-globals-set-value`      | `set_value` (globals)     |
-//! | `nelisp--env-globals-get-function`   | `lookup_function`         |
-//! | `nelisp--env-globals-set-function`   | `set_function`            |
-//! | `nelisp--env-globals-clear-value`    | `makunbound`              |
-//! | `nelisp--env-globals-clear-function` | `fmakunbound`             |
-//! | `nelisp--env-globals-is-bound`       | `boundp`                  |
-//! | `nelisp--env-globals-is-fbound`      | `fboundp`                 |
-//! | `nelisp--env-globals-is-constant`    | constant flag check       |
-//! | `nelisp--env-globals-set-constant`   | `defconst` constant flag  |
-//! | `nelisp--env-globals-capture-lexical`| capture lexical scope     |
-//!
-//! NB: `set_value` here is the **globals-only** variant — it never
-//! walks lexical frames, never errors on constants in the elisp shim
-//! (= constant rejection is the shim's job, not the primitive's), and
-//! always writes to the global value cell.  This matches the Doc 89
-//! §6 chicken-and-egg gate: the shim itself must be installable
-//! before higher-level semantics (`setq` / `defvar`) come online.
+//! Set-value bypasses the constant-rejection path (= elisp shim
+//! enforces); set-function never errors on existing entries; clear-*
+//! is a no-op when the entry is absent.
 
 use super::env::{Env, SymbolEntry};
 use super::error::EvalError;
 use super::sexp::Sexp;
 
-/// Argument-arity helper.  Inlined here (= not pulled from
-/// `builtins::require_arity`) to avoid a cross-module dependency on
-/// the Doc 86 §86.1.b agent's edits.
-fn check_arity(name: &str, args: &[Sexp], expected: usize) -> Result<(), EvalError> {
-    if args.len() != expected {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: name.to_string(),
-            expected: format!("{}", expected),
-            got: args.len(),
-        });
+fn wrong_args(arity: &str, got: usize) -> EvalError {
+    EvalError::WrongNumberOfArguments {
+        function: "nelisp--env-globals-op".to_string(),
+        expected: arity.to_string(),
+        got,
     }
-    Ok(())
 }
 
-/// Extract a symbol name from `arg`, signalling `wrong-type-argument`
-/// otherwise.  Used by every primitive below.
 fn sym_arg(arg: &Sexp) -> Result<String, EvalError> {
     match arg {
         Sexp::Symbol(s) => Ok(s.clone()),
@@ -81,172 +47,109 @@ fn sym_arg(arg: &Sexp) -> Result<String, EvalError> {
     }
 }
 
-/// `(nelisp--env-globals-get-value SYMBOL)` — return the value cell
-/// of SYMBOL from the canonical `Env::globals` map.  Signals
-/// `void-variable` if the symbol has no value cell.  Does NOT walk
-/// lexical frames — the precursor shim is globals-only.
-fn bi_get_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-get-value", args, 1)?;
-    let name = sym_arg(&args[0])?;
-    match env.globals.get(&name) {
-        Some(SymbolEntry { value: Some(v), .. }) => Ok(v.clone()),
-        _ => Err(EvalError::UnboundVariable(name)),
+fn bool_sexp(b: bool) -> Sexp {
+    if b { Sexp::T } else { Sexp::Nil }
+}
+
+/// Generic `nelisp--env-globals-op OP NAME &optional ARG' dispatcher;
+/// see module doc for OP tag semantics.
+fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    let op = match args.first() {
+        Some(Sexp::Symbol(s)) => s.as_str(),
+        Some(o) => {
+            return Err(EvalError::WrongType {
+                expected: "symbolp".into(),
+                got: o.clone(),
+            });
+        }
+        None => return Err(wrong_args(">= 1", 0)),
+    };
+    let expected: usize = match op {
+        "capture-lexical" => 1,
+        "set-value" | "set-function" | "set-constant" => 3,
+        _ => 2,
+    };
+    if args.len() != expected {
+        return Err(wrong_args(&format!("{}", expected), args.len()));
+    }
+    if op == "capture-lexical" {
+        return Ok(env.capture_lexical());
+    }
+    let name = sym_arg(&args[1])?;
+    match op {
+        "get-value" => match env.globals.get(&name) {
+            Some(SymbolEntry { value: Some(v), .. }) => Ok(v.clone()),
+            _ => Err(EvalError::UnboundVariable(name)),
+        },
+        "set-value" => {
+            let v = args[2].clone();
+            env.globals
+                .entry(name)
+                .or_insert_with(SymbolEntry::new)
+                .value = Some(v.clone());
+            Ok(v)
+        }
+        "get-function" => match env.globals.get(&name) {
+            Some(SymbolEntry { function: Some(f), .. }) => Ok(f.clone()),
+            _ => Err(EvalError::UnboundFunction(name)),
+        },
+        "set-function" => {
+            let def = args[2].clone();
+            env.globals
+                .entry(name)
+                .or_insert_with(SymbolEntry::new)
+                .function = Some(def.clone());
+            Ok(def)
+        }
+        "clear-value" => {
+            if let Some(e) = env.globals.get_mut(&name) {
+                e.value = None;
+            }
+            Ok(args[1].clone())
+        }
+        "clear-function" => {
+            if let Some(e) = env.globals.get_mut(&name) {
+                e.function = None;
+            }
+            Ok(args[1].clone())
+        }
+        "is-bound" => Ok(bool_sexp(matches!(
+            env.globals.get(&name),
+            Some(SymbolEntry { value: Some(_), .. })
+        ))),
+        "is-fbound" => Ok(bool_sexp(matches!(
+            env.globals.get(&name),
+            Some(SymbolEntry { function: Some(_), .. })
+        ))),
+        "is-constant" => Ok(bool_sexp(matches!(
+            env.globals.get(&name),
+            Some(SymbolEntry { constant: true, .. })
+        ))),
+        "set-constant" => {
+            let truthy = !matches!(args[2], Sexp::Nil);
+            env.globals
+                .entry(name)
+                .or_insert_with(SymbolEntry::new)
+                .constant = truthy;
+            Ok(bool_sexp(truthy))
+        }
+        other => Err(EvalError::Internal(format!(
+            "nelisp--env-globals-op: unknown OP `{}`",
+            other
+        ))),
     }
 }
 
-/// `(nelisp--env-globals-set-value SYMBOL VALUE)` — overwrite the
-/// global value cell of SYMBOL with VALUE.  Returns VALUE.  Bypasses
-/// the constant-rejection path (= caller's responsibility).  Creates
-/// the entry if missing.
-fn bi_set_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-set-value", args, 2)?;
-    let name = sym_arg(&args[0])?;
-    let value = args[1].clone();
-    let entry = env
-        .globals
-        .entry(name)
-        .or_insert_with(SymbolEntry::new);
-    entry.value = Some(value.clone());
-    Ok(value)
-}
-
-/// `(nelisp--env-globals-get-function SYMBOL)` — return the function
-/// cell of SYMBOL.  Signals `void-function` when missing.
-fn bi_get_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-get-function", args, 1)?;
-    let name = sym_arg(&args[0])?;
-    match env.globals.get(&name) {
-        Some(SymbolEntry {
-            function: Some(f), ..
-        }) => Ok(f.clone()),
-        _ => Err(EvalError::UnboundFunction(name)),
-    }
-}
-
-/// `(nelisp--env-globals-set-function SYMBOL DEF)` — overwrite the
-/// global function cell.  Returns DEF.  Creates the entry if missing.
-fn bi_set_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-set-function", args, 2)?;
-    let name = sym_arg(&args[0])?;
-    let def = args[1].clone();
-    let entry = env
-        .globals
-        .entry(name)
-        .or_insert_with(SymbolEntry::new);
-    entry.function = Some(def.clone());
-    Ok(def)
-}
-
-/// `(nelisp--env-globals-clear-value SYMBOL)` — drop the global value
-/// cell.  Returns SYMBOL.  No-op when the entry is absent.
-fn bi_clear_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-clear-value", args, 1)?;
-    let name = sym_arg(&args[0])?;
-    if let Some(entry) = env.globals.get_mut(&name) {
-        entry.value = None;
-    }
-    Ok(args[0].clone())
-}
-
-/// `(nelisp--env-globals-clear-function SYMBOL)` — drop the global
-/// function cell.  Returns SYMBOL.
-fn bi_clear_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-clear-function", args, 1)?;
-    let name = sym_arg(&args[0])?;
-    if let Some(entry) = env.globals.get_mut(&name) {
-        entry.function = None;
-    }
-    Ok(args[0].clone())
-}
-
-/// `(nelisp--env-globals-is-bound SYMBOL)` — t iff the global value
-/// cell is set.  Does NOT walk lexical frames (= precursor is
-/// globals-only; full `boundp` = §86.3.b).
-fn bi_is_bound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-is-bound", args, 1)?;
-    let name = sym_arg(&args[0])?;
-    let bound = matches!(
-        env.globals.get(&name),
-        Some(SymbolEntry { value: Some(_), .. })
-    );
-    Ok(if bound { Sexp::T } else { Sexp::Nil })
-}
-
-/// `(nelisp--env-globals-is-fbound SYMBOL)` — t iff the global
-/// function cell is set.
-fn bi_is_fbound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-is-fbound", args, 1)?;
-    let name = sym_arg(&args[0])?;
-    let bound = matches!(
-        env.globals.get(&name),
-        Some(SymbolEntry {
-            function: Some(_),
-            ..
-        })
-    );
-    Ok(if bound { Sexp::T } else { Sexp::Nil })
-}
-
-/// `(nelisp--env-globals-is-constant SYMBOL)` — t iff SYMBOL is
-/// flagged constant (= `nil` / `t` / keyword / `defconst`'d).
-fn bi_is_constant(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-is-constant", args, 1)?;
-    let name = sym_arg(&args[0])?;
-    let cflag = matches!(
-        env.globals.get(&name),
-        Some(SymbolEntry { constant: true, .. })
-    );
-    Ok(if cflag { Sexp::T } else { Sexp::Nil })
-}
-
-/// `(nelisp--env-globals-set-constant SYMBOL FLAG)` — set the
-/// constant flag.  FLAG is treated as truthy = constant, nil =
-/// non-constant.  Returns FLAG (= the truthy / nil value, normalised).
-/// Creates the entry if missing.  Used by `defconst' shim.
-fn bi_set_constant(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-set-constant", args, 2)?;
-    let name = sym_arg(&args[0])?;
-    let truthy = !matches!(args[1], Sexp::Nil);
-    let entry = env
-        .globals
-        .entry(name)
-        .or_insert_with(SymbolEntry::new);
-    entry.constant = truthy;
-    Ok(if truthy { Sexp::T } else { Sexp::Nil })
-}
-
-/// `(nelisp--env-globals-capture-lexical)` — snapshot the current
-/// lexical frame stack as a flat alist `((NAME . CELL) ...)` so a
-/// `lambda` body can keep its closure environment as plain Sexp data.
-/// Equivalent to `Env::capture_lexical` exposed for the elisp shim.
-fn bi_capture_lexical(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    check_arity("nelisp--env-globals-capture-lexical", args, 0)?;
-    Ok(env.capture_lexical())
-}
-
-/// Install all 11 Tier 0 env shim primitives into `env`.  Idempotent
-/// — re-installing overwrites the previous closures (= same contract
-/// as `Env::register_extern_builtin`).
+/// Install the Doc 102 Phase 2.c generic env-globals dispatcher into
+/// `env`.  Idempotent — re-installing overwrites the previous closure
+/// (= same contract as `Env::register_extern_builtin`).
 ///
 /// Called from `Env::new_global` after `install_builtins` has run but
 /// before `STDLIB_IMAGES` are loaded, so the shim file
-/// (`nelisp-stdlib-env-shim.el`) can `funcall` these names at load
-/// time.
+/// (`nelisp-stdlib-env-shim.el`) can `funcall` `nelisp--env-globals-op`
+/// at load time (= when its 11 elisp wrappers' bodies expand).
 pub fn install_env_shim_primitives(env: &mut Env) {
-    env.register_extern_builtin("nelisp--env-globals-get-value", bi_get_value);
-    env.register_extern_builtin("nelisp--env-globals-set-value", bi_set_value);
-    env.register_extern_builtin("nelisp--env-globals-get-function", bi_get_function);
-    env.register_extern_builtin("nelisp--env-globals-set-function", bi_set_function);
-    env.register_extern_builtin("nelisp--env-globals-clear-value", bi_clear_value);
-    env.register_extern_builtin("nelisp--env-globals-clear-function", bi_clear_function);
-    env.register_extern_builtin("nelisp--env-globals-is-bound", bi_is_bound);
-    env.register_extern_builtin("nelisp--env-globals-is-fbound", bi_is_fbound);
-    env.register_extern_builtin("nelisp--env-globals-is-constant", bi_is_constant);
-    env.register_extern_builtin("nelisp--env-globals-set-constant", bi_set_constant);
-    env.register_extern_builtin(
-        "nelisp--env-globals-capture-lexical",
-        bi_capture_lexical,
-    );
+    env.register_extern_builtin("nelisp--env-globals-op", bi_globals_op);
 }
 
 #[cfg(test)]
@@ -319,7 +222,14 @@ mod tests {
     #[test]
     fn primitive_capture_lexical_at_top_level_is_nil() {
         // No active frames → capture returns nil (= empty alist).
-        let out = eval_str("(nelisp--env-globals-capture-lexical)").unwrap();
+        // Doc 102 Phase 2.c: call the Rust primitive directly (= the
+        // OP-tag form), bypassing the elisp `nelisp--env-globals-
+        // capture-lexical' wrapper.  The wrapper IS a `defun' that
+        // `push_frame's an empty closure-body frame around the call,
+        // which `capture_lexical' would then walk — calling the OP
+        // form keeps the test scoped to the Rust dispatcher's
+        // zero-frame contract.
+        let out = eval_str("(nelisp--env-globals-op 'capture-lexical)").unwrap();
         assert!(matches!(out, Sexp::Nil));
     }
 
