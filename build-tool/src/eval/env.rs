@@ -209,6 +209,12 @@ impl Env {
             ("nelisp-stdlib-time.el", include_bytes!("../../../lisp/nelisp-stdlib-time.el.image")),
             ("nelisp-stdlib-math.el", include_bytes!("../../../lisp/nelisp-stdlib-math.el.image")),
             ("nelisp-stdlib-regex.el", include_bytes!("../../../lisp/nelisp-stdlib-regex.el.image")),
+            // Doc 102 Phase 2.b (2026-05-13): elisp-side env modules.
+            // See `nelisp-baker.rs' STDLIB_FILES for the load-order
+            // rationale; these load LAST so `(provide)' + record
+            // primitives are available.
+            ("nelisp-stdlib-fast-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-fast-hash.el.image")),
+            ("nelisp-env.el", include_bytes!("../../../lisp/nelisp-env.el.image")),
         ];
         let mut env = Env {
             globals: HashMap::new(),

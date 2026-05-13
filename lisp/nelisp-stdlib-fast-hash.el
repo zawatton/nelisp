@@ -92,7 +92,10 @@ fast `logand'.  Doc 102 §2.2 hash function spec."
     ;; means we can `logand H (1- bucket-count)' instead of `mod'.
     ;; `mod' works for the general case (= callers may pass a
     ;; non-power-of-2 bucket count for testing).
-    (if (zerop (logand bucket-count (1- bucket-count)))
+    ;; Use `(= ... 0)' instead of `zerop' — `zerop' is not bound in
+    ;; the nelisp runtime (= we are part of stdlib, can't rely on
+    ;; conveniences that aren't substrate-level).
+    (if (= (logand bucket-count (1- bucket-count)) 0)
         (logand h (1- bucket-count))
       (mod h bucket-count))))
 

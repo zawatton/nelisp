@@ -111,6 +111,17 @@ const STDLIB_FILES: &[&str] = &[
     "nelisp-stdlib-time.el",
     "nelisp-stdlib-math.el",
     "nelisp-stdlib-regex.el",
+    // Doc 102 Phase 2.b (2026-05-13): elisp-side env modules
+    // (= future replacement for `build-tool/src/eval/env.rs's
+    // globals HashMap, see Doc 102 §2.1 + §2.2).  Loads LAST so
+    // (a) `(provide)' from stdlib-misc is live, (b) record
+    // primitives from jit-strategy are live, (c) `(provide)' is
+    // available for byte-compile + Emacs-side tests.  Phase 2.c
+    // ships the env_shim.rs flip that actually routes through
+    // these modules; Phase 2.b just ensures they're discoverable
+    // at runtime so production smoke can call them.
+    "nelisp-stdlib-fast-hash.el",
+    "nelisp-env.el",
 ];
 
 fn main() -> ExitCode {
