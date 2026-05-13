@@ -148,6 +148,39 @@ impl Env {
         self.populate_globals_record();
     }
 
+    /// Doc 102 Phase 8 sprint Session 3 — keep the elisp env mirror
+    /// current after a Rust-side `set_value' / `defvar' on a global.
+    /// No-op when the mirror isn't ready yet (= early bootstrap, before
+    /// `nelisp-env-set-value' has been loaded).  Lookup-on-each-call
+    /// rather than caching the function Sexp so that `unload-feature'
+    /// or test-time reload sees the new definition.
+    fn mirror_set_value(&mut self, name: &str, value: Sexp) {
+        let Ok(set_fn) = self.lookup_function("nelisp-env-set-value") else {
+            return;
+        };
+        let record = self.globals_record.clone();
+        let _ = super::apply_function(
+            &set_fn,
+            &[record, Sexp::Str(name.into()), value],
+            self,
+        );
+    }
+
+    /// Doc 102 Phase 8 sprint Session 3 — function-cell counterpart of
+    /// `mirror_set_value'.  Triggered by `set_function' (= `defun' /
+    /// `defalias' / `register_extern_builtin' callers).
+    fn mirror_set_function(&mut self, name: &str, func: Sexp) {
+        let Ok(set_fn) = self.lookup_function("nelisp-env-set-function") else {
+            return;
+        };
+        let record = self.globals_record.clone();
+        let _ = super::apply_function(
+            &set_fn,
+            &[record, Sexp::Str(name.into()), func],
+            self,
+        );
+    }
+
     /// Doc 102 Phase 8 sprint Session 2 — mirror the Rust `globals'
     /// HashMap into the elisp `globals_record'.  Called once after the
     /// elisp record is constructed.  Session 3-4 migrate read/write
@@ -268,6 +301,7 @@ impl Env {
             return Ok(value);
         }
         self.globals.entry(name.to_string()).or_default().value = Some(value.clone());
+        self.mirror_set_value(name, value.clone());
         Ok(value)
     }
 
@@ -282,7 +316,8 @@ impl Env {
 
     /// `defun' / `defalias' — write the function cell.
     pub fn set_function(&mut self, name: &str, func: Sexp) {
-        self.globals.entry(name.to_string()).or_default().function = Some(func);
+        self.globals.entry(name.to_string()).or_default().function = Some(func.clone());
+        self.mirror_set_function(name, func);
     }
 
     /// `defvar' / `defconst' — install value only if unbound (Elisp
@@ -291,11 +326,15 @@ impl Env {
     /// elisp routes through `nelisp--env-globals-op').
     pub fn defvar(&mut self, name: &str, value: Sexp, is_constant: bool) {
         let entry = self.globals.entry(name.to_string()).or_default();
-        if entry.value.is_none() {
-            entry.value = Some(value);
+        let actually_changed = entry.value.is_none();
+        if actually_changed {
+            entry.value = Some(value.clone());
         }
         if is_constant {
             entry.constant = true;
+        }
+        if actually_changed {
+            self.mirror_set_value(name, value);
         }
     }
 
@@ -432,5 +471,50 @@ mod tests {
             &mut env,
         );
         assert!(matches!(t_result, Ok(Sexp::T)), "mirror missing `t': {:?}", t_result);
+    }
+
+    #[test]
+    fn phase8_session3_post_bootstrap_set_value_propagates_to_mirror() {
+        // Doc 102 Phase 8 Sprint Session 3 — after bootstrap, a Rust-side
+        // `set_value' on a fresh global must surface in the elisp mirror.
+        // Validates that `mirror_set_value' is wired correctly and that
+        // the elisp env has not gone stale post-populate.
+        let mut env = Env::new_global();
+        env.set_value("doc-102-phase-8-session-3-probe", Sexp::Int(4242))
+            .expect("set_value failed");
+        let lookup_fn = env
+            .lookup_function("nelisp-env-lookup-value")
+            .expect("nelisp-env-lookup-value not loaded");
+        let record = env.globals_record.clone();
+        let result = super::super::apply_function(
+            &lookup_fn,
+            &[record, Sexp::Str("doc-102-phase-8-session-3-probe".into())],
+            &mut env,
+        );
+        assert!(matches!(result, Ok(Sexp::Int(4242))),
+                "mirror did not observe post-bootstrap set_value: {:?}", result);
+    }
+
+    #[test]
+    fn phase8_session3_post_bootstrap_set_function_propagates_to_mirror() {
+        // Counterpart for the function cell — validate `set_function'
+        // dual-writes through `mirror_set_function'.
+        let mut env = Env::new_global();
+        let sentinel = Sexp::list_from(&[
+            Sexp::Symbol("builtin".into()),
+            Sexp::Symbol("car".into()),
+        ]);
+        env.set_function("doc-102-phase-8-session-3-fn-probe", sentinel.clone());
+        let lookup_fn = env
+            .lookup_function("nelisp-env-lookup-function")
+            .expect("nelisp-env-lookup-function not loaded");
+        let record = env.globals_record.clone();
+        let result = super::super::apply_function(
+            &lookup_fn,
+            &[record, Sexp::Str("doc-102-phase-8-session-3-fn-probe".into())],
+            &mut env,
+        );
+        assert!(matches!(&result, Ok(v) if *v == sentinel),
+                "mirror did not observe post-bootstrap set_function: {:?}", result);
     }
 }
