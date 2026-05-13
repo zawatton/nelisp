@@ -5,12 +5,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT
+:STATE: PARTIALLY SUPERSEDED — Stage 1 + 2-prep SHIPPED (per b.* commits) / 軸 A Stage 2-5 = Doc 77b で elisp-driven 路線に pivot / Stage 4 = 2026-05-09 Doc 77c で unpause、自前実装 path に
 :DRAFTED: 2026-05-08
 :PARENT: Doc 62 §0 audit-revised (= Phase 5 IR family scaffold complete だが perf target 未達)
-:RELATED: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 63 (Phase 7 self-host roadmap) / Doc 64〜76 (= Phase 7 elisp 化 stages)
+:RELATED: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 63 (Phase 7 self-host roadmap) / Doc 64〜76 (= Phase 7 elisp 化 stages) / **Doc 77b (= Rust-min JIT 路線)** / **Doc 77c (= Sexp ABI Stage 4 unpause + self-host commitment)**
 :DEPENDS_ON: Doc 62 Stage 5.0〜5.7 SHIPPED (= 5 IR family / 24 primitives lowered / repr-pin commit 2fb64cd)
 :SUPERSEDES: Doc 62 §3 5.6 "Path B = OS 別 syscall instruction emit" の perf 期待値 (= 軸 A の eval-site JIT が先決)
+:UPDATED_BY: Doc 77b (2026-05-09、Rust-min pivot) / Doc 77c (2026-05-09、Stage 4 unpause)
 :END:
 
 * §0 TL;DR
@@ -369,6 +370,8 @@ LOC 規模: +300-400 LOC, 2-3 commit. 複数 sub-stage:
 - Stage 3.d: invalidation (= form が macroexpand で書き換わった場合)
 
 *** §2.3.3 Stage 4 — Sexp memory layout を JIT emit base
+
+**2026-05-09 STATUS UPDATE**: 本 Stage は **Doc 77c で unpause** された.  動機: user 改判断 "Sexp ABI elisp 化はまだ諦めていません" + Doc 76 OS surface 100% SHIPPED で ABI 衝突懸念解消.  実装は Doc 77c Phase A-E でカバーされ、本 Doc の articulation はそのまま設計参考として有効.
 
 Stage 3 までで =Rc<RefCell<...>>= は依然 helper 経由. Stage 4 で
 =Sexp::Cons(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>)= の memory layout

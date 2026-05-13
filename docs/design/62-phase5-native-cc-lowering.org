@@ -20,6 +20,7 @@
   - `ash' (= Stage 5.2 follow-up): Cranelift `brif' で count 符号 dispatch、count ∈ [-62,+62] のみ JIT path、外側は dispatcher fallback で `bi_ash' の 32-bit truncation 互換性維持
 :DEPENDS_ON: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 53〜60 (OS surface) / Doc 61 (cXXr migrate)
 :CONCURRENT_WITH: Doc 63 (Phase 7 self-host roadmap)
+:STATUS_AFTER: 2026-05-09 — Doc 28 §3.6 Phase 7.1.6 (= eval-site primitive lowering takeover) で本 Doc が articulate した Cranelift dispatch arm (=jit/{arith,cons,access,predicate,syscall}.rs= = 計 1,994 LOC) は nelisp-cc 直 emit に移管予定、Doc 28 §3.7 Phase 7.1.7 で =build-tool/src/jit/= directory 全削除 + =Cargo.toml= の =cranelift= / =cranelift-jit= / =cranelift-module= 3 crate dep 削除.  Aggregate Rust delta ≈ -4,782 LOC (= Doc 77c §2.4.2 Path D-B 着地).  Doc 62 の Stage 5.0〜5.5 Cranelift IR scaffold は Phase 7.1.6 完了で historical archive に降格、Phase 7.1.7 完了で物理削除.  詳細 stage breakdown は Doc 28 §3.6〜§3.9 参照.
 :END:
 
 * §0 TL;DR

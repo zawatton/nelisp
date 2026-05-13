@@ -1,0 +1,1554 @@
+#+TITLE: Doc 95 — Phase 47 component: Sexp layout DSL + compiler lower (elisp)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: DRAFT (= spike, not actionable yet — moves the Sexp DSL
+  candidate identified by Doc 85 §3.5 / §X from "concept" to
+  "implementation-ready spec".  Read-only doc, no Rust / elisp file
+  changes.)
+- *Parent*: Doc 85 (= Phase 47 feasibility spike, =docs/design/85-
+  phase-47-feasibility-spike.org=) — §3.5 / §5.1 sized this component
+  at ~150-300 elisp LOC vs 300 Rust LOC削減 (= 0.5:1 net 投資 ratio
+  with partial-asset 流用; Doc 85 §0 TL;DR table row 5 quoted ROI 0.6:1
+  pre-asset)
+- *Sister docs*: Doc 91 (= elisp ELF writer, ~500 elisp), Doc 92 (=
+  macro assembler 拡張, ~800 elisp), Doc 93 (= static linker + syscall
+  inline, ~300 elisp), Doc 94 (= crt0 + boot loader elisp, ~150
+  elisp).  本 doc は Doc 91-94 の出力 channel に Sexp 値を流し込む
+  data-format 層を articulate する。
+- *Unlocks*: 本 doc が articulate する Sexp DSL は Phase 47 master
+  chain (Doc 91-94) すべての *precondition* — JIT trampoline は現状
+  =*const Sexp / *mut Sexp= を Rust 側から alloc されたものとして deref
+  する。elisp 側で同 layout を emit できないと Doc 92 macro assembler
+  / Doc 91 ELF writer の出力に Sexp 値を埋められず、Phase 47 完遂は
+  blocked。
+- *OOS for THIS doc*:
+  - 実装作業 (= elisp / Rust file 編集なし、grep + read + design 構築のみ)
+  - Sexp の =impl= 領域 (= ~600 LOC、Doc 85 §2.1.2 で Phase 2 移管予定
+    と articulate 済) は Phase 47 対象外、本 doc も対象外
+  - x86_64 以外の arch (= aarch64 layout は §3.6 で軽く触れるが詳細
+    は Doc 92 assembler 候補に委譲)
+  - 既存 Sexp 型を「elisp で作り直す」のではなく「elisp が Sexp を
+    Rust と byte-identical な layout で emit できる DSL を提供する」
+    のが本 doc scope (= self-host bootstrap の data-format 層、Doc 47
+    rust-seed-image-abi の延長線)
+
+* §0 TL;DR
+
+** §0.1 Sexp DSL とは何か (= 1-line)
+
+elisp が =build-tool/src/eval/sexp.rs= の =Sexp= enum と *byte-
+identical な memory layout を持つ値を生成し serialize できる* DSL =
+=nelisp-sexp-dsl.el=.  「elisp の中で Rust の =Sexp= を作る」の elisp
+版。
+
+** §0.2 なぜ elisp で実装できるのか
+
+=Sexp= は **pure data** = foreign behavior を持たない (Rust 側で =impl=
+される method = =fmt_sexp=, =cons_car= 等は data に対する pure
+function、Rust runtime invariant に依存しない)。layout は =#[repr(C,
+u8)]= で fixed = elisp 側で同 byte pattern を組めば Rust 側 =*const
+Sexp= deref と区別不能。pointer 経由の =Arc<NlConsBox>= 等の
+internal handle も「pointer = u64 = 8 byte」が canonical bit pattern
+なので elisp の =make-bool-vector / make-string / make-vector= で
+byte-buffer を組めば代替可能。
+
+** §0.3 なぜ Phase 47 が本 DSL を要するか
+
+JIT trampoline (= =build-tool/src/jit/=) は現状以下のように呼び出される:
+
+#+begin_src text
+caller (Rust)         JIT trampoline (asm)        callee (Rust)
+    |                          |                          |
+    |---- *const Sexp -------->|                          |
+    |                          |---- *const Sexp -------->|
+    |                          |                          |
+    |<---- *const Sexp --------|<---- *const Sexp --------|
+#+end_src
+
+すべての Sexp 値が「Rust 側で alloc された box」前提。Phase 47 で
+elisp が trampoline を「emit する側」になる時、elisp が Sexp 値を
+alloc する経路がないと caller arm が組めない。本 doc の DSL がその
+経路を提供する。
+
+** §0.4 ROI sketch
+
+| 投資 (elisp 新規) | 削減 (Rust)       | 比率   | partial 流用                 |
+|-------------------+-------------------+--------+------------------------------|
+| ~600 elisp LOC    | -300 Rust (= sexp.rs 型定義) + 一部 ffi.rs marshalling | 0.5:1 | Phase A.5 layout pin 既存 |
+
+Doc 85 §3.5.2 の "150-300 elisp LOC" は variant 数を 14 と仮定した
+optimistic estimate.  本 doc が grep で検証した結果 (§1) =実
+13 variant + 50 helper fn= で workforce は §0.4 表の ~600 LOC。Doc 85
+§0 TL;DR table の row 5 の "150 elisp + -300 Rust = 0.5:1" は変わらず、
+本 doc で見積もり精度を上げただけ。
+
+** §0.5 Phase 47 chain 上の位置
+
+#+begin_src text
+[Phase 1-3 完遂]
+       |
+       v
+[Doc 91 ELF writer] ←──┐
+[Doc 92 assembler] ←──┤
+[Doc 93 linker] ←─────┤  (= 並列開発可能)
+                       |
+                       v
+              [本 Doc 95 Sexp DSL] (= 並列、Doc 92 assembler の output
+                                      format を依存するが byte layout
+                                      だけなので fixed point として
+                                      同期可能)
+                       |
+                       v
+              [Doc 94 crt0 elisp]
+                       |
+                       v
+              [Phase 47 完遂 = 0 Rust]
+#+end_src
+
+* §1 Current Rust =Sexp= definition inventory
+
+** §1.1 anchor + LOC contribution
+
+- Path: =build-tool/src/eval/sexp.rs= 979 LOC (verified 2026-05-10
+  via =wc -l=)
+- Phase 47 削減 target は型定義部分のみ:
+  - =enum Sexp= 本体 (= line 56-199 = 144 LOC)
+  - =SEXP_TAG_*= constants (= line 217-229 = 13 LOC)
+  - =variant_tag= + =SEXP_PAYLOAD_OFFSET= + ABI direct-access helpers
+    (= line 231-348 = 118 LOC)
+  - =CharTableInner= struct (= line 376-394 = 19 LOC)
+  - layout assert =const _: ()= block (= line 352-362 = 11 LOC)
+  - 計 *~305 LOC*  (= Doc 85 §0 TL;DR table row 5 の "300 Rust 削減"
+    の根拠)
+- Phase 47 対象外 (= Phase 2 / 別 doc 移管):
+  - =impl Sexp= の constructor / accessor (line 396-523 = ~127 LOC、=
+    50 helper fn のうち 14 個)
+  - printer (= =fmt_sexp= / =write_sexp= / =write_reader_macro= /
+    =list_tag_and_arg= / =write_list_body=、line 531-734 = ~204 LOC、
+    Doc 85 §2.1.2 articulated)
+  - =impl fmt::Display=
+  - =mod tests= (= line 736-979 = ~244 LOC)
+
+** §1.2 enum =Sexp= variants (= 13 個)
+
+=#[repr(C, u8)]= 化済 (Doc 62 Phase 5 inline-emit unlock、layout
+pinned).  =SEXP_TAG_*= constants が discriminant byte の値を固定:
+
+| #  | name        | tag | payload (= 8-byte slot at offset 8)        | byte size       | Phase A.4.x 移管        |
+|----+-------------+-----+--------------------------------------------+-----------------+--------------------------|
+| 0  | Nil         |   0 | (none)                                     | 8               | n/a                      |
+| 1  | T           |   1 | (none)                                     | 8               | n/a                      |
+| 2  | Int         |   2 | i64                                        | 16              | n/a                      |
+| 3  | Float       |   3 | f64                                        | 16              | n/a                      |
+| 4  | Symbol      |   4 | String (= ptr/len/cap, 24 bytes)           | 32              | n/a                      |
+| 5  | Str         |   5 | String                                     | 32              | n/a                      |
+| 6  | MutStr      |   6 | NlStrRef (= NonNull, 8 bytes)              | 16              | A.4.2 (2026-05-09)       |
+| 7  | Cons        |   7 | NlConsBoxRef (= NonNull, 8 bytes)          | 16              | A.2.1 (2026-05-09)       |
+| 8  | Vector      |   8 | NlVectorRef                                | 16              | A.4.3                    |
+| 9  | CharTable   |   9 | NlCharTableRef                             | 16              | A.4.6                    |
+| 10 | BoolVector  |  10 | NlBoolVectorRef                            | 16              | A.4.4                    |
+| 11 | Cell        |  11 | NlCellRef                                  | 16              | A.4 (private; not user)  |
+| 12 | Record      |  12 | NlRecordRef                                | 16              | A.4.5                    |
+
+注:
+- =HashTable= variant は Doc 50 stage 4f (2026-05-07) で *retired*。
+  =(record 'hash-table TEST ENTRIES)= に置換、Sexp 層では Record と
+  して見える。よって Doc 85 §3.5.1 の "18 variant" は **過大
+  reporting**、実 13 variant が canonical。
+- enum 全体の =size_of::<Sexp>()= は 32 byte (= 24-byte =String=
+  payload + 1-byte tag + padding rounded up to 8-byte alignment)。layout
+  assert (sexp.rs line 844 =sexp_layout_alignment_and_size_sane=
+  test) で固定。
+- box variant 7 個 (MutStr / Cons / Vector / CharTable / BoolVector /
+  Cell / Record) は全部 =NonNull<NlXxx>= = 8 byte handle に統一済 (=
+  Phase A.4.x).  payload offset は **常に 8**.
+
+** §1.3 helper functions inventory (= ~50 個)
+
+grep =^pub fn\|^fn\|^    pub fn\|^    fn= で得た cluster:
+
+*** §1.3.1 module-level helpers (5 個)
+
+- =variant_tag(s: &Sexp) -> u8= (line 234) — discriminant 読み出し
+- =fmt_sexp(s: &Sexp) -> String= (line 531) — pretty printer entry
+- =write_sexp(out: &mut String, s: &Sexp)= (line 543) — printer 本体
+- =write_reader_macro(out, s) -> bool= (line 675) — quote-family 検出
+- =list_tag_and_arg(s) -> Option<(String, Sexp)>= (line 695) — 2-elt
+  list 抽出
+- =write_list_body(out, s)= (line 712) — list body 印刷
+
+*** §1.3.2 =impl Sexp= block 1 (line 272-348, ABI direct-access、8 個)
+
+- =tag(&self) -> u8= (line 276) — =variant_tag= の method 版
+- =cons_box_ptr(&self) -> *const NlConsBox= (line 290)
+- =cell_box_ptr(&self) -> *const NlCell= (line 299)
+- =mut_str_box_ptr(&self) -> *const NlStr= (line 307)
+- =vector_box_ptr(&self) -> *const NlVector= (line 315)
+- =bool_vector_box_ptr(&self) -> *const NlBoolVector= (line 323)
+- =record_box_ptr(&self) -> *const NlRecord= (line 333)
+- =char_table_box_ptr(&self) -> *const NlCharTable= (line 341)
+
+これら 7 つの =*_box_ptr= は all =unsafe fn=、tag check 後に payload
+offset 8 から =NonNull<NlXxx>= を読むだけ (= 同じ shape).  elisp
+側 DSL では =(nelisp-sexp-tag x) = 'cons= → =(nelisp-sexp-box-ptr x)=
+で同じ抽出ができれば良い (§2.2).
+
+*** §1.3.3 =impl Sexp= block 2 (line 396-523, constructors + accessors、14 個)
+
+- =list_from(items: &[Sexp]) -> Sexp= (line 399) — slice → list
+- =cons(car, cdr) -> Sexp= (line 414) — cons cell ctor
+- =vector(items: Vec<Sexp>) -> Sexp= (line 420) — vector ctor
+- =mut_str(s: impl Into<String>) -> Sexp= (line 427) — mut-str ctor
+- =char_table(subtype, init) -> Sexp= (line 433) — char-table ctor
+- =bool_vector(len, init) -> Sexp= (line 445) — bool-vector ctor
+- =as_string_owned(&self) -> Option<String>= (line 453) — Str/MutStr → String
+- =is_string(&self) -> bool= (line 463)
+- =record(type_tag, init: Vec<Sexp>) -> Sexp= (line 476)
+- =cons_car(&self) -> Sexp= (line 482)
+- =cons_cdr(&self) -> Sexp= (line 490)
+- =quote(inner) -> Sexp= (line 498) — =(quote X)= ctor
+- =backquote(inner)= (line 502)
+- =comma(inner)= (line 506) / =comma_at(inner)= (line 510) /
+  =function(inner)= (line 514)
+- =is_nil(&self) -> bool= (line 520)
+
+block 1 の direct-access 8 + block 2 の constructor/accessor 14 +
+module-level 6 = **28 helper fn** が canonical Sexp surface.  Doc 85
+§3.5 の "~50 helper fn" は printer 内部 helper も加算した上界、
+実用 surface は 28.  本 doc では DSL surface を **30 helper fn** と
+articulate (§2 で詳述、+1 = =equal= predicate、+1 = =write-bytes=
+serializer)。
+
+** §1.4 関連 layout-pinned types
+
+box variant 7 個の各 box の Rust LOC (Phase A.4.x で layout pinned):
+
+| file (sexp.rs と同 dir = build-tool/src/eval/) | LOC | 移管 |
+|------------------------------------------------+-----+------|
+| nlconsbox.rs                                  | 654 | A.2.1 |
+| nlcell.rs                                     | 388 | A.4   |
+| nlstr.rs                                      | 406 | A.4.2 |
+| nlvector.rs                                   | 344 | A.4.3 |
+| nlboolvector.rs                               | 343 | A.4.4 |
+| nlrecord.rs                                   | 348 | A.4.5 |
+| nlchartable.rs                                | 397 | A.4.6 |
+| *合計*                                        | *2,880* | |
+
+これらは「Sexp 型定義 ~300」とは別 = box の中身 (= alloc /
+refcount / set-car / set-cdr の semantics).  Phase 47 = box 内身も
+elisp 側で持つ場合は更に -2,880 LOC 削減可能だが、本 doc scope は
+*Sexp の layout DSL のみ* (= =NonNull<NlConsBox>= の 8-byte pointer
+を elisp が emit できれば良く、=NlConsBox= 自体の生成 / refcount
+mgmt は Phase 47 の別 component に委譲).
+
+注: Sexp DSL は box の "中身" を作らず、box の "pointer" を 8-byte
+slot として emit するに留まる.  実体 box の生成は (a) Rust 側に残置
+継続 / (b) Phase 47 別 doc で elisp 化 のいずれか — 本 doc は (a)
+前提.
+
+* §2 elisp Sexp DSL 設計 (=nelisp-sexp-dsl.el=)
+
+** §2.1 module 全体構造
+
+layout = sexp.rs と 1:1 mirror.  module で提供する surface:
+
+- §1 *layout constants*: =nelisp-sexp-tag-{nil,t,int,float,symbol,
+  str,mut-str,cons,vector,char-table,bool-vector,cell,record}= +
+  =nelisp-sexp-payload-offset= (= 8) + size constants (= 14 defconst)
+- §2 *constructors* (= 13、§2.3): =nelisp-sexp-make-{nil,t,int,
+  float,symbol,str,mut-str,cons,vector,bool-vector,record,char-table,
+  cell}=
+- §3 *accessors / mutators* (= 15、§2.4): =-tag/-arity/-car/-cdr/
+  -aref/-aset/-symbol-name/-int-value/-float-value/-str-value/-record-
+  type-tag/-record-slot/-bool-vector-bit/-cell-value/-cell-set-value=
+- §4 *predicates* (= 4): =-nil-p/-string-p/-equal/-eq=
+- §5 *byte serializer* (= 2): =-write-bytes BUF OFFSET= /
+  =-read-bytes BUF OFFSET=
+- §6 *sugar* (= 5): =-quote/-backquote/-comma/-comma-at/-function=
+  (mirror Rust =Sexp::quote= 等)
+
+** §2.2 internal repr 選択
+
+elisp 側で Sexp を表す choice 3 候補:
+
+| repr            | pros                                  | cons                               |
+|-----------------+---------------------------------------+------------------------------------|
+| (a) elisp value | 簡潔 (= int → integer, str → string)  | tag mapping を都度推測必要、box variant repr 不在 |
+| (b) tagged vec  | =[TAG PAYLOAD]= explicit              | constructor/accessor が wrap/unwrap |
+| (c) raw bytes   | serialize 不要 = byte-buffer 直で持つ | accessor 重い (= byte parse 毎回)  |
+
+採用: *(b) tagged vec* — DSL は internal で =[TAG PAYLOAD]= を持ち、
+=nelisp-sexp-write-bytes= の時のみ raw bytes に変換.  これは Doc 47
+seed image 路線と整合 (= elisp 側は high-level、serialize は専用 fn).
+
+box variant の場 payload は **=(:box-ptr POINTER-AS-INT :box-kind
+KIND :inner INNER-VEC)= の plist** とする.  =POINTER-AS-INT= は ELF
+emit 時の relocation target で、生成段階では placeholder (= 0)、linker
+が patch (Doc 93).  =:inner= は box 中身を elisp 値として hold (= box
+allocation を Rust に push する場合の hint、Phase 47 で実体 box も
+elisp 化する path への forward-compat).
+
+** §2.3 constructors 一覧 (= 13 variant ctor)
+
+各 ctor は ~5 LOC = ~70 LOC subtotal.  簡素 variant (= Nil/T/Int/
+Float/Symbol/Str) は =(vector TAG PAYLOAD)= でそのまま、box variant
+(= MutStr/Cons/Vector/BoolVector/Record/CharTable/Cell) は payload
+として =(:box-kind KIND :inner INNER :box-ptr 0)= plist を持つ.
+=:box-ptr 0= が relocation placeholder.
+
+representative impl:
+
+#+begin_src elisp
+(defun nelisp-sexp-make-int (n)
+  "Construct Sexp::Int.  N is an elisp integer."
+  (cl-check-type n integer)
+  (vector nelisp-sexp-tag-int n))
+
+(defun nelisp-sexp-make-cons (car cdr)
+  "Construct Sexp::Cons with CAR / CDR (Sexp values)."
+  (vector nelisp-sexp-tag-cons
+          (list :box-kind 'cons :inner (cons car cdr) :box-ptr 0)))
+
+(defun nelisp-sexp-make-bool-vector (len init)
+  (vector nelisp-sexp-tag-bool-vector
+          (list :box-kind 'bool-vector
+                :inner (make-bool-vector len (and init t))
+                :box-ptr 0)))
+;; ... 残 10 ctor も同 pattern (-make-{nil,t,float,symbol,str,
+;;     mut-str,vector,record,char-table,cell})
+#+end_src
+
+** §2.4 accessors / mutators (= ~15 helper, ~100 LOC subtotal)
+
+各 5-8 LOC.  =-tag= は =(aref sexp 0)= 直返、=-car/-cdr= は cons
+variant の =:inner= から =car/cdr=、=-aref/-aset= は vector variant
+=:inner= list の =nth/setf=、=-int-value/-float-value/-symbol-name/
+-str-value= は =(aref sexp 1)= 直返.  box variant accessor は
+=plist-get :inner= 経由で wrap/unwrap.
+
+mutator (=-aset/-cell-set-value=) は **placeholder edit** = =:box-ptr=
+0 の段階での mutation は内部 list を編集するだけ、実 box alloc
+後 (= linker patch 後) の mutation は別 path (= Phase 47 内で box
+ownership は Rust 側に残るため、本 DSL の mutator は bake time にのみ
+有効).
+
+** §2.5 equality / serializer (= 3 high-LOC helpers)
+
+=nelisp-sexp-equal= mirrors Rust =impl PartialEq for Sexp= (=
+=#[derive(PartialEq)]=).  Cons / Vector / Record などは structural
+recurse、box variant 同 tag 同 inner で =equal=.
+
+=nelisp-sexp-write-bytes= は §3 で詳述.  =nelisp-sexp-read-bytes=
+は inverse.
+
+各 ~50 LOC = 150 LOC subtotal.
+
+** §2.6 LOC accounting
+
+| section            | helper count | LOC each (avg) | subtotal |
+|--------------------+--------------+----------------+----------|
+| layout constants   | 14           | 1              | 14       |
+| §3 ctors           | 13           | 5              | 65       |
+| §4 accessors       | 15           | 6              | 90       |
+| §5 predicates      | 4            | 8              | 32       |
+| §6 serializer      | 2            | 50             | 100      |
+| §7 sugar           | 5            | 4              | 20       |
+| docstring + module | -            | -              | 80       |
+| ert testbench      | -            | -              | 200      |
+| *合計*             | *53*         | *avg 7*        | *~600 LOC* |
+
+Doc 85 §3.5.2 の "150-300 elisp" は test と docstring を除いた core
+だけの数字.  本 doc では test (= 200 LOC) + docstring (= 80 LOC) も
+含めて articulate、合計 ~600 LOC.
+
+* §3 byte-layout invariants (= Rust binary layout との bit-for-bit 整合)
+
+** §3.1 enum 全体 layout (Sexp = 32 byte)
+
+Rust =#[repr(C, u8)]=:
+
+#+begin_src text
+offset  size  name        notes
+------  ----  ----------  -----
+  0      1   tag         u8 = SEXP_TAG_*
+  1      7   _pad        align padding (= alignof(payload) = 8)
+  8     24   payload     largest variant (= String = ptr/len/cap)
+------  ----  ----------
+ 32      0   end of Sexp
+#+end_src
+
+unit test =sexp_layout_alignment_and_size_sane= (sexp.rs line 844)
+で固定 = =size_of::<Sexp>() == 32=, =align_of::<Sexp>() == 8=,
+=SEXP_PAYLOAD_OFFSET == 8=.
+
+** §3.2 variant-by-variant byte layout
+
+| variant      | tag | payload bytes (= offset 8..)                          | total | elisp serialize fn                |
+|--------------+-----+-------------------------------------------------------+-------+-----------------------------------|
+| Nil          |  0  | (none, padding to 32)                                 |  32   | =nelisp-sexp-write-nil=           |
+| T            |  1  | (none)                                                |  32   | =nelisp-sexp-write-t=             |
+| Int          |  2  | i64 LE @ 8                                            |  32   | =nelisp-sexp-write-int=           |
+| Float        |  3  | f64 LE @ 8 (= IEEE 754 binary64)                      |  32   | =nelisp-sexp-write-float=         |
+| Symbol       |  4  | String layout = ptr@8/len@16/cap@24                   |  32   | =nelisp-sexp-write-symbol=        |
+| Str          |  5  | String layout                                         |  32   | =nelisp-sexp-write-str=           |
+| MutStr       |  6  | =NonNull<NlStr>= = u64 ptr @ 8                        |  32   | =nelisp-sexp-write-mut-str=       |
+| Cons         |  7  | =NonNull<NlConsBox>= ptr @ 8                          |  32   | =nelisp-sexp-write-cons=          |
+| Vector       |  8  | =NonNull<NlVector>= ptr @ 8                           |  32   | =nelisp-sexp-write-vector=        |
+| CharTable    |  9  | =NonNull<NlCharTable>= ptr @ 8                        |  32   | =nelisp-sexp-write-char-table=    |
+| BoolVector   | 10  | =NonNull<NlBoolVector>= ptr @ 8                       |  32   | =nelisp-sexp-write-bool-vector=   |
+| Cell         | 11  | =NonNull<NlCell>= ptr @ 8                             |  32   | =nelisp-sexp-write-cell=          |
+| Record       | 12  | =NonNull<NlRecord>= ptr @ 8                           |  32   | =nelisp-sexp-write-record=        |
+
+注:
+- *all* variants padded to 32 byte total (= =size_of::<Sexp>()=).  Rust
+  enum の =align_of= は 8、payload 最大は =String= の 24 byte、+ tag 1
+  + padding 7 = 32.
+- =NonNull<T>= は =repr(transparent)= = bare =*const T= と同 layout =
+  u64 little-endian.
+- =String= layout = =Vec<u8>= = =(ptr: *mut u8, capacity: usize, len:
+  usize)= の **3 word**, 各 8 byte = 24 byte total.  注: Rust の
+  =String= 内部 layout は **non-stable** (rustc 版で順番が変わりうる) =
+  本 DSL は **=Symbol/Str= variant の serialize は heap pointer ではなく
+  別途 raw bytes を rodata section に emit する** path を採る (= §3.5).
+
+** §3.3 box variant の pointer 値 (= Phase 47 relocation target)
+
+box variant 7 個 (MutStr/Cons/Vector/CharTable/BoolVector/Cell/Record)
+は payload @ offset 8 が =NonNull<NlXxx>= = u64 pointer.  この 8-byte
+slot が Phase 47 で linker (Doc 93) が patch する target:
+
+#+begin_src text
+generation time              link time              run time
+[elisp emit]                 [linker patches]       [JIT trampoline reads]
+| Sexp::Cons {              | (resolves           | mov rsi, [rdi+8]
+|   tag:  7,                |  symbol             | call NlConsBoxRef::car
+|   _pad: 0..0,             |  "_box_X" to        |
+|   payload: 0xDEADBEEF }   |  actual address)    |
+#+end_src
+
+elisp DSL は =:box-ptr 0= の placeholder を埋め、Doc 93 linker が ELF
+=R_X86_64_64= relocation で patch.  alignment 制約 = 8-byte aligned
+target / 8-byte aligned source = automatic (= payload offset 8 は 8-
+byte aligned by §3.1 layout).
+
+** §3.4 =Symbol= / =Str= の文字列 payload
+
+Rust =String= layout は **rustc 内部実装依存** = elisp 側で同 byte
+pattern を emit するのは not safe.  解決 choice: (a) =NonNull<u8>=
+(rodata pointer) + =u64 len= の 16 byte 新 layout に migrate、(b)
+MutStr と同じく =NonNull<NlStr>= refcounted box 統一案 (= layout
+breaking change).  本 doc 暫定 assumption: *(b) box variant 統一* で
+全 13 variant payload を 16 byte に揃える.  Phase 47 master spec 側で
+spec freeze 時 final 選択.
+
+** §3.5 sanity table (= round-trip property per variant)
+
+| variant       | Rust size  | round-trip property                                |
+|---------------+------------+-----------------------------------------------------|
+| Nil/T         | 32 byte    | =deser . ser . make = make=                        |
+| Int(i64)      | 32         | bit-identical for any i64                          |
+| Float(f64)    | 32         | bit-identical for finite + NaN preservation        |
+| Symbol/Str    | 16 or 32 * | structural — name/text string equal                |
+| MutStr        | 16         | inner string equal (= structural; pointer differs) |
+| Cons/Vector/Record/CharTable | 16 | recursive structural                       |
+| BoolVector    | 16         | bit-vector equality                                |
+| Cell          | 16         | inner value equal                                  |
+
+(* §3.4 layout choice 依存.  ctor / serializer 名は §3.2 表参照.)
+
+** §3.6 multi-arch 注釈
+
+x86_64 LE assumption.  aarch64 も LE (Linux+macOS は default LE)
+なので =Int= / =Float= / pointer の byte order は同じ.  big-endian
+(= s390x, ppc64be) は scope 外 — Phase 47 master が x86_64 + aarch64
+LE only と articulate 済 (Doc 85 §7.1 multi-arch contingency).
+
+* §4 mapping to JIT trampoline ABI
+
+** §4.1 現状 (Rust → Rust)
+
+JIT trampoline (= Doc 81 articulated) は現状:
+
+#+begin_src text
+caller (Rust) builds Sexp::Int(42)              → *const Sexp
+   passes via System V AMD64 ABI rdi register
+trampoline reads tag byte at [rdi+0], dispatches
+   reads payload at [rdi+8] (= 8-byte slot)
+callee (Rust) receives Sexp                     ← *const Sexp
+#+end_src
+
+trampoline は Sexp の **layout** (tag at 0, payload at 8) のみ
+信頼、ownership / lifetime は Rust 側に任せる (= raw pointer).
+
+** §4.2 Phase 47 (elisp emits, Rust JIT trampoline reads)
+
+elisp DSL の生成物が JIT trampoline に流れる経路:
+
+#+begin_src text
+elisp builds                       byte buffer                      JIT trampoline
+nelisp-sexp-make-int 42            (32 byte = SEXP_TAG_INT          mov al, [rdi+0]   ;; al = 2 (= INT)
+   |                               + 7 byte pad + i64 LE 42)        cmp al, 2
+   v                                                                jne .other
+nelisp-sexp-write-bytes              ↓ inserted in .data section    mov rax, [rdi+8]  ;; rax = 42
+   into a (make-string 32 ?\0)        of ELF binary by Doc 91         ret
+   buffer                              writer (relocation _box_42)
+   |
+   v
+the buffer's address               =*const Sexp= layout-identical
+   (= Doc 93 linker patches)       to Rust-built Sexp::Int(42)
+#+end_src
+
+** §4.3 elisp / Rust boundary 越え不要
+
+key insight: elisp は **byte buffer を作るだけ** = Rust の Sexp 値を
+直接 alloc する経路は不要.  byte buffer = =(make-string 32 ?\0)=
+or =(make-bool-vector 256 nil)= は elisp の primitive、その raw bytes
+を ELF =.data= section に emit すれば Rust JIT trampoline が同 byte
+を Sexp として deref できる.
+
+これは Doc 47 seed image と全く同じ pattern (= elisp が NELIMG v3
+heap snapshot を bake、Rust runtime が mmap して直 deref).
+
+** §4.4 box pointer の relocation (= Doc 93 dependency)
+
+box variant の payload =NonNull<NlConsBox>= は generation 時には
+*どこに alloc されるか不明*.  Doc 93 static linker が:
+
+1. elisp が生成した byte buffer に =SEXP_TAG_CONS= + =0xDEADBEEF=
+   placeholder pointer を埋めた状態
+2. linker が =.data= section の box 実体 alloc 位置を確定
+3. relocation entry =R_X86_64_64= で payload @ offset 8 を実 address に
+   patch
+
+この workflow は GCC / clang static link と完全同じ = standard ELF
+relocation で済み新 mechanism 不要.
+
+** §4.5 hot path / cold path
+
+| path        | byte operations                                        | speed                           |
+|-------------+--------------------------------------------------------+---------------------------------|
+| cold path   | elisp DSL ctor → tagged vec → write-bytes → buffer    | elisp byte manipulation = slow  |
+| hot path    | JIT trampoline reads buffer's raw bytes via =mov=     | as fast as native Rust deref   |
+
+「cold path = elisp 経由」が Phase 47 perf concern だが、これは bake
+time にのみ走り、run time の hot path は trampoline から見える raw
+bytes = native speed.
+
+** §4.6 Sexp lifecycle through elisp DSL
+
+#+begin_src text
+[bake time (= Doc 91-95 chain)]
+  elisp source
+    → nelisp-sexp-make-* (= DSL ctor)
+    → byte buffer (= 32-byte aligned)
+    → ELF .data section (= Doc 91 writer)
+    → relocation entries (= Doc 93 linker)
+
+[boot time]
+  ./nelisp loads bake image
+  .data section mmap'd, pointers resolved by static link
+  Sexp values now live in process memory at fixed addresses
+
+[run time (= JIT executes)]
+  trampoline gets =rdi= = pointer into .data
+  reads tag/payload as raw bytes (= no marshalling)
+#+end_src
+
+* §5 testing strategy
+
+** §5.1 round-trip test (= unit test, ert)
+
+各 variant: =(make-X) → write-bytes → read-bytes → equal-X=.  13
+variant × 1 round-trip = 13 ert.  + edge case (= negative i64, NaN,
+empty string, deep cons chain) ~5 ert.  + structural equal ~5 ert.
+合計 ~23 ert, ~120 LOC.
+
+** §5.2 byte-pattern test against Rust
+
+elisp 生成 buffer と Rust =Sexp::Int(42)= の =transmute= された bytes
+が bit-identical であることを Rust 側 =#[test]= で確認.  fixture file
+は elisp toolchain で生成 (= =(nelisp-sexp-write-bytes (nelisp-sexp-
+make-int 42) buf 0)= の output) を =tests/fixtures/sexp_*.bin= に保
+存、Rust test が =include_bytes!= で読み込み =transmute_copy= 結果と
+=assert_eq!=.  13 variant × 1 fixture = 13 fixture (~32 byte each =
+416 byte total)、Rust test ~50 LOC.
+
+** §5.3 JIT trampoline e2e (= Doc 81 trampoline 利用)
+
+elisp DSL で =(+ 1 2)= 相当の Sexp tree を bake、=nelisp-jit-eval-
+buffer= で =3= が返ることを ert で confirm.  ~3 e2e (constant fold,
+function call, branch) ~30 LOC.
+
+** §5.4 boot test (= bake-images integration)
+
+最終 acceptance test = =STDLIB_FILES= 全部を DSL で bake し直し、
+=make bake-images= の output が **byte-identical** に再現できるか.
+
+procedure:
+1. =make bake-images= で Rust-built reference image を保存
+2. elisp toolchain (= 本 DSL + Doc 91-94) で同 stdlib を bake
+3. =cmp -l= で byte 差分なし
+
+これが green になれば Phase 47 全 chain が work している証拠 = Phase
+47 ship gate criterion.
+
+** §5.5 test LOC accounting
+
+| layer                  | LOC |
+|------------------------+-----|
+| §5.1 round-trip ert    | 120 |
+| §5.2 byte fixture test | 50  |
+| §5.3 JIT e2e ert       | 30  |
+| §5.4 boot test driver  | 50  |
+| *合計*                 | 250 |
+
+(Doc 85 §3.5.2 の "工数 ~150 elisp" は test を含まない core.  test
+含めると ~600 LOC、§2.6 と整合.)
+
+* §6 ROI quantification
+
+** §6.1 Rust LOC eliminated
+
+| target                                           | LOC | 出典                  |
+|--------------------------------------------------+-----+-----------------------|
+| =sexp.rs= の =enum Sexp= + =SEXP_TAG_*= +        |     |                       |
+| =SEXP_PAYLOAD_OFFSET= + ABI helpers + assert     | 305 | §1.1 inventory        |
+| =sexp.rs= 内 =CharTableInner= struct             |  19 | §1.1                  |
+| ffi.rs partial = =Sexp= marshalling fn (見積)    |  80 | Doc 85 §2.2 ffi.rs 820 LOC のうち Sexp 関連部 |
+| jit/bridge.rs partial = =Sexp= calling-conv     |     |                       |
+| (Doc 81 articulated) marshalling                |  40 | Doc 85 §3.5.3 既存 partial asset 参照 |
+| *Rust 削減 合計*                                 | *444* |                     |
+
+(Doc 85 §0 TL;DR 表は "300 Rust 削減" = sexp.rs core 部のみ articulate.
+本 doc は ffi.rs / bridge.rs の Sexp marshalling 部分も含めた net 削減
+= ~444 LOC を articulate.)
+
+** §6.2 elisp LOC required
+
+| section             | LOC |
+|---------------------+-----|
+| layout constants    |  14 |
+| §3 ctors            |  65 |
+| §4 accessors        |  90 |
+| §5 predicates       |  32 |
+| §6 serializer       | 100 |
+| §7 sugar            |  20 |
+| docstring + module  |  80 |
+| ert testbench       | 200 |
+| *合計*              | *601* |
+
+(= §2.6 と一致.  test を core に含める方針.  test を別 LOC 計上する
+慣例なら core 401 LOC、test 200 LOC.)
+
+** §6.3 Net LOC change
+
+#+begin_src text
++ 601 elisp (= 本 DSL 投資)
+- 444 Rust (= sexp.rs 型定義 + ffi.rs/bridge.rs partial)
+= net +157 LOC
+#+end_src
+
+ratio: *1.35 elisp 投資 per 1 Rust 削減* = Doc 85 §0 TL;DR table row 5
+の "0.5:1" よりやや劣る (= test を含めたため).  test 抜きの core core
+比較なら 401 / 444 = *0.90:1* (= Doc 85 articulated 値とほぼ一致).
+
+** §6.4 Phase 47 unblocking value
+
+LOC 比だけ見ると魅力薄だが、実 value は **chain unlock**:
+
+- Doc 91 ELF writer は Sexp 値を =.data= に埋めるために必須
+- Doc 92 macro assembler は Sexp constants を operand として扱う
+  (=mov rdi, [Sexp const ptr]=) ためにレイアウト知識必須
+- Doc 93 static linker は box pointer の relocation target が Sexp
+  layout に依存
+- Doc 94 crt0 elisp は image load 時に Sexp 値を deref するため layout
+  必須
+
+= 本 DSL なしでは Doc 91-94 のいずれも完成不可。Phase 47 の **gate
+component**.
+
+** §6.5 partial asset 流用
+
+Doc 85 §3.5.3 articulated:
+
+- Phase A.5 layout pin (= 本 doc §1.1 で実 verified、=#[repr(C, u8)]=
+  + =SEXP_PAYLOAD_OFFSET= constants) — 本 DSL は同 layout を **そのまま
+  serialize するだけ**.  layout discovery 不要 = 工数 -50 LOC 相当
+- Phase A.4.x の 7 box variant 統一 (= 全部 =NonNull<NlXxx>= = 8 byte
+  handle) — 本 DSL は box variant 全部を 1 つの =-write-box-ptr= で
+  serialize できる = 工数 -40 LOC 相当
+
+** §6.6 ROI 表 (本 doc 確定値)
+
+| component       | elisp 投資 | Rust 削減 | partial 流用 | net 投資  |
+|-----------------+------------+-----------+--------------+-----------|
+| Sexp DSL (本 doc) | 601 (= 401 core + 200 test) | 444 | -90 (Phase A.5 + A.4.x 既存) | *511*  |
+
+Doc 85 §5.1 表 row 5 "Sexp DSL: 150 / 300 / -100 / 50" は **過小
+estimate**, 本 doc 確定値に置換するべき.
+
+* §7 Risk / unknowns
+
+** §7.1 elisp byte manipulation の性能
+
+elisp の =(aset (make-string 32 ?\0) 0 ...)= は cold path で speed
+issue:
+
+- 32-byte buffer × N variant × M Sexp value at bake time
+- =STDLIB_FILES= の Sexp 値数は ~10,000 オーダー (= 推定、stdlib AST
+  全体)
+- 1 Sexp ~ 1 ms (= elisp byte access)、合計 ~10s = bake time +10s
+
+緩和策:
+- elisp byte primitive を C-implemented =unibyte-string= 経由で
+  optimize
+- =cl-loop= unroll
+- 並列化は elisp single-thread のため不可
+
+判断: bake time +10s は許容、Phase 47 acceptance に影響しない.  hot
+path (= JIT) は影響なし (§4.5).
+
+** §7.2 Rust =Sexp= layout drift
+
+risk: =rustc= 版で =#[repr(C, u8)]= の挙動が変わる:
+
+- =#[repr(C, u8)]= 自体は **stable since rustc 1.66 (2022)** = 当面
+  stable
+- =String= 内部 layout は **NOT stable** = §3.4 で box 化統一案を
+  採用すれば回避
+- =NonNull<T>= layout は =#[repr(transparent)]= = stable
+
+緩和策:
+- CI に =cargo expand= で =#[repr(C, u8)]= の expand 結果を snapshot
+  test、変化検出
+- =sexp_layout_alignment_and_size_sane= test を release gate
+- =MSRV (minimum supported rustc version)= を articulate
+
+判断: 緩和策あれば low risk.
+
+** §7.3 bootstrap chicken-and-egg
+
+問題: 本 DSL は Phase 47 で稼働するが、**本 DSL を生成する elisp
+code 自体** は既存 Rust nelisp で実行される.
+
+= 既存 Rust nelisp が elisp code を実行 → 本 DSL (= elisp 値 of
+Sexp) を bake → output bytes を Doc 91 writer に渡す → ELF binary 生成
+→ 新 elisp-only nelisp が boot.
+
+Phase 47 master spec 側 (= Doc 85 §7.4 articulated と整合) で
+chicken-and-egg は handled = 既存 Rust nelisp は **archaeology** とし
+て残し、新 binary を生成するための bootstrap stage 0 として永久 pin.
+
+判断: bootstrap chain 健全、本 DSL は他 component と同じ条件.
+
+** §7.4 Symbol/Str layout choice (§3.4 不確定)
+
+current Rust = =Symbol(String)= / =Str(String)= は =String= 内部 24 byte
+payload + tag + pad = 32 byte.  =String= 内部 layout が不安定.
+
+choice:
+1. *box 化統一* (= NlSymbolRef / NlStrRef) = 16 byte payload に縮小、
+   layout-breaking
+2. *raw rodata pointer + length* = =(u64 ptr, u64 len)= 16 byte
+3. *current 維持* = String layout を assume、rustc 版 pin
+
+本 doc 暫定 = (1).  Phase 47 master (= Doc 85 update) で確定要.
+
+判断: medium risk.  Phase 47 master 側で choice すれば本 DSL は
+追従するだけ.
+
+** §7.5 box 実体 alloc の locus
+
+§1.4 で articulated = 本 DSL は box の "pointer" を emit するに
+留まり、box 実体は Rust 側に残置.  Phase 47 完遂後も =NlConsBox= /
+=NlVector= 等の box impl Rust = ~2,880 LOC が残る.
+
+= "Phase 47 完遂 = 0 Rust" の宣伝は **enum Sexp の 305 LOC のみ
+削減**、box 実体は別 phase で elisp 化要 (= future Phase 48? 別 doc).
+
+判断: Phase 47 scope は本 doc 範囲で正しく、Doc 85 §0 TL;DR table の
+"300 Rust 削減 / Sexp DSL row" は本 doc で正確に articulated.  box
+実体 elisp 化は scope 外と明示する.
+
+** §7.6 elisp byte serializer の big-int 制約
+
+=Sexp::Int(i64)= は 64-bit 整数.  elisp の integer は **fixnum (=
+typically 62-bit on 64-bit platform)** で full i64 範囲を持たない.
+
+緩和策:
+- 64-bit 値は 2 つの 32-bit half-word (= =high * 2^32 + low=) で encode
+- elisp の =bignum= (= Emacs 27+ で fboundp) を assume すれば direct
+- =(format "%x"...)= → bytes へ char-encode の workaround
+
+判断: low risk.  Emacs 27+ には bignum あり、subset target = nelisp
+の elisp interpreter は full bignum support 前提 (= Phase 7.4 NeLisp
+coding).
+
+** §7.7 char-table の =Vec<(i64, Sexp)>= recurse 表現
+
+=CharTableInner.entries: Vec<(i64, Sexp)>= は Sexp を再帰 hold する.
+elisp DSL で表現する場合 entry list の serializer は recurse 必須.
+
+→ =-write-char-table= 実装が他 variant よりやや複雑 (~25 LOC
+vs typical 10 LOC).  §2.6 LOC 計算済.
+
+判断: low risk.
+
+** §7.8 multi-arch (aarch64) layout
+
+Doc 85 §7.1 multi-arch contingency = "Linux x86_64 のみで Phase 47
+完遂、他 platform は後続".
+
+aarch64 への extend:
+- byte order = LE (= 同 x86_64)
+- align_of(Sexp) = 8 (= 同)
+- =NonNull<T>= layout = 同
+- 違い: 関数 calling convention (= AAPCS64 vs SysV AMD64)、Sexp
+  layout 自体は arch-independent
+
+= 本 DSL は arch-independent.  aarch64 対応は trampoline ABI (Doc 81
+/ Doc 92) 側の concern.
+
+判断: 本 doc 影響なし.
+
+** §7.9 Risk summary 表
+
+| risk                              | severity | mitigation                                  |
+|-----------------------------------+----------+---------------------------------------------|
+| §7.1 elisp byte perf              | low      | bake time +10s 許容                         |
+| §7.2 Rust layout drift            | low      | CI snapshot + MSRV                          |
+| §7.3 bootstrap chicken-and-egg    | low      | Phase 47 master 共通 issue                 |
+| §7.4 Symbol/Str layout choice     | medium   | Phase 47 master 側で選択                    |
+| §7.5 box impl 残置 scope          | medium   | Phase 47 scope 明示、Phase 48? に push     |
+| §7.6 i64 vs elisp fixnum          | low      | bignum support assume                       |
+| §7.7 char-table recurse           | low      | code already articulated                    |
+| §7.8 multi-arch                   | n/a      | DSL arch-independent                        |
+
+*top 3 risks for implementer*:
+
+1. *§7.4 Symbol/Str layout choice* = Phase 47 master と整合させて
+   選ぶ必要、本 DSL の serializer 分岐数に直結
+2. *§7.5 box impl scope* = Phase 47 完遂後も Rust box impl ~2,880 LOC
+   残置と articulated、user 期待値 management 要
+3. *§7.2 Rust layout drift* = =cargo expand= snapshot を CI に組み
+   込まないと rustc upgrade で silent breakage 危険
+
+* §8 Implementation phases
+
+5 sub-stage 提案 (= 各 stage 独立 ship 可能、chain 直列だが各 stage
+で valid intermediate state 保持):
+
+** §8.1 §95.a constructors (~80 LOC, ~2 day)
+
+deliverable:
+- =nelisp-sexp-dsl.el= module skeleton
+- 14 layout constants (= =SEXP_TAG_*= + =SEXP_PAYLOAD_OFFSET=)
+- 13 ctor (= =nelisp-sexp-make-{nil,t,int,float,symbol,str,mut-str,
+  cons,vector,bool-vector,record,char-table,cell}=)
+- ert smoke test = 各 ctor が正しい =[TAG payload]= vec を返す
+
+acceptance: =M-x ert RET nelisp-sexp-dsl-make- RET= で 13 test green.
+
+** §8.2 §95.b accessors (~100 LOC, ~2 day)
+
+deliverable:
+- 15 accessor / mutator (= =-tag/-arity/-car/-cdr/-aref/-aset/-symbol-
+  name/-int-value/-float-value/-str-value/-record-type-tag/-record-
+  slot/-bool-vector-bit/-cell-value/-cell-set-value=)
+- 4 predicate (=-nil-p/-string-p/-equal/-eq=)
+- ert ~10 test = 各 accessor が ctor 出力から正しく抽出
+
+acceptance: =-equal= が 13 variant 全部の structural compare に成功.
+
+** §8.3 §95.c serializer (~150 LOC, ~3 day)
+
+deliverable:
+- =nelisp-sexp-write-bytes= = 13 variant の byte serializer
+- =nelisp-sexp-read-bytes= = inverse
+- ert round-trip × 13 + edge cases × 5
+- §3.4 で choose した Symbol/Str layout に従って encode
+
+acceptance:
+- round-trip ert 23 test green
+- =i64= range 全 corner case (=-2^63=, =2^63-1=, =0=, =1=, =-1=) green
+- =NaN= preservation green
+
+** §8.4 §95.d JIT bridge (~120 LOC, ~3 day)
+
+deliverable:
+- byte fixture file 生成 helper (= write Rust-side reference bytes)
+- =build-tool/src/eval/sexp.rs= に Rust unit test (= byte fixture 比較、
+  §5.2)
+- e2e ert (= elisp DSL emit → Doc 91 ELF writer skeleton (= shim 可)
+  → Doc 81 trampoline (= existing) で eval → 結果 verify)
+
+acceptance:
+- Rust =elisp_dsl_byte_layout_matches_*= test 13 個 green
+- elisp e2e ert 3 個 green (= int eval, cons traversal, vector aref)
+
+** §8.5 §95.e bake-images integration (~150 LOC, ~5 day)
+
+deliverable:
+- =make bake-images= に DSL toolchain branch を追加 (= feature flag
+  =NELISP_BAKE_VIA_DSL=)
+- existing Rust baker と DSL baker の output を =cmp -l= で diff 0
+- byte-identical を CI で固定
+
+acceptance:
+- =make bake-images NELISP_BAKE_VIA_DSL=1= = =make bake-images= の
+  output と =cmp= diff 0
+- CI green
+
+** §8.6 期間 + 並列度
+
+| stage  | LOC | day | 並列      |
+|--------+-----+-----+-----------|
+| §95.a  | 80  | 2   |           |
+| §95.b  | 100 | 2   | (after a) |
+| §95.c  | 150 | 3   | (after b) |
+| §95.d  | 120 | 3   | (after c) |
+| §95.e  | 150 | 5   | (after d) |
+| *合計* | 600 | 15  | linear    |
+
+*15 work-day = 3 calendar week* (= 1 dev、weekend 抜き).  並列性なし
+(= 各 stage 直前 stage に依存).  Doc 91 / Doc 92 / Doc 93 / Doc 94 と
+の chain では §95.d が Doc 91 ELF writer を参照、§95.e が Doc 91-94
+の足回りを参照 = Phase 47 chain の最終段近く.
+
+* §9 References
+
+** §9.1 internal NeLisp design docs
+
+- *Doc 85* (= =docs/design/85-phase-47-feasibility-spike.org=) — 本
+  doc の parent.  §0 TL;DR table row 5 (= "Sexp layout DSL + compiler
+  lower ~150 elisp / -300 Rust / 0.5:1 ROI"), §3.5 (= scope + 工数
+  詳述), §5.1 ROI 表 row 5, §8 派生候補 doc list
+- *Doc 91* (= elisp ELF writer, sister component, =~500 elisp=) —
+  本 DSL の output (= 32-byte Sexp buffer) を =.data= section に
+  emit する責務.  §95.d で参照.
+- *Doc 92* (= elisp macro assembler 拡張, ~800 elisp) — Sexp 値を
+  operand とする instruction (= =mov rdi, [SEXP_CONST_PTR]=) emit.
+  §3.3 box pointer relocation で参照.
+- *Doc 93* (= elisp static linker + syscall inline, ~300 elisp) —
+  本 DSL が emit する =:box-ptr 0= placeholder の relocation.  §3.3
+  + §4.4 で参照.
+- *Doc 94* (= crt0 + boot loader elisp, ~150 elisp) — image load 時
+  Sexp 値を deref するため layout 知識.  §6.4 で chain 参照.
+- *Doc 81* (= =docs/design/81-nelisp-cc-primitive-trampoline-extension.
+  org=) — JIT trampoline ABI.  本 DSL が emit する Sexp byte buffer
+  が trampoline の入力 = §4 で参照.
+- *Doc 89 §6* (= =docs/design/89-phase-2-env-scope-chain-migration.
+  org=, line 669-) — bootstrap strategy.  Tier 0 minimal Rust env で
+  chicken-and-egg 解決 articulate、本 DSL の bootstrap (= §7.3) と
+  整合.
+- *Doc 47* (= rust-seed-image-abi.org) — seed image format、本 DSL の
+  byte serialize と同 path (= elisp が bake、Rust が deref).
+- *Doc 62 Phase 5* — Sexp =#[repr(C, u8)]= inline-emit unlock、本 DSL
+  が依存する layout pin の起源.
+- *Doc 77c Phase A.4.x* — box variant 7 個の =NonNull<NlXxx>= 統一、
+  payload offset 8 を可能にした precondition.
+
+** §9.2 Rust source anchors
+
+- =build-tool/src/eval/sexp.rs= 979 LOC
+  - line 56-199: =enum Sexp= (= 13 variant)
+  - line 217-229: =SEXP_TAG_*= constants
+  - line 234: =variant_tag()=
+  - line 270: =SEXP_PAYLOAD_OFFSET=
+  - line 272-348: =impl Sexp= ABI direct-access (= 8 method)
+  - line 376-394: =CharTableInner=
+  - line 396-523: =impl Sexp= constructors / accessors (= 14 method)
+- =build-tool/src/eval/{nlconsbox,nlcell,nlstr,nlvector,nlboolvector,
+  nlrecord,nlchartable}.rs= = box 実体 (= 2,880 LOC、本 DSL scope 外)
+- =build-tool/src/eval/ffi.rs= 820 LOC = Phase 47 ffi.rs 削減 (Doc 93)
+- =build-tool/src/jit/= = JIT trampoline (= Doc 81 anchor)
+
+** §9.3 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= = NeLisp standalone MCP
+  current state
+- =feedback_nelisp_perf_not_elisp_interpreter= = NeLisp 性能特性 (=
+  本 DSL の elisp byte manipulation も elisp interpreter と異なり
+  native cc target)
+- =feedback_nelisp_announcement_standalone_gate= = public announce
+  gate (= Phase 47 が完遂しないと standalone 化未完)
+
+** §9.4 external prior art
+
+- *SBCL* — =sb!c::node= AST が Common Lisp で書かれた self-hosted
+  CL.  layout pin + serialize prior art.
+- *GHC core* — =CoreSyn.Expr= + =Iface= binary serialize、本 DSL
+  serializer (§3) と同 pattern.
+- *Forth* — 16 word kernel 上で全自己 host、本 DSL bootstrap
+  philosophy と一致.
+- *V8 / SpiderMonkey* — =HeapObject= layout C++ fixed、JS 自身は
+  deserialize しない (= 本 DSL は逆方向).
+
+** §9.5 Phase 47 chain 上の dispatch order
+
+並列性: §95.a-c は Doc 91 / 92 と完全並列開発可能 (= layout +
+in-elisp behavior のみ).  §95.d 以降は Doc 91 ELF writer の skeleton
+を要する.  最終 ROI は Doc 91-95 全体で -2,000 LOC Rust、本 doc 単体
+は core core 比較で 0.90:1 (§6.3).
+
+----
+
+* Status updates
+
+** §95.a SHIPPED (2026-05-11)
+
+Freestanding constructor / accessor / predicate spike landed:
+
+- =lisp/nelisp-sexp-dsl.el= — 13 ctors + tag accessor + 13
+  predicates + per-variant accessors + structural =nelisp-sexp-eq=
+  + debug printer.  Plist representation (= simpler than the §2.2
+  tagged-vec choice; serializer-ready repr is deferred to §95.c).
+- =test/nelisp-sexp-dsl-test.el= — 33 ert cases covering ctor +
+  predicate + accessor type-check + recursive structural equality.
+- No Rust changes, no =nelisp-baker= STDLIB_FILES registration —
+  freestanding spike per task spec.
+
+** §95.b SHIPPED (2026-05-11)
+
+Operational surface needed before §95.c serializer + §95.e baker
+landed on top of §95.a, same file:
+
+- =lisp/nelisp-sexp-dsl.el= — 24 new helpers across 7 sub-groups:
+  - mutators: =cons-set-car=, =cons-set-cdr=, =vector-aset=,
+    =record-set-slot= (= bounds + type-check, in-place)
+  - length / arity: =cons-length= (signals on improper),
+    =vector-length=, =record-arity=
+  - iteration: =walk= (pre-order), =map-cons=, =foldl=
+  - conversion: =cons-from-list=, =list-from-cons=, =to-elisp=
+    (lossy debug), =from-elisp= (cond-sniff)
+  - hash: =hash= (= sxhash-equal + tag mix; usable as =eql= key)
+  - deep copy / deep-eq: =copy= (recursive new cells), =deep-eq=
+    (alias for §95.a =eq= which is already recursive)
+  - type coercion: =as-int=, =as-float=, =as-str= (accepts both
+    str variants), =as-symbol=, =as-cons=, =as-vector=, =as-record=
+- =test/nelisp-sexp-dsl-test.el= — 30 new ert cases (mutator bounds
+  + improper-list signals + map/fold semantics + round-trip +
+  hash stability + copy independence + coercion mismatch errors).
+- No Rust changes, no =nelisp-baker= STDLIB_FILES registration.
+- §95.c byte-layout serializer remains intentionally deferred —
+  that is the big one and is the next sub-stage per §8.6 plan.
+
+** §95.c SHIPPED (2026-05-11)
+
+Freestanding wire-format byte serializer landed on top of §95.a/b
+in the same =lisp/nelisp-sexp-dsl.el= file:
+
+- 13 tag-byte constants (= =nelisp-sexp-wire-tag-{nil,t,int,float,
+  symbol,str,mut-str,cons,vector,char-table,bool-vector,cell,record}=)
+- low-level codecs:
+  - =--write-u32= / =--read-u32= (= 4-byte LE)
+  - =--write-i64= / =--read-i64= (= 8-byte LE two's complement, signals
+    =args-out-of-range= for >2^63-1 or <-2^63)
+  - =--write-f64= / =--read-f64= (= IEEE 754 binary64 LE; hand-rolled
+    =--f64-to-bits= / =--f64-from-bits= covers normal / subnormal /
+    +/-zero / +/-Infinity / NaN with implicit-1 mantissa shift via
+    =frexp=)
+  - =--write-utf8= / =--read-utf8= (= u32 LE length + UTF-8 bytes
+    encoded with =utf-8-unix= for clean multibyte round-trip)
+- top-level entry points:
+  - =nelisp-sexp-write-bytes SEXP= → unibyte string
+  - =nelisp-sexp-read-bytes BYTES &optional POS= → =(SEXP . NEW-POS)=
+- validation:
+  - =nelisp-sexp-bytes-round-trip-p SEXP= via structural =nelisp-sexp-eq=
+  - =nelisp-sexp-bytes-equal-p A B= via raw byte equality
+- error symbols: =nelisp-sexp-truncated=, =nelisp-sexp-unknown-tag=,
+  =nelisp-sexp-malformed-record= (= =define-error= so =should-error=
+  can match by =:type=)
+
+Wire format is *not* the §3 Rust 32-byte fixed layout — that is the
+JIT bridge concern reserved for §95.d.  This §95.c serializer is the
+self-describing variable-length wire format that pairs with elisp
+buffers + ert; the §95.d bridge will translate this stream to the
+fixed Rust layout on the boundary.
+
+- =test/nelisp-sexp-dsl-test.el= — 41 new ert cases:
+  - round-trip per variant (= 13 explicit + 1 coverage smoke =
+    14 cases)
+  - i64 corners (= =most-positive/negative-fixnum=, =2^63-1=, =-2^63=,
+    =0=, =1=, =-1=) + i64 out-of-range signal
+  - float corners (= +/-zero with sign preservation, +/-1, +/-inf,
+    NaN preserved via =isnan=, smallest subnormal 5e-324, 1e+100,
+    DBL_MAX)
+  - UTF-8 multibyte (= "日本語", "🎉", "αβγ", explicit byte check for
+    "あ" = 3 bytes UTF-8)
+  - deep cons (= 100-element list) + nested vec-cons-vec
+  - truncated input (= tag / int / float / utf8-len / utf8-content /
+    bool-vector) → =nelisp-sexp-truncated= signal
+  - unknown tag (= 0xFF, 0x0D) → =nelisp-sexp-unknown-tag= signal
+  - malformed record (= type-sym slot is not a Symbol) signal
+  - sequential decode via =NEW-POS= continuation
+  - bool-vector len=0 documented limitation (= no bit storage so
+    =:init= unrecoverable from wire; symbolically zero info loss)
+- =make compile= 0 warning, =ert= 107/107 (= 66 §95.a/b carried +
+  41 new §95.c).
+- No Rust changes, no =nelisp-baker= STDLIB_FILES registration —
+  freestanding wire format per task spec, JIT bridge deferred to §95.d.
+
+** §95.d SHIPPED (2026-05-11)
+
+Rust ABI fixed-layout JIT bridge landed on top of §95.a/b/c in the
+same =lisp/nelisp-sexp-dsl.el= file.  Mirrors =build-tool/src/eval/
+sexp.rs= =#[repr(C, u8)]= layout so JIT trampolines can read elisp-
+emitted Sexp values via raw pointer deref.
+
+- 13 Rust-ABI tag-byte constants (= =nelisp-sexp-jit-tag-{nil,t,int,
+  float,symbol,str,mut-str,cons,vector,char-table,bool-vector,cell,
+  record}=) pinned to SEXP_TAG_* values in sexp.rs lines 217-229
+- 2 layout-pin constants:
+  - =nelisp-sexp-jit-record-size= = 32 (= =size_of::<Sexp>()=
+    asserted by =sexp_layout_alignment_and_size_sane= unit test)
+  - =nelisp-sexp-jit-payload-offset= = 8 (= =SEXP_PAYLOAD_OFFSET=
+    in sexp.rs line 270)
+- low-level layout codecs:
+  - =--jit-u64-bytes= / =--jit-u64-from-bytes= (= 8-byte LE u64
+    payload bridge — Rust =NonNull<NlXxx>= is =repr(transparent)=
+    bare =*const T= = u64 LE on x86_64/aarch64)
+  - =--jit-i64-bytes= / =--jit-i64-from-bytes= (= 8-byte LE i64,
+    delegated through u64 codecs)
+  - =--jit-f64-bytes= / =--jit-f64-from-bytes= (= delegates to
+    §95.c =--f64-to-bits= / =--f64-from-bits= so NaN preservation
+    + subnormal handling stay in one place)
+- 32-byte record assembly via =--jit-record TAG PAYLOAD-8= (= TAG @
+  0, 7-byte zero pad, PAYLOAD @ 8, 16-byte trail pad to 32 total)
+- heap-store for round-trip helpers:
+  - =nelisp-sexp-jit-make-heap-store= = =(NEXT-PTR . HASH)= cons
+  - =--jit-heap-put= allocates fresh integer ptr, returns key
+  - =nelisp-sexp-jit-heap-store-fn= returns =(lambda (PTR LEN) BYTES)=
+    closure suitable as HEAP-FN argument to read-bytes
+- top-level entry points:
+  - =nelisp-sexp-jit-write-bytes SEXP &optional STORE= → 32-byte
+    unibyte string.  Inline variants (= Nil / T / Int / Float)
+    embed payload bytes at offset 8.  Boxed variants (= 9 other
+    tags) write §95.c wire-format bytes to STORE keyed by fresh
+    integer ptr, embed ptr as 8-byte LE u64 at offset 8.
+  - =nelisp-sexp-jit-read-bytes BYTES &optional POS HEAP-FN= →
+    reconstructed Sexp plist.  Dispatches on tag byte at POS:
+    inline variants decode payload bytes 8-15 directly; boxed
+    variants invoke =(funcall HEAP-FN PTR nil)= and feed the
+    returned wire-format bytes through =nelisp-sexp-read-bytes=.
+- validation:
+  - =nelisp-sexp-jit-round-trip-p SEXP= via structural
+    =nelisp-sexp-eq= (= write + heap + read should reproduce SEXP)
+- new error symbol: =nelisp-sexp-jit-heap-miss= (= HEAP-FN returned
+  nil for a boxed-variant pointer — distinguishes "wire-format
+  truncation" from "heap lookup failure")
+
+Layout per §3.1 mirror:
+
+#+begin_src text
+offset  size  field
+  0       1   tag byte (= SEXP_TAG_*)
+  1       7   align padding (zero-filled)
+  8       8   payload (= i64 / f64 / u64-ptr LE)
+ 16      16   trailing pad to 32-byte total
+#+end_src
+
+- =test/nelisp-sexp-dsl-test.el= — 31 new ert cases:
+  - record-size invariants (= 32 bytes per variant, 4 inline +
+    1 sweep over all 13 = 5 cases)
+  - tag-byte position (= byte 0 holds discriminant, 6 variant
+    samples in one test) + Rust-stable numeric pinning (= 13
+    constants asserted against the SEXP_TAG_* canon)
+  - pad-bytes-are-zero (= 1-7 align, 16-31 trail)
+  - int payload LE i64 (= 1, 0x102, -1 all-FF, MAX/MIN round-trip)
+  - float payload LE f64 (= 1.0 = 0x3FF0000000000000 byte check)
+  - inline decode without HEAP-FN (= Nil/T/Int/Float)
+  - heap-store decode for Str / Symbol (multibyte 日本語) / Cons /
+    Vector / Record / Cell (= 6 boxed cases)
+  - 13-variant round-trip sweep + nested cons/vec/cell/record/str
+  - error paths: truncated record / unknown tag / boxed-without-
+    HEAP-FN / heap-miss / non-Sexp input
+  - POS cursor (= back-to-back records at offsets 0 and 32)
+  - heap-store counter monotonicity (= 2 writes → 2 distinct keys)
+  - layout-pin constants (= payload-offset = 8, record-size = 32)
+- =make compile= 0 warning, =ert= 138/138 (= 107 §95.a/b/c carried
+  + 31 new §95.d).
+- No Rust changes; sexp.rs read-only for layout verification per
+  task constraints.
+
+Deferred to §95.e (= bake-images integration):
+- Real ELF =.data= section emit via Doc 91 ELF writer (= replace
+  hash-table heap-store with byte buffer + R_X86_64_64 relocations)
+- =cmp -l= byte-identical check against existing Rust =make bake-
+  images= output
+- Doc 81 JIT trampoline e2e (= elisp emits Sexp tree, trampoline
+  evals via raw pointer, result verified)
+
+Cross-platform layout assumption (= x86_64 + aarch64 LE only) is
+documented in §3.6 and Doc 85 §7.1.  Big-endian arches (s390x,
+ppc64be) remain out of scope per Phase 47 master.
+
+Rust layout assumption verification: the =#[repr(C, u8)]= on enum
+=Sexp= (sexp.rs line 57) places the discriminant byte at offset 0
+per Rust =rustc-1.x= stable spec, then aligns the payload to the
+largest variant's alignment (= 8 for the =String/NonNull= boxed
+variants).  This is asserted by the in-tree =sexp_layout_alignment_
+and_size_sane= + =sexp_payload_offset_is_eight= unit tests in sexp.
+rs (= drift detector if a future =rustc= changes representation).
+
+** §95.e SHIPPED (2026-05-11)
+
+Bake-images integration layer landed on top of §95.a-d in the same
+=lisp/nelisp-sexp-dsl.el= file plus a Rust-side hook in
+=build-tool/src/bin/nelisp-baker.rs=.  This wires the elisp
+serializer to the on-disk =*.image= artifact produced by =make bake-
+images= and provides bidirectional byte-identity verification.
+
+*** Wire format discovery (= the surprising third format)
+
+Investigation of =build-tool/src/image.rs= revealed that the Rust
+baker emits NELIMG v3 frozen-heap (§5.2), which is *neither* §95.c
+(= per-Sexp variable-length tag + payload) *nor* §95.d (= 32-byte
+fixed =repr(C, u8)= record).  v3 is a *multi-section envelope*:
+
+#+begin_src text
+NELIMG\0\x03                 ; 8-byte magic
+u32  version = 3
+u8   kind    = 0x01           ; frozen-heap
+u32  N_NODES, [TAG, payload]…
+u32  N_GLOBALS, [name+flags+idxs]…
+u32  N_FALLBACK_FORMS, [u32 len, utf-8]…
+#+end_src
+
+Crucially, today's =compile_elisp_to_image' stashes the *entire
+source* as a single fallback-form entry inside an *empty-env*
+image (= 0 nodes, 0 globals, 1 fallback form).  Verification of
+all 25 existing =.image= files under =lisp/= confirms this is
+universal — none yet exercise the node-pool / globals-section
+encoder paths.
+
+Per the §95.e task spec for "scenario (a)" (= Rust uses a third
+format), §95.e ships an *envelope-level* reader / writer / verify
+trio for the empty-env subset and defers node-pool encoding to a
+future Doc 95.f / Phase 48 dive.
+
+*** elisp surface (= 4 entry points + 7 error symbols)
+
+- =nelisp-sexp-bake-read-image FILE-PATH= — parse NELIMG v3
+  envelope into a plist (=:magic-ok :version :kind :n-nodes
+  :n-globals :n-fallback-forms :fallback-forms :raw=).  Signals
+  =nelisp-sexp-bake-unsupported= if N_NODES>0 or N_GLOBALS>0 (=
+  Doc 95.f boundary marker).
+- =nelisp-sexp-bake--encode-envelope FALLBACK-FORMS= — internal,
+  emits an empty-env image carrying just FALLBACK-FORMS.  Mirrors
+  =encode_v3_with_fallback' in =build-tool/src/image.rs= line 214.
+- =nelisp-sexp-bake-verify-image FILE-PATH= — round-trip an existing
+  baked image through elisp read + re-emit, =equal'-compare to the
+  on-disk bytes; signals =nelisp-sexp-bake-mismatch= on divergence.
+  *This is the central acceptance test*.  Returns t on byte
+  identity.
+- =nelisp-sexp-bake-dump-fixture FALLBACK-FORMS FILE-PATH= — emit
+  elisp-encoded NELIMG v3 bytes for cross-impl testing.  The Rust
+  baker can compare its own output against these fixtures.
+
+3 new layout-pin =defconst='s mirror the Rust constants:
+=nelisp-sexp-bake-v3-magic= / =-version= / =-kind-frozen-heap=.
+
+*** Rust-side hook: =nelisp-baker --verify-elisp-fixtures=
+
+Added to =build-tool/src/bin/nelisp-baker.rs= (= ~50 LOC).  Each
+fixture path is decoded via =decode_v3_into', re-encoded via
+=encode_v3_with_fallback', and the result compared byte-for-byte
+to the on-disk fixture.  Exit code 4 on any mismatch, 0 on full
+agreement, with a first-diff offset reported for actionable
+debugging.
+
+This forms the *cross-implementation gate*: elisp emits a fixture
+→ Rust decodes → Rust re-encodes → bytes match the elisp output.
+End-to-end confirmed for empty / multi-form / multibyte UTF-8
+payloads.
+
+*** Byte-identity results
+
+- 25 / 25 baked =lisp/*.image= files round-trip byte-identical via
+  =nelisp-sexp-bake-verify-image= (= covers
+  =nelisp-stdlib-{misc,hof,math,os,gc,plist-str,...}=).
+- Elisp-produced fixtures round-trip via the Rust binary for 3
+  hand-crafted payloads (empty / 2-form / multibyte 日本語).
+- =./target/release/nelisp-baker --check= still exits 0 (= existing
+  Rust bake path untouched).
+
+*** ERT coverage: =test/nelisp-sexp-bake-test.el= — 13 cases
+
+- envelope header parsing (= magic / version / kind / counts on a
+  real baked image)
+- fallback-form source extraction (= confirms source-prefix string
+  match)
+- byte-identity on a single real baked image (= explicit smoke)
+- byte-identity sweep over all =lisp/*.image= (= the central
+  acceptance test, asserts 0 failures)
+- dump-fixture round-trip (= multi-form / multibyte / empty cases)
+- error paths: bad magic, truncated header,
+  =nelisp-sexp-bake-unsupported= for hand-crafted N_NODES>0 image
+- cross-format non-interference: §95.c bytes do not carry the
+  NELIMG magic; §95.d 32-byte records do not carry the NELIMG
+  magic; existing §95.c / §95.d round-trip helpers still pass
+  after =require= of the §95.e additions
+
+*** LOC accounting
+
+- elisp =lisp/nelisp-sexp-dsl.el= delta: +177 LOC (3 entry points
+  + 1 internal encoder + 7 error symbols + 3 constants + cl-lib
+  require + section banners).  Total file now 1627 LOC.
+- elisp =test/nelisp-sexp-bake-test.el= new: +228 LOC (13 ert).
+- Rust =build-tool/src/bin/nelisp-baker.rs= delta: +80 LOC
+  (CLI flag + dispatcher branch + =verify_elisp_fixture' helper).
+- No other files touched.  =build-tool/src/eval/sexp.rs= remains
+  read-only per task constraint.
+
+*** Discrepancy from §8 deliverable (= scope honesty)
+
+The §8.5 deliverable text called for a =NELISP_BAKE_VIA_DSL=1=
+feature flag in =make bake-images= that *replaces* the Rust baker
+with the elisp toolchain.  §95.e ships the byte-identity
+*verification* layer rather than that replacement — the elisp
+serializer does not yet emit images with non-zero N_NODES /
+N_GLOBALS, which is the regime any non-trivial future bake would
+exercise.
+
+Recommended Doc 95.f / Phase 48 follow-up:
+- extend =nelisp-sexp-bake--encode-envelope= to a full node-pool
+  encoder mirroring =encode_v3='s Phase A-E (intern + DAG-dedup
+  + write nodes + write globals + write fallback)
+- adopt §95.c read-bytes for per-node decode (= each NODE_TAG
+  branch maps to the §95.c wire-format tag set)
+- wire =NELISP_BAKE_VIA_DSL=1= into =make bake-images= so the
+  elisp toolchain *produces* (= not just verifies) bake output
+- target acceptance: =cmp -l= diff = 0 against current Rust
+  =nelisp-baker= output for all 25 STDLIB files
+
+The §95.e helpers are designed to compose with that extension:
+=encode-envelope= is one node-encoder pass away from full v3, and
+the unsupported-on-nonzero-nodes guard explicitly marks the
+boundary so future bumps are caught at read time instead of
+silently producing wrong fixtures.
+
+*** Validation summary
+
+- =make compile= 0 warning (= post-edit byte-compile of
+  =lisp/nelisp-sexp-dsl.el= + =test/nelisp-sexp-bake-test.el=
+  with =byte-compile-error-on-warn t=)
+- =ert= §95.e: 13/13 passes
+- =ert= §95.a-d regression: 138/138 passes (= unchanged from
+  §95.d SHIPPED count)
+- Cargo build (= =cargo build --release --features image-baker
+  --bin nelisp-baker=) green
+- =nelisp-baker --check= exit 0 (= existing baked images
+  unbroken)
+- =nelisp-baker --verify-elisp-fixtures FIXTURE= exit 0 for elisp-
+  produced fixtures, exit 4 for corrupted inputs (= failure path
+  exercised)
+
+*** CI integration SHIPPED (2026-05-11)
+
+Wired the §95.e byte-identity gate into `make' + GitHub Actions:
+
+- New =lisp/nelisp-bake-fixtures.el= (= 10 hand-picked NELIMG v3
+  envelope fixtures — empty / one-form / multibyte-UTF-8 /
+  two-forms / multi-multibyte / comment-only / defvar /
+  progn-multiline / mixed-ascii-utf8 / longer multi-line block).
+  Each emits via =nelisp-sexp-bake-dump-fixture'.  Scope =
+  envelope subset only (= N_NODES = 0 / N_GLOBALS = 0); node-pool
+  fixtures deferred to Doc 95.f.
+- New =make verify-elisp-fixtures= target: builds the release
+  =nelisp-baker= (= same incantation as =bake-images=), emits the
+  corpus into =target/elisp-fixtures/=, then runs
+  =nelisp-baker --verify-elisp-fixtures= over every fixture.
+  Exit non-zero = drift between elisp + Rust encoders.
+- =make bake-images= now opt-in chains the verify step when
+  =NELISP_VERIFY_ELISP=1= (= keeps default bake fast; CI sets the
+  env explicitly via the dedicated job step).
+- =.github/workflows/ci.yml= adds a *Verify elisp ↔ Rust fixture
+  byte-identity* step on the Linux matrix leg (= release baker
+  build is the cost driver; the byte contract is OS-independent
+  so Linux coverage is enough).
+- New =test/nelisp-bake-fixtures-test.el= = 8 ert cases (= corpus
+  shape, name uniqueness, emit-all writes-files, every-shape
+  self-round-trip, Rust verifies single fixture, Rust verifies
+  whole corpus, Rust rejects corrupted fixture, batch entry point
+  prints paths).  Tests that need the release binary
+  auto-=skip-unless= on its absence so a bare =make test= from a
+  fresh checkout stays green.
+
+LOC delta (= §95.e CI integration only, additive only):
+
+- =lisp/nelisp-bake-fixtures.el= NEW: ~85 LOC
+- =test/nelisp-bake-fixtures-test.el= NEW: ~165 LOC
+- =Makefile= delta: +17 LOC (= target + .PHONY +
+  =bake-images= opt-in)
+- =.github/workflows/ci.yml= delta: +13 LOC (= new step + comment)
+
+** §95.f SHIPPED (2026-05-11)
+
+Full NELIMG v3 node-pool encoder + decoder landed on top of §95.e
+in the same =lisp/nelisp-sexp-dsl.el=, expanding elisp coverage
+from the empty-env single-fallback envelope subset to every
+NELIMG v3 wire shape (= any combination of N_NODES / N_GLOBALS /
+N_FALLBACK_FORMS).
+
+**Outcome A** chosen: the Rust serializer turned out tractable
+to mirror because all wire bytes are little-endian primitives
+(u8 / u32 / i64 / u64 / utf-8 length-prefixed) that §95.c
+already had helpers for, and the Phase A-E walk is a mechanical
+post-order traversal.  Decision made after reading
+=build-tool/src/image.rs= lines 60-300 (= tag inventory,
+=encode_v3_with_fallback=, =decode_v3_into=) and confirming
+no bit-packing or custom hash-table layouts on the wire.
+
+*** Architecture
+
+§95.f introduces three layers on top of §95.e:
+
+1. *Internal IR (= "node records"):* a 13-variant plist shape that
+   mirrors Rust =NodeRecord= 1:1.  Encoder/decoder operate on this
+   IR directly (= no DSL conversion in the hot path), so every
+   bit-exact wire byte is round-trippable.  Variants:
+   =nil / t / int / float / symbol / string / cons / vector
+    / char-table / bool-vector / cell / record / mut-str=.
+
+2. *Encoder / decoder pair* (=nelisp-sexp-bake-encode-full= /
+   =nelisp-sexp-bake-decode-full= / =nelisp-sexp-bake-verify-full=):
+   take NODES + GLOBALS + FALLBACK-FORMS triples, emit / parse
+   byte strings, and round-trip them through =verify-full= for
+   byte-identity proof.
+
+3. *DSL Phase-A interner* (=nelisp-sexp-bake-intern-dsl=): walks a
+   list of §95.a DSL sexps and produces a node list ready for
+   =encode-full=.  Uses =eq= identity for boxed plists (cons /
+   vector / record / cell / mut-str / bool-vector / char-table)
+   and structural keys for atoms (nil / t / int / float / symbol /
+   str) so cycles + sharing survive the encode boundary.
+
+*** Coverage
+
+All 13 v3 node tags fully supported on both encoder and decoder:
+
+| Tag             | Encode | Decode | Notes |
+|-----------------+--------+--------+----------------------------|
+| TAG_V3_NIL      | ✓      | ✓      |                            |
+| TAG_V3_T        | ✓      | ✓      |                            |
+| TAG_V3_INT      | ✓      | ✓      | i64 LE                     |
+| TAG_V3_FLOAT    | ✓      | ✓      | u64 bit pattern (NaN safe) |
+| TAG_V3_SYMBOL   | ✓      | ✓      | utf-8 length-prefixed      |
+| TAG_V3_STRING   | ✓      | ✓      | utf-8 length-prefixed      |
+| TAG_V3_CONS     | ✓      | ✓      | car_idx / cdr_idx          |
+| TAG_V3_VECTOR   | ✓      | ✓      | len + idx[]                |
+| TAG_V3_CHAR_TABLE | ✓    | ✓      | subtype/default/entries/   |
+|                 |        |        | parent chain/extra all     |
+|                 |        |        | round-trip                 |
+| TAG_V3_BOOL_VECTOR | ✓   | ✓      | one byte per bit           |
+| TAG_V3_CELL     | ✓      | ✓      | inner idx                  |
+| TAG_V3_RECORD   | ✓      | ✓      | type_tag idx + slots[]     |
+| TAG_V3_MUT_STR  | ✓      | ✓      | utf-8 length-prefixed      |
+
+Globals section: all 4 FLAGS bits supported (HAS_VALUE / HAS_FUNCTION
+/ HAS_PLIST / CONSTANT), optional NODE_INDEX fields emitted in the
+canonical order matching the Rust =write= block.
+
+Fallback forms section: unchanged from §95.e (= u32 count + N
+length-prefixed strings).
+
+*** DSL interner CharTable limitation
+
+The §95.a DSL =char-table= shape (=:default + :extras=) is a
+simplification of the full Rust =CharTableInner= layout (=subtype /
+default_val / entries / parent / extra=).  =intern-dsl= maps it
+losslessly to a minimal-entry node record:
+=(subtype = Nil, default_val = :default, entries = [], parent =
+None, extra = :extras)=.  Hand-crafted node records with non-empty
+=:entries= or non-=nil= =:parent= must be passed to =encode-full=
+directly (= bypass the interner).  This is *not* a wire-format
+limitation — the encoder + decoder both fully support the rich
+CharTable shape and exercise it in ERT
+=nelisp-sexp-bake-full-char-table-with-entries=.
+
+*** ERT additions
+
+21 new =ert-deftest= cases in
+=test/nelisp-sexp-bake-test.el=, covering:
+
+- empty-image encode + decode (= 25-byte minimum)
+- every atomic tag (nil / t / int / float / symbol / string / mut-str)
+- CONS with car/cdr index linkage
+- 10-level deep right-nested cons spine
+- shared sub-tree (= one idx referenced from two parents)
+- vector with mixed item indices
+- bool-vector with mixed bits
+- cell + record with type_tag + slots
+- minimal char-table (= empty entries, no parent)
+- char-table with non-empty entries + parent chain
+- globals section with all flag combinations
+- fallback-forms section coexisting with nodes + globals
+- DSL interner atomic structural dedupe
+- DSL interner cons =eq= dedupe (vs structural-equal copies)
+- DSL interner → encode → decode round-trip
+- envelope-only baked images still round-trip via full codec
+  (= 25/25 lisp/*.image files pass)
+- §95.f =encode-full= byte-equal to §95.e =encode-envelope= when
+  N_NODES = 0 / N_GLOBALS = 0 (= layer consistency)
+- error paths: unknown node tag, malformed-node on encode
+
+*** LOC accounting
+
+- elisp =lisp/nelisp-sexp-dsl.el= delta: +721 LOC (encoder helpers
+  / decoder helpers / global encode-decode / top-level
+  encode-full + decode-full + verify-full / DSL Phase-A interner
+  + ctx helpers / 13 tag constants + 4 global-flag constants +
+  2 error symbols + section banners + docstrings).  Total file
+  now 2348 LOC.
+- elisp =test/nelisp-sexp-bake-test.el= delta: +271 LOC (21 new
+  ert-deftest + 1 helper defconst + section banners).  Total
+  file now 499 LOC.
+- No other files touched.  =build-tool/src/image.rs= remains
+  read-only per task constraint.
+
+*** Replacing =make bake-images= via elisp
+
+§95.f closes the gap §95.e left:
+
+| Capability                       | §95.e | §95.f |
+|----------------------------------+-------+-------|
+| Read NELIMG v3 envelope (0 node) | ✓     | ✓     |
+| Re-emit envelope byte-identical  | ✓     | ✓     |
+| Read multi-node NELIMG v3        |       | ✓     |
+| Encode multi-node NELIMG v3      |       | ✓     |
+| Encode multi-global NELIMG v3    |       | ✓     |
+| Round-trip CharTable parent chain |      | ✓     |
+| Mirror Rust =encode_v3= exactly  |       | ✓     |
+
+What remains for §95.g / Phase 48 (= true =make bake-images=
+*replacement* rather than just byte-identity verification):
+
+1. Wire =NELISP_BAKE_VIA_DSL=1= flag into =make bake-images= so
+   the elisp path emits the on-disk =.image= files rather than
+   shelling out to =nelisp-baker=.
+2. Add a Rust =Env= → §95.a DSL converter so production Rust
+   builds can hand globals to the elisp encoder (= currently the
+   DSL interner consumes elisp-side fixtures only).
+3. Stretch: replace the §95.a DSL CharTable shape with a richer
+   plist that mirrors =CharTableInner= 1:1 so the interner is
+   never lossy.
+
+These are out of scope for §95.f because each requires touching
+the Rust crate (= forbidden by the §95.f task constraints).
+
+*** Validation summary
+
+- =make compile= 0 warning
+- =ert= §95.f: 21/21 passes, plus 13/13 §95.e carried = 34/34
+- =ert= §95.a-d regression: 138/138 passes (= unchanged)
+- All 25 baked =lisp/*.image= files round-trip byte-identical
+  through =nelisp-sexp-bake-verify-image-full= (= the §95.f full
+  codec gracefully handles the envelope subset)
+
+----
+
+End of Doc 95 DRAFT.

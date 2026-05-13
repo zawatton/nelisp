@@ -88,6 +88,11 @@
 (require 'nelisp-cc-arm64)
 (require 'nelisp-cc-pipeline)
 
+;; Phase 7.1.6.a — Rust-side primitive available only when running under
+;; standalone NeLisp (= `nelisp' binary).  All callers gate via
+;; `(unless (fboundp 'nelisp-cc--dlsym-resolve) ...)' before invocation.
+(declare-function nelisp-cc--dlsym-resolve "ext:nelisp-runtime" (symbol-name))
+
 ;;; Constants -------------------------------------------------------
 
 (defconst nelisp-cc-runtime-gc-metadata-version 1
@@ -1333,7 +1338,153 @@ ERT golden tests that pin specific byte sequences."
     (_ (signal 'nelisp-cc-runtime-error
                (list :unknown-backend backend)))))
 
-(defun nelisp-cc-runtime-compile-and-allocate (lambda-form &optional backend exec-args)
+;;; Doc 81 Stage 81.1 — entry-ABI mode dispatch ----------------------
+;;
+;; `nelisp-cc-runtime-compile-and-allocate' historically produced
+;; `extern "C" fn(i64, ..., i64) -> i64' entry points (`:host-int'
+;; ABI mode).  Doc 81 §5.1.1 adds `:trampoline-unary' for the
+;; primitive-trampoline shape:
+;;
+;;   :host-int          extern "C" fn(i64, ..., i64) -> i64    (default)
+;;   :trampoline-unary  extern "C" fn(*const Sexp, *mut Sexp) -> i64
+;;
+;; In the `:trampoline-unary' shape, arg0 = a *const Sexp pointer
+;; (rdi / x0), arg1 = a *mut Sexp out-buffer (rsi / x1), and the
+;; return value (rax / x0) carries TRAMPOLINE_OK (0) or TRAMPOLINE_ERR
+;; (>0).  This is the calling convention the Cranelift `nl_jit_cons_*'
+;; primitives already use, so trampoline emit lined up with Phase
+;; 7.1.6.a (cons.rs takeover) keeps caller layout invariant.
+;;
+;; The Stage 81.1 PoC does *not* yet thread the ABI mode through to
+;; backend prologue/epilogue emission — frame layout on
+;; `:trampoline-unary' just records arg/out-pointer slot positions
+;; for downstream stages.  The ABI mode is currently used as a
+;; metadata channel that the recognition pass (Stage 81.3) consults
+;; when selecting the trampoline shape for a given primitive.
+
+(defconst nelisp-cc-runtime-trampoline-ok 0
+  "Status returned in rax/x0 by a `:trampoline-unary' entry on success.
+
+Mirrors the convention of the existing Cranelift `nl_jit_cons_car'
+trampoline: out-buffer is written, then the function returns 0.
+Doc 81 §5.1.1 critical decision — staying compatible with the
+extant FFI shape lets Phase 7.1.6.a take over without changing the
+Rust callee-side fixups.")
+
+(defconst nelisp-cc-runtime-trampoline-err 1
+  "Status returned by a `:trampoline-unary' entry on failure.
+
+The trampoline returns this value when the input Sexp does not
+match the primitive's expected variant (e.g. `car' on an Int).  The
+out-buffer contents are then unspecified — callers must check the
+status before reading the buffer.")
+
+(defconst nelisp-cc-runtime--entry-abi-modes
+  '(:host-int
+    :trampoline-unary
+    :trampoline-binary-ctor
+    :trampoline-binary-mut
+    :trampoline-binary-aref
+    :trampoline-ternary-aset
+    :trampoline-binary-float-arith
+    :trampoline-unary-float
+    :trampoline-binary-float-cmp
+    :trampoline-format-float)
+  "Allowed values for the `:entry-abi' keyword to
+`nelisp-cc-runtime-compile-and-allocate'.
+
+`:host-int' is the legacy default (`extern \"C\" fn(i64, ..., i64) -> i64').
+
+`:trampoline-unary' (Doc 81 §5.1.1) is `extern \"C\" fn(*const Sexp,
+*mut Sexp) -> i64' for unary primitive trampolines (= car / cdr /
+length / etc).  arg0 = *const Sexp pointer to the read-only argument,
+arg1 = *mut Sexp out-buffer the trampoline writes into; return = i64
+TRAMPOLINE_OK / TRAMPOLINE_ERR status.
+
+`:trampoline-binary-ctor' (Doc 81 §5.2.1) is `extern \"C\"
+fn(*const Sexp, *const Sexp, *mut Sexp) -> i64' for binary
+constructors (= cons).  arg0/arg1 = read-only inputs, arg2 = *mut
+Sexp out-buffer, return = i64 status.  The trampoline allocates a
+fresh box and writes the new Sexp into the out-slot.
+
+`:trampoline-binary-mut' (Doc 81 §5.2.1) is `extern \"C\"
+fn(*mut Sexp, *const Sexp) -> i64' for binary mutators (= setcar /
+setcdr).  arg0 = *mut Sexp cons cell to mutate, arg1 = *const Sexp
+new value; return = i64 status (= TRAMPOLINE_OK on success).  No
+out-buffer slot — the caller's eval-time return value is the
+unchanged arg1 (= V), so the recognition pass in Stage 81.3 just
+threads V back as the SSA def of the parent `(setcar C V)' call.
+
+`:trampoline-binary-aref' (Doc 81 §5.3.1) is `extern \"C\"
+fn(*const Sexp, i64, *mut Sexp) -> i64' for vector / array indexed
+reads (= aref / elt).  arg0 = *const Sexp container, arg1 = i64 raw
+index (= NOT a Sexp — the recognition pass unboxes a const-folded
+small-integer or threads through a known-i64 SSA def), arg2 = *mut
+Sexp out-buffer; return = i64 status.  The shape mirrors the
+existing Cranelift `nl_jit_access_aref' /
+`nl_jit_access_elt' contracts in build-tool/src/jit/access.rs so
+Phase 7.1.6.b (vector cluster takeover) can wire elisp-emit
+verbatim against the same Rust trampolines.
+
+`:trampoline-ternary-aset' (Doc 81 §5.3.1) is `extern \"C\"
+fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64' for vector /
+array indexed writes (= aset).  arg0 = *const Sexp container, arg1
+= i64 raw index, arg2 = *const Sexp value to store, arg3 = *mut
+Sexp out-buffer; return = i64 status.  Per Emacs' `aset' contract
+the trampoline writes the value into the out-slot so the eval-time
+return value is (= V).  The shape mirrors `nl_jit_access_aset'.
+
+`:trampoline-binary-float-arith' (Doc 84 §84.1, 2026-05-10) is
+`extern \"C\" fn(f64, f64) -> f64' for binary Float arithmetic
+(= add / sub / mul).  System V AMD64 passes the two f64 args in
+xmm0/xmm1 and returns the f64 result in xmm0; arm64 AAPCS uses
+d0/d1 → d0.  This is the first xmm-register-using ABI mode in the
+nelisp-cc trampoline family.  Backing trampolines live in
+`build-tool/src/jit/float.rs' (`nl_jit_float_{add,sub,mul}'),
+invoked through the `nl-jit-call-float-float' bridge primitive.
+
+`:trampoline-unary-float' (Doc 87 §5, 2026-05-10) is
+`extern \"C\" fn(f64) -> f64' for unary Float math primitives
+(= float / exp / log).  System V AMD64 passes the f64 arg in xmm0
+and returns the f64 result in xmm0; arm64 AAPCS uses d0 → d0.  The
+trampoline body is the only xmm-using ABI shape that survives the
+plain `--emit-prologue' / `--lower-return' frame layout untouched
+(= int-class register pushes don't disturb xmm0/v0).  Backing
+trampolines live in `build-tool/src/jit/math.rs'
+(`nl_jit_float_{float,exp,log}'), invoked through the
+`nl-jit-call-float-unary' bridge primitive (Doc 87 §5.3).
+
+`:trampoline-binary-float-cmp' (Doc 84 §84.1, 2026-05-10) is
+`extern \"C\" fn(f64, f64) -> i64' for binary Float comparisons
+(= = / < / > / <= / >=).  args in xmm0/xmm1, i64 result (0 or 1)
+in rax/x0.  The `=` arm uses an `1e-15' epsilon to mirror the
+deleted `bi_num_eq2_float'.  Backing trampolines live in
+`build-tool/src/jit/float.rs' (`nl_jit_float_{eq_eps,lt,gt,le,ge}'),
+invoked through the `nl-jit-call-float-cmp' bridge primitive.
+
+`:trampoline-format-float' (Doc 86 §86.1.e / Doc 87 §5.1, 2026-05-10)
+is `extern \"C\" fn(f64, char, i64, *mut Sexp) -> i64' for the
+`format' float-conversion body builder (= ?f / ?F / ?e / ?E / ?g /
+?G).  arg0 = f64 magnitude in xmm0, arg1 = i64 conv codepoint in
+rsi, arg2 = i64 precision in rdx, arg3 = *mut Sexp out-buffer in
+rcx; return = i64 status.  The trampoline writes a fresh
+`Sexp::Str' (= unsigned, unpadded body) into the out-slot.  Sole
+consumer is `lisp/nelisp-stdlib-format.el' `nelisp--format-float-
+body'.  Like the two `:trampoline-binary-float-*' modes above, the
+cc backend never emits an entry of this shape — the path is
+bridge-only via the `nl-jit-call-format-float' primitive in
+`bridge.rs', so registering the keyword here is for documentation
+/ validation symmetry.")
+
+(defun nelisp-cc-runtime--validate-entry-abi (mode)
+  "Signal `nelisp-cc-runtime-error' if MODE is not a valid entry-ABI keyword."
+  (unless (memq mode nelisp-cc-runtime--entry-abi-modes)
+    (signal 'nelisp-cc-runtime-error
+            (list :unknown-entry-abi mode
+                  :valid nelisp-cc-runtime--entry-abi-modes))))
+
+(cl-defun nelisp-cc-runtime-compile-and-allocate
+    (lambda-form &optional backend exec-args &key (entry-abi :host-int))
   "Run the full Phase 7.1.4 pipeline on LAMBDA-FORM.
 
 Steps:
@@ -1350,7 +1501,43 @@ Steps:
 
 BACKEND is `x86_64' / `arm64' (default = host inference).  EXEC-ARGS
 is forwarded to `nelisp-cc-runtime--exec-real' when MODE is `real';
-nil preserves the old zero-argument behavior.  Returns:
+nil preserves the old zero-argument behavior.
+
+ENTRY-ABI (Doc 81 Stage 81.1 / 81.2 / 81.3) selects the produced
+entry-point's calling convention:
+  :host-int                (default) extern \"C\" fn(i64, ..., i64) -> i64
+  :trampoline-unary        extern \"C\" fn(*const Sexp, *mut Sexp) -> i64
+                           unary primitive trampoline (= car / cdr / length).
+  :trampoline-binary-ctor  extern \"C\" fn(*const Sexp, *const Sexp,
+                                            *mut Sexp) -> i64
+                           binary constructor (= cons), Stage 81.2.
+  :trampoline-binary-mut   extern \"C\" fn(*mut Sexp, *const Sexp) -> i64
+                           binary mutator (= setcar / setcdr), Stage 81.2.
+  :trampoline-binary-aref  extern \"C\" fn(*const Sexp, i64, *mut Sexp) -> i64
+                           vector indexed read (= aref / elt), Stage 81.3.
+  :trampoline-ternary-aset extern \"C\" fn(*const Sexp, i64, *const Sexp,
+                                            *mut Sexp) -> i64
+                           vector indexed write (= aset), Stage 81.3.
+  :trampoline-binary-float-arith
+                           extern \"C\" fn(f64, f64) -> f64
+                           binary Float arith (= add/sub/mul), Doc 84 §84.1.
+  :trampoline-unary-float  extern \"C\" fn(f64) -> f64
+                           unary Float math (= float/exp/log), Doc 87 §5.
+  :trampoline-binary-float-cmp
+                           extern \"C\" fn(f64, f64) -> i64
+                           binary Float cmp (= eq-eps/lt/gt/le/ge),
+                           Doc 84 §84.1.
+  :trampoline-format-float
+                           extern \"C\" fn(f64, char, i64, *mut Sexp) -> i64
+                           format float body (= %f/%F/%e/%E/%g/%G),
+                           Doc 86 §86.1.e / Doc 87 §5.1.
+
+Stage 81.1/81.2/81.3 records the mode in the result plist under
+`:entry-abi' but does NOT yet alter prologue/epilogue emit; the
+backend frame layout is taken over in a later stage once the
+recognition pass starts producing trampoline-shape calls.
+
+Returns:
 
   (:exec-page PAGE         ; `nelisp-cc-runtime--exec-page' simulator
    :gc-metadata META       ; plist from `--insert-safe-points'
@@ -1369,6 +1556,7 @@ nil preserves the old zero-argument behavior.  Returns:
 The `:final-bytes' equals `(--exec-page-bytes PAGE)' restricted to
 `(--exec-page-length PAGE)' — exposed separately so test code does
 not have to slice the page buffer manually."
+  (nelisp-cc-runtime--validate-entry-abi entry-abi)
   (let* ((be (or backend (nelisp-cc-runtime--default-backend)))
          (fn (nelisp-cc-build-ssa-from-ast lambda-form))
          ;; T158 — Phase 7.7 SSA passes (escape + inline + rec-inline +
@@ -1399,10 +1587,216 @@ not have to slice the page buffer manually."
            :gc-metadata gc-meta
            :tail-call-rewritten rewrote-p
            :backend be
+           :entry-abi entry-abi
            :ssa-function fn
            :pipeline-stats pipeline-stats
            :raw-bytes raw
            :final-bytes final))))
+
+;;; Doc 81 Stage 81.4 — dlsym bridge (resolve-symbol stub) -------------
+;;
+;; When the recognition pass rewrites `(call cons …)' to
+;; `(ssa-call-primitive :symbol nl_jit_cons_make …)', the backend
+;; emitter records a *call-fixup* keyed on the C symbol name.  At link
+;; time the fixup must be resolved to an *absolute address* so the CALL
+;; rel32 / BL placeholder can be patched.  The legacy (Stage 81.1〜81.3)
+;; fixup path piggybacks on `nelisp-defs-index' which only resolves
+;; same-page elisp letrec entries — extern C trampolines like
+;; `nl_jit_cons_make' need a different lookup.
+;;
+;; `nelisp-cc-runtime-resolve-symbol' is the *contract surface* for that
+;; lookup.  On host Emacs it is a *stub* — Emacs has no general way to
+;; ask the running process for the address of an arbitrary C symbol
+;; without loading a dynamic module that calls dlsym(3) itself, and
+;; Doc 81 hard-constrains zero Rust LOC delta in Stage 81.4.  The host
+;; stub therefore returns a *sentinel* address (= the first valid
+;; non-NULL u64 unlikely to collide with any real exec page) and a
+;; status keyword indicating the lookup was deferred.  Real exec on
+;; host Emacs is gated upstream by `nelisp-cc-runtime-exec-mode' (=
+;; `simulator' / `in-process' modes never attempt to invoke the
+;; trampolines so the sentinel is never dereferenced).
+;;
+;; On standalone NeLisp (= Phase 7.1.6.a's takeover target) the stub
+;; will be *overridden* by a runtime hook that calls into a thin Rust
+;; shim exposing `dlsym(RTLD_DEFAULT, SYMBOL-NAME)'.  Phase 7.1.6.a is
+;; what introduces the Rust hook (= part of the cluster takeover
+;; PR's Rust delta budget); Stage 81.4 itself stays at zero Rust LOC.
+;;
+;; The override contract is:
+;;
+;;   - Standalone NeLisp shall let-bind or `setq' the dynamic variable
+;;     `nelisp-cc-runtime-resolve-symbol-function' to a function with
+;;     signature `(SYMBOL-NAME) -> (STATUS . ADDR-OR-NIL)'.
+;;   - STATUS is `:resolved' (ADDR is a non-zero unsigned i64) or
+;;     `:not-found' (ADDR is nil) or `:host-stub' (host Emacs default —
+;;     ADDR is the sentinel `nelisp-cc-runtime--resolve-symbol-stub-addr').
+;;   - The override MUST be idempotent on the same SYMBOL-NAME within a
+;;     single page allocation (= the link pass may query it more than
+;;     once for the same fixup; returning a different ADDR between
+;;     queries silently corrupts CALL rel32 patching).
+;;   - The override is invoked at link time, *not* at SSA compile time;
+;;     it must therefore tolerate being called with arbitrary symbol
+;;     names — unknown symbols return `(:not-found . nil)' rather than
+;;     erroring out, so the link pass can decide whether to patch a
+;;     trampoline indirection (= Doc 81 §6.3 fallback) or signal.
+;;
+;; Phase 7.1.6.a will provide the Rust override via
+;; `nelisp-cc-runtime-resolve-symbol-via-dlsym' (registered through
+;; `nelisp-cc-runtime-resolve-symbol-function').  Until then host Emacs
+;; uses the stub which returns the sentinel address — sufficient for
+;; ERT / link-table inspection but never executed (= simulator /
+;; in-process exec modes are the host default).
+
+(defconst nelisp-cc-runtime--resolve-symbol-stub-addr #x0DEADBEEF
+  "Sentinel pointer returned by `nelisp-cc-runtime-resolve-symbol' on host.
+
+The value is chosen to be:
+  - non-zero (= distinguishable from `:not-found')
+  - misaligned (= would SEGV if accidentally CALLed, so a host Emacs
+    bug that strays into trampoline exec hits an obvious crash rather
+    than silent wrong-result)
+  - inside the i32 representable range so test code can compare bytes
+    without 64-bit subtleties
+
+Standalone NeLisp's override returns real dlsym addresses — this
+sentinel is never observed in production once Phase 7.1.6.a's hook
+is installed.")
+
+(defvar nelisp-cc-runtime-resolve-symbol-function nil
+  "Function used by `nelisp-cc-runtime-resolve-symbol' to do the lookup.
+
+When non-nil, called with one argument (= SYMBOL-NAME, a symbol such
+as `nl_jit_cons_make') and must return `(STATUS . ADDR-OR-NIL)'
+following the contract documented on `nelisp-cc-runtime-resolve-symbol'.
+
+Default = nil → host stub path (= return the sentinel address).
+Standalone NeLisp registers a real dlsym implementation here at
+runtime startup; ERT can let-bind it for fault-injection
+(= `:not-found' fallback testing).")
+
+(defun nelisp-cc-runtime-resolve-symbol (symbol-name)
+  "Resolve a primitive C SYMBOL-NAME to a runtime address.
+
+SYMBOL-NAME is a symbol (e.g. `nl_jit_cons_make') typically extracted
+from an `:ssa-call-primitive' instruction's `:symbol' meta during
+the link pass.  Returns `(STATUS . ADDR-OR-NIL)':
+
+  STATUS = `:resolved'   — ADDR is a non-zero unsigned i64
+                            host-process address ready for fixup patching
+  STATUS = `:host-stub'  — host Emacs has no dlsym; ADDR is the
+                            sentinel
+                            `nelisp-cc-runtime--resolve-symbol-stub-addr'.
+                            The link pass treats this as a *deferred*
+                            fixup (= patches the placeholder with the
+                            sentinel and records the symbol on a
+                            `:unresolved-extern-c-symbols' list in the
+                            page meta so the simulator never executes it).
+  STATUS = `:not-found'  — ADDR is nil; SYMBOL-NAME is not exported by
+                            the running process.  Phase 7.1.6.a's link
+                            pass converts this into a runtime error
+                            keyed on the page allocation site.
+
+When `nelisp-cc-runtime-resolve-symbol-function' is non-nil, the
+function is delegated to (= override hook for standalone NeLisp).
+Otherwise the host stub returns `(:host-stub
+. nelisp-cc-runtime--resolve-symbol-stub-addr)' for *any* symbol
+name (= the host has no dlsym available without a Rust dynamic
+module, which Doc 81 §0 STATUS forbids in Stage 81.4 — Rust delta
+must be 0)."
+  (unless (and symbol-name (symbolp symbol-name))
+    (signal 'nelisp-cc-runtime-error
+            (list :resolve-symbol-bad-type symbol-name)))
+  (if nelisp-cc-runtime-resolve-symbol-function
+      (funcall nelisp-cc-runtime-resolve-symbol-function symbol-name)
+    (cons :host-stub nelisp-cc-runtime--resolve-symbol-stub-addr)))
+
+(defun nelisp-cc-runtime-resolve-symbol-host-stub-p (status-addr)
+  "Return non-nil when STATUS-ADDR (= a `resolve-symbol' return value)
+is the host-Emacs sentinel response.
+
+Convenience predicate for ERT / link-pass code so callers do not have
+to remember the sentinel address constant or the `:host-stub' tag
+key."
+  (and (consp status-addr)
+       (eq (car status-addr) :host-stub)
+       (eq (cdr status-addr)
+           nelisp-cc-runtime--resolve-symbol-stub-addr)))
+
+;;; Phase 7.1.6.a — dlsym bridge wiring -------------------------------
+;;
+;; The standalone NeLisp `nelisp' binary registers the Rust-side
+;; `nelisp-cc--dlsym-resolve' primitive (= libc::dlsym(RTLD_DEFAULT,
+;; ...)) as the resolver hook so the Doc 81 §5.4 link pass gets real
+;; addresses for primitive trampoline symbols (= `nl_jit_cons_*' etc.).
+;;
+;; The Rust shim's contract:
+;;
+;;   (nelisp-cc--dlsym-resolve SYMBOL-NAME) -> (STATUS . ADDR-OR-NIL)
+;;     STATUS = `:resolved' (ADDR is unsigned i64), or
+;;     STATUS = `:not-found' (ADDR is nil).
+;;
+;; Matches the override contract documented on
+;; `nelisp-cc-runtime-resolve-symbol' verbatim, so the wiring is a
+;; one-liner: just install the primitive as the hook function when
+;; available.
+;;
+;; On host Emacs the primitive is absent (= `fboundp' nil) — the
+;; resolve-symbol path stays on the `:host-stub' default per Doc 81
+;; §5.4.  Integration smoke ERT is deferred to Phase 7.1.6.a.2 (=
+;; cluster takeover commit) when the standalone NeLisp wiring activates
+;; with `#[no_mangle]' trampolines + `-rdynamic' link.
+;;
+;; Phase 7.1.6.a.2 (= cluster takeover) follows up by adding
+;; `#[no_mangle]' to the cons trampolines and `-rdynamic' link so the
+;; binary's dynamic symbol table actually exposes them.  Until then
+;; this resolver returns `:not-found' on host Emacs for cons cluster
+;; lookups, which the link pass treats as deferred fallback (Doc 81
+;; §6.3) rather than an error.
+
+(defun nelisp-cc-runtime-resolve-symbol-via-dlsym (symbol-name)
+  "Doc 81 §5.4 + Phase 7.1.6.a — dlsym-backed resolve-symbol implementation.
+
+Calls the Rust-side `nelisp-cc--dlsym-resolve' primitive (= a thin
+libc::dlsym(RTLD_DEFAULT, ...) shim shipped in
+`build-tool/src/eval/dlsym_bridge.rs').  Returns the
+`(STATUS . ADDR-OR-NIL)' pair verbatim per the contract documented on
+`nelisp-cc-runtime-resolve-symbol'.
+
+Caller is expected to install this as
+`nelisp-cc-runtime-resolve-symbol-function' on a host where the Rust
+primitive is available (= standalone NeLisp via
+`nelisp-cc-runtime-install-dlsym-resolver').  ERT may also bind it
+locally to exercise the resolved-path of the contract without
+mocking."
+  (unless (fboundp 'nelisp-cc--dlsym-resolve)
+    (signal 'nelisp-cc-runtime-error
+            (list :resolve-symbol-via-dlsym-primitive-absent
+                  symbol-name)))
+  (nelisp-cc--dlsym-resolve symbol-name))
+
+(defun nelisp-cc-runtime-install-dlsym-resolver ()
+  "Phase 7.1.6.a — install the dlsym-backed resolver as the override hook.
+
+Sets `nelisp-cc-runtime-resolve-symbol-function' to
+`nelisp-cc-runtime-resolve-symbol-via-dlsym' when the underlying Rust
+primitive `nelisp-cc--dlsym-resolve' is available (= we are running
+under standalone NeLisp's `nelisp' binary).
+
+Returns non-nil on success (= hook was installed), nil if the Rust
+primitive is absent (= host Emacs).  Idempotent — safe to call
+multiple times.  Callers (= standalone NeLisp startup) invoke this
+once at boot.  ERT may invoke it conditionally on a `fboundp'
+guard."
+  (when (fboundp 'nelisp-cc--dlsym-resolve)
+    (setq nelisp-cc-runtime-resolve-symbol-function
+          #'nelisp-cc-runtime-resolve-symbol-via-dlsym)
+    t))
+
+;; Auto-wire the dlsym resolver at load time when the Rust primitive is
+;; reachable.  Host Emacs (= no nelisp binary in the picture) keeps the
+;; default `:host-stub' path unchanged; standalone NeLisp installs the
+;; real lookup transparently.
+(nelisp-cc-runtime-install-dlsym-resolver)
 
 (provide 'nelisp-cc-runtime)
 ;;; nelisp-cc-runtime.el ends here

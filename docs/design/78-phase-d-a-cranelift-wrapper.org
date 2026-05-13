@@ -1,0 +1,422 @@
+#+TITLE: Doc 78 — Phase D-A Cranelift wrapper 設計 (= JIT を elisp で driving)
+
+* Status
+:PROPERTIES:
+:STATE: DEFERRED 2026-05-09 — user 100% 純 elisp commitment と方向矛盾、本設計を保留
+:DRAFTED: 2026-05-09
+:PARENT: Doc 77c (= Sexp ABI elisp 化 commitment)
+:RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 63 (= Phase 7 self-host roadmap)、Doc 77 (= Stage 4 sexp memory layout pin の上位)、Doc 79 (= Phase C GC elisp 化 設計 v3)
+:UPDATES: Doc 77c §2.4.1 を deepen (= ~50 fn shim の概略から具体 ~38 fn list + state mgmt + migration plan に refine)
+:DECISION_DATE: 2026-05-09 — DEFERRED 確定
+:LATEST: 2026-05-09 — D-A の C-style shim wrapper は本質的に "Cranelift を Rust 経由で温存" 路線で、user 2026-05-09 確定の "100% 純 elisp (= Cranelift も完全に elisp 化)" 目標と矛盾。さらに D-A.1 単独で Rust core +800 LOC 中間状態 (= shim 400 + ERT 400) を要し、user 2026-05-09 monotonic shrink rule にも違反 (= Track 2 dispatch 中止経緯)。Doc 77c §3.4 D-B 経路 (= Cranelift 完全置換 / NeLisp Phase 7+ native cc 切替) を本命とする方針合意により本 Doc は DEFERRED 化。再開条件: D-B が技術的に不可能と判明し、Cranelift 温存 hybrid に方針変更があった場合のみ。
+:END:
+
+* §0 TL;DR
+
+Doc 77c Phase A 完遂 (= 全 boxed Sexp variant の =NlXxxRef= 化 + =#[repr(transparent)]= + =Sexp::*_box_ptr()= 直接 accessor SHIPPED) により、JIT trampoline 層を elisp wrapper で書換える FFI 基盤が揃った.  Doc 77c §2.4 articulation を refine し、**Phase D-A = Cranelift Rust crate を約 38 個の C-style FFI shim で expose し、IR builder を elisp 駆動に置換する** path を本 Doc で詳細設計する.
+
+D-A 着地時の core 構成:
+- Rust 側: cranelift crate + 約 38 個の =cl_*= 薄い shim function (~400 LOC、unsafe 集中)
+- elisp 側: =nl-cl-*= primitive 経由で IR を組立、=cl_jit_finalize= で実行ポインタ取得
+- 削除対象: =build-tool/src/jit/{cons,access,arith,predicate,syscall,dsl}.rs= の builder 関数群 (~3000 LOC) + =bridge.rs= の half (~400 LOC)
+
+合計 net delta: **-~2400 LOC Rust** (= 既存 4733 LOC jit/ → 残 ~400 LOC shim + ~600 LOC bridge bookkeeping = ~1000 LOC).  対応する elisp 側 LOC = +~1500 LOC (= IR builder DSL + 既存 strategy.el の再配線).
+
+工数: 1-2 週間 (= Doc 77c §2.4.1 推定維持). Phase B / C 完了後に着手、ただし shim 設計は前倒し可能.
+
+* §1 Background
+
+** §1.1 Phase A で揃った FFI 基盤 (= 2026-05-09 着地)
+
+Phase A.1〜A.5 で以下が確定:
+- 全 7 boxed Sexp variant が layout-pinned struct (=NlConsBox / NlCell / NlStr / NlVector / NlBoolVector / NlRecord / NlCharTable=) + =#[repr(C)]= + =value(s) @ offset 0, refcount @ trailer= shape
+- 7 件の =NlXxxRef= が =#[repr(transparent)]= で =NonNull<NlXxx>= に固定
+- =Sexp::tag()= で discriminant byte read、=Sexp::*_box_ptr()= で box pointer 取得
+- =SEXP_PAYLOAD_OFFSET = 8= 定数 + compile-time layout assertion
+- =nl-cons-*= / =nl-rc-*= 8 件 elisp primitive (Phase A.3 SHIPPED)
+
+これにより elisp 側から:
+1. raw =Sexp= 値の variant tag が読める (= =nl-sexp-tag= primitive 1 行 wrap)
+2. raw box pointer が elisp の int 値として手に入る (= =nl-cons-box-ptr= 等の wrapper、現状 nl-cons-car 経由で間接)
+3. refcount を elisp 駆動で増減できる (= =nl-rc-inc/-dec/-count= SHIPPED)
+
+これは Phase B (Sexp 操作 elisp 化) には十分.  Phase D-A はさらに **cranelift IR generator を elisp 駆動にする** ので、別軸の FFI surface 拡張が必要 = 本 Doc の主題.
+
+** §1.2 Phase D-A vs D-B vs Doc 77c §2.4 articulation
+
+Doc 77c §2.4 では:
+- D-A = Cranelift wrapper (= "~50 fn 薄い shim")、1-2 週間
+- D-B = Cranelift 完全置換 (= elisp が x86_64/ARM64 byte sequence 直 emit)、3-6 ヶ月
+
+本 Doc は D-A に焦点.  D-B は将来別 Doc (= Doc 79 候補) で articulate.
+
+D-A を選ぶ理由:
+- Cranelift の register allocator / instruction selection / ELF linkage は production quality (= Bytecodealliance + wasmtime と共有)、これを elisp で書換えるのは ROI 悪
+- 完全 self-host が gate でない (= "Cranelift binding crate に依存" は許容、Cranelift が Rust crate であることは elisp self-host の障害ではない、cranelift の internals に手を入れていないので "external library として使う" 立ち位置)
+- 1-2 週間で着地する見込み = Phase B/C 完了後の自然な流れ
+
+* §2 Shim surface inventory (= 実数ベース)
+
+Doc 77c Phase A.5 着地時点 (= 2026-05-09) の =build-tool/src/jit/*.rs= から実 grep 抽出.
+
+** §2.1 IR builder =fb.ins().*= API (= 19 distinct)
+
+usage 頻度順 (= grep usage count 入り):
+
+| API           | 用途                          | 頻度 | shim signature (案)                       |
+|---------------+-------------------------------+------+-------------------------------------------|
+| =return_=     | 関数 return                   |   15 | =cl_emit_return(fb, vals_ptr, n_vals)=    |
+| =iconst=      | 即値 i64 / i32                |    9 | =cl_emit_iconst(fb, ty, val) -> Value=    |
+| =uextend=     | u8/u32 → i64 ゼロ拡張         |    7 | =cl_emit_uextend(fb, dst_ty, val) -> v=   |
+| =load=        | mem read                      |    7 | =cl_emit_load(fb, ty, flags, ptr, off) -> v= |
+| =brif=        | 条件分岐                      |    7 | =cl_emit_brif(fb, cond, then_b, else_b)=  |
+| =call=        | helper call                   |    6 | =cl_emit_call(fb, func, args_ptr, n)=     |
+| =icmp=        | int 比較                      |    5 | =cl_emit_icmp(fb, cc, a, b) -> v=         |
+| =store=       | mem write                     |    4 | =cl_emit_store(fb, flags, val, ptr, off)= |
+| =icmp_imm=    | int 即値比較                  |    4 | =cl_emit_icmp_imm(fb, cc, val, imm) -> v= |
+| =sshr / ishl= | signed shift                  |    4 | =cl_emit_sshr / _ishl(fb, a, b) -> v=     |
+| =isub / iadd= | int sub/add                   |    4 | =cl_emit_isub / _iadd(fb, a, b) -> v=     |
+| =imul=        | int mul                       |    2 | =cl_emit_imul(fb, a, b) -> v=             |
+| =ineg=        | int 反転                      |    2 | =cl_emit_ineg(fb, a) -> v=                |
+| =bxor / bor / band= | bitwise               |    6 | =cl_emit_bxor / _bor / _band(fb, a, b) -> v= |
+| =jump=        | 無条件 jump                   |    1 | =cl_emit_jump(fb, target_b)=              |
+
+合計 19 builder API、shim 化見積 **~16 fn** (= cmp 系を 1 fn に統合、bxor/bor/band を 1 fn + opcode 引数に統合).
+
+** §2.2 Module API (= 6 distinct)
+
+| API                    | 用途                         | 頻度 | shim signature (案)                          |
+|------------------------+------------------------------+------+----------------------------------------------|
+| =get_finalized_function= | finalize 後の fn ptr 取得  |   18 | =cl_get_finalized_function(mod, fn_id) -> *u8= |
+| =make_signature=       | 関数 sig 生成                |   15 | =cl_make_signature(mod) -> sig_handle=       |
+| =make_context=         | compile context              |    9 | =cl_make_context(mod) -> ctx_handle=         |
+| =clear_context=        | compile context reset        |    9 | =cl_clear_context(mod, ctx)=                 |
+| =declare_func_in_func= | extern fn declare in IR      |    6 | =cl_declare_func_in_func(fb, fn_id) -> ref=  |
+| =finalize_definitions= | JIT relocate                 |    4 | =cl_finalize_definitions(mod)=               |
+
+合計 6 module API、shim 化 **~6 fn** (= 1:1).
+
+** §2.3 Builder API (= 約 9 distinct)
+
+| API                       | 用途                       | shim signature (案)                            |
+|---------------------------+----------------------------+------------------------------------------------|
+| =FunctionBuilder::new=    | builder 生成               | =cl_make_builder(ctx) -> builder=              |
+| =create_block=            | block 作成                 | =cl_create_block(fb) -> block_id=              |
+| =append_block_params_for_function_params= | entry block の引数注入 | =cl_append_block_params(fb, block)= |
+| =switch_to_block=         | block 切替                 | =cl_switch_to_block(fb, block)=                |
+| =seal_block=              | block 完了                 | =cl_seal_block(fb, block)=                     |
+| =block_params=            | block の引数取得            | =cl_block_params(fb, block, idx) -> v=         |
+| =inst_results=            | 命令の result 取得         | =cl_inst_results(fb, inst, idx) -> v=          |
+| =finalize=                | builder 終了               | =cl_finalize_builder(fb)=                      |
+| =MemFlags::trusted=       | mem flags                  | =cl_memflags_trusted() -> flags=               |
+
+合計 9 builder API、shim 化 **~9 fn** (= 1:1).
+
+** §2.4 Signature 構築 API (= 4 distinct、推定)
+
+=AbiParam= / =Signature::params.push= / =returns.push= / =call_conv= 設定:
+
+| API                          | shim signature (案)                    |
+|------------------------------+----------------------------------------|
+| =sig.params.push(AbiParam)=  | =cl_sig_add_param(sig, ty)=            |
+| =sig.returns.push(AbiParam)= | =cl_sig_add_return(sig, ty)=           |
+| =module.declare_function=    | =cl_declare_function(mod, name, linkage, sig) -> fn_id= |
+| =module.define_function=     | =cl_define_function(mod, fn_id, ctx)=  |
+
+合計 4 signature/declare API、shim 化 **~4 fn**.
+
+** §2.5 Type / enum 定数 (= ~6)
+
+elisp 側は単なる i64 enum 値として扱う:
+
+| Rust 側                | elisp 定数                  |
+|------------------------+-----------------------------|
+| =types::I8 / I32 / I64= | =cl-type-i8 / -i32 / -i64= |
+| =IntCC::Equal / NotEqual / SignedLessThan / UnsignedLessThan / ...= | =cl-cc-eq / -ne / -slt / ...= |
+| =Linkage::Local / Import= | =cl-linkage-local / -import= |
+| =MemFlags::trusted=    | =cl-memflags-trusted=      |
+
+合計 ~6 enum 系、shim 化なし (= 定数を =defconst= で elisp 側に複製、Rust 側で =extern "C" int cl_type_i64()= constexpr-getter 1 件で十分).
+
+** §2.6 Total shim surface
+
+| 領域           | shim fn 数 |
+|----------------+-----------|
+| IR builder ins | 16        |
+| Module         | 6         |
+| Builder        | 9         |
+| Signature      | 4         |
+| Type/enum get  | ~3        |
+| **合計**       | **~38 fn** |
+
+Doc 77c §2.4.1 推定 "~50 fn" は若干過大、実数 ~38 fn = **shim Rust LOC ~400 (= 各 fn 10 LOC = 関数 sig + unsafe deref + cranelift API call + return)**.
+
+* §3 State management 設計
+
+cranelift API は state-ful (= =FunctionBuilder= は =&mut Context= 経由、=Module= は =&mut JITModule=).  elisp 側でこれを保持する方法:
+
+** §3.1 案 A: opaque pointer + nl-rc 経由 (= 推奨)
+
+各 cranelift state を =NlRc<Box<T>>= で wrap:
+
+#+begin_src rust
+#[no_mangle]
+pub unsafe extern "C" fn cl_make_module() -> *mut std::ffi::c_void {
+    let module = JITModule::new(JITBuilder::new(...));
+    let boxed = Box::into_raw(Box::new(module));
+    boxed as *mut _
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cl_drop_module(handle: *mut std::ffi::c_void) {
+    drop(Box::from_raw(handle as *mut JITModule));
+}
+#+end_src
+
+elisp 側は =Sexp::Int(handle as i64)= で保持、=cl-drop-module= 呼出責任を持つ.  または =NlRc<JITModule>= で wrap して既存 =nl-rc-*= primitive 経由で refcount management.
+
+** §3.2 案 B: elisp-side state machine
+
+Cranelift state を Rust に持たず、IR を elisp side で alist として組立、=cl_compile_module= 1 fn で一括 lower.  問題: Cranelift API は callback-style で =FunctionBuilder= の各 ins() が直 IR emit、これを deferred batch にすると elisp 側で IR DSL を full reimplement する必要 = D-B に近い分量になり D-A の趣旨と外れる.
+
+→ **採用 = 案 A**.
+
+** §3.3 handle ライフサイクル
+
+| handle 種別        | alloc                | drop                 | refcount   |
+|--------------------+----------------------+----------------------+------------|
+| =JITModule=        | =cl_make_module=     | =cl_drop_module=     | nl-rc 任意 |
+| =Context=          | =cl_make_context=    | =cl_clear_context=   | nl-rc 任意 |
+| =FunctionBuilder=  | =cl_make_builder=    | =cl_finalize_builder= | nl-rc 任意 |
+| =Signature=        | =cl_make_signature=  | (= module 所有)       | -          |
+| =FuncId=           | =cl_declare_function= | (= module 所有)       | -          |
+| =Block= / =Value= / =Inst= | (= ID は単なる u32) | -                    | -          |
+
+elisp 側は =Sexp::Int= で raw handle (= 数値) を保持.  =Block= / =Value= / =Inst= は cranelift 内部 ID なので drop 不要.
+
+* §4 elisp DSL shape
+
+** §4.1 直書き shim 呼出 (= primitive level)
+
+#+begin_src elisp
+(let* ((mod (cl-make-module))
+       (sig (cl-make-signature mod)))
+  (cl-sig-add-param sig cl-type-i64)
+  (cl-sig-add-param sig cl-type-i64)
+  (cl-sig-add-return sig cl-type-i64)
+  (let* ((fn-id (cl-declare-function mod "add2" cl-linkage-local sig))
+         (ctx (cl-make-context mod))
+         (fb (cl-make-builder ctx))
+         (entry (cl-create-block fb)))
+    (cl-append-block-params fb entry)
+    (cl-switch-to-block fb entry)
+    (let* ((a (cl-block-params fb entry 0))
+           (b (cl-block-params fb entry 1))
+           (sum (cl-emit-iadd fb a b)))
+      (cl-emit-return fb (vector sum)))
+    (cl-seal-block fb entry)
+    (cl-finalize-builder fb)
+    (cl-define-function mod fn-id ctx)
+    (cl-clear-context mod ctx)
+    (cl-finalize-definitions mod)
+    (cl-get-finalized-function mod fn-id)))  ; → *u8 ptr
+#+end_src
+
+(= ~20 行で 2-引数 add 関数を JIT compile)
+
+** §4.2 高水準 macro / DSL (= 自前で書く)
+
+将来 =lisp/nelisp-cl-dsl.el= で =defmacro cl-defun= を定義:
+
+#+begin_src elisp
+(cl-defun add2 (a b)
+  :sig (i64 i64) i64
+  (cl-iadd a b))
+#+end_src
+
+→ macroexpand で §4.1 の shim 呼出列を生成.  ~150 LOC elisp 1 ファイル.
+
+** §4.3 既存 jit/cons.rs / access.rs / arith.rs を elisp 側に rewrite
+
+Phase D-A 着地ファイル群:
+- =lisp/nelisp-jit-cons.el= (= 元 =build-tool/src/jit/cons.rs=、5 trampoline + entry block 構築): ~150 LOC
+- =lisp/nelisp-jit-access.el= (= 元 =access.rs=、4 trampoline + dispatch): ~250 LOC
+- =lisp/nelisp-jit-arith.el= (= 元 =arith.rs=): ~200 LOC
+- =lisp/nelisp-jit-predicate.el= (= 元 =predicate.rs=): ~200 LOC
+- =lisp/nelisp-jit-syscall.el= (= 元 =syscall.rs=): ~150 LOC
+- =lisp/nelisp-jit-dsl.el= (= 元 =dsl.rs=、IR DSL macro): ~300 LOC
+
+合計 elisp 側 +~1250 LOC.  対応 Rust 側 -~3700 LOC (= access 646 + arith 344 + cons 408 + predicate 331 + syscall 276 + dsl 1190 + bridge 825 のうち half ~400) = **net -2450 LOC**.
+
+* §5 Migration plan
+
+** §5.1 D-A.1: shim 実装 (= 1 週間)
+
+新規 module =build-tool/src/jit/cl_shim.rs= に ~38 個の =#[no_mangle] pub unsafe extern "C" fn cl_*= を実装.  各 ~10 LOC.
+
+副産物:
+- =cl_shim.rs= ~400 LOC 新規
+- shim per-fn ERT (= unit test、各 fn の round-trip 動作確認): ~400 LOC ERT
+
+** §5.2 D-A.2: elisp DSL 起草 (= 並行可)
+
+=lisp/nelisp-cl-dsl.el= に:
+- defconst で IntCC / Linkage / MemFlags / types の enum 値複製
+- =cl-make-module= 等の一連の defun (= 各 shim を =nl-ffi-call= で呼ぶ wrapper、~5 LOC each = ~38 × 5 = ~190 LOC)
+- 高水準 =cl-defun= macro (~50 LOC)
+
+合計 elisp ~250 LOC.
+
+** §5.3 D-A.3: cons.rs migration (= 最小モジュールから検証)
+
+=jit/cons.rs= の 5 trampoline (= car/cdr/cons_make/setcar/setcdr) を =lisp/nelisp-jit-cons.el= に rewrite.  検証:
+- =cargo test --lib --test-threads=1=: 663 PASS 維持
+- =make test=: ERT regression 0 unexpected
+- bench (= cons-heavy workload): 退行 10% 以下
+
+cons.rs (~125 LOC after A.5) を削除.
+
+** §5.4 D-A.4: access / predicate / arith / syscall 順次 migration
+
+D-A.3 と同じ pattern で 4 module を順次 elisp 側へ.  各 commit で test 通すこと条件.
+
+** §5.5 D-A.5: dsl.rs / bridge.rs cleanup
+
+最後に残る =build-tool/src/jit/dsl.rs= (1190 LOC) を elisp DSL 側に集約、=bridge.rs= (825 LOC) は call-out helper の half (~400 LOC) を削除.
+
+** §5.6 D-A.6: 最終 ERT + bench gate
+
+全 =build-tool/src/jit/{cons,access,arith,predicate,syscall,dsl}.rs= 削除後:
+- =cargo test --lib=: 全 PASS
+- =make test=: ERT regression 0 unexpected
+- bench: 退行 10% 以下 (= shim call overhead がボトルネック化していないこと)
+
+* §6 Test plan
+
+** §6.1 shim per-fn unit test
+
+=cl_shim.rs= 内 =mod tests= で各 shim の round-trip:
+- =cl_make_module= → =cl_drop_module= が leak なし (= valgrind / miri で検証)
+- =cl_emit_iadd= で生成した IR が =cl_finalize= 後に正しい結果を返す
+- =cl_make_signature= の after-state が =cl_declare_function= に渡せる
+
+合計 ~38 unit test、~400 LOC.
+
+** §6.2 elisp DSL integration test
+
+=lisp/test/test-cl-dsl.el= で:
+- 簡単な =add2= 関数を JIT compile + 呼出 → 結果検証
+- =sub3= / =if-then-else= / call-out helper など 5-6 ケース
+- err-cases (= bad type signature 等) の error message round-trip
+
+合計 ~10 ERT、~200 LOC.
+
+** §6.3 Migration gate (= 各 D-A.3-5 で)
+
+- =cargo test --lib --test-threads=1=: 663 → 663 PASS 維持 (= shim ERT 追加で +38 = 701 PASS 想定)
+- =make test=: ERT regression 0 unexpected
+- bench (= =scripts/bench-jit.sh=): 退行 10% 以下
+
+* §7 Risks
+
+** §7.1 cranelift API drift
+
+cranelift crate は upstream で API 変更頻度高 (= 2024-2026 で =FunctionBuilder= の seal API 等が複数回変更).  shim 経由 = elisp side が isolation されるが、shim Rust 側で API 追従が必要.
+
+Mitigation: shim 数を最小限に抑える (= ~38)、cranelift version pin.
+
+** §7.2 Performance regression
+
+shim 経由 = 各 IR instruction 1 個に対し =nl-ffi-call= 1 回 = function call overhead 加算.  典型 trampoline は ~20 IR ins = 20 ffi-call.  Phase A 時点の bench で許容範囲内か検証必要.
+
+Mitigation:
+- =nl-ffi-call= overhead の bench (= empty fn 1 call の cost を測定)
+- 必要なら hot path だけ Rust に残す (= "Rust core" 約 500 LOC まで膨らむ妥協)
+- IR emit を batch 化 (= elisp 側で IR を一旦 alist に組立、=cl_emit_batch= 1 call で渡す = 案 B 折衷)
+
+** §7.3 Debugging difficulty
+
+cranelift IR の検査は Rust 側で =cranelift-codegen= の DSL を使うのが標準.  elisp 側 IR は alist で持つしかなく、debug print が劣る.
+
+Mitigation: =cl_dump_module= / =cl_dump_ir= shim を追加、elisp から =(cl-dump-module mod)= で stdout に Cranelift native fmt を出力可能に.
+
+** §7.4 unsafe surface 増加
+
+shim 38 fn は全 =#[no_mangle] pub unsafe extern "C"= = audit 表面が広がる.  elisp 側のバグ (= 不正 handle 渡し) が UB に直結.
+
+Mitigation:
+- 各 shim 入口で handle null-check + magic-number check (= each 1 LOC)
+- miri + cargo-fuzz で shim の random input fuzzing
+- 案 A の =NlRc<Box<T>>= 化で handle lifetime を refcount 管理
+
+* §8 LOC delta refinement
+
+** §8.1 Doc 77c §3.2 推定の re-validate
+
+Doc 77c §3.2 は D-A まで -2000 LOC 推定.  本 Doc の inventory ベース:
+
+| 削除対象                 | LOC   |
+|--------------------------+-------|
+| jit/cons.rs              | ~125  |
+| jit/access.rs            | ~640  |
+| jit/arith.rs             | ~344  |
+| jit/predicate.rs         | ~331  |
+| jit/syscall.rs           | ~276  |
+| jit/dsl.rs               | ~1190 |
+| jit/bridge.rs (half)     | ~400  |
+| jit/mod.rs (half)        | ~150  |
+| **削除合計**             | ~3456 |
+| 新規 cl_shim.rs           | +400  |
+| 新規 cl_shim.rs 内 ERT   | +400  |
+| **正味 Rust delta**      | **-2656** |
+| 新規 lisp/nelisp-cl-dsl.el | +250 |
+| 新規 lisp/nelisp-jit-*.el  | +1250 |
+| 新規 lisp/test/test-*.el   | +200 |
+
+→ **Rust core net = -2656 LOC**, elisp net = +1700 LOC.
+
+Doc 77c §3.2 推定 -2000 LOC は若干 conservative、実数 -2656 LOC.
+
+** §8.2 Doc 77c §3.3 最終 Rust core 構成 update 案
+
+D-A 着地後の =build-tool/src/jit/= 想定:
+
+| 残る Rust 領域              | LOC | 役割                                       |
+|-----------------------------+-----+--------------------------------------------|
+| =cl_shim.rs=                | 400 | cranelift Rust crate の薄い C 化            |
+| =bridge.rs= half            | 400 | call-out / call-in glue (= elisp ↔ helper) |
+| =mod.rs= half               | 150 | unified_jit のリファレンス管理             |
+| **jit/ 残合計**             | 950 |                                            |
+
+Doc 77c §3.3 (D-A 採用 case) の "Sexp 型定義 + NlRc / NlConsBox ~300 LOC" + "JIT 周辺 wrapper ~400" を update: JIT wrapper は ~950 LOC (= cl_shim 400 + bridge half 400 + mod half 150).
+
+最終 Rust core 構成:
+- Sexp 型 + NlRc / 7 NlXxx box: ~300 LOC
+- JIT wrapper (cl_shim + bridge + mod): ~950 LOC
+- eval glue (= ffi + builtins/sexp_eq 等の必須残): ~500 LOC
+- reader / printer: 0 (= Doc 64/66 で elisp 化済)
+- I/O / OS surface: 0 (= Doc 76 で elisp 化済)
+- **合計 Rust core**: ~1750 LOC
+
+Doc 77c §0 の "self-host (= Rust core ≈ 300-500 LOC)" 目標は D-A だけでは到達せず.  D-B (= cranelift 完全置換) で初めて =-cl_shim.rs= 400 LOC + =-bridge.rs= 400 LOC = 残 ~950 LOC まで縮められる. → Doc 77c §3.3 を本数値で update する follow-up 必要.
+
+* §9 Decision points
+
+Phase D-A 着手前に以下を resolve:
+
+1. **Phase B 完了が必須 gate か?** (= §3.1 dependency graph 上は yes、ただし B が =strategy.rs= 削除で D-A の dsl.rs 削除に近い shape なので並行可能性あり)
+2. **shim 数の妥協範囲** (= 案 A の opaque ptr + 38 fn vs. batch IR の ~10 fn): Performance bench 結果次第
+3. **elisp 側 IR debug 機能の優先度** (= =cl_dump_module= の必須度): 小規模なら yes、大規模なら =disasm= shim も追加
+4. **cranelift version pin 戦略**: =Cargo.toml= で =cranelift = "=0.x.y"= として shim audit を担保
+
+* §10 References
+
+- Doc 77c (= Sexp ABI elisp 化 commitment、本 Doc の親)
+- Doc 77b (= Rust-min JIT 路線、Phase B-quick の delta は本 Doc D-A.5 と重なる)
+- Doc 77 (= Stage 4 sexp memory layout pin、本 Doc の前提条件 SHIPPED 済)
+- Doc 63 (= Phase 7 self-host roadmap、master plan)
+- Cranelift API: https://docs.rs/cranelift/0.x/cranelift/
+
+* §11 History
+
+- 2026-05-09: Doc 77c Phase A.5 着地 (= "JIT を elisp で driving する技術前提が揃った") に応じて user 指示で本 Doc を draft.  shim inventory を実 grep ベースで refine、Doc 77c §2.4.1 articulation を deepen.

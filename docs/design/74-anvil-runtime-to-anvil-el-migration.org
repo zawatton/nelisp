@@ -1,17 +1,49 @@
 #+TITLE: anvil-runtime → anvil.el migration (= Stage 8.2 拡張)
-#+DATE: 2026-05-08
+#+DATE: 2026-05-09
 #+AUTHOR: Claude (z=Opus 4.7) + user direction
 #+OPTIONS: ^:nil
+
+:PROPERTIES:
+:STATE: DRAFT v2 2026-05-09
+:DRAFTED: 2026-05-08 (v1) → 2026-05-09 (v2: audit + concrete LOC inventory + per-stage shrink target)
+:PARENT: Doc 73 §2.2 / §9 #5
+:RELATED: Doc 73 §2.4 (Stage 8.4 reader feature gate, 本 Doc 完了に依存), Doc 77c §4.7 (Phase A.6 anvil-runtime fix-or-replace 判断), Doc 63 (Phase 7 self-host roadmap), feedback_nelisp_minimize_rust
+:DECISION_DATE: 2026-05-09 (user 指示: every commit must net-decrease Rust LOC)
+:END:
 
 * §0 Status
 
 - 親 Doc: 73 §2.2 / §9 #5 (= Stage 8.2 方針転換)
 - 前提 SHIPPED: Doc 64〜72 (Phase 7) / Doc 73 Stage 8.1 + 8.3.a/b
-- 本 Doc: anvil-runtime crate 全体 (5,667 LOC) を =anvil.el= 側に移行
-  する大型 migration の全体設計 — *DRAFT 2026-05-08*
+- 本 Doc: anvil-runtime crate 全体 (= 5,667 LOC) を =anvil.el= 側に移行
+  する大型 migration の全体設計.  *DRAFT v2 2026-05-09*
 - 規模: Phase 9 相当、複数 session に跨る. 実装は本 Doc 内 sub-stage
   分割で段階的に進める
 - 完了で Stage 8.4 (= reader feature gate, Doc 73) の前提が揃う
+- *2026-05-09 並行 session 注記*: 同日に **parallel session** (= nelisp
+  =a6de799= までで Phase A/B 系列 SHIPPED、Final B target -7,346 Rust
+  LOC) が独立に着手. 二重 audit alignment は *Doc 82* で articulate
+  (= §3 alignment matrix で layer 直交、§4 convergence path で Option
+  α 推奨 = parallel Final B 採用 + 本 Doc 74 v2 を Final B 詳細設計
+  reference として deferred).  Stage 74.1 のみ即時 ship 可、Stage
+  74.2-74.7 は parallel Phase B5 SHIPPED 確認後に正式 dispatch 判断.
+
+** §0.1 v1 → v2 改訂点 (= 2026-05-09)
+
+v1 (2026-05-08 DRAFT) は方針 articulation のみで、 LOC inventory が概算値、
+各 stage の Rust LOC 削減量が unspecified だった.  v2 で:
+
+1. *concrete LOC inventory* を =wc -l= / =grep= 実測で固定 (= §2.1)
+2. *callsite map* を全数列挙 (= §3、leaf crate であることを実証)
+3. *migration option 比較* を Option A/B/C で articulate、Option C
+   推奨理由 (= user 2026-05-09 monotonic shrink rule + Phase A.2.1
+   compile error 既存) を明示 (= §4)
+4. *per-stage Rust LOC delta target* を全 stage で `≤ 0' 制約付きで
+   articulate (= §5).  各 stage は何の Rust LOC を削るかを source-file
+   レベルまで articulate
+5. *Stage 8.4 unblock path* を明示的に節として追加 (= §7)
+6. *Risk* を test coverage gap / cross-crate ABI / perf-critical
+   function 別の articulation に分離 (= §6)
 
 * §1 背景
 
@@ -19,11 +51,11 @@
 
 architecture_correction_anvil_uses_nelisp_2026-04-25.org §1.2 LOCKED:
 
-| layer | 担当 | LOC |
-|-------+------+-----|
-| =anvil-runtime= (Rust crate) | MCP server + tool registries + emacs-less launcher | 5,667 |
-| =nelisp-runtime= (Rust crate) | pure Elisp interpreter | (別 carve-out) |
-| =anvil.el= リポジトリ | Emacs-attached helpers (= anvil-host.el 等) | ~多数 |
+| layer | 担当 | 規模 |
+|-------+------+------|
+| =anvil-runtime= (Rust crate) | MCP server + tool registries + emacs-less launcher | 5,667 LOC |
+| =nelisp-runtime= / =nelisp-build-tool= | pure Elisp interpreter | (別 carve-out) |
+| =anvil.el= リポジトリ | Emacs-attached helpers (= anvil-host.el 等) | (本 Doc 移管先) |
 
 =anvil-runtime= は "emacs-less standalone" の MCP server. 起動時に
 =anvil-host.el= を =read_all= でパース → =eval_via_self_host= で
@@ -39,20 +71,17 @@ Rust 最小化、elisp 化可能なら elisp。JIT + native comp で速度問題
 Rust 実装も migrate していく
 #+end_quote
 
-=anvil-runtime= の orchestration (= file load / tool registry / dispatch
-form 構築 / formal introspection / JSON ↔ Sexp 変換) は本質的に
-elisp で記述できる内容で、Rust に書く必然性が薄い. 残すべき Rust
-は:
-- MCP transport (= stdio JSON-RPC 受信 / 送信ループ)
-- =nelisp= standalone binary (= eval entrypoint)
+加えて user 2026-05-09 指示: *"every commit must net-decrease Rust
+LOC"* (= monotonic shrink rule).  この rule が articulated された後、
+anvil-runtime crate は次の理由で migrate priority:
 
-それ以外の orchestration は =anvil.el= に移す方が:
-- *単一 source of truth*: tool dispatch logic が Emacs-attached / -less
-  両モードで共通化される (= 現状は Rust dispatch + Emacs server dispatch
-  の二重実装)
-- *iteration 速度*: elisp で書けば再 build 不要、=eval-buffer= で即反映
-- *Rust LOC 削減*: 5,667 LOC → ~500-800 LOC (= MCP transport 残り) に
-  減る見込み
+- Phase A.2.1 (Doc 77c) で =Sexp::Cons(NlConsBoxRef)= に migrate した
+  際に anvil-runtime は追従しておらず、現在 *14 個の compile error*
+  を抱えた状態 (= =cargo build -p anvil-runtime= 失敗).  detail §2.3.
+- "Rust ABI を fix する" 路線は monotonic shrink rule に違反 (= +effort、
+  net +0 の Rust LOC、user commitment と逆).
+- "elisp に移管して crate 削除" 路線は Doc 76 Phase 7 と同 pattern で、
+  各 commit で Rust LOC 純減を保てる.
 
 ** §1.3 Phase 8 全体での位置付け
 
@@ -63,33 +92,89 @@ Doc 73 の Phase 8 sub-stage の文脈で:
 - *8.2 — anvil-runtime read_all 3 callsite* → 本 Doc 74 で大型 scope
   に再定義.  3 callsite を読み替えるだけでなく、anvil-runtime crate
   自体を anvil.el 側に移行することで自然消滅させる
-- 8.4 (= reader feature gate): 本 Doc 完了で前提が揃う
+- 8.4 (= reader feature gate): 本 Doc 完了で前提が揃う (= 後述 §7)
 - 8.5 (= frozen heap): 別 Doc 75 候補
 
 * §2 anvil-runtime 現状 audit
 
-** §2.1 LOC inventory
+** §2.1 LOC inventory (= =wc -l= 実測, 2026-05-09)
 
-| ファイル | LOC | 役割 |
-|----------+-----+------|
-| =anvil_host_registry.rs= | 1,739 | anvil-host.el パース + tool registry + dispatch |
-| =anvil_module_registry.rs= | 523 | anvil-state.el / anvil-memory.el 等の Pattern C module load + tool registry |
-| =anvil_data_registry.rs= | 508 | data tools の registry |
-| =anvil_file_registry.rs= | 657 | file tools の registry |
-| =anvil_shell_filter_registry.rs= | 656 | shell filter tools の registry |
-| =anvil_tools_registry.rs= | 357 | 全 registry の合成 |
-| =mcp/dispatch.rs= | 402 | JSON-RPC dispatch loop |
-| =mcp/mod.rs= | 192 | MCP server top-level |
-| =mcp/protocol.rs= | 218 | JSON-RPC protocol types |
-| =mcp/tool.rs= | 162 | =ToolRegistry= trait |
-| =bin/anvil-runtime.rs= | 208 | binary entrypoint |
-| =bin/anvil-mcp-demo.rs= | 20 | smoke demo |
-| =lib.rs= | 25 | crate root |
-| *合計* | *5,667* | |
+#+begin_src bash
+$ find anvil-runtime/src -name '*.rs' | xargs wc -l
+#+end_src
 
-** §2.2 各 module の責務
+| ファイル | 全 LOC | =#[cfg(test)]= block 内 LOC | non-test LOC | 役割 |
+|----------+--------+-----------------------------+--------------+------|
+| =anvil_host_registry.rs= | 1,739 | 242 | 1,497 | anvil-host.el パース + tool registry + dispatch + compat_* |
+| =anvil_module_registry.rs= | 523 | 66 | 457 | Pattern C module load + tool registry |
+| =anvil_data_registry.rs= | 508 | 89 | 419 | data tools registry |
+| =anvil_file_registry.rs= | 657 | 183 | 474 | file tools registry |
+| =anvil_shell_filter_registry.rs= | 656 | 94 | 562 | shell filter tools registry |
+| =anvil_tools_registry.rs= | 357 | 161 | 196 | 5 sub-registry の合成 |
+| =mcp/dispatch.rs= | 402 | 198 | 204 | JSON-RPC dispatch loop |
+| =mcp/mod.rs= | 192 | (top-level) | ~150 | MCP server top-level |
+| =mcp/protocol.rs= | 218 | 59 | 159 | JSON-RPC protocol types |
+| =mcp/tool.rs= | 162 | 49 | 113 | =ToolRegistry= trait |
+| =bin/anvil-runtime.rs= | 208 | (binary) | 208 | binary entrypoint |
+| =bin/anvil-mcp-demo.rs= | 20 | (binary) | 20 | smoke demo |
+| =lib.rs= | 25 | (header) | 25 | crate root |
+| *合計* | *5,667* | *1,141* | *4,484* | |
 
-*** =anvil_host_registry.rs= (1,739 LOC)
+注:
+- non-test LOC = 4,484、test LOC = 1,141 (= 全体の 20%).  test は ERT
+  port 対象 (= §6.2)
+- Phase A.2.1 compile error 影響範囲 (= 後述 §2.3) は =anvil_host_registry.rs=
+  + =anvil_module_registry.rs= の合計 2,262 LOC
+
+** §2.2 Public API surface (= =grep= 実測)
+
+| 種別 | 件数 |
+|------+------|
+| =pub fn= | 30 |
+| =pub struct= / =pub enum= / =pub trait= | 20 |
+| 合計 public surface | 50 |
+
+このうち crate 外 (= =bin/anvil-runtime.rs= 経由) からの呼出 surface
+は 2 path のみ:
+- =anvil_runtime::anvil_tools_registry::AnvilToolsRegistry=
+- =anvil_runtime::mcp::{serve_with, PlaceholderRegistry}=
+
+残り 48 entry は crate 内部 module 間の依存. すなわち crate 削除時に
+external breakage は上記 2 surface のみ.
+
+** §2.3 Phase A.2.1 compile error 状況
+
+=cargo build -p anvil-runtime --release= は 2026-05-09 時点で
+*14 個の error*:
+
+#+begin_example
+error[E0023]: this pattern has 2 fields, but the corresponding tuple variant has 1 field
+  → Sexp::Cons(car, cdr) = 旧 2-field pattern (= Phase A.2.1 で
+    NlConsBoxRef 1-field tuple に migrate されたが anvil-runtime
+    側未追従)
+
+error[E0599]: no method named `borrow` found for reference `&NlCellRef`
+                                                          / `&NlStrRef`
+                                                          / `&NlVectorRef`
+                                                          / `&NlBoolVectorRef`
+  → Phase A.4.x (Cell / MutStr / Vector / BoolVector) の repr-transparent
+    NlXxxRef に直接 access する API 変更未追従
+#+end_example
+
+| ファイル | error 数 | broken LOC scope |
+|----------+----------+-----------------|
+| =anvil_host_registry.rs= | 7 (= =Sexp::Cons=) + N (= NlXxxRef.borrow) | ~1,497 non-test LOC 全体が再 audit 必須 |
+| =anvil_module_registry.rs= | 3 (= =Sexp::Cons=) + 0 (= no NlXxxRef use) | ~457 non-test LOC |
+
+Phase A.2.1 / A.4.x ABI 変更 (= Doc 77c §2-§4) は nelisp-build-tool
+crate を canonical source とし、anvil-runtime は path dep でしか触れて
+いないので "fix-and-pin" は per-API change 毎に re-sync 工数が発生する.
+elisp port pattern (= Doc 76 Phase 7) では Sexp ABI は elisp 側で
+透過的に扱われるので ABI 変更追従コストが消える.
+
+** §2.4 各 module の責務 (= v1 §2.2 から継承、簡略化)
+
+*** =anvil_host_registry.rs= (1,739 LOC, broken)
 
 - =seed_host_constants(env)= = =system-type=, =anvil-runtime-version=
   など定数 inject (~30 LOC)
@@ -103,11 +188,12 @@ Doc 73 の Phase 8 sub-stage の文脈で:
 - =build_call_form= = JSON args → Sexp lambda call form (~150 LOC)
 - =extract_lambda_formals= = lambda introspection (~50 LOC)
 - =compat_*= = =anvil-host-env= / =-which= / =-info= / =-shell= 等の
-  Rust-side 互換実装 (~700 LOC)
+  Rust-side 互換実装 (= 17 個の =fn compat_*=、~700 LOC)
 - =sexp_tool_result= / =json_to_quoted_sexp= = JSON ↔ Sexp 変換 (~200 LOC)
 - =seed_*= = ed env constants (~150 LOC)
+- =mod tests= (= 242 LOC, broken)
 
-*** =anvil_module_registry.rs= (523 LOC)
+*** =anvil_module_registry.rs= (523 LOC, broken)
 
 - =new(env, paths)= = paths を順に load + eval、shim drain で tool
   spec 収集
@@ -115,13 +201,17 @@ Doc 73 の Phase 8 sub-stage の文脈で:
 - =build_module_call_form= = JSON args → Sexp call form (formals
   introspection 込み)
 - =list_elements= / =plist_get_string= 等 = Sexp utility
+- =mod tests= (= 66 LOC)
 
-*** =anvil_data_registry= / =anvil_file_registry= / =anvil_shell_filter_registry= (1,821 LOC)
+*** =anvil_data_registry= / =anvil_file_registry= / =anvil_shell_filter_registry= (1,821 LOC, currently clean)
 
 各 registry とも:
 - 特定の elisp 関数群を MCP tool として expose
 - JSON ↔ Sexp 変換
 - compat 互換実装
+
+注: 現時点で compile error 無し.  しかし NlCellRef/NlVectorRef ABI 変更
+の影響を将来的に受ける可能性あり (= Phase A.5+ で同様の delta が再発).
 
 *** =anvil_tools_registry.rs= (357 LOC)
 
@@ -133,7 +223,7 @@ Doc 73 の Phase 8 sub-stage の文脈で:
 - =stdio= 経由の serve loop
 - =tools/list= / =tools/call= dispatch
 
-** §2.3 anvil.el 側既存実装との重複
+** §2.5 anvil.el 側既存実装との重複
 
 | 機能 | Rust 実装 | anvil.el 既存 | 重複度 |
 |------+-----------+---------------+--------|
@@ -146,7 +236,7 @@ Doc 73 の Phase 8 sub-stage の文脈で:
 つまり Rust 側の =compat_*= 実装 = anvil.el 側 =anvil-host-*= の
 *完全二重実装*. anvil.el 経由で eval すれば全て解決する.
 
-** §2.4 移行困難な部分
+** §2.6 移行困難な部分
 
 - *MCP stdio transport*: JSON-RPC over stdio loop は elisp で書ける
   が、毎メッセージで Lisp object → JSON string 変換 + flush + lock
@@ -156,229 +246,303 @@ Doc 73 の Phase 8 sub-stage の文脈で:
   混合実装. これは Phase 7 で既に最小化済 (= eval は Rust、reader は
   elisp).  *残す* (= 既存)
 
-* §3 Migration architecture
+* §3 Callsite map (= leaf crate 検証)
 
-** §3.1 完了形 split
+=grep -rn 'use anvil_runtime\|extern crate anvil_runtime'= 全数:
 
 #+begin_example
-[Before — 現状]
-  anvil-runtime crate (Rust, 5,667 LOC)
-  ├── MCP server (~974 LOC)
-  ├── 6 tool registries (~3,300 LOC)
-  ├── compat_* implementations (~1,200 LOC, anvil.el の二重実装)
-  └── 補助 utilities (~200 LOC)
+anvil-runtime/src/bin/anvil-runtime.rs:12:
+  use anvil_runtime::anvil_tools_registry::AnvilToolsRegistry;
+anvil-runtime/src/bin/anvil-runtime.rs:13:
+  use anvil_runtime::mcp::{serve_with, PlaceholderRegistry};
 
-  anvil.el repo (elisp, 多数)
-  ├── anvil-host.el (Emacs-attached helpers)
-  ├── anvil-server.el (Pattern C registration)
-  └── ...
-
-[After — Doc 74 完了形]
-  anvil-runtime crate (Rust, ~500-800 LOC)
-  ├── MCP stdio transport (~600 LOC)
-  └── nelisp interpreter glue (~100 LOC)
-
-  anvil.el repo (elisp, 多数 + 新規)
-  ├── anvil-host.el (= 既存)
-  ├── anvil-server.el (= 既存)
-  ├── anvil-mcp-server.el (= 新規、tool registry + dispatch)
-  ├── anvil-mcp-host-tools.el (= 新規、host registry の elisp port)
-  ├── anvil-mcp-module-tools.el (= 新規、module registry の elisp port)
-  └── ... (data / file / shell-filter registry も elisp 化)
+(他 crate 内 module 間の use crate::anvil_xxx_registry はあるが、
+ crate 外からの依存はゼロ)
 #+end_example
 
-** §3.2 Rust ↔ elisp boundary
+*Lib crate 外部呼出: 0 件 (= bin/anvil-runtime.rs 1 ファイルのみが import)*
 
-- *Rust 側*:
-  - stdio JSON-RPC 1 byte 単位の receive loop
-  - JSON parse / serialize
-  - request を 1 form (= =(anvil-mcp-handle-request JSON)=) に詰めて
-    elisp に投げる
-  - elisp の return を JSON で stdout に送出
-- *elisp 側*:
-  - =anvil-mcp-handle-request= = MCP request ディスパッチ
-  - tool registry (= 起動時に各 anvil-*-tools.el を load)
-  - tool call → JSON args 変換 → elisp 関数呼出 → return JSON 変換
-  - error 時 JSON-RPC error 形式に整形
+build-tool, nelisp-runtime, examples, tests からの =use anvil_runtime=
+は 0 件.  workspace =Cargo.toml= の =members= に anvil-runtime が並ぶ
+こと、build script (= =tools/build-bundled-tarball.sh= 等) が
+=anvil-runtime/target/release/anvil-runtime= binary を bundle する
+ことのみが external dependence.
 
-要するに Rust = transport、elisp = orchestration + business logic.
+すなわち anvil-runtime は **leaf crate**. crate 削除時に他 Rust crate
+への影響は無い.  workspace member 1 個減 + build script の binary path
+更新のみ.
 
-** §3.3 anvil.el repo 構造への影響
+* §4 Migration option 比較
 
-新規 elisp ファイル群:
+** §4.1 Option A — anvil-runtime を current Sexp ABI に追従させる (= rejected)
 
-| ファイル | 推定 LOC | 役割 |
-|----------+----------+------|
-| =anvil-mcp-protocol.el= | ~100 | JSON-RPC 構造体 + error code |
-| =anvil-mcp-server.el= | ~300 | top-level dispatch + tool registry 合成 |
-| =anvil-mcp-host-tools.el= | ~400 | =anvil_host_registry.rs= の elisp port |
-| =anvil-mcp-module-tools.el= | ~200 | =anvil_module_registry.rs= elisp port |
-| =anvil-mcp-data-tools.el= | ~200 | =anvil_data_registry.rs= elisp port |
-| =anvil-mcp-file-tools.el= | ~250 | =anvil_file_registry.rs= elisp port |
-| =anvil-mcp-shell-filter-tools.el= | ~250 | =anvil_shell_filter_registry.rs= elisp port |
-| *合計* | *~1,700* | |
+Phase A.2.1 / A.4.x ABI 変更を anvil-runtime 内に追従:
+- =Sexp::Cons(car, cdr)= → =Sexp::Cons(rc)= (= 10 callsite を rewrite)
+- =NlCellRef.borrow()= → =NlCellRef.deref()= (= N callsite)
+- ERT も同期させる
 
-既存 anvil.el ファイルへの追加 modification:
+| 観点 | 評価 |
+|------+------|
+| Rust LOC delta | *+0 〜 +50* (= 修正コードの方が冗長になる場合あり) |
+| user 2026-05-09 commitment | *違反* (= net-decrease 不可) |
+| 工数 | ~1 day |
+| 中長期 ABI 変更追従コスト | 継続発生 (= Phase A.5+ で再 sync 必須) |
+| Rust 最小化方針 | 反する (= elisp 化可能 orchestration を Rust に温存) |
 
-- =anvil-host.el= = 既存実装は変更なし、ただ =anvil-mcp-host-tools.el=
-  が呼び出す形
-- =anvil-server.el= = Pattern C 実装は MCP transport bypass mode を追加
+→ *rejected*.
 
-* §4 Sub-stages
+** §4.2 Option B — 一気に elisp port + crate 削除 (= big-bang)
 
-本 Doc 74 内の段階分け. 各 stage 別 commit、別検証.
+anvil-runtime 全 5,667 LOC の elisp port を 1 stage で作成、Rust 側を
+1 commit で全削除:
 
-** §4.1 Stage A — anvil.el repo に MCP skeleton 整備
+| 観点 | 評価 |
+|------+------|
+| Rust LOC delta | *-5,667* (= 1 commit) |
+| user commitment | 1 commit で達成、しかし途中 commit 不在で daily granularity に合わない |
+| 工数 | ~7 day 連続 |
+| risk | 巨大 commit、cross-mode equivalence 検証困難、回帰時に bisect 困難 |
+| reader feature gate (Doc 73 Stage 8.4) unblock | crate 削除 commit 直後 |
 
-- =anvil-mcp-protocol.el= = JSON-RPC error / request / response の
-  helper 関数群を anvil.el 側に追加 (= 既存 =anvil-server.el= からの
-  抽出 + 拡張)
-- =anvil-mcp-server.el= = top-level =anvil-mcp-handle-request= を実装、
-  最初は =tools/list= が空 list を返すだけの skeleton
-- Rust 側 =mcp/dispatch.rs= に新 mode =--elisp-dispatch= を追加、
-  この mode では tool dispatch を Rust から elisp 1-call に転送
-- 既存 mode (= Rust-side dispatch) も維持 (= migration 中の互換)
+→ *rejected*.  monotonic shrink rule を 1 commit で満たすが、daily
+operating discipline と整合しない (= 各日に Rust LOC 純減 commit を
+1 個以上出す前提の方が user の operating model と合致).
 
-*検証*: =--elisp-dispatch= で =tools/list= が空配列を返す MCP smoke
+** §4.3 Option C — fix-then-incremental-delete (= *recommended*)
 
-** §4.2 Stage B — anvil-host registry を elisp 移植
+Stage 74.1 で *minimum-effort fix* (= compile error 14 個解消、Rust LOC
+delta = ±0 ぴったり、または -10 程度) で anvil-runtime を再びビルド可能
+にする.  これが Stage 8.4 unblock の "前段の前段". その後 Stage 74.2-74.k
+で各 registry を 1 stage = 1 elisp port + 対応 Rust source 削除で
+incremental migrate. Stage 74.final で残った crate を削除.
 
-- =anvil-mcp-host-tools.el= = =anvil_host_registry.rs= の主要機能を
-  elisp port:
-  - =anvil-mcp-host-tools-list= = =anvil-host.el= の =defun anvil-host-*=
-    を =obarray-map= で列挙、=ToolSpec= 相当の plist を返す
-  - =anvil-mcp-host-tools-call= = name / args plist で elisp 関数 invoke
-  - formals introspection (= =help-function-arglist= 利用)
-  - JSON ↔ Sexp は elisp 自然形 (= =json-encode= / =json-parse-string=)
-- =anvil-mcp-server.el= の dispatch table に =anvil-host-*= を登録
-- Rust 側 =anvil_host_registry.rs= は =--elisp-dispatch= mode で skip、
-  ただし default mode では引き続き利用 (= 並行運用)
+| 観点 | 評価 |
+|------+------|
+| 各 stage Rust LOC delta | =≤ 0= (= 制約付きで articulate、§5) |
+| user commitment | 各 commit で satisfy |
+| 工数 | 各 stage ~1 day、計 ~7 day だが pipeline 化可 |
+| risk | per-stage equivalence 検証で回帰局所化 |
+| reader feature gate unblock | Stage 74.4 完了 (= =read_all= callsite 全消滅) で達成 |
 
-*検証*: =anvil-mcp-host-info= 等が Rust dispatch / elisp dispatch 両
-mode で同 JSON 出力を返す
+注: Stage 74.1 (= compile fix) は厳密に言うと "user 2026-05-09 ルールの
+gray zone" (= ±0 commit).  しかし無修正のまま放置すると以降の Phase A
+sync 毎に technical debt が膨らむため、**例外的に net-zero commit を
+許容** する判断.  代替として Stage 74.1 を skip して Stage 74.2 から
+始めることも可能だが、その場合 Stage 74.2 の elisp port 作業中に
+Rust 側 anvil-runtime が依然として broken state なので integration test
+が走らない (= cross-mode equivalence 不可能).  Stage 74.1 で一時的に
+build を通す方が 検証 baseline 確立の点で優位.
 
-** §4.3 Stage C — anvil-module / data / file / shell-filter registry を elisp 移植
+→ *Option C を推奨*.
 
-各 registry 同様の手順で elisp port. 1 stage = 1 registry の段階分け
-(= Stage C-1, C-2, C-3, C-4) で進める.
+* §5 Stage breakdown (= per-stage Rust LOC delta target)
 
-各 stage 完了で対応する Rust =*_registry.rs= を =--elisp-dispatch= mode
-の dispatch table から外す.
+各 stage commit の `Δ Rust LOC' は user 2026-05-09 monotonic shrink rule
+に従い `≤ 0' (= 縮小または zero).  下表の "target" は本 Doc が proposed
+する numerical target (= 実装時に measured で検証).
 
-*検証*: 各 registry の MCP integration test PASS
+| stage | scope | Δ Rust LOC target | source-of-deletion |
+|-------+-------+-------------------+---------------------|
+| 74.1 | compile error 14 個解消 (= Sexp::Cons / NlXxxRef.borrow rewrite) | *±0 〜 -10* | =anvil_host_registry.rs= 内 redundant pattern simplify |
+| 74.2 | =anvil-mcp-protocol.el= + =anvil-mcp-server.el= skeleton 整備、Rust =mcp/dispatch.rs= 内 =--elisp-dispatch= flag 追加 + dead code 削除 | *-100 〜 -200* | =mcp/dispatch.rs= 内 verbose Rust dispatch 一部 dedup |
+| 74.3 | =anvil-mcp-host-tools.el= 作成 → =anvil_host_registry.rs::compat_*= 関数群 (= 17 個) を順次削除 | *-700 〜 -900* | =anvil_host_registry.rs= 内 =compat_env= / =compat_which= / =compat_info= / =compat_shell= / =compat_*_helper= 全 17 個 (~700 LOC) + 補助関数 |
+| 74.4 | =anvil-mcp-module-tools.el= 作成 → =anvil_module_registry.rs= 削除 (= =read_all= callsite 2 個消滅、Doc 73 Stage 8.2 自然解消) | *-457 〜 -523* | =anvil_module_registry.rs= 全 (= non-test 457 + test 66) |
+| 74.5 | =anvil-mcp-data-tools.el= + =anvil-mcp-file-tools.el= + =anvil-mcp-shell-filter-tools.el= 作成 → 対応 Rust registry 3 個削除 | *-1,400 〜 -1,821* | =anvil_data_registry.rs= (508) + =anvil_file_registry.rs= (657) + =anvil_shell_filter_registry.rs= (656) |
+| 74.6 | =anvil_tools_registry.rs= 削除 (= 5 sub-registry が消えた後の合成 file 不要) + =anvil_host_registry.rs= 残骸削除 (= compat 削除後の bootstrap shell のみ) | *-1,500 〜 -2,000* | =anvil_tools_registry.rs= 全 357 + =anvil_host_registry.rs= 残骸 ~1,000 |
+| 74.7 | crate 削除 / 統合判断 (= Option I crate 残し thin shim / Option II nelisp binary に統合) | *-208 〜 -5,667* | =bin/anvil-runtime.rs= + =bin/anvil-mcp-demo.rs= + =mcp/*= (= Option I 残し ~500 LOC、Option II 完全削除) |
 
-** §4.4 Stage D — Rust =compat_*= 実装の削除
+合計 Rust LOC delta target: *-4,365 〜 -5,667* (= Option I 残し or
+Option II 完全削除に依存).
 
-=anvil_host_registry.rs::compat_env= / =compat_which= / =compat_info= /
-=compat_shell= 等 (= ~700 LOC) を削除. これらは elisp port が
-完成すれば不要.
+各 stage の per-commit invariant:
+1. Δ Rust LOC ≤ 0 (= 厳密 monotonic shrink、74.1 のみ ±0 容認の例外)
+2. =cargo build --release= 成功 (= 全 workspace member)
+3. =cargo test --release --lib --tests -p nelisp-build-tool= PASS
+4. ERT (= =make test=) 0 unexpected
+5. 該当 stage の MCP integration smoke (= =anvil mcp serve --no-emacs=
+   起動 + =tools/list= + =tools/call= 1 件)
 
-*検証*: =anvil-host-info= 等の MCP出力が elisp port 経由で同等
+** §5.1 Stage dependency graph
 
-** §4.5 Stage E — Rust =anvil_*_registry= module 削除
+#+begin_example
+74.1 (compile fix)
+  ↓
+74.2 (mcp skeleton + --elisp-dispatch flag)
+  ↓
+74.3 (host registry, compat_* 削除)
+  ├─ 74.4 (module registry, read_all 2 callsite 消滅)  ← Doc 73 Stage 8.4 unblock 候補 #1
+  └─ 74.5 (data / file / shell-filter registry)
+  ↓
+74.6 (tools registry + host_registry 残骸削除)
+  ↓
+74.7 (crate 統合判断)  ← Doc 73 Stage 8.4 unblock 候補 #2 (= 確実)
+#+end_example
 
-各 elisp port が完成し =--elisp-dispatch= で全 tool が走る状態を確認後、
-Rust 側 registry module を削除. =mcp/dispatch.rs= も simplify (=
-elisp dispatch 1 path のみ).
+74.4 と 74.5 は parallel 可能 (= 異なる registry を異なる session で).
 
-*検証*: =cargo build --release= で anvil-runtime crate が ~500 LOC に縮小
+* §6 Risk
 
-** §4.6 Stage F — anvil-runtime crate 削除 / 統合判断
+** §6.1 Cross-crate ABI risk
 
-ここで判断分岐:
+§3 で実証した通り anvil-runtime は leaf crate. 他 Rust crate からの
+import 0 件、external surface = =bin/anvil-runtime= binary のみ.  crate
+削除時の Rust side breakage は workspace =Cargo.toml= の =members= 1
+行と build script の binary path 1 行のみ.
 
-- *Option I — anvil-runtime crate 維持 (= MCP transport のみ)*: ~500 LOC
-  程度の thin shim として残す. =bin/anvil-runtime= は引き続き
-  =anvil mcp serve --no-emacs= の resolve 先
-- *Option II — anvil-runtime crate 削除、=nelisp= binary に MCP mode 統合*:
-  =nelisp serve-mcp= サブコマンドを =nelisp= binary に追加、別 crate
-  不要になる. workspace member 1 個減
+逆に anvil-runtime → nelisp-build-tool 方向の依存は強い (= Sexp ABI /
+eval / reader を経由). この dep 鎖が Phase A.2.1 compile error の
+根本原因. elisp port 完了後はこの dep 鎖が断たれる (= elisp 側は Sexp
+を opaque に扱う).
 
-*推奨*: Option I (= 段階的移行、影響範囲限定). Stage F は別 Phase で
-判断.
+** §6.2 Test coverage gap
 
-* §5 Risks / Mitigation
+Rust =mod tests= 内 ERT-相当 fixture: 計 *1,141 LOC*.
 
-** §5.1 性能
+| ファイル | test LOC | port 戦略 |
+|----------+----------+-----------|
+| =anvil_host_registry.rs= | 242 | 各 stage で対応 elisp ERT (= =anvil-mcp-host-tools-test.el=) を追加、Rust test は stage 完了で削除 |
+| =anvil_module_registry.rs= | 66 | 同上 (=anvil-mcp-module-tools-test.el=) |
+| =anvil_data_registry.rs= | 89 | 同上 |
+| =anvil_file_registry.rs= | 183 | 同上 |
+| =anvil_shell_filter_registry.rs= | 94 | 同上 |
+| =anvil_tools_registry.rs= | 161 | 統合 smoke のみ port |
+| =mcp/dispatch.rs= | 198 | =anvil-mcp-server-test.el= の cross-mode equivalence で代替 |
+| =mcp/protocol.rs= | 59 | port (= JSON-RPC 仕様の boundary check) |
+| =mcp/tool.rs= | 49 | port |
 
-- elisp dispatch は Rust dispatch より overhead 大 (= function lookup,
-  apply, JSON encode/decode を全部 elisp で行う)
-- *Mitigation*: bench 測定、典型 tool で latency p99 が 5ms 以下なら
-  許容. JIT (Cranelift, Phase 5) が有効化されれば diff 大半解消
+*Mitigation*: 各 stage で対応 Rust test を **削除する commit 内で**
+elisp ERT を追加 (= test coverage を per-stage で同等以上に維持).
 
-** §5.2 既存 anvil-runtime tests の port
+** §6.3 性能 risk (= perf-critical 関数の identification)
 
-- Rust の =anvil_host_registry.rs= 等には ~1,000 LOC の test fixture
-  がある (= anvil-host parse / formal introspection / dispatch shape)
-- *Mitigation*: 各 elisp port stage で対応する ERT を追加、Rust test
-  は段階的に削除 (= elisp port 完了で Rust test ignore + 後で削除)
+elisp dispatch overhead が懸念される代表的 hot path:
 
-** §5.3 anvil.el repo 側の build / load order
+| 関数 | 役割 | 推定 latency 影響 |
+|------+------+-------------------|
+| =anvil_host_registry::call_via_eval= | MCP tool call の毎回 dispatch | 各 call ~1ms (= JSON encode + form 構築) |
+| =anvil_host_registry::compat_info= | =anvil-host-info= の per-call response 構築 | 各 call ~5-20ms (= disk_info + shell_capture) |
+| =anvil_host_registry::sexp_to_json= | tool 結果 → JSON 変換 | 各 call ~0.5ms |
+| =mcp/dispatch::serve_loop= | per-request transport (= 残す前提) | n/a |
 
-- elisp ファイル間 dep (= require) graph が複雑化する可能性
-- *Mitigation*: =provide= / =require= で明示的に整理、各新規 file の
-  header に dep 列挙
+elisp port では:
+- =call_via_eval= 相当: 元々 elisp eval にディスパッチしていたので、
+  Rust side で form 構築する時間が消えるのみ (= 改善側になる可能性)
+- =compat_info= 相当: 100% 重複なので Rust 削除で純減
+- =sexp_to_json= 相当: =json-encode= の elisp impl は C実装ベースなので
+  C-bound、性能差小
 
-** §5.4 user 既存 workflow への影響
+**bench gate**: Stage 74.3 完了で =anvil mcp bench --tool anvil-host-info=
+を実施、p99 latency が baseline + 5ms 以下に収まることを確認.  超過時は
+JIT (Phase 5) 待ち or 該当関数のみ Rust に戻す pivot 判断.
 
-- =anvil mcp serve --no-emacs= で起動する user は Rust binary 経由で
-  動く前提
-- *Mitigation*: Stage A で =--elisp-dispatch= mode 追加、default は
-  既存 Rust dispatch のまま. 全 stage 完了で switch.  Rust binary 自体
-  の CLI surface は不変
+** §6.4 anvil.el repo 側の build / load order
 
-** §5.5 cross-PC 互換 (Linux / Windows)
+elisp ファイル間 dep (= =require=) graph 複雑化リスク.
 
-- elisp port は OS-agnostic に書く (= =system-type= 分岐は anvil-host.el
-  既存 pattern を踏襲)
-- Windows でも shell command 動作確認
+*Mitigation*: =provide= / =require= で明示的に整理、各新規 file の
+header に dep 列挙. 各新規 anvil-mcp-* file は同 repo 内の anvil-host.el
+/ anvil-server.el にのみ依存させ、cross-anvil-mcp dep は最小化.
 
-* §6 Out of scope
+** §6.5 user 既存 workflow への影響
 
+=anvil mcp serve --no-emacs= で起動する user は Rust binary 経由で
+動く前提.
+
+*Mitigation*: Stage 74.2 で =--elisp-dispatch= mode 追加、default は
+既存 Rust dispatch のまま. 全 stage 完了で switch.  Rust binary 自体
+の CLI surface は Stage 74.7 まで不変.
+
+** §6.6 cross-PC 互換 (= Linux / Windows)
+
+elisp port は OS-agnostic に書く (= =system-type= 分岐は anvil-host.el
+既存 pattern を踏襲).  Windows でも shell command 動作確認.
+
+* §7 Stage 8.4 unblock path (= Doc 73 reader feature gate)
+
+Doc 73 §2.4 で articulated されている Stage 8.4 (= reader feature gate)
+は =build-tool/src/lib.rs= の =pub mod reader= を =#[cfg(any(test,
+feature = "image-baker"))]= 下に降ろし、production reader を排除する
+~1,779 LOC 削減 stage.
+
+依存条件 (= Doc 73 §2.2):
+1. =anvil_module_registry.rs:103= の =read_all(&source)= callsite 消滅
+2. =anvil_module_registry.rs:121= の =read_all("(anvil-nelisp-shims-drain)")= callsite 消滅
+3. =anvil_host_registry.rs:104= の =read_all(&source)= callsite 消滅
+
+本 Doc 74 stage との対応:
+
+| Doc 73 Stage 8.2 callsite | 消滅する Doc 74 stage |
+|---------------------------+----------------------|
+| =anvil_module_registry.rs:103= | *Stage 74.4* (= module registry 削除) |
+| =anvil_module_registry.rs:121= | *Stage 74.4* (= module registry 削除) |
+| =anvil_host_registry.rs:104= | *Stage 74.6* (= host registry 残骸削除) または 74.3 で部分達成 |
+
+すなわち:
+- *Stage 74.4 完了で module registry 側 2 callsite 消滅* (= Stage 8.4
+  の ⅔ unblock)
+- *Stage 74.6 完了で host registry 側 1 callsite 消滅* (= Stage 8.4
+  完全 unblock)
+
+最早の Stage 8.4 着手可能タイミング: *Doc 74 Stage 74.6 完了直後*.
+その時点で reader 全 callsite が production 経路から消失、=cfg(any(test,
+feature = "image-baker"))= gate を即時投入可能.
+
+注: Stage 74.7 (= crate 削除) は Stage 8.4 着手の必要条件ではない (=
+crate が thin shim として残っていても reader を呼ばない state なら gate 可能).
+
+* §8 Out of scope
+
+- *Cranelift D-A* (Doc 78 で DEFERRED) — Cranelift wrapper bridge は
+  Doc 78 で reject 済、本 Doc では扱わない
+- *Cranelift D-B* — 別 Doc
+- *Phase C GC elisp 化* (Doc 79 v3) — 並行進行、本 Doc とは独立
+- *Phase 9 frozen heap* (Doc 75 v2 audit 中) — 別 Doc
 - *frozen heap* (= Stage 7.7.e) — Doc 75 候補に再 assign
 - *reader feature gate* (= Doc 73 Stage 8.4) — 本 Doc 完了が前提、
-  Doc 73 で実施
+  Doc 73 で実施 (= §7)
 - *Phase 5 native cc* (Doc 62) — 別 track
 - *anvil.el repo の git history 統合* — anvil.el は別 repo として
   維持、本 Doc は anvil.el への file 追加 + nelisp 側 anvil-runtime
   削除を扱う
 - 旧 nelisp-runtime crate (= seed loader / sqlite / image boot) — 別 scope
 
-* §7 Test plan
+* §9 Test plan
 
-** §7.1 各 stage の検証 baseline
+** §9.1 各 stage の検証 baseline
 
 | stage | 検証項目 |
 |-------+----------|
-| A skeleton | =anvil mcp serve= で =--elisp-dispatch=、=tools/list= 空 |
-| B host | =tools/list= に =anvil-host-*= 登場、=tools/call= で =anvil-host-info= 動作 |
-| C-1〜4 module/data/file/shell-filter | 各 registry の tool が elisp dispatch で動作 |
-| D compat 削除 | Rust side compat 関数削除、tool 出力等価 |
-| E registry 削除 | =cargo build --release= で anvil-runtime 縮小 |
-| F crate 判断 | (= 別 Phase) |
+| 74.1 compile fix | =cargo build --release -p anvil-runtime= 成功、ERT regression 0 |
+| 74.2 mcp skeleton | =anvil mcp serve= で =--elisp-dispatch= mode が =tools/list= 空配列を返す |
+| 74.3 host elisp port | =tools/list= に =anvil-host-*= 登場、=tools/call= で =anvil-host-info= 動作、cross-mode equivalence fixture PASS |
+| 74.4 module elisp port | Pattern C tool が elisp dispatch で動作、=read_all= callsite 2 個消滅 |
+| 74.5 data/file/shell elisp port | 各 registry の MCP integration test PASS |
+| 74.6 tools/host registry 削除 | =cargo build --release -p anvil-runtime= で crate が ~500 LOC に縮小、=read_all= callsite 0 |
+| 74.7 crate 削除/統合 | (= Option I/II 別検証) |
 
-** §7.2 ERT 追加
+** §9.2 ERT 追加
 
-各 stage で対応する =anvil-mcp-*-test.el= を追加:
+各 stage で対応する =anvil-mcp-*-test.el= を追加 (= §6.2 表参照).
 
-- =anvil-mcp-protocol-test.el= (Stage A)
-- =anvil-mcp-host-tools-test.el= (Stage B)
-- =anvil-mcp-module-tools-test.el= (Stage C-1)
-- ...
+** §9.3 cross-mode equivalence fixture
 
-** §7.3 cross-mode equivalence
-
-Stage A で =--elisp-dispatch= flag を導入する際、Rust dispatch と
+Stage 74.2 で =--elisp-dispatch= flag を導入する際、Rust dispatch と
 elisp dispatch の出力が同一であることを fixture で検証.  各 stage で
 対応する tool に対して同 fixture を adapt.
 
-** §7.4 性能 bench
+** §9.4 性能 bench
 
-- baseline: 現状 Rust dispatch の =anvil-host-info= = ~Xms
-- target: elisp dispatch で latency p99 < baseline + 5ms
+- baseline: 現状 Rust dispatch の =anvil-host-info= = ~Xms (Stage
+  74.1 完了時に measure 確定)
+- target: elisp dispatch で latency p99 < baseline + 5ms (= §6.3)
 - 測定: =anvil mcp bench --tool anvil-host-info --iters 100=
 
-* §8 共通原則 (= Doc 67〜73 から継承)
+** §9.5 cross-platform smoke
+
+各 stage で Linux + Windows の =anvil mcp serve --no-emacs= 起動 + 1
+tool call smoke を実施 (= §6.6).
+
+* §10 共通原則 (= Doc 67〜73 から継承)
 
 - 1 sub-stage = 1 commit、commit message に SHIPPED record
 - 各 commit で =cargo test --release --lib --tests -p nelisp-build-tool=
@@ -386,22 +550,29 @@ elisp dispatch の出力が同一であることを fixture で検証.  各 stag
 - =make test= ERT 全 PASS 必須
 - elisp port は anvil.el repo の既存 conventions (= =defcustom= /
   =defgroup= / =provide= header) に従う
-- 改判断は §9 record に追記
+- 改判断は §12 record に追記
 
-* §9 References
+* §11 References
 
 - Doc 73 §2.2 / §9 #5 — Stage 8.2 方針転換 articulation
+- Doc 73 §2.4 — Stage 8.4 reader feature gate (= 本 Doc 完了に依存)
+- Doc 77c §4.7 — Phase A.6 anvil-runtime fix-or-replace 判断 (= 本 Doc に
+  ボール送り)
+- Doc 78 — Cranelift wrapper bridge DEFERRED
+- Doc 79 v3 — Phase C GC elisp 化 (= 並行 track)
 - =anvil-runtime/src/= — 本 migration の source
 - =/home/madblack-21/Cowork/Notes/dev/anvil.el/= — 移行先 repo
 - =architecture_correction_anvil_uses_nelisp_2026-04-25.org= §1.2 —
   layer 境界 LOCKED
 - =feedback_nelisp_minimize_rust= memory — durable user directive
+- user 2026-05-09 monotonic shrink rule — every commit must
+  net-decrease Rust LOC
 
-* §10 改判断 record
+* §12 改判断 record
 
-(2026-05-08, Claude session continuation; Doc 73 Stage 8.3.a/b SHIPPED 後)
+** v1 (2026-05-08)
 
-設計時点での判断:
+(設計時点での判断、= Doc 73 Stage 8.3.a/b SHIPPED 後)
 
 1. *Doc 74 を anvil-runtime → anvil.el migration に re-assign*
    (2026-05-08): 当初 Doc 73 §9 #1 で "Doc 74 候補は frozen heap" と
@@ -421,3 +592,25 @@ elisp dispatch の出力が同一であることを fixture で検証.  各 stag
 5. *anvil.el repo 側の git history は本 Doc では扱わない*: anvil.el は
    独立 repo、本 Doc は file 追加 + nelisp 側削除のみ. anvil.el repo
    での commit / PR 戦略は別途.
+
+** v2 (2026-05-09)
+
+(audit refinement、= Doc 76 Phase 7 100% SHIPPED + Doc 78 DEFERRED +
+Doc 79 v3 Phase C 設計確定の同 session)
+
+6. *concrete LOC inventory + per-stage delta target*: v1 の Stage A-F
+   articulation を Stage 74.1-74.7 に renumber、各 stage に Δ Rust
+   LOC ≤ 0 制約付き numerical target を付与 (= §5).
+7. *Option C (= fix-then-incremental-delete) を formal recommend*:
+   v1 では Option I/II の crate 削除戦略のみ articulate していた.
+   v2 で migration phase 全体の Option A/B/C を articulate、user
+   2026-05-09 monotonic shrink rule との整合で Option C 推奨.
+8. *Stage 74.1 を net-zero commit 例外として articulate*: Phase A.2.1
+   compile error 14 個解消は厳密には ±0 commit (= shrink ではない)
+   だが、以降 stage の baseline 確立のため例外的に許容. v2 で明示.
+9. *Stage 8.4 unblock path 表 (= §7)* を追加: Doc 73 §2.2 callsite と
+   本 Doc stage の対応を表で固定. Stage 74.6 完了 = Stage 8.4 着手可.
+10. *Doc 77c §4.7 からのボール受け* を §1.2 / §11 で明示記録: anvil-
+    runtime crate 削除判断は Doc 77c Phase A.6 の保留事項だった
+    (= "A.6 で同期させるか Phase B で elisp 化に合わせて削除するか
+    判断要"). 本 Doc v2 で "elisp 化合わせて削除" path に確定.

@@ -139,8 +139,8 @@ fn function_on_symbol_returns_symbol() {
 fn function_on_lambda_makes_closure() {
     let v = ok("(function (lambda (x) x))");
     // Should be a closure form starting with `closure` symbol.
-    if let Sexp::Cons(head, _) = &v {
-        assert_eq!(*head.borrow(), Sexp::Symbol("closure".into()));
+    if let Sexp::Cons(b) = &v {
+        assert_eq!(b.car, Sexp::Symbol("closure".into()));
     } else {
         panic!("expected closure cons, got {:?}", v);
     }
@@ -2266,11 +2266,9 @@ fn track_p_current_winsize_callable() {
     let r = ok_all("(terminal-current-winsize)");
     match r {
         Sexp::Nil => {}
-        Sexp::Cons(car, cdr) => {
-            let car = car.borrow();
-            let cdr = cdr.borrow();
-            assert!(matches!(*car, Sexp::Int(_)));
-            assert!(matches!(*cdr, Sexp::Int(_)));
+        Sexp::Cons(b) => {
+            assert!(matches!(b.car, Sexp::Int(_)));
+            assert!(matches!(b.cdr, Sexp::Int(_)));
         }
         other => panic!("expected nil or (int . int), got {:?}", other),
     }
@@ -2874,13 +2872,21 @@ fn stage74a_bind_local_rejects_non_symbol() {
 
 #[test]
 fn stage74a_apply_builtin_dispatch_cons() {
-    // (cons 1 2) を builtin dispatch 経由で呼んで (1 . 2) を得る.
-    // ARGS は proper list (= '(1 2)) を渡す.
-    let result = ok_all("(nelisp--apply-builtin-dispatch 'cons '(1 2))");
+    // Doc 77b Stage b.4 (2026-05-09): `cons' is no longer a Rust
+    // builtin — its function cell is now an elisp closure (=
+    // `lisp/nelisp-jit-strategy.el' `(fset 'cons (lambda ...))').
+    // The bridge primitive `nl-jit-call-out-2' IS still a Rust
+    // builtin and reachable via `apply-builtin-dispatch'; cover that
+    // surface instead.  Direct `(cons 1 2)' coverage is in
+    // `cons_constructs_pair' / etc.
+    let result = ok_all(
+        "(nelisp--apply-builtin-dispatch 'nl-jit-call-out-2 \
+                                          '(\"nelisp_jit_cons\" 1 2))",
+    );
     match result {
-        Sexp::Cons(a, d) => {
-            assert_eq!(*a.borrow(), Sexp::Int(1));
-            assert_eq!(*d.borrow(), Sexp::Int(2));
+        Sexp::Cons(b) => {
+            assert_eq!(b.car, Sexp::Int(1));
+            assert_eq!(b.cdr, Sexp::Int(2));
         }
         other => panic!("expected (1 . 2), got {:?}", other),
     }
@@ -2888,10 +2894,15 @@ fn stage74a_apply_builtin_dispatch_cons() {
 
 #[test]
 fn stage74a_apply_builtin_dispatch_arith() {
-    // 2-arg arith primitive を経由.  Phase 5 lower が効く path
-    // (= try_lower hook 通過) も同 dispatcher を経るので合算で確認.
+    // Doc 77b Stage b.4 (2026-05-09): `nelisp--add2' is no longer a
+    // Rust builtin — its function cell is now an elisp closure.
+    // Cover the bridge surface (= `nl-jit-call-i64-i64') reachable
+    // via `apply-builtin-dispatch' instead.
     assert_eq!(
-        ok_all("(nelisp--apply-builtin-dispatch 'nelisp--add2 '(3 4))"),
+        ok_all(
+            "(nelisp--apply-builtin-dispatch 'nl-jit-call-i64-i64 \
+                                              '(\"nelisp_jit_add2\" 3 4))",
+        ),
         Sexp::Int(7),
     );
 }
@@ -2999,4 +3010,47 @@ fn stage74e1_apply_lambda_inner_preserves_user_args_formal() {
         ok_all("(nelisp--apply-lambda-inner nil '(args) '((+ args args)) '(21))"),
         Sexp::Int(42),
     );
+}
+// ============================================================
+// Doc 75 v3 Stage 9.1.b (2026-05-09) — frozen-heap 戦略 C spike
+// ============================================================
+//
+// closure-with-captures count spike per Doc 75 v3 §3.1.2.  After
+// Env::new_global() bootstrap completes, walk the globals map and
+// count function cells whose value is a closure form
+// `(closure CAPTURED-ENV ARGS BODY...)' with a non-nil CAPTURED-ENV.
+// Doc 75 v3 §1.5 戦略 C banks on this set being small (= the
+// fallback list of forms that v3 frozen heap will re-evaluate
+// instead of materialising as nodes); §7.1 sets the gate.
+//
+// This is a cfg(test) probe ONLY — it is not exercised by the
+// production binary and counts toward 0 production Rust LOC per
+// Doc 77c counting policy + Doc 75 v3 §3.1.4 articulation.
+//
+// Stage 9.3+9.4 (= encoder + decoder atomic) will replace this with
+// a v3 encode/decode round-trip happy-path test.
+
+#[test]
+fn frozen_heap_strategy_c_closure_with_captures_count() {
+    let env = Env::new_global();
+    let mut count = 0usize;
+    for (_name, entry) in env.globals.iter() {
+        if let Some(Sexp::Cons(c)) = &entry.function {
+            // (closure CAPTURED-ENV ARGS BODY...) — pattern match
+            // car == 'closure and cadr (= CAPTURED-ENV) != nil.
+            if c.car == Sexp::Symbol("closure".into()) {
+                if let Sexp::Cons(rest) = &c.cdr {
+                    if rest.car != Sexp::Nil {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("CLOSURE_WITH_CAPTURES_COUNT={count}");
+    // Stage 9.1.b records the count for §7.1 threshold review.
+    // No hard assert yet — the value feeds the Stage 9.3 design.
+    // We only sanity-check that the bootstrap produced a globals
+    // map (= the spike actually walked something).
+    assert!(!env.globals.is_empty(), "bootstrap globals map empty");
 }

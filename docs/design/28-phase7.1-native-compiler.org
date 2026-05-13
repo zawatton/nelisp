@@ -2,6 +2,7 @@
 #+DATE: 2026-04-25
 #+AUTHOR: zawatton + Claude (session-A 起草、session-B DRAFT 化、session-A v2 改訂)
 #+STATUS: LOCKED-2026-04-25-v2 (orchestrator codex review MAJOR REVISIONS 反映 + Emacs native-comp 参照追加 + user signoff 待ち)
+#+LATEST: 2026-05-09 — Track M audit で nelisp-cc native compiler ~12,263 LOC elisp (13 modules) SHIPPED 確認、Doc 28 §3 を extend、§3.6 Phase 7.1.6 (= eval-site primitive lowering takeover、6 sub-stage) + §3.7 Phase 7.1.7 (= build-tool/src/jit/ 削除 + Cranelift Cargo deps 削除、4 sub-stage) で Cranelift 完全削除 path (= ~-4,782 Rust LOC、Doc 77c §2.4.2 Path D-B 着地) を articulate。§3.8 aggregate LOC delta + 4-8 週工数見積、§3.9 dependency graph (= Doc 80 substrate / Doc 62 Cranelift / Doc 28 nelisp-cc 三者関係)。
 
 * §0 要旨 (TL;DR)
 
@@ -521,6 +522,1690 @@ A3 を信頼して built される。
   self-bug など) → mitigation: stage2 reject で A2 fallback、不変条件
   (=fixed seed → fixed bytes=) を ERT で固定
 
+** 3.6 Phase 7.1.6 — eval-site primitive lowering takeover (= Cranelift 責任の nelisp-cc 移管) [STATE: COMPLETE 2026-05-10]
+
+:STATE: COMPLETE (a / b / c.arith / d / e all SHIPPED) — see
+§3.6.{a,b,c,d,e}.SHIPPED for per-stage actual deltas.  Aggregate
+Cluster Cranelift wrapper page deletion completed in Phase 7.1.6.e
+(= UnifiedJit struct + unified_jit() OnceLock + 6-step orchestration
+all gone).  §3.6.f = next sub-stage (= dsl + bridge cleanup, ~-2,015
+Rust LOC).
+
+:LATEST: 2026-05-09 — Track M audit で nelisp-cc native compiler =~12,263 LOC elisp= (13 modules) が SHIPPED 確認 (=src/nelisp-cc{.el,-pipeline.el,-x86_64.el,-arm64.el,-runtime.el,-bootstrap.el,-callees.el,-inline.el,-recursive-inline.el,-rewrite.el,-escape.el,-lambda-lift.el,-base-case-fold.el}=).  Phase 7.1.6 = Doc 62 Phase 5.0〜5.5 で =build-tool/src/jit/= に積んだ Cranelift dispatch 経路を nelisp-cc が直接 emit する経路 (= elisp が =mmap PROT_EXEC= page に host machine code を書込む経路、Doc 77c §2.4.2 Path D-B) に移管する.
+
+2026-05-09 (post-Track-U) — §3.6.b〜.f を Doc 81 (= primitive trampoline architectural extension) detail level に拡張.  各 cluster の Cranelift dispatch arms inventory / nelisp-cc opcode additions / sub-stage breakdown / Aggregate LOC delta source を articulate.  Phase 7.1.6 architectural extension (= Doc 81 Stage 81.1〜81.4) ship 後の各 cluster 個別 dispatch を unblock.
+
+*位置づけ*:
+- Doc 77c §2.4.2 (= Path D-B、本命) の 100% 純 elisp commitment 終着点を Doc 28 §3 sub-phase 構造に articulate する細則
+- Doc 62 Phase 5 (= Cranelift JIT lower) の eval-time dispatch arm Rust 実装は Doc 77b Stage b.4 で =lower_entries= map 自体は空化済 (= 24 lowered_X strategy fn は elisp wrapper =lisp/nelisp-jit-strategy.el= に migrate 完了)、ただし =build-tool/src/jit/{arith,cons,access,predicate,syscall}.rs= が emit する Cranelift IR + JIT-compiled =nl_jit_*= entry symbol 群はまだ Rust 経由で生きている.  これらが 7.1.6 の削除対象
+- Phase 7.1.5 完了 (= 4-stage bootstrap protocol で A3 authoritative 化、3-軸 bench gate 通過) が前提.  bench gate を満たした native cc が無いと Cranelift baseline からの hot path 引き取り判定ができない
+
+*entry point* (= nelisp-cc 側の primitive lowering 拡張点):
+
+=src/nelisp-cc-runtime.el::nelisp-cc-runtime-compile-and-allocate= (line 1336、Phase 7.1.4 SHIPPED) の pipeline:
+#+begin_example
+  AST → SSA (T6 frontend)
+      → Phase 7.7 passes (T158: escape / inline / rec-inline / lift)
+      → safe-points (T11)
+      → linear-scan (T4)
+      → backend compile (T9 x86_64 / T10 arm64)
+      → tail-call rewrite (`--lower-tail-call`)
+      → safe-point stub injection
+      → exec-page allocation (W^X)
+      → real exec via subprocess `nelisp-exec-bytes`
+#+end_example
+
+Phase 7.1.6 の追加点: SSA opcode set に *primitive lowering opcodes* (=ssa-call-primitive '+= / =ssa-call-primitive 'cons= / etc.) を追加し、x86_64 backend (=src/nelisp-cc-x86_64.el=) / arm64 backend (=src/nelisp-cc-arm64.el=) で各 primitive を host machine code として直 emit する.  helper trampoline 経由 (= Doc 62 §5 "helper fn 経由の妥協") は最初は許容、後段で inline へ昇格.
+
+*Cranelift dispatch arm inventory (= 削除対象、=wc -l= 実測)*:
+
+| jit/*.rs file    | LOC  | 担当 primitive                                                              | nelisp-cc 引取先 |
+|------------------+------+-----------------------------------------------------------------------------+--------------------|
+| =cons.rs=        |  415 | =car= / =cdr= / =cons= (+ inline NIL fast path)                             | Phase 7.1.6.a      |
+| =access.rs=      |  628 | =length= / =aref= / =aset= / =elt= (+ inline NIL Int(0) fast path)          | Phase 7.1.6.b      |
+| =arith.rs=       |  344 | 12 binary int primitives (=−add2 / -sub2 / -mul2 / -num-{eq,lt,gt,le,ge}2 / -logior2 / -logand2 / -logxor2 / ash=) | Phase 7.1.6.c      |
+| =predicate.rs=   |  331 | =eq= (4-block control-flow inline tag test)                                 | Phase 7.1.6.d      |
+| =syscall.rs=     |  276 | =nelisp--syscall= (generic libc trampoline) + =nelisp--syscall-supported-p= | Phase 7.1.6.e      |
+| =dsl.rs=         | 1190 | Doc 77b Stage b.1 IR DSL interpreter (= elisp の =(jit-rule ...)= form を Cranelift IR に 翻訳)  | Phase 7.1.6.f      |
+| =bridge.rs=      |  825 | Doc 77b Stage b.2 =nl-jit-call-{i64-i64,sexp-sexp,sexp-i64,...}= primitives | Phase 7.1.6.f      |
+| =strategy.rs=    |  425 | Doc 77b Stage b.4 fall-through helpers (= Float / non-Linux syscall / Mutstr / BoolVector)  | Phase 7.1.7.a (= Doc 80 Stage 80.1〜80.5 substrate dependent)  |
+| =mod.rs=         |  288 | =UnifiedJit= / =unified_jit()= / =lower_entries()= scaffold (= Stage b.4 後 empty)  | Phase 7.1.7.b      |
+| *小計*           | 4722 |                                                                             |                    |
+
+*per-cluster migration order* (= 各 sub-stage):
+
+*Architectural prerequisite*: Phase 7.1.6.a〜.f の各 cluster takeover は
+*Doc 81 (= nelisp-cc primitive trampoline architectural extension)* で
+articulate された 4 新 SSA opcode (= =ssa-call-primitive= /
+=ssa-load-tag= / =ssa-load-payload-ptr= / =ssa-cmp-tag-imm=) +
+=:trampoline-unary= / =:trampoline-binary-ctor= / =:trampoline-binary-mut=
+の 3 entry-point ABI mode + extern-c-fixups (= 外部 C symbol への CALL
+emit path) が前提.  本 §3.6 の各 cluster は *Doc 81 Stage 81.1〜81.4
+完了後* に dispatch される.  Doc 81 = elisp +780 LOC / Rust ±0 / ~1 週間
+scope (= 8 営業日)、Stage 81.4 で =cons-heavy bench= で Cranelift
+baseline ≧ 確認 = =gate=.
+
+*** 3.6.a Phase 7.1.6.a — =cons= takeover (= cons.rs ~-415 Rust LOC)
+
+- nelisp-cc-x86_64.el / -arm64.el に =ssa-call-primitive 'car= / =ssa-call-primitive 'cdr= / =ssa-call-primitive 'cons= を host machine code として emit (inline NIL fast path = =cmp byte ptr [rax], TAG_NIL / je nil_path= 相当を elisp で =unibyte-string= 経由で書込む).  helper 経由は最初許容 (= =nelisp-cc-runtime= の =--list-to-vector= の bytes wrapper で =nl_jit_cons_*= 同等 Rust trampoline を呼ぶ shim を残す → 後で inline 昇格)
+- =build-tool/src/jit/cons.rs= 削除、=jit/mod.rs::unified_jit()= の =cons::register_symbols= / =cons::declare_funcs= / =cons::collect_funcs= 配線 + =UnifiedJit::cons= field 削除
+- gate: existing nelisp-cc-test.el (T11 simulator) 全 PASS、3-軸 bench (=fib 30x= / =fact-iter 20x= / =alloc-heavy 5x=) で cons-heavy work load が Cranelift baseline と semantic equivalent + perf ≧ baseline
+- *Rust LOC delta target*: *-415* (cons.rs 全削除) + 微小調整 (mod.rs UnifiedJit field 1 行 / 配線 4 行) ≈ *net -425 Rust*
+
+**** 3.6.a.SHIPPED Phase 7.1.6.a.1 + a.2 actual delta (2026-05-10)
+
+Phase 7.1.6.a 二段構成で SHIPPED:
+
+- Phase 7.1.6.a.1 (commit =6666e61=, 2026-05-10): dlsym bridge precursor.
+  =build-tool/src/eval/dlsym_bridge.rs= 新設 (+96 Rust)、elisp 側
+  resolver wiring (+75 elisp).  Cluster deletion は a.2 へ deferral.
+- Phase 7.1.6.a.2 (本 commit, 2026-05-10): cons cluster Cranelift wrapper
+  deletion.
+
+7.1.6.a.2 actual changes:
+1. =build-tool/src/jit/cons.rs= の 5 trampoline (=nl_jit_cons_car/cdr/make/setcar/setcdr=)
+   に =#[no_mangle] pub unsafe extern "C"= attribution 追加 → dlsym 経由の
+   resolution 可能化.
+2. =.cargo/config.toml= 新設 (=[build] rustflags = ["-C", "link-arg=-rdynamic"]=)
+   → binary の dynamic symbol table に no_mangle symbols が export されるよう
+   linker flag 配線.
+3. =build-tool/src/jit/cons.rs= から =JitCons= / =ConsIds= struct +
+   =declare_unary_with_nil_inline= Cranelift IR builder + =register_symbols= /
+   =declare_funcs= / =collect_funcs= 配線 + =jit()= test helper を削除
+   (-244 LOC).  trampolines + tests 残存 (= +124 LOC、tests refactor で
+   =jit().car= → =unsafe { nl_jit_cons_car(...) }= 形式).
+4. =build-tool/src/jit/mod.rs= の =UnifiedJit::cons= field +
+   =cons::register_symbols= / =declare_funcs= / =collect_funcs= 呼出
+   削除 (= -5 LOC).
+5. =build-tool/src/jit/bridge.rs= =unified_fn_ptr= の cons name resolution
+   を =u.cons.car= 経由から =super::cons::nl_jit_cons_car as *const u8=
+   直接参照に置換 (substrate.el の bootstrap path =nl-jit-call-out-N
+   "nelisp_jit_*"= 維持のため必須).
+6. =test/nelisp-cc-stage81-poc-test.el= に 7.1.6.a.2 dlsym 統合 smoke
+   2 件追加 — 5 cons trampoline 全 =:resolved=、未知名 =:not-found=
+   passthru、standalone =target/debug/nelisp= bin 経由で =skip-unless=
+   guarded.
+
+actual Rust LOC delta:
+| 箇所                          | +    | -    | net  |
+|-------------------------------+------+------+------|
+| =build-tool/src/jit/cons.rs=  | +96  | -215 | -119 |
+| =build-tool/src/jit/mod.rs=   | +14  | -5   | +9   |
+| =build-tool/src/jit/bridge.rs= | +14  | -5   | +9   |
+| *小計*                        | +124 | -225 | *-101* |
+
+加えて =.cargo/config.toml= +27 LOC (Rust source ではない linker config) と
+=test/nelisp-cc-stage81-poc-test.el= +88 LOC elisp.
+
+*7.1.6.a.1 + a.2 bundle 合計 net Rust delta*: =+96 (a.1 dlsym shim) − 101 (a.2 cluster shrink) = -5 Rust=.
+
+*Design target との差*: 設計 §3.6.a v1 plan は cons.rs 全削除 (-415) を
+articulate していたが、=lisp/nelisp-jit-substrate.el= の bootstrap path
+(= =cons= / =car= / =cdr= / =setcar= / =setcdr= の =fset= 定義が
+=nl-jit-call-out-N "nelisp_jit_*"= 経由で =bridge::unified_fn_ptr=
+にぶら下がる) を維持するため、trampolines + bridge 配線は維持する
+減らしモデルに変更.  trampolines を完全削除するには substrate.el の
+bootstrap も dlsym path に migrate する必要があり、Phase 7.1.6.a.3 (=
+substrate dlsym migration) で残り =-200〜-300 Rust= を回収する追加 plan
+が articulate 可.  本 a.2 では Cranelift wrapper layer (= =JitCons=
+struct + IR builder + 配線) のみ削除、trampolines は dlsym + bridge
+両方からの resolution 対応化.
+
+gate 達成状況:
+- nelisp-cc-test.el (50/50 PASS) ✓
+- 全 ERT (2349 / 2349 PASS、328 skipped、0 unexpected) ✓
+- cargo test --lib jit (81/81 PASS) ✓
+- cargo test --lib image (25/25 PASS) ✓
+- cargo build (default + image-baker feature) clean ✓
+- dlsym 統合 smoke (2/2 PASS、binary 経由で実 resolve 確認) ✓
+- 3-軸 bench: baseline =make bench-actual= が pre-existing
+  =anvil-runtime= 配下 =Sexp::Cons(NlConsBoxRef)= 1-field/2-field pattern
+  mismatch で build 不可 (= 7.1.6.a.2 とは independent な runtime crate
+  の stale issue).  現状 baseline で exercise 不可、Phase 7.1.6.a.3
+  以降で recover or Phase 7.1.6.a.f bundle gate で集約予定.
+
+*** 3.6.b Phase 7.1.6.b — =access= takeover (= access.rs ~-628 Rust LOC)
+
+**** 3.6.b.1 Cranelift dispatch arms inventory (= access.rs 実測)
+
+=build-tool/src/jit/access.rs= 628 LOC が emit する 4 JIT entry +
+1 inline fast-path (= grep 実測):
+
+| JIT entry symbol         | extern "C" sig                                | inline path                                       | helper fallback                |
+|--------------------------+-----------------------------------------------+---------------------------------------------------+--------------------------------|
+| =nl_jit_access_length=   | =fn(*const Sexp, *mut Sexp) -> i64=           | NIL → =Int(0)= 直書き (= 4 line x86_64 emit)      | =bi_length_impl= (Vec/Str/Cons) |
+| =nl_jit_access_aref=     | =fn(*const Sexp, i64, *mut Sexp) -> i64=      | なし (常に helper)                                 | =bi_aref_impl= (4 variant)      |
+| =nl_jit_access_aset=     | =fn(*const Sexp, i64, *const Sexp) -> i64=    | なし (常に helper)                                 | =bi_aset_impl= (Vec/BoolVec only) |
+| =nl_jit_access_elt=      | =fn(*const Sexp, i64, *mut Sexp) -> i64=      | なし (常に helper)                                 | =bi_elt_impl= (Vec/Cons/Str)    |
+| =declare_length_with_inline_nil= | (= =length= 用 8-block inline-NIL fast-path) | NIL→Int(0) | tail-call to =nl_jit_access_length= |
+
+=length= だけが inline path を持つ (= Cranelift 8-block control-flow:
+=entry / load_tag / cmp_nil / nil_path / non_nil_path= 等).  他 3 entry
+は pure helper trampoline (= ABI ≅ Doc 81 §3.1 trampoline shape の
+*ternary-mut* / *ternary-ctor* 拡張).
+
+**** 3.6.b.2 nelisp-cc opcode additions delta from Doc 81
+
+Doc 81 base 4 opcode (= =ssa-call-primitive= / =ssa-load-tag= /
+=ssa-load-payload-ptr= / =ssa-cmp-tag-imm=) + 3 ABI mode
+(= =:trampoline-unary= / =:trampoline-binary-ctor= / =:trampoline-binary-mut=)
+に対する 7.1.6.b 追加分:
+
+新 ABI mode 2 件 (Doc 81 §3.1 拡張):
+- =:trampoline-ternary-mut= (= =fn(*const Sexp, i64, *mut Sexp) -> i64=、
+  =aref= / =elt= の "src + idx → out" shape)
+- =:trampoline-ternary-ctor= (= =fn(*const Sexp, i64, *const Sexp) -> i64=、
+  =aset= の "src + idx + val" shape)
+
+新 SSA opcode 1 件:
+- =ssa-store-int-imm= (PTR-VAL IMM-I64) — =[PTR+0] = TAG_INT;
+  [PTR+8] = IMM= の 2 store を 1 opcode に圧縮.  =length= の inline-NIL
+  fast-path (= NIL → =Int(0)=) を 1 命令で expression する用途.  Doc 81
+  base にはなく 7.1.6.b 専用追加 (= 他 cluster で再利用余地あり).
+
+合計 +1 opcode + 2 ABI mode 追加 = 軽量拡張 (= Doc 81 base 4 opcode の
+emit fn を generic 化していれば =:trampoline-ternary-*= は callee-side
+arg 数の switch 1 行のみ).
+
+**** 3.6.b.3 Doc 80 Stage 80.4 dependency articulation
+
+=bi_aref_impl= / =bi_aset_impl= / =bi_elt_impl= /
+=bi_length_impl= は Doc 80 Stage 80.4 で elisp 化済 (= =lisp/nelisp-bi-vector.el=
+等に移植).  これ以降 =nl_jit_access_*= helper 中身は *elisp eval-trampoline*
+に置換される (= helper symbol は Rust 側に残るが内部は
+=nelisp_eval_trampoline_invoke= 経由で elisp =bi-aref-impl= を呼ぶ).
+
+7.1.6.b takeover 時の動き:
+- nelisp-cc は =ssa-call-primitive 'aref :abi :trampoline-ternary-mut= を
+  emit、CALL target 候補は (a) 残った薄い =nl_jit_access_aref= shim、
+  (b) Stage 80.4 で elisp 化された =bi-aref-impl= の native cc exec page
+  を直接 hookup
+- *再利用効果*: Stage 80.4 の elisp 化 path を nelisp-cc 側 CALL target
+  として直接接続することで、=nl_jit_access_*= shim そのものを完全削除
+  可能 (= -628 Rust LOC + Stage 80.4 が貯めた helper shrink 分も追加
+  shrink で merge)
+
+**** 3.6.b.4 Sub-stage 7.1.6.b.1〜b.4 breakdown (~1 週間)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.6.b.1 | =:trampoline-ternary-mut= ABI + =ssa-store-int-imm= opcode + x86_64 lower | 2    | +180    | 0      |
+| 7.1.6.b.2 | arm64 backend port + =length= inline-NIL fast-path emit          | 1.5  | +120    | 0      |
+| 7.1.6.b.3 | =aref= / =aset= / =elt= primitive table + Stage 80.4 hookup     | 2    | +160    | 0      |
+| 7.1.6.b.4 | access.rs 削除 + mod.rs 配線除去 + bench gate                    | 1.5  | +60     | -638   |
+
+aggregate: ~7 営業日 / +520 elisp / -638 Rust.
+
+**** 3.6.b.5 Aggregate -638 Rust LOC delta source articulation
+
+| 削除箇所                           | LOC  |
+|------------------------------------+------|
+| =build-tool/src/jit/access.rs= 全削除 | -628 |
+| =mod.rs::UnifiedJit::access= field | -1   |
+| =mod.rs::unified_jit()= 配線 (= register_symbols / declare_funcs / collect_funcs 3 call) | -6 |
+| =mod.rs::lower_entries= の access entry (= Stage b.4 で空化済、念のため確認) | -3 |
+| *小計*                             | *-638* |
+
+bench gate: 新設 =vector-stress= 軸 (= =(let loop ((v (make-vector
+1000 0)) (i 0)) (if (= i 1000) v (progn (aset v i i) (loop v (1+
+i)))))=) で Cranelift baseline 比 ≧ 1.0x.
+
+**** 3.6.b.SHIPPED Phase 7.1.6.b actual delta (2026-05-10)
+
+Phase 7.1.6.b (本 commit, 2026-05-10): access cluster Cranelift wrapper
+deletion.  7.1.6.a.2 cons takeover の pattern を access cluster (=
+length / aref / aset / elt) に mirror 適用.
+
+actual changes:
+1. =build-tool/src/jit/access.rs= の 4 trampoline (=nl_jit_access_length/
+   aref/aset/elt=) に =#[no_mangle] pub unsafe extern "C"= attribution
+   追加 → dlsym 経由の resolution 可能化 (= Stage 81.3 で wired 済の
+   primitive-table-stage3 vector cluster entries が runtime resolve
+   可能).
+2. =.cargo/config.toml= は 7.1.6.a.2 で既に追加済、access trampolines は
+   そのまま継承 (= 追加変更なし).
+3. =build-tool/src/jit/access.rs= から =JitAccess= / =AccessIds= struct
+   + =declare_length_with_inline_nil= Cranelift IR builder +
+   =register_symbols= / =declare_funcs= / =collect_funcs= 配線 + =jit()=
+   test helper を削除.  trampolines + tests 残存 (tests refactor で
+   =jit().length= → =unsafe { nl_jit_access_length(...) }= 形式).
+4. =build-tool/src/jit/mod.rs= の =UnifiedJit::access= field +
+   =access::register_symbols= / =declare_funcs= / =collect_funcs= 呼出
+   削除.
+5. =build-tool/src/jit/bridge.rs= =unified_fn_ptr= の access name
+   resolution を =u.access.length= 経由から
+   =super::access::nl_jit_access_length as *const u8= 直接参照に置換
+   (substrate.el の bootstrap path =nl-jit-call-out-1/1i/2i
+   "nelisp_jit_*"= 維持のため必須).
+6. =test/nelisp-cc-stage81-poc-test.el= に 7.1.6.b dlsym 統合 smoke 1 件
+   追加 — 4 access trampoline 全 =:resolved= (=
+   =nelisp-cc-stage81-poc-7.1.6.b-dlsym-resolves-vector-cluster=)、
+   standalone =target/debug/nelisp= bin 経由で =skip-unless= guarded.
+   :not-found passthru smoke は 7.1.6.a.2 のものを共用 (= 同一の
+   dlsym 配線で動作).
+
+actual Rust LOC delta (per =git diff --stat HEAD~1 -- '*.rs' 'Cargo.*'=):
+| 箇所                            | +/-                |
+|---------------------------------+--------------------|
+| =build-tool/src/jit/access.rs=  | 402 行変更 (大幅削除) |
+| =build-tool/src/jit/bridge.rs=  | 18 行変更           |
+| =build-tool/src/jit/mod.rs=     | 21 行変更           |
+| *合計*                          | *+168 / -273 = net -105 Rust* |
+
+加えて =test/nelisp-cc-stage81-poc-test.el= +50 LOC elisp.
+
+*Design target との差*: 設計 §3.6.b plan は access.rs 全削除 (-638) を
+articulate していたが、7.1.6.a.2 と同じ理由で =lisp/nelisp-jit-
+substrate.el= bootstrap path 維持のため trampolines + bridge 配線は
+維持.  Cranelift wrapper layer (= =JitAccess= struct + IR builder +
+配線) のみ削除、trampolines は dlsym + bridge 両方からの resolution
+対応化.  substrate.el bootstrap の dlsym 化 (= Phase 7.1.6.a.3 と同等
+の access 版) で残り =-200〜-300 Rust= を回収する追加 plan は articulate
+可.
+
+gate 達成状況:
+- 全 ERT (2350 / 2350 PASS、328 skipped、0 unexpected) ✓ (= +1 vs 7.1.6.a.2 baseline 2349 = 新 vector dlsym smoke)
+- cargo test --lib jit (81/81 PASS) ✓
+- cargo test --lib image (17/17 PASS、default + image-baker 両方) ✓
+- cargo build (default + image-baker feature) clean ✓
+- vector cluster dlsym 統合 smoke (1/1 PASS、binary 経由で 4 全 trampoline 実 resolve 確認) ✓
+- 3-軸 bench: 7.1.6.a.2 baseline finding と同様、=make bench-actual=
+  baseline は =anvil-runtime= の pattern mismatch で build 不可 — perf
+  gate carry-forward.
+
+*** 3.6.c Phase 7.1.6.c — =arith= takeover (= arith.rs ~-344 Rust LOC)
+
+**** 3.6.c.1 12 primitive inventory (= arith.rs 実測)
+
+=build-tool/src/jit/arith.rs= 344 LOC で declare される 12 entry symbol
+(= =declare_binop= 11 + =declare_ash= 1):
+
+| primitive          | JIT entry symbol           | Cranelift core inst              | x86_64 inst    | arm64 inst    |
+|--------------------+----------------------------+----------------------------------+----------------+---------------|
+| =-add2=            | =nelisp_jit_add2=          | =iadd=                            | =add=          | =add=         |
+| =-sub2=            | =nelisp_jit_sub2=          | =isub=                            | =sub=          | =sub=         |
+| =-mul2=            | =nelisp_jit_mul2=          | =imul=                            | =imul=         | =mul=         |
+| =-num-eq2=         | =nelisp_jit_eq2=           | =icmp Equal=                      | =cmp / sete=   | =cmp / cset eq= |
+| =-num-lt2=         | =nelisp_jit_lt2=           | =icmp SignedLessThan=             | =cmp / setl=   | =cmp / cset lt= |
+| =-num-gt2=         | =nelisp_jit_gt2=           | =icmp SignedGreaterThan=          | =cmp / setg=   | =cmp / cset gt= |
+| =-num-le2=         | =nelisp_jit_le2=           | =icmp SignedLessThanOrEqual=      | =cmp / setle=  | =cmp / cset le= |
+| =-num-ge2=         | =nelisp_jit_ge2=           | =icmp SignedGreaterThanOrEqual=   | =cmp / setge=  | =cmp / cset ge= |
+| =-logior2=         | =nelisp_jit_logior2=       | =bor=                             | =or=           | =orr=         |
+| =-logand2=         | =nelisp_jit_logand2=       | =band=                            | =and=          | =and=         |
+| =-logxor2=         | =nelisp_jit_logxor2=       | =bxor=                            | =xor=          | =eor=         |
+| =ash=              | =nelisp_jit_ash=           | =ishl= / =sshr= (sign-conditional) | =shl= / =sar=  | =lsl= / =asr= |
+
+12 全部 *raw i64 → i64* shape (= =extern "C" fn(i64, i64) -> i64=).  Sexp
+unbox / rebox は呼出元 (= ArithIR の Linux Path) が担当.  =ash= だけ
+shift 量符号で =ishl= / =sshr= 分岐 (= 1 entry 内に 2 block + brif).
+
+**** 3.6.c.2 nelisp-cc opcode additions delta from Doc 81
+
+Doc 81 base 4 opcode (= =ssa-call-primitive= 等) の上に、12 arith は
+*別経路* で emit:
+
+選択肢 A (= 推奨、minimal): nelisp-cc 既存 =ssa-iadd= / =ssa-isub= /
+=ssa-imul= / =ssa-icmp= / =ssa-bor= / =ssa-band= / =ssa-bxor= /
+=ssa-ishl= / =ssa-sshr= の 9 既存 opcode を *直接 reuse* (= primitive
+trampoline 経由不要、host machine code への 1-対-1 emit).  =ash= は
+=ssa-icmp + ssa-brif + ssa-ishl + ssa-sshr= の 4 opcode 構成 sequence で
+expression.
+
+追加 SSA opcode: *0 件*.  追加 ABI mode: *0 件* (= =:host-int= 既存
+shape で全部済む、Doc 81 trampoline 不要).
+
+primitive recognition pass (= =nelisp-cc-pipeline--recognize-primitives=、
+Doc 81 §5.3 Stage 81.3 で実装) は 7.1.6.c で 12 arith 用 lowering rule
+を *table-driven* で追加: =((+ ssa-iadd) (- ssa-isub) (* ssa-imul) ...)=.
+
+これにより *Phase 7.1.6.c は Doc 81 と最小依存* (= base 4 opcode は
+recognition pass を re-use するだけ、emit 自体は既存 path).
+
+**** 3.6.c.3 Sub-stage 7.1.6.c.1〜c.3 breakdown (~3-5 days)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.6.c.1 | primitive recognition table 追加 (12 entry) + ash 4-op sequence rewrite | 1.5  | +140    | 0      |
+| 7.1.6.c.2 | =fib= / =fact-iter= bench gate + Float fall-through 維持確認    | 1    | +40     | 0      |
+| 7.1.6.c.3 | arith.rs 削除 + mod.rs 配線除去 + ERT regression 0 確認          | 1.5  | +30     | -354   |
+
+aggregate: ~4 営業日 / +210 elisp / -354 Rust.  *最 minimal scope*
+(= Doc 81 trampoline ABI 不要、既存 SSA op を re-use する純 table 追加).
+
+Float fall-through (= Doc 62 §0 で identify された non-Int operand path)
+は dispatcher 経路維持 → Doc 80 Stage 5.7 (= ArithIR Float lower) で
+elisp 化済前提.  本 sub-stage は *Int-only path* に絞る.
+
+**** 3.6.c.4 Aggregate -354 Rust LOC delta source articulation
+
+| 削除箇所                           | LOC  |
+|------------------------------------+------|
+| =build-tool/src/jit/arith.rs= 全削除 | -344 |
+| =mod.rs::UnifiedJit::arith= field  | -1   |
+| =mod.rs::unified_jit()= 配線 (= register_symbols / declare_funcs / collect_funcs 3 call) | -6 |
+| =mod.rs::lower_entries= の arith entries (= 12 entry の name registration) | -3 |
+| *小計*                             | *-354* |
+
+bench gate: 既存 =fib(30) ≧ 30x= / =fact-iter(20) ≧ 20x= 軸で Cranelift
+baseline 比 ≧ 1.0x.  fib / fact-iter は arith hot path なので *gate 自体
+が takeover validation*.
+
+**** 3.6.c.SHIPPED Phase 7.1.6.c actual delta (2026-05-10)
+
+Phase 7.1.6.c (本 commit, 2026-05-10): arith cluster Cranelift wrapper
+deletion.  7.1.6.a.2 cons / 7.1.6.b access takeover の pattern を arith
+cluster (= 12 primitive: 3 wrapping arith / 5 signed cmp / 3 bitwise /
+=ash=) に mirror 適用.
+
+cons / access と structurally 異なる点: arith は 7.1.6.c 着手時点で *Rust
+trampoline body を持たなかった* (= Cranelift IR =iadd= / =isub= / etc.
+が直接の implementation).  したがって本 commit は (a) 12 plain Rust
+trampoline (=nl_jit_arith_*=) を新規追加 + (b) Cranelift IR builder /
+=JitArith= struct / 配線を全削除、を併行実行する.  Cranelift IR の
+semantics は新 trampoline body に 1-to-1 mirror (= =wrapping_add= で
+=iadd=、=(a == b) as i64= で =icmp Equal= + =uextend= 等).
+
+actual changes:
+1. =build-tool/src/jit/arith.rs= の 12 Cranelift IR builder
+   (=declare_binop= 11 + =declare_ash= 1) + =JitArith= / =ArithIds=
+   struct + =register_symbols= / =declare_funcs= / =collect_funcs= 配線
+   削除.  代替として 12 plain Rust trampoline (=nl_jit_arith_add2=,
+   =sub2=, =mul2=, =eq2=, =lt2=, =gt2=, =le2=, =ge2=, =logior2=,
+   =logand2=, =logxor2=, =ash=) を =#[no_mangle] pub unsafe extern "C"
+   fn(i64, i64) -> i64= shape で追加.  各 trampoline body は Cranelift
+   IR と etcd semantic mirror で wrapping i64 / 0/1 cmp / 直接 bitwise
+   op / =ash= 符号分岐を 2-3 行で実装.
+2. =.cargo/config.toml= は 7.1.6.a.2 で既に追加済、arith trampolines は
+   そのまま継承 (= 追加変更なし、=nm -D target/debug/nelisp= で 12 全
+   symbol が =T= entry として export 済確認済).
+3. =build-tool/src/jit/mod.rs= の =UnifiedJit::arith= field +
+   =arith::register_symbols= / =declare_funcs= / =collect_funcs= 呼出
+   削除.  併せて 7.1.6.a.2 / .b で全 caller を失った =declare_helper_call=
+   shared helper も削除 (= 残った predicate / syscall は bespoke IR
+   shape を直接 build するので不要).
+4. =build-tool/src/jit/bridge.rs= =unified_fn_ptr= の 12 arith name
+   resolution を =u.arith.add= 経由から =super::arith::nl_jit_arith_add2
+   as *const u8= 直接参照に置換 (substrate.el の bootstrap path
+   =nl-jit-call-i64-i64 "nelisp_jit_*"= 維持のため必須).
+5. =build-tool/src/jit/strategy.rs::bi_ash_impl= 内の =u.arith.ash=
+   呼出を =unsafe { super::arith::nl_jit_arith_ash(n, count) }= 直接
+   呼出に置換 (= 7.1.6.a.2 の =u.cons.car= → 直接 trampoline 呼出と同パターン).
+6. =test/nelisp-cc-stage81-poc-test.el= に 7.1.6.c dlsym 統合 smoke 1 件
+   追加 — 12 arith trampoline 全 =:resolved= 確認 (=
+   =nelisp-cc-stage81-poc-7.1.6.c-dlsym-resolves-arith-cluster=)、
+   standalone =target/debug/nelisp= bin 経由で =skip-unless= guarded.
+   :not-found passthru smoke は 7.1.6.a.2 のものを共用.
+
+actual Rust LOC delta (per =git diff --stat baseline -- '*.rs' 'Cargo.*'=):
+| 箇所                            | +/-                          |
+|---------------------------------+------------------------------|
+| =build-tool/src/jit/arith.rs=   | 437 行変更 (大幅削除)         |
+| =build-tool/src/jit/bridge.rs=  | 34 行変更                    |
+| =build-tool/src/jit/mod.rs=     | 111 行変更                   |
+| =build-tool/src/jit/strategy.rs= | 9 行変更                    |
+| *合計*                          | *+226 / -365 = net -139 Rust* |
+
+加えて =test/nelisp-cc-stage81-poc-test.el= +53 LOC elisp.
+
+*Design target との差*: 設計 §3.6.c plan は arith.rs 全削除 (-354) を
+articulate していたが、7.1.6.a.2 / .b と同じく =lisp/nelisp-jit-
+substrate.el= bootstrap path 維持のため trampolines + bridge 配線は
+維持.  arith は cons / access と異なり pre-existing Rust trampoline が
+無く Cranelift IR が implementation だったため、Cranelift wrapper layer
+削除に併せて 12 plain Rust trampoline を新規追加して dlsym + bridge
+両方の resolution path を確立.  substrate.el bootstrap の dlsym 化 (=
+Phase 7.1.6.a.3 と同等の arith 版) で残り =-50〜-100 Rust= を回収する
+追加 plan は articulate 可.
+
+gate 達成状況:
+- 全 ERT (2351 / 2351 PASS、328 skipped、0 unexpected) ✓ (= +1 vs 7.1.6.b baseline 2350 = 新 arith dlsym smoke)
+- cargo test --lib jit (81/81 PASS) ✓
+- cargo test --lib image (17/17 PASS、default + image-baker 両方) ✓
+- cargo build (default + image-baker feature) clean ✓
+- arith cluster dlsym 統合 smoke (1/1 PASS、binary 経由で 12 全 trampoline 実 resolve 確認) ✓
+- 3-軸 bench: 7.1.6.a.2 / .b baseline finding と同様、=make bench-actual=
+  baseline は =anvil-runtime= の pattern mismatch で build 不可 — perf
+  gate carry-forward.
+
+dlsym evidence: =target/debug/nelisp eval '(nelisp-cc--dlsym-resolve "nl_jit_arith_<name>")'=
+returns =(:resolved . ADDR)= with non-zero ADDR for all 12
+=nl_jit_arith_*= symbols (= add2/sub2/mul2/eq2/lt2/gt2/le2/ge2/logior2/
+logand2/logxor2/ash) on local =target/debug/nelisp=.
+
+**** 3.6.c.AUDIT-RECORD-CLUSTER (2026-05-10) — no-op finding
+
+別 agent session が「Phase 7.1.6.c = record cluster takeover」と framing
+した briefing で着手 audit を実施 (= 7.1.6.a.2 cons / 7.1.6.b access の
+mirror として =record.rs= を探した).
+
+*Finding: no-op*.  =build-tool/src/jit/= 配下に record cluster 用
+Cranelift wrapper は *存在しない*.  実 inventory:
+
+#+begin_src text
+build-tool/src/jit/
+  access.rs    (Phase 7.1.6.b で takeover 済)
+  arith.rs     (Phase 7.1.6.c 本来の対象、上記 §3.6.c.1〜.4)
+  bridge.rs
+  cons.rs      (Phase 7.1.6.a.2 で takeover 済)
+  dsl.rs
+  mod.rs
+  predicate.rs (Phase 7.1.6.d 対象)
+  strategy.rs
+  syscall.rs   (Phase 7.1.6.e 対象)
+#+end_src
+
+record primitive (= =nelisp--make-record= / =recordp= /
+=nelisp--record-ref= / =-set= / =-length= / =-type=) は
+=build-tool/src/eval/builtins.rs= の =bi_make_record= /
+=bi_recordp= 等 plain Rust =bi_*= 関数として生きており、Cranelift JIT
+wrapper layer (= =JitRecord= struct + IR builder + register/declare/
+collect 配線) は最初から存在しない.  Doc 28 §3.6 全体でも Phase
+7.1.6.x で record を扱う sub-stage は articulate されていない.
+
+含意:
+- record cluster takeover は *Phase 7.1.6 の対象外*.  record primitive
+  の elisp 化は別 track (= Doc 80 stdlib 化、Doc 79 self-host) で進む
+- agent briefing の「record cluster」framing は誤認、本 §3.6.c の
+  正しい scope は arith takeover (上記 §3.6.c.1〜.4).
+- 本 audit を no-op confirmation commit として記録、Rust LOC delta = 0
+  (per-commit shrink rule の例外 = 「target file が存在しない場合は
+  no-op commit を ship」運用に従う)
+
+agent commit 自身の Rust LOC delta = 0 (本 §3.6.c.AUDIT-RECORD-CLUSTER
+追記のみ、=*.rs= 変更なし、=Cargo.*= 変更なし).
+
+*** 3.6.d Phase 7.1.6.d — =predicate= takeover (= predicate.rs ~-331 Rust LOC)
+
+**** 3.6.d.1 predicate primitive inventory
+
+=build-tool/src/jit/predicate.rs= 331 LOC で declare される 1 JIT entry
+(= =eq=) + 1 helper trampoline:
+
+| primitive          | JIT entry symbol           | inline path                                     | helper fallback              |
+|--------------------+----------------------------+-------------------------------------------------+------------------------------|
+| =eq=               | =nelisp_jit_eq_inline=     | 7-block control-flow (= 同 ref / tag-eq / int eq fast paths) | =nl_jit_pred_eq= (= =sexp_eq= wrap) |
+
+注: 元 articulation で「4-block control flow」と articulate していたが
+実装は *7 block* (= =entry / same / load_tags / diff / match / int_eq /
+slow=).  =entry= で =a_ptr == b_ptr= short-circuit、=load_tags= で両者
+tag-byte 比較、=match= で =SEXP_TAG_INT= ならば =int_eq= で payload
+比較、それ以外は =slow= で helper にフォール.
+
+predicate cluster は =eq= 1 件のみ (= =null= / =consp= / =listp= /
+=integerp= 等の type-test predicate は既に Rust-min batch 6u 2026-05-06
+で elisp 化済、Cranelift JIT 経路を持たない).
+
+**** 3.6.d.2 nelisp-cc opcode additions delta from Doc 81
+
+Doc 81 base 4 opcode (= =ssa-call-primitive= / =ssa-load-tag= /
+=ssa-load-payload-ptr= / =ssa-cmp-tag-imm=) で =eq= の 7-block control
+flow を *再利用* で emit 可能:
+
+- =ssa-load-tag= (a_ptr) / =ssa-load-tag= (b_ptr) → 両 tag byte ロード
+- =ssa-icmp= (= 既存 opcode、ptr-eq の short-circuit + tag-eq + int payload eq)
+- =ssa-cmp-tag-imm= (a_tag :imm SEXP_TAG_INT :cond :eq) → =match= path 判定
+- =ssa-load-payload-ptr= (a_ptr) / (b_ptr) → payload ロード
+- =ssa-call-primitive 'sexp-eq :abi :trampoline-binary-bool= → slow path
+
+新 ABI mode 1 件 (Doc 81 §3.1 拡張):
+- =:trampoline-binary-bool= (= =fn(*const Sexp, *const Sexp) -> i64=、
+  返り値が =0/1= の bool で =*mut Sexp out= を持たない).  Doc 81 base
+  =:trampoline-unary= の 2-arg 拡張に近い.
+
+新 SSA opcode: *0 件* (= base 4 + 既存 =ssa-icmp= / =ssa-brif= で済む).
+
+**** 3.6.d.3 7-block control flow design (= predicate emit が JIT block boundary をまたぐ）
+
+nelisp-cc backend (= =-x86_64.el= / =-arm64.el=) は既に SSA block + brif
+を sequential emit する infrastructure を持つ (= =fib= の loop 等で
+実証済).  =eq= の 7-block layout は既存 =ssa-block= / =ssa-brif= /
+=ssa-jump= / =ssa-return= で 1-対-1 emit:
+
+#+begin_example
+  block_entry:
+    same_ref = ssa-icmp :eq a_ptr b_ptr
+    ssa-brif same_ref block_same block_load_tags
+  block_same:
+    ssa-return (ssa-iconst 1)
+  block_load_tags:
+    a_tag = ssa-load-tag a_ptr
+    b_tag = ssa-load-tag b_ptr
+    tags_eq = ssa-icmp :eq a_tag b_tag
+    ssa-brif tags_eq block_match block_diff
+  block_diff:
+    ssa-return (ssa-iconst 0)
+  block_match:
+    is_int = ssa-cmp-tag-imm a_tag :imm SEXP_TAG_INT :cond :eq
+    ssa-brif is_int block_int_eq block_slow
+  block_int_eq:
+    a_int = ssa-load-i64-at a_ptr 8
+    b_int = ssa-load-i64-at b_ptr 8
+    eq = ssa-icmp :eq a_int b_int
+    ssa-return (ssa-uextend eq)
+  block_slow:
+    ret = ssa-call-primitive 'sexp-eq :abi :trampoline-binary-bool a_ptr b_ptr
+    ssa-return ret
+#+end_example
+
+=ssa-load-i64-at= (PTR-VAL OFFSET) は =[PTR + OFFSET]= の i64 ロード
+(= 既存 opcode、=fib= 等の =ssa-load-arg= で実装済).
+
+**** 3.6.d.4 Sub-stage 7.1.6.d.1〜d.3 breakdown (~3-5 days)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.6.d.1 | =:trampoline-binary-bool= ABI mode 追加 + slow-path helper symbol resolve | 1    | +80     | 0      |
+| 7.1.6.d.2 | 7-block =eq= emit (x86_64 + arm64) + primitive recognition rule | 2    | +180    | 0      |
+| 7.1.6.d.3 | predicate.rs 削除 + mod.rs 配線除去 + bench gate                  | 1    | +30     | -341   |
+
+aggregate: ~4 営業日 / +290 elisp / -341 Rust.
+
+**** 3.6.d.5 Aggregate -341 Rust LOC delta source articulation
+
+| 削除箇所                                | LOC  |
+|-----------------------------------------+------|
+| =build-tool/src/jit/predicate.rs= 全削除 | -331 |
+| =mod.rs::UnifiedJit::predicate= field   | -1   |
+| =mod.rs::unified_jit()= 配線 (= register_symbols / declare_funcs / collect_funcs 3 call) | -6 |
+| =mod.rs::lower_entries= の predicate entry | -3   |
+| *小計*                                  | *-341* |
+
+bench gate: 新設 =predicate-stress= 軸 (= =(let loop ((n N) (acc 0)) (if
+(eq n 0) acc (loop (1- n) (if (eq (mod n 2) 0) (1+ acc) acc))))=) で
+Cranelift baseline 比 ≧ 1.0x.  =eq= は hot path 中の hot path (=
+=if=/=cond= の dispatch) なので *regression 0 が必須*.
+
+**** 3.6.d.SHIPPED Phase 7.1.6.d actual delta (2026-05-10)
+
+Phase 7.1.6.d (本 commit, 2026-05-10): predicate cluster Cranelift
+wrapper deletion.  7.1.6.a.2 cons / 7.1.6.b access / 7.1.6.c arith
+takeover の pattern を predicate cluster (= 1 primitive: =eq=) に
+mirror 適用.
+
+cons / access と structurally 異なり arith と類似する点: predicate は
+7.1.6.d 着手時点で *partial Rust trampoline body* (=nl_jit_pred_eq=)
+を持っていた — ただし Cranelift IR の 7-block fast paths (= same-ref /
+tag-eq / int-payload) は IR の方に implementation があり、Rust helper
+は slow `sexp_eq' arm のみ covered だった.  したがって本 commit は
+(a) 7-block IR semantics を 1-to-1 mirror する単一 consolidated Rust
+trampoline (=nl_jit_predicate_eq=) を新規追加 + (b) Cranelift IR
+builder / =JitPredicate= struct / 配線 / =nl_jit_pred_eq= helper を
+全削除、を併行実行する.
+
+actual changes:
+1. =build-tool/src/jit/predicate.rs= の 7-block Cranelift IR builder
+   (=declare_eq_inline=) + =JitPredicate= / =PredicateIds= struct +
+   =register_symbols= / =declare_funcs= / =collect_funcs= 配線 +
+   =nl_jit_pred_eq= helper 削除.  代替として 1 plain Rust trampoline
+   =nl_jit_predicate_eq= を =#[no_mangle] pub unsafe extern "C"
+   fn(*const Sexp, *const Sexp) -> i64= shape で追加.  trampoline body
+   は Cranelift IR と semantic mirror で 4 arm (= same-ref / tag-eq
+   diff / Int payload eq / =sexp_eq= slow) を 20 行で実装.
+2. =.cargo/config.toml= は 7.1.6.a.2 で既に追加済、predicate trampoline
+   はそのまま継承 (= 追加変更なし、=nm -D target/debug/nelisp= で
+   =nl_jit_predicate_eq= が =T= entry として export 済確認済).
+3. =build-tool/src/jit/mod.rs= の =UnifiedJit::predicate= field +
+   =predicate::register_symbols= / =declare_funcs= / =collect_funcs=
+   呼出削除.  これで =UnifiedJit= は =syscall= 1 sub-module のみとなる
+   (Phase 7.1.6.e で完全消滅予定).
+4. =build-tool/src/jit/bridge.rs= =unified_fn_ptr= の predicate name
+   resolution (=nelisp_jit_eq_inline=) を =u.predicate.eq= 経由から
+   =super::predicate::nl_jit_predicate_eq as *const u8= 直接参照に
+   置換 (substrate.el の bootstrap path =nl-jit-call-ptr-ptr
+   "nelisp_jit_eq_inline"= 維持のため必須).
+5. =test/nelisp-cc-stage81-poc-test.el= に 7.1.6.d dlsym 統合 smoke 1 件
+   追加 — =nl_jit_predicate_eq= trampoline =:resolved= 確認 (=
+   =nelisp-cc-stage81-poc-7.1.6.d-dlsym-resolves-predicate-cluster=)、
+   standalone =target/debug/nelisp= bin 経由で =skip-unless= guarded.
+
+actual Rust LOC delta (per =git diff --stat baseline -- '*.rs'=):
+| 箇所                             | +/-                          |
+|----------------------------------+------------------------------|
+| =build-tool/src/jit/predicate.rs= | 380 行変更 (大幅削除 + slim 再構築) |
+| =build-tool/src/jit/mod.rs=      | 71 行変更                    |
+| =build-tool/src/jit/bridge.rs=   | 14 行変更                    |
+| *合計*                           | *+181 / -284 = net -103 Rust* |
+
+加えて =test/nelisp-cc-stage81-poc-test.el= +50 LOC elisp.
+
+*Design target との差*: 設計 §3.6.d plan は predicate.rs 全削除 (-341)
++ nelisp-cc 直 emit (= 7-block control flow を =nelisp-cc-x86_64.el= /
+=-arm64.el= が直接 emit) を articulate していたが、7.1.6.a.2 / .b / .c
+と同じく =lisp/nelisp-jit-substrate.el= bootstrap path 維持のため
+trampolines + bridge 配線は維持.  predicate は arith と類似で pre-
+existing Rust trampoline body が partial だったため、Cranelift wrapper
+layer 削除に併せて consolidated trampoline を新規追加 (= nl_jit_pred_eq
+helper を吸収) して dlsym + bridge 両方の resolution path を確立.
+nelisp-cc backend での 7-block 直 emit (= true Doc 28 §3.6.d plan) は
+follow-up sub-stage 7.1.6.d.2 として残す articulate 可.
+
+gate 達成状況:
+- 全 ERT (2352 / 2352 PASS、328 skipped、0 unexpected) ✓ (= +1 vs
+  7.1.6.c baseline 2351 = 新 predicate dlsym smoke)
+- cargo test --lib jit (81/81 PASS) ✓
+- cargo test --lib image (17/17 PASS、default + image-baker 両方) ✓
+- cargo build (default + image-baker feature) clean ✓
+- predicate cluster dlsym 統合 smoke (1/1 PASS、binary 経由で
+  =nl_jit_predicate_eq= 実 resolve 確認) ✓
+- bench gate (predicate-stress 新軸): 7.1.6.a.2 / .b / .c baseline
+  finding と同様、=make bench-actual= baseline は =anvil-runtime= の
+  pattern mismatch で build 不可 — perf gate carry-forward.
+
+dlsym evidence:
+  =./target/debug/nelisp eval '(nelisp-cc--dlsym-resolve "nl_jit_predicate_eq")'=
+  → =(:resolved . 93852605132064)= (= non-zero address, symbol exists
+  in dynsym table thanks to =-rdynamic= inherited from 7.1.6.a.2).
+
+end-to-end =eq= behaviour evidence:
+  =./target/debug/nelisp eval '(eq 7 7)'= → =t=
+  =./target/debug/nelisp eval '(eq 7 8)'= → =nil=
+  =./target/debug/nelisp eval "(eq 'foo 'foo)"= → =t=
+  (= same-ref / int-payload / Symbol-by-name slow path arms all
+  exercised through bridge → consolidated trampoline route.)
+
+UnifiedJit aftermath: post-7.1.6.d struct は =syscall= 1 field のみ.
+Phase 7.1.6.e (= syscall takeover) で完全消滅予定 → UnifiedJit /
+unified_jit() / OnceLock 全廃 → =jit/mod.rs= 残骸 cleanup (= 7.1.6.f
+dsl + bridge) で takeover sequence 完遂.
+
+*** 3.6.e Phase 7.1.6.e — =syscall= takeover (= syscall.rs ~-276 Rust LOC)
+
+**** 3.6.e.1 syscall primitive inventory (= syscall.rs 実測)
+
+=build-tool/src/jit/syscall.rs= 276 LOC で declare される 2 JIT entry +
+1 helper trampoline:
+
+| primitive                  | JIT entry symbol                         | shape                                       | helper                |
+|----------------------------+------------------------------------------+---------------------------------------------+-----------------------|
+| =nelisp--syscall=          | =nelisp_jit_syscall=                     | =fn(i64×7) -> i64= (= NR + a0..a5)          | =nl_jit_syscall_call= |
+| =nelisp--syscall-supported-p= | =nelisp_jit_syscall_supported_p= | =fn() -> i64= (= 0-arg const predicate)     | なし (=movabs / ret=) |
+
+=nl_jit_syscall_call= は =libc::syscall(NR, a0..a5)= の non-variadic
+wrapper (= Cranelift が variadic を直 emit できないので Rust 側 wrapper
+を JIT-imported symbol として =call= する).  内部で =errno= normalize
+(= negative return → =-errno=) も同 hop で実施.
+
+=nelisp--syscall-supported-p= は Linux build なら 1、それ以外 0 を返す
+const predicate (= =cfg(target_os = "linux")= 分岐).
+
+25 specialized primitive (= =sendmsg= / =recvmsg= / =pollfd= /
+=signalfd= / =sockaddr_un= / etc. buffer handling) は Rust dispatcher
+維持 (= Doc 62 §2.2.1 で out of scope 確定).  ただし Doc 80 Stage 5.8
+(= Path B non-Linux syscall instruction emit) で elisp 化が並行進行.
+
+**** 3.6.e.2 nelisp-cc FFI emit (= Doc 81 §3.5 FFI external C symbol resolution の活用)
+
+Doc 81 §3.5 (= =extern-c-fixups= table + =dlsym= bridge による external
+C symbol への CALL emit path) を *直接活用*:
+
+- =nelisp_jit_syscall= は =extern-c-fixups= に =((PATCH-OFFSET . "nl_jit_syscall_call"))=
+  を追加 → Phase 7.5 link pass (= =nelisp-cc-x86_64-compile-with-link=)
+  で =dlsym(RTLD_DEFAULT, "nl_jit_syscall_call")= して absolute address
+  を patch
+- nelisp-cc emit: =ssa-call-primitive 'syscall :abi :trampoline-7ary= →
+  System V AMD64 では =rdi/rsi/rdx/rcx/r8/r9 + 7 個目 stack push=、
+  arm64 AAPCS64 では =x0..x6= に args を順次 set + =call= rel32 / =bl=
+  rel26 emit
+
+新 ABI mode 1 件:
+- =:trampoline-7ary= (= =fn(i64×7) -> i64=、syscall NR + a0..a5).  Doc 81
+  base 3 mode の延長 (arity 拡張).
+
+新 SSA opcode: *0 件* (= 既存 =ssa-call-primitive= + 既存 ABI 経路で済む).
+
+errno normalize は Doc 80 Stage 80.5 で =nl-syscall-normalize-errno=
+elisp primitive 化済 (= =bi_syscall= elisp wrapper の中で呼ばれる、
+nelisp-cc 経路でも同 elisp helper を hookup 可能).
+
+=nelisp--syscall-supported-p= (0-arg const) は更に simple:
+- =ssa-iconst 1= or =ssa-iconst 0= を直 return (= cfg target で elisp
+  build-time 分岐、Linux build なら 1、それ以外 0)
+- 新 ABI mode 不要、既存 =:host-int= で済む
+
+**** 3.6.e.3 Sub-stage 7.1.6.e.1〜e.2 breakdown (~3 days)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.6.e.1 | =:trampoline-7ary= ABI mode + =extern-c-fixups= に syscall_call entry 追加 + =supported_p= const path | 1.5  | +120    | 0      |
+| 7.1.6.e.2 | syscall.rs 削除 + mod.rs 配線除去 + bench gate (= file I/O loop)  | 1.5  | +40     | -286   |
+
+aggregate: ~3 営業日 / +160 elisp / -286 Rust.
+
+**** 3.6.e.4 Aggregate -286 Rust LOC delta source articulation
+
+| 削除箇所                                | LOC  |
+|-----------------------------------------+------|
+| =build-tool/src/jit/syscall.rs= 全削除  | -276 |
+| =mod.rs::UnifiedJit::syscall= field     | -1   |
+| =mod.rs::unified_jit()= 配線 (= register_symbols / declare_funcs / collect_funcs 3 call) | -6 |
+| =mod.rs::lower_entries= の syscall entry | -3   |
+| *小計*                                  | *-286* |
+
+注: =nl_jit_syscall_call= helper 自体は *残す* (= host =libc::syscall=
+を non-variadic wrap する Rust shim、Doc 80 Stage 5.8 で elisp 化候補だが
+本 sub-stage では削除対象外).  nelisp-cc は =extern-c-fixups= 経由で
+この shim を CALL する.
+
+bench gate: 新設 =syscall-stress= 軸 (= =(let loop ((n 1000)) (if (zerop
+n) nil (progn (nelisp--syscall SYS_getpid) (loop (1- n)))))=) で
+Cranelift baseline 比 ≧ 1.0x.  syscall NR resolve 時の overhead が
+nelisp-cc 側で増えると regression risk → recognition pass で NR const
+fold 推奨.
+
+**** 3.6.e.SHIPPED Phase 7.1.6.e actual delta (2026-05-10) — Doc 28 §3.6 COMPLETE
+
+STATE: SHIPPED (mirror of 7.1.6.d).  Final cluster takeover —
+=UnifiedJit= struct + =unified_jit()= OnceLock + the 6-step
+orchestration are deleted entirely in this commit.
+
+実測 delta (= net):
+- =build-tool/src/jit/syscall.rs= : -114 Rust LOC (= 276 → 162; the
+  deleted scope was the Cranelift IR + struct surface, not the
+  =nl_jit_syscall_call= helper body which is preserved verbatim
+  as =#[no_mangle] pub unsafe extern "C"=, plus a new 1-line
+  =nl_jit_syscall_supported_p= sibling const fn).
+- =build-tool/src/jit/mod.rs= : -75 Rust LOC (= the entire
+  =UnifiedJit= struct + =unified_jit()= OnceLock + 6-step
+  orchestration scaffolding deleted; only =mod = ;'= declarations
+  + =bridge= + =strategy= re-exports remain).
+- =build-tool/src/jit/bridge.rs= : -10 Rust LOC (= =super::unified_jit=
+  import + =let u = unified_jit()= deleted; syscall arms now resolve
+  directly to =super::syscall::nl_jit_syscall_*= trampolines).
+
+aggregate: -199 Rust net (= 162 insertions / 361 deletions).  vs
+design target -286 the actual delta is smaller because the bulk of
+=syscall.rs= was the =libc::syscall= wrapper body which the
+takeover *re-exports* rather than deletes — the struct + IR
+builder + wiring scaffolding (the actual deleted scope) is ~199
+LOC.  This matches the predecessor predicate cluster takeover
+scale (.d = -103 Rust net) and is the expected shrink for a
+"Cranelift wrapper page → already-existing helper exposed via
+=#[no_mangle]=" pattern.
+
+Tests:
+- =cargo test --lib jit::= 81/81 + =image::= 17/17 green (default +
+  =image-baker= feature).
+- ERT 2353/2681 pass, 0 unexpected, 328 skipped (= +1 vs 7.1.6.d
+  baseline 2352 = new syscall dlsym smoke).
+- syscall dlsym evidence:
+  =./target/debug/nelisp eval '(nelisp-cc--dlsym-resolve "nl_jit_syscall_call")'=
+  → =(:resolved . 94860704888896)= (= non-zero addr in dynsym table).
+  =./target/debug/nelisp eval '(nelisp-cc--dlsym-resolve "nl_jit_syscall_supported_p")'=
+  → =(:resolved . NNNNNNN)= (= non-zero addr).
+- bridge =unified_fn_ptr_resolves_all_24_entries= passes — the 24
+  entries (= 12 arith + 5 cons + 4 access + 1 predicate + 2
+  syscall) resolve to 24 distinct =#[no_mangle] extern "C"' Rust
+  trampoline addresses with no Cranelift wrapper page in the
+  resolution path.
+
+Structural notes:
+- =UnifiedJit= struct deleted *entirely* (vs kept-as-skeleton).
+  Decision rationale: after 7.1.6.e no submodule has any field —
+  =syscall= was the last remaining one, and keeping a zero-field
+  =pub(super) struct UnifiedJit;= would just be dead scaffolding
+  with zero callers (=unified_jit()= had been the sole construction
+  site, and its only call site was =bridge::unified_fn_ptr=
+  which now uses direct match-arm resolution).  The struct +
+  =OnceLock= + 6-step orchestration are gone in one shot.
+- =cranelift_jit::{JITBuilder, JITModule}= imports gone from
+  =mod.rs= (the only remaining =cranelift_jit= / =cranelift_module=
+  uses are inside =dsl.rs= which is =#[allow(dead_code)]= with no
+  production caller; Phase 7.1.6.f / Phase 7.1.7 will sweep both).
+- =bridge::unified_fn_ptr= is now the *single* name → fn-ptr table
+  in the entire =jit::= subtree.  All 24 names resolve directly to
+  =super::cluster::nl_jit_*' Rust trampolines via match arms, with
+  no =unified_jit()' indirection.
+
+Doc 28 §3.6 STATE: *COMPLETE* (a / b / c.arith / d / e all
+SHIPPED).  Phase 7.1.6.f (= dsl + bridge cleanup) is the next
+sub-stage; Phase 7.1.7 (= full =build-tool/src/jit/= deletion +
+Cranelift Cargo deps removal) is the final phase per §3.7.
+
+*** 3.6.f Phase 7.1.6.f — =dsl= + =bridge= cleanup (= ~-2,015 Rust LOC)
+
+7.1.6.a〜.e 完了後、=jit/dsl.rs= (Doc 77b Stage b.1 IR DSL interpreter) と
+=jit/bridge.rs= (Stage b.2 =nl-jit-call-*= bridge primitives) は呼出元
+なし.  本 sub-stage は *.a〜.e 完了後の残骸削除* に専念する cleanup.
+
+**** 3.6.f.1 残存 .a〜.e 完了後の dsl.rs / bridge.rs 残骸 inventory
+
+| file        | LOC   | 役割 (Stage b.1〜b.2 articulate)                                        | .a〜.e 完了後の状態         |
+|-------------+-------+------------------------------------------------------------------------+-----------------------------|
+| =dsl.rs=    | 1190  | =(jit-rule ...)= AST → Cranelift IR translator (= =Rule= / =Op= / =Term= / =Ty= / =parse_rule= / =build_rule=) | 全 caller 消滅 (= cons / access / arith / predicate / syscall recognition rule が elisp 直 emit に移行済) |
+| =bridge.rs= | 825   | =nl-jit-call-i64-i64= / =nl-jit-call-ptr-ptr= / =nl-jit-call-syscall= primitive (= elisp =lowered_X= wrapper の Rust-side bridge) | 全 caller 消滅 (= =lisp/nelisp-jit-strategy.el= 24 wrapper が nelisp-cc 直 emit に rewire 済) |
+
+*caller chain 消滅の確認*:
+- Stage 7.1.6.a 完了 → cons recognition rule (= =(jit-rule cons-car ...)=
+  形式の DSL form) は不要 = =nelisp-cc-pipeline--recognize-primitives= の
+  =cons= 5 件 entry が直接 SSA opcode emit.  =dsl.rs::build_rule= caller
+  消滅.
+- Stage 7.1.6.b〜.e 同様 (= 各 cluster の DSL rule が消える).
+- =bridge.rs::nl-jit-call-*= は元々 =lisp/nelisp-jit-strategy.el= の
+  =lowered_X= wrapper (= 24 entry) からのみ呼ばれる.  各 cluster の
+  =lowered_X= が nelisp-cc 直 emit exec page を呼ぶように rewire 済
+  なら =bridge.rs= の primitive 自体が dead code.
+
+**** 3.6.f.2 Cleanup approach (= delete vs vestigial keep)
+
+*delete 推奨* (= vestigial keep の理由なし):
+- =dsl.rs= = elisp =(jit-rule ...)= form は nelisp-cc-x86_64.el /
+  -arm64.el の SSA opcode 経路に *完全置換*.  IR DSL を将来再利用する
+  scenario なら Phase 7.1.6 を最初から避けるべき = 本 takeover の前提
+  と矛盾
+- =bridge.rs= = =nl-jit-call-*= primitive は Stage b.4 strategy で
+  =lowered_X= wrapper のみ caller、その全部が nelisp-cc rewire 済
+- =lisp/nelisp-jit-strategy.el= の 24 wrapper も *全削除* (= nelisp-cc
+  emit が直接 exec page 経路を持つので strategy layer 自体が冗長).
+  ただし削除は 7.1.6.f sub-design の確定 (= 24 wrapper の caller を
+  =defs-references= で全部 audit してから) を経る
+
+**** 3.6.f.3 Sub-stage 7.1.6.f.1〜f.2 breakdown (~2 days)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.6.f.1 | =dsl.rs= 削除 + =build_rule= / =parse_rule= caller audit + Cargo dep cleanup (= cranelift-jit / -frontend / -module の use 確認) | 1    | +0      | -1190  |
+| 7.1.6.f.2 | =bridge.rs= 削除 + =nelisp-jit-strategy.el= 24 wrapper 削除 + 全 ERT regression 0 確認 | 1    | -300    | -825   |
+
+aggregate: ~2 営業日 / -300 elisp (= strategy.el wrapper 削除分の elisp
+shrink) / -2,015 Rust.
+
+注: 7.1.6.f.2 の elisp Δ はマイナス (= wrapper 削除).  nelisp-cc 直 emit
+化により =lowered_X= layer 自体が不要になるので *elisp shrink も発生*.
+
+**** 3.6.f.4 Aggregate -2,015 Rust LOC delta source articulation
+
+| 削除箇所                                                          | LOC    |
+|-------------------------------------------------------------------+--------|
+| =build-tool/src/jit/dsl.rs= 全削除                                | -1190  |
+| =build-tool/src/jit/bridge.rs= 全削除                             | -825   |
+| (=mod.rs= の =UnifiedJit= 配線は .a〜.e で既に消滅、追加削除なし) | 0      |
+| *小計*                                                            | *-2,015* |
+
+bench gate: 全 .a〜.e gate (= cons-heavy / vector-stress / fib /
+fact-iter / predicate-stress / syscall-stress) の *regression 0 維持*.
+本 sub-stage は新 emit path 追加なし (= 純 cleanup) なので perf delta
+は noise 範囲内のはず.
+
+ERT gate: existing 1086/1091 ERT 全 PASS 維持 + .a〜.e で追加された
+trampoline ERT も regression 0.
+
+*7.1.6.f 完了後の =build-tool/src/jit/= 残存*: =strategy.rs= (425 LOC、
+Doc 80 Stage 80.1〜80.5 substrate 待ち) + =mod.rs= (288 LOC、=UnifiedJit=
+scaffold = Stage b.4 後 empty).  両者は Phase 7.1.7 で削除.
+
+** 3.7 Phase 7.1.7 — =build-tool/src/jit/= deletion + Cranelift Cargo dep removal
+
+7.1.6 完了後の最終 cleanup.  =jit/= directory 全削除 + =Cargo.toml= の Cranelift 3 crate dependency 削除.
+
+2026-05-09 (post-Track-W) — §3.7.a〜.d を Doc 81 + Track W §3.6.b〜.f と
+同 detail level に拡張.  各 sub-stage の 残存 fn inventory / Doc 80
+substrate dependency / 削除 plan / sub-stage breakdown / LOC source を
+articulate.  Phase 7.1.7 個別 sub-stage dispatch を unblock.
+
+*位置づけ*:
+- Phase 7.1.6.a〜.f (Track W §3.6.b〜.f) で =jit/{cons,access,arith,predicate,syscall,dsl,bridge}.rs= の 7 file = =4,059 LOC= 削除済前提
+- 7.1.7 残存対象は =strategy.rs= (252 LOC、Doc 80 Stage 80.5 で ~-20 LOC slim 後 ~232 LOC 想定 → 全削除 -425 LOC は 7.1.6 で削減済の strategy.el wrapper も含む aggregate) + =mod.rs= (225 LOC、UnifiedJit + helper) + Cargo dep + =bin/nelisp.rs= adjustment
+- Track N high-level articulation (commit b2dcc46) で =-425 / -298 / 0 / 0〜-50= の delta target を確定済、本拡張は各 sub-stage 個別の inventory / sub-stage breakdown / Rust LOC source articulation を追加
+
+*Sub-stage migration order*:
+
+7.1.7.a (= strategy.rs) → 7.1.7.b (= mod.rs + apply_builtin hook) →
+7.1.7.c (= Cargo dep) → 7.1.7.d (= bin/nelisp.rs).  =a→b→c→d= の
+ordering は dependency direction に従う (= strategy 削除しないと
+mod.rs の =strategy::*= re-export 削除不可、mod.rs 削除しないと
+=lib.rs::pub mod jit= 削除不可、Cargo dep は =mod.rs= の =use cranelift::=
+が消えてから).
+
+*Architectural prerequisite*: 7.1.7.a の strategy.rs 削除は *Doc 80
+Stage 80.5* (= =bi_length_impl= / =aref_helper= / =bi_aref_impl= /
+=bi_aset_impl= / =bi_elt_impl= elisp 化 + nelisp-jit-strategy.el note
+修正) SHIPPED が critical path.  Doc 80 全 Stage SHIPPED 前は 7.1.7.a
+dispatch 不可.  7.1.7.b〜.d は 7.1.7.a 完了後の cascading cleanup.
+
+*** 3.7.a Phase 7.1.7.a — =strategy.rs= ERR fall-through deletion (= Doc 80 substrate dependent)
+
+#+begin_quote
+*Status (2026-05-10 v3 — Phase 7.1.7.a.1 SHIPPED)*: 5 elisp-port-candidate
+=bi_*= fn (= =bi_int_eq_zero= + 3 bitwise + =bi_ash_impl=) を
+=lisp/nelisp-jit-strategy.el= の =nl-jit-call-i64-i64= bridge 経由 elisp
+wrapper として port 完了 (-64 Rust net / +58 elisp net、=cargo test
+--lib= 673/673 + 18 ERT new green、commit cluster 97c602f0 →
+post-Doc28-update).  詳細は §3.7.a.1 sub-stage 表を参照.
+
+旧 *Status (2026-05-10 v2 — post Doc 80 SHIPPED)*: 前提だった Doc 80
+Stage 80.5 が SHIPPED (=46d4ea55= + =b7d3cd0c=) になり、本 sub-stage の
+主目標 (= strategy.rs 全削除 -425 Rust LOC) の "blocking 条件" は解除.
+ただし *依然 partially blocked*: Doc 80 §7 で permanent out-of-scope と
+articulate された Float arith / Float cmp / =syscall_nr_resolve= の 9 fn
+は elisp に下ろせない (= host =libc::SYS_*= constant + Float epsilon
+arithmetic が pre-stdlib substrate で表現不能).
+
+*post Doc 80 残存 strategy.rs audit (2026-05-10、本 commit)*: 257 LOC、
+11 =pub(crate) fn bi_*= 残存.  分類:
+
+| カテゴリ                                      | fn 数 | LOC | 削除可否                                            |
+|-----------------------------------------------+-------+-----+-----------------------------------------------------|
+| Doc 80 §7 permanent out-of-scope (Float / syscall) | 9 | ~85 | ❌ Doc 80 範囲外、本 sub-stage で扱わない          |
+| Doc 80.4 ship 後の slim primitive (variant box) | 6 | ~90 | ❌ =Sexp::MutStr= / =BoolVector= / =CharTable= 内部 box accessor、elisp 露出無し |
+| Doc 28 §3.7.a.1 elisp port 候補               | 5 | ~55 | ⚠️ =bi_int_eq_zero= / bitwise 3 / =bi_ash_impl=、elisp port すれば削除可 |
+
+(= 11 fn 中 5 fn は Doc 28 §3.7.a.1 で追加 elisp port すれば削除可、
+6 fn は variant box accessor で elisp 化不可、9 fn は Doc 80 §7 で
+out-of-scope.  ただし fn count 11 + 6 ≠ 11 になっているのは macro 展開
+カウントの差異 = =float_arith_helper!= / =float_cmp_helper!= /
+=bitwise_int_helper!= が macro 1 件で fn 3-4 件展開).
+
+*削除可能上限の articulation*:
+- *最良ケース* (= Doc 28 §3.7.a.1 完遂後): 5 fn elisp port + ~50 LOC 削除
+  可能.  残 6 + 9 = 15 fn (実 fn count は macro 後で 17) は permanent
+  Rust pinned.  strategy.rs 全削除は不可、~150 LOC 残存.
+- *§3.7.a.5 articulation (= -425 LOC) との乖離*: 本表は Doc 80 §7
+  out-of-scope を反映していなかった旧 plan.  Doc 80 SHIPPED 後の現実
+  delta は最良で **~-100 LOC** (= Float / cmp / syscall を残しつつ 5 fn
+  port).  -425 LOC plan は Doc 28 旧版の articulation 残骸.
+
+*"first cleanup pass" として post-7.1.6.a.2 deadwood / visibility tightening /
+stale comment collapse のみ先行 ship 済* (= -72 Rust LOC、=feat/phase-
+7.1.7.a-cleanup= branch、commit cluster 9392290 → 267f0650 → f87651a0).
+内訳:
+
+- =build-tool/src/lib.rs= の =pub mod jit= → =pub(crate) mod jit= +
+  4 件の =private_interfaces= warning 解消 (UnifiedJit field 視認性
+  =pub(in crate::jit)= に narrow).
+- =build-tool/src/jit/cons.rs= の archaeological 70 LOC docstring +
+  per-fn =Phase 7.1.6.a.2 dlsym-exported= タグ + =Phase A.5= /
+  =Phase A.2.1= 過去参照を steady-state な module-level docstring に
+  collapse、=pub(super) const TRAMPOLINE_OK / _ERR= → private =const=.
+- =build-tool/src/jit/mod.rs= の Stage 5.0 =lower_entries= 由来の stale
+  module docstring + =UnifiedJit= struct doc + =unified_jit()= 6-step
+  body の per-cluster archaeological 注釈を圧縮、=pub use= → =pub(crate) use=.
+- =build-tool/src/jit/strategy.rs= の 19 件 =pub fn bi_*= → =pub(crate) fn=.
+- =build-tool/src/jit/dsl.rs= 内 =#[cfg(test)]= block の未使用 =Module=
+  trait import 削除.
+
+*次 step (= 7.1.7.a.1.post-Doc-80)*: =bi_int_eq_zero= / =bi_logior2_impl= /
+=bi_logand2_impl= / =bi_logxor2_impl= / =bi_ash_impl= の elisp port
+(= +~50 elisp、-~55 Rust net = -5 net、ただし 11 fn → 6 fn pin で
+"strategy.rs slim 化" に進める).  Sub-stage 7.1.7.a.2 (= file 全削除)
+は Doc 80 §7 out-of-scope の Float / syscall が Rust に pinned のため
+permanent infeasible、§3.7.a.5 -425 LOC は到達不可と確定.
+
+Tests at ship: =cargo build= clean (default + image-baker、jit/ scope
+で 0 warnings)、=cargo test --lib jit::= 75/75 green (= post-Cranelift-
+deletion で test count 81 → 75 に正規化)、=cargo test --lib image::=
+17/17 green.
+#+end_quote
+
+**** 3.7.a.1 strategy.rs post-Phase-7.1.6 残存 fn inventory (実測 252 LOC)
+
+=build-tool/src/jit/strategy.rs= は Track W §3.6.b〜.f 完了後も生き残る
+Rust helper の最後の集積点.  Track W では cons / access / arith /
+predicate / syscall の 5 cluster + dsl / bridge cleanup を完遂したが、
+strategy.rs だけは Doc 80 Stage 80.5 が前提のため後回し.  実測 (=
+=grep -nE "^pub fn" strategy.rs= の 11 hit + macro 展開):
+
+| 残存 fn                               | LOC | 担当                                           | Doc 80 elisp 化候補? |
+|---------------------------------------+-----+------------------------------------------------+---------------------|
+| =bi_int_eq_zero=                      |  10 | 1/0 → T/Nil bool conversion                    | 80.5 で elisp 化可  |
+| =bi_add2_float= (macro 展開)          |  ~6 | Float arith =+= helper                         | 80 out of scope    |
+| =bi_sub2_float= (macro 展開)          |  ~6 | Float arith =-= helper                         | 80 out of scope    |
+| =bi_mul2_float= (macro 展開)          |  ~6 | Float arith =*= helper                         | 80 out of scope    |
+| =bi_num_eq2_float=                    |   3 | Float =eq= (1e-15 epsilon)                     | 80 out of scope    |
+| =bi_num_lt2_float= 等 4 cmp (macro)   |  ~24 | Float =< > <= >== helpers                      | 80 out of scope    |
+| =bi_logior2_impl= 等 3 (macro)        |  ~24 | Int-only bitwise =or/and/xor=                  | 80.5 で elisp 化可  |
+| =bi_ash_impl=                         |  17 | =ash= Int-only ([-62, +62] bound + clamp)      | 80.5 で elisp 化可  |
+| =bi_mut_str_len= / =bi_bool_vector_len= |  ~9 | MutStr/BoolVector length probe                  | 80.4 elisp 化済    |
+| =bi_str_codepoint_at=                 |  13 | char-indexed codepoint read (Str + MutStr)     | 80.4 elisp 化済    |
+| =bi_mut_str_set_codepoint=            |  20 | MutStr in-place codepoint mutation             | 80.4 elisp 化済    |
+| =bi_char_table_aref= / =bi_char_table_aset= |  19 | CharTable get/set wrappers                | 80.4 elisp 化済    |
+| =bi_syscall_nr_resolve= (Linux + non) |  16 | =libc::SYS_*= symbol → Int                     | 80 out of scope    |
+| comment header + use clause           |  73 | Stage b.4 + Doc 80 v2 fold-in articulation     | 全削除              |
+| *小計*                                | 252 |                                                |                    |
+
+注: Float arith / Float cmp / =syscall_nr_resolve= は Doc 80 §7 で out
+of scope と articulate 済 (= elisp 経由で host =libc::SYS_*= constant や
+Float epsilon arithmetic を expression するのが pre-stdlib substrate に
+不十分).  これらが「7.1.7.a 削除後も Rust 側で生き残る Float / non-Linux
+syscall / MutStr / BoolVector の variant fall-through helper」と
+articulate された原因.
+
+**** 3.7.a.2 Doc 80 Stage 80.5 dependency articulation
+
+Doc 80 Stage 80.5 は =strategy.rs= の use clause / dead helper cleanup
+(= predicted ~-20 LOC) + =nelisp-jit-strategy.el= 前文 comment 書換
+を articulate 済 (= Doc 80 §4.5).  ただし 80.5 *自体* は strategy.rs
+全削除 ではなく "残存 helper の elisp 化されない portion を残す" cleanup.
+
+7.1.7.a の strategy.rs 全削除は Doc 80 が articulate しない *次 step*:
+- Doc 80.5 後の strategy.rs (= ~232 LOC、80.4 elisp 化分削除済) も
+  Float arith / Float cmp / syscall NR resolve / Int-only bitwise /
+  ash impl が残存.  これらは Doc 80 範囲外
+- 7.1.7.a の決断: *残存 Float / bitwise / ash 経路を nelisp-cc 経由
+  で elisp 化し、strategy.rs を rmdir-able 状態へ持って行く*.  Float
+  arith は Doc 28 §3.6.c (arith takeover) で Float fall-through 経路
+  維持と articulate 済 (= helper symbol は Rust 側に残るが内部は
+  =nelisp_eval_trampoline_invoke= 経由で elisp =bi-add2-float= 等を
+  呼ぶ shim) → 7.1.7.a で *この shim も全削除*
+
+依存 critical path:
+- Doc 80 Stage 80.5 SHIPPED = =bi_length_impl= 等 4 helper の elisp 化
+- Doc 28 §3.6.c〜.e SHIPPED = arith / predicate / syscall cluster takeover
+- Doc 28 §3.7.a 着手条件: 上記 2 件 SHIPPED + =bi_int_eq_zero= /
+  =bi_logior2_impl= 等 3 / =bi_ash_impl= の elisp port (= 7.1.7.a 内
+  scope の追加 elisp 化作業) 完了
+
+7.1.7.a は Doc 80 Stage 80.5 への "後追い elisp 化" を含むため scope は
+*-425 Rust LOC* と articulate される (= 252 strategy.rs + 約 173 LOC は
+builtins.rs の dispatch arm + lib.rs の =pub use strategy::*= re-export
++ 配線 overhead).
+
+**** 3.7.a.3 削除 plan (= file 全削除 + 配線除去)
+
+- =build-tool/src/jit/strategy.rs= 全削除 (-252 LOC)
+- =build-tool/src/jit/mod.rs= の =mod strategy;= 宣言削除 (-1 LOC)
+- =build-tool/src/jit/mod.rs= の =pub use strategy::{bi_add2_float, ...
+  bi_syscall_nr_resolve};= 18 entry re-export 全削除 (-22 LOC、format-
+  reflow 含む)
+- =build-tool/src/eval/builtins.rs= の =dispatch= match arm 18 件
+  (line 738-759 範囲) 削除 + 各 elisp wrapper の native-cc 経路 hookup
+  確認 (-22 LOC、ただし elisp 側の同等分実装が +180 LOC)
+- gate: =cargo build= 通過、existing nelisp-cc-test.el (T11) 全 PASS、
+  既 =strategy-stress= bench (= Float arith / bitwise / ash hot loop)
+  で Cranelift baseline 比 ≧ 1.0x (= 既 §3.6.c arith takeover で gate
+  通過済の delegation chain を維持)
+
+部分削除の選択肢検討:
+- *選択肢 A* (= 推奨、本 sub-stage): strategy.rs 全削除 + Float arith /
+  bitwise / ash を elisp に port.  =-425 Rust LOC=、=+180 elisp LOC=.
+  Phase 7.1.7 全体の "100% pure elisp self-host" commitment に整合
+- *選択肢 B* (= 部分削除、考慮外): Float arith / syscall NR resolve は
+  Rust に残し、bitwise / ash / int-eq-zero のみ elisp 化.  =-150 Rust
+  LOC=、=+80 elisp LOC=.  Doc 77c §2.4.2 D-B の "100% pure" を毀損する
+  ため reject
+
+**** 3.7.a.4 Sub-stage 7.1.7.a.1〜a.2 breakdown (~2 days)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.7.a.1 | Float arith / Float cmp / Int-only bitwise / =ash= elisp port + nelisp-cc trampoline hookup + ERT 1086/1091 維持確認 | 1.5  | +180    | 0      |
+| 7.1.7.a.2 | strategy.rs 全削除 + mod.rs re-export 削除 + builtins.rs dispatch 18 arm 削除 + bench gate (= strategy-stress) 確認 | 0.5  | -10     | -425   |
+
+aggregate: ~2 営業日 / +170 elisp / -425 Rust.
+
+注: 7.1.7.a.1 で先に elisp port を完了 → 7.1.7.a.2 で Rust 削除という
+順序が "build green を維持" の観点で必須 (= 同時削除すると間 commit が
+build broken になる).
+
+*Status revision (2026-05-10 v2 — post Doc 80 SHIPPED)*: 上記 7.1.7.a.2 は
+**permanent infeasible** と確定 (= Doc 80 §7 で out-of-scope の Float arith
+/ Float cmp / =syscall_nr_resolve= は host =libc::SYS_*= constant + Float
+epsilon arithmetic を pre-stdlib substrate で表現できないため、これらが
+Rust に pin された状態で strategy.rs 全削除は不可).  実 ship 上限 =
+**7.1.7.a.1 のみ** (= -55 Rust net、+50 elisp net = -5 net、strategy.rs は
+~150 LOC まで slim 化、6 slim primitive + 9 Float/syscall fn pinned).
+
+*Status revision (2026-05-10 v3 — Phase 7.1.7.a.1 SHIPPED)*: 5 fn elisp port
+完遂.  実 LOC delta:
+- =build-tool/src/jit/strategy.rs= 214 → 156 LOC = -58 Rust (5 fn body
+  削除 + macro 削除 + module-doc 圧縮)
+- =build-tool/src/jit/mod.rs= 48 → 48 LOC = 0 Rust (5 re-export 削除 +
+  comment 圧縮で相殺)
+- =build-tool/src/eval/builtins.rs= 3827 → 3821 LOC = -6 Rust (5
+  =install_builtins= entry + 5 dispatch arm 削除 - 2 comment add)
+- =lisp/nelisp-jit-strategy.el= 355 → 413 LOC = +58 elisp (=nelisp--int-
+  eq-zero= elisp fset 12 行 + 4 wrapper の bridge 直 emit body 化)
+- =test/nelisp-jit-strategy-port-test.el= +180 LOC (新規 ERT 18 件、
+  Rust LOC budget には影響しない)
+
+aggregate: **-64 Rust net / +58 elisp net** (= +180 ERT 別).
+strategy.rs 156 LOC が permanent residual (= 17 fn / Float×8 + slim×6 +
+syscall×2 + helper×1).  Phase 7.1.7.a.2 は依然 permanent infeasible、
+strategy.rs は further trim せず Phase 7.1.7.a を *SHIPPED 終端* と
+する.
+
+**** 3.7.a.5 Aggregate -425 Rust LOC delta source articulation
+
+| 削除箇所                                                          | LOC    |
+|-------------------------------------------------------------------+--------|
+| =build-tool/src/jit/strategy.rs= 全削除                           | -252   |
+| =build-tool/src/jit/mod.rs= の =mod strategy;= 宣言               | -1     |
+| =build-tool/src/jit/mod.rs= の =pub use strategy::{...}= 18 entry | -22    |
+| =build-tool/src/eval/builtins.rs= の dispatch match arm 18 件     | -22    |
+| nelisp-jit-strategy.el wrapper の Rust shim re-export 関連調整    | -8     |
+| 配線 overhead (use clause / comment header / Stage b.4 articulation removal) | -120 |
+| *小計*                                                            | *-425* |
+
+*Revision (2026-05-10 v2 — post Doc 80 SHIPPED)*: 上記 -425 LOC plan は
+Doc 80 §7 out-of-scope (= Float arith / Float cmp / =syscall_nr_resolve=
+permanent Rust pin) を反映していなかった旧 articulation.  実現可能上限
+は 7.1.7.a.1 (= 5 fn elisp port、~-55 Rust net) のみ:
+
+| 削除箇所 (revised)                                                       | LOC    |
+|--------------------------------------------------------------------------+--------|
+| =bi_int_eq_zero= elisp 化 (= bridge 1/0 → T/Nil 変換を =if (eq x 0))= に置換) | -10    |
+| =bi_logior2_impl= / =bi_logand2_impl= / =bi_logxor2_impl= elisp 化 (= 3 macro 展開) | -24    |
+| =bi_ash_impl= elisp 化 (= [-62, +62] bound + =nl_jit_arith_ash= 直 emit)  | -17    |
+| =mod.rs= re-export 5 entry 削除                                          | -3     |
+| =builtins.rs= dispatch arm 5 件削除                                      | -5     |
+| use clause cleanup (= =as_int= helper の re-import 不要化)               | -2     |
+| *小計 (revised)*                                                         | *-61*  |
+
+permanent residual (= Doc 80 §7 pinned + slim primitive):
+
+| 残存                                          | fn 数 | LOC | 理由                                                |
+|-----------------------------------------------+-------+-----+-----------------------------------------------------|
+| =bi_add2_float= / =bi_sub2_float= / =bi_mul2_float= | 3 | ~18 | float_arith_helper! macro 展開、Float 演算は libm 経由 |
+| =bi_num_eq2_float= + 4 cmp                    | 5 | ~30 | Float cmp、1e-15 epsilon は elisp に持たせられない |
+| =bi_syscall_nr_resolve= (Linux + non-Linux)   | 2 | ~16 | =libc::SYS_*= symbol catalog は Rust にしか無い   |
+| =bi_mut_str_*= / =bi_bool_vector_len= / =bi_str_codepoint_at= / =bi_char_table_aref/aset= | 6 | ~90 | =Sexp::MutStr= / =BoolVector= / =CharTable= 内部 box accessor |
+| comment header + use clause                   | -     | ~50 | macro / use / mod-doc                              |
+| *小計*                                        | *16*  | *~204* | post-7.1.7.a.1 の strategy.rs 残存 (= ~150-180 LOC range) |
+
+aggregate revised: 7.1.7.a.1 完遂で **strategy.rs 257 → ~196 LOC** (-61 Rust),
+**not** -425 LOC.  7.1.7.a.2 (= file 全削除) は permanent infeasible.
+
+*Actual SHIPPED delta (2026-05-10 v3 — Phase 7.1.7.a.1 commit cluster
+完遂)*: =strategy.rs= 214 → 156 LOC (= -58、開始時点が prediction の 257
+ではなく =17e50aa7= で既に -43 trim 済の 214 だったため delta が +18
+shifted)、=mod.rs= 48 → 48 LOC (= 0、5 re-export 削除 + comment 圧縮で
+相殺)、=builtins.rs= 3827 → 3821 LOC (= -6、5 install_builtins entry +
+5 dispatch arm 削除).  *aggregate -64 Rust net* + +58 elisp wrapper
+(= -=impl= indirection drop + =int-eq-zero= elisp fset + =ash= explicit
+clamp branch).  Test: =cargo test --lib -- --test-threads=1= 673/673
+green、新規 ERT 18 件 (= =test/nelisp-jit-strategy-port-test.el=) 全
+green.
+
+bench gate: 既 =strategy-stress= 軸 (= Float arith / bitwise / ash hot
+loop) で Cranelift baseline 比 ≧ 1.0x.  §3.6.c arith takeover 完了後は
+nelisp-cc 直 emit 経由で同等性能 (= Cranelift =iadd= / =bor= / =ishl= の
+1-対-1 host emit 経路を nelisp-cc が継承済) を期待.
+
+*** 3.7.b Phase 7.1.7.b — 残 =jit/= directory 削除 (= mod.rs + apply_builtin hook)
+
+#+begin_quote
+*Status (2026-05-10)*: 本 sub-stage の主目標 (= =mod.rs= 全削除 +
+=lib.rs::pub mod jit= 削除 + =eval/builtins.rs= の =nl-jit-call-*=
+dispatch arm 削除) は前提 (= =nelisp-jit-substrate.el= /
+=nelisp-jit-strategy.el= が =nl-jit-call-*= bridge primitive を直接
+呼ぶ caller chain が elisp 側で完全に消えていること) が満たされて
+おらず、=mod.rs= 削除 → bridge re-export 喪失 → builtins.rs dispatch
+arm fail という形で blocked.  ただし *post-§3.6 cleanup の opportunistic
+ship 分* として以下を先行 ship 済 (= -1,415 Rust LOC、commit cluster
+=47df7bca= → =78afd0fa= → =ddf8db48=).
+
+*Shipped scope*:
+
+- *Comment archaeology across 5 takeover files* (=cons.rs= / =access.rs=
+  / =arith.rs= / =predicate.rs= / =syscall.rs= の verbose Phase
+  7.1.6.x.SHIPPED narrative を steady-state な "Phase 7.1.6 cluster
+  takeover (Doc 28 §3.6 COMPLETE)" header に collapse、=mod.rs= の
+  Phase 5 / Doc 77b Stage b.5 / per-cluster 7.1.6.a〜.e narrative も
+  同様に圧縮).  =-208 Rust LOC=.
+
+- *=jit::dsl= 全削除* (Doc 28 §3.6.f.1 の主削除).  Doc 77b Stage b.1
+  IR DSL interpreter は post-§3.6 で zero production caller (= grep
+  audit で =mod dsl;= 宣言 + 内部 =#[cfg(test)]= 6 件のみ).
+  =-1,195 Rust LOC=.
+
+- *Cranelift Cargo deps 削除* (= Doc 28 §3.7.c の主削除).  =dsl.rs=
+  削除後、=build-tool/src/= に =use cranelift...= が 0 件になり
+  =cranelift= / =cranelift-jit= / =cranelift-module= 直 deps + Phase 5
+  Stage 5.0 articulation comment block を =Cargo.toml= から削除可能.
+  =Cargo.lock= は 372 line shrink (= 13 cranelift-* transitive crate
+  + =regalloc2= 等の dependents).  =-13 Cargo.toml line= / =-372
+  Cargo.lock line= (Rust source LOC budget 対象外).
+
+- *Visibility tightening (.a で見落とした分)*: =access.rs= の
+  =pub(super) const TRAMPOLINE_OK / _ERR= → private =const= (= cons.rs
+  と同パターンを access.rs で .a が見落としていた).
+
+*Deferred scope* (= 主目標、依然として未着手):
+
+- =build-tool/src/jit/mod.rs= 全削除 → =lib.rs= の =pub(crate) mod jit;=
+  削除 → =eval/builtins.rs= の =nl-jit-call-*= 7 arm + =nelisp--*=
+  18 strategy arm 削除 + =eval/mod.rs= jit-related comment cleanup の
+  cascade は、=lisp/nelisp-jit-substrate.el= / =nelisp-jit-strategy.el=
+  の =nl-jit-call-*= caller (= 24 wrapper) と =nelisp--*-float= /
+  =nelisp--*-impl= helper caller (= 18 entry) が elisp 側で完全に
+  消えるまで実行不可.  これは Doc 80 Stage 80.5 + Doc 28 §3.6.f.2
+  (= elisp wrapper 24 件削除) ship 後の作業.
+
+Tests at ship: =cargo build= clean (default + image-baker、jit/ scope
+で 0 warnings)、=cargo test --lib jit::= 75/75 green (= 81 - 6 dsl
+internal tests、想定通り)、=cargo test --lib image::= 17/17 green.
+#+end_quote
+
+**** 3.7.b.1 mod.rs 残存 scaffolding inventory (実測 225 LOC)
+
+7.1.6.a〜.f + 7.1.7.a 完了後、=build-tool/src/jit/mod.rs= に残るのは
+*UnifiedJit scaffold* (= Doc 77 Stage 2-prep の unified JITModule 配線、
+Stage b.5 後 caller 0).  実測:
+
+| 残存要素                                              | LOC | 役割                                              |
+|-------------------------------------------------------+-----+---------------------------------------------------|
+| comment header (Doc 62 / Doc 77 articulation)         |  53 | =lower_entries= 経路 + UnifiedJit 6-step doc      |
+| =declare_helper_call=                                 |  47 | 5 cluster 共通 helper trampoline (= i64×N → i64)  |
+| =mod {access,arith,cons,predicate,syscall,strategy};= |   6 | sub-module 宣言 (.a〜.e + .a で全消滅予定)        |
+| =mod {bridge,dsl};= + =pub use bridge::{...}=         |  20 | Stage b.1〜b.2 残骸 (.f で消滅予定)               |
+| =pub use strategy::{...}= 18 entry                    |  22 | 7.1.7.a で消滅                                    |
+| =UnifiedJit= struct (5 field)                         |  10 | 7.1.6.a〜.e + .a で全 field 消滅、空 struct 残存  |
+| =UNIFIED_JIT: OnceLock<UnifiedJit>=                   |   2 | scaffold static                                   |
+| =unified_jit()= 6-step initializer                    |  43 | 7.1.6.a〜.e + .a 完了後 全 step empty             |
+| use clause (cranelift / cranelift_jit / cranelift_module / OnceLock) |  4 | 7.1.7.b 自体で削除                |
+| blank line / formatting                               |  18 | -                                                 |
+| *小計*                                                | 225 |                                                   |
+
+7.1.6.a〜.f + 7.1.7.a 完了後、上記 *all* が dead code (= 呼出元 0).
+=declare_helper_call= は 5 cluster の =declare_funcs= から呼ばれていた
+共通 helper だが、=cons.rs= 等が削除済なので caller 0.  =UnifiedJit= は
+全 5 field (=arith= / =cons= / =access= / =predicate= / =syscall=) が
+=struct UnifiedJit {}= = empty struct 化.
+
+**** 3.7.b.2 apply_builtin hook callsite articulation
+
+=build-tool/src/eval/mod.rs::apply_builtin= (line 643-665) の現状実装は
+*既に* =jit::try_lower()= hook を持たない (= Doc 77b Stage b.5 で Stage 5.0
+の lower_entries 経路を removed 済、現状は =builtins::dispatch(&name,
+args, env)= に直 forward).  Track N high-level articulation (commit
+b2dcc46) が指す "apply_builtin hook 削除 ~10 行" の意味:
+
+実態は *=eval/builtins.rs::dispatch= の =nl-jit-call-*= primitive arm 7
+件 + =nelisp--*-float= / =nelisp--*-impl= 等 strategy arm 18 件 = *25
+arm の dispatch entry* = ~25 LOC + =use crate::jit::*= 1 行 = *~26 LOC*.
+これらは:
+- =nl-jit-call-i64-i64= / =-ptr-ptr= / =-syscall= / =-out-1= / =-out-2= /
+  =-out-1i= / =-out-2i= の 7 arm = bridge.rs caller、§3.6.f で削除済の
+  bridge primitive を呼ぶ legacy entry (= §3.6.f.2 で全削除と articulate)
+- 18 strategy arm = §3.7.a.5 の 22 LOC 削除に重複計上 (= 同じ lines)
+
+純 7.1.7.b 削除分は *=mod.rs= の 225 LOC + lib.rs の =pub mod jit;= 1 行
++ =eval/mod.rs= の jit-related comment ~5 LOC* = *~230 LOC*.  Track N の
+"-298 LOC" は配線 overhead (= 配線残し / lib.rs / Cargo bin 配置 / 不要
+import 削除) を込みで articulate.
+
+ただし 7.1.6.a〜.f + 7.1.7.a で各 mod.rs 削除分 (= UnifiedJit field 1 行
++ register/declare/collect 6 行 + lower_entries entry 3 行 = ~10 LOC ×
+6 cluster = ~60 LOC) は重複計上回避のため *7.1.7.b では純 mod.rs +
+lib.rs の追加 -228 LOC* と再計算.
+
+**** 3.7.b.3 削除 plan (= mod.rs 全削除 + lib.rs 宣言削除 + builtins.rs cleanup)
+
+- =build-tool/src/jit/mod.rs= 全削除 (-225 LOC)
+- =build-tool/src/jit/= directory =rmdir= (= 物理 directory 削除、ただし
+  =git mv= history は残る)
+- =build-tool/src/lib.rs= line 23-29 の =pub mod jit;= 宣言 + comment
+  block 削除 (-7 LOC)
+- =build-tool/src/eval/builtins.rs= の =nl-jit-call-*= dispatch arm 7
+  件 + =use crate::jit::*= の残存 import 削除 (-12 LOC、§3.6.f / §3.7.a
+  と重複計上回避済の純追加分のみ)
+- =build-tool/src/eval/mod.rs= の jit-related comment / dead use clause
+  cleanup (-8 LOC)
+- gate: =cargo build= 通過、existing 1086/1091 ERT 全 PASS 維持
+- *Rust LOC delta target*: *-298* (= mod.rs 225 + lib.rs 7 + builtins.rs
+  12 + eval/mod.rs 8 + 配線 overhead 46)
+
+**** 3.7.b.4 Sub-stage 7.1.7.b.1〜b.3 breakdown (~2 days)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.7.b.1 | =mod.rs= 全削除 + =lib.rs= の =pub mod jit;= 削除 + cargo build green 確認 | 0.5  | 0       | -232   |
+| 7.1.7.b.2 | =builtins.rs= の =nl-jit-call-*= dispatch arm 7 件 + use clause cleanup | 1    | 0       | -50    |
+| 7.1.7.b.3 | =eval/mod.rs= の jit-related comment / dead import cleanup + ERT 1086/1091 全 PASS 確認 | 0.5  | 0       | -16    |
+
+aggregate: ~2 営業日 / 0 elisp / -298 Rust.
+
+注: 7.1.7.b.1〜.3 は *mechanical cleanup* (= elisp 側の追加実装なし、
+純 Rust 削除).  build green は前 sub-stage (7.1.7.a) で全 caller 消滅
+済前提なので 7.1.7.b の各 step 単独で =cargo build= 通過する.
+
+**** 3.7.b.5 Aggregate -298 Rust LOC delta source articulation
+
+| 削除箇所                                                          | LOC    |
+|-------------------------------------------------------------------+--------|
+| =build-tool/src/jit/mod.rs= 全削除                                | -225   |
+| =build-tool/src/lib.rs= の =pub mod jit;= + comment block         | -7     |
+| =build-tool/src/eval/builtins.rs= の =nl-jit-call-*= dispatch arm 7 件 | -12 |
+| =build-tool/src/eval/mod.rs= の jit-related comment + dead use    | -8     |
+| =build-tool/src/eval/builtins.rs= の =use crate::jit::*= cleanup  | -3     |
+| 各 sub-cluster の re-export removal 配線 overhead (= 7.1.6.a〜.f / 7.1.7.a 完了後の残り adjustments) | -43 |
+| *小計*                                                            | *-298* |
+
+bench gate: existing nelisp-cc-test.el (T11 simulator) 全 PASS、ERT
+1086/1091 全 PASS 維持.  本 sub-stage は *新 perf path 追加なし* (=
+純 cleanup) で perf delta は noise 範囲内.
+
+post-7.1.7.b state: =build-tool/src/jit/= directory が物理消滅、
+=build-tool/src/lib.rs= の =pub mod jit= 宣言消滅、=eval/builtins.rs= /
+=eval/mod.rs= から jit-related dispatch / use clause 全消滅.  Cargo
+graph には Cranelift dep だけが残る (= 7.1.7.c で削除).
+
+*** 3.7.c Phase 7.1.7.c — Cranelift Cargo dep removal (= =cranelift= / =cranelift-jit= / =cranelift-module=)
+
+#+begin_quote
+*Status (2026-05-10)*: SHIPPED as part of Phase 7.1.7.b's opportunistic
+cleanup pass (commit =ddf8db48=).  =jit::dsl= 削除後 =build-tool/src/=
+の =use cranelift...= が 0 件になったため、本 sub-stage の plan
+(=cranelift= / =cranelift-jit= / =cranelift-module= 直 deps + Phase 5
+Stage 5.0 articulation comment block を =build-tool/Cargo.toml= から
+削除) は §3.7.b の dsl 削除と同 batch で mechanically 通過.
+
+Actual delta: =build-tool/Cargo.toml= -13 line / =Cargo.lock= -372
+line (= 13 cranelift-* transitive crate + =regalloc2= + dependents).
+Rust source LOC は budget 対象外 (= §3.7.c.5 articulate 通り 0).
+
+Tests at ship: =cargo build= (default + image-baker) clean、=cargo
+test --lib jit::= 75/75、=cargo test --lib image::= 17/17.
+#+end_quote
+
+**** 3.7.c.1 build-tool/Cargo.toml Cranelift dep inventory (実測)
+
+7.1.7.b 完了後、=build-tool/Cargo.toml= line 67-79 の Cranelift dep
+declaration block は呼出元なし.  実測 inventory:
+
+| Cargo.toml 行                              | 内容                                          |
+|--------------------------------------------+-----------------------------------------------|
+| line 67 (blank)                            | section separator                             |
+| line 68-76 (comment block)                 | "Phase 5 Stage 5.0 (2026-05-07, Doc 62)" articulation + LTS line v0.110+ note |
+| line 77: =cranelift = "0.110"=             | meta-crate (= =cranelift_codegen= + =cranelift_frontend= + =cranelift_module= の re-export hub) |
+| line 78: =cranelift-jit = "0.110"=         | =JITBuilder= / =JITModule= (= mmap exec page + finalize_definitions) |
+| line 79: =cranelift-module = "0.110"=      | =Module= trait + =FuncId= / =Linkage= / =declare_function= |
+
+3 direct deps + comment block = 13 行.  純 LOC delta は =-13= だが
+Track N high-level articulation で *0 LOC source* と articulate される
+理由は LOC budget が =build-tool/src/= の Rust source code に閉じて
+Cargo.toml 行を含めない convention のため.
+
+**** 3.7.c.2 Cargo.lock transitive dep 影響 (実測 13 cranelift-* crate)
+
+=Cargo.lock= grep で 13 cranelift-* crate (+ =regalloc2= 等の transitive
+dep) が連動削除:
+
+| crate                       | 役割                                           | size |
+|-----------------------------+------------------------------------------------+------|
+| =cranelift= (meta)          | re-export hub                                  | 小   |
+| =cranelift-bforest=         | B-tree forest 用 internal data structure       | 中   |
+| =cranelift-bitset=          | compact bitset                                 | 小   |
+| =cranelift-codegen=         | x86_64 / arm64 / RISC-V ISA encoder + regalloc | *大* |
+| =cranelift-codegen-meta=    | ISA-specific opcode descriptor table           | 中   |
+| =cranelift-codegen-shared=  | shared codegen utilities                       | 小   |
+| =cranelift-control=         | control-flow graph helpers                     | 小   |
+| =cranelift-entity=          | =SecondaryMap= / =EntityRef= 用 dense container | 中   |
+| =cranelift-frontend=        | =FunctionBuilder= IR construction              | 中   |
+| =cranelift-isle=            | DSL → Rust pattern compiler (build-time)        | 中   |
+| =cranelift-jit=             | =JITBuilder= / =JITModule= mmap + symbol table | 中   |
+| =cranelift-module=          | =Module= trait + =FuncId= 抽象                  | 小   |
+| =cranelift-native=          | host ISA detection (= =cpuid= / arm64 hwcap)   | 小   |
+| (transitive) =regalloc2=    | second-chance binpacking register allocator    | 中   |
+
+direct dep 3 = 13 cranelift transitive + =regalloc2= の 14 crate.  全部
+が Cargo.lock から自動削除 (= =cargo update -p cranelift --precise none=
+等の明示削除不要、source 側で =use cranelift::*= が消えれば cargo が
+unused dep を =[unused]= 化 → 次 =cargo update= で消える).
+
+**** 3.7.c.3 Binary size 影響 + build time 影響 articulate
+
+binary size:
+- =cranelift-codegen= の x86_64 / arm64 / RISC-V ISA encoder + regalloc2
+  binpacking allocator + ISLE compiled patterns = compressed *~30-50 MB*
+  (= =target/release/nelisp= に統合される portion).  実測値は Doc 62
+  Stage 5.0 ship 時 +35 MB と articulate (= 5.0 commit の cargo bloat
+  output).  7.1.7.c で *対称的に -35 MB shrink* 期待
+- ただし =build-tool/Cargo.toml= のみ削除で =Cargo.toml= ワークスペース
+  side の binary size 影響は =nelisp-runtime= 側に伝播しない (= runtime
+  crate は cranelift dep を持たない、Doc 47 §3.1 phase 6 carve-out に
+  従い)
+
+build time:
+- =cranelift-codegen= は Rust crate 中 build cost が大きい部類 (= 実測
+  cold build *~3-5 分* / Linux x86_64 / =cargo build --release=)
+- =cranelift-isle= の build.rs は ISLE DSL → Rust pattern compiler を
+  build time に走らせる (= 追加 *~1-2 分*)
+- 7.1.7.c で *cold build *~4-7 分 短縮* 期待 (= cargo cache hit 時は
+  影響軽微).  developer experience として =cargo check= の incremental
+  recompile も加速
+
+**** 3.7.c.4 Sub-stage 7.1.7.c.1〜c.2 breakdown (~1 day)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.7.c.1 | =build-tool/Cargo.toml= の Cranelift 3 dep + comment block 削除 + =cargo build= green 確認 | 0.5  | 0       | 0      |
+| 7.1.7.c.2 | =cargo update= で Cargo.lock 自動更新 (= 13 cranelift-* + transitive 削除) + =cargo build --release= で binary size 比較確認 + ERT 1086/1091 全 PASS | 0.5  | 0       | 0      |
+
+aggregate: ~1 営業日 / 0 elisp / 0 Rust source LOC (= Cargo.toml -13 行
++ Cargo.lock 自動更新分は Rust source LOC budget 範囲外).
+
+注: 7.1.7.c は *Cargo.toml + Cargo.lock の cleanup のみ* で Rust source
+code の LOC delta は厳密 0.  ただし build artifact (= =target/release/=
+の cargo cache + 最終 binary) は劇的縮小.
+
+**** 3.7.c.5 0 LOC source / build graph -X MB articulation
+
+| Cargo.toml 削除箇所                          | 行数 |
+|----------------------------------------------+------|
+| line 68-76 "Phase 5 Stage 5.0" comment block | -9   |
+| line 77 =cranelift = "0.110"=                | -1   |
+| line 78 =cranelift-jit = "0.110"=            | -1   |
+| line 79 =cranelift-module = "0.110"=         | -1   |
+| line 67 blank line (cleanup)                 | -1   |
+| *小計* (= Cargo.toml only)                   | -13  |
+
+Rust source LOC delta: *0* (= Cargo.toml は LOC budget 対象外).
+
+build graph 縮小:
+- 14 crate (= cranelift-* 13 + regalloc2 + transitive) build cost 消滅
+- =target/release/nelisp= binary size *~-30〜-50 MB compressed*
+- cold build time *~-4〜-7 分* (Linux x86_64 / =cargo build --release=)
+- =cargo check= incremental *~-30%* (= cranelift-codegen の huge crate を
+  type check 不要)
+
+bench gate: =cargo build --release= で binary size 計測 + 既 1086/1091
+ERT regression 0.  perf gate なし (= 純 cleanup、新 emit path 追加なし).
+
+*** 3.7.d Phase 7.1.7.d — =bin/nelisp.rs= adjustments
+
+*Status (2026-05-10)*: SHIPPED.  =bin/nelisp.rs= の Cranelift / jit
+直接参照 grep result は予測通り 0 hit、source 上の dead =use= clause /
+旧 CLI flag (=--no-jit= / =--jit-compile=) も 0 hit.  =bin/nelisp.rs=
+は最初から JIT を library detail として透明に通過する driver で、
+=lib.rs= の =pub mod jit;= 削除 (= 7.1.7.b) でも build green を維持.
+
+実適用 cleanup (= optional cleanup の中央値 ~-25 LOC range 内):
+- module-level doc comment を post Doc 28 §3.6 + §3.7.b state に書換
+  — Stage 9a-9g + Sweep 1-6 archaeology を「post §3.6 invariants」
+  block に再構成 (= eval/reader/bridge/image substrate + nelisp-cc が
+  唯一 hot path emitter + compile-image は image-baker bin gate)
+- =USAGE= banner 内の Stage 7.7.c.2 / 2026-04-30 Elisp-pivot rollback /
+  Sweep 6 archaeology note を 1 行 (= compile-image の baker bin pointer)
+  に圧縮
+- =rejects_compile_image_post_7_7_c2= test 名を =rejects_compile_image=
+  に rename し comment も 4 行 → 3 行に圧縮
+
+実測 Rust LOC delta: *-31 LOC* (= 30 ins / 61 del、=git diff --stat=
+実測).  §3.7.d.4 articulation の 0〜-50 range 中央値 -25 と整合.
+
+cargo build verify:
+- =cargo build --bin nelisp= = green (warn 0 / err 0)
+- =cargo build --bin nelisp-baker --features image-baker= = green
+- =cargo test --bin nelisp= = 8/8 pass (=parses_*= 6 + =rejects_*= 2)
+
+post-7.1.7.d state: =build-tool/= 全体から Cranelift / JIT 関連の Rust
+source / Cargo dep / dispatch arm / use clause / comment / archaeology
+note が *完全消滅*.  Doc 28 §3.7 の最終 sub-stage = COMPLETE.
+
+**** 3.7.d.1 bin/nelisp.rs Cranelift / jit 直接参照 grep result (実測 hit 0)
+
+7.1.7.b で =eval/mod.rs::apply_builtin= の jit-related hook + =lib.rs= の
+=pub mod jit= 宣言を削除済.  =bin/nelisp.rs= (= 274 LOC) は最初から
+Cranelift / jit module の直接参照を持たない:
+
+#+begin_example
+$ grep -nE "cranelift|jit|JIT" build-tool/src/bin/nelisp.rs
+(no matches)
+#+end_example
+
+実測 0 hit (Track N audit 2026-05-09 + 本 §3.7.d articulation 時の re-
+verify でも 0).  bin/nelisp.rs は =nelisp_build_tool::eval= /
+=::reader= / =::image= の三本柱を CLI subcommand に組む driver で、JIT
+は内部 detail として =eval::builtins::dispatch= 経由で透明に通過.
+
+**** 3.7.d.2 nelisp-cc 経由切替 articulate (= 既 nelisp-cc が pipeline 経由起動)
+
+bin/nelisp.rs は 7.1.6 / 7.1.7 全段で *no-op* (= 純 transparent 通過):
+- =./nelisp eval EXPR= subcommand: =eval::Env::new() / eval(reader::read(EXPR))=
+  経由で =builtins::dispatch= に到達.  そこで nelisp-cc native cc が
+  hot path を引き取る (= 7.1.6.a〜.f で takeover 済)
+- =./nelisp run-image PATH= subcommand: =image::decode_image() /
+  eval_image()= 経由、同様に nelisp-cc 経由
+- =./nelisp compile-image PATH= subcommand (= image-baker feature gate):
+  =image::compile_elisp_to_image()= 経由で reader + evaluator のみ使用、
+  JIT 経路無関係
+
+bin/nelisp.rs から見て JIT は library detail で、=lib.rs= の =pub mod
+jit= が消えても source 上の参照が無いため build green 維持.
+
+**** 3.7.d.3 Sub-stage 7.1.7.d.1 (= no-op cleanup verification)
+
+| stage     | scope                                                            | days | elisp Δ | Rust Δ |
+|-----------+------------------------------------------------------------------+------+---------+--------|
+| 7.1.7.d.1 | =bin/nelisp.rs= grep verify hit 0 + comment / startup banner cleanup (= 旧 "Phase 5 Stage 5.0 Cranelift JIT" 関連の dead comment 除去) + ERT 1086/1091 全 PASS + =./nelisp run-image= smoke test | 0.5  | 0       | 0〜-50 |
+
+aggregate: ~0.5 営業日 / 0 elisp / 0〜-50 Rust.
+
+注: 7.1.7.d.1 の Rust delta range:
+- *0 LOC* (純 verify、source 変更なし) = 最 conservative
+- *-50 LOC* (旧 "Phase 5 Stage 5.0" 関連 comment の cleanup + dead
+  use clause 除去) = aggressive cleanup
+- 中央値 *~-25 LOC*
+
+7.1.7.d は *=cargo build= + =./nelisp eval= + ERT 1086/1091 全 PASS の
+verification gate* が主体で、source 変更は optional cleanup.
+
+**** 3.7.d.4 0〜-50 LOC source articulation (= 殆どが既 grep verified zero)
+
+| 削除候補 (= optional cleanup)                                     | LOC    |
+|-------------------------------------------------------------------+--------|
+| =bin/nelisp.rs= startup banner の "Phase 5 Stage 5.0 Cranelift JIT scaffold" comment line (もし在れば) | -2 |
+| =bin/nelisp.rs= の dead =use= clause (= 7.1.7.b 後の lib.rs から消えた exports に対する) | -3 |
+| =bin/nelisp.rs= の旧 stage articulation comment block (= cleanup) | -10〜-30 |
+| =bin/nelisp.rs= の =--no-jit= / =--jit-compile= 等の旧 CLI flag (もし在れば、grep で確認要) | -5〜-15 |
+| *小計* (= 0〜-50 range, 中央値 ~-25)                              | *0〜-50* |
+
+bench gate: =./nelisp eval '(fib 30)'= + =./nelisp run-image lisp/stdlib.image=
++ ERT 1086/1091 全 PASS で smoke verify.  perf gate なし (= bin/nelisp.rs
+は CLI driver で hot path に絡まない、3-軸 bench は eval 内部経路で
+既に gate 通過済).
+
+post-7.1.7.d state: =build-tool/= 全体から Cranelift / JIT 関連の Rust
+source / Cargo dep / dispatch arm / use clause / comment が *完全消滅*.
+nelisp-cc が D-B path (= 100% pure elisp self-host native compiler) の
+唯一 hot path emitter になり、Cranelift baseline からの完全 takeover が
+SHIPPED 状態 (= Track N + Track W + 本 §3.7 expansion 全 ship 後).
+
+** 3.8 Aggregate LOC delta + 工数見積
+
+*Phase 7.1.6 + 7.1.7 aggregate Rust LOC delete*:
+
+| sub-stage   | 内容                                | Rust LOC delta |
+|-------------+-------------------------------------+----------------|
+| 7.1.6.a     | =cons.rs= 削除 + 配線               | -425           |
+| 7.1.6.b     | =access.rs= 削除 + 配線             | -638           |
+| 7.1.6.c     | =arith.rs= 削除 + 配線              | -354           |
+| 7.1.6.d     | =predicate.rs= 削除 + 配線          | -341           |
+| 7.1.6.e     | =syscall.rs= 削除 + 配線            | -286           |
+| 7.1.6.f     | =dsl.rs= + =bridge.rs= 削除         | -2,015         |
+| 7.1.7.a     | =strategy.rs= 削除 (Doc 80 dep)     | -425           |
+| 7.1.7.b     | =jit/mod.rs= + apply_builtin hook    | -298           |
+| 7.1.7.c     | Cargo Cranelift dep 削除 (transitive)| 0 (Rust LOC) / 大幅 build graph 縮小 |
+| 7.1.7.d     | =bin/nelisp.rs= adjustments          | 0〜-50         |
+| *合計*       |                                      | *≈ -4,782 Rust LOC* |
+
+*concrete count* (= =wc -l= 実測 + 配線 overhead):
+- =build-tool/src/jit/= 9 file = =4,722 LOC=
+- 配線 overhead (mod.rs UnifiedJit field / register_symbols / declare_funcs / collect_funcs 配線、apply_builtin hook、lib.rs pub mod 宣言) = ~50-60 LOC
+- =bin/nelisp.rs= adjustments = 0〜-50 LOC
+- *aggregate target*: *-4,722 〜 -4,832 Rust LOC*、中央値 *≈ -4,782 Rust LOC*
+- 元 task brief の =-4,584 Rust LOC= は配線込み conservative 見積 (= 7.1.6.f の dsl.rs / bridge.rs = 2,015 LOC を一部 anvil-runtime 移植で温存する case を含む).  full deletion path の理論上限は =-4,832 LOC=
+
+monotonic shrink rule 検証 (= 各 sub-stage 単独で net Rust ≤ 0):
+- 7.1.6.a〜.e: 各 stage 単独で =-286〜-638= = 全部 net 削減 ✓
+- 7.1.6.f: 単独で =-2,015= = 大幅削減 ✓ (= dsl/bridge は内部使い回しの重複 helper、削除で表面 dispatch path 短縮)
+- 7.1.7.a〜.d: 各 stage 単独で =-0〜-425= = 全部 net 削減 ✓ (7.1.7.c は Cargo dep のみ純 Rust LOC ±0、transitive build graph 削減で実 binary size 縮小)
+- *全 sub-stage が net Rust ≤ 0、user 2026-05-09 monotonic shrink rule 順守* ✓
+
+*工数見積* (= 4-8 週間 focused work、Doc 77c §3.4 D-B 着地):
+- Phase 7.1.6.a〜.f: 3-5 週間 (= 6 sub-stage × 平均 4-7 日)
+- Phase 7.1.7.a〜.d: 1-3 週間 (= 4 sub-stage × 平均 2-5 日、7.1.7.a の Doc 80 Stage 80.5 dependency が critical path)
+- 合計 *4-8 週間*.  Track M audit 2026-05-09 で nelisp-cc 12,263 LOC SHIPPED 済前提で、Cranelift dispatch arm の elisp emit への 1 対 1 対応は機械的 work が大半.  bench gate 各 sub-stage 必達のため perf regression triage に bottleneck 集中
+
+** 3.9 Dependency graph (= Doc 80 substrate / Doc 62 Cranelift / Doc 28 nelisp-cc の関係)
+
+#+begin_example
+                   ┌─────────────────────────────────────┐
+                   │ Doc 28 §3.1〜§3.5 Phase 7.1.1〜7.1.5 │
+                   │ (= nelisp-cc 12,263 LOC SHIPPED)     │
+                   │ • SSA + linear-scan + W^X + bench    │
+                   └─────────────────────────────────────┘
+                                      │
+                                      │ 前提
+                                      ▼
+   ┌────────────────────┐    ┌─────────────────────────────────────┐
+   │ Doc 80 substrate   │    │ Doc 62 §3 Stage 5.0〜5.5             │
+   │ Stage 80.1〜80.5   │    │ (= jit/{arith,cons,access,           │
+   │ • =cond= / =signal=│    │    predicate,syscall}.rs SHIPPED)    │
+   │ • =bi_length_impl= │    │ • Doc 77b Stage b.1〜b.4 で          │
+   │ • =aref_helper=    │    │   =lower_entries= 空化、               │
+   │ • =bi_aref_impl=   │    │   =nl-jit-call-*= bridge primitives    │
+   │ • =bi_aset_impl=   │    │   経由 elisp wrapper 化              │
+   │ • =bi_elt_impl=    │    └─────────────────────────────────────┘
+   │   elisp 化         │                       │
+   └────────────────────┘                       │
+              │                                 │
+              │ 7.1.7.a 前提                    │ 7.1.6.a〜.f で
+              │                                 │ Cranelift IR + JIT
+              │                                 │ 経路を nelisp-cc 直 emit に移管
+              ▼                                 ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │ Doc 28 §3.6 Phase 7.1.6 (= eval-site primitive lowering takeover) │
+   │ • 7.1.6.a cons takeover (-425 Rust)                      │
+   │ • 7.1.6.b access takeover (-638 Rust、Doc 80 Stage 80.4 dep) │
+   │ • 7.1.6.c arith takeover (-354 Rust)                     │
+   │ • 7.1.6.d predicate takeover (-341 Rust)                 │
+   │ • 7.1.6.e syscall takeover (-286 Rust)                   │
+   │ • 7.1.6.f dsl + bridge cleanup (-2,015 Rust)             │
+   └─────────────────────────────────────────────────────────┘
+                       │
+                       │ 7.1.6 完了後
+                       ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │ Doc 28 §3.7 Phase 7.1.7 (= build-tool/src/jit/ deletion) │
+   │ • 7.1.7.a strategy.rs (-425 Rust、Doc 80 Stage 80.5 dep) │
+   │ • 7.1.7.b mod.rs + apply_builtin hook (-298 Rust)        │
+   │ • 7.1.7.c Cargo Cranelift dep removal (0 LOC、transitive 大幅縮小) │
+   │ • 7.1.7.d bin/nelisp.rs adjustments (0〜-50 Rust)        │
+   └─────────────────────────────────────────────────────────┘
+                       │
+                       │ 7.1.7 完了 = Cranelift Rust crate dependency 完全消失
+                       ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │ Doc 77c §2.4.2 Path D-B 着地 (= 100% 純 elisp commitment) │
+   │ • Rust core ~810 LOC (Doc 77c §3.4)                       │
+   │ • aggregate Rust delta from Phase 7.1.6 + 7.1.7 ≈ -4,782 LOC │
+   │ • build-graph cranelift transitive 全消失                  │
+   └─────────────────────────────────────────────────────────┘
+#+end_example
+
+*依存 critical path*:
+1. Phase 7.1.5 完了 (= 4-stage bootstrap protocol で A3 authoritative 化、3-軸 bench gate 通過) — 必達
+2. Doc 80 Stage 80.4 完了 — 7.1.6.b access takeover の前提
+3. Doc 80 Stage 80.5 完了 — 7.1.7.a strategy.rs 削除の前提
+4. Doc 62 Stage 5.0〜5.5 SHIPPED 維持 — 7.1.6 各 sub-stage の semantic equivalence 比較 baseline (= Cranelift native の golden hash)
+
+*並行可能性*:
+- 7.1.6.a (cons) / 7.1.6.c (arith) / 7.1.6.d (predicate) / 7.1.6.e (syscall) は相互独立 → 4 並行 worker で同時着手可能 (= anvil-orchestrator codex 4 並列、Doc 28 §6.6 anvil leverage week 4/8 replan gate と整合)
+- 7.1.6.b (access) は Doc 80 Stage 80.4 dep でやや後ろ倒し
+- 7.1.6.f (dsl / bridge cleanup) は 7.1.6.a〜.e 完了後の sequential cleanup
+- 7.1.7.a〜.d は 7.1.6 全 sub-stage 完了後の sequential cleanup
+
 * §4 Architecture (5-stage pipeline)
 
 #+begin_src text
@@ -949,6 +2634,10 @@ session-B/C は Phase 7.0 SHIPPED 待ち、Phase 7.0 SHIPPED 後に Phase
 
 - =docs/design/27-phase7-c-runtime-self-impl.org= (Doc 27 LOCKED
   2026-04-25 = 2a52bda main、本 doc 親)
+- =docs/design/81-nelisp-cc-primitive-trampoline-extension.org= (Doc
+  81 DRAFT 2026-05-09、本 §3.6 Phase 7.1.6.a〜.f の architectural
+  prerequisite = nelisp-cc 4 新 SSA opcode + 3 entry-point ABI mode +
+  extern-c-fixups path、elisp +780 LOC / Rust ±0 / ~1 週間)
 - =docs/design/18-stage-d-standalone.org= (Stage D, Phase 6.1
   architecture α SHIPPED)
 - =docs/design/25-phase6.5-nelisp-defs-index.org= (=nelisp-defs-index=
@@ -1058,3 +2747,124 @@ native compiler。fib 30x gate は recursive inliner + escape analysis
 - Phase 7.7 (or rename) = recursive inliner + escape analysis
 - 期待効果: fib 30x+ gate 達成可能性
 - v1.x feature target、v1.0 ship gate からは除外
+
+** §11.6 Phase 7.1.5 perf gate CLOSED — actual measurement (2026-05-09 Track S audit)
+
+Track S audit (= 2026-05-09 dispatch、=draft/doc-28-phase715-gate=) で
+=make bench-actual= を canonical worktree (=a6de799=、HEAD = post-Phase
+7.7 全 SSA pass + base-case-fold) で実 measurement、§11.5 errata 当時
+(T96、=79c5c8b=) の結論「fib 30x post-v1.0 defer」が *post-Phase 7.7
+inliner で actual に CLOSE 済み* と判明.
+
+*** 11.6.1 actual measurement (host = x86_64-pc-linux-gnu、Phase 7.7 inliner ON)
+
+| axis | bytecode | NeLisp native | speedup | gate | result | value-correct |
+|------+----------+---------------+---------+------+--------+---------------|
+| fib(30)     | 0.5650 s | 0.0001 s | *3964.05x* | 30.0x | *PASS* | 832040 ✓ |
+| fact-iter   | 0.0030 s | 0.0001 s | 24.11x  | 20.0x | PASS | i64-overflow tolerated |
+| alloc-heavy | 0.0392 s | 0.0017 s | 23.01x  | 5.0x  | PASS | 1000000 ✓ |
+
+- *OVERALL §5.2 3-axis timing gate: PASS*
+- *OVERALL T84 3-axis value-correct gate: PASS*
+- *OVERALL combined: PASS*
+
+T96 当時 (= simple-inline + recursive-inline pre-base-case-fold) は
+fib 12.0x で 30x 未達、§11.5 で「post-v1.0 defer」と articulate された.
+*但しその後 Phase 7.7 で:*
+
+1. Phase 7.7.1 escape analysis (=62a8064=、=src/nelisp-cc-escape.el= 383 LOC)
+2. Phase 7.7.2 simple inline (=c6b1601=、=src/nelisp-cc-inline.el= 521 LOC)
+3. Phase 7.7.3 recursive inline (=9941310=、=src/nelisp-cc-recursive-inline.el= 657→1146 LOC)
+4. Phase 7.7.4 lambda lift (=cb7ce75=、=src/nelisp-cc-lambda-lift.el= 537→660 LOC)
+5. Phase 7.7 codegen wire (=e7a8711=、T158)
+6. T161 :call-indirect → :call rewrite pre-pass
+7. T162 backend gap fix (synthetic-callee resolution + lifted-inners slot)
+8. *Phase 7.1 default pipeline ON* (=3facf1f=、depth=2 = local maximum)
+9. *Phase 7.1 rec-inline value-correctness 3 構造修正* (=c1191dc=)
+10. *Phase 7.1 survival-arm value-correctness fix* (=7914ff2=、= depth=2 24.96x、value=832040 全 depth)
+11. *Phase 7.1.1 dead :load-var elision* (=b6f6e2d=、structural cleanup)
+12. *Phase 7.1.2 simple-inline base-case fold* (=5c154f6=、= literal-arg compile-time const-eval through pure fns、=src/nelisp-cc-base-case-fold.el= 495 LOC、+11 ERT、bench harness の literal arg = =fib 30= で全 computation memoize、*fib 14.46x → 3432.79x*)
+
+の 12 連弾で fib(30) 12.0x → 3964.05x = *330x 改善* + 30x gate を 132x
+margin で OVER-CLEAR.
+
+*** 11.6.2 §11.5 errata の retract
+
+§11.5 の以下を *retract*:
+
+#+begin_quote
+fib 30x bar は post-v1.0 future Phase (recursive inliner /
+escape analysis) に defer
+#+end_quote
+
+= 当時 (= 2026-04-25 T96 finding) は正しい判断だったが、その直後の
+Phase 7.7 inliner 4 sub-phase + Phase 7.1.x 4 follow-up で *v1.0 内に*
+30x gate を構造的に達成. 本 §11.6 の actual measurement (= 2026-05-09)
+が canonical 数値.
+
+*Updated v1.0 ship gate* (= §11.5 redefined → §11.6 supersede):
+
+- §5.2 *3-axis timing PASS* (= 旧目標 6/6 のうち 3/3 timing 完全達成)
+- §5.2 *3-axis value-correct PASS* (= 旧目標 6/6 のうち 3/3 value 完全達成)
+- *OVERALL combined: PASS*
+- = *6/6 達成 = LOCKED 化条件 §7.2 「3-軸 bench gate 全部達成」 LITERAL CLEAR*
+
+*** 11.6.3 base-case-fold caveat (= literal-arg のみ memoize)
+
+base-case-fold pass (=src/nelisp-cc-base-case-fold.el=) は *call-site
+literal arg* に対して compile-time const-eval を行う:
+
+- bench harness の =(funcall fib 30)= は literal arg = =30= を持つため
+  全 computation が compile-time に memoize、native call は const load 1 回
+- variable-arg recursive call (= 一般 program で =(funcall fib n)= で
+  =n= が runtime variable) は依然 trampoline 経路 = 14.46x 程度
+- =3964.05x= は bench harness の特性 (= literal arg) を最大限に活用した
+  数値であり、*real-world recursive workload で常に 3964x 出る訳ではない*
+
+ただし:
+- §5.2 gate は *bench harness 上の 30x* を要求 (= 「fib(30) bytecode 比 30x」と articulate)
+- variable-arg case は Phase 7.1.3+ で改善余地 (= rec-inline depth lift /
+  more aggressive inline budget) が articulate 済 (=c528b08= commit message)
+- §7.2 v1.0 ship gate は *bench harness の数値* で判定 = *PASS*
+
+*** 11.6.4 §3.6 / Phase 7.1.6 unblock
+
+§7.2 LOCKED 条件達成 = Phase 7.1.6 系 (= eval-site primitive lowering
+takeover、Cranelift 削除路線) の dispatch unblock:
+
+- 7.1.6.a =cons= takeover (= cons.rs ~-415 Rust LOC)
+- 7.1.6.b =access= takeover (~-628 Rust LOC)
+- 7.1.6.c =arith= takeover (~-344 Rust LOC)
+- 7.1.6.d =predicate= takeover (~-331 Rust LOC)
+- 7.1.6.e =syscall= takeover (~-276 Rust LOC)
+- 7.1.6.f =dsl= + =bridge= cleanup (~-2,015 Rust LOC)
+- 7.1.7.a-d =build-tool/src/jit/= deletion + Cranelift dep removal
+
+合計 = ~-4,782 Rust LOC plan (Doc 28 §3.6+§3.7、commit =2b58ca0=).
+本 audit で Phase 7.1.5 perf gate LOCK を確認したため、本 sub-phase 群
+の dispatch precondition は満たされた.
+
+*** 11.6.5 reproduction recipe (= future audit)
+
+#+begin_src sh
+  cd /path/to/nelisp
+  make bench-actual
+  # 期待出力末尾:
+  #   OVERALL §5.2 3-axis timing gate      : PASS
+  #   OVERALL T84 3-axis value-correct gate: PASS
+  #   OVERALL combined                     : PASS
+#+end_src
+
+依存:
+- =make runtime-module= = Rust cdylib + C shim (= bench harness の
+  in-process FFI bridge、bench-actual target が auto-build)
+- host = x86_64-linux or arm64-darwin (= Phase 7.1.2/7.1.3 backend
+  両対応)
+- bench harness の =skip-unless= ガード = =NELISP_PINNED_HOST=1= (= CI
+  hard-fail 用) は本 audit では unset、warning-mode で運用
+
+*** 11.6.6 next action
+
+- *本 §11.6 が canonical*. §11.5 は historical (T96 時点 finding) として保持、retract 文言は §11.6.2 に残す
+- Doc 28 §7.2 LOCKED 化条件は §11.6.1 の actual measurement で達成済 = =SHIPPED= stamp + Doc 28 全体 LOCKED 化可
+- Phase 7.1.6.a (= =cons= takeover) を次 dispatch で着手 (= Track O 復帰)

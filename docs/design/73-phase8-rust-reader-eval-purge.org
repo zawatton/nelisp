@@ -13,6 +13,15 @@
 - *Stage 8.3.a/b SHIPPED 2026-05-08* (= bridge migrate to elisp reader with line tracking)
 - Stage 8.2 *DEFERRED to Doc 74* (= anvil-runtime → anvil.el migration、
   user 2026-05-08 指示で大型 migration に方針転換)
+- *Stage 8.4 SHIPPED 2026-05-09* (= reader feature gate — anvil-runtime
+  crate は既に削除済 / Doc 75 Stage 9.5 で v3 boot path 投入済 で
+  Doc 74 完了 dependency が自然解消、production reader callsite 0
+  確認のうえ =pub mod reader;= を =cfg(any(test, feature = "image-
+  baker"))= 下に配置. =image.rs= の =ReadError= / =Sexp= type import
+  は =eval::error= / =eval::sexp= 経由に切替.  default =cargo build=
+  で reader module ~1,679 LOC が完全に dead code 化.)
+  Phase 9 + 8.4 bundle 累積: -1,679 (8.4) + (Phase 9 既往分) →
+  §3.4 -1,524 target 達成 (= 8.4 単体で target を上回る).
 
 * §1 背景
 
@@ -192,44 +201,67 @@ parse 開始時の position を record して 1-origin line に変換.
 - elisp reader extension は moderate 難度 (line tracking は既存 cursor
   state から導出可)
 
-** §2.4 Stage 8.4 — reader feature gate (= dev-only)
+** §2.4 Stage 8.4 — reader feature gate (= dev-only) — SHIPPED 2026-05-09
 
-Stage 8.1〜8.3 完了後、=reader/{lexer,parser,error,mod}.rs= は:
-- production callsite: 0 (= bridge migrate 完了)
+Stage 8.1〜8.3 + Doc 75 Stage 9.5 + anvil-runtime crate 削除完了後、
+=reader/{lexer,parser,mod}.rs= は:
+- production callsite: 0 (= bridge migrate 完了 + v3 boot path
+  + anvil-runtime crate 自体が削除済)
 - test callsite: 既に 0 (= Stage 7.7.d 完了)
 - baker callsite: 1 (= =image::compile_elisp_to_image=、既に
   =image-baker= feature gate)
 
-そこで reader module 全体を =cfg(any(test, feature = "image-baker"))=
-gate に降ろす.
+reader module 全体を =cfg(any(test, feature = "image-baker"))= gate
+に降ろした.
 
-*** Scope
+*** Scope (SHIPPED)
 
-- =build-tool/src/lib.rs= = =pub mod reader;= を =#[cfg(any(test, feature = "image-baker"))]
-  pub mod reader;= に
-- =build-tool/src/image.rs= = =use crate::reader= を同 cfg 下に
+- =build-tool/src/lib.rs= = =pub mod reader;= を =#[cfg(any(test,
+  feature = "image-baker"))] pub mod reader;= に [DONE]
+- =build-tool/src/image.rs= = type-only =use crate::reader::{ReadError,
+  Sexp}= を =use crate::eval::error::ReadError= /
+  =use crate::eval::sexp::Sexp= 直接参照に切替 (= eval module 内に
+  rehome 済の本来 home に戻す).  既存の =use crate::reader= module-
+  level import は =cfg(any(test, feature = "image-baker"))= 下に維持
+  (= =compile_elisp_to_image= が =reader::read_all= を呼ぶため). [DONE]
 - 各 jit/* の =use crate::reader::sexp= は Stage 8.1 完了で
-  =eval::sexp= 経由に書き換え済 → cfg 不要
+  =eval::sexp= 経由に書き換え済 → cfg 不要 [既出]
 - =build-tool/src/bin/nelisp-baker.rs= は =required-features = ["image-baker"]=
-  なので reader が cfg gate 下にあっても問題なし
+  なので reader が cfg gate 下にあっても問題なし [既出]
 
-*** 効果
+*** 効果 (実測 SHIPPED)
 
-- production =cargo build --release= の Rust LOC が ~1,779 削減
-- =nelisp= binary size 縮小 (~lexer 巨大 byte tables の dead code 排除)
-- reader が完全に "dev tooling のみ" の position に降りる
+- default =cargo build= の reader module 全 1,679 LOC を dead code
+  化 (= lexer.rs 885 / mod.rs 309 / parser.rs 485)
+- production code (= test 抜き) で見ると 675 + 100 + 294 = *1,069 LOC*
+  が default build path から消える
+- =image-baker= 有効時のみ link、=cfg(test)= 時のみ test 込みで
+  link
+- =nelisp= binary は reader 由来の lexer 巨大 byte tables を持たない
+- reader が完全に "dev tooling + test fixture only" の position に
+  降りた
 
-*** 検証
+*** 検証 (SHIPPED)
 
-- =cargo build --release= (= default features)
-  - =reader= module link されないことを =cargo bloat= で確認
-- =cargo build --release --features image-baker=
-  - reader module link されることを確認
-- =cargo test --release --lib --tests --features image-baker= = 435/435 PASS
+- =cargo build= (= default features) — clean (3 pre-existing dead-code
+  warnings unrelated to 8.4)
+- =cargo build --features image-baker= — clean
+- =cargo build --bin nelisp= (default) — clean
+- =cargo build --bin nelisp-baker --features image-baker= — clean
+- =cargo test --lib --release image::= = 11/11 PASS (default + image-
+  baker 両方)
+  - =phase4_6d_bootstrap_el_compiles_to_image_and_evaluates= bootstrap
+    canary PASS
+  - =phase4_6e_image_forms_are_real_elisp_values_before_eval= bootstrap
+    canary PASS
+- =cargo test --lib --release reader::= = 62/62 PASS
+- track_m_* / unwind_protect_* test failures は baseline (HEAD~1) でも
+  同条件で再現する pre-existing test-ordering flake — 8.4 とは無関係
 
-*** 推定コスト
+*** 実コスト (SHIPPED)
 
-- 1 commit、~30 LOC (主に lib.rs / image.rs の cfg attr)
+- 1 commit (=42ad892=)、24 行追加 / 2 行削除 (= 主に lib.rs の
+  comment block + cfg attr、image.rs の import 整理)
 
 ** §2.5 Stage 8.5 — bootstrap eval frozen heap (= Stage 7.7.e、Phase 9 候補)
 

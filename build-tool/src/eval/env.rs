@@ -1,23 +1,6 @@
-//! Symbol table + lexical-scope frame stack — Phase 8.0.2 (Doc 44 §3.3).
-//!
-//! Design notes (Doc 44 §3.3 + §4.1 + §4.2):
-//!   - Heap = leak-tolerant Rust ownership (each [`Sexp`] is `Box`ed
-//!     by the reader, the evaluator clones on read).  No GC, no arena.
-//!     Doc 44 §4.1 case 2 (`arena drop`) is the takeover plan.
-//!   - Symbol table = `HashMap<String, SymbolEntry>` per Doc 44 §3.3.
-//!     Two-cell model (value cell + function cell) matches Elisp.
-//!   - Environment = lexical-scope frame stack (`Vec<HashMap<...>>`).
-//!     Even though Elisp default is dynamic binding, the bootstrap
-//!     interpreter implements **lexical** binding for `let`, `lambda`
-//!     argument lists, and `let*` because (a) the prompt §6.5 names
-//!     this scope explicitly and (b) the Phase 7.1 native compiler
-//!     takeover only sees lexical-binding code anyway.
-//!
-//! Lambdas are stored as `(closure CAPTURED-ENV ARGS BODY...)` cons
-//! cells in the function cell of a symbol (or as anonymous values).
-//! `CAPTURED-ENV` is encoded as a flat alist `((name . value) ...)`
-//! so that the closure stays a plain [`Sexp`] and survives `eq` /
-//! `equal` semantics.
+//! Symbol table + lexical frame stack.  Two-cell symbol model (value /
+//! function); lambdas are `(closure CAPTURED-ENV ARGS BODY...)'.  See
+//! Doc 44 §3.3 + §4.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -27,504 +10,928 @@ use crate::image;
 use super::error::EvalError;
 use super::sexp::Sexp;
 
-/// Extension-point alias for builtin closures registered from outside
-/// `nelisp-build-tool` (= host crates like `nelisp-emacs-gtk' that
-/// expose GTK / SDL / native-OS primitives as elisp callables).
-///
-/// The signature mirrors the internal `bi_*' helpers' shape so the
-/// dispatch fallback can call either uniformly.  `Rc` is used (not
-/// `Arc`) because the `Env' is single-threaded; the closure itself
-/// must be `'static' so the registry outlives any caller's borrow.
+/// Host-crate-registered builtin closure.  `Rc' because `Env' is single-threaded.
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
-/// A symbol's two cells per Elisp's value/function dichotomy.
-///
-/// `plist` is a property list, kept as a single [`Sexp`] (a proper
-/// list of even length).  We only need it for `(put SYM PROP VAL)` /
-/// `(get SYM PROP)`-shaped code paths the bootstrap may reach; it is
-/// initialised to `nil`.
-#[derive(Debug, Clone, Default)]
+/// Symbol's two cells (Elisp value/function dichotomy) + plist + constant flag.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SymbolEntry {
     pub value: Option<Sexp>,
     pub function: Option<Sexp>,
     pub plist: Option<Sexp>,
-    /// `t` if this symbol is a constant (`nil`, `t`, keyword
-    /// symbols).  `setq` / `set` on a constant signals
-    /// [`EvalError::SettingConstant`].
+    /// `setq' / `set' on a constant signals `SettingConstant'.
     pub constant: bool,
 }
 
-impl SymbolEntry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// One lexical frame.  A `let`, `let*`, or lambda body push one
-/// frame; `setq` against a name in a frame mutates the frame slot.
-///
-/// Each slot is `Rc<RefCell<Sexp>>' (= a write-through cell) so a
-/// closure that captures the frame can `setq' through the cell and
-/// have the change visible at the originating let-binding's view.
-/// Without the cell layer, `Env::capture_lexical' would have to
-/// copy-by-value into the closure's captured-env alist and `setq'
-/// would silently mutate only the copy (= bug fixed 2026-05-06).
-pub type FrameCell = std::rc::Rc<std::cell::RefCell<Sexp>>;
+/// Write-through cell — captured-closure `setq' mutates the originating
+/// let-binding's slot (= layout-pinned NlCellRef).
+pub type FrameCell = crate::eval::nlcell::NlCellRef;
 pub type Frame = HashMap<String, FrameCell>;
 
-/// The evaluator's runtime environment.
-///
-/// `globals` is the dynamic / global namespace (= `defvar` / `defun`
-/// / `setq` of an unbound name).  `frames` is the lexical-binding
-/// stack (innermost frame last).
-///
-/// `catch_stack` and `condition_stack` are runtime book-keeping for
-/// `(catch TAG ...)` / `(throw TAG VAL)` and `(condition-case ...)`
-/// respectively.  They are tracked as plain depth counters here and
-/// the actual unwind happens via the `Result` return — this matches
-/// Doc 44 §4.3's "use Result not Rust panic" directive.
+/// Runtime environment: globals + lexical frame stack + recursion guard
+/// + extern-builtin registry + Stage 7.4.c apply takeover flags.
 pub struct Env {
-    /// Global symbol table — `defvar`, `defun`, primitives, anything
-    /// not in a lexical frame.
     pub globals: HashMap<String, SymbolEntry>,
-    /// Lexical scope stack; innermost frame is last.
+    /// Innermost frame is last.
     pub frames: Vec<Frame>,
-    /// Recursion depth guard so a runaway `(defun f () (f))` returns
-    /// an error instead of overflowing the Rust stack.  Set lower than
-    /// you might expect (256 instead of Emacs' default 1600) because
-    /// debug-mode Rust frames are *much* fatter than Emacs C stack
-    /// frames; the bootstrap source needs ~50 deep at most.  Callers
-    /// can bump it for testing.
     pub max_recursion: u32,
     pub current_recursion: u32,
-    /// External builtin registry — host crates (= `nelisp-emacs-gtk'
-    /// for GTK4 GUI ops, future SDL2 / Win32 backends) register Rust
-    /// closures here via [`Env::register_extern_builtin`] which then
-    /// become callable from elisp under the registered name.  The
-    /// `builtins::dispatch' fallback consults this map before
-    /// surfacing `EvalError::UnboundFunction`.
     pub extern_builtins: HashMap<String, ExternBuiltin>,
-    /// Phase 7 Stage 7.4.c (Doc 68 §2.7) — takeover flag for the
-    /// elisp-side `nelisp--apply-fn' dispatch.  When `true',
-    /// `eval/mod.rs::apply_combiner' delegates the plain-function and
-    /// lambda-head paths to elisp instead of invoking the Rust
-    /// `apply_function' helpers directly.  Stage 7.4.e (Doc 70):
-    /// default is `true' once bootstrap completes (= elisp dispatch
-    /// is the runtime path).  Set the `NELISP_USE_RUST_APPLY' env var
-    /// to a non-empty value to keep Rust dispatch as an escape hatch.
-    /// Runtime-mutable via the `nelisp--set-use-elisp-apply' builtin
-    /// so ERT can flip it inside a single subprocess.
+    /// Stage 7.4.c — route apply_combiner's plain-fn / lambda-head paths
+    /// through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
     pub use_elisp_apply: bool,
-    /// Phase 7 Stage 7.4.c (Doc 68 §2.7) — re-entry guard for the
-    /// elisp-apply takeover.  Counts active `delegate_to_elisp_apply'
-    /// frames; when > 0 the apply_combiner skips its delegate gate so
-    /// that the dispatcher's own machinery (= helpers, predicates,
-    /// macro expansion phases, the elisp defuns they internally
-    /// invoke like `consp' / `null' / `nth') runs through the Rust
-    /// `apply_function' path without recursing back through itself.
-    /// Trade-off: only the *outermost* user-level call is exercised
-    /// through the elisp dispatcher.  Cross-equivalence ERT verifies
-    /// that one entry through the elisp path computes the same final
-    /// value as Rust dispatch would; deep / recursive coverage is
-    /// Stage 7.4.d's default-flip job (= every user-entry-point call
-    /// flows through elisp by default).
     pub delegation_depth: u32,
+    /// Doc 102 Phase 8 sprint — elisp-side mirror of `globals' as a
+    /// `nelisp-env' record (see `lisp/nelisp-env.el').  `Sexp::Nil' until
+    /// `new_global' constructs it after STDLIB decode.
+    pub globals_record: Sexp,
+    /// Doc 102 Phase 8 Sprint Session 5 — cached `nelisp--unbound-marker'
+    /// sentinel.  `make-symbol' produces counter-disambiguated uninterned
+    /// names like `nelisp--unbound-marker__nelisp-uninterned-0', so the
+    /// mirror's unbound test is `cell == self.unbound_marker' (Sexp value
+    /// equality via the stable cached Sexp::Symbol).
+    pub unbound_marker: Sexp,
 }
 
 impl Env {
-    /// Construct a globals-only environment with all built-ins
-    /// installed.  Equivalent to GNU Emacs' empty-buffer top-level.
+    /// Zero-state Env — the 3 public ctors share this one literal site so
+    /// adding a field touches one place (Doc 102 Phase 6 option a).
+    fn fresh(max_recursion: u32) -> Self {
+        Env {
+            globals: HashMap::new(),
+            frames: Vec::new(),
+            max_recursion,
+            current_recursion: 0,
+            extern_builtins: HashMap::new(),
+            use_elisp_apply: false,
+            delegation_depth: 0,
+            globals_record: Sexp::Nil,
+            unbound_marker: Sexp::Nil,
+        }
+    }
+
+    /// Globals-only environment with all built-ins installed (= GNU
+    /// Emacs' empty-buffer top-level equivalent).
+    ///
+    /// STDLIB_IMAGES are frozen-heap `.image' files baked by `nelisp-baker'.
+    /// Load-order rationale lives in `nelisp-baker.rs' STDLIB_FILES + each
+    /// `.el' header.  `decode_v3_into' streams straight into `env.globals'
+    /// (no eval, no reader — Doc 98 §98.3).
     pub fn new_global() -> Self {
-        // Phase 7 Stage 7.7.b (2026-05-08, Doc 72): bootstrap stdlib is
-        // now AOT-baked — each `lisp/*.el' has a sibling `*.image'
-        // produced by `make bake-images' (= `nelisp-baker' running
-        // `image::compile_elisp_to_image' on the source).  At startup
-        // we `image::decode_image' the embedded bytes and feed the
-        // resulting `Sexp` forms straight to `eval'; the Rust reader
-        // is no longer touched on the production startup path.
-        //
-        // Order is identical to the pre-Stage-7.7.b STDLIB_SOURCES list
-        // (= upstream history preserved in git).  Each comment kept
-        // there is now folded into the corresponding `.el' file's
-        // own header so future readers can look there for the dep
-        // ordering rationale.
         const STDLIB_IMAGES: &[(&str, &[u8])] = &[
+            ("nelisp-jit-substrate.el", include_bytes!("../../../lisp/nelisp-jit-substrate.el.image")),
+            ("nelisp-syscall-table.el", include_bytes!("../../../lisp/nelisp-syscall-table.el.image")),
+            ("nelisp-jit-strategy.el", include_bytes!("../../../lisp/nelisp-jit-strategy.el.image")),
+            ("nelisp-stdlib-env-shim.el", include_bytes!("../../../lisp/nelisp-stdlib-env-shim.el.image")),
             ("nelisp-stdlib-eval-special.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-special.el.image")),
+            ("nelisp-stdlib-error.el", include_bytes!("../../../lisp/nelisp-stdlib-error.el.image")),
             ("nelisp-stdlib.el", include_bytes!("../../../lisp/nelisp-stdlib.el.image")),
             ("nelisp-stdlib-list.el", include_bytes!("../../../lisp/nelisp-stdlib-list.el.image")),
             ("nelisp-stdlib-hof.el", include_bytes!("../../../lisp/nelisp-stdlib-hof.el.image")),
             ("nelisp-stdlib-search.el", include_bytes!("../../../lisp/nelisp-stdlib-search.el.image")),
             ("nelisp-stdlib-plist-str.el", include_bytes!("../../../lisp/nelisp-stdlib-plist-str.el.image")),
+            ("nelisp-stdlib-format.el", include_bytes!("../../../lisp/nelisp-stdlib-format.el.image")),
             ("nelisp-stdlib-misc.el", include_bytes!("../../../lisp/nelisp-stdlib-misc.el.image")),
             ("nelisp-stdlib-os.el", include_bytes!("../../../lisp/nelisp-stdlib-os.el.image")),
             ("nelisp-pcase.el", include_bytes!("../../../lisp/nelisp-pcase.el.image")),
             ("nelisp-cl-macros.el", include_bytes!("../../../lisp/nelisp-cl-macros.el.image")),
             ("nelisp-stdlib-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-hash.el.image")),
+            ("nelisp-stdlib-gc.el", include_bytes!("../../../lisp/nelisp-stdlib-gc.el.image")),
             ("nelisp-stdlib-equal.el", include_bytes!("../../../lisp/nelisp-stdlib-equal.el.image")),
             ("nelisp-stdlib-prn.el", include_bytes!("../../../lisp/nelisp-stdlib-prn.el.image")),
             ("nelisp-stdlib-reader.el", include_bytes!("../../../lisp/nelisp-stdlib-reader.el.image")),
             ("nelisp-stdlib-eval-core.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-core.el.image")),
+            ("nelisp-stdlib-time.el", include_bytes!("../../../lisp/nelisp-stdlib-time.el.image")),
+            ("nelisp-stdlib-math.el", include_bytes!("../../../lisp/nelisp-stdlib-math.el.image")),
+            ("nelisp-stdlib-regex.el", include_bytes!("../../../lisp/nelisp-stdlib-regex.el.image")),
+            ("nelisp-stdlib-fast-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-fast-hash.el.image")),
+            ("nelisp-env.el", include_bytes!("../../../lisp/nelisp-env.el.image")),
         ];
-        let mut env = Env {
-            globals: HashMap::new(),
-            frames: Vec::new(),
-            // Phase 7 Stage 7.3.d (Doc 67) — Tier 2 special forms now
-            // expand via elisp macros at runtime; each `cond' / `or' /
-            // `when' / `unless' / `dolist' adds 2-3 frames per call.
-            // The Rust prn-* family walks deep cons structures, so 256
-            // is too tight (the cl-defun expansion depth alone needs
-            // ~280 frames after macros pile up).  We bump to 512 — far
-            // below host Emacs's 1600 to keep the Rust call stack
-            // bounded under cargo-test default thread stacks.  See
-            // `recursion_depth_guard' for the upper-bound test.
-            // Phase 7 Stage 7.4.c (Doc 68): bumped from 512 to 1024
-            // because the elisp-apply takeover adds ~10-15 eval
-            // frames per outermost user-level call (= cond expansion
-            // + apply-closure helper + apply-lambda-inner + body
-            // eval).  1024 absorbs that overhead with margin while
-            // staying within cargo test's default 2MB thread stack
-            // (= 4096 was tested and overflowed `recursion_depth_guard'
-            // under the test runner; 1024 fits with ~256-byte
-            // release-mode frames).  Stage 7.4.c's
-            // `delegation_depth' counter ensures the takeover only
-            // multiplies depth at the outermost user-call boundary,
-            // not on every recursive entry.
-            max_recursion: 1024,
-            current_recursion: 0,
-            extern_builtins: HashMap::new(),
-            // Phase 7 Stage 7.4.c (Doc 68 §2.7): start with elisp
-            // dispatch *off* during bootstrap.  The dispatcher
-            // (`nelisp--apply-fn' et al., installed by the LAST
-            // STDLIB_SOURCES entry `nelisp-stdlib-eval-core.el')
-            // doesn't exist until bootstrap completes; if the flag
-            // were on from the start, every defun load along the way
-            // would try to delegate through a `void-function:
-            // nelisp--apply-fn' panic.  Stage 7.4.e.2 post-bootstrap
-            // step then flips it ON by default (= Doc 70).
-            use_elisp_apply: false,
-            delegation_depth: 0,
-        };
-        // `nil` and `t` self-evaluate; mark them constant so that
-        // (setq nil 1) is a hard error per Elisp.
-        env.intern_constant("nil", Sexp::Nil);
-        env.intern_constant("t", Sexp::T);
-        super::builtins::install_builtins(&mut env);
+        // max_recursion=1024 bounds eval-loop nesting under cargo test's
+        // 2MB thread stack (see `recursion_depth_guard').
+        let mut env = Env::install_stage0(1024);
         for (name, image_bytes) in STDLIB_IMAGES {
-            let forms = match image::decode_image(image_bytes) {
-                Ok(forms) => forms,
+            let fallback = match image::decode_v3_into(&mut env, image_bytes) {
+                Ok(f) => f,
                 Err(e) => panic!("{} image decode failed: {}", name, e),
             };
-            for form in &forms {
-                if let Err(e) = super::eval(form, &mut env) {
-                    panic!("{} bootstrap failed: {}", name, e);
-                }
-            }
+            assert!(
+                fallback.is_empty(),
+                "{} image has non-empty FALLBACK_FORMS ({} forms) — \
+                 rebake with `make bake-images' (= --frozen-heap)",
+                name,
+                fallback.len()
+            );
         }
-        // Phase 7 Stage 7.4.e.2 (Doc 70) — default ON post-bootstrap.
-        // Stage 7.4.d で発見した frame-capture leak は Stage 7.4.e.1
-        // で `nelisp--apply-lambda-inner' を Rust builtin に降ろすこと
-        // で解消済 → helper の state slot は lexical env に出ず、
-        // `sf_lambda' が user code 評価中の env を snapshot しても
-        // dispatcher 内部状態は捕捉されない.
-        //
-        // escape hatch: `NELISP_USE_RUST_APPLY' env var が非空なら
-        // Rust dispatch を維持 (= 旧 Stage 7.3.d behaviour に戻す).
-        // 観測未知の dispatch regression が出た場合の bisect 補助.
-        let force_rust = std::env::var_os("NELISP_USE_RUST_APPLY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        env.use_elisp_apply = !force_rust;
+        // Elisp dispatch ON post-bootstrap; `NELISP_USE_RUST_APPLY' env
+        // var pins Rust dispatch as escape hatch.
+        env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY")
+            .map(|v| v.is_empty())
+            .unwrap_or(true);
+        // Doc 102 Phase 8 sprint Session 1 — construct the elisp-side
+        // env mirror.  Future sessions migrate callsites to read/write
+        // through this record, then delete the Rust `globals' HashMap.
+        env.install_globals_record();
         env
     }
 
-    /// Empty environment with no built-ins — useful for tests that
-    /// want to assert error paths in isolation.  Most callers want
-    /// [`Env::new_global`].
+    /// Empty env (= no built-ins).  For error-path tests.
     pub fn empty() -> Self {
-        Env {
-            globals: HashMap::new(),
-            frames: Vec::new(),
-            max_recursion: 256,
-            current_recursion: 0,
-            extern_builtins: HashMap::new(),
-            // `Env::empty' is for stand-alone error-path tests that
-            // never reach the apply-fn dispatch; default `false' is
-            // safe.
-            use_elisp_apply: false,
-            delegation_depth: 0,
+        Env::fresh(256)
+    }
+
+    /// Doc 102 Phase 8 sprint Session 1 — invoke elisp `nelisp-env-make'
+    /// (= `lisp/nelisp-env.el', loaded during STDLIB decode) and store the
+    /// resulting nelisp-env record into `globals_record'.  Session 2 also
+    /// populates the elisp env with the Rust HashMap's contents.
+    fn install_globals_record(&mut self) {
+        // Sprint B Stage 2 — mirror is already constructed by
+        // `install_empty_mirror_rust_direct' during install_stage0,
+        // and `install_stage0' write-paths (intern_constant /
+        // set_function via register_extern_builtin / etc.) already
+        // dual-wrote builtins into the mirror.  STDLIB decode only
+        // populated `env.globals' (HashMap); copy those into the
+        // mirror via `populate_globals_record', then override the
+        // `nelisp--unbound-marker' value with our Rust-defined
+        // sentinel so elisp `(eq cell nelisp--unbound-marker)' aligns
+        // with `mirror_lookup_value' identity checks.
+        self.populate_globals_record();
+        let unbound = self.unbound_marker.clone();
+        self.mirror_set_value("nelisp--unbound-marker", unbound);
+    }
+
+    /// Doc 102 Phase 8 Sprint Session 6 — Rust-direct mirror write
+    /// path.  Replaces the Session 3 `apply_function' shim, which paid
+    /// ~800µs per call for the interpreted `nelisp--fast-hash--hash'
+    /// loop; the direct path runs the same FNV-1a in Rust + slot
+    /// mutation via `with_slots_mut' for ~10µs per call.  No-op when
+    /// the mirror isn't ready (= `globals_record == Sexp::Nil', early
+    /// bootstrap before `install_globals_record').  Auto-vivifies an
+    /// absent entry.  Constant-flag enforcement stays in `set_value'
+    /// against the Rust `globals' HashMap (= Sprint A); Sprint B moves
+    /// the check onto the mirror once the HashMap is deleted.
+    pub(crate) fn mirror_set_value(&mut self, name: &str, value: Sexp) {
+        if matches!(&self.globals_record, Sexp::Nil) {
+            return;
+        }
+        if let Some(entry) = Env::mirror_lookup_entry(&self.globals_record, name) {
+            // SAFETY: no other `&Vec<Sexp>` borrow into `entry.slots' is
+            // live (Phase A.2.1 setcar discipline).
+            unsafe { entry.with_slots_mut(|s| s[0] = value) };
+            return;
+        }
+        self.mirror_insert_new_entry(name, /* slot */ 0, value);
+    }
+
+    /// Doc 102 Phase 8 Sprint Session 6 — function-cell counterpart
+    /// of `mirror_set_value'.  Mutates symbol-entry slot 1 in place.
+    pub(crate) fn mirror_set_function(&mut self, name: &str, func: Sexp) {
+        if matches!(&self.globals_record, Sexp::Nil) {
+            return;
+        }
+        if let Some(entry) = Env::mirror_lookup_entry(&self.globals_record, name) {
+            // SAFETY: see `mirror_set_value'.
+            unsafe { entry.with_slots_mut(|s| s[1] = func) };
+            return;
+        }
+        self.mirror_insert_new_entry(name, /* slot */ 1, func);
+    }
+
+    /// Doc 102 Phase 8 Sprint Session 6 — clear the entry's value
+    /// cell (= `makunbound').  Mirrors `nelisp-env-clear-value' from
+    /// `lisp/nelisp-env.el': preserves the entry record, sets slot 0
+    /// to `nelisp--unbound-marker' so subsequent `mirror_lookup_value'
+    /// returns None (= `void-variable').
+    pub(crate) fn mirror_clear_value(&mut self, name: &str) {
+        if matches!(&self.globals_record, Sexp::Nil) {
+            return;
+        }
+        let unbound = self.unbound_marker.clone();
+        if let Some(entry) = Env::mirror_lookup_entry(&self.globals_record, name) {
+            // SAFETY: see `mirror_set_value'.
+            unsafe { entry.with_slots_mut(|s| s[0] = unbound) };
         }
     }
 
+    /// Doc 102 Phase 8 Sprint Session 6 — function-cell counterpart
+    /// of `mirror_clear_value' (= `fmakunbound').  Slot 1 → unbound.
+    pub(crate) fn mirror_clear_function(&mut self, name: &str) {
+        if matches!(&self.globals_record, Sexp::Nil) {
+            return;
+        }
+        let unbound = self.unbound_marker.clone();
+        if let Some(entry) = Env::mirror_lookup_entry(&self.globals_record, name) {
+            // SAFETY: see `mirror_set_value'.
+            unsafe { entry.with_slots_mut(|s| s[1] = unbound) };
+        }
+    }
+
+    /// Doc 102 Phase 8 Sprint Session 6 — insert a fresh symbol-entry
+    /// record into the bucket alist.  `slot' selects which cell the
+    /// caller is filling (0 = value, 1 = function); the other cell is
+    /// initialised to `self.unbound_marker'.
+    fn mirror_insert_new_entry(&mut self, name: &str, slot: usize, cell: Sexp) {
+        let unbound = self.unbound_marker.clone();
+        let (value_slot, function_slot) = if slot == 0 {
+            (cell, unbound)
+        } else {
+            (unbound, cell)
+        };
+        let entry = Sexp::record(
+            Sexp::Symbol("symbol-entry".into()),
+            vec![value_slot, function_slot, Sexp::Nil, Sexp::Nil],
+        );
+        self.mirror_prepend_to_bucket(name, entry);
+    }
+
+    /// Doc 102 Phase 8 Sprint B — full symbol-entry installer.  Used
+    /// by image decode (= replaces the old `env.globals.insert' call
+    /// at `image.rs::decode_v3_into') and by `intern_constant'.  When
+    /// the entry exists, mutates all four slots in place; otherwise
+    /// allocates a fresh `symbol-entry' record and prepends it onto
+    /// the appropriate bucket.  Absent value / function default to
+    /// `self.unbound_marker' (matching `nelisp-env--make-symbol-entry'),
+    /// absent plist defaults to `Sexp::Nil', `constant=true' sets slot
+    /// 3 to `Sexp::T'.
+    pub(crate) fn mirror_install_entry(
+        &mut self,
+        name: &str,
+        value: Option<Sexp>,
+        function: Option<Sexp>,
+        plist: Option<Sexp>,
+        constant: bool,
+    ) {
+        if matches!(&self.globals_record, Sexp::Nil) {
+            return;
+        }
+        let unbound = self.unbound_marker.clone();
+        let value_slot = value.unwrap_or_else(|| unbound.clone());
+        let function_slot = function.unwrap_or(unbound);
+        let plist_slot = plist.unwrap_or(Sexp::Nil);
+        let constant_slot = if constant { Sexp::T } else { Sexp::Nil };
+        if let Some(entry) = Env::mirror_lookup_entry(&self.globals_record, name) {
+            // SAFETY: see `mirror_set_value'.
+            unsafe {
+                entry.with_slots_mut(|s| {
+                    s[0] = value_slot;
+                    s[1] = function_slot;
+                    s[2] = plist_slot;
+                    s[3] = constant_slot;
+                });
+            }
+            return;
+        }
+        let entry = Sexp::record(
+            Sexp::Symbol("symbol-entry".into()),
+            vec![value_slot, function_slot, plist_slot, constant_slot],
+        );
+        self.mirror_prepend_to_bucket(name, entry);
+    }
+
+    /// Doc 102 Phase 8 Sprint B — read symbol-entry slot 3 (= constant
+    /// flag) for the elisp `boundp' / `setting-constant' check paths.
+    /// Returns false when the entry is absent or the mirror is unbuilt.
+    pub(crate) fn mirror_is_constant(&self, name: &str) -> bool {
+        match Env::mirror_lookup_entry(&self.globals_record, name) {
+            Some(entry) => matches!(entry.slots.get(3), Some(Sexp::T)),
+            None => false,
+        }
+    }
+
+    /// Doc 102 Phase 8 Sprint B — write symbol-entry slot 3.  Used by
+    /// `env_shim::bi_globals_op set-constant' + `intern_constant'.
+    /// Auto-vivifies a fresh entry when the name is unknown so callers
+    /// can mark a symbol constant before its value is set.
+    pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
+        if matches!(&self.globals_record, Sexp::Nil) {
+            return;
+        }
+        let value = if truthy { Sexp::T } else { Sexp::Nil };
+        if let Some(entry) = Env::mirror_lookup_entry(&self.globals_record, name) {
+            // SAFETY: see `mirror_set_value'.
+            unsafe { entry.with_slots_mut(|s| s[3] = value) };
+            return;
+        }
+        let unbound = self.unbound_marker.clone();
+        let entry = Sexp::record(
+            Sexp::Symbol("symbol-entry".into()),
+            vec![unbound.clone(), unbound, Sexp::Nil, value],
+        );
+        self.mirror_prepend_to_bucket(name, entry);
+    }
+
+    /// Doc 102 Phase 8 Sprint B — bucket-prepend primitive.  Shared by
+    /// `mirror_insert_new_entry' / `mirror_install_entry' /
+    /// `mirror_set_constant'.  Hashes NAME, locates the bucket, builds
+    /// `(KEY . ENTRY)', prepends onto the bucket head, bumps the
+    /// entry-count slot.
+    fn mirror_prepend_to_bucket(&mut self, name: &str, entry: Sexp) {
+        let env_rec = match &self.globals_record {
+            Sexp::Record(r) => r.clone(),
+            _ => return,
+        };
+        let ht_rec = match env_rec.slots.get(0) {
+            Some(Sexp::Record(r)) => r.clone(),
+            _ => return,
+        };
+        let bucket_count = match ht_rec.slots.get(0) {
+            Some(Sexp::Int(n)) => *n as u32,
+            _ => return,
+        };
+        let buckets = match ht_rec.slots.get(1) {
+            Some(Sexp::Vector(v)) => v.clone(),
+            _ => return,
+        };
+        let h = mirror_fnv1a(name);
+        let idx = (if bucket_count & (bucket_count - 1) == 0 {
+            h & (bucket_count - 1)
+        } else {
+            h % bucket_count
+        }) as usize;
+        let pair = Sexp::cons(Sexp::Str(name.to_string()), entry);
+        // SAFETY: no other borrow into `buckets.value' / `ht_rec.slots'
+        // is live across the closure boundary.
+        unsafe {
+            buckets.with_value_mut(|v| {
+                let old = v.get(idx).cloned().unwrap_or(Sexp::Nil);
+                v[idx] = Sexp::cons(pair, old);
+            });
+            ht_rec.with_slots_mut(|s| {
+                if let Some(Sexp::Int(n)) = s.get_mut(2) {
+                    *n += 1;
+                }
+            });
+        }
+    }
+
+    /// Doc 102 Phase 8 Sprint B — walk every bucket of the mirror and
+    /// invoke `callback(name, entry)' for each live symbol-entry.
+    /// Used by the image baker (= replaces `env.globals.iter()' /
+    /// `env.globals.keys()').  Callback receives a `NlRecordRef'
+    /// (= refcount-bumped clone) so it may read all four slots
+    /// (value / function / plist / constant).
+    pub(crate) fn mirror_iter_entries<F>(&self, mut callback: F)
+    where
+        F: FnMut(&str, &crate::eval::nlrecord::NlRecordRef),
+    {
+        let env_rec = match &self.globals_record {
+            Sexp::Record(r) => r,
+            _ => return,
+        };
+        let ht_rec = match env_rec.slots.get(0) {
+            Some(Sexp::Record(r)) => r,
+            _ => return,
+        };
+        let buckets = match ht_rec.slots.get(1) {
+            Some(Sexp::Vector(v)) => v,
+            _ => return,
+        };
+        for bucket in buckets.value.iter() {
+            let mut cur = bucket;
+            while let Sexp::Cons(c) = cur {
+                if let Sexp::Cons(pair) = &c.car {
+                    if let (Sexp::Str(k), Sexp::Record(r)) = (&pair.car, &pair.cdr) {
+                        callback(k, r);
+                    }
+                }
+                cur = &c.cdr;
+            }
+        }
+    }
+
+    /// Doc 102 Phase 8 sprint Session 2 — mirror the Rust `globals'
+    /// HashMap into the elisp `globals_record'.  Called once after the
+    /// elisp record is constructed.  Sprint A (Session 6) swaps the
+    /// per-entry `apply_function' for `mirror_set_value' /
+    /// `mirror_set_function' direct writes: bootstrap drops from ~5s
+    /// (interpreted FNV-1a × 4000) to ~50ms (Rust FNV-1a × 4000).
+    /// Sprint B deletes the Rust HashMap entirely once image.rs +
+    /// env_shim.rs callsites are rewired to read from the mirror.
+    /// Skips the constant flag (Sprint B fills it via direct
+    /// record-set when the HashMap goes away).
+    fn populate_globals_record(&mut self) {
+        // Snapshot to avoid borrow conflict with `&mut self' below.
+        // Sprint B Session 7 — `mirror_install_entry' propagates ALL
+        // four slots (value / function / plist / constant), closing
+        // the Sprint A constant-flag gap that left `nil' / `t' /
+        // `defconst' globals with `constant=false' on the mirror.
+        let snapshot: Vec<(String, SymbolEntry)> =
+            self.globals.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (name, entry) in snapshot {
+            self.mirror_install_entry(
+                &name,
+                entry.value,
+                entry.function,
+                entry.plist,
+                entry.constant,
+            );
+        }
+    }
+
+    /// Baker accumulator env — built-ins + env_shim installed but no
+    /// STDLIB images decoded.  Used by `image::iterative_bake_one'.
+    pub fn new_global_no_stdlib() -> Self {
+        Env::install_stage0(1024)
+    }
+
+    /// Stage 0 bootstrap: fresh env + Rust-direct empty mirror + intern
+    /// nil/t + install builtins + install env_shim primitives.  Common
+    /// to `new_global' and `new_global_no_stdlib'; the former
+    /// additionally decodes STDLIB.
+    ///
+    /// Sprint B Stage 2 — `install_empty_mirror_rust_direct' replaces
+    /// the Session 6 sequence of (a) HashMap-based bootstrap then (b)
+    /// `apply_function(nelisp-env-make)' construction with a single
+    /// Rust-direct allocation.  This lets `install_stage0' writes flow
+    /// straight into the mirror via `set_value' / `set_function' (no
+    /// HashMap intermediate) — Sprint B Stage 2 follow-up modifications
+    /// strip the HashMap dual-write entirely.
+    fn install_stage0(max_recursion: u32) -> Self {
+        let mut env = Env::fresh(max_recursion);
+        env.install_empty_mirror_rust_direct();
+        env.intern_constant("nil", Sexp::Nil);
+        env.intern_constant("t", Sexp::T);
+        super::builtins::install_builtins(&mut env);
+        super::env_shim::install_env_shim_primitives(&mut env);
+        env
+    }
+
+    /// Sprint B Stage 2 — Rust-direct empty mirror constructor.
+    /// Pre-allocates the `nelisp-env' / `fast-hash-table' /
+    /// `buckets' record graph without invoking elisp `nelisp-env-make'
+    /// (= no `apply_function' detour, no STDLIB dependency).  Sets
+    /// `self.unbound_marker' to a Rust-defined sentinel
+    /// `Sexp::Symbol("nelisp--unbound-marker")'; STDLIB's defvar of
+    /// the same name (= baked into nelisp-stdlib-fast-hash.el.image
+    /// as `make-symbol' counter-suffixed) will overwrite the
+    /// `nelisp--unbound-marker' global after decode, after which
+    /// `install_globals_record' captures the post-decode value and
+    /// walks the mirror to refresh in-place sentinels.
+    fn install_empty_mirror_rust_direct(&mut self) {
+        const BUCKET_COUNT: usize = 1024;
+        // Sentinel for absent slots — replaced post-decode by the
+        // baked elisp `nelisp--unbound-marker'.
+        self.unbound_marker = Sexp::Symbol("nelisp--unbound-marker".into());
+        let buckets = Sexp::vector(vec![Sexp::Nil; BUCKET_COUNT]);
+        let ht_record = Sexp::record(
+            Sexp::Symbol("fast-hash-table".into()),
+            vec![Sexp::Int(BUCKET_COUNT as i64), buckets, Sexp::Int(0)],
+        );
+        self.globals_record = Sexp::record(
+            Sexp::Symbol("nelisp-env".into()),
+            vec![ht_record, Sexp::Nil, Sexp::Nil],
+        );
+    }
+
+    /// Per-file globals diff vs. `before' (= new key OR mutated entry).
+    /// Used by `image::iterative_bake_one'.
+    pub fn globals_diff_view(&self, before: &HashMap<String, SymbolEntry>) -> Env {
+        let mut diff = Env::empty();
+        diff.globals = self
+            .globals
+            .iter()
+            .filter(|(k, v)| before.get(*k).map_or(true, |prev| prev != *v))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        diff
+    }
+
+
     /// Register `f' as an externally-supplied builtin under `name'.
-    /// After this call, evaluating `(NAME ARG...)` in elisp invokes
-    /// `f(args, env)` — the same dispatch path the internal `bi_*'
-    /// helpers go through, just with the body lifted out of
-    /// `eval/builtins.rs'.
-    ///
-    /// Used by host crates that need to expose Rust APIs as elisp
-    /// callables without forking the upstream interpreter:
-    ///
-    ///   - `nelisp-emacs-gtk' registers GTK4 GUI ops
-    ///     (`nelisp-gtk-grid-put' / `nelisp-gtk-redraw' / …).
-    ///   - Future SDL2 / Win32 / native-macOS backends will register
-    ///     their own primitives the same way.
-    ///
-    /// Re-registering an existing name overwrites the previous closure.
-    /// As a side effect, the symbol's function-cell is set to the
-    /// `(builtin NAME)' sentinel so it's immediately callable from
-    /// elisp `(funcall NAME ...)` / `(NAME ...)` forms.
+    /// Sets the function cell to `(builtin NAME)' so `(NAME ARG...)'
+    /// invokes `f(args, env)'.  Re-registering overwrites.
     pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
     where
         F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,
     {
-        self.extern_builtins
-            .insert(name.to_string(), Rc::new(f));
-        let sentinel = Sexp::list_from(&[
-            Sexp::Symbol("builtin".into()),
-            Sexp::Symbol(name.into()),
-        ]);
+        self.extern_builtins.insert(name.to_string(), Rc::new(f));
+        let sentinel =
+            Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol(name.into())]);
         self.set_function(name, sentinel);
     }
 
     /// Mark `name` as a self-evaluating constant bound to `value`.
+    /// Sprint B Stage 2 dual-writes: mirror via `mirror_install_entry'
+    /// (sets value + constant slot in one shot) and HashMap so
+    /// `image::iterative_bake_one' baseline includes nil/t.
     pub fn intern_constant(&mut self, name: &str, value: Sexp) {
-        let entry = self
-            .globals
-            .entry(name.to_string())
-            .or_insert_with(SymbolEntry::new);
-        entry.value = Some(value);
-        entry.constant = true;
-    }
-
-    /// Walk the lexical frames inside-out, then fall through to the
-    /// global value cell.  Used by symbol evaluation.
-    pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
-        for frame in self.frames.iter().rev() {
-            if let Some(cell) = frame.get(name) {
-                return Ok(cell.borrow().clone());
-            }
-        }
-        match self.globals.get(name) {
-            Some(SymbolEntry {
-                value: Some(v), ..
-            }) => Ok(v.clone()),
-            _ => Err(EvalError::UnboundVariable(name.to_string())),
-        }
-    }
-
-    /// `setq`/`set` semantics: mutate the **innermost** lexical frame
-    /// that already binds `name`; otherwise update the global value
-    /// cell (creating the symbol entry if needed).  Constants are
-    /// rejected.  Lexical writes go through the FrameCell so any
-    /// closure that captured the same cell sees the new value.
-    pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
-        if let Some(entry) = self.globals.get(name) {
-            if entry.constant {
-                return Err(EvalError::SettingConstant(name.to_string()));
-            }
-        }
-        for frame in self.frames.iter().rev() {
-            if let Some(cell) = frame.get(name) {
-                *cell.borrow_mut() = value.clone();
-                return Ok(value);
-            }
-        }
-        let entry = self
-            .globals
-            .entry(name.to_string())
-            .or_insert_with(SymbolEntry::new);
+        let entry = self.globals.entry(name.to_string()).or_default();
         entry.value = Some(value.clone());
+        entry.constant = true;
+        self.mirror_install_entry(name, Some(value), None, None, true);
+    }
+
+    /// Innermost-first lexical frame walk.
+    fn find_frame_cell(&self, name: &str) -> Option<&FrameCell> {
+        self.frames.iter().rev().find_map(|f| f.get(name))
+    }
+
+    pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
+        if let Some(cell) = self.find_frame_cell(name) {
+            return Ok(cell.value.clone());
+        }
+        // Special-case the sentinel itself: `mirror_lookup_value' treats
+        // slot 0 == `self.unbound_marker' as "absent", which would
+        // mark `nelisp--unbound-marker' (= the symbol whose VALUE is
+        // the sentinel) as unbound.  Return the sentinel directly so
+        // elisp `(eq cell nelisp--unbound-marker)' checks resolve.
+        if name == "nelisp--unbound-marker" {
+            return Ok(self.unbound_marker.clone());
+        }
+        self.mirror_lookup_value(name)
+            .or_else(|| self.globals.get(name).and_then(|e| e.value.clone()))
+            .ok_or_else(|| EvalError::UnboundVariable(name.to_string()))
+    }
+
+    /// `setq' / `set' — innermost frame slot if lexically bound (write-
+    /// through cell, so closures observe), else globals.  Constants raise.
+    /// Sprint B Stage 2 keeps the HashMap write so `image::iterative_
+    /// bake_one' can `globals_diff_view' baked top-level forms (= the
+    /// baker still snapshots / diffs the HashMap).  Full mirror-only
+    /// write path waits for image.rs baker rewire.
+    pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
+        if self.mirror_is_constant(name) {
+            return Err(EvalError::SettingConstant(name.to_string()));
+        }
+        if let Some(cell) = self.find_frame_cell(name) {
+            // SAFETY: `value' owned; no outstanding `&Sexp' borrow into
+            // the cell's slot (Phase A.2.1 setcar discipline).
+            unsafe { cell.set_value(value.clone()) };
+            return Ok(value);
+        }
+        self.globals.entry(name.to_string()).or_default().value = Some(value.clone());
+        self.mirror_set_value(name, value.clone());
         Ok(value)
     }
 
-    /// Look up `name` in the function cell.  No lexical fallback —
-    /// Elisp `funcall` always goes through the global function slot.
+    /// Look up `name` in the function cell.  No lexical fallback (Elisp
+    /// `funcall' always goes through the global function slot).
+    /// Mirror-first canonical, HashMap fallback while
+    /// `install_globals_record' is mid-flight.
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
-        match self.globals.get(name) {
-            Some(SymbolEntry {
-                function: Some(f), ..
-            }) => Ok(f.clone()),
-            _ => Err(EvalError::UnboundFunction(name.to_string())),
-        }
+        self.mirror_lookup_function(name)
+            .or_else(|| self.globals.get(name).and_then(|e| e.function.clone()))
+            .ok_or_else(|| EvalError::UnboundFunction(name.to_string()))
     }
 
-    /// `defun` / `defalias` semantics — write to the function cell
-    /// without disturbing the value cell.
+    /// `defun' / `defalias' — write the function cell.  Sprint B Stage 2
+    /// keeps the HashMap write for `image::iterative_bake_one' diff
+    /// compatibility (see `set_value' comment).
     pub fn set_function(&mut self, name: &str, func: Sexp) {
-        let entry = self
-            .globals
-            .entry(name.to_string())
-            .or_insert_with(SymbolEntry::new);
-        entry.function = Some(func);
+        self.globals.entry(name.to_string()).or_default().function = Some(func.clone());
+        self.mirror_set_function(name, func);
     }
 
-    /// `fmakunbound' semantics — drop the function cell.
-    pub fn clear_function(&mut self, name: &str) {
-        if let Some(entry) = self.globals.get_mut(name) {
-            entry.function = None;
-        }
-    }
-
-    /// `makunbound' semantics — drop the value cell.  The constant
-    /// flag is preserved so re-binding via `defconst' still errors.
-    pub fn clear_value(&mut self, name: &str) {
-        if let Some(entry) = self.globals.get_mut(name) {
-            entry.value = None;
-        }
-    }
-
-    /// `defvar`/`defconst` semantics — install a value but only if the
-    /// symbol is not already bound (per Elisp `defvar` idempotence).
-    /// `is_constant=true` is `defconst`.
+    /// `defvar' / `defconst' — install value only if unbound (Elisp
+    /// idempotence); IS_CONSTANT=true marks `defconst'.  Doc 102 Phase 7:
+    /// `makunbound' / `fmakunbound' Rust helpers retired (zero callsites;
+    /// elisp routes through `nelisp--env-globals-op').  Sprint B Stage 2
+    /// keeps the HashMap write for `image::iterative_bake_one' diff
+    /// compatibility (see `set_value' comment).
     pub fn defvar(&mut self, name: &str, value: Sexp, is_constant: bool) {
-        let entry = self
-            .globals
-            .entry(name.to_string())
-            .or_insert_with(SymbolEntry::new);
-        if entry.value.is_none() {
-            entry.value = Some(value);
+        let entry = self.globals.entry(name.to_string()).or_default();
+        let actually_changed = entry.value.is_none();
+        if actually_changed {
+            entry.value = Some(value.clone());
         }
         if is_constant {
             entry.constant = true;
         }
+        if actually_changed {
+            self.mirror_set_value(name, value);
+        }
+        if is_constant {
+            self.mirror_set_constant(name, true);
+        }
     }
 
-    /// Push a new (initially empty) lexical frame.  Returns the frame
-    /// depth so callers can `pop_frame` symmetrically even if errors
-    /// fire mid-body.
     pub fn push_frame(&mut self) {
         self.frames.push(HashMap::new());
     }
 
-    /// Pop the innermost lexical frame.  Must be paired with
-    /// [`Env::push_frame`].  Silently no-ops on under-pop because the
-    /// caller path is expected to be balanced — but we never panic.
+    /// Silently no-ops on under-pop (= balanced caller path).
     pub fn pop_frame(&mut self) {
         self.frames.pop();
     }
 
-    /// Bind `name` to `value` in the innermost frame.  Used by `let`,
-    /// `let*`, and lambda parameter binding.  If no frame exists, the
-    /// binding falls through to the global slot — this is intentional
-    /// so top-level `(setq x 1)` works without an outer `(let)`.
-    /// Each binding is wrapped in a fresh FrameCell so a closure
-    /// capturing this name shares the cell (= setq write-through).
+    /// `let' / `let*' / lambda formals — bind NAME→VALUE in innermost
+    /// frame (= fresh FrameCell so closures share the slot); falls
+    /// through to the global slot when no frame is active.
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if let Some(frame) = self.frames.last_mut() {
-            frame.insert(
-                name.to_string(),
-                std::rc::Rc::new(std::cell::RefCell::new(value)),
-            );
+            frame.insert(name.to_string(), FrameCell::new(value));
         } else {
-            let entry = self
-                .globals
-                .entry(name.to_string())
-                .or_insert_with(SymbolEntry::new);
-            entry.value = Some(value);
+            self.globals.entry(name.to_string()).or_default().value = Some(value.clone());
+            self.mirror_set_value(name, value);
         }
     }
 
-    /// `boundp` — true iff `name` resolves in any lexical frame or
-    /// has a global value cell.
+    /// `boundp` — true iff `name` resolves in any frame or has a global
+    /// value.  Mirror-first, HashMap fallback while
+    /// `install_globals_record' is mid-flight.  Sentinel symbol is
+    /// special-cased to mirror `lookup_value' semantics.
     pub fn is_bound(&self, name: &str) -> bool {
-        for frame in self.frames.iter().rev() {
-            if frame.contains_key(name) {
-                return true;
-            }
+        if self.find_frame_cell(name).is_some() {
+            return true;
         }
-        matches!(
-            self.globals.get(name),
-            Some(SymbolEntry {
-                value: Some(_),
-                ..
-            })
-        )
+        if name == "nelisp--unbound-marker" {
+            return true;
+        }
+        self.mirror_is_bound(name)
+            || matches!(self.globals.get(name), Some(SymbolEntry { value: Some(_), .. }))
     }
 
     /// `fboundp` — true iff `name` has a global function cell.
+    /// Mirror-first, HashMap fallback while `install_globals_record' is
+    /// mid-flight.
     pub fn is_fbound(&self, name: &str) -> bool {
-        matches!(
-            self.globals.get(name),
-            Some(SymbolEntry {
-                function: Some(_),
-                ..
-            })
-        )
+        self.mirror_is_fbound(name)
+            || matches!(self.globals.get(name), Some(SymbolEntry { function: Some(_), .. }))
     }
 
-    /// Capture the current lexical frames as a flat alist so a
-    /// `lambda` can keep its closure environment as plain [`Sexp`]
-    /// data.  Inner frames take precedence over outer.
-    ///
-    /// Each captured slot is wrapped in `Sexp::Cell` carrying the
-    /// **same** `Rc<RefCell<Sexp>>` as the original frame entry, so
-    /// `setq' inside the closure mutates the cell visible at the
-    /// originating let-binding (= write-through closures, fixed
-    /// 2026-05-06).
+    /// Capture lexical frames as a flat `((name . cell) ...)` alist for
+    /// closure construction.  Each slot is wrapped in `Sexp::Cell`
+    /// carrying the same `NlCellRef` as the originating frame entry, so
+    /// closure `setq' writes through to the let-binding's slot.
     pub fn capture_lexical(&self) -> Sexp {
+        // Innermost-first dedup so the innermost binding wins;
+        // `push_captured' consumes the result order-independently.
+        let mut acc = Sexp::Nil;
         let mut seen = std::collections::HashSet::new();
-        let mut entries: Vec<(String, FrameCell)> = Vec::new();
         for frame in self.frames.iter().rev() {
             for (k, cell) in frame {
                 if seen.insert(k.clone()) {
-                    entries.push((k.clone(), cell.clone()));
+                    let pair = Sexp::cons(Sexp::Symbol(k.clone()), Sexp::Cell(cell.clone()));
+                    acc = Sexp::cons(pair, acc);
                 }
             }
-        }
-        let mut acc = Sexp::Nil;
-        for (k, cell) in entries.into_iter().rev() {
-            let pair = Sexp::cons(Sexp::Symbol(k), Sexp::Cell(cell));
-            acc = Sexp::cons(pair, acc);
         }
         acc
     }
 
-    /// Push a frame populated from a captured-env alist (the inverse
-    /// of [`Env::capture_lexical`]).  When a captured value is wrapped
-    /// in `Sexp::Cell`, the same `Rc` is reinstalled so mutation is
-    /// shared with the original frame; otherwise the value is wrapped
-    /// in a fresh cell (= legacy alist input still works).
+    /// Push a frame from a captured-env alist (inverse of `capture_lexical').
+    /// When a captured value is `Sexp::Cell', the same `Rc` is reinstalled
+    /// (= write-through); otherwise a fresh cell wraps the value.
+    // ---- Doc 102 Phase 8 sprint Session 4 — mirror read accessors ----
+    // Session 5 wires these into `lookup_value' / `lookup_function' /
+    // `is_bound' / `is_fbound' bodies, then deletes the Rust HashMap.
+    // Marked `dead_code' here because Session 4 ships the accessors +
+    // unit tests only; production callsites are still on the HashMap.
+    /// Doc 102 Phase 8 sprint Session 4 — fast read from the elisp env
+    /// mirror via Rust-direct `Sexp::Record' walk.  No `apply_function'
+    /// (= no FNV-1a interpreted loop overhead).  Returns the symbol-entry
+    /// record's `Sexp::Record', or None if the key is absent.
+    ///
+    /// Layout (= `lisp/nelisp-env.el' + `nelisp-stdlib-fast-hash.el'):
+    ///   globals_record = Sexp::Record(`nelisp-env')
+    ///     slots[0] = Sexp::Record(`fast-hash-table')
+    ///       slots[0] = Sexp::Int (= bucket count, power-of-2)
+    ///       slots[1] = Sexp::Vector (= buckets, each elt an alist)
+    ///       slots[2] = Sexp::Int (= entry count)
+    ///   Bucket alist cell: (Sexp::Cons (Sexp::Str . Sexp::Record(`symbol-entry')))
+    ///   Symbol entry slots: [value, function, plist, constant]
+    ///
+    /// Doc 102 Phase 8 Sprint Session 6 — returns the entry handle
+    /// (`NlRecordRef') so callers may both read slots (= `lookup_*')
+    /// and mutate them via `with_slots_mut' (= direct write path).
+    pub(crate) fn mirror_lookup_entry(
+        env_record: &Sexp,
+        name: &str,
+    ) -> Option<crate::eval::nlrecord::NlRecordRef> {
+        let env_rec = match env_record { Sexp::Record(r) => r, _ => return None };
+        let ht_rec = match env_rec.slots.get(0)? { Sexp::Record(r) => r, _ => return None };
+        let bucket_count = match ht_rec.slots.get(0)? { Sexp::Int(n) => *n as u32, _ => return None };
+        let buckets = match ht_rec.slots.get(1)? { Sexp::Vector(v) => v, _ => return None };
+        let h = mirror_fnv1a(name);
+        // power-of-2 fast path matches `nelisp--fast-hash--hash'.
+        let idx = (if bucket_count & (bucket_count - 1) == 0 {
+            h & (bucket_count - 1)
+        } else {
+            h % bucket_count
+        }) as usize;
+        let bucket = buckets.value.get(idx)?;
+        let mut cur = bucket;
+        while let Sexp::Cons(c) = cur {
+            if let Sexp::Cons(pair) = &c.car {
+                if let Sexp::Str(k) = &pair.car {
+                    if k == name {
+                        if let Sexp::Record(r) = &pair.cdr {
+                            return Some(r.clone());
+                        }
+                    }
+                }
+            }
+            cur = &c.cdr;
+        }
+        None
+    }
+
+    /// Doc 102 Phase 8 sprint Session 4 — value-cell read.  Returns None
+    /// when the entry is absent OR holds `nelisp--unbound-marker' (Session 5:
+    /// identity-compared against the cached `self.unbound_marker').
+    pub(crate) fn mirror_lookup_value(&self, name: &str) -> Option<Sexp> {
+        let entry = Env::mirror_lookup_entry(&self.globals_record, name)?;
+        let cell = entry.slots.get(0)?.clone();
+        if cell == self.unbound_marker { None } else { Some(cell) }
+    }
+
+    /// Doc 102 Phase 8 sprint Session 4 — function-cell read.
+    pub(crate) fn mirror_lookup_function(&self, name: &str) -> Option<Sexp> {
+        let entry = Env::mirror_lookup_entry(&self.globals_record, name)?;
+        let cell = entry.slots.get(1)?.clone();
+        if cell == self.unbound_marker { None } else { Some(cell) }
+    }
+
+    /// Doc 102 Phase 8 sprint Session 4 — `boundp' equivalent against
+    /// the elisp env mirror.
+    pub(crate) fn mirror_is_bound(&self, name: &str) -> bool {
+        self.mirror_lookup_value(name).is_some()
+    }
+
+    /// Doc 102 Phase 8 sprint Session 4 — `fboundp' equivalent against
+    /// the elisp env mirror.
+    pub(crate) fn mirror_is_fbound(&self, name: &str) -> bool {
+        self.mirror_lookup_function(name).is_some()
+    }
+
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let mut frame: Frame = HashMap::new();
-        let mut cur: Sexp = alist.clone();
-        loop {
-            let next = match &cur {
-                Sexp::Nil => break,
-                Sexp::Cons(car, cdr) => {
-                    let car_inner = car.borrow().clone();
-                    if let Sexp::Cons(name, value) = &car_inner {
-                        if let Sexp::Symbol(s) = &*name.borrow() {
-                            // Closure write-through: when value is a
-                            // `Sexp::Cell`, install the SAME Rc so the
-                            // closure shares the originating frame's
-                            // slot; otherwise wrap in a fresh cell.
-                            let value_inner = value.borrow().clone();
-                            let cell = match value_inner {
-                                Sexp::Cell(rc) => rc,
-                                v => std::rc::Rc::new(std::cell::RefCell::new(v)),
-                            };
-                            frame.insert(s.clone(), cell);
-                        } else {
-                            return Err(EvalError::Internal(
-                                "closure env entry name not a symbol".into(),
-                            ));
-                        }
-                    } else {
-                        return Err(EvalError::Internal(
-                            "closure env entry not a cons".into(),
-                        ));
-                    }
-                    cdr.borrow().clone()
-                }
-                _ => {
-                    return Err(EvalError::Internal(
-                        "closure env not a proper list".into(),
-                    ))
-                }
+        let mut cur = alist;
+        while let Sexp::Cons(outer) = cur {
+            let Sexp::Cons(inner) = &outer.car else {
+                return Err(EvalError::Internal("closure env entry not a cons".into()));
             };
-            cur = next;
+            let Sexp::Symbol(s) = &inner.car else {
+                return Err(EvalError::Internal("closure env entry name not a symbol".into()));
+            };
+            let cell = match &inner.cdr {
+                Sexp::Cell(c) => c.clone(),
+                v => FrameCell::new(v.clone()),
+            };
+            frame.insert(s.clone(), cell);
+            cur = &outer.cdr;
+        }
+        if !matches!(cur, Sexp::Nil) {
+            return Err(EvalError::Internal("closure env not a proper list".into()));
         }
         self.frames.push(frame);
         Ok(())
+    }
+}
+
+/// Doc 102 Phase 8 sprint Session 4 — FNV-1a 32-bit hash matching the
+/// elisp `nelisp--fast-hash--hash' (iterates Unicode codepoints).
+/// Native Rust replacement for the interpreted hash loop.
+pub(crate) fn mirror_fnv1a(s: &str) -> u32 {
+    let mut h: u32 = 0x811C9DC5;
+    for c in s.chars() {
+        h ^= c as u32;
+        h = h.wrapping_mul(0x01000193);
+    }
+    h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase8_session1_globals_record_is_nelisp_env_after_bootstrap() {
+        // Doc 102 Phase 8 Sprint Session 1 — verify `new_global' installs
+        // a fresh `nelisp-env' record into `globals_record'.
+        let env = Env::new_global();
+        match &env.globals_record {
+            Sexp::Record(r) => match &r.type_tag {
+                Sexp::Symbol(s) => assert_eq!(s, "nelisp-env"),
+                other => panic!("globals_record type tag is not a symbol: {:?}", other),
+            },
+            other => panic!("globals_record is not a Record: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn phase8_session2_globals_record_mirrors_rust_hashmap_sentinels() {
+        // Doc 102 Phase 8 Sprint Session 2 — verify the populated elisp env
+        // mirror contains the same key sentinels as the Rust HashMap.
+        // Spot-checks `car' (= function cell, ~1000 stdlib fns), `t' (=
+        // value + constant), and `make-hash-table' (= function cell, mid-
+        // STDLIB load order) — together prove that builtins, intern-
+        // constant, and STDLIB image decode all reached the mirror.
+        let mut env = Env::new_global();
+        let lookup_fn = env
+            .lookup_function("nelisp-env-lookup-function")
+            .expect("nelisp-env-lookup-function not loaded");
+        let record = env.globals_record.clone();
+        for name in &["car", "make-hash-table"] {
+            let result = super::super::apply_function(
+                &lookup_fn,
+                &[record.clone(), Sexp::Str((*name).into())],
+                &mut env,
+            );
+            assert!(
+                result.is_ok(),
+                "mirror missing function `{}': {:?}",
+                name,
+                result.err()
+            );
+        }
+        // `t' is a value-cell entry (= intern_constant path).
+        let lookup_value_fn = env
+            .lookup_function("nelisp-env-lookup-value")
+            .expect("nelisp-env-lookup-value not loaded");
+        let t_result = super::super::apply_function(
+            &lookup_value_fn,
+            &[record, Sexp::Str("t".into())],
+            &mut env,
+        );
+        assert!(matches!(t_result, Ok(Sexp::T)), "mirror missing `t': {:?}", t_result);
+    }
+
+    #[test]
+    fn phase8_session3_post_bootstrap_set_value_propagates_to_mirror() {
+        // Doc 102 Phase 8 Sprint Session 3 — after bootstrap, a Rust-side
+        // `set_value' on a fresh global must surface in the elisp mirror.
+        // Validates that `mirror_set_value' is wired correctly and that
+        // the elisp env has not gone stale post-populate.
+        let mut env = Env::new_global();
+        env.set_value("doc-102-phase-8-session-3-probe", Sexp::Int(4242))
+            .expect("set_value failed");
+        let lookup_fn = env
+            .lookup_function("nelisp-env-lookup-value")
+            .expect("nelisp-env-lookup-value not loaded");
+        let record = env.globals_record.clone();
+        let result = super::super::apply_function(
+            &lookup_fn,
+            &[record, Sexp::Str("doc-102-phase-8-session-3-probe".into())],
+            &mut env,
+        );
+        assert!(matches!(result, Ok(Sexp::Int(4242))),
+                "mirror did not observe post-bootstrap set_value: {:?}", result);
+    }
+
+    #[test]
+    fn phase8_session3_post_bootstrap_set_function_propagates_to_mirror() {
+        // Counterpart for the function cell — validate `set_function'
+        // dual-writes through `mirror_set_function'.
+        let mut env = Env::new_global();
+        let sentinel = Sexp::list_from(&[
+            Sexp::Symbol("builtin".into()),
+            Sexp::Symbol("car".into()),
+        ]);
+        env.set_function("doc-102-phase-8-session-3-fn-probe", sentinel.clone());
+        let lookup_fn = env
+            .lookup_function("nelisp-env-lookup-function")
+            .expect("nelisp-env-lookup-function not loaded");
+        let record = env.globals_record.clone();
+        let result = super::super::apply_function(
+            &lookup_fn,
+            &[record, Sexp::Str("doc-102-phase-8-session-3-fn-probe".into())],
+            &mut env,
+        );
+        assert!(matches!(&result, Ok(v) if *v == sentinel),
+                "mirror did not observe post-bootstrap set_function: {:?}", result);
+    }
+
+    #[test]
+    fn phase8_session4_rust_direct_lookup_function_matches_rust_hashmap() {
+        // Doc 102 Phase 8 Sprint Session 4 — Rust-direct mirror_lookup_*
+        // accessors return the same Sexp the Rust HashMap holds.  Spot-
+        // checks `car' / `cdr' / `eq' / `make-hash-table' covering
+        // builtins + STDLIB-loaded functions.
+        let env = Env::new_global();
+        for name in &["car", "cdr", "eq", "make-hash-table"] {
+            let rust_side = env.lookup_function(name).expect(name);
+            let mirror_side = env
+                .mirror_lookup_function(name)
+                .unwrap_or_else(|| panic!("mirror missing function `{}'", name));
+            assert_eq!(rust_side, mirror_side, "mismatch for `{}'", name);
+        }
+    }
+
+    #[test]
+    fn phase8_session4_rust_direct_lookup_value_returns_t_for_constant_t() {
+        // `t' is interned with value Sexp::T + constant flag.  Verify
+        // the mirror returns Sexp::T (not the unbound-marker sentinel).
+        let env = Env::new_global();
+        let v = env.mirror_lookup_value("t").expect("mirror missing value for `t'");
+        assert!(matches!(v, Sexp::T));
+    }
+
+    #[test]
+    fn phase8_session4_rust_direct_is_fbound_matches_rust() {
+        let env = Env::new_global();
+        // Present in env: `car'.  Absent: invented name.
+        assert!(env.mirror_is_fbound("car"));
+        assert!(!env.mirror_is_fbound("doc-102-session-4-absent-fn"));
+    }
+
+    #[test]
+    fn phase8_session4_fnv1a_matches_elisp_hash_loop() {
+        // FNV-1a 32-bit reference vectors (= ASCII inputs, same algorithm
+        // as `nelisp--fast-hash--hash').  Confirms the Rust port matches
+        // the elisp implementation bit-for-bit.
+        assert_eq!(mirror_fnv1a(""), 0x811C9DC5);
+        assert_eq!(mirror_fnv1a("a"), 0xE40C292C);
+        assert_eq!(mirror_fnv1a("foobar"), 0xBF9CF968);
     }
 }

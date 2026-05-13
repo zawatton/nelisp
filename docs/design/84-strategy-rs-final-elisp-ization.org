@@ -1,0 +1,584 @@
+#+TITLE: Doc 84 — strategy.rs final elisp 化 (= Doc 80 §7 permanent OOS の unlock)
+#+DATE: 2026-05-10
+
+* Status
+
+:STATE: SHIPPED 2026-05-10 (= 全 stage 84.1 / 84.2 / 84.3 / 84.4 完走、=strategy.rs= 全消滅)
+:PARENT: Doc 77c (= 100% 純 elisp commitment) / Doc 80 (= pre-stdlib substrate、§7 で 15 fns を permanent OOS と articulate) / Doc 28 (= Phase 7.1 Cranelift 削除 path)
+:UNLOCKS: =build-tool/src/jit/strategy.rs= 全消滅 (= -156 Rust LOC SHIPPED) + UnifiedJit 跡地完全 cleanup (= predicate / syscall trampoline 整理)
+:USER_DIRECTIVE: 2026-05-10 — "elisp化するには何が必要ですか？" → "ではこれを実施するために design doc を作成しましょう"
+:RELATED: Doc 80 §7 (= permanent OOS 宣言、本 Doc が「permanent」を「未着手」に格下げ → §7 で 0 件に縮小済) / Doc 81 (= primitive trampoline ABI、本 Doc が同 pattern を 3 family に拡張) / Doc 85 (= Phase 47 elisp self-hosting toolchain feasibility spike、次 OOS frontier)
+:DEPENDS_ON: Phase A.5 layout pin (=NlFloat= / =NlMutStr= / =NlBoolVector= / =NlCharTable= 既 SHIPPED)
+:NEXT: Doc 85 = Phase 47 feasibility spike (= ~810 LOC 次 OOS target = =Sexp= 型 / =ffi.rs= / boot loader)
+:SHIPPED_COMMITS: 84.1 = =887b08e2= / 84.2 = =5098d777= / 84.3 = =c4efa646= / 84.4 = (= 本コミット、agent-doc-84-stage-4 branch)
+
+* §0 TL;DR
+
+Doc 80 §7 で "permanent OOS" と articulate された =strategy.rs= 残 15 fn (= 8 Float + 6 box accessor + 1 syscall) を **3 stage atomic ship** で elisp 化し、=strategy.rs= を全消滅させる.
+
+| stage | scope | Rust delta | elisp delta | 工数 |
+|-------+-------+-----------+-------------+------|
+| 84.1 Float family | 8 fn (= add/sub/mul/eq-eps/lt/gt/le/ge) | -85 | +120 elisp + ABI | 3-5 day |
+| 84.2 Syscall table | 1 fn (= cfg(linux/not-linux) 2 variant) | -15 | +50 elisp (= build.rs codegen 経由) | 1-2 day |
+| 84.3 Box accessor family | 6 fn (= MutStr/BoolVector/CharTable) | -90 | +180 elisp + ABI + primitives | 5-7 day |
+| **計** | 15 fn | **-190 Rust** | **+350 elisp** | **約 2 週間** |
+
+aggregate 後の状態:
+- =strategy.rs= 全消滅 (= 156 LOC → 0 LOC)
+- =build-tool/src/jit/mod.rs= の =strategy::*= 再 export 全消滅
+- =build-tool/src/eval/builtins.rs= dispatch arms 19 件削除
+- 純 elisp 化 = 完走 (= "純 elisp 化を絶対に進めたい" user directive 達成)
+
+key 構造的事実:
+- Phase A.5 で =NlFloat= / =NlMutStr= / =NlBoolVector= / =NlCharTable= は既に =#[repr(C)]= layout pin 済 → primitive trampoline は安全に書ける
+- Doc 81 trampoline ABI 拡張 pattern (= Stage 81.2/81.3) を 3 family に再適用するだけ
+- "permanent OOS" は engineering 困難ではなく **Doc 80 設計の自己制約** だった (= Doc 80 は pre-stdlib substrate、Doc 84 はその外側で elisp 化)
+
+* §1 動機
+
+** §1.1 user directive
+
+2026-05-10 user 質問: "下記をelisp化するには何が必要ですか？  strategy.rs 残 15 fns: 9 fns: Float epsilon + libc::SYS_* (= Rust runtime 必須)、6 fns: 内部 box accessor (= elisp に露出不可)"
+
+→ Claude 回答: 「不可能ではなく、design scope 外」.  3 group それぞれに unlock 条件あり.
+
+→ user follow-up: "ではこれを実施するために design doc を作成しましょう"
+
+本 Doc がその回答.
+
+** §1.2 Doc 80 §7 の再評価
+
+Doc 80 §7 は "out of scope" と articulate しているが、その理由は:
+- (a) Float arith / cmp は Doc 80 が pre-stdlib substrate (= =defmacro=/=cond=/=when= 等の language rule) に focus したため、Float primitive は別 Doc 担当という分業.
+- (b) 内部 box accessor は =Sexp::MutStr= 等の variant box の private field を elisp 露出させない方針だが、これは Doc 80 の判断であり、本 Doc は逆判断 = **trampoline ABI 経由で露出** とする.
+- (c) =bi_syscall_nr_resolve= は libc::SYS_* compile-time constant の elisp 経路が無いだけ.  build.rs codegen で解決.
+
+つまり Doc 80 の "permanent OOS" は **Doc 80 の scope に対する permanent**、**system 全体への permanent ではない**.  Doc 84 が Doc 80 の scope の外側で 15 fn を elisp 化する.
+
+** §1.3 純 elisp 化完走への意義
+
+Phase 7.1.7.a.1 までの累計実績 (2026-05-10 session):
+- Cranelift 完全削除 (Doc 28 §3.6 + §3.7 完遂)
+- UnifiedJit 構造体消滅 (5 cluster takeover)
+- bridge.rs = pure name→fn-ptr match table
+- 24 trampoline 全 dlsym-resolved
+- Phase 9 frozen heap 完遂 (Doc 75)
+- Phase C GC pure elisp (Doc 79)
+- reader fence-off (Doc 73 Stage 8.4)
+
+残るのは =strategy.rs= 156 LOC のみ.  Doc 84 完了で **"100% pure elisp" (Rust 削減 ≠ 0 だが elisp で再表現可能な部分は全 elisp 化)** 達成.
+
+* §2 現状制約分析
+
+** §2.1 Group 1: Float family (8 fn)
+
+実装位置: =strategy.rs= line 24-58.
+
+| fn | 実装 | LOC |
+|----+------+-----|
+| =bi_add2_float= | macro =float_arith_helper!=、=Sexp::Float(a + b)= | ~5 |
+| =bi_sub2_float= | 同上、=a - b= | ~5 |
+| =bi_mul2_float= | 同上、=a * b= | ~5 |
+| =bi_num_eq2_float= | 個別実装、=(a - b).abs() < 1e-15= | ~4 |
+| =bi_num_lt2_float= | macro =float_cmp_helper!=、=a < b= | ~5 |
+| =bi_num_gt2_float= | 同上、=a > b= | ~5 |
+| =bi_num_le2_float= | 同上、=a <= b= | ~5 |
+| =bi_num_ge2_float= | 同上、=a >= b= | ~5 |
+
+呼出経路: =eval::builtins::dispatch= の =nelisp--add2= / 等 19 arm が =strategy::bi_add2_float= 等を直接 call.  elisp 側 =nelisp-jit-strategy.el= は =nl-jit-call-i64-i64= bridge 経由で nelisp_jit_arith_* trampoline に飛ぶ Int path のみ持ち、Float fall-through を Rust 側 =bi_*_float= に委譲する形.
+
+elisp 化阻害要因:
+- pre-stdlib substrate (Doc 80) に Float arithmetic primitive が無い.
+- =Sexp::Float(f64)= variant は elisp に露出されているが、Float ↔ f64 marshal の primitive (= =nl-float-payload= / =nl-float-make=) が無い.
+- IEEE 754 epsilon comparison (=1e-15=) も pre-stdlib では表現不可.
+
+** §2.2 Group 2: Syscall table (1 fn × 2 cfg)
+
+実装位置: =strategy.rs= line 142-155.
+
+呼出経路: =eval::builtins::dispatch= の =nelisp--syscall-nr-resolve= arm が =strategy::bi_syscall_nr_resolve= を call.  elisp 側 =nelisp-jit-strategy.el= は wrapper を持たず、直接 builtin 経由で呼ぶ.  Linux variant は =crate::eval::builtins::syscall_nr= 経由で =libc::SYS_*= を返す.
+
+elisp 化阻害要因:
+- =libc::SYS_*= は compile-time constant (= Rust 側 platform-dependent symbol catalog).
+- elisp は build-time に Rust crate に直接アクセスできない.
+- runtime に primitive 経由で問合せるのは可能だが、syscall name → number lookup は build-time constants の static table 化が圧倒的に効率的.
+
+** §2.3 Group 3: Box accessor family (6 fn)
+
+実装位置: =strategy.rs= line 60-138.
+
+| fn | variant | LOC |
+|----+---------+-----|
+| =bi_mut_str_len= | =Sexp::MutStr(rc)= | ~5 |
+| =bi_bool_vector_len= | =Sexp::BoolVector(v)= | ~5 |
+| =bi_str_codepoint_at= | =Sexp::Str= or =Sexp::MutStr= | ~12 |
+| =bi_mut_str_set_codepoint= | =Sexp::MutStr(rc)= mutate | ~18 |
+| =bi_char_table_aref= | =Sexp::CharTable(rc)= | ~6 |
+| =bi_char_table_aset= | =Sexp::CharTable(rc)= mutate | ~10 |
+
+呼出経路: elisp =length= / =aref= / =aset= / =elt= の variant fall-through arm.  =nelisp-jit-strategy.el= の =cond= 内で =mut-string-p= / =bool-vector-p= / =char-table-p= predicate が真の場合に =nelisp--mut-str-len= 等の builtin に dispatch.
+
+elisp 化阻害要因:
+- =NlMutStrRef::value= / =NlBoolVectorRef::value= / =NlCharTableRef::with_inner_mut= が elisp に primitive として露出していない.
+- =Sexp::MutStr(rc)= の =rc.set_value(new_str)= 経路は Phase A.4.2 の SAFETY contract (= local 不 alias) に依存し、elisp から呼ぶ場合は ABI 経由で contract を維持する必要.
+- =char_table_get= / =char_table_set_one= も同様.
+
+* §3 設計
+
+** §3.1 Stage 84.1: Float family elisp 化
+
+*** §3.1.1 新 ABI mode (Doc 81 拡張)
+
+Doc 81 trampoline ABI に **Float 用 2 mode 追加**:
+
+#+begin_example
+:trampoline-binary-float
+  Rust signature: extern "C" fn(f64, f64) -> f64
+  elisp wrapper:  (nl-jit-call-float-float SYM A B) → Float
+  marshalling:    System V xmm0/xmm1, Returns xmm0
+
+:trampoline-binary-float-cmp
+  Rust signature: extern "C" fn(f64, f64, f64) -> i64  (= a, b, epsilon)
+  elisp wrapper:  (nl-jit-call-float-cmp SYM A B EPS) → 0 or 1
+  marshalling:    a/b → xmm0/xmm1, eps → xmm2, returns rax (i64)
+#+end_example
+
+x86_64 + arm64 両 backend に encoder 追加.
+
+*** §3.1.2 8 新 trampoline (Rust)
+
+新 file: =build-tool/src/jit/float.rs= (新規作成、~80 LOC):
+
+#+begin_example
+#[no_mangle] pub extern "C" fn nl_jit_float_add(a: f64, b: f64) -> f64 { a + b }
+#[no_mangle] pub extern "C" fn nl_jit_float_sub(a: f64, b: f64) -> f64 { a - b }
+#[no_mangle] pub extern "C" fn nl_jit_float_mul(a: f64, b: f64) -> f64 { a * b }
+#[no_mangle] pub extern "C" fn nl_jit_float_eq_eps(a: f64, b: f64, eps: f64) -> i64 {
+    if (a - b).abs() < eps { 1 } else { 0 }
+}
+#[no_mangle] pub extern "C" fn nl_jit_float_lt(a: f64, b: f64) -> i64 { (a < b) as i64 }
+#[no_mangle] pub extern "C" fn nl_jit_float_gt(a: f64, b: f64) -> i64 { (a > b) as i64 }
+#[no_mangle] pub extern "C" fn nl_jit_float_le(a: f64, b: f64) -> i64 { (a <= b) as i64 }
+#[no_mangle] pub extern "C" fn nl_jit_float_ge(a: f64, b: f64) -> i64 { (a >= b) as i64 }
+#+end_example
+
+これらは Doc 81 trampoline ABI の拡張により、bridge.rs から dlsym-resolved.
+
+*** §3.1.3 Float marshalling primitive (新)
+
+=Sexp::Float= ↔ f64 の elisp 経路を追加:
+
+#+begin_example
+nl-float-payload    : (Sexp::Float) → f64       (= unbox)
+nl-float-make       : (f64) → Sexp::Float       (= box)
+#+end_example
+
+これらは =build-tool/src/eval/builtins.rs= に =bi_nl_float_payload= / =bi_nl_float_make= で実装、=install_builtins= 名前 list に登録.
+
+*** §3.1.4 elisp 側 wrapper (=nelisp-jit-strategy.el= +120 LOC)
+
+#+begin_example
+(defun nelisp--add2 (a b)
+  (cond
+    ((and (integerp a) (integerp b))
+     (nl-jit-call-i64-i64 "nl_jit_arith_add2" a b))
+    (t
+     (nl-float-make (nl-jit-call-float-float "nl_jit_float_add"
+                                              (nl-float-coerce a)
+                                              (nl-float-coerce b))))))
+#+end_example
+
+=nelisp--sub2= / =nelisp--mul2= / =nelisp--num-eq2= / 等 7 wrapper を同 pattern で書く.  =nelisp--num-eq2= だけは =nl-jit-call-float-cmp= に epsilon =1e-15= を渡す.
+
+*** §3.1.5 dispatch removal
+
+=build-tool/src/eval/builtins.rs= dispatch から 8 arm 削除:
+=nelisp--add2= / =nelisp--sub2= / =nelisp--mul2= / =nelisp--num-eq2= / =nelisp--num-lt2= / =nelisp--num-gt2= / =nelisp--num-le2= / =nelisp--num-ge2=.
+
+これらは elisp に既存定義あれば直接そちらを呼ぶようになる.
+
+** §3.2 Stage 84.2: Syscall table elisp 化
+
+*** §3.2.1 build.rs codegen
+
+新 file: =build-tool/build.rs= (= 拡張、既存があれば追加 codegen step):
+
+#+begin_example
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let names = match target_os.as_str() {
+        "linux" => vec![
+            ("read", libc::SYS_read), ("write", libc::SYS_write),
+            ("open", libc::SYS_open), ("close", libc::SYS_close),
+            ("mmap", libc::SYS_mmap), ("mprotect", libc::SYS_mprotect),
+            // ... 約 100 entries
+        ],
+        _ => vec![],
+    };
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    let path = format!("{}/syscall_table.el", out_dir);
+    let mut f = std::fs::File::create(path).unwrap();
+    use std::io::Write;
+    writeln!(f, ";;; auto-generated by build.rs").unwrap();
+    writeln!(f, "(defconst nelisp--syscall-nr-table").unwrap();
+    writeln!(f, "  '(").unwrap();
+    for (n, nr) in names {
+        writeln!(f, "    (\"{}\" . {})", n, nr).unwrap();
+    }
+    writeln!(f, "  ))").unwrap();
+}
+#+end_example
+
+build.rs が =OUT_DIR/syscall_table.el= を生成.
+
+*** §3.2.2 elisp 側 lookup
+
+=lisp/nelisp-syscall-table.el= (= shim):
+
+#+begin_example
+;; This file is a shim; the real `nelisp--syscall-nr-table' is
+;; generated by `build-tool/build.rs' at compile time and embedded
+;; into the .image artifact.
+
+(defun nelisp--syscall-nr-resolve (name)
+  "Doc 84 §3.2 — resolve syscall NAME (string) to host syscall number.
+Returns the integer syscall number, or signals `arith-error' if NAME is
+not in the platform's libc::SYS_* catalog."
+  (or (cdr (assoc name nelisp--syscall-nr-table))
+      (signal 'arith-error
+              (format "nelisp--syscall-nr-resolve: unknown syscall %s" name))))
+#+end_example
+
+*** §3.2.3 dispatch removal
+
+=build-tool/src/eval/builtins.rs= dispatch から =nelisp--syscall-nr-resolve= arm 削除.
+
+** §3.3 Stage 84.3: Box accessor family elisp 化
+
+*** §3.3.1 6 新 primitive trampoline (Rust)
+
+新 file: =build-tool/src/jit/box_accessor.rs= (~120 LOC):
+
+#+begin_example
+#[no_mangle] pub extern "C" fn nl_jit_mut_str_len(s: *const NlMutStrRef) -> i64 {
+    unsafe { (*s).value.chars().count() as i64 }
+}
+
+#[no_mangle] pub extern "C" fn nl_jit_bool_vector_len(v: *const NlBoolVectorRef) -> i64 {
+    unsafe { (*v).value.len() as i64 }
+}
+
+#[no_mangle] pub extern "C" fn nl_jit_str_codepoint_at(s: *const Sexp, idx: i64) -> i64 {
+    // 0..u32::MAX → codepoint, -1 → out-of-range
+    let s = unsafe { &*s };
+    let s_str = match s {
+        Sexp::Str(rc) => &rc[..],
+        Sexp::MutStr(rc) => &unsafe { &*rc }.value[..],
+        _ => return -1,
+    };
+    if idx < 0 { return -1; }
+    s_str.chars().nth(idx as usize).map(|c| c as i64).unwrap_or(-1)
+}
+
+#[no_mangle] pub extern "C" fn nl_jit_mut_str_set_codepoint(
+    s: *const NlMutStrRef, idx: i64, cp: i64) -> i64 {
+    // returns 0 on success, -1 on out-of-range or invalid codepoint
+    unsafe {
+        let rc = &*s;
+        let new_ch = match char::from_u32(cp as u32) {
+            Some(c) => c, None => return -1,
+        };
+        let chars: Vec<char> = rc.value.chars().collect();
+        if idx < 0 || (idx as usize) >= chars.len() { return -1; }
+        let new_str: String = chars.iter().enumerate()
+            .map(|(i, c)| if i == idx as usize { new_ch } else { *c }).collect();
+        rc.set_value(new_str);
+        0
+    }
+}
+
+#[no_mangle] pub extern "C" fn nl_jit_char_table_aref(
+    t: *const NlCharTableRef, idx: i64) -> Sexp {
+    unsafe { char_table_get(&*t, idx) }
+}
+
+#[no_mangle] pub extern "C" fn nl_jit_char_table_aset(
+    t: *const NlCharTableRef, idx: i64, val: Sexp) -> i64 {
+    unsafe {
+        (*t).with_inner_mut(|i| char_table_set_one(i, idx, val.clone()));
+    }
+    0
+}
+#+end_example
+
+*** §3.3.2 新 ABI mode (= 必要に応じて)
+
+既存 ABI mode で済まない場合のみ追加:
+- =:trampoline-unary-box-len= : =fn(*const Box) -> i64= (= len 系)
+- =:trampoline-binary-box-aref= : =fn(*const Box, i64) -> Sexp= (= aref 系)
+- =:trampoline-ternary-box-aset= : =fn(*const Box, i64, Sexp) -> i64= (= aset 系)
+
+これらは Stage 81.3 の =:trampoline-binary-aref= / =:trampoline-ternary-aset= を box 専用 (= =NlVectorRef= でなく =NlMutStrRef= 等) に拡張した bare pointer mode.
+
+x86_64 / arm64 backend encoder に対応 arm 追加.
+
+*** §3.3.3 elisp 側 wrapper (=nelisp-jit-strategy.el= +180 LOC)
+
+#+begin_example
+(defun nelisp--mut-str-len (s)
+  "Doc 84 §3.3 — MutStr length via box-pointer trampoline."
+  (cond ((mut-string-p s)
+         (nl-jit-call-box-len "nl_jit_mut_str_len" (nl-mut-str-payload s)))
+        (t (signal 'wrong-type-argument (list 'mut-string s)))))
+
+(defun nelisp--char-table-aref (table idx)
+  "Doc 84 §3.3 — CharTable aref via box-pointer trampoline."
+  (cond ((char-table-p table)
+         (nl-jit-call-box-aref "nl_jit_char_table_aref"
+                               (nl-char-table-payload table)
+                               idx))
+        (t (signal 'wrong-type-argument (list 'char-table table)))))
+#+end_example
+
+=nl-mut-str-payload= / =nl-char-table-payload= 等の payload 取得 primitive (= 既 SHIPPED の =nl-rc-payload-ptr= variant) を拡張して個別 box 用に追加.
+
+*** §3.3.4 dispatch removal
+
+=build-tool/src/eval/builtins.rs= dispatch から 6 arm 削除:
+=nelisp--mut-str-len= / =nelisp--bool-vector-len= / =nelisp--str-codepoint-at= / =nelisp--mut-str-set-codepoint= / =nelisp--char-table-aref= / =nelisp--char-table-aset=.
+
+* §4 Stage breakdown
+
+** §4.1 Stage 84.1 (Float family)
+
+| sub-stage | 内容 | 工数 | LOC delta |
+|-----------+------+------+-----------|
+| 84.1.a | float.rs 新規 + 8 trampoline 実装 | 1 day | +80 Rust |
+| 84.1.b | trampoline ABI :trampoline-binary-float / :trampoline-binary-float-cmp 追加 | 1 day | +60 elisp (nelisp-cc-runtime) |
+| 84.1.c | nl-float-payload / nl-float-make primitive 実装 | 0.5 day | +20 Rust |
+| 84.1.d | elisp wrapper 8 fn + ERT | 1 day | +120 elisp |
+| 84.1.e | strategy.rs Float 8 fn 削除 + builtins.rs dispatch 削除 | 0.5 day | -85 Rust + -40 dispatch |
+| **計** | | **3-5 day** | **-85 Rust net + +200 elisp** |
+
+** §4.2 Stage 84.2 (Syscall table)
+
+| sub-stage | 内容 | 工数 | LOC delta |
+|-----------+------+------+-----------|
+| 84.2.a | build.rs codegen 実装 (= libc::SYS_* walk + .el emission) | 0.5 day | +60 Rust (build.rs) |
+| 84.2.b | nelisp-syscall-table.el shim + lookup fn | 0.5 day | +50 elisp |
+| 84.2.c | strategy.rs bi_syscall_nr_resolve 削除 + builtins.rs dispatch 削除 + image rebake | 0.5 day | -15 Rust |
+| **計** | | **1-2 day** | **+45 Rust build.rs + -15 strategy = +30 net Rust** (transient、build.rs は production runtime に乗らない) |
+
+** §4.3 Stage 84.3 (Box accessor family)
+
+| sub-stage | 内容 | 工数 | LOC delta |
+|-----------+------+------+-----------|
+| 84.3.a | box_accessor.rs 新規 + 6 trampoline 実装 | 2 day | +120 Rust |
+| 84.3.b | trampoline ABI :trampoline-unary-box-len / -aref / -aset 追加 (必要時) | 1 day | +80 elisp (nelisp-cc-runtime) |
+| 84.3.c | nl-mut-str-payload / nl-bool-vector-payload / nl-char-table-payload primitive 実装 | 1 day | +30 Rust |
+| 84.3.d | elisp wrapper 6 fn + ERT | 2 day | +180 elisp |
+| 84.3.e | strategy.rs box 6 fn 削除 + builtins.rs dispatch 削除 + image rebake | 1 day | -90 Rust + -30 dispatch |
+| **計** | | **5-7 day** | **+60 Rust accessor + -90 strategy = -30 net Rust + +260 elisp** |
+
+** §4.4 Final cleanup (84.4)
+
+Stage 84.1〜84.3 全 SHIPPED 後の最終整理:
+- =strategy.rs= 全削除 (= 156 LOC → 0)
+- =build-tool/src/jit/mod.rs= の =mod strategy;= + 19 件 =pub(crate) use strategy::{...}= 削除
+- =build-tool/src/eval/builtins.rs= 残 dispatch arms 削除
+- Doc 80 §7 STATE 更新 (= "permanent OOS" → "Doc 84 で elisp 化済")
+- Doc 28 §3.7.a STATE → COMPLETE
+- 工数: ~0.5 day
+
+* §5 Test / verification strategy
+
+** §5.1 Per-stage ERT
+
+各 stage で新 ERT を =test/nelisp-jit-strategy-port-test.el= 拡張:
+- Stage 84.1: Float 8 fn の round-trip + epsilon edge case (= =1e-15= boundary, =NaN= behaviour)
+- Stage 84.2: syscall name resolution (= =read= → 0 (Linux) etc) + 不明 syscall name で =arith-error= signal
+- Stage 84.3: box accessor 6 fn の length / aref / aset round-trip + 境界 case (= empty MutStr, idx out-of-range)
+
+** §5.2 Bootstrap canaries
+
+Phase 9 baseline canaries を維持:
+- =phase4_6d_bootstrap_el_compiles_to_image_and_evaluates=
+- =phase4_6e_image_forms_are_real_elisp_values_before_eval=
+
+これらは production .image load 経路をカバーするため、Doc 84 各 stage 後も green.
+
+** §5.3 Cargo build clean
+
+各 stage 後:
+- =cargo build= (default features) clean
+- =cargo build --features image-baker= clean
+- =cargo test --lib jit::= green
+- =cargo test --lib image::= green
+
+** §5.4 Perf gate
+
+Phase 7.1.5 fib 30x speedup gate (= LOCKED at 3964x) は本 Doc では関係なし (= Float / box accessor は hot path でない).  ただし:
+- =eq= / =length= / =aref= / =aset= の elisp wrapper が新 trampoline 経由になるため、interactive performance を =make bench= で確認 (= 退行なし)
+
+* §6 LOC delta accounting
+
+** §6.1 aggregate
+
+| component | Rust delta | elisp delta |
+|-----------+-----------+-------------|
+| Stage 84.1 Float | -85 production + +20 marshalling = -65 | +200 |
+| Stage 84.2 Syscall | -15 strategy + +60 build.rs = +45 transient | +50 |
+| Stage 84.3 Box accessor | -90 strategy + +150 trampoline+marshalling = +60 | +260 |
+| Stage 84.4 Final cleanup | -10 mod.rs/dispatch/strategy 残骸 | 0 |
+| **計** | **-25 net Rust + +60 build.rs (transient)** | **+510 elisp** |
+
+** §6.2 production binary 影響
+
+Doc 84 ship 後の =cargo build= (default features) production runtime size:
+- Rust source LOC: -156 (= strategy.rs 全削除) + 5 trampoline file 追加 (= ~+200 LOC、ただし Cranelift 削除後の clean な layout)
+- 純減見込み: **-50〜-100 production Rust LOC** (depend on trampoline body 圧縮度)
+- elisp .image size: +500 elisp LOC が image baker で frozen heap entries に変換される (= 数 KB image 増)
+
+** §6.3 構造的成果
+
+数値以外の成果:
+- =build-tool/src/jit/strategy.rs= 全消滅 = jit/ 配下に "Cranelift 残骸" 0 LOC.
+- =UnifiedJit= 完全消滅 (= Phase 7.1.6.e で予告された predicate / syscall trampoline も box accessor pattern で別ファイル化).
+- =bridge.rs= 配下の dlsym 経路が 24 → ~32 trampoline (= Float 8 + box 6 + 既存 24) に拡張、すべて name → fn-ptr の uniform table.
+- nelisp-cc native compiler が hot path だけでなく **Float / box 操作も完全所有**.
+
+* §7 Bundle accounting and dependencies
+
+** §7.1 Doc 80 との関係
+
+Doc 80 §7 を修正:
+- "permanent OOS" 文言を "**Doc 80 scope OOS、Doc 84 で elisp 化済**" に書換.
+- §7 旧 11 fn list を残し、各 fn の隣に "Doc 84 §3.X で SHIPPED" stamp.
+
+** §7.2 Doc 28 との関係
+
+Doc 28 §3.7.a Status を更新:
+- "realistic ceiling = -55 Rust via 5 bitwise/ash elisp port (= Phase 7.1.7.a.1)" は SHIPPED.
+- 残骸 = "Doc 84 が strategy.rs 全削除を担当" と articulate.
+- §3.7.a STATE → COMPLETE は Doc 84 ship 後.
+
+** §7.3 Doc 81 との関係
+
+Doc 81 trampoline ABI の設計上の拡張:
+- =:trampoline-binary-float= (新 mode 1)
+- =:trampoline-binary-float-cmp= (新 mode 2)
+- =:trampoline-unary-box-len= (新 mode 3、必要時)
+- =:trampoline-binary-box-aref= (新 mode 4、必要時)
+- =:trampoline-ternary-box-aset= (新 mode 5、必要時)
+
+Doc 81 §5 (= 81.1〜81.4 全 SHIPPED) の後継として **Doc 81 §6 = "Doc 84 由来 ABI mode 拡張"** subsection を追加するか、Doc 84 内に articulate.
+
+** §7.4 user directive 達成
+
+2026-05-09 user directive: "elisp 再表現可能とする為に、足らない表現があったらelispで実装しましょう".
+
+Doc 84 はこの directive を **strategy.rs 残 15 fn にも適用** = 「足らない表現」を新 trampoline ABI mode と新 primitive で provision して elisp 化.
+
+* §8 implementation order
+
+推奨順序:
+
+1. **Stage 84.2 (Syscall) を最初** — 1-2 day と最小、build.rs codegen の建付け確認も兼ねる
+2. **Stage 84.1 (Float)** — 3-5 day、Float marshalling primitive + 2 ABI mode 拡張
+3. **Stage 84.3 (Box accessor)** — 5-7 day、最も複雑、複数 box 種類への ABI 拡張
+4. **Stage 84.4 (Final cleanup)** — 0.5 day、strategy.rs 全削除確定
+
+Stage 84.1 と 84.3 は **並列 dispatch 可能** (= 違うファイル groups touch するため).  Stage 84.2 は他 stage と独立で常に並列可.
+
+合計 timeline:
+- sequential: 約 2 週間
+- 並列 (84.1 + 84.3 同時): 約 1.5 週間
+
+* §9 risk assessment
+
+** §9.1 ABI mode 拡張のリスク
+
+Doc 81 trampoline ABI 拡張は既に Stage 81.3 で実証済 pattern.  リスク低.
+
+** §9.2 build.rs codegen のリスク
+
+libc crate の =SYS_*= constants は =cfg(target_os)= で gating されており、cross-compile 時の挙動を要 verify.  CI で Linux + macOS (ARM64) の両 build 確認が必要.
+
+** §9.3 Box accessor の SAFETY contract
+
+Phase A.4.x で確立された SAFETY contract (= local 不 alias、=with_inner_mut= closure ownership) を ABI 経由で維持する必要.  trampoline body に SAFETY コメント明記.
+
+** §9.4 Image 再 bake のリスク
+
+各 stage で =lisp/*.el.image= 18 件再 bake が必要.  Stage 9.5 / 7.1.7.a.1 で同様のオペレーション実証済、リスク低.
+
+* §10 acceptance criteria
+
+Doc 84 全 SHIPPED の判定:
+
+1. =build-tool/src/jit/strategy.rs= が物理削除されている (= file 不在).
+2. =build-tool/src/jit/mod.rs= に =mod strategy;= および =strategy::*= 再 export が一切無い.
+3. =build-tool/src/eval/builtins.rs= dispatch から =nelisp--{add,sub,mul}2= / =nelisp--num-{eq,lt,gt,le,ge}2= / =nelisp--syscall-nr-resolve= / =nelisp--{mut-str,bool-vector,char-table}-{len,aref,aset,codepoint-at,set-codepoint}= 全 19 arm が削除されている.
+4. =cargo build= (default + image-baker) clean、warning 0.
+5. =cargo test --lib jit:: + image::= 全 green.
+6. =make test= (full ERT) で本 Doc 由来の追加 ERT (~30 件) が全 green.
+7. Bootstrap canary 2 件 (=phase4_6d=, =phase4_6e=) green.
+8. Doc 80 §7 と Doc 28 §3.7.a の STATE 更新.
+9. Doc 84 §0 STATE → SHIPPED.
+
+* §11 Open questions (= reviewer 検討事項)
+
+** §11.1 Float marshalling の代替設計
+
+選択肢 A (本 Doc 採用): =nl-float-payload= / =nl-float-make= primitive で f64 marshal、trampoline は f64 直接受取.
+
+選択肢 B: =Sexp::Float= を直接 trampoline argument にする (= =:trampoline-binary= の float variant).  marshalling primitive 不要だが、ABI signature が =fn(*const Sexp, *const Sexp, *mut Sexp) -> i64= で xmm レジスタ未使用 (= 性能退行リスク).
+
+選択肢 A を推奨 (= xmm0/xmm1 直接使用、Float arith hot path の高速性維持).
+
+** §11.2 Box accessor の payload pointer 露出
+
+選択肢 A (本 Doc 採用): =nl-mut-str-payload= 等が =NlMutStrRef= の生 pointer (= =Box<UnsafeCell<...>>= の中身) を返す.  trampoline は raw pointer を受取り unsafe 操作.
+
+選択肢 B: 全 box 操作を =nl-rc-*= primitive 経由に統一し、box 種類別 trampoline を作らない.  ただし =nl-rc-payload-ptr= が type-erased pointer を返すため、box 種類ごとの type cast が trampoline 内に必要.
+
+選択肢 A の方が Stage 81.2/81.3 の cons/vector pattern と integrity 高い.
+
+** §11.3 Stage 84.2 の build.rs runtime cost
+
+build.rs が libc crate を pull する増 build time vs. runtime に primitive 経由で問合せる approach の trade-off.
+
+build.rs codegen は **build-time コスト一回 vs runtime コスト無し** で、production binary 影響なし → 推奨.
+
+* §12 next action
+
+本 Doc DRAFT に対する user feedback を経て、Stage 84.2 (Syscall) から着手 (= 最小 stage で実装パターン確立).
+
+* §13 Implementation deviations (2026-05-10 SHIPPED 後追記)
+
+** §13.1 Stage 84.3 Box accessor — payload-ptr design からの逸脱
+
+Stage 84.3 は §3.3 設計で「3 new ABI modes (=nl-jit-call-mut-str-ix= / =bool-vec-ix= / =char-table-ix=) + payload-pointer primitives」を提案していたが、**実装は既存 =nl-jit-call-out-{1,1i,2i}= bridge shapes (= =*const Sexp → *mut Sexp= shape via =jit/access::nl_jit_access_*= parity) を再利用** で完走した:
+
+- 設計 (= §3.3 v1): 3 new ABI modes + 6 new payload-ptr primitives + 6 new trampolines = 推定 +60 primitives + +60 ABI wiring = **NET +120 Rust LOC**.
+- 実装 (= =c4efa646= SHIPPED): =jit/box_accessor.rs= 91 LOC (= 6 trampolines on existing =nl-jit-call-out-*= shapes) + =bridge.rs= +7 LOC (= 6 fn ptr 追加) + =strategy.rs= -77 LOC (= 6 =bi_*= 削除 + =slim!= macro 削除) + =builtins.rs= -6 LOC (= 6 dispatch arms 削除) = **NET -2 Rust LOC**.
+
+逸脱の正当化:
+1. 設計の payload-ptr アプローチは monotonic shrink rule (= "stage 単位で必ず Rust LOC が減る") に違反 (= NET +120 Rust LOC).
+2. 既存 bridge shapes が Box accessor の signature space を完全 cover (= 1-arg = =mut-str-len= / =bool-vector-len=, 2-arg-idx = =str-codepoint-at= / =char-table-aref=, 3-arg-idx = =mut-str-set-codepoint= / =char-table-aset=).
+3. 6 trampolines が =NlStrRef= / =NlBoolVectorRef= / =NlCharTableRef= の payload に直接 reach する pattern は Phase A.4.x SAFETY contract (= local 変数 borrow / =set_value= / =with_inner_mut= closure scoping) を壊さない.
+
+成果:
+- 計画 -30 LOC vs 実測 -2 LOC で計画より 28 LOC 弱い.
+- ただし Stage 84.4 (= 本コミット) で =strategy.rs= 全削除 → 残 17 LOC (= placeholder docstring + use stmts) も消滅 → aggregate goal (= "strategy.rs 削除可能" = §0 TL;DR) 達成.
+
+cite: =c4efa646= commit log の "Strategy (atomic-with-consumer)" 節.
+
+** §13.2 Stage 84.4 Final cleanup の実 LOC 効果
+
+3 stage cherry-pick の merge resolution で =strategy.rs= が 156 LOC → 17 LOC placeholder (docstring + use 文) で残った.  Stage 84.4 で:
+- =git rm build-tool/src/jit/strategy.rs= = -17 Rust LOC.
+- =build-tool/src/jit/mod.rs= の =mod strategy;= + 4-line comment block 削除 = -5 Rust LOC.
+
+Stage 84.4 単独の効果 = -22 Rust LOC.  累計 = baseline 21818 LOC → final 21796 LOC = **-22 net Rust LOC** (= 84.1 -1 + 84.2 -20 + 84.3 -2 + 84.4 -22 の累積で merge resolution の重複を相殺した実測).

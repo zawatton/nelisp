@@ -1,0 +1,1069 @@
+#+TITLE: Doc 89 — §86.3 env.rs scope chain elisp 化 detailed design
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: DRAFT
+- *Parent*: Doc 86 §86.3 (= Phase 2 master design の最 risky stage)、Doc
+  86 §7 / §9.3 で chicken-and-egg risk が articulate 済み
+- *Builds_on*: Doc 80 SHIPPED (= pre-stdlib substrate、=cond= /
+  =defmacro= self-boot / =signal-helper= が確立 = §86.3 の lowest-level
+  expressibility)、Doc 84 SHIPPED (= =strategy.rs= 全消滅 = Phase 1 末
+  端)、Doc 68 / Doc 69 / Doc 70 (= =nelisp--apply-fn= / 7.4.b〜7.4.e の
+  apply chain elisp 化、= env.rs の closure 周り delegate 経路を確立済)
+- *Sibling docs*: Doc 87 (= §86.1 builtins dispatch arm migration、Tier
+  1/2 並列)、Doc 88 (= §86.2 error.rs migration、独立並列)、Doc 90 (=
+  Phase 2 連動削減 audit、本 Doc が articulate した連動削減を post-ship
+  audit する)
+- *Unlocks*: Phase 2 着地 ~17,000-19,000 LOC の最後の -1,500 LOC、Phase
+  3 (= Doc 77c 究極 D-B) への gateway
+- *OOS for THIS doc*: 実装作業 (= §86.3.a/b/c は別 dispatch、Phase 2 sub-
+  stage doc としてのみ articulate)、Phase 3 究極 D-B、Doc 87 / Doc 88
+  の sub-task
+
+* §0 TL;DR
+
+| 領域                                  | 現 LOC | 削減試算 (= 連動含む) |
+|---------------------------------------+--------+-----------------------|
+| =eval/env.rs= 単独                    | 564    | -514 (= 残 ~50 LOC stub) |
+| =eval/mod.rs= 連動                    | 848    | -200                  |
+| =eval/special_forms.rs= 連動          | 572    | -300                  |
+| =eval/ffi.rs= 連動                    | 820    | *0* (= grep 0 件、Doc 86 §4.3 の -100 試算は要訂正) |
+| =eval/builtins.rs= Tier 3 連動        | 3,804  | -200                  |
+| *合計*                                | 6,608+ | *-1,214 net Rust*    |
+
+新規 elisp = ~700 LOC (= scope chain helpers + global-env hash-table
+manipulation + lexical bind macros)。
+
+ROI = 0.58:1 (= 1 elisp 投資で 1.7 Rust 削減).  Doc 86 §10.1 試算
+(0.53:1) と整合.
+
+3-step migration:
+- *§86.3.a precursor* (= 3 day): elisp 側に =nelisp--global-env= 構造
+  + minimal dispatcher 確立、Rust =Env= と coexist、shadow path 起動
+  まで
+- *§86.3.b shadow path* (= 5 day): 全 lookup を dual-path、Rust =Env=
+  と elisp env を毎 op で sync 比較し regression 検知
+- *§86.3.c switch-over* (= 5 day): Rust =Env= 削除、連動 file の env
+  reference を elisp に書き換え、stub 50 LOC のみ残置
+
+最大 risk = chicken-and-egg (= §86.3.a 中の elisp 自身が global-env
+lookup を必要とする状態).  解決策: Tier 0 minimal env を Rust に永久
+残置 (= ~50 LOC stub)、defvar 即値 lookup のみ提供、bootstrap が elisp
+extended env を install するまでの bridge.
+
+* §1 Env / SymbolEntry internals (= field-by-field analysis)
+
+** §1.1 SymbolEntry struct (= 4 fields)
+
+#+begin_src rust
+pub struct SymbolEntry {
+    pub value: Option<Sexp>,
+    pub function: Option<Sexp>,
+    pub plist: Option<Sexp>,
+    pub constant: bool,
+}
+#+end_src
+
+| field | 型 | 意味 | 現 Rust 用途 | elisp 表現 |
+|-------+-----+------+---------------+-------------|
+| =value= | =Option<Sexp>= | symbol の value cell (= =defvar= / =setq= の格納先) | =lookup_value= / =set_value= で読み書き | =(plist :value V)= の =V= or =:unbound= sentinel |
+| =function= | =Option<Sexp>= | symbol の function cell (= =defun= / =defalias= / =fset= の格納先) | =lookup_function= / =set_function= | =(plist :function F)= |
+| =plist= | =Option<Sexp>= | property list (= =put= / =get= 用) | 未使用 (= 初期 nil)、TODO comment | =(plist :plist P)= or skip (=t= = 全 symbol がまず empty plist 持ち) |
+| =constant= | =bool= | =setq= 不可 flag (= =nil= / =t= / keyword) | =set_value= で SettingConstant signal | =(plist :constant t)= or 別 hash-set =nelisp--constant-symbols= |
+
+elisp 側の natural 表現は **plist** (= elisp 自身の =get= / =put= で
+直接操作可能) または小さな **vector record** (= =(record 'nelisp-symbol-
+entry VALUE FUNCTION PLIST CONSTANT)= による cl-defstruct 風).
+
+判断: =plist= が low-overhead (= record は =NlRecord= 経由で boot
+order の depth を増やす).
+
+** §1.2 Env struct (= 7 fields)
+
+#+begin_src rust
+pub struct Env {
+    pub globals: HashMap<String, SymbolEntry>,
+    pub frames: Vec<Frame>,                          // Frame = HashMap<String, FrameCell>
+    pub max_recursion: u32,
+    pub current_recursion: u32,
+    pub extern_builtins: HashMap<String, ExternBuiltin>,
+    pub use_elisp_apply: bool,
+    pub delegation_depth: u32,
+}
+pub type FrameCell = crate::eval::nlcell::NlCellRef;
+pub type Frame = HashMap<String, FrameCell>;
+#+end_src
+
+*** §1.2.1 globals (= 主犯、~80% の env op が触る)
+
+- 型: =HashMap<String, SymbolEntry>=
+- 用途: =defvar= / =defun= / =fset= / =defconst= / Rust builtin の install /
+  primitive constant (= =nil= / =t=) の保存先
+- 操作: =get= / =insert= / =or_insert_with= / =get_mut= が基本
+- elisp 表現: =nelisp--global-env= = =make-hash-table :test 'equal= 1
+  個、各 entry は =(NAME . SYMBOL-ENTRY)= or 直 plist
+- migration 工法: option A (alist + hash) を base、Tier 1/2 は Tier 0
+  shim 経由
+
+*** §1.2.2 frames (= lexical scope stack)
+
+- 型: =Vec<Frame>= where =Frame = HashMap<String, FrameCell>=
+- 各 frame = =let= / =let*= / lambda body 1 個に対応 (= push_frame / pop_frame
+  でペア管理)
+- =FrameCell= = layout-pinned =NlCellRef= (= Phase A.4 で
+  =Rc<RefCell<Sexp>>= から migrate 済) = closure write-through 用
+- elisp 表現:
+  - **option A1**: elisp =let= form の native frame stack を直接利用
+    (= =sf_let= 自身が elisp 化されれば自動的に動く)
+  - **option A2**: =nelisp--frame-stack= = nested alist =(((a . cell-a)
+    (b . cell-b)) ((c . cell-c)) ...)=、明示的に push / pop する Rust
+    builtin =bi_push_frame= / =bi_pop_frame= は既存 (= Doc 68 Stage 7.4.a
+    で SHIPPED)
+- 判断: option A2 が現実的 (= option A1 は Rust =sf_let= を完全 elisp
+  化する必要があり、§86.3 を超えた scope)
+- 既存 helper: =bi_push_frame= / =bi_pop_frame= / =bi_push_captured= /
+  =bi_bind_local= が builtins.rs にすでに存在 (= line 2389-2428)、scope
+  chain elisp 経路の primitive はほぼ揃っている
+
+*** §1.2.3 max_recursion / current_recursion (= u32 counters)
+
+- recursion guard、=eval= 入口で increment / 出口で decrement
+- elisp 表現: =defvar nelisp--current-recursion 0= + =defvar nelisp--
+  max-recursion 1024=、Rust 側 =eval= は elisp の =nelisp--enter-recursion=
+  / =nelisp--exit-recursion= を呼ぶ shim に変える ... ただしこれは hot
+  path (= 全 eval call で touch)、Rust 側 u32 incr/decr (= ~2 instruction)
+  → elisp helper 経由 (= ~1000+ instruction) は perf-prohibitive
+- 判断: counter 自体は **Rust 側に残置** (= elisp 化の意味 0、§86.3 OOS)、
+  elisp が読み取りたい場合のみ =bi_get-current-recursion= primitive を
+  追加
+
+*** §1.2.4 extern_builtins (= host crate registry)
+
+- 型: =HashMap<String, ExternBuiltin>= where =ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>=
+- 用途: =nelisp-emacs-gtk= 等の host crate が GTK / SDL primitive を
+  register
+- elisp 化不可: Rust closure を elisp が hold する手段なし (= Sexp::Cell
+  に dyn Fn は wrap できない)
+- 判断: **Rust 側に永久残置** (= §86.3 OOS、Tier 0 minimal env に含める)
+
+*** §1.2.5 use_elisp_apply / delegation_depth (= apply chain delegate flags)
+
+- =use_elisp_apply= = bool、bootstrap 完了後 ON、ERT で flip 可能
+- =delegation_depth= = u32、=delegate_to_elisp_apply= 内で incr/decr で
+  recursion gate
+- 既に Stage 7.4.c〜7.4.e で elisp 経路と互換、=bi_set_use_elisp_apply= /
+  =bi_get_use_elisp_apply= で elisp visibility あり
+- 判断: counter 系は Rust 残置 (=current_recursion= と同理由)
+
+** §1.3 fields の elisp 化対象 / Rust 残置 分類
+
+| field             | elisp 化対象? | 理由                                             |
+|-------------------+---------------+--------------------------------------------------|
+| =globals=         | YES           | §86.3 中核、~80% の op が touch              |
+| =frames=          | YES (= partial) | 既 primitive 経由で elisp visible、明示 push/pop は elisp 駆動 |
+| =max_recursion=   | NO            | hot-path counter、elisp 化 = perf prohibitive |
+| =current_recursion= | NO          | 同上                                             |
+| =extern_builtins= | NO            | Rust closure を elisp で hold できない         |
+| =use_elisp_apply= | NO (= leave as-is) | 既に elisp visible (= bi_set/get)、bool は移管メリット 0 |
+| =delegation_depth=| NO            | hot-path counter                                 |
+
+つまり **真に elisp 化対象は =globals= と =frames= の 2 field のみ**.
+他は Rust 側 Tier 0 stub に残置して shim 経由で elisp に visibility を
+提供する.
+
+* §2 Scope chain ops inventory (= callsite map across 4 files)
+
+** §2.1 Env method count (= 19 method total)
+
+| method            | LOC (env.rs) | 主目的                          |
+|-------------------+--------------+---------------------------------|
+| =new_global=      | ~107         | bootstrap (= STDLIB_IMAGES load) |
+| =empty=           | ~14          | test fixture                    |
+| =register_extern_builtin= | ~12  | host crate API                  |
+| =intern_constant= | ~7           | =nil= / =t= など定数 install    |
+| =lookup_value=    | ~13          | symbol value 解決               |
+| =set_value=       | ~24          | =setq= / =set= の core         |
+| =lookup_function= | ~7           | =funcall= / fcell 解決         |
+| =set_function=    | ~6           | =defun= / =defalias= / =fset=  |
+| =clear_function=  | ~5           | =fmakunbound=                   |
+| =clear_value=     | ~5           | =makunbound=                    |
+| =defvar=          | ~10          | =defvar= / =defconst=          |
+| =push_frame=      | ~3           | =let= / lambda body            |
+| =pop_frame=       | ~3           | 同上                             |
+| =bind_local=      | ~10          | =let= 各 binding 投入          |
+| =is_bound=        | ~14          | =boundp=                        |
+| =is_fbound=       | ~9           | =fboundp=                       |
+| =capture_lexical= | ~17          | lambda 作成時の env snapshot   |
+| =push_captured=   | ~43          | closure call 時の env restore  |
+
+** §2.2 Callsite count per file (= grep =env\.METHOD=)
+
+| file                       | 現 LOC | env-touching call count | LOC ratio |
+|----------------------------+--------+-------------------------+-----------|
+| =eval/mod.rs=              | 848    | 30                      | 3.5%      |
+| =eval/special_forms.rs=    | 572    | 15                      | 2.6%      |
+| =eval/builtins.rs=         | 3,804  | 31                      | 0.8%      |
+| =eval/ffi.rs=              | 820    | *0*                     | 0.0%      |
+| =eval/env.rs= (= self)     | 564    | (= internal、count 除外) | n/a       |
+| =image.rs=                 | n/a    | 1 (= globals direct read for image bake) | trace |
+
+合計 76 callsites across 4 production files、env.rs 自身は 19 method
+definition.
+
+*** §2.2.1 mod.rs callsites (= 30 件、最重要)
+
+- =env.set_value= ×3 (= line 259/263/270, =default-directory= /
+  =load-file-name= / =load-path= 初期化)
+- =env.current_recursion= / =env.max_recursion= ×4 (= line 307/310/313/315、
+  recursion guard)
+- =env.lookup_value= ×1 (= line 342, symbol eval)
+- =env.lookup_function= ×3 (= line 360/375)
+- =env.delegation_depth= ×4 (= line 373/399/416/555/557/582/584、delegate gate)
+- =env.use_elisp_apply= ×2 (= line 398/415)
+- =env.push_frame= / =env.pop_frame= ×4 (= line 686/689/690/704/705)
+- =env.push_captured= ×1 (= line 685)
+- =env.bind_local= ×3 (= line 773/784/794, in =bind_formals=)
+
+→ 中核 = =bind_formals= (= 80 LOC、line 716-822) の elisp 化、+ recursion guard
+の counter shim 経由化、+ apply path の env touchpoint の count 削減.
+
+*** §2.2.2 special_forms.rs callsites (= 15 件)
+
+- =env.push_frame= ×4 (= line 169/189/375/414, =let= / =let*= /
+  =condition-case= no-catch / =condition-case= error)
+- =env.bind_local= ×4 (= line 171/192/377/416)
+- =env.pop_frame= ×4 (= line 174/194/200/387/420)
+- =env.set_value= ×1 (= line 295, =setq=)
+- =env.capture_lexical= ×1 (= line 258, =lambda=)
+
+→ Tier 1 special form (= =sf_let= / =sf_let_star= / =sf_lambda= / =sf_setq= /
+=sf_condition_case=) の env 操作が core.  これらは Tier 1 special form
+として Rust 残置の方針 (= Doc 86 §86.1 で migrate 候補は Tier 2 macro
+のみ) なので、env API 経路を elisp 化しても Rust 側 callsite は減らない.
+
+ただし =sf_let= / =sf_let_star= 内の =bind_local= は frame primitive 経由
+(= =nelisp--bind-local= 既存) で **コードを inline 短縮**できる (= 現
+=parse_let_binding= helper を elisp に押し下げ).
+
+*** §2.2.3 builtins.rs callsites (= 31 件)
+
+builtin 側で env を触る arm = 12 件 (= Doc 86 §2.2.3 Tier 3):
+
+| arm 名                                | env method                       | line       |
+|---------------------------------------+----------------------------------+------------|
+| =symbol-value=                        | =lookup_value=                   | 2211       |
+| =symbol-function=                     | =lookup_function=                | 2222       |
+| =fboundp=                             | =is_fbound=                      | 2243       |
+| =boundp=                              | =is_bound=                       | 2251       |
+| =defalias=                            | =lookup_function= + =set_function= | 2273/2276 |
+| =set=                                 | =set_value=                      | 2294       |
+| =fset=                                | =lookup_function= + =set_function= | 2311/2314 |
+| =fmakunbound=                         | =clear_function=                 | 2328       |
+| =makunbound=                          | =clear_value=                    | 2500       |
+| =nelisp--push-frame=                  | =push_frame=                     | 2391       |
+| =nelisp--pop-frame=                   | =pop_frame=                      | 2399       |
+| =nelisp--push-captured=               | =push_captured=                  | 2409       |
+| =nelisp--bind-local=                  | =bind_local=                     | 2426       |
+
+加えて、env を **読むだけ** の arm = 8 件:
+
+| arm 名                                | env method        | line       |
+|---------------------------------------+-------------------+------------|
+| =bi_default_directory= (内部 helper) | =lookup_value=    | 1771       |
+| =bi_read_string= 系                   | =lookup_function= | 1830/3636/3673 |
+| =bi_require=                          | =lookup_value=    | 3710       |
+| =bi_require= → load                   | =lookup_function= | 3720       |
+| =elisp_featurep= helper               | =lookup_function= | 3745       |
+| =elisp_provide= helper                | =lookup_function= | 3759       |
+| =install_builtins=                    | =set_function=    | 453        |
+| =extern_builtins= dispatch fallback   | =extern_builtins.get= | 802    |
+
+最後の 2 件 (= =install_builtins= / extern fallback) は Tier 0 minimal
+env に残置.  読むだけ の 6 件 (= =default-directory= / read-string /
+require) は elisp shim の薄いラッパで吸収可能.
+
+*** §2.2.4 ffi.rs (= 0 件)
+
+grep 0 件.  Doc 86 §4.3 の "ffi.rs -100 LOC" 試算は **誤り** (= 古い
+時代の env-aware marshalling は既に消滅、Doc 51 Phase 5 で generic
+=nl-ffi-call= に統一済).  本 Doc では **ffi.rs 連動削減 = 0** に訂正、
+代わりに mod.rs / special_forms.rs / builtins.rs Tier 3 の連動を主軸
+とする.
+
+** §2.3 image.rs serialisation (= migration の隠れ依存)
+
+=build-tool/src/image.rs= は globals を AOT bake 形式で serialise する:
+
+- =image.rs:229= = =env.globals.keys()= の iterate
+- =image.rs:530= = =SymbolEntry::default()= で entry 復元
+- =image.rs:544= = =env.globals.insert(name, entry)= で復元
+
+elisp 化すると **bake / unbake の両 sides で wire format が変わる**.
+shadow path (= §86.3.b) では:
+
+1. Rust =Env::globals= が canonical、elisp =nelisp--global-env= は
+   mirror
+2. image.rs は Rust 側を read/write して既存 wire format 維持
+3. switch-over (= §86.3.c) で wire format を v4 に bump (= elisp
+   hash-table の serialisation)、または elisp 側を Rust =globals= の
+   thin view に維持して image.rs 不変
+
+判断: 後者が安全 (= image.rs の wire format change は orthogonal scope、
+切り離す).  =Env::globals= は Rust 側に永久残置の Tier 0 minimal env
+として、elisp =nelisp--global-env= は **その上のキャッシュ view** =
+read-through、write-through の dual-update.
+
+これで image.rs は zero change、Phase 3 (= 究極 D-B) で wire format
+revisit のみ.
+
+* §3 Implementation strategy (= option A/B/hybrid trade-off)
+
+** §3.1 option A: alist + hash (= 純 elisp)
+
+elisp =make-hash-table :test 'equal= 1 個 = =nelisp--global-env=、各
+entry は plist =(:value V :function F :plist P :constant nil)=.
+
+#+begin_src emacs-lisp
+(defvar nelisp--global-env (make-hash-table :test 'equal))
+
+(defun nelisp--symbol-entry (name)
+  "Return the SymbolEntry plist for NAME, creating empty if absent."
+  (let ((e (gethash name nelisp--global-env)))
+    (or e
+        (let ((fresh (list :value nil :function nil :plist nil :constant nil)))
+          (puthash name fresh nelisp--global-env)
+          fresh))))
+
+(defun nelisp--lookup-value (name)
+  "Look up NAME's value cell."
+  (let ((e (gethash name nelisp--global-env)))
+    (cond
+     ((null e) (signal 'void-variable (cons name nil)))
+     (t (let ((v (plist-get e :value)))
+          (if (eq v :unbound)
+              (signal 'void-variable (cons name nil))
+            v))))))
+#+end_src
+
+*** trade-off
+
+- *優*: 純 elisp、Rust 側 layout pin 不要、Phase 3 (= 究極 D-B) との
+  整合性 100%
+- *劣*: hash lookup overhead が elisp interpreter loop 経由 = ~10-50x の
+  hot path slowdown (= Doc 84 §84.3 Box accessor elisp 化と同 pattern)
+- *劣*: =frames= の =FrameCell= = =NlCellRef= は Rust struct なので、
+  elisp =hash-table= の value 側に `Sexp::Cell` 経由で wrap する layer
+  が必要
+
+** §3.2 option B: payload pointer 経由 (= Doc 81 ABI mode 拡張)
+
+Rust =Env::globals= の memory layout を pin、elisp が =nl-jit-call-out-*=
+trampoline で payload pointer 直接アクセス.
+
+#+begin_src emacs-lisp
+(defun nelisp--lookup-value (name)
+  (nl-jit-call-globals-lookup-value name))  ; → Rust ptr → SymbolEntry → value cell
+#+end_src
+
+Rust 側に slim primitive を 8-12 件追加:
+
+| primitive                              | LOC est | 役割              |
+|----------------------------------------+---------+-------------------|
+| =bi_globals_get_value=                 | 8       | =lookup_value=    |
+| =bi_globals_set_value=                 | 10      | =set_value=       |
+| =bi_globals_get_function=              | 8       | =lookup_function= |
+| =bi_globals_set_function=              | 6       | =set_function=    |
+| =bi_globals_clear_value=               | 5       | =makunbound=      |
+| =bi_globals_clear_function=            | 5       | =fmakunbound=     |
+| =bi_globals_is_bound=                  | 6       | =boundp=          |
+| =bi_globals_is_fbound=                 | 6       | =fboundp=         |
+| =bi_globals_is_constant=               | 5       | =constant= flag check |
+| =bi_globals_set_constant=              | 5       | =defconst=        |
+| =bi_globals_capture_lexical=           | 17      | (= =capture_lexical=) |
+| 既存 =bi_push_frame= / =bi_pop_frame= 等は流用 | — | (= 既 SHIPPED) |
+
+合計 ~80 LOC slim primitive 追加、Rust =Env= API は維持.
+
+*** trade-off
+
+- *優*: hot path ほぼ無 overhead (= Rust 直接 lookup と同等)、image.rs
+  wire format 不変
+- *優*: 既 SHIPPED の Stage 7.4.a primitive (= =bi_push_frame= 等) と
+  同一 pattern = leverage 可能
+- *劣*: elisp 化「度」が低い = Phase 3 究極 D-B で再 audit が必要 (=
+  Phase 3 で Rust =Env= 自体を消す path が必要)
+- *劣*: env.rs LOC 削減効果は薄い (= primitive が +80 LOC で打ち消す)
+
+** §3.3 option C: hybrid (= recommended)
+
+- *Tier 0 stub* (= Rust 残置、~50 LOC):
+  - =Env::globals= = =HashMap<String, SymbolEntry>= 維持 (= image.rs
+    wire format / extern_builtins / recursion counter のため)
+  - =Env::frames= の =push_frame= / =pop_frame= / =push_captured= /
+    =bind_local= は既存 primitive (= Stage 7.4.a) のまま、Rust 側で
+    frame stack 管理
+  - =SymbolEntry= struct も維持 (= image.rs 互換)
+- *option B 経路* (= 8 件 slim primitive 追加、~80 LOC):
+  - =bi_globals_get_value= / =-set_value= / =-get_function= / =-set_function=
+    / =-clear_value= / =-clear_function= / =-is_bound= / =-is_fbound=
+  - 既存の Tier 3 dispatch arm (= =symbol-value= / =fset= / etc.) は
+    これらの slim primitive に reduce (= 各 arm 平均 -5 LOC body、12
+    arm × -5 = -60 LOC builtins.rs)
+- *option A 経路* (= elisp 側 ~700 LOC):
+  - =nelisp--global-env-shim.el= = elisp 側 primitive helper (=
+    =nelisp--lookup-value= / =-set-value= / etc.)、内部で slim primitive
+    を呼ぶ
+  - =nelisp--bind-local= 等の既存 primitive と統合
+  - 連動先 (= =mod.rs= の =bind_formals= / =special_forms.rs= の
+    =sf_let= / etc.) を elisp 経由に書き換え
+
+*** §3.3.1 option C choice 理由
+
+1. *Phase 2 単独 着地点* = ~17,000-19,000 LOC を満たす最短経路
+2. *Phase 3 (D-B) との互換*: option B の slim primitive は Phase 3 で
+   trampoline 経由のままにできる、option A の hash-table 経路は Phase 3
+   の Rust =Env= 消滅と整合
+3. *image.rs 不変*: wire format change を Phase 3 に押し出せる
+4. *bench gate clear*: hot path (= =lookup_value= / =bind_local=) は
+   slim primitive 経由で Rust 直接と同等の perf、ERR / cold path は
+   elisp 化で柔軟性
+
+* §4 3-step migration plan (= §86.3.a / §86.3.b / §86.3.c)
+
+** §4.1 §86.3.a precursor (= 3 day, +50 elisp / +80 Rust)
+
+*** §4.1.1 scope
+
+新規 file 2 本:
+- =lisp/nelisp-stdlib-env-shim.el= (~150 LOC) = elisp 側 env primitive
+  helper (= =nelisp--lookup-value= / =-set-value= / =-lookup-function= /
+  =-set-function= / =-fboundp= / =-boundp= / =-makunbound= /
+  =-fmakunbound= / =-defvar= / =-capture-lexical=)
+- builtins.rs += slim primitive 11 件 (= §3.2 表、~80 LOC)
+
+elisp shim は **shadow** = Rust =Env= の coexist、elisp 側で =nelisp--global-env=
+hash-table を **mirror** として保持 (= read-through cache、write-through で
+slim primitive を call).
+
+*** §4.1.2 deliverable
+
+| ファイル                              | LOC delta |
+|---------------------------------------+-----------|
+| =lisp/nelisp-stdlib-env-shim.el=      | +150      |
+| =build-tool/src/eval/builtins.rs=     | +80 (= primitive) |
+| =build-tool/src/eval/builtins.rs=     | +5 (= dispatch arm install) |
+| =build-tool/src/eval/env.rs=          | +0        |
+
+Net Rust delta: **+85 LOC** (= まだ削減フェーズ前).
+
+*** §4.1.3 ERT
+
+- =substrate-env-shim-test.el= (~15 ERT、各 primitive 単体 round-trip)
+- =substrate-env-shim-mirror-test.el= (~10 ERT、Rust =Env= と elisp
+  =nelisp--global-env= の divergence 0 確認)
+
+*** §4.1.4 chicken-and-egg 検証
+
+substrate (= Doc 80) load 直後は =defvar= macro 既 install、=cond= /
+=defmacro= self-boot 完了済 = =nelisp-stdlib-env-shim.el= は STDLIB_IMAGES
+の Doc 80 substrate 直後 (= index 1 or 2) に load 可能.
+
+bootstrap order:
+1. =nelisp-jit-substrate.el= (= Doc 80、=cond= / =defmacro= 確立)
+2. =nelisp-syscall-table.el= (= Doc 84 §84.2、auto-gen)
+3. =nelisp-jit-strategy.el= (= Doc 80 §3.1、length / aref / aset / elt)
+4. **NEW: =nelisp-stdlib-env-shim.el=** (= §86.3.a)
+5. =nelisp-stdlib-eval-special.el= (= 既存)
+6. ...
+
+env-shim が install されるまでは Tier 0 stub (= Rust =Env=) のみで
+operate、shim install 後は dual-path = mirror 開始.
+
+** §4.2 §86.3.b shadow path (= 5 day, +0 LOC)
+
+*** §4.2.1 scope
+
+連動先 (= mod.rs / special_forms.rs / builtins.rs Tier 3) の env 操作
+を **shadow 経路** に切替.  Rust =Env= 直接呼び出しを elisp shim 経由
+(= =bi_globals_get_value= → elisp =nelisp--lookup-value= → 元の
+=env.lookup_value=) に書き換える.
+
+具体例 (=builtins.rs:2211= =bi_symbol_value=):
+
+#+begin_src rust
+// before:
+fn bi_symbol_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("symbol-value", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Symbol(s) => env.lookup_value(s),
+        // ...
+    }
+}
+
+// after (shadow path, dual-update):
+fn bi_symbol_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("symbol-value", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Symbol(s) => {
+            let rust_result = env.lookup_value(s);
+            #[cfg(feature = "env-shadow-verify")]
+            verify_elisp_mirror(env, s, &rust_result);
+            rust_result
+        }
+        // ...
+    }
+}
+#+end_src
+
+shadow 期間 = ~1 week of CI green、elisp mirror が divergence 0 を
+confirm.
+
+*** §4.2.2 ERT
+
+- 既存 env 関連 ERT 1300+ test 全 green、shadow verify 経路で fail 0
+- =substrate-env-shim-shadow-test.el= = 各 op で shadow verify が catch
+  する synthetic divergence test
+
+*** §4.2.3 deliverable
+
+Rust LOC delta: **+0** (= shadow verify は cfg-gated、production build
+影響 0)
+
+** §4.3 §86.3.c switch-over (= 5 day, -1,214 Rust net)
+
+*** §4.3.1 scope
+
+shadow verify が CI で 1 week green を確認後、Rust 側 =Env= method を
+elisp shim 経由に switch:
+
+1. **eval/builtins.rs Tier 3 (= 12 arm)**:
+   - 各 arm body を slim primitive 直接 call に reduce (= 5-10 LOC →
+     2-3 LOC)
+   - elisp 側 user-visible name (= =symbol-value= / =fset= / etc.) は
+     shim defun に bind、shim 内で slim primitive を呼ぶ
+   - LOC delta: -200 (= 12 arm × -15-17 LOC + helper 削減)
+2. **eval/special_forms.rs (= sf_let / sf_let_star / sf_setq /
+    sf_lambda / sf_condition_case)**:
+   - =parse_let_binding= helper を elisp 化 (= =nelisp--parse-let-binding=)
+   - =sf_setq= の =env.set_value= は slim =bi_globals_set_value=
+   - =sf_lambda= の =env.capture_lexical= は slim
+     =bi_globals_capture_lexical=
+   - =sf_condition_case= の =push_frame= / =bind_local= / =pop_frame=
+     は既存 primitive 経由 (= 変更なし)
+   - LOC delta: -300
+3. **eval/mod.rs (= bind_formals / apply_lambda_inner / load init)**:
+   - =bind_formals= 80 LOC を elisp =nelisp--bind-formals= に push (=
+     既 Stage 7.4.b で SHIPPED 済の =nelisp--bind-formals--compute=
+     + slim =bi_bind_local= で構成可能)
+   - =apply_lambda_inner= の =push_captured= / =bind_formals= /
+     =push_frame= / =pop_frame= は既 primitive 経由
+   - =eval_str_all_at_path= の =env.set_value= 3 件 (= load-path 等
+     初期化) は slim primitive 経由
+   - LOC delta: -200
+4. **eval/env.rs 自身**:
+   - 19 method のうち、=lookup_value= / =set_value= / =lookup_function= /
+     =set_function= / =clear_value= / =clear_function= / =is_bound= /
+     =is_fbound= / =defvar= は **slim primitive 経由の thin wrapper** に
+     reduce (= 各 method ~3 LOC)
+   - =push_frame= / =pop_frame= / =bind_local= / =push_captured= /
+     =capture_lexical= は既 primitive 経由で薄い wrapper
+   - =register_extern_builtin= / =intern_constant= / =new_global= /
+     =empty= は Tier 0 minimal env (= Rust 残置)
+   - LOC delta: -514 (= 564 → 50 stub)
+
+*** §4.3.2 deliverable
+
+| file                              | before | after | delta |
+|-----------------------------------+--------+-------+-------|
+| =eval/env.rs=                     | 564    | 50    | -514  |
+| =eval/mod.rs=                     | 848    | 648   | -200  |
+| =eval/special_forms.rs=           | 572    | 272   | -300  |
+| =eval/builtins.rs=                | 3,884 (= 80 primitive added in §86.3.a) | 3,684 | -200 |
+| =lisp/nelisp-stdlib-env-shim.el=  | 150    | 700   | +550  |
+
+Net Rust delta (= §86.3.a の +85 を含む): **-1,214 LOC**
+
+** §4.4 工数 / 並列性
+
+| stage     | 工数  | 並列? |
+|-----------+-------+-------|
+| §86.3.a   | 3 day | 直列 (= shadow path の前提) |
+| §86.3.b   | 5 day | 直列 (= verify gate)    |
+| §86.3.c   | 5 day | 直列 (= switch over)    |
+| **合計**  | 13 day | (Doc 86 §7.4 と一致)  |
+
+§86.3 は内部 3 stage が直列、外部的には Doc 87 (= §86.1 builtins Tier 1/2)
+と並列可能 (= Tier 3 のみ §86.3 と統合).
+
+* §5 連動削減 articulation (= per-file LOC delta plan)
+
+** §5.1 mod.rs (= -200 LOC)
+
+| 削減対象                              | LOC | 工法                   |
+|---------------------------------------+-----+------------------------|
+| =bind_formals= (line 716-822)         | 100 | elisp =nelisp--bind-formals= に push、Rust 側は薄い shim ~10 LOC 残置 |
+| =eval_str_all_at_path= の env init    | 25  | slim primitive 経由化 |
+| =delegate_to_elisp_apply= 内 env touch | 20 | =delegation_depth= は Rust 残置、touch 自体は不変 (= 削減効果 0) |
+| =apply_lambda_inner=                  | 35  | 既 primitive 経由で再構成 |
+| 細々な lookup 経路                    | 20  | shim 経由化           |
+
+*真の削減* = ~100-150 LOC、見積 -200 は楽観値.  Doc 90 (= 連動削減
+audit) で post-ship 実測.
+
+** §5.2 special_forms.rs (= -300 LOC)
+
+| 削減対象                              | LOC | 工法                   |
+|---------------------------------------+-----+------------------------|
+| =parse_let_binding=                   | 30  | elisp =nelisp--parse-let-binding= |
+| =sf_let= / =sf_let_star=              | 50  | elisp wrapper、Rust shim ~15 LOC |
+| =sf_setq=                             | 35  | elisp =nelisp--setq= 既存 macro 経由化 |
+| =sf_lambda=                           | 17  | elisp 化 (= =sf_function= も合わせて) |
+| =sf_condition_case= の env op         | 70  | =push_frame= / =bind_local= / =pop_frame= の elisp 経由化 |
+| =eval_body= helper                    | 7   | inline 化              |
+| 共通 helper / boilerplate             | 90  | Tier 1 special form 残るが env 操作部分の縮減 |
+
+*真の削減* = ~250-300 LOC、見積 -300 は ~妥当.
+
+** §5.3 ffi.rs (= 0 LOC)
+
+grep 結果 0 callsites = **削減対象なし**.  Doc 86 §4.3 の "-100 LOC"
+試算は **誤り** で要訂正、Doc 86 §4.4 net delta も -1,214 (= -1,500 では
+ない) に下方修正が必要.
+
+** §5.4 builtins.rs Tier 3 (= -200 LOC)
+
+| arm 名                                | before LOC | after LOC | delta |
+|---------------------------------------+------------+-----------+-------|
+| =bi_symbol_value=                     | 9          | 3         | -6    |
+| =bi_symbol_function=                  | 9          | 3         | -6    |
+| =bi_fboundp=                          | 6          | 2         | -4    |
+| =bi_boundp=                           | 6          | 2         | -4    |
+| =bi_defalias=                         | 18         | 4         | -14   |
+| =bi_set=                              | 11         | 3         | -8    |
+| =bi_fset=                             | 15         | 3         | -12   |
+| =bi_fmakunbound=                      | 11         | 2         | -9    |
+| =bi_makunbound=                       | 11         | 2         | -9    |
+| (= existing) =bi_push_frame= 等       | 5 × 6      | 5 × 6     | 0     |
+
+各 arm の reduce = 70 LOC 程度.  ただし Tier 3 dispatch arm の elisp
+直接 fset化 (= dispatch table から消す) で更に -130 LOC = **合計 -200**.
+
+** §5.5 連動削減 grand total
+
+| file              | delta |
+|-------------------+-------|
+| env.rs (= 主)     | -514  |
+| mod.rs            | -200  |
+| special_forms.rs  | -300  |
+| ffi.rs            | 0     |
+| builtins.rs Tier 3 | -200 |
+| 合計              | -1,214 |
+
+elisp 投資 = ~700 LOC (= shim + bind-formals + parse-let-binding +
+let macros + condition-case helpers).
+
+ROI = 0.58:1 (= 1 elisp 投資で 1.7 Rust 削減).
+
+* §6 Chicken-and-egg / bootstrap strategy
+
+** §6.1 problem statement
+
+elisp が自身の =defvar= macro / =setq= macro / global env を提供する場合:
+
+- =defvar= macro 自体を install するには elisp interpreter が動いている
+  必要 = =fset 'defvar (cons 'macro ...)= が呼べる必要
+- =fset= は Rust builtin (= =bi_fset=) で、global env に書く
+- ところが global env が elisp 側に移管されると、=bi_fset= が elisp
+  =nelisp--global-env= を触る必要 = elisp が動いている前提
+- ループ
+
+** §6.2 solution: Tier 0 minimal Rust env (= ~50 LOC permanent stub)
+
+env.rs に **Tier 0 minimal env** を永久残置:
+
+#+begin_src rust
+// Tier 0 = Rust always-available shim.  elisp shim never replaces this;
+// it consults this for primitive bootstrap operations BEFORE elisp
+// shim is loaded.
+pub struct Env {
+    pub globals: HashMap<String, SymbolEntry>,  // Tier 0 canonical globals
+    pub frames: Vec<Frame>,                      // Tier 0 frame stack
+    pub max_recursion: u32,
+    pub current_recursion: u32,
+    pub extern_builtins: HashMap<String, ExternBuiltin>,
+    pub use_elisp_apply: bool,
+    pub delegation_depth: u32,
+}
+
+impl Env {
+    pub fn new_global() -> Self { /* image bake load (unchanged) */ }
+    pub fn empty() -> Self { /* ... */ }
+    // 11 thin method = each ~3 LOC, delegate to slim primitive's body
+    pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
+        // pre-shim: direct globals access
+        // post-shim: same (= elisp shim mirrors but Rust canonical)
+        match self.globals.get(name) { ... }
+    }
+    // ... 他 method
+}
+#+end_src
+
+*** §6.2.1 bootstrap order
+
+1. **Phase 0 (= Rust)**: =Env::new_global()= 開始、=intern_constant=
+   で =nil= / =t= 投入、=install_builtins= で全 builtin install (= Tier 0
+   environment 完成、~700 builtin available)
+2. **Phase 1 (= STDLIB_IMAGES load)**:
+   1. =nelisp-jit-substrate.el= = =cond= / =defmacro= self-boot
+   2. =nelisp-syscall-table.el=
+   3. =nelisp-jit-strategy.el=
+   4. **NEW: =nelisp-stdlib-env-shim.el=** = elisp =nelisp--global-env=
+      hash-table 作成、shim defun install、Tier 0 globals を mirror
+      する **read-through cache** として attach
+   5. =nelisp-stdlib-eval-special.el=
+   6. ... (残 STDLIB_IMAGES)
+3. **Phase 2 (= post-bootstrap)**: shim が Tier 0 と同期、user code が
+   =defvar= / =setq= / =defun= を call すると shim 経由で Tier 0 を
+   write-through で update
+
+*** §6.2.2 chicken-and-egg 回避
+
+- shim load 前は **Tier 0 only** で operate (= Rust =bi_fset= は Rust
+  =env.set_function= を呼ぶだけ)
+- shim load 中も自分自身の install (= =fset 'nelisp--lookup-value ...=)
+  で Tier 0 path を踏む (= shim 自身は shim を call しない)
+- shim load 完了後は dual-update が active、user code は shim 経由、
+  Tier 0 は always synced
+
+** §6.3 Tier 0 method count
+
+permanent residual = ~50 LOC、=Env= struct 内の thin wrapper:
+
+| method            | LOC est |
+|-------------------+---------|
+| =new_global=      | 5 (= image load only) |
+| =empty=           | 3       |
+| =lookup_value=    | 4       |
+| =set_value=       | 6       |
+| =lookup_function= | 3       |
+| =set_function=    | 4       |
+| =clear_value=     | 3       |
+| =clear_function=  | 3       |
+| =is_bound=        | 3       |
+| =is_fbound=       | 3       |
+| =defvar=          | 4       |
+| =push_frame=      | 2       |
+| =pop_frame=       | 2       |
+| =bind_local=      | 4       |
+| =capture_lexical= | (Tier 0 不要、elisp 経由) | 0 |
+| =push_captured=   | (= 同上、Tier 0 不要) | 0 |
+| =register_extern_builtin= | 5 |
+| =intern_constant= | 4       |
+
+合計: ~58 LOC.  実装 / cargo fmt 後で ~50 LOC 着地と見込む.
+
+** §6.4 risk
+
+- shim load **失敗時** = Rust panic で halt、shim 不在のまま user code
+  に行かないので safe
+- Tier 0 と shim の **divergence**: §86.3.b shadow path で 1 week 検証
+  必須、divergence catch 機構を =verify_elisp_mirror= で実装
+
+* §7 Lexical vs dynamic binding handling
+
+** §7.1 NeLisp 現状 = "全部 lexical" (= bootstrap 制約)
+
+env.rs comment line 11-14:
+
+#+begin_quote
+Even though Elisp default is dynamic binding, the bootstrap interpreter
+implements *lexical* binding for `let`, `lambda` argument lists, and
+`let*` because (a) the prompt §6.5 names this scope explicitly and (b)
+the Phase 7.1 native compiler takeover only sees lexical-binding code
+anyway.
+#+end_quote
+
+つまり NeLisp 全体が =-*- lexical-binding: t -*-= 前提.  Emacs Lisp 的
+な dynamic =defvar= "special variable" semantics (= 同名の =let= が
+dynamic shadowing する) は **NeLisp では実装されていない**.
+
+** §7.2 elisp 化後の binding 実現
+
+| binding 種別        | 現 Rust 経路                | elisp 経由             |
+|---------------------+-----------------------------+------------------------|
+| lexical =let=       | =push_frame= + =bind_local= + body + =pop_frame= | 既 primitive 経由 (= 不変) |
+| lexical =let*=      | 同上 (= 順次 bind)         | 同上                   |
+| lexical lambda 引数 | =bind_formals= + =push_frame= | =nelisp--bind-formals= elisp 化 |
+| dynamic =defvar=    | =env.defvar= = global value cell 上書きのみ | shim 経由             |
+| dynamic =setq-default= | (= 未実装、defvar 同等) | 同上                  |
+
+NeLisp の dynamic binding は **global value cell 上書き** (= Emacs と
+比べて単純化されている) なので、shim 経由でそのまま実現可能.
+
+** §7.3 elisp native =let= form との interaction
+
+elisp =let= form は NeLisp =sf_let= (= Tier 1 special form、Rust 残置)
+が実装.  =sf_let= が =bind_local= 経由で elisp shim を呼ぶ場合:
+
+#+begin_src text
+sf_let body 評価
+   ↓
+push_frame (= Rust direct, Tier 0 op)
+   ↓
+各 binding に対して:
+  bind_local (= Rust direct, Tier 0 op)
+   ↓
+body 評価 (= recursive eval)
+   ↓
+pop_frame (= Rust direct, Tier 0 op)
+#+end_src
+
+frame stack 操作は **Tier 0 direct**、value lookup は **shim 経由** =
+hot path も safe.  =setq= だけが shim を呼ぶ (= =set_value= 経由).
+
+** §7.4 special variable semantics
+
+Emacs Lisp の "special variable" = =defvar= した symbol が =let= で
+dynamic binding される.  NeLisp では:
+
+- =defvar= した symbol も全 lexical = =let= は frame に bind、global
+  value cell には触れない
+- =setq= が **frame で先 hit**、frame 不在で global cell に fall-through
+  する `set_value` semantics (= env.rs:351-374)
+
+elisp 化後も同 semantics 維持.  shim の =nelisp--set-value= は frame
+walk を Rust 側で行い (= primitive 経由)、無ければ global hash-table
+に書く.
+
+* §8 Tier 3 dispatch arm coordination
+
+** §8.1 Tier 3 arm 一覧 (= 12 arm)
+
+§2.2.3 で確認した 12 件の Tier 3 arm:
+
+1. =symbol-value=
+2. =symbol-function=
+3. =fboundp=
+4. =boundp=
+5. =defalias=
+6. =fset=
+7. =set=
+8. =fmakunbound=
+9. =makunbound=
+10. =nelisp--push-frame= (= 既 primitive)
+11. =nelisp--pop-frame= (= 既 primitive)
+12. =nelisp--push-captured= (= 既 primitive)
+13. =nelisp--bind-local= (= 既 primitive)
+
+(= 13 件、§7.4 7.4.a で SHIPPED 済の primitive 4 件を含むと 13 件、
+"Tier 3" としては user-visible name = 9 件 + helper = 4 件)
+
+** §8.2 migration timing (= §86.3.a/b/c との関係)
+
+| arm                  | §86.3.a       | §86.3.b       | §86.3.c       |
+|----------------------+---------------+---------------+---------------|
+| =symbol-value=       | shim defun add | shadow verify | dispatch arm 縮小 |
+| =symbol-function=    | 同上          | 同上          | 同上          |
+| =fboundp= / =boundp= | 同上          | 同上          | 同上          |
+| =defalias= / =fset= / =set= | 同上    | 同上          | 同上          |
+| =fmakunbound= / =makunbound= | 同上 | 同上          | 同上          |
+| 既 primitive 4 件    | 不変          | 不変          | 不変          |
+
+§86.3.a で elisp shim defun を install (= dispatch arm は variable しない)、
+§86.3.c で各 arm body を 3 LOC 程度に reduce.
+
+** §8.3 §86.1 (= Tier 1/2) との依存
+
+Doc 86 §9.3 で articulated:
+
+#+begin_quote
+builtins Tier 3 (= 12 arm、env 操作系) を §86.1 で elisp 化しようと
+すると env.rs の elisp 化が precondition だが、env.rs elisp 化には
+Tier 1 の minimal elisp infrastructure が precondition = chicken-and-egg.
+#+end_quote
+
+本 Doc 89 §6 の解決策 (= Tier 0 minimal Rust env permanent 残置) で
+解決:
+
+- §86.1 Tier 1 (= predicate / 算術 / record / intern / symbol、~30 arm)
+  は env 不依存、§86.3 と並列可能
+- §86.1 Tier 2 (= 簡単 trampoline、~15 arm) も env 不依存、並列可能
+- §86.1 Tier 3 (= 12 arm) は §86.3.c switch-over 後に着手 = 直列
+
+** §8.4 §86.1 Tier 3 連動削減
+
+§86.3.c で Tier 3 arm の dispatch table エントリ (= line 601-623 の
+9 行) を **削除**し、=fset 'symbol-value (lambda ...)= で elisp 直接
+install に切替:
+
+- before: =builtins.rs:601= "symbol-value" => bi_symbol_value(args, env)
+- after: dispatch arm から消滅、user-visible name は elisp =fset= で
+  install (= shim load 時に行う)
+
+LOC delta: -9 行 × 7 LOC = -65 LOC、それ以外の helper / signature
+削減合わせて Tier 3 arm 全消滅で **-130 LOC** 程度.
+
+* §9 ERT / verification plan
+
+** §9.1 §86.3.a precursor ERT
+
+新規 file 1 本: =tests/substrate-env-shim-test.el= (~30 ERT)
+
+#+begin_src emacs-lisp
+(ert-deftest env-shim-lookup-value-roundtrip ()
+  "Set and get a value through the shim, verify round-trip."
+  (nelisp--set-value 'test-x 42)
+  (should (eq 42 (nelisp--lookup-value 'test-x)))
+  (nelisp--makunbound 'test-x)
+  (should-error (nelisp--lookup-value 'test-x) :type 'void-variable))
+
+(ert-deftest env-shim-mirror-divergence ()
+  "Confirm shim mirror tracks Tier 0 globals."
+  (nelisp--set-value 'mirror-test 100)
+  (should (eq 100 (gethash 'mirror-test nelisp--global-env-mirror)))
+  ...)
+#+end_src
+
+** §9.2 §86.3.b shadow ERT
+
+shadow verify 経路の synthetic divergence 検出 ERT:
+- =substrate-env-shim-shadow-divergence-test.el= (~10 ERT)
+  - 各 op (= =lookup_value= / =set_value= / etc.) で意図的に shim を
+    desync させ、verify が catch するか確認
+  - cfg-gated (= =features = ["env-shadow-verify"]= でのみ build)
+
+** §9.3 §86.3.c switch-over ERT
+
+既存 ERT 1300+ test 全 green を gate.  追加:
+- =substrate-env-shim-perf-test.el= (~5 micro-bench)
+  - hot path (= =lookup_value=) の elisp 経由 vs Rust 直接の latency
+    比較、threshold 5x slowdown まで許容 (= ERR path のみ elisp、
+    fast path は slim primitive 直叩き)
+
+** §9.4 共通 gate
+
+- =cargo test --all= (= build-tool / runtime 全 test green)
+- =make test-all= (= 既存 1300+ ERT、=test/= 配下)
+- =make bake-images= (= 全 .image regenerate clean、image.rs wire format
+  互換性確認)
+- 連動 file の =unsafe= section (= =FrameCell::set_value=) 周辺の Rust
+  ERT がまだ green (= 削減対象では None)
+
+* §10 Risk / unknowns
+
+** §10.1 hot path perf regression (HIGH)
+
+=lookup_value= は eval ループ内で **全 symbol resolve** で hit する.
+shim 経由 (= Rust → slim primitive → elisp shim defun → elisp lookup)
+は ~10-50x slowdown 可能性.  Doc 84 §84.3 の Box accessor elisp 化と
+同 pattern.
+
+mitigation:
+- slim primitive を **直接 dispatch** で hit させる (= elisp shim defun
+  経由しない)、elisp shim はあくまで user-visible API + advice hook 用
+- Rust 内部 callsite (= =mod.rs= eval ループ) は引き続き Rust =Env=
+  method 経由、shim は user code のみ
+- bench gate (= Doc 62 Phase 5 / Doc 76 bench) を §86.3.c 完了直後に
+  re-run、threshold 5% regression なら revert
+
+** §10.2 image.rs wire format (MEDIUM)
+
+§2.3 で articulate 通り、image.rs は Rust =Env::globals= を canonical
+扱い、shim は read-through cache のため wire format 不変.  ただし future
+Phase 3 で wire format v4 への bump が必要 = 別 doc で扱う.
+
+** §10.3 chicken-and-egg (MEDIUM, mitigated)
+
+§6 で Tier 0 permanent stub 戦略で解決.  shim load 中の self-call 回避
+は実 ship で検証必要.
+
+** §10.4 extern_builtins (LOW)
+
+Rust closure を elisp で持てない問題は §1.2.4 で articulate.  Tier 0
+永久残置で OK、host crate (= =nelisp-emacs-gtk=) も既存 API 維持.
+
+** §10.5 Doc 86 §4.3 試算誤り (LOW)
+
+Doc 86 §4.3 の "ffi.rs -100 LOC" は grep 0 件 = 誤り.  Doc 86 § net
+delta -1,500 → -1,214 へ訂正.  本 Doc 89 SHIPPED 後に Doc 86 に correction
+note を追加.
+
+** §10.6 Tier 3 arm 数の不確実性
+
+Doc 86 §2.2.3 で "Tier 3 ~12 arm" としたが、本 Doc §2.2.3 grep で 12
+user-visible + 4 helper = 16 件確認.  Doc 86 試算は user-visible のみで
+妥当、helper は §86.3.a 既 SHIPPED の primitive (= 不変).
+
+** §10.7 §86.1 Tier 3 vs §86.3 の dispatch arm 削除順序
+
+§86.1 Tier 3 (= 12 arm 削減 -200 LOC) と §86.3.c (= 同 12 arm の env
+shim 経由化) の重複に注意.  本 Doc では **§86.3.c が canonical** = arm
+削除 + slim primitive 経由化を §86.3 で実施、§86.1 Tier 3 は post-§86.3
+の clean-up sub-stage に縮退する案.
+
+→ Doc 87 (= §86.1 detailed design) で再 articulate 必要.
+
+** §10.8 ERT covered surface (LOW)
+
+env shim の defun が 11 件、各 5-10 ERT で計 ~70 ERT 必要.  既存 ERT
+(= 1300+) は env API 経路 100% カバーしているので shadow phase で
+divergence 検知は確実.
+
+* §11 References
+
+** internal NeLisp design docs
+
+- Doc 80 (= elisp-pre-stdlib-substrate.org SHIPPED) — pre-stdlib
+  substrate (= =cond= / =defmacro= self-boot / signal-helper)、§86.3.a の
+  precondition、本 Doc §6.2.1 bootstrap order の Phase 1 起点
+- Doc 81 (= nelisp-cc-primitive-trampoline-extension.org) — ABI mode
+  pattern、本 Doc §3.2 option B の trampoline 経路の前例
+- Doc 84 (= strategy-rs-final-elisp-ization.org SHIPPED) — Phase 1 末端、
+  =strategy.rs= 全消滅、本 Doc §3.3 hybrid choice の前例 pattern (=
+  Box accessor elisp 化 + slim primitive)
+- Doc 86 (= phase-2-eval-refactor-master.org DRAFT) — parent design、
+  §86.3 を本 Doc が detail.  §4.3 ffi.rs -100 試算は本 Doc §10.5 で訂正
+- Doc 87 (= §86.1 builtins dispatch arm migration、別 agent 並列) —
+  本 Doc §10.7 で連携必要
+- Doc 88 (= §86.2 error.rs migration、別 agent 並列) — 本 Doc と独立
+
+** Phase 7 関連 (= apply chain elisp 化の前例)
+
+- Doc 67 — Tier 2 special form macro 移管、=cond= / =when= / =unless=
+  / =and= / =or= / =defun= / =defvar= 等
+- Doc 68 — =nelisp--apply-fn= elisp 化 + Stage 7.4.a で
+  =nelisp--push-frame= / =-pop-frame= / =-push-captured= / =-bind-local=
+  primitive 追加 (= 本 Doc が leverage する既存 primitive)
+- Doc 69 — Stage 7.5.c =nelisp--expand-macro= elisp 化
+- Doc 70 — Stage 7.4.e =nelisp--apply-lambda-inner= demote (= frame-
+  capture leak 修正)、本 Doc §1.2.5 delegation_depth の SHIPPED 前例
+
+** code references
+
+- =build-tool/src/eval/env.rs= 564 LOC (= 本 Doc 主対象)
+- =build-tool/src/eval/mod.rs= 848 LOC (= 連動 -200)
+- =build-tool/src/eval/special_forms.rs= 572 LOC (= 連動 -300)
+- =build-tool/src/eval/builtins.rs= 3,804 LOC (= Tier 3 連動 -200)
+- =build-tool/src/eval/ffi.rs= 820 LOC (= 連動 0、grep 確認済)
+- =build-tool/src/image.rs= (= globals serialisation、wire format 互換性
+  source)
+- =lisp/nelisp-stdlib-eval-core.el= (= apply chain elisp 経路の前例)
+- =lisp/nelisp-jit-substrate.el= (= Doc 80 substrate、=cond= /
+  =defmacro= self-boot)
+
+** 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= (= NeLisp standalone MCP)
+- =feedback_nelisp_runtime_vs_elisp_language= (= NeLisp = runtime、
+  elisp = 言語 syntax)
+- =feedback_nelisp_core_vs_layer2_boundary= (= elisp 言語 rule = core /
+  Emacs OS API = Layer 2 別 package)
+
+** external prior art
+
+- SBCL Common Lisp = symbol value/function cell の native 構造
+- GHC = Haskell symbol table の native impl
+- Emacs Lisp = =obarray= + =symbol-plist= の組み合わせで global env を
+  実装 (= NeLisp の =nelisp--global-env= hash-table と同 pattern)

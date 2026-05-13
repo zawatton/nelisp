@@ -1,0 +1,555 @@
+#+TITLE: Doc 85 — Phase 47: elisp self-hosting toolchain feasibility spike
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: **SPIKE VALIDATED — TECHNICAL FEASIBILITY CONFIRMED
+  (2026-05-11)**.  Phase 47 thesis (= "pure-elisp emit + link + ELF
+  + kernel exec works") **proven end-to-end** via Doc 93 §93.c e2e
+  exec gate: 2 hand-emitted compile units (= main.o calls helper.o
+  via R_X86_64_PC32, helper exits via syscall) → `nelisp-link-units`
+  → `nelisp-elf-write-binary` → `chmod +x` → kernel exec → EXIT=0.
+  Doc 96 build orchestrator demos 3 chain demos (= hello-world /
+  exit-with-status / argc-printer) all green.  All 5 component sub-
+  specs SHIPPED: §91.a/b/c/d (ELF) + §92.a/b/c (asm x86_64/arm64) +
+  §93.a/b/c (linker) + §94.a/b/c (crt0) + §95.a/b/c/d (Sexp DSL).
+  Cumulative ert: **447/447 pass + 2 skip** (= arm64 host gated).
+  Spike phase complete; deferral: Doc 97 Sexp→asm compiler + §95.e
+  baker integration + §92.d perf = production engagement candidates
+- *Parent*: Doc 83 §6.3 (= 究極着地 ~300-500 LOC + "Phase 47 phase 6
+  C-runtime 自前化、別 Doc 必要" として保留された path)、Doc 47 (=
+  rust-seed-image-abi)、Doc 63 (= phase7-self-host-roadmap)
+- *Unlocks*: 完全 0 Rust runtime (= "Phase 47 完遂" = self-hosted
+  compiler toolchain 着地)
+- *OOS for THIS doc*: 実装作業 (= spike なので grep + design 構築まで)、
+  Doc 86-90 の起こし (= 本 doc の §8 decision で go なら別途)、
+  multi-arch (= aarch64 / x86_64 両対応の細部議論は Doc 87 候補に委譲)
+
+* §0 TL;DR
+
+Doc 83 §6.3 が articulate した「究極着地 ~300-500 LOC」 = 3 領域 (Sexp
+型定義 ~300 + ffi.rs ~360 + boot loader ~150) + nelisp-runtime/ の C
+shim 残骸が永続 Rust pin として残るとした構成。本 doc は「これを 0 に
+する」ための工数 / ROI / critical path を articulate。
+
+*結論 sketch*:
+
+| 投資 (elisp 新規)               | 削減 (Rust)        | 比率   | ROI 判定          |
+|---------------------------------+--------------------+--------+-------------------|
+| ELF writer ~500 elisp           | -150 boot loader   | 3.3:1  | 良                |
+| macro assembler 拡張 ~800 elisp | (既存 nelisp-cc 活用、+追加 ~400 LOC) | 2:1 | 良 |
+| static linker + syscall inline ~300 elisp | -360 ffi.rs | 0.83:1 | *優*           |
+| crt0 elisp + image load 統合 ~150 elisp | -nelisp-runtime/ 1,147 LOC | 0.13:1 | *優* |
+| Sexp layout DSL + compiler lower ~150 elisp | -300 sexp.rs 型定義 | 0.5:1 | *優* |
+| *合計*                          | *~-2,000 Rust*     | *~1.0:1* | *Phase 1-3 と同等 ROI* |
+
+つまり「ROI 悪化」と冒頭で言った認識は misestimate。**実は Phase 1-3
+と同等 ROI** (= 1 elisp 投資で 1 Rust 削減)。最大の障壁は ROI ではなく
+*** 4 つの新 component が個別に design depth 要 *** であること。
+
+推奨: 5 実装 doc (Doc 86-90) を起こし、各 component を独立 dispatch
+可能な状態にする。ただし依存 graph 上 Doc 86 ELF writer / Doc 87
+assembler は Doc 88 static linker / Doc 89 crt0 / Doc 90 Sexp DSL の
+critical path 上にある (= 並列性は限定的)。
+
+* §1 Phase 47 終点定義
+
+** §1.1 "0 Rust runtime" の意味
+
+Phase 47 完遂時に達成される具体状態:
+
+1. =cargo build --release= が **空 binary** を生成 (= no Rust source
+   を compile)、または Cargo workspace 自体が削除される
+2. =./nelisp= binary が elisp で書かれた toolchain によって生成される
+   (= AOT compile, all elisp)
+3. ELF entry point から elisp main までの全 path が elisp / asm / 直接
+   syscall のみで構成される
+4. dynamic linking 不要 = =/lib64/ld-linux-x86-64.so.2= 依存削除、
+   musl static or pure syscall binary
+5. 残 component:
+   - elisp source files (~30,000+ LOC、現 ~17,000 から増)
+   - assembler / linker / writer 自体も elisp
+   - C 領域 = libc 一切なし、syscall は inline asm
+
+** §1.2 Phase 1-3 との関係
+
+Doc 83 §6 が articulate した stage:
+
+| Phase    | Rust 残量      | Doc 85 の位置付け           |
+|----------+----------------+-----------------------------|
+| Phase 1  | ~17,000 LOC    | Doc 84 まで含む既存路線     |
+| Phase 2  | ~6,000-8,000   | builtins refactor (= 別 Doc) |
+| Phase 3  | ~300-500       | 究極 D-B (= 既存 articulated) |
+| *Phase 47* | *~0*         | *本 doc の対象* (= Phase 3 → 0 への深掘り) |
+
+Phase 47 は Phase 3 完遂 *後* に着手 (= 数ヶ月先)。Phase 1/2/3 を先に
+完遂しないと無限投資となる。
+
+** §1.3 戦略的価値
+
+「0 Rust」を達成すると:
+
+- *self-hosted compiler*: GHC / Forth / Lisp COLDLINE 系譜の正統
+- *boot stripping*: Cargo + Rust toolchain が無くても build 可能 (=
+  既に build された =./nelisp= が次世代 =./nelisp= を生成)
+- *bootstrap minimization*: 究極の minimal trust base (= elisp source
+  + 最初の 1 binary のみ信頼すれば良い)
+
+非戦略コスト:
+
+- *production debug*: =gdb= の Rust source-level debugging 喪失
+- *profile tooling*: =perf= / =flamegraph= の symbol resolution 困難
+- *security advisory*: =cargo audit= が走らない、libc CVE は手動 patch
+
+* §2 3 領域 + 1 領域の現況解剖
+
+** §2.1 Sexp 型定義 (= build-tool/src/eval/sexp.rs)
+
+*** §2.1.1 anchor
+
+- Path: =build-tool/src/eval/sexp.rs:58= で =pub enum Sexp= 開始
+- 同 file =impl Sexp= が 2 箇所 (line 272, 396)
+- Total file LOC: 979 (= 型定義 ~300 + impl ~600 + module-doc ~80)
+
+*** §2.1.2 elisp 化対象
+
+「型定義 ~300」とは:
+- =enum Sexp { Int(i64), Float(f64), Str(Arc<str>), Cons(NlConsBox), MutStr(NlMutStr), ... }= の 18 variant
+- =#[repr(C)]= 各 variant の memory layout 指定
+- =Drop= / =Clone= / =PartialEq= 等の trait impl 一部
+
+「impl ~600」(= 別途 Phase 2 で elisp 移管予定)、これは Phase 47 対象外。
+
+*** §2.1.3 elisp 化の本質
+
+Sexp 型は「**memory layout を CPU が見る bit pattern**」を pin する。
+elisp 化するには:
+
+1. =(nelisp-defstruct sexp ...)= macro DSL で elisp が layout を記述
+2. compiler (= elisp 自身) が macro を **C ABI compatible struct
+   layout** に lower
+3. =GenericValue= / =Sexp::Int(...)= 構築コードも elisp 側で emit
+
+これは「elisp が自分自身の memory layout を制御する」 self-hosted 性
+の核心。
+
+** §2.2 ffi.rs (= build-tool/src/eval/ffi.rs)
+
+*** §2.2.1 anchor
+
+- Path: =build-tool/src/eval/ffi.rs= 820 LOC (Doc 83 §6.3 試算 "360"
+  は **Phase 2 削減後の予測値**、現状は 820)
+- 主要 fn:
+  - =dlopen=, =dlsym= (line 77, 95) - libdl wrapper
+  - =nl_ffi_call= (line 220) - 任意 C 関数 invocation
+  - =nl_ffi_{malloc,free,read_bytes,write_bytes,read_i32,read_i64,read_i16,read_u16,read_u32}=
+    - libc allocator + memory primitives
+  - =alloc_table= (line 373) - allocation tracking
+
+*** §2.2.2 dependencies
+
+- =libffi= crate (= libffi-rs binding)
+- =libloading= crate (= dlopen wrapper)
+- =libc= 直接 type bindings
+
+これらを elisp で代替するには:
+
+1. =libffi= = "任意 calling convention で C 関数を呼ぶ" 機能。
+   - 代替案 A: AOT で必要な全 C symbol を pre-resolved → libffi 不要
+   - 代替案 B: elisp で calling convention dispatcher を書く (=
+     System V AMD64 ABI / AAPCS64 / Win64 ABI)
+2. =libloading= (dlopen / dlsym) = "実行時 symbol 解決"。
+   - 代替案 A: static linking で全 symbol pre-resolve
+   - 代替案 B: elisp で ELF parser + symbol table walker
+3. =libc= type binding = "C struct layout を Rust 側で reflect"。
+   - elisp で layout DSL (= §2.1.3 と同じ) で代替
+
+*** §2.2.3 syscall は既に分離済
+
+Cargo workspace に 5 sub-crate が既に存在:
+- =nelisp-syscall-fileio=
+- =nelisp-syscall-filenotify=
+- =nelisp-syscall-process=
+- =nelisp-syscall-types=
+- (+ 関連)
+
+これらは「特定 syscall の wrapper」。Phase 47 では各 sub-crate も elisp
++ inline asm で代替 (= 各 sub-crate ~100-300 LOC × 4 = ~600-1,200 LOC
+の追加削減 target)。
+
+** §2.3 boot loader (= bin/nelisp.rs + nelisp-runtime/main.rs)
+
+*** §2.3.1 anchor
+
+- =build-tool/src/bin/nelisp.rs= (8.6KB ~250 LOC) - main =./nelisp=
+  binary entry
+- =build-tool/src/bin/nelisp-baker.rs= (6.2KB ~180 LOC) - image baker
+  binary entry (= dev tool、Phase 47 では削除可能)
+- =nelisp-runtime/src/main.rs= (4.7KB ~140 LOC) - 別 crate の binary
+  entry (= seed image runtime)
+- =nelisp-runtime-cli/src/main.rs= (4.4KB ~130 LOC) - CLI wrapper
+
+*** §2.3.2 構成要素
+
+各 boot loader の内訳 (= 平均 ~150 LOC):
+1. =fn main()= = ELF =_start= から呼ばれる Rust runtime entry
+2. argv / env var 解析
+3. image file load (= mmap / read)
+4. evaluator の起動
+5. REPL or script execution
+
+elisp 化:
+- crt0 = =_start= label に jump して stack pointer setup する 5-10 命令
+- argv parsing = elisp string-split + plist
+- image load = elisp が =open(2)= + =mmap(2)= syscall を inline asm で
+- evaluator boot = elisp が elisp を ldload する self-bootstrap
+
+** §2.4 nelisp-runtime/ 全体 (= 隠れた 4 つ目の領域)
+
+Doc 83 §6.1 試算では "nelisp-runtime/ ~1,147 LOC" として永続化されて
+いるが、これは:
+
+- =nelisp-runtime/src/lib.rs= 5.8KB - ライブラリ entry
+- =nelisp-runtime/src/main.rs= 4.7KB - binary entry
+- =nelisp-runtime/src/seed.rs= 14.4KB *!!* - seed image format (= Doc
+  47 articulated)
+- =nelisp-runtime/src/syscall/= - syscall wrapper
+
+*重要 discovery*: =seed.rs 14.4KB ~480 LOC= は seed image format の
+encoder/decoder。これは「最初の 1 binary」(= bootstrap stage 0) に
+必要だが、Phase 47 完遂後は不要 (= elisp が自身を生成できれば seed image
+は archaeology 相当)。
+
+つまり Phase 47 完遂時は nelisp-runtime/ 全体 (~1,147 LOC) も削除対象
+となり、Doc 83 §6.3 の "~810 LOC" + "nelisp-runtime/ ~1,147 LOC" =
+*合計 ~1,957 LOC が Phase 47 削減 target*。
+
+* §3 必要 component の技術調査
+
+** §3.1 elisp ELF writer (Doc 86 候補)
+
+*** §3.1.1 scope
+
+- ELF64 header / section header / program header の binary serialization
+- =.text=, =.rodata=, =.data=, =.bss=, =.symtab=, =.strtab= section
+  emission
+- relocation entries (= R_X86_64_PC32, R_X86_64_PLT32, ...) の emission
+
+*** §3.1.2 工数
+
+- 原語: ELF64 spec (= System V ABI) は ~200 page、必要部分は ~50 page
+- elisp impl: 既存 binary I/O primitives (=insert-byte=, =write-region=)
+  で実装可能
+- ~500 elisp LOC 見込み (= header struct ~100 + section emit ~200 +
+  relocation ~150 + symbol table ~50)
+
+*** §3.1.3 既存 partial asset
+
+- *なし*。新規開発。
+- 参考: =objdump=, =readelf= の元になっている GNU binutils source、また
+  Plan 9 mk の =8l= linker source (= 簡素 ELF writer)
+
+** §3.2 elisp macro assembler (Doc 87 候補)
+
+*** §3.2.1 scope
+
+- x86_64 instruction encoding (= Intel SDM Vol.2 = ~1,500 page、core
+  ~50 instruction)
+- aarch64 instruction encoding (= ARM ARM = ~6,000 page、core ~80
+  instruction)
+- relocation symbol resolution
+- label / section management
+
+*** §3.2.2 工数
+
+- 既存 nelisp-cc が code emit している → core encoding は 30-50% 既存
+- 不足: AOT context での register allocation, scheduling, peephole
+  optimization
+- ~800-2,000 elisp LOC 見込み (= 範囲が広い、Doc 87 で精緻化)
+
+*** §3.2.3 既存 partial asset
+
+- *nelisp-cc*: native code emit を既に行う JIT compiler。x86_64 +
+  aarch64 partial encoding 既存
+- 流用率: AOT 用に re-purpose すれば 30-50% 削減可能
+
+** §3.3 static linker + syscall inline (Doc 88 候補)
+
+*** §3.3.1 scope
+
+- libc 不使用での syscall 直接 emit (= =syscall= 命令、SVC)
+- musl static linking または pure syscall binary
+- =write/read/open/close/mmap/exit/...= の 30-40 syscall を inline asm
+
+*** §3.3.2 工数
+
+- 各 syscall = 5-10 命令の inline asm wrapper
+- 30 syscall × 10 LOC = ~300 elisp LOC
+
+*** §3.3.3 既存 partial asset
+
+- =nelisp-syscall-*= sub-crate (4 個) - 既に分離されている = elisp 移管
+  の足場として優秀
+- 既存 Rust impl を「inline asm を emit する elisp」に書き換える tier
+
+** §3.4 crt0 + boot loader elisp (Doc 89 候補)
+
+*** §3.4.1 scope
+
+- =_start= label の assembly (= 5-10 命令)
+- argv / envp の stack 上 layout 解析 (= System V AMD64 ABI 規定)
+- image load = mmap syscall inline + elisp ldload bootstrap
+- exit syscall
+
+*** §3.4.2 工数
+
+- ~150 elisp LOC + ~50 行の inline asm
+
+*** §3.4.3 既存 partial asset
+
+- *なし*。新規。
+- 参考: musl の =crt1.o= source (~20 行 asm)、Plan 9 の =rt0=
+
+** §3.5 Sexp layout DSL + compiler lower (Doc 90 候補)
+
+*** §3.5.1 scope
+
+- =(nelisp-defstruct sexp ...)= macro
+- compiler (elisp 自身) が macro を C ABI compatible struct layout に
+  lower
+- field access primitives = =(sexp-tag x)= → mov rax, [rsi+0] 等
+- variant-specific constructors = =(sexp-int n)= → tag=Int + payload=n
+
+*** §3.5.2 工数
+
+- macro DSL = ~50 LOC
+- compiler lowering = ~100 LOC
+- variant impl = ~100 LOC × 18 variant = ~150 LOC (= macro generated)
+- 計 ~150-300 elisp LOC
+
+*** §3.5.3 既存 partial asset
+
+- *Phase A.5 layout pin* (= Doc 77c phase A.5 で =#[repr(C)]= 化済) =
+  layout は既に確定している、elisp 側で同 layout を表現するだけ
+
+* §4 既存 partial asset 全集
+
+| asset                           | LOC 寄与 | location                       |
+|---------------------------------+----------+--------------------------------|
+| nelisp-cc native code emit      | -300〜500 | (assembler 流用)              |
+| Phase A.5 =#[repr(C)]= layout pin | -100   | sexp.rs (= 移管対象だが pin 済) |
+| NELIMG v3 frozen heap image format | -200  | image.rs (= image load の半分) |
+| Doc 81 trampoline ABI bridge primitives | -50 | jit/bridge.rs (= calling conv の前例) |
+| nelisp-syscall-* 4 sub-crate    | -800    | syscall を分離済 (= elisp 移管 base) |
+| Doc 75 phase 9 frozen heap baker | -100  | image-baker (= AOT compile の前例) |
+| *合計 partial asset 寄与*       | *~1,500-2,000* | *= Phase 47 投資の 50% は既存資産流用で済む* |
+
+これは大きい。「+1,800 elisp 投資」のうち ~1,000 は既存 component の
+re-purpose で済むので、*実質投資 ~800 elisp、削減 ~2,000 Rust* =
+ROI 2.5:1 (= Phase 1-3 と同等または上回る)。
+
+* §5 ROI 解析
+
+** §5.1 LOC 投資 vs 削減
+
+| component             | elisp 投資 | Rust 削減  | partial 流用 | net 投資 |
+|-----------------------+------------+------------+--------------+----------|
+| ELF writer            | 500        | 150        | 0            | 500      |
+| macro assembler 拡張  | 800        | 0          | -300         | 500      |
+| static linker         | 300        | 360        | -200         | 100      |
+| crt0 elisp            | 150        | 150        | 0            | 150      |
+| Sexp DSL              | 150        | 300        | -100         | 50       |
+| nelisp-runtime/ 削除  | 200 (= cleanup) | 1,147 | 0          | 200      |
+| nelisp-syscall-* 移管 | 400        | 800        | -400         | 0        |
+| *合計*                | *2,500*    | *2,907*    | *-1,000*     | *1,500*  |
+
+実質: *1,500 elisp 投資で 2,907 Rust 削減* = ROI ~2:1 (= Phase 1-3 と
+同等)。
+
+** §5.2 Phase 1-3 vs Phase 47 ROI 比較
+
+| Phase    | 投資 ratio (elisp:Rust) | 開発期間 |
+|----------+-------------------------+----------|
+| Phase 1 (Doc 73-84) | 1.5:1 (= 1 Rust 削減で 1.5 elisp) | ~3 ヶ月 |
+| Phase 2 (eval refactor) | 2:1 | ~2 ヶ月 |
+| Phase 3 (究極 D-B) | 1.8:1 | ~3 ヶ月 |
+| *Phase 47*           | *~0.5:1 (= 1 Rust 削減で 0.5 elisp)* | *~6 ヶ月* |
+
+期間が長い (= 6 ヶ月)、ratio は良い (= 0.5:1)。Phase 47 の ROI は
+むしろ Phase 1-3 を上回る。
+
+** §5.3 戦略価値の定量化
+
+「0 Rust」 は技術的成果だけでなく:
+
+- *paper publishability*: SIGPLAN / OOPSLA / ICFP に通る研究水準
+- *recruitment signal*: self-hosted Lisp compiler は OSS community で
+  rare achievement
+- *long-term maintenance*: Rust toolchain (= cargo, rustc) update
+  追従不要
+
+ただし *risk*:
+- multi-arch (x86_64 + aarch64 + Win64 + macOS Mach-O) ごとに ELF
+  writer / assembler が別実装必要 → 工数 ×2-3
+- libc CVE patch を全部手動 → security maintenance 負担
+
+* §6 Critical path / 並列性
+
+** §6.1 dependency graph
+
+#+begin_src text
+                     [Phase 1-3 完遂]
+                            |
+                            v
+           +----[Doc 86: ELF writer]----+
+           |                            |
+           v                            v
+   [Doc 87: assembler]           [Doc 88: static linker]
+           |                            |
+           +-------+--------------------+
+                   |
+                   v
+           [Doc 89: crt0 elisp]
+                   |
+                   v
+           [Doc 90: Sexp DSL]
+                   |
+                   v
+           [Phase 47 完遂 = 0 Rust]
+#+end_src
+
+並列性:
+- Doc 86 (ELF writer) と Doc 87 (assembler) は **並列**
+- Doc 88 (linker) は Doc 87 (assembler) の output format を依存 (=
+  半並列)
+- Doc 89 (crt0) は Doc 86/87/88 全てに依存 (= 直列)
+- Doc 90 (Sexp DSL) は Doc 87 (assembler) に依存
+
+最大並列度: 2-3 stream
+
+** §6.2 milestone
+
+- M1: Doc 86 ELF writer SHIPPED = "elisp が ELF binary を生成できる"
+- M2: Doc 87 assembler SHIPPED = "elisp が x86_64 + aarch64 機械語を
+  emit できる"
+- M3: Doc 88 static linker SHIPPED = "libffi / libloading 不要、libc
+  static linked"
+- M4: Doc 89 crt0 SHIPPED = "Rust runtime 不要、=./nelisp= が elisp
+  からのみ生成される"
+- M5: Doc 90 Sexp DSL SHIPPED = *"0 Rust achieved"*
+
+期間試算: 6-9 ヶ月 (= 2 並列 dev で 6 ヶ月、1 並列 dev で 9 ヶ月)
+
+* §7 Risk / unknowns
+
+** §7.1 multi-arch サポート
+
+- x86_64 + aarch64 + Win64 + macOS Mach-O → ELF writer は ELF のみ、
+  Mach-O は別実装、PE/COFF も別実装
+- 工数 ×3 = 6 ヶ月 → 18 ヶ月
+- *contingency*: Linux x86_64 のみで Phase 47 完遂、他 platform は後続
+
+** §7.2 production debugging tools 喪失
+
+- =gdb= の Rust source debugging → DWARF info 自前生成必要
+- =perf= profile → symbol table を ELF writer が正確に emit する必要
+- *cost*: ~200 elisp LOC for DWARF emission (= Doc 86 enhancement)
+
+** §7.3 libc 廃止の影響
+
+- =malloc= / =free= = elisp 自身が allocator を持つ (= GC 経由)
+- =printf= = elisp =format= で代替済
+- =stdio= = =read=/=write= syscall + buffer 管理
+- 影響: low、既存 elisp で 80% 既に代替済
+
+** §7.4 bootstrap 問題
+
+- Doc 86 開発中は既存 Rust 製 nelisp で動かす
+- Doc 90 完成 = 既存 Rust 製 nelisp が elisp 製 nelisp を生成 = self-host 達成
+- *risk*: 移行期間中の chicken-and-egg は普通の self-hosting bootstrap
+  と同じ、深刻ではない
+
+** §7.5 既存 Rust toolchain への依存
+
+Phase 47 完遂後も:
+- 最初の 1 binary を build する Rust toolchain は **archaeology** として
+  残す必要 (= bootstrap minimization)
+- 完全 0 Rust = 既に build された =./nelisp= を git に保存して、それを
+  使って次世代を build (= reproducible build 議論)
+
+* §8 Decision matrix / recommendation
+
+** §8.1 Go / no-go criteria
+
+| criterion             | go threshold           | 現状           |
+|-----------------------+------------------------+----------------|
+| Phase 1-3 ship 完遂   | 必須 = pre-condition  | Phase 1 進行中 (Doc 84 dispatch 中) |
+| 6-9 ヶ月の開発 budget  | あり                   | TBD            |
+| multi-arch scope 確定  | x86_64 のみで OK         | OK             |
+| ROI 試算              | ~1:1.5 以上            | 1:0.5 (= 優れる) |
+| 戦略価値 (= 0 Rust)    | あり                   | あり           |
+| 既存 partial asset 流用 | 50% 以上              | ~50%           |
+
+** §8.2 推奨 path
+
+1. *Phase 1 完遂*待つ (= Doc 84 SHIPPED 後)
+2. *Phase 2 (eval refactor) 完遂*待つ (= ~2 ヶ月先)
+3. *Phase 3 (究極 D-B) 完遂*待つ (= ~3 ヶ月先)
+4. その時点で Phase 47 を再評価 (= context が変わっている可能性 = D-B
+   採用で Sexp 型定義が更に小さくなる、ffi.rs が更に小さくなる)
+5. **再評価後 go なら** Doc 86-90 を一気に起こし、2-3 並列 dispatch
+
+** §8.3 短期 (= Phase 1 期間中の) action
+
+本 Doc 85 起こし後は:
+- Phase 1 (Doc 84) dispatch 進行を継続
+- Phase 47 へは即着手しない
+- 6 ヶ月後 = Phase 2 完遂時に本 Doc を再 review、Doc 86-90 起こし判断
+
+* §9 References
+
+** internal NeLisp design docs
+
+- Doc 47 (= rust-seed-image-abi.org) - Phase 6 workspace 分離 articulated
+- Doc 63 (= phase7-nelisp-self-host-roadmap.org) - Phase 7 self-host
+  roadmap 一般 (= Phase 47 の上位 frame)
+- Doc 73 (= phase8-rust-reader-eval-purge.org) - reader / eval purge
+- Doc 75 (= phase9-frozen-heap.org) - NELIMG v3 image format
+- Doc 79 (= phase-c-gc-elisp.org) - GC elisp 化 (= Phase 47 GC 統合
+  precursor)
+- Doc 80 (= elisp-pre-stdlib-substrate.org) - pre-stdlib elisp foundation
+- Doc 81 (= nelisp-cc-primitive-trampoline-extension.org) - calling
+  conv extension
+- Doc 83 (= 100pct-pure-elisp-roadmap-consolidated.org) - 本 doc の
+  parent、§6.3 で "Phase 47 phase 6 C-runtime 自前化、別 Doc 必要"
+- Doc 84 (= strategy-rs-final-elisp-ization.org) - Phase 1 末端 work
+
+** 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= (= NeLisp standalone MCP)
+- =feedback_nelisp_announcement_standalone_gate= (= public announce
+  gate)
+- =feedback_nelisp_perf_not_elisp_interpreter= (= NeLisp 性能特性が
+  Elisp interpreter とは別物)
+
+** external prior art
+
+- GHC bootstrap (= self-hosted Haskell compiler)
+- SBCL = Steel Bank Common Lisp (= Common Lisp で書かれた Common Lisp)
+- Forth = self-hosted from 16 word kernel
+- Plan 9 mk =8l= linker source (= simple ELF writer 参考)
+- musl =crt1.o= source (= ~20 行 asm の crt0 参考)
+- Cosmopolitan libc (= multi-platform single-binary 思想)
+
+** 派生候補 design doc (= 本 doc go の場合)
+
+(注: 当初 Doc 86-90 を予約していたが、Phase 2 が時系列的に先に来るため
+Doc 86 を Phase 2 master design に割り当て。Phase 47 候補は Doc 91-95
+に renumber 済 = 2026-05-10 update。)
+
+- Doc 91 = elisp ELF writer (= ~500 elisp 投資)
+- Doc 92 = elisp macro assembler 拡張 (= ~800 elisp、nelisp-cc 流用)
+- Doc 93 = elisp static linker + syscall inline (= ~300 elisp)
+- Doc 94 = crt0 + boot loader elisp (= ~150 elisp)
+- Doc 95 = Sexp layout DSL + compiler lower (= ~150 elisp)

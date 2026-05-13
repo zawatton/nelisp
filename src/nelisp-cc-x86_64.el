@@ -1981,23 +1981,292 @@ in its slot."
       (nelisp-cc-x86_64--writeback-def
        cg def nelisp-cc-x86_64--return-reg))))
 
+;;; Doc 81 Stage 81.1 — primitive trampoline opcode lowerings ----------
+;;
+;; Three SSA opcodes from Doc 81 §5.1.2:
+;;   - `ssa-load-tag'         — read tag byte at offset 0 of a Sexp ptr
+;;   - `ssa-load-payload-ptr' — read payload pointer at offset 8
+;;   - `ssa-cmp-tag-imm'      — compare tag against immediate, branch
+;;
+;; Critical decision (§5.1.2): the tag-load is *zero-extended* (MOVZX,
+;; not MOVSX).  Tag bytes >= 0x80 (future-expansion enum values) must
+;; not be sign-extended into a negative i64.
+
+(defun nelisp-cc-x86_64--emit-movzx-r64-byte-mem (dst-reg src-reg)
+  "Encode MOVZX DST-REG, byte ptr [SRC-REG] (4-byte instruction).
+
+Used by `ssa-load-tag' to read the 1-byte Sexp discriminant at
+offset 0 with zero-extension into a full 64-bit register.
+
+Bytes: REX.W=1 [+R/B] | 0x0F | 0xB6 | ModR/M(mod=0, reg=DST.low3,
+rm=SRC.low3).  When SRC is `rbp' / `r13' the encoding requires a
+disp8 byte (mod=01, disp=0) but the Doc 81 PoC only loads through
+the param-0 register `rdi', so the simple no-displacement form
+suffices.  Other source regs would need a sib byte for `rsp' /
+`r12'."
+  (when (memq src-reg '(rsp r12 rbp r13))
+    (signal 'nelisp-cc-x86_64-encoding-error
+            (list :movzx-needs-sib-or-disp src-reg)))
+  (let* ((dst-low3 (nelisp-cc-x86_64--reg-low3 dst-reg))
+         (src-low3 (nelisp-cc-x86_64--reg-low3 src-reg))
+         (rex.r    (nelisp-cc-x86_64--reg-rex-ext-p dst-reg))
+         (rex.b    (nelisp-cc-x86_64--reg-rex-ext-p src-reg))
+         (rex      (nelisp-cc-x86_64--rex-byte t rex.r nil rex.b))
+         (modrm    (nelisp-cc-x86_64--modrm-byte 0 dst-low3 src-low3)))
+    (list rex #x0F #xB6 modrm)))
+
+(defun nelisp-cc-x86_64--emit-mov-r64-mem-disp8 (dst-reg src-reg disp8)
+  "Encode MOV DST-REG, qword ptr [SRC-REG + DISP8] (4-byte instruction).
+
+Used by `ssa-load-payload-ptr' to read the 8-byte payload pointer
+at offset 8 of a Sexp.  DISP8 must fit in a signed 8-bit range
+[-128, 127]; for the Doc 81 PoC DISP8 = 8 (the SEXP_PAYLOAD_OFFSET
+constant pinned in Phase A.5.1, see build-tool/src/eval/sexp.rs).
+
+Bytes: REX.W=1 [+R/B] | 0x8B | ModR/M(mod=01, reg=DST.low3,
+rm=SRC.low3) | disp8."
+  (unless (and (integerp disp8) (<= -128 disp8) (<= disp8 127))
+    (signal 'nelisp-cc-x86_64-encoding-error
+            (list :disp8-out-of-range disp8)))
+  (when (memq src-reg '(rsp r12))
+    (signal 'nelisp-cc-x86_64-encoding-error
+            (list :mov-needs-sib src-reg)))
+  (let* ((dst-low3 (nelisp-cc-x86_64--reg-low3 dst-reg))
+         (src-low3 (nelisp-cc-x86_64--reg-low3 src-reg))
+         (rex.r    (nelisp-cc-x86_64--reg-rex-ext-p dst-reg))
+         (rex.b    (nelisp-cc-x86_64--reg-rex-ext-p src-reg))
+         (rex      (nelisp-cc-x86_64--rex-byte t rex.r nil rex.b))
+         (modrm    (nelisp-cc-x86_64--modrm-byte 1 dst-low3 src-low3))
+         (db       (logand disp8 #xFF)))
+    (list rex #x8B modrm db)))
+
+(defun nelisp-cc-x86_64--emit-cmp-r8-imm8 (reg imm8)
+  "Encode CMP REG_8 (low byte of REG), imm8 (3-byte instruction).
+
+Used by `ssa-cmp-tag-imm' to compare the freshly-loaded tag byte
+(parked in the low 8 bits of the value's register) against an
+immediate constant such as SEXP_TAG_CONS (= 7).
+
+Bytes: 0x80 | ModR/M(mod=11, reg=/7=CMP, rm=REG.low3) | imm8.
+For `rax'..`rdx' the instruction is REX-free; for `rsi' / `rdi'
+the encoding must include a REX prefix even with W=0 to access
+`sil' / `dil' rather than the legacy `dh' / `bh' high-byte
+registers.  The Doc 81 PoC uses `rdi' (= param-0 register, after
+`mov al, [rdi]'), so we always emit REX.
+
+The /7 ModR/M.reg field tells the CPU this is the CMP variant of
+the 0x80 opcode group."
+  (unless (and (integerp imm8) (<= -128 imm8) (<= imm8 255))
+    (signal 'nelisp-cc-x86_64-encoding-error
+            (list :imm8-out-of-range imm8)))
+  (let* ((reg-low3 (nelisp-cc-x86_64--reg-low3 reg))
+         (rex.b    (nelisp-cc-x86_64--reg-rex-ext-p reg))
+         ;; REX is mandatory for `sil' / `dil' / `bpl' / `spl' even
+         ;; with W=0; emit unconditionally for predictable bytes.
+         (rex      (nelisp-cc-x86_64--rex-byte nil nil nil rex.b))
+         (modrm    (nelisp-cc-x86_64--modrm-byte 3 7 reg-low3))
+         (ib       (logand imm8 #xFF)))
+    (list rex #x80 modrm ib)))
+
+(defun nelisp-cc-x86_64--lower-load-tag (cg instr)
+  "Lower SSA `ssa-load-tag' (Doc 81 Stage 81.1) — emit MOVZX r64, byte [src].
+
+The instruction has one operand (the *const Sexp pointer SSA value)
+and one def (the loaded u64 zero-extended tag byte).  This is the
+read-half of a primitive trampoline's tag-check: the trampoline
+prologue lands the arg-pointer in `rdi' (System V param-0), so the
+typical lowering reads `[rdi]' and writes the 0..12 tag byte to the
+def's allocated register."
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (src-val  (car operands))
+         (src-reg  (nelisp-cc-x86_64--materialise-operand cg src-val))
+         (dst-reg  (nelisp-cc-x86_64--def-target cg def)))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-movzx-r64-byte-mem dst-reg src-reg))
+    (nelisp-cc-x86_64--writeback-def cg def dst-reg)))
+
+(defun nelisp-cc-x86_64--lower-load-payload-ptr (cg instr)
+  "Lower SSA `ssa-load-payload-ptr' (Doc 81 Stage 81.1) — MOV r64, [src+8].
+
+Reads the 8-byte payload pointer at offset 8 (= SEXP_PAYLOAD_OFFSET,
+pinned by Phase A.5.1) of a Sexp value.  For a Cons variant this is
+the `NlConsBoxRef' raw pointer that subsequent `ssa-call-primitive'
+lowerings (Stage 81.2) consume."
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (src-val  (car operands))
+         (src-reg  (nelisp-cc-x86_64--materialise-operand cg src-val))
+         (dst-reg  (nelisp-cc-x86_64--def-target cg def)))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-mov-r64-mem-disp8 dst-reg src-reg 8))
+    (nelisp-cc-x86_64--writeback-def cg def dst-reg)))
+
+(defun nelisp-cc-x86_64--lower-cmp-tag-imm (cg instr)
+  "Lower SSA `ssa-cmp-tag-imm' (Doc 81 Stage 81.1) — CMP r8, imm8 + JE rel32.
+
+The instruction is a *terminator* — its meta plist carries
+  :imm  IMM      — immediate tag byte to compare against
+  :then THEN-ID  — successor block id taken when ZF=1 (= equal)
+  :else ELSE-ID  — fall-through block id
+
+The single operand is the SSA value that holds the tag byte (= the
+def of an upstream `ssa-load-tag').  Encoding emits CMP r8, imm8
+followed by JE rel32 against `L_block_<THEN-ID>' and an
+unconditional JMP rel32 against `L_block_<ELSE-ID>' so the layout
+is independent of RPO.  Both branches use rel32 fixups via
+`nelisp-cc-x86_64--buffer-emit-fixup' (= 1086 ERT layout-stable
+encoding pattern)."
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (imm      (plist-get meta :imm))
+         (then-id  (plist-get meta :then))
+         (else-id  (plist-get meta :else))
+         (tag-val  (car operands))
+         (tag-reg  (nelisp-cc-x86_64--materialise-operand cg tag-val)))
+    (unless (integerp imm)
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :ssa-cmp-tag-imm-missing-imm
+                    (nelisp-cc--ssa-instr-id instr))))
+    (unless (and (integerp then-id) (integerp else-id))
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :ssa-cmp-tag-imm-missing-target
+                    (nelisp-cc--ssa-instr-id instr))))
+    ;; CMP r8, imm8 (3 bytes with REX).
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-cmp-r8-imm8 tag-reg imm))
+    ;; JE rel32 to THEN block (6 bytes with 4-byte fixup).
+    (let ((then-label (intern (format "L_block_%d" then-id))))
+      (nelisp-cc-x86_64--buffer-emit-fixup
+       buf (nelisp-cc-x86_64--emit-jcc-rel32 'je 0)
+       then-label
+       2))
+    ;; JMP rel32 to ELSE block (5 bytes with 4-byte fixup).
+    (let ((else-label (intern (format "L_block_%d" else-id))))
+      (nelisp-cc-x86_64--buffer-emit-fixup
+       buf (nelisp-cc-x86_64--emit-jmp-rel32 0)
+       else-label
+       1))))
+
+;;; Doc 81 Stage 81.2 / 81.3 — ssa-call-primitive emit ----------------
+;;
+;; The 4th opcode (Stage 81.2 addition) — emit a CALL rel32 to the
+;; extern "C" trampoline body whose name is recorded in the
+;; instruction's META `:symbol' slot.  Argument marshalling follows
+;; the ABI shape declared in `:abi':
+;;
+;;   :trampoline-unary        arg0 → rdi, arg1 (out-ptr) → rsi
+;;   :trampoline-binary-ctor  arg0 → rdi, arg1 → rsi, arg2 (out-ptr) → rdx
+;;   :trampoline-binary-mut   arg0 → rdi, arg1 → rsi
+;;   :trampoline-binary-aref  arg0 → rdi, arg1 (i64 idx) → rsi,
+;;                            arg2 (out-ptr) → rdx                     (Stage 81.3)
+;;   :trampoline-ternary-aset arg0 → rdi, arg1 (i64 idx) → rsi,
+;;                            arg2 (val ptr) → rdx, arg3 (out-ptr) → rcx (Stage 81.3)
+;;
+;; Doc 86 §86.1.e (2026-05-10): the new `:trampoline-format-float'
+;; mode (= `extern "C" fn(f64, char, i64, *mut Sexp) -> i64', xmm0 +
+;; rsi + rdx + rcx) is *bridge-only* — the cc backend never emits a
+;; trampoline of this shape, the path is `nl-jit-call-format-float'
+;; in `bridge.rs'.  No `--lower-call-primitive' arm needed; the same
+;; applies to the existing `:trampoline-binary-float-{arith,cmp}'.
+;;
+;; Stage 81.2 keeps the out-ptr / mutate-in-place distinction *purely
+;; in metadata* — the recognition pass (Stage 81.3) is responsible for
+;; allocating the out-slot via `alloca' SSA before this CALL.  Here we
+;; just marshal whatever operand list the IR carries into the System V
+;; argument registers and emit the rel32 placeholder + a call-fixup
+;; entry whose cdr is the C symbol (= linker-resolved at link time
+;; against `dlsym(RTLD_DEFAULT, SYMBOL-NAME)').
+;;
+;; Stage 81.3 extends the accepted ABI set to the two vector shapes
+;; (= aref / aset).  The marshalling helper is *shape-isomorphic* —
+;; operands flow into rdi/rsi/rdx/rcx in declaration order regardless
+;; of whether they carry a Sexp pointer or a raw i64 index, because
+;; both are 8-byte int-class quantities at the System V AMD64 ABI
+;; level.  The Sexp-vs-i64 distinction is enforced upstream by the
+;; recognition pass (= it is responsible for materialising the index
+;; as an i64-typed SSA value).
+
+(defun nelisp-cc-x86_64--lower-call-primitive (cg instr)
+  "Lower SSA `ssa-call-primitive' (Doc 81 Stage 81.2).
+
+Marshals operands into System V argument registers per the ABI
+shape declared in INSTR's META :abi field, emits CALL rel32 with a
+zero-displacement placeholder, and records a call-fixup entry on
+the codegen so the link pass can resolve the C symbol's address.
+The trampoline status (= rax = TRAMPOLINE_OK / TRAMPOLINE_ERR) is
+written back to the def's allocated register if a def is present."
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (abi      (plist-get meta :abi))
+         (symbol   (plist-get meta :symbol))
+         (n        (length operands)))
+    (unless symbol
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :ssa-call-primitive-missing-symbol
+                    (nelisp-cc--ssa-instr-id instr))))
+    (unless (memq abi '(:trampoline-unary
+                        :trampoline-binary-ctor
+                        :trampoline-binary-mut
+                        :trampoline-binary-aref
+                        :trampoline-ternary-aset
+                        :trampoline-unary-float))
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :ssa-call-primitive-bad-abi abi)))
+    (when (> n (length nelisp-cc-x86_64--int-arg-regs))
+      (signal 'nelisp-cc-x86_64-unsupported-opcode
+              (list :stack-arg-spill-not-implemented n)))
+    ;; Marshal operands into rdi / rsi / rdx / ... in declaration
+    ;; order.  Stage 81.2 reuses the existing parallel-copy /
+    ;; push-pop strategy — primitive-call is shape-isomorphic to a
+    ;; regular `:call' from a marshalling POV.
+    (nelisp-cc-x86_64--marshal-args buf cg operands)
+    ;; Emit CALL rel32 placeholder + record the extern-C fixup.  We
+    ;; piggyback on `--codegen-call-fixups' rather than introducing a
+    ;; separate `extern-c-fixups' slot — the link pass discriminates by
+    ;; symbol name (= primitive symbols are `nl_jit_*' prefixed).
+    (let ((before-call (nelisp-cc-x86_64--buffer-offset buf)))
+      (nelisp-cc-x86_64--buffer-emit-bytes
+       buf (nelisp-cc-x86_64--emit-call-rel32 0))
+      (push (cons (+ before-call 1) symbol)
+            (nelisp-cc-x86_64--codegen-call-fixups cg)))
+    ;; Status code (rax) → def register.
+    (when def
+      (nelisp-cc-x86_64--writeback-def
+       cg def nelisp-cc-x86_64--return-reg))))
+
 (defun nelisp-cc-x86_64--lower-instr (cg instr)
   "Dispatch a single SSA INSTR to its per-opcode lower helper.
 
 Skeleton subset — opcodes outside the supported set raise
 `nelisp-cc-x86_64-unsupported-opcode'.  phi nodes specifically must
-be lowered out by a phi-out pass before this dispatch sees them."
+be lowered out by a phi-out pass before this dispatch sees them.
+
+Doc 81 Stage 81.1 added `ssa-load-tag' / `ssa-load-payload-ptr' /
+`ssa-cmp-tag-imm' for the primitive-trampoline ABI.  Stage 81.2
+added the 4th opcode `ssa-call-primitive' (= the actual CALL out
+to the extern \"C\" trampoline body); subsequent stages will
+activate these via the recognition pass."
   (pcase (nelisp-cc--ssa-instr-opcode instr)
-    ('const          (nelisp-cc-x86_64--lower-const cg instr))
-    ('load-var       (nelisp-cc-x86_64--lower-load-var cg instr))
-    ('store-var      (nelisp-cc-x86_64--lower-store-var cg instr))
-    ('call           (nelisp-cc-x86_64--lower-call cg instr))
-    ('call-indirect  (nelisp-cc-x86_64--lower-call-indirect cg instr))
-    ('closure        (nelisp-cc-x86_64--lower-closure cg instr))
-    ('copy           (nelisp-cc-x86_64--lower-copy cg instr))
-    ('branch         (nelisp-cc-x86_64--lower-branch cg instr))
-    ('jump           (nelisp-cc-x86_64--lower-jump cg instr))
-    ('return         (nelisp-cc-x86_64--lower-return cg instr))
+    ('const               (nelisp-cc-x86_64--lower-const cg instr))
+    ('load-var            (nelisp-cc-x86_64--lower-load-var cg instr))
+    ('store-var           (nelisp-cc-x86_64--lower-store-var cg instr))
+    ('call                (nelisp-cc-x86_64--lower-call cg instr))
+    ('call-indirect       (nelisp-cc-x86_64--lower-call-indirect cg instr))
+    ('closure             (nelisp-cc-x86_64--lower-closure cg instr))
+    ('copy                (nelisp-cc-x86_64--lower-copy cg instr))
+    ('branch              (nelisp-cc-x86_64--lower-branch cg instr))
+    ('jump                (nelisp-cc-x86_64--lower-jump cg instr))
+    ('return              (nelisp-cc-x86_64--lower-return cg instr))
+    ('ssa-load-tag        (nelisp-cc-x86_64--lower-load-tag cg instr))
+    ('ssa-load-payload-ptr (nelisp-cc-x86_64--lower-load-payload-ptr cg instr))
+    ('ssa-cmp-tag-imm     (nelisp-cc-x86_64--lower-cmp-tag-imm cg instr))
+    ('ssa-call-primitive  (nelisp-cc-x86_64--lower-call-primitive cg instr))
     ('phi
      (signal 'nelisp-cc-x86_64-unsupported-opcode
              (list :phi-must-be-lowered-out-before-codegen

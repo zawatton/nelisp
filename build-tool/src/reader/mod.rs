@@ -1,77 +1,28 @@
-//! Phase 8.0.1 (= Doc 44 §3.2 LOCKED) — Rust-side minimal Elisp
-//! reader / sexp parser.
+//! Rust-side minimal Elisp reader / sexp parser (Doc 44 §3.2 LOCKED).
 //!
-//! Public surface:
-//!   - [`read_str`]  — parse exactly one form, error on trailing junk
-//!   - [`read_all`]  — parse every top-level form (`.el` file shape)
-//!   - [`fmt_sexp`]  — debug pretty-printer (lossy, NOT prin1)
-//!   - [`Sexp`]      — value enum
-//!   - [`ReadError`] — failure type with explicit
-//!     `NotYetImplemented` for remaining deferred features
+//! Public surface (= `read_str' / `read_all') is intentionally
+//! narrow — the reader stops at the syntactic value (`Sexp'), never
+//! depending on the evaluator.  Supported subset includes the Doc 44
+//! §3.2 lockset plus the Doc 51 / Doc 52 extensions
+//! (`?\M-X' meta chars, bare `,X' / `,@X' outside backquote,
+//! `#s(...)' struct literals, unknown `\X' as literal X).
 //!
-//! Layer rule (= prompt constraint): the reader must NOT depend on
-//! the evaluator.  Phase 7.5.4.2 is responsible for taking `Sexp` and
-//! producing `LispObject`; this module stops at the syntactic value.
-//!
-//! Remaining deferred per Doc 44 §3.2:
-//!   - `#[...]` byte-code literal (= the last reader-surface gap;
-//!     bytecode evaluator itself is a Phase 8 concern)
-//!   - multibyte / non-ASCII string content (currently passed through
-//!     as raw bytes; Phase 7.4 NeLisp coding will own real decoding)
-//!
-//! Doc 51 Phase 3-A''-1/2/3 (2026-05-04) widened the supported set
-//! beyond the original Doc 44 §3.2 LOCKED subset:
-//!   - `?\M-X` meta-modifier char literals (= `Int(X | 0x8000000)`)
-//!   - `,X` / `,@X` outside backquote contexts (= macro authors'
-//!     `inline-quote` shape)
-//!   - any unknown `\X` inside string / char literals = literal `X`
-//!
-//! Phase 7 Stage 7.2.d/e (2026-05-07, Doc 66) + Stage 7.6.a
-//! (2026-05-08, Doc 71) — *all* user-visible reads now route through
-//! the elisp impl `nelisp--read-from-string-impl' / `nelisp--read-all-
-//! from-string-impl' (= `lisp/nelisp-stdlib-reader.el').  Specifically
-//! `read-from-string' (Stage 7.2.d), `read' and `nelisp--read-all-
-//! from-string' (Stage 7.6.a) all delegate mandatorily.
-//!
-//! This Rust reader survives because (a) `Env::new_global' bootstrap
-//! must parse the bundled stdlib sources — the elisp reader cannot
-//! parse itself, since reader.el's bodies depend on `not` / `null` /
-//! `nreverse` / `floatp` etc. that are defined in `nelisp-stdlib*.el'
-//! and the elisp reader is invoked at PARSE time of subsequent files;
-//! and (b) `bridge::bootstrap_self_host' + the feature-gated
-//! `image::compile_elisp_to_image' baker still call it directly.
-//! Doc 63 §2.6 anticipated complete deletion of this module
-//! (~1,400 LOC), but bootstrap chicken-and-egg + `Sexp' value-type
-//! sharing across the entire crate make that aspirational — AOT bake
-//! (Doc 63 §3.3) is the prerequisite for deletion.
-//!
-//! Stage 7.7.c.1 (Doc 72) routed `eval_str' / `eval_str_all' /
-//! `eval_str_all_at_path' through the elisp reader so the production
-//! `nelisp' binary no longer touches `reader::read_*'.  Stage 7.7.c.2
-//! gated `image::compile_elisp_to_image' behind `image-baker'.
-//! Stage 7.7.d (this comment, 2026-05-08) migrated the cargo unit
-//! test fixture-construction callsites (= 12 in `eval/tests.rs', 3 in
-//! `bridge/mod.rs') from `reader::read_str' to `eval::read_one_via_
-//! elisp', so the test suite now exercises the elisp reader for
-//! every fixture.  Remaining non-test, non-baker callsite =
-//! `bridge/loader.rs::bootstrap_self_host' (production) — Phase 8
-//! migrates it.
-//!
-//! `#s(...)` structure literal landed in Doc 52 Stage 4b — read as a
-//! `Sexp::Record { type_tag, slots }' (positional form; keyword form
-//! is desugared by `cl-defstruct' macros in elisp).
+//! After Doc 98 §98.3 (2026-05-11) the production `nelisp' binary
+//! never touches this module — boot streams pre-baked NELIMG v3
+//! frozen-heap globals via `image::decode_v3_into', and user-visible
+//! `read' / `read-from-string' delegate to the elisp implementation
+//! in `lisp/nelisp-stdlib-reader.el'.  The Rust reader survives only
+//! in `image-baker' feature builds where `image::iterative_bake_one'
+//! parses each stdlib source on the way to its v3 image, plus the
+//! reader's own ERTs.
 
 pub mod lexer;
 pub mod parser;
 
-// Phase 8 Stage 8.1 (Doc 73, 2026-05-08): the value type (`Sexp',
-// `CharTableInner', tag constants, `fmt_sexp') and the read-side
-// error type (`ReadError', `SourcePos') were rehomed to `eval/sexp.rs'
-// and `eval/error.rs' respectively.  This module now re-exports them
-// for backward compatibility with downstream consumers (= the
-// `image-baker' bin via `image::compile_elisp_to_image' and any
-// remaining `use crate::reader::Sexp' callsites pending migration in
-// later sub-stages).  The lexer / parser also import from `eval' now.
+// Value type (`Sexp', `CharTableInner', tag constants, `fmt_sexp')
+// and read-side error type (`ReadError', `SourcePos') live in
+// `eval/sexp.rs' and `eval/error.rs' since Doc 73 Stage 8.1; re-
+// exported here for any remaining `use crate::reader::Sexp' callsites.
 pub use crate::eval::error::{ReadError, SourcePos};
 pub use crate::eval::sexp::{fmt_sexp, Sexp};
 

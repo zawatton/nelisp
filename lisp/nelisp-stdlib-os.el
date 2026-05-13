@@ -812,8 +812,10 @@ host byte order."
 ;;
 ;; pidfd_open / pidfd_send_signal / inotify_init1 / inotify_rm_watch /
 ;; eventfd2 ride the generic `nelisp--syscall' arm via `syscall_nr()'
-;; symbol map.  inotify_add_watch + inotify_read need string / packed
-;; binary handling and live in their own primitives.
+;; symbol map.  inotify_add_watch + inotify_read used to be specialized
+;; Rust primitives (path string + packed `struct inotify_event' parse)
+;; but were retired in Doc 76 Stage E (2026-05-09); the Stage E section
+;; below now drives them elisp-side via `nl-ffi-call' libc.
 ;; ---------------------------------------------------------------------------
 
 ;; ----- pidfd flags -----
@@ -863,6 +865,31 @@ zero; pass FLAGS = 0 unless you know better."
    (nelisp--syscall 'pidfd_send_signal pidfd sig 0 flags)))
 
 ;; ----- inotify wrappers -----
+;;
+;; Doc 76 Stage E (2026-05-09): inotify_add_watch / inotify_read were
+;; specialized Rust primitives (= path string + variable-length packed
+;; `struct inotify_event' buffer) but are now driven elisp-side through
+;; `nl-ffi-call' libc.  inotify_init1 / inotify_rm_watch keep riding
+;; the generic int-only `nelisp--syscall' arm via syscall_nr() symbol map.
+;;
+;; struct inotify_event (Linux) layout — same on all glibc/musl arches:
+;;   offset 0  i32 wd          (watch descriptor; -1 for IN_Q_OVERFLOW)
+;;   offset 4  u32 mask        (event mask bits, see IN-* defconsts)
+;;   offset 8  u32 cookie      (rename pair correlator)
+;;   offset 12 u32 len         (length of name[], including NUL pad)
+;;   offset 16 char name[len]  (NUL-padded UTF-8 file basename, len = 0
+;;                              for events on the watched path itself)
+;;   sizeof(struct inotify_event) without name = 16 bytes
+;;   NAME_MAX (Linux) = 255, +1 NUL = 256 bytes max name field per event.
+;;
+;; Read pattern:
+;;   1. nl-ffi-malloc (per-event-cap = 16 + 256 = 272) * MAX-EVENTS bytes
+;;   2. libc.read (fd, buf, cap) → ssize_t n
+;;   3. walk buf [0..n) parsing header (= read-i32/u32) + name field (=
+;;      read-bytes-at + NUL-truncate via string-search), advance to next
+;;      record at off + 16 + len
+;; Empty result list = no events ready (only possible when FD opened
+;; with IN-NONBLOCK).
 
 (defun nelisp-os-inotify-init (flags)
   "Linux inotify_init1(2) — return a new inotify fd.  FLAGS is OR of
@@ -872,8 +899,15 @@ zero; pass FLAGS = 0 unless you know better."
 (defun nelisp-os-inotify-add-watch (fd path mask)
   "Linux inotify_add_watch(2) — return a watch descriptor (positive
 integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
-  (nelisp-os--check-errno
-   (nelisp--syscall-inotify-add-watch fd path mask)))
+  ;; libc::inotify_add_watch: int(int fd, const char *path, uint32_t mask)
+  ;; → int.  Returns -1 on error and sets errno; the wd is a positive
+  ;; per-fd integer otherwise.
+  (let ((r (nl-ffi-call "libc" "inotify_add_watch"
+                        [:sint32 :sint32 :string :uint32]
+                        fd path mask)))
+    (if (= r -1)
+        (nelisp-os--ffi-errno-signal)
+      r)))
 
 (defun nelisp-os-inotify-rm-watch (fd wd)
   "Linux inotify_rm_watch(2) — remove the watch identified by WD."
@@ -883,10 +917,39 @@ integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
   "Read up to MAX-EVENTS events off inotify FD.  Returns a list of
 4-element lists `(WD MASK COOKIE NAME)'.  Empty list when no events
 are ready (only possible when FD was opened `IN-NONBLOCK')."
-  (let ((r (nelisp--syscall-inotify-read fd max-events)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+  ;; Doc 76 Stage E: was a Rust specialized primitive; now elisp-side
+  ;; libc.read + nl-ffi-read-i32/u32/bytes-at parse loop.
+  (let* ((per-event-cap (+ 16 256))             ; sizeof(header) + NAME_MAX+1
+         (cap           (* max-events per-event-cap))
+         (buf           (nl-ffi-malloc cap)))
+    (unwind-protect
+        (let ((n (nl-ffi-call "libc" "read"
+                              [:sint64 :sint32 :pointer :uint64]
+                              fd buf cap)))
+          (cond
+           ((= n -1) (nelisp-os--ffi-errno-signal))
+           ((= n 0)  nil)
+           (t (let ((events nil) (off 0))
+                (catch 'done
+                  (while (<= (+ off 16) n)
+                    (let* ((wd     (nl-ffi-read-i32 buf off))
+                           (mask   (nl-ffi-read-u32 buf (+ off 4)))
+                           (cookie (nl-ffi-read-u32 buf (+ off 8)))
+                           (nlen   (nl-ffi-read-u32 buf (+ off 12)))
+                           (name-off (+ off 16)))
+                      ;; Truncated tail (kernel never writes a partial
+                      ;; record; this guards corruption / short read).
+                      (when (> (+ name-off nlen) n)
+                        (throw 'done nil))
+                      (let* ((raw  (if (= nlen 0)
+                                       ""
+                                     (nl-ffi-read-bytes-at buf name-off nlen)))
+                             (cut  (string-search "\0" raw))
+                             (name (if cut (substring raw 0 cut) raw)))
+                        (push (list wd mask cookie name) events))
+                      (setq off (+ name-off nlen)))))
+                (nreverse events)))))
+      (nl-ffi-free buf))))
 
 ;; ----- eventfd wrapper -----
 
@@ -1199,6 +1262,35 @@ value=MS-as-(sec . nsec)."
 ;; boundary-preserving messages) and link-local IPv6 are all
 ;; expressible from elisp without touching anything beyond the Doc 53
 ;; substrate.  See docs/design/60-...org for design notes.
+;;
+;; Doc 76 Stage G (2026-05-09) retired the 7 specialized Rust primitives
+;; (= socketpair / sendmsg-fds / recvmsg-fds / getsockopt-peercred /
+;; bind-/connect-/accept-inet6-scoped).  elisp now drives msghdr +
+;; SCM_RIGHTS cmsg + struct ucred + sockaddr_in6+scope_id directly via
+;; `nl-ffi-call' libc + `nl-ffi-malloc' / `-write-i*' / `-read-i*' /
+;; `-write-bytes-at' / `-read-bytes-at'.
+;;
+;; ABI assumption: 64-bit Linux (glibc / musl).  Layout constants below
+;; are hardcoded to that ABI:
+;;
+;;   msghdr (56 bytes):
+;;     msg_name@0 ptr (8B), msg_namelen@8 u32+4 pad, msg_iov@16 ptr (8B),
+;;     msg_iovlen@24 size_t (8B), msg_control@32 ptr (8B),
+;;     msg_controllen@40 size_t (8B), msg_flags@48 i32+4 pad
+;;
+;;   iovec (16 bytes):
+;;     iov_base@0 ptr (8B), iov_len@8 size_t (8B)
+;;
+;;   cmsghdr (16 bytes, alignment 8):
+;;     cmsg_len@0 size_t (8B), cmsg_level@8 i32, cmsg_type@12 i32
+;;     CMSG_LEN(n)   = 16 + n
+;;     CMSG_SPACE(n) = align_up(16 + n, 8)   (= round to next multiple of 8)
+;;
+;;   ucred (12 bytes): pid@0 i32, uid@4 u32, gid@8 u32
+;;
+;;   sockaddr_in6 (28 bytes):
+;;     sin6_family@0 u16, sin6_port@2 u16 BE, sin6_flowinfo@4 u32 BE,
+;;     sin6_addr@8 16 bytes (8 BE u16 groups), sin6_scope_id@24 u32 host order
 ;; ---------------------------------------------------------------------------
 
 ;; ----- Extra socket type / cmsg / sockopt constants -----
@@ -1207,16 +1299,119 @@ value=MS-as-(sec . nsec)."
 (defconst nelisp-os-SCM-RIGHTS     1)              ; SOL_SOCKET cmsg type — fd passing
 (defconst nelisp-os-SO-PEERCRED    17)             ; getsockopt option — struct ucred
 
+;; ----- 64-bit Linux ABI layout constants (Doc 76 Stage G) -----
+
+(defconst nelisp-os--msghdr-len     56)            ; struct msghdr (Linux x86_64 / aarch64)
+(defconst nelisp-os--iovec-len      16)            ; struct iovec
+(defconst nelisp-os--cmsghdr-len    16)            ; struct cmsghdr header
+(defconst nelisp-os--cmsg-align      8)            ; CMSG alignment on 64-bit Linux
+(defconst nelisp-os--ucred-len      12)            ; struct ucred
+(defconst nelisp-os--sockaddr-in6-scoped-len 28)   ; sockaddr_in6 with scope_id
+(defconst nelisp-os--sizeof-fd       4)            ; sizeof(int) on Linux LP64
+
+;; ----- cmsg helpers (CMSG_LEN / CMSG_SPACE re-implementation) -----
+
+(defun nelisp-os--cmsg-align-up (n)
+  "Round N up to the next multiple of `nelisp-os--cmsg-align'."
+  (let ((a nelisp-os--cmsg-align))
+    (* a (/ (+ n (1- a)) a))))
+
+(defun nelisp-os--cmsg-len (datalen)
+  "POSIX CMSG_LEN(DATALEN) on 64-bit Linux: cmsghdr + DATALEN, no padding."
+  (+ nelisp-os--cmsghdr-len datalen))
+
+(defun nelisp-os--cmsg-space (datalen)
+  "POSIX CMSG_SPACE(DATALEN) on 64-bit Linux: align CMSG_LEN to alignment."
+  (nelisp-os--cmsg-align-up (nelisp-os--cmsg-len datalen)))
+
+(defun nelisp-os--cmsg-decode-header (buf off)
+  "Decode a single cmsghdr at BUF + OFF.  Return list (LEN LEVEL TYPE).
+LEN is the full cmsghdr length (= header + data), LEVEL/TYPE are the
+SOL_*/SCM_* identifiers."
+  (list (nl-ffi-read-i64 buf (+ off 0))
+        (nl-ffi-read-i32 buf (+ off 8))
+        (nl-ffi-read-i32 buf (+ off 12))))
+
+(defun nelisp-os--cmsg-iterate (buf controllen fn)
+  "Walk every cmsghdr in BUF (= MSG_CONTROL[0..CONTROLLEN]).
+For each cmsg call FN with three arguments (LEN LEVEL TYPE
+DATA-OFF).  DATA-OFF is the byte offset within BUF of the cmsg's
+payload (= cmsghdr_off + cmsghdr_len header size).
+Stops on a malformed cmsg (= len < cmsghdr_len) or buffer exhaustion."
+  (let ((off 0))
+    (catch 'done
+      (while (<= (+ off nelisp-os--cmsghdr-len) controllen)
+        (let* ((hdr   (nelisp-os--cmsg-decode-header buf off))
+               (len   (nth 0 hdr))
+               (level (nth 1 hdr))
+               (type  (nth 2 hdr))
+               (next  (+ off (nelisp-os--cmsg-align-up len))))
+          (when (or (< len nelisp-os--cmsghdr-len)
+                    (> next controllen))
+            (throw 'done nil))
+          (funcall fn len level type (+ off nelisp-os--cmsghdr-len))
+          (setq off next))))))
+
+;; ----- ucred decoder -----
+
+(defun nelisp-os--decode-ucred (buf)
+  "Decode 12-byte struct ucred at BUF into list (PID UID GID)."
+  (list (nl-ffi-read-i32 buf 0)
+        (nl-ffi-read-u32 buf 4)
+        (nl-ffi-read-u32 buf 8)))
+
+;; ----- scoped sockaddr_in6 encode/decode -----
+
+(defun nelisp-os--encode-sockaddr-in6-scoped (buf groups port flowinfo scope-id)
+  "Populate BUF (= 28-byte zeroed) with sockaddr_in6 carrying
+flowinfo (BE) and scope_id (host order) in addition to host/port."
+  (nl-ffi-write-i16 buf 0 nelisp-os-AF-INET6)
+  (let ((port-be (nl-ffi-call "libc" "htons" [:uint16 :uint16] port)))
+    (nl-ffi-write-i16 buf 2 port-be))
+  ;; flowinfo @ 4: htonl, written as i32 LE bit pattern.
+  (let ((flowinfo-be (nl-ffi-call "libc" "htonl" [:uint32 :uint32] flowinfo)))
+    (nl-ffi-write-i32 buf 4 flowinfo-be))
+  ;; sin6_addr @ 8 (8 BE u16 groups).
+  (let ((idx 0))
+    (dolist (g groups)
+      (let* ((off  (+ 8 (* idx 2)))
+             (g-be (nl-ffi-call "libc" "htons" [:uint16 :uint16] g)))
+        (nl-ffi-write-i16 buf off g-be))
+      (setq idx (1+ idx))))
+  ;; scope_id @ 24 in host byte order.
+  (nl-ffi-write-i32 buf 24 scope-id))
+
+(defun nelisp-os--decode-sockaddr-in6-scoped (buf)
+  "Decode 28-byte sockaddr_in6 BUF.  Return list
+(GROUPS PORT FLOWINFO SCOPE-ID) — all in host byte order."
+  (let* ((port-be     (nl-ffi-read-u16 buf 2))
+         (port        (nl-ffi-call "libc" "ntohs" [:uint16 :uint16] port-be))
+         (flowinfo-be (nl-ffi-read-u32 buf 4))
+         (flowinfo    (nl-ffi-call "libc" "ntohl" [:uint32 :uint32] flowinfo-be))
+         (scope-id    (nl-ffi-read-u32 buf 24))
+         (groups nil))
+    (dotimes (i 8)
+      (let ((g-be (nl-ffi-read-u16 buf (+ 8 (* i 2)))))
+        (push (nl-ffi-call "libc" "ntohs" [:uint16 :uint16] g-be) groups)))
+    (list (nreverse groups) port flowinfo scope-id)))
+
 ;; ----- socketpair -----
 
 (defun nelisp-os-socketpair (domain type protocol)
   "POSIX socketpair(2) — returns (FD1 . FD2) on success.
 Typical use: (nelisp-os-socketpair AF-UNIX SOCK-STREAM 0).  Signals
 `nelisp-os-error' on failure."
-  (let ((r (nelisp--syscall-socketpair domain type protocol)))
-    (if (and (consp r) (integerp (car r)) (integerp (cdr r)))
-        r
-      (nelisp-os--check-errno r))))
+  ;; libc::socketpair(int domain, int type, int protocol, int sv[2]) → int.
+  (let ((sv-buf (nl-ffi-malloc 8)))         ; 2 × sizeof(int)
+    (unwind-protect
+        (let ((r (nl-ffi-call "libc" "socketpair"
+                              [:sint32 :sint32 :sint32 :sint32 :pointer]
+                              domain type protocol sv-buf)))
+          (if (/= r 0)
+              (nelisp-os--ffi-errno-signal)
+            (cons (nl-ffi-read-i32 sv-buf 0)
+                  (nl-ffi-read-i32 sv-buf 4))))
+      (nl-ffi-free sv-buf))))
 
 ;; ----- SCM_RIGHTS fd passing -----
 
@@ -1224,8 +1419,53 @@ Typical use: (nelisp-os-socketpair AF-UNIX SOCK-STREAM 0).  Signals
   "Send PAYLOAD plus FDS (list of int file descriptors) over UDS FD
 via sendmsg(2) + SCM_RIGHTS cmsg.  PAYLOAD must be a string ≥ 1 byte
 (the kernel rejects cmsg-only sendmsg).  Returns bytes_sent."
-  (nelisp-os--check-errno
-   (nelisp--syscall-sendmsg-fds fd fds payload)))
+  (when (= (length payload) 0)
+    (signal 'nelisp-os-error (list 22)))     ; EINVAL — cmsg-only rejected
+  (let* ((nfds          (length fds))
+         (fds-bytes     (* nfds nelisp-os--sizeof-fd))
+         (cmsg-len      (nelisp-os--cmsg-len fds-bytes))
+         (cmsg-space    (nelisp-os--cmsg-space fds-bytes))
+         (payload-bytes (length payload))
+         (payload-buf   (nl-ffi-malloc payload-bytes))
+         (iov-buf       (nl-ffi-malloc nelisp-os--iovec-len))
+         (cmsg-buf      (nl-ffi-malloc cmsg-space))
+         (msg-buf       (nl-ffi-malloc nelisp-os--msghdr-len)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-bytes payload-buf payload)
+          ;; iovec[0] = {payload-buf, payload-bytes}
+          (nl-ffi-write-i64 iov-buf 0 payload-buf)
+          (nl-ffi-write-i64 iov-buf 8 payload-bytes)
+          ;; cmsg header = {cmsg_len, SOL_SOCKET, SCM_RIGHTS}
+          (nl-ffi-write-i64 cmsg-buf 0 cmsg-len)
+          (nl-ffi-write-i32 cmsg-buf 8  nelisp-os-SOL-SOCKET)
+          (nl-ffi-write-i32 cmsg-buf 12 nelisp-os-SCM-RIGHTS)
+          ;; cmsg payload = fds[] starting at offset cmsghdr_len (= 16).
+          (let ((idx 0))
+            (dolist (one-fd fds)
+              (nl-ffi-write-i32 cmsg-buf
+                                (+ nelisp-os--cmsghdr-len
+                                   (* idx nelisp-os--sizeof-fd))
+                                one-fd)
+              (setq idx (1+ idx))))
+          ;; msghdr — name=NULL, iov=&iov, controllen=cmsg-space.
+          (nl-ffi-write-i64 msg-buf 0  0)              ; msg_name
+          (nl-ffi-write-i32 msg-buf 8  0)              ; msg_namelen
+          (nl-ffi-write-i64 msg-buf 16 iov-buf)        ; msg_iov
+          (nl-ffi-write-i64 msg-buf 24 1)              ; msg_iovlen
+          (nl-ffi-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
+          (nl-ffi-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
+          (nl-ffi-write-i32 msg-buf 48 0)              ; msg_flags
+          (let ((r (nl-ffi-call "libc" "sendmsg"
+                                [:sint64 :sint32 :pointer :sint32]
+                                fd msg-buf 0)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              r)))
+      (nl-ffi-free msg-buf)
+      (nl-ffi-free cmsg-buf)
+      (nl-ffi-free iov-buf)
+      (nl-ffi-free payload-buf))))
 
 (defun nelisp-os-recvmsg-fds (fd max-fds max-bytes)
   "Receive up to MAX-BYTES of payload + up to MAX-FDS file descriptors
@@ -1233,20 +1473,77 @@ over UDS FD via recvmsg(2).  Returns (PAYLOAD-STRING . FDS-LIST).
 PAYLOAD-STRING is truncated to the actual bytes_received; FDS-LIST is
 all descriptors collected from SCM_RIGHTS cmsgs (may be fewer than
 MAX-FDS, never more)."
-  (let ((r (nelisp--syscall-recvmsg-fds fd max-fds max-bytes)))
-    (if (consp r)
-        r
-      (nelisp-os--check-errno r))))
+  (when (<= max-bytes 0)
+    (signal 'nelisp-os-error (list 22)))     ; EINVAL
+  (let* ((fds-bytes  (* max-fds nelisp-os--sizeof-fd))
+         (cmsg-space (if (= max-fds 0)
+                         0
+                       (nelisp-os--cmsg-space fds-bytes)))
+         (payload-buf (nl-ffi-malloc max-bytes))
+         (iov-buf     (nl-ffi-malloc nelisp-os--iovec-len))
+         ;; Always allocate at least 1 byte (nl-ffi-malloc 0 is undefined).
+         (cmsg-buf    (nl-ffi-malloc (max cmsg-space 1)))
+         (msg-buf     (nl-ffi-malloc nelisp-os--msghdr-len)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i64 iov-buf 0 payload-buf)
+          (nl-ffi-write-i64 iov-buf 8 max-bytes)
+          (nl-ffi-write-i64 msg-buf 0  0)              ; msg_name
+          (nl-ffi-write-i32 msg-buf 8  0)              ; msg_namelen
+          (nl-ffi-write-i64 msg-buf 16 iov-buf)        ; msg_iov
+          (nl-ffi-write-i64 msg-buf 24 1)              ; msg_iovlen
+          (nl-ffi-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
+          (nl-ffi-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
+          (nl-ffi-write-i32 msg-buf 48 0)              ; msg_flags
+          (let ((r (nl-ffi-call "libc" "recvmsg"
+                                [:sint64 :sint32 :pointer :sint32]
+                                fd msg-buf 0)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (let* ((bytes-received r)
+                     (payload (if (= bytes-received 0)
+                                  ""
+                                (nl-ffi-read-bytes-at payload-buf 0 bytes-received)))
+                     ;; Kernel may shrink controllen below cmsg-space.
+                     (actual-controllen (nl-ffi-read-i64 msg-buf 40))
+                     (fds-out nil))
+                (nelisp-os--cmsg-iterate
+                 cmsg-buf actual-controllen
+                 (lambda (len level type data-off)
+                   (when (and (= level nelisp-os-SOL-SOCKET)
+                              (= type  nelisp-os-SCM-RIGHTS))
+                     (let* ((payload-len (- len nelisp-os--cmsghdr-len))
+                            (n-fds (/ payload-len nelisp-os--sizeof-fd)))
+                       (dotimes (i n-fds)
+                         (push (nl-ffi-read-i32
+                                cmsg-buf
+                                (+ data-off (* i nelisp-os--sizeof-fd)))
+                               fds-out))))))
+                (cons payload (nreverse fds-out))))))
+      (nl-ffi-free msg-buf)
+      (nl-ffi-free cmsg-buf)
+      (nl-ffi-free iov-buf)
+      (nl-ffi-free payload-buf))))
 
 ;; ----- SO_PEERCRED -----
 
 (defun nelisp-os-getsockopt-peercred (fd)
   "Retrieve the peer's `struct ucred' on AF_UNIX FD via getsockopt
 SO_PEERCRED.  Returns (PID UID GID) on success."
-  (let ((r (nelisp--syscall-getsockopt-peercred fd)))
-    (if (and (listp r) (= (length r) 3))
-        r
-      (nelisp-os--check-errno r))))
+  (let ((cred-buf (nl-ffi-malloc nelisp-os--ucred-len))
+        (len-buf  (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 len-buf 0 nelisp-os--ucred-len)
+          (let ((r (nl-ffi-call "libc" "getsockopt"
+                                [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                                fd nelisp-os-SOL-SOCKET nelisp-os-SO-PEERCRED
+                                cred-buf len-buf)))
+            (if (/= r 0)
+                (nelisp-os--ffi-errno-signal)
+              (nelisp-os--decode-ucred cred-buf))))
+      (nl-ffi-free len-buf)
+      (nl-ffi-free cred-buf))))
 
 ;; ----- IPv6 scoped (full sockaddr_in6 surface) -----
 
@@ -1254,21 +1551,46 @@ SO_PEERCRED.  Returns (PID UID GID) on success."
   "Bind FD to IPv6 (HOST6 = 8-element host-byte-order group list, PORT,
 FLOWINFO, SCOPE-ID).  All extra fields are wire-protocol-aware
 (flowinfo gets htonl on the way out)."
-  (nelisp-os--check-errno
-   (nelisp--syscall-bind-inet6-scoped fd host6 port flowinfo scope-id)))
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-in6-scoped-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in6-scoped buf host6 port flowinfo scope-id)
+          (let ((r (nl-ffi-call "libc" "bind"
+                                [:sint32 :sint32 :pointer :uint32]
+                                fd buf nelisp-os--sockaddr-in6-scoped-len)))
+            (if (/= r 0) (nelisp-os--ffi-errno-signal) r)))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-connect-inet6-scoped (fd host6 port flowinfo scope-id)
   "Same as `nelisp-os-bind-inet6-scoped' but for connect(2)."
-  (nelisp-os--check-errno
-   (nelisp--syscall-connect-inet6-scoped fd host6 port flowinfo scope-id)))
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-in6-scoped-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in6-scoped buf host6 port flowinfo scope-id)
+          (let ((r (nl-ffi-call "libc" "connect"
+                                [:sint32 :sint32 :pointer :uint32]
+                                fd buf nelisp-os--sockaddr-in6-scoped-len)))
+            (if (/= r 0) (nelisp-os--ffi-errno-signal) r)))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-accept-inet6-scoped (fd)
   "Accept on listening IPv6 FD and return a 5-element list
 (NEW-FD HOST6 PORT FLOWINFO SCOPE-ID)."
-  (let ((r (nelisp--syscall-accept-inet6-scoped fd)))
-    (if (and (listp r) (= (length r) 5))
-        r
-      (nelisp-os--check-errno r))))
+  (let ((addr-buf (nl-ffi-malloc nelisp-os--sockaddr-in6-scoped-len))
+        (len-buf  (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 len-buf 0 nelisp-os--sockaddr-in6-scoped-len)
+          (let ((newfd (nl-ffi-call "libc" "accept"
+                                    [:sint32 :sint32 :pointer :pointer]
+                                    fd addr-buf len-buf)))
+            (if (= newfd -1)
+                (nelisp-os--ffi-errno-signal)
+              (let ((decoded (nelisp-os--decode-sockaddr-in6-scoped addr-buf)))
+                ;; (NEW-FD GROUPS PORT FLOWINFO SCOPE-ID)
+                (cons newfd decoded)))))
+      (nl-ffi-free len-buf)
+      (nl-ffi-free addr-buf))))
 
 (provide 'nelisp-stdlib-os)
 

@@ -25,9 +25,14 @@
 //! must NOT depend on the evaluator (= layer separation, see prompt
 //! constraints).
 
-use std::cell::RefCell;
+use crate::eval::nlboolvector::NlBoolVectorRef;
+use crate::eval::nlcell::NlCellRef;
+use crate::eval::nlchartable::NlCharTableRef;
+use crate::eval::nlconsbox::NlConsBoxRef;
+use crate::eval::nlrecord::NlRecordRef;
+use crate::eval::nlstr::NlStrRef;
+use crate::eval::nlvector::NlVectorRef;
 use std::fmt;
-use std::rc::Rc;
 
 /// A parsed s-expression.  The variants form the minimal value
 /// universe that the Phase 7.5.4.1 reader can produce; the evaluator
@@ -77,33 +82,50 @@ pub enum Sexp {
     Str(String),
     /// Mutable string buffer.  Returned by `make-string' so substrate
     /// code (= `nelisp-text-buffer''s gap-buffer mgmt) can do
-    /// `(aset BYTES I N)' to fill in raw bytes.  Equivalent to a
-    /// `String' under `Rc<RefCell<...>>' — clone is a cheap Rc bump,
-    /// mutation through any alias is shared.  Identity comparison
-    /// goes through `Rc::ptr_eq'; structural equality (the derived
+    /// `(aset BYTES I N)' to fill in raw bytes.  Clone is a cheap
+    /// refcount bump on the underlying [`NlStrRef`]; mutation through
+    /// any alias is shared.  Identity comparison goes through
+    /// `NlStrRef::ptr_eq'; structural equality (the derived
     /// `PartialEq') unwraps the inner `String'.
     ///
     /// Predicates such as `stringp' / `arrayp' treat `MutStr' the
     /// same as `Str'; printers, equality, and format conversions all
     /// share the helper [`Sexp::as_string_owned`].
-    MutStr(Rc<RefCell<String>>),
+    ///
+    /// Phase A.4.2 (Doc 77c §4.5.2, 2026-05-09): migrated from
+    /// `Rc<RefCell<String>>' to layout-pinned [`NlStrRef`] for the
+    /// same reason `Cell' moved in A.4.1 — unifies the boxed-variant
+    /// ABI for Phase A.5 JIT direct emit and Phase B elisp self-host.
+    MutStr(NlStrRef),
     /// Cons cell.  Lists are encoded as right-leaning `Cons` chains
     /// terminated by `Nil`; dotted pairs (`(a . b)`) leave the cdr as
     /// any non-`Nil` value.
     ///
-    /// Phase 8.x: each pointer is `Rc<RefCell<Sexp>>` so `setcar' /
-    /// `setcdr' can mutate in place and the change is visible
-    /// through any aliased binding (the cell itself has identity,
-    /// like Common Lisp / Scheme cons cells).  Clone is two Rc
-    /// bumps — cheap; equality stays structural.
-    Cons(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>),
+    /// Doc 77c Phase A.2.1 (2026-05-09): the legacy
+    /// `(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>)' tuple was replaced
+    /// with a single `NlConsBoxRef' handle backed by the layout-
+    /// pinned [`NlConsBox`](crate::eval::nlconsbox::NlConsBox).  The
+    /// box embeds `car' / `cdr' / `refcount' at fixed byte offsets
+    /// so the JIT (Phase A.5) and elisp `nl-cons-*' / `nl-rc-*'
+    /// primitives (Phase A.3) can reach them without consulting
+    /// Rust at runtime.  Clone is one refcount bump (= cheaper than
+    /// the old two `Rc::clone'); equality remains structural with a
+    /// `ptr_eq' fast path; `setcar' / `setcdr' mutate the shared box
+    /// in place via [`NlConsBoxRef::set_car`] /
+    /// [`NlConsBoxRef::set_cdr`] so the change is still visible
+    /// through every aliased handle.
+    Cons(NlConsBoxRef),
     /// `[a b c]` vector literal.
     ///
-    /// Wrapped in `Rc<RefCell<...>>' to support `aset' / in-place
-    /// mutation while keeping `Sexp: Clone` cheap (Rc bump only).
-    /// Identity comparison goes through `Rc::ptr_eq'; structural
-    /// equality (the derived `PartialEq') unwraps the inner `Vec'.
-    Vector(Rc<RefCell<Vec<Sexp>>>),
+    /// Backed by [`NlVectorRef`] so `aset' / in-place mutation work
+    /// while keeping `Sexp: Clone` cheap (refcount bump only).
+    /// Identity comparison goes through `NlVectorRef::ptr_eq';
+    /// structural equality (the derived `PartialEq') unwraps the
+    /// inner `Vec'.
+    ///
+    /// Phase A.4.3 (Doc 77c §4.5.3, 2026-05-09): migrated from
+    /// `Rc<RefCell<Vec<Sexp>>>' to layout-pinned [`NlVectorRef`].
+    Vector(NlVectorRef),
     // Sexp::HashTable variant retired in Doc 50 stage 4f (2026-05-07).
     // Hash-tables are now `(record 'hash-table TEST ENTRIES)' built
     // on top of the Stage 4c record primitives — see
@@ -114,36 +136,66 @@ pub enum Sexp {
     /// Sparse linear-scan storage; substrate use cases hold tens
     /// of entries (= ASCII coverage), occasional whole-range fills
     /// via `set-char-table-range'.
-    CharTable(Rc<RefCell<CharTableInner>>),
+    ///
+    /// Backed by [`NlCharTableRef`] so the boxed-variant ABI is
+    /// uniform across Phase A.4.x boxes.  Identity comparison goes
+    /// through `NlCharTableRef::ptr_eq'; structural equality (the
+    /// derived `PartialEq') unwraps the inner [`CharTableInner`].
+    /// The `parent' chain is itself an `Option<NlCharTableRef>',
+    /// which is a self-reference handled by refcount semantics
+    /// (no cycle API exposed — only the child can install a parent).
+    ///
+    /// Phase A.4.6 (Doc 77c §4.5.6, 2026-05-09): migrated from
+    /// `Rc<RefCell<CharTableInner>>' to layout-pinned [`NlCharTableRef`]
+    /// for the same reason `Record' moved in A.4.5 — fixed offset
+    /// of `inner' enables Phase A.5 JIT direct emit and Phase B
+    /// elisp self-host primitive access.
+    CharTable(NlCharTableRef),
     /// Bool-vector (Track F minimum impl): packed boolean array.
     /// Used by Emacs syntax classes / region-mark bookkeeping.
     /// `aref' returns t / nil; `aset' takes any Sexp and stores
     /// truthy/falsy.  `length' returns the bit count.
-    BoolVector(Rc<RefCell<Vec<bool>>>),
+    ///
+    /// Phase A.4.4 (Doc 77c §4.5, 2026-05-09): migrated from
+    /// `Rc<RefCell<Vec<bool>>>' to a layout-pinned [`NlBoolVectorRef`]
+    /// for the same reason `Vector' moved to `NlVectorRef' in Phase
+    /// A.4.3 — fixed offset of `value' enables Phase A.5 JIT direct
+    /// emit and Phase B elisp self-host primitive access.
+    BoolVector(NlBoolVectorRef),
     /// Mutable cell (= write-through reference) used to back let-
     /// binding storage so `setq' inside a closure mutates the
     /// captured slot, not a copy.  The reader does NOT produce this
     /// variant — it appears only inside captured-environment alists
     /// emitted by `Env::capture_lexical' (build-tool/src/eval/env.rs).
-    /// Identity goes through `Rc::ptr_eq'; structural equality
+    /// Identity goes through `NlCellRef::ptr_eq'; structural equality
     /// unwraps the inner Sexp.
-    Cell(Rc<RefCell<Sexp>>),
+    ///
+    /// Phase A.4 (Doc 77c §4.5, 2026-05-09): migrated from
+    /// `Rc<RefCell<Sexp>>' to a layout-pinned [`NlCellRef`] for the
+    /// same reason `Cons' moved to `NlConsBoxRef' in Phase A.2.1 —
+    /// fixed offset of `value' enables Phase A.5 JIT direct emit and
+    /// Phase B elisp self-host primitive access.
+    Cell(NlCellRef),
     /// Record (= host emacs `record' / pvec subtype).  Underlies
     /// `cl-defstruct' user types — the first slot (`type_tag') names
     /// the struct type so `type-of' can return that symbol verbatim
     /// instead of `record'.  Remaining slots are user-visible and
     /// `aset'-able.  Doc 52 §2.1 (Doc 50 Stage 4).
     ///
-    /// Identity goes through `Rc::ptr_eq' on `slots'; structural
-    /// equality (the derived `PartialEq') compares both `type_tag'
-    /// and inner slot vector.  Printer round-trips as
+    /// Identity goes through `NlRecordRef::ptr_eq' (= same allocation);
+    /// structural equality (the derived `PartialEq') compares both
+    /// `type_tag' and inner slot vector.  Printer round-trips as
     /// `#s(TYPE V0 V1 ...)' (positional shape — keyword forms are
     /// desugared by the `cl-defstruct' macro before reaching the
     /// reader).
-    Record {
-        type_tag: Box<Sexp>,
-        slots: Rc<RefCell<Vec<Sexp>>>,
-    },
+    ///
+    /// Phase A.4.5 (Doc 77c §4.5.5, 2026-05-09): migrated from
+    /// `Record { type_tag: Box<Sexp>, slots: Rc<RefCell<Vec<Sexp>>> }'
+    /// to a single layout-pinned [`NlRecordRef`] allocation that holds
+    /// both fields at fixed offsets — same reason `Cons' moved to
+    /// `NlConsBoxRef' in Phase A.2.1, fixed offsets enable Phase A.5
+    /// JIT direct emit and Phase B elisp self-host primitive access.
+    Record(NlRecordRef),
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +239,128 @@ pub fn variant_tag(s: &Sexp) -> u8 {
     unsafe { *(s as *const Sexp as *const u8) }
 }
 
+// ---------------------------------------------------------------------------
+// Sexp ABI direct-access helpers (Doc 77c Phase A.5).
+//
+// `#[repr(C, u8)]` lays out a Sexp as { tag: u8, _pad: [u8; 7], payload: T }
+// where `T` is the variant payload, aligned to the largest variant's
+// alignment requirement.  All boxed variants (Cons / Cell / MutStr /
+// Vector / BoolVector / Record / CharTable) carry an `NlXxxRef` handle
+// that internally contains a single `NonNull<NlXxx>` pointer (= 8 bytes,
+// pointer-aligned).  Therefore the box pointer is always at byte offset
+// `SEXP_PAYLOAD_OFFSET = 8` of every boxed Sexp.
+//
+// The helpers below let JIT trampolines and Phase B elisp wrappers read
+// the box pointer directly without a `match` on the enum, which collapses
+// each trampoline arm from "match → borrow → clone" to "if tag == X →
+// load *const NlXxx + clone".  Phase A.4.x layout-pinned every box's
+// `value(s) @ offset 0, refcount @ trailer' so the loaded pointer is
+// stable across compiler versions.
+//
+// SAFETY contract: every `*_box_ptr` accessor is an `unsafe fn` that
+// caller must guard by a tag check.  Reading the payload bytes for the
+// wrong variant is UB (= e.g. reading a Vector's `Vec<Sexp>` header as
+// an `NlConsBox*` would dereference the Vec ptr-len-cap as a struct).
+// ---------------------------------------------------------------------------
+
+/// Byte offset of the variant payload within a `Sexp` value.  Pinned by
+/// `#[repr(C, u8)]` + 8-byte payload alignment (= max alignment of any
+/// payload = pointer / `f64` / `String` ptr / NonNull ptr = 8).  Phase
+/// A.5 JIT IR emits direct loads at this offset.
+pub const SEXP_PAYLOAD_OFFSET: usize = 8;
+
+impl Sexp {
+    /// Read the discriminant byte (offset 0).  Equivalent to
+    /// [`variant_tag`] but spelled as a method for trampoline ergonomics.
+    #[inline]
+    pub fn tag(&self) -> u8 {
+        variant_tag(self)
+    }
+
+    /// Read the boxed pointer of a [`Sexp::Cons`] without going through
+    /// `match`.  Returns a raw `*const NlConsBox`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must guarantee `self.tag() == SEXP_TAG_CONS`.  The returned
+    /// pointer is borrowed for the lifetime of `self`; cloning the
+    /// pointed-to handle requires a separate refcount bump (= go through
+    /// the `Sexp::Cons(rc)` clone if you need an owned reference).
+    #[inline]
+    pub unsafe fn cons_box_ptr(&self) -> *const crate::eval::nlconsbox::NlConsBox {
+        // Layout: { tag: u8 @ 0, _pad: [u8; 7], handle: NonNull<NlConsBox> @ 8 }
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlconsbox::NlConsBox>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::Cell`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn cell_box_ptr(&self) -> *const crate::eval::nlcell::NlCell {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlcell::NlCell>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::MutStr`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn mut_str_box_ptr(&self) -> *const crate::eval::nlstr::NlStr {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlstr::NlStr>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::Vector`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn vector_box_ptr(&self) -> *const crate::eval::nlvector::NlVector {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlvector::NlVector>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::BoolVector`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn bool_vector_box_ptr(&self)
+        -> *const crate::eval::nlboolvector::NlBoolVector
+    {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlboolvector::NlBoolVector>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::Record`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn record_box_ptr(&self) -> *const crate::eval::nlrecord::NlRecord {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlrecord::NlRecord>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::CharTable`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn char_table_box_ptr(&self)
+        -> *const crate::eval::nlchartable::NlCharTable
+    {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlchartable::NlCharTable>;
+        unsafe { (*payload).as_ptr() }
+    }
+}
+
+// Compile-time check: every NlXxxRef handle must be exactly pointer-
+// sized (= 8 bytes on 64-bit) so the payload offset stays at 8.
+const _: () = {
+    use std::mem::size_of;
+    assert!(size_of::<std::ptr::NonNull<crate::eval::nlconsbox::NlConsBox>>() == 8);
+    assert!(size_of::<crate::eval::nlconsbox::NlConsBoxRef>() == 8);
+    assert!(size_of::<crate::eval::nlcell::NlCellRef>() == 8);
+    assert!(size_of::<crate::eval::nlstr::NlStrRef>() == 8);
+    assert!(size_of::<crate::eval::nlvector::NlVectorRef>() == 8);
+    assert!(size_of::<crate::eval::nlboolvector::NlBoolVectorRef>() == 8);
+    assert!(size_of::<crate::eval::nlrecord::NlRecordRef>() == 8);
+    assert!(size_of::<crate::eval::nlchartable::NlCharTableRef>() == 8);
+};
+
 // HashTableInner struct retired in Doc 50 stage 4f (2026-05-07);
 // see lisp/nelisp-stdlib-hash.el for the elisp implementation that
 // stores equivalent state inside a Sexp::Record.
@@ -195,7 +369,12 @@ pub fn variant_tag(s: &Sexp) -> u8 {
 /// substrate use cases (= syntax-table, category-table, case-table)
 /// the typical entry count is < 256 (ASCII range).  Future scaling
 /// to full Unicode would replace this with a paged table.
+///
+/// Phase A.4.6: parent chain now holds [`NlCharTableRef`] handles
+/// (= refcount-tracked self-reference) instead of the legacy
+/// `Rc<RefCell<CharTableInner>>'.
 #[derive(Debug, Clone, PartialEq)]
+#[repr(C)]
 pub struct CharTableInner {
     /// Subtype symbol (e.g., `syntax-table', `display-table',
     /// `category-table').  Stored verbatim; we do not interpret it.
@@ -207,7 +386,7 @@ pub struct CharTableInner {
     /// Optional parent char-table.  When set, lookups that miss the
     /// local `entries' fall through to the parent.  Used by syntax
     /// tables that derive from a base.
-    pub parent: Option<Rc<RefCell<CharTableInner>>>,
+    pub parent: Option<NlCharTableRef>,
     /// Per-table extra slots (= upstream `char-table-extra-slot').
     /// Allocated lazily by `set-char-table-extra-slot'.  We keep this
     /// minimal — most substrate consumers only touch slots 0-3.
@@ -225,42 +404,46 @@ impl Sexp {
         acc
     }
 
-    /// Build a cons cell.  Allocates two Rc<RefCell<Sexp>> wrappers
-    /// so the cell has identity (== same Rc instance through any
-    /// alias) and supports `setcar' / `setcdr' mutation.
+    /// Build a cons cell.  Doc 77c Phase A.2.1: allocates a single
+    /// layout-pinned [`NlConsBox`](crate::eval::nlconsbox::NlConsBox)
+    /// (= `car @ 0' / `cdr @ sizeof(Sexp)' / `refcount' trailer) and
+    /// returns a [`NlConsBoxRef`] handle wrapped in `Sexp::Cons'.
+    /// The cell has identity (= same box ptr through any clone) and
+    /// supports `setcar' / `setcdr' via in-place mutation through
+    /// the shared box.
     pub fn cons(car: Sexp, cdr: Sexp) -> Sexp {
-        Sexp::Cons(Rc::new(RefCell::new(car)), Rc::new(RefCell::new(cdr)))
+        Sexp::Cons(NlConsBoxRef::new(car, cdr))
     }
 
     /// Build a vector Sexp from an owned `Vec<Sexp>` without forcing
     /// every call site to spell out `Rc::new(RefCell::new(...))'.
     pub fn vector(items: Vec<Sexp>) -> Sexp {
-        Sexp::Vector(Rc::new(RefCell::new(items)))
+        Sexp::Vector(NlVectorRef::new(items))
     }
 
     /// Build a mutable string Sexp from a `String` (or `&str`).  Used
     /// by `make-string' / similar constructors that need `aset'-able
     /// content.
     pub fn mut_str(s: impl Into<String>) -> Sexp {
-        Sexp::MutStr(Rc::new(RefCell::new(s.into())))
+        Sexp::MutStr(NlStrRef::new(s.into()))
     }
 
     /// Build an empty char-table with the given SUBTYPE and INIT
     /// (= default value for unset chars).  Used by `make-char-table'.
     pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
-        Sexp::CharTable(Rc::new(RefCell::new(CharTableInner {
+        Sexp::CharTable(NlCharTableRef::new(CharTableInner {
             subtype,
             default_val: init,
             entries: Vec::new(),
             parent: None,
             extra: Vec::new(),
-        })))
+        }))
     }
 
     /// Build a bool-vector of LEN bits all initialised to INIT.  Used
     /// by `make-bool-vector'.
     pub fn bool_vector(len: usize, init: bool) -> Sexp {
-        Sexp::BoolVector(Rc::new(RefCell::new(vec![init; len])))
+        Sexp::BoolVector(NlBoolVectorRef::new(vec![init; len]))
     }
 
     /// Return the string content of any string-like variant as an
@@ -270,7 +453,7 @@ impl Sexp {
     pub fn as_string_owned(&self) -> Option<String> {
         match self {
             Sexp::Str(s) => Some(s.clone()),
-            Sexp::MutStr(s) => Some(s.borrow().clone()),
+            Sexp::MutStr(s) => Some(s.value.clone()),
             _ => None,
         }
     }
@@ -291,17 +474,14 @@ impl Sexp {
     /// macros after the user-side keyword args are shuffled into
     /// positional order.
     pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp {
-        Sexp::Record {
-            type_tag: Box::new(type_tag),
-            slots: Rc::new(RefCell::new(init)),
-        }
+        Sexp::Record(NlRecordRef::new(type_tag, init))
     }
 
     /// Read the car of a cons cell as a fresh `Sexp` clone.  Returns
     /// `Nil' for non-cons input — same shape as Emacs' `car'.
     pub fn cons_car(&self) -> Sexp {
         match self {
-            Sexp::Cons(h, _) => h.borrow().clone(),
+            Sexp::Cons(b) => b.car.clone(),
             _ => Sexp::Nil,
         }
     }
@@ -309,7 +489,7 @@ impl Sexp {
     /// Read the cdr of a cons cell as a fresh `Sexp` clone.
     pub fn cons_cdr(&self) -> Sexp {
         match self {
-            Sexp::Cons(_, t) => t.borrow().clone(),
+            Sexp::Cons(b) => b.cdr.clone(),
             _ => Sexp::Nil,
         }
     }
@@ -398,7 +578,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             out.push('"');
         }
         Sexp::MutStr(rc) => {
-            let text = rc.borrow();
+            let text = &rc.value;
             out.push('"');
             for ch in text.chars() {
                 match ch {
@@ -412,15 +592,14 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
             out.push('"');
         }
-        Sexp::Cons(_, _) => {
+        Sexp::Cons(_) => {
             out.push('(');
             write_list_body(out, s);
             out.push(')');
         }
         Sexp::Vector(items) => {
             out.push('[');
-            let borrowed = items.borrow();
-            for (i, item) in borrowed.iter().enumerate() {
+            for (i, item) in items.value.iter().enumerate() {
                 if i > 0 {
                     out.push(' ');
                 }
@@ -433,11 +612,11 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         // V1 ...))') is now implicit via `Sexp::Record' below: the
         // record's printer emits `#s(hash-table TEST ENTRIES)' which
         // is round-trip readable by `parse_record'.
-        Sexp::CharTable(inner) => {
+        Sexp::CharTable(rc) => {
             // Compact printer — substrate use cases never need the
             // upstream `#^[...]' faithful shape.  We dump the populated
             // entries and the default in a self-describing form.
-            let inner = inner.borrow();
+            let inner = &rc.inner;
             out.push_str("#<char-table");
             if !matches!(inner.subtype, Sexp::Nil) {
                 out.push(' ');
@@ -450,7 +629,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             out.push('>');
         }
         Sexp::BoolVector(rc) => {
-            let v = rc.borrow();
+            let v = &rc.value;
             out.push_str("#&");
             out.push_str(&v.len().to_string());
             out.push('"');
@@ -476,15 +655,15 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         }
         // Lexical-binding cell — print the inner value transparently
         // so user-facing prints never reveal the storage wrapper.
-        Sexp::Cell(rc) => write_sexp(out, &rc.borrow()),
-        Sexp::Record { type_tag, slots } => {
+        Sexp::Cell(c) => write_sexp(out, &c.value),
+        Sexp::Record(rec) => {
             // Round-trippable positional shape: `#s(TYPE V0 V1 ...)'.
             // The reader (lexer.rs) accepts the same form; the
             // `cl-defstruct' macro handles keyword desugaring before
             // values reach here.
             out.push_str("#s(");
-            write_sexp(out, type_tag);
-            for v in slots.borrow().iter() {
+            write_sexp(out, &rec.type_tag);
+            for v in rec.slots.iter() {
                 out.push(' ');
                 write_sexp(out, v);
             }
@@ -515,18 +694,14 @@ fn write_reader_macro(out: &mut String, s: &Sexp) -> bool {
 /// detect quote-family forms.
 fn list_tag_and_arg(s: &Sexp) -> Option<(String, Sexp)> {
     match s {
-        Sexp::Cons(car_rc, cdr_rc) => {
-            let car = car_rc.borrow();
-            let cdr = cdr_rc.borrow();
-            match (&*car, &*cdr) {
-                (Sexp::Symbol(tag), Sexp::Cons(arg_rc, tail_rc))
-                    if matches!(&*tail_rc.borrow(), Sexp::Nil) =>
-                {
-                    Some((tag.clone(), arg_rc.borrow().clone()))
-                }
-                _ => None,
+        Sexp::Cons(b) => match (&b.car, &b.cdr) {
+            (Sexp::Symbol(tag), Sexp::Cons(rest))
+                if matches!(&rest.cdr, Sexp::Nil) =>
+            {
+                Some((tag.clone(), rest.car.clone()))
             }
-        }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -539,13 +714,13 @@ fn write_list_body(out: &mut String, s: &Sexp) {
     let mut first = true;
     loop {
         let next = match &cur {
-            Sexp::Cons(car_rc, cdr_rc) => {
+            Sexp::Cons(b) => {
                 if !first {
                     out.push(' ');
                 }
                 first = false;
-                write_sexp(out, &car_rc.borrow());
-                cdr_rc.borrow().clone()
+                write_sexp(out, &b.car);
+                b.cdr.clone()
             }
             Sexp::Nil => return,
             other => {
@@ -561,6 +736,7 @@ fn write_list_body(out: &mut String, s: &Sexp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::Deref;
 
     #[test]
     fn list_from_empty_is_nil() {
@@ -642,18 +818,18 @@ mod tests {
             SEXP_TAG_CHAR_TABLE
         );
         assert_eq!(
-            variant_tag(&Sexp::BoolVector(Rc::new(RefCell::new(vec![])))),
+            variant_tag(&Sexp::BoolVector(NlBoolVectorRef::new(vec![]))),
             SEXP_TAG_BOOL_VECTOR
         );
         assert_eq!(
-            variant_tag(&Sexp::Cell(Rc::new(RefCell::new(Sexp::Nil)))),
+            variant_tag(&Sexp::Cell(NlCellRef::new(Sexp::Nil))),
             SEXP_TAG_CELL
         );
         assert_eq!(
-            variant_tag(&Sexp::Record {
-                type_tag: Box::new(Sexp::Symbol("foo".into())),
-                slots: Rc::new(RefCell::new(vec![]))
-            }),
+            variant_tag(&Sexp::Record(NlRecordRef::new(
+                Sexp::Symbol("foo".into()),
+                vec![]
+            ))),
             SEXP_TAG_RECORD
         );
     }
@@ -671,5 +847,133 @@ mod tests {
         // → minimum total 32 bytes.  Allow up to 40 for niche slack.
         let sz = std::mem::size_of::<Sexp>();
         assert!(sz >= 32 && sz <= 48, "Sexp size = {} (expected 32..=48)", sz);
+    }
+
+    // ----------------------------------------------------------------
+    // Phase A.5 ABI helpers — round-trip read of `*_box_ptr' against
+    // the existing match-arm path.  If the payload offset (= 8) ever
+    // shifts under us (= compiler change, repr override), these fail
+    // BEFORE JIT-emitted IR mis-decodes a Sexp value.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn sexp_payload_offset_is_eight() {
+        // Manual layout probe: build a Sexp with a known boxed payload
+        // and check that the pointer at offset 8 equals the box's ptr.
+        let cons = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
+        let direct = unsafe { cons.cons_box_ptr() } as usize;
+        // Read offset 8 manually through the *const Sexp.
+        let raw = (&cons as *const Sexp) as *const u8;
+        let payload_at_8 = unsafe {
+            let p = raw.add(8) as *const std::ptr::NonNull<crate::eval::nlconsbox::NlConsBox>;
+            (*p).as_ptr()
+        } as usize;
+        assert_eq!(direct, payload_at_8);
+    }
+
+    #[test]
+    fn cons_box_ptr_round_trips_to_match() {
+        let cons = Sexp::cons(Sexp::Int(7), Sexp::Symbol("x".into()));
+        if let Sexp::Cons(rc) = &cons {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { cons.cons_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected Cons");
+        }
+    }
+
+    #[test]
+    fn cell_box_ptr_round_trips_to_match() {
+        let cell = Sexp::Cell(NlCellRef::new(Sexp::Int(99)));
+        if let Sexp::Cell(rc) = &cell {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { cell.cell_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected Cell");
+        }
+    }
+
+    #[test]
+    fn mut_str_box_ptr_round_trips_to_match() {
+        let s = Sexp::mut_str("hello");
+        if let Sexp::MutStr(rc) = &s {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { s.mut_str_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected MutStr");
+        }
+    }
+
+    #[test]
+    fn vector_box_ptr_round_trips_to_match() {
+        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2)]);
+        if let Sexp::Vector(rc) = &v {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { v.vector_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected Vector");
+        }
+    }
+
+    #[test]
+    fn bool_vector_box_ptr_round_trips_to_match() {
+        let bv = Sexp::bool_vector(8, true);
+        if let Sexp::BoolVector(rc) = &bv {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { bv.bool_vector_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected BoolVector");
+        }
+    }
+
+    #[test]
+    fn record_box_ptr_round_trips_to_match() {
+        let r = Sexp::record(Sexp::Symbol("point".into()), vec![Sexp::Int(3)]);
+        if let Sexp::Record(rc) = &r {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { r.record_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected Record");
+        }
+    }
+
+    #[test]
+    fn char_table_box_ptr_round_trips_to_match() {
+        let ct = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil);
+        if let Sexp::CharTable(rc) = &ct {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { ct.char_table_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected CharTable");
+        }
+    }
+
+    #[test]
+    fn tag_method_matches_variant_tag_fn() {
+        let cases = [
+            Sexp::Nil,
+            Sexp::T,
+            Sexp::Int(0),
+            Sexp::Float(0.0),
+            Sexp::Symbol("x".into()),
+            Sexp::Str("x".into()),
+            Sexp::mut_str("x"),
+            Sexp::cons(Sexp::Nil, Sexp::Nil),
+            Sexp::vector(vec![]),
+            Sexp::char_table(Sexp::Nil, Sexp::Nil),
+            Sexp::bool_vector(0, false),
+            Sexp::Cell(NlCellRef::new(Sexp::Nil)),
+            Sexp::record(Sexp::Symbol("k".into()), vec![]),
+        ];
+        for s in &cases {
+            assert_eq!(s.tag(), variant_tag(s));
+        }
     }
 }

@@ -1,52 +1,70 @@
-//! Phase 5 Stage 5.5 — PredicateIR lower (= inline tag test for `eq').
+//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — predicate trampoline,
+//! dlsym-exported.
 //!
-//! Stage 5.5 (2026-05-07, Doc 62, repr-pin commit 2fb64cd):
-//! - Initial scaffold (commit 5299e44) routed `eq' through a Rust
-//!   trampoline that wrapped `special_forms::sexp_eq', exercising the
-//!   lower hook but adding a JIT call hop with no perf gain.
-//! - This commit adds an inline tag-byte fast path on top of the
-//!   trampoline now that `Sexp' has `#[repr(C, u8)]' (= discriminant
-//!   byte at offset 0, payload at offset 8 with 8-byte alignment):
+//! Single Rust trampoline `nl_jit_predicate_eq' that mirrors the
+//! pre-takeover 7-block Cranelift IR's control flow 1-to-1: (1) same-ref
+//! short-circuit, (2) tag-byte equality test (early-out when variants
+//! differ), (3) Int payload fast path (avoids any helper call for
+//! `Sexp::Int' pairs), (4) `sexp_eq' slow path for variant-specific
+//! equality (Symbol-by-name, Cons-by-Rc-ptr-eq, Str-by-content, etc.).
+//! `#[no_mangle] pub unsafe extern "C"' so the dlsym bridge resolves it
+//! at runtime.
 //!
-//!   ```text
-//!   jit_eq(a_ptr, b_ptr):
-//!     a_tag = movzx u8 [a_ptr + 0]
-//!     b_tag = movzx u8 [b_ptr + 0]
-//!     if a_tag != b_tag    → return 0       (= different variants)
-//!     if a_tag == TAG_INT  → return cmp i64 [a_ptr+8] vs [b_ptr+8]
-//!     else                  → call helper (= sexp_eq trampoline)
-//!   ```
-//!
-//! Net effect: `(eq INT INT)' is now ~3 host instructions (load, load,
-//! cmp + uextend) instead of a full `sexp_eq' match dispatch, and any
-//! tag-mismatch comparison short-circuits without entering the helper.
-//! Other variant pairings (Nil/T/Symbol/Str/Cons/Vector/etc) still
-//! flow through the helper for variant-specific equality semantics.
-//!
-//! Other predicates listed in Doc 62 §2.2.5 (= `consp', `listp', `null',
-//! `integerp', `stringp', `symbolp', `numberp', `floatp', `vectorp',
-//! `atom') have already migrated to elisp on top of `nelisp--type-of'
-//! (Rust-min batch 6u, 2026-05-06) so they no longer have a Rust
-//! dispatcher arm to lower.  Stage 5.5 covers the residual Rust-side
-//! predicate, `eq'.
+//! `nelisp-jit-strategy.el' calls `(nl-jit-call-ptr-ptr
+//! "nelisp_jit_eq_inline" a b)' which goes through
+//! `bridge::unified_fn_ptr's name → fn-ptr table — no Cranelift wrapper
+//! page in between.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
-
-use cranelift::prelude::*;
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
-
-use crate::eval::env::Env;
-use crate::eval::error::EvalError;
 use crate::eval::sexp::{Sexp, SEXP_TAG_INT};
 
-use super::LowerFn;
-
-/// `(eq A B) -> 1 if equal, 0 otherwise' helper trampoline used by
-/// the JIT entry's slow path.  Wraps the existing
-/// `special_forms::sexp_eq' so behavior is byte-identical to `bi_eq'.
-unsafe extern "C" fn nl_jit_pred_eq(a: *const Sexp, b: *const Sexp) -> i64 {
+/// `(eq A B) -> 1 if equal, 0 otherwise' trampoline.
+///
+/// Mirrors the deleted 7-block Cranelift IR semantics:
+///   1. same-ref short-circuit (= `a_ptr == b_ptr' → return 1
+///      regardless of variant; idiom in pcase / cl-typecase guard
+///      chains).
+///   2. tag-byte equality test (= different variants → return 0
+///      without entering the helper).
+///   3. Int payload fast path (= matching `Sexp::Int' tags → compare
+///      i64 payloads at offset 8 directly).
+///   4. `sexp_eq' slow path for variant-specific equality (= same as
+///      the Cranelift IR's `block_slow' arm).
+///
+/// Phase 7.1.6.d dlsym-exported.
+///
+/// SAFETY: caller must pass valid `*const Sexp' pointers.  Same
+/// contract as the deleted Cranelift IR (= identical PTR ABI).
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_predicate_eq(
+    a: *const Sexp,
+    b: *const Sexp,
+) -> i64 {
+    // 1. Same-ref short-circuit.
+    if a == b {
+        return 1;
+    }
+    // 2. Tag-byte equality test (= load discriminant byte at offset 0).
+    //    `Sexp' is `#[repr(C, u8)]' so the tag occupies byte 0; matches
+    //    the deleted IR's `load.i8 [a_ptr + 0]' / `load.i8 [b_ptr + 0]'.
+    let a_tag = *(a as *const u8);
+    let b_tag = *(b as *const u8);
+    if a_tag != b_tag {
+        return 0;
+    }
+    // 3. Int fast path: matching `SEXP_TAG_INT' → compare i64 payload at
+    //    offset 8.  Mirrors the deleted IR's `block_int_eq' which loaded
+    //    `[a_ptr + 8]' / `[b_ptr + 8]' as i64 and emitted `icmp Equal +
+    //    uextend'.
+    if a_tag == SEXP_TAG_INT {
+        let a_int = *((a as *const u8).add(8) as *const i64);
+        let b_int = *((b as *const u8).add(8) as *const i64);
+        return (a_int == b_int) as i64;
+    }
+    // 4. Slow path: variant-specific equality through `sexp_eq' (=
+    //    Symbol-by-name, Cons-by-Rc-ptr-eq, Str-by-content, etc.).
+    //    Mirrors the deleted IR's `block_slow' arm which called the
+    //    `nl_jit_pred_eq' helper (= itself a thin wrapper around
+    //    `sexp_eq').  Inlining the helper body here saves a hop.
     if crate::eval::special_forms::sexp_eq(&*a, &*b) {
         1
     } else {
@@ -54,158 +72,108 @@ unsafe extern "C" fn nl_jit_pred_eq(a: *const Sexp, b: *const Sexp) -> i64 {
     }
 }
 
-struct JitPredicate {
-    eq: extern "C" fn(*const Sexp, *const Sexp) -> i64,
-}
-
-static JIT_PREDICATE: OnceLock<JitPredicate> = OnceLock::new();
-
-/// Build the `eq' JIT entry with inline tag-byte fast paths.  The
-/// shape is:
+/// Doc 86 §86.1.b (2026-05-10) — `(nelisp--ref-eq A B)' trampoline.
+/// Shape `(*const Sexp, *const Sexp, *mut Sexp) -> i64' (=
+/// `:trampoline-binary-ctor'), reachable via `(nl-jit-call-out-2
+/// "nelisp_jit_ref_eq" a b)'.  Writes `Sexp::T' / `Sexp::Nil' into
+/// `out' directly — distinct from `nl_jit_predicate_eq' which returns
+/// the result as a raw 0/1 i64 and so cannot bypass the `nelisp--int-
+/// eq-zero' bootstrap convert dance.  Always succeeds (= returns 0).
 ///
-/// ```text
-///   block_entry(a_ptr, b_ptr):
-///     a_tag = uextend.i64 (load.i8 [a_ptr+0])
-///     b_tag = uextend.i64 (load.i8 [b_ptr+0])
-///     tags_eq = icmp Equal, a_tag, b_tag
-///     brif tags_eq, block_match, block_diff
-///   block_diff:
-///     return iconst.i64 0
-///   block_match:
-///     is_int = icmp_imm Equal, a_tag, SEXP_TAG_INT
-///     brif is_int, block_int_eq, block_slow
-///   block_int_eq:
-///     a_int = load.i64 [a_ptr+8]
-///     b_int = load.i64 [b_ptr+8]
-///     eq = icmp Equal, a_int, b_int
-///     return uextend.i64 eq
-///   block_slow:
-///     ret = call helper(a_ptr, b_ptr)
-///     return ret
-/// ```
-fn declare_eq_inline(module: &mut JITModule) -> FuncId {
-    // Imported helper = `nl_jit_pred_eq(*const Sexp, *const Sexp) -> i64'.
-    let mut helper_sig = module.make_signature();
-    helper_sig.params.push(AbiParam::new(types::I64));
-    helper_sig.params.push(AbiParam::new(types::I64));
-    helper_sig.returns.push(AbiParam::new(types::I64));
-    let helper_id = module
-        .declare_function("nl_jit_pred_eq", Linkage::Import, &helper_sig)
-        .expect("cranelift: declare_function nl_jit_pred_eq");
-
-    // JIT entry = same i64 × 2 → i64 shape.
-    let mut entry_sig = module.make_signature();
-    entry_sig.params.push(AbiParam::new(types::I64));
-    entry_sig.params.push(AbiParam::new(types::I64));
-    entry_sig.returns.push(AbiParam::new(types::I64));
-    let entry_id = module
-        .declare_function("nelisp_jit_eq_inline", Linkage::Local, &entry_sig)
-        .expect("cranelift: declare_function nelisp_jit_eq_inline");
-
-    let mut ctx = module.make_context();
-    ctx.func.signature = entry_sig;
-
-    let mut fbcx = FunctionBuilderContext::new();
-    {
-        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
-        let entry_b = fb.create_block();
-        let diff_b = fb.create_block();
-        let match_b = fb.create_block();
-        let int_eq_b = fb.create_block();
-        let slow_b = fb.create_block();
-        fb.append_block_params_for_function_params(entry_b);
-
-        // Entry: load tag bytes from both args + branch.
-        fb.switch_to_block(entry_b);
-        let a_ptr = fb.block_params(entry_b)[0];
-        let b_ptr = fb.block_params(entry_b)[1];
-        let flags = MemFlags::trusted();
-        let a_tag_byte = fb.ins().load(types::I8, flags, a_ptr, 0);
-        let b_tag_byte = fb.ins().load(types::I8, flags, b_ptr, 0);
-        let a_tag = fb.ins().uextend(types::I64, a_tag_byte);
-        let b_tag = fb.ins().uextend(types::I64, b_tag_byte);
-        let tags_eq = fb.ins().icmp(IntCC::Equal, a_tag, b_tag);
-        fb.ins().brif(tags_eq, match_b, &[], diff_b, &[]);
-        fb.seal_block(entry_b);
-
-        // Tags differ → return 0 (= guaranteed not eq across variants).
-        fb.switch_to_block(diff_b);
-        let zero = fb.ins().iconst(types::I64, 0);
-        fb.ins().return_(&[zero]);
-        fb.seal_block(diff_b);
-
-        // Tags match → check if Int (= cheap fast path) else slow.
-        fb.switch_to_block(match_b);
-        let is_int = fb
-            .ins()
-            .icmp_imm(IntCC::Equal, a_tag, SEXP_TAG_INT as i64);
-        fb.ins().brif(is_int, int_eq_b, &[], slow_b, &[]);
-        fb.seal_block(match_b);
-
-        // Int fast path: load i64 payload at offset 8, cmp.
-        fb.switch_to_block(int_eq_b);
-        let a_int = fb.ins().load(types::I64, flags, a_ptr, 8);
-        let b_int = fb.ins().load(types::I64, flags, b_ptr, 8);
-        let int_eq = fb.ins().icmp(IntCC::Equal, a_int, b_int);
-        let int_result = fb.ins().uextend(types::I64, int_eq);
-        fb.ins().return_(&[int_result]);
-        fb.seal_block(int_eq_b);
-
-        // Slow path: call helper for variant-specific equality.
-        fb.switch_to_block(slow_b);
-        let helper_local = module.declare_func_in_func(helper_id, fb.func);
-        let inst = fb.ins().call(helper_local, &[a_ptr, b_ptr]);
-        let helper_result = fb.inst_results(inst)[0];
-        fb.ins().return_(&[helper_result]);
-        fb.seal_block(slow_b);
-
-        fb.finalize();
-    }
-
-    module
-        .define_function(entry_id, &mut ctx)
-        .expect("cranelift: define_function nelisp_jit_eq_inline");
-    module.clear_context(&mut ctx);
-    entry_id
+/// Doc 87 §10.2 judgment call: the body is identical to `sexp_eq'
+/// because `sexp_eq' already uses `Rc::ptr_eq' for every shared-heap
+/// variant.  The deleted `bi_ref_eq' had a multi-arm `match' that
+/// fell through to `sexp_eq' for mismatched / non-shared-heap pairs
+/// — the explicit cases were redundant given `sexp_eq''s coverage.
+/// Reusing `sexp_eq' verbatim preserves the public contract bit-for-
+/// bit while collapsing 30 LOC of repeated `match' arms.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_ref_eq(
+    a: *const Sexp,
+    b: *const Sexp,
+    out: *mut Sexp,
+) -> i64 {
+    *out = if crate::eval::special_forms::sexp_eq(&*a, &*b) {
+        Sexp::T
+    } else {
+        Sexp::Nil
+    };
+    0
 }
 
-fn build_jit_predicate() -> JitPredicate {
-    let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .expect("cranelift_jit: host ISA must resolve");
-    builder.symbol("nl_jit_pred_eq", nl_jit_pred_eq as *const u8);
-    let mut module = JITModule::new(builder);
-
-    let eq_id = declare_eq_inline(&mut module);
-
-    module
-        .finalize_definitions()
-        .expect("cranelift: finalize_definitions");
-    let eq_ptr = module.get_finalized_function(eq_id);
-    Box::leak(Box::new(module));
-    // SAFETY: declared signature matches the function-pointer type.
-    unsafe {
-        JitPredicate {
-            eq: std::mem::transmute::<_, extern "C" fn(*const Sexp, *const Sexp) -> i64>(
-                eq_ptr,
-            ),
+// Doc 86 §86.1.b — `(sxhash X)' (1:1 port of deleted `bi_sxhash',
+// kept in Rust for `DefaultHasher' bit-exactness, Doc 87 §3.2).
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_sxhash(arg: *const Sexp, out: *mut Sexp) -> i64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    fn fold<H: Hasher>(v: &Sexp, h: &mut H) {
+        match v {
+            Sexp::Nil => 0u8.hash(h),
+            Sexp::T => 1u8.hash(h),
+            Sexp::Int(n) => { 2u8.hash(h); n.hash(h); }
+            Sexp::Float(x) => { 3u8.hash(h); x.to_bits().hash(h); }
+            Sexp::Symbol(s) => { 4u8.hash(h); s.hash(h); }
+            Sexp::Str(s) => { 5u8.hash(h); s.hash(h); }
+            Sexp::MutStr(rc) => { 5u8.hash(h); rc.value.hash(h); }
+            Sexp::Cons(b) => { 6u8.hash(h); fold(&b.car, h); fold(&b.cdr, h); }
+            Sexp::Vector(rc) => {
+                7u8.hash(h);
+                for it in rc.value.iter() { fold(it, h); }
+            }
+            Sexp::CharTable(_) => 9u8.hash(h),
+            Sexp::BoolVector(rc) => {
+                10u8.hash(h);
+                for &b in rc.value.iter() { (b as u8).hash(h); }
+            }
+            Sexp::Cell(c) => fold(&c.value, h),
+            Sexp::Record(rec) => {
+                11u8.hash(h);
+                fold(&rec.type_tag, h);
+                for s in rec.slots.iter() { fold(s, h); }
+            }
         }
     }
+    let mut h = DefaultHasher::new();
+    fold(&*arg, &mut h);
+    *out = Sexp::Int((h.finish() & 0x3FFF_FFFF_FFFF_FFFFu64) as i64);
+    0
 }
 
-fn jit() -> &'static JitPredicate {
-    JIT_PREDICATE.get_or_init(build_jit_predicate)
-}
-
-fn lowered_eq(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    // Phase 5 Stage C-Phase1 (Doc 62, 2026-05-08): self-contained
-    // arity check; never falls back through `dispatch'.
-    crate::eval::builtins::require_arity("eq", args, 2, Some(2))?;
-    let v = (jit().eq)(&args[0] as *const _, &args[1] as *const _);
-    Ok(if v != 0 { Sexp::T } else { Sexp::Nil })
-}
-
-pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
-    map.insert("eq", lowered_eq);
+/// Doc 86 §86.1.a — `(type-of OBJECT)' trampoline.
+/// Shape `(*const Sexp, *mut Sexp) -> i64', reachable via
+/// `(nl-jit-call-out-1 "nelisp_jit_type_of" x)'.  Always succeeds
+/// (= returns 0); the err arm is unreachable for 1-arg `type-of'.
+/// Records return their `type_tag' symbol verbatim so `cl-defstruct'
+/// types are first-class.  Closure write-through `Cell's are unwrapped
+/// to mirror the captured identity.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_type_of(arg: *const Sexp, out: *mut Sexp) -> i64 {
+    let mut v: Sexp = (*arg).clone();
+    while let Sexp::Cell(c) = v {
+        v = c.value.clone();
+    }
+    if let Sexp::Record(rec) = &v {
+        if let Sexp::Symbol(_) = &rec.type_tag {
+            *out = rec.type_tag.clone();
+            return 0;
+        }
+        *out = Sexp::Symbol("record".into());
+        return 0;
+    }
+    let tag = match v {
+        Sexp::Cons(_) => "cons",
+        Sexp::Nil | Sexp::T | Sexp::Symbol(_) => "symbol",
+        Sexp::Int(_) => "integer",
+        Sexp::Float(_) => "float",
+        Sexp::Str(_) | Sexp::MutStr(_) => "string",
+        Sexp::Vector(_) => "vector",
+        Sexp::CharTable(_) => "char-table",
+        Sexp::BoolVector(_) => "bool-vector",
+        Sexp::Cell(_) | Sexp::Record(_) => unreachable!(),
+    };
+    *out = Sexp::Symbol(tag.into());
+    0
 }
 
 #[cfg(test)]
@@ -216,61 +184,86 @@ mod tests {
 
     #[test]
     fn jit_eq_int_equal_inline() {
-        // Same Int → JIT inline int_eq_b returns 1.
+        // Same Int → trampoline int fast path returns 1.
         let a = Sexp::Int(7);
         let b = Sexp::Int(7);
-        assert_eq!((jit().eq)(&a as *const _, &b as *const _), 1);
+        assert_eq!(unsafe { nl_jit_predicate_eq(&a, &b) }, 1);
     }
 
     #[test]
     fn jit_eq_int_unequal_inline() {
-        // Different Int → JIT inline int_eq_b returns 0.
+        // Different Int → trampoline int fast path returns 0.
         let a = Sexp::Int(7);
         let b = Sexp::Int(8);
-        assert_eq!((jit().eq)(&a as *const _, &b as *const _), 0);
+        assert_eq!(unsafe { nl_jit_predicate_eq(&a, &b) }, 0);
     }
 
     #[test]
     fn jit_eq_tag_mismatch_short_circuits() {
-        // Different tags → JIT inline diff_b returns 0 without entering
-        // the helper.  Verifies the Sexp::Int vs Sexp::Float pairing
-        // (= same payload size, different tag) routes to the diff_b
-        // path, not the int_eq_b fast path.
+        // Different tags → trampoline tag-byte arm returns 0 without
+        // entering the slow path.  Verifies the Sexp::Int vs Sexp::Float
+        // pairing (= same payload size, different tag) routes to the
+        // diff arm, not the int_eq fast path.
         let a = Sexp::Int(0);
         let b = Sexp::Float(0.0);
-        assert_eq!((jit().eq)(&a as *const _, &b as *const _), 0);
+        assert_eq!(unsafe { nl_jit_predicate_eq(&a, &b) }, 0);
     }
 
     #[test]
     fn jit_eq_nil_t_via_helper() {
-        // Nil/T have matching tags but no payload — the helper handles
-        // this through `sexp_eq''s `(Nil, Nil) | (T, T) => true' arm.
+        // Nil/T have matching tags but no payload — the slow path
+        // handles this through `sexp_eq''s `(Nil, Nil) | (T, T) => true'
+        // arm.
         let nil = Sexp::Nil;
         let t = Sexp::T;
-        assert_eq!((jit().eq)(&nil as *const _, &nil as *const _), 1);
-        assert_eq!((jit().eq)(&t as *const _, &t as *const _), 1);
-        // Mismatched tags → diff_b inline.
-        assert_eq!((jit().eq)(&nil as *const _, &t as *const _), 0);
+        assert_eq!(unsafe { nl_jit_predicate_eq(&nil, &nil) }, 1);
+        assert_eq!(unsafe { nl_jit_predicate_eq(&t, &t) }, 1);
+        // Mismatched tags → diff arm inline.
+        assert_eq!(unsafe { nl_jit_predicate_eq(&nil, &t) }, 0);
     }
 
-    // --- Slow paths via helper ---
+    // --- Slow paths via sexp_eq ---
 
     #[test]
     fn jit_eq_symbol_by_name_via_helper() {
-        // Symbol matches via helper's name-equality arm.
+        // Symbol matches via `sexp_eq''s name-equality arm.
         let a = Sexp::Symbol("foo".into());
         let b = Sexp::Symbol("foo".into());
-        assert_eq!((jit().eq)(&a as *const _, &b as *const _), 1);
+        assert_eq!(unsafe { nl_jit_predicate_eq(&a, &b) }, 1);
     }
 
     #[test]
     fn jit_eq_cons_identity_via_helper() {
         // Two separately-constructed cons cells with same value are
-        // NOT eq (= identity check via Rc::ptr_eq inside the helper).
+        // NOT eq (= identity check via Rc::ptr_eq inside `sexp_eq',
+        // reached after both same-ref check and tag-equal branches).
         let a = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
         let b = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
-        assert_eq!((jit().eq)(&a as *const _, &b as *const _), 0);
-        // But the same cell IS eq with itself.
-        assert_eq!((jit().eq)(&a as *const _, &a as *const _), 1);
+        assert_eq!(unsafe { nl_jit_predicate_eq(&a, &b) }, 0);
+        // The same cell IS eq with itself — same-ref short-circuit
+        // returns 1 from the first arm before any helper call.
+        assert_eq!(unsafe { nl_jit_predicate_eq(&a, &a) }, 1);
+    }
+
+    // --- Same-ref short-circuit ---
+
+    #[test]
+    fn jit_eq_same_ref_short_circuit() {
+        // For every variant, comparing a Sexp ref to itself must
+        // return 1 without entering the slow path.  Pre-7.1.6.d this
+        // worked for Int via the `block_int_eq' Cranelift IR arm and
+        // for non-Int variants via `block_same' (= the inline same-ref
+        // check); now both are unified in the trampoline's first arm.
+        let int = Sexp::Int(42);
+        let flt = Sexp::Float(3.14);
+        let nil = Sexp::Nil;
+        let t = Sexp::T;
+        let sym = Sexp::Symbol("x".into());
+        let s = Sexp::Str("hello".into());
+        let cons = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
+        for r in [&int, &flt, &nil, &t, &sym, &s, &cons] {
+            let p = r as *const Sexp;
+            assert_eq!(unsafe { nl_jit_predicate_eq(p, p) }, 1);
+        }
     }
 }

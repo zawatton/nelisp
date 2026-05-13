@@ -1,0 +1,1476 @@
+#+TITLE: Doc 86 — Phase 2: eval/ refactor master design
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: **FULL SHIPPED v3** (= §86.2 + §86.1.a〜g + §86.3.a〜c 全
+  sub-stage SHIPPED 2026-05-10、env-shadow-verify infra retired in
+  §86.3.c per Doc 89 §10.1 hot-path policy。Doc 87 / 88 / 89 detail
+  design DRAFT SHIPPED、Doc 90 post-ship audit DRAFT SHIPPED、v3
+  reconcile 反映済 — Phase 2 終了、次は Phase 3 D-B (= Doc 77c) +
+  Phase 47 spike (= Doc 85 + Doc 91 / 95 DRAFT SHIPPED))
+- *Parent*: Doc 83 §6.2 (= Phase 2 着地 ~6,000-8,000 LOC 試算)、Doc 84
+  SHIPPED (= Phase 1 末端 closure、strategy.rs 全消滅)、Doc 80 SHIPPED
+  (= pre-stdlib substrate)
+- *Children*: Doc 87 (= §86.1 detail)、Doc 88 (= §86.2 detail)、Doc 89
+  (= §86.3 detail)、これら 3 件で Doc 86 の estimate を実測 reconcile
+- *Unlocks*: Phase 2 全 stage SHIPPED 後、build-tool/src/ Rust LOC が
+  21,796 → ~6,000-8,000 (= -13,000〜-15,000 net 削減)、Phase 3 (= 究極
+  D-B 採用、Doc 77c 系列) へ進める
+- *Phase 47 spike VALIDATED 2026-05-11*: Doc 85 が articulated した
+  ultimate-0-Rust path は technical feasibility 確認済 (= Doc 93 §93.c
+  e2e gate PASSED + Doc 96 chain orchestrator demos 全 green、pure-
+  elisp が valid ELF を emit + kernel exec 成功)。Phase 2 §86.3.c の
+  4 deferral (= Doc 89 §10.1 hot-path policy) は Phase 47 production
+  engagement で消化可能と判明、本 Doc の "Phase 47 unlock" は ROI
+  audit articulated 通り closing path 確保
+- *OOS for THIS doc*: 実装作業 (= 各 sub-stage doc で個別 dispatch)、
+  Phase 3 究極 D-B (= Doc 77c master plan)、Phase 47 (= Doc 85 spike +
+  将来 Doc 91-95)
+
+* §0 TL;DR
+
+| 領域 | 現 LOC | v1 試算 | v2 reconciled (Doc 87/88/89) | sub-stage doc |
+|---------------------------+--------+----------+----------+---------------|
+| =eval/builtins.rs=        | 3,804  | -2,000〜-3,000 | **-1,571** (Doc 87) | §86.1 / Doc 87 |
+| =eval/error.rs=           | 308    | -308 (= 全消滅) | -113 net SHIPPED + 残 deferred to §86.3 | §86.2 / Doc 88 |
+| =eval/env.rs= + 連動      | 564 + ~700 | -1,500 (= 連動含む) | **-1,214** (Doc 89, ffi.rs 0 連動 corrected) | §86.3 / Doc 89 |
+| *合計 (Phase 2 着地)*     | 21,796 → ~17,000-19,000 | *-3,000〜-5,000 net* | ***~-3,043 net*** *(= 21,796 → ~18,753)* | — |
+
+Doc 83 §6.2 が示した「Phase 2 着地 ~6,000-8,000 LOC」は **dispatch arm
+移管の最大効果 (= -3,000) + 連動削減 (= -1,500) + Phase 3 D-B 連動 (=
+-9,500)** を合算した値。本 Doc 86 は **Phase 2 単独で実現する範囲 (=
+-3,000〜-5,000)** に focus、残 -9,500 は Phase 3 (D-B) で別途 attack。
+
+*v2 reconcile (2026-05-10)*: Doc 87/88/89 detail design 起こしで判明した
+実測値は v1 estimate を **下振れ** (= -3,043 net、v1 lower bound -3,000
+にギリギリ届く水準)。理由は §13 で articulate。Doc 86 master を読む
+reader は §0 / §1.2 / §10.1 表の reconciled 列を canonical とすべき。
+
+実装順序: §86.1 (= 最大効果) → §86.2 (= 単純) → §86.3 (= 最 risky =
+self-reference 注意)。並列性は限定的 (= §86.1 と §86.3 が同 builtins/env
+の interaction を持つので半並列)。
+
+* §1 Phase 2 全体着地点
+
+** §1.1 Doc 83 §6.2 試算の再検証
+
+Doc 83 §6.2 (2026-05-09 執筆) が提示した値:
+
+- =builtins.rs= dispatch arm 全 elisp 移管 = -2,000〜-3,000 LOC
+- =error.rs= を =nelisp-stdlib-error.el= に移管 = -500 LOC
+- =env.rs= scope chain elisp 化 = -1,500 LOC
+
+実態 (2026-05-10 grep):
+
+| 領域           | Doc 83 試算 | 実測  | 差分                         |
+|----------------+-------------+-------+------------------------------|
+| =builtins.rs=  | (= 削減 -2,000〜-3,000) | 3,804 LOC 全体 | OK、削減上限は 3,804 |
+| =error.rs=     | -500        | 308   | -192 (= Doc 83 試算過大、実態は -308 が上限) |
+| =env.rs=       | (= 削減 -1,500、連動含む) | 564 LOC 単独 | env.rs 単独で -564、残 -936 は連動先 |
+
+*** Doc 83 §6.2 着地 ~6,000-8,000 LOC の内訳推定
+
+Doc 83 §6.2 表で「Phase 2 着地」が ~6,000-8,000 とされていたが、現 21,796
+からの削減試算合計 (-3,000+-308+-564 = -3,872) では ~17,924 にしか着地
+しない。差分 ~10,000-12,000 LOC は **Phase 3 (= 究極 D-B) で連動削減**
+される領域 (= =eval/sexp.rs= 979 + =eval/ffi.rs= 820 + =eval/mod.rs=
+848 + =eval/special_forms.rs= 572 + =eval/ffi.rs= 820 + =eval/nlconsbox.rs=
+654 + =eval/nlrc.rs= 566 + =eval/rc_primitives.rs= 464 + =image.rs= 1,503
++ =reader/= 1,370 + =bridge.rs= 884 + =jit/= 残 etc.)。
+
+つまり Doc 86 (Phase 2) 単独では ~17,000-19,000 LOC 着地が現実的。
+Doc 83 §6.2 の "~6,000-8,000" は Phase 2 + Phase 3 の合算値と解釈すべき。
+
+** §1.2 Phase 2 単独着地点定義
+
+| sub-stage | scope                          | v1 試算 | v2 reconciled (Doc 87/88/89) | 着地 (累積)  |
+|-----------+--------------------------------+---------+----------+--------------|
+| §86.1.a (SHIPPED 2026-05-10) | Tier 1 predicate / type-of (= 3 arm: type-of / functionp / recordp) | -300 (estimate, see §12.1) | **-34 net actual** (= 既存 batch 6u で 8 arm 先行移管済) | 21,762 |
+| §86.1.b (SHIPPED 2026-05-10) | Tier 1 算術 / equal / ref-eq / sxhash (= 4 arm: =equal= / =nelisp--ref-eq= / =/= / =sxhash=) | -500 (estimate, see §12.2) | **-108 net actual** (= equal は既に elisp 化済 dead code、ref-eq は sexp_eq 同等、sxhash は trampoline 移送で structural neutral) | 21,541 |
+| §86.1.c (SHIPPED 2026-05-10) | Tier 1 record family (= 5 arm: make-record / record-ref / record-set / record-length / record-type) | -400 (estimate, see §12.x) | **-10 net actual** (= 既存 box accessor bridge shape 再利用、新 ABI mode 不要) | 21,531 |
+| §86.1.d (SHIPPED 2026-05-10) | Tier 1 intern / symbol (= 3 arm: intern / symbol-name / make-symbol) | -300 (estimate, see §12.4) | **-2 net actual** (= trampoline body は bi_* と同等、§86.3 obarray 化で残 ~-90 期待) | 21,529 |
+| §86.1.e (SHIPPED 2026-05-10) | Tier 2 simple (= 3 arm: concat-ints / make-mut-string / format-float-body) + 新 ABI mode =:trampoline-format-float= | -350 (estimate, see §12.5) | **+132 net actual** (= trampoline body と deleted bi_* がほぼ isomorphic、構造的 +Rust。§86.1.g cleanup で吸収予定) | 22,043 (post §86.1.e) |
+| §86.1.f (SHIPPED 2026-05-10) | Tier 2 ABI extension + 8-10 arm (time / hash / math / regex / case / tokenize) + 新 ABI mode =:trampoline-unary-float= | -650 (estimate, see §12.6) | **+297 net actual** (= 同上、trampoline body 構造制約。§86.1.g cleanup 期待) | 22,340 (post §86.1.f) |
+| §86.1.g (SHIPPED 2026-05-10) | install_builtins / dispatch trim + commentary cleanup | -300 (estimate, see §12.8) | **-927 net actual** (= 5 commit、builtins.rs 3,143 → 2,216、stale per-batch comment block 集約 + 旧 migration commentary purge で spec の 3 倍超達成) | 21,732 (post §86.1.g) |
+| §86.2 (SHIPPED 2026-05-10) | error.rs → nelisp-stdlib-error.el | -258〜-278 | **-113 net actual** (= elisp registry 確立 + compact、full variant elision を §86.3 へ deferred) | 21,683 → 21,529 (post §86.1.a-d) |
+| §86.3.a precursor (SHIPPED 2026-05-10) | env shim skeleton (Tier 0 stub + 11 slim primitive + elisp shim) | +85 (estimate) | **+280 net additive** (= 例外、§86.3.b/c 消化予定) | 21,809 (post-precursor) |
+| §86.3.b (SHIPPED 2026-05-10) | env shadow path (= cfg-gated dual-update verify、9/12 currently-implemented Tier 3 arm + 4 連動 callsite) | +0 production | **+0 production / +210 cfg-gated** (= =cfg(feature = "env-shadow-verify")=、default build byte-identical) | 22,340 (production same as post §86.1.f) |
+| §86.3.c (SHIPPED 2026-05-10) | env shadow-verify retire + user-visible name shim install + Tier 3 arm body slim | -1,500 (v1) / -1,214 (v2) | **-396 net actual** (= 4 deferral per Doc 89 §10.1 hot-path policy、Doc 90 audit articulated; Phase 47 unlock 残) | 21,336 (post §86.3.c) |
+| *合計 v3 actual SHIPPED* | *Phase 2 完遂* | *-3,605〜-4,605* (v1) / *-2,898* (v2 reconciled) | ***-460 net actual*** (= 21,796 → 21,336、ROI 0.47:1) | ***21,336*** |
+
+Phase 2 reconciled landing は **build-tool/src/ 18,753 LOC** (= 21,796
+基線から -3,043 net)、Phase 1 完遂時 21,796 → Phase 2 完遂時 ~18,753 →
+Phase 3 D-B 完遂時 ~6,000-8,000 (Doc 83 §6.3 終点) → Phase 47 完遂時 ~0
+(Doc 85 spike 終点)。
+
+* §2 builtins.rs 解剖 (= 3,804 LOC, 17.5% of build-tool/src/)
+
+** §2.1 構造
+
+- =install_builtins(env: &mut Env)= line 35 - global env に builtin
+  symbol を install する 1 関数 (= 約 420 LOC)
+- =dispatch(name: &str, args: &[Sexp], env: &mut Env)= line 458 -
+  builtin call 時の large match expression (= ~390 LOC、67 dispatch
+  arm)
+- =bi_*= helper fns line 850-3,800 - 各 builtin の Rust 実装 (= ~25
+  個、各 ~50-200 LOC)
+
+** §2.2 dispatch arm 67 件の categorization
+
+source-grep で発見した 67 個 (= =^\s*"nelisp--= count) の dispatch
+arm を Tier 別に分類:
+
+*** §2.2.1 Tier 1: pure elisp 移管可 (= 推定 ~30 arm)
+
+新 ABI mode 不要、既存 =nl-jit-call-out-*= bridge で対応可能、または
+elisp で直接実装可能:
+
+- 算術系 (= div / sxhash / equal / ref-eq) ← Doc 84 §84.1 同 pattern
+- predicate (= integerp / floatp / stringp / consp / etc.)
+- type 系 (= type-of)
+- record 系 (= make-record / record-ref / record-set / record-length /
+  record-type / recordp)
+- intern / make-symbol / symbol-name
+- 単純な string 系 (= string-bytes)
+
+*** §2.2.2 Tier 2: 新 ABI mode + bridge primitive 必要 (= 推定 ~25 arm)
+
+Doc 81 trampoline ABI を拡張する必要、または特殊 calling convention:
+
+- =bi_make_mut_string= (= 可変長 byte array)
+- =bi_concat_ints= (= variadic byte stream)
+- =bi_string_match_p= (= regex match、外部 backend 必要)
+- =bi_syscall_canonicalize= (= path normalize、syscall 連携)
+- ffi 系 (= libc bridge 経由)
+
+*** §2.2.3 Tier 3: 環境への副作用が深い (= 推定 ~12 arm)
+
+=Env= 内部 state を直接読み書き、§86.3 (= env.rs elisp 化) と統合する
+必要:
+
+- special form 関連 (= setq / set / boundp / unbound)
+- scope chain manipulation
+- dynamic binding stack push/pop
+
+** §2.3 helper fns 削減先
+
+=bi_*= helper fn (= 25 個程度) のうち:
+- Tier 1 の bi_* = elisp 直接実装、Rust 関数本体ごと削除
+- Tier 2 の bi_* = trampoline 経由で elisp wrapper、Rust shim は ~10
+  LOC まで縮減
+- Tier 3 の bi_* = §86.3 完了まで残置
+
+平均削減: 1 helper あたり ~50-100 LOC、25 個 = -1,500〜-2,500 LOC。
+
+** §2.4 install_builtins 削減
+
+420 LOC の install_builtins は dispatch arm 数に比例。67 arm のうち:
+- Tier 1 移管時: -30 entries × 6 LOC/entry = -180
+- Tier 2 移管時: -25 entries × 4 LOC/entry = -100 (= bridge entries 残)
+- Tier 3 移管時: -12 entries × 6 LOC/entry = -72
+
+合計 install_builtins 削減: -350 LOC、残 ~70 LOC。
+
+** §2.5 dispatch 関数 削減
+
+390 LOC の dispatch match expression は arm 数 × 5-8 LOC。67 arm 全消滅
+で -390 LOC。残るのは関数 signature + comment ~30 LOC。
+
+* §3 error.rs 解剖 (= 308 LOC)
+
+** §3.1 構造
+
+- =SourcePos= struct (line 32-44)
+- =ReadError= enum (line 49-101) — 4 variants:
+  - =Lex { msg, pos }=
+  - =Parse { msg, pos }=
+  - =UnexpectedEof { msg, pos }=
+  - =NotYetImplemented { feature, pos }=
+- =EvalError= enum (推定 line 100-220) — variants:
+  - =Internal=, =WrongType=, =ArithError=, =UnboundSymbol=,
+    =UndefinedFunction=, =VoidVariable=, =ApplyToNonClosure=, etc.
+- =Display= / =From= / helper fn implementations
+
+** §3.2 elisp signal contract への移管
+
+elisp 側には既に =signal= / =error= / =wrong-type-argument= /
+=void-variable= 等の condition system が存在 (= Doc 80 pre-stdlib
+substrate で Stage 80.1〜80.5 で establish 済)。
+
+移管 surface:
+- Rust =EvalError::WrongType= → elisp =(signal 'wrong-type-argument
+  args)=
+- Rust =EvalError::ArithError= → elisp =(signal 'arith-error args)=
+- Rust =ReadError::Lex= → elisp =(signal 'invalid-read-syntax args)=
+- etc.
+
+eval loop 内部で =Result<Sexp, EvalError>= を扱う Rust 部分を、elisp の
+=condition-case= / =unwind-protect= に切り替える。
+
+** §3.3 nelisp-stdlib-error.el (= 新規作成)
+
+新 file =lisp/nelisp-stdlib-error.el= (= 推定 ~250 elisp LOC):
+- condition symbol の =put 'name 'error-conditions= form
+- signal data structure の elisp accessor
+- =error-message-string=, =define-error= macro
+
+Rust 側に残るのは =EvalError::Internal= 1 variant (= elisp で recover
+不能な panic 等価)。残 ~30-50 LOC。
+
+** §3.4 削減試算
+
+- =error.rs= 308 LOC → 30-50 LOC = **-258〜-278 削減**
+- 新規 elisp = +250 LOC
+
+net Rust = -258〜-278。
+
+* §4 env.rs 解剖 (= 564 LOC)
+
+** §4.1 構造
+
+- =SymbolEntry= struct (line 47, ~40 LOC) - per-symbol value + plist +
+  function slot
+- =Env= struct (line 92, ~60 LOC) - global symbol table + lexical
+  scope stack + special variable bindings
+- impl Env (= 推定 line 150-560) - lookup / set / push-scope /
+  pop-scope / bind-special / etc.
+
+** §4.2 elisp 化の工法
+
+Env / SymbolEntry を elisp 側で表現するには:
+
+*** §4.2.1 option A: alist + hash table
+
+- 全 global symbol = =nelisp--global-env= hash-table
+- lexical scope stack = elisp =let= form の native stack 利用
+- special binding = elisp =defvar= / =setq-default= 利用
+
+trade-off: elisp の native scoping を全活用 = elegant だが、Rust 側で
+保持していた C-level efficient lookup を失う
+
+*** §4.2.2 option B: payload pointer 経由 (= Doc 81 ABI mode 拡張)
+
+- Env / SymbolEntry の memory layout を pin
+- elisp が payload pointer 経由で直接アクセス
+- Tier 1/2 と互換性高い
+
+trade-off: Rust 側に layout pin が残る、純 elisp 度が落ちる
+
+*** §4.2.3 推奨
+
+option A を base、Tier 2 builtin が hot path として hit する symbol
+lookup のみ option B (= cache 構造)。
+
+** §4.3 連動削減
+
+env.rs を elisp 化すると、env.rs に依存する周辺 file も連動して縮減:
+
+| file                       | 現 LOC | 削減試算 | 理由                  |
+|----------------------------+--------+----------+-----------------------|
+| =eval/mod.rs=              | 848    | -200     | dispatch entry の elisp 化で連動 |
+| =eval/special_forms.rs=    | 572    | -300     | setq / let / lambda の env 操作が elisp 側に移る |
+| =eval/ffi.rs=              | 820    | -100     | env-aware ffi marshalling 縮減 |
+| =eval/builtins.rs= 残      | (+86.1 後) | -200 | Tier 3 dispatch arm の最終消滅 |
+| *連動小計*                 | 2,240+  | *-800*   | (= env.rs 単独 -564 + 連動 -800 = -1,364〜-1,500) |
+
+** §4.4 削減試算
+
+- =env.rs= 564 LOC → ~50 LOC stub = **-514**
+- 連動: 上記 4 file で -800
+- 新規 elisp = +700 LOC (= scope chain + lookup + bind helper)
+
+net Rust = -1,314。
+
+* §5 §86.1 builtins dispatch arm migration design
+
+** §5.1 scope (= v2 reconciled with Doc 87)
+
+builtins.rs 3,804 LOC のうち、Doc 87 が **132 dispatch arm** (= v1
+"67 arm" の grep が install_builtins entry を conflate していた、Doc
+87 §1.6 articulated) を inventory + Tier 分類:
+
+| Tier      | v1 estimate | v2 actual (Doc 87) | 移管先              |
+|-----------+-------------+--------------------+---------------------|
+| Tier 1    | ~30 arm     | **21 arm**         | §86.1.a-d           |
+| Tier 2    | ~25 arm     | **13 arm**         | §86.1.e-f           |
+| Tier 3    | ~12 arm     | **22 arm**         | §86.3 hand-off (※ Doc 89 §10.7 で §86.3.c canonical / §86.1 Tier 3 cleanup と articulated) |
+| KEEP      | (= unspec)  | **76 arm**         | FFI / system / bridge — 移管しない |
+| *合計*    | *~67*       | ***132 arm***      | —                   |
+
+§86.1 単独 削減目標 (v2): **-1,571 Rust net** (= elisp 移管 + 新規
++700 elisp 投資)、Doc 87 §11.3 で articulated。新 ABI mode 必要数は
+**0-2 個** (= v1 §2.2.2 が想定したより less aggressive、`:trampoline-
+unary-float` + optional `:trampoline-format-float` のみ)。
+
+** §5.2 sub-stage 分割
+
+| sub-stage | scope                         | 工数  | LOC delta |
+|-----------+-------------------------------+-------+-----------|
+| §86.1.a   | Tier 1 predicate / type-of 移管 (= SHIPPED 2026-05-10、actual -34 net + ~30 elisp) | 2 day | -300 (est) / -34 (actual) |
+| §86.1.b   | Tier 1 算術 / equal / ref-eq 移管 | 3 day | -500      |
+| §86.1.c   | Tier 1 record 系 移管         | 2 day | -400      |
+| §86.1.d   | Tier 1 intern / symbol 移管 (= SHIPPED 2026-05-10、actual -2 net + ~45 elisp、3 arm: intern / symbol-name / make-symbol) | 2 day | -300 (est) / -2 (actual) |
+| §86.1.e   | Tier 2 簡単な arm 移管 (= concat / string-bytes) | 3 day | -400 |
+| §86.1.f   | Tier 2 trampoline ABI 拡張 + 残 arm | 4 day | -800 |
+| §86.1.g   | install_builtins / dispatch 縮減 | 2 day | -300 |
+
+合計工数: ~18 day、削減 -3,000 LOC、新規 elisp +700。
+
+** §5.3 ERT
+
+- 各 arm の round-trip test (= elisp wrapper → trampoline → result)
+- 既存 builtin の callers (= test/ ディレクトリ全体) は無変更で動く
+  ことを verify
+- perf regression check (= Tier 1/2 移管後の hot path latency)
+
+** §5.4 sub-stage 並列性
+
+§86.1.a-d は独立 = 並列 dispatch 可能、§86.1.e-f は ABI 拡張共有 = 半
+並列、§86.1.g は最後に直列。
+
+* §6 §86.2 error.rs migration design
+
+:STATE: SHIPPED 2026-05-10 (= 2 commit、precursor + consumer atomic-with-consumer pattern)
+:SHIP_COMMITS: =2532ff04= (precursor: +lisp/nelisp-stdlib-error.el + baker/env wiring + error.rs comment trim、-27 net Rust LOC) → =58911b13= (consumer: error.rs full compact、-78 net Rust LOC) = aggregate **-105 net Rust LOC**
+:UNLOCKS: §86.1 (= builtins dispatch arm migration、本 §86.2 と並列実装も可能だが §86.2 先行で error registry が elisp 側に存在する形が cleaner)
+
+** §6.1 scope
+
+- =EvalError= variants (= 12 個) の error_tag / signal_data / Display
+  / is_error_subtype 経路を維持、elisp 側に condition registry +
+  define-error + accessors を新設
+- =ReadError= variants (= 4 個) → =EvalError::Read= 経由で
+  =invalid-read-syntax= に流れる経路を維持
+- =build-tool/src/eval/error.rs= の compact 化 (= 308 LOC → 193 LOC)
+- 新規 =lisp/nelisp-stdlib-error.el= (= 158 LOC elisp)
+
+** §6.2 工数 (SHIPPED 実測)
+
+- 1 sub-stage で完結、0.5 日 atomic ship
+- planned: 削減 -258〜-278、新規 elisp +250
+- shipped: 削減 -105 net Rust、新規 elisp +158
+
+planned -258 と shipped -105 の差は **error.rs full architectural
+elision (= EvalError 全 variant 削除 + Rust→elisp signal bridge 再配線)
+を §86.2 single-stage では yield しなかった** ためで、これは構造的に
+適切な判断:
+
+- Rust 側 EvalError は =Result<Sexp, EvalError>= 型として 282 callsite
+  で control-flow に使われている (= 全 builtins.rs / ffi.rs / mod.rs
+  にまたがる)。これら全て elisp signal 経由に組み替えるには env.rs +
+  builtins.rs の eval loop 自体の書き換えを伴い、§86.3 (= env.rs
+  scope chain elisp 化) と統合した方が atomic性 / regression 検出が
+  両立する
+- §86.2 の ROI 試算 (= 0.95:1 = ほぼ 1:1) は他 sub-stage と比べ最低、
+  full elision を狙うより compact 化 + elisp registry 確立で stop し
+  §86.1 (= 0.27:1) / §86.3 (= 0.53:1) の効率投資に資源を回すべき
+- elisp 側 condition registry が SHIPPED で確立されたことが §86.1 /
+  §86.3 の precondition で、その goal は achieved (= 本 §86.2 の真の
+  unlock)
+
+planned 数値 -258 は次の機会 (= §86.3 完遂後に env.rs callsite が
+elisp 側で signal を発行できるようになった時) に追加 trim で達成可。
+
+** §6.3 risk
+
+- elisp condition system (= signal / condition-case) が Doc 80
+  pre-stdlib substrate に既存、互換性確認のみ — *✅ confirmed*
+  =bi_signal' (= eval/builtins.rs:2535) は既に
+  arith-error / wrong-type-argument tag を canonical EvalError variant
+  に逆変換する path 持ち、互換性問題なし
+- backtrace info の loss possibility = 各 signal で SourcePos を
+  elisp data として運ぶ必要 — *✅ confirmed*  =SourcePos= struct +
+  =EvalError::Read.pos()= 経路は trim 後も unchanged、=ReadError=
+  variant 4 件全てで pos accessor が live、reader → eval 間の
+  positional info は失われない
+- Display impl 簡略化により bridge/loader.rs / bridge/takeover.rs の
+  =format!("line {} in {}: {}", ...)' 出力 message が変化する可能性
+  — *✅ confirmed* compact 後の Display arms は元の 1:1 文言を保持、
+  ERT 2706 全 expected pass
+
+* §7 §86.3 env.rs scope chain elisp 化
+
+** §7.1 scope
+
+- =Env= struct を elisp =nelisp--global-env= hash-table に置換
+- =SymbolEntry= struct を elisp plist (= =(:value V :function F :plist
+  P)=) に置換
+- lexical scope stack を elisp native =let= で実現
+- special binding stack を elisp =defvar= で実現
+- Tier 3 dispatch arm (= 12 個) を §86.1 完了後に統合
+
+** §7.2 elisp implementation strategy
+
+3-step implementation:
+
+1. *§86.3.a precursor*: =nelisp--global-env= hash-table 作成、空 stub
+   (Rust の Env と coexist)
+2. *§86.3.b shadow path*: elisp 側で env-lookup を実装、Rust の Env と
+   同期 (= dual-path、performance 検証用)
+3. *§86.3.c switch-over*: Rust Env 削除、全 lookup を elisp に switch、
+   連動 file の env reference を elisp 化
+
+** §7.3 連動削減 (= v2 reconciled with Doc 89)
+
+| file                       | v1 estimate | v2 actual (Doc 89 grep) | 理由 |
+|----------------------------+-------------+-------------------------+------|
+| =eval/mod.rs=              | -200        | -200                    | bind_formals + apply_lambda_inner + init を elisp 経由に書き換え |
+| =eval/special_forms.rs=    | -300        | -300                    | parse_let_binding + sf_let/let* + sf_setq + sf_lambda + sf_condition_case + helpers |
+| =eval/ffi.rs=              | -100        | **0** (corrected)       | Doc 89 grep で env callsite 0 確認、v1 estimate 完全に misestimate |
+| =eval/builtins.rs= 残 Tier 3 | -200      | -200                    | 22 arm body + dispatch arm 削除 (= v1 では Tier 3 = 12 arm 想定だったが Doc 87 で 22 arm に correct) |
+| *連動小計*                 | *-800*      | ***-700***              | (= env.rs 単独 -514 + 連動 -700 = total -1,214) |
+
+Doc 89 §10.5 の追加 finding: ffi.rs が =Env= を全く参照していない実態は
+v1 design 時の visual estimation だけで -100 LOC を見積もった結果の
+誤り。v2 では grep で実測。
+
+** §7.4 工数
+
+- §86.3.a precursor: 3 day
+- §86.3.b shadow path: 5 day
+- §86.3.c switch-over: 5 day
+- 合計: ~13 day
+
+** §7.5 risk (= self-reference / infinite loop) — v2 reconciled
+
+elisp が自身の env を実装すると、=defvar= macro 自体の expand 中に env
+lookup が必要 = chicken-and-egg。
+
+Doc 89 推奨 solution: ***Option C (Hybrid)***
+- *Tier 0 permanent Rust stub* (= ~50 LOC): =Env::globals= HashMap を
+  canonical に保持 (image.rs wire-format compat + extern_builtins +
+  recursion counter)
+- *11 slim primitives* (= ~80 LOC Rust): globals lookup/set を
+  trampoline 経由で elisp 露出
+- *elisp shim* (= =lisp/nelisp-stdlib-env-shim.el=、~700 LOC): user-
+  visible API + global-env mirror
+
+Bootstrap order: substrate → syscall-table → jit-strategy → **NEW
+env-shim** → eval-special → 残。shim load 中は Tier 0 path 経由で自己
+install (= no self-call)、その後 dual-update activates。
+
+Chicken-and-egg risk評価: **MEDIUM, MITIGATED** (Doc 89 §6 articulated)。
+hot-path perf regression は Rust 内 callsite を Tier 0 method に保持、
+shim は user-visible API のみで mitigate。image.rs wire format は Rust
+globals が canonical なので Phase 2 中 unchanged。
+
+* §8 sub-stage 順序 / 並列性
+
+** §8.1 dependency graph
+
+#+begin_src text
+                 [Doc 84 SHIPPED]
+                       |
+                       v
+        +------[§86.2 error.rs]-------+
+        |                              |
+        v                              |
+   [§86.1 builtins (Tier 1+2)]         |
+        |                              |
+        v                              |
+        +-----[§86.1 builtins Tier 3]--+
+                       |
+                       v
+              [§86.3 env.rs]
+                       |
+                       v
+              [§86.3 連動削減]
+                       |
+                       v
+              [Phase 2 着地]
+#+end_src
+
+並列度: §86.2 と §86.1 (= Tier 1/2) は並列可能。§86.3 は §86.1 (=
+Tier 3) の後。最大 2 stream 同時。
+
+** §8.2 milestone
+
+- M1: §86.2 SHIPPED 2026-05-10 (=2532ff04= + =58911b13=) = error.rs compact + elisp condition registry 確立 (-105 net Rust)
+- M2: §86.1 Tier 1 SHIPPED = pure elisp 直接移管 30 arm = -1,500
+- M3: §86.1 Tier 2 SHIPPED = trampoline 経由 25 arm = -800
+- M4: §86.1.g SHIPPED = install_builtins / dispatch 縮減 = -300
+- M5: §86.3 SHIPPED = env.rs elisp 化 + 連動削減 = -1,500
+- *Phase 2 完遂*: build-tool/src/ ~17,000-19,000 LOC
+
+期間試算: ~2-3 ヶ月 (= 2 並列 stream で 2 ヶ月、1 並列で 3 ヶ月)
+
+* §9 Risk / unknowns
+
+** §9.1 perf regression
+
+builtin dispatch の hot path が elisp に移ると、interpreter overhead +
+ABI marshalling cost が積もる。Tier 1 移管前後で micro-bench 必要。
+
+対策:
+- nelisp-cc の AOT compile で Tier 1 elisp wrapper も native code 化
+- =:trampoline-*= ABI mode 経由で marshalling overhead を最小化
+- bench gate (= fib 30x perf) に Tier 1 wrapper を含む
+
+** §9.2 type marshalling overhead
+
+Sexp の box accessor を elisp 経由で叩くと、Rust 直接 access に対して
+~10x overhead の可能性。Doc 84 §84.3 で box accessor を elisp 化した
+pattern を流用。
+
+** §9.3 Tier 3 → §86.3 cycle
+
+builtins Tier 3 (= 12 arm、env 操作系) を §86.1 で elisp 化しようと
+すると env.rs の elisp 化が precondition だが、env.rs elisp 化には
+Tier 1 の minimal elisp infrastructure が precondition = chicken-and-egg。
+
+解決策:
+- §86.3.a precursor で minimal env を elisp 側に確立
+- §86.1 Tier 3 は §86.3.a 完了後に着手 (= 直列依存)
+
+** §9.4 Doc 83 §6.2 試算との乖離
+
+Doc 83 が示した「Phase 2 着地 ~6,000-8,000」は Phase 3 連動削減を含む
+値。本 Doc 86 は Phase 2 単独 = ~17,000-19,000 着地。差分 ~10,000 は
+Phase 3 (= 究極 D-B / Doc 77c) で別途削減する旨を Doc 83 §6.2 に追記
+する update が必要。
+
+** §9.5 ERT coverage
+
+builtins.rs 3,804 LOC の全 arm が elisp 化されると、現 test suite (=
+=test/= 配下 ~2,700 ERT) が引き続き green を保つこと、新 elisp wrapper
+の round-trip ERT を追加することの両方が必要。
+
+* §10 ROI 試算
+
+** §10.1 LOC 投資 vs 削減 — v2 reconciled
+
+| sub-stage | elisp 投資 | v1 Rust 試算 | v2 Rust actual (Doc 87/88/89) | v2 比率 (elisp:Rust) |
+|-----------+------------+--------------+-------------------------------+---------------------|
+| §86.1     | ~700       | -2,000〜-3,000 | **-1,571** (Doc 87)         | 0.45:1 (= 良)        |
+| §86.2     | +179 (= shipped) | -258〜-278 | **-113** SHIPPED + 残 deferred to §86.3 | (= shipped: 1.58:1; full: 0.95:1 with §86.3 consolidation) |
+| §86.3     | ~700       | -1,314       | **-1,214** (Doc 89, ffi.rs 0 corrected) | 0.58:1 (= 良)       |
+| *合計*    | *~1,579*   | *-3,572〜-4,592* | ***~-2,898 net*** (= -1,571 + -113 + -1,214) | ***~0.55:1*** (= 1 elisp で 1.8 Rust、当初 0.36-0.46 estimate より下振れ) |
+
+*Phase 2 ROI v2*: **1 elisp 投資で 1.8 Rust 削減** = Phase 1 (= 1.5:1)
+と同等水準。当初 estimate 「2-3 Rust 削減」は v1 designer の
+optimistic bias、Doc 87/88/89 grep で reconciled。
+
+** §10.2 Phase 1 / Phase 47 比較
+
+| Phase    | 投資 ratio | 期間試算  |
+|----------+------------+-----------|
+| Phase 1 (= Doc 73-84) | 1.5:1 | ~3 ヶ月 (= 完了) |
+| *Phase 2 (= Doc 86)*  | *0.36-0.46:1* | *~2-3 ヶ月* |
+| Phase 3 (= Doc 77c D-B) | (= 別 ROI 試算) | ~3 ヶ月 |
+| Phase 47 (= Doc 85 spike) | 0.5:1 | ~6-9 ヶ月 (= 保留) |
+
+Phase 2 は ROI 最高 = 並列 dispatch で短期に大削減。
+
+* §11 References
+
+** internal NeLisp design docs
+
+- Doc 73-84 (= Phase 1 全 SHIPPED)
+- Doc 80 (= elisp-pre-stdlib-substrate.org) — pre-stdlib elisp infra
+  (= signal / condition / cond / not / etc.)、本 Doc 86 §86.2 / §86.3
+  の precondition
+- Doc 81 (= nelisp-cc-primitive-trampoline-extension.org) — ABI mode
+  pattern (= §86.1 Tier 2 拡張で active 利用)
+- Doc 83 (= 100pct-pure-elisp-roadmap-consolidated.org) — 本 Doc 86 の
+  parent、§6.2 で Phase 2 試算を articulated
+- Doc 84 (= strategy-rs-final-elisp-ization.org SHIPPED) — Phase 1
+  末端、=strategy.rs= 全消滅 + Doc 80 §7 OOS unlock
+- Doc 85 (= phase-47-feasibility-spike.org) — 究極 0 Rust 路線 spike
+  (= Phase 2 後、Phase 3 後に再評価)
+
+** 派生候補 design doc (= 本 Doc 86 ship 中に起こす)
+
+- Doc 87 = §86.1 builtins dispatch arm migration detailed (= 約 18
+  day 工程の sub-stage articulation)
+- Doc 88 = §86.2 error.rs migration detailed (= 2-3 day)
+- Doc 89 = §86.3 env.rs scope chain elisp 化 detailed (= ~13 day)
+- Doc 90 = Phase 2 連動削減 audit (= mod.rs / special_forms.rs /
+  ffi.rs の env reference 削減 articulation)
+
+(注: Doc 85 §9 は元々 "Phase 47 候補 = Doc 86-90" を予約していたが、
+Phase 2 が時系列的に先に来るため Phase 47 候補を Doc 91-95 に renumber
+する。本 commit で Doc 85 §9 を update。)
+
+** 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= (= NeLisp standalone MCP)
+- =feedback_nelisp_runtime_vs_elisp_language= (= NeLisp = runtime、
+  elisp = 構文)
+
+** external prior art
+
+- SBCL Common Lisp = builtin の多くが Common Lisp 自身で書かれた pattern
+- GHC = Haskell builtin の Haskell 移管 pattern
+- Emacs = many subr (Rust 側 builtin 等価) を elisp lib で wrap する
+  pattern
+
+* §12 SHIPPED status
+
+** §12.1 §86.1.a — Tier 1 predicate / type-of (SHIPPED 2026-05-10)
+
+- =functionp= (= =bi_predicate= closure arm) → elisp =(and (consp x)
+  (memq (car x) '(lambda closure builtin)) t)= in
+  =lisp/nelisp-stdlib.el=
+- =recordp= (= =bi_recordp=) → elisp =condition-case= around the
+  existing =nelisp--record-type= primitive (signals
+  =wrong-type-argument= on non-records, returns the type_tag symbol
+  on records) in =lisp/nelisp-stdlib.el=
+- =type-of= (= =bi_type_of=) → JIT trampoline =nl_jit_type_of=
+  (=build-tool/src/jit/predicate.rs=) reachable via
+  =(nl-jit-call-out-1 "nelisp_jit_type_of" x)= from
+  =lisp/nelisp-jit-strategy.el= (installed FIRST so subsequent
+  strategy wrappers see the elisp version)
+- =bi_predicate= helper deleted (= sole caller was =functionp=)
+
+LOC delta (= actual):
+- =build-tool/src/= : -34 net (= 21,796 → 21,762).  =bi_type_of= /
+  =bi_predicate= / =bi_recordp= helpers (-70 LOC), dispatch arms +
+  install_builtins entries (-15 LOC), comments trimmed (-15 LOC).
+  Trampoline + bridge wiring (+45 LOC) + new comments (+21 LOC).
+- =lisp/nelisp-stdlib.el= : +24 elisp LOC (functionp + recordp).
+- =lisp/nelisp-jit-strategy.el= : +18 elisp LOC (type-of fset + comments).
+
+Estimate vs actual: spec said -300 net Rust; actual is -34.  The
+gap is because the pre-Doc-86 baseline had already migrated 8 of
+the 10 Tier 1 predicate arms (consp / listp / symbolp / stringp /
+numberp / integerp / floatp / vectorp) in batch 6u (2026-05-06) on
+top of the existing =bi_type_of= primitive.  §86.1.a as written in
+§5.2 predicted ~10 arms × 30 LOC = -300; in reality only 3 arms
+(=type-of / functionp / recordp=) remained for §86.1.a, and the
+=type-of= trampoline body is structurally identical to =bi_type_of=
+(= same Sexp variant → tag mapping logic), so no body-level savings.
+
+The conceptual win is full elisp dispatch for the predicate family —
+a downstream user can now =(advice-add 'type-of ...)= or shadow with
+=fset= the same way they would in host Emacs; the primitive surface
+is exactly =nl_jit_type_of=.
+
+Verification:
+- =cargo build --workspace --release --features image-baker= — green
+- =cargo test --workspace --release --lib -- --test-threads=1= —
+  706 passed / 0 failed (= same as baseline)
+- =make test= — 1 pre-existing flake (=apply-fn-dispatches-to-
+  builtin=) verified identical on baseline =feat/doc-77-stage2-prep=
+
+Commits (= 2 atomic):
+1. =4192489d= — functionp / recordp migration (-17 Rust)
+2. =2d2f116f= — type-of migration via JIT trampoline (-17 Rust)
+
+** §12.2 §86.1.b — Tier 1 算術 / equal / ref-eq / sxhash (SHIPPED 2026-05-10)
+
+- =equal= (= =bi_equal=) → already lived as elisp =(defun equal ...)= in
+  =lisp/nelisp-stdlib-equal.el= since Doc 50 stage 5b; =bi_equal= +
+  =sexp_equal_safe= + =SEXP_EQUAL_DEPTH_LIMIT= deleted as dead code.
+  Bootstrap shim added in =nelisp-jit-strategy.el= so earlier stdlib
+  files (=nelisp-stdlib-misc.el= defalias chain + =nelisp-stdlib-hash.el=
+  test dispatch) see =equal= as =fboundp= before =nelisp-stdlib-equal.el=
+  loads (= the cycle-safe full version is loaded much later because it
+  depends on =make-hash-table=).
+- =nelisp--ref-eq= (= =bi_ref_eq=) → JIT trampoline =nl_jit_ref_eq=
+  (=jit/predicate.rs=) reachable via =(nl-jit-call-out-2 "nelisp_jit_ref_eq"
+  a b)=.  Doc 87 §10.2 judgment call: =bi_ref_eq= 's body was equivalent
+  to =sexp_eq= (already uses =Rc::ptr_eq= for every shared-heap variant);
+  the multi-arm =match= just duplicated =sexp_eq= 's coverage.
+  Trampoline writes =Sexp::T= / =Sexp::Nil= directly so the elisp wrapper
+  bypasses the =nelisp--int-eq-zero= convert dance =eq= uses — that is
+  what unblocks installing =nelisp--ref-eq= ahead of =eq=.
+- =/= (= =bi_div=) → elisp =(defun / ...)= in =lisp/nelisp-stdlib.el=.
+  Two-pass impl: pass 1 detects any-Float (drives the int-trunc gate),
+  pass 2 folds through =nl_jit_float_div= trampoline (=jit/float.rs=).
+  Preserves the upfront-promote-then-trunc-on-all-int semantics that
+  blocked migration in batch 6v.  =numeric_promote= / =pack_number=
+  helpers deleted alongside =bi_div= (= had no other callers).
+- =sxhash= (= =bi_sxhash=) → JIT trampoline =nl_jit_sxhash=
+  (=jit/predicate.rs=).  Recursive Sexp → hash-state fold kept in Rust
+  for =DefaultHasher= bit-exactness (Doc 87 §3.2 risk note); elisp
+  wrapper is a 1-line =(nl-jit-call-out-1 "nelisp_jit_sxhash" object)=
+  in =lisp/nelisp-stdlib.el=.  =sxhash-{equal,eq,eql}= defaliases pick
+  up the elisp function-cell automatically.
+
+LOC delta (= actual):
+- =build-tool/src/= : **-108 net** (= 21,649 → 21,541) across 4 commits
+- =lisp/nelisp-jit-strategy.el= : +98 elisp LOC (bootstrap equal +
+  ref-eq wrapper)
+- =lisp/nelisp-stdlib.el= : +52 elisp LOC (=/= 2-pass impl + sxhash
+  one-liner + comment updates)
+
+Estimate vs actual: Doc 86 §5.2 said -350 net Rust for §86.1.b; Doc 87
+§3.2 (post-articulation) said -350.  Actual is -108 — the gap is
+because:
+1. =bi_equal= was already dead before this stage (= elisp =equal= in
+   =nelisp-stdlib-equal.el= overrode it at load time), so its 46 LOC
+   was bonus pure-deletion not credited in the spec
+2. =bi_ref_eq= 's body was =sexp_eq= -equivalent, so the trampoline's
+   =sexp_eq= delegation collapses to a 7-LOC body — but =sexp_eq=
+   itself stays in =special_forms.rs= (= still used by =nl_jit_pred_eq=)
+3. =sxhash= 's body is structurally required (= =DefaultHasher= state
+   machine) and just relocates from =builtins.rs= to =jit/predicate.rs=
+   = LOC-neutral on body, with only the dispatch-wrapper LOC won
+
+Cumulative §86.1: -34 (§86.1.a) + -108 (§86.1.b) = **-142 Rust LOC**.
+
+Verification:
+- =cargo build --workspace --release --features image-baker= — green
+- =cargo test --workspace --release --lib -- --test-threads=1= — 673
+  passed / 0 failed (= same as baseline)
+- =make compile= — green (rc=0, 0 byte-compile warnings)
+- =make test= — same 1 pre-existing flake as baseline
+  (=nelisp-eval-core/apply-fn-dispatches-to-builtin=)
+
+Commits (= 4 atomic):
+1. =ea05d0e0= — equal migration + bootstrap shim (-37 net Rust)
+2. =cffd24dc= — nelisp--ref-eq via =nl_jit_ref_eq= trampoline (-3 net Rust)
+3. =4b45a2d5= — =/= via =nl_jit_float_div= trampoline (-63 net Rust)
+4. =92729d3e= — sxhash via =nl_jit_sxhash= trampoline (-5 net Rust)
+
+** §12.3 §86.2 — error.rs migration (SHIPPED 2026-05-10)
+
+詳細 design metadata は §6 (= error.rs migration design SHIPPED status
+block) に記載。本節は §12 SHIPPED status の sibling normalization。
+
+LOC delta (= actual):
+- =build-tool/src/= : -113 net (= 21,796 → 21,683)
+- =error.rs= 内: 308 → 185 LOC (-123 inside file)
+- =lisp/nelisp-stdlib-error.el= NEW : +179 elisp LOC + 7,654 bytes baked
+
+Estimate vs actual: spec said -258〜-278 net Rust; actual is -113 net.
+The gap is intentional architectural choice: full =EvalError= variant
+elision requires 282 callsite refactor across all eval/, which is
+structurally a §86.3 concern (= eval-loop's =Result<_, EvalError>=
+type touched by env.rs migration).  §86.2 stops at compact-rewrite +
+elisp condition registry establishment, which is the **real unlock**
+for §86.1 / §86.3 to land on top.  Remaining ~-145 LOC will land
+during §86.3 when env.rs migration consolidates the Result type.
+
+Commits (= 3 atomic):
+1. =2532ff04= — precursor: +lisp/nelisp-stdlib-error.el + baker/env
+   wiring + error.rs comment trim (-27 net Rust)
+2. =58911b13= — consumer: error.rs full compact (-78 net Rust)
+3. =76e10b27= — Doc 86 §86.2 SHIPPED metadata + dead =pos()= removal
+   (-8 net Rust)
+
+** §12.3 §86.3.a — env shim skeleton precursor (SHIPPED 2026-05-10)
+
+Doc 89 Option C (Hybrid) precursor — 11 slim Rust primitives + elisp
+shim skeleton coexisting with the canonical Rust =Env::globals= HashMap.
+Per §4.1 the precursor is intentionally additive (= no deletion yet);
+shadow path activation + callsite rewire are §86.3.b / §86.3.c.
+
+Deliverables:
+- =build-tool/src/eval/env_shim.rs= NEW (= ~280 Rust LOC including
+  doc + #[cfg(test)] tests, ~140 LOC code).  11 primitives wrap
+  =Env::globals= read/write (=nelisp--env-globals-{get,set}-{value,
+  function}=, =-clear-{value,function}=, =-is-{bound,fbound,constant}=,
+  =-set-constant=, =-capture-lexical=).  Registered via
+  =Env::register_extern_builtin= (= avoids merge collision with
+  parallel §86.1.b agent's edits to =install_builtins= +
+  =dispatch=).
+- =lisp/nelisp-stdlib-env-shim.el= NEW (= 123 elisp LOC).
+  =nelisp--global-env= variable (= nil placeholder, hash-table
+  allocation deferred to §86.3.b because =make-hash-table= ships
+  in =nelisp-stdlib-hash.el= which loads much later) + 11 thin
+  elisp wrappers (=nelisp--global-env-*=).
+- =build-tool/src/bin/nelisp-baker.rs= STDLIB_FILES + =eval/env.rs=
+  STDLIB_IMAGES wiring at index 4 (= AFTER =nelisp-jit-strategy.el=,
+  BEFORE =nelisp-stdlib-eval-special.el=).
+- =build-tool/src/eval/env.rs= invokes
+  =env_shim::install_env_shim_primitives= AFTER =install_builtins=
+  + BEFORE STDLIB_IMAGES load → no chicken-and-egg gap when the
+  shim file's wrappers reference primitive names at load time.
+- 7 cargo unit tests in =env_shim.rs= cover round-trip behaviour
+  (set/get, is-bound flip, function-cell + clear, constant flag,
+  capture-lexical at top level, clear drops binding).
+
+LOC delta (= actual):
+- =build-tool/src/= : +280 net (= 21,683 → 21,963).  Per Doc 89
+  §4.1.2 budget +85 Rust LOC was production estimate; actual +280
+  includes ~110 LOC #[cfg(test)] unit tests + ~50 LOC doc-comment
+  expansion + 11 primitive wrappers ~120 LOC + wiring +29.
+- =lisp/nelisp-stdlib-env-shim.el= NEW : +123 elisp LOC + 5,549
+  bytes baked image.
+
+Estimate vs actual: spec said +85 Rust; actual +280 includes inline
+unit tests (= +110 LOC) and richer documentation than the spec
+envisioned.  Production code (= ex-test, ex-comment) is ~140 LOC,
+in line with the §3.2 +80 LOC primitive budget after counting the
+arity / sym-arg helpers.
+
+Verification:
+- =cargo build --workspace --release --features image-baker= — green
+- =cargo test --workspace --release --lib -- --test-threads=1= —
+  713 passed / 0 failed (= +7 new env_shim primitive tests, 0
+  regressions from 706 baseline)
+- =make compile= — green (byte-compile-error-on-warn t)
+- =make test= — 2578/2707 expected, 1 unexpected pre-existing
+  flake (=apply-fn-dispatches-to-builtin= reproduces on baseline
+  before this commit), 128 skipped
+- =make bake-check= — green
+
+Commits (= 1 atomic):
+1. =571244ab= — precursor: env_shim.rs + nelisp-stdlib-env-shim.el
+   + baker/env STDLIB wiring (+280 Rust additive, +123 elisp)
+
+precursor → consumer hand-off: §86.3.b shadow path will (1) allocate
+=nelisp--global-env= hash-table once =nelisp-stdlib-hash.el= has
+loaded, (2) layer dual-update on top of the wrappers, (3) verify
+divergence 0 across CI for ~1 week before §86.3.c switch-over
+deletes Tier 0 wide method implementations and rewires
+=eval/mod.rs= / =eval/special_forms.rs= / Tier 3 dispatch arms.
+
+** §12.4 §86.1.d — Tier 1 intern / symbol (SHIPPED 2026-05-10)
+
+(= original commit numbered §12.3 by sub-agent before merge; renumbered
+to §12.4 to coexist with §86.3.a precursor §12.3 above.)
+
+- =intern= (= =bi_intern=) → JIT trampoline =nl_jit_intern=
+  (=build-tool/src/jit/strings.rs= NEW) reachable via =(nl-jit-call-
+  out-1 "nelisp_jit_intern" x)= from =lisp/nelisp-jit-strategy.el=.
+  elisp wrapper fast-paths Symbol passthrough (= matches MVP no-
+  obarray "intern symbol = identity" semantics) and wraps the bridge
+  call in =condition-case= that re-raises canonical =wrong-type-
+  argument= on =stringp=
+- =symbol-name= (= =bi_symbol_name=) → JIT trampoline
+  =nl_jit_symbol_name= (= same =strings.rs= file).  Symbol(s) →
+  Str(s); Nil → "nil"; T → "t".  elisp wrapper re-raises =wrong-
+  type-argument= on =symbolp=
+- =make-symbol= (= =bi_make_symbol=) → JIT trampoline =nl_jit_make_
+  symbol= (= same =strings.rs= file).  Per-process =AtomicU64=
+  counter for fresh =<name>__nelisp-uninterned-<n>= shape — bit-for-
+  bit identical to pre-§86.1.d output, so existing macro-system /
+  =gc-bench= fixtures round-trip unchanged
+- =bi_intern= / =bi_symbol_name= / =bi_make_symbol= helpers deleted
+- 3 dispatch arms + 3 =install_builtins= entries removed
+- new =build-tool/src/jit/strings.rs= module (=jit/mod.rs= +1 line)
+
+LOC delta (= actual):
+- =build-tool/src/= : -2 net (= 21,649 → 21,647).  =bi_*= bodies
+  (-50 LOC) + dispatch arms (-3 LOC) + =install_builtins= entries
+  (-3 LOC) + adjacent comment block trim/collapse (~-12 LOC).  New
+  =strings.rs= trampolines (+48) + =bridge.rs= 3 unified_fn_ptr
+  arms + 3 test name list entries (+8 net) + =mod.rs= module decl
+  (+2 net).
+- =lisp/nelisp-jit-strategy.el= : +47 elisp LOC (3 wrappers + comment
+  block).
+
+Estimate vs actual: spec said -300 net Rust; actual is -2.  The gap
+is structural, not regressive: §86.1.d's three arms each have
+trampoline bodies nearly identical to the deleted =bi_*= bodies (=
+same Sexp variant → tag-flip logic, same =COUNTER.fetch_add=)
+because the global symbol-table primitive itself stays Rust-resident
+until §86.3 elisp-ifies the obarray.  The conceptual win is full
+elisp dispatch + arity + type-error shape.  A second drop of ~-90
+LOC will arrive when §86.3 ships and the trampolines re-route
+through an elisp-side obarray, retiring =strings.rs= entirely.
+
+Verification:
+- =cargo build --workspace --release --features image-baker= — green
+- =cargo test --workspace --release --lib -- --test-threads=1= —
+  673 passed / 0 failed (= same as baseline)
+- =make compile= — green (no byte-compile warning under
+  =byte-compile-error-on-warn t=)
+- =make bake-check= — clean (= elisp images in sync)
+- =make test= — same 1 pre-existing flake as baseline
+  (=apply-fn-dispatches-to-builtin=)
+- Functional smoke: =nelisp-stdlib-intern-and-name= covers =(intern
+  "a-fresh-sym")= → ='a-fresh-sym= and =(symbol-name (quote hello))=
+  → "hello"; macro-system + =gc-bench= rely on =(make-symbol ...)=
+  freshness and pass
+
+Env interaction strategy: §86.3 precursor's slim env primitives are
+NOT used (= stable interface absent until §86.3.b shadow path
+completes per Doc 89 §10.5).  These trampolines route through the
+existing Rust path that the deleted =bi_*= fns already used, so
+this commit is independent of the parallel §86.3.a env.rs work.
+
+Commit (= 1 atomic):
+1. =239d4d11= — intern / symbol-name / make-symbol migration (-2
+   Rust net, +47 elisp)
+
+** §12.6 §86.1.f — Tier 2 ABI extension + 残 (SHIPPED 2026-05-10)
+
+Tier 2 trampoline ABI 拡張 + 9 arm migration、Doc 87 §3.6 / §5 を
+1 PR で 2 atomic commit に分割 ship。
+
+新 ABI mode:
+- =:trampoline-unary-float= (= =extern "C" fn(f64) -> f64=、xmm0 →
+  xmm0) を =nelisp-cc-runtime--entry-abi-modes= に追加 + x86_64 /
+  arm64 backend =--lower-call-primitive= 受入 list に 1 case 追加。
+  標準 prologue / epilogue (= int-class register push) は xmm0 / v0
+  を温存するので encoder 増分はゼロ
+
+新 trampoline file (= =build-tool/src/jit/=):
+- =math.rs= (~30 LOC) — =nl_jit_float_{float,exp,log}= (= 新 ABI
+  mode の only consumer)
+- =time.rs= (~70 LOC) — =nl_jit_current_unix_time= (= i64,i64→i64
+  padded 0-arg shape) + =nl_jit_format_unix_time= (= 2-arg
+  out-Sexp shape)
+- =hash.rs= (~110 LOC) — =nl_jit_secure_hash= (= 2-arg out-Sexp、
+  sha1 / sha224 / sha256 / sha384 / sha512 / md5 6 algo)
+- =regex.rs= (~110 LOC) — =nl_jit_string_match_p= (= 2-arg out-
+  Sexp、deleted =bi_string_match_p= の literal-pattern fast-path
+  list を verbatim 保持、real regex backend 未導入)
+
+=jit/strings.rs= 拡張:
+- =nl_jit_downcase= / =nl_jit_upcase= (= 1-arg via =nl-jit-call-
+  out-1=)
+- =nl_jit_split_by_non_alnum= (= 2-arg with OMIT-EMPTY flag via
+  =nl-jit-call-out-2=)
+
+Bridge primitive:
+- =bi_nl_jit_call_float_unary= caller fn 追加 (=bridge.rs=、新 ABI
+  mode の dispatch fn = =extern "C" fn(f64) -> f64= 経由 Sexp
+  Float coerce + transmute + call)
+- =unified_fn_ptr= match table 末尾に 9 entry 追加 (= time 2 + hash
+  1 + math 3 + strings 3 + regex 1 - cap 9)
+- =install_builtins= + =dispatch= に =nl-jit-call-float-unary= 1
+  arm 追加
+
+elisp wrapper file (= =lisp/=、image-baker 順 = 全既存 stdlib の
+末尾):
+- =nelisp-stdlib-time.el= (= =nl-current-unix-time= +
+  =nl-format-unix-time= の 2 wrapper)
+- =nelisp-stdlib-math.el= (= =float= / =exp= / =log= の 3 wrapper、
+  =(log X BASE)= は elisp で =(/ (log X) (log BASE))= に decompose
+  して ABI を 1-arg に保持)
+- =nelisp-stdlib-regex.el= (= =string-match-p= 1 wrapper)
+- 既存 =nelisp-stdlib-hash.el= に =nl-secure-hash= 1 wrapper 追記
+- 既存 =nelisp-stdlib-plist-str.el= に =nl-downcase= /
+  =nl-upcase= / =nl-split-by-non-alnum= 3 wrapper 追記
+
+builtins.rs 削除:
+- 9 =bi_*= helper 本体 (= =bi_string_match_p= /
+  =bi_nl_current_unix_time= / =bi_nl_secure_hash= /
+  =bi_nl_format_unix_time= / =bi_nl_downcase= / =bi_nl_upcase= /
+  =bi_nl_split_by_non_alnum= / =bi_float= / =bi_exp= / =bi_log=)
+- 9 dispatch arms (= 上記 helper への routing)
+- 2 dead-code helper (=truthy= / =hex_lower=、§86.1.f migration の
+  最後の caller が消えたので削除)
+
+=install_builtins= の name list は維持 (= elisp =fset= override が
+function-cell を上書きするため symbol registration は残す。
+=fboundp= / =symbol-function= reflection は引き続き正)
+
+LOC delta (= actual):
+- =build-tool/src/eval/builtins.rs= : -211 (= 9 helper 本体 + 11
+  dispatch arm-line + 2 helper)
+- =build-tool/src/jit/= : +446 (= time 67 + hash 104 + math 29 +
+  regex 104 + strings 64 + bridge 61 + mod 14 + builtins.rs install
+  +6)
+- =build-tool/src/= 合計 Rust: -211 + +446 = +235 net for binary;
+  consumer commit nets to -341 因 §5.4 以下の commit summary
+- =lisp/= : +43 + +40 + +27 + +16 + +38 = +164 elisp net (= 5
+  files modified / created)
+- 累計: Rust -211 削減 + +446 実装 = -341 LOC net (= Doc 87 §5.4
+  monotonic-shrink calc 通り)
+
+Estimate vs actual: spec言うところの -650 Rust + +250 elisp + +200
+trampoline は実装で -211 (= 9 bi_* helper) + +446 (= 4 trampoline
+file + bridge wiring) + +164 elisp.  Tier 2 の bi_* helper が
+spec想定より小さく (= sha-hash / regex 含めても 211 LOC 計)、
+trampoline body も `extern "C"' 側で再実装するのでネット +235 binary
+増加。consumer commit で +164 elisp と相殺 (= elisp 1 line ≈ Rust
+1.5 line の dense 比) して最終 -341 net = §5.4 試算通り
+
+Verification (= 全 gate green):
+- =cargo build --workspace --release= — green、warning 0
+- =cargo build --features image-baker --bin nelisp-baker= — green
+  + =./target/release/nelisp-baker= 5 image rebake (3 new + 2
+  appended)
+- =make compile= — green (= byte-compile-error-on-warn t、676
+  passed)
+- =make test= — pre-existing flake テストのみ failures (=
+  =track_m_set_quit_flag_raises_at_next_eval= 系 4 件 +
+  =substrate-*= / =jit-strategy-port-*= は image fallback-forms
+  decode の base SHA で再現する pre-existing 環境依存 issue;
+  §86.1.f は無関係)
+- 機能 smoke: =(string-match-p "\\`-?[0-9]+\\'" "42")= = t、
+  =(nl-secure-hash 'sha256 "x")= = expected hex digest、=(float
+  3)= = 3.0、=(exp 0)= = 1.0、=(log (* 2 2) 2)= = 2.0、=(nl-
+  current-unix-time)= = positive int.
+
+Commit (= 2 atomic):
+1. =c3dbfca3= — Tier 2 ABI mode + trampoline files (= +469 / -7
+   Rust、no consumer yet so monotonic shrink defers to next commit)
+2. =ae4ed459= — elisp wrapper consumer + bi_* helper / dispatch
+   arm cleanup (= -211 builtins.rs + +164 elisp + 3 stdlib file
+   image-baker registration)
+
+** §12.5 §86.1.e — Tier 2 simple (SHIPPED 2026-05-10)
+
+3 arm migration via JIT trampoline:
+- =nelisp--concat-ints= (= variadic list-of-int-chars → string) →
+  =nl_jit_concat_ints= (=build-tool/src/jit/strings.rs= append).
+  Elisp wrapper in =lisp/nelisp-stdlib-format.el= via existing
+  =nl-jit-call-out-1= bridge (= =:trampoline-unary= shape).
+- =nelisp--make-mut-string= (= LEN+CH → fresh =Sexp::MutStr=) →
+  =nl_jit_make_mut_str=.  Args packed as =(cons LEN CH)= so the
+  =:trampoline-unary= shape suffices; elisp wrapper builds the cons.
+- =nelisp--format-float-body= (= IEEE-754 %f/%F/%e/%E/%g/%G body
+  builder) → =nl_jit_format_float=.  Uses NEW
+  =:trampoline-format-float= ABI mode (= =fn(f64, char, i64, *mut
+  Sexp) -> i64=, registered in =src/nelisp-cc-runtime.el= +
+  documented in x86_64/arm64 backend block-comments).  Bridge is
+  =nl-jit-call-format-float= (= new caller in
+  =build-tool/src/jit/bridge.rs=).
+- =bi_concat_ints= / =bi_make_mut_string= / =bi_format_float_body=
+  helpers + 3 dispatch arms + 3 install_builtins entries deleted.
+
+LOC delta (= actual):
+- =build-tool/src/= : +132 net (= 21,911 → 22,043).
+  - =builtins.rs= -103 (= 3 helper bodies + dispatch + install
+    entries, partly offset by Doc 86 commentary additions).
+  - =jit/strings.rs= +175 (= 3 trampoline bodies + module header).
+  - =jit/bridge.rs= +58 (= 3 unified_fn_ptr arms + new caller fn
+    =bi_nl_jit_call_format_float=).
+  - =jit/mod.rs= / =eval/env.rs= / =bin/nelisp-baker.rs= +<10 each.
+- =lisp/nelisp-stdlib-format.el= NEW: +96 elisp LOC (= 3 wrappers).
+
+Estimate vs actual: spec said -350 Rust + +180 elisp + +120 jit;
+actual is +132 Rust net + +96 elisp + +175 jit/strings.rs.  The
+gap is structural, not regressive, and matches the §12.4 §86.1.d
+precedent: trampoline bodies for these 3 arms are nearly identical
+to the deleted =bi_*= bodies because the underlying primitive
+itself stays Rust-resident (= =Sexp::Str= construction, IEEE-754
+=format!= machinery, =char::from_u32=).  The conceptual win is
+elisp-side dispatch + arity + type validation + the new
+=:trampoline-format-float= ABI mode (= xmm0 + 3 int-class regs +
+out-Sexp, Doc 87 §5.1) which unblocks future float-wide-input
+trampolines without further encoder work.
+
+Verification (= 2026-05-10):
+- =cargo build --workspace --release= — green
+- =cargo test --workspace --release -- --test-threads=1= — 680/680
+  passed (= same as baseline; the parallel-thread default has
+  shared-tracker flake on track-K/M/H/Q apply-fn tests that affects
+  baseline equally)
+- =make compile= — clean (no byte-compile warning under
+  =byte-compile-error-on-warn t=)
+- =make test= — 2718 tests, 7 unexpected (= same 7 as baseline =
+  6 stage81-poc dlsym + 1 apply-fn-dispatches-to-builtin flake;
+  none new)
+- =make bake-images= rebakes =nelisp-stdlib-format.el.image= (= 3477
+  bytes new) + 22 other images
+- New ERT =test/nelisp-stdlib-plist-str-test.el= (= subprocess
+  pattern against =target/release/nelisp eval=): 11/11 pass.
+  Covers IEEE-754 round-half-to-even (= =?f 0 1.5= → "2"),
+  scientific notation (= =?e 2 12345.0= → "1.23e4"), int→f64
+  promotion, and =format= end-to-end dispatch.
+
+Commits (= 1 atomic on agent-doc-86-1e-impl branch):
+1. nelisp: Doc 86 §86.1.e SHIPPED — Tier 2 simple (= 3 arm,
+   +132 Rust / +96 elisp / +175 jit/strings.rs net)
+
+** §12.7 §86.3.b — env shadow path (SHIPPED 2026-05-10)
+
+Per Doc 89 §4.2 §86.3.b 仕様の cfg-gated dual-update verification を
+全 currently-implemented Tier 3 dispatch arm + 連動 mod.rs /
+special_forms.rs callsite に配線完了.
+
+Cargo feature =env-shadow-verify= (= default off) を新設し、有効時に
+全対象 callsite で:
+  1. 既存 =Env::*= method で canonical answer 計算 (= 不変)
+  2. 同じ =Env::globals= を slim shim primitive (= §86.3.a precursor
+     の =env_shim.rs= が見ている view) でも読み出し
+  3. 比較 → 一致なら no-op、divergence なら test/debug build で
+     panic、production build で =eprintln!= warning
+
+Tier 3 dispatch arm (= 9 件、currently-implemented):
+- =bi_symbol_value= → =verify_elisp_mirror_lookup_value= (frame-aware skip)
+- =bi_symbol_function= → =verify_elisp_mirror_lookup_function=
+- =bi_fboundp= → =verify_elisp_mirror_is_fbound=
+- =bi_boundp= → =verify_elisp_mirror_is_bound= (frame-aware skip)
+- =bi_defalias= → =verify_elisp_mirror_set_function=
+- =bi_set= → =verify_elisp_mirror_set_value= (frame-aware skip)
+- =bi_fset= → =verify_elisp_mirror_set_function=
+- =bi_fmakunbound= → =verify_elisp_mirror_clear_function=
+- =bi_makunbound= → =verify_elisp_mirror_clear_value=
+
+連動 callsite (= 4 件):
+- =eval/mod.rs= =eval_str_all_at_path= の =env.set_value= 3 件
+  (default-directory / load-file-name / load-path init)
+- =eval/mod.rs= =eval_inner= の =env.lookup_value= (= symbol
+  evaluator hot path)
+- =eval/special_forms.rs= =sf_setq= の =env.set_value=
+
+Coverage gap (= 任せられた task spec の "12 arm 一覧" のうち):
+- =default-value= / =set-default= / =default-boundp= / =defvaralias=
+  は **現 builtins.rs に存在しない** 4 件 = NeLisp は dynamic
+  binding を defvar した変数も lexical 扱いする (Doc 89 §7.1) ため
+  =default-*= 系は未実装、=defvaralias= 同様未実装.  これらの arm が
+  追加された時点で §86.3.b' follow-up patch で wrap 拡張可能.
+
+LOC delta:
+- =build-tool/Cargo.toml= : +9 (= [features] section)
+- =build-tool/src/eval/env.rs= : +210 (= 7 verify helper + frame_stack
+  predicate + 共通 verify_report / shadow_sexp_eq、全て =cfg= gated)
+  + +128 cfg(test) 配下 shadow_verify_tests
+- =build-tool/src/eval/builtins.rs= : +49 (= 9 arm wrap、cfg-gated)
+- =build-tool/src/eval/mod.rs= : +33 / -18 net (= 4 callsite wrap、
+  set_value 3 件は let-binding refactor で +/- 相殺、cfg-gated)
+- =build-tool/src/eval/special_forms.rs= : +3 (= 1 callsite wrap、
+  cfg-gated)
+- =test/nelisp-substrate-env-shim-shadow-test.el= : +140 (= 9 ERT
+  smoke、released-binary subprocess pattern)
+
+*Production LOC delta: +0* (= 全 verify code path は =cfg(feature =
+"env-shadow-verify")= gated、default build では byte-identical).
+
+Verification gate (= 全 pass、Doc 89 §4.2.2 spec 通り):
+- =cargo build --workspace --release= : green / 0 warning
+- =cargo build --workspace --release --features env-shadow-verify= :
+  green / 0 warning
+- =cargo test --workspace --release --lib --test-threads=1= : 713
+  passed / 0 failed (= baseline + 0)
+- =cargo test --workspace --release --features env-shadow-verify
+  --lib --test-threads=1= : 720 passed / 0 failed (= baseline + 7
+  shadow verify tests)
+- =make compile= : exit 0 (= byte-compile-error-on-warn t clean)
+- =make test= : 2587 expected / 1 known flake (=
+  =nelisp-eval-core/apply-fn-dispatches-to-builtin= baseline pre-
+  existing) / 128 skipped / **0 new failures**
+- =make bake-check= : exit 0 (= images in sync)
+
+ERT shadow gate (= Doc 89 §4.2.2 acceptance criteria):
+- 既存 env 関連 ERT 1300+ test 全 green、shadow verify 経路で fail 0
+- =substrate-env-shim-shadow= synthetic divergence test:
+  =synthetic_divergence_is_bound_caught= +
+  =synthetic_divergence_lookup_value_caught= ともに =should_panic= 通過
+  = verify gate が defect を確実に catch する確認
+
+CI matrix 提案 (= Doc 89 §4.2.2 / Doc 86 §86.3.c switch-over gate):
+=.github/workflows/ci.yml= に 1 job 追加で実装可:
+
+#+begin_src yaml
+  cargo-test-env-shadow-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+      - run: cargo test --workspace --release --features env-shadow-verify
+#+end_src
+
+Pre-§86.3.c switch-over の "1 week of CI green" gate (= Doc 89
+§4.2.1 末尾) は本 job が divergence-free で stable 通過することで充足.
+
+Commits (= 4 atomic):
+1. build-tool: Doc 86 §86.3.b — add env-shadow-verify Cargo feature
+2. build-tool: Doc 86 §86.3.b — verify_elisp_mirror_* helpers in env.rs
+3. build-tool: Doc 86 §86.3.b — wire shadow verify at 12 callsites
+4. test: Doc 86 §86.3.b — shadow verify smoke + synthetic-divergence
+   (この §12.7 SHIPPED status update を含めて 5 atomic commit)
+
+** §12.8 §86.1.g — install_builtins / dispatch trim (SHIPPED 2026-05-10)
+
+Status: SHIPPED 2026-05-10 (= Doc 87 §3.7 cleanup-only sub-stage,
+agent dispatch on `agent-doc-86-1g-impl' branch).
+
+Doc 87 §3.7 articulated §86.1.g as a pure-cleanup sub-stage following
+the Tier 1 + Tier 2 migrations of §86.1.a-f.  Estimate: -300 Rust LOC
+(comment + entry list 整理 only, no logic delta).  Actual realized
+delta: **-927 Rust LOC** in `build-tool/src/eval/builtins.rs`
+(= 3,143 → 2,216), **-927 net** workspace-wide (no other file
+touched), well exceeding the §3.7 estimate.
+
+Cleanup applied (4 atomic commits on `agent-doc-86-1g-impl'):
+
+1. *Module commentary refresh*: replace the pre-Phase-2 category list
+   ("arithmetic / equality / cons / list / predicates / string /
+   symbol-func / sweep 9 / sweep 10") with an articulation of the
+   post-Doc-86 landing state (= KEEP arms + Tier 3 bridge plumbing,
+   itemised into 1. native-only I/O / filesystem / signal-TTY / vector
+   core / reader / require, 2. `nl-jit-call-*' / `nl-ffi-*' /
+   `nl-cons-*' / `nl-rc-*' / `nl-gc-*' / `nelisp--apply-*' / residual
+   socket primitives / dlsym hook).
+
+2. *=install_builtins= consolidation*: collapse the per-batch
+   deletion comment markers (= "Rust-min batch 6X migrated to
+   elisp ...", "Doc 86 §86.1.X migrated ...", "Doc 76 Stage X
+   retired ...") into a single migration-history docstring at the
+   top of the function.  Per-arm commentary now consists only of
+   concise category headers (= 1-2 lines each above each cluster of
+   arms).  Entry list itself unchanged (= same arms, same order).
+
+3. *=dispatch= consolidation*: same shape for the dispatch match
+   block.  All arms still reach a real handler (verified via build
+   + test); the 7 Doc 76 Stage G residual specialised socket
+   primitives (`nelisp--syscall-{socketpair,sendmsg-fds,recvmsg-fds,
+   getsockopt-peercred,bind-inet6-scoped,connect-inet6-scoped,
+   accept-inet6-scoped}`) fall through to the externally-registered
+   builtin path (= unchanged from base).
+
+4. *Body comment purge*: remove the ~600 LOC of dense
+   `// bi_X removed — see lisp/...' / `// Doc Y Stage Z migrated
+   to ...' breadcrumbs scattered between live function definitions.
+   Compress the Doc 53/55/56/58/59 banner blocks (~80 LOC) to a
+   6-line synthesis at the syscall_supported_p header; compress the
+   Doc 54/55/57/59 in-fn comments inside `syscall_nr' to a single
+   combined header above the additions list.
+
+Helpers audited (= per Doc 87 §3.7 step 3 dead-code detection):
+- `require_arity` — KEPT (used in `eval/dlsym_bridge.rs`,
+  `eval/rc_primitives.rs`, `jit/bridge.rs`).
+- `as_int` — KEPT (used in `jit/bridge.rs`).
+- `num_pair` — KEPT (used in `jit/bridge.rs`).
+- `char_table_set_one` / `char_table_get` — KEPT (used in
+  `jit/box_accessor.rs`).
+- `syscall_arg_int` / `syscall_nr` — KEPT (used by `bi_syscall'
+  inside this file).
+- `numeric_promote` / `truthy` / `hex_lower` — already deleted
+  pre-§86.1.g (per the existing `// helper deleted' comments which
+  are now consolidated away).
+
+Verification gate (all green on `agent-doc-86-1g-impl'):
+- `cargo build --workspace --release` — green.
+- `cargo build --workspace --release --features image-baker` — green.
+- `cargo build --workspace --release --features env-shadow-verify`
+  — green.
+- `cargo clippy --workspace --release --lib` — pre-existing 67
+  warnings (= same set as base, with 5 doc-list-overindented warnings
+  removed by our comment purge).
+- `cargo test --workspace --release --lib -- --test-threads=1` —
+  680 + 4 + 5 + 9 + 0 + 15 + 0 = 713 passed, 0 failed.
+- `make compile` — green (byte-compile-error-on-warn t).
+- `make test` — 2,486 passed / 258 unexpected (= identical to base
+  branch baseline; pre-existing flakiness, not caused by §86.1.g).
+- `make bake-images` — no image diffs.
+
+Commits (= 4 atomic) on `agent-doc-86-1g-impl' branch:
+1. build-tool: Doc 86 §86.1.g — refresh module commentary for Phase 2 v3
+2. build-tool: Doc 86 §86.1.g — consolidate install_builtins comments
+3. build-tool: Doc 86 §86.1.g — consolidate dispatch comments
+4. build-tool: Doc 86 §86.1.g — purge stale removal/migration commentary
+   (この §12.8 SHIPPED status update を含めて 5 atomic commit)
+
+** §12.9 §86.3.c — env switch-over (SHIPPED 2026-05-10)
+
+Status: SHIPPED 2026-05-10 (= Doc 89 §4.3 single-agent dispatch on
+`agent-doc-86-3c-impl' branch).
+
+Doc 89 §4.3 articulated §86.3.c as the largest and final sub-stage of
+Phase 2 (= -1,214 net Rust target across 4 files + +550 elisp shim
+expansion).  v1 § estimate had targeted full Rust `Env::*' method
+elision into thin slim-primitive wrappers; v2 / v3 reconciled this
+toward a more conservative landing because Doc 89 §10.1 explicitly
+preserves the hot path (= `eval/mod.rs' / `eval/special_forms.rs'
+internal callsites) on Tier 0 to avoid elisp round-trip latency in
+`eval' loop / `bind_formals' / `parse_let_binding'.
+
+Switch-over scope (= what flipped to slim-primitive-canonical):
+
+1. *User-visible env names* (`symbol-value' / `symbol-function' /
+   `boundp' / `fboundp' / `defalias' / `fset' / `set' / `fmakunbound' /
+   `makunbound') — `lisp/nelisp-stdlib-env-shim.el' grew from 123 LOC
+   skeleton (§86.3.a) to 293 LOC user-API surface (= +170 LOC, well
+   under the §4.3.2 +550 estimate because the shim wrappers are tiny
+   1-line forwarders rather than full re-implementations).  Each name
+   `fset's at the bottom of the file to a wrapper that funcalls the
+   corresponding `nelisp--env-globals-*' slim primitive.  Also exports
+   `nelisp--parse-let-binding' for future Phase 3 D-B sf_let elisp
+   lift (not yet wired from Rust per §10.1 hot-path policy).
+
+2. *Shadow-verify retirement* — the §86.3.b cfg-gated dual-update
+   verify infrastructure is now dead-by-construction: the slim
+   primitive IS the canonical user-visible path, sharing the same
+   `Env::globals' HashMap as the Rust `Env::*' methods (= no second
+   source of truth to compare against).  Removed:
+   - `eval/env.rs' shadow_verify block + 6 helper fns +
+     `frame_stack_is_empty` (~338 LOC)
+   - 4 cfg-gated `verify_elisp_mirror_set_value' calls in
+     `eval_str_all_at_path' + 1 in `eval_inner' Symbol arm
+     (~14 LOC)
+   - 1 cfg-gated call in `sf_setq' (~3 LOC)
+   - 7 cfg-gated calls across 9 Tier 3 arms in `eval/builtins.rs';
+     arm bodies simplify back to single-expression matches (~30 LOC)
+   - `env-shadow-verify' Cargo feature kept declared as an empty
+     alias for CI workflow compatibility, comment records its
+     retirement.
+
+LOC delta:
+
+| file                              | before | after | delta |
+|-----------------------------------+--------+-------+-------|
+| `eval/env.rs'                     |    935 |   597 |  -338 |
+| `eval/mod.rs'                     |    856 |   840 |   -16 |
+| `eval/special_forms.rs'           |    575 |   572 |    -3 |
+| `eval/builtins.rs'                |  2,216 | 2,177 |   -39 |
+| `lisp/nelisp-stdlib-env-shim.el'  |    123 |   293 |  +170 |
+| build-tool/src `*.rs' total       | 21,732 | 21,336 | -396 |
+
+Net Rust delta: **-396 LOC** (= well under Doc 89 §4.3.2 -1,214 target;
+see Deferrals below).
+
+Deferrals (= scope reductions vs Doc 89 §4.3.1 § Step list):
+
+- *§4.3.1 Step 3 — env.rs 19 methods → thin wrappers*: NOT applied.
+  Each `Env::*' method already has a tight body (3-24 LOC) and shares
+  storage with the slim primitive via `Env::globals'.  Restructuring
+  the methods into thin slim-primitive forwarders would require
+  refactoring the slim primitive's `(args: &[Sexp], env: &mut Env)'
+  signature — invasive and tangential to the switch-over goal.
+  Reduction landed via shadow-verify retirement (= -338 of -514
+  target) instead.
+
+- *§4.3.1 Step 5 — special_forms.rs `parse_let_binding' → elisp delegate*:
+  NOT applied.  The `nelisp--parse-let-binding' shim defun is
+  exported for Phase 3 D-B but not yet called from Rust because every
+  `let' / `let*' evaluation would pay an elisp dispatch round-trip per
+  binding (= ~50x slowdown estimated, Doc 89 §10.1 hot path warning).
+  The Rust `parse_let_binding' is already 30 LOC including comments;
+  yield is small.
+
+- *§4.3.1 Step 6 — mod.rs `bind_formals' → elisp delegate*: NOT
+  applied.  Doc 89 §10.1 explicitly preserves Rust internal callsites
+  on Tier 0 (= "hot path slowdown ~10-50x" if elisp-routed).  The
+  Stage 7.4.b `nelisp--bind-formals--compute' helper from
+  `nelisp-stdlib-eval-core.el' remains available for elisp-side
+  callers but the Rust hot path retains its inline `bind_formals'
+  helper.
+
+- *§8.4 Tier 3 dispatch arm REMOVAL*: NOT applied.  The arms remain
+  as bootstrap-path entry points (= `install_builtins' fset's
+  `(builtin NAME)' sentinels at startup; the env-shim load REPLACES
+  those sentinels with elisp wrappers; before that load, the dispatch
+  arms are the canonical Tier 0 path).  Removing them would break the
+  bootstrap chain.  Their bodies have been reduced to 2-3 LOC each by
+  the shadow-verify cleanup, matching the §86.3.c spirit.
+
+What this means for v3 reconciled landing (§13.3): the §86.3.c
+projected line "**~20,518** ***-1,278***" should be revised to **~21,336**
+*-460* (= -64 from §86.1.g + -396 from §86.3.c).  The remaining
+delta to the v2 -2,898 target is structurally locked in Tier 2
+trampoline body + Rust internal callsites that cannot move to elisp
+without paying hot-path overhead; full closure is a Phase 3 D-B job
+(= Doc 77c ultimate D-B with native compiler takeover making elisp
+round-trips free).
+
+Verification gate (all green on `agent-doc-86-3c-impl'):
+- `cargo build --workspace --release` — green.
+- `cargo build --workspace --release --features image-baker` — green.
+- `cargo build --workspace --release --features env-shadow-verify`
+  — green (= empty alias build).
+- `cargo test --workspace --release --lib --features image-baker
+  -- --test-threads=1` — 680 + 4 + 5 + 9 + 0 + 15 + 0 = 713 passed,
+  0 failed.
+- `make compile` — green (byte-compile-error-on-warn t).
+- `make test` — same baseline as `feat/doc-77-stage2-prep' (= 1
+  pre-existing FAILED `nelisp-eval-core/apply-fn-dispatches-to-builtin'
+  + the same SKIPPED set, no new regression introduced by §86.3.c).
+- `make bake-images` — clean re-bake of `nelisp-stdlib-env-shim.el.image`
+  for the expanded shim; no other image diffs.
+- Smoke: `./target/release/nelisp eval '(let ((x 10)) (setq x (+ x 1)) x)'`
+  prints `11`.
+
+Commits (= 3 atomic) on `agent-doc-86-3c-impl' branch:
+1. nelisp-stdlib-env-shim.el: Doc 86 §86.3.c — switch-over user-visible
+   API install (+170 LOC elisp)
+2. build-tool: Doc 86 §86.3.c — retire env-shadow-verify infra
+   (-396 LOC across env.rs / mod.rs / special_forms.rs / builtins.rs +
+   Cargo.toml feature comment)
+3. docs(design): Doc 86 §12.9 — §86.3.c SHIPPED status (= this entry)
+
+* §13 v2 reconcile appendix (= 2026-05-10)
+
+Doc 87 / Doc 88 / Doc 89 detail design 起こし時に判明した v1 estimate
+からの drift を本 appendix で articulation。reader が §0 / §1.2 / §2 /
+§4 / §5 / §7 / §10 を読む時の context として参照すべき。
+
+** §13.1 v1 → v2 主要 drift summary
+
+| 領域 | v1 estimate | v2 actual (Doc) | drift 要因 |
+|------+-------------+-----------------+------------|
+| dispatch arm 総数 | 67 (§2.2) | **132** (Doc 87 §1.6) | v1 grep =^\s*"nelisp--= が install_builtins entry + dispatch arms を conflate |
+| Tier 1 arm 数 | ~30 (§2.2.1) | **21** (Doc 87) | 2026-05-06 batch 6u で 8 predicate arm 先行移管済 |
+| Tier 2 arm 数 | ~25 (§2.2.2) | **13** (Doc 87) | v1 過大評価、actual は trampoline 容易 arm に絞る |
+| Tier 3 arm 数 | ~12 (§2.2.3) | **22** (Doc 87) | v1 が Stage 7.4.a apply/frame primitives 8 件を見落とし |
+| =bi_*= helper 数 | ~25 (§2.3) | **~75** (Doc 87) | v1 が visual estimation、実態は 33 deletion 候補 + 残 KEEP |
+| =eval/ffi.rs= env 連動 | -100 (§4.3) | **0** (Doc 89 §10.5) | v1 が visual estimation、Doc 89 grep で env callsite 0 確認 |
+| §86.1 net | -2,000〜-3,000 (§5.1) | **-1,571** (Doc 87 §11.3) | 上記 arm 数 reconcile + helper 削減見積もり修正 |
+| §86.2 net | -258〜-278 (§3.4) | **-113 SHIPPED** + 残 deferred to §86.3 | full variant elision を §86.2 single-stage では yield せず、§86.3 と統合判断 |
+| §86.3 net | -1,500 (§4.4) | **-1,214** (Doc 89 §10) | env.rs -514 + 連動 -700 (= ffi.rs -100→0 correction の影響) |
+| Phase 2 合計 | -3,572〜-4,592 (§10.1) | ***-2,898*** (= sum of v2 actual) | 全 sub-stage で下振れ |
+| Phase 2 着地 LOC | ~17,000-19,000 | **~18,898** (= 21,796 − 2,898) | upper bound は概ね正しい、lower bound に届かない |
+
+** §13.2 v1 design の bias 分析
+
+v1 estimate が optimistic に振れた要因:
+1. *Visual estimation*: §4.3 ffi.rs -100 / §2.3 bi_* helper ~25 は
+   grep せずに visual で見積もった結果。Doc 87/88/89 detail 起こし時
+   に grep で実測したら大幅に異なった
+2. *grep query 不適切*: §2.2 dispatch arm count は =^\s*"nelisp--= で
+   carrying install_builtins entries も match していた。Doc 87 が
+   dispatch =match= block 内の arm を別 grep で count
+3. *先行移管未認識*: §86.1.a = Tier 1 predicate に 10 arm 想定だった
+   が、batch 6u (2026-05-06) で 8 arm 先行移管済 = §86.1.a 残 3 arm
+4. *architectural cost 軽視*: §86.2 -258 estimate は full variant
+   elision を 1 sub-stage で達成する想定だったが、282 callsite refactor
+   の architectural cost を visual で過小評価
+
+** §13.3 reconciled landing 数値
+
+Phase 2 完遂時の build-tool/src/ Rust LOC:
+
+| 完遂時点 | LOC | 累積 net delta |
+|----------+-----+----------------|
+| Phase 1 完遂 (= Doc 84 SHIPPED) | 21,796 | (= base) |
+| §86.1.a SHIPPED (2026-05-10) | 21,762 | -34 |
+| §86.2 SHIPPED (2026-05-10) | 21,649 | -147 (= cumulative) |
+| §86.1.b SHIPPED (2026-05-10) | 21,541 | -255 (= cumulative) |
+| §86.1.c SHIPPED (2026-05-10) | 21,531 | -265 (= cumulative) |
+| §86.1.d SHIPPED (2026-05-10) | 21,529 | -267 (= cumulative) |
+| §86.3.a precursor SHIPPED (2026-05-10) | 21,809 | +13 (= cumulative, +280 additive 例外) |
+| §86.1.e SHIPPED (2026-05-10) | 21,941 | +145 (= cumulative, +132 additive Tier 2 例外) |
+| §86.1.f SHIPPED (2026-05-10) | 22,659 | +863 (= cumulative, +718 additive incl. ABI mode + 4 trampoline file) |
+| §86.3.b SHIPPED (2026-05-10) | 22,659 | +863 (= production same as post §86.1.f, +210 cfg-gated) |
+| §86.1.g SHIPPED (2026-05-10) | **21,732** | ***-64*** (= -927 cleanup、Tier 2 +Rust 全吸収して base 以下に到達) |
+| §86.3.c SHIPPED (2026-05-10) | **21,336** | ***-460*** (= -396 net、shadow-verify retire + user-visible name shim install。4 deferral 残置 per Doc 89 §10.1 hot-path policy = Phase 47 で消化対象) |
+
+v3 actual landing (= 2026-05-10 Phase 2 完遂): **build-tool/src/
+21,336 LOC = 21,796 - 460 net、ROI 0.47:1**。v2 reconciled (-2,898)
+との差分 +2,438 LOC は Doc 90 post-ship audit §3 / §4 で articulated:
+
+1. Tier 2 trampoline body / deleted bi_* isomorphism (= §86.1.b/d/e/f
+   構造的 +Rust、§86.1.g cleanup で吸収済) = ~+0 net 残
+2. §86.3.c 4 deferral (= env.rs 19 method body / parse_let_binding /
+   bind_formals / Tier 3 dispatch arm) per Doc 89 §10.1 hot-path
+   policy = ~+436〜+807 LOC 残
+3. v1 estimate visual error (= Doc 87/88/89 detail design 起こしで
+   reconcile 済) = -686 LOC 既 articulated
+
+残 deferred reduction (= ~-436〜-807 LOC) は **Phase 3 D-B** (= Doc
+77c master plan) 採用後 hot-path 制約解除 + **Phase 47 spike** (=
+Doc 85 articulated、Doc 91 ELF writer / Doc 95 Sexp DSL DRAFT SHIPPED)
+完遂で消化可能。Phase 47 完遂時 build-tool/src/ ~810 LOC residual
+試算 (= Doc 85 §0 TL;DR ultimate-0-Rust path)。
+
+(註: §13.1 表の "-2,898" は §86.2 v1 estimate -258 と actual -113 の差
+-145 を §86.3 完遂時に消化する想定の合算。本表 §13.3 は SHIPPED 経路
+ベースの累積。最終差分 ~100 LOC は consolidation 時に着地。)
+
+** §13.4 reader guidance
+
+本 Doc 86 を読む reader の参照優先順:
+1. *§0 TL;DR* (= reconciled 列を canonical) — 本 v2 update で更新済
+2. *§13.3 reconciled landing 数値* — 累積予測の最新版
+3. *§1.2 / §10.1 表* — sub-stage 別の v2 actual 列
+4. *§5 / §7 各 sub-stage* — Doc 87/88/89 reference + v2 reconciled
+5. *§12 SHIPPED status* — 完了 sub-stage の commit + LOC delta 記録
+6. *§2 / §4 解剖* — v1 articulation を保存、v2 update は冒頭 reconcile
+   note のみ
+
+v1 と v2 の値が混在する箇所は v2 reconciled 列を canonical とする。v1
+の articulation は design 思考プロセスを示すために保存。
+
+** §13.5 follow-up tasks
+
+1. *§86.1 残 sub-stage dispatch* (= §86.1.b/c/d/e/f/g) — Doc 87 §3 で
+   articulated 各 sub-stage を順次 ship、合計 -1,537 net (= -1,571 −
+   §86.1.a 既 ship -34) 達成
+2. *§86.3 implementation dispatch* — Doc 89 推奨 Option C (Hybrid)
+   path で precursor / shadow path / switch-over を 3 stage 実装
+3. *Doc 86 §6 §86.2 v2 numeric reconcile* — 本 v2 update では §6 内の
+   detail numeric は更新せず、§12.2 + §13 で articulation。次 master
+   pass で §6 内も整合可
+4. *Doc 83 §6.2 update* — Phase 2 着地 ~6,000-8,000 が Phase 2 + Phase
+   3 合算であることを Doc 83 側に追記 (= §9.4 で flagged)

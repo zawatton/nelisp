@@ -1,0 +1,576 @@
+#+TITLE: Doc 99 — Phase 47 native compile を eval loop に配線
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-11
+
+* Status
+
+- *State*: DRAFT 2026-05-11
+- *Parent*: Doc 85 (= Phase 47 feasibility spike VALIDATED) /
+  Doc 96 (= chain demonstrator SHIPPED) / Doc 97 (= Sexp → asm
+  compiler with §97.a/b/c SHIPPED)
+- *Sibling*: Doc 90 (= Phase 2 postship audit) §3 deferrals D1/D2/D3
+  whose "unlock 条件" requires this wiring to land
+- *Dependents (future)*:
+  - Doc 100+ — per-Rust-fn elisp swap commits (= one design slice
+    per `bi_*' migration after §99.C spike validates)
+- *Scope*: design only.  Implementation (= §99.A spike + §99.B build
+  wiring + §99.C first swap) is multi-session; sub-stage Doc 100+
+  records the actual commits.
+
+* §0 TL;DR
+
+** §0.1 The "配線" gap
+
+Phase 47 chain (Doc 91-97) currently ships a *frontend* that takes
+elisp Sexp source and produces *standalone* Linux ELF executables.
+Run `nelisp-phase47-build-program' on `(seq (write "hi\n") (exit 0))'
+and you get a `/tmp/x' file the kernel can exec directly.
+
+What it does NOT ship: a way for the `nelisp' interpreter to *call
+into* the compiled code at runtime.  Compiled output today is
+ET_EXEC binaries — full programs with their own `_start' + linear
+control flow.  There is no:
+
+- ET_REL (= relocatable `.o') output that an external linker can pull
+  into another binary
+- Loadable shared-library (ET_DYN / `.so') output for `dlopen'
+- Calling-convention / ABI document for how the interpreter would
+  hand argument lists + receive return values
+
+Without one of these, "Phase 47 unlocks Doc 90 D1/D2/D3 deferrals"
+cannot land — there is no path for the `nelisp' binary to delegate
+a `bind_formals' call to elisp-compiled code in place of the Rust
+hot-path.
+
+** §0.2 The target end state (= Arch C)
+
+#+begin_src text
+  ┌────────────────────────────────────────────────────────┐
+  │       nelisp binary (= 100% elisp-compiled AOT)        │
+  ├────────────────────────────────────────────────────────┤
+  │  Doc 94 crt0 (elisp) → kernel entry                    │
+  │      ↓                                                 │
+  │  AOT-compiled stdlib + interpreter + builtins          │
+  │      ↓                                                 │
+  │  user code (= interpret OR compile-on-demand)          │
+  └────────────────────────────────────────────────────────┘
+              ↕ (syscalls only)
+        Linux kernel
+#+end_src
+
+Every byte of code in the binary derives from elisp source the
+Phase 47 chain compiled.  Rust is build-time only (= cargo as
+self-host check) and disappears once the chain bootstraps itself.
+
+This satisfies Doc 77c v1.0 condition #4 (= 4-core C runtime +
+standalone binary) by reduction to zero (= no C / Rust at runtime,
+only kernel ABI).
+
+** §0.3 The pragmatic incremental path
+
+Arch C is the destination.  Getting there requires *intermediate*
+architectures that progressively replace Rust functions with elisp-
+compiled native code, one at a time.  Doc 99 defines that path:
+
+| Stage    | Scope                                                   | Effect |
+|----------+---------------------------------------------------------+--------|
+| §99.A    | Doc 91 ELF writer learns ET_REL output                  | unblock |
+| §99.B    | `nelisp' build links 1 elisp-compiled `.o' alongside Rust | spike  |
+| §99.C    | First Rust `bi_*' swapped for `extern "C"' elisp object | proof  |
+| §99.D    | Doc 90 D1/D2/D3 swap rollout (= per-fn Doc 100+ slices) | unlock |
+| §99.E    | Cargo-free build (= chain bootstraps itself)           | Arch C |
+
+§99.A〜§99.C is the *spike*: ~1 week of focused work; proves the
+loop end-to-end with one trivial function.  §99.D is the
+*production engagement*: each subsequent swap is faster (= the
+machinery is in place) but the LOC reduction is the real win.
+§99.E is the *cutover*: roll cargo out as a build-time-only
+secondary path, then delete it.
+
+** §0.4 Scope of Doc 99
+
+This document specifies §99.A〜§99.C (= spike) in implementation-
+ready detail and sketches §99.D〜§99.E.  Each sub-stage commit lands
+its own slice; cumulative expected timeline:
+
+- §99.A spike: 1-2 days (= ELF writer ET_REL + smoke test)
+- §99.B spike: 1 day (= build.rs glue, 1 dummy `.o' linked)
+- §99.C spike: 2-3 days (= first real swap + cargo test green)
+- §99.D rollout: ~1 month (= D1 19 methods + D2 + D3 = ~25 swaps)
+- §99.E cutover: deferred until §99.D substantially complete
+
+* §1 Background
+
+** §1.1 Phase 47 chain — current capability
+
+The chain is *complete* for the standalone-binary use case.  Each
+component is feature-grade per its parent doc:
+
+| Doc | Module                            | LOC  | Output |
+|-----+-----------------------------------+------+--------|
+| 91  | =lisp/nelisp-elf-write.el=        | 1152 | ET_EXEC ELF binary |
+| 92  | =lisp/nelisp-asm-x86_64.el=       |  688 | x86_64 machine code |
+| 92  | =lisp/nelisp-asm-arm64.el=        |  519 | arm64 machine code |
+| 93  | =lisp/nelisp-static-linker.el=    |  630 | symbol resolution + reloc apply |
+| 94  | =lisp/nelisp-crt0.el=             |  510 | x86_64 _start |
+| 94  | =lisp/nelisp-crt0-arm64.el=       |  339 | arm64 _start |
+| 95  | =lisp/nelisp-sexp-dsl.el=         | 2348 | Sexp layout DSL (= structures hash-tables, vectors, conses) |
+| 96  | =lisp/nelisp-phase47-build.el=    |  245 | chain orchestrator (3 hand-crafted demos) |
+| 97  | =lisp/nelisp-phase47-compiler.el= | 1091 | Sexp → asm (§97.a/b/c SHIPPED) |
+
+Total: ~7,500 LOC of pure elisp.  Verified end-to-end by the demo
+suite in Doc 96 — `(fact 5)' compiles to native x86_64, execs,
+exits 120.
+
+** §1.2 What the chain does NOT produce
+
+#+begin_src text
+  ┌────────────────────────────┐
+  │ Phase 47 chain (Doc 91-97) │ ←  Sexp source
+  └─────────────┬──────────────┘
+                ↓
+       /tmp/foo (= ET_EXEC)   ← can run via fork+exec
+       /tmp/foo               ← cannot dlopen
+       /tmp/foo               ← cannot static-link into nelisp
+#+end_src
+
+ELF writer's =nelisp-elf--et-exec= constant is the only `e_type'
+emitted.  ET_REL (`.o', value 1) and ET_DYN (`.so', value 3) are
+unimplemented.
+
+Without ET_REL, the chain cannot interoperate with `nelisp''s build
+system.  `cargo build' has no way to consume compiled elisp code.
+
+** §1.3 Doc 90 D1/D2/D3 unlock conditions
+
+Doc 90 §3.1〜§3.3 (= D1/D2/D3 deferrals) all cite the same blocker:
+
+#+begin_quote
+Phase 47 unlock 条件: Phase 3 D-B (= Doc 77c master) が ship し
+native compiler 経由で elisp =NAME= が Rust 同等 perf で動く時点。
+#+end_quote
+
+Translated: "the deferral resolves once native-compiled elisp
+performs at Rust speed *and is reachable from the eval loop*".  The
+first half is solved by Doc 97 (= native compile exists).  The
+second half is what Doc 99 specifies — the wiring layer.
+
+** §1.4 Why not Cranelift / inkwell / LLVM-shaped JIT
+
+NeLisp already burned the Cranelift bridge (Doc 28 §3.7.b cited
+in =bin/nelisp.rs= header comment: "post-Cranelift全削除").  The
+Phase 47 chain replaces that JIT with AOT pure-elisp asm emission.
+This is *the* architectural commitment — Doc 99 reinforces it
+rather than reopens it.
+
+The natural consequence: dispatch from interpreter to native code
+must be a *function pointer call*, not a JIT IR-translation step.
+The function pointer must be resolvable at link time (= ET_REL +
+static link) or at startup (= ET_DYN + dlopen).  Doc 99 picks
+ET_REL + static link for §99.A-C (= simplest), keeps ET_DYN as a
+future option for §99.E if a use case emerges.
+
+* §2 Target architecture (= Arch C)
+
+** §2.1 Component layout
+
+#+begin_src text
+  Source code that ships in nelisp repo:
+    lisp/nelisp-*.el        ← elisp source (stdlib + builtin shims)
+    lisp/nelisp-cc-*.el     ← Phase 47 chain (Doc 91-97)
+    build-tool/src/         ← Rust (= shrinks toward zero)
+
+  Build-time process (= cargo build):
+    1. cargo compiles build-tool/src/ → emits temporary Rust nelisp
+    2. Temporary nelisp loads stdlib via existing frozen-heap path
+    3. Temporary nelisp runs Phase 47 chain on selected stdlib *.el
+    4. Phase 47 emits *.o (= ET_REL ELF objects)
+    5. Cargo links *.o into final nelisp binary alongside Rust .rlib
+    6. Final nelisp binary boots, links to elisp-compiled functions
+
+  Runtime process (= nelisp binary running):
+    - Rust interpreter (= eval loop) dispatches function calls
+    - Some functions resolve to elisp-compiled code (= extern "C"
+      calls into linked-in objects)
+    - Some functions stay Rust (= until swap completes)
+    - Net effect: zero perf cost over Rust for swapped functions,
+      and Rust LOC strictly decreases per swap
+#+end_src
+
+** §2.2 ABI between interpreter and elisp-compiled code
+
+The boundary needs to handle:
+
+- Argument passing: `[Sexp]' slice from Rust + `&mut Env'
+- Return: `Result<Sexp, EvalError>'
+
+Two options for the C ABI shape:
+
+*Option A: by-pointer*
+#+begin_src c
+  // C ABI: takes ptr to Sexp slice + ptr to Env + ptr to result.
+  void nelisp_X(const Sexp* args, size_t n_args,
+                Env* env, Result_Sexp_EvalError* out);
+#+end_src
+
+*Option B: by-Sexp-list*
+#+begin_src c
+  // C ABI: takes a single Sexp value (= cons-chain list) + Env.
+  Sexp nelisp_X(Sexp args_list, Env* env);
+  // Error propagation via env-stored unwind flag.
+#+end_src
+
+Doc 99 picks *Option B* because:
+- It matches the elisp side's natural argument representation (=
+  `args' is already a cons list before destructuring).
+- Phase 47 chain doesn't have a struct passing convention yet —
+  passing a single tagged-pointer Sexp value is the lowest-friction
+  starting point.
+- Error propagation via env-side flag is already how the Rust
+  interpreter signals `signal' unwinds; reuse keeps the ABI simple.
+
+The exact `Sexp' tag layout + `Env' pointer layout are pinned by
+Doc 95 (= Sexp DSL) and existing Rust `eval/sexp.rs' definitions.
+§99.B must publish a *frozen* layout document so the Phase 47
+compiler can emit matching field offsets.
+
+** §2.3 Why static link, not dlopen
+
+Static linking (= ET_REL + ld during cargo build) is the simplest
+shape for §99.A-D:
+
+- *Single binary* deployment story preserved (= no shared-library
+  path search at runtime).
+- *No runtime resolver* — function pointers are bound at link time
+  by `ld' or `cc -static'.
+- *Cargo build.rs integration* is straightforward — cc-rs crate
+  already has `.object(path)' for ingesting `.o' files.
+- *Failure mode is build-time*, not startup-time — easier to debug.
+
+ET_DYN / dlopen makes sense later (= §99.E or beyond) when:
+- Runtime load of user-supplied compiled elisp is a feature.
+- Hot-swap / live-update of compiled stdlib functions is desired.
+- The Rust runtime is mostly gone and the remaining bootstrap shell
+  is a thin dlopen-driven shim.
+
+Doc 99 defers those scenarios.  §99.A-D delivers everything Doc 90
+deferrals need without them.
+
+* §3 Stage breakdown
+
+** §3.A Stage 99.A — Doc 91 ELF writer ET_REL output (~1-2 days)
+
+*Scope*:
+
+1. Add =nelisp-elf--et-rel= constant (= 1).
+2. Add `:e-type 'rel' branch to =nelisp-elf-write-binary' (or
+   sister entry point `=nelisp-elf-write-relocatable=').
+3. ET_REL-specific section table:
+   - =.text= section with `SHF_ALLOC | SHF_EXECINSTR'.
+   - =.rodata= section with `SHF_ALLOC'.
+   - =.symtab= section with one `STT_FUNC' symbol per exported function.
+   - =.strtab= section for symbol names.
+   - =.rela.text= section with relocations against `.rodata' / `.text'.
+   - Optional =.shstrtab= section for section name strings.
+4. No program headers (= `e_phnum = 0', `e_phoff = 0' — ET_REL
+   doesn't need them).
+5. Implement the standard ELF64 relocation types the chain emits:
+   - `R_X86_64_64' (= absolute 64-bit address)
+   - `R_X86_64_PC32' (= PC-relative 32-bit, for `call' instructions)
+   - `R_X86_64_PLT32' (= PLT-relative, used identically for static link)
+6. arm64 equivalents in Doc 92 arm64 module (= follow-up; x86_64
+   first).
+
+*LOC delta*: +200〜+300 elisp in `nelisp-elf-write.el'.
+
+*Verification gate*:
+
+- New ert: `nelisp-elf-write-rel-smoke' — emit a `.o' containing
+  `_start: mov rax, 60; mov rdi, 42; syscall' + minimal symbol
+  table.  `objdump -d /tmp/x.o' / `readelf -h /tmp/x.o' confirms
+  ET_REL + symbol present.
+- New ert: `nelisp-elf-write-rel-ld-can-link' — `ld /tmp/x.o
+  -o /tmp/x' produces an executable that exits 42.  Validates that
+  the relocation section is consumable by system `ld'.
+
+*Why it's correct*: ET_REL is a strict subset of ET_EXEC's machinery
+(= no segments, no program headers, simpler symbol table) — we are
+*removing* complexity from the writer, not adding it.  The existing
+test fixtures stay green because ET_EXEC code path is untouched.
+
+** §3.B Stage 99.B — `nelisp' build links 1 elisp-compiled `.o' (~1 day)
+
+*Scope*:
+
+1. Add =scripts/compile-elisp-objects.el= — script that:
+   - Loads Phase 47 chain (= require nelisp-phase47-compiler).
+   - Reads a manifest (`build-tool/elisp-objects.toml' or similar)
+     listing `.el' files to compile.
+   - For each, runs `nelisp-phase47-compile-sexp' (extended to emit
+     `.o' instead of executable) into `target/elisp-objects/X.o'.
+2. Add =build-tool/build.rs= step:
+   - Detect manifest.
+   - Invoke `emacs --batch -Q -l scripts/compile-elisp-objects.el
+     -f emit-all'.
+   - Use `cc::Build::new().object("target/elisp-objects/X.o").compile(...)'
+     to wrap into a `.a' static archive.
+3. Add 1 dummy elisp function to the manifest:
+   #+begin_src elisp
+     ;; lisp/nelisp-cc-spike-noop.el
+     (defun nelisp-spike-noop (env args)
+       "Return 42 unconditionally — §99.B spike."
+       42)
+   #+end_src
+4. Add 1 Rust extern "C" declaration + 1 call site in a probe
+   test, verify cargo test passes.
+
+*LOC delta*: +50 elisp (script) + +30 build.rs + +20 Rust shim.
+
+*Verification gate*:
+
+- `cargo build --release' compiles cleanly with the new build.rs
+  step.
+- Probe test `bin/nelisp eval "(nelisp-spike-noop nil nil)"' (=
+  or equivalent) prints 42.
+- `nm target/release/nelisp | grep nelisp_spike_noop' shows the
+  symbol present in the final binary.
+
+*Why it's correct*: This stage adds ONE new function and ONE new
+build step.  Nothing existing is modified — purely additive.  If
+the build.rs step fails it's caught at build time, not at boot.
+Probe test is independent of the existing 679 cargo tests.
+
+** §3.C Stage 99.C — First Rust → elisp swap (~2-3 days)
+
+*Scope*:
+
+Pick the smallest, most isolated Rust `bi_*' function that's still
+in `eval/builtins.rs' after Doc 98 §98.4 — candidates:
+
+- =bi_symbol_function= (10 LOC) — env-shim's own bake reads it but
+  could be replaced with a stub during early bake + final replacement
+  with elisp.  Trade-off: more disruptive.
+- A specific Tier 2 helper like =bi_format= sliver — easier to swap
+  but ROI smaller.
+- =bi_macroexpand_1= — modest size, one defined call site, no
+  bootstrap dependency.
+
+Suggested first target: =bi_macroexpand_1= or a brand-new tiny
+function added specifically for the spike.
+
+Process:
+
+1. Write elisp equivalent of the chosen `bi_*' as a stand-alone
+   function (= `lisp/nelisp-cc-XXX.el').
+2. Phase 47 chain compiles it to `.o' via §99.B's manifest.
+3. Replace the Rust `bi_XXX' implementation with `extern "C"' call
+   that hands `[Sexp]' + `&mut Env' across.
+4. Verify cargo test (lib, single-threaded) stays 679/679.
+5. Production smoke: `nelisp eval "(macroexpand-1 ...)"` returns
+   expected value.
+
+*LOC delta*: −20〜−50 Rust (= the deleted `bi_*' body) + +30〜+60
+elisp (= the equivalent + Phase 47 chain glue).  Net likely
+positive on first swap but the *machinery* is fully in place.
+
+*Verification gate*:
+
+- cargo test 679/679 PASS.
+- `cargo build --release' produces same-sized binary ±10 KB (= sanity).
+- Production smoke covering the swapped function.
+- A new ert that intentionally panics if the elisp version returns a
+  different answer than the old Rust version (= cross-impl
+  regression lock).
+
+*Why it's the right spike*: Single-function swap proves the whole
+ABI + build pipeline + cross-impl equivalence in one motion.  All
+later swaps reuse the §99.A〜§99.C machinery.
+
+** §3.D Stage 99.D — Doc 90 D1/D2/D3 unlock rollout
+
+Once §99.C SHIPPED, the unlock conditions for Doc 90 D1/D2/D3
+deferrals are met:
+
+| Deferral | Target                  | Expected LOC |
+|----------+-------------------------+-------------|
+| D1       | env.rs 19 methods       | -547         |
+| D2       | parse_let_binding       | -30          |
+| D3       | bind_formals            | -100         |
+| §98.4 残 | symbol-function + fset  | (Doc 90 §3.4) |
+
+Each becomes a *separate sub-stage doc* (= Doc 100, 101, 102, ...)
+following the §99.C template:
+
+- elisp equivalent
+- Phase 47 compile manifest entry
+- Rust delete + extern "C" replace
+- cargo test + perf gate
+
+Doc 99 does not prescribe the order — Doc 90's existing priority
+order (= D2 / D3 hot-path first, D1 bulk last) is the working
+default.
+
+Cumulative expected: −800 〜 −1,000 Rust LOC across ~25 swaps.
+
+** §3.E Stage 99.E — Cargo-free build (= Arch C cutover)
+
+Long-term, after §99.D substantially complete:
+
+1. Compile the Rust interpreter loop itself to elisp (= via a new
+   "Rust subset → elisp" transpiler, OR by replacing the loop with
+   an elisp implementation that uses the now-elisp builtins).
+2. Compile crt0 + boot loader as the binary entry point.
+3. Cargo build no longer required — `make bake-and-link' produces
+   the final binary from elisp source alone.
+4. Delete `build-tool/' / `nelisp-runtime/' Rust crates.
+
+Specifying §99.E in detail is deferred — too many unknowns until
+§99.D reveals what the eval loop actually looks like after Doc 90
+deferrals consume their Rust hot paths.
+
+* §4 Why this design is "純 elisp として綺麗"
+
+** §4.1 Single source of truth
+
+In Arch C, every byte of code in `nelisp' descends from
+`lisp/*.el' via the Phase 47 chain.  No second-language redundancy
+(= Rust copy of an elisp builtin), no "is the Rust or the elisp
+canonical" ambiguity.  Source = elisp, binary = compiled elisp,
+runtime = compiled elisp executing.
+
+** §4.2 Self-hosting fixed point
+
+Once the Phase 47 chain itself is among the things the binary
+compiles, `nelisp' can re-produce its own binary from its own
+source.  Bootstrap is fixed-point closed:
+
+#+begin_src text
+  nelisp(N)  +  nelisp-phase47-compiler.el  →  nelisp(N+1)
+            sources both versions are identical
+#+end_src
+
+This is the cleanest possible self-hosting story — no two-language
+shim, no "fix it in Rust" escape hatch.
+
+** §4.3 Layer count
+
+Arch C has *two* layers:
+1. elisp source (= what humans / AIs write)
+2. native machine code (= what CPU executes)
+
+No interpreter as a separate layer (= it IS native code).  No JIT.
+No bytecode VM.  No Cranelift IR.  No LLVM.  Two layers.
+
+Compare to Emacs (= elisp + bytecode + native-comp + C runtime),
+SBCL (= CL + compiler IR + native + C runtime), GHC (= Haskell +
+Core + STG + Cmm + native + C runtime).  Two layers is rare and is
+itself part of the aesthetic.
+
+** §4.4 Incrementally provable
+
+Every Doc 100+ swap commit ships a *test* that proves the elisp
+version computes the same value as the Rust version it replaces.
+The aesthetic of pure-elisp is backed by per-commit empirical
+evidence, not architectural assertion.
+
+* §5 Risks / unknowns
+
+** §5.1 ABI layout fragility
+
+The C ABI between interpreter and elisp-compiled code embeds the
+exact memory layout of `Sexp' / `Env'.  Any field reorder in
+`eval/sexp.rs' breaks every compiled `.o' silently.
+
+*Mitigation*: §99.B publishes a frozen layout document committed to
+the repo (= `docs/arch/sexp-abi.md').  CI gate detects layout
+drift via a generated assertion in Rust (`const_assert!' on field
+offsets).  Phase 47 chain reads the same frozen doc.
+
+** §5.2 elisp compile errors at build time
+
+Phase 47 chain currently aborts on unsupported forms (§97 v1
+language is very restricted).  Selecting Rust functions for
+§99.D swap requires they fit the supported language subset.
+
+*Mitigation*: §99.C picks the simplest possible function for the
+spike.  §99.D swap order matches available compiler features —
+the Phase 47 chain evolves alongside (= §97.d / §97.e land before
+expensive D1 env.rs migration).
+
+** §5.3 cargo build ordering
+
+`build.rs' runs *before* `rustc' on `nelisp-build-tool'.  But the
+script `compile-elisp-objects.el' needs a working `emacs --batch'
+that knows about the Phase 47 chain — meaning it needs the
+*current* state of `lisp/*.el' as source files (= no chicken-and-
+egg on the binary).
+
+*Mitigation*: `emacs --batch -Q -L lisp -l nelisp-phase47-compiler'
+runs the chain *inside host Emacs*, not inside `nelisp'.  No
+chicken-and-egg.  The compiled `.o' is what gets linked into
+the *new* `nelisp' binary.
+
+** §5.4 Cross-arch (= arm64) parity
+
+Doc 92 / Doc 94 ship both x86_64 and arm64 backends.  ET_REL output
+must follow the same parity discipline.
+
+*Mitigation*: §99.A x86_64 first, §99.A.arm64 as a follow-up
+substage.  arm64 production engagement (= §99.B-D for arm64
+target) waits for x86_64 spike validation.
+
+* §6 Verification gates
+
+** §6.1 Per-stage gates (= recap)
+
+- *§99.A*: `nelisp-elf-write-rel-smoke' + `ld'-can-link ert pass.
+- *§99.B*: `cargo build --release' clean + probe test prints 42 +
+  `nm' shows symbol.
+- *§99.C*: 679/679 cargo test + cross-impl regression ert + binary
+  size sanity.
+- *§99.D*: per-Doc-100+ cross-impl regression ert + cargo test
+  green + perf parity test (= within 5% of original Rust).
+
+** §6.2 Cumulative gates
+
+- *Doc 90 D1/D2/D3 unlock*: each deferral's "Phase 47 unlock 条件"
+  clause is satisfied by §99.C SHIPPED.
+- *Phase 47 production engagement*: Doc 96 §0.2 thesis ("a single
+  pure-elisp tool chain produces production native code") moves
+  from "demonstrator" to "production" once §99.D substantial
+  rollout completes.
+
+* §7 References
+
+** §7.1 Parent docs
+
+- Doc 85 — Phase 47 feasibility spike (= VALIDATED 2026-05-11)
+- Doc 90 — Phase 2 postship audit (= D1/D2/D3 deferral unlock conditions)
+- Doc 96 — Phase 47 build orchestrator (= chain demonstrator SHIPPED)
+- Doc 97 — Sexp → asm compiler (= §97.a/b/c SHIPPED, §97.d/e DRAFT)
+- Doc 98 — Stage 9.5 real frozen-heap baker (= sibling, SHIPPED 2026-05-11)
+
+** §7.2 Memory entries (= context)
+
+- =project_phase_47_spike_validated= — `(fact 5)' → EXIT=120 ✓ proof
+- =feedback_rust_core_minimization_principle= — same-commit net
+  Rust decrease rule (= applies to every Doc 100+ swap commit)
+- =feedback_define_completion_before_dispatch= — completion-
+  definition pre-alignment rule (= §99.A-C is the spike, §99.D is
+  the production engagement; user alignment per commit)
+
+** §7.3 Code references
+
+- =lisp/nelisp-elf-write.el:62= — `et_exec' constant (= §99.A
+  target: add `et_rel')
+- =build-tool/src/eval/sexp.rs= — `Sexp' enum (= §5.1 ABI fragility
+  surface)
+- =build-tool/src/eval/builtins.rs:117-266= — `install_builtins'
+  names array (= §99.C target: pick first `bi_*' to swap)
+
+** §7.4 Commit references (= future, will fill as Doc 100+ ships)
+
+- §99.A spike commit (= TBD)
+- §99.B spike commit (= TBD)
+- §99.C spike commit (= TBD)
+- Doc 100+ per-fn swap commits (= TBD)

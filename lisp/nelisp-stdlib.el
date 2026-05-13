@@ -8,11 +8,12 @@
 ;; from Rust to elisp, folding over new 2-arg primitives
 ;; `nelisp--add2' / `nelisp--sub2' / `nelisp--mul2'.  Same pattern
 ;; as batch 6j (= bitwise variadic fold over `nelisp--logior2'
-;; etc.).  `/' kept in Rust because its variadic semantics promote
-;; ALL args to f64 upfront, then trunc only at end IF originally
-;; all-int — a step-wise fold would lose precision for mixed
-;; int/float input (e.g. (/ 10 3 2.0) = 1.666 upfront vs 1.5
-;; step-wise).
+;; etc.).  Doc 86 §86.1.b (2026-05-10): `/' migrated to elisp on
+;; top of the new `nl_jit_float_div' trampoline (jit/float.rs).
+;; The upfront-promote-then-trunc-on-all-int semantics (= which
+;; previously kept `bi_div' in Rust to avoid step-wise precision
+;; loss) are now elisp-native via a 2-pass fold: pass 1 detects
+;; any-float, pass 2 does the f64 division through the trampoline.
 ;;
 ;; Identity elements: (+) = 0, (-) = 0, (*) = 1.  Unary cases:
 ;; (- x) = (nelisp--sub2 0 x) = -x; (+ x) and (* x) return x.
@@ -41,6 +42,47 @@
       (setq acc (nelisp--mul2 acc (car cur)))
       (setq cur (cdr cur)))
     acc))
+
+;; Doc 86 §86.1.b — `/' (variadic).  Pass 1: detect any Float arg
+;; (= drives the int-trunc gate at the end).  Pass 2: f64 division
+;; through `nl_jit_float_div' trampoline; division-by-zero check
+;; uses `nelisp--num-eq2' (= the same numeric `=' the deleted
+;; `bi_div' tested via `vs[0] == 0.0').  1-arg case is reciprocal
+;; `(/ x)' = `(1.0 / x)' with int-trunc gating just like n-arg.
+;; All-int-trunc uses `(nl-jit-call-i64-i64 "nelisp_jit_add2" 0 X)'
+;; (= the as_int coerce idiom from `ash') so `truncate' (which
+;; lives in Rust as a separate primitive yet to migrate in §86.1.d)
+;; is not on the dependency path here.
+(defun / (&rest args)
+  (cond
+   ((null args) (signal 'wrong-number-of-arguments (list '/ 0)))
+   ((null (cdr args))
+    ;; 1-arg: reciprocal.
+    (let ((x (car args)))
+      (when (nelisp--num-eq2 x 0)
+        (signal 'arith-error (cons "/" args)))
+      (let ((res (nl-jit-call-float-float "nl_jit_float_div" 1.0 x)))
+        (if (eq (type-of x) 'float)
+            res
+          (nl-jit-call-i64-i64 "nelisp_jit_add2" 0 res)))))
+   (t
+    ;; n-arg: pass 1 detect any-float.
+    (let ((all-int t) (cur args))
+      (while cur
+        (when (eq (type-of (car cur)) 'float)
+          (setq all-int nil))
+        (setq cur (cdr cur)))
+      ;; Pass 2: float-fold (upfront promote = matches deleted bi_div).
+      (let ((acc (car args)) (rest (cdr args)))
+        (while rest
+          (let ((b (car rest)))
+            (when (nelisp--num-eq2 b 0)
+              (signal 'arith-error (cons "/" args)))
+            (setq acc (nl-jit-call-float-float "nl_jit_float_div" acc b))
+            (setq rest (cdr rest))))
+        (if all-int
+            (nl-jit-call-i64-i64 "nelisp_jit_add2" 0 acc)
+          acc))))))
 
 (defun 1+ (x) (nelisp--add2 x 1))
 (defun 1- (x) (nelisp--sub2 x 1))
@@ -178,6 +220,32 @@
   "Return t if X is a sequence (= nil, cons, string, or vector)."
   (or (null x) (consp x) (stringp x) (vectorp x)))
 
+;; Doc 86 §86.1.a (Tier 1 predicate / type-of) — `functionp' migrated
+;; from Rust to elisp.  The previous `bi_predicate' dispatch arm
+;; matched `Sexp::Cons(b)' whose `b.car' was the symbol `lambda',
+;; `closure', or `builtin'.  Direct transliteration on top of `consp'
+;; + `car' + `memq' = same semantics, no new primitive needed (= Tier 1
+;; "elisp で直接実装可能" per Doc 86 §2.2.1).
+(defun functionp (x)
+  "Return t if X is callable (= a `lambda' / `closure' / `builtin' form)."
+  (and (consp x) (memq (car x) '(lambda closure builtin)) t))
+
+;; Doc 86 §86.1.a — `recordp' migrated from Rust to elisp.  The
+;; previous `bi_recordp' arm tested `matches!(&args[0], Sexp::Record(_))'.
+;; The elisp port leverages the existing `nelisp--record-type'
+;; primitive: it returns the record's type_tag (= a symbol) for
+;; records, and signals `wrong-type-argument' otherwise.  A
+;; `condition-case' around it converts the signal back into `nil', so
+;; we end up with the same `t / nil' contract as the Rust impl without
+;; needing a new primitive.  Records are not on a hot dispatch path
+;; (= primitives like integer / cons dominate), so the signal
+;; round-trip cost is acceptable.
+(defun recordp (x)
+  "Return t if X is a record."
+  (condition-case nil
+      (progn (nelisp--record-type x) t)
+    (error nil)))
+
 ;; Rust-min batch 6l (2026-05-06): `mod' migrated from Rust to
 ;; elisp.  Reproduces the previous `bi_mod' contract exactly:
 ;;   r = euclidean_mod(a, |b|)   (always >= 0)
@@ -224,5 +292,13 @@
 ;; (lognot X) = bitwise NOT of fixnum X.  In two's complement
 ;; ~x = x XOR -1, so the elisp form needs no extra primitive.
 (defun lognot (x) (nelisp--logxor2 x -1))
+
+;; Doc 86 §86.1.b — `sxhash' migrated from Rust to elisp on top of
+;; the `nl_jit_sxhash' trampoline (jit/predicate.rs).  Recursive
+;; Sexp → hash fold stays in Rust for `DefaultHasher' bit-exactness
+;; (Doc 87 §3.2 risk note).  `sxhash-{equal,eq,eql}' defaliases
+;; live in `nelisp-stdlib-misc.el' and pick up this function-cell.
+(defun sxhash (object)
+  (nl-jit-call-out-1 "nelisp_jit_sxhash" object))
 
 ;; nelisp-stdlib.el ends here

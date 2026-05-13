@@ -1,0 +1,633 @@
+#+TITLE: Doc 77c — Sexp ABI Stage 4 unpause + 完全 elisp self-host commitment
+
+* Status
+:PROPERTIES:
+:STATE: Phase A 完了、Phase B GATE FAILED audit (= structural infeasibility)、Doc 79 v3〜v5 Phase C 設計 SHIPPED、Doc 76 100% SHIPPED、Doc 81 Phase 7.1.6 archi extension DRAFT.  Phase D-B = 100% 純 elisp 終着点 (= 当初 3-6 ヶ月推定 → Track S+T audit で *5-7 週間* に refine、Phase 7.1.5 perf gate 既 CLOSED + nelisp-cc 12,512 LOC SHIPPED 確認による)
+:DRAFTED: 2026-05-09
+:PARENT: Doc 77 (= 元 Stage 4 articulation)
+:RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
+:UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
+:DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
+:LATEST: 2026-05-09 — user 100% 純 elisp commit + per-commit monotonic shrink rule 確定.  Doc 78 D-A DEFERRED. Doc 76 = 40/40 100% SHIPPED (Rust -406 LOC). Doc 79 v3 Phase C 設計 SHIPPED. Phase C C.1+4 実装 dispatch 中.
+:END:
+
+* §0 TL;DR
+
+Doc 77 §2.3.3 Stage 4 (= Sexp memory layout pin、JIT direct emit base) を **resume**.  さらに本 Doc は同 Stage を入口として **Sexp ABI を完全 elisp 化** し、最終的に nelisp を self-hosting (= Rust core ≈ 300-500 LOC) する commitment を articulate する.
+
+過去の関連判断と本 Doc の位置:
+- Doc 77 (= JIT 拡大路線): Stage 4 = NlConsBox layout pin。Doc 77b で deferred。
+- Doc 77b (= Rust-min 路線): elisp wrapper で strategy 移管。Sexp ABI pin は §6 で deferred と articulate。
+- Doc 75 (= image decode in elisp): PAUSED INDEFINITELY。**ただし**理由は image decoder の Rust 必須性 (= boot 前要件) で、Sexp ABI 一般の elisp 化を否定したものではない。
+- 本 Doc (= 77c): user 改判断 "Sexp ABI elisp 化はまだ諦めていません" に基づき Stage 4 unpause。
+
+期待 net delta (= 全 Phase A-E 完走時):
+- Rust core: 現 ~3000 LOC → ~300-500 LOC (= ~85% 縮小)
+- elisp: ~+1500-2000 LOC 増加 (= Sexp 操作 + GC + native compiler)
+- 起動時間: NELIMG image decode を elisp 化すると +80ms (= 許容範囲、Doc 75 PAUSED 議論より)
+
+** 2026-05-09 session 進捗
+
+本 session で以下が確定:
+- *user 100% 純 elisp commitment 確定*: nelisp は 100% pure elisp self-host を達成する.  運用 rule = 「全 commit が net-decrease Rust LOC」 (= per-commit monotonic shrink rule).
+- *Doc 76 Phase 7 elisp-side OS surface migration = 100% SHIPPED*: 40/40 specialized syscall primitive 削除完遂、本 session で Stage E + G が ship (Rust -89 + -317 = -406 LOC).
+- *Doc 78 Phase D-A Cranelift wrapper = DEFERRED 2026-05-09*: D-A の C-style shim path は Cranelift Rust crate を温存する hybrid であり 100% 純 elisp commitment と方向矛盾、さらに D-A.1 単独で +800 LOC 中間状態 (= shim 400 + ERT 400) を要し monotonic shrink rule 違反.
+- *Doc 79 Phase C GC elisp 化 設計 v3 = SHIPPED* (commit 5e85ea7、merge e48f79a): Stage C.1+4 を atomic 1 stage に折り畳み per-commit shrink rule satisfy、Phase C 単独 net Rust target -56〜-101 LOC.
+- *Phase B = GATE FAILED audit 結論*: Doc 62 Phase 5 (= 2026-05-08) で eval-time dispatch arm はすでに削除済、Phase B "−408 strategy.rs 削除" alibi は前提が古く invalid.  本 §2.2 の Phase B 計画は structural infeasibility.
+- *本命は Phase D-B*: Cranelift 完全置換 / NeLisp Phase 7+ native cc 切替 (= 当初 3-6 ヶ月推定 → Track M+S+T audit で *5-7 週間* に refine).  D-A skip + D-B 直行が 100% 純 elisp commitment の最短 path.
+
+** 2026-05-09 session 後半 — Track G 以降の累計進捗
+
+本 session 累計 *Rust -681 LOC SHIPPED* 内訳:
+- Doc 76 Stage E filenotify (commit 6f23c40): *-89 Rust*
+- Doc 76 Stage G SCM_RIGHTS (commit 03329c3): *-317 Rust* (Doc 76 = 40/40 100% 完遂)
+- Doc 79 v4 Stage C.4-atomic (commit 8ba6f32): *-81 Rust* (NLRC_DROP_TABLE + Drop body slim)
+- Doc 80 Stage 80.1〜80.5 substrate (commit 99440d4): *-78 Rust* (= cond/when/unless/signal helper + 5 strategy.rs fn delete)
+- Doc 80 §7 v2 fold-in (commit 5a4949d): *-34 Rust* (= slim! macro で 5 primitives 統合)
+- Doc 77b stub cleanup (commit 401fb17): *-82 Rust* (= lower_entries + try_lower + LowerFn type + _unused_truthy delete)
+
+D-B path 完全 articulate:
+- *Track M audit*: nelisp-cc native compiler ~12,512 LOC elisp **既 SHIPPED** (Doc 28 LOCKED-v2 Phase 7.1.1〜7.1.5 + Phase 7.7 inliner) と確定.  D-B = greenfield ではなく既存 finishing work.
+- *Track S audit* (commit b0a030f / merge 3a2e624): Phase 7.1.5 fib 30x perf gate **既 CLOSED** (実測 fib-30 *3964.05x* speedup、12 commit follow-up で T96 stale state を超克).  Doc 28 §11.5 errata "post-v1.0 defer" 記述は obsolete、§11.6 で retract articulate.
+- *Track T DRAFT* (commit a6e1a8c / merge e59ba5e): Doc 81 — Phase 7.1.6.a〜.f cluster takeover の prerequisite (= primitive trampoline ABI mode + 4 SSA opcodes + x86_64/arm64 backend emit + FFI external C symbol resolution).  4 sub-stage、~1 週間 / +780 elisp / Rust ±0.
+
+D-B 工数 refine: 当初 3-6 ヶ月 → *5-7 週間* (= Phase 7.1.5 close 0 + Phase 7.1.6 archi extension 1 週間 + .a〜.f cluster takeover 3-5 週間 + Phase 7.1.7 cleanup 1 週間).  100% 純 elisp 到達は *2-4 ヶ月* 見込 (= Doc 74 anvil-runtime 1-2 ヶ月 + Phase 9 frozen heap 1 ヶ月 + D-B 5-7 週間).
+
+*2026-05-09 anvil-runtime 並行 session articulate* (= Doc 82 DRAFT): anvil-runtime crate 削除 path は **2 session 並行進行** (= parallel session の Phase A/B 系列 = nelisp =a6de799= までで -7,346 LOC target、my session の Doc 74 v2 audit = -4,365〜-5,667 LOC target).  Doc 82 §3 alignment matrix で layer 直交確認、§4 convergence path で Option α (= parallel session Final B 採用、Doc 74 v2 を Final B 詳細設計 reference として deferred) 推奨.  Doc 74 v2 の status は parallel session Phase B5 SHIPPED 確認後に正式 update.
+
+詳細 roadmap consolidated は Doc 83 (= =docs/design/83-100pct-pure-elisp-roadmap-consolidated.org=) 参照.  本 §0 + Doc 28/73/74/75/78/79/80/81/82 の 18+ design doc を single canonical roadmap に統合、5 並列 track inventory + concrete sequencing (= 10 step) + LOC accounting reconciliation を articulate.
+
+* §1 動機
+
+** §1.1 「Sexp ABI elisp 化諦めない」commitment + 100% 純 elisp commitment + monotonic shrink rule
+
+user 2026-05-09 指示を直接引用:
+- "下記の部分も elisp で記述出来るようにするにはどうしたら良いですか？ 1. nelisp 自身の runtime ABI (= Sexp / GC / JIT bridge)、2. Cranelift などの外部 native compiler crate との bridge"
+- "4. nelisp self-host roadmap 全体を遂行。これしか目指していません。"
+- "Sexp ABI elisp 化はまだ諦めていません"
+- "Doc 77 の Stage4 を unpause で"
+- (2026-05-09 session 後半) "100% 純 elisp で self-host する。途中で Rust crate を残すような hybrid は採らない"
+- (2026-05-09 session 後半) "全 commit が net-decrease Rust LOC でなければならない (= per-commit monotonic shrink rule)"
+
+これらが本 Doc の出発点.  特に後 2 点は本 session で確定した *operating rule* で、以後の sub-Doc (Doc 78 / 79 / 76) と本 Doc の Phase 計画は両 rule を gate にして取捨選択する:
+
+- *100% 純 elisp commitment*: 終着点は Rust 側に Cranelift / image decoder / 大規模 GC ロジック等を温存しない。Rust core は heap allocator + atomic 操作 + layout pin の primitive のみ (= Doc 47 phase 6 の C-runtime 自前化に繋がる最小核).
+- *per-commit monotonic shrink rule*: 1 commit でも Rust net LOC が増えると、その commit は ship 不可。中間状態 (例: Doc 78 D-A.1 の shim 400 + ERT 400 = +800 LOC) は許されない。Phase 計画は atomic stage 単位で per-commit shrink rule を satisfy する形に再設計する (例: Doc 79 v3 が Stage C.1+4 を atomic 1 stage に折り畳んだのはこの rule 適用).
+
+** §1.2 過去の "deferred" 判断の見直し
+
+Doc 77b §6 articulation:
+> Sexp ABI pin (= Doc 77 §2.3.3 Stage 4) は ABI 変更で Doc 76 と衝突懸念あり、本 Doc では deferred.
+
+検証: Doc 76 (= OS surface migration) は 2026-05-09 に **100% SHIPPED** (= Stage 0/A/B/C/D/E/F/G 全完). Sexp ABI 変更との衝突は事実上解消.  =Stage 4 を妨げる構造的理由は現存しない=.
+
+** §1.3 Doc 75 PAUSED との区別
+
+Doc 75 PAUSED の commit body より:
+> 本 Doc の実装は decoder が elisp 起動前に走る必要があり、構造的に Rust core にしか置けない (= image binary I/O 範囲を超える DAG cycle-safe encoder/decoder ロジック)
+
+これは **image decode** (= boot 前) 限定の制約.  本 Doc が対象とする **runtime での Sexp 操作** (= boot 後) は elisp が走っている前提なので別問題.  Doc 75 PAUSED は本 Doc の path を否定しない.
+
+* §2 段階的 plan (= Phase A-E)
+
+** §2.1 Phase A — Sexp ABI 解放 (= 1-2 ヶ月)
+
+Doc 77 §2.3.3 Stage 4 の articulation を実装段階に落とす.
+
+*** §2.1.1 NlRc<T> 自前実装
+
+現状: =Rc<RefCell<T>>= が =Sexp::Cons= 等の payload に使われる.  Rust 内部では std で動くが elisp / Cranelift IR から直触れない.
+
+新設: =NlRc<T>= 自前 ref-counted ptr.  layout fixed:
+
+#+begin_example
+#[repr(C)]
+struct NlRcInner<T> {
+    refcount: AtomicUsize,  // offset 0
+    value: T,                // offset 8
+}
+
+pub struct NlRc<T>(*mut NlRcInner<T>);
+#+end_example
+
+API parity with =Rc<T>=:
+- =NlRc::new(value) -> NlRc<T>=
+- =NlRc::clone(this) -> NlRc<T>= (= refcount += 1)
+- =Drop= impl (= refcount -= 1, free if 0)
+- =NlRc::deref(this) -> &T=
+
+*** §2.1.2 NlConsBox layout pin
+
+#+begin_example
+#[repr(C)]
+struct NlConsBox {
+    car: Sexp,    // offset 0  (= 16 bytes: 1 byte tag @ 0, 8 byte payload @ 8)
+    cdr: Sexp,    // offset 16
+    refcount: AtomicUsize,  // offset 32
+}
+#+end_example
+
+Sexp 自体も pin:
+
+#+begin_example
+#[repr(C, u8)]
+pub enum Sexp {
+    Nil,                       // tag = 0, payload = 0
+    T,                         // tag = 1, payload = 0
+    Int(i64),                  // tag = 2, payload = i64
+    Cons(NonNull<NlConsBox>),  // tag = 7, payload = box ptr
+    // ... 他 variant
+}
+#+end_example
+
+Sexp Cons → NlConsBox の deref は単一 ptr load + offset access.  JIT IR で直 emit 可能 (= Doc 77 §2.3.3 emit pattern 通り).
+
+*** §2.1.3 elisp primitive 追加
+
+Layer 2 から NlConsBox を直接操作するための primitive:
+
+| primitive | signature | semantics |
+|-----------+-----------+-----------|
+| =nl-cons-alloc CAR CDR= | =Sexp Sexp -> Sexp= | NlConsBox を heap に malloc、Sexp::Cons を返す |
+| =nl-cons-car BOX= | =Sexp -> Sexp= | NlConsBox の car field を read |
+| =nl-cons-cdr BOX= | =Sexp -> Sexp= | NlConsBox の cdr field を read |
+| =nl-cons-set-car BOX VAL= | =Sexp Sexp -> Sexp= | car field を write |
+| =nl-cons-set-cdr BOX VAL= | =Sexp Sexp -> Sexp= | cdr field を write |
+| =nl-rc-inc BOX= | =Sexp -> ()= | refcount +1 |
+| =nl-rc-dec BOX= | =Sexp -> ()= | refcount -1, 0 になったら drop |
+| =nl-rc-count BOX= | =Sexp -> i64= | 現 refcount を read |
+
+Rust 側 ~50 LOC の薄い shim で実装.  elisp から =nl-ffi-call= 経由で呼ばれる.
+
+*** §2.1.4 JIT trampoline 改修
+
+現在 =build-tool/src/jit/cons.rs::nl_jit_cons_car= は =&*arg= で =Sexp::Cons(rc)= を match、=rc.borrow().clone()= で deref.  Stage 4 後は:
+
+#+begin_example
+unsafe extern "C" fn nl_jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64 {
+    if (*arg).tag() == SEXP_TAG_CONS {
+        let box_ptr = (*arg).cons_box_ptr();
+        *out = (*box_ptr).car.clone();  // Sexp clone (= 16 byte memcpy + tag adjust)
+        TRAMPOLINE_OK
+    } else {
+        TRAMPOLINE_ERR
+    }
+}
+#+end_example
+
+clone semantics: Sexp::Cons(box_ptr) の clone は box の refcount inc + ptr copy. 別 variant (Int / Float / Nil / T) は payload memcpy.
+
+*** §2.1.5 Phase A 工数見積
+
+| sub-stage | 内容 | 工数 |
+|-----------+------+------|
+| A.1 | NlRc<T> 設計書 + 実装 + ERT | 1-2 週間 |
+| A.2 | NlConsBox layout pin + Sexp variant 改修 | 2-3 週間 |
+| A.3 | 全 manipulation 経路 audit + 置換 (= ~600 LOC Rust 変更) | 2-4 週間 |
+| A.4 | elisp primitive 追加 + smoke | 1 週間 |
+| A.5 | JIT trampoline 書換 | 1-2 週間 |
+| A.6 | ERT regression 検証 | 1 週間 |
+| **計** | | **8-13 週間** (= 2-3 ヶ月) |
+
+** §2.2 Phase B — Sexp 操作を elisp wrapper に migrate (= 2-4 週間)
+
+Phase A 完了後、=cons= / =car= / =cdr= / =setcar= / =setcdr= の elisp wrapper を =nl-cons-*= primitive で書換:
+
+#+begin_example
+(defun cons (a b)
+  (nl-cons-alloc a b))
+
+(defun car (cell)
+  (cond ((eq cell nil) nil)
+        ((nl-cons-p cell) (nl-cons-car cell))
+        (t (signal 'wrong-type-argument (list 'consp cell)))))
+#+end_example
+
+Doc 77b Stage b.4 で elisp wrapper は既にあるが Rust =strategy.rs= 経由で box 操作していた.  Phase B で =strategy.rs= 削除可 (~-408 LOC Rust).
+
+Vector / Str / その他 variant も同様に NlVecBox / NlStrBox 化、elisp 移管.
+
+#+begin_quote
+*Note 2026-05-09*: Phase B "Sexp 操作 elisp 化 + strategy.rs -408 削除" は audit (GATE FAILED) で structural infeasibility 判明.  Doc 62 Phase 5 (= 2026-05-08) で eval-time dispatch arm はすでに削除済、Phase B 単独で削除すべき Rust 残骸が無い.  本 §2.2 の "-408 LOC" 記述は前提が古い.  代わりに Doc 76 (100% SHIPPED 2026-05-09、Rust -406 LOC) + Doc 79 v3 Phase C (target Rust -56〜-101) + Phase D-B (Cranelift 完全置換) で Rust 削減を進める.
+#+end_quote
+
+** §2.3 Phase C — GC を elisp に migrate (= 1-2 ヶ月)
+
+詳細設計は **Doc 79 v3 (commit 5e85ea7、merge e48f79a) を canonical** とする.  Stage C.1+4 (atomic) → C.2 cycle collector elisp → C.3 finalizer queue elisp → C.5 self-host gate の 5 sub-stage.  Phase C 単独 net Rust target -56〜-101 LOC (= per-commit shrink rule satisfy、Phase B alibi 不要).  対応 elisp +~660 LOC (= cycle collector 400 + finalizer 150 + wrapper 60 + bench 50).
+
+以下は本 Doc 残置の概要 (= Doc 79 v3 と齟齬がある場合は Doc 79 v3 に従う):
+
+=Drop= による auto-free は Rust 内部のみ.  elisp が manual ref counting を駆動:
+
+#+begin_example
+(defun cons (a b)
+  (let ((box (nl-cons-alloc a b)))
+    (nl-rc-inc a)        ; car ref +1
+    (nl-rc-inc b)        ; cdr ref +1
+    box))
+
+(defun nl-cons-finalize (box)
+  "cons の refcount = 0 時、car/cdr の refcount を dec して free."
+  (nl-rc-dec (nl-cons-car box))
+  (nl-rc-dec (nl-cons-cdr box))
+  (nl-cons-free-box box))
+#+end_example
+
+Cycle detection (= cons 同士の循環参照) は elisp で Bacon-Rajan アルゴリズムを実装. ~300 LOC elisp.
+
+Rust =Drop= impl は依然必要 (= elisp が dec 漏らした時の safety net) だが、運用上は elisp 駆動.
+
+** §2.4 Phase D — Native compiler を elisp 化 (= 当初 3-6 ヶ月推定 → Track S+T audit で 5-7 週間 refine)
+
+Cranelift 依存を解消.  2 path:
+
+*** §2.4.1 Path D-A: Cranelift C-style shim (= DEFERRED 2026-05-09)
+
+Doc 78 → **DEFERRED 2026-05-09** (= user 100% 純 elisp commitment と方向矛盾、D-A.1 単独 +800 LOC 中間状態が monotonic shrink rule 違反).  本命は §2.4.2 Path D-B.
+
+経緯: D-A の C-style shim は Cranelift Rust crate を保持しつつ薄い C API で expose し elisp が =nl-ffi-call= で IR builder を driving する hybrid 案.  当初は「現実路線」として §2.4.1 articulation の deepening を Doc 78 で進行 (= 計 ~38 shim fn / Rust net -2656 LOC / 対応 elisp +1700 LOC) していたが、本 session で以下 2 点で却下:
+
+1. *100% 純 elisp commitment との矛盾*: D-A 着地後も Cranelift Rust crate は依然 Rust core に残置、終着点で Rust crate dependency が消えない.
+2. *monotonic shrink rule 違反*: D-A.1 単独で shim 400 + ERT 400 = +800 LOC 中間状態を要し、per-commit Rust net 増の commit が出る.
+
+再開条件: D-B が技術的に不可能と判明し、Cranelift 温存 hybrid に方針変更があった場合のみ.  Doc 78 自身は DEFERRED status で archive 維持 (= 後に Cranelift 路線へ regress した時の reference).
+
+*** §2.4.2 Path D-B: Cranelift 完全置換 (= 5-7 週間 refine 後、true self-host) — *本命*
+
+D-A DEFERRED 確定 (2026-05-09) により、Phase D は **D-B 直行** が canonical path.  100% 純 elisp commitment の終着点でもある (= Cranelift Rust crate dependency 完全消失、Rust core ~810 LOC まで縮小).
+
+x86_64 / ARM64 の machine code byte sequence を elisp で直 emit、=mmap PROT_EXEC= した page に書込んで dispatch:
+
+#+begin_example
+(defun nl-emit-iadd-rax-rdx (page offset)
+  ;; x86_64: 48 01 d0 = add rax, rdx
+  (nl-ffi-write-bytes-at page offset (unibyte-string #x48 #x01 #xd0))
+  (+ offset 3))
+#+end_example
+
+これが完成すれば nelisp は **Rust の Cranelift 依存ゼロ** で動く.  ただし register allocator / instruction selection / ELF linkage の elisp 実装が必要 (= ~5000 LOC elisp).
+
+Phase D-A は DEFERRED 化により skip、**Phase D-B 直行**.  NeLisp Phase 7+ native cc 切替 (= 2026 後半 〜) と timeline 同期.
+
+*canonical implementation plan* (= 2026-05-09 articulate):
+
+D-B path の細則は Doc 28 §3.6 (= Phase 7.1.6 eval-site primitive lowering takeover、6 sub-stage、Rust ≈ -4,063 LOC) + Doc 28 §3.7 (= Phase 7.1.7 build-tool/src/jit/ 削除 + Cranelift Cargo dep 削除、4 sub-stage、Rust ≈ -719 LOC) に articulate.  aggregate Rust delta = *≈ -4,782 LOC*、工数 *4-8 週間*.  Track M audit 2026-05-09 で nelisp-cc native compiler ~12,263 LOC elisp (13 modules) SHIPPED 確認済、Cranelift dispatch arm の elisp emit への 1 対 1 対応は機械的 work が大半.  詳細 stage breakdown / 依存 critical path / 並行可能性は Doc 28 §3.6〜§3.9 参照.
+
+** §2.5 Phase E — reader/eval 残作業 (= 1-2 ヶ月)
+
+Doc 63 master plan の残:
+- Stage 7.1 (Doc 64 printer port): DRAFT → SHIPPED 完了 (= ~200 LOC 削減)
+- Stage 7.2 (Doc 66 reader port): DRAFT → SHIPPED 完了 (= ~1400 LOC 削減)
+- Phase 8 残 (Doc 73 Rust reader/eval purge 完了)
+
+Phase A-D と並行可能 (= 別ファイル群).  Stage 7.1 は smaller pilot.
+
+* §3 総合工数 + 着地形
+
+** §3.1 全 Phase 並行不可、依存関係 (2026-05-09 refresh)
+
+旧 graph (Phase A → B → C/D-A/E → D-B 任意) は 2026-05-09 で再編成.  Phase B GATE FAILED + Doc 78 D-A DEFERRED + Doc 79 v3 SHIPPED + Doc 76 100% SHIPPED を反映:
+
+#+begin_example
+   ┌─────┐
+   │ A   │ Sexp ABI 解放 (= 完了)
+   └──┬──┘
+      ↓
+   ┌─────┐ ✗ GATE FAILED audit (= structural infeasibility)
+   │ B   │ Phase B は skip、削除すべき strategy.rs 残骸が無い
+   └─────┘   (= Doc 62 Phase 5 で eval-time dispatch arm 削除済)
+      ↓
+   ┌─────┐    ┌─────┐    ┌─────┐
+   │ C   │    │ D-A │    │ E   │
+   │ Doc │    │DEFER│    │7.1/2│
+   │ 79  │    │RED  │    │     │
+   │ v3  │    │(Doc │    │     │
+   │     │    │78)  │    │     │
+   └──┬──┘    └─────┘    └─────┘
+      ↓                       ↓
+   ┌─────────────────────────────┐
+   │ D-B (本命、3-6 ヶ月)        │
+   │ Cranelift 完全置換 = 100% 純 elisp 終着点
+   │ NeLisp Phase 7+ native cc 切替と timeline 同期
+   └─────────────────────────────┘
+
+   並行 (= 別 file 群、Phase A 完了で unblock 済):
+   - Doc 76 (= OS surface migration、100% SHIPPED)
+   - Doc 75 Phase 9 v2 audit (= 進行中)
+   - Doc 74 anvil-runtime migration audit (= 進行中)
+   - Doc 80 (= pre-stdlib elisp substrate、DRAFT 2026-05-09、=strategy.rs= ~-227 LOC unlock path)
+#+end_example
+
+Note 2026-05-09: Doc 80 (= =docs/design/80-elisp-pre-stdlib-substrate.org=) は §3.1 の "Phase B GATE FAILED" 結論を invalidate するわけではない (= 旧 Phase B plan は relevance を失ったまま) が、Track H audit が =memory project_nelisp_strategy_rs_pinned= で identify した "future deletion path" を main path に格上げし、=strategy.rs= の =bi_length_impl= / =aref_helper= / =bi_aset_impl= / =bi_elt_impl= の multi-variant fall-through body (= ~250 LOC) を elisp 再表現可能にする独立 shrink path として並行進行可.
+
+** §3.2 工数 grand total
+
+| phase | 期間 | Rust LOC delta |
+|-------+------+----------------|
+| A | 2-3 ヶ月 | +0 (= refactor) |
+| B | 2-4 週間 | -400 (= strategy.rs 削除) |
+| C | 1-2 ヶ月 | -100 |
+| D-A | 1-2 週間 | -2000 (= cranelift wrapper 残るが dsl.rs 等削除) |
+| D-B (任意) | 3-6 ヶ月 | -200 (= cranelift binding shim 削除) |
+| E | 1-2 ヶ月 | -1600 (= Stage 7.1 + 7.2) |
+| **合計 (D-A まで)** | **5-8 ヶ月** | **-4100 LOC** |
+| **合計 (D-B まで)** | **8-14 ヶ月** | **-4300 LOC** |
+
+** §3.3 最終 Rust core 構成 (= D-A 採用)
+
+| 残る Rust 領域 | 推定 LOC |
+|---------------+----------|
+| Sexp 型定義 + NlRc / NlConsBox | ~300 |
+| ffi.rs (= libdl wrapper) | ~360 |
+| boot loader (= main + image load) | ~150 |
+| Cranelift C shim (= ~50 fn) | ~600 |
+| **計** | **~1400 LOC** |
+
+baseline ~3000 LOC → ~1400 LOC、**~50% 縮小**.
+
+** §3.4 最終 Rust core 構成 (= D-B 採用)
+
+| 残る Rust 領域 | 推定 LOC |
+|---------------+----------|
+| Sexp 型定義 + NlRc / NlConsBox | ~300 |
+| ffi.rs | ~360 |
+| boot loader | ~150 |
+| **計** | **~810 LOC** |
+
+baseline ~3000 LOC → ~810 LOC、**~73% 縮小**.
+
+* §4 immediate next steps (= 本 Doc 完成直後)
+
+** §4.1 Doc 77 / 77b status update — ✅ SHIPPED (commit d697875, 2026-05-09)
+
+実施済み:
+- Doc 77 top-level =:STATE:= を =DRAFT= → =PARTIALLY SUPERSEDED ... / Stage 4 = 2026-05-09 Doc 77c で unpause= に書換 (= Stage 4 単独の =STATE:= block は元来未保有のため top-level に articulate)
+- Doc 77 §2.3.3 Stage 4 本文先頭に =2026-05-09 STATUS UPDATE= 段落を追加 (Doc 77c で unpause、自前実装 path)
+- Doc 77b §6 の "Sexp ABI pin (= Doc 77 §2.3.3 Stage 4) は ... 本 Doc では deferred" 行を "2026-05-09 に Doc 77c で unpause された ... Stage 4 → Doc 77c Phase A で resume、本 Doc 77b 範囲外" に書換 (= 削除と等価意味)
+- Doc 77c (= 本 Doc) を =feat/doc-77-stage2-prep= に commit (= main は Doc 76 完了 merge 直後)
+
+** §4.2 Phase A.1 着手 — NlRc<T> 設計 + POC 実装 — ✅ SHIPPED (commit e6c7367, 2026-05-09)
+
+実施済み:
+- =build-tool/src/eval/nlrc.rs= 新設 (= 503 LOC、当初見積 ~100 LOC から拡大は doc + test 込み)
+- =NlRc<T>= struct + =Drop= / =Deref= / =Clone= / =strong_count= / =ptr_eq= 全 API
+- =NlRcInner<T>= layout pin (=#[repr(C)]= + =const _= compile-time offset assert + runtime layout test)
+- ERT 19/19 PASS (= 3 layout + 5 lifecycle + 3 deref + 3 ptr_eq + 2 composite + 1 atomic round-trip + 2 misc)
+- 全体 regression 504 lib + 8 bin = 512 PASS, 0 fail
+- 着地: 1 commit (= 設計 + 実装 + ERT を 1 commit に)
+
+** §4.3 Phase A.2 着手 — NlConsBox 試作 + 1 site での migrate — ✅ SHIPPED (commits 02aa7e6 + a6b3757, 2026-05-09)
+
+実施済み:
+- Sub-stage A.2.0 (commit 02aa7e6): =build-tool/src/eval/nlconsbox.rs= 新設。=NlConsBox= struct + =#[repr(C)]= layout pin (= car @ offset 0、cdr @ offset 16、refcount @ offset 32 — Doc 77c §2.1.2 spec 通り)、Drop / Clone / Deref / accessor、ERT 21/21 PASS (= 3 layout + 5 lifecycle + 4 accessor + ...)
+- Sub-stage A.2.1 (commit a6b3757): =Sexp::Cons= variant を =Rc<RefCell<Sexp>>= 2 個から =NlConsBoxRef= (= NonNull<NlConsBox> wrapper、refcount semantics 込み) に切替。56 callsite / 13 files の touch (env.rs / sexp.rs / special_forms.rs / jit/cons.rs / jit/access.rs / jit/strategy.rs ほか)、+193 / -138 LOC
+- 完了 gate verification: =cargo test --release -- --test-threads=1=: 525/525 lib + 8/8 bin = 533 PASS, 0 fail (= +21 nlconsbox 新規 ERT、回帰 0). =bi_car= / =bi_cdr= / JIT trampoline =nl_jit_cons_car= 全 PASS
+- 並行 test 時に 2-5 件出る flake (track_h / track_m / track_p / stage74e1) は signal-handler global state 由来 pre-existing race、本 commit と無関係
+- 着地工数: §2.1.5 推定 2-3 週間に対し並行 session 1 日で完走 (= 設計仕様明確化 + 並列 worktree が効いた)
+
+** §4.4 Phase A.3 着手 — Layer 2 elisp primitive 8 件追加 — ✅ SHIPPED (2026-05-09)
+
+実施済み:
+- =build-tool/src/eval/cons_primitives.rs= 新設 (= 5 nl-cons-* + 3 nl-rc-* = 8 =bi_*= 関数)
+  - =bi_nl_cons_alloc= (CAR CDR → Sexp::Cons): NlConsBoxRef::new + Sexp::Cons wrap
+  - =bi_nl_cons_car= / =bi_nl_cons_cdr= (CONS → Sexp): field clone read
+  - =bi_nl_cons_set_car= / =bi_nl_cons_set_cdr= (CONS VAL → VAL): unsafe set_car/set_cdr 経由 in-place mutate
+  - =bi_nl_rc_inc= / =bi_nl_rc_dec= (CONS → Nil): refcount manual inc/dec、dec 時 0 で free
+  - =bi_nl_rc_count= (CONS → Int): NlConsBoxRef::strong_count
+- =build-tool/src/eval/nlconsbox.rs=: =rc_inc_raw= / =rc_dec_raw= 2 unsafe method 追加 (= Drop 本体相当 + safety contract)
+- =build-tool/src/eval/builtins.rs::dispatch=: 8 dispatch entry 追加 (=nl-cons-alloc / -car / -cdr / -set-car / -set-cdr / nl-rc-inc / -dec / -count=)
+- =build-tool/src/eval/mod.rs=: =pub mod cons_primitives;= 追加
+- ERT 15/15 PASS (= 4 alloc/access + 2 set + 2 inc/dec + 7 error/round-trip cases)
+- 全体 regression: =cargo test --release --lib --test-threads=1=: 540/540 PASS、0 fail (= base 525 + 新規 15)
+
+** §4.5 Phase A.4 — 残 =Rc<RefCell<...>>= variant audit + Cell pilot SHIPPED
+
+audit 結果 (2026-05-09): A.2.1 (= Sexp::Cons) 着地後に残った =Rc<RefCell<...>>= variant は 6 件、calling site count は以下:
+
+| variant      | callsite | 内部       | 複雑度 | sub-stage |
+|--------------|---------:|------------|--------|-----------|
+| Cell         |       14 | Sexp 1     | ★      | A.4.1 ✅  |
+| MutStr       |       23 | String     | ★      | A.4.2 ✅  |
+| Vector       |       26 | Vec<Sexp>  | ★★     | A.4.3 ✅  |
+| BoolVector   |       26 | Vec<bool>  | ★★     | A.4.4 ✅  |
+| Record       |       21 | Vec<Sexp>+ | ★★     | A.4.5 ✅  |
+| CharTable    |       21 | self-ref   | ★★★    | A.4.6 ✅  |
+
+合計 ~131 callsite + 各 sub-stage に対応する struct 設計.  A.2.1 (= 56 callsite for Cons) と同等規模が 6 つ並ぶ計算で、§2.1.5 原見積 "全 manipulation 経路 audit + 置換 ~600 LOC、2-4 週間" は妥当.
+
+*** §4.5.1 Phase A.4.1 — Cell pilot — ✅ SHIPPED (2026-05-09)
+
+実施済み:
+- =build-tool/src/eval/nlcell.rs= 新設 (~340 LOC): =NlCell= struct (=#[repr(C)]=、value @ offset 0、refcount @ offset sizeof(Sexp)) + =NlCellRef= handle (Drop / Clone / Deref / =unsafe set_value=)
+- =Sexp::Cell(Rc<RefCell<Sexp>>)= → =Sexp::Cell(NlCellRef)= に migrate
+- =FrameCell= type alias を =Rc<RefCell<Sexp>>= → =NlCellRef= に flip。env.rs / mod.rs / builtins.rs / image.rs の =cell.borrow().clone()= → =cell.value.clone()= 、 =*cell.borrow_mut() = v= → =unsafe { cell.set_value(v) }= に rewrite (Phase A.2.1 setcar discipline と同等)
+- ERT 17/17 PASS (= 3 layout + 5 lifecycle + 3 ptr_eq + 3 set_value + 2 partial_eq + 1 debug-fmt + payload-drop + intermediate-drop)
+- 全体 regression: =cargo test --release --lib --test-threads=1=: 557/557 PASS, 0 fail (= base 540 + 新規 17、回帰 0)
+
+*** §4.5.2 Phase A.4.2 — Sexp::MutStr → NlStrRef migrate — ✅ SHIPPED (2026-05-09)
+
+実施済み:
+- =build-tool/src/eval/nlstr.rs= 新設 (~370 LOC): =NlStr= struct (=#[repr(C)]=、value @ offset 0、refcount @ offset sizeof(String)) + =NlStrRef= handle (Drop / Clone / Deref / =unsafe set_value= / =unsafe with_value_mut=)
+- =Sexp::MutStr(Rc<RefCell<String>>)= → =Sexp::MutStr(NlStrRef)= に migrate
+- 23 callsite touch:
+  - =sexp.rs= の constructor (=mut_str=)、getter (=as_string_owned=)、printer 各 1 (= 3)
+  - =builtins.rs= の sxhash / sexp_eq (eq) / sexp_equal_safe (equal) / length-bytes / intern / make-symbol / string_value / read-from-string-impl 各 1 (= 8) — read 経路は =rc.borrow()= → =rc.value=、ptr_eq は =Rc::ptr_eq= → =NlStrRef::ptr_eq=
+  - =jit/strategy.rs= の length-impl / aref / aset 各 1 (= 3)。aset の =*s = new_str= → =unsafe { rc.set_value(new_str) }= に rewrite (Phase A.2.1 setcar discipline)
+  - =image.rs= の encode_value 1
+  - =eval/special_forms.rs= の eq 1
+  - =eval/mod.rs= の self-evaluate 1
+- ERT 19/19 PASS (= 2 layout + 5 lifecycle + 2 ptr_eq + 5 set/with_value_mut + 1 debug-fmt + 2 partial_eq + payload-drop + intermediate-drop)
+- 全体 regression: =cargo test --release --lib --test-threads=1=: 576/576 PASS, 0 fail (= base 557 + 新規 19、回帰 0)
+
+*** §4.5.3 Phase A.4.3 — Sexp::Vector → NlVectorRef migrate — ✅ SHIPPED (2026-05-09)
+
+実施済み:
+- =build-tool/src/eval/nlvector.rs= 新設 (~330 LOC): =NlVector= struct (=#[repr(C)]=、value @ offset 0、refcount @ offset sizeof(Vec<Sexp>)) + =NlVectorRef= handle (Drop / Clone / Deref / =unsafe set_value= / =unsafe with_value_mut=)
+- =Sexp::Vector(Rc<RefCell<Vec<Sexp>>>)= → =Sexp::Vector(NlVectorRef)= に migrate
+- 26 callsite touch:
+  - =sexp.rs= の constructor / printer 各 1 (= 2)
+  - =builtins.rs= の sxhash / sexp_eq (eq) / sexp_equal_safe (equal) 各 1 (= 3) — read 経路は =rc.borrow()= → =rc.value=、ptr_eq は =Rc::ptr_eq= → =NlVectorRef::ptr_eq=
+  - =jit/access.rs= の length / aref / aset / elt 各 1 (= 4)。aset は =borrow_mut + index assign= → =unsafe { v.with_value_mut(|vec| vec[idx] = ...) }= (= bounds check は =v.value.len()= で先に）
+  - =jit/strategy.rs= の aref-out-of-range / aset-out-of-range error 各 1 (= 2)
+  - =image.rs= の encode_value 1
+  - =eval/special_forms.rs= の sexp_eq 1
+  - =eval/ffi.rs= の =nl-ffi-call= sig vector 取得 1
+- =eval/nlcell.rs= / =eval/nlconsbox.rs= の =payload_drop_runs_exactly_once= テスト probe を =Rc<RefCell<Vec<Sexp>>>= から =NlVectorRef= に切替 (= 旧型は =Sexp::Vector= から消えたため)
+- ERT 19/19 PASS (= 2 layout + 5 lifecycle + 2 ptr_eq + 5 set/with_value_mut + 1 debug-fmt + 2 partial_eq + payload-drop + intermediate-drop + empty-vec)
+- 全体 regression: =cargo test --release --lib --test-threads=1=: 595/595 PASS, 0 fail (= base 576 + 新規 19、回帰 0)
+
+*** §4.5.4 Phase A.4.4 — Sexp::BoolVector → NlBoolVectorRef migrate — ✅ SHIPPED (2026-05-09)
+
+`Sexp::BoolVector(Rc<RefCell<Vec<bool>>>)` → `Sexp::BoolVector(NlBoolVectorRef)` migration. NlVector を template として最短 path で完了.
+
+実装:
+- =build-tool/src/eval/nlboolvector.rs= (NEW、~310 LOC): NlBoolVector struct (= value @ offset 0、refcount @ trailer) + NlBoolVectorRef handle. NlVectorRef と Vec<bool> 以外は完全同型 (= 19 unit tests も同 pattern)
+- =build-tool/src/eval/sexp.rs=: variant decl + bool_vector constructor + printer + variant_tag test の 4 callsite migrate
+- =build-tool/src/eval/builtins.rs=: 3 callsite (sxhash_into / sexp_eq Vector ptr_eq / sexp_equal_safe ptr_eq fast path)
+- =build-tool/src/eval/special_forms.rs=: 1 callsite (sexp-eq Vector arm)
+- =build-tool/src/jit/access.rs=: 4 callsite (aref/aset trampoline + 1 test)。aset は bounds check を =rc.value.len()= 先 → =with_value_mut= で in-place mutation
+- =build-tool/src/jit/strategy.rs=: 2 callsite (length / aref-helper)
+- =build-tool/src/image.rs=: 2 callsite (encode / decode) + 2 test 修正
+
+Verification:
+- =cargo build --release --lib=: clean (5 既存 warning のみ)
+- =cargo test --release --lib -- --test-threads=1=: 614 passed (= +19 from new NlBoolVector unit tests); 0 failed; 0 ignored
+
+*** §4.5.5 Phase A.4.5 — Sexp::Record → NlRecordRef migrate — ✅ SHIPPED (2026-05-09)
+
+`Sexp::Record { type_tag: Box<Sexp>, slots: Rc<RefCell<Vec<Sexp>>> }` → `Sexp::Record(NlRecordRef)` migration. 2-field struct を 1 allocation に詰め、両 field を fixed offset でアクセス可能にした.
+
+実装:
+- =build-tool/src/eval/nlrecord.rs= (NEW、~330 LOC、20 unit tests): NlRecord struct (= type_tag: Sexp @ offset 0、slots: Vec<Sexp> @ offset sizeof(Sexp)、refcount @ trailer) + NlRecordRef handle. NlConsBox 系 (= 2-payload box) と NlVector 系 (= mutable Vec) のハイブリッド。compile-time =const _= で 3 layout assert
+- =build-tool/src/eval/sexp.rs=: variant decl (struct → tuple) + record constructor + printer + variant_tag test の 4 callsite migrate
+- =build-tool/src/eval/builtins.rs=: 9 callsite (sxhash_into / sexp_eq Record arm / type-of `if let` + match arm + unreachable!() / record-ref / record-set / record-length / record-type / recordp). record-set は =with_slots_mut= で in-place mutation
+- =build-tool/src/eval/special_forms.rs=: 1 callsite (sexp-eq Record arm)
+- =build-tool/src/eval/mod.rs=: 1 callsite (self-evaluating arm)
+- =build-tool/src/image.rs=: 1 callsite (NotImplemented arm)
+
+Identity 規則:
+- =eq=: =NlRecordRef::ptr_eq= (= 同 allocation). 旧 "same slots Rc + value-equal type_tag" rule から strictly stronger に. 唯一の constructor =Sexp::record= が新規 alloc 専用なので elisp 観測可能な挙動差は無い
+
+Verification:
+- =cargo build --release --lib=: clean (5 既存 warning のみ)
+- =cargo test --release --lib -- --test-threads=1=: 633 passed (= +19 from new NlRecord unit tests); 0 failed; 0 ignored
+
+*** §4.5.6 Phase A.4.6 — Sexp::CharTable → NlCharTableRef migrate — ✅ SHIPPED (2026-05-09)
+
+`Sexp::CharTable(Rc<RefCell<CharTableInner>>)` → `Sexp::CharTable(NlCharTableRef)` migration. Phase A.4.x 6 variant の最後で、parent self-reference を持つ最複雑 layout を完了.
+
+実装:
+- =build-tool/src/eval/nlchartable.rs= (NEW、~360 LOC、21 unit tests): NlCharTable struct (= inner: CharTableInner @ offset 0、refcount @ trailer) + NlCharTableRef handle。CharTableInner は =#[repr(C)]= 化、parent field は =Option<NlCharTableRef>= に flip (= self-reference を refcount semantics に乗せる). compile-time =const _= で 2 layout assert (= inner @ 0、refcount @ sizeof(CharTableInner))
+- =build-tool/src/eval/sexp.rs=: variant decl + char_table constructor (Rc::new(RefCell::new(...)) → NlCharTableRef::new(...)) + printer (=inner.borrow()= → =&rc.inner=) + CharTableInner.parent type の 4 callsite migrate. =std::cell::RefCell= / =std::rc::Rc= import 削除
+- =build-tool/src/eval/builtins.rs=: 4 callsite (sxhash / sexp_eq CharTable arm / sexp_equal_safe CharTable arm / char_table_get / char_table_set_one). char_table_get の signature を =&Rc<RefCell<CharTableInner>>= → =&NlCharTableRef= に変更、=borrow()= → =&rc.inner= で fall-through. =std::cell::RefCell= / =std::rc::Rc= import 削除
+- =build-tool/src/eval/special_forms.rs=: 1 callsite (sexp-eq CharTable arm)。=std::rc::Rc= import 削除
+- =build-tool/src/jit/strategy.rs=: 1 callsite (aset)。=borrow_mut() + char_table_set_one= → =unsafe { rc.with_inner_mut(|inner| char_table_set_one(...)) }= に rewrite (Phase A.2.1 setcar discipline)
+- =build-tool/src/image.rs=: 6 callsite (encode_value CharTable arm / decode_value TAG_CHAR_TABLE arm / encode_char_table parent arm / decode_char_table parent arm + 3 image test). image test は =borrow_mut().*= → =unsafe { rc.with_inner_mut(|i| i.* = ...) }= に統一. =std::cell::RefCell= / =std::rc::Rc= import 削除
+
+Self-reference 取扱:
+- CharTableInner.parent: =Option<NlCharTableRef>= で child から parent への単方向 ref. Drop chain は refcount semantics で自然に処理される (= child drop → parent refcount-- → if 0 → parent drop → grandparent refcount--、cascade)
+- cycle 形成 API は無い (= 既存も同じ。child.parent = parent しか経路がなく self-parent は API 不可能)
+
+Identity 規則:
+- =eq=: =NlCharTableRef::ptr_eq= (= 同 allocation). 旧 =Rc::ptr_eq= (= 同 inner cell の Rc) から strictly stronger だが char-table は alloc 単位で 1 box と 1 inner なので elisp 観測等価
+
+Verification:
+- =cargo build --release --lib=: clean (5 既存 warning のみ)
+- =cargo test --release --lib -- --test-threads=1=: 654 passed (= +21 from new NlCharTable unit tests); 0 failed; 0 ignored
+
+§4.5 完遂 — Phase A.4.x 6 variant (Cell / MutStr / Vector / BoolVector / Record / CharTable) 全件 NlXxxRef 化。次は Phase A.5 JIT trampoline =addr_of!= 直接 emit (-1640 LOC 想定の核).
+
+** §4.6 Phase A.5 — JIT trampoline rewrite (minimal scope SHIPPED, A.5.3/A.5.4 skipped)
+
+*** §4.6.1 Phase A.5.1 — Sexp ABI direct-access helpers — ✅ SHIPPED (2026-05-09)
+
+実装:
+- =build-tool/src/eval/sexp.rs= に 7 件の box-ptr accessor + 1 件の tag accessor を impl Sexp 直下に追加 (~100 LOC source + ~150 LOC tests):
+  - =Sexp::tag(&self) -> u8= (= =variant_tag= の method 版)
+  - =Sexp::cons_box_ptr() / cell_box_ptr() / mut_str_box_ptr() / vector_box_ptr() / bool_vector_box_ptr() / record_box_ptr() / char_table_box_ptr()= (= 各 =unsafe= で =SEXP_TAG_*= 確認後の deref を caller 責務に articulate)
+  - =SEXP_PAYLOAD_OFFSET: usize = 8= 定数 + compile-time =const _= layout assertion (= 7 NlXxxRef が NonNull と同サイズ = 8 bytes)
+- =build-tool/src/eval/nl{consbox,cell,str,vector,boolvector,record,chartable}.rs= の 7 件の =Ref= struct に =#[repr(transparent)]= を追加 — Phase A.5.1 必須の load-bearing invariant (= NonNull 直 layout = box ptr が =SEXP_PAYLOAD_OFFSET= から raw ptr で読める保証)
+- =build-tool/src/eval/nlconsbox.rs= に =NlConsBox::set_car / set_cdr= 直 impl (= raw =*const NlConsBox= 経由で setcar / setcdr 可能、=NlConsBoxRef::set_car= の delegating wrapper を温存)
+- ERT 9 件追加 (= 7 box_ptr round-trip + payload_offset_is_eight + tag_method_matches_variant_tag_fn): =cargo test --release --lib eval::sexp -- --test-threads=1= 18/18 PASS
+
+*** §4.6.2 Phase A.5.2 — cons.rs / access.rs trampoline rewrite — ✅ SHIPPED (2026-05-09)
+
+実装:
+- =build-tool/src/jit/cons.rs= の 5 trampoline (=nl_jit_cons_car/cdr/make/setcar/setcdr=) を =match &*arg { Sexp::Cons(b) => ... }= → =if (*arg).tag() == SEXP_TAG_CONS { let p = (*arg).cons_box_ptr(); ... }= に書換。jump-table dispatch (= 13 arms after Phase A.4.6) が =cmp tag, 7= 1 命令に collapse
+- =build-tool/src/jit/access.rs= の 4 trampoline (=length / aref / aset / elt=) を同形に書換。Cons walking (=elt=) も =std::ptr::addr_of!(box.cdr)= で raw ptr 経由のループに整理
+- ERT regression: =cargo test --release --lib --test-threads=1= 663/663 PASS, 0 fail (= base 654 + 9 new sexp helper tests)
+
+*** §4.6.3 Phase A.5.3 / A.5.4 skip 判断 (2026-05-09)
+
+A.5 当初計画では predicate.rs / 残 trampoline の cranelift IR direct emit + 全 boxed variant rewrite を含めていた.  Phase B (= Sexp 操作 elisp 化) 詳細を考慮して以下を skip:
+
+- A.5.3 (predicate.rs IR direct emit): consp / nullp / atomp 等を helper-call → cranelift IR 直 emit に書換える計画.  Phase B で predicate も elisp wrapper に migrate される見込みであり、IR 化の投資は B で chase される.  layout pinning の運用検証は cons.rs + access.rs で達成済 (= 全 boxed variant が同 ABI なので残 5 variant も pattern reproducible と確認済).
+- A.5.4 (残 trampoline rewrite): MutStr / Vector / BoolVector / Record / CharTable / Cell の rewrite を当初予定したが、A.5.2 で代表 2 module の rewrite が動作確認済で「pattern が再現可能」が証明されたため、残 trampoline は Phase B で elisp wrapper 化されるタイミングで自然消滅する (= rewrite するコストが消える).
+
+LOC delta (Phase A.5.1+A.5.2 着地時):
+- =sexp.rs= +251 LOC (= helpers 100 + ERT 150)
+- =nlconsbox.rs= +39 LOC (= =NlConsBox::set_car/set_cdr= + repr(transparent) doc)
+- =nl{cell,str,vector,boolvector,record,chartable}.rs= 各 +6 LOC (= repr(transparent) attribute + doc)
+- =jit/cons.rs= ±51 LOC (= rewrite、ほぼ net-neutral)
+- =jit/access.rs= +47 LOC net (= 200 / -153、rewrite で comment 整理 + match-arm 圧縮)
+- **net: +377 LOC infra/-153 LOC match cleanup = +224 LOC source net**
+
+このうち ~150 LOC は ERT (= safety net for Phase B) なので runtime LOC は +75 LOC 程度.  Phase A.5 の役割を「Phase B 用の foundation 投資」と位置付け、本物の Rust core 縮減 (= 元 plan の =Rust core ≈ 300-500 LOC=) は Phase B-D で実現する.
+
+** §4.7 Phase A.6 残作業 (= 旧 articulation、2026-05-09 で superseded)
+
+- A.6 (1 週間予定): ERT 全面 regression gate (= make test 0 unexpected + perf bench 退行 10% 以下)。anvil-runtime crate は Phase A.2.1 / A.4.x 移行に追従しておらず compile error 残存、A.6 で同期させるか Phase B で elisp 化に合わせて削除するか判断要
+
+** §4.8 next steps (2026-05-09 refresh — 進行中 3 track + 残 task)
+
+旧 §4.7 "Phase A.6 / B 着手" articulation は 2026-05-09 で再編成. Phase B GATE FAILED により直接 Phase C / D-B / 並行 audit に dispatch:
+
+*** §4.8.1 完了済み (2026-05-09 時点)
+
+- Phase A.1〜A.6 (NlRc / NlConsBox / 8 primitives / 6 variant migrate / Sexp ABI helpers + cons.rs/access.rs trampoline rewrite)
+- Phase A.5.1 + A.5.2 (= JIT trampoline minimal scope)
+- *Doc 76 = 100% SHIPPED* (Phase 7 elisp-side OS surface migration、40/40 specialized 削除完遂、Rust -406 LOC 本 session)
+- *Doc 78 D-A = DEFERRED 確定* (= 100% 純 elisp commitment 違反 + monotonic shrink rule 違反)
+- *Doc 79 v3 = SHIPPED* (= Phase C GC elisp 化 設計、commit 5e85ea7、merge e48f79a)
+
+*** §4.8.2 進行中 (2026-05-09 dispatch)
+
+- *Phase C C.1+4 実装* (= Doc 79 v3 atomic stage、generic NlRc primitive 5-8 件 + Drop 本体 thin 化、target Rust -56〜-101 LOC)
+- *Doc 75 Phase 9 v2 audit* (= NELIMG image decode 関連 PAUSED の見直し)
+- *Doc 74 anvil-runtime migration audit* (= Phase A.2.1 / A.4.x migrate 追従、anvil-runtime crate を anvil-el に集約)
+
+*** §4.8.3 残 task (= future)
+
+- Phase C C.2 (cycle collector elisp、Bacon-Rajan 実装、+~400 LOC elisp)
+- Phase C C.3 (finalizer queue elisp、+~150 LOC elisp)
+- Phase C C.5 (self-host gate)
+- Doc 73 Stage 8.4 (Doc 74 dependent)
+- Phase 9 実装 (Doc 75 Phase 9 v2 audit 結果に応じて)
+- *Phase D-B* (= Cranelift 完全置換、3-6 ヶ月、100% 純 elisp 終着点、NeLisp Phase 7+ native cc 切替と timeline 同期)
+- Phase E (Doc 64 printer / Doc 66 reader port — Stage 7.1 / 7.2 SHIPPED 済、残は Doc 73 Phase 8 内で消化)
+
+* §5 Test plan
+
+** §5.1 Phase A 各 stage で既存 ERT 全 PASS
+
+各 sub-stage 完了時:
+- =cargo test --release --lib --tests -p nelisp-build-tool=: 既存 PASS 維持
+- =make test=: ERT regression 0 unexpected
+- 性能 bench: 退行 10% 以下
+
+** §5.2 Phase B-E 各 stage で smoke + ERT
+
+Phase A 完了後の各 stage は基本 elisp 側の追加なので smoke + ERT の組合せで sufficient.
+
+** §5.3 Final self-host gate
+
+D-A or D-B 完了時:
+- nelisp binary 単体で stdlib + user code が動く
+- Rust core LOC < 2000 (D-A) or < 1000 (D-B)
+- 起動時間 < 200ms (= NELIMG decode を elisp 化した場合の +80ms 込み)
+
+* §6 Out of scope
+
+- 既存 Doc 76 の OS surface migration は完了済 (= 100% SHIPPED).  本 Doc は同 path の延長.
+- 本 Doc は **設計** であり **実装** は別 commits.  各 Phase の sub-stage commit が SHIPPED 報告.
+- 性能チューニング (= Doc 77 元 §0 perf target 5-20x) は本 Doc の goal ではない.  Sexp ABI 解放は perf にとっても正方向だが measurement は別.
+
+* §7 References
+
+- Doc 77 (= 親 Doc、Stage 4 元 articulation)
+- Doc 77b (= Rust-min 路線、本 Doc が更新する側)
+- Doc 75 (= NELIMG image decode、PAUSED — 本 Doc の path とは別 issue)
+- Doc 76 (= OS surface migration、100% SHIPPED — 本 Doc の前提整備)
+- Doc 63 (= Phase 7 self-host roadmap)
+- Doc 73 (= Phase 8 Rust reader/eval purge)
+
+* §8 改判断 record
+
+- 2026-05-09: user 指示 "Doc 77 Stage4 を unpause" を受け、本 Doc を draft.  Doc 75 PAUSED は image decode 限定で、Sexp ABI 一般の elisp 化を否定したものではないことを articulate.
+- 2026-05-09 (session 後半): 以下を確定し本 Doc に同期.
+  - *user 100% 純 elisp commitment 確定* — nelisp 終着点で Cranelift / image decoder / 大規模 Rust GC 等を残さず、Rust core は heap allocator + atomic + layout pin の primitive のみ.  §1.1 で articulate.
+  - *per-commit monotonic shrink rule 確定* — 全 commit が net-decrease Rust LOC を満たす.  +N LOC 中間状態は不可、Phase 計画は atomic stage 単位で再設計 (Doc 79 v3 が代表例).
+  - *Doc 78 D-A DEFERRED 確定* — Cranelift Rust crate を残す hybrid path は 100% 純 elisp commitment 違反 + D-A.1 単独 +800 LOC が monotonic shrink rule 違反.  §2.4.1 を DEFERRED articulation に書換、§2.4.2 D-B を本命化.
+  - *Phase B GATE FAILED 確定* — Doc 62 Phase 5 (= 2026-05-08) で eval-time dispatch arm 削除済、Phase B 単独で削除すべき strategy.rs 残骸が無い (= "-408 LOC" alibi invalid).  §2.2 に Note block 追記.
+  - *Doc 79 v3 SHIPPED* — Phase C GC elisp 化 設計が Stage C.1+4 atomic stage で per-commit shrink rule satisfy.  commit 5e85ea7、merge e48f79a.  §2.3 を Doc 79 v3 への外部参照に切替.
+  - *Doc 76 100% SHIPPED* — Phase 7 elisp-side OS surface migration が 40/40 specialized 削除完遂 (= 本 session で Stage E + G ship、Rust -89 + -317 = -406 LOC).  §3.1 dependency graph に並行 track として追記.

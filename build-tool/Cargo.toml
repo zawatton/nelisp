@@ -28,6 +28,15 @@ path = "src/lib.rs"
 # image' CLI subcommand likewise becomes opt-in.
 default = []
 image-baker = []
+# Doc 86 §86.3.b / Doc 89 §4.2 (2026-05-10) — env shadow path verify.
+# Retired 2026-05-10 in §86.3.c switch-over: the slim shim primitive
+# IS now the canonical path (= reads / writes the same `Env::globals'
+# HashMap via `eval/env_shim.rs'), so the verify comparison would be
+# tautologically equal.  Feature kept declared as an empty alias for
+# CI workflow compatibility — workflows that pass
+# `--features env-shadow-verify' continue to build cleanly without it
+# affecting the binary.
+env-shadow-verify = []
 
 [[bin]]
 name = "nelisp"
@@ -42,6 +51,13 @@ path = "src/bin/nelisp.rs"
 name = "nelisp-baker"
 path = "src/bin/nelisp-baker.rs"
 required-features = ["image-baker"]
+
+# Doc 100 v2 §100.B (2026-05-12) — Sexp ABI layout dump driver.
+# Prints the Rust-side `ABI_EXPORT' rows in `NAME=VALUE' form so the
+# `make sexp-abi-check' target can diff against `nelisp-sexp--abi-export'.
+[[bin]]
+name = "sexp-abi-emit"
+path = "src/bin/sexp-abi-emit.rs"
 
 [dependencies]
 # Sweep 6 (2026-04-30): the previous nelisp-runtime path dependency
@@ -65,22 +81,17 @@ sha2 = "0.10"
 md5 = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
-# Phase 5 Stage 5.0 (2026-05-07, Doc 62) — Cranelift JIT scaffold.
-# `cranelift-jit' / `cranelift-codegen' / `cranelift-frontend' /
-# `cranelift-module' are the canonical 4-crate split for a single-pass
-# JIT module + IR builder + low-level codegen.  Phase 5.0 only adds the
-# scaffold (= lower_entries registry + IR type stubs); actual lowering
-# of SyscallIR / ArithIR / ConsIR / AccessIR / PredicateIR ships in
-# Stage 5.1〜5.5 (= each a separate doc + commit).  Pinned at v0.110+
-# which is the LTS line covering Linux x86_64 / aarch64 / Darwin /
-# Windows codegen targets.
-cranelift = "0.110"
-cranelift-jit = "0.110"
-cranelift-module = "0.110"
-
 # Doc 51 Track E (2026-05-04): libc for termios raw-mode + poll() to
 # enable interactive TTY input wiring under the nelisp driver.  Used
 # only by `terminal-raw-mode-enter' / `-leave' / `read-stdin-byte' /
 # `read-stdin-byte-available' builtins.  Not pulled in for batch use.
 [target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Doc 84 §84.2 (2026-05-10) — `build.rs' codegen for
+# `lisp/nelisp-syscall-table.el' (= elisp-side syscall name → number
+# resolver).  Only `libc::SYS_*' constants are read at build time; no
+# runtime libc dep is added through this entry (the runtime libc dep
+# stays the `[target.'cfg(unix)'.dependencies]' one above).
+[build-dependencies]
 libc = "0.2"

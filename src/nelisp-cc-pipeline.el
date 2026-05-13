@@ -109,6 +109,12 @@ locally — see `test/nelisp-cc-pipeline-test.el' and
   :type 'boolean
   :group 'nelisp-cc)
 
+;; Forward declaration so the byte-compiler accepts the reference in
+;; `nelisp-cc-pipeline-run-7.7-passes' below.  The actual defcustom
+;; (with full docstring) lives in the Doc 81 Stage 81.4 section near
+;; the recognition-pass implementation.
+(defvar nelisp-cc-pipeline-recognize-primitives-enable)
+
 (defcustom nelisp-cc-pipeline-rec-inline-depth-limit 2
   "Pipeline-effective depth-limit override for the recursive inliner.
 Bound around `nelisp-cc-rec-inline-pass' invocations from the pipeline
@@ -146,13 +152,17 @@ REWROTE-CALL-INDIRECT is the count of `:call-indirect' instructions
 converted to `:call' by the T161 pre-pass (= load-var callee whose
 name is in the registry).  REGISTRY-SIZE is the number of
 `(NAME . FN)' entries the driver synthesised from walking the SSA's
-nested `:closure' instructions."
+nested `:closure' instructions.  RECOGNIZED-PRIMITIVES is the count
+of `:call' instructions rewritten to `:ssa-call-primitive' by the
+Doc 81 Stage 81.4 recognition pass (= 0 when
+`nelisp-cc-pipeline-recognize-primitives-enable' is nil)."
   (simple-inlined 0)
   (rec-inlined 0)
   (lifted 0)
   (rewrote-call-indirect 0)
   (registry-size 0)
-  (base-case-folded 0))
+  (base-case-folded 0)
+  (recognized-primitives 0))
 
 ;;; Registry construction ------------------------------------------
 
@@ -279,7 +289,234 @@ exactly as Doc 42 §4.2 specifies."
             (nelisp-cc-pipeline--run-passes-on-fn inner registry stats)))
         ;; (b) outer.
         (nelisp-cc-pipeline--run-passes-on-fn function registry stats)))
+    ;; (c) Doc 81 Stage 81.4 — primitive recognition pass (opt-in).
+    ;; Independent of `nelisp-cc-enable-7.7-passes' so callers can
+    ;; activate the trampoline-emit path even with the inliner pipeline
+    ;; disabled (= A/B baseline).  Run *after* the inliner pipeline so
+    ;; any `:call' sites that simple-inline / lambda-lift introduced
+    ;; (= synthetic letrec callees) bypass recognition correctly — the
+    ;; primitive table only names elisp surface symbols, never lifted
+    ;; synthetic names.
+    (when nelisp-cc-pipeline-recognize-primitives-enable
+      (let ((rcount 0))
+        ;; Apply to outer.
+        (cl-incf rcount (cdr (nelisp-cc-pipeline--recognize-primitives
+                              function)))
+        ;; And to every inner reachable via the registry.  Re-collect
+        ;; the registry here — `nelisp-cc-enable-7.7-passes' may have
+        ;; been nil so the earlier collection branch never ran.
+        (dolist (cell (nelisp-cc-pipeline--collect-letrec-callee-registry
+                       function))
+          (cl-incf rcount (cdr (nelisp-cc-pipeline--recognize-primitives
+                                (cdr cell)))))
+        (setf (nelisp-cc-pipeline-stats-recognized-primitives stats)
+              rcount)))
     (cons function stats)))
+
+;;; Doc 81 Stage 81.1 / 81.2 / 81.3 — primitive recognition table -----
+;;
+;; Stage 81.1 shipped a *one-entry* table — `car' only — so the
+;; trampoline-emit infrastructure (Doc 81 §5.1) could be exercised on
+;; the simplest possible primitive.  Stage 81.2 extends this to 5 cons
+;; primitives covering the `cons.rs' Rust API parity surface (read 2 +
+;; write 2 + alloc 1).  Stage 81.3 (this stage) extends the trampoline
+;; ABI to non-cons primitives by adding the *vector cluster* (= length
+;; / aref / aset / elt) — 4 entries on top of the cons 5 = 9 entry
+;; table targeting Phase 7.1.6.b `access.rs' takeover.  Subsequent
+;; stages (81.4+) will further extend to arith / predicate / syscall
+;; clusters per Doc 28 §3.6.c~.e.
+;;
+;; The recognition pass (`nelisp-cc-pipeline--recognize-primitives')
+;; is *not* yet wired; for Stage 81.1/81.2/81.3 the table only declares
+;; "if you call this primitive, here is the ABI mode + the C symbol to
+;; fix up".  `nelisp-cc-pipeline-primitive-info' is the lookup helper
+;; used by ERT and by the Stage 81.4+ recognition pass.
+
+(defconst nelisp-cc-pipeline-primitive-table-stage1
+  '((car 1 :trampoline-unary nl_jit_cons_car))
+  "Stage 81.1 PoC primitive recognition table (1 entry: `car').
+
+Retained as a separate constant so Stage 81.1 ERT (= sole-entry
+shape verification) keeps passing without modification.  The
+canonical lookup goes through
+`nelisp-cc-pipeline-primitive-table-stage2' in 81.2+.")
+
+(defconst nelisp-cc-pipeline-primitive-table-stage2
+  '((car    1 :trampoline-unary       nl_jit_cons_car)
+    (cdr    1 :trampoline-unary       nl_jit_cons_cdr)
+    (cons   2 :trampoline-binary-ctor nl_jit_cons_make)
+    (setcar 2 :trampoline-binary-mut  nl_jit_cons_setcar)
+    (setcdr 2 :trampoline-binary-mut  nl_jit_cons_setcdr))
+  "Doc 81 Stage 81.2 primitive recognition table (5 cons primitives).
+
+Each entry is (ELISP-NAME ARITY ABI-MODE C-SYMBOL):
+
+  ELISP-NAME — the elisp symbol the user wrote
+  ARITY      — number of value arguments the primitive expects
+  ABI-MODE   — entry-ABI keyword from
+               `nelisp-cc-runtime--entry-abi-modes'.  Stage 81.2
+               uses three: `:trampoline-unary' (read = car / cdr),
+               `:trampoline-binary-ctor' (alloc = cons), and
+               `:trampoline-binary-mut' (write = setcar / setcdr).
+  C-SYMBOL   — Rust-side extern \"C\" symbol the trampoline calls
+               (= `nl_jit_cons_*' from build-tool/src/jit/cons.rs).
+
+Retained as the Stage 81.2 archaeological snapshot — the canonical
+lookup goes through `-table-stage3' once Stage 81.3 lands.")
+
+(defconst nelisp-cc-pipeline-primitive-table-stage3
+  '(;; cons cluster (Stage 81.2 — preserved verbatim).
+    (car    1 :trampoline-unary        nl_jit_cons_car)
+    (cdr    1 :trampoline-unary        nl_jit_cons_cdr)
+    (cons   2 :trampoline-binary-ctor  nl_jit_cons_make)
+    (setcar 2 :trampoline-binary-mut   nl_jit_cons_setcar)
+    (setcdr 2 :trampoline-binary-mut   nl_jit_cons_setcdr)
+    ;; vector cluster (Stage 81.3 — Doc 28 §3.6.b access.rs takeover).
+    (length 1 :trampoline-unary        nl_jit_access_length)
+    (aref   2 :trampoline-binary-aref  nl_jit_access_aref)
+    (aset   3 :trampoline-ternary-aset nl_jit_access_aset)
+    (elt    2 :trampoline-binary-aref  nl_jit_access_elt))
+  "Doc 81 Stage 81.3 primitive recognition table (5 cons + 4 vector).
+
+Each entry is (ELISP-NAME ARITY ABI-MODE C-SYMBOL).
+
+Vector cluster (Stage 81.3 addition, Phase 7.1.6.b `access.rs'
+takeover prerequisite):
+
+  length  arity 1, :trampoline-unary       — `(length VEC)'
+  aref    arity 2, :trampoline-binary-aref — `(aref VEC IDX)'
+  aset    arity 3, :trampoline-ternary-aset — `(aset VEC IDX VAL)'
+  elt     arity 2, :trampoline-binary-aref — `(elt SEQ IDX)'
+
+The vector primitives reuse the `nl_jit_access_*' Rust trampolines
+from build-tool/src/jit/access.rs, which already implement the
+Vector / BoolVector / Str / Cons-list fast paths the Stage 81.3
+elisp-emit path will eventually subsume in Phase 7.1.6.b.
+
+Note `length' is *also* the unary trampoline shape — same as
+car/cdr — so it shares the existing `:trampoline-unary' ABI mode
+without needing a new one.  `aref' / `elt' use the new
+`:trampoline-binary-aref' shape (= vec, i64-idx, out-ptr); `aset'
+uses the new `:trampoline-ternary-aset' shape (= vec, i64-idx,
+val, out-ptr).
+
+Stage 81.4+ will further extend this to arith / predicate /
+syscall clusters per Doc 28 §3.6.c~.e (= ~15 more entries).")
+
+(defun nelisp-cc-pipeline-primitive-info (sym)
+  "Return the primitive descriptor for ELISP SYM, or nil.
+
+Returned shape: (ARITY ABI-MODE C-SYMBOL).  Looks up in the
+Stage 81.3 table (= 5 cons + 4 vector primitives) — supersedes
+the Stage 81.1 / 81.2 tables which are kept as archaeological
+snapshots.  Stage 81.4+ will further extend the table."
+  (cdr (assq sym nelisp-cc-pipeline-primitive-table-stage3)))
+
+;;; Doc 81 Stage 81.4 — recognition pass + dlsym bridge -----------------
+;;
+;; Stage 81.1〜81.3 shipped the IR opcodes, ABI modes, backend emit
+;; helpers and primitive table that wire the trampoline shape.  Stage
+;; 81.4 is the *final* glue: a recognition pass that walks compiled IR
+;; and rewrites `:call' instructions whose `:fn' meta names a primitive
+;; in `nelisp-cc-pipeline-primitive-table-stage3' to the new
+;; `:ssa-call-primitive' opcode (with the right `:abi' / `:symbol'
+;; meta), and a dlsym bridge contract describing how the resolved
+;; primitive symbol becomes a real function-pointer at exec time.
+;;
+;; The recognition pass is *opt-in* via
+;; `nelisp-cc-pipeline-recognize-primitives-enable' (default = nil).
+;; Default-off keeps the existing 1086/1091 ERT corpus undisturbed —
+;; the Cranelift `:call' fast-path still services the bench harness
+;; until Phase 7.1.6.a flips the flag and routes the cluster.  ERT and
+;; Phase 7.1.6.a opt in by binding the variable around their compile
+;; call.
+
+(defcustom nelisp-cc-pipeline-recognize-primitives-enable nil
+  "When non-nil, run the Stage 81.4 primitive recognition pass.
+
+When t, `nelisp-cc-pipeline-run-7.7-passes' walks every block and
+rewrites `:call' instructions whose `:fn' meta is in
+`nelisp-cc-pipeline-primitive-table-stage3' to the new
+`:ssa-call-primitive' opcode.  The rewrite stores the table-derived
+ABI mode + C symbol in the instruction's meta so the backend
+emitter (`-lower-call-primitive') picks the right marshalling.
+
+Default = nil so the existing Phase 7.1.5 LOCKED bench / ERT corpus
+runs unchanged through the legacy `:call' codepath until Phase
+7.1.6.a (= cons takeover) is dispatched.  The Phase 7.1.6.a entry
+point will set this to t (or bind it locally) once the cons-heavy
+bench gate (= Doc 81 §5.4 follow-up) confirms the trampoline-emit
+path matches Cranelift baseline.
+
+The pass is also exposed as `nelisp-cc-pipeline--recognize-primitives'
+for direct invocation by ERT and by Phase 7.1.6.a's bench harness."
+  :type 'boolean
+  :group 'nelisp-cc)
+
+(defun nelisp-cc-pipeline--recognition-rewrite-instr (instr info)
+  "Rewrite a `:call' INSTR in place into `ssa-call-primitive' shape.
+
+INFO is the descriptor returned by
+`nelisp-cc-pipeline-primitive-info' (= (ARITY ABI-MODE C-SYMBOL)).
+The rewrite preserves the instruction's id / operands / def / block
+back-pointer, replacing only the opcode + meta.  Returns INSTR."
+  (let* ((arity     (nth 0 info))
+         (abi-mode  (nth 1 info))
+         (c-symbol  (nth 2 info))
+         (operands  (nelisp-cc--ssa-instr-operands instr))
+         (n         (length operands))
+         (old-meta  (nelisp-cc--ssa-instr-meta instr))
+         (fn        (plist-get old-meta :fn)))
+    ;; Sanity: the operand count must match the table's declared arity
+    ;; (= the recognition contract).  Mismatch is a frontend bug — we
+    ;; signal so it surfaces immediately rather than silently corrupting
+    ;; ABI marshalling.
+    (unless (= n arity)
+      (signal 'nelisp-cc-runtime-error
+              (list :recognition-arity-mismatch
+                    :primitive fn
+                    :expected arity
+                    :actual n)))
+    (setf (nelisp-cc--ssa-instr-opcode instr) 'ssa-call-primitive)
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          ;; Carry the original :fn through so downstream debug /
+          ;; pretty-printers can still display the elisp surface name.
+          (list :abi abi-mode :symbol c-symbol :fn fn :recognized t))
+    instr))
+
+(defun nelisp-cc-pipeline--recognize-primitives (function)
+  "Doc 81 Stage 81.4 — rewrite known-primitive `:call' sites in FUNCTION.
+
+Walks every block of FUNCTION, examines each instruction with
+opcode `call', looks up its `:fn' meta in
+`nelisp-cc-pipeline-primitive-table-stage3', and rewrites the
+instruction *in place* to opcode `ssa-call-primitive' carrying the
+table-derived `:abi' mode + `:symbol' C symbol.  Returns
+`(FUNCTION . COUNT)' where COUNT is the number of rewritten
+instructions (= 0 when no primitive call was found).
+
+The rewrite is conservative — only `:call' sites whose `:fn'
+*directly* hits the primitive table are touched.  Indirect calls
+(`call-indirect'), the new `ssa-call-primitive' itself, and any
+`:call' whose `:fn' is *not* a primitive surface name fall
+through unchanged.  This keeps the pass safe to run multiple
+times (= idempotent — a recognized site is no longer a `call'
+opcode so a second sweep skips it).
+
+The pass is invoked by `nelisp-cc-pipeline-run-7.7-passes' when
+`nelisp-cc-pipeline-recognize-primitives-enable' is non-nil; ERT
+and Phase 7.1.6.a callers may invoke it directly."
+  (let ((count 0))
+    (dolist (block (nelisp-cc--ssa-function-blocks function))
+      (dolist (instr (nelisp-cc--ssa-block-instrs block))
+        (when (eq (nelisp-cc--ssa-instr-opcode instr) 'call)
+          (let* ((meta (nelisp-cc--ssa-instr-meta instr))
+                 (fn   (plist-get meta :fn))
+                 (info (and fn (nelisp-cc-pipeline-primitive-info fn))))
+            (when info
+              (nelisp-cc-pipeline--recognition-rewrite-instr instr info)
+              (cl-incf count))))))
+    (cons function count)))
 
 (provide 'nelisp-cc-pipeline)
 

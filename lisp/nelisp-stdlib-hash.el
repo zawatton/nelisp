@@ -145,4 +145,20 @@ mutate the spine without affecting TABLE.  Matches the prior
       (setq entries (cdr entries)))
     out))
 
+;;;; --- Doc 87 §86.1.f Tier 2 wrapper: nl-secure-hash ---------------
+
+;; Doc 87 §86.1.f Tier 2 wrapper.  2-arg out-Sexp primitive call to
+;; the `nl_jit_secure_hash' trampoline in `build-tool/src/jit/hash.rs'.
+;; Replaces the deleted `bi_nl_secure_hash' helper in
+;; `eval/builtins.rs'.  ALGO is a symbol or string in `(sha1 sha224
+;; sha256 sha384 sha512 md5)'; STRING is a string.  Returns the
+;; lowercase hex digest as a string.
+(fset 'nl-secure-hash
+      (lambda (algo string)
+        (condition-case _err
+            (nl-jit-call-out-2 "nl_jit_secure_hash" algo string)
+          (error
+           (nelisp--signal-wrong-type
+            'symbol-or-string (cons algo string))))))
+
 ;; nelisp-stdlib-hash.el ends here

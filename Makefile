@@ -6,7 +6,7 @@
         bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
         stage-d-v2-tarball stage-d-v2-tarball-verify \
         stage-d-v3-tarball stage-d-v3-tarball-verify \
-        bake-images bake-check
+        bake-images bake-check verify-elisp-fixtures
 
 EMACS ?= emacs
 
@@ -71,11 +71,49 @@ clean:
 # instead — exits non-zero if a `.el' was edited without rebake.
 bake-images:
 	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
-	./target/release/nelisp-baker
+	./target/release/nelisp-baker --frozen-heap
+	@if [ "$$NELISP_VERIFY_ELISP" = "1" ]; then \
+	  $(MAKE) verify-elisp-fixtures; \
+	else \
+	  echo "(verify-elisp-fixtures skipped — set NELISP_VERIFY_ELISP=1 to enable)"; \
+	fi
 
 bake-check:
 	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
-	./target/release/nelisp-baker --check
+	./target/release/nelisp-baker --frozen-heap --check
+
+# Doc 100 v2 §100.B (2026-05-12) — Sexp ABI cross-side drift gate.
+# Builds the `sexp-abi-emit' driver to print the Rust-side `ABI_EXPORT'
+# rows, dumps the elisp-side `nelisp-sexp--abi-export' alist to the
+# same `NAME=VALUE' form, and diffs the two.  Drift fails the build.
+# Pairs with the compile-time `const _: ()' assertions in
+# `build-tool/src/eval/sexp_abi_assert.rs' — together they guarantee
+# Phase 47-compiled `.o' objects (`lisp/nelisp-cc-*.el') see the same
+# byte layout the Rust evaluator sees.
+sexp-abi-check:
+	cargo build --release --manifest-path build-tool/Cargo.toml --bin sexp-abi-emit
+	@mkdir -p target/sexp-abi-check
+	./target/release/sexp-abi-emit > target/sexp-abi-check/rust.txt
+	$(EMACS) --batch -Q -L lisp -l nelisp-sexp-layout \
+	  --eval '(with-temp-file "target/sexp-abi-check/elisp.txt" (dolist (e nelisp-sexp--abi-export) (insert (format "%s=%d\n" (car e) (cdr e)))))'
+	@diff -u target/sexp-abi-check/elisp.txt target/sexp-abi-check/rust.txt \
+	  && echo "sexp-abi-check: Rust and elisp constants match"
+
+# Doc 95 §95.e CI integration: emit the hand-picked NELIMG v3 envelope
+# fixture corpus via the elisp serializer (`nelisp-sexp-bake-dump-
+# fixture'), then run each through the Rust baker's `--verify-elisp-
+# fixtures' branch to confirm byte-identity.  Failure = drift between
+# the elisp encoder (`lisp/nelisp-sexp-dsl.el') and the Rust encoder
+# (`build-tool/src/image.rs::encode_v3_with_fallback').  Depends only
+# on the `nelisp-baker' binary plus an Emacs to run the dumper.
+verify-elisp-fixtures:
+	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
+	@mkdir -p target/elisp-fixtures
+	$(EMACS) --batch -Q -L lisp \
+	  -l nelisp-bake-fixtures \
+	  --eval '(nelisp-bake-fixtures-emit-all "target/elisp-fixtures/")'
+	./target/release/nelisp-baker --verify-elisp-fixtures \
+	  $$(ls target/elisp-fixtures/*.image)
 
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
 # Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).

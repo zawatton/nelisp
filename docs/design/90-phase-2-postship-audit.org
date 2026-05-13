@@ -1,0 +1,633 @@
+#+TITLE: Doc 90 — Phase 2 完遂後 連動削減 audit + post-ship measurement
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: DRAFT (= post-ship audit, not actionable spec). 本 Doc は
+  Phase 2 (= Doc 86 §86.1 + §86.2 + §86.3 全 sub-stage SHIPPED 2026-05-10
+  時点) の actual LOC 着地点を実測し、Doc 86 / 87 / 88 / 89 estimate
+  からの drift を articulation する。次 Phase の architect (= Doc 77c
+  Phase 3 D-B、Doc 85 Phase 47 spike) に「どこまで削れて、どこから先は
+  hot-path policy で構造的に locked か」を渡すための reference。
+- *Update 2026-05-11*: Phase 47 spike **VALIDATED** (= Doc 85 SPIKE
+  VALIDATED、Doc 93 §93.c e2e exec gate PASSED)。本 audit が flagged
+  した §86.3.c 4 deferral + Tier 2 trampoline isomorphism は Phase 47
+  production engagement (= Doc 97 Sexp→asm compiler + §95.e baker
+  integration 待ち) で消化 path 確保。"Phase 47 unlock" は hypothesis
+  から validated technical reality に移行
+- *Parent*: Doc 86 (= Phase 2 master、§13 v2 reconcile appendix が
+  本 Doc の articulation 起点)
+- *Siblings*: Doc 87 (= §86.1 builtins detail)、Doc 88 (= §86.2 error
+  detail)、Doc 89 (= §86.3 env detail)
+- *Reader*: Phase 3 / Phase 47 architect、本 Doc は estimate 精度
+  retrospective + hot-path policy gate articulation を主目的とする
+- *OOS for THIS doc*: 実装 / 修正 / Rust file edit (= 本 Doc は読み取り
+  audit のみ)、Phase 2 estimate 訂正 (= Doc 86 §13 supervisor 領分)、
+  Phase 3 D-B 設計 (= 別 doc Doc 77c 系列)
+
+* §1 Phase 2 actual landing measurement
+
+** §1.1 grand total wc -l (= 2026-05-10 §86.3.c SHIPPED 後)
+
+実測 (= =wc -l build-tool/src/eval/{builtins,env,error,mod,special_forms}.rs= +
+=find build-tool/src -name "*.rs" -exec wc -l= grand total):
+
+| file                              | post-§86.3.c LOC | Phase 1 完遂 LOC | net delta |
+|-----------------------------------+------------------+------------------+-----------|
+| =build-tool/src/eval/builtins.rs= | 2,177            | 3,804            | -1,627    |
+| =build-tool/src/eval/env.rs=      | 597              | 564              | +33       |
+| =build-tool/src/eval/error.rs=    | 185              | 308              | -123      |
+| =build-tool/src/eval/mod.rs=      | 840              | 848              | -8        |
+| =build-tool/src/eval/special_forms.rs= | 572         | 572              | 0         |
+| 5-file 小計 (= eval/ subset)       | 4,371            | 6,096            | -1,725    |
+| build-tool/src/ grand total       | **21,336**       | 21,796           | **-460**  |
+
+実測差分 -460 LOC (= Phase 2 単独着地)。Doc 86 §0 v2 reconciled
+estimate -3,043、Doc 86 §13.1 v2 actual sum estimate -2,898、Doc 86
+§13.3 §86.3.c projection -1,278 (= 完遂前)、Doc 86 §12.9 §86.3.c
+post-ship correction -460 (= Phase 1 base 比 -64 from §86.1.g + -396
+from §86.3.c).
+
+実測 -460 = Doc 86 §12.9 SHIPPED block 末の「-460」と一致 (= §86.1.g
+SHIPPED 21,732 − §86.3.c -396 = 21,336)。grand total measurement
+self-consistent.
+
+** §1.2 estimate row-by-row比較
+
+| 段階                       | Doc 86 estimate | Doc 87/88/89 v2 reconciled | actual SHIPPED | drift vs v2 |
+|----------------------------+-----------------+----------------------------+----------------+-------------|
+| §86.1.a (Tier 1 predicate) | -300            | -34                        | **-34**        | 0           |
+| §86.1.b (Tier 1 算術)      | -350 (Doc 87 §3.2) | -350                    | **-108**       | -242 short  |
+| §86.1.c (Tier 1 record)    | -400            | (= -10 Doc 86 §1.2)        | **-10**        | 0           |
+| §86.1.d (Tier 1 intern)    | -300            | -300 (Doc 87)              | **-2**         | -298 short  |
+| §86.1.e (Tier 2 simple)    | -350            | (= +132 §1.2 reconciled)   | **+132**       | 0           |
+| §86.1.f (Tier 2 ABI ext)   | -650            | (= +297 §1.2 reconciled)   | **+297**       | 0           |
+| §86.1.g (cleanup)          | -300            | -300 (Doc 87 §3.7)         | **-927**       | +627 over   |
+| §86.1 sub-total            | -2,650          | -1,571 (Doc 87 §11.3)      | **-652**       | -919 short  |
+| §86.2 (error.rs)           | -258〜-278      | -258 SHIPPED + 145 deferred | **-113**      | -145 short  |
+| §86.3.a (precursor)        | +85             | +85                        | **+280**       | +195 over   |
+| §86.3.b (shadow)           | +0              | +0 production              | **+0 production / +210 cfg-gated** | 0 |
+| §86.3.c (switch-over)      | -1,500          | -1,214 (Doc 89 §5.5)       | **-396**       | -818 short  |
+| §86.3 sub-total            | -1,415          | -1,129 (= +85 -1,214)      | **+114** *(= +280 -396)** prod-only / **+324 incl cfg-gate** | -1,243 short cfg-incl |
+| Phase 2 grand total        | -3,572〜-4,592  | -2,898 (Doc 86 §13.1)      | **-460**       | -2,438 short |
+
+(=「v2 reconciled」列で blank の cells は v2 reconcile 時に Doc 86 §1.2
+で **そのまま actual を記載した** sub-stage = §86.1.a / §86.1.c /
+§86.1.e / §86.1.f。v1 estimate は Doc 86 §5.2 元値、これらは v2 で
+actual と equate された。)
+
+** §1.3 大局観: -460 が示すもの
+
+Doc 89 §10.1 hot-path preservation policy が **ship 時に Doc 86 §1.2
+の v2 reconciled -2,898 estimate よりさらに保守的に landed**。drift の
+最大 contributor は §86.3.c (= -1,500 → -396 = -1,104 short)、次点が
+§86.1 sub-total (= -1,571 → -652 = -919 short)。逆方向の +627 over は
+§86.1.g (= cleanup の comment block purge が予想を 3 倍超過)。
+
+差し引き Phase 1 base 21,796 → 21,336 (= -460) は **Doc 86 §1.2 v3
+reconciled landing 21,336** (Doc 86 §13.3 末「v3 reconciled landing
+v3 = §86.1.g で base 以下到達 + §86.3.c 完遂で ~20,518」projection を
+ship 時に -396 へ revise した結果) に一致。Phase 2 単独で v1 estimate
+の lower bound (= -3,000) にも v2 reconciled (-2,898) にも届かなかった
+構造的理由は §3 で articulate。
+
+* §2 sub-stage by sub-stage drift analysis
+
+各 sub-stage で (estimate / actual / drift / drift cause) を articulation。
+v1 estimate は Doc 86 §5.2 / §6 / §4.4、v2 reconciled は Doc 87 §11.3 /
+Doc 88 §11.3 相当 / Doc 89 §5.5、actual は Doc 86 §12.x SHIPPED block
+の LOC delta 表より。
+
+** §2.1 §86.1.a — Tier 1 predicate / type-of
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -300                                                 |
+| v2 reconciled | -34 (= Doc 86 §1.2 で actual と equate)              |
+| actual SHIPPED | -34                                                 |
+| drift cause   | (a) v1 visual estimation = "10 arm × 30 LOC" 想定、actual は batch 6u (2026-05-06) で 8 arm 先行移管済 + 残 3 arm の trampoline body が =bi_*= と isomorphic |
+
+drift root cause: (c) v1 visual-error correction (= 先行移管 8 arm 認識
+不足)。v2 で Doc 87 detail 起こし時に grep で actual を検出、ship 時は
+v2 通り。
+
+** §2.2 §86.1.b — Tier 1 算術 / equal / ref-eq / sxhash
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -350 (= Doc 86 §5.2)                                 |
+| v2 reconciled | -350 (= Doc 87 §3.2 post-articulation 同値)          |
+| actual SHIPPED | -108                                                |
+| drift cause   | (a) trampoline body と deleted =bi_*= が structural isomorphic + (c) =bi_equal= は既に dead code (= Doc 50 stage 5b で elisp =equal= が override 済) で 46 LOC が "bonus pure-deletion"、=bi_ref_eq= body は =sexp_eq= 等価で 7-LOC 残置、=sxhash= は =DefaultHasher= state machine 構造的必須 |
+
+drift root cause: (a) Tier 2 trampoline body / deleted =bi_*= isomorphism
++ (c) v1/v2 estimate visual-error correction。v2 reconciled は v1 と同値
+(= -350) に留まっており、Doc 87 §3.2 でも actual の -108 は予期されな
+かった。drift -242 は **trampoline body 構造制約**で structurally locked。
+
+** §2.3 §86.1.c — Tier 1 record family
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -400                                                 |
+| v2 reconciled | -10 (= Doc 86 §1.2 で actual と equate)              |
+| actual SHIPPED | -10                                                 |
+| drift cause   | (c) v1 visual estimation の致命的過大、actual は既存 box accessor bridge shape 再利用で新 ABI mode 不要、5 arm の trampoline body は box accessor primitive を直接 funcall するだけで body 軽量 |
+
+drift root cause: (c) v1 estimate visual-error correction。Doc 87 detail
+起こし時に再見積もり、§12.x SHIPPED entry が省略された (= Doc 86 §12 に
+明示 §86.1.c block 不在)。
+
+** §2.4 §86.1.d — Tier 1 intern / symbol
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -300                                                 |
+| v2 reconciled | -300 (= Doc 87 同値)                                 |
+| actual SHIPPED | -2                                                  |
+| drift cause   | (a) trampoline body と deleted =bi_*= isomorphism = =intern= / =symbol-name= / =make-symbol= の 3 arm は全て global symbol-table primitive (= Rust-resident obarray) に touch する性質上 trampoline body が =bi_*= body と nearly identical |
+
+drift root cause: (a) Tier 2 trampoline body isomorphism。Doc 86 §12.4
+末で「§86.3 で obarray elisp 化が ship すると -90 LOC 追加 drop 期待」
+articulation 済 = **Phase 47 (= Doc 85 spike) で obarray を Sexp DSL
+で elisp 表現可能になった時点で初めて closure**。Phase 2 単独では
+structurally locked。
+
+** §2.5 §86.1.e — Tier 2 simple
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -350                                                 |
+| v2 reconciled | +132 (= Doc 86 §1.2 で actual と equate、Doc 87 §5.1) |
+| actual SHIPPED | +132                                                |
+| drift cause   | (a) trampoline body isomorphism + 新 ABI mode =:trampoline-format-float= の register encoder cost = 3 arm の =bi_*= 削除 -103 を trampoline +175 / bridge +58 が上回る |
+
+drift root cause: (a) Tier 2 trampoline body / deleted =bi_*= isomorphism。
+Doc 86 §12.5 末「§86.1.g cleanup で吸収予定」articulation = §86.1.g で
+回収済。
+
+** §2.6 §86.1.f — Tier 2 ABI extension + 残
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -650                                                 |
+| v2 reconciled | +297 (= Doc 86 §1.2 で actual と equate、Doc 87 §5.4 monotonic-shrink calc) |
+| actual SHIPPED | +297 production / -341 consumer-net incl. elisp     |
+| drift cause   | (a) Tier 2 ABI extension の +Rust 構造制約 = 4 trampoline file (time/hash/math/regex 計 +446) + bridge +9 entries + 新 ABI mode =:trampoline-unary-float= 受入が 9 =bi_*= 削除 -211 を上回る |
+
+drift root cause: (a) Tier 2 trampoline body / deleted =bi_*= isomorphism +
+ABI mode register encoder cost。Doc 87 §5.4 で monotonic-shrink
+calculation 通り = 構造的に下限値 (= +297 production)、§86.1.g cleanup
+で吸収。
+
+** §2.7 §86.1.g — install_builtins / dispatch trim
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -300 (= Doc 86 §5.2 / Doc 87 §3.7)                   |
+| v2 reconciled | -300 (= Doc 87 §3.7 同値)                            |
+| actual SHIPPED | -927                                                |
+| drift cause   | spec 範囲外 over-deliver = =builtins.rs= 内 stale per-batch comment block 集約 + Doc 53/55/56/58/59 banner block の 80 LOC compress + 旧 migration commentary purge ~600 LOC が予想外に bulk |
+
+drift root cause: 予想外の over-deliver (= comment-LOC purge は
+"productive"では計上されてこなかったが、cleanup sub-stage で aggressive
+に進めた結果)。drift category (a)/(b)/(c) の何れにも入らない bonus、
+§86.1 sub-total +627 LOC を回収して Tier 2 Rust 増加分 (= §86.1.e
++132 + §86.1.f +297 = +429) を吸収して base 以下到達。
+
+** §2.8 §86.2 — error.rs migration
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -258〜-278                                           |
+| v2 reconciled | -258 SHIPPED + 残 145 deferred (= Doc 86 §13.1)      |
+| actual SHIPPED | -113                                                |
+| drift cause   | (b) full =EvalError= variant elision は 282 callsite refactor を要し architectural cost 高、§86.2 single-stage では yield せず §86.3 と統合判断。残 -145 は §86.3 完遂時消化想定だったが §86.3.c で env.rs / mod.rs / special_forms.rs 連動の Result type 触れず未消化 |
+
+drift root cause: (c) v1 estimate visual-error correction (= callsite
+count 過小評価) + (b) hot-path policy preservation 派生 (= Result type
+全 callsite refactor は eval ループ全 hot path に touch する architectural
+cost)。残 -145 は Phase 3 D-B で eval ループ全体を elisp 化する時に
+fold される想定。
+
+** §2.9 §86.3.a — env shim skeleton precursor
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | +85 (= Doc 89 §4.1.2 production budget)              |
+| v2 reconciled | +85                                                  |
+| actual SHIPPED | +280                                                |
+| drift cause   | =env_shim.rs= に inline =#[cfg(test)] tests= ~110 LOC + doc-comment ~50 LOC + 11 primitive wrappers + arity/sym-arg helpers が含まれる = production-only LOC は ~140 で v2 budget +80 と整合 |
+
+drift root cause: 予想外 over (= test/doc は production-LOC として
+計上していないが、ship 時に file-LOC で測ると +280 になる)。production
+LOC は spec 内。
+
+** §2.10 §86.3.b — env shadow path
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | +0 production                                        |
+| v2 reconciled | +0 production / +210 cfg-gated (= Doc 89 §4.2)       |
+| actual SHIPPED | +0 production / +210 cfg-gated                      |
+| drift cause   | drift 0 = spec 通り                                  |
+
+drift root cause: なし。Doc 89 §4.2 cfg-gated dual-update verify が
+spec 通り landed、default build は byte-identical で +0 production。
+
+** §2.11 §86.3.c — env switch-over
+
+| metric        | value                                                |
+|---------------+------------------------------------------------------|
+| v1 estimate   | -1,500 (= Doc 86 §4.4 net、ffi.rs -100 含む)         |
+| v2 reconciled | -1,214 (= Doc 89 §5.5、ffi.rs 0 連動 corrected)      |
+| actual SHIPPED | -396                                                |
+| drift cause   | (b) Doc 89 §10.1 hot-path policy preservation の最大 hit point = 4 deferral (= env.rs 19 method body un-reduced / parse_let_binding hot-path / bind_formals hot-path / Tier 3 dispatch arm preserved) で v2 -1,214 から -818 short |
+
+drift root cause: (b) hot-path policy preservation。詳細は §3 で
+articulate (= 4 deferral 個別 articulation)。
+
+* §3 §86.3.c specific deferral articulation
+
+§86.3.c は Phase 2 最大 sub-stage で v2 reconciled -1,214 target に対し
+ship 実績 -396 (= -818 short)。Doc 89 §10.1 が定めた hot-path policy
+を ship agent が遵守した結果、4 個の deferral が発生した。本節は各
+deferral の articulation + Phase 47 で unlock する条件を articulate。
+
+** §3.1 deferral 1: env.rs 19 method body un-reduced (-176 expected)
+
+Doc 89 §4.3.1 Step 3 が「19 method を thin slim-primitive forwarder
+化、env.rs 935 → ~50 LOC stub = -885」を spec していた。actual = env.rs
+935 → 597 (= -338) で stop、19 method body は **そのまま残置**。
+
+ship agent (= Doc 86 §12.9) の根拠:
+- 各 =Env::*= method の body は既に 3-24 LOC のタイト実装
+- slim primitive と同じ =Env::globals= HashMap を共有 (= storage は
+  single source of truth)
+- thin forwarder 化するには slim primitive の =(args: &[Sexp], env:
+  &mut Env)= signature を refactor 必要 = 侵襲的、switch-over 目的
+  と直交
+
+Doc 89 §10.1 hot-path policy 適用判断: =env.lookup_value= は eval
+ループ内で全 symbol resolve で hit する。Rust =Env::*= method を
+slim primitive 経由 (= 同 HashMap への 2 段 indirection) にすると、
+eval loop の hot path で indirect call cost を払う = ~10-50x slowdown
+risk。ship agent は **Rust internal callsite を Rust =Env= method
+直呼び出しに維持**することで policy 遵守。
+
+代わりに shadow-verify retirement (= -338 of -514 target) で env.rs
+内部を slim な形に整理 = §86.3.b で +210 cfg-gated として上乗せして
+いた verify infrastructure (= 7 helper + frame_stack predicate +
+shadow_sexp_eq) を §86.3.c で full retire = -338 inside file。
+
+なぜ正しいか: Doc 89 §10.1 が明示するように、shim 経由は user-visible
+API + advice hook 用、Rust internal callsite は Rust =Env= method
+直呼び出し維持が canonical。19 method body 残置は policy compliant。
+
+Phase 47 unlock 条件: Doc 85 spike が完了し native compiler が elisp
+round-trip を free (= zero-overhead) にできた時点で、19 method を
+elisp =nelisp--env-globals-*= 直呼びに switch 可能。Sexp DSL で global
+hash-table 表現を elisp 化できれば storage 側も Rust 不要。expected
+recover: ~-176 LOC (= 597 → 597 − 176 = ~421) または更に深く ~-547
+(= ~50 LOC stub 着地、Doc 89 §4.4 完遂値)。
+
+** §3.2 deferral 2: parse_let_binding hot-path preserved (-30 expected)
+
+Doc 89 §5.2 が「=parse_let_binding= 30 LOC を elisp =nelisp--parse-
+let-binding= に push、Rust 側薄い shim ~10 LOC」を spec。actual =
+elisp shim defun は exported (= =lisp/nelisp-stdlib-env-shim.el=) が、
+Rust =parse_let_binding= は **そのまま残置** (= callsite から funcall
+されない)。
+
+ship agent (= Doc 86 §12.9) の根拠:
+- 全 =let= / =let*= 評価で binding ごとに elisp dispatch round-trip が
+  発生 = ~50x slowdown estimate (Doc 89 §10.1)
+- Rust =parse_let_binding= は 30 LOC including comments で yield 小
+- Phase 3 D-B 時に elisp shim を canonical 化する用意は完了
+
+Doc 89 §10.1 hot-path policy 適用判断: =let= / =let*= は eval ループ
+内で頻繁に hit する hot path。binding parse は 1 binding あたり ~10
+LOC の処理で、毎 evaluation ごとに elisp dispatch を介すと ~50x
+overhead 発生 risk。
+
+なぜ正しいか: =parse_let_binding= の semantic は inline 30 LOC で
+完結し、複雑度低 = Rust 側 maintain cost も低い。一方 elisp 化の
+overhead cost は eval ループ全体に prorated される = ROI 著しく低い。
+ship agent は Rust 内 hot path を維持し、elisp shim を Phase 3 D-B
+向け canonical 化 unlock として配置 = policy compliant。
+
+Phase 47 unlock 条件: Phase 3 D-B (= Doc 77c master) が ship し native
+compiler 経由で elisp =parse-let-binding= が Rust 同等 perf で動く時点。
+expected recover: -30 LOC (= special_forms.rs から =parse_let_binding=
+削除)。
+
+** §3.3 deferral 3: bind_formals hot-path preserved (-100 expected)
+
+Doc 89 §5.1 が「=bind_formals= 100 LOC (line 716-822) を elisp =nelisp--
+bind-formals= に push、Rust 側薄い shim ~10 LOC」を spec。actual =
+Stage 7.4.b の =nelisp--bind-formals--compute= helper は =nelisp-stdlib-
+eval-core.el= に既に存在 (= elisp-side caller 用 available) が、Rust hot
+path =bind_formals= は **そのまま残置**。
+
+ship agent (= Doc 86 §12.9) の根拠:
+- =bind_formals= は **全 function call** で hit する Tier 0 hot path
+- Doc 89 §10.1 が "hot path slowdown ~10-50x" 警告を明示
+- =nelisp--bind-formals--compute= elisp helper は 既存 (= Stage 7.4.b
+  ship 済)、elisp-side caller は available
+
+Doc 89 §10.1 hot-path policy 適用判断: =bind_formals= は eval ループの
+最深 hot path = function call 1 回ごとに必ず通る。仮に elisp 化すれば
+全 function call が elisp dispatch を介す = ~50x slowdown が apply chain
+全体に loaded の risk。
+
+なぜ正しいか: =bind_formals= は eval ループの critical path で、Doc 89
+§10.1 が Tier 0 preservation を policy 化した最大の理由。ship agent は
+Rust hot path 維持 + elisp helper を future Phase 3 D-B 向けに available
+化 = policy compliant。
+
+Phase 47 unlock 条件: Phase 3 D-B native compiler + elisp =bind-formals=
+の native code 化。expected recover: -100 LOC (= mod.rs 848 → ~748、Doc
+89 §5.1 spec line 716-822 削除)。
+
+** §3.4 deferral 4: Tier 3 dispatch arm preserved (-130 expected)
+
+Doc 89 §5.4 + §10.7 が「Tier 3 dispatch arm 12 件を =install_builtins=
++ =dispatch= match から削除、env shim 経由 fset に切替で更に -130 LOC」
+を spec。actual = arm body は -39 LOC まで簡素化 (= 9 arm 各 6-9 LOC
+→ 2-4 LOC) されたが、**arm 自体は preserved** = =install_builtins=
+の =fset= sentinel + =dispatch= match arm として残る。
+
+ship agent (= Doc 86 §12.9) の根拠:
+- =install_builtins= が起動時に =(builtin NAME)= sentinel で fset
+- env-shim load が sentinels を elisp wrapper に REPLACE
+- shim load 前は dispatch arm が canonical Tier 0 path
+- arm 削除すると bootstrap chain 破壊
+
+Doc 89 §10.1 hot-path policy 適用判断: bootstrap path の hot path 性は
+低い (= 起動 1 回のみ hit) が、削除すると **bootstrap 完了前の env-shim
+load 中 self-call 経路が消滅** = chicken-and-egg 問題が再活性化 risk。
+Doc 89 §6 の Tier 0 minimal Rust env permanent stub 戦略の前提条件。
+
+なぜ正しいか: Tier 3 arm body は shadow-verify cleanup で -39 LOC まで
+簡素化済 (= §86.3.c 後の builtins.rs 2,177 LOC が反映)、arm structural
+preservation は bootstrap chain 維持に必須。Doc 89 §6.2 chicken-and-egg
+solution の Tier 0 permanent stub 戦略と integrated。
+
+Phase 47 unlock 条件: Phase 3 D-B 完了で native compiler が boot
+sequence を elisp で fold できた時点 + Sexp DSL が hash-table を elisp
+表現可能になった時点。expected recover: -130 LOC (= dispatch arm 12
+削除 + install_builtins entries 削減)。
+
+** §3.5 §86.3.c deferral grand total
+
+| deferral                       | expected recover | rationale                           |
+|--------------------------------+------------------+-------------------------------------|
+| 1. env.rs 19 method un-reduced | -176 ~ -547      | hot path (= eval ループ全 symbol resolve) |
+| 2. parse_let_binding 残置      | -30              | hot path (= let / let* 全 evaluation) |
+| 3. bind_formals 残置           | -100             | hot path (= 全 function call)        |
+| 4. Tier 3 dispatch arm 保存    | -130             | bootstrap chain (= shim load 前 canonical) |
+| 合計 deferral                  | -436 ~ -807      | = Phase 47 で unlock 可能            |
+
+actual -396 + 4 deferral expected -436~-807 = -832 ~ -1,203 で v2
+reconciled -1,214 とほぼ一致 (= -11 ~ -382 short)。残差は §86.2 で
+deferred の -145 含む architectural overlap、Phase 3 D-B の eval
+ループ全体 elisp 化で fold 想定。
+
+* §4 ROI / drift root cause taxonomy
+
+全 sub-stage drift を 3 reason に classify:
+
+** §4.1 (a) Tier 2 trampoline body / deleted =bi_*= isomorphism (= structural +Rust)
+
+該当 sub-stage:
+- §86.1.b (= drift -242)
+- §86.1.d (= drift -298)
+- §86.1.e (= drift +132 / +Rust 増)
+- §86.1.f (= drift +297 / +Rust 増)
+
+特徴: Tier 1/2 builtin を =bi_*= helper から JIT trampoline 経由 elisp
+wrapper に migrate する場合、trampoline body は =bi_*= body と **構造的
+isomorphic** になる (= 同 Sexp variant → tag-flip logic / 同 primitive
+operation 呼び出し)。理由は Sexp 変換 / IEEE-754 / =Rc::ptr_eq= 等の
+underlying primitive 自体が Rust-resident な fact = 言語側 (Rust) の
+expressibility に locked。
+
+migration の **conceptual win** は dispatch + arity + type-error shape を
+elisp 化 = =advice-add= / =fset= override / user-visible signal contract
+が elisp ergonomics に乗る。ただし Rust LOC delta は body isomorphism
+で構造的に limited (= ±~50-200 LOC per arm)。
+
+ROI 改善 condition: Phase 47 (= Doc 85 spike) で **Sexp DSL** が
+trampoline body を elisp で表現可能にする = =Rc::ptr_eq= / IEEE-754 /
+=DefaultHasher= state machine 等の primitive を Sexp DSL 経由で elisp
+記述 = trampoline body 自体が elisp 化可能。
+
+** §4.2 (b) Hot-path policy preservation (= Doc 89 §10.1)
+
+該当 sub-stage:
+- §86.2 残 -145 deferred (= eval ループ Result type architectural cost)
+- §86.3.c 4 deferral (§3 articulated、合計 -436 ~ -807 expected recover)
+
+特徴: eval ループ内 hot path (= =lookup_value= / =bind_formals= /
+=parse_let_binding= / Tier 3 dispatch / Result type) を elisp 化すると
+~10-50x slowdown が apply chain 全体に loaded する。Doc 89 §10.1 が
+explicit policy として established、ship agent が遵守。
+
+trade-off: Phase 2 単独削減量 vs Phase 3 D-B 完了後の native compiler
+free-overhead unlock。Phase 2 で push しても perf regression revert を
+要する risk = 遅らせる方が architecturally clean。
+
+ROI 改善 condition: Phase 3 D-B (= Doc 77c master plan) 完了で native
+compiler が elisp dispatch を free にする時点 = hot-path policy
+restriction が外れる。
+
+** §4.3 (c) v1 estimate visual-error correction (= Doc 87/88/89 detail design uncovered)
+
+該当 sub-stage:
+- §86.1.a (= 先行移管 8 arm 認識不足 -300 → -34)
+- §86.1.b (= =bi_equal= dead code 認識不足、=bi_ref_eq= 等価性認識不足 -350 → -108)
+- §86.1.c (= visual estimation -400 → -10)
+- §86.2 (= callsite count 過小評価 -258 → -113)
+- §86.3.c v1→v2 (= ffi.rs -100 → 0 で Doc 89 §10.5 correction)
+
+特徴: Doc 86 §5/§6/§4.3 の v1 estimate は visual estimation 中心で、
+Doc 87/88/89 detail design 起こし時に grep / callsite count で実測
+すると下振れ。
+
+ROI 改善 condition: 該当 sub-stage は **既に v2 reconciled で訂正済**、
+Phase 47 で recover する余地なし (= structurally already-deleted code
+は再削除不可)。Phase 3 D-B / Phase 47 で別 source of reduction を探す
+必要。
+
+** §4.4 drift category 分布
+
+| category       | sub-stage 数 | drift sum (= short side のみ) |
+|----------------+--------------+-------------------------------|
+| (a) Tier 2 isomorphism | 4    | -242 + -298 = -540 short + Tier 2 +Rust +132 + +297 = +429 over |
+| (b) hot-path preservation | 2 | -145 + -1,104 (= §86.3.c の -818 + 連動 -286) = -1,249 short |
+| (c) v1 visual-error | 5      | (= 既に v2 で訂正済、再削除余地なし)         |
+| 予想外 over-deliver | 1      | §86.1.g +627 over                          |
+
+(b) hot-path preservation が最大 contributor (= -1,249 short)、Phase 3
+D-B 完了で unlock 可能な structural reduction。次点 (a) Tier 2 isomorphism
+は Phase 47 spike (= Sexp DSL) で unlock 可能。(c) v1 visual-error は
+v2 で既 reconciled = Phase 2 内 closure。
+
+** §4.5 ROI 数値整理
+
+Doc 89 §5.5 が宣言した ROI (= 0.58:1 = 1 elisp 投資で 1.7 Rust 削減)
+は §86.3.c v2 target -1,214 + elisp +700 で計算。actual ship では:
+
+| metric                           | value                          |
+|----------------------------------+--------------------------------|
+| Phase 2 actual Rust net          | -460                           |
+| Phase 2 actual elisp net         | + ~970 (= -error 179 + env-shim +293 + jit-strategy +163 + stdlib +各 sub-stage)  |
+| ROI actual                       | ~ -460 / +970 = **0.47:1** = 1 elisp 投資で 0.47 Rust 削減 |
+
+ROI v2 spec 0.58:1 → actual 0.47:1 への低下は (b) hot-path preservation
+が elisp shim を investment するが Rust hot path 削れない drift 直接帰結。
+Phase 47 完遂で 4 deferral 解除 + Phase 3 D-B での Result type fold 経由
+で ROI 改善が可能。
+
+* §5 follow-up tasks
+
+Phase 3 (= Doc 77c D-B master) / Phase 47 (= Doc 85 Sexp DSL spike) で
+attack すべき residual gap:
+
+** §5.1 Phase 3 D-B 向け task
+
+1. *eval ループ Result type fold* (= §86.2 残 -145 deferred + §86.3.c
+   architectural overlap) — eval ループ全体を elisp 化し =Result<Sexp,
+   EvalError>= の Rust callsite を消滅 → =error.rs= 残 185 LOC のうち
+   =EvalError::Internal= 1 variant を除き全消滅可
+2. *=bind_formals= elisp 化* (= §86.3.c deferral 3) — native compiler が
+   elisp dispatch を free にした時点で =mod.rs= line 716-822 を =nelisp--
+   bind-formals= に切替 = -100 LOC
+3. *=parse_let_binding= elisp 化* (= §86.3.c deferral 2) — 同上、=special_
+   forms.rs= から削除 = -30 LOC
+4. *Tier 3 dispatch arm 削除* (= §86.3.c deferral 4) — bootstrap chain
+   reorganization (= Tier 0 stub の elisp 化 + boot sequence elisp fold)
+   完了で =install_builtins= + =dispatch= から 12 arm 削除可 = -130 LOC
+
+合計 Phase 3 D-B unlock expected: ~-405 LOC (= 145 + 100 + 30 + 130)。
+
+** §5.2 Phase 47 (= Doc 85 spike) 向け task
+
+1. *Sexp DSL で trampoline body 表現* (= §86.1.b/d/e/f drift 解消) — Tier
+   2 trampoline body を Rust =extern "C" fn= から elisp 経由 (=
+   Sexp DSL macro で primitive operation 表現) に switch、=jit/= 配下の
+   trampoline file を elisp 化可。expected recover: ~-300 ~ -500 LOC
+2. *env.rs 19 method body elision* (= §86.3.c deferral 1) — Sexp DSL で
+   global hash-table 表現が elisp 可能になった時点で 19 method を
+   slim primitive 直呼び化 = -176 ~ -547 LOC
+3. *obarray elisp 化* (= §86.1.d 連動) — global symbol-table primitive
+   を elisp 化、=jit/strings.rs= の 3 trampoline (=intern= / =symbol-name= /
+   =make-symbol=) を retire = ~-90 LOC
+
+合計 Phase 47 unlock expected: ~-566 ~ -1,137 LOC。
+
+** §5.3 Phase 2 内 follow-up (= 別 sub-stage 化判断)
+
+- *§86.3.c'* (= shadow-verify retirement の更なる cleanup) は §86.3.c で
+  full retire 済、追加 sub-stage 不要
+- *§86.1.h* (= Tier 2 cleanup re-pass) は §86.1.g で先取り済、追加 不要
+- *§86.4* (= Phase 2 completion banner) は本 Doc 90 で代替、別 sub-stage
+  ship 不要
+
+** §5.4 estimate calibration learning
+
+Phase 3 / Phase 47 で estimate を立てる時の calibration:
+1. *Visual estimation を grep で裏取りする* (= §86.1.c -400 → -10 教訓)
+2. *trampoline body / deleted helper の isomorphism を計算する* (=
+   §86.1.b/d/e/f の -242 ~ -298 short / +132 / +297 over の構造)
+3. *hot-path preservation cost を separately budget* (= §86.3.c の -818
+   short の構造 = Doc 89 §10.1 policy が ship 時に landed)
+4. *callsite count を accurate に grep* (= §86.2 callsite refactor cost
+   過小評価教訓)
+
+* §6 References
+
+** §6.1 internal NeLisp design docs
+
+- Doc 83 §6.2 (= phase-3 ultimate-D-B bridge plan) — Phase 2 着地
+  ~6,000-8,000 試算の出処、本 Doc §1.3 / §5.1 で Phase 2 + Phase 3 合算
+  値と reinterpret
+- Doc 85 (= phase-47 sexp-dsl-spike) — Phase 47 spike、本 Doc §5.2
+  Phase 47 follow-up の前提
+- Doc 86 (= phase-2-eval-refactor-master) parent — §1.2 / §13 v2
+  reconcile / §12.x SHIPPED block が本 Doc の data source
+  - §1.2 = Phase 2 単独着地点定義表
+  - §13.3 = reconciled landing 数値
+  - §12.1〜§12.9 = 各 sub-stage SHIPPED block (= 本 Doc §2 articulation
+    の起点)
+- Doc 87 (= §86.1 builtins dispatch arm migration、SHIPPED 2026-05-10) —
+  §3.2/§3.7 / §5.1/§5.4 / §11.3 が本 Doc §2.1〜§2.7 の reconciled 列
+  data source
+- Doc 88 (= §86.2 error.rs migration、SHIPPED 2026-05-10) — §11.3 相当
+  が本 Doc §2.8 data source
+- Doc 89 (= §86.3 env scope chain migration、SHIPPED 2026-05-10) —
+  §5.5 (= 連動削減 grand total) / §10.1 (= hot path perf regression
+  policy) / §4.3 (= §86.3.c spec) が本 Doc §2.11 / §3 / §4.2 の根拠
+
+** §6.2 commit references (= 2026-05-10 §86.3.c ship)
+
+- =04e0dc2e4= = 2026-05-09_23:07:26 routine commit (= base 比 timestamp)
+- =e29c2c96= = docs(design): Doc 86 §12.9 — §86.3.c SHIPPED status
+  (本 Doc が反応する commit)
+- =325d4226= = build-tool: Doc 86 §86.3.c — retire env-shadow-verify
+  infra (-396 LOC)
+- =dac24109= = nelisp-stdlib-env-shim.el: Doc 86 §86.3.c — switch-over
+  user-visible API install
+- =c328fc71= = docs(design): Doc 86 supervisor cleanup — Status / §1.2 /
+  §13.3 §86.1.g 反映
+- =a46b0e48= = docs(design): Doc 86 §12.8 — §86.1.g SHIPPED status
+
+** §6.3 code references (= post-§86.3.c)
+
+- =build-tool/src/eval/builtins.rs= 2,177 LOC (= Phase 1 base 3,804 比
+  -1,627、§86.1 + §86.1.g + §86.3.c shadow-verify retirement の合算)
+- =build-tool/src/eval/env.rs= 597 LOC (= base 564 比 +33、§86.3.a
+  shim install +280 - §86.3.c shadow retirement -338 + 構造調整 +91)
+- =build-tool/src/eval/error.rs= 185 LOC (= base 308 比 -123、§86.2)
+- =build-tool/src/eval/mod.rs= 840 LOC (= base 848 比 -8、§86.3.c)
+- =build-tool/src/eval/special_forms.rs= 572 LOC (= base 572 比 ±0、
+  §86.3.c で touched but net 0)
+- =lisp/nelisp-stdlib-env-shim.el= 293 LOC (= §86.3.a +123、§86.3.c で
+  +170)
+- =lisp/nelisp-stdlib-error.el= 179 LOC (= §86.2 NEW)
+- =lisp/nelisp-stdlib-format.el= 96 LOC (= §86.1.e NEW)
+
+** §6.4 external prior art
+
+- TBD (= Phase 3 D-B 設計時に Common Lisp / Scheme / Tcl の eval-loop
+  inline / dispatch decoupling 事例を参照予定)
+
+** §6.5 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= (= NeLisp standalone MCP)
+- =feedback_nelisp_runtime_vs_elisp_language= (= NeLisp = runtime、
+  elisp = 言語 syntax)
+- =feedback_nelisp_perf_not_elisp_interpreter= (= Phase 47 native cc
+  perf characteristics、本 Doc §4.2 / §5.2 の前提)
+- =feedback_nelisp_core_vs_layer2_boundary= (= elisp 言語 rule = core /
+  Emacs OS API = Layer 2 別 package)
+
+* §7 Status: DRAFT
+
+本 Doc は post-ship audit、actionable spec ではない。次 sub-stage の
+ship 対象なし、Phase 3 / Phase 47 の architect が estimate calibration +
+hot-path policy gate articulation を読む reference として使用。
+
+更新 trigger:
+1. Phase 3 D-B (= Doc 77c) ship 時に §5.1 follow-up task の actual recover
+   を追記、本 Doc §1〜§5 を v2 reconcile (= Phase 2 + Phase 3 合算 audit)
+2. Phase 47 (= Doc 85 spike) ship 時に §5.2 follow-up task の actual
+   recover を追記、§4.5 ROI を再計算
+3. Phase 2 内で §86.x 追加 sub-stage が発生した場合は §2 に追記、§3 4
+   deferral の expected recover を update
+
+reader への advice: Phase 2 estimate vs actual の **lessons learned** は
+§4.4 + §5.4 に集約。Phase 3 D-B 設計時に Doc 77c master が本 Doc §5.1
+を inline reference するべき。Phase 47 spike (Doc 85) が本 Doc §5.2 を
+prerequisite として読むべき。

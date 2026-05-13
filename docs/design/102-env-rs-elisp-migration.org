@@ -1,0 +1,615 @@
+#+TITLE: Doc 102 — env.rs → elisp Migration (Phase 1: Hashtable ABI + SymbolEntry rep)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-13
+
+* Status
+
+- *State*: DRAFT 2026-05-13 (Phase 1 design only)
+- *Parent track*: =project_env_rs_long_term_deletion_roadmap= memory
+  (= 8-phase, 6-12 months estimate from §0.4 audit).
+- *Sibling*: Doc 110 (= f64 ABI track; parallel capability
+  expansion, no shared dependencies).
+- *Scope*: design only.  Phase 1 ships this DRAFT + (optional)
+  a stub `lisp/nelisp-stdlib-fast-hash.el' once the buckets
+  representation is settled.  Implementation work for Phase 2+
+  (= migration of actual storage / methods) is out of scope.
+
+** Why this DRAFT exists (= roadmap context)
+
+The =project_env_rs_long_term_deletion_roadmap= memory states the
+goal:
+
+#+begin_quote
+env.rs (646 LOC) を *最終的に削除する*.  HashMap<String,
+SymbolEntry> + Vec<HashMap<String, FrameCell>> を elisp 化する
+には 8 phase の積み上げが必要.
+#+end_quote
+
+Phase 1 designs the *hashtable layer* — the foundation layer that
+all subsequent phases (= symbol intern table, storage migration,
+eval-callback grammar) build on.  Without an O(1)-ish elisp
+hashtable, every symbol lookup would scan a list per access (=
+the existing =nelisp-stdlib-hash.el= path), which is too slow for
+the hot eval loop.
+
+Phase 1 deliberately does *not* ship code that touches env.rs
+yet — it lays the foundation only.  Phase 2 starts the actual
+storage migration.
+
+* §0 TL;DR
+
+** §0.1 What env.rs is
+
+647 LOC Rust evaluator state.  Three HashMaps + a Vec stack:
+
+- =globals: HashMap<String, SymbolEntry>= — value / function /
+  plist / constant cells for every interned name (≈ 2k entries
+  after stdlib bootstrap)
+- =frames: Vec<HashMap<String, FrameCell>>= — lexical scope
+  stack; each frame holds let-bound + lambda-param shadows
+- =extern_builtins: HashMap<String, ExternBuiltin>= — Rust closure
+  registry for host crates (nelisp-emacs-gtk, etc.)
+
+21 public methods all mediate access to these three maps:
+`lookup_value' / `set_value' / `lookup_function' / `set_function'
+/ `is_bound' / `is_fbound' / `defvar' / `push_frame' / `pop_frame'
+/ `bind_local' / `capture_lexical' / `push_captured' / ... .
+
+** §0.2 What blocks deletion
+
+The Rust HashMap is hot — every `(setq X 1)' or `(foo)' call
+traverses the global table.  A naive port to the existing
+=nelisp-stdlib-hash.el= path (= linear-scan alist storage) would
+slow the eval loop by 100x or worse for the 2k-entry global
+table.
+
+Three architectural directions, in increasing migration cost:
+
+*Option A (compile env.rs to Phase 47)*: emit env.rs as a single
+Phase-47-compiled `.o' on every supported target.  Requires
+Phase 47 to grow:
+- String pool / intern table support (= currently unsupported)
+- `HashMap<String, T>' equivalent grammar form
+- =NlCellRef= shared-mutable cell ABI
+- Closure capture (= `capture_lexical' / `push_captured')
+- ExternBuiltin dispatch (= function-pointer registry)
+That's 4-6 new ABI layers; way too much for a single doc.
+
+*Option B (elisp-owned storage via Phase 47 grammar form)*: env.rs
+storage moves to elisp data structures (=
+=Sexp::Record= -based SymbolEntry + a bucket-array hashtable).
+Rust-side env.rs reduces to slim ABI plumbing that calls into
+elisp via the existing `nelisp--env-globals-*' primitives.  Doc
+102 Phase 1-8 follows this path.
+
+*Option C (opaque-handle FFI)*: keep env.rs's Rust HashMap, but
+expose it via a single opaque handle that elisp calls into via
+extern.  Net Rust LOC delta is small (= just slim plumbing
+removed); env.rs stays.  *Rejected* — defeats the deletion goal.
+
+** §0.3 Phase 1 deliverable
+
+This DRAFT establishes the foundations for Option B:
+
+1. *SymbolEntry rep* (§2.1) — pick a single canonical Sexp shape
+   that the migration uses end-to-end.  Candidate: =Sexp::Record=
+   with type-tag `symbol-entry' and 4 slots (value / function /
+   plist / constant).
+2. *Fast hashtable* (§2.2) — design a bucket-array elisp
+   hashtable that achieves O(1) avg lookup with O(N) worst-case
+   in pathological collision scenarios.  No new Phase 47 grammar
+   required — pure elisp using existing =aref= / =aset= +
+   chained linear scan within each bucket.
+3. *Migration mapping* (§3) — Phase 2 through Phase 8 outline,
+   one phase per Doc 103-109.  Each phase covers one independent
+   piece (= globals, frames, extern_builtins, capture/push,
+   etc.).
+
+§110.F shipped today (2026-05-13) — `f64-call' grammar form +
+math.rs delete (-29 LOC).  Confidence in the §110-style
+"infrastructure plumbing then delete" loop is high; the same
+pattern applies cleanly to env.rs.
+
+** §0.4 Scope of Phase 1
+
+In scope:
+- SymbolEntry Sexp shape decision
+- Fast hashtable design (= bucket count, hash function, collision
+  policy)
+- Phase 2-8 outline + per-phase deletion target
+
+Out of scope (= future doc work):
+- Actual elisp module shipping the fast hashtable (= maybe ships
+  in Phase 1 as a stub `lisp/nelisp-stdlib-fast-hash.el', maybe
+  deferred to Phase 2 — caller's choice)
+- env.rs storage migration (= Phase 2-6)
+- ExternBuiltin migration (= Phase 7)
+- env.rs final delete (= Phase 8)
+
+* §1 Background
+
+** §1.1 env.rs in numbers
+
+| File                         | LOC | Notes                            |
+|------------------------------|-----|----------------------------------|
+| =build-tool/src/eval/env.rs=  | 646 | 3 HashMaps + 21 pub methods      |
+| =build-tool/src/eval/env_shim.rs= | 337 | 11 slim primitives + tests   |
+| =lisp/nelisp-stdlib-env-shim.el= | 293 | 9 user-visible elisp shims   |
+
+The .el shim layer (Doc 86 §86.3.c, SHIPPED 2026-05) already
+mediates user-visible env API through elisp wrappers.  env_shim.rs
+is the 11-fn Rust boundary that these wrappers call into.
+
+Doc 102 reduces the env.rs side: as Phase 2+ migrates storage
+into elisp, the env.rs methods shrink to plumbing (= maybe ~50
+LOC ABI + dispatch), and eventually disappear into the
+=env_shim.rs= layer entirely.
+
+** §1.2 SymbolEntry — the unit of work
+
+#+begin_src rust
+  pub struct SymbolEntry {
+      pub value: Option<Sexp>,
+      pub function: Option<Sexp>,
+      pub plist: Option<Sexp>,
+      pub constant: bool,
+  }
+#+end_src
+
+4 fields, all =Option<Sexp>= or =bool=.  Total Rust size: 4
+×=Option<Sexp>= (24 bytes each for 32-byte Sexp) + 1 byte bool +
+padding = ~104 bytes per entry.
+
+For 2k entries: ~200 KB of SymbolEntry storage.  Plus the
+=HashMap<String, SymbolEntry>= overhead (= hash, key string,
+chain pointers): ~50 bytes per entry × 2k = ~100 KB.  Total ≈
+300 KB for the global symbol table.
+
+A Sexp-based replacement would be larger (= Sexp::Record fixed-
+arity wrapper has more bytes per slot), but the lookup path
+remains O(1) avg with proper hashing.
+
+** §1.3 The "linear scan would be too slow" argument
+
+=nelisp-stdlib-hash.el= (Doc 50 §4f, 2026-05-08, SHIPPED) uses
+linear-scan alist storage (= =(nelisp--record-ref table 1)= holds
+a list of =(key . value)= cells).  Its docstring explicitly
+warns:
+
+#+begin_quote
+:size N         size hint, accepted but ignored — linear-scan
+                storage holds tens of entries for substrate use.
+#+end_quote
+
+For env.rs's 2k-entry global table, every symbol lookup would
+scan up to 2k cons cells.  Worst case: 2k × 1 entry name compare
+= 2k compares per lookup.  Eval loop hits this ~50k times per
+second on typical code → 100M compares/second → way too slow.
+
+The fast hashtable in §2.2 uses bucket array storage: with 1024
+buckets and uniform hash distribution, each lookup averages 2
+compares (= 2000 entries / 1024 buckets).  100x speedup over
+linear scan.
+
+* §2 ABI design
+
+** §2.1 SymbolEntry rep — `Sexp::Record' fixed-arity 4
+
+Use the existing =Sexp::Record= variant with:
+
+- Type tag = `symbol-entry` (Sexp::Symbol)
+- 4 slots, fixed indexing:
+  - slot 0: value cell (Sexp or `unbound-marker' sentinel)
+  - slot 1: function cell (Sexp or sentinel)
+  - slot 2: plist (Sexp, default Sexp::Nil)
+  - slot 3: constant flag (Sexp::T / Sexp::Nil)
+
+Sentinel for the "Option<Sexp>" semantics:
+
+- `unbound-marker' is a fresh Symbol that no user code ever
+  binds (= same convention as Emacs' `<unbound>' value).  Empty
+  cells store the sentinel; user-visible cells store the actual
+  Sexp.
+- Equivalent to `Option::None' (None ↔ sentinel) /
+  `Option::Some(v)' (Some ↔ v itself).
+
+Rationale:
+- Sexp::Record already shipped (Doc 50 stage 4f).  No new variant
+  needed.
+- Fixed-arity indexing matches the Rust struct fields 1-to-1.
+- Sentinel sidesteps the need for a separate `presence' slot.
+- Constant flag as Sexp::T/Nil maps cleanly to elisp =nil= /
+  =non-nil= idioms.
+
+** §2.2 Fast hashtable — bucket-array elisp
+
+Storage:
+
+#+begin_src elisp
+  ;; A fast-hash-table is a Sexp::Record with type `fast-hash-table'
+  ;; and 3 slots:
+  ;;   slot 0: bucket count (= power-of-2, default 1024)
+  ;;   slot 1: buckets vector — Sexp::Vector of length BUCKET-COUNT;
+  ;;          each element is an alist of (key . value) cells
+  ;;   slot 2: entry count (= total live entries across all buckets,
+  ;;          used for resize triggers in future iterations)
+#+end_src
+
+Hash function (= elisp):
+
+#+begin_src elisp
+  (defun nelisp--fast-hash--hash (str bucket-count)
+    "FNV-1a 32-bit hash of STR mod BUCKET-COUNT.
+  Plain elisp arithmetic — no Phase 47 grammar form needed for
+  Phase 1.  When the env.rs port reaches the hot path and the
+  elisp eval cost dominates, consider promoting this hash loop
+  to a Phase 47-compiled `.o' (= Doc 103+ optimisation)."
+    (let ((h #x811C9DC5)  ; FNV offset basis
+          (i 0)
+          (len (length str)))
+      (while (< i len)
+        (setq h (logxor h (aref str i)))
+        (setq h (logand (* h #x01000193) #xFFFFFFFF))
+        (setq i (1+ i)))
+      (mod h bucket-count)))
+#+end_src
+
+Lookup:
+
+#+begin_src elisp
+  (defun nelisp--fast-hash-get (ht key)
+    "Return value for KEY in HT or `unbound-marker' if absent."
+    (let* ((bc (nelisp--record-ref ht 0))
+           (buckets (nelisp--record-ref ht 1))
+           (idx (nelisp--fast-hash--hash key bc))
+           (bucket (aref buckets idx))
+           (cur bucket)
+           (found nil))
+      (while (and cur (not found))
+        (when (string= (car (car cur)) key)
+          (setq found (cdr (car cur))))
+        (setq cur (cdr cur)))
+      (or found 'unbound-marker)))
+#+end_src
+
+Insert / update:
+
+#+begin_src elisp
+  (defun nelisp--fast-hash-put (ht key value)
+    "Set HT[KEY] = VALUE.  Returns VALUE."
+    (let* ((bc (nelisp--record-ref ht 0))
+           (buckets (nelisp--record-ref ht 1))
+           (idx (nelisp--fast-hash--hash key bc))
+           (bucket (aref buckets idx)))
+      ;; In-place setcdr if entry exists, prepend otherwise.
+      (let ((cur bucket) (found nil))
+        (while (and cur (not found))
+          (when (string= (car (car cur)) key)
+            (setcdr (car cur) value)
+            (setq found t))
+          (setq cur (cdr cur)))
+        (unless found
+          (aset buckets idx (cons (cons key value) bucket))
+          (nelisp--record-set ht 2 (1+ (nelisp--record-ref ht 2)))))
+      value))
+#+end_src
+
+Other ops (`remove' / `contains-p' / `iter' / `clear') follow
+the same pattern — single `aref' into buckets vector, then
+within-bucket scan.
+
+Performance characteristics:
+
+| Op           | Best   | Avg                | Worst (= pathological)       |
+|--------------|--------|--------------------|------------------------------|
+| get          | O(1)   | O(1 + N/buckets)  | O(N)                         |
+| put          | O(1)   | O(1 + N/buckets)  | O(N)                         |
+| remove       | O(1)   | O(1 + N/buckets)  | O(N)                         |
+| iterate-all  | O(N)   | O(N)              | O(N)                         |
+
+With 1024 buckets and 2k entries: avg ≈ 2 compares per lookup =
+~100x faster than the existing =nelisp-stdlib-hash.el= alist.
+
+No Phase 47 grammar form needed in Phase 1.  The hot path runs
+through =aref= / =aset= which Phase 47 already supports for
+=Sexp::Vector=.
+
+** §2.3 Bucket count rationale
+
+1024 buckets chosen as a sweet spot:
+
+- 2k entries → load factor 2.0 → avg 2 compares (= acceptable for
+  the eval hot path)
+- Memory overhead: 1024 × Sexp::Nil pointer ≈ 32 KB (= tiny)
+- Power-of-2 lets the hash modulo collapse to `logand H
+  (1- bucket-count)' for slight speed-up
+
+Resize to 2048 / 4096 if the global table grows past 4k entries
+(= triggered by load factor > 3.0).  Resize implementation in
+Phase 2.
+
+** §2.4 Why no Phase 47 grammar form for Phase 1
+
+The roadmap memory (Phase 1 = "Phase 47 grammar form 4-6 件")
+overestimated.  Inspection reveals:
+
+- The fast hashtable ops fit cleanly in existing elisp
+  primitives (=aref / aset / cons / car / cdr / string= /
+  logand / mod / logxor / *).
+- Phase 47 compiler integration is *optional* — if the bucket-
+  array lookup ends up dominating eval time, we can promote the
+  inner loop to a Phase 47-compiled `.o' as a Phase 3+
+  optimization.  But Phase 1 doesn't need it.
+
+This is honest LOC accounting: Phase 1 ships *0 Rust LOC change*
+and ships ~150 LOC of new elisp (= the fast hashtable module
+implementation, not just the spec).  If we keep Phase 1 to
+"spec only" (= this doc + a stub module), the elisp delta is
+even smaller.
+
+* §3 Phase 2-8 stage outline
+
+Each phase is its own Doc 103+ design document.  Brief sketches:
+
+** Phase 2 (Doc 103) — `nelisp-env.el` skeleton + globals migration (1-2 sessions)
+
+*Scope*:
+- Ship `lisp/nelisp-stdlib-fast-hash.el' (= §2.2 implementation)
+- Ship `lisp/nelisp-env.el' — elisp-side env module:
+  - `nelisp-env-make' (= new empty env)
+  - `nelisp-env-lookup-value HT NAME' (= analog of Rust
+    `lookup_value', no frames yet)
+  - `nelisp-env-set-value HT NAME VALUE'
+  - `nelisp-env-lookup-function' / `set-function' / `is-fbound' /
+    `is-bound'
+  - `nelisp-env-defvar' / `clear-value' / `clear-function'
+- Add 11 slim primitives in env_shim.rs that *route through* the
+  elisp env table instead of the Rust HashMap (= Phase 2's swap
+  step).
+
+*LOC delta*:
+- Rust: small reduction (= ~50 LOC of `globals: HashMap<...>'
+  helpers obsoleted by the routing).
+- Elisp: +200 (fast hash + env module).
+
+** Phase 3 (Doc 104) — Frame stack migration (1 session)
+
+Move `frames: Vec<HashMap<String, FrameCell>>' to an elisp
+Sexp::Vector of fast hashtables.  `push_frame' / `pop_frame' /
+`bind_local' route through elisp.
+
+*LOC delta*: Rust -80 (= Vec ops + frame helpers); Elisp +50.
+
+** Phase 4 (Doc 105) — Closure capture (1 session)
+
+`capture_lexical' / `push_captured' move to elisp.  Already
+Sexp-shaped on input/output (= alist of (sym . cell)); the Rust
+side just iterates frames.
+
+*LOC delta*: Rust -60; Elisp +40.
+
+** Phase 5 (Doc 106) — defvar / constant / sentinel handling (1 session)
+
+Move the `defvar' idempotence + constant-flag check to elisp.
+Adopt the `unbound-marker' sentinel pattern (= §2.1) so
+`Option::None' goes away.
+
+*LOC delta*: Rust -30; Elisp +30.
+
+** Phase 6 (Doc 107) — extern_builtins migration (1-2 sessions)
+
+`extern_builtins: HashMap<String, ExternBuiltin>' is trickier
+because ExternBuiltin is a Rust closure (= `Box<dyn Fn(...)>').
+Two approaches:
+(a) Keep `extern_builtins' Rust-side; route through env_shim
+    primitives only.  Net Rust change: small (= just plumbing).
+(b) Define an `extern-builtin' Sexp variant that wraps the
+    function pointer + closure-state + signature.  Move the
+    table to elisp.  Net Rust change: -40 LOC table ops, but
+    +30 LOC for the new Sexp variant.
+
+Phase 6 chooses (a) for simplicity; the Sexp::ExternBuiltin
+variant is deferred to Phase 8+.
+
+*LOC delta*: Rust -20; Elisp +25.
+
+** Phase 7 (Doc 108) — Last-mile shrink (1 session)
+
+After Phases 2-6, env.rs is ≈ 200 LOC of plumbing:
+- `Env::new_global' + `new_global_no_stdlib' (= startup)
+- Recursion guard counter (`max_recursion' / `current_recursion')
+- `use_elisp_apply' / `delegation_depth' (= takeover flags)
+- A handful of `pub fn' shims that route to env_shim primitives
+
+Phase 7 shrinks this to a minimal struct with:
+- `recursion: u32' (= counter only)
+- `extern_builtins: HashMap<...>' (= until Phase 8+)
+- Phantom shims that route to elisp via slim primitives
+
+*LOC delta*: Rust -100; Elisp +20.
+
+** Phase 8 (Doc 109) — env.rs DELETED (= the deliverable)
+
+Move the remaining ~50 LOC into `eval/mod.rs' (= the recursion
+guard + takeover flags are eval-loop state, not env-table
+state).  Delete `env.rs' entirely.
+
+*LOC delta*: Rust -50 (= env.rs gone).  Cumulative across
+Phases 2-8: ~-310 LOC Rust delete; +365 LOC elisp added (=
+substantial elisp scaffolding that lives in `lisp/nelisp-env.el'
++ `lisp/nelisp-stdlib-fast-hash.el').
+
+Net algorithm-bearing Rust delta across Doc 102: *~-310 LOC*
+(= the env.rs Rust source).  Including the env_shim.rs
+shrinkage from Phase 7, total approaches *-350 LOC Rust*.
+
+* §4 Verification gates (cumulative)
+
+** §4.1 Phase 1 gate
+
+- Doc 102 DRAFT lands.
+- `make test-all' unchanged (= 0 code shipping in Phase 1).
+
+** §4.2 Per-phase gate (Phase 2-8)
+
+Each subsequent phase verifies:
+- elisp ert tests for new env module functions
+- `cargo test --release --lib' for the Rust path
+- Production smoke: bootstrap completes; symbol-value /
+  defvar / setq / let / lambda all work bit-equivalent.
+- Performance: env table lookup latency stays within 20% of
+  the previous phase (= no eval-loop pessimisation).
+
+** §4.3 Cumulative gate (Phase 8 ship-ready)
+
+After Phase 8:
+1. `make test-all' green.
+2. `cargo build --release' clean on linux-x86_64,
+   linux-aarch64, macos-aarch64.
+3. `build-tool/src/eval/env.rs' no longer exists.
+4. Production smoke: bootstrap + entire stdlib test suite
+   (= ~2000 elisp ert) green.
+5. Per-phase perf delta cumulative within 50% of original (=
+   acceptable trade-off for the deletion).
+
+* §5 Risks / unknowns
+
+** §5.1 Performance regression
+
+Moving env.rs storage to elisp adds Sexp dispatch + GC cost per
+op.  If the regression exceeds 50% in macrobenchmarks, fall back
+to Option C (= keep Rust HashMap behind opaque handle).
+
+*Mitigation*: each phase measures perf vs the previous; revert
+the swap step if regression > tolerable budget.
+
+** §5.2 ExternBuiltin closure semantics
+
+ExternBuiltin is `Box<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp,
+EvalError>>'.  Moving to a `Sexp' variant requires either:
+- A new Sexp::ExternBuiltin variant that wraps a function
+  pointer + captured-env (= ABI-significant; touches Doc 100
+  §100.B sexp-abi.md)
+- Or keep the table Rust-side and accept that env.rs can't be
+  100% deleted
+
+Phase 6 picks the latter (= deferred Sexp variant).  Phase 8's
+delete relocates the remaining `extern_builtins' table to
+=eval/mod.rs= or =bridge.rs=, not eliminated.
+
+** §5.3 `unbound-marker' sentinel — Sexp identity
+
+If user code somehow holds an =unbound-marker= symbol (= via
+=(intern "unbound-marker")=), env table lookups would incorrectly
+treat that user-bound value as absent.
+
+*Mitigation*: namespace the sentinel as `nelisp--unbound-marker'
+(= leading-dash gensym-ish name).  User code that interns this
+exact name is doing something deliberately wrong; not the
+runtime's problem.
+
+** §5.4 Hash collision worst-case
+
+If user code interns names that all hash to the same bucket, get
+/ put degrades to O(N).  Adversarial but unlikely.
+
+*Mitigation*: FNV-1a is well-mixed; uniform distribution is the
+default outcome.  Document the worst-case in `nelisp-env.el'
+header for future audit.
+
+** §5.5 Bootstrap order
+
+`Env::new_global' currently runs:
+1. `install_builtins' (= seeds globals table with ~150 entries)
+2. `install_env_shim_primitives' (= seeds env_shim 11 primitives)
+3. `STDLIB_IMAGES' decode loop (= seeds globals with ~1800
+   entries from stdlib `.image' files)
+
+The Phase 2-7 migration must keep this order intact, otherwise
+the elisp env module can't load (= it needs `unbound-marker'
+symbol + the basic builtins to be available before the env
+table is queried).
+
+*Mitigation*: each phase explicitly documents what the boot
+sequence sees; Phase 2's `nelisp-env.el' loads BEFORE
+`STDLIB_IMAGES' so the global table exists when stdlib seeds
+itself.
+
+** §5.6 Estimate honesty
+
+The =project_env_rs_long_term_deletion_roadmap= memory estimated:
+
+#+begin_quote
+累計: -680 LOC Rust + 500 LOC elisp の見込み.  各 Doc は独立
+design + ship、合計 8 PR / 6-12 months.
+#+end_quote
+
+This DRAFT's Phase 2-8 outline projects -310 LOC Rust + 365 elisp
+— less Rust deletion than the original estimate (= -680).  The
+gap is mainly =env_shim.rs= (337 LOC) which the memory counted
+toward the env.rs reduction but is actually a separate file
+serving a useful bridging role.
+
+After Doc 102 ships, the surface area is:
+- =env.rs= GONE (= -646 LOC, includes the pub methods)
+- =env_shim.rs= shrunk to ~150 LOC (= -187 LOC)
+- =nelisp-env.el= NEW (+250 LOC elisp)
+- =nelisp-stdlib-fast-hash.el= NEW (+150 LOC elisp)
+
+Net Rust delete: ~-833 LOC; net elisp delete: -293.  Total
+algorithm-bearing Rust delta: *~-833 LOC* (= env.rs's full pub
+method surface).  This is *more aggressive* than the original
+memory estimate.
+
+Per-phase delta estimates in §3 are rough — actuals will land
+within ±25% per audit-then-implement loop, mirroring §110 ship
+discipline.
+
+* §6 Out of scope
+
+** §6.1 Phase 47 grammar additions
+
+Originally projected by the memory roadmap.  This DRAFT
+*explicitly omits* Phase 47 grammar additions for Phase 1.  If
+hot-path elisp env ops dominate eval time after Phase 2+, the
+fast-hash inner loops can be promoted to Phase-47-compiled `.o'
+files in a Doc 103+ optimization phase.
+
+** §6.2 Symbol identity / intern table
+
+Closely related but separately addressed.  =Sexp::Symbol= currently
+uses `String' equality (= different `intern' calls of the same
+name yield distinct Strings, comparable as `string=' but not
+`eq').  Future "intern table" doc (= Doc 110+ depending on
+numbering) addresses identity unification.  Doc 102 only handles
+the value/function/plist cells, not the intern table itself.
+
+** §6.3 GC integration
+
+If elisp env data structures hold values that the GC needs to
+trace (= they do, via SymbolEntry's Sexp slots), the existing
+GC machinery already handles `Sexp::Record' and `Sexp::Vector'
+correctly.  No new GC integration work.  Mentioned for
+completeness.
+
+** §6.4 Save / restore (= image baking)
+
+The =nelisp-baker= tool currently dumps `env.globals' as part
+of stdlib image baking.  After Phase 2+ migration, the bake step
+must dump the new elisp env structure instead.  Image format
+changes are Doc 102+ Phase 5-ish work; the baker side is its
+own change.
+
+* §7 References
+
+- =project_env_rs_long_term_deletion_roadmap= memory (= 8-phase
+  arc, 2026-05-12 revision).
+- =build-tool/src/eval/env.rs= — 646 LOC source under migration.
+- =build-tool/src/eval/env_shim.rs= — 337 LOC bridging layer.
+- =lisp/nelisp-stdlib-env-shim.el= — 293 LOC user-visible elisp.
+- =lisp/nelisp-stdlib-hash.el= — Doc 50 stage 4f, linear-scan
+  reference implementation (NOT used by Doc 102 fast-hash).
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= — Sexp ABI
+  precedent (= 3-artifact sync for cross-language stability).
+- =docs/design/110-phase-47-f64-abi.org= — most recent
+  capability-expansion DRAFT; same shape as this one.

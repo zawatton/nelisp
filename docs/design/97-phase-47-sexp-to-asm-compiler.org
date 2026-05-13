@@ -1,0 +1,614 @@
+#+TITLE: Doc 97 — Phase 47 Sexp → asm compiler (production engagement entry)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-11
+
+* Status
+
+- *State*: DRAFT → SHIPPED on agent-doc-97-impl branch.  Doc 97 is the
+  /production engagement entry point/ for the Phase 47 chain: the
+  first piece of code that consumes a Sexp source program and emits a
+  runnable Linux ELF binary with no hand-crafted asm bytes in the
+  caller.
+- *Parent*: Doc 85 (= Phase 47 feasibility spike VALIDATED 2026-05-11)
+  / Doc 96 (= chain demonstrator that ships three hand-crafted demos).
+- *Sister docs*:
+  - Doc 91 — pure-elisp ELF writer (=lisp/nelisp-elf-write.el=, 1152 LOC)
+  - Doc 92 — pure-elisp macro assembler (=lisp/nelisp-asm-x86_64.el=,
+    586 LOC)
+  - Doc 93 — pure-elisp static linker (=lisp/nelisp-static-linker.el=,
+    630 LOC)
+  - Doc 94 — pure-elisp crt0 (=lisp/nelisp-crt0.el=, 510 LOC)
+  - Doc 95 — Sexp layout DSL (=lisp/nelisp-sexp-dsl.el=, 1450 LOC)
+  - Doc 96 — Phase 47 build orchestrator (=lisp/nelisp-phase47-build.el=,
+    245 LOC; three hand-crafted demos)
+- *Unlocks*: With Doc 97 live, an end-user can write
+  =(seq (write "hello\n") (exit 0))= as input data — not as elisp
+  function body — and receive a runnable Linux binary back.  This is
+  the *qualitative* transition from "Phase 47 components exist" to
+  "Phase 47 is a compiler you can use".
+- *OOS for THIS doc* (= deferred to Doc 97.b / 97.c / 97.d / 97.e):
+  - Function definitions, calls, return values (Doc 97.b).
+  - Control flow forms =if= / =while= / =cond= (Doc 97.c).
+  - Heap allocation, dynamic typing, GC, runtime errors (Doc 97.d).
+  - Full NeLisp source compatibility (= compile real
+    =M-x nelisp-load-file= input) (Doc 97.e).
+  - aarch64 backend (= Doc 97 ships x86_64 only; aarch64 is a
+    parallel-arch concern that the existing chain already supports via
+    a sibling slice).
+  - Optimisation passes (= no IR rewriter, no constant propagation
+    beyond pure-arithmetic folding, no DCE, no register allocator with
+    interference graph — v1 is *naive linear emit* by design).
+
+* §0 TL;DR
+
+** §0.1 What Doc 97 ships
+
+=lisp/nelisp-phase47-compiler.el= — a /frontend/ that consumes a
+Sexp program (= an elisp form like
+=(seq (write "hello\n") (exit 0))=, treated as *data* not *code*) and
+emits a static-linked ELF executable via the existing Doc 91-94 chain.
+
+Public entry point:
+
+#+begin_src elisp
+  (nelisp-phase47-compile-sexp
+   '(seq (write "hello\n") (exit 0))
+   "/tmp/my-binary")
+  ;; => "/tmp/my-binary"  (= executable file written, +x mode set)
+#+end_src
+
+The returned path is directly =exec=-able by the Linux kernel.  No
+intermediate =.o= files, no =ld= invocation, no =gcc= dependency: the
+entire compile chain lives in elisp.
+
+** §0.2 Why this matters (= the production engagement gap)
+
+Doc 96 demonstrates the Phase 47 chain works by shipping three demos
+whose =.text= bytes are written *by hand* in elisp (= 37 bytes for
+hello-world, 12 bytes for exit-with-status, 108 bytes for argc-
+printer).  Each demo lives in =nelisp-phase47-build.el= as a fixed-
+shape function — the *source language* is "elisp helper that returns
+a unibyte string".
+
+Doc 97 inverts that: the source language becomes a Sexp form whose
+*data shape* describes the program.  The compiler walks the form,
+emits asm via Doc 92's =nelisp-asm-x86_64-*= primitives, lays out
+=.rodata= for string literals, computes RIP-aware absolute addresses
+for the kernel-supplied loader base, and hands a finished
+=:text= / =:rodata= / =:symbols= plist to Doc 91's
+=nelisp-elf-write-binary=.
+
+Before Doc 97 the chain needs an elisp programmer to encode each new
+program by hand.  After Doc 97 the chain accepts /Sexp source/ as
+input — a qualitative transition.
+
+** §0.3 What Doc 97 explicitly does NOT do
+
+- *Does not* implement function calls, recursion, or closures.  Every
+  Doc 97 program compiles to a single =_start= entry point with linear
+  control flow.  Function calls are Doc 97.b's scope.
+- *Does not* implement runtime control flow (=if=, =while=, =cond=).
+  The compiler accepts only straight-line =seq= bodies.  Branches are
+  Doc 97.c's scope.
+- *Does not* implement dynamic typing.  Every value is an =int= (=
+  sign-extended to 64 bits at emit time).  Strings are byte buffers
+  in =.rodata= addressed by absolute vaddr; they are not first-class
+  values.  Dynamic types are Doc 97.d's scope.
+- *Does not* implement a real register allocator.  v1 uses fixed
+  scratch (= =rax= / =rdi= / =rsi= / =rdx= for syscalls) and resolves
+  =let= bindings via *compile-time substitution* (= the environment
+  maps symbols to integer constants, not to live registers or stack
+  slots).
+- *Does not* register itself in =nelisp-baker= STDLIB_FILES.  Like the
+  rest of the Phase 47 spike chain, Doc 97 is freestanding; baker
+  integration arrives with the Phase 47 production landing slice.
+- *Does not* touch =lisp/nelisp-*.el= existing files.  The compiler is
+  a *new* module (=nelisp-phase47-compiler.el=) that delegates to the
+  existing chain via published entry points (= no internal symbol
+  reach-through).
+
+* §1 Source language scope (= what Sexp forms v1 accepts)
+
+Doc 97 v1 accepts a /minimal/ Sexp source language — just enough to
+exercise the full chain end-to-end on a Linux kernel.  The forms below
+are the complete v1 grammar; anything else signals
+=nelisp-phase47-compiler-error= at parse time.
+
+** §1.1 Top-level
+
+A program is a single Sexp form, typically a =(seq ...)= sequence.
+The compiler treats the top-level form as the body of an implicit
+=_start= entry point.
+
+** §1.2 Forms
+
+*** §1.2.1 =(write "STRING")=
+
+Emit a Linux =write(1, addr, len)= syscall that writes STRING to fd 1
+(stdout).  STRING is a unibyte string (= length is the byte count, not
+the character count); embedded newlines and any ASCII / Latin-1 byte
+are fine.  Multi-byte UTF-8 is accepted but the byte count is what the
+kernel writes — the compiler does not interpret encoding.
+
+Emit shape (= 33 bytes via Doc 92 fixed-length helpers):
+- =mov rax, 1=                          (= 7 bytes, SYS_write)
+- =mov rdi, 1=                          (= 7 bytes, fd=stdout)
+- =mov rsi, ADDR=                       (= 10 bytes, absolute vaddr)
+- =mov rdx, LEN=                        (= 7 bytes, 32-bit length)
+- =syscall=                             (= 2 bytes)
+
+*** §1.2.2 =(exit N)=
+
+Emit a Linux =exit(N)= syscall that terminates the process with status
+N (= integer 0..255 per the POSIX status-byte convention).
+
+N may be either:
+- an integer literal (= constant-folded immediately), or
+- a symbol bound by an enclosing =let= to a constant integer (=
+  resolved via environment lookup at compile time).
+
+Emit shape (= 16 bytes via Doc 92 fixed-length helpers):
+- =mov rax, 60=                         (= 7 bytes, SYS_exit)
+- =mov rdi, N=                          (= 7 bytes, status)
+- =syscall=                             (= 2 bytes)
+
+*** §1.2.3 =(seq EXPR1 EXPR2 ...)=
+
+Emit each EXPR in order.  No tail-call elision, no register reuse
+hint, no scope effect — the children share the enclosing =let=
+environment.
+
+*** §1.2.4 =(let ((VAR VALUE)) BODY)=
+
+Bind VAR to VALUE within BODY.  VALUE must be /reducible to an integer
+constant at compile time/ in v1: either a literal integer, a nested
+=let=-bound symbol, or a pure-arithmetic expression over those (=
+=(+ A B)=, =(- A B)=, =(* A B)=).
+
+Only one binding per =let= form in v1 (= matching the Sexp shape
+=((VAR VALUE))=).  Multi-bindings are syntactic sugar over nested
+=let=, but v1 rejects them with a parse error to keep the IR
+unambiguous.
+
+*** §1.2.5 =(+ A B)= / =(- A B)= / =(* A B)=
+
+Compile-time arithmetic over integer constants.  A and B must each
+reduce to a constant integer (= recursion through nested arithmetic
+and =let=-bound symbols is fine).
+
+The compiler folds the result *at parse time*; no runtime arithmetic
+instruction is emitted in v1.  This is the design choice that lets v1
+ship with /zero/ register allocation work — every value the program
+references resolves to a 64-bit integer at compile time.
+
+*** §1.2.6 Integer constants
+
+Any =integerp= elisp value (= bignum-safe, but practically constrained
+to the 64-bit signed range by =mov-imm64='s encoder).
+
+*** §1.2.7 Symbol references
+
+A bare symbol resolves via the enclosing =let= environment.  Free
+symbols (= not bound) signal =nelisp-phase47-compiler-error=.
+
+** §1.3 Not in v1 (= what the parser rejects)
+
+- =(if COND THEN ELSE)=                                       (Doc 97.c)
+- =(while COND BODY)=                                         (Doc 97.c)
+- =(defun NAME ARGS BODY)=                                    (Doc 97.b)
+- =(call NAME ARGS)=                                          (Doc 97.b)
+- =(car X)= / =(cdr X)= / cons cells                          (Doc 97.d)
+- Floating-point literals                                       (out)
+- =progn= (= use =seq= explicitly; aliasing dropped for v1)
+
+* §2 Compile pipeline architecture
+
+#+begin_src
+   ┌─────────────────────────────────────────────────────────────┐
+   │ User                                                         │
+   │   (nelisp-phase47-compile-sexp '(seq (write "hi") (exit 0))  │
+   │                                "/tmp/binary")                │
+   └────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ Frontend: parse                                              │
+   │  Sexp → IR  =(:kind seq :forms (...))=  /  =(:kind write    │
+   │      :str "hi")=  /  =(:kind exit :status 0)=  /  =(:kind   │
+   │      let :var v :value V :body B)=                          │
+   └────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ Layout: collect string literals                              │
+   │  Walk IR → assign each unique string a =.rodata= offset.    │
+   │  Concatenate strings into rodata bytes.                      │
+   └────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ Pass-1 emit (dry): compute text-size                         │
+   │  Emit text bytes with rodata-vaddr=0 (placeholder) just to   │
+   │  measure how long the =.text= section will be.  Every Doc   │
+   │  92 emitter has fixed length, so this is deterministic.      │
+   └────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ Address resolution                                           │
+   │  Given Doc 91 single-PT_LOAD layout (vaddr-base 0x400000,    │
+   │  text-off 0x78), compute:                                    │
+   │    text-vaddr   = 0x400000 + 0x78                            │
+   │    rodata-vaddr = text-vaddr + text-size                     │
+   └────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ Pass-2 emit (real): emit text with real addresses            │
+   │  Same IR walker as pass-1, but =write= forms now stamp the  │
+   │  real absolute vaddr of each string into =mov rsi, ADDR=.    │
+   │  Result must be byte-length-equal to pass-1 output (=        │
+   │  invariant asserted by the compiler).                        │
+   └────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │ Backend: hand to existing chain                              │
+   │  Plist =(:text BYTES :rodata BYTES :symbols (...)            │
+   │         :entry-sym "_start" :machine x86_64)= →              │
+   │  =nelisp-elf-write-binary= → ELF64 on disk, +x mode.         │
+   └─────────────────────────────────────────────────────────────┘
+#+end_src
+
+** §2.1 Why two-pass emit instead of fixup/reloc
+
+The macro assembler (= Doc 92) /does/ have a fixup + reloc API.  But:
+
+- =call-rel32= / =jmp-rel32= fixups are *intra-text* (= the target is
+  another label inside the same buffer).  Doc 97 v1 has no labels in
+  =.text=: it is one linear =_start=.
+- =reloc-abs64-here= records a relocation entry for Doc 93 the linker
+  to resolve.  But Doc 97 v1 has no Doc 93 hop — we emit straight to
+  Doc 91.  Adding a Doc 93 dependency just for address resolution
+  would double the code path for no gain.
+
+Two-pass emit is /simpler/: every Doc 92 instruction emits a fixed
+byte length regardless of immediate values, so pass-1 measures
+=text-size= deterministically, and pass-2 uses the real addresses.
+The dry-pass is byte-cheap (= ~25 bytes per =write=, ~12 per =exit=)
+so even a 1000-form program takes < 1ms to size.
+
+The invariant =(eq (length pass-1-bytes) (length pass-2-bytes))= is
+asserted at compile time; any drift signals
+=nelisp-phase47-compiler-error= immediately (= shields against future
+emitter additions that violate fixed-length encoding).
+
+** §2.2 Register allocation = trivial in v1
+
+Doc 97 v1 has /no register allocator/.  Every emitted instruction uses
+fixed registers:
+
+- =rax= holds the syscall number (= 1 for write, 60 for exit).
+- =rdi= holds the first syscall argument (= fd=1 for write; status for
+  exit).
+- =rsi=, =rdx= hold subsequent syscall arguments (= write's buf, len).
+
+No value ever lives across an instruction boundary — every =let=-bound
+value is a /compile-time constant/ that gets baked directly into the
+=mov rdi, N= immediate of the consuming syscall.
+
+This means:
+- No spill / reload code.
+- No callee-saved register dance.
+- No interference graph.
+- No live-range analysis.
+
+When Doc 97.b adds function calls, the allocator needs to grow.  v1
+keeps the allocator at 0 LOC.
+
+** §2.3 .rodata layout
+
+All string literals in the program are collected into a single
+contiguous =.rodata= buffer.  Strings are *deduplicated by =equal===:
+two textually-identical =(write "hi")= forms share a single
+=.rodata= entry.
+
+Each unique string is recorded with =:offset= (= byte offset within
+=.rodata=) and =:len= (= byte length).  At emit time, the absolute
+vaddr of a string is =rodata-vaddr + offset=.
+
+No alignment is applied between strings (= the kernel doesn't care,
+and =write(2)= is byte-aligned).
+
+* §3 Public API
+
+** §3.1 =nelisp-phase47-compile-sexp= (entry point)
+
+#+begin_src elisp
+  (cl-defun nelisp-phase47-compile-sexp
+      (sexp file-path &key (arch 'x86_64) (entry-sym "_start"))
+    "Compile SEXP to a static-linked ELF executable at FILE-PATH.
+
+  SEXP is a Doc 97 source program (= a single top-level Sexp form,
+  typically `(seq ...)`).  See Doc 97 §1 for the v1 grammar.
+
+  FILE-PATH is the output path.  The file is written with mode #o755
+  (= +x bit set) by `nelisp-elf-write-binary`.
+
+  ARCH defaults to `x86_64`.  `aarch64` is reserved for Doc 97.b but
+  v1 signals `nelisp-phase47-compiler-error` for any non-x86_64 ARCH.
+
+  ENTRY-SYM defaults to `_start` (= the kernel-recognised entry name).
+
+  Returns FILE-PATH on success.  Signals on parse error, on free
+  symbol reference, on out-of-range integer constants, or on any
+  pass-1/pass-2 byte-length drift."
+    ...)
+#+end_src
+
+** §3.2 Error condition
+
+A single =define-error= = =nelisp-phase47-compiler-error= covers parse
+errors, free-symbol references, out-of-range arithmetic, and emit
+invariants.  The error data is a list whose first element is a tag
+keyword (= e.g. =:unknown-form=, =:free-symbol=, =:status-out-of-
+range=, =:pass-length-mismatch=) followed by debug context.
+
+** §3.3 Internal helpers
+
+These are *not* part of the public API but are documented for §97.b
+implementers who will extend the IR:
+
+- =nelisp-phase47-compiler--parse SEXP &optional ENV= → IR plist
+  - Recursive descent parser.  ENV is the lexical environment used for
+    symbol resolution during constant folding.
+- =nelisp-phase47-compiler--ir-strings IR= → list of unique strings
+  - Walks the IR collecting =:str= values from =write= nodes.
+- =nelisp-phase47-compiler--emit IR BUF STR-OFFSETS RODATA-VADDR=
+  - Recursive emit pass.  =STR-OFFSETS= maps string → byte offset
+    within =.rodata=.  =RODATA-VADDR= is the absolute vaddr of byte 0
+    of =.rodata= (or any number during pass-1).
+
+* §4 IR design
+
+The IR is a /tagged plist/ — small, inspectable, easy to walk.  Every
+node is a list whose =:kind= keyword identifies the shape:
+
+** §4.1 Node shapes
+
+| Sexp form                  | IR node                                        |
+|----------------------------+------------------------------------------------|
+| =(write "S")=              | =(:kind write :str "S")=                       |
+| =(exit N)=                 | =(:kind exit :status N)=  (N already folded)   |
+| =(seq A B ...)=            | =(:kind seq :forms (A' B' ...))=               |
+| =(let ((V X)) BODY)=       | =(:kind let :var V :value N :body BODY')=      |
+| =(+ A B)= folded           | (resolves to an integer constant in parent)    |
+| =(- A B)= folded           | (resolves to an integer constant in parent)    |
+| =(* A B)= folded           | (resolves to an integer constant in parent)    |
+| Integer literal            | (resolves to the integer itself in parent)     |
+
+Notice =let= retains its node shape (= body needs an emit pass) but
+arithmetic disappears entirely after parsing — the parser folds
+arithmetic into a single integer before it ever reaches the IR.  This
+keeps the emit walker /one-node-kind-per-runtime-effect/.
+
+** §4.2 Why tagged plists not =cl-defstruct=
+
+The IR has 4 node shapes total.  =cl-defstruct= would buy type-
+tagged accessors but cost a per-node allocation overhead.  Plists are
+=equal=-comparable for dedup (= e.g. two identical =write= nodes
+collapse for free) and serialise to readable elisp for debug print.
+
+When the IR grows past ~10 node shapes (= Doc 97.c / Doc 97.d),
+revisiting the choice is appropriate.
+
+* §5 Testing strategy
+
+** §5.1 Unit-level (= parser + IR shape)
+
+- Each form individually round-trips Sexp → IR.
+- Arithmetic constant folding produces the expected integer.
+- =let=-bound symbol lookup resolves through nested =let=.
+- Free symbol signals =nelisp-phase47-compiler-error=.
+- Unknown form signals.
+
+** §5.2 Emit-level (= bytes pattern)
+
+- =(exit 0)= → 16-byte text (= REX.W-tagged Doc 92 emitters; differs
+  from Doc 96 §3.3's 12-byte hand-encoded =bf imm32= because Doc 92's
+  =mov-imm32= unconditionally tags REX.W for 64-bit ABI parity).
+- =(exit 42)= → 16-byte text with =0x2a= in the status slot.
+- =(write "hi")= alone → 33-byte text (= 4×mov-imm + syscall) +
+  =.rodata= of 2 bytes.
+- =(seq (write "a") (write "b") (exit 0))= → 33 + 33 + 16 = 82 bytes
+  of text; =.rodata= = "ab" (= 2 bytes, sequential offsets).
+- String dedup: =(seq (write "x") (write "x"))= → =.rodata= = "x"
+  (1 byte, both =write= forms use the same rodata offset).
+- Pass-1 vs pass-2 byte-length parity (= invariant smoke).
+
+** §5.3 End-to-end (= exec + observe)
+
+- =(seq (write "hello\n") (exit 0))= → exec → stdout = "hello\n",
+  exit code = 0.
+- =(exit 42)= → exec → exit code = 42.
+- =(seq (let ((x 7)) (exit x)))= → exec → exit code = 7.
+- =(seq (write "ab") (exit (+ 1 2)))= → exec → stdout = "ab",
+  exit code = 3.
+- =(seq (write "hi") (write " there\n") (exit 0))= → exec → stdout =
+  "hi there\n", exit code = 0.
+
+Each e2e test:
+1. Calls =nelisp-phase47-compile-sexp= writing to a unique
+   =/tmp/nelisp-doc97-…= path.
+2. Shells out =chmod +x= (= already done by =nelisp-elf-write-binary=,
+   but ert tests assert it).
+3. Runs the binary via =call-process= capturing stdout + exit code.
+4. Asserts both observable surfaces.
+
+All e2e tests are guarded by =(eq system-type 'gnu/linux)= — non-Linux
+hosts (= macOS / Windows) skip with =ert-skip=.
+
+** §5.4 Test count
+
+At least 12 =ert-deftest= cases covering §5.1-§5.3.  The e2e cases
+double as the production engagement smoke gate — if they pass, the
+Phase 47 thesis ("pure-elisp Sexp → executable Linux binary") is
+demonstrably true.
+
+* §6 Limitations + Doc 97 follow-ups
+
+** §6.1 What v1 explicitly leaves on the floor
+
+- *Function calls* (= the entire =defun= / =call= machinery).  v1
+  programs are linear sequences of syscall-emitting forms.
+- *Runtime arithmetic* (= no =add= / =sub= / =mul= emit; everything is
+  constant-folded).  Without runtime arithmetic, programs can't
+  compute non-trivial exit codes from input.
+- *Control flow* (= =if= / =while= / =cond=).  v1 has no branches.
+- *I/O beyond =write(1)===.  No =read=, no other fds, no environment
+  inspection.
+- *Heap allocation*.  Strings live in =.rodata= (= read-only).  No
+  =malloc=, no growing buffers.
+- *Dynamic typing*.  Every value is a 64-bit signed integer.  String
+  literals are second-class (= they can be passed to =write= but not
+  bound by =let=).
+- *Error messages*.  Runtime errors don't exist (= no syscall error
+  path: =write= and =exit= return values are ignored).
+
+** §6.2 Doc 97.b — function calls + return values
+
+*Status*: SHIPPED 2026-05-11 on =agent-doc-97b-impl= branch.
+
+Adds:
+- =(defun NAME (PARAMS...) BODY)= form (= up to 6 positional int
+  params).
+- =(NAME ARG1 ARG2 ...)= function call by name (= no separate =call=
+  keyword; call sites use the function symbol directly, matching the
+  Lisp surface).
+- Stack frame establishment via =push rbp= / =mov rbp, rsp= prologue
+  + =pop rbp= / =ret= epilogue.
+- SysV AMD64 argument register convention (=rdi=, =rsi=, =rdx=,
+  =rcx=, =r8=, =r9=).
+- Return value in =rax=.
+- Runtime arithmetic (= the v1 constant-folder still fires when all
+  operands are compile-time foldable, otherwise =(+ a b)= / =(- a b)=
+  / =(* a b)= lower to =add= / =sub= / =imul= on rax + r10 scratch).
+- Implicit return: every function body's value is the function's
+  return value (= no separate =return= form).
+
+Implementation:
+- =--collect-defuns= pre-pass pulls defun nodes from the IR and the
+  emitter places them after =_start= with =define-label= entries.
+- =call-rel32= records a fixup against the function's label;
+  =resolve-fixups= patches the rel32 displacement at finalize time.
+- Scratch register selected = =r10= (caller-saved, NOT in the
+  arg-regs list) so chained calls don't alias a parameter slot.
+- =imul= encoded inline via =emit-bytes= (= Doc 92 has no =imul=
+  helper; the encoding is fixed-width so pass-1/pass-2 byte invariant
+  holds).
+- Stack delta: each call site pushes evaluated args (= N pushes)
+  then pops them into the SysV arg-regs in reverse order before
+  =call-rel32= — net delta is 0 at the call boundary so the kernel-
+  provided 16-byte alignment is preserved (= modulo the return-addr
+  push which the callee's =push rbp= immediately re-aligns to 16).
+- Forward references: the seq pre-scan registers every defun in the
+  same seq before walking child statements, so call sites can refer
+  to functions defined later in source order (= a defun on line 5
+  can be called from a function defined on line 1, as long as both
+  share the same enclosing seq).
+
+Deferred to Doc 97.c / 97.d:
+- > 6 positional args (= stack spill).
+- Cross-seq forward references (= rarely useful when the program is
+  one top-level =seq=).
+- Tail call optimisation.
+- Mutual recursion across separate seqs.
+
+** §6.3 Doc 97.c — control flow
+
+*Status*: SHIPPED 2026-05-11 on =agent-doc-97c-impl= branch.
+
+Adds the following source-language forms:
+- =(if TEST THEN ELSE)= — TEST != 0 ? THEN : ELSE.
+- =(while TEST BODY...)= — loop while TEST != 0, returns 0 at exit.
+- =(cond (P1 B1) ... (t Bn))= — first matching clause; =t= = always.
+- =(< A B)= / =(> A B)= / =(<= A B)= / =(>= A B)= / =(= A B)= — signed
+  integer comparison producing 0 or 1.
+- =(and EXPR ...)= — short-circuit AND, returns first 0 or last value.
+- =(or EXPR ...)= — short-circuit OR, returns first non-0 or 0.
+
+Encoding additions in =lisp/nelisp-asm-x86_64.el=:
+- =jz-rel32 BUF LABEL= (= =0F 84= + fixup, 6 bytes).
+- =jnz-rel32 BUF LABEL= (= =0F 85= + fixup, 6 bytes).
+- =cmp-reg-reg BUF DST SRC= (= MR-form, opcode =0x39=, 3 bytes).
+- =setcc-al BUF CC= (= =0F XX C0= for setl/setg/setle/setge/sete/setne).
+- =movzx-eax-al BUF= (= =0F B6 C0=, zero-extends AL into RAX).
+
+Compiler-side additions in =lisp/nelisp-phase47-compiler.el=:
+- New IR kinds: =:kind cmp / if / while / cond / logic= (= and/or).
+- Parse-time =--label-counter= ensures every control-flow node gets a
+  unique label id; both passes see identical names, preserving the
+  pass-1/pass-2 byte invariant.
+- Param-spill prologue: each defun pushes its incoming arg-regs onto
+  the stack at entry, and =:kind ref= reads from =[rbp - 8*(slot+1)]=
+  via a 4-byte =mov rax, [rbp+disp8]= encoding.  This makes recursive
+  composition (= factorial) safe by isolating param liveness from
+  caller-saved arg-reg clobbers across nested calls.
+
+Smoke gates (= all green):
+- =(seq (exit (if 1 7 0)))= → EXIT=7
+- =(seq (exit (if 0 7 99)))= → EXIT=99
+- =(seq (exit (if (< 3 5) 1 2)))= → EXIT=1
+- =(seq (defun fact (n) (if (= n 0) 1 (* n (fact (- n 1))))) (exit (fact 5)))= → EXIT=120
+- =(seq (exit (and 1 2 3)))= → EXIT=3
+- =(seq (exit (or 0 5 7)))= → EXIT=5
+- =(seq (exit (cond ((= 1 2) 9) ((= 3 3) 7) (t 5))))= → EXIT=7
+
+Deferred to Doc 97.d:
+- Tail call optimisation for recursive functions.
+- 7+ positional args (= stack-spill at call site).
+- Heap allocation + dynamic typing (= unchanged from §6.4).
+
+** §6.4 Doc 97.d — heap + dynamic typing
+
+Adds runtime heap allocation (= =brk(2)= syscall or =mmap=
+=MAP_ANONYMOUS= mapping).  Adds tagged values (= the existing NeLisp
+tag scheme can be reused if the compiler targets the NeLisp ABI).
+This is the slice that turns Doc 97 from "demo compiler" into "actual
+NeLisp backend candidate".
+
+** §6.5 Doc 97.e — NeLisp source compatibility
+
+The capstone: make the Doc 97 frontend accept real NeLisp source (=
+=(defun ...)= forms with =cl-= macros, =require= statements, etc.)
+without bespoke parser code.  Likely needs:
+- A pre-pass that strips =require= / =provide= boilerplate.
+- Macro expansion (= reuse NeLisp's macro expander via a shim).
+- Bytecode compatibility for already-=byte-compile=d call sites.
+
+This is the gate to retiring =gcc= from the NeLisp build chain.
+
+* §7 References
+
+- Doc 85 — Phase 47 feasibility spike (= chain origin) — SHIPPED
+  2026-05-11.
+- Doc 91 — Pure-elisp ELF writer — SHIPPED.
+- Doc 92 — Pure-elisp macro assembler (= x86_64) — SHIPPED.
+- Doc 93 — Pure-elisp static linker — SHIPPED.
+- Doc 94 — Pure-elisp crt0 (= x86_64 + aarch64) — SHIPPED.
+- Doc 95 — Sexp layout DSL — SHIPPED.
+- Doc 96 — Build orchestrator (= chain demonstrator) — SHIPPED.
+
+Implementation files:
+- =lisp/nelisp-phase47-compiler.el= — frontend + emit walker.
+- =test/nelisp-phase47-compiler-test.el= — ert unit + e2e smoke.
+
+Status flow:
+- DRAFT 2026-05-11: Doc written, implementation in flight on
+  agent-doc-97-impl branch.
+- SHIPPED 2026-05-11: All ert cases green, all three smoke
+  demonstrations exec to expected stdout / exit code.
+- 97.b SHIPPED 2026-05-11: defun + call + return values + runtime
+  arithmetic on parameters, 39/39 ert.
+- 97.c SHIPPED 2026-05-11: if / while / cond / comparisons /
+  short-circuit and/or + recursive factorial, 64/64 ert.

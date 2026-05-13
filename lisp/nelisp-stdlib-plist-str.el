@@ -1041,4 +1041,42 @@ forms are out of scope)."
             (setq cur (cdr cur)))
           acc))))))
 
+;;;; --- Doc 87 §86.1.f Tier 2 wrappers: nl-downcase / nl-upcase ----
+;;;; --- nl-split-by-non-alnum --------------------------------------
+
+;; Doc 87 §86.1.f Tier 2 wrappers — UTF-8 case + alnum-tokenize via
+;; the `nl_jit_downcase' / `nl_jit_upcase' / `nl_jit_split_by_non_alnum'
+;; trampolines in `build-tool/src/jit/strings.rs'.  Replace the
+;; deleted `bi_nl_downcase' / `bi_nl_upcase' / `bi_nl_split_by_non_alnum'
+;; helpers in `eval/builtins.rs'.
+
+(fset 'nl-downcase
+      (lambda (s)
+        (condition-case _err
+            (nl-jit-call-out-1 "nl_jit_downcase" s)
+          (error
+           (nelisp--signal-wrong-type 'stringp s)))))
+
+(fset 'nl-upcase
+      (lambda (s)
+        (condition-case _err
+            (nl-jit-call-out-1 "nl_jit_upcase" s)
+          (error
+           (nelisp--signal-wrong-type 'stringp s)))))
+
+;; The Rust trampoline reads OMIT-EMPTY = `!Nil' (= true unless the
+;; second arg is the symbol `nil').  Original `bi_*' contract: when
+;; the 2nd arg is omitted the default is `true' (= drop empties); the
+;; user has to pass an explicit `nil' to retain empty fragments.  We
+;; mirror this via `(2-arity)' detection — if the caller passes 1
+;; arg, send `t'; if they pass 2 args, send whatever they passed.
+(fset 'nl-split-by-non-alnum
+      (lambda (s &rest rest)
+        (condition-case _err
+            (nl-jit-call-out-2
+             "nl_jit_split_by_non_alnum" s
+             (if (null rest) t (car rest)))
+          (error
+           (nelisp--signal-wrong-type 'stringp s)))))
+
 ;; nelisp-stdlib-plist-str.el ends here

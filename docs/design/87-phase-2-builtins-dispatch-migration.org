@@ -1,0 +1,1112 @@
+#+TITLE: Doc 87 — §86.1 builtins.rs dispatch arm migration detailed design
+#+AUTHOR: NeLisp design (Claude agent-doc-87-design)
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: DRAFT (= sub-stage articulation で個別 dispatch 可能な
+  detail level に到達。実装は §86.1.a-g を順次 ship、agent 並列化可)
+- *Parent*: Doc 86 §86.1 (= Phase 2 master design、=builtins.rs= 3,804
+  LOC を Tier 1/2/3 elisp 移管で -2,000〜-3,000)
+- *Precedent*: Doc 84 SHIPPED (= =strategy.rs= 全消滅 = 同 pattern を
+  3 family + 19 dispatch arm で実証)、Doc 81 SHIPPED (= ABI mode
+  pattern + bridge primitive で Cranelift 削除を unblock)
+- *OOS for THIS doc*: 実装作業 (= §86.1.a-g 各 sub-stage の個別
+  agent dispatch)、Doc 88 (= §86.2 error.rs detail)、Doc 89 (= §86.3
+  env.rs detail)、Phase 3 / Phase 47 検討
+- *Naming convention*: §87.X = 本 Doc 内 sub-section、§86.1.a-g = Doc
+  86 §5.2 sub-stage、Tier 1/2/3 = Doc 86 §2.2 dispatch arm
+  categorization
+
+* §0 TL;DR
+
+| sub-stage | scope                              | arm 数 | 工数 | LOC delta |
+|-----------+------------------------------------+--------+------+-----------|
+| §86.1.a   | Tier 1 predicate / type-of         | 5      | 2 day | -150     |
+| §86.1.b   | Tier 1 算術 / equal / ref-eq       | 4      | 3 day | -350     |
+| §86.1.c   | Tier 1 record 6 系                 | 6      | 2 day | -250     |
+| §86.1.d   | Tier 1 intern / symbol / string    | 6      | 2 day | -200     |
+| §86.1.e   | Tier 2 簡単 (concat-ints / make-mut-string / format-float-body) | 5 | 3 day | -350 |
+| §86.1.f   | Tier 2 trampoline ABI 拡張 + 残    | 8      | 4 day | -650     |
+| §86.1.g   | install_builtins / dispatch 縮減   | -      | 2 day | -300     |
+| *合計*    | *§86.1 完遂*                        | *34*  | *18 day* | *-2,250〜-2,800* |
+
+Tier 3 (= 12 arm、=Env= state 直接操作) は §86.1 では touch せず、
+Doc 89 §86.3 (= env.rs elisp 化) と統合 dispatch される。本 Doc は
+*Tier 1/2 のみ articulate*、Tier 3 は §3 で識別だけ済ませて Doc 89 に
+hand-off。
+
+key 構造的事実:
+- Doc 86 §2.2 が言う "67 dispatch arm" は =builtins.rs= 中 =^\s*"nelisp--=
+  prefix の grep count であり、install_builtins entry + dispatch arm の
+  両方を含む混合数値。実 dispatch match arm 数は **132**、うち migration
+  対象 (= elisp に lift 可能) は **約 50-55**、残 80 弱は FFI / system /
+  bridge primitive で elisp に lift 不能。Doc 86 §5.2 の 67 表記は維持
+  しつつ、本 Doc では 実 dispatch arm 132 を base に articulate
+- Tier 2 trampoline ABI 拡張は Doc 81 §3 + Doc 84 §3.1.1 / §3.3.2 で
+  確立済 pattern。新 ABI mode 0-2 件で済む見込
+- 各 sub-stage は monotonic shrink rule (= Doc 84 §13.1 articulated):
+  「stage 単位で必ず Rust LOC が減る」を厳守
+
+* §1 67 dispatch arm full inventory
+
+** §1.1 Inventory 方法論
+
+=build-tool/src/eval/builtins.rs= の dispatch 関数 (line 458-808) の
+match arm を = 全 132 件 enumerate。各 arm に以下属性を付与:
+
+- *line*: dispatch 関数内行
+- *arity*: =require_arity()= 第 3-4 引数 (= min, max)
+- *signature*: 引数型と Env 依存
+- *Tier*:
+  - *Tier 1* = pure elisp 移管可、新 ABI 不要
+  - *Tier 2* = 新 ABI mode + bridge primitive 必要
+  - *Tier 3* = =Env= state 直接操作、§86.3 hand-off
+  - *KEEP* = FFI / system / bridge primitive、elisp 移管不可
+- *target sub-stage*: §86.1.a-g 配置
+
+** §1.2 Tier 1 — pure elisp 移管 (= 21 arm)
+
+新 ABI 不要、既存 =nl-jit-call-out-*= bridge or 既存 elisp builtin で
+表現可。
+
+*** §1.2.1 算術 / equality (= 4 arm、§86.1.b)
+
+| arm                  | line | arity | bi_* fn        | sig        | target |
+|----------------------+------+-------+----------------+------------+--------|
+| =/=                   | 466  | 1+    | =bi_div=       | Sexp[]     | §86.1.b |
+| =equal=              | 480  | 2     | =bi_equal=     | Sexp[]     | §86.1.b |
+| =nelisp--ref-eq=     | 481  | 2     | =bi_ref_eq=    | Sexp[]     | §86.1.b |
+| =sxhash=             | 531  | 1     | =bi_sxhash=    | Sexp[]     | §86.1.b |
+
+migration note:
+- =/= は 1-arg (reciprocal) と n-arg (左折り) の両方を扱う。Doc 84
+  の Float family 同様、Int / Float promote → =nl-jit-call-float-float
+  "nl_jit_float_div"= or 既存 =nelisp--*-float= delegation
+- =equal= は recursive structural equality + Doc 50 stage 5a の cycle-
+  safe path (= visited hash via =nelisp--ref-eq=)。pure elisp で書ける
+  pattern が Doc 80 substrate に存在
+- =nelisp--ref-eq= は =Rc::ptr_eq= のため Rust 必須に見えるが、JIT
+  trampoline (=nelisp_jit_eq_inline=) が tag + payload 比較を既に提供
+  しており elisp 側で薄く包めば ref-eq に等しい。ただし *残置候補* (=
+  既存 =nl-jit-call-ptr-ptr "nelisp_jit_eq_inline"= が ref-identity
+  の代替として機能する) で詳細は §7 risk
+- =sxhash= は visit set + recursive hash で elisp ports 可能、ただし
+  precision (= sxhash-equal collision above 2^53) に注意
+
+*** §1.2.2 predicate / type (= 5 arm、§86.1.a)
+
+| arm                  | line | arity | bi_* fn          | sig    | target |
+|----------------------+------+-------+------------------+--------+--------|
+| =vector=             | 503  | 0+    | inline =Sexp::vector= | Sexp[] | §86.1.a |
+| =make-vector=        | 504  | 2     | =bi_make_vector= | Sexp[] | §86.1.a |
+| =type-of=            | 510  | 1     | =bi_type_of=     | Sexp[] | §86.1.a |
+| =functionp=          | 511  | 1     | =bi_predicate=   | Sexp[] | §86.1.a |
+| =recordp=            | 655  | 1     | =bi_recordp=     | Sexp[] | §86.1.a |
+
+migration note:
+- =vector= は raw =Sexp::vector(args.to_vec())= の inline 1 行、=make-
+  vector= は size + init の Rust loop。両者とも =nl-jit-call-out-1i= や
+  generic vector primitive (= 既存 =nelisp_jit_aset= を fold) で代替可
+- =type-of= は 1-arg branching (Cell unwrap → Record special-case →
+  generic tag emit)。pure elisp で =cond= 連鎖 + slim primitive (=
+  Record の type_tag accessor、= Doc 84 box accessor 同 pattern)
+- =functionp= は callable 判定 (= cons head が "lambda" / "closure" /
+  "builtin")。elisp の =cond= + =eq= + =car= で書ける純 Tier 1
+- =recordp= = =matches!(&args[0], Sexp::Record(_))=、=type-of= の出力
+  経由で elisp 側 =(eq (type-of x) 'record)= に collapse 可
+
+*** §1.2.3 record 6 系 (= 6 arm、§86.1.c)
+
+| arm                       | line | arity | bi_* fn               | sig    | target |
+|---------------------------+------+-------+-----------------------+--------+--------|
+| =nelisp--make-record=     | 650  | 1+    | =bi_make_record=      | Sexp[] | §86.1.c |
+| =nelisp--record-ref=      | 651  | 2     | =bi_record_ref=       | Sexp[] | §86.1.c |
+| =nelisp--record-set=      | 652  | 3     | =bi_record_set=       | Sexp[] | §86.1.c |
+| =nelisp--record-length=   | 653  | 1     | =bi_record_length=    | Sexp[] | §86.1.c |
+| =nelisp--record-type=     | 654  | 1     | =bi_record_type=      | Sexp[] | §86.1.c |
+| =recordp=                 | 655  | 1     | =bi_recordp=          | Sexp[] | §86.1.a→.c 重複 |
+
+migration note (= record family):
+- =Sexp::Record= は =NlRecord= ref-counted box (= type_tag + slots
+  vec)。Doc 84 §3.3 box accessor pattern と同形 = bridge primitive
+  (=nl_jit_record_alloc= / =-ref= / =-set= / =-len= / =-type=) を 5 個
+  追加して既存 =nl-jit-call-out-{1,1i,2i}= 経由で叩けば pure-elisp 可
+- *Tier 1 か Tier 2 か*: 新 trampoline は要 + 既存 ABI mode で済む =
+  Tier 1.5 として扱い、=jit/box_accessor.rs= に 5 trampoline 追加で
+  対応。Doc 84 §13.1 で確立した pattern と同じ
+- =recordp= は §86.1.a で `type-of` 経由 elisp で済むため、§86.1.c で
+  は重複として記録 (= 削除 timing が §86.1.a)
+
+*** §1.2.4 intern / symbol / string (= 6 arm、§86.1.d)
+
+| arm                       | line | arity | bi_* fn              | sig    | target |
+|---------------------------+------+-------+----------------------+--------+--------|
+| =intern=                  | 541  | 1     | =bi_intern=          | Sexp[] | §86.1.d |
+| =symbol-name=             | 542  | 1     | =bi_symbol_name=     | Sexp[] | §86.1.d |
+| =make-symbol=             | 626  | 1     | =bi_make_symbol=     | Sexp[] | §86.1.d |
+| =string-bytes=            | 551  | 1     | =bi_string_bytes=    | Sexp[] | §86.1.d |
+| =string-match-p=          | 547  | 2     | =bi_string_match_p=  | Sexp[] | §86.1.d (Tier 2 候補) |
+| =truncate=                | 540  | 1     | =bi_truncate=        | Sexp[] | §86.1.d |
+
+migration note:
+- =intern= = =Sexp::Str/MutStr → Sexp::Symbol= の type-tag 変換。
+  elisp で =(if (eq (type-of x) 'string) <build-symbol> ...)= だが
+  symbol allocation は primitive 経由 (= =nl-jit-call-out-1
+  "nl_jit_str_to_symbol"=) で済む
+- =symbol-name= = symbol → string 逆変換。primitive 経由 1 trampoline
+- =make-symbol= = uninterned symbol 生成 (= COUNTER 経由)。elisp 純
+  実装は counter 共有が複雑、= primitive 1 件残置候補
+- =string-bytes= = UTF-8 byte count、= simple Rust =.len()= を
+  =nl_jit_str_byte_len= trampoline で expose
+- =string-match-p= = regex backend 必要、Tier 2 (= 既存 Rust regex
+  crate 依存)。§86.1.d でも段階保留可、最終的に Tier 2 §86.1.f に
+  retire
+- =truncate= = float → int conversion。既存 =nelisp--f64-trunc= 経由で
+  elisp 側 =(nelisp--f64-trunc 'truncate x 1)= に collapse 可
+
+** §1.3 Tier 2 — 新 ABI mode + bridge primitive 必要 (= 13 arm)
+
+trampoline ABI 拡張または新 bridge primitive を要する。Doc 81 §3 + Doc
+84 §3.1 / §3.3 で確立した pattern を再利用。
+
+*** §1.3.1 string / format / regex (= 5 arm、§86.1.e)
+
+| arm                          | line | arity | bi_* fn                  | sig    | target |
+|------------------------------+------+-------+--------------------------+--------+--------|
+| =nelisp--concat-ints=        | 535  | 1     | =bi_concat_ints=         | Sexp[] | §86.1.e |
+| =nelisp--make-mut-string=    | 629  | 2     | =bi_make_mut_string=     | Sexp[] | §86.1.e |
+| =nelisp--format-float-body=  | 539  | -     | =bi_format_float_body=   | Sexp[] | §86.1.e |
+| =string-match-p=             | 547  | 2     | =bi_string_match_p=      | Sexp[] | §86.1.f |
+| =bi_truncate= (= 共通基盤)   | -    | -     | -                        | -      | §86.1.e |
+
+migration note:
+- =nelisp--concat-ints= = list-of-int → Sexp::Str builder。bridge
+  primitive =nl_jit_concat_ints (*const NlConsBox) -> Sexp= 1 件追加で
+  既存 =nl-jit-call-out-1= 経由で叩ける
+- =nelisp--make-mut-string= = LEN×CH の MutStr build。Doc 84 §3.3 box
+  accessor pattern + =nl_jit_make_mut_string (i64 len, i64 cp) -> Sexp=
+  trampoline。新 ABI mode 不要 (= 既存 =:trampoline-binary-aref= を
+  Sexp 返り型に流用)
+- =nelisp--format-float-body= = IEEE-754 float→string formatter。Rust
+  =write!(...)= の出力を Sexp::Str に。primitive 1 件で済むが arg
+  shape は (= Float, conv-char, precision, ...) で variadic = Tier 2
+  候補
+- =string-match-p= は regex 依存 = Tier 2 のうち最 risky、§86.1.f に
+  retire (= 新 ABI mode かつ Rust crate 依存削除可否を要 audit)
+
+*** §1.3.2 OS / file / time / hash (= 8 arm、§86.1.f)
+
+| arm                    | line | arity | bi_* fn               | sig          | target |
+|------------------------+------+-------+-----------------------+--------------+--------|
+| =nl-current-unix-time= | 704  | 0     | =bi_nl_current_unix_time= | Sexp[]   | §86.1.f |
+| =nl-secure-hash=       | 705  | 2     | =bi_nl_secure_hash=   | Sexp[]       | §86.1.f |
+| =nl-format-unix-time=  | 706  | 2     | =bi_nl_format_unix_time= | Sexp[]    | §86.1.f |
+| =nl-downcase=          | 707  | 1     | =bi_nl_downcase=      | Sexp[]       | §86.1.f |
+| =nl-upcase=            | 708  | 1     | =bi_nl_upcase=        | Sexp[]       | §86.1.f |
+| =nl-split-by-non-alnum=| 709  | 1     | =bi_nl_split_by_non_alnum= | Sexp[]  | §86.1.f |
+| =float=                | 712  | 1     | =bi_float=            | Sexp[]       | §86.1.f |
+| =exp=                  | 713  | 1     | =bi_exp=              | Sexp[]       | §86.1.f |
+| =log=                  | 714  | 1     | =bi_log=              | Sexp[]       | §86.1.f |
+
+migration note:
+- =nl-current-unix-time= = 0-arg system clock query。primitive 1 件残置
+  ですが、bridge 経由 =nl-jit-call-i64-i64 "nl_jit_now"= で薄く包んで
+  install_builtins 1 entry 削減
+- =nl-secure-hash= = SHA-1/-256 等 OpenSSL backend。Doc 51 articulated
+  by `inherently OS-dependent`、= elisp 純実装は OOS。bridge
+  primitive 経由で薄く包む方針 (= 1 entry 削減のみ、bi_* 残置)
+- =nl-format-unix-time= = strftime wrapper。同上、薄ラップ
+- =nl-{downcase,upcase}= = Unicode case fold。Rust stdlib =char::to_*=
+  経由、bridge 1 entry 削減で elisp 側に lift
+- =nl-split-by-non-alnum= = Unicode word boundary split。bridge 経由
+- =float / exp / log= = math primitive。既存 =nl-jit-call-float-float=
+  に =nl_jit_float_exp= / =-log= / =-coerce= 追加 = Doc 84 §84.1
+  pattern の 3 件拡張。arity 変則 (= unary float→float) で Doc 84 が
+  既に持つ =:trampoline-binary-float= の =unary 形= を要 articulate
+
+** §1.4 Tier 3 — Env state 操作 (= 12 arm、§86.3 hand-off)
+
+これらは =&mut Env= に依存するため、§86.3 (= env.rs elisp 化) と統合
+dispatch される。本 Doc は識別のみ:
+
+| arm                            | line | arity | bi_* fn                | env 操作 |
+|--------------------------------+------+-------+------------------------+----------|
+| =symbol-value=                 | 601  | 1     | =bi_symbol_value=      | lookup   |
+| =symbol-function=              | 602  | 1     | =bi_symbol_function=   | lookup   |
+| =fboundp=                      | 603  | 1     | =bi_fboundp=           | lookup   |
+| =boundp=                       | 604  | 1     | =bi_boundp=            | lookup   |
+| =defalias=                     | 605  | 2-3   | =bi_defalias=          | mutate   |
+| =fset=                         | 606  | 2     | =bi_fset=              | mutate   |
+| =set=                          | 607  | 2     | =bi_set=               | mutate   |
+| =fmakunbound=                  | 608  | 1     | =bi_fmakunbound=       | mutate   |
+| =makunbound=                   | 609  | 1     | =bi_makunbound=        | mutate   |
+| =macroexpand-1=                | 612  | 1-2   | =bi_macroexpand_1=     | lookup + apply |
+| =funcall=                      | 658  | 1+    | =bi_funcall=           | apply    |
+| =apply=                        | 659  | 2+    | =bi_apply=             | apply    |
+| =eval=                         | 660  | 1-2   | =bi_eval=              | re-entry |
+| =require=                      | 743  | 1-3   | =bi_require=           | load + lookup |
+
+(= 14 arm、Doc 86 §2.2.3 推定 12 を実 grep で 14 と訂正。Doc 89 §86.3
+detailed design でこの 14 を articulate する)
+
+5 補助 primitive (= Stage 7.4.a Doc 68 由来) も Tier 3:
+
+| arm                                | line | arity | bi_* fn                          |
+|------------------------------------+------+-------+----------------------------------|
+| =nelisp--push-frame=               | 614  | 0     | =bi_push_frame=                  |
+| =nelisp--pop-frame=                | 615  | 0     | =bi_pop_frame=                   |
+| =nelisp--push-captured=            | 616  | 1     | =bi_push_captured=               |
+| =nelisp--bind-local=               | 617  | 2     | =bi_bind_local=                  |
+| =nelisp--apply-builtin-dispatch=   | 618  | 2     | =bi_apply_builtin_dispatch=      |
+| =nelisp--set-use-elisp-apply=      | 620  | 1     | =bi_set_use_elisp_apply=         |
+| =nelisp--get-use-elisp-apply=      | 621  | 0     | =bi_get_use_elisp_apply=         |
+| =nelisp--apply-lambda-inner=       | 623  | 4     | =bi_apply_lambda_inner=          |
+
+(= 8 arm、Doc 89 §86.3 統合判断)
+
+合計 Tier 3 = 14 + 8 = **22 arm** (Doc 86 §2.2.3 = "12 arm" 過小、
+実 22 arm に訂正)
+
+** §1.5 KEEP — elisp 移管対象外 (= 96 arm)
+
+bridge primitive (= JIT trampoline lookup) / FFI generic / OS surface /
+Read primitive 等。Doc 86 scope では touch しない:
+
+- =signal= (line 661) — error.rs / Doc 88 で扱う、= 本 Doc 87 OOS
+- =nl-jit-call-{i64-i64,ptr-ptr,syscall,out-1,out-2,out-1i,out-2i,
+  float-float,float-cmp}= (= 9 arm、bridge primitive 自身)
+- =nl-cons-{alloc,car,cdr,set-car,set-cdr}= + =nl-rc-{inc,dec,count,
+  alloc,dealloc,inc-strong,dec-strong,strong-count,kind,payload-ptr}=
+  + =nl-gc-{walk-children,buffered-decs,finalize}= (= 18 arm、Layer 2
+  primitive、Doc 79 v7 GC infrastructure)
+- =nl-ffi-{call,malloc,read-bytes,free,write-bytes,errno,read-i32,
+  read-i64,read-i16,read-u16,read-u32,write-i16,write-i32,read-u8,
+  write-bytes-at,read-bytes-at,write-i64}= (= 17 arm、Doc 51/76 FFI
+  primitive)
+- =nelisp--syscall*= (= 9 arm、Doc 53/76 OS surface)
+- =nelisp--{read-all-from-string,write-stdout-bytes,write-stderr-line}=
+  (= 3 arm、stdio primitive)
+- =read-stdin-bytes= / =read-stdin-byte-available= / =read= / =read-
+  from-string= / =require= (= 5 arm、I/O entry-points)
+- =nl-write-file= / =nl-make-directory= (= 2 arm)
+- =terminal-*= / =install-*-handler= / =_*-installed-p= / =_termios-
+  saved-p= / =_raw-mode-hooks-installed-p= / =set-quit-flag= / =clear-
+  quit-flag= / =quit-flag-pending-p= (= 14 arm、Doc 51 Track E/M/P/Q)
+- =nelisp--f64-trunc= (= 1 arm、Doc 51 Phase 8 共通基盤)
+- =nelisp-cc--dlsym-resolve= (= 1 arm、Doc 81 §5.4 dlsym bridge)
+- =nelisp--apply-builtin-dispatch= (= 1 arm、Tier 3 重複、§86.3 hand-off)
+
+合計 KEEP = 80 (= 132 - 21 Tier 1 - 13 Tier 2 - 22 Tier 3 = 76、4 件
+は重複 cross-counted で実 KEEP は約 80)
+
+** §1.6 集計
+
+| Tier         | 件数 | 削減対象 | 移管先              |
+|--------------+------+----------+---------------------|
+| Tier 1       | 21   | 〇       | §86.1.a-d           |
+| Tier 2       | 13   | 〇       | §86.1.e/f           |
+| Tier 3       | 22   | 保留     | Doc 89 §86.3        |
+| KEEP         | 76   | ×        | -                   |
+| *合計*       | 132  | -        | -                   |
+
+* §2 25 bi_* helper fn full inventory
+
+=builtins.rs= 内の =fn bi_*= ヘルパは grep で **75 件**確認 (Doc 86
+§2.3 推定 25 は過小)。各 helper は dispatch arm の実体で、Tier 1/2 の
+arm が全 elisp 移管されると helper 本体ごと削除可能。
+
+** §2.1 削除候補 helper (Tier 1+2 移管対象、= 33 件)
+
+| bi_* fn                  | line | LOC est | 対応 arm                | Tier  | sub-stage |
+|--------------------------+------+---------+-------------------------+-------+-----------|
+| =bi_div=                 | 896  | 30      | =/=                     | 1     | §86.1.b   |
+| =bi_sxhash=              | 987  | 70      | =sxhash=                | 1     | §86.1.b   |
+| =bi_equal=               | 1059 | 26      | =equal=                 | 1     | §86.1.b   |
+| =bi_ref_eq=              | 1085 | 95      | =nelisp--ref-eq=        | 1     | §86.1.b   |
+| =bi_string_bytes=        | 1185 | 50      | =string-bytes=          | 1     | §86.1.d   |
+| =bi_predicate=           | 1238 | 12      | =functionp=             | 1     | §86.1.a   |
+| =bi_type_of=             | 1251 | 50      | =type-of=               | 1     | §86.1.a   |
+| =bi_concat_ints=         | 1308 | 35      | =nelisp--concat-ints=   | 2     | §86.1.e   |
+| =bi_intern=              | 1357 | 12      | =intern=                | 1     | §86.1.d   |
+| =bi_make_symbol=         | 1381 | 16      | =make-symbol=           | 1     | §86.1.d   |
+| =bi_make_mut_string=     | 1428 | 65      | =nelisp--make-mut-string= | 2   | §86.1.e   |
+| =bi_make_record=         | 1496 | 14      | =nelisp--make-record=   | 1     | §86.1.c   |
+| =bi_record_ref=          | 1512 | 30      | =nelisp--record-ref=    | 1     | §86.1.c   |
+| =bi_record_set=          | 1541 | 38      | =nelisp--record-set=    | 1     | §86.1.c   |
+| =bi_record_length=       | 1578 | 14      | =nelisp--record-length= | 1     | §86.1.c   |
+| =bi_record_type=         | 1593 | 13      | =nelisp--record-type=   | 1     | §86.1.c   |
+| =bi_recordp=             | 1605 | 8       | =recordp=               | 1     | §86.1.a   |
+| =bi_symbol_name=         | 1673 | 13      | =symbol-name=           | 1     | §86.1.d   |
+| =bi_string_match_p=      | 1709 | 80      | =string-match-p=        | 2     | §86.1.f   |
+| =bi_format_float_body=   | 2667 | 60      | =nelisp--format-float-body= | 2 | §86.1.e   |
+| =bi_truncate=            | 2728 | 28      | =truncate=              | 1     | §86.1.d   |
+| =bi_nl_current_unix_time=| 2755 | 14      | =nl-current-unix-time=  | 2     | §86.1.f   |
+| =bi_nl_secure_hash=      | 2769 | 60      | =nl-secure-hash=        | 2     | §86.1.f   |
+| =bi_nl_format_unix_time= | 2826 | 18      | =nl-format-unix-time=   | 2     | §86.1.f   |
+| =bi_nl_downcase=         | 2844 | 6       | =nl-downcase=           | 2     | §86.1.f   |
+| =bi_nl_upcase=           | 2850 | 6       | =nl-upcase=             | 2     | §86.1.f   |
+| =bi_nl_split_by_non_alnum=| 2862| 35      | =nl-split-by-non-alnum= | 2     | §86.1.f   |
+| =bi_float=               | 2896 | 6       | =float=                 | 2     | §86.1.f   |
+| =bi_exp=                 | 2901 | 6       | =exp=                   | 2     | §86.1.f   |
+| =bi_log=                 | 2906 | 17      | =log=                   | 2     | §86.1.f   |
+| =bi_make_vector=         | 3780 | ~25     | =make-vector=           | 1     | §86.1.a   |
+
+合計 helper LOC 削除見込み: **約 950 LOC** (= 平均 28 LOC/helper × 33
+helper)
+
+** §2.2 残置 helper (KEEP / Tier 3、= 約 42 件)
+
+詳細列挙は省略 (= §1.5 KEEP / §1.4 Tier 3 と 1:1 対応)。代表:
+- Tier 3 (Env 操作): =bi_symbol_value=, =bi_symbol_function=,
+  =bi_fboundp=, =bi_boundp=, =bi_defalias=, =bi_fset=, =bi_set=,
+  =bi_fmakunbound=, =bi_makunbound=, =bi_macroexpand_1=, =bi_signal=,
+  =bi_funcall=, =bi_apply=, =bi_eval=, =bi_require=, =bi_push_frame=,
+  =bi_pop_frame=, =bi_push_captured=, =bi_bind_local=,
+  =bi_apply_builtin_dispatch=, =bi_set_use_elisp_apply=,
+  =bi_get_use_elisp_apply=, =bi_apply_lambda_inner=
+- KEEP (FFI/OS): =bi_syscall_*= (~6 件), =bi_read*= (~3 件),
+  =bi_write_*= (~2 件), =bi_terminal_*= (~5 件), =bi_install_*= (~5
+  件), =bi_*_handler_installed_p= (~4 件), =bi_set_quit_flag= /
+  =bi_clear_quit_flag= / =bi_quit_flag_pending_p=, =bi_nl_write_file=,
+  =bi_nl_make_directory=, =bi_read_stdin_bytes=,
+  =bi_read_stdin_byte_available=, =bi_termios_saved_p=,
+  =bi_raw_mode_hooks_installed_p=, =bi_f64_trunc=,
+  =bi_terminal_take_winsize_changed=, =bi_terminal_current_winsize=,
+  =bi_terminal_take_sigcont=
+
+** §2.3 helper LOC delta 集計
+
+- 削除 helper 33 件 × 平均 28 LOC = **-924 LOC**
+- 削除 dispatch arm entry 34 件 × 平均 1.5 LOC = **-51 LOC**
+- 削除 install_builtins entry 34 件 × 平均 1 LOC = **-34 LOC**
+- 関連 helper utility 削除 (= =require_arity= caller 縮小、=as_int= /
+  =numeric_promote= の dead-code prune): **-50 LOC**
+- *合計 Rust 削減*: **約 -1,060 LOC** (= §0 表 -2,250 試算の 47%)
+
+残 -1,200〜-1,800 LOC は:
+- Tier 2 trampoline ABI 拡張 (= float unary 形 + 新 mode 0-2 件) で
+  =build-tool/src/jit/= に **+200 LOC** Rust 追加されるが、=builtins.
+  rs= 単独では削減のみカウント
+- =install_builtins= 関数本体の縮減 (= 420 LOC → ~280 LOC、§86.1.g
+  で纏めて scrub)
+- dispatch 関数本体の縮減 (= 350 LOC → ~210 LOC、§86.1.g)
+- top-of-file commentary (= 関連 helper 削減後、Rust-min batch 6X
+  系コメント整理) で **-300 LOC**
+
+* §3 7 sub-stage breakdown (= §86.1.a-g)
+
+** §3.1 §86.1.a — Tier 1 predicate / type-of (= 5 arm)
+
+target arm:
+- =vector= (line 503)
+- =make-vector= (line 504)
+- =type-of= (line 510)
+- =functionp= (line 511)
+- =recordp= (line 655)
+
+工数: **2 day**
+LOC delta: -150 Rust + +80 elisp
+
+実装 step:
+1. =lisp/nelisp-stdlib-types.el= 新規作成 (= 約 80 LOC)
+2. =type-of= elisp 実装: =cond= on Sexp variant、Cell/Record の
+   special-case を bridge primitive (= =nl_jit_record_type_tag=) で
+   薄く expose
+3. =functionp= elisp 実装: =cond ((eq (type-of x) 'cons) ...)= +
+   head 比較
+4. =recordp=: =(eq (type-of x) 'record)= の 1 行 defun
+5. =vector= / =make-vector=: =nl_jit_vector_alloc (i64) -> Sexp= +
+   =nl_jit_vector_aset= fold で elisp 純実装 = pure-elisp
+6. =build-tool/src/eval/builtins.rs= dispatch arm + install_builtins
+   entry 削除、=bi_predicate= / =bi_type_of= / =bi_recordp= /
+   =bi_make_vector= 削除
+7. ERT: =test/nelisp-types-port-test.el= 追加 (= 約 30 件、各 arm の
+   round-trip + edge case)
+
+verification gate:
+- =cargo test --lib eval::builtins::= green
+- =make test= 全 ERT green、Tier 1.a 由来 +30 件追加
+- bootstrap canary green
+
+** §3.2 §86.1.b — Tier 1 算術 / equal / ref-eq (= 4 arm)
+
+target arm: =/=, =equal=, =nelisp--ref-eq=, =sxhash=
+
+工数: **3 day**
+LOC delta: -350 Rust + +200 elisp
+
+実装 step:
+1. =/= elisp 実装: 1-arg reciprocal は既存 =nelisp--num-eq2= で 0
+   detection + Float promote → =nl-jit-call-float-float "nl_jit_float_
+   recip"=、n-arg は左折り
+2. =equal= elisp 実装: cycle-safe via =nelisp--ref-eq= identity hash
+   set。Doc 50 stage 5a の elisp pattern を base
+3. =nelisp--ref-eq= elisp wrap: 既存 =nl-jit-call-ptr-ptr "nelisp_jit_
+   eq_inline"= = ref-eq + tag 比較で代替 (= §1.2.1 risk note 参照)
+4. =sxhash= elisp 実装: visit set + recursive。Int / Symbol / Str /
+   Cons / Vector の各 case に =nelisp--add2= で hash fold
+5. =bi_div= / =bi_equal= / =bi_ref_eq= / =bi_sxhash= 削除
+6. dispatch + install_builtins entry 削除
+7. ERT: =test/nelisp-arith-port-test.el= 拡張 (= +20 件)
+
+risk:
+- =sxhash= の hash collision: 既存 Rust impl と elisp port で同じ
+  hash 値が出ることを ERT で固定 (= snapshot test、= make bench で
+  hash-table key derivation の perf 退行も check)
+- =equal= の cycle detection performance: 既存 Rust の visited set
+  は raw pointer hashing、elisp は alist (= O(n) lookup) の代替で 10x
+  退行可能性、Tier 2 の =nelisp--ref-eq-hash-table= primitive で
+  解決可能だが §86.1.b ではまず O(n) で ship、退行が出たら §86.1.f に
+  fold
+
+** §3.3 §86.1.c — Tier 1 record 6 系 (= 6 arm)
+
+target arm: =nelisp--make-record=, =-record-ref=, =-record-set=,
+=-record-length=, =-record-type=, =recordp= (= §86.1.a で先行削除)
+
+工数: **2 day**
+LOC delta: -250 Rust + +130 elisp + +100 box-accessor.rs (Rust 追加)
+
+実装 step:
+1. =build-tool/src/jit/box_accessor.rs= に 5 trampoline 追加 (= Doc
+   84 §3.3 pattern):
+   #+begin_example
+   #[no_mangle] pub extern "C" fn nl_jit_record_alloc(...) -> Sexp;
+   #[no_mangle] pub extern "C" fn nl_jit_record_ref(...) -> Sexp;
+   #[no_mangle] pub extern "C" fn nl_jit_record_set(...) -> i64;
+   #[no_mangle] pub extern "C" fn nl_jit_record_len(...) -> i64;
+   #[no_mangle] pub extern "C" fn nl_jit_record_type(...) -> Sexp;
+   #+end_example
+2. =bridge.rs unified_fn_ptr= に 5 entry 追加
+3. =lisp/nelisp-stdlib-record.el= elisp wrapper:
+   - =nelisp--make-record=: variadic args → vector + alloc
+   - =nelisp--record-ref=: =nl-jit-call-out-1i "nl_jit_record_ref"=
+   - =nelisp--record-set=: =nl-jit-call-out-2i "nl_jit_record_set"=
+   - =nelisp--record-length=: =nl-jit-call-out-1 "nl_jit_record_len"=
+   - =nelisp--record-type=: =nl-jit-call-out-1 "nl_jit_record_type"=
+4. =bi_make_record= ... =bi_record_type= 削除 (= 5 helper)
+5. dispatch + install_builtins entry 5 件削除 (= =recordp= は §86.1.a
+   で済)
+6. ERT: =test/nelisp-record-port-test.el= 拡張、cl-defstruct 等の
+   record consumer (Doc 50 stage 4e) の round-trip 維持 verify
+
+monotonic shrink check:
+- box_accessor.rs の +100 LOC 追加 vs builtins.rs の -250 LOC 削減 =
+  net -150 LOC。Doc 84 §13.1 の "stage 単位で必ず Rust LOC が減る"
+  rule を満たす
+
+** §3.4 §86.1.d — Tier 1 intern / symbol / string (= 6 arm)
+
+target arm: =intern=, =symbol-name=, =make-symbol=, =string-bytes=,
+=truncate=, (= =string-match-p= は §86.1.f に retire)
+
+工数: **2 day**
+LOC delta: -200 Rust + +120 elisp + +60 jit/strings.rs (新規)
+
+実装 step:
+1. =build-tool/src/jit/strings.rs= 新規 (~60 LOC、4 trampoline):
+   #+begin_example
+   #[no_mangle] pub extern "C" fn nl_jit_str_to_symbol(...) -> Sexp;
+   #[no_mangle] pub extern "C" fn nl_jit_symbol_name(...) -> Sexp;
+   #[no_mangle] pub extern "C" fn nl_jit_str_byte_len(...) -> i64;
+   #[no_mangle] pub extern "C" fn nl_jit_make_symbol_uninterned(...) -> Sexp;
+   #+end_example
+2. =bridge.rs= に 4 entry 追加
+3. =lisp/nelisp-stdlib-symbol.el= elisp wrapper 4 件
+4. =truncate= elisp 実装: =nelisp--f64-trunc 'truncate x 1= に
+   collapse (= 既存 primitive 経由)
+5. =bi_intern= / =bi_symbol_name= / =bi_make_symbol= / =bi_string_
+   bytes= / =bi_truncate= 削除
+6. dispatch + install_builtins entry 5 件削除
+7. ERT: =test/nelisp-symbol-port-test.el= 拡張
+
+** §3.5 §86.1.e — Tier 2 簡単 (concat-ints / make-mut-string / format-float-body)
+
+target arm: =nelisp--concat-ints=, =nelisp--make-mut-string=,
+=nelisp--format-float-body=
+
+工数: **3 day**
+LOC delta: -350 Rust + +180 elisp + +120 jit/strings.rs (継続)
+
+実装 step:
+1. =jit/strings.rs= に 3 trampoline 追加:
+   #+begin_example
+   #[no_mangle] pub extern "C" fn nl_jit_concat_ints(...) -> Sexp;
+   #[no_mangle] pub extern "C" fn nl_jit_make_mut_str(...) -> Sexp;
+   #[no_mangle] pub extern "C" fn nl_jit_format_float(...) -> Sexp;
+   #+end_example
+2. =nelisp--format-float-body= は variadic conv 仕様。新 ABI mode
+   =:trampoline-format-float= (= =fn(f64, char, i64, *mut Sexp) -> i64=) を
+   §3.6 で追加して使う
+3. =lisp/nelisp-stdlib-format.el= elisp wrapper
+4. =bi_concat_ints= / =bi_make_mut_string= / =bi_format_float_body=
+   削除
+5. dispatch + install_builtins entry 削除
+6. ERT: =test/nelisp-stdlib-plist-str-test.el= 拡張
+
+risk:
+- =nelisp--format-float-body= の precision invariance: 既存 Rust の
+  =write!("{:.Nf}", x)= と elisp 経路で出力 byte 完全一致を要 ERT
+  fixture (= snapshot test、IEEE-754 boundary)
+
+** §3.6 §86.1.f — Tier 2 trampoline ABI 拡張 + 残
+
+target arm: =nl-current-unix-time=, =nl-secure-hash=, =nl-format-
+unix-time=, =nl-downcase=, =nl-upcase=, =nl-split-by-non-alnum=,
+=float=, =exp=, =log=, =string-match-p=
+
+工数: **4 day**
+LOC delta: -650 Rust + +250 elisp + +200 jit/(time, hash, math, regex).rs
+
+実装 step:
+1. *新 ABI mode 1 件追加*: =:trampoline-unary-float= = =fn(f64) -> f64=
+   (= xmm0 → xmm0)。x86_64 + arm64 backend encoder 両方に 1 case 追加
+   (= Doc 84 §84.1 の binary-float をトリミングしただけ)
+2. =build-tool/src/jit/time.rs= 新規 (~40 LOC、3 trampoline =
+   now / format / parse)
+3. =build-tool/src/jit/hash.rs= 新規 (~80 LOC、SHA-1/-256/-512)
+4. =build-tool/src/jit/math.rs= 新規 (~30 LOC、float / exp / log の 3
+   xmm trampoline = 新 ABI mode の利用)
+5. =build-tool/src/jit/regex.rs= 新規 (~50 LOC、=string-match-p= の
+   regex backend 1 trampoline)
+6. =bridge.rs= に 9 entry 追加
+7. =lisp/nelisp-stdlib-{time,hash,math,regex}.el= elisp wrapper
+8. helper bi_* 9 件削除
+9. dispatch + install_builtins entry 9 件削除
+10. ERT: 各機能で +10 件、計 +90 件
+
+new ABI mode 詳細 (§5 で深掘り):
+- =:trampoline-unary-float= の登録は Doc 81 §3.1 の =:trampoline-unary=
+  + Doc 84 §84.1 の =:trampoline-binary-float= の合成。x86_64 calling
+  convention で xmm0 in / xmm0 out = MOVSD + RET の薄ラッパ
+- arm64 は v0 in / v0 out = SIMD register、=fmov d0, d0= は no-op で
+  prologue / epilogue のみ追加
+
+** §3.7 §86.1.g — install_builtins / dispatch 縮減
+
+target: =install_builtins= 関数本体 + =dispatch= 関数本体 + 削除
+helper の cleanup commentary
+
+工数: **2 day**
+LOC delta: -300 Rust (= comment + entry list 整理)
+
+実装 step:
+1. =install_builtins= 内 entry 列を Tier 1+2 移管後の 96 entry に
+   再整列、Rust-min batch 6X 系の "已 elisp 化" コメントを集約 (= 個別
+   batch comment を 1 block に統合)
+2. =dispatch= 関数本体: deleted arm 周辺の comment block も同様に
+   集約 (= 全 batch コメントを 1 文にまとめて重複削除)
+3. =require_arity= / =as_int= / =numeric_promote= 等の helper の
+   dead-code 検出 + 削除
+4. =top-of-file= module commentary を Phase 2 着地状態に refresh
+
+verification gate:
+- =cargo build --features image-baker= warning 0
+- =cargo clippy= warning 0
+- =make test-all= 全 green
+- =builtins.rs= 全体行数測定: 3,804 → ~1,500-1,700 (= -2,100〜-2,300
+  LOC、Doc 86 §5.1 試算上限の達成)
+
+* §4 elisp wrapper template by Tier
+
+** §4.1 Tier 1 wrapper template
+
+新 ABI 不要、既存 =nl-jit-call-out-*= or 既存 elisp builtin で表現。
+
+template (= =recordp= / =functionp= 等):
+#+begin_src elisp
+  ;; Doc 87 §86.1.a Tier 1 wrapper.  Pure-elisp re-implementation of
+  ;; the deleted Rust `bi_NAME' helper.  No bridge primitive needed —
+  ;; the body uses only Tier 1 primitives and existing elisp builtins.
+  (fset 'NELISP-NAME
+        (lambda (ARG)
+          (cond
+            ((eq (type-of ARG) 'TAG-1) BODY-1)
+            ((eq (type-of ARG) 'TAG-2) BODY-2)
+            (t (nelisp--signal-wrong-type 'EXPECTED ARG)))))
+#+end_src
+
+template (= =type-of= 経由 predicate 移管):
+#+begin_src elisp
+  ;; Doc 87 §86.1.a — Predicate via type-of dispatch.
+  (fset 'PREDICATE-NAME
+        (lambda (x)
+          (eq (type-of x) 'EXPECTED-TAG)))
+#+end_src
+
+** §4.2 Tier 1.5 wrapper template (= record 等 box accessor pattern)
+
+bridge primitive 経由だが新 ABI mode 不要、Doc 84 §3.3 既存 ABI で済む。
+
+template (= =nelisp--record-ref= 等):
+#+begin_src elisp
+  ;; Doc 87 §86.1.c Tier 1.5 wrapper.  Calls the matching `nl_jit_*'
+  ;; trampoline shipped in `build-tool/src/jit/box_accessor.rs' through
+  ;; the existing `nl-jit-call-out-{1,1i,2i}' bridge primitive — no new
+  ;; ABI mode.  ERR from the bridge surfaces as a generic `error' which
+  ;; we re-signal as `wrong-type-argument' per the pre-Doc-87 contract.
+  (fset 'NELISP-NAME
+        (lambda (ARG &optional ARG2)
+          (condition-case _err
+              (nl-jit-call-out-1i "nl_jit_NAME_TRAMPOLINE" ARG ARG2)
+            (error (nelisp--signal-wrong-type 'EXPECTED ARG)))))
+#+end_src
+
+** §4.3 Tier 2 wrapper template (= 新 ABI mode 利用)
+
+新 ABI mode (= 例 =:trampoline-unary-float=) 経由で xmm レジスタを
+直接利用、または primitive 1 件追加。
+
+template (= =float= / =exp= / =log= 等 unary float):
+#+begin_src elisp
+  ;; Doc 87 §86.1.f Tier 2 wrapper.  Uses new `:trampoline-unary-float'
+  ;; ABI mode shipped in §5.1 (= xmm0 → xmm0 calling convention).
+  (fset 'NELISP-NAME
+        (lambda (x)
+          (nl-jit-call-float-unary "nl_jit_float_NAME" x)))
+#+end_src
+
+template (= =nl-current-unix-time= 等 0-arg primitive):
+#+begin_src elisp
+  ;; Doc 87 §86.1.f Tier 2 wrapper.  0-arg primitive call.
+  (fset 'NELISP-NAME
+        (lambda ()
+          (nl-jit-call-i64-i64 "nl_jit_NAME" 0 0)))
+#+end_src
+
+** §4.4 各 sub-stage 共通の必須 invariant
+
+各 elisp wrapper は以下を満たすこと:
+
+1. *Doc 80 substrate (= Tier 1 special form + =cond= / =when= /
+   =unless= / =null= / =not= / =nelisp--signal-{wrong-type,arith}=) の
+   みを使う*。host =defmacro= / =loop= 等は assume しない
+2. *=fset= で定義する* (=defun= は macro expansion で循環参照リスク、
+   既存 =nelisp-jit-strategy.el= 同 pattern)
+3. *bridge primitive 経由は最大 1 hop*。同 wrapper 内で 2 trampoline
+   を chain しない (= compile cache miss 防止)
+4. *wrong-type / arith error は =nelisp--signal-{wrong-type,arith}=
+   経由で raise*。直接 =signal= 呼出は禁止 (= Doc 88 error.rs 統合の
+   precondition)
+5. *boot order*: =nelisp-stdlib-record.el= は =nelisp-stdlib-types.el=
+   の後に load (= =recordp= が =type-of= に依存)。既存 =image-baker=
+   の load order に新 stdlib file を順に追加
+
+* §5 New ABI mode plan (Tier 2 specific)
+
+** §5.1 必要な新 ABI mode (= 0-2 件、= §86.1.f で集中 ship)
+
+| ABI mode 名                       | signature                        | 用途                                | sub-stage |
+|-----------------------------------+----------------------------------+-------------------------------------+-----------|
+| =:trampoline-unary-float=         | =fn(f64) -> f64=                  | =float= / =exp= / =log=             | §86.1.f   |
+| =:trampoline-format-float= (opt)  | =fn(f64, char, i64, *mut Sexp) -> i64= | =nelisp--format-float-body=    | §86.1.e   |
+
+両者とも Doc 81 §3.1 + Doc 84 §84.1 で確立 pattern の派生:
+- =:trampoline-unary-float= = Doc 84 =:trampoline-binary-float= の
+  arity=1 化 (= xmm0 のみ使用、xmm1 を無視)
+- =:trampoline-format-float= = Doc 84 =:trampoline-binary-float-cmp=
+  + =:trampoline-binary-aref= (Sexp 出力) の合成。実装複雑性が高けれ
+  ば既存 =:trampoline-binary-aref= で =fn(f64-as-i64-bits, char_imm)
+  -> Sexp= の bits puzzle で代替可
+
+** §5.2 ABI mode 登録 plan
+
+実装場所: =src/nelisp-cc-runtime.el= の =nelisp-cc-runtime-compile-and-
+allocate= に新 entry-abi case を追加 + =src/nelisp-cc-x86_64.el= /
+=src/nelisp-cc-arm64.el= の =--emit-prologue= に対応 frame layout 追加。
+
+x86_64 emit (= =:trampoline-unary-float=):
+#+begin_example
+  prologue:
+    push rbp
+    mov rbp, rsp
+    ; xmm0 already holds arg
+  body:
+    ; computed in trampoline body, result in xmm0
+  epilogue:
+    pop rbp
+    ret
+#+end_example
+
+arm64 emit (同上、= v0 in / v0 out):
+#+begin_example
+  prologue:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    ; v0 already holds arg
+  body:
+    ; computed, result in v0
+  epilogue:
+    ldp x29, x30, [sp], #16
+    ret
+#+end_example
+
+** §5.3 bridge primitive 追加
+
+=build-tool/src/jit/bridge.rs= の =unified_fn_ptr= match table に新
+entry を追加。Tier 2 全 9 trampoline (= time 3 + hash 3 + math 3) +
+record 5 trampoline (= §86.1.c) + strings 7 trampoline (= §86.1.d/e) =
+**約 24 entry 追加** (= 既存 31 → 55 entry)。
+
+新 caller fn 1 件追加 = =bi_nl_jit_call_float_unary=:
+#+begin_src rust
+  pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
+      require_arity("nl-jit-call-float-unary", args, 2, Some(2))?;
+      let name = as_name("nl-jit-call-float-unary", &args[0])?;
+      let x = as_float("nl-jit-call-float-unary", &args[1])?;
+      let p = unified_fn_ptr(name)
+          .ok_or_else(|| unknown_name_err("nl-jit-call-float-unary", name))?;
+      let f: extern "C" fn(f64) -> f64 = unsafe { std::mem::transmute(p) };
+      Ok(Sexp::Float(f(x)))
+  }
+#+end_src
+
+dispatch arm に 1 件追加:
+#+begin_src rust
+  "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary(args),
+#+end_src
+
+(= +25 LOC Rust net、ABI mode 拡張は monotonic shrink rule に
+反するが、= elisp 移管総削減 -650 と相殺で net -625)
+
+** §5.4 monotonic shrink check
+
+§86.1.f の Rust LOC delta:
+- 削除 helper bi_* 9 件: -650
+- 追加 bridge entry: +24
+- 追加 caller fn (=bi_nl_jit_call_float_unary=): +25
+- 新 trampoline file (= time / hash / math / regex の 4 file): +200
+- ABI mode encoder (x86_64 + arm64 の 2 file): +60
+- *合計*: **-650 + +309 = -341 net**
+
+§86.1.f 単独で -341 LOC、Doc 86 §5.2 試算 -800 LOC (= 80% 達成)。残
+20% は §86.1.g の commentary cleanup で吸収。
+
+* §6 Verification gates per sub-stage
+
+各 sub-stage の SHIPPED 判定 gate:
+
+** §6.1 共通 gate (= 全 sub-stage)
+
+1. =cargo build --features image-baker= warning 0、=cargo clippy=
+   warning 0
+2. =cargo test --lib= green (= core / eval / jit / image module)
+3. =make test-all= ERT 全 green
+4. bootstrap canary (= =phase4_6d_bootstrap_el_compiles_to_image_and_
+   evaluates= + =phase4_6e_image_forms_are_real_elisp_values_before_
+   eval=) green
+5. =build-tool/src/eval/builtins.rs= 行数測定: 各 sub-stage 後の値を
+   commit message に記録、Doc 86 §5.1 計画 vs 実測の比較表を維持
+
+** §6.2 sub-stage 個別 gate
+
+| sub-stage | 主 ERT file                          | 件数 | perf check         |
+|-----------+--------------------------------------+------+--------------------|
+| §86.1.a   | nelisp-types-port-test.el           | +30  | type-of hot path   |
+| §86.1.b   | nelisp-arith-port-test.el           | +20  | sxhash collision   |
+| §86.1.c   | nelisp-record-port-test.el          | +25  | cl-defstruct round |
+| §86.1.d   | nelisp-symbol-port-test.el          | +20  | intern lookup      |
+| §86.1.e   | nelisp-stdlib-plist-str-test.el     | +30  | format precision   |
+| §86.1.f   | (4 file 分割) -time/-hash/-math/-regex | +90 | xmm overhead       |
+| §86.1.g   | -                                    | -    | bench gate (= fib 30x) |
+
+** §6.3 perf gate (= 全 sub-stage で 1 回 必須)
+
+Phase 7.1.5 LOCKED bench (= fib 3964x / fact-iter 24.1x / alloc-heavy
+23.0x) を維持。各 sub-stage SHIPPED 後に =make bench= で確認:
+- *fib*: =nelisp--add2= / =nelisp--num-eq2= / =nelisp--sub2= の hot
+  path (= 既存 elisp wrapper 維持、新規 elisp は cold path)
+- *fact-iter*: =nelisp--mul2= / =nelisp--num-le2= / =setq= (= Tier
+  1.b 移管後の Float fall-through path に注意)
+- *alloc-heavy*: =cons= / =car= / =cdr= (= §86.1 では touch しない)
+
+退行閾値: 5% 以内なら ship、5-15% は =:apply nil= で disable + 原因
+究明、15% 超は revert。
+
+** §6.4 monotonic shrink rule
+
+各 sub-stage の =git diff --stat build-tool/src/= で:
+- =eval/builtins.rs= LOC: 前 stage 比 必ず減少
+- =jit/= 配下 LOC: 増加可、ただし =builtins.rs= 削減幅を超えない
+- 全 Rust LOC (= =build-tool/src/= total): 必ず減少
+
+これは Doc 84 §13.1 で確立した rule。違反すると monotonic shrink
+guarantee が壊れ、Phase 2 → Phase 3 のための clean substrate も曇る。
+
+** §6.5 backward compat
+
+=image-baker= は新 elisp file を frozen heap に焼き込む。各 sub-stage で:
+- 新 elisp file (= =lisp/nelisp-stdlib-{types,record,symbol,...}.el=) を
+  =Cargo.toml= の =lisp_files= に追加
+- =image= 再 bake が成功し、production binary の startup time に退行
+  なし (= startup bench で +100ms 以上は revert)
+- =lisp/*.el.image= 18 件の再生成 + commit
+
+* §7 Risk / unknowns
+
+** §7.1 perf regression — 現実的 hot path 計測
+
+elisp 移管が hot path に hit する arm は限定的:
+- =type-of= = predicate 連鎖の起点で頻繁に呼ばれる (= =stringp= /
+  =integerp= / =consp= 全部の依存)。elisp 化で 2-3 layer の
+  interpreter overhead 増 = perf 退行 5-15% 想定
+- =equal= = hash-table key 比較 + ERT assertion で多用、cycle-safe
+  port は visited alist (= O(n)) で巨大データ比較に 100x 退行 risk
+- =sxhash= = hash-table 全操作の起点、collision avoidance 維持必要
+
+対策:
+- =type-of= は §86.1.a 完了直後に bench、5% 超なら =nelisp-cc=
+  (= AOT compiler) で elisp wrapper を native code 化 = §86.1.g 内で
+  config 化 (= =nelisp-cc-aot-port-bin t=)
+- =equal= は §86.1.b の Tier 1 として ship した後、退行が観測されたら
+  Tier 2 への migrate (= =nl-jit-call-out-*= 経由 visited hash) を §86.1.f に追加
+- =sxhash= は ERT snapshot で hash 値 invariance を fix、collision 改
+  善は scope 外 (= 既存 Rust impl の collision rate を維持)
+
+** §7.2 dispatch table overhead
+
+=match name { ... }= の arm 数が 132 → ~80 に減ると、Rust match の
+linear scan が早くなる方向 = 退行 risk なし。逆に =install_builtins= の
+sentinel 設置で 96 entry × 一意 string allocation = startup cost
+あり、§86.1.g の cleanup でこれも削減。
+
+** §7.3 Tier 3 deferral 順序問題
+
+Doc 86 §9.3 で articulated chicken-and-egg:
+- Tier 3 (= =defalias= / =fset= / =set= / =boundp= / =fboundp= 等) は
+  Doc 89 §86.3 (= env.rs elisp 化) と統合する必要
+- ただし elisp wrapper 自身が =fset= を使うため、Tier 3 を完全 elisp
+  化できない (= =defalias= が elisp で書かれていると =defalias= 自身
+  の expand に env access が必要)
+- 解決策: Tier 0 minimal env (= ~50 LOC Rust) を残置し、=defalias= /
+  =fset= / =set= の最低限 dispatch のみ提供、その上に上層 Tier 3
+  arm を elisp 化
+
+本 Doc 87 では Tier 3 を全て §86.3 hand-off 扱いとし、§86.1 では
+touch しない。Doc 89 で chicken-and-egg を解決する design を articulate。
+
+** §7.4 string-match-p (= regex backend) の依存
+
+=string-match-p= は Rust regex crate に依存、elisp 純実装は不可。
+§86.1.f で primitive 1 件 (= =nl_jit_regex_match=) として残置 + thin
+wrapper で elisp lift。Phase 47 (= ultimate 0 Rust) では regex も
+elisp で書く必要があり、Doc 85 §6 で audit 予定 = 本 Doc OOS。
+
+** §7.5 Doc 86 §2.2 67 arm 表記との整合
+
+Doc 86 §2.2 が "67 dispatch arm" と articulate しているのは
+=^\s*"nelisp--= prefix grep の混合数値。実 dispatch arm 132 件のうち
+=nelisp--*= prefix は 26 件、=nl-*= prefix は 35 件、その他は 71 件。
+本 Doc では 132 全 arm を base に Tier 1/2/3/KEEP に分類、Doc 86 表記
+は維持しつつ実数で運用。
+
+action: Doc 86 §2.2 に *脚注追加* (= "67 = nelisp-- prefix grep mixed
+count、実 dispatch arm 132、Tier 移管対象 56") を §86.1.g 完了後に
+SHIPPED commit で同梱。
+
+** §7.6 monotonic shrink rule との緊張
+
+§86.1.c (= record family) と §86.1.d (= intern / symbol) と §86.1.e
+(= concat-ints / make-mut-string / format-float-body) で
+=jit/box_accessor.rs= や =jit/strings.rs= に Rust trampoline を追加
+する。各 sub-stage で =builtins.rs= 削減幅 > =jit/= 追加幅 を
+確認、Doc 84 §13.1 rule を維持:
+
+| sub-stage | =builtins.rs= 削減 | =jit/= 追加 | net Rust delta |
+|-----------+-------------------+-------------+----------------|
+| §86.1.a   | -150              | 0           | -150           |
+| §86.1.b   | -350              | 0           | -350           |
+| §86.1.c   | -250              | +100        | -150           |
+| §86.1.d   | -200              | +60         | -140           |
+| §86.1.e   | -350              | +120        | -230           |
+| §86.1.f   | -650              | +309        | -341           |
+| §86.1.g   | -300              | 0           | -300           |
+| *合計*    | *-2,250*          | *+589*      | *-1,661*       |
+
+合計 net Rust 削減 = -1,661 LOC (= Doc 86 §5.1 試算 "-2,000〜-3,000"
+の lower bound 達成)。新 elisp +1,000 LOC、ROI = 0.60:1 (= 1 elisp
+LOC で 1.66 Rust LOC 削減) = Doc 86 §10.1 表 "Phase 2 ROI 0.27:1"
+よりも保守的だが、Phase 1 (1.5:1) より optimal。
+
+** §7.7 Doc 86 §10.1 ROI 試算との乖離
+
+Doc 86 §10.1 は §86.1 ROI を 0.27:1 (= 700 elisp 投資 / -2,000〜
+-3,000 Rust) と articulate。本 Doc 87 の sub-stage 詳細試算は ROI =
+0.60:1 = Doc 86 試算より控えめ (= 削減量試算同程度、elisp 投資が
+Doc 86 試算 +300 LOC 過剰)。
+
+action: Doc 86 §10.1 表を本 Doc 87 SHIPPED 時に同期 update (=
+0.27:1 → 0.60:1)。Phase 2 全体 ROI も 0.36-0.46:1 → 0.5-0.7:1 に
+保守化。
+
+* §8 References
+
+** §8.1 internal NeLisp design docs
+
+- Doc 80 (= elisp-pre-stdlib-substrate.org) — pre-stdlib elisp infra、
+  本 Doc 87 の precondition (= =cond= / =not= / =nelisp--signal-*=)
+- Doc 81 (= nelisp-cc-primitive-trampoline-extension.org) — ABI
+  mode pattern、§86.1.f 拡張で参照
+- Doc 83 (= 100pct-pure-elisp-roadmap-consolidated.org) — Phase 2 試算
+  の親、§6.2 の "~6,000-8,000 LOC" を Phase 2 + Phase 3 合算と articulate
+- Doc 84 (= strategy-rs-final-elisp-ization.org SHIPPED) — Phase 1
+  末端、本 Doc 87 が同 pattern を §86.1.c/d/e で再利用
+- Doc 86 (= phase-2-eval-refactor-master.org) — 親、本 Doc 87 は
+  §86.1 sub-stage の articulation
+- Doc 88 (= 派生 design doc 予定) — §86.2 error.rs 詳細
+- Doc 89 (= 派生 design doc 予定) — §86.3 env.rs 詳細、Tier 3 の
+  hand-off 先
+
+** §8.2 implementation reference
+
+- =build-tool/src/eval/builtins.rs= line 35-455 (= install_builtins)
+- =build-tool/src/eval/builtins.rs= line 458-808 (= dispatch)
+- =build-tool/src/eval/builtins.rs= line 850-3,800 (= bi_* helpers)
+- =build-tool/src/jit/bridge.rs= line 61-168 (= unified_fn_ptr)
+- =build-tool/src/jit/bridge.rs= line 180-410 (= bi_nl_jit_call_*)
+- =build-tool/src/jit/{cons,access,arith,predicate,syscall,float,
+  box_accessor}.rs= = 既存 trampoline file pattern
+- =lisp/nelisp-jit-strategy.el= = 既存 elisp wrapper pattern (= 全
+  sub-stage の template source)
+- =lisp/nelisp-jit-substrate.el= = Doc 80 substrate macro / signal
+  helper
+
+** §8.3 派生 follow-up doc 候補
+
+本 Doc 87 ship 中または直後に起こす:
+- *Doc 87.1* = §86.1 Phase A (= Tier 1 sub-stage a-d) implementation
+  trace (= 各 sub-stage commit log + LOC delta 実測)
+- *Doc 87.2* = §86.1 Phase B (= Tier 2 sub-stage e-f) implementation
+  trace
+- *Doc 87.3* = §86.1.g cleanup trace + Doc 86 §2.2 / §10.1 update
+- *Doc 88* = §86.2 error.rs detailed (= 別 agent で並列 dispatch 可)
+- *Doc 89* = §86.3 env.rs scope chain detailed (= 別 agent、本 Doc 87
+  Tier 3 hand-off 先)
+
+** §8.4 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= (= NeLisp standalone MCP)
+- =feedback_nelisp_runtime_vs_elisp_language= (= NeLisp = runtime、
+  elisp = 構文 = 構文説明では "Elisp" を使う)
+- =feedback_nelisp_core_vs_layer2_boundary= (= core / Layer 2 境界、
+  Tier 2 primitive の登録判断軸)
+- =feedback_nelisp_perf_not_elisp_interpreter= (= NeLisp Phase 7+ は
+  native cc、perf 議論で Elisp interpreter と混同しない)
+
+** §8.5 prior art
+
+- SBCL = COMMON-LISP-USER の多くは Common Lisp 自身で書かれ、core C
+  は ~30 primitive のみ。本 Doc Tier 1+2 移管後の =builtins.rs= 残
+  ~80 arm は SBCL の 2-3x、= Phase 3 D-B + Doc 89 env.rs elisp 化で
+  さらに半減見込
+- GHC = Haskell の =GHC.Base= 等は Haskell 自身で書かれ、=ghc-prim=
+  (= C-equivalent primitive) は ~150 件
+- Emacs = =subr.el= が C builtin の elisp wrapper として 1,500 LOC 程度、
+  本 Doc =lisp/nelisp-stdlib-*.el= のロール
+
+** §8.6 user directive 達成
+
+2026-05-09 user directive: "elisp 再表現可能とする為に、足らない
+表現があったらelispで実装しましょう"
+
+Doc 87 は本 directive を =builtins.rs= dispatch arm 132 件にも適用 =
+Tier 1+2 の 34 arm を elisp で再表現、不足する表現は Tier 2 の 5
+新 trampoline + 1-2 新 ABI mode で provision する articulation。
+
+* §9 next action
+
+本 Doc DRAFT に対する user feedback を経て:
+1. *§86.1.a 着手* — agent dispatch (= claude / codex 並列)、最小 sub-
+   stage で実装 pattern 確立
+2. *Doc 88 並列着手* — §86.2 error.rs 別 agent で書始め (= §86.1.a と
+   独立 dispatch 可)
+3. Doc 89 (§86.3) は §86.1.f SHIPPED 後、Tier 3 hand-off 整備が成熟
+   してから着手
+
+* §10 Open questions (= reviewer 検討事項)
+
+** §10.1 Tier 1 vs Tier 1.5 の境界
+
+§86.1.c の record family は trampoline 5 件追加するが、その複雑性
+(= NlRecord box 操作の SAFETY contract 維持) は Tier 2 並み。本 Doc
+は "Tier 1.5" と articulate して Tier 1 sub-stage に置いたが、reviewer
+判断で Tier 2 (§86.1.e/f) に移すか検討。
+
+** §10.2 =nelisp--ref-eq= の扱い
+
+Doc 50 stage 5a で added、=Rc::ptr_eq= identity を expose。本 Doc
+§1.2.1 は "JIT trampoline =nelisp_jit_eq_inline= で代替可能" と
+articulate したが、ref-eq 厳密 semantics と eq-inline (= tag + payload
+比較) の差を要 ERT 確認。本 wrapper を完全 elisp 化できない場合、
+=nelisp--ref-eq= は Tier 2 trampoline 1 件 (= =nl_jit_ref_eq=) として
+残置。
+
+** §10.3 monotonic shrink rule の strict 化
+
+§86.1.c 単独で =builtins.rs= -250 / =jit/= +100 = =builtins.rs= 単独
+で見れば -250 だが、=build-tool/src/= 全体では -150。reviewer 判断
+で "stage 単位で =builtins.rs= 必ず減少" を rule にするか、"全 src/
+で減少" を rule にするか確定する。本 Doc は後者 (= Doc 84 §13.1 同) で
+articulate。
+
+** §10.4 sub-stage 並列性
+
+Doc 86 §5.4 は "§86.1.a-d は独立 = 並列 dispatch 可能、§86.1.e-f は
+ABI 拡張共有 = 半並列、§86.1.g は最後に直列" と articulate。本 Doc
+§3 sub-stage の依存:
+
+#+begin_src text
+   §86.1.a (types) ──────────┐
+   §86.1.b (arith)  ─────────┤
+   §86.1.c (record)──────────┤
+   §86.1.d (symbol/string)──┤
+                              │  (並列 = 4 stream)
+   §86.1.e (string Tier 2) ──┐
+   §86.1.f (Tier 2 残)   ────┘  (半並列 = 2 stream、ABI 共有)
+                              │
+   §86.1.g (cleanup) ────────  (直列、最後)
+#+end_src
+
+最大 5 並列 stream、最小 18 day → 並列で ~10 day。
+
+* §11 LOC Accounting
+
+** §11.1 Net LOC delta (= 全 §86.1 完遂)
+
+| 領域                                    | 削減  | 追加  | net   |
+|-----------------------------------------+-------+-------+-------|
+| =build-tool/src/eval/builtins.rs=       | -2,250| 0     | -2,250|
+| =build-tool/src/jit/= (4 新 file)        | 0     | +500  | +500  |
+| =build-tool/src/jit/bridge.rs=          | 0     | +49   | +49   |
+| =src/nelisp-cc-{x86_64,arm64,runtime}.el= (ABI mode 拡張) | 0 | +60 | +60 |
+| =lisp/nelisp-stdlib-{types,record,symbol,format,time,hash,math,regex}.el= (8 新) | 0 | +1,000 | +1,000 |
+| *合計 Rust*                              | *-2,250* | *+609* | *-1,641* |
+| *合計 elisp*                             | *0*   | *+1,060* | *+1,060* |
+
+** §11.2 sub-stage 個別 LOC delta
+
+| sub-stage | builtins.rs    | jit/      | nelisp-cc/  | lisp/       | net Rust |
+|-----------+----------------+-----------+-------------+-------------+----------|
+| §86.1.a   | -150           | 0         | 0           | +80         | -150     |
+| §86.1.b   | -350           | 0         | 0           | +200        | -350     |
+| §86.1.c   | -250           | +100      | 0           | +130        | -150     |
+| §86.1.d   | -200           | +60       | 0           | +120        | -140     |
+| §86.1.e   | -350           | +120      | +30 (format ABI) | +180   | -200     |
+| §86.1.f   | -650           | +309      | +60 (unary-float ABI) | +250 | -281   |
+| §86.1.g   | -300           | 0         | 0           | 0           | -300     |
+| *計*      | *-2,250*       | *+589*    | *+90*       | *+960*      | *-1,571* |
+
+(= 上記 §11.1 微妙差は ABI mode 拡張の二重計上、§11.2 が正確)
+
+** §11.3 Doc 86 §5.1 vs 本 Doc 試算比較
+
+| 項目         | Doc 86 §5.1 試算       | 本 Doc 87 試算    | 差分                   |
+|--------------+------------------------+-------------------+------------------------|
+| Tier 1 移管  | 30 arm / -1,500〜-2,000 | 21 arm / -950     | -9 arm / -550 LOC 不足 |
+| Tier 2 移管  | 25 arm / -800           | 13 arm / -1,000    | -12 arm / +200 LOC 多 |
+| §86.1 net Rust削減 | -2,000〜-3,000        | -1,571             | 下限 -429 LOC 不足   |
+| 工数         | 18 day                 | 18 day            | 同                     |
+
+action: Doc 86 §5.1 表を本 Doc 87 SHIPPED 時に sync update。総削減
+を "-1,500〜-2,500" に保守化、工数は維持。
