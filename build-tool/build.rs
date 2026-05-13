@@ -84,6 +84,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-jit-arith.el",
         // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.
         "nelisp-cc-jit-float.el",
+        // Doc 110 §110.F — 3-trampoline `jit/math.rs' swap (float / exp / log).
+        "nelisp-cc-jit-math.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

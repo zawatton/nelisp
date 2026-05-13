@@ -119,6 +119,13 @@ pub mod elisp_cc_spike {
         // `(a - b).abs() < 1e-15' AND both inputs are ordered (=
         // not NaN), matching the Rust float.rs body bit-for-bit.
         pub fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64;
+        // Doc 110 §110.F — 3 `jit/math.rs' trampoline swaps.
+        // `float' = identity, `exp' / `log' = libm extern call
+        // through the new `(f64-call)' grammar form.  Shape is
+        // `extern "C" fn(f64) -> f64' (= xmm0/d0 in, xmm0/d0 out).
+        pub fn nl_jit_float_float(x: f64) -> f64;
+        pub fn nl_jit_float_exp(x: f64) -> f64;
+        pub fn nl_jit_float_log(x: f64) -> f64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -205,4 +212,12 @@ pub mod elisp_cc_spike {
     /// Result: 1 iff `(a - b).abs() < 1e-15' AND ordered.
     /// NaN inputs return 0.
     pub fn jit_float_eq_eps(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_eq_eps(a, b) } }
+
+    /// Doc 110 §110.F probes — thin safe wrappers around the 3
+    /// elisp-compiled `jit/math.rs' replacements (float identity,
+    /// exp, log).  `float' is pure pass-through; `exp' / `log'
+    /// delegate to libm via the §110.F `(f64-call)' grammar form.
+    pub fn jit_float_float(x: f64) -> f64 { unsafe { nl_jit_float_float(x) } }
+    pub fn jit_float_exp(x: f64) -> f64 { unsafe { nl_jit_float_exp(x) } }
+    pub fn jit_float_log(x: f64) -> f64 { unsafe { nl_jit_float_log(x) } }
 }

@@ -50,8 +50,13 @@ mod cons;
 // extern declarations the linker resolves against the elisp `.o'
 // static archive.
 // Doc 87 §86.1.f (2026-05-10): hash / math / regex / time trampolines.
+// Doc 110 §110.F (2026-05-13) — `jit/math.rs's 3 unary f64
+// trampolines (float / exp / log) wholly replaced by Phase-47-
+// compiled elisp `.o' files emitted from `lisp/nelisp-cc-jit-
+// math.el'.  `mod math;' is therefore deleted — see
+// `bridge.rs::math_link' for the extern declarations the linker
+// resolves against the elisp `.o' static archive.
 mod hash;
-mod math;
 mod predicate;
 mod regex;
 // Doc 86 §86.1.d (2026-05-10): intern / symbol-name / make-symbol.

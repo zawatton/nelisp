@@ -34,8 +34,9 @@
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::{
-    jit_float_add, jit_float_div, jit_float_eq_eps, jit_float_ge, jit_float_gt, jit_float_le,
-    jit_float_lt, jit_float_mul, jit_float_sub,
+    jit_float_add, jit_float_div, jit_float_eq_eps, jit_float_exp, jit_float_float,
+    jit_float_ge, jit_float_gt, jit_float_le, jit_float_log, jit_float_lt, jit_float_mul,
+    jit_float_sub,
 };
 
 // ---- ADDSD coverage ----
@@ -320,5 +321,81 @@ fn float_cmp_matches_rust() {
         assert_eq!(jit_float_gt(a, b), (a > b) as i64, "gt({}, {})", a, b);
         assert_eq!(jit_float_le(a, b), (a <= b) as i64, "le({}, {})", a, b);
         assert_eq!(jit_float_ge(a, b), (a >= b) as i64, "ge({}, {})", a, b);
+    }
+}
+
+// ---- §110.F — `jit/math.rs' replacements (identity, exp, log) ----
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_float_identity() {
+    assert_eq!(jit_float_float(0.0), 0.0);
+    assert_eq!(jit_float_float(1.5), 1.5);
+    assert_eq!(jit_float_float(-3.14), -3.14);
+    assert_eq!(jit_float_float(f64::INFINITY), f64::INFINITY);
+    assert!(jit_float_float(f64::NAN).is_nan());
+    // Bit-exact preservation including denormals + signed zero
+    assert_eq!(jit_float_float(1e-308), 1e-308);
+    assert_eq!(jit_float_float(0.0_f64).to_bits(), 0_u64);
+    assert_eq!(jit_float_float(-0.0_f64).to_bits(), (-0.0_f64).to_bits());
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_exp_basics() {
+    // exp(0) = 1
+    assert_eq!(jit_float_exp(0.0), 1.0);
+    // exp(1) ≈ e (= 2.718...)
+    assert!((jit_float_exp(1.0) - std::f64::consts::E).abs() < 1e-12);
+    // Bit-exact against Rust's own libm-equivalent
+    assert_eq!(jit_float_exp(2.0), (2.0_f64).exp());
+    assert_eq!(jit_float_exp(-1.0), (-1.0_f64).exp());
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_exp_extremes() {
+    // exp(+inf) = +inf, exp(-inf) = 0
+    assert_eq!(jit_float_exp(f64::INFINITY), f64::INFINITY);
+    assert_eq!(jit_float_exp(f64::NEG_INFINITY), 0.0);
+    // exp(NaN) = NaN
+    assert!(jit_float_exp(f64::NAN).is_nan());
+    // exp(very-large) = +inf (= overflow to inf per IEEE 754)
+    assert_eq!(jit_float_exp(1000.0), f64::INFINITY);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_log_basics() {
+    // log(1) = 0
+    assert_eq!(jit_float_log(1.0), 0.0);
+    // log(e) = 1
+    assert!((jit_float_log(std::f64::consts::E) - 1.0).abs() < 1e-12);
+    // Bit-exact agreement
+    assert_eq!(jit_float_log(2.0), (2.0_f64).ln());
+    assert_eq!(jit_float_log(10.0), (10.0_f64).ln());
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_log_extremes() {
+    // log(0) = -inf
+    assert_eq!(jit_float_log(0.0), f64::NEG_INFINITY);
+    // log(negative) = NaN
+    assert!(jit_float_log(-1.0).is_nan());
+    // log(+inf) = +inf
+    assert_eq!(jit_float_log(f64::INFINITY), f64::INFINITY);
+    // log(NaN) = NaN
+    assert!(jit_float_log(f64::NAN).is_nan());
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_exp_log_round_trip() {
+    // log(exp(x)) ≈ x for ordinary magnitudes
+    let samples: [f64; 5] = [0.0, 1.0, -1.0, 3.14, -2.71];
+    for x in samples {
+        let round_trip = jit_float_log(jit_float_exp(x));
+        assert!((round_trip - x).abs() < 1e-10, "log(exp({})) = {}", x, round_trip);
     }
 }

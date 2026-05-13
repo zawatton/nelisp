@@ -153,6 +153,37 @@ mod float_link {
     pub unsafe extern "C" fn nl_jit_float_eq_eps(_: f64, _: f64) -> i64 { 0 }
 }
 
+// Doc 110 §110.F (2026-05-13) — `jit/math.rs's 3 unary f64
+// trampolines (float identity / exp / log) wholly replaced by
+// Phase-47-compiled elisp `.o' files (= `lisp/nelisp-cc-jit-
+// math.el's defconsts).  `math_link' mirrors `float_link' /
+// `arith_link' shape: extern on supported targets, stubbed
+// on others.  The `exp' / `log' bodies emit a `CALL libm-name'
+// via the new `(f64-call SYM ARG)' grammar form; the static
+// linker resolves the relocs against the libm symbols `bin/
+// nelisp' already pulls in transitively through `std'.
+#[cfg(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", target_arch = "aarch64"),
+))]
+mod math_link {
+    extern "C" {
+        pub fn nl_jit_float_float(x: f64) -> f64;
+        pub fn nl_jit_float_exp(x: f64) -> f64;
+        pub fn nl_jit_float_log(x: f64) -> f64;
+    }
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", target_arch = "aarch64"),
+)))]
+mod math_link {
+    pub unsafe extern "C" fn nl_jit_float_float(_: f64) -> f64 { 0.0 }
+    pub unsafe extern "C" fn nl_jit_float_exp(_: f64) -> f64 { 0.0 }
+    pub unsafe extern "C" fn nl_jit_float_log(_: f64) -> f64 { 0.0 }
+}
+
 // Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
 // `UnifiedJit' struct + `unified_jit()' OnceLock are gone now that
 // every cluster (cons / access / arith / predicate / syscall) goes
@@ -334,9 +365,15 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // Unary float math (= `:trampoline-unary-float' ABI mode,
         // Doc 87 §5).  Reachable via `nl-jit-call-float-unary' (new
         // bridge primitive shipped in this commit).
-        "nl_jit_float_float" => super::math::nl_jit_float_float as *const u8,
-        "nl_jit_float_exp" => super::math::nl_jit_float_exp as *const u8,
-        "nl_jit_float_log" => super::math::nl_jit_float_log as *const u8,
+        // Doc 110 §110.F (2026-05-13) — `jit/math.rs's 3 unary
+        // f64 trampolines (float / exp / log) wholly replaced by
+        // Phase-47-compiled elisp `.o' files on all 3 supported
+        // targets.  Routing always goes through `math_link' (=
+        // extern on supported targets, stubbed on others, same
+        // shape as `float_link' from §110.E.2.b).
+        "nl_jit_float_float" => math_link::nl_jit_float_float as *const u8,
+        "nl_jit_float_exp" => math_link::nl_jit_float_exp as *const u8,
+        "nl_jit_float_log" => math_link::nl_jit_float_log as *const u8,
         // ---- Doc 86 §86.1.e Tier 2 simple (3) ---- (2026-05-10).
         // First two share the existing `:trampoline-unary' shape (=
         // reachable via `nl-jit-call-out-1' from `lisp/nelisp-stdlib-

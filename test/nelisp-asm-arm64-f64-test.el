@@ -332,6 +332,34 @@ assembler buffer."
                      (,op a b)))))
       (should (= (length bytes) 56)))))
 
+;; AArch64 f64-call layout for `(defun fn ((x :type f64))
+;; (f64-call exp x))':
+;;
+;;   Prologue (20 bytes, arity=1):
+;;     str x30, [sp, #-16]!     (4)
+;;     str x29, [sp, #-16]!     (4)
+;;     mov x29, sp              (4)
+;;     sub sp, sp, #16          (4)
+;;     stur d0, [x29, #-16]     (4)
+;;   Body (8 bytes):
+;;     ldur d0, [x29, #-16]     (4)  ; place ARG in d0
+;;     94 00 00 00              (4)  ; BL placeholder, R_AARCH64_CALL26 reloc
+;;   Epilogue (16 bytes):
+;;     mov sp, x29 / 2 × ldr / ret  (16)
+;; Total = 20 + 8 + 16 = 44 bytes
+
+(ert-deftest nelisp-asm-arm64-f64/defun-f64-call-exp-byte-length ()
+  (let ((bytes (nelisp-asm-arm64-f64-test--compile-defun
+                '(defun fn ((x :type f64)) (f64-call exp x)))))
+    (should (= (length bytes) 44))))
+
+;; Identity (= nl_jit_float_float shape) = 40 bytes:
+;;   prologue 20 + body 4 (ldur) + epilogue 16 = 40
+(ert-deftest nelisp-asm-arm64-f64/defun-f64-identity-byte-length ()
+  (let ((bytes (nelisp-asm-arm64-f64-test--compile-defun
+                '(defun fn ((x :type f64)) x))))
+    (should (= (length bytes) 40))))
+
 ;; f64-eq-eps aarch64 sequence (= body 44 bytes):
 ;;   2 LDUR (8) + FSUB (4) + FABS (4) +
 ;;   MOV-imm64 (= 4-instr MOVZ/MOVK chain for the 1e-15 bit

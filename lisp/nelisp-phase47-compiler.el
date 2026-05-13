@@ -424,6 +424,27 @@ functions `((NAME . ARITY) ...)'."
                  (nth 1 sexp) env fenv defuns)
           :val (nelisp-phase47-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
+   ;; (f64-call SYM ARG) — Doc 110 §110.E.2 / Doc 110 §3.F.
+   ;; 1-arg f64→f64 extern call (= the shape `exp' / `log' / other
+   ;; libm unary functions use).  ARG must be an f64-class value
+   ;; (= ref to f64 param at MVP).  Result returns in xmm0 / d0
+   ;; per SysV / AAPCS f64 ABI; no further materialisation needed.
+   ;; Records a PLT32 (x86_64) / R_AARCH64_CALL26 (aarch64) reloc
+   ;; against SYM so the linker resolves to the matching libm /
+   ;; static archive entry.
+   ((and (consp sexp) (eq (car sexp) 'f64-call))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :f64-call-arity sexp)))
+    (let ((name (nth 1 sexp))
+          (arg (nth 2 sexp)))
+      (unless (symbolp name)
+        (signal 'nelisp-phase47-compiler-error
+                (list :f64-call-name-not-symbol name)))
+      (list :kind 'f64-call
+            :name name
+            :arg (nelisp-phase47-compiler--parse-value
+                  arg env fenv defuns))))
    ;; (extern-call SYM ARG...) — Doc 100 §100.A call into a C-callable
    ;; extern symbol.  SYM becomes an SHN_UNDEF entry in the output .o's
    ;; symtab; the rel32 placeholder gets an R_X86_64_PLT32 relocation
@@ -887,6 +908,47 @@ parser must reject anything that would force xmm spill."
         (signal 'nelisp-phase47-compiler-error
                 (list :unknown-f64-binop op)))))))
 
+(defun nelisp-phase47-compiler--emit-f64-call (node buf)
+  "Emit a 1-arg `f64 → f64' extern call (Doc 110 §110.E.2 / §3.F).
+NODE is `:kind f64-call :name SYM :arg IR-NODE'.  Strategy:
+
+  1. Place ARG in xmm0 / d0 via `--emit-f64-leaf-into' (= MVP
+     constraint: ARG must be a leaf f64 ref).
+  2. Emit `CALL rel32' (x86_64) / `BL imm26' (aarch64) with a
+     PLT32 / R_AARCH64_CALL26 reloc against NAME.  4-byte
+     placeholder; the linker patches the displacement at static-
+     link time.
+  3. Result lands in xmm0 / d0 per SysV / AAPCS f64 return ABI.
+     No further work — the caller's epilogue's RET preserves
+     xmm0 / d0 untouched, so the f64 return value reaches
+     this defun's caller intact.
+
+Stack alignment: the prologue rounds the f64 frame to 16-byte
+multiples so rsp / sp at the moment of CALL / BL satisfies the
+SysV / AAPCS alignment contract (= rsp % 16 == 0 just before
+the call instruction)."
+  (let ((name (plist-get node :name))
+        (arg (plist-get node :arg))
+        (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64)))
+    (nelisp-phase47-compiler--emit-f64-leaf-into
+     arg buf (if aarch64-p 'd0 'xmm0))
+    (if aarch64-p
+        (let ((slot (nelisp-asm-arm64-buffer-pos buf)))
+          ;; Emit BL imm26 placeholder (= base 0x94000000, imm26
+          ;; field zeroed).  The linker patches imm26 at static-
+          ;; link time via R_AARCH64_CALL26.
+          (nelisp-asm-arm64--emit-word buf #x94000000)
+          (nelisp-asm-arm64-emit-reloc
+           buf 'b26-pc (symbol-name name)))
+      ;; x86_64: CALL rel32 = 0xE8 + 4-byte placeholder.  Reloc
+      ;; addend -4 matches the GCC / clang convention (= the
+      ;; CALL instruction's relative offset is computed against
+      ;; the END of the disp32 field, so the PLT32 entry needs
+      ;; an addend of -4 to land on the call target).
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf (symbol-name name) -4 'text))))
+
 (defun nelisp-phase47-compiler--emit-f64-leaf-into (node buf xmm-dst)
   "Emit code that places f64-class NODE into XMM-DST.
 MVP flat-only constraint: NODE must be `:kind ref' with `:class
@@ -1091,6 +1153,8 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-f64-binop node buf))
         ('f64-cmp
          (nelisp-phase47-compiler--emit-f64-cmp node buf))
+        ('f64-call
+         (nelisp-phase47-compiler--emit-f64-call node buf))
         ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
              'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -1116,6 +1180,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-f64-binop node buf))
       ('f64-cmp
        (nelisp-phase47-compiler--emit-f64-cmp node buf))
+      ('f64-call
+       (nelisp-phase47-compiler--emit-f64-call node buf))
       ('arith
        (nelisp-phase47-compiler--emit-arith node buf))
       ('shift
@@ -1693,11 +1759,23 @@ return reg, untouched by epilogue)."
        ((eq param-class 'gp)
         (dolist (preg param-regs)
           (nelisp-asm-x86_64-push buf preg)))
-       ;; f64 class — one bulk `sub rsp, 8*arity', then per-param
-       ;; `movsd [rbp - 8*(slot+1)], xmmN'.
+       ;; f64 class — one bulk `sub rsp, 8*ARITY-ROUNDED', then
+       ;; per-param `movsd [rbp - 8*(slot+1)], xmmN'.  ARITY-
+       ;; ROUNDED is `arity' rounded up to the next even value
+       ;; (= 1→2, 2→2, 3→4, ...) so the post-prologue rsp stays
+       ;; 16-byte aligned per SysV AMD64.  The internal CALL
+       ;; emitted by `--emit-f64-call' (Doc 110 §3.F) only
+       ;; observes a correctly-aligned rsp when this rounding
+       ;; happens; arity=1 cases without it would land at rsp ≡
+       ;; 8 mod 16 (= ABI violation).  Even rounding wastes 8
+       ;; bytes for odd-arity frames; cheap vs the alternative
+       ;; of materialising a one-shot pad.
        ((eq param-class 'f64)
         (let* ((arity (length param-regs))
-               (frame-bytes (* 8 arity))
+               (arity-rounded (if (zerop (logand arity 1))
+                                  arity
+                                (1+ arity)))
+               (frame-bytes (* 8 arity-rounded))
                (slot-idx -1))
           (when (> arity 0)
             (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))

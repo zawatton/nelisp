@@ -146,6 +146,21 @@
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-eq-eps--source
      :output "nl_jit_float_eq_eps.o"
+     :requires-arch (x86_64 aarch64))
+    ;; Doc 110 §110.F — `jit/math.rs' 3 unary f64 trampoline swaps.
+    ;; `float' = identity, `exp' / `log' = libm extern call via the
+    ;; new `(f64-call SYM ARG)' grammar form introduced in §110.F.
+    (nelisp-cc-jit-math
+     :source-var nelisp-cc-jit-math-float--source
+     :output "nl_jit_float_float.o"
+     :requires-arch (x86_64 aarch64))
+    (nelisp-cc-jit-math
+     :source-var nelisp-cc-jit-math-exp--source
+     :output "nl_jit_float_exp.o"
+     :requires-arch (x86_64 aarch64))
+    (nelisp-cc-jit-math
+     :source-var nelisp-cc-jit-math-log--source
+     :output "nl_jit_float_log.o"
      :requires-arch (x86_64 aarch64)))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

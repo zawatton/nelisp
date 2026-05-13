@@ -1293,6 +1293,98 @@ epilogue layout."
 ;;   81..83  movzx eax, al          (0F B6 C0)
 ;;   84..88  epilogue (mov rsp,rbp; pop rbp; ret)
 
+;; ---- §110.F (math.rs swap) — `(f64-call SYM ARG)' integration ----
+;;
+;; New parse-value form `(f64-call SYM ARG)' produces an
+;; `:kind f64-call' IR; emit-value lowers to a CALL rel32 with
+;; PLT32 reloc against SYM.  Stack alignment is preserved by
+;; the prologue's `frame-bytes' rounding-to-even.
+
+(ert-deftest nelisp-asm-x86_64-f64/parser-f64-call-shape ()
+  (let* ((ir (nelisp-phase47-compiler--parse-stmt
+              '(defun fn ((x :type f64)) (f64-call exp x))
+              nil nil nil))
+         (body (plist-get ir :body)))
+    (should (eq (plist-get body :kind) 'f64-call))
+    (should (eq (plist-get body :name) 'exp))))
+
+(ert-deftest nelisp-asm-x86_64-f64/parser-f64-call-arity ()
+  (should-error
+   (nelisp-phase47-compiler--parse-stmt
+    '(defun fn ((x :type f64)) (f64-call exp))
+    nil nil nil)
+   :type 'nelisp-phase47-compiler-error)
+  (should-error
+   (nelisp-phase47-compiler--parse-stmt
+    '(defun fn ((x :type f64)) (f64-call exp x x))
+    nil nil nil)
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-asm-x86_64-f64/parser-f64-call-name-not-symbol ()
+  (should-error
+   (nelisp-phase47-compiler--parse-stmt
+    '(defun fn ((x :type f64)) (f64-call "exp" x))
+    nil nil nil)
+   :type 'nelisp-phase47-compiler-error))
+
+;; Canonical 31-byte layout for `(defun fn ((x :type f64))
+;; (f64-call exp x))':
+;;
+;;   Prologue (16 bytes, arity=1):
+;;     55                       ; push rbp
+;;     48 89 E5                 ; mov rbp, rsp
+;;     48 81 EC 10 00 00 00     ; sub rsp, 16  (arity=1 rounded up to 16-byte align)
+;;     F2 0F 11 45 F8           ; movsd [rbp - 8], xmm0
+;;   Body (10 bytes):
+;;     F2 0F 10 45 F8           ; movsd xmm0, [rbp - 8]
+;;     E8 00 00 00 00           ; CALL rel32 (placeholder, PLT32 reloc)
+;;   Epilogue (5 bytes):
+;;     48 89 EC                 ; mov rsp, rbp
+;;     5D                       ; pop rbp
+;;     C3                       ; ret
+;; Total = 16 + 10 + 5 = 31 bytes
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-call-exp-canonical-bytes ()
+  (let* ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                 '(defun fn ((x :type f64)) (f64-call exp x)))))
+    (should (= (length bytes) 31))
+    (should (equal bytes
+                   (nelisp-asm-x86_64-f64-test--ub
+                    ;; Prologue (16)
+                    #x55
+                    #x48 #x89 #xE5
+                    #x48 #x81 #xEC #x10 #x00 #x00 #x00
+                    #xF2 #x0F #x11 #x45 #xF8
+                    ;; Body (10)
+                    #xF2 #x0F #x10 #x45 #xF8
+                    #xE8 #x00 #x00 #x00 #x00
+                    ;; Epilogue (5)
+                    #x48 #x89 #xEC
+                    #x5D
+                    #xC3)))))
+
+;; Identity defun = `(defun fn ((x :type f64)) x)' compiles to
+;; prologue (16) + MOVSD-load (5) + epilogue (5) = 26 bytes.
+;; This is the `nl_jit_float_float' shape.
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-identity-canonical-bytes ()
+  (let* ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                 '(defun fn ((x :type f64)) x))))
+    (should (= (length bytes) 26))
+    (should (equal bytes
+                   (nelisp-asm-x86_64-f64-test--ub
+                    ;; Prologue (16)
+                    #x55
+                    #x48 #x89 #xE5
+                    #x48 #x81 #xEC #x10 #x00 #x00 #x00
+                    #xF2 #x0F #x11 #x45 #xF8
+                    ;; Body — just MOVSD xmm0, [rbp - 8] (5)
+                    #xF2 #x0F #x10 #x45 #xF8
+                    ;; Epilogue (5)
+                    #x48 #x89 #xEC
+                    #x5D
+                    #xC3)))))
+
 (ert-deftest nelisp-asm-x86_64-f64/defun-f64-eq-eps-key-instructions ()
   (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
                 '(defun fn ((a :type f64) (b :type f64))
