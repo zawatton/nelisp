@@ -249,7 +249,15 @@ runtime:
 	cd $(NELISP_SYSCALL_FILEIO_DIR) && $(CARGO) build --release
 	cd $(NELISP_SYSCALL_FILENOTIFY_DIR) && $(CARGO) build --release
 	cd $(NELISP_SYSCALL_PROCESS_DIR) && $(CARGO) build --release
-	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) build --release
+	# Issue #4 (2026-05-09): build the `nelisp' CLI binary so
+	# stage-d-v3-tarball can bundle it.  The README's quick-start
+	# (= `nelisp --version` / `nelisp eval EXPR`) assumes this binary
+	# is on $PATH after install.  Pre-Phase-B builds shipped
+	# `anvil-runtime` only and the binary was missing from the tarball.
+	$(CARGO) build --release --manifest-path build-tool/Cargo.toml --bin nelisp
+	# Phase B Final B Stage 2 (2026-05-09): anvil-runtime Rust crate
+	# was deleted entirely; bin/anvil-runtime is now a pure-shell
+	# wrapper around the standalone `nelisp' binary.  No crate to build.
 
 runtime-test:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) test --release
@@ -258,7 +266,8 @@ runtime-test:
 	cd $(NELISP_SYSCALL_FILEIO_DIR) && $(CARGO) test --release
 	cd $(NELISP_SYSCALL_FILENOTIFY_DIR) && $(CARGO) test --release
 	cd $(NELISP_SYSCALL_PROCESS_DIR) && $(CARGO) test --release
-	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) test --release
+	# Phase B Final B Stage 2 (2026-05-09): anvil-runtime crate deleted.
+	# Its tests live in test/ ERT (= nelisp/test/) now and run via `make test'.
 
 runtime-cli:
 	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) build --release

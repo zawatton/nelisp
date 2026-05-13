@@ -56,6 +56,16 @@ LEGACY_ANVIL_RUNTIME_DIR="anvil-runtime/target/release"
 RUNTIME_BIN="$RUNTIME_DIR/anvil-runtime"
 [[ -x "$RUNTIME_BIN" ]] || RUNTIME_BIN="$LEGACY_ANVIL_RUNTIME_DIR/anvil-runtime"
 [[ -x "$RUNTIME_BIN" ]] || RUNTIME_BIN="$LEGACY_RUNTIME_DIR/anvil-runtime"
+
+# Issue #4 (2026-05-09 vonHabsi): the README documents `nelisp ...' CLI
+# usage, but earlier tarballs only shipped `anvil-runtime'.  Probe for
+# the `nelisp' binary built by build-tool (Phase B SHIPPED 2026-05-09:
+# binary lives at target/release/nelisp regardless of legacy crate dirs)
+# and bundle it alongside anvil-runtime so the README's
+#   nelisp --version / nelisp eval / nelisp -l FILE
+# entry points work directly from the tarball install.
+NELISP_BIN="$RUNTIME_DIR/nelisp"
+[[ -x "$NELISP_BIN" ]] || NELISP_BIN="$LEGACY_RUNTIME_DIR/nelisp"
 RUNTIME_CDYLIB=""
 for dir in "$RUNTIME_DIR" "$LEGACY_RUNTIME_DIR"; do
   for cand in "$dir/libnelisp_runtime.so" \
@@ -71,6 +81,7 @@ RUNTIME_STATICLIB="$RUNTIME_DIR/libnelisp_runtime.a"
 [[ -f "$RUNTIME_STATICLIB" ]] || RUNTIME_STATICLIB="$LEGACY_RUNTIME_DIR/libnelisp_runtime.a"
 
 [[ -x "$RUNTIME_BIN" ]] || { err "runtime binary missing: $RUNTIME_BIN"; exit 1; }
+[[ -x "$NELISP_BIN" ]] || { err "nelisp binary missing: $NELISP_BIN (build with 'cargo build --release --bin nelisp')"; exit 1; }
 [[ -n "$RUNTIME_CDYLIB" ]] || { err "runtime cdylib missing under $RUNTIME_DIR"; exit 1; }
 [[ -f "$RUNTIME_STATICLIB" ]] || { err "runtime staticlib missing: $RUNTIME_STATICLIB"; exit 1; }
 
@@ -83,7 +94,8 @@ mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/anvil-lib" "$STAGE_DIR/li
 
 cp bin/anvil "$STAGE_DIR/bin/"
 cp "$RUNTIME_BIN" "$STAGE_DIR/bin/anvil-runtime"
-chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/anvil-runtime"
+cp "$NELISP_BIN" "$STAGE_DIR/bin/nelisp"
+chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/anvil-runtime" "$STAGE_DIR/bin/nelisp"
 
 cp src/nelisp*.el "$STAGE_DIR/src/"
 for file in "${ANVIL_FILES[@]}"; do
@@ -103,6 +115,7 @@ printf "%s\n" "$PLATFORM" > "$STAGE_DIR/PLATFORM"
   printf "version  %s\n" "$VERSION"
   printf "platform %s\n" "$PLATFORM"
   printf "runtime  %s\n" "$(basename "$RUNTIME_BIN")"
+  printf "nelisp   %s\n" "$(basename "$NELISP_BIN")"
   printf "cdylib   %s\n" "$(basename "$RUNTIME_CDYLIB")"
   printf "anvil-el %s files\n" "${#ANVIL_FILES[@]}"
   printf "built    %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

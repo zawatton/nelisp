@@ -43,13 +43,36 @@
 
 ;;; Code:
 
-(require 'nelisp)
-
 (defconst nelisp-bootstrap--source-dir
   (expand-file-name
    "."
    (file-name-directory (or load-file-name buffer-file-name)))
   "Absolute path of the NeLisp `src/' directory containing the bootstrap files.")
+
+(defun nelisp-bootstrap--add-package-paths ()
+  "Add every `packages/<name>/src/' directory to `load-path'.
+
+Issue #3 (2026-05-09 vonHabsi): the README quick-start used to ask
+callers to `(add-to-list \\='load-path \"~/nelisp/src\")' only, but the
+post-v1.0 layout splits subsystems like `nelisp-regex' /
+`nelisp-secure-hash' / `nelisp-json' / etc. into `packages/<name>/src/'
+trees.  Without those on `load-path' the transitive `require' chain
+through `nelisp.el' → `nelisp-load.el' → `nelisp-emacs-compat.el' →
+`nelisp-regex' fails (= file-missing, sometimes surfaced as a deep
+recursion exceeding `max-specpdl-size' before the missing file
+diagnostic).  Auto-detect and add them here so `(require
+\\='nelisp-bootstrap)' Just Works."
+  (let* ((repo-root (expand-file-name ".." nelisp-bootstrap--source-dir))
+         (packages-dir (expand-file-name "packages" repo-root)))
+    (when (file-directory-p packages-dir)
+      (dolist (entry (directory-files packages-dir t "^[^.]"))
+        (let ((pkg-src (expand-file-name "src" entry)))
+          (when (file-directory-p pkg-src)
+            (add-to-list 'load-path pkg-src)))))))
+
+(nelisp-bootstrap--add-package-paths)
+
+(require 'nelisp)
 
 (defconst nelisp-bootstrap--files
   '("nelisp-read.el"
