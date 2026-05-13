@@ -46,15 +46,30 @@ pub struct Env {
     pub max_recursion: u32,
     pub current_recursion: u32,
     pub extern_builtins: HashMap<String, ExternBuiltin>,
-    /// Stage 7.4.c takeover flag — `true' routes apply_combiner's
-    /// plain-fn / lambda-head paths through elisp `nelisp--apply-fn'
-    /// (= default post-bootstrap; flip via `NELISP_USE_RUST_APPLY').
+    /// Stage 7.4.c — route apply_combiner's plain-fn / lambda-head paths
+    /// through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
     pub use_elisp_apply: bool,
-    /// Re-entry guard for the elisp-apply takeover.
     pub delegation_depth: u32,
 }
 
 impl Env {
+    /// Zero-state Env with no globals / frames / extern builtins.  The
+    /// `Env::new_global` / `empty` / `new_global_no_stdlib` ctors are
+    /// thin wrappers that pick `max_recursion` and run the rest of the
+    /// startup pipeline.  Doc 102 Phase 6 (option a): all three ctors
+    /// share this one literal site so adding a field touches one place.
+    fn fresh(max_recursion: u32) -> Self {
+        Env {
+            globals: HashMap::new(),
+            frames: Vec::new(),
+            max_recursion,
+            current_recursion: 0,
+            extern_builtins: HashMap::new(),
+            use_elisp_apply: false,
+            delegation_depth: 0,
+        }
+    }
+
     /// Construct a globals-only environment with all built-ins
     /// installed.  Equivalent to GNU Emacs' empty-buffer top-level.
     pub fn new_global() -> Self {
@@ -93,22 +108,13 @@ impl Env {
             ("nelisp-stdlib-fast-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-fast-hash.el.image")),
             ("nelisp-env.el", include_bytes!("../../../lisp/nelisp-env.el.image")),
         ];
-        let mut env = Env {
-            globals: HashMap::new(),
-            frames: Vec::new(),
-            // 1024 = elisp-apply takeover (~10-15 eval frames per
-            // outermost user-level call) + macro expansion overhead;
-            // bounded under cargo test's 2MB thread stack.  See
-            // `recursion_depth_guard'.
-            max_recursion: 1024,
-            current_recursion: 0,
-            extern_builtins: HashMap::new(),
-            // Elisp dispatch starts OFF during bootstrap (= the
-            // dispatcher in `nelisp-stdlib-eval-core.el' isn't loaded
-            // yet); flipped ON post-bootstrap below.
-            use_elisp_apply: false,
-            delegation_depth: 0,
-        };
+        // max_recursion=1024: elisp-apply takeover (~10-15 eval frames
+        // per outermost user-level call) + macro expansion overhead;
+        // bounded under cargo test's 2MB thread stack (see
+        // `recursion_depth_guard').  `use_elisp_apply' stays off during
+        // bootstrap (= dispatcher in `nelisp-stdlib-eval-core.el' not
+        // loaded yet); flipped on after STDLIB decode.
+        let mut env = Env::fresh(1024);
         // `nil` and `t` self-evaluate; mark them constant so that
         // (setq nil 1) is a hard error per Elisp.
         env.intern_constant("nil", Sexp::Nil);
@@ -141,29 +147,14 @@ impl Env {
     /// Empty env (= no built-ins).  For error-path tests; most callers
     /// want [`Env::new_global`].
     pub fn empty() -> Self {
-        Env {
-            globals: HashMap::new(),
-            frames: Vec::new(),
-            max_recursion: 256,
-            current_recursion: 0,
-            extern_builtins: HashMap::new(),
-            use_elisp_apply: false,
-            delegation_depth: 0,
-        }
+        Env::fresh(256)
     }
+
     /// Baker accumulator env — built-ins + env_shim installed but
     /// STDLIB_IMAGES decode loop skipped.  Used by
     /// `image::iterative_bake_one' to accumulate per-file state.
     pub fn new_global_no_stdlib() -> Self {
-        let mut env = Env {
-            globals: HashMap::new(),
-            frames: Vec::new(),
-            max_recursion: 1024,
-            current_recursion: 0,
-            extern_builtins: HashMap::new(),
-            use_elisp_apply: false,
-            delegation_depth: 0,
-        };
+        let mut env = Env::fresh(1024);
         env.intern_constant("nil", Sexp::Nil);
         env.intern_constant("t", Sexp::T);
         super::builtins::install_builtins(&mut env);
@@ -192,19 +183,15 @@ impl Env {
 
 
     /// Register `f' as an externally-supplied builtin under `name'.
-    /// Sets the symbol's function-cell to the `(builtin NAME)'
-    /// sentinel so elisp `(NAME ARG...)' invokes `f(args, env)'.
-    /// Re-registering overwrites the previous closure.
+    /// Sets the function cell to `(builtin NAME)' so `(NAME ARG...)'
+    /// invokes `f(args, env)'.  Re-registering overwrites.
     pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
     where
         F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,
     {
-        self.extern_builtins
-            .insert(name.to_string(), Rc::new(f));
-        let sentinel = Sexp::list_from(&[
-            Sexp::Symbol("builtin".into()),
-            Sexp::Symbol(name.into()),
-        ]);
+        self.extern_builtins.insert(name.to_string(), Rc::new(f));
+        let sentinel =
+            Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol(name.into())]);
         self.set_function(name, sentinel);
     }
 

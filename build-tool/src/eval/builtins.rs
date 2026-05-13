@@ -456,19 +456,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-gc-walk-children" => crate::eval::rc_primitives::bi_nl_gc_walk_children(args),
         "nl-gc-buffered-decs" => crate::eval::rc_primitives::bi_nl_gc_buffered_decs(args),
         "nl-gc-finalize" => crate::eval::rc_primitives::bi_nl_gc_finalize(args),
-        // Doc 99 §99.C — first elisp-only builtin.  The body lives in
-        // `lisp/nelisp-cc-fact-i64.el' (Phase 47-compiled); this arm
-        // is a Sexp-unwrap / Sexp-wrap shim around the extern "C"
-        // call.  See `bi_nl_fact_i64' for the range check.
+        // Doc 99 §99.C — elisp-only body in `lisp/nelisp-cc-fact-i64.el'.
         "nl-fact-i64" => bi_nl_fact_i64(args),
         _ => {
-            // Externally-registered builtin (= `Env::register_extern_builtin')
-            // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /
-            // future backend primitives this way.  Also catches the
-            // 7 Doc 76 Stage G residual socket primitives whose bodies
-            // live in registered modules.  Clone the Rc out first so
-            // the borrow on `env.extern_builtins' drops before we re-
-            // borrow `env' through the closure (= eval re-entry safe).
+            // Externally-registered builtin (`Env::register_extern_builtin').
+            // Clone the Rc first so the `extern_builtins' borrow drops
+            // before we re-borrow `env' through the closure.
             if let Some(f) = env.extern_builtins.get(name).cloned() {
                 return f(args, env);
             }
