@@ -19,6 +19,12 @@ v1.0 ships those four C-runtime equivalents and a 624 KB standalone
 tarball.  Use cases: running Elisp on machines without Emacs, and as
 a substrate for Lisp Machine / new-dialect experiments.
 
+Post-v1.0 the repo is on a sustained *pure-Elisp migration* track: each
+sprint deletes another Rust module by reimplementing it in Elisp (via
+Phase 47 self-emission for new substrate, or via JIT trampolines for
+hot loops).  See =Pure-Elisp Migration Progress= below for the most
+recent shipped reductions.
+
 * What NeLisp is
 
 A research project to implement Emacs Lisp on a substrate other than
@@ -34,13 +40,25 @@ build-time-only Elisp bootstrap evaluator lives in =build-tool/= as
 an escape hatch until the native-compiled Elisp seed seam (Doc 49)
 ships end-to-end.
 
-LoC split: ~54k Elisp vs ~19k Rust.  Lisp natively compiles its own
-runtime; Rust handles the headless entry point and the OS substrate
-optional surfaces (sqlite / fileio / filenotify / process) live in
-sibling extension crates so a =--no-default-features= "Rust-min
-core" build keeps shrinking.
+LoC split: *~34k Elisp* (= =lisp/= 46 files ~20k + =packages/= 27 files
+~14k) vs *~26k Rust* (= =build-tool/src/= ~22k + extension crates ~4k)
+as of 2026-05-14.  The 2026-04-27 v1.0 snapshot was ~54k Elisp vs ~19k
+Rust — Elisp shrank by removing a generated 20k-line character-table
+file, Rust gained ~7k from Phase 47 self-emission infrastructure
+(Doc 85/91-97) but the =anvil-runtime/= crate was deleted (-5.8k,
+Phase B Final B Stage 2).  Lisp natively compiles its own runtime;
+Rust handles the headless entry point and the OS substrate optional
+surfaces (sqlite / fileio / filenotify / process) live in sibling
+extension crates so a =--no-default-features= "Rust-min core" build
+keeps shrinking.  See =Pure-Elisp Migration Progress= for details.
 
-** Elisp — the language runtime (45 files, 54,511 LoC)
+** Elisp — the language runtime (v1.0 snapshot: 45 files, 54,511 LoC)
+
+The breakdown below is the 2026-04-27 v1.0 snapshot and is retained for
+reference.  Current totals (2026-05-14) are =lisp/= 46 files ~20k LOC
++ =packages/= 27 files ~14k LOC; see =Pure-Elisp Migration Progress=
+for what shifted.
+
 
 | Subsystem | Files | LoC | Phase |
 |-----------+-------+-----+-------|
@@ -56,7 +74,14 @@ core" build keeps shrinking.
 | Other infrastructure (dev-audit, heap-types, EC bridge, entry point) | 4 | 1,094 | -- |
 | Character tables (JIS, data) | 1 | 20,815 | -- |
 
-** Rust — the no-Emacs path (47 files, 18,909 LoC across 9 crates)
+** Rust — the no-Emacs path (v1.0 snapshot: 47 files, 18,909 LoC across 9 crates)
+
+Below is the 2026-04-27 v1.0 snapshot.  Current Rust footprint
+(2026-05-14): =build-tool/src/= ~22k LOC (44 files), extension crates
+~4.5k LOC.  The =anvil-runtime= crate (5,063 LOC) was deleted in
+Phase B Final B Stage 2 (2026-05-09) and replaced by a pure-shell
+=bin/anvil-runtime= wrapper.
+
 
 | Subsystem | Crate | Files | LoC | Phase |
 |-----------+-------+-------+-----+-------|
@@ -83,6 +108,68 @@ compile, allocator, GC, coding-system — all written in Elisp itself.
   what made the orchestrator and the long-running MCP handler design
   tractable.
 
+* Pure-Elisp Migration Progress (post-v1.0, 2026-05-14)
+
+The long-term goal is =bin/nelisp= Rust runtime LOC → 0 (pure-elisp
+self-host).  Since v1.0 (2026-04-27) the Rust → Elisp migration has
+shipped the following:
+
+** Rust LOC reductions
+- *Phase B Final B Stage 2* (2026-05-09): =anvil-runtime/= Rust crate
+  deleted ( *-5,795 LOC* ).  =bin/anvil-runtime= is now a pure-shell
+  wrapper around the standalone =nelisp= binary backed by a UNIX-socket
+  persistent daemon (=scripts/anvil-runtime-server-loop.el=).
+- *Doc 102 Phase 2.c–7 SHIPPED*: =build-tool/src/eval/env.rs= and
+  surrounding evaluator compaction ( *-819 LOC Rust* ).
+- *Doc 110 SHIPPED*: =build-tool/src/jit/float.rs= + =math.rs= deleted
+  (-109 LOC Rust); IEEE-754 f64 arithmetic + math primitives lowered to
+  Phase 47-emitted native code.
+- *Doc 102 Phase 8 Sprint A SHIPPED*: =Env::globals= HashMap retired in
+  favor of an elisp-side =nelisp-env= record mirror with Rust-direct
+  writes ( *26× ERT wall-clock speedup* , =apply_function= bootstrap
+  detour eliminated).  Sprint B Stage 1+2 partial landed mirror
+  infrastructure; Sprint C (=image.rs= baker rewire + HashMap field
+  delete) is the next ~-150 LOC win.
+
+** Pure-Elisp substrate shipped
+- *Phase 47 self-emission* (Doc 85 / 91–97):  ~7,550 LoC of Elisp for
+  the x86_64 + arm64 assemblers, ELF writer, static linker, =crt0=, the
+  Sexp DSL, and the Phase 47 compiler.  600+ ERT.  =(fact 5)= compiles
+  through this pipeline end-to-end to a Linux x86_64 ET_REL =.o=,
+  links, and runs (=EXIT=120= validated).
+- *Sexp ABI freeze* (Doc 100 §100.B/C):  three-artifact contract
+  ( =docs/arch/sexp-abi.md= + =lisp/nelisp-sexp-layout.el= +
+  =build-tool/src/eval/sexp_abi_assert.rs= ) kept in sync by
+  =make sexp-abi-check=.  Unlocks elisp-emitted =.o= files calling Rust
+  with a stable layout.
+- *Layer 2 cons cluster elisp化* (Doc 81 Stage 81.2):  the opcode
+  layer for =cons / car / cdr / setcar / setcdr / nth= dispatches
+  entirely through elisp.
+- *Doc 86 / 87 Phase 2 v3 — Tier 1 + Tier 2 builtins elisp 化*:
+  1-arg predicates, =type-of= / =eq= / =equal= / =intern= /
+  =symbol-name= / =sxhash= / =string-match-p= / =float= / =exp= /
+  =log= / =nl-current-unix-time= / =nl-secure-hash= / =nl-downcase= /
+  =nl-upcase= and friends now live in Elisp with thin JIT trampolines.
+- *GC pure-elisp* (Doc 79 v7 Phase C Stage 5.3):  Bacon-Rajan cycle
+  collector at =lisp/nelisp-stdlib-gc.el= ( *806 LoC* ).
+
+** Test gate
+- =make test= = *3604 tests / 3562 expected / 5 unexpected (all
+  pre-existing flake) / 37 skipped* on linux-x86_64.
+- The 5 pre-existing flakes are 1 stale test (=apply-fn-dispatches-
+  to-builtin= references =cons= which has moved off the Rust dispatch
+  arm) + 4 =nelisp-sexp-bake-*= cases against an incomplete sexp-bake
+  infra.
+
+** Roadmap (next sprints)
+- *Doc 102 Sprint C*: =image.rs= baker rewire + =Env::globals= field
+  delete (~-150 LOC Rust).
+- Per-trampoline =jit/*.rs= deletions, riding the established §100.D /
+  §110.E-F pattern (arith / float / math already removed).
+- Per-data-type Phase 47 grammar expansion so substrate modules
+  (=cons.rs= / =sexp.rs= / =ffi.rs= / =loader.rs= / =nl*= types) become
+  migrable from Rust to Elisp.
+
 * Status — v1.0 (2026-04-27)
 
 NeLisp v1.0 ships *two standalone deployment paths* as of today:
@@ -93,14 +180,19 @@ NeLisp v1.0 ships *two standalone deployment paths* as of today:
    dev checkouts fall through to system PATH unchanged.  See
    =README-stage-d-v2.0.org= and =RELEASE_NOTES.md=.
 
-2. *Phase 8.0* — Rust-side Elisp interpreter + MCP stdio server.
+2. *Phase 8.0* (v1.0) — Rust-side Elisp interpreter + MCP stdio server.
    =bin/anvil mcp serve --no-emacs= starts an MCP JSON-RPC server with
    *zero Emacs process spawn*: a single =anvil-runtime= Rust binary
    (~421 KB) implements the reader, evaluator, MCP protocol, and
-   anvil tool registry.  An MCP client (Claude Code, Claude Desktop,
-   any MCP-speaking agent) calls =anvil-host-*= tools through this
-   path without requiring Emacs to be installed at all.  See
+   anvil tool registry.  See
    =docs/design/44-phase8.0-rust-elisp-interpreter.org= (LOCKED).
+
+   /Post-v1.0 update (2026-05-09)/: Phase B Final B Stage 2 deletes the
+   =anvil-runtime= Rust crate entirely.  =bin/anvil-runtime= is now a
+   pure-shell wrapper that drives a persistent UNIX-socket daemon
+   running the MCP loop in Elisp (=scripts/anvil-runtime-server-loop.el=)
+   on top of the standalone =nelisp= binary.  Same MCP JSON-RPC surface,
+   no Rust crate.
 
 ** Install
 
@@ -277,14 +369,21 @@ self-contained.
   └─────────────────┬────────────────────────────────┘
                     │ MCP stdio JSON-RPC
   ┌─────────────────▼────────────────────────────────┐
-  │ anvil-runtime crate                              │  Phase 8.0.4-8.0.5
-  │   mcp/ + anvil_*_registry.rs + bin/anvil-runtime │
+  │ bin/anvil-runtime (pure-shell wrapper)           │  Phase B Final B
+  │   UNIX-socket daemon ⇆ anvil-runtime-server-loop  │  Stage 2 SHIPPED
   ├──────────────────────────────────────────────────┤
-  │ Native-compiled Elisp seed                       │  Doc 49 §2 (target)
-  │   reader / evaluator / macro / compiler / loader │
+  │ Elisp anvil tool registry + MCP dispatch         │  formerly the
+  │   (= scripts/anvil-runtime-server-loop.el +       │  =anvil-runtime/=
+  │    lisp/* MCP handlers)                          │  Rust crate, now
+  │                                                  │  -5,795 LOC deleted
   ├──────────────────────────────────────────────────┤
-  │ nelisp-runtime crate (Rust-min core)             │  Doc 49 §1 D2
-  │   syscall + mmap/mprotect + icache + seed loader │
+  │ standalone =nelisp= binary                       │  build-tool/src/bin/
+  │   reader / evaluator / macro / compiler / loader │  + STDLIB .image
+  │   (Phase 47 self-emission for new substrate code)│
+  ├──────────────────────────────────────────────────┤
+  │ build-tool/src/ Rust core                        │  Rust-min target;
+  │   eval / jit / image / sexp / env_shim / ffi     │  per-trampoline
+  │                                                  │  deletion ongoing
   ├────────────┬─────────────────────┬───────────────┤
   │ extension  │ extension           │ dev bridge    │
   │ crates     │ crates              │ crate         │
@@ -301,10 +400,11 @@ self-contained.
 
 Two boundaries are pinned:
 
-- *Doc 46* (=architecture α boundary final=) — =nelisp-runtime= owns
-  no =anvil_*= or =mcp= modules.  The optional MCP front end lives in
-  the sibling =anvil-runtime= crate and calls into =nelisp-runtime=
-  through a path dependency.
+- *Doc 46* (=architecture α boundary final=) — =build-tool/src/= owns
+  no =anvil_*= or =mcp= modules.  Originally enforced through a sibling
+  =anvil-runtime= Rust crate; since Phase B Final B Stage 2 (2026-05-09)
+  the crate is gone entirely and the MCP front end is implemented in
+  Elisp on top of the standalone =nelisp= binary.
 - *Doc 49* (=Rust-min core / self-host=) — =nelisp-runtime= owns no
   Elisp interpreter.  Rust handles only OS ABI (raw syscalls,
   mmap/mprotect/munmap, icache flush) plus a NLSEED v1 seed image
@@ -359,25 +459,37 @@ Said plainly so expectations are calibrated:
 - macOS arm64 / Linux arm64 = best-effort only (= time-boxed for v1.0).
 - Windows native =--no-emacs= is post-v2.0 scope.
 
-** Test status (HEAD, 2026-04-29)
+** Test status (HEAD, 2026-05-14)
 
-- Rust runtime side: =cargo test --lib= = *291 pass / 0 failed*
-  (Linux x86_64 measured 2026-04-29).
-- Elisp side (ERT): =make test= = *2452 tests / 2409 passed /
-  0 unexpected / 43 skipped*.  The 43 skipped are platform-gated
-  SQLite cases on the Linux x86_64 run.
+- =make test= = *3604 tests / 3562 expected / 5 unexpected (all
+  pre-existing flake) / 37 skipped* on linux-x86_64.  See
+  =Pure-Elisp Migration Progress= section above for the flake breakdown.
+- The previous 2026-04-29 baseline was 2452 / 2409 / 0 unexpected.  The
+  ~1.5× growth in test count reflects the new sub-systems: Phase 47
+  self-emission (600+ ERT), Doc 79 v7 GC, Doc 102 mirror, Doc 100/110
+  ABI / arithmetic, Doc 81 cons cluster, Doc 86/87 Tier 1+2 builtins.
 - 3-platform 1-hour soak (Linux x86_64 / macOS M1 / Windows MSYS2)
-  passed end-to-end, 3600 iter @ 1 Hz.
+  passed end-to-end at v1.0; macOS aarch64 build re-validation is
+  pending a libffi-sys upstream fix (Doc 76 M1 verify pause).
 
 ** Key design documents
 
-| Doc | Topic                                  | Status                |
-|-----+----------------------------------------+-----------------------|
-| 18  | Stage D launcher charter               | LOCKED                |
-| 27  | Phase 7+ self-implemented C runtime    | LOCKED-2026-04-25-v2  |
-| 28  | Phase 7.1 NeLisp native compiler       | LOCKED-2026-04-25-v2  |
-| 32  | Phase 7.5 integration + standalone E2E | LOCKED-2026-04-25-v2  |
-| 44  | Phase 8.0 Rust Elisp interpreter       | LOCKED-2026-04-27     |
+| Doc    | Topic                                            | Status               |
+|--------+--------------------------------------------------+----------------------|
+| 18     | Stage D launcher charter                         | LOCKED               |
+| 27     | Phase 7+ self-implemented C runtime              | LOCKED-2026-04-25-v2 |
+| 28     | Phase 7.1 NeLisp native compiler                 | LOCKED-2026-04-25-v2 |
+| 32     | Phase 7.5 integration + standalone E2E           | LOCKED-2026-04-25-v2 |
+| 44     | Phase 8.0 Rust Elisp interpreter                 | LOCKED-2026-04-27    |
+| 76     | Phase 7 elisp-side OS surface migration          | IN PROGRESS          |
+| 77b/c  | Rust min-JIT + Sexp ABI elisp self-host          | SHIPPED partial      |
+| 79 v7  | Pure-elisp GC (Bacon-Rajan cycle collector)      | Phase C Stage 5.3 SHIPPED |
+| 81     | nelisp-cc primitive trampoline extension         | Stage 81.2 SHIPPED   |
+| 85     | Phase 47 feasibility spike                       | VALIDATED            |
+| 91-97  | Phase 47 ELF writer / asm / linker / DSL / build | SHIPPED              |
+| 100    | Sexp ABI freeze (3-artifact contract)            | §B/C SHIPPED         |
+| 102    | env.rs → elisp migration                         | Phase 8 Sprint A SHIPPED, Sprint B/C deferred |
+| 110    | Phase 47 f64 ABI + float.rs/math.rs swap         | SHIPPED              |
 
 * Earlier status (Phase 0 — 2026-04-22) — preserved for reference
 
