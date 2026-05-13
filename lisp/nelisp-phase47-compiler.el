@@ -272,6 +272,23 @@ functions `((NAME . ARITY) ...)'."
               (nth 1 sexp) env fenv defuns)
           :b (nelisp-phase47-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
+   ;; Doc 110 §110.C.2.a — flat f64 ordered comparison (NaN →
+   ;; false matching Rust's `<' / `>' / `<=' / `>=' semantics).
+   ;; Result is i64 0 or 1 produced in rax (= GP convention,
+   ;; bridges to the `extern "C" fn(f64, f64) -> i64' float.rs
+   ;; trampoline shape).  EQ-EPS is deferred to §110.C.2.b
+   ;; because it needs rodata for the 1e-15 literal + an ANDPD
+   ;; abs-mask + a NaN-aware SETB/SETNP/AND sequence.
+   ((and (consp sexp) (memq (car sexp) '(f64-lt f64-gt f64-le f64-ge)))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :f64-cmp-arity (car sexp) sexp)))
+    (list :kind 'f64-cmp
+          :op (car sexp)
+          :a (nelisp-phase47-compiler--parse-value
+              (nth 1 sexp) env fenv defuns)
+          :b (nelisp-phase47-compiler--parse-value
+              (nth 2 sexp) env fenv defuns)))
    ;; Doc 100 §100.D shifts — variable count goes through CL, so the
    ;; emit shape differs from `arith' (= an extra mov rcx, r10 before
    ;; the shift opcode).  Only signed-extending arithmetic shift
@@ -857,20 +874,74 @@ parser must reject anything that would force xmm spill."
 (defun nelisp-phase47-compiler--emit-f64-leaf-into (node buf xmm-dst)
   "Emit code that places f64-class NODE into XMM-DST.
 MVP flat-only constraint: NODE must be `:kind ref' with `:class
-f64' (= a direct f64 parameter reference).  Nested f64-binops
-are rejected so the xmm0/xmm1 register schedule stays trivial
-until xmm spill machinery lands."
+f64' (= a direct f64 parameter reference).  Nested f64-binops /
+f64-cmps are rejected so the xmm0/xmm1 register schedule stays
+trivial until xmm spill machinery lands."
   (let ((kind (plist-get node :kind)))
     (cond
      ((and (eq kind 'ref) (eq (plist-get node :class) 'f64))
       (nelisp-phase47-compiler--emit-f64-ref-load
        buf (plist-get node :slot) xmm-dst))
-     ((eq kind 'f64-binop)
+     ((memq kind '(f64-binop f64-cmp))
       (signal 'nelisp-phase47-compiler-error
               (list :nested-f64-binop-needs-doc-112 node)))
      (t
       (signal 'nelisp-phase47-compiler-error
               (list :f64-leaf-shape-unsupported kind node))))))
+
+(defun nelisp-phase47-compiler--emit-f64-cmp (node buf)
+  "Emit a flat f64-class ordered comparison NODE (Doc 110 §110.C.2.a).
+Result is `0' or `1' in rax via the canonical 10-byte sequence:
+
+  UCOMISD <xmmL>, <xmmR>   ; flags ← cmp(L, R)
+  SET{A|AE} al             ; al ← 1 iff ordered relation holds
+  MOVZX eax, al            ; rax ← zext(al); implicit
+                              RAX[63:32] = 0 from 32-bit write
+
+Operand order is *swapped* for `f64-lt' / `f64-le' so the SETA /
+SETAE result naturally matches Rust's NaN-→-false semantics
+without an explicit AND-with-SETNP mask.  Concretely:
+
+  (a < b)  = UCOMISD xmm1, xmm0 ; SETA   al  (= b above a, ordered)
+  (a > b)  = UCOMISD xmm0, xmm1 ; SETA   al  (= a above b, ordered)
+  (a <= b) = UCOMISD xmm1, xmm0 ; SETAE  al  (= b above-or-eq a, ordered)
+  (a >= b) = UCOMISD xmm0, xmm1 ; SETAE  al  (= a above-or-eq b, ordered)
+
+Under unordered (= NaN involved), UCOMISD sets CF=1 ZF=1 PF=1.
+SETA tests `CF=0 AND ZF=0' → 0; SETAE tests `CF=0' → 0.  Both
+yield 0, matching Rust's `(NaN OP x) = false' rule.  NaN-aware
+EQ-EPS is more involved (needs PF mask AND-ed with SETB) and
+ships in §110.C.2.b."
+  (let ((op (plist-get node :op))
+        (a (plist-get node :a))
+        (b (plist-get node :b)))
+    (when (eq nelisp-phase47-compiler--arch 'aarch64)
+      (signal 'nelisp-phase47-compiler-error
+              (list :f64-cmp-aarch64-not-yet op)))
+    ;; Operand placement: A → xmm0, B → xmm1 (= same convention as
+    ;; `--emit-f64-binop'); the UCOMISD operand-order swap below
+    ;; reuses the placed leaves without re-eval.
+    (nelisp-phase47-compiler--emit-f64-leaf-into b buf 'xmm1)
+    (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
+    (let ((ucomisd-args
+           (cond
+            ;; LT / LE: compare b vs a (= swap order so SETA / SETAE
+            ;; tests "b above a ordered" = "a below b ordered").
+            ((memq op '(f64-lt f64-le)) (list 'xmm1 'xmm0))
+            ;; GT / GE: compare a vs b directly.
+            ((memq op '(f64-gt f64-ge)) (list 'xmm0 'xmm1))
+            (t (signal 'nelisp-phase47-compiler-error
+                       (list :unknown-f64-cmp-op op)))))
+          (setcc-mnemonic
+           (cond
+            ((memq op '(f64-lt f64-gt)) 'seta)   ; strict ordered above
+            ((memq op '(f64-le f64-ge)) 'setae)  ; ordered above-or-equal
+            (t (signal 'nelisp-phase47-compiler-error
+                       (list :unknown-f64-cmp-op op))))))
+      (nelisp-asm-x86_64-ucomisd-reg-reg
+       buf (nth 0 ucomisd-args) (nth 1 ucomisd-args))
+      (nelisp-asm-x86_64-setcc-al buf setcc-mnemonic)
+      (nelisp-asm-x86_64-movzx-eax-al buf))))
 
 (defun nelisp-phase47-compiler--emit-value (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
@@ -897,7 +968,7 @@ the node's class to consume the result correctly."
         ('if
          (nelisp-phase47-compiler--emit-if node buf))
         ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
-             'while 'cond 'logic 'f64-binop)
+             'while 'cond 'logic 'f64-binop 'f64-cmp)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (plist-get node :kind) node))
         (kind
@@ -919,6 +990,8 @@ the node's class to consume the result correctly."
           buf (plist-get node :slot))))
       ('f64-binop
        (nelisp-phase47-compiler--emit-f64-binop node buf))
+      ('f64-cmp
+       (nelisp-phase47-compiler--emit-f64-cmp node buf))
       ('arith
        (nelisp-phase47-compiler--emit-arith node buf))
       ('shift

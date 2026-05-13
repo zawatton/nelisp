@@ -65,6 +65,38 @@ Replaces `build-tool/src/jit/float.rs::nl_jit_float_add'.  ABI:
   "Phase 47 source for `nl_jit_float_div' f64 trampoline.
 IEEE 754 division-by-zero produces ±inf / NaN, not a trap.")
 
+;; Doc 110 §110.C.2.a — 4 ordered-comparison trampolines.  Each
+;; returns i64 0 / 1 in rax (= `extern \"C\" fn(f64, f64) -> i64'
+;; shape).  NaN semantics: NaN comparisons return 0 to match Rust
+;; `<' / `>' / `<=' / `>=' (= operand-swap trick + SETA/SETAE
+;; naturally masks unordered case, see emit-f64-cmp docstring).
+;; EQ-EPS comes in §110.C.2.b once rodata for the 1e-15 literal +
+;; ANDPD abs-mask lands.
+
+(defconst nelisp-cc-jit-float-lt--source
+  '(defun nl_jit_float_lt ((a :type f64) (b :type f64))
+     (f64-lt a b))
+  "Phase 47 source for `nl_jit_float_lt' f64 trampoline.
+Matches Rust `(a < b) as i64' including NaN → 0.")
+
+(defconst nelisp-cc-jit-float-gt--source
+  '(defun nl_jit_float_gt ((a :type f64) (b :type f64))
+     (f64-gt a b))
+  "Phase 47 source for `nl_jit_float_gt' f64 trampoline.
+Matches Rust `(a > b) as i64' including NaN → 0.")
+
+(defconst nelisp-cc-jit-float-le--source
+  '(defun nl_jit_float_le ((a :type f64) (b :type f64))
+     (f64-le a b))
+  "Phase 47 source for `nl_jit_float_le' f64 trampoline.
+Matches Rust `(a <= b) as i64' including NaN → 0.")
+
+(defconst nelisp-cc-jit-float-ge--source
+  '(defun nl_jit_float_ge ((a :type f64) (b :type f64))
+     (f64-ge a b))
+  "Phase 47 source for `nl_jit_float_ge' f64 trampoline.
+Matches Rust `(a >= b) as i64' including NaN → 0.")
+
 (provide 'nelisp-cc-jit-float)
 
 ;;; nelisp-cc-jit-float.el ends here

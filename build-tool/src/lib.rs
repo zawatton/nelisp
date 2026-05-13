@@ -108,6 +108,13 @@ pub mod elisp_cc_spike {
         pub fn nl_jit_float_sub(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_mul(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_div(a: f64, b: f64) -> f64;
+        // Doc 110 §110.C.2.a — 4 ordered comparison trampoline swaps.
+        // i64 return matches the `extern "C" fn(f64, f64) -> i64'
+        // float.rs cmp shape.  NaN semantics: 0 (= matches Rust).
+        pub fn nl_jit_float_lt(a: f64, b: f64) -> i64;
+        pub fn nl_jit_float_gt(a: f64, b: f64) -> i64;
+        pub fn nl_jit_float_le(a: f64, b: f64) -> i64;
+        pub fn nl_jit_float_ge(a: f64, b: f64) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -178,4 +185,15 @@ pub mod elisp_cc_spike {
     pub fn jit_float_sub(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_sub(a, b) } }
     pub fn jit_float_mul(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_mul(a, b) } }
     pub fn jit_float_div(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_div(a, b) } }
+
+    /// Doc 110 §110.C.2.a probes — thin safe wrappers around the 4
+    /// elisp-compiled ordered comparison trampolines (lt / gt / le
+    /// / ge).  Result is 0 or 1 as i64.  NaN inputs return 0 to
+    /// match Rust's `<' / `>' / `<=' / `>=' semantics.  Used by
+    /// `tests/elisp_cc_jit_float_probe.rs' to assert every member
+    /// resolves and produces the expected boolean.
+    pub fn jit_float_lt(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_lt(a, b) } }
+    pub fn jit_float_gt(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_gt(a, b) } }
+    pub fn jit_float_le(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_le(a, b) } }
+    pub fn jit_float_ge(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_ge(a, b) } }
 }

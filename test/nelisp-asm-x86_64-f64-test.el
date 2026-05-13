@@ -969,6 +969,141 @@ epilogue layout."
     (should (= (aref bytes 0) #x55))   ; push rbp
     (should (= (aref bytes 4) #x57)))) ; push rdi (= GP param 0)
 
+;; ---- §110.C.2.a (1) f64-cmp parser ----
+
+(ert-deftest nelisp-asm-x86_64-f64/parser-f64-cmp-lt-shape ()
+  (let* ((ir (nelisp-phase47-compiler--parse-stmt
+              '(defun fn ((a :type f64) (b :type f64)) (f64-lt a b))
+              nil nil nil))
+         (body (plist-get ir :body)))
+    (should (eq (plist-get body :kind) 'f64-cmp))
+    (should (eq (plist-get body :op) 'f64-lt))))
+
+(ert-deftest nelisp-asm-x86_64-f64/parser-f64-cmp-arity ()
+  (should-error
+   (nelisp-phase47-compiler--parse-stmt
+    '(defun fn ((a :type f64) (b :type f64)) (f64-lt a))
+    nil nil nil)
+   :type 'nelisp-phase47-compiler-error))
+
+;; ---- §110.C.2.a (2) f64-cmp emit canonical bytes ----
+;;
+;; Canonical 46-byte layout for `(defun fn ((a :type f64) (b :type f64))
+;; (f64-lt a b))':
+;;
+;;   Prologue (21 bytes): same as f64-add — push rbp; mov rbp, rsp;
+;;     sub rsp, 16; spill xmm0 to [rbp-8]; spill xmm1 to [rbp-16]
+;;   Body (20 bytes):
+;;     F2 0F 10 4D F0     ; movsd xmm1, [rbp - 16]   (= eval B)
+;;     F2 0F 10 45 F8     ; movsd xmm0, [rbp - 8]    (= eval A)
+;;     66 0F 2E C8        ; UCOMISD xmm1, xmm0   (= swap: cmp b vs a)
+;;     0F 97 C0           ; SETA al              (= 1 iff b>a ordered)
+;;     0F B6 C0           ; MOVZX eax, al        (= zext into rax)
+;;   Epilogue (5 bytes): mov rsp, rbp; pop rbp; ret
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-lt-canonical-bytes ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-lt a b)))))
+    (should (= (length bytes) 46))
+    (should (equal bytes
+                   (nelisp-asm-x86_64-f64-test--ub
+                    ;; Prologue (21)
+                    #x55                          ; push rbp
+                    #x48 #x89 #xE5                ; mov rbp, rsp
+                    #x48 #x81 #xEC #x10 #x00 #x00 #x00 ; sub rsp, 16
+                    #xF2 #x0F #x11 #x45 #xF8      ; movsd [rbp-8], xmm0
+                    #xF2 #x0F #x11 #x4D #xF0      ; movsd [rbp-16], xmm1
+                    ;; Body (20)
+                    #xF2 #x0F #x10 #x4D #xF0      ; movsd xmm1, [rbp-16]
+                    #xF2 #x0F #x10 #x45 #xF8      ; movsd xmm0, [rbp-8]
+                    #x66 #x0F #x2E #xC8           ; UCOMISD xmm1, xmm0
+                    #x0F #x97 #xC0                ; SETA al
+                    #x0F #xB6 #xC0                ; MOVZX eax, al
+                    ;; Epilogue (5)
+                    #x48 #x89 #xEC                ; mov rsp, rbp
+                    #x5D                          ; pop rbp
+                    #xC3)))))                     ; ret
+
+;; Byte-index pointers into the compare sequence:
+;;   byte 31 = F2 (first byte of MOVSD - actually wait, the 2nd MOVSD ends at 30)
+;;   byte 31 = UCOMISD prefix (= 0x66)
+;;   byte 33 = UCOMISD opcode (= 0x2E)
+;;   byte 34 = UCOMISD ModR/M (= 0xC8 for swapped, 0xC1 for direct)
+;;   byte 35 = SETcc escape (= 0x0F)
+;;   byte 36 = SETcc opcode (= 0x97 SETA, 0x93 SETAE)
+;;   byte 37 = SETcc ModR/M (= 0xC0 for AL)
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-gt-uses-direct-ucomisd ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-gt a b)))))
+    (should (= (length bytes) 46))
+    ;; UCOMISD operand order direct (= a vs b): ModR/M = 0xC1
+    (should (= (aref bytes 34) #xC1))
+    ;; SETA still (= strict ordered greater)
+    (should (= (aref bytes 36) #x97))))
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-le-uses-swap-setae ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-le a b)))))
+    (should (= (length bytes) 46))
+    ;; UCOMISD swap (= b vs a): ModR/M = 0xC8
+    (should (= (aref bytes 34) #xC8))
+    ;; SETAE (= ordered above-or-equal)
+    (should (= (aref bytes 36) #x93))))
+
+(ert-deftest nelisp-asm-x86_64-f64/defun-f64-ge-direct-setae ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-ge a b)))))
+    (should (= (length bytes) 46))
+    ;; UCOMISD direct (= a vs b): ModR/M = 0xC1
+    (should (= (aref bytes 34) #xC1))
+    ;; SETAE
+    (should (= (aref bytes 36) #x93))))
+
+;; Cross-op discrimination: 4 cmp ops produce 46-byte sequences
+;; that differ in exactly 2 positions (UCOMISD ModR/M @ 34 + SETcc
+;; opcode @ 36); everything else identical.
+
+(ert-deftest nelisp-asm-x86_64-f64/cmp-discrimination ()
+  (let* ((compile (lambda (op)
+                    (nelisp-asm-x86_64-f64-test--compile-defun
+                     `(defun fn ((a :type f64) (b :type f64))
+                        (,op a b)))))
+         (lt (funcall compile 'f64-lt))
+         (gt (funcall compile 'f64-gt))
+         (le (funcall compile 'f64-le))
+         (ge (funcall compile 'f64-ge)))
+    (should (= (length lt) 46))
+    ;; UCOMISD ModR/M byte @ 34: swap = 0xC8, direct = 0xC1
+    (should (= (aref lt 34) #xC8))  ; LT: swap
+    (should (= (aref gt 34) #xC1))  ; GT: direct
+    (should (= (aref le 34) #xC8))  ; LE: swap
+    (should (= (aref ge 34) #xC1))  ; GE: direct
+    ;; SETcc opcode byte @ 36: strict = 0x97, oreq = 0x93
+    (should (= (aref lt 36) #x97))  ; SETA
+    (should (= (aref gt 36) #x97))  ; SETA
+    (should (= (aref le 36) #x93))  ; SETAE
+    (should (= (aref ge 36) #x93))  ; SETAE
+    ;; Everything else identical across the 4 ops
+    (dotimes (i (length lt))
+      (unless (memq i '(34 36))
+        (let ((ref (aref lt i)))
+          (should (= (aref gt i) ref))
+          (should (= (aref le i) ref))
+          (should (= (aref ge i) ref)))))))
+
+;; Nested f64-cmp rejected (= MVP flat-only)
+(ert-deftest nelisp-asm-x86_64-f64/emit-rejects-nested-f64-cmp ()
+  (should-error
+   (nelisp-asm-x86_64-f64-test--compile-defun
+    '(defun fn ((a :type f64) (b :type f64))
+       (f64-lt (f64-add a b) a)))
+   :type 'nelisp-phase47-compiler-error))
+
 (provide 'nelisp-asm-x86_64-f64-test)
 
 ;;; nelisp-asm-x86_64-f64-test.el ends here

@@ -34,7 +34,8 @@
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::{
-    jit_float_add, jit_float_div, jit_float_mul, jit_float_sub,
+    jit_float_add, jit_float_div, jit_float_ge, jit_float_gt, jit_float_le, jit_float_lt,
+    jit_float_mul, jit_float_sub,
 };
 
 // ---- ADDSD coverage ----
@@ -142,4 +143,105 @@ fn float_nan_propagates() {
     assert!(jit_float_sub(nan, 1.0).is_nan());
     assert!(jit_float_mul(nan, 1.0).is_nan());
     assert!(jit_float_div(nan, 1.0).is_nan());
+}
+
+// ---- §110.C.2.a — ordered comparison coverage ----
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_lt_basics() {
+    assert_eq!(jit_float_lt(1.0, 2.0), 1);
+    assert_eq!(jit_float_lt(2.0, 1.0), 0);
+    assert_eq!(jit_float_lt(1.0, 1.0), 0);  // equal → not less
+    assert_eq!(jit_float_lt(-1.0, 0.0), 1);
+    assert_eq!(jit_float_lt(0.0, -0.0), 0); // ±0 compare equal
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_gt_basics() {
+    assert_eq!(jit_float_gt(2.0, 1.0), 1);
+    assert_eq!(jit_float_gt(1.0, 2.0), 0);
+    assert_eq!(jit_float_gt(1.0, 1.0), 0);
+    assert_eq!(jit_float_gt(0.0, -1.0), 1);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_le_basics() {
+    assert_eq!(jit_float_le(1.0, 2.0), 1);
+    assert_eq!(jit_float_le(1.0, 1.0), 1);  // equal → yes
+    assert_eq!(jit_float_le(2.0, 1.0), 0);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_ge_basics() {
+    assert_eq!(jit_float_ge(2.0, 1.0), 1);
+    assert_eq!(jit_float_ge(1.0, 1.0), 1);
+    assert_eq!(jit_float_ge(1.0, 2.0), 0);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_cmp_infinities() {
+    // +inf comparisons
+    assert_eq!(jit_float_lt(1.0, f64::INFINITY), 1);
+    assert_eq!(jit_float_gt(f64::INFINITY, 1.0), 1);
+    assert_eq!(jit_float_le(f64::INFINITY, f64::INFINITY), 1);
+    assert_eq!(jit_float_ge(f64::INFINITY, f64::INFINITY), 1);
+    // -inf comparisons
+    assert_eq!(jit_float_lt(f64::NEG_INFINITY, 0.0), 1);
+    assert_eq!(jit_float_gt(0.0, f64::NEG_INFINITY), 1);
+    // mixed inf
+    assert_eq!(jit_float_lt(f64::NEG_INFINITY, f64::INFINITY), 1);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_cmp_nan_is_false() {
+    // The headline f64-cmp invariant: every comparison involving
+    // NaN returns 0 to match Rust `<' / `>' / `<=' / `>=' which
+    // are all defined as false for NaN inputs.  The
+    // UCOMISD-operand-swap + SETA/SETAE encoding makes this fall
+    // out naturally (= no AND-with-SETNP needed).
+    let nan = f64::NAN;
+    for v in [1.0_f64, 0.0, -1.0, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(jit_float_lt(nan, v), 0, "lt(NaN, {})", v);
+        assert_eq!(jit_float_lt(v, nan), 0, "lt({}, NaN)", v);
+        assert_eq!(jit_float_gt(nan, v), 0, "gt(NaN, {})", v);
+        assert_eq!(jit_float_gt(v, nan), 0, "gt({}, NaN)", v);
+        assert_eq!(jit_float_le(nan, v), 0, "le(NaN, {})", v);
+        assert_eq!(jit_float_le(v, nan), 0, "le({}, NaN)", v);
+        assert_eq!(jit_float_ge(nan, v), 0, "ge(NaN, {})", v);
+        assert_eq!(jit_float_ge(v, nan), 0, "ge({}, NaN)", v);
+    }
+    // NaN vs NaN — also all false
+    assert_eq!(jit_float_lt(nan, nan), 0);
+    assert_eq!(jit_float_gt(nan, nan), 0);
+    assert_eq!(jit_float_le(nan, nan), 0);
+    assert_eq!(jit_float_ge(nan, nan), 0);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn float_cmp_matches_rust() {
+    // Crucial bit-exact agreement with Rust's `<' / `>' / `<=' /
+    // `>=' across a sample grid.  Confirms the elisp emit doesn't
+    // diverge on edge cases like tiny denormals or boundary
+    // ordered pairs.
+    let samples = [
+        (0.0, 0.0),
+        (-0.0, 0.0),
+        (1e-308, 0.0),   // smallest normal vs 0
+        (1.0, 1.0 + f64::EPSILON),
+        (1e15, 1e15 + 1.0),
+        (-1.0, 1.0),
+    ];
+    for (a, b) in samples {
+        assert_eq!(jit_float_lt(a, b), (a < b) as i64, "lt({}, {})", a, b);
+        assert_eq!(jit_float_gt(a, b), (a > b) as i64, "gt({}, {})", a, b);
+        assert_eq!(jit_float_le(a, b), (a <= b) as i64, "le({}, {})", a, b);
+        assert_eq!(jit_float_ge(a, b), (a >= b) as i64, "ge({}, {})", a, b);
+    }
 }

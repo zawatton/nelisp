@@ -121,6 +121,24 @@
     (nelisp-cc-jit-float
      :source-var nelisp-cc-jit-float-div--source
      :output "nl_jit_float_div.o"
+     :requires-arch x86_64)
+    ;; Doc 110 §110.C.2.a — 4 ordered comparison trampolines.
+    ;; eq_eps stays Rust until §110.C.2.b (= rodata + NaN mask).
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-lt--source
+     :output "nl_jit_float_lt.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-gt--source
+     :output "nl_jit_float_gt.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-le--source
+     :output "nl_jit_float_le.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-float
+     :source-var nelisp-cc-jit-float-ge--source
+     :output "nl_jit_float_ge.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

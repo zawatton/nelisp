@@ -111,6 +111,13 @@ mod float_link {
         pub fn nl_jit_float_sub(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_mul(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_div(a: f64, b: f64) -> f64;
+        // Doc 110 §110.C.2.a — 4 ordered compare trampolines.
+        // Bodies compiled from `lisp/nelisp-cc-jit-float.el' using
+        // the §110.C compiler emit path (UCOMISD + SETcc + MOVZX).
+        pub fn nl_jit_float_lt(a: f64, b: f64) -> i64;
+        pub fn nl_jit_float_gt(a: f64, b: f64) -> i64;
+        pub fn nl_jit_float_le(a: f64, b: f64) -> i64;
+        pub fn nl_jit_float_ge(a: f64, b: f64) -> i64;
     }
 }
 
@@ -270,9 +277,24 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_div" => super::float::nl_jit_float_div as *const u8,
         "nl_jit_float_eq_eps" => super::float::nl_jit_float_eq_eps as *const u8,
+        // Doc 110 §110.C.2.a (2026-05-13) — 4 ordered compares dispatch
+        // to elisp `.o' on linux-x86_64; other targets keep Rust.
+        // EQ-EPS stays Rust on every target until §110.C.2.b.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_lt" => float_link::nl_jit_float_lt as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_lt" => super::float::nl_jit_float_lt as *const u8,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_gt" => float_link::nl_jit_float_gt as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_gt" => super::float::nl_jit_float_gt as *const u8,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_le" => float_link::nl_jit_float_le as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_le" => super::float::nl_jit_float_le as *const u8,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        "nl_jit_float_ge" => float_link::nl_jit_float_ge as *const u8,
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         "nl_jit_float_ge" => super::float::nl_jit_float_ge as *const u8,
         // ---- box accessor (6) ---- Doc 84 §84.3 (2026-05-10).
         "nl_jit_mut_str_len" => super::box_accessor::nl_jit_mut_str_len as *const u8,
