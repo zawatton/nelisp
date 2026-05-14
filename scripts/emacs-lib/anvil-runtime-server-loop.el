@@ -171,7 +171,7 @@ response."
                        (concat
                         "anvil-discovery,anvil-sqlite,anvil-bench,"
                         "anvil-state,anvil-memory,anvil-worklog,"
-                        "anvil-org-index"))))
+                        "anvil-org-index,anvil-orchestrator"))))
     (when (fboundp 'nelisp--write-stderr-line)
       (nelisp--write-stderr-line
        (concat "[server-loop] ANVIL_TOOL_MODULES=" modules-env)))
