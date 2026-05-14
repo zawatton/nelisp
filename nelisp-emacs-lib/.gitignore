@@ -13,3 +13,12 @@
 *.db
 *.db-shm
 *.db-wal
+
+# AI assistant project-instruction files — kept local, not published.
+CLAUDE.md
+AGENTS.md
+.cursorrules
+.cursor/
+.aider*
+.codex/
+.windsurfrules
