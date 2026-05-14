@@ -588,6 +588,25 @@ removes it."
              (nelisp-eval
               '(alist-get "k" '(("k" . 42) ("z" . 0)) nil nil #'equal)))))
 
+(ert-deftest nelisp-stdlib-alist-get-nested-cons-value ()
+  "Regression: `alist-get' must return the matched pair's `cdr' verbatim,
+even when that cdr is itself a cons (= nested alist).
+
+Prior bug (= `(if (consp tail) (car tail) tail)') collapsed nested
+alist values into their `car', corrupting the MCP request shape
+`((params . ((name . \"X\") (arguments)))' into `(name . \"X\")' and
+tripping the JIT trampoline on the downstream `alist-get' walk."
+  (let* ((req '((jsonrpc . "2.0")
+                (method  . "tools/call")
+                (params  . ((name . "X") (arguments)))
+                (id      . 3))))
+    (should (equal '((name . "X") (arguments))
+                   (nelisp-eval `(alist-get 'params ',req))))
+    (should (equal "X"
+                   (nelisp-eval
+                    `(alist-get 'name
+                                (alist-get 'params ',req)))))))
+
 ;;;; Phase 5-F.1.0 — sqlite primitives (anvil-state port 前提)
 
 (ert-deftest nelisp-stdlib-phase5f10-sqlite-available-p ()
