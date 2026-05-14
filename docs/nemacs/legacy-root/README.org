@@ -1,62 +1,174 @@
-#+TITLE: nelisp-emacs — Emacs C → Elisp Port Project
+#+TITLE: nelisp-emacs — Emacs C → elisp port
 #+AUTHOR: zawatton + Claude
-#+DATE: 2026-04-25
-#+STATUS: BOOTSTRAP
+#+DATE: 2026-05-14
+#+STATUS: early / exploratory
 
-* Vision
+* Status — read this first
 
-Emacs core C を Elisp で再実装、NeLisp runtime 上で動作させる pure
-Elisp Emacs を build する long-term project。
+This is an *early, exploratory research project*.  It is *not* a
+usable Emacs replacement and is unlikely to become one for several
+years.  Most user-visible Emacs features are absent, the API is
+unstable, and breaking changes are expected on most commits.
+
+Concretely, as of 2026-05-14:
+
+- Phase 1 (= core editor substrate: =buffer.c=, =window.c=, =frame.c=,
+  =keymap.c=, =minibuffer.c= ported to elisp) is *in progress*.
+- Phase 2 (= TUI reference display backend) has *scaffolding only*.
+- Phases 3-5 (= ~xdisp.c~ port, MELPA shim, Emacs bootstrap /
+  self-host) are *unstarted*.
+
+If you are looking for a working pure-elisp Emacs binary today, this
+is not it.  See [[#long-term-roadmap][Long-term roadmap]] below for an
+honest timescale.
+
+* What is this?
+
+=nelisp-emacs= is the Layer 2 (extension package) + Layer 3 (TUI
+reference display backend) of the
+[[https://github.com/zawatton/nelisp][NeLisp]] stack.  The long-term
+goal is to re-implement Emacs's core C code in elisp, running on the
+NeLisp runtime, so that a pure-elisp Emacs binary can be produced
+without a hand-written C core.
+
+#+begin_src
+┌──────────────────────────────────────────────────────────────┐
+│  Layer 3                                                     │
+│  ├── TUI backend (THIS REPO):                                │
+│  │     emacs-tui-backend.el · emacs-tui-terminfo.el · ...    │
+│  └── GUI backend (separate repo: nelisp-gtk)                 │
+└─────────────▲────────────────────────────────────────────────┘
+              │
+┌─────────────┴────────────────────────────────────────────────┐
+│  Layer 2  (THIS REPO)                                        │
+│  Emacs C → elisp ports + substrate elisp:                    │
+│    emacs-buffer.el · emacs-window.el · emacs-frame.el ·      │
+│    emacs-keymap.el · emacs-minibuffer.el · emacs-eval.el ·   │
+│    emacs-fns.el · emacs-list.el · emacs-string.el · ...      │
+│  (a slice of these has already shipped upstream as           │
+│  nelisp-emacs-compat / -process / -regex / -coding / -json   │
+│  / -sqlite / -base64 / -secure-hash / -filenotify — those    │
+│  belong to the NeLisp Layer 2 substrate, not this repo)      │
+└─────────────▲────────────────────────────────────────────────┘
+              │
+┌─────────────┴────────────────────────────────────────────────┐
+│  Layer 1  (upstream: nelisp)                                 │
+│  NeLisp core Lisp runtime (read / eval / GC / FFI / …)       │
+└──────────────────────────────────────────────────────────────┘
+#+end_src
 
 * Relationship to NeLisp
 
-- Layer 1 (NeLisp core runtime) = =/Notes/dev/nelisp/= (= 既存、本 repo
-  触らない)
-- Layer 2 (extension package) = 一部既 SHIPPED 済 (=
-  =nelisp-emacs-compat= / =nelisp-process= / =nelisp-eventloop-multiplex=
-  / =nelisp-regex= / =nelisp-coding= / =nelisp-sqlite= / =nelisp-base64=
-  / =nelisp-secure-hash= / =nelisp-json= / =nelisp-filenotify= 等)、本
-  repo は **残 Layer 2 + Layer 3 (display backend)** を担当
-- Layer 3 (display backend) = TUI primary、GTK / Cocoa / Win32 / wgpu は
-  community
+- =Layer 1 (NeLisp core runtime)= = upstream
+  [[https://github.com/zawatton/nelisp][~nelisp~]] (vendored under
+  =vendor/nelisp/= via =bin/build-nelisp=).  This repo never modifies
+  Layer 1.
+- =Layer 2 (extension package)= = partly upstream (the
+  =nelisp-emacs-compat=, =nelisp-process=, =nelisp-regex=,
+  =nelisp-coding=, =nelisp-sqlite=, =nelisp-base64=,
+  =nelisp-secure-hash=, =nelisp-json=, =nelisp-filenotify=, …
+  modules are part of the NeLisp distribution).  *This repo is the
+  remaining Layer 2 work* — the Emacs interactive editor substrate
+  (buffer / window / frame / keymap / minibuffer / etc.) ported
+  from Emacs C.
+- =Layer 3 (display backend)= = TUI primary (in this repo).  The
+  GTK4 GUI sibling lives in
+  [[https://github.com/zawatton/nelisp-gtk][~nelisp-gtk~]].  Cocoa /
+  Win32 / =wgpu= backends are open to community contribution.
 
-* Initial Scope (Phase 1)
+* Repository layout
 
-per Doc 01 architecture LOCKED:
-1. =src/emacs-buffer.el= = buffer.c port (= 既 nelisp-emacs-compat の上
-   に乗る、buffer-local-variable / advanced text-property / undo full)
-2. =src/emacs-window.el= = window.c port
-3. =src/emacs-frame.el= = frame.c port (= display backend abstraction)
-4. =src/emacs-keymap.el= = keymap.c port
-5. =src/emacs-minibuffer.el= = minibuffer.c port
-6. =src/emacs-tui-backend.el= = TUI display backend MVP (=
-   ncurses-style、reference impl)
+- =src/= — Layer 2 / Layer 3 elisp implementation
+  (=emacs-buffer.el=, =emacs-window.el=, =emacs-frame.el=,
+  =emacs-keymap.el=, =emacs-minibuffer.el=,
+  =emacs-tui-backend.el=, =emacs-tui-terminfo.el=,
+  =emacs-network-ffi.el=, =emacs-sqlite-ffi.el=,
+  =emacs-server-polyfills.el=, …)
+- =test/= — ERT tests for the modules under =src/=
+- =vendor/emacs-lisp/= — vendored copies of selected Emacs
+  =lisp/= subtrees used as references during the port
+  (e.g. =vendor/emacs-lisp/org/= for the day when an
+  =org-mode= bootstrap becomes meaningful)
+- =vendor/nelisp/= — produced by =bin/build-nelisp= (= =make nelisp=)
+- =docs/design/= — design documents for each port phase
+- =bench/= — micro-benchmarks (advisory; not merge gates)
 
-* Long-term Roadmap
+The =vendor/= elisp is *imported, not implemented*.  Until the Layer
+2/3 substrate is functional enough to host those packages, the vendored
+copies are reference material — they will not produce a working
+=org-mode= or =Org agenda= on top of =nelisp-emacs= today.
 
-| Phase   | scope                              | LOC 目安 | 期間 |
-|---------+------------------------------------+----------+------|
-| Phase 1 | Layer 2 残 (buffer/window/keymap)  | ~5-10K   | 6-12 ヶ月 |
-| Phase 2 | TUI backend reference impl         | ~5-10K   | 6-12 ヶ月 |
-| Phase 3 | xdisp.c port (= 最大難所、display) | ~10-30K  | 12-24 ヶ月 |
-| Phase 4 | MELPA compat layer (= shim)        | ~20-50K  | 1-2 年 |
-| Phase 5 | Emacs bootstrap (= self-host)      | full     | 3-5 年 |
+* Initial scope (Phase 1)
+
+Per =docs/design/01-architecture.org= (LOCKED):
+
+1. =src/emacs-buffer.el= = =buffer.c= port (buffer-local
+   variables, advanced text-property, full undo)
+2. =src/emacs-window.el= = =window.c= port
+3. =src/emacs-frame.el= = =frame.c= port (display backend
+   abstraction)
+4. =src/emacs-keymap.el= = =keymap.c= port
+5. =src/emacs-minibuffer.el= = =minibuffer.c= port
+6. =src/emacs-tui-backend.el= = TUI display backend MVP
+   (ncurses-style, reference impl)
+
+* Long-term roadmap
+:PROPERTIES:
+:CUSTOM_ID: long-term-roadmap
+:END:
+
+These estimates are *aspirational*, not commitments.  Each phase
+boundary is a real piece of work — the figures below assume single
+maintainer evening hours.
+
+| Phase   | Scope                              | LOC estimate | Wall-clock |
+|---------+------------------------------------+--------------+------------|
+| Phase 1 | Layer 2 core (buffer / window / …) | ~5-10K       | 6-12 mo    |
+| Phase 2 | TUI backend reference impl         | ~5-10K       | 6-12 mo    |
+| Phase 3 | =xdisp.c= port (display engine)    | ~10-30K      | 12-24 mo   |
+| Phase 4 | MELPA compat layer (shim)          | ~20-50K      | 1-2 yr     |
+| Phase 5 | Emacs bootstrap (self-host)        | full         | 3-5 yr     |
+
+In particular: =org-mode= depends on Phase 1 (buffer + text
+properties) + Phase 2 (TUI redisplay) + Phase 3 (display engine, for
+visual folding / agenda / table alignment) all reaching usable
+state.  Today, ~ert-run~ batch-style use of vendored elisp is
+plausible; interactive editing in =nelisp-emacs= is not.
+
+* Building
+
+#+begin_src sh
+make nelisp        # populate vendor/nelisp/ from upstream
+make compile       # byte-compile src/
+make test          # run the ERT test suite
+#+end_src
+
+The nelisp binary tool is the source of truth for
+=vendor/nelisp/=; do not add Makefile targets or scripts that assume
+an external nelisp checkout outside =$NEMACS_HOME=.
 
 * Dependencies
 
-- =nelisp= (= /Notes/dev/nelisp/、Layer 1 runtime + Layer 2 既 substrate)
-- =anvil.el= (= /Notes/dev/anvil.el/、tooling、optional)
+- [[https://github.com/zawatton/nelisp][~nelisp~]] (Layer 1 runtime +
+  baseline Layer 2 substrate)
+- Optional tooling: [[https://github.com/zawatton/anvil.el][~anvil.el~]]
+  (development helpers; not required to build or test)
+
+* Related repositories
+
+- [[https://github.com/zawatton/nelisp][~nelisp~]] — Layer 1 Lisp
+  runtime (Rust + ongoing pure-elisp migration)
+- [[https://github.com/zawatton/nelisp-gtk][~nelisp-gtk~]] — Layer 3
+  GTK4 GUI sibling of the TUI backend in this repo
 
 * License
 
-(TBD per public release timing、現状 private dev)
+GPL-3.0-or-later (= matches Emacs's license).  A =LICENSE= file
+will be added before any release tagging.
 
-* Status
+* Acknowledgements
 
-GitHub 公開予定なし (= private dev)、本 repo は local 開発 only。
-
-* Reference Docs
-
-- NeLisp Doc 33 v2 LOCKED (= overall architecture)
-- NeLisp Doc 34 v2 LOCKED (= Phase 9b interactive editor substrate)
-- NeLisp Doc 39 v2 LOCKED (= Phase 9d process subprocess、ship 順序 swap)
+Personal research project by zawatton, developed collaboratively
+with Claude (Anthropic).  No funding, no roadmap commitment, no
+SLA — interest, issues, and PRs are welcome but please calibrate
+expectations against the roadmap above.
