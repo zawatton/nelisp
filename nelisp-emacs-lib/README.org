@@ -163,8 +163,15 @@ an external nelisp checkout outside =$NEMACS_HOME=.
 
 * License
 
-GPL-3.0-or-later (= matches Emacs's license).  A =LICENSE= file
-will be added before any release tagging.
+GPL-3.0-or-later — see =LICENSE= for the full text.  Matches GNU
+Emacs, the NeLisp runtime, and =anvil.el=, which is the natural
+fit since this repo ports Emacs C → elisp and vendors GPL-licensed
+Emacs Lisp source under =vendor/emacs-lisp/=.
+
+Vendored files retain their original copyright and license headers;
+they are not relicensed by this repository's =LICENSE= file.  Combined
+/ derivative binary distributions remain subject to the terms of
+GPL-3.0-or-later.
 
 * Acknowledgements
 
