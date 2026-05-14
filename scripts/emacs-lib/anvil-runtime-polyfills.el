@@ -77,6 +77,27 @@
   (provide 'subr-x))
 
 
+;; --- tabulated-list.el stub (UI module, not used in MCP tool path) ---
+
+;; `anvil-orchestrator' does `(require 'tabulated-list)' at load time so
+;; it can render the interactive `anvil-orchestrator-status' dashboard
+;; buffer.  Standalone NeLisp's reader cannot yet parse multibyte char
+;; literals like `?▼' (line 46 col 50 of the vendor file), so loading
+;; the real `tabulated-list.el' fails.  The MCP tool surface
+;; (`orchestrator-submit', `orchestrator-status' returning JSON, etc.)
+;; never reaches the UI render path, so a `provide'-only stub suffices.
+(unless (featurep 'tabulated-list)
+  (provide 'tabulated-list)
+  ;; Minimal mode shell so any top-level form referencing the symbol
+  ;; (e.g. `(define-derived-mode foo tabulated-list-mode ...)') resolves.
+  (unless (fboundp 'tabulated-list-mode)
+    (defun tabulated-list-mode () nil))
+  (unless (boundp 'tabulated-list-format)
+    (defvar tabulated-list-format nil))
+  (unless (boundp 'tabulated-list-entries)
+    (defvar tabulated-list-entries nil)))
+
+
 ;; --- subr.el cherry-pick polyfills ----------------------------------
 
 ;; `apply-partially' lives in vendor/emacs-lisp/subr.el but loading the
