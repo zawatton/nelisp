@@ -73,8 +73,12 @@ without a hand-written C core.
   from Emacs C.
 - =Layer 3 (display backend)= = TUI primary (in this repo).  The
   GTK4 GUI sibling lives in
-  [[https://github.com/zawatton/nelisp-gtk][~nelisp-gtk~]].  Cocoa /
-  Win32 / =wgpu= backends are open to community contribution.
+  [[https://github.com/zawatton/nelisp-gtk][~nelisp-gtk~]] (currently a
+  Rust boot-stub + elisp policy split, with a long-term goal of
+  collapsing the Rust layer in favour of pure-elisp NeLisp-native
+  GTK4 FFI bindings — see that repo's README "Long-term goal" section
+  for the B0/B/C plan).  Cocoa / Win32 / =wgpu= backends are open to
+  community contribution.
 
 * Repository layout
 
