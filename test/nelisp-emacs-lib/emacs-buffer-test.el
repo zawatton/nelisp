@@ -3,7 +3,7 @@
 ;; Phase 1 module 1/6 tests per nelisp-emacs Doc 01.
 ;; Covers all 6 categories of `emacs-buffer-*' API:
 ;;   A. buffer-local variables  (10 tests)
-;;   B. text-property MVP        (7 tests)
+;;   B. text-property            (7 MVP + 14 advanced = 21 tests)
 ;;   C. undo system              (6 tests)
 ;;   D. modification tracking    (4 tests)
 ;;   E. additional buffer ops    (5 tests)
@@ -195,6 +195,171 @@
       (nelisp-ec-insert "x")
       (should-error (emacs-buffer-put-text-property 1 1 'face 'bold)
                     :type 'nelisp-ec-args-out-of-range))))
+
+;;;; B'. text-property advanced (14 tests)
+
+(ert-deftest emacs-buffer-set-text-properties-replaces-plist ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello")
+      ;; Add (face bold, weight 700).
+      (emacs-buffer-add-text-properties 1 6 '(face bold weight 700))
+      ;; Replace with just (face italic).
+      (emacs-buffer-set-text-properties 1 6 '(face italic))
+      (should (eq 'italic (emacs-buffer-get-text-property 3 'face)))
+      (should-not (emacs-buffer-get-text-property 3 'weight)))))
+
+(ert-deftest emacs-buffer-set-text-properties-nil-clears ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello")
+      (emacs-buffer-add-text-properties 1 6 '(face bold))
+      (emacs-buffer-set-text-properties 1 6 nil)
+      (should-not (emacs-buffer-get-text-property 3 'face))
+      (should-not (emacs-buffer-text-property-at 3)))))
+
+(ert-deftest emacs-buffer-set-text-properties-rejects-bad-plist ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "x")
+      (should-error (emacs-buffer-set-text-properties 1 2 '(face))
+                    :type 'wrong-type-argument))))
+
+(ert-deftest emacs-buffer-get-text-property-category-inheritance ()
+  ;; Category symbol carries face=red.  Range has only (category cat).
+  (let ((cat (make-symbol "test-cat")))
+    (put cat 'face 'red)
+    (put cat 'priority 5)
+    (emacs-buffer-test--with-fresh-world
+      (let ((b (nelisp-ec-generate-new-buffer "tp")))
+        (nelisp-ec-set-buffer b)
+        (nelisp-ec-insert "hello")
+        (emacs-buffer-add-text-properties 1 6 (list 'category cat))
+        ;; Inherited via category.
+        (should (eq 'red (emacs-buffer-get-text-property 3 'face)))
+        (should (eq 5 (emacs-buffer-get-text-property 3 'priority)))
+        ;; Not on category either → nil.
+        (should-not (emacs-buffer-get-text-property 3 'no-such))))))
+
+(ert-deftest emacs-buffer-get-text-property-direct-overrides-category ()
+  (let ((cat (make-symbol "test-cat")))
+    (put cat 'face 'red)
+    (emacs-buffer-test--with-fresh-world
+      (let ((b (nelisp-ec-generate-new-buffer "tp")))
+        (nelisp-ec-set-buffer b)
+        (nelisp-ec-insert "hello")
+        (emacs-buffer-add-text-properties 1 6 (list 'category cat
+                                                    'face 'blue))
+        ;; Direct (face blue) wins over category (face red).
+        (should (eq 'blue (emacs-buffer-get-text-property 3 'face)))))))
+
+(ert-deftest emacs-buffer-get-text-property-category-non-symbol-ignored ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hi")
+      ;; category set to a non-symbol → no inheritance.
+      (emacs-buffer-add-text-properties 1 3 '(category "not-a-symbol"))
+      (should-not (emacs-buffer-get-text-property 1 'face)))))
+
+(ert-deftest emacs-buffer-next-property-change-inside-interval ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello world")
+      (emacs-buffer-put-text-property 3 7 'face 'bold)
+      ;; POS=4 inside [3,7) — next change at 7.
+      (should (= 7 (emacs-buffer-next-property-change 4))))))
+
+(ert-deftest emacs-buffer-next-property-change-before-first-interval ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello world")
+      (emacs-buffer-put-text-property 5 9 'face 'bold)
+      ;; POS=1 has no props — next change at start of first interval (5).
+      (should (= 5 (emacs-buffer-next-property-change 1))))))
+
+(ert-deftest emacs-buffer-next-property-change-no-more ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello")
+      ;; No intervals at all.
+      (should-not (emacs-buffer-next-property-change 2))
+      ;; With LIMIT → returns LIMIT.
+      (should (= 10 (emacs-buffer-next-property-change 2 nil 10))))))
+
+(ert-deftest emacs-buffer-previous-property-change-basic ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello world")
+      (emacs-buffer-put-text-property 3 7 'face 'bold)
+      ;; POS=9 — last change before is at 7 (end of interval).
+      (should (= 7 (emacs-buffer-previous-property-change 9)))
+      ;; POS=5 inside — previous change at 3 (start of interval).
+      (should (= 3 (emacs-buffer-previous-property-change 5))))))
+
+(ert-deftest emacs-buffer-next-single-property-change-finds-change ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello world")
+      ;; [3,7) face=bold, [7,9) face=italic.
+      (emacs-buffer-put-text-property 3 7 'face 'bold)
+      (emacs-buffer-put-text-property 7 9 'face 'italic)
+      ;; POS=4 (face=bold) — next change in face at 7.
+      (should (= 7 (emacs-buffer-next-single-property-change 4 'face))))))
+
+(ert-deftest emacs-buffer-next-single-property-change-skips-unrelated ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello world")
+      ;; [3,5) face=bold weight=700, [5,7) face=bold weight=400.
+      (emacs-buffer-add-text-properties 3 5 '(face bold weight 700))
+      (emacs-buffer-add-text-properties 5 7 '(face bold weight 400))
+      ;; face is constant across [3,7) — next change at 7 (= where face
+      ;; goes back to nil) honouring LIMIT 100.
+      (should (= 7 (emacs-buffer-next-single-property-change 3 'face nil 100))))))
+
+(ert-deftest emacs-buffer-previous-single-property-change-finds-change ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello world")
+      (emacs-buffer-put-text-property 3 7 'face 'bold)
+      ;; POS=9 face=nil — previous change in face at 7 (where it was bold).
+      (should (= 7 (emacs-buffer-previous-single-property-change 9 'face))))))
+
+(ert-deftest emacs-buffer-get-char-property-overlay-wins ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello")
+      (emacs-buffer-put-text-property 1 6 'face 'red)
+      (let ((ov (emacs-buffer-make-overlay 1 6 b)))
+        (emacs-buffer-overlay-put ov 'face 'blue)
+        ;; Overlay value wins over text-property.
+        (should (eq 'blue (emacs-buffer-get-char-property 3 'face b)))
+        ;; Property not on overlay falls through.
+        (emacs-buffer-overlay-put ov 'weight 700)
+        (should (eq 700 (emacs-buffer-get-char-property 3 'weight b)))))))
+
+(ert-deftest emacs-buffer-get-char-property-text-prop-fallback ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "tp")))
+      (nelisp-ec-set-buffer b)
+      (nelisp-ec-insert "hello")
+      ;; No overlays — falls through to text-property (with category).
+      (let ((cat (make-symbol "tp-cat")))
+        (put cat 'face 'cyan)
+        (emacs-buffer-add-text-properties 1 6 (list 'category cat))
+        (should (eq 'cyan (emacs-buffer-get-char-property 3 'face b)))))))
 
 ;;;; C. undo system (6 tests)
 
