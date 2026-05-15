@@ -641,8 +641,16 @@ a one-element list (or nil if no root-window has been wired in)."
                   (handle callback))
 (declare-function emacs-tui-event-uninstall-sigwinch "emacs-tui-event"
                   (handle))
+(declare-function emacs-tui-event-poll               "emacs-tui-event"
+                  (handle &optional timeout-ms))
 (declare-function emacs-tui-terminfo-detect          "emacs-tui-terminfo"
                   (&optional env))
+
+;; emacs-keymap is lazy-required by `emacs-frame-use-tui-backend' to keep
+;; the load chain unidirectional (keymap → minibuffer → frame); declare
+;; the symbol so the byte-compiler can wire up references in
+;; `emacs-frame--tui-read-event' and the backend swap helpers.
+(defvar emacs-keymap--read-event-fn)
 (declare-function emacs-tui-terminfo-backend-init-args
                   "emacs-tui-terminfo" (&optional env))
 
@@ -719,6 +727,115 @@ backend is currently installed."
           (push f resized)
           (run-hook-with-args 'emacs-frame-tui-resize-hook f cols lines)))
       resized)))
+
+;; T161 / Doc 43 §3.1 Phase 11.A close gate #5 — stdin keyboard wire-up
+
+(defcustom emacs-frame-tui-read-event-timeout-ms 0
+  "Timeout in milliseconds for `emacs-frame--tui-read-event' polls.
+
+Forwarded to `emacs-tui-event-poll' on every read.  0 (the default)
+matches the pull-on-demand contract — the reader returns immediately
+when no event is queued (and signals `emacs-keymap-error' in that
+case).  Interactive use should bump this so the keymap reader blocks
+until the next byte arrives; ERT keeps the default to stay
+deterministic.
+
+Must be a non-negative integer."
+  :type 'integer
+  :group 'emacs-frame)
+
+(defcustom emacs-frame-tui-key-hook nil
+  "Abnormal hook fired after a TUI key event is dispatched to the keymap.
+
+Each function is called with one argument EVENT — the raw key-event
+plist (:type key :name NAME :modifiers MODS) produced by the TUI
+event source, *before* translation to a keymap element.  Phase 2
+reserves this hook as the observability seam: redisplay (Phase 11.B)
+and dribble logging can register here without touching the read-event
+path itself."
+  :type 'hook
+  :group 'emacs-frame)
+
+(defvar emacs-frame--tui-prev-read-event-fn nil
+  "Previous value of `emacs-keymap--read-event-fn' before TUI install.
+Module-private.  Restored by `emacs-frame-use-stub-backend' so a user
+override survives a backend swap.")
+
+(defun emacs-frame--tui-key-event->elem (event)
+  "Translate a TUI key EVENT plist into a `emacs-keymap'-compatible element.
+
+EVENT is `(:type key :name NAME :modifiers MODS)' as produced by
+`emacs-tui-event-encode-key-event'.  NAME is either a character
+integer or a symbol; MODS is a sublist of `(control meta shift)'.
+
+Translation rules:
+- Character + `control' modifier → integer with the Emacs control
+  bit set (= `(logior NAME ?\\C-\\^@)').
+- Bare character → the integer itself.
+- Symbol key (e.g. `up', `f1') → the symbol.  Modifiers on symbol
+  keys are not yet folded into the symbol name in this phase; the
+  raw event is still surfaced via `emacs-frame-tui-key-hook' so an
+  upstream consumer can recover them when needed.
+
+Returns the translated element; signals `wrong-type-argument' on a
+malformed EVENT."
+  (unless (and (listp event) (eq (plist-get event :type) 'key))
+    (signal 'wrong-type-argument (list 'tui-key-event event)))
+  (let ((name (plist-get event :name))
+        (mods (plist-get event :modifiers)))
+    (cond
+     ((integerp name)
+      (if (memq 'control mods)
+          (logior name ?\C-\^@)
+        name))
+     ((symbolp name) name)
+     (t (signal 'wrong-type-argument (list 'tui-key-name name))))))
+
+(defun emacs-frame--tui-read-event ()
+  "Read one key event from the active TUI event handle.
+
+Installed as `emacs-keymap--read-event-fn' by
+`emacs-frame-use-tui-backend' so `emacs-keymap-read-key-sequence' and
+its callers pull live key events from the stdin parser instead of
+the default FIFO queue.
+
+Loops `emacs-tui-event-poll' (timeout =
+`emacs-frame-tui-read-event-timeout-ms') discarding any `:type
+resize' events until a `:type key' event is observed, then runs
+`emacs-frame-tui-key-hook' with the raw event and returns the
+translated element from `emacs-frame--tui-key-event->elem'.
+
+Signals `emacs-keymap-error' when no TUI event handle is installed
+or the poll returns nil within the loop budget (= 1024 iterations).
+The error type matches `emacs-keymap--default-read-event' so callers
+expecting the empty-queue path stay source-compatible."
+  (require 'emacs-keymap)
+  (require 'emacs-tui-event)
+  (let ((eh emacs-frame--tui-event-handle))
+    (unless eh
+      (signal 'emacs-keymap-error (list "TUI event handle not installed")))
+    (let ((timeout (max 0 (or emacs-frame-tui-read-event-timeout-ms 0)))
+          (budget  1024)
+          (result  nil))
+      (while (and (null result) (> budget 0))
+        (setq budget (1- budget))
+        (let ((ev (emacs-tui-event-poll eh timeout)))
+          (cond
+           ((null ev)
+            (signal 'emacs-keymap-error (list "no event available")))
+           ((eq (plist-get ev :type) 'resize)
+            ;; SIGWINCH path already handled the geometry; skip and re-poll.
+            nil)
+           ((eq (plist-get ev :type) 'key)
+            (run-hook-with-args 'emacs-frame-tui-key-hook ev)
+            (setq result (emacs-frame--tui-key-event->elem ev)))
+           (t
+            ;; Unknown event types are surfaced via the hook for
+            ;; debugging but skipped from the keymap-reader contract.
+            (run-hook-with-args 'emacs-frame-tui-key-hook ev)))))
+      (unless result
+        (signal 'emacs-keymap-error (list "read-event loop budget exhausted")))
+      result)))
 
 (defun emacs-frame--tui-make-dispatch (handle event-handle)
   "Construct the `emacs-frame--backend-dispatch' plist for HANDLE.
@@ -821,6 +938,7 @@ If a TUI backend is already active, it is shut down cleanly first
   (require 'emacs-tui-backend)
   (require 'emacs-tui-event)
   (require 'emacs-tui-terminfo)
+  (require 'emacs-keymap)
   ;; Idempotent: tear down any existing TUI backend first.
   (when (or emacs-frame--tui-handle emacs-frame--tui-event-handle)
     (emacs-frame-use-stub-backend))
@@ -843,6 +961,11 @@ If a TUI backend is already active, it is shut down cleanly first
     (emacs-frame-set-backend-dispatch dispatch)
     (emacs-tui-event-install-sigwinch event-handle
                                       #'emacs-frame--tui-on-sigwinch)
+    ;; T161 keyboard wire-up: install the keymap read-event seam.
+    ;; Preserve any prior caller-installed override so `use-stub-backend'
+    ;; can restore it on revert.
+    (setq emacs-frame--tui-prev-read-event-fn emacs-keymap--read-event-fn
+          emacs-keymap--read-event-fn        #'emacs-frame--tui-read-event)
     (list :backend backend-handle
           :event   event-handle
           :info    info)))
@@ -858,6 +981,12 @@ BACKEND-OBJ pointing at a TUI frame record is also cleared, since
 those records die with their handle.
 
 Returns t."
+  ;; T161 keyboard wire-up: restore the previous read-event-fn before
+  ;; tearing down the event handle so any concurrent poll fails cleanly.
+  (when (and (boundp 'emacs-keymap--read-event-fn)
+             (eq emacs-keymap--read-event-fn #'emacs-frame--tui-read-event))
+    (setq emacs-keymap--read-event-fn emacs-frame--tui-prev-read-event-fn))
+  (setq emacs-frame--tui-prev-read-event-fn nil)
   (when emacs-frame--tui-event-handle
     (when (fboundp 'emacs-tui-event-uninstall-sigwinch)
       (ignore-errors
