@@ -30,8 +30,10 @@
 ;;   C. confirmation  (2 APIs)
 ;;      y-or-n-p / yes-or-no-p
 ;;
-;;   D. completion  (1 API + 2 special vars)
-;;      completing-read / minibuffer-completion-table (var) /
+;;   D. completion  (5 APIs + 2 special vars)
+;;      completing-read / completing-read-default
+;;      try-completion / all-completions / test-completion
+;;      minibuffer-completion-table (var) /
 ;;      minibuffer-completion-confirm (var)
 ;;
 ;;   E. minibuffer state / control  (8 APIs + 3 special vars)
@@ -91,6 +93,14 @@ honour them.  Default nil keeps the inserted prompt plain text."
 (defcustom emacs-minibuffer-message-timeout 2
   "Seconds the `minibuffer-message' overlay would persist (informational only)."
   :type 'number
+  :group 'emacs-minibuffer)
+
+(defcustom emacs-minibuffer-completion-ignore-case nil
+  "If non-nil, completion matching is case-insensitive.
+Mirrors host Emacs `completion-ignore-case'.  Honoured by
+`emacs-minibuffer-try-completion', `emacs-minibuffer-all-completions',
+`emacs-minibuffer-test-completion', and the shared internal helpers."
+  :type 'boolean
   :group 'emacs-minibuffer)
 
 (defvar emacs-minibuffer--read-fn nil
@@ -532,24 +542,60 @@ predicate nil to enumerate)."
    (t (signal 'emacs-minibuffer-error
               (list "Bad collection" collection)))))
 
-(defun emacs-minibuffer--try-completion (string table)
+(defun emacs-minibuffer--prefix-match-p (prefix candidate)
+  "Return non-nil iff CANDIDATE begins with PREFIX.
+Honours `emacs-minibuffer-completion-ignore-case'."
+  (let ((plen (length prefix)))
+    (and (>= (length candidate) plen)
+         (if emacs-minibuffer-completion-ignore-case
+             (eq t (compare-strings prefix 0 plen candidate 0 plen t))
+           (string-prefix-p prefix candidate)))))
+
+(defun emacs-minibuffer--string-equal-cf (a b)
+  "Case-aware string equality honouring `emacs-minibuffer-completion-ignore-case'."
+  (if emacs-minibuffer-completion-ignore-case
+      (eq t (compare-strings a 0 nil b 0 nil t))
+    (string-equal a b)))
+
+(defun emacs-minibuffer--filter-candidates (string table predicate)
+  "Return entries of TABLE (list of strings) starting with STRING.
+PREDICATE, when non-nil, further filters the result."
+  (let ((cands (cl-remove-if-not
+                (lambda (c) (emacs-minibuffer--prefix-match-p string c))
+                table)))
+    (if predicate
+        (cl-remove-if-not predicate cands)
+      cands)))
+
+(defun emacs-minibuffer--common-prefix (cands)
+  "Return the longest common prefix of CANDS (non-empty list of strings).
+Case-fold honours `emacs-minibuffer-completion-ignore-case'."
+  (let ((prefix (car cands)))
+    (dolist (c (cdr cands))
+      (let ((i 0)
+            (lim (min (length prefix) (length c))))
+        (while (and (< i lim)
+                    (if emacs-minibuffer-completion-ignore-case
+                        (eq t (compare-strings prefix i (1+ i)
+                                               c i (1+ i) t))
+                      (eq (aref prefix i) (aref c i))))
+          (cl-incf i))
+        (setq prefix (substring prefix 0 i))))
+    prefix))
+
+(defun emacs-minibuffer--try-completion (string table &optional predicate)
   "Return the longest common prefix in TABLE that begins with STRING,
-or t if STRING is itself a complete match, or nil if no candidates."
-  (let ((cands (cl-remove-if-not (lambda (c) (string-prefix-p string c))
-                                 table)))
+t if STRING is itself a unique exact match, or nil when no candidate matches.
+TABLE must already be a list of strings.  PREDICATE, when non-nil,
+filters candidates after the prefix match.  Honours
+`emacs-minibuffer-completion-ignore-case'."
+  (let ((cands (emacs-minibuffer--filter-candidates string table predicate)))
     (cond
      ((null cands) nil)
-     ((and (= (length cands) 1) (string-equal (car cands) string)) t)
-     (t
-      ;; longest common prefix
-      (let ((prefix (car cands)))
-        (dolist (c (cdr cands))
-          (let ((i 0)
-                (lim (min (length prefix) (length c))))
-            (while (and (< i lim) (eq (aref prefix i) (aref c i)))
-              (cl-incf i))
-            (setq prefix (substring prefix 0 i))))
-        prefix)))))
+     ((and (= (length cands) 1)
+           (emacs-minibuffer--string-equal-cf (car cands) string))
+      t)
+     (t (emacs-minibuffer--common-prefix cands)))))
 
 ;;;###autoload
 (defun emacs-minibuffer-completing-read
@@ -570,10 +616,52 @@ INITIAL-INPUT, HIST, DEF behave as in `read-from-minibuffer'."
     (let ((s (emacs-minibuffer-read-from-minibuffer
               prompt initial-input nil nil hist default-str)))
       (when require-match
-        (unless (member s table)
+        (unless (cl-some (lambda (c) (emacs-minibuffer--string-equal-cf c s))
+                         table)
           (signal 'emacs-minibuffer-error
                   (list "Match required" s))))
       s)))
+
+;;;###autoload
+(defalias 'emacs-minibuffer-completing-read-default
+  #'emacs-minibuffer-completing-read
+  "Alias for `emacs-minibuffer-completing-read'.
+Matches the host Emacs entry-point name used by libraries that bind
+`completing-read-function' explicitly.")
+
+;;;###autoload
+(defun emacs-minibuffer-try-completion (string collection &optional predicate)
+  "Public Phase 1 port of `try-completion'.
+COLLECTION is normalised via `emacs-minibuffer--collection->list'
+(= list of strings / alist / obarray / function).  Returns the longest
+common prefix of (filtered) COLLECTION entries that begin with STRING,
+or t when STRING is the unique exact match, or nil when nothing matches.
+Honours `emacs-minibuffer-completion-ignore-case'."
+  (emacs-minibuffer--try-completion
+   string
+   (emacs-minibuffer--collection->list collection)
+   predicate))
+
+;;;###autoload
+(defun emacs-minibuffer-all-completions (string collection &optional predicate)
+  "Public Phase 1 port of `all-completions'.
+Return a list of every entry in COLLECTION that begins with STRING and
+satisfies PREDICATE (when non-nil).  Order follows COLLECTION traversal
+order (= post-`--collection->list').  Honours
+`emacs-minibuffer-completion-ignore-case'."
+  (let ((table (emacs-minibuffer--collection->list collection)))
+    (emacs-minibuffer--filter-candidates string table predicate)))
+
+;;;###autoload
+(defun emacs-minibuffer-test-completion (string collection &optional predicate)
+  "Public Phase 1 port of `test-completion'.
+Return t iff STRING is an exact element of (filtered) COLLECTION.
+Honours `emacs-minibuffer-completion-ignore-case'."
+  (let* ((table (emacs-minibuffer--collection->list collection))
+         (table (if predicate (cl-remove-if-not predicate table) table)))
+    (and (cl-some (lambda (c) (emacs-minibuffer--string-equal-cf c string))
+                  table)
+         t)))
 
 ;;; E. minibuffer state / control
 
