@@ -7,7 +7,7 @@ NELISP_LOAD_PATH = -L $(NELISP_ROOT)/src \
 SRC_FILES = $(wildcard src/*.el)
 TEST_FILES = $(wildcard test/*.el)
 
-.PHONY: compile test bench demo clean
+.PHONY: compile test bench demo demo-phase2 clean
 
 compile:
 	$(EMACS) -L src $(NELISP_LOAD_PATH) \
@@ -27,6 +27,12 @@ demo:
 	$(EMACS) -L src -L demo $(NELISP_LOAD_PATH) \
 		-l phase1-close-demo \
 		--eval "(prin1 (phase1-close-demo-run))" \
+		--eval "(terpri)"
+
+demo-phase2:
+	$(EMACS) -L src -L demo $(NELISP_LOAD_PATH) \
+		-l phase2-close-demo \
+		--eval "(prin1 (phase2-close-demo-run))" \
 		--eval "(terpri)"
 
 clean:
