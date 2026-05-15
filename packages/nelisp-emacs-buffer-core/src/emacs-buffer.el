@@ -97,14 +97,18 @@ Slots:
                    `nelisp-ec-delete-region').  Used as a buffer-string
                    cache key — text-property changes do NOT bump it.
 - BASE-BUFFER    : non-nil = this buffer is an indirect clone of the
-                   given `nelisp-ec-buffer'."
+                   given `nelisp-ec-buffer'.
+- OVERLAYS       : Phase 1 §4.2 — per-buffer overlay list sorted by
+                   ascending START (`emacs-buffer--overlay' records).
+                   See F. overlay section below."
   (locals        nil)
   (auto-local-p  nil)
   (undo-list     nil)
   (text-props    nil)
   (modified-tick 0)
   (text-tick     0)
-  (base-buffer   nil))
+  (base-buffer   nil)
+  (overlays      nil))
 
 (defvar emacs-buffer--state (make-hash-table :test 'eq :weakness nil)
   "Hash table buffer-object -> `emacs-buffer--ext'.
@@ -781,6 +785,261 @@ Like `generate-new-buffer-name' but pure (= does NOT create a buffer)."
       (while (assoc (format "%s<%d>" base n) nelisp-ec--buffers)
         (setq n (1+ n)))
       (format "%s<%d>" base n))))
+
+;;; F. overlay  (15 APIs)
+;;
+;; Self-contained overlay primitives keyed by `nelisp-ec-buffer'.
+;; Phase 1 §4.2 — vendor/emacs-lisp/ does not provide overlay.el
+;; (upstream Emacs implements it in buffer.c) and the Layer 1
+;; `nelisp-overlay' package assumes host Emacs `bufferp', so there is
+;; no impedance-free delegate path.  This section implements the
+;; minimum viable subset directly on top of the existing
+;; `emacs-buffer--ext' side-table.  Doc 41 §3.4 (Phase 9c.4) provider
+;; semantics — priority / insertion-order tie-break, front/rear advance
+;; endpoint behaviour — are honoured.
+
+(defvar emacs-buffer--overlay-counter 0
+  "Monotonic counter for overlay insertion stamps.
+Used as the priority tie-break key (Doc 41 §2.5 LOCKED v1: ties broken
+by insertion order so the LATER overlay wins).")
+
+(cl-defstruct (emacs-buffer--overlay
+               (:constructor emacs-buffer--overlay-make)
+               (:copier nil)
+               (:predicate emacs-buffer--overlay-record-p)
+               (:conc-name emacs-buffer--overlay-rec-))
+  "Overlay record stored on an `emacs-buffer--ext' OVERLAYS list.
+
+Slots:
+- ID            : monotonic insertion stamp (priority tie-break).
+- START / END   : 1-based positions in BUFFER, half-open [START, END).
+- BUFFER        : back-reference to the owning `nelisp-ec-buffer', or
+                  nil after `delete-overlay'.
+- FRONT-ADVANCE : t = START moves on insertion at START.
+- REAR-ADVANCE  : t = END moves on insertion at END.
+- PROPERTIES    : property plist."
+  (id            0   :type integer)
+  (start         0   :type integer)
+  (end           0   :type integer)
+  (buffer        nil)
+  (front-advance nil)
+  (rear-advance  nil)
+  (properties    nil))
+
+;;;###autoload
+(defun emacs-buffer-overlayp (object)
+  "Return non-nil if OBJECT is an `emacs-buffer' overlay record."
+  (and (emacs-buffer--overlay-record-p object) t))
+
+(defun emacs-buffer--overlay-alive-p (ov)
+  "Return non-nil if OV is still attached to a buffer."
+  (and (emacs-buffer--overlay-record-p ov)
+       (emacs-buffer--overlay-rec-buffer ov)
+       t))
+
+(defun emacs-buffer--overlay-check-alive (ov)
+  "Signal `emacs-buffer-error' unless OV is still attached."
+  (unless (emacs-buffer--overlay-alive-p ov)
+    (signal 'emacs-buffer-error (list "Dead overlay" ov))))
+
+(defun emacs-buffer--overlay-insert-sorted (buf rec)
+  "Insert REC into BUF's overlay list, keeping ascending START order.
+Ties on START preserve insertion order (= REC goes after any existing
+record with equal START)."
+  (let* ((ext (emacs-buffer--ensure-ext buf))
+         (lst (emacs-buffer--ext-overlays ext))
+         (start (emacs-buffer--overlay-rec-start rec)))
+    (cond
+     ((null lst)
+      (setf (emacs-buffer--ext-overlays ext) (list rec)))
+     ((< start (emacs-buffer--overlay-rec-start (car lst)))
+      (setf (emacs-buffer--ext-overlays ext) (cons rec lst)))
+     (t
+      (let ((tail lst))
+        (while (and (cdr tail)
+                    (<= (emacs-buffer--overlay-rec-start (cadr tail)) start))
+          (setq tail (cdr tail)))
+        (setcdr tail (cons rec (cdr tail))))))))
+
+(defun emacs-buffer--overlay-remove-rec (buf rec)
+  "Remove REC from BUF's overlay list (one-shot delq)."
+  (let ((ext (gethash buf emacs-buffer--state)))
+    (when ext
+      (setf (emacs-buffer--ext-overlays ext)
+            (delq rec (emacs-buffer--ext-overlays ext))))))
+
+(defun emacs-buffer--overlay-re-sort (buf)
+  "Re-sort BUF's overlay list by ascending START (stable on insertion id)."
+  (let ((ext (gethash buf emacs-buffer--state)))
+    (when (and ext (emacs-buffer--ext-overlays ext))
+      (setf (emacs-buffer--ext-overlays ext)
+            (sort (copy-sequence (emacs-buffer--ext-overlays ext))
+                  (lambda (a b)
+                    (let ((sa (emacs-buffer--overlay-rec-start a))
+                          (sb (emacs-buffer--overlay-rec-start b)))
+                      (if (= sa sb)
+                          (< (emacs-buffer--overlay-rec-id a)
+                             (emacs-buffer--overlay-rec-id b))
+                        (< sa sb)))))))))
+
+;;;###autoload
+(defun emacs-buffer-make-overlay (beg end &optional buf front-adv rear-adv)
+  "Create an overlay covering [BEG, END) in BUF (default = current).
+FRONT-ADV and REAR-ADV control endpoint behaviour under insertion at
+the respective endpoint, mirroring Emacs `make-overlay' semantics."
+  (unless (and (integerp beg) (integerp end))
+    (signal 'wrong-type-argument (list 'integerp beg end)))
+  (let* ((buffer (or buf (emacs-buffer--current)))
+         (s (min beg end))
+         (e (max beg end))
+         (id (cl-incf emacs-buffer--overlay-counter))
+         (rec (emacs-buffer--overlay-make
+               :id id :start s :end e :buffer buffer
+               :front-advance (and front-adv t)
+               :rear-advance  (and rear-adv  t)
+               :properties nil)))
+    (emacs-buffer--overlay-insert-sorted buffer rec)
+    rec))
+
+;;;###autoload
+(defun emacs-buffer-overlay-start (ov)
+  "Return the START position of OV, or nil if OV has been deleted."
+  (and (emacs-buffer--overlay-alive-p ov)
+       (emacs-buffer--overlay-rec-start ov)))
+
+;;;###autoload
+(defun emacs-buffer-overlay-end (ov)
+  "Return the END position of OV, or nil if OV has been deleted."
+  (and (emacs-buffer--overlay-alive-p ov)
+       (emacs-buffer--overlay-rec-end ov)))
+
+;;;###autoload
+(defun emacs-buffer-overlay-buffer (ov)
+  "Return the buffer that OV is attached to, or nil if OV has been deleted."
+  (and (emacs-buffer--overlay-alive-p ov)
+       (emacs-buffer--overlay-rec-buffer ov)))
+
+;;;###autoload
+(defun emacs-buffer-overlay-properties (ov)
+  "Return a fresh copy of OV's property list.
+Signals `emacs-buffer-error' if OV has been deleted."
+  (emacs-buffer--overlay-check-alive ov)
+  (copy-sequence (emacs-buffer--overlay-rec-properties ov)))
+
+;;;###autoload
+(defun emacs-buffer-overlay-put (ov prop value)
+  "Set property PROP of OV to VALUE.  Returns VALUE.
+Signals `emacs-buffer-error' if OV has been deleted."
+  (emacs-buffer--overlay-check-alive ov)
+  (setf (emacs-buffer--overlay-rec-properties ov)
+        (plist-put (emacs-buffer--overlay-rec-properties ov) prop value))
+  value)
+
+;;;###autoload
+(defun emacs-buffer-overlay-get (ov prop)
+  "Return PROP of OV, or nil if it is not set.
+Signals `emacs-buffer-error' if OV has been deleted."
+  (emacs-buffer--overlay-check-alive ov)
+  (plist-get (emacs-buffer--overlay-rec-properties ov) prop))
+
+;;;###autoload
+(defun emacs-buffer-move-overlay (ov beg end &optional buf)
+  "Move OV to cover [BEG, END) in BUF (default = OV's current buffer).
+Returns OV.  Signals `emacs-buffer-error' if OV has been deleted."
+  (emacs-buffer--overlay-check-alive ov)
+  (let* ((old-buf (emacs-buffer--overlay-rec-buffer ov))
+         (new-buf (or buf old-buf))
+         (s (min beg end))
+         (e (max beg end)))
+    (unless (eq old-buf new-buf)
+      (emacs-buffer--overlay-remove-rec old-buf ov))
+    (setf (emacs-buffer--overlay-rec-start ov) s
+          (emacs-buffer--overlay-rec-end ov) e
+          (emacs-buffer--overlay-rec-buffer ov) new-buf)
+    (if (eq old-buf new-buf)
+        (emacs-buffer--overlay-re-sort new-buf)
+      (emacs-buffer--overlay-insert-sorted new-buf ov))
+    ov))
+
+;;;###autoload
+(defun emacs-buffer-delete-overlay (ov)
+  "Detach OV from its buffer.  Idempotent.  Returns nil."
+  (when (emacs-buffer--overlay-alive-p ov)
+    (let ((buf (emacs-buffer--overlay-rec-buffer ov)))
+      (emacs-buffer--overlay-remove-rec buf ov)
+      (setf (emacs-buffer--overlay-rec-buffer ov) nil)))
+  nil)
+
+;;;###autoload
+(defun emacs-buffer-delete-all-overlays (&optional buf)
+  "Remove every overlay in BUF (default = current).  Returns nil."
+  (let* ((buffer (or buf (emacs-buffer--current)))
+         (ext (gethash buffer emacs-buffer--state)))
+    (when ext
+      (dolist (ov (emacs-buffer--ext-overlays ext))
+        (setf (emacs-buffer--overlay-rec-buffer ov) nil))
+      (setf (emacs-buffer--ext-overlays ext) nil)))
+  nil)
+
+;;;###autoload
+(defun emacs-buffer-overlays-at (pos &optional buf)
+  "Return overlays at POS in BUF (default = current).
+Order: by ascending START, ties broken by insertion order."
+  (let* ((buffer (or buf (emacs-buffer--current)))
+         (ext (gethash buffer emacs-buffer--state)))
+    (when ext
+      (cl-remove-if-not
+       (lambda (ov)
+         (and (<= (emacs-buffer--overlay-rec-start ov) pos)
+              (< pos (emacs-buffer--overlay-rec-end ov))))
+       (emacs-buffer--ext-overlays ext)))))
+
+;;;###autoload
+(defun emacs-buffer-overlays-in (beg end &optional buf)
+  "Return overlays in BUF (default = current) that overlap [BEG, END)."
+  (let* ((buffer (or buf (emacs-buffer--current)))
+         (ext (gethash buffer emacs-buffer--state)))
+    (when ext
+      (cl-remove-if-not
+       (lambda (ov)
+         (and (< (emacs-buffer--overlay-rec-start ov) end)
+              (> (emacs-buffer--overlay-rec-end ov) beg)))
+       (emacs-buffer--ext-overlays ext)))))
+
+;;;###autoload
+(defun emacs-buffer-overlay-lists (&optional buf)
+  "Return (BEFORE . AFTER) overlays in BUF (default = current).
+Phase 1 — partition by START relative to BUF's current point.
+BEFORE holds overlays starting at or before POINT, AFTER the rest."
+  (let* ((buffer (or buf (emacs-buffer--current)))
+         (ext (gethash buffer emacs-buffer--state)))
+    (when ext
+      (let ((point (nelisp-ec-buffer-point buffer))
+            before after)
+        (dolist (ov (emacs-buffer--ext-overlays ext))
+          (if (<= (emacs-buffer--overlay-rec-start ov) point)
+              (push ov before)
+            (push ov after)))
+        (cons (nreverse before) (nreverse after))))))
+
+;;;###autoload
+(defun emacs-buffer-copy-overlay (ov)
+  "Return a fresh copy of OV in the same buffer with the same range / props.
+The copy receives a fresh insertion stamp."
+  (emacs-buffer--overlay-check-alive ov)
+  (let* ((buf (emacs-buffer--overlay-rec-buffer ov))
+         (id (cl-incf emacs-buffer--overlay-counter))
+         (rec (emacs-buffer--overlay-make
+               :id id
+               :start (emacs-buffer--overlay-rec-start ov)
+               :end (emacs-buffer--overlay-rec-end ov)
+               :buffer buf
+               :front-advance (emacs-buffer--overlay-rec-front-advance ov)
+               :rear-advance  (emacs-buffer--overlay-rec-rear-advance ov)
+               :properties (copy-sequence
+                            (emacs-buffer--overlay-rec-properties ov)))))
+    (emacs-buffer--overlay-insert-sorted buf rec)
+    rec))
 
 (provide 'emacs-buffer)
 ;;; emacs-buffer.el ends here

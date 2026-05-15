@@ -1,12 +1,13 @@
 ;;; emacs-buffer-test.el --- ERT tests for emacs-buffer.el  -*- lexical-binding: t; -*-
 
 ;; Phase 1 module 1/6 tests per nelisp-emacs Doc 01.
-;; Covers all 5 categories of `emacs-buffer-*' API across 28 tests:
+;; Covers all 6 categories of `emacs-buffer-*' API:
 ;;   A. buffer-local variables  (10 tests)
 ;;   B. text-property MVP        (7 tests)
 ;;   C. undo system              (6 tests)
 ;;   D. modification tracking    (4 tests)
 ;;   E. additional buffer ops    (5 tests)
+;;   F. overlay                  (18 tests)
 
 (require 'ert)
 (require 'emacs-buffer)
@@ -20,7 +21,8 @@
          (nelisp-ec--current-buffer nil)
          (emacs-buffer--state (make-hash-table :test 'eq))
          (emacs-buffer--variable-buffer-local nil)
-         (emacs-buffer--default-values (make-hash-table :test 'eq)))
+         (emacs-buffer--default-values (make-hash-table :test 'eq))
+         (emacs-buffer--overlay-counter 0))
      ,@body))
 
 ;;;; A. buffer-local variables (10 tests)
@@ -343,6 +345,207 @@
     (should (equal "scratch<2>" (emacs-buffer-generate-new-buffer-name "scratch")))
     (nelisp-ec-generate-new-buffer "scratch")
     (should (equal "scratch<3>" (emacs-buffer-generate-new-buffer-name "scratch")))))
+
+;;;; F. overlay (18 tests)
+
+(ert-deftest emacs-buffer-overlay-make-and-accessors ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 3 7 b)))
+      (should (emacs-buffer-overlayp ov))
+      (should (= 3 (emacs-buffer-overlay-start ov)))
+      (should (= 7 (emacs-buffer-overlay-end ov)))
+      (should (eq b (emacs-buffer-overlay-buffer ov))))))
+
+(ert-deftest emacs-buffer-overlay-make-swaps-reversed-range ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 9 4 b)))
+      (should (= 4 (emacs-buffer-overlay-start ov)))
+      (should (= 9 (emacs-buffer-overlay-end ov))))))
+
+(ert-deftest emacs-buffer-overlay-make-rejects-non-integer-range ()
+  (emacs-buffer-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "x")))
+      (should-error (emacs-buffer-make-overlay "x" 5 b)
+                    :type 'wrong-type-argument))))
+
+(ert-deftest emacs-buffer-overlayp-rejects-non-overlay ()
+  (should-not (emacs-buffer-overlayp 42))
+  (should-not (emacs-buffer-overlayp '(1 2 3)))
+  (should-not (emacs-buffer-overlayp "ov")))
+
+(ert-deftest emacs-buffer-overlay-put-get-roundtrip ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 1 5 b)))
+      (should (eq 'red (emacs-buffer-overlay-put ov 'face 'red)))
+      (should (eq 'red (emacs-buffer-overlay-get ov 'face)))
+      ;; absent key -> nil
+      (should-not (emacs-buffer-overlay-get ov 'no-such-prop)))))
+
+(ert-deftest emacs-buffer-overlay-properties-returns-copy ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 1 5 b)))
+      (emacs-buffer-overlay-put ov 'face 'red)
+      (emacs-buffer-overlay-put ov 'priority 1)
+      (let ((props (emacs-buffer-overlay-properties ov)))
+        (should (equal 'red (plist-get props 'face)))
+        (should (equal 1 (plist-get props 'priority)))
+        ;; mutating the copy must not affect OV
+        (plist-put props 'face 'blue)
+        (should (eq 'red (emacs-buffer-overlay-get ov 'face)))))))
+
+(ert-deftest emacs-buffer-overlays-at-single ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 3 7 b)))
+      ;; START is inclusive, END is exclusive.
+      (should (equal (list ov) (emacs-buffer-overlays-at 3 b)))
+      (should (equal (list ov) (emacs-buffer-overlays-at 6 b)))
+      ;; END boundary is NOT included.
+      (should-not (emacs-buffer-overlays-at 7 b))
+      ;; Outside the range.
+      (should-not (emacs-buffer-overlays-at 2 b)))))
+
+(ert-deftest emacs-buffer-overlays-at-multiple-ordered-by-start ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (o1 (emacs-buffer-make-overlay 5 10 b))
+           (o2 (emacs-buffer-make-overlay 3 8  b))
+           (o3 (emacs-buffer-make-overlay 7 9  b)))
+      ;; Position 7 is in all three.  Order = ascending START
+      ;; (3, 5, 7) -> (o2 o1 o3).
+      (should (equal (list o2 o1 o3) (emacs-buffer-overlays-at 7 b))))))
+
+(ert-deftest emacs-buffer-overlays-in-range ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (o1 (emacs-buffer-make-overlay 1 3 b))
+           (o2 (emacs-buffer-make-overlay 5 9 b))
+           (o3 (emacs-buffer-make-overlay 8 12 b)))
+      ;; [4, 10) overlaps o2 + o3 but not o1.
+      (let ((hits (emacs-buffer-overlays-in 4 10 b)))
+        (should (= 2 (length hits)))
+        (should (memq o2 hits))
+        (should (memq o3 hits))
+        (should-not (memq o1 hits))))))
+
+(ert-deftest emacs-buffer-move-overlay-within-buffer ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 3 7 b)))
+      (emacs-buffer-move-overlay ov 10 15)
+      (should (= 10 (emacs-buffer-overlay-start ov)))
+      (should (= 15 (emacs-buffer-overlay-end ov)))
+      (should (eq b (emacs-buffer-overlay-buffer ov)))
+      ;; overlays-at @ 5 no longer hits.
+      (should-not (emacs-buffer-overlays-at 5 b))
+      (should (equal (list ov) (emacs-buffer-overlays-at 12 b))))))
+
+(ert-deftest emacs-buffer-move-overlay-across-buffers ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((a (nelisp-ec-generate-new-buffer "a"))
+           (b (nelisp-ec-generate-new-buffer "b"))
+           (ov (emacs-buffer-make-overlay 1 5 a)))
+      (emacs-buffer-move-overlay ov 2 6 b)
+      (should (eq b (emacs-buffer-overlay-buffer ov)))
+      ;; The overlay is no longer in A's registry.
+      (should-not (emacs-buffer-overlays-at 3 a))
+      (should (equal (list ov) (emacs-buffer-overlays-at 3 b))))))
+
+(ert-deftest emacs-buffer-delete-overlay-clears-buffer-ref ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 3 7 b)))
+      (should-not (emacs-buffer-delete-overlay ov))
+      (should-not (emacs-buffer-overlay-start ov))
+      (should-not (emacs-buffer-overlay-end ov))
+      (should-not (emacs-buffer-overlay-buffer ov))
+      (should-not (emacs-buffer-overlays-at 5 b))
+      ;; Idempotent.
+      (should-not (emacs-buffer-delete-overlay ov)))))
+
+(ert-deftest emacs-buffer-delete-all-overlays-empties-registry ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x")))
+      (emacs-buffer-make-overlay 1 3 b)
+      (emacs-buffer-make-overlay 5 7 b)
+      (emacs-buffer-make-overlay 9 11 b)
+      (should-not (emacs-buffer-delete-all-overlays b))
+      (should-not (emacs-buffer-overlays-in 1 20 b))
+      (should-not (emacs-buffer-overlays-at 2 b)))))
+
+(ert-deftest emacs-buffer-copy-overlay-is-independent ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 3 7 b)))
+      (emacs-buffer-overlay-put ov 'face 'red)
+      (let ((cp (emacs-buffer-copy-overlay ov)))
+        (should (emacs-buffer-overlayp cp))
+        (should (not (eq cp ov)))
+        (should (= 3 (emacs-buffer-overlay-start cp)))
+        (should (eq 'red (emacs-buffer-overlay-get cp 'face)))
+        ;; Mutating the copy must not affect OV.
+        (emacs-buffer-overlay-put cp 'face 'blue)
+        (should (eq 'red (emacs-buffer-overlay-get ov 'face)))
+        (should (eq 'blue (emacs-buffer-overlay-get cp 'face)))
+        ;; Both live in BUF's registry.
+        (let ((hits (emacs-buffer-overlays-at 5 b)))
+          (should (memq ov hits))
+          (should (memq cp hits)))))))
+
+(ert-deftest emacs-buffer-overlay-lists-partitions-by-point ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (o1 (emacs-buffer-make-overlay 1 3 b))
+           (o2 (emacs-buffer-make-overlay 5 9 b))
+           (_o3 (emacs-buffer-make-overlay 10 12 b)))
+      (ignore _o3)
+      ;; point defaults to 1 on a fresh buffer.
+      (setf (nelisp-ec-buffer-point b) 4)
+      (let ((pair (emacs-buffer-overlay-lists b)))
+        (should (memq o1 (car pair)))
+        (should (memq o2 (cdr pair)))))))
+
+(ert-deftest emacs-buffer-overlay-dead-ops-signal ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 3 7 b)))
+      (emacs-buffer-delete-overlay ov)
+      (should-error (emacs-buffer-overlay-put ov 'face 'red)
+                    :type 'emacs-buffer-error)
+      (should-error (emacs-buffer-overlay-get ov 'face)
+                    :type 'emacs-buffer-error)
+      (should-error (emacs-buffer-overlay-properties ov)
+                    :type 'emacs-buffer-error)
+      (should-error (emacs-buffer-move-overlay ov 1 2 b)
+                    :type 'emacs-buffer-error)
+      (should-error (emacs-buffer-copy-overlay ov)
+                    :type 'emacs-buffer-error))))
+
+(ert-deftest emacs-buffer-overlay-front-rear-advance-stored ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (ov (emacs-buffer-make-overlay 3 7 b t t))
+           (cp (emacs-buffer-copy-overlay ov)))
+      ;; Phase 1 stores the flags; insertion-shift semantics arrive
+      ;; with the Doc 41 §2.6 endpoint-aware insert/delete propagation.
+      (should (emacs-buffer--overlay-rec-front-advance ov))
+      (should (emacs-buffer--overlay-rec-rear-advance ov))
+      ;; Copy preserves the flags.
+      (should (emacs-buffer--overlay-rec-front-advance cp))
+      (should (emacs-buffer--overlay-rec-rear-advance cp)))))
+
+(ert-deftest emacs-buffer-overlay-tie-break-by-insertion-id ()
+  (emacs-buffer-test--with-fresh-world
+    (let* ((b (nelisp-ec-generate-new-buffer "x"))
+           (o1 (emacs-buffer-make-overlay 5 9 b))
+           (o2 (emacs-buffer-make-overlay 5 9 b))
+           (o3 (emacs-buffer-make-overlay 5 9 b)))
+      ;; All three start at 5; order at position 5 must be insertion order.
+      (should (equal (list o1 o2 o3) (emacs-buffer-overlays-at 5 b))))))
 
 (provide 'emacs-buffer-test)
 ;;; emacs-buffer-test.el ends here
