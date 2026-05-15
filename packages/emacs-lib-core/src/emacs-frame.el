@@ -673,6 +673,53 @@ Resolution order:
         (and (stringp n) n))
       (format "F%d" (emacs-frame-id frame))))
 
+;; T160 / Doc 43 §3.1 Phase 11.A close gate #4 — SIGWINCH wire-up
+
+(defcustom emacs-frame-tui-resize-hook nil
+  "Abnormal hook fired after a SIGWINCH-driven TUI frame resize.
+
+Each function is called with three arguments `(FRAME WIDTH
+HEIGHT)' where FRAME is the live `emacs-frame' that has just been
+resized through `emacs-frame--tui-on-sigwinch', and WIDTH /
+HEIGHT are the new column / line dimensions reported by the
+terminal.
+
+Phase 2 reserves this hook as the redisplay-trigger seam: a real
+redisplay engine (Phase 11.B) is expected to register here and
+refresh the canvas after the terminal reports a new size.  The
+hook is empty by default (= no-op trigger)."
+  :type 'hook
+  :group 'emacs-frame)
+
+(defun emacs-frame--tui-on-sigwinch (width height)
+  "SIGWINCH callback installed on the TUI event handle.
+
+When the TUI backend is currently active, iterate
+`emacs-frame--registry' and resize every live frame to WIDTH x
+HEIGHT (clamped to `emacs-frame--min-cols' /
+`emacs-frame--min-lines'), then run `emacs-frame-tui-resize-hook'
+with `(FRAME WIDTH HEIGHT)' for each frame actually resized.
+
+The TUI backend owns the underlying terminal so a single SIGWINCH
+notification applies uniformly to every live frame — gating on
+`emacs-frame-current-backend' is sufficient; the per-frame BACKEND
+slot is not consulted (= covers `ensure-initial' frames whose slot
+defaults to `stub' but whose backend-obj is a live TUI record).
+
+Returns the list of frames that were resized, or nil when no TUI
+backend is currently installed."
+  (when (eq 'tui (emacs-frame-current-backend))
+    (let ((cols  (max width  emacs-frame--min-cols))
+          (lines (max height emacs-frame--min-lines))
+          (resized nil))
+      (dolist (f emacs-frame--registry)
+        (when (and (emacs-frame-p f)
+                   (not (emacs-frame-dead-p f)))
+          (emacs-frame-set-frame-size f cols lines)
+          (push f resized)
+          (run-hook-with-args 'emacs-frame-tui-resize-hook f cols lines)))
+      resized)))
+
 (defun emacs-frame--tui-make-dispatch (handle event-handle)
   "Construct the `emacs-frame--backend-dispatch' plist for HANDLE.
 HANDLE is an `emacs-tui-backend-handle' and EVENT-HANDLE is an
@@ -794,6 +841,8 @@ If a TUI backend is already active, it is shut down cleanly first
           emacs-frame--tui-event-handle event-handle
           emacs-frame--tui-terminfo     info)
     (emacs-frame-set-backend-dispatch dispatch)
+    (emacs-tui-event-install-sigwinch event-handle
+                                      #'emacs-frame--tui-on-sigwinch)
     (list :backend backend-handle
           :event   event-handle
           :info    info)))
@@ -810,6 +859,9 @@ those records die with their handle.
 
 Returns t."
   (when emacs-frame--tui-event-handle
+    (when (fboundp 'emacs-tui-event-uninstall-sigwinch)
+      (ignore-errors
+        (emacs-tui-event-uninstall-sigwinch emacs-frame--tui-event-handle)))
     (when (fboundp 'emacs-tui-event-shutdown)
       (ignore-errors
         (emacs-tui-event-shutdown emacs-frame--tui-event-handle))))

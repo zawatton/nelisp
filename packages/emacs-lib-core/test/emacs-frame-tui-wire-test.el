@@ -228,5 +228,82 @@ results do not vary with the host TTY."
         (should (eq 132 (plist-get ev :width)))
         (should (eq 50  (plist-get ev :height)))))))
 
+;;;; 5. SIGWINCH wire-up (T160 / Doc 43 §3.1 Phase 11.A close gate #4)
+
+(ert-deftest emacs-frame-tui-wire-sigwinch-installed-on-use-tui ()
+  "`use-tui-backend' installs the SIGWINCH callback on the event handle."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (emacs-frame-use-tui-backend
+     (list :env (emacs-frame-tui-wire-test--xterm-env)))
+    (let ((eh (emacs-frame-tui-event-handle)))
+      (should (eq #'emacs-frame--tui-on-sigwinch
+                  (emacs-tui-event-handle-sigwinch-cb eh)))
+      (should (memq eh emacs-tui-event--installed-handles)))))
+
+(ert-deftest emacs-frame-tui-wire-sigwinch-uninstalled-on-use-stub ()
+  "`use-stub-backend' removes the handle from the resize subscriber list."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (emacs-frame-use-tui-backend
+     (list :env (emacs-frame-tui-wire-test--xterm-env)))
+    (let ((eh (emacs-frame-tui-event-handle)))
+      (should (memq eh emacs-tui-event--installed-handles))
+      (emacs-frame-use-stub-backend)
+      (should-not (memq eh emacs-tui-event--installed-handles)))))
+
+(ert-deftest emacs-frame-tui-wire-sigwinch-resizes-live-tui-frames ()
+  "Dispatching a resize event updates each live TUI frame's size."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (emacs-frame-use-tui-backend
+     (list :env (emacs-frame-tui-wire-test--xterm-env)))
+    (let* ((f (emacs-frame-make-frame '((width . 80) (height . 24)))))
+      (emacs-tui-event-dispatch-resize
+       (emacs-frame-tui-event-handle) 132 50)
+      (should (= 132 (emacs-frame-frame-width  f)))
+      (should (= 50  (emacs-frame-frame-height f)))
+      ;; The per-frame TUI canvas is also resized through the dispatch
+      ;; table since `emacs-frame-set-frame-size' cascades into
+      ;; `:frame-resize'.
+      (let ((obj (emacs-frame-backend-obj f)))
+        (should (= 132 (emacs-tui-backend-frame-width  obj)))
+        (should (= 50  (emacs-tui-backend-frame-height obj)))))))
+
+(ert-deftest emacs-frame-tui-wire-sigwinch-invokes-resize-hook ()
+  "`emacs-frame-tui-resize-hook' fires once per live TUI frame."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((seen nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (let* ((emacs-frame-tui-resize-hook
+              (list (lambda (frame w h) (push (list frame w h) seen))))
+             (f1 (emacs-frame-make-frame '((width . 80) (height . 24)
+                                           (name . "alpha"))))
+             (f2 (emacs-frame-make-frame '((width . 80) (height . 24)
+                                           (name . "beta")))))
+        (emacs-tui-event-dispatch-resize
+         (emacs-frame-tui-event-handle) 100 40)
+        ;; Root frame auto-created by `ensure-initial' plus f1 + f2
+        ;; = 3 hook calls.
+        (should (= 3 (length seen)))
+        (dolist (rec seen)
+          (should (eq 100 (nth 1 rec)))
+          (should (eq 40  (nth 2 rec))))
+        (let ((resized-frames (mapcar #'car seen)))
+          (should (memq f1 resized-frames))
+          (should (memq f2 resized-frames)))))))
+
+(ert-deftest emacs-frame-tui-wire-sigwinch-clamps-to-minimum ()
+  "Sub-minimum WIDTH / HEIGHT are clamped before resize cascades."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (emacs-frame-use-tui-backend
+     (list :env (emacs-frame-tui-wire-test--xterm-env)))
+    (let ((f (emacs-frame-make-frame '((width . 80) (height . 24)))))
+      ;; Width / height of 1 should be clamped up to the configured
+      ;; minimums (`emacs-frame--min-cols' = 2,
+      ;; `emacs-frame--min-lines' = 1).
+      (emacs-tui-event-dispatch-resize
+       (emacs-frame-tui-event-handle) 1 1)
+      (should (>= (emacs-frame-frame-width  f) emacs-frame--min-cols))
+      (should (>= (emacs-frame-frame-height f) emacs-frame--min-lines)))))
+
 (provide 'emacs-frame-tui-wire-test)
 ;;; emacs-frame-tui-wire-test.el ends here
