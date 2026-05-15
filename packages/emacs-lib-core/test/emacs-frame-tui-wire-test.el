@@ -9,6 +9,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-frame)
+(require 'emacs-keymap)
 (require 'emacs-tui-backend)
 (require 'emacs-tui-event)
 (require 'emacs-tui-terminfo)
@@ -304,6 +305,125 @@ results do not vary with the host TTY."
        (emacs-frame-tui-event-handle) 1 1)
       (should (>= (emacs-frame-frame-width  f) emacs-frame--min-cols))
       (should (>= (emacs-frame-frame-height f) emacs-frame--min-lines)))))
+
+;;;; 6. Keyboard wire-up (T161 / Doc 43 §3.1 Phase 11.A close gate #5)
+
+(ert-deftest emacs-frame-tui-wire-keyboard-installed-on-use-tui ()
+  "`use-tui-backend' installs `emacs-frame--tui-read-event' as the keymap reader."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (should (eq #'emacs-frame--tui-read-event
+                  emacs-keymap--read-event-fn)))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-restored-on-use-stub ()
+  "`use-stub-backend' restores the prior `emacs-keymap--read-event-fn'."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let* ((sentinel (lambda () 'sentinel))
+           (emacs-keymap--read-event-fn sentinel))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (should (eq #'emacs-frame--tui-read-event
+                  emacs-keymap--read-event-fn))
+      (emacs-frame-use-stub-backend)
+      (should (eq sentinel emacs-keymap--read-event-fn)))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-restores-nil-default ()
+  "A nil prior value is faithfully restored (= no leak into stub mode)."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (emacs-frame-use-stub-backend)
+      (should-not emacs-keymap--read-event-fn))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-translates-bare-char ()
+  "A bare ASCII byte fed to the event handle is returned as an integer."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (emacs-tui-event-feed-bytes (emacs-frame-tui-event-handle) "a")
+      (should (eq ?a (funcall emacs-keymap--read-event-fn))))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-translates-control-char ()
+  "C-a (= 0x01) is folded into an integer with the Emacs control bit set."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (emacs-tui-event-feed-bytes
+       (emacs-frame-tui-event-handle) (string 1))
+      (let ((elem (funcall emacs-keymap--read-event-fn)))
+        (should (integerp elem))
+        (should (/= 0 (logand elem ?\C-\^@)))
+        (should (= ?a (logxor elem ?\C-\^@)))))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-translates-arrow-symbol ()
+  "An ESC `[A' CSI sequence surfaces as the `up' symbol."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (emacs-tui-event-feed-bytes
+       (emacs-frame-tui-event-handle) (concat (string ?\e) "[A"))
+      (should (eq 'up (funcall emacs-keymap--read-event-fn))))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-drops-resize-events ()
+  "Resize events are silently consumed before the next key surfaces."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (emacs-tui-event-dispatch-resize
+       (emacs-frame-tui-event-handle) 132 50)
+      (emacs-tui-event-feed-bytes (emacs-frame-tui-event-handle) "z")
+      (should (eq ?z (funcall emacs-keymap--read-event-fn))))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-empty-queue-signals ()
+  "An empty queue signals `emacs-keymap-error' (= default-reader contract)."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (should-error (funcall emacs-keymap--read-event-fn)
+                    :type 'emacs-keymap-error))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-no-handle-signals ()
+  "`emacs-frame--tui-read-event' signals when no event handle is installed."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (should-not emacs-frame--tui-event-handle)
+    (should-error (emacs-frame--tui-read-event)
+                  :type 'emacs-keymap-error)))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-key-hook-fires ()
+  "`emacs-frame-tui-key-hook' receives the raw key-event plist."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((seen nil)
+          (emacs-keymap--read-event-fn nil))
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (let ((emacs-frame-tui-key-hook
+             (list (lambda (ev) (push ev seen)))))
+        (emacs-tui-event-feed-bytes (emacs-frame-tui-event-handle) "Q")
+        (funcall emacs-keymap--read-event-fn)
+        (should (= 1 (length seen)))
+        (let ((ev (car seen)))
+          (should (eq 'key (plist-get ev :type)))
+          (should (eq ?Q (plist-get ev :name))))))))
+
+(ert-deftest emacs-frame-tui-wire-keyboard-via-read-key-sequence ()
+  "`emacs-keymap-read-key-sequence' consumes events through the TUI bridge."
+  (emacs-frame-tui-wire-test--with-fresh-world
+    (let ((emacs-keymap--read-event-fn nil)
+          (emacs-keymap-global-map (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key emacs-keymap-global-map [?x] 'self-insert)
+      (emacs-frame-use-tui-backend
+       (list :env (emacs-frame-tui-wire-test--xterm-env)))
+      (emacs-tui-event-feed-bytes (emacs-frame-tui-event-handle) "x")
+      (let ((seq (emacs-keymap-read-key-sequence nil)))
+        (should (equal [?x] seq))))))
 
 (provide 'emacs-frame-tui-wire-test)
 ;;; emacs-frame-tui-wire-test.el ends here
