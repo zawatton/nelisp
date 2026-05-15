@@ -28,17 +28,23 @@
 
 (defun nemacs-bootstrap-nelisp-test--nelisp-home ()
   "Resolve the directory holding the nelisp Rust runtime.
-Returns nil when neither the vendored nor the legacy fallback path
-contains a built `target/release/nelisp' binary."
+
+Honours `NELISP_HOME' first (= contributor explicitly opted in to
+running the subprocess gate), then the vendored copy populated by
+`make nelisp'.  The legacy =~/Notes/dev/nelisp/= fallback used to
+be probed too, but it was matching cross-repo binaries whose
+bootstrap was incompatible with this branch's loadup, hanging
+=make test= for several minutes per CI run; ship-gate-grade soak
+should be opt-in via NELISP_HOME, not driven by an
+implicit-path heuristic.  Returns nil when no candidate has a
+built `target/release/nelisp' binary."
   (let* ((vendor (expand-file-name "vendor/nelisp"
                                    nemacs-bootstrap-nelisp-test--repo-root))
-         (legacy (expand-file-name "Notes/dev/nelisp"
-                                   (or (getenv "HOME") "~")))
          (env (getenv "NELISP_HOME")))
     (cl-find-if
      (lambda (d)
        (and d (file-executable-p (expand-file-name "target/release/nelisp" d))))
-     (list env vendor legacy))))
+     (list env vendor))))
 
 (defmacro nemacs-bootstrap-nelisp-test--skip-unless-binary (&rest body)
   "Evaluate BODY only when the nelisp binary + bin/nemacs are present."
