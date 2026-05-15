@@ -56,6 +56,13 @@
 ;;      select-window / save-selected-window (macro)
 ;;      with-selected-window (macro)
 ;;
+;;   F. newer window helpers  (8 APIs, Phase 1 §4.3)
+;;      split-window-below / split-window-right (Emacs 24+ aliases)
+;;      other-window (cycle by N steps)
+;;      window-live-p / window-valid-p (predicates)
+;;      enlarge-window / shrink-window (resize)
+;;      frame-selected-window (Phase 1 = selected-window)
+;;
 ;; Non-goals (deferred per task spec):
 ;;   - frame integration               (= emacs-frame.el, Phase 1 mod 3/6)
 ;;   - minibuffer windows               (= emacs-minibuffer.el, mod 4/6)
@@ -789,6 +796,123 @@ CONFIG must be a value returned by
        (emacs-window-save-selected-window
          (emacs-window-select-window ,win)
          ,@body))))
+
+;;; F. newer window helpers (Phase 1 §4.3, 8 APIs)
+;;
+;; Thin layer of widely-used helpers expected by host Emacs 24+ code.
+;; The split-window-{below,right} pair matches the Emacs 24 rename of
+;; -vertically / -horizontally and keeps the same argument shape.
+;; other-window mirrors C-x o semantics: cycle the leaf list by N and
+;; select the result.  enlarge/shrink-window are intentionally MVP: they
+;; redistribute size with the *immediate* next sibling under a
+;; same-direction split parent; cross-tree redistribution lands in
+;; Phase 11 once the redisplay engine drives resize.
+
+;;;###autoload
+(defun emacs-window-split-window-below (&optional size)
+  "Split the selected window into two stacked windows.
+Emacs 24+ alias of `emacs-window-split-window-vertically'."
+  (emacs-window-split-window nil size 'below))
+
+;;;###autoload
+(defun emacs-window-split-window-right (&optional size)
+  "Split the selected window into two side-by-side windows.
+Emacs 24+ alias of `emacs-window-split-window-horizontally'."
+  (emacs-window-split-window nil size 'right))
+
+;;;###autoload
+(defun emacs-window-window-live-p (window)
+  "Return non-nil iff WINDOW is a live leaf window.
+Internal split nodes return nil — only leaf windows that display a
+buffer are \"live\" in the Emacs sense."
+  (and (emacs-window-p window)
+       (emacs-window-leaf-p window)
+       (not (emacs-window-deleted-p window))))
+
+;;;###autoload
+(defun emacs-window-window-valid-p (window)
+  "Return non-nil iff WINDOW is a valid (= non-deleted) window record.
+Both leaves and internal split nodes return t until they are deleted."
+  (and (emacs-window-p window)
+       (not (emacs-window-deleted-p window))))
+
+;;;###autoload
+(defun emacs-window-frame-selected-window (&optional _frame)
+  "Return the selected window of FRAME.
+Phase 1 has a single implicit frame so this delegates to
+`emacs-window-selected-window' regardless of FRAME."
+  (emacs-window-selected-window))
+
+;;;###autoload
+(defun emacs-window-other-window (n &optional _all-frames)
+  "Select the window N leaves forward (or backward when N is negative).
+Wraps around the live-leaf list.  Returns the newly selected window.
+ALL-FRAMES is accepted for ABI compatibility but ignored in Phase 1."
+  (emacs-window--ensure-root)
+  (let* ((leaves (emacs-window--all-leaves))
+         (len    (length leaves)))
+    (when (zerop len)
+      (signal 'emacs-window-error '("No live windows")))
+    (let* ((cur     (or emacs-window--selected (car leaves)))
+           (idx     (or (cl-position cur leaves) 0))
+           (new-idx (mod (+ idx n) len)))
+      (emacs-window-select-window (nth new-idx leaves)))))
+
+(defun emacs-window--resize-sibling-pair (win delta horizontal)
+  "Add DELTA to WIN's size on the HORIZONTAL axis, taking from a sibling.
+HORIZONTAL non-nil = column adjustment; nil = line adjustment.  WIN's
+parent must split in the same direction (= `horizontal' for cols,
+`vertical' for lines).  Picks the next sibling if any, else the
+previous one."
+  (let* ((parent (emacs-window-parent win))
+         (want   (if horizontal 'horizontal 'vertical)))
+    (unless parent
+      (signal 'emacs-window-too-small (list win)))
+    (unless (eq (emacs-window-direction parent) want)
+      (signal 'emacs-window-too-small (list win)))
+    (let* ((sibs (emacs-window-children parent))
+           (idx  (cl-position win sibs))
+           (next (or (nth (1+ idx) sibs)
+                     (and (> idx 0) (nth (1- idx) sibs)))))
+      (unless next
+        (signal 'emacs-window-too-small (list win)))
+      (let* ((win-size  (if horizontal
+                            (emacs-window-total-cols win)
+                          (emacs-window-total-lines win)))
+             (next-size (if horizontal
+                            (emacs-window-total-cols next)
+                          (emacs-window-total-lines next)))
+             (min-size  (if horizontal
+                            emacs-window--min-cols
+                          emacs-window--min-lines))
+             (new-win   (+ win-size delta))
+             (new-next  (- next-size delta)))
+        (when (or (< new-win min-size) (< new-next min-size))
+          (signal 'emacs-window-too-small (list win delta)))
+        (if horizontal
+            (setf (emacs-window-total-cols win)  new-win
+                  (emacs-window-total-cols next) new-next)
+          (setf (emacs-window-total-lines win)  new-win
+                (emacs-window-total-lines next) new-next))
+        delta))))
+
+;;;###autoload
+(defun emacs-window-enlarge-window (size &optional horizontal)
+  "Enlarge the selected window by SIZE lines (or cols if HORIZONTAL).
+Borrows the space from the immediate next sibling in the same-direction
+split parent.  Signals `emacs-window-too-small' when the resize would
+push either window below the minimum size, or when the parent split
+direction doesn't match the requested axis."
+  (let ((win (emacs-window-selected-window)))
+    (emacs-window--check-leaf win)
+    (emacs-window--resize-sibling-pair win size horizontal)
+    nil))
+
+;;;###autoload
+(defun emacs-window-shrink-window (size &optional horizontal)
+  "Shrink the selected window by SIZE lines (or cols if HORIZONTAL).
+Inverse of `emacs-window-enlarge-window'.  Same constraints apply."
+  (emacs-window-enlarge-window (- size) horizontal))
 
 (provide 'emacs-window)
 
