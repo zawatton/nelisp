@@ -1,6 +1,6 @@
 #+TITLE: nelisp-emacs — Emacs C → elisp port
 #+AUTHOR: zawatton + Claude
-#+DATE: 2026-05-14
+#+DATE: 2026-05-15
 #+STATUS: early / exploratory
 
 * Status — read this first
@@ -10,13 +10,25 @@ usable Emacs replacement and is unlikely to become one for several
 years.  Most user-visible Emacs features are absent, the API is
 unstable, and breaking changes are expected on most commits.
 
-Concretely, as of 2026-05-14:
+Concretely, as of 2026-05-15:
 
 - Phase 1 (= core editor substrate: =buffer.c=, =window.c=, =frame.c=,
-  =keymap.c=, =minibuffer.c= ported to elisp) is *in progress*.
+  =keymap.c=, =minibuffer.c= ported to elisp) has its *§4 sub-tasks
+  + close mini-demo shipped*.  The five core modules expose a Phase 1
+  API surface that runs end-to-end in batch ERT — see
+  =demo/phase1-close-demo.el= for the integration shape.  Advanced
+  text-property (Phase 9c), full redisplay, and frame backend
+  swap-in remain future phases.
 - Phase 2 (= TUI reference display backend) has *scaffolding only*.
+  The Phase 1 close demo uses =emacs-tui-stub.el= as a no-op canvas
+  backend; Phase 2 swaps in =emacs-tui-backend.el= +
+  =emacs-tui-terminfo.el= + =emacs-tui-event.el=.
 - Phases 3-5 (= ~xdisp.c~ port, MELPA shim, Emacs bootstrap /
   self-host) are *unstarted*.
+
+The repository ships *597 ERT* across the Phase 1 modules, all
+green; integration round-trip is exercised in seven additional
+=phase1-close-demo-*= tests.
 
 If you are looking for a working pure-elisp Emacs binary today, this
 is not it.  See [[#long-term-roadmap][Long-term roadmap]] below for an
@@ -88,10 +100,15 @@ without a hand-written C core.
   =emacs-tui-backend.el=, =emacs-tui-terminfo.el=,
   =emacs-network-ffi.el=, =emacs-sqlite-ffi.el=,
   =emacs-server-polyfills.el=, …)
-- =test/= — ERT tests for the modules under =src/=
+- =test/= — ERT tests for the modules under =src/= plus the
+  =phase1-close-demo-test.el= integration battery
+- =demo/= — runnable scenarios (=phase1-close-demo.el= drives the
+  Phase 1 close gate; invoke via =make demo=)
 - =vendor/emacs-lisp/= — vendored copies of selected Emacs
   =lisp/= subtrees used as references during the port
-  (e.g. =vendor/emacs-lisp/org/= for the day when an
+  (e.g. =vendor/emacs-lisp/keymap.el= is the upstream source for
+  =key-parse= / =key-valid-p= delegated by =emacs-keymap.el='s
+  newer-API section; =vendor/emacs-lisp/org/= for the day when an
   =org-mode= bootstrap becomes meaningful)
 - =vendor/nelisp/= — produced by =bin/build-nelisp= (= =make nelisp=)
 - =docs/design/= — design documents for each port phase
@@ -104,17 +121,33 @@ copies are reference material — they will not produce a working
 
 * Initial scope (Phase 1)
 
-Per =docs/design/01-architecture.org= (LOCKED):
+Per =docs/design/01-architecture.org= (LOCKED).  Five core modules +
+a TUI stub form the Phase 1 surface; the real TUI backend is Phase 2.
+The §4 close-mini-demo (Doc 34 §9.5 / gate-M9) ties them together.
 
 1. =src/emacs-buffer.el= = =buffer.c= port (buffer-local
-   variables, advanced text-property, full undo)
-2. =src/emacs-window.el= = =window.c= port
-3. =src/emacs-frame.el= = =frame.c= port (display backend
-   abstraction)
-4. =src/emacs-keymap.el= = =keymap.c= port
-5. =src/emacs-minibuffer.el= = =minibuffer.c= port
-6. =src/emacs-tui-backend.el= = TUI display backend MVP
-   (ncurses-style, reference impl)
+   variables, text-property MVP + =category= symbol inheritance +
+   change navigation, overlay primitives, undo MVP, modification
+   tracking).  Doc 41 advanced text-property and the full undo
+   contract remain future phases.
+2. =src/emacs-window.el= = =window.c= port (query, split / delete,
+   size / position, window-local config, selection,
+   newer-API helpers: =split-window-below/right=, =other-window=,
+   =window-live-p=, =enlarge-window= / =shrink-window=).
+3. =src/emacs-frame.el= = =frame.c= port (Phase 1 stub mode per
+   Doc 34 §2.11; the real backend swap-in is Phase 2 / Doc 43 §2.1).
+4. =src/emacs-keymap.el= = =keymap.c= port (7段 / opt-in 9段 chain,
+   parent inheritance, prefix bindings, newer kbd-style API
+   delegating =key-parse= / =key-valid-p= to
+   =vendor/emacs-lisp/keymap.el=).
+5. =src/emacs-minibuffer.el= = =minibuffer.c= port (line readers,
+   typed readers, =completing-read= with =completion-ignore-case=
+   support, =try-/all-/test-completion= helpers, plug-in reader for
+   ERT).
+6. =src/emacs-tui-stub.el= = TUI stub backend (Phase 1 close gate
+   only).  Provides the frame / canvas / capability surface so the
+   §4 demo runs end-to-end without ncurses; replaced by the real
+   =src/emacs-tui-backend.el= in Phase 2.
 
 * Long-term roadmap
 :PROPERTIES:
@@ -125,13 +158,13 @@ These estimates are *aspirational*, not commitments.  Each phase
 boundary is a real piece of work — the figures below assume single
 maintainer evening hours.
 
-| Phase   | Scope                              | LOC estimate | Wall-clock |
-|---------+------------------------------------+--------------+------------|
-| Phase 1 | Layer 2 core (buffer / window / …) | ~5-10K       | 6-12 mo    |
-| Phase 2 | TUI backend reference impl         | ~5-10K       | 6-12 mo    |
-| Phase 3 | =xdisp.c= port (display engine)    | ~10-30K      | 12-24 mo   |
-| Phase 4 | MELPA compat layer (shim)          | ~20-50K      | 1-2 yr     |
-| Phase 5 | Emacs bootstrap (self-host)        | full         | 3-5 yr     |
+| Phase   | Scope                              | LOC estimate | Wall-clock | Status         |
+|---------+------------------------------------+--------------+------------+----------------|
+| Phase 1 | Layer 2 core (buffer / window / …) | ~5-10K       | 6-12 mo    | §4 + close demo shipped (2026-05-15) |
+| Phase 2 | TUI backend reference impl         | ~5-10K       | 6-12 mo    | scaffolding    |
+| Phase 3 | =xdisp.c= port (display engine)    | ~10-30K      | 12-24 mo   | unstarted      |
+| Phase 4 | MELPA compat layer (shim)          | ~20-50K      | 1-2 yr     | unstarted      |
+| Phase 5 | Emacs bootstrap (self-host)        | full         | 3-5 yr     | unstarted      |
 
 In particular: =org-mode= depends on Phase 1 (buffer + text
 properties) + Phase 2 (TUI redisplay) + Phase 3 (display engine, for
@@ -145,11 +178,16 @@ plausible; interactive editing in =nelisp-emacs= is not.
 make nelisp        # populate vendor/nelisp/ from upstream
 make compile       # byte-compile src/
 make test          # run the ERT test suite
+make demo          # run the Phase 1 close mini demo and print result
 #+end_src
 
 The nelisp binary tool is the source of truth for
 =vendor/nelisp/=; do not add Makefile targets or scripts that assume
 an external nelisp checkout outside =$NEMACS_HOME=.
+
+=make demo= prints the demo's observable state plist so you can
+inspect the integration round-trip from the shell — useful as a
+smoke test on a fresh clone.
 
 * Dependencies
 
