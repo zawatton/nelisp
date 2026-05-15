@@ -11,7 +11,8 @@
 ;;   D. lookup helpers                              (6 tests)
 ;;   E. minimal command-loop scaffolding            (3 tests)
 ;;   F. Doc 41 §2.5 chain inject opt-in             (3 tests)
-;; Total: 31 tests (≥ task spec 20+)
+;;   G. newer kbd-style API (Phase 1 §4.4)          (14 tests)
+;; Total: 45 tests
 
 (require 'ert)
 (require 'emacs-keymap)
@@ -357,6 +358,99 @@
 (ert-deftest emacs-keymap-contract-version-constants ()
   (should (= 1 emacs-keymap-contract-version))
   (should (= 1 emacs-keymap-chain-inject-contract-version)))
+
+;;;; G. newer kbd-style API (Phase 1 §4.4, 14 tests)
+
+(ert-deftest emacs-keymap-keymap-set-roundtrip-single-key ()
+  (let ((m (emacs-keymap-make-sparse-keymap)))
+    (emacs-keymap-keymap-set m "a" 'self-insert)
+    (should (eq 'self-insert (emacs-keymap-keymap-lookup m "a")))))
+
+(ert-deftest emacs-keymap-keymap-set-with-prefix ()
+  (let ((m (emacs-keymap-make-sparse-keymap)))
+    (emacs-keymap-keymap-set m "C-x C-f" 'find-file)
+    (should (eq 'find-file (emacs-keymap-keymap-lookup m "C-x C-f")))
+    ;; The prefix slot must itself be a keymap (so further keys land
+    ;; in the same prefix).
+    (should (emacs-keymap-keymapp
+             (emacs-keymap-keymap-lookup m "C-x")))))
+
+(ert-deftest emacs-keymap-keymap-set-invalid-syntax-signals ()
+  (let ((m (emacs-keymap-make-sparse-keymap)))
+    (should-error (emacs-keymap-keymap-set m "not a kbd" 'foo)
+                  :type 'emacs-keymap-bad-key)))
+
+(ert-deftest emacs-keymap-keymap-set-string-def-is-parsed ()
+  (let ((m (emacs-keymap-make-sparse-keymap)))
+    ;; DEF is a kbd string -> stored as the parsed key vector.
+    (emacs-keymap-keymap-set m "C-a" "C-x C-f")
+    (should (equal (key-parse "C-x C-f")
+                   (emacs-keymap-keymap-lookup m "C-a")))))
+
+(ert-deftest emacs-keymap-keymap-set-string-def-invalid-signals ()
+  (let ((m (emacs-keymap-make-sparse-keymap)))
+    (should-error (emacs-keymap-keymap-set m "C-a" "not a kbd")
+                  :type 'emacs-keymap-bad-key)))
+
+(ert-deftest emacs-keymap-keymap-lookup-invalid-syntax-signals ()
+  (let ((m (emacs-keymap-make-sparse-keymap)))
+    (should-error (emacs-keymap-keymap-lookup m "not a kbd")
+                  :type 'emacs-keymap-bad-key)))
+
+(ert-deftest emacs-keymap-keymap-lookup-absent-returns-nil ()
+  (let ((m (emacs-keymap-make-sparse-keymap)))
+    (should-not (emacs-keymap-keymap-lookup m "C-q"))))
+
+(ert-deftest emacs-keymap-keymap-unset-removes-binding ()
+  (let ((m (emacs-keymap-make-sparse-keymap)))
+    (emacs-keymap-keymap-set m "a" 'self-insert)
+    (should (eq 'self-insert (emacs-keymap-keymap-lookup m "a")))
+    (emacs-keymap-keymap-unset m "a")
+    (should-not (emacs-keymap-keymap-lookup m "a"))))
+
+(ert-deftest emacs-keymap-keymap-global-set-and-lookup ()
+  (emacs-keymap-test--with-fresh-world
+    (emacs-keymap-keymap-global-set "C-x C-s" 'save-buffer)
+    (should (eq 'save-buffer
+                (emacs-keymap-keymap-lookup
+                 (emacs-keymap-current-global-map) "C-x C-s")))))
+
+(ert-deftest emacs-keymap-keymap-local-set-auto-creates ()
+  (emacs-keymap-test--with-fresh-world
+    (should-not (emacs-keymap-current-local-map))
+    (emacs-keymap-keymap-local-set "C-c x" 'my-cmd)
+    (let ((local (emacs-keymap-current-local-map)))
+      (should (emacs-keymap-keymapp local))
+      (should (eq 'my-cmd (emacs-keymap-keymap-lookup local "C-c x"))))))
+
+(ert-deftest emacs-keymap-keymap-local-set-uses-existing ()
+  (emacs-keymap-test--with-fresh-world
+    (let ((local (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-use-local-map local)
+      (emacs-keymap-keymap-local-set "C-c x" 'my-cmd)
+      ;; The existing local map must be the one mutated, not a fresh one.
+      (should (eq local (emacs-keymap-current-local-map)))
+      (should (eq 'my-cmd (emacs-keymap-keymap-lookup local "C-c x"))))))
+
+(ert-deftest emacs-keymap-keymap-global-unset ()
+  (emacs-keymap-test--with-fresh-world
+    (emacs-keymap-keymap-global-set "C-x C-s" 'save-buffer)
+    (emacs-keymap-keymap-global-unset "C-x C-s")
+    (should-not (emacs-keymap-keymap-lookup
+                 (emacs-keymap-current-global-map) "C-x C-s"))))
+
+(ert-deftest emacs-keymap-keymap-local-unset-no-local-map-is-noop ()
+  (emacs-keymap-test--with-fresh-world
+    (should-not (emacs-keymap-current-local-map))
+    ;; No local map: just returns nil without error.
+    (should-not (emacs-keymap-keymap-local-unset "C-c x"))))
+
+(ert-deftest emacs-keymap-key-parse-and-key-valid-p-delegate ()
+  ;; Phase 1 wrappers must agree with upstream.
+  (should (equal (key-parse "C-x C-f") (emacs-keymap-key-parse "C-x C-f")))
+  (should (eq (key-valid-p "C-x C-f")
+              (emacs-keymap-key-valid-p "C-x C-f")))
+  (should-not (emacs-keymap-key-valid-p "not a kbd")))
 
 (provide 'emacs-keymap-test)
 ;;; emacs-keymap-test.el ends here
