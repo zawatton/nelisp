@@ -45,10 +45,20 @@
 ;;   E. minimal command-loop scaffolding  (3 APIs)
 ;;      this-command-keys / this-command-keys-vector / read-key-sequence
 ;;      (read-key-sequence is intentionally a thin synchronous reader
-;;       that routes through `emacs-keymap--read-event-fn' so that
-;;       Phase 1 emacs-minibuffer / Phase 9b event-loop can plug their
-;;       own event source.  Default is a buffered FIFO suitable for
-;;       ERT.)
+;;      that routes through `emacs-keymap--read-event-fn' so that
+;;      Phase 1 emacs-minibuffer / Phase 9b event-loop can plug their
+;;      own event source.  Default is a buffered FIFO suitable for
+;;      ERT.)
+;;
+;;   G. newer kbd-style API  (9 APIs, Phase 1 §4.4)
+;;      keymap-set / keymap-lookup / keymap-unset
+;;      keymap-global-set / keymap-local-set
+;;      keymap-global-unset / keymap-local-unset
+;;      key-parse (= delegate) / key-valid-p (= delegate)
+;;      Vendor-first: kbd-syntax parsing is delegated to upstream
+;;      `vendor/emacs-lisp/keymap.el' (= `key-parse' / `key-valid-p').
+;;      The actual binding state lives in our own `emacs-keymap-*'
+;;      structures via `emacs-keymap-define-key' / -lookup-key.
 ;;
 ;; Non-goals (deferred per task spec):
 ;;   - keyboard input event 解釈 (= emacs-minibuffer.el / event handler)
@@ -703,6 +713,99 @@ to plug into a real event source."
          (t (setq done t)))))
     (setq emacs-keymap--this-command-keys consumed)
     consumed))
+
+;;; G. newer kbd-style API  (9 APIs, Phase 1 §4.4)
+;;
+;; Vendor-first: parsing of "C-x C-f" and similar kbd-style strings is
+;; delegated to upstream `vendor/emacs-lisp/keymap.el' via `key-parse'
+;; and `key-valid-p'.  Our wrappers convert the parsed vector and call
+;; back into the existing `emacs-keymap-define-key' /
+;; `emacs-keymap-lookup-key' so the 7 段 chain and parent inheritance
+;; logic stay in one place.  In host Emacs both names are autoloaded
+;; from the same upstream source; in standalone NeLisp the vendor file
+;; provides them via `(require 'keymap)' on the
+;; `vendor/emacs-lisp/' load-path.
+
+(require 'keymap)
+
+;;;###autoload
+(defun emacs-keymap-key-parse (keys)
+  "Convert KEYS, a kbd-style string, to an internal key vector.
+Thin delegate to upstream `key-parse'."
+  (key-parse keys))
+
+;;;###autoload
+(defun emacs-keymap-key-valid-p (keys)
+  "Return non-nil iff KEYS is a valid kbd-style key description.
+Thin delegate to upstream `key-valid-p'."
+  (key-valid-p keys))
+
+;;;###autoload
+(defun emacs-keymap-keymap-set (keymap key def)
+  "Bind KEY (a kbd-style string) to DEF in KEYMAP.
+Signals if KEY is not a valid kbd-style description.  When DEF is a
+string it is treated as a key sequence and parsed via `key-parse'."
+  (unless (key-valid-p key)
+    (signal 'emacs-keymap-bad-key (list key)))
+  (let ((d (if (stringp def)
+               (progn (unless (key-valid-p def)
+                        (signal 'emacs-keymap-bad-key (list def)))
+                      (key-parse def))
+             def)))
+    (emacs-keymap-define-key keymap (key-parse key) d)
+    d))
+
+;;;###autoload
+(defun emacs-keymap-keymap-lookup (keymap key &optional accept-default
+                                          _no-remap _position)
+  "Look up KEY (a kbd-style string) in KEYMAP.
+ACCEPT-DEFAULT is forwarded to `emacs-keymap-lookup-key'.  _NO-REMAP
+and _POSITION are accepted for ABI compatibility but ignored in
+Phase 1 (= remap / position-aware lookup is Phase 9b scope)."
+  (unless (key-valid-p key)
+    (signal 'emacs-keymap-bad-key (list key)))
+  (emacs-keymap-lookup-key keymap (key-parse key) accept-default))
+
+;;;###autoload
+(defun emacs-keymap-keymap-unset (keymap key &optional _remove)
+  "Remove the binding for KEY (a kbd-style string) in KEYMAP.
+_REMOVE is accepted for ABI compatibility but ignored — Phase 1
+always sets the binding to nil rather than splicing the entry out
+of the alist."
+  (unless (key-valid-p key)
+    (signal 'emacs-keymap-bad-key (list key)))
+  (emacs-keymap-define-key keymap (key-parse key) nil))
+
+;;;###autoload
+(defun emacs-keymap-keymap-global-set (key command)
+  "Bind KEY (kbd-style) to COMMAND in the current global map."
+  (emacs-keymap-keymap-set (emacs-keymap-current-global-map) key command))
+
+;;;###autoload
+(defun emacs-keymap-keymap-local-set (key command)
+  "Bind KEY (kbd-style) to COMMAND in the current local map.
+Allocates a fresh sparse keymap and installs it via
+`emacs-keymap-use-local-map' if no local map is in effect yet."
+  (let ((local (emacs-keymap-current-local-map)))
+    (unless local
+      (setq local (emacs-keymap-make-sparse-keymap))
+      (emacs-keymap-use-local-map local))
+    (emacs-keymap-keymap-set local key command)))
+
+;;;###autoload
+(defun emacs-keymap-keymap-global-unset (key &optional remove)
+  "Remove KEY's binding from the current global map.
+REMOVE is forwarded to `emacs-keymap-keymap-unset'."
+  (emacs-keymap-keymap-unset (emacs-keymap-current-global-map) key remove))
+
+;;;###autoload
+(defun emacs-keymap-keymap-local-unset (key &optional remove)
+  "Remove KEY's binding from the current local map.
+A no-op when no local map is in effect.  REMOVE is forwarded to
+`emacs-keymap-keymap-unset'."
+  (let ((local (emacs-keymap-current-local-map)))
+    (when local
+      (emacs-keymap-keymap-unset local key remove))))
 
 (provide 'emacs-keymap)
 ;;; emacs-keymap.el ends here
