@@ -1,12 +1,13 @@
 ;;; emacs-window-test.el --- ERT tests for emacs-window.el  -*- lexical-binding: t; -*-
 
 ;; Phase 1 module 2/6 tests per nelisp-emacs Doc 01 (LOCKED v2).
-;; Covers all 5 categories of `emacs-window-*' API across 28+ tests:
+;; Covers all 6 categories of `emacs-window-*' API:
 ;;   A. window query              (8 tests)
 ;;   B. window split / delete     (9 tests)
 ;;   C. window size / position    (5 tests)
 ;;   D. window-local config       (5 tests)
 ;;   E. window selection          (4 tests)
+;;   F. newer window helpers      (14 tests, Phase 1 §4.3)
 ;;   X. error / edge-case         (3 tests)
 
 (require 'ert)
@@ -369,6 +370,152 @@
         (emacs-window-set-window-buffer w b1)
         ;; buffer size = 2 ⇒ end clamp to 3
         (should (= 3 (emacs-window-window-end w)))))))
+
+;;;; F. newer window helpers (Phase 1 §4.3, 14 tests)
+
+(ert-deftest emacs-window-split-window-below-stacks-vertically ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-below)))
+      (should (emacs-window-windowp w2))
+      (should (eq 'vertical
+                  (emacs-window-direction (emacs-window-parent w1)))))))
+
+(ert-deftest emacs-window-split-window-right-puts-side-by-side ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-right)))
+      (should (emacs-window-windowp w2))
+      (should (eq 'horizontal
+                  (emacs-window-direction (emacs-window-parent w1)))))))
+
+(ert-deftest emacs-window-window-live-p-leaf-vs-split ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-below))
+           (parent (emacs-window-parent w1)))
+      (should (emacs-window-window-live-p w1))
+      (should (emacs-window-window-live-p w2))
+      ;; The split node is a valid window but not "live" (= no buffer).
+      (should-not (emacs-window-window-live-p parent)))))
+
+(ert-deftest emacs-window-window-live-p-deleted ()
+  (emacs-window-test--with-fresh-world
+    (let* ((_w1 (emacs-window-selected-window))
+           (w2  (emacs-window-split-window-below)))
+      (emacs-window-delete-window w2)
+      (should-not (emacs-window-window-live-p w2)))))
+
+(ert-deftest emacs-window-window-valid-p-leaf-and-split ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-below))
+           (parent (emacs-window-parent w1)))
+      (should (emacs-window-window-valid-p w1))
+      (should (emacs-window-window-valid-p w2))
+      ;; Split nodes ARE valid (just not live).
+      (should (emacs-window-window-valid-p parent))
+      ;; Non-window object is neither.
+      (should-not (emacs-window-window-valid-p 42)))))
+
+(ert-deftest emacs-window-window-valid-p-after-delete ()
+  (emacs-window-test--with-fresh-world
+    (let* ((_w1 (emacs-window-selected-window))
+           (w2  (emacs-window-split-window-below)))
+      (emacs-window-delete-window w2)
+      (should-not (emacs-window-window-valid-p w2)))))
+
+(ert-deftest emacs-window-frame-selected-window-aliases-selected ()
+  (emacs-window-test--with-fresh-world
+    (let ((w (emacs-window-selected-window)))
+      (should (eq w (emacs-window-frame-selected-window)))
+      (should (eq w (emacs-window-frame-selected-window 'any-frame))))))
+
+(ert-deftest emacs-window-other-window-cycles-forward ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (_w2 (emacs-window-split-window-below))
+           (_w3 (emacs-window-split-window-below)))
+      (ignore _w2 _w3)
+      (let* ((leaves (emacs-window--all-leaves))
+             (n (length leaves)))
+        ;; Cycling forward `n' times must return to w1.
+        (emacs-window-select-window w1)
+        (dotimes (_ n) (emacs-window-other-window 1))
+        (should (eq w1 (emacs-window-selected-window)))
+        ;; A single step moves off w1 onto a different leaf.
+        (emacs-window-select-window w1)
+        (let ((next (emacs-window-other-window 1)))
+          (should-not (eq next w1))
+          (should (memq next leaves)))))))
+
+(ert-deftest emacs-window-other-window-cycles-backward ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-below))
+           (_w3 (emacs-window-split-window-below)))
+      (ignore _w3)
+      (emacs-window-select-window w1)
+      ;; Negative N walks backwards (and wraps).
+      (let ((res (emacs-window-other-window -1)))
+        (should (emacs-window-windowp res))
+        (should-not (eq res w1)))
+      ;; -3 from w1 (= 3 windows) returns to w1.
+      (emacs-window-select-window w1)
+      (should (eq w1 (emacs-window-other-window -3)))
+      (ignore w2))))
+
+(ert-deftest emacs-window-other-window-single-window-noop ()
+  (emacs-window-test--with-fresh-world
+    (let ((w (emacs-window-selected-window)))
+      ;; Single window: cycling stays on it.
+      (should (eq w (emacs-window-other-window 1)))
+      (should (eq w (emacs-window-other-window -5))))))
+
+(ert-deftest emacs-window-enlarge-window-vertical ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-below))
+           (h1 (emacs-window-window-height w1))
+           (h2 (emacs-window-window-height w2)))
+      (emacs-window-select-window w1)
+      (emacs-window-enlarge-window 3)
+      (should (= (+ h1 3) (emacs-window-window-height w1)))
+      (should (= (- h2 3) (emacs-window-window-height w2))))))
+
+(ert-deftest emacs-window-enlarge-window-horizontal ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-right))
+           (c1 (emacs-window-window-width w1))
+           (c2 (emacs-window-window-width w2)))
+      (emacs-window-select-window w1)
+      (emacs-window-enlarge-window 4 t)
+      (should (= (+ c1 4) (emacs-window-window-width w1)))
+      (should (= (- c2 4) (emacs-window-window-width w2))))))
+
+(ert-deftest emacs-window-shrink-window-inverts-enlarge ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-below))
+           (h1 (emacs-window-window-height w1))
+           (h2 (emacs-window-window-height w2)))
+      (ignore w2)
+      (emacs-window-select-window w1)
+      (emacs-window-shrink-window 2)
+      (should (= (- h1 2) (emacs-window-window-height w1)))
+      ;; Sibling gained the 2 lines.
+      (should (= (+ h2 2) (emacs-window-window-height w2))))))
+
+(ert-deftest emacs-window-enlarge-window-too-small-signals ()
+  (emacs-window-test--with-fresh-world
+    (let* ((_w1 (emacs-window-selected-window))
+           (w2  (emacs-window-split-window-below))
+           (h2  (emacs-window-window-height w2)))
+      (ignore _w1)
+      ;; Asking for more lines than the sibling has must signal.
+      (should-error (emacs-window-enlarge-window (1+ h2))
+                    :type 'emacs-window-too-small))))
 
 (provide 'emacs-window-test)
 
