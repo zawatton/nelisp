@@ -298,13 +298,22 @@ removed unconditionally."
       (setf (emacs-buffer--ext-locals ext) nil))
     nil))
 
-;;; B. text-property MVP  (5 APIs)
+;;; B. text-property  (11 APIs)
 ;;
 ;; Storage: a sorted list of intervals `(START END . PLIST)' kept in the
 ;; ext record.  Adjacent intervals with `equal' plists are coalesced on
 ;; insert so the list stays compact.  Doc 41 Phase 9c will swap this for
 ;; a balanced interval-tree once we need O(log n) lookups, but the API
 ;; shape is preserved.
+;;
+;; `category' inheritance: when a text-property `category' is set on the
+;; range and points to a symbol with its own property list, lookups for
+;; properties *not* explicitly set on the range fall back to the
+;; symbol's plist via `(get CATEGORY-SYMBOL PROP)'.  This matches host
+;; Emacs semantics — see `get-text-property' / `get-char-property'
+;; below.  Inheritance is resolved lazily on lookup; the raw plist
+;; returned by `text-property-at' / `text-properties-at' still carries
+;; the `category' key unexpanded.
 
 (defun emacs-buffer--tp-cell (start end plist)
   "Construct a text-prop interval cell."
@@ -450,6 +459,31 @@ KEYS is a flat list of symbol property names.  Returns a sorted list."
       (setq rest (cddr rest)))
     out))
 
+(defun emacs-buffer--tp-resolve-prop (plist prop)
+  "Look up PROP in PLIST honouring `category' inheritance.
+PROP set directly on PLIST wins; otherwise the value of the `category'
+key (if it is a symbol) is consulted via its symbol-plist.  Returns nil
+when neither carries PROP."
+  (cond
+   ((plist-member plist prop)
+    (plist-get plist prop))
+   (t
+    (let ((cat (plist-get plist 'category)))
+      (and (symbolp cat) cat (get cat prop))))))
+
+(defun emacs-buffer--tp-cell-at (intervals pos)
+  "Return the interval cell covering POS in INTERVALS, or nil."
+  (catch 'found
+    (dolist (cell intervals)
+      (let ((s (emacs-buffer--tp-start cell))
+            (e (emacs-buffer--tp-end cell)))
+        (when (and (<= s pos) (< pos e))
+          (throw 'found cell))))))
+
+(defun emacs-buffer--tp-clamp-limit (pos limit)
+  "If LIMIT is non-nil and POS > LIMIT, return LIMIT; else POS."
+  (if (and limit (> pos limit)) limit pos))
+
 ;;;###autoload
 (defun emacs-buffer-put-text-property (start end prop value &optional buf)
   "Set the text property PROP to VALUE on [START, END) in BUF.
@@ -470,18 +504,18 @@ overwritten on this range; other properties are preserved."
 ;;;###autoload
 (defun emacs-buffer-get-text-property (pos prop &optional buf)
   "Return the value of property PROP at POS in BUF, or nil if unset.
-POS is 1-based."
+POS is 1-based.  Honours `category' inheritance — when PROP is not
+explicitly set on the range, the `category' value (if a symbol) is
+consulted via `(get CATEGORY PROP)'."
   (unless (integerp pos)
     (signal 'wrong-type-argument (list 'integerp pos)))
   (let* ((b (or buf (emacs-buffer--current)))
          (ext (gethash b emacs-buffer--state)))
     (when ext
-      (catch 'found
-        (dolist (cell (emacs-buffer--ext-text-props ext))
-          (let ((s (emacs-buffer--tp-start cell))
-                (e (emacs-buffer--tp-end cell)))
-            (when (and (<= s pos) (< pos e))
-              (throw 'found (plist-get (emacs-buffer--tp-plist cell) prop)))))))))
+      (let ((cell (emacs-buffer--tp-cell-at
+                   (emacs-buffer--ext-text-props ext) pos)))
+        (and cell (emacs-buffer--tp-resolve-prop
+                   (emacs-buffer--tp-plist cell) prop))))))
 
 ;;;###autoload
 (defun emacs-buffer-add-text-properties (start end plist &optional buf)
@@ -533,6 +567,144 @@ ARG may be a list of symbols or an Emacs-style plist."
         (push (car rest) out)
         (setq rest (cddr rest)))
       (nreverse out)))))
+
+;;;###autoload
+(defun emacs-buffer-set-text-properties (start end plist &optional buf)
+  "Replace the property plist on [START, END) in BUF with PLIST.
+Existing properties on the range are discarded — only PLIST keys
+remain.  When PLIST is nil the range is stripped of all properties."
+  (unless (and (integerp start) (integerp end))
+    (signal 'wrong-type-argument (list 'integerp start end)))
+  (when (>= start end)
+    (signal 'nelisp-ec-args-out-of-range (list start end)))
+  (unless (and (listp plist) (zerop (mod (length plist) 2)))
+    (signal 'wrong-type-argument (list 'plist plist)))
+  (let* ((b (or buf (emacs-buffer--current)))
+         (ext (emacs-buffer--ensure-ext b)))
+    (setf (emacs-buffer--ext-text-props ext)
+          (if (null plist)
+              (emacs-buffer--tp-clip (emacs-buffer--ext-text-props ext)
+                                     start end)
+            (emacs-buffer--tp-merge (emacs-buffer--ext-text-props ext)
+                                    start end plist)))
+    (cl-incf (emacs-buffer--ext-modified-tick ext))
+    nil))
+
+;;;###autoload
+(defun emacs-buffer-next-property-change (pos &optional buf limit)
+  "Return the next position after POS at which any property changes.
+Returns LIMIT (when given and reached) or nil when no further change."
+  (unless (integerp pos)
+    (signal 'wrong-type-argument (list 'integerp pos)))
+  (let* ((b (or buf (emacs-buffer--current)))
+         (ext (gethash b emacs-buffer--state))
+         (intervals (and ext (emacs-buffer--ext-text-props ext))))
+    (catch 'done
+      (dolist (cell intervals)
+        (let ((s (emacs-buffer--tp-start cell))
+              (e (emacs-buffer--tp-end cell)))
+          (cond
+           ((and (<= s pos) (< pos e))
+            (throw 'done (emacs-buffer--tp-clamp-limit e limit)))
+           ((> s pos)
+            (throw 'done (emacs-buffer--tp-clamp-limit s limit))))))
+      limit)))
+
+;;;###autoload
+(defun emacs-buffer-previous-property-change (pos &optional buf limit)
+  "Return the largest position less than POS at which any property changes.
+Returns LIMIT (when given and reached) or nil when no earlier change."
+  (unless (integerp pos)
+    (signal 'wrong-type-argument (list 'integerp pos)))
+  (let* ((b (or buf (emacs-buffer--current)))
+         (ext (gethash b emacs-buffer--state))
+         (intervals (and ext (emacs-buffer--ext-text-props ext)))
+         (best nil))
+    (dolist (cell intervals)
+      (let ((s (emacs-buffer--tp-start cell))
+            (e (emacs-buffer--tp-end cell)))
+        (cond
+         ;; Interval entirely before POS — its END is a change point.
+         ((<= e pos) (setq best e))
+         ;; Interval straddles POS — its START is a change point if it
+         ;; is strictly before POS.
+         ((and (<= s pos) (< pos e) (< s pos))
+          (setq best s)))))
+    (cond
+     ((null best) limit)
+     ((and limit (< best limit)) limit)
+     (t best))))
+
+(defun emacs-buffer--tp-prop-eq (a b)
+  "Property-equality predicate matching Emacs `eq' on text-prop values."
+  (eq a b))
+
+;;;###autoload
+(defun emacs-buffer-next-single-property-change (pos prop &optional buf limit)
+  "Return the next position > POS where the value of PROP differs.
+Honours `category' inheritance for the comparison.  Returns LIMIT
+(when given and reached) or nil when no further change is found."
+  (unless (integerp pos)
+    (signal 'wrong-type-argument (list 'integerp pos)))
+  (let* ((b (or buf (emacs-buffer--current)))
+         (cur (emacs-buffer-get-text-property pos prop b))
+         (scan pos)
+         (next nil))
+    (catch 'done
+      (while t
+        (setq next (emacs-buffer-next-property-change scan b limit))
+        (cond
+         ((null next) (throw 'done limit))
+         ((and limit (>= next limit)) (throw 'done limit))
+         (t
+          (let ((val (emacs-buffer-get-text-property next prop b)))
+            (unless (emacs-buffer--tp-prop-eq val cur)
+              (throw 'done next))
+            (setq scan next))))))))
+
+;;;###autoload
+(defun emacs-buffer-previous-single-property-change (pos prop &optional buf limit)
+  "Return the largest position < POS where the value of PROP differs.
+Honours `category' inheritance for the comparison.  Returns LIMIT
+(when given and reached) or nil when no earlier change is found."
+  (unless (integerp pos)
+    (signal 'wrong-type-argument (list 'integerp pos)))
+  (let* ((b (or buf (emacs-buffer--current)))
+         (cur (emacs-buffer-get-text-property pos prop b))
+         (scan pos)
+         (prev nil))
+    (catch 'done
+      (while t
+        (setq prev (emacs-buffer-previous-property-change scan b limit))
+        (cond
+         ((null prev) (throw 'done limit))
+         ((and limit (<= prev limit)) (throw 'done limit))
+         (t
+          (let ((val (emacs-buffer-get-text-property (1- prev) prop b)))
+            (unless (emacs-buffer--tp-prop-eq val cur)
+              (throw 'done prev))
+            (setq scan prev))))))))
+
+;;;###autoload
+(defun emacs-buffer-get-char-property (pos prop &optional buf)
+  "Return the value of PROP at POS, checking overlays first, then text-props.
+Overlays are inspected in `emacs-buffer-overlays-at' priority order
+(later insertion wins ties).  Falls back to
+`emacs-buffer-get-text-property' (which honours `category' inheritance)
+when no overlay carries PROP."
+  (unless (integerp pos)
+    (signal 'wrong-type-argument (list 'integerp pos)))
+  (let* ((b (or buf (emacs-buffer--current)))
+         (overlays (emacs-buffer-overlays-at pos b))
+         ;; Later insertion wins — walk the list in reverse so the
+         ;; first match below is the most-recent overlay.
+         (rev (reverse overlays)))
+    (or (catch 'hit
+          (dolist (ov rev)
+            (let ((plist (emacs-buffer--overlay-rec-properties ov)))
+              (when (plist-member plist prop)
+                (throw 'hit (plist-get plist prop))))))
+        (emacs-buffer-get-text-property pos prop b))))
 
 ;;;###autoload
 (defun emacs-buffer-text-property-at (pos &optional buf)
