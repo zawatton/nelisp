@@ -9,10 +9,10 @@
 ;;   A. core readers                              (5 tests)
 ;;   B. typed readers                             (6 tests)
 ;;   C. confirmation                              (3 tests)
-;;   D. completion                                (4 tests)
+;;   D. completion                                (15 tests)
 ;;   E. minibuffer state / control                (6 tests)
 ;;   F. plug-in / control-flow / sentinel         (4 tests)
-;; Total: 28 tests (>= task spec 15+)
+;; Total: 39 tests (>= task spec 15+)
 
 (require 'ert)
 (require 'emacs-minibuffer)
@@ -189,6 +189,131 @@
                  "apple" '("apple"))))
   (should (null (emacs-minibuffer--try-completion
                  "x" '("apple" "banana")))))
+
+(ert-deftest emacs-minibuffer-try-completion-public-list ()
+  ;; Public wrapper: handles raw COLLECTION via --collection->list.
+  (should (string-equal "ap"
+                        (emacs-minibuffer-try-completion
+                         "a" '("apple" "apricot"))))
+  (should (eq t (emacs-minibuffer-try-completion "apple" '("apple"))))
+  (should (null (emacs-minibuffer-try-completion
+                 "x" '("apple" "banana")))))
+
+(ert-deftest emacs-minibuffer-try-completion-public-with-predicate ()
+  (should (string-equal "b"
+                        (emacs-minibuffer-try-completion
+                         "" '("apple" "banana" "berry")
+                         (lambda (s) (string-prefix-p "b" s)))))
+  ;; PREDICATE eliminates everything -> nil.
+  (should (null (emacs-minibuffer-try-completion
+                 "a" '("apple" "apricot")
+                 (lambda (_) nil)))))
+
+(ert-deftest emacs-minibuffer-try-completion-alist ()
+  ;; (STRING . ANY) alist collection is normalised to its cars.
+  (should (string-equal "ap"
+                        (emacs-minibuffer-try-completion
+                         "a" '(("apple" . 1) ("apricot" . 2)))))
+  (should (eq t (emacs-minibuffer-try-completion
+                 "apple" '(("apple" . 1))))))
+
+(ert-deftest emacs-minibuffer-try-completion-function-collection ()
+  ;; FUNCTION collection: called with ("" nil t) for enumeration.
+  (let ((coll (lambda (_s _p flag)
+                (when flag '("apple" "apricot" "avocado")))))
+    (should (string-equal "a"
+                          (emacs-minibuffer-try-completion "" coll)))
+    (should (string-equal "ap"
+                          (emacs-minibuffer-try-completion "ap" coll)))))
+
+(ert-deftest emacs-minibuffer-try-completion-ignore-case ()
+  (let ((emacs-minibuffer-completion-ignore-case t))
+    ;; Common prefix of "Apple"+"Application" is "Appl" — case taken from
+    ;; the first candidate (post-filter).
+    (should (string-equal "Appl"
+                          (emacs-minibuffer-try-completion
+                           "app" '("Apple" "Application"))))
+    ;; STRING differs in case but matches uniquely + length-equal -> t.
+    (should (eq t (emacs-minibuffer-try-completion
+                   "APPLE" '("apple")))))
+  ;; Without ignore-case the match fails on capitalisation.
+  (let ((emacs-minibuffer-completion-ignore-case nil))
+    (should (null (emacs-minibuffer-try-completion
+                   "app" '("Apple"))))))
+
+(ert-deftest emacs-minibuffer-all-completions-basic ()
+  (should (equal '("apple" "apricot")
+                 (emacs-minibuffer-all-completions
+                  "a" '("apple" "apricot" "banana"))))
+  ;; Empty STRING returns the whole (filtered) collection.
+  (should (equal '("apple" "apricot" "banana")
+                 (emacs-minibuffer-all-completions
+                  "" '("apple" "apricot" "banana"))))
+  ;; No match -> empty list.
+  (should (equal nil (emacs-minibuffer-all-completions
+                      "z" '("apple" "banana")))))
+
+(ert-deftest emacs-minibuffer-all-completions-predicate ()
+  (should (equal '("banana" "berry")
+                 (emacs-minibuffer-all-completions
+                  "" '("apple" "banana" "berry")
+                  (lambda (s) (string-prefix-p "b" s))))))
+
+(ert-deftest emacs-minibuffer-all-completions-function-collection ()
+  (let ((coll (lambda (_s _p flag)
+                (when flag '("apple" "apricot" "banana")))))
+    (should (equal '("apple" "apricot")
+                   (emacs-minibuffer-all-completions "a" coll)))))
+
+(ert-deftest emacs-minibuffer-all-completions-ignore-case ()
+  (let ((emacs-minibuffer-completion-ignore-case t))
+    (should (equal '("Apple" "Application")
+                   (emacs-minibuffer-all-completions
+                    "app" '("Apple" "Application" "Banana"))))))
+
+(ert-deftest emacs-minibuffer-test-completion-exact-match ()
+  (should (eq t (emacs-minibuffer-test-completion
+                 "apple" '("apple" "banana"))))
+  (should (null (emacs-minibuffer-test-completion
+                 "applesauce" '("apple" "banana"))))
+  ;; Prefix is not exact -> nil.
+  (should (null (emacs-minibuffer-test-completion
+                 "app" '("apple")))))
+
+(ert-deftest emacs-minibuffer-test-completion-predicate ()
+  ;; Without predicate STRING is in table.
+  (should (eq t (emacs-minibuffer-test-completion
+                 "apple" '("apple" "banana"))))
+  ;; Predicate rejects "apple" -> nil.
+  (should (null (emacs-minibuffer-test-completion
+                 "apple" '("apple" "banana")
+                 (lambda (s) (string-prefix-p "b" s))))))
+
+(ert-deftest emacs-minibuffer-test-completion-ignore-case ()
+  (let ((emacs-minibuffer-completion-ignore-case t))
+    (should (eq t (emacs-minibuffer-test-completion
+                   "APPLE" '("apple" "banana")))))
+  (let ((emacs-minibuffer-completion-ignore-case nil))
+    (should (null (emacs-minibuffer-test-completion
+                   "APPLE" '("apple" "banana"))))))
+
+(ert-deftest emacs-minibuffer-completing-read-default-aliases ()
+  ;; Both names must resolve to the same underlying function object.
+  (should (eq (indirect-function 'emacs-minibuffer-completing-read-default)
+              (indirect-function 'emacs-minibuffer-completing-read)))
+  (emacs-minibuffer-test--with-fresh-world
+    (emacs-minibuffer-feed-input "banana")
+    (should (string-equal "banana"
+                          (emacs-minibuffer-completing-read-default
+                           "P: " '("apple" "banana") nil t)))))
+
+(ert-deftest emacs-minibuffer-completing-read-ignore-case ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let ((emacs-minibuffer-completion-ignore-case t))
+      (emacs-minibuffer-feed-input "APPLE")
+      (should (string-equal "APPLE"
+                            (emacs-minibuffer-completing-read
+                             "P: " '("apple" "banana") nil t))))))
 
 ;;;; E. minibuffer state / control (6 tests)
 
