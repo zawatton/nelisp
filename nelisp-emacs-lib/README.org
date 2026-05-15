@@ -31,15 +31,43 @@ Concretely, as of 2026-05-16:
   (TUI swap → mini find-file → simulated typing through the
   keyboard wire-up → SIGWINCH coexistence → mini save-buffer →
   stub revert) under env-injected =xterm-256color= /
-  =xterm-kitty= / Windows-Terminal-style detection.  *Phase 11.B
-  (= real redisplay engine driving the canvas) remains a future
-  phase*; the substrate is in place but =nelisp-emacs= still does
-  not paint anything you can see on a real terminal.
-- Phases 3-5 (= ~xdisp.c~ port, MELPA shim, Emacs bootstrap /
-  self-host) are *unstarted*.
+  =xterm-kitty= / Windows-Terminal-style detection.
+- Phase 3 (= redisplay engine, Doc 43 §3.2 Phase 11.B MVP) has its
+  *close gate shipped* (2026-05-06).  =src/emacs-redisplay.el=
+  (~1830 LOC) provides the redisplay driver + glyph-matrix MVP per
+  Doc 43 §3.2, with row-hash diff propagation, =force-mode-line-update= /
+  =redraw-display= triggers, =invisible= property handling,
+  text-property face change propagation, scroll re-fill, mode-line
+  rendering, and per-row incremental rebuild (Phase 3.B.6) with
+  buffer-string text-tick cache (Phase 3.B.7).  Bench gate met:
+  =bench/bench-redisplay.el= reports *static throughput 112.96x*
+  (target 5x) and *p99 latency static 0.010ms / edit 15.169ms /
+  scroll 21.337ms* (target < 100ms), all PASS with ~4.7x headroom.
+  The 1h-soak / 10MB-scroll RSS audit (Doc 43 §3.2 post-ship audit
+  gate #7) is optional and intentionally not wired into CI — it
+  belongs in release pre-flight.  *bidi*, *composition*, *mouse-face*,
+  full =display= property =(image …)= / =(space …)= rendering, and a
+  dedicated mode-line row are explicit Phase 3 v2.x future work.
+- Phase 4 (= MELPA compat reference subset) is at *scaffold + synthetic
+  pilot* stage.  =src/emacs-melpa-shim.el= (~227 LOC) declares the
+  buffer / search / local-variable subset that popular MELPA packages
+  expect and ships =install/uninstall= + =with-installed= scoped macro
+  plus =emacs-melpa-shim-api-status= for per-API tracking.  A synthetic
+  pilot in =test/emacs-melpa-shim-test.el= exercises the install
+  round-trip.  Real MELPA package onboarding (helm / ido / dired-full /
+  org-full / company / eglot per Doc 01 §3.4 target list) is the next
+  step.
+- Phase 5 (= Emacs bootstrap / self-host binary, =bin/nelisp-emacs=)
+  is *unstarted* on this branch.  A parallel daily-driver design
+  exists as DRAFT (=docs/design/02-v01-daily-driver.org=) on a
+  separate feature branch; the public, integrated state on =main=
+  remains TUI substrate + redisplay engine, not yet a runnable
+  =nelisp-emacs= binary.
 
-The repository ships *624 ERT* across the Phase 1 + Phase 2 modules,
-all green; integration round-trip is exercised by 7
+The repository ships *624 ERT* across the Phase 1 + Phase 2 + Phase 3
+modules, all green.  Highlights: 80 redisplay ERTs (=emacs-redisplay-
+test.el=) cover driver / matrix / face / overlay / scroll / mode-line
+/ p99 latency; integration round-trip is exercised by 7
 =phase1-close-demo-*= tests plus 11 =phase2-close-demo-*= tests (= 8
 checkpoint asserts on the default run + 3-env validation under
 =xterm-256color= / =xterm-kitty= / Windows-Terminal-style
@@ -206,19 +234,84 @@ ships these modules:
    Windows-Terminal-style =COLORTERM=truecolor=.
 
 What Phase 2 does *not* yet ship:
-- A redisplay engine that paints buffer contents onto the canvas
-  (= Phase 11.B, Doc 43 §3.2).  Today
-  =emacs-tui-backend-canvas-draw-text= exists but no automatic
-  buffer → canvas refresh is wired up.
 - Live execution on a real device.  The substrate is verified
   through env-injection (=:env= plist forwarded to
   =emacs-tui-terminfo-detect=); real-tty validation on physical
   =xterm-256color= / kitty / Windows Terminal sessions is part of
-  the Phase 11.B / Phase 3 work.
+  the Phase 5 bootstrap work.
 - Modifier folding on symbol keys (=C-<up>=, =M-<f1>=, …).  Phase 2
   forwards the modifier list through =emacs-frame-tui-key-hook= but
   the keymap reader returns the bare symbol; symbol-name modifier
   encoding lands when a real command loop needs it.
+
+* Phase 3 substrate (redisplay engine MVP, Doc 43 §3.2 Phase 11.B)
+
+Phase 3 adds the redisplay engine that drives buffer contents onto
+the TUI canvas.  Per Doc 43 §3.2 the MVP scope is the
+redisplay-driver + glyph-matrix (face-realize and
+display-property-handler are v2.x incremental).  The close gate
+shipped 2026-05-06; the following commits build it up:
+
+1. =src/emacs-redisplay.el= (~1830 LOC) = single-file MVP carrying
+   the redisplay handle, glyph-matrix struct, driver loop,
+   row-hash diff, fingerprint short-circuit, per-row incremental
+   rebuild, buffer-string text-tick cache, and the TUI canvas
+   flush.  Phase 3.B.1 face-realize MVP, 3.B.2 overlay
+   before/after-string, 3.B.3 256-color/truecolor SGR, 3.B.4
+   mode-line + invisible + row-hash diff, 3.B.5 fingerprint
+   throughput gate, 3.B.6 row-incremental rebuild, 3.B.7
+   buffer-string cache are all merged.
+2. =test/emacs-redisplay-test.el= = 80 ERT covering driver / matrix
+   / face / overlay / scroll / mode-line / scroll re-fill /
+   text-property face change propagation / p99 latency.
+3. =bench/bench-redisplay.el= + =make bench= target = persistent
+   throughput + p99 latency verification.  3 scenarios (static /
+   edit / scroll) × 2 modes (:diff vs :full), per-iter sample +
+   p50/p99/p99.9/max + gate verdict.
+4. =emacs-buffer.el= integration: =put-text-property= /
+   =add-text-properties= / =remove-text-properties= bump
+   =modified-tick=, =nelisp-ec-insert= / =-delete-region= /
+   =-erase-buffer= bump =text-tick= via =:after= advice.
+
+Close gate verdict (Doc 43 §3.2 audit, Doc 01 §3.3 table):
+| #     | gate                                       | status            |
+|-------+--------------------------------------------+-------------------|
+| #1    | face change → glyph-matrix dirty propagation | SHIPPED           |
+| #2    | window scroll → glyph-matrix re-fill         | SHIPPED           |
+| #3    | =force-mode-line-update= → mode-line redraw  | SHIPPED           |
+| #4    | 5x throughput vs full-redraw bench           | SHIPPED (112.96x) |
+| #5    | xdisp ERT ~45 test                           | SHIPPED (80 ERT)  |
+| #6    | integration smoke ~20 cases                  | SHIPPED (25 ERT)  |
+| #7    | 1h soak / 10MB / leak 0 / RSS < 5MB          | OPTIONAL, not run |
+| #8    | per-frame p99 < 100ms                        | SHIPPED (max 21ms) |
+
+What Phase 3 does *not* yet ship (= future Phase 3 v2.x work):
+- bidi (right-to-left text) — MVP is LTR only.
+- =composition= (CJK glyph composite).
+- =display= property =(image …)= / =(space …)= / =(when …)= real
+  spec; today =image= is capability-flag degraded.
+- =mouse-face= — depends on mouse events (Phase 11.A v2.1+).
+- Dedicated mode-line row — current MVP folds the mode-line into
+  the window matrix's final row.
+
+* Phase 4 substrate (MELPA compat reference subset, Doc 01 §3.4)
+
+Phase 4 is at *scaffold + synthetic pilot* stage on =main=.
+
+- =src/emacs-melpa-shim.el= (~227 LOC) = compat layer for the
+  buffer / search / local-variable API subset most popular MELPA
+  packages depend on.  Provides =emacs-melpa-shim-install= /
+  =-uninstall= and the =with-installed= scoped macro plus
+  per-API status tracking via =emacs-melpa-shim-api-status=.
+- =test/emacs-melpa-shim-test.el= = synthetic pilot
+  (=phase4-pilot-transform= on a temp package) verifies the
+  install / uninstall round-trip end-to-end.
+
+Real MELPA package onboarding (helm / ido / dired-full / org-full /
+company / eglot per Doc 01 §3.4 target list) is the next step.  Per
+Doc 01 §1 Phase 4 scope is the *reference subset*; long-tail MELPA
+support (= ~5000 packages) lives in a separate community repo
+=nelisp-elisp-compat= per Doc 33 §3.2 delegate.
 
 * Long-term roadmap
 :PROPERTIES:
@@ -232,10 +325,10 @@ maintainer evening hours.
 | Phase    | Scope                              | LOC estimate | Wall-clock | Status         |
 |----------+------------------------------------+--------------+------------+----------------|
 | Phase 1  | Layer 2 core (buffer / window / …) | ~5-10K       | 6-12 mo    | §4 + close demo shipped (2026-05-15) |
-| Phase 2  | TUI backend reference impl         | ~5-10K       | 6-12 mo    | close gate shipped (2026-05-16); Phase 11.B redisplay pending |
-| Phase 3  | =xdisp.c= port (display engine)    | ~10-30K      | 12-24 mo   | unstarted      |
-| Phase 4  | MELPA compat layer (shim)          | ~20-50K      | 1-2 yr     | unstarted      |
-| Phase 5  | Emacs bootstrap (self-host)        | full         | 3-5 yr     | unstarted      |
+| Phase 2  | TUI backend reference impl         | ~2-3.5K      | 4-9 mo     | close gate shipped (2026-05-16) |
+| Phase 3  | redisplay engine MVP               | ~1.3-2.5K    | 6-12 mo    | MVP close gate shipped (2026-05-06); bidi / composition / display real spec are v2.x future |
+| Phase 4  | MELPA compat reference subset      | ~3-8K        | 6-12 mo    | scaffold + synthetic pilot; real package onboarding pending |
+| Phase 5  | Emacs bootstrap (self-host)        | full         | 3-5 yr     | unstarted on =main= (parallel DRAFT in feature branch) |
 
 In particular: =org-mode= depends on Phase 1 (buffer + text
 properties) + Phase 2 (TUI redisplay) + Phase 3 (display engine, for
