@@ -543,6 +543,54 @@ positioned at the run start (1-based)."
                     '((:foreground . green) (:bold . t)))
                    "\e[32;1m")))
 
+;;; Track X (2026-05-04) — alt-screen takeover
+
+(ert-deftest emacs-tui-backend-test-enter-alt-screen-emits-sequence ()
+  "enter-alt-screen emits `\\e[?1049h' + clear + cursor-home in order."
+  (emacs-tui-backend-test--with-capture
+    (let ((h (emacs-tui-backend-init)))
+      (should (eq t (emacs-tui-backend-enter-alt-screen h)))
+      (should (string=
+               emacs-tui-backend-test--captured
+               (concat "\e[?1049h" "\e[2J" "\e[1;1H"))))))
+
+(ert-deftest emacs-tui-backend-test-enter-alt-screen-idempotent ()
+  "enter-alt-screen is idempotent — second call returns nil + emits nothing."
+  (emacs-tui-backend-test--with-capture
+    (let ((h (emacs-tui-backend-init)))
+      (emacs-tui-backend-enter-alt-screen h)
+      (setq emacs-tui-backend-test--captured "")
+      (should (eq nil (emacs-tui-backend-enter-alt-screen h)))
+      (should (string= emacs-tui-backend-test--captured "")))))
+
+(ert-deftest emacs-tui-backend-test-leave-alt-screen-emits-restore ()
+  "leave-alt-screen emits cursor-show + reset + `\\e[?1049l' in order."
+  (emacs-tui-backend-test--with-capture
+    (let ((h (emacs-tui-backend-init)))
+      (emacs-tui-backend-enter-alt-screen h)
+      (setq emacs-tui-backend-test--captured "")
+      (should (eq t (emacs-tui-backend-leave-alt-screen h)))
+      (should (string-match-p "\\\\?\\[?25h" emacs-tui-backend-test--captured))
+      (should (string-match-p "\\\\?\\[0m"   emacs-tui-backend-test--captured))
+      (should (string-match-p "\\\\?\\[?1049l" emacs-tui-backend-test--captured)))))
+
+(ert-deftest emacs-tui-backend-test-leave-alt-screen-noop-when-off ()
+  "leave-alt-screen returns nil when alt-screen was never entered."
+  (emacs-tui-backend-test--with-capture
+    (let ((h (emacs-tui-backend-init)))
+      (should (eq nil (emacs-tui-backend-leave-alt-screen h)))
+      (should (string= emacs-tui-backend-test--captured "")))))
+
+(ert-deftest emacs-tui-backend-test-shutdown-after-alt-screen-cleans-up ()
+  "shutdown after enter-alt-screen still emits the alt-screen-off escape."
+  (emacs-tui-backend-test--with-capture
+    (let ((h (emacs-tui-backend-init)))
+      (emacs-tui-backend-enter-alt-screen h)
+      (setq emacs-tui-backend-test--captured "")
+      (emacs-tui-backend-shutdown h)
+      (should (string-match-p "\\\\?\\[?1049l"
+                              emacs-tui-backend-test--captured)))))
+
 (provide 'emacs-tui-backend-test)
 
 ;;; emacs-tui-backend-test.el ends here

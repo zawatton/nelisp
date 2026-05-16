@@ -34,12 +34,35 @@
 
 ;;; Code:
 
+(defun emacs-sqlite-ffi--default-libpath ()
+  "Resolve the default location of `libnelisp_runtime.so'.
+
+Resolution order (Doc 51 Track I, 2026-05-04):
+  1. `NELISP_RUNTIME_SO' env var (= absolute path, takes precedence)
+  2. `NELISP_HOME' env var + `target/release/libnelisp_runtime.so'
+     (= same NELISP_HOME used by `bin/nemacs')
+  3. `~/Notes/dev/nelisp/target/release/libnelisp_runtime.so'
+     (= developer's standard checkout location)
+
+Step 3 is a sensible fallback for the project author; deployments
+should set NELISP_RUNTIME_SO or NELISP_HOME explicitly."
+  (let ((override (and (fboundp 'getenv) (getenv "NELISP_RUNTIME_SO"))))
+    (cond
+     ((and override (not (string-empty-p override))) override)
+     ((and (fboundp 'getenv)
+           (let ((home (getenv "NELISP_HOME")))
+             (and home (not (string-empty-p home))
+                  (concat (file-name-as-directory home)
+                          "target/release/libnelisp_runtime.so")))))
+     (t (expand-file-name "Notes/dev/nelisp/target/release/libnelisp_runtime.so"
+                          (or (and (fboundp 'getenv) (getenv "HOME")) "~"))))))
+
 (defvar emacs-sqlite-ffi-libpath
-  (or (and (fboundp 'getenv) (getenv "NELISP_RUNTIME_SO"))
-      "/home/madblack-21/Cowork/Notes/dev/nelisp/target/release/libnelisp_runtime.so")
+  (emacs-sqlite-ffi--default-libpath)
   "Absolute path to `libnelisp_runtime.so' (= nelisp-sqlite-rs cdylib).
-Override via `NELISP_RUNTIME_SO' env var or by `setq' before this
-file loads.")
+Override via `NELISP_RUNTIME_SO' env var or `setq' before this file
+loads.  See `emacs-sqlite-ffi--default-libpath' for the resolution
+order.")
 
 
 ;;;; --- routing: in-process nl-ffi-call vs subprocess nelisp-ffi-call ----

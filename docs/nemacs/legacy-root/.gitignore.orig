@@ -22,3 +22,9 @@ AGENTS.md
 .aider*
 .codex/
 .windsurfrules
+
+# Layer-2 self-containment (Doc 51, 2026-05-04): the nelisp runtime
+# is fetched into vendor/nelisp/ by `bin/build-nelisp'.  Source +
+# build artifacts both live there; we don't want to track either —
+# `make nelisp' is the source of truth.
+vendor/nelisp/

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# bin/build-nelisp — fetch + build the nelisp runtime in vendor/nelisp/
+#
+# Layer-2 self-containment (Doc 51, 2026-05-04): nemacs depends on a
+# `nelisp' binary at runtime, but the source/build of that binary is
+# the responsibility of THIS repo's build pipeline — not of an
+# environment-wide checkout at $HOME/Notes/dev/nelisp.
+#
+# Default behaviour: clone the upstream nelisp repo into
+# vendor/nelisp/ (gitignored) and run `cargo build --release` on it.
+# The resulting binary is at vendor/nelisp/target/release/nelisp,
+# which is what `bin/nemacs` looks for by default.
+#
+# Idempotent: re-running `bin/build-nelisp` is a no-op when the
+# vendored checkout exists and is up to date.  Pass `--rebuild` to
+# force a fresh `cargo build --release`.
+#
+# Environment overrides:
+#   NELISP_REPO_URL   git remote (default: https://github.com/zawatton/nelisp.git)
+#   NELISP_REPO_REF   branch / tag / SHA (default: feat/doc-49-rust-min-core)
+#   CARGO             cargo binary (default: cargo)
+
+set -euo pipefail
+
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
+NEMACS_HOME="$(cd "$SCRIPT_PATH/.." && pwd)"
+VENDOR_DIR="$NEMACS_HOME/vendor/nelisp"
+NELISP_REPO_URL="${NELISP_REPO_URL:-https://github.com/zawatton/nelisp.git}"
+NELISP_REPO_REF="${NELISP_REPO_REF:-feat/doc-49-rust-min-core}"
+CARGO="${CARGO:-cargo}"
+
+REBUILD=0
+PULL=1
+for arg in "$@"; do
+  case "$arg" in
+    --rebuild) REBUILD=1 ;;
+    --no-pull) PULL=0 ;;
+    --help|-h)
+      sed -n '2,28p' "$0"
+      exit 0
+      ;;
+    *) echo "build-nelisp: unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+
+echo "build-nelisp: vendor dir = $VENDOR_DIR"
+echo "build-nelisp: ref        = $NELISP_REPO_REF"
+
+if [[ ! -d "$VENDOR_DIR/.git" ]]; then
+  echo "build-nelisp: cloning $NELISP_REPO_URL → $VENDOR_DIR"
+  mkdir -p "$VENDOR_DIR"
+  git clone "$NELISP_REPO_URL" "$VENDOR_DIR"
+  ( cd "$VENDOR_DIR" && git checkout "$NELISP_REPO_REF" )
+elif (( PULL )); then
+  echo "build-nelisp: pulling latest"
+  ( cd "$VENDOR_DIR" \
+      && git fetch origin "$NELISP_REPO_REF" \
+      && git checkout "$NELISP_REPO_REF" \
+      && git pull origin "$NELISP_REPO_REF" )
+fi
+
+if (( REBUILD )); then
+  ( cd "$VENDOR_DIR" && "$CARGO" clean -p nelisp-build-tool 2>/dev/null || true )
+fi
+
+echo "build-nelisp: cargo build --release -p nelisp-build-tool"
+( cd "$VENDOR_DIR" && "$CARGO" build --release -p nelisp-build-tool )
+
+BIN="$VENDOR_DIR/target/release/nelisp"
+if [[ ! -x "$BIN" ]]; then
+  echo "build-nelisp: build succeeded but $BIN is missing — fatal" >&2
+  exit 1
+fi
+
+echo "build-nelisp: OK — binary at $BIN"
+"$BIN" --version || true
