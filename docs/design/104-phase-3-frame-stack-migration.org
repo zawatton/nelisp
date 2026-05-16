@@ -1,0 +1,447 @@
+#+TITLE: Doc 104 — env.rs → elisp Migration (Phase 3: Frame stack migration)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-16
+
+* Status
+
+- *State*: DRAFT 2026-05-16
+- *Parent track*: Doc 102 §3 Phase 3 (= 1 session, "move =frames: Vec<HashMap<String, FrameCell>>= to an elisp =Sexp::Vector= of fast hashtables"). Doc 102 Phase 2 (`globals`) SHIPPED at commit `91266188` (= `env.globals: HashMap` retired, mirror canonical).
+- *Sibling*: Doc 110 (= f64 ABI), Doc 98 (= frozen-heap baker §98.2-5).
+- *Scope*: design only.  Implementation ships under feat/doc-104-* branches per stage; per Doc 102 §1.2 monotonic-shrink rule, each ship commit must produce non-positive Rust LOC delta or pair primitive + consumer atomically.
+
+** Why this DRAFT exists (= what changed since Doc 102 §3 sketch)
+
+Doc 102 §3 captured Phase 3 in one paragraph:
+
+#+begin_quote
+Move =frames: Vec<HashMap<String, FrameCell>>= to an elisp =Sexp::Vector=
+of fast hashtables.  =push_frame= / =pop_frame= / =bind_local= route
+through elisp.
+
+*LOC delta*: Rust -80 (= Vec ops + frame helpers); Elisp +50.
+#+end_quote
+
+Three concrete refinements landed in Phase 2.b (SHIPPED 2026-05-16) that change the Phase 3 picture:
+
+1. =install_empty_mirror_rust_direct= (= Phase 2 Sprint B Stage 2) is now the canonical bootstrap for the elisp `nelisp-env` record. The same Rust-direct allocation pattern can build a `nelisp-frame-stack` record without going through `apply_function'.
+2. =mirror_iter_entries= + =mirror_snapshot_globals= + =mirror_install_entry= establish a *generic fast-hash bucket walk + slot manipulation API*.  Phase 3 reuses the same primitives — no new low-level Rust plumbing required.
+3. =FrameCell= is already =NlCellRef= = =Sexp::Cell= internally (see `eval/nlcell.rs').  Captured-closure write-through (= Doc 44 §3.3 Phase A.2.1 setcar discipline) already round-trips through `Sexp::Cell' in `capture_lexical' / `push_captured'.  *Phase 3 only needs to migrate the frame container, not the cell value*.
+
+The first two together drop the Phase 3 implementation surface from "ABI design + 8 helpers" to "container swap + 5 helpers".  The third drops the cell-semantics complexity to zero.
+
+* §0 TL;DR
+
+** §0.1 What Phase 3 owns
+
+The Rust frame stack:
+
+#+begin_src rust
+pub type FrameCell = crate::eval::nlcell::NlCellRef;
+pub type Frame = HashMap<String, FrameCell>;
+pub struct Env {
+    pub frames: Vec<Frame>,
+    // ... (8 other fields, including globals_record from Phase 2)
+}
+#+end_src
+
+6 Rust methods access =frames=:
+
+| Method | Body | Hot? |
+|---|---|---|
+| =push_frame= | =self.frames.push(HashMap::new())= | yes (every let / lambda) |
+| =pop_frame= | =self.frames.pop()= | yes |
+| =bind_local= | =self.frames.last_mut().insert(name, FrameCell::new(value))= | yes |
+| =find_frame_cell= | =self.frames.iter().rev().find_map(|f| f.get(name))= | *very hot* — every variable lookup |
+| =capture_lexical= | walk frames innermost-first, dedup names, build (name . cell) alist | warm (every closure) |
+| =push_captured= | parse alist → fresh =Frame= → =self.frames.push= | warm |
+
+External callsites (= ~13 lines, all in eval/):
+
+- =special_forms.rs::do_let= (×1) + =do_condition_case= (×1) + =do_catch= (×1)
+- =mod.rs::eval_lambda_call= push_captured / push_frame / pop_frame ×2 + bind_local for args
+- =builtins.rs::bi_funcall= push/pop/bind for apply primitive
+- =env_shim.rs::bi_globals_op= reads `capture_lexical' for OP=`capture-lexical'
+
+All callsites are *opaque to the underlying storage* — they call methods on =Env=.  Phase 3's surface is the method bodies + the field declaration only.
+
+** §0.2 What blocks deletion (= why Phase 2's approach works here too)
+
+Phase 2 retired =globals: HashMap= by:
+
+1. constructing an elisp =nelisp-env= record (= bucket-array fast-hash) eagerly in =install_stage0=,
+2. routing all reads / writes through =mirror_*= helpers that walk Sexp::Record slots directly in Rust,
+3. retiring HashMap dual-writes in the value / function / defvar / etc. methods,
+4. retiring the HashMap field after no callsite touched it.
+
+Phase 3 follows the same pattern with one twist: the stack semantics (= push / pop) need an elisp representation that supports cheap top-of-stack mutation without =apply_function= round-trips.  Two candidate representations:
+
+*Option A (Sexp::Vector stack, growable)*: =frames_record= is =Sexp::Vector= of frame records.  Push = grow vector by 1 (cheap, =NlVectorRef::push' or equivalent).  Pop = shrink by 1.  =find_frame_cell= = reverse-iterate the vector + mirror_lookup each frame.
+
+*Option B (Sexp::Cons stack, persistent)*: =frames_record= is a cons-list of frame records, top first.  Push = =cons(new, frames)=.  Pop = =cdr(frames)=.  Allocates a cons per push (= measurable on hot let / lambda).
+
+*Option C (Rust Vec stays, only frame contents migrate)*: =frames: Vec<Sexp>= where each =Sexp= is an elisp frame record.  Push / pop stay Rust ops; only =Frame= storage migrates.  Net Rust delta is small (= Vec stays); ABI alignment with Phase 2 is incomplete.
+
+This DRAFT chooses *Option A* (= Sexp::Vector growable stack).  Push / pop are O(1) amortized via =NlVectorRef= grow, =find_frame_cell= keeps native Rust iteration speed, and the whole frame stack lives on the elisp heap (= consistent with Phase 2's globals story).  Doc 102 §3 Phase 3 also implicitly named Option A ("Sexp::Vector of fast hashtables").
+
+** §0.3 Phase 3 deliverable
+
+Phase 3 ships in 5 stages (= Stage 3.a-e), each its own commit.  Naming follows Phase 2.b precedent (Step A/B/C/D/E).
+
+| Stage | Scope | Rust delta |
+|---|---|---|
+| 3.a | =lisp/nelisp-frame.el= elisp module + record skeleton.  No Rust changes. | 0 |
+| 3.b | =Env::frames_record= field + =install_frames_record= + Rust-direct =frame_push_*= / =frame_pop_*= / =frame_bind_*= / =frame_lookup_*= helpers.  Dual-write Vec + mirror.  Add Phase 3 regression tests. | +60 helpers, +30 tests |
+| 3.c | =bind_local= / =push_frame= / =pop_frame= bodies switch to mirror-only.  Vec dual-write retired. | -10 |
+| 3.d | =find_frame_cell= / =capture_lexical= / =push_captured= switch to mirror walk. | -20 |
+| 3.e | Retire =frames: Vec<Frame>= field + =Frame= / =FrameCell= type aliases (= FrameCell stays as it's NlCellRef alias) + dead-code cleanup. | -40 |
+
+Cumulative target per Doc 102 §3 Phase 3 estimate: *Rust -80 LOC + Elisp +50 LOC*.  Including the Phase 2.b-style regression-test surface, net could be +0 to -50 LOC over the 5 stages depending on test depth.
+
+** §0.4 Scope of Phase 3
+
+In scope:
+
+- frame stack representation (= Sexp::Vector of fast-hash records)
+- migration of 6 frame helpers + 13 external callsite stability
+- =FrameCell= write-through preservation (= no semantic change to closure capture)
+- per-stage perf gate (= eval lookup latency within 20% of Phase 2 post-ship baseline)
+
+Out of scope:
+
+- =extern_builtins: HashMap<String, ExternBuiltin>= migration (= Phase 6, Doc 107)
+- frame *content* changes (= the Sexp::Cell write-through pattern is preserved verbatim)
+- Phase 47 grammar form for frame ops (= deferred to Phase 7+ if needed)
+- =unbound-marker= sentinel for frames (= frames don't have an unbound concept; absent = HashMap miss, equivalent fast-hash miss)
+
+* §1 Background
+
+** §1.1 frames in numbers (= 2026-05-16 post-Phase-2.b snapshot)
+
+| Metric | Value | Source |
+|---|---|---|
+| =Env::frames= field declaration | 1 LOC | =eval/env.rs:39= |
+| =Frame= type alias | 1 LOC | =eval/env.rs:29= |
+| =FrameCell= type alias | 1 LOC | =eval/env.rs:28= |
+| =push_frame= | 3 LOC | =eval/env.rs:618-620= |
+| =pop_frame= | 3 LOC | =eval/env.rs:622-625= |
+| =bind_local= | 7 LOC | =eval/env.rs:632-638= |
+| =find_frame_cell= | 3 LOC | =eval/env.rs:547-549= |
+| =capture_lexical= | 15 LOC | =eval/env.rs:664-678= |
+| =push_captured= | 23 LOC | =eval/env.rs:765-787= |
+| *Phase 3 surface (Rust)* | ~57 LOC | (sum of above) |
+
+External callsites:
+
+| File | Helpers used | Count |
+|---|---|---|
+| =eval/special_forms.rs= | push/pop/bind | 11 |
+| =eval/mod.rs= (lambda apply) | push/pop/bind/push_captured | 7 |
+| =eval/builtins.rs= | push/pop/bind/push_captured | 5 |
+| =eval/env_shim.rs= | capture_lexical | 1 |
+| *Total external callsites* | | 24 |
+
+Frame depth (= measured at production bootstrap end, instrumented in a Stage 3.b probe TBD): expected ≤ 4 frames concurrent during STDLIB load (= top-level only, no nested closures).  Hot eval (= recursive elisp functions) can hit 100+ depth; the Sexp::Vector =find_frame_cell= walk must scale at native iteration speed, not =apply_function= speed.
+
+** §1.2 FrameCell — already elisp-shaped
+
+=FrameCell= is a type alias for =NlCellRef= (= one-slot record with =Sexp= content).  When wrapped as =Sexp::Cell(NlCellRef)=, it round-trips through =capture_lexical= alist + =push_captured= without identity loss (= the same =NlCellRef= ends up in the closure's frame, so =setq= on the closure body writes through to the originating let-binding).
+
+This means Phase 3 does *not* design a new cell ABI — the existing =Sexp::Cell= is the cell ABI.  The migration only touches the *frame container*.
+
+** §1.3 Why a Sexp::Vector beats a cons stack
+
+Hot path = =find_frame_cell=, hit once per non-lexically-bound variable reference.  Per-call cost breakdown (= rough estimate, machine-dependent):
+
+| Representation | Push | Pop | Top access | =find_frame_cell= (depth N) |
+|---|---|---|---|---|
+| =Vec<HashMap>= (current) | ~10ns | ~5ns | ~3ns | ~5ns × N |
+| Sexp::Vector growable | ~20ns | ~10ns | ~5ns | ~10ns × N |
+| Sexp::Cons stack | ~50ns (alloc) | ~5ns | ~10ns | ~15ns × N |
+| =apply_function= round-trip | ~800ns | ~800ns | ~800ns | ~800ns × N |
+
+Sexp::Vector buys consistent native iteration speed at a modest constant factor over Rust HashMap; cons stack pays an alloc per push that lambda-heavy code (= apply / funcall hot path) cannot afford.
+
+* §2 ABI design
+
+** §2.1 Frame rep — =Sexp::Record= type-tag =nelisp-frame=
+
+#+begin_src elisp
+;; Storage layout:
+;;   frames_record (Sexp::Vector)
+;;     elt 0 .. elt (N-1) = Sexp::Record(`nelisp-frame')
+;;       slots[0] = Sexp::Record(`fast-hash-table')
+;;         slots[0] = Sexp::Int (= bucket count = 16, power-of-2)
+;;         slots[1] = Sexp::Vector (= buckets, each elt an alist)
+;;         slots[2] = Sexp::Int (= entry count)
+;;
+;; Bucket alist cell:
+;;   (Sexp::Cons (Sexp::Str . Sexp::Cell(NlCellRef)))
+;;   ^^^ same shape as nelisp-env's symbol-entry record's slot,
+;;       but the value side is a bare Sexp::Cell, not a 4-slot
+;;       symbol-entry — frames have no function / plist / constant
+;;       dichotomy.
+#+end_src
+
+The Stage 3.a elisp module ships:
+
+- =nelisp-frame-make= → fresh =nelisp-frame= record
+- =nelisp-frame-bind FRAME NAME CELL= → install / update
+- =nelisp-frame-lookup FRAME NAME= → Sexp::Cell or =nelisp--unbound-marker=
+- =nelisp-frame-stack-push STACK FRAME= → append to vector
+- =nelisp-frame-stack-pop STACK= → drop last
+- =nelisp-frame-stack-find STACK NAME= → cell or =nelisp--unbound-marker=, walks innermost-first
+- =nelisp-frame-stack-capture STACK= → alist of (name . cell) for closure construction
+- =nelisp-frame-stack-push-captured STACK ALIST= → push a frame populated from ALIST
+
+Bucket count: 16 (= small; frames typically hold 1-5 bindings).  Power-of-2 to match =mirror_fnv1a= dispatch (= same shift-AND fast path).
+
+** §2.2 Why 16 buckets instead of 1024
+
+Globals (Phase 2): ~2000 entries, 1024 buckets → ~2 entries per bucket avg.
+
+Frames (Phase 3): typical =(let ((x 1) (y 2)) ...)= = 2 entries; lambda formals = 1-5 entries; pathological with =(let ((a 1)(b 2)..(z 26)) ...)= = 26 entries.
+
+16 buckets → 1-2 entries per bucket for typical frames, 2 entries for pathological — perfectly tolerable linear scan within bucket.
+
+Tradeoff:
+
+- 16 buckets × 8 bytes Sexp::Nil = 128 bytes Sexp::Vector backing per frame
+- 1024 buckets = 8KB per frame → unacceptable when 100+ frames are live during deep recursion
+
+Default to 16; if recursion-heavy benchmarks degrade, Stage 3.c.1 can flip it via a defcustom.
+
+** §2.3 Capture-lexical semantics — preserve cell identity
+
+=capture_lexical= currently:
+
+#+begin_src rust
+for frame in self.frames.iter().rev() {
+    for (k, cell) in frame {
+        if seen.insert(k.clone()) {
+            let pair = Sexp::cons(Sexp::Symbol(k.clone()), Sexp::Cell(cell.clone()));
+            acc = Sexp::cons(pair, acc);
+        }
+    }
+}
+#+end_src
+
+The post-Phase-3 mirror walk must preserve the exact same =NlCellRef= identity (= no =NlCellRef::new= per visit, which would break closure write-through).  This translates to:
+
+- =mirror_iter_frame_entries= helper that yields =(name, &NlCellRef)= pairs without cloning the cell into a fresh =NlCellRef= per visit.
+- The =Sexp::Cell(cell.clone())= clone is the *Rc bump*, not a deep copy — preserved.
+
+Implementation note: the bucket alist cell carries =(Sexp::Str . Sexp::Cell(NlCellRef))=, so reading the cdr-as-cell preserves identity for free (= no helper required).
+
+** §2.4 No new Phase 47 grammar form
+
+Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Record= / =Sexp::Vector= ABI walks; no new compiler lowering is needed.  Phase 47 stays cleanly separated.
+
+* §3 Stage outline
+
+** Stage 3.a — =lisp/nelisp-frame.el= skeleton (= no Rust changes)
+
+*Scope*:
+
+- Ship =lisp/nelisp-frame.el= (= elisp module providing the 8 helpers from §2.1).  Each helper is unit-tested via host Emacs / make test.
+- Reuse =nelisp-stdlib-fast-hash.el= (= already loaded from Phase 2) for the per-frame fast-hash backing.
+- No Rust changes.  Rust still holds =frames: Vec<Frame>=.
+
+*Verification*:
+
+- =make test= (= elisp ERT) green.
+- =make bake-images= regenerates =nelisp-frame.el.image= cleanly (post-Doc 98 §98.2 unblock).
+
+*LOC delta*: Rust 0, Elisp ~+80.
+
+** Stage 3.b — =frames_record= field + Rust-direct helpers (= dual-write)
+
+*Scope*:
+
+- Add =frames_record: Sexp= to =Env= (= initial =Sexp::Nil=, populated by =install_frames_record= during =install_stage0=).
+- Add Rust-direct helpers paralleling =mirror_*=:
+  - =frame_push_rust_direct=, =frame_pop_rust_direct=
+  - =frame_bind_rust_direct=
+  - =frame_lookup_rust_direct=, =frame_stack_find_rust_direct=
+  - =frame_capture_rust_direct=, =frame_push_captured_rust_direct=
+- =push_frame= / =pop_frame= / =bind_local= dual-write (= Vec + frames_record).  Reads still hit Vec (= no semantic change yet).
+- Ship Phase 3.b regression test paralleling =doc102_phase2b_stdlib_past_env_shim_produces_real_diffs=: bake a stdlib file that uses elisp-driven =bind_local= via env_shim and assert the frame is visible after each push.
+
+*Verification*:
+
+- =cargo test --release --lib --features image-baker -- --test-threads=1= green (all 686 + new Stage 3.b tests).
+- Production smoke unchanged.
+- =bench/= (if any frame microbench exists) within 20% of pre-Stage-3.b.
+
+*LOC delta*: Rust +60 (helpers) + +30 (tests).
+
+** Stage 3.c — write-path switch to mirror-only
+
+*Scope*:
+
+- =push_frame= / =pop_frame= / =bind_local= bodies drop the Vec write.  Mirror is canonical for writes.
+- Reads still hit Vec (= dual-read).  Vec is a stale snapshot.
+
+*Verification*: same gate as 3.b + assertion that Vec is empty post-bootstrap (=> no production callsite still writes to Vec).
+
+*LOC delta*: Rust -10 (= drop 3 Vec writes + their let-bindings).
+
+** Stage 3.d — read-path switch to mirror
+
+*Scope*:
+
+- =find_frame_cell= / =capture_lexical= / =push_captured= bodies route through =frames_record=.
+- Vec is now fully unused.
+
+*Verification*: same gate + grep proof that =self.frames= has zero references in production code paths (= test-only references are acceptable in transition).
+
+*LOC delta*: Rust -20 (= replace iterator bodies with mirror walks).
+
+** Stage 3.e — retire =frames: Vec<Frame>= field
+
+*Scope*:
+
+- Remove =frames: Vec<Frame>= field declaration.
+- Remove =frames: Vec::new()= initializer in =Env::fresh=.
+- Remove =type Frame= alias (= used nowhere after this).  =FrameCell= alias stays (= referenced by =Sexp::Cell= comments + =NlCellRef= API).
+- Migrate any =test/= code that touched =env.frames= to mirror access (= same migration pattern as Phase 2.b Step E test churn).
+
+*Verification*: full =cargo build --release= clean (= no stale Vec reference anywhere); 686+ tests green; production smoke pass.
+
+*LOC delta*: Rust -40 (= field + alias + Vec ops cleanup + dead code).
+
+** Stage 3 cumulative target
+
+Per-stage LOC delta: 0 / +90 / -10 / -20 / -40 = *+20 net Rust* across 5 stages, but ~-80 production-code LOC if the +90 test surface is excluded.  Matches Doc 102 §3 Phase 3 estimate (Rust -80, Elisp +50).
+
+* §4 Verification gates
+
+** §4.1 Per-stage gate
+
+Each stage verifies:
+
+- =cargo build --release= clean (production binary).
+- =cargo build --release --features image-baker= clean (baker).
+- =cargo test --release --lib --features image-baker -- --test-threads=1= green.
+- Production smoke: =./target/release/nelisp eval '(+ 1 2)'= → =3=; =./target/release/nelisp eval '(let ((x 5)) (* x x))'= → =25=; =./target/release/nelisp eval '(let ((f (lambda (n) (* n 2)))) (funcall f 7))'= → =14= (= closure capture).
+- =make bake-images= regenerates without 25-byte empty images (= post-Doc 98 §98.2 sanity).
+
+** §4.2 Cumulative gate (Stage 3.e ship-ready)
+
+After Stage 3.e:
+
+- =cargo build --release= clean on linux-x86_64, linux-aarch64, macos-aarch64.
+- =eval/env.rs::Env= struct contains *no* =frames= field; =type Frame= alias is deleted.
+- ERT closure-capture suite green (= the let-binding + capturing-lambda + closure-setq invariants).
+- Per-stage perf delta cumulative within 50% of pre-Phase-3 baseline.
+
+** §4.3 Perf measurement plan
+
+Stage 3.b ships a microbench at =bench/frame_lookup_microbench.rs= (= or extends existing =bench/=) that runs:
+
+#+begin_src text
+1M iterations of:
+  (let ((x 1)) (let ((y 2)) (let ((z 3)) (+ x y z))))
+#+end_src
+
+Baseline (= pre-Phase-3): TBD (measure at Stage 3.b dispatch).
+Target: post-Stage-3.e ≤ 1.5× baseline.
+
+If perf regresses > 1.5× at Stage 3.d, Stage 3.e is BLOCKED on optimisation (= bucket count tuning, =mirror_fnv1a= unroll, or a Sexp::Vector fast-path that bypasses fast-hash for ≤3-entry frames).
+
+* §5 Risks / unknowns
+
+** §5.1 =find_frame_cell= hot-path perf
+
+The current Rust impl is a =HashMap::get= per frame × innermost-first iteration.  Post-Phase-3 it's a Sexp::Vector walk + =mirror_fnv1a= + bucket alist walk.  Bucket alist is a Rust =&Sexp= linked-list walk (= no apply_function), so per-bucket overhead is small.  Risk: if recursion-heavy benches degrade > 1.5×, fall back to Option C (= keep =frames: Vec= on Rust side, only migrate frame contents).
+
+*Mitigation*: §4.3 perf gate enforces the budget at every stage.  Bucket count is a single defcustom away from tuning.
+
+** §5.2 =Sexp::Vector= growable semantics
+
+=NlVectorRef= must support O(1) amortized grow + O(1) pop without reallocating-and-copying on every push.  Phase 2 baker uses =NlVectorRef::new(vec![Sexp::Nil; BUCKET_COUNT])' (= fixed-size).  Stage 3.a confirms =NlVectorRef= push / pop / =with_value_mut= are exposed and behaved.
+
+*Mitigation*: if =NlVectorRef= lacks =push= / =pop= primitives, Stage 3.b extends it (= primitive +consumer atomic ship per Doc 83 §1.2).
+
+** §5.3 Captured-closure cell identity
+
+If =frame_push_captured= ever calls =NlCellRef::new= instead of reusing the alist's =Sexp::Cell= handle, closures stop write-through and silently lose mutations.  Doc 44 §3.3 + Phase A.2.1 setcar discipline must hold.
+
+*Mitigation*: Stage 3.b adds a dedicated regression test:
+
+#+begin_src text
+(let ((x 0))
+  (let ((f (lambda () (setq x (1+ x))))
+        (g (lambda () x)))
+    (funcall f) (funcall f) (funcall g)))  ;; expect 2
+#+end_src
+
+If the result is 0, the cell was cloned somewhere along the push_captured path.
+
+** §5.4 Frame stack depth + Sexp::Vector size
+
+Deep recursion = 100+ frames live.  Sexp::Vector backing = 1024 buckets × 16 bytes × 100 = 1.6MB worst-case (= bucket count 1024, but Phase 3 uses 16 so it's 26KB worst-case — negligible).
+
+*Mitigation*: §2.2 articulates 16 buckets default.  No further mitigation needed.
+
+** §5.5 Boot order — =install_frames_record= timing
+
+=install_stage0= calls =install_empty_mirror_rust_direct= (= Phase 2's globals mirror) before =install_builtins= / =install_env_shim_primitives=.  Phase 3 inserts =install_empty_frames_record= here too, before any STDLIB decode happens.
+
+Risk: if a builtin install path *implicitly* pushes a frame (= unlikely, but possible if a future builtin uses =register_with_setup= that calls back into eval), the frames_record must be ready.
+
+*Mitigation*: =install_empty_frames_record= constructs an empty =Sexp::Vector= (= zero frames) eagerly in =install_stage0=.  No conditional initialization.
+
+** §5.6 Estimate honesty
+
+Doc 102 §3 Phase 3 estimated *Rust -80 / Elisp +50, 1 session*.  This DRAFT splits the work into 5 stages, each session-shippable; total work is closer to 2-3 sessions including the perf gate measurement.  Per Doc 83 §1.2 monotonic-shrink rule, Stage 3.b alone is +90 LOC (= helpers + tests), so it must ship in the same commit as Stage 3.c -10 (= net +80) or as part of an atomic primitive+consumer bundle.  Phase 2.b precedent (Session 1 +153, Session 2 -10, cumulative +143) suggests the bundle evaluation is the natural cadence.
+
+* §6 Out of scope
+
+** §6.1 =FrameCell= cell ABI changes
+
+=FrameCell = NlCellRef= stays as-is.  Closure write-through semantics are an invariant, not a migration target.
+
+** §6.2 Phase 47 grammar form for frame ops
+
+The Phase 47 strategy (= compile critical loops to native code via per-target =.o=) is a separate concern.  Phase 3 stays at the Rust-direct =Sexp::Record= walk level; if =find_frame_cell= proves too slow under Phase 3.d, it gets a dedicated Phase 47 grammar form in a future doc (= Doc 110-class capability expansion), not as part of Phase 3.
+
+** §6.3 =push_captured= alist representation
+
+The alist =((name . cell) ...)= shape is preserved exactly.  Closures already shipped with this representation; changing it is a separate ABI break.
+
+** §6.4 =extern_builtins= migration
+
+Doc 102 Phase 6 / Doc 107.  Same map, different concern (= Rust closure registry, not lexical state).
+
+** §6.5 Frame perf optimisations beyond bucket-count tuning
+
+If §5.1 mitigation isn't enough, the Phase 47 path (= §6.2) is the next escalation — *not* an inline optimisation in Phase 3.  Keeps the scope of this doc small.
+
+* §7 References
+
+** §7.1 Parent docs
+
+- =docs/design/102-env-rs-elisp-migration.org= (= Phase 1 design, Phase 2 SHIPPED)
+- =docs/design/83-100pct-pure-elisp-roadmap-consolidated.org= (= overall roadmap)
+
+** §7.2 Memory entries
+
+- =project_anvil_runtime_phase_b_complete= (= Phase B Final B Stage 2 + standalone NeLisp baseline)
+- =project_phase_47_spike_validated= (= Phase 47 toolchain capability gate)
+
+** §7.3 Code references
+
+- =build-tool/src/eval/env.rs= (= frames + 6 helpers + Env struct)
+- =build-tool/src/eval/nlcell.rs= (= NlCellRef / FrameCell = layout-pinned write-through cell)
+- =build-tool/src/eval/special_forms.rs= (= primary external callsite for push/pop/bind)
+- =build-tool/src/eval/mod.rs= (= eval_lambda_call frame discipline)
+- =lisp/nelisp-env.el= (= Phase 2 elisp env, sibling of the upcoming =nelisp-frame.el=)
+- =lisp/nelisp-stdlib-fast-hash.el= (= reusable fast-hash substrate)
+
+** §7.4 Commit references (= future)
+
+- Stage 3.a ship: =feat/doc-104-stage-3a-skeleton=
+- Stage 3.b ship: =feat/doc-104-stage-3b-helpers=
+- Stage 3.c ship: =feat/doc-104-stage-3c-write-flip=
+- Stage 3.d ship: =feat/doc-104-stage-3d-read-flip=
+- Stage 3.e ship: =feat/doc-104-stage-3e-field-delete=
