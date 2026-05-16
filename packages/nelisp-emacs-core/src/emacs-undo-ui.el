@@ -125,13 +125,36 @@ Each redo stack element is one undo-group in `primitive-undo' record form.")
          (append undo-group (cons nil rest))))))
   nil)
 
+;; Capture the host C subr at module load so timer-driven boundaries
+;; (= `undo-auto--boundary-timer' in host simple.el) can still drive
+;; the host's undo bookkeeping after this module shadows the symbol.
+;; Without this, the timer fires during any `sleep-for' (e.g. in
+;; `emacs-tui-backend-event-poll' with TIMEOUT-MS) and routes into
+;; our polyfill — which dereferences `nelisp-ec--current-buffer' and
+;; signals `nelisp-ec-no-current-buffer' when no Layer 2 buffer is
+;; bound, hanging the test run.
+(defvar emacs-undo-ui--orig-undo-boundary
+  (and (fboundp 'undo-boundary)
+       (subrp (symbol-function 'undo-boundary))
+       (symbol-function 'undo-boundary))
+  "Original `undo-boundary' subr captured at load time, or nil.")
+
 ;;;###autoload
 (defun undo-boundary ()
   "Close the current undo-group and drop redo on fresh edits."
-  (let ((list (emacs-undo-buffer-undo-list)))
-    (when (and (consp list) (car list))
-      (emacs-undo-ui--clear-redo)))
-  (emacs-undo-undo-boundary))
+  (cond
+   ;; Timer-driven path (= no Layer 2 buffer bound).  Forward to the
+   ;; host subr if we captured one so host buffers still get their
+   ;; boundaries; otherwise the polyfill is a no-op.
+   ((and emacs-undo-ui--orig-undo-boundary
+         (or (null (boundp 'nelisp-ec--current-buffer))
+             (null nelisp-ec--current-buffer)))
+    (funcall emacs-undo-ui--orig-undo-boundary))
+   (t
+    (let ((list (emacs-undo-buffer-undo-list)))
+      (when (and (consp list) (car list))
+        (emacs-undo-ui--clear-redo)))
+    (emacs-undo-undo-boundary))))
 
 (defun emacs-undo-ui--install-bindings ()
   "Install the undo UI bindings into `current-global-map'."
