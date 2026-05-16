@@ -27,6 +27,24 @@
 (require 'emacs-eval)
 (require 'emacs-keymap-builtins)
 
+;; Capture the host runtime's `eval-buffer' / `eval-region' before this
+;; module installs its interactive replacements.  Under host Emacs both
+;; are C subrs that `load' calls internally to populate `load-history';
+;; under standalone NeLisp neither symbol is fboundp yet.  Saving them
+;; here lets the polyfills below delegate when invoked from `load',
+;; preserving load-history bookkeeping for subsequently loaded files.
+(defvar emacs-elisp-eval--orig-eval-buffer
+  (and (fboundp 'eval-buffer)
+       (subrp (symbol-function 'eval-buffer))
+       (symbol-function 'eval-buffer))
+  "Original `eval-buffer' subr captured at load time, or nil.")
+
+(defvar emacs-elisp-eval--orig-eval-region
+  (and (fboundp 'eval-region)
+       (subrp (symbol-function 'eval-region))
+       (symbol-function 'eval-region))
+  "Original `eval-region' subr captured at load time, or nil.")
+
 (defun emacs-elisp-eval--echo-result (value)
   "Render VALUE in the echo area and return it."
   (message "%s" (prin1-to-string value))
@@ -149,23 +167,36 @@ Return the last value, or nil when TEXT contains no forms."
 (defun eval-region (beg end &optional stream read-function)
   "Evaluate each top-level form between BEG and END and echo the last result."
   (interactive "r")
-  (ignore stream read-function)
-  (condition-case err
-      (let ((value (emacs-elisp-eval--eval-forms-in-string
-                    (buffer-substring-no-properties beg end))))
-        (emacs-elisp-eval--echo-result value))
-    (error
-     (emacs-elisp-eval--echo-error err))))
+  (if (and load-in-progress emacs-elisp-eval--orig-eval-region)
+      ;; `load' depends on the host C subr's bookkeeping (load-history,
+      ;; lexical-binding cookies, byte-compile cookies).  Delegate
+      ;; transparently to preserve that surface.
+      (funcall emacs-elisp-eval--orig-eval-region beg end stream read-function)
+    (ignore stream read-function)
+    (condition-case err
+        (let ((value (emacs-elisp-eval--eval-forms-in-string
+                      (buffer-substring-no-properties beg end))))
+          (emacs-elisp-eval--echo-result value))
+      (error
+       (emacs-elisp-eval--echo-error err)))))
 
 ;;;###autoload
 (defun eval-buffer (&optional buffer printflag filename unibyte do-allow-print)
   "Evaluate every top-level form in the current buffer and echo the last result."
   (interactive)
-  (ignore printflag filename unibyte do-allow-print)
-  (save-current-buffer
-    (when buffer
-      (set-buffer buffer))
-    (eval-region (point-min) (point-max))))
+  (if (and load-in-progress emacs-elisp-eval--orig-eval-buffer)
+      ;; Same delegation as `eval-region': `load' calls `eval-buffer'
+      ;; internally and depends on the C subr's load-history side
+      ;; effects.  Routing through our polyfill there would silently
+      ;; drop the per-file load-history entry (breaking `symbol-file'
+      ;; lookups in every later-loaded file).
+      (funcall emacs-elisp-eval--orig-eval-buffer
+               buffer printflag filename unibyte do-allow-print)
+    (ignore printflag filename unibyte do-allow-print)
+    (save-current-buffer
+      (when buffer
+        (set-buffer buffer))
+      (eval-region (point-min) (point-max)))))
 
 (emacs-elisp-eval--install-bindings)
 

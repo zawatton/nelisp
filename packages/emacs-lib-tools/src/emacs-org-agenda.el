@@ -59,9 +59,11 @@
   "[ \t]+\\(:[[:alnum:]_@#%:]+:\\)[ \t]*$"
   "Regexp matching an Org headline tag suffix.")
 
-(defvar org-todo-keywords nil
-  "Optional TODO keyword specification from M3.2.
-When nil or unbound, `org-agenda' simply reports no TODO headings.")
+;; The variable is owned by `emacs-org-todo' (M3.2) — declare without
+;; initialisation so a later-loading `emacs-org-todo' defcustom value
+;; still applies (a defvar with a nil initial value would silently
+;; mark the symbol bound and suppress the defcustom default).
+(defvar org-todo-keywords)
 
 (defvar org-agenda-mode-map
   (let ((map (make-sparse-keymap)))

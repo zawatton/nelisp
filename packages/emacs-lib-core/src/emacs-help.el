@@ -295,8 +295,37 @@ RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
   (ignore buffer)
   (emacs-help--render-key key))
 
+;; Snapshot our `describe-*' implementations at load time so we can
+;; reassert them later.  Host Emacs's `help-fns' / `help.el' install
+;; their own definitions whenever something autoload-loads them (e.g.
+;; `find-function-library' loads `find-func' which loads `help-fns'),
+;; silently overwriting our polyfills via plain `defun'.  Tests after
+;; that point would otherwise route through host help, breaking the
+;; *Help*-buffer rendering contract this module owns.
+(defvar emacs-help--describe-function-impl
+  (symbol-function 'describe-function)
+  "Captured nelisp-emacs `describe-function' implementation.")
+
+(defvar emacs-help--describe-variable-impl
+  (symbol-function 'describe-variable)
+  "Captured nelisp-emacs `describe-variable' implementation.")
+
+(defvar emacs-help--describe-key-impl
+  (symbol-function 'describe-key)
+  "Captured nelisp-emacs `describe-key' implementation.")
+
+(defun emacs-help--reassert-overrides ()
+  "Reinstall our `describe-*' implementations.
+Run from `emacs-help--ensure-global-bindings' so any host library that
+re-defined these symbols (via `help-fns' autoload, `find-func' load,
+etc.) is silently re-shadowed before the binding step."
+  (fset 'describe-function emacs-help--describe-function-impl)
+  (fset 'describe-variable emacs-help--describe-variable-impl)
+  (fset 'describe-key emacs-help--describe-key-impl))
+
 (defun emacs-help--ensure-global-bindings ()
   "Install the M2.2 help bindings into the global map."
+  (emacs-help--reassert-overrides)
   (let ((map (or (and (fboundp 'current-global-map) (current-global-map))
                  (and (fboundp 'make-sparse-keymap) (make-sparse-keymap)))))
     (when (and map (fboundp 'use-global-map))
