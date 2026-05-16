@@ -2,13 +2,27 @@
 
 * Status
 :PROPERTIES:
-:STATE: PARTIALLY SHIPPED — b.1 / b.2 / b.2.5 / b.4 / b.5 SHIPPED、b.3 / b.6 残
+:STATE: CLOSED 2026-05-16 — b.1 / b.2 / b.2.5 / b.4 / b.5 SHIPPED、b.3 / b.6 SUPERSEDED by Phase 7.1.6 + 7.1.7.b (Doc 28 §3.6 + §3.7.c)
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 軸 A/B Stage 1-5 articulation)
 :SUPERSEDES: Doc 77 §2.3 Stage 2-5 articulation (= Rust 拡大方向の plan)
+:SUPERSEDED_BY: Doc 28 §3.6 (= Phase 7.1.6 cluster takeover) / Doc 28 §3.7.c (= Phase 7.1.7.b dsl deletion)
 :RELATED: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 76 (OS surface elisp 化) / Doc 62 (Phase 5 IR family scaffold)
 :DEPENDS_ON: Doc 77 Stage 2-prep SHIPPED (= unified JITModule)
 :END:
+
+** §0.0 b.3 / b.6 closure note (2026-05-16 audit)
+
+本 Doc は 2026-05-09 起草、Stage b.1 / b.2 / b.2.5 / b.4 / b.5 を ship 後、b.3 / b.6 が PENDING のままだった.  2026-05-16 audit で b.3 (=
+"5 declare_X_inline 全部 DSL 化、predicate / access / cons / arith / syscall, -600 LOC Rust") と b.6 ("旧 declare/lowered のうち未削除分 cleanup, -100〜200 LOC") は *Doc 28 §3.6 (Phase 7.1.6 cluster takeover) + §3.7.c (Phase 7.1.7.b dsl deletion)* で別ルート完了済と確定:
+
+- =declare_X_inline= パターンを生成していた DSL interpreter (=jit::dsl=) は Phase 7.1.7.b で物理削除済 (= =jit/mod.rs= line 6-8 ヘッダー).
+- =arith.rs= / =float.rs= / =math.rs= は Doc 100 §100.D + Doc 110 §110.E + §110.F の Phase 47 swap で物理削除済 (= 4 cluster of 5 deleted).
+- 残 =predicate.rs= / =access.rs= / =cons.rs= / =syscall.rs= は Phase 7.1.6 takeover 後 *Cranelift IR builder ではなく =#[no_mangle] extern "C"= trampoline* に変身済.  declare_X_inline 形式は存在せず、DSL 化対象なし.
+
+結果として b.3 の -600 LOC 削減目標は別 doc 経由で既に上回って達成済 (Doc 28 §3.6 で Cranelift IR builder 全削除 + Doc 100/110 で 4 trampoline cluster 削除).  b.6 (= cleanup) も同様に Doc 28 + 100 + 110 の sweep で吸収済.
+
+本 Doc は SHIPPED 部分 (b.1 / b.2 / b.2.5 / b.4 / b.5) の record として archival 保存、新規 work item は無し.  残 trampoline cluster (= =predicate= / =access= / =cons= / =syscall= / =strings= / =box_accessor= / =regex= / =hash= / =time= / =bridge=) の更なる削減は別 doc (= 仮称 Doc 111+: Phase 47 ABI 拡張 = ptr→i64 out-param / syscall 7-arg) で扱う.
 
 * §0 TL;DR
 
@@ -233,10 +247,10 @@ Rust 側に必要な primitive: =nl-jit-call-ptr-ptr name a b= が name → fn p
 | b.1   | DSL interpreter (dsl.rs) + tag table + 1 pilot rule (= eq) elisp 化 | +330 / -100 | +50 | - | ✅ SHIPPED ad6c3e4 |
 | b.2   | =nl-jit-call-*= primitives (bridge.rs) + lowered_eq elisp 化 | +150 / -30 | +30 | b.1 | ✅ SHIPPED 87e103d |
 | b.2.5 | bridge out-param primitives (cons/access trampolines) | +50 | 0 | b.2 | ✅ SHIPPED 6298e00 |
-| b.3   | 5 declare_X_inline 全部 DSL 化 (= predicate / access / cons / arith / syscall) | -600 | +400 | b.1, b.2 | ❌ PENDING |
+| b.3   | 5 declare_X_inline 全部 DSL 化 (= predicate / access / cons / arith / syscall) | -600 | +400 | b.1, b.2 | 🔒 SUPERSEDED by Doc 28 §3.6 / §3.7.c (2026-05-16 audit, §0.0) |
 | b.4   | 24 lowered_X 全部 elisp 化 | -620 | +250 | b.2 | ✅ SHIPPED 09fe88d |
 | b.5   | bench.rs 全部 elisp ERT 化 (= test/nelisp-jit-bench-test.el) | -270 | +173 | b.2 | ✅ SHIPPED (本 commit) |
-| b.6   | 旧 declare/lowered のうち未削除分 cleanup | -100〜200 | 0 | b.3-b.5 | ❌ PENDING (b.3 完了後) |
+| b.6   | 旧 declare/lowered のうち未削除分 cleanup | -100〜200 | 0 | b.3-b.5 | 🔒 SUPERSEDED by Doc 28 + 100 + 110 sweep (2026-05-16 audit, §0.0) |
 
 合計推定: Rust *-1640 LOC*, elisp *+880 LOC*, **net -760 LOC** (= プロジェクト全体).
 
