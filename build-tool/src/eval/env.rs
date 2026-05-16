@@ -56,6 +56,11 @@ pub struct Env {
     /// mirror's unbound test is `cell == self.unbound_marker' (Sexp value
     /// equality via the stable cached Sexp::Symbol).
     pub unbound_marker: Sexp,
+    /// Doc 104 Stage 3.b — elisp-side `nelisp-lexframe-stack' record (see
+    /// `lisp/nelisp-lexframe.el').  `Sexp::Nil' until `install_stage0'
+    /// (via `install_empty_frames_record_rust_direct') constructs an
+    /// empty stack.  Stage 3.b dual-writes; Stage 3.c+ migrates reads.
+    pub frames_record: Sexp,
 }
 
 impl Env {
@@ -71,6 +76,7 @@ impl Env {
             delegation_depth: 0,
             globals_record: Sexp::Nil,
             unbound_marker: Sexp::Nil,
+            frames_record: Sexp::Nil,
         }
     }
 
@@ -520,6 +526,295 @@ impl Env {
             Sexp::Symbol("nelisp-env".into()),
             vec![ht_record, Sexp::Nil, Sexp::Nil],
         );
+        self.install_empty_frames_record_rust_direct();
+    }
+
+    /// Doc 104 Stage 3.b — Rust-direct empty lexframe-stack constructor.
+    /// Pre-allocates the `nelisp-lexframe-stack' record graph without
+    /// invoking elisp `nelisp-lexframe-stack-make' (= no `apply_function'
+    /// detour, no STDLIB dependency).  Matches the layout in
+    /// `lisp/nelisp-lexframe.el':
+    ///   frames_record = Sexp::Record(`nelisp-lexframe-stack')
+    ///     slots[0] = Sexp::Vector(BACKING, length = INITIAL_CAPACITY,
+    ///                             all entries Sexp::Nil)
+    ///     slots[1] = Sexp::Int(0)            (= DEPTH)
+    pub(crate) fn install_empty_frames_record_rust_direct(&mut self) {
+        const INITIAL_CAPACITY: usize = 8;
+        let backing = Sexp::vector(vec![Sexp::Nil; INITIAL_CAPACITY]);
+        self.frames_record = Sexp::record(
+            Sexp::Symbol("nelisp-lexframe-stack".into()),
+            vec![backing, Sexp::Int(0)],
+        );
+    }
+
+    // ---- Doc 104 Stage 3.b — Rust-direct frame helpers ----
+    //
+    // These parallel the `mirror_*' globals helpers (= walk the elisp
+    // `nelisp-lexframe-stack' record via NlRecordRef / NlVectorRef
+    // instead of `apply_function').  Stage 3.b keeps the Rust
+    // `frames: Vec<Frame>' as the canonical store and dual-writes
+    // here for parity verification; Stage 3.c+ flips canonicalness.
+
+    /// Layout walker — fetch the backing vector + current depth from
+    /// `self.frames_record'.  Returns None when the mirror is unbuilt
+    /// (= `Sexp::Nil', pre-`install_stage0').
+    fn frame_stack_view(&self) -> Option<(crate::eval::nlrecord::NlRecordRef, crate::eval::nlvector::NlVectorRef, usize)> {
+        let stack_rec = match &self.frames_record { Sexp::Record(r) => r.clone(), _ => return None };
+        let backing = match stack_rec.slots.get(0)? { Sexp::Vector(v) => v.clone(), _ => return None };
+        let depth = match stack_rec.slots.get(1)? { Sexp::Int(n) => *n as usize, _ => return None };
+        Some((stack_rec, backing, depth))
+    }
+
+    /// Build a fresh empty `nelisp-lexframe' record (= type-tagged
+    /// record containing a single fast-hash-table slot).  Internal —
+    /// callers use `frame_push_rust_direct' to push it.
+    fn make_empty_frame_record() -> Sexp {
+        const BUCKET_COUNT: usize = 16;
+        let buckets = Sexp::vector(vec![Sexp::Nil; BUCKET_COUNT]);
+        let ht_record = Sexp::record(
+            Sexp::Symbol("fast-hash-table".into()),
+            vec![Sexp::Int(BUCKET_COUNT as i64), buckets, Sexp::Int(0)],
+        );
+        Sexp::record(
+            Sexp::Symbol("nelisp-lexframe".into()),
+            vec![ht_record],
+        )
+    }
+
+    /// Grow `backing' if `needed > backing.len()' via capacity doubling
+    /// + copy-across, mutating `stack_rec.slots[0]' in place to point at
+    /// the new backing vector.  Mirrors
+    /// `nelisp-lexframe-stack--ensure-capacity'.
+    fn frame_stack_ensure_capacity(
+        stack_rec: &crate::eval::nlrecord::NlRecordRef,
+        backing: &crate::eval::nlvector::NlVectorRef,
+        depth: usize,
+        needed: usize,
+    ) -> crate::eval::nlvector::NlVectorRef {
+        let cap = backing.value.len();
+        if cap >= needed {
+            return backing.clone();
+        }
+        let mut new_cap = cap.max(1);
+        while new_cap < needed {
+            new_cap *= 2;
+        }
+        let mut new_buf: Vec<Sexp> = Vec::with_capacity(new_cap);
+        for i in 0..depth {
+            new_buf.push(backing.value.get(i).cloned().unwrap_or(Sexp::Nil));
+        }
+        while new_buf.len() < new_cap {
+            new_buf.push(Sexp::Nil);
+        }
+        let new_vec_sexp = Sexp::vector(new_buf);
+        let new_vec_ref = match &new_vec_sexp { Sexp::Vector(v) => v.clone(), _ => unreachable!() };
+        // SAFETY: no outstanding borrow into `stack_rec.slots'.
+        unsafe { stack_rec.with_slots_mut(|s| s[0] = new_vec_sexp) };
+        new_vec_ref
+    }
+
+    /// Push a fresh empty frame onto the mirror stack.  No-op when the
+    /// mirror is unbuilt.  Returns the frame's `Sexp::Record' clone
+    /// (= for callers that want to populate it inline; usually they
+    /// just bind into the top frame via `frame_bind_rust_direct').
+    pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
+        let (stack_rec, backing, depth) = self.frame_stack_view()?;
+        let backing = Env::frame_stack_ensure_capacity(&stack_rec, &backing, depth, depth + 1);
+        let frame = Env::make_empty_frame_record();
+        // SAFETY: no outstanding borrow into `backing.value' /
+        // `stack_rec.slots'.
+        unsafe {
+            backing.with_value_mut(|v| v[depth] = frame.clone());
+            stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
+        }
+        Some(frame)
+    }
+
+    /// Pop the innermost frame.  Silently no-ops on under-pop (= same
+    /// semantics as `Vec::pop' on empty).  No-op when the mirror is
+    /// unbuilt.
+    pub(crate) fn frame_pop_rust_direct(&mut self) {
+        let Some((stack_rec, backing, depth)) = self.frame_stack_view() else { return };
+        if depth == 0 { return; }
+        let new_depth = depth - 1;
+        // SAFETY: see `frame_push_rust_direct'.
+        unsafe {
+            backing.with_value_mut(|v| v[new_depth] = Sexp::Nil);
+            stack_rec.with_slots_mut(|s| s[1] = Sexp::Int(new_depth as i64));
+        }
+    }
+
+    /// Bind NAME → CELL in the innermost frame.  No-op when the stack
+    /// is empty OR the mirror is unbuilt.  CELL is stored verbatim
+    /// (= callers wrap in `Sexp::Cell' for closure write-through).
+    pub(crate) fn frame_bind_rust_direct(&mut self, name: &str, cell: Sexp) {
+        let Some((_stack_rec, backing, depth)) = self.frame_stack_view() else { return };
+        if depth == 0 { return; }
+        let frame = match backing.value.get(depth - 1) { Some(f) => f.clone(), None => return };
+        Env::frame_bind_into(&frame, name, cell);
+    }
+
+    /// Internal — `nelisp-lexframe-bind' for a frame record handle.
+    /// Hashes NAME via `mirror_fnv1a' + walks the bucket alist to
+    /// update-in-place or prepend a fresh `(NAME . CELL)' pair.
+    fn frame_bind_into(frame: &Sexp, name: &str, cell: Sexp) {
+        let Sexp::Record(frame_rec) = frame else { return };
+        let ht_rec = match frame_rec.slots.get(0) { Some(Sexp::Record(r)) => r.clone(), _ => return };
+        let bucket_count = match ht_rec.slots.get(0) { Some(Sexp::Int(n)) => *n as u32, _ => return };
+        let buckets = match ht_rec.slots.get(1) { Some(Sexp::Vector(v)) => v.clone(), _ => return };
+        let h = mirror_fnv1a(name);
+        let idx = (if bucket_count & (bucket_count - 1) == 0 {
+            h & (bucket_count - 1)
+        } else {
+            h % bucket_count
+        }) as usize;
+        // First pass — see if NAME already lives in the bucket; if so,
+        // mutate the existing pair's cdr in place.
+        let bucket = match buckets.value.get(idx) { Some(b) => b.clone(), None => return };
+        let mut cur = bucket;
+        while let Sexp::Cons(c) = &cur {
+            if let Sexp::Cons(pair) = &c.car {
+                if let Sexp::Str(k) = &pair.car {
+                    if k == name {
+                        // SAFETY: replace pair.cdr in place.
+                        unsafe { pair.set_cdr(cell) };
+                        return;
+                    }
+                }
+            }
+            cur = c.cdr.clone();
+        }
+        // Not found — prepend.
+        let pair = Sexp::cons(Sexp::Str(name.to_string()), cell);
+        // SAFETY: no outstanding borrow into `buckets.value' /
+        // `ht_rec.slots'.
+        unsafe {
+            buckets.with_value_mut(|v| {
+                let old = v.get(idx).cloned().unwrap_or(Sexp::Nil);
+                v[idx] = Sexp::cons(pair, old);
+            });
+            ht_rec.with_slots_mut(|s| {
+                if let Some(Sexp::Int(n)) = s.get_mut(2) {
+                    *n += 1;
+                }
+            });
+        }
+    }
+
+    /// Internal — `nelisp-lexframe-lookup' for a frame record handle.
+    /// Returns `Some(cell)' when NAME is bound, `None' when absent.
+    #[allow(dead_code)] // Doc 104 Stage 3.b — used by Stage 3.c+ + test
+    fn frame_lookup_in(frame: &Sexp, name: &str) -> Option<Sexp> {
+        let Sexp::Record(frame_rec) = frame else { return None };
+        let ht_rec = match frame_rec.slots.get(0)? { Sexp::Record(r) => r, _ => return None };
+        let bucket_count = match ht_rec.slots.get(0)? { Sexp::Int(n) => *n as u32, _ => return None };
+        let buckets = match ht_rec.slots.get(1)? { Sexp::Vector(v) => v, _ => return None };
+        let h = mirror_fnv1a(name);
+        let idx = (if bucket_count & (bucket_count - 1) == 0 {
+            h & (bucket_count - 1)
+        } else {
+            h % bucket_count
+        }) as usize;
+        let bucket = buckets.value.get(idx)?;
+        let mut cur = bucket;
+        while let Sexp::Cons(c) = cur {
+            if let Sexp::Cons(pair) = &c.car {
+                if let Sexp::Str(k) = &pair.car {
+                    if k == name {
+                        return Some(pair.cdr.clone());
+                    }
+                }
+            }
+            cur = &c.cdr;
+        }
+        None
+    }
+
+    /// Look up NAME in the innermost frame only.  Returns `None' when
+    /// stack is empty / mirror unbuilt / NAME absent.
+    #[allow(dead_code)] // Doc 104 Stage 3.b — used by Stage 3.d + test
+    pub(crate) fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
+        let (_stack_rec, backing, depth) = self.frame_stack_view()?;
+        if depth == 0 { return None; }
+        let frame = backing.value.get(depth - 1)?;
+        Env::frame_lookup_in(frame, name)
+    }
+
+    /// Innermost-first walk across the entire mirror stack.  Returns
+    /// the first NAME hit.  Mirrors `nelisp-lexframe-stack-find' +
+    /// `find_frame_cell'.
+    #[allow(dead_code)] // Doc 104 Stage 3.b — used by Stage 3.d + test
+    pub(crate) fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
+        let (_stack_rec, backing, depth) = self.frame_stack_view()?;
+        for i in (0..depth).rev() {
+            let Some(frame) = backing.value.get(i) else { continue };
+            if let Some(cell) = Env::frame_lookup_in(frame, name) {
+                return Some(cell);
+            }
+        }
+        None
+    }
+
+    /// Walk the mirror stack innermost-first and return an alist of
+    /// `((NAME . CELL) ...)' with inner-shadows-outer dedup.  Cell
+    /// identity is preserved (= caller may rely on `Sexp::Cell' Rc
+    /// equality for closure write-through).  Mirrors
+    /// `nelisp-lexframe-stack-capture' + `capture_lexical'.
+    #[allow(dead_code)] // Doc 104 Stage 3.b — used by Stage 3.d + test
+    pub(crate) fn frame_capture_rust_direct(&self) -> Sexp {
+        let Some((_stack_rec, backing, depth)) = self.frame_stack_view() else { return Sexp::Nil };
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut acc = Sexp::Nil;
+        for i in (0..depth).rev() {
+            let Some(frame) = backing.value.get(i) else { continue };
+            let Sexp::Record(frame_rec) = frame else { continue };
+            let Some(Sexp::Record(ht_rec)) = frame_rec.slots.get(0) else { continue };
+            let Some(Sexp::Vector(buckets)) = ht_rec.slots.get(1) else { continue };
+            for bucket in buckets.value.iter() {
+                let mut cur = bucket;
+                while let Sexp::Cons(c) = cur {
+                    if let Sexp::Cons(pair) = &c.car {
+                        if let Sexp::Str(k) = &pair.car {
+                            if seen.insert(k.clone()) {
+                                let entry = Sexp::cons(
+                                    Sexp::Symbol(k.clone()),
+                                    pair.cdr.clone(),
+                                );
+                                acc = Sexp::cons(entry, acc);
+                            }
+                        }
+                    }
+                    cur = &c.cdr;
+                }
+            }
+        }
+        acc
+    }
+
+    /// Build a fresh frame populated from ALIST = `((NAME . CELL) ...)'
+    /// (NAME may be `Sexp::Symbol' or `Sexp::Str') and push it onto
+    /// the mirror stack.  Mirrors `nelisp-lexframe-stack-push-captured!'
+    /// + `push_captured'.  Cell identity is preserved.
+    #[allow(dead_code)] // Doc 104 Stage 3.b — used by Stage 3.c + test
+    pub(crate) fn frame_push_captured_rust_direct(&mut self, alist: &Sexp) -> Result<(), EvalError> {
+        let Some(frame) = self.frame_push_rust_direct() else { return Ok(()); };
+        let mut cur = alist;
+        while let Sexp::Cons(outer) = cur {
+            let Sexp::Cons(inner) = &outer.car else {
+                return Err(EvalError::Internal("closure env entry not a cons".into()));
+            };
+            let name = match &inner.car {
+                Sexp::Symbol(s) => s.clone(),
+                Sexp::Str(s) => s.clone(),
+                _ => return Err(EvalError::Internal("closure env entry name not a symbol".into())),
+            };
+            Env::frame_bind_into(&frame, &name, inner.cdr.clone());
+            cur = &outer.cdr;
+        }
+        if !matches!(cur, Sexp::Nil) {
+            return Err(EvalError::Internal("closure env not a proper list".into()));
+        }
+        Ok(())
     }
 
     /// Register `f' as an externally-supplied builtin under `name'.
@@ -617,11 +912,16 @@ impl Env {
 
     pub fn push_frame(&mut self) {
         self.frames.push(HashMap::new());
+        // Doc 104 Stage 3.b — dual-write: mirror gets a parallel empty
+        // frame so its depth stays in lock-step with the Vec.
+        self.frame_push_rust_direct();
     }
 
     /// Silently no-ops on under-pop (= balanced caller path).
     pub fn pop_frame(&mut self) {
         self.frames.pop();
+        // Doc 104 Stage 3.b — dual-write.
+        self.frame_pop_rust_direct();
     }
 
     /// `let' / `let*' / lambda formals — bind NAME→VALUE in innermost
@@ -631,7 +931,12 @@ impl Env {
     /// no-frame branch.
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if let Some(frame) = self.frames.last_mut() {
-            frame.insert(name.to_string(), FrameCell::new(value));
+            let cell = FrameCell::new(value);
+            frame.insert(name.to_string(), cell.clone());
+            // Doc 104 Stage 3.b — dual-write: mirror frame gets the
+            // same FrameCell wrapped as `Sexp::Cell' so closure write-
+            // through Rc equality holds across Vec / mirror.
+            self.frame_bind_rust_direct(name, Sexp::Cell(cell));
         } else {
             self.mirror_set_value(name, value);
         }
@@ -764,6 +1069,10 @@ impl Env {
 
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let mut frame: Frame = HashMap::new();
+        // Doc 104 Stage 3.b — dual-write: build a parallel mirror
+        // frame.  Pushing happens after both are populated so a mid-
+        // walk error path doesn't leave the mirror with a stub frame.
+        let mirror_frame = Env::make_empty_frame_record();
         let mut cur = alist;
         while let Sexp::Cons(outer) = cur {
             let Sexp::Cons(inner) = &outer.car else {
@@ -776,13 +1085,25 @@ impl Env {
                 Sexp::Cell(c) => c.clone(),
                 v => FrameCell::new(v.clone()),
             };
-            frame.insert(s.clone(), cell);
+            frame.insert(s.clone(), cell.clone());
+            Env::frame_bind_into(&mirror_frame, s, Sexp::Cell(cell));
             cur = &outer.cdr;
         }
         if !matches!(cur, Sexp::Nil) {
             return Err(EvalError::Internal("closure env not a proper list".into()));
         }
         self.frames.push(frame);
+        // Doc 104 Stage 3.b — push the pre-populated mirror frame to
+        // keep the two stacks in lock-step.
+        if let Some((stack_rec, backing, depth)) = self.frame_stack_view() {
+            let backing =
+                Env::frame_stack_ensure_capacity(&stack_rec, &backing, depth, depth + 1);
+            // SAFETY: see `frame_push_rust_direct'.
+            unsafe {
+                backing.with_value_mut(|v| v[depth] = mirror_frame);
+                stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
+            }
+        }
         Ok(())
     }
 }
@@ -941,5 +1262,151 @@ mod tests {
         assert_eq!(mirror_fnv1a(""), 0x811C9DC5);
         assert_eq!(mirror_fnv1a("a"), 0xE40C292C);
         assert_eq!(mirror_fnv1a("foobar"), 0xBF9CF968);
+    }
+
+    // ---- Doc 104 Stage 3.b regression tests ----
+
+    fn frames_record_depth(env: &Env) -> i64 {
+        match &env.frames_record {
+            Sexp::Record(r) => match r.slots.get(1) {
+                Some(Sexp::Int(n)) => *n,
+                other => panic!("frames_record slot 1 not Int: {:?}", other),
+            },
+            other => panic!("frames_record not Record: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn doc104_stage3b_install_stage0_yields_empty_lexframe_stack() {
+        // Bootstrap should leave an empty `nelisp-lexframe-stack' record
+        // (depth = 0, BACKING vec pre-allocated to the initial capacity).
+        let env = Env::new_global_no_stdlib();
+        match &env.frames_record {
+            Sexp::Record(r) => match &r.type_tag {
+                Sexp::Symbol(s) => assert_eq!(s, "nelisp-lexframe-stack"),
+                other => panic!("frames_record type tag not a symbol: {:?}", other),
+            },
+            other => panic!("frames_record is not a Record: {:?}", other),
+        }
+        assert_eq!(frames_record_depth(&env), 0);
+    }
+
+    #[test]
+    fn doc104_stage3b_push_pop_dual_writes_keep_depths_aligned() {
+        // push_frame / pop_frame must keep Vec depth + mirror depth in
+        // lock-step.  Walk past the initial capacity (= 8) to also
+        // exercise the capacity-doubling grow path.
+        let mut env = Env::new_global_no_stdlib();
+        for i in 0..20 {
+            env.push_frame();
+            assert_eq!(env.frames.len() as i64, frames_record_depth(&env),
+                       "depth mismatch after push #{}", i);
+        }
+        for i in 0..20 {
+            env.pop_frame();
+            assert_eq!(env.frames.len() as i64, frames_record_depth(&env),
+                       "depth mismatch after pop #{}", i);
+        }
+        assert_eq!(env.frames.len(), 0);
+        assert_eq!(frames_record_depth(&env), 0);
+    }
+
+    #[test]
+    fn doc104_stage3b_bind_local_visible_via_mirror() {
+        // After bind_local, the same NAME should resolve via both the
+        // Vec-based find_frame_cell and the mirror frame_lookup.
+        let mut env = Env::new_global_no_stdlib();
+        env.push_frame();
+        env.bind_local("doc104-stage3b-probe", Sexp::Int(7777));
+        // Vec side.
+        let vec_cell = env.find_frame_cell("doc104-stage3b-probe").expect("Vec side missing");
+        assert_eq!(vec_cell.value.clone(), Sexp::Int(7777));
+        // Mirror side: cell is wrapped in `Sexp::Cell'.
+        let mirror_cell = env
+            .frame_lookup_rust_direct("doc104-stage3b-probe")
+            .expect("mirror side missing");
+        match mirror_cell {
+            Sexp::Cell(c) => assert_eq!(c.value.clone(), Sexp::Int(7777)),
+            other => panic!("mirror frame slot is not Sexp::Cell: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn doc104_stage3b_stack_find_walks_innermost_first() {
+        // Outer frame binds X=1, inner shadows with X=2.  Mirror walk
+        // must return the inner value.
+        let mut env = Env::new_global_no_stdlib();
+        env.push_frame();
+        env.bind_local("doc104-stage3b-shadow", Sexp::Int(1));
+        env.push_frame();
+        env.bind_local("doc104-stage3b-shadow", Sexp::Int(2));
+        let cell = env
+            .frame_stack_find_rust_direct("doc104-stage3b-shadow")
+            .expect("stack_find missing");
+        match cell {
+            Sexp::Cell(c) => assert_eq!(c.value.clone(), Sexp::Int(2)),
+            other => panic!("stack_find returned non-Cell: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn doc104_stage3b_bind_local_preserves_cell_identity_across_stacks() {
+        // Closure write-through invariant: the FrameCell stored in the
+        // Vec frame and the one wrapped in the mirror frame's `Sexp::Cell'
+        // must share the same Rc (= write to one is visible via the
+        // other).  Drives the Stage 3.d cutover safety case.
+        let mut env = Env::new_global_no_stdlib();
+        env.push_frame();
+        env.bind_local("doc104-stage3b-write-through", Sexp::Int(10));
+        let vec_cell = env
+            .find_frame_cell("doc104-stage3b-write-through")
+            .expect("Vec side missing")
+            .clone();
+        let mirror_cell_sexp = env
+            .frame_lookup_rust_direct("doc104-stage3b-write-through")
+            .expect("mirror side missing");
+        let mirror_cell = match mirror_cell_sexp {
+            Sexp::Cell(c) => c,
+            other => panic!("mirror slot not Sexp::Cell: {:?}", other),
+        };
+        // Mutate via the mirror handle; Vec side must observe.
+        unsafe { mirror_cell.set_value(Sexp::Int(99)) };
+        assert_eq!(vec_cell.value.clone(), Sexp::Int(99),
+                   "write through mirror cell not visible on Vec side");
+    }
+
+    #[test]
+    fn doc104_stage3b_capture_mirror_matches_vec_capture() {
+        // capture_lexical (= Vec) and frame_capture_rust_direct (=
+        // mirror) must enumerate the same names with the same cells
+        // (Sexp::Cell wrapping the Vec side's FrameCell).
+        let mut env = Env::new_global_no_stdlib();
+        env.push_frame();
+        env.bind_local("a", Sexp::Int(1));
+        env.bind_local("b", Sexp::Int(2));
+        env.push_frame();
+        env.bind_local("a", Sexp::Int(3)); // shadows outer
+        env.bind_local("c", Sexp::Int(4));
+
+        let mirror_alist = env.frame_capture_rust_direct();
+        // Build a {name -> value} map from the mirror alist.
+        let mut seen: HashMap<String, Sexp> = HashMap::new();
+        let mut cur = &mirror_alist;
+        while let Sexp::Cons(c) = cur {
+            if let Sexp::Cons(pair) = &c.car {
+                if let Sexp::Symbol(k) = &pair.car {
+                    let v = match &pair.cdr {
+                        Sexp::Cell(c) => c.value.clone(),
+                        other => other.clone(),
+                    };
+                    seen.insert(k.clone(), v);
+                }
+            }
+            cur = &c.cdr;
+        }
+        assert_eq!(seen.get("a"), Some(&Sexp::Int(3)), "inner shadow lost");
+        assert_eq!(seen.get("b"), Some(&Sexp::Int(2)));
+        assert_eq!(seen.get("c"), Some(&Sexp::Int(4)));
+        assert_eq!(seen.len(), 3, "extra / missing names in capture");
     }
 }
