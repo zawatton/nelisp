@@ -58,20 +58,39 @@ Concretely, as of 2026-05-16:
   org-full / company / eglot per Doc 01 §3.4 target list) is the next
   step.
 - Phase 5 (= Emacs bootstrap / self-host binary, =bin/nelisp-emacs=)
-  is *unstarted* on this branch.  A parallel daily-driver design
-  exists as DRAFT (=docs/design/02-v01-daily-driver.org=) on a
-  separate feature branch; the public, integrated state on =main=
-  remains TUI substrate + redisplay engine, not yet a runnable
-  =nelisp-emacs= binary.
+  is *unstarted* on =main=.  A parallel daily-driver design
+  (=docs/design/02-v01-daily-driver.org=, "v0.1 daily-driver gate")
+  shipped its M1+M2+M3+M4 modules to =main= on 2026-05-16 — see
+  the next bullet — but a self-host bootstrap binary is still a
+  Phase 5 future.
+- *Doc 02 v0.1 daily-driver gate* (parallel to Phase 4) shipped to
+  =main= on 2026-05-16.  Adds ~58k LOC across 131 files: M1 file +
+  buffer + dired-min (find-file / save-buffer / switch-to-buffer /
+  window split + dired entry / RET / q / g), M2 dev experience
+  (isearch / undo UI / help system C-h f/v/k / =eval-defun= /
+  =ielm=), M3 org-mode subset (outline / TODO state cycle / agenda
+  light / capture / table edit), M4 process surface (shell-command
+  sync+async / minibuffer completion / =project.el= subset).  Also
+  brings the =nemacs-gtk= GTK4 frontend and the =bin/nemacs= /
+  =bin/build-nelisp= launchers.  See =docs/design/02-v01-daily-
+  driver.org= for the milestone breakdown.
 
-The repository ships *624 ERT* across the Phase 1 + Phase 2 + Phase 3
-modules, all green.  Highlights: 80 redisplay ERTs (=emacs-redisplay-
-test.el=) cover driver / matrix / face / overlay / scroll / mode-line
-/ p99 latency; integration round-trip is exercised by 7
-=phase1-close-demo-*= tests plus 11 =phase2-close-demo-*= tests (= 8
-checkpoint asserts on the default run + 3-env validation under
-=xterm-256color= / =xterm-kitty= / Windows-Terminal-style
-=COLORTERM=truecolor= environments).
+The repository ships *1281 ERT* across all phases, *1260 pass / 0
+fail / 21 skip* (the 21 skips are intentional =skip-unless= gates —
+nelisp-runtime probes, host-only OS clipboard fallbacks, the
+branch-specific 5x diff-redraw bench, etc.).  Highlights: 80
+redisplay ERTs (=emacs-redisplay-test.el=) cover driver / matrix /
+face / overlay / scroll / mode-line / p99 latency; integration
+round-trip is exercised by 7 =phase1-close-demo-*= tests plus 11
+=phase2-close-demo-*= tests (= 8 checkpoint asserts on the default
+run + 3-env validation under =xterm-256color= / =xterm-kitty= /
+Windows-Terminal-style =COLORTERM=truecolor= environments); the
+Doc 02 v0.1 modules contribute several hundred more across
+=emacs-fileio-test.el= / =emacs-dired-min-test.el= /
+=emacs-isearch-test.el= / =emacs-help-test.el= / =emacs-ielm-test.el=
+/ =emacs-org-{outline,todo,table,agenda,capture}-test.el= /
+=emacs-shell-command-test.el= / =emacs-completion-ui-test.el= /
+=emacs-project-test.el= plus the =nemacs-gtk-*= frontend tests.
 
 If you are looking for a working pure-elisp Emacs binary today, this
 is not it.  See [[#long-term-roadmap][Long-term roadmap]] below for an
@@ -313,6 +332,62 @@ Doc 01 §1 Phase 4 scope is the *reference subset*; long-tail MELPA
 support (= ~5000 packages) lives in a separate community repo
 =nelisp-elisp-compat= per Doc 33 §3.2 delegate.
 
+* Doc 02 v0.1 daily-driver gate (shipped 2026-05-16)
+
+Doc 02 (=docs/design/02-v01-daily-driver.org=) is the *fastest-path*
+track to a usable elisp daily-driver, running parallel to the
+canonical Phase 4 work above.  All four M-milestones shipped to
+=main= on 2026-05-16 (merge commit =c3c403e=, fully-green commit
+=9a8bda6=).  The scope is intentionally narrower than Phase 4 —
+helm / ido / company / eglot / magit / org-full are explicit
+non-goals, and the deliverable is a runnable editor with file open
+/ buffer switch / dired / isearch / help / undo / eval / =ielm= /
+=org-mode= subset / =shell-command= / minibuffer completion /
+=project.el= subset.
+
+Module breakdown:
+
+- *M1 file + buffer + dired-min* (~1290 LOC, 31 ERT):
+  =emacs-fileio.el= / =emacs-dired-min.el= / =emacs-window.el=
+  (real impl) / =emacs-buffer-ui.el= — =find-file= /
+  =save-buffer= / =switch-to-buffer= / window split + dired
+  entry / =RET= / =q= / =g=.
+- *M2 dev experience* (~1810 LOC, 31 ERT): =emacs-isearch.el= /
+  =emacs-help.el= / =emacs-undo-ui.el= / =emacs-elisp-eval.el= /
+  =emacs-ielm.el= — isearch forward/back, =C-h f= / =C-h v= /
+  =C-h k= help, undo + redo on fresh edits, =C-x C-e= /
+  =eval-defun= / =eval-region= / =eval-buffer=, =M-x ielm= REPL.
+- *M3 org-mode subset* (~4450 LOC, 41 ERT):
+  =emacs-org-outline.el= / =emacs-org-todo.el= /
+  =emacs-org-table.el= / =emacs-org-agenda.el= /
+  =emacs-org-capture.el= — outline folding, TODO state cycle
+  (=INBOX / NEXT / WAIT / PROJECTS / SCHEDULED / SOMEDAY /
+  DONE / CANCEL=) with optional CLOSED timestamp, table edit
+  subset, lightweight agenda, capture light.  =org-mode=
+  =major-mode= is wired in.
+- *M4 process surface* (~1010 LOC, 19 ERT):
+  =emacs-shell-command.el= / =emacs-completion-ui.el= /
+  =emacs-project.el= — synchronous + asynchronous
+  =shell-command=, minibuffer completion polish, =project.el=
+  subset (=project-current= via VC root, =project-find-file= /
+  =project-switch-project=).
+
+Plus the GTK frontend stack:
+- =src/nemacs-gtk-frontend.el= — Layer 3 GTK4 GUI driver invoked
+  by the NeLisp Rust runtime (=(nemacs-gtk-main)=).
+- =src/nemacs-gtk-view-menu.el= — buffer-list dynamic submenu.
+- =bin/nemacs= — launcher script (host emacs driver default,
+  =--driver=nelisp= for the experimental standalone driver).
+- =bin/build-nelisp= — fetches + builds the nelisp Rust runtime
+  into =vendor/nelisp/=.  =make nelisp= is the idempotent entry
+  point.
+
+Known caveat: the GTK boot fix (commit =c70ec7b=, reorders
+=--prepare-welcome-buffer= ahead of =--load-user-init-file= so the
+user's =init.el= sees a live Layer 2 buffer) is verified by
+=make test= but not yet by a real GTK shell.  Verification under
+a Linux desktop is the next physical-environment milestone.
+
 * Long-term roadmap
 :PROPERTIES:
 :CUSTOM_ID: long-term-roadmap
@@ -328,7 +403,8 @@ maintainer evening hours.
 | Phase 2  | TUI backend reference impl         | ~2-3.5K      | 4-9 mo     | close gate shipped (2026-05-16) |
 | Phase 3  | redisplay engine MVP               | ~1.3-2.5K    | 6-12 mo    | MVP close gate shipped (2026-05-06); bidi / composition / display real spec are v2.x future |
 | Phase 4  | MELPA compat reference subset      | ~3-8K        | 6-12 mo    | scaffold + synthetic pilot; real package onboarding pending |
-| Phase 5  | Emacs bootstrap (self-host)        | full         | 3-5 yr     | unstarted on =main= (parallel DRAFT in feature branch) |
+| Doc 02 v0.1 | Daily-driver M1+M2+M3+M4 modules | ~58K LOC     | 4-5 mo     | shipped to =main= 2026-05-16 (file/buffer/dired/window/isearch/help/undo/eval/ielm/org-subset/shell/completion/project + =nemacs-gtk= + =bin/nemacs=); GTK runtime verification pending |
+| Phase 5  | Emacs bootstrap (self-host)        | full         | 3-5 yr     | unstarted on =main= |
 
 In particular: =org-mode= depends on Phase 1 (buffer + text
 properties) + Phase 2 (TUI redisplay) + Phase 3 (display engine, for
