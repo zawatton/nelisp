@@ -157,17 +157,20 @@ pub fn iterative_bake_one(
     env: &mut Env,
     source: &str,
 ) -> Result<Vec<u8>, ImageError> {
-    // Doc 98 §98.2 — snapshot full SymbolEntry state, not just keys,
-    // so function-cell overrides on Rust-builtin names (= `fset' on
-    // `cons' et al.) are detected as mutations and encoded into the
-    // diff.
+    // Doc 98 §98.2 + Doc 102 Phase 2.b Step B — snapshot the elisp
+    // mirror, not the legacy `env.globals' HashMap.  Elisp-driven
+    // mutations (= env_shim `(defun)' / `(fset)' running through
+    // `nelisp--env-globals-op set-function') land ONLY on the mirror
+    // when the consumer file lives past `nelisp-stdlib-env-shim.el'
+    // in STDLIB load order.  `env.globals.clone()' missed those,
+    // producing 25-byte empty images for everything past file 4.
     let before: std::collections::HashMap<String, crate::eval::SymbolEntry> =
-        env.globals.clone();
+        env.mirror_snapshot_globals();
     let forms = reader::read_all(source)?;
     for form in &forms {
         crate::eval::eval(form, env)?;
     }
-    let diff = env.globals_diff_view(&before);
+    let diff = env.mirror_diff_view(&before);
     encode_v3(&diff)
 }
 
@@ -1492,6 +1495,96 @@ mod tests {
         );
         assert_eq!(residue, 0,
             "jit-substrate residue: every top-level form should produce a global change");
+    }
+
+    /// Doc 102 Phase 2.b Step B regression — the bake driver must
+    /// capture elisp-driven mutations that landed ONLY on the mirror
+    /// (= the env_shim primitive `set-value' / `set-function' path
+    /// writes through `Env::mirror_set_*' and bypasses
+    /// `env.globals').  Pre-fix `iterative_bake_one' snapshotted
+    /// `env.globals.clone()' and missed these mutations, producing
+    /// 25-byte empty images for every stdlib file past
+    /// `nelisp-stdlib-env-shim.el' (= the symptom captured in
+    /// memory `doc 98 section 2 blocked by env shim').
+    #[test]
+    fn doc102_phase2b_iterative_bake_captures_mirror_only_mutation() {
+        // Eval a form that writes via the env_shim primitive directly.
+        // `nelisp--env-globals-op set-value' is the Rust-installed
+        // dispatcher (= `bi_globals_op'); it calls
+        // `env.mirror_set_value' and does NOT touch `env.globals'.
+        // The user-facing `nelisp--env-globals-set-value' defun lives
+        // in `nelisp-stdlib-env-shim.el' (not loaded by
+        // `new_global_no_stdlib'), so we exercise the dispatcher
+        // directly to keep the test scoped to the bake path.
+        let source = "(nelisp--env-globals-op 'set-value 'doc102-phase2b-foo 4242)";
+
+        let mut env = Env::new_global_no_stdlib();
+        let bytes = iterative_bake_one(&mut env, source)
+            .expect("bake should succeed");
+
+        // Pre-fix this image was 25 bytes (= magic + zero globals)
+        // because `env.globals.clone()' snapshot showed no diff.
+        // Post-fix the diff carries `doc102-phase2b-foo' from the
+        // mirror walk and encodes a real entry.
+        let decoded = decode_v3(&bytes).expect("decode_v3 should succeed");
+        let entry = decoded.globals.get("doc102-phase2b-foo").expect(
+            "mirror-driven `set-value' must land in the baked image's globals \
+             diff (Doc 102 Phase 2.b Step B)",
+        );
+        assert!(
+            matches!(&entry.value, Some(Sexp::Int(4242))),
+            "value cell round-trip: got {:?}", entry.value
+        );
+    }
+
+    /// Doc 102 Phase 2.b Step B end-to-end smoke — bake every stdlib
+    /// `.el' past `nelisp-stdlib-env-shim.el' on top of a cumulative
+    /// `new_global_no_stdlib()' env (mimicking `STDLIB_FILES' load
+    /// order) and assert each bake produces *more than the empty-
+    /// image footprint* (= the 25-byte-class header-only output the
+    /// pre-fix baker emitted for everything past file 4).  This is
+    /// the production-shape regression for the
+    /// `doc 98 section 2 blocked by env shim' memory.
+    #[test]
+    fn doc102_phase2b_stdlib_past_env_shim_produces_real_diffs() {
+        // STDLIB load order excerpt — file 4 is env-shim, files 5+
+        // are the ones whose `defun's used to silently drop.  Keep
+        // the list small (4 representative files) so the test stays
+        // fast while still exercising the env-shim boundary.
+        let stdlib_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../lisp");
+        let files = [
+            "nelisp-jit-substrate.el",
+            "nelisp-syscall-table.el",
+            "nelisp-jit-strategy.el",
+            "nelisp-stdlib-env-shim.el",
+            "nelisp-stdlib-eval-special.el",
+            "nelisp-stdlib-error.el",
+        ];
+
+        let mut env = Env::new_global_no_stdlib();
+        let mut produced: Vec<(String, usize)> = Vec::new();
+        for f in &files {
+            let path = format!("{}/{}", stdlib_dir, f);
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {}", path, e));
+            let bytes = iterative_bake_one(&mut env, &source)
+                .unwrap_or_else(|e| panic!("bake {}: {:?}", f, e));
+            produced.push((f.to_string(), bytes.len()));
+        }
+
+        // Pre-fix files 5+ produced 25-byte (header-only) images.
+        // Post-fix every file's diff carries at least one mutated
+        // global, encoded as a NameLen / Flags / NodeIndex triple.
+        // Even the smallest non-empty image clears ~30 bytes; use
+        // 40 as a generous floor.
+        for (name, size) in &produced {
+            assert!(*size > 40,
+                "Doc 102 Phase 2.b Step B regression: bake of {} \
+                 produced {}-byte image (= empty-diff footprint).  \
+                 Post-fix every stdlib file past env-shim should \
+                 emit a real diff.",
+                name, size);
+        }
     }
 
 }

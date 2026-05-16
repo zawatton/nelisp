@@ -399,6 +399,66 @@ impl Env {
         }
     }
 
+    /// Doc 102 Phase 2.b Step A — snapshot the elisp mirror as a
+    /// `HashMap<String, SymbolEntry>' so the baker can diff before /
+    /// after eval'ing a stdlib `.el' file.  Converts each entry's 4
+    /// slots back to `SymbolEntry':
+    ///   slot 0 (value)    : `unbound_marker' → `None'
+    ///   slot 1 (function) : `unbound_marker' → `None'
+    ///   slot 2 (plist)    : `Sexp::Nil' → `None'
+    ///   slot 3 (constant) : `Sexp::T' → `true' (otherwise `false')
+    ///
+    /// This is the read complement of `mirror_install_entry' — a
+    /// round-trip through mirror is value-equivalent to the original
+    /// `SymbolEntry'.  Captures elisp-driven mutations (= env_shim
+    /// `(defun)' / `(fset)' that wrote ONLY to the mirror), which
+    /// `self.globals.clone()' misses.
+    pub(crate) fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
+        let mut out: HashMap<String, SymbolEntry> = HashMap::new();
+        let unbound = self.unbound_marker.clone();
+        self.mirror_iter_entries(|name, record| {
+            let slots = &record.slots;
+            let value = match slots.get(0) {
+                Some(s) if *s != unbound => Some(s.clone()),
+                _ => None,
+            };
+            let function = match slots.get(1) {
+                Some(s) if *s != unbound => Some(s.clone()),
+                _ => None,
+            };
+            let plist = match slots.get(2) {
+                Some(Sexp::Nil) | None => None,
+                Some(s) => Some(s.clone()),
+            };
+            let constant = matches!(slots.get(3), Some(Sexp::T));
+            out.insert(
+                name.to_string(),
+                SymbolEntry { value, function, plist, constant },
+            );
+        });
+        out
+    }
+
+    /// Doc 102 Phase 2.b Step B — per-file diff of the elisp mirror
+    /// against `before' (= a prior `mirror_snapshot_globals' result).
+    /// Returns a fresh `Env' whose `globals' field holds the changed
+    /// entries (new key OR mutated `SymbolEntry: PartialEq').  Used by
+    /// `image::iterative_bake_one'; the diff env is fed directly to
+    /// `encode_v3', which still consumes `env.globals' (encoder
+    /// rewiring is Step C / Step E follow-up).
+    ///
+    /// Unlike `globals_diff_view' (which reads `self.globals'), this
+    /// captures elisp-driven mutations that landed only on the mirror.
+    pub fn mirror_diff_view(&self, before: &HashMap<String, SymbolEntry>) -> Env {
+        let mut diff = Env::empty();
+        let after = self.mirror_snapshot_globals();
+        diff.globals = after
+            .into_iter()
+            .filter(|(k, v)| before.get(k).map_or(true, |prev| prev != v))
+            .collect();
+        diff
+    }
+
     /// Doc 102 Phase 8 sprint Session 2 — mirror the Rust `globals'
     /// HashMap into the elisp `globals_record'.  Called once after the
     /// elisp record is constructed.  Sprint A (Session 6) swaps the
