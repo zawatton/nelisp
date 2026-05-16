@@ -23,7 +23,7 @@ through elisp.
 
 Three concrete refinements landed in Phase 2.b (SHIPPED 2026-05-16) that change the Phase 3 picture:
 
-1. =install_empty_mirror_rust_direct= (= Phase 2 Sprint B Stage 2) is now the canonical bootstrap for the elisp `nelisp-env` record. The same Rust-direct allocation pattern can build a `nelisp-frame-stack` record without going through `apply_function'.
+1. =install_empty_mirror_rust_direct= (= Phase 2 Sprint B Stage 2) is now the canonical bootstrap for the elisp `nelisp-env` record. The same Rust-direct allocation pattern can build a `nelisp-lexframe-stack` record without going through `apply_function'.
 2. =mirror_iter_entries= + =mirror_snapshot_globals= + =mirror_install_entry= establish a *generic fast-hash bucket walk + slot manipulation API*.  Phase 3 reuses the same primitives — no new low-level Rust plumbing required.
 3. =FrameCell= is already =NlCellRef= = =Sexp::Cell= internally (see `eval/nlcell.rs').  Captured-closure write-through (= Doc 44 §3.3 Phase A.2.1 setcar discipline) already round-trips through `Sexp::Cell' in `capture_lexical' / `push_captured'.  *Phase 3 only needs to migrate the frame container, not the cell value*.
 
@@ -89,7 +89,7 @@ Phase 3 ships in 5 stages (= Stage 3.a-e), each its own commit.  Naming follows 
 
 | Stage | Scope | Rust delta |
 |---|---|---|
-| 3.a | =lisp/nelisp-frame.el= elisp module + record skeleton.  No Rust changes. | 0 |
+| 3.a | =lisp/nelisp-lexframe.el= elisp module + record skeleton.  No Rust changes. | 0 |
 | 3.b | =Env::frames_record= field + =install_frames_record= + Rust-direct =frame_push_*= / =frame_pop_*= / =frame_bind_*= / =frame_lookup_*= helpers.  Dual-write Vec + mirror.  Add Phase 3 regression tests. | +60 helpers, +30 tests |
 | 3.c | =bind_local= / =push_frame= / =pop_frame= bodies switch to mirror-only.  Vec dual-write retired. | -10 |
 | 3.d | =find_frame_cell= / =capture_lexical= / =push_captured= switch to mirror walk. | -20 |
@@ -163,12 +163,12 @@ Sexp::Vector buys consistent native iteration speed at a modest constant factor 
 
 * §2 ABI design
 
-** §2.1 Frame rep — =Sexp::Record= type-tag =nelisp-frame=
+** §2.1 Frame rep — =Sexp::Record= type-tag =nelisp-lexframe=
 
 #+begin_src elisp
 ;; Storage layout:
 ;;   frames_record (Sexp::Vector)
-;;     elt 0 .. elt (N-1) = Sexp::Record(`nelisp-frame')
+;;     elt 0 .. elt (N-1) = Sexp::Record(`nelisp-lexframe')
 ;;       slots[0] = Sexp::Record(`fast-hash-table')
 ;;         slots[0] = Sexp::Int (= bucket count = 16, power-of-2)
 ;;         slots[1] = Sexp::Vector (= buckets, each elt an alist)
@@ -184,14 +184,14 @@ Sexp::Vector buys consistent native iteration speed at a modest constant factor 
 
 The Stage 3.a elisp module ships:
 
-- =nelisp-frame-make= → fresh =nelisp-frame= record
-- =nelisp-frame-bind FRAME NAME CELL= → install / update
-- =nelisp-frame-lookup FRAME NAME= → Sexp::Cell or =nelisp--unbound-marker=
-- =nelisp-frame-stack-push STACK FRAME= → append to vector
-- =nelisp-frame-stack-pop STACK= → drop last
-- =nelisp-frame-stack-find STACK NAME= → cell or =nelisp--unbound-marker=, walks innermost-first
-- =nelisp-frame-stack-capture STACK= → alist of (name . cell) for closure construction
-- =nelisp-frame-stack-push-captured STACK ALIST= → push a frame populated from ALIST
+- =nelisp-lexframe-make= → fresh =nelisp-lexframe= record
+- =nelisp-lexframe-bind FRAME NAME CELL= → install / update
+- =nelisp-lexframe-lookup FRAME NAME= → Sexp::Cell or =nelisp--unbound-marker=
+- =nelisp-lexframe-stack-push STACK FRAME= → append to vector
+- =nelisp-lexframe-stack-pop STACK= → drop last
+- =nelisp-lexframe-stack-find STACK NAME= → cell or =nelisp--unbound-marker=, walks innermost-first
+- =nelisp-lexframe-stack-capture STACK= → alist of (name . cell) for closure construction
+- =nelisp-lexframe-stack-push-captured STACK ALIST= → push a frame populated from ALIST
 
 Bucket count: 16 (= small; frames typically hold 1-5 bindings).  Power-of-2 to match =mirror_fnv1a= dispatch (= same shift-AND fast path).
 
@@ -238,18 +238,18 @@ Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Re
 
 * §3 Stage outline
 
-** Stage 3.a — =lisp/nelisp-frame.el= skeleton (= no Rust changes)
+** Stage 3.a — =lisp/nelisp-lexframe.el= skeleton (= no Rust changes)
 
 *Scope*:
 
-- Ship =lisp/nelisp-frame.el= (= elisp module providing the 8 helpers from §2.1).  Each helper is unit-tested via host Emacs / make test.
+- Ship =lisp/nelisp-lexframe.el= (= elisp module providing the 8 helpers from §2.1).  Each helper is unit-tested via host Emacs / make test.
 - Reuse =nelisp-stdlib-fast-hash.el= (= already loaded from Phase 2) for the per-frame fast-hash backing.
 - No Rust changes.  Rust still holds =frames: Vec<Frame>=.
 
 *Verification*:
 
 - =make test= (= elisp ERT) green.
-- =make bake-images= regenerates =nelisp-frame.el.image= cleanly (post-Doc 98 §98.2 unblock).
+- =make bake-images= regenerates =nelisp-lexframe.el.image= cleanly (post-Doc 98 §98.2 unblock).
 
 *LOC delta*: Rust 0, Elisp ~+80.
 
@@ -435,7 +435,7 @@ If §5.1 mitigation isn't enough, the Phase 47 path (= §6.2) is the next escala
 - =build-tool/src/eval/nlcell.rs= (= NlCellRef / FrameCell = layout-pinned write-through cell)
 - =build-tool/src/eval/special_forms.rs= (= primary external callsite for push/pop/bind)
 - =build-tool/src/eval/mod.rs= (= eval_lambda_call frame discipline)
-- =lisp/nelisp-env.el= (= Phase 2 elisp env, sibling of the upcoming =nelisp-frame.el=)
+- =lisp/nelisp-env.el= (= Phase 2 elisp env, sibling of the upcoming =nelisp-lexframe.el=)
 - =lisp/nelisp-stdlib-fast-hash.el= (= reusable fast-hash substrate)
 
 ** §7.4 Commit references (= future)
