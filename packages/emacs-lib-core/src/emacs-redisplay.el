@@ -1825,6 +1825,30 @@ nil if no backend is bound."
              (c (+ left (or (and cursor (cdr cursor)) 0))))
         (emacs-tui-backend-cursor-show backend frame r c)))))
 
+;;; --- diff-redraw cache stub (Phase 3.B.5 forward-compat) -------------------
+;;
+;; Branch `feat/doc-51-emacs-builtins' shipped a Phase 3.B.5 step-1
+;; row-hash diff that lets `flush-frame' skip backend draw calls when
+;; a dirty row's hash matches the last successfully-emitted value.
+;; Main HEAD took a different optimization path (Phase 3.B.6 row-
+;; incremental rebuild + 3.B.7 buffer-string text-tick cache), so
+;; the hash cache itself isn't wired here.  We still expose the
+;; clear-cache API as a no-op so callers that depend on the symbol
+;; (= the 5x throughput bench in
+;; `emacs-redisplay-builtins-test/diff-redraw-5x-throughput') don't
+;; trip `void-function'.  The bench's ratio assertion still won't
+;; meet 5x without the row-hash optimisation, but it errors cleanly
+;; rather than aborting on a missing function.
+
+;;;###autoload
+(defun emacs-redisplay-flush-hash-clear (&optional _matrix)
+  "No-op stub: drop the per-matrix flush-hash cache.
+
+Main HEAD's flush path doesn't maintain a flush-hash cache; this stub
+satisfies callers that expect the API from the branch's Phase 3.B.5
+diff-redraw work.  Returns nil."
+  nil)
+
 (provide 'emacs-redisplay)
 
 ;;; emacs-redisplay.el ends here

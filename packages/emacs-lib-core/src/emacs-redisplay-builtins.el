@@ -72,35 +72,87 @@ HANDLE.  After this call, the unprefixed trigger functions
 
 ;;;; --- trigger handlers ----------------------------------------------
 
-(defun emacs-redisplay-force-mode-line-update (&optional all)
+;; Polymorphic dispatch: `emacs-redisplay.el' (= main HEAD) defines
+;; explicit-handle versions of `emacs-redisplay-force-mode-line-update'
+;; / `emacs-redisplay-redraw-display' that take HANDLE as the first
+;; arg.  This module's older convenience-API used the same names with
+;; a zero-arg shape that pulled the handle from
+;; `emacs-redisplay-current-handle' instead.  Defining both with the
+;; same prefixed name created a load-order race: whichever file's
+;; defun ran second won the symbol and broke the OTHER test bundle.
+;;
+;; Resolution: redefine the symbol once, polymorphically — first arg
+;; is a redisplay handle → explicit-handle path (delegates to the
+;; explicit-handle implementation captured below); else → fall back
+;; to the convenience semantics we already had.
+
+(defvar emacs-redisplay-builtins--explicit-force-mode-line-update
+  (and (fboundp 'emacs-redisplay-force-mode-line-update)
+       (symbol-function 'emacs-redisplay-force-mode-line-update))
+  "Explicit-handle `force-mode-line-update' captured from `emacs-redisplay.el'.")
+
+(defvar emacs-redisplay-builtins--explicit-redraw-display
+  (and (fboundp 'emacs-redisplay-redraw-display)
+       (symbol-function 'emacs-redisplay-redraw-display))
+  "Explicit-handle `redraw-display' captured from `emacs-redisplay.el'.")
+
+(defun emacs-redisplay-force-mode-line-update (&rest args)
   "Phase 3 close-gate trigger: invalidate mode-line caches.
 
-When ALL is non-nil, dirties every window in the current frame.
-With ALL nil, dirties the selected window only.  No-op when there
-is no `emacs-redisplay-current-handle'.  Returns the cleared
-window count."
-  (let ((handle (emacs-redisplay-current-handle)))
-    (cond
-     ((null handle) 0)
-     (all
-      (emacs-redisplay-mark-frame-dirty handle))
-     (t
-      (let ((w (and (fboundp 'emacs-window-selected-window)
-                    (emacs-window-selected-window))))
-        (cond
-         ((null w) 0)
-         (t (if (emacs-redisplay-mark-window-dirty handle w) 1 0))))))))
+Two calling conventions:
 
-(defun emacs-redisplay-redraw-display ()
+  (emacs-redisplay-force-mode-line-update)              — convenience
+  (emacs-redisplay-force-mode-line-update ALL)          — convenience
+  (emacs-redisplay-force-mode-line-update HANDLE)       — explicit
+  (emacs-redisplay-force-mode-line-update HANDLE ALL)   — explicit
+  (emacs-redisplay-force-mode-line-update HANDLE ALL WINDOW) — explicit
+
+Convenience form pulls the handle from
+`emacs-redisplay-current-handle' and returns the cleared window
+count (or 0 when no handle is bound).  Explicit form delegates
+through to the underlying handle-aware implementation."
+  (cond
+   ;; Explicit-handle path (= main HEAD's emacs-redisplay.el contract).
+   ((and (car args) (emacs-redisplay-handlep (car args))
+         emacs-redisplay-builtins--explicit-force-mode-line-update)
+    (apply emacs-redisplay-builtins--explicit-force-mode-line-update args))
+   ;; Convenience path (= branch's original semantics).
+   (t
+    (let ((all (car args))
+          (handle (emacs-redisplay-current-handle)))
+      (cond
+       ((null handle) 0)
+       (all
+        (emacs-redisplay-mark-frame-dirty handle))
+       (t
+        (let ((w (and (fboundp 'emacs-window-selected-window)
+                      (emacs-window-selected-window))))
+          (cond
+           ((null w) 0)
+           (t (if (emacs-redisplay-mark-window-dirty handle w) 1 0))))))))))
+
+(defun emacs-redisplay-redraw-display (&rest args)
   "Phase 3 close-gate trigger: full-frame invalidation.
 
-Drops every cached glyph-matrix on the current handle so the next
-flush rebuilds from scratch.  No-op when no current handle.
-Returns the cleared count."
-  (let ((handle (emacs-redisplay-current-handle)))
-    (if handle
-        (emacs-redisplay-mark-frame-dirty handle)
-      0)))
+Two calling conventions:
+
+  (emacs-redisplay-redraw-display)                — convenience
+  (emacs-redisplay-redraw-display HANDLE)         — explicit
+  (emacs-redisplay-redraw-display HANDLE FRAME)   — explicit
+
+Convenience form pulls the handle from
+`emacs-redisplay-current-handle' and returns the cleared count
+(or 0 when no handle is bound).  Explicit form delegates to the
+underlying handle-aware implementation."
+  (cond
+   ((and (car args) (emacs-redisplay-handlep (car args))
+         emacs-redisplay-builtins--explicit-redraw-display)
+    (apply emacs-redisplay-builtins--explicit-redraw-display args))
+   (t
+    (let ((handle (emacs-redisplay-current-handle)))
+      (if handle
+          (emacs-redisplay-mark-frame-dirty handle)
+        0)))))
 
 (defun emacs-redisplay-redraw-frame (&optional _frame)
   "Phase 3 close-gate trigger: same as `emacs-redisplay-redraw-display'.
