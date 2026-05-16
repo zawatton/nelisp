@@ -242,14 +242,19 @@ pub fn encode_v3_with_fallback(
     // identity so cycles + sharing are preserved exactly; atomic
     // variants dedupe structurally because they have no identity.
     //
-    // We sort global names so the visit traversal is deterministic —
-    // otherwise NODE_INDEX assignment depends on HashMap iteration
-    // order and the image bytes vary across runs.
-    let mut names: Vec<&String> = env.globals.keys().collect();
+    // Doc 102 Phase 2.b Step C — globals are read from the elisp
+    // mirror (`env.globals_record'), not the legacy `env.globals'
+    // HashMap.  `mirror_snapshot_globals' walks every bucket of the
+    // `nelisp-env' record and reconstructs `SymbolEntry' tuples;
+    // names are sorted afterwards so the visit traversal is
+    // deterministic across runs (= Doc 75 §3.3.1 Phase D
+    // requirement).
+    let entries = env.mirror_snapshot_globals();
+    let mut names: Vec<&String> = entries.keys().collect();
     names.sort();
     let mut globals_meta: Vec<GlobalMeta> = Vec::with_capacity(names.len());
     for name in &names {
-        let entry = &env.globals[*name];
+        let entry = &entries[*name];
         let value = entry.value.as_ref().map(|s| node_table.intern(s));
         let function = entry.function.as_ref().map(|s| node_table.intern(s));
         let plist = entry.plist.as_ref().map(|s| node_table.intern(s));
@@ -350,6 +355,12 @@ pub fn encode_v3_with_fallback(
 /// tests.  Production callers will use [`decode_v3_into`].
 pub fn decode_v3(bytes: &[u8]) -> Result<Env, ImageError> {
     let mut env = Env::empty();
+    // Doc 102 Phase 2.b Step D — decode writes to the mirror via
+    // `mirror_install_entry'.  The mirror must already exist on the
+    // env; production `Env::new_global' calls `install_stage0' which
+    // sets it up, but the simple `decode_v3' entrypoint constructs a
+    // bare `Env::empty()' so install the mirror here.
+    env.install_empty_mirror_rust_direct();
     let _fallback = decode_v3_into(&mut env, bytes)?;
     // Tests + the simple entrypoint discard the fallback list.  The
     // production `Env::new_global` will pass it to `read_all + eval`
@@ -541,7 +552,12 @@ pub fn decode_v3_into(env: &mut Env, bytes: &[u8]) -> Result<Vec<String>, ImageE
         }
     }
 
-    // Pass 4a — globals.
+    // Pass 4a — globals.  Doc 102 Phase 2.b Step D — write to the
+    // elisp mirror (`env.globals_record') via `mirror_install_entry'
+    // instead of `env.globals.insert'.  The legacy HashMap write is
+    // kept until Step E so test helpers that read `decoded.globals'
+    // continue to function during the intermediate session; the
+    // mirror is the canonical state going forward.
     let n_globals = rd.read_u32("v3 N_GLOBALS")? as usize;
     for _ in 0..n_globals {
         let name = rd.read_string("v3 global name")?;
@@ -560,7 +576,13 @@ pub fn decode_v3_into(env: &mut Env, bytes: &[u8]) -> Result<Vec<String>, ImageE
             let i = rd.read_u32("v3 global plist idx")?;
             entry.plist = Some(resolve_node_index(&placeholders, i)?);
         }
-        env.globals.insert(name, entry);
+        env.mirror_install_entry(
+            &name,
+            entry.value,
+            entry.function,
+            entry.plist,
+            entry.constant,
+        );
     }
 
     // Pass 4b — fallback forms (= strategy C re-eval list).  We do
@@ -1158,20 +1180,22 @@ mod tests {
         let env = Env::empty();
         let bytes = encode_v3(&env).unwrap();
         let decoded = decode_v3(&bytes).unwrap();
-        assert!(decoded.globals.is_empty());
+        assert!(decoded.mirror_snapshot_globals().is_empty());
     }
 
     // ---- Doc 75 v3 Stage 9.3.b + 9.4 (2026-05-10) — payload encoder + decoder ----
 
     fn assert_globals_eq(actual: &Env, expected: &Env) {
-        let mut actual_keys: Vec<&String> = actual.globals.keys().collect();
-        let mut expected_keys: Vec<&String> = expected.globals.keys().collect();
+        let actual_g = actual.mirror_snapshot_globals();
+        let expected_g = expected.mirror_snapshot_globals();
+        let mut actual_keys: Vec<&String> = actual_g.keys().collect();
+        let mut expected_keys: Vec<&String> = expected_g.keys().collect();
         actual_keys.sort();
         expected_keys.sort();
         assert_eq!(actual_keys, expected_keys, "global key set mismatch");
         for k in expected_keys {
-            let a = &actual.globals[k];
-            let e = &expected.globals[k];
+            let a = &actual_g[k];
+            let e = &expected_g[k];
             assert_eq!(a.value, e.value, "global value mismatch for {k}");
             assert_eq!(a.function, e.function, "global function mismatch for {k}");
             assert_eq!(a.plist, e.plist, "global plist mismatch for {k}");
@@ -1180,9 +1204,20 @@ mod tests {
     }
 
     fn env_with_globals(items: &[(&str, SymbolEntry)]) -> Env {
+        // Doc 102 Phase 2.b Step C+E — populate ONLY the mirror.  The
+        // legacy `env.globals: HashMap' field was retired in Step E,
+        // so this helper writes exclusively through
+        // `mirror_install_entry'.
         let mut env = Env::empty();
+        env.install_empty_mirror_rust_direct();
         for (name, entry) in items {
-            env.globals.insert((*name).to_string(), entry.clone());
+            env.mirror_install_entry(
+                name,
+                entry.value.clone(),
+                entry.function.clone(),
+                entry.plist.clone(),
+                entry.constant,
+            );
         }
         env
     }
@@ -1334,7 +1369,7 @@ mod tests {
         let bytes = encode_v3(&env).unwrap();
         let decoded = decode_v3(&bytes).unwrap();
         assert_globals_eq(&decoded, &env);
-        assert!(decoded.globals[":kw"].constant);
+        assert!(decoded.mirror_snapshot_globals()[":kw"].constant);
     }
 
     #[test]
@@ -1374,7 +1409,8 @@ mod tests {
         assert_eq!(n_nodes, 3, "shared cons should dedupe to one node");
         // Identity is also preserved post-decode: alpha + beta point
         // to the same `NlConsBoxRef'.
-        match (&decoded.globals["alpha"].value, &decoded.globals["beta"].value) {
+        let decoded_g = decoded.mirror_snapshot_globals();
+        match (&decoded_g["alpha"].value, &decoded_g["beta"].value) {
             (Some(Sexp::Cons(a)), Some(Sexp::Cons(b))) => {
                 assert!(NlConsBoxRef::ptr_eq(a, b));
             }
@@ -1409,7 +1445,8 @@ mod tests {
         let decoded = decode_v3(&bytes).unwrap();
         // cdr of the recovered cons should be the cons itself
         // (= ptr_eq, not just structural equal — equal would loop).
-        match &decoded.globals["cyc"].value {
+        let decoded_g = decoded.mirror_snapshot_globals();
+        match &decoded_g["cyc"].value {
             Some(Sexp::Cons(b)) => match &b.cdr {
                 Sexp::Cons(b2) => {
                     assert!(NlConsBoxRef::ptr_eq(b, b2),
@@ -1437,11 +1474,12 @@ mod tests {
         .expect("nelisp-jit-substrate.el should be readable from CARGO_MANIFEST_DIR");
 
         let mut env = Env::new_global_no_stdlib();
-        let before = env.globals.clone();
+        let before = env.mirror_snapshot_globals();
         let bytes = iterative_bake_one(&mut env, &source).expect("bake should succeed");
 
+        let after = env.mirror_snapshot_globals();
         let mut expected_keys: HashSet<String> = HashSet::new();
-        for (k, v) in &env.globals {
+        for (k, v) in &after {
             let changed = match before.get(k) {
                 None => true,
                 Some(prev) => prev != v,
@@ -1454,7 +1492,8 @@ mod tests {
             "jit-substrate should introduce at least one global change");
 
         let decoded = decode_v3(&bytes).expect("decode_v3 should succeed");
-        let decoded_keys: HashSet<String> = decoded.globals.keys().cloned().collect();
+        let decoded_keys: HashSet<String> =
+            decoded.mirror_snapshot_globals().keys().cloned().collect();
         assert_eq!(decoded_keys, expected_keys,
             "decoded globals must match encoded diff (modulo order)");
     }
@@ -1475,10 +1514,11 @@ mod tests {
         let n_forms = forms.len();
 
         let mut env = Env::new_global_no_stdlib();
-        let before = env.globals.clone();
+        let before = env.mirror_snapshot_globals();
         let _bytes = iterative_bake_one(&mut env, &source).expect("bake should succeed");
+        let after = env.mirror_snapshot_globals();
         let mut changed = 0usize;
-        for (k, v) in &env.globals {
+        for (k, v) in &after {
             let differs = match before.get(k) {
                 None => true,
                 Some(prev) => prev != v,
@@ -1527,7 +1567,8 @@ mod tests {
         // Post-fix the diff carries `doc102-phase2b-foo' from the
         // mirror walk and encodes a real entry.
         let decoded = decode_v3(&bytes).expect("decode_v3 should succeed");
-        let entry = decoded.globals.get("doc102-phase2b-foo").expect(
+        let decoded_g = decoded.mirror_snapshot_globals();
+        let entry = decoded_g.get("doc102-phase2b-foo").expect(
             "mirror-driven `set-value' must land in the baked image's globals \
              diff (Doc 102 Phase 2.b Step B)",
         );

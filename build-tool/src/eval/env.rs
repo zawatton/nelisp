@@ -28,10 +28,13 @@ pub struct SymbolEntry {
 pub type FrameCell = crate::eval::nlcell::NlCellRef;
 pub type Frame = HashMap<String, FrameCell>;
 
-/// Runtime environment: globals + lexical frame stack + recursion guard
-/// + extern-builtin registry + Stage 7.4.c apply takeover flags.
+/// Runtime environment: lexical frame stack + recursion guard +
+/// extern-builtin registry + elisp-side globals mirror + Stage 7.4.c
+/// apply takeover flags.  Doc 102 Phase 2.b Step E removed the legacy
+/// `globals: HashMap<String, SymbolEntry>` field — the canonical
+/// globals state is the elisp `nelisp-env' record reachable via
+/// `globals_record' + `mirror_*' accessors.
 pub struct Env {
-    pub globals: HashMap<String, SymbolEntry>,
     /// Innermost frame is last.
     pub frames: Vec<Frame>,
     pub max_recursion: u32,
@@ -41,9 +44,11 @@ pub struct Env {
     /// through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
     pub use_elisp_apply: bool,
     pub delegation_depth: u32,
-    /// Doc 102 Phase 8 sprint — elisp-side mirror of `globals' as a
-    /// `nelisp-env' record (see `lisp/nelisp-env.el').  `Sexp::Nil' until
-    /// `new_global' constructs it after STDLIB decode.
+    /// Doc 102 Phase 8 sprint — elisp-side `nelisp-env' record (see
+    /// `lisp/nelisp-env.el').  `Sexp::Nil' until `install_stage0' (or
+    /// the explicit `install_empty_mirror_rust_direct') constructs
+    /// it.  Step E elevated this from "mirror" to "canonical" — all
+    /// globals reads / writes flow through the `mirror_*' helpers.
     pub globals_record: Sexp,
     /// Doc 102 Phase 8 Sprint Session 5 — cached `nelisp--unbound-marker'
     /// sentinel.  `make-symbol' produces counter-disambiguated uninterned
@@ -58,7 +63,6 @@ impl Env {
     /// adding a field touches one place (Doc 102 Phase 6 option a).
     fn fresh(max_recursion: u32) -> Self {
         Env {
-            globals: HashMap::new(),
             frames: Vec::new(),
             max_recursion,
             current_recursion: 0,
@@ -140,22 +144,17 @@ impl Env {
         Env::fresh(256)
     }
 
-    /// Doc 102 Phase 8 sprint Session 1 — invoke elisp `nelisp-env-make'
-    /// (= `lisp/nelisp-env.el', loaded during STDLIB decode) and store the
-    /// resulting nelisp-env record into `globals_record'.  Session 2 also
-    /// populates the elisp env with the Rust HashMap's contents.
+    /// Doc 102 Phase 8 sprint Session 1 — finalise the elisp
+    /// `globals_record' after STDLIB decode.
+    /// Phase 2.b Step E: `populate_globals_record' is retired — the
+    /// HashMap dual-write is gone, so the mirror is already canonical
+    /// by the time decode finishes.  All we still owe is to pin the
+    /// `nelisp--unbound-marker' value cell to the Rust-defined
+    /// sentinel so elisp `(eq cell nelisp--unbound-marker)' aligns
+    /// with `mirror_lookup_value' identity checks (STDLIB's defvar
+    /// of the same name baked a `make-symbol' counter-suffixed value
+    /// that we replace here).
     fn install_globals_record(&mut self) {
-        // Sprint B Stage 2 — mirror is already constructed by
-        // `install_empty_mirror_rust_direct' during install_stage0,
-        // and `install_stage0' write-paths (intern_constant /
-        // set_function via register_extern_builtin / etc.) already
-        // dual-wrote builtins into the mirror.  STDLIB decode only
-        // populated `env.globals' (HashMap); copy those into the
-        // mirror via `populate_globals_record', then override the
-        // `nelisp--unbound-marker' value with our Rust-defined
-        // sentinel so elisp `(eq cell nelisp--unbound-marker)' aligns
-        // with `mirror_lookup_value' identity checks.
-        self.populate_globals_record();
         let unbound = self.unbound_marker.clone();
         self.mirror_set_value("nelisp--unbound-marker", unbound);
     }
@@ -413,7 +412,7 @@ impl Env {
     /// `SymbolEntry'.  Captures elisp-driven mutations (= env_shim
     /// `(defun)' / `(fset)' that wrote ONLY to the mirror), which
     /// `self.globals.clone()' misses.
-    pub(crate) fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
+    pub fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
         let mut out: HashMap<String, SymbolEntry> = HashMap::new();
         let unbound = self.unbound_marker.clone();
         self.mirror_iter_entries(|name, record| {
@@ -439,46 +438,25 @@ impl Env {
         out
     }
 
-    /// Doc 102 Phase 2.b Step B — per-file diff of the elisp mirror
+    /// Doc 102 Phase 2.b Step B+C — per-file diff of the elisp mirror
     /// against `before' (= a prior `mirror_snapshot_globals' result).
-    /// Returns a fresh `Env' whose `globals' field holds the changed
-    /// entries (new key OR mutated `SymbolEntry: PartialEq').  Used by
-    /// `image::iterative_bake_one'; the diff env is fed directly to
-    /// `encode_v3', which still consumes `env.globals' (encoder
-    /// rewiring is Step C / Step E follow-up).
+    /// Returns a fresh `Env' whose **mirror** is populated with the
+    /// changed entries (new key OR mutated `SymbolEntry: PartialEq').
+    /// Used by `image::iterative_bake_one'; the diff env is fed
+    /// directly to `encode_v3', which walks the mirror via
+    /// `mirror_snapshot_globals'.
     ///
     /// Unlike `globals_diff_view' (which reads `self.globals'), this
     /// captures elisp-driven mutations that landed only on the mirror.
+    /// Step C completes the round-trip — encoder reads ONLY the mirror.
     pub fn mirror_diff_view(&self, before: &HashMap<String, SymbolEntry>) -> Env {
         let mut diff = Env::empty();
+        diff.install_empty_mirror_rust_direct();
         let after = self.mirror_snapshot_globals();
-        diff.globals = after
-            .into_iter()
-            .filter(|(k, v)| before.get(k).map_or(true, |prev| prev != v))
-            .collect();
-        diff
-    }
-
-    /// Doc 102 Phase 8 sprint Session 2 — mirror the Rust `globals'
-    /// HashMap into the elisp `globals_record'.  Called once after the
-    /// elisp record is constructed.  Sprint A (Session 6) swaps the
-    /// per-entry `apply_function' for `mirror_set_value' /
-    /// `mirror_set_function' direct writes: bootstrap drops from ~5s
-    /// (interpreted FNV-1a × 4000) to ~50ms (Rust FNV-1a × 4000).
-    /// Sprint B deletes the Rust HashMap entirely once image.rs +
-    /// env_shim.rs callsites are rewired to read from the mirror.
-    /// Skips the constant flag (Sprint B fills it via direct
-    /// record-set when the HashMap goes away).
-    fn populate_globals_record(&mut self) {
-        // Snapshot to avoid borrow conflict with `&mut self' below.
-        // Sprint B Session 7 — `mirror_install_entry' propagates ALL
-        // four slots (value / function / plist / constant), closing
-        // the Sprint A constant-flag gap that left `nil' / `t' /
-        // `defconst' globals with `constant=false' on the mirror.
-        let snapshot: Vec<(String, SymbolEntry)> =
-            self.globals.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        for (name, entry) in snapshot {
-            self.mirror_install_entry(
+        for (name, entry) in after.into_iter().filter(|(k, v)| {
+            before.get(k).map_or(true, |prev| prev != v)
+        }) {
+            diff.mirror_install_entry(
                 &name,
                 entry.value,
                 entry.function,
@@ -486,6 +464,7 @@ impl Env {
                 entry.constant,
             );
         }
+        diff
     }
 
     /// Baker accumulator env — built-ins + env_shim installed but no
@@ -527,7 +506,7 @@ impl Env {
     /// `nelisp--unbound-marker' global after decode, after which
     /// `install_globals_record' captures the post-decode value and
     /// walks the mirror to refresh in-place sentinels.
-    fn install_empty_mirror_rust_direct(&mut self) {
+    pub(crate) fn install_empty_mirror_rust_direct(&mut self) {
         const BUCKET_COUNT: usize = 1024;
         // Sentinel for absent slots — replaced post-decode by the
         // baked elisp `nelisp--unbound-marker'.
@@ -543,20 +522,6 @@ impl Env {
         );
     }
 
-    /// Per-file globals diff vs. `before' (= new key OR mutated entry).
-    /// Used by `image::iterative_bake_one'.
-    pub fn globals_diff_view(&self, before: &HashMap<String, SymbolEntry>) -> Env {
-        let mut diff = Env::empty();
-        diff.globals = self
-            .globals
-            .iter()
-            .filter(|(k, v)| before.get(*k).map_or(true, |prev| prev != *v))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        diff
-    }
-
-
     /// Register `f' as an externally-supplied builtin under `name'.
     /// Sets the function cell to `(builtin NAME)' so `(NAME ARG...)'
     /// invokes `f(args, env)'.  Re-registering overwrites.
@@ -571,13 +536,10 @@ impl Env {
     }
 
     /// Mark `name` as a self-evaluating constant bound to `value`.
-    /// Sprint B Stage 2 dual-writes: mirror via `mirror_install_entry'
-    /// (sets value + constant slot in one shot) and HashMap so
-    /// `image::iterative_bake_one' baseline includes nil/t.
+    /// Doc 102 Phase 2.b Step E — mirror is canonical; HashMap dual-
+    /// write retired.  `mirror_install_entry' sets value + constant
+    /// slot in one shot.
     pub fn intern_constant(&mut self, name: &str, value: Sexp) {
-        let entry = self.globals.entry(name.to_string()).or_default();
-        entry.value = Some(value.clone());
-        entry.constant = true;
         self.mirror_install_entry(name, Some(value), None, None, true);
     }
 
@@ -586,6 +548,9 @@ impl Env {
         self.frames.iter().rev().find_map(|f| f.get(name))
     }
 
+    /// `symbol-value' — innermost lexical frame first, then the
+    /// elisp-side globals mirror.  Doc 102 Phase 2.b Step E retired
+    /// the HashMap fallback (= mirror is canonical).
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
         if let Some(cell) = self.find_frame_cell(name) {
             return Ok(cell.value.clone());
@@ -599,16 +564,13 @@ impl Env {
             return Ok(self.unbound_marker.clone());
         }
         self.mirror_lookup_value(name)
-            .or_else(|| self.globals.get(name).and_then(|e| e.value.clone()))
             .ok_or_else(|| EvalError::UnboundVariable(name.to_string()))
     }
 
     /// `setq' / `set' — innermost frame slot if lexically bound (write-
-    /// through cell, so closures observe), else globals.  Constants raise.
-    /// Sprint B Stage 2 keeps the HashMap write so `image::iterative_
-    /// bake_one' can `globals_diff_view' baked top-level forms (= the
-    /// baker still snapshots / diffs the HashMap).  Full mirror-only
-    /// write path waits for image.rs baker rewire.
+    /// through cell, so closures observe), else the globals mirror.
+    /// Constants raise.  Doc 102 Phase 2.b Step E retired the HashMap
+    /// dual-write (= mirror is canonical).
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
         if self.mirror_is_constant(name) {
             return Err(EvalError::SettingConstant(name.to_string()));
@@ -619,44 +581,32 @@ impl Env {
             unsafe { cell.set_value(value.clone()) };
             return Ok(value);
         }
-        self.globals.entry(name.to_string()).or_default().value = Some(value.clone());
         self.mirror_set_value(name, value.clone());
         Ok(value)
     }
 
     /// Look up `name` in the function cell.  No lexical fallback (Elisp
-    /// `funcall' always goes through the global function slot).
-    /// Mirror-first canonical, HashMap fallback while
-    /// `install_globals_record' is mid-flight.
+    /// `funcall' always goes through the global function slot).  Doc
+    /// 102 Phase 2.b Step E retired the HashMap fallback.
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
         self.mirror_lookup_function(name)
-            .or_else(|| self.globals.get(name).and_then(|e| e.function.clone()))
             .ok_or_else(|| EvalError::UnboundFunction(name.to_string()))
     }
 
-    /// `defun' / `defalias' — write the function cell.  Sprint B Stage 2
-    /// keeps the HashMap write for `image::iterative_bake_one' diff
-    /// compatibility (see `set_value' comment).
+    /// `defun' / `defalias' — write the function cell.  Doc 102
+    /// Phase 2.b Step E retired the HashMap dual-write.
     pub fn set_function(&mut self, name: &str, func: Sexp) {
-        self.globals.entry(name.to_string()).or_default().function = Some(func.clone());
         self.mirror_set_function(name, func);
     }
 
     /// `defvar' / `defconst' — install value only if unbound (Elisp
     /// idempotence); IS_CONSTANT=true marks `defconst'.  Doc 102 Phase 7:
     /// `makunbound' / `fmakunbound' Rust helpers retired (zero callsites;
-    /// elisp routes through `nelisp--env-globals-op').  Sprint B Stage 2
-    /// keeps the HashMap write for `image::iterative_bake_one' diff
-    /// compatibility (see `set_value' comment).
+    /// elisp routes through `nelisp--env-globals-op').  Doc 102
+    /// Phase 2.b Step E retired the HashMap dual-write — idempotence
+    /// is now checked via `mirror_is_bound'.
     pub fn defvar(&mut self, name: &str, value: Sexp, is_constant: bool) {
-        let entry = self.globals.entry(name.to_string()).or_default();
-        let actually_changed = entry.value.is_none();
-        if actually_changed {
-            entry.value = Some(value.clone());
-        }
-        if is_constant {
-            entry.constant = true;
-        }
+        let actually_changed = !self.mirror_is_bound(name);
         if actually_changed {
             self.mirror_set_value(name, value);
         }
@@ -676,20 +626,21 @@ impl Env {
 
     /// `let' / `let*' / lambda formals — bind NAME→VALUE in innermost
     /// frame (= fresh FrameCell so closures share the slot); falls
-    /// through to the global slot when no frame is active.
+    /// through to the global slot when no frame is active.  Doc 102
+    /// Phase 2.b Step E retired the HashMap dual-write for the
+    /// no-frame branch.
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if let Some(frame) = self.frames.last_mut() {
             frame.insert(name.to_string(), FrameCell::new(value));
         } else {
-            self.globals.entry(name.to_string()).or_default().value = Some(value.clone());
             self.mirror_set_value(name, value);
         }
     }
 
     /// `boundp` — true iff `name` resolves in any frame or has a global
-    /// value.  Mirror-first, HashMap fallback while
-    /// `install_globals_record' is mid-flight.  Sentinel symbol is
-    /// special-cased to mirror `lookup_value' semantics.
+    /// value.  Doc 102 Phase 2.b Step E retired the HashMap fallback.
+    /// Sentinel symbol is special-cased to mirror `lookup_value'
+    /// semantics.
     pub fn is_bound(&self, name: &str) -> bool {
         if self.find_frame_cell(name).is_some() {
             return true;
@@ -698,15 +649,12 @@ impl Env {
             return true;
         }
         self.mirror_is_bound(name)
-            || matches!(self.globals.get(name), Some(SymbolEntry { value: Some(_), .. }))
     }
 
-    /// `fboundp` — true iff `name` has a global function cell.
-    /// Mirror-first, HashMap fallback while `install_globals_record' is
-    /// mid-flight.
+    /// `fboundp` — true iff `name` has a global function cell.  Doc
+    /// 102 Phase 2.b Step E retired the HashMap fallback.
     pub fn is_fbound(&self, name: &str) -> bool {
         self.mirror_is_fbound(name)
-            || matches!(self.globals.get(name), Some(SymbolEntry { function: Some(_), .. }))
     }
 
     /// Capture lexical frames as a flat `((name . cell) ...)` alist for

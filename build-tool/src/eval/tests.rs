@@ -3033,8 +3033,9 @@ fn stage74e1_apply_lambda_inner_preserves_user_args_formal() {
 #[test]
 fn frozen_heap_strategy_c_closure_with_captures_count() {
     let env = Env::new_global();
+    let globals = env.mirror_snapshot_globals();
     let mut count = 0usize;
-    for (_name, entry) in env.globals.iter() {
+    for (_name, entry) in globals.iter() {
         if let Some(Sexp::Cons(c)) = &entry.function {
             // (closure CAPTURED-ENV ARGS BODY...) — pattern match
             // car == 'closure and cadr (= CAPTURED-ENV) != nil.
@@ -3052,5 +3053,5 @@ fn frozen_heap_strategy_c_closure_with_captures_count() {
     // No hard assert yet — the value feeds the Stage 9.3 design.
     // We only sanity-check that the bootstrap produced a globals
     // map (= the spike actually walked something).
-    assert!(!env.globals.is_empty(), "bootstrap globals map empty");
+    assert!(!globals.is_empty(), "bootstrap globals map empty");
 }
