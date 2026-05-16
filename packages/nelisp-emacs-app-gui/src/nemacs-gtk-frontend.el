@@ -6753,33 +6753,37 @@ Release is intentionally silent so click events don't double-fire."
   "Entry point invoked by the Rust boot stub.  Brings up the GUI,
 paints the initial frame, and drives the main loop until the window
 is closed."
-  (message "[boot] step 1 nelisp-gtk-init")
   ;; 1. GTK init.
   (nelisp-gtk-init nemacs-gtk--rows nemacs-gtk--cols)
   (nelisp-gtk-set-mode-line-row nemacs-gtk--mode-line-row)
-  (message "[boot] step 2 menu-bar")
   ;; 2. Native menu bar (= Phase 2.A re-add, now elisp-driven).
   (when (fboundp 'nelisp-gtk-set-menu-accels)
     (nelisp-gtk-set-menu-accels nemacs-gtk--menu-accels))
   (nelisp-gtk-set-menu-bar nemacs-gtk--menu-spec)
-  (message "[boot] step 3 clipboard-glue")
-  ;; 3. System clipboard bridge.
+  ;; 3. System clipboard bridge — kill-ring ↔ GTK clipboard
+  ;; (Phase 2.C, lives behind the substrate's `interprogram-*'
+  ;; hook points so `kill-new' / `yank' transparently sync).
   (nemacs-gtk--install-clipboard-glue)
-  (message "[boot] step 4a init-keymap")
   ;; 4. Layer 2 keymap + welcome buffer.
   (nemacs-gtk--init-keymap)
-  (message "[boot] step 4b seed-auto-mode-alist")
+  ;; Phase 3.A — seed auto-mode-alist before any file open.
   (nemacs-gtk--seed-auto-mode-alist)
-  (message "[boot] step 4c load-user-init-file")
-  (nemacs-gtk--load-user-init-file)
-  (message "[boot] step 4d prepare-welcome-buffer")
+  ;; Stage the welcome buffer *before* the user init runs so that any
+  ;; init-time code touching `current-buffer' (= e.g. messages to the
+  ;; echo area, `electric-pair-mode' which walks buffer text, or a
+  ;; user's own `with-current-buffer' opener) lands on a live buffer
+  ;; instead of nil.  Diagnosed 2026-05-09 as the trigger for
+  ;; `wrong-type-argument: nelisp-ec-buffer-p nil' on VMware boot: the
+  ;; Layer 2 buffer registry has no auto-`*scratch*' so the first
+  ;; buffer-touching call from init.el saw a nil current-buffer.
   (nemacs-gtk--prepare-welcome-buffer)
-  (message "[boot] step 4e sync-window-title")
+  ;; Phase 3.C — load user init file (~/.emacs.d/init.el or ~/.emacs)
+  ;; before painting so any `setq` of GUI defvars / `electric-pair-mode'
+  ;; calls / etc. take effect on the first frame.
+  (nemacs-gtk--load-user-init-file)
   (nemacs-gtk--sync-window-title)
-  (message "[boot] step 5 first-repaint")
-  ;; 5. First paint.
+  ;; 4. First paint.
   (nemacs-gtk--repaint)
-  (message "[boot] step 6 enter main loop")
   ;; 5. Main loop.  Phase 3.G change: drain ALL queued events of every
   ;; channel per iteration + repaint at most ONCE at the end (= the
   ;; `dirty' flag).  Previously each event triggered its own paint;
@@ -6788,47 +6792,34 @@ is closed."
   ;; GUI.  Motion events also dropped in favour of just-the-last so
   ;; the user doesn't pay paint cost for every pixel of drag.
   (setq nemacs-gtk--quit-requested nil)
-  (let ((iter-count 0))
-    (while (and (not (nelisp-gtk-should-quit))
-                (not nemacs-gtk--quit-requested))
-      (setq iter-count (1+ iter-count))
-      (when (<= iter-count 3)
-        (message "[loop] iter %d: pre nelisp-gtk-iterate" iter-count))
-      (nelisp-gtk-iterate t)
-      (when (<= iter-count 3)
-        (message "[loop] iter %d: post iterate, pre poll-key" iter-count))
-      (let ((dirty nil)
-            (last-motion nil))
-        ;; Drain key queue.
-        (let ((kv (nelisp-gtk-poll-key)))
-          (while kv
-            (when (<= iter-count 3)
-              (message "[loop] iter %d: dispatch-key %S" iter-count kv))
-            (let ((keysym (car kv))
-                  (mods   (cadr kv))
-                  (uni    (car (cddr kv))))
-              (setq nemacs-gtk--last-key-text
-                    (nemacs-gtk--describe-key keysym mods uni))
-              (nemacs-gtk--dispatch-key keysym mods uni)
-              (setq dirty t))
-            (setq kv (nelisp-gtk-poll-key))))
-      (when (<= iter-count 3)
-        (message "[loop] iter %d: pre poll-menu" iter-count))
+  (while (and (not (nelisp-gtk-should-quit))
+              (not nemacs-gtk--quit-requested))
+    (nelisp-gtk-iterate t)
+    (let ((dirty nil)
+          (last-motion nil))
+      ;; Drain key queue.
+      (let ((kv (nelisp-gtk-poll-key)))
+        (while kv
+          (let ((keysym (car kv))
+                (mods   (cadr kv))
+                (uni    (car (cddr kv))))
+            (setq nemacs-gtk--last-key-text
+                  (nemacs-gtk--describe-key keysym mods uni))
+            (nemacs-gtk--dispatch-key keysym mods uni)
+            (setq dirty t))
+          (setq kv (nelisp-gtk-poll-key))))
       ;; Drain menu queue.
       (let ((m (nelisp-gtk-poll-menu-event)))
         (while m
-          (when (<= iter-count 3)
-            (message "[loop] iter %d: handle-menu %S" iter-count m))
           (nemacs-gtk--handle-menu-action m)
           (setq dirty t)
           (setq m (nelisp-gtk-poll-menu-event))))
-      (when (<= iter-count 3)
-        (message "[loop] iter %d: pre poll-mouse" iter-count))
-      ;; Drain mouse queue.
+      ;; Drain mouse queue.  Motion events get coalesced (= only the
+      ;; last motion is processed; press / release / scroll are
+      ;; processed individually so click count + scroll deltas don't
+      ;; get lost).
       (let ((mev (nelisp-gtk-poll-mouse)))
         (while mev
-          (when (<= iter-count 3)
-            (message "[loop] iter %d: mouse %S" iter-count mev))
           (let ((kind (nth 0 mev)))
             (cond
              ((eq kind 'motion)
@@ -6843,28 +6834,19 @@ is closed."
         (when last-motion
           (nemacs-gtk--handle-mouse-event last-motion)
           (setq dirty t)))
-      (when (<= iter-count 3)
-        (message "[loop] iter %d: pre poll-resize" iter-count))
-      ;; Drain resize queue.
+      ;; Drain resize queue (= use the LAST one; coalescing works
+      ;; because each carries an absolute (rows cols), not a delta).
       (let ((rs (nelisp-gtk-poll-resize))
             (last-rs nil))
         (while rs
-          (when (<= iter-count 3)
-            (message "[loop] iter %d: resize %S" iter-count rs))
           (setq last-rs rs)
           (setq rs (nelisp-gtk-poll-resize)))
         (when last-rs
-          (when (<= iter-count 3)
-            (message "[loop] iter %d: apply-grid-size %S" iter-count last-rs))
           (nemacs-gtk--apply-grid-size (nth 0 last-rs) (nth 1 last-rs))
           (setq dirty t)))
-      (when (<= iter-count 3)
-        (message "[loop] iter %d: pre dirty-repaint dirty=%S" iter-count dirty))
       ;; One repaint per main-loop iteration if anything changed.
       (when dirty
-        (nemacs-gtk--repaint))
-      (when (<= iter-count 3)
-        (message "[loop] iter %d: end" iter-count)))))
+        (nemacs-gtk--repaint))))
   'done)
 
 (provide 'nemacs-gtk-frontend)
