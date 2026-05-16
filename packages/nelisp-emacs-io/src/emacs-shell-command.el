@@ -33,6 +33,18 @@
 (defvar emacs-shell-command-last-async-process nil
   "Most recent process started by `async-shell-command'.")
 
+;; Snapshot the host runtime's `shell-command' before this module
+;; installs its polyfill.  Host Emacs's C `shell-command-to-string'
+;; calls `shell-command' internally with `t' as OUTPUT-BUFFER (=
+;; "insert at point in current buffer"), which our polyfill cannot
+;; honour without the C subr's buffer-narrowing setup.  Saving the
+;; original lets us delegate transparently in that one shape.
+(defvar emacs-shell-command--orig-shell-command
+  (and (fboundp 'shell-command)
+       (subrp (symbol-function 'shell-command))
+       (symbol-function 'shell-command))
+  "Original `shell-command' subr captured at load time, or nil.")
+
 (defun emacs-shell-command--read-command (prompt)
   "Read a shell command with PROMPT."
   (if (fboundp 'read-shell-command)
@@ -143,19 +155,28 @@ different target.  Return the exit status integer from
 leave the output in the destination buffer."
   (interactive
    (list (emacs-shell-command--read-command "Shell command: ")))
-  (let* ((buffer (emacs-shell-command--prepare-buffer
-                  (emacs-shell-command--get-buffer
-                   output-buffer
-                   emacs-shell-command-output-buffer-name)
-                  t))
-         (status (emacs-shell-command--call-shell command buffer error-buffer)))
-    (when (and (integerp status) (/= status 0))
-      (emacs-shell-command--message "%s"
-                                    (emacs-shell-command--exit-summary
-                                     command status)))
-    (when (called-interactively-p 'interactive)
-      (display-buffer buffer))
-    status))
+  (if (and (eq output-buffer t) emacs-shell-command--orig-shell-command)
+      ;; Host C `shell-command-to-string' passes `t' to mean "insert
+      ;; output at point in the current buffer," which our polyfill
+      ;; cannot honour without reproducing the C subr's narrowing.
+      ;; Delegate that one shape to the original subr so the host's
+      ;; `shell-command-to-string' keeps working when our polyfill
+      ;; shadows the public symbol.
+      (funcall emacs-shell-command--orig-shell-command
+               command output-buffer error-buffer)
+    (let* ((buffer (emacs-shell-command--prepare-buffer
+                    (emacs-shell-command--get-buffer
+                     output-buffer
+                     emacs-shell-command-output-buffer-name)
+                    t))
+           (status (emacs-shell-command--call-shell command buffer error-buffer)))
+      (when (and (integerp status) (/= status 0))
+        (emacs-shell-command--message "%s"
+                                      (emacs-shell-command--exit-summary
+                                       command status)))
+      (when (called-interactively-p 'interactive)
+        (display-buffer buffer))
+      status)))
 
 ;;;###autoload
 (defun shell-command-on-region (start end command
