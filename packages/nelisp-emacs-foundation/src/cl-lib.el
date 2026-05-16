@@ -1,0 +1,249 @@
+;;; cl-lib.el --- nelisp-emacs intercepting cl-lib shim  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton + Claude
+
+;; This file is part of nelisp-emacs.
+
+;;; Commentary:
+
+;; Doc 51 Track O (2026-05-04) — Layer 2 cl-lib intercept shim.
+;;
+;; Why this exists: the upstream `vendor/emacs-lisp/emacs-lisp/cl-lib.el'
+;; uses several reader features (= `\(' string escape on docstring
+;; arglist hints, `,' outside backquote, etc.) that nelisp's reader
+;; rejects.  Under host Emacs `cl-lib' is preloaded so `(require
+;; 'cl-lib)' is a no-op and our shim never executes.  Under nelisp the
+;; shim wins because `src/' precedes `vendor/' on the load-path.
+;;
+;; We deliberately do NOT mirror every cl-lib symbol — only the
+;; subset our Layer-2 substrate touches (= the `MISSING' list from
+;; the audit script run as part of Track O).  Most of cl-lib is
+;; already covered by `emacs-cl-macros.el' (cl-defun, cl-loop,
+;; cl-defstruct, …); this file adds the remaining 3-4 helpers and
+;; declares the `cl-lib' feature.
+;;
+;; If a future substrate change pulls in another cl-lib symbol that
+;; isn't here, the right fix is to either (a) add a polyfill here,
+;; or (b) port the symbol into `emacs-cl-macros.el'.
+
+;;; Code:
+
+(provide 'cl-lib)
+
+;; Pull in the existing prefixed subset (cl-loop / cl-defun /
+;; cl-defstruct / cl-letf / cl-flet / cl-block / cl-some / cl-every /
+;; cl-position / cl-find / cl-remove-if{,-not} / cl-delete-* /
+;; cl-union / cl-intersection / cl-sort / cl-case / cl-pushnew / etc.)
+(require 'emacs-cl-macros)
+
+;;;; --- helpers not in emacs-cl-macros --------------------------------
+
+(unless (fboundp 'cl-subseq)
+  (defun cl-subseq (sequence start &optional end)
+    "Return the subsequence of SEQUENCE from START to END.
+If END is nil, copy SEQUENCE from START to end.  Mirrors the
+classic Common Lisp shape used by the Layer-2 substrate (=
+`emacs-window.el' tree-rebuild paths)."
+    (cond
+     ((listp sequence)
+      (let* ((rest (nthcdr start sequence))
+             (len (if end (- end start) (length rest))))
+        (let (out (i 0))
+          (while (and rest (< i len))
+            (push (car rest) out)
+            (setq rest (cdr rest))
+            (setq i (1+ i)))
+          (nreverse out))))
+     ((stringp sequence)
+      (substring sequence start end))
+     ((vectorp sequence)
+      (let* ((len (length sequence))
+             (e (or end len))
+             (out (make-vector (- e start) nil)))
+        (let ((i start) (j 0))
+          (while (< i e)
+            (aset out j (aref sequence i))
+            (setq i (1+ i) j (1+ j))))
+        out))
+     (t (signal 'wrong-type-argument (list 'sequencep sequence))))))
+
+(unless (fboundp 'cl-remove)
+  (defun cl-remove (item sequence)
+    "Return SEQUENCE with all occurrences of ITEM removed (`equal' test).
+Always returns a fresh list (= callers in `emacs-window.el' rely on
+this for sibling-list immutability)."
+    (cond
+     ((listp sequence)
+      (let (out)
+        (dolist (x sequence)
+          (unless (equal item x) (push x out)))
+        (nreverse out)))
+     ((stringp sequence)
+      (apply #'string
+             (cl-loop for c across sequence
+                      unless (equal item c) collect c)))
+     ((vectorp sequence)
+      (apply #'vector
+             (cl-loop for x across sequence
+                      unless (equal item x) collect x)))
+     (t (signal 'wrong-type-argument (list 'sequencep sequence))))))
+
+(unless (fboundp 'cl-find-if-not)
+  (defun cl-find-if-not (predicate sequence)
+    "Return the first element of SEQUENCE for which PREDICATE is nil."
+    (catch 'found
+      (cond
+       ((listp sequence)
+        (dolist (x sequence)
+          (unless (funcall predicate x) (throw 'found x))))
+       ((stringp sequence)
+        (let ((i 0) (n (length sequence)))
+          (while (< i n)
+            (let ((c (aref sequence i)))
+              (unless (funcall predicate c) (throw 'found c)))
+            (setq i (1+ i)))))
+       ((vectorp sequence)
+        (let ((i 0) (n (length sequence)))
+          (while (< i n)
+            (let ((x (aref sequence i)))
+              (unless (funcall predicate x) (throw 'found x)))
+            (setq i (1+ i))))))
+      nil)))
+
+;;;; --- generalized place setter (setf) ---------------------------------
+;;
+;; nelisp driver では vendor/emacs-lisp/emacs-lisp/gv.el が reader 不
+;; 整合で読めないため、setf を最小限ここで polyfill する。host driver
+;; では gv.el の `setf' が先に勝つので、`(unless (fboundp 'setf) ...)'
+;; gate で安全に共存。
+
+(unless (fboundp 'setf)
+  (defmacro setf (&rest pairs)
+    "Minimal setf — handles common places.
+Supported PLACE forms:
+  symbol             → setq
+  (car X)            → setcar
+  (cdr X)            → setcdr
+  (nth N L)          → setcar of nthcdr
+  (aref V I)         → aset
+  (gethash K H)      → puthash
+  (struct-slot OBJ)  → uses property `cl-struct-setter` on slot symbol
+
+For unrecognised places, signals an error at expansion time."
+    (when (= (mod (length pairs) 2) 1)
+      (error "setf: odd number of arguments"))
+    (let ((forms nil))
+      (while pairs
+        (let ((place (pop pairs))
+              (value (pop pairs)))
+          (push
+           (cond
+            ((symbolp place) (list 'setq place value))
+            ((not (consp place))
+             (error "setf: invalid place: %S" place))
+            (t
+             (let ((fn (car place))
+                   (args (cdr place)))
+               (cond
+                ((eq fn 'car)     (list 'setcar (car args) value))
+                ((eq fn 'cdr)     (list 'setcdr (car args) value))
+                ((eq fn 'aref)    (list 'aset (car args) (cadr args) value))
+                ((eq fn 'gethash) (list 'puthash (car args) value (cadr args)))
+                ((eq fn 'nth)
+                 (list 'setcar
+                       (list 'nthcdr (car args) (cadr args))
+                       value))
+                ((eq fn 'plist-get)
+                 (list 'plist-put (car args) (cadr args) value))
+                ((and (symbolp fn) (get fn 'cl-struct-setter))
+                 (list 'funcall (list 'get (list 'quote fn)
+                                      (list 'quote 'cl-struct-setter))
+                       (car args) value))
+                (t (error "setf: unsupported place form: %S" place))))))
+           forms)))
+      (cons 'progn (nreverse forms)))))
+
+;;;; --- list / alist polyfills ------------------------------------------
+
+(unless (fboundp 'assoc-delete-all)
+  (defun assoc-delete-all (key alist &optional test)
+    "Return ALIST with all entries whose car matches KEY removed.
+TEST defaults to `equal'."
+    (unless test (setq test (function equal)))
+    (let (out)
+      (dolist (cell alist)
+        (unless (and (consp cell) (funcall test (car cell) key))
+          (push cell out)))
+      (nreverse out))))
+
+(unless (fboundp 'plist-put)
+  (defun plist-put (plist prop val)
+    "Change PLIST so PROP maps to VAL.  In-place when possible."
+    (let ((cur plist))
+      (catch 'done
+        (while cur
+          (when (eq (car cur) prop)
+            (setcar (cdr cur) val)
+            (throw 'done plist))
+          (setq cur (cddr cur)))
+        (append plist (list prop val))))))
+
+;;;; --- error / control-flow macros -------------------------------------
+
+(unless (fboundp 'ignore-errors)
+  (defmacro ignore-errors (&rest body)
+    "Execute BODY; on error return nil instead of raising."
+    (list 'condition-case nil
+          (cons 'progn body)
+          (list 'error nil))))
+
+(unless (fboundp 'with-no-warnings)
+  (defmacro with-no-warnings (&rest body)
+    "Like `progn', no compiler-warning suppression in this stub."
+    (cons 'progn body)))
+
+(unless (fboundp 'when-let)
+  (defmacro when-let (spec &rest body)
+    "Evaluate SPEC bindings; if all values are non-nil, execute BODY.
+SPEC is either ((VAR EXPR) ...) or (VAR EXPR) for a single binding."
+    (let ((bindings (if (and (consp spec)
+                             (symbolp (car spec))
+                             (not (consp (car-safe (cdr spec)))))
+                        (list spec)
+                      spec))
+          (vars nil)
+          (let-bindings nil))
+      (dolist (b bindings)
+        (push (car b) vars)
+        (push b let-bindings))
+      (list 'let* (nreverse let-bindings)
+            (list 'when (cons 'and (nreverse vars))
+                  (cons 'progn body))))))
+
+(unless (fboundp 'if-let)
+  (defmacro if-let (spec then &rest else)
+    "Evaluate SPEC bindings; on all-non-nil run THEN, else ELSE."
+    (let ((bindings (if (and (consp spec)
+                             (symbolp (car spec))
+                             (not (consp (car-safe (cdr spec)))))
+                        (list spec)
+                      spec))
+          (vars nil)
+          (let-bindings nil))
+      (dolist (b bindings)
+        (push (car b) vars)
+        (push b let-bindings))
+      (list 'let* (nreverse let-bindings)
+            (list 'if (cons 'and (nreverse vars))
+                  then
+                  (cons 'progn else))))))
+
+(unless (fboundp 'when-let*) (defalias 'when-let* 'when-let))
+(unless (fboundp 'if-let*)   (defalias 'if-let* 'if-let))
+
+;;;; --- introspection -------------------------------------------------
+
+(defconst cl-lib-version "1.0-nemacs-shim"
+  "Version of the nelisp-emacs cl-lib shim (= NOT upstream cl-lib).")
+
+;;; cl-lib.el ends here

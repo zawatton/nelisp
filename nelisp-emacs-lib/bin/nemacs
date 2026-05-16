@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# nemacs — nelisp-emacs Layer 2 launcher
+#
+# Wraps the host Emacs (default driver) or `nelisp` (experimental driver)
+# so that users can spawn nemacs the same way they would spawn Emacs.
+# Usage shape mirrors `emacs --batch ...`:
+#
+#   nemacs                          interactive TUI runner
+#   nemacs --batch                  batch entry (= boots, runs --eval/-l, exits)
+#   nemacs --batch -l FILE          batch + load FILE
+#   nemacs --batch --eval FORM      batch + eval FORM
+#   nemacs --batch -l a -l b --eval '(...)'
+#   nemacs --driver=nelisp ...      use the nelisp Rust runtime as driver
+#   nemacs --driver=host ...        force host emacs driver (= default)
+#   nemacs --print-paths            dump the resolved load-path / vendor root
+#   nemacs --version                print nemacs version + driver
+#   nemacs --help                   this message
+#
+# Environment overrides:
+#   NEMACS_HOME      directory containing src/ (default: this script's parent)
+#   NELISP_HOME      nelisp checkout (default: $NEMACS_HOME/vendor/nelisp)
+#                    — vendored inside this repo; populated by `bin/build-nelisp'
+#   NEMACS_DRIVER    `host' (default) or `nelisp'
+#   NEMACS_EMACS     emacs binary path (default: emacs)
+#   NEMACS_NELISP    nelisp binary path (default: $NELISP_HOME/target/release/nelisp)
+
+set -euo pipefail
+
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
+NEMACS_HOME="${NEMACS_HOME:-$(cd "$SCRIPT_PATH/.." && pwd)}"
+
+# Layer-2 self-containment (2026-05-04): nelisp source/build lives
+# under $NEMACS_HOME/vendor/nelisp by default — populated by
+# `bin/build-nelisp' (= clone + cargo build --release).  Legacy
+# fallback to $HOME/Notes/dev/nelisp is preserved when (a) NELISP_HOME
+# is explicitly exported by the user, or (b) the vendored path does
+# not exist *and* the legacy path does.  Pure source-of-truth for new
+# checkouts: the vendored copy.
+DEFAULT_VENDOR_NELISP="$NEMACS_HOME/vendor/nelisp"
+DEFAULT_LEGACY_NELISP="$HOME/Notes/dev/nelisp"
+if [[ -z "${NELISP_HOME:-}" ]]; then
+  if [[ -d "$DEFAULT_VENDOR_NELISP/target/release" ]]; then
+    NELISP_HOME="$DEFAULT_VENDOR_NELISP"
+  elif [[ -d "$DEFAULT_LEGACY_NELISP/target/release" ]]; then
+    NELISP_HOME="$DEFAULT_LEGACY_NELISP"
+  else
+    NELISP_HOME="$DEFAULT_VENDOR_NELISP"
+  fi
+fi
+NEMACS_DRIVER="${NEMACS_DRIVER:-host}"
+NEMACS_EMACS="${NEMACS_EMACS:-emacs}"
+NEMACS_NELISP="${NEMACS_NELISP:-$NELISP_HOME/target/release/nelisp}"
+NEMACS_VERSION="0.1.0-mvp"
+
+usage() {
+  sed -n '2,30p' "$0"
+}
+
+print_paths() {
+  cat <<EOF
+nemacs paths:
+  NEMACS_HOME      = $NEMACS_HOME
+  NELISP_HOME      = $NELISP_HOME
+  NEMACS_DRIVER    = $NEMACS_DRIVER
+  NEMACS_EMACS     = $NEMACS_EMACS
+  NEMACS_NELISP    = $NEMACS_NELISP
+  src/             = $NEMACS_HOME/src
+  vendor/          = $NEMACS_HOME/vendor
+EOF
+}
+
+# --- parse args ----------------------------------------------------
+
+BATCH=0
+NO_BANNER=0
+LOAD_FILES=()
+EVAL_FORMS=()
+EXTRA_ARGS=()
+
+while (( $# > 0 )); do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --version)
+      echo "nemacs $NEMACS_VERSION (driver=$NEMACS_DRIVER)"
+      exit 0 ;;
+    --print-paths) print_paths; exit 0 ;;
+    --batch) BATCH=1; shift ;;
+    --no-banner) NO_BANNER=1; shift ;;
+    --driver=*) NEMACS_DRIVER="${1#--driver=}"; shift ;;
+    --driver) NEMACS_DRIVER="$2"; shift 2 ;;
+    -l)
+      [[ -n "${2-}" ]] || { echo "nemacs: -l requires an argument" >&2; exit 2; }
+      LOAD_FILES+=("$2"); shift 2 ;;
+    --load=*) LOAD_FILES+=("${1#--load=}"); shift ;;
+    --eval)
+      [[ -n "${2-}" ]] || { echo "nemacs: --eval requires an argument" >&2; exit 2; }
+      EVAL_FORMS+=("$2"); shift 2 ;;
+    --eval=*) EVAL_FORMS+=("${1#--eval=}"); shift ;;
+    --) shift; while (($#>0)); do EXTRA_ARGS+=("$1"); shift; done ;;
+    *) EXTRA_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# --- bootstrap form ------------------------------------------------
+
+# Build the lisp form we hand to the driver.  The form sets the
+# nemacs-main-options plist + load-path then requires nemacs-main +
+# calls nemacs-main / nemacs-batch-main.
+
+shell_quote() {
+  # Emacs/nelisp string literal escaping for filenames + sexps.
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+LOAD_LIST=""
+for f in "${LOAD_FILES[@]+"${LOAD_FILES[@]}"}"; do
+  LOAD_LIST+=" \"$(shell_quote "$f")\""
+done
+
+EVAL_LIST=""
+for f in "${EVAL_FORMS[@]+"${EVAL_FORMS[@]}"}"; do
+  # Each --eval is itself elisp source; wrap as (read-from-string)? No — we
+  # ship the raw form inside a (quote ...) and rely on the runner's
+  # (eval form t) call.  The user's responsibility to pass valid syntax.
+  EVAL_LIST+=" (read \"$(shell_quote "$f")\")"
+done
+
+if (( BATCH )); then
+  ENTRY_CALL='(nemacs-batch-main)'
+else
+  ENTRY_CALL='(nemacs-main)'
+fi
+
+BOOT_FORM="$(cat <<EOF
+(progn
+  (unless (boundp 'load-path) (defvar load-path nil))
+  (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
+  (setq load-path
+        (append (list "$(shell_quote "$NEMACS_HOME/src")"
+                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp")"
+                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp")")
+                (and (boundp 'load-path) load-path)))
+  (require 'nemacs-main)
+  (setq nemacs-main-options
+        (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
+              :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
+              :driver '$NEMACS_DRIVER
+              :load (list$LOAD_LIST)
+              :eval-forms (list$EVAL_LIST)))
+  $ENTRY_CALL)
+EOF
+)"
+
+# --- driver dispatch -----------------------------------------------
+
+case "$NEMACS_DRIVER" in
+  host)
+    if (( BATCH )); then
+      exec "$NEMACS_EMACS" --batch --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+    else
+      # Interactive: -Q keeps user init out of nemacs's way.
+      exec "$NEMACS_EMACS" -Q --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+    fi
+    ;;
+  nelisp)
+    if [[ ! -x "$NEMACS_NELISP" ]]; then
+      echo "nemacs: nelisp driver requested but $NEMACS_NELISP is not executable" >&2
+      echo "  Set NEMACS_NELISP or build it via: cd $NELISP_HOME && cargo build --release" >&2
+      exit 1
+    fi
+    # nelisp lacks --batch / -e ergonomics; we use eval.  This driver
+    # path is experimental — see Doc 51 Track N' for the reader-incompat
+    # work-list.
+    exec "$NEMACS_NELISP" eval "$BOOT_FORM"
+    ;;
+  *)
+    echo "nemacs: unknown --driver=$NEMACS_DRIVER (expected host or nelisp)" >&2
+    exit 2
+    ;;
+esac

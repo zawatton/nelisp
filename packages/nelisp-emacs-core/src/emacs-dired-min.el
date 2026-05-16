@@ -1,0 +1,269 @@
+;;; emacs-dired-min.el --- Minimal dired for nelisp-emacs -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton + Claude
+
+;; This file is part of nelisp-emacs.
+
+;;; Commentary:
+
+;; Doc 02 `docs/design/02-v01-daily-driver.org' §3.1 / item 6
+;; (= dired-min) asks for the smallest directory browser needed by
+;; the v0.1 daily-driver gate: enter a directory, move by line, RET
+;; into files/subdirs, go up, quit, and rescan.
+;;
+;; This module intentionally keeps its own per-buffer side table for
+;; listing state so it can operate on the `nelisp-ec-*' buffer
+;; substrate without depending on host Emacs window/buffer objects.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'emacs-buffer-builtins)
+(require 'emacs-error)
+(require 'emacs-keymap)
+(require 'emacs-line-builtins)
+(require 'emacs-minibuffer-builtins)
+(require 'emacs-mode)
+(require 'nelisp-emacs-compat)
+(require 'nelisp-emacs-compat-fileio)
+
+(defvar dired-mode-map
+  (let ((map (emacs-keymap-make-sparse-keymap)))
+    (emacs-keymap-define-key map (kbd "RET") #'dired-find-file)
+    (emacs-keymap-define-key map (kbd "n") #'dired-next-line)
+    (emacs-keymap-define-key map (kbd "p") #'dired-previous-line)
+    (emacs-keymap-define-key map (kbd "q") #'emacs-dired-min-quit-window)
+    (emacs-keymap-define-key map (kbd "g") #'emacs-dired-min-revert-buffer)
+    (emacs-keymap-define-key map (kbd "^") #'dired-up-directory)
+    map)
+  "Keymap for `dired-mode'.")
+
+(defvar emacs-dired-min--state (make-hash-table :test 'eq :weakness nil)
+  "Hash table mapping dired buffers to listing metadata.
+Each value is a plist with keys:
+- `:directory'       current expanded directory (with trailing slash)
+- `:entries'         listing entries in display order
+- `:line-starts'     1-based buffer positions for each entry line
+- `:previous-buffer' previously-selected buffer, if any")
+
+(defun emacs-dired-min--buffer-by-name (name)
+  "Return the live nelisp buffer named NAME, or nil."
+  (cdr (assoc name nelisp-ec--buffers)))
+
+(defun emacs-dired-min--dired-buffer-name (directory)
+  "Return the dired buffer name for DIRECTORY."
+  (format "*Dired %s*" directory))
+
+(defun emacs-dired-min--normalize-directory (directory)
+  "Return DIRECTORY as an expanded directory name."
+  (file-name-as-directory (nelisp-ec-expand-file-name directory)))
+
+(defun emacs-dired-min--parent-directory (directory)
+  "Return the parent directory of DIRECTORY."
+  (let* ((dir (directory-file-name
+               (emacs-dired-min--normalize-directory directory)))
+         (parent (file-name-directory dir)))
+    (if (or (null parent) (equal parent ""))
+        (emacs-dired-min--normalize-directory directory)
+      (file-name-as-directory (nelisp-ec-expand-file-name parent)))))
+
+(defun emacs-dired-min--directory-files-and-attributes (directory)
+  "Return `(NAME . ATTRS)' pairs for DIRECTORY in alphabetical order."
+  (let ((entries nil))
+    (dolist (name (nelisp-ec-directory-files directory nil nil nil nil))
+      (let* ((path (nelisp-ec-expand-file-name name directory))
+             (attrs (nelisp-ec-file-attributes path)))
+        (when attrs
+          (push (cons name attrs) entries))))
+    (nreverse entries)))
+
+(defun emacs-dired-min--format-entry (entry)
+  "Return the display line for ENTRY."
+  (let* ((name (plist-get entry :name))
+         (attrs (plist-get entry :attributes))
+         (size (or (nth 7 attrs) 0))
+         (modes (or (nth 8 attrs) "----------")))
+    (format "%s\t%s\t%s\n" name size modes)))
+
+(defun emacs-dired-min--entries (directory)
+  "Return dired entry plists for DIRECTORY."
+  (let ((dir (emacs-dired-min--normalize-directory directory))
+        (entries nil))
+    (dolist (cell (emacs-dired-min--directory-files-and-attributes directory))
+      (push (list :name (car cell)
+                  :path (nelisp-ec-expand-file-name (car cell) dir)
+                  :attributes (cdr cell))
+            entries))
+    (nreverse entries)))
+
+(defun emacs-dired-min--line-starts-for-entries (entries)
+  "Return 1-based line starts for ENTRIES."
+  (let ((pos 1)
+        (starts nil))
+    (dolist (entry entries)
+      (push pos starts)
+      (setq pos (+ pos (length (emacs-dired-min--format-entry entry)))))
+    (nreverse starts)))
+
+(defun emacs-dired-min--line-index-at-point (line-starts point)
+  "Return the line index in LINE-STARTS containing POINT."
+  (let ((index 0)
+        (count (length line-starts)))
+    (while (and (< index count)
+                (let ((next (nth (1+ index) line-starts)))
+                  (and next (>= point next))))
+      (setq index (1+ index)))
+    index))
+
+(defun emacs-dired-min--current-state ()
+  "Return dired state for the current buffer, or signal `user-error'."
+  (let* ((buffer (nelisp-ec-current-buffer))
+         (state (and buffer (gethash buffer emacs-dired-min--state))))
+    (or state
+        (user-error "Current buffer is not a dired buffer"))))
+
+(defun emacs-dired-min--current-entry ()
+  "Return the dired entry at point, or nil when the listing is empty."
+  (let* ((state (emacs-dired-min--current-state))
+         (entries (plist-get state :entries))
+         (line-starts (plist-get state :line-starts)))
+    (when entries
+      (nth (emacs-dired-min--line-index-at-point line-starts (nelisp-ec-point))
+           entries))))
+
+(defun emacs-dired-min--render-current-buffer (directory)
+  "Render DIRECTORY into the current dired buffer."
+  (let* ((dir (emacs-dired-min--normalize-directory directory))
+         (entries (emacs-dired-min--entries dir))
+         (line-starts (emacs-dired-min--line-starts-for-entries entries))
+         (buffer (nelisp-ec-current-buffer))
+         (previous (plist-get (gethash buffer emacs-dired-min--state)
+                              :previous-buffer)))
+    (nelisp-ec-erase-buffer)
+    (dolist (entry entries)
+      (nelisp-ec-insert (emacs-dired-min--format-entry entry)))
+    (puthash buffer
+             (list :directory dir
+                   :entries entries
+                   :line-starts line-starts
+                   :previous-buffer previous)
+             emacs-dired-min--state)
+    (when (> (length entries) 0)
+      (nelisp-ec-goto-char 1))
+    buffer))
+
+(defun emacs-dired-min--goto-entry-index (index)
+  "Move point to entry INDEX in the current dired buffer."
+  (let* ((state (emacs-dired-min--current-state))
+         (line-starts (plist-get state :line-starts))
+         (count (length line-starts)))
+    (when (> count 0)
+      (nelisp-ec-goto-char
+       (nth (max 0 (min index (1- count))) line-starts)))))
+
+(defun emacs-dired-min--move-line (delta)
+  "Move point DELTA lines in the current dired buffer."
+  (let* ((state (emacs-dired-min--current-state))
+         (line-starts (plist-get state :line-starts)))
+    (when line-starts
+      (emacs-dired-min--goto-entry-index
+       (+ (emacs-dired-min--line-index-at-point line-starts (nelisp-ec-point))
+          delta)))))
+
+(defun emacs-dired-min--create-buffer (directory previous-buffer)
+  "Return the dired buffer for DIRECTORY.
+PREVIOUS-BUFFER is remembered for quit behaviour."
+  (let* ((dir (emacs-dired-min--normalize-directory directory))
+         (name (emacs-dired-min--dired-buffer-name dir))
+         (buffer (or (emacs-dired-min--buffer-by-name name)
+                     (nelisp-ec-generate-new-buffer name))))
+    (puthash buffer
+             (list :directory dir
+                   :entries nil
+                   :line-starts nil
+                   :previous-buffer previous-buffer)
+             emacs-dired-min--state)
+    buffer))
+
+;;;###autoload
+(defun dired-mode ()
+  "Major mode for the minimal directory browser."
+  (interactive)
+  (emacs-mode-kill-all-local-variables)
+  (emacs-mode-set-major-mode 'dired-mode "Dired")
+  (setq major-mode 'dired-mode)
+  (setq mode-name "Dired")
+  (emacs-keymap-use-local-map dired-mode-map)
+  nil)
+
+;;;###autoload
+(defun dired (directory)
+  "Open DIRECTORY in a minimal dired buffer."
+  (interactive (list (read-directory-name "Dired (directory): ")))
+  (let* ((dir (emacs-dired-min--normalize-directory directory))
+         (previous (nelisp-ec-current-buffer))
+         (buffer (emacs-dired-min--create-buffer dir previous)))
+    (nelisp-ec-with-current-buffer buffer
+      (dired-mode)
+      (emacs-dired-min--render-current-buffer dir))
+    (nelisp-ec-set-buffer buffer)
+    buffer))
+
+;;;###autoload
+(defun dired-find-file ()
+  "Open the file or directory at point."
+  (interactive)
+  (let* ((entry (or (emacs-dired-min--current-entry)
+                    (user-error "No dired entry on this line")))
+         (path (plist-get entry :path)))
+    (if (nelisp-ec-file-directory-p path)
+        (dired path)
+      (if (fboundp 'find-file)
+          (find-file path)
+        (user-error "find-file not available")))))
+
+;;;###autoload
+(defun dired-next-line (&optional n)
+  "Move to the next dired line."
+  (interactive "p")
+  (emacs-dired-min--move-line (or n 1))
+  nil)
+
+;;;###autoload
+(defun dired-previous-line (&optional n)
+  "Move to the previous dired line."
+  (interactive "p")
+  (emacs-dired-min--move-line (- (or n 1)))
+  nil)
+
+;;;###autoload
+(defun dired-up-directory ()
+  "Visit the parent directory of the current dired buffer."
+  (interactive)
+  (dired (emacs-dired-min--parent-directory
+          (plist-get (emacs-dired-min--current-state) :directory))))
+
+;;;###autoload
+(defun emacs-dired-min-revert-buffer ()
+  "Rescan the current dired buffer."
+  (interactive)
+  (emacs-dired-min--render-current-buffer
+   (plist-get (emacs-dired-min--current-state) :directory))
+  nil)
+
+;;;###autoload
+(defun emacs-dired-min-quit-window ()
+  "Leave the current dired buffer and restore the previous buffer if known."
+  (interactive)
+  (let* ((buffer (nelisp-ec-current-buffer))
+         (state (emacs-dired-min--current-state))
+         (previous (plist-get state :previous-buffer)))
+    (when (and previous (buffer-live-p previous))
+      (nelisp-ec-set-buffer previous))
+    (when buffer
+      (remhash buffer emacs-dired-min--state))
+    nil))
+
+(provide 'emacs-dired-min)
+
+;;; emacs-dired-min.el ends here
