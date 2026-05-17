@@ -148,6 +148,61 @@ Reserved for future nemacs layer parity."
   "Stub: NeLisp has no narrowing, so this is just `progn'."
   (cons 'progn body))
 
+(defmacro save-current-buffer (&rest body)
+  "Stub: NeLisp has no current buffer, so this is just `progn'."
+  (cons 'progn body))
+
+;;;; --- declarations (no-op in interpreter mode) ------------------------
+
+(defmacro declare-function (_fn _file &rest _args)
+  "No-op: declare-function is a byte-compiler hint, returns nil."
+  nil)
+
+;;;; --- compile-time forms (interpreter-mode stubs) ---------------------
+
+;; In byte-compile mode `eval-when-compile' evaluates BODY at compile
+;; time and replaces the form with the result.  NeLisp runs vendor
+;; files through the tree-walking interpreter, so interpreter-mode
+;; semantics reduce to `progn' (= evaluate BODY at load time, return
+;; the last value).  Vendor migration v2 — 2026-05-17.
+
+(defmacro eval-when-compile (&rest body)
+  "Interpreter-mode stub: evaluate BODY immediately as `progn'."
+  (cons 'progn body))
+
+(defmacro eval-and-compile (&rest body)
+  "Interpreter-mode stub: evaluate BODY immediately as `progn'."
+  (cons 'progn body))
+
+;;;; --- buffer/syntax `with-*' family (interpreter-mode stubs) ----------
+
+;; NeLisp has no buffer / syntax-table concept.  These macros' BODY
+;; runs without the buffer-context save/restore that host Emacs would
+;; install — sufficient for tree-walker loading of vendor files; if a
+;; vendor function actually depends on the buffer context at call
+;; time, the call site will fail later (= deferred to a more specific
+;; blocker).
+
+(defmacro with-current-buffer (_buffer &rest body)
+  "Stub: ignore BUFFER, run BODY in current context."
+  (cons 'progn body))
+
+(defmacro with-temp-buffer (&rest body)
+  "Stub: ignore temp-buffer scoping, run BODY in current context."
+  (cons 'progn body))
+
+(defmacro with-syntax-table (_table &rest body)
+  "Stub: ignore TABLE, run BODY in current context."
+  (cons 'progn body))
+
+(defmacro with-no-warnings (&rest body)
+  "Stub: no warning suppression infrastructure yet, just `progn'."
+  (cons 'progn body))
+
+(defmacro with-suppressed-warnings (_warnings &rest body)
+  "Stub: ignore WARNINGS list, just run BODY as `progn'."
+  (cons 'progn body))
+
 ;;;; --- setq alias / defvar family --------------------------------------
 
 (defmacro setq-default (&rest pairs)
