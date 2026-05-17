@@ -532,6 +532,22 @@
      :source-var nelisp-cc-rc-kind--source
      :output "nelisp_rc_kind.o"
      :requires-arch x86_64)
+    ;; Doc 123 §123.D — walk-children + payload-ptr (the last MEDIUM
+    ;; stage of Doc 123's substrate elisp化 chain).  Two source files:
+    ;; `nelisp_rc_payload_ptr' (= `ptr-read-u64' at offset 8 of the
+    ;; outer `Sexp' = `SEXP_PAYLOAD_OFFSET'; mirrors `bi_nl_rc_payload_ptr'
+    ;; Cons arm) and `nelisp_gc_walk_children' (= two `cons-make' allocs
+    ;; driven by `ptr-read-u64' for the box-ptr extraction; mirrors
+    ;; `bi_nl_gc_walk_children' Cons arm via `Sexp::list_from(&[car, cdr])').
+    ;; Cons-only support; Vector/Record/Cell child walks DEFERRED.
+    (nelisp-cc-rc-payload-ptr
+     :source-var nelisp-cc-rc-payload-ptr--source
+     :output "nelisp_rc_payload_ptr.o"
+     :requires-arch x86_64)
+    (nelisp-cc-gc-walk-children
+     :source-var nelisp-cc-gc-walk-children--source
+     :output "nelisp_gc_walk_children.o"
+     :requires-arch x86_64)
     ;; Doc 124 §124.A — NlConsBox Clone elisp kernel.  First stage of
     ;; the `nl*.rs::Clone/Drop' substrate elisp化 chain (Doc 123 sibling,
     ;; expanded scope to `nl{consbox,vector,cell,record,str}.rs').  The

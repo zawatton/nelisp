@@ -269,6 +269,25 @@ pub mod elisp_cc_spike {
         // Doc 123 §123.C — refcount-reader twins.
         fn nelisp_rc_strong_count(box_ptr: *const u8) -> i64;
         fn nelisp_rc_kind(sexp_ptr: *const u8) -> i64;
+        // Doc 123 §123.D — payload-ptr reader + walk-children kernel,
+        // completing the substrate elisp化 chain of Doc 123.
+        // `nelisp_rc_payload_ptr' reads the inner NlBox* payload
+        // pointer at offset 8 of the outer `Sexp' (= `SEXP_PAYLOAD_OFFSET');
+        // tag-dispatch (the non-Cons-returns-0 branch of
+        // `bi_nl_rc_payload_ptr') is the caller's responsibility.
+        // `nelisp_gc_walk_children' composes 2 `cons-make' allocations
+        // to materialize the 2-list `(car cdr)' for Cons inputs,
+        // mirroring the Rust body's `Sexp::list_from(&[car, cdr])'.
+        // The `result_slot' parameter receives the head Sexp::Cons;
+        // `tail_slot' is caller-owned scratch for the inner
+        // `(cdr . nil)' allocation.  Cons-only support; non-Cons
+        // tag-dispatch lands in §123.F's sweep stage.
+        fn nelisp_rc_payload_ptr(sexp_ptr: *const u8) -> i64;
+        fn nelisp_gc_walk_children(
+            sexp_ptr: *const Sexp,
+            result_slot: *mut Sexp,
+            tail_slot: *mut Sexp,
+        ) -> *mut Sexp;
         // Doc 124 §124.A — first stage of the `nl*.rs::Clone/Drop'
         // substrate elisp化.  NlConsBox Clone kernel: bumps the
         // refcount at offset 64 via §122.E `atomic-fetch-add', then
@@ -1137,6 +1156,33 @@ pub mod elisp_cc_spike {
     /// Doc 123 §123.C — pure-elisp `nelisp_rc_kind' kernel.
     pub unsafe fn rc_kind(sexp_ptr: *const u8) -> i64 {
         nelisp_rc_kind(sexp_ptr)
+    }
+
+    /// Doc 123 §123.D — pure-elisp `nelisp_rc_payload_ptr' kernel.
+    /// Reads the inner NlBox* payload pointer at offset 8 of the
+    /// outer `Sexp' (= `SEXP_PAYLOAD_OFFSET').  Tag-dispatch (=
+    /// the non-Cons-returns-0 branch of `bi_nl_rc_payload_ptr') is
+    /// the caller's responsibility — this wrapper performs the raw
+    /// load unconditionally.
+    pub unsafe fn rc_payload_ptr(sexp_ptr: *const u8) -> i64 {
+        nelisp_rc_payload_ptr(sexp_ptr)
+    }
+
+    /// Doc 123 §123.D — pure-elisp `nelisp_gc_walk_children' kernel.
+    /// Composes two `cons-make' allocations to materialize the
+    /// 2-list `Sexp::Cons((car . (cdr . nil)))' in `result_slot',
+    /// using `tail_slot' as scratch for the inner `(cdr . nil)'.
+    /// Mirrors the Cons arm of `bi_nl_gc_walk_children' bit-for-bit
+    /// via `Sexp::list_from(&[car, cdr])'.  Cons-only — caller
+    /// must filter non-Cons inputs (= §123.F sweep stage will add
+    /// the Rust-side tag-dispatch preamble).  Returns
+    /// `result_slot' for caller ergonomics.
+    pub unsafe fn gc_walk_children(
+        sexp_ptr: *const Sexp,
+        result_slot: *mut Sexp,
+        tail_slot: *mut Sexp,
+    ) -> *mut Sexp {
+        nelisp_gc_walk_children(sexp_ptr, result_slot, tail_slot)
     }
 
     /// Doc 124 §124.A — pure-elisp `nelisp_nlconsbox_clone' kernel.

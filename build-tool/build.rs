@@ -206,6 +206,19 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // discriminant).
         "nelisp-cc-rc-strong-count.el",
         "nelisp-cc-rc-kind.el",
+        // Doc 123 §123.D — the last MEDIUM stage of Doc 123's
+        // substrate elisp化 chain.  Two source files:
+        // `nelisp_rc_payload_ptr' (= `ptr-read-u64' at offset 8 of
+        // the outer `Sexp' = `SEXP_PAYLOAD_OFFSET'; mirrors the
+        // `bi_nl_rc_payload_ptr' Cons arm body in `rc_primitives.rs:
+        // 230-244') and `nelisp_gc_walk_children' (= two `cons-make'
+        // allocations driven by `ptr-read-u64' for the box-ptr
+        // extraction; mirrors `bi_nl_gc_walk_children' Cons arm
+        // body via `Sexp::list_from(&[car, cdr])').  Dispatch swap
+        // lands in a future §123.F-like sweep stage that also handles
+        // non-Cons tag-dispatch fallback.
+        "nelisp-cc-rc-payload-ptr.el",
+        "nelisp-cc-gc-walk-children.el",
         // Doc 124 §124.A — first stage of the `nl*.rs::Clone/Drop'
         // substrate elisp化 chain.  Ships the NlConsBox Clone kernel
         // (= `rc_inc' + return-the-pointer) as PoC; §124.B-E sweep the
