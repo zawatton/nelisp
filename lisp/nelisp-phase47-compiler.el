@@ -541,6 +541,54 @@ functions `((NAME . ARITY) ...)'."
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
+   ;; ---- Doc 111 §111.D Cell read+write ops ----
+   ;; (cell-value H SLOT)     — copy the cell's current value (inline
+   ;;                           Sexp at NlCell offset 0) into the
+   ;;                           caller-owned SLOT.  Returns SLOT.
+   ;; (cell-set-value H VAL)  — delegate to the Rust `nl_cell_set_value'
+   ;;                           extern which does refcount-aware
+   ;;                           drop-then-write on the cell's `value'.
+   ;;                           Returns the original H pointer.
+   ;; (cell-make VAL SLOT)    — allocate a fresh `NlCell' via
+   ;;                           `nl_alloc_cell(VAL)' and write
+   ;;                           `Sexp::Cell(box)' into SLOT.  Returns
+   ;;                           SLOT.
+   ;; (cell-null-p H)         — predicate: 1 iff the cell's value slot
+   ;;                           currently holds `Sexp::Nil', else 0.
+   ((and (consp sexp) (eq (car sexp) 'cell-value))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cell-value-arity sexp)))
+    (list :kind 'cell-value
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'cell-set-value))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cell-set-value-arity sexp)))
+    (list :kind 'cell-set-value
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :val-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'cell-make))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cell-make-arity sexp)))
+    (list :kind 'cell-make
+          :val-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 1 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'cell-null-p))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cell-null-p-arity sexp)))
+    (list :kind 'cell-null-p
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.C Symbol/Str read ops ----
    ;; (str-len H)       — read String::len at offset 24 from a
    ;;                     `Sexp::Str' / `Sexp::Symbol' slot.
@@ -1382,6 +1430,7 @@ the node's class to consume the result correctly."
              'record-type-tag 'record-slot-count 'record-slot-ref
              'record-slot-ref-ptr 'record-slot-set
              'vector-len 'vector-ref 'vector-ref-ptr
+             'cell-value 'cell-set-value 'cell-make 'cell-null-p
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
              'cons-make 'cons-set-car 'cons-set-cdr
@@ -1453,6 +1502,14 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-vector-ref node buf))
       ('vector-ref-ptr
        (nelisp-phase47-compiler--emit-vector-ref-ptr node buf))
+      ('cell-value
+       (nelisp-phase47-compiler--emit-cell-value node buf))
+      ('cell-set-value
+       (nelisp-phase47-compiler--emit-cell-set-value node buf))
+      ('cell-make
+       (nelisp-phase47-compiler--emit-cell-make node buf))
+      ('cell-null-p
+       (nelisp-phase47-compiler--emit-cell-null-p node buf))
       ('str-len
        (nelisp-phase47-compiler--emit-str-len node buf))
       ('str-bytes
@@ -1988,6 +2045,175 @@ on box-tagged variants) before writing into the destination."
     ;; Restore dst into rax — convention for vector-ref / record-
     ;; slot-ref: rax = the destination pointer the op just wrote into.
     (nelisp-asm-x86_64-pop buf 'rax)))
+
+;; ---- Doc 111 §111.D Cell read+write ops emit ----
+;;
+;; All four ops operate on a `*const Sexp' that points at a
+;; `Sexp::Cell(_)' slot.  The boxed `NlCell*' lives at
+;; `[ptr + nelisp-sexp--offset-payload]' (= same payload-offset
+;; convention as `Sexp::Cons').  `value' is the inline Sexp at offset
+;; 0 of the NlCell (= 32-byte slot, asserted by §111.A layout consts).
+;;
+;; MVP refcount note (cell-value): we currently inline-copy the 32-byte
+;; `value' Sexp into the caller-owned SLOT without bumping refcounts on
+;; nested boxed payloads.  This is the SAME safety contract Doc 101
+;; §101.B `cons-car' / `cons-cdr' use today (= caller-owned copy with
+;; the implicit assumption that the slot won't outlive the cell).
+;; Agent A is shipping a refcount-aware `nl_sexp_clone_into' helper for
+;; vector-ref; once that lands on main this op should switch to call
+;; that helper too — see TODO below.  For now `cell-value' is safe iff
+;; the consumer holds the cell pointer for the entire lifetime of the
+;; copied SLOT, which is the §111.E env_lexframe usage pattern.
+
+(defun nelisp-phase47-compiler--emit-cell-value (node buf)
+  "Emit `cell-value' — copy NlCell.value into NODE's caller-owned SLOT.
+NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)') and
+`:slot' (= `*mut Sexp').  Strategy:
+
+  1. Evaluate PTR / SLOT and stash both on the stack.
+  2. Load the `NlCell*' from `[ptr + 8]' into r10.
+  3. Copy 32 bytes from `[r10 + 0, r10 + 32)' into `[rsi + 0)' via
+     two 16-byte `movdqu' pairs.
+  4. Return SLOT in rax.
+
+TODO (refcount-aware §111.D.2): when Agent A's `nl_sexp_clone_into'
+extern lands on main, replace the inline `movdqu' pair with a
+`call nl_sexp_clone_into(dst=SLOT, src=NlCell.value_ptr)' to make
+this op symmetric with `cell-set-value' (= no double-free on
+boxed-tagged values).  Tracking the safety constraint here so the
+diff is obvious at swap time."
+  (let ((ptr (plist-get node :ptr))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; r10 = NlCell* (= payload pointer at offset 8 of the Sexp slot).
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r10 'rdi nelisp-sexp--offset-payload)
+    ;; value lives at NlCell offset 0 (= nelisp-nlcell--offset-value).
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8
+     buf 'xmm0 'r10 nelisp-nlcell--offset-value)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 0 'xmm0)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8
+     buf 'xmm0 'r10 (+ nelisp-nlcell--offset-value 16))
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+
+(defun nelisp-phase47-compiler--emit-cell-set-value (node buf)
+  "Emit `cell-set-value' — delegate to `nl_cell_set_value' extern.
+NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)') and
+`:val-ptr' (= `*const Sexp').  The Rust helper does refcount-aware
+drop-then-write on `NlCell.value' (= matches `cons-set-car' /
+`cons-set-cdr' delegation pattern from Doc 101 §101.D).  Returns the
+original H pointer in rax."
+  (let ((ptr (plist-get node :ptr))
+        (val-ptr (plist-get node :val-ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Preserve H across the helper call; caller-saved regs are not
+    ;; stable, so keep it on the stack and pop it back into rax after.
+    ;; Two extra pushes (= H + a scratch pad) keep rsp at a 16-byte
+    ;; boundary at the call site (SysV AMD64 alignment).
+    (nelisp-asm-x86_64-push buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rsi)
+    ;; rdi = NlCell* (= payload pointer at offset 8 of the Sexp slot).
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rdi 'rdi nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_cell_set_value" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'rax)))
+
+(defun nelisp-phase47-compiler--emit-cell-make (node buf)
+  "Emit `cell-make' — allocate fresh NlCell and write Sexp::Cell into SLOT.
+NODE carries `:val-ptr' (= `*const Sexp', the initial value) and
+`:slot' (= `*mut Sexp').
+
+Strategy (= literal mirror of `cons-make' alignment idiom):
+
+  1. Evaluate VAL-PTR, push.
+  2. Evaluate SLOT, push.
+  3. Push one extra alignment pad (= same trick `cons-make' uses for
+     its 3-args + 1-pad = 4 effective pushes).
+  4. Call `nl_alloc_cell(val_ptr)' — only one arg, so we discard the
+     pad with `pop r11' first.  Stack at CALL site matches the
+     `cons-make' shape modulo arity.
+  5. Recover slot from stack, write `Sexp::Cell(box)' (tag at offset
+     0, ptr at offset 8) and return slot in rax.
+
+The exact push/pop balancing follows `cons-make' / `cons-set-slot' so
+SysV AMD64 alignment holds whatever the wrapper arity ends up being.
+See `cons-make' comment for the alignment rationale."
+  (let ((val-ptr (plist-get node :val-ptr))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Mirror cons-make's "one extra scratch slot" alignment pad.  The
+    ;; `nl_alloc_cell' helper only takes 1 arg, so we don't need
+    ;; multiple live values on the stack across the call — but keeping
+    ;; the 1-extra-pad pattern means the call site aligns the same way
+    ;; cons-make's does (caller-side rsp%16 invariant).
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Pop the alignment pad + slot off the stack into scratch r11 /
+    ;; rsi (slot survives in rsi for the post-call write since rsi is
+    ;; clobberable but we save/restore it via the stack below).
+    (nelisp-asm-x86_64-pop buf 'r11)        ; r11 = pad (discard)
+    (nelisp-asm-x86_64-pop buf 'rsi)        ; rsi = slot (will save to stack)
+    (nelisp-asm-x86_64-pop buf 'rdi)        ; rdi = val-ptr (= arg 0)
+    ;; Save slot across the helper call.  Two extra pushes (= slot +
+    ;; one pad) keep the call site at a 16-byte boundary, matching
+    ;; cons-make / cons-set-slot's idiom.
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_alloc_cell" -4 'text)
+    ;; rax = NlCell*.  Move to r10.
+    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+    ;; Discard alignment pad, recover slot.
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'rsi)        ; rsi = slot
+    ;; slot = Sexp::Cell(box).  Tag byte at offset 0, payload ptr at
+    ;; offset 8 (= `Sexp::Cell' tag = 11, same shape `cons-make' uses
+    ;; for `Sexp::Cons').
+    (nelisp-asm-x86_64-mov-mem-imm8 buf 'rsi nelisp-sexp--tag-cell)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rsi nelisp-sexp--offset-payload 'r10)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+
+(defun nelisp-phase47-compiler--emit-cell-null-p (node buf)
+  "Emit `cell-null-p' — read NlCell.value's tag byte, compare to Nil.
+NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)').
+Returns 1 in rax iff `NlCell.value.tag == SEXP_TAG_NIL'; else 0.
+
+Strategy (= inline tag check, no extern call):
+
+  1. Evaluate PTR into rax, copy to rdi.
+  2. rdi = NlCell* via `mov rdi, [rdi + 8]'.
+  3. Load tag byte at `[rdi + 0]' (= NlCell.value tag at offset 0).
+  4. Compare to `SEXP_TAG_NIL', setCC AL, movzx to materialise."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    ;; rdi = NlCell* via payload load.
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rdi 'rdi nelisp-sexp--offset-payload)
+    ;; Read NlCell.value's tag byte (= offset 0 inside the value Sexp,
+    ;; which is itself at offset 0 inside NlCell).
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-nil)
+    (nelisp-asm-x86_64-setcc-al buf 'sete)
+    (nelisp-asm-x86_64-movzx-eax-al buf)))
 
 ;; ---- Doc 101 §101.C Symbol/Str read ops emit ----
 

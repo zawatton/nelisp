@@ -111,6 +111,25 @@ pub mod elisp_cc_spike {
             arg1: *const Sexp,
             result_slot: *mut Sexp,
         ) -> *mut Sexp;
+        // Doc 111 §111.D — Cell read+write ops compiled from
+        // `lisp/nelisp-cc-cell-ops.el'.  Each op is a separate `.o' in
+        // the static archive so the integration test in
+        // `tests/phase47_cell.rs' can drive each one independently.
+        //
+        //   `nelisp_cell_value(arg0, slot)' — inline 32-byte copy of
+        //     `NlCell.value' into `*slot'.  No refcount work (MVP,
+        //     same contract as `cons-car' / `cons-cdr').
+        //   `nelisp_cell_set_value(arg0, val_ptr)' — refcount-aware
+        //     overwrite via `nl_cell_set_value' extern.
+        //   `nelisp_cell_make(val_ptr, slot)' — allocate a fresh
+        //     NlCell via `nl_alloc_cell' and write `Sexp::Cell(box)'
+        //     into `*slot'.
+        //   `nelisp_cell_null_p(arg0)' — i64 1 iff `NlCell.value's tag
+        //     is `Sexp::Nil', else 0.
+        fn nelisp_cell_value(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
+        fn nelisp_cell_set_value(arg0: *const Sexp, val_ptr: *const Sexp);
+        fn nelisp_cell_make(val_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
+        fn nelisp_cell_null_p(arg0: *const Sexp) -> i64;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
         // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
@@ -251,6 +270,61 @@ pub mod elisp_cc_spike {
         slot: *mut Sexp,
     ) -> *mut Sexp {
         nelisp_aref_vector(arg0, arg1, slot)
+    }
+
+    /// Doc 111 §111.D — `(cell-value H SLOT)' via elisp-compiled Cell ops.
+    ///
+    /// `arg0` must point at `Sexp::Cell(_)`; `slot` must point at a
+    /// writable 32-byte Sexp slot.  The elisp body copies the cell's
+    /// inline `value` Sexp (= NlCell offset 0) into `*slot` via two
+    /// 16-byte `movdqu' pairs.  No refcount maintenance — see the
+    /// MVP note in `lisp/nelisp-cc-cell-ops.el'.
+    ///
+    /// # Safety
+    /// - `arg0` must be non-null and point at `Sexp::Cell(NlCellRef)`.
+    /// - `slot` must be non-null, properly aligned, and writable for
+    ///   one Sexp slot (32 bytes).
+    pub unsafe fn cell_value(arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
+        nelisp_cell_value(arg0, slot)
+    }
+
+    /// Doc 111 §111.D — `(cell-set-value H VAL)' via elisp-compiled Cell ops.
+    ///
+    /// Delegates to the Rust extern `nl_cell_set_value' which calls
+    /// `NlCellRef::set_value' (drop-then-write with refcount-aware
+    /// semantics via `Sexp::Drop' + `Sexp::Clone').
+    ///
+    /// # Safety
+    /// - `arg0` must be non-null and point at `Sexp::Cell(NlCellRef)`.
+    /// - `val_ptr` must be non-null and point at an initialized `Sexp`.
+    /// - No other `&Sexp` borrow into the cell's `value` may be live.
+    pub unsafe fn cell_set_value(arg0: *const Sexp, val_ptr: *const Sexp) {
+        nelisp_cell_set_value(arg0, val_ptr)
+    }
+
+    /// Doc 111 §111.D — `(cell-make VAL SLOT)' via elisp-compiled Cell ops.
+    ///
+    /// Allocates a fresh `NlCell` via the Rust extern `nl_alloc_cell'
+    /// (refcount-aware clone of `*val_ptr` into the new cell) and
+    /// writes `Sexp::Cell(box)` into `*slot`.
+    ///
+    /// # Safety
+    /// - `val_ptr` must be non-null and point at an initialized `Sexp`.
+    /// - `slot` must be non-null, properly aligned, and writable for
+    ///   one Sexp slot (32 bytes).
+    pub unsafe fn cell_make(val_ptr: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
+        nelisp_cell_make(val_ptr, slot)
+    }
+
+    /// Doc 111 §111.D — `(cell-null-p H)' via elisp-compiled Cell ops.
+    ///
+    /// Returns 1 iff the cell's `value` Sexp currently has tag
+    /// `Sexp::Nil', else 0.  Inline tag check, no extern call.
+    ///
+    /// # Safety
+    /// - `arg0` must be non-null and point at `Sexp::Cell(NlCellRef)`.
+    pub unsafe fn cell_null_p(arg0: *const Sexp) -> i64 {
+        nelisp_cell_null_p(arg0)
     }
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the

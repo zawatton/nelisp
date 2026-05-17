@@ -74,6 +74,27 @@
      :source-var nelisp-cc-aref-vector--source
      :output "nelisp_aref_vector.o"
      :requires-arch x86_64)
+    ;; Doc 111 §111.D — Cell read+write op probes (= no user-visible
+    ;; swap, used only by `tests/phase47_cell.rs').  Four entries, one
+    ;; per grammar op (`cell-value' / `cell-set-value' / `cell-make' /
+    ;; `cell-null-p').  Linux-x86_64 only — same gate `nelisp-cc-recordp'
+    ;; uses; aarch64 emit ships in a follow-up.
+    (nelisp-cc-cell-ops
+     :source-var nelisp-cc-cell-ops--value-source
+     :output "nelisp_cell_value.o"
+     :requires-arch x86_64)
+    (nelisp-cc-cell-ops
+     :source-var nelisp-cc-cell-ops--set-value-source
+     :output "nelisp_cell_set_value.o"
+     :requires-arch x86_64)
+    (nelisp-cc-cell-ops
+     :source-var nelisp-cc-cell-ops--make-source
+     :output "nelisp_cell_make.o"
+     :requires-arch x86_64)
+    (nelisp-cc-cell-ops
+     :source-var nelisp-cc-cell-ops--null-p-source
+     :output "nelisp_cell_null_p.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

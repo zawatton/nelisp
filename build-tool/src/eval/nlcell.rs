@@ -85,6 +85,68 @@ pub struct NlCellRef {
 }
 
 impl NlCell { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlCell>; } // Doc 79 v4 C.4-atomic
+
+/// Doc 111 §111.D — allocator helper for Phase 47-compiled elisp.
+/// Returns a freshly-allocated `NlCell` initialized with `value =
+/// (*initial).clone()` (refcount-aware) and `refcount = 1`.  Caller
+/// is responsible for wrapping the returned pointer into a
+/// `Sexp::Cell(_)` whose `NlCellRef::drop` decrements the refcount
+/// (standard ownership transfer).
+///
+/// Mirrors `nl_alloc_consbox` (Doc 101 §101.D) in shape and
+/// `NlCellRef::new` in semantics — except `new` *moves* its `Sexp`
+/// argument in by value, which doesn't survive the
+/// `extern "C"` boundary because `Sexp` is not `#[repr(C)]`-friendly
+/// to pass by value.  So we take a pointer and `clone()` it
+/// internally; this also matches `nl_consbox_set_car`'s
+/// `(*val).clone()` convention.
+///
+/// # Safety
+/// - `initial` must be non-null and point at an initialized `Sexp`.
+/// - No other `&Sexp` borrow into `*initial` may be mutated for the
+///   duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_cell(initial: *const Sexp) -> *mut NlCell {
+    let value = unsafe { (*initial).clone() };
+    let layout = Layout::new::<NlCell>();
+    // SAFETY: `Layout::new::<NlCell>()' is non-zero-sized.
+    let raw = unsafe { alloc::alloc(layout) } as *mut NlCell;
+    if raw.is_null() {
+        alloc::handle_alloc_error(layout);
+    }
+    // SAFETY: `raw' was just allocated for `NlCell' and is exclusively
+    // owned here.  Initialize both fields before anyone observes the
+    // cell.
+    unsafe {
+        std::ptr::write(std::ptr::addr_of_mut!((*raw).value), value);
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*raw).refcount),
+            AtomicUsize::new(1),
+        );
+    }
+    raw
+}
+
+/// Doc 111 §111.D — extern wrapper for Phase 47 `(cell-set-value H VAL)'.
+/// Wraps the existing `NlCellRef::set_value' unsafe method which does
+/// `std::ptr::drop_in_place' + `std::ptr::write' on the inner NlCell's
+/// `value' field.  Refcount maintenance is handled automatically by
+/// `Sexp::Drop' (= old value's drop) and `Sexp::Clone' (= refcount-
+/// aware clone of `*val' before the write).
+///
+/// # Safety
+/// - `cell' must be non-null and point at an initialized `NlCell'.
+/// - `val' must be non-null and point at an initialized `Sexp'.
+/// - No other `&Sexp' borrow into `cell.value' may be live.
+#[no_mangle]
+pub unsafe extern "C" fn nl_cell_set_value(cell: *mut NlCell, val: *const Sexp) {
+    let val_owned = unsafe { (*val).clone() };
+    let value_ptr = std::ptr::addr_of_mut!((*cell).value);
+    unsafe {
+        std::ptr::drop_in_place(value_ptr);
+        std::ptr::write(value_ptr, val_owned);
+    }
+}
 impl NlCellRef {
     /// Allocate a fresh [`NlCell`] on the heap with `refcount = 1`
     /// and return the unique handle.  The supplied `value` is moved
@@ -371,6 +433,54 @@ mod tests {
             assert_eq!(NlVectorRef::strong_count(&probe), 2);
         }
         assert_eq!(NlVectorRef::strong_count(&probe), 1);
+    }
+
+    #[test]
+    fn nl_alloc_cell_returns_initialised_cell_with_refcount_1() {
+        // Doc 111 §111.D — `nl_alloc_cell' extern wrapper round-trip.
+        let initial = Sexp::Int(42);
+        let raw = unsafe { nl_alloc_cell(&initial as *const Sexp) };
+        assert!(!raw.is_null());
+        // Wrap back into the safe handle so `Drop' runs at scope-exit
+        // and the allocation is reclaimed.
+        let owned = NlCellRef {
+            ptr: NonNull::new(raw).unwrap(),
+            _marker: PhantomData,
+        };
+        assert_eq!(NlCellRef::strong_count(&owned), 1);
+        assert_eq!(owned.value, Sexp::Int(42));
+    }
+
+    #[test]
+    fn nl_cell_set_value_overwrites_slot_and_drops_old() {
+        // Doc 111 §111.D — verify the extern set_value path runs
+        // drop-in-place on the previous value (refcount of an inner
+        // boxed payload returns to 1 after the overwrite).
+        use crate::eval::nlvector::NlVectorRef;
+        let probe = NlVectorRef::new(vec![Sexp::Int(1)]);
+        assert_eq!(NlVectorRef::strong_count(&probe), 1);
+        let initial = Sexp::Vector(probe.clone());
+        assert_eq!(NlVectorRef::strong_count(&probe), 2);
+        let raw = unsafe { nl_alloc_cell(&initial as *const Sexp) };
+        assert!(!raw.is_null());
+        // `nl_alloc_cell' clones `initial' so the probe refcount is now 3.
+        assert_eq!(NlVectorRef::strong_count(&probe), 3);
+        // Drop the local `initial' to bring the probe refcount back to
+        // 2 (= one inside the cell, one outside).
+        drop(initial);
+        assert_eq!(NlVectorRef::strong_count(&probe), 2);
+        let new_val = Sexp::Int(7);
+        unsafe { nl_cell_set_value(raw, &new_val as *const Sexp) };
+        // After set_value the previous Sexp::Vector is dropped, and
+        // only the local `probe' handle remains -> refcount 1.
+        assert_eq!(NlVectorRef::strong_count(&probe), 1);
+        // Reclaim by wrapping into an NlCellRef and letting it drop.
+        let owned = NlCellRef {
+            ptr: NonNull::new(raw).unwrap(),
+            _marker: PhantomData,
+        };
+        assert_eq!(owned.value, Sexp::Int(7));
+        drop(owned);
     }
 
     #[test]
