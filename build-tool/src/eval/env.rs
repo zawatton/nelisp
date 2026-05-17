@@ -921,16 +921,13 @@ impl Env {
     }
 
     pub fn push_frame(&mut self) {
-        self.frames.push(HashMap::new());
-        // Doc 104 Stage 3.b — dual-write: mirror gets a parallel empty
-        // frame so its depth stays in lock-step with the Vec.
+        // Doc 104 Stage 3.d — Vec write retired; mirror is canonical.
         self.frame_push_rust_direct();
     }
 
     /// Silently no-ops on under-pop (= balanced caller path).
     pub fn pop_frame(&mut self) {
-        self.frames.pop();
-        // Doc 104 Stage 3.b — dual-write.
+        // Doc 104 Stage 3.d — Vec write retired.
         self.frame_pop_rust_direct();
     }
 
@@ -938,14 +935,16 @@ impl Env {
     /// frame (= fresh FrameCell so closures share the slot); falls
     /// through to the global slot when no frame is active.  Doc 102
     /// Phase 2.b Step E retired the HashMap dual-write for the
-    /// no-frame branch.
+    /// no-frame branch.  Doc 104 Stage 3.d retired the Vec write —
+    /// mirror is canonical (= `frame_bind_rust_direct' fast-paths
+    /// "no live frame" by no-op, matching `nelisp-lexframe-stack-depth
+    /// == 0').
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
-        if let Some(frame) = self.frames.last_mut() {
+        // Check whether the mirror stack has at least one frame.
+        let has_frame = matches!(&self.frames_record, Sexp::Record(r)
+            if matches!(r.slots.get(1), Some(Sexp::Int(n)) if *n > 0));
+        if has_frame {
             let cell = FrameCell::new(value);
-            frame.insert(name.to_string(), cell.clone());
-            // Doc 104 Stage 3.b — dual-write: mirror frame gets the
-            // same FrameCell wrapped as `Sexp::Cell' so closure write-
-            // through Rc equality holds across Vec / mirror.
             self.frame_bind_rust_direct(name, Sexp::Cell(cell));
         } else {
             self.mirror_set_value(name, value);
@@ -1071,10 +1070,10 @@ impl Env {
     }
 
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
-        let mut frame: Frame = HashMap::new();
-        // Doc 104 Stage 3.b — dual-write: build a parallel mirror
-        // frame.  Pushing happens after both are populated so a mid-
-        // walk error path doesn't leave the mirror with a stub frame.
+        // Doc 104 Stage 3.d — Vec write retired.  Build the mirror
+        // frame, validate the alist shape on the fly, push only when
+        // the walk succeeds (= a mid-walk error doesn't leave a stub
+        // frame on the mirror).
         let mirror_frame = Env::make_empty_frame_record();
         let mut cur = alist;
         while let Sexp::Cons(outer) = cur {
@@ -1088,16 +1087,13 @@ impl Env {
                 Sexp::Cell(c) => c.clone(),
                 v => FrameCell::new(v.clone()),
             };
-            frame.insert(s.clone(), cell.clone());
             Env::frame_bind_into(&mirror_frame, s, Sexp::Cell(cell));
             cur = &outer.cdr;
         }
         if !matches!(cur, Sexp::Nil) {
             return Err(EvalError::Internal("closure env not a proper list".into()));
         }
-        self.frames.push(frame);
-        // Doc 104 Stage 3.b — push the pre-populated mirror frame to
-        // keep the two stacks in lock-step.
+        // Push the pre-populated mirror frame.
         if let Some((stack_rec, backing, depth)) = self.frame_stack_view() {
             let backing =
                 Env::frame_stack_ensure_capacity(&stack_rec, &backing, depth, depth + 1);
@@ -1296,38 +1292,42 @@ mod tests {
 
     #[test]
     fn doc104_stage3b_push_pop_dual_writes_keep_depths_aligned() {
-        // push_frame / pop_frame must keep Vec depth + mirror depth in
-        // lock-step.  Walk past the initial capacity (= 8) to also
-        // exercise the capacity-doubling grow path.
+        // Stage 3.b shipped this as a dual-write parity check; Stage
+        // 3.d retired the Vec write so the assertion now tracks the
+        // mirror depth only.  Walking past the initial capacity (= 8)
+        // still exercises the capacity-doubling grow path.
         let mut env = Env::new_global_no_stdlib();
         for i in 0..20 {
             env.push_frame();
-            assert_eq!(env.frames.len() as i64, frames_record_depth(&env),
-                       "depth mismatch after push #{}", i);
+            assert_eq!(frames_record_depth(&env), (i + 1) as i64,
+                       "mirror depth wrong after push #{}", i);
         }
         for i in 0..20 {
             env.pop_frame();
-            assert_eq!(env.frames.len() as i64, frames_record_depth(&env),
-                       "depth mismatch after pop #{}", i);
+            assert_eq!(frames_record_depth(&env), (19 - i) as i64,
+                       "mirror depth wrong after pop #{}", i);
         }
-        assert_eq!(env.frames.len(), 0);
         assert_eq!(frames_record_depth(&env), 0);
+        // Stage 3.d invariant — Vec stays empty post-bootstrap.
+        assert!(env.frames.is_empty(), "Vec was written despite Stage 3.d retiring its writes");
     }
 
     #[test]
     fn doc104_stage3b_bind_local_visible_via_mirror() {
-        // After bind_local, the same NAME should resolve via both the
-        // Vec-based find_frame_cell and the mirror frame_lookup.
+        // After bind_local, NAME must resolve via both find_frame_cell
+        // (which Stage 3.c flipped to mirror walks) and the direct
+        // mirror helper.  Both paths now read the mirror; the test
+        // remains green and acts as a regression gate for Stage 3.d.
         let mut env = Env::new_global_no_stdlib();
         env.push_frame();
         env.bind_local("doc104-stage3b-probe", Sexp::Int(7777));
-        // Vec side.
-        let vec_cell = env.find_frame_cell("doc104-stage3b-probe").expect("Vec side missing");
-        assert_eq!(vec_cell.value.clone(), Sexp::Int(7777));
-        // Mirror side: cell is wrapped in `Sexp::Cell'.
+        // find_frame_cell — post Stage 3.c walks the mirror.
+        let cell_via_find = env.find_frame_cell("doc104-stage3b-probe").expect("find_frame_cell missing");
+        assert_eq!(cell_via_find.value.clone(), Sexp::Int(7777));
+        // Direct mirror walk.
         let mirror_cell = env
             .frame_lookup_rust_direct("doc104-stage3b-probe")
-            .expect("mirror side missing");
+            .expect("mirror direct missing");
         match mirror_cell {
             Sexp::Cell(c) => assert_eq!(c.value.clone(), Sexp::Int(7777)),
             other => panic!("mirror frame slot is not Sexp::Cell: {:?}", other),
@@ -1354,28 +1354,30 @@ mod tests {
 
     #[test]
     fn doc104_stage3b_bind_local_preserves_cell_identity_across_stacks() {
-        // Closure write-through invariant: the FrameCell stored in the
-        // Vec frame and the one wrapped in the mirror frame's `Sexp::Cell'
-        // must share the same Rc (= write to one is visible via the
-        // other).  Drives the Stage 3.d cutover safety case.
+        // Closure write-through invariant: the FrameCell observed via
+        // find_frame_cell (= Stage 3.c mirror walk) and the one
+        // obtained via frame_lookup_rust_direct must share the same
+        // NlCellRef Rc — a write via one handle is visible through the
+        // other.  Drives the Stage 3.d cutover safety case (= closure
+        // setq still hits the binding's slot).
         let mut env = Env::new_global_no_stdlib();
         env.push_frame();
         env.bind_local("doc104-stage3b-write-through", Sexp::Int(10));
-        let vec_cell = env
+        let cell_via_find = env
             .find_frame_cell("doc104-stage3b-write-through")
-            .expect("Vec side missing")
+            .expect("find_frame_cell missing")
             .clone();
         let mirror_cell_sexp = env
             .frame_lookup_rust_direct("doc104-stage3b-write-through")
-            .expect("mirror side missing");
+            .expect("mirror direct missing");
         let mirror_cell = match mirror_cell_sexp {
             Sexp::Cell(c) => c,
             other => panic!("mirror slot not Sexp::Cell: {:?}", other),
         };
-        // Mutate via the mirror handle; Vec side must observe.
+        // Mutate via one handle; the other must observe.
         unsafe { mirror_cell.set_value(Sexp::Int(99)) };
-        assert_eq!(vec_cell.value.clone(), Sexp::Int(99),
-                   "write through mirror cell not visible on Vec side");
+        assert_eq!(cell_via_find.value.clone(), Sexp::Int(99),
+                   "write through mirror handle not visible via find_frame_cell");
     }
 
     #[test]
