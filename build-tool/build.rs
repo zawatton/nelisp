@@ -192,6 +192,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // using the §122.E `atomic-fetch-add' op with delta = -1
         // (= fetch-sub semantics).  Dispatch swap lands in §123.F.
         "nelisp-cc-rc-dec.el",
+        // Doc 123 §123.C — refcount-reader twins.  Two source files:
+        // `nelisp_rc_strong_count' (= `ptr-read-u64' at offset 64 of
+        // an `NlConsBox') and `nelisp_rc_kind' (= `ptr-read-u8' at
+        // offset 0 of the outer `Sexp' enum's `#[repr(C, u8)]'
+        // discriminant).
+        "nelisp-cc-rc-strong-count.el",
+        "nelisp-cc-rc-kind.el",
         // Doc 116 §116.A — pure-elisp Reader lexer.  Single source
         // file defining `nelisp_reader_lex_one' + ~20 tail-call
         // helpers; replaces the eventual deletion of
