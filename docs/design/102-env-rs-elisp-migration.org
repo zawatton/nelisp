@@ -24,7 +24,7 @@
   - Phase 5 — *SHIPPED (Steps A + B) 2026-05-17*:
     - Step A: =Env::defvar= body dispatches to elisp =nelisp-env-defvar= via =apply_function= (Phase 4.b pattern).  The idempotence check + constant-flag setting now run in elisp.  Bootstrap fallback preserved (= when the helper isn't loaded yet, the Rust mirror_* path runs).  Name is passed as =Sexp::Str= because fast-hash hashes string keys; symbols crash on =(length symbol)=.
     - Step B: elisp =defconst= macro now sets the constant flag via =nelisp--env-globals-set-constant= (= Doc 86 §86.3.a surface).  Resolves the Stage 7.3.a TODO ("NeLisp has no constant-flag primitive accessible from elisp; Stage 7.3.d will revisit").  Smoke test: =(progn (defconst x 99) (setq x 50))= now errors with =setting-constant=.
-    - PENDING: =mirror_lookup_value= / =mirror_lookup_function= Option<Sexp> → sentinel-return refactor (= the §2.1 "unbound-marker pattern" so Option::None goes away).  Deferred to a later Phase 5.c.
+    - Step C SHIPPED 2026-05-17: =mirror_lookup_value= / =mirror_lookup_function= now return =Sexp= directly (= =Env::unbound_marker= for the absent case, no =Option<Sexp>= wrapping).  =mirror_is_bound= / =mirror_is_fbound= updated to sentinel comparison.  All callers (= =Env::lookup_value=, =Env::lookup_function=, =env_shim::bi_globals_op= get-value / get-function arms, 2 mirror_*-direct tests) migrated.  Aligns the Rust mirror API with the elisp side (= =nelisp-env-lookup-value= returns =nelisp--unbound-marker= for the absent case) so Phase 6+ can dispatch the lookup path without a Result/Option conversion layer.
   - Phase 6 (Doc 107) — *PENDING*: extern_builtins migration (= option (a) keep Rust-side + slim primitive routing).
   - Phase 7 (Doc 108) — *PENDING*: last-mile shrink (= phantom shims routing to elisp via slim primitives).
   - Phase 8 (Doc 109) — *PENDING*: =env.rs= file physically DELETED, residual ~50 LOC absorbed into =eval/mod.rs=.
@@ -463,17 +463,32 @@ check to elisp; adopt the =unbound-marker= sentinel pattern (=
   call so the constant flag is actually set; =setq= on a defconst
   now errors with =setting-constant= (Stage 7.3.a TODO resolved).
 
-*What's deferred to Phase 5.c*:
-- =mirror_lookup_value= / =mirror_lookup_function= still return
-  =Option<Sexp>=.  Refactoring these to return =Sexp= directly
-  (= the unbound-marker sentinel pattern) touches every caller of
-  =lookup_value= / =lookup_function= / =is_bound= / =is_fbound=
-  (≈ 6 functions across env.rs and ~5 callsites in
-  builtins.rs / env_shim.rs).  Worth a dedicated session.
+*What shipped in Phase 5.c (2026-05-17)*:
+- =mirror_lookup_value= / =mirror_lookup_function= now return
+  =Sexp= directly.  Absent / unbound returns =Env::unbound_marker=
+  (= the same cached =Sexp::Symbol("nelisp--unbound-marker")= the
+  elisp side returns).  =Option::None= no longer appears in the
+  mirror API.
+- =mirror_is_bound= / =mirror_is_fbound= updated to sentinel
+  comparison.
+- All callers migrated: =Env::lookup_value= /
+  =Env::lookup_function= convert the sentinel into the explicit
+  =UnboundVariable= / =UnboundFunction= error;
+  =env_shim::bi_globals_op= get-value / get-function arms do the
+  same; two mirror-direct tests use sentinel != comparison.
+- Aligns the Rust mirror API with =nelisp-env-lookup-value= /
+  =nelisp-env-lookup-function= on the elisp side (= same return
+  convention) so a future Phase 6+ can dispatch the lookup path
+  without a Result/Option conversion layer.
 
-*LOC delta (Phase 5 Step A + B)*: Rust ~+12 (= dispatch glue +
-bootstrap fallback); Elisp ~+5 (= defconst macro one extra cons
-call).
+*LOC delta (Phase 5 Step A + B + C cumulative)*: Rust ~+20 (=
+dispatch glue + bootstrap fallback + sentinel comparison
+boilerplate); Elisp ~+5 (= defconst macro one extra cons call).
+The unbound-marker pattern shifts complexity from Option<Sexp>
+wrap/unwrap (~6 callsites × ~2 LOC = ~12 LOC saved) to explicit
+sentinel comparison (~6 callsites × ~3 LOC = ~18 LOC added), so
+the net Rust shrink from Step C alone is ~+6 LOC; the win is
+API-shape alignment, not raw LOC.
 
 ** Phase 6 (Doc 107) — extern_builtins migration (1-2 sessions)
 

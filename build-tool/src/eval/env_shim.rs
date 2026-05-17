@@ -86,17 +86,31 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     // (`install_env_shim_primitives' only registers; production callers
     // are STDLIB elisp invoked after `install_globals_record').
     match op {
-        "get-value" => env
-            .mirror_lookup_value(&name)
-            .ok_or(EvalError::UnboundVariable(name)),
+        // Doc 102 Phase 5.c — `mirror_lookup_*' now returns
+        // `Env::unbound_marker' for the absent case; convert that
+        // sentinel into the explicit `Unbound*' error here so the
+        // env_shim primitive's Result-typed surface stays unchanged.
+        "get-value" => {
+            let v = env.mirror_lookup_value(&name);
+            if v == env.unbound_marker {
+                Err(EvalError::UnboundVariable(name))
+            } else {
+                Ok(v)
+            }
+        }
         "set-value" => {
             let v = args[2].clone();
             env.mirror_set_value(&name, v.clone());
             Ok(v)
         }
-        "get-function" => env
-            .mirror_lookup_function(&name)
-            .ok_or(EvalError::UnboundFunction(name)),
+        "get-function" => {
+            let f = env.mirror_lookup_function(&name);
+            if f == env.unbound_marker {
+                Err(EvalError::UnboundFunction(name))
+            } else {
+                Ok(f)
+            }
+        }
         "set-function" => {
             let def = args[2].clone();
             env.mirror_set_function(&name, def.clone());

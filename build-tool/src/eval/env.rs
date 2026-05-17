@@ -798,16 +798,21 @@ impl Env {
         if let Some(cell) = self.find_frame_cell(name) {
             return Ok(cell.value.clone());
         }
-        // Special-case the sentinel itself: `mirror_lookup_value' treats
-        // slot 0 == `self.unbound_marker' as "absent", which would
-        // mark `nelisp--unbound-marker' (= the symbol whose VALUE is
-        // the sentinel) as unbound.  Return the sentinel directly so
-        // elisp `(eq cell nelisp--unbound-marker)' checks resolve.
+        // Special-case the sentinel itself: a `mirror_lookup_value'
+        // returning `self.unbound_marker' would otherwise be treated as
+        // "absent", which would mark `nelisp--unbound-marker' (= the
+        // symbol whose VALUE is the sentinel) as unbound.  Return the
+        // sentinel directly so elisp
+        // `(eq cell nelisp--unbound-marker)' checks resolve.
         if name == "nelisp--unbound-marker" {
             return Ok(self.unbound_marker.clone());
         }
-        self.mirror_lookup_value(name)
-            .ok_or_else(|| EvalError::UnboundVariable(name.to_string()))
+        let v = self.mirror_lookup_value(name);
+        if v == self.unbound_marker {
+            Err(EvalError::UnboundVariable(name.to_string()))
+        } else {
+            Ok(v)
+        }
     }
 
     /// `setq' / `set' — innermost frame slot if lexically bound (write-
@@ -832,8 +837,12 @@ impl Env {
     /// `funcall' always goes through the global function slot).  Doc
     /// 102 Phase 2.b Step E retired the HashMap fallback.
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
-        self.mirror_lookup_function(name)
-            .ok_or_else(|| EvalError::UnboundFunction(name.to_string()))
+        let f = self.mirror_lookup_function(name);
+        if f == self.unbound_marker {
+            Err(EvalError::UnboundFunction(name.to_string()))
+        } else {
+            Ok(f)
+        }
     }
 
     /// `defun' / `defalias' — write the function cell.  Doc 102
@@ -1018,32 +1027,45 @@ impl Env {
         None
     }
 
-    /// Doc 102 Phase 8 sprint Session 4 — value-cell read.  Returns None
-    /// when the entry is absent OR holds `nelisp--unbound-marker' (Session 5:
-    /// identity-compared against the cached `self.unbound_marker').
-    pub(crate) fn mirror_lookup_value(&self, name: &str) -> Option<Sexp> {
-        let entry = Env::mirror_lookup_entry(&self.globals_record, name)?;
-        let cell = entry.slots.get(0)?.clone();
-        if cell == self.unbound_marker { None } else { Some(cell) }
+    /// Value-cell read.  Returns `self.unbound_marker' when the entry
+    /// is absent OR holds the sentinel; callers use
+    /// `is_unbound(result)' for the "absent" check.
+    ///
+    /// Doc 102 Phase 5.c (2026-05-17) — switched from `Option<Sexp>'
+    /// to direct sentinel return so the API matches the elisp side
+    /// (= `nelisp-env-lookup-value' returns `nelisp--unbound-marker'
+    /// for the absent case).  Aligns with §2.1 unbound-marker pattern.
+    pub(crate) fn mirror_lookup_value(&self, name: &str) -> Sexp {
+        let Some(entry) = Env::mirror_lookup_entry(&self.globals_record, name) else {
+            return self.unbound_marker.clone();
+        };
+        let Some(cell) = entry.slots.get(0) else {
+            return self.unbound_marker.clone();
+        };
+        cell.clone()
     }
 
-    /// Doc 102 Phase 8 sprint Session 4 — function-cell read.
-    pub(crate) fn mirror_lookup_function(&self, name: &str) -> Option<Sexp> {
-        let entry = Env::mirror_lookup_entry(&self.globals_record, name)?;
-        let cell = entry.slots.get(1)?.clone();
-        if cell == self.unbound_marker { None } else { Some(cell) }
+    /// Function-cell read.  Returns `self.unbound_marker' when absent
+    /// or unbound (Doc 102 Phase 5.c sentinel pattern).
+    pub(crate) fn mirror_lookup_function(&self, name: &str) -> Sexp {
+        let Some(entry) = Env::mirror_lookup_entry(&self.globals_record, name) else {
+            return self.unbound_marker.clone();
+        };
+        let Some(cell) = entry.slots.get(1) else {
+            return self.unbound_marker.clone();
+        };
+        cell.clone()
     }
 
-    /// Doc 102 Phase 8 sprint Session 4 — `boundp' equivalent against
-    /// the elisp env mirror.
+    /// `boundp' equivalent against the elisp env mirror.  Convenience
+    /// over `mirror_lookup_value' + sentinel comparison.
     pub(crate) fn mirror_is_bound(&self, name: &str) -> bool {
-        self.mirror_lookup_value(name).is_some()
+        self.mirror_lookup_value(name) != self.unbound_marker
     }
 
-    /// Doc 102 Phase 8 sprint Session 4 — `fboundp' equivalent against
-    /// the elisp env mirror.
+    /// `fboundp' equivalent against the elisp env mirror.
     pub(crate) fn mirror_is_fbound(&self, name: &str) -> bool {
-        self.mirror_lookup_function(name).is_some()
+        self.mirror_lookup_function(name) != self.unbound_marker
     }
 
     /// Push a frame from a captured-env alist (inverse of `capture_lexical').
@@ -1237,9 +1259,11 @@ mod tests {
         let env = Env::new_global();
         for name in &["car", "cdr", "eq", "make-hash-table"] {
             let rust_side = env.lookup_function(name).expect(name);
-            let mirror_side = env
-                .mirror_lookup_function(name)
-                .unwrap_or_else(|| panic!("mirror missing function `{}'", name));
+            let mirror_side = env.mirror_lookup_function(name);
+            assert!(
+                mirror_side != env.unbound_marker,
+                "mirror missing function `{}'", name,
+            );
             assert_eq!(rust_side, mirror_side, "mismatch for `{}'", name);
         }
     }
@@ -1249,7 +1273,8 @@ mod tests {
         // `t' is interned with value Sexp::T + constant flag.  Verify
         // the mirror returns Sexp::T (not the unbound-marker sentinel).
         let env = Env::new_global();
-        let v = env.mirror_lookup_value("t").expect("mirror missing value for `t'");
+        let v = env.mirror_lookup_value("t");
+        assert!(v != env.unbound_marker, "mirror missing value for `t'");
         assert!(matches!(v, Sexp::T));
     }
 
