@@ -178,6 +178,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (= 6 entries, shared source file).  Substrate gate for
         // Doc 123-128 refcount / nl*.rs lifecycle elisp化.
         "nelisp-cc-atomic-raw-mem.el",
+        // Doc 116 §116.A — pure-elisp Reader lexer.  Single source
+        // file defining `nelisp_reader_lex_one' + ~20 tail-call
+        // helpers; replaces the eventual deletion of
+        // `build-tool/src/reader/lexer.rs' (= -885 LOC Rust) once
+        // §116.B parser + §116.C top-level wrapper SHIP.
+        "nelisp-cc-reader-lexer.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

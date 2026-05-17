@@ -382,6 +382,53 @@ pub mod elisp_cc_spike {
         // low 32 bits (= `(logand h #xFFFFFFFF)' after every
         // multiply guarantees the high 32 bits are 0).
         fn nelisp_fnv1a(str_ptr: *const Sexp) -> i64;
+        // Doc 116 §116.A — pure-elisp Reader lexer compiled from
+        // `lisp/nelisp-cc-reader-lexer.el'.  Reads ONE token at
+        // `cursor` from the UTF-8 bytes of `*str_ptr' (= must be
+        // `Sexp::Str(_)' / `Sexp::Symbol(_)').  Returns an i64
+        // token kind code:
+        //
+        //   0   EOF                  payload untouched
+        //   1   LParen   `('         payload untouched
+        //   2   RParen   `)'
+        //   3   LBracket `['
+        //   4   RBracket `]'
+        //   5   Quote    `''
+        //   6   Backquote `\\`'
+        //   7   Comma    `,'
+        //   8   CommaAt  `,@'
+        //   9   FunctionQuote `#\\''
+        //   10  Dot      `.'
+        //   11  SharpsParen `#s('
+        //   20  Int                   `*payload_slot' = Sexp::Str(text)
+        //   21  Float                 `*payload_slot' = Sexp::Str(text)
+        //   22  Str                   `*payload_slot' = Sexp::Str(body)
+        //   23  Sym                   `*payload_slot' = Sexp::Str(name)
+        //   -1  Error / unexpected EOF
+        //
+        // Side effects:
+        //   `*cursor_out_slot' is written with `Sexp::Int(next-cursor)'
+        //     via the §100.B `sexp-int-make' op.
+        //   `*payload_slot' is written with `Sexp::Str(_)' via the
+        //     §122.B `mut-str-finalize' op only when kind >= 20.
+        //   `*scratch_mutstr_slot' is mutated (= bytes pushed) during
+        //     atom / string scanning.
+        //
+        // Caller must:
+        //   1. Pre-init `*payload_slot' to `Sexp::Nil' (= the
+        //      `mut-str-finalize' / `sexp-int-make' ops do not drop
+        //      a pre-existing payload).
+        //   2. Pre-init `*cursor_out_slot' to `Sexp::Nil'.
+        //   3. Allocate the scratch MutStr via `mut_str_make_empty'
+        //      BEFORE the call.  Reset between calls (= a fresh
+        //      `mut_str_make_empty' is the safest pattern).
+        fn nelisp_reader_lex_one(
+            str_ptr: *const Sexp,
+            cursor: i64,
+            payload_slot: *mut Sexp,
+            cursor_out_slot: *mut Sexp,
+            scratch_mutstr_slot: *mut Sexp,
+        ) -> i64;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
         // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
@@ -1172,6 +1219,43 @@ pub mod elisp_cc_spike {
     ///   only meaningful for the Str / Symbol arms).
     pub unsafe fn fnv1a(str_ptr: *const Sexp) -> i64 {
         nelisp_fnv1a(str_ptr)
+    }
+
+    /// Doc 116 §116.A — pure-elisp Reader lexer.  Reads ONE token at
+    /// `cursor` from the bytes of `*str_ptr', writes the next-cursor
+    /// into `*cursor_out_slot' as `Sexp::Int(_)', and (for kinds
+    /// 20-23) finalizes the accumulated text into `*payload_slot'
+    /// as `Sexp::Str(_)'.  Returns the i64 kind code.  See the
+    /// `nelisp_reader_lex_one' extern decl above for the full kind
+    /// table and side-effect contract.
+    ///
+    /// # Safety
+    /// - `str_ptr' must be non-null and point at a `Sexp::Str' or
+    ///   `Sexp::Symbol' (the lexer reads bytes via `str-byte-at'
+    ///   which works on either tag's shared 24-byte `String' header).
+    /// - `payload_slot' / `cursor_out_slot' must be non-null +
+    ///   writable + pre-initialized to `Sexp::Nil' (= the
+    ///   `mut-str-finalize' / `sexp-int-make' ops do a raw overwrite
+    ///   without dropping the prior payload).
+    /// - `scratch_mutstr_slot' must point at a live `Sexp::MutStr'
+    ///   allocated via `mut_str_make_empty' on this call OR reset
+    ///   to an empty MutStr (the caller is responsible for draining
+    ///   the inner String between calls).  Allocating a fresh
+    ///   `mut_str_make_empty' per call is the simplest safe pattern.
+    pub unsafe fn reader_lex_one(
+        str_ptr: *const Sexp,
+        cursor: i64,
+        payload_slot: *mut Sexp,
+        cursor_out_slot: *mut Sexp,
+        scratch_mutstr_slot: *mut Sexp,
+    ) -> i64 {
+        nelisp_reader_lex_one(
+            str_ptr,
+            cursor,
+            payload_slot,
+            cursor_out_slot,
+            scratch_mutstr_slot,
+        )
     }
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the

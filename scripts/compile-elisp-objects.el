@@ -480,6 +480,17 @@
     (nelisp-cc-atomic-raw-mem
      :source-var nelisp-cc-atomic-raw-mem--write-u8-source
      :output "nelisp_ptr_write_u8.o"
+     :requires-arch x86_64)
+    ;; Doc 116 §116.A — pure-elisp Reader lexer.  Single manifest
+    ;; entry; the source defconst is a `(seq DEFUN ...)' of ~20
+    ;; mutually-recursive tail-call helpers and one public entry
+    ;; `nelisp_reader_lex_one'.  Linux-x86_64 only (= same gate
+    ;; as `nelisp-cc-mut-str' / `nelisp-cc-utf8'; aarch64 emit
+    ;; will land with the rest of the Phase 47 aarch64 sweep when
+    ;; the `extern-call' ABI's aarch64 path is complete).
+    (nelisp-cc-reader-lexer
+     :source-var nelisp-cc-reader-lexer--source
+     :output "nelisp_reader_lex_one.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
