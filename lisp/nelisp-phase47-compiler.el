@@ -828,6 +828,53 @@ functions `((NAME . ARITY) ...)'."
                 (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
+   ;; Doc 122 §122.D — UTF-8 helper grammar.
+   ;; ---------------------------------------
+   ;; `(str-char-count STR)' — count UTF-8 codepoints (NOT bytes)
+   ;; in the `Sexp::Str' at STR.  Calls `nl_str_char_count(str_ptr)
+   ;; -> i64' which delegates to `s.chars().count()'.  Used by the
+   ;; elisp `length' shim's String arm (= `(length "藤澤")' = 2,
+   ;; not 6).
+   ((and (consp sexp) (eq (car sexp) 'str-char-count))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :str-char-count-arity sexp)))
+    (list :kind 'str-char-count
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ;; `(str-codepoint-at STR I CP-SLOT WIDTH-SLOT)' — decode the
+   ;; codepoint at byte index I in STR and write codepoint /
+   ;; byte-width via the two caller-supplied i64 out-slots.
+   ;; Returns rax = 1 on success, 0 on invalid I / malformed UTF-8.
+   ;; The dual-slot return convention avoids needing tuple-typed
+   ;; Sexps for the common (cp, width) decode case.
+   ((and (consp sexp) (eq (car sexp) 'str-codepoint-at))
+    (unless (= (length sexp) 5)
+      (signal 'nelisp-phase47-compiler-error
+              (list :str-codepoint-at-arity sexp)))
+    (list :kind 'str-codepoint-at
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)
+          :cp-slot (nelisp-phase47-compiler--parse-value
+                    (nth 3 sexp) env fenv defuns)
+          :width-slot (nelisp-phase47-compiler--parse-value
+                       (nth 4 sexp) env fenv defuns)))
+   ;; `(str-is-alphanumeric-at STR I)' — predicate.  ASCII fast
+   ;; path checks the byte at I directly; multi-byte slow path
+   ;; decodes the codepoint and calls `char::is_alphanumeric'.
+   ;; Returns i64 1/0 in rax.  Used by `nl_jit_split_by_non_alnum'
+   ;; / Reader lexer char-class checks.
+   ((and (consp sexp) (eq (car sexp) 'str-is-alphanumeric-at))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :str-is-alphanumeric-at-arity sexp)))
+    (list :kind 'str-is-alphanumeric-at
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.D Cons construction ops ----
    ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
    ;; payloads into a fresh `NlConsBox' and therefore assume the input
@@ -1608,6 +1655,7 @@ the node's class to consume the result correctly."
              'sexp-write-str 'sexp-write-symbol
              'mut-str-make-empty 'mut-str-push-byte 'mut-str-push-codepoint
              'mut-str-len 'mut-str-finalize
+             'str-char-count 'str-codepoint-at 'str-is-alphanumeric-at
              'cons-make 'cons-set-car 'cons-set-cdr
              'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -1725,6 +1773,12 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-mut-str-len node buf))
       ('mut-str-finalize
        (nelisp-phase47-compiler--emit-mut-str-finalize node buf))
+      ('str-char-count
+       (nelisp-phase47-compiler--emit-str-char-count node buf))
+      ('str-codepoint-at
+       (nelisp-phase47-compiler--emit-str-codepoint-at node buf))
+      ('str-is-alphanumeric-at
+       (nelisp-phase47-compiler--emit-str-is-alphanumeric-at node buf))
       ('cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
       ('cons-set-car
@@ -2967,6 +3021,110 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_mut_str_finalize" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+
+;; ---- Doc 122 §122.D — UTF-8 helper grammar emit ----
+
+(defun nelisp-phase47-compiler--emit-str-char-count (node buf)
+  "Emit `str-char-count' — call `nl_str_char_count(str_ptr) -> i64'.
+NODE carries `:ptr' (= `*const Sexp' to a `Sexp::Str' / `Sexp::Symbol'
+/ `Sexp::MutStr').  The Rust extern walks the inner `String' via
+`chars().count()' and returns the codepoint count as i64 in rax.
+
+Strategy (= 1-arg extern call with i64 return, mirrors
+`mut-str-len' shape):
+
+  1. Evaluate PTR -> rax, copy to rdi (= arg 0).
+  2. Push one alignment pad to keep rsp 16-byte aligned at call site.
+  3. Call `nl_str_char_count' — rax = i64 codepoint count.
+  4. Pop the alignment pad."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_str_char_count" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-str-codepoint-at (node buf)
+  "Emit `str-codepoint-at' — call `nl_str_codepoint_at(ptr, idx, cp_slot, width_slot)'.
+NODE carries `:ptr' (= `*const Sexp' to `Sexp::Str' / `Sexp::Symbol'
+/ `Sexp::MutStr'), `:idx' (= i64 byte index), `:cp-slot' (= `*mut i64'
+out-slot for the decoded codepoint), and `:width-slot' (= `*mut i64'
+out-slot for the byte width).  Returns rax = 1 on success, 0 on
+invalid IDX / malformed UTF-8.  On failure the out-slots are
+untouched.
+
+Strategy (= 4-arg extern call):
+
+  1. Evaluate PTR, push.
+  2. Evaluate IDX, push.
+  3. Evaluate CP-SLOT, push.
+  4. Evaluate WIDTH-SLOT, push.
+  5. Pop WIDTH-SLOT -> rcx (= arg 3), CP-SLOT -> rdx (= arg 2),
+     IDX -> rsi (= arg 1), PTR -> rdi (= arg 0).
+  6. 4 push + 4 pop balanced + function entry rsp mod 16 = 8; one
+     extra push aligns the call site at 16.
+  7. Call `nl_str_codepoint_at' — rax = i64 success flag.
+  8. Pop the alignment pad."
+  (let ((ptr (plist-get node :ptr))
+        (idx (plist-get node :idx))
+        (cp-slot (plist-get node :cp-slot))
+        (width-slot (plist-get node :width-slot)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value idx buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value cp-slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value width-slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Pop in reverse push order: width-slot -> rcx, cp-slot -> rdx,
+    ;; idx -> rsi, ptr -> rdi.
+    (nelisp-asm-x86_64-pop buf 'rcx)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Alignment pad: 4 push + 4 pop balanced; function entry has
+    ;; rsp mod 16 = 8; one extra push aligns the call site.
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_str_codepoint_at" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-str-is-alphanumeric-at (node buf)
+  "Emit `str-is-alphanumeric-at' — call `nl_str_is_alphanumeric_at(ptr, idx)'.
+NODE carries `:ptr' (= `*const Sexp' to `Sexp::Str' / `Sexp::Symbol'
+/ `Sexp::MutStr') and `:idx' (= i64 byte index).  The Rust extern
+takes the ASCII fast path (= byte `[0-9A-Za-z]` test) when possible
+and falls back to a Unicode-aware `char::is_alphanumeric' decode.
+Returns rax = 1 if alphanumeric, 0 otherwise.
+
+Strategy (= 2-arg extern call with i64 return, mirrors
+`mut-str-push-2arg' shape but the helper returns a real i64 instead
+of `void' so no post-call sentinel materialisation):
+
+  1. Evaluate PTR, push.
+  2. Evaluate IDX, push.
+  3. Pop IDX -> rsi (= arg 1), PTR -> rdi (= arg 0).
+  4. Push one alignment pad to keep rsp 16-byte aligned at call site.
+  5. Call `nl_str_is_alphanumeric_at' — rax = i64 1/0.
+  6. Pop the alignment pad."
+  (let ((ptr (plist-get node :ptr))
+        (idx (plist-get node :idx)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value idx buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_str_is_alphanumeric_at" -4 'text)
     (nelisp-asm-x86_64-pop buf 'r11)))
 
 

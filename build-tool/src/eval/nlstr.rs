@@ -520,6 +520,162 @@ pub unsafe extern "C" fn nl_mut_str_finalize(
     result_slot
 }
 
+// ---- Doc 122 §122.D — UTF-8 helper externs ----
+//
+// Phase 47 grammar ops `str-char-count' / `str-codepoint-at' /
+// `str-is-alphanumeric-at' use these externs to walk the UTF-8 byte
+// stream of a `Sexp::Str' value.  All three consult the inline
+// `String' payload at offset 8..32 (= same layout the
+// `nelisp-string--offset-{capacity,ptr,length}' Phase 47 emit code
+// uses for `str-len' / `str-bytes' / `str-byte-at').  Unblocks Doc
+// 120 `nl_jit_mut_str_len' (= char count, not byte count) +
+// `nl_jit_str_codepoint_at' + `nl_jit_downcase' / `_upcase' +
+// `nl_jit_split_by_non_alnum' (= predicate side) and completes the
+// Doc 116.A Reader lexer char-class prereqs.
+
+/// Doc 122 §122.D — count UTF-8 codepoints (NOT bytes) in a
+/// `Sexp::Str'.
+///
+/// Equivalent to `s.chars().count() as i64'.  Differs from
+/// `nl_str_len' / `str-len' / `nl_mut_str_len' which all return
+/// byte counts.  Used by the elisp `length' shim's String arm
+/// (= elisp `(length "藤澤")' must yield 2, not 6).
+///
+/// # Safety
+/// `str_ptr' must be non-null and point at a live `Sexp::Str'
+/// (or `Sexp::Symbol' — same layout).  Non-string variants
+/// produce undefined behaviour because the inline `String' header
+/// access reads garbage bytes.
+#[no_mangle]
+pub unsafe extern "C" fn nl_str_char_count(
+    str_ptr: *const crate::eval::sexp::Sexp,
+) -> i64 {
+    // SAFETY: caller-asserted tag.  Either `Sexp::Str(s)' or
+    // `Sexp::Symbol(s)' carries the inline `String' header; both
+    // expose the same `.as_str()' view, so a single match arm
+    // covers them.  For `Sexp::MutStr(_)` we walk through the
+    // boxed `NlStr.value' instead.
+    let sexp_ref: &crate::eval::sexp::Sexp = unsafe { &*str_ptr };
+    let s: &str = match sexp_ref {
+        crate::eval::sexp::Sexp::Str(text) => text.as_str(),
+        crate::eval::sexp::Sexp::Symbol(text) => text.as_str(),
+        crate::eval::sexp::Sexp::MutStr(rc) => rc.value.as_str(),
+        _ => return 0,
+    };
+    s.chars().count() as i64
+}
+
+/// Doc 122 §122.D — decode the UTF-8 codepoint at `byte_idx' in a
+/// `Sexp::Str' and write `(codepoint, byte_width)' through the
+/// caller-supplied out-slots.
+///
+/// Returns `1' on success, `0' on an invalid `byte_idx' (= out of
+/// range or in the middle of a multi-byte codepoint) or malformed
+/// UTF-8.  On failure the out-slots are left untouched.  Used by
+/// `nl_jit_str_codepoint_at' (= the Phase 47 alternative to the
+/// Rust trampoline that walks `s.char_indices()' looking for the
+/// `byte_idx` match).
+///
+/// # Safety
+/// - `str_ptr' must be non-null and point at a live `Sexp::Str'
+///   / `Sexp::Symbol' / `Sexp::MutStr'.
+/// - `out_codepoint' and `out_byte_width' must be non-null and
+///   writable for one `i64' each.
+#[no_mangle]
+pub unsafe extern "C" fn nl_str_codepoint_at(
+    str_ptr: *const crate::eval::sexp::Sexp,
+    byte_idx: i64,
+    out_codepoint: *mut i64,
+    out_byte_width: *mut i64,
+) -> i64 {
+    // SAFETY: caller-asserted tag.
+    let sexp_ref: &crate::eval::sexp::Sexp = unsafe { &*str_ptr };
+    let s: &str = match sexp_ref {
+        crate::eval::sexp::Sexp::Str(text) => text.as_str(),
+        crate::eval::sexp::Sexp::Symbol(text) => text.as_str(),
+        crate::eval::sexp::Sexp::MutStr(rc) => rc.value.as_str(),
+        _ => return 0,
+    };
+    if byte_idx < 0 {
+        return 0;
+    }
+    let idx = byte_idx as usize;
+    let bytes = s.as_bytes();
+    if idx >= bytes.len() {
+        return 0;
+    }
+    if !s.is_char_boundary(idx) {
+        return 0;
+    }
+    // `s[idx..].chars().next()` decodes the codepoint starting at
+    // `idx'.  The byte width is the difference between the next
+    // codepoint boundary and `idx', which `char::len_utf8' supplies
+    // directly.
+    let ch = match s[idx..].chars().next() {
+        Some(c) => c,
+        None => return 0,
+    };
+    let width = ch.len_utf8() as i64;
+    // SAFETY: caller-supplied out-slots are non-null + writable.
+    unsafe {
+        *out_codepoint = ch as i64;
+        *out_byte_width = width;
+    }
+    1
+}
+
+/// Doc 122 §122.D — predicate: is the UTF-8 codepoint at `byte_idx'
+/// alphanumeric (Unicode-aware)?
+///
+/// ASCII fast path: when the byte at `byte_idx' is `[0-9A-Za-z]`
+/// return `1' directly without UTF-8 decode.  Otherwise decode the
+/// codepoint and consult `char::is_alphanumeric'.  Returns `0' on
+/// out-of-range / mid-codepoint indices or non-alphanumeric values.
+/// Used by `nl_jit_split_by_non_alnum' / lexer char-class checks.
+///
+/// # Safety
+/// `str_ptr' must be non-null and point at a live `Sexp::Str' /
+/// `Sexp::Symbol' / `Sexp::MutStr'.
+#[no_mangle]
+pub unsafe extern "C" fn nl_str_is_alphanumeric_at(
+    str_ptr: *const crate::eval::sexp::Sexp,
+    byte_idx: i64,
+) -> i64 {
+    // SAFETY: caller-asserted tag.
+    let sexp_ref: &crate::eval::sexp::Sexp = unsafe { &*str_ptr };
+    let s: &str = match sexp_ref {
+        crate::eval::sexp::Sexp::Str(text) => text.as_str(),
+        crate::eval::sexp::Sexp::Symbol(text) => text.as_str(),
+        crate::eval::sexp::Sexp::MutStr(rc) => rc.value.as_str(),
+        _ => return 0,
+    };
+    if byte_idx < 0 {
+        return 0;
+    }
+    let idx = byte_idx as usize;
+    let bytes = s.as_bytes();
+    if idx >= bytes.len() {
+        return 0;
+    }
+    // ASCII fast path — `[0-9A-Za-z]` lead byte means the codepoint
+    // is exactly that byte (single-byte UTF-8 sequence).
+    let b = bytes[idx];
+    if b.is_ascii_alphanumeric() {
+        return 1;
+    }
+    // Multi-byte slow path: decode codepoint at boundary, check
+    // Unicode property.  Mid-codepoint indices fail the boundary
+    // check the same way as `nl_str_codepoint_at'.
+    if !s.is_char_boundary(idx) {
+        return 0;
+    }
+    let ch = match s[idx..].chars().next() {
+        Some(c) => c,
+        None => return 0,
+    };
+    if ch.is_alphanumeric() { 1 } else { 0 }
+}
+
 // ---- Compile-time layout assertions ----
 
 const _: () = {

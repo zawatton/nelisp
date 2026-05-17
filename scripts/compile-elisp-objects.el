@@ -430,6 +430,24 @@
     (nelisp-cc-mut-str
      :source-var nelisp-cc-mut-str--finalize-source
      :output "nelisp_mut_str_finalize.o"
+     :requires-arch x86_64)
+    ;; Doc 122 §122.D — UTF-8 helper grammar ops.  Three entries,
+    ;; one per op, packaged as standalone Phase 47-compiled `defun's
+    ;; so `tests/elisp_cc_utf8_probe.rs' can drive each round-trip
+    ;; independently.  Same Linux-x86_64 gate as `nelisp-cc-mut-str'
+    ;; (§122.B); aarch64 emit lands with the rest of the Phase 47
+    ;; aarch64 sweep.
+    (nelisp-cc-utf8
+     :source-var nelisp-cc-utf8--char-count-source
+     :output "nelisp_str_char_count.o"
+     :requires-arch x86_64)
+    (nelisp-cc-utf8
+     :source-var nelisp-cc-utf8--codepoint-at-source
+     :output "nelisp_str_codepoint_at.o"
+     :requires-arch x86_64)
+    (nelisp-cc-utf8
+     :source-var nelisp-cc-utf8--is-alphanumeric-at-source
+     :output "nelisp_str_is_alphanumeric_at.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
