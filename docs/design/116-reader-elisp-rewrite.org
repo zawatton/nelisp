@@ -1,0 +1,637 @@
+#+TITLE: Doc 116 — Reader (lexer + parser) pure-elisp 化
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-18
+
+* Status
+
+- *State*: DRAFT 2026-05-18 — awaiting user approval before
+  implementation.  Catalogue / dependency map only; no code touched
+  yet.
+- *Parent*: Doc 115 SHIPPED (main =7e18edd1=, env_lexframe shim file
+  deleted) + Doc 73 §2.4 / Doc 98 §98.3 reader cfg-gating.  Pattern
+  reference for `defconst …--source' Phase 47 elisp swap = Doc 115
+  §115.1-7 + Doc 117 Tier A precedent.
+- *Dependents*: Doc 117 Tier C (= `bi_read' / `bi_read_from_string'
+  /  `bi_read_all_from_string' handlers) waits on Doc 116; their
+  elisp swap currently has nowhere to dispatch because the reader
+  itself is Rust.
+- *Blocking dependencies*: Doc 122.A (= str allocator + raw-mem ops)
+  + Doc 122.B (= `mut-str` builder helpers for char-by-char string
+  construction) + Doc 122.C (= UTF-8 / char classification helpers,
+  if those land as a separate sub-cluster).  Doc 116 cannot START
+  until Doc 122.A + 122.B SHIP — neither lexer nor parser can build
+  output `Sexp::Str` / `Sexp::Symbol` values without a mut-str
+  builder.
+- *Scope*: replace =build-tool/src/reader/{mod,lexer,parser}.rs=
+  (~1,630 LOC) with pure-elisp implementations Phase 47-compiled
+  into `.o` files linked into the build-tool crate (= same
+  pattern as Doc 115's shim ports).  Final stage deletes the
+  Rust source directory + `pub mod reader;` line from `lib.rs`.
+
+* §0 TL;DR
+
+** §0.1 The Reader is the classical Lisp self-host milestone
+
+A Lisp implementation that reads its own source in its own
+language is — by tradition — the canonical self-host marker.
+NeLisp already runs the *production* read path through elisp
+(see §0.2 below), so the conceptual milestone is partially
+achieved.  Doc 116 closes the remaining gap: the *baker* path
+(= `nelisp-baker` dev tool that constructs frozen-heap images
+from `.el` source) currently lexes and parses in Rust.  After
+Doc 116 SHIPPED, every byte of Lisp source the project consumes
+is read by Lisp.
+
+| File             | LOC | Role                                  |
+|------------------+-----+---------------------------------------|
+| reader/mod.rs    | 260 | Public surface (`read_str' / `read_all') + ERTs |
+| reader/lexer.rs  | 885 | Hand-rolled tokenizer state machine   |
+| reader/parser.rs | 485 | Recursive-descent s-expression parser |
+| *Total*          | *1,630* | (mod includes 200 LOC test fixtures) |
+
+Excluding test fixtures, the live code is ~1,500 LOC of Rust to
+remove.
+
+** §0.2 cfg-gating context (= already dev-only)
+
+Per Doc 98 §98.3 (2026-05-11), the *production* `nelisp` binary
+never touches `reader::*`:
+
+- Boot reads pre-baked NELIMG v3 frozen-heap globals via
+  `image::decode_v3_into' (= dump-image fast path, zero parsing).
+- User-visible `(read ...)` / `(read-from-string ...)` route to
+  =lisp/nelisp-stdlib-reader.el= (= production elisp reader,
+  already shipped).
+- `eval_str' / `eval_str_all' route through
+  `eval::read_all_with_line_via_elisp' (= elisp reader path with
+  line-tracking, see =build-tool/src/eval/mod.rs:37,72=).
+
+Surviving Rust callsites (= "dev tool only"):
+- =build-tool/src/image.rs:169,1518= — `image::iterative_bake_one`
+  parses each stdlib source on the way to its v3 image.
+- =build-tool/src/bin/nelisp-baker.rs:221= — baker CLI entry.
+- =build-tool/src/reader/*= ERT inner tests.
+
+The `#[cfg(any(test, feature = "image-baker"))]` gate on `pub mod
+reader;` (= =lib.rs:58=) means non-baker production builds already
+exclude the module from the binary.
+
+** §0.3 Why elisp化 anyway
+
+Despite cfg-gating, ~1,500 LOC of Rust reader logic still ships in:
+- `nelisp-baker` builds (= image-baker feature)
+- `cargo test` (= `cfg(test)`)
+- Image regeneration pipelines (CI + release)
+
+Per repo charter (=CLAUDE.md=: 純 elisp 化 が repo の存在目的, Rust
+削減 が唯一の評価軸) the reader being Rust is a contradiction —
+NeLisp parses NeLisp source with NeLisp code.  Doc 116 removes the
+contradiction.
+
+** §0.4 Estimated delta after SHIPPED
+
+| Metric                          | Delta      |
+|---------------------------------+------------|
+| Rust deletion (reader/* files)  | -1,500 LOC |
+| Test-fixture migration (Rust → integration probes) | -130 LOC Rust mod tests |
+| New elisp source                | +~1,800 LOC (denser grammar; see §3) |
+| Net Rust LOC                    | *-1,630 LOC* |
+| New Phase 47 grammar ops        | 0-3 (= depending on Doc 122 audit; see §3) |
+
+Doc 116 is *the single largest Rust-deletion document* in the
+pure-elisp roadmap (= rivalled only by Doc 124 nl*.rs Clone/Drop
+groups and Doc 120 jit trampolines).
+
+* §1 Audit — 3 files, ~1,500 live LOC
+
+** §1.1 =build-tool/src/reader/mod.rs= (260 LOC, ~70 LOC live)
+
+*Entry points (= baker-facing)*:
+
+| Function                                              | Caller                              |
+|-------------------------------------------------------+-------------------------------------|
+| `pub fn read_str(input: &str) -> Result<Sexp, ReadError>` | =image.rs= (single-form parse) + ERTs |
+| `pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError>` | =image.rs:169,1518=, ERTs |
+| `pub use ReadError, SourcePos` (from `eval/error.rs`)     | re-export for callers              |
+| `pub use Sexp, fmt_sexp` (from `eval/sexp.rs`)            | re-export for callers              |
+
+*Algorithm*: trivial two-pass — `tokenize` then `parse_one` /
+`parse_all`.  `read_str` enforces "exactly one form" (= trailing
+token error).  `read_all` consumes the entire token stream.
+
+*Sexp types produced*: any `Sexp` variant the parser builds (see
+§1.3).  No new sexp construction logic here — pure delegation.
+
+*External dependencies*:
+- `eval::error::{ReadError, SourcePos}` (re-exported)
+- `eval::sexp::{Sexp, fmt_sexp}` (re-exported)
+- Internal: `lexer::tokenize`, `parser::parse_one`, `parser::parse_all`
+
+*Live code estimate*: ~50 LOC (= `read_str` + `read_all` + module
+header).  The remaining 210 LOC is `#[cfg(test)] mod tests`.
+
+** §1.2 =build-tool/src/reader/lexer.rs= (885 LOC, ~675 LOC live)
+
+*Entry points (= public to mod.rs)*:
+
+| Function                                                          | Returns                            |
+|-------------------------------------------------------------------+------------------------------------|
+| `pub fn tokenize(input: &str) -> Result<Vec<PositionedToken>, ReadError>` | All-tokens vector                  |
+| `pub enum Token { LParen, RParen, ..., Symbol(String), ... }` (12 variants) | Token kinds                      |
+| `pub struct PositionedToken { pub token: Token, pub pos: SourcePos }`    | Token + source location          |
+
+*Algorithm* — single-pass hand-rolled tokenizer with byte-precise
+column tracking:
+
+1. *Outer loop*: `skip_whitespace_and_comments` → look at first byte → dispatch.
+2. *Dispatch table* (line 159-209):
+   - `(`, `)`, `[`, `]`, `'`, `` ` `` — single-byte tokens.
+   - `,` — peek next, emit `Comma` or `CommaAt`.
+   - `"` → `read_string` (escape resolution, `\n`/`\t`/`\xNN`/`\C-`/`\M-`/
+     `\(` / `\<unknown>` fallthrough — Doc 51 Phase 3-A'' compat).
+   - `#` → `read_sharpsign` (radix `#x` / `#o` / `#b`, function-quote
+     `#'`, byte-code `#[` NYI, record `#s(`).
+   - `?` → either bare symbol `?` (whitespace/EOF follower) or
+     `read_char_literal` (chars accept any byte, escape codes,
+     `\C-X`, `\M-X` nesting, `\xNN`).
+   - else → `read_atom` (scan non-terminator bytes, try-parse as
+     Int → Float → Symbol).
+3. *State*: byte-offset position, line+column tracking with `\r\n`
+   normalisation.
+
+*Sub-functions*:
+- `read_string` (~95 LOC, line 214-310) — escape resolution incl. line continuation, hex `\xNN`, named escapes (`\n`, `\t`, `\r`, `\e`, `\s`, `\b`, `\d`, `\a`, `\f`, `\v`, `\0`), unknown-`\X` fallthrough.
+- `read_sharpsign` (~60 LOC, line 312-372) — `#x`/`#o`/`#b`/`#'`/`#s(`/`#[` NYI dispatch.
+- `read_radix_int` (~40 LOC, line 374-414) — generic radix integer with optional sign + `_` digit separators.
+- `read_atom` (~25 LOC, line 422-448) — accumulate non-terminator bytes, decide Int vs Float vs Symbol via `try_parse_int` / `try_parse_float`.
+- `read_char_literal` (~145 LOC, line 450-594) — character escape DSL: `?a`, `?\n`, `?\xNN`, `?\C-a`, `?\M-a`, nested `?\M-\C-a`, `?\(` etc.
+- Free helpers: `is_whitespace`, `is_atom_terminator`, `hex_digit`, `try_parse_int`, `try_parse_float` (~80 LOC, line 597-674).
+
+*Sexp types produced*: none directly — emits `Token` enum values
+that the parser converts.
+
+*External dependencies*:
+- `eval::error::{ReadError, SourcePos}` for error construction (= `ReadError::lex`, `::unexpected_eof`, `::not_yet_implemented`).
+- Stdlib: `String::push`, `i64::from_str_radix`, `f64::from_str`,
+  `str::parse`, `String::chars().filter()`.  Each of these is a
+  Phase 47 grammar concern (see §3).
+
+*Live code estimate*: ~675 LOC (= 885 - 210 `mod tests`).
+
+** §1.3 =build-tool/src/reader/parser.rs= (485 LOC, ~290 LOC live)
+
+*Entry points (= public to mod.rs)*:
+
+| Function                                                       | Returns                       |
+|----------------------------------------------------------------+-------------------------------|
+| `pub fn parse_one(tokens: &[PositionedToken]) -> Result<(Sexp, usize), ReadError>` | First form + index next-unread |
+| `pub fn parse_all(tokens: &[PositionedToken]) -> Result<Vec<Sexp>, ReadError>` | All forms                   |
+
+*Algorithm* — single-class recursive-descent:
+
+1. `Parser { tokens: &[PositionedToken], pos: usize }` carries the
+   cursor.
+2. `parse_form(depth, quasiquote_depth)` (line 74-139) — pops one
+   token, dispatches:
+   - `LParen` → `parse_list` (proper / dotted)
+   - `LBracket` → `parse_vector`
+   - `SharpsParen` → `parse_record` (= `#s(TYPE V0 ...)` per Doc 52)
+   - `Quote` / `Backquote` / `FunctionQuote` → recursive parse +
+     wrap in `(quote X)` / `(backquote X)` / `(function X)`
+   - `Comma` / `CommaAt` → recursive parse + wrap (= Doc 51 Phase
+     3-A''-3 — bare comma outside backquote allowed at parse time)
+   - `Int` / `Float` / `Str` → direct Sexp leaf
+   - `Symbol` → `symbol_to_sexp` (= recognise `nil` → `Sexp::Nil`,
+     `t` → `Sexp::T`, else `Sexp::Symbol`)
+   - `RParen` / `RBracket` / `Dot` → error (= unexpected close)
+3. `parse_list` (line 151-200) — loop accumulating items; on `Dot`
+   token, parse one tail form, require `RParen`, build improper
+   list via `build_dotted`.
+4. `parse_vector` (line 202-230) — same shape, rejects `Dot`.
+5. `parse_record` (line 236-272) — first item = type tag, rest =
+   slots; empty `#s()` rejected.
+
+*Safety net*: `MAX_DEPTH = 256` recursion cap (line 26, ample
+headroom for bootstrap source's ~10-deep nesting).
+
+*Sexp types produced* (= the full reader output vocabulary):
+- `Sexp::Nil`, `Sexp::T`
+- `Sexp::Int(i64)`, `Sexp::Float(f64)`, `Sexp::Str(String)`,
+  `Sexp::Symbol(String)`
+- `Sexp::cons(car, cdr)` — proper list cons chains + dotted pairs
+- `Sexp::list_from(&[...])` — convenience that folds via cons
+- `Sexp::vector(Vec<Sexp>)` — `[...]` literals
+- `Sexp::record(type_tag, Vec<Sexp>)` — `#s(...)` literals
+- `Sexp::quote(x)` = `(quote x)`, `::backquote`, `::function`,
+  `::comma`, `::comma_at` (= macro-shape helpers)
+
+*External dependencies*:
+- `super::lexer::{PositionedToken, Token}` — input
+- `eval::error::{ReadError, SourcePos}` — error type
+- `eval::sexp::Sexp` + its 10+ constructor helpers
+
+*Live code estimate*: ~290 LOC (= 485 - 195 `mod tests`).
+
+* §2 Phase 47 elisp化 plan — 4 stages
+
+** §116.A — Lexer (= lisp/nelisp-cc-reader-lexer.el)
+
+*Goal*: tokenizer state machine in pure elisp.  Single source
+file holding `defconst …--source' that gets Phase 47 compiled into
+`target/<...>/elisp-objects/nelisp_reader_lexer.o`.
+
+*Output shape*: instead of `Vec<PositionedToken>` (= Rust-owned
+heap), the elisp tokenizer returns a `Sexp::Vector` of token
+records `#s(nelisp-token KIND POS-LINE POS-COL PAYLOAD)`.  Tokens
+are pure-elisp `Sexp` values that the §116.B parser walks.
+
+*Phase 47 ops needed*:
+- =str-len=, =str-byte-at= — already shipped (Doc 101 §101.C).
+- =int-eq=, =int-lt=, =int-le=, =int-ge=, =arith add/sub= — shipped (Doc 100).
+- =cond=, =while= — Phase 47 core.
+- =cons-make=, =cons-car=, =cons-cdr= — shipped (Doc 101).
+- =vector-make=, =vector-slot-set=, =vector-len=, =vector-ref= — shipped (Doc 111).
+- =record-make=, =record-slot-ref=, =record-slot-set= — shipped (Doc 111).
+- *NEW* =mut-str-builder= (= push byte, finalize to `Sexp::Str`) — *Doc 122.B dependency*.
+- *NEW* =mut-str-append-byte= — Doc 122.B.
+- *NEW* `int-logior` / `int-logand` for hex escape composition —
+  already shipped (Doc 115 §0.2 audit confirmed via Doc 100 §100.D arith op set).
+- *Optional* char classification helpers: =is-ascii-digit=,
+  =is-hex-digit=, =is-whitespace=.  Can be implemented in pure
+  elisp via byte-range checks (= `(and (>= b 0x30) (<= b 0x39))`),
+  or as Doc 122.C extern-call wrappers to libc `isdigit`/`isalpha`.
+  *Decision*: pure-elisp byte-range checks — no extern needed,
+  identical perf after Phase 47 lowering.
+
+*Probe test plan*:
+- New `build-tool/tests/elisp_cc_reader_lexer_probe.rs` (= Rust
+  integration test that calls into the compiled elisp `.o`).
+- Migrate the 16 existing `mod tests` cases in =lexer.rs= as
+  probe cases: skips_whitespace_and_comments, parens_and_brackets,
+  quote_prefix, quasiquote_prefixes, function_quote_prefix,
+  dotted_pair_dot_is_token, integer_shapes, radix_integers,
+  float_shapes, string_with_escapes, string_backslash_newline,
+  unterminated_string_errors, string_unknown_escape_drops_backslash,
+  string_paren_escapes, char_literal_shapes,
+  char_literal_paren_escapes, char_literal_meta_modifier,
+  char_literal_bad_hex_errors, symbol_with_punctuation.
+- Add 5 cross-comparison probes: lex the same input with Rust + elisp
+  side-by-side and assert token-stream equality (shake-out gate).
+
+*Estimated effort*: 2-3 Agent dispatch days.  ~675 LOC Rust → ~700-800
+LOC elisp (denser, slightly longer due to explicit `cond` arms vs
+Rust pattern matching).
+
+** §116.B — Parser (= lisp/nelisp-cc-reader-parser.el)
+
+*Goal*: recursive-descent parser in pure elisp.  Consumes the
+=Sexp::Vector= of token records produced by §116.A, produces the
+final =Sexp= forest.
+
+*Phase 47 ops needed*:
+- =vector-len=, =vector-ref= — token-stream cursor (= shipped Doc 111).
+- =cons-make= (= the building block of proper + improper lists) — shipped (Doc 101).
+- =record-make= (= for `#s()` literals + final result) — shipped (Doc 111).
+- =record-slot-ref= — read token kind from record — shipped (Doc 111).
+- =str-eq= — for `"nil"` / `"t"` symbol recognition — shipped (Doc 101 §101.C).
+- =if= / =cond= / =while= — Phase 47 core.
+- Recursive function-call ABI — already shipped (Doc 99 §99.B `nl_fact_i64` spike + Doc 101 cons walks).
+- *Reuse mut-vec builder* (= for `parse_list` / `parse_vector` item
+  accumulation) — already provided by =vector-make= + capacity
+  doubling pattern from Doc 115 §115.1.
+
+*Probe test plan*:
+- New `build-tool/tests/elisp_cc_reader_parser_probe.rs`.
+- Migrate the 21 existing `mod tests` cases: parse_nil_and_t,
+  parse_empty_list_is_nil, parse_proper_list, parse_dotted_pair,
+  parse_quote_desugars, parse_backquote_family_desugars,
+  parse_function_quote_desugars, parse_vector, parse_nested,
+  parse_leading_dot_errors, parse_unbalanced_open_errors,
+  parse_stray_close_errors, parse_unquote_outside_backquote,
+  parse_splice_outside_backquote, parse_dot_in_vector_errors,
+  parse_record_simple, parse_record_only_tag, parse_record_nested,
+  parse_record_round_trips_via_printer, parse_empty_record_errors,
+  parse_record_dot_errors.
+- Add 5 round-trip probes against `fmt_sexp` (= reader → printer →
+  reader identity).
+
+*Estimated effort*: 1-2 Agent dispatch days.  ~290 LOC Rust →
+~400-500 LOC elisp.  Smaller than lexer because the algorithm is
+just recursive dispatch — no escape DSL.
+
+** §116.C — Top-level read entry (= lisp/nelisp-cc-reader.el)
+
+*Goal*: thin wrapper that composes §116.A + §116.B into
+`(nelisp-cc-read-str STR)` / `(nelisp-cc-read-all STR)` callable
+from Rust via `extern-call` (= same shape as Doc 117 Tier A handler
+swaps).
+
+*Phase 47 ops needed*: none new — pure composition.
+
+*Rust dispatch shape* (= mirrors `bi_truncate' precedent in
+=eval/builtins.rs= line 1234):
+
+#+begin_src rust
+// build-tool/src/reader/mod.rs — replacement for read_str / read_all.
+pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
+    // Phase 47 dispatch.  No tokenize+parse Rust logic remains.
+    crate::elisp_cc_spike::nelisp_cc_read_str(input)
+}
+pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
+    crate::elisp_cc_spike::nelisp_cc_read_all(input)
+}
+#+end_src
+
+The `nelisp_cc_read_str` / `nelisp_cc_read_all` Rust wrappers
+(~30 LOC each) bridge `&str` ↔ elisp `Sexp::Str` and surface the
+elisp error tag (= second tuple slot, see §3.3) as a Rust
+`ReadError`.
+
+*Probe test plan*:
+- Run the existing 22 `mod tests` in =reader/mod.rs= unchanged
+  (= now exercising the elisp dispatch end-to-end).
+- Add 1 mega-probe: lex+parse the entirety of =lisp/subr.el= (~5,000
+  forms) under both Rust legacy + new elisp paths; assert
+  per-form `Sexp` equality.  Provides regression gate before
+  §116.D file deletion.
+
+*Estimated effort*: 0.5 Agent day.
+
+** §116.D — Delete reader/* + remove `pub mod reader;`
+
+*Goal*: physical Rust deletion after §116.A-C SHIPPED + the
+mega-probe passes on full =lisp/= source corpus.
+
+*Steps*:
+1. `git rm build-tool/src/reader/lexer.rs build-tool/src/reader/parser.rs`
+2. Reduce =build-tool/src/reader/mod.rs= to a thin re-export shim
+   (= ~30 LOC: `pub use crate::eval::error::{ReadError, SourcePos};`
+   + `pub use crate::eval::sexp::{fmt_sexp, Sexp};` + the wrapper
+   `read_str`/`read_all` calling `elisp_cc_spike`).
+3. Migrate the 13 `#[cfg(test)] mod tests` in =mod.rs= to
+   =build-tool/tests/elisp_cc_reader_integration_probe.rs=.
+4. Optionally: delete `pub mod reader;` from =lib.rs= entirely and
+   inline `read_str` / `read_all` at the elisp_cc_spike layer.
+   *Decision*: keep `pub mod reader;` as a shim for now (= existing
+   `image.rs:44 use crate::reader;` callsite stays valid without
+   wave 2 refactor).  Doc 121 (image baker elisp化) deletes the
+   module entirely.
+
+*Estimated Rust delta*: -1,500 LOC (= lexer.rs + parser.rs full
+deletion, mod.rs reduction from 260 to ~30 LOC).
+
+*Estimated effort*: 0.5 Agent day.
+
+* §3 Critical primitives audit — what Doc 122 must ship first
+
+** §3.1 Current Phase 47 grammar pool
+
+Surveyed from Doc 115 §0.2 table + Doc 117 references + Doc 100/
+101/111 SHIPPED status (= main =d8adf4a7=):
+
+| Op family               | Examples                          | Status  |
+|-------------------------+-----------------------------------+---------|
+| Int ABI                 | int-eq, int-lt, sexp-int-unwrap   | SHIPPED |
+| Cons / Symbol / Str ABI | cons-make/-car/-cdr, str-len, str-byte-at, str-eq | SHIPPED |
+| Vector ABI              | vector-make, vector-ref, vector-slot-set, vector-len | SHIPPED |
+| Record ABI              | record-make, record-slot-ref/-set | SHIPPED |
+| Cell ABI                | cell-make, cell-value, cell-set-value | SHIPPED |
+| F64 ABI                 | f64-eq, f64-add etc.              | SHIPPED |
+| Arith                   | +, -, *, logior, logand, logxor, shift | SHIPPED |
+| Control                 | while, cond, if, recursive call   | SHIPPED |
+
+** §3.2 Gaps Doc 122 must close
+
+Per the pure-elisp roadmap memory entry:
+- Doc 122.A — *raw memory primitives*: `ptr-read-u8`, `ptr-read-u64`,
+  `ptr-write-u8`, `ptr-write-u64`.  Needed by mut-str (= append
+  bytes to a growable buffer).
+- Doc 122.B — *mut-str builder*: `mut-str-new`, `mut-str-append-byte`,
+  `mut-str-finalize` (= produce immutable `Sexp::Str`).  *This is the
+  critical blocker for §116.A* — the lexer's `read_string`,
+  `read_atom`, `read_radix_int` all build their output string char-
+  by-char.  Without a mut-str primitive, the elisp port would have
+  to construct strings via cons-list-of-bytes + final fold, which
+  is correct but ~10× slower.
+- Doc 122.C — *atomic ops* (atomic-load/store/cas).  *Not needed by
+  the reader* (= reader is single-threaded, no shared state).  Skip.
+- Doc 122.D — *libc binding for malloc / free*.  *Not needed by the
+  reader* — mut-str builder uses Rust-allocated boxes per the existing
+  NlBox pattern (= refcount-aware, allocator-stable).  Skip.
+
+** §3.3 String slicing — design decision
+
+Two approaches for the lexer's `read_atom` (= scan a run of non-
+terminator bytes, then try-parse Int / Float / Symbol):
+
+1. *Byte-range substring* — Phase 47 `(str-sub STR START END)` op.
+   Requires a new grammar primitive.  Best perf.  *Cost*: +1 grammar
+   op (= ~80 LOC asm helper + parser + emit).
+2. *Byte-by-byte append into mut-str* — uses only Doc 122.B mut-str
+   primitives.  No new grammar surface.  Slightly slower but the
+   reader is already O(n) per source byte; the constant factor is
+   negligible.
+
+*Decision*: option 2 (= byte-by-byte mut-str append).  Adds zero
+new grammar ops beyond Doc 122.B.  Lexer cold-init speed is dwarfed
+by Phase 47 emit time; perf is not a deciding factor.
+
+** §3.4 Char classification primitives
+
+Lexer needs: is-digit, is-hex-digit, is-whitespace, is-atom-terminator,
+is-radix-digit (for `#x` / `#o` / `#b`).
+
+*Options*:
+- Pure-elisp byte-range tests (= `(and (>= b 0x30) (<= b 0x39))`).
+  ~5 LOC each, no new ops.  *Chosen*.
+- libc `isdigit` / `isalpha` via extern-call.  Requires Doc 122.D
+  libc binding for the char-class table.  Overkill.
+
+*Decision*: pure-elisp byte-range checks.  Adds zero new grammar ops.
+
+** §3.5 Error reporting — `(sexp . error-msg)` tuple
+
+Rust's `ReadError` carries:
+- enum kind: `Lex` / `Parse` / `UnexpectedEof` / `NotYetImplemented`
+- `SourcePos { line: u32, col: u32 }`
+- `String` message
+
+Elisp port returns a `Sexp::cons(result-or-nil, error-record-or-nil)`
+two-tuple from every entry point.  The Rust `nelisp_cc_read_str`
+wrapper (§116.C) inspects the cdr; if non-nil, builds the matching
+`ReadError` variant and returns `Err(...)`.  This pattern matches
+how Doc 115 §115.7 FNV-1a returns its result (= bare Sexp::Int, no
+error path needed) — and how Doc 117 Tier A handlers will surface
+errors after the throw / signal primitive lands.
+
+*New Phase 47 ops needed for error path*: zero.  All cons + record
++ Int + Str ops already shipped.
+
+** §3.6 Dependency cross-ref — which Doc 122 clusters block which Doc 116 stages
+
+| Doc 116 stage         | Hard-block on                               |
+|-----------------------+---------------------------------------------|
+| §116.A (lexer)        | Doc 122.A (raw mem ops) + Doc 122.B (mut-str builder) |
+| §116.B (parser)       | none (= uses only shipped Sexp constructors) |
+| §116.C (top-level)    | §116.A + §116.B SHIPPED                     |
+| §116.D (file deletion)| §116.A + §116.B + §116.C all SHIPPED + mega-probe green |
+
+*Critical path*: Doc 122.A + 122.B → §116.A → §116.C → §116.D.
+§116.B is independent of Doc 122 and can ship anytime after Doc 116
+DRAFT approval (= parallelizable with Doc 122 development).
+
+* §4 Risks + open questions
+
+** §4.1 The reader is the bootstrap entry
+
+Even though Doc 98 §98.3 removed reader from the production boot
+path, the *image baker* still uses it to construct every NELIMG v3
+image from `.el` source.  If the elisp reader has a bug, the
+baker silently produces a broken image that boots into a corrupt
+heap — symptom appears at first use of the affected stdlib
+function, not at boot.
+
+*Mitigation*:
+- Mega-probe (§116.C) lex+parse-compares full =lisp/= corpus
+  against the Rust legacy reader.  Must be 100% identical per-form
+  Sexp output before §116.D file deletion.
+- Stage §116.D file deletion is *very late*: only after all images
+  rebuild green + `make test` 100% pass + manual `cargo run --bin
+  nelisp` smoke on a non-trivial elisp program.
+
+** §4.2 Test migration risk
+
+13 mod tests in =reader/mod.rs= + 16 in =lexer.rs= + 21 in =parser.rs=
+= *50 ERT cases* embedded in Rust.  Each migrates to a Rust
+integration probe (= same `cargo test` discovery, different file
+location).
+
+*Risk*: a probe might silently regress if the migration drops a case.
+*Mitigation*: per-stage probe count gate — §116.A must add ≥ 16 cases,
+§116.B ≥ 21, §116.C ≥ 13 plus the mega-probe.
+
+** §4.3 Image baker dependency
+
+=build-tool/src/image.rs:169= calls `reader::read_all(source)`.
+After §116.D, that callsite goes through the elisp reader transparently
+(= mod.rs becomes a thin shim per §116.D step 2).  No image.rs change
+required.
+
+*Risk*: `image::iterative_bake_one` may have hidden coupling to
+Rust-side `Sexp` allocation patterns.  Audit before §116.D.
+
+*Mitigation*: §116.C's mega-probe explicitly exercises baker callsites.
+
+** §4.4 `nelisp-baker` build (= `image-baker` feature)
+
+The reader module is cfg-gated to `#[cfg(any(test, feature = "image-baker"))]`.
+Doc 116 cannot change this gate during stages A-C (= elisp source +
+probes still need the gate to compile).  At §116.D, when the elisp
+dispatch path is the only one, the `pub mod reader;` can move out of
+the gate (= elisp reader is cheap; no reason to gate it).
+
+*Decision*: §116.D leaves the gate in place to minimise change
+surface; Doc 121 (image baker elisp化) revisits gating.
+
+** §4.5 Performance regression
+
+The Rust reader is a tight byte-loop with `&[u8]` indexing — very
+fast.  Phase 47-compiled elisp is also a tight loop after lowering,
+but each `(str-byte-at STR I)` call has the Phase 47 extern-call
+overhead (= ~3-5 cycles for cdecl prologue).
+
+*Concrete estimate*: Rust reader on a 50KB elisp source = ~50µs.
+Phase 47 elisp version = ~80-100µs (= 2× slower due to per-byte call
+overhead).
+
+*Verdict*: not a regression for the baker use-case (= images bake
+once, then are reused).  Mega-probe (§116.C) includes 1 timing
+assertion: full =lisp/= corpus reader wall-clock < 5× legacy Rust.
+
+*If perf matters more later*: a future Doc 122.E could add inline-
+mode hint to `(str-byte-at)` (= the compiler inlines the i64 load
+instead of emitting an extern-call), recovering most of the gap.
+
+* §5 Schedule
+
+** §5.1 Prerequisite
+
+- *Doc 122.A* (raw memory primitives) SHIPPED.
+- *Doc 122.B* (mut-str builder) SHIPPED.  This is the critical blocker.
+
+Until Doc 122.A + 122.B ship, Doc 116 can only complete:
+- §116.B (parser) — independent of Doc 122; can ship anytime after
+  Doc 116 DRAFT approval.
+
+** §5.2 Stage sequence
+
+| Stage                          | Depends on             | Effort      |
+|--------------------------------+------------------------+-------------|
+| §116.B parser                  | Doc 116 DRAFT approval | 1-2 days    |
+| §116.A lexer                   | Doc 122.A + 122.B      | 2-3 days    |
+| §116.C top-level + mega-probe  | §116.A + §116.B        | 0.5 day     |
+| §116.D file deletion           | §116.C + green mega-probe | 0.5 day  |
+
+*Total*: ~4-6 Agent dispatch days (= roughly co-equal to Doc 115's
+8 commits).
+
+** §5.3 Parallel dispatch opportunities
+
+- §116.B can dispatch in parallel with Doc 122.A + 122.B development
+  (= different code paths, no shared file).
+- §116.A's sub-functions (=read_string=, =read_atom=, =read_char_literal=,
+  =read_sharpsign=) are independent enough to parallel-dispatch 4 Agents
+  once Doc 122.B SHIPPED.
+
+* §6 References
+
+** §6.1 Internal precedent
+
+- =docs/design/115-phase47-shims-pure-elisp.org= — the cleanest
+  Phase 47 elisp swap pattern.  §115.1-7 ship sequence is the
+  template for §116.A-D.
+- =docs/design/117-builtins-elisp-sweep.org= §1 Tier A — handler
+  swap pattern (= `defconst …--source' + manifest entry + thin Rust
+  dispatch).  §116.C top-level wrapper follows the same shape.
+- =docs/design/99-phase-47-eval-loop-wiring.org= — `nl_fact_i64`
+  recursive-call ABI spike, validates parser's recursive descent
+  has a known-working precedent.
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= + Doc 101 + Doc 111
+  — the four full-ABI sets the reader builds on.
+
+** §6.2 Reader history
+
+- *Doc 44 §3.2 LOCKED* — original minimal reader subset (= 1,500 LOC
+  Rust scope cap).  Doc 116 inherits the exact same surface and
+  reproduces it in elisp.
+- *Doc 51 Phase 3-A''-1/-2/-3* — Emacs-reader compatibility passes
+  (= bare comma, `\M-X` meta, unknown `\X` fallthrough).  All
+  present in =lexer.rs= line 195-208, 537-587, 588-593 and must
+  port verbatim.
+- *Doc 52 §2.3* — `#s(...)` record literals.  Present in =lexer.rs=
+  line 340-362 + =parser.rs= line 236-272.
+- *Doc 73 §2.4* — reader/* cfg-gating to dev tool.
+- *Doc 98 §98.3* — production reader = `lisp/nelisp-stdlib-reader.el`
+  (= already shipped); Rust reader = baker dev tool only.
+
+** §6.3 Substrate dependency
+
+- *Doc 122 (DRAFT)* — Phase 47 grammar 拡張 (raw mem + atomic + libc binding).
+  Clusters 122.A + 122.B block Doc 116 §116.A start.  Cluster 122.C
+  (atomic) + 122.D (libc) are *not* on Doc 116's critical path.
+
+** §6.4 Memory cross-refs
+
+- =project_nelisp_pure_elisp_roadmap= — full Doc 114-128 chain.
+  Doc 116 is one of two ~-1,500 LOC sub-projects (= other is
+  Doc 120 jit trampolines + Doc 124 nl*.rs Clone/Drop).
+- =feedback_nelisp_core_vs_layer2_boundary= — reader is a *language
+  rule* (= core, not Layer 2).  The mut-str builder it depends on
+  is Layer 2 (= memory primitive).  This boundary stays preserved:
+  Doc 122.B ships in Layer 2, Doc 116 ships in core.
+- =feedback_anvil_uses_nelisp_architecture= — dual-target Emacs /
+  NeLisp.  After Doc 116 SHIPPED, the NeLisp side has 純 elisp 化d
+  the reader; the Emacs-host side keeps using its native `read'.
+- =project_anvil_runtime_phase_b_complete= — precedent for ~5,000
+  LOC Rust crate deletion when elisp equivalent suffices.  Doc 116
+  applies the same pattern at smaller scale (~1,500 LOC).
