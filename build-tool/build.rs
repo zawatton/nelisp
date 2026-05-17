@@ -195,6 +195,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // entries wrapping libm sqrt / sin / cos for the
         // `tests/elisp_cc_extern_call_f64_probe.rs' round-trip).
         "nelisp-cc-extern-call-f64.el",
+        // Doc 116 §116.B — pure-elisp Reader parser.  Single source
+        // file defining `nelisp_reader_parse_one' + ~25 tail-call
+        // helpers; consumes §116.A's tokens via `extern-call' and
+        // builds Sexp values via the §101/§111/§122 grammar
+        // primitives.  Top-level wire-in (`read_str' / `read_all'
+        // public entry) is §116.C; Rust parser.rs deletion is §116.D.
+        "nelisp-cc-reader-parser.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

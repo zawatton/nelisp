@@ -519,6 +519,15 @@
     (nelisp-cc-extern-call-f64
      :source-var nelisp-cc-extern-call-f64--cos-source
      :output "nelisp_libm_cos.o"
+     :requires-arch x86_64)
+    ;; Doc 116 §116.B — pure-elisp Reader parser.  Single manifest
+    ;; entry; the source defconst is a `(seq DEFUN ...)' of ~25
+    ;; mutually-recursive helpers + one public entry
+    ;; `nelisp_reader_parse_one'.  Consumes §116.A's token stream
+    ;; via `extern-call nelisp_reader_lex_one'.  Linux-x86_64 only.
+    (nelisp-cc-reader-parser
+     :source-var nelisp-cc-reader-parser--source
+     :output "nelisp_reader_parse_one.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

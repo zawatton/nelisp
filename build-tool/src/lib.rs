@@ -436,6 +436,38 @@ pub mod elisp_cc_spike {
             cursor_out_slot: *mut Sexp,
             scratch_mutstr_slot: *mut Sexp,
         ) -> i64;
+        // Doc 116 §116.B — pure-elisp Reader parser compiled from
+        // `lisp/nelisp-cc-reader-parser.el'.  Consumes the §116.A
+        // token stream (via internal `extern-call nelisp_reader_lex_one'
+        // calls) and writes one parsed top-level `Sexp' value into
+        // `*result_slot'.  Returns i64 status (1 = success, anything
+        // else = parse error).
+        //
+        // Args:
+        //   str_ptr:     `*const Sexp' (Sexp::Str / Sexp::Symbol with
+        //                the UTF-8 source bytes).
+        //   cursor_slot: `*mut Sexp::Int(_)' — current byte cursor.
+        //                Read via `sexp-int-unwrap'; lexer writes the
+        //                next cursor back via the same slot.  Must
+        //                be pre-initialised to `Sexp::Int(start_cursor)'.
+        //   result_slot: `*mut Sexp', pre-init to `Sexp::Nil';
+        //                receives the parsed form.
+        //   slot_pool:   `*const Sexp::Vector(N)' of pre-Nil slots.
+        //                Layout: slot 0 = SCRATCH MutStr, slot 1 =
+        //                PAYLOAD Sexp::Str, slot 2 = CONST-NIL,
+        //                slots 3+4d..6+4d = per-depth working slots.
+        //                Caller must pre-allocate Sexp::MutStr at
+        //                slot 0 (via `nl_alloc_mut_str') and pre-Nil
+        //                slot 2.
+        //   depth:       i64 — initial recursion depth (= 0 for the
+        //                top-level call).
+        fn nelisp_reader_parse_one(
+            str_ptr: *const Sexp,
+            cursor_slot: *mut Sexp,
+            result_slot: *mut Sexp,
+            slot_pool: *const Sexp,
+            depth: i64,
+        ) -> i64;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
         // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
@@ -1283,6 +1315,41 @@ pub mod elisp_cc_spike {
             payload_slot,
             cursor_out_slot,
             scratch_mutstr_slot,
+        )
+    }
+
+    /// Doc 116 §116.B — pure-elisp Reader parser.  Parses ONE
+    /// top-level form starting at `*cursor_slot' (a `Sexp::Int'
+    /// holding the byte cursor) and writes the parsed `Sexp' value
+    /// into `*result_slot'.  Returns the i64 status (1 = success,
+    /// other = error).  See `nelisp_reader_parse_one' extern decl
+    /// above for the full ABI contract.
+    ///
+    /// # Safety
+    /// - `str_ptr' must be non-null and point at a `Sexp::Str' /
+    ///   `Sexp::Symbol' value with the source bytes.
+    /// - `cursor_slot' must be non-null + writable + pre-initialised
+    ///   to `Sexp::Int(start_cursor)'.
+    /// - `result_slot' must be non-null + writable + pre-initialised
+    ///   to `Sexp::Nil'.
+    /// - `slot_pool' must point at a `Sexp::Vector' of at least
+    ///   `3 + 4 * max_depth' Nil-initialised slots, with slot 0
+    ///   carrying a fresh `Sexp::MutStr(_)' (= caller calls
+    ///   `mut_str_make_empty' on slot 0 before the parse) and slot
+    ///   2 left as `Sexp::Nil' forever (= "constant nil" source).
+    pub unsafe fn reader_parse_one(
+        str_ptr: *const Sexp,
+        cursor_slot: *mut Sexp,
+        result_slot: *mut Sexp,
+        slot_pool: *const Sexp,
+        depth: i64,
+    ) -> i64 {
+        nelisp_reader_parse_one(
+            str_ptr,
+            cursor_slot,
+            result_slot,
+            slot_pool,
+            depth,
         )
     }
 
