@@ -4,15 +4,24 @@
 
 * Status
 
-- *State*: DRAFT 2026-05-13 (Phase 1 design only)
+- *State*: PARTIAL SHIPPED 2026-05-17 — Phase 1 / Phase 2 / Phase 3 all SHIPPED; Phase 4-8 pending.
 - *Parent track*: =project_env_rs_long_term_deletion_roadmap= memory
   (= 8-phase, 6-12 months estimate from §0.4 audit).
 - *Sibling*: Doc 110 (= f64 ABI track; parallel capability
-  expansion, no shared dependencies).
+  expansion, no shared dependencies); Doc 104 (= Phase 3 sub-design).
 - *Scope*: design only.  Phase 1 ships this DRAFT + (optional)
   a stub `lisp/nelisp-stdlib-fast-hash.el' once the buckets
   representation is settled.  Implementation work for Phase 2+
   (= migration of actual storage / methods) is out of scope.
+- *Per-phase ship status*:
+  - Phase 1 — *SHIPPED* (2026-05-13〜): =lisp/nelisp-stdlib-fast-hash.el= + =lisp/nelisp-env.el= shipped.
+  - Phase 2 — *SHIPPED* (2026-05-15〜2026-05-16): Phase 2.a (slim primitive routing through elisp env table) + Phase 2.b (=env.globals: HashMap= physically retired, mirror canonical).  Final commit =91266188=.
+  - Phase 3 — *SHIPPED* (2026-05-16〜2026-05-17) via Doc 104 5 stages 3.a-3.e: =Env::frames: Vec<HashMap<String, FrameCell>>= physically deleted, =frames_record: Sexp= (= =nelisp-lexframe-stack=) canonical.  Final commit =9d915463=.
+  - Phase 4 (Doc 105) — *PENDING*: =capture_lexical= / =push_captured= pure elisp delegation.  Partial credit from Doc 104 Stage 3.c-d (= Rust-direct walks of elisp records already in place); full elisp call dispatch is the remaining work.
+  - Phase 5 (Doc 106) — *PENDING*: defvar idempotence / constant flag / =unbound-marker= sentinel handling fully on elisp side.
+  - Phase 6 (Doc 107) — *PENDING*: extern_builtins migration (= option (a) keep Rust-side + slim primitive routing).
+  - Phase 7 (Doc 108) — *PENDING*: last-mile shrink (= phantom shims routing to elisp via slim primitives).
+  - Phase 8 (Doc 109) — *PENDING*: =env.rs= file physically DELETED, residual ~50 LOC absorbed into =eval/mod.rs=.
 
 ** Why this DRAFT exists (= roadmap context)
 
@@ -351,7 +360,7 @@ even smaller.
 
 Each phase is its own Doc 103+ design document.  Brief sketches:
 
-** Phase 2 (Doc 103) — `nelisp-env.el` skeleton + globals migration (1-2 sessions)
+** Phase 2 (Doc 103) — `nelisp-env.el` skeleton + globals migration (1-2 sessions) [SHIPPED 2026-05-16, commit =91266188=]
 
 *Scope*:
 - Ship `lisp/nelisp-stdlib-fast-hash.el' (= §2.2 implementation)
@@ -372,7 +381,11 @@ Each phase is its own Doc 103+ design document.  Brief sketches:
   helpers obsoleted by the routing).
 - Elisp: +200 (fast hash + env module).
 
-** Phase 3 (Doc 104) — Frame stack migration (1 session)
+** Phase 3 (Doc 104) — Frame stack migration (1 session) [SHIPPED 2026-05-17, commit =9d915463=]
+
+*Ship summary*: Doc 104 broke the single-session estimate into 5 stages (3.a–3.e); all SHIPPED 2026-05-16〜2026-05-17. =Env::frames: Vec<Frame>= field + =type Frame= alias physically deleted, =frames_record: Sexp= (= elisp =nelisp-lexframe-stack=) canonical. Cumulative LOC delta: +547 Elisp (lexframe substrate), ~+471 Rust net (helpers + tests + dead-code allow-bumps for stage-progressive ship); production-only delta ~+200 (helpers) − ~30 (field) ≈ +170. The original estimate (-80 Rust / +50 Elisp) was off because the per-helper bucket-alist primitive expansion the doc rolled up into =mirror_*=-style summaries materialised at +200 prod + +140 test. See Doc 104 Status header for per-stage commit list.
+
+
 
 Move `frames: Vec<HashMap<String, FrameCell>>' to an elisp
 Sexp::Vector of fast hashtables.  `push_frame' / `pop_frame' /

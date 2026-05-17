@@ -4,10 +4,17 @@
 
 * Status
 
-- *State*: DRAFT 2026-05-16
+- *State*: SHIPPED 2026-05-17 — Stage 3.a / 3.b / 3.c / 3.d / 3.e all SHIPPED; =Env::frames: Vec<Frame>= field + =type Frame= alias physically deleted, mirror (=frames_record: Sexp= → =nelisp-lexframe-stack=) is canonical.
 - *Parent track*: Doc 102 §3 Phase 3 (= 1 session, "move =frames: Vec<HashMap<String, FrameCell>>= to an elisp =Sexp::Vector= of fast hashtables"). Doc 102 Phase 2 (`globals`) SHIPPED at commit `91266188` (= `env.globals: HashMap` retired, mirror canonical).
 - *Sibling*: Doc 110 (= f64 ABI), Doc 98 (= frozen-heap baker §98.2-5).
 - *Scope*: design only.  Implementation ships under feat/doc-104-* branches per stage; per Doc 102 §1.2 monotonic-shrink rule, each ship commit must produce non-positive Rust LOC delta or pair primitive + consumer atomically.
+- *Ship commits (cumulative)*:
+  - Stage 3.a (=8e06a550=, 2026-05-16) — =lisp/nelisp-lexframe.el= skeleton (+547 Elisp).
+  - Stage 3.b (=c99b63e4=, 2026-05-17) — =frames_record= field + 7 Rust-direct helpers + dual-write + 6 regression tests (+469/-2).
+  - Stage 3.c (=947b3a5b=, 2026-05-17) — =find_frame_cell= + =capture_lexical= read flip to mirror (+24/-21).  Reordered vs. Doc §3.c/§3.d as written (= read-flip first to keep production green).
+  - Stage 3.d (=beb09a2f=, 2026-05-17) — Vec writes retired, mirror canonical (+46/-44).
+  - Stage 3.e (=9d915463=, 2026-05-17) — =frames= field + =type Frame= alias deleted (+5/-8).
+- *Cumulative LOC delta*: ~+547 Elisp (lexframe substrate); ~+471 Rust net (helpers + tests + dead-code allow-bumps).  Doc 104 §3 estimate (+20 net) was below actuals — the per-helper bucket-alist primitive expansion the doc rolled up into =mirror_*=-style summaries materialised at +200 prod + +140 test in implementation.  Production-only delta is dominated by the new helpers; the retired =Env::frames= field is ~30 LOC.
 
 ** Why this DRAFT exists (= what changed since Doc 102 §3 sketch)
 
@@ -238,7 +245,7 @@ Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Re
 
 * §3 Stage outline
 
-** Stage 3.a — =lisp/nelisp-lexframe.el= skeleton (= no Rust changes)
+** Stage 3.a — =lisp/nelisp-lexframe.el= skeleton (= no Rust changes) [SHIPPED 2026-05-16, =8e06a550=]
 
 *Scope*:
 
@@ -253,7 +260,7 @@ Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Re
 
 *LOC delta*: Rust 0, Elisp ~+80.
 
-** Stage 3.b — =frames_record= field + Rust-direct helpers (= dual-write)
+** Stage 3.b — =frames_record= field + Rust-direct helpers (= dual-write) [SHIPPED 2026-05-17, =c99b63e4=]
 
 *Scope*:
 
@@ -274,7 +281,11 @@ Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Re
 
 *LOC delta*: Rust +60 (helpers) + +30 (tests).
 
-** Stage 3.c — write-path switch to mirror-only
+** Stage 3.c — read-path switch to mirror [SHIPPED 2026-05-17, =947b3a5b=] (= reordered, see §3.note below)
+
+*Implementation note (2026-05-17)*: shipped as the *read flip* (=find_frame_cell=, =capture_lexical= → mirror walks).  As written, Doc §3.c retired Vec writes first, but that left =find_frame_cell= reading an empty Vec post-bootstrap → void-variable for every let-binding.  Implementation reordered to read-flip-then-write-drop, ship order: §3.a → §3.b → §3.c-as-read-flip → §3.d-as-write-drop → §3.e.  Original §3.c / §3.d content swapped:
+
+** Stage 3.c — write-path switch to mirror-only (ORIGINAL TEXT, superseded)
 
 *Scope*:
 
@@ -285,7 +296,11 @@ Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Re
 
 *LOC delta*: Rust -10 (= drop 3 Vec writes + their let-bindings).
 
-** Stage 3.d — read-path switch to mirror
+** Stage 3.d — write-path switch to mirror-only [SHIPPED 2026-05-17, =beb09a2f=] (= reordered, see §3.c note above)
+
+*Implementation note (2026-05-17)*: shipped as the *write retire* (Vec writes dropped from =push_frame= / =pop_frame= / =bind_local= / =push_captured=; mirror canonical for all writes; Vec stays empty post-bootstrap until field deletion at §3.e).  Original §3.d content (= "read-path switch to mirror") was completed at §3.c above due to the reorder.
+
+** Stage 3.d — read-path switch to mirror (ORIGINAL TEXT, superseded — work landed at §3.c)
 
 *Scope*:
 
@@ -296,7 +311,7 @@ Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Re
 
 *LOC delta*: Rust -20 (= replace iterator bodies with mirror walks).
 
-** Stage 3.e — retire =frames: Vec<Frame>= field
+** Stage 3.e — retire =frames: Vec<Frame>= field [SHIPPED 2026-05-17, =9d915463=]
 
 *Scope*:
 
