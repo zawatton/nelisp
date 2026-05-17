@@ -1,0 +1,410 @@
+#+TITLE: Doc 115 — env_lexframe_phase47_shims pure elisp化 (= the last Rust intermediary)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-17
+
+* Status
+
+- *State*: DRAFT 2026-05-17 — awaiting user approval before
+  implementation.
+- *Parent*: Doc 114 (= x86_64-linux pivot, SHIPPED main =2e32f16b=).
+  Doc 102 Phase 8.b condition (a) literally satisfied (env_mirror.rs /
+  env_lexframe.rs deleted), but the 500 LOC of
+  `env_lexframe_phase47_shims.rs` remains as the last Rust
+  intermediary in the lexframe Phase 47 dispatch chain.
+- *Dependents*: this is the final step before "真の純 elisp 化"
+  (per user 2026-05-17 directive).  After Doc 115 SHIPPED, no Rust
+  code participates in env_lexframe / lexical-frame management at
+  runtime.
+- *Scope*: replace 7 `extern "C" fn nl_*' shims (=
+  `nl_frame_stack_ensure_capacity', `nl_frame_push', `nl_frame_pop',
+  `nl_frame_bind', `nl_frame_stack_find', `nl_wrap_alist_cells', plus
+  the depth read `nl_frame_stack_depth' which is already trivial =
+  one `sexp-int-unwrap') with pure-elisp Phase 47 implementations.
+  Delete the shim file outright.
+
+* §0 TL;DR
+
+** §0.1 What Doc 114 left unfinished
+
+After Doc 114 Step 5 (main =2e32f16b=), the lexframe dispatch chain is:
+
+#+begin_src
+caller (eval::env::Env method)
+   ↓
+Phase 47-compiled .o (lisp/nelisp-cc-frame-*.el)
+   ↓
+nl_frame_* extern (env_lexframe_phase47_shims.rs)  ← still Rust
+   ↓
+NlRecord / NlVector primitive ops (Rust)
+#+end_src
+
+The shim layer (= 500 LOC) is "hybrid": elisp dispatches into the
+shim, but the shim does the real work in Rust.  Per the repo's
+existence purpose (= 純 elisp化, Rust 削減 唯一の評価軸), this is a
+contradiction — the elisp `.o' files are thin trampolines back into
+Rust.
+
+Doc 115 closes the loop: the `nl_frame_*' implementations move into
+elisp, the shim file is deleted, the dispatch chain becomes:
+
+#+begin_src
+caller (eval::env::Env method)
+   ↓
+Phase 47-compiled .o (lisp/nelisp-cc-frame-*.el)  ← does the actual work
+   ↓
+NlRecord / NlVector / NlCell / NlConsBox primitive ops (extern "C",
+shared with all other Phase 47 callers)
+#+end_src
+
+** §0.2 Why this is feasible now
+
+All required Phase 47 grammar ops + ABI helpers are already SHIPPED
+on main =2e32f16b=:
+
+| Op needed                          | Source     | Status   |
+|------------------------------------+------------+----------|
+| record-slot-ref / -ref-ptr / -set | Doc 111 §111.B | SHIPPED |
+| record-make (via `nl_alloc_record') | Doc 111 §111.E #12 | SHIPPED |
+| vector-len / -ref / -ref-ptr      | Doc 111 §111.C | SHIPPED |
+| vector-make (via `nl_alloc_vector') | Doc 111 §111.E #20 | SHIPPED |
+| vector-slot-set (= `nl_vector_set_slot') | Doc 111 §111.E #12 | SHIPPED |
+| cell-make / -value / -set-value   | Doc 111 §111.D | SHIPPED |
+| cons-make / -car / -cdr / -cdr-raw | Doc 101 §101.B-D | SHIPPED |
+| sexp-int-unwrap / -make           | Doc 100        | SHIPPED |
+| sexp-tag / -write-{nil,t}         | Doc 101 §101.C | SHIPPED |
+| str-eq / symbol-eq                | Doc 101 §101.C | SHIPPED |
+
+No new ABI surface is required.  Doc 115 is *implementation only*.
+
+* §1 Shim audit (= what gets rewritten)
+
+** §1.1 The 7 shims
+
+Source-of-truth: =build-tool/src/eval/env_lexframe_phase47_shims.rs=
+@ main =2e32f16b= (501 LOC).
+
+*** nl_frame_stack_ensure_capacity (= shim #20, ~50 LOC Rust)
+
+*Behavior*: grow the backing vector inside `frames_record' to at
+least `needed' slots.  Returns the resulting capacity, or 0 on
+unbuilt mirror.
+
+*Phase 47 ops needed*: =record-slot-ref-ptr=, =vector-len=,
+=vector-slot-set= (= `nl_vector_set_slot'), =nl_alloc_vector=.
+
+*Algorithm*:
+1. Read `slots[0]' from frames_record (= backing NlVector) via
+   record-slot-ref-ptr.
+2. If `vector-len' ≥ needed → return current capacity.
+3. Compute new capacity via capacity-doubling.
+4. Allocate fresh vector via `nl_alloc_vector(new_cap)'.
+5. Copy existing slots via repeated `vector-slot-set' + vector-ref.
+6. Overwrite `slots[0]' via record-slot-set.
+7. Return new capacity.
+
+LOC estimate: ~60 elisp + 0 new Rust.
+
+*** nl_frame_push (= shim #21, ~60 LOC Rust)
+
+*Behavior*: push a fresh empty `nelisp-lexframe' record onto the
+stack.  Returns 1 on push, 0 on unbuilt mirror.
+
+*Phase 47 ops needed*: ensure_capacity (= #20, call sibling helper
+via extern-call), =record-slot-ref=, =vector-slot-set=,
+=record-slot-set= (for depth increment), =nl_alloc_record=,
+=sexp-int-unwrap/make=.
+
+*Algorithm*:
+1. Read current `depth' (= slots[1]) and `backing' (= slots[0]).
+2. Call `nelisp_frame_stack_ensure_capacity(depth + 1)' via
+   extern-call.
+3. Allocate fresh frame record via `nl_alloc_record(type_tag,
+   slot_count)' with `nelisp-lexframe' type tag.
+4. Initialize frame's slots (= 1 fast-hash-table sub-record + 16
+   nil bucket vector).
+5. `vector-slot-set(backing, depth, new_frame)'.
+6. `record-slot-set(frames_record, 1, depth + 1)' to increment.
+7. Return 1.
+
+LOC estimate: ~80 elisp.
+
+*** nl_frame_pop (= shim #22, ~30 LOC Rust)
+
+*Behavior*: pop the innermost frame (= write Nil into slot
+[depth-1], decrement depth).  Returns 1 on pop, 0 on empty stack.
+
+*Phase 47 ops needed*: =record-slot-ref-ptr= for backing,
+=sexp-int-unwrap/make= for depth, =vector-slot-set=,
+=record-slot-set=, =sexp-write-nil=.
+
+*Algorithm*:
+1. Read current depth.  If 0 → return 0.
+2. Read backing pointer.
+3. =vector-slot-set(backing, depth-1, Sexp::Nil)= (= refcount drop).
+4. =record-slot-set(frames_record, 1, depth - 1)=.
+5. Return 1.
+
+LOC estimate: ~30 elisp.
+
+*** nl_frame_bind (= shim #23, ~30 LOC Rust + uses bind_into_frame)
+
+*Behavior*: bind NAME → CELL in the innermost frame's hash table.
+Returns 1 on bind, 0 on no-op.
+
+*Phase 47 ops needed*: =record-slot-ref-ptr= (frame stack), =vector-ref-ptr=
+(active frame), =record-slot-ref= (hash-table inner record), =vector-ref-ptr=
+(bucket vector), FNV-1a hash via `nl_mirror_fnv1a_sexp' extern (shared
+with env_mirror), =cons-make=, =cons-car/-cdr=, =vector-slot-set= (=
+overwrite bucket head).
+
+*Algorithm*:
+1. Read innermost frame from `backing[depth-1]'.
+2. Read `fast-hash-table' inner record (frame's slot 0).
+3. Read `buckets' vector (= hash-table slot 1).
+4. Compute FNV-1a hash of name → bucket index via `vector-len' mod.
+5. Walk bucket cons-list, replace cell if name matches, else
+   cons-prepend new `(name . cell)' pair to bucket head.
+6. Return 1.
+
+LOC estimate: ~60 elisp (longest shim).
+
+*** nl_frame_stack_find (= shim #24, ~25 LOC + uses lookup_in_frame)
+
+*Behavior*: walk the lexframe stack innermost-first, return pointer
+to the matching pair's CDR (= cell slot), or 0 on miss.
+
+*Phase 47 ops needed*: depth read, =vector-ref-ptr=, frame
+internal walk (= same hash-table lookup as `nl_frame_bind' minus
+the cons-prepend).
+
+*Algorithm*:
+1. Read depth.  For i in [depth-1, 0]:
+   a. Read backing[i] = frame.
+   b. Compute FNV-1a hash of name.
+   c. Walk corresponding bucket cons-list checking str-eq.
+   d. On hit, return pointer to pair's CDR via cons-cdr-raw (=
+      `*const Sexp', as `i64' for the extern signature).
+2. On miss, return 0.
+
+LOC estimate: ~50 elisp.
+
+*** nl_wrap_alist_cells (= shim #26, ~50 LOC Rust)
+
+*Behavior*: walk a proper-list alist of `(symbol . value)' pairs,
+construct a new alist of `(symbol . NlCell(value))', return Sexp
+result via output slot.  Returns 1 on success, 0 on malformed input.
+
+*Phase 47 ops needed*: =cons-walk= (= proper-list iteration),
+=cons-car=, =cons-cdr=, =cell-make=, =cons-make=.
+
+*Algorithm*: standard list-rebuild fold — for each pair (sym . val)
+in input, emit (sym . cell-make(val)) in output.
+
+LOC estimate: ~40 elisp.
+
+*** nl_frame_stack_depth (= shim #19, ALREADY trivial)
+
+Already a single =sexp-int-unwrap= of `slots[1]'.  No Rust shim
+exists (= goes direct from `.o' to the Sexp byte at the
+known offset).
+
+*Status*: nothing to do; this entry counts as 0 LOC of Rust to
+remove.
+
+** §1.2 Shared dependencies
+
+- `nl_mirror_fnv1a_sexp' extern (= FNV-1a hash, currently in
+  `env_helpers.rs') is reused by `nl_frame_bind' and
+  `nl_frame_stack_find'.  Stays in Rust per Doc 111 §3.E Group C
+  classification.
+- `nl_alloc_vector', `nl_alloc_record', `nl_alloc_cell',
+  `nl_vector_set_slot', `nl_record_set_slot', `nl_cell_set_value',
+  `nl_alloc_consbox' allocators stay in Rust as small atomic
+  externs (Doc 111 §111.E §2.4 audit-approved).  These are not
+  shims; they are primitive memory operations.
+
+* §2 Implementation plan
+
+** §2.1 Per-shim cutover (= 7 single-commit steps)
+
+For each of the 7 shims (Doc 115 §1.1's ordering):
+
+1. *Write the elisp source*: `lisp/nelisp-cc-frame-XXX-impl.el'
+   (suffix `-impl' to distinguish from the existing trampoline
+   `nelisp-cc-frame-XXX.el' Agent G shipped, which currently
+   dispatches into the Rust shim).
+2. *Add manifest entry* in `scripts/compile-elisp-objects.el'.
+3. *Add build.rs source-list entry*.
+4. *Replace the existing trampoline body*: edit
+   `lisp/nelisp-cc-frame-XXX.el' to drop the `extern-call' to
+   `nl_frame_XXX' and inline (or delegate to) the new impl source.
+5. *Delete the Rust shim function* from
+   `env_lexframe_phase47_shims.rs'.
+6. *Add probe test*: extend or add
+   `build-tool/tests/elisp_cc_frame_XXX_probe.rs' to verify the
+   new pure-elisp path round-trips correctly.
+7. *Build + verify gates*: cargo build, =make compile=, lib tests
+   732+, integration tests 911+.
+
+Repeat per shim; one commit per shim with message:
+
+#+begin_src
+feat(doc-115): §115.N — elisp化 nl_frame_XXX shim
+
+Replaces the ~XXX LOC Rust shim with a Phase 47-compiled elisp
+implementation.  ABI ops: <list>.  Probe coverage: <count> cases
+including <key invariant>.
+
+Rust deletion: -XX LOC from env_lexframe_phase47_shims.rs.
+
+Co-Authored-By: ...
+EOF
+#+end_src
+
+** §2.2 Final commit — file deletion
+
+After all 7 shims are elisp-ified:
+
+- `env_lexframe_phase47_shims.rs' contains only the file header
+  doc-comment + `use' statements + the `frame_stack_view_from_ptr'
+  private helper.
+- Inline `frame_stack_view_from_ptr' usages into env_helpers.rs (=
+  it's only used internally by the shims).
+- `git rm build-tool/src/eval/env_lexframe_phase47_shims.rs'.
+- Remove `pub mod env_lexframe_phase47_shims;' from `eval/mod.rs'.
+
+Final commit message:
+
+#+begin_src
+feat(doc-115): SHIPPED — delete env_lexframe_phase47_shims.rs
+
+All 7 nl_frame_* shims are now pure elisp.  The Rust intermediary
+in the lexframe Phase 47 dispatch chain is gone.
+
+True 純 elisp 化 milestone:
+- caller → Phase 47 `.o` → primitive extern (alloc/clone only)
+- no Rust logic participates in lexframe management at runtime
+
+Rust deletion: -501 LOC.
+
+Co-Authored-By: ...
+#+end_src
+
+* §3 Verification gates (per shim + cumulative)
+
+** Per shim
+- `cargo build` clean
+- `make compile` no warnings
+- =find lisp -name "*.elc" -delete= before testing
+- `cargo test --release --lib -- --test-threads=1` shows 732 pass
+- The shim's probe test ≥ 3/3 cases
+- Integration test suite all green (911+)
+
+** Cumulative (post-Doc-115 SHIPPED)
+- `env_lexframe_phase47_shims.rs` does not exist
+- `grep -rn "nl_frame_" build-tool/src/` returns ZERO hits
+- `grep -rn "extern \"C\" fn nl_frame" build-tool/` returns ZERO hits
+- Rust LOC delta: net −501 LOC (= shim file size at start)
+- Elisp LOC delta: net +320 to +400 LOC (estimates from §1.1)
+- *Net total LOC*: ≈ −100 to −180 LOC (= the elisp version is more
+  compact than Rust because Phase 47 grammar ops are dense)
+- Doc 102 Phase 8.b condition (a) was satisfied by Doc 114; Doc 115
+  adds the deeper "no Rust logic in lexframe runtime path" property.
+
+* §4 Risk + open questions
+
+** §4.1 FNV-1a hash via extern-call
+
+The `nl_mirror_fnv1a_sexp' extern stays in Rust.  It's a hot inner
+loop (= reads `str.bytes' and produces a u32).  Pure-elisp
+re-implementation would be slower; the existing Phase 47 grammar
+doesn't have `byte-shift' / `byte-xor' ops to express FNV-1a
+densely.
+
+*Decision*: keep as Rust extern.  Doc 115 is "no Rust *logic in
+shims*", not "zero extern" — primitive memory + numeric helpers
+remain (per Doc 111 §111.E Group C / D classification).
+
+If pure-elisp FNV-1a becomes desirable later, that's a separate
+Phase 47 grammar extension (Doc 116+).
+
+** §4.2 Probe coverage drift
+
+When the per-shim probe was first written (Agent G's work), it
+exercised the Rust shim.  After elisp化, the same probe exercises
+the elisp path — but the probe's assertions may have implicitly
+depended on Rust behaviour.
+
+*Mitigation*: each per-shim commit must run the existing probe
+unchanged (= same input, same expected output).  If the probe
+fails after elisp化, that's a bug in the elisp port, not a probe
+update.
+
+** §4.3 Frame structure layout assumptions
+
+The shims hardcode:
+- `nelisp-lexframe' is a Record with `fast-hash-table' in slot 0.
+- `fast-hash-table' is a Record with `bucket-count' (slot 0),
+  `buckets' (slot 1, Vector), `size' (slot 2).
+- `frames_record' is a Record with `backing' (slot 0, Vector),
+  `depth' (slot 1, Int).
+
+Pure-elisp versions must match exactly.  Source-of-truth is the
+current shim file + `lisp/nelisp-lexframe.el'.
+
+*Decision*: each elisp impl source includes a top-of-file comment
+listing the layout assumptions (= maintenance footprint), and a
+=defconst= for the slot indices.
+
+** §4.4 Refcount discipline
+
+`vector-slot-set' / `record-slot-set' / `cell-set-value' all
+delegate to refcount-aware Rust externs (= `nl_vector_set_slot'
+clones+drops, etc.).  Pure-elisp impls do not need to manage
+refcounts explicitly — that's already encapsulated.
+
+* §5 Schedule
+
+- §115.1 (= nl_frame_stack_ensure_capacity) — simplest, no FNV hash,
+  ~60 LOC elisp.  Ship first to establish the pattern.
+- §115.2 (= nl_frame_pop) — second simplest, ~30 LOC.
+- §115.3 (= nl_frame_push) — uses §115.1 via extern-call.
+- §115.4 (= nl_wrap_alist_cells) — independent of stack ops, ~40
+  LOC.
+- §115.5 (= nl_frame_bind) — uses FNV extern.
+- §115.6 (= nl_frame_stack_find) — uses FNV extern, similar to
+  §115.5.
+- §115.7 (= file deletion + final cleanup).
+
+7 commits, roughly 1-2 days of focused parallel-Agent work or 1 week
+single-session.  Per-shim Agent dispatch is fine because each shim
+is independent (the only shared dep is FNV extern + allocator
+externs, which already exist).
+
+* §6 References
+
+- =/dev/nelisp/CLAUDE.md= — repo existence purpose.
+- =docs/design/114-x86_64-linux-pivot.org= — Doc 114 SHIPPED main
+  =2e32f16b=.
+- =docs/design/111-phase-47-sexp-record-vector-cell-abi.org= — Doc
+  111 §111.E (= 18 Phase 47 helpers, all SHIPPED).  Group C/D
+  classification grounds the §4.1 keep-FNV-extern decision.
+- =build-tool/src/eval/env_lexframe_phase47_shims.rs= @ main
+  =2e32f16b= — the 501 LOC target file.
+- =build-tool/src/eval/env_helpers.rs= — current home of FNV-1a +
+  primitive helpers Doc 115 reuses (= retained per Group C/D).
+- =lisp/nelisp-cc-frame-*.el= — current trampolines (Agent G ship
+  on main `c60c1f96', now to be repurposed as full
+  implementations).
+
+Memory cross-refs:
+
+- =feedback_anvil_uses_nelisp_architecture= — dual-target Emacs /
+  NeLisp; Doc 115 advances the NeLisp side toward "Emacs
+  primitives gone".
+- =feedback_nelisp_core_vs_layer2_boundary= — language rule = core,
+  I/O primitive = layer 2.  FNV-1a hash crosses this boundary; the
+  extern stays Layer 2.
+- =project_anvil_runtime_phase_b_complete= — precedent: anvil-runtime
+  crate deleted when elisp equivalent was sufficient.  Doc 115
+  applies the same pattern to env_lexframe_phase47_shims.
