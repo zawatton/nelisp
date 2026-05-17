@@ -173,6 +173,24 @@ pub mod elisp_cc_spike {
         // error).  The Rust shim discards the return — pre-swap
         // `writeln!' suppressed errors the same way (`let _ = ...').
         fn nelisp_bi_write_stderr_line(str_ptr: *const Sexp) -> i64;
+        // Doc 117 §117.B (cont) — I/O syscall sweep batch.  Twin of
+        // `nelisp_bi_write_stderr_line' modulo (fd=1, no trailing
+        // newline).  Compiled from
+        // `lisp/nelisp-cc-bi-write-stdout-bytes.el'.  Returns the
+        // libc `write(1, ...)' i64 (= bytes written, or -1 on error).
+        fn nelisp_bi_write_stdout_bytes(str_ptr: *const Sexp) -> i64;
+        // Doc 117 §117.B (cont) — read-side counterpart of the I/O
+        // sweep batch.  Compiled from
+        // `lisp/nelisp-cc-bi-read-stdin-bytes.el'.  Issues a single
+        // `read(0, buf_ptr, limit)' libc syscall against fd 0 (stdin).
+        // The destination buffer is Rust-owned (= `Vec<u8>` allocated
+        // in the shim before the call).  Returns the libc `read(2)'
+        // i64: > 0 = bytes received, 0 = EOF, -1 = errno set.  The
+        // Rust shim wraps the bytes into `Sexp::Str' via
+        // `String::from_utf8_lossy' (= no Phase 47 grammar equivalent
+        // for the lossy UTF-8 path today; future §122.X op would let
+        // the wrap migrate too).
+        fn nelisp_bi_read_stdin_bytes(buf_ptr: *mut u8, limit: i64) -> i64;
         // Doc 111 §111.D — Cell read+write ops compiled from
         // `lisp/nelisp-cc-cell-ops.el'.  Each op is a separate `.o' in
         // the static archive so the integration test in
@@ -907,6 +925,61 @@ pub mod elisp_cc_spike {
     ///   non-string variant yields a 0-length `write' rather than UB.
     pub unsafe fn bi_write_stderr_line(str_ptr: *const Sexp) -> i64 {
         nelisp_bi_write_stderr_line(str_ptr)
+    }
+
+    /// Doc 117 §117.B (cont) — `(nelisp--write-stdout-bytes STR)'
+    /// algorithmic body via the Phase 47 elisp object compiled from
+    /// `lisp/nelisp-cc-bi-write-stdout-bytes.el'.
+    ///
+    /// Twin of [`bi_write_stderr_line`] modulo (fd=1, no trailing
+    /// newline).  The elisp body issues
+    /// `write(1, str-bytes-ptr(str), str-len(str))' — a single libc
+    /// `write' syscall against fd 1 (stdout).  The Rust shim
+    /// (`eval::builtins::bi_write_stdout_bytes') keeps:
+    ///   - arity check (1 arg)
+    ///   - `WrongType' dispatch (`Sexp::Str' / `Sexp::MutStr' only)
+    ///   - the final `out.flush()' call
+    ///   - the `Sexp' return value (= `args[0].clone()')
+    ///   - I/O error → `EvalError::Internal' (= the pre-swap behaviour
+    ///                  used `map_err' instead of silently ignoring).
+    ///
+    /// # Safety
+    /// Identical contract to [`bi_write_stderr_line`].
+    pub unsafe fn bi_write_stdout_bytes(str_ptr: *const Sexp) -> i64 {
+        nelisp_bi_write_stdout_bytes(str_ptr)
+    }
+
+    /// Doc 117 §117.B (cont) — `(read-stdin-bytes LIMIT)' syscall body
+    /// via the Phase 47 elisp object compiled from
+    /// `lisp/nelisp-cc-bi-read-stdin-bytes.el'.
+    ///
+    /// Issues a single `read(0, buf_ptr, limit)' libc syscall against
+    /// fd 0 (stdin).  The destination buffer is caller-owned (= Rust
+    /// `Vec<u8>` allocated in the shim before the call).  Returns the
+    /// libc `read(2)' i64: `> 0' = bytes received, `0' = EOF, `-1' =
+    /// errno set.  The Rust shim
+    /// (`eval::builtins::bi_read_stdin_bytes') keeps:
+    ///   - arity check (1 arg)
+    ///   - positive-integer validation (`Sexp::Int(n)' with `n > 0')
+    ///   - destination buffer allocation (`vec![0u8; limit]`)
+    ///   - EOF → `Sexp::Nil' branch (= `n == 0' from this fn)
+    ///   - I/O error → `EvalError::Internal' branch (= `n < 0' from
+    ///                 this fn — `errno' would land here but the libc
+    ///                 syscall's errno is currently not surfaced
+    ///                 through the elisp body; matches the pre-swap
+    ///                 `Err(e)' arm semantically for non-EOF errors).
+    ///   - successful read → truncate buf to `n' bytes + `String::
+    ///                       from_utf8_lossy' → `Sexp::Str'.
+    ///
+    /// # Safety
+    /// - `buf_ptr' must be non-null, properly aligned for `u8' (= any
+    ///   alignment), and writable for `limit' bytes.  Caller (the
+    ///   Rust shim) must hold the `Vec<u8>` alive across the call;
+    ///   `Vec::as_mut_ptr' satisfies the requirement.
+    /// - `limit' must be `> 0' and fit in the host `usize' (= caller-
+    ///   validated by the Rust shim's positive-integer dispatch).
+    pub unsafe fn bi_read_stdin_bytes(buf_ptr: *mut u8, limit: i64) -> i64 {
+        nelisp_bi_read_stdin_bytes(buf_ptr, limit)
     }
 
     /// Doc 111 §111.D — `(cell-value H SLOT)' via elisp-compiled Cell ops.

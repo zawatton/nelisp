@@ -114,6 +114,22 @@
      :source-var nelisp-cc-bi-write-stderr-line--source
      :output "nelisp_bi_write_stderr_line.o"
      :requires-arch x86_64)
+    ;; Doc 117 §117.B (cont) — I/O syscall sweep batch.
+    ;; `(nelisp--write-stdout-bytes STR)' — twin of write-stderr-line
+    ;; modulo (fd=1, no trailing newline).  Same §122.H grammar.
+    (nelisp-cc-bi-write-stdout-bytes
+     :source-var nelisp-cc-bi-write-stdout-bytes--source
+     :output "nelisp_bi_write_stdout_bytes.o"
+     :requires-arch x86_64)
+    ;; `(read-stdin-bytes LIMIT)' — the libc `read(0, buf, limit)'
+    ;; syscall lifted into elisp.  Buffer alloc + UTF-8 lossy wrap
+    ;; stay in Rust (= `from_utf8_lossy' has no Phase 47 grammar
+    ;; equivalent; future §122.X `sexp-write-str-lossy' would let the
+    ;; full body migrate).  Elisp body returns the i64 byte count.
+    (nelisp-cc-bi-read-stdin-bytes
+     :source-var nelisp-cc-bi-read-stdin-bytes--source
+     :output "nelisp_bi_read_stdin_bytes.o"
+     :requires-arch x86_64)
     ;; Doc 111 §111.D — Cell read+write op probes (= no user-visible
     ;; swap, used only by `tests/phase47_cell.rs').  Four entries, one
     ;; per grammar op (`cell-value' / `cell-set-value' / `cell-make' /

@@ -102,6 +102,15 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // form using §122.E `atomic-compare-exchange' / `ptr-read-u64'
         // against the `QUIT_FLAG' static slot in `eval/quit.rs'.
         "nelisp-cc-bi-quit-flag.el",
+        // Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
+        // `(nelisp--write-stderr-line STR)' body via §122.H
+        // `str-bytes-ptr' + libc `write(2, ...)`.
+        "nelisp-cc-bi-write-stderr-line.el",
+        // Doc 117 §117.B (cont) — I/O syscall sweep batch.  Twin
+        // write-side (stdout) + read-side (stdin) handlers.  Both
+        // use the same §122.H grammar shape modulo (fd, direction).
+        "nelisp-cc-bi-write-stdout-bytes.el",
+        "nelisp-cc-bi-read-stdin-bytes.el",
         // Doc 111 §111.D — Cell read+write op probes (4 entries,
         // shared source file, one .o per op).
         "nelisp-cc-cell-ops.el",

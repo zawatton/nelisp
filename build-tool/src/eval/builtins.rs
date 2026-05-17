@@ -1212,13 +1212,46 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
     require_arity("nelisp--write-stdout-bytes", args, 1, Some(1))?;
+    // Validate stringp + materialise the variant-uniform `Sexp::Str'
+    // view that the elisp body's `str-bytes-ptr' op can read.  Same
+    // dispatch shape as `bi_write_stderr_line' (Doc 117 §117.B /
+    // Doc 122 §122.H) — the elisp body handles all string-y variants
+    // uniformly via `nl_str_bytes_ptr', but routing through `Sexp::Str'
+    // keeps the elisp body free of any variant-specific branching.
     let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
         expected: "stringp".into(),
         got: args[0].clone(),
     })?;
+    let body_sexp = Sexp::Str(s);
+    // Doc 117 §117.B (cont): the per-payload byte-write
+    // `out.write_all(s.as_bytes())' step now runs through the Phase
+    // 47 elisp object compiled from
+    // `lisp/nelisp-cc-bi-write-stdout-bytes.el' (= a 3-arg
+    // `extern-call' to libc `write' using the §122.H `str-bytes-ptr'
+    // grammar op + the §101.C `str-len' op).  Return is the libc
+    // `write(2)' i64 — `> 0' = bytes written, `0' = success on
+    // 0-byte payload, `-1' = error.
+    let rc = unsafe {
+        crate::elisp_cc_spike::bi_write_stdout_bytes(
+            &body_sexp as *const Sexp,
+        )
+    };
+    if rc < 0 {
+        // Mirror the pre-swap `map_err' branch: I/O errors propagate
+        // through `EvalError::Internal' with the same prefix.  errno
+        // is not surfaced today (the libc `write' errno would land
+        // here but we don't materialise it across the elisp body);
+        // emit a generic message — callers that match on the prefix
+        // continue to do so.
+        return Err(EvalError::Internal(format!(
+            "nelisp--write-stdout-bytes: write returned {}",
+            rc,
+        )));
+    }
+    // Flush is kept in the Rust shim — the elisp body is exactly the
+    // syscall, no flush opcode in Phase 47's grammar.
     let mut out = std::io::stdout().lock();
-    out.write_all(s.as_bytes())
-        .and_then(|_| out.flush())
+    out.flush()
         .map_err(|e| EvalError::Internal(format!("nelisp--write-stdout-bytes: {}", e)))?;
     Ok(args[0].clone())
 }
@@ -1456,7 +1489,6 @@ fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    use std::io::Read;
     require_arity("read-stdin-bytes", args, 1, Some(1))?;
     let limit = match &args[0] {
         Sexp::Int(n) if *n > 0 => *n as usize,
@@ -1468,15 +1500,41 @@ fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
         }
     };
     let mut buf = vec![0u8; limit];
-    let mut handle = std::io::stdin().lock();
-    match handle.read(&mut buf) {
-        Ok(0) => Ok(Sexp::Nil),
-        Ok(n) => {
-            buf.truncate(n);
-            Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
-        }
-        Err(e) => Err(EvalError::Internal(format!("read-stdin-bytes: {}", e))),
+    // Doc 117 §117.B (cont): the `read(0, buf, limit)' libc syscall
+    // step now runs through the Phase 47 elisp object compiled from
+    // `lisp/nelisp-cc-bi-read-stdin-bytes.el' (= a 3-arg `extern-call'
+    // to libc `read').  The Rust shim keeps buffer allocation, EOF /
+    // err branching, and `from_utf8_lossy' wrap because Phase 47's
+    // §122.A `sexp-write-str' op uses `from_utf8_unchecked' (= would
+    // produce UB on non-UTF-8 stdin); a future §122.X
+    // `sexp-write-str-lossy' op would let the wrap migrate too.
+    let rc = unsafe {
+        crate::elisp_cc_spike::bi_read_stdin_bytes(
+            buf.as_mut_ptr(),
+            limit as i64,
+        )
+    };
+    if rc < 0 {
+        // I/O error — match the pre-swap `Err(e)' arm semantically.
+        // The libc `read' errno would land here but we don't materialise
+        // it across the elisp body; emit a generic message — callers
+        // that match on the prefix continue to do so.
+        return Err(EvalError::Internal(format!(
+            "read-stdin-bytes: read returned {}",
+            rc,
+        )));
     }
+    if rc == 0 {
+        // EOF — peer closed stdin.
+        return Ok(Sexp::Nil);
+    }
+    let n = rc as usize;
+    // Defensive clamp: libc `read' should never return > limit but
+    // guard the truncate in case of an unexpected return value (= the
+    // pre-swap body trusted `handle.read' which is bounded by buf.len).
+    let n = std::cmp::min(n, buf.len());
+    buf.truncate(n);
+    Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 // Doc 51 Track E (2026-05-04) — TTY raw-mode + non-blocking byte reader.
