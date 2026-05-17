@@ -1,0 +1,947 @@
+#+TITLE: Doc 101 — Phase 47 Sexp::Cons / Symbol / Str ABI (= list / atom layout extensions)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-17
+
+* Status
+
+- *State*: DRAFT 2026-05-17 — *depends on Doc 100 §100.B-C
+  completion*.  Doc 100 itself is still DRAFT v2 with only §100.A
+  (= =extern-call= grammar) shipped at =cab01038=.  §100.B (=
+  Sexp-layout grammar + frozen layout doc) is the prerequisite that
+  must ship before this doc's §101.B-D have a foundation to build
+  on; this doc references §100.B's CI gate (= =make sexp-abi-check=)
+  + the frozen-layout invariant throughout.
+- *Parent*: Doc 100 v2 (= Phase 47 Sexp::Int ABI MVP; §100.A
+  SHIPPED =cab01038=, §100.B-C still DRAFT / queued).  Doc 100 §0.4
+  + §5.2 + §5.3 explicitly reserved this doc number for "Sexp::Cons
+  / Symbol / Str layout extensions".
+- *Sibling*: Doc 110 (= f64 ABI track, parallel capability expansion);
+  Doc 111 (= future, Sexp::Record / Vector / Cell ABI; this doc is its
+  prerequisite).
+- *Dependents (future)*:
+  - Doc 111 — Sexp::Record / Vector / Cell layout extensions.  Needs
+    Cons ABI for record-walking helpers that return alists.
+  - Doc 112 — apply-arg-frame separation (= solve Phase 4 option B
+    layering).
+- *Scope*: design only.  Implementation is 4 sub-stages (§101.A
+  layout doc + elisp constants / §101.B Cons read ops + first
+  list-walking swap / §101.C Symbol/Str read ops + first hash-key
+  swap / §101.D Cons construction + allocator helper + first list-
+  builder swap).
+- *Doc 102 unlock relevance*: Phase 8.b condition (a) (= Phase 47
+  native compile reaches elisp helpers used by =env_mirror.rs= /
+  =env_lexframe.rs=).  Doc 101 covers ~60% of the ABI surface those
+  helpers need; Doc 111 covers the remaining ~40% (= Record / Vector
+  / Cell variants).
+
+* §0 TL;DR
+
+** §0.1 What Doc 100 leaves unfinished
+
+Doc 100 v2 *designed* the Sexp::Int ABI MVP — three Phase 47
+grammar ops (=(sexp-tag H)=, =(sexp-int-unwrap H)=, =(sexp-int-make
+SLOT N)=) that read + construct =Sexp::Int(n)= values by directly
+accessing the =#[repr(C, u8)]= byte layout.  As of 2026-05-17 only
+§100.A (= =extern-call= grammar, =cab01038=) has shipped; §100.B
+(= layout doc + 3 grammar ops + CI assertion) and §100.C (= first
+real swap =bi_truncate= Int arm) remain queued.
+
+Once §100.B-C ship, Sexp::Int reads + constructs cover ~7% of the
+Sexp variant space (= 1 of 14 variants).
+
+Every non-trivial elisp helper handles richer shapes:
+- *List walks* — every =alist=, =plist=, =body= form is a
+  =Sexp::Cons= chain.  Without Cons read ops, no helper can iterate
+  a list at native speed.
+- *Name comparison* — bucket-hash dispatch (= =mirror_lookup_entry=,
+  =frame_bind_into=) compares names byte-by-byte against
+  =Sexp::Str(name)= keys.  Without Str read ops, the comparison
+  must go through =apply_function='s ~800µs-per-call interpreted
+  path.
+- *Symbol identity* — =eq= on =Sexp::Symbol= is the substrate for
+  =(eq cell nelisp--unbound-marker)=-style checks.  Without Symbol
+  read ops, every sentinel check is interpreted.
+
+Doc 102 §3 Phase 8.b's deletion path for =eval/env_mirror.rs= /
+=eval/env_lexframe.rs= is gated on Phase 47 reaching the elisp
+helpers they currently shadow.  Doc 101 ships the layer-2 ABI that
+makes that path viable.
+
+** §0.2 The boxed-variant question
+
+Sexp::Int is an *atomic* variant — the payload (i64) lives inline in
+the Sexp slot's [8, 16) bytes.  Reads + writes are direct memory
+accesses with zero pointer indirection.
+
+Cons / Symbol / Str are *boxed* variants:
+
+- =Sexp::Cons(NlConsBoxRef)= — the slot's [8, 16) holds a
+  =NonNull<NlConsBox>= (= 8-byte pointer).  The actual car / cdr live
+  in the heap-allocated =NlConsBox= struct (=#[repr(C)]=, 72 bytes:
+  car=32, cdr=32, refcount=8).
+- =Sexp::Symbol(String)= / =Sexp::Str(String)= — the slot's [8, 32)
+  holds a =String= header struct (= 24 bytes: ptr=8, cap=8, len=8).
+  The UTF-8 bytes live in the heap-allocated buffer.
+
+Reading from a boxed variant therefore requires *two* memory accesses
+(= one to read the box pointer, one to read the box's interior); the
+first access is the same for all callers (= "load 8 bytes from slot
++ 8"), the second depends on which field is being read.
+
+** §0.3 The two architectural directions, again
+
+Doc 100 §0.2 surveyed three options for the Int ABI:
+- Option A (by-pointer struct), Option B (by-Sexp-list), Option C
+  (opaque-handle + Rust helpers, *rejected* in v2).
+
+For Cons / Symbol / Str the same options apply, with one new
+sub-question: *who allocates fresh boxed-variant payloads?*  Reads
+have no allocator question, but =cons-make=, =symbol-make=, and
+=str-make= must put a new =NlConsBox= / =String= on the heap.
+
+Two sub-options for the allocator:
+
+*Sub-option α (Rust helper)*: a tiny Rust =extern "C"= function
+=nl_alloc_consbox(car, cdr) -> *mut NlConsBox= (~10 LOC of Rust).
+Phase 47 emits =call nl_alloc_consbox= via the §100.A =extern-call=
+grammar.  Pros: trivial implementation, no elisp arena allocator
+needed.  Cons: violates "pure elisp" goal *slightly* (= still 10
+LOC of Rust on the call path, vs. 250 LOC in v1's rejected Option C).
+
+*Sub-option β (pure-elisp arena allocator)*: ~100 LOC of elisp that
+implements a bump-pointer arena over =mmap='d pages.  Pros: fully
+pure-elisp.  Cons: significant new substrate; needs its own GC story
+to interop with =NlRc='s refcount; risks Phase 47 grammar bloat (=
+arena ops are new value-producing forms).
+
+This doc picks sub-option α.  Rationale (§5.3 + Doc 100 §5.3):
+- 10 LOC of Rust allocator is far smaller than the 250 LOC v1 helper
+  crate.  The pure-elisp goal is "net Rust LOC down per swap", not
+  "zero Rust LOC ever".
+- =NlConsBox= uses =NlRc='s atomic refcount; an elisp arena would
+  have to interop with that refcount or replace it.  Both options
+  are large new design surfaces.
+- Doc 110 §2.2 already establishes the precedent that f64 literals
+  use Rust-resident rodata — i.e. the Phase 47 elisp doesn't try to
+  be entirely Rust-free, just monotonically less Rust per swap.
+
+Sub-option β remains the long-term target; Doc 101 picks α for the
+MVP.  A future Doc 101b can revisit if profiling shows the
+allocator call is a hot path.
+
+** §0.4 The pragmatic incremental path
+
+| Stage    | Scope                                                                                                | Effect |
+|----------+------------------------------------------------------------------------------------------------------+--------|
+| §101.A   | Layout doc extension (=docs/arch/sexp-abi.md=) + elisp constants for Cons/Symbol/Str.  CI drift gate already from Doc 100 §100.B. | unblock |
+| §101.B   | Phase 47 grammar gains read ops: =(cons-car H)=, =(cons-cdr H)=, =(cons-null-p H)=.  First swap: =bi_length= for cons lists.        | spike  |
+| §101.C   | Phase 47 grammar gains atom read ops: =(symbol-bytes H)= / =(symbol-len H)= / =(str-bytes H)= / =(str-len H)= / =(symbol-eq H1 H2)= / =(str-eq H1 H2)=.  First swap: =bi_eq= for symbol identity. | extend |
+| §101.D   | Phase 47 grammar gains construction ops: =(cons-make CAR CDR)= with =nl_alloc_consbox= helper, =(cons-set-car H V)= / =(cons-set-cdr H V)= mutation.  First swap: =bi_cons= construction. | builder |
+
+§101.A-C is the *read-only foundation*: ~4-5 days of focused work,
+proves that elisp =.o= files can walk Cons chains + compare names
+without going through =apply_function=.  §101.D adds the
+construction side once the read path is empirically validated.
+
+** §0.5 Scope of Doc 101
+
+This document specifies §101.A〜§101.D in implementation-ready
+detail.  §101.D's allocator design is documented but kept minimal;
+a future Doc 101b can revisit if profiling indicates need.
+
+Out of scope:
+- Sexp::Record / Sexp::Vector / Sexp::Cell ABI (= Doc 111).
+- Sexp::Float / Sexp::Nil / Sexp::T construction (= mostly trivial,
+  fold into Doc 100 follow-up if needed).
+- Sexp::MutStr (= mutable string variant).
+- Allocator alternatives (= sub-option β arena allocator).
+- Full env_mirror / env_lexframe deletion (= Doc 102 Phase 8.b
+  follow-up, depends on Doc 101 + Doc 111 + Doc 112 cumulative).
+
+* §1 Background
+
+** §1.1 What the elisp helpers in env_mirror / env_lexframe need
+
+Concrete callsites that today walk Cons / Symbol / Str via
+Rust-direct code in =build-tool/src/eval/env_mirror.rs= +
+=build-tool/src/eval/env_lexframe.rs=:
+
+*Cons walks (= bucket alist iteration)*:
+
+#+begin_src rust
+  // env_mirror.rs::mirror_lookup_entry, simplified:
+  let mut cur = bucket;
+  while let Sexp::Cons(c) = cur {
+      if let Sexp::Cons(pair) = &c.car {
+          if let Sexp::Str(k) = &pair.car {
+              if k == name { return Some(...); }
+          }
+      }
+      cur = &c.cdr;
+  }
+#+end_src
+
+This walks 5 levels of structure: bucket → cons → pair → str → bytes.
+Without Doc 101, every step uses Rust-direct accessors; with Doc 101,
+the entire walk is Phase 47-emitted machine code.
+
+*Str byte access (= FNV-1a hashing)*:
+
+#+begin_src rust
+  // env_mirror.rs::mirror_fnv1a, simplified:
+  let mut h: u32 = 0x811C9DC5;
+  for c in s.chars() {
+      h ^= c as u32;
+      h = h.wrapping_mul(0x01000193);
+  }
+  h
+#+end_src
+
+Iterates UTF-8 codepoints of a =&str=.  Without Doc 101, this is a
+Rust function called from Rust; with Doc 101's =(str-bytes)= /
+=(str-len)= primitives, an elisp version of =mirror_fnv1a= runs at
+Rust speed.
+
+*Symbol identity check (= unbound-marker comparison)*:
+
+#+begin_src rust
+  // env.rs::lookup_value, simplified:
+  if name == "nelisp--unbound-marker" {
+      return Ok(self.unbound_marker.clone());
+  }
+  let v = self.mirror_lookup_value(name);
+  if v == self.unbound_marker { ... }
+#+end_src
+
+The first comparison is =&str= equality.  The second is =Sexp= equality
+(= variant + payload check).  Both currently use Rust =PartialEq=
+implementations; Doc 101 enables elisp-side equivalents.
+
+** §1.2 The Cons / Symbol / Str memory layouts
+
+*Sexp::Cons(NlConsBoxRef)* — slot [0, 32):
+- byte [0]:    tag = 7
+- bytes [1, 8): padding
+- bytes [8, 16): =NonNull<NlConsBox>= (= 8-byte non-null pointer)
+- bytes [16, 32): unused
+
+The =NonNull<NlConsBox>= points to an =NlConsBox= struct with this
+layout (=#[repr(C)]= per =build-tool/src/eval/nlconsbox.rs:56-67=):
+
+#+begin_src text
+  NlConsBox layout:
+    [0, 32)   = car  (Sexp, 32 bytes)
+    [32, 64)  = cdr  (Sexp, 32 bytes)
+    [64, 72)  = refcount (AtomicUsize, 8 bytes)
+#+end_src
+
+*Sexp::Symbol(String)* — slot [0, 32):
+- byte [0]:    tag = 4
+- bytes [1, 8): padding
+- bytes [8, 16): String.ptr (= =*mut u8=, points at UTF-8 byte buffer)
+- bytes [16, 24): String.capacity (= usize)
+- bytes [24, 32): String.length (= usize, NOT char count)
+
+*Sexp::Str(String)* — slot [0, 32):
+- Same shape as Sexp::Symbol but tag = 5.
+
+The String header layout is the standard =Vec<u8>= header from the
+Rust standard library, which Doc 100 §1.3's frozen-layout contract
+must extend to cover.  The =String='s internal buffer is heap-
+allocated and outlives the =Sexp= value via Rust ownership rules
+(= the =Drop= impl for =Sexp::Symbol= / =Sexp::Str= frees the buffer).
+
+** §1.3 Why the layout extension is the right risk trade
+
+Doc 100 §5.1 established the principle: *freeze the layout, gate
+changes at CI*.  Doc 101 extends that contract:
+
+- =docs/arch/sexp-abi.md= grows three new sections for Cons /
+  Symbol / Str variant byte tables.
+- =build-tool/src/eval/sexp_abi_assert.rs= grows new =const _:
+  () = assert!(std::mem::offset_of!(NlConsBox, car) == 0);=-style
+  static assertions for each box-interior offset.
+- =lisp/nelisp-sexp-layout.el= grows matching =defconst= values.
+- =make sexp-abi-check= already gates drift (= shipped by Doc 100
+  §100.B); Doc 101 extends the same gate to the new offsets.
+
+The String header layout is *not stable across Rust versions* in
+principle — the Rust stdlib reserves the right to reorder fields.
+In practice the layout has been (ptr, cap, len) since Rust 1.0 and
+=cargo +nightly rustc -- -Zprint-type-sizes= shows no change is
+queued.  Doc 101 §5.4 documents the mitigation: a pinned
+=rust-toolchain.toml= file + the CI assertion will fail loudly if
+=offset_of!(String, len)= ever changes.
+
+* §2 ABI design
+
+** §2.1 Sexp::Cons read ops
+
+Three new value-producing Phase 47 grammar forms, all compiling to
+direct memory access:
+
+*1. =(cons-null-p H)= — predicate for the Sexp::Nil tag*
+
+Phase 47 sometimes needs to test "is the cdr a Cons or a Nil
+terminator" in a list walk.  =(cons-null-p H)= reads the tag byte
+at offset 0 and compares against =SEXP_TAG_NIL= (= 0).
+
+Emits:
+- =movzx rax, byte [rdi]=
+- =sub rax, 0=          (= sets ZF if tag==0)
+- =sete al=             (= bool result in al)
+
+Result: i64 0 or 1, suitable for =if= dispatch in Phase 47.
+
+*2. =(cons-car H SLOT)= — read the car field into a caller slot*
+
+Pre-condition: =H= points at a =Sexp::Cons(_)= variant.  Reads the
+=NlConsBox*= pointer at slot+8, then copies the 32-byte =car= field
+from the box's offset 0 into the caller-provided result slot.
+
+Emits:
+- =mov rsi, [rdi + 8]=   (= rsi = NlConsBox*)
+- =movdqu xmm0, [rsi + 0]=
+- =movdqu xmm1, [rsi + 16]=
+- =movdqu [rdx + 0], xmm0=
+- =movdqu [rdx + 16], xmm1=
+- =mov rax, rdx=         (= return slot pointer)
+
+(Two 16-byte SIMD copies = 32 bytes total = one =Sexp= slot.)
+
+*3. =(cons-cdr H SLOT)= — read the cdr field into a caller slot*
+
+Same shape as =cons-car= but reads from box offset 32 instead of 0:
+
+#+begin_src text
+  mov rsi, [rdi + 8]
+  movdqu xmm0, [rsi + 32]
+  movdqu xmm1, [rsi + 48]
+  movdqu [rdx + 0], xmm0
+  movdqu [rdx + 16], xmm1
+  mov rax, rdx
+#+end_src
+
+Refcount note: =cons-car= / =cons-cdr= *clone* the Sexp value out of
+the box.  The clone increments the refcount of any boxed variant
+inside the car/cdr (= recursive structure).  This matches Rust's
+=Sexp::Clone= behavior; the elisp emit must call =nl_rc_inc=
+(= a new =extern-call= per box-tagged field).
+
+For the MVP (= §101.B first swap = =bi_length=), we sidestep
+refcount entirely by *not cloning into a slot* — we only need
+"step the cdr pointer until tag==0", which can use a separate
+"raw cdr pointer" op:
+
+*3-alt. =(cons-cdr-raw H)= — read the cdr's box pointer if it's a Cons*
+
+Returns =NlConsBox*= (= the next link in the chain) or NULL if the
+cdr is not a Cons.  No cloning, no refcount touch.  Emits:
+
+#+begin_src text
+  mov rsi, [rdi + 8]            ; rsi = NlConsBox*
+  movzx rax, byte [rsi + 32]    ; rax = cdr.tag
+  sub rax, 7                    ; ZF if cdr.tag==SEXP_TAG_CONS
+  jne .not_cons
+  mov rax, [rsi + 32 + 8]       ; rax = cdr.NlConsBox*
+  ret
+.not_cons:
+  xor rax, rax                  ; rax = NULL
+  ret
+#+end_src
+
+This is the actual list-walking primitive.  =bi_length= boils down to:
+
+#+begin_src elisp
+  (defun nelisp_length_cons (head)
+    (let ((cur head)
+          (n 0))
+      (while (not (cons-null-p cur))
+        (setq n (+ n 1))
+        (setq cur (cons-cdr-raw cur)))
+      n))
+#+end_src
+
+(The actual elisp shape is more verbose due to Phase 47 grammar
+limits; see §2.3 for the real source.)
+
+*Const additions* (= =lisp/nelisp-sexp-layout.el=):
+
+#+begin_src elisp
+  (defconst nelisp-sexp--tag-cons 7)
+  (defconst nelisp-nlconsbox--offset-car   0)
+  (defconst nelisp-nlconsbox--offset-cdr   32)
+  (defconst nelisp-nlconsbox--offset-rc   64)
+  (defconst nelisp-nlconsbox--size        72)
+#+end_src
+
+** §2.2 Sexp::Symbol / Sexp::Str read ops
+
+Both variants share the =String= header layout, so the ops are
+generic over the tag:
+
+*1. =(str-len H)= — read the byte length from a Sexp::Symbol or Sexp::Str*
+
+The =String= header's =len= field lives at byte 24 of the Sexp slot
+(= padding[1..8] + ptr[8..16] + cap[16..24] + len[24..32]).
+
+Emits: =mov rax, [rdi + 24]=.
+
+Returns: i64 byte count (= NOT char count; UTF-8 multibyte chars
+count their byte size).
+
+*2. =(str-bytes H)= — read the byte pointer*
+
+Emits: =mov rax, [rdi + 8]=.
+
+Returns: =*const u8= to the UTF-8 byte buffer.  Caller must NOT
+hold the pointer past the =Sexp= value's lifetime.
+
+*3. =(str-byte-at H N)= — read a single byte by index*
+
+Composed primitive: =mov rdi, [rdi + 8]; movzx rax, byte [rdi + rsi]=.
+Useful for codepoint-walking loops (= FNV-1a hash) without exposing
+the raw byte pointer to higher-level elisp.
+
+*4. =(str-eq H1 H2)= — byte-for-byte equality*
+
+Emits a length check + =memcmp=-equivalent loop.  Two paths:
+- Inline =memcmp= for short strings (= ≤ 16 bytes): SIMD-compare
+  the whole slot.
+- =extern-call memcmp= for longer strings (= uses libc memcmp via
+  §100.A =extern-call= grammar).
+
+For the MVP (= first swap in §101.C is =bi_eq= for symbols),
+short-string inline path covers the common case (= symbol names are
+mostly 3-15 bytes).
+
+*5. =(symbol-eq H1 H2)= — alias for =(str-eq H1 H2)= with tag check*
+
+Pre-checks that both inputs are Sexp::Symbol (= tag 4); falls through
+to =str-eq= for the byte comparison.  Currently elisp =eq= on
+symbols compares by name (=NeLisp doesn't intern symbols — see
+=feedback_nelisp_runtime_vs_elisp_language=); this primitive matches
+that semantic.
+
+*Const additions* (= =lisp/nelisp-sexp-layout.el=):
+
+#+begin_src elisp
+  (defconst nelisp-sexp--tag-symbol 4)
+  (defconst nelisp-sexp--tag-str    5)
+  (defconst nelisp-string--offset-ptr  8)
+  (defconst nelisp-string--offset-cap  16)
+  (defconst nelisp-string--offset-len  24)
+  (defconst nelisp-string--header-size 24)
+#+end_src
+
+** §2.3 Worked example — =bi_length= for cons lists
+
+First real swap target.  Original Rust:
+
+#+begin_src rust
+  // build-tool/src/eval/builtins.rs (current bi_length cons arm)
+  Sexp::Cons(_) => {
+      let mut n: i64 = 0;
+      let mut cur = &args[0];
+      while let Sexp::Cons(c) = cur {
+          n += 1;
+          cur = &c.cdr;
+      }
+      Ok(Sexp::Int(n))
+  }
+#+end_src
+
+Phase 47 elisp replacement:
+
+#+begin_src elisp
+  ;; lisp/nelisp-cc-length-cons.el
+  (defconst nelisp-cc-length-cons--source
+    '(defun nelisp_length_cons (arg0 result-slot)
+       ;; arg0:        *const Sexp pointing at a Sexp::Cons(_) (or Nil)
+       ;; result-slot: *mut Sexp 32-byte slot for Sexp::Int return
+       (let ((cur-ptr (sexp-payload-ptr arg0))   ; *const NlConsBox or NULL
+             (n 0))
+         (while cur-ptr
+           (setq n (+ n 1))
+           (setq cur-ptr (cons-cdr-raw-from-box cur-ptr)))
+         (sexp-int-make result-slot n))))
+#+end_src
+
+Where:
+- =sexp-payload-ptr= reads bytes [8, 16) (= the NlConsBoxRef
+  pointer) and returns 0 if the tag isn't Cons (= treat Nil as
+  empty list).  Composed from =sexp-tag= + =mov rax, [rdi + 8]=.
+- =cons-cdr-raw-from-box= is =(cons-cdr-raw)= from §2.1 above but
+  takes the box pointer directly instead of a Sexp pointer.
+- =sexp-int-make= is the Doc 100 op for writing Sexp::Int into a
+  slot.
+
+Rust shim:
+
+#+begin_src rust
+  // build-tool/src/eval/builtins.rs (§101.B replacement)
+  Sexp::Cons(_) | Sexp::Nil => {
+      let mut result_slot: Sexp = Sexp::Nil;
+      unsafe {
+          crate::elisp_cc_spike::length_cons(
+              &args[0] as *const Sexp,
+              &mut result_slot as *mut Sexp,
+          );
+      }
+      Ok(result_slot)
+  }
+#+end_src
+
+LOC change: −5 Rust (= the original loop body), +6 elisp source,
++5 Rust for the extern wrapper.  Net Rust −0 lines, but the
+algorithm now lives only in elisp.
+
+** §2.4 Worked example — =bi_eq= for symbol identity
+
+Second real swap target (= §101.C MVP):
+
+Original Rust (= simplified):
+
+#+begin_src rust
+  // bi_eq for (Sexp::Symbol(a), Sexp::Symbol(b))
+  Ok(Sexp::from_bool(a == b))
+#+end_src
+
+Phase 47 elisp:
+
+#+begin_src elisp
+  ;; lisp/nelisp-cc-eq-symbol.el
+  (defconst nelisp-cc-eq-symbol--source
+    '(defun nelisp_eq_symbol (arg0 arg1 result-slot)
+       ;; arg0 / arg1: *const Sexp pointing at Sexp::Symbol(_) values
+       ;; result-slot: *mut Sexp 32-byte slot for Sexp::T or Sexp::Nil
+       (let ((eq-p (symbol-eq arg0 arg1)))
+         (if eq-p
+             (sexp-write-t result-slot)
+           (sexp-write-nil result-slot)))))
+#+end_src
+
+Where =sexp-write-t= / =sexp-write-nil= are trivial ops emitting
+"mov byte [rdi], 1" / "mov byte [rdi], 0".  They're not first-class
+grammar primitives in Doc 101 — they're produced by Phase 47 from
+=(sexp-int-make SLOT 1)= with the tag overridden, but for clarity
+the source uses named helpers.
+
+** §2.5 Sexp::Cons construction (= §101.D)
+
+The first three stages are read-only.  §101.D adds the construction
+side, gated on the allocator design (§0.3, §5.3).
+
+*1. =(cons-make CAR-PTR CDR-PTR SLOT)= — allocate + initialize*
+
+Pre-condition: =CAR-PTR= + =CDR-PTR= point at valid 32-byte =Sexp=
+values that will be CLONED into the new =NlConsBox=.  =SLOT= is a
+=*mut Sexp= 32-byte slot for the new =Sexp::Cons(_)= handle.
+
+Phase 47 emit:
+
+#+begin_src text
+  ; Allocate 72-byte NlConsBox via Rust helper
+  push rdi                       ; save SLOT
+  push rsi                       ; save CDR-PTR
+  push rdx                       ; (alignment + CAR-PTR)
+  call nl_alloc_consbox          ; rax = *mut NlConsBox (with car/cdr=Nil placeholder)
+  pop rdx
+  pop rsi
+  pop rdi
+  ; Copy CAR (32 bytes) into NlConsBox+0
+  mov r10, rdx                   ; r10 = CAR-PTR
+  movdqu xmm0, [r10 + 0]
+  movdqu xmm1, [r10 + 16]
+  movdqu [rax + 0], xmm0
+  movdqu [rax + 16], xmm1
+  ; Increment refcount on each boxed sub-field of CAR (= recursive)
+  ; ... (lookup CAR.tag, conditional call to nl_rc_inc on box pointers)
+  ; Copy CDR (32 bytes) into NlConsBox+32
+  movdqu xmm0, [rsi + 0]
+  movdqu xmm1, [rsi + 16]
+  movdqu [rax + 32], xmm0
+  movdqu [rax + 48], xmm1
+  ; (Increment refcount on CDR sub-fields)
+  ; Write Sexp::Cons header into SLOT
+  mov byte [rdi], 7              ; tag = SEXP_TAG_CONS
+  mov [rdi + 8], rax             ; NlConsBoxRef = NlConsBox*
+  mov rax, rdi                   ; return SLOT
+#+end_src
+
+*2. =nl_alloc_consbox= Rust helper*
+
+Signature + body (~10 LOC of Rust in =build-tool/src/eval/nlconsbox.rs=):
+
+#+begin_src rust
+  /// Doc 101 §101.D — allocator helper for Phase 47-compiled elisp.
+  /// Returns a freshly-allocated NlConsBox with car=Nil, cdr=Nil,
+  /// refcount=1.  The caller is responsible for overwriting car/cdr
+  /// before any other code observes the box.
+  ///
+  /// # Safety
+  /// Caller must drop the returned pointer via `nl_drop_consbox` (=
+  /// part of the §101.D ABI) or wrap into a `Sexp::Cons` whose Drop
+  /// impl invokes the standard `NlConsBoxRef::drop`.
+  #[no_mangle]
+  pub unsafe extern "C" fn nl_alloc_consbox() -> *mut NlConsBox {
+      let boxed = Box::new(NlConsBox {
+          car: Sexp::Nil,
+          cdr: Sexp::Nil,
+          refcount: AtomicUsize::new(1),
+      });
+      Box::into_raw(boxed)
+  }
+#+end_src
+
+This is the *only* Rust function added by Doc 101 — 10 LOC,
+contrasted with v1's rejected ~250 LOC helper crate.
+
+*3. =(cons-set-car H VAL)= / =(cons-set-cdr H VAL)= — mutation*
+
+For =setcar= / =setcdr=.  Wraps the existing =NlConsBox::set_car=
+/ =set_cdr= unsafe methods (= drop-then-write semantics in
+=build-tool/src/eval/nlconsbox.rs:85=).
+
+Emit:
+- Read box pointer: =mov rsi, [rdi + 8]=
+- Drop old car/cdr (= invokes =nl_drop_sexp= via extern-call;
+  conditional on tag for box variants)
+- Write new car/cdr (= 32-byte SIMD copy as in =cons-car=)
+
+** §2.6 Memory management for boxed variants
+
+Doc 100 §2.4 sidestepped the allocator question by using caller-owned
+slots (= no fresh allocations).  Doc 101 cannot sidestep it for
+=Cons::make= / =Symbol::make= / =Str::make=, which produce heap-
+allocated boxes.
+
+*The Doc 101 model*:
+
+- *Argument ownership*: caller's =*const Sexp= pointers are *borrowed*
+  for the duration of the elisp call.  The elisp body may read fields
+  but must not extend the lifetime (= no storing the pointer in a
+  global).
+- *Result ownership*: when the elisp body produces a freshly-allocated
+  =NlConsBox=, it stores the =NlConsBoxRef= into the caller's result
+  slot.  The slot's =Drop= impl frees the box when the Rust =Sexp=
+  value is dropped (= the refcount drops to 0 since elisp creates with
+  refcount=1, and the slot's =NlConsBoxRef= owns that count).
+- *Clone semantics*: when =cons-car= / =cons-cdr= copies a Sexp value
+  out of an =NlConsBox=, the copy increments the refcount of any
+  boxed sub-fields.  Emit-time conditional: dispatch on the tag of
+  the copied value, =call nl_rc_inc= for box-tagged variants.
+
+This matches Rust =Sexp::Clone= semantics so caller's =PartialEq= /
+=Drop= round-trips remain sound.
+
+Symbol / Str construction: same pattern but allocates a =String= via
+=nl_alloc_string(ptr, len) -> String= (= bumps the new Rust helper
+count to 2; still ~20 LOC total).  Deferred to a follow-up §101.E if
+profiling shows construction of symbols/strings is needed; for now
+all symbol/string callers can produce =Sexp::Symbol= / =Sexp::Str=
+via the Rust =Sexp= constructors and pass *into* elisp.
+
+** §2.7 ELF / linker mechanics (= unchanged from §100.A)
+
+The read-only ops (§101.B-C) compile to *direct memory access*
+instructions with no extern symbol references — same as Doc 100
+§2.5.
+
+The construction ops (§101.D) need =call nl_alloc_consbox= and
+=call nl_rc_inc=, which use the §100.A =extern-call= grammar and
+emit PLT32 relocations.  No new relocation types, no new linker
+behavior.
+
+* §3 Stage breakdown
+
+** §3.A Stage 101.A — Layout extension + elisp constants (~1-2 days)
+
+*Scope*:
+
+1. Extend =docs/arch/sexp-abi.md= with three new sections (Cons,
+   Symbol, Str) documenting tag values + payload offsets + box
+   layouts.
+2. Extend =lisp/nelisp-sexp-layout.el= with the constants listed in
+   §2.1 + §2.2 (= 11 new =defconst= forms).
+3. Extend =build-tool/src/eval/sexp_abi_assert.rs= with new static
+   assertions for each NlConsBox / String offset.
+4. =make sexp-abi-check= (= existing CI gate from Doc 100 §100.B)
+   automatically picks up the new constants and offsets — no new
+   target.
+
+*LOC delta*:
+- =docs/arch/sexp-abi.md=                  : +80 (markdown extensions)
+- =lisp/nelisp-sexp-layout.el=             : +20 (11 new defconst)
+- =build-tool/src/eval/sexp_abi_assert.rs= : +25 (5 new const_assert)
+- *Net Rust*: +25 (= CI assertion only)
+
+*Verification gate*:
+- =make sexp-abi-check= green.
+- Layout doc renders cleanly in the project's doc browser.
+
+** §3.B Stage 101.B — Cons read ops + =bi_length= swap (~3-4 days)
+
+*Scope*:
+
+1. Add =cons-null-p=, =cons-car=, =cons-cdr=, =cons-cdr-raw=,
+   =sexp-payload-ptr= as new value forms in
+   =lisp/nelisp-phase47-compiler.el='s =parse-value= dispatch.
+2. Add the IR + emit cases for each (= ~30 LOC of elisp per op).
+3. Add =lisp/nelisp-cc-length-cons.el= with the §2.3 source.
+4. Add to =scripts/compile-elisp-objects.el= manifest.
+5. Add =extern "C"= declaration to =build-tool/src/lib.rs=
+   =elisp_cc_spike= module.
+6. Replace =bi_length='s Cons arm in =build-tool/src/eval/builtins.rs=
+   per §2.3.
+7. Probe test =build-tool/tests/elisp_cc_length_cons_probe.rs= with
+   nil, 1-element, 100-element, deeply-nested cases.
+
+*LOC delta*:
+- =lisp/nelisp-phase47-compiler.el=                 : +150 (5 new emit ops + IR + parse)
+- =lisp/nelisp-cc-length-cons.el=                   : +35 (new)
+- =scripts/compile-elisp-objects.el=                : +5 (manifest entry)
+- =build-tool/src/lib.rs=                            : +15 (extern + wrapper)
+- =build-tool/src/eval/builtins.rs=                  : ~+5 / -5 (= shim replaces loop body)
+- =build-tool/tests/elisp_cc_length_cons_probe.rs=   : +100 (new)
+- *Net Rust algorithm-bearing code*: −5 (= original loop body gone)
+
+*Verification gate*:
+- Probe ≥ 4/4 PASS.
+- =cargo test --release --lib= no regression.
+- Production smoke: =bin/nelisp eval "(length '(a b c))"= → =3=.
+- =make sexp-abi-check= still green.
+
+** §3.C Stage 101.C — Symbol/Str read ops + =bi_eq= swap (~2-3 days)
+
+*Scope*:
+
+1. Add =str-len=, =str-bytes=, =str-byte-at=, =str-eq=, =symbol-eq=
+   as new value forms.
+2. =str-eq= short-string inline path (= ≤ 16 bytes via SIMD).
+3. =str-eq= long-string path: optional =extern-call memcmp= (=
+   Doc 101 §3.C ships only the short path; long-string falls back
+   to a Rust shim if needed, deferred to §101.C.b if profiling shows
+   need).
+4. Add =lisp/nelisp-cc-eq-symbol.el= with the §2.4 source.
+5. Add manifest entry, extern declaration, replace =bi_eq='s Symbol
+   arm.
+6. Probe test with symbol-equal + symbol-not-equal cases at common
+   lengths (= 3/8/16 bytes).
+
+*LOC delta*:
+- =lisp/nelisp-phase47-compiler.el=                : +200 (5 new emit ops + SIMD path)
+- =lisp/nelisp-cc-eq-symbol.el=                    : +30 (new)
+- =scripts/compile-elisp-objects.el=               : +5
+- =build-tool/src/lib.rs=                           : +15
+- =build-tool/src/eval/builtins.rs=                 : ~+5 / -3
+- =build-tool/tests/elisp_cc_eq_symbol_probe.rs=    : +120 (new)
+- *Net Rust*: −3 (= original Symbol arm reduced to shim call)
+
+*Verification gate*:
+- Probe ≥ 6/6 PASS.
+- =cargo test --release --lib= no regression.
+- Production smoke: =bin/nelisp eval "(eq 'foo 'foo)"= → =t=,
+  =(eq 'foo 'bar)= → =nil=.
+
+** §3.D Stage 101.D — Cons construction + =nl_alloc_consbox= + =bi_cons= swap (~2-3 days)
+
+*Scope*:
+
+1. Add =cons-make=, =cons-set-car=, =cons-set-cdr= as new value /
+   statement forms.
+2. Add =nl_alloc_consbox= Rust helper to =build-tool/src/eval/
+   nlconsbox.rs= (10 LOC).
+3. Add refcount-increment dispatch table emit path (= conditional
+   =nl_rc_inc= calls based on field tags).
+4. Add =lisp/nelisp-cc-cons-construct.el= source for =bi_cons=.
+5. Replace =bi_cons= body (= the Rust =Sexp::cons(a, b)= 1-liner).
+6. Probe test with various car/cdr type combinations.
+
+*LOC delta*:
+- =lisp/nelisp-phase47-compiler.el=                  : +250 (3 new emit ops + refcount dispatch)
+- =build-tool/src/eval/nlconsbox.rs=                 : +12 (allocator helper + extern decl)
+- =lisp/nelisp-cc-cons-construct.el=                 : +30 (new)
+- =scripts/compile-elisp-objects.el=                 : +5
+- =build-tool/src/lib.rs=                             : +15
+- =build-tool/src/eval/builtins.rs=                   : ~+5 / -2
+- =build-tool/tests/elisp_cc_cons_construct_probe.rs= : +150 (new)
+- *Net Rust*: +10 (= allocator helper) − 2 (= bi_cons body) = +8
+
+This is the first stage where Doc 101 net-adds Rust code (= the
+allocator).  Per §0.3 the trade is intentional: 10 LOC of allocator
+unlocks the full Cons-construction path that every list-building
+helper needs.  All subsequent swaps reuse the same allocator with no
+new Rust LOC.
+
+*Verification gate*:
+- Probe ≥ 5/5 PASS.
+- =cargo test --release --lib= no regression.
+- Production smoke: =bin/nelisp eval "(cons 'a 'b)"= → =(a . b)=,
+  =(cons 1 (cons 2 nil))= → =(1 2)=.
+
+* §4 Verification gates (cumulative)
+
+** §4.1 Per-stage gates (recap)
+
+| Stage  | Gate                                                                          |
+|--------+-------------------------------------------------------------------------------|
+| §101.A | `make sexp-abi-check' green (= no layout drift)                              |
+| §101.B | probe ≥ 4/4 + cargo test --lib no regression + length production smoke      |
+| §101.C | probe ≥ 6/6 + cargo test --lib no regression + eq production smoke          |
+| §101.D | probe ≥ 5/5 + cargo test --lib no regression + cons production smoke        |
+
+** §4.2 Cumulative gate (= Doc 101 ship-ready)
+
+After §101.D:
+
+1. =make test= green (= full elisp + Rust suite).
+2. =make sexp-abi-check= green (= layout drift gate covers
+   Int + Cons + Symbol + Str variants).
+3. =cargo build --release= clean (= default features = no image-baker).
+4. Three production builtin paths whose algorithms live only in
+   elisp source (= =bi_truncate= Int from Doc 100, =bi_length= Cons
+   + =bi_eq= Symbol from Doc 101) plus the =bi_cons= constructor.
+5. Phase 47 grammar surface stabilizes at ~25 Sexp-specific forms
+   (= 3 from Doc 100 + 13 from Doc 101).  Doc 111's Record / Vector
+   / Cell additions land on top of this foundation.
+
+** §4.3 Performance gate (= regression budget)
+
+The Doc 100 §100.C =bi_truncate= swap measured ~10-20µs/call for the
+Phase 47-emitted version (= near-zero overhead vs. native Rust).
+
+Doc 101 swaps must stay within *2× the Rust baseline* (= a Rust
+fn-call typically 10-50ns; Phase 47-emit + extern-call boundary adds
+~50-200ns for the call setup).  Probe tests include a microbench
+that compares Rust baseline against Phase 47 version.  If the
+delta exceeds 2×, the swap is deferred for emit-path optimisation.
+
+* §5 Risks / unknowns
+
+** §5.1 NlConsBox layout assumption (`#[repr(C)]`)
+
+The =NlConsBox= struct's =#[repr(C)]= attribute guarantees field
+ordering matches declaration order (= car, cdr, refcount).  Removing
+this attribute would silently break Doc 101's emit code.
+
+*Mitigation*: =build-tool/src/eval/sexp_abi_assert.rs= adds
+=const _: () = assert!(std::mem::offset_of!(NlConsBox, car) == 0);=
+plus matching assertions for cdr (= 32) and refcount (= 64).  CI
+gate via =make sexp-abi-check=.
+
+** §5.2 String header layout drift across Rust versions
+
+Doc 101 depends on =String='s internal layout being (ptr, cap, len)
+at offsets (0, 8, 16) of the String struct.  This has been stable
+since Rust 1.0 but is *not* a formal API contract — the stdlib
+reserves the right to reorder fields.
+
+*Mitigation*: =const _: () = assert!(std::mem::offset_of!(String,
+ptr_or_first_field) == 0);=-equivalent assertions.  =rust-toolchain.toml=
+pin keeps the toolchain fixed; CI runs =sexp-abi-check= on each
+toolchain bump as the gate.
+
+A future stronger mitigation is to define a NeLisp-internal
+=NlString= type with explicit =#[repr(C)]= layout, and migrate
+=Sexp::Symbol/Str= to hold =NlString= instead of std =String=.  This
+is ~50 LOC of churn across the Rust codebase; deferred to a future
+=NlString= proposal (= candidate Doc 121).
+
+** §5.3 Allocator design choice
+
+§0.3 picked sub-option α (= 10 LOC Rust helper) over sub-option β
+(= pure-elisp arena).  Risks of α:
+- Locks in =Box::new=-style heap allocator (= Rust's global
+  =std::alloc::GlobalAlloc=); any future NeLisp arena work has to
+  swap this out.
+- 10 LOC of Rust on the construction path violates "zero Rust on
+  call path" in the strictest reading.
+
+*Mitigation*: the allocator helper is a single function with no
+internal state — swapping to sub-option β later only requires
+replacing =Box::new= with the arena's bump-pointer call.  The
+=extern "C"= signature stays identical.
+
+If sub-option β is later ranked as the right path, a follow-up Doc
+101b can swap the implementation transparently (= no Phase 47
+grammar churn, no probe-test churn).
+
+** §5.4 Refcount maintenance correctness
+
+When =cons-car= / =cons-cdr= clone a Sexp value out of an NlConsBox,
+the refcount of any boxed sub-fields must be incremented (= the
+same semantic as =Sexp::Clone=).  The Phase 47 emit's
+conditional-=nl_rc_inc= dispatch table must cover every box-tagged
+Sexp variant.
+
+*Mitigation*: =sexp_abi_assert.rs= adds a "box-variant tag set"
+constant (= bitset of which tags are boxed); Phase 47 emit reads
+this same constant from the elisp side (= =defconst
+nelisp-sexp--box-tag-mask=); CI drift gate checks the bitset.
+Probe tests include a refcount-leak assertion (= alloc + clone N
+times + drop N+1 times, expect zero leaks).
+
+** §5.5 Performance of =str-eq= for long strings
+
+The §2.2 short-string inline path covers ≤16-byte names (= ~95% of
+mirror lookups).  For longer keys (= rare user-defined names), the
+emit calls =extern memcmp=.  The =memcmp= call setup may dominate
+for medium-length names (= 17-32 bytes); profiling at §101.C
+ship-time will decide whether a 17-32-byte SIMD path is worth
+adding.
+
+* §6 References
+
+** §6.1 Parent docs
+
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= §0.4 / §5.2 / §5.3
+  (= explicit Doc 101 reservation + allocator question deferred here)
+- =docs/design/110-phase-47-f64-abi.org= (= sibling track, same
+  per-type-doc pattern)
+- =docs/design/102-env-rs-elisp-migration.org= §3 Phase 8.b (= the
+  consumer that drives Doc 101's priority)
+- =docs/design/97-phase-47-sexp-to-asm-compiler.org= (= base Phase 47
+  compiler that Doc 101 extends)
+
+** §6.2 Memory entries (= context)
+
+- =project_doc_99_phases_a_b_c_shipped= — §99 SHIPPED state +
+  Phase 47 build chain wiring
+- =feedback_nelisp_runtime_vs_elisp_language= — symbol non-interning
+  in NeLisp (= why =symbol-eq= compares by name not by pointer)
+- =feedback_nelisp_core_vs_layer2_boundary= — what belongs in Phase
+  47 core vs Layer 2 packages (= allocator question framing)
+
+** §6.3 Code references
+
+- =build-tool/src/eval/sexp.rs:139-160= — =Sexp= enum + =#[repr(C, u8)]=
+  declaration covering Cons / Symbol / Str
+- =build-tool/src/eval/nlconsbox.rs:56-67= — =NlConsBox= layout
+  (=#[repr(C)]= car/cdr/refcount)
+- =build-tool/src/eval/nlconsbox.rs:85-101= — =set_car= / =set_cdr=
+  mutation methods (= §2.5 const-set-car / cons-set-cdr Phase 47
+  emit wraps these via =extern-call=)
+- =build-tool/src/eval/env_mirror.rs= — env_mirror Rust-direct walks
+  (= primary Doc 101 consumer for Phase 8.b)
+- =build-tool/src/eval/env_lexframe.rs= — env_lexframe Rust-direct
+  walks (= same)
+
+** §6.4 Commit references
+
+- §100.A SHIPPED — =cab01038= (2026-05-11)
+- §101.A — TBD
+- §101.B — TBD
+- §101.C — TBD
+- §101.D — TBD
+
+** §6.5 Layout source-of-truth
+
+- =docs/arch/sexp-abi.md= — Doc 100 §100.B canonical byte-offset
+  table; Doc 101 §101.A extends with Cons / Symbol / Str sections.
+- =lisp/nelisp-sexp-layout.el= — elisp constants; Doc 101 §101.A
+  extends with 11 new defconst.
+- =build-tool/src/eval/sexp_abi_assert.rs= — Rust static assertions;
+  Doc 101 §101.A extends with NlConsBox + String offset asserts.
+- =Makefile= =sexp-abi-check= target — Doc 100 §100.B gate, covers
+  new constants automatically.
