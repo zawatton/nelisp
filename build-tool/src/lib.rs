@@ -305,6 +305,17 @@ pub mod elisp_cc_spike {
             cell_slot: *mut Sexp,
             inner_slot: *mut Sexp,
         ) -> i64;
+        // Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash compiled
+        // from `lisp/nelisp-cc-fnv1a.el'.  Replaces the deleted
+        // Rust `mirror_fnv1a' free fn + `nl_mirror_fnv1a_sexp'
+        // extern wrapper in `env_helpers.rs'.  `str_ptr' must
+        // point at a `Sexp::Str(_)' or `Sexp::Symbol(_)'; the
+        // helper reads bytes via `str-byte-at' (= matches the
+        // 24-byte `String' header layout shared by both arms).
+        // Returns: i64 — the 32-bit hash zero-extended into the
+        // low 32 bits (= `(logand h #xFFFFFFFF)' after every
+        // multiply guarantees the high 32 bits are 0).
+        fn nelisp_fnv1a(str_ptr: *const Sexp) -> i64;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
         // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
@@ -834,6 +845,32 @@ pub mod elisp_cc_spike {
         core::ptr::write(&mut cell_slot as *mut Sexp, Sexp::Nil);
         core::ptr::write(&mut inner_slot as *mut Sexp, Sexp::Nil);
         rc
+    }
+
+    /// Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash, safe wrapper.
+    ///
+    /// `str_ptr' must be non-null and point at a `Sexp::Str(_)' or
+    /// `Sexp::Symbol(_)' (= the two arms whose payload is a `String'
+    /// with byte data at `str_ptr + 24..(+ 24 len)').  The body reads
+    /// `len' bytes via `str-byte-at' and returns the 32-bit FNV-1a
+    /// hash zero-extended to `i64'.  Empty input returns the FNV
+    /// offset basis (= `0x811C9DC5' = 2166136261).
+    ///
+    /// For ASCII inputs (= every elisp identifier that lands in the
+    /// env mirror) the result is bit-equal to the deleted Rust
+    /// `mirror_fnv1a' free fn.  Non-ASCII inputs diverge (= the elisp
+    /// path iterates bytes while the Rust path iterated Unicode
+    /// codepoints) but the env mirror never receives non-ASCII keys
+    /// so the divergence is documentation-only.
+    ///
+    /// # Safety
+    /// - `str_ptr' must be non-null and point at an initialized
+    ///   `Sexp::Str' or `Sexp::Symbol' value.  Any other tag is
+    ///   undefined behaviour (= the helper reads `String::len' at
+    ///   offset 24 and `String::ptr' at offset 16; both fields are
+    ///   only meaningful for the Str / Symbol arms).
+    pub unsafe fn fnv1a(str_ptr: *const Sexp) -> i64 {
+        nelisp_fnv1a(str_ptr)
     }
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the

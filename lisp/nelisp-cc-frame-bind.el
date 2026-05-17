@@ -39,7 +39,8 @@
 ;;   3. Read HT-PTR    = record-slot-ref-ptr FRAME 0.
 ;;   4. Read BUCKET-COUNT = sexp-int-unwrap (record-slot-ref-ptr HT 0)
 ;;      and BUCKETS-PTR  = record-slot-ref-ptr HT 1.
-;;   5. Hash NAME via extern-call nl_mirror_fnv1a_sexp.
+;;   5. Hash NAME via extern-call nelisp_fnv1a (Doc 115 §115.7
+;;      pure-elisp FNV-1a).
 ;;      idx = hash & (bucket-count - 1).  (Doc 115 §115.7 will rewire
 ;;      to a pure-elisp FNV-1a helper.)
 ;;   6. Walk the bucket chain.  If a pair's KEY matches NAME, replace
@@ -72,7 +73,8 @@
 ;;   §101.C  `str-eq'              — KEY (Sexp::Str) ↔ NAME byte compare.
 ;;   §101.D  `cons-make'           — fresh NlConsBox allocator.
 ;;   §101.D  `cons-set-cdr'        — in-place pair-cdr replace.
-;;   §100.A  `extern-call'         — `nl_mirror_fnv1a_sexp' (§111.E grp C,
+;;   §100.A  `extern-call'         — `nelisp_fnv1a' (Doc 115 §115.7 pure-elisp;
+;;                                    historically `nl_mirror_fnv1a_sexp',
 ;;                                   to be rewired in Doc 115 §115.7).
 
 ;;; Code:
@@ -182,7 +184,7 @@
            (nelisp_frame_bind_install
             (record-slot-ref-ptr ht-ptr 1)
             (logand
-             (extern-call nl_mirror_fnv1a_sexp name-ptr)
+             (extern-call nelisp_fnv1a name-ptr)
              (- (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0)) 1))
             scratch-pair-slot scratch-outer-slot)
            (sexp-int-make scratch-count-slot
@@ -208,7 +210,7 @@
                (vector-ref-ptr
                 (record-slot-ref-ptr ht-ptr 1)
                 (logand
-                 (extern-call nl_mirror_fnv1a_sexp name-ptr)
+                 (extern-call nelisp_fnv1a name-ptr)
                  (- (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
                     1))))
               name-ptr cell-ptr)
@@ -259,8 +261,9 @@ Pure-elisp innermost-frame bind.  Composes `record-slot-ref-ptr'
 slot-set' (§111.C / §111.E), `sexp-int-unwrap' / `sexp-int-make'
 (§100), `sexp-payload-ptr' / `cons-cdr-raw-from-box' (§101.B),
 `str-eq' (§101.C), `cons-make' / `cons-set-cdr' (§101.D), and an
-`extern-call' to `nl_mirror_fnv1a_sexp' for the FNV-1a hash
-(Doc 115 §115.7 rewires to a pure-elisp FNV-1a helper).
+`extern-call' to `nelisp_fnv1a' for the FNV-1a hash (Doc 115 §115.7
+pure-elisp 32-bit FNV-1a; historically routed through the now-
+deleted `nl_mirror_fnv1a_sexp' extern wrapper).
 
 Replaces the ~95 LOC Rust shim `nl_frame_bind' + private helper
 `bind_into_frame' which have been removed from `env_lexframe_phase47_shims.rs'.")

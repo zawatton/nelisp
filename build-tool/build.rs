@@ -102,9 +102,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-cell-ops.el",
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 rewrite
         // (= Group A read-path foundation, composed by 5 sibling
-        // helpers).  The bare `mirror_fnv1a' loop stays in Rust per
-        // §3.E Group C; this object calls it via the new
-        // `nl_mirror_fnv1a_sexp' extern.
+        // helpers).  Doc 115 §115.7 — calls the pure-elisp
+        // `nelisp_fnv1a' helper for the bucket-index hash (previously
+        // routed through the now-deleted `nl_mirror_fnv1a_sexp' Rust
+        // extern wrapping `env_helpers::mirror_fnv1a').
         "nelisp-cc-mirror-lookup-entry.el",
         // Doc 111 §111.E #2-6 — Group A compose-on-#1 read helpers
         // (lookup_value / lookup_function / is_bound / is_fbound /
@@ -140,6 +141,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-frame-bind.el",
         "nelisp-cc-frame-stack-find.el",
         "nelisp-cc-wrap-alist-cells.el",
+        // Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash.  Replaces
+        // the Rust `mirror_fnv1a' + `nl_mirror_fnv1a_sexp' extern.
+        "nelisp-cc-fnv1a.el",
         // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
         "nelisp-cc-jit-arith.el",
         // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.

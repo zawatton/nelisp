@@ -20,7 +20,10 @@
 //! to dispatch through these shims (= the canonical "extern wrapper"
 //! pattern from §3.E).
 
-use crate::eval::env_helpers::mirror_fnv1a;
+// Doc 115 §115.7 — `mirror_fnv1a' deleted; the file no longer needs
+// the import.  All hash sites in this Group E module already routed
+// through Phase 47 helpers' `extern-call' to `nl_mirror_fnv1a_sexp'
+// (now rewired to the pure-elisp `nelisp_fnv1a').
 use crate::eval::nlrecord::NlRecordRef;
 use crate::eval::nlvector::NlVectorRef;
 use crate::eval::sexp::Sexp;
@@ -102,8 +105,8 @@ unsafe fn frame_stack_view_from_ptr(
 // walk + str-eq) now runs in Phase 47-compiled elisp via the
 // `record-slot-ref-ptr' / `vector-ref-ptr' / `sexp-payload-ptr' /
 // `cons-cdr-raw-from-box' / `str-eq' / `logand' / `extern-call'
-// (= `nl_mirror_fnv1a_sexp', itself slated for §115.7 elisp rewrite)
-// ops.  See the safe wrapper `Spike::frame_stack_find' in
+// (= `nelisp_fnv1a', Doc 115 §115.7 pure-elisp 32-bit FNV-1a) ops.
+// See the safe wrapper `Spike::frame_stack_find' in
 // `build-tool/src/lib.rs' for the public entry point.
 //
 // §115.5 note: the pure-elisp `frame_bind' (= shipped above) byte-copies

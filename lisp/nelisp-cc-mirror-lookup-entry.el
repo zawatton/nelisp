@@ -31,9 +31,11 @@
 ;;                                  + `cons-cdr-raw-from-box' (= next-bucket walk).
 ;;   §101.C  `str-eq'               — byte-payload equality between bucket KEY (Sexp::Str)
 ;;                                    and the lookup symbol (Sexp::Symbol).
-;;   §100.A  `extern-call'          — `nl_mirror_fnv1a_sexp' for the hash (the bare
-;;                                    `mirror_fnv1a' tight loop stays in Rust per
-;;                                    Doc 111 §3.E Group C).
+;;   §100.A  `extern-call'          — `nelisp_fnv1a' for the hash (Doc 115
+;;                                    §115.7 pure-elisp 32-bit FNV-1a;
+;;                                    the previous `nl_mirror_fnv1a_sexp'
+;;                                    Rust extern + `mirror_fnv1a' free fn
+;;                                    have been deleted).
 ;;
 ;; Power-of-2 bucket-count assumption: the bootstrap mirror created by
 ;; `install_empty_mirror_rust_direct' always allocates 1024 buckets and
@@ -92,7 +94,7 @@
         (vector-ref-ptr
          (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 1)
          (logand
-          (extern-call nl_mirror_fnv1a_sexp sym-ptr)
+          (extern-call nelisp_fnv1a sym-ptr)
           (- (sexp-int-unwrap
               (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 0))
              1))))
@@ -101,7 +103,7 @@
 
 Composes record-slot-ref-ptr (§111.B) + vector-ref-ptr (§111.C) +
 cons-walk primitives (§101.B) + str-eq (§101.C) + extern-call into
-`nl_mirror_fnv1a_sexp' (§100.A) to walk the env-mirror fast-hash-
+`nelisp_fnv1a' (Doc 115 §115.7) to walk the env-mirror fast-hash-
 table without materialising any intermediate Sexp slot (= every
 hop is a raw `*const Sexp' / NlConsBox* pointer in rax).")
 

@@ -488,7 +488,9 @@ impl Env {
 }
 
 // `mirror_fnv1a' moved to `eval/env_helpers.rs' (Doc 102 Phase 8 →
-// Doc 114 Step 5 consolidation).
+// Doc 114 Step 5 consolidation); Doc 115 §115.7 deleted it outright
+// in favour of the pure-elisp `nelisp_fnv1a' Phase 47 `.o' compiled
+// from `lisp/nelisp-cc-fnv1a.el'.
 
 #[cfg(test)]
 mod tests {
@@ -629,7 +631,10 @@ mod tests {
 
     // `phase8_session4_fnv1a_matches_elisp_hash_loop' moved to
     // `eval/env_helpers.rs::tests::mirror_fnv1a_matches_elisp_hash_loop'
-    // (Doc 102 Phase 8 → Doc 114 Step 5 consolidation).
+    // (Doc 102 Phase 8 → Doc 114 Step 5 consolidation); Doc 115 §115.7
+    // deleted the test alongside the deleted Rust hash impl.  Bit-
+    // equality coverage moves to the integration probe at
+    // `tests/elisp_cc_fnv1a_probe.rs'.
 
     // ---- Doc 104 Stage 3.b regression tests ----
 

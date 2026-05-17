@@ -288,7 +288,14 @@ impl Env {
             Some(Sexp::Vector(v)) => v.clone(),
             _ => return,
         };
-        let h = mirror_fnv1a(name);
+        // Doc 115 §115.7 — pure-elisp FNV-1a via the
+        // `nelisp_fnv1a' Phase 47 `.o'.  Replaces the deleted
+        // Rust `mirror_fnv1a' free fn.  For the ASCII identifier
+        // names that land here the result is bit-equal.
+        let name_sym = Sexp::Symbol(name.into());
+        let h = unsafe {
+            crate::elisp_cc_spike::fnv1a(&name_sym as *const Sexp)
+        } as u32;
         let idx = (if bucket_count & (bucket_count - 1) == 0 {
             h & (bucket_count - 1)
         } else {
@@ -720,14 +727,19 @@ impl Env {
     }
 
     /// Internal — `nelisp-lexframe-bind' for a frame record handle.
-    /// Hashes NAME via `mirror_fnv1a' + walks the bucket alist to
-    /// update-in-place or prepend a fresh `(NAME . CELL)' pair.
+    /// Hashes NAME via the pure-elisp `nelisp_fnv1a' (Doc 115 §115.7)
+    /// + walks the bucket alist to update-in-place or prepend a
+    /// fresh `(NAME . CELL)' pair.
     fn frame_bind_into(frame: &Sexp, name: &str, cell: Sexp) {
         let Sexp::Record(frame_rec) = frame else { return };
         let ht_rec = match frame_rec.slots.get(0) { Some(Sexp::Record(r)) => r.clone(), _ => return };
         let bucket_count = match ht_rec.slots.get(0) { Some(Sexp::Int(n)) => *n as u32, _ => return };
         let buckets = match ht_rec.slots.get(1) { Some(Sexp::Vector(v)) => v.clone(), _ => return };
-        let h = mirror_fnv1a(name);
+        // Doc 115 §115.7 — pure-elisp FNV-1a.
+        let name_sym = Sexp::Symbol(name.into());
+        let h = unsafe {
+            crate::elisp_cc_spike::fnv1a(&name_sym as *const Sexp)
+        } as u32;
         let idx = (if bucket_count & (bucket_count - 1) == 0 {
             h & (bucket_count - 1)
         } else {
@@ -768,13 +780,18 @@ impl Env {
 
     /// Internal — `nelisp-lexframe-lookup' for a frame record handle.
     /// Returns `Some(cell)' when NAME is bound, `None' when absent.
+    /// Doc 115 §115.7 — hashes NAME via the pure-elisp `nelisp_fnv1a'.
     #[allow(dead_code)] // Doc 104 Stage 3.b — used by stack walks + tests
     fn frame_lookup_in(frame: &Sexp, name: &str) -> Option<Sexp> {
         let Sexp::Record(frame_rec) = frame else { return None };
         let ht_rec = match frame_rec.slots.get(0)? { Sexp::Record(r) => r, _ => return None };
         let bucket_count = match ht_rec.slots.get(0)? { Sexp::Int(n) => *n as u32, _ => return None };
         let buckets = match ht_rec.slots.get(1)? { Sexp::Vector(v) => v, _ => return None };
-        let h = mirror_fnv1a(name);
+        // Doc 115 §115.7 — pure-elisp FNV-1a.
+        let name_sym = Sexp::Symbol(name.into());
+        let h = unsafe {
+            crate::elisp_cc_spike::fnv1a(&name_sym as *const Sexp)
+        } as u32;
         let idx = (if bucket_count & (bucket_count - 1) == 0 {
             h & (bucket_count - 1)
         } else {
@@ -851,61 +868,13 @@ impl Env {
     }
 }
 
-/// FNV-1a 32-bit hash matching the elisp `nelisp--fast-hash--hash'
-/// (iterates Unicode codepoints).  Native Rust replacement for the
-/// interpreted hash loop.  Shared by `mirror_*' + `frame_*' helpers
-/// (and `env_lexframe_phase47_shims').
-pub(crate) fn mirror_fnv1a(s: &str) -> u32 {
-    let mut h: u32 = 0x811C9DC5;
-    for c in s.chars() {
-        h ^= c as u32;
-        h = h.wrapping_mul(0x01000193);
-    }
-    h
-}
-
-/// Doc 111 §111.E Group C — C-callable FNV-1a wrapper for the
-/// Phase 47-compiled `mirror_lookup_entry' helper.  The elisp body
-/// emits an `(extern-call nl_mirror_fnv1a_sexp sym-ptr)' which lands
-/// here; we reach into the `Sexp::Symbol' / `Sexp::Str' payload, run
-/// the same Unicode-codepoint loop as [`mirror_fnv1a`], and return
-/// the hash as `i64' (= rax-shaped result so the elisp call site can
-/// feed it into the `(logand H (- COUNT 1))' index mask without an
-/// extra zero-extend).
-///
-/// The hash itself stays in Rust (= Group C "stay Rust" per
-/// Doc 111 §3.E) because the inner loop is performance-critical
-/// (called once per `defvar' / `boundp' / `fboundp' / `intern' /
-/// global ref) and the Phase 47 grammar does not yet have a
-/// Unicode-codepoint iterator.  Only the surrounding bucket walk
-/// moves to elisp.
-///
-/// # Safety
-/// - `sym' must be non-null, properly aligned, and point at an
-///   initialized `Sexp::Symbol(_)' or `Sexp::Str(_)' value.  Any
-///   other tag returns 0 (= the FNV-1a hash of the empty string is
-///   `0x811C9DC5', not 0, so this sentinel cannot collide with a
-///   legitimate empty-string hash and the elisp walker will simply
-///   fall through to the bucket lookup with idx 0 and miss).
-#[no_mangle]
-pub unsafe extern "C" fn nl_mirror_fnv1a_sexp(sym: *const Sexp) -> i64 {
-    match unsafe { &*sym } {
-        Sexp::Symbol(s) | Sexp::Str(s) => mirror_fnv1a(s) as i64,
-        _ => 0,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mirror_fnv1a_matches_elisp_hash_loop() {
-        // FNV-1a 32-bit reference vectors (= ASCII inputs, same algorithm
-        // as `nelisp--fast-hash--hash').  Confirms the Rust port matches
-        // the elisp implementation bit-for-bit.
-        assert_eq!(mirror_fnv1a(""), 0x811C9DC5);
-        assert_eq!(mirror_fnv1a("a"), 0xE40C292C);
-        assert_eq!(mirror_fnv1a("foobar"), 0xBF9CF968);
-    }
-}
+// Doc 115 §115.7 — the `mirror_fnv1a' free fn + `nl_mirror_fnv1a_sexp'
+// extern wrapper have been deleted.  Every call site (= the three
+// callers above in `mirror_prepend_to_bucket' / `frame_bind_into' /
+// `frame_lookup_in', plus the elisp `extern-call' sites in
+// `lisp/nelisp-cc-mirror-lookup-entry.el' / `nelisp-cc-frame-bind.el' /
+// `nelisp-cc-frame-stack-find.el') now dispatches through the
+// pure-elisp `nelisp_fnv1a' Phase 47 `.o' compiled from
+// `lisp/nelisp-cc-fnv1a.el'.  The Rust hash bit-equality test for
+// ASCII reference vectors moves to the integration probe at
+// `tests/elisp_cc_fnv1a_probe.rs'.

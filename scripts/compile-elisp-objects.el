@@ -174,6 +174,15 @@
      :source-var nelisp-cc-wrap-alist-cells--source
      :output "nelisp_wrap_alist_cells.o"
      :requires-arch x86_64)
+    ;; Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash.  Replaces the
+    ;; Rust `mirror_fnv1a' free fn + `nl_mirror_fnv1a_sexp' extern
+    ;; wrapper in `env_helpers.rs'.  Linux-x86_64 only for the same
+    ;; reason as `nelisp-cc-mirror-lookup-entry' (= `str-byte-at' +
+    ;; `str-len' ABI offsets are x86_64-encoded).
+    (nelisp-cc-fnv1a
+     :source-var nelisp-cc-fnv1a--source
+     :output "nelisp_fnv1a.o"
+     :requires-arch x86_64)
     ;; Doc 111 §111.E Group B (#7-#12) — env_mirror.rs write path
     ;; Phase 47 rewrites.  Each helper composes `mirror_lookup_entry'
     ;; (= #1) via `extern-call' + a §111.B `record-slot-set' write to

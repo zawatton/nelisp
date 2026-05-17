@@ -42,8 +42,8 @@
 ;;   §111.C  `vector-ref-ptr'       — backing[i], buckets[idx].
 ;;   §101.B  `cons-walk' primitives — `sexp-payload-ptr' + `cons-cdr-raw-from-box'.
 ;;   §101.C  `str-eq'               — byte-payload equality on bucket KEY.
-;;   §100.A  `extern-call'          — `nl_mirror_fnv1a_sexp' (hash; rewired to
-;;                                    pure elisp in §115.7).
+;;   §100.A  `extern-call'          — `nelisp_fnv1a' (Doc 115 §115.7
+;;                                    pure-elisp 32-bit FNV-1a).
 ;;   §100    `sexp-int-unwrap'      — depth payload + bucket-count payload.
 ;;   §111.E  `logand'               — `(h & (count - 1))' fast-path mask.
 
@@ -91,7 +91,7 @@
         (vector-ref-ptr
          (record-slot-ref-ptr (record-slot-ref-ptr frame-ptr 0) 1)
          (logand
-          (extern-call nl_mirror_fnv1a_sexp name-ptr)
+          (extern-call nelisp_fnv1a name-ptr)
           (- (sexp-int-unwrap
               (record-slot-ref-ptr (record-slot-ref-ptr frame-ptr 0) 0))
              1))))
@@ -153,7 +153,7 @@ Pure-elisp innermost-first stack walk.  Composes `record-slot-ref-
 ptr' (§111.B), `vector-ref-ptr' (§111.C), `sexp-payload-ptr' /
 `cons-cdr-raw-from-box' (§101.B), `str-eq' (§101.C), `logand'
 (§111.E), `sexp-int-unwrap' (§100), and `extern-call' into
-`nl_mirror_fnv1a_sexp' (§100.A, rewired to pure elisp in §115.7)
+`nelisp_fnv1a' (Doc 115 §115.7 pure-elisp 32-bit FNV-1a)
 + three recursive helper-function calls for the inner loops (=
 bucket walk + per-frame lookup + stack descend).
 
