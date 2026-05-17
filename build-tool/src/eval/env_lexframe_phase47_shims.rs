@@ -235,78 +235,17 @@ fn bind_into_frame(frame: &Sexp, name: &str, cell: Sexp) {
 }
 
 // ---- #24 frame_stack_find_rust_direct -------------------------------
-
-/// Doc 111 §111.E #24 — innermost-first walk across the entire mirror
-/// stack.  Returns the `*const Sexp' of the matching `(NAME . CELL)'
-/// pair's CDR (= the cell slot), or `null' on miss / empty stack /
-/// unbuilt mirror.
-///
-/// # Safety
-/// - `frames_ptr' must be non-null and point at `Env::frames_record'.
-/// - `name_ptr' must point at a `Sexp::Str' or `Sexp::Symbol'.
-/// - The returned pointer borrows the bucket-pair's CDR slot owned by
-///   `*frames_ptr'; callers must not outlive that ownership.
-#[no_mangle]
-pub unsafe extern "C" fn nl_frame_stack_find(
-    frames_ptr: *const Sexp,
-    name_ptr: *const Sexp,
-) -> *const Sexp {
-    let Some((_stack_rec, backing, depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
-        return std::ptr::null();
-    };
-    let name: &str = match unsafe { &*name_ptr } {
-        Sexp::Str(s) => s.as_str(),
-        Sexp::Symbol(s) => s.as_str(),
-        _ => return std::ptr::null(),
-    };
-    for i in (0..depth).rev() {
-        let Some(frame) = backing.value.get(i) else { continue };
-        if let Some(slot_ptr) = lookup_in_frame(frame, name) {
-            return slot_ptr;
-        }
-    }
-    std::ptr::null()
-}
-
-/// Internal — mirror of `Env::frame_lookup_in' but returns the raw
-/// `*const Sexp' of the matching pair's CDR slot (= cell), or `None'
-/// on miss.  Used by `nl_frame_stack_find' to surface the cell
-/// pointer up to the Phase 47 caller.
-fn lookup_in_frame(frame: &Sexp, name: &str) -> Option<*const Sexp> {
-    let Sexp::Record(frame_rec) = frame else { return None };
-    let ht_rec = match frame_rec.slots.get(0)? {
-        Sexp::Record(r) => r,
-        _ => return None,
-    };
-    let bucket_count = match ht_rec.slots.get(0)? {
-        Sexp::Int(n) => *n as u32,
-        _ => return None,
-    };
-    let buckets = match ht_rec.slots.get(1)? {
-        Sexp::Vector(v) => v,
-        _ => return None,
-    };
-    let h = mirror_fnv1a(name);
-    let idx = (if bucket_count & (bucket_count - 1) == 0 {
-        h & (bucket_count - 1)
-    } else {
-        h % bucket_count
-    }) as usize;
-    let bucket = buckets.value.get(idx)?;
-    let mut cur = bucket;
-    while let Sexp::Cons(c) = cur {
-        if let Sexp::Cons(pair) = &c.car {
-            if let Sexp::Str(k) = &pair.car {
-                if k == name {
-                    // The cell is the pair's CDR; return its slot ptr.
-                    return Some(&pair.cdr as *const Sexp);
-                }
-            }
-        }
-        cur = &c.cdr;
-    }
-    None
-}
+//
+// Doc 115 §115.6 — the Rust shim `nl_frame_stack_find' + private
+// `lookup_in_frame' helper have been replaced by the pure-elisp
+// implementation in `lisp/nelisp-cc-frame-stack-find.el'.  The
+// innermost-first stack walk + per-frame hash-bucket lookup (= cons-
+// walk + str-eq) now runs in Phase 47-compiled elisp via the
+// `record-slot-ref-ptr' / `vector-ref-ptr' / `sexp-payload-ptr' /
+// `cons-cdr-raw-from-box' / `str-eq' / `logand' / `extern-call'
+// (= `nl_mirror_fnv1a_sexp', itself slated for §115.7 elisp rewrite)
+// ops.  See the safe wrapper `Spike::frame_stack_find' in
+// `build-tool/src/lib.rs' for the public entry point.
 
 // ---- #26 wrap_alist_cells -------------------------------------------
 
@@ -381,28 +320,13 @@ mod tests {
     // implementation end-to-end (= 3 tests covering empty-stack
     // no-op, single push+pop, and nested 3x push + 3x pop walk).
 
-    #[test]
-    fn nl_frame_bind_then_find_roundtrip() {
-        let frames = build_frames_record();
-        let val = Sexp::Int(42);
-        let cell = Sexp::Cell(FrameCell::new(val));
-        let name = Sexp::Symbol("alpha".into());
-        unsafe {
-            assert_eq!(nl_frame_push(&frames as *const Sexp), 1);
-            assert_eq!(
-                nl_frame_bind(
-                    &frames as *const Sexp,
-                    &name as *const Sexp,
-                    &cell as *const Sexp,
-                ),
-                1
-            );
-            let found = nl_frame_stack_find(&frames as *const Sexp, &name as *const Sexp);
-            assert!(!found.is_null(), "bound name should be findable");
-            let cell_slot = &*found;
-            assert!(matches!(cell_slot, Sexp::Cell(_)));
-        }
-    }
+    // Doc 115 §115.6 — the `nl_frame_bind_then_find_roundtrip' test
+    // was tied to the deleted `nl_frame_stack_find' Rust shim.
+    // Coverage moves to the integration probe at
+    // `tests/elisp_cc_frame_stack_find_probe.rs' which drives the
+    // pure-elisp implementation end-to-end (= 4 tests covering empty
+    // stack, innermost hit, outer-frame walk, and inner-shadow
+    // priority).
 
     #[test]
     fn nl_wrap_alist_cells_basic() {

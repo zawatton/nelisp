@@ -661,6 +661,11 @@ pub mod elisp_cc_spike {
         frames_ptr: *const Sexp,
         name_ptr: *const Sexp,
     ) -> *const Sexp {
+        // Doc 115 §115.6 — the Rust shim `nl_frame_stack_find' has
+        // been replaced by the pure-elisp implementation in
+        // `lisp/nelisp-cc-frame-stack-find.el'.  The elisp body
+        // returns the cell-slot pointer encoded as i64 (or 0 on
+        // miss); we widen back to `*const Sexp' for the public API.
         nelisp_frame_stack_find(frames_ptr, name_ptr) as *const Sexp
     }
 
