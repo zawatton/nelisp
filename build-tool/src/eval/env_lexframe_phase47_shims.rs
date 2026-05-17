@@ -12,7 +12,8 @@
 //! the surrounding `Env' fields, so they're safe to call from the
 //! Phase 47 ABI which only knows the frames-record pointer.
 //!
-//! The existing private impls in `env_lexframe.rs' (`Env::frame_*')
+//! The existing private impls in `env_helpers.rs' (`Env::frame_*',
+//! previously in `env_lexframe.rs' before Doc 114 Step 5)
 //! stay in place — production callers route through `Env::*' while
 //! Phase 47 probes drive these shims directly.  Once all Group E
 //! helpers ship, a follow-up commit will rewire the `Env::*' methods
@@ -20,7 +21,7 @@
 //! pattern from §3.E).
 
 use crate::eval::env::FrameCell;
-use crate::eval::env_mirror::mirror_fnv1a;
+use crate::eval::env_helpers::mirror_fnv1a;
 use crate::eval::nlrecord::NlRecordRef;
 use crate::eval::nlvector::NlVectorRef;
 use crate::eval::sexp::Sexp;

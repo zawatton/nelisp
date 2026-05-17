@@ -13,7 +13,7 @@
 
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// FNV-1a 32-bit hash — same loop as `env_mirror::mirror_fnv1a'.
+/// FNV-1a 32-bit hash — same loop as `env_helpers::mirror_fnv1a'.
 fn fnv1a(s: &str) -> u32 {
     let mut h: u32 = 0x811C9DC5;
     for c in s.chars() {

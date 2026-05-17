@@ -216,8 +216,8 @@ impl Env {
         env
     }
 
-    // ---- frame_* helpers moved to `eval/env_lexframe.rs' in Doc 102
-    // Phase 8 (2026-05-17). ----
+    // ---- frame_* helpers moved to `eval/env_helpers.rs' (Doc 102
+    // Phase 8 / Doc 114 Step 5 consolidation, 2026-05-17). ----
 
     /// Register `f' as an externally-supplied builtin under `name'.
     /// Sets the function cell to `(builtin NAME)' so `(NAME ARG...)'
@@ -441,8 +441,8 @@ impl Env {
     }
 
     // ---- mirror_lookup_entry / mirror_lookup_* / mirror_is_bound /
-    // mirror_is_fbound : moved to `eval/env_mirror.rs' in Doc 102
-    // Phase 8 (2026-05-17). ----
+    // mirror_is_fbound : moved to `eval/env_helpers.rs' (Doc 102
+    // Phase 8 / Doc 114 Step 5 consolidation, 2026-05-17). ----
 
     /// Push a frame from a captured-env alist (inverse of `capture_lexical').
     /// When a captured value is `Sexp::Cell', the same `Rc` is reinstalled
@@ -482,11 +482,13 @@ impl Env {
         Ok(())
     }
 
-    // `wrap_alist_cells' moved to `eval/env_lexframe.rs' in Doc 102
-    // Phase 8 (2026-05-17).
+    // `wrap_alist_cells' moved to `eval/env_helpers.rs' in Doc 102
+    // Phase 8 (2026-05-17); Doc 114 Step 5 (2026-05-17) merged the
+    // former `env_lexframe.rs' + `env_mirror.rs' into `env_helpers.rs'.
 }
 
-// `mirror_fnv1a' moved to `eval/env_mirror.rs' in Doc 102 Phase 8.
+// `mirror_fnv1a' moved to `eval/env_helpers.rs' (Doc 102 Phase 8 →
+// Doc 114 Step 5 consolidation).
 
 #[cfg(test)]
 mod tests {
@@ -626,8 +628,8 @@ mod tests {
     }
 
     // `phase8_session4_fnv1a_matches_elisp_hash_loop' moved to
-    // `eval/env_mirror.rs::tests::mirror_fnv1a_matches_elisp_hash_loop'
-    // in Doc 102 Phase 8.
+    // `eval/env_helpers.rs::tests::mirror_fnv1a_matches_elisp_hash_loop'
+    // (Doc 102 Phase 8 → Doc 114 Step 5 consolidation).
 
     // ---- Doc 104 Stage 3.b regression tests ----
 

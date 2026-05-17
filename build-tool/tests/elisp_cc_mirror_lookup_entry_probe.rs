@@ -17,7 +17,7 @@
 use nelisp_build_tool::eval::sexp::Sexp;
 
 /// FNV-1a 32-bit hash matching `nl_mirror_fnv1a_sexp' (= same loop as
-/// `env_mirror::mirror_fnv1a').  Duplicated locally because the
+/// `env_helpers::mirror_fnv1a').  Duplicated locally because the
 /// upstream function is `pub(crate)' and integration tests live in a
 /// separate compilation unit.  Used to pick the bucket index the
 /// elisp walker will land on.
