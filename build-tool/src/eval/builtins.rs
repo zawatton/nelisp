@@ -1925,26 +1925,47 @@ fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// flag into `EvalError::Quit`.  Used by the C-g key dispatch and
 /// any external interrupt source that wants to stop the evaluator
 /// at the next safe point instead of immediately.
+///
+/// Doc 117 §117.B (2026-05-18): the atomic transition itself now
+/// runs through the Phase 47 elisp object compiled from
+/// `lisp/nelisp-cc-bi-quit-flag.el` (= `atomic-compare-exchange'
+/// against the `QUIT_FLAG' static surfaced by `nl_quit_flag_ptr').
+/// The Rust side keeps arity validation + the `Sexp::T' return; no
+/// algorithmic Rust line survives the swap.
 fn bi_set_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("set-quit-flag", args, 0, Some(0))?;
-    quit::set_quit_flag();
+    unsafe {
+        crate::elisp_cc_spike::bi_set_quit_flag(quit::nl_quit_flag_ptr());
+    }
     Ok(Sexp::T)
 }
 
 /// Doc 51 Track M — `(clear-quit-flag)' resets the flag without
 /// raising.  Useful in tests and for flushing a stale flag after
 /// the user dismisses an unrelated condition.
+///
+/// Doc 117 §117.B (2026-05-18): elisp-cc swap, see `bi_set_quit_flag'
+/// for the dispatch convention.
 fn bi_clear_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("clear-quit-flag", args, 0, Some(0))?;
-    quit::clear_quit_flag();
+    unsafe {
+        crate::elisp_cc_spike::bi_clear_quit_flag(quit::nl_quit_flag_ptr());
+    }
     Ok(Sexp::T)
 }
 
 /// Doc 51 Track M — `(quit-flag-pending-p)' returns t if the flag
 /// is currently set, nil otherwise.  Read-only — does NOT clear.
+///
+/// Doc 117 §117.B (2026-05-18): elisp-cc swap.  The raw `ptr-read-u64'
+/// against the `QUIT_FLAG' slot lives in `lisp/nelisp-cc-bi-quit-flag.el';
+/// the Rust side here is the arity check + 0/non-zero → Nil/T mapping.
 fn bi_quit_flag_pending_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("quit-flag-pending-p", args, 0, Some(0))?;
-    Ok(if quit::is_quit_pending() { Sexp::T } else { Sexp::Nil })
+    let raw = unsafe {
+        crate::elisp_cc_spike::bi_quit_flag_pending_p(quit::nl_quit_flag_ptr())
+    };
+    Ok(if raw != 0 { Sexp::T } else { Sexp::Nil })
 }
 
 /// Doc 51 Track M — install a SIGINT handler that flips the

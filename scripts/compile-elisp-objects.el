@@ -85,6 +85,24 @@
      :source-var nelisp-cc-bi-make-vector--source
      :output "nelisp_bi_make_vector.o"
      :requires-arch x86_64)
+    ;; Doc 117 §117.B — quit-flag atomic ops swap (3 entries, shared
+    ;; source file).  Rust shim calls `nl_quit_flag_ptr' to obtain the
+    ;; static slot's address, then dispatches to one of these kernels
+    ;; via `extern "C"' to perform the §122.E `atomic-compare-exchange'
+    ;; (= set / clear) or `ptr-read-u64' (= pending-p) op.  Linux-
+    ;; x86_64 only — same gate the rest of the §122.E call sites use.
+    (nelisp-cc-bi-quit-flag
+     :source-var nelisp-cc-bi-quit-flag--set-source
+     :output "nelisp_bi_set_quit_flag.o"
+     :requires-arch x86_64)
+    (nelisp-cc-bi-quit-flag
+     :source-var nelisp-cc-bi-quit-flag--clear-source
+     :output "nelisp_bi_clear_quit_flag.o"
+     :requires-arch x86_64)
+    (nelisp-cc-bi-quit-flag
+     :source-var nelisp-cc-bi-quit-flag--pending-p-source
+     :output "nelisp_bi_quit_flag_pending_p.o"
+     :requires-arch x86_64)
     ;; Doc 111 §111.D — Cell read+write op probes (= no user-visible
     ;; swap, used only by `tests/phase47_cell.rs').  Four entries, one
     ;; per grammar op (`cell-value' / `cell-set-value' / `cell-make' /

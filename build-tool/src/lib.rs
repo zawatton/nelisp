@@ -148,6 +148,19 @@ pub mod elisp_cc_spike {
             init_ptr: *const Sexp,
             result_slot: *mut Sexp,
         ) -> i64;
+        // Doc 117 §117.B — quit-flag atomic ops compiled from
+        // `lisp/nelisp-cc-bi-quit-flag.el'.  Each kernel takes a
+        // `*mut i64' pointing at the `QUIT_FLAG' static in
+        // `eval/quit.rs' (= surfaced by `nl_quit_flag_ptr') and uses
+        // a §122.E `atomic-compare-exchange' (= set / clear) or
+        // `ptr-read-u64' (= pending-p) op.  Returns:
+        //   set / clear → i64 CAS result (1 on transition, 0 on
+        //                 benign no-op); both states satisfy the
+        //                 post-condition so the Rust shim discards it.
+        //   pending-p   → i64 slot value (0 = clear, non-zero = pending).
+        fn nelisp_bi_set_quit_flag(flag_ptr: *mut i64) -> i64;
+        fn nelisp_bi_clear_quit_flag(flag_ptr: *mut i64) -> i64;
+        fn nelisp_bi_quit_flag_pending_p(flag_ptr: *const i64) -> i64;
         // Doc 111 §111.D — Cell read+write ops compiled from
         // `lisp/nelisp-cc-cell-ops.el'.  Each op is a separate `.o' in
         // the static archive so the integration test in
@@ -800,6 +813,54 @@ pub mod elisp_cc_spike {
         slot: *mut Sexp,
     ) -> i64 {
         nelisp_bi_make_vector(n_ptr, init_ptr, slot)
+    }
+
+    /// Doc 117 §117.B — `(set-quit-flag)' atomic transition via
+    /// elisp-compiled `atomic-compare-exchange' (§122.E).
+    ///
+    /// `flag_ptr' must point at the `QUIT_FLAG' static i64 slot in
+    /// `eval/quit.rs' (= obtained from `nl_quit_flag_ptr').  The
+    /// elisp body issues `CAS(0, 1, SeqCst)' against the slot; the
+    /// return is the CAS result (1 on transition 0→1, 0 if the slot
+    /// was already 1).  Both outcomes satisfy the post-condition
+    /// (slot == 1), so the Rust shim in `eval::builtins::bi_set_quit_flag'
+    /// discards the return and yields `Sexp::T'.
+    ///
+    /// # Safety
+    /// - `flag_ptr' must be non-null and 8-byte aligned, pointing at
+    ///   the `'static` `AtomicI64` storage of `QUIT_FLAG'.  Aliasing
+    ///   with Rust-side `AtomicI64::{store, load, swap}' calls is
+    ///   sound because the elisp op performs a `LOCK CMPXCHG' which
+    ///   is itself atomic + interferes correctly with the Rust ops.
+    pub unsafe fn bi_set_quit_flag(flag_ptr: *mut i64) -> i64 {
+        nelisp_bi_set_quit_flag(flag_ptr)
+    }
+
+    /// Doc 117 §117.B — `(clear-quit-flag)' atomic transition via
+    /// elisp-compiled `atomic-compare-exchange' (§122.E).
+    ///
+    /// Symmetric to [`bi_set_quit_flag`] — CAS(1, 0, SeqCst).  The
+    /// Rust shim discards the return and yields `Sexp::T'.
+    ///
+    /// # Safety
+    /// Identical contract to [`bi_set_quit_flag`].
+    pub unsafe fn bi_clear_quit_flag(flag_ptr: *mut i64) -> i64 {
+        nelisp_bi_clear_quit_flag(flag_ptr)
+    }
+
+    /// Doc 117 §117.B — `(quit-flag-pending-p)' atomic read via
+    /// elisp-compiled `ptr-read-u64' (§122.E).
+    ///
+    /// `flag_ptr' must point at the `QUIT_FLAG' static i64 slot.  The
+    /// elisp body issues a `ptr-read-u64 flag_ptr 0' op which lowers
+    /// to a `MOV' from the aligned 8-byte slot.  Returns the slot
+    /// value (0 = clear, non-zero = pending); the Rust shim maps
+    /// non-zero → `Sexp::T' / zero → `Sexp::Nil'.
+    ///
+    /// # Safety
+    /// Identical contract to [`bi_set_quit_flag`].
+    pub unsafe fn bi_quit_flag_pending_p(flag_ptr: *const i64) -> i64 {
+        nelisp_bi_quit_flag_pending_p(flag_ptr)
     }
 
     /// Doc 111 §111.D — `(cell-value H SLOT)' via elisp-compiled Cell ops.
