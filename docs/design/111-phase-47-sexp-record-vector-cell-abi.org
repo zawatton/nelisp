@@ -71,11 +71,11 @@ element is a 32-byte =Sexp= slot, so element indexing requires a
 
 | Stage    | Scope                                                                                                       | Effect |
 |----------+-------------------------------------------------------------------------------------------------------------+--------|
-| §111.A   | Layout doc + elisp constants + Rust assertions for NlRecord / NlVector / NlCell.  Inherits §100.B CI gate.  | unblock |
-| §111.B   | Phase 47 grammar gains Record read ops: =(record-type-tag H)=, =(record-slot-ref H N)=, =(record-slot-count H)=.  First swap: =recordp= predicate via elisp =.o=. | spike  |
+| §111.A   | Layout doc + elisp constants + Rust assertions for NlRecord / NlVector / NlCell.  Inherits §100.B CI gate.                                                          | unblock |
+| §111.B   | Phase 47 grammar gains Record read+write ops: =(record-type-tag H)=, =(record-slot-ref H N)=, =(record-slot-ref-ptr H N)=, =(record-slot-set H N VAL)=, =(record-slot-count H)=.  First swap: =recordp= predicate via elisp =.o=. | spike  |
 | §111.C   | Phase 47 grammar gains Vector read ops: =(vector-len H)=, =(vector-ref H N)=, =(vector-ref-ptr H N)=.  First swap: =aref= for Sexp::Vector via elisp =.o=.        | extend |
 | §111.D   | Phase 47 grammar gains Cell ops: =(cell-value H)= / =(cell-set-value H VAL)=.  First swap: NONE (Cell access is internal — used by §111.E only).                  | extend |
-| §111.E   | =env_mirror.rs= + =env_lexframe.rs= rewritten as Phase 47-compiled elisp helpers.  Rust files DELETED.  Doc 102 Phase 8.b condition (a) satisfied.                  | finale |
+| §111.E   | =env_mirror.rs= + =env_lexframe.rs= rewritten as ~19 Phase 47-compiled elisp helpers + 2 new Rust allocator helpers (=nl_alloc_record= + =nl_alloc_vector=, total ~22 LOC).  Bootstrap + baker-only helpers stay in Rust under cfg gating.  Doc 102 Phase 8.b condition (a) satisfied. | finale |
 
 §111.A-D are foundation work (= ~4-6 days each); §111.E is the big
 payoff (= ~1-2 weeks, but each individual helper rewrite is a
@@ -247,7 +247,41 @@ The slots Vec's length is at offset 32 + 16 = 48 of NlRecord.
   mov rax, qword ptr [rsi + 48]     ; rax = slots.len
 #+end_src
 
-*3. =(record-slot-ref H N SLOT)= — copy the N-th slot into SLOT*
+*3. =(record-slot-set H N VAL-PTR)= — write =*VAL-PTR= into slot N*
+
+Mirrors =NlRecord='s =with_slots_mut= unsafe API which is used
+extensively by =env_mirror.rs= (= e.g. =entry.with_slots_mut(|s| s[0] = value)=
+in =mirror_set_value=).  Drops the old Sexp value at slot N then
+copies the 32-byte VAL into it.  Conditional drop dispatch (= same
+refcount-aware table as Doc 101 §2.6 / Doc 111 §2.3 =cell-set-value=).
+
+Emit shape:
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlRecord*
+  mov rcx, qword ptr [rsi + 32]     ; rcx = slots.ptr (Sexp* base)
+  imul r10, rsi, 32                 ; r10 = N * 32   (N from rsi)
+  add rcx, r10                      ; rcx = ptr to slot[N]
+  ; --- conditional drop of old slot value ---
+  movzx rax, byte [rcx + 0]         ; rax = old.tag
+  ; ... dispatch table call to nl_rc_dec for box-tagged old.tag ...
+  ; --- write new slot value ---
+  movdqu xmm0, [rdx + 0]
+  movdqu xmm1, [rdx + 16]
+  movdqu [rcx + 0], xmm0
+  movdqu [rcx + 16], xmm1
+  ; --- conditional incref on new slot value ---
+  movzx rax, byte [rcx + 0]
+  ; ... dispatch table call to nl_rc_inc ...
+  mov rax, rdi                      ; return H
+#+end_src
+
+Doc 111 §111.E audit (= 2026-05-17 pre-validation) confirmed this
+op is mandatory for =mirror_set_value= / =mirror_set_function= /
+=mirror_install_entry= rewrites; without it those helpers cannot
+mutate slot contents in place.
+
+*4. =(record-slot-ref H N SLOT)= — copy the N-th slot into SLOT*
 
 Composed: locate slots.ptr at offset 32 + 0 = 32, multiply N by 32,
 copy 32-byte Sexp:
@@ -383,18 +417,59 @@ read-only ops have proven the read path.
   (defconst nelisp-nlcell--size             40)
 #+end_src
 
-** §2.4 Allocator question — none needed for §111.A-D
+** §2.4 Allocator helpers — required by §111.E (= confirmed by audit)
 
 The read-only ops §2.1-§2.2 + the cell read/write §2.3 work entirely
 through caller-provided slots + already-allocated boxes.  No new
-allocator helper required.
+allocator helper required for §111.A-D.
 
-§111.E may reach a point where the elisp helper needs to construct
-a fresh =NlRecord= or =NlVector= (= e.g. building a new entry in
-=mirror_install_entry=).  Doc 101 §5.3 sub-option α applies: a
-tiny Rust =extern "C" fn nl_alloc_record(slot_count) -> *mut
-NlRecord= helper (~10 LOC), called via §100.A =extern-call=.
-Defer the decision to §111.E ship time.
+**§111.E requires two new Rust =extern "C"= allocator helpers** (=
+beyond Doc 101 §101.D's =nl_alloc_consbox=).  This was confirmed by
+the 2026-05-17 pre-validation audit of =env_mirror.rs= +
+=env_lexframe.rs=:
+
+*1. =nl_alloc_record(slot_count: usize) -> *mut NlRecord=* (~12 LOC)
+
+Used by =mirror_install_entry= (= fresh =symbol-entry= record
+allocation) and =frame_push_rust_direct= (= fresh =nelisp-lexframe=
+record).  Body:
+
+#+begin_src rust
+  #[no_mangle]
+  pub unsafe extern "C" fn nl_alloc_record(slot_count: usize) -> *mut NlRecord {
+      let boxed = Box::new(NlRecord {
+          type_tag: Sexp::Nil,
+          slots: vec![Sexp::Nil; slot_count],
+          refcount: AtomicUsize::new(1),
+      });
+      Box::into_raw(boxed)
+  }
+#+end_src
+
+*2. =nl_alloc_vector(capacity: usize) -> *mut NlVector=* (~10 LOC)
+
+Used by =frame_stack_ensure_capacity= (= grow lexframe-stack BACKING
+when full) and =install_empty_frames_record_rust_direct= (= initial
+8-slot BACKING vector).  Body:
+
+#+begin_src rust
+  #[no_mangle]
+  pub unsafe extern "C" fn nl_alloc_vector(capacity: usize) -> *mut NlVector {
+      let boxed = Box::new(NlVector {
+          value: vec![Sexp::Nil; capacity],
+          refcount: AtomicUsize::new(1),
+      });
+      Box::into_raw(boxed)
+  }
+#+end_src
+
+Both allocators initialise the new slots / elements to =Sexp::Nil=
+(= the safe default for layout-pinned boxes).  Caller-side elisp
+overwrites the slots before any other code observes the box.
+
+Per Doc 101 §0.3 sub-option α: ~22 LOC of Rust allocator helpers
+(across Doc 101 §101.D + Doc 111 §111.E) is the agreed trade for
+not building an elisp arena allocator.
 
 ** §2.5 Worked example — mirror_lookup_entry replacement
 
@@ -578,34 +653,79 @@ grammar including refcount emit table).
 
 ** §3.E Stage 111.E — env_mirror.rs + env_lexframe.rs rewrite (~1-2 weeks)
 
-*Scope (= 12 helpers, each shippable independently)*:
+*Scope (= 22 helpers, audit-validated 2026-05-17, each shippable independently)*:
 
-| # | Helper                          | Source file                            | Notes |
-|---+---------------------------------+----------------------------------------+-------|
-| 1 | =mirror_lookup_entry=            | lisp/nelisp-cc-mirror-lookup-entry.el  | §2.5 worked example |
-| 2 | =mirror_lookup_value=            | (composes 1 + tag check)                | shim deletes Rust impl |
-| 3 | =mirror_lookup_function=         | (composes 1 + slot 1 access)            | shim deletes Rust impl |
-| 4 | =mirror_is_bound= / =-is_fbound= | (composes 2 + 3)                         | shim deletes Rust impl |
-| 5 | =mirror_set_value=               | lisp/nelisp-cc-mirror-set-value.el     | needs cell-set + alloc |
-| 6 | =mirror_set_function=            | (composes 5 with slot 1)                | shim deletes Rust impl |
-| 7 | =mirror_install_entry=           | lisp/nelisp-cc-mirror-install.el       | needs record alloc |
-| 8 | =frame_stack_find_rust_direct=   | lisp/nelisp-cc-frame-stack-find.el     | record + vector + cons walk |
-| 9 | =frame_lookup_rust_direct=       | (composes 8 with single-frame search)   | shim deletes Rust impl |
-| 10 | =frame_push_rust_direct=         | lisp/nelisp-cc-frame-push.el           | needs vector ensure-capacity |
-| 11 | =frame_pop_rust_direct=          | (composes vector mutation)              | shim deletes Rust impl |
-| 12 | =frame_bind_rust_direct=         | lisp/nelisp-cc-frame-bind.el           | cell-set + bucket walk |
+The 2026-05-17 audit (see =project_doc_111_env_mirror_rewrite_scope_audit=)
+identified the actual rewrite surface as ~22 functions (vs. the
+draft's "12") split between =env_mirror.rs= (15 functions) and
+=env_lexframe.rs= (8 functions, includes private helpers).  The
+table below enumerates each helper with its required ABI ops:
 
-Once helpers 1-12 ship, delete:
-- =build-tool/src/eval/env_mirror.rs= (= 447 LOC)
-- =build-tool/src/eval/env_lexframe.rs= (= 267 LOC)
-- The =pub mod env_mirror;= / =pub mod env_lexframe;= in =eval/mod.rs=.
+*Group A — env_mirror.rs read path (5 helpers)*
 
-Replace with thin extern wrappers (= ~50 LOC each) that delegate to
-the Phase 47 =.o= entries.
+| # | Helper                  | Source file                              | ABI deps |
+|---+-------------------------+------------------------------------------+----------|
+| 1 | =mirror_lookup_entry=   | lisp/nelisp-cc-mirror-lookup-entry.el    | §111.B record-slot-ref-ptr + §111.C vector-ref-ptr + §101.B cons-walk + §101.C str-eq |
+| 2 | =mirror_lookup_value=   | (compose 1 + tag-check)                   | §100 sexp-tag |
+| 3 | =mirror_lookup_function= | (compose 1 + slot 1)                      | §111.B record-slot-ref |
+| 4 | =mirror_is_bound=        | (compose 2 + sentinel cmp)                | §101.C symbol-eq |
+| 5 | =mirror_is_fbound=       | (compose 3 + sentinel cmp)                | §101.C symbol-eq |
+| 6 | =mirror_is_constant=     | (compose 1 + slot 3 read)                 | §111.B record-slot-ref |
 
-*LOC delta (cumulative §111.E)*: Rust −664 (= module deletion) +50
-(= thin extern wrappers); elisp +600 (= 12 helper sources +
-grammar reuse).  *Net Rust: −614 LOC*.
+*Group B — env_mirror.rs write path (5 helpers)*
+
+| # | Helper                  | Source file                              | ABI deps |
+|---+-------------------------+------------------------------------------+----------|
+| 7 | =mirror_set_value=       | lisp/nelisp-cc-mirror-set-value.el       | §111.B record-slot-set (writes slot 0) + cons-walk |
+| 8 | =mirror_set_function=    | (compose 7 with slot 1)                   | §111.B record-slot-set |
+| 9 | =mirror_clear_value=     | (compose 7 with unbound-marker)           | §111.B record-slot-set |
+| 10 | =mirror_clear_function=  | (compose 8 with unbound-marker)           | §111.B record-slot-set |
+| 11 | =mirror_set_constant=    | (compose 7 with slot 3)                   | §111.B record-slot-set |
+| 12 | =mirror_install_entry=   | lisp/nelisp-cc-mirror-install.el         | §111.E nl_alloc_record + §111.B record-slot-set + §101.D cons-make |
+
+*Group C — env_mirror.rs bootstrap (2 helpers, stay Rust)*
+
+| # | Helper                              | Action |
+|---+-------------------------------------+--------|
+| 13 | =install_empty_mirror_rust_direct= | KEEP IN RUST (= bootstrap, runs before stdlib loads; ~25 LOC) |
+| 14 | =mirror_fnv1a= (free fn)            | KEEP IN RUST (= called from elisp via =extern-call=; tight inner loop) |
+
+*Group D — env_mirror.rs baker-only (3 helpers, stay Rust + cfg)*
+
+| # | Helper                       | Action |
+|---+------------------------------+--------|
+| 15 | =mirror_iter_entries=        | KEEP IN RUST under =#[cfg(any(test, feature = "image-baker"))]= |
+| 16 | =mirror_snapshot_globals=    | KEEP IN RUST under =#[cfg(...)]= |
+| 17 | =mirror_diff_view=           | KEEP IN RUST under =#[cfg(...)]= |
+
+*Group E — env_lexframe.rs (8 helpers)*
+
+| # | Helper                                  | Source file                              | ABI deps |
+|---+-----------------------------------------+------------------------------------------+----------|
+| 18 | =install_empty_frames_record_rust_direct= | KEEP IN RUST (= bootstrap, ~10 LOC)       | — |
+| 19 | =frame_stack_view=                      | (internal accessor)                       | §111.B record-slot-ref |
+| 20 | =frame_stack_ensure_capacity=            | lisp/nelisp-cc-frame-ensure-capacity.el  | §111.E nl_alloc_vector + §111.B record-slot-set |
+| 21 | =frame_push_rust_direct=                 | lisp/nelisp-cc-frame-push.el             | §111.E nl_alloc_record + §111.C vector-ref + ensure_capacity |
+| 22 | =frame_pop_rust_direct=                  | lisp/nelisp-cc-frame-pop.el              | §111.C vector-ref-ptr (write Nil + decrement depth) |
+| 23 | =frame_bind_rust_direct=                 | lisp/nelisp-cc-frame-bind.el             | §111.B record-slot-ref + cell-set + cons-walk |
+| 24 | =frame_stack_find_rust_direct=           | lisp/nelisp-cc-frame-stack-find.el       | §111.B record-slot-ref + §111.C vector-ref-ptr + cons-walk |
+| 25 | =frame_lookup_rust_direct= / =frame_bind_into= / =frame_lookup_in= | (private helpers, fold into 23 / 24) | — |
+| 26 | =wrap_alist_cells=                       | lisp/nelisp-cc-wrap-alist-cells.el       | §101.D cons-make + §101.B cons-walk + cell construction |
+
+*After all 22 callable helpers ship, delete*:
+- =build-tool/src/eval/env_mirror.rs= (= 447 LOC, minus Groups C + D which stay)
+- =build-tool/src/eval/env_lexframe.rs= (= 267 LOC, minus Group E helper #18)
+- The =pub mod env_mirror;= / =pub mod env_lexframe;= in =eval/mod.rs=
+
+*Replace with thin extern wrappers* (= ~80 LOC total) that:
+- Dispatch each Group A/B/E callable helper through its Phase 47-
+  compiled =.o= via the Doc 100 §100.A =extern-call= ABI.
+- Keep Group C/D Rust helpers inline (or move into eval/mod.rs).
+
+*LOC delta (cumulative §111.E ship)*: Rust −600 (= ~85% of env_mirror
++ env_lexframe content deleted, Groups C/D ~120 LOC stay in eval/mod.rs);
+elisp +800 (= 19 helper sources from Groups A/B/E + grammar reuse).
+*Net Rust: −520 LOC*.
 
 This is the actual Doc 102 Phase 8.b condition (a) satisfaction.
 
