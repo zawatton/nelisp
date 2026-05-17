@@ -1,0 +1,408 @@
+#+TITLE: Doc 114 — x86_64-linux pivot (= Phase 47-using code dual-path cfg-gate end-of-life)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-17
+
+* Status
+
+- *State*: DRAFT 2026-05-17 — design only, awaiting user approval before
+  the cleanup PR series.
+- *Parent*: Doc 102 Phase 8.b (= env_mirror.rs / env_lexframe.rs
+  deletion goal); Doc 111 §111.E (= 18 Phase 47 helpers SHIPPED on
+  main =3bdc6487=).
+- *Sibling*: Doc 100 (Sexp::Int), Doc 101 (Cons/Sym/Str), Doc 110
+  (f64), Doc 111 (Record/Vector/Cell), Doc 113 (Float ABI DRAFT).
+  All of them produce Phase 47 emit code that is *x86_64 only*
+  (=:requires-arch x86_64= in =scripts/compile-elisp-objects.el=).
+- *Dependents*: every future Phase 47 swap PR.  Without this pivot,
+  each new swap mandatorily grows Rust by O(duplication) (= the
+  =#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]=
+  fallback block).
+- *Scope*: architectural decision + repo-wide cleanup PR plan.  No
+  new ABI surface.  Pure removal of dead branches and a compile-time
+  guard that makes the constraint explicit.
+
+* §0 TL;DR
+
+** §0.1 The contradiction we are resolving
+
+This repo's existence purpose, per =dev/nelisp/CLAUDE.md=, is *pure
+elisp化 (Rust 削減 が唯一の評価軸)*.  Phase 47 (Doc 100/101/110/
+111/113) is the mechanism: each Sexp ABI op + helper swap moves
+work from Rust to elisp-compiled =.o= files.
+
+The current convention, however, surrounds every Phase 47 callsite
+with a cfg-gate:
+
+#+begin_src rust
+match &args[0] {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    Sexp::Int(_) => { /* call elisp `.o` */ }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    Sexp::Int(_) => { /* full Rust fallback path */ }
+}
+#+end_src
+
+The non-x86_64 branch is the original Rust logic preserved in full.
+=swap N ops= therefore yields *Rust LOC +O(N × duplication)* — the
+opposite of the repo's stated purpose.  Concrete evidence:
+
+- =build-tool/src/eval/env_mirror.rs= cutover (Doc 111 §111.E,
+  branch =feat/doc-111-stage-e-cutover= @ =5895d336=): +456 / −122
+  = *+334 LOC* despite the spec ("Rust −520 LOC") going the other
+  way.  24 cfg-gates added for 12 swapped methods.
+- =build-tool/src/eval/special_forms.rs=, =builtins.rs= already
+  carry the same pattern from earlier swaps (Doc 100/101).
+
+Continuing this pattern means the more we ship Phase 47, the more
+Rust we accumulate.  Doc 111 §111.E exposes this clearly; the same
+arithmetic applies to Doc 100, 101, 110, 113, and every future ABI.
+
+** §0.2 The pivot
+
+*Declare Phase 47-using code paths x86_64-linux-only.*
+
+- Delete the =#[cfg(not(all(target_os = "linux",
+  target_arch = "x86_64")))]= fallback branches everywhere they
+  guard a Phase 47 dispatch.
+- Replace the dual-arm =match= / =if-else= with a single arm that
+  unconditionally dispatches to the elisp =.o=.
+- For modules that cannot otherwise be built on non-x86_64
+  (= because their entire body becomes Phase 47-dependent), add a
+  =compile_error!("...")= sentinel at the top of the file:
+
+#+begin_src rust
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+compile_error!("Doc 114: env_mirror.rs requires Phase 47 helpers \
+which are emitted x86_64-linux-only.  Build on Linux x86_64 or via \
+Docker / Linux VM.");
+#+end_src
+
+- Multi-arch support comes back through *additional Phase 47 emit
+  branches* (e.g., =lisp/nelisp-asm-aarch64.el=), never through
+  re-introducing the Rust fallback.
+
+** §0.3 Why x86_64-first then add archs (= the architectural argument)
+
+The current pattern conflates two unrelated concerns:
+
+1. *ISA support* (= which CPU ISA can the build tool emit code for).
+2. *Logic fallback* (= what runs when Phase 47 isn't available).
+
+Healthy native-code projects (LLVM, QEMU, rustc, GCC) keep these
+separate: a missing ISA backend is a missing backend, not a "use
+the C reference path" fallback.  Adding an ISA means writing a new
+backend (= more elisp emit code in our case), not duplicating the
+high-level logic.
+
+Concrete asymmetry:
+
+| Path                           | LOC cost per op                 | Cumulative across N swaps     |
+|--------------------------------+---------------------------------+-------------------------------|
+| =x86_64-only + add arm64 later= | 1 emit branch (~30 LOC elisp)   | bounded: N elisp + 1 arm64 emit |
+| =dual-arch via Rust fallback=  | 1 Rust fallback (~25 LOC Rust) | unbounded: N elisp + N Rust   |
+
+The first row is what the repo's stated purpose requires.  The
+second is what the current cfg-gate pattern enforces.
+
+Adding arm64 *later* via elisp emit branches is *faster* progress
+toward pure-elisp化 than maintaining a parallel Rust column, because
+elisp emit additions are themselves part of the elisp goal.
+
+** §0.4 Risk: non-x86_64 developer hosts
+
+The one real cost: developers on macOS arm64, Windows arm64, etc.
+cannot run =cargo build= locally.
+
+Mitigation (= already de facto):
+
+1. NeLisp standalone, anvil-runtime, and the build tool already
+   deploy x86_64-linux only.  The dual-arch fallback was theoretical
+   support for hosts no production path actually uses.
+2. Developers on arm64 hosts use Docker / Linux VM (already required
+   for many tasks: nelisp-emacs network stack tests, anvil daemon
+   probes, Phase 47 binary verification).
+3. CI runs on Linux x86_64.  No regression in CI signal.
+4. =compile_error!= messages name the constraint clearly so
+   non-Linux-x86_64 contributors get an actionable build error, not
+   a silent miscompile.
+
+Cost: arm64 dev convenience (low frequency, no production impact).
+Benefit: bounded Rust footprint + linear pure-elisp化 progress
+(continuous, repo-purpose-aligned).
+
+* §1 What gets removed
+
+** §1.1 Scope: cfg-gate fallback branches around Phase 47 dispatch
+
+A =#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]=
+block is a *removal target* IFF:
+
+- It guards code whose only purpose is to substitute for a Phase 47
+  =.o= helper on non-x86_64-linux hosts, AND
+- The corresponding x86_64-linux branch dispatches to a
+  =crate::elisp_cc_spike::*= safe wrapper (or =unsafe= extern call
+  with that wrapper's contract).
+
+If a cfg gate guards platform-specific syscalls, FFI, or genuine
+multi-OS plumbing (= the non-x86_64 branch *isn't a Phase 47 fallback*),
+leave it.  This doc is not about removing all cfg gates.
+
+** §1.2 Concrete callsite audit (= what to delete)
+
+Sources flagged for cleanup (= as of main =3bdc6487=):
+
+| File                                     | Phase 47-related cfg gates (estimated) |
+|------------------------------------------+----------------------------------------|
+| =build-tool/src/eval/special_forms.rs=  | ~12 (Doc 100/101 swaps)                |
+| =build-tool/src/eval/builtins.rs=       | ~10 (Doc 100/101/111 swaps)            |
+| =build-tool/src/eval/env_mirror.rs=     | 24 (Doc 111 §111.E cutover branch)     |
+| =build-tool/src/eval/env_lexframe.rs=   | ~14 (future Doc 111 §111.E Group E)    |
+| =build-tool/src/eval/nlrecord.rs=, etc. | 0 (allocator helpers are unconditional) |
+
+(Exact counts are determined at PR-1 time by =grep -rn "cfg(all(target_os = \"linux\""=
+under =build-tool/src/=.  The audit step is mandatory because Phase
+47-related cfg gates share syntax with unrelated platform-gates;
+the auditor must visually confirm each one.)
+
+** §1.3 Files that become Phase 47-only outright
+
+After the cleanup:
+
+- =build-tool/src/eval/env_mirror.rs= (post-Doc-111-§111.E cutover):
+  no Rust fallback, so the entire file becomes x86_64-linux only.
+  Top-of-file =compile_error!= or =#[cfg(all(...))]= module gate.
+- =build-tool/src/eval/env_lexframe.rs= (post-Doc-111-§111.E Group
+  E cutover): same.
+- =build-tool/src/elisp_cc_spike/*=: already implicitly
+  x86_64-linux (= the externs they wrap point at =.o= files emitted
+  only for x86_64).  Add the =compile_error!= guard if not already
+  present.
+
+* §2 The new convention
+
+** §2.1 Single-arm dispatch pattern
+
+Replace:
+
+#+begin_src rust
+match &args[0] {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    Sexp::Int(_) => {
+        /* Phase 47 dispatch */
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    Sexp::Int(_) => {
+        /* legacy Rust fallback */
+    }
+}
+#+end_src
+
+With:
+
+#+begin_src rust
+match &args[0] {
+    Sexp::Int(_) => {
+        /* Phase 47 dispatch (= the only path) */
+    }
+}
+#+end_src
+
+The module file gets one top-level guard if the module is fully
+Phase 47-dependent:
+
+#+begin_src rust
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+//! Doc 114: this module requires Phase 47 emit, which is
+//! x86_64-linux only.  Cross-arch hosts get a compile error.
+#+end_src
+
+Or =compile_error!= at the top for callsite modules that only have
+*some* Phase 47 callsites — the rest can compile cross-arch.
+
+** §2.2 Future multi-arch path
+
+When arm64 (or another ISA) becomes a real deployment target:
+
+1. Add =lisp/nelisp-asm-aarch64.el= with arm64 instruction emit
+   helpers (parallel to =lisp/nelisp-asm-x86_64.el=).
+2. Extend each Phase 47 emit function with an arch-dispatched
+   branch (= elisp =if= on a runtime tag, or per-arch defun).
+3. Update =scripts/compile-elisp-objects.el= to drop the
+   =:requires-arch x86_64= gate for ops that have arm64 emit.
+4. Relax =compile_error!= / module guards to
+   =target_os = "linux", target_arch ∈ {x86_64, aarch64}=.
+
+*No Rust additions are required at any stage of the arm64 port.*
+This is the central design contract.
+
+* §3 PR series
+
+** §3.1 PR-1 — audit + small modules (= proof of pattern)
+
+- Run =grep -rn "cfg(all(target_os = \"linux\", target_arch = \"x86_64\"))"=
+  under =build-tool/src/= and =build-tool/tests/=.
+- Categorize each hit: Phase 47 fallback (= remove) vs. unrelated
+  platform gate (= leave).
+- Apply removal to *2-3 small modules* (e.g., individual builtins),
+  not the big files yet.
+- Verify =cargo test --release --lib -- --test-threads=1= still
+  green (= 732+ pass) on x86_64-linux.
+- Verify =cargo build= on a non-x86_64-linux host yields a clean,
+  actionable =compile_error!= (= simulate via cross-compile target
+  or =cfg(not_target)=).
+- Doc 114 update: lock the audit table.
+
+** §3.2 PR-2 — special_forms.rs + builtins.rs cleanup
+
+- Remove all Phase 47-fallback cfg gates in these two files.
+- Top-of-file guard if the file becomes fully Phase 47-dependent;
+  otherwise per-callsite =compile_error!= comments.
+- LOC delta: −300 to −500 LOC estimated.
+- Verification gate identical to PR-1.
+
+** §3.3 PR-3 — Doc 111 §111.E cutover branch repair
+
+- Rebase =feat/doc-111-stage-e-cutover= onto post-PR-2 main.
+- Strip the 24 cfg-gates added by the original cutover Agent;
+  collapse each method to single-arm Phase 47 dispatch + Rust
+  fallback only for the *miss* case (= entry not in mirror, not for
+  the arch fallback).
+- Resulting LOC: net negative for env_mirror.rs (= cutover commit
+  becomes a *thin wrapper* commit, ~80 LOC total per Doc 111 §3.E
+  spec target).
+- Merge to main.
+
+** §3.4 PR-4 — Doc 111 §111.E Group E cutover (env_lexframe.rs)
+
+- Fresh Agent dispatch under the new convention (= no cfg gates).
+- Same single-arm pattern.
+- Merge to main.
+
+** §3.5 PR-5 — env_mirror.rs / env_lexframe.rs file deletion
+
+- Move Group C/D Rust helpers (=mirror_fnv1a=,
+  =install_empty_mirror_rust_direct=,
+  =install_empty_frames_record_rust_direct=, baker-only helpers)
+  into =build-tool/src/eval/mod.rs= or a small =env_bootstrap.rs=.
+- Delete =build-tool/src/eval/env_mirror.rs= +
+  =build-tool/src/eval/env_lexframe.rs=.
+- =pub mod env_mirror;= / =pub mod env_lexframe;= removed from
+  =eval/mod.rs=.
+- *Doc 102 Phase 8.b condition (a) literally satisfied.*
+- Doc 102 status mark: SHIPPED.
+
+** §3.6 PR-6 (optional) — sweep remaining Phase 47 callsites
+
+- Re-run the audit grep across the whole crate.
+- Apply cfg-gate removal to any callsites missed in PR-1..PR-2.
+- This is bookkeeping; if PR-1..PR-2 caught everything, PR-6 is
+  empty.
+
+* §4 Verification gates (cumulative)
+
+| Stage | Gate                                                                                  |
+|-------+---------------------------------------------------------------------------------------|
+| PR-1  | 732+ lib tests pass; non-x86_64 build fails with clear =compile_error!=             |
+| PR-2  | 732+ lib tests pass; LOC delta ≥ −300                                                |
+| PR-3  | 732+ lib tests pass; env_mirror.rs ≤ 200 LOC (= cutover commit collapsed to thin wrapper) |
+| PR-4  | 732+ lib tests pass; env_lexframe.rs ≤ 150 LOC                                       |
+| PR-5  | 732+ lib tests pass; env_mirror.rs + env_lexframe.rs *do not exist*; =pub mod= removed |
+| PR-6  | grep returns 0 Phase-47-fallback cfg gates                                            |
+
+Cumulative target: *net −1000 LOC of Rust* across PR-1..PR-5.
+
+* §5 Risks + open questions
+
+** §5.1 Hidden non-Phase-47 fallbacks
+
+Risk: a cfg-gated block looks like a Phase 47 fallback but actually
+guards different platform-specific code (= unrelated syscalls,
+endianness, libc behavior).  Removing it would break real
+non-x86_64 builds for non-Phase-47 reasons.
+
+Mitigation: PR-1 audit is *manual review per cfg gate*, not bulk
+=sed=.  The auditor confirms each one points at a Phase 47 path
+before removal.
+
+** §5.2 Test infrastructure dependency
+
+Risk: integration tests + harnesses may depend on the non-x86_64
+build succeeding (= cross-arch CI smoke).
+
+Mitigation: confirm CI matrix.  If any non-x86_64 job exists, drop
+those jobs in the same PR that adds the =compile_error!= guard.
+Likely none exist today (= manual check at PR-1).
+
+** §5.3 Doc 102 / Doc 111 wording
+
+Doc 102 Phase 8.b condition (a) currently reads "delete
+env_mirror.rs / env_lexframe.rs".  This doc treats that as the
+endpoint of PR-5; Doc 102 status should be updated to "deferred
+behind Doc 114 PR-1..PR-5" upon Doc 114 acceptance.
+
+Doc 111 §3.E spec "Rust −520 LOC" remains the *direct* env_mirror /
+env_lexframe target.  Doc 114 expands that to the broader "Rust
+−1000 LOC across all Phase 47 callsites" because the cleanup is
+inherently repo-wide once we commit to the pivot.
+
+** §5.4 Reversal cost (= what if arm64 becomes urgent tomorrow)
+
+If arm64 deployment becomes urgent before any =nelisp-asm-aarch64.el=
+exists, the cleanest reversal is:
+
+1. Implement =lisp/nelisp-asm-aarch64.el= (= the design-intended
+   path, ~1-2 weeks).
+2. *Not* re-introduce Rust fallback.
+
+This reversal cost is bounded by §2.2's contract; it does not
+require any Rust delta.
+
+** §5.5 Documentation locality
+
+Risk: future contributors won't know why a =compile_error!= sits
+at the top of a module and might try to "fix" it.
+
+Mitigation: every =compile_error!= references Doc 114 by number:
+
+#+begin_src rust
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+compile_error!("Doc 114: Phase 47 helpers are x86_64-linux only.");
+#+end_src
+
+The git blame + the Doc number gives any future investigator a
+direct trail.
+
+* §6 References
+
+- =/dev/nelisp/CLAUDE.md= — repo existence purpose, =Rust 削減=
+  evaluation axis.
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= — Doc 100 v2
+  (SHIPPED).
+- =docs/design/101-phase-47-sexp-cons-symbol-str-abi.org= — Doc 101
+  (§101.A-D SHIPPED).
+- =docs/design/110-phase-47-f64-abi.org= — Doc 110 (DRAFT).
+- =docs/design/111-phase-47-sexp-record-vector-cell-abi.org= — Doc
+  111 (§111.A-D SHIPPED; §111.E #1-12 + #19-26 SHIPPED on main
+  =3bdc6487=; cutover branch =feat/doc-111-stage-e-cutover= awaits
+  PR-3 rework).
+- =docs/design/102-env-rs-elisp-migration.org= — Doc 102 (Phase
+  8.b condition (a) endpoint).
+- =scripts/compile-elisp-objects.el= — current
+  =:requires-arch x86_64= gates documenting de facto x86_64-only
+  reality.
+- Cutover branch evidence: =git log feat/doc-111-stage-e-cutover=
+  + =git diff main..feat/doc-111-stage-e-cutover --
+  build-tool/src/eval/env_mirror.rs | head -100=.
+
+Memory cross-refs:
+
+- =feedback_anvil_module_dual_target_categorization= — anvil
+  modules are categorized by purpose; the same logic separates ISA
+  support from logic fallback for Phase 47 callers.
+- =feedback_nelisp_perf_not_elisp_interpreter= — NeLisp Phase 7+
+  is native cc, not Emacs Lisp interpreter; the Rust fallback was
+  shadowing this distinction.
+- =project_anvil_runtime_phase_b_complete= — anvil-runtime crate
+  deleted (= prior precedent of "delete Rust crate when elisp
+  replacement exists"); Doc 114 extends that operating mode to
+  Phase 47-using code paths.
