@@ -301,6 +301,77 @@ mod box_accessor_link {
     }
 }
 
+// Doc 120 §120.D — `jit/access.rs's 4 of 4 trampolines (=
+// `nl_jit_access_length' / `_aref' / `_aset' / `_elt') now live in
+// Phase-47-compiled elisp `.o' files (=
+// `lisp/nelisp-cc-jit-{length,aref,aset,elt}.el').  `access_link'
+// mirrors `predicate_link' / `box_accessor_link' shape: `extern "C"'
+// decls so the linker resolves the symbols against the static archive
+// built by `build.rs::link_elisp_cc_spike'.
+//
+// Sub-arms covered by narrow Rust externs (= `extern-call' from elisp
+// body, same shape `nl_sexp_eq' / `nl_sexp_clone_into' use):
+//   - `length' Str arm — strategy.el's `condition-case' fallback to
+//     `nelisp--mut-str-len' takes over on ERR; no extern needed.
+//   - `aref' / `aset' BoolVector arms — `nl_jit_access_{aref,aset}_
+//     bool_vector_inner' narrow externs in `jit/access.rs' do the
+//     bit decode + tag-byte write that Phase 47 can't emit yet (see
+//     Doc 122 §122.B `bool-vector-*' cluster).
+//
+// Currently linux-x86_64 only — `extern-call' ABI ships aarch64 in
+// a follow-up.  Other targets fall through to the legacy
+// `super::access::nl_jit_access_*' Rust trampolines via the inverse
+// `#[cfg(not(...))]' stub below.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod access_link {
+    use crate::eval::sexp::Sexp;
+    #[allow(improper_ctypes)]
+    extern "C" {
+        pub fn nelisp_jit_length(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_aset(
+            arg: *const Sexp,
+            idx: i64,
+            val: *const Sexp,
+            out: *mut Sexp,
+        ) -> i64;
+        pub fn nelisp_jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+mod access_link {
+    use crate::eval::sexp::Sexp;
+    pub unsafe extern "C" fn nelisp_jit_length(
+        arg: *const Sexp,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::access::nl_jit_access_length(arg, out)
+    }
+    pub unsafe extern "C" fn nelisp_jit_aref(
+        arg: *const Sexp,
+        idx: i64,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::access::nl_jit_access_aref(arg, idx, out)
+    }
+    pub unsafe extern "C" fn nelisp_jit_aset(
+        arg: *const Sexp,
+        idx: i64,
+        val: *const Sexp,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::access::nl_jit_access_aset(arg, idx, val, out)
+    }
+    pub unsafe extern "C" fn nelisp_jit_elt(
+        arg: *const Sexp,
+        idx: i64,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::access::nl_jit_access_elt(arg, idx, out)
+    }
+}
+
 // Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
 // `UnifiedJit' struct + `unified_jit()' OnceLock are gone now that
 // every cluster (cons / access / arith / predicate / syscall) goes
@@ -380,10 +451,16 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // return OK') without further work, so semantic behaviour is
         // preserved.  nelisp-cc compiled hot paths skip this bridge
         // entirely via dlsym + direct CALL.
-        "nelisp_jit_length" => super::access::nl_jit_access_length as *const u8,
-        "nelisp_jit_aref" => super::access::nl_jit_access_aref as *const u8,
-        "nelisp_jit_aset" => super::access::nl_jit_access_aset as *const u8,
-        "nelisp_jit_elt" => super::access::nl_jit_access_elt as *const u8,
+        // Doc 120 §120.D — all 4 trampolines (`length' / `aref' /
+        // `aset' / `elt') wholly replaced by Phase-47-compiled elisp
+        // `.o' on linux-x86_64; other targets fall through to the
+        // Rust trampolines in `super::access' via the `access_link'
+        // stub.  Sub-arms (= Str length, BoolVector aref/aset) reach
+        // narrow Rust externs via `extern-call' from elisp.
+        "nelisp_jit_length" => access_link::nelisp_jit_length as *const u8,
+        "nelisp_jit_aref" => access_link::nelisp_jit_aref as *const u8,
+        "nelisp_jit_aset" => access_link::nelisp_jit_aset as *const u8,
+        "nelisp_jit_elt" => access_link::nelisp_jit_elt as *const u8,
         // ---- predicate (1) ----
         // Phase 7.1.6.d (Doc 28 §3.6.d): resolve predicate name directly
         // to the `#[no_mangle] extern "C"' trampoline now that the

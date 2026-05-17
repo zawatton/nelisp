@@ -12,6 +12,57 @@
 //! direct fixup (which can also emit the inline-NIL short-circuit as
 //! host machine code before the CALL), and (2) `nelisp-jit-substrate.el'
 //! / `-strategy.el' via `bridge::unified_fn_ptr's name → fn-ptr table.
+//!
+//! # Doc 120 §120.D swap status (2026-05-18)
+//!
+//! 4 of 4 trampolines moved to Phase-47-compiled elisp on linux-x86_64:
+//!
+//!   - `nl_jit_access_length' → `lisp/nelisp-cc-jit-length.el'
+//!     (= Nil + Vector arms inline; Str arm via narrow
+//!     `nl_jit_access_length_str_inner' extern — UTF-8 codepoint
+//!     count not yet expressible in Phase 47, kept in Rust).
+//!   - `nl_jit_access_aref'   → `lisp/nelisp-cc-jit-aref.el'
+//!     (= Vector arm via `vector-ref' + inline bounds check;
+//!     BoolVector arm via `extern-call' to the narrow
+//!     `nl_jit_access_aref_bool_vector_inner' helper below).
+//!   - `nl_jit_access_aset'   → `lisp/nelisp-cc-jit-aset.el'
+//!     (= Vector arm via `vector-slot-set' + `nl_sexp_clone_into';
+//!     BoolVector arm via narrow `_aset_bool_vector_inner' helper).
+//!   - `nl_jit_access_elt'    → `lisp/nelisp-cc-jit-elt.el'
+//!     (= Vector arm same as `aref'; Cons arm via recursive
+//!     `cons-cdr-raw-from-box' walker — same shape §101.B `length'
+//!     established).
+//!
+//! Sub-arms covered by narrow Rust externs (= `extern-call' from
+//! Phase 47 elisp body; each helper is ~10 LOC of bounded scope):
+//!
+//!   - `length' Str arm — `nl_jit_access_length_str_inner' performs
+//!     `s.chars().count()'.  Needs UTF-8 codepoint-count grammar
+//!     primitive to fully swap (= same blocker as §120.B
+//!     `nl_jit_mut_str_len' and §120.C `nl_jit_intern' /
+//!     `_split_by_non_alnum').  Adding a `(str-char-count H)' op
+//!     that walks the UTF-8 byte stream and counts codepoints would
+//!     unblock; Phase 47 currently only reads `String::len' (= byte
+//!     count) via `str-len'.  See Doc 122 §122.A `mut-str-char-
+//!     count' cluster.
+//!
+//!   - `aref' / `aset' BoolVector arms — needs `bool-vector-{len,
+//!     bit,set-bit}' grammar primitives.  Phase 47 has no
+//!     bool-vector ops yet (= mechanical to add per §120.B
+//!     blocker note; same shape as `vector-len' / `vector-ref' at a
+//!     different offset constant + a bit-shift decode).  The narrow
+//!     `nl_jit_access_{aref,aset}_bool_vector_inner' externs below
+//!     are the minimum viable swap — they keep the bool-vector
+//!     codepath alive while consolidating the rest of each
+//!     trampoline body into Phase 47.  See Doc 122 §122.B
+//!     `bool-vector-*' cluster.
+//!
+//! On linux-x86_64 the Rust `nl_jit_access_*' functions below are
+//! kept for fallback parity + in-file unit tests (= dead code that
+//! the linker keeps via `#[no_mangle]' + `-rdynamic', similar to
+//! other arch-specific reference impls).  Other targets still route
+//! through these Rust trampolines via the `access_link' stub in
+//! `bridge.rs' until the §120.D elisp emit is generalized.
 
 use crate::eval::sexp::{
     Sexp, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CONS, SEXP_TAG_NIL, SEXP_TAG_STR,
@@ -86,12 +137,7 @@ pub unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mu
         return TRAMPOLINE_ERR;
     }
     if tag == SEXP_TAG_BOOL_VECTOR {
-        let box_ref = &*(*arg).bool_vector_box_ptr();
-        if let Some(b) = box_ref.value.get(idx as usize) {
-            *out = if *b { Sexp::T } else { Sexp::Nil };
-            return TRAMPOLINE_OK;
-        }
-        return TRAMPOLINE_ERR;
+        return nl_jit_access_aref_bool_vector_inner(arg, idx, out);
     }
     TRAMPOLINE_ERR
 }
@@ -127,18 +173,7 @@ pub unsafe extern "C" fn nl_jit_access_aset(
         return TRAMPOLINE_OK;
     }
     if tag == SEXP_TAG_BOOL_VECTOR {
-        let box_ptr = (*arg).bool_vector_box_ptr()
-            as *mut crate::eval::nlboolvector::NlBoolVector;
-        let len = (&*box_ptr).value.len();
-        if (idx as usize) >= len {
-            return TRAMPOLINE_ERR;
-        }
-        let bit = crate::eval::special_forms::is_truthy(&*val);
-        // SAFETY: Phase A.4.4 — same discipline as the Vector arm above.
-        let value_ref = &mut (*box_ptr).value;
-        value_ref[idx as usize] = bit;
-        *out = (*val).clone();
-        return TRAMPOLINE_OK;
+        return nl_jit_access_aset_bool_vector_inner(arg, idx, val, out);
     }
     TRAMPOLINE_ERR
 }
@@ -180,6 +215,100 @@ pub unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut
         }
     }
     TRAMPOLINE_ERR
+}
+
+// ---- Doc 120 §120.D narrow sub-arm externs ----
+//
+// Reached from the Phase 47 elisp bodies in `lisp/nelisp-cc-jit-
+// aref.el' / `lisp/nelisp-cc-jit-aset.el' via the `(extern-call SYM
+// ARG...)' grammar form (= same shape `nl_sexp_eq' uses for the
+// §120.A predicate-eq slow path).  Phase 47 has no `bool-vector-*'
+// grammar primitives yet (see Doc 122 §122.B cluster) so the
+// bool-vector arms can't be expressed entirely in elisp; these
+// narrow helpers shrink the surface area to just the bit decode +
+// `Sexp::T' / `Sexp::Nil' tag-byte write.
+//
+// Both helpers reuse the pre-§120.D trampoline body logic (= bounds
+// check + bool-vector box ptr deref) so the on-disk semantics match
+// the deleted trampoline arm bit-for-bit.
+
+/// `(length STR)' narrow `Sexp::Str' arm — reached from the
+/// Phase 47 `nelisp_jit_length' body's Str tag arm.  Returns
+/// codepoint count via `s.chars().count()' — the same Unicode-
+/// aware char-walker the pre-§120.D trampoline used, kept in
+/// Rust until Phase 47 grows a `(str-char-count H)' grammar op
+/// (= Doc 122 §122.A `mut-str-char-count' cluster).
+///
+/// # Safety
+/// - `arg' must point at `Sexp::Str(_)' — elisp tag-checks.
+/// - `out' must be non-null + writable for one 32-byte Sexp slot.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_access_length_str_inner(
+    arg: *const Sexp,
+    out: *mut Sexp,
+) -> i64 {
+    if let Sexp::Str(s) = &*arg {
+        *out = Sexp::Int(s.chars().count() as i64);
+        TRAMPOLINE_OK
+    } else {
+        TRAMPOLINE_ERR
+    }
+}
+
+/// `(aref BV INDEX)' narrow BoolVector arm — reached from the
+/// Phase 47 `nelisp_jit_aref' body's BoolVector tag arm.
+///
+/// # Safety
+/// - `arg' must point at `Sexp::BoolVector(_)' — the elisp body
+///   tag-checks before calling.
+/// - `out' must be non-null + writable for one 32-byte Sexp slot.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_access_aref_bool_vector_inner(
+    arg: *const Sexp,
+    idx: i64,
+    out: *mut Sexp,
+) -> i64 {
+    if idx < 0 {
+        return TRAMPOLINE_ERR;
+    }
+    let box_ref = &*(*arg).bool_vector_box_ptr();
+    if let Some(b) = box_ref.value.get(idx as usize) {
+        *out = if *b { Sexp::T } else { Sexp::Nil };
+        return TRAMPOLINE_OK;
+    }
+    TRAMPOLINE_ERR
+}
+
+/// `(aset BV INDEX VALUE)' narrow BoolVector arm — reached from the
+/// Phase 47 `nelisp_jit_aset' body's BoolVector tag arm.
+///
+/// # Safety
+/// - `arg' must point at `Sexp::BoolVector(_)' — elisp tag-checks.
+/// - `val' must point at an initialized `Sexp' for truthiness test.
+/// - `out' must be non-null + writable for one 32-byte Sexp slot.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_access_aset_bool_vector_inner(
+    arg: *const Sexp,
+    idx: i64,
+    val: *const Sexp,
+    out: *mut Sexp,
+) -> i64 {
+    if idx < 0 {
+        return TRAMPOLINE_ERR;
+    }
+    let box_ptr = (*arg).bool_vector_box_ptr()
+        as *mut crate::eval::nlboolvector::NlBoolVector;
+    let len = (&*box_ptr).value.len();
+    if (idx as usize) >= len {
+        return TRAMPOLINE_ERR;
+    }
+    let bit = crate::eval::special_forms::is_truthy(&*val);
+    // SAFETY: Phase A.4.4 — same discipline as the pre-§120.D
+    // BoolVector arm above.
+    let value_ref = &mut (*box_ptr).value;
+    value_ref[idx as usize] = bit;
+    *out = (*val).clone();
+    TRAMPOLINE_OK
 }
 
 #[cfg(test)]

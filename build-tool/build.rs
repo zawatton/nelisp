@@ -159,6 +159,15 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // / `record_set'; `record_alloc' stays Rust + 6 non-record
         // entries SKIP per blocker notes in `jit/box_accessor.rs').
         "nelisp-cc-jit-record.el",
+        // Doc 120 §120.D — 4 of 4 `jit/access.rs' trampoline swaps
+        // (`length' / `aref' / `aset' / `elt').  Str length + BoolVector
+        // aref/aset sub-arms reach narrow Rust externs via `extern-call'
+        // (= same shape `nl_sexp_eq' uses for the §120.A predicate-eq
+        // slow path).
+        "nelisp-cc-jit-length.el",
+        "nelisp-cc-jit-aref.el",
+        "nelisp-cc-jit-aset.el",
+        "nelisp-cc-jit-elt.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

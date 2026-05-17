@@ -376,6 +376,34 @@
     (nelisp-cc-sexp-write-str
      :source-var nelisp-cc-sexp-write-str--symbol-source
      :output "nelisp_sexp_write_symbol.o"
+     :requires-arch x86_64)
+    ;; Doc 120 §120.D — `jit/access.rs' all 4 trampoline swaps
+    ;; (`nl_jit_access_length' / `_aref' / `_aset' / `_elt').  Vector
+    ;; arms use the existing `vector-ref' / `vector-slot-set' /
+    ;; `vector-len' grammar.  Cons-list `elt' walker reuses §101.B
+    ;; `cons-cdr-raw-from-box' / `sexp-payload-ptr' shape.  Str arm
+    ;; of `length' degrades to ERR fallthrough (= strategy.el's
+    ;; `condition-case' dispatches to `nelisp--mut-str-len'); the
+    ;; BoolVector arms of `aref' / `aset' delegate to narrow Rust
+    ;; externs (`nl_jit_access_{aref,aset}_bool_vector_inner') via
+    ;; `extern-call' until Phase 47 grows `bool-vector-*' grammar
+    ;; primitives (= Doc 122 §122.B cluster).  Linux-x86_64 only —
+    ;; `extern-call' ABI ships aarch64 in follow-up.
+    (nelisp-cc-jit-length
+     :source-var nelisp-cc-jit-length--source
+     :output "nelisp_jit_length.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-aref
+     :source-var nelisp-cc-jit-aref--source
+     :output "nelisp_jit_aref.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-aset
+     :source-var nelisp-cc-jit-aset--source
+     :output "nelisp_jit_aset.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-elt
+     :source-var nelisp-cc-jit-elt--source
+     :output "nelisp_jit_elt.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

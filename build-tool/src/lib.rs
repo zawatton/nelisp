@@ -421,6 +421,24 @@ pub mod elisp_cc_spike {
             val: *const Sexp,
             out: *mut Sexp,
         ) -> i64;
+        // Doc 120 §120.D — `jit/access.rs' 4 of 4 trampoline swaps
+        // (`length' / `aref' / `aset' / `elt').  Defined in
+        // `lisp/nelisp-cc-jit-{length,aref,aset,elt}.el'; wired to
+        // `unified_fn_ptr' via the `access_link' module in
+        // `jit/bridge.rs'.  Same dead-symbol-on-rlib pinning rationale
+        // as the §120.A / §120.B externs above.  The Str / BoolVector
+        // sub-arms reach narrow Rust externs in `jit/access.rs' via
+        // `extern-call' from the elisp bodies (= same shape
+        // `nl_sexp_eq' uses for the §120.A predicate-eq slow path).
+        pub fn nelisp_jit_length(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_aset(
+            arg: *const Sexp,
+            idx: i64,
+            val: *const Sexp,
+            out: *mut Sexp,
+        ) -> i64;
+        pub fn nelisp_jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -1115,5 +1133,65 @@ pub mod elisp_cc_spike {
         out: *mut Sexp,
     ) -> i64 {
         nelisp_jit_record_set(arg, idx, val, out)
+    }
+
+    /// Doc 120 §120.D probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_length' trampoline.  ABI matches the
+    /// pre-§120.D Rust impl in `jit/access.rs': `(*const Sexp, *mut
+    /// Sexp) -> i64' returning 0 on OK (Nil / Vector input, `*out =
+    /// Sexp::Int(len)'), 1 on ERR (Str / other variant — strategy.el
+    /// `condition-case' fallback handles `string' via
+    /// `nelisp--mut-str-len').
+    ///
+    /// # Safety
+    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_length(arg: *const Sexp, out: *mut Sexp) -> i64 {
+        nelisp_jit_length(arg, out)
+    }
+
+    /// Doc 120 §120.D probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_aref' trampoline.  ABI: `(*const Sexp,
+    /// i64, *mut Sexp) -> i64' returning 0 on OK (Vector / BoolVector
+    /// in-range), 1 on ERR (negative idx / OOR / non-array tag).
+    ///
+    /// # Safety
+    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
+        nelisp_jit_aref(arg, idx, out)
+    }
+
+    /// Doc 120 §120.D probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_aset' trampoline.  ABI: `(*const Sexp,
+    /// i64, *const Sexp, *mut Sexp) -> i64' returning 0 on OK
+    /// (Vector / BoolVector in-range), 1 on ERR.
+    ///
+    /// # Safety
+    /// - `arg' / `val' must be non-null pointers to initialized `Sexp's.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_aset(
+        arg: *const Sexp,
+        idx: i64,
+        val: *const Sexp,
+        out: *mut Sexp,
+    ) -> i64 {
+        nelisp_jit_aset(arg, idx, val, out)
+    }
+
+    /// Doc 120 §120.D probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_elt' trampoline.  ABI: `(*const Sexp,
+    /// i64, *mut Sexp) -> i64' returning 0 on OK (Vector / Cons-list
+    /// in-range), 1 on ERR.
+    ///
+    /// # Safety
+    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
+        nelisp_jit_elt(arg, idx, out)
     }
 }
