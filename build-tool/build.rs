@@ -215,6 +215,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-nlconsbox-clone.el",
         // Doc 124 §124.G — first Drop-half stage.
         "nelisp-cc-nlconsbox-drop.el",
+        // Doc 124 §124.H — NlVector Drop kernel (REFCOUNT_OFFSET=24,
+        // SIZE=32, ALIGN=8).  Mechanical port of §124.G to the
+        // `Vec<Sexp>' header + AtomicUsize trailer layout.
+        "nelisp-cc-nlvector-drop.el",
         // Doc 124 §124.B-E — mechanical sibling Clone kernels for the
         // remaining 4 nl*.rs box types (NlVector / NlCell / NlRecord /
         // NlStr).  REFCOUNT_OFFSET = 24 / 32 / 56 / 24 respectively.

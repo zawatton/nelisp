@@ -551,6 +551,14 @@
      :source-var nelisp-cc-nlconsbox-drop--source
      :output "nelisp_nlconsbox_drop.o"
      :requires-arch x86_64)
+    ;; Doc 124 §124.H — NlVector Drop elisp kernel.  Identical shape
+    ;; to §124.G modulo per-type layout: REFCOUNT_OFFSET = 24,
+    ;; SIZE_OF_NLVECTOR = 32 (= 24-byte Vec<Sexp> header + 8-byte
+    ;; AtomicUsize trailer), ALIGN = 8.
+    (nelisp-cc-nlvector-drop
+     :source-var nelisp-cc-nlvector-drop--source
+     :output "nelisp_nlvector_drop.o"
+     :requires-arch x86_64)
     ;; Doc 124 §124.B-E — mechanical sibling Clone kernels.  Identical
     ;; shape to §124.A modulo the per-type REFCOUNT_OFFSET literal:
     ;;   §124.B NlVector: 24, §124.C NlCell: 32,

@@ -279,6 +279,10 @@ pub mod elisp_cc_spike {
         // Doc 124 §124.G — first Drop-half stage.  NlConsBox Drop
         // kernel: fetch-sub then conditional dealloc.
         fn nelisp_nlconsbox_drop(box_ptr: *mut i64) -> i64;
+        // Doc 124 §124.H — NlVector Drop kernel (REFCOUNT_OFFSET=24,
+        // SIZE=32, ALIGN=8).  Mechanical port of §124.G modulo the
+        // per-type layout literals.
+        fn nelisp_nlvector_drop(box_ptr: *mut i64) -> i64;
         // Doc 124 §124.B-E — mechanical sibling Clone kernels.
         // REFCOUNT_OFFSET = 24/32/56/24 respectively.
         fn nelisp_nlvector_clone(box_ptr: *mut i64) -> i64;
@@ -1143,6 +1147,14 @@ pub mod elisp_cc_spike {
     /// Doc 124 §124.G — pure-elisp NlConsBox Drop kernel.
     pub unsafe fn nlconsbox_drop(box_ptr: *mut i64) -> i64 {
         nelisp_nlconsbox_drop(box_ptr)
+    }
+
+    /// Doc 124 §124.H — pure-elisp NlVector Drop kernel.  Mechanical
+    /// port of §124.G modulo the per-type layout literals: offset 24
+    /// (= `size_of::<Vec<Sexp>>()'), total size 32, align 8 (=
+    /// `Layout::new::<NlVector>()' per `nlvector.rs:69, 143').
+    pub unsafe fn nlvector_drop(box_ptr: *mut i64) -> i64 {
+        nelisp_nlvector_drop(box_ptr)
     }
 
     /// Doc 124 §124.B — NlVector Clone kernel (offset 24).
