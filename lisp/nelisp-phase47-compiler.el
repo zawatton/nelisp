@@ -218,6 +218,100 @@ Caller has already verified foldability via
   '(< > <= >= =)
   "Doc 97.c comparison operators (= produce 0 or 1 in rax).")
 
+(defun nelisp-phase47-compiler--parse-extern-call-args
+    (op name raw-args env fenv defuns)
+  "Parse Doc 122 §122.C extern-call arg list into IR descriptors.
+OP is the head op symbol (= `extern-call' or `extern-call-f64').
+NAME is the extern symbol (for diagnostics).  RAW-ARGS is the
+list following NAME in the source form; each entry is either a
+bare value expression (= legacy `:i64' default), a `(:i64 EXPR)'
+plist, a `(:f64 EXPR)' plist, or a single trailing `(:varargs
+ARG ...)' marker that itself wraps the same per-arg plist shape.
+ENV / FENV / DEFUNS are forwarded to `--parse-value' for each
+underlying expression.
+
+Returns a plist `(:args (PARSED-NODE ...) :varargs-p BOOL
+:f64-count N)' where each PARSED-NODE is the same value IR plus
+a `:cls' (= `gp' or `f64') tag and a `:varargs-p' flag for emit
+to inspect when fixing register placement + the SysV AMD64 AL
+register before the call instruction.  Args are validated against
+the GP / xmm register budget (= 6 / 8 respectively); over-budget
+forms raise `:extern-call-too-many-gp-args' or
+`:extern-call-too-many-f64-args'.
+
+Per-class budget is total across the fixed + varargs sets — SysV
+AMD64 still passes variadic args through the same register pool
+as fixed args, just with the addition of the AL count.
+
+OP is recorded for diagnostics; the caller's `:ret-class' flag
+already distinguishes `extern-call' (i64 return) from
+`extern-call-f64' (f64 return)."
+  (let ((fixed-args nil)
+        (varargs nil)
+        (varargs-p nil))
+    ;; Split raw-args into fixed + optional trailing (:varargs ...).
+    (dolist (a raw-args)
+      (cond
+       ((and (consp a) (eq (car a) :varargs))
+        (when varargs-p
+          (signal 'nelisp-phase47-compiler-error
+                  (list :extern-call-multiple-varargs name op)))
+        (setq varargs-p t
+              varargs (cdr a)))
+       (varargs-p
+        ;; Anything after the (:varargs ...) form is an error.
+        (signal 'nelisp-phase47-compiler-error
+                (list :extern-call-trailing-after-varargs name a)))
+       (t
+        (push a fixed-args))))
+    (setq fixed-args (nreverse fixed-args))
+    (let* ((parse-one
+            (lambda (form is-varargs)
+              (let* ((cls-expr
+                      (cond
+                       ;; (:i64 EXPR) / (:f64 EXPR) plist form.
+                       ((and (consp form)
+                             (memq (car form) '(:i64 :f64))
+                             (= (length form) 2))
+                        (cons (if (eq (car form) :f64) 'f64 'gp)
+                              (cadr form)))
+                       ;; (:i64) / (:f64) without an expression is bad.
+                       ((and (consp form)
+                             (memq (car form) '(:i64 :f64)))
+                        (signal 'nelisp-phase47-compiler-error
+                                (list :extern-call-bad-arg-shape
+                                      name form)))
+                       ;; Bare value expr → default i64.
+                       (t (cons 'gp form))))
+                     (cls (car cls-expr))
+                     (expr (cdr cls-expr))
+                     (parsed (nelisp-phase47-compiler--parse-value
+                              expr env fenv defuns)))
+                (append parsed
+                        (list :cls cls :varargs-p is-varargs)))))
+           (parsed-fixed (mapcar (lambda (a) (funcall parse-one a nil))
+                                 fixed-args))
+           (parsed-var (mapcar (lambda (a) (funcall parse-one a t))
+                               varargs))
+           (all-args (append parsed-fixed parsed-var))
+           (gp-args (cl-remove-if-not
+                     (lambda (n) (eq (plist-get n :cls) 'gp)) all-args))
+           (f64-args (cl-remove-if-not
+                      (lambda (n) (eq (plist-get n :cls) 'f64)) all-args)))
+      (when (> (length gp-args)
+               (length nelisp-phase47-compiler--arg-regs))
+        (signal 'nelisp-phase47-compiler-error
+                (list :extern-call-too-many-gp-args name
+                      (length gp-args))))
+      (when (> (length f64-args)
+               (length nelisp-phase47-compiler--xmm-arg-regs))
+        (signal 'nelisp-phase47-compiler-error
+                (list :extern-call-too-many-f64-args name
+                      (length f64-args))))
+      (list :args all-args
+            :varargs-p varargs-p
+            :f64-count (length f64-args)))))
+
 (defun nelisp-phase47-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
@@ -1009,30 +1103,42 @@ functions `((NAME . ARITY) ...)'."
             :name name
             :arg (nelisp-phase47-compiler--parse-value
                   arg env fenv defuns))))
-   ;; (extern-call SYM ARG...) — Doc 100 §100.A call into a C-callable
-   ;; extern symbol.  SYM becomes an SHN_UNDEF entry in the output .o's
-   ;; symtab; the rel32 placeholder gets an R_X86_64_PLT32 relocation
-   ;; that the linker resolves at static-link time against another
-   ;; object (typically a Rust `.rlib' exporting `#[no_mangle] pub
-   ;; extern "C"' helpers).  Up to 6 args, all i64-shaped.
-   ((and (consp sexp) (eq (car sexp) 'extern-call))
+   ;; (extern-call SYM ARG...) — Doc 100 §100.A / Doc 122 §122.C call
+   ;; into a C-callable extern symbol.  SYM becomes an SHN_UNDEF entry
+   ;; in the output .o's symtab; the rel32 placeholder gets an
+   ;; R_X86_64_PLT32 relocation that the linker resolves at static-
+   ;; link time against another object (typically a Rust `.rlib'
+   ;; exporting `#[no_mangle] pub extern "C"' helpers, or libc /
+   ;; libm).
+   ;;
+   ;; Doc 122 §122.C — args may be bare (= legacy `:i64', backward-
+   ;; compatible with all existing `extern-call' call sites) or
+   ;; type-annotated `(:i64 EXPR)' / `(:f64 EXPR)' / `(:varargs
+   ;; (:TYPE V) ...)' plists.  The classifier dispatches i64 → rdi-
+   ;; r9 GP regs, f64 → xmm0-7 per SysV AMD64.  Varargs entries are
+   ;; appended after the fixed args and the f64-count is recorded so
+   ;; emit can set the AL register before the `call' instruction
+   ;; (= SysV ABI: AL = number of vector args for variadic
+   ;; functions).  Return type is i64 (= read from rax); use
+   ;; `extern-call-f64' for f64 return (= read from xmm0).
+   ((and (consp sexp) (memq (car sexp) '(extern-call extern-call-f64)))
     (when (< (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :extern-call-needs-symbol sexp)))
-    (let* ((name (nth 1 sexp))
-           (args (nthcdr 2 sexp)))
+    (let* ((op (car sexp))
+           (name (nth 1 sexp))
+           (raw-args (nthcdr 2 sexp))
+           (parsed (nelisp-phase47-compiler--parse-extern-call-args
+                    op name raw-args env fenv defuns)))
       (unless (symbolp name)
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-name-not-symbol name)))
-      (when (> (length args) (length nelisp-phase47-compiler--arg-regs))
-        (signal 'nelisp-phase47-compiler-error
-                (list :extern-call-too-many-args name (length args))))
       (list :kind 'extern-call
             :name name
-            :args (mapcar (lambda (a)
-                            (nelisp-phase47-compiler--parse-value
-                             a env fenv defuns))
-                          args))))
+            :ret-class (if (eq op 'extern-call-f64) 'f64 'gp)
+            :args (plist-get parsed :args)
+            :varargs-p (plist-get parsed :varargs-p)
+            :f64-count (plist-get parsed :f64-count))))
    ;; Function call (= head is a defined function name).
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
@@ -2026,52 +2132,105 @@ Strategy:
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))
 
 (defun nelisp-phase47-compiler--emit-extern-call (node buf)
-  "Emit a SysV AMD64 call to an extern symbol NODE (= Doc 100 §100.A).
+  "Emit a SysV AMD64 call to an extern symbol NODE.
+Doc 100 §100.A introduced the all-i64 form; Doc 122 §122.C extends
+this to mixed i64 / f64 args (= per-arg `:cls' tag) + f64 return
+(= `:ret-class' = `f64') + variadic calls (= `:varargs-p' t with
+`:f64-count' = AL register value).
+
 Same strategy as `--emit-call' but emits the `call' opcode bytes
 directly + records a `plt32' reloc against an external symbol
 instead of an intra-text label fixup.  The ELF writer's
 `.rela.text' machinery surfaces the reloc for `ld' to resolve
-against the final linked binary (= typically a Rust `.rlib'
+against the final linked binary (= libc / libm / Rust `.rlib'
 exporting matching `#[no_mangle] pub extern \"C\"' helpers).
+
+Arg placement strategy:
+  1. Evaluate each arg in source order, transferring an f64 result
+     from xmm0 → rax via MOVQ before the unified `push rax' save.
+     This keeps the spill pipeline uniform so the second arg's
+     emit can clobber xmm0 / rax freely.
+  2. Pop in reverse, dispatching each value into rdi-r9 (gp args)
+     or xmm0-7 (f64 args) per its `:cls' tag.  f64 pops first
+     land in rax, then MOVQ rax → target xmm reg.
+  3. For variadic calls, materialise `:f64-count' in AL via
+     `mov eax, imm32' (= zero-extended, satisfies SysV ABI §3.5.7
+     contract that AL contains the upper bound on f64 args).
 
 Unlike `--emit-call' the target name is NOT validated against the
 compile-time defuns alist; the parser already accepted SYM as a
 bare symbol literal under `(extern-call SYM ...)'.  Out-of-budget
-args are rejected at parse time."
+args are rejected at parse time per class."
   (let* ((name (plist-get node :name))
          (args (plist-get node :args))
-         (n (length args))
-         (regs (cl-subseq nelisp-phase47-compiler--arg-regs 0 n))
+         (ret-class (or (plist-get node :ret-class) 'gp))
+         (varargs-p (plist-get node :varargs-p))
+         (f64-count (or (plist-get node :f64-count) 0))
+         ;; Per-class register pools, sliced to the number of args
+         ;; of that class.  Iteration order matches source order:
+         ;; the Nth gp arg → Nth GP reg, the Nth f64 arg → Nth xmm
+         ;; reg, both pools indexed independently.
+         (gp-args (cl-remove-if-not
+                   (lambda (a) (eq (plist-get a :cls) 'gp)) args))
+         (f64-args (cl-remove-if-not
+                    (lambda (a) (eq (plist-get a :cls) 'f64)) args))
+         (gp-regs (cl-subseq nelisp-phase47-compiler--arg-regs
+                             0 (length gp-args)))
+         (xmm-regs (cl-subseq nelisp-phase47-compiler--xmm-arg-regs
+                              0 (length f64-args)))
+         ;; Map each arg back to its target register so the reverse-
+         ;; pop loop knows where to deposit the popped value.
+         (gp-cursor 0)
+         (f64-cursor 0)
+         (arg-targets
+          (mapcar (lambda (a)
+                    (if (eq (plist-get a :cls) 'f64)
+                        (let ((r (nth f64-cursor xmm-regs)))
+                          (setq f64-cursor (1+ f64-cursor))
+                          r)
+                      (let ((r (nth gp-cursor gp-regs)))
+                        (setq gp-cursor (1+ gp-cursor))
+                        r)))
+                  args))
          ;; Stack alignment correction (Doc 111 §111.E fix).
          ;; Post-prologue body-entry rsp:
          ;;   - even arity (= 0, 2, 4, 6): rsp ≡ 0 mod 16 (good for call)
          ;;   - odd arity (= 1, 3, 5):     rsp ≡ 8 mod 16 (needs +8 sub)
-         ;; The body's push/pop balance must net zero by the time we
-         ;; reach the call site; the args are pushed + popped in
-         ;; matched pairs below, also net zero.  So the dynvar
-         ;; capture suffices to pick the alignment correction.
-         ;;
-         ;; Returns nil during main `_start' emit, in which case rsp is
-         ;; assumed aligned (= same convention as the existing code
-         ;; before this fix; main body extern-call was already broken
-         ;; for any 1-arg defun-body but is not currently exercised
-         ;; outside defuns).
+         ;; f64-class defuns round to even arity in the prologue so
+         ;; rsp is already aligned post-spill (= see `--emit-defun');
+         ;; only gp-class defuns need the runtime correction below.
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
          (needs-align (= (logand arity 1) 1)))
-    ;; Push each evaluated arg.
+    ;; Push each evaluated arg.  f64 args land in xmm0 (per
+    ;; `--emit-value' contract for f64 nodes) so we transfer to rax
+    ;; first before the unified push.
     (dolist (a args)
       (nelisp-phase47-compiler--emit-value a buf)
+      (when (eq (plist-get a :cls) 'f64)
+        ;; xmm0 → rax (64-bit bit pattern, preserves the f64 value).
+        (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
       (nelisp-asm-x86_64-push buf 'rax))
-    ;; Pop into arg-regs in reverse (= last pushed first popped).
-    (dolist (r (reverse regs))
-      (nelisp-asm-x86_64-pop buf r))
-    ;; Insert the 8-byte alignment correction for odd-arity defuns,
-    ;; preserving rax (which the body may have computed before the
-    ;; extern-call as a value) by pushing it across the pad.  We can't
-    ;; just `sub rsp, 8' because the call's return value lives in rax
-    ;; — but at this point in the emit sequence rax is unused (= we
-    ;; just popped the last arg into rdi/rsi/etc.), so a bare `sub
-    ;; rsp, 8' + matching `add rsp, 8' after the call is safe.
+    ;; Pop in reverse (= last pushed → first popped) and dispatch.
+    (dolist (target (reverse arg-targets))
+      (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
+          ;; f64 target — pop into rax then MOVQ → xmm.
+          (progn
+            (nelisp-asm-x86_64-pop buf 'rax)
+            (nelisp-asm-x86_64-movq-xmm-r64 buf target 'rax))
+        ;; GP target — pop directly.
+        (nelisp-asm-x86_64-pop buf target)))
+    ;; Materialise AL = f64-count for variadic calls (SysV ABI §3.5.7).
+    ;; `mov eax, imm32' is a 5-byte sequence (= REX-less; the imm32
+    ;; zero-extends into RAX, clearing the upper 32 bits which is
+    ;; exactly what AL = N requires).  Note: this clobbers rax, so
+    ;; it MUST happen AFTER any rax-bound arg was popped into its
+    ;; GP target.  Currently `eax' isn't in the arg-regs pool so the
+    ;; ordering is naturally safe.
+    (when varargs-p
+      (nelisp-asm-x86_64-mov-imm32 buf 'rax f64-count))
+    ;; Insert the 8-byte alignment correction for odd-arity GP-class
+    ;; defuns.  rax holds either the AL count (varargs) or stale
+    ;; data — `sub rsp, 8' doesn't touch any GPR so both survive.
     (when needs-align
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
     ;; Emit the `call rel32' opcode (0xE8) + 4-byte zero placeholder
@@ -2080,10 +2239,15 @@ args are rejected at parse time."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf (symbol-name name) -4 'text)
-    ;; Undo the alignment correction.  rax (= return value) is
-    ;; preserved because `add rsp, 8' doesn't touch any GPR.
+    ;; Undo the alignment correction.  rax (= i64 return) or xmm0
+    ;; (= f64 return) is preserved because `add rsp, 8' doesn't
+    ;; touch any GPR / xmm.
     (when needs-align
-      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))
+    ;; Doc 122 §122.C — caller convention: extern-call result is i64
+    ;; in rax (default) or f64 in xmm0 (when :ret-class = f64).  Both
+    ;; are already in place by SysV ABI; nothing else to do.
+    (ignore ret-class)))
 
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access emit ----
 

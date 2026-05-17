@@ -912,6 +912,25 @@ operand width; the upper 64 bits of XMM-DST are zero-extended."
     (nelisp-asm-x86_64--append-bytes
      buf (unibyte-string #x66 rex #x0F #x6E modrm))))
 
+(defun nelisp-asm-x86_64-movq-r64-xmm (buf gp-dst xmm-src)
+  "Emit `MOVQ GP-DST, XMM-SRC' = 66 REX.W [REX.R/B?] 0F 7E ModR/M.
+Doc 122 §122.C — xmm-to-GP 64-bit transfer used by `extern-call-
+f64' / `extern-call-varargs' to spill an f64 argument across a
+push/pop pair (= the SysV ABI for variadic args still passes f64
+in xmm0-7 + GP in rdi-r9, but our emit pipeline serializes arg
+saves through `push rax').  REX.W = 1 selects the 64-bit operand
+width; the high bits of GP-DST are filled with the full 64-bit
+f64 bit pattern.  Inverse of `movq-xmm-r64'."
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext xmm-src))
+         (ext-b (nelisp-asm-x86_64--reg-ext gp-dst))
+         (rex (nelisp-asm-x86_64--rex 1 ext-r 0 ext-b))
+         (modrm (nelisp-asm-x86_64--modrm
+                 3
+                 (nelisp-asm-x86_64--xmm-reg-low3 xmm-src)
+                 (nelisp-asm-x86_64--reg-low3 gp-dst))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string #x66 rex #x0F #x7E modrm))))
+
 (defun nelisp-asm-x86_64-and-r8-r8 (buf dst src)
   "Emit 8-bit `AND DST, SRC' = 20 ModR/M.
 Doc 110 §110.C.2.b — used to AND the SETB result with SETNP

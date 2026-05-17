@@ -232,6 +232,16 @@ pub mod elisp_cc_spike {
         fn nelisp_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) -> i64;
         fn nelisp_ptr_read_u8(ptr: *const u8, offset: i64) -> i64;
         fn nelisp_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64;
+        // Doc 122 §122.C — Extended extern-call (f64 args + f64
+        // return) probe wrappers.  Each is a thin Phase 47 `defun'
+        // around the matching libm symbol; the new `extern-call-f64'
+        // grammar form emits MOVSD loads into xmm0 + a PLT32 reloc
+        // against the libm name.  Linked transitively through `std'
+        // (= same path Doc 110 §110.F `nl_jit_float_exp' / `_log'
+        // uses for libm).
+        fn nelisp_libm_sqrt(x: f64) -> f64;
+        fn nelisp_libm_sin(x: f64) -> f64;
+        fn nelisp_libm_cos(x: f64) -> f64;
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
         // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
         // Returns the `*const Sexp' of the matching symbol-entry
@@ -915,6 +925,23 @@ pub mod elisp_cc_spike {
     /// Doc 122 §122.E — `(ptr-write-u8 PTR OFFSET VAL)'.
     pub unsafe fn ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64 {
         nelisp_ptr_write_u8(ptr, offset, val)
+    }
+
+    /// Doc 122 §122.C — Phase 47 extern-call-f64 probe for libm `sqrt'.
+    /// Round-trips an f64 through the new `:f64' arg grammar +
+    /// `extern-call-f64' return discipline (= xmm0 in, xmm0 out).
+    pub unsafe fn libm_sqrt(x: f64) -> f64 {
+        nelisp_libm_sqrt(x)
+    }
+
+    /// Doc 122 §122.C — Phase 47 extern-call-f64 probe for libm `sin'.
+    pub unsafe fn libm_sin(x: f64) -> f64 {
+        nelisp_libm_sin(x)
+    }
+
+    /// Doc 122 §122.C — Phase 47 extern-call-f64 probe for libm `cos'.
+    pub unsafe fn libm_cos(x: f64) -> f64 {
+        nelisp_libm_cos(x)
     }
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.

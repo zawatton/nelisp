@@ -184,6 +184,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // `build-tool/src/reader/lexer.rs' (= -885 LOC Rust) once
         // §116.B parser + §116.C top-level wrapper SHIP.
         "nelisp-cc-reader-lexer.el",
+        // Doc 122 §122.C — Extended extern-call f64 probes (= 3
+        // entries wrapping libm sqrt / sin / cos for the
+        // `tests/elisp_cc_extern_call_f64_probe.rs' round-trip).
+        "nelisp-cc-extern-call-f64.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
