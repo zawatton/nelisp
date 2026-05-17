@@ -742,8 +742,8 @@ impl Env {
 
     /// Innermost-first walk across the entire mirror stack.  Returns
     /// the first NAME hit.  Mirrors `nelisp-lexframe-stack-find' +
-    /// `find_frame_cell'.
-    #[allow(dead_code)] // Doc 104 Stage 3.b — used by Stage 3.d + test
+    /// `find_frame_cell'.  Doc 104 Stage 3.c — `find_frame_cell' now
+    /// delegates here.
     pub(crate) fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
         let (_stack_rec, backing, depth) = self.frame_stack_view()?;
         for i in (0..depth).rev() {
@@ -759,8 +759,8 @@ impl Env {
     /// `((NAME . CELL) ...)' with inner-shadows-outer dedup.  Cell
     /// identity is preserved (= caller may rely on `Sexp::Cell' Rc
     /// equality for closure write-through).  Mirrors
-    /// `nelisp-lexframe-stack-capture' + `capture_lexical'.
-    #[allow(dead_code)] // Doc 104 Stage 3.b — used by Stage 3.d + test
+    /// `nelisp-lexframe-stack-capture' + `capture_lexical'.  Doc 104
+    /// Stage 3.c — `capture_lexical' now delegates here.
     pub(crate) fn frame_capture_rust_direct(&self) -> Sexp {
         let Some((_stack_rec, backing, depth)) = self.frame_stack_view() else { return Sexp::Nil };
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -838,9 +838,19 @@ impl Env {
         self.mirror_install_entry(name, Some(value), None, None, true);
     }
 
-    /// Innermost-first lexical frame walk.
-    fn find_frame_cell(&self, name: &str) -> Option<&FrameCell> {
-        self.frames.iter().rev().find_map(|f| f.get(name))
+    /// Innermost-first lexical frame walk.  Doc 104 Stage 3.c — body
+    /// now walks the elisp-side `nelisp-lexframe-stack' mirror via
+    /// `frame_stack_find_rust_direct'.  Returns an `Option<FrameCell>'
+    /// (owned Rc handle, cheap to clone) instead of the previous
+    /// `Option<&FrameCell>'; callers just `cell.value.clone()' or
+    /// `cell.set_value(...)' so the signature widening is transparent.
+    /// Vec is still written by `push_frame/pop_frame/bind_local'
+    /// (Stage 3.d drops those writes); reads no longer touch it.
+    fn find_frame_cell(&self, name: &str) -> Option<FrameCell> {
+        match self.frame_stack_find_rust_direct(name)? {
+            Sexp::Cell(c) => Some(c),
+            _ => None,
+        }
     }
 
     /// `symbol-value' — innermost lexical frame first, then the
@@ -965,21 +975,14 @@ impl Env {
     /// Capture lexical frames as a flat `((name . cell) ...)` alist for
     /// closure construction.  Each slot is wrapped in `Sexp::Cell`
     /// carrying the same `NlCellRef` as the originating frame entry, so
-    /// closure `setq' writes through to the let-binding's slot.
+    /// closure `setq' writes through to the let-binding's slot.  Doc
+    /// 104 Stage 3.c — body delegates to `frame_capture_rust_direct'
+    /// which walks the elisp-side mirror.  The mirror was populated
+    /// via `Sexp::Cell(cell.clone())' in `bind_local' (Stage 3.b
+    /// dual-write), so the returned alist preserves the same
+    /// `NlCellRef' identity as the Vec side did.
     pub fn capture_lexical(&self) -> Sexp {
-        // Innermost-first dedup so the innermost binding wins;
-        // `push_captured' consumes the result order-independently.
-        let mut acc = Sexp::Nil;
-        let mut seen = std::collections::HashSet::new();
-        for frame in self.frames.iter().rev() {
-            for (k, cell) in frame {
-                if seen.insert(k.clone()) {
-                    let pair = Sexp::cons(Sexp::Symbol(k.clone()), Sexp::Cell(cell.clone()));
-                    acc = Sexp::cons(pair, acc);
-                }
-            }
-        }
-        acc
+        self.frame_capture_rust_direct()
     }
 
     /// Push a frame from a captured-env alist (inverse of `capture_lexical').
