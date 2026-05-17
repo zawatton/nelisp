@@ -163,6 +163,35 @@
      :source-var nelisp-cc-wrap-alist-cells--source
      :output "nelisp_wrap_alist_cells.o"
      :requires-arch x86_64)
+    ;; Doc 111 §111.E Group B (#7-#12) — env_mirror.rs write path
+    ;; Phase 47 rewrites.  Each helper composes `mirror_lookup_entry'
+    ;; (= #1) via `extern-call' + a §111.B `record-slot-set' write to
+    ;; the matched entry's slot N.  Linux-x86_64 only for the same
+    ;; reason as `nelisp-cc-mirror-lookup-entry'.
+    (nelisp-cc-mirror-set-value
+     :source-var nelisp-cc-mirror-set-value--source
+     :output "nelisp_mirror_set_value.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-set-function
+     :source-var nelisp-cc-mirror-set-function--source
+     :output "nelisp_mirror_set_function.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-clear-value
+     :source-var nelisp-cc-mirror-clear-value--source
+     :output "nelisp_mirror_clear_value.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-clear-function
+     :source-var nelisp-cc-mirror-clear-function--source
+     :output "nelisp_mirror_clear_function.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-set-constant
+     :source-var nelisp-cc-mirror-set-constant--source
+     :output "nelisp_mirror_set_constant.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-install-entry
+     :source-var nelisp-cc-mirror-install-entry--source
+     :output "nelisp_mirror_install_entry.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

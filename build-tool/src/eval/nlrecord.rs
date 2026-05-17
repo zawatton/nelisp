@@ -118,44 +118,6 @@ impl NlRecordRef {
     }
 }
 
-/// Doc 111 §111.E — C-callable allocator for fresh `NlRecord' boxes
-/// pre-filled with `slot_count' `Sexp::Nil' slots + a `Sexp::Nil'
-/// type_tag (caller overwrites both before observing).
-///
-/// Mirrors `nl_alloc_vector' / `nl_alloc_consbox' / `nl_alloc_cell'
-/// in shape.  Used by `mirror_install_entry' (= fresh `symbol-entry'
-/// record) and `frame_push_rust_direct' (= fresh `nelisp-lexframe'
-/// record).  The returned pointer is the only owner; caller wraps in
-/// `Sexp::Record(_)' or invokes the standard drop path.
-///
-/// # Safety
-/// Caller must wrap the returned pointer into a `Sexp::Record(_)'
-/// whose `NlRecordRef::drop' decrements the refcount (standard
-/// ownership transfer).
-#[no_mangle]
-pub unsafe extern "C" fn nl_alloc_record(slot_count: i64) -> *mut NlRecord {
-    let count = if slot_count < 0 { 0 } else { slot_count as usize };
-    let layout = Layout::new::<NlRecord>();
-    // SAFETY: `Layout::new::<NlRecord>()' is non-zero-sized.
-    let raw = unsafe { alloc::alloc(layout) } as *mut NlRecord;
-    if raw.is_null() {
-        alloc::handle_alloc_error(layout);
-    }
-    // SAFETY: `raw' was just allocated and is exclusively owned.
-    unsafe {
-        std::ptr::write(std::ptr::addr_of_mut!((*raw).type_tag), Sexp::Nil);
-        std::ptr::write(
-            std::ptr::addr_of_mut!((*raw).slots),
-            vec![Sexp::Nil; count],
-        );
-        std::ptr::write(
-            std::ptr::addr_of_mut!((*raw).refcount),
-            AtomicUsize::new(1),
-        );
-    }
-    raw
-}
-
 /// Doc 111 §111.E — set the `type_tag' field of an `NlRecord' in place,
 /// refcount-safely cloning `*val' before write.  Companion to
 /// `nl_record_set_slot' (= writes slot N) used by callers that want
@@ -190,6 +152,50 @@ pub unsafe extern "C" fn nl_record_set_slot(
     let r = unsafe { &mut *record };
     let new_val = unsafe { (*val).clone() };
     r.slots[n] = new_val;
+}
+
+/// Doc 111 §111.E — allocator helper for Phase 47-compiled
+/// `mirror_install_entry' (= helper #12) and friends.  Returns a
+/// freshly-allocated [`NlRecord`] with `type_tag = (*type_tag_ptr).clone()',
+/// `slot_count' slots all initialised to `Sexp::Nil', and
+/// `refcount = 1'.  Caller is responsible for overwriting individual
+/// slots via `record-slot-set' / `nl_record_set_slot' before
+/// publishing the pointer (= same contract as `nl_alloc_cell' /
+/// `nl_alloc_consbox').
+///
+/// The returned raw `*mut NlRecord' must eventually be wrapped into a
+/// `Sexp::Record(NlRecordRef)' (which takes ownership of the strong
+/// reference) — letting it leak raw counts as a single permanent
+/// refcount.  See Doc 111 §2.4 for the broader allocator audit.
+///
+/// The two-arg shape (= type_tag passed as `*const Sexp' rather than
+/// initialized to `Sexp::Nil' and overwritten by a separate op) was
+/// chosen because Phase 47 currently has no grammar form to write the
+/// record's type_tag field (= only the user-visible slots are
+/// addressable via `record-slot-set').  Adding the tag as an
+/// allocator-time parameter keeps the elisp surface minimal.
+///
+/// # Safety
+/// Caller must guarantee:
+/// - `type_tag_ptr' is non-null and points at an initialized `Sexp'.
+/// - The returned pointer is eventually freed via `NlRecordRef::drop'
+///   (= owned by a `Sexp::Record(NlRecordRef)`) or via `Box::from_raw'
+///   if it's never wrapped.  Otherwise the allocation leaks.
+/// - `slot_count' is not so large that
+///   `vec![Sexp::Nil; slot_count]' overflows.
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_record(
+    type_tag_ptr: *const Sexp,
+    slot_count: i64,
+) -> *mut NlRecord {
+    let n = slot_count as usize;
+    let tag = unsafe { (*type_tag_ptr).clone() };
+    let boxed = Box::new(NlRecord {
+        type_tag: tag,
+        slots: vec![Sexp::Nil; n],
+        refcount: AtomicUsize::new(1),
+    });
+    Box::into_raw(boxed)
 }
 
 impl Clone for NlRecordRef {

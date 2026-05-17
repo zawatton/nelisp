@@ -112,6 +112,20 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-mirror-is-bound.el",
         "nelisp-cc-mirror-is-fbound.el",
         "nelisp-cc-mirror-is-constant.el",
+        // Doc 111 §111.E #7-#12 — `mirror_set_value' / `mirror_set_function'
+        // / `mirror_clear_value' / `mirror_clear_function' /
+        // `mirror_set_constant' / `mirror_install_entry' Phase 47 helpers
+        // (= Group B write path).  All six compose on `mirror_lookup_entry'
+        // (= #1) via `extern-call' and use the §111.B `record-slot-set'
+        // ABI to overwrite the matched entry's slots refcount-safely.
+        // The miss / auto-vivify branch stays in Rust under the
+        // dispatcher for now (returns 0 from these helpers).
+        "nelisp-cc-mirror-set-value.el",
+        "nelisp-cc-mirror-set-function.el",
+        "nelisp-cc-mirror-clear-value.el",
+        "nelisp-cc-mirror-clear-function.el",
+        "nelisp-cc-mirror-set-constant.el",
+        "nelisp-cc-mirror-install-entry.el",
         // Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
         // rewrites.  Seven entries; each wraps an `nl_frame_*' Rust
         // shim in `env_lexframe_phase47_shims.rs'.

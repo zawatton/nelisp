@@ -557,6 +557,23 @@ functions `((NAME . ARITY) ...)'."
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
+   ;; Doc 111 §111.E — `(vector-slot-set H N VAL-PTR)' refcount-safe
+   ;; vector element overwrite.  Parallel to `record-slot-set' (§111.B).
+   ;; Delegates to the Rust extern `nl_vector_set_slot' which drops the
+   ;; old slot value (refcount-aware) then writes the new one.  Used by
+   ;; `mirror_install_entry' (= Phase 47 helper #12) to prepend a fresh
+   ;; cons cell onto a bucket without leaking the prior bucket head.
+   ((and (consp sexp) (eq (car sexp) 'vector-slot-set))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :vector-slot-set-arity sexp)))
+    (list :kind 'vector-slot-set
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)
+          :val-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 111 §111.D Cell read+write ops ----
    ;; (cell-value H SLOT)     — copy the cell's current value (inline
    ;;                           Sexp at NlCell offset 0) into the
@@ -1445,7 +1462,7 @@ the node's class to consume the result correctly."
              'sexp-payload-ptr
              'record-type-tag 'record-slot-count 'record-slot-ref
              'record-slot-ref-ptr 'record-slot-set
-             'vector-len 'vector-ref 'vector-ref-ptr
+             'vector-len 'vector-ref 'vector-ref-ptr 'vector-slot-set
              'cell-value 'cell-set-value 'cell-make 'cell-null-p
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
@@ -1518,6 +1535,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-vector-ref node buf))
       ('vector-ref-ptr
        (nelisp-phase47-compiler--emit-vector-ref-ptr node buf))
+      ('vector-slot-set
+       (nelisp-phase47-compiler--emit-vector-slot-set node buf))
       ('cell-value
        (nelisp-phase47-compiler--emit-cell-value node buf))
       ('cell-set-value
@@ -2041,7 +2060,33 @@ that result slots start as `Sexp::Nil' bit-pattern."
     (nelisp-asm-x86_64-pop buf 'rax)))
 
 (defun nelisp-phase47-compiler--emit-record-slot-set (node buf)
-  "Call the Rust helper that refcount-safely overwrites a record slot."
+  "Call the Rust helper that refcount-safely overwrites a record slot.
+
+Dynamic rsp alignment around the call: `nl_record_set_slot' uses
+`Vec::index_mut' which dispatches through SSE on some Rust targets
+and requires `rsp ≡ 0 mod 16' at the `call' site per SysV AMD64.
+Phase 47 callers can have either body-entry alignment (= depends
+on outer-defun param count: even → 0 mod 16, odd → 8 mod 16), so
+this op aligns rsp via `mov rbx, rsp; and rsp, -16; ...; mov rsp,
+rbx' regardless of inbound state.
+
+`rbx' is callee-saved in SysV AMD64, so its value across our `call'
+is preserved by `nl_record_set_slot'.  Pre-existing emits that
+depend on `rbx' (= currently none in Phase 47) would need updating;
+the constraint is documented here as the local convention for this
+op.
+
+After the helper call, materialise `rax = 1' so this op composes
+cleanly inside `(and SIDE-EFFECT VALUE)' value-form chains (= the
+Phase 47 idiom for sequencing side effects when no `progn'-shape
+value form exists).  `nl_record_set_slot' returns Rust unit, which
+leaves rax in an unspecified state across the call boundary; the
+explicit `mov rax, 1' makes the op produce a stable truthy value.
+
+This is a Doc 111 §111.E #7-#12 enabler: those helpers chain
+`record-slot-set' with `(and ... 1)' to express \"overwrite slot
+then return 1 on hit\".  No callers depended on the prior
+undefined-rax behaviour."
   (let ((ptr (plist-get node :ptr))
         (idx (plist-get node :idx))
         (val-ptr (plist-get node :val-ptr)))
@@ -2056,9 +2101,29 @@ that result slots start as `Sexp::Nil' bit-pattern."
     (nelisp-asm-x86_64-pop buf 'rdi)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rdi 'rdi nelisp-sexp--offset-payload)
+    ;; Dynamic rsp alignment around the call.  Save old rsp on the
+    ;; aligned stack (via caller-saved r10, plus a stack mirror so we
+    ;; survive the callee's r10 clobber).  Sequence:
+    ;;   mov r10, rsp          ; 49 89 e2 — r10 = old rsp
+    ;;   and rsp, -16          ; 48 83 e4 f0 — rsp aligned to 16
+    ;;   push r10              ; 41 52 — save old rsp on stack (rsp -= 8, now 8 off)
+    ;;   sub rsp, 8            ; 48 83 ec 08 — pad to 0 mod 16 for call
+    ;;   call nl_record_set_slot
+    ;;   add rsp, 8            ; 48 83 c4 08 — remove pad
+    ;;   pop r10               ; 41 5a — reload old rsp (callee may have clobbered r10)
+    ;;   mov rsp, r10          ; 4c 89 d4 — restore rsp
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x49 #x89 #xE2))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x41 #x52))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xEC #x08))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_record_set_slot" -4 'text)))
+     buf "nl_record_set_slot" -4 'text)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xC4 #x08))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x41 #x5A))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x4C #x89 #xD4))
+    ;; rax = 1 (truthy sentinel for value-form chaining).
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
 ;; ---- Doc 111 §111.C Vector read ops emit ----
 
@@ -2091,6 +2156,33 @@ that result slots start as `Sexp::Nil' bit-pattern."
   "Leave the raw `*const Sexp' for NODE's vector element in rax."
   (nelisp-phase47-compiler--emit-vector-slot-ptr-core
    (plist-get node :ptr) (plist-get node :idx) buf))
+
+(defun nelisp-phase47-compiler--emit-vector-slot-set (node buf)
+  "Call the Rust helper that refcount-safely overwrites a vector slot.
+
+Doc 111 §111.E — parallel to `--emit-record-slot-set' (§111.B); the
+Sexp payload at offset 8 is an `NlVector*' (vs. `NlRecord*' for
+record-slot-set) and the called helper is `nl_vector_set_slot'.  The
+helper signature is identical: `(vec, n, val_ptr)' in `rdi / rsi /
+rdx', refcount-aware drop of the old element via `Vec::index_mut'
+assignment, refcount-aware clone of `*val_ptr' into the slot."
+  (let ((ptr (plist-get node :ptr))
+        (idx (plist-get node :idx))
+        (val-ptr (plist-get node :val-ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value idx buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rdi 'rdi nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_vector_set_slot" -4 'text)))
 
 (defun nelisp-phase47-compiler--emit-vector-ref (node buf)
   "Copy a vector element into the caller-owned destination slot.

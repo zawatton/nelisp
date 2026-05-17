@@ -189,45 +189,66 @@ pub mod elisp_cc_spike {
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
         ) -> i64;
+        // Doc 111 §111.E Group B (#7-#12) — env_mirror.rs write path
+        // Phase 47 helpers.  Each one composes #1 `mirror_lookup_entry'
+        // (via the `extern-call' grammar form) with a §111.B
+        // `record-slot-set' on the matched entry's slot N.  Returns 1
+        // on hit (entry slot was overwritten in place) or 0 on miss
+        // (caller dispatches to the Rust auto-vivify path).
+        fn nelisp_mirror_set_value(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            val_ptr: *const Sexp,
+        ) -> i64;
+        fn nelisp_mirror_set_function(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            val_ptr: *const Sexp,
+        ) -> i64;
+        fn nelisp_mirror_clear_value(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            unbound_ptr: *const Sexp,
+        ) -> i64;
+        fn nelisp_mirror_clear_function(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            unbound_ptr: *const Sexp,
+        ) -> i64;
+        fn nelisp_mirror_set_constant(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            flag_ptr: *const Sexp,
+        ) -> i64;
+        fn nelisp_mirror_install_entry(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            value_ptr: *const Sexp,
+            function_ptr: *const Sexp,
+            plist_ptr: *const Sexp,
+            constant_ptr: *const Sexp,
+        ) -> i64;
         // Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
         // rewrites.  Each `nelisp_frame_*' below is a thin elisp-side
         // wrapper around the matching `nl_frame_*' Rust shim in
         // `eval/env_lexframe_phase47_shims.rs'; the shim performs the
         // actual refcount-disciplined operation.
-        //
-        //   #19 `nelisp_frame_stack_depth' — returns the current depth
-        //     (= slots[1] Int payload) of the frames-record stack.
         fn nelisp_frame_stack_depth(frames_ptr: *const Sexp) -> i64;
-        //   #20 `nelisp_frame_stack_ensure_capacity' — grow the backing
-        //     vector to at least `needed' slots.  Returns the resulting
-        //     capacity, or 0 on unbuilt mirror.
         fn nelisp_frame_stack_ensure_capacity(
             frames_ptr: *const Sexp,
             needed: i64,
         ) -> i64;
-        //   #21 `nelisp_frame_push' — push a fresh empty `nelisp-lexframe'
-        //     record.  Returns 1 on push, 0 on unbuilt mirror.
         fn nelisp_frame_push(frames_ptr: *const Sexp) -> i64;
-        //   #22 `nelisp_frame_pop' — pop the innermost frame.  Returns 1
-        //     on pop, 0 on empty stack / unbuilt mirror.
         fn nelisp_frame_pop(frames_ptr: *const Sexp) -> i64;
-        //   #23 `nelisp_frame_bind' — bind NAME → CELL in the innermost
-        //     frame.  Returns 1 on bind, 0 on no-op.
         fn nelisp_frame_bind(
             frames_ptr: *const Sexp,
             name_ptr: *const Sexp,
             cell_ptr: *const Sexp,
         ) -> i64;
-        //   #24 `nelisp_frame_stack_find' — innermost-first walk to
-        //     find NAME.  Returns the `*const Sexp' of the matching
-        //     pair's CDR (= cell slot), or 0 on miss.
         fn nelisp_frame_stack_find(
             frames_ptr: *const Sexp,
             name_ptr: *const Sexp,
         ) -> i64;
-        //   #26 `nelisp_wrap_alist_cells' — wrap closure-env alist's
-        //     bare values in fresh `NlCellRef'.  Returns 1 on success,
-        //     0 on malformed input.
         fn nelisp_wrap_alist_cells(
             alist_ptr: *const Sexp,
             result_slot: *mut Sexp,
@@ -463,22 +484,6 @@ pub mod elisp_cc_spike {
     }
 
     /// Doc 111 §111.E #2 — Phase 47 `mirror_lookup_value' probe wrapper.
-    ///
-    /// On hit, copies the entry's slot 0 (= value cell) into
-    /// `result_slot` via the refcount-aware `nl_sexp_clone_into`
-    /// helper.  On miss, writes `Sexp::Nil` (= zeroed tag byte) into
-    /// `result_slot`.  The sentinel-return convention of the Rust
-    /// `Env::mirror_lookup_value' (= unbound-marker on miss) is
-    /// re-introduced by the dispatcher; this Phase 47 helper stays
-    /// stateless and returns Nil.
-    ///
-    /// # Safety
-    /// - `mirror_ptr` / `sym_ptr` per #1's contract.
-    /// - `result_slot` must be non-null, properly aligned, and writable
-    ///   for one 32-byte `Sexp` slot.  The slot must start in a
-    ///   bit-pattern-Copy state (= `Sexp::Nil`) — `record-slot-ref` 's
-    ///   underlying `nl_sexp_clone_into' performs `ptr::write` without
-    ///   dropping the prior contents.
     pub unsafe fn mirror_lookup_value(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
@@ -487,9 +492,7 @@ pub mod elisp_cc_spike {
         nelisp_mirror_lookup_value(mirror_ptr, sym_ptr, result_slot)
     }
 
-    /// Doc 111 §111.E #3 — Phase 47 `mirror_lookup_function' probe
-    /// wrapper.  Slot 1 (= function cell) counterpart of
-    /// [`mirror_lookup_value`]; same safety contract.
+    /// Doc 111 §111.E #3 — Phase 47 `mirror_lookup_function' probe wrapper.
     pub unsafe fn mirror_lookup_function(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
@@ -499,18 +502,6 @@ pub mod elisp_cc_spike {
     }
 
     /// Doc 111 §111.E #4 — Phase 47 `mirror_is_bound' probe wrapper.
-    ///
-    /// Returns 1 iff the named entry exists in the mirror AND its
-    /// slot 0 (= value cell) does not compare `symbol-eq' to the
-    /// caller-supplied `unbound_ptr' sentinel.  `symbol-eq' returns
-    /// 0 for tag-mismatched inputs, so any non-Symbol value cell is
-    /// classified as bound.
-    ///
-    /// # Safety
-    /// - `mirror_ptr` / `sym_ptr` per #1's contract.
-    /// - `unbound_ptr` must be non-null and point at a
-    ///   `Sexp::Symbol("nelisp--unbound-marker")` (or any Sexp the
-    ///   caller wants to use as the unbound sentinel).
     pub unsafe fn mirror_is_bound(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
@@ -520,7 +511,6 @@ pub mod elisp_cc_spike {
     }
 
     /// Doc 111 §111.E #5 — Phase 47 `mirror_is_fbound' probe wrapper.
-    /// Slot 1 counterpart of [`mirror_is_bound`]; same safety contract.
     pub unsafe fn mirror_is_fbound(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
@@ -530,14 +520,6 @@ pub mod elisp_cc_spike {
     }
 
     /// Doc 111 §111.E #6 — Phase 47 `mirror_is_constant' probe wrapper.
-    ///
-    /// Returns 1 iff the named entry exists AND its slot 3
-    /// (= constant flag) currently has tag `SEXP_TAG_T` (= numeric
-    /// value 1).  No unbound-marker parameter — constancy is a direct
-    /// tag-byte check.
-    ///
-    /// # Safety
-    /// - `mirror_ptr` / `sym_ptr` per #1's contract.
     pub unsafe fn mirror_is_constant(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
@@ -545,26 +527,72 @@ pub mod elisp_cc_spike {
         nelisp_mirror_is_constant(mirror_ptr, sym_ptr)
     }
 
+    /// Doc 111 §111.E #7 — Phase 47 `mirror_set_value' probe wrapper.
+    pub unsafe fn mirror_set_value(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        val_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_set_value(mirror_ptr, sym_ptr, val_ptr)
+    }
+
+    /// Doc 111 §111.E #8 — Phase 47 `mirror_set_function' probe wrapper.
+    pub unsafe fn mirror_set_function(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        val_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_set_function(mirror_ptr, sym_ptr, val_ptr)
+    }
+
+    /// Doc 111 §111.E #9 — Phase 47 `mirror_clear_value' probe wrapper.
+    pub unsafe fn mirror_clear_value(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        unbound_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_clear_value(mirror_ptr, sym_ptr, unbound_ptr)
+    }
+
+    /// Doc 111 §111.E #10 — Phase 47 `mirror_clear_function' probe wrapper.
+    pub unsafe fn mirror_clear_function(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        unbound_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_clear_function(mirror_ptr, sym_ptr, unbound_ptr)
+    }
+
+    /// Doc 111 §111.E #11 — Phase 47 `mirror_set_constant' probe wrapper.
+    pub unsafe fn mirror_set_constant(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        flag_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_set_constant(mirror_ptr, sym_ptr, flag_ptr)
+    }
+
+    /// Doc 111 §111.E #12 — Phase 47 `mirror_install_entry' probe wrapper.
+    pub unsafe fn mirror_install_entry(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        value_ptr: *const Sexp,
+        function_ptr: *const Sexp,
+        plist_ptr: *const Sexp,
+        constant_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_install_entry(
+            mirror_ptr, sym_ptr,
+            value_ptr, function_ptr, plist_ptr, constant_ptr,
+        )
+    }
+
     // ---- Doc 111 §111.E Group E (env_lexframe.rs) probes -----------
 
-    /// Doc 111 §111.E #19 — `frame_stack_view' depth read.  Returns
-    /// the current depth of the lexframe stack as `i64'.
-    ///
-    /// # Safety
-    /// - `frames_ptr' must point at a `Sexp::Record(_)' built by
-    ///   `Env::install_empty_frames_record_rust_direct' or its
-    ///   descendants.  Caller's pre-condition: slots[1] is `Sexp::Int'.
     pub unsafe fn frame_stack_depth(frames_ptr: *const Sexp) -> i64 {
         nelisp_frame_stack_depth(frames_ptr)
     }
 
-    /// Doc 111 §111.E #20 — `frame_stack_ensure_capacity'.  Grows the
-    /// backing vector to at least `needed' slots when necessary;
-    /// returns the resulting capacity, or 0 on unbuilt mirror.
-    ///
-    /// # Safety
-    /// - `frames_ptr' must point at `Env::frames_record'.
-    /// - No other `&Sexp' borrow into `*frames_ptr' may be live.
     pub unsafe fn frame_stack_ensure_capacity(
         frames_ptr: *const Sexp,
         needed: i64,
@@ -572,32 +600,14 @@ pub mod elisp_cc_spike {
         nelisp_frame_stack_ensure_capacity(frames_ptr, needed)
     }
 
-    /// Doc 111 §111.E #21 — `frame_push_rust_direct'.  Pushes a fresh
-    /// empty `nelisp-lexframe' record.  Returns 1 on push, 0 on
-    /// unbuilt mirror.
-    ///
-    /// # Safety
-    /// - `frames_ptr' must point at `Env::frames_record'.
     pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 {
         nelisp_frame_push(frames_ptr)
     }
 
-    /// Doc 111 §111.E #22 — `frame_pop_rust_direct'.  Pops the
-    /// innermost frame.  Returns 1 on pop, 0 on no-op.
-    ///
-    /// # Safety
-    /// - `frames_ptr' must point at `Env::frames_record'.
     pub unsafe fn frame_pop(frames_ptr: *const Sexp) -> i64 {
         nelisp_frame_pop(frames_ptr)
     }
 
-    /// Doc 111 §111.E #23 — `frame_bind_rust_direct'.  Binds NAME →
-    /// CELL in the innermost frame.  Returns 1 on bind, 0 on no-op.
-    ///
-    /// # Safety
-    /// - `frames_ptr' must point at `Env::frames_record'.
-    /// - `name_ptr' must point at `Sexp::Str' / `Sexp::Symbol'.
-    /// - `cell_ptr' must point at the new cell value.
     pub unsafe fn frame_bind(
         frames_ptr: *const Sexp,
         name_ptr: *const Sexp,
@@ -606,15 +616,6 @@ pub mod elisp_cc_spike {
         nelisp_frame_bind(frames_ptr, name_ptr, cell_ptr)
     }
 
-    /// Doc 111 §111.E #24 — `frame_stack_find_rust_direct' with
-    /// `frame_lookup_in' (#25) folded in.  Returns the `*const Sexp'
-    /// of the matching pair's CDR (= cell slot), or null on miss.
-    ///
-    /// # Safety
-    /// - `frames_ptr' must point at `Env::frames_record'.
-    /// - `name_ptr' must point at `Sexp::Str' / `Sexp::Symbol'.
-    /// - The returned pointer borrows the bucket-pair's slot; callers
-    ///   must not outlive that ownership.
     pub unsafe fn frame_stack_find(
         frames_ptr: *const Sexp,
         name_ptr: *const Sexp,
@@ -622,16 +623,6 @@ pub mod elisp_cc_spike {
         nelisp_frame_stack_find(frames_ptr, name_ptr) as *const Sexp
     }
 
-    /// Doc 111 §111.E #26 — `wrap_alist_cells'.  Wraps closure-env
-    /// alist bare values in fresh `NlCellRef'.  Writes result into
-    /// `result_slot'; returns 1 on success, 0 on malformed input.
-    ///
-    /// # Safety
-    /// - `alist_ptr' must point at a proper-list `Sexp'.
-    /// - `result_slot' must be writable, properly aligned, and either
-    ///   pre-set to `Sexp::Nil' (Copy-shape) or treated as
-    ///   uninitialised by the caller; the shim's `core::ptr::write'
-    ///   does not drop prior contents.
     pub unsafe fn wrap_alist_cells(
         alist_ptr: *const Sexp,
         result_slot: *mut Sexp,

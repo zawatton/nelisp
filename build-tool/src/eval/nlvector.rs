@@ -164,6 +164,10 @@ pub unsafe extern "C" fn nl_alloc_vector(capacity: i64) -> *mut NlVector {
 /// safely cloning `*val' before write.  Mirrors `nl_record_set_slot'
 /// for record-slot writes.
 ///
+/// Used by `frame_stack_ensure_capacity' (Group E) and by
+/// `mirror_install_entry' (= Phase 47 helper #12, Group B) to overwrite
+/// a bucket-vector slot when prepending a fresh `symbol-entry'.
+///
 /// # Safety
 /// - `vec_ptr' must be non-null and point at a live `NlVector'.
 /// - `val' must be non-null and point at an initialised `Sexp'.
