@@ -231,11 +231,20 @@ so closure write-through holds.  Doc 104 §2.3 contract — matches
 push it onto STACK (= mutating).  Returns the new frame.  CELL
 identity is preserved exactly so the pushed frame shares cells
 with the originating let-binding (= closure write-through).  Doc
-104 §2.3 contract — matches `push_captured'."
+104 §2.3 contract — matches `push_captured'.
+
+NAME may be a symbol or a string; symbols are converted via
+`symbol-name' so the underlying `nelisp--fast-hash-put' (= string-
+only keys) accepts either.  Doc 102 Phase 4 added this tolerance
+so the captured-env alist format is independent of which side
+(= Rust vs elisp) emits it."
   (let ((frame (nelisp-lexframe-make)))
     (while alist
       (let* ((pair (car alist))
-             (name (car pair))
+             (raw-name (car pair))
+             (name (if (symbolp raw-name)
+                       (symbol-name raw-name)
+                     raw-name))
              (cell (cdr pair)))
         (nelisp-lexframe-bind frame name cell))
       (setq alist (cdr alist)))

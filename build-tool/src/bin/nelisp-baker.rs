@@ -122,6 +122,15 @@ const STDLIB_FILES: &[&str] = &[
     // at runtime so production smoke can call them.
     "nelisp-stdlib-fast-hash.el",
     "nelisp-env.el",
+    // Doc 102 Phase 4 (2026-05-17): lexframe substrate.  Provides
+    // `nelisp-lexframe-stack-capture' + `nelisp-lexframe-stack-push-
+    // captured!' which the Rust `capture_lexical' / `push_captured'
+    // delegate to via apply_function.  Loads AFTER `nelisp-stdlib-
+    // fast-hash.el' (= depends on `nelisp--fast-hash-make' / `-put'
+    // / `-get' / `-iter') but BEFORE any closure-capture-using
+    // stdlib form gets evaluated.  Doc 104 Stage 3.b shipped the
+    // file standalone; Phase 4 wires it into the production binary.
+    "nelisp-lexframe.el",
 ];
 
 fn main() -> ExitCode {

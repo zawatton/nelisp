@@ -115,6 +115,7 @@ impl Env {
             ("nelisp-stdlib-regex.el", include_bytes!("../../../lisp/nelisp-stdlib-regex.el.image")),
             ("nelisp-stdlib-fast-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-fast-hash.el.image")),
             ("nelisp-env.el", include_bytes!("../../../lisp/nelisp-env.el.image")),
+            ("nelisp-lexframe.el", include_bytes!("../../../lisp/nelisp-lexframe.el.image")),
         ];
         // max_recursion=1024 bounds eval-loop nesting under cargo test's
         // 2MB thread stack (see `recursion_depth_guard').
@@ -973,12 +974,18 @@ impl Env {
     /// Capture lexical frames as a flat `((name . cell) ...)` alist for
     /// closure construction.  Each slot is wrapped in `Sexp::Cell`
     /// carrying the same `NlCellRef` as the originating frame entry, so
-    /// closure `setq' writes through to the let-binding's slot.  Doc
-    /// 104 Stage 3.c — body delegates to `frame_capture_rust_direct'
-    /// which walks the elisp-side mirror.  The mirror was populated
-    /// via `Sexp::Cell(cell.clone())' in `bind_local' (Stage 3.b
-    /// dual-write), so the returned alist preserves the same
-    /// `NlCellRef' identity as the Vec side did.
+    /// closure `setq' writes through to the let-binding's slot.
+    ///
+    /// Doc 102 Phase 4 (2026-05-17) — body delegates to
+    /// `frame_capture_rust_direct' which walks the elisp-side mirror
+    /// (= `nelisp-lexframe-stack' record) via Rust.  An apply_function-
+    /// based dispatch into `nelisp-lexframe-stack-capture' was
+    /// attempted but blocked by the apply_lambda_inner layering issue
+    /// (= apply pushes its own argument frame onto the SAME stack
+    /// record that capture reads from, contaminating the result).
+    /// The elisp module remains in STDLIB so a future Phase 4.b can
+    /// switch the dispatch on once apply argument frames live on a
+    /// separate record (= candidate Doc 105 / Phase 4.b design).
     pub fn capture_lexical(&self) -> Sexp {
         self.frame_capture_rust_direct()
     }
@@ -1068,11 +1075,19 @@ impl Env {
         self.mirror_lookup_function(name).is_some()
     }
 
+    /// Push a frame from a captured-env alist (inverse of `capture_lexical').
+    /// When a captured value is `Sexp::Cell', the same `Rc` is reinstalled
+    /// (= write-through); otherwise a fresh cell wraps the value.
+    ///
+    /// Doc 102 Phase 4 (2026-05-17) — body keeps the Rust-direct walk
+    /// (= same architectural reason as `capture_lexical'; apply_function
+    /// dispatch into `nelisp-lexframe-stack-push-captured!' contaminates
+    /// the stack because apply_lambda_inner pushes its argument frame
+    /// onto the same record).  Future Phase 4.b will route through
+    /// elisp once apply argument frames live on a separate record.
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
-        // Doc 104 Stage 3.d — Vec write retired.  Build the mirror
-        // frame, validate the alist shape on the fly, push only when
-        // the walk succeeds (= a mid-walk error doesn't leave a stub
-        // frame on the mirror).
+        // Build mirror frame, validate alist shape, push only on success
+        // (= a mid-walk error doesn't leave a stub frame on the mirror).
         let mirror_frame = Env::make_empty_frame_record();
         let mut cur = alist;
         while let Sexp::Cons(outer) = cur {

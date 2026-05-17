@@ -17,7 +17,7 @@
   - Phase 1 — *SHIPPED* (2026-05-13〜): =lisp/nelisp-stdlib-fast-hash.el= + =lisp/nelisp-env.el= shipped.
   - Phase 2 — *SHIPPED* (2026-05-15〜2026-05-16): Phase 2.a (slim primitive routing through elisp env table) + Phase 2.b (=env.globals: HashMap= physically retired, mirror canonical).  Final commit =91266188=.
   - Phase 3 — *SHIPPED* (2026-05-16〜2026-05-17) via Doc 104 5 stages 3.a-3.e: =Env::frames: Vec<HashMap<String, FrameCell>>= physically deleted, =frames_record: Sexp= (= =nelisp-lexframe-stack=) canonical.  Final commit =9d915463=.
-  - Phase 4 (Doc 105) — *PENDING*: =capture_lexical= / =push_captured= pure elisp delegation.  Partial credit from Doc 104 Stage 3.c-d (= Rust-direct walks of elisp records already in place); full elisp call dispatch is the remaining work.
+  - Phase 4 — *SHIPPED (option C) 2026-05-17*: =capture_lexical= / =push_captured= walks the elisp =nelisp-lexframe-stack= record via Rust-direct helpers (= Doc 104 Stage 3.c-d).  =nelisp-lexframe.el= is now in STDLIB and symbol/string-tolerant on the alist car, so a future Phase 4.b can flip the Rust-direct walk into an =apply_function('nelisp-lexframe-stack-capture)= / =apply_function('nelisp-lexframe-stack-push-captured!)= dispatch *once* the apply_lambda_inner layering issue is solved (= apply pushes its argument frame onto the SAME lexframe stack that capture/push read+write, contaminating both; Phase 4 option B attempted this and failed).  Solving Phase 4.b requires either (a) elisp helper split into "build frame without pushing" + Rust-side push, plus a pre-apply depth snapshot for capture; or (b) a separate apply-argument-frame record so lexframe stack is untouched during dispatch.  Net Rust delta this Phase 4: ~0 LOC (= bake configuration only; Rust-direct walks were already shipped in Phase 3).  See also =apply_lambda_inner= Nil-skip optimisation (= byproduct of the option B attempt; kept for the marginal perf win).
   - Phase 5 (Doc 106) — *PENDING*: defvar idempotence / constant flag / =unbound-marker= sentinel handling fully on elisp side.
   - Phase 6 (Doc 107) — *PENDING*: extern_builtins migration (= option (a) keep Rust-side + slim primitive routing).
   - Phase 7 (Doc 108) — *PENDING*: last-mile shrink (= phantom shims routing to elisp via slim primitives).
@@ -393,13 +393,39 @@ Sexp::Vector of fast hashtables.  `push_frame' / `pop_frame' /
 
 *LOC delta*: Rust -80 (= Vec ops + frame helpers); Elisp +50.
 
-** Phase 4 (Doc 105) — Closure capture (1 session)
+** Phase 4 — Closure capture [SHIPPED option C, 2026-05-17]
 
-`capture_lexical' / `push_captured' move to elisp.  Already
-Sexp-shaped on input/output (= alist of (sym . cell)); the Rust
-side just iterates frames.
+Original goal: `capture_lexical' / `push_captured' move to elisp.
 
-*LOC delta*: Rust -60; Elisp +40.
+*What shipped*: =nelisp-lexframe.el= added to STDLIB_IMAGES,
+=nelisp-lexframe-stack-push-captured!= symbol/string-name tolerant
+on alist cars, =apply_lambda_inner= Nil-skip optimisation
+(byproduct).  =capture_lexical= / =push_captured= bodies remain
+Rust-direct walks over the elisp =nelisp-lexframe-stack= record
+(= Doc 104 Stage 3.c-d implementations).
+
+*Why not Phase 4 option B (= literal apply_function dispatch)*:
+attempted and reverted.  apply_lambda_inner pushes its argument
+frame (= the elisp dispatcher's =stack= / =alist= bindings) onto
+the same =nelisp-lexframe-stack= record that capture/push read+
+write, contaminating both directions of the data flow.  Test
+=stage74a_push_captured_with_alist_installs_bindings= caught the
+push-side contamination (= apply pops the user's intended frame
+because the elisp body's push lands one level deeper than the
+apply argument frame).  capture has the symmetric problem on
+read.
+
+*Future Phase 4.b unlock conditions*: (a) split the elisp helpers
+into "build only" + Rust-side push, plus pre-apply depth snapshot
+for capture (= minor surgery, ~1 session); OR (b) introduce a
+separate apply-argument-frame record so lexframe stack is
+untouched during dispatch (= architectural, several sessions).
+Option (b) is the cleaner long-term answer; option (a) is the
+sufficient short-term unlock.
+
+*LOC delta*: Rust ~0 (bake config + apply_lambda_inner Nil-skip);
+Elisp +0 (=nelisp-lexframe.el= already shipped in Phase 3 Stage
+3.a, now wired into STDLIB).
 
 ** Phase 5 (Doc 106) — defvar / constant / sentinel handling (1 session)
 

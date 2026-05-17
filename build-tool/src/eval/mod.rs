@@ -514,7 +514,19 @@ pub(crate) fn apply_lambda_inner(
     args: &[Sexp],
     env: &mut Env,
 ) -> Result<Sexp, EvalError> {
-    env.push_captured(captured)?;
+    // Doc 102 Phase 4 — skip push_captured for `Sexp::Nil' (= a
+    // top-level defun closure with no captured state).  The skip
+    // breaks the apply_function recursion that Phase 4's elisp
+    // dispatch otherwise introduces: push_captured (Rust) calls
+    // apply_function(=nelisp-lexframe-stack-push-captured!=), whose
+    // own closure has Nil captured env → without this skip, every
+    // closure application re-enters push_captured on the empty env,
+    // never bottoming out.  Semantically a no-op (= zero entries
+    // pushed onto the mirror, same as before).
+    let captured_pushed = !matches!(captured, Sexp::Nil);
+    if captured_pushed {
+        env.push_captured(captured)?;
+    }
     env.push_frame();
     let result = (|| {
         bind_formals(formals, args, env)?;
@@ -525,7 +537,9 @@ pub(crate) fn apply_lambda_inner(
         Ok(last)
     })();
     env.pop_frame();
-    env.pop_frame();
+    if captured_pushed {
+        env.pop_frame();
+    }
     result
 }
 
