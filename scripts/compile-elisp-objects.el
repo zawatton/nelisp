@@ -64,6 +64,11 @@
     (nelisp-cc-cons-construct
      :source-var nelisp-cc-cons-construct--source
      :output "nelisp_cons_construct.o")
+    ;; Doc 111 §111.B — `(recordp X)' via direct Sexp tag test.
+    (nelisp-cc-recordp
+     :source-var nelisp-cc-recordp--source
+     :output "nelisp_recordp.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

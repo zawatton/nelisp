@@ -230,21 +230,13 @@
   "Return t if X is callable (= a `lambda' / `closure' / `builtin' form)."
   (and (consp x) (memq (car x) '(lambda closure builtin)) t))
 
-;; Doc 86 §86.1.a — `recordp' migrated from Rust to elisp.  The
-;; previous `bi_recordp' arm tested `matches!(&args[0], Sexp::Record(_))'.
-;; The elisp port leverages the existing `nelisp--record-type'
-;; primitive: it returns the record's type_tag (= a symbol) for
-;; records, and signals `wrong-type-argument' otherwise.  A
-;; `condition-case' around it converts the signal back into `nil', so
-;; we end up with the same `t / nil' contract as the Rust impl without
-;; needing a new primitive.  Records are not on a hot dispatch path
-;; (= primitives like integer / cons dominate), so the signal
-;; round-trip cost is acceptable.
+;; Doc 111 §111.B — `recordp' now routes through the internal
+;; `nelisp--recordp-cc' bridge.  Linux x86_64 uses the new
+;; Phase 47-compiled tag-check object; other targets keep the legacy
+;; direct Rust fallback behind the same builtin name.
 (defun recordp (x)
   "Return t if X is a record."
-  (condition-case nil
-      (progn (nelisp--record-type x) t)
-    (error nil)))
+  (nelisp--recordp-cc x))
 
 ;; Rust-min batch 6l (2026-05-06): `mod' migrated from Rust to
 ;; elisp.  Reproduces the previous `bi_mod' contract exactly:

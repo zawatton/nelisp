@@ -118,6 +118,24 @@ impl NlRecordRef {
     }
 }
 
+/// Doc 111 §111.B — set slot N of an NlRecord in place, dropping the
+/// old value first (refcount-aware via Sexp's Drop impl).
+///
+/// # Safety
+/// - `record` must be non-null and point at an initialized NlRecord.
+/// - `val` must be non-null and point at an initialized Sexp.
+/// - `n` must be a valid index into `record.slots`.
+#[no_mangle]
+pub unsafe extern "C" fn nl_record_set_slot(
+    record: *mut NlRecord,
+    n: usize,
+    val: *const Sexp,
+) {
+    let r = unsafe { &mut *record };
+    let new_val = unsafe { (*val).clone() };
+    r.slots[n] = new_val;
+}
+
 impl Clone for NlRecordRef {
     fn clone(&self) -> Self {
         // SAFETY: `self.ptr' is alive because we hold a handle.

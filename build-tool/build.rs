@@ -89,6 +89,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-eq-symbol.el",
         // Doc 101 §101.D — `cons' constructor swap.
         "nelisp-cc-cons-construct.el",
+        // Doc 111 §111.B — `recordp' predicate swap.
+        "nelisp-cc-recordp.el",
         // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
         "nelisp-cc-jit-arith.el",
         // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.

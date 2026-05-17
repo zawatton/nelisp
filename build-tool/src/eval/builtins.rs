@@ -127,8 +127,9 @@ pub fn install_builtins(env: &mut Env) {
         // cons / list (= JIT lowered_{car,cdr,cons,length,setcar,setcdr,
         // aref,aset,elt}; `nelisp--length-cons-cc' is the internal
         // bridge to the Doc 101 §101.B elisp-compiled cons walker;
-        // `string-bytes' stays plain Rust)
-        "car", "cdr", "cons", "length", "nelisp--length-cons-cc", "string-bytes",
+        // `nelisp--recordp-cc' is the Doc 111 §111.B record predicate
+        // bridge; `string-bytes' stays plain Rust)
+        "car", "cdr", "cons", "length", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes",
         "setcar", "setcdr",
         "aref", "aset", "elt",
         "vector", "make-vector",
@@ -315,6 +316,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         "nelisp--length-cons-cc" => bi_length_cons_cc(args),
+        "nelisp--recordp-cc" => bi_recordp_cc(args),
         "string-bytes" => bi_string_bytes(args),
         // ---- string format/build slivers (Doc 86 §86.1.e bridge,
         // `truncate' float→int helper for elisp `format') ----
@@ -1292,6 +1294,28 @@ fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
             expected: "sequencep".into(),
             got: other.clone(),
         }),
+    }
+}
+
+/// Internal `(recordp X)' bridge used by the stdlib `recordp' wrapper.
+fn bi_recordp_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--recordp-cc", args, 1, Some(1))?;
+    match &args[0] {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        _ => {
+            let mut result_slot: Sexp = Sexp::Nil;
+            unsafe {
+                crate::elisp_cc_spike::recordp(
+                    &args[0] as *const Sexp,
+                    &mut result_slot as *mut Sexp,
+                );
+            }
+            Ok(result_slot)
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        Sexp::Record(_) => Ok(Sexp::T),
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        _ => Ok(Sexp::Nil),
     }
 }
 

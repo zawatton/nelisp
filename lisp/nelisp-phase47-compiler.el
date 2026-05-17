@@ -465,6 +465,54 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'sexp-payload-ptr
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
+   ;; ---- Doc 111 §111.B Record read+write ops ----
+   ((and (consp sexp) (eq (car sexp) 'record-type-tag))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :record-type-tag-arity sexp)))
+    (list :kind 'record-type-tag
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'record-slot-count))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :record-slot-count-arity sexp)))
+    (list :kind 'record-slot-count
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'record-slot-ref))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :record-slot-ref-arity sexp)))
+    (list :kind 'record-slot-ref
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 3 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'record-slot-ref-ptr))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :record-slot-ref-ptr-arity sexp)))
+    (list :kind 'record-slot-ref-ptr
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'record-slot-set))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :record-slot-set-arity sexp)))
+    (list :kind 'record-slot-set
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)
+          :val-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.C Symbol/Str read ops ----
    ;; (str-len H)       — read String::len at offset 24 from a
    ;;                     `Sexp::Str' / `Sexp::Symbol' slot.
@@ -1303,6 +1351,8 @@ the node's class to consume the result correctly."
         ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
              'cons-null-p 'cons-car 'cons-cdr 'cons-cdr-raw
              'sexp-payload-ptr
+             'record-type-tag 'record-slot-count 'record-slot-ref
+             'record-slot-ref-ptr 'record-slot-set
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
              'cons-make 'cons-set-car 'cons-set-cdr
@@ -1358,6 +1408,16 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-cons-cdr-raw node buf))
       ('sexp-payload-ptr
        (nelisp-phase47-compiler--emit-sexp-payload-ptr node buf))
+      ('record-type-tag
+       (nelisp-phase47-compiler--emit-record-type-tag node buf))
+      ('record-slot-count
+       (nelisp-phase47-compiler--emit-record-slot-count node buf))
+      ('record-slot-ref
+       (nelisp-phase47-compiler--emit-record-slot-ref node buf))
+      ('record-slot-ref-ptr
+       (nelisp-phase47-compiler--emit-record-slot-ref-ptr node buf))
+      ('record-slot-set
+       (nelisp-phase47-compiler--emit-record-slot-set node buf))
       ('str-len
        (nelisp-phase47-compiler--emit-str-len node buf))
       ('str-bytes
@@ -1706,6 +1766,94 @@ safe to use as the loop seed in the length walker."
     (nelisp-asm-x86_64-define-label buf zero-lbl)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-define-label buf end-lbl)))
+
+;; ---- Doc 111 §111.B Record read+write ops emit ----
+
+(defun nelisp-phase47-compiler--emit-record-slot-ptr-core (ptr idx buf)
+  "Leave the raw `*const Sexp' for record slot IDX in rax."
+  (nelisp-phase47-compiler--emit-value ptr buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value idx buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-asm-x86_64-pop buf 'rax)
+  (nelisp-phase47-compiler--imul-rax-imm32 buf nelisp-sexp--size)
+  (nelisp-asm-x86_64-pop buf 'rdi)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf 'r10 'rdi nelisp-sexp--offset-payload)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf 'r10 'r10 nelisp-nlrecord--offset-slots-vec)
+  (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10))
+
+(defun nelisp-phase47-compiler--emit-record-type-tag (node buf)
+  "Copy a record's inline `type_tag' Sexp into the caller-owned slot."
+  (let ((ptr (plist-get node :ptr))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r10 'rdi nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8
+     buf 'xmm0 'r10 nelisp-nlrecord--offset-type-tag)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 0 'xmm0)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8
+     buf 'xmm0 'r10 (+ nelisp-nlrecord--offset-type-tag 16))
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+
+(defun nelisp-phase47-compiler--emit-record-slot-count (node buf)
+  "Read `record.slots.len' into rax."
+  (nelisp-phase47-compiler--emit-value (plist-get node :ptr) buf)
+  (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf 'rdi 'rdi nelisp-sexp--offset-payload)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf 'rax 'rdi nelisp-nlrecord--offset-slots-length))
+
+(defun nelisp-phase47-compiler--emit-record-slot-ref-ptr (node buf)
+  "Leave the raw `*const Sexp' for NODE's record slot in rax."
+  (nelisp-phase47-compiler--emit-record-slot-ptr-core
+   (plist-get node :ptr) (plist-get node :idx) buf))
+
+(defun nelisp-phase47-compiler--emit-record-slot-ref (node buf)
+  "Copy a record slot into the caller-owned destination slot."
+  (let ((ptr (plist-get node :ptr))
+        (idx (plist-get node :idx))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-record-slot-ptr-core ptr idx buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'r10)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'r10 0)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 0 'xmm0)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'r10 16)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+
+(defun nelisp-phase47-compiler--emit-record-slot-set (node buf)
+  "Call the Rust helper that refcount-safely overwrites a record slot."
+  (let ((ptr (plist-get node :ptr))
+        (idx (plist-get node :idx))
+        (val-ptr (plist-get node :val-ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value idx buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rdi 'rdi nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_record_set_slot" -4 'text)))
 
 ;; ---- Doc 101 §101.C Symbol/Str read ops emit ----
 
