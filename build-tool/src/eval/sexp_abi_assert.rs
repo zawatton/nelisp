@@ -78,6 +78,25 @@ const _: () = assert!(std::mem::size_of::<String>() == 24);
 const _: () = assert!(std::mem::align_of::<String>() == 8);
 
 // ---------------------------------------------------------------------------
+// Doc 111 §111.A — NlRecord / NlVector / NlCell struct field offsets.
+// Match `nelisp-nlrecord--*', `nelisp-nlvector--*', and
+// `nelisp-nlcell--*' in `lisp/nelisp-sexp-layout.el'.
+// ---------------------------------------------------------------------------
+
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlrecord::NlRecord, type_tag) == 0);
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlrecord::NlRecord, slots) == 32);
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlrecord::NlRecord, refcount) == 56);
+const _: () = assert!(std::mem::size_of::<crate::eval::nlrecord::NlRecord>() == 64);
+
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlvector::NlVector, value) == 0);
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlvector::NlVector, refcount) == 24);
+const _: () = assert!(std::mem::size_of::<crate::eval::nlvector::NlVector>() == 32);
+
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlcell::NlCell, value) == 0);
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlcell::NlCell, refcount) == 32);
+const _: () = assert!(std::mem::size_of::<crate::eval::nlcell::NlCell>() == 40);
+
+// ---------------------------------------------------------------------------
 // Public exports for the `sexp-abi-emit' driver.
 // ---------------------------------------------------------------------------
 
@@ -122,6 +141,71 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("string-offset-ptr", (SEXP_PAYLOAD_OFFSET + 8) as i64),
     ("string-offset-length", (SEXP_PAYLOAD_OFFSET + 16) as i64),
     ("string-header-size", std::mem::size_of::<String>() as i64),
+    // Doc 111 §111.A additions
+    (
+        "nlrecord-offset-type-tag",
+        std::mem::offset_of!(crate::eval::nlrecord::NlRecord, type_tag) as i64,
+    ),
+    (
+        "nlrecord-offset-slots-vec",
+        std::mem::offset_of!(crate::eval::nlrecord::NlRecord, slots) as i64,
+    ),
+    (
+        "nlrecord-offset-slots-ptr",
+        std::mem::offset_of!(crate::eval::nlrecord::NlRecord, slots) as i64,
+    ),
+    (
+        "nlrecord-offset-slots-capacity",
+        (std::mem::offset_of!(crate::eval::nlrecord::NlRecord, slots) + 8) as i64,
+    ),
+    (
+        "nlrecord-offset-slots-length",
+        (std::mem::offset_of!(crate::eval::nlrecord::NlRecord, slots) + 16) as i64,
+    ),
+    (
+        "nlrecord-offset-refcount",
+        std::mem::offset_of!(crate::eval::nlrecord::NlRecord, refcount) as i64,
+    ),
+    (
+        "nlrecord-size",
+        std::mem::size_of::<crate::eval::nlrecord::NlRecord>() as i64,
+    ),
+    (
+        "nlvector-offset-value-vec",
+        std::mem::offset_of!(crate::eval::nlvector::NlVector, value) as i64,
+    ),
+    (
+        "nlvector-offset-value-ptr",
+        std::mem::offset_of!(crate::eval::nlvector::NlVector, value) as i64,
+    ),
+    (
+        "nlvector-offset-value-capacity",
+        (std::mem::offset_of!(crate::eval::nlvector::NlVector, value) + 8) as i64,
+    ),
+    (
+        "nlvector-offset-value-length",
+        (std::mem::offset_of!(crate::eval::nlvector::NlVector, value) + 16) as i64,
+    ),
+    (
+        "nlvector-offset-refcount",
+        std::mem::offset_of!(crate::eval::nlvector::NlVector, refcount) as i64,
+    ),
+    (
+        "nlvector-size",
+        std::mem::size_of::<crate::eval::nlvector::NlVector>() as i64,
+    ),
+    (
+        "nlcell-offset-value",
+        std::mem::offset_of!(crate::eval::nlcell::NlCell, value) as i64,
+    ),
+    (
+        "nlcell-offset-refcount",
+        std::mem::offset_of!(crate::eval::nlcell::NlCell, refcount) as i64,
+    ),
+    (
+        "nlcell-size",
+        std::mem::size_of::<crate::eval::nlcell::NlCell>() as i64,
+    ),
 ];
 
 #[cfg(test)]

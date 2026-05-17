@@ -574,7 +574,7 @@ helper; a follow-up swap can elisp-ify =mirror_fnv1a=.
 
 * §3 Stage breakdown
 
-** §3.A Stage 111.A — Layout extension + elisp constants (~1-2 days)
+** §3.A Stage 111.A — Layout extension + elisp constants [SHIPPED 2026-05-17]
 
 *Scope*:
 
@@ -834,7 +834,7 @@ pin + the =sexp_abi_assert.rs= =const_assert!= for =size_of::<String>=.
 
 ** §6.4 Commit references
 
-- §111.A — TBD (kickoff after Doc 101 §101.B-D ship)
+- §111.A — SHIPPED 2026-05-17 (= layout doc §10-§12 extension + 16 new elisp defconst + 9 new Rust const_assert + ABI_EXPORT additions; make sexp-abi-check green)
 - §111.B-E — TBD
 
 ** §6.5 Layout source-of-truth

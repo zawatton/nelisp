@@ -1,7 +1,7 @@
 # Sexp ABI — frozen byte-layout contract
 
-**Status**: SHIPPED (Doc 100 v2 §100.B, 2026-05-12; Doc 101 §101.A extension, 2026-05-17)
-**Scope**: byte-precise layout of `Sexp` and its `Sexp::Int` (Doc 100), `Sexp::Cons` / `Sexp::Symbol` / `Sexp::Str` (Doc 101) variants — sufficient for Doc 100 §100.C plus Doc 101 §101.B-D swaps.
+**Status**: SHIPPED (Doc 100 v2 §100.B, 2026-05-12; Doc 101 §101.A extension, 2026-05-17; Doc 111 §111.A extension, 2026-05-17)
+**Scope**: byte-precise layout of `Sexp` and its `Sexp::Int` (Doc 100), `Sexp::Cons` / `Sexp::Symbol` / `Sexp::Str` (Doc 101), `NlRecord` / `NlVector` / `NlCell` boxed layouts (Doc 111) — sufficient for Doc 100 §100.C plus Doc 101 §101.B-D and Doc 111 §111.B-E swaps.
 
 This document is the **single source of truth** for the byte layout of
 `Sexp` values that Phase 47-compiled elisp `.o` objects read or write
@@ -218,10 +218,104 @@ Phase 47 emit:
 
 If the stdlib ever changes the layout, the fix is either to bump the toolchain back, or to migrate `Sexp::Symbol/Str` to hold a NeLisp-internal `NlString` type with explicit `#[repr(C)]` (deferred to a future `NlString` proposal).
 
-## 8. Stability promise
+## 10. `NlRecord` layout (Doc 111 §111.A)
+
+`Sexp::Record` carries an 8-byte `NonNull<NlRecord>` handle at offset 8 of the Sexp slot.  The pointed-at `NlRecord` is a `#[repr(C)]` struct with inline `type_tag: Sexp`, `slots: Vec<Sexp>`, and trailer `refcount` (defined in `build-tool/src/eval/nlrecord.rs:51-59`):
+
+| Field      | Offset | Size |
+|------------|-------:|-----:|
+| `type_tag` | 0      | 32   |
+| `slots`    | 32     | 24   |
+| `refcount` | 56     | 8    |
+| total      | —      | 64   |
+
+The `slots` Vec header uses the standard Rust `(ptr, capacity, length)` layout:
+
+| Inner field | Offset within `NlRecord` | Size |
+|-------------|-------------------------:|-----:|
+| `slots.ptr` | 32                       | 8    |
+| `slots.capacity` | 40                 | 8    |
+| `slots.length` | 48                   | 8    |
+
+ASCII layout:
+
+```
+NlRecord:
+  [0, 32)    type_tag        (inline Sexp)
+  [32, 40)   slots.ptr       (*mut Sexp)
+  [40, 48)   slots.capacity  (usize)
+  [48, 56)   slots.length    (usize)
+  [56, 64)   refcount        (AtomicUsize)
+```
+
+Phase 47 emit examples for read ops:
+
+- Read `type_tag`: load record pointer from `[rdi + 8]`, then copy 32 bytes from `[record + 0]` into the caller slot with two 16-byte SIMD loads/stores.
+- Read slot count: `mov rax, qword ptr [rsi + 48]` after loading `rsi = [rdi + 8]`.
+- Read slot base pointer: `mov rax, qword ptr [rsi + 32]` after loading `rsi = [rdi + 8]`; callers add `N * 32` to index the `Vec<Sexp>` element array.
+
+## 11. `NlVector` layout (Doc 111 §111.A)
+
+`Sexp::Vector` carries an 8-byte `NonNull<NlVector>` handle at offset 8 of the Sexp slot.  The pointed-at `NlVector` is a `#[repr(C)]` struct with inline `value: Vec<Sexp>` and trailer `refcount` (defined in `build-tool/src/eval/nlvector.rs:44-49`):
+
+| Field      | Offset | Size |
+|------------|-------:|-----:|
+| `value`    | 0      | 24   |
+| `refcount` | 24     | 8    |
+| total      | —      | 32   |
+
+The `value` Vec header uses the standard Rust `(ptr, capacity, length)` layout:
+
+| Inner field | Offset within `NlVector` | Size |
+|-------------|-------------------------:|-----:|
+| `value.ptr` | 0                        | 8    |
+| `value.capacity` | 8                  | 8    |
+| `value.length` | 16                   | 8    |
+
+ASCII layout:
+
+```
+NlVector:
+  [0, 8)     value.ptr       (*mut Sexp)
+  [8, 16)    value.capacity  (usize)
+  [16, 24)   value.length    (usize)
+  [24, 32)   refcount        (AtomicUsize)
+```
+
+Phase 47 emit examples for read ops:
+
+- Read vector length: load vector pointer from `[rdi + 8]`, then `mov rax, qword ptr [rsi + 16]`.
+- Read element base pointer: `mov rax, qword ptr [rsi + 0]` after loading `rsi = [rdi + 8]`; callers add `N * 32` to form `&vec[N]`.
+- Read the N-th element into a caller slot: load `value.ptr`, add `N * 32`, then copy 32 bytes with two 16-byte SIMD loads/stores.
+
+## 12. `NlCell` layout (Doc 111 §111.A)
+
+`Sexp::Cell` carries an 8-byte `NonNull<NlCell>` handle at offset 8 of the Sexp slot.  The pointed-at `NlCell` is a `#[repr(C)]` struct with inline `value: Sexp` and trailer `refcount` (defined in `build-tool/src/eval/nlcell.rs:57-64`):
+
+| Field      | Offset | Size |
+|------------|-------:|-----:|
+| `value`    | 0      | 32   |
+| `refcount` | 32     | 8    |
+| total      | —      | 40   |
+
+ASCII layout:
+
+```
+NlCell:
+  [0, 32)    value           (inline Sexp)
+  [32, 40)   refcount        (AtomicUsize)
+```
+
+Phase 47 emit examples for read ops:
+
+- Read cell value: load cell pointer from `[rdi + 8]`, then copy 32 bytes from `[cell + 0]` into the caller slot with two 16-byte SIMD loads/stores.
+- Read raw value tag for dispatch: `movzx rax, byte ptr [rsi + 0]` after loading `rsi = [rdi + 8]`.
+- Read the boxed payload pointer from the inline `Sexp` value: `mov rax, qword ptr [rsi + 8]` after tag-checking `[rsi + 0]`.
+
+## 13. Stability promise
 
 The numbers in §2 (tag bytes) and §3 (offsets) are frozen at the
-Doc 100 v2 ship date (2026-05-12).  Changing any of them:
+Doc 100 / 101 / 111 ship dates (2026-05-12, 2026-05-17, 2026-05-17).  Changing any of them:
 
 - breaks every Phase 47-compiled `.o` linked into `bin/nelisp`,
 - requires updating this doc + the Rust assertion + the elisp
@@ -232,13 +326,17 @@ Doc 100 v2 ship date (2026-05-12).  Changing any of them:
 The CI `make sexp-abi-check` step catches drift before it reaches a
 release build.
 
-## 9. Refs
+## 14. Refs
 
 - `build-tool/src/eval/sexp.rs:57` — enum source.
 - `build-tool/src/eval/sexp.rs:217..229` — `SEXP_TAG_*` constants.
 - `build-tool/src/eval/sexp.rs:270` — `SEXP_PAYLOAD_OFFSET`.
 - `build-tool/src/eval/nlconsbox.rs:56-67` — `NlConsBox` struct layout (`car` / `cdr` / `refcount`).
+- `build-tool/src/eval/nlrecord.rs:51-59` — `NlRecord` struct layout (`type_tag` / `slots` / `refcount`).
+- `build-tool/src/eval/nlvector.rs:44-49` — `NlVector` struct layout (`value` / `refcount`).
+- `build-tool/src/eval/nlcell.rs:57-64` — `NlCell` struct layout (`value` / `refcount`).
 - `build-tool/src/eval/sexp_abi_assert.rs` — Rust-side assertions.
 - `lisp/nelisp-sexp-layout.el` — elisp constants.
 - `docs/design/100-phase-47-sexp-int-abi-mvp.org` §1.2 / §2.2 — design rationale (Sexp::Int).
 - `docs/design/101-phase-47-sexp-cons-symbol-str-abi.org` §1.2 / §2 — design rationale (Sexp::Cons / Symbol / Str).
+- `docs/design/111-phase-47-sexp-record-vector-cell-abi.org` §1.2 / §1.3 / §3.A — design rationale (NlRecord / NlVector / NlCell).

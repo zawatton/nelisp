@@ -114,6 +114,63 @@ payload + 16.")
   "Total size of a Rust `String' header in bytes (= ptr + cap + len).")
 
 ;; ---------------------------------------------------------------------------
+;; Doc 111 §111.A — boxed-collection layout constants for NlRecord /
+;; NlVector / NlCell.  `NlRecord' and `NlVector' each carry an inline
+;; `Vec<Sexp>' header whose inner fields are addressed by fixed +0/+8/+16
+;; offsets from the header start.  See docs/arch/sexp-abi.md §10-§12.
+;; ---------------------------------------------------------------------------
+
+(defconst nelisp-nlrecord--offset-type-tag       0
+  "Byte offset of the inline `type_tag' Sexp inside an NlRecord.")
+
+(defconst nelisp-nlrecord--offset-slots-vec      32
+  "Byte offset of the inline `slots' Vec<Sexp> header inside an NlRecord.")
+
+(defconst nelisp-nlrecord--offset-slots-ptr      32
+  "Byte offset of `slots.ptr' inside an NlRecord.
+Alias for `nelisp-nlrecord--offset-slots-vec' kept for emit clarity.")
+
+(defconst nelisp-nlrecord--offset-slots-capacity 40
+  "Byte offset of `slots.capacity' inside an NlRecord.")
+
+(defconst nelisp-nlrecord--offset-slots-length   48
+  "Byte offset of `slots.length' inside an NlRecord.")
+
+(defconst nelisp-nlrecord--offset-refcount       56
+  "Byte offset of the `refcount' AtomicUsize inside an NlRecord.")
+
+(defconst nelisp-nlrecord--size                  64
+  "Total size of an NlRecord struct in bytes.")
+
+(defconst nelisp-nlvector--offset-value-vec      0
+  "Byte offset of the inline `value' Vec<Sexp> header inside an NlVector.")
+
+(defconst nelisp-nlvector--offset-value-ptr      0
+  "Byte offset of `value.ptr' inside an NlVector.
+Alias for `nelisp-nlvector--offset-value-vec' kept for emit clarity.")
+
+(defconst nelisp-nlvector--offset-value-capacity 8
+  "Byte offset of `value.capacity' inside an NlVector.")
+
+(defconst nelisp-nlvector--offset-value-length   16
+  "Byte offset of `value.length' inside an NlVector.")
+
+(defconst nelisp-nlvector--offset-refcount       24
+  "Byte offset of the `refcount' AtomicUsize inside an NlVector.")
+
+(defconst nelisp-nlvector--size                  32
+  "Total size of an NlVector struct in bytes.")
+
+(defconst nelisp-nlcell--offset-value            0
+  "Byte offset of the inline `value' Sexp inside an NlCell.")
+
+(defconst nelisp-nlcell--offset-refcount         32
+  "Byte offset of the `refcount' AtomicUsize inside an NlCell.")
+
+(defconst nelisp-nlcell--size                    40
+  "Total size of an NlCell struct in bytes.")
+
+;; ---------------------------------------------------------------------------
 ;; Self-export — list of (NAME . VALUE) pairs every consumer that
 ;; needs to diff against the Rust assertions can iterate over.
 ;; ---------------------------------------------------------------------------
@@ -143,7 +200,24 @@ payload + 16.")
     (string-offset-capacity    . ,nelisp-string--offset-capacity)
     (string-offset-ptr         . ,nelisp-string--offset-ptr)
     (string-offset-length      . ,nelisp-string--offset-length)
-    (string-header-size        . ,nelisp-string--header-size))
+    (string-header-size        . ,nelisp-string--header-size)
+    ;; Doc 111 §111.A additions
+    (nlrecord-offset-type-tag       . ,nelisp-nlrecord--offset-type-tag)
+    (nlrecord-offset-slots-vec      . ,nelisp-nlrecord--offset-slots-vec)
+    (nlrecord-offset-slots-ptr      . ,nelisp-nlrecord--offset-slots-ptr)
+    (nlrecord-offset-slots-capacity . ,nelisp-nlrecord--offset-slots-capacity)
+    (nlrecord-offset-slots-length   . ,nelisp-nlrecord--offset-slots-length)
+    (nlrecord-offset-refcount       . ,nelisp-nlrecord--offset-refcount)
+    (nlrecord-size                  . ,nelisp-nlrecord--size)
+    (nlvector-offset-value-vec      . ,nelisp-nlvector--offset-value-vec)
+    (nlvector-offset-value-ptr      . ,nelisp-nlvector--offset-value-ptr)
+    (nlvector-offset-value-capacity . ,nelisp-nlvector--offset-value-capacity)
+    (nlvector-offset-value-length   . ,nelisp-nlvector--offset-value-length)
+    (nlvector-offset-refcount       . ,nelisp-nlvector--offset-refcount)
+    (nlvector-size                  . ,nelisp-nlvector--size)
+    (nlcell-offset-value            . ,nelisp-nlcell--offset-value)
+    (nlcell-offset-refcount         . ,nelisp-nlcell--offset-refcount)
+    (nlcell-size                    . ,nelisp-nlcell--size))
   "Layout constants flattened to (NAME . VALUE) for cross-side diffing.
 `make sexp-abi-check' runs the Rust driver, prints the same set in
 the same order, and asserts equality.  Order matters for the diff
