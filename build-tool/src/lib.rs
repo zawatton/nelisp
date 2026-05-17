@@ -283,6 +283,14 @@ pub mod elisp_cc_spike {
         // SIZE=32, ALIGN=8).  Mechanical port of §124.G modulo the
         // per-type layout literals.
         fn nelisp_nlvector_drop(box_ptr: *mut i64) -> i64;
+        // Doc 124 §124.I/J/K — sibling Drop kernels.  Same shape as
+        // §124.G/H modulo per-type SIZE / REFCOUNT_OFFSET literals:
+        //   §124.I NlCell:   REFCOUNT_OFFSET = 32, SIZE = 40, ALIGN = 8
+        //   §124.J NlRecord: REFCOUNT_OFFSET = 56, SIZE = 64, ALIGN = 8
+        //   §124.K NlStr:    REFCOUNT_OFFSET = 24, SIZE = 32, ALIGN = 8
+        fn nelisp_nlcell_drop(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlrecord_drop(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlstr_drop(box_ptr: *mut i64) -> i64;
         // Doc 124 §124.B-E — mechanical sibling Clone kernels.
         // REFCOUNT_OFFSET = 24/32/56/24 respectively.
         fn nelisp_nlvector_clone(box_ptr: *mut i64) -> i64;
@@ -1155,6 +1163,30 @@ pub mod elisp_cc_spike {
     /// `Layout::new::<NlVector>()' per `nlvector.rs:69, 143').
     pub unsafe fn nlvector_drop(box_ptr: *mut i64) -> i64 {
         nelisp_nlvector_drop(box_ptr)
+    }
+
+    /// Doc 124 §124.I — pure-elisp NlCell Drop kernel.  Mechanical
+    /// port of §124.G modulo the per-type layout literals: offset 32
+    /// (= `size_of::<Sexp>()'), total size 40, align 8 (=
+    /// `Layout::new::<NlCell>()' per `nlcell.rs:111, 158').
+    pub unsafe fn nlcell_drop(box_ptr: *mut i64) -> i64 {
+        nelisp_nlcell_drop(box_ptr)
+    }
+
+    /// Doc 124 §124.J — pure-elisp NlRecord Drop kernel.  Mechanical
+    /// port of §124.G modulo the per-type layout literals: offset 56
+    /// (= `size_of::<Sexp>() + size_of::<Vec<Sexp>>()'), total size 64,
+    /// align 8 (= `Layout::new::<NlRecord>()' per `nlrecord.rs:77').
+    pub unsafe fn nlrecord_drop(box_ptr: *mut i64) -> i64 {
+        nelisp_nlrecord_drop(box_ptr)
+    }
+
+    /// Doc 124 §124.K — pure-elisp NlStr Drop kernel.  Mechanical
+    /// port of §124.G modulo the per-type layout literals: offset 24
+    /// (= `size_of::<String>()'), total size 32, align 8 (=
+    /// `Layout::new::<NlStr>()' per `nlstr.rs:95').
+    pub unsafe fn nlstr_drop(box_ptr: *mut i64) -> i64 {
+        nelisp_nlstr_drop(box_ptr)
     }
 
     /// Doc 124 §124.B — NlVector Clone kernel (offset 24).

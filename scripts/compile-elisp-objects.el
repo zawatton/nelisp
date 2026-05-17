@@ -559,6 +559,23 @@
      :source-var nelisp-cc-nlvector-drop--source
      :output "nelisp_nlvector_drop.o"
      :requires-arch x86_64)
+    ;; Doc 124 §124.I/J/K — sibling Drop kernels.  Same shape as §124.G/H
+    ;; modulo per-type layout literals:
+    ;;   §124.I NlCell:   REFCOUNT_OFFSET = 32, SIZE = 40, ALIGN = 8
+    ;;   §124.J NlRecord: REFCOUNT_OFFSET = 56, SIZE = 64, ALIGN = 8
+    ;;   §124.K NlStr:    REFCOUNT_OFFSET = 24, SIZE = 32, ALIGN = 8
+    (nelisp-cc-nlcell-drop
+     :source-var nelisp-cc-nlcell-drop--source
+     :output "nelisp_nlcell_drop.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlrecord-drop
+     :source-var nelisp-cc-nlrecord-drop--source
+     :output "nelisp_nlrecord_drop.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlstr-drop
+     :source-var nelisp-cc-nlstr-drop--source
+     :output "nelisp_nlstr_drop.o"
+     :requires-arch x86_64)
     ;; Doc 124 §124.B-E — mechanical sibling Clone kernels.  Identical
     ;; shape to §124.A modulo the per-type REFCOUNT_OFFSET literal:
     ;;   §124.B NlVector: 24, §124.C NlCell: 32,

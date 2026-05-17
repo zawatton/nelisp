@@ -219,6 +219,14 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // SIZE=32, ALIGN=8).  Mechanical port of §124.G to the
         // `Vec<Sexp>' header + AtomicUsize trailer layout.
         "nelisp-cc-nlvector-drop.el",
+        // Doc 124 §124.I/J/K — sibling Drop kernels.  Same shape as
+        // §124.G/H modulo per-type SIZE / REFCOUNT_OFFSET literals:
+        //   §124.I NlCell:   REFCOUNT_OFFSET = 32, SIZE = 40, ALIGN = 8
+        //   §124.J NlRecord: REFCOUNT_OFFSET = 56, SIZE = 64, ALIGN = 8
+        //   §124.K NlStr:    REFCOUNT_OFFSET = 24, SIZE = 32, ALIGN = 8
+        "nelisp-cc-nlcell-drop.el",
+        "nelisp-cc-nlrecord-drop.el",
+        "nelisp-cc-nlstr-drop.el",
         // Doc 124 §124.B-E — mechanical sibling Clone kernels for the
         // remaining 4 nl*.rs box types (NlVector / NlCell / NlRecord /
         // NlStr).  REFCOUNT_OFFSET = 24 / 32 / 56 / 24 respectively.
