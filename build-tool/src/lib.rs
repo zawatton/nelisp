@@ -286,6 +286,10 @@ pub mod elisp_cc_spike {
         fn nelisp_wrap_alist_cells(
             alist_ptr: *const Sexp,
             result_slot: *mut Sexp,
+            work_slot: *mut Sexp,
+            name_slot: *mut Sexp,
+            cell_slot: *mut Sexp,
+            inner_slot: *mut Sexp,
         ) -> i64;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
@@ -749,7 +753,39 @@ pub mod elisp_cc_spike {
         alist_ptr: *const Sexp,
         result_slot: *mut Sexp,
     ) -> i64 {
-        nelisp_wrap_alist_cells(alist_ptr, result_slot)
+        // Doc 115 §115.4 — the pure-elisp implementation in
+        // `lisp/nelisp-cc-wrap-alist-cells.el' takes 4 extra scratch-
+        // slot pointers for the per-iteration cell-wrap +
+        // name-clone-into + single-slot ping-pong outer-cons build.
+        // Stack-allocate them here as `Sexp::Nil' so the public 2-arg
+        // API is preserved for existing callers.
+        let mut work_slot = Sexp::Nil;
+        let mut name_slot = Sexp::Nil;
+        let mut cell_slot = Sexp::Nil;
+        let mut inner_slot = Sexp::Nil;
+        let rc = nelisp_wrap_alist_cells(
+            alist_ptr,
+            result_slot,
+            &mut work_slot as *mut Sexp,
+            &mut name_slot as *mut Sexp,
+            &mut cell_slot as *mut Sexp,
+            &mut inner_slot as *mut Sexp,
+        );
+        // Mem-forget the work slots' contents to prevent the
+        // wrapper-local Drops from decrementing refcounts on heap
+        // nodes that the result chain already accounts for.  Phase
+        // 47's `cons-make' / `cell-make' raw 32-byte copies do not
+        // bump refcount on nested boxed payloads (= MVP ownership
+        // constraint), so each result-chain reference is matched 1:1
+        // with the original `+1' from `nl_alloc_consbox' /
+        // `nl_alloc_cell' / `nl_sexp_clone_into'.  The work slots
+        // hold "extra" handles whose refcount-claim was never
+        // actually counted; Drop on those would underflow.
+        core::ptr::write(&mut work_slot as *mut Sexp, Sexp::Nil);
+        core::ptr::write(&mut name_slot as *mut Sexp, Sexp::Nil);
+        core::ptr::write(&mut cell_slot as *mut Sexp, Sexp::Nil);
+        core::ptr::write(&mut inner_slot as *mut Sexp, Sexp::Nil);
+        rc
     }
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the

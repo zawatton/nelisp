@@ -20,7 +20,6 @@
 //! to dispatch through these shims (= the canonical "extern wrapper"
 //! pattern from §3.E).
 
-use crate::eval::env::FrameCell;
 use crate::eval::env_helpers::mirror_fnv1a;
 use crate::eval::nlrecord::NlRecordRef;
 use crate::eval::nlvector::NlVectorRef;
@@ -112,62 +111,18 @@ unsafe fn frame_stack_view_from_ptr(
 // while the elisp `frame_stack_find' uses `str-eq' which accepts both
 // tags symmetrically.  Cross-tag round-trip therefore still works.
 
-// ---- #26 wrap_alist_cells -------------------------------------------
-
-/// Doc 111 §111.E #26 — walk ALIST = `((NAME . VALUE-OR-CELL) ...)' and
-/// produce a new alist where every cdr is a `Sexp::Cell'.  Bare values
-/// are wrapped in fresh `NlCellRef' so the elisp lexframe-bind path
-/// stores write-through cells.  Writes the result into `result_slot'.
-///
-/// Returns 1 on success, 0 on malformed input (= matches the
-/// `Env::wrap_alist_cells' Err arm).  The result slot is initialised
-/// to `Sexp::Nil' on error.
-///
-/// # Safety
-/// - `alist_ptr' must be non-null and point at a proper-list `Sexp'.
-/// - `result_slot' must be non-null, writable, and either pre-set to
-///   `Sexp::Nil' (Copy-shape) or treated by the caller as
-///   uninitialised; the helper drops the prior contents before write.
-#[no_mangle]
-pub unsafe extern "C" fn nl_wrap_alist_cells(
-    alist_ptr: *const Sexp,
-    result_slot: *mut Sexp,
-) -> i64 {
-    let alist = unsafe { &*alist_ptr };
-    let mut entries: Vec<(Sexp, Sexp)> = Vec::new();
-    let mut cur = alist;
-    while let Sexp::Cons(outer) = cur {
-        let inner = match &outer.car {
-            Sexp::Cons(c) => c,
-            _ => {
-                unsafe { core::ptr::write(result_slot, Sexp::Nil) };
-                return 0;
-            }
-        };
-        let name = inner.car.clone();
-        let cell = match &inner.cdr {
-            Sexp::Cell(_) => inner.cdr.clone(),
-            v => Sexp::Cell(FrameCell::new(v.clone())),
-        };
-        entries.push((name, cell));
-        cur = &outer.cdr;
-    }
-    if !matches!(cur, Sexp::Nil) {
-        unsafe { core::ptr::write(result_slot, Sexp::Nil) };
-        return 0;
-    }
-    let mut acc = Sexp::Nil;
-    for (name, cell) in entries.into_iter().rev() {
-        acc = Sexp::cons(Sexp::cons(name, cell), acc);
-    }
-    // SAFETY: result_slot is caller-owned per the contract above.
-    unsafe { core::ptr::write(result_slot, acc) };
-    1
-}
+// Doc 115 §115.4 — the `nl_wrap_alist_cells' Rust shim has been
+// replaced by the pure-elisp implementation in
+// `lisp/nelisp-cc-wrap-alist-cells.el'.  Coverage moves to the
+// integration probe at `tests/elisp_cc_wrap_alist_cells_probe.rs'
+// which drives the pure-elisp implementation end-to-end (= 4
+// tests covering empty alist, bare-value wrap, existing-cell
+// preserve + refcount-bump, and malformed-inner detection).
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval::env::FrameCell;
 
     fn build_frames_record() -> Sexp {
         const INITIAL_CAPACITY: usize = 8;
@@ -203,22 +158,11 @@ mod tests {
     // stack, innermost hit, outer-frame walk, and inner-shadow
     // priority).
 
-    #[test]
-    fn nl_wrap_alist_cells_basic() {
-        let alist = Sexp::list_from(&[
-            Sexp::cons(Sexp::Symbol("a".into()), Sexp::Int(1)),
-            Sexp::cons(Sexp::Symbol("b".into()), Sexp::Int(2)),
-        ]);
-        let mut out = Sexp::Nil;
-        let rc = unsafe {
-            nl_wrap_alist_cells(&alist as *const Sexp, &mut out as *mut Sexp)
-        };
-        assert_eq!(rc, 1);
-        // Walk: ((a . #<cell 1>) (b . #<cell 2>))
-        let Sexp::Cons(outer) = &out else { panic!("expected cons") };
-        let Sexp::Cons(first) = &outer.car else { panic!("inner not cons") };
-        assert!(matches!(&first.cdr, Sexp::Cell(_)));
-    }
+    // Doc 115 §115.4 — the `nl_wrap_alist_cells_basic' mod test was
+    // tied to the deleted Rust shim.  Coverage moves to the
+    // integration probe at `tests/elisp_cc_wrap_alist_cells_probe.rs'
+    // (= 4 tests covering empty alist, bare-value wrap, existing-
+    // cell preserve + refcount-bump, and malformed-inner detection).
 
     // Doc 115 §115.1 — the `nl_frame_stack_ensure_capacity_grows'
     // test was tied to the deleted Rust shim.  Coverage moves to the
