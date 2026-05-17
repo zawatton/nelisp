@@ -1,0 +1,730 @@
+#+TITLE: Doc 111 — Phase 47 Sexp::Record / Vector / Cell ABI (= boxed-collection layout extensions)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-17
+
+* Status
+
+- *State*: DRAFT 2026-05-17 — *depends on Doc 101 §101.A-D
+  completion*.  §101.A SHIPPED 2026-05-17; §101.B/C in flight via
+  parallel codex dispatch as of this commit.  Doc 111 §111.A-E is
+  designed to ship sequentially after §101.B-D land.
+- *Parent*: Doc 100 v2 (= Sexp::Int ABI, SHIPPED 2026-05-12);
+  Doc 101 (= Sexp::Cons / Symbol / Str ABI, in flight).  This doc
+  is the third layer of Phase 47 ABI coverage, focused on the boxed-
+  collection variants that =env_mirror.rs= + =env_lexframe.rs=
+  consume.
+- *Sibling*: Doc 110 (= f64 ABI, DRAFT); Doc 112 (= apply-arg-frame
+  separation, queued — may be moot if Phase 47 dispatch bypasses
+  =apply_lambda_inner=, see Doc 101 §0.3).
+- *Dependents*: Doc 102 Phase 8.b condition (a) — env_mirror.rs /
+  env_lexframe.rs deletion needs Doc 101 + Doc 111 cumulative ABI
+  + a Phase 47 rewrite of the helpers themselves (Doc 111 §111.E).
+- *Scope*: design only.  Implementation is 5 sub-stages
+  (§111.A-E).  Stages A-D add ABI surface; Stage E performs the
+  actual env_mirror / env_lexframe rewrite + Rust-direct deletion.
+
+* §0 TL;DR
+
+** §0.1 What Doc 101 leaves unfinished
+
+Doc 101 covers Sexp::Cons, Sexp::Symbol, Sexp::Str — the variants
+needed to walk bucket alists (= Cons chains) and compare keys
+(= Str byte equality).  But the structures the buckets *live
+inside* are:
+
+- =Sexp::Record(NlRecordRef)= — the =nelisp-env= / =fast-hash-table=
+  / =symbol-entry= / =nelisp-lexframe= / =nelisp-lexframe-stack=
+  records.  Without Record read ops, no elisp helper can find the
+  bucket vector to start walking.
+- =Sexp::Vector(NlVectorRef)= — the bucket array (= =buckets= slot
+  of =fast-hash-table=) + the lexframe-stack BACKING vector.  Without
+  Vector read ops, no helper can index into the bucket array by
+  hash.
+- =Sexp::Cell(NlCellRef)= — the write-through cell that backs
+  let-bindings (= every entry in a lexframe is a =Sexp::Cell=).
+  Without Cell read+write ops, =setq= inside a closure can't update
+  the let-binding's slot.
+
+These three variants are the "structural backbone" that env_mirror
++ env_lexframe walk; Doc 111 supplies the ABI to walk them at
+native speed.
+
+** §0.2 The collection-payload question
+
+Doc 100 (Sexp::Int) was atomic — payload inline, no indirection.
+Doc 101 (Sexp::Cons) was boxed — payload behind one pointer, fixed-
+size NlConsBox.  Doc 111 (Record / Vector / Cell) is boxed *with
+variable-size interior*:
+
+- =NlRecord= holds a =Vec<Sexp>= (= variable-length slots array).
+- =NlVector= holds a =Vec<Sexp>= (= variable-length elements).
+- =NlCell= holds a single =Sexp= (= fixed-size, simplest of the
+  three).
+
+The =Vec<Sexp>= header layout (ptr / cap / len at offsets 0 / 8 /
+16) is the same =Vec= we already documented in Doc 101 §7.  Doc 111
+extends that to the Sexp-element case: =Vec<Sexp>= means each
+element is a 32-byte =Sexp= slot, so element indexing requires a
+=lea= for the base pointer + =N * 32= offset arithmetic.
+
+** §0.3 The pragmatic incremental path
+
+| Stage    | Scope                                                                                                       | Effect |
+|----------+-------------------------------------------------------------------------------------------------------------+--------|
+| §111.A   | Layout doc + elisp constants + Rust assertions for NlRecord / NlVector / NlCell.  Inherits §100.B CI gate.  | unblock |
+| §111.B   | Phase 47 grammar gains Record read ops: =(record-type-tag H)=, =(record-slot-ref H N)=, =(record-slot-count H)=.  First swap: =recordp= predicate via elisp =.o=. | spike  |
+| §111.C   | Phase 47 grammar gains Vector read ops: =(vector-len H)=, =(vector-ref H N)=, =(vector-ref-ptr H N)=.  First swap: =aref= for Sexp::Vector via elisp =.o=.        | extend |
+| §111.D   | Phase 47 grammar gains Cell ops: =(cell-value H)= / =(cell-set-value H VAL)=.  First swap: NONE (Cell access is internal — used by §111.E only).                  | extend |
+| §111.E   | =env_mirror.rs= + =env_lexframe.rs= rewritten as Phase 47-compiled elisp helpers.  Rust files DELETED.  Doc 102 Phase 8.b condition (a) satisfied.                  | finale |
+
+§111.A-D are foundation work (= ~4-6 days each); §111.E is the big
+payoff (= ~1-2 weeks, but each individual helper rewrite is a
+shippable commit, so the work parallelizes by helper).
+
+** §0.4 Scope of Doc 111
+
+This document specifies §111.A〜§111.E in implementation-ready
+detail.  §111.E's per-helper rewrite plan is documented as a
+checklist; each helper ships as its own commit.
+
+Out of scope:
+- Sexp::BoolVector / Sexp::CharTable (= rarely used by env_mirror /
+  env_lexframe; deferred to a follow-on doc if needed).
+- Sexp::MutStr (= mutable string, separate variant from Sexp::Str).
+- Phase 47-compiled Record / Vector / Cell *construction* — for
+  Doc 111 we focus on READ + write-through-on-Cell, deferring fresh
+  allocation to a future Doc 111b (if profiling shows need).
+  =env_mirror= / =env_lexframe= construction paths can remain in
+  Rust (= the cold path; bootstrap-only).
+
+* §1 Background
+
+** §1.1 Where env_mirror / env_lexframe use Record / Vector / Cell
+
+Concrete walks in =build-tool/src/eval/env_mirror.rs= +
+=env_lexframe.rs= (post-Phase-8 split):
+
+*Record walks* — finding the bucket vector inside the env record:
+
+#+begin_src rust
+  // env_mirror.rs::mirror_lookup_entry, simplified:
+  let env_rec = match env_record { Sexp::Record(r) => r, _ => return None };
+  let ht_rec = match env_rec.slots.get(0)? { Sexp::Record(r) => r, _ => return None };
+  let buckets = match ht_rec.slots.get(1)? { Sexp::Vector(v) => v, _ => return None };
+#+end_src
+
+Three Record dereferences: env → fast-hash-table → buckets-slot.
+Each is a Vec indexed read.
+
+*Vector walks* — indexing into the bucket array:
+
+#+begin_src rust
+  let h = mirror_fnv1a(name);
+  let idx = (h & (bucket_count - 1)) as usize;
+  let bucket = buckets.value.get(idx)?;
+#+end_src
+
+One indexed read into a =Vec<Sexp>=.
+
+*Cell write-through* — closure setq:
+
+#+begin_src rust
+  // env_lexframe.rs::wrap_alist_cells (cell construction at bootstrap):
+  let cell = match &inner.cdr {
+      Sexp::Cell(_) => inner.cdr.clone(),
+      v => Sexp::Cell(FrameCell::new(v.clone())),
+  };
+#+end_src
+
+#+begin_src rust
+  // setq via captured cell (= eval::env::set_value at lexical hit):
+  unsafe { cell.set_value(value.clone()) };
+#+end_src
+
+Read of the cell's current value (via =cell.value.clone()=) + write
+of a new value (via =set_value=) are both needed.
+
+** §1.2 Memory layouts
+
+*NlRecord* (= =build-tool/src/eval/nlrecord.rs:51=, =#[repr(C)]=):
+
+#+begin_src text
+  [0, 32)    type_tag    (Sexp, 32 bytes)
+  [32, 56)   slots       (Vec<Sexp> header, 24 bytes)
+                          - ptr      at slots+0  => NlRecord+32
+                          - capacity at slots+8  => NlRecord+40
+                          - length   at slots+16 => NlRecord+48
+  [56, 64)   refcount    (AtomicUsize, 8 bytes)
+  total:     64 bytes
+#+end_src
+
+*NlVector* (= =build-tool/src/eval/nlvector.rs:44=, =#[repr(C)]=):
+
+#+begin_src text
+  [0, 24)   value     (Vec<Sexp> header, 24 bytes)
+                       - ptr      at 0   => element-array start
+                       - capacity at 8
+                       - length   at 16
+  [24, 32)  refcount  (AtomicUsize, 8 bytes)
+  total:    32 bytes
+#+end_src
+
+*NlCell* (= =build-tool/src/eval/nlcell.rs:57=, =#[repr(C)]=):
+
+#+begin_src text
+  [0, 32)   value     (Sexp, 32 bytes)
+  [32, 40)  refcount  (AtomicUsize, 8 bytes)
+  total:    40 bytes
+#+end_src
+
+Each is reached via the 8-byte =NonNull<NlXxx>= at Sexp slot offset
+8 (= Doc 100 §1.3 frozen invariant).
+
+** §1.3 Element indexing in Vec<Sexp>
+
+Reading the N-th Sexp from a =Vec<Sexp>= header at offset O of an
+NlXxx box:
+
+#+begin_src text
+  mov rax, qword ptr [box + O + 0]    ; rax = vec.ptr (= Sexp array base)
+  imul rcx, rsi, 32                   ; rcx = N * 32 (= byte offset)
+  add rax, rcx                        ; rax = ptr to N-th Sexp
+#+end_src
+
+For an out-of-bounds read the caller must compare =N < len= first
+(via =mov rcx, [box + O + 16]= for the len field) — Phase 47's
+=if= form handles the dispatch.
+
+Reading the *length*:
+
+#+begin_src text
+  mov rax, qword ptr [box + O + 16]   ; rax = vec.len
+#+end_src
+
+** §1.4 Frozen layout discipline
+
+Doc 100 §5.1 + Doc 101 §5.1 — same pattern.  Doc 111 §111.A
+extends:
+
+- =docs/arch/sexp-abi.md= gains three new sections (NlRecord,
+  NlVector, NlCell layouts).
+- =lisp/nelisp-sexp-layout.el= gains ~12 new =defconst= (offsets +
+  sizes for each box type).
+- =build-tool/src/eval/sexp_abi_assert.rs= gains =const_assert!= for
+  every offset.
+- =make sexp-abi-check= picks up new constants automatically.
+
+Vec<Sexp> element stride (= 32 bytes) is implicit in the Sexp slot
+size constant from Doc 100 §100.B; no new constant needed.
+
+* §2 ABI design
+
+** §2.1 Sexp::Record read ops
+
+Three new value-producing grammar forms:
+
+*1. =(record-type-tag H SLOT)= — read the type_tag Sexp into a slot*
+
+Loads =NlRecordRef= from =[H + 8]=, then copies 32-byte =type_tag=
+from =[record + 0]= into the caller-provided slot.  Two SIMD copies
+(same pattern as Doc 101 §2.1 =cons-car=):
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlRecord*
+  movdqu xmm0, [rsi + 0]
+  movdqu xmm1, [rsi + 16]
+  movdqu [rdx + 0], xmm0
+  movdqu [rdx + 16], xmm1
+  mov rax, rdx                      ; return slot pointer
+#+end_src
+
+*2. =(record-slot-count H)= — read the slots Vec's length*
+
+The slots Vec's length is at offset 32 + 16 = 48 of NlRecord.
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlRecord*
+  mov rax, qword ptr [rsi + 48]     ; rax = slots.len
+#+end_src
+
+*3. =(record-slot-ref H N SLOT)= — copy the N-th slot into SLOT*
+
+Composed: locate slots.ptr at offset 32 + 0 = 32, multiply N by 32,
+copy 32-byte Sexp:
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlRecord*
+  mov rcx, qword ptr [rsi + 32]     ; rcx = slots.ptr (Sexp* base)
+  imul r10, rsi, 32                 ; r10 = N * 32  (N in rsi by ABI)
+  add rcx, r10                      ; rcx = ptr to N-th Sexp
+  movdqu xmm0, [rcx + 0]
+  movdqu xmm1, [rcx + 16]
+  movdqu [rdx + 0], xmm0
+  movdqu [rdx + 16], xmm1
+  mov rax, rdx
+#+end_src
+
+*Const additions* (= =lisp/nelisp-sexp-layout.el=):
+
+#+begin_src elisp
+  (defconst nelisp-nlrecord--offset-type-tag       0)
+  (defconst nelisp-nlrecord--offset-slots-vec      32)
+  (defconst nelisp-nlrecord--offset-slots-ptr      32)   ; = slots-vec + 0
+  (defconst nelisp-nlrecord--offset-slots-capacity 40)   ; = slots-vec + 8
+  (defconst nelisp-nlrecord--offset-slots-length   48)   ; = slots-vec + 16
+  (defconst nelisp-nlrecord--offset-refcount       56)
+  (defconst nelisp-nlrecord--size                  64)
+#+end_src
+
+** §2.2 Sexp::Vector read ops
+
+Three ops paralleling §2.1:
+
+*1. =(vector-len H)= — read the value Vec's length*
+
+NlVector.value.len lives at offset 0 + 16 = 16 of the NlVector box.
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlVector*
+  mov rax, qword ptr [rsi + 16]     ; rax = value.len
+#+end_src
+
+*2. =(vector-ref H N SLOT)= — copy the N-th element into SLOT*
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlVector*
+  mov rcx, qword ptr [rsi + 0]      ; rcx = value.ptr (Sexp* base)
+  imul r10, rsi, 32                 ; r10 = N * 32  (N in rsi by ABI)
+  add rcx, r10                      ; rcx = ptr to N-th Sexp
+  movdqu xmm0, [rcx + 0]
+  movdqu xmm1, [rcx + 16]
+  movdqu [rdx + 0], xmm0
+  movdqu [rdx + 16], xmm1
+  mov rax, rdx
+#+end_src
+
+*3. =(vector-ref-ptr H N)= — return raw =*const Sexp= to N-th element*
+
+Used internally by bucket walks that don't need to copy.  Returns a
+pointer the caller may immediately re-dereference (= no clone, no
+refcount touch).
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlVector*
+  mov rcx, qword ptr [rsi + 0]      ; rcx = value.ptr
+  imul r10, rsi, 32                 ; r10 = N * 32
+  lea rax, [rcx + r10]              ; rax = &vec[N]
+#+end_src
+
+*Const additions*:
+
+#+begin_src elisp
+  (defconst nelisp-nlvector--offset-value-vec      0)
+  (defconst nelisp-nlvector--offset-value-ptr      0)
+  (defconst nelisp-nlvector--offset-value-capacity 8)
+  (defconst nelisp-nlvector--offset-value-length   16)
+  (defconst nelisp-nlvector--offset-refcount       24)
+  (defconst nelisp-nlvector--size                  32)
+#+end_src
+
+** §2.3 Sexp::Cell read + write-through ops
+
+The cell's =value= Sexp lives at offset 0 of NlCell.  Read + write
+are the only ops needed; =NlCell::set_value='s safety contract
+(= drop-then-write semantics in =build-tool/src/eval/nlcell.rs=)
+must be respected.
+
+*1. =(cell-value H SLOT)= — copy the cell's current value into SLOT*
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlCell*
+  movdqu xmm0, [rsi + 0]
+  movdqu xmm1, [rsi + 16]
+  movdqu [rdx + 0], xmm0
+  movdqu [rdx + 16], xmm1
+  mov rax, rdx
+#+end_src
+
+*2. =(cell-set-value H VAL-PTR)= — replace the cell's value*
+
+Drops the old value (= calls =nl_drop_sexp= for box-tagged old) then
+writes the new 32-byte Sexp from =[VAL-PTR + 0]= into =[cell + 0]=.
+
+Drop dispatch table: read the cell's current tag at =[cell + 0]=,
+conditionally call =nl_rc_dec= for boxed variants (= same table
+Doc 101 §2.6 documents).  Then copy the new 32 bytes in.
+
+#+begin_src text
+  mov rsi, [rdi + 8]                ; rsi = NlCell*
+  ; --- conditional drop of old value ---
+  movzx rax, byte [rsi + 0]         ; rax = old.tag
+  ; ... dispatch on box-variant tag, conditional call to nl_rc_dec ...
+  ; (templated by the same emit table Doc 101 §2.6 generates)
+  ; --- write new value ---
+  movdqu xmm0, [rdx + 0]
+  movdqu xmm1, [rdx + 16]
+  movdqu [rsi + 0], xmm0
+  movdqu [rsi + 16], xmm1
+  ; --- conditional incref on new value ---
+  movzx rax, byte [rsi + 0]
+  ; ... dispatch on box-variant tag, conditional call to nl_rc_inc ...
+  mov rax, rdi                      ; return H (= cell pointer)
+#+end_src
+
+The conditional drop+incref machinery is non-trivial; Doc 111 §3.D
+defers the full implementation to a sub-stage that ships after the
+read-only ops have proven the read path.
+
+*Const additions*:
+
+#+begin_src elisp
+  (defconst nelisp-nlcell--offset-value     0)
+  (defconst nelisp-nlcell--offset-refcount  32)
+  (defconst nelisp-nlcell--size             40)
+#+end_src
+
+** §2.4 Allocator question — none needed for §111.A-D
+
+The read-only ops §2.1-§2.2 + the cell read/write §2.3 work entirely
+through caller-provided slots + already-allocated boxes.  No new
+allocator helper required.
+
+§111.E may reach a point where the elisp helper needs to construct
+a fresh =NlRecord= or =NlVector= (= e.g. building a new entry in
+=mirror_install_entry=).  Doc 101 §5.3 sub-option α applies: a
+tiny Rust =extern "C" fn nl_alloc_record(slot_count) -> *mut
+NlRecord= helper (~10 LOC), called via §100.A =extern-call=.
+Defer the decision to §111.E ship time.
+
+** §2.5 Worked example — mirror_lookup_entry replacement
+
+Current Rust (= =build-tool/src/eval/env_mirror.rs::mirror_lookup_entry=):
+
+#+begin_src rust
+  pub(crate) fn mirror_lookup_entry(
+      env_record: &Sexp,
+      name: &str,
+  ) -> Option<NlRecordRef> {
+      let env_rec = match env_record { Sexp::Record(r) => r, _ => return None };
+      let ht_rec = match env_rec.slots.get(0)? { Sexp::Record(r) => r, _ => return None };
+      let bucket_count = match ht_rec.slots.get(0)? { Sexp::Int(n) => *n as u32, _ => return None };
+      let buckets = match ht_rec.slots.get(1)? { Sexp::Vector(v) => v, _ => return None };
+      let h = mirror_fnv1a(name);
+      let idx = (if bucket_count & (bucket_count - 1) == 0 {
+          h & (bucket_count - 1)
+      } else {
+          h % bucket_count
+      }) as usize;
+      let bucket = buckets.value.get(idx)?;
+      let mut cur = bucket;
+      while let Sexp::Cons(c) = cur {
+          if let Sexp::Cons(pair) = &c.car {
+              if let Sexp::Str(k) = &pair.car {
+                  if k == name {
+                      if let Sexp::Record(r) = &pair.cdr {
+                          return Some(r.clone());
+                      }
+                  }
+              }
+          }
+          cur = &c.cdr;
+      }
+      None
+  }
+#+end_src
+
+Phase 47 elisp source (= §111.E rewrite):
+
+#+begin_src elisp
+  (defun nelisp_mirror_lookup_entry (env-ptr name-ptr result-slot)
+    ;; env-ptr:     *const Sexp pointing at Sexp::Record(`nelisp-env')
+    ;; name-ptr:    *const Sexp pointing at Sexp::Str(name)
+    ;; result-slot: *mut Sexp 32-byte slot for the symbol-entry Record
+    ;;              (or Sexp::Nil if absent).
+    (let* ((ht-slot-ptr (record-slot-ref-ptr env-ptr 0))      ; *const Sexp -> ht record
+           (bc-slot-ptr (record-slot-ref-ptr ht-slot-ptr 0))  ; *const Sexp -> bucket-count Int
+           (bucket-count (sexp-int-unwrap bc-slot-ptr))
+           (buckets-slot-ptr (record-slot-ref-ptr ht-slot-ptr 1))  ; *const Sexp -> buckets Vector
+           ;; FNV-1a hash inline (Doc 101 §2.2 str-byte-at + arithmetic)
+           (h (nelisp_fnv1a_bytes name-ptr))
+           ;; power-of-2 fast-path (bucket-count & (bucket-count - 1) == 0)
+           (idx (if (= 0 (logand bucket-count (- bucket-count 1)))
+                    (logand h (- bucket-count 1))
+                  (mod h bucket-count)))
+           (bucket-ptr (vector-ref-ptr buckets-slot-ptr idx))
+           (cur-ptr bucket-ptr))
+      ;; Walk the cons chain (= Doc 101 §2.1 cons-cdr-raw-from-box loop)
+      (while (and (not (= 0 (sexp-payload-ptr cur-ptr)))
+                  ;; ... pair match logic ...)
+        ;; ... compare *(pair.car) bytes against name-ptr bytes ...
+        ;; ... if equal, copy *(pair.cdr) into result-slot, return ...
+        (setq cur-ptr (cons-cdr-raw cur-ptr)))
+      ;; Not found — write Sexp::Nil into result-slot.
+      (sexp-write-nil result-slot)))
+#+end_src
+
+Body relies on Doc 100 (=sexp-int-unwrap=) + Doc 101 (=cons-cdr-raw=
++ =sexp-payload-ptr= + str byte access) + Doc 111 (=record-slot-ref-ptr=
++ =vector-ref-ptr=).  Pure elisp, no Rust on the call path except
+the extern shim that triggers the call.
+
+The =record-slot-ref-ptr= op is a §111.B addition I didn't list
+above — it returns a raw =*const Sexp= to the slot (= same pattern
+as =vector-ref-ptr= §2.2.3).  Useful when the caller will
+immediately re-dereference into another Record / Vector without
+needing to copy the intermediate Sexp.
+
+Add to §111.B grammar:
+
+#+begin_src text
+  (record-slot-ref-ptr H N)
+    mov rsi, [rdi + 8]                ; rsi = NlRecord*
+    mov rcx, qword ptr [rsi + 32]     ; rcx = slots.ptr
+    imul r10, rsi, 32                 ; r10 = N * 32   (N from rsi)
+    lea rax, [rcx + r10]              ; rax = &slots[N]
+#+end_src
+
+** §2.6 ELF / linker mechanics
+
+Same as Doc 101: read ops compile to direct memory access with no
+relocations.  §111.D Cell set ops need =call nl_rc_dec= +
+=call nl_rc_inc= for refcount maintenance — extern-call via §100.A
+grammar, PLT32 relocations resolved by the linker.
+
+§111.E uses =call mirror_fnv1a= (= reuse the existing Rust helper)
+for the FNV-1a hash temporarily; a future elisp implementation of
+FNV-1a is plausible (= Doc 101 §2.2 already exposes =str-byte-at=)
+but adds elisp complexity.  §111.E first ship can use the Rust
+helper; a follow-up swap can elisp-ify =mirror_fnv1a=.
+
+* §3 Stage breakdown
+
+** §3.A Stage 111.A — Layout extension + elisp constants (~1-2 days)
+
+*Scope*:
+
+1. Extend =docs/arch/sexp-abi.md= with §10 (NlRecord layout) + §11
+   (NlVector layout) + §12 (NlCell layout) — same pattern as Doc 101
+   §6-§7.
+2. Extend =lisp/nelisp-sexp-layout.el= with ~12 new =defconst= forms
+   (offsets + sizes for each box).
+3. Extend =build-tool/src/eval/sexp_abi_assert.rs= with
+   =const_assert!(offset_of!(NlRecord, type_tag) == 0)= etc.  Total
+   ~9 new assertions + matching =ABI_EXPORT= entries.
+
+*LOC delta*:
+- =docs/arch/sexp-abi.md=                  : +120
+- =lisp/nelisp-sexp-layout.el=             : +30
+- =build-tool/src/eval/sexp_abi_assert.rs= : +35
+- *Net Rust*: +35 (= CI assertion only)
+
+*Verification gate*: =make sexp-abi-check= green.
+
+** §3.B Stage 111.B — Record read ops + recordp swap (~3-4 days)
+
+*Scope*:
+
+1. Add =record-type-tag=, =record-slot-count=, =record-slot-ref=,
+   =record-slot-ref-ptr= as new value forms in
+   =lisp/nelisp-phase47-compiler.el='s =parse-value= dispatch.
+2. Add IR + emit cases.
+3. Add =lisp/nelisp-cc-recordp.el= source for the =recordp=
+   predicate swap (= tag-byte check at Sexp slot offset 0; trivial
+   first swap to validate the Record ABI).
+4. Replace =recordp= predicate's Rust body with cfg-gated dispatch.
+5. Probe test with various record shapes (= nelisp-env, fast-hash-
+   table, symbol-entry instances).
+
+*LOC delta*: Rust ~+10 (= shim + tests), elisp ~+200 (= grammar +
+source).
+
+*Verification gate*: probe ≥ 4/4 PASS + cargo test no regression +
+production smoke (= =(recordp (make-record 'foo 1 2 3))= → =t=).
+
+** §3.C Stage 111.C — Vector read ops + aref swap (~3-4 days)
+
+*Scope*:
+
+1. Add =vector-len=, =vector-ref=, =vector-ref-ptr= grammar ops.
+2. Add =lisp/nelisp-cc-vector-aref.el= for the =aref= swap on
+   =Sexp::Vector=.
+3. Bounds check: emit =if (N < (vector-len H)) ...= dispatch.
+4. Replace =bi_aref='s Vector arm + the JIT trampoline
+   =nl_jit_access_vector_aref= path with Phase 47 dispatch.
+
+*LOC delta*: Rust ~+15 (= shim + bounds error), elisp ~+150.
+
+*Verification gate*: probe ≥ 5/5 PASS (= in-range / out-of-range /
+empty / large indices).
+
+** §3.D Stage 111.D — Cell read+write ops + refcount maintenance (~2-3 days)
+
+*Scope*:
+
+1. Add =cell-value=, =cell-set-value= grammar ops.
+2. Emit the conditional drop+incref dispatch table (= shared with
+   the Doc 101 §2.6 refcount machinery — extract a common emit
+   helper if not already done by Doc 101).
+3. First swap: NONE.  =cell-value= / =cell-set-value= are used only
+   by §111.E env_lexframe helpers.
+4. Probe test that allocates Cells, mutates them, and verifies
+   refcount-on-drop semantics.
+
+*LOC delta*: Rust ~+5 (= probe scaffolding), elisp ~+250 (=
+grammar including refcount emit table).
+
+*Verification gate*: probe ≥ 4/4 PASS, no refcount leaks (= alloc N
++ clone N + drop N+1 + assert zero leaks).
+
+** §3.E Stage 111.E — env_mirror.rs + env_lexframe.rs rewrite (~1-2 weeks)
+
+*Scope (= 12 helpers, each shippable independently)*:
+
+| # | Helper                          | Source file                            | Notes |
+|---+---------------------------------+----------------------------------------+-------|
+| 1 | =mirror_lookup_entry=            | lisp/nelisp-cc-mirror-lookup-entry.el  | §2.5 worked example |
+| 2 | =mirror_lookup_value=            | (composes 1 + tag check)                | shim deletes Rust impl |
+| 3 | =mirror_lookup_function=         | (composes 1 + slot 1 access)            | shim deletes Rust impl |
+| 4 | =mirror_is_bound= / =-is_fbound= | (composes 2 + 3)                         | shim deletes Rust impl |
+| 5 | =mirror_set_value=               | lisp/nelisp-cc-mirror-set-value.el     | needs cell-set + alloc |
+| 6 | =mirror_set_function=            | (composes 5 with slot 1)                | shim deletes Rust impl |
+| 7 | =mirror_install_entry=           | lisp/nelisp-cc-mirror-install.el       | needs record alloc |
+| 8 | =frame_stack_find_rust_direct=   | lisp/nelisp-cc-frame-stack-find.el     | record + vector + cons walk |
+| 9 | =frame_lookup_rust_direct=       | (composes 8 with single-frame search)   | shim deletes Rust impl |
+| 10 | =frame_push_rust_direct=         | lisp/nelisp-cc-frame-push.el           | needs vector ensure-capacity |
+| 11 | =frame_pop_rust_direct=          | (composes vector mutation)              | shim deletes Rust impl |
+| 12 | =frame_bind_rust_direct=         | lisp/nelisp-cc-frame-bind.el           | cell-set + bucket walk |
+
+Once helpers 1-12 ship, delete:
+- =build-tool/src/eval/env_mirror.rs= (= 447 LOC)
+- =build-tool/src/eval/env_lexframe.rs= (= 267 LOC)
+- The =pub mod env_mirror;= / =pub mod env_lexframe;= in =eval/mod.rs=.
+
+Replace with thin extern wrappers (= ~50 LOC each) that delegate to
+the Phase 47 =.o= entries.
+
+*LOC delta (cumulative §111.E)*: Rust −664 (= module deletion) +50
+(= thin extern wrappers); elisp +600 (= 12 helper sources +
+grammar reuse).  *Net Rust: −614 LOC*.
+
+This is the actual Doc 102 Phase 8.b condition (a) satisfaction.
+
+*Verification gate (per helper)*:
+- probe ≥ 3/3 (= positive / negative / edge case).
+- =cargo test --release --lib --features image-baker= no regression.
+- Doc 104 Stage 3.b regression tests still green.
+
+*Verification gate (cumulative §111.E ship)*:
+- =cargo test --release --lib --features image-baker --test-threads=1= → 692+ PASS.
+- Production smoke: defvar / defconst / closure counter all still
+  work.
+- =build-tool/src/eval/env_mirror.rs= and =env_lexframe.rs= do not
+  exist on the file system (= Doc 102 Phase 8.b condition (a)
+  literally satisfied).
+
+* §4 Verification gates (cumulative)
+
+| Stage   | Gate |
+|---------+----------------------------------------------------------------|
+| §111.A  | =make sexp-abi-check= green (= layout drift)                    |
+| §111.B  | recordp probe ≥ 4/4 + no regression + smoke =(recordp ...)=    |
+| §111.C  | aref probe ≥ 5/5 + no regression + smoke =(aref [1 2 3] 1)=    |
+| §111.D  | cell probe ≥ 4/4 + no refcount leaks                            |
+| §111.E  | per-helper probe + Doc 104 regression + 692+ green + env_mirror.rs / env_lexframe.rs deleted |
+
+* §5 Risks / unknowns
+
+** §5.1 Vec<Sexp> stride invariant
+
+Each element is 32 bytes (= =SEXP_SLOT_SIZE=).  The =imul r10, rsi,
+32= constant must match.  Mitigation: =const_assert!= already
+asserts this in Doc 100 §100.B; reuse the same constant.
+
+** §5.2 Refcount safety in =cell-set-value=
+
+The drop+write pattern (= drop_in_place then write) requires the
+old value's destructor to complete before the new value is written.
+The Phase 47 emit must respect this ordering even when the compiler
+reorders instructions for ILP.
+
+*Mitigation*: emit a memory fence (= or call into a Rust =unsafe fn=
+helper that does the drop_in_place + write) before the new write.
+The current =NlCell::set_value= Rust impl uses =std::ptr::drop_in_place=
++ =std::ptr::write= sequentially; the Phase 47 emit reuses the same
+helper via =call nl_cell_set_value= rather than re-implementing the
+unsafe sequence inline.
+
+This reduces §111.D ambition: =cell-set-value= becomes a thin wrapper
+around an existing Rust helper, not a from-scratch elisp emit.
+Slightly less pure-elisp but markedly safer.
+
+** §5.3 Vec<T> capacity-doubling on push
+
+=env_lexframe::frame_push_rust_direct= currently grows the backing
+vector when full.  Phase 47 =vector-push= grammar requires either:
+- An =nl_vec_push_sexp= Rust helper (= ~15 LOC).
+- Or capacity-aware allocation in elisp (= ~50 LOC of arithmetic +
+  =call nl_alloc_vec=).
+
+§111.E will pick when it gets there; Doc 111 §111.A-D doesn't
+require a decision yet.
+
+** §5.4 env_mirror / env_lexframe rewrite scope creep
+
+The 12-helper list in §111.E §3.E is the *minimum*; if =install_stage0=
+or =register_extern_builtin= also need to compile-and-link an elisp
+helper, the list grows.
+
+*Mitigation*: audit at §111.E ship time (= NOT now); fold any
+discovered additions into the same checklist + grow the LOC delta
+accordingly.
+
+** §5.5 String layout drift recurrence
+
+Same as Doc 101 §5.2.  Doc 111 inherits the =rust-toolchain.toml=
+pin + the =sexp_abi_assert.rs= =const_assert!= for =size_of::<String>=.
+
+* §6 References
+
+** §6.1 Parent docs
+
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= (= SHIPPED) —
+  Sexp::Int ABI foundation
+- =docs/design/101-phase-47-sexp-cons-symbol-str-abi.org= (= §101.A
+  SHIPPED, §101.B-D in flight) — Cons / Symbol / Str ABI
+- =docs/design/102-env-rs-elisp-migration.org= §3 Phase 8.b — the
+  env.rs deletion goal that Doc 111 §111.E completes
+
+** §6.2 Memory entries
+
+- =project_doc_99_phases_a_b_c_shipped= — §99 SHIPPED state
+- =feedback_elisp_dispatch_state_audit= — apply_function dispatch
+  layering audit (= relevant to §111.E if any helper ends up
+  re-entering apply)
+- =feedback_orchestrator_codex_parallel_workflow= — parallel codex
+  dispatch pattern used in §111.E rewrite
+
+** §6.3 Code references
+
+- =build-tool/src/eval/nlrecord.rs:51= — NlRecord layout
+- =build-tool/src/eval/nlvector.rs:44= — NlVector layout
+- =build-tool/src/eval/nlcell.rs:57= — NlCell layout
+- =build-tool/src/eval/env_mirror.rs= — Doc 111 §111.E target #1
+- =build-tool/src/eval/env_lexframe.rs= — Doc 111 §111.E target #2
+
+** §6.4 Commit references
+
+- §111.A — TBD (kickoff after Doc 101 §101.B-D ship)
+- §111.B-E — TBD
+
+** §6.5 Layout source-of-truth
+
+- =docs/arch/sexp-abi.md= — Doc 100 §100.B canonical byte-offset
+  table; Doc 111 §111.A extends with §10-§12 sections.
+- =lisp/nelisp-sexp-layout.el= — elisp constants; Doc 111 §111.A
+  extends with ~12 new defconst.
+- =build-tool/src/eval/sexp_abi_assert.rs= — Rust static assertions;
+  Doc 111 §111.A extends with NlRecord + NlVector + NlCell offset
+  asserts.
+- =Makefile= =sexp-abi-check= target — gate covers new constants
+  automatically.
