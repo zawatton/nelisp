@@ -404,6 +404,32 @@
     (nelisp-cc-jit-elt
      :source-var nelisp-cc-jit-elt--source
      :output "nelisp_jit_elt.o"
+     :requires-arch x86_64)
+    ;; Doc 122 §122.B — Mutable string builder grammar ops.  Five
+    ;; entries, one per op, packaged as standalone Phase 47-compiled
+    ;; `defun's so `tests/elisp_cc_mut_str_probe.rs' can drive each
+    ;; round-trip independently.  Same Linux-x86_64 gate as
+    ;; `nelisp-cc-sexp-write-str' (§122.A); aarch64 emit lands with
+    ;; the rest of the Phase 47 aarch64 sweep.
+    (nelisp-cc-mut-str
+     :source-var nelisp-cc-mut-str--make-empty-source
+     :output "nelisp_mut_str_make_empty.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mut-str
+     :source-var nelisp-cc-mut-str--push-byte-source
+     :output "nelisp_mut_str_push_byte.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mut-str
+     :source-var nelisp-cc-mut-str--push-codepoint-source
+     :output "nelisp_mut_str_push_codepoint.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mut-str
+     :source-var nelisp-cc-mut-str--len-source
+     :output "nelisp_mut_str_len.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mut-str
+     :source-var nelisp-cc-mut-str--finalize-source
+     :output "nelisp_mut_str_finalize.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

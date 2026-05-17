@@ -765,6 +765,69 @@ functions `((NAME . ARITY) ...)'."
                       (nth 2 sexp) env fenv defuns)
           :len (nelisp-phase47-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
+   ;; Doc 122 §122.B — Mutable string builder grammar.
+   ;; ------------------------------------------------
+   ;; `(mut-str-make-empty SLOT CAP)' — call `nl_alloc_mut_str(cap, slot)'
+   ;; which allocates a fresh `NlStrRef::new(String::with_capacity(cap))'
+   ;; and writes `Sexp::MutStr(rc)' (= tag at offset 0, box ptr at
+   ;; offset 8) into the caller-owned SLOT.  Returns SLOT in rax.
+   ((and (consp sexp) (eq (car sexp) 'mut-str-make-empty))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :mut-str-make-empty-arity sexp)))
+    (list :kind 'mut-str-make-empty
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)
+          :cap (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)))
+   ;; `(mut-str-push-byte PTR BYTE)' — append a single byte (low 8
+   ;; bits of BYTE) to the MutStr at PTR (= `*mut Sexp' slot
+   ;; carrying `Sexp::MutStr').  Returns rax = 1 sentinel so the op
+   ;; composes cleanly in `(and SIDE-EFFECT VALUE)' chains.
+   ((and (consp sexp) (eq (car sexp) 'mut-str-push-byte))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :mut-str-push-byte-arity sexp)))
+    (list :kind 'mut-str-push-byte
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :byte (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)))
+   ;; `(mut-str-push-codepoint PTR CP)' — UTF-8 encode CP into 1-4
+   ;; bytes and append.  Out-of-range / surrogate codepoints clamp
+   ;; to U+FFFD inside the Rust extern.  Returns rax = 1 sentinel.
+   ((and (consp sexp) (eq (car sexp) 'mut-str-push-codepoint))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :mut-str-push-codepoint-arity sexp)))
+    (list :kind 'mut-str-push-codepoint
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :cp (nelisp-phase47-compiler--parse-value
+               (nth 2 sexp) env fenv defuns)))
+   ;; `(mut-str-len PTR)' — current byte length of the MutStr at
+   ;; PTR.  Returns the i64 length in rax (= `String::len').
+   ((and (consp sexp) (eq (car sexp) 'mut-str-len))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :mut-str-len-arity sexp)))
+    (list :kind 'mut-str-len
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ;; `(mut-str-finalize PTR SLOT)' — clone the MutStr's current
+   ;; bytes into a fresh `Sexp::Str(String)' and write to the
+   ;; caller-owned SLOT.  The source MutStr remains live + push-able
+   ;; (= clone semantics, not move) so the Reader lexer can take
+   ;; intermediate token snapshots.  Returns SLOT in rax.
+   ((and (consp sexp) (eq (car sexp) 'mut-str-finalize))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :mut-str-finalize-arity sexp)))
+    (list :kind 'mut-str-finalize
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.D Cons construction ops ----
    ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
    ;; payloads into a fresh `NlConsBox' and therefore assume the input
@@ -1543,6 +1606,8 @@ the node's class to consume the result correctly."
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
              'sexp-write-str 'sexp-write-symbol
+             'mut-str-make-empty 'mut-str-push-byte 'mut-str-push-codepoint
+             'mut-str-len 'mut-str-finalize
              'cons-make 'cons-set-car 'cons-set-cdr
              'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -1648,6 +1713,18 @@ the node's class to consume the result correctly."
       ('sexp-write-symbol
        (nelisp-phase47-compiler--emit-sexp-write-alloc
         node buf "nl_alloc_symbol"))
+      ('mut-str-make-empty
+       (nelisp-phase47-compiler--emit-mut-str-make-empty node buf))
+      ('mut-str-push-byte
+       (nelisp-phase47-compiler--emit-mut-str-push-2arg
+        node buf "nl_mut_str_push_byte" :byte))
+      ('mut-str-push-codepoint
+       (nelisp-phase47-compiler--emit-mut-str-push-2arg
+        node buf "nl_mut_str_push_codepoint" :cp))
+      ('mut-str-len
+       (nelisp-phase47-compiler--emit-mut-str-len node buf))
+      ('mut-str-finalize
+       (nelisp-phase47-compiler--emit-mut-str-finalize node buf))
       ('cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
       ('cons-set-car
@@ -2774,6 +2851,122 @@ separately)."
      buf helper-name -4 'text)
     ;; Helper returned the slot pointer in rax.  Discard the
     ;; alignment pad; rax is already the desired return value.
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+
+;; ---- Doc 122 §122.B — Mutable string builder grammar emit ----
+
+(defun nelisp-phase47-compiler--emit-mut-str-make-empty (node buf)
+  "Emit `mut-str-make-empty' — call `nl_alloc_mut_str(cap, slot)'.
+NODE carries `:cap' (= i64 byte-capacity) and `:slot' (= `*mut Sexp').
+The Rust extern allocates a fresh `NlStrRef::new(String::with_capacity(cap))'
+and writes `Sexp::MutStr(rc)' (= tag at offset 0, box ptr at offset 8)
+into `*slot'.  Returns SLOT in rax.
+
+Strategy (= 2-arg extern call, mirrors `sexp-write-alloc' shape):
+
+  1. Evaluate CAP, push.
+  2. Evaluate SLOT, push.
+  3. Pop SLOT -> rsi (= arg 1), CAP -> rdi (= arg 0).
+  4. Push one alignment pad to keep rsp 16-byte aligned at call site.
+  5. Call `nl_alloc_mut_str' — rax = slot pointer.
+  6. Pop the alignment pad."
+  (let ((cap (plist-get node :cap))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value cap buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Alignment pad: 2 push + 2 pop balanced, function entry has
+    ;; rsp mod 16 = 8; one extra push aligns the call site.
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_alloc_mut_str" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-mut-str-push-2arg (node buf helper-name arg-key)
+  "Emit a 2-arg in-place push op — `nl_mut_str_push_byte' / `_push_codepoint'.
+NODE carries `:ptr' (= `*mut Sexp' slot for MutStr) and ARG-KEY's
+value (= i64 byte or codepoint).  HELPER-NAME selects the extern.
+Returns rax = 1 sentinel (= matches `vector-slot-set' /
+`record-slot-set' convention for value-form `and'-chain composition;
+the extern itself is `void' so we materialise the truthy 1 explicitly
+post-call to leave rax in a defined state).
+
+Strategy (= 2-arg extern call, no return value):
+
+  1. Evaluate PTR, push.
+  2. Evaluate ARG, push.
+  3. Pop ARG -> rsi (= arg 1), PTR -> rdi (= arg 0).
+  4. Push one alignment pad.
+  5. Call HELPER-NAME — clobbers rax (= `void' return).
+  6. Pop pad, set rax = 1 sentinel."
+  (let ((ptr (plist-get node :ptr))
+        (arg (plist-get node arg-key)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value arg buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf helper-name -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    ;; rax = 1 sentinel (helper return is `void').
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
+
+(defun nelisp-phase47-compiler--emit-mut-str-len (node buf)
+  "Emit `mut-str-len' — call `nl_mut_str_len(ptr) -> i64' extern.
+NODE carries `:ptr' (= `*const Sexp' slot for MutStr).  Returns the
+i64 byte length in rax (= `String::len' on the MutStr's inner value).
+
+Strategy (= 1-arg extern call with i64 return):
+
+  1. Evaluate PTR -> rax, copy to rdi (= arg 0).
+  2. Push one alignment pad to keep rsp 16-byte aligned at call site.
+  3. Call `nl_mut_str_len' — rax = i64 length.
+  4. Pop the alignment pad."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_mut_str_len" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-mut-str-finalize (node buf)
+  "Emit `mut-str-finalize' — call `nl_mut_str_finalize(ptr, slot)' extern.
+NODE carries `:ptr' (= `*const Sexp' source MutStr slot) and `:slot'
+(= `*mut Sexp' destination Str slot).  The Rust extern clones the
+MutStr's inner `String' and writes `Sexp::Str(s)' into `*slot'; the
+source remains live + push-able.  Returns SLOT in rax.
+
+Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
+
+  1. Evaluate PTR, push.
+  2. Evaluate SLOT, push.
+  3. Pop SLOT -> rsi (= arg 1), PTR -> rdi (= arg 0).
+  4. Push one alignment pad.
+  5. Call `nl_mut_str_finalize' — rax = slot pointer.
+  6. Pop the alignment pad."
+  (let ((ptr (plist-get node :ptr))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_mut_str_finalize" -4 'text)
     (nelisp-asm-x86_64-pop buf 'r11)))
 
 

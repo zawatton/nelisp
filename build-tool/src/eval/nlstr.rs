@@ -334,6 +334,192 @@ pub unsafe extern "C" fn nl_alloc_symbol(
     result_slot
 }
 
+// ---- Doc 122 §122.B — Mutable string builder externs ----
+//
+// Phase 47 grammar ops `mut-str-make-empty' / `mut-str-push-byte' /
+// `mut-str-push-codepoint' / `mut-str-len' / `mut-str-finalize' use
+// these externs to drive incremental NlMutStr construction (= the
+// Reader / lexer use case: byte-at-a-time token accumulation, then a
+// single move into an immutable `Sexp::Str' at token end).
+//
+// Layout shape vs. §122.A: `Sexp::MutStr(NlStrRef)' wraps a
+// `NonNull<NlStr>' (= `#[repr(transparent)]'), so the Sexp payload at
+// offset 8 is a raw box pointer.  Unlike `Sexp::Str' / `Sexp::Symbol'
+// which carry an inline `String' header at offset 8..32, MutStr's
+// inner `NlStr.value: String' lives one indirection away.  Each
+// push extern therefore: (1) reads the box pointer via
+// `Sexp::mut_str_box_ptr', (2) takes a `&mut String' to the inner
+// `value' through `NlStrRef::with_value_mut'-equivalent raw access,
+// (3) mutates in place.
+//
+// Refcount semantics: `nl_alloc_mut_str' returns an `NlStrRef' with
+// refcount = 1 (= `NlStrRef::new' contract).  The slot owns that
+// single strong reference; dropping the slot decrements to 0 and
+// frees the box.  Push ops do not bump the refcount (= they take a
+// raw pointer, not a clone).  `nl_mut_str_finalize' clones the
+// `String' (= a heap copy of the chars buffer) rather than moving
+// it out of the live NlStr, so the caller's MutStr slot remains
+// usable post-finalize for further pushes — matches the elisp
+// `(mut-str-push-byte H B) ... (mut-str-finalize H S1) (mut-str-push-byte H C) ...
+// (mut-str-finalize H S2)' usage pattern the Reader lexer needs
+// for sub-token snapshots.
+//
+// Doc 120 SKIPPED trampolines this unblocks (per task spec):
+//   - `nl_jit_make_mut_str' (= alloc + finalize chain)
+//   - `nl_jit_concat_ints' (= alloc + repeated push_codepoint loop)
+//   - `nl_jit_mut_str_set_codepoint' (= push_codepoint primitive)
+//   - `nl_jit_record_alloc' (= alloc pattern reused for record init)
+
+/// Doc 122 §122.B — allocate a fresh `Sexp::MutStr(NlStrRef)` into
+/// the caller-supplied `result_slot` with a reserved byte capacity.
+///
+/// Calls [`NlStrRef::new`] on a `String::with_capacity(cap)`,
+/// constructs `Sexp::MutStr(rc)`, and writes that 40-byte value into
+/// `*result_slot`.  Returns `result_slot` for caller ergonomics.
+/// Refcount starts at 1 (= `NlStrRef::new` contract).
+///
+/// # Safety
+/// - `result_slot` must be non-null, properly aligned, and writable
+///   for one full `Sexp` slot (40 bytes).  Callers should
+///   pre-initialize it to `Sexp::Nil` so the `std::ptr::write` does
+///   not drop arbitrary bytes (= same convention as
+///   [`nl_alloc_str`] / `nelisp_cell_make`).
+/// - `cap` must be `>= 0` and fit in a `usize`.  A `cap == 0` is
+///   permitted and yields an `NlStr.value` with `String::new()`
+///   semantics (= no heap allocation until the first push).
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_mut_str(
+    cap: i64,
+    result_slot: *mut crate::eval::sexp::Sexp,
+) -> *mut crate::eval::sexp::Sexp {
+    let n = if cap < 0 { 0 } else { cap as usize };
+    let rc = NlStrRef::new(String::with_capacity(n));
+    let sexp = crate::eval::sexp::Sexp::MutStr(rc);
+    // SAFETY: caller-owned slot, pre-init to Nil by convention.
+    unsafe { std::ptr::write(result_slot, sexp) };
+    result_slot
+}
+
+/// Doc 122 §122.B — append a single byte to a `Sexp::MutStr`'s buffer.
+///
+/// `mut_str_ptr` is a `*mut Sexp` whose tag is `SEXP_TAG_MUT_STR`.
+/// `byte` is the low 8 bits of a `i64` (= elisp doesn't have a `u8`
+/// primitive; the high 56 bits are masked off here).  The push is
+/// raw byte-level — no UTF-8 validation, no codepoint encoding.
+/// Use for ASCII / pre-encoded UTF-8 input; use
+/// [`nl_mut_str_push_codepoint`] when the caller has a codepoint.
+///
+/// # Safety
+/// - `mut_str_ptr` must be non-null and point at a live `Sexp::MutStr`.
+///   The MutStr's inner `NlStr` must not have any other live `&String`
+///   borrow into `value` (= same contract as
+///   [`NlStrRef::with_value_mut`]).
+/// - The resulting bytes do not need to be valid UTF-8 mid-build;
+///   callers that intend to read the bytes back as UTF-8 (= via
+///   `nl_mut_str_finalize`'s `Sexp::Str` output) must ensure overall
+///   validity before finalize.  `String::from_utf8_unchecked` is used
+///   on the finalize path so an invalid mid-state observed via
+///   finalize is undefined behavior — see `nl_mut_str_finalize`.
+#[no_mangle]
+pub unsafe extern "C" fn nl_mut_str_push_byte(
+    mut_str_ptr: *mut crate::eval::sexp::Sexp,
+    byte: i64,
+) {
+    let b = (byte & 0xFF) as u8;
+    // SAFETY: caller-asserted tag.  `mut_str_box_ptr' returns
+    // `*const NlStr'; cast to `*mut' since caller's contract grants
+    // exclusive mut access for this op.
+    let nlstr_ptr = unsafe { (*mut_str_ptr).mut_str_box_ptr() } as *mut NlStr;
+    // SAFETY: caller contract — no aliasing borrow into value.  We
+    // bypass the `safe' UTF-8 invariant by writing via `Vec'.
+    let value_ref: &mut String = unsafe { &mut (*nlstr_ptr).value };
+    unsafe { value_ref.as_mut_vec() }.push(b);
+}
+
+/// Doc 122 §122.B — UTF-8 encode `codepoint` and append (1–4 bytes)
+/// to a `Sexp::MutStr`'s buffer.
+///
+/// Out-of-range / surrogate codepoints are silently clamped to
+/// U+FFFD (REPLACEMENT CHARACTER) so the final string remains valid
+/// UTF-8.  This matches the spirit of Rust's
+/// `char::from_u32(...).unwrap_or(REPLACEMENT_CHARACTER)` rather than
+/// returning an error code: the Reader lexer (= the primary caller)
+/// would otherwise need an extra check on each iteration, and the
+/// codepoint stream feeding the lexer is already validated upstream.
+///
+/// # Safety
+/// Same contract as [`nl_mut_str_push_byte`] — caller asserts
+/// `*mut_str_ptr` has `SEXP_TAG_MUT_STR` and no aliasing borrow.
+#[no_mangle]
+pub unsafe extern "C" fn nl_mut_str_push_codepoint(
+    mut_str_ptr: *mut crate::eval::sexp::Sexp,
+    codepoint: i64,
+) {
+    let cp_u32 = if codepoint < 0 || codepoint > 0x10_FFFF {
+        0xFFFD
+    } else {
+        codepoint as u32
+    };
+    let ch = char::from_u32(cp_u32).unwrap_or('\u{FFFD}');
+    // SAFETY: caller-asserted tag.
+    let nlstr_ptr = unsafe { (*mut_str_ptr).mut_str_box_ptr() } as *mut NlStr;
+    // SAFETY: caller contract — no aliasing borrow into value.
+    let value_ref: &mut String = unsafe { &mut (*nlstr_ptr).value };
+    value_ref.push(ch);
+}
+
+/// Doc 122 §122.B — current byte length of a `Sexp::MutStr`.
+///
+/// Equivalent to `(*mut_str_ptr).MutStr.value.len()`.  Returned as
+/// `i64` to fit the Phase 47 GP register width.
+///
+/// # Safety
+/// `mut_str_ptr` must be non-null and point at a live `Sexp::MutStr`.
+#[no_mangle]
+pub unsafe extern "C" fn nl_mut_str_len(
+    mut_str_ptr: *const crate::eval::sexp::Sexp,
+) -> i64 {
+    // SAFETY: caller-asserted tag.  Materialise an explicit `&String'
+    // borrow (= rustc 1.83+ `dangerous_implicit_autorefs' lint
+    // requires the autoref be spelled out when starting from a raw
+    // pointer through autoref).
+    let nlstr_ptr = unsafe { (*mut_str_ptr).mut_str_box_ptr() };
+    let value_ref: &String = unsafe { &(*nlstr_ptr).value };
+    value_ref.len() as i64
+}
+
+/// Doc 122 §122.B — build an immutable `Sexp::Str` from a
+/// `Sexp::MutStr`'s current bytes and write it into the caller-owned
+/// `result_slot`.
+///
+/// Clones the inner `String` rather than moving it out of the live
+/// MutStr (= the source remains usable for further pushes /
+/// snapshots).  The clone is a single `String::clone` (= heap
+/// allocation + memcpy of the chars buffer; no UTF-8 re-validation
+/// because the source is invariant-by-construction when pushes go
+/// through `push_codepoint`; `push_byte` callers must keep the
+/// invariant — see [`nl_mut_str_push_byte`] safety note).
+///
+/// # Safety
+/// - `mut_str_ptr`: same as [`nl_mut_str_len`].
+/// - `result_slot`: same as [`nl_alloc_mut_str`].  Pre-init to
+///   `Sexp::Nil`.
+#[no_mangle]
+pub unsafe extern "C" fn nl_mut_str_finalize(
+    mut_str_ptr: *const crate::eval::sexp::Sexp,
+    result_slot: *mut crate::eval::sexp::Sexp,
+) -> *mut crate::eval::sexp::Sexp {
+    // SAFETY: caller-asserted tag.  Explicit `&String' borrow per
+    // `dangerous_implicit_autorefs' lint.
+    let nlstr_ptr = unsafe { (*mut_str_ptr).mut_str_box_ptr() };
+    let value_ref: &String = unsafe { &(*nlstr_ptr).value };
+    let cloned = value_ref.clone();
+    let sexp = crate::eval::sexp::Sexp::Str(cloned);
+    // SAFETY: caller-owned slot.
+    unsafe { std::ptr::write(result_slot, sexp) };
+    result_slot
+}
+
 // ---- Compile-time layout assertions ----
 
 const _: () = {

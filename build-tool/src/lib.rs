@@ -188,6 +188,23 @@ pub mod elisp_cc_spike {
             bytes_ptr: *const u8,
             len: i64,
         ) -> *mut Sexp;
+        // Doc 122 §122.B — Mutable string builder Phase 47 grammar ops
+        // compiled from `lisp/nelisp-cc-mut-str.el'.  Each op evaluates
+        // its args, marshals them to rdi/rsi per SysV AMD64, and calls
+        // the matching `nl_mut_str_*' / `nl_alloc_mut_str' Rust extern
+        // (in `build-tool/src/eval/nlstr.rs').  The push/len/finalize
+        // ops dereference the `Sexp::MutStr' payload pointer at offset
+        // 8 to reach the inner `NlStr.value: String' (= one extra
+        // indirection vs. §122.A's inline String layout, because
+        // `Sexp::MutStr' wraps an `NlStrRef' / `NonNull<NlStr>').
+        fn nelisp_mut_str_make_empty(slot: *mut Sexp, cap: i64) -> *mut Sexp;
+        fn nelisp_mut_str_push_byte(ptr: *mut Sexp, byte: i64) -> i64;
+        fn nelisp_mut_str_push_codepoint(ptr: *mut Sexp, cp: i64) -> i64;
+        fn nelisp_mut_str_len(ptr: *const Sexp) -> i64;
+        fn nelisp_mut_str_finalize(
+            ptr: *const Sexp,
+            slot: *mut Sexp,
+        ) -> *mut Sexp;
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
         // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
         // Returns the `*const Sexp' of the matching symbol-entry
@@ -683,6 +700,65 @@ pub mod elisp_cc_spike {
         len: i64,
     ) -> *mut Sexp {
         nelisp_sexp_write_symbol(slot, bytes_ptr, len)
+    }
+
+    /// Doc 122 §122.B — `(mut-str-make-empty SLOT CAP)' via
+    /// elisp-compiled Phase 47 grammar op.
+    ///
+    /// Calls `nl_alloc_mut_str(cap, slot)' which allocates a fresh
+    /// `NlStrRef::new(String::with_capacity(cap))' and writes
+    /// `Sexp::MutStr(rc)' into `*slot'.  Returns `slot'.
+    ///
+    /// # Safety
+    /// - `slot' must be non-null, properly aligned, and writable for
+    ///   one `Sexp' slot.  Pre-init to `Sexp::Nil'.
+    /// - `cap' must be `>= 0' (negative values are clamped to 0).
+    pub unsafe fn mut_str_make_empty(slot: *mut Sexp, cap: i64) -> *mut Sexp {
+        nelisp_mut_str_make_empty(slot, cap)
+    }
+
+    /// Doc 122 §122.B — `(mut-str-push-byte PTR BYTE)' via Phase 47
+    /// grammar op.  Wraps `nl_mut_str_push_byte'; returns the i64
+    /// sentinel 1 left in rax by the emit code.
+    ///
+    /// # Safety
+    /// `ptr' must be non-null and point at a live `Sexp::MutStr'.
+    /// See `nl_mut_str_push_byte' for the full contract.
+    pub unsafe fn mut_str_push_byte(ptr: *mut Sexp, byte: i64) -> i64 {
+        nelisp_mut_str_push_byte(ptr, byte)
+    }
+
+    /// Doc 122 §122.B — `(mut-str-push-codepoint PTR CP)' via Phase
+    /// 47 grammar op.  Wraps `nl_mut_str_push_codepoint'.
+    ///
+    /// # Safety
+    /// Same as [`mut_str_push_byte`].
+    pub unsafe fn mut_str_push_codepoint(ptr: *mut Sexp, cp: i64) -> i64 {
+        nelisp_mut_str_push_codepoint(ptr, cp)
+    }
+
+    /// Doc 122 §122.B — `(mut-str-len PTR)' via Phase 47 grammar op.
+    /// Wraps `nl_mut_str_len'; returns the current byte length.
+    ///
+    /// # Safety
+    /// `ptr' must be non-null and point at a live `Sexp::MutStr'.
+    pub unsafe fn mut_str_len(ptr: *const Sexp) -> i64 {
+        nelisp_mut_str_len(ptr)
+    }
+
+    /// Doc 122 §122.B — `(mut-str-finalize PTR SLOT)' via Phase 47
+    /// grammar op.  Wraps `nl_mut_str_finalize'; clones the inner
+    /// `String' into a fresh `Sexp::Str' written into `*slot'.
+    /// Source MutStr remains live + push-able.
+    ///
+    /// # Safety
+    /// Both pointers must satisfy the contracts on their underlying
+    /// externs.  See `nl_mut_str_finalize'.
+    pub unsafe fn mut_str_finalize(
+        ptr: *const Sexp,
+        slot: *mut Sexp,
+    ) -> *mut Sexp {
+        nelisp_mut_str_finalize(ptr, slot)
     }
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.
