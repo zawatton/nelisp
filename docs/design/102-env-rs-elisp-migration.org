@@ -25,7 +25,7 @@
     - Step A: =Env::defvar= body dispatches to elisp =nelisp-env-defvar= via =apply_function= (Phase 4.b pattern).  The idempotence check + constant-flag setting now run in elisp.  Bootstrap fallback preserved (= when the helper isn't loaded yet, the Rust mirror_* path runs).  Name is passed as =Sexp::Str= because fast-hash hashes string keys; symbols crash on =(length symbol)=.
     - Step B: elisp =defconst= macro now sets the constant flag via =nelisp--env-globals-set-constant= (= Doc 86 §86.3.a surface).  Resolves the Stage 7.3.a TODO ("NeLisp has no constant-flag primitive accessible from elisp; Stage 7.3.d will revisit").  Smoke test: =(progn (defconst x 99) (setq x 50))= now errors with =setting-constant=.
     - Step C SHIPPED 2026-05-17: =mirror_lookup_value= / =mirror_lookup_function= now return =Sexp= directly (= =Env::unbound_marker= for the absent case, no =Option<Sexp>= wrapping).  =mirror_is_bound= / =mirror_is_fbound= updated to sentinel comparison.  All callers (= =Env::lookup_value=, =Env::lookup_function=, =env_shim::bi_globals_op= get-value / get-function arms, 2 mirror_*-direct tests) migrated.  Aligns the Rust mirror API with the elisp side (= =nelisp-env-lookup-value= returns =nelisp--unbound-marker= for the absent case) so Phase 6+ can dispatch the lookup path without a Result/Option conversion layer.
-  - Phase 6 (Doc 107) — *PENDING*: extern_builtins migration (= option (a) keep Rust-side + slim primitive routing).
+  - Phase 6 — *SHIPPED (option a) 2026-05-17*: production's sole =extern_builtin= entry (= =nelisp--env-globals-op=) promoted to a regular =builtins::dispatch= match arm.  =install_env_shim_primitives= now sets just the function-cell sentinel; the =register_extern_builtin= call is removed.  The =extern_builtins: HashMap<...>= field stays as a *host-crate / test-only extension surface* (= 4 test callsites + the public API contract for crates that depend on =nelisp-build-tool=).  Production binary no longer reads from =extern_builtins= at all.
   - Phase 7 (Doc 108) — *PENDING*: last-mile shrink (= phantom shims routing to elisp via slim primitives).
   - Phase 8 (Doc 109) — *PENDING*: =env.rs= file physically DELETED, residual ~50 LOC absorbed into =eval/mod.rs=.
 
@@ -490,22 +490,41 @@ sentinel comparison (~6 callsites × ~3 LOC = ~18 LOC added), so
 the net Rust shrink from Step C alone is ~+6 LOC; the win is
 API-shape alignment, not raw LOC.
 
-** Phase 6 (Doc 107) — extern_builtins migration (1-2 sessions)
+** Phase 6 — extern_builtins migration [SHIPPED option (a), 2026-05-17]
 
-`extern_builtins: HashMap<String, ExternBuiltin>' is trickier
-because ExternBuiltin is a Rust closure (= `Box<dyn Fn(...)>').
-Two approaches:
-(a) Keep `extern_builtins' Rust-side; route through env_shim
-    primitives only.  Net Rust change: small (= just plumbing).
-(b) Define an `extern-builtin' Sexp variant that wraps the
-    function pointer + closure-state + signature.  Move the
-    table to elisp.  Net Rust change: -40 LOC table ops, but
-    +30 LOC for the new Sexp variant.
+*What shipped*: production's only =extern_builtin= entry
+(=nelisp--env-globals-op=, registered in =env_shim::install_env_
+shim_primitives=) is promoted to a regular =builtins::dispatch=
+match arm.  The =extern_builtins= HashMap stays as a host-crate /
+test-only extension surface (4 test callsites + public API), but
+the *production binary* no longer reads from it.
 
-Phase 6 chooses (a) for simplicity; the Sexp::ExternBuiltin
-variant is deferred to Phase 8+.
+Implementation:
+- =env_shim::bi_globals_op= visibility lifted from =fn= to
+  =pub(crate) fn= so =builtins::dispatch= can call it directly.
+- =builtins::dispatch= gets a new match arm:
+  =⤳ "nelisp--env-globals-op" => env_shim::bi_globals_op(args, env)=.
+- =install_env_shim_primitives= replaces its
+  =register_extern_builtin= call with a plain =set_function= call
+  that installs the =(builtin nelisp--env-globals-op)= sentinel.
+  =(funcall #'nelisp--env-globals-op ...)= continues to resolve
+  through the usual dispatch path.
 
-*LOC delta*: Rust -20; Elisp +25.
+*Why option (a) and not (b)*: option (b) (= define an
+=Sexp::ExternBuiltin= variant carrying a function pointer +
+closure-state) would also move the HashMap to elisp, but the
+existing =extern_builtins= surface is small enough (1 production
+entry) that the simpler refactor lands the desired LOC reduction
+without the Sexp variant churn.  =Sexp::ExternBuiltin= deferred
+to Phase 8+ when env.rs is being deleted anyway.
+
+*LOC delta (actual)*: Rust net ~0 (= 1 line removed in
+env_shim's register call replaced by 4 lines of set_function +
+sentinel construction; 1 new match arm in dispatch).  The win is
+*production binary independence from extern_builtins*: the
+HashMap can now be tagged =#[cfg(any(test, feature = "...host
+extension..."))]= in a follow-up cleanup, which would actually
+delete the field from production binaries.
 
 ** Phase 7 (Doc 108) — Last-mile shrink (1 session)
 

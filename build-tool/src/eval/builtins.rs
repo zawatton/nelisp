@@ -458,6 +458,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-gc-finalize" => crate::eval::rc_primitives::bi_nl_gc_finalize(args),
         // Doc 99 §99.C — elisp-only body in `lisp/nelisp-cc-fact-i64.el'.
         "nl-fact-i64" => bi_nl_fact_i64(args),
+        // Doc 102 Phase 6 (2026-05-17) — `nelisp--env-globals-op' moved
+        // from `extern_builtins' to a regular dispatch arm.  Drops the
+        // production binary's dependency on `extern_builtins'; the
+        // HashMap is now a test-only / host-crate extension surface.
+        "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op(args, env),
         _ => {
             // Externally-registered builtin (`Env::register_extern_builtin').
             // Clone the Rc first so the `extern_builtins' borrow drops

@@ -53,7 +53,12 @@ fn bool_sexp(b: bool) -> Sexp {
 
 /// Generic `nelisp--env-globals-op OP NAME &optional ARG' dispatcher;
 /// see module doc for OP tag semantics.
-fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+///
+/// Doc 102 Phase 6 (2026-05-17) — promoted from `extern_builtin' to a
+/// `pub(crate)' regular builtin invoked directly from `builtins::dispatch'.
+/// Removes the production binary's dependency on the `extern_builtins'
+/// HashMap (= now a test-only / host-crate extension API surface).
+pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let op = match args.first() {
         Some(Sexp::Symbol(s)) => s.as_str(),
         Some(o) => {
@@ -140,15 +145,26 @@ fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 /// Install the Doc 102 Phase 2.c generic env-globals dispatcher into
-/// `env`.  Idempotent — re-installing overwrites the previous closure
-/// (= same contract as `Env::register_extern_builtin`).
+/// `env`.  Idempotent — re-installing overwrites the previous function
+/// cell.
 ///
 /// Called from `Env::new_global` after `install_builtins` has run but
 /// before `STDLIB_IMAGES` are loaded, so the shim file
 /// (`nelisp-stdlib-env-shim.el`) can `funcall` `nelisp--env-globals-op`
 /// at load time (= when its 11 elisp wrappers' bodies expand).
+///
+/// Doc 102 Phase 6 (2026-05-17) — `bi_globals_op' is now invoked
+/// directly from `builtins::dispatch' via a regular match arm; the
+/// `extern_builtins' HashMap detour is retired.  We still register
+/// the function-cell sentinel `(builtin nelisp--env-globals-op)' so
+/// =(funcall #'nelisp--env-globals-op ...)= resolves through the
+/// usual dispatch path.
 pub fn install_env_shim_primitives(env: &mut Env) {
-    env.register_extern_builtin("nelisp--env-globals-op", bi_globals_op);
+    let sentinel = Sexp::list_from(&[
+        Sexp::Symbol("builtin".into()),
+        Sexp::Symbol("nelisp--env-globals-op".into()),
+    ]);
+    env.set_function("nelisp--env-globals-op", sentinel);
 }
 
 #[cfg(test)]
