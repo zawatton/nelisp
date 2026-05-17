@@ -21,6 +21,7 @@ pub mod nlrecord;
 pub mod nlstr;
 pub mod nlvector;
 pub mod quit;
+pub mod raw_mem;
 pub mod rc_primitives;
 pub mod sexp;
 pub mod sexp_abi_assert;

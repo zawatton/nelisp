@@ -875,6 +875,84 @@ functions `((NAME . ARITY) ...)'."
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
+   ;; Doc 122 §122.E — Atomic + raw memory primitives.
+   ;; ------------------------------------------------
+   ;; `(atomic-fetch-add PTR DELTA)' — SeqCst atomic fetch-and-add on
+   ;; the `*mut i64' slot at PTR.  Returns the pre-add value in rax
+   ;; (= match the underlying Rust `AtomicI64::fetch_add' contract).
+   ;; Substrate gate for Doc 123 refcount elisp化.
+   ((and (consp sexp) (eq (car sexp) 'atomic-fetch-add))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :atomic-fetch-add-arity sexp)))
+    (list :kind 'atomic-fetch-add
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :delta (nelisp-phase47-compiler--parse-value
+                  (nth 2 sexp) env fenv defuns)))
+   ;; `(atomic-compare-exchange PTR EXPECTED NEW)' — SeqCst CAS on
+   ;; the `*mut i64' slot at PTR.  Returns 1 on success / 0 on
+   ;; mismatch.  Substrate gate for Doc 123 Bacon-Rajan promote.
+   ((and (consp sexp) (eq (car sexp) 'atomic-compare-exchange))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :atomic-compare-exchange-arity sexp)))
+    (list :kind 'atomic-compare-exchange
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :expected (nelisp-phase47-compiler--parse-value
+                     (nth 2 sexp) env fenv defuns)
+          :new-val (nelisp-phase47-compiler--parse-value
+                    (nth 3 sexp) env fenv defuns)))
+   ;; `(ptr-read-u64 PTR OFFSET)' — raw `u64' read at `*(u64*)(ptr +
+   ;; offset)'.  Returns the value re-cast to `i64' in rax.
+   ;; Substrate gate for Doc 124 nl*.rs header walks.
+   ((and (consp sexp) (eq (car sexp) 'ptr-read-u64))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-read-u64-arity sexp)))
+    (list :kind 'ptr-read-u64
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 2 sexp) env fenv defuns)))
+   ;; `(ptr-write-u64 PTR OFFSET VAL)' — raw `u64' store at
+   ;; `*(u64*)(ptr + offset)'.  Returns rax = 1 sentinel.
+   ((and (consp sexp) (eq (car sexp) 'ptr-write-u64))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-write-u64-arity sexp)))
+    (list :kind 'ptr-write-u64
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 2 sexp) env fenv defuns)
+          :val (nelisp-phase47-compiler--parse-value
+                (nth 3 sexp) env fenv defuns)))
+   ;; `(ptr-read-u8 PTR OFFSET)' — raw `u8' read; zero-extends to i64
+   ;; (= no sign extension).
+   ((and (consp sexp) (eq (car sexp) 'ptr-read-u8))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-read-u8-arity sexp)))
+    (list :kind 'ptr-read-u8
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 2 sexp) env fenv defuns)))
+   ;; `(ptr-write-u8 PTR OFFSET VAL)' — raw `u8' store.  Returns 1
+   ;; sentinel.
+   ((and (consp sexp) (eq (car sexp) 'ptr-write-u8))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-write-u8-arity sexp)))
+    (list :kind 'ptr-write-u8
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 2 sexp) env fenv defuns)
+          :val (nelisp-phase47-compiler--parse-value
+                (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.D Cons construction ops ----
    ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
    ;; payloads into a fresh `NlConsBox' and therefore assume the input
@@ -1656,6 +1734,9 @@ the node's class to consume the result correctly."
              'mut-str-make-empty 'mut-str-push-byte 'mut-str-push-codepoint
              'mut-str-len 'mut-str-finalize
              'str-char-count 'str-codepoint-at 'str-is-alphanumeric-at
+             'atomic-fetch-add 'atomic-compare-exchange
+             'ptr-read-u64 'ptr-write-u64
+             'ptr-read-u8 'ptr-write-u8
              'cons-make 'cons-set-car 'cons-set-cdr
              'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -1779,6 +1860,18 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-str-codepoint-at node buf))
       ('str-is-alphanumeric-at
        (nelisp-phase47-compiler--emit-str-is-alphanumeric-at node buf))
+      ('atomic-fetch-add
+       (nelisp-phase47-compiler--emit-atomic-fetch-add node buf))
+      ('atomic-compare-exchange
+       (nelisp-phase47-compiler--emit-atomic-compare-exchange node buf))
+      ('ptr-read-u64
+       (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u64"))
+      ('ptr-write-u64
+       (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u64"))
+      ('ptr-read-u8
+       (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u8"))
+      ('ptr-write-u8
+       (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u8"))
       ('cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
       ('cons-set-car
@@ -3027,18 +3120,7 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
 ;; ---- Doc 122 §122.D — UTF-8 helper grammar emit ----
 
 (defun nelisp-phase47-compiler--emit-str-char-count (node buf)
-  "Emit `str-char-count' — call `nl_str_char_count(str_ptr) -> i64'.
-NODE carries `:ptr' (= `*const Sexp' to a `Sexp::Str' / `Sexp::Symbol'
-/ `Sexp::MutStr').  The Rust extern walks the inner `String' via
-`chars().count()' and returns the codepoint count as i64 in rax.
-
-Strategy (= 1-arg extern call with i64 return, mirrors
-`mut-str-len' shape):
-
-  1. Evaluate PTR -> rax, copy to rdi (= arg 0).
-  2. Push one alignment pad to keep rsp 16-byte aligned at call site.
-  3. Call `nl_str_char_count' — rax = i64 codepoint count.
-  4. Pop the alignment pad."
+  "Emit `str-char-count' — call `nl_str_char_count(str_ptr) -> i64'."
   (let ((ptr (plist-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
@@ -3049,26 +3131,7 @@ Strategy (= 1-arg extern call with i64 return, mirrors
     (nelisp-asm-x86_64-pop buf 'r11)))
 
 (defun nelisp-phase47-compiler--emit-str-codepoint-at (node buf)
-  "Emit `str-codepoint-at' — call `nl_str_codepoint_at(ptr, idx, cp_slot, width_slot)'.
-NODE carries `:ptr' (= `*const Sexp' to `Sexp::Str' / `Sexp::Symbol'
-/ `Sexp::MutStr'), `:idx' (= i64 byte index), `:cp-slot' (= `*mut i64'
-out-slot for the decoded codepoint), and `:width-slot' (= `*mut i64'
-out-slot for the byte width).  Returns rax = 1 on success, 0 on
-invalid IDX / malformed UTF-8.  On failure the out-slots are
-untouched.
-
-Strategy (= 4-arg extern call):
-
-  1. Evaluate PTR, push.
-  2. Evaluate IDX, push.
-  3. Evaluate CP-SLOT, push.
-  4. Evaluate WIDTH-SLOT, push.
-  5. Pop WIDTH-SLOT -> rcx (= arg 3), CP-SLOT -> rdx (= arg 2),
-     IDX -> rsi (= arg 1), PTR -> rdi (= arg 0).
-  6. 4 push + 4 pop balanced + function entry rsp mod 16 = 8; one
-     extra push aligns the call site at 16.
-  7. Call `nl_str_codepoint_at' — rax = i64 success flag.
-  8. Pop the alignment pad."
+  "Emit `str-codepoint-at' — 4-arg call to `nl_str_codepoint_at'."
   (let ((ptr (plist-get node :ptr))
         (idx (plist-get node :idx))
         (cp-slot (plist-get node :cp-slot))
@@ -3081,14 +3144,10 @@ Strategy (= 4-arg extern call):
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value width-slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    ;; Pop in reverse push order: width-slot -> rcx, cp-slot -> rdx,
-    ;; idx -> rsi, ptr -> rdi.
     (nelisp-asm-x86_64-pop buf 'rcx)
     (nelisp-asm-x86_64-pop buf 'rdx)
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; Alignment pad: 4 push + 4 pop balanced; function entry has
-    ;; rsp mod 16 = 8; one extra push aligns the call site.
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
@@ -3096,23 +3155,7 @@ Strategy (= 4-arg extern call):
     (nelisp-asm-x86_64-pop buf 'r11)))
 
 (defun nelisp-phase47-compiler--emit-str-is-alphanumeric-at (node buf)
-  "Emit `str-is-alphanumeric-at' — call `nl_str_is_alphanumeric_at(ptr, idx)'.
-NODE carries `:ptr' (= `*const Sexp' to `Sexp::Str' / `Sexp::Symbol'
-/ `Sexp::MutStr') and `:idx' (= i64 byte index).  The Rust extern
-takes the ASCII fast path (= byte `[0-9A-Za-z]` test) when possible
-and falls back to a Unicode-aware `char::is_alphanumeric' decode.
-Returns rax = 1 if alphanumeric, 0 otherwise.
-
-Strategy (= 2-arg extern call with i64 return, mirrors
-`mut-str-push-2arg' shape but the helper returns a real i64 instead
-of `void' so no post-call sentinel materialisation):
-
-  1. Evaluate PTR, push.
-  2. Evaluate IDX, push.
-  3. Pop IDX -> rsi (= arg 1), PTR -> rdi (= arg 0).
-  4. Push one alignment pad to keep rsp 16-byte aligned at call site.
-  5. Call `nl_str_is_alphanumeric_at' — rax = i64 1/0.
-  6. Pop the alignment pad."
+  "Emit `str-is-alphanumeric-at' — 2-arg call to `nl_str_is_alphanumeric_at'."
   (let ((ptr (plist-get node :ptr))
         (idx (plist-get node :idx)))
     (nelisp-phase47-compiler--emit-value ptr buf)
@@ -3127,6 +3170,80 @@ of `void' so no post-call sentinel materialisation):
      buf "nl_str_is_alphanumeric_at" -4 'text)
     (nelisp-asm-x86_64-pop buf 'r11)))
 
+;; ---- Doc 122 §122.E — Atomic + raw memory primitives emit ----
+
+(defun nelisp-phase47-compiler--emit-atomic-fetch-add (node buf)
+  "Emit `atomic-fetch-add' — call `nl_atomic_fetch_add(ptr, delta) -> i64'."
+  (let ((ptr (plist-get node :ptr))
+        (delta (plist-get node :delta)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value delta buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_atomic_fetch_add" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-atomic-compare-exchange (node buf)
+  "Emit `atomic-compare-exchange' — 3-arg call to `nl_atomic_compare_exchange'."
+  (let ((ptr (plist-get node :ptr))
+        (expected (plist-get node :expected))
+        (new-val (plist-get node :new-val)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value expected buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value new-val buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_atomic_compare_exchange" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-ptr-read (node buf helper-name)
+  "Emit `ptr-read-u64' / `ptr-read-u8' — 2-arg call to HELPER-NAME."
+  (let ((ptr (plist-get node :ptr))
+        (offset (plist-get node :offset)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value offset buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf helper-name -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-ptr-write (node buf helper-name)
+  "Emit `ptr-write-u64' / `ptr-write-u8' — 3-arg call to HELPER-NAME, sentinel rax=1."
+  (let ((ptr (plist-get node :ptr))
+        (offset (plist-get node :offset))
+        (val (plist-get node :val)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value offset buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value val buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf helper-name -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
 ;; ---- Doc 101 §101.D Cons construction ops ----
 

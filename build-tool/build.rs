@@ -168,6 +168,16 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-jit-aref.el",
         "nelisp-cc-jit-aset.el",
         "nelisp-cc-jit-elt.el",
+        // Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' grammar
+        // ops (= 2 entries, shared source file).
+        "nelisp-cc-sexp-write-str.el",
+        // Doc 122 §122.B — Mutable string builder grammar ops (= 5
+        // entries, shared source file).
+        "nelisp-cc-mut-str.el",
+        // Doc 122 §122.E — Atomic + raw memory primitive grammar ops
+        // (= 6 entries, shared source file).  Substrate gate for
+        // Doc 123-128 refcount / nl*.rs lifecycle elisp化.
+        "nelisp-cc-atomic-raw-mem.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

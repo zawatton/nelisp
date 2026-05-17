@@ -206,24 +206,7 @@ pub mod elisp_cc_spike {
             slot: *mut Sexp,
         ) -> *mut Sexp;
         // Doc 122 §122.D — UTF-8 helper Phase 47 grammar ops compiled
-        // from `lisp/nelisp-cc-utf8.el'.  Each op evaluates its args,
-        // marshals them per SysV AMD64, and calls the matching
-        // `nl_str_*' Rust extern (in `build-tool/src/eval/nlstr.rs').
-        //
-        //   `nelisp_str_char_count(ptr) -> i64' — codepoint count
-        //     (NOT byte count) of the inner `String'.  Unblocks Doc
-        //     120 `nl_jit_mut_str_len' / `length' shim's String arm.
-        //   `nelisp_str_codepoint_at(ptr, idx, cp_slot, width_slot)
-        //     -> i64' — decode codepoint at byte IDX, write codepoint
-        //     + UTF-8 byte width via the caller-owned out-slots.
-        //     Returns 1 on success / 0 on invalid IDX / malformed
-        //     UTF-8 (out-slots untouched on failure).  Unblocks Doc
-        //     120 `nl_jit_str_codepoint_at'.
-        //   `nelisp_str_is_alphanumeric_at(ptr, idx) -> i64' —
-        //     predicate.  ASCII fast path = `[0-9A-Za-z]' byte test;
-        //     multi-byte slow path = `char::is_alphanumeric'.
-        //     Unblocks Doc 120 `nl_jit_split_by_non_alnum' +
-        //     `nl_jit_downcase' / `_upcase' (codepoint walk).
+        // from `lisp/nelisp-cc-utf8.el'.
         fn nelisp_str_char_count(ptr: *const Sexp) -> i64;
         fn nelisp_str_codepoint_at(
             ptr: *const Sexp,
@@ -235,6 +218,20 @@ pub mod elisp_cc_spike {
             ptr: *const Sexp,
             idx: i64,
         ) -> i64;
+        // Doc 122 §122.E — Atomic + raw memory primitive Phase 47
+        // grammar ops compiled from `lisp/nelisp-cc-atomic-raw-mem.el'.
+        // Substrate gate for Doc 123-128 (= refcount elisp化,
+        // nl*.rs Clone/Drop elisp化, alloc / dealloc handlers).
+        fn nelisp_atomic_fetch_add(ptr: *mut i64, delta: i64) -> i64;
+        fn nelisp_atomic_compare_exchange(
+            ptr: *mut i64,
+            expected: i64,
+            new_val: i64,
+        ) -> i64;
+        fn nelisp_ptr_read_u64(ptr: *const u8, offset: i64) -> i64;
+        fn nelisp_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) -> i64;
+        fn nelisp_ptr_read_u8(ptr: *const u8, offset: i64) -> i64;
+        fn nelisp_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64;
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
         // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
         // Returns the `*const Sexp' of the matching symbol-entry
@@ -837,6 +834,40 @@ pub mod elisp_cc_spike {
         idx: i64,
     ) -> i64 {
         nelisp_str_is_alphanumeric_at(ptr, idx)
+    }
+
+    /// Doc 122 §122.E — `(atomic-fetch-add PTR DELTA)'.  SeqCst.
+    pub unsafe fn atomic_fetch_add(ptr: *mut i64, delta: i64) -> i64 {
+        nelisp_atomic_fetch_add(ptr, delta)
+    }
+
+    /// Doc 122 §122.E — `(atomic-compare-exchange PTR EXPECTED NEW)'.
+    pub unsafe fn atomic_compare_exchange(
+        ptr: *mut i64,
+        expected: i64,
+        new_val: i64,
+    ) -> i64 {
+        nelisp_atomic_compare_exchange(ptr, expected, new_val)
+    }
+
+    /// Doc 122 §122.E — `(ptr-read-u64 PTR OFFSET)'.
+    pub unsafe fn ptr_read_u64(ptr: *const u8, offset: i64) -> i64 {
+        nelisp_ptr_read_u64(ptr, offset)
+    }
+
+    /// Doc 122 §122.E — `(ptr-write-u64 PTR OFFSET VAL)'.
+    pub unsafe fn ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) -> i64 {
+        nelisp_ptr_write_u64(ptr, offset, val)
+    }
+
+    /// Doc 122 §122.E — `(ptr-read-u8 PTR OFFSET)'.
+    pub unsafe fn ptr_read_u8(ptr: *const u8, offset: i64) -> i64 {
+        nelisp_ptr_read_u8(ptr, offset)
+    }
+
+    /// Doc 122 §122.E — `(ptr-write-u8 PTR OFFSET VAL)'.
+    pub unsafe fn ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64 {
+        nelisp_ptr_write_u8(ptr, offset, val)
     }
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.

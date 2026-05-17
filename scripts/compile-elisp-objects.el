@@ -448,6 +448,38 @@
     (nelisp-cc-utf8
      :source-var nelisp-cc-utf8--is-alphanumeric-at-source
      :output "nelisp_str_is_alphanumeric_at.o"
+     :requires-arch x86_64)
+    ;; Doc 122 §122.E — Atomic + raw memory primitives.  Six entries,
+    ;; one per op, packaged as standalone Phase 47-compiled `defun's
+    ;; so `tests/elisp_cc_atomic_raw_mem_probe.rs' can drive each
+    ;; round-trip independently.  Substrate gate for Doc 123-128
+    ;; (= refcount elisp化, nl*.rs::Clone/Drop elisp化, alloc /
+    ;; dealloc handlers).  Same Linux-x86_64 gate as the §122.A/B
+    ;; siblings; aarch64 emit lands with the rest of the Phase 47
+    ;; aarch64 sweep.
+    (nelisp-cc-atomic-raw-mem
+     :source-var nelisp-cc-atomic-raw-mem--fetch-add-source
+     :output "nelisp_atomic_fetch_add.o"
+     :requires-arch x86_64)
+    (nelisp-cc-atomic-raw-mem
+     :source-var nelisp-cc-atomic-raw-mem--compare-exchange-source
+     :output "nelisp_atomic_compare_exchange.o"
+     :requires-arch x86_64)
+    (nelisp-cc-atomic-raw-mem
+     :source-var nelisp-cc-atomic-raw-mem--read-u64-source
+     :output "nelisp_ptr_read_u64.o"
+     :requires-arch x86_64)
+    (nelisp-cc-atomic-raw-mem
+     :source-var nelisp-cc-atomic-raw-mem--write-u64-source
+     :output "nelisp_ptr_write_u64.o"
+     :requires-arch x86_64)
+    (nelisp-cc-atomic-raw-mem
+     :source-var nelisp-cc-atomic-raw-mem--read-u8-source
+     :output "nelisp_ptr_read_u8.o"
+     :requires-arch x86_64)
+    (nelisp-cc-atomic-raw-mem
+     :source-var nelisp-cc-atomic-raw-mem--write-u8-source
+     :output "nelisp_ptr_write_u8.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
