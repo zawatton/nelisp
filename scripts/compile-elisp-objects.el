@@ -481,6 +481,17 @@
      :source-var nelisp-cc-atomic-raw-mem--write-u8-source
      :output "nelisp_ptr_write_u8.o"
      :requires-arch x86_64)
+    ;; Doc 123 §123.A — first substrate elisp化 stage.  Replaces the
+    ;; simplest macro from `build-tool/src/eval/rc_primitives.rs' (=
+    ;; the refcount-inc kernel) with a pure-elisp body that uses the
+    ;; §122.E `atomic-fetch-add' op.  Substrate gate validation for
+    ;; the Doc 123-128 chain — proves §122.E grammar is sufficient to
+    ;; mutate the `NlConsBox' refcount slot from elisp without a Rust
+    ;; hop.  Same Linux-x86_64 gate as the §122.E parent.
+    (nelisp-cc-rc-inc
+     :source-var nelisp-cc-rc-inc--source
+     :output "nelisp_rc_inc.o"
+     :requires-arch x86_64)
     ;; Doc 116 §116.A — pure-elisp Reader lexer.  Single manifest
     ;; entry; the source defconst is a `(seq DEFUN ...)' of ~20
     ;; mutually-recursive tail-call helpers and one public entry

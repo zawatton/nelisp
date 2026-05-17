@@ -178,6 +178,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (= 6 entries, shared source file).  Substrate gate for
         // Doc 123-128 refcount / nl*.rs lifecycle elisp化.
         "nelisp-cc-atomic-raw-mem.el",
+        // Doc 123 §123.A — first substrate elisp化 stage.  Single
+        // entry: `nelisp_rc_inc' = the refcount-inc kernel pulled
+        // out of `build-tool/src/eval/rc_primitives.rs' using the
+        // §122.E `atomic-fetch-add' op.  Proof of concept that the
+        // substrate gate is functional; §123.B-E sweep the remaining
+        // rc primitive bodies onto the same pattern.
+        "nelisp-cc-rc-inc.el",
         // Doc 116 §116.A — pure-elisp Reader lexer.  Single source
         // file defining `nelisp_reader_lex_one' + ~20 tail-call
         // helpers; replaces the eventual deletion of

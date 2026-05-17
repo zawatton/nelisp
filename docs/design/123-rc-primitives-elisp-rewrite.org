@@ -1,0 +1,246 @@
+#+TITLE: Doc 123 — rc_primitives.rs substrate elisp化 (refcount macros → §122.E)
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-18
+
+* Status
+
+- *State*: DRAFT 2026-05-18 — §123.A ships alongside this DRAFT.
+- *Parent*: Doc 122.E (= atomic + raw-mem grammar ops, SHIPPED main
+  =38be9c7f=).  §122.E is the substrate gate; without
+  `atomic-fetch-add' + `ptr-read-u64' / `ptr-write-u64' the rc body
+  cannot be written in pure elisp.
+- *Sibling*: Doc 124 (= `nl*.rs::Clone/Drop' elisp化, queued), Doc
+  125 (= alloc / dealloc handlers), Doc 126-128 (= ELF loader +
+  bridge GC).  All four cite Doc 123 as their unblock for the
+  refcount mutation kernel.
+- *Dependents*: Doc 124-128 substrate sweep.  After Doc 123 SHIPPED
+  the `bi_nl_rc_*' / `bi_nl_gc_*' surface in `rc_primitives.rs' is
+  a pair of Sexp-unwrap / extern-C / Sexp-wrap shims around a
+  pure-elisp kernel — the same migration pattern Doc 99 §99.C
+  established for `nelisp_fact_i64' and Doc 100 §100.C for
+  `nelisp_truncate_int'.
+- *Scope*: 10 rc primitives + 2 internal helpers in
+  `build-tool/src/eval/rc_primitives.rs' (464 LOC) move to elisp
+  using §122.E.  *Stage breakdown*: §123.A ships the simplest
+  (`rc_inc_strong' = single atomic-fetch-add); §123.B-E sweep the
+  remainder.  This DRAFT enumerates each, classifies feasibility,
+  and ships §123.A as proof of concept.
+
+* §0 TL;DR
+
+** §0.1 Why this doc exists
+
+`build-tool/src/eval/rc_primitives.rs' (464 LOC) hosts the elisp-
+facing refcount + GC primitives backing the Bacon-Rajan cycle
+collector skeleton in `lisp/nelisp-stdlib-gc.el'.  Every primitive
+in the file follows the same three-step shape:
+
+1. Sexp unwrap (= match on `Sexp::Cons(r) => ...` etc.).
+2. *Atomic memory op on the refcount slot* (= `fetch_add(1,
+   Relaxed)` / `fetch_sub(1, Release)`).
+3. Sexp wrap (= `Ok(Sexp::Int(new_count))` / `Ok(Sexp::Nil)`).
+
+Step 2 is the only "real algorithm".  Steps 1 + 3 are mechanical
+ABI boilerplate already established by Doc 99/100/101.  Doc 122.E
+(= `atomic-fetch-add' + `ptr-read-u64' grammar ops) is the gate:
+once it shipped, Step 2 can be written as a one-line elisp body.
+
+Per the Doc 79 v6 Track L pattern (= refcount mutation goes through
+a per-box typed pointer at the call site), each rc primitive
+materializes the *NlConsBox refcount slot address* = `box_ptr +
+REFCOUNT_OFFSET` and feeds it to `atomic-fetch-add'.  The offset
+is a `#[repr(C)]`-pinned constant (= 64 for NlConsBox = 2 *
+`size_of::<Sexp>()` = 2 * 32) so the elisp body needs no extern
+hop for the address arithmetic.
+
+** §0.2 Net LOC delta target
+
+| Stage  | Removes Rust LOC | Adds elisp LOC | Net    |
+|--------+------------------+----------------+--------|
+| §123.A | -15              | +10            | -5     |
+| §123.B | -80              | +30            | -50    |
+| §123.C | -120             | +60            | -60    |
+| §123.D | -100             | +50            | -50    |
+| §123.E | -149             | +50            | -99    |
+| Total  | -464             | +200           | *-264* |
+
+Per the Doc 79 §11.7 "atomic-with-consumer" pattern the rc
+primitives' Sexp-unwrap / -wrap stays in Rust (= the elisp body is
+a pure-arithmetic kernel that the Rust shim wraps).  This is the
+minimum Rust surface that survives `rc_primitives.rs' migration.
+
+* §1 Audit — every macro / function in `rc_primitives.rs'
+
+| Symbol                     | Lines | Body shape                                            | Stage  | §122.E op used                |
+|----------------------------+-------+-------------------------------------------------------+--------+-------------------------------|
+| `rc_dec_no_drop`           | 70-75 | `fetch_sub(1, Release)` + `saturating_sub`            | §123.B | `atomic-fetch-add` (delta=-1) |
+| `require_supported_kind`   | 82-91 | tag dispatch table                                    | §123.D | (no atomic op; pure dispatch) |
+| `extract_kind_tag`         | 95-103| `Sexp::Int` range check                               | §123.D | (no atomic op)                |
+| `bi_nl_rc_alloc`           | 110-128 | `NlConsBoxRef::new(nil, nil)`                       | §123.E | (alloc-side; Doc 125 territory) |
+| `bi_nl_rc_dealloc`         | 133-136 | trivial forwarder to `gc_finalize`                  | §123.E | (no atomic op; pure delegate) |
+| `bi_nl_rc_inc_strong`      | 140-154 | `unsafe rc_inc_raw(r)`                              | *§123.A* | `atomic-fetch-add` (delta=+1) |
+| `bi_nl_rc_dec_strong`      | 166-184 | `rc_dec_no_drop(r)` + `Sexp::Int(new)`              | §123.B | `atomic-fetch-add` (delta=-1) |
+| `bi_nl_rc_strong_count`    | 189-198 | `NlConsBoxRef::strong_count(r)` (Acquire load)      | §123.C | `ptr-read-u64`                |
+| `bi_nl_rc_kind`            | 204-207 | `args[0].tag() as i64` (= read tag byte)            | §123.C | `ptr-read-u8`                 |
+| `bi_nl_rc_payload_ptr`     | 213-224 | `NlConsBoxRef::as_ptr(r) as usize`                  | §123.D | (no atomic; payload-ptr only) |
+| `bi_nl_gc_walk_children`   | 230-245 | `(r.car.clone(), r.cdr.clone())` 2-list             | §123.D | `ptr-read-u64` ×2 + cons-make |
+| `bi_nl_gc_buffered_decs`   | 252-255 | Nil-returning stub                                  | §123.D | (no atomic; MVP no-op)        |
+| `bi_nl_gc_finalize`        | 276-285 | MVP no-op (validates kind only)                     | §123.E | (no atomic; deferred to Doc 125) |
+
+*Bold §123.A row* = the §123.A scope (= ships with this DRAFT).
+Twelve total symbols (8 primitives + 4 helpers); §123.A picks the
+simplest one as proof of concept.
+
+** §1.1 Per-macro feasibility table
+
+| Stage  | Symbols                                              | Feasibility | Risk             |
+|--------+------------------------------------------------------+-------------+------------------|
+| §123.A | `bi_nl_rc_inc_strong`                                | TRIVIAL     | Race vs SeqCst   |
+| §123.B | `rc_dec_no_drop` + `bi_nl_rc_dec_strong`             | EASY        | Saturating sub   |
+| §123.C | `bi_nl_rc_strong_count` + `bi_nl_rc_kind`            | EASY        | Tag dispatch     |
+| §123.D | `bi_nl_rc_payload_ptr` + `bi_nl_gc_walk_children` +   | MEDIUM      | Refcount-aware  |
+|        | `bi_nl_gc_buffered_decs` + helpers                   |             | clone for kids  |
+| §123.E | `bi_nl_rc_alloc` + `bi_nl_rc_dealloc` +              | HARD        | Defer to Doc 125 |
+|        | `bi_nl_gc_finalize`                                  |             | (alloc/dealloc)  |
+
+*Risk notes*:
+
+- §123.A: §122.E `atomic-fetch-add' uses SeqCst, Rust's
+  `rc_inc_raw' uses Relaxed.  SeqCst ⊃ Relaxed (= stronger ordering
+  is always valid for an inc-only operation); the cost is a single
+  `mfence' on x86_64 which is acceptable for the rc-bump fast path.
+  Doc 122.E.2 may add a `Relaxed' variant if profiling shows it.
+- §123.B: `saturating_sub` is a single `cmp + cmov`; expressible as
+  `(if (= prev 0) 0 (- prev 1))' in elisp.
+- §123.C: `Acquire` load — §122.E ships `ptr-read-u64` with no
+  explicit ordering (= compiler defaults are sufficient for a
+  read-only load of an atomic slot that no writer is racing with).
+- §123.D: requires §122.E `ptr-read-u64' for the car/cdr pointer
+  walks + cons-make to materialize the result list.  Refcount
+  bumping for the cloned kids reuses §123.A's atomic-fetch-add.
+- §123.E: `bi_nl_rc_alloc' allocates a fresh NlConsBox via the Rust
+  `alloc::alloc` global allocator.  Phase 47 has no alloc grammar
+  op as of Doc 122; this is Doc 125 (= alloc/dealloc handlers).
+  §123.E ships *after* Doc 125 lands.
+
+* §2 Stage breakdown
+
+** §2.1 §123.A — `nelisp_rc_inc` (simplest macro elisp化)
+
+- New file: `lisp/nelisp-cc-rc-inc.el` (= ~10 elisp LOC).
+- Body:
+  #+begin_src elisp
+  (defun nelisp_rc_inc (box-ptr)
+    (atomic-fetch-add (+ box-ptr 64) 1))
+  #+end_src
+  - `box-ptr' = raw `*const NlConsBox' as i64 (= the same pointer
+    `NlConsBoxRef::as_ptr' returns to `bi_nl_rc_payload_ptr').
+  - `+ box-ptr 64' = REFCOUNT_OFFSET (= 64 bytes = 2 *
+    `size_of::<Sexp>()`).  Constant verified at the §122.E layout
+    assert in `nlrc.rs:292`.
+  - `atomic-fetch-add' returns the *pre-add* i64 value in rax.
+- New extern: =extern "C" fn nelisp_rc_inc(box_ptr: *mut i64) -> i64=
+  declared in `build-tool/src/lib.rs::elisp_cc_spike`.
+- Probe: `build-tool/tests/elisp_cc_rc_inc_probe.rs' (≥ 3 cases):
+  1. Single inc on a refcount=1 slot returns 1 (pre-add) and writes 2.
+  2. Multiple inc accumulates monotonically.
+  3. Atomic ordering check — concurrent inc from 2 host threads
+     converges to N1+N2 total (no lost updates).
+- Verification: existing `rc_primitives.rs::tests::rc_prim_inc_dec_balance`
+  still passes (= the Rust `bi_nl_rc_inc_strong` still calls
+  `rc_inc_raw'; this stage only adds the elisp counterpart, does
+  not swap the dispatch yet).  §123.B swaps the dispatch.
+- LOC: +10 elisp / +5 Rust extern wrapper / -0 Rust (= no removal
+  yet; §123.B removes the Rust body after the swap lands).
+
+** §2.2 §123.B — `nelisp_rc_dec` + Rust swap
+
+- Replace `rc_dec_no_drop` + `bi_nl_rc_dec_strong`'s body with a
+  call into `nelisp_rc_dec` (= the §123.A pattern but with
+  `delta=-1` + saturating-sub on the pre-sub return).
+- Removes ~80 Rust LOC (= the helper + the primitive body + the
+  inline doc-only commentary).
+- Adds ~30 elisp LOC (= one defun + saturating-sub helper).
+
+** §2.3 §123.C — count + kind readers
+
+- `nelisp_rc_strong_count` = `(ptr-read-u64 box-ptr 64)`.
+- `nelisp_rc_kind` = `(ptr-read-u8 sexp-ptr 0)` (= tag byte at
+  offset 0 of the outer `Sexp` enum, not the box).
+- Both are 1-line elisp bodies; ~60 elisp LOC total including
+  defcomp + doc.  Removes ~120 Rust LOC.
+
+** §2.4 §123.D — walk-children + helpers
+
+- `nelisp_gc_walk_children' = read car/cdr via `ptr-read-u64' at
+  offsets 0/32 of the NlConsBox, refcount-bump each via `nelisp_rc_inc`
+  (= §123.A composition), then `cons-make' the 2-list.
+- `require_supported_kind' + `extract_kind_tag' + `nl_gc_buffered_decs`
+  + `bi_nl_rc_payload_ptr` move to elisp as small dispatch helpers.
+- ~100 Rust LOC removed / ~50 elisp added.
+
+** §2.5 §123.E — alloc/dealloc/finalize (gated on Doc 125)
+
+- `bi_nl_rc_alloc' / `bi_nl_rc_dealloc' / `bi_nl_gc_finalize' need
+  alloc-grammar ops not yet in Phase 47.  Defer to Doc 125 (=
+  alloc / dealloc handlers).
+- Skeleton landed here so the rest of `rc_primitives.rs' is empty
+  after §123.D; §123.E completes the file deletion once Doc 125
+  ships its alloc primitives.
+
+* §3 Stage order
+
+| Stage  | Depends on            | Ships after            |
+|--------+-----------------------+------------------------|
+| §123.A | §122.E (= SHIPPED)    | This DRAFT             |
+| §123.B | §123.A                | §123.A merge to main   |
+| §123.C | §122.E                | parallel with §123.B   |
+| §123.D | §123.A + §122.E       | §123.A + §123.C        |
+| §123.E | Doc 125 (= alloc op)  | Doc 125 SHIPPED        |
+
+§123.A SHIPS with this DRAFT to validate the substrate elisp化
+pattern is functional.  §123.B-D are independent feat branches
+once §123.A lands on main.
+
+* §4 LOC target
+
+464 Rust LOC removed when §123.A-E all SHIPPED.  +200 elisp added
+(= one `lisp/nelisp-cc-rc-*.el' per stage; ~40 LOC each including
+DRAFT-pattern commentary).  Net delta: *-264 LOC* across the
+NeLisp tree.
+
+The Rust shim layer (= `pub fn bi_nl_rc_inc_strong(args: &[Sexp])'
+etc.) stays intact — only the *kernel body* migrates.  This is the
+Doc 99/100/101 swap pattern: Sexp ABI boilerplate stays in Rust,
+algorithmic core moves to elisp.
+
+* §5 Verification matrix
+
+| Stage  | New probe                                          | Existing tests must pass                |
+|--------+----------------------------------------------------+-----------------------------------------|
+| §123.A | `elisp_cc_rc_inc_probe.rs' (3 cases)               | `rc_primitives::tests::*` (8 cases)     |
+| §123.B | `elisp_cc_rc_dec_probe.rs' (4 cases)               | + §123.A probe                          |
+| §123.C | `elisp_cc_rc_count_kind_probe.rs' (4 cases)        | + §123.A/B probes                       |
+| §123.D | `elisp_cc_gc_walk_probe.rs' (3 cases)              | + §123.A-C probes                       |
+| §123.E | (gated)                                            | Doc 125's alloc probe                   |
+
+Baseline test counts (= `cargo test --release` after §122.E
+SHIPPED): `--lib` ≥ 733, `--tests` ≥ 1006.  Each §123.x stage
+must not regress these counts.
+
+* §6 References
+
+- Doc 79 v6 §4.2 = elisp rc primitive surface contract.
+- Doc 79 v7 Phase C Stage 5.3.a = Bacon-Rajan skeleton.
+- Doc 122.E = `atomic-fetch-add' + `ptr-read-u64' grammar ops.
+- Doc 99 §99.C / Doc 100 §100.C = elisp-only builtin migration
+  pattern (= Sexp shim + extern-C + algorithmic body in elisp).
+- `build-tool/src/eval/rc_primitives.rs` = target file.
+- `build-tool/src/eval/nlconsbox.rs` = NlConsBox layout + offset
+  reference.
+- `build-tool/src/eval/nlrc.rs:292` = REFCOUNT_OFFSET layout
+  assertion.
+
+;; Local Variables:
+;; mode: org
+;; End:
