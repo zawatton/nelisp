@@ -37,6 +37,10 @@
 ;;   21  Float                 payload = Sexp::Str of text
 ;;   22  Str                   payload = Sexp::Str of resolved body
 ;;   23  Sym                   payload = Sexp::Str of symbol name
+;;   24  Char     `?X' / `?\X'    payload = Sexp::Str of body bytes
+;;                                (after the leading `?'; parser decodes)
+;;   25  RadixInt `#x..'/`#o..'/  payload = Sexp::Str of base byte
+;;                `#b..'           (`x'/`o'/`b'/`X'/`O'/`B') + digit text
 ;;   -1  Error / unexpected
 ;;
 ;; The Rust safe wrapper in `lib.rs::elisp_cc_spike::reader_lex_one'
@@ -51,18 +55,24 @@
 ;; `mut-str-make-empty' is the safest pattern given clone-not-move
 ;; finalize semantics).
 ;;
-;; Scope discipline (= §116.A only):
+;; Scope discipline:
 ;;   - Lexer ONLY.  Parser is §116.B.  Top-level wrapper is §116.C.
 ;;   - Token kinds covered: lparen / rparen / lbracket / rbracket /
 ;;     quote / backquote / comma / comma-at / function-quote / dot /
-;;     sharps-paren / int / float / str / sym / eof.
+;;     sharps-paren / int / float / str / sym / char / radix-int / eof.
 ;;   - String escapes: \\n, \\t, \\r, \\\\, \\\"; line continuation
 ;;     `\\<LF>'; any other `\\X' drops the backslash + pushes X
 ;;     (= Doc 51 Phase 3-A''-1 Emacs reader compat).
-;;   - Char literals `?x' / `?\\C-a' / `?\\M-x' deferred (= the
-;;     stdlib subset under §116.A's scope discipline doesn't need
-;;     them; §116.B follow-up extends if needed).
-;;   - Radix integers `#x10' / `#o17' / `#b1010' deferred similarly.
+;;   - Char literals `?X' / `?\\C-a' / `?\\M-X' covered (Doc 116 §116.B+).
+;;     Payload is the raw body bytes (after the `?'); parser-side decoder
+;;     in `nelisp-cc-reader-parser.el' handles the escape + Meta-modifier
+;;     reduction.  Bare `?' (followed by whitespace / EOF) still lexes
+;;     as the 1-char symbol `?'.
+;;   - Radix integers `#x10' / `#o17' / `#b1010' covered (Doc 116 §116.B+).
+;;     Payload first byte = base marker (`x'/`o'/`b'); remaining bytes =
+;;     the digit text (incl. optional `+'/`-' sign).  Parser converts.
+;;   - Byte-code `#[..]' literal still deferred (rare; falls through to
+;;     the Rust legacy path in §116.C).
 ;;
 ;; Side-effect sequencing pattern (= no `(seq ...)' in value form):
 ;;   The Phase 47 grammar's `seq' is statement-only; defun bodies
@@ -185,24 +195,33 @@
     ;;   bit 0  has `.'              (-> Float candidate)
     ;;   bit 1  has `e' or `E'       (-> Float candidate)
     ;;   bit 2  non-numeric byte seen (-> force Sym)
+    ;;   bit 3  saw an ASCII digit   (-> required for Int/Float)
     ;;
     ;; Final mapping:
-    ;;   sym-bit (bit 2) set -> 23 (Sym)
-    ;;   has-dot or has-e   -> 21 (Float)
-    ;;   else                -> 20 (Int)
+    ;;   sym-bit (bit 2) set        -> 23 (Sym)
+    ;;   saw-digit (bit 3) NOT set  -> 23 (Sym) — bare `+', `-', `.'
+    ;;                                  symbols (= no digits seen).
+    ;;   has-dot or has-e (bit 0|1) -> 21 (Float)
+    ;;   else                       -> 20 (Int)
     ;; ===========================================================
 
     (defun nelisp_reader_classify_step (str-ptr i end class)
       (if (>= i end)
-          (if (= (logand class 4) 4)
-              23
-            (if (> class 0)
-                21
-              20))
+          (cond
+           ;; Non-numeric byte seen -> force Sym.
+           ((= (logand class 4) 4) 23)
+           ;; No digits seen -> bare sign / dot / sign-only-with-non-digit
+           ;; -> Sym.  Without this, `(+ x y)' lexes as Int "+".
+           ((= (logand class 8) 0) 23)
+           ;; Has dot OR exponent -> Float.
+           ((> (logand class 3) 0) 21)
+           ;; Otherwise -> Int.
+           (t 20))
         (cond
-         ;; Digit: no class change.
+         ;; Digit: set saw-digit bit.
          ((= (nelisp_reader_is_digit (str-byte-at str-ptr i)) 1)
-          (nelisp_reader_classify_step str-ptr (+ i 1) end class))
+          (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                       (logior class 8)))
          ;; `.': set dot bit.
          ((= (str-byte-at str-ptr i) 46)
           (nelisp_reader_classify_step str-ptr (+ i 1) end
@@ -244,6 +263,112 @@
                 (str-byte-at str-ptr start)) 1)
             (nelisp_reader_classify_step str-ptr start end 0)
           23)))
+
+    ;; ===========================================================
+    ;; Char literal body scanner (post-`?').  CURSOR points at the
+    ;; first byte AFTER `?'.  Pushes the body bytes into SCRATCH +
+    ;; returns the post-body cursor.  Two shapes:
+    ;;
+    ;;   `?X'       — single ASCII byte X (any non-`\\').
+    ;;   `?\\X...'  — backslash-prefixed sequence; consume the `\\'
+    ;;                + ALL subsequent non-atom-terminator bytes
+    ;;                (= covers `\\C-a' / `\\M-a' / `\\xff' / `\\(' /
+    ;;                `\\\\' etc.).  The parser-side decoder will then
+    ;;                walk the captured body to compute the codepoint.
+    ;;
+    ;; Side effect: SCRATCH receives the raw body bytes (no `?').
+    ;; Returns: post-body cursor (= first byte AFTER the literal), or
+    ;; -1 if the body is empty (= EOF right after `?').
+    ;; ===========================================================
+
+    (defun nelisp_reader_char_body_tail (str-ptr cursor n scratch)
+      ;; Inside a `?\\...' body — keep pushing while bytes are NOT
+      ;; atom terminators.  Differs from `scan_atom' in that we have
+      ;; already accepted the leading `\\' + escape char and continue
+      ;; greedily; for `?\\C-a' this walks `C', `-', `a'.
+      (if (>= cursor n)
+          cursor
+        (if (= (nelisp_reader_is_atom_term (str-byte-at str-ptr cursor)) 1)
+            cursor
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
+           (nelisp_reader_char_body_tail
+            str-ptr (+ cursor 1) n scratch)))))
+
+    (defun nelisp_reader_char_body (str-ptr cursor n scratch)
+      (if (>= cursor n)
+          -1
+        (if (= (str-byte-at str-ptr cursor) 92)
+            ;; `?\\X...' — push the `\\' + the next byte unconditionally
+            ;; (handles `?\\)' / `?\\\"' which would otherwise terminate),
+            ;; then continue with the tail scanner.
+            (if (>= (+ cursor 1) n)
+                -1
+              (nelisp_reader_prog2
+               (mut-str-push-byte scratch 92)
+               (nelisp_reader_prog2
+                (mut-str-push-byte scratch (str-byte-at str-ptr (+ cursor 1)))
+                (nelisp_reader_char_body_tail
+                 str-ptr (+ cursor 2) n scratch))))
+          ;; `?X' — push the one byte, done.
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
+           (+ cursor 1)))))
+
+    (defun nelisp_reader_lex_char_finalize
+        (end-or-err payload-slot cursor-out-slot scratch)
+      (if (< end-or-err 0)
+          (nelisp_reader_prog2
+           (sexp-int-make cursor-out-slot 0)
+           -1)
+        (nelisp_reader_prog2
+         (sexp-int-make cursor-out-slot end-or-err)
+         (nelisp_reader_prog2
+          (mut-str-finalize scratch payload-slot)
+          24))))
+
+    (defun nelisp_reader_lex_char
+        (str-ptr cursor n payload-slot cursor-out-slot scratch)
+      ;; CURSOR points at the byte AFTER the leading `?'.
+      (nelisp_reader_lex_char_finalize
+       (nelisp_reader_char_body str-ptr cursor n scratch)
+       payload-slot cursor-out-slot scratch))
+
+    ;; ===========================================================
+    ;; Radix-int body scanner.  CURSOR points at the first byte AFTER
+    ;; the radix marker (= `#x' / `#X' / `#o' / `#O' / `#b' / `#B').
+    ;; BASE-BYTE is the lowercase marker (`x'/`o'/`b') — pushed FIRST
+    ;; into SCRATCH so the parser can dispatch on radix without
+    ;; re-reading the source.  Then push every non-atom-terminator
+    ;; byte (sign, digits, `_' separators).
+    ;; ===========================================================
+
+    (defun nelisp_reader_radix_body
+        (str-ptr cursor n scratch)
+      (if (>= cursor n)
+          cursor
+        (if (= (nelisp_reader_is_atom_term (str-byte-at str-ptr cursor)) 1)
+            cursor
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
+           (nelisp_reader_radix_body str-ptr (+ cursor 1) n scratch)))))
+
+    (defun nelisp_reader_lex_radix
+        (str-ptr cursor n payload-slot cursor-out-slot scratch)
+      ;; CURSOR points at the first DIGIT byte (= post `#x'/`#o'/`#b').
+      ;; The caller has ALREADY pushed the lowercase base marker
+      ;; (`x'/`o'/`b') onto SCRATCH before calling.  Body bytes follow.
+      (nelisp_reader_lex_radix_finalize
+       (nelisp_reader_radix_body str-ptr cursor n scratch)
+       payload-slot cursor-out-slot scratch))
+
+    (defun nelisp_reader_lex_radix_finalize
+        (end payload-slot cursor-out-slot scratch)
+      (nelisp_reader_prog2
+       (sexp-int-make cursor-out-slot end)
+       (nelisp_reader_prog2
+        (mut-str-finalize scratch payload-slot)
+        25)))
 
     ;; ===========================================================
     ;; String literal scanner.  Caller has already consumed `"'.
@@ -401,11 +526,12 @@
        payload-slot cursor-out-slot scratch))
 
     ;; ===========================================================
-    ;; Sharpsign dispatch: `#'' / `#s(' / fail.
+    ;; Sharpsign dispatch: `#'' / `#s(' / `#x..' / `#o..' / `#b..' /
+    ;; fail.
     ;; ===========================================================
 
     (defun nelisp_reader_lex_sharpsign
-        (str-ptr cursor n cursor-out-slot)
+        (str-ptr cursor n payload-slot cursor-out-slot scratch)
       (if (>= (+ cursor 1) n)
           (nelisp_reader_emit_error cursor-out-slot (+ cursor 1))
         (cond
@@ -419,6 +545,41 @@
             (if (= (str-byte-at str-ptr (+ cursor 2)) 40)
                 (nelisp_reader_emit_triple cursor-out-slot cursor 11)
               (nelisp_reader_emit_error cursor-out-slot (+ cursor 2)))))
+         ;; `#x..' / `#X..' -> RadixInt (kind 25, base 16).  Pre-push
+         ;; the lowercase `x' marker onto SCRATCH so `lex_radix' fits
+         ;; the 6-reg ABI.
+         ((= (str-byte-at str-ptr (+ cursor 1)) 120)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 120)
+           (nelisp_reader_lex_radix str-ptr (+ cursor 2) n
+                                    payload-slot cursor-out-slot scratch)))
+         ((= (str-byte-at str-ptr (+ cursor 1)) 88)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 120)
+           (nelisp_reader_lex_radix str-ptr (+ cursor 2) n
+                                    payload-slot cursor-out-slot scratch)))
+         ;; `#o..' / `#O..' -> RadixInt (kind 25, base 8).
+         ((= (str-byte-at str-ptr (+ cursor 1)) 111)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 111)
+           (nelisp_reader_lex_radix str-ptr (+ cursor 2) n
+                                    payload-slot cursor-out-slot scratch)))
+         ((= (str-byte-at str-ptr (+ cursor 1)) 79)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 111)
+           (nelisp_reader_lex_radix str-ptr (+ cursor 2) n
+                                    payload-slot cursor-out-slot scratch)))
+         ;; `#b..' / `#B..' -> RadixInt (kind 25, base 2).
+         ((= (str-byte-at str-ptr (+ cursor 1)) 98)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 98)
+           (nelisp_reader_lex_radix str-ptr (+ cursor 2) n
+                                    payload-slot cursor-out-slot scratch)))
+         ((= (str-byte-at str-ptr (+ cursor 1)) 66)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 98)
+           (nelisp_reader_lex_radix str-ptr (+ cursor 2) n
+                                    payload-slot cursor-out-slot scratch)))
          (t
           (nelisp_reader_emit_error cursor-out-slot (+ cursor 1))))))
 
@@ -437,6 +598,24 @@
     ;; ===========================================================
     ;; Main dispatch: first byte -> token kind branch.
     ;; ===========================================================
+
+    ;; ===========================================================
+    ;; `?'-dispatcher.  Emacs reader compat: bare `?' (= followed by
+    ;; whitespace OR EOF) is the symbol named `?'.  Otherwise the byte
+    ;; is the start of a char literal body (= kind 24).
+    ;; ===========================================================
+
+    (defun nelisp_reader_lex_question
+        (str-ptr cursor n payload-slot cursor-out-slot scratch)
+      (if (>= (+ cursor 1) n)
+          ;; Bare `?' at EOF -> symbol `?'.
+          (nelisp_reader_lex_atom
+           str-ptr cursor n payload-slot cursor-out-slot scratch)
+        (if (= (nelisp_reader_is_ws (str-byte-at str-ptr (+ cursor 1))) 1)
+            (nelisp_reader_lex_atom
+             str-ptr cursor n payload-slot cursor-out-slot scratch)
+          (nelisp_reader_lex_char
+           str-ptr (+ cursor 1) n payload-slot cursor-out-slot scratch))))
 
     (defun nelisp_reader_dispatch
         (str-ptr cursor n payload-slot cursor-out-slot scratch)
@@ -461,10 +640,14 @@
          ((= (str-byte-at str-ptr cursor) 44)
           (nelisp_reader_lex_comma str-ptr cursor n cursor-out-slot))
          ((= (str-byte-at str-ptr cursor) 35)
-          (nelisp_reader_lex_sharpsign str-ptr cursor n cursor-out-slot))
+          (nelisp_reader_lex_sharpsign
+           str-ptr cursor n payload-slot cursor-out-slot scratch))
          ((= (str-byte-at str-ptr cursor) 34)
           (nelisp_reader_lex_string
            str-ptr (+ cursor 1) n payload-slot cursor-out-slot scratch))
+         ((= (str-byte-at str-ptr cursor) 63)
+          (nelisp_reader_lex_question
+           str-ptr cursor n payload-slot cursor-out-slot scratch))
          (t
           (nelisp_reader_lex_atom
            str-ptr cursor n payload-slot cursor-out-slot scratch)))))
@@ -492,7 +675,8 @@ Sexp::Cons that the §116.B parser will consume.
 
 Kinds: 0 EOF, 1 LParen, 2 RParen, 3 LBracket, 4 RBracket, 5 Quote,
 6 Backquote, 7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot,
-11 SharpsParen, 20 Int, 21 Float, 22 Str, 23 Sym, -1 Error.")
+11 SharpsParen, 20 Int, 21 Float, 22 Str, 23 Sym, 24 Char,
+25 RadixInt, -1 Error.")
 
 (provide 'nelisp-cc-reader-lexer)
 

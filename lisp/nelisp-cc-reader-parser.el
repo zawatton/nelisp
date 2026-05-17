@@ -67,6 +67,17 @@
 ;;                   Sexp::T inline).
 ;;   Str  (kind 22): same as Sym but `sexp-write-str' + no nil/t
 ;;                   recognition.
+;;   Char (kind 24): walk the payload body bytes (= what came after
+;;                   `?').  Single ASCII byte -> codepoint.  Leading
+;;                   `\\' triggers escape decoding: named escapes
+;;                   (n/t/r/s/e/b/d/a/f/v/0), `\\xHH' hex, `\\C-X'
+;;                   control, `\\M-X' Meta (= base | 0x8000000).
+;;                   Result via `sexp-int-make'.
+;;   RadixInt (kind 25): payload first byte = base marker
+;;                       (`x'=hex/`o'=oct/`b'=bin); remaining bytes =
+;;                       optional sign + digits + underscores.  Loop
+;;                       multiplying accumulator by base; result via
+;;                       `sexp-int-make'.
 ;;
 ;; Quote-family desugar: each prefix `'`, `` ` ``, `,`, `,@`, `#''
 ;; becomes `(HEAD INNER)' via two cons-makes (= (cons HEAD (cons
@@ -165,6 +176,199 @@
        (ptr-read-u64 src-str-slot 24)))
 
     ;; ===========================================================
+    ;; Hex-digit decoder.  Returns 0..15 for `0'..`9'/`a'..`f'/`A'..`F',
+    ;; -1 otherwise.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_hex_digit (b)
+      (cond
+       ((>= b 48) (if (<= b 57) (- b 48)
+                    (if (>= b 97) (if (<= b 102) (+ (- b 97) 10) -1)
+                      (if (>= b 65) (if (<= b 70) (+ (- b 65) 10) -1)
+                        -1))))
+       (t -1)))
+
+    ;; ===========================================================
+    ;; Radix-int decode (kind 25 payload).
+    ;;
+    ;; Payload first byte = base marker `x'/`o'/`b'.  Remaining bytes
+    ;; = optional sign + base-N digits + optional `_' separators.
+    ;; Loop multiplying accumulator by BASE; digit < BASE expected.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_radix_step (str-ptr i n base acc)
+      (if (>= i n)
+          acc
+        (cond
+         ;; Underscore: skip silently.
+         ((= (str-byte-at str-ptr i) 95)
+          (nelisp_reader_p_radix_step str-ptr (+ i 1) n base acc))
+         (t
+          (nelisp_reader_p_radix_dispatch
+           str-ptr i n base acc
+           (nelisp_reader_p_hex_digit (str-byte-at str-ptr i)))))))
+
+    (defun nelisp_reader_p_radix_dispatch (str-ptr i n base acc digit)
+      ;; If DIGIT is negative OR >= BASE, bail (= leave ACC as-is).
+      (if (< digit 0)
+          acc
+        (if (>= digit base)
+            acc
+          (nelisp_reader_p_radix_step
+           str-ptr (+ i 1) n base
+           (+ (* acc base) digit)))))
+
+    (defun nelisp_reader_p_decode_radix (payload-slot)
+      ;; Payload layout: [base-byte] [opt-sign] [digits...].  We have
+      ;; already consumed byte 0 to dispatch on BASE.
+      (nelisp_reader_p_decode_radix_dispatch
+       payload-slot
+       (str-byte-at payload-slot 0)))
+
+    (defun nelisp_reader_p_decode_radix_dispatch (payload-slot base-byte)
+      (cond
+       ;; `x' -> base 16.
+       ((= base-byte 120)
+        (nelisp_reader_p_decode_radix_signed payload-slot 16))
+       ;; `o' -> base 8.
+       ((= base-byte 111)
+        (nelisp_reader_p_decode_radix_signed payload-slot 8))
+       ;; `b' -> base 2.
+       ((= base-byte 98)
+        (nelisp_reader_p_decode_radix_signed payload-slot 2))
+       (t 0)))
+
+    (defun nelisp_reader_p_decode_radix_signed (payload-slot base)
+      ;; Handle optional `+'/`-' sign at byte 1.  Loop starts at byte 2
+      ;; if signed, byte 1 otherwise.
+      (if (>= (str-len payload-slot) 2)
+          (cond
+           ((= (str-byte-at payload-slot 1) 45)
+            (- 0 (nelisp_reader_p_radix_step
+                  payload-slot 2 (str-len payload-slot) base 0)))
+           ((= (str-byte-at payload-slot 1) 43)
+            (nelisp_reader_p_radix_step
+             payload-slot 2 (str-len payload-slot) base 0))
+           (t
+            (nelisp_reader_p_radix_step
+             payload-slot 1 (str-len payload-slot) base 0)))
+        0))
+
+    ;; ===========================================================
+    ;; Char-literal decode (kind 24 payload).
+    ;;
+    ;; Payload = the body bytes AFTER the leading `?'.  Two shapes:
+    ;;   - Single ASCII byte X        -> codepoint X.
+    ;;   - `\\X...' escape sequence   -> named escape / hex / C- / M-.
+    ;;
+    ;; Mirror `build-tool/src/reader/lexer.rs::read_char_literal'.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_decode_char (payload-slot)
+      (if (>= (str-len payload-slot) 1)
+          (if (= (str-byte-at payload-slot 0) 92)
+              ;; Escape body starts at byte 1.
+              (if (>= (str-len payload-slot) 2)
+                  (nelisp_reader_p_decode_char_escape
+                   payload-slot 1 (str-byte-at payload-slot 1))
+                0)
+            ;; Plain `?X' — payload byte 0 is the codepoint.
+            (str-byte-at payload-slot 0))
+        0))
+
+    (defun nelisp_reader_p_decode_char_escape (payload-slot start esc-byte)
+      ;; START points at the escape selector byte (= byte AFTER `\\').
+      (cond
+       ;; Named single-letter escapes.
+       ((= esc-byte 110) 10)        ; \\n -> LF
+       ((= esc-byte 116) 9)         ; \\t -> TAB
+       ((= esc-byte 114) 13)        ; \\r -> CR
+       ((= esc-byte 92) 92)         ; \\\\ -> backslash
+       ((= esc-byte 39) 39)         ; \\' -> '
+       ((= esc-byte 34) 34)         ; \\" -> "
+       ((= esc-byte 115) 32)        ; \\s -> space
+       ((= esc-byte 101) 27)        ; \\e -> ESC
+       ((= esc-byte 98) 8)          ; \\b -> backspace
+       ((= esc-byte 100) 127)       ; \\d -> delete
+       ((= esc-byte 97) 7)          ; \\a -> bell
+       ((= esc-byte 102) 12)        ; \\f -> form feed
+       ((= esc-byte 118) 11)        ; \\v -> vertical tab
+       ((= esc-byte 48) 0)          ; \\0 -> NUL
+       ;; \\xHH -> 2 hex digits.
+       ((= esc-byte 120)
+        (nelisp_reader_p_decode_char_hex
+         payload-slot (+ start 1)))
+       ;; \\C-X -> control modifier.
+       ((= esc-byte 67)
+        (nelisp_reader_p_decode_char_ctrl
+         payload-slot (+ start 1)))
+       ;; \\M-X -> meta modifier (set bit 27 = 0x8000000).
+       ((= esc-byte 77)
+        (nelisp_reader_p_decode_char_meta
+         payload-slot (+ start 1)))
+       ;; Doc 51 Phase 3-A''-1 — unknown `\\X' = literal X.
+       (t esc-byte)))
+
+    (defun nelisp_reader_p_decode_char_hex (payload-slot start)
+      ;; \\xHH — 2 hex digits at START / START+1.
+      (if (>= (str-len payload-slot) (+ start 2))
+          (+ (* (nelisp_reader_p_hex_digit
+                 (str-byte-at payload-slot start)) 16)
+             (nelisp_reader_p_hex_digit
+              (str-byte-at payload-slot (+ start 1))))
+        0))
+
+    (defun nelisp_reader_p_decode_char_ctrl (payload-slot start)
+      ;; \\C-X — expect `-' at START, then the control target at START+1.
+      ;; Control char = (byte & 0x1f).
+      (if (>= (str-len payload-slot) (+ start 2))
+          (if (= (str-byte-at payload-slot start) 45)
+              (logand (str-byte-at payload-slot (+ start 1)) 31)
+            0)
+        0))
+
+    (defun nelisp_reader_p_decode_char_meta (payload-slot start)
+      ;; \\M-X — expect `-' at START, then the meta target at START+1.
+      ;; Meta char = (base | 0x8000000).  Handles single-byte target
+      ;; only (= nested \\M-\\C-x is left to the Rust fallback path
+      ;; for now; that path is deeply rare in the bootstrap subset).
+      (if (>= (str-len payload-slot) (+ start 2))
+          (if (= (str-byte-at payload-slot start) 45)
+              (nelisp_reader_p_decode_char_meta_target
+               payload-slot (+ start 1))
+            0)
+        0))
+
+    (defun nelisp_reader_p_decode_char_meta_target (payload-slot at)
+      ;; AT points at the byte after `M-'.  Handle nested `\\C-X' /
+      ;; named escape inside Meta; otherwise the raw byte.
+      (if (= (str-byte-at payload-slot at) 92)
+          ;; \\M-\\X — nested escape.
+          (if (>= (str-len payload-slot) (+ at 2))
+              (logior
+               (nelisp_reader_p_decode_char_meta_nested
+                payload-slot (+ at 1)
+                (str-byte-at payload-slot (+ at 1)))
+               134217728)             ; 0x8000000
+            0)
+        ;; Raw byte target.
+        (logior (str-byte-at payload-slot at) 134217728)))
+
+    (defun nelisp_reader_p_decode_char_meta_nested (payload-slot start inner)
+      (cond
+       ;; \\M-\\C-X: control over the byte at START+2.
+       ((= inner 67)
+        (if (>= (str-len payload-slot) (+ start 3))
+            (if (= (str-byte-at payload-slot (+ start 1)) 45)
+                (logand (str-byte-at payload-slot (+ start 2)) 31)
+              0)
+          0))
+       ((= inner 110) 10)
+       ((= inner 116) 9)
+       ((= inner 114) 13)
+       (t inner)))
+
+    ;; ===========================================================
     ;; Materialise a leaf token into RESULT-SLOT.  RESULT-SLOT
     ;; must be pre-Nil on entry.  Returns 1 on success.
     ;; ===========================================================
@@ -185,13 +389,31 @@
        ;; Sym
        ((= kind 23)
         (cond
-         ((= (nelisp_reader_p_is_nil_name payload-slot) 1) 1)
+         ;; "nil" -> force tag byte to SEXP_TAG_NIL (0).  Must overwrite
+         ;; the slot even when previously holding a non-Nil value (=
+         ;; e.g., the parser reuses car[d] across list elements;
+         ;; without this explicit write, a `nil' element after a prior
+         ;; quote-wrap would silently leave the prior symbol in place).
+         ((= (nelisp_reader_p_is_nil_name payload-slot) 1)
+          (nelisp_reader_p_prog2 (ptr-write-u8 result-slot 0 0) 1))
          ((= (nelisp_reader_p_is_t_name payload-slot) 1)
           (nelisp_reader_p_prog2 (ptr-write-u8 result-slot 0 1) 1))
          (t
           (nelisp_reader_p_prog2
            (nelisp_reader_p_copy_symbol result-slot payload-slot)
            1))))
+       ;; Char (kind 24) -> decode body to codepoint.
+       ((= kind 24)
+        (nelisp_reader_p_prog2
+         (sexp-int-make result-slot
+                        (nelisp_reader_p_decode_char payload-slot))
+         1))
+       ;; RadixInt (kind 25) -> decode body to i64.
+       ((= kind 25)
+        (nelisp_reader_p_prog2
+         (sexp-int-make result-slot
+                        (nelisp_reader_p_decode_radix payload-slot))
+         1))
        (t -1)))
 
     ;; ===========================================================
@@ -478,9 +700,11 @@ token stream via `extern-call nelisp_reader_lex_one' and produces
 Sexp values via the §101 / §111 / §122 grammar primitives.
 
 Kinds dispatched: 0 EOF, 1 LParen, 2 RParen, 5 Quote, 6 Backquote,
-7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 20 Int, 22 Str, 23 Sym.
-Kinds 3/4 LBracket/RBracket and 11 SharpsParen route to error (=
-vectors + records are out of §116.B scope; §116.C / §116.D follow-up).
+7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 20 Int, 22 Str, 23 Sym,
+24 Char, 25 RadixInt.  Kinds 3 LBracket and 11 SharpsParen drive
+the vector / record parsers (Doc 116 §116.B+).  Kind 21 Float still
+routes to error -1 (= grammar lacks `sexp-write-float'; §116.C
+falls back to the Rust path for Float literals).
 
 Slot-pool layout (= safe Rust wrapper allocates a Sexp::Vector of
 3 + 4 * MAX_DEPTH slots, all pre-Nil):

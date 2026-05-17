@@ -447,3 +447,144 @@ fn lex_function_quote_then_symbol() {
     assert_eq!(c, 7);
     assert_eq!(p.as_deref(), Some("my-fn"));
 }
+
+// ---------- Doc 116 §116.B+ char literals (kind 24) ----------
+
+#[test]
+fn lex_char_literal_plain_ascii() {
+    let (kind, next, payload) = lex_one("?a");
+    assert_eq!(kind, 24, "`?a' lexes as Char (kind 24)");
+    assert_eq!(next, 2);
+    assert_eq!(payload.as_deref(), Some("a"));
+}
+
+#[test]
+fn lex_char_literal_escape_newline() {
+    let (kind, next, payload) = lex_one("?\\n");
+    assert_eq!(kind, 24);
+    assert_eq!(next, 3);
+    assert_eq!(payload.as_deref(), Some("\\n"));
+}
+
+#[test]
+fn lex_char_literal_ctrl() {
+    let (kind, next, payload) = lex_one("?\\C-a");
+    assert_eq!(kind, 24);
+    assert_eq!(next, 5);
+    assert_eq!(payload.as_deref(), Some("\\C-a"));
+}
+
+#[test]
+fn lex_char_literal_hex() {
+    let (kind, next, payload) = lex_one("?\\xff");
+    assert_eq!(kind, 24);
+    assert_eq!(next, 5);
+    assert_eq!(payload.as_deref(), Some("\\xff"));
+}
+
+#[test]
+fn lex_char_literal_paren_escape() {
+    // Doc 51 Phase 3-A''-1 — `?\(' must read as kind 24 with body `\('
+    // so the parser-side decoder produces 40 (= literal `(').
+    let (kind, next, payload) = lex_one("?\\(");
+    assert_eq!(kind, 24);
+    assert_eq!(next, 3);
+    assert_eq!(payload.as_deref(), Some("\\("));
+}
+
+#[test]
+fn lex_bare_question_is_symbol() {
+    // Bare `?' followed by whitespace is the symbol named `?'.  This
+    // matches the Rust legacy dispatcher.
+    let (kind, _next, payload) = lex_one("? ");
+    assert_eq!(kind, 23, "bare `?' is Sym");
+    assert_eq!(payload.as_deref(), Some("?"));
+}
+
+// ---------- Doc 116 §116.B+ radix integers (kind 25) ----------
+
+#[test]
+fn lex_radix_int_hex() {
+    let (kind, next, payload) = lex_one("#x10");
+    assert_eq!(kind, 25, "`#x10' lexes as RadixInt");
+    assert_eq!(next, 4);
+    // Payload = base marker `x' + digits `10'.
+    assert_eq!(payload.as_deref(), Some("x10"));
+}
+
+#[test]
+fn lex_radix_int_octal() {
+    let (kind, next, payload) = lex_one("#o17");
+    assert_eq!(kind, 25);
+    assert_eq!(next, 4);
+    assert_eq!(payload.as_deref(), Some("o17"));
+}
+
+#[test]
+fn lex_radix_int_binary() {
+    let (kind, next, payload) = lex_one("#b1010");
+    assert_eq!(kind, 25);
+    assert_eq!(next, 6);
+    assert_eq!(payload.as_deref(), Some("b1010"));
+}
+
+#[test]
+fn lex_radix_int_hex_signed() {
+    let (kind, next, payload) = lex_one("#x-ff");
+    assert_eq!(kind, 25);
+    assert_eq!(next, 5);
+    assert_eq!(payload.as_deref(), Some("x-ff"));
+}
+
+#[test]
+fn lex_radix_int_upper_x() {
+    // `#X10' should normalise to lowercase `x' marker in payload.
+    let (kind, _next, payload) = lex_one("#X10");
+    assert_eq!(kind, 25);
+    assert_eq!(payload.as_deref(), Some("x10"));
+}
+
+// ---------- Doc 116 §116.B+ bare-sign symbols ----------
+
+#[test]
+fn lex_bare_plus_is_symbol() {
+    // `(+ x y)' — the `+' must lex as Sym, not Int.  Standalone test
+    // assertion for the bare-sign fix.
+    let (kind, next, payload) = lex_one("+");
+    assert_eq!(kind, 23, "lone `+' is Sym");
+    assert_eq!(next, 1);
+    assert_eq!(payload.as_deref(), Some("+"));
+}
+
+#[test]
+fn lex_bare_minus_is_symbol() {
+    let (kind, _next, payload) = lex_one("-");
+    assert_eq!(kind, 23, "lone `-' is Sym");
+    assert_eq!(payload.as_deref(), Some("-"));
+}
+
+#[test]
+fn lex_bare_dot_followed_by_terminator_is_dot_token() {
+    // Lone `.' is the dot token (kind 10), not a symbol.  The
+    // dispatch arm in `nelisp_reader_lex_atom_finalize' handles this.
+    // Surround with space so it terminates as a lone `.'.
+    let (kind, next, _payload) = lex_one(" . ");
+    assert_eq!(kind, 10, "lone `.' is the Dot token");
+    assert_eq!(next, 2);
+}
+
+#[test]
+fn lex_sign_then_symbol_is_symbol() {
+    // `+foo' has no digits = Sym, not Int.  The saw-digit bit fix.
+    let (kind, _next, payload) = lex_one("+foo");
+    assert_eq!(kind, 23, "`+foo' is Sym");
+    assert_eq!(payload.as_deref(), Some("+foo"));
+}
+
+#[test]
+fn lex_signed_int_still_int() {
+    // Regression: `+42' must still lex as Int.
+    let (kind, _next, payload) = lex_one("+42");
+    assert_eq!(kind, 20, "`+42' is Int");
+    assert_eq!(payload.as_deref(), Some("+42"));
+}

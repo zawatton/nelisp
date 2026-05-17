@@ -436,6 +436,12 @@ pub mod elisp_cc_spike {
         //   21  Float                 `*payload_slot' = Sexp::Str(text)
         //   22  Str                   `*payload_slot' = Sexp::Str(body)
         //   23  Sym                   `*payload_slot' = Sexp::Str(name)
+        //   24  Char  `?X'/`?\\X'     `*payload_slot' = Sexp::Str(body
+        //                              bytes; parser-side decoder
+        //                              materialises the codepoint).
+        //   25  RadixInt `#x..'/`#o..'/  `*payload_slot' = Sexp::Str
+        //              `#b..'           with first byte = `x'/`o'/`b'
+        //                              base marker + remaining digit text.
         //   -1  Error / unexpected EOF
         //
         // Side effects:

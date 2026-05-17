@@ -374,3 +374,120 @@ fn parse_quote_quote() {
         ])
     );
 }
+
+// ---------- Doc 116 §116.B+ char literals (kind 24) ----------
+
+#[test]
+fn parse_char_literal_plain_ascii() {
+    // `?a' -> Sexp::Int(97).
+    assert_eq!(parse_one("?a"), Sexp::Int(97));
+}
+
+#[test]
+fn parse_char_literal_named_escape_newline() {
+    // `?\n' -> 10.
+    assert_eq!(parse_one("?\\n"), Sexp::Int(10));
+}
+
+#[test]
+fn parse_char_literal_named_escape_tab() {
+    assert_eq!(parse_one("?\\t"), Sexp::Int(9));
+}
+
+#[test]
+fn parse_char_literal_named_escape_space() {
+    assert_eq!(parse_one("?\\s"), Sexp::Int(32));
+}
+
+#[test]
+fn parse_char_literal_hex() {
+    // `?\xff' -> 255.
+    assert_eq!(parse_one("?\\xff"), Sexp::Int(255));
+}
+
+#[test]
+fn parse_char_literal_control() {
+    // `?\C-a' -> 1.
+    assert_eq!(parse_one("?\\C-a"), Sexp::Int(1));
+}
+
+#[test]
+fn parse_char_literal_paren_escape() {
+    // `?\(' -> 40 (= literal `(').
+    assert_eq!(parse_one("?\\("), Sexp::Int(40));
+}
+
+// ---------- Doc 116 §116.B+ radix integers (kind 25) ----------
+
+#[test]
+fn parse_radix_int_hex() {
+    assert_eq!(parse_one("#x10"), Sexp::Int(16));
+}
+
+#[test]
+fn parse_radix_int_octal() {
+    assert_eq!(parse_one("#o17"), Sexp::Int(15));
+}
+
+#[test]
+fn parse_radix_int_binary() {
+    assert_eq!(parse_one("#b1010"), Sexp::Int(10));
+}
+
+#[test]
+fn parse_radix_int_hex_negative() {
+    assert_eq!(parse_one("#x-ff"), Sexp::Int(-255));
+}
+
+#[test]
+fn parse_radix_int_upper_x() {
+    assert_eq!(parse_one("#X10"), Sexp::Int(16));
+}
+
+// ---------- Doc 116 §116.B+ bare-sign symbols ----------
+
+#[test]
+fn parse_bare_plus_as_symbol() {
+    // `(+ x y)' — the `+' parses as the symbol `+'.
+    let got = parse_one("(+ x y)");
+    assert_eq!(
+        got,
+        Sexp::list_from(&[
+            Sexp::Symbol("+".to_string()),
+            Sexp::Symbol("x".to_string()),
+            Sexp::Symbol("y".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn parse_bare_minus_as_symbol() {
+    let got = parse_one("(- a b)");
+    assert_eq!(
+        got,
+        Sexp::list_from(&[
+            Sexp::Symbol("-".to_string()),
+            Sexp::Symbol("a".to_string()),
+            Sexp::Symbol("b".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn parse_signed_int_still_works() {
+    // Regression: `+42' must still parse as Int(42).
+    assert_eq!(parse_one("+42"), Sexp::Int(42));
+}
+
+#[test]
+fn parse_negative_int_in_list() {
+    let got = parse_one("(- 1 -2)");
+    assert_eq!(
+        got,
+        Sexp::list_from(&[
+            Sexp::Symbol("-".to_string()),
+            Sexp::Int(1),
+            Sexp::Int(-2),
+        ])
+    );
+}

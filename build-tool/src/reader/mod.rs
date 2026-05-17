@@ -20,15 +20,18 @@
 //! `read_all' first attempt the pure-elisp pipeline composed of
 //! §116.A `nelisp_reader_lex_one' + §116.B `nelisp_reader_parse_one'
 //! (via `crate::elisp_cc_spike::reader_lex_one' /
-//! `crate::elisp_cc_spike::reader_parse_one').  For inputs that
-//! exercise features outside the §116.B MVP scope (= Float literals,
-//! char literals `?X', vector / record literals `[..]' / `#s(..)',
-//! radix integers `#x..'/`#o..'/`#b..', byte-code literal `#[..]')
-//! the elisp side reports a parse error (or, for char literals,
-//! would silently misread `?` as an atom byte); both flavours
-//! fall back to the legacy Rust `lexer::tokenize' + `parser::parse_one'
-//! path inside this module.  Behaviour is preserved bit-for-bit
-//! across the existing `mod tests' suite via the fallback layer.
+//! `crate::elisp_cc_spike::reader_parse_one').  Doc 116 §116.B+
+//! extended the elisp side to cover char literals `?X' (kind 24),
+//! radix integers `#x..'/`#o..'/`#b..' (kind 25), and bare-sign
+//! symbols (= the saw-digit bit in the atom classifier), retiring
+//! the pre-call `needs_rust_fallback_sentinel' heuristic.  The
+//! remaining unsupported features (Float `1.5'/`1e3' (kind 21),
+//! vector `[..]' (kind 3), record `#s(..)' (kind 11), byte-code
+//! `#[..]') still cause the elisp parser to return status != 1;
+//! the wrapper observes that and falls back to the legacy Rust
+//! `lexer::tokenize' + `parser::parse_one' path inside this module.
+//! Behaviour is preserved bit-for-bit across the existing `mod
+//! tests' suite via the fallback layer.
 //!
 //! The cons-make MVP refcount discipline (= raw 32-byte payload
 //! copy without inner-box refcount bump, see
@@ -51,116 +54,50 @@ pub use crate::eval::sexp::{fmt_sexp, Sexp};
 
 use crate::elisp_cc_spike;
 
-/// Slot-pool capacity for the §116.B parser.  Covers nesting depth
-/// ~32 with 4 working slots per depth + 3 fixed-position slots.
-/// Matches `tests/elisp_cc_reader_parser_probe.rs::POOL_SIZE'.
-const PARSER_POOL_SIZE: usize = 3 + 4 * 32;
+/// Slot-pool capacity for the §116.B parser.  The parser depth
+/// counter increments per-element-in-list (= one slot triple per
+/// list element walked) plus per-nesting-level, so a 12-deep
+/// `(cons 1 (cons 2 (...)))' chain consumes ~3*12 = 36 depth slots.
+/// Doc 116 §116.B+ raised the cap to 1024 so the elisp pipeline
+/// can handle the full stdlib subset without OOB indexing into the
+/// pool (= the pre-§116.B+ cap of 32 silently passed all probe
+/// tests but SIGSEGV'd on real stdlib code whose `defmacro' bodies
+/// nest cons chains 12+ deep).  Matches
+/// `tests/elisp_cc_reader_parser_probe.rs::POOL_SIZE'.
+const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
 
 /// Initial scratch MutStr capacity.  64 bytes covers ~all atoms in
 /// the boot stdlib without reallocation; mut-str grows as needed.
 const SCRATCH_CAP: i64 = 64;
 
-/// Heuristic: does `input` use a feature the §116.B elisp parser
-/// MVP does not yet support, such that the wire-in cannot route
-/// through it safely?
+/// Heuristic: does `input` use a feature the elisp parser does not
+/// yet support, such that the wire-in cannot route through it safely?
 ///
-/// The §116.B parser already cleanly errors (= returns -1) on most
-/// unsupported tokens (`[..]', `#s(..)', `#x..'/`#o..'/`#b..',
-/// Float kind 21, `#[..]'), which the [`read_str`] wrapper picks up
-/// and falls back to the Rust path on.  Two silent-mismatch hazards
-/// require explicit pre-detection:
+/// Doc 116 §116.B+ retired most arms of this check by extending the
+/// elisp lexer + parser to cover the previously-silent-mismatch
+/// hazards.  Specifically:
 ///
-///   1. `?X' character literals: the §116.B lexer scans them as an
-///      atom and the parser materialises `Sexp::Symbol(\"?X\")'
-///      rather than the Rust legacy's `Sexp::Int(codepoint)'.
+///   - `?X' char literals — handled by the new kind 24 (Char) path
+///     in `nelisp-cc-reader-lexer.el' + `nelisp_reader_p_decode_char'
+///     in `nelisp-cc-reader-parser.el'.
+///   - `#x..'/`#o..'/`#b..' radix integers — handled by kind 25
+///     (RadixInt) plus `nelisp_reader_p_decode_radix'.
+///   - Bare `+' / `-' / `.' symbols — handled by the saw-digit bit
+///     in `nelisp_reader_classify_step' (= no digit -> force Sym).
 ///
-///   2. Bare `+' / `-' / `.'-starting symbol atoms (e.g., the
-///      `+' in `(+ x y)'): the §116.B lexer's `classify_atom' tags
-///      anything whose first byte is a numeric-starter as Int /
-///      Float, even when only the sign / dot is present and
-///      `nelisp_reader_p_atoi' yields 0.  The Rust legacy
-///      correctly disambiguates these to `Sexp::Symbol' via the
-///      `try_parse_int' / `try_parse_float' fallthrough.
+/// Remaining unsupported features (= Float kind 21, `[..]' vector
+/// kind 3, `#s(..)' record kind 11, `#[..]' byte-code) all cause
+/// the elisp parser to return status != 1, which the wrapper
+/// observes and falls back to the Rust path on.  Bytes that would
+/// hit those features need no upfront sentinel check — the elisp
+/// parser bails fast (= returns -1) and the wrapper retries the
+/// whole input through `lexer::tokenize' / `parser::parse_one'.
 ///
-/// Both hazards route the form to the Rust legacy path before the
-/// elisp pipeline can silently misread it.  Conservative on inputs
-/// that contain the sentinel byte only inside string literals (=
-/// legitimately handled by the elisp parser); the extra Rust
-/// dispatch is harmless and behaviour-preserving.  A future §116.B
-/// extension that wires char literals + sign-fallthrough into the
-/// elisp lexer + parser retires this check.
-fn needs_rust_fallback_sentinel(input: &str) -> bool {
-    if input.contains('?') {
-        return true;
-    }
-    // Look for a numeric-starter byte (`+', `-', `.') that appears
-    // at a position where the elisp lexer would classify it as an
-    // atom start.  An atom start is any byte that is NOT preceded
-    // by an atom-internal byte (= alphanumeric / sign / dot / `_'
-    // etc).  Equivalent: the byte just before is whitespace, paren,
-    // bracket, quote-family, semicolon, or string-quote, or BOF.
-    let bytes = input.as_bytes();
-    let mut in_string = false;
-    for (i, &b) in bytes.iter().enumerate() {
-        if in_string {
-            if b == b'\\' {
-                // Skip the escaped byte; the elisp lexer mirrors this.
-                continue;
-            }
-            if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        if b == b'"' {
-            in_string = true;
-            continue;
-        }
-        if b == b'+' || b == b'-' || b == b'.' {
-            // Atom-start position?  Prior byte is a terminator or BOF.
-            let starts_atom = i == 0
-                || matches!(
-                    bytes[i - 1],
-                    b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'(' | b')' | b'[' | b']'
-                        | b'\'' | b'`' | b',' | b';' | b'#'
-                );
-            if !starts_atom {
-                continue;
-            }
-            // The atom is also non-numeric if the NEXT byte is a
-            // terminator (= lone `+' / `-' / `.') OR if no digit
-            // ever appears before the next terminator.  We pessim-
-            // istically scan ahead until the atom ends.
-            let mut j = i + 1;
-            let mut saw_digit = false;
-            while j < bytes.len() {
-                let bj = bytes[j];
-                if matches!(
-                    bj,
-                    b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'(' | b')' | b'[' | b']'
-                        | b'\'' | b'`' | b',' | b';' | b'"'
-                ) {
-                    break;
-                }
-                if bj.is_ascii_digit() {
-                    saw_digit = true;
-                }
-                j += 1;
-            }
-            if !saw_digit {
-                // Lone sign / dot or sign-followed-by-non-digit symbol.
-                // The elisp classifier mis-tags this as Int.
-                return true;
-            }
-            // If there's a digit AND the elisp parser's atoi yields
-            // the correct legacy value, the wire-in is safe.  But
-            // the legacy might disambiguate further (e.g., `1e3' is
-            // Float).  The elisp lexer flags `e' / `.' / `E' bits
-            // and emits kind 21 (Float) which the parser then
-            // routes to -1 -> Rust fallback, so we don't need to
-            // detect Float-shape inputs here.
-        }
-    }
+/// The function is retained as `fn (&str) -> bool` returning `false`
+/// to keep the call site in [`read_str`] / [`read_all`] uniform with
+/// the pre-§116.B+ shape; a future cleanup pass inlines the elided
+/// check + drops the function.
+fn needs_rust_fallback_sentinel(_input: &str) -> bool {
     false
 }
 
