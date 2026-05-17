@@ -2207,6 +2207,13 @@ fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
 
 // ===== Vector / generic accessor helpers (Phase 8.x core) =====
 
+/// Doc 117 §117.A.1 (2026-05-17): the `(make-vector N INIT)' body
+/// now routes through the Phase 47-compiled `nelisp_bi_make_vector'
+/// function in `lisp/nelisp-cc-bi-make-vector.el'.  The Rust side
+/// here is a thin arity/range-check + caller-owned-slot setup; the
+/// allocation (`vector-make' §115.1) and fill loop (`vector-slot-set'
+/// §111.E, recursive helper) live only in elisp.  No Rust
+/// algorithmic line survives the swap.
 fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("make-vector", args, 2, Some(2))?;
     let len = as_int("make-vector", &args[0])?;
@@ -2216,5 +2223,20 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
             len
         )));
     }
-    Ok(Sexp::vector(vec![args[1].clone(); len as usize]))
+    // The elisp body reads N via `sexp-int-unwrap' on `n_ptr', which
+    // requires the slot to be `Sexp::Int'.  `as_int' above guarantees
+    // `args[0]' is one, so passing it directly is sound.  `init_ptr'
+    // is shape-agnostic (= `vector-slot-set' clones whatever Sexp the
+    // pointer references).  `result_slot' must start as `Sexp::Nil'
+    // so `vector-make' can write the tag byte + payload pointer
+    // without colliding with a live heap-tagged Sexp drop.
+    let mut result_slot: Sexp = Sexp::Nil;
+    unsafe {
+        crate::elisp_cc_spike::bi_make_vector(
+            &args[0] as *const Sexp,
+            &args[1] as *const Sexp,
+            &mut result_slot as *mut Sexp,
+        );
+    }
+    Ok(result_slot)
 }

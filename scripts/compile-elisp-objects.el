@@ -80,6 +80,11 @@
      :source-var nelisp-cc-aref-vector--source
      :output "nelisp_aref_vector.o"
      :requires-arch x86_64)
+    ;; Doc 117 §117.A.1 — `(make-vector N INIT)' allocate + fill swap.
+    (nelisp-cc-bi-make-vector
+     :source-var nelisp-cc-bi-make-vector--source
+     :output "nelisp_bi_make_vector.o"
+     :requires-arch x86_64)
     ;; Doc 111 §111.D — Cell read+write op probes (= no user-visible
     ;; swap, used only by `tests/phase47_cell.rs').  Four entries, one
     ;; per grammar op (`cell-value' / `cell-set-value' / `cell-make' /

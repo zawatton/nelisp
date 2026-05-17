@@ -134,6 +134,20 @@ pub mod elisp_cc_spike {
             arg1: *const Sexp,
             result_slot: *mut Sexp,
         ) -> *mut Sexp;
+        // Doc 117 §117.A.1 — `(make-vector N INIT)' allocate + fill
+        // compiled from `lisp/nelisp-cc-bi-make-vector.el'.  Rust
+        // pre-validates that `n_ptr' points at `Sexp::Int' with
+        // N >= 0; the elisp body allocates a fresh `Sexp::Vector(N)'
+        // via `vector-make' (§115.1) and fills each slot [0, N) with
+        // a refcount-aware clone of `*init_ptr' via `vector-slot-set'
+        // (§111.E).  Returns i64 = 1 on success (= `and' chain
+        // terminator); the caller reads the fresh vector from
+        // `*result_slot'.
+        fn nelisp_bi_make_vector(
+            n_ptr: *const Sexp,
+            init_ptr: *const Sexp,
+            result_slot: *mut Sexp,
+        ) -> i64;
         // Doc 111 §111.D — Cell read+write ops compiled from
         // `lisp/nelisp-cc-cell-ops.el'.  Each op is a separate `.o' in
         // the static archive so the integration test in
@@ -453,6 +467,40 @@ pub mod elisp_cc_spike {
         slot: *mut Sexp,
     ) -> *mut Sexp {
         nelisp_aref_vector(arg0, arg1, slot)
+    }
+
+    /// Doc 117 §117.A.1 — `(make-vector N INIT)' via elisp-compiled
+    /// `vector-make' (§115.1) + `vector-slot-set' (§111.E) fill loop.
+    ///
+    /// `n_ptr` must point at a `Sexp::Int` with payload N >= 0 (= the
+    /// Rust dispatcher in `eval::builtins::bi_make_vector' enforces
+    /// the non-negative invariant before calling).  `init_ptr` may
+    /// point at any Sexp shape; `vector-slot-set' clones it once per
+    /// slot via the refcount-aware `nl_vector_set_slot' helper, so
+    /// the caller's `*init_ptr' refcount is preserved.  `slot' must
+    /// point at a writable 32-byte Sexp slot pre-initialised to
+    /// `Sexp::Nil'; on return it holds the fresh
+    /// `Sexp::Vector(NlVectorRef)' with N copies of `*init_ptr'.
+    /// Returns `i64' = 1 on success (= the `and' chain terminator
+    /// inside the elisp body — same convention as `frame_push'
+    /// (§115.3) / `frame_pop' (§115.2)).
+    ///
+    /// # Safety
+    ///
+    /// - `n_ptr` must be non-null and point at an initialised
+    ///   `Sexp::Int(N)` with N >= 0.
+    /// - `init_ptr` must be non-null and point at an initialised
+    ///   `Sexp` value.
+    /// - `slot` must be non-null, properly aligned, and writable for
+    ///   one Sexp slot.  Initialise it to `Sexp::Nil` so the
+    ///   `vector-make' op's tag + payload writes do not collide with
+    ///   a live heap-tagged Sexp drop.
+    pub unsafe fn bi_make_vector(
+        n_ptr: *const Sexp,
+        init_ptr: *const Sexp,
+        slot: *mut Sexp,
+    ) -> i64 {
+        nelisp_bi_make_vector(n_ptr, init_ptr, slot)
     }
 
     /// Doc 111 §111.D — `(cell-value H SLOT)' via elisp-compiled Cell ops.

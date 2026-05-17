@@ -95,6 +95,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-recordp.el",
         // Doc 111 §111.C — `aref' Vector arm swap.
         "nelisp-cc-aref-vector.el",
+        // Doc 117 §117.A.1 — `make-vector' allocate + fill swap.
+        "nelisp-cc-bi-make-vector.el",
         // Doc 111 §111.D — Cell read+write op probes (4 entries,
         // shared source file, one .o per op).
         "nelisp-cc-cell-ops.el",
