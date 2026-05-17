@@ -16,23 +16,27 @@
 //! parses each stdlib source on the way to its v3 image, plus the
 //! reader's own ERTs.
 //!
-//! Doc 116 §116.C top-level wire-in (this file): `read_str' /
-//! `read_all' first attempt the pure-elisp pipeline composed of
-//! §116.A `nelisp_reader_lex_one' + §116.B `nelisp_reader_parse_one'
-//! (via `crate::elisp_cc_spike::reader_lex_one' /
+//! Doc 116 §116.C top-level wire-in: `read_str' / `read_all' route
+//! every input through the pure-elisp pipeline composed of §116.A
+//! `nelisp_reader_lex_one' + §116.B `nelisp_reader_parse_one' (via
+//! `crate::elisp_cc_spike::reader_lex_one' /
 //! `crate::elisp_cc_spike::reader_parse_one').  Doc 116 §116.B+
 //! extended the elisp side to cover char literals `?X' (kind 24),
 //! radix integers `#x..'/`#o..'/`#b..' (kind 25), and bare-sign
 //! symbols (= the saw-digit bit in the atom classifier).  Doc 122
 //! §122.G further extended the elisp parser to handle Float
 //! literals `1.5' / `1e3' (kind 21) via the `nl_str_to_float'
-//! extern.  The remaining unsupported features (vector `[..]'
-//! (kind 3), record `#s(..)' (kind 11), byte-code `#[..]') still
-//! cause the elisp parser to return status != 1; the wrapper
-//! observes that and falls back to the legacy Rust
-//! `lexer::tokenize' + `parser::parse_one' path inside this module.
-//! Behaviour is preserved bit-for-bit across the existing `mod
-//! tests' suite via the fallback layer.
+//! extern.
+//!
+//! Doc 116 §116.D (this commit) deleted the legacy Rust `lexer.rs' +
+//! `parser.rs' modules (-1370 LOC).  Inputs the elisp parser still
+//! does not support (vector `[..]' kind 3, record `#s(..)' kind 11,
+//! byte-code `#[..]') now surface as `NotYetImplemented' read errors
+//! rather than routing through a Rust fallback.  The boot stdlib
+//! sources never use those literals (verified by grep), so
+//! `image-baker' continues to work end-to-end on the pure-elisp
+//! Reader.  This module retains the dispatch + deep-clone layer +
+//! `ReadError` re-export only.
 //!
 //! The cons-make MVP refcount discipline (= raw 32-byte payload
 //! copy without inner-box refcount bump, see
@@ -42,9 +46,6 @@
 //! before returning so the slot pool can be safely dropped.  A
 //! proper §123.F-style refcount-aware `cons-make' is a future Doc
 //! 123 follow-up that retires this helper.
-
-pub mod lexer;
-pub mod parser;
 
 // Value type (`Sexp', `CharTableInner', tag constants, `fmt_sexp')
 // and read-side error type (`ReadError', `SourcePos') live in
@@ -71,75 +72,42 @@ const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
 /// the boot stdlib without reallocation; mut-str grows as needed.
 const SCRATCH_CAP: i64 = 64;
 
-/// Heuristic: does `input` use a feature the elisp parser does not
-/// yet support, such that the wire-in cannot route through it safely?
-///
-/// Doc 116 §116.B+ retired most arms of this check by extending the
-/// elisp lexer + parser to cover the previously-silent-mismatch
-/// hazards.  Specifically:
-///
-///   - `?X' char literals — handled by the new kind 24 (Char) path
-///     in `nelisp-cc-reader-lexer.el' + `nelisp_reader_p_decode_char'
-///     in `nelisp-cc-reader-parser.el'.
-///   - `#x..'/`#o..'/`#b..' radix integers — handled by kind 25
-///     (RadixInt) plus `nelisp_reader_p_decode_radix'.
-///   - Bare `+' / `-' / `.' symbols — handled by the saw-digit bit
-///     in `nelisp_reader_classify_step' (= no digit -> force Sym).
-///
-/// Remaining unsupported features (= `[..]' vector kind 3, `#s(..)'
-/// record kind 11, `#[..]' byte-code) all cause the elisp parser
-/// to return status != 1, which the wrapper observes and falls
-/// back to the Rust path on.  Bytes that would hit those features
-/// need no upfront sentinel check — the elisp parser bails fast
-/// (= returns -1) and the wrapper retries the whole input through
-/// `lexer::tokenize' / `parser::parse_one'.  Doc 122 §122.G
-/// retired the Float kind 21 fallback by routing payload bytes
-/// through the `nl_str_to_float' extern.
-///
-/// The function is retained as `fn (&str) -> bool` returning `false`
-/// to keep the call site in [`read_str`] / [`read_all`] uniform with
-/// the pre-§116.B+ shape; a future cleanup pass inlines the elided
-/// check + drops the function.
-fn needs_rust_fallback_sentinel(_input: &str) -> bool {
-    false
-}
-
 /// Parse exactly one top-level form from `input`.  Trailing
 /// non-whitespace tokens (after one form is read) are an error — use
 /// [`read_all`] if you want every form.
+///
+/// Doc 116 §116.D: every input routes through the §116.A/B/B+/§122.G
+/// pure-elisp pipeline.  Features the elisp parser cannot handle
+/// (vector `[..]', record `#s(..)', byte-code `#[..]') surface as
+/// `NotYetImplemented' read errors.
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
-    if !needs_rust_fallback_sentinel(input) {
-        if let Some(result) = try_elisp_read_str(input) {
-            return result;
-        }
+    match try_elisp_read_str(input) {
+        Some(result) => result,
+        None => Err(ReadError::not_yet_implemented(
+            "feature unsupported by §116.A/B elisp Reader \
+             (vector `[..]', record `#s(..)', byte-code `#[..]', \
+             or syntax error)",
+            SourcePos { line: 1, col: 1 },
+        )),
     }
-    // Fallback: Rust lexer + parser path (§116.C scope outside the
-    // §116.B elisp MVP).  Same `lexer::tokenize' / `parser::parse_one'
-    // composition that the pre-wire-in body used.
-    let tokens = lexer::tokenize(input)?;
-    let (form, consumed) = parser::parse_one(&tokens)?;
-    if consumed < tokens.len() {
-        let next = &tokens[consumed];
-        return Err(ReadError::parse(
-            format!("trailing token after first form: {:?}", next.token),
-            next.pos,
-        ));
-    }
-    Ok(form)
 }
 
 /// Parse every top-level form in `input`.  Returns an empty vector
 /// if the input is empty (or whitespace + comments only).
+///
+/// Doc 116 §116.D: every input routes through the §116.A/B/B+/§122.G
+/// pure-elisp pipeline.  Features the elisp parser cannot handle
+/// surface as `NotYetImplemented' read errors.
 pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
-    if !needs_rust_fallback_sentinel(input) {
-        if let Some(result) = try_elisp_read_all(input) {
-            return result;
-        }
+    match try_elisp_read_all(input) {
+        Some(result) => result,
+        None => Err(ReadError::not_yet_implemented(
+            "feature unsupported by §116.A/B elisp Reader \
+             (vector `[..]', record `#s(..)', byte-code `#[..]', \
+             or syntax error)",
+            SourcePos { line: 1, col: 1 },
+        )),
     }
-    // Fallback: Rust lexer + parser path.  Same composition as the
-    // pre-wire-in body.
-    let tokens = lexer::tokenize(input)?;
-    parser::parse_all(&tokens)
 }
 
 // ---------------------------------------------------------------------------
@@ -515,12 +483,16 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// `[a b c]` → vector literal.
+    /// Doc 116 §116.D — vector literals `[..]' were supported by the
+    /// legacy Rust reader but are not yet handled by the §116.A/B
+    /// elisp pipeline.  Post-§116.D they surface as
+    /// `NotYetImplemented'.
     #[test]
-    fn smoke_vector() {
-        let got = read_str("[1 2 3]").unwrap();
-        let expected = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
-        assert_eq!(got, expected);
+    fn smoke_vector_not_yet_implemented() {
+        match read_str("[1 2 3]") {
+            Err(ReadError::NotYetImplemented { .. }) => (),
+            other => panic!("expected NotYetImplemented for `[1 2 3]', got {:?}", other),
+        }
     }
 
     /// `'x` → `(quote x)`.
