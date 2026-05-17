@@ -506,6 +506,20 @@
      :source-var nelisp-cc-rc-kind--source
      :output "nelisp_rc_kind.o"
      :requires-arch x86_64)
+    ;; Doc 124 §124.A — NlConsBox Clone elisp kernel.  First stage of
+    ;; the `nl*.rs::Clone/Drop' substrate elisp化 chain (Doc 123 sibling,
+    ;; expanded scope to `nl{consbox,vector,cell,record,str}.rs').  The
+    ;; elisp body bumps the refcount via §122.E `atomic-fetch-add' (same
+    ;; pattern as Doc 123 §123.A `nelisp_rc_inc') and returns the input
+    ;; pointer unchanged (= the cloned-handle's pointer; `NlConsBoxRef'
+    ;; is `#[repr(transparent)]' so the trait impl's `Self { ptr,
+    ;; _marker }' construction is an ABI no-op).  §124.F sweep stage
+    ;; will replace the inline Rust `impl Clone for NlConsBoxRef' body
+    ;; in `nlconsbox.rs:343-355' once §124.B-E sibling PoCs land.
+    (nelisp-cc-nlconsbox-clone
+     :source-var nelisp-cc-nlconsbox-clone--source
+     :output "nelisp_nlconsbox_clone.o"
+     :requires-arch x86_64)
     ;; Doc 116 §116.A — pure-elisp Reader lexer.  Single manifest
     ;; entry; the source defconst is a `(seq DEFUN ...)' of ~20
     ;; mutually-recursive tail-call helpers and one public entry

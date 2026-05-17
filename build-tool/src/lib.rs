@@ -246,6 +246,13 @@ pub mod elisp_cc_spike {
         // Doc 123 §123.C — refcount-reader twins.
         fn nelisp_rc_strong_count(box_ptr: *const u8) -> i64;
         fn nelisp_rc_kind(sexp_ptr: *const u8) -> i64;
+        // Doc 124 §124.A — first stage of the `nl*.rs::Clone/Drop'
+        // substrate elisp化.  NlConsBox Clone kernel: bumps the
+        // refcount at offset 64 via §122.E `atomic-fetch-add', then
+        // returns the input pointer (= the cloned-handle's pointer).
+        // The Rust `impl Clone for NlConsBoxRef' wraps the return
+        // into `Self { ptr, _marker }' in §124.F's sweep stage.
+        fn nelisp_nlconsbox_clone(box_ptr: *mut i64) -> i64;
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
         // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
         // Returns the `*const Sexp' of the matching symbol-entry
@@ -998,6 +1005,19 @@ pub mod elisp_cc_spike {
     /// Doc 123 §123.C — pure-elisp `nelisp_rc_kind' kernel.
     pub unsafe fn rc_kind(sexp_ptr: *const u8) -> i64 {
         nelisp_rc_kind(sexp_ptr)
+    }
+
+    /// Doc 124 §124.A — pure-elisp `nelisp_nlconsbox_clone' kernel.
+    /// Bumps the refcount at offset 64 (= REFCOUNT_OFFSET for
+    /// NlConsBox) via §122.E `atomic-fetch-add' with delta=+1, then
+    /// returns `box_ptr' unchanged.  The Rust `impl Clone for
+    /// NlConsBoxRef' wraps the return into `Self { ptr, _marker }'
+    /// in the §124.F sweep stage; until then the inline Rust body
+    /// in `nlconsbox.rs:343-355' continues to drive Clone semantics
+    /// — this safe wrapper exists solely for the probe in
+    /// `tests/elisp_cc_nlconsbox_clone_probe.rs'.
+    pub unsafe fn nlconsbox_clone(box_ptr: *mut i64) -> i64 {
+        nelisp_nlconsbox_clone(box_ptr)
     }
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.

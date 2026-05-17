@@ -1,0 +1,251 @@
+#+TITLE: Doc 124 — nl*.rs Clone/Drop substrate elisp化
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-18
+
+* Status
+
+- *State*: DRAFT 2026-05-18 — §124.A NlConsBox Clone kernel ships
+  as PoC; §124.B-E queued; §124.F sweep + Drop stages gated on
+  Doc 125 alloc/dealloc grammar.
+- *Parent*: Doc 122.E (= atomic + raw-mem grammar ops, SHIPPED
+  main =38be9c7f=) + Doc 123 §123.A-F (= refcount primitive bodies
+  elisp化, SHIPPED main =9b69096c=).  Doc 123's `nelisp_rc_inc' /
+  `nelisp_rc_dec' kernels are reused verbatim here — Clone = `rc_inc'
+  + return pointer, Drop = `rc_dec' + if-zero dealloc.
+- *Sibling*: Doc 125 (= alloc / dealloc grammar handlers, queued)
+  is the gate for Drop stages.  Doc 126-128 (= ELF loader + bridge
+  GC) consume Doc 124's slimmed `NlBoxRef::Clone / Drop' surface.
+- *Scope*: 5 `impl Clone' + 5 `impl Drop' (one each for
+  NlConsBoxRef / NlVectorRef / NlCellRef / NlRecordRef / NlStrRef)
+  in `build-tool/src/eval/nl{consbox,vector,cell,record,str}.rs'.
+  Total = 10 trait impls + their inline `unsafe' bodies + shared
+  `nlrc_drop_box!` macro fan-in.  Doc 124 ports the *Clone half*
+  for all 5 first (= uses §123 `rc_inc' only, no alloc grammar);
+  Drop half lands in §124.G-K after Doc 125 ships.
+
+* §0 TL;DR
+
+The 5 `NlBoxRef::Clone' impls + 5 `NlBoxRef::Drop' impls in
+`build-tool/src/eval/nl*.rs' share a 2-step pattern:
+
+  Clone: `unsafe { (*self.ptr.as_ptr()).refcount.fetch_add(1, Relaxed); }`
+         then return `Self { ptr: self.ptr, _marker: PhantomData }`.
+  Drop:  `unsafe { nlrc_drop_box!(self.ptr.as_ptr(), NlT, SEXP_TAG_T); }`
+         (= fetch_sub + if-zero `Layout::new::<NlT>()` + `alloc::dealloc`).
+
+Step 1 of each Clone is *identical to Doc 123 §123.A's `nelisp_rc_inc'*
+(= `atomic-fetch-add' at `REFCOUNT_OFFSET').  The handle struct
+itself is `#[repr(transparent)]` so "return Self" is a no-op at
+the ABI level — the elisp kernel just returns the input pointer
+after the rc_inc.
+
+Step 2 of each Drop wraps `rc_dec' + a conditional `alloc::dealloc'
+call; the dealloc half needs Doc 125's alloc grammar (= a typed
+`(dealloc PTR LAYOUT)` op).  Doc 124 outlines the Drop kernels but
+*does not implement* them — they ship after §125.A lands.
+
+** §0.1 Why this doc exists
+
+Doc 123 demonstrated that *atomic refcount mutation* moves cleanly
+to elisp via §122.E.  The `impl Clone' / `impl Drop' fan-out
+across the 5 NlBox types is the next-largest concentration of
+boilerplate `unsafe { refcount.fetch_*(...) }` calls in the eval/
+substrate.  Per `audit-script.el` (= rg `'fetch_add\|fetch_sub'`),
+the Clone/Drop bodies + their helper methods account for ~500 LOC
+per nl*.rs file × 5 files = *~2500 LOC of substrate `unsafe`
+boilerplate*.  Moving the *kernel* (= the atomic op + the dealloc
+branch) to elisp shrinks the Rust surface to a thin Sexp-unwrap /
+extern-C shim, matching the Doc 123 pattern.
+
+** §0.2 Net LOC delta target
+
+| Stage  | Removes Rust LOC | Adds elisp LOC | Net   |
+|--------+------------------+----------------+-------|
+| §124.A | -15              | +10            | -5    |
+| §124.B | -15              | +10            | -5    |
+| §124.C | -15              | +10            | -5    |
+| §124.D | -15              | +10            | -5    |
+| §124.E | -15              | +10            | -5    |
+| §124.F | -350             | 0              | -350  |
+| §124.G | -250             | +100           | -150  |
+| §124.H | -250             | +100           | -150  |
+| §124.I | -250             | +100           | -150  |
+| §124.J | -250             | +100           | -150  |
+| §124.K | -250             | +100           | -150  |
+| §124.L | -825             | 0              | -825  |
+| Total  | -2500            | +550           | *-1950* |
+
+§124.A-E = Clone kernels (= one tiny `defun' each, pattern-identical
+to `nelisp_rc_inc' bar the type tag).  §124.F = sweep the 5 `impl
+Clone' bodies to call the elisp kernels.  §124.G-K = Drop kernels
+(= need Doc 125 alloc grammar).  §124.L = sweep the 5 `impl Drop'
+bodies + the `nlrc_drop_box!' macro.
+
+* §1 Audit — every `impl Clone' / `impl Drop' in `build-tool/src/eval/nl*.rs'
+
+| File             | LOC | impl Clone line | impl Drop line | Refcount offset | SEXP_TAG               |
+|------------------+-----+-----------------+----------------+-----------------+------------------------|
+| nlconsbox.rs     | 692 | 337             | 358            | 64              | SEXP_TAG_CONS          |
+| nlvector.rs      | 404 | 187             | 200            | 24              | SEXP_TAG_VECTOR        |
+| nlcell.rs        | 498 | 223             | 239            | 32              | SEXP_TAG_CELL          |
+| nlrecord.rs      | 428 | 201             | 214            | 24              | SEXP_TAG_RECORD        |
+| nlstr.rs         | 866 | 174             | 189            | 24              | SEXP_TAG_MUT_STR       |
+| Total            | 2888 | -               | -              | -               | -                      |
+
+*REFCOUNT_OFFSET per type* (= byte offset of the `AtomicUsize`
+trailer inside each `#[repr(C)]` box).  NlConsBox has two `Sexp'
+fields (= 2 × 32 = 64); NlCell has one `Sexp' field + alignment;
+NlVector / NlRecord / NlStr have a `Vec' header (= 24 bytes) at
+offset 0 then `refcount'.  The exact value will be pinned by a
+compile-time assert per file in §124.B-E, mirroring `nlrc.rs:292'.
+
+** §1.1 Per-impl feasibility table
+
+| Stage  | Symbols                              | Feasibility   | Risk             |
+|--------+--------------------------------------+---------------+------------------|
+| §124.A | `impl Clone for NlConsBoxRef`        | TRIVIAL       | None — Doc 123 PoC|
+| §124.B | `impl Clone for NlVectorRef`         | TRIVIAL       | REFCOUNT_OFFSET=24|
+| §124.C | `impl Clone for NlCellRef`           | TRIVIAL       | REFCOUNT_OFFSET=32|
+| §124.D | `impl Clone for NlRecordRef`         | TRIVIAL       | REFCOUNT_OFFSET=24|
+| §124.E | `impl Clone for NlStrRef`            | TRIVIAL       | REFCOUNT_OFFSET=24|
+| §124.F | Sweep all 5 `impl Clone' bodies      | EASY          | Per-type extern  |
+| §124.G | `impl Drop for NlConsBoxRef`         | BLOCKED       | Doc 125 grammar  |
+| §124.H | `impl Drop for NlVectorRef`          | BLOCKED       | Doc 125 grammar  |
+| §124.I | `impl Drop for NlCellRef`            | BLOCKED       | Doc 125 grammar  |
+| §124.J | `impl Drop for NlRecordRef`          | BLOCKED       | Doc 125 grammar  |
+| §124.K | `impl Drop for NlStrRef`             | BLOCKED       | Doc 125 grammar  |
+| §124.L | Sweep all 5 `impl Drop' bodies +     | BLOCKED       | Doc 125 grammar  |
+|        | delete `nlrc_drop_box!' macro        |               |                  |
+
+* §2 Stage breakdown
+
+** §2.A NlConsBox Clone (= this DRAFT's ship scope)
+
+Pattern (cf. `lisp/nelisp-cc-rc-inc.el'):
+
+#+begin_src elisp
+(defun nelisp_nlconsbox_clone (box-ptr)
+  (atomic-fetch-add (+ box-ptr 64) 1)
+  box-ptr)
+#+end_src
+
+= `rc_inc' at REFCOUNT_OFFSET = 64, then return the same pointer
+(= `Self { ptr: self.ptr, _marker: PhantomData }` is the identity
+fn on the ABI side because `NlConsBoxRef' is `#[repr(transparent)]'
+over `NonNull<NlConsBox>').  The atomic op's return value is
+discarded (= Doc 123 §123.A semantics, but here the host-side
+wrapper ignores it explicitly).
+
+** §2.B-E NlVector / NlCell / NlRecord / NlStr Clone
+
+Same as §2.A but with the type-specific REFCOUNT_OFFSET.  Each
+ships its own `lisp/nelisp-cc-nl{T}-clone.el' + `extern "C"' decl
+in `build-tool/src/lib.rs::elisp_cc_spike' + safe wrapper.
+
+** §2.F Rust impl Clone sweep
+
+Replace each of the 5 `unsafe { (*self.ptr.as_ptr()).refcount.
+fetch_add(1, Relaxed); }` blocks with a call to the matching
+`crate::elisp_cc_spike::nl{T}_clone(box_ptr)` followed by the
+existing `Self { ptr: self.ptr, ... }` return.  Mirrors §123.F's
+4-body sweep.  Pure-elisp body becomes the canonical clone semantics.
+
+** §2.G-L Drop kernels + sweep (= Doc 125 dependent)
+
+Drop pattern (proposed, pending Doc 125 §125.A grammar):
+
+#+begin_src elisp
+(defun nelisp_nlconsbox_drop (box-ptr)
+  ;; (atomic-fetch-add) returns pre-sub.  If pre-sub == 1, the
+  ;; new count is 0 ⇒ free the box.
+  (let ((prev (atomic-fetch-add (+ box-ptr 64) -1)))
+    (when (= prev 1)
+      ;; Needs Doc 125's (dealloc PTR LAYOUT) grammar op.
+      (dealloc box-ptr (layout-of NlConsBox)))))
+#+end_src
+
+The `(dealloc PTR LAYOUT)` op is *not yet defined* — Doc 125 §125.A
+is the design doc.  §124.G-K cannot ship until §125.A SHIPPED.
+
+* §3 Strategy
+
+** §3.1 Per-stage commit shape (Clone half = §124.A-E)
+
+Each Clone stage adds three files + a manifest entry:
+
+1. `lisp/nelisp-cc-nl{T}-clone.el' — the elisp kernel + defconst
+   `nelisp-cc-nl{T}-clone--source' wrapping the `(defun nelisp_nl{T}_clone ...)'.
+2. `build-tool/tests/elisp_cc_nl{T}_clone_probe.rs' — ≥ 3 cases
+   (single-clone increments rc, N-clone increments rc by N,
+   concurrent clone from 2 threads = no lost updates).
+3. `build-tool/build.rs` + `scripts/compile-elisp-objects.el' +
+   `build-tool/src/lib.rs::elisp_cc_spike' wire-in (= extern decl +
+   safe wrapper + .o output).
+
+** §3.2 Drop half = §124.G-K (= post-Doc-125)
+
+Each Drop stage adds the same three files but the elisp body is
+~5 lines (= `let' bind pre-sub + `when' branch on `prev == 1' +
+`dealloc' op).  The Rust shim in §124.L collapses 5 different `impl
+Drop' bodies + the `nlrc_drop_box!' macro fan-in.
+
+** §3.3 Layout-pin contract per type
+
+Each elisp kernel will embed the REFCOUNT_OFFSET as a *literal i64*
+(= `(+ box-ptr 24)' for NlStr, `(+ box-ptr 32)' for NlCell, etc.).
+The matching Rust file gets a `static_assertions::const_assert_eq!(
+std::mem::offset_of!(NlT, refcount), N)` to fail the build if the
+layout drifts.  Doc 123 §123.A established this pattern for
+NlConsBox (= `nlrc.rs:292').
+
+* §4 LOC target
+
+Per §0.2: -2500 Rust (= 5 `impl Clone' bodies + 5 `impl Drop' bodies
++ helper methods + `nlrc_drop_box!' macro fan-in) - +550 elisp =
+*-1950 net*.  Per-type breakdown deferred to §124.B+ as each stage
+audits its own file.
+
+* §5 Dependency on Doc 125 (alloc/dealloc grammar)
+
+Doc 125 §125.A must define a Phase 47 grammar op that lowers to
+`std::alloc::dealloc(ptr, Layout::new::<T>())' via a typed extern
+shim.  Without it, the Drop kernel cannot express the "if-zero
+free the box" branch — the existing `nlrc_drop_box!' macro relies
+on `Layout::for_value()` resolved at *Rust* compile time, not
+runtime, so the elisp kernel needs a typed dealloc extern per
+NlBox variant.
+
+Stage gating:
+- §124.A-F (Clone half) ships *independently* of Doc 125
+  (= only uses §123 `rc_inc' = `atomic-fetch-add' delta=+1).
+- §124.G-L (Drop half) blocked on Doc 125 §125.A SHIPPED.
+- Doc 124's main ship gate = §124.F sweep.  Drop kernels remain
+  in Rust until Doc 125 unblocks them.
+
+* §6 Stage gates (SHIPPED log)
+
+** §124.A — NlConsBox Clone elisp kernel + probe — IN-FLIGHT (this commit)
+
+PoC for the Clone half.  Ships:
+- `lisp/nelisp-cc-nlconsbox-clone.el' — elisp source
+- `build-tool/tests/elisp_cc_nlconsbox_clone_probe.rs' — 3 probe
+  cases (single / N-iter / concurrent)
+- `build-tool/build.rs` + `scripts/compile-elisp-objects.el' +
+  `build-tool/src/lib.rs` wire-in
+- Rust `impl Clone for NlConsBoxRef' body UNCHANGED (= §124.F
+  sweep stage swaps it later, once §124.B-E PoCs all green).
+
+** §124.B-E — NlVector / NlCell / NlRecord / NlStr Clone — QUEUED
+
+Each follows the §124.A pattern with the type-specific
+REFCOUNT_OFFSET (= 24 / 32 / 24 / 24 respectively per §1 audit).
+
+** §124.F — sweep 5 `impl Clone' bodies — QUEUED
+
+After §124.A-E all green, swap the 5 Rust `impl Clone' bodies to
+call `crate::elisp_cc_spike::nl{T}_clone(box_ptr)`.  Mirrors §123.F.
+
+** §124.G-L — Drop half — BLOCKED on Doc 125 §125.A
+
+Tracked separately; will be added to this Status when Doc 125
+lands.

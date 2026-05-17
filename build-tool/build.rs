@@ -199,6 +199,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // discriminant).
         "nelisp-cc-rc-strong-count.el",
         "nelisp-cc-rc-kind.el",
+        // Doc 124 §124.A — first stage of the `nl*.rs::Clone/Drop'
+        // substrate elisp化 chain.  Ships the NlConsBox Clone kernel
+        // (= `rc_inc' + return-the-pointer) as PoC; §124.B-E sweep the
+        // remaining 4 NlBox types onto the same pattern.  Reuses Doc
+        // 123 §123.A's `atomic-fetch-add' at REFCOUNT_OFFSET = 64.
+        // Drop half (§124.G-K) gated on Doc 125 alloc/dealloc grammar.
+        "nelisp-cc-nlconsbox-clone.el",
         // Doc 116 §116.A — pure-elisp Reader lexer.  Single source
         // file defining `nelisp_reader_lex_one' + ~20 tail-call
         // helpers; replaces the eventual deletion of
