@@ -266,10 +266,11 @@ pub mod elisp_cc_spike {
             constant_ptr: *const Sexp,
         ) -> i64;
         // Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
-        // rewrites.  Each `nelisp_frame_*' below is a thin elisp-side
-        // wrapper around the matching `nl_frame_*' Rust shim in
-        // `eval/env_lexframe_phase47_shims.rs'; the shim performs the
-        // actual refcount-disciplined operation.
+        // rewrites.  Each `nelisp_frame_*' below is the Phase 47-
+        // compiled pure-elisp implementation in
+        // `lisp/nelisp-cc-frame-*.el' (Doc 115 §115.1-7).  The former
+        // `nl_frame_*' Rust shims (whole Phase 47 shims module under
+        // `eval/') were deleted in Doc 115 §115.8.
         fn nelisp_frame_stack_depth(frames_ptr: *const Sexp) -> i64;
         fn nelisp_frame_stack_ensure_capacity(
             frames_ptr: *const Sexp,
