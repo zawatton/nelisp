@@ -676,6 +676,103 @@ pub unsafe extern "C" fn nl_str_is_alphanumeric_at(
     if ch.is_alphanumeric() { 1 } else { 0 }
 }
 
+// ---- Doc 122 §122.G — Float allocator + str-to-float helper ----
+//
+// §122.G unlocks Reader Float literals (Doc 116.B+).  Two externs:
+//
+//   `nl_sexp_write_float(slot, val: f64)` — write `Sexp::Float(val)`
+//   into `*slot`.  The `Sexp::Float` payload is inline f64 at offset
+//   `nelisp-sexp--offset-payload' = 8 (matches `Sexp::Int' layout but
+//   with tag byte = `SEXP_TAG_FLOAT' = 3).  No heap box needed.
+//
+//   `nl_str_to_float(bytes_ptr, len, slot)` — parse the UTF-8 byte
+//   range as an f64 via `str::parse::<f64>()` and write
+//   `Sexp::Float(parsed)' into `*slot' on success; leave `*slot' as
+//   `Sexp::Nil' on failure (= caller observes via the `i64' return
+//   status: 1 = success, 0 = parse error).
+//
+// The two externs split responsibility cleanly:
+//   - `nl_sexp_write_float' is the Phase 47 grammar op's lowering
+//     target — exercises f64 arg dispatch via xmm0 per Doc 122.C
+//     SysV AMD64 ABI.
+//   - `nl_str_to_float' is the Reader's bridge — takes a byte range
+//     (= Sexp::Str payload) and writes the parsed Float Sexp directly
+//     into the parser's result slot.  This avoids needing the elisp
+//     parser to round-trip the f64 through an xmm0 in-flight value
+//     (= no f64 type-annotated local binding grammar yet).
+
+/// Doc 122 §122.G — write `Sexp::Float(val)` into the caller's slot.
+///
+/// Inline f64 payload: tag byte 3 at `slot[0]`, f64 little-endian at
+/// `slot[8..16]`.  `std::ptr::write' overwrites without dropping the
+/// previous value — caller pre-initialises to `Sexp::Nil' so this is
+/// safe (= same convention as `nl_alloc_str' / `nl_alloc_symbol' /
+/// `nelisp_cons_construct').
+///
+/// # Safety
+/// - `slot' must be non-null, properly aligned, and writable for one
+///   full `Sexp' slot (40 bytes).  Pre-init to `Sexp::Nil'.
+/// - `val' is a regular f64; NaN / Infinity / -0.0 are all valid and
+///   round-trip bit-for-bit (= `std::ptr::write' is a byte copy).
+#[no_mangle]
+pub unsafe extern "C" fn nl_sexp_write_float(
+    slot: *mut crate::eval::sexp::Sexp,
+    val: f64,
+) -> *mut crate::eval::sexp::Sexp {
+    let sexp = crate::eval::sexp::Sexp::Float(val);
+    // SAFETY: caller-owned slot pre-init to Nil per contract.
+    unsafe { std::ptr::write(slot, sexp) };
+    slot
+}
+
+/// Doc 122 §122.G — parse a UTF-8 byte range as an f64 and write
+/// `Sexp::Float(parsed)' into the caller's slot.  Returns 1 on
+/// success, 0 on parse failure (= `slot' is set to `Sexp::Nil' in
+/// the failure case).
+///
+/// Uses `str::parse::<f64>()' which accepts the standard Rust float
+/// grammar: decimal point, exponent, optional leading sign, the
+/// special tokens `inf' / `infinity' / `nan' (case-insensitive).
+/// Matches the Reader's `Token::Float` payload shape (= the lexer's
+/// `parse::<f64>' arm) by construction.
+///
+/// # Safety
+/// - `bytes_ptr' must be non-null when `len > 0' and point at `len'
+///   initialized bytes of valid UTF-8.  `len == 0' permits a
+///   dangling-but-aligned `bytes_ptr' (= `slice::from_raw_parts'
+///   contract).
+/// - `slot' must be non-null, properly aligned, and writable for one
+///   `Sexp' slot.  Pre-init to `Sexp::Nil'.
+#[no_mangle]
+pub unsafe extern "C" fn nl_str_to_float(
+    bytes_ptr: *const u8,
+    len: i64,
+    slot: *mut crate::eval::sexp::Sexp,
+) -> i64 {
+    let n = if len < 0 { 0 } else { len as usize };
+    let slice = if n == 0 {
+        &[][..]
+    } else {
+        // SAFETY: caller contract — `bytes_ptr' valid for `n' bytes.
+        unsafe { std::slice::from_raw_parts(bytes_ptr, n) }
+    };
+    // SAFETY: caller contract — bytes are valid UTF-8.
+    let text = unsafe { std::str::from_utf8_unchecked(slice) };
+    match text.parse::<f64>() {
+        Ok(f) => {
+            let sexp = crate::eval::sexp::Sexp::Float(f);
+            // SAFETY: caller-owned slot.
+            unsafe { std::ptr::write(slot, sexp) };
+            1
+        }
+        Err(_) => {
+            // SAFETY: caller-owned slot.
+            unsafe { std::ptr::write(slot, crate::eval::sexp::Sexp::Nil) };
+            0
+        }
+    }
+}
+
 // ---- Compile-time layout assertions ----
 
 const _: () = {

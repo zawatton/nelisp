@@ -23,12 +23,13 @@
 //! `crate::elisp_cc_spike::reader_parse_one').  Doc 116 §116.B+
 //! extended the elisp side to cover char literals `?X' (kind 24),
 //! radix integers `#x..'/`#o..'/`#b..' (kind 25), and bare-sign
-//! symbols (= the saw-digit bit in the atom classifier), retiring
-//! the pre-call `needs_rust_fallback_sentinel' heuristic.  The
-//! remaining unsupported features (Float `1.5'/`1e3' (kind 21),
-//! vector `[..]' (kind 3), record `#s(..)' (kind 11), byte-code
-//! `#[..]') still cause the elisp parser to return status != 1;
-//! the wrapper observes that and falls back to the legacy Rust
+//! symbols (= the saw-digit bit in the atom classifier).  Doc 122
+//! §122.G further extended the elisp parser to handle Float
+//! literals `1.5' / `1e3' (kind 21) via the `nl_str_to_float'
+//! extern.  The remaining unsupported features (vector `[..]'
+//! (kind 3), record `#s(..)' (kind 11), byte-code `#[..]') still
+//! cause the elisp parser to return status != 1; the wrapper
+//! observes that and falls back to the legacy Rust
 //! `lexer::tokenize' + `parser::parse_one' path inside this module.
 //! Behaviour is preserved bit-for-bit across the existing `mod
 //! tests' suite via the fallback layer.
@@ -85,13 +86,15 @@ const SCRATCH_CAP: i64 = 64;
 ///   - Bare `+' / `-' / `.' symbols — handled by the saw-digit bit
 ///     in `nelisp_reader_classify_step' (= no digit -> force Sym).
 ///
-/// Remaining unsupported features (= Float kind 21, `[..]' vector
-/// kind 3, `#s(..)' record kind 11, `#[..]' byte-code) all cause
-/// the elisp parser to return status != 1, which the wrapper
-/// observes and falls back to the Rust path on.  Bytes that would
-/// hit those features need no upfront sentinel check — the elisp
-/// parser bails fast (= returns -1) and the wrapper retries the
-/// whole input through `lexer::tokenize' / `parser::parse_one'.
+/// Remaining unsupported features (= `[..]' vector kind 3, `#s(..)'
+/// record kind 11, `#[..]' byte-code) all cause the elisp parser
+/// to return status != 1, which the wrapper observes and falls
+/// back to the Rust path on.  Bytes that would hit those features
+/// need no upfront sentinel check — the elisp parser bails fast
+/// (= returns -1) and the wrapper retries the whole input through
+/// `lexer::tokenize' / `parser::parse_one'.  Doc 122 §122.G
+/// retired the Float kind 21 fallback by routing payload bytes
+/// through the `nl_str_to_float' extern.
 ///
 /// The function is retained as `fn (&str) -> bool` returning `false`
 /// to keep the call site in [`read_str`] / [`read_all`] uniform with

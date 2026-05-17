@@ -9,14 +9,15 @@
 //! asserts the produced Sexp value matches the expected shape.
 //!
 //! Scope (= §116.B MVP):
-//!   - Atom leaves: Nil / T / Int / Symbol / Str.
+//!   - Atom leaves: Nil / T / Int / Symbol / Str / Char / RadixInt /
+//!     Float (= Doc 122 §122.G unlock).
 //!   - Proper list construction `(a b c)' + empty list `()'.
 //!   - Dotted-pair construction `(a . b)'.
 //!   - Quote-family desugar `'x' / `` `x `` / `,x' / `,@x' / `#'x'.
 //!   - Nested lists `((a b) c)' / `(1 (2 3))'.
 //!
 //! Out of scope (= §116.C top-level + §116.D file deletion):
-//!   vectors `[..]', records `#s(..)', float parsing, the public
+//!   vectors `[..]', records `#s(..)', byte-code `#[..]', the public
 //!   `(read-str S)' / `(read-all S)' helpers.
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -488,6 +489,53 @@ fn parse_negative_int_in_list() {
             Sexp::Symbol("-".to_string()),
             Sexp::Int(1),
             Sexp::Int(-2),
+        ])
+    );
+}
+
+// ---------- Doc 122 §122.G — Float kind 21 ----------
+
+#[test]
+fn parse_simple_float() {
+    // Basic decimal — covers the `digits . digits' path.
+    assert_eq!(parse_one("1.5"), Sexp::Float(1.5));
+}
+
+#[test]
+fn parse_float_with_exponent() {
+    // Exponent path — covers the `digits e digits' form.
+    assert_eq!(parse_one("1e3"), Sexp::Float(1000.0));
+}
+
+#[test]
+fn parse_negative_float() {
+    // Leading sign + decimal.
+    assert_eq!(parse_one("-0.5"), Sexp::Float(-0.5));
+}
+
+#[test]
+fn parse_float_zero() {
+    // `0.0' must parse to Sexp::Float(0.0), not Sexp::Int(0).
+    assert_eq!(parse_one("0.0"), Sexp::Float(0.0));
+}
+
+#[test]
+fn parse_negative_float_with_exponent() {
+    // Combined sign + decimal + signed exponent.
+    assert_eq!(parse_one("-1.5e-2"), Sexp::Float(-0.015));
+}
+
+#[test]
+fn parse_float_in_list() {
+    // Float inside a list — exercises the per-depth recursion path
+    // for kind 21 just like Int / Sym / Str.
+    let got = parse_one("(+ 1.5 2.5)");
+    assert_eq!(
+        got,
+        Sexp::list_from(&[
+            Sexp::Symbol("+".to_string()),
+            Sexp::Float(1.5),
+            Sexp::Float(2.5),
         ])
     );
 }

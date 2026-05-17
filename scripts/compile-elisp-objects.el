@@ -377,6 +377,15 @@
      :source-var nelisp-cc-sexp-write-str--symbol-source
      :output "nelisp_sexp_write_symbol.o"
      :requires-arch x86_64)
+    ;; Doc 122 §122.G — `sexp-write-float' grammar op (= Reader Float
+    ;; unlock).  Single entry; same Linux-x86_64 gate as the §122.A
+    ;; siblings.  Both params f64-class (MVP uniform-class defun
+    ;; restriction); test harness bit-casts the slot pointer through
+    ;; xmm0 before invocation.
+    (nelisp-cc-sexp-write-float
+     :source-var nelisp-cc-sexp-write-float--source
+     :output "nelisp_sexp_write_float.o"
+     :requires-arch x86_64)
     ;; Doc 120 §120.D — `jit/access.rs' all 4 trampoline swaps
     ;; (`nl_jit_access_length' / `_aref' / `_aset' / `_elt').  Vector
     ;; arms use the existing `vector-ref' / `vector-slot-set' /

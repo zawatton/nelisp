@@ -188,6 +188,18 @@ pub mod elisp_cc_spike {
             bytes_ptr: *const u8,
             len: i64,
         ) -> *mut Sexp;
+        // Doc 122 §122.G — `sexp-write-float' Phase 47 grammar op
+        // compiled from `lisp/nelisp-cc-sexp-write-float.el'.  Both
+        // params are f64-class (= Phase 47 MVP uniform-class restriction);
+        // the slot pointer is bit-cast through xmm0 and the elisp emit
+        // code unspills it back to GP rdi before calling the Rust extern
+        // `nl_sexp_write_float' (in `build-tool/src/eval/nlstr.rs') which
+        // writes `Sexp::Float(val)' into `*slot' inline (= tag 3 + f64
+        // payload at offset 8, no heap box).
+        fn nelisp_sexp_write_float(
+            slot_bits: f64,
+            val: f64,
+        ) -> *mut Sexp;
         // Doc 122 §122.B — Mutable string builder Phase 47 grammar ops
         // compiled from `lisp/nelisp-cc-mut-str.el'.  Each op evaluates
         // its args, marshals them to rdi/rsi per SysV AMD64, and calls
@@ -853,6 +865,57 @@ pub mod elisp_cc_spike {
         len: i64,
     ) -> *mut Sexp {
         nelisp_sexp_write_symbol(slot, bytes_ptr, len)
+    }
+
+    /// Doc 122 §122.G — `(sexp-write-float SLOT VAL)' Phase 47 grammar op.
+    ///
+    /// The Phase 47 MVP forbids mixed-class defun params; the probe
+    /// declares both slot + val as f64-class so the slot pointer arrives
+    /// in xmm0 as a bit-cast f64.  Internally the elisp emit code
+    /// MOVQ's xmm0 back into rdi before calling the Rust extern
+    /// `nl_sexp_write_float'.  Caller bit-casts `slot' via
+    /// `(slot as u64).to_bits()' / `f64::from_bits(slot as u64)' before
+    /// invocation.
+    ///
+    /// # Safety
+    /// - `slot' (after bit-cast back to `*mut Sexp') must be non-null,
+    ///   properly aligned, and writable for one Sexp slot.  Pre-init
+    ///   to `Sexp::Nil`.
+    /// - `val' is any f64 (NaN / Infinity / -0.0 all valid).
+    pub unsafe fn sexp_write_float_via_grammar(
+        slot: *mut Sexp,
+        val: f64,
+    ) -> *mut Sexp {
+        let slot_bits = f64::from_bits(slot as u64);
+        nelisp_sexp_write_float(slot_bits, val)
+    }
+
+    /// Doc 122 §122.G — direct Rust-extern entry to
+    /// [`nl_sexp_write_float`].  Mirrors the safe-wrapper convention
+    /// for `sexp_write_str` / `sexp_write_symbol` (= probe tests can
+    /// bypass the elisp grammar op and check the Rust side in isolation).
+    ///
+    /// # Safety
+    /// Same as [`sexp_write_float_via_grammar`].
+    pub unsafe fn sexp_write_float_extern(slot: *mut Sexp, val: f64) -> *mut Sexp {
+        crate::eval::nlstr::nl_sexp_write_float(slot, val)
+    }
+
+    /// Doc 122 §122.G — `nl_str_to_float(bytes, len, slot) -> i64` direct
+    /// entry.  Parses the UTF-8 byte range as f64 via
+    /// `str::parse::<f64>()' and writes `Sexp::Float(parsed)' into
+    /// `*slot' on success (returns 1), or `Sexp::Nil` on failure
+    /// (returns 0).
+    ///
+    /// # Safety
+    /// - `bytes_ptr' non-null + valid UTF-8 for `len' bytes (or `len == 0`).
+    /// - `slot' non-null + writable for one Sexp slot.  Pre-init to Nil.
+    pub unsafe fn str_to_float(
+        bytes_ptr: *const u8,
+        len: i64,
+        slot: *mut Sexp,
+    ) -> i64 {
+        crate::eval::nlstr::nl_str_to_float(bytes_ptr, len, slot)
     }
 
     /// Doc 122 §122.B — `(mut-str-make-empty SLOT CAP)' via

@@ -171,6 +171,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' grammar
         // ops (= 2 entries, shared source file).
         "nelisp-cc-sexp-write-str.el",
+        // Doc 122 §122.G — `sexp-write-float' grammar op (= Reader Float
+        // unlock).  Single entry; same Linux-x86_64 gate as §122.A.
+        "nelisp-cc-sexp-write-float.el",
         // Doc 122 §122.B — Mutable string builder grammar ops (= 5
         // entries, shared source file).
         "nelisp-cc-mut-str.el",

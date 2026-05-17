@@ -859,6 +859,25 @@ functions `((NAME . ARITY) ...)'."
                       (nth 2 sexp) env fenv defuns)
           :len (nelisp-phase47-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
+   ;; Doc 122 §122.G — `(sexp-write-float SLOT VALUE)' allocates a
+   ;; `Sexp::Float(f64)' value inline (= tag byte 3, f64 payload at
+   ;; offset 8, no heap box).  VALUE is f64-class — must be an f64
+   ;; param ref (= the same flat-leaf constraint as `f64-call'
+   ;; / `extern-call-f64' f64 args at MVP).  SLOT is i64-class
+   ;; (= `*mut Sexp' pointer).  Lowers to `nl_sexp_write_float'
+   ;; extern (SysV AMD64: rdi = slot, xmm0 = value) and returns SLOT
+   ;; in rax.  Parallel to `sexp-write-str' / `sexp-int-make' but the
+   ;; payload is f64 and the helper extern takes one i64 + one f64
+   ;; rather than three i64 args.
+   ((and (consp sexp) (eq (car sexp) 'sexp-write-float))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-write-float-arity sexp)))
+    (list :kind 'sexp-write-float
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)
+          :value (nelisp-phase47-compiler--parse-value
+                  (nth 2 sexp) env fenv defuns)))
    ;; Doc 122 §122.B — Mutable string builder grammar.
    ;; ------------------------------------------------
    ;; `(mut-str-make-empty SLOT CAP)' — call `nl_alloc_mut_str(cap, slot)'
@@ -1870,7 +1889,7 @@ the node's class to consume the result correctly."
              'cell-value 'cell-set-value 'cell-make 'cell-null-p
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
-             'sexp-write-str 'sexp-write-symbol
+             'sexp-write-str 'sexp-write-symbol 'sexp-write-float
              'mut-str-make-empty 'mut-str-push-byte 'mut-str-push-codepoint
              'mut-str-len 'mut-str-finalize
              'str-char-count 'str-codepoint-at 'str-is-alphanumeric-at
@@ -1983,6 +2002,8 @@ the node's class to consume the result correctly."
       ('sexp-write-symbol
        (nelisp-phase47-compiler--emit-sexp-write-alloc
         node buf "nl_alloc_symbol"))
+      ('sexp-write-float
+       (nelisp-phase47-compiler--emit-sexp-write-float node buf))
       ('mut-str-make-empty
        (nelisp-phase47-compiler--emit-mut-str-make-empty node buf))
       ('mut-str-push-byte
@@ -3201,6 +3222,68 @@ separately)."
      buf helper-name -4 'text)
     ;; Helper returned the slot pointer in rax.  Discard the
     ;; alignment pad; rax is already the desired return value.
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-sexp-write-float (node buf)
+  "Emit `sexp-write-float' — call `nl_sexp_write_float(slot, val: f64)'.
+NODE carries `:slot' (= `*mut Sexp', supplied as either gp-class or
+f64-class bit-cast pointer) and `:value' (= f64-class flat-leaf
+ref).  Per SysV AMD64: slot → rdi (= GP arg 0), value → xmm0
+(= f64 arg 0).  Helper returns slot in rax.
+
+Strategy (= mirrors `--emit-extern-call' f64 path with one gp + one
+f64 arg, balanced pushes for stack alignment):
+
+  1. Evaluate VALUE — emits an f64-leaf load into xmm0.
+  2. Transfer xmm0 → rax (= MOVQ), push.  Stack carries the f64
+     bit-pattern as 8 bytes.
+  3. Evaluate SLOT — lands in rax (gp-class default) or xmm0
+     (f64-class ref bit-pattern of pointer).  If f64-class,
+     MOVQ rax, xmm0 first.  Push rax.
+  4. Pop in reverse: SLOT → rdi (= arg 0), VALUE → rax then
+     MOVQ → xmm0 (= f64 arg 0).
+  5. Push one alignment pad.  Function entry has rsp mod 16 = 8;
+     our balanced 2 push + 2 pop net to 0, so we need one extra
+     push to bring rsp to (8 + 8) mod 16 = 0 before the `call'
+     instruction.
+  6. Call `nl_sexp_write_float' — rax = slot pointer on return.
+  7. Pop the alignment pad.
+
+SLOT f64-class is the workaround for the Phase 47 MVP requirement
+that defun params be uniform-class.  Test harnesses bit-cast the
+pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
+param alongside VALUE; the bit pattern survives unchanged through
+the xmm0 spill / unspill round trip."
+  (let ((slot (plist-get node :slot))
+        (value (plist-get node :value)))
+    ;; Step 1-2: VALUE → xmm0, then xmm0 → rax, push.  The
+    ;; `emit-f64-leaf-into' helper enforces the flat-ref shape so
+    ;; this op composes only at the same MVP level as `f64-call'.
+    (nelisp-phase47-compiler--emit-f64-leaf-into value buf 'xmm0)
+    (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Step 3: SLOT.  If the IR node is an f64-class ref, the
+    ;; emit-value path lands the bit pattern in xmm0; transfer to
+    ;; rax via MOVQ.  Otherwise (= gp-class ref / imm / call), the
+    ;; result is already in rax.
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (when (and (eq (plist-get slot :kind) 'ref)
+               (eq (plist-get slot :class) 'f64))
+      (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Step 4: pop in reverse — slot (last pushed) → rdi, then
+    ;; value (first pushed) → rax → xmm0.
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-pop buf 'rax)
+    (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm0 'rax)
+    ;; Step 5: alignment pad.
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Step 6: CALL rel32 = 0xE8 + 4-byte placeholder + PLT32 reloc.
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_sexp_write_float" -4 'text)
+    ;; Step 7: discard the alignment pad.  rax = slot pointer is
+    ;; the value-form result.
     (nelisp-asm-x86_64-pop buf 'r11)))
 
 

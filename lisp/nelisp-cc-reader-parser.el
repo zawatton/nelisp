@@ -414,6 +414,19 @@
          (sexp-int-make result-slot
                         (nelisp_reader_p_decode_radix payload-slot))
          1))
+       ;; Float (kind 21) -> Doc 122 §122.G unlock.  Payload Sexp::Str
+       ;; carries the lexer's snapshot text (= digits + optional `.'
+       ;; / `e` exponent / leading sign).  `nl_str_to_float' parses
+       ;; the UTF-8 bytes via `str::parse::<f64>()' and writes
+       ;; `Sexp::Float(parsed)' into RESULT-SLOT directly, returning
+       ;; 1 on success / 0 on parse failure.  Bytes pointer + length
+       ;; come from the Sexp::Str header (offsets 16 / 24 per
+       ;; `nelisp-sexp-layout.el').
+       ((= kind 21)
+        (extern-call nl_str_to_float
+                     (ptr-read-u64 payload-slot 16)
+                     (ptr-read-u64 payload-slot 24)
+                     result-slot))
        (t -1)))
 
     ;; ===========================================================
@@ -700,11 +713,12 @@ token stream via `extern-call nelisp_reader_lex_one' and produces
 Sexp values via the §101 / §111 / §122 grammar primitives.
 
 Kinds dispatched: 0 EOF, 1 LParen, 2 RParen, 5 Quote, 6 Backquote,
-7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 20 Int, 22 Str, 23 Sym,
-24 Char, 25 RadixInt.  Kinds 3 LBracket and 11 SharpsParen drive
-the vector / record parsers (Doc 116 §116.B+).  Kind 21 Float still
-routes to error -1 (= grammar lacks `sexp-write-float'; §116.C
-falls back to the Rust path for Float literals).
+7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 20 Int, 21 Float,
+22 Str, 23 Sym, 24 Char, 25 RadixInt.  Kinds 3 LBracket and 11
+SharpsParen drive the vector / record parsers (Doc 116 §116.B+).
+Doc 122 §122.G unlocks kind 21 Float by routing the payload bytes
+through the `nl_str_to_float' extern (= `str::parse::<f64>()' with
+direct `Sexp::Float' write into RESULT-SLOT).
 
 Slot-pool layout (= safe Rust wrapper allocates a Sexp::Vector of
 3 + 4 * MAX_DEPTH slots, all pre-Nil):
