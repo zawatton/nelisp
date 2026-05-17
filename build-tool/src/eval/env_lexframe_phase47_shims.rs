@@ -87,100 +87,12 @@ unsafe fn frame_stack_view_from_ptr(
 // `build-tool/src/lib.rs' for the public entry point.
 
 // ---- #23 frame_bind_rust_direct -------------------------------------
-
-/// Doc 111 §111.E #23 — bind NAME → CELL in the innermost frame.
-/// Hashes NAME via `mirror_fnv1a' + walks the bucket alist to update-
-/// in-place or prepend `(NAME . CELL)'.  No-op when the stack is empty
-/// or the mirror is unbuilt.
-///
-/// Returns 1 on bind, 0 on no-op.
-///
-/// # Safety
-/// - `frames_ptr' must be non-null and point at `Env::frames_record'.
-/// - `name_ptr' must point at a `Sexp::Str' or `Sexp::Symbol'.
-/// - `cell_ptr' must point at the new cell value (commonly `Sexp::Cell').
-#[no_mangle]
-pub unsafe extern "C" fn nl_frame_bind(
-    frames_ptr: *const Sexp,
-    name_ptr: *const Sexp,
-    cell_ptr: *const Sexp,
-) -> i64 {
-    let Some((_stack_rec, backing, depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
-        return 0;
-    };
-    if depth == 0 {
-        return 0;
-    }
-    let frame = match backing.value.get(depth - 1) {
-        Some(f) => f.clone(),
-        None => return 0,
-    };
-    let name: String = match unsafe { &*name_ptr } {
-        Sexp::Str(s) => s.clone(),
-        Sexp::Symbol(s) => s.clone(),
-        _ => return 0,
-    };
-    let cell = unsafe { (*cell_ptr).clone() };
-    bind_into_frame(&frame, &name, cell);
-    1
-}
-
-/// Internal — mirror of `Env::frame_bind_into' but standalone (no
-/// `Env' self).  Hashes NAME via `mirror_fnv1a' + walks the bucket
-/// alist; the in-place pair-cdr update path uses
-/// `NlConsBoxRef::set_cdr' so refcounts stay tidy.
-fn bind_into_frame(frame: &Sexp, name: &str, cell: Sexp) {
-    let Sexp::Record(frame_rec) = frame else { return };
-    let ht_rec = match frame_rec.slots.get(0) {
-        Some(Sexp::Record(r)) => r.clone(),
-        _ => return,
-    };
-    let bucket_count = match ht_rec.slots.get(0) {
-        Some(Sexp::Int(n)) => *n as u32,
-        _ => return,
-    };
-    let buckets = match ht_rec.slots.get(1) {
-        Some(Sexp::Vector(v)) => v.clone(),
-        _ => return,
-    };
-    let h = mirror_fnv1a(name);
-    let idx = (if bucket_count & (bucket_count - 1) == 0 {
-        h & (bucket_count - 1)
-    } else {
-        h % bucket_count
-    }) as usize;
-    let bucket = match buckets.value.get(idx) {
-        Some(b) => b.clone(),
-        None => return,
-    };
-    let mut cur = bucket;
-    while let Sexp::Cons(c) = &cur {
-        if let Sexp::Cons(pair) = &c.car {
-            if let Sexp::Str(k) = &pair.car {
-                if k == name {
-                    // SAFETY: in-place pair-cdr replacement.
-                    unsafe { pair.set_cdr(cell) };
-                    return;
-                }
-            }
-        }
-        cur = c.cdr.clone();
-    }
-    // Not found — prepend `(NAME . CELL)' to the bucket.
-    let pair = Sexp::cons(Sexp::Str(name.to_string()), cell);
-    // SAFETY: see `Env::frame_bind_into'.
-    unsafe {
-        buckets.with_value_mut(|v| {
-            let old = v.get(idx).cloned().unwrap_or(Sexp::Nil);
-            v[idx] = Sexp::cons(pair, old);
-        });
-        ht_rec.with_slots_mut(|s| {
-            if let Some(Sexp::Int(n)) = s.get_mut(2) {
-                *n += 1;
-            }
-        });
-    }
-}
+//
+// Doc 115 §115.5 — moved to pure-elisp in `lisp/nelisp-cc-frame-bind.el'.
+// The shim `nl_frame_bind' (+ private `bind_into_frame', ~95 LOC) has
+// been removed; the safe wrapper in `lib.rs::elisp_cc_spike::frame_bind'
+// now calls the Phase 47-compiled `nelisp_frame_bind' instead.  See the
+// elisp source for the full algorithm and the 3 scratch-slot signature.
 
 // ---- #24 frame_stack_find_rust_direct -------------------------------
 //
@@ -194,6 +106,11 @@ fn bind_into_frame(frame: &Sexp, name: &str, cell: Sexp) {
 // (= `nl_mirror_fnv1a_sexp', itself slated for §115.7 elisp rewrite)
 // ops.  See the safe wrapper `Spike::frame_stack_find' in
 // `build-tool/src/lib.rs' for the public entry point.
+//
+// §115.5 note: the pure-elisp `frame_bind' (= shipped above) byte-copies
+// whichever tag the caller-owned `name_ptr' carried (Str or Symbol),
+// while the elisp `frame_stack_find' uses `str-eq' which accepts both
+// tags symmetrically.  Cross-tag round-trip therefore still works.
 
 // ---- #26 wrap_alist_cells -------------------------------------------
 
@@ -272,6 +189,11 @@ mod tests {
     // Full push coverage moves to the integration probe
     // `tests/elisp_cc_frame_push_probe.rs' which drives the pure-elisp
     // implementation end-to-end.
+
+    // Doc 115 §115.5 — the `nl_frame_bind' Rust shim has been deleted.
+    // End-to-end bind coverage moves to the integration probe at
+    // `tests/elisp_cc_frame_bind_probe.rs' which exercises the
+    // pure-elisp implementation including cross-tag KEY semantics.
 
     // Doc 115 §115.6 — the `nl_frame_bind_then_find_roundtrip' test
     // was tied to the deleted `nl_frame_stack_find' Rust shim.

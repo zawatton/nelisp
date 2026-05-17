@@ -267,6 +267,9 @@ pub mod elisp_cc_spike {
             frames_ptr: *const Sexp,
             name_ptr: *const Sexp,
             cell_ptr: *const Sexp,
+            scratch_pair_slot: *mut Sexp,
+            scratch_outer_slot: *mut Sexp,
+            scratch_count_slot: *mut Sexp,
         ) -> i64;
         fn nelisp_frame_stack_find(
             frames_ptr: *const Sexp,
@@ -680,7 +683,24 @@ pub mod elisp_cc_spike {
         name_ptr: *const Sexp,
         cell_ptr: *const Sexp,
     ) -> i64 {
-        nelisp_frame_bind(frames_ptr, name_ptr, cell_ptr)
+        // Doc 115 §115.5 — the pure-elisp implementation in
+        // `lisp/nelisp-cc-frame-bind.el' takes 3 caller-owned scratch
+        // `*mut Sexp' slots (= the freshly-allocated inner pair, outer
+        // bucket cell, and `Sexp::Int(new-count)' for the slot-2 bump).
+        // We allocate stack-local `Sexp::Nil's here and pass their
+        // pointers so the public 3-arg API is preserved for existing
+        // callers / probes.
+        let mut scratch_pair = Sexp::Nil;
+        let mut scratch_outer = Sexp::Nil;
+        let mut scratch_count = Sexp::Nil;
+        nelisp_frame_bind(
+            frames_ptr,
+            name_ptr,
+            cell_ptr,
+            &mut scratch_pair as *mut Sexp,
+            &mut scratch_outer as *mut Sexp,
+            &mut scratch_count as *mut Sexp,
+        )
     }
 
     pub unsafe fn frame_stack_find(
