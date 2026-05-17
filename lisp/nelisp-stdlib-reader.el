@@ -446,11 +446,13 @@ since the substrate has no `isnan' primitive yet."
       (nelisp--read-tok-error "unterminated char literal after `?'" pos))
     (cond
      ((not (eq c ?\\))
-      ;; Plain `?X'
+      ;; Plain `?X' — any character (ASCII or multibyte) reads as its
+      ;; codepoint, matching host Emacs's reader.  Multibyte was
+      ;; previously deferred; lifted 2026-05-17 (vendor migration v2
+      ;; blocker — info.el `?©', simple.el `?→', help-fns.el `?→',
+      ;; help-mode.el `?…' etc all rely on this).
       (nelisp--read-tok-bump lx)
-      (if (< c 128)
-          (nelisp--read-tok-make 'int c pos)
-        (nelisp--read-tok-error "multibyte char literal is deferred" pos)))
+      (nelisp--read-tok-make 'int c pos))
      (t
       ;; `?\X'
       (nelisp--read-tok-bump lx)            ; consume `\'

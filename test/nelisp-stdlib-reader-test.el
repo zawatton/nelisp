@@ -377,6 +377,18 @@ where OBJ is OBJ-FORM evaluated; return stdout (= `t' or `nil')."
   ;; ?A = 65 (Int) — char literals are sugar for fixnums.
   (should (equal (nelisp-stdlib-reader-test--round-trip "?A") "t")))
 
+(ert-deftest nelisp-stdlib-reader-roundtrip-char-literal-multibyte-copyright ()
+  ;; ?© = 169 (vendor info.el).
+  (should (equal (nelisp-stdlib-reader-test--round-trip "?©") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-char-literal-multibyte-arrow ()
+  ;; ?→ = 8594 (vendor simple.el / help-fns.el).
+  (should (equal (nelisp-stdlib-reader-test--round-trip "?→") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-char-literal-multibyte-ellipsis ()
+  ;; ?… = 8230 (vendor help-mode.el).
+  (should (equal (nelisp-stdlib-reader-test--round-trip "?…") "t")))
+
 ;; Sexp::Float ----------------------------------------------------------------
 
 (ert-deftest nelisp-stdlib-reader-roundtrip-float-one ()
