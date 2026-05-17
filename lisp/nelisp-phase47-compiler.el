@@ -622,6 +622,22 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'cell-null-p
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
+   ;; Doc 115 §115.1 — `(vector-make CAP SLOT)' allocates a fresh
+   ;; `NlVector' via `nl_alloc_vector(CAP)' (Doc 111 §111.E) and
+   ;; writes `Sexp::Vector(box)' (= tag byte + payload pointer) into
+   ;; the caller-owned SLOT.  Returns SLOT in rax.  Parallel to
+   ;; `cell-make' / `cons-make' for `Sexp::Cell' / `Sexp::Cons'.
+   ;; CAP is evaluated as an i64; the new vector is pre-filled with
+   ;; `Sexp::Nil' elements by `nl_alloc_vector'.
+   ((and (consp sexp) (eq (car sexp) 'vector-make))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :vector-make-arity sexp)))
+    (list :kind 'vector-make
+          :cap (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.C Symbol/Str read ops ----
    ;; (str-len H)       — read String::len at offset 24 from a
    ;;                     `Sexp::Str' / `Sexp::Symbol' slot.
@@ -1463,6 +1479,7 @@ the node's class to consume the result correctly."
              'record-type-tag 'record-slot-count 'record-slot-ref
              'record-slot-ref-ptr 'record-slot-set
              'vector-len 'vector-ref 'vector-ref-ptr 'vector-slot-set
+             'vector-make
              'cell-value 'cell-set-value 'cell-make 'cell-null-p
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
@@ -1537,6 +1554,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-vector-ref-ptr node buf))
       ('vector-slot-set
        (nelisp-phase47-compiler--emit-vector-slot-set node buf))
+      ('vector-make
+       (nelisp-phase47-compiler--emit-vector-make node buf))
       ('cell-value
        (nelisp-phase47-compiler--emit-cell-value node buf))
       ('cell-set-value
@@ -2165,7 +2184,14 @@ Sexp payload at offset 8 is an `NlVector*' (vs. `NlRecord*' for
 record-slot-set) and the called helper is `nl_vector_set_slot'.  The
 helper signature is identical: `(vec, n, val_ptr)' in `rdi / rsi /
 rdx', refcount-aware drop of the old element via `Vec::index_mut'
-assignment, refcount-aware clone of `*val_ptr' into the slot."
+assignment, refcount-aware clone of `*val_ptr' into the slot.
+
+Doc 115 §115.1 — materialise `rax = 1' after the helper call so this
+op composes cleanly in `(and SIDE-EFFECT VALUE)' value-form chains,
+matching the convention `--emit-record-slot-set' established for
+§111.B's record overwrite (= `Vec::index_mut' leaves rax in an
+unspecified state across the call boundary; explicit `mov rax, 1'
+yields a stable truthy value)."
   (let ((ptr (plist-get node :ptr))
         (idx (plist-get node :idx))
         (val-ptr (plist-get node :val-ptr)))
@@ -2182,7 +2208,9 @@ assignment, refcount-aware clone of `*val_ptr' into the slot."
      buf 'rdi 'rdi nelisp-sexp--offset-payload)
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_vector_set_slot" -4 'text)))
+     buf "nl_vector_set_slot" -4 'text)
+    ;; rax = 1 (truthy sentinel for value-form chaining).
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
 (defun nelisp-phase47-compiler--emit-vector-ref (node buf)
   "Copy a vector element into the caller-owned destination slot.
@@ -2307,6 +2335,58 @@ original H pointer in rax."
      buf "nl_cell_set_value" -4 'text)
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'rax)))
+
+(defun nelisp-phase47-compiler--emit-vector-make (node buf)
+  "Emit `vector-make' — allocate fresh NlVector and write Sexp::Vector into SLOT.
+NODE carries `:cap' (= i64 capacity) and `:slot' (= `*mut Sexp').
+
+Strategy (= literal mirror of `cell-make' alignment idiom, just with
+an i64 arg instead of a `*const Sexp' arg):
+
+  1. Evaluate CAP, push.
+  2. Evaluate SLOT, push.
+  3. Push one extra alignment pad (= same trick `cell-make' uses).
+  4. Call `nl_alloc_vector(cap)' — only one arg, so we discard the
+     pad with `pop r11' first.  Stack at CALL site matches the
+     `cell-make' shape.
+  5. Recover slot from stack, write `Sexp::Vector(box)' (tag at offset
+     0, ptr at offset 8) and return slot in rax.
+
+The exact push/pop balancing follows `cell-make' so SysV AMD64
+alignment holds.  The new vector is pre-filled with `Sexp::Nil'
+elements by `nl_alloc_vector' (= refcount-1 box, ready for
+`vector-slot-set'-based copy-fill)."
+  (let ((cap (plist-get node :cap))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value cap buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Mirror cell-make's "one extra scratch slot" alignment pad.
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'r11)        ; r11 = pad (discard)
+    (nelisp-asm-x86_64-pop buf 'rsi)        ; rsi = slot (will save to stack)
+    (nelisp-asm-x86_64-pop buf 'rdi)        ; rdi = cap (= arg 0)
+    ;; Save slot across the helper call.  Two extra pushes (= slot +
+    ;; one pad) keep the call site at a 16-byte boundary, matching
+    ;; cell-make's idiom.
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_alloc_vector" -4 'text)
+    ;; rax = NlVector*.  Move to r10.
+    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+    ;; Discard alignment pad, recover slot.
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'rsi)        ; rsi = slot
+    ;; slot = Sexp::Vector(box).  Tag byte at offset 0, payload ptr at
+    ;; offset 8 (= `Sexp::Vector' tag = 8, same shape `cell-make' uses
+    ;; for `Sexp::Cell').
+    (nelisp-asm-x86_64-mov-mem-imm8 buf 'rsi nelisp-sexp--tag-vector)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rsi nelisp-sexp--offset-payload 'r10)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
 (defun nelisp-phase47-compiler--emit-cell-make (node buf)
   "Emit `cell-make' — allocate fresh NlCell and write Sexp::Cell into SLOT.

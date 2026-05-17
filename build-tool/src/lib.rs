@@ -252,6 +252,7 @@ pub mod elisp_cc_spike {
         fn nelisp_frame_stack_ensure_capacity(
             frames_ptr: *const Sexp,
             needed: i64,
+            scratch_slot: *mut Sexp,
         ) -> i64;
         fn nelisp_frame_push(frames_ptr: *const Sexp) -> i64;
         fn nelisp_frame_pop(frames_ptr: *const Sexp) -> i64;
@@ -612,7 +613,19 @@ pub mod elisp_cc_spike {
         frames_ptr: *const Sexp,
         needed: i64,
     ) -> i64 {
-        nelisp_frame_stack_ensure_capacity(frames_ptr, needed)
+        // Doc 115 §115.1 — the pure-elisp implementation in
+        // `lisp/nelisp-cc-frame-ensure-capacity.el' takes a 3rd
+        // `scratch_slot' parameter (= caller-owned `*mut Sexp' to
+        // hold the freshly-allocated `Sexp::Vector' before installing
+        // it into the frames-record's slot 0).  We allocate a stack-
+        // local `Sexp::Nil' here and pass its pointer so the public
+        // 2-arg API is preserved for existing callers / probes.
+        let mut scratch = Sexp::Nil;
+        nelisp_frame_stack_ensure_capacity(
+            frames_ptr,
+            needed,
+            &mut scratch as *mut Sexp,
+        )
     }
 
     pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 {

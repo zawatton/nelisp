@@ -53,57 +53,15 @@ unsafe fn frame_stack_view_from_ptr(
 }
 
 // ---- #20 frame_stack_ensure_capacity --------------------------------
-
-/// Doc 111 §111.E #20 — grow the lexframe-stack BACKING vector to at
-/// least `needed' slots, copying live elements over and installing the
-/// new vector in `frames_record.slots[0]'.  No-op when the existing
-/// capacity already covers `needed'.  Returns 0 when the mirror is
-/// unbuilt (= `Sexp::Nil' frames_record).
-///
-/// Returns the resulting capacity (= length of the backing vector
-/// after the call) as i64, so the Phase 47 caller has a non-zero
-/// return value to thread through `if'.
-///
-/// # Safety
-/// - `frames_ptr' must be non-null and point at the `Env::frames_record'
-///   slot (= a `Sexp::Record(_)' or `Sexp::Nil').
-/// - No other `&Sexp' borrow into `*frames_ptr' may be live.
-#[no_mangle]
-pub unsafe extern "C" fn nl_frame_stack_ensure_capacity(
-    frames_ptr: *const Sexp,
-    needed: i64,
-) -> i64 {
-    let Some((stack_rec, backing, _depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
-        return 0;
-    };
-    let depth = match unsafe { &*frames_ptr } {
-        Sexp::Record(r) => match r.slots.get(1) {
-            Some(Sexp::Int(n)) => *n as usize,
-            _ => 0,
-        },
-        _ => 0,
-    };
-    let needed_usize = if needed < 0 { 0 } else { needed as usize };
-    let cap = backing.value.len();
-    if cap >= needed_usize {
-        return cap as i64;
-    }
-    let mut new_cap = cap.max(1);
-    while new_cap < needed_usize {
-        new_cap *= 2;
-    }
-    let mut new_buf: Vec<Sexp> = Vec::with_capacity(new_cap);
-    for i in 0..depth {
-        new_buf.push(backing.value.get(i).cloned().unwrap_or(Sexp::Nil));
-    }
-    while new_buf.len() < new_cap {
-        new_buf.push(Sexp::Nil);
-    }
-    let new_vec_sexp = Sexp::vector(new_buf);
-    // SAFETY: no outstanding borrow into `stack_rec.slots'.
-    unsafe { stack_rec.with_slots_mut(|s| s[0] = new_vec_sexp) };
-    new_cap as i64
-}
+//
+// Doc 115 §115.1 — the Rust shim `nl_frame_stack_ensure_capacity'
+// has been replaced by the pure-elisp implementation in
+// `lisp/nelisp-cc-frame-ensure-capacity.el'.  The grow algorithm
+// (= capacity-doubling + depth-aware copy + slot 0 install) now
+// runs in Phase 47-compiled elisp via the `vector-make' (§115.1)
+// + `vector-slot-set' (§111.E) + `record-slot-set' (§111.B) ops.
+// See the safe wrapper `Spike::frame_stack_ensure_capacity' in
+// `build-tool/src/lib.rs' for the public entry point.
 
 // ---- #21 frame_push_rust_direct -------------------------------------
 
@@ -482,20 +440,9 @@ mod tests {
         assert!(matches!(&first.cdr, Sexp::Cell(_)));
     }
 
-    #[test]
-    fn nl_frame_stack_ensure_capacity_grows() {
-        let frames = build_frames_record();
-        unsafe {
-            // Force growth: 8-slot initial, request 16.
-            nl_frame_stack_ensure_capacity(&frames as *const Sexp, 16);
-        }
-        // Verify new vector is in slot 0 with len >= 16.
-        if let Sexp::Record(r) = &frames {
-            if let Sexp::Vector(v) = &r.slots[0] {
-                assert!(v.value.len() >= 16);
-            } else {
-                panic!("slot 0 not Vector");
-            }
-        }
-    }
+    // Doc 115 §115.1 — the `nl_frame_stack_ensure_capacity_grows'
+    // test was tied to the deleted Rust shim.  Coverage moves to the
+    // integration probe at `tests/elisp_cc_frame_stack_ensure_capacity_probe.rs'
+    // which drives the pure-elisp implementation end-to-end (= 3
+    // tests covering no-grow, grow-to-next-pow2, and multi-doubling).
 }
