@@ -2,7 +2,9 @@
 //! function); lambdas are `(closure CAPTURED-ENV ARGS BODY...)'.  See
 //! Doc 44 §3.3 + §4.
 
+#[cfg(any(test, feature = "image-baker"))]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::rc::Rc;
 
 use crate::image;
@@ -11,6 +13,13 @@ use super::error::EvalError;
 use super::sexp::Sexp;
 
 /// Host-crate-registered builtin closure.  `Rc' because `Env' is single-threaded.
+///
+/// Doc 102 Phase 7 (2026-05-17) — gated behind `#[cfg(test)]`.
+/// Production binary doesn't ship this surface; `nelisp--env-globals-op'
+/// (= the sole former production extern_builtin) is now a regular
+/// `builtins::dispatch' match arm (= Doc 102 Phase 6).  Tests retain
+/// the extension point for verifying the dispatch fall-through path.
+#[cfg(test)]
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
 /// Symbol's two cells (Elisp value/function dichotomy) + plist + constant flag.
@@ -39,6 +48,10 @@ pub type FrameCell = crate::eval::nlcell::NlCellRef;
 pub struct Env {
     pub max_recursion: u32,
     pub current_recursion: u32,
+    /// Doc 102 Phase 7 — extension-point HashMap for tests; production
+    /// binary builds without this field (`nelisp--env-globals-op' is a
+    /// regular dispatch arm as of Phase 6).
+    #[cfg(test)]
     pub extern_builtins: HashMap<String, ExternBuiltin>,
     /// Stage 7.4.c — route apply_combiner's plain-fn / lambda-head paths
     /// through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
@@ -70,6 +83,7 @@ impl Env {
         Env {
             max_recursion,
             current_recursion: 0,
+            #[cfg(test)]
             extern_builtins: HashMap::new(),
             use_elisp_apply: false,
             delegation_depth: 0,
@@ -145,7 +159,12 @@ impl Env {
         env
     }
 
-    /// Empty env (= no built-ins).  For error-path tests.
+    /// Empty env (= no built-ins).  For error-path tests + the
+    /// image baker's `decode_v3` round-trip helper.  Doc 102 Phase 7
+    /// (2026-05-17) — gated behind `#[cfg(any(test, feature =
+    /// "image-baker"))]` so the production binary doesn't carry the
+    /// symbol.
+    #[cfg(any(test, feature = "image-baker"))]
     pub fn empty() -> Self {
         Env::fresh(256)
     }
@@ -375,6 +394,10 @@ impl Env {
     /// `env.globals.keys()').  Callback receives a `NlRecordRef'
     /// (= refcount-bumped clone) so it may read all four slots
     /// (value / function / plist / constant).
+    ///
+    /// Doc 102 Phase 7 (2026-05-17) — gated; only consumer is
+    /// `mirror_snapshot_globals' which is itself baker-only.
+    #[cfg(any(test, feature = "image-baker"))]
     pub(crate) fn mirror_iter_entries<F>(&self, mut callback: F)
     where
         F: FnMut(&str, &crate::eval::nlrecord::NlRecordRef),
@@ -418,6 +441,11 @@ impl Env {
     /// `SymbolEntry'.  Captures elisp-driven mutations (= env_shim
     /// `(defun)' / `(fset)' that wrote ONLY to the mirror), which
     /// `self.globals.clone()' misses.
+    ///
+    /// Doc 102 Phase 7 (2026-05-17) — gated behind `#[cfg(any(test,
+    /// feature = "image-baker"))]'; called only by `iterative_bake_one'
+    /// + `encode_v3' (= both image-baker-only paths).
+    #[cfg(any(test, feature = "image-baker"))]
     pub fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
         let mut out: HashMap<String, SymbolEntry> = HashMap::new();
         let unbound = self.unbound_marker.clone();
@@ -455,6 +483,10 @@ impl Env {
     /// Unlike `globals_diff_view' (which reads `self.globals'), this
     /// captures elisp-driven mutations that landed only on the mirror.
     /// Step C completes the round-trip — encoder reads ONLY the mirror.
+    ///
+    /// Doc 102 Phase 7 (2026-05-17) — gated behind `#[cfg(any(test,
+    /// feature = "image-baker"))]'; only used by `iterative_bake_one'.
+    #[cfg(any(test, feature = "image-baker"))]
     pub fn mirror_diff_view(&self, before: &HashMap<String, SymbolEntry>) -> Env {
         let mut diff = Env::empty();
         diff.install_empty_mirror_rust_direct();
@@ -475,6 +507,10 @@ impl Env {
 
     /// Baker accumulator env — built-ins + env_shim installed but no
     /// STDLIB images decoded.  Used by `image::iterative_bake_one'.
+    /// Doc 102 Phase 7 (2026-05-17) — gated behind `#[cfg(any(test,
+    /// feature = "image-baker"))]'; production binary doesn't ship
+    /// this entry point.
+    #[cfg(any(test, feature = "image-baker"))]
     pub fn new_global_no_stdlib() -> Self {
         Env::install_stage0(1024)
     }
@@ -758,6 +794,12 @@ impl Env {
     /// Register `f' as an externally-supplied builtin under `name'.
     /// Sets the function cell to `(builtin NAME)' so `(NAME ARG...)'
     /// invokes `f(args, env)'.  Re-registering overwrites.
+    ///
+    /// Doc 102 Phase 7 (2026-05-17) — gated behind `#[cfg(test)]'.
+    /// Production binary's sole former extern_builtin
+    /// (=nelisp--env-globals-op=) is now a regular `builtins::dispatch'
+    /// match arm (Phase 6).
+    #[cfg(test)]
     pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
     where
         F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,

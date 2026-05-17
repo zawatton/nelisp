@@ -26,7 +26,7 @@
     - Step B: elisp =defconst= macro now sets the constant flag via =nelisp--env-globals-set-constant= (= Doc 86 §86.3.a surface).  Resolves the Stage 7.3.a TODO ("NeLisp has no constant-flag primitive accessible from elisp; Stage 7.3.d will revisit").  Smoke test: =(progn (defconst x 99) (setq x 50))= now errors with =setting-constant=.
     - Step C SHIPPED 2026-05-17: =mirror_lookup_value= / =mirror_lookup_function= now return =Sexp= directly (= =Env::unbound_marker= for the absent case, no =Option<Sexp>= wrapping).  =mirror_is_bound= / =mirror_is_fbound= updated to sentinel comparison.  All callers (= =Env::lookup_value=, =Env::lookup_function=, =env_shim::bi_globals_op= get-value / get-function arms, 2 mirror_*-direct tests) migrated.  Aligns the Rust mirror API with the elisp side (= =nelisp-env-lookup-value= returns =nelisp--unbound-marker= for the absent case) so Phase 6+ can dispatch the lookup path without a Result/Option conversion layer.
   - Phase 6 — *SHIPPED (option a) 2026-05-17*: production's sole =extern_builtin= entry (= =nelisp--env-globals-op=) promoted to a regular =builtins::dispatch= match arm.  =install_env_shim_primitives= now sets just the function-cell sentinel; the =register_extern_builtin= call is removed.  The =extern_builtins: HashMap<...>= field stays as a *host-crate / test-only extension surface* (= 4 test callsites + the public API contract for crates that depend on =nelisp-build-tool=).  Production binary no longer reads from =extern_builtins= at all.
-  - Phase 7 (Doc 108) — *PENDING*: last-mile shrink (= phantom shims routing to elisp via slim primitives).
+  - Phase 7 — *PARTIAL SHIPPED 2026-05-17*: production binary surface shrink via cfg-gating.  =Env::empty=, =Env::new_global_no_stdlib=, =Env::mirror_snapshot_globals=, =Env::mirror_diff_view=, =Env::mirror_iter_entries=, =image::decode_v3= all gated behind =#[cfg(any(test, feature = "image-baker"))]=.  =Env::extern_builtins= field, =ExternBuiltin= type, =Env::register_extern_builtin= method, and the =builtins::dispatch= fall-through gated behind =#[cfg(test)]=.  Production binary no longer carries these symbols.  The original §3 Phase 7 target of "env.rs ≈ 200 LOC" turned out to be structurally off — the mirror_* + frame_* Rust-direct helpers (~600 LOC) are required by production reads/writes; they can't be moved out without Phase 8's env.rs split.  Remaining shrinks (= mirror_* / frame_* relocation into a separate `eval/mirror.rs`) become Phase 8 prerequisite work.
   - Phase 8 (Doc 109) — *PENDING*: =env.rs= file physically DELETED, residual ~50 LOC absorbed into =eval/mod.rs=.
 
 ** Why this DRAFT exists (= roadmap context)
@@ -526,20 +526,44 @@ HashMap can now be tagged =#[cfg(any(test, feature = "...host
 extension..."))]= in a follow-up cleanup, which would actually
 delete the field from production binaries.
 
-** Phase 7 (Doc 108) — Last-mile shrink (1 session)
+** Phase 7 — Last-mile shrink [PARTIAL SHIPPED 2026-05-17]
 
-After Phases 2-6, env.rs is ≈ 200 LOC of plumbing:
-- `Env::new_global' + `new_global_no_stdlib' (= startup)
-- Recursion guard counter (`max_recursion' / `current_recursion')
-- `use_elisp_apply' / `delegation_depth' (= takeover flags)
-- A handful of `pub fn' shims that route to env_shim primitives
+*Original goal*: shrink env.rs to ≈ 200 LOC of plumbing, with
+phantom shims routing to elisp via slim primitives.  Estimate
+predated the Rust-direct mirror_* / frame_* helpers that Doc 102
+Phase 8 sprint + Doc 104 Phase 3 accumulated for performance.
 
-Phase 7 shrinks this to a minimal struct with:
-- `recursion: u32' (= counter only)
-- `extern_builtins: HashMap<...>' (= until Phase 8+)
-- Phantom shims that route to elisp via slim primitives
+*What shipped*: production binary surface shrink via cfg-gating
+(= the helpers stay in env.rs but compile out of the non-baker
+production binary).  Six baker-only helpers gated behind
+=#[cfg(any(test, feature = "image-baker"))]=:
+- =Env::empty=
+- =Env::new_global_no_stdlib=
+- =Env::mirror_snapshot_globals=
+- =Env::mirror_diff_view=
+- =Env::mirror_iter_entries= (= consumed only by snapshot)
+- =image::decode_v3= (= consumed only by tests)
 
-*LOC delta*: Rust -100; Elisp +20.
+Three test-extension surfaces gated behind =#[cfg(test)]=:
+- =Env::extern_builtins= field
+- =ExternBuiltin= type alias
+- =Env::register_extern_builtin= method
+- =builtins::dispatch= fall-through that reads =extern_builtins=
+
+Production binary no longer carries these symbols.
+
+*What's deferred*: the mirror_* / frame_* Rust-direct helpers
+(~600 LOC) are required by production reads/writes; they can't be
+trivially relocated.  Phase 8 will split env.rs into:
+- =eval/env.rs= (≈ struct + ctors + simple shims, ≈ 200 LOC)
+- =eval/mirror.rs= (= mirror_* helpers)
+- =eval/lexframe.rs= (= frame_* helpers)
+…and then delete =env.rs= once everything finds a home.
+
+*LOC delta (actual)*: Rust ~0 net (= cfg attributes added, no
+function bodies deleted).  The win is *production binary surface
+reduction* (= the gated helpers compile out, so the production
+binary's symbol table + code size both shrink).
 
 ** Phase 8 (Doc 109) — env.rs DELETED (= the deliverable)
 

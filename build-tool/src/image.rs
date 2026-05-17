@@ -353,6 +353,11 @@ pub fn encode_v3_with_fallback(
 /// The simpler [`decode_v3`] entrypoint constructs a fresh empty
 /// [`Env`] and discards fallback forms — useful for round-trip
 /// tests.  Production callers will use [`decode_v3_into`].
+///
+/// Doc 102 Phase 7 (2026-05-17) — gated behind `#[cfg(any(test,
+/// feature = "image-baker"))]`; production binary uses
+/// `decode_v3_into` on the pre-allocated `new_global` env.
+#[cfg(any(test, feature = "image-baker"))]
 pub fn decode_v3(bytes: &[u8]) -> Result<Env, ImageError> {
     let mut env = Env::empty();
     // Doc 102 Phase 2.b Step D — decode writes to the mirror via

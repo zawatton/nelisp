@@ -461,14 +461,21 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // Doc 102 Phase 6 (2026-05-17) — `nelisp--env-globals-op' moved
         // from `extern_builtins' to a regular dispatch arm.  Drops the
         // production binary's dependency on `extern_builtins'; the
-        // HashMap is now a test-only / host-crate extension surface.
+        // HashMap is now a test-only extension surface (Phase 7).
         "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op(args, env),
         _ => {
             // Externally-registered builtin (`Env::register_extern_builtin').
-            // Clone the Rc first so the `extern_builtins' borrow drops
-            // before we re-borrow `env' through the closure.
-            if let Some(f) = env.extern_builtins.get(name).cloned() {
-                return f(args, env);
+            // Doc 102 Phase 7 (2026-05-17) — extern_builtins is
+            // `#[cfg(test)]'-only; production binary never reaches the
+            // HashMap lookup and falls straight through to
+            // `UnboundFunction'.
+            #[cfg(test)]
+            {
+                // Clone the Rc first so the `extern_builtins' borrow drops
+                // before we re-borrow `env' through the closure.
+                if let Some(f) = env.extern_builtins.get(name).cloned() {
+                    return f(args, env);
+                }
             }
             Err(EvalError::UnboundFunction(name.to_string()))
         }
