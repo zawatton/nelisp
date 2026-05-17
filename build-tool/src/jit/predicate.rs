@@ -14,6 +14,40 @@
 //! "nelisp_jit_eq_inline" a b)' which goes through
 //! `bridge::unified_fn_ptr's name → fn-ptr table — no Cranelift wrapper
 //! page in between.
+//!
+//! # Doc 120 §120.A swap status (2026-05-18)
+//!
+//! 2 of 4 trampolines moved to Phase-47-compiled elisp on linux-x86_64:
+//!
+//!   - `nl_jit_predicate_eq' → `lisp/nelisp-cc-jit-predicate-eq.el'
+//!     (= elisp body owns the 3 fast paths; slow path delegates to a
+//!     new `nl_sexp_eq' `#[no_mangle]' extern in `eval/special_forms.rs').
+//!   - `nl_jit_ref_eq'       → `lisp/nelisp-cc-jit-ref-eq.el'
+//!     (= same `nl_sexp_eq' slow-path delegate + `sexp-write-t' /
+//!     `sexp-write-nil' tag writers).
+//!
+//! Skipped (= blockers documented inline):
+//!
+//!   - `nl_jit_sxhash'       — needs a recursive variant-walking
+//!     `DefaultHasher' port in Phase 47.  The trampoline composes
+//!     `Hash::hash' over every nested Sexp variant which would require
+//!     a new `(hash-state-update STATE BYTES)' grammar primitive plus
+//!     a port of `std::collections::hash_map::DefaultHasher's
+//!     SipHash-1-3 implementation.  Out of scope for §120.A.
+//!   - `nl_jit_type_of'      — needs `(sexp-write-symbol SLOT
+//!     "type-name")' grammar op which does not yet exist.  The
+//!     trampoline returns one of 9 distinct `Sexp::Symbol' values
+//!     depending on the tag byte; Phase 47 currently only exposes
+//!     `sexp-write-t' / `sexp-write-nil' (= byte-only writers for
+//!     `Sexp::T' / `Sexp::Nil').  Adding a symbol writer is feasible
+//!     but expanding the grammar is out of scope for §120.A.
+//!
+//! On linux-x86_64 the Rust `nl_jit_predicate_eq' / `nl_jit_ref_eq'
+//! functions below are kept for fallback parity + in-file unit tests
+//! (= dead code that the linker keeps via `#[no_mangle]' + `-rdynamic',
+//! similar to other arch-specific reference impls).  Other targets
+//! still route through these Rust trampolines via the `predicate_link'
+//! stub in `bridge.rs' until the §120.A elisp emit is generalized.
 
 use crate::eval::sexp::{Sexp, SEXP_TAG_INT};
 

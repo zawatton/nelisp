@@ -464,6 +464,31 @@ fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let value = eval(&parts[1], env)?;
     Err(EvalError::UncaughtThrow { tag, value })
 }
+/// Doc 120 §120.A — `#[no_mangle] extern "C"' wrapper around
+/// [`sexp_eq`] for the Phase-47-compiled `nelisp_jit_predicate_eq`
+/// / `nelisp_jit_ref_eq' trampolines.  The elisp bodies in
+/// `lisp/nelisp-cc-jit-predicate-eq.el' / `nelisp-cc-jit-ref-eq.el'
+/// reach this through `(extern-call nl_sexp_eq A B)' for the slow-
+/// path variant-specific equality (= Symbol-by-name, Cons-by-Rc-
+/// ptr-eq, Str-by-content, etc.).  Returns i64 = 1 iff equal else
+/// 0; the i64 shape matches the `(extern-call SYM ARG...) -> i64'
+/// ABI for the GP arg-reg class.
+///
+/// # Safety
+///
+/// - `a' and `b' must be non-null pointers to initialized `Sexp'
+///   values.  The function only borrows `*a' / `*b' for the
+///   `sexp_eq' call duration, so the caller may pass `&Sexp'
+///   pointers without ownership transfer.
+#[no_mangle]
+pub unsafe extern "C" fn nl_sexp_eq(a: *const Sexp, b: *const Sexp) -> i64 {
+    if sexp_eq(&*a, &*b) {
+        1
+    } else {
+        0
+    }
+}
+
 /// `eq' — symbols by name, integers by value, heap types by
 /// ptr_eq (= same allocation, so cyclic graphs don't recurse).
 pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {

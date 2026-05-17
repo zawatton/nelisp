@@ -184,6 +184,52 @@ mod math_link {
     pub unsafe extern "C" fn nl_jit_float_log(_: f64) -> f64 { 0.0 }
 }
 
+// Doc 120 §120.A — `jit/predicate.rs's 2 of 4 trampolines (=
+// `nelisp_jit_predicate_eq' for `(eq A B)' and `nelisp_jit_ref_eq'
+// for `(nelisp--ref-eq A B)') now live in Phase-47-compiled elisp
+// `.o' files (= `lisp/nelisp-cc-jit-predicate-eq.el' +
+// `lisp/nelisp-cc-jit-ref-eq.el').  `predicate_link' mirrors
+// `arith_link' / `float_link' / `math_link' shape: `extern "C"'
+// decls so the linker resolves the symbols against the static
+// archive built by `build.rs::link_elisp_cc_spike'.
+//
+// Currently linux-x86_64 only — the `extern-call' grammar form
+// the elisp bodies use to call into `nl_sexp_eq' ships aarch64
+// in a follow-up.  Other targets fall through to the legacy
+// `super::predicate::nl_jit_predicate_eq' / `nl_jit_ref_eq' Rust
+// trampolines (kept under the inverse `#[cfg(not(...))]' gate in
+// `jit/predicate.rs').  `nelisp_jit_sxhash' + `nelisp_jit_type_of'
+// stay in Rust on every target — see the blocker comments in
+// `predicate.rs' (= they need symbol-write + DefaultHasher port
+// not yet expressible in the Phase 47 grammar).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod predicate_link {
+    use crate::eval::sexp::Sexp;
+    #[allow(improper_ctypes)]
+    extern "C" {
+        pub fn nelisp_jit_predicate_eq(a: *const Sexp, b: *const Sexp) -> i64;
+        pub fn nelisp_jit_ref_eq(a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64;
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+mod predicate_link {
+    use crate::eval::sexp::Sexp;
+    pub unsafe extern "C" fn nelisp_jit_predicate_eq(
+        a: *const Sexp,
+        b: *const Sexp,
+    ) -> i64 {
+        super::super::predicate::nl_jit_predicate_eq(a, b)
+    }
+    pub unsafe extern "C" fn nelisp_jit_ref_eq(
+        a: *const Sexp,
+        b: *const Sexp,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::predicate::nl_jit_ref_eq(a, b, out)
+    }
+}
+
 // Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
 // `UnifiedJit' struct + `unified_jit()' OnceLock are gone now that
 // every cluster (cons / access / arith / predicate / syscall) goes
@@ -280,10 +326,16 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // skip this bridge entirely via dlsym + direct CALL.  The `_u'
         // binding is now unused since no field of `UnifiedJit' is
         // looked up on this match arm.
-        "nelisp_jit_eq_inline" => super::predicate::nl_jit_predicate_eq as *const u8,
+        // Doc 120 §120.A — `nl_jit_predicate_eq' wholly replaced by
+        // Phase-47-compiled elisp `.o' on linux-x86_64; other targets
+        // fall through to the Rust trampoline in `super::predicate' via
+        // the `predicate_link' stub.
+        "nelisp_jit_eq_inline" => predicate_link::nelisp_jit_predicate_eq as *const u8,
         // Doc 86 §86.1.a (2026-05-10): `type-of' migrated to elisp on
         // top of this trampoline (= reachable via `(nl-jit-call-out-1
         // "nelisp_jit_type_of" x)' from `lisp/nelisp-stdlib.el').
+        // Doc 120 §120.A — stays in Rust: needs `sexp-write-symbol' op
+        // not yet in the Phase 47 grammar.
         "nelisp_jit_type_of" => super::predicate::nl_jit_type_of as *const u8,
         // ---- intern / symbol (3) ---- Doc 86 §86.1.d (2026-05-10).
         "nelisp_jit_intern" => super::strings::nl_jit_intern as *const u8,
@@ -295,9 +347,15 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // `lisp/nelisp-jit-strategy.el').  Returns `Sexp::T' / `Sexp::Nil'
         // directly so the elisp wrapper can avoid the `nelisp--int-eq-
         // zero' convert dance that `eq' uses.
-        "nelisp_jit_ref_eq" => super::predicate::nl_jit_ref_eq as *const u8,
+        // Doc 120 §120.A — `nl_jit_ref_eq' wholly replaced by Phase-47-
+        // compiled elisp `.o' on linux-x86_64; other targets fall through
+        // to the Rust trampoline in `super::predicate' via the
+        // `predicate_link' stub.
+        "nelisp_jit_ref_eq" => predicate_link::nelisp_jit_ref_eq as *const u8,
         // Doc 86 §86.1.b — `sxhash' trampoline (1:1 port, kept in
         // Rust for `DefaultHasher' bit-exactness, Doc 87 §3.2).
+        // Doc 120 §120.A — stays in Rust: recursive variant-walking
+        // hash composition not yet expressible in Phase 47 grammar.
         "nelisp_jit_sxhash" => super::predicate::nl_jit_sxhash as *const u8,
         // ---- syscall (2) ----
         // Phase 7.1.6.e (Doc 28 §3.6.e): resolve syscall names directly

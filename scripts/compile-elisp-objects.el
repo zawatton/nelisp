@@ -321,7 +321,24 @@
     (nelisp-cc-jit-math
      :source-var nelisp-cc-jit-math-log--source
      :output "nl_jit_float_log.o"
-     :requires-arch (x86_64 aarch64)))
+     :requires-arch (x86_64 aarch64))
+    ;; Doc 120 §120.A — `jit/predicate.rs' partial swap.
+    ;; `nl_jit_predicate_eq' (`(eq A B)' trampoline) and
+    ;; `nl_jit_ref_eq' (`(nelisp--ref-eq A B)' trampoline) move to
+    ;; Phase 47 elisp.  Both compose the slow path through a fresh
+    ;; `nl_sexp_eq' Rust extern in `eval/special_forms.rs' (= thin
+    ;; `#[no_mangle]' wrapper around the existing `sexp_eq' free
+    ;; fn).  `nl_jit_sxhash' + `nl_jit_type_of' stay Rust — see the
+    ;; blocker note in `build-tool/src/jit/predicate.rs'.  Linux-
+    ;; x86_64 only — `extern-call' ABI ships aarch64 in a follow-up.
+    (nelisp-cc-jit-predicate-eq
+     :source-var nelisp-cc-jit-predicate-eq--source
+     :output "nelisp_jit_predicate_eq.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-ref-eq
+     :source-var nelisp-cc-jit-ref-eq--source
+     :output "nelisp_jit_ref_eq.o"
+     :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding

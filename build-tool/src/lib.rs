@@ -365,6 +365,20 @@ pub mod elisp_cc_spike {
         pub fn nl_jit_float_float(x: f64) -> f64;
         pub fn nl_jit_float_exp(x: f64) -> f64;
         pub fn nl_jit_float_log(x: f64) -> f64;
+        // Doc 120 §120.A — `jit/predicate.rs' 2 of 4 trampoline swaps
+        // (`predicate_eq' + `ref_eq'; `sxhash' + `type_of' stay Rust).
+        // Defined in `lisp/nelisp-cc-jit-predicate-eq.el' +
+        // `lisp/nelisp-cc-jit-ref-eq.el'; wired to `unified_fn_ptr' via
+        // the `predicate_link' module in `jit/bridge.rs'.  These decls
+        // also pin the symbols into the integration test binary's
+        // link line (= the rlib's `predicate_link' extern block alone
+        // gets DCE'd by `--gc-sections' before tests can call them).
+        pub fn nelisp_jit_predicate_eq(a: *const Sexp, b: *const Sexp) -> i64;
+        pub fn nelisp_jit_ref_eq(
+            a: *const Sexp,
+            b: *const Sexp,
+            out: *mut Sexp,
+        ) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -929,4 +943,29 @@ pub mod elisp_cc_spike {
     pub fn jit_float_float(x: f64) -> f64 { unsafe { nl_jit_float_float(x) } }
     pub fn jit_float_exp(x: f64) -> f64 { unsafe { nl_jit_float_exp(x) } }
     pub fn jit_float_log(x: f64) -> f64 { unsafe { nl_jit_float_log(x) } }
+
+    /// Doc 120 §120.A probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_predicate_eq' trampoline.  ABI matches the
+    /// deleted Rust `nl_jit_predicate_eq': `(*const Sexp, *const Sexp)
+    /// -> i64' returning 1 iff `(eq a b)' else 0.
+    ///
+    /// # Safety
+    /// - `a' / `b' must be non-null pointers to initialized `Sexp's.
+    pub unsafe fn jit_predicate_eq(a: *const Sexp, b: *const Sexp) -> i64 {
+        nelisp_jit_predicate_eq(a, b)
+    }
+
+    /// Doc 120 §120.A probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_ref_eq' trampoline.  ABI matches the
+    /// deleted Rust `nl_jit_ref_eq': `(*const Sexp, *const Sexp, *mut
+    /// Sexp) -> i64'; writes `Sexp::T' / `Sexp::Nil' into `*out' and
+    /// returns 0 (= always succeeds).
+    ///
+    /// # Safety
+    /// - `a' / `b' must be non-null pointers to initialized `Sexp's.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_ref_eq(a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64 {
+        nelisp_jit_ref_eq(a, b, out)
+    }
 }

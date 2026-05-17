@@ -150,6 +150,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-jit-float.el",
         // Doc 110 §110.F — 3-trampoline `jit/math.rs' swap (float / exp / log).
         "nelisp-cc-jit-math.el",
+        // Doc 120 §120.A — 2 of 4 `jit/predicate.rs' trampoline swaps
+        // (`predicate_eq' + `ref_eq'; `sxhash' + `type_of' stay Rust).
+        "nelisp-cc-jit-predicate-eq.el",
+        "nelisp-cc-jit-ref-eq.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
