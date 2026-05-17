@@ -89,6 +89,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-eq-symbol.el",
         // Doc 101 §101.D — `cons' constructor swap.
         "nelisp-cc-cons-construct.el",
+        // Doc 117 §117.A.2 — `bi_string_bytes' byte-length swap.
+        "nelisp-cc-bi-string-bytes.el",
         // Doc 111 §111.B — `recordp' predicate swap.
         "nelisp-cc-recordp.el",
         // Doc 111 §111.C — `aref' Vector arm swap.

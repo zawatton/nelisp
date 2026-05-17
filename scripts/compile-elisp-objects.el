@@ -64,6 +64,12 @@
     (nelisp-cc-cons-construct
      :source-var nelisp-cc-cons-construct--source
      :output "nelisp_cons_construct.o")
+    ;; Doc 117 §117.A.2 — `(string-bytes STR)' byte-length swap.  Rust
+    ;; keeps arity + tag dispatch + WrongType error; elisp owns the
+    ;; `str-len' + `sexp-int-make' pair.
+    (nelisp-cc-bi-string-bytes
+     :source-var nelisp-cc-bi-string-bytes--source
+     :output "nelisp_bi_string_bytes.o")
     ;; Doc 111 §111.B — `(recordp X)' via direct Sexp tag test.
     (nelisp-cc-recordp
      :source-var nelisp-cc-recordp--source

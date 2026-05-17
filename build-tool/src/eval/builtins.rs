@@ -546,16 +546,41 @@ pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), Ev
 /// `nl-ffi-call libc.write' + `nl-ffi-malloc' / `nl-ffi-write-bytes'
 /// (= without it elisp can only get char count via `length', which
 /// truncates multi-byte payloads at the libc.write boundary).
+///
+/// Doc 117 §117.A.2 (2026-05-17): the per-string byte-length step now
+/// runs through the Phase 47 elisp object compiled from
+/// `lisp/nelisp-cc-bi-string-bytes.el' (= `str-len' + `sexp-int-make').
+/// Rust keeps the arity check, the `Sexp::Str' / `Sexp::MutStr' tag
+/// dispatch (= elisp's `str-len' reads `String::len' at offset 24 from
+/// a plain `Sexp::Str' / `Sexp::Symbol'; the `MutStr' arm is unwrapped
+/// into a transient `Sexp::Str' view first), the caller-owned out-slot,
+/// and the `WrongType' error for non-string inputs.
 fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-bytes", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Str(s) => Ok(Sexp::Int(s.as_bytes().len() as i64)),
-        Sexp::MutStr(rc) => Ok(Sexp::Int(rc.value.as_bytes().len() as i64)),
-        other => Err(EvalError::WrongType {
-            expected: "string".into(),
-            got: other.clone(),
-        }),
+    // Unify the two string variants behind a `*const Sexp' that the
+    // elisp body can `str-len' directly.  `Sexp::Str' is already in
+    // the right shape; `Sexp::MutStr' carries the bytes inside an
+    // `NlStrMutRef.value: String', so we materialise a transient
+    // `Sexp::Str' (= bitwise clone of the same underlying bytes) and
+    // hand the elisp body a pointer into that local.
+    let str_view: Sexp = match &args[0] {
+        Sexp::Str(_) => args[0].clone(),
+        Sexp::MutStr(rc) => Sexp::Str(rc.value.clone()),
+        other => {
+            return Err(EvalError::WrongType {
+                expected: "string".into(),
+                got: other.clone(),
+            })
+        }
+    };
+    let mut result_slot: Sexp = Sexp::Nil;
+    unsafe {
+        crate::elisp_cc_spike::bi_string_bytes(
+            &str_view as *const Sexp,
+            &mut result_slot as *mut Sexp,
+        );
     }
+    Ok(result_slot)
 }
 
 // ---------- higher-order ----------

@@ -114,6 +114,14 @@ pub mod elisp_cc_spike {
             arg1: *const Sexp,
             result_slot: *mut Sexp,
         ) -> *mut Sexp;
+        // Doc 117 §117.A.2 — `(string-bytes STR)' byte-length helper
+        // compiled from `lisp/nelisp-cc-bi-string-bytes.el'.  `arg0'
+        // must point at a `Sexp::Str' / `Sexp::Symbol' (= the Rust
+        // shim in `eval/builtins.rs::bi_string_bytes' unwraps
+        // `Sexp::MutStr' into the underlying `Sexp::Str' view before
+        // calling).  Writes `Sexp::Int(byte_count)' into `*result_slot'
+        // and returns the same pointer for caller ergonomics.
+        fn nelisp_bi_string_bytes(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         // Doc 111 §111.B — `(recordp X)' predicate compiled from
         // `lisp/nelisp-cc-recordp.el'.  Writes Sexp::T / Sexp::Nil
         // into `*result_slot' and returns that same pointer.
@@ -397,6 +405,28 @@ pub mod elisp_cc_spike {
     /// `slot` must point at a writable 32-byte Sexp slot.
     pub unsafe fn cons_construct(arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
         nelisp_cons_construct(arg0, arg1, slot)
+    }
+
+    /// Doc 117 §117.A.2 — `(string-bytes STR)' byte-length via the
+    /// elisp-compiled `str-len' + `sexp-int-make' pair.
+    ///
+    /// `arg0' must point at `Sexp::Str(_)' or `Sexp::Symbol(_)' — the
+    /// Rust shim in `eval::builtins::bi_string_bytes' unwraps
+    /// `Sexp::MutStr' into the underlying `Sexp::Str' view before
+    /// calling, so this safe wrapper does not need a MutStr-aware path.
+    /// `slot' must point at a writable 32-byte Sexp slot
+    /// (`Sexp::Nil' default-init works because the elisp body
+    /// overwrites bytes `[0, 1)` for the tag plus `[8, 16)` for the
+    /// i64 payload).  Returns `slot' for caller ergonomics.
+    ///
+    /// # Safety
+    ///
+    /// - `arg0' must be non-null and point at an initialized
+    ///   `Sexp::Str' / `Sexp::Symbol'.
+    /// - `slot' must be non-null, properly aligned, and writable for
+    ///   one Sexp slot.
+    pub unsafe fn bi_string_bytes(arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
+        nelisp_bi_string_bytes(arg0, slot)
     }
 
     /// Doc 111 §111.B — `(recordp X)' via elisp-compiled Record ops.
