@@ -129,29 +129,14 @@ pub unsafe extern "C" fn nl_frame_push(frames_ptr: *const Sexp) -> i64 {
 }
 
 // ---- #22 frame_pop_rust_direct --------------------------------------
-
-/// Doc 111 §111.E #22 — pop the innermost frame.  Silently no-ops on
-/// empty stack / unbuilt mirror.  Returns 1 on pop, 0 on no-op.
-///
-/// # Safety
-/// - `frames_ptr' must be non-null and point at `Env::frames_record'.
-/// - No other `&Sexp' borrow into `*frames_ptr' may be live.
-#[no_mangle]
-pub unsafe extern "C" fn nl_frame_pop(frames_ptr: *const Sexp) -> i64 {
-    let Some((stack_rec, backing, depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
-        return 0;
-    };
-    if depth == 0 {
-        return 0;
-    }
-    let new_depth = depth - 1;
-    // SAFETY: see `Env::frame_pop_rust_direct'.
-    unsafe {
-        backing.with_value_mut(|v| v[new_depth] = Sexp::Nil);
-        stack_rec.with_slots_mut(|s| s[1] = Sexp::Int(new_depth as i64));
-    }
-    1
-}
+//
+// Doc 115 §115.2 — the Rust shim `nl_frame_pop' has been replaced by
+// the pure-elisp implementation in `lisp/nelisp-cc-frame-pop.el'.
+// The two-step refcount-safe write (= backing[depth-1] := Nil + depth
+// := Int(depth-1)) now runs in Phase 47-compiled elisp via the
+// `vector-slot-set' (§111.E) + `sexp-int-make' (§100) + `record-slot-
+// set' (§111.B) ops.  See the safe wrapper `Spike::frame_pop' in
+// `build-tool/src/lib.rs' for the public entry point.
 
 // ---- #23 frame_bind_rust_direct -------------------------------------
 
@@ -389,16 +374,12 @@ mod tests {
         )
     }
 
-    #[test]
-    fn nl_frame_push_pop_roundtrip() {
-        let frames = build_frames_record();
-        unsafe {
-            assert_eq!(nl_frame_push(&frames as *const Sexp), 1);
-            assert_eq!(nl_frame_pop(&frames as *const Sexp), 1);
-            // empty stack pop returns 0
-            assert_eq!(nl_frame_pop(&frames as *const Sexp), 0);
-        }
-    }
+    // Doc 115 §115.2 — the `nl_frame_push_pop_roundtrip' unit test was
+    // tied to the deleted `nl_frame_pop' Rust shim.  Pop-side coverage
+    // moves to the integration probe at
+    // `tests/elisp_cc_frame_pop_probe.rs' which drives the pure-elisp
+    // implementation end-to-end (= 3 tests covering empty-stack
+    // no-op, single push+pop, and nested 3x push + 3x pop walk).
 
     #[test]
     fn nl_frame_bind_then_find_roundtrip() {

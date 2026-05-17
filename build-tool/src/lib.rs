@@ -255,7 +255,10 @@ pub mod elisp_cc_spike {
             scratch_slot: *mut Sexp,
         ) -> i64;
         fn nelisp_frame_push(frames_ptr: *const Sexp) -> i64;
-        fn nelisp_frame_pop(frames_ptr: *const Sexp) -> i64;
+        fn nelisp_frame_pop(
+            frames_ptr: *const Sexp,
+            scratch_slot: *mut Sexp,
+        ) -> i64;
         fn nelisp_frame_bind(
             frames_ptr: *const Sexp,
             name_ptr: *const Sexp,
@@ -633,7 +636,17 @@ pub mod elisp_cc_spike {
     }
 
     pub unsafe fn frame_pop(frames_ptr: *const Sexp) -> i64 {
-        nelisp_frame_pop(frames_ptr)
+        // Doc 115 §115.2 — the pure-elisp implementation in
+        // `lisp/nelisp-cc-frame-pop.el' takes a 2nd `scratch_slot'
+        // parameter (= caller-owned `*mut Sexp' initialised to
+        // `Sexp::Nil'; used both as the Nil-source for `vector-slot-
+        // set' on the backing element and then overwritten in place
+        // with the new depth `Sexp::Int' before `record-slot-set' on
+        // slot 1).  We allocate a stack-local `Sexp::Nil' here and
+        // pass its pointer so the public 1-arg API is preserved for
+        // existing callers / probes.
+        let mut scratch = Sexp::Nil;
+        nelisp_frame_pop(frames_ptr, &mut scratch as *mut Sexp)
     }
 
     pub unsafe fn frame_bind(
