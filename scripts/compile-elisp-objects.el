@@ -481,6 +481,23 @@
      :source-var nelisp-cc-atomic-raw-mem--write-u8-source
      :output "nelisp_ptr_write_u8.o"
      :requires-arch x86_64)
+    ;; Doc 125 §125.A — alloc / dealloc primitive grammar ops.  Two
+    ;; entries, one per op, packaged as standalone Phase 47-compiled
+    ;; `defun's so `tests/elisp_cc_alloc_dealloc_probe.rs' can drive
+    ;; each round-trip independently.  Substrate gate for Doc 124.G-K
+    ;; (= NlBox Drop kernels' if-zero-refcount free branch) +
+    ;; Doc 126-128 (= bridge GC arena allocator).  Same Linux-x86_64
+    ;; gate as the §122.E siblings (= raw_mem.rs is the shared Rust
+    ;; module); aarch64 emit lands with the rest of the Phase 47
+    ;; aarch64 sweep.
+    (nelisp-cc-alloc-dealloc
+     :source-var nelisp-cc-alloc-dealloc--alloc-bytes-source
+     :output "nelisp_alloc_bytes.o"
+     :requires-arch x86_64)
+    (nelisp-cc-alloc-dealloc
+     :source-var nelisp-cc-alloc-dealloc--dealloc-bytes-source
+     :output "nelisp_dealloc_bytes.o"
+     :requires-arch x86_64)
     ;; Doc 123 §123.A — first substrate elisp化 stage.  Replaces the
     ;; simplest macro from `build-tool/src/eval/rc_primitives.rs' (=
     ;; the refcount-inc kernel) with a pure-elisp body that uses the

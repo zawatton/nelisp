@@ -178,6 +178,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (= 6 entries, shared source file).  Substrate gate for
         // Doc 123-128 refcount / nl*.rs lifecycle elisp化.
         "nelisp-cc-atomic-raw-mem.el",
+        // Doc 125 §125.A — alloc / dealloc primitive grammar ops
+        // (= 2 entries, shared source file).  Substrate gate for
+        // Doc 124.G-K NlBox Drop kernels + Doc 126-128 GC arena.
+        "nelisp-cc-alloc-dealloc.el",
         // Doc 123 §123.A — first substrate elisp化 stage.  Single
         // entry: `nelisp_rc_inc' = the refcount-inc kernel pulled
         // out of `build-tool/src/eval/rc_primitives.rs' using the

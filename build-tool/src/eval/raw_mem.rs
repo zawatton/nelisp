@@ -1,12 +1,15 @@
-//! Doc 122 §122.E — atomic + raw memory primitives.
+//! Doc 122 §122.E + Doc 125 §125.A — atomic + raw memory primitives
+//! + alloc / dealloc primitives.
 //!
-//! These six `#[no_mangle]` `extern "C"` wrappers provide the substrate
-//! gating layer required by Doc 123-128 (= refcount elisp化,
+//! These eight `#[no_mangle]` `extern "C"` wrappers provide the
+//! substrate gating layer required by Doc 123-128 (= refcount elisp化,
 //! `nl*.rs::Clone/Drop` elisp化, alloc/dealloc handlers).  Without
 //! `atomic-fetch-add` + `atomic-compare-exchange` + raw `ptr-read-*` /
 //! `ptr-write-*` ops, Phase 47 grammar cannot express refcount
-//! semantics, so the entire substrate-internalization chain is
-//! blocked at the elisp compiler boundary.
+//! semantics; without `alloc-bytes` + `dealloc-bytes`, Phase 47
+//! grammar cannot express the if-zero-refcount free branch in the
+//! Doc 124 NlBox Drop kernels.  Both are blockers for the entire
+//! substrate-internalization chain at the elisp compiler boundary.
 //!
 //! Surface (matching the Phase 47 grammar ops in
 //! `lisp/nelisp-phase47-compiler.el`):
@@ -19,6 +22,8 @@
 //! | `nl_ptr_write_u64(ptr, offset, val)`    | `(ptr-write-u64 PTR OFFSET VAL)`    |
 //! | `nl_ptr_read_u8(ptr, offset)`           | `(ptr-read-u8 PTR OFFSET)`          |
 //! | `nl_ptr_write_u8(ptr, offset, val)`     | `(ptr-write-u8 PTR OFFSET VAL)`     |
+//! | `nl_alloc_bytes(size, align)`           | `(alloc-bytes SIZE ALIGN)`          |
+//! | `nl_dealloc_bytes(ptr, size, align)`    | `(dealloc-bytes PTR SIZE ALIGN)`    |
 //!
 //! All atomic operations use `Ordering::SeqCst`.  The §122.E spec
 //! contemplates per-op memory ordering (= 5-variant integer arg) but
@@ -54,6 +59,7 @@
 //! - The Bacon-Rajan cycle collector's CAS-based refcount promotion
 //!   uses `(atomic-compare-exchange COUNTER-PTR OLD NEW)` directly.
 
+use std::alloc::{self, Layout};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// Doc 122 §122.E — atomic fetch-and-add on an `i64` slot with
@@ -183,6 +189,79 @@ pub unsafe extern "C" fn nl_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) {
     unsafe { *p = val as u8 };
 }
 
+/// Doc 125 §125.A — generic byte-level allocator wrapping
+/// `std::alloc::alloc(Layout::from_size_align(size, align))`.
+///
+/// Returns the freshly-allocated `*mut u8` on success or
+/// `std::ptr::null_mut()` on either layout-arg error (= align not a
+/// power of two, or size rounded up to align overflows isize) or
+/// underlying OOM.  The elisp grammar op `(alloc-bytes SIZE ALIGN)`
+/// re-casts the returned pointer to `i64` and the elisp caller must
+/// inspect for 0 before dereferencing.
+///
+/// The 0-sized allocation is rejected up-front (= return null) to
+/// keep the `dealloc-bytes` contract simple — a 0-sized free is a
+/// no-op and we don't want callers to distinguish "alloc returned a
+/// valid 0-size sentinel pointer" from null.
+///
+/// # Safety
+/// This function itself is sound — it only touches the global
+/// allocator.  Marked `unsafe` for ABI uniformity with the rest of
+/// the `nl_*` extern surface (= every Phase 47-lowered grammar op
+/// is `unsafe extern "C"`, so the elisp wrapper crate doesn't need
+/// per-op safety-attr discrimination).
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
+    if size <= 0 || align <= 0 {
+        return std::ptr::null_mut();
+    }
+    let Ok(layout) = Layout::from_size_align(size as usize, align as usize) else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: `Layout::from_size_align` succeeded → layout is valid;
+    // size > 0 by the early return above.  The underlying allocator
+    // may return null on OOM, which propagates to the caller.
+    unsafe { alloc::alloc(layout) }
+}
+
+/// Doc 125 §125.A — generic byte-level deallocator wrapping
+/// `std::alloc::dealloc(ptr, Layout::from_size_align(size, align))`.
+///
+/// The `(size, align)` pair *must* match the values passed to the
+/// matching `nl_alloc_bytes` call — `std::alloc::dealloc` is UB on
+/// layout mismatch.  Doc 124 NlBox Drop kernels avoid this risk by
+/// going through §125.B-F's per-type externs (= layout pre-baked at
+/// Rust compile time via `Layout::new::<NlT>()`); the generic
+/// dealloc op is for Doc 126-128's bridge GC arena code which
+/// tracks `(size, align)` per allocation in its own metadata.
+///
+/// Null pointer + zero-size are silent no-ops (= matches `free(NULL)`
+/// semantics + avoids the `from_size_align` zero-size rejection).
+/// Invalid layout args (= bad align, overflow) are likewise silent
+/// no-ops — caller cannot recover meaningfully and the alternative
+/// would be a panic across the `extern "C"` boundary.
+///
+/// # Safety
+/// - `ptr` must be either null or a pointer returned by
+///   `nl_alloc_bytes` (or compatible `alloc::alloc`) with the *same*
+///   `(size, align)` arguments.
+/// - The slot must not be accessed (read or write) after this call.
+/// - Concurrent free of the same slot is UB; the elisp Drop kernel's
+///   `atomic-fetch-add` decrement-to-zero check is the
+///   single-thread-wins guard.
+#[no_mangle]
+pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
+    if ptr.is_null() || size <= 0 || align <= 0 {
+        return;
+    }
+    let Ok(layout) = Layout::from_size_align(size as usize, align as usize) else {
+        return;
+    };
+    // SAFETY: caller's responsibility — see fn-level doc.  Layout
+    // matches the matching alloc call by the doc-comment contract.
+    unsafe { alloc::dealloc(ptr, layout) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +325,63 @@ mod tests {
         let v = unsafe { nl_ptr_read_u8(base as *const u8, 3) };
         assert_eq!(v, 0xFF, "u8 read must zero-extend (255, not -1)");
         assert_eq!(buf[3], 0xFF);
+    }
+
+    // ---- Doc 125 §125.A alloc / dealloc ----
+
+    #[test]
+    fn alloc_dealloc_bytes_round_trip_with_writes() {
+        let size: i64 = 64;
+        let align: i64 = 8;
+        let ptr = unsafe { nl_alloc_bytes(size, align) };
+        assert!(!ptr.is_null(), "alloc-bytes(64, 8) must succeed");
+        // Write + read through the block to verify the returned pointer
+        // is genuinely valid for the requested layout.
+        unsafe {
+            nl_ptr_write_u64(ptr, 0, 0xCAFE_BABE_DEAD_BEEF_u64 as i64);
+            nl_ptr_write_u64(ptr, 56, 0x1122_3344_5566_7788_u64 as i64);
+        }
+        let head = unsafe { nl_ptr_read_u64(ptr as *const u8, 0) };
+        let tail = unsafe { nl_ptr_read_u64(ptr as *const u8, 56) };
+        assert_eq!(head as u64, 0xCAFE_BABE_DEAD_BEEF_u64);
+        assert_eq!(tail as u64, 0x1122_3344_5566_7788_u64);
+        unsafe { nl_dealloc_bytes(ptr, size, align) };
+    }
+
+    #[test]
+    fn alloc_bytes_rejects_bad_alignment() {
+        // 3 is not a power of two — `Layout::from_size_align' rejects.
+        let ptr = unsafe { nl_alloc_bytes(32, 3) };
+        assert!(ptr.is_null(), "alloc-bytes must reject non-pow2 align");
+        // Zero size / negative args also return null.
+        assert!(unsafe { nl_alloc_bytes(0, 8) }.is_null());
+        assert!(unsafe { nl_alloc_bytes(-1, 8) }.is_null());
+        assert!(unsafe { nl_alloc_bytes(32, 0) }.is_null());
+    }
+
+    #[test]
+    fn dealloc_bytes_null_or_invalid_is_no_op() {
+        // null pointer must not crash (= matches `free(NULL)' semantics).
+        unsafe { nl_dealloc_bytes(std::ptr::null_mut(), 32, 8) };
+        // bad align: silent no-op, must not panic.
+        let p = unsafe { nl_alloc_bytes(32, 8) };
+        assert!(!p.is_null());
+        // wrong-but-safe path: bad align triggers early return, leaks
+        // the alloc — that's documented; here we just check no panic.
+        unsafe { nl_dealloc_bytes(p, 32, 3) };
+        unsafe { nl_dealloc_bytes(p, 32, 8) };
+    }
+
+    #[test]
+    fn alloc_bytes_16_byte_aligned() {
+        // SIMD-friendly alignment for the NlBox families.
+        let ptr = unsafe { nl_alloc_bytes(128, 16) };
+        assert!(!ptr.is_null());
+        assert_eq!(
+            (ptr as usize) & 0xF,
+            0,
+            "alloc-bytes(_, 16) must return 16-byte aligned pointer"
+        );
+        unsafe { nl_dealloc_bytes(ptr, 128, 16) };
     }
 }

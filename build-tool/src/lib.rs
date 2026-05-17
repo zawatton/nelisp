@@ -232,6 +232,17 @@ pub mod elisp_cc_spike {
         fn nelisp_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) -> i64;
         fn nelisp_ptr_read_u8(ptr: *const u8, offset: i64) -> i64;
         fn nelisp_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64;
+        // Doc 125 §125.A — alloc / dealloc primitive Phase 47 grammar
+        // ops compiled from `lisp/nelisp-cc-alloc-dealloc.el'.
+        // Substrate gate for Doc 124.G-K (= NlBox Drop kernels'
+        // if-zero-refcount free branch) + Doc 126-128 (= bridge GC
+        // arena allocator).  Each is a 2-/3-arg extern-call shape
+        // matching the §122.E `(ptr-write-u64 …)' / `(atomic-fetch-add
+        // …)' family — args go in rdi/rsi(/rdx) per SysV AMD64 and
+        // the call lowers to `nl_alloc_bytes' / `nl_dealloc_bytes' in
+        // `build-tool/src/eval/raw_mem.rs'.
+        fn nelisp_alloc_bytes(size: i64, align: i64) -> *mut u8;
+        fn nelisp_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) -> i64;
         // Doc 122 §122.C — Extended extern-call (f64 args + f64 return) probes.
         fn nelisp_libm_sqrt(x: f64) -> f64;
         fn nelisp_libm_sin(x: f64) -> f64;
@@ -968,6 +979,37 @@ pub mod elisp_cc_spike {
     /// Doc 122 §122.E — `(ptr-write-u8 PTR OFFSET VAL)'.
     pub unsafe fn ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64 {
         nelisp_ptr_write_u8(ptr, offset, val)
+    }
+
+    /// Doc 125 §125.A — `(alloc-bytes SIZE ALIGN)' generic byte-level
+    /// allocator.  Returns the freshly-allocated `*mut u8' on success
+    /// or `std::ptr::null_mut()' on either layout-arg error (= align
+    /// not a power of two, or size·align overflow isize) or underlying
+    /// OOM.  Callers must inspect for null before dereferencing.
+    ///
+    /// # Safety
+    /// The call itself is sound — it only touches the global allocator.
+    /// `unsafe` is required for ABI uniformity with the other
+    /// `elisp_cc_spike` wrappers.  The returned pointer's safety
+    /// (= must be paired with `dealloc_bytes` using identical
+    /// `(size, align)` args) is the *caller's* responsibility per
+    /// `std::alloc` contracts.
+    pub unsafe fn alloc_bytes(size: i64, align: i64) -> *mut u8 {
+        nelisp_alloc_bytes(size, align)
+    }
+
+    /// Doc 125 §125.A — `(dealloc-bytes PTR SIZE ALIGN)' generic
+    /// byte-level deallocator.  Returns rax = 1 sentinel for `and'-
+    /// chain composition.  Null pointer + zero-size are silent
+    /// no-ops; layout-arg errors are likewise silent no-ops.
+    ///
+    /// # Safety
+    /// - `ptr` must be either null or a pointer returned by
+    ///   `alloc_bytes' with the *same* `(size, align)' arguments.
+    /// - The slot must not be accessed after this call.
+    /// - Concurrent free of the same slot is UB.
+    pub unsafe fn dealloc_bytes(ptr: *mut u8, size: i64, align: i64) -> i64 {
+        nelisp_dealloc_bytes(ptr, size, align)
     }
 
     /// Doc 122 §122.C — Phase 47 extern-call-f64 probe for libm `sqrt'.

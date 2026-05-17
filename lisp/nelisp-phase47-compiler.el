@@ -1047,6 +1047,40 @@ functions `((NAME . ARITY) ...)'."
                    (nth 2 sexp) env fenv defuns)
           :val (nelisp-phase47-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
+   ;; Doc 125 §125.A — alloc / dealloc grammar primitives.
+   ;; ------------------------------------------------
+   ;; `(alloc-bytes SIZE ALIGN)' — generic byte-level allocator
+   ;; wrapping `std::alloc::alloc(Layout::from_size_align(size, align))'.
+   ;; Returns the freshly-allocated `*mut u8' re-cast to `i64' in rax
+   ;; (= 0 on layout error or OOM).  Substrate gate for Doc 126-128
+   ;; bridge GC arena code; the Doc 124 NlBox Drop kernels use the
+   ;; per-type §125.B-F externs instead.
+   ((and (consp sexp) (eq (car sexp) 'alloc-bytes))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :alloc-bytes-arity sexp)))
+    (list :kind 'alloc-bytes
+          :size (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)
+          :align (nelisp-phase47-compiler--parse-value
+                  (nth 2 sexp) env fenv defuns)))
+   ;; `(dealloc-bytes PTR SIZE ALIGN)' — generic byte-level deallocator
+   ;; wrapping `std::alloc::dealloc(ptr, Layout::from_size_align(size,
+   ;; align))'.  Returns rax = 1 sentinel for `and'-chain composition.
+   ;; Substrate gate for Doc 124.G-K NlBox Drop kernels (= the
+   ;; if-zero-refcount free branch).  Layout must match the matching
+   ;; `alloc-bytes' call; mismatch is UB per `std::alloc::dealloc'.
+   ((and (consp sexp) (eq (car sexp) 'dealloc-bytes))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :dealloc-bytes-arity sexp)))
+    (list :kind 'dealloc-bytes
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :size (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)
+          :align (nelisp-phase47-compiler--parse-value
+                  (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.D Cons construction ops ----
    ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
    ;; payloads into a fresh `NlConsBox' and therefore assume the input
@@ -1843,6 +1877,7 @@ the node's class to consume the result correctly."
              'atomic-fetch-add 'atomic-compare-exchange
              'ptr-read-u64 'ptr-write-u64
              'ptr-read-u8 'ptr-write-u8
+             'alloc-bytes 'dealloc-bytes
              'cons-make 'cons-set-car 'cons-set-cdr
              'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -1978,6 +2013,10 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u8"))
       ('ptr-write-u8
        (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u8"))
+      ('alloc-bytes
+       (nelisp-phase47-compiler--emit-alloc-bytes node buf))
+      ('dealloc-bytes
+       (nelisp-phase47-compiler--emit-dealloc-bytes node buf))
       ('cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
       ('cons-set-car
@@ -3406,6 +3445,49 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf helper-name -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
+
+;; ---- Doc 125 §125.A — alloc / dealloc primitives emit ----
+
+(defun nelisp-phase47-compiler--emit-alloc-bytes (node buf)
+  "Emit `alloc-bytes' — 2-arg call to `nl_alloc_bytes(size, align) -> *mut u8'.
+Returns the freshly-allocated pointer re-cast to `i64' in rax (= 0
+on layout error or OOM)."
+  (let ((size (plist-get node :size))
+        (align (plist-get node :align)))
+    (nelisp-phase47-compiler--emit-value size buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value align buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_alloc_bytes" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
+(defun nelisp-phase47-compiler--emit-dealloc-bytes (node buf)
+  "Emit `dealloc-bytes' — 3-arg call to `nl_dealloc_bytes(ptr, size, align)'.
+Returns rax = 1 sentinel for `and'-chain composition (= underlying
+extern is `void')."
+  (let ((ptr (plist-get node :ptr))
+        (size (plist-get node :size))
+        (align (plist-get node :align)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value size buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value align buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_dealloc_bytes" -4 'text)
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 

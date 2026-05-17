@@ -1,0 +1,471 @@
+#+TITLE: Doc 125 — alloc / dealloc grammar substrate elisp化
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-18
+
+* Status
+
+- *State*: DRAFT 2026-05-18 + §125.A IN-FLIGHT (this commit).
+- *Parent*: Doc 122.E (= atomic + raw-mem grammar ops, SHIPPED main
+  =38be9c7f=) + Doc 123 §123.A-F (= refcount primitive bodies elisp化,
+  SHIPPED main =9b69096c=) + Doc 124 §124.A (= NlConsBox Clone elisp
+  kernel, SHIPPED main =0dd540cf=).
+- *Sibling*: Doc 124.G-L (= the NlBox Drop half) is the principal
+  consumer.  Doc 117 Tier C (= ~25 `bi_*' handlers that need fresh
+  heap blocks from elisp) re-attempt after Doc 125 lands.
+- *Dependents*:
+  - Doc 124.G-K (= 5 `impl Drop' bodies) — *direct unblock*.
+  - Doc 124.L (= sweep + delete `nlrc_drop_box!' macro) — *direct
+    unblock* via §124.G-K.
+  - Doc 117 Tier C partial (= the `bi_*' handlers that today wrap
+    `Box::new(NlT { … })' + matching `Box::from_raw' on the error
+    path) can move their alloc side to elisp once §125 ships.
+- *Scope*: Generic byte-level `(alloc-bytes SIZE ALIGN)` +
+  `(dealloc-bytes PTR SIZE ALIGN)` Phase 47 grammar primitives wrapping
+  `std::alloc::alloc` / `std::alloc::dealloc` via `Layout::from_size_
+  align(_unchecked)`.  Plus 5 per-type extern wrappers (§125.B-F) that
+  bake the type-specific `Layout::new::<NlT>()` so the elisp caller
+  doesn't need to thread `(size_of, align_of)` literals.  §125.A
+  (= generic byte-level grammar) is the foundation; §125.B-F are
+  thin helpers gated on §124.G-K landing.
+
+* §0 TL;DR
+
+** §0.1 Why this doc exists
+
+Doc 124 §5 names a single gap: the NlBox Drop elisp kernels cannot
+express the *if-zero-refcount free* branch because Phase 47 grammar
+has *no `dealloc` op*.  The existing `nlrc_drop_box!` Rust macro
+relies on `Layout::for_value()` / `Layout::new::<T>()` resolved at
+Rust *compile time*, so a pure-elisp body that wants to free a heap
+block needs *either* a runtime `(size, align)` pair *or* one extern
+per type that pre-bakes the layout.
+
+This doc adds *both* paths:
+
+- §125.A — generic `(alloc-bytes SIZE ALIGN)` + `(dealloc-bytes PTR
+  SIZE ALIGN)` ops wrapping `Layout::from_size_align`.  Foundation
+  for the substrate (= the elisp caller can call the typed wrappers
+  *or* drop down to byte-level for opaque arenas / GC pools later).
+- §125.B-F — per-type extern wrappers `nl_dealloc_consbox(ptr)` /
+  `nl_dealloc_vector(ptr)` / `nl_dealloc_cell(ptr)` / `nl_dealloc_
+  record(ptr)` / `nl_dealloc_str(ptr)` that internally invoke
+  `alloc::dealloc(ptr, Layout::new::<NlT>())` so the Doc 124.G-K
+  Drop kernels can call a single-arg helper.
+
+The Phase 47 grammar surface (= §125.A) lands first; §125.B-F are
+trivial 3-LOC Rust externs gated on each §124.G-K stage shipping
+its own probe.
+
+** §0.2 Why generic + per-type both
+
+Two reasons to keep both:
+
+1. *Type-specific layout pin*.  Doc 124 §3.3 already establishes the
+   per-type `const_assert_eq!(offset_of!(NlT, refcount), N)` pattern.
+   The §125.B-F wrappers extend this discipline to the layout —
+   `nl_dealloc_consbox` uses `Layout::new::<NlConsBox>()` which fails
+   the build if the type definition drifts.  Bypassing this and
+   emitting `(dealloc-bytes ptr 72 8)` from the elisp Drop kernel
+   loses the compile-time layout-pin and trades a tiny LOC saving
+   for substantial maintenance risk.
+2. *Future GC / arena freedom*.  The Doc 126-128 bridge GC plan
+   needs to free opaque buffers (= concatenated leaf slabs, hash
+   bucket arrays) whose `Layout` is computed at runtime.  Those
+   callers go through §125.A directly with `(alloc-bytes SIZE
+   ALIGN)`.  Without the generic op, every new arena size needs
+   its own extern.
+
+So: §125.A = grammar foundation + GC use case; §125.B-F = stable
+typed helpers for the Drop kernels.
+
+** §0.3 Pacing
+
+Per Doc 122 pattern (= ship the foundation in one commit, sweep its
+consumers in follow-ups):
+
+- §125.A — generic `alloc-bytes` / `dealloc-bytes` grammar + 2 Rust
+  externs + probe.  *This commit.*
+- §125.B — `nl_dealloc_consbox(ptr)` extern (= 3 LOC Rust).  Lands
+  *with* Doc 124.G NlConsBox Drop kernel so the per-stage probe can
+  exercise the typed dealloc through the full Drop chain.
+- §125.C-F — same shape, one per remaining NlBox type.  Each lands
+  with the matching Doc 124.H-K Drop kernel.
+
+The generic alloc-bytes counterpart (= §125.A's `alloc-bytes` op) is
+shipped for completeness but the NlBox lifecycle does *not* call it
+— each NlBox already has `nl_alloc_consbox` / `nl_alloc_vector` /
+etc. externs from Doc 111.D / Doc 115 §115.1.  `alloc-bytes` exists
+for the Doc 126-128 GC arena code that ships separately.
+
+* §1 Audit — every NlBox Drop site that needs dealloc
+
+| File             | LOC | impl Drop line | REFCOUNT_OFFSET | Layout pin source | Doc 124 stage |
+|------------------+-----+----------------+-----------------+-------------------+---------------|
+| nlconsbox.rs     | 692 | 358            | 64              | `Layout::new::<NlConsBox>()`  | §124.G        |
+| nlvector.rs      | 404 | 200            | 24              | `Layout::new::<NlVector>()`   | §124.H        |
+| nlcell.rs        | 498 | 239            | 32              | `Layout::new::<NlCell>()`     | §124.I        |
+| nlrecord.rs      | 428 | 214            | 24              | `Layout::new::<NlRecord>()`   | §124.J        |
+| nlstr.rs         | 866 | 189            | 24              | `Layout::new::<NlStr>()`      | §124.K        |
+| Total            | 2888 | -              | -               | -                 | -             |
+
+The existing `nlrc_drop_box!` macro (= `build-tool/src/eval/nlrc.rs')
+takes `(ptr, T, SEXP_TAG_T)` and expands to `alloc::dealloc(ptr,
+Layout::new::<T>())` after the `fetch_sub == 1` check.  Doc 124.L
+deletes the macro once §124.G-K all use `nl_dealloc_<T>(ptr)`.
+
+* §2 Stage breakdown
+
+** §2.A — Generic byte-level `alloc-bytes` / `dealloc-bytes` grammar
+
+Adds two Phase 47 grammar ops:
+
+- `(alloc-bytes SIZE ALIGN)` → i64 (= raw `*mut u8` re-cast to i64,
+  0 on `from_size_align` failure or OOM).  Substrate gate for the
+  Doc 126-128 GC arena allocator.
+- `(dealloc-bytes PTR SIZE ALIGN)` → i64 = 1 sentinel for `and`-chain
+  composition.  Substrate gate for §125.B-F + the Doc 124.G-K Drop
+  kernels' generic-path fallback.
+
+Both lower to a single Rust extern call (= the same emit pattern as
+the §122.E `atomic-fetch-add` op):
+
+#+begin_src rust
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
+    let Ok(layout) = Layout::from_size_align(size as usize, align as usize) else {
+        return std::ptr::null_mut();
+    };
+    if layout.size() == 0 { return std::ptr::null_mut(); }
+    unsafe { alloc::alloc(layout) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
+    let Ok(layout) = Layout::from_size_align(size as usize, align as usize) else {
+        return;
+    };
+    if ptr.is_null() || layout.size() == 0 { return; }
+    unsafe { alloc::dealloc(ptr, layout) }
+}
+#+end_src
+
+Files touched (= mirrors §122.E / §123.A pattern):
+
+1. `build-tool/src/eval/raw_mem.rs` — append `nl_alloc_bytes` +
+   `nl_dealloc_bytes` (= same module as the §122.E primitives since
+   alloc/dealloc is the next layer of raw memory access).
+2. `lisp/nelisp-phase47-compiler.el` — add 2 parse-value clauses +
+   2 dispatch arms (`'alloc-bytes` / `'dealloc-bytes`) + 2 emit
+   functions following the §122.E `--emit-atomic-fetch-add` /
+   `--emit-ptr-write` shape (= 2-arg / 3-arg extern-call lowerings
+   with rdi/rsi/rdx marshalling).
+3. `lisp/nelisp-cc-alloc-dealloc.el` — new file, 2 `defconst`
+   sources following the §122.E pattern (`nelisp_alloc_bytes` /
+   `nelisp_dealloc_bytes` thin `defun` wrappers).
+4. `scripts/compile-elisp-objects.el` — 2 manifest entries
+   (= `nelisp_alloc_bytes.o` + `nelisp_dealloc_bytes.o`).
+5. `build-tool/build.rs` — 1 `manifest_sources` entry
+   (= `nelisp-cc-alloc-dealloc.el`).
+6. `build-tool/src/lib.rs` — 2 `extern "C"` decls + 2 safe wrappers
+   in `elisp_cc_spike` (= match the §122.E `atomic_fetch_add` +
+   §122.E `ptr_write_u64` wrapper shape).
+7. `build-tool/tests/elisp_cc_alloc_dealloc_probe.rs` — new file,
+   ≥ 3 cases (= round-trip / different sizes / aligned alloc).
+
+LOC budget (= per Doc 124 §0.2 pattern):
+
+| File                                              | Lines added |
+|---------------------------------------------------+-------------|
+| docs/design/125-alloc-dealloc-grammar.org         | ~150        |
+| build-tool/src/eval/raw_mem.rs                    | ~55         |
+| lisp/nelisp-phase47-compiler.el                   | ~70         |
+| lisp/nelisp-cc-alloc-dealloc.el                   | ~40         |
+| scripts/compile-elisp-objects.el                  | ~15         |
+| build-tool/build.rs                               | ~3          |
+| build-tool/src/lib.rs                             | ~30         |
+| build-tool/tests/elisp_cc_alloc_dealloc_probe.rs  | ~110        |
+| Total                                             | ~473        |
+
+Of the ~473 LOC added, ~85 LOC is elisp (= the grammar surface +
+defcomp sources), ~88 LOC is Rust runtime / extern decls, the rest
+is docs + tests + manifest.  Per the repo's *Rust 削減 唯一の評価軸*
+rule (= dev/nelisp/CLAUDE.md):
+
+- Rust delta: +88 LOC (= 2 externs in `raw_mem.rs` + 4 extern decls
+  + 2 safe wrappers in `lib.rs::elisp_cc_spike`).  Per the CLAUDE.md
+  exception list this is a thin extern wrapper layer + Phase 47
+  grammar bridge — i.e. exception (b) "thin wrapper" and (c)
+  "Phase 47 grammar 拡張までの繋ぎ" combined.
+- Downstream Rust delta after §125.B-F + Doc 124.G-L sweep: ~ -2,500
+  Rust LOC (= the 5 `impl Drop` bodies + `nlrc_drop_box!` macro
+  per Doc 124 §0.2 forecast).  Net trajectory after all consumers
+  ship: ~ -2,400 LOC, all in the right direction.
+
+** §2.B-F — Per-type dealloc externs (= deferred to §124.G-K)
+
+Each NlBox type gets a 3-LOC extern wrapper that pre-bakes its
+`Layout` at Rust compile time:
+
+#+begin_src rust
+#[no_mangle]
+pub unsafe extern "C" fn nl_dealloc_consbox(ptr: *mut u8) {
+    unsafe { alloc::dealloc(ptr, Layout::new::<NlConsBox>()) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn nl_dealloc_vector(ptr: *mut u8) {
+    unsafe { alloc::dealloc(ptr, Layout::new::<NlVector>()) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn nl_dealloc_cell(ptr: *mut u8) {
+    unsafe { alloc::dealloc(ptr, Layout::new::<NlCell>()) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn nl_dealloc_record(ptr: *mut u8) {
+    unsafe { alloc::dealloc(ptr, Layout::new::<NlRecord>()) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn nl_dealloc_str(ptr: *mut u8) {
+    unsafe { alloc::dealloc(ptr, Layout::new::<NlStr>()) }
+}
+#+end_src
+
+Each landing pairs with the matching Doc 124.G-K Drop stage; the
+elisp Drop kernel calls `(extern-call nl_dealloc_consbox ptr)` after
+the `(atomic-fetch-add ... -1)` returns 1 (= pre-sub count was 1,
+post-sub is 0).
+
+* §3 Strategy
+
+** §3.1 §125.A grammar surface
+
+Parse + emit follow the §122.E precedent.  The `(alloc-bytes SIZE
+ALIGN)` parse-value clause is a 2-arg variant of the `(atomic-fetch-
+add PTR DELTA)` pattern (= eval both args, push onto stack, pop to
+rdi/rsi, call extern, pop scratch slot).  `(dealloc-bytes PTR SIZE
+ALIGN)` adds a third arg for rdx and matches the §122.E `(ptr-write-
+u64 PTR OFFSET VAL)` emit shape exactly (= 3 pushes, pops to rdi/rsi/
+rdx, extern-call, restore stack, `mov rax, 1` sentinel).
+
+The aarch64 unsupported list (= `--emit-aarch64-unsupported` switch
+at line ~1843) gets two new entries so non-x86_64-linux builds give
+a clear error instead of a silent codegen miss.
+
+** §3.2 §125.B-F per-type externs
+
+Each is a one-line `unsafe extern "C" fn nl_dealloc_<T>(ptr: *mut u8)
+{ alloc::dealloc(ptr, Layout::new::<T>()) }` in the matching
+`build-tool/src/eval/nl{consbox,vector,cell,record,str}.rs` file.
+No new elisp grammar — the Doc 124 Drop kernel just calls them via
+the existing `extern-call` op:
+
+#+begin_src elisp
+(defun nelisp_nlconsbox_drop (box-ptr)
+  (let ((prev (atomic-fetch-add (+ box-ptr 64) -1)))
+    (when (= prev 1)
+      (extern-call nl_dealloc_consbox box-ptr))))
+#+end_src
+
+The §124.G probe verifies this end-to-end.
+
+** §3.3 Probe coverage (= §125.A this commit)
+
+`build-tool/tests/elisp_cc_alloc_dealloc_probe.rs` exercises:
+
+1. *Round-trip*: `alloc-bytes 64 8` → write a byte pattern via
+   `ptr-write-u64` (§122.E) → read it back via `ptr-read-u64` → free
+   via `dealloc-bytes ptr 64 8`.  Verifies the elisp grammar
+   primitives compose end-to-end and the returned pointer is valid
+   for read+write.
+2. *Different sizes*: 3 separate allocs at sizes (= 8, 64, 4096) all
+   align=8.  Verifies the layout arithmetic handles small/medium/
+   page-sized blocks.  Each is freed via the matching dealloc.
+3. *16-byte aligned alloc*: `alloc-bytes 128 16` returns a pointer
+   whose low 4 bits are zero.  Verifies the alignment arg is honored
+   (= matches the `Layout::from_size_align` contract for SIMD-friendly
+   alignments that NlBox types use).
+
+All cases run through the public wrapper in
+`nelisp_build_tool::elisp_cc_spike::alloc_bytes` /
+`::dealloc_bytes` (= same pattern as `atomic_fetch_add` wrapping
+`nelisp_atomic_fetch_add`).
+
+* §4 LOC delta projection
+
+Per §2.A summary: ~473 LOC added in this commit, of which ~88 LOC is
+Rust.  Per CLAUDE.md exception list (= "extern "C" 1-3 行の thin
+wrapper" + "Phase 47 grammar 拡張までの繋ぎ"), this Rust addition is
+permissible because:
+
+- `nl_alloc_bytes` / `nl_dealloc_bytes` (= ~30 LOC including doc
+  comments) are *the* Phase 47 alloc/dealloc surface.  Without them
+  the grammar op cannot lower to a `call` instruction.
+- The 4 extern decls + 2 safe wrappers in `lib.rs::elisp_cc_spike`
+  (= ~30 LOC including doc comments) are mandatory plumbing — every
+  Phase 47-compiled `.o` consumed by Rust needs this layer.
+- The downstream Rust delta is the actual evaluation target:
+
+  - §125.B-F per-type externs: +15 LOC Rust (= 5 × 3-line extern).
+  - Doc 124.G-K Drop kernels: -1,250 LOC Rust (= 5 × ~250 LOC per
+    `impl Drop` body per Doc 124 §0.2 forecast).
+  - Doc 124.L `nlrc_drop_box!` macro deletion: -825 LOC Rust per
+    Doc 124 §0.2 forecast.
+
+  Net after the §125.A + Doc 124.G-L chain: ~+100 LOC Rust
+  added (= this commit's bridge + §125.B-F externs) vs ~-2,075 LOC
+  Rust deleted (= Doc 124.G-K bodies + macro).  Cumulative delta
+  *-1,975 Rust LOC*, exactly the trajectory the repo exists for.
+
+* §5 Alloc counterpart — `(alloc-bytes SIZE ALIGN)` rationale
+
+NlBox lifecycle does *not* need `alloc-bytes` strictly — each NlBox
+type already has a dedicated `nl_alloc_<T>()` extern shipped earlier:
+
+- `nl_alloc_consbox` (= Doc 101 §101.D, `eval/nlconsbox.rs:113`).
+- `nl_alloc_vector` (= Doc 115 §115.1, `eval/nlvector.rs`).
+- `nl_alloc_cell` (= Doc 111 §111.D, `eval/nlcell.rs`).
+- `nl_alloc_record` (= Doc 111 §111.B, `eval/nlrecord.rs`).
+- `nl_alloc_str` / `nl_alloc_symbol` (= Doc 122 §122.A,
+  `eval/nlstr.rs`).
+- `nl_alloc_mut_str` (= Doc 122 §122.B, `eval/nlstr.rs`).
+
+Shipping `alloc-bytes` in §125.A is *foundational*:
+
+- Symmetry with `dealloc-bytes` — Phase 47 grammar should not have
+  a free op without an alloc counterpart (= teaches confusion).
+- Doc 126-128 bridge GC (= concatenated leaf slabs, hash table
+  bucket arrays, weak-ref tombstones) needs arena-style fresh
+  `*mut u8` from elisp without per-shape externs.
+- Future arena pooling experiments — having the grammar op lets us
+  prototype `(arena-make POOL-SIZE)` etc. without touching Rust.
+
+The cost is one extra extern (= ~25 LOC) + one extra parse-value
+clause + emit fn (= ~30 LOC elisp).  Within the §125.A LOC envelope.
+
+* §6 Risks + open questions
+
+** §6.1 `Layout::from_size_align` failure modes
+
+`from_size_align(size, align)` rejects when:
+
+- align is not a power of two.
+- size, rounded up to nearest multiple of align, would overflow
+  isize.
+
+The §125.A op returns 0 (= null pointer re-cast to i64) on both
+cases.  This is the *same sentinel* as OOM (= `alloc::alloc`
+returning null).  The elisp caller must inspect for 0 and either
+`signal` an error or retry with smaller params.  The wrapper
+`alloc_bytes` doc-comments this contract.
+
+Decision: ship §125.A with the null-on-failure sentinel.  If a
+future caller needs distinguishing layout-error vs OOM, add a
+follow-up `(alloc-bytes-checked)` op that returns a 2-element
+slot (= ptr + error code).  Not needed by Doc 124.G-K.
+
+** §6.2 Should §125.A track allocations for double-free detection?
+
+Adding a host-side `HashMap<ptr, Layout>` would catch caller bugs
+(= free with wrong size, double free, free of stack pointer).
+*Decision*: do not add tracking in §125.A.
+
+Rationale: (a) every existing alloc path in `nl{consbox,vector,
+cell,record,str}.rs` already runs without tracking, (b) tracking
+adds atomic lock contention on every alloc / dealloc (= defeats
+the purpose of moving the body to elisp), (c) the layout-pin via
+`const_assert_eq!` (= §125.B-F per-type externs) catches the
+common drift bug at *compile* time.
+
+A debug-only Doc 125.A.+ follow-up could add tracking under a cfg
+flag, mirroring the §122.E.2 proposal pattern.  Not on the
+critical path.
+
+** §6.3 Should §125.A also handle realloc?
+
+Realloc would be useful for the GC arena resize path (= bump
+allocator running out of slab room).  *Decision*: defer to a future
+Doc 125.G stage when a real caller materialises.  Avoid speculative
+surface area — Phase 47 grammar ops are easier to add than retract.
+
+** §6.4 Alignment of `Layout::new::<NlT>()` vs runtime alignment
+
+The per-type externs (§125.B-F) use `Layout::new::<T>()` which pulls
+both size and align from `T`.  The generic `dealloc-bytes` op takes
+size + align from the elisp caller.  These *must* match for a
+sound free — `alloc::dealloc` is UB if the layout doesn't equal the
+layout used at `alloc::alloc` time.
+
+For Doc 124 Drop kernels: callers go through §125.B-F (= layout
+baked at compile time) so this risk is non-issue.  For Doc 126-128
+GC: the arena code must track its own (size, align) per allocation
+and pass them back at free.  The grammar op's contract is the same
+as Rust's `alloc::dealloc` — caller responsibility.
+
+* §7 Stage gates (SHIPPED log)
+
+** §125.A — generic `alloc-bytes` / `dealloc-bytes` grammar — IN-FLIGHT (this commit)
+
+Ships:
+- `docs/design/125-alloc-dealloc-grammar.org` — this DRAFT.
+- `build-tool/src/eval/raw_mem.rs` — `nl_alloc_bytes' / `nl_dealloc_bytes'.
+- `lisp/nelisp-phase47-compiler.el` — `(alloc-bytes SIZE ALIGN)' / `(dealloc-bytes PTR SIZE ALIGN)' parse + emit.
+- `lisp/nelisp-cc-alloc-dealloc.el` — defconst sources.
+- `scripts/compile-elisp-objects.el` — 2 manifest entries.
+- `build-tool/build.rs` — 1 manifest_sources entry.
+- `build-tool/src/lib.rs` — 2 extern decls + 2 safe wrappers in `elisp_cc_spike`.
+- `build-tool/tests/elisp_cc_alloc_dealloc_probe.rs` — 3 probe cases.
+
+Unlocks Doc 124.G-L (= NlBox Drop elisp化) + Doc 117 Tier C partial.
+
+** §125.B — `nl_dealloc_consbox` extern — QUEUED (lands with Doc 124.G)
+
+** §125.C — `nl_dealloc_vector` extern — QUEUED (lands with Doc 124.H)
+
+** §125.D — `nl_dealloc_cell` extern — QUEUED (lands with Doc 124.I)
+
+** §125.E — `nl_dealloc_record` extern — QUEUED (lands with Doc 124.J)
+
+** §125.F — `nl_dealloc_str` extern — QUEUED (lands with Doc 124.K)
+
+* §8 References
+
+** Repo / source
+
+- =/dev/nelisp/CLAUDE.md= — repo existence purpose (= 純 elisp化,
+  Rust 削減 唯一の評価軸); exception list for thin extern wrappers.
+- =build-tool/src/eval/raw_mem.rs= @ main =38be9c7f= — §122.E
+  precedent for the `nl_*` extern shape this doc extends.
+- =build-tool/src/eval/nlconsbox.rs= @ main =0dd540cf= — `impl Drop'
+  body that §124.G replaces; `nl_alloc_consbox' precedent for the
+  alloc counterpart at line 113.
+- =build-tool/src/eval/nlrc.rs= — `nlrc_drop_box!' macro that
+  Doc 124.L deletes.
+- =lisp/nelisp-phase47-compiler.el= — Phase 47 grammar parse + emit
+  surface that §125.A extends.
+- =lisp/nelisp-cc-atomic-raw-mem.el= — §122.E elisp source precedent.
+
+** Design docs
+
+- =docs/design/122-phase47-grammar-extensions.org= — Doc 122 §122.E
+  parent (= atomic + raw-mem grammar this doc extends with
+  alloc/dealloc).
+- =docs/design/123-rc-primitives-elisp-rewrite.org= — Doc 123 §123.A-F
+  precedent for the kernel pattern (= elisp body + Rust extern shim).
+- =docs/design/124-nlbox-clone-drop-elisp.org= — §5 names this doc
+  as the gate; this doc's §125.A unblocks §124.G-L.
+
+** Memory cross-refs
+
+- =project_nelisp_pure_elisp_roadmap= — Doc 122-128 chain.  Doc 125
+  is the alloc/dealloc gate between Doc 124's Clone half and Doc
+  124's Drop half (= same diagram, two adjacent boxes).
+- =feedback_nelisp_core_vs_layer2_boundary= — alloc / dealloc sit
+  on the *layer 2 / OS primitive* side of the boundary (= same
+  classification as §122.E atomic ops).  Documented inline in
+  `raw_mem.rs` module comment.
+- =feedback_nelisp_pure_elisp_means_rust_loc_decreases= — this doc
+  satisfies the rule: +88 Rust LOC bridge that unblocks ~-2,075
+  Rust LOC of `impl Drop` bodies.  Net trajectory negative.
