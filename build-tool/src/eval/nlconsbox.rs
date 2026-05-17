@@ -335,18 +335,13 @@ impl NlConsBoxRef {
 }
 
 impl Clone for NlConsBoxRef {
-    /// Bump the refcount and return a new handle that shares the
-    /// same inner box.  Uses `Relaxed` because this thread already
-    /// holds a handle — no cross-thread synchronization is needed
-    /// for the *increment* (= matches `NlRc::clone' /
-    /// `std::sync::Arc::clone').
+    /// Doc 124 §124.F — thin elisp dispatch via §124.A kernel.
+    /// The pure-elisp body does the refcount +1 via §122.E
+    /// `atomic-fetch-add' (SeqCst ⊇ Relaxed).
     fn clone(&self) -> Self {
-        // SAFETY: `self.ptr' is alive because we hold a handle.  The
-        // increment cannot wrap because `usize::MAX' handles is
-        // physically impossible (= would exhaust 16 EiB of address
-        // space at 1 byte per handle).
+        // SAFETY: `self.ptr' is alive because we hold a handle.
         unsafe {
-            (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
+            crate::elisp_cc_spike::nlconsbox_clone(self.ptr.as_ptr() as *mut i64);
         }
         NlConsBoxRef {
             ptr: self.ptr,
