@@ -1234,7 +1234,6 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("truncate", args, 1, Some(1))?;
     match &args[0] {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         Sexp::Int(_) => {
             // Doc 100 §100.C: route the Int identity through the
             // elisp `.o'.  The slot is a stack-local Sexp::Nil; the
@@ -1252,8 +1251,6 @@ fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
             }
             Ok(result_slot)
         }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        Sexp::Int(n) => Ok(Sexp::Int(*n)),
         Sexp::Float(x) => Ok(Sexp::Int(*x as i64)),
         other => Err(EvalError::WrongType {
             expected: "numberp".into(),
@@ -1269,7 +1266,6 @@ fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--length-cons-cc", args, 1, Some(1))?;
     match &args[0] {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         Sexp::Cons(_) | Sexp::Nil => {
             let mut result_slot: Sexp = Sexp::Nil;
             unsafe {
@@ -1279,16 +1275,6 @@ fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
                 );
             }
             Ok(result_slot)
-        }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        Sexp::Cons(_) | Sexp::Nil => {
-            let mut n: i64 = 0;
-            let mut cur = &args[0];
-            while let Sexp::Cons(c) = cur {
-                n += 1;
-                cur = &c.cdr;
-            }
-            Ok(Sexp::Int(n))
         }
         other => Err(EvalError::WrongType {
             expected: "sequencep".into(),
@@ -1300,23 +1286,14 @@ fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// Internal `(recordp X)' bridge used by the stdlib `recordp' wrapper.
 fn bi_recordp_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--recordp-cc", args, 1, Some(1))?;
-    match &args[0] {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        _ => {
-            let mut result_slot: Sexp = Sexp::Nil;
-            unsafe {
-                crate::elisp_cc_spike::recordp(
-                    &args[0] as *const Sexp,
-                    &mut result_slot as *mut Sexp,
-                );
-            }
-            Ok(result_slot)
-        }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        Sexp::Record(_) => Ok(Sexp::T),
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        _ => Ok(Sexp::Nil),
+    let mut result_slot: Sexp = Sexp::Nil;
+    unsafe {
+        crate::elisp_cc_spike::recordp(
+            &args[0] as *const Sexp,
+            &mut result_slot as *mut Sexp,
+        );
     }
+    Ok(result_slot)
 }
 
 /// (nl-fact-i64 N) — Doc 99 §99.C first elisp-only builtin.
@@ -1331,10 +1308,8 @@ fn bi_recordp_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// overflow.  Out-of-range inputs signal `arith-error' so the elisp
 /// caller can `condition-case' around the failure.
 ///
-/// Non-Linux / non-x86_64 targets get a stub arm that signals
-/// `arith-error' with a clear message — the build chain only emits
-/// the `.o' on those targets so the symbol isn't linked.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+/// Doc 114: Phase 47 helpers are x86_64-linux only; the entire crate
+/// fails to build on non-x86_64-linux via the top-level guard.
 fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-fact-i64", args, 1, Some(1))?;
     let n = as_int("nl-fact-i64", &args[0])?;
@@ -1346,13 +1321,6 @@ fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     let result = crate::elisp_cc_spike::fact_i64(n);
     Ok(Sexp::Int(result))
-}
-
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-fn bi_nl_fact_i64(_args: &[Sexp]) -> Result<Sexp, EvalError> {
-    Err(EvalError::Internal(
-        "nl-fact-i64: not available on this target (linux-x86_64 only in v1)".into(),
-    ))
 }
 
 /// (read-stdin-bytes LIMIT) — block-read up to LIMIT bytes from fd 0.

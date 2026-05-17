@@ -471,23 +471,16 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         (Sexp::Nil, Sexp::Nil) | (Sexp::T, Sexp::T) => true,
         (Sexp::Int(x), Sexp::Int(y)) => x == y,
         (Sexp::Symbol(x), Sexp::Symbol(y)) => {
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            {
-                let _ = (x, y);
-                let mut slot = Sexp::Nil;
-                unsafe {
-                    crate::elisp_cc_spike::eq_symbol(
-                        a as *const Sexp,
-                        b as *const Sexp,
-                        &mut slot as *mut Sexp,
-                    );
-                }
-                matches!(slot, Sexp::T)
+            let _ = (x, y);
+            let mut slot = Sexp::Nil;
+            unsafe {
+                crate::elisp_cc_spike::eq_symbol(
+                    a as *const Sexp,
+                    b as *const Sexp,
+                    &mut slot as *mut Sexp,
+                );
             }
-            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-            {
-                x == y
-            }
+            matches!(slot, Sexp::T)
         }
         (Sexp::Cons(a), Sexp::Cons(b)) => crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b),
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),

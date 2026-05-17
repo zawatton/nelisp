@@ -17,6 +17,21 @@
 //! and re-wired the `anvil-runtime` consumer to depend on this
 //! crate instead.  Future Stage 6+ will add the dumper that bakes a
 //! heap evaluated by these modules into a `nelisp.image` v1 file.
+//!
+//! Doc 114: this crate is **x86_64-linux only**.  Phase 47 emit
+//! (`scripts/compile-elisp-objects.el`) produces ELF64 `.o` files
+//! linked directly into the crate; the dispatch sites in `eval/` and
+//! `jit/` assume those symbols are present.  Cross-arch hosts must
+//! build via Docker / Linux VM.  Multi-arch returns later as
+//! additional Phase 47 emit branches (e.g.,
+//! `lisp/nelisp-asm-aarch64.el`), never as a re-introduced Rust
+//! fallback — see `docs/design/114-x86_64-linux-pivot.org`.
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+compile_error!(
+    "Doc 114: nelisp-build-tool requires x86_64-linux \
+     (Phase 47 emit is x86_64-linux only).  Build via Docker / Linux VM."
+);
 
 pub mod bridge;
 pub mod eval;
@@ -49,9 +64,9 @@ pub mod reader;
 // links it into the crate via `cargo:rustc-link-lib=static=...'.
 // This module gives the symbol a Rust home so cargo doesn't dead-code-
 // eliminate it from the final binary and `cargo test' can probe the
-// round-trip end-to-end.  Linux x86_64 only — other targets skip the
-// build step entirely (see `build.rs::link_elisp_cc_spike').
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+// round-trip end-to-end.  Doc 114: crate-level guard at top of lib.rs
+// makes this module-level cfg redundant; non-x86_64-linux builds fail
+// at the crate boundary with a clear compile_error!.
 pub mod elisp_cc_spike {
     use crate::eval::sexp::Sexp;
 
