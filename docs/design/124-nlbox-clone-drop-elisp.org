@@ -109,7 +109,7 @@ compile-time assert per file in §124.B-E, mirroring `nlrc.rs:292'.
 | §124.D | `impl Clone for NlRecordRef`         | TRIVIAL       | REFCOUNT_OFFSET=24|
 | §124.E | `impl Clone for NlStrRef`            | TRIVIAL       | REFCOUNT_OFFSET=24|
 | §124.F | Sweep all 5 `impl Clone' bodies      | EASY          | Per-type extern  |
-| §124.G | `impl Drop for NlConsBoxRef`         | BLOCKED       | Doc 125 grammar  |
+| §124.G | `impl Drop for NlConsBoxRef`         | IN-FLIGHT     | Doc 125 SHIPPED  |
 | §124.H | `impl Drop for NlVectorRef`          | BLOCKED       | Doc 125 grammar  |
 | §124.I | `impl Drop for NlCellRef`            | BLOCKED       | Doc 125 grammar  |
 | §124.J | `impl Drop for NlRecordRef`          | BLOCKED       | Doc 125 grammar  |
@@ -245,7 +245,55 @@ REFCOUNT_OFFSET (= 24 / 32 / 24 / 24 respectively per §1 audit).
 After §124.A-E all green, swap the 5 Rust `impl Clone' bodies to
 call `crate::elisp_cc_spike::nl{T}_clone(box_ptr)`.  Mirrors §123.F.
 
-** §124.G-L — Drop half — BLOCKED on Doc 125 §125.A
+** §124.G — NlConsBox Drop elisp kernel + probe — IN-FLIGHT (this commit)
 
-Tracked separately; will be added to this Status when Doc 125
-lands.
+PoC for the Drop half, unblocked by Doc 125 §125.A SHIPPED.  Ships:
+- `lisp/nelisp-cc-nlconsbox-drop.el' — elisp source.  Two-entry
+  `(seq DEFUN ...)' manifest: a `prog2' helper (reserved for
+  §124.L's recursive-payload-drop integration) + the public
+  `nelisp_nlconsbox_drop' entry.  Body = `if' on
+  `(atomic-fetch-add (+ box-ptr 64) -1) == 1' → `dealloc-bytes
+  box-ptr 72 8' else literal 1.
+- `build-tool/tests/elisp_cc_nlconsbox_drop_probe.rs' — 3 probe
+  cases (drop from rc=2 = no dealloc, drop from rc=1 = dealloc
+  happens, N consecutive drops = walk to 0 and free at last).
+- `build-tool/build.rs' + `scripts/compile-elisp-objects.el' +
+  `build-tool/src/lib.rs' wire-in (extern decl + safe wrapper).
+- Rust `impl Drop for NlConsBoxRef' body UNCHANGED (=
+  `nlconsbox.rs:358-360' still calls `nlrc_drop_box!'; §124.L
+  sweep stage swaps it later, mirroring §124.F's Clone-sweep gate).
+
+Known PoC limitation: interior payload (car/cdr Sexp) recursive
+Drop is NOT performed.  If the box hits refcount 0 the box's
+heap allocation is freed but nested NlBox handles in car/cdr
+leak.  Full recursive walk requires §124.H-K (sibling Drop
+kernels per variant) + a Sexp-tag-dispatch jump table in
+§124.L.  Acceptable because production Drop continues to drive
+through the Rust `nlrc_drop_box!' macro until §124.L sweep.
+
+Layout constants baked into the kernel:
+- REFCOUNT_OFFSET = 64 (= `2 * size_of::<Sexp>()`, pinned by
+  `sexp_abi_assert.rs:45' + `nlconsbox.rs:418-431').
+- SIZE_OF_NLCONSBOX = 72 (= car @ 0 (32) + cdr @ 32 (32) +
+  refcount @ 64 (8); `repr(C)' layout).
+- ALIGN_OF_NLCONSBOX = 8 (= max of Sexp's 8 and AtomicUsize's 8).
+
+** §124.H-K — NlVector / NlCell / NlRecord / NlStr Drop — QUEUED
+
+Each follows the §124.G pattern with the type-specific
+REFCOUNT_OFFSET + SIZE / ALIGN literals (= per Doc 124 §1 audit:
+NlVector rc@24 size=N (variable-length tail), NlCell rc@32
+size=fixed, NlRecord rc@24 size=N (variable slot count), NlStr
+rc@24 size=N (variable string bytes)).  Variable-size types
+need a `(read-i64 BOX_PTR SIZE_OFFSET)' to compute the live
+allocation size before calling `dealloc-bytes' (= already
+expressible via §122.E `ptr-read-u64').
+
+** §124.L — sweep 5 `impl Drop' bodies + delete `nlrc_drop_box!' — QUEUED
+
+After §124.G-K all green: swap the 5 Rust `impl Drop' bodies to
+call `crate::elisp_cc_spike::nl{T}_drop(box_ptr)' and delete the
+`nlrc_drop_box!' macro + `NLRC_DROP_TABLE' dispatch.  Also wire
+the recursive interior-payload Drop via the same dispatch table
+expressed in elisp (= `(let ((tag (rc_kind sexp))) (cond ...))'
+fan-in).  Mirrors §123.F's body-sweep + §124.F's Clone-sweep.

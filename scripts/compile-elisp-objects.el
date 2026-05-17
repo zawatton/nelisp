@@ -537,6 +537,20 @@
      :source-var nelisp-cc-nlconsbox-clone--source
      :output "nelisp_nlconsbox_clone.o"
      :requires-arch x86_64)
+    ;; Doc 124 §124.G — NlConsBox Drop elisp kernel.  First Drop-half
+    ;; stage of the `nl*.rs::Clone/Drop' substrate elisp化 chain.  The
+    ;; elisp body fetch-subs the refcount via §122.E `atomic-fetch-add'
+    ;; delta = -1 (= §123.B fetch-sub semantics) and on `pre-sub == 1'
+    ;; calls §125.A `dealloc-bytes' with the NlConsBox layout literal
+    ;; (72 bytes / 8-byte align) to free the box.  Interior car/cdr
+    ;; Sexp recursive Drop deferred to §124.L sweep stage.  §124.F +
+    ;; §124.L (= dispatch swap stages) replace the inline Rust
+    ;; `impl Drop for NlConsBoxRef' body in `nlconsbox.rs:358-360'
+    ;; once §124.H-K sibling PoCs land.
+    (nelisp-cc-nlconsbox-drop
+     :source-var nelisp-cc-nlconsbox-drop--source
+     :output "nelisp_nlconsbox_drop.o"
+     :requires-arch x86_64)
     ;; Doc 116 §116.A — pure-elisp Reader lexer.  Single manifest
     ;; entry; the source defconst is a `(seq DEFUN ...)' of ~20
     ;; mutually-recursive tail-call helpers and one public entry
