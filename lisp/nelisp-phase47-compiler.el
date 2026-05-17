@@ -638,6 +638,26 @@ functions `((NAME . ARITY) ...)'."
                 (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
+   ;; Doc 115 §115.3 — `(record-make TAG-PTR SLOT-COUNT SLOT)' allocates
+   ;; a fresh `NlRecord' via `nl_alloc_record(TAG-PTR, SLOT-COUNT)' (Doc
+   ;; 111 §111.E) and writes `Sexp::Record(box)' (= tag byte 12 + payload
+   ;; pointer) into the caller-owned SLOT.  Returns SLOT in rax.  Parallel
+   ;; to `vector-make' / `cell-make' for `Sexp::Vector' / `Sexp::Cell'.
+   ;; TAG-PTR is a `*const Sexp' (typically a `Sexp::Symbol' identifying
+   ;; the record kind); SLOT-COUNT is evaluated as an i64; the new record
+   ;; has SLOT-COUNT slots all pre-filled with `Sexp::Nil' by
+   ;; `nl_alloc_record'.
+   ((and (consp sexp) (eq (car sexp) 'record-make))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :record-make-arity sexp)))
+    (list :kind 'record-make
+          :tag-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 1 sexp) env fenv defuns)
+          :slot-count (nelisp-phase47-compiler--parse-value
+                       (nth 2 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.C Symbol/Str read ops ----
    ;; (str-len H)       — read String::len at offset 24 from a
    ;;                     `Sexp::Str' / `Sexp::Symbol' slot.
@@ -1480,6 +1500,7 @@ the node's class to consume the result correctly."
              'record-slot-ref-ptr 'record-slot-set
              'vector-len 'vector-ref 'vector-ref-ptr 'vector-slot-set
              'vector-make
+             'record-make
              'cell-value 'cell-set-value 'cell-make 'cell-null-p
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
@@ -1556,6 +1577,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-vector-slot-set node buf))
       ('vector-make
        (nelisp-phase47-compiler--emit-vector-make node buf))
+      ('record-make
+       (nelisp-phase47-compiler--emit-record-make node buf))
       ('cell-value
        (nelisp-phase47-compiler--emit-cell-value node buf))
       ('cell-set-value
@@ -2384,6 +2407,64 @@ elements by `nl_alloc_vector' (= refcount-1 box, ready for
     ;; offset 8 (= `Sexp::Vector' tag = 8, same shape `cell-make' uses
     ;; for `Sexp::Cell').
     (nelisp-asm-x86_64-mov-mem-imm8 buf 'rsi nelisp-sexp--tag-vector)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rsi nelisp-sexp--offset-payload 'r10)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+
+(defun nelisp-phase47-compiler--emit-record-make (node buf)
+  "Emit `record-make' — allocate fresh NlRecord and write Sexp::Record into SLOT.
+NODE carries `:tag-ptr' (= `*const Sexp', the type-tag symbol),
+`:slot-count' (= i64 number of slots) and `:slot' (= `*mut Sexp').
+
+Strategy (= literal mirror of `vector-make' alignment idiom, extended
+for a 2-arg helper call):
+
+  1. Evaluate TAG-PTR, push.
+  2. Evaluate SLOT-COUNT, push.
+  3. Evaluate SLOT, push.
+  4. Pop slot into rax (save for later), pop slot-count into rsi (= arg
+     1), pop tag-ptr into rdi (= arg 0).
+  5. Push slot back + one alignment pad to keep rsp 16-byte aligned at
+     the call site (= same 2-push pattern `vector-make' uses).
+  6. Call `nl_alloc_record(tag_ptr, slot_count)' — rax = `*mut NlRecord'.
+  7. Discard the alignment pad, recover slot, write `Sexp::Record(box)'
+     (tag at offset 0, ptr at offset 8) and return slot in rax.
+
+The push/pop balancing follows `vector-make' / `cons-make' so SysV
+AMD64 alignment holds.  The new record has SLOT-COUNT slots all pre-
+filled with `Sexp::Nil' by `nl_alloc_record', and refcount = 1 ready
+for `record-slot-set'-based init."
+  (let ((tag-ptr (plist-get node :tag-ptr))
+        (slot-count (plist-get node :slot-count))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value tag-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot-count buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Pop in reverse push order: slot -> rax (will save), slot-count ->
+    ;; rsi (= arg 1), tag-ptr -> rdi (= arg 0).
+    (nelisp-asm-x86_64-pop buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Save slot across the helper call.  Two pushes (= slot + one pad)
+    ;; keep the call site at a 16-byte boundary, matching the idiom in
+    ;; `vector-make' / `cons-make'.
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_alloc_record" -4 'text)
+    ;; rax = *mut NlRecord.  Move to r10.
+    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+    ;; Discard alignment pad, recover slot.
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'rsi)        ; rsi = slot
+    ;; slot = Sexp::Record(box).  Tag byte at offset 0 (= 12), payload
+    ;; ptr at offset 8 (= `nelisp-sexp--offset-payload', same shape
+    ;; `vector-make' uses for `Sexp::Vector').
+    (nelisp-asm-x86_64-mov-mem-imm8 buf 'rsi nelisp-sexp--tag-record)
     (nelisp-asm-x86_64-mov-mem-reg-disp8
      buf 'rsi nelisp-sexp--offset-payload 'r10)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))

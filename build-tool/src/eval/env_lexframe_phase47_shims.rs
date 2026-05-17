@@ -64,69 +64,17 @@ unsafe fn frame_stack_view_from_ptr(
 // `build-tool/src/lib.rs' for the public entry point.
 
 // ---- #21 frame_push_rust_direct -------------------------------------
-
-/// Doc 111 §111.E #21 — push a fresh empty frame onto the mirror stack.
-/// Mirrors `Env::frame_push_rust_direct' bit-for-bit (= allocate a
-/// `nelisp-lexframe' record with one `fast-hash-table' slot, install
-/// it at `backing[depth]', increment depth).
-///
-/// Returns 1 on success, 0 when the mirror is unbuilt.  The pushed
-/// frame is owned by the backing vector; callers don't get a handle.
-///
-/// # Safety
-/// - `frames_ptr' must be non-null and point at `Env::frames_record'.
-/// - No other `&Sexp' borrow into `*frames_ptr' may be live.
-#[no_mangle]
-pub unsafe extern "C" fn nl_frame_push(frames_ptr: *const Sexp) -> i64 {
-    let Some((stack_rec, backing, depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
-        return 0;
-    };
-    // Grow if needed (same logic as #20 inlined here to avoid double-
-    // walking the frames-record).
-    let new_backing = {
-        let cap = backing.value.len();
-        if cap >= depth + 1 {
-            backing
-        } else {
-            let mut new_cap = cap.max(1);
-            while new_cap < depth + 1 {
-                new_cap *= 2;
-            }
-            let mut new_buf: Vec<Sexp> = Vec::with_capacity(new_cap);
-            for i in 0..depth {
-                new_buf.push(backing.value.get(i).cloned().unwrap_or(Sexp::Nil));
-            }
-            while new_buf.len() < new_cap {
-                new_buf.push(Sexp::Nil);
-            }
-            let new_vec_sexp = Sexp::vector(new_buf);
-            let new_vec_box = match &new_vec_sexp {
-                Sexp::Vector(v) => v.clone(),
-                _ => unreachable!(),
-            };
-            unsafe { stack_rec.with_slots_mut(|s| s[0] = new_vec_sexp) };
-            new_vec_box
-        }
-    };
-    // Build empty frame (= record `nelisp-lexframe' with one
-    // `fast-hash-table' slot containing 16 empty buckets).
-    const BUCKET_COUNT: usize = 16;
-    let buckets = Sexp::vector(vec![Sexp::Nil; BUCKET_COUNT]);
-    let ht_record = Sexp::record(
-        Sexp::Symbol("fast-hash-table".into()),
-        vec![Sexp::Int(BUCKET_COUNT as i64), buckets, Sexp::Int(0)],
-    );
-    let frame = Sexp::record(
-        Sexp::Symbol("nelisp-lexframe".into()),
-        vec![ht_record],
-    );
-    // SAFETY: see `Env::frame_push_rust_direct'.
-    unsafe {
-        new_backing.with_value_mut(|v| v[depth] = frame);
-        stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
-    }
-    1
-}
+//
+// Doc 115 §115.3 — the Rust shim `nl_frame_push' has been replaced by
+// the pure-elisp implementation in `lisp/nelisp-cc-frame-push.el'.
+// The full push sequence (= allocate fast-hash-table sub-record + 16-
+// bucket vector + lexframe record, ensure_capacity, install at
+// backing[depth], depth bump) now runs in Phase 47-compiled elisp via
+// the `record-make' (§115.3 new) + `vector-make' (§115.1) + `record-
+// slot-set' / `vector-slot-set' + `sexp-int-make' grammar ops plus an
+// `extern-call' to `nelisp_frame_stack_ensure_capacity'.  See the
+// safe wrapper `Spike::frame_push' in `build-tool/src/lib.rs' for the
+// public entry point.
 
 // ---- #22 frame_pop_rust_direct --------------------------------------
 //
@@ -319,6 +267,11 @@ mod tests {
     // `tests/elisp_cc_frame_pop_probe.rs' which drives the pure-elisp
     // implementation end-to-end (= 3 tests covering empty-stack
     // no-op, single push+pop, and nested 3x push + 3x pop walk).
+
+    // Doc 115 §115.3 — the `nl_frame_push' Rust shim has been deleted.
+    // Full push coverage moves to the integration probe
+    // `tests/elisp_cc_frame_push_probe.rs' which drives the pure-elisp
+    // implementation end-to-end.
 
     // Doc 115 §115.6 — the `nl_frame_bind_then_find_roundtrip' test
     // was tied to the deleted `nl_frame_stack_find' Rust shim.

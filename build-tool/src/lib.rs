@@ -254,7 +254,11 @@ pub mod elisp_cc_spike {
             needed: i64,
             scratch_slot: *mut Sexp,
         ) -> i64;
-        fn nelisp_frame_push(frames_ptr: *const Sexp) -> i64;
+        fn nelisp_frame_push(
+            frames_ptr: *const Sexp,
+            scratch_vec_ptr: *const Sexp,
+            _pad: i64,
+        ) -> i64;
         fn nelisp_frame_pop(
             frames_ptr: *const Sexp,
             scratch_slot: *mut Sexp,
@@ -632,7 +636,29 @@ pub mod elisp_cc_spike {
     }
 
     pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 {
-        nelisp_frame_push(frames_ptr)
+        // Doc 115 §115.3 — the pure-elisp implementation in
+        // `lisp/nelisp-cc-frame-push.el' takes a 7-slot `Sexp::Vector'
+        // scratch (= two type-tag symbols + five scratch slots) that
+        // the safe wrapper allocates internally so the public 1-arg
+        // API is preserved.  See the elisp commentary for the per-slot
+        // layout and refcount discipline.  The third `_pad' i64 arg is
+        // ignored by the helper but flips outer-defun arity to odd (=
+        // 3), which matches the static rsp-alignment assumption baked
+        // into `vector-make' / `record-make' / `vector-slot-set'.
+        let scratch_vec = Sexp::vector(vec![
+            Sexp::Symbol("nelisp-lexframe".into()),
+            Sexp::Symbol("fast-hash-table".into()),
+            Sexp::Nil, // ensure_capacity scratch
+            Sexp::Nil, // bucket vector scratch
+            Sexp::Nil, // fast-hash-table record scratch
+            Sexp::Nil, // lexframe record scratch
+            Sexp::Nil, // reusable Sexp::Int scratch
+        ]);
+        nelisp_frame_push(
+            frames_ptr,
+            &scratch_vec as *const Sexp,
+            0,
+        )
     }
 
     pub unsafe fn frame_pop(frames_ptr: *const Sexp) -> i64 {
