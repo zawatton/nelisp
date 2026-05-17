@@ -362,6 +362,20 @@
     (nelisp-cc-jit-record
      :source-var nelisp-cc-jit-record-set--source
      :output "nelisp_jit_record_set.o"
+     :requires-arch x86_64)
+    ;; Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' grammar
+    ;; ops.  Two entries, one per op, packaged as standalone
+    ;; Phase 47-compiled `defun's so `tests/elisp_cc_sexp_write_str_
+    ;; probe.rs' can drive each round-trip independently.  Same
+    ;; Linux-x86_64 gate as `nelisp-cc-cell-ops' (aarch64 emit lands in
+    ;; the same future doc that covers §115.1+ Phase 47 emit ops).
+    (nelisp-cc-sexp-write-str
+     :source-var nelisp-cc-sexp-write-str--str-source
+     :output "nelisp_sexp_write_str.o"
+     :requires-arch x86_64)
+    (nelisp-cc-sexp-write-str
+     :source-var nelisp-cc-sexp-write-str--symbol-source
+     :output "nelisp_sexp_write_symbol.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

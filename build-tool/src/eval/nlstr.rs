@@ -216,6 +216,124 @@ impl PartialEq for NlStrRef {
     }
 }
 
+// ---- Doc 122 §122.A — String/Symbol allocator externs ----
+//
+// Phase 47 grammar ops `sexp-write-str' / `sexp-write-symbol' use these
+// externs to materialize fresh `Sexp::Str(String)' / `Sexp::Symbol(String)'
+// values into a caller-owned slot.  Unlike `nl_alloc_vector' / `nl_alloc_
+// cell' which return `*mut NlXXX' pointers (= boxed payloads accessed at
+// `Sexp' payload offset 8), `Sexp::Str' and `Sexp::Symbol' carry their
+// `String' header *inline* at payload offset 8..32 (= ptr/cap/len triple
+// — see `nelisp-string--offset-*' in `lisp/nelisp-sexp-layout.el').
+// Therefore the allocator extern writes the full 40-byte `Sexp' (tag at
+// offset 0, padding [1..8), 24-byte `String' header at [8..32),
+// 8-byte tail padding [32..40)) into the result slot directly.  The
+// existing `str-len' / `str-bytes' / `str-byte-at' grammar ops read
+// from this inline layout, so the round-trip
+// `(sexp-write-str slot bytes len)' -> `(str-len slot)' yields LEN
+// without any indirection.
+//
+// Refcount semantics: the freshly allocated `String' is owned by the
+// `Sexp::Str' / `Sexp::Symbol' value sitting in the slot — i.e. drop
+// of the slot frees the `String' buffer.  No `AtomicUsize' refcount
+// is involved (= `String' is move-only; the "refcount = 1" mention
+// in Doc 122 §122.A applies to the heap chars buffer's single owner,
+// not an `NlStr' trailer).
+//
+// Doc 122 §122.A intentionally diverges from the literal task-prompt
+// signature `-> *mut NlStr'.  An `*mut NlStr' would require `str-len'
+// to do an extra indirection (= load NlStr*, then `+16` for the String
+// length field), breaking the existing inline-layout contract and the
+// 4 trampolines this stage unblocks (= `nl_jit_intern',
+// `nl_jit_symbol_name', `nl_jit_type_of', `nl_jit_make_symbol').  The
+// `result_slot' write-through shape matches the existing
+// `nelisp_cons_construct' / `nelisp_truncate_int' externs.
+
+/// Doc 122 §122.A — allocate a fresh `Sexp::Str(String)` value into
+/// the caller-supplied `result_slot` from a byte range.
+///
+/// Copies `len` bytes starting at `bytes_ptr` into a fresh `String`,
+/// constructs `Sexp::Str(s)`, and writes that 40-byte value into
+/// `*result_slot`.  Returns `result_slot` for caller ergonomics
+/// (= matches `nelisp_cons_construct' shape).
+///
+/// The `bytes_ptr` range MUST be valid UTF-8.  We use
+/// `String::from_utf8_unchecked` on the freshly allocated copy after
+/// length-prefixed bound checks; callers that synthesize the bytes
+/// out of e.g. `format!` results trivially satisfy the invariant,
+/// and the elisp reader/lexer arms that feed this op verify their
+/// inputs upstream.
+///
+/// # Safety
+/// - `bytes_ptr` must be non-null and point at `len` initialized
+///   bytes of valid UTF-8.  An empty range (`len == 0`) is permitted
+///   and `bytes_ptr` may be dangling-but-aligned in that case
+///   (= matches `std::slice::from_raw_parts` contract).
+/// - `result_slot` must be non-null, properly aligned, and writable
+///   for one full `Sexp` slot (40 bytes).  Callers should
+///   pre-initialize it to `Sexp::Nil` so the `std::ptr::write` does
+///   not drop arbitrary bytes; `nelisp_cons_construct' and
+///   `nelisp_cell_make' use the same convention.
+/// - `len` must be `>= 0` and fit in a `usize`.
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_str(
+    bytes_ptr: *const u8,
+    len: i64,
+    result_slot: *mut crate::eval::sexp::Sexp,
+) -> *mut crate::eval::sexp::Sexp {
+    let n = len as usize;
+    // Build a fresh owned String.  `len == 0` is a permitted edge case:
+    // `slice::from_raw_parts(ptr, 0)' is well-defined regardless of
+    // `ptr' alignment / validity.
+    let bytes: Vec<u8> = if n == 0 {
+        Vec::new()
+    } else {
+        let slice = unsafe { std::slice::from_raw_parts(bytes_ptr, n) };
+        slice.to_vec()
+    };
+    // SAFETY: caller contract guarantees the input is valid UTF-8.
+    let s = unsafe { String::from_utf8_unchecked(bytes) };
+    let sexp = crate::eval::sexp::Sexp::Str(s);
+    // SAFETY: `result_slot' is caller-owned for one `Sexp' slot.
+    // `std::ptr::write' overwrites without dropping the previous
+    // value — caller pre-initialized to `Sexp::Nil' so this is safe.
+    unsafe { std::ptr::write(result_slot, sexp) };
+    result_slot
+}
+
+/// Doc 122 §122.A — allocate a fresh `Sexp::Symbol(String)` value into
+/// the caller-supplied `result_slot` from a byte range.
+///
+/// Same shape as [`nl_alloc_str`] but produces `Sexp::Symbol(_)` (=
+/// tag byte = `SEXP_TAG_SYMBOL`, payload = inline `String` header).
+/// *Does not* consult any intern table — the caller is responsible
+/// for symbol identity when needed.  See Doc 122 §5 (open question)
+/// for the future intern-table consult vs. caller-managed split.
+///
+/// # Safety
+/// Identical contract to [`nl_alloc_str`].  The fresh `Symbol` is
+/// move-owned by the slot; dropping the slot frees the chars buffer.
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_symbol(
+    bytes_ptr: *const u8,
+    len: i64,
+    result_slot: *mut crate::eval::sexp::Sexp,
+) -> *mut crate::eval::sexp::Sexp {
+    let n = len as usize;
+    let bytes: Vec<u8> = if n == 0 {
+        Vec::new()
+    } else {
+        let slice = unsafe { std::slice::from_raw_parts(bytes_ptr, n) };
+        slice.to_vec()
+    };
+    // SAFETY: caller contract guarantees valid UTF-8.
+    let s = unsafe { String::from_utf8_unchecked(bytes) };
+    let sexp = crate::eval::sexp::Sexp::Symbol(s);
+    // SAFETY: see `nl_alloc_str' note.
+    unsafe { std::ptr::write(result_slot, sexp) };
+    result_slot
+}
+
 // ---- Compile-time layout assertions ----
 
 const _: () = {

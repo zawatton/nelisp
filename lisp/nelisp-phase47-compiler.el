@@ -727,6 +727,44 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'sexp-write-t
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)))
+   ;; Doc 122 §122.A — `(sexp-write-str SLOT BYTES-PTR LEN)' allocates a
+   ;; fresh `Sexp::Str(String)' via the Rust extern `nl_alloc_str' (=
+   ;; copies LEN bytes from BYTES-PTR into a new `String', writes
+   ;; `Sexp::Str(s)' into the caller-owned SLOT).  Returns SLOT in rax.
+   ;; Parallel to `vector-make' / `cell-make' / `record-make' but the
+   ;; allocator extern is 3-arg (= bytes_ptr, len, result_slot) and
+   ;; writes the full 40-byte Sexp inline (= `Sexp::Str' carries its
+   ;; `String' header inline at payload offset 8..32, not via an
+   ;; `*mut NlStr' indirection — see `lisp/nelisp-sexp-layout.el'
+   ;; `nelisp-string--offset-*' constants and the comment above
+   ;; `nl_alloc_str' in `build-tool/src/eval/nlstr.rs').
+   ((and (consp sexp) (eq (car sexp) 'sexp-write-str))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-write-str-arity sexp)))
+    (list :kind 'sexp-write-str
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)
+          :bytes-ptr (nelisp-phase47-compiler--parse-value
+                      (nth 2 sexp) env fenv defuns)
+          :len (nelisp-phase47-compiler--parse-value
+                (nth 3 sexp) env fenv defuns)))
+   ;; Doc 122 §122.A — `(sexp-write-symbol SLOT BYTES-PTR LEN)' — same
+   ;; shape as `sexp-write-str' but the allocator extern is
+   ;; `nl_alloc_symbol' (= writes `Sexp::Symbol(s)' instead of
+   ;; `Sexp::Str(s)').  Does NOT consult any intern table — see Doc
+   ;; 122 §5 open question.
+   ((and (consp sexp) (eq (car sexp) 'sexp-write-symbol))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-write-symbol-arity sexp)))
+    (list :kind 'sexp-write-symbol
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)
+          :bytes-ptr (nelisp-phase47-compiler--parse-value
+                      (nth 2 sexp) env fenv defuns)
+          :len (nelisp-phase47-compiler--parse-value
+                (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.D Cons construction ops ----
    ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
    ;; payloads into a fresh `NlConsBox' and therefore assume the input
@@ -1504,6 +1542,7 @@ the node's class to consume the result correctly."
              'cell-value 'cell-set-value 'cell-make 'cell-null-p
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
+             'sexp-write-str 'sexp-write-symbol
              'cons-make 'cons-set-car 'cons-set-cdr
              'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -1603,6 +1642,12 @@ the node's class to consume the result correctly."
       ('sexp-write-t
        (nelisp-phase47-compiler--emit-sexp-write-tag
         node buf nelisp-sexp--tag-t))
+      ('sexp-write-str
+       (nelisp-phase47-compiler--emit-sexp-write-alloc
+        node buf "nl_alloc_str"))
+      ('sexp-write-symbol
+       (nelisp-phase47-compiler--emit-sexp-write-alloc
+        node buf "nl_alloc_symbol"))
       ('cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
       ('cons-set-car
@@ -2673,6 +2718,64 @@ values whose payload layout matches Rust `String' (=`Sexp::Str' or
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-mem-imm8 buf 'rdi tag)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)))
+
+(defun nelisp-phase47-compiler--emit-sexp-write-alloc (node buf helper-name)
+  "Emit `sexp-write-str' / `sexp-write-symbol' — call alloc HELPER-NAME.
+NODE carries `:slot' (= `*mut Sexp'), `:bytes-ptr' (= `*const u8'),
+and `:len' (= i64).  HELPER-NAME is `\"nl_alloc_str\"' or
+`\"nl_alloc_symbol\"' (see Doc 122 §122.A).
+
+Strategy (= 3-arg extern call, mirrors `record-make' alignment idiom):
+
+  1. Evaluate BYTES-PTR, push.
+  2. Evaluate LEN, push.
+  3. Evaluate SLOT, push.
+  4. Pop SLOT -> rdx (= arg 2), LEN -> rsi (= arg 1),
+     BYTES-PTR -> rdi (= arg 0).
+  5. Push one alignment pad to keep rsp 16-byte aligned at the call
+     site (= 3 saved + call addr = 32 bytes; an extra pad makes it
+     40 = 16*2 + 8 which then `call' pushes 8 more for rip → 48 = 16*3).
+  6. Call `nl_alloc_str' / `nl_alloc_symbol' — the helper writes a
+     full `Sexp::Str' / `Sexp::Symbol' (40 bytes incl. inline String
+     header at payload offset 8..32) into `*SLOT' and returns SLOT
+     in rax.
+  7. Pop the alignment pad.
+
+The helper's return value (= SLOT pointer) is left in rax, which is
+exactly the contract for value-returning Phase 47 ops.  No
+post-call tag/payload writes are needed because the extern
+populates the full slot inline (= the key divergence from
+`vector-make' / `cell-make' / `record-make' which return a `*mut
+NlXXX' and require the emit code to write tag + payload offset
+separately)."
+  (let ((slot (plist-get node :slot))
+        (bytes-ptr (plist-get node :bytes-ptr))
+        (len (plist-get node :len)))
+    (nelisp-phase47-compiler--emit-value bytes-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value len buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Pop in reverse push order: slot -> rdx (= arg 2), len -> rsi
+    ;; (= arg 1), bytes-ptr -> rdi (= arg 0).
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; One alignment pad to keep rsp 16-byte aligned at the call
+    ;; site.  Pre-prologue rsp is misaligned by 8 (= function entry
+    ;; has 8 mod 16 due to the return address pushed by the caller);
+    ;; our 3 push + 3 pop sequence is balanced, so we need exactly
+    ;; one extra push to bring rsp to (8 + 8) mod 16 = 0 before the
+    ;; new `call' instruction.
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf helper-name -4 'text)
+    ;; Helper returned the slot pointer in rax.  Discard the
+    ;; alignment pad; rax is already the desired return value.
+    (nelisp-asm-x86_64-pop buf 'r11)))
+
 
 ;; ---- Doc 101 §101.D Cons construction ops ----
 

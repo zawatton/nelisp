@@ -167,6 +167,27 @@ pub mod elisp_cc_spike {
         fn nelisp_cell_set_value(arg0: *const Sexp, val_ptr: *const Sexp);
         fn nelisp_cell_make(val_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_cell_null_p(arg0: *const Sexp) -> i64;
+        // Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' Phase
+        // 47 grammar ops compiled from `lisp/nelisp-cc-sexp-write-str.el'.
+        // Each op evaluates 3 args (slot, bytes_ptr, len), marshals them
+        // to rdi/rsi/rdx, and calls the Rust `nl_alloc_str' /
+        // `nl_alloc_symbol' extern (in `build-tool/src/eval/nlstr.rs')
+        // which writes a fresh `Sexp::Str' / `Sexp::Symbol' into `*slot'
+        // and returns the slot pointer.  Unlike the cell/vector/record
+        // allocators these write the full 40-byte `Sexp' value inline
+        // (= `Sexp::Str' / `Sexp::Symbol' carry their `String' header
+        // inline at payload offset 8..32, not via an `*mut NlXXX'
+        // pointer indirection — see comments in `eval/nlstr.rs').
+        fn nelisp_sexp_write_str(
+            slot: *mut Sexp,
+            bytes_ptr: *const u8,
+            len: i64,
+        ) -> *mut Sexp;
+        fn nelisp_sexp_write_symbol(
+            slot: *mut Sexp,
+            bytes_ptr: *const u8,
+            len: i64,
+        ) -> *mut Sexp;
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
         // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
         // Returns the `*const Sexp' of the matching symbol-entry
@@ -603,6 +624,47 @@ pub mod elisp_cc_spike {
     /// - `arg0` must be non-null and point at `Sexp::Cell(NlCellRef)`.
     pub unsafe fn cell_null_p(arg0: *const Sexp) -> i64 {
         nelisp_cell_null_p(arg0)
+    }
+
+    /// Doc 122 §122.A — `(sexp-write-str SLOT BYTES-PTR LEN)' via
+    /// elisp-compiled Phase 47 grammar op.
+    ///
+    /// Calls the Rust `nl_alloc_str' extern which copies `len' bytes
+    /// from `bytes_ptr' into a fresh `String', wraps as
+    /// `Sexp::Str(_)', and writes the resulting 40-byte Sexp value
+    /// into `*slot'.  Returns `slot' for caller ergonomics.
+    ///
+    /// # Safety
+    /// - `slot' must be non-null, properly aligned, and writable for
+    ///   one `Sexp' slot (40 bytes).  Pre-initialise to `Sexp::Nil`
+    ///   so the inline `ptr::write' does not drop arbitrary bytes
+    ///   (same convention as `cons_construct' / `cell_make').
+    /// - `bytes_ptr' must be non-null when `len > 0' and point at
+    ///   `len' initialized bytes of valid UTF-8.  `len == 0' permits
+    ///   a dangling-but-aligned `bytes_ptr'.
+    pub unsafe fn sexp_write_str(
+        slot: *mut Sexp,
+        bytes_ptr: *const u8,
+        len: i64,
+    ) -> *mut Sexp {
+        nelisp_sexp_write_str(slot, bytes_ptr, len)
+    }
+
+    /// Doc 122 §122.A — `(sexp-write-symbol SLOT BYTES-PTR LEN)' via
+    /// elisp-compiled Phase 47 grammar op.
+    ///
+    /// Same shape as [`sexp_write_str`] but produces `Sexp::Symbol(_)`
+    /// instead of `Sexp::Str(_)'.  Does NOT consult any intern table —
+    /// see Doc 122 §5 open question.
+    ///
+    /// # Safety
+    /// Identical to [`sexp_write_str`].
+    pub unsafe fn sexp_write_symbol(
+        slot: *mut Sexp,
+        bytes_ptr: *const u8,
+        len: i64,
+    ) -> *mut Sexp {
+        nelisp_sexp_write_symbol(slot, bytes_ptr, len)
     }
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.
