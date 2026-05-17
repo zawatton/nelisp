@@ -17,7 +17,10 @@
   - Phase 1 — *SHIPPED* (2026-05-13〜): =lisp/nelisp-stdlib-fast-hash.el= + =lisp/nelisp-env.el= shipped.
   - Phase 2 — *SHIPPED* (2026-05-15〜2026-05-16): Phase 2.a (slim primitive routing through elisp env table) + Phase 2.b (=env.globals: HashMap= physically retired, mirror canonical).  Final commit =91266188=.
   - Phase 3 — *SHIPPED* (2026-05-16〜2026-05-17) via Doc 104 5 stages 3.a-3.e: =Env::frames: Vec<HashMap<String, FrameCell>>= physically deleted, =frames_record: Sexp= (= =nelisp-lexframe-stack=) canonical.  Final commit =9d915463=.
-  - Phase 4 — *SHIPPED (option C) 2026-05-17*: =capture_lexical= / =push_captured= walks the elisp =nelisp-lexframe-stack= record via Rust-direct helpers (= Doc 104 Stage 3.c-d).  =nelisp-lexframe.el= is now in STDLIB and symbol/string-tolerant on the alist car, so a future Phase 4.b can flip the Rust-direct walk into an =apply_function('nelisp-lexframe-stack-capture)= / =apply_function('nelisp-lexframe-stack-push-captured!)= dispatch *once* the apply_lambda_inner layering issue is solved (= apply pushes its argument frame onto the SAME lexframe stack that capture/push read+write, contaminating both; Phase 4 option B attempted this and failed).  Solving Phase 4.b requires either (a) elisp helper split into "build frame without pushing" + Rust-side push, plus a pre-apply depth snapshot for capture; or (b) a separate apply-argument-frame record so lexframe stack is untouched during dispatch.  Net Rust delta this Phase 4: ~0 LOC (= bake configuration only; Rust-direct walks were already shipped in Phase 3).  See also =apply_lambda_inner= Nil-skip optimisation (= byproduct of the option B attempt; kept for the marginal perf win).
+  - Phase 4 — *SHIPPED (option C) 2026-05-17*: =capture_lexical= / =push_captured= walks the elisp =nelisp-lexframe-stack= record via Rust-direct helpers (= Doc 104 Stage 3.c-d).  =nelisp-lexframe.el= is now in STDLIB and symbol/string-tolerant on the alist car.  Net Rust delta this Phase 4: ~0 LOC (= bake configuration only; Rust-direct walks were already shipped in Phase 3).  See also =apply_lambda_inner= Nil-skip optimisation (= byproduct of the option B attempt; kept for the marginal perf win).
+  - Phase 4.b — *SHIPPED 2026-05-17*: option (a) — elisp helper split into build-only (=nelisp-lexframe-make-from-alist=) + pre-apply depth snapshot (=nelisp-lexframe-stack-capture-to-depth=).  Rust =capture_lexical= / =push_captured= dispatch through =apply_function= via the new helpers; the Rust-direct =frame_capture_rust_direct= / =frame_push_captured_rust_direct= are physically deleted (~60 LOC retired).  Two non-obvious findings:
+    1. Both new helpers must be *lambda-literal-free* in their body — any inner =(lambda ...)= triggers =sf_lambda= → =capture_lexical= → re-entry into the dispatch → infinite recursion.  =nelisp-lexframe-stack-capture-to-depth= inlines the bucket walk rather than calling =nelisp--fast-hash-iter= (which takes a callback lambda) for this reason.
+    2. =push_captured= still calls a Rust =wrap_alist_cells= helper before dispatch because elisp can't construct an =NlCellRef= without a dedicated primitive.  Bare alist values get wrapped in =Sexp::Cell= before the elisp helper receives the alist.
   - Phase 5 (Doc 106) — *PENDING*: defvar idempotence / constant flag / =unbound-marker= sentinel handling fully on elisp side.
   - Phase 6 (Doc 107) — *PENDING*: extern_builtins migration (= option (a) keep Rust-side + slim primitive routing).
   - Phase 7 (Doc 108) — *PENDING*: last-mile shrink (= phantom shims routing to elisp via slim primitives).
@@ -415,17 +418,32 @@ because the elisp body's push lands one level deeper than the
 apply argument frame).  capture has the symmetric problem on
 read.
 
-*Future Phase 4.b unlock conditions*: (a) split the elisp helpers
-into "build only" + Rust-side push, plus pre-apply depth snapshot
-for capture (= minor surgery, ~1 session); OR (b) introduce a
-separate apply-argument-frame record so lexframe stack is
-untouched during dispatch (= architectural, several sessions).
-Option (b) is the cleaner long-term answer; option (a) is the
-sufficient short-term unlock.
+*Phase 4.b SHIPPED 2026-05-17 (option (a))*: elisp helpers split
+into =nelisp-lexframe-make-from-alist= (= build only, no push)
+and =nelisp-lexframe-stack-capture-to-depth= (= walks frames
+[0..MAX-DEPTH-1], skipping apply's argument frame at index
+MAX-DEPTH).  Rust =capture_lexical= dispatches with pre-apply
+depth snapshot; =push_captured= dispatches to the build helper
+and pushes the returned frame onto the mirror via Rust-direct (=
+so the depth lands at the caller's stack, not inside the
+dispatcher's argument frame).  Rust-direct =frame_capture_rust_
+direct= / =frame_push_captured_rust_direct= deleted (~60 LOC).
 
-*LOC delta*: Rust ~0 (bake config + apply_lambda_inner Nil-skip);
-Elisp +0 (=nelisp-lexframe.el= already shipped in Phase 3 Stage
-3.a, now wired into STDLIB).
+Two implementation hazards discovered during Phase 4.b:
+1. Helper bodies must be *lambda-literal-free*.  Any inner
+   =(lambda ...)= triggers =sf_lambda= → =capture_lexical= →
+   re-entry into the dispatch → infinite recursion.  The walk
+   in =nelisp-lexframe-stack-capture-to-depth= is inlined rather
+   than using =nelisp--fast-hash-iter= (which takes a callback
+   lambda).
+2. =push_captured= still wraps bare alist values in =Sexp::Cell=
+   on the Rust side before dispatch — elisp can't construct an
+   =NlCellRef= without a dedicated primitive.
+
+*LOC delta (Phase 4 + 4.b cumulative)*: Rust net ~-50 (= -60
+Rust-direct helpers + ~+10 dispatch glue + apply_lambda_inner
+Nil-skip); Elisp +50 (=make-from-alist= + =capture-to-depth=
+inlined walks).
 
 ** Phase 5 (Doc 106) — defvar / constant / sentinel handling (1 session)
 

@@ -755,68 +755,6 @@ impl Env {
         None
     }
 
-    /// Walk the mirror stack innermost-first and return an alist of
-    /// `((NAME . CELL) ...)' with inner-shadows-outer dedup.  Cell
-    /// identity is preserved (= caller may rely on `Sexp::Cell' Rc
-    /// equality for closure write-through).  Mirrors
-    /// `nelisp-lexframe-stack-capture' + `capture_lexical'.  Doc 104
-    /// Stage 3.c — `capture_lexical' now delegates here.
-    pub(crate) fn frame_capture_rust_direct(&self) -> Sexp {
-        let Some((_stack_rec, backing, depth)) = self.frame_stack_view() else { return Sexp::Nil };
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut acc = Sexp::Nil;
-        for i in (0..depth).rev() {
-            let Some(frame) = backing.value.get(i) else { continue };
-            let Sexp::Record(frame_rec) = frame else { continue };
-            let Some(Sexp::Record(ht_rec)) = frame_rec.slots.get(0) else { continue };
-            let Some(Sexp::Vector(buckets)) = ht_rec.slots.get(1) else { continue };
-            for bucket in buckets.value.iter() {
-                let mut cur = bucket;
-                while let Sexp::Cons(c) = cur {
-                    if let Sexp::Cons(pair) = &c.car {
-                        if let Sexp::Str(k) = &pair.car {
-                            if seen.insert(k.clone()) {
-                                let entry = Sexp::cons(
-                                    Sexp::Symbol(k.clone()),
-                                    pair.cdr.clone(),
-                                );
-                                acc = Sexp::cons(entry, acc);
-                            }
-                        }
-                    }
-                    cur = &c.cdr;
-                }
-            }
-        }
-        acc
-    }
-
-    /// Build a fresh frame populated from ALIST = `((NAME . CELL) ...)'
-    /// (NAME may be `Sexp::Symbol' or `Sexp::Str') and push it onto
-    /// the mirror stack.  Mirrors `nelisp-lexframe-stack-push-captured!'
-    /// + `push_captured'.  Cell identity is preserved.
-    #[allow(dead_code)] // Doc 104 Stage 3.b — used by Stage 3.c + test
-    pub(crate) fn frame_push_captured_rust_direct(&mut self, alist: &Sexp) -> Result<(), EvalError> {
-        let Some(frame) = self.frame_push_rust_direct() else { return Ok(()); };
-        let mut cur = alist;
-        while let Sexp::Cons(outer) = cur {
-            let Sexp::Cons(inner) = &outer.car else {
-                return Err(EvalError::Internal("closure env entry not a cons".into()));
-            };
-            let name = match &inner.car {
-                Sexp::Symbol(s) => s.clone(),
-                Sexp::Str(s) => s.clone(),
-                _ => return Err(EvalError::Internal("closure env entry name not a symbol".into())),
-            };
-            Env::frame_bind_into(&frame, &name, inner.cdr.clone());
-            cur = &outer.cdr;
-        }
-        if !matches!(cur, Sexp::Nil) {
-            return Err(EvalError::Internal("closure env not a proper list".into()));
-        }
-        Ok(())
-    }
-
     /// Register `f' as an externally-supplied builtin under `name'.
     /// Sets the function cell to `(builtin NAME)' so `(NAME ARG...)'
     /// invokes `f(args, env)'.  Re-registering overwrites.
@@ -976,18 +914,30 @@ impl Env {
     /// carrying the same `NlCellRef` as the originating frame entry, so
     /// closure `setq' writes through to the let-binding's slot.
     ///
-    /// Doc 102 Phase 4 (2026-05-17) — body delegates to
-    /// `frame_capture_rust_direct' which walks the elisp-side mirror
-    /// (= `nelisp-lexframe-stack' record) via Rust.  An apply_function-
-    /// based dispatch into `nelisp-lexframe-stack-capture' was
-    /// attempted but blocked by the apply_lambda_inner layering issue
-    /// (= apply pushes its own argument frame onto the SAME stack
-    /// record that capture reads from, contaminating the result).
-    /// The elisp module remains in STDLIB so a future Phase 4.b can
-    /// switch the dispatch on once apply argument frames live on a
-    /// separate record (= candidate Doc 105 / Phase 4.b design).
-    pub fn capture_lexical(&self) -> Sexp {
-        self.frame_capture_rust_direct()
+    /// Doc 102 Phase 4.b (2026-05-17) — body dispatches to elisp
+    /// `nelisp-lexframe-stack-capture-to-depth' via `apply_function'.
+    /// The pre-apply depth snapshot caps the elisp walk at the
+    /// caller-time stack depth so apply_lambda_inner's argument
+    /// frame (= pushed onto the same record during dispatch) is
+    /// excluded from the result.  Pre-bootstrap (= helper not yet
+    /// loaded) falls back to a `Sexp::Nil' result (= empty captured
+    /// env; correct for the empty initial stack).
+    pub fn capture_lexical(&mut self) -> Sexp {
+        // Snapshot the current depth BEFORE the dispatch — apply_lambda_inner
+        // will push its argument frame at this index during the helper call.
+        let depth = match &self.frames_record {
+            Sexp::Record(r) => match r.slots.get(1) {
+                Some(Sexp::Int(n)) => *n,
+                _ => return Sexp::Nil,
+            },
+            _ => return Sexp::Nil,
+        };
+        let f = match self.lookup_function("nelisp-lexframe-stack-capture-to-depth") {
+            Ok(f) => f,
+            Err(_) => return Sexp::Nil,
+        };
+        let args = [self.frames_record.clone(), Sexp::Int(depth)];
+        super::apply_function(&f, &args, self).unwrap_or(Sexp::Nil)
     }
 
     /// Push a frame from a captured-env alist (inverse of `capture_lexical').
@@ -1077,47 +1027,70 @@ impl Env {
 
     /// Push a frame from a captured-env alist (inverse of `capture_lexical').
     /// When a captured value is `Sexp::Cell', the same `Rc` is reinstalled
-    /// (= write-through); otherwise a fresh cell wraps the value.
+    /// (= write-through); plain values are wrapped in a fresh
+    /// `Sexp::Cell' so `setq' on the binding still hits a real
+    /// `NlCellRef' slot.
     ///
-    /// Doc 102 Phase 4 (2026-05-17) — body keeps the Rust-direct walk
-    /// (= same architectural reason as `capture_lexical'; apply_function
-    /// dispatch into `nelisp-lexframe-stack-push-captured!' contaminates
-    /// the stack because apply_lambda_inner pushes its argument frame
-    /// onto the same record).  Future Phase 4.b will route through
-    /// elisp once apply argument frames live on a separate record.
+    /// Doc 102 Phase 4.b (2026-05-17) — body dispatches to elisp
+    /// `nelisp-lexframe-make-from-alist' via `apply_function' to
+    /// build the frame, then pushes the returned frame onto the
+    /// mirror stack via Rust-direct (= the apply_lambda_inner
+    /// argument-frame contamination is contained inside the helper
+    /// call; only the build is delegated, the push stays Rust-side
+    /// so it lands at the correct depth).  The `wrap_alist_cells'
+    /// normalisation stays Rust-side because elisp can't construct
+    /// an `NlCellRef' without a dedicated primitive.
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
-        // Build mirror frame, validate alist shape, push only on success
-        // (= a mid-walk error doesn't leave a stub frame on the mirror).
-        let mirror_frame = Env::make_empty_frame_record();
-        let mut cur = alist;
-        while let Sexp::Cons(outer) = cur {
-            let Sexp::Cons(inner) = &outer.car else {
-                return Err(EvalError::Internal("closure env entry not a cons".into()));
-            };
-            let Sexp::Symbol(s) = &inner.car else {
-                return Err(EvalError::Internal("closure env entry name not a symbol".into()));
-            };
-            let cell = match &inner.cdr {
-                Sexp::Cell(c) => c.clone(),
-                v => FrameCell::new(v.clone()),
-            };
-            Env::frame_bind_into(&mirror_frame, s, Sexp::Cell(cell));
-            cur = &outer.cdr;
-        }
-        if !matches!(cur, Sexp::Nil) {
-            return Err(EvalError::Internal("closure env not a proper list".into()));
-        }
-        // Push the pre-populated mirror frame.
+        let normalized = Env::wrap_alist_cells(alist)?;
+        let f = match self.lookup_function("nelisp-lexframe-make-from-alist") {
+            Ok(f) => f,
+            Err(_) => return Ok(()),
+        };
+        let frame = super::apply_function(&f, &[normalized], self)?;
+        // Push the returned frame onto the mirror stack (Rust-direct,
+        // so the depth lands at the caller's stack — apply argument
+        // frame contamination from the helper call has already been
+        // popped by apply_lambda_inner's return path).
         if let Some((stack_rec, backing, depth)) = self.frame_stack_view() {
             let backing =
                 Env::frame_stack_ensure_capacity(&stack_rec, &backing, depth, depth + 1);
             // SAFETY: see `frame_push_rust_direct'.
             unsafe {
-                backing.with_value_mut(|v| v[depth] = mirror_frame);
+                backing.with_value_mut(|v| v[depth] = frame);
                 stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
             }
         }
         Ok(())
+    }
+
+    /// Walk ALIST = `((NAME . VALUE-OR-CELL) ...)' and produce a new
+    /// alist where every cdr is a `Sexp::Cell'.  Bare values are
+    /// wrapped in fresh `NlCellRef's so the elisp lexframe-bind path
+    /// stores write-through cells.  Returns `Sexp::Nil' for an empty
+    /// alist.  Errors on malformed input.
+    fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> {
+        let mut entries: Vec<(Sexp, Sexp)> = Vec::new();
+        let mut cur = alist;
+        while let Sexp::Cons(outer) = cur {
+            let Sexp::Cons(inner) = &outer.car else {
+                return Err(EvalError::Internal("closure env entry not a cons".into()));
+            };
+            let name = inner.car.clone();
+            let cell = match &inner.cdr {
+                Sexp::Cell(_) => inner.cdr.clone(),
+                v => Sexp::Cell(FrameCell::new(v.clone())),
+            };
+            entries.push((name, cell));
+            cur = &outer.cdr;
+        }
+        if !matches!(cur, Sexp::Nil) {
+            return Err(EvalError::Internal("closure env not a proper list".into()));
+        }
+        let mut acc = Sexp::Nil;
+        for (name, cell) in entries.into_iter().rev() {
+            acc = Sexp::cons(Sexp::cons(name, cell), acc);
+        }
+        Ok(acc)
     }
 }
 
@@ -1394,10 +1367,14 @@ mod tests {
 
     #[test]
     fn doc104_stage3b_capture_mirror_matches_vec_capture() {
-        // capture_lexical (= Vec) and frame_capture_rust_direct (=
-        // mirror) must enumerate the same names with the same cells
-        // (Sexp::Cell wrapping the Vec side's FrameCell).
-        let mut env = Env::new_global_no_stdlib();
+        // capture_lexical walks the elisp lexframe stack (via Phase
+        // 4.b apply_function dispatch into
+        // `nelisp-lexframe-stack-capture-to-depth') and returns an
+        // alist of `(NAME . CELL)' with inner-shadows-outer dedup.
+        // The captured-env alist key type is either Sexp::Str or
+        // Sexp::Symbol depending on how the elisp helper preserves
+        // the stored key (= the fast-hash bucket stores Sexp::Str).
+        let mut env = Env::new_global();
         env.push_frame();
         env.bind_local("a", Sexp::Int(1));
         env.bind_local("b", Sexp::Int(2));
@@ -1405,18 +1382,22 @@ mod tests {
         env.bind_local("a", Sexp::Int(3)); // shadows outer
         env.bind_local("c", Sexp::Int(4));
 
-        let mirror_alist = env.frame_capture_rust_direct();
-        // Build a {name -> value} map from the mirror alist.
+        let alist = env.capture_lexical();
+        // Build a {name -> value} map from the alist.
         let mut seen: HashMap<String, Sexp> = HashMap::new();
-        let mut cur = &mirror_alist;
+        let mut cur = &alist;
         while let Sexp::Cons(c) = cur {
             if let Sexp::Cons(pair) = &c.car {
-                if let Sexp::Symbol(k) = &pair.car {
+                let key = match &pair.car {
+                    Sexp::Str(k) | Sexp::Symbol(k) => Some(k.clone()),
+                    _ => None,
+                };
+                if let Some(k) = key {
                     let v = match &pair.cdr {
                         Sexp::Cell(c) => c.value.clone(),
                         other => other.clone(),
                     };
-                    seen.insert(k.clone(), v);
+                    seen.insert(k, v);
                 }
             }
             cur = &c.cdr;

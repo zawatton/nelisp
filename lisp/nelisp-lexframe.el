@@ -226,6 +226,73 @@ so closure write-through holds.  Doc 104 §2.3 contract — matches
       (setq i (1- i)))
     acc))
 
+(defun nelisp-lexframe-make-from-alist (alist)
+  "Build a fresh frame populated from ALIST = ((NAME . CELL) ...)
+without pushing onto any stack.  Returns the frame.
+
+Doc 102 Phase 4.b helper — paired with a Rust-side push so the
+apply_lambda_inner argument frame doesn't contaminate the
+lexframe stack during dispatch (see Doc 102 §3 Phase 4 for the
+layering rationale).
+
+NAME may be a symbol or a string; symbols are converted via
+`symbol-name' so the underlying `nelisp--fast-hash-put' (= string-
+only keys) accepts either.  CELL is stored verbatim — callers
+pre-wrap bare values in `Sexp::Cell' for write-through."
+  (let ((frame (nelisp-lexframe-make)))
+    (while alist
+      (let* ((pair (car alist))
+             (raw-name (car pair))
+             (name (if (symbolp raw-name)
+                       (symbol-name raw-name)
+                     raw-name))
+             (cell (cdr pair)))
+        (nelisp-lexframe-bind frame name cell))
+      (setq alist (cdr alist)))
+    frame))
+
+(defun nelisp-lexframe-stack-capture-to-depth (stack max-depth)
+  "Walk STACK innermost-first up to MAX-DEPTH; return an alist of
+\(NAME . CELL).  Frames at index >= MAX-DEPTH are skipped.  Inner
+shadows outer (= only the first-seen binding per NAME appears).
+The cell identity is preserved exactly (= no clone), so closure
+write-through holds.
+
+Doc 102 Phase 4.b — MAX-DEPTH is the caller's pre-apply depth
+snapshot.  apply_lambda_inner pushes its argument frame at depth
+MAX-DEPTH during the dispatch, so capping the walk at MAX-DEPTH-1
+(via the `(>= i 0)' guard against `i = (1- MAX-DEPTH)') skips
+that contamination.
+
+The bucket walk is inlined here rather than using
+`nelisp--fast-hash-iter' (= which takes a callback lambda) to keep
+the body lambda-literal-free.  Any inner `(lambda ...)' literal in
+this body would trigger `sf_lambda' → `capture_lexical' →
+re-entry into this dispatch → infinite recursion."
+  (let* ((backing (nelisp-lexframe-stack--backing stack))
+         (seen (make-hash-table :test 'equal))
+         (acc nil)
+         (i (1- max-depth)))
+    (while (>= i 0)
+      (let* ((frame (aref backing i))
+             (ht (nelisp-lexframe--ht frame))
+             (bc (nelisp--record-ref ht 0))
+             (buckets (nelisp--record-ref ht 1))
+             (j 0))
+        (while (< j bc)
+          (let ((cur (aref buckets j)))
+            (while cur
+              (let* ((pair (car cur))
+                     (name (car pair))
+                     (cell (cdr pair)))
+                (unless (gethash name seen)
+                  (puthash name t seen)
+                  (setq acc (cons (cons name cell) acc))))
+              (setq cur (cdr cur))))
+          (setq j (1+ j))))
+      (setq i (1- i)))
+    acc))
+
 (defun nelisp-lexframe-stack-push-captured! (stack alist)
   "Build a fresh frame populated from ALIST = ((NAME . CELL) ...),
 push it onto STACK (= mutating).  Returns the new frame.  CELL
