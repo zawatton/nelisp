@@ -381,29 +381,49 @@ must be respected.
 
 *2. =(cell-set-value H VAL-PTR)= — replace the cell's value*
 
-Drops the old value (= calls =nl_drop_sexp= for box-tagged old) then
-writes the new 32-byte Sexp from =[VAL-PTR + 0]= into =[cell + 0]=.
+**Implementation strategy (= refined 2026-05-17)**: delegate to an
+existing Rust helper rather than re-implement drop+write in
+Phase 47 emit.  =NlCellRef::set_value= (=build-tool/src/eval/
+nlcell.rs:151=) already does =std::ptr::drop_in_place= +
+=std::ptr::write= with the correct ordering + refcount maintenance
+(via the inner =Sexp::Drop= impl).  Phase 47 §111.D wraps this via
+a thin =extern "C"= helper:
 
-Drop dispatch table: read the cell's current tag at =[cell + 0]=,
-conditionally call =nl_rc_dec= for boxed variants (= same table
-Doc 101 §2.6 documents).  Then copy the new 32 bytes in.
+#+begin_src rust
+  /// Doc 111 §111.D — extern wrapper for Phase 47 cell-set-value op.
+  /// Wraps the existing `NlCellRef::set_value' unsafe method which
+  /// itself does `std::ptr::drop_in_place' + `std::ptr::write' on the
+  /// inner NlCell's `value' field.  Refcount maintenance is handled
+  /// automatically by `Sexp::Drop' + `Sexp::Clone'.
+  ///
+  /// # Safety
+  /// - `cell' must be non-null and point at an initialized NlCell.
+  /// - `val' must be non-null and point at an initialized Sexp.
+  /// - No other `&Sexp' borrow into `cell.value' may be live.
+  #[no_mangle]
+  pub unsafe extern "C" fn nl_cell_set_value(cell: *mut NlCell, val: *const Sexp) {
+      let val_owned = (*val).clone();  // refcount-aware clone
+      let value_ptr = std::ptr::addr_of_mut!((*cell).value);
+      std::ptr::drop_in_place(value_ptr);
+      std::ptr::write(value_ptr, val_owned);
+  }
+#+end_src
+
+Phase 47 emit becomes a simple =call nl_cell_set_value= via §100.A
+=extern-call= grammar — no inline drop-table dispatch needed:
 
 #+begin_src text
-  mov rsi, [rdi + 8]                ; rsi = NlCell*
-  ; --- conditional drop of old value ---
-  movzx rax, byte [rsi + 0]         ; rax = old.tag
-  ; ... dispatch on box-variant tag, conditional call to nl_rc_dec ...
-  ; (templated by the same emit table Doc 101 §2.6 generates)
-  ; --- write new value ---
-  movdqu xmm0, [rdx + 0]
-  movdqu xmm1, [rdx + 16]
-  movdqu [rsi + 0], xmm0
-  movdqu [rsi + 16], xmm1
-  ; --- conditional incref on new value ---
-  movzx rax, byte [rsi + 0]
-  ; ... dispatch on box-variant tag, conditional call to nl_rc_inc ...
-  mov rax, rdi                      ; return H (= cell pointer)
+  mov rsi, [rdi + 8]                ; rsi = NlCell* (= passed to nl_cell_set_value as arg 0)
+  ; rdx already holds VAL-PTR (= arg 1)
+  call nl_cell_set_value
+  mov rax, rdi                      ; return H
 #+end_src
+
+This trade is the same as the original Doc 101 §2.6 / Doc 111 §2.3
+=cell-set-value= design but moves all unsafe complexity into a
+single ~10 LOC Rust helper.  The inline-drop-dispatch approach
+described in earlier DRAFT iterations is deferred to a future
+§111.D.2 if profiling shows the extern-call overhead matters.
 
 The conditional drop+incref machinery is non-trivial; Doc 111 §3.D
 defers the full implementation to a sub-stage that ships after the
