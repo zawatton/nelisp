@@ -103,6 +103,32 @@
      :source-var nelisp-cc-mirror-lookup-entry--source
      :output "nelisp_mirror_lookup_entry.o"
      :requires-arch x86_64)
+    ;; Doc 111 §111.E #2-6 — Group A compose-on-#1 helpers.  Each
+    ;; thin object reuses `nelisp_mirror_lookup_entry' via the
+    ;; `extern-call' grammar form and adds a 1-2 op tail
+    ;; (`record-slot-ref' / `symbol-eq' / `sexp-tag') to read the
+    ;; requested slot.  Linux-x86_64 only (= shares the same arch
+    ;; gate as #1).
+    (nelisp-cc-mirror-lookup-value
+     :source-var nelisp-cc-mirror-lookup-value--source
+     :output "nelisp_mirror_lookup_value.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-lookup-function
+     :source-var nelisp-cc-mirror-lookup-function--source
+     :output "nelisp_mirror_lookup_function.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-is-bound
+     :source-var nelisp-cc-mirror-is-bound--source
+     :output "nelisp_mirror_is_bound.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-is-fbound
+     :source-var nelisp-cc-mirror-is-fbound--source
+     :output "nelisp_mirror_is_fbound.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-is-constant
+     :source-var nelisp-cc-mirror-is-constant--source
+     :output "nelisp_mirror_is_constant.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

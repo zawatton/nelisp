@@ -146,6 +146,49 @@ pub mod elisp_cc_spike {
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
         ) -> i64;
+        // Doc 111 §111.E #2-6 — Group A compose-on-#1 helpers.  Each
+        // is a thin Phase 47 object that calls
+        // `nelisp_mirror_lookup_entry' via the `extern-call' grammar
+        // form and adds a 1-2 op tail to read the requested
+        // symbol-entry slot.  See `lisp/nelisp-cc-mirror-*.el' for
+        // the per-helper source body.
+        //
+        //   `nelisp_mirror_lookup_value(M, S, SLOT)' — copy entry
+        //      slot 0 (value cell) into SLOT via record-slot-ref, or
+        //      write Sexp::Nil on miss.  Returns SLOT.
+        //   `nelisp_mirror_lookup_function(M, S, SLOT)' — slot 1
+        //      counterpart of value.
+        //   `nelisp_mirror_is_bound(M, S, UNBOUND)' — i64 1 iff entry
+        //      exists AND slot 0 != UNBOUND (= the caller-supplied
+        //      `Sexp::Symbol("nelisp--unbound-marker")' sentinel).
+        //   `nelisp_mirror_is_fbound(M, S, UNBOUND)' — slot 1
+        //      counterpart of is_bound.
+        //   `nelisp_mirror_is_constant(M, S)' — i64 1 iff entry
+        //      exists AND slot 3 has tag `SEXP_TAG_T' (= 1).
+        fn nelisp_mirror_lookup_value(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            result_slot: *mut Sexp,
+        ) -> *mut Sexp;
+        fn nelisp_mirror_lookup_function(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            result_slot: *mut Sexp,
+        ) -> *mut Sexp;
+        fn nelisp_mirror_is_bound(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            unbound_ptr: *const Sexp,
+        ) -> i64;
+        fn nelisp_mirror_is_fbound(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            unbound_ptr: *const Sexp,
+        ) -> i64;
+        fn nelisp_mirror_is_constant(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+        ) -> i64;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
         // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
@@ -374,6 +417,89 @@ pub mod elisp_cc_spike {
         sym_ptr: *const Sexp,
     ) -> *const Sexp {
         nelisp_mirror_lookup_entry(mirror_ptr, sym_ptr) as *const Sexp
+    }
+
+    /// Doc 111 §111.E #2 — Phase 47 `mirror_lookup_value' probe wrapper.
+    ///
+    /// On hit, copies the entry's slot 0 (= value cell) into
+    /// `result_slot` via the refcount-aware `nl_sexp_clone_into`
+    /// helper.  On miss, writes `Sexp::Nil` (= zeroed tag byte) into
+    /// `result_slot`.  The sentinel-return convention of the Rust
+    /// `Env::mirror_lookup_value' (= unbound-marker on miss) is
+    /// re-introduced by the dispatcher; this Phase 47 helper stays
+    /// stateless and returns Nil.
+    ///
+    /// # Safety
+    /// - `mirror_ptr` / `sym_ptr` per #1's contract.
+    /// - `result_slot` must be non-null, properly aligned, and writable
+    ///   for one 32-byte `Sexp` slot.  The slot must start in a
+    ///   bit-pattern-Copy state (= `Sexp::Nil`) — `record-slot-ref` 's
+    ///   underlying `nl_sexp_clone_into' performs `ptr::write` without
+    ///   dropping the prior contents.
+    pub unsafe fn mirror_lookup_value(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        result_slot: *mut Sexp,
+    ) -> *mut Sexp {
+        nelisp_mirror_lookup_value(mirror_ptr, sym_ptr, result_slot)
+    }
+
+    /// Doc 111 §111.E #3 — Phase 47 `mirror_lookup_function' probe
+    /// wrapper.  Slot 1 (= function cell) counterpart of
+    /// [`mirror_lookup_value`]; same safety contract.
+    pub unsafe fn mirror_lookup_function(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        result_slot: *mut Sexp,
+    ) -> *mut Sexp {
+        nelisp_mirror_lookup_function(mirror_ptr, sym_ptr, result_slot)
+    }
+
+    /// Doc 111 §111.E #4 — Phase 47 `mirror_is_bound' probe wrapper.
+    ///
+    /// Returns 1 iff the named entry exists in the mirror AND its
+    /// slot 0 (= value cell) does not compare `symbol-eq' to the
+    /// caller-supplied `unbound_ptr' sentinel.  `symbol-eq' returns
+    /// 0 for tag-mismatched inputs, so any non-Symbol value cell is
+    /// classified as bound.
+    ///
+    /// # Safety
+    /// - `mirror_ptr` / `sym_ptr` per #1's contract.
+    /// - `unbound_ptr` must be non-null and point at a
+    ///   `Sexp::Symbol("nelisp--unbound-marker")` (or any Sexp the
+    ///   caller wants to use as the unbound sentinel).
+    pub unsafe fn mirror_is_bound(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        unbound_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_is_bound(mirror_ptr, sym_ptr, unbound_ptr)
+    }
+
+    /// Doc 111 §111.E #5 — Phase 47 `mirror_is_fbound' probe wrapper.
+    /// Slot 1 counterpart of [`mirror_is_bound`]; same safety contract.
+    pub unsafe fn mirror_is_fbound(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        unbound_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_is_fbound(mirror_ptr, sym_ptr, unbound_ptr)
+    }
+
+    /// Doc 111 §111.E #6 — Phase 47 `mirror_is_constant' probe wrapper.
+    ///
+    /// Returns 1 iff the named entry exists AND its slot 3
+    /// (= constant flag) currently has tag `SEXP_TAG_T` (= numeric
+    /// value 1).  No unbound-marker parameter — constancy is a direct
+    /// tag-byte check.
+    ///
+    /// # Safety
+    /// - `mirror_ptr` / `sym_ptr` per #1's contract.
+    pub unsafe fn mirror_is_constant(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_is_constant(mirror_ptr, sym_ptr)
     }
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the

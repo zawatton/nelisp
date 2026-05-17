@@ -102,6 +102,16 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // §3.E Group C; this object calls it via the new
         // `nl_mirror_fnv1a_sexp' extern.
         "nelisp-cc-mirror-lookup-entry.el",
+        // Doc 111 §111.E #2-6 — Group A compose-on-#1 read helpers
+        // (lookup_value / lookup_function / is_bound / is_fbound /
+        // is_constant).  Each calls `nelisp_mirror_lookup_entry' via
+        // `extern-call' and adds a 1-2 op tail to read the requested
+        // symbol-entry slot.
+        "nelisp-cc-mirror-lookup-value.el",
+        "nelisp-cc-mirror-lookup-function.el",
+        "nelisp-cc-mirror-is-bound.el",
+        "nelisp-cc-mirror-is-fbound.el",
+        "nelisp-cc-mirror-is-constant.el",
         // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
         "nelisp-cc-jit-arith.el",
         // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.
