@@ -103,6 +103,17 @@
      :source-var nelisp-cc-bi-quit-flag--pending-p-source
      :output "nelisp_bi_quit_flag_pending_p.o"
      :requires-arch x86_64)
+    ;; Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
+    ;; Algorithmic body of `(nelisp--write-stderr-line STR)' moves
+    ;; into Phase 47 elisp via the new §122.H `str-bytes-ptr' grammar
+    ;; op (= Rust `nl_str_bytes_ptr' extern that returns the data
+    ;; pointer of any string-y Sexp variant safely).  The Rust shim
+    ;; keeps arity + tag dispatch + trailing-newline + flush; the
+    ;; elisp body is one `extern-call write 2 ptr len' syscall.
+    (nelisp-cc-bi-write-stderr-line
+     :source-var nelisp-cc-bi-write-stderr-line--source
+     :output "nelisp_bi_write_stderr_line.o"
+     :requires-arch x86_64)
     ;; Doc 111 §111.D — Cell read+write op probes (= no user-visible
     ;; swap, used only by `tests/phase47_cell.rs').  Four entries, one
     ;; per grammar op (`cell-value' / `cell-set-value' / `cell-make' /

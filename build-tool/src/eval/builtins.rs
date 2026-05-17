@@ -1229,15 +1229,48 @@ fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// the previous `bi_message' was just `bi_format' + this writeln,
 /// and moving the dispatch to elisp means the few-line I/O sliver
 /// is the only piece that genuinely needs Rust.
+///
+/// Doc 117 §117.B / Doc 122 §122.H (2026-05-18): the per-payload
+/// byte-write `out.write_all(s.as_bytes())' step now runs through the
+/// Phase 47 elisp object compiled from
+/// `lisp/nelisp-cc-bi-write-stderr-line.el' (= a 3-arg `extern-call'
+/// to libc `write' using the new §122.H `str-bytes-ptr' grammar op
+/// + the §101.C `str-len' op).  The Rust shim keeps arity validation
+/// + the `WrongType' tag dispatch + the trailing `\n' byte + the
+/// final `err.flush()' so user-observable behaviour matches the
+/// pre-swap `writeln!' exactly.  First I/O syscall in the Doc 117
+/// Tier B sweep — same shape applies to `write-stdout-bytes' /
+/// `read-stdin-bytes' / `read-file' / `write-file' next.
 fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
     require_arity("nelisp--write-stderr-line", args, 1, Some(1))?;
+    // Validate stringp + materialise the variant-uniform `Sexp::Str'
+    // view that the elisp body's `str-bytes-ptr' op can read.
+    // `as_string_owned()' returns Some for Str / MutStr (= the same
+    // gate the pre-swap body used).  We rebuild a stack-local
+    // `Sexp::Str' so the elisp body sees a single layout — the
+    // §122.H `nl_str_bytes_ptr' extern handles MutStr natively but
+    // routing through `Sexp::Str' keeps the elisp body free of any
+    // variant-specific branching.
     let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
         expected: "stringp".into(),
         got: args[0].clone(),
     })?;
+    let body_sexp = Sexp::Str(s);
+    // Dispatch the body write through the Phase 47 elisp object.
+    // The return is the libc `write(2)' i64 (= bytes written or -1);
+    // discarded here for parity with the pre-swap `let _ = writeln!()'.
+    unsafe {
+        let _ = crate::elisp_cc_spike::bi_write_stderr_line(
+            &body_sexp as *const Sexp,
+        );
+    }
+    // Trailing newline + flush — kept in the Rust shim so the elisp
+    // body is exactly the algorithmic core.  `let _ = ...' preserves
+    // the pre-swap error-suppression (= `writeln!' + `flush' both
+    // ignored I/O errors).
     let mut err = std::io::stderr().lock();
-    let _ = writeln!(err, "{}", s);
+    let _ = err.write_all(b"\n");
     let _ = err.flush();
     Ok(args[0].clone())
 }

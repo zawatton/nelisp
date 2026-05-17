@@ -676,6 +676,72 @@ pub unsafe extern "C" fn nl_str_is_alphanumeric_at(
     if ch.is_alphanumeric() { 1 } else { 0 }
 }
 
+// ---- Doc 122 §122.H — Outward `Str → *const u8' bytes-pointer op ----
+//
+// §122.A's `sexp-write-str' covers the *inward* direction
+// (bytes → `Sexp::Str').  The matching *outward* direction (`Sexp::Str'
+// → `*const u8' for a libc-style syscall) was missing until Doc 122
+// §122.H — Phase 47's pre-§122.H `str-bytes' grammar op only worked on
+// the inline `String' layout of `Sexp::Str' / `Sexp::Symbol'
+// (`mov rax, [rdi + 16]'); it could not handle `Sexp::MutStr'
+// (which wraps `NlStrRef = NonNull<NlStr>' at payload offset 8, one
+// indirection away from the bytes).  The Doc 117.B I/O syscall sweep
+// (`write_stdout' / `write_stderr_line' / `read_stdin' / `read_file'
+// / `write_file') needs a single grammar op that handles all three
+// `string-y' variants safely, so that the same elisp body works
+// regardless of whether the caller passes an immutable literal
+// (`Sexp::Str'), an interned name (`Sexp::Symbol') or a builder buffer
+// (`Sexp::MutStr').
+//
+// `nl_str_bytes_ptr' centralises the variant dispatch in Rust + uses
+// the official `String::as_ptr()' / `NlStr.value.as_ptr()' accessors
+// (= no layout assumption on the inner `String' header).  Non-string
+// variants return `std::ptr::null()' which the elisp caller is
+// expected to either avoid (= tag-check upstream) or treat as a
+// 0-length write (= benign no-op when paired with `str-len' of 0).
+
+/// Doc 122 §122.H — return the data pointer of a `Sexp`'s underlying
+/// byte buffer for a `string-y' variant (`Sexp::Str' / `Sexp::Symbol'
+/// / `Sexp::MutStr'); return `null` for every other tag.
+///
+/// The returned pointer aliases `*str_ptr`'s inner storage: it remains
+/// valid for as long as the `Sexp` slot lives and is not mutated /
+/// reallocated.  Callers that pair this with `str-len' (= the byte
+/// count returned by `nl_str_len' / inline `[rdi + 24]') reach
+/// exactly `len' initialised UTF-8 bytes at `[ptr, ptr + len)'.
+///
+/// The implementation goes through the standard `String::as_ptr()` /
+/// `(&*nlstr).value.as_ptr()' accessors so it does not depend on
+/// Rust's `String' header field order being `(ptr, capacity, length)'
+/// (= the assumption baked into Phase 47's inline `str-bytes' op).
+/// `Sexp::Symbol' carries the same inline `String` header as
+/// `Sexp::Str' so its pointer behaves identically; `Sexp::MutStr'
+/// indirects through `NlStrRef::deref' to the heap-resident `NlStr.value'.
+///
+/// # Safety
+/// - `str_ptr' must be non-null and point at a live `Sexp' value
+///   (= same precondition the §122.D `nl_str_*' externs use).  The
+///   tag dispatch is internal — non-string variants yield `null` not
+///   undefined behaviour.
+/// - For `Sexp::Str' / `Sexp::Symbol' the empty-string case yields a
+///   non-null but `dangling-but-aligned' pointer (= `String::as_ptr()`
+///   contract); reading 0 bytes from it is sound, reading non-zero is
+///   UB.  Callers that pair with `str-len' get the matching `len = 0'
+///   and naturally do nothing in that case.
+#[no_mangle]
+pub unsafe extern "C" fn nl_str_bytes_ptr(
+    str_ptr: *const crate::eval::sexp::Sexp,
+) -> *const u8 {
+    // SAFETY: caller contract — `str_ptr' non-null + live Sexp.
+    let sexp_ref: &crate::eval::sexp::Sexp = unsafe { &*str_ptr };
+    match sexp_ref {
+        crate::eval::sexp::Sexp::Str(s) => s.as_ptr(),
+        crate::eval::sexp::Sexp::Symbol(s) => s.as_ptr(),
+        crate::eval::sexp::Sexp::MutStr(rc) => rc.value.as_ptr(),
+        _ => std::ptr::null(),
+    }
+}
+
 // ---- Doc 122 §122.G — Float allocator + str-to-float helper ----
 //
 // §122.G unlocks Reader Float literals (Doc 116.B+).  Two externs:

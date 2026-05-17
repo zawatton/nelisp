@@ -778,6 +778,24 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'str-bytes
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
+   ;; Doc 122 §122.H — `(str-bytes-ptr STR-PTR)' returns the raw
+   ;; `*const u8' data pointer of a Sexp::Str / Sexp::Symbol /
+   ;; Sexp::MutStr.  Unlike `str-bytes' (which is layout-coupled —
+   ;; inline read at `nelisp-string--offset-ptr' that only works for
+   ;; the inline-String variants), this op dispatches through the
+   ;; Rust `nl_str_bytes_ptr' extern which uses the official
+   ;; `String::as_ptr()' / `NlStr.value.as_ptr()' accessors and
+   ;; covers all three string variants.  Pair with `str-len' to
+   ;; get the matching byte count.  Unblocks the Doc 117 Tier B
+   ;; I/O syscall sweep (= `write_stdout' / `write_stderr_line' /
+   ;; `read_stdin' / `read_file' / `write_file' family).
+   ((and (consp sexp) (eq (car sexp) 'str-bytes-ptr))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :str-bytes-ptr-arity sexp)))
+    (list :kind 'str-bytes-ptr
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'str-byte-at))
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
@@ -1887,7 +1905,7 @@ the node's class to consume the result correctly."
              'vector-make
              'record-make
              'cell-value 'cell-set-value 'cell-make 'cell-null-p
-             'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
+             'str-len 'str-bytes 'str-bytes-ptr 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
              'sexp-write-str 'sexp-write-symbol 'sexp-write-float
              'mut-str-make-empty 'mut-str-push-byte 'mut-str-push-codepoint
@@ -1984,6 +2002,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-str-len node buf))
       ('str-bytes
        (nelisp-phase47-compiler--emit-str-bytes node buf))
+      ('str-bytes-ptr
+       (nelisp-phase47-compiler--emit-str-bytes-ptr node buf))
       ('str-byte-at
        (nelisp-phase47-compiler--emit-str-byte-at node buf))
       ('str-eq
@@ -3062,6 +3082,32 @@ Strategy (= inline tag check, no extern call):
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-string--offset-ptr)))
+
+(defun nelisp-phase47-compiler--emit-str-bytes-ptr (node buf)
+  "Emit Doc 122 §122.H `str-bytes-ptr' — 1-arg call to `nl_str_bytes_ptr'.
+
+Layout-safe sibling of `str-bytes': dispatches through the Rust extern
+`nl_str_bytes_ptr' which covers all three string-y variants
+(`Sexp::Str' / `Sexp::Symbol' / `Sexp::MutStr') via the official
+`String::as_ptr()' / `NlStr.value.as_ptr()' accessors.  Non-string
+inputs return null pointer.  Pair with `str-len' for the matching
+byte count.
+
+Strategy (= 1-arg extern call, mirrors §122.D `mut-str-len' /
+`str-char-count' pattern):
+
+  1. Evaluate `:ptr' -> rax, copy to rdi (= arg 0).
+  2. Push one alignment pad to keep rsp 16-byte aligned at call site.
+  3. Call `nl_str_bytes_ptr' — rax = `*const u8' data pointer.
+  4. Pop the alignment pad."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_str_bytes_ptr" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)))
 
 (defun nelisp-phase47-compiler--emit-str-byte-at (node buf)
   "Emit byte load from a `Sexp::Str' / `Sexp::Symbol' String buffer.

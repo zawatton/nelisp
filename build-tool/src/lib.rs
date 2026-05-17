@@ -161,6 +161,18 @@ pub mod elisp_cc_spike {
         fn nelisp_bi_set_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_clear_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_quit_flag_pending_p(flag_ptr: *const i64) -> i64;
+        // Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
+        // Phase 47 elisp body compiled from
+        // `lisp/nelisp-cc-bi-write-stderr-line.el'.  Single-arg
+        // function: receives a `*const Sexp' caller-validated as
+        // `Sexp::Str' / `Sexp::Symbol' / `Sexp::MutStr', dispatches
+        // through the §122.H `str-bytes-ptr' grammar op (= Rust
+        // `nl_str_bytes_ptr' extern) + the §101.C `str-len' op, and
+        // emits a single `write(2, bytes, len)' libc syscall.
+        // Returns the libc `write' i64 (= bytes written, or -1 on
+        // error).  The Rust shim discards the return — pre-swap
+        // `writeln!' suppressed errors the same way (`let _ = ...').
+        fn nelisp_bi_write_stderr_line(str_ptr: *const Sexp) -> i64;
         // Doc 111 §111.D — Cell read+write ops compiled from
         // `lisp/nelisp-cc-cell-ops.el'.  Each op is a separate `.o' in
         // the static archive so the integration test in
@@ -861,6 +873,40 @@ pub mod elisp_cc_spike {
     /// Identical contract to [`bi_set_quit_flag`].
     pub unsafe fn bi_quit_flag_pending_p(flag_ptr: *const i64) -> i64 {
         nelisp_bi_quit_flag_pending_p(flag_ptr)
+    }
+
+    /// Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
+    /// `(nelisp--write-stderr-line STR)' algorithmic body via the
+    /// Phase 47 elisp object compiled from
+    /// `lisp/nelisp-cc-bi-write-stderr-line.el'.
+    ///
+    /// The elisp body issues `write(2, str-bytes-ptr(str), str-len(str))'
+    /// — a single libc `write' syscall against fd 2 (stderr) for the
+    /// user payload bytes.  The Rust shim
+    /// (`eval::builtins::bi_write_stderr_line') keeps:
+    ///   - arity check (1 arg)
+    ///   - `WrongType' dispatch (`Sexp::Str' / `Sexp::MutStr' only)
+    ///   - the trailing `\n' byte (= `writeln!' parity)
+    ///   - the final `err.flush()' call
+    ///   - the `Sexp' return value (= `args[0].clone()')
+    /// so that user-observable behaviour matches the pre-swap body.
+    ///
+    /// `str_ptr' must point at a `Sexp::Str' / `Sexp::Symbol' /
+    /// `Sexp::MutStr' (the elisp body's `str-bytes-ptr' op safely
+    /// handles all three variants — non-string variants would return
+    /// a null pointer + length 0, which is a benign no-op `write').
+    /// Returns the libc `write(2)' i64 (= bytes written, or -1 on
+    /// error).  The Rust shim discards the return — the pre-swap
+    /// `let _ = writeln!()` had the same error-suppression contract.
+    ///
+    /// # Safety
+    /// - `str_ptr' must be non-null and point at a live `Sexp' value
+    ///   (= the caller's `&args[0] as *const Sexp').  The elisp body
+    ///   only reads through `nl_str_bytes_ptr' (= variant-safe) +
+    ///   inline `String::len' (= caller-validated tag), so passing a
+    ///   non-string variant yields a 0-length `write' rather than UB.
+    pub unsafe fn bi_write_stderr_line(str_ptr: *const Sexp) -> i64 {
+        nelisp_bi_write_stderr_line(str_ptr)
     }
 
     /// Doc 111 §111.D — `(cell-value H SLOT)' via elisp-compiled Cell ops.
