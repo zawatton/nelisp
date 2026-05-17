@@ -1,0 +1,270 @@
+#+TITLE: Doc 117 — builtins.rs pure-elisp sweep
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-17
+
+* Status
+
+- *State*: DRAFT 2026-05-17 — staged behind Doc 115 SHIPPED.
+- *Parent*: Doc 114 (= x86_64-linux pivot, SHIPPED 2e32f16b) + Doc 115
+  (= env_lexframe shims pure elisp, in flight).
+- *Sibling*: Doc 116 (Reader, queued), Doc 118 (special_forms, queued),
+  Doc 119 (env.rs core methods, queued).
+- *Dependents*: Doc 119 — some builtins touch `Env` methods, so deep
+  Env sweep waits on this doc's pattern + selective sweep.
+- *Scope*: 49 `bi_*` functions in =build-tool/src/eval/builtins.rs=
+  (2,195 LOC).  Categorized by elisp化-feasibility; this doc targets
+  the *pure-logic* tier first.
+
+* §0 TL;DR
+
+eval/builtins.rs is the biggest single Rust file in the project
+(excluding tests.rs).  It hosts 49 `bi_*` builtin handlers
+dispatched by `eval::builtins::dispatch'.  Each handler is a small
+function (~20-80 LOC) doing arg-validation + algorithm + result
+wrap.  Doc 100 §100.C + Doc 101 §101.B + Doc 111 §111.B already
+demonstrated that individual handlers can swap to Phase 47 elisp
+(`bi_truncate', `bi_length_cons_cc', `bi_recordp_cc' precedent).
+
+Doc 117 sweeps the remaining ~46 handlers (= 49 minus 3 already
+elisp-dispatching), targeting Tier A *first* (= pure-logic
+handlers with no Env mutation, no syscall, no reader callout).
+Tier B (syscalls) waits for Doc 122 (Phase 47 syscall grammar) +
+Doc 125 (libc binding).  Tier C (Env-touching) waits for Doc 119.
+
+* §1 Builtin audit (= 49 functions categorized)
+
+** Tier A — Pure logic, immediate elisp化 candidates (~12 handlers)
+
+These have no Env mutation, no syscall, no reader.  Each is a
+self-contained algorithm that consumes Sexps and produces Sexps.
+
+| Function          | Line | LOC | Description                              | Phase 47 ops needed             |
+|-------------------+------+-----+------------------------------------------+---------------------------------|
+| bi_string_bytes   | 549  | ~30 | Return Str bytes as Vector of Ints       | str-len, str-byte-at, vector-make, vector-slot-set |
+| bi_funcall        | 1096 | ~6  | Call function with args                  | (Tier C — touches Env::eval)    |
+| bi_apply          | 1102 | ~10 | Apply function to argument list          | (Tier C)                        |
+| bi_signal         | 1117 | ~70 | Build error condition, throw             | cons-walk, cons-make, str-eq    |
+| bi_truncate       | 1234 | 30  | ✓ ALREADY elisp-dispatching via Doc 100  | —                               |
+| bi_length_cons_cc | 1266 | 22  | ✓ ALREADY elisp-dispatching via Doc 101  | —                               |
+| bi_recordp_cc     | 1287 | 27  | ✓ ALREADY elisp-dispatching via Doc 111  | —                               |
+| bi_nl_fact_i64    | 1313 | 13  | ✓ ALREADY elisp-dispatching via Doc 99   | —                               |
+| bi_f64_trunc      | 1354 | 30  | f64 truncation                            | f64 → int conversion via Doc 110|
+| bi_make_vector    | 2185 | ~20 | Allocate vector with init element       | vector-make + fill loop         |
+| bi_set_quit_flag  | 1903 | 9   | Set static atomic flag                    | (atomic-store; Doc 122 needed)  |
+| bi_clear_quit_flag | 1912 | 8  | Clear static atomic flag                  | (atomic-store; Doc 122)         |
+| bi_quit_flag_pending_p | 1920 | 9 | Read static atomic flag                | (atomic-load; Doc 122)          |
+
+*Pure Tier A subset (no atomic, no extern call) = 4 handlers*:
+`bi_string_bytes`, `bi_signal`, `bi_f64_trunc`, `bi_make_vector`.
+Estimated LOC delta: -150 Rust + +200 elisp = +50 net (= elisp
+slightly larger because Phase 47 grammar is denser than Rust
+match arms, but the Rust here is small).
+
+** Tier B — Syscall wrappers (~20 handlers)
+
+These wrap libc / kernel calls (file I/O, terminal control,
+signals).  elisp化 requires `extern-call` to libc symbols (=
+already shipped via Phase 47 §100.A `extern-call` grammar) PLUS
+small additions to handle:
+- Static atomic flag storage (= Doc 122 atomic ops)
+- Sigaction installation (= libc binding via extern-call)
+- Termios state (= libc binding)
+
+Affected handlers:
+- `bi_syscall_canonicalize`, `bi_syscall_read_file`,
+  `bi_syscall_stat`, `bi_syscall_readdir`,
+  `bi_syscall_supported_p`, `bi_syscall`
+- `bi_nl_write_file`, `bi_nl_make_directory`
+- `bi_read_stdin_bytes`, `bi_read_stdin_byte_available`
+- `bi_write_stdout_bytes`, `bi_write_stderr_line`
+- `bi_terminal_raw_mode_enter`, `bi_terminal_raw_mode_leave`
+- `bi_termios_saved_p`, `bi_raw_mode_hooks_installed_p`
+- `bi_set_quit_flag`, `bi_clear_quit_flag`,
+  `bi_quit_flag_pending_p`
+- `bi_install_sigint_handler`, `bi_sigint_handler_installed_p`
+- `bi_install_winsize_handler`,
+  `bi_winsize_handler_installed_p`,
+  `bi_terminal_take_winsize_changed`,
+  `bi_terminal_current_winsize`
+- `bi_install_jobctrl_handlers`,
+  `bi_jobctrl_handlers_installed_p`,
+  `bi_terminal_take_sigcont`
+
+Estimated LOC: ~800 Rust → ~600 elisp + extern-call sites.  Deferred
+to Doc 117.B subdoc (= post-Doc-122 substrate enabler).
+
+** Tier C — Env-touching / eval-loop integration (~13 handlers)
+
+Need Env method access (= post-Doc-119 elisp化 of env.rs):
+- `bi_symbol_function`, `bi_fset`, `bi_macroexpand_1`
+- `bi_frame_op`, `bi_apply_builtin_dispatch`,
+  `bi_apply_lambda_inner`
+- `bi_funcall`, `bi_apply`, `bi_eval`
+- `bi_read`, `bi_read_from_string` (use the reader =
+  Doc 116 dependency)
+- `bi_read_all_from_string`, `bi_require`
+
+Deferred to Doc 117.C (= post-Doc-119).
+
+** Status summary
+
+| Tier   | Count | Rust LOC | elisp化 path             |
+|--------+-------+----------+--------------------------|
+| Already elisp | 4 | 90 (thin)  | Doc 100/101/111 SHIPPED  |
+| Tier A pure   | 4 | ~150       | *This doc's scope*       |
+| Tier A (atomic) | 4 | ~30      | Doc 122 then this doc    |
+| Tier A (f64)   | 1 | 30        | Doc 110 §110.G if needed |
+| Tier B syscall | 25| ~800      | Doc 117.B (post-Doc-122) |
+| Tier C env    | 13| ~1100     | Doc 117.C (post-Doc-119) |
+| *Total*       | 49| 2,195     |                          |
+
+* §2 Implementation plan (Tier A pure subset, 4 handlers)
+
+Each handler swap follows the established pattern (Doc 111 §111.B
+recordp / §111.C aref-vector / §111.D cell-ops shipped examples):
+
+1. Write `lisp/nelisp-cc-bi-<name>.el' with `defconst …--source'
+   holding the Phase 47 elisp.
+2. Add `scripts/compile-elisp-objects.el' manifest entry +
+   `build.rs' source list entry.
+3. Add extern decl + safe wrapper in `build-tool/src/lib.rs'.
+4. Replace the `bi_<name>' Rust body with a thin Phase 47 dispatch
+   (= same pattern as `bi_truncate' / `bi_length_cons_cc' on main).
+5. Add probe test `build-tool/tests/elisp_cc_bi_<name>_probe.rs'
+   with ≥ 3/3 cases.
+6. Verify: lib tests still pass, probe ≥ 3/3, no regression.
+
+### Per-handler
+
+*** §117.A.1 — bi_make_vector
+
+Algorithm: `(make-vector N INIT)` → fresh `Sexp::Vector` of N
+copies of INIT.
+
+Phase 47 ops: `vector-make N slot' (§115.1) + N-element fill via
+`vector-slot-set' (§111.E) in a recursive helper.
+
+Estimate: ~20 LOC elisp.  Single commit.
+
+*** §117.A.2 — bi_string_bytes
+
+Algorithm: `(string-bytes STR)` → `Vector` of `Sexp::Int` (one per
+byte).
+
+Phase 47 ops: `str-len' + `str-byte-at' + `vector-make' +
+recursive copy.
+
+Estimate: ~30 LOC elisp.  Single commit.
+
+*** §117.A.3 — bi_signal
+
+Algorithm: `(signal CONDITION DATA)` — build cons of CONDITION and
+DATA, throw via `EvalError::Lisp(_)`.
+
+The "throw" part needs control flow back to the dispatcher.  In
+the Rust version this is a `Err(EvalError::Lisp(...))` return; in
+elisp it'd need either:
+- A throw / catch primitive (= already shipped? check Phase 47
+  grammar).
+- A sentinel Sexp tag the dispatcher recognises as "this is a
+  signal".
+
+For Doc 117.A scope, defer signal to Doc 117.D or after
+condition-case primitives ship.  Skip from initial sweep.
+
+*** §117.A.4 — bi_f64_trunc
+
+Algorithm: f64 → i64 truncation.  Doc 110 §110.F covers most of
+the f64 dispatch already.
+
+Phase 47 ops: f64 → int conversion grammar (Doc 110 §110.E.2.b if
+present, else add).
+
+Estimate: ~25 LOC elisp.  Single commit, requires Doc 110 §110.E
+audit first.
+
+### Net Tier A scope
+
+After audit, the *immediately ship-able* Tier A handlers are:
+1. §117.A.1 `bi_make_vector` (vector-make + fill)
+2. §117.A.2 `bi_string_bytes` (str-len + str-byte-at + vector-make)
+
+*Total: 2 handlers, ~50 LOC elisp, ~-50 LOC Rust on main.*
+
+§117.A.3 + §117.A.4 wait for prereqs (throw/catch primitive + f64
+conversion audit).
+
+* §3 Verification gates
+
+Per handler:
+- `cargo build` clean.
+- `make compile` no warnings.
+- `find lisp -name '*.elc' -delete' before testing.
+- Per-handler probe ≥ 3/3 pass.
+- `cargo test --release --lib -- --test-threads=1` shows lib pass
+  count ≥ baseline.
+
+Cumulative (post-Doc-117.A SHIPPED):
+- 2 new `.o' files in the archive (nelisp_make_vector,
+  nelisp_string_bytes).
+- `bi_make_vector' + `bi_string_bytes' bodies are thin Phase 47
+  dispatch in builtins.rs.
+- Rust net delta: ~-50 LOC.
+
+* §4 Risks + open questions
+
+** §4.1 Throw / signal primitive
+
+`bi_signal' and friends need a way to non-locally return from
+elisp.  Options:
+- Add Phase 47 `throw' grammar op that returns a sentinel tag the
+  dispatcher recognises.
+- Use the existing `condition-case' machinery in Rust (= keep
+  signal Rust-side for now).
+
+*Decision*: defer signal to Doc 117.D, ship Tier A.1+A.2 first to
+establish the swap pattern.
+
+** §4.2 Per-handler size
+
+Tier A.1 and A.2 are tiny (~50 LOC each).  Bundling them in one
+commit OR two commits is acceptable.  Recommend one commit per
+handler for clean bisect history.
+
+** §4.3 Existing test coverage
+
+Each handler has ERT + Rust integration tests in `eval/tests.rs'.
+The elisp swap must preserve all existing test outcomes.  Don't
+add new behaviour; pure migration.
+
+** §4.4 Tier B + C interactions
+
+After Tier A ships, Tier B (syscalls) needs Doc 122 (Phase 47
+syscall + atomic grammar) + Doc 125 (libc binding) before
+proceeding.  Tier C waits for Doc 119 (env.rs elisp化).
+
+* §5 Schedule
+
+- §117.A.1 — `bi_make_vector` swap (~50 LOC).
+- §117.A.2 — `bi_string_bytes` swap (~70 LOC).
+- (Defer) §117.A.3 — `bi_signal` swap (needs throw primitive).
+- (Defer) §117.A.4 — `bi_f64_trunc` swap (needs f64 conv audit).
+- §117.B — Tier B syscall sweep (post-Doc-122).
+- §117.C — Tier C env sweep (post-Doc-119).
+
+Initial commits: 2.  Estimated effort: 1 Agent dispatch per
+handler, parallelizable.
+
+* §6 References
+
+- =/dev/nelisp/CLAUDE.md= — repo existence purpose.
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= — `bi_truncate'
+  precedent.
+- =docs/design/101-phase-47-sexp-cons-symbol-str-abi.org= —
+  `bi_length_cons_cc' precedent.
+- =docs/design/111-phase-47-sexp-record-vector-cell-abi.org= —
+  `bi_recordp_cc' precedent.
+- =build-tool/src/eval/builtins.rs= @ main =237582f6= — the 49
+  handlers' source.
+- Memory: =project_nelisp_pure_elisp_roadmap= — overall plan
+  Doc 114-128 + final endpoint.
