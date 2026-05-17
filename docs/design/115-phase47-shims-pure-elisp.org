@@ -80,16 +80,36 @@ on main =2e32f16b=:
 | str-eq / symbol-eq                | Doc 101 §101.C | SHIPPED |
 | str-len / str-byte-at             | Doc 101 §101.C | SHIPPED |
 | while / cond / logic              | Phase 47 core  | SHIPPED |
-| arith (add/sub/mul)                | Phase 47 core  | SHIPPED |
-| *int-logxor / int-logand*         | *§115.0 NEW*   | *DRAFT* |
+| arith (add/sub/mul/logior/logand/logxor) | Doc 100 §100.D | SHIPPED |
 
-Doc 115 adds *one minimal grammar extension* (§115.0) to enable the
-last Rust intermediary (= `mirror_fnv1a' hash) to be expressed in
-pure elisp.  Two new ops, ~30 LOC of Phase 47 emit code each, both
-are single-instruction lowerings on x86_64 (=xor reg, reg= / =and
-reg, reg=).  After §115.0 ships, no further ABI surface is needed.
+**Audit finding (2026-05-17, post-DRAFT)**: §115.0 was redundant.
+The Phase 47 grammar already accepts `(logxor A B)' / `(logand A B)'
+via Doc 100 §100.D's `arith' op set (= `lisp/nelisp-phase47-compiler.el'
+line 265: `(memq (car sexp) '(+ - * logior logand logxor))').  Both
+are MR-form lowerings to `xor rax, r10' / `and rax, r10' (= 3 bytes
+each).  The asm helpers `nelisp-asm-x86_64-xor-reg-reg' /
+`-and-reg-reg' are also shipped (= `lisp/nelisp-asm-x86_64.el' lines
+1010-1016).
 
-* §115.0 Phase 47 grammar extension — int-logxor + int-logand
+**No grammar extension is required**.  Doc 115 §115.0 is *deleted
+from scope*; §115.7 pure-elisp FNV-1a uses the existing `(logxor)' /
+`(logand)' surface forms directly.
+
+Net consequence: Doc 115 reduces from 9 stages to 8 (= §115.1-6
+shim ports, §115.7 FNV pure-elisp, §115.8 file deletion).
+
+* §115.0 [DELETED — already SHIPPED via Doc 100 §100.D]
+
+The 2026-05-17 audit confirmed `(logxor)' / `(logand)' Phase 47
+grammar surface is already shipped via the `arith' op set.  Asm
+helpers `nelisp-asm-x86_64-{xor,and}-reg-reg' also exist.  §115.0
+removed from Doc 115 scope.  See §0.2 for the corrected table.
+
+The remainder of this section (kept for archival purpose) shows
+what the planned grammar extension *would have looked like* before
+the audit found the existing implementation.  Skip to §1.
+
+* §115.0-DELETED-ARCHIVE (= prior DRAFT design, no longer in scope)
 
 ** §115.0.1 Why
 
@@ -519,9 +539,9 @@ Co-Authored-By: ...
 - Rust LOC delta: net −536 LOC (= -501 shim file + -35 FNV in
   env_helpers.rs)
 - Elisp LOC delta: net +340 to +420 LOC (= +320-400 shims +20 FNV)
-- New Phase 47 grammar surface: 2 ops (`int-logxor', `int-logand'),
-  ~30 LOC each = +60 elisp
-- *Net total LOC*: ≈ −130 to −210 LOC
+- New Phase 47 grammar surface: *none* (= `(logxor)' / `(logand)'
+  audit-confirmed already shipped via Doc 100 §100.D)
+- *Net total LOC*: ≈ −116 to −196 LOC
 - Doc 102 Phase 8.b condition (a) was satisfied by Doc 114; Doc 115
   adds the deeper "*zero Rust logic in lexframe + env_mirror runtime
   path*" property = 完全 elisp 化.
@@ -589,11 +609,10 @@ refcounts explicitly — that's already encapsulated.
 
 * §5 Schedule
 
-- *§115.0* (= grammar extension: `int-logxor' + `int-logand') —
-  *must ship first*; §115.5/6/7 depend on it.  +60 elisp grammar
-  + helpers, +80 probe Rust.  Single commit.
+- ~~§115.0~~ — *DELETED from scope* (= already shipped via Doc 100
+  §100.D, see §0.2 audit finding).
 - §115.1 (= nl_frame_stack_ensure_capacity) — simplest, no FNV hash,
-  ~60 LOC elisp.  Pattern-establishing.
+  ~60 LOC elisp.  Pattern-establishing; can ship first.
 - §115.2 (= nl_frame_pop) — second simplest, ~30 LOC.
 - §115.3 (= nl_frame_push) — uses §115.1 via extern-call.
 - §115.4 (= nl_wrap_alist_cells) — independent of stack ops, ~40
@@ -607,12 +626,13 @@ refcounts explicitly — that's already encapsulated.
 - §115.8 (= file deletion + final cleanup, = delete
   env_lexframe_phase47_shims.rs).
 
-9 commits total (§115.0 + 6 shim ports + §115.7 + §115.8 file
-deletion).  Per-shim Agent dispatch is fine because each shim is
-independent (the only shared dep is FNV — initially extern, finally
-pure-elisp helper).  §115.0 + §115.7 + §115.8 are sequenced (=
-must happen in order); §115.1-§115.6 can parallel-dispatch after
-§115.0 ships.
+*8 commits total* (= §115.1-6 shim ports + §115.7 FNV cutover +
+§115.8 file deletion).  Per-shim Agent dispatch is fine because
+each shim is independent (the only shared dep is FNV — initially
+Rust extern, finally pure-elisp helper).  §115.5/6 ship first with
+Rust FNV extern, then §115.7 rewires them to elisp FNV + deletes
+the Rust extern.  §115.1-§115.4 + §115.5-§115.6 can
+parallel-dispatch (= 6 concurrent Agents).
 
 * §6 References
 
