@@ -20,7 +20,12 @@
   `nl_frame_bind', `nl_frame_stack_find', `nl_wrap_alist_cells', plus
   the depth read `nl_frame_stack_depth' which is already trivial =
   one `sexp-int-unwrap') with pure-elisp Phase 47 implementations.
-  Delete the shim file outright.
+  *Additionally extends Phase 47 grammar with `int-logxor' + `int-logand'
+  ops* so the last hash-related Rust shim (`mirror_fnv1a' +
+  `nl_mirror_fnv1a_sexp' extern) can also be elisp-ified inside Doc 115.
+  Delete the shim file outright + delete `mirror_fnv1a' from
+  `env_helpers.rs'.  Doc 115 completion = *zero Rust logic in
+  lexframe + env_mirror runtime dispatch* = 完全 elisp 化.
 
 * §0 TL;DR
 
@@ -58,7 +63,7 @@ shared with all other Phase 47 callers)
 
 ** §0.2 Why this is feasible now
 
-All required Phase 47 grammar ops + ABI helpers are already SHIPPED
+Most required Phase 47 grammar ops + ABI helpers are already SHIPPED
 on main =2e32f16b=:
 
 | Op needed                          | Source     | Status   |
@@ -73,8 +78,124 @@ on main =2e32f16b=:
 | sexp-int-unwrap / -make           | Doc 100        | SHIPPED |
 | sexp-tag / -write-{nil,t}         | Doc 101 §101.C | SHIPPED |
 | str-eq / symbol-eq                | Doc 101 §101.C | SHIPPED |
+| str-len / str-byte-at             | Doc 101 §101.C | SHIPPED |
+| while / cond / logic              | Phase 47 core  | SHIPPED |
+| arith (add/sub/mul)                | Phase 47 core  | SHIPPED |
+| *int-logxor / int-logand*         | *§115.0 NEW*   | *DRAFT* |
 
-No new ABI surface is required.  Doc 115 is *implementation only*.
+Doc 115 adds *one minimal grammar extension* (§115.0) to enable the
+last Rust intermediary (= `mirror_fnv1a' hash) to be expressed in
+pure elisp.  Two new ops, ~30 LOC of Phase 47 emit code each, both
+are single-instruction lowerings on x86_64 (=xor reg, reg= / =and
+reg, reg=).  After §115.0 ships, no further ABI surface is needed.
+
+* §115.0 Phase 47 grammar extension — int-logxor + int-logand
+
+** §115.0.1 Why
+
+`mirror_fnv1a' (= 32-bit FNV-1a hash in `env_helpers.rs') is the
+only Rust intermediary that survives Doc 114 + Doc 115's 7-shim
+sweep.  Its body is:
+
+#+begin_src rust
+fn mirror_fnv1a(s: &str) -> u32 {
+    let mut h: u32 = 2166136261;     // OFFSET_BASIS
+    for b in s.bytes() {
+        h ^= b as u32;               // <-- needs `int-logxor'
+        h = h.wrapping_mul(16777619); // already in Phase 47 arith
+    }
+    h & 0xFFFFFFFF                   // <-- needs `int-logand'
+}
+#+end_src
+
+Three primitives missing from Phase 47 grammar:
+- *`int-logxor'* — i64 XOR, lowered to `xor rax, rdi' (3 bytes).
+- *`int-logand'* — i64 AND, lowered to `and rax, rdi' (3 bytes).
+- 32-bit truncation can be done via `int-logand' with `0xFFFFFFFF'.
+
+Multiplication wrapping is already correct (Phase 47 `arith mul' uses
+`imul rax, rdi' which is 64-bit two's-complement, matching
+Rust's `wrapping_mul' semantics for u32 promoted to i64).
+
+** §115.0.2 Grammar surface
+
+Add to `lisp/nelisp-phase47-compiler.el' parse-value clause + emit
+dispatch (= same shape as existing `arith' / `shift'):
+
+#+begin_src elisp
+;; (int-logxor A B) — i64 bitwise XOR.
+((and (consp sexp) (eq (car sexp) 'int-logxor))
+ (unless (= (length sexp) 3)
+   (signal 'nelisp-phase47-compiler-error
+           (list :int-logxor-arity sexp)))
+ (list :kind 'int-logxor
+       :a (nelisp-phase47-compiler--parse-value
+           (nth 1 sexp) env fenv defuns)
+       :b (nelisp-phase47-compiler--parse-value
+           (nth 2 sexp) env fenv defuns)))
+
+;; (int-logand A B) — i64 bitwise AND.
+((and (consp sexp) (eq (car sexp) 'int-logand))
+ (unless (= (length sexp) 3)
+   (signal 'nelisp-phase47-compiler-error
+           (list :int-logand-arity sexp)))
+ (list :kind 'int-logand
+       :a ...
+       :b ...))
+#+end_src
+
+Emit (= ~15 LOC each):
+
+#+begin_src elisp
+(defun nelisp-phase47-compiler--emit-int-logxor (node buf)
+  "Emit `int-logxor' — i64 bitwise XOR, result in rax."
+  (nelisp-phase47-compiler--emit-value (plist-get node :a) buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value (plist-get node :b) buf)
+  (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+  (nelisp-asm-x86_64-pop buf 'rax)
+  (nelisp-asm-x86_64-xor-reg-reg buf 'rax 'rdi))
+
+(defun nelisp-phase47-compiler--emit-int-logand (node buf)
+  "Emit `int-logand' — i64 bitwise AND, result in rax."
+  ;; ... same shape, `and rax, rdi' instead of `xor rax, rdi'.
+  )
+#+end_src
+
+Plus 2 helper functions in =lisp/nelisp-asm-x86_64.el=:
+- =nelisp-asm-x86_64-xor-reg-reg= (= REX.W + 0x31 + ModR/M).
+- =nelisp-asm-x86_64-and-reg-reg= (= REX.W + 0x21 + ModR/M).
+
+Each helper is ~10 LOC of elisp emitting 3 bytes.
+
+** §115.0.3 Verification
+
+Probe test = ERT in `lisp/nelisp-phase47-compiler.el' (or a new
+`elisp_cc_int_logxor_probe.rs' integration test):
+
+| Case             | Expected            |
+|------------------+---------------------|
+| 0 XOR 0          | 0                   |
+| 0xFF XOR 0xAA    | 0x55                |
+| 0xFFFFFFFF XOR 0 | 0xFFFFFFFF (= -1 in i64 if interpreted signed) |
+| OFFSET_BASIS XOR 0x41 ("A") | matches Rust `2166136261 ^ 0x41' |
+| AND mask         | 0xDEADBEEF_CAFEBABE & 0xFFFFFFFF = 0xCAFEBABE |
+
+After §115.0 SHIPPED, FNV-1a can be expressed entirely in elisp
+(§115.7 below), and `mirror_fnv1a` + `nl_mirror_fnv1a_sexp` are
+deletable.
+
+** §115.0.4 Stage breakdown
+
+| Step      | Content                                          |
+|-----------+--------------------------------------------------|
+| §115.0.a  | Add =nelisp-asm-x86_64-xor-reg-reg= + =-and-reg-reg= |
+| §115.0.b  | Add parse + emit clauses for `int-logxor' / `int-logand' |
+| §115.0.c  | ERT + integration probes (≥ 5/5 cases each)      |
+| §115.0.d  | Commit message: "feat(doc-115): §115.0 — int-logxor / int-logand grammar ops" |
+
+Estimated LOC delta for §115.0: +60 elisp (grammar + emit + helper),
++~80 probe Rust.  Net Rust: 0 (probes don't count toward削減 target).
 
 * §1 Shim audit (= what gets rewritten)
 
@@ -153,15 +274,15 @@ Returns 1 on bind, 0 on no-op.
 
 *Phase 47 ops needed*: =record-slot-ref-ptr= (frame stack), =vector-ref-ptr=
 (active frame), =record-slot-ref= (hash-table inner record), =vector-ref-ptr=
-(bucket vector), FNV-1a hash via `nl_mirror_fnv1a_sexp' extern (shared
-with env_mirror), =cons-make=, =cons-car/-cdr=, =vector-slot-set= (=
-overwrite bucket head).
+(bucket vector), *pure-elisp FNV-1a* (= §115.7 helper, no extern),
+=cons-make=, =cons-car/-cdr=, =vector-slot-set= (= overwrite bucket head).
 
 *Algorithm*:
 1. Read innermost frame from `backing[depth-1]'.
 2. Read `fast-hash-table' inner record (frame's slot 0).
 3. Read `buckets' vector (= hash-table slot 1).
-4. Compute FNV-1a hash of name → bucket index via `vector-len' mod.
+4. Compute FNV-1a hash of name → bucket index via `vector-len' mod
+   (= call elisp-compiled `nelisp_fnv1a' from §115.7 via extern-call).
 5. Walk bucket cons-list, replace cell if name matches, else
    cons-prepend new `(name . cell)' pair to bucket head.
 6. Return 1.
@@ -173,9 +294,9 @@ LOC estimate: ~60 elisp (longest shim).
 *Behavior*: walk the lexframe stack innermost-first, return pointer
 to the matching pair's CDR (= cell slot), or 0 on miss.
 
-*Phase 47 ops needed*: depth read, =vector-ref-ptr=, frame
-internal walk (= same hash-table lookup as `nl_frame_bind' minus
-the cons-prepend).
+*Phase 47 ops needed*: depth read, =vector-ref-ptr=, *pure-elisp
+FNV-1a* (= §115.7 helper, no extern), frame internal walk (= same
+hash-table lookup as `nl_frame_bind' minus the cons-prepend).
 
 *Algorithm*:
 1. Read depth.  For i in [depth-1, 0]:
@@ -211,17 +332,62 @@ known offset).
 *Status*: nothing to do; this entry counts as 0 LOC of Rust to
 remove.
 
+*** mirror_fnv1a (= NEW §115.7 target, ~25 LOC Rust + 8 LOC extern wrapper)
+
+*Behavior*: 32-bit FNV-1a hash of a Sexp::Symbol's name bytes.
+Currently in `env_helpers.rs' as a free fn `mirror_fnv1a' + extern
+wrapper `nl_mirror_fnv1a_sexp'.  Called from elisp via extern-call
+by all helpers that need bucket-index resolution
+(`mirror_lookup_entry', `mirror_install_entry', plus future
+§115.5 / §115.6 if FNV stayed extern).
+
+*Phase 47 ops needed* (= §115.0 newly added + existing):
+- =int-logxor= (§115.0)
+- =int-logand= (§115.0, for the 0xFFFFFFFF truncation)
+- =arith mul= (existing, for wrapping multiplication)
+- =str-len= + =str-byte-at= (Doc 101 §101.C)
+- =while=, =sexp-int-unwrap/make=, =cond=
+
+*Algorithm* (= literal elisp transcription of the Rust body):
+
+#+begin_src elisp
+;; lisp/nelisp-cc-fnv1a.el (new source file).
+(defun nelisp-fnv1a (str-ptr)
+  "Compute 32-bit FNV-1a hash of STR-PTR's bytes.
+Returns i64 (= the u32 hash zero-extended).  Phase 47 grammar:
+no extern call, pure elisp + Doc 100/101 + §115.0 ops."
+  (let ((h 2166136261)
+        (n (str-len str-ptr))
+        (i 0))
+    (while (< i n)
+      (setq h (arith-mul (int-logxor h (str-byte-at str-ptr i))
+                         16777619))
+      (setq h (int-logand h #xFFFFFFFF))
+      (setq i (+ i 1)))
+    h))
+#+end_src
+
+LOC estimate: ~20 elisp (= 12-line body + boilerplate).
+
+After §115.7 SHIPPED, `mirror_fnv1a' (free fn) and
+`nl_mirror_fnv1a_sexp' (extern wrapper) are both deletable from
+`env_helpers.rs' (~35 LOC removed).
+
 ** §1.2 Shared dependencies
 
-- `nl_mirror_fnv1a_sexp' extern (= FNV-1a hash, currently in
-  `env_helpers.rs') is reused by `nl_frame_bind' and
-  `nl_frame_stack_find'.  Stays in Rust per Doc 111 §3.E Group C
-  classification.
+- *Pure-elisp FNV-1a* (= §115.7) replaces both `mirror_fnv1a' (free
+  fn) and `nl_mirror_fnv1a_sexp' (extern wrapper).  After §115.7
+  ships, the `mirror_fnv1a' callers in `env_helpers.rs' (=
+  `mirror_lookup_entry' / `mirror_install_entry' fallback paths)
+  also dispatch into the new elisp helper, and the Rust hash
+  implementation can be deleted.
 - `nl_alloc_vector', `nl_alloc_record', `nl_alloc_cell',
   `nl_vector_set_slot', `nl_record_set_slot', `nl_cell_set_value',
   `nl_alloc_consbox' allocators stay in Rust as small atomic
   externs (Doc 111 §111.E §2.4 audit-approved).  These are not
-  shims; they are primitive memory operations.
+  shims; they are primitive memory operations that the elisp
+  compiler legitimately cannot synthesize (= they manipulate
+  heap-allocated boxes + refcounts).
 
 * §2 Implementation plan
 
@@ -261,9 +427,45 @@ Co-Authored-By: ...
 EOF
 #+end_src
 
-** §2.2 Final commit — file deletion
+** §2.2 §115.7 cutover — pure-elisp FNV-1a + delete mirror_fnv1a
 
-After all 7 shims are elisp-ified:
+After §115.0 grammar extension SHIPPED (provides `int-logxor' /
+`int-logand'):
+
+1. Write `lisp/nelisp-cc-fnv1a.el' (= ~20 LOC, see §1.1.7 body).
+2. Add manifest entry + build.rs source list.
+3. Rewire callers in `env_helpers.rs' (= `mirror_lookup_entry' /
+   `mirror_install_entry' fallback paths): replace
+   `mirror_fnv1a(name)' with `crate::elisp_cc_spike::nelisp_fnv1a(
+   name_sym_ptr)'.
+4. Rewire `lisp/nelisp-cc-frame-bind-impl.el' (§115.5) and
+   `lisp/nelisp-cc-frame-stack-find-impl.el' (§115.6) to call
+   `(nelisp-fnv1a name-ptr)' via extern-call (= compose-on-elisp
+   pattern, no Rust).
+5. Delete `mirror_fnv1a' free fn + `nl_mirror_fnv1a_sexp' extern
+   wrapper from `env_helpers.rs'.
+6. ERT + integration probe: bit-equality of elisp vs. Rust hash on
+   ≥ 20 sample strings (= shake-out test to confirm zero
+   semantic drift).
+
+Commit message:
+
+#+begin_src
+feat(doc-115): §115.7 — pure-elisp FNV-1a, delete mirror_fnv1a
+
+The last Rust intermediary in the env_mirror / env_lexframe Phase 47
+dispatch chain is gone.  All hash-related callsites now dispatch
+through the elisp-compiled `nelisp_fnv1a' .o.
+
+Rust deletion: ~35 LOC from env_helpers.rs (mirror_fnv1a free fn +
+nl_mirror_fnv1a_sexp extern wrapper).
+
+Co-Authored-By: ...
+#+end_src
+
+** §2.3 Final commit — file deletion
+
+After all 7 shims + FNV-1a are elisp-ified:
 
 - `env_lexframe_phase47_shims.rs' contains only the file header
   doc-comment + `use' statements + the `frame_stack_view_from_ptr'
@@ -278,14 +480,22 @@ Final commit message:
 #+begin_src
 feat(doc-115): SHIPPED — delete env_lexframe_phase47_shims.rs
 
-All 7 nl_frame_* shims are now pure elisp.  The Rust intermediary
-in the lexframe Phase 47 dispatch chain is gone.
+All 7 nl_frame_* shims + mirror_fnv1a are now pure elisp.  Phase 47
+grammar gained `int-logxor' / `int-logand' (§115.0) to enable the
+FNV-1a transcription.
 
-True 純 elisp 化 milestone:
-- caller → Phase 47 `.o` → primitive extern (alloc/clone only)
-- no Rust logic participates in lexframe management at runtime
+完全 elisp 化 milestone achieved:
+- caller → Phase 47 `.o` → primitive extern (alloc-only)
+- *zero Rust logic* participates in lexframe / env_mirror runtime
+  dispatch at this layer
+- only memory primitives (= `nl_alloc_*`, `nl_*_set_slot`,
+  `nl_sexp_clone_into`) remain as small atomic externs
 
-Rust deletion: -501 LOC.
+Cumulative Rust deletion (Doc 114 + Doc 115):
+- Doc 114: env_mirror.rs + env_lexframe.rs files deleted (= -300 LOC
+  net after env_helpers.rs inline, +0 dispatch overhead).
+- Doc 115: -501 LOC shim file + -35 LOC FNV = -536 LOC.
+- Total: ≈ -836 LOC of Rust logic across both docs.
 
 Co-Authored-By: ...
 #+end_src
@@ -304,29 +514,43 @@ Co-Authored-By: ...
 - `env_lexframe_phase47_shims.rs` does not exist
 - `grep -rn "nl_frame_" build-tool/src/` returns ZERO hits
 - `grep -rn "extern \"C\" fn nl_frame" build-tool/` returns ZERO hits
-- Rust LOC delta: net −501 LOC (= shim file size at start)
-- Elisp LOC delta: net +320 to +400 LOC (estimates from §1.1)
-- *Net total LOC*: ≈ −100 to −180 LOC (= the elisp version is more
-  compact than Rust because Phase 47 grammar ops are dense)
+- `grep -rn "fn mirror_fnv1a\|nl_mirror_fnv1a_sexp" build-tool/src/`
+  returns ZERO hits (= §115.7 deletion gate)
+- Rust LOC delta: net −536 LOC (= -501 shim file + -35 FNV in
+  env_helpers.rs)
+- Elisp LOC delta: net +340 to +420 LOC (= +320-400 shims +20 FNV)
+- New Phase 47 grammar surface: 2 ops (`int-logxor', `int-logand'),
+  ~30 LOC each = +60 elisp
+- *Net total LOC*: ≈ −130 to −210 LOC
 - Doc 102 Phase 8.b condition (a) was satisfied by Doc 114; Doc 115
-  adds the deeper "no Rust logic in lexframe runtime path" property.
+  adds the deeper "*zero Rust logic in lexframe + env_mirror runtime
+  path*" property = 完全 elisp 化.
 
 * §4 Risk + open questions
 
-** §4.1 FNV-1a hash via extern-call
+** §4.1 FNV-1a hash performance after elisp化
 
-The `nl_mirror_fnv1a_sexp' extern stays in Rust.  It's a hot inner
-loop (= reads `str.bytes' and produces a u32).  Pure-elisp
-re-implementation would be slower; the existing Phase 47 grammar
-doesn't have `byte-shift' / `byte-xor' ops to express FNV-1a
-densely.
+After §115.7, FNV-1a runs as Phase 47-compiled `.o' (= native x86_64
+code).  The inner loop is:
 
-*Decision*: keep as Rust extern.  Doc 115 is "no Rust *logic in
-shims*", not "zero extern" — primitive memory + numeric helpers
-remain (per Doc 111 §111.E Group C / D classification).
+#+begin_src text
+load byte at str-bytes-ptr + i      ; movzx eax, [rdi + rsi]
+xor with h                          ; xor rcx, rax        (§115.0)
+imul h by FNV_PRIME                 ; imul rcx, r11
+and h with 0xFFFFFFFF               ; and rcx, r9         (§115.0)
+inc i, jmp loop                     ; add rsi, 1 / jmp
+#+end_src
 
-If pure-elisp FNV-1a becomes desirable later, that's a separate
-Phase 47 grammar extension (Doc 116+).
+Performance is *identical or better* than the Rust version, because
+the Rust loop is also lowered to this exact sequence by =rustc=.
+The only divergence is the function-call boundary: the Rust path
+has Rust ABI call overhead, the elisp path has the Phase 47 extern-call
+overhead (= ~3-5 cycles for cdecl prologue).  Both are negligible vs.
+the loop body.
+
+*Decision*: §115.7 is *not* a perf regression.  Sample probe
+includes ≥ 1 micro-benchmark (= 100-byte string hashed 10000×) to
+confirm.
 
 ** §4.2 Probe coverage drift
 
@@ -365,21 +589,30 @@ refcounts explicitly — that's already encapsulated.
 
 * §5 Schedule
 
+- *§115.0* (= grammar extension: `int-logxor' + `int-logand') —
+  *must ship first*; §115.5/6/7 depend on it.  +60 elisp grammar
+  + helpers, +80 probe Rust.  Single commit.
 - §115.1 (= nl_frame_stack_ensure_capacity) — simplest, no FNV hash,
-  ~60 LOC elisp.  Ship first to establish the pattern.
+  ~60 LOC elisp.  Pattern-establishing.
 - §115.2 (= nl_frame_pop) — second simplest, ~30 LOC.
 - §115.3 (= nl_frame_push) — uses §115.1 via extern-call.
 - §115.4 (= nl_wrap_alist_cells) — independent of stack ops, ~40
   LOC.
-- §115.5 (= nl_frame_bind) — uses FNV extern.
-- §115.6 (= nl_frame_stack_find) — uses FNV extern, similar to
-  §115.5.
-- §115.7 (= file deletion + final cleanup).
+- §115.5 (= nl_frame_bind) — uses pure-elisp FNV (= depends on §115.0
+  but FNV impl itself lands in §115.7).  For §115.5 ship, FNV still
+  Rust extern; rewires to elisp helper in §115.7.
+- §115.6 (= nl_frame_stack_find) — same as §115.5.
+- *§115.7* (= pure-elisp FNV-1a + delete mirror_fnv1a + rewire
+  §115.5/6 to elisp FNV).  Depends on §115.0 grammar.
+- §115.8 (= file deletion + final cleanup, = delete
+  env_lexframe_phase47_shims.rs).
 
-7 commits, roughly 1-2 days of focused parallel-Agent work or 1 week
-single-session.  Per-shim Agent dispatch is fine because each shim
-is independent (the only shared dep is FNV extern + allocator
-externs, which already exist).
+9 commits total (§115.0 + 6 shim ports + §115.7 + §115.8 file
+deletion).  Per-shim Agent dispatch is fine because each shim is
+independent (the only shared dep is FNV — initially extern, finally
+pure-elisp helper).  §115.0 + §115.7 + §115.8 are sequenced (=
+must happen in order); §115.1-§115.6 can parallel-dispatch after
+§115.0 ships.
 
 * §6 References
 
