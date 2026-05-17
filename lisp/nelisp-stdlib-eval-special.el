@@ -175,15 +175,24 @@ DOCSTRING is currently ignored.  Returns NAME."
 
 (defmacro defconst (name value &optional _docstring)
   "Define NAME as a constant whose initial value is VALUE.
-DOCSTRING is currently ignored.  Returns NAME."
-  ;; Stage 7.3.a: NeLisp has no constant-flag primitive accessible from
-  ;; elisp; we simply set the value cell.  Stage 7.3.d will revisit
-  ;; (= adding a `mark-constant' primitive or relaxing constness).
+DOCSTRING is currently ignored.  Returns NAME.
+
+Doc 102 Phase 5 Step B (2026-05-17) — the constant flag is now
+set via the `nelisp--env-globals-set-constant' env_shim primitive
+(= Doc 86 §86.3.a surface; routes through the elisp env mirror's
+slot-3 `Sexp::T').  Stage 7.3.a TODO resolved."
+  ;; Expansion:
+  ;;   (progn (set 'NAME VALUE)
+  ;;          (nelisp--env-globals-set-constant 'NAME t)
+  ;;          'NAME)
   (cons 'progn
         (cons (cons 'set
                     (cons (cons 'quote (cons name nil))
                           (cons value nil)))
-              (cons (cons 'quote (cons name nil)) nil))))
+              (cons (cons 'nelisp--env-globals-set-constant
+                          (cons (cons 'quote (cons name nil))
+                                (cons t nil)))
+                    (cons (cons 'quote (cons name nil)) nil)))))
 
 (defmacro defcustom (name value docstring &rest _options)
   "Stub: ignore OPTIONS, behave like `defvar'."

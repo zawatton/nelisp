@@ -843,19 +843,40 @@ impl Env {
     }
 
     /// `defvar' / `defconst' — install value only if unbound (Elisp
-    /// idempotence); IS_CONSTANT=true marks `defconst'.  Doc 102 Phase 7:
-    /// `makunbound' / `fmakunbound' Rust helpers retired (zero callsites;
-    /// elisp routes through `nelisp--env-globals-op').  Doc 102
-    /// Phase 2.b Step E retired the HashMap dual-write — idempotence
-    /// is now checked via `mirror_is_bound'.
+    /// idempotence); IS_CONSTANT=true marks `defconst'.
+    ///
+    /// Doc 102 Phase 5 Step A (2026-05-17) — body dispatches to elisp
+    /// `nelisp-env-defvar' via `apply_function'.  The elisp helper
+    /// performs the idempotence check + constant-flag setting against
+    /// the globals mirror.  Pre-bootstrap (= helper not yet loaded),
+    /// falls back to the Rust mirror_* helpers so STDLIB decode-time
+    /// `defvar's still install correctly.
     pub fn defvar(&mut self, name: &str, value: Sexp, is_constant: bool) {
-        let actually_changed = !self.mirror_is_bound(name);
-        if actually_changed {
-            self.mirror_set_value(name, value);
-        }
-        if is_constant {
-            self.mirror_set_constant(name, true);
-        }
+        let f = match self.lookup_function("nelisp-env-defvar") {
+            Ok(f) => f,
+            Err(_) => {
+                // Bootstrap fallback — same logic as the pre-Phase-5
+                // body, used until `nelisp-env.el' loads.
+                if !self.mirror_is_bound(name) {
+                    self.mirror_set_value(name, value);
+                }
+                if is_constant {
+                    self.mirror_set_constant(name, true);
+                }
+                return;
+            }
+        };
+        let args = [
+            self.globals_record.clone(),
+            // Name is passed as `Sexp::Str' because the underlying
+            // `nelisp--fast-hash-put' hashes string keys via FNV-1a
+            // over the char sequence; symbols would crash on
+            // `(length symbol)' inside the elisp hash function.
+            Sexp::Str(name.to_string()),
+            value,
+            if is_constant { Sexp::T } else { Sexp::Nil },
+        ];
+        let _ = super::apply_function(&f, &args, self);
     }
 
     pub fn push_frame(&mut self) {

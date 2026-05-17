@@ -21,7 +21,10 @@
   - Phase 4.b — *SHIPPED 2026-05-17*: option (a) — elisp helper split into build-only (=nelisp-lexframe-make-from-alist=) + pre-apply depth snapshot (=nelisp-lexframe-stack-capture-to-depth=).  Rust =capture_lexical= / =push_captured= dispatch through =apply_function= via the new helpers; the Rust-direct =frame_capture_rust_direct= / =frame_push_captured_rust_direct= are physically deleted (~60 LOC retired).  Two non-obvious findings:
     1. Both new helpers must be *lambda-literal-free* in their body — any inner =(lambda ...)= triggers =sf_lambda= → =capture_lexical= → re-entry into the dispatch → infinite recursion.  =nelisp-lexframe-stack-capture-to-depth= inlines the bucket walk rather than calling =nelisp--fast-hash-iter= (which takes a callback lambda) for this reason.
     2. =push_captured= still calls a Rust =wrap_alist_cells= helper before dispatch because elisp can't construct an =NlCellRef= without a dedicated primitive.  Bare alist values get wrapped in =Sexp::Cell= before the elisp helper receives the alist.
-  - Phase 5 (Doc 106) — *PENDING*: defvar idempotence / constant flag / =unbound-marker= sentinel handling fully on elisp side.
+  - Phase 5 — *SHIPPED (Steps A + B) 2026-05-17*:
+    - Step A: =Env::defvar= body dispatches to elisp =nelisp-env-defvar= via =apply_function= (Phase 4.b pattern).  The idempotence check + constant-flag setting now run in elisp.  Bootstrap fallback preserved (= when the helper isn't loaded yet, the Rust mirror_* path runs).  Name is passed as =Sexp::Str= because fast-hash hashes string keys; symbols crash on =(length symbol)=.
+    - Step B: elisp =defconst= macro now sets the constant flag via =nelisp--env-globals-set-constant= (= Doc 86 §86.3.a surface).  Resolves the Stage 7.3.a TODO ("NeLisp has no constant-flag primitive accessible from elisp; Stage 7.3.d will revisit").  Smoke test: =(progn (defconst x 99) (setq x 50))= now errors with =setting-constant=.
+    - PENDING: =mirror_lookup_value= / =mirror_lookup_function= Option<Sexp> → sentinel-return refactor (= the §2.1 "unbound-marker pattern" so Option::None goes away).  Deferred to a later Phase 5.c.
   - Phase 6 (Doc 107) — *PENDING*: extern_builtins migration (= option (a) keep Rust-side + slim primitive routing).
   - Phase 7 (Doc 108) — *PENDING*: last-mile shrink (= phantom shims routing to elisp via slim primitives).
   - Phase 8 (Doc 109) — *PENDING*: =env.rs= file physically DELETED, residual ~50 LOC absorbed into =eval/mod.rs=.
@@ -445,13 +448,32 @@ Rust-direct helpers + ~+10 dispatch glue + apply_lambda_inner
 Nil-skip); Elisp +50 (=make-from-alist= + =capture-to-depth=
 inlined walks).
 
-** Phase 5 (Doc 106) — defvar / constant / sentinel handling (1 session)
+** Phase 5 — defvar / constant / sentinel handling [PARTIAL SHIPPED 2026-05-17]
 
-Move the `defvar' idempotence + constant-flag check to elisp.
-Adopt the `unbound-marker' sentinel pattern (= §2.1) so
-`Option::None' goes away.
+Original goal: move the =defvar= idempotence + constant-flag
+check to elisp; adopt the =unbound-marker= sentinel pattern (=
+§2.1) so =Option::None= goes away.
 
-*LOC delta*: Rust -30; Elisp +30.
+*What shipped (Step A + Step B)*:
+- =Env::defvar= dispatches to elisp =nelisp-env-defvar= via
+  =apply_function= (same pattern as Phase 4.b).  Idempotence
+  check + constant-flag setting now run in elisp.  Bootstrap
+  fallback (= when the helper isn't loaded) preserved.
+- elisp =defconst= macro emits =nelisp--env-globals-set-constant=
+  call so the constant flag is actually set; =setq= on a defconst
+  now errors with =setting-constant= (Stage 7.3.a TODO resolved).
+
+*What's deferred to Phase 5.c*:
+- =mirror_lookup_value= / =mirror_lookup_function= still return
+  =Option<Sexp>=.  Refactoring these to return =Sexp= directly
+  (= the unbound-marker sentinel pattern) touches every caller of
+  =lookup_value= / =lookup_function= / =is_bound= / =is_fbound=
+  (≈ 6 functions across env.rs and ~5 callsites in
+  builtins.rs / env_shim.rs).  Worth a dedicated session.
+
+*LOC delta (Phase 5 Step A + B)*: Rust ~+12 (= dispatch glue +
+bootstrap fallback); Elisp ~+5 (= defconst macro one extra cons
+call).
 
 ** Phase 6 (Doc 107) — extern_builtins migration (1-2 sessions)
 
