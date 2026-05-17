@@ -1,0 +1,691 @@
+#+TITLE: Doc 122 — Phase 47 grammar extensions for substrate elisp化 + jit/* trampoline swap unlock
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-18
+
+* Status
+
+- *State*: DRAFT 2026-05-18 — awaiting user approval before
+  implementation.
+- *Parent*: Doc 114 (= x86_64-linux pivot, SHIPPED main =2e32f16b=) +
+  Doc 115 (= env_lexframe shims pure elisp, SHIPPED) + Doc 120.A/B/C
+  (= partial swap of `jit/predicate.rs', `jit/box_accessor.rs',
+  `jit/strings.rs', main HEAD =d8adf4a7=).
+- *Sibling*: Doc 117 (= `eval/builtins.rs' sweep, Tier A in flight),
+  Doc 118 (= `eval/special_forms.rs', queued), Doc 119 (= `env.rs',
+  queued).
+- *Dependents*: Doc 123-128 = substrate Rust 削減 chain (= `rc_primitives'
+  / nl*.rs Clone/Drop / alloc/dealloc / ELF loader / bridge GC).  Most
+  of these handlers need atomic / raw-mem / extern-call extensions
+  that do not yet exist in the Phase 47 grammar.  Doc 122 is the
+  *single point* where every missing primitive is catalogued, so each
+  downstream doc can cite a specific Doc 122 §X.Y stage as its
+  unblock.  Doc 117.B (= Tier B syscall sweep) also names Doc 122 as
+  prerequisite.
+- *Scope*: 6 clusters of Phase 47 grammar primitives identified via
+  the Doc 120 audit + the Doc 123-128 substrate plan.  *Design only*
+  — no implementation, no test, no commit beyond this DRAFT doc.
+  Each cluster lands as a sub-stage (§122.A through §122.F) and is
+  shippable independently after this DRAFT is accepted.
+
+* §0 TL;DR
+
+** §0.1 Why this doc exists
+
+After Doc 120.A/B/C (= the predicate / box-accessor / strings swap
+sweep) landed on main =d8adf4a7=, *11 of 24 surveyed trampolines*
+across the three `build-tool/src/jit/*' files remained SKIPPED.  The
+SKIP rationale is uniform: each trampoline allocates a fresh
+`Sexp::Str' / `Sexp::Symbol' / `Sexp::MutStr' (= no Phase 47
+allocator), or it walks UTF-8 codepoints (= no decoder), or it
+calls into a libc f64-returning / variadic function (=
+`extern-call' is limited to 6 fixed i64 args), or it requires
+atomic primitives (= the `bi_*_quit_flag' family in Doc 117 Tier
+A).  These gaps do not overlap — they form *4 priority clusters*
+that, once filled in, unblock the entire SKIPPED set and also
+enable the Doc 123-128 substrate sweep.
+
+The Doc 117 Tier B audit independently named "Phase 47 syscall
+grammar + atomic ops" (= "Doc 122") as the gate for ~25 syscall
+handlers.  The substrate Doc 123 plan (= refcount internalization)
+needs `atomic-fetch-add' + `ptr-read-u64' / `ptr-write-u64' to
+mutate the `Rc' refcount field from elisp without an extern hop.
+
+Doc 122 is the place where all of this gets a coherent design.
+*Each cluster as a sub-doc Stage.*
+
+** §0.2 Cluster map (= what's missing today)
+
+| Cluster | Theme                              | Stage   | Unblocks (= principal callers)                          |
+|---------+------------------------------------+---------+---------------------------------------------------------|
+| 1       | String/Symbol allocator primitives | §122.A  | `nl_jit_intern`, `nl_jit_symbol_name`, `nl_jit_type_of` |
+| 2       | Mutable string builder             | §122.B  | `nl_jit_make_mut_str`, `nl_jit_concat_ints`, `nl_jit_mut_str_set_codepoint` |
+| 3       | Extended extern-call (f64 + va)    | §122.C  | `nl_jit_format_float`, Tier B syscall family            |
+| 4       | UTF-8 helpers                      | §122.D  | `nl_jit_mut_str_len`, `nl_jit_str_codepoint_at`, `nl_jit_downcase` / `upcase`, `nl_jit_split_by_non_alnum` |
+| 5       | Atomic + raw-mem primitives        | §122.E  | `bi_*_quit_flag`, Doc 123 refcount, Doc 124 dealloc     |
+| 6       | Refcount-aware grammar op audit    | §122.F  | Latent Doc 120.B `record-type-tag` SIMD-copy bug + sibling ops |
+
+** §0.3 Implementation pacing
+
+Each stage shippable as its own commit.  Parallelism:
+
+- §122.A (= str/sym allocator) is foundational — most of the
+  remaining stages cite the same Rust externs (= `nl_alloc_str' /
+  `nl_alloc_symbol').  Ship first.
+- §122.D (= UTF-8 helpers) can parallel-dispatch with §122.B (= mut
+  str builder) *after* §122.A, since §122.D needs the
+  `sexp-write-str' op to materialize results into out-slots.
+- §122.C (= extern-call-f64 + extern-call-varargs) is independent of
+  §122.A/B/D and can ship anytime after this DRAFT lands.
+- §122.E (= atomic + raw-mem) is gating for the Doc 123-128 substrate
+  chain.  Ship after §122.A/B/C/D so that the supporting
+  infrastructure (= new asm helpers + bridge updates) is mature.
+- §122.F (= refcount-aware grammar audit) is a *correctness* stage,
+  not a new feature.  Should be re-audited after each of A/B/D ships
+  since each landed Phase 47 op is a candidate for the same SIMD-
+  copy bug.
+
+After Doc 122 SHIPPED, *all* Doc 120 SKIPPED trampolines can
+re-attempt under their parent doc (Doc 120.A_REOPEN / .B_REOPEN /
+.C_REOPEN).  See §4 for the mapping.
+
+* §1 Gap audit (= what is missing today)
+
+This section catalogues every Phase 47 grammar primitive that the
+Doc 120 audit identified as missing, grouped by cluster.  Each entry
+notes the primary caller, the proposed grammar surface, and the
+supporting Rust extern (= what `build-tool/src/lib.rs' must publish
+via `#[no_mangle]').
+
+** §1.1 Cluster 1 — String/Symbol allocator primitives
+
+The Doc 120.C SKIP rationale for `nl_jit_intern' /
+`nl_jit_symbol_name' is verbatim: *"Phase 47 currently only exposes
+`sexp-write-t` / `sexp-write-nil` for slot-byte writes — there is no
+`sexp-write-str` / `sexp-write-symbol` op (= no String-header
+allocator, no Rust-side `Vec<u8>::with_capacity` analogue)."*  This
+gap also blocks Doc 120.A `nl_jit_type_of' (= writes one of 9
+distinct `Sexp::Symbol' values).
+
+Proposed grammar:
+
+| Op                               | Shape                              | Description                                       |
+|----------------------------------+------------------------------------+---------------------------------------------------|
+| `sexp-write-str SLOT BYTES-PTR LEN' | 3-arg slot-byte write               | Allocate `Sexp::Str' from byte range, tag = `Str' |
+| `sexp-write-symbol SLOT BYTES-PTR LEN' | 3-arg slot-byte write               | Same shape, tag = `Symbol'                        |
+| `sexp-write-str-literal SLOT LIT-IDX' | 2-arg with build-time literal index | Slot writer for compile-time-known byte strings (= `"nil"`, `"t"`, `"cons"`, `"integer"`, …) |
+
+Required Rust externs (= `build-tool/src/lib.rs'):
+
+- =extern "C" fn nl_alloc_str(bytes: *const u8, len: usize) -> Sexp= —
+  fresh `Sexp::Str' with copied bytes.  Refcount = 1.
+- =extern "C" fn nl_alloc_symbol(bytes: *const u8, len: usize) -> Sexp= —
+  same shape, tag = Symbol.  *Does not consult the intern table* (=
+  see §5 open question).
+- =extern "C" fn nl_str_literal_ptr(idx: u32) -> (*const u8, usize)= —
+  resolves a build-time literal index to a static byte range.  Used
+  by `sexp-write-str-literal' for the small set of compile-time
+  strings that the type_of / symbol_name handlers need.
+
+The literal table approach (= 3rd op above) is what lets
+`nl_jit_symbol_name' specialise Nil → "nil" / T → "t" without
+emitting a fresh allocation at each call site; the byte range is
+embedded in the .rodata of `build-tool/src/lib.rs' and the elisp
+helper passes a compile-time index.
+
+** §1.2 Cluster 2 — Mutable string builder
+
+Doc 120.C SKIP for `nl_jit_make_mut_str' / `nl_jit_concat_ints'
+calls out: *"needs `mut-str-make' + `mut-str-push-codepoint' +
+`mut-str-finalize-to-str' grammar ops."*  The Doc 120.B
+`nl_jit_mut_str_set_codepoint' SKIP names the same gap from the
+mutation side.
+
+Proposed grammar:
+
+| Op                                | Shape                       | Description                                |
+|-----------------------------------+-----------------------------+--------------------------------------------|
+| `mut-str-make-empty SLOT CAP'     | 2-arg                       | Fresh empty NlMutStr with reserved capacity |
+| `mut-str-push-byte STR BYTE'      | 2-arg (in-place)            | Append byte; for ASCII / pre-encoded UTF-8 |
+| `mut-str-push-codepoint STR CP'   | 2-arg (in-place)            | Encode codepoint as UTF-8 + push           |
+| `mut-str-byte-len STR'            | 1-arg → i64                 | Byte length (= `String::len' equivalent)   |
+| `mut-str-set-codepoint-at STR I CP' | 3-arg (in-place)            | Mutate codepoint at *char* index I         |
+| `mut-str-finalize STR SLOT'       | 2-arg                       | Convert NlMutStr → `Sexp::Str' (move, no copy when refcount = 1) |
+
+Required Rust externs:
+
+- =extern "C" fn nl_alloc_mut_str(cap: usize) -> Sexp= — fresh
+  `Sexp::MutStr' with `Vec::with_capacity(cap)' backing.
+- =extern "C" fn nl_mut_str_push_byte(s: *mut Sexp, b: u8)=
+- =extern "C" fn nl_mut_str_push_codepoint(s: *mut Sexp, cp: u32) -> i64=
+  — returns ERR if cp > 0x10FFFF or surrogate.
+- =extern "C" fn nl_mut_str_byte_len(s: *const Sexp) -> i64=
+- =extern "C" fn nl_mut_str_finalize(s: *mut Sexp, out: *mut Sexp) -> i64=
+  — moves the inner `String' into a fresh `Sexp::Str' when refcount = 1,
+  clone-and-replace otherwise.
+
+The `set-codepoint-at' op subsumes the Doc 120.B
+`nl_jit_mut_str_set_codepoint' trampoline directly (= the elisp body
+becomes a 1-line `mut-str-set-codepoint-at' call after type-check).
+
+** §1.3 Cluster 3 — Extended extern-call
+
+Current Phase 47 `extern-call' (= Doc 100 §100.A grammar) accepts
+*6 fixed i64 args + i64 return*.  Doc 120.C SKIP for
+`nl_jit_format_float' names two extensions: *"`extern-call-f64' /
+`extern-call-varargs' (= unlocks `format_float' via libc snprintf
+bridge)."*  Doc 117 Tier B (= 25 syscall handlers) requires the
+varargs path for `dprintf', `snprintf', `open(..., mode)' arg-3
+pattern, and `fprintf' / `printf'-family.
+
+Proposed grammar:
+
+| Op                                | Shape                                                       | Description                                |
+|-----------------------------------+-------------------------------------------------------------+--------------------------------------------|
+| `extern-call-f64 NAME ARGS...'    | 6 args, each i64 *or* f64-tagged                            | Pass f64 args via xmm0-7, integer args via rdi-r9 per SysV ABI |
+| `extern-call-f64-ret NAME ARGS...' | same, returns f64 into xmm0                                 | For libc `pow`, `sqrt`, etc.               |
+| `extern-call-varargs NAME FIXED VAR-LIST' | FIXED = up to 6 i64/f64; VAR-LIST = compile-time-known sequence of i64/f64 | snprintf / printf family                    |
+
+Required asm support (= `lisp/nelisp-asm-x86_64.el'):
+
+- Mixed-register parameter classification (= an "args descriptor" at
+  emit time naming, per slot, "this slot goes to xmm0" vs "this
+  slot goes to rdi").  Phase 47 currently classifies all 6 slots as
+  GPR.
+- AL register set for variadic calls (= SysV says "the number of
+  vector args used; up to 8").  Static at emit time when the var-
+  list shape is known.
+- Stack alignment audit at the call site (= 16-byte before `call').
+
+Required Rust externs: *none* (= the existing libc symbols are the
+target; the new grammar only changes how Phase 47 marshals
+arguments to them).
+
+** §1.4 Cluster 4 — UTF-8 helpers
+
+Doc 120.B SKIP for `nl_jit_mut_str_len' / `nl_jit_str_codepoint_at'
+calls out: *"`elisp `length' of a string returns char count, not
+byte count' … needs a new `(str-char-count H)' grammar op that
+walks the UTF-8 byte stream and counts codepoints."*  Doc 120.C SKIP
+for `nl_jit_split_by_non_alnum' names the predicate side: *"needs
+`char::is_alphanumeric' (= multi-byte UTF-8 decode + Unicode
+property lookup)."*
+
+Proposed grammar:
+
+| Op                                  | Shape                              | Description                                  |
+|-------------------------------------+------------------------------------+----------------------------------------------|
+| `str-char-count STR'                | 1-arg → i64                        | Count codepoints (= `chars().count()')       |
+| `str-codepoint-at STR I'            | 2-arg, dual-slot return            | Decode codepoint at *byte* index I; returns `(cp, byte-width)' pair |
+| `str-codepoint-at-char STR I'       | 2-arg, dual-slot return            | Decode codepoint at *char* index I; returns `(cp, byte-start)' |
+| `str-is-alphanumeric-at STR I'      | 2-arg → 0/1                        | Predicate; ASCII fast path + Unicode prop fallback |
+| `str-is-whitespace-at STR I'        | 2-arg → 0/1                        | Same shape; for split-by-whitespace          |
+| `str-byte-width-at STR I'           | 2-arg → i64 (1, 2, 3, 4)           | UTF-8 lead-byte → byte width                 |
+
+Dual-slot return convention: the codepoint sits in the i64-return
+register (rax) and the byte-width is written into a caller-passed
+out-slot pointer.  This avoids needing tuple-typed Sexps for the
+common case and lets the elisp wrapper choose to discard the
+byte-width when iterating by char.
+
+Required Rust externs:
+
+- =extern "C" fn nl_str_char_count(s: *const Sexp) -> i64=
+- =extern "C" fn nl_str_codepoint_at_byte(s: *const Sexp, byte_idx: i64, width_out: *mut i64) -> i64=
+- =extern "C" fn nl_str_codepoint_at_char(s: *const Sexp, char_idx: i64, byte_start_out: *mut i64) -> i64=
+- =extern "C" fn nl_codepoint_is_alphanumeric(cp: u32) -> i64=
+- =extern "C" fn nl_codepoint_is_whitespace(cp: u32) -> i64=
+
+The Unicode-aware predicates remain in Rust (= the data table is
+~30 KB; porting to elisp is not justified).  The Phase 47 op is a
+1-line wrap around `extern-call-1' to the helper.
+
+** §1.5 Cluster 5 — Atomic + raw memory primitives
+
+The Doc 117 Tier A subset has 3 atomic-flag handlers
+(`bi_set_quit_flag', `bi_clear_quit_flag',
+`bi_quit_flag_pending_p').  The Doc 123 substrate plan (=
+refcount internalization) requires atomic `fetch_add' on the
+embedded `AtomicUsize' refcount field of every `nl*.rs' value
+header.  The Doc 124 alloc / dealloc handlers need raw `*mut u8'
+arithmetic to walk allocation arenas without going through Rust.
+
+Proposed grammar:
+
+| Op                                   | Shape                                  | Description                                  |
+|--------------------------------------+----------------------------------------+----------------------------------------------|
+| `atomic-load-u64 PTR ORDER'          | 2-arg → i64                            | Load with memory order (`relaxed' / `acquire' / `seqcst') |
+| `atomic-store-u64 PTR VAL ORDER'     | 3-arg                                  | Store with memory order                      |
+| `atomic-fetch-add-i64 PTR DELTA ORDER' | 3-arg → i64 (= prev value)             | Refcount increment / decrement               |
+| `atomic-fetch-sub-i64 PTR DELTA ORDER' | 3-arg → i64                            | Symmetric                                    |
+| `atomic-compare-exchange-u64 PTR EXP NEW ORDER-SUCC ORDER-FAIL' | 5-arg → 0/1     | CAS; success = 1 + prev was overwritten      |
+| `ptr-read-u64 PTR OFFSET'            | 2-arg → i64                            | Raw memory read at PTR+OFFSET                |
+| `ptr-read-u32 PTR OFFSET'            | 2-arg → i64 (zero-extended)            |                                              |
+| `ptr-read-u8 PTR OFFSET'             | 2-arg → i64                            |                                              |
+| `ptr-write-u64 PTR OFFSET VAL'       | 3-arg                                  |                                              |
+| `ptr-write-u32 PTR OFFSET VAL'       | 3-arg                                  |                                              |
+| `ptr-write-u8 PTR OFFSET VAL'        | 3-arg                                  |                                              |
+| `ptr-add PTR DELTA'                  | 2-arg → ptr                            | Byte-offset pointer arithmetic               |
+| `hash-state-init SLOT'               | 1-arg                                  | Allocate SipHash-1-3 state (Doc 117 Tier C / sxhash) |
+| `hash-state-update STATE BYTES-PTR LEN' | 3-arg                                  | Feed bytes                                   |
+| `hash-state-finalize STATE'          | 1-arg → i64                            | Drain to u64                                 |
+
+Memory order encoding: pass as a compile-time-known small integer
+(= Phase 47 grammar accepts immediate literals for the order arg).
+The mapping `0 = relaxed`, `1 = acquire`, `2 = release`, `3 = acqrel`,
+`4 = seqcst` matches `std::sync::atomic::Ordering' variant order.
+
+Required Rust externs:
+
+- =extern "C" fn nl_atomic_*_u64(ptr: *mut u64, ...) -> u64=
+- =extern "C" fn nl_atomic_*_i64(ptr: *mut i64, ...) -> i64=
+- =extern "C" fn nl_hash_state_alloc() -> *mut SipHasher13=
+- =extern "C" fn nl_hash_state_update(state: *mut SipHasher13, bytes: *const u8, len: usize)=
+- =extern "C" fn nl_hash_state_finalize(state: *mut SipHasher13) -> u64=
+
+The raw-mem ops (= `ptr-read-*' / `ptr-write-*' / `ptr-add') do not
+need Rust externs — Phase 47 emits the loads/stores inline as
+`mov' instructions with the offset embedded.  This is the same
+shape as the existing `record-slot-ref' / `vector-slot-ref' ops at
+a known offset, but generalized to a runtime-provided offset.
+
+** §1.6 Cluster 6 — Refcount-aware grammar op audit
+
+Doc 120.B inline note (= `box_accessor.rs' line 87-104): *"`record-
+type-tag' Phase 47 op does SIMD copy without refcount (per Doc
+120.B finding).  Need refactor."*  The fix shipped for `record-
+slot-ref' but the audit was not extended to siblings.
+
+Audit targets (= every Phase 47 op that materializes a `Sexp' value
+from a heap-backed container without going through a refcount-
+managing extern):
+
+- `record-type-tag'   — direct field read, SIMD copy of 24 bytes.
+  Bug surface: every refcounted heap variant inside the type-tag
+  field (= Symbol-Str, Cons, Vector, etc.).  Currently safe in
+  practice because type_tag is always Sexp::Symbol(Rc<String>) or
+  Sexp::Nil and Symbol clone is trivial — but the grammar admits
+  any tag, so a future caller could ship a refcount leak.
+- `record-slot-ref-ptr' — returns `*const Sexp', not a value.
+  Caller is expected to compose with `nl_sexp_clone_into'.  Safe
+  but undocumented; should formalize the calling convention.
+- `vector-slot-ref-ptr' — same shape, same concern.
+- `cell-value-ptr'      — same shape.
+- `cons-car-ptr' / `cons-cdr-ptr' — same shape.
+- `record-make' / `vector-make' / `cell-make' / `cons-make' —
+  allocator side, refcount = 1 by construction; verify no aliasing
+  re-use across calls.
+- All `*-set' ops (= `record-slot-set', `vector-slot-set',
+  `cell-set-value', `cons-set-car', `cons-set-cdr') — currently
+  delegate to refcount-aware Rust externs per Doc 115 §4.4.
+  Re-verify after Doc 122.A/B land (= new allocator ops should
+  follow the same delegation pattern).
+
+The audit deliverable is *not* new grammar but a written
+classification matrix + targeted fixes where the SIMD copy is
+unsafe.  Estimated fix surface: 1-3 Phase 47 ops.
+
+* §2 Per-cluster implementation plan
+
+Each cluster lands as a sub-stage with its own commit.  Per
+established Doc 115 / Doc 117 pattern:
+
+1. Add the new Phase 47 grammar surface in
+   =lisp/nelisp-phase47-compiler.el= (= parse-value clauses +
+   emit dispatch).
+2. Add the new x86_64 asm helpers in =lisp/nelisp-asm-x86_64.el=
+   (= the actual bytes emitted by each op).
+3. Add the supporting Rust externs in =build-tool/src/lib.rs=
+   (= `#[no_mangle] pub unsafe extern "C" fn nl_*').
+4. Add probe ERT in =build-tool/tests/elisp_grammar_<stage>.rs=
+   with at least 3 cases per op.
+5. Verify: =cargo build= clean, =make compile= no warnings,
+   =cargo test --release --lib -- --test-threads=1= shows no
+   regression.
+6. Re-attempt the Doc 120 trampoline that named the stage as its
+   blocker (= the per-stage "unblocks" column from §0.2).
+
+** §2.1 §122.A — String/Symbol allocator primitives
+
+- New grammar: 3 ops (= `sexp-write-str', `sexp-write-symbol',
+  `sexp-write-str-literal').
+- New asm helpers: 3 emit routines (= small wrappers around the
+  6-arg `extern-call' path that lower to `nl_alloc_str' /
+  `nl_alloc_symbol').
+- New Rust externs: 3 fns (= ~30 LOC Rust, mostly the literal table
+  bookkeeping for `sexp-write-str-literal').
+- Verification: probe `lisp/test-grammar-str-alloc.el' with at
+  least one Str alloc, one Symbol alloc, one literal lookup; assert
+  refcount = 1 on the freshly allocated value.
+- LOC budget: ~80 elisp + ~50 Rust + ~30 asm = ~160 added.
+- Removes the Doc 120 SKIP commentary for Cluster 1 callers.
+
+** §2.2 §122.B — Mutable string builder
+
+- New grammar: 6 ops (per §1.2 table).
+- New asm helpers: 6 emit routines, all 2-3-arg extern-call
+  delegates.
+- New Rust externs: 5 fns (= NlMutStr alloc / push / finalize +
+  byte-len getter).  ~80 LOC Rust.
+- Verification: probe `lisp/test-grammar-mut-str.el' with
+  alloc → push 4 codepoints → finalize → assert byte length and
+  content.  Also assert mid-build `mut-str-byte-len' returns the
+  running total.
+- LOC budget: ~120 elisp + ~80 Rust + ~60 asm = ~260 added.
+
+** §2.3 §122.C — Extended extern-call
+
+- New grammar: 3 new extern-call variants (= f64, f64-ret,
+  varargs).
+- New asm helpers: extension to existing `nelisp-asm-x86_64-extern-
+  call-*' family.  Mostly a register-classification table change at
+  emit time; the actual `call' instruction is unchanged.
+- New Rust externs: *none* (= libc symbols only).
+- Verification: probe `lisp/test-grammar-extern-call-f64.el'
+  exercising `libm sqrt' (= f64-arg + f64-ret) + `snprintf' (=
+  varargs).  Assert bit-exact results vs the Rust `format!()'
+  baseline.
+- LOC budget: ~60 elisp + 0 Rust + ~120 asm = ~180 added.
+
+** §2.4 §122.D — UTF-8 helpers
+
+- New grammar: 6 ops (per §1.4 table).
+- New asm helpers: 6 thin extern-call delegates.  The dual-slot
+  return convention adds one new emit pattern (= "return value in
+  rax + sidecar write to caller-passed `*mut i64'").
+- New Rust externs: 5 fns (= the Unicode-aware path remains in
+  Rust).  ~60 LOC Rust.
+- Verification: probe `lisp/test-grammar-utf8.el' against the
+  Doc 120.C `nl_jit_split_by_non_alnum' trampoline output (= byte-
+  exact match for ASCII + 3-byte CJK + 4-byte emoji inputs).
+- LOC budget: ~100 elisp + ~60 Rust + ~80 asm = ~240 added.
+
+** §2.5 §122.E — Atomic + raw memory primitives
+
+- New grammar: 14 ops (per §1.5 table).
+- New asm helpers: 11 (= 6 raw-mem ops emit inline `mov' / `lea';
+  5 atomic ops emit `lock' prefix + arithmetic).  Hash state ops
+  delegate to externs.
+- New Rust externs: 5 fns (= 5 atomic wrappers around `AtomicU64`
+  / `AtomicI64` + 3 hash-state fns).  ~70 LOC Rust.
+- Verification: probe `lisp/test-grammar-atomic.el' with
+  single-threaded fetch_add (= 1000 iterations, assert final value
+  = 1000) + CAS race detection (= spawn 2 trampolines via the
+  existing thread harness, assert exactly one CAS succeeds).  Also
+  hash probe asserting bit-exact SipHash-1-3 output vs the Rust
+  `DefaultHasher` baseline used by `nl_jit_sxhash'.
+- LOC budget: ~160 elisp + ~70 Rust + ~140 asm = ~370 added.
+- *Gating stage for Doc 123-128 substrate.*
+
+** §2.6 §122.F — Refcount-aware grammar op audit
+
+- No new grammar.  This is a *correctness* stage.
+- Deliverable: a written classification matrix in
+  =docs/design/122-phase47-grammar-extensions.org= §1.6 (= updated
+  in-place at stage ship time) + per-op fixes where the SIMD copy
+  is unsafe.  Each fix is a small Phase 47 op refactor (= replace
+  inline `movdqu' with an `nl_sexp_clone_into' extern-call hop)
+  plus a regression probe.
+- Verification: a "weighted refcount" probe that allocates a
+  shared `Sexp::Symbol' / `Sexp::Cons' inside a record's type-tag
+  / slot, calls the audited op N times, and asserts the refcount
+  matches the expected count after each call.
+- LOC budget: probably ~30 elisp + 0 Rust + ~50 asm (= per-op
+  refactor) = ~80 added.  Conservative since the audit may find no
+  unsafe ops.
+
+** §2.7 LOC budget summary
+
+| Stage  | elisp | Rust | asm  | Total |
+|--------+-------+------+------+-------|
+| §122.A | 80    | 50   | 30   | 160   |
+| §122.B | 120   | 80   | 60   | 260   |
+| §122.C | 60    | 0    | 120  | 180   |
+| §122.D | 100   | 60   | 80   | 240   |
+| §122.E | 160   | 70   | 140  | 370   |
+| §122.F | 30    | 0    | 50   | 80    |
+|--------+-------+------+------+-------|
+| Total  | 550   | 260  | 480  | 1,290 |
+
+The elisp + asm growth is acceptable because each stage *enables*
+larger Rust deletions downstream:
+
+- §122.A → ~150 LOC Rust deletable from `jit/strings.rs' +
+  `jit/predicate.rs' (= `nl_jit_intern' / `nl_jit_symbol_name' /
+  `nl_jit_type_of' bodies).
+- §122.B → ~100 LOC Rust deletable from `jit/strings.rs' +
+  `jit/box_accessor.rs' (= `nl_jit_make_mut_str' / `nl_jit_concat_
+  ints' / `nl_jit_mut_str_set_codepoint').
+- §122.C → ~30 LOC `nl_jit_format_float' deletable + Tier B
+  enabler for ~800 LOC `eval/builtins.rs' Rust syscall handlers.
+- §122.D → ~120 LOC `nl_jit_downcase' / `nl_jit_upcase' /
+  `nl_jit_split_by_non_alnum' bodies deletable.
+- §122.E → enables Doc 123 (= ~500 LOC refcount internalization)
+  + Doc 124 (= ~400 LOC alloc/dealloc).
+
+Net delta after Doc 122 fully SHIPPED + downstream sweeps:
+~1,290 added vs ~2,100 deletable → ~-810 LOC, all in the right
+direction.
+
+* §3 Stage breakdown
+
+- *§122.A* — String/Symbol allocator primitives.  Foundational;
+  ship first.
+- *§122.B* — Mutable string builder.  Independent of §122.A but
+  shares the `nl_alloc_*' codepath philosophy.
+- *§122.C* — Extended extern-call (f64 + varargs).  Independent of
+  §122.A/B/D; ship anytime after DRAFT accepted.
+- *§122.D* — UTF-8 helpers.  Depends on §122.A (= needs
+  `sexp-write-str' to materialize codepoint-of-str results that
+  cross variant tags).
+- *§122.E* — Atomic + raw memory primitives.  Independent of A/B/D
+  in terms of grammar but should ship last so the asm
+  infrastructure is mature.  Gating for Doc 123-128.
+- *§122.F* — Refcount-aware grammar op audit.  Should re-audit
+  after each of A/B/D ships.  Final pass after §122.E completes
+  the new-op landings.
+
+Each stage shippable independently.  After §122.A and §122.D
+both shipped, §122.B can land in parallel.  §122.C is
+parallelizable with all of A/B/D.  §122.E waits on the rest only
+for asm-infrastructure maturity, not for grammar dependencies.
+
+* §4 Doc 120 SKIPPED trampolines re-attempt mapping
+
+After Doc 122 stages ship, the Doc 120 SKIPPED trampolines can
+re-attempt under their parent doc.  Mapping:
+
+| Doc 120 SKIPPED trampoline      | Source file          | Unblocked by  | Notes                                       |
+|---------------------------------+----------------------+---------------+---------------------------------------------|
+| `nl_jit_sxhash`                 | predicate.rs         | §122.E (hash) | Needs hash-state ops + Sexp variant walk    |
+| `nl_jit_type_of`                | predicate.rs         | §122.A        | sexp-write-symbol + literal table           |
+| `nl_jit_mut_str_len`            | box_accessor.rs      | §122.D        | str-char-count                              |
+| `nl_jit_str_codepoint_at`       | box_accessor.rs      | §122.D        | str-codepoint-at-char (dual-slot)           |
+| `nl_jit_mut_str_set_codepoint`  | box_accessor.rs      | §122.B        | mut-str-set-codepoint-at                    |
+| `nl_jit_bool_vector_len`        | box_accessor.rs      | §122.F        | Audit-stage adds bool-vector-len op         |
+| `nl_jit_char_table_aref`        | box_accessor.rs      | (separate)    | Char-table grammar is its own doc (post-122) |
+| `nl_jit_char_table_aset`        | box_accessor.rs      | (separate)    | Same                                        |
+| `nl_jit_record_alloc`           | box_accessor.rs      | §122.B path   | 2-pass walk feasible once mut-str pattern lands |
+| `nl_jit_intern`                 | strings.rs           | §122.A        | sexp-write-symbol                           |
+| `nl_jit_symbol_name`            | strings.rs           | §122.A        | sexp-write-str + literal table              |
+| `nl_jit_make_symbol`            | strings.rs           | §122.A + §122.E | symbol alloc + atomic counter             |
+| `nl_jit_downcase`               | strings.rs           | §122.D        | ASCII fast path + UTF-8 fallback            |
+| `nl_jit_upcase`                 | strings.rs           | §122.D        | Same                                        |
+| `nl_jit_split_by_non_alnum`     | strings.rs           | §122.A + §122.D | Alnum predicate + fresh-Str-per-fragment  |
+| `nl_jit_concat_ints`            | strings.rs           | §122.B        | mut-str-push-codepoint loop                 |
+| `nl_jit_make_mut_str`           | strings.rs           | §122.B        | mut-str-make-empty + mut-str-push-codepoint loop |
+| `nl_jit_format_float`           | strings.rs           | §122.C        | extern-call-f64 + extern-call-varargs       |
+
+11 of 11 strictly-SKIPPED trampolines unblocked after §122.A-E
+land.  Char-table family is gated by a separate doc (= not Doc 122
+scope) since it needs a parent-chain walk algorithm that is its
+own design problem.
+
+The Doc 117 Tier A atomic-flag handlers (= `bi_set_quit_flag' /
+`bi_clear_quit_flag' / `bi_quit_flag_pending_p') and Tier B syscall
+sweep also reference §122.E as their gating doc.
+
+* §5 Risks + open questions
+
+** §5.1 Symbol interning side-effect (= Doc 122.A.+)
+
+`nl_alloc_symbol' as specified in §1.1 allocates a fresh
+`Sexp::Symbol(Rc<String>)' *without* consulting an intern table.
+Current Rust `Sexp::Symbol' is *not* interned at the Sexp level
+(= each `s.clone()' is a distinct `Rc'); identity comparison
+(= `eq') falls back to name-equality via `sexp_eq' (= the slow
+path in `predicate.rs`).  This matches Doc 120.A's existing slow-
+path semantics, so `sexp-write-symbol' that does not intern is
+*not* a regression.
+
+*However*, if a future doc (= Doc 119 env.rs sweep?) wants to
+add Sexp-level interning (= make `eq' on Symbols be Rc-ptr-eq,
+faster), then `sexp-write-symbol' would need an additional
+`intern' arg or a separate `sexp-write-symbol-interned' op.
+
+Decision: ship §122.A with the non-interning op; revisit if a
+later doc adds an intern table.  Document this choice inline at
+the §122.A grammar surface.
+
+** §5.2 Atomic ordering semantics
+
+§122.E proposes 5 memory orders (relaxed / acquire / release /
+acqrel / seqcst).  Open question: does Phase 47 need *all five*
+upfront, or can §122.E ship with `relaxed' + `seqcst' only and
+add the others when a use case lands?
+
+Doc 123 (= refcount internalization) needs `relaxed' for
+`fetch_add' on increment (= the standard `Rc' pattern in stdlib)
+and `acquire' + `release' pair for the decrement-to-zero free
+path.  So `acquire' + `release' are also Day-1 requirements.
+
+Decision: ship §122.E with all 4 of relaxed/acquire/release/seqcst.
+`acqrel' deferred until a use case lands.
+
+** §5.3 f64 register class detection in extern-call
+
+Phase 47's current emit pipeline classifies all 6 extern-call slots
+as GPR (= rdi/rsi/rdx/rcx/r8/r9).  The §122.C `extern-call-f64'
+op needs a per-slot tag at emit time.  Open question: where does
+the tag live?
+
+Two options:
+- (a) Embed in the op name (= `extern-call-f64-iiiif' where each
+  letter denotes a slot's class).  Concise but ugly; 64 ops to
+  cover all combinations of 6 slots × 2 classes.
+- (b) Pass a separate descriptor list (= `(extern-call-f64 NAME
+  ARGS (CLS1 CLS2 CLS3 CLS4 CLS5 CLS6))').  More verbose at the
+  call site but only one op name.
+
+Decision: option (b).  Adds one parse-value clause vs 64 emit
+dispatch arms.  The descriptor is compile-time-known so the asm
+emit can still specialize per-call.
+
+** §5.4 Hash state allocation lifetime
+
+§122.E `hash-state-init' returns a `*mut SipHasher13' (= heap
+allocation).  Open question: who deallocates?
+
+- (a) Caller-side: pair `hash-state-finalize' with an implicit
+  `Box::from_raw' free.  Risk: forgetting to call finalize leaks.
+- (b) Stack-allocated: pass a caller-owned buffer.  SipHasher13 is
+  ~48 bytes, fits in a small stack buffer.  Phase 47 grammar would
+  need a "alloca" op or a fixed-size scratch slot.
+- (c) Pool of N preallocated state slots: caller borrows by index,
+  returns by `finalize'.
+
+Decision: option (a) for simplicity, with a `nl_hash_state_drop'
+extern (= mirror of `Drop') that the elisp wrapper calls on the
+error path.  Document the leak risk inline.
+
+** §5.5 Doc 122.F audit coverage horizon
+
+The audit (= §122.F) currently lists ~10 ops to re-audit.  Open
+question: how confident are we that this is the complete set?
+
+The Phase 47 op catalog grows with each Doc; the audit needs to
+re-run after each new Doc (= Doc 123, 124, etc.) adds ops.
+Practical proposal: add a CI gate that lists every grammar op and
+flags any that does not have an explicit "refcount-safe?" tag in
+its docstring.  Defer this to a Doc 122.F.+ subdoc if the manual
+audit proves insufficient.
+
+** §5.6 Stage parallelism vs the Doc 117 Tier B sweep
+
+Doc 117.B (= Tier B syscall sweep) lists §122 as prerequisite.
+Open question: does Doc 117.B wait for *all* of §122 or only
+§122.C + §122.E?
+
+Audit: the 25 Tier B handlers split into (a) varargs-bound
+(`open`, `fcntl`, `ioctl`) → need §122.C; (b) atomic-flag-bound
+(`bi_*_quit_flag`) → need §122.E; (c) plain-arg syscalls (`read`,
+`write`, `stat`, `readdir`) → need *only* the existing 6-arg
+extern-call.
+
+Decision: Doc 117.B can split into 117.B1 (= the 6-arg subset,
+ship immediately) + 117.B2 (= varargs, ship after §122.C) +
+117.B3 (= atomic, ship after §122.E).  Communicate this in Doc
+117 §5 Schedule update.
+
+* §6 References
+
+** Repo / source
+
+- =/dev/nelisp/CLAUDE.md= — repo existence purpose (= 純 elisp化,
+  Rust 削減 唯一の評価軸).
+- =build-tool/src/jit/predicate.rs= @ main =d8adf4a7= — Doc 120.A
+  SKIP commentary for `nl_jit_sxhash' + `nl_jit_type_of'.
+- =build-tool/src/jit/box_accessor.rs= @ main =d8adf4a7= — Doc
+  120.B SKIP for `nl_jit_mut_str_len' /
+  `nl_jit_str_codepoint_at' / `nl_jit_mut_str_set_codepoint' /
+  `nl_jit_bool_vector_len' / `nl_jit_char_table_a{ref,set}' /
+  `nl_jit_record_alloc'.
+- =build-tool/src/jit/strings.rs= @ main =d8adf4a7= — Doc 120.C
+  SKIP for `nl_jit_intern' / `nl_jit_symbol_name' /
+  `nl_jit_make_symbol' / `nl_jit_downcase' / `nl_jit_upcase' /
+  `nl_jit_split_by_non_alnum' / `nl_jit_concat_ints' /
+  `nl_jit_make_mut_str' / `nl_jit_format_float'.
+- =lisp/nelisp-phase47-compiler.el= — current grammar parse-value +
+  emit dispatch (= the file the §122.A-F stages edit).
+- =lisp/nelisp-asm-x86_64.el= — current x86_64 asm emit helpers
+  (= the file the §122.A-F stages extend).
+- =build-tool/src/lib.rs= — current `#[no_mangle]' extern surface
+  (= the file the §122.A/B/D/E stages add `nl_alloc_*` /
+  `nl_atomic_*` etc. to).
+
+** Design docs
+
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= — Phase 47
+  Sexp::Int ABI MVP.
+- =docs/design/101-phase-47-sexp-cons-symbol-str-abi.org= — Phase
+  47 Cons / Symbol / Str ABI.
+- =docs/design/110-phase-47-f64-abi.org= — Phase 47 f64 ABI (=
+  §122.C parent reference).
+- =docs/design/111-phase-47-sexp-record-vector-cell-abi.org= —
+  Doc 111 §111.E refcount-aware extern surface (= §122.F audit
+  baseline).
+- =docs/design/115-phase47-shims-pure-elisp.org= — Doc 115 §4.4
+  refcount discipline statement (= "delegates to refcount-aware
+  Rust externs" — §122.F audits whether this is uniformly true).
+- =docs/design/117-builtins-elisp-sweep.org= — Doc 117 Tier B
+  cites §122 (= this doc) as prerequisite for ~25 syscall
+  handlers.
+
+** Memory cross-refs
+
+- =project_nelisp_pure_elisp_roadmap= — overall plan Doc 114-128
+  + final endpoint.  Doc 122 fits between Doc 117/118/119 (=
+  Rust-file sweeps) and Doc 123-128 (= substrate sweep) as the
+  grammar gate.
+- =feedback_nelisp_core_vs_layer2_boundary= — language rule =
+  core, I/O primitive = layer 2.  §122.A `nl_alloc_*' and §122.E
+  atomic ops both sit on the boundary; §122.C `extern-call-
+  varargs' is layer 2.  Document each grammar op's classification
+  inline.
+- =feedback_anvil_uses_nelisp_architecture= — dual-target Emacs /
+  NeLisp.  §122.E atomic ops must work on both runtimes; Emacs-
+  side fallback is via the host VM's atomic primitives (= no
+  delta from current behaviour).
+- =project_anvil_runtime_phase_b_complete= — precedent: Rust
+  crate deleted when elisp equivalent was sufficient.  Doc 122
+  advances the same trajectory by enabling further Rust deletion
+  in the `jit/*' family.
