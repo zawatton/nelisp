@@ -4,17 +4,15 @@
 
 * Status
 
-- *State*: DRAFT 2026-05-17 — *depends on Doc 100 §100.B-C
-  completion*.  Doc 100 itself is still DRAFT v2 with only §100.A
-  (= =extern-call= grammar) shipped at =cab01038=.  §100.B (=
-  Sexp-layout grammar + frozen layout doc) is the prerequisite that
-  must ship before this doc's §101.B-D have a foundation to build
-  on; this doc references §100.B's CI gate (= =make sexp-abi-check=)
-  + the frozen-layout invariant throughout.
-- *Parent*: Doc 100 v2 (= Phase 47 Sexp::Int ABI MVP; §100.A
-  SHIPPED =cab01038=, §100.B-C still DRAFT / queued).  Doc 100 §0.4
-  + §5.2 + §5.3 explicitly reserved this doc number for "Sexp::Cons
-  / Symbol / Str layout extensions".
+- *State*: DRAFT 2026-05-17 — *prerequisites met*.  Doc 100 v2
+  audit (= 2026-05-17) confirms §100.A (=cab01038=) + §100.B (=
+  layout doc + elisp constants + Rust assertion + =make
+  sexp-abi-check= CI gate) + §100.C (= =bi_truncate= Int swap via
+  =nelisp_truncate_int.o=) all SHIPPED.  Doc 101 §101.A-D can build
+  on the frozen-layout invariant + the CI drift gate directly.
+- *Parent*: Doc 100 v2 (= Phase 47 Sexp::Int ABI MVP, SHIPPED
+  2026-05-12).  Doc 100 §0.4 + §5.2 + §5.3 explicitly reserved this
+  doc number for "Sexp::Cons / Symbol / Str layout extensions".
 - *Sibling*: Doc 110 (= f64 ABI track, parallel capability expansion);
   Doc 111 (= future, Sexp::Record / Vector / Cell ABI; this doc is its
   prerequisite).
@@ -38,16 +36,16 @@
 
 ** §0.1 What Doc 100 leaves unfinished
 
-Doc 100 v2 *designed* the Sexp::Int ABI MVP — three Phase 47
-grammar ops (=(sexp-tag H)=, =(sexp-int-unwrap H)=, =(sexp-int-make
-SLOT N)=) that read + construct =Sexp::Int(n)= values by directly
-accessing the =#[repr(C, u8)]= byte layout.  As of 2026-05-17 only
-§100.A (= =extern-call= grammar, =cab01038=) has shipped; §100.B
-(= layout doc + 3 grammar ops + CI assertion) and §100.C (= first
-real swap =bi_truncate= Int arm) remain queued.
+Doc 100 v2 *shipped* the Sexp::Int ABI MVP (= 2026-05-17 audit re-
+synced the Doc 100 status header).  Three Phase 47 grammar ops
+(=(sexp-tag H)=, =(sexp-int-unwrap H)=, =(sexp-int-make SLOT N)=)
+read + construct =Sexp::Int(n)= values via direct =#[repr(C, u8)]=
+byte access, and =bi_truncate='s Int arm now routes through a
+Phase 47-compiled =nelisp_truncate_int.o= linked into =bin/nelisp=.
 
-Once §100.B-C ship, Sexp::Int reads + constructs cover ~7% of the
-Sexp variant space (= 1 of 14 variants).
+That covers ~7% of the Sexp variant space (= 1 of 14 variants).
+The remaining 13 variants are queued for follow-on docs; Doc 101
+handles Sexp::Cons + Sexp::Symbol + Sexp::Str.
 
 Every non-trivial elisp helper handles richer shapes:
 - *List walks* — every =alist=, =plist=, =body= form is a
@@ -655,7 +653,7 @@ behavior.
 
 * §3 Stage breakdown
 
-** §3.A Stage 101.A — Layout extension + elisp constants (~1-2 days)
+** §3.A Stage 101.A — Layout extension + elisp constants [SHIPPED 2026-05-17]
 
 *Scope*:
 
@@ -930,7 +928,7 @@ adding.
 ** §6.4 Commit references
 
 - §100.A SHIPPED — =cab01038= (2026-05-11)
-- §101.A — TBD
+- §101.A — SHIPPED 2026-05-17 (= layout doc §6-§7 extension + 8 new elisp `defconst` + Rust `const_assert!` for NlConsBox + String header + ABI_EXPORT additions; `make sexp-abi-check' green)
 - §101.B — TBD
 - §101.C — TBD
 - §101.D — TBD

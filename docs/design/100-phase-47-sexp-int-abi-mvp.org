@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: DRAFT v2 2026-05-12
+- *State*: SHIPPED v2 2026-05-12 — §100.A (=cab01038=) + §100.B (= =docs/arch/sexp-abi.md= + =lisp/nelisp-sexp-layout.el= + =build-tool/src/eval/sexp_abi_assert.rs= + =Makefile sexp-abi-check= + =bin/sexp-abi-emit=) + §100.C (= =bi_truncate= Int arm now routes through Phase 47-compiled =nelisp_truncate_int.o=, see =build-tool/src/eval/builtins.rs:1229= + =lisp/nelisp-cc-truncate-int.el=) all SHIPPED.  Doc 100 v2 chain functionally complete; status header re-synced 2026-05-17 (= Doc 101 implementation kickoff audit).
 - *Parent*: Doc 99 (= Phase 47 → eval loop wiring master plan, §99.A-C
   SHIPPED 2026-05-11; §99.D rollout queue opens here)
 - *Sibling*: Doc 90 §3.1-§3.3 (= D1/D2/D3 deferrals)
@@ -84,10 +84,10 @@ lands.
 
 | Stage    | Scope                                                                          | Effect |
 |----------+--------------------------------------------------------------------------------+--------|
-| §100.A   | (SHIPPED cab01038) Phase 47 `extern-call' grammar + ELF SHN_UNDEF / PLT32 | unblock |
-| §100.B   | Sexp-layout document + Phase 47 grammar ops (= `sexp-tag', `sexp-int-unwrap', `sexp-int-make') that compile to direct memory access + CI drift gate | spike  |
-| §100.C   | First real swap: =bi_truncate= Int branch via pure-elisp `.o', net Rust LOC negative | proof  |
-| §100.D   | (= deferred to Doc 101) Sexp::Cons / Symbol / Str layout ops + first list-walking swap | extend |
+| §100.A   | (SHIPPED cab01038, 2026-05-11) Phase 47 `extern-call' grammar + ELF SHN_UNDEF / PLT32 | unblock |
+| §100.B   | (SHIPPED 2026-05-12) Sexp-layout document + Phase 47 grammar ops (= `sexp-tag', `sexp-int-unwrap', `sexp-int-make') that compile to direct memory access + CI drift gate | spike  |
+| §100.C   | (SHIPPED 2026-05-12) First real swap: =bi_truncate= Int branch via pure-elisp `.o', net Rust LOC negative | proof  |
+| §100.D   | (= handed off to Doc 101) Sexp::Cons / Symbol / Str layout ops + first list-walking swap | extend |
 
 §100.B-C is the *spike*: ~3-4 days of focused work, proves the
 elisp-only Sexp ABI end-to-end with one trivial swap that *removes*
@@ -538,5 +538,5 @@ Sexp variant's footprint.
 ** §6.4 Commit references
 
 - §100.A — cab01038 (SHIPPED 2026-05-11)
-- §100.B — TBD
-- §100.C — TBD
+- §100.B — SHIPPED 2026-05-12 (= layout doc + elisp constants + Rust assertion + Makefile + sexp-abi-emit binary; status re-synced 2026-05-17)
+- §100.C — SHIPPED 2026-05-12 (= bi_truncate Int arm routes through Phase 47-compiled nelisp_truncate_int.o; status re-synced 2026-05-17)

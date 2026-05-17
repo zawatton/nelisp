@@ -1,7 +1,7 @@
 # Sexp ABI — frozen byte-layout contract
 
-**Status**: SHIPPED (Doc 100 v2 §100.B, 2026-05-12)
-**Scope**: byte-precise layout of `Sexp` and its `Sexp::Int` variant — sufficient for §100.C and the early Doc 101+ swaps.
+**Status**: SHIPPED (Doc 100 v2 §100.B, 2026-05-12; Doc 101 §101.A extension, 2026-05-17)
+**Scope**: byte-precise layout of `Sexp` and its `Sexp::Int` (Doc 100), `Sexp::Cons` / `Sexp::Symbol` / `Sexp::Str` (Doc 101) variants — sufficient for Doc 100 §100.C plus Doc 101 §101.B-D swaps.
 
 This document is the **single source of truth** for the byte layout of
 `Sexp` values that Phase 47-compiled elisp `.o` objects read or write
@@ -155,7 +155,70 @@ dispatch, then drops the i64 payload (= no allocation, no destructor),
 so a partially-initialized slot is sound as long as the tag byte is
 written.
 
-## 6. Stability promise
+## 6. `Sexp::Cons(NlConsBoxRef)` payload (Doc 101 §101.A)
+
+`Sexp::Cons` carries an 8-byte `NonNull<NlConsBox>` handle at offset 8 of the Sexp slot.  The pointed-at `NlConsBox` is a `#[repr(C)]` struct with car / cdr / refcount at fixed offsets (defined in `build-tool/src/eval/nlconsbox.rs:56-67`):
+
+```
+NlConsBox layout (offsets, sizes in bytes):
+    [0, 32)    car         (Sexp, 32 bytes)
+    [32, 64)   cdr         (Sexp, 32 bytes)
+    [64, 72)   refcount    (AtomicUsize, 8 bytes)
+    total:     72 bytes
+```
+
+Sexp slot for `Sexp::Cons`:
+
+```
+offset:   0  1..7   8  9 10 11 12 13 14 15 16..31
+value:    07 <pad>  <NonNull<NlConsBox> ptr>      <unused>
+          ^^        ^^^^^^^^^^^^^^^^^^^^^^^^
+          tag = 7   8-byte pointer to NlConsBox
+```
+
+Phase 47 emit reads / writes through this layout:
+
+- Read box pointer: `mov rax, qword ptr [rdi + 8]` (= 4 bytes encoded).
+- Read car (= 32-byte Sexp): two 16-byte SIMD loads from `[box + 0]` + `[box + 16]`, store into caller slot.
+- Read cdr: two 16-byte SIMD loads from `[box + 32]` + `[box + 48]`.
+- Read raw box pointer for next-cell chain (= `cons-cdr-raw`): tag-check `[box + 32]` == `SEXP_TAG_CONS`, then `mov rax, [box + 32 + 8]` for the next NlConsBox pointer (or NULL if not Cons).
+
+Box allocation requires `nl_alloc_consbox` Rust helper (Doc 101 §101.D) — Phase 47 emits `call nl_alloc_consbox` via the §100.A `extern-call` grammar.
+
+## 7. `Sexp::Symbol(String)` / `Sexp::Str(String)` payload (Doc 101 §101.A)
+
+`Sexp::Symbol` (tag 4) and `Sexp::Str` (tag 5) carry a Rust `String` value inline.  A `String` is a `Vec<u8>` header: 24 bytes consisting of `(ptr, capacity, length)`.  Per the standard Rust stdlib layout (stable since Rust 1.0 in practice; formally not a frozen contract but pinned in this repo by `rust-toolchain.toml`):
+
+```
+String layout (offsets within the String header, sizes in bytes):
+    [0, 8)     ptr         (NonNull<u8>, 8 bytes)
+    [8, 16)    capacity    (usize, 8 bytes)
+    [16, 24)   length      (usize, BYTE count not char count)
+    total:     24 bytes
+```
+
+Sexp slot for `Sexp::Symbol` / `Sexp::Str`:
+
+```
+offset:   0  1..7   8 9 10 11 12 13 14 15 16..23 24..31
+value:    04 <pad>  <ptr to UTF-8 bytes>  <cap>   <len>
+          ^^        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+          tag = 4   24-byte String header (ptr/cap/len)
+```
+
+Phase 47 emit:
+
+- Read byte length: `mov rax, qword ptr [rdi + 24]` (= length field at offset 24 of Sexp slot).
+- Read byte pointer: `mov rax, qword ptr [rdi + 8]` (= ptr field at offset 8 of Sexp slot).
+- Read individual byte at index N: load byte pointer + load `[ptr + N]` (= composed op).
+- Short-string byte-for-byte equality (= ≤ 16 bytes): SIMD compare two 16-byte loads.
+- Long-string equality: `extern-call memcmp` via Doc 100 §100.A grammar.
+
+**Layout drift note**: the `String` layout is the stdlib internal representation.  The Rust stdlib does not formally guarantee this layout but has not changed it since 1.0; the repo pins the toolchain via `rust-toolchain.toml` and `sexp_abi_assert.rs` adds `const_assert!` for each String offset to fail fast on drift.
+
+If the stdlib ever changes the layout, the fix is either to bump the toolchain back, or to migrate `Sexp::Symbol/Str` to hold a NeLisp-internal `NlString` type with explicit `#[repr(C)]` (deferred to a future `NlString` proposal).
+
+## 8. Stability promise
 
 The numbers in §2 (tag bytes) and §3 (offsets) are frozen at the
 Doc 100 v2 ship date (2026-05-12).  Changing any of them:
@@ -169,12 +232,13 @@ Doc 100 v2 ship date (2026-05-12).  Changing any of them:
 The CI `make sexp-abi-check` step catches drift before it reaches a
 release build.
 
-## 7. Refs
+## 9. Refs
 
 - `build-tool/src/eval/sexp.rs:57` — enum source.
 - `build-tool/src/eval/sexp.rs:217..229` — `SEXP_TAG_*` constants.
 - `build-tool/src/eval/sexp.rs:270` — `SEXP_PAYLOAD_OFFSET`.
+- `build-tool/src/eval/nlconsbox.rs:56-67` — `NlConsBox` struct layout (`car` / `cdr` / `refcount`).
 - `build-tool/src/eval/sexp_abi_assert.rs` — Rust-side assertions.
 - `lisp/nelisp-sexp-layout.el` — elisp constants.
-- `docs/design/100-phase-47-sexp-int-abi-mvp.org` §1.2 / §2.2 —
-  design rationale.
+- `docs/design/100-phase-47-sexp-int-abi-mvp.org` §1.2 / §2.2 — design rationale (Sexp::Int).
+- `docs/design/101-phase-47-sexp-cons-symbol-str-abi.org` §1.2 / §2 — design rationale (Sexp::Cons / Symbol / Str).

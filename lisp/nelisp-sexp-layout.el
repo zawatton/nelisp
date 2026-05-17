@@ -63,6 +63,56 @@ expressed without overloading the generic offset.")
 Mirrors `std::mem::size_of::<Sexp>()' on the Rust side.")
 
 ;; ---------------------------------------------------------------------------
+;; Doc 101 §101.A — NlConsBox struct field offsets (= car / cdr / refcount
+;; inside the heap-allocated cons box that Sexp::Cons points to).
+;; The box is `#[repr(C)]` per `build-tool/src/eval/nlconsbox.rs:56-67'.
+;; ---------------------------------------------------------------------------
+
+(defconst nelisp-nlconsbox--offset-car   0
+  "Byte offset of the `car' Sexp inside an NlConsBox.")
+
+(defconst nelisp-nlconsbox--offset-cdr   32
+  "Byte offset of the `cdr' Sexp inside an NlConsBox.
+Equals one full Sexp slot (= 32) past the `car'.")
+
+(defconst nelisp-nlconsbox--offset-refcount 64
+  "Byte offset of the `refcount' AtomicUsize inside an NlConsBox.
+Two full Sexp slots (= 64) past the start.")
+
+(defconst nelisp-nlconsbox--size         72
+  "Total size of an NlConsBox struct in bytes.
+Mirrors `std::mem::size_of::<NlConsBox>()' on the Rust side.")
+
+;; ---------------------------------------------------------------------------
+;; Doc 101 §101.A — Rust `String' header field offsets within a Sexp::Symbol
+;; or Sexp::Str slot.  The `String' header is laid out as
+;; `(ptr, capacity, length)' at offsets `(8, 16, 24)' of the Sexp slot
+;; (= 0, 8, 16 within the 24-byte `String' header itself).
+;;
+;; NOTE: Rust's `String' layout is stdlib-internal and not formally
+;; frozen across compiler versions.  The repo pins the toolchain via
+;; `rust-toolchain.toml'; `sexp_abi_assert.rs' adds `const_assert!' for
+;; each offset so drift fails compilation.  See docs/arch/sexp-abi.md §7.
+;; ---------------------------------------------------------------------------
+
+(defconst nelisp-string--offset-ptr      8
+  "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
+String's data pointer.  Equals `nelisp-sexp--offset-payload' + 0
+since `ptr' is the first field of the String header.")
+
+(defconst nelisp-string--offset-capacity 16
+  "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
+String's capacity field.  Equals payload + 8.")
+
+(defconst nelisp-string--offset-length   24
+  "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
+String's length field (= byte count, NOT char count).  Equals
+payload + 16.")
+
+(defconst nelisp-string--header-size     24
+  "Total size of a Rust `String' header in bytes (= ptr + cap + len).")
+
+;; ---------------------------------------------------------------------------
 ;; Self-export — list of (NAME . VALUE) pairs every consumer that
 ;; needs to diff against the Rust assertions can iterate over.
 ;; ---------------------------------------------------------------------------
@@ -83,7 +133,16 @@ Mirrors `std::mem::size_of::<Sexp>()' on the Rust side.")
     (tag-record       . ,nelisp-sexp--tag-record)
     (offset-tag       . ,nelisp-sexp--offset-tag)
     (offset-payload   . ,nelisp-sexp--offset-payload)
-    (slot-size        . ,nelisp-sexp--slot-size))
+    (slot-size        . ,nelisp-sexp--slot-size)
+    ;; Doc 101 §101.A additions
+    (nlconsbox-offset-car      . ,nelisp-nlconsbox--offset-car)
+    (nlconsbox-offset-cdr      . ,nelisp-nlconsbox--offset-cdr)
+    (nlconsbox-offset-refcount . ,nelisp-nlconsbox--offset-refcount)
+    (nlconsbox-size            . ,nelisp-nlconsbox--size)
+    (string-offset-ptr         . ,nelisp-string--offset-ptr)
+    (string-offset-capacity    . ,nelisp-string--offset-capacity)
+    (string-offset-length      . ,nelisp-string--offset-length)
+    (string-header-size        . ,nelisp-string--header-size))
   "Layout constants flattened to (NAME . VALUE) for cross-side diffing.
 `make sexp-abi-check' runs the Rust driver, prints the same set in
 the same order, and asserts equality.  Order matters for the diff

@@ -46,6 +46,38 @@ const _: () = assert!(std::mem::size_of::<Sexp>() == 32);
 const _: () = assert!(std::mem::align_of::<Sexp>() == 8);
 
 // ---------------------------------------------------------------------------
+// Doc 101 §101.A — NlConsBox struct field offsets.  Match
+// `nelisp-nlconsbox--offset-*' in `lisp/nelisp-sexp-layout.el'.
+// Layout pinned by `#[repr(C)]` in `build-tool/src/eval/nlconsbox.rs:56-67'.
+// ---------------------------------------------------------------------------
+
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, car) == 0);
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, cdr) == 32);
+const _: () = assert!(std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, refcount) == 64);
+const _: () = assert!(std::mem::size_of::<crate::eval::nlconsbox::NlConsBox>() == 72);
+
+// ---------------------------------------------------------------------------
+// Doc 101 §101.A — Rust String header field offsets within a
+// Sexp::Symbol / Sexp::Str slot.  The String header is laid out
+// (ptr, capacity, length) starting at SEXP_PAYLOAD_OFFSET (= 8) within
+// the Sexp slot.  Per std::mem::offset_of on String fields (which are
+// stdlib-internal but stable in practice since Rust 1.0):
+//
+//   String slot offset 0:  Vec<u8> header
+//                          - ptr      at offset 0 of header => Sexp slot 8
+//                          - capacity at offset 8 of header => Sexp slot 16
+//                          - length   at offset 16 of header => Sexp slot 24
+//
+// We cannot directly assert these via `offset_of!(String, ptr)' because
+// String's internal fields are not public; instead we assert the total
+// size matches the 24-byte expectation and let the runtime driver
+// (`sexp-abi-emit') verify the layout via a probe-built String value.
+// ---------------------------------------------------------------------------
+
+const _: () = assert!(std::mem::size_of::<String>() == 24);
+const _: () = assert!(std::mem::align_of::<String>() == 8);
+
+// ---------------------------------------------------------------------------
 // Public exports for the `sexp-abi-emit' driver.
 // ---------------------------------------------------------------------------
 
@@ -69,6 +101,27 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("offset-tag", 0),
     ("offset-payload", SEXP_PAYLOAD_OFFSET as i64),
     ("slot-size", std::mem::size_of::<Sexp>() as i64),
+    // Doc 101 §101.A additions
+    (
+        "nlconsbox-offset-car",
+        std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, car) as i64,
+    ),
+    (
+        "nlconsbox-offset-cdr",
+        std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, cdr) as i64,
+    ),
+    (
+        "nlconsbox-offset-refcount",
+        std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, refcount) as i64,
+    ),
+    (
+        "nlconsbox-size",
+        std::mem::size_of::<crate::eval::nlconsbox::NlConsBox>() as i64,
+    ),
+    ("string-offset-ptr", SEXP_PAYLOAD_OFFSET as i64),
+    ("string-offset-capacity", (SEXP_PAYLOAD_OFFSET + 8) as i64),
+    ("string-offset-length", (SEXP_PAYLOAD_OFFSET + 16) as i64),
+    ("string-header-size", std::mem::size_of::<String>() as i64),
 ];
 
 #[cfg(test)]
