@@ -361,6 +361,45 @@ const _: () = {
     assert!(size_of::<crate::eval::nlchartable::NlCharTableRef>() == 8);
 };
 
+/// Doc 111 §111.C — refcount-aware Sexp slot copy.
+///
+/// Reads the Sexp at `*src` by reference, produces a fresh `Sexp::clone`
+/// (= refcount bump for box-tagged variants), and writes the result
+/// into `*dst` without running Drop on the (uninitialized) destination.
+///
+/// This is the ABI-stable replacement for the inline SIMD 32-byte slot
+/// copy that Phase 47 used in §111.B (`record-slot-ref`) and the
+/// initial §111.C (`vector-ref`) emit.  The SIMD copy is NOT refcount-
+/// aware: copying a box-tagged Sexp via raw bytes leaves both the
+/// source and destination pointing at the same `NlXxx` heap object,
+/// and two `Drop`s on that handle cause a double-free.
+///
+/// # Safety
+/// - `src` must be non-null, properly aligned, and point at an
+///   initialized `Sexp` value that remains valid for the duration of
+///   this call.
+/// - `dst` must be non-null, properly aligned to a 32-byte `Sexp`
+///   slot, and writable.  The bytes at `*dst` are treated as
+///   *uninitialized*: this helper does NOT drop the prior contents.
+///   Callers that need to overwrite a live `Sexp` slot must drop the
+///   prior value first (the JIT does this implicitly because every
+///   result slot is initialized to `Sexp::Nil`, which is `Copy`-shape
+///   so dropping the byte pattern is harmless).
+#[no_mangle]
+pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) {
+    // Read `*src' as a borrow (= do NOT move out of `*src') so the
+    // source slot retains ownership of its boxed payload, then take
+    // a fresh `Sexp::clone' which performs the variant-specific
+    // refcount bump (one fetch_add per boxed variant; String/Symbol
+    // do a heap allocation; Nil/T/Int/Float are bit-copies).
+    let cloned: Sexp = unsafe { (*src).clone() };
+    // Write the cloned value into `*dst' WITHOUT running Drop on the
+    // prior contents — `core::ptr::write' treats the destination as
+    // uninitialized.  The caller has guaranteed `*dst' is either
+    // `Sexp::Nil' (Copy-shape) or otherwise dead bytes.
+    unsafe { core::ptr::write(dst, cloned); }
+}
+
 // HashTableInner struct retired in Doc 50 stage 4f (2026-05-07);
 // see lisp/nelisp-stdlib-hash.el for the elisp implementation that
 // stores equivalent state inside a Sexp::Record.

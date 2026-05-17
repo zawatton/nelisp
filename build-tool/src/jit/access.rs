@@ -71,11 +71,30 @@ pub unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mu
     let tag = (*arg).tag();
     if tag == SEXP_TAG_VECTOR {
         let box_ref = &*(*arg).vector_box_ptr();
-        if let Some(elem) = box_ref.value.get(idx as usize) {
-            *out = elem.clone();
-            return TRAMPOLINE_OK;
+        if (idx as usize) >= box_ref.value.len() {
+            return TRAMPOLINE_ERR;
         }
-        return TRAMPOLINE_ERR;
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            let idx_sexp = Sexp::Int(idx);
+            let returned = crate::elisp_cc_spike::aref_vector(
+                arg,
+                &idx_sexp as *const Sexp,
+                out,
+            );
+            if returned == out {
+                return TRAMPOLINE_OK;
+            }
+            return TRAMPOLINE_ERR;
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            if let Some(elem) = box_ref.value.get(idx as usize) {
+                *out = elem.clone();
+                return TRAMPOLINE_OK;
+            }
+            return TRAMPOLINE_ERR;
+        }
     }
     if tag == SEXP_TAG_BOOL_VECTOR {
         let box_ref = &*(*arg).bool_vector_box_ptr();

@@ -69,6 +69,11 @@
      :source-var nelisp-cc-recordp--source
      :output "nelisp_recordp.o"
      :requires-arch x86_64)
+    ;; Doc 111 §111.C — `(aref VECTOR IDX)' Vector arm swap.
+    (nelisp-cc-aref-vector
+     :source-var nelisp-cc-aref-vector--source
+     :output "nelisp_aref_vector.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

@@ -513,6 +513,34 @@ functions `((NAME . ARITY) ...)'."
                 (nth 2 sexp) env fenv defuns)
           :val-ptr (nelisp-phase47-compiler--parse-value
                     (nth 3 sexp) env fenv defuns)))
+   ;; ---- Doc 111 §111.C Vector read ops ----
+   ((and (consp sexp) (eq (car sexp) 'vector-len))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :vector-len-arity sexp)))
+    (list :kind 'vector-len
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'vector-ref))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :vector-ref-arity sexp)))
+    (list :kind 'vector-ref
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 3 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'vector-ref-ptr))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :vector-ref-ptr-arity sexp)))
+    (list :kind 'vector-ref-ptr
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.C Symbol/Str read ops ----
    ;; (str-len H)       — read String::len at offset 24 from a
    ;;                     `Sexp::Str' / `Sexp::Symbol' slot.
@@ -1353,6 +1381,7 @@ the node's class to consume the result correctly."
              'sexp-payload-ptr
              'record-type-tag 'record-slot-count 'record-slot-ref
              'record-slot-ref-ptr 'record-slot-set
+             'vector-len 'vector-ref 'vector-ref-ptr
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
              'sexp-write-nil 'sexp-write-t
              'cons-make 'cons-set-car 'cons-set-cdr
@@ -1418,6 +1447,12 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-record-slot-ref-ptr node buf))
       ('record-slot-set
        (nelisp-phase47-compiler--emit-record-slot-set node buf))
+      ('vector-len
+       (nelisp-phase47-compiler--emit-vector-len node buf))
+      ('vector-ref
+       (nelisp-phase47-compiler--emit-vector-ref node buf))
+      ('vector-ref-ptr
+       (nelisp-phase47-compiler--emit-vector-ref-ptr node buf))
       ('str-len
        (nelisp-phase47-compiler--emit-str-len node buf))
       ('str-bytes
@@ -1819,21 +1854,50 @@ safe to use as the loop seed in the length walker."
    (plist-get node :ptr) (plist-get node :idx) buf))
 
 (defun nelisp-phase47-compiler--emit-record-slot-ref (node buf)
-  "Copy a record slot into the caller-owned destination slot."
+  "Copy a record slot into the caller-owned destination slot.
+
+Doc 111 §111.C v3 fix: the previous inline SIMD 32-byte slot copy
+was NOT refcount-aware — copying a box-tagged Sexp (Cons / Symbol /
+Str / Record / Vector / Cell / BoolVector / CharTable) via raw
+bytes left both the source slot and the destination slot pointing
+at the same `NlXxx' heap object with refcount=1, so subsequent
+`Drop' on either side caused a double-free.
+
+The slot copy now delegates to the `nl_sexp_clone_into' Rust helper
+which performs a refcount-aware `Sexp::clone' before writing into
+the destination.  The destination is treated as uninitialized
+(`core::ptr::write' without Drop), matching the Phase 47 invariant
+that result slots start as `Sexp::Nil' bit-pattern."
   (let ((ptr (plist-get node :ptr))
         (idx (plist-get node :idx))
         (slot (plist-get node :slot)))
+    ;; Compute the source `*const Sexp' pointer for record slot N.
     (nelisp-phase47-compiler--emit-record-slot-ptr-core ptr idx buf)
     (nelisp-asm-x86_64-push buf 'rax)
+    ;; Compute the destination `*mut Sexp' pointer (= result_slot).
     (nelisp-phase47-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
+    ;; SysV AMD64 arg order: rdi = src, rsi = dst.  Pop in reverse
+    ;; push order: last pushed (= dst) -> rsi, first pushed (= src)
+    ;; pointer is still on the stack — pop into rdi.
     (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'r10)
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'r10 0)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 0 'xmm0)
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'r10 16)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Stack alignment + dst preservation:
+    ;; Body entry rsp ≡ 8 (mod 16) (= post-prologue, post-param-pushes
+    ;; for a 3-arg GP defun).  After the two pops above we are back
+    ;; at body entry alignment.  A single `push rsi' brings rsp to
+    ;; ≡ 0 (mod 16) which is what `call' requires, AND it doubles as
+    ;; the dst-preservation save (rsi is caller-saved and may be
+    ;; clobbered inside `nl_sexp_clone_into').
+    (nelisp-asm-x86_64-push buf 'rsi)
+    ;; call nl_sexp_clone_into
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_sexp_clone_into" -4 'text)
+    ;; Restore dst into rax (= the conventional return register for
+    ;; record-slot-ref ops; callers treat rax as the destination
+    ;; pointer they just wrote into).
+    (nelisp-asm-x86_64-pop buf 'rax)))
 
 (defun nelisp-phase47-compiler--emit-record-slot-set (node buf)
   "Call the Rust helper that refcount-safely overwrites a record slot."
@@ -1854,6 +1918,76 @@ safe to use as the loop seed in the length walker."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_record_set_slot" -4 'text)))
+
+;; ---- Doc 111 §111.C Vector read ops emit ----
+
+(defun nelisp-phase47-compiler--emit-vector-slot-ptr-core (ptr idx buf)
+  "Leave the raw `*const Sexp' for vector element IDX in rax."
+  (nelisp-phase47-compiler--emit-value ptr buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value idx buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-asm-x86_64-pop buf 'rax)
+  (nelisp-phase47-compiler--imul-rax-imm32 buf nelisp-sexp--slot-size)
+  (nelisp-asm-x86_64-pop buf 'rdi)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf 'rsi 'rdi nelisp-sexp--offset-payload)
+  ;; Pinned repo toolchain lays out `Vec<Sexp>' as (capacity, ptr, len).
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf 'rcx 'rsi nelisp-nlvector--offset-value-capacity)
+  (nelisp-asm-x86_64-add-reg-reg buf 'rax 'rcx))
+
+(defun nelisp-phase47-compiler--emit-vector-len (node buf)
+  "Read `vector.value.len' into rax."
+  (nelisp-phase47-compiler--emit-value (plist-get node :ptr) buf)
+  (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf 'rsi 'rdi nelisp-sexp--offset-payload)
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf 'rax 'rsi nelisp-nlvector--offset-value-length))
+
+(defun nelisp-phase47-compiler--emit-vector-ref-ptr (node buf)
+  "Leave the raw `*const Sexp' for NODE's vector element in rax."
+  (nelisp-phase47-compiler--emit-vector-slot-ptr-core
+   (plist-get node :ptr) (plist-get node :idx) buf))
+
+(defun nelisp-phase47-compiler--emit-vector-ref (node buf)
+  "Copy a vector element into the caller-owned destination slot.
+
+Doc 111 §111.C v3 fix: the previous inline SIMD 32-byte slot copy
+was NOT refcount-aware (see `--emit-record-slot-ref' for the full
+rationale).  Test `aref_vector_heap_backed_element_is_stable'
+reproduced a double-free on `[Sexp::Str(...)]' inputs because the
+raw byte copy left both the vector's interior storage and the
+caller's result slot holding the same `NlStr' pointer at refcount
+1, then both invoked `Drop' at scope-exit.
+
+The slot copy now delegates to the `nl_sexp_clone_into' Rust helper
+which performs a refcount-aware `Sexp::clone' (= one `fetch_add'
+on box-tagged variants) before writing into the destination."
+  (let ((ptr (plist-get node :ptr))
+        (idx (plist-get node :idx))
+        (slot (plist-get node :slot)))
+    ;; Compute source `*const Sexp' (vec_ptr + offset + idx*32) -> rax.
+    (nelisp-phase47-compiler--emit-vector-slot-ptr-core ptr idx buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Compute destination `*mut Sexp' -> rax.
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; SysV AMD64: rdi = src, rsi = dst.  Pop in reverse push order.
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Stack alignment + dst preservation (see `--emit-record-slot-
+    ;; ref' comment for the full rsp accounting): one `push rsi'
+    ;; brings rsp to ≡ 0 (mod 16) for the call AND saves dst since
+    ;; rsi is caller-saved across `nl_sexp_clone_into'.
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_sexp_clone_into" -4 'text)
+    ;; Restore dst into rax — convention for vector-ref / record-
+    ;; slot-ref: rax = the destination pointer the op just wrote into.
+    (nelisp-asm-x86_64-pop buf 'rax)))
 
 ;; ---- Doc 101 §101.C Symbol/Str read ops emit ----
 
