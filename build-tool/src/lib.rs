@@ -379,6 +379,27 @@ pub mod elisp_cc_spike {
             b: *const Sexp,
             out: *mut Sexp,
         ) -> i64;
+        // Doc 120 §120.B — `jit/box_accessor.rs' 4 of 11 record-family
+        // trampoline swaps (`record_type' / `record_len' / `record_ref'
+        // / `record_set'; `record_alloc' stays Rust + 6 non-record
+        // entries SKIP per blocker notes in `jit/box_accessor.rs').
+        // Defined in `lisp/nelisp-cc-jit-record.el'; wired to
+        // `unified_fn_ptr' via the `box_accessor_link' module in
+        // `jit/bridge.rs'.  Same dead-symbol-on-rlib pinning rationale
+        // as the §120.A externs above.
+        pub fn nelisp_jit_record_type(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_record_len(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_record_ref(
+            arg: *const Sexp,
+            idx: i64,
+            out: *mut Sexp,
+        ) -> i64;
+        pub fn nelisp_jit_record_set(
+            arg: *const Sexp,
+            idx: i64,
+            val: *const Sexp,
+            out: *mut Sexp,
+        ) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -967,5 +988,70 @@ pub mod elisp_cc_spike {
     ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
     pub unsafe fn jit_ref_eq(a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64 {
         nelisp_jit_ref_eq(a, b, out)
+    }
+
+    /// Doc 120 §120.B probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_record_type' trampoline.  ABI matches the
+    /// pre-§120.B Rust impl in `jit/box_accessor.rs': `(*const Sexp,
+    /// *mut Sexp) -> i64' returning 0 on OK (Record arg, `*out =
+    /// arg.type_tag'), 1 on ERR (non-Record).
+    ///
+    /// # Safety
+    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_record_type(arg: *const Sexp, out: *mut Sexp) -> i64 {
+        nelisp_jit_record_type(arg, out)
+    }
+
+    /// Doc 120 §120.B probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_record_len' trampoline.  ABI matches the
+    /// pre-§120.B Rust impl: `(*const Sexp, *mut Sexp) -> i64'
+    /// returning 0 on OK (Record arg, `*out = Sexp::Int(slots.len)`),
+    /// 1 on ERR (non-Record).
+    ///
+    /// # Safety
+    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_record_len(arg: *const Sexp, out: *mut Sexp) -> i64 {
+        nelisp_jit_record_len(arg, out)
+    }
+
+    /// Doc 120 §120.B probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_record_ref' trampoline.  ABI matches the
+    /// pre-§120.B Rust impl: `(*const Sexp, i64, *mut Sexp) -> i64'
+    /// returning 0 on OK (Record arg + idx in [0, slots.len), `*out =
+    /// arg.slots[idx]'), 1 on ERR (non-Record OR OOR).
+    ///
+    /// # Safety
+    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_record_ref(
+        arg: *const Sexp,
+        idx: i64,
+        out: *mut Sexp,
+    ) -> i64 {
+        nelisp_jit_record_ref(arg, idx, out)
+    }
+
+    /// Doc 120 §120.B probe — thin safe wrapper around the Phase 47-
+    /// compiled `nelisp_jit_record_set' trampoline.  ABI matches the
+    /// pre-§120.B Rust impl: `(*const Sexp, i64, *const Sexp, *mut
+    /// Sexp) -> i64' returning 0 on OK (Record + OOR-valid idx,
+    /// `slots[idx] := clone(*val)` and `*out = clone(*val)`), 1 on ERR.
+    ///
+    /// # Safety
+    /// - `arg' / `val' must be non-null pointers to initialized `Sexp's.
+    /// - `out' must be non-null, properly aligned, and writable for
+    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
+    pub unsafe fn jit_record_set(
+        arg: *const Sexp,
+        idx: i64,
+        val: *const Sexp,
+        out: *mut Sexp,
+    ) -> i64 {
+        nelisp_jit_record_set(arg, idx, val, out)
     }
 }

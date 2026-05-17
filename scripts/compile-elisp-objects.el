@@ -338,6 +338,30 @@
     (nelisp-cc-jit-ref-eq
      :source-var nelisp-cc-jit-ref-eq--source
      :output "nelisp_jit_ref_eq.o"
+     :requires-arch x86_64)
+    ;; Doc 120 §120.B — `jit/box_accessor.rs' record family partial swap.
+    ;; 4 of 11 trampolines (= `nl_jit_record_type', `nl_jit_record_len',
+    ;; `nl_jit_record_ref', `nl_jit_record_set') move to Phase 47 elisp.
+    ;; `nl_jit_record_alloc' stays Rust (list-walk-to-count requires a
+    ;; grammar primitive not yet shipped); the 6 non-record trampolines
+    ;; (mut-str / bool-vector / codepoint / char-table) all SKIP with
+    ;; documented blockers in `build-tool/src/jit/box_accessor.rs'.
+    ;; Linux-x86_64 only — `extern-call' ABI ships aarch64 in follow-up.
+    (nelisp-cc-jit-record
+     :source-var nelisp-cc-jit-record-type--source
+     :output "nelisp_jit_record_type.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-record
+     :source-var nelisp-cc-jit-record-len--source
+     :output "nelisp_jit_record_len.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-record
+     :source-var nelisp-cc-jit-record-ref--source
+     :output "nelisp_jit_record_ref.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-record
+     :source-var nelisp-cc-jit-record-set--source
+     :output "nelisp_jit_record_set.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

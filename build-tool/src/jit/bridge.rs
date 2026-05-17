@@ -230,6 +230,77 @@ mod predicate_link {
     }
 }
 
+// Doc 120 §120.B — `jit/box_accessor.rs's 4 of 11 trampolines (=
+// the record family `nl_jit_record_type' / `_len' / `_ref' / `_set')
+// now live in Phase-47-compiled elisp `.o' files (=
+// `lisp/nelisp-cc-jit-record.el').  `box_accessor_link' mirrors
+// `predicate_link' shape: `extern "C"' decls so the linker resolves
+// the symbols against the static archive built by
+// `build.rs::link_elisp_cc_spike'.
+//
+// `nl_jit_record_alloc' stays in Rust on every target (list-walk-
+// to-count needs a grammar primitive not yet shipped); the 6
+// non-record box-accessor trampolines (mut-str / bool-vector /
+// codepoint / char-table) all SKIP with documented blockers in
+// `jit/box_accessor.rs'.
+//
+// Currently linux-x86_64 only — `extern-call' grammar form ships
+// aarch64 in a follow-up.  Other targets fall through to the
+// legacy `super::box_accessor::nl_jit_record_*' Rust trampolines
+// via the inverse `#[cfg(not(...))]' stub below.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod box_accessor_link {
+    use crate::eval::sexp::Sexp;
+    #[allow(improper_ctypes)]
+    extern "C" {
+        pub fn nelisp_jit_record_type(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_record_len(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_record_ref(
+            arg: *const Sexp,
+            idx: i64,
+            out: *mut Sexp,
+        ) -> i64;
+        pub fn nelisp_jit_record_set(
+            arg: *const Sexp,
+            idx: i64,
+            val: *const Sexp,
+            out: *mut Sexp,
+        ) -> i64;
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+mod box_accessor_link {
+    use crate::eval::sexp::Sexp;
+    pub unsafe extern "C" fn nelisp_jit_record_type(
+        arg: *const Sexp,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::box_accessor::nl_jit_record_type(arg, out)
+    }
+    pub unsafe extern "C" fn nelisp_jit_record_len(
+        arg: *const Sexp,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::box_accessor::nl_jit_record_len(arg, out)
+    }
+    pub unsafe extern "C" fn nelisp_jit_record_ref(
+        arg: *const Sexp,
+        idx: i64,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::box_accessor::nl_jit_record_ref(arg, idx, out)
+    }
+    pub unsafe extern "C" fn nelisp_jit_record_set(
+        arg: *const Sexp,
+        idx: i64,
+        val: *const Sexp,
+        out: *mut Sexp,
+    ) -> i64 {
+        super::super::box_accessor::nl_jit_record_set(arg, idx, val, out)
+    }
+}
+
 // Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
 // `UnifiedJit' struct + `unified_jit()' OnceLock are gone now that
 // every cluster (cons / access / arith / predicate / syscall) goes
@@ -398,10 +469,16 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // ---- record family (5) ---- Doc 86 §86.1.c (2026-05-10).
         // Same `nl-jit-call-out-{1,1i,2i,2}' bridge primitives as box
         // accessor above; trampolines live in `box_accessor.rs'.
-        "nl_jit_record_type" => super::box_accessor::nl_jit_record_type as *const u8,
-        "nl_jit_record_len" => super::box_accessor::nl_jit_record_len as *const u8,
-        "nl_jit_record_ref" => super::box_accessor::nl_jit_record_ref as *const u8,
-        "nl_jit_record_set" => super::box_accessor::nl_jit_record_set as *const u8,
+        // Doc 120 §120.B — 4 of 5 (`record_type', `_len', `_ref',
+        // `_set') wholly replaced by Phase-47-compiled elisp `.o' on
+        // linux-x86_64; other targets fall through to the Rust
+        // trampolines in `super::box_accessor' via `box_accessor_link'.
+        // `record_alloc' stays Rust on every target (list-walk-to-
+        // count grammar primitive not yet shipped).
+        "nl_jit_record_type" => box_accessor_link::nelisp_jit_record_type as *const u8,
+        "nl_jit_record_len" => box_accessor_link::nelisp_jit_record_len as *const u8,
+        "nl_jit_record_ref" => box_accessor_link::nelisp_jit_record_ref as *const u8,
+        "nl_jit_record_set" => box_accessor_link::nelisp_jit_record_set as *const u8,
         "nl_jit_record_alloc" => super::box_accessor::nl_jit_record_alloc as *const u8,
         // ---- Doc 87 §86.1.f (2026-05-10): Tier 2 trampolines ----
         // Time + hash (= 2-arg / 0-arg `bi_*' helpers retired in

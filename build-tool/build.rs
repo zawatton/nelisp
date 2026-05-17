@@ -154,6 +154,11 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (`predicate_eq' + `ref_eq'; `sxhash' + `type_of' stay Rust).
         "nelisp-cc-jit-predicate-eq.el",
         "nelisp-cc-jit-ref-eq.el",
+        // Doc 120 §120.B — 4 of 11 `jit/box_accessor.rs' record-family
+        // trampoline swaps (`record_type' / `record_len' / `record_ref'
+        // / `record_set'; `record_alloc' stays Rust + 6 non-record
+        // entries SKIP per blocker notes in `jit/box_accessor.rs').
+        "nelisp-cc-jit-record.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
