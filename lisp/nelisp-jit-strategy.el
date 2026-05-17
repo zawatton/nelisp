@@ -425,15 +425,11 @@
               ((eq tag 'string) (nelisp--mut-str-len x))
               ;; BoolVector arm.
               ((eq tag 'bool-vector) (nelisp--bool-vector-len x))
-              ;; Cons-walk via `cdr' chain — Tier-1 `while' loop.
-              ((eq tag 'cons)
-               (let ((n 0) (p x))
-                 (while (eq (type-of p) 'cons)
-                   (setq n (nelisp--add2 n 1))
-                   (setq p (cdr p)))
-                 (if (eq p nil)
-                     n
-                   (nelisp--signal-wrong-type 'sequencep x))))
+              ;; Cons / Nil proper-list walk — Doc 101 §101.B routes
+              ;; the algorithm through the elisp-compiled
+              ;; `nelisp_length_cons' symbol via a tiny Rust bridge.
+              ((or (eq tag 'cons) (eq x nil))
+               (nelisp--length-cons-cc x))
               (t (nelisp--signal-wrong-type 'sequencep x)))))))) 
 
 (fset 'aref

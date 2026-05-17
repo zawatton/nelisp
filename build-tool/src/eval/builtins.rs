@@ -125,8 +125,10 @@ pub fn install_builtins(env: &mut Env) {
         // equality (= JIT lowered_eq in jit/predicate.rs)
         "eq",
         // cons / list (= JIT lowered_{car,cdr,cons,length,setcar,setcdr,
-        // aref,aset,elt}; only `string-bytes' is plain Rust)
-        "car", "cdr", "cons", "length", "string-bytes",
+        // aref,aset,elt}; `nelisp--length-cons-cc' is the internal
+        // bridge to the Doc 101 §101.B elisp-compiled cons walker;
+        // `string-bytes' stays plain Rust)
+        "car", "cdr", "cons", "length", "nelisp--length-cons-cc", "string-bytes",
         "setcar", "setcdr",
         "aref", "aset", "elt",
         "vector", "make-vector",
@@ -312,6 +314,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // `string-bytes' stay plain Rust) ----
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
+        "nelisp--length-cons-cc" => bi_length_cons_cc(args),
         "string-bytes" => bi_string_bytes(args),
         // ---- string format/build slivers (Doc 86 §86.1.e bridge,
         // `truncate' float→int helper for elisp `format') ----
@@ -1257,6 +1260,41 @@ fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
+/// Internal `(length X)' cons/nil arm bridge used by
+/// `lisp/nelisp-jit-strategy.el'.  Doc 101 §101.B moved the proper-list
+/// walk itself into `lisp/nelisp-cc-length-cons.el`; this Rust body is
+/// just arity/type dispatch plus the caller-owned out-slot.
+fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--length-cons-cc", args, 1, Some(1))?;
+    match &args[0] {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        Sexp::Cons(_) | Sexp::Nil => {
+            let mut result_slot: Sexp = Sexp::Nil;
+            unsafe {
+                crate::elisp_cc_spike::length_cons(
+                    &args[0] as *const Sexp,
+                    &mut result_slot as *mut Sexp,
+                );
+            }
+            Ok(result_slot)
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        Sexp::Cons(_) | Sexp::Nil => {
+            let mut n: i64 = 0;
+            let mut cur = &args[0];
+            while let Sexp::Cons(c) = cur {
+                n += 1;
+                cur = &c.cdr;
+            }
+            Ok(Sexp::Int(n))
+        }
+        other => Err(EvalError::WrongType {
+            expected: "sequencep".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
 /// (nl-fact-i64 N) — Doc 99 §99.C first elisp-only builtin.
 ///
 /// Computes `N!' via the Phase-47-compiled `nelisp_fact_i64' function
@@ -2163,4 +2201,3 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     Ok(Sexp::vector(vec![args[1].clone(); len as usize]))
 }
-

@@ -80,6 +80,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-fact-i64.el",
         // Doc 100 §100.C — `bi_truncate' Int swap.
         "nelisp-cc-truncate-int.el",
+        // Doc 101 §101.B — `length' Cons/Nil swap.
+        "nelisp-cc-length-cons.el",
         // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
         "nelisp-cc-jit-arith.el",
         // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.

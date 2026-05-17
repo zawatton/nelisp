@@ -424,6 +424,46 @@ functions `((NAME . ARITY) ...)'."
                  (nth 1 sexp) env fenv defuns)
           :val (nelisp-phase47-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'cons-null-p))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cons-null-p-arity sexp)))
+    (list :kind 'cons-null-p
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'cons-car))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cons-car-arity sexp)))
+    (list :kind 'cons-car
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'cons-cdr))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cons-cdr-arity sexp)))
+    (list :kind 'cons-cdr
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (memq (car sexp) '(cons-cdr-raw cons-cdr-raw-from-box)))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cons-cdr-raw-arity sexp)))
+    (list :kind 'cons-cdr-raw
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :from-box (eq (car sexp) 'cons-cdr-raw-from-box)))
+   ((and (consp sexp) (eq (car sexp) 'sexp-payload-ptr))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-payload-ptr-arity sexp)))
+    (list :kind 'sexp-payload-ptr
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
    ;; (f64-call SYM ARG) — Doc 110 §110.E.2 / Doc 110 §3.F.
    ;; 1-arg f64→f64 extern call (= the shape `exp' / `log' / other
    ;; libm unary functions use).  ARG must be an f64-class value
@@ -1156,6 +1196,8 @@ the node's class to consume the result correctly."
         ('f64-call
          (nelisp-phase47-compiler--emit-f64-call node buf))
         ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
+             'cons-null-p 'cons-car 'cons-cdr 'cons-cdr-raw
+             'sexp-payload-ptr
              'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (plist-get node :kind) node))
@@ -1196,6 +1238,18 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-sexp-int-unwrap node buf))
       ('sexp-int-make
        (nelisp-phase47-compiler--emit-sexp-int-make node buf))
+      ('cons-null-p
+       (nelisp-phase47-compiler--emit-cons-null-p node buf))
+      ('cons-car
+       (nelisp-phase47-compiler--emit-cons-slot-copy
+        node buf nelisp-nlconsbox--offset-car))
+      ('cons-cdr
+       (nelisp-phase47-compiler--emit-cons-slot-copy
+        node buf nelisp-nlconsbox--offset-cdr))
+      ('cons-cdr-raw
+       (nelisp-phase47-compiler--emit-cons-cdr-raw node buf))
+      ('sexp-payload-ptr
+       (nelisp-phase47-compiler--emit-sexp-payload-ptr node buf))
       ('cmp
        (nelisp-phase47-compiler--emit-cmp node buf))
       ('if
@@ -1421,6 +1475,103 @@ glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
     (nelisp-asm-x86_64-mov-mem-reg-disp8
      buf 'rdi nelisp-sexp--offset-payload 'rsi)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)))
+
+(defun nelisp-phase47-compiler--emit-cons-null-p (node buf)
+  "Emit a tag==Nil predicate for NODE's `:ptr' Sexp pointer.
+Returns 1 in rax iff the tag byte at `[ptr + 0]' equals
+`nelisp-sexp--tag-nil'; else returns 0."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-nil)
+    (nelisp-asm-x86_64-setcc-al buf 'sete)
+    (nelisp-asm-x86_64-movzx-eax-al buf)))
+
+(defun nelisp-phase47-compiler--emit-cons-slot-copy (node buf field-off)
+  "Emit the Doc 101 §2.1 boxed-slot copy for `car' / `cdr'.
+NODE carries `:ptr' (= `*const Sexp') and `:slot' (= `*mut Sexp').
+FIELD-OFF is 0 for `car' and 32 for `cdr'.  The emitted x86_64 path:
+
+  1. Reads the `NlConsBox*' payload from `[ptr + 8]'.
+  2. Copies 32 bytes from `[box + FIELD-OFF, box + FIELD-OFF + 32)'
+     into SLOT using two 16-byte `movdqu' load/store pairs.
+  3. Returns SLOT in rax.
+
+Caller must guarantee PTR points at `Sexp::Cons(_)'."
+  (let ((ptr (plist-get node :ptr))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r10 'rdi nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'r10 field-off)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 0 'xmm0)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'r10 (+ field-off 16))
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+
+(defun nelisp-phase47-compiler--emit-cons-cdr-raw (node buf)
+  "Emit the Doc 101 §2.1 raw cdr walker primitive.
+If NODE's `:from-box' is nil, `:ptr' is a `*const Sexp' and we first
+load the `NlConsBox*' payload from `[ptr + 8]'.  If `:from-box' is t,
+`:ptr' already is the `NlConsBox*'.  Then:
+
+  1. Read the cdr tag byte at `[box + 32 + 0]'.
+  2. If tag == `SEXP_TAG_CONS', return `[box + 32 + 8]'
+     (= next `NlConsBox*').
+  3. Else return 0.
+
+Used by the §101.B `length' list walk to follow proper-list cons
+chains without materialising intermediate `Sexp' values."
+  (let* ((ptr (plist-get node :ptr))
+         (from-box (plist-get node :from-box))
+         (id (nelisp-phase47-compiler--gensym "cons-cdr-raw"))
+         (nil-lbl (intern (format "%s-nil" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (if from-box
+        (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+      (progn
+        (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+        (nelisp-asm-x86_64-mov-reg-mem-disp8
+         buf 'rdi 'rdi nelisp-sexp--offset-payload)))
+    (nelisp-asm-x86_64-mov-reg-reg buf 'r11 'rdi)
+    (nelisp-asm-x86_64-add-imm32 buf 'r11 nelisp-nlconsbox--offset-cdr)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'r11)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-cons)
+    (nelisp-asm-x86_64-jnz-rel32 buf nil-lbl)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'r11 nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf nil-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
+    (nelisp-asm-x86_64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-sexp-payload-ptr (node buf)
+  "Emit a boxed-payload pointer read for NODE's `:ptr' Sexp pointer.
+Doc 101 §2.3 uses this for list walks: `Cons' returns the
+`NlConsBox*'; `Nil' returns 0.  Other tags also return 0 so the op is
+safe to use as the loop seed in the length walker."
+  (let* ((ptr (plist-get node :ptr))
+         (id (nelisp-phase47-compiler--gensym "sexp-payload-ptr"))
+         (zero-lbl (intern (format "%s-zero" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-cons)
+    (nelisp-asm-x86_64-jnz-rel32 buf zero-lbl)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf zero-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
+    (nelisp-asm-x86_64-define-label buf end-lbl)))
 
 ;; ---- §97.c emit — comparisons + control flow ----
 

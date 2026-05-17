@@ -78,6 +78,11 @@ pub mod elisp_cc_spike {
         // Returns `result_slot' for caller ergonomics.  Defined in
         // `lisp/nelisp-cc-truncate-int.el'.
         fn nelisp_truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
+        // Doc 101 §101.B — `(length CONS)' proper-list walk compiled
+        // from `lisp/nelisp-cc-length-cons.el'.  `arg0' must point at
+        // `Sexp::Cons(_)` or `Sexp::Nil`; result is written into
+        // `*result_slot` as `Sexp::Int(n)`.
+        fn nelisp_length_cons(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
         // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
@@ -163,6 +168,16 @@ pub mod elisp_cc_spike {
     ///   unmodified, so callers that read them must initialize first.
     pub unsafe fn truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp {
         nelisp_truncate_int(arg0, result_slot)
+    }
+
+    /// Doc 101 §101.B — `(length CONS)' proper-list walk, elisp-compiled.
+    ///
+    /// `arg0' must point at `Sexp::Cons(_)` or `Sexp::Nil`;
+    /// `result_slot' must point at a writable 32-byte Sexp slot.
+    /// The elisp body walks the raw `NlConsBox*` chain and writes
+    /// `Sexp::Int(list-length)` into `*result_slot`.
+    pub unsafe fn length_cons(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp {
+        nelisp_length_cons(arg0, result_slot)
     }
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the

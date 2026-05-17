@@ -52,6 +52,9 @@
     (nelisp-cc-truncate-int
      :source-var nelisp-cc-truncate-int--source
      :output "nelisp_truncate_int.o")
+    (nelisp-cc-length-cons
+     :source-var nelisp-cc-length-cons--source
+     :output "nelisp_length_cons.o")
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

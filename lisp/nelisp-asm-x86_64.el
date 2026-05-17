@@ -761,6 +761,60 @@ spill an xmm value to a `[rbp + disp]' stack slot."
                  rex
                  (unibyte-string #x0F #x11 modrm (logand disp #xFF))))))
 
+(defun nelisp-asm-x86_64-movdqu-xmm-mem-disp8 (buf dst base disp)
+  "Emit `MOVDQU DST, XMMWORD PTR [BASE + DISP]'.
+Encoding: F3 [REX?] 0F 6F ModR/M disp8.  Used by Doc 101 §101.B's
+Cons slot copies (= 16-byte unaligned loads from `NlConsBox.car' /
+`cdr' into an xmm scratch register)."
+  (when (memq base '(rsp r12))
+    (signal 'nelisp-asm-x86_64-error
+            (list :movdqu-rsp-r12-base-needs-sib base)))
+  (unless (and (integerp disp) (<= -128 disp 127))
+    (signal 'nelisp-asm-x86_64-error
+            (list :disp8-out-of-range disp)))
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext dst))
+         (ext-b (nelisp-asm-x86_64--reg-ext base))
+         (need-rex (or (= ext-r 1) (= ext-b 1)))
+         (rex (if need-rex
+                  (unibyte-string
+                   (nelisp-asm-x86_64--rex 0 ext-r 0 ext-b))
+                ""))
+         (modrm (nelisp-asm-x86_64--modrm
+                 1
+                 (nelisp-asm-x86_64--xmm-reg-low3 dst)
+                 (nelisp-asm-x86_64--reg-low3 base))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (concat (unibyte-string #xF3)
+                 rex
+                 (unibyte-string #x0F #x6F modrm (logand disp #xFF))))))
+
+(defun nelisp-asm-x86_64-movdqu-mem-disp8-xmm (buf base disp src)
+  "Emit `MOVDQU XMMWORD PTR [BASE + DISP], SRC'.
+Encoding: F3 [REX?] 0F 7F ModR/M disp8.  Used by Doc 101 §101.B's
+Cons slot copies (= 16-byte unaligned stores into the caller-owned
+32-byte Sexp slot)."
+  (when (memq base '(rsp r12))
+    (signal 'nelisp-asm-x86_64-error
+            (list :movdqu-rsp-r12-base-needs-sib base)))
+  (unless (and (integerp disp) (<= -128 disp 127))
+    (signal 'nelisp-asm-x86_64-error
+            (list :disp8-out-of-range disp)))
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext src))
+         (ext-b (nelisp-asm-x86_64--reg-ext base))
+         (need-rex (or (= ext-r 1) (= ext-b 1)))
+         (rex (if need-rex
+                  (unibyte-string
+                   (nelisp-asm-x86_64--rex 0 ext-r 0 ext-b))
+                ""))
+         (modrm (nelisp-asm-x86_64--modrm
+                 1
+                 (nelisp-asm-x86_64--xmm-reg-low3 src)
+                 (nelisp-asm-x86_64--reg-low3 base))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (concat (unibyte-string #xF3)
+                 rex
+                 (unibyte-string #x0F #x7F modrm (logand disp #xFF))))))
+
 (defun nelisp-asm-x86_64-movsd-xmm-rip-disp32 (buf dst disp32)
   "Emit `MOVSD DST, QWORD PTR [RIP + DISP32]' = F2 [REX?] 0F 10 ModR/M disp32.
 Loads 8 bytes at the address `RIP + DISP32', where RIP is the
