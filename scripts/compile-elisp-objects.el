@@ -52,9 +52,14 @@
     (nelisp-cc-truncate-int
      :source-var nelisp-cc-truncate-int--source
      :output "nelisp_truncate_int.o")
+    ;; Doc 101 §101.B — `(length CONS)' proper-list walk.
     (nelisp-cc-length-cons
      :source-var nelisp-cc-length-cons--source
      :output "nelisp_length_cons.o")
+    ;; Doc 101 §101.C — `(eq SYMBOL SYMBOL)' via Symbol/Str read ops.
+    (nelisp-cc-eq-symbol
+     :source-var nelisp-cc-eq-symbol--source
+     :output "nelisp_eq_symbol.o")
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

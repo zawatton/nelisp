@@ -424,6 +424,7 @@ functions `((NAME . ARITY) ...)'."
                  (nth 1 sexp) env fenv defuns)
           :val (nelisp-phase47-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
+   ;; ---- Doc 101 §101.B Cons read ops ----
    ((and (consp sexp) (eq (car sexp) 'cons-null-p))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
@@ -464,6 +465,75 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'sexp-payload-ptr
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
+   ;; ---- Doc 101 §101.C Symbol/Str read ops ----
+   ;; (str-len H)       — read String::len at offset 24 from a
+   ;;                     `Sexp::Str' / `Sexp::Symbol' slot.
+   ;; (str-bytes H)     — read String::ptr at offset 8.
+   ;; (str-byte-at H N) — read byte `N' from the String::ptr buffer,
+   ;;                     zero-extended to i64.
+   ;; (str-eq H1 H2)    — compare lengths then bytes, return i64 0/1.
+   ;; (symbol-eq H1 H2) — require both tags = `Sexp::Symbol', then
+   ;;                     compare the underlying String payload bytes.
+   ;; (sexp-write-nil SLOT) / (sexp-write-t SLOT)
+   ;;                   — write only the tag byte of a caller-owned
+   ;;                     result slot and return the slot pointer.
+   ((and (consp sexp) (eq (car sexp) 'str-len))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :str-len-arity sexp)))
+    (list :kind 'str-len
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'str-bytes))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :str-bytes-arity sexp)))
+    (list :kind 'str-bytes
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'str-byte-at))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :str-byte-at-arity sexp)))
+    (list :kind 'str-byte-at
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :idx (nelisp-phase47-compiler--parse-value
+                (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'str-eq))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :str-eq-arity sexp)))
+    (list :kind 'str-eq
+          :id (nelisp-phase47-compiler--gensym "str-eq")
+          :a (nelisp-phase47-compiler--parse-value
+              (nth 1 sexp) env fenv defuns)
+          :b (nelisp-phase47-compiler--parse-value
+              (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'symbol-eq))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :symbol-eq-arity sexp)))
+    (list :kind 'symbol-eq
+          :id (nelisp-phase47-compiler--gensym "symbol-eq")
+          :a (nelisp-phase47-compiler--parse-value
+              (nth 1 sexp) env fenv defuns)
+          :b (nelisp-phase47-compiler--parse-value
+              (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'sexp-write-nil))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-write-nil-arity sexp)))
+    (list :kind 'sexp-write-nil
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'sexp-write-t))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-write-t-arity sexp)))
+    (list :kind 'sexp-write-t
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)))
    ;; (f64-call SYM ARG) — Doc 110 §110.E.2 / Doc 110 §3.F.
    ;; 1-arg f64→f64 extern call (= the shape `exp' / `log' / other
    ;; libm unary functions use).  ARG must be an f64-class value
@@ -1198,7 +1268,8 @@ the node's class to consume the result correctly."
         ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
              'cons-null-p 'cons-car 'cons-cdr 'cons-cdr-raw
              'sexp-payload-ptr
-             'while 'cond 'logic)
+             'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
+             'sexp-write-nil 'sexp-write-t 'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (plist-get node :kind) node))
         (kind
@@ -1250,6 +1321,22 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-cons-cdr-raw node buf))
       ('sexp-payload-ptr
        (nelisp-phase47-compiler--emit-sexp-payload-ptr node buf))
+      ('str-len
+       (nelisp-phase47-compiler--emit-str-len node buf))
+      ('str-bytes
+       (nelisp-phase47-compiler--emit-str-bytes node buf))
+      ('str-byte-at
+       (nelisp-phase47-compiler--emit-str-byte-at node buf))
+      ('str-eq
+       (nelisp-phase47-compiler--emit-str-eq node buf))
+      ('symbol-eq
+       (nelisp-phase47-compiler--emit-symbol-eq node buf))
+      ('sexp-write-nil
+       (nelisp-phase47-compiler--emit-sexp-write-tag
+        node buf nelisp-sexp--tag-nil))
+      ('sexp-write-t
+       (nelisp-phase47-compiler--emit-sexp-write-tag
+        node buf nelisp-sexp--tag-t))
       ('cmp
        (nelisp-phase47-compiler--emit-cmp node buf))
       ('if
@@ -1476,6 +1563,8 @@ glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
      buf 'rdi nelisp-sexp--offset-payload 'rsi)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)))
 
+;; ---- Doc 101 §101.B Cons read ops emit ----
+
 (defun nelisp-phase47-compiler--emit-cons-null-p (node buf)
   "Emit a tag==Nil predicate for NODE's `:ptr' Sexp pointer.
 Returns 1 in rax iff the tag byte at `[ptr + 0]' equals
@@ -1572,6 +1661,128 @@ safe to use as the loop seed in the length walker."
     (nelisp-asm-x86_64-define-label buf zero-lbl)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-define-label buf end-lbl)))
+
+;; ---- Doc 101 §101.C Symbol/Str read ops emit ----
+
+(defun nelisp-phase47-compiler--emit-str-len (node buf)
+  "Emit `mov rax, qword ptr [rdi + 24]' after computing NODE's :ptr."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-string--offset-length)))
+
+(defun nelisp-phase47-compiler--emit-str-bytes (node buf)
+  "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-string--offset-ptr)))
+
+(defun nelisp-phase47-compiler--emit-str-byte-at (node buf)
+  "Emit byte load from a `Sexp::Str' / `Sexp::Symbol' String buffer.
+Result: the selected UTF-8 byte zero-extended into rax."
+  (let ((ptr (plist-get node :ptr))
+        (idx (plist-get node :idx)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value idx buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'r10)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-string--offset-ptr)
+    (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rax)))
+
+(defun nelisp-phase47-compiler--emit-string-eq-core (buf left right id)
+  "Emit length-first byte-loop equality for two String-header slots.
+LEFT and RIGHT are GP registers holding `*const Sexp' addresses of
+values whose payload layout matches Rust `String' (=`Sexp::Str' or
+`Sexp::Symbol').  Result: i64 0/1 in rax."
+  (let ((false-lbl (intern (format "%s-false" id)))
+        (true-lbl (intern (format "%s-true" id)))
+        (loop-lbl (intern (format "%s-loop" id)))
+        (end-lbl (intern (format "%s-end" id))))
+    ;; r10=len(left), r11=len(right)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r10 left nelisp-string--offset-length)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r11 right nelisp-string--offset-length)
+    (nelisp-asm-x86_64-cmp-reg-reg buf 'r10 'r11)
+    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+    ;; Empty strings are equal.
+    (nelisp-asm-x86_64-cmp-imm32 buf 'r10 0)
+    (nelisp-asm-x86_64-jz-rel32 buf true-lbl)
+    ;; r8=ptr(left), r9=ptr(right), rcx=remaining byte count.
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r8 left nelisp-string--offset-ptr)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r9 right nelisp-string--offset-ptr)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'r10)
+    (nelisp-asm-x86_64-define-label buf loop-lbl)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'r8)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rdx 'r9)
+    (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'rdx)
+    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+    (nelisp-asm-x86_64-add-imm32 buf 'r8 1)
+    (nelisp-asm-x86_64-add-imm32 buf 'r9 1)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rcx 1)
+    (nelisp-asm-x86_64-jnz-rel32 buf loop-lbl)
+    (nelisp-asm-x86_64-define-label buf true-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf false-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
+    (nelisp-asm-x86_64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-str-eq (node buf)
+  "Emit `str-eq' using a byte loop over the two String payloads."
+  (let ((a (plist-get node :a))
+        (b (plist-get node :b))
+        (id (plist-get node :id)))
+    (nelisp-phase47-compiler--emit-value a buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value b buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; last pushed (= b) → rsi, first pushed (= a) → rdi
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-phase47-compiler--emit-string-eq-core buf 'rdi 'rsi id)))
+
+(defun nelisp-phase47-compiler--emit-symbol-eq (node buf)
+  "Emit `symbol-eq': tag-check both inputs, then compare name bytes."
+  (let ((a (plist-get node :a))
+        (b (plist-get node :b))
+        (id (plist-get node :id))
+        (tag-false-lbl (intern (format "%s-tag-false" (plist-get node :id))))
+        (end-lbl (intern (format "%s-tag-end" (plist-get node :id)))))
+    (nelisp-phase47-compiler--emit-value a buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value b buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-symbol)
+    (nelisp-asm-x86_64-jnz-rel32 buf tag-false-lbl)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rsi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-symbol)
+    (nelisp-asm-x86_64-jnz-rel32 buf tag-false-lbl)
+    (nelisp-phase47-compiler--emit-string-eq-core buf 'rdi 'rsi id)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf tag-false-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
+    (nelisp-asm-x86_64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-sexp-write-tag (node buf tag)
+  "Emit `mov byte ptr [rdi], TAG; mov rax, rdi' for NODE's :slot."
+  (let ((slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-mov-mem-imm8 buf 'rdi tag)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)))
 
 ;; ---- §97.c emit — comparisons + control flow ----
 

@@ -59,13 +59,13 @@ const _: () = assert!(std::mem::size_of::<crate::eval::nlconsbox::NlConsBox>() =
 // ---------------------------------------------------------------------------
 // Doc 101 §101.A — Rust String header field offsets within a
 // Sexp::Symbol / Sexp::Str slot.  The String header is laid out
-// (ptr, capacity, length) starting at SEXP_PAYLOAD_OFFSET (= 8) within
+// (capacity, ptr, length) starting at SEXP_PAYLOAD_OFFSET (= 8) within
 // the Sexp slot.  Per std::mem::offset_of on String fields (which are
 // stdlib-internal but stable in practice since Rust 1.0):
 //
 //   String slot offset 0:  Vec<u8> header
-//                          - ptr      at offset 0 of header => Sexp slot 8
-//                          - capacity at offset 8 of header => Sexp slot 16
+//                          - capacity at offset 0 of header => Sexp slot 8
+//                          - ptr      at offset 8 of header => Sexp slot 16
 //                          - length   at offset 16 of header => Sexp slot 24
 //
 // We cannot directly assert these via `offset_of!(String, ptr)' because
@@ -118,8 +118,8 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
         "nlconsbox-size",
         std::mem::size_of::<crate::eval::nlconsbox::NlConsBox>() as i64,
     ),
-    ("string-offset-ptr", SEXP_PAYLOAD_OFFSET as i64),
-    ("string-offset-capacity", (SEXP_PAYLOAD_OFFSET + 8) as i64),
+    ("string-offset-capacity", SEXP_PAYLOAD_OFFSET as i64),
+    ("string-offset-ptr", (SEXP_PAYLOAD_OFFSET + 8) as i64),
     ("string-offset-length", (SEXP_PAYLOAD_OFFSET + 16) as i64),
     ("string-header-size", std::mem::size_of::<String>() as i64),
 ];
@@ -152,5 +152,23 @@ mod tests {
         assert_eq!(map["tag-int"], SEXP_TAG_INT as i64);
         assert_eq!(map["offset-payload"], SEXP_PAYLOAD_OFFSET as i64);
         assert_eq!(map["slot-size"], std::mem::size_of::<Sexp>() as i64);
+    }
+
+    #[test]
+    fn string_header_runtime_probe_matches_exported_offsets() {
+        let mut s = String::with_capacity(32);
+        s.push_str("foo");
+        let words = &s as *const String as *const usize;
+        let map: std::collections::HashMap<_, _> =
+            ABI_EXPORT.iter().copied().collect();
+        let cap_word = unsafe { *words.add(0) } as i64;
+        let ptr_word = unsafe { *words.add(1) } as i64;
+        let len_word = unsafe { *words.add(2) } as i64;
+        assert_eq!(cap_word, 32);
+        assert_ne!(ptr_word, 0);
+        assert_eq!(len_word, 3);
+        assert_eq!(map["string-offset-capacity"], SEXP_PAYLOAD_OFFSET as i64);
+        assert_eq!(map["string-offset-ptr"], (SEXP_PAYLOAD_OFFSET + 8) as i64);
+        assert_eq!(map["string-offset-length"], (SEXP_PAYLOAD_OFFSET + 16) as i64);
     }
 }

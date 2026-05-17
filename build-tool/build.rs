@@ -71,6 +71,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let compiler_src = repo_root
         .join("lisp")
         .join("nelisp-phase47-compiler.el");
+    let layout_src = repo_root
+        .join("lisp")
+        .join("nelisp-sexp-layout.el");
 
     // Re-run when any elisp source the manifest can consume changes.
     // Keep this list in sync with `compile-elisp-objects-manifest' in
@@ -82,6 +85,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-truncate-int.el",
         // Doc 101 §101.B — `length' Cons/Nil swap.
         "nelisp-cc-length-cons.el",
+        // Doc 101 §101.C — `bi_eq' Symbol swap.
+        "nelisp-cc-eq-symbol.el",
         // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
         "nelisp-cc-jit-arith.el",
         // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.
@@ -92,6 +97,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
 
     println!("cargo:rerun-if-changed={}", script.display());
     println!("cargo:rerun-if-changed={}", compiler_src.display());
+    println!("cargo:rerun-if-changed={}", layout_src.display());
     for src in &manifest_sources {
         println!(
             "cargo:rerun-if-changed={}",

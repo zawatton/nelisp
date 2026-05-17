@@ -95,14 +95,15 @@ Mirrors `std::mem::size_of::<NlConsBox>()' on the Rust side.")
 ;; each offset so drift fails compilation.  See docs/arch/sexp-abi.md §7.
 ;; ---------------------------------------------------------------------------
 
-(defconst nelisp-string--offset-ptr      8
+(defconst nelisp-string--offset-capacity 8
   "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
-String's data pointer.  Equals `nelisp-sexp--offset-payload' + 0
-since `ptr' is the first field of the String header.")
+String's capacity field.  Equals `nelisp-sexp--offset-payload' + 0
+because Rust's `String' header currently stores capacity first on the
+repo toolchain.")
 
-(defconst nelisp-string--offset-capacity 16
+(defconst nelisp-string--offset-ptr      16
   "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
-String's capacity field.  Equals payload + 8.")
+String's data pointer.  Equals payload + 8 on the repo toolchain.")
 
 (defconst nelisp-string--offset-length   24
   "Byte offset (within a Sexp::Symbol / Sexp::Str slot) of the
@@ -139,8 +140,8 @@ payload + 16.")
     (nlconsbox-offset-cdr      . ,nelisp-nlconsbox--offset-cdr)
     (nlconsbox-offset-refcount . ,nelisp-nlconsbox--offset-refcount)
     (nlconsbox-size            . ,nelisp-nlconsbox--size)
-    (string-offset-ptr         . ,nelisp-string--offset-ptr)
     (string-offset-capacity    . ,nelisp-string--offset-capacity)
+    (string-offset-ptr         . ,nelisp-string--offset-ptr)
     (string-offset-length      . ,nelisp-string--offset-length)
     (string-header-size        . ,nelisp-string--header-size))
   "Layout constants flattened to (NAME . VALUE) for cross-side diffing.
