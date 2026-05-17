@@ -112,6 +112,16 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-mirror-is-bound.el",
         "nelisp-cc-mirror-is-fbound.el",
         "nelisp-cc-mirror-is-constant.el",
+        // Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
+        // rewrites.  Seven entries; each wraps an `nl_frame_*' Rust
+        // shim in `env_lexframe_phase47_shims.rs'.
+        "nelisp-cc-frame-stack-view.el",
+        "nelisp-cc-frame-ensure-capacity.el",
+        "nelisp-cc-frame-push.el",
+        "nelisp-cc-frame-pop.el",
+        "nelisp-cc-frame-bind.el",
+        "nelisp-cc-frame-stack-find.el",
+        "nelisp-cc-wrap-alist-cells.el",
         // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
         "nelisp-cc-jit-arith.el",
         // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.

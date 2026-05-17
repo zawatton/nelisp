@@ -118,6 +118,62 @@ impl NlRecordRef {
     }
 }
 
+/// Doc 111 §111.E — C-callable allocator for fresh `NlRecord' boxes
+/// pre-filled with `slot_count' `Sexp::Nil' slots + a `Sexp::Nil'
+/// type_tag (caller overwrites both before observing).
+///
+/// Mirrors `nl_alloc_vector' / `nl_alloc_consbox' / `nl_alloc_cell'
+/// in shape.  Used by `mirror_install_entry' (= fresh `symbol-entry'
+/// record) and `frame_push_rust_direct' (= fresh `nelisp-lexframe'
+/// record).  The returned pointer is the only owner; caller wraps in
+/// `Sexp::Record(_)' or invokes the standard drop path.
+///
+/// # Safety
+/// Caller must wrap the returned pointer into a `Sexp::Record(_)'
+/// whose `NlRecordRef::drop' decrements the refcount (standard
+/// ownership transfer).
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_record(slot_count: i64) -> *mut NlRecord {
+    let count = if slot_count < 0 { 0 } else { slot_count as usize };
+    let layout = Layout::new::<NlRecord>();
+    // SAFETY: `Layout::new::<NlRecord>()' is non-zero-sized.
+    let raw = unsafe { alloc::alloc(layout) } as *mut NlRecord;
+    if raw.is_null() {
+        alloc::handle_alloc_error(layout);
+    }
+    // SAFETY: `raw' was just allocated and is exclusively owned.
+    unsafe {
+        std::ptr::write(std::ptr::addr_of_mut!((*raw).type_tag), Sexp::Nil);
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*raw).slots),
+            vec![Sexp::Nil; count],
+        );
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*raw).refcount),
+            AtomicUsize::new(1),
+        );
+    }
+    raw
+}
+
+/// Doc 111 §111.E — set the `type_tag' field of an `NlRecord' in place,
+/// refcount-safely cloning `*val' before write.  Companion to
+/// `nl_record_set_slot' (= writes slot N) used by callers that want
+/// to install the type-tag symbol after `nl_alloc_record'.
+///
+/// # Safety
+/// - `record' must be non-null and point at an initialized `NlRecord'.
+/// - `val' must be non-null and point at an initialized `Sexp'.
+#[no_mangle]
+pub unsafe extern "C" fn nl_record_set_type_tag(
+    record: *mut NlRecord,
+    val: *const Sexp,
+) {
+    let r = unsafe { &mut *record };
+    let new_val = unsafe { (*val).clone() };
+    r.type_tag = new_val;
+}
+
 /// Doc 111 §111.B — set slot N of an NlRecord in place, dropping the
 /// old value first (refcount-aware via Sexp's Drop impl).
 ///

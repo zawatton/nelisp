@@ -1,0 +1,500 @@
+//! Doc 111 §111.E Group E — `extern "C"` shims that let Phase 47-
+//! compiled elisp helpers in `lisp/nelisp-cc-frame-*.el' drive the
+//! lexical-frame-stack operations without re-implementing the inner
+//! tight loops (= hash-bucket walk, vector grow + copy, etc.) in elisp.
+//!
+//! Mirrors the design-doc §5.3 trade-off ("first ship can use the Rust
+//! helper") and §111.E §3.E table where Group E helpers are wired to
+//! `extern-call' targets next to their elisp-side composition.
+//!
+//! These shims operate on raw `*const Sexp' / `*mut Sexp' pointers
+//! (= the `frames_record' Sexp slot owned by `Env') and never touch
+//! the surrounding `Env' fields, so they're safe to call from the
+//! Phase 47 ABI which only knows the frames-record pointer.
+//!
+//! The existing private impls in `env_lexframe.rs' (`Env::frame_*')
+//! stay in place — production callers route through `Env::*' while
+//! Phase 47 probes drive these shims directly.  Once all Group E
+//! helpers ship, a follow-up commit will rewire the `Env::*' methods
+//! to dispatch through these shims (= the canonical "extern wrapper"
+//! pattern from §3.E).
+
+use crate::eval::env::FrameCell;
+use crate::eval::env_mirror::mirror_fnv1a;
+use crate::eval::nlrecord::NlRecordRef;
+use crate::eval::nlvector::NlVectorRef;
+use crate::eval::sexp::Sexp;
+
+// ---- Helpers shared between shims ----------------------------------
+
+/// Read `(stack_rec, backing, depth)' from a `*const Sexp' pointing at
+/// the `frames_record' slot inside `Env'.  Returns `None' when the
+/// mirror is unbuilt (= `Sexp::Nil', pre-`install_stage0').  Mirrors
+/// `Env::frame_stack_view' exactly so the Phase 47 helpers see the
+/// same view the Rust impl sees.
+unsafe fn frame_stack_view_from_ptr(
+    frames_ptr: *const Sexp,
+) -> Option<(NlRecordRef, NlVectorRef, usize)> {
+    let frames = unsafe { &*frames_ptr };
+    let stack_rec = match frames {
+        Sexp::Record(r) => r.clone(),
+        _ => return None,
+    };
+    let backing = match stack_rec.slots.get(0)? {
+        Sexp::Vector(v) => v.clone(),
+        _ => return None,
+    };
+    let depth = match stack_rec.slots.get(1)? {
+        Sexp::Int(n) => *n as usize,
+        _ => return None,
+    };
+    Some((stack_rec, backing, depth))
+}
+
+// ---- #20 frame_stack_ensure_capacity --------------------------------
+
+/// Doc 111 §111.E #20 — grow the lexframe-stack BACKING vector to at
+/// least `needed' slots, copying live elements over and installing the
+/// new vector in `frames_record.slots[0]'.  No-op when the existing
+/// capacity already covers `needed'.  Returns 0 when the mirror is
+/// unbuilt (= `Sexp::Nil' frames_record).
+///
+/// Returns the resulting capacity (= length of the backing vector
+/// after the call) as i64, so the Phase 47 caller has a non-zero
+/// return value to thread through `if'.
+///
+/// # Safety
+/// - `frames_ptr' must be non-null and point at the `Env::frames_record'
+///   slot (= a `Sexp::Record(_)' or `Sexp::Nil').
+/// - No other `&Sexp' borrow into `*frames_ptr' may be live.
+#[no_mangle]
+pub unsafe extern "C" fn nl_frame_stack_ensure_capacity(
+    frames_ptr: *const Sexp,
+    needed: i64,
+) -> i64 {
+    let Some((stack_rec, backing, _depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
+        return 0;
+    };
+    let depth = match unsafe { &*frames_ptr } {
+        Sexp::Record(r) => match r.slots.get(1) {
+            Some(Sexp::Int(n)) => *n as usize,
+            _ => 0,
+        },
+        _ => 0,
+    };
+    let needed_usize = if needed < 0 { 0 } else { needed as usize };
+    let cap = backing.value.len();
+    if cap >= needed_usize {
+        return cap as i64;
+    }
+    let mut new_cap = cap.max(1);
+    while new_cap < needed_usize {
+        new_cap *= 2;
+    }
+    let mut new_buf: Vec<Sexp> = Vec::with_capacity(new_cap);
+    for i in 0..depth {
+        new_buf.push(backing.value.get(i).cloned().unwrap_or(Sexp::Nil));
+    }
+    while new_buf.len() < new_cap {
+        new_buf.push(Sexp::Nil);
+    }
+    let new_vec_sexp = Sexp::vector(new_buf);
+    // SAFETY: no outstanding borrow into `stack_rec.slots'.
+    unsafe { stack_rec.with_slots_mut(|s| s[0] = new_vec_sexp) };
+    new_cap as i64
+}
+
+// ---- #21 frame_push_rust_direct -------------------------------------
+
+/// Doc 111 §111.E #21 — push a fresh empty frame onto the mirror stack.
+/// Mirrors `Env::frame_push_rust_direct' bit-for-bit (= allocate a
+/// `nelisp-lexframe' record with one `fast-hash-table' slot, install
+/// it at `backing[depth]', increment depth).
+///
+/// Returns 1 on success, 0 when the mirror is unbuilt.  The pushed
+/// frame is owned by the backing vector; callers don't get a handle.
+///
+/// # Safety
+/// - `frames_ptr' must be non-null and point at `Env::frames_record'.
+/// - No other `&Sexp' borrow into `*frames_ptr' may be live.
+#[no_mangle]
+pub unsafe extern "C" fn nl_frame_push(frames_ptr: *const Sexp) -> i64 {
+    let Some((stack_rec, backing, depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
+        return 0;
+    };
+    // Grow if needed (same logic as #20 inlined here to avoid double-
+    // walking the frames-record).
+    let new_backing = {
+        let cap = backing.value.len();
+        if cap >= depth + 1 {
+            backing
+        } else {
+            let mut new_cap = cap.max(1);
+            while new_cap < depth + 1 {
+                new_cap *= 2;
+            }
+            let mut new_buf: Vec<Sexp> = Vec::with_capacity(new_cap);
+            for i in 0..depth {
+                new_buf.push(backing.value.get(i).cloned().unwrap_or(Sexp::Nil));
+            }
+            while new_buf.len() < new_cap {
+                new_buf.push(Sexp::Nil);
+            }
+            let new_vec_sexp = Sexp::vector(new_buf);
+            let new_vec_box = match &new_vec_sexp {
+                Sexp::Vector(v) => v.clone(),
+                _ => unreachable!(),
+            };
+            unsafe { stack_rec.with_slots_mut(|s| s[0] = new_vec_sexp) };
+            new_vec_box
+        }
+    };
+    // Build empty frame (= record `nelisp-lexframe' with one
+    // `fast-hash-table' slot containing 16 empty buckets).
+    const BUCKET_COUNT: usize = 16;
+    let buckets = Sexp::vector(vec![Sexp::Nil; BUCKET_COUNT]);
+    let ht_record = Sexp::record(
+        Sexp::Symbol("fast-hash-table".into()),
+        vec![Sexp::Int(BUCKET_COUNT as i64), buckets, Sexp::Int(0)],
+    );
+    let frame = Sexp::record(
+        Sexp::Symbol("nelisp-lexframe".into()),
+        vec![ht_record],
+    );
+    // SAFETY: see `Env::frame_push_rust_direct'.
+    unsafe {
+        new_backing.with_value_mut(|v| v[depth] = frame);
+        stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
+    }
+    1
+}
+
+// ---- #22 frame_pop_rust_direct --------------------------------------
+
+/// Doc 111 §111.E #22 — pop the innermost frame.  Silently no-ops on
+/// empty stack / unbuilt mirror.  Returns 1 on pop, 0 on no-op.
+///
+/// # Safety
+/// - `frames_ptr' must be non-null and point at `Env::frames_record'.
+/// - No other `&Sexp' borrow into `*frames_ptr' may be live.
+#[no_mangle]
+pub unsafe extern "C" fn nl_frame_pop(frames_ptr: *const Sexp) -> i64 {
+    let Some((stack_rec, backing, depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
+        return 0;
+    };
+    if depth == 0 {
+        return 0;
+    }
+    let new_depth = depth - 1;
+    // SAFETY: see `Env::frame_pop_rust_direct'.
+    unsafe {
+        backing.with_value_mut(|v| v[new_depth] = Sexp::Nil);
+        stack_rec.with_slots_mut(|s| s[1] = Sexp::Int(new_depth as i64));
+    }
+    1
+}
+
+// ---- #23 frame_bind_rust_direct -------------------------------------
+
+/// Doc 111 §111.E #23 — bind NAME → CELL in the innermost frame.
+/// Hashes NAME via `mirror_fnv1a' + walks the bucket alist to update-
+/// in-place or prepend `(NAME . CELL)'.  No-op when the stack is empty
+/// or the mirror is unbuilt.
+///
+/// Returns 1 on bind, 0 on no-op.
+///
+/// # Safety
+/// - `frames_ptr' must be non-null and point at `Env::frames_record'.
+/// - `name_ptr' must point at a `Sexp::Str' or `Sexp::Symbol'.
+/// - `cell_ptr' must point at the new cell value (commonly `Sexp::Cell').
+#[no_mangle]
+pub unsafe extern "C" fn nl_frame_bind(
+    frames_ptr: *const Sexp,
+    name_ptr: *const Sexp,
+    cell_ptr: *const Sexp,
+) -> i64 {
+    let Some((_stack_rec, backing, depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
+        return 0;
+    };
+    if depth == 0 {
+        return 0;
+    }
+    let frame = match backing.value.get(depth - 1) {
+        Some(f) => f.clone(),
+        None => return 0,
+    };
+    let name: String = match unsafe { &*name_ptr } {
+        Sexp::Str(s) => s.clone(),
+        Sexp::Symbol(s) => s.clone(),
+        _ => return 0,
+    };
+    let cell = unsafe { (*cell_ptr).clone() };
+    bind_into_frame(&frame, &name, cell);
+    1
+}
+
+/// Internal — mirror of `Env::frame_bind_into' but standalone (no
+/// `Env' self).  Hashes NAME via `mirror_fnv1a' + walks the bucket
+/// alist; the in-place pair-cdr update path uses
+/// `NlConsBoxRef::set_cdr' so refcounts stay tidy.
+fn bind_into_frame(frame: &Sexp, name: &str, cell: Sexp) {
+    let Sexp::Record(frame_rec) = frame else { return };
+    let ht_rec = match frame_rec.slots.get(0) {
+        Some(Sexp::Record(r)) => r.clone(),
+        _ => return,
+    };
+    let bucket_count = match ht_rec.slots.get(0) {
+        Some(Sexp::Int(n)) => *n as u32,
+        _ => return,
+    };
+    let buckets = match ht_rec.slots.get(1) {
+        Some(Sexp::Vector(v)) => v.clone(),
+        _ => return,
+    };
+    let h = mirror_fnv1a(name);
+    let idx = (if bucket_count & (bucket_count - 1) == 0 {
+        h & (bucket_count - 1)
+    } else {
+        h % bucket_count
+    }) as usize;
+    let bucket = match buckets.value.get(idx) {
+        Some(b) => b.clone(),
+        None => return,
+    };
+    let mut cur = bucket;
+    while let Sexp::Cons(c) = &cur {
+        if let Sexp::Cons(pair) = &c.car {
+            if let Sexp::Str(k) = &pair.car {
+                if k == name {
+                    // SAFETY: in-place pair-cdr replacement.
+                    unsafe { pair.set_cdr(cell) };
+                    return;
+                }
+            }
+        }
+        cur = c.cdr.clone();
+    }
+    // Not found — prepend `(NAME . CELL)' to the bucket.
+    let pair = Sexp::cons(Sexp::Str(name.to_string()), cell);
+    // SAFETY: see `Env::frame_bind_into'.
+    unsafe {
+        buckets.with_value_mut(|v| {
+            let old = v.get(idx).cloned().unwrap_or(Sexp::Nil);
+            v[idx] = Sexp::cons(pair, old);
+        });
+        ht_rec.with_slots_mut(|s| {
+            if let Some(Sexp::Int(n)) = s.get_mut(2) {
+                *n += 1;
+            }
+        });
+    }
+}
+
+// ---- #24 frame_stack_find_rust_direct -------------------------------
+
+/// Doc 111 §111.E #24 — innermost-first walk across the entire mirror
+/// stack.  Returns the `*const Sexp' of the matching `(NAME . CELL)'
+/// pair's CDR (= the cell slot), or `null' on miss / empty stack /
+/// unbuilt mirror.
+///
+/// # Safety
+/// - `frames_ptr' must be non-null and point at `Env::frames_record'.
+/// - `name_ptr' must point at a `Sexp::Str' or `Sexp::Symbol'.
+/// - The returned pointer borrows the bucket-pair's CDR slot owned by
+///   `*frames_ptr'; callers must not outlive that ownership.
+#[no_mangle]
+pub unsafe extern "C" fn nl_frame_stack_find(
+    frames_ptr: *const Sexp,
+    name_ptr: *const Sexp,
+) -> *const Sexp {
+    let Some((_stack_rec, backing, depth)) = (unsafe { frame_stack_view_from_ptr(frames_ptr) }) else {
+        return std::ptr::null();
+    };
+    let name: &str = match unsafe { &*name_ptr } {
+        Sexp::Str(s) => s.as_str(),
+        Sexp::Symbol(s) => s.as_str(),
+        _ => return std::ptr::null(),
+    };
+    for i in (0..depth).rev() {
+        let Some(frame) = backing.value.get(i) else { continue };
+        if let Some(slot_ptr) = lookup_in_frame(frame, name) {
+            return slot_ptr;
+        }
+    }
+    std::ptr::null()
+}
+
+/// Internal — mirror of `Env::frame_lookup_in' but returns the raw
+/// `*const Sexp' of the matching pair's CDR slot (= cell), or `None'
+/// on miss.  Used by `nl_frame_stack_find' to surface the cell
+/// pointer up to the Phase 47 caller.
+fn lookup_in_frame(frame: &Sexp, name: &str) -> Option<*const Sexp> {
+    let Sexp::Record(frame_rec) = frame else { return None };
+    let ht_rec = match frame_rec.slots.get(0)? {
+        Sexp::Record(r) => r,
+        _ => return None,
+    };
+    let bucket_count = match ht_rec.slots.get(0)? {
+        Sexp::Int(n) => *n as u32,
+        _ => return None,
+    };
+    let buckets = match ht_rec.slots.get(1)? {
+        Sexp::Vector(v) => v,
+        _ => return None,
+    };
+    let h = mirror_fnv1a(name);
+    let idx = (if bucket_count & (bucket_count - 1) == 0 {
+        h & (bucket_count - 1)
+    } else {
+        h % bucket_count
+    }) as usize;
+    let bucket = buckets.value.get(idx)?;
+    let mut cur = bucket;
+    while let Sexp::Cons(c) = cur {
+        if let Sexp::Cons(pair) = &c.car {
+            if let Sexp::Str(k) = &pair.car {
+                if k == name {
+                    // The cell is the pair's CDR; return its slot ptr.
+                    return Some(&pair.cdr as *const Sexp);
+                }
+            }
+        }
+        cur = &c.cdr;
+    }
+    None
+}
+
+// ---- #26 wrap_alist_cells -------------------------------------------
+
+/// Doc 111 §111.E #26 — walk ALIST = `((NAME . VALUE-OR-CELL) ...)' and
+/// produce a new alist where every cdr is a `Sexp::Cell'.  Bare values
+/// are wrapped in fresh `NlCellRef' so the elisp lexframe-bind path
+/// stores write-through cells.  Writes the result into `result_slot'.
+///
+/// Returns 1 on success, 0 on malformed input (= matches the
+/// `Env::wrap_alist_cells' Err arm).  The result slot is initialised
+/// to `Sexp::Nil' on error.
+///
+/// # Safety
+/// - `alist_ptr' must be non-null and point at a proper-list `Sexp'.
+/// - `result_slot' must be non-null, writable, and either pre-set to
+///   `Sexp::Nil' (Copy-shape) or treated by the caller as
+///   uninitialised; the helper drops the prior contents before write.
+#[no_mangle]
+pub unsafe extern "C" fn nl_wrap_alist_cells(
+    alist_ptr: *const Sexp,
+    result_slot: *mut Sexp,
+) -> i64 {
+    let alist = unsafe { &*alist_ptr };
+    let mut entries: Vec<(Sexp, Sexp)> = Vec::new();
+    let mut cur = alist;
+    while let Sexp::Cons(outer) = cur {
+        let inner = match &outer.car {
+            Sexp::Cons(c) => c,
+            _ => {
+                unsafe { core::ptr::write(result_slot, Sexp::Nil) };
+                return 0;
+            }
+        };
+        let name = inner.car.clone();
+        let cell = match &inner.cdr {
+            Sexp::Cell(_) => inner.cdr.clone(),
+            v => Sexp::Cell(FrameCell::new(v.clone())),
+        };
+        entries.push((name, cell));
+        cur = &outer.cdr;
+    }
+    if !matches!(cur, Sexp::Nil) {
+        unsafe { core::ptr::write(result_slot, Sexp::Nil) };
+        return 0;
+    }
+    let mut acc = Sexp::Nil;
+    for (name, cell) in entries.into_iter().rev() {
+        acc = Sexp::cons(Sexp::cons(name, cell), acc);
+    }
+    // SAFETY: result_slot is caller-owned per the contract above.
+    unsafe { core::ptr::write(result_slot, acc) };
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_frames_record() -> Sexp {
+        const INITIAL_CAPACITY: usize = 8;
+        let backing = Sexp::vector(vec![Sexp::Nil; INITIAL_CAPACITY]);
+        Sexp::record(
+            Sexp::Symbol("nelisp-lexframe-stack".into()),
+            vec![backing, Sexp::Int(0)],
+        )
+    }
+
+    #[test]
+    fn nl_frame_push_pop_roundtrip() {
+        let frames = build_frames_record();
+        unsafe {
+            assert_eq!(nl_frame_push(&frames as *const Sexp), 1);
+            assert_eq!(nl_frame_pop(&frames as *const Sexp), 1);
+            // empty stack pop returns 0
+            assert_eq!(nl_frame_pop(&frames as *const Sexp), 0);
+        }
+    }
+
+    #[test]
+    fn nl_frame_bind_then_find_roundtrip() {
+        let frames = build_frames_record();
+        let val = Sexp::Int(42);
+        let cell = Sexp::Cell(FrameCell::new(val));
+        let name = Sexp::Symbol("alpha".into());
+        unsafe {
+            assert_eq!(nl_frame_push(&frames as *const Sexp), 1);
+            assert_eq!(
+                nl_frame_bind(
+                    &frames as *const Sexp,
+                    &name as *const Sexp,
+                    &cell as *const Sexp,
+                ),
+                1
+            );
+            let found = nl_frame_stack_find(&frames as *const Sexp, &name as *const Sexp);
+            assert!(!found.is_null(), "bound name should be findable");
+            let cell_slot = &*found;
+            assert!(matches!(cell_slot, Sexp::Cell(_)));
+        }
+    }
+
+    #[test]
+    fn nl_wrap_alist_cells_basic() {
+        let alist = Sexp::list_from(&[
+            Sexp::cons(Sexp::Symbol("a".into()), Sexp::Int(1)),
+            Sexp::cons(Sexp::Symbol("b".into()), Sexp::Int(2)),
+        ]);
+        let mut out = Sexp::Nil;
+        let rc = unsafe {
+            nl_wrap_alist_cells(&alist as *const Sexp, &mut out as *mut Sexp)
+        };
+        assert_eq!(rc, 1);
+        // Walk: ((a . #<cell 1>) (b . #<cell 2>))
+        let Sexp::Cons(outer) = &out else { panic!("expected cons") };
+        let Sexp::Cons(first) = &outer.car else { panic!("inner not cons") };
+        assert!(matches!(&first.cdr, Sexp::Cell(_)));
+    }
+
+    #[test]
+    fn nl_frame_stack_ensure_capacity_grows() {
+        let frames = build_frames_record();
+        unsafe {
+            // Force growth: 8-slot initial, request 16.
+            nl_frame_stack_ensure_capacity(&frames as *const Sexp, 16);
+        }
+        // Verify new vector is in slot 0 with len >= 16.
+        if let Sexp::Record(r) = &frames {
+            if let Sexp::Vector(v) = &r.slots[0] {
+                assert!(v.value.len() >= 16);
+            } else {
+                panic!("slot 0 not Vector");
+            }
+        }
+    }
+}

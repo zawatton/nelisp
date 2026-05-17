@@ -124,6 +124,62 @@ impl NlVectorRef {
     }
 }
 
+/// Doc 111 §111.E — C-callable allocator for fresh `NlVector` boxes
+/// pre-filled with `capacity' `Sexp::Nil' elements.
+///
+/// Mirrors `nl_alloc_consbox` / `nl_alloc_cell' in shape and return-
+/// raw-pointer convention.  Used by `frame_stack_ensure_capacity'
+/// (= grow lexframe-stack BACKING when full) and may also be used by
+/// `install_empty_frames_record_rust_direct' (= 8-slot initial vector)
+/// once Rust callers swap to it.
+///
+/// # Safety
+/// Caller must wrap the returned pointer into a `Sexp::Vector(_)' whose
+/// `NlVectorRef::drop' decrements the refcount (standard ownership
+/// transfer), or call into the standard Rust drop path.
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_vector(capacity: i64) -> *mut NlVector {
+    let cap = if capacity < 0 { 0 } else { capacity as usize };
+    let layout = Layout::new::<NlVector>();
+    // SAFETY: `Layout::new::<NlVector>()' is non-zero-sized.
+    let raw = unsafe { alloc::alloc(layout) } as *mut NlVector;
+    if raw.is_null() {
+        alloc::handle_alloc_error(layout);
+    }
+    // SAFETY: `raw' was just allocated and is exclusively owned.
+    unsafe {
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*raw).value),
+            vec![Sexp::Nil; cap],
+        );
+        std::ptr::write(
+            std::ptr::addr_of_mut!((*raw).refcount),
+            AtomicUsize::new(1),
+        );
+    }
+    raw
+}
+
+/// Doc 111 §111.E — set element N of an NlVector in place, refcount-
+/// safely cloning `*val' before write.  Mirrors `nl_record_set_slot'
+/// for record-slot writes.
+///
+/// # Safety
+/// - `vec_ptr' must be non-null and point at a live `NlVector'.
+/// - `val' must be non-null and point at an initialised `Sexp'.
+/// - `n' must be a valid index into `vec.value'.
+/// - No other `&Vec<Sexp>' borrow into `vec.value' may be live.
+#[no_mangle]
+pub unsafe extern "C" fn nl_vector_set_slot(
+    vec_ptr: *mut NlVector,
+    n: i64,
+    val: *const Sexp,
+) {
+    let v = unsafe { &mut *vec_ptr };
+    let new_val = unsafe { (*val).clone() };
+    v.value[n as usize] = new_val;
+}
+
 impl Clone for NlVectorRef {
     fn clone(&self) -> Self {
         // SAFETY: `self.ptr' is alive because we hold a handle.

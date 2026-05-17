@@ -9,6 +9,7 @@ pub mod cons_primitives;
 pub mod dlsym_bridge;
 pub mod env;
 pub mod env_lexframe;
+pub mod env_lexframe_phase47_shims;
 pub mod env_mirror;
 pub mod env_shim;
 pub mod error;

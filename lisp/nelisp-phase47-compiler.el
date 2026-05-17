@@ -143,6 +143,22 @@ within one compile but never collide between control-flow nodes.")
 Emit helpers consult this dynvar to pick the x86_64 or aarch64 code
 path while sharing the same parsed IR.")
 
+(defvar nelisp-phase47-compiler--current-defun-arity nil
+  "Arity of the defun currently being emitted, or nil during main `_start'.
+Bound dynamically by `--emit-defun' so inner emit helpers (= those
+that issue `call' / `extern-call') can compute the correct stack
+alignment correction.  The body-entry rsp alignment depends on the
+parity of the param-spill count: even arity → rsp ≡ 0 mod 16 (= call
+ready), odd arity → rsp ≡ 8 mod 16 (= one extra `sub rsp, 8' before
+each call to restore alignment).
+
+Doc 111 §111.E surfaced this bug when 1-arg helpers
+(`nelisp_frame_push' / `nelisp_frame_pop') crashed inside the Rust
+shim's SSE-aligned stack accesses; the pre-existing fix is the
+manual `push %rsi' inside `--emit-record-slot-ref' (= 3-arg defun,
+also odd) which the design notes call out as a stack-alignment
+band-aid.  This dynvar generalises the pattern.")
+
 (defun nelisp-phase47-compiler--gensym (prefix)
   "Return a fresh symbol `PREFIX-N' for control-flow labelling.
 N is the next value of `nelisp-phase47-compiler--label-counter'.
@@ -1656,7 +1672,14 @@ Strategy:
   (let* ((name (plist-get node :name))
          (args (plist-get node :args))
          (n (length args))
-         (regs (cl-subseq nelisp-phase47-compiler--arg-regs 0 n)))
+         (regs (cl-subseq nelisp-phase47-compiler--arg-regs 0 n))
+         ;; Stack alignment correction (Doc 111 §111.E fix) — same
+         ;; reasoning as `--emit-extern-call'.  Intra-text recursive
+         ;; calls also need rsp ≡ 0 mod 16 at the call site; otherwise
+         ;; the callee's prologue lands at rsp ≡ 0 mod 16 (= ABI
+         ;; violation) and any SSE/aligned access inside crashes.
+         (arity (or nelisp-phase47-compiler--current-defun-arity 0))
+         (needs-align (= (logand arity 1) 1)))
     ;; Push each evaluated arg.
     (dolist (a args)
       (nelisp-phase47-compiler--emit-value a buf)
@@ -1665,8 +1688,12 @@ Strategy:
     ;; the last arg; so iterate regs reversed).
     (dolist (r (reverse regs))
       (nelisp-asm-x86_64-pop buf r))
+    (when needs-align
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
     ;; call <NAME> — intra-text rel32 resolved at finalize time.
-    (nelisp-asm-x86_64-call-rel32 buf name)))
+    (nelisp-asm-x86_64-call-rel32 buf name)
+    (when needs-align
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))
 
 (defun nelisp-phase47-compiler--emit-extern-call (node buf)
   "Emit a SysV AMD64 call to an extern symbol NODE (= Doc 100 §100.A).
@@ -1684,7 +1711,23 @@ args are rejected at parse time."
   (let* ((name (plist-get node :name))
          (args (plist-get node :args))
          (n (length args))
-         (regs (cl-subseq nelisp-phase47-compiler--arg-regs 0 n)))
+         (regs (cl-subseq nelisp-phase47-compiler--arg-regs 0 n))
+         ;; Stack alignment correction (Doc 111 §111.E fix).
+         ;; Post-prologue body-entry rsp:
+         ;;   - even arity (= 0, 2, 4, 6): rsp ≡ 0 mod 16 (good for call)
+         ;;   - odd arity (= 1, 3, 5):     rsp ≡ 8 mod 16 (needs +8 sub)
+         ;; The body's push/pop balance must net zero by the time we
+         ;; reach the call site; the args are pushed + popped in
+         ;; matched pairs below, also net zero.  So the dynvar
+         ;; capture suffices to pick the alignment correction.
+         ;;
+         ;; Returns nil during main `_start' emit, in which case rsp is
+         ;; assumed aligned (= same convention as the existing code
+         ;; before this fix; main body extern-call was already broken
+         ;; for any 1-arg defun-body but is not currently exercised
+         ;; outside defuns).
+         (arity (or nelisp-phase47-compiler--current-defun-arity 0))
+         (needs-align (= (logand arity 1) 1)))
     ;; Push each evaluated arg.
     (dolist (a args)
       (nelisp-phase47-compiler--emit-value a buf)
@@ -1692,12 +1735,25 @@ args are rejected at parse time."
     ;; Pop into arg-regs in reverse (= last pushed first popped).
     (dolist (r (reverse regs))
       (nelisp-asm-x86_64-pop buf r))
+    ;; Insert the 8-byte alignment correction for odd-arity defuns,
+    ;; preserving rax (which the body may have computed before the
+    ;; extern-call as a value) by pushing it across the pad.  We can't
+    ;; just `sub rsp, 8' because the call's return value lives in rax
+    ;; — but at this point in the emit sequence rax is unused (= we
+    ;; just popped the last arg into rdi/rsi/etc.), so a bare `sub
+    ;; rsp, 8' + matching `add rsp, 8' after the call is safe.
+    (when needs-align
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
     ;; Emit the `call rel32' opcode (0xE8) + 4-byte zero placeholder
     ;; + record a PLT32 reloc at the placeholder offset.  Section is
     ;; `text' (default) since we are inside an `.text' defun body.
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
-     buf (symbol-name name) -4 'text)))
+     buf (symbol-name name) -4 'text)
+    ;; Undo the alignment correction.  rax (= return value) is
+    ;; preserved because `add rsp, 8' doesn't touch any GPR.
+    (when needs-align
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))
 
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access emit ----
 
@@ -2742,7 +2798,13 @@ return reg, untouched by epilogue)."
   (let* ((name (plist-get defun-ir :name))
          (param-regs (plist-get defun-ir :param-regs))
          (param-class (or (plist-get defun-ir :param-class) 'gp))
-         (body (plist-get defun-ir :body)))
+         (body (plist-get defun-ir :body))
+         ;; Track this defun's arity for `--emit-extern-call' (Doc 111
+         ;; §111.E #19-#26 stack alignment fix).  Inner emit helpers
+         ;; bound under this `let*' see the param count via the dynvar
+         ;; and can issue an extra `sub rsp, 8' before extern `call's
+         ;; when arity is odd, restoring rsp ≡ 0 mod 16 SysV alignment.
+         (nelisp-phase47-compiler--current-defun-arity (length param-regs)))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
         (let ((gp-arg-regs '(x0 x1 x2 x3 x4 x5))
               (fp-arg-regs '(d0 d1 d2 d3 d4 d5 d6 d7)))

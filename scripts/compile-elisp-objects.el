@@ -129,6 +129,40 @@
      :source-var nelisp-cc-mirror-is-constant--source
      :output "nelisp_mirror_is_constant.o"
      :requires-arch x86_64)
+    ;; Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
+    ;; rewrites.  Each entry wraps a Rust shim that mirrors the
+    ;; corresponding `Env::frame_*' method (= `nl_frame_*' externs in
+    ;; `build-tool/src/eval/env_lexframe_phase47_shims.rs').  Linux-
+    ;; x86_64 only for the same `extern-call' + record/vector ABI
+    ;; reasons; aarch64 emit ships in a follow-up.
+    (nelisp-cc-frame-stack-view
+     :source-var nelisp-cc-frame-stack-view--source
+     :output "nelisp_frame_stack_depth.o"
+     :requires-arch x86_64)
+    (nelisp-cc-frame-ensure-capacity
+     :source-var nelisp-cc-frame-ensure-capacity--source
+     :output "nelisp_frame_stack_ensure_capacity.o"
+     :requires-arch x86_64)
+    (nelisp-cc-frame-push
+     :source-var nelisp-cc-frame-push--source
+     :output "nelisp_frame_push.o"
+     :requires-arch x86_64)
+    (nelisp-cc-frame-pop
+     :source-var nelisp-cc-frame-pop--source
+     :output "nelisp_frame_pop.o"
+     :requires-arch x86_64)
+    (nelisp-cc-frame-bind
+     :source-var nelisp-cc-frame-bind--source
+     :output "nelisp_frame_bind.o"
+     :requires-arch x86_64)
+    (nelisp-cc-frame-stack-find
+     :source-var nelisp-cc-frame-stack-find--source
+     :output "nelisp_frame_stack_find.o"
+     :requires-arch x86_64)
+    (nelisp-cc-wrap-alist-cells
+     :source-var nelisp-cc-wrap-alist-cells--source
+     :output "nelisp_wrap_alist_cells.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'
