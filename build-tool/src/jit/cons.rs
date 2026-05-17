@@ -61,7 +61,24 @@ pub unsafe extern "C" fn nl_jit_cons_make(
     b: *const Sexp,
     out: *mut Sexp,
 ) -> i64 {
-    *out = Sexp::cons((*a).clone(), (*b).clone());
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let car_owned = (*a).clone();
+        let cdr_owned = (*b).clone();
+        crate::elisp_cc_spike::cons_construct(
+            &car_owned as *const Sexp,
+            &cdr_owned as *const Sexp,
+            out,
+        );
+        // Transfer ownership of the cloned payloads into the copied
+        // bytes now stored in `out`'s `NlConsBox`.
+        std::mem::forget(car_owned);
+        std::mem::forget(cdr_owned);
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        *out = Sexp::cons((*a).clone(), (*b).clone());
+    }
     TRAMPOLINE_OK
 }
 

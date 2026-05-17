@@ -534,6 +534,41 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'sexp-write-t
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)))
+   ;; ---- Doc 101 §101.D Cons construction ops ----
+   ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
+   ;; payloads into a fresh `NlConsBox' and therefore assume the input
+   ;; values are caller-owned / already cloned on the Rust side.  They
+   ;; do not perform `nl_rc_inc' on nested boxed variants yet; that
+   ;; lands in a follow-up §101.D.2 stage if needed.
+   ((and (consp sexp) (eq (car sexp) 'cons-make))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cons-make-arity sexp)))
+    (list :kind 'cons-make
+          :car-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 1 sexp) env fenv defuns)
+          :cdr-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 2 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 3 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'cons-set-car))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cons-set-car-arity sexp)))
+    (list :kind 'cons-set-car
+          :handle (nelisp-phase47-compiler--parse-value
+                   (nth 1 sexp) env fenv defuns)
+          :val-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'cons-set-cdr))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cons-set-cdr-arity sexp)))
+    (list :kind 'cons-set-cdr
+          :handle (nelisp-phase47-compiler--parse-value
+                   (nth 1 sexp) env fenv defuns)
+          :val-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 2 sexp) env fenv defuns)))
    ;; (f64-call SYM ARG) — Doc 110 §110.E.2 / Doc 110 §3.F.
    ;; 1-arg f64→f64 extern call (= the shape `exp' / `log' / other
    ;; libm unary functions use).  ARG must be an f64-class value
@@ -1269,7 +1304,9 @@ the node's class to consume the result correctly."
              'cons-null-p 'cons-car 'cons-cdr 'cons-cdr-raw
              'sexp-payload-ptr
              'str-len 'str-bytes 'str-byte-at 'str-eq 'symbol-eq
-             'sexp-write-nil 'sexp-write-t 'while 'cond 'logic)
+             'sexp-write-nil 'sexp-write-t
+             'cons-make 'cons-set-car 'cons-set-cdr
+             'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (plist-get node :kind) node))
         (kind
@@ -1337,6 +1374,14 @@ the node's class to consume the result correctly."
       ('sexp-write-t
        (nelisp-phase47-compiler--emit-sexp-write-tag
         node buf nelisp-sexp--tag-t))
+      ('cons-make
+       (nelisp-phase47-compiler--emit-cons-make node buf))
+      ('cons-set-car
+       (nelisp-phase47-compiler--emit-cons-set-slot
+        node buf 'nl_consbox_set_car))
+      ('cons-set-cdr
+       (nelisp-phase47-compiler--emit-cons-set-slot
+        node buf 'nl_consbox_set_cdr))
       ('cmp
        (nelisp-phase47-compiler--emit-cmp node buf))
       ('if
@@ -1783,6 +1828,91 @@ values whose payload layout matches Rust `String' (=`Sexp::Str' or
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-mem-imm8 buf 'rdi tag)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)))
+
+;; ---- Doc 101 §101.D Cons construction ops ----
+
+(defun nelisp-phase47-compiler--emit-cons-make (node buf)
+  "Emit a `Sexp::Cons' constructor into NODE's caller-owned slot.
+Strategy:
+
+  1. Evaluate CAR-PTR / CDR-PTR / SLOT and save them on the stack.
+  2. Call `nl_alloc_consbox()' to allocate a fresh `NlConsBox'
+     initialized to `(nil . nil)' with refcount 1.
+  3. Copy the 32-byte Sexp at `*CAR-PTR' into `box->car' and the
+     32-byte Sexp at `*CDR-PTR' into `box->cdr' via two 16-byte
+     `movdqu' pairs each.
+  4. Write `SEXP_TAG_CONS' and the box pointer into SLOT.
+  5. Return SLOT in rax.
+
+MVP ownership constraint: the copied `Sexp' payloads are assumed to
+already be caller-owned / cloned; this op does not yet perform
+refcount-aware nested-box increments."
+  (let ((car-ptr (plist-get node :car-ptr))
+        (cdr-ptr (plist-get node :cdr-ptr))
+        (slot (plist-get node :slot)))
+    (nelisp-phase47-compiler--emit-value car-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value cdr-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Keep rsp 16-byte aligned across the extern call: 3 saved
+    ;; values would misalign the call site, so reserve one extra
+    ;; scratch slot and discard it after the call.
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_alloc_consbox" -4 'text)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    ;; last pushed (= slot) -> rsi, cdr-ptr -> rdx, car-ptr -> rdi
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; box->car = *car-ptr
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'rdi 0)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'r10 nelisp-nlconsbox--offset-car 'xmm0)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'rdi 16)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'r10 (+ nelisp-nlconsbox--offset-car 16) 'xmm0)
+    ;; box->cdr = *cdr-ptr
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'rdx 0)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'r10 nelisp-nlconsbox--offset-cdr 'xmm0)
+    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'rdx 16)
+    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'r10 (+ nelisp-nlconsbox--offset-cdr 16) 'xmm0)
+    ;; slot = Sexp::Cons(box)
+    (nelisp-asm-x86_64-mov-mem-imm8 buf 'rsi nelisp-sexp--tag-cons)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rsi nelisp-sexp--offset-payload 'r10)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+
+(defun nelisp-phase47-compiler--emit-cons-set-slot (node buf helper-name)
+  "Emit `cons-set-car' / `cons-set-cdr' via Rust HELPER-NAME.
+NODE carries `:handle' (= `*const Sexp' pointing at a Cons slot) and
+`:val-ptr' (= `*const Sexp').  The helper does the drop-then-write
+mutation on the boxed field; this op only resolves the `NlConsBox*'
+payload from the handle and forwards the two pointers.  Returns the
+original handle pointer in rax."
+  (let ((handle (plist-get node :handle))
+        (val-ptr (plist-get node :val-ptr)))
+    (nelisp-phase47-compiler--emit-value handle buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Preserve H across the helper call; caller-saved regs are not
+    ;; stable, so keep it on the stack and pop it back into rax after.
+    (nelisp-asm-x86_64-push buf 'rdi)
+    ;; Same alignment rule as `cons-make': two extra pushes keep the
+    ;; call site at a 16-byte boundary.
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rdi 'rdi nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf (symbol-name helper-name) -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'rax)))
 
 ;; ---- §97.c emit — comparisons + control flow ----
 

@@ -101,6 +101,44 @@ impl NlConsBox {
     }
 }
 
+/// Doc 101 §101.D — allocator helper for Phase 47-compiled elisp.
+/// Returns a freshly-allocated NlConsBox with car=Nil, cdr=Nil,
+/// refcount=1.  Caller is responsible for overwriting car/cdr.
+///
+/// # Safety
+/// Caller must wrap the returned pointer into a `Sexp::Cons(_)` whose
+/// `NlConsBoxRef::drop` decrements the refcount (standard ownership
+/// transfer), or call into the standard Rust drop path.
+#[no_mangle]
+pub unsafe extern "C" fn nl_alloc_consbox() -> *mut NlConsBox {
+    let boxed = Box::new(NlConsBox {
+        car: Sexp::Nil,
+        cdr: Sexp::Nil,
+        refcount: AtomicUsize::new(1),
+    });
+    Box::into_raw(boxed)
+}
+
+/// Doc 101 §101.D — C-callable wrapper around [`NlConsBox::set_car`].
+///
+/// # Safety
+/// `box_ptr` must point at a live `NlConsBox`; `val` must point at an
+/// initialized `Sexp`.
+#[no_mangle]
+pub unsafe extern "C" fn nl_consbox_set_car(box_ptr: *mut NlConsBox, val: *const Sexp) {
+    (*box_ptr).set_car((*val).clone());
+}
+
+/// Doc 101 §101.D — C-callable wrapper around [`NlConsBox::set_cdr`].
+///
+/// # Safety
+/// `box_ptr` must point at a live `NlConsBox`; `val` must point at an
+/// initialized `Sexp`.
+#[no_mangle]
+pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const Sexp) {
+    (*box_ptr).set_cdr((*val).clone());
+}
+
 /// Refcounted handle to an [`NlConsBox`].  API parity with
 /// [`NlRc<T>`](super::nlrc::NlRc): `new` / `Clone` / `Drop` / `Deref`
 /// (returns `&NlConsBox`).

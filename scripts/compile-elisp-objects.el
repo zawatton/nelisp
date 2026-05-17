@@ -60,6 +60,10 @@
     (nelisp-cc-eq-symbol
      :source-var nelisp-cc-eq-symbol--source
      :output "nelisp_eq_symbol.o")
+    ;; Doc 101 §101.D — `(cons A B)' via Cons construction ops.
+    (nelisp-cc-cons-construct
+     :source-var nelisp-cc-cons-construct--source
+     :output "nelisp_cons_construct.o")
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

@@ -91,6 +91,14 @@ pub mod elisp_cc_spike {
             arg1: *const Sexp,
             result_slot: *mut Sexp,
         ) -> *mut Sexp;
+        // Doc 101 §101.D — `(cons A B)' constructor compiled from
+        // `lisp/nelisp-cc-cons-construct.el'.  Writes `Sexp::Cons(_)'
+        // into `*result_slot' and returns that same pointer.
+        fn nelisp_cons_construct(
+            arg0: *const Sexp,
+            arg1: *const Sexp,
+            result_slot: *mut Sexp,
+        ) -> *mut Sexp;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
         // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
@@ -200,6 +208,15 @@ pub mod elisp_cc_spike {
     /// - `slot' must be non-null and writable for at least one Sexp slot.
     pub unsafe fn eq_symbol(arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
         nelisp_eq_symbol(arg0, arg1, slot)
+    }
+
+    /// Doc 101 §101.D — `(cons A B)' via elisp-compiled Cons
+    /// construction ops.
+    ///
+    /// `arg0` / `arg1` must point at initialized `Sexp` values and
+    /// `slot` must point at a writable 32-byte Sexp slot.
+    pub unsafe fn cons_construct(arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
+        nelisp_cons_construct(arg0, arg1, slot)
     }
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the
