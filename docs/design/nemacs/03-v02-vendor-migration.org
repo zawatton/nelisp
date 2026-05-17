@@ -1,0 +1,550 @@
+#+TITLE: nelisp-emacs Doc 03 — v0.2 Vendor Migration v2 Plan
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-05-17
+#+STATUS: DRAFT (v0.1 = §10 5 件 resolved 2026-05-17、Phase 0 着手前確認)
+#+DEPENDS_ON: nelisp-emacs Doc 01 (architecture LOCKED-2026-04-25-v2), nelisp-emacs Doc 02 (v0.1 daily-driver SHIPPED-2026-05-16), nelisp Doc 83 (100% pure-elisp self-host roadmap consolidated DRAFT-2026-05-09)
+#+SIBLINGS: nelisp Doc 73 (rust reader/eval purge), nelisp Doc 75 (frozen heap), nelisp Doc 77c (sexp ABI elisp self-host), nelisp Doc 102 (env-rs-elisp-migration), nelisp Doc 104 (frame-stack-migration)
+
+* §0 motivation
+
+** 0.1 user directive (2026-05-17)
+
+"vendor/ 下にある Emacs ソースコードの elisp が動作するように出来れば完成"
++ "nelisp 側に主戦場を移すにしても、実装は Rust ではなく elisp で実装
+(Rust コア削除)"
+
+= 「Emacs 置き換え完遂」の user 定義は *vendor/emacs-lisp/ 配下 1440 el が
+NeLisp ランタイム上で動く* こと。Phase 4 (= MELPA scratch compat) や
+Phase 2 (= TUI MVP scratch) は user 目標と方向違い (= scratch 実装増殖)。
+
+** 0.2 v0.2 vendor migration v1 revert (2026-05-09) からの学習
+
+a9c2f58 / 0aa3b24 で help-fns / help-mode / lisp-mode / ielm / minibuffer /
+project / files / simple / isearch / dired の 11 module を vendor 経由で
+動作確認 (= 27 commands fboundp OK + 6 runtime PASS) → 0.2 M3 全 5 module
+(org-mode / cus-theme / babel / export) 含めて 16 module vendor 化。
+
+VMware Debian での verification で破綻 → 95316e2 で revert。真因は
+NeLisp Rust runtime の 4 つの limitation:
+
+1. *reader* — =?'= (apostrophe char literal) 直接受け入れ不可、
+   "lex error at 9041:49: empty char literal after =?=" を吐く。
+   vendor files.el / info.el / woman.el 等で頻出
+2. *function-quote* — =#'macro= 受け入れ不可
+3. *autoload-defs* — dump 相当の pre-load なし、=autoload= 経由で
+   呼ばれる関数が見つからない
+4. *dump* — preloaded.el / image bake 機構なし、global state を image
+   として焼き付けて起動高速化する path がない
+
+これら 4 件は *NeLisp Rust runtime に深い限界* で、vendor 全体を render
+可能にするには NeLisp 改善必須。1-char workaround (39ff46f: =?'= → =?\'=)
+で vendor pristine が崩れた事も revert 理由。
+
+** 0.3 本 doc の主張
+
+1. v0.2 migration v1 で名指しされた 4 blocker は *既に dev/nelisp/ 側で
+   pure-elisp self-host migration 道筋 (Doc 83) に組み込まれている*
+   → blocker 解消は dev/nelisp/ 側の Doc 73/75/77c/102/104 等の SHIPPED
+   timeline と完全に同期する
+2. 1440 vendor el は均一ではなく、blocker 依存度で *5 段階クラス分け* 可能
+   → クラス A (現 NeLisp で既に動く ~11 module = v0.2 verified) から
+   段階的に vendor 起動できる
+3. v0.1 scratch (= 17 module) との *共存戦略* = vendor を上に top する、
+   scratch を破棄しない。v0.2 v1 では "redundant" として削除して revert
+   時に LOC +7439 復活で失敗。v2 では vendor が動いた module のみ scratch を
+   優先後退 (= require 順 vendor → scratch fallback)
+4. *起動 verification methodology* = guilemacs / rune の先行事例から学習、
+   ERT mirror + property comparison + loadup.el bootstrap + smoke 関数の
+   4 軸で進捗計測。これが無いと「動いた」の定義が曖昧
+
+* §1 scope
+
+** 1.1 in-scope
+
+- 1440 vendor el の blocker dependency taxonomy
+- 各 blocker と dev/nelisp/ Doc (73 / 75 / 77c / 80 / 81 / 102 / 104) の mapping
+- vendor 化の phased migration plan (= class A → B → C → D)
+- 起動 verification suite design (= guilemacs / rune 方式 mirror)
+- v0.1 scratch との共存規約 (= require 順 / removal gate)
+- nemacs-gtk-frontend.el / vendor の load-path 設計
+
+** 1.2 out-of-scope
+
+- NeLisp Rust runtime 自体の改善 = dev/nelisp/ Doc 73 / 75 / 77c 等が担当
+- vendor 配下の Emacs lisp 自体の patch = vendor pristine が原則
+  (= 例外時のみ =RUNE-BOOTSTRAP= 風 tag で隔離、§7.4)
+- TUI / GUI display backend 実装 = Doc 01 Phase 2/3 担当
+- C primitive 追加実装 = NeLisp Layer 1 / 2 substrate 担当
+
+* §2 prior art (= guilemacs + rune)
+
+** 2.1 guilemacs (codeberg.org/lyrra/guilemacs)
+
+Guile Scheme runtime 上で Elisp engine を載せる exploratory fork。
+test methodology:
+- *ERT mirror*: 本家 Emacs ERT 1741 cases をそのまま走らせて pass/fail
+  集計 (= 多くは fail だが指標として有効)
+- *Prelude tests*: C 定義 primitive の自前 unit test (=test/pre/=)、
+  loadup.el 前の core primitive 検証
+- *Scheme-generated tests*: Guile Scheme 側から Elisp test を生成し、
+  target binary に load → execute
+- *Bootstrap*: =loadup.el= 完走を critical gate に設定
+- *Smoke 関数*: Tetris / Snake / Dunnet / Eshell が起動するか
+
+180 generated tests + 1741 ERT で recent build = all pass を維持。
+
+** 2.2 rune (github.com/CeleritasCelery/rune)
+
+Rust runtime 上で Elisp VM を実装する exploratory project。test methodology:
+- *property comparison*: =assert_elprop!= macro で同じ form を rune と
+  host Emacs に送り、結果を比較。互換性検証の主軸
+- *exploratory*: "try to load new elisp files and see what breaks"
+- vendor lisp = emacs-mirror emacs-29.1 branch を pull、=/lisp/= 配下に配置
+- vendor patch は =RUNE-BOOTSTRAP= tag で source 内 isolate
+- =cargo run --release -- --load <file>= で個別 file load 駆動
+
+** 2.3 nelisp-emacs に流用する 4 軸
+
+| 軸 | 採用 | 出典 |
+|----+------+------|
+| ERT mirror (= 本家 lisp/emacs-lisp/ert.el test 走行) | YES | guilemacs |
+| Prelude tests (= NeLisp C primitive / Layer 2 substrate の unit test) | YES (既存 ERT で代替) | guilemacs |
+| Property comparison (= form を nelisp-emacs と host Emacs に送り結果比較) | YES (新規) | rune |
+| Bootstrap (= loadup.el 完走) | YES (新規 = §6.3) | guilemacs + rune |
+| Smoke 関数 (= Tetris / Snake / Dunnet / Eshell / IRC) | YES (Phase 4 で) | guilemacs |
+| Vendor patch tag (= =NELISP-EMACS-BOOTSTRAP=) | YES (= §7.4) | rune (=RUNE-BOOTSTRAP= 風) |
+| Pull from emacs-mirror branch | 既採用 (= vendor/emacs-lisp/ tree) | rune |
+
+* §3 vendor lisp inventory (= 2026-05-17 実測)
+
+** 3.1 規模
+
+| metric | value |
+|--------+-------|
+| =vendor/emacs-lisp/= 直下 .el (top level) | ~330 |
+| 全 .el (再帰、calc/cedet/erc/gnus/org/progmodes 等含む) | *1440* |
+| 主要 sub-tree | =org/= / =progmodes/= / =textmodes/= / =net/= / =mail/= / =gnus/= / =cedet/= / =calc/= / =erc/= / =eshell/= / =emulation/= / =vc/= / =international/= / =language/= / =play/= / =image/= / =term/= / =url/= / =nxml/= / =mh-e/= |
+
+** 3.2 既動作確認済 (= v0.2 v1 で verified、95316e2 revert 前)
+
+11 module + 5 org module (= 16 module) が load + runtime 両方 OK:
+
+| group | module | M (Doc 02) |
+|-------+--------+------------|
+| file/buffer | =files.el= / =simple.el= / =dired.el= | M1 |
+| help | =help-fns.el= / =help-mode.el= | M2 |
+| eval/REPL | =lisp-mode.el= / =ielm.el= | M2 |
+| isearch | =isearch.el= | M2 |
+| completion | =minibuffer.el= / =project.el= | M4 |
+| org-mode | =org.el= / =cus-theme.el= / =org-refile.el= / =org-archive.el= / =ob.el= / =ob-emacs-lisp.el= / =ox.el= / =ox-md.el= / =ox-html.el= / =ox-ascii.el= / =cus-edit.el= | M3 |
+
+これらは v2 で *class A* (= 既動作 = 最優先 vendor 化) に置く。
+
+** 3.3 class 分類軸 (= NeLisp capability 依存度)
+
+| class | 動作可否 | blocker | 推定件数 (= 1440 of) |
+|-------+----------+---------+----------------------|
+| A. 現行 NeLisp で動く | OK | なし | ~50-100 (= v0.2 v1 verified 16 module + 周辺) |
+| B. reader =?'= のみ blocker | =?'= patch 後 OK | NeLisp reader (Doc 73 Stage 8.4) | ~100-200 |
+| C. function-quote =#'macro= blocker | NeLisp reader 改修待ち | NeLisp reader / eval (Doc 73 / 77c) | ~200-400 |
+| D. autoload / dump 依存 | preloaded.el 機構待ち | NeLisp dump (Doc 75 frozen heap / Doc 81 image-baker) | ~400-600 |
+| E. 多重 blocker / C primitive 未実装 | 複合 | 複合 + Layer 1/2 substrate | ~300-500 |
+
+class B/C/D 件数は概算、§5.1 で実 audit 必要。
+
+* §4 blocker taxonomy + dev/nelisp/ mapping
+
+** 4.1 blocker #1: reader =?'=
+
+- 症状: =vendor/emacs-lisp/files.el:9041:49=、
+  =info.el:4485=、=woman.el:...= 等で "lex error after =?=" 多発
+- 短期 workaround: =?'= → =?\'= の 1-char patch (v0.2 v1 で 39ff46f
+  実施、revert)。pristine 破壊で reject
+- 真因解消: NeLisp Rust reader に =?'= = ASCII 39 apostrophe char literal
+  を直接受け入れる branch 追加
+- dev/nelisp/ mapping: *Doc 73 Stage 8.4 reader cfg-gate* (-1,679 Rust LOC、
+  Track A Phase B5 SHIPPED 後 dispatch unblock)。Doc 83 §3.3 milestone
+  table の "Doc 73 Stage 8.4" 行が gate
+
+** 4.2 blocker #2: function-quote =#'macro=
+
+- 症状: =#'macro-name= の形で macro symbol を function-position に
+  bind する慣用句が vendor easy-mmode.el line 447 等で使われる、
+  v0.2 v1 で 5e15b63 + 484a0ae の 2 site patch (revert)
+- 真因解消: NeLisp Rust reader + eval が =#'= prefix を quote の variant
+  として handle、macro symbol も function-quotable に
+- dev/nelisp/ mapping: *Doc 73 Phase 8 rust-reader-eval-purge* および
+  *Doc 77c sexp-abi-elisp-self-host*。Doc 67 phase7-stage3 special-forms
+  migration 配下の =function= form / =#'= reader entry も関係
+
+** 4.3 blocker #3: autoload-defs (= dump 相当の pre-load)
+
+- 症状: vendor の =autoload= 経由 function が "void-function" になる。
+  =cus-load.el= / =finder-inf.el= / =loaddefs.el= 等の pre-baked 巨大
+  =autoload= 宣言群を起動前に inject する path が NeLisp に無い
+- 真因解消: =preloaded.el= / =frozen heap image= 機構の整備
+- dev/nelisp/ mapping: *Doc 75 phase9 frozen heap* (-1,524 net Rust)
+  + *Doc 28 §3.7 autoload* + *Doc 81 image-baker*
+
+** 4.4 blocker #4: dump (= preloaded.el 機構)
+
+- 症状: GNU Emacs は =build_emacs= 時に =loadup.el= で大量 .el を
+  load → =dump-emacs-portable= で =emacs.pdmp= に焼く。NeLisp は dump
+  step 不在 = 毎起動 loadup を回す path 必要
+- 真因解消: image baker + frozen heap で同等の "pre-loaded state を
+  binary に焼く" 機構を pure-elisp で実装
+- dev/nelisp/ mapping: *Doc 81 image-baker* + *Doc 75 phase9 frozen heap*
+  + *Doc 98 stage-95-real-frozen-heap-baker*
+
+** 4.5 まとめ: dev/nelisp/ SHIPPED → vendor unlock 関係
+
+| dev/nelisp/ ship | unlocks vendor class | vendor el 増分見込 |
+|------------------+----------------------+--------------------|
+| Doc 73 Stage 8.4 reader cfg-gate | A → B | +100-200 module |
+| Doc 73 + 77c function-quote 受入 | B → C | +200-400 module |
+| Doc 75 Phase 9 + Doc 81 image-baker | C → D | +400-600 module |
+| 全 unlock 後 | D → E (= 残 long-tail) | 全 1440 ~80% カバー |
+
+E (= long-tail) は C primitive 未実装 や Layer 2 substrate gap が個別
+要因。Phase 5 self-host bootstrap close 直前まで残る。
+
+* §5 phased migration plan
+
+** 5.1 Phase 0 = vendor inventory audit (= 本 v2 着手前準備、1-2w)
+
+- 1440 vendor el を script で classify (= class A/B/C/D/E)
+- 各 file の =require= グラフを build、起動 chain で必要な順序を抽出
+- =loadup.el= 上から下まで walk して "host Emacs では何が load 順で要る
+  か" を baseline 化
+- 出力: =docs/design/03-vendor-inventory.csv= or =.el data table=
+
+** 5.2 Phase 1 = class A vendor 化 (= 既動作確認済 16 module、4-6w)
+
+*** 5.2.0 Phase 1 着手前: v0.2 v1 re-audit (= 10.5 確定)
+
+Phase 1 dispatch 前に 2026-05-09 から現在までの dev/nelisp/ Rust purge
+差分を audit:
+
+1. =git log --oneline 2026-05-09..HEAD= on dev/nelisp/ で SHIPPED 列挙
+2. v0.2 v1 verified 16 module の require chain と Rust purge touch API を
+   cross-reference
+3. drift module を =docs/design/03-vendor-audit-2026-05-17.org= に snapshot
+4. drift module は (a) Phase 1 scope 残し / (b) dev/nelisp/ feedback 後
+   再 verify 待ち / (c) Phase 2 以降に降格 のいずれかに分類
+
+*** 5.2.1 Phase 1 本体
+
+- v0.2 v1 で verified の 16 module を *scratch を削除せず* vendor 化:
+  - =nemacs-gtk-frontend.el= の eager require リストに vendor 16 module
+    を入れる (= v0.2 v1 と同 path)
+  - v0.1 scratch (= =emacs-fileio.el= 等 17 module) は *残す*、ただし
+    =require= 順を =(require 'files)= → fallback で =(unless (fboundp
+    'find-file) (require 'emacs-fileio))= の形に変更
+  - vendor 経路で動いた command 群を ERT で再検証 (= scratch ERT を
+    残置、vendor 経路用 ERT を別途追加)
+- 起動 verification suite (= §6) を Phase 1 内で立ち上げる、これが v2 の
+  re-engagement 安全装置
+- close gate:
+  - vendor 16 module 経由で v0.1 daily-driver M1-M4 用途 (= find-file /
+    save-buffer / dired / isearch / undo / help / eval / ielm /
+    shell-command / completion / project / org-cycle / org-todo /
+    org-capture / org-agenda / load-theme) が動作
+  - VMware Debian で再 verification pass (= v0.2 v1 で blocker 化した環境)
+  - ERT mirror (= host Emacs から拝借した case の一部) で >= 50 cases pass
+
+** 5.3 Phase 2 = class B vendor 化 (= reader =?'= 解消後、Doc 73 Stage 8.4 SHIPPED 依存)
+
+- dev/nelisp/ Doc 73 Stage 8.4 SHIPPED 待ち
+- 主要 target: =info.el= / =woman.el= / =cus-start.el= / =startup.el=
+  + reader =?'= に引っかかる他 ~100-200 module
+- close gate: 起動 verification suite + ERT mirror >= 200 cases pass
+
+** 5.4 Phase 3 = class C vendor 化 (= function-quote 解消後、Doc 73/77c 依存)
+
+- dev/nelisp/ Doc 73 残 + Doc 77c の function-quote 受入 SHIPPED 待ち
+- 主要 target: =easy-mmode.el= / =derived.el= / =define-derived-mode=
+  系 / =cl-generic.el= + 周辺 ~200-400 module
+- close gate: =define-derived-mode= 系の major mode 群が vendor 経由で
+  起動、ERT mirror >= 500 cases pass
+
+** 5.5 Phase 4 = class D vendor 化 (= autoload / dump 解消後、Doc 75/81 依存)
+
+- dev/nelisp/ Doc 75 Phase 9 frozen heap + Doc 81 image-baker SHIPPED 待ち
+- =loadup.el= 相当の起動 sequence を image bake で固定
+- 主要 target: =cus-load.el= / =finder-inf.el= / =loaddefs.el= 等の
+  pre-baked autoload group ~400-600 module
+- close gate: =loadup.el= 完走 (= guilemacs / rune と同 gate)、
+  ERT mirror >= 1000 cases pass
+
+** 5.6 Phase 5 = class E long-tail (= NeLisp Layer 1/2 完成後、Phase 5 self-host bootstrap と同期)
+
+- 残 ~300-500 module = C primitive 未実装 / Layer 2 substrate gap が
+  個別要因。Doc 01 §3.5 Phase 5 self-host bootstrap と同時 close
+- close gate: =bin/nelisp-emacs --batch -l loadup.el= が pure-elisp で完走、
+  =bin/nelisp-emacs= interactive で TUI session 全機能、
+  ERT mirror 全 cases pass (= host Emacs と同等)
+
+* §6 起動 verification suite design
+
+** 6.1 4 軸構成
+
+| 軸 | 目的 | 出力 | 採用元 |
+|----+------+------+--------|
+| A. ERT mirror | 本家 Emacs ERT case 走行 → pass/fail/skip 集計 | =test/ert-mirror-status.csv= | guilemacs |
+| B. property comparison | 同 form を nelisp-emacs と host Emacs に送り結果比較 | =test/elprop-results.csv= | rune |
+| C. loadup bootstrap | =loadup.el= chain を上から walk、どこで break するか追跡 | =test/loadup-walk.log= | guilemacs + rune |
+| D. smoke functional | Tetris / Snake / Dunnet / Eshell / IRC が起動 + 1 操作完走 | =test/smoke-functional.log= | guilemacs |
+
+** 6.2 軸 A: ERT mirror
+
+スコープ (= 10.3 確定):
+- *base*: daily-driver 関連 ~50-100 file を =vendor/emacs-tests/= に
+  curated vendor (= files-tests.el / simple-tests.el / isearch-tests.el /
+  dired-tests.el / org/*-tests.el / help-fns-tests.el / etc.)
+- *spot full check*: 要所 (= phase close / major release 取り込み後 /
+  weekly nightly) で host Emacs =test/lisp/= 全件 (~数千 case) を走らせ
+  pass% を計測
+
+実装:
+- nelisp-emacs binary で load → run → 結果集計
+- skip 条件 (= NeLisp blocker 既知) を =skip-when-blocker= macro で分類
+- 出力: csv で {file, test, status, blocker-class}
+- progress KPI (base scope): pass% (= goal Phase 1: ≥10%, Phase 2: ≥30%,
+  Phase 3: ≥50%, Phase 4: ≥80%, Phase 5: ≥95%)
+- progress KPI (full scope spot check): regression detection (= pass%
+  decrease > 5% で CI alert)
+
+** 6.3 軸 B: property comparison (= rune =assert_elprop!= 風)
+
+form 集生成 (= 10.4 確定): =scripts/extract-elprop-forms.el= で host Emacs
+=test/lisp/*-tests.el= の =should= form を auto-extract、pure form のみを
+filter。Phase 1 で ~500 form 生成、Phase 2+ で拡張。
+
+実装:
+- =test/elprop-forms-auto.el= に (id, form, expected, type) リスト
+- =bin/elprop-run= が:
+  1. host Emacs (=emacs --batch=) に form を投入 → 結果取得
+  2. nelisp-emacs binary に同 form 投入 → 結果取得
+  3. =equal= で比較、不一致なら diff 出力
+- form 例 (= 抽出元 ERT body): =(+ 1 2)=, =(mapcar #'1+ '(1 2 3))=,
+  =(let ((x 10)) (* x x))=, =(substring "hello" 1 3)=, ...
+- 出力: csv で {form-id, host-result, nelisp-result, match?}
+
+** 6.4 軸 C: loadup bootstrap walk
+
+- =vendor/emacs-lisp/loadup.el= を実 load せず static parse → file 依存
+  graph build
+- =bin/loadup-walker= が graph を上から順に =(load file)= 試行、
+  initial error の file 名 + error 種別を log
+- 出力: =loadup-walk.log= で "file X で symbol Y not bound" 等を抽出
+- progress KPI: chain 完走 file 数 (= goal Phase 1: ~50, Phase 5: 全)
+
+** 6.5 軸 D: smoke functional
+
+- 各 smoke は subprocess で =nelisp-emacs -nw -l <file> -f <fn>= 起動、
+  expect 出力を timeout 内に検出
+- 候補 (= guilemacs 同):
+  1. =tetris= = =M-x tetris= 起動 + 任意 key 1 操作 + quit
+  2. =snake= = 同様
+  3. =dunnet= = =M-x dunnet= 起動 + =go east= 1 step
+  4. =eshell= = =M-x eshell= 起動 + =ls= 実行
+  5. =org-agenda= = =org-agenda= 起動 + view dispatch
+- 出力: 各 smoke の pass/fail + 所要 ms
+
+** 6.6 CI integration
+
+- =Makefile= に =make verify-vendor= target、4 軸を順次 run
+- GitHub Actions で nightly + main push 時に走行
+- regression detection = pass% 減少 / smoke fail を CI で alert
+
+* §7 v0.1 scratch との共存戦略
+
+** 7.1 require 順序 規約
+
+vendor を *先*、scratch を *fallback*:
+
+#+begin_src elisp
+;; nemacs-gtk-frontend.el / init.el 等の中で:
+(condition-case err
+    (progn
+      (require 'files)            ; vendor files.el
+      (require 'simple)           ; vendor simple.el
+      (require 'dired))           ; vendor dired.el
+  (error
+    (message "vendor load failed: %s. fallback to scratch." err)
+    (require 'emacs-fileio)        ; v0.1 scratch
+    (require 'emacs-buffer-ui)
+    (require 'emacs-dired-min)))
+#+end_src
+
+** 7.2 fboundp 条件付き scratch defun
+
+scratch 側は vendor 同名関数を上書きしない:
+
+#+begin_src elisp
+;; emacs-fileio.el の中で:
+(unless (fboundp 'find-file)
+  (defun find-file (filename) ...))
+#+end_src
+
+= 既存 v0.1 scratch を全件この pattern に修正 (= =feedback_emacs_stub_
+unconditional_defun_clobber= の rule 適用拡張)
+
+** 7.3 scratch removal gate
+
+class A vendor 化 + 1 ヶ月 soak で regression 0 確認後、scratch 削除を許可:
+- 個別 module 単位で remove (= 1 commit = 1 module)
+- 削除前 1 週間は =message= で deprecation 警告
+- 削除コミットは ERT + smoke を緑で確認
+
+** 7.4 vendor patch tag (= =NELISP-EMACS-BOOTSTRAP=)
+
+vendor pristine が原則だが、blocker 解消前に短期 patch が必要な場合:
+- 該当行直前に =;; NELISP-EMACS-BOOTSTRAP: <reason>= comment を入れる
+- =scripts/audit-vendor-patches= で全 BOOTSTRAP tag を grep → list 出力
+- dev/nelisp/ で対応 blocker が SHIPPED したら patch を revert (= 自動 audit)
+- = rune の =RUNE-BOOTSTRAP= tag pattern を mirror
+
+* §8 close gate
+
+** 8.1 Phase 1 close (= class A vendor 化)
+
+| item | spec |
+|------+------|
+| vendor 16 module 起動 | nemacs-gtk binary 起動 → 全 16 module fboundp OK |
+| daily-driver use case 動作 | find-file / save-buffer / dired / isearch / org-cycle / org-todo / shell-command 等 v0.1 M1-M4 用途を vendor 経由で実機操作 |
+| ERT mirror | >= 50 cases pass |
+| property comparison | >= 100 form / >= 95% match |
+| loadup walk | >= 50 file load OK |
+| smoke | >= 1 / 5 pass (= eshell 等 1 つ立ち上がる) |
+| VMware Debian | v0.2 v1 で broke した環境で再 verification pass |
+
+** 8.2 Phase 2-4 close
+
+各 Phase の dev/nelisp/ blocker SHIPPED 後に re-engage、§5.3-5.5 の
+gate を順次満たす。
+
+** 8.3 Phase 5 close (= Doc 01 §3.5 + 本 doc §5.6 同期)
+
+- =bin/nelisp-emacs --batch -l loadup.el= 完走
+- =bin/nelisp-emacs= interactive で host Emacs 同等 session
+- ERT mirror >= 95% pass
+- smoke 5 / 5 pass
+- per-platform binary release (= Linux / macOS / Windows)
+
+* §9 dependencies
+
+** 9.1 dev/nelisp/ side (= blocker 解消 ship 順)
+
+| order | dev/nelisp/ doc | blocker | nelisp-emacs phase unlock |
+|-------+-----------------+---------+---------------------------|
+| 1 | Doc 73 Stage 8.4 reader cfg-gate | reader =?'= | Phase 2 (class B) |
+| 2 | Doc 73 + 77c function-quote | =#'macro= | Phase 3 (class C) |
+| 3 | Doc 75 Phase 9 frozen heap | autoload / dump | Phase 4 (class D) |
+| 4 | Doc 81 image-baker | image / preloaded | Phase 4 (class D) |
+| 5 | Doc 102 / 104 / 全 Rust purge | Rust コア削除完遂 | Phase 5 (class E) |
+
+** 9.2 nelisp-emacs side (= 本 doc 内 work)
+
+- =scripts/audit-vendor-classify.el= = Phase 0 class A-E 分類 audit
+- =scripts/refresh-vendor.sh= = git subtree pull wrapper (= 10.1 確定)
+- =scripts/extract-elprop-forms.el= = host ERT =should= form 抽出 (= 10.4 確定)
+- =scripts/audit-vendor-patches.sh= = =NELISP-EMACS-BOOTSTRAP= tag list 出力 (§7.4)
+- =scripts/audit-v0.2-v1-modules.el= = 2026-05-09 verified 16 module の re-verify (= 10.5 確定)
+- 起動 verification suite = =test/vendor/= ツリー + =Makefile= target =make verify-vendor=
+- =vendor/emacs-tests/= = host =test/lisp/= の daily-driver scope curated copy (10.3)
+- nemacs-gtk-frontend.el 拡張 (= eager require with fallback)
+- scratch 側を全件 =(unless (fboundp ...))= gate に修正
+
+** 9.3 anvil.el side (= tooling)
+
+- anvil-orchestrator codex 並列 dispatch (= Phase 1 16 module を並列に
+  ERT bundle 化)
+- anvil-bench で起動 verification の bench gate 監視
+
+* §10 resolved decisions (= 2026-05-17 user 確定)
+
+** 10.1 vendor storage: git subtree (squash flag)
+
+vendor/emacs-lisp/ = emacs-mirror emacs-30 branch の git subtree。半年毎
+major upgrade 時の workflow:
+
+#+begin_src bash
+git subtree pull \
+  --prefix=vendor/emacs-lisp \
+  https://github.com/emacs-mirror/emacs.git \
+  emacs-30 \
+  --squash \
+  -m "vendor: bump to emacs 30.x"
+#+end_src
+
+- squash flag で git history 上 1 commit / 1 update に圧縮 (= noise 削減)
+- patch は inline commit (= NELISP-EMACS-BOOTSTRAP tag で audit 可能、§7.4)
+- emacs-31 リリース時は =--prefix=vendor/emacs-lisp emacs-31= に切り替え
+- rune と同じ pull-from-emacs-mirror pattern
+
+scripts/refresh-vendor.sh = subtree pull の wrapper、conflict 時に
+patch reverify を半自動化。
+
+** 10.2 host Emacs version pin: 半年毎 major 上げ
+
+- 起点: 現在 vendor 取り込み済の Emacs 30.x (= 2026-05-17 baseline)
+- update cadence: ~半年毎、major release (30.1 → 30.2 → 31.x) に追従
+- minor patch (= 30.1.1 → 30.1.2 等) は必要時のみ (= bug fix が
+  vendor migration を blocker 化した場合)
+- update 後 always re-run §5.1 audit script + §6 verification suite で
+  regression detection
+
+** 10.3 ERT mirror スコープ: daily-driver 範囲 file 選択 (base) + 要所で全件
+
+- *base scope* (= Phase 1-4 各 close gate): host Emacs =test/lisp/= から
+  daily-driver 関連 file のみ import (~50-100 file)
+  - 例: =files-tests.el= / =simple-tests.el= / =isearch-tests.el= /
+    =dired-tests.el= / =org-tests.el= / =help-tests.el= / etc.
+- *spot full check*: 要所 (= phase ship 直前、major release 取り込み後、
+  四半期毎 nightly) で host Emacs =test/lisp/= 全件 (~数千 case) を走らせ
+  て pass% を計測、recess 検出
+- CI 設定: daily run = base scope、weekly nightly = full
+
+** 10.4 property comparison form 集: host Emacs ERT の =should= 抽出
+
+scripts/extract-elprop-forms.el で host Emacs =test/lisp/*-tests.el= を
+parse:
+
+#+begin_src elisp
+(defun extract-elprop-forms (file)
+  "Extract pure should-forms from host ERT test FILE."
+  ;; (should EXPR) → EXPR
+  ;; (should-equal A B) → (list :form A :expected B)
+  ;; (should-error EXPR :type 'TYPE) → (list :form EXPR :error TYPE)
+  ;; pure filter: no setq/save-excursion/with-temp-buffer/...
+  ...)
+#+end_src
+
+- pure form (= side-effect なし、buffer 状態に依存しない) のみを抽出
+- 出力 = =test/elprop-forms-auto.el= の (id, form, expected, type) リスト
+- ~500 form を Phase 1 で生成、Phase 2+ で再生成して拡張
+
+** 10.5 v0.2 v1 module 再 verification: 必須 audit
+
+Phase 1 着手前に *2026-05-09 verified 16 module を NeLisp 現 HEAD で
+再 audit*:
+
+- 2026-05-09 以降 dev/nelisp/ で SHIPPED された Rust purge を git log で 列挙
+- 各 SHIPPED が touch した API surface と 16 module の require chain を
+  cross-reference
+- behaviour drift が見つかった module は dev/nelisp/ に feedback (= issue or
+  Doc 03 注記)、Phase 1 scope に含めるか後送りか判断
+- audit 出力 = =docs/design/03-vendor-audit-2026-05-17.org= (= snapshot)
+
+* §11 revision log
+
+- v0 (2026-05-17): 初版 DRAFT、user 確認待ち。
+  guilemacs / rune 起動 test methodology を反映、
+  v0.2 v1 revert (95316e2) の 4 blocker を taxonomy 化、
+  dev/nelisp/ Doc 73/75/77c/81/102/104 と mapping。
+- v0.1 (2026-05-17): §10 open question 5 件 を user 確定で resolved decisions
+  に変換。git subtree (squash) / 半年毎 major 上げ / daily-driver scope
+  + 要所 full / =should= 抽出 / Phase 1 着手前 audit 必須。
+  §5.2.0 audit step / §6.2 spot full check / §6.3 form 生成 / §9.2 scripts
+  enumeration を追記。
