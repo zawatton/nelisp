@@ -95,6 +95,14 @@
      :source-var nelisp-cc-cell-ops--null-p-source
      :output "nelisp_cell_null_p.o"
      :requires-arch x86_64)
+    ;; Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 rewrite
+    ;; (= Group A foundation helper for env_mirror.rs).  Linux-x86_64
+    ;; only for the same reason as `nelisp-cc-recordp' (= aarch64
+    ;; record/vector-ref-ptr emit ships in a follow-up).
+    (nelisp-cc-mirror-lookup-entry
+     :source-var nelisp-cc-mirror-lookup-entry--source
+     :output "nelisp_mirror_lookup_entry.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

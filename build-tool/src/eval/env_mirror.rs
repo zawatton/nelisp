@@ -431,6 +431,37 @@ pub(crate) fn mirror_fnv1a(s: &str) -> u32 {
     h
 }
 
+/// Doc 111 §111.E Group C — C-callable FNV-1a wrapper for the
+/// Phase 47-compiled `mirror_lookup_entry' helper.  The elisp body
+/// emits an `(extern-call nl_mirror_fnv1a_sexp sym-ptr)' which lands
+/// here; we reach into the `Sexp::Symbol' / `Sexp::Str' payload, run
+/// the same Unicode-codepoint loop as [`mirror_fnv1a`], and return
+/// the hash as `i64' (= rax-shaped result so the elisp call site can
+/// feed it into the `(logand H (- COUNT 1))' index mask without an
+/// extra zero-extend).
+///
+/// The hash itself stays in Rust (= Group C "stay Rust" per
+/// Doc 111 §3.E) because the inner loop is performance-critical
+/// (called once per `defvar' / `boundp' / `fboundp' / `intern' /
+/// global ref) and the Phase 47 grammar does not yet have a
+/// Unicode-codepoint iterator.  Only the surrounding bucket walk
+/// moves to elisp.
+///
+/// # Safety
+/// - `sym' must be non-null, properly aligned, and point at an
+///   initialized `Sexp::Symbol(_)' or `Sexp::Str(_)' value.  Any
+///   other tag returns 0 (= the FNV-1a hash of the empty string is
+///   `0x811C9DC5', not 0, so this sentinel cannot collide with a
+///   legitimate empty-string hash and the elisp walker will simply
+///   fall through to the bucket lookup with idx 0 and miss).
+#[no_mangle]
+pub unsafe extern "C" fn nl_mirror_fnv1a_sexp(sym: *const Sexp) -> i64 {
+    match unsafe { &*sym } {
+        Sexp::Symbol(s) | Sexp::Str(s) => mirror_fnv1a(s) as i64,
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

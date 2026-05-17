@@ -96,6 +96,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Doc 111 §111.D — Cell read+write op probes (4 entries,
         // shared source file, one .o per op).
         "nelisp-cc-cell-ops.el",
+        // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 rewrite
+        // (= Group A read-path foundation, composed by 5 sibling
+        // helpers).  The bare `mirror_fnv1a' loop stays in Rust per
+        // §3.E Group C; this object calls it via the new
+        // `nl_mirror_fnv1a_sexp' extern.
+        "nelisp-cc-mirror-lookup-entry.el",
         // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
         "nelisp-cc-jit-arith.el",
         // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.

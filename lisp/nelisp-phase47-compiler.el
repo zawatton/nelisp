@@ -1862,18 +1862,46 @@ safe to use as the loop seed in the length walker."
 ;; ---- Doc 111 §111.B Record read+write ops emit ----
 
 (defun nelisp-phase47-compiler--emit-record-slot-ptr-core (ptr idx buf)
-  "Leave the raw `*const Sexp' for record slot IDX in rax."
+  "Leave the raw `*const Sexp' for record slot IDX in rax.
+
+Doc 111 §111.E #1 fix (two bugs uncovered by the first user of
+`record-slot-ref-ptr', = `mirror_lookup_entry'):
+
+  1. Per-Sexp slot stride was `nelisp-sexp--size' (= undefined
+     symbol); the canonical constant in `nelisp-sexp-layout.el' is
+     `--slot-size'.
+  2. The slots `Vec<Sexp>' data-pointer read used
+     `nelisp-nlrecord--offset-slots-vec' (= 32), which on the
+     pinned repo Rust toolchain is the Vec's `capacity' field, not
+     the data pointer.  The actual layout is `(capacity, ptr,
+     length)' (= same convention as `vector-ref-ptr-core' over
+     `NlVector'); the data pointer lives at offset `+40' inside
+     NlRecord (= `nelisp-nlrecord--offset-slots-capacity' — name
+     left from a pre-merge `(ptr, cap, len)' assumption that no
+     longer holds).
+
+Both bugs stayed dormant because the §111.B `recordp' probe only
+reads the tag byte and the §111.C `aref-vector' probe goes through
+the NlVector path which has its own correctly-named offset
+constants.  The first composer of `record-slot-ref-ptr'
+(= `mirror_lookup_entry') is the first caller to exercise this
+code, so the test there is the regression gate."
   (nelisp-phase47-compiler--emit-value ptr buf)
   (nelisp-asm-x86_64-push buf 'rax)
   (nelisp-phase47-compiler--emit-value idx buf)
   (nelisp-asm-x86_64-push buf 'rax)
   (nelisp-asm-x86_64-pop buf 'rax)
-  (nelisp-phase47-compiler--imul-rax-imm32 buf nelisp-sexp--size)
+  (nelisp-phase47-compiler--imul-rax-imm32 buf nelisp-sexp--slot-size)
   (nelisp-asm-x86_64-pop buf 'rdi)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'r10 'rdi nelisp-sexp--offset-payload)
+  ;; Read the Vec<Sexp>'s data pointer, which on the pinned toolchain
+  ;; lives at byte +40 inside NlRecord (= the `--offset-slots-capacity'
+  ;; constant; the name dates from a (ptr, cap, len) assumption that
+  ;; no longer matches actual layout).  See the comment in
+  ;; `--emit-vector-slot-ptr-core' for the matching NlVector reasoning.
   (nelisp-asm-x86_64-mov-reg-mem-disp8
-   buf 'r10 'r10 nelisp-nlrecord--offset-slots-vec)
+   buf 'r10 'r10 nelisp-nlrecord--offset-slots-capacity)
   (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10))
 
 (defun nelisp-phase47-compiler--emit-record-type-tag (node buf)

@@ -130,6 +130,22 @@ pub mod elisp_cc_spike {
         fn nelisp_cell_set_value(arg0: *const Sexp, val_ptr: *const Sexp);
         fn nelisp_cell_make(val_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_cell_null_p(arg0: *const Sexp) -> i64;
+        // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
+        // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
+        // Returns the `*const Sexp' of the matching symbol-entry
+        // Record (= the Sexp slot inside the bucket's (KEY . ENTRY)
+        // pair NlConsBox), or 0 on miss / empty mirror.
+        //
+        // Pre-conditions (= caller / dispatcher responsibility,
+        // mirror the Rust impl's early-`return None' arms):
+        //   mirror_ptr.tag = Sexp::Record (= globals_record).
+        //   mirror_ptr.slots[0].tag = Sexp::Record (= fast-hash-table).
+        //   ht.slots[0] = Sexp::Int (= bucket count, power of 2).
+        //   ht.slots[1] = Sexp::Vector (= buckets).
+        fn nelisp_mirror_lookup_entry(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+        ) -> i64;
         // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
         // swaps.  Defined in `lisp/nelisp-cc-jit-arith.el', wired to
         // `unified_fn_ptr' in `jit/bridge.rs::arith_link'.  These
@@ -325,6 +341,39 @@ pub mod elisp_cc_spike {
     /// - `arg0` must be non-null and point at `Sexp::Cell(NlCellRef)`.
     pub unsafe fn cell_null_p(arg0: *const Sexp) -> i64 {
         nelisp_cell_null_p(arg0)
+    }
+
+    /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.
+    ///
+    /// Walks the env-mirror fast-hash-table for `sym_ptr` (= a
+    /// `Sexp::Symbol(_)' / `Sexp::Str(_)') and returns the raw
+    /// `*const Sexp' of the matching symbol-entry Record, or 0 on
+    /// miss / empty mirror.  The returned pointer is *not* refcount-
+    /// bumped — it borrows the slot owned by the bucket's `(KEY .
+    /// ENTRY)` cons pair, so callers must clone (`nl_sexp_clone_into`)
+    /// before storing the result anywhere that outlives the mirror.
+    ///
+    /// Used by `tests/elisp_cc_mirror_lookup_entry_probe.rs' to drive
+    /// the §111.E #1 verification gate.  Production callers (= the
+    /// env_mirror.rs Rust impl + its 5 compose-on-it siblings) still
+    /// route through `Env::mirror_lookup_entry' — the extern wrapper
+    /// dispatch swap lands in a follow-up commit after all Group A/B
+    /// helpers ship.
+    ///
+    /// # Safety
+    /// - `mirror_ptr' must be non-null and point at a `Sexp::Record(_)'
+    ///   built by `Env::install_empty_mirror_rust_direct' (or its
+    ///   `mirror_install_entry' descendants).  The pre-conditions
+    ///   listed on the extern decl must hold.
+    /// - `sym_ptr' must be non-null and point at a `Sexp::Symbol(_)`
+    ///   or `Sexp::Str(_)`.
+    /// - The returned pointer is only valid while `*mirror_ptr` and
+    ///   its bucket chain remain unchanged.
+    pub unsafe fn mirror_lookup_entry(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+    ) -> *const Sexp {
+        nelisp_mirror_lookup_entry(mirror_ptr, sym_ptr) as *const Sexp
     }
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the
