@@ -492,6 +492,16 @@
      :source-var nelisp-cc-rc-inc--source
      :output "nelisp_rc_inc.o"
      :requires-arch x86_64)
+    ;; Doc 123 §123.B — second substrate elisp化 stage.  Single
+    ;; entry: `nelisp_rc_dec' = the refcount-dec twin of §123.A,
+    ;; pulled out of `build-tool/src/eval/rc_primitives.rs'
+    ;; (= `rc_dec_no_drop' + `bi_nl_rc_dec_strong' mutation half)
+    ;; using the §122.E `atomic-fetch-add' op with delta = -1
+    ;; (= fetch-sub semantics).  Same Linux-x86_64 gate as §123.A.
+    (nelisp-cc-rc-dec
+     :source-var nelisp-cc-rc-dec--source
+     :output "nelisp_rc_dec.o"
+     :requires-arch x86_64)
     ;; Doc 116 §116.A — pure-elisp Reader lexer.  Single manifest
     ;; entry; the source defconst is a `(seq DEFUN ...)' of ~20
     ;; mutually-recursive tail-call helpers and one public entry

@@ -185,6 +185,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // substrate gate is functional; §123.B-E sweep the remaining
         // rc primitive bodies onto the same pattern.
         "nelisp-cc-rc-inc.el",
+        // Doc 123 §123.B — second substrate elisp化 stage.  Single
+        // entry: `nelisp_rc_dec' = the refcount-dec twin of §123.A,
+        // pulled out of `build-tool/src/eval/rc_primitives.rs'
+        // (= `rc_dec_no_drop' + `bi_nl_rc_dec_strong' mutation half)
+        // using the §122.E `atomic-fetch-add' op with delta = -1
+        // (= fetch-sub semantics).  Dispatch swap lands in §123.F.
+        "nelisp-cc-rc-dec.el",
         // Doc 116 §116.A — pure-elisp Reader lexer.  Single source
         // file defining `nelisp_reader_lex_one' + ~20 tail-call
         // helpers; replaces the eventual deletion of

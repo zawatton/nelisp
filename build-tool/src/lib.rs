@@ -239,6 +239,10 @@ pub mod elisp_cc_spike {
         // Doc 123 §123.A — first substrate elisp化 of rc_primitives.rs.
         // Pure-elisp refcount-inc kernel via §122.E atomic-fetch-add.
         fn nelisp_rc_inc(box_ptr: *mut i64) -> i64;
+        // Doc 123 §123.B — second substrate elisp化 of rc_primitives.rs.
+        // Pure-elisp refcount-dec kernel via §122.E atomic-fetch-add
+        // with delta=-1 (= fetch-sub semantics).  Returns pre-sub i64.
+        fn nelisp_rc_dec(box_ptr: *mut i64) -> i64;
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
         // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
         // Returns the `*const Sexp' of the matching symbol-entry
@@ -975,6 +979,24 @@ pub mod elisp_cc_spike {
     /// Atomic-fetch-add at offset 64 (REFCOUNT_OFFSET).
     pub unsafe fn rc_inc(box_ptr: *mut i64) -> i64 {
         nelisp_rc_inc(box_ptr)
+    }
+
+    /// Doc 123 §123.B — pure-elisp `nelisp_rc_dec' kernel.
+    /// Atomic-fetch-add with delta=-1 at offset 64 (= fetch-sub
+    /// semantics; SeqCst).  Returns the *pre-sub* i64 refcount value;
+    /// callers apply `saturating_sub(1)' on the host side to get the
+    /// new non-negative count, mirroring the existing
+    /// `rc_primitives.rs::rc_dec_no_drop' contract.
+    ///
+    /// # Safety
+    /// `box_ptr' must be non-null and point at the base of a live
+    /// `NlConsBox' (= layout-pinned by `#[repr(C)]', refcount slot at
+    /// byte offset 64).  Caller is responsible for not triggering a
+    /// double-free when the resulting count hits 0 (= the same
+    /// "no-drop" contract Doc 79 v6 §4.2 articulates: teardown is the
+    /// elisp cycle collector's responsibility).
+    pub unsafe fn rc_dec(box_ptr: *mut i64) -> i64 {
+        nelisp_rc_dec(box_ptr)
     }
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.
