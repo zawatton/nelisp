@@ -264,19 +264,15 @@ pub mod elisp_cc_spike {
         // The Rust `impl Clone for NlConsBoxRef' wraps the return
         // into `Self { ptr, _marker }' in §124.F's sweep stage.
         fn nelisp_nlconsbox_clone(box_ptr: *mut i64) -> i64;
-        // Doc 124 §124.G — first Drop-half stage of the
-        // `nl*.rs::Clone/Drop' substrate elisp化.  NlConsBox Drop
-        // kernel: fetch-subs the refcount at offset 64 via §122.E
-        // `atomic-fetch-add' with delta = -1 (= §123.B semantics) and
-        // branches on `pre-sub == 1' into §125.A `dealloc-bytes' with
-        // the NlConsBox layout literal (72 bytes, 8-byte align) to
-        // free the box.  Both branches return rax = 1 sentinel.
-        // Interior car/cdr Sexp recursive Drop deferred to §124.L
-        // sweep stage (= PoC limitation, see kernel Commentary).  The
-        // Rust `impl Drop for NlConsBoxRef' body in
-        // `nlconsbox.rs:358-360' continues to use the
-        // `nlrc_drop_box!' macro until §124.F + §124.L swap.
+        // Doc 124 §124.G — first Drop-half stage.  NlConsBox Drop
+        // kernel: fetch-sub then conditional dealloc.
         fn nelisp_nlconsbox_drop(box_ptr: *mut i64) -> i64;
+        // Doc 124 §124.B-E — mechanical sibling Clone kernels.
+        // REFCOUNT_OFFSET = 24/32/56/24 respectively.
+        fn nelisp_nlvector_clone(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlcell_clone(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlrecord_clone(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlstr_clone(box_ptr: *mut i64) -> i64;
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
         // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
         // Returns the `*const Sexp' of the matching symbol-entry
@@ -1081,33 +1077,29 @@ pub mod elisp_cc_spike {
         nelisp_nlconsbox_clone(box_ptr)
     }
 
-    /// Doc 124 §124.G — pure-elisp `nelisp_nlconsbox_drop' kernel.
-    /// Fetch-subs the refcount at offset 64 (= REFCOUNT_OFFSET for
-    /// NlConsBox) via §122.E `atomic-fetch-add' with delta = -1, then
-    /// branches on `pre-sub == 1' into §125.A `dealloc-bytes' with
-    /// the NlConsBox layout literal (72 bytes / 8-byte align) to
-    /// free the box.  Returns rax = 1 sentinel on both branches.
-    ///
-    /// Known PoC limitation: this kernel does NOT recursively drop
-    /// the box's `car' / `cdr' Sexp payloads.  If the dropped box
-    /// holds nested `Sexp::Cons(NlConsBoxRef)' / `Sexp::Vector(...)' /
-    /// etc handles, those clones are leaked on the last drop.  The
-    /// production Rust `impl Drop for NlConsBoxRef'
-    /// (= `nlconsbox.rs:358-360' driving `nlrc_drop_box!') continues
-    /// to do the full recursive walk via `NLRC_DROP_TABLE'.  §124.L
-    /// sweep stage will lift the recursive walk into elisp once
-    /// §124.H-K sibling Drop kernels SHIP.
-    ///
-    /// # Safety
-    /// - `box_ptr' must point at a live `NlConsBox' with a positive
-    ///   refcount (= one this thread effectively "owns" the right to
-    ///   decrement).
-    /// - The slot must not be accessed after the call if the call
-    ///   freed the box (= pre-sub was 1).
-    /// - Concurrent drop of the same effective handle is UB; see the
-    ///   `nlconsbox.rs::rc_dec_raw' contract.
+    /// Doc 124 §124.G — pure-elisp NlConsBox Drop kernel.
     pub unsafe fn nlconsbox_drop(box_ptr: *mut i64) -> i64 {
         nelisp_nlconsbox_drop(box_ptr)
+    }
+
+    /// Doc 124 §124.B — NlVector Clone kernel (offset 24).
+    pub unsafe fn nlvector_clone(box_ptr: *mut i64) -> i64 {
+        nelisp_nlvector_clone(box_ptr)
+    }
+
+    /// Doc 124 §124.C — NlCell Clone kernel (offset 32).
+    pub unsafe fn nlcell_clone(box_ptr: *mut i64) -> i64 {
+        nelisp_nlcell_clone(box_ptr)
+    }
+
+    /// Doc 124 §124.D — NlRecord Clone kernel (offset 56).
+    pub unsafe fn nlrecord_clone(box_ptr: *mut i64) -> i64 {
+        nelisp_nlrecord_clone(box_ptr)
+    }
+
+    /// Doc 124 §124.E — NlStr Clone kernel (offset 24).
+    pub unsafe fn nlstr_clone(box_ptr: *mut i64) -> i64 {
+        nelisp_nlstr_clone(box_ptr)
     }
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.

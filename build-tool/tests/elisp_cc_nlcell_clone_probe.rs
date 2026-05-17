@@ -1,0 +1,130 @@
+//! Doc 124 §124.C probe — pure-elisp `nelisp_nlcell_clone' kernel.
+//!
+//! Mechanical port of §124.A's NlConsBox Clone probe to NlCell.
+//! Only difference: REFCOUNT_OFFSET = 32 instead of 64 (= NlCell
+//! holds one `Sexp' slot at offset 0 — half the value-payload of
+//! NlConsBox's `(car, cdr)' pair — so the refcount trails at +32).
+//!
+//! Test cases (≥ 3):
+//!   1. Clone single — refcount @ +32 must advance by 1 and the
+//!      returned pointer must equal the input.
+//!   2. Clone N times — slot must equal initial + N.
+//!   3. Concurrent clone from 2 threads × 10 000 iters — final slot
+//!      must equal 20 000 (= no lost updates under SeqCst).
+
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+
+use std::sync::atomic::{AtomicI64, Ordering};
+
+/// Layout-pinned struct matching `NlCell' for the probe:
+/// `#[repr(C)]' keeps `refcount' at byte offset 32 (= same offset
+/// as the production `NlCell' per the `offset_of!(NlCell, refcount)
+/// == size_of::<Sexp>()' assertion at `nlcell.rs:285').  We use
+/// `[u8; 32]' for the Sexp slot because the elisp body never reads
+/// the value bytes.
+#[repr(C)]
+struct ProbeBox {
+    value: [u8; 32],
+    refcount: AtomicI64,
+}
+
+impl ProbeBox {
+    fn new(initial: i64) -> Self {
+        ProbeBox {
+            value: [0; 32],
+            refcount: AtomicI64::new(initial),
+        }
+    }
+
+    fn as_box_ptr(&self) -> *mut i64 {
+        self as *const ProbeBox as *mut i64
+    }
+}
+
+// ---- Case 1: single clone — rc += 1 and return value == input ----
+
+#[test]
+fn nlcell_clone_single_increments_and_returns_input_ptr() {
+    assert_eq!(
+        std::mem::offset_of!(ProbeBox, refcount),
+        32,
+        "ProbeBox layout must mirror NlCell (= refcount at +32)"
+    );
+
+    let bx = ProbeBox::new(1);
+    let input_ptr = bx.as_box_ptr();
+    let returned_ptr = unsafe { nelisp_build_tool::elisp_cc_spike::nlcell_clone(input_ptr) };
+    assert_eq!(
+        returned_ptr as usize, input_ptr as usize,
+        "nelisp_nlcell_clone must return the *input* pointer unchanged"
+    );
+    assert_eq!(
+        bx.refcount.load(Ordering::SeqCst),
+        2,
+        "post-call refcount slot must be old + 1"
+    );
+}
+
+// ---- Case 2: N clones — rc advances by N ----
+
+#[test]
+fn nlcell_clone_n_times_count_equals_n_plus_initial() {
+    const INITIAL: i64 = 1;
+    const N: usize = 10;
+
+    let bx = ProbeBox::new(INITIAL);
+    let input_ptr = bx.as_box_ptr();
+    for i in 0..N {
+        let returned = unsafe { nelisp_build_tool::elisp_cc_spike::nlcell_clone(input_ptr) };
+        assert_eq!(
+            returned as usize, input_ptr as usize,
+            "iteration {i}: returned pointer must equal input (alias, not copy)"
+        );
+        assert_eq!(
+            bx.refcount.load(Ordering::SeqCst),
+            INITIAL + (i as i64) + 1,
+            "iteration {i}: slot must advance by exactly 1 per call"
+        );
+    }
+    assert_eq!(
+        bx.refcount.load(Ordering::SeqCst),
+        INITIAL + N as i64,
+        "N-call total: slot = INITIAL + N (= 11 here)"
+    );
+}
+
+// ---- Case 3: concurrent clone — atomic semantics ----
+
+#[test]
+fn nlcell_clone_concurrent_no_lost_updates() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let bx = Arc::new(ProbeBox::new(0));
+    const PER_THREAD: i64 = 10_000;
+
+    let base_usize = bx.as_box_ptr() as usize;
+    let bx_keep_alive = Arc::clone(&bx);
+
+    let t1 = thread::spawn(move || {
+        let p = base_usize as *mut i64;
+        for _ in 0..PER_THREAD {
+            let _ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlcell_clone(p) };
+        }
+    });
+    let t2 = thread::spawn(move || {
+        let p = base_usize as *mut i64;
+        for _ in 0..PER_THREAD {
+            let _ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlcell_clone(p) };
+        }
+    });
+
+    t1.join().expect("thread 1 panicked");
+    t2.join().expect("thread 2 panicked");
+
+    assert_eq!(
+        bx_keep_alive.refcount.load(Ordering::SeqCst),
+        2 * PER_THREAD,
+        "concurrent clone must converge to N1 + N2 (= no lost updates)"
+    );
+}

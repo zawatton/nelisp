@@ -210,17 +210,15 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // 123 §123.A's `atomic-fetch-add' at REFCOUNT_OFFSET = 64.
         // Drop half (§124.G-K) gated on Doc 125 alloc/dealloc grammar.
         "nelisp-cc-nlconsbox-clone.el",
-        // Doc 124 §124.G — first Drop-half stage of the
-        // `nl*.rs::Clone/Drop' substrate elisp化 chain.  Pairs §124.A's
-        // Clone kernel with the matched Drop body: `atomic-fetch-add'
-        // delta = -1 (= §123.B fetch-sub semantics) followed by an
-        // if-zero branch into §125.A `dealloc-bytes' with the
-        // NlConsBox layout literal (72/8).  Interior payload Drop
-        // (= recursive car/cdr Sexp walk) deferred to §124.L sweep
-        // stage per file Commentary.  §124.F + §124.L (= dispatch
-        // swap stages) replace the inline Rust `impl Drop' body in
-        // `nlconsbox.rs:358-360' once §124.H-K sibling PoCs land.
+        // Doc 124 §124.G — first Drop-half stage.
         "nelisp-cc-nlconsbox-drop.el",
+        // Doc 124 §124.B-E — mechanical sibling Clone kernels for the
+        // remaining 4 nl*.rs box types (NlVector / NlCell / NlRecord /
+        // NlStr).  REFCOUNT_OFFSET = 24 / 32 / 56 / 24 respectively.
+        "nelisp-cc-nlvector-clone.el",
+        "nelisp-cc-nlcell-clone.el",
+        "nelisp-cc-nlrecord-clone.el",
+        "nelisp-cc-nlstr-clone.el",
         // Doc 116 §116.A — pure-elisp Reader lexer.  Single source
         // file defining `nelisp_reader_lex_one' + ~20 tail-call
         // helpers; replaces the eventual deletion of
