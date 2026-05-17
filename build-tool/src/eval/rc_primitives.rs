@@ -50,31 +50,6 @@ use crate::eval::builtins::require_arity;
 use crate::eval::error::EvalError;
 use crate::eval::nlconsbox::NlConsBoxRef;
 use crate::eval::sexp::{Sexp, SEXP_TAG_CONS};
-use std::sync::atomic::Ordering;
-
-/// Decrement the strong refcount **without** triggering the
-/// drop-in-place + dealloc cascade.  Per Doc 79 v6 §4.2 articulation,
-/// `nl-rc-dec-strong' is "fetch_sub + return new count" only —
-/// teardown is the elisp cycle collector's job (= it explicitly calls
-/// `nl-gc-finalize' once it has confirmed every external reference
-/// is gone).  This decouples refcount accounting from object lifetime
-/// the way the Bacon-Rajan algorithm needs.
-///
-/// # Safety
-///
-/// `r' must point at a live `NlConsBox' (= some Sexp::Cons clone is
-/// still on the stack so `Drop' has not yet fired).  If the resulting
-/// count is 0 the box is *kept alive* for the cycle collector to
-/// finalize; an extra `nl-rc-inc-strong' may follow to lift the count
-/// back above 0 without re-allocating.
-unsafe fn rc_dec_no_drop(r: &NlConsBoxRef) -> usize {
-    // SAFETY: `r' is alive on entry per the function-level contract.
-    let raw = NlConsBoxRef::as_ptr(r);
-    let prev = (*raw).refcount.fetch_sub(1, Ordering::Release);
-    prev.saturating_sub(1)
-}
-
-
 
 /// Ensure the kind tag arg names a kind we currently support in the
 /// MVP.  Stage 5.3.b〜.e widen this gate as walk-children / dealloc
@@ -137,13 +112,23 @@ pub fn bi_nl_rc_dealloc(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 /// `(nl-rc-inc-strong HANDLE) -> nil`.  Bump the strong refcount of
 /// HANDLE's box by 1.  MVP: CONS only.
+///
+/// Doc 123 §123.F: body migrated to the pure-elisp `nelisp_rc_inc'
+/// kernel (= §122.E `atomic-fetch-add' + REFCOUNT_OFFSET = 64).  The
+/// Rust shim retains the Sexp unwrap / arity-error contract; the
+/// atomic-fetch-add itself runs in elisp.
 pub fn bi_nl_rc_inc_strong(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-rc-inc-strong", args, 1, Some(1))?;
     match &args[0] {
         Sexp::Cons(r) => {
-            // SAFETY: caller (= Layer 2 elisp / cycle collector) takes
-            // responsibility for the matching `nl-rc-dec-strong' call.
-            unsafe { NlConsBoxRef::rc_inc_raw(r) };
+            // SAFETY: `r' is alive on entry (= caller's Sexp::Cons
+            // handle holds the box).  The elisp kernel adds 64 to
+            // `box_ptr' internally to reach the refcount slot.  Pre-
+            // add i64 return is discarded (= Sexp surface is Nil).
+            let box_ptr = NlConsBoxRef::as_ptr(r) as *mut i64;
+            unsafe {
+                let _ = crate::elisp_cc_spike::rc_inc(box_ptr);
+            }
             Ok(Sexp::Nil)
         }
         other => Err(EvalError::WrongType {
@@ -158,23 +143,32 @@ pub fn bi_nl_rc_inc_strong(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// elisp cycle collector is responsible for dealloc on count = 0
 /// (= it calls `nl-gc-finalize' when ready).  MVP: CONS only.
 ///
-/// Track L pattern: refcount mutation goes through `rc_dec_no_drop'
-/// which uses a per-box typed pointer at the call site (= the macro
-/// `nlrc_drop_box!' is NOT invoked from this primitive).  A future
-/// non-CONS kind with a different trailer offset thus cannot silently
-/// corrupt the count via this codepath.
+/// Doc 123 §123.F: body migrated to the pure-elisp `nelisp_rc_dec'
+/// kernel (= §122.E `atomic-fetch-add' with delta=-1).  The kernel
+/// returns the *pre-sub* i64; the Rust shim applies the
+/// `saturating_sub(1)' that the previous `rc_dec_no_drop' helper
+/// performed inline so the Sexp surface still reports the *new*
+/// count (= 0 floor preserved).  Track L pattern is preserved: the
+/// elisp kernel uses the box's REFCOUNT_OFFSET = 64 constant, not a
+/// generic trailer offset, so future non-CONS kinds with different
+/// layouts cannot silently corrupt the count via this codepath.
 pub fn bi_nl_rc_dec_strong(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-rc-dec-strong", args, 1, Some(1))?;
     match &args[0] {
         Sexp::Cons(r) => {
             // SAFETY: `r' is alive because the caller's Sexp::Cons
-            // handle (= `args[0]') is on the stack.  We must NOT
-            // trigger the box's destructor here even if the count
-            // hits 0, because the outer Sexp::Cons would then double-
-            // free on its own Drop.  `rc_dec_no_drop' enforces the
-            // no-teardown contract.
-            let new = unsafe { rc_dec_no_drop(r) };
-            Ok(Sexp::Int(new as i64))
+            // handle (= `args[0]') is on the stack.  The kernel does
+            // a single `atomic-fetch-add' delta=-1 — the outer
+            // Sexp::Cons Drop still controls box teardown, matching
+            // the pre-§123.F no-auto-free contract.
+            let box_ptr = NlConsBoxRef::as_ptr(r) as *mut i64;
+            let prev = unsafe { crate::elisp_cc_spike::rc_dec(box_ptr) };
+            // saturating_sub at the i64/usize boundary: prev was
+            // loaded from a non-negative atomic so it cannot be
+            // negative.  prev=0 saturates to 0 (= matches the
+            // previous `rc_dec_no_drop' contract).
+            let new = if prev > 0 { (prev - 1) as i64 } else { 0 };
+            Ok(Sexp::Int(new))
         }
         other => Err(EvalError::WrongType {
             expected: "boxed Sexp (nl-rc-dec-strong arg)".into(),
@@ -184,12 +178,25 @@ pub fn bi_nl_rc_dec_strong(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 /// `(nl-rc-strong-count HANDLE) -> Int`.  Read the current strong
-/// refcount.  `Acquire' load (= synchronizes with prior `Release'
-/// decrements).  MVP: CONS only.
+/// refcount.  MVP: CONS only.
+///
+/// Doc 123 §123.F: body migrated to the pure-elisp
+/// `nelisp_rc_strong_count' kernel (= §122.E `ptr-read-u64' at
+/// REFCOUNT_OFFSET = 64).  Per §123.C risk note, the elisp body uses
+/// `ptr-read-u64' with no explicit ordering (= compiler defaults are
+/// sufficient for a read-only load of an atomic slot that no writer
+/// is racing with under the cycle collector's coordination).
 pub fn bi_nl_rc_strong_count(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-rc-strong-count", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Cons(r) => Ok(Sexp::Int(NlConsBoxRef::strong_count(r) as i64)),
+        Sexp::Cons(r) => {
+            // SAFETY: `r' is alive on entry (= caller's Sexp::Cons
+            // handle holds the box).  The elisp kernel adds 64 to
+            // `box_ptr' internally to reach the refcount slot.
+            let box_ptr = NlConsBoxRef::as_ptr(r) as *const u8;
+            let count = unsafe { crate::elisp_cc_spike::rc_strong_count(box_ptr) };
+            Ok(Sexp::Int(count))
+        }
         other => Err(EvalError::WrongType {
             expected: "boxed Sexp (nl-rc-strong-count arg)".into(),
             got: other.clone(),
@@ -201,9 +208,19 @@ pub fn bi_nl_rc_strong_count(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// constant) of HANDLE.  Works on every Sexp variant since the tag
 /// is always at offset 0; cycle collector uses this to decide which
 /// per-kind walker to invoke.
+///
+/// Doc 123 §123.F: body migrated to the pure-elisp `nelisp_rc_kind'
+/// kernel (= §122.E `ptr-read-u8' at offset 0 of the outer `Sexp'
+/// enum's `#[repr(C, u8)]' discriminant).
 pub fn bi_nl_rc_kind(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-rc-kind", args, 1, Some(1))?;
-    Ok(Sexp::Int(args[0].tag() as i64))
+    // SAFETY: `&args[0]' is a valid `&Sexp' for the call's lifetime,
+    // so casting it to `*const u8' and reading offset 0 (= the
+    // `#[repr(C, u8)]' discriminant byte) is sound — same operation
+    // the previous `args[0].tag()' performed under the hood.
+    let sexp_ptr = &args[0] as *const Sexp as *const u8;
+    let tag = unsafe { crate::elisp_cc_spike::rc_kind(sexp_ptr) };
+    Ok(Sexp::Int(tag))
 }
 
 /// `(nl-rc-payload-ptr HANDLE) -> Int`.  Return the underlying box

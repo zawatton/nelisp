@@ -4,7 +4,8 @@
 
 * Status
 
-- *State*: DRAFT 2026-05-18 — §123.A ships alongside this DRAFT.
+- *State*: DRAFT 2026-05-18 — §123.A/B/C ships, §123.F dispatch
+  sweep SHIPPED 2026-05-18 (= 4 `bi_nl_*' bodies migrated).
 - *Parent*: Doc 122.E (= atomic + raw-mem grammar ops, SHIPPED main
   =38be9c7f=).  §122.E is the substrate gate; without
   `atomic-fetch-add' + `ptr-read-u64' / `ptr-write-u64' the rc body
@@ -188,6 +189,50 @@ simplest one as proof of concept.
   after §123.D; §123.E completes the file deletion once Doc 125
   ships its alloc primitives.
 
+** §2.6 §123.F — dispatch sweep (Rust algorithmic bodies → elisp kernels)
+
+- *SHIPPED 2026-05-18*: swaps the Rust algorithmic bodies of the 4
+  `bi_nl_*' primitives whose elisp kernels SHIPPED in §123.A-C for
+  thin Phase 47 dispatches.  This is where Rust LOC actually
+  disappears — §123.A-C only landed the kernels + probes alongside
+  the existing Rust bodies.
+- Swapped primitives:
+  - `bi_nl_rc_inc_strong' → `crate::elisp_cc_spike::rc_inc' (§123.A
+    kernel).  Pre-add i64 return discarded (= Sexp surface stays
+    Nil).
+  - `bi_nl_rc_dec_strong' → `crate::elisp_cc_spike::rc_dec' (§123.B
+    kernel).  Pre-sub i64 returned by the kernel; the Rust shim
+    applies `saturating_sub(1)' that the deleted `rc_dec_no_drop'
+    helper performed inline so the Sexp surface still reports the
+    *new* count (= 0 floor preserved).
+  - `bi_nl_rc_strong_count' → `crate::elisp_cc_spike::rc_strong_count'
+    (§123.C kernel).
+  - `bi_nl_rc_kind' → `crate::elisp_cc_spike::rc_kind' (§123.C
+    kernel).
+- *Deleted helper*: `rc_dec_no_drop' free fn (= the
+  `fetch_sub(1, Release) + saturating_sub' inline helper).  Only
+  caller was `bi_nl_rc_dec_strong' itself; grep across `build-tool/
+  src/' confirms no external callers.
+- *Kept*: `NlConsBoxRef::rc_inc_raw' (method, NOT a free fn) —
+  also used by `cons_primitives.rs:113'.  The elisp dispatch in
+  `bi_nl_rc_inc_strong' uses `NlConsBoxRef::as_ptr' + the elisp
+  kernel directly instead of this method, but the method survives
+  for the cons-primitive caller.
+- *Verification*:
+  - All 10 existing `eval::rc_primitives::tests::*' pass unchanged
+    (= behavior preserved at the Sexp surface).
+  - 4 elisp kernel probes (`elisp_cc_rc_{inc,dec,kind,strong_count}_probe')
+    pass unchanged.
+  - `cargo test --release --lib': 733 passed (= baseline maintained).
+  - `cargo test --release --tests -p nelisp-build-tool': 1048 passed
+    (= above 1006 baseline).
+- *LOC delta*: `rc_primitives.rs' 464 → 481 (= +17 net, but: ~25 Rust
+  algorithmic lines deleted vs. ~42 lines of dispatch + ample
+  inline doc-comments documenting the §123.F migration).  The
+  Doc 99/100/101 swap pattern documents the *kernel* in elisp and
+  the *contract* in the Rust shim; the doc-overhead is paid once,
+  Rust algorithmic surface area is gone.
+
 * §3 Stage order
 
 | Stage  | Depends on            | Ships after            |
@@ -197,6 +242,7 @@ simplest one as proof of concept.
 | §123.C | §122.E                | parallel with §123.B   |
 | §123.D | §123.A + §122.E       | §123.A + §123.C        |
 | §123.E | Doc 125 (= alloc op)  | Doc 125 SHIPPED        |
+| §123.F | §123.A/B/C SHIPPED    | (SHIPPED 2026-05-18)   |
 
 §123.A SHIPS with this DRAFT to validate the substrate elisp化
 pattern is functional.  §123.B-D are independent feat branches
