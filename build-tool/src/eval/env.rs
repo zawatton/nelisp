@@ -26,17 +26,17 @@ pub struct SymbolEntry {
 /// Write-through cell — captured-closure `setq' mutates the originating
 /// let-binding's slot (= layout-pinned NlCellRef).
 pub type FrameCell = crate::eval::nlcell::NlCellRef;
-pub type Frame = HashMap<String, FrameCell>;
 
 /// Runtime environment: lexical frame stack + recursion guard +
 /// extern-builtin registry + elisp-side globals mirror + Stage 7.4.c
 /// apply takeover flags.  Doc 102 Phase 2.b Step E removed the legacy
 /// `globals: HashMap<String, SymbolEntry>` field — the canonical
 /// globals state is the elisp `nelisp-env' record reachable via
-/// `globals_record' + `mirror_*' accessors.
+/// `globals_record' + `mirror_*' accessors.  Doc 104 Stage 3.e removed
+/// the legacy `frames: Vec<HashMap<String, FrameCell>>' field — the
+/// canonical lexical scope stack is the elisp `nelisp-lexframe-stack'
+/// record reachable via `frames_record' + `frame_*_rust_direct'.
 pub struct Env {
-    /// Innermost frame is last.
-    pub frames: Vec<Frame>,
     pub max_recursion: u32,
     pub current_recursion: u32,
     pub extern_builtins: HashMap<String, ExternBuiltin>,
@@ -68,7 +68,6 @@ impl Env {
     /// adding a field touches one place (Doc 102 Phase 6 option a).
     fn fresh(max_recursion: u32) -> Self {
         Env {
-            frames: Vec::new(),
             max_recursion,
             current_recursion: 0,
             extern_builtins: HashMap::new(),
@@ -1308,8 +1307,6 @@ mod tests {
                        "mirror depth wrong after pop #{}", i);
         }
         assert_eq!(frames_record_depth(&env), 0);
-        // Stage 3.d invariant — Vec stays empty post-bootstrap.
-        assert!(env.frames.is_empty(), "Vec was written despite Stage 3.d retiring its writes");
     }
 
     #[test]

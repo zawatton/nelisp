@@ -25,7 +25,7 @@ pub mod sexp;
 pub mod sexp_abi_assert;
 pub mod special_forms;
 
-pub use env::{Env, Frame, SymbolEntry};
+pub use env::{Env, SymbolEntry};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 
