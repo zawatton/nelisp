@@ -103,8 +103,6 @@ pub fn install_builtins(env: &mut Env) {
         "nl-rc-inc-strong", "nl-rc-dec-strong", "nl-rc-strong-count",
         "nl-rc-kind", "nl-rc-payload-ptr",
         "nl-gc-walk-children", "nl-gc-buffered-decs", "nl-gc-finalize",
-        // dlsym bridge.
-        "nelisp-cc--dlsym-resolve",
         "nl-fact-i64",
     ];
     for n in names {
@@ -168,8 +166,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--write-stderr-line" => bi_write_stderr_line(args),
         // ---- self-process stdio ----
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
-        // ---- dlsym bridge ----
-        "nelisp-cc--dlsym-resolve" => super::dlsym_bridge::bi_dlsym_resolve(args),
         // ---- FFI primitives (libffi-backed) ----
         "nl-ffi-call" => super::ffi::nl_ffi_call(args),
         "nl-ffi-malloc" => super::ffi::nl_ffi_malloc(args),

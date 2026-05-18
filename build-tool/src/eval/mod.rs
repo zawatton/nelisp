@@ -5,7 +5,6 @@
 
 pub mod builtins;
 pub mod cons_primitives;
-pub mod dlsym_bridge;
 pub mod env_helpers;
 pub mod env_shim;
 pub mod error;
