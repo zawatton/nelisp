@@ -527,6 +527,15 @@
      :source-var nelisp-cc-jit-cons-setcdr--source
      :output "nelisp_jit_cons_setcdr.o"
      :requires-arch x86_64)
+    ;; `nl_jit_cons_make' -- last jit/cons.rs trampoline swap.  Uses the
+    ;; `cons-make' Phase 47 opcode to alloc a fresh NlConsBox and
+    ;; raw-copy *a / *b into box->car / box->cdr, then writes
+    ;; Sexp::Cons(box) into *out; returns i64 = 0 (TRAMPOLINE_OK).
+    ;; Linux-x86_64 only -- same arch gate as the SS120.C siblings.
+    (nelisp-cc-jit-cons-make
+     :source-var nelisp-cc-jit-cons-make--source
+     :output "nl_jit_cons_make.o"
+     :requires-arch x86_64)
     ;; `nl_cons_car_ptr' / `nl_cons_cdr_ptr' — narrow slot-pointer
     ;; helpers used by `nelisp_jit_cons_car' / `nelisp_jit_cons_cdr'
     ;; via `extern-call'.  Replaced from Rust `jit/cons.rs'.
@@ -880,6 +889,10 @@
     (nelisp-cc-jit-type-of
      :source-var nelisp-cc-jit-type-of--source
      :output "nl_jit_type_of.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-record-type-tag-ptr
+     :source-var nelisp-cc-jit-record-type-tag-ptr--source
+     :output "nl_record_type_tag_ptr.o"
      :requires-arch x86_64)
     (nelisp-cc-jit-sxhash
      :source-var nelisp-cc-jit-sxhash--source

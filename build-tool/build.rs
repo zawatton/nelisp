@@ -203,6 +203,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (`cons_car' / `_cdr' / `_setcar' / `_setcdr'; `_make' stays
         // Rust per blocker note in `jit/cons.rs').
         "nelisp-cc-jit-cons.el",
+        // `nl_jit_cons_make' — last jit/cons.rs trampoline swap.
+        // Rust body deleted; `cons-make' Phase 47 opcode replaces it.
+        "nelisp-cc-jit-cons-make.el",
         // `nl_cons_car_ptr' / `nl_cons_cdr_ptr' — narrow slot-pointer
         // helpers used by the §120.C cons trampolines via `extern-call'.
         // Replaced from Rust `jit/cons.rs' (2 function bodies deleted).
