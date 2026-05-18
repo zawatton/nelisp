@@ -22,8 +22,8 @@
 ;;   2. exit-with-status = configurable code, exit(2) only
 ;;   3. argc-printer     = SysV AMD64 argv-stack unpack
 ;;
-;; The orchestrator is freestanding — not wired into nelisp-baker
-;; STDLIB_FILES.  A future "Doc 97 Sexp source compiler" would
+;; The orchestrator is freestanding — not wired into the production
+;; STDLIB load.  A future "Doc 97 Sexp source compiler" would
 ;; supply ASM-FN values that lower Sexp source through Doc 92's
 ;; macro assembler before calling the orchestrator; for Doc 96, the
 ;; three demos hard-code their ASM-FN to call Doc 94's crt0 helpers

@@ -12,9 +12,7 @@
 ;; as `nelisp-cc-mirror-set-value-or-insert.el' (see that file for
 ;; the scratch-vec layout + algorithm) but the hit-path overwrites
 ;; all four symbol-entry slots (= value / function / plist / constant)
-;; in a single 4-call sequence.  Used by `intern_constant' and the
-;; image baker (= `iterative_bake_one' / `encode_v3' relocated to
-;; `bin/nelisp-baker.rs' per Doc 126.E).
+;; in a single 4-call sequence.  Used by `intern_constant'.
 ;;
 ;; For this wrapper: scratch slots 7/8/9/10 hold the four caller-
 ;; supplied entry slot Sexps (= value / function / plist / constant),

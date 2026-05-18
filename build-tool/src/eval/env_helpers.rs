@@ -91,9 +91,7 @@ impl Env {
 
     /// Full symbol-entry installer (value + function + plist + constant).
     /// Hit-path overwrites all 4 slots; miss-path auto-vivifies (Doc
-    /// 119 §119.A).  Used by image decode + `intern_constant'.
-    /// `pub' (not `pub(crate)') so the `image-baker'-feature-gated
-    /// `bin/nelisp-baker.rs' bin (= separate crate) can call it.
+    /// 119 §119.A).  Used by `intern_constant'.
     pub fn mirror_install_entry(
         &mut self,
         name: &str,
@@ -161,11 +159,10 @@ impl Env {
     }
 
     /// Walk every bucket of the mirror and invoke `callback(name,
-    /// entry)' for each live symbol-entry.  Baker-only (replaces
-    /// `env.globals.iter()').  Callback receives a `NlRecordRef'
-    /// (= refcount-bumped clone) so it may read all four slots.
-    /// Doc 130 (2026-05-18) — ungated to keep `mirror_snapshot_globals'
-    /// compilable on default features (integration test binary uses it).
+    /// entry)' for each live symbol-entry.  Callback receives a
+    /// `NlRecordRef' (= refcount-bumped clone) so it may read all
+    /// four slots.  Backs `mirror_snapshot_globals' (integration-
+    /// test only consumer post-baker-retirement).
     pub(crate) fn mirror_iter_entries<F>(&self, mut callback: F)
     where
         F: FnMut(&str, &crate::eval::nlrecord::NlRecordRef),
@@ -195,10 +192,10 @@ impl Env {
         }
     }
 
-    /// Snapshot the elisp mirror as a `HashMap<String, SymbolEntry>'
-    /// so the baker can diff before / after eval'ing a stdlib `.el'.
-    /// Baker-only — called by `iterative_bake_one' + `encode_v3' in
-    /// `bin/nelisp-baker.rs'.
+    /// Snapshot the elisp mirror as a `HashMap<String, SymbolEntry>'.
+    /// Integration-test only post-baker-retirement (see
+    /// `tests/eval_integration.rs').  Kept `pub' so the integration
+    /// test binary in the separate `tests/' crate can reach it.
     pub fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
         let mut out: HashMap<String, SymbolEntry> = HashMap::new();
         let unbound = self.unbound_marker.clone();
@@ -232,7 +229,7 @@ impl Env {
     /// a Rust-defined sentinel `Sexp::Symbol("nelisp--unbound-marker")';
     /// STDLIB's defvar of the same name will overwrite the post-decode
     /// value, after which `install_globals_record' refreshes in-place
-    /// sentinels.  `pub' so `bin/nelisp-baker.rs' can call it.
+    /// sentinels.
     pub fn install_empty_mirror_rust_direct(&mut self) {
         const BUCKET_COUNT: usize = 1024;
         // Sentinel for absent slots — replaced post-decode by the
@@ -248,43 +245,6 @@ impl Env {
             vec![ht_record, Sexp::Nil, Sexp::Nil],
         );
         self.install_empty_frames_record_rust_direct();
-    }
-
-    /// Fast read from the elisp env mirror via Rust-direct
-    /// `Sexp::Record' walk.  Returns the symbol-entry record's
-    /// `NlRecordRef' handle, or None if absent.  Layout:
-    ///   globals_record = Sexp::Record(`nelisp-env')
-    ///     slots[0] = Sexp::Record(`fast-hash-table')
-    ///       slots[0] = Sexp::Int (= bucket count, power-of-2)
-    ///       slots[1] = Sexp::Vector (= buckets, each elt an alist)
-    ///       slots[2] = Sexp::Int (= entry count)
-    ///   Bucket alist cell: (Sexp::Cons (Sexp::Str . Sexp::Record(`symbol-entry')))
-    ///   Symbol entry slots: [value, function, plist, constant]
-    #[allow(dead_code)] // thin wrapper; callers dispatch direct to Phase 47.
-    pub(crate) fn mirror_lookup_entry(
-        env_record: &Sexp,
-        name: &str,
-    ) -> Option<crate::eval::nlrecord::NlRecordRef> {
-        if !matches!(env_record, Sexp::Record(_)) {
-            return None;
-        }
-        let sym = Sexp::Symbol(name.into());
-        let entry_ptr = unsafe {
-            crate::elisp_cc_spike::mirror_lookup_entry(
-                env_record as *const Sexp,
-                &sym as *const Sexp,
-            )
-        };
-        if entry_ptr.is_null() {
-            return None;
-        }
-        // SAFETY: returned slot is owned by the bucket's `NlConsBox'
-        // pair and stays live as long as `*env_record' is unchanged.
-        let entry_sexp: &Sexp = unsafe { &*entry_ptr };
-        match entry_sexp {
-            Sexp::Record(r) => Some(r.clone()),
-            _ => None,
-        }
     }
 
     /// Value-cell read.  Returns `self.unbound_marker' on miss

@@ -47,8 +47,8 @@
 ;;   ...            .rela.text     (optional, not in segment)
 ;;   ...            Shdr[0..n]     (section header table)
 ;;
-;; The module is freestanding — not yet wired into nelisp-baker
-;; STDLIB_FILES (= integration deferred per Doc 91 §8.1).
+;; The module is freestanding — not yet wired into the production
+;; STDLIB load (= integration deferred per Doc 91 §8.1).
 
 ;;; Code:
 

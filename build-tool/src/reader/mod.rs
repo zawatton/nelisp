@@ -128,8 +128,8 @@ enum ElispParseOutcome {
 /// result slot, per-depth working slots, and in-flight intermediates
 /// without bumping inner-box refcounts; letting Rust drop normally
 /// would double-free those shared boxes.  Leaked memory is reclaimed
-/// by process exit (test runs) or kept short-lived (image-baker /
-/// dev paths).  A future refcount-aware cons-make retires the leak.
+/// by process exit (test runs) or kept short-lived (dev paths).  A
+/// future refcount-aware cons-make retires the leak.
 struct ElispReadState {
     /// Sexp::Str source (= owns the input bytes for the call).
     src: Sexp,

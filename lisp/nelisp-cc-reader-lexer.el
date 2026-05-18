@@ -11,8 +11,9 @@
 ;; Doc 116 §116.A — pure-elisp Phase 47 implementation of the
 ;; tokenizer state machine in `build-tool/src/reader/lexer.rs'
 ;; (~885 LOC Rust → ~400 LOC elisp source).  The classical Lisp
-;; self-host milestone: NeLisp's image-baker dev tool no longer
-;; needs Rust-side reader code to tokenize the `.el' source it bakes.
+;; self-host milestone: NeLisp's boot path is the pure-elisp
+;; reader (Doc 126.B) — no Rust-side reader code in the production
+;; eval-boot loop.
 ;;
 ;; ABI shape (= one token per call; caller drives the loop):
 ;;

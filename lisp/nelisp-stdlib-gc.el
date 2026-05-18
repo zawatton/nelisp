@@ -638,9 +638,8 @@ diff for non-cycle-capable kinds.  Pure elisp, 0 Rust delta."
 ;; Phase C closing stage.  Doc 79 §5.5 articulates a 3-axis bench that
 ;; runs against a real `nelisp' standalone binary (= cons-heavy /
 ;; vector-heavy / cycle-heavy throughput, baseline-relative).  That
-;; spec depends on the standalone runtime + image-baker pipeline,
-;; neither of which is reachable from host Emacs (= Doc 78 / Doc 47
-;; phase 6 prerequisites).
+;; spec depends on the standalone runtime, which is not reachable from
+;; host Emacs (= Doc 78 / Doc 47 phase 6 prerequisites).
 ;;
 ;; What IS reachable from host Emacs — and what the user prompt spells
 ;; out as the deliverable — is the *correctness* axis of the gate: do

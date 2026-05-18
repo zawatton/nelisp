@@ -85,7 +85,7 @@
 ;; Labels emitted for if/while/cond/and/or are stamped with a parse-
 ;; time unique id so pass-1 and pass-2 see identical label names.
 ;;
-;; Not wired into nelisp-baker.
+;; Not wired into the production STDLIB load.
 
 ;;; Code:
 

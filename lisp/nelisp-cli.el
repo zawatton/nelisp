@@ -46,12 +46,7 @@ constant before the elisp `nelisp-cli-main' dispatch runs.")
        nelisp eval EXPR                 # evaluate EXPR and print the result
        nelisp -l FILE                   # load FILE and print the last result
        nelisp exec FILE                 # load FILE silently (no final-value print)
-       nelisp -                         # read from stdin and print the last result
-
-Note: image manipulation (compile-image / eval-image) lives in the
-dev-tooling `nelisp-baker' binary behind the `image-baker' feature
-(= `make bake-images' / `cargo run --bin nelisp-baker --features
-image-baker')."
+       nelisp -                         # read from stdin and print the last result"
   "USAGE banner — adapted verbatim from the pre-Doc-128 Rust const.")
 
 (defun nelisp--cli-print-error (msg)

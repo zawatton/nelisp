@@ -97,9 +97,8 @@ impl Env {
     /// `eval(form, env)' per top-level STDLIB form.  `.el' sources are
     /// the canonical artifact (= 純 elisp 化 the only metric).  The
     /// pre-126.B NELIMG v3 `.image' frozen-heap fast path was retired
-    /// here; encode/decode helpers remain under the `image-baker'
-    /// feature for the Doc 95 §95.e cross-impl byte-identity gate
-    /// only.  `NELISP_EVAL_BOOT_TRACE=1' prints per-form load progress.
+    /// (Doc 126.B-E removed the image module + baker bin entirely).
+    /// `NELISP_EVAL_BOOT_TRACE=1' prints per-form load progress.
     pub fn new_global() -> Self {
         // STDLIB load order — see each `.el' header for rationale.
         const STDLIB_FILES: &[(&str, &str)] = &[
@@ -196,7 +195,8 @@ impl Env {
         env
     }
 
-    /// Empty env (no built-ins).  Tests + image-baker round-trip only.
+    /// Empty env (no built-ins).  Integration tests only (see
+    /// `tests/eval_integration.rs::env_empty_has_no_builtins').
     pub fn empty() -> Self {
         Env::fresh(256)
     }
@@ -209,9 +209,9 @@ impl Env {
         self.mirror_set_value("nelisp--unbound-marker", unbound);
     }
 
-    /// Baker accumulator env (built-ins + env_shim installed, no STDLIB).
-    /// Used by `iterative_bake_one' in `bin/nelisp-baker.rs' (Doc 126.E
-    /// — formerly `image::iterative_bake_one').
+    /// Built-ins + env_shim installed, no STDLIB.  Used by the
+    /// `mirror_*' direct-write tests in this file (Doc 104 Stage 3.b)
+    /// where STDLIB load would dwarf the mirror probe under test.
     pub fn new_global_no_stdlib() -> Self {
         Env::install_stage0(1024)
     }

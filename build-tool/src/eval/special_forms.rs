@@ -5,7 +5,7 @@
 use super::env::Env;
 use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
-use super::{eval, eval_arg_list, list_elements};
+use super::{eval, list_elements};
 
 /// Dispatch the 13 Tier 1 irreducible special forms.  Tier 2 forms
 /// (`cond' / `when' / `defvar' / `dolist' / etc.) are elisp macros
@@ -510,7 +510,3 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn _eval_args(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
-    eval_arg_list(args, env)
-}

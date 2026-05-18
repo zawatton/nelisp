@@ -35,19 +35,6 @@ compile_error!(
 
 pub mod bridge;
 pub mod eval;
-// Doc 126.C (2026-05-18) — NELIMG v3 frozen-heap image format retired
-// from the production boot path (= Doc 126.B switched `Env::new_global'
-// to `reader::read_all + eval').
-//
-// Doc 126.E (2026-05-18) — `pub mod image' (= 1,567 LOC of encoder /
-// decoder / round-trip tests) deleted from the lib surface entirely
-// and relocated into `src/bin/nelisp-baker.rs' as bin-private items
-// (the bin is the sole consumer for the §95.e cross-impl byte-
-// identity verifier; `required-features = ["image-baker"]' in
-// `Cargo.toml' keeps it opt-in).  Round-trip tests live inline in the
-// bin as `#[cfg(test)] mod tests' and run under `cargo test
-// --features image-baker'.  Per repo policy (= pure-elisp化, Rust LOC
-// 削減 only metric), this is a -1,567 LOC carve-out from the lib.
 // Phase 5 Stage 5.0 / Doc 77b Stage b.4 — Cranelift JIT.  Lowered
 // primitives flow through elisp wrappers in
 // `lisp/nelisp-jit-strategy.el' that call JIT entries via the
@@ -60,12 +47,12 @@ pub mod eval;
 // Keeping this `pub(crate)' lets `UnifiedJit' field types stay
 // `pub(super)' without `private_interfaces' warnings.
 pub(crate) mod jit;
-// Reader (Doc 73 §2.4 / Doc 98 §98.3 / Doc 126.A §126.A).  Doc 126.A
-// (2026-05-18) re-promoted the reader to production: `Env::new_global'
-// dispatches to `reader::read_all' + `eval' per top-level STDLIB form
-// when `NELISP_EVAL_BOOT=1' is set, as the first step toward retiring
-// the entire NELIMG image subsystem (Doc 126.B-D).  The reader's pre-
-// 126.A role of supplying `image-baker' / ERT remains intact.
+// Reader (Doc 73 §2.4 / Doc 98 §98.3 / Doc 126.A §126.A).  Doc 126.B
+// (2026-05-18) promoted the reader to the canonical boot path:
+// `Env::new_global' iterates STDLIB `.el' sources with `reader::read_all'
+// + `eval' per top-level form (= the NELIMG `.image' frozen-heap fast
+// path was retired in Doc 126.B-E, and the encoder/decoder + baker bin
+// were removed in the 099355ea cleanup commit).
 pub mod reader;
 
 // Doc 99 §99.B spike — C-callable function compiled from elisp by the
