@@ -1,5 +1,4 @@
-//! S-expression value type — eval-owned since Phase 8 Stage 8.1 (Doc 73).
-//! See `reader/mod.rs' for the parser and `eval/mod.rs' for the evaluator.
+//! Eval-owned s-expression value type.
 
 use crate::eval::nlboolvector::NlBoolVectorRef;
 use crate::eval::nlcell::NlCellRef;
@@ -10,9 +9,8 @@ use crate::eval::nlstr::NlStrRef;
 use crate::eval::nlvector::NlVectorRef;
 use std::fmt;
 
-/// A parsed s-expression.  `#[repr(C, u8)]` puts the tag byte at offset 0
-/// + 8-byte-aligned payload (JIT reads the tag inline; `SEXP_TAG_*` are
-/// stable — variants must only be appended).
+/// Parsed s-expression. `#[repr(C, u8)]` keeps the tag at offset 0; `SEXP_TAG_*`
+/// are ABI and variants must only be appended.
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C, u8)]
 pub enum Sexp {
@@ -22,20 +20,20 @@ pub enum Sexp {
     Float(f64),
     Symbol(String),
     Str(String),
-    /// Mutable string buffer (= `make-string' / `aset'-able), refcount-shared.
+    /// Mutable string buffer.
     MutStr(NlStrRef),
     Cons(NlConsBoxRef),
     Vector(NlVectorRef),
-    /// Maps integer codepoints to Sexp (syntax/category/case/display tables).
+    /// Integer codepoint map.
     CharTable(NlCharTableRef),
     BoolVector(NlBoolVectorRef),
-    /// Write-through cell for let-binding closure `setq' (Env::capture_lexical).
+    /// Write-through lexical cell.
     Cell(NlCellRef),
-    /// Host emacs `record' / `cl-defstruct': slot 0 = type_tag, rest = user slots.
+    /// Host `record' / `cl-defstruct`.
     Record(NlRecordRef),
 }
 
-// Tag constants — mirror enum declaration order; JIT depends on stability.
+// Tag constants mirror enum declaration order.
 
 pub const SEXP_TAG_NIL: u8 = 0;
 pub const SEXP_TAG_T: u8 = 1;
@@ -51,19 +49,17 @@ pub const SEXP_TAG_BOOL_VECTOR: u8 = 10;
 pub const SEXP_TAG_CELL: u8 = 11;
 pub const SEXP_TAG_RECORD: u8 = 12;
 
-/// Read the discriminant byte (offset 0).  Matches one of `SEXP_TAG_*'.
+/// Read the discriminant byte.
 #[inline]
 pub fn variant_tag(s: &Sexp) -> u8 {
-    // SAFETY: `#[repr(C, u8)]' puts the discriminant as a `u8' at
-    // offset 0; reading through `*const u8' is sound.
+    // SAFETY: `#[repr(C, u8)]` stores the discriminant as a `u8` at offset 0.
     unsafe { *(s as *const Sexp as *const u8) }
 }
 
-/// Byte offset of the boxed `NonNull<NlXxx>` handle within a Sexp.
+/// Byte offset of the boxed handle within a `Sexp`.
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
 
-/// Emit `unsafe fn $name(&self) -> *const $ty` loading the box ptr at
-/// offset 8.  Caller must match tag; wrong-variant access is UB.
+/// Emit `unsafe fn $name(&self) -> *const $ty` loading the box ptr at offset 8.
 macro_rules! sexp_box_ptr_accessor {
     ($name:ident, $ty:ty) => {
         #[inline]
@@ -76,8 +72,7 @@ macro_rules! sexp_box_ptr_accessor {
 }
 
 impl Sexp {
-    /// Read the discriminant byte (offset 0); spelled as a method for
-    /// trampoline ergonomics.  Equivalent to [`variant_tag`].
+    /// Equivalent to [`variant_tag`].
     #[inline]
     pub fn tag(&self) -> u8 {
         variant_tag(self)
@@ -92,8 +87,7 @@ impl Sexp {
     sexp_box_ptr_accessor!(char_table_box_ptr, crate::eval::nlchartable::NlCharTable);
 }
 
-// Compile-time check: every NlXxxRef must be pointer-sized (8 bytes
-// on 64-bit) so the payload offset stays at 8.
+// Every NlXxxRef must stay pointer-sized so payload remains at offset 8.
 const _: () = {
     use std::mem::size_of;
     assert!(size_of::<crate::eval::nlconsbox::NlConsBoxRef>() == 8);
@@ -105,8 +99,7 @@ const _: () = {
     assert!(size_of::<crate::eval::nlchartable::NlCharTableRef>() == 8);
 };
 
-/// Doc 111 §111.C — refcount-aware Sexp slot copy.  Clones `*src` and
-/// writes the result to `*dst` without dropping prior contents.
+/// Clone `*src` into `*dst` without dropping prior contents.
 ///
 /// # Safety
 /// - `src` must point at an initialized `Sexp` valid for the call.
@@ -118,26 +111,24 @@ pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) {
     unsafe { core::ptr::write(dst, cloned); }
 }
 
-/// Inner storage for [`Sexp::CharTable`].  Sparse linear-scan; typical
-/// entry count < 256 (ASCII range).  Parent chain holds
-/// [`NlCharTableRef`] handles for refcount-tracked self-reference.
+/// Inner storage for [`Sexp::CharTable`].
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
 pub struct CharTableInner {
-    /// Subtype symbol (e.g., `syntax-table', `display-table').
+    /// Subtype symbol.
     pub subtype: Sexp,
-    /// Default value returned for chars not in `entries`.
+    /// Default value.
     pub default_val: Sexp,
-    /// Sparse char → value map.  Linear scan on lookup.
+    /// Sparse char -> value map.
     pub entries: Vec<(i64, Sexp)>,
-    /// Optional parent — lookups falling through `entries' consult it.
+    /// Optional parent.
     pub parent: Option<NlCharTableRef>,
-    /// Per-table extra slots (= `char-table-extra-slot').
+    /// Extra slots.
     pub extra: Vec<Sexp>,
 }
 
 impl Sexp {
-    /// Build a proper list from a slice of values (empty → `Nil`).
+    /// Build a proper list from a slice.
     pub fn list_from(items: &[Sexp]) -> Sexp {
         let mut acc = Sexp::Nil;
         for item in items.iter().rev() {
@@ -146,22 +137,22 @@ impl Sexp {
         acc
     }
 
-    /// Build a cons cell — single layout-pinned [`NlConsBoxRef`].
+    /// Build a cons cell.
     pub fn cons(car: Sexp, cdr: Sexp) -> Sexp {
         Sexp::Cons(NlConsBoxRef::new(car, cdr))
     }
 
-    /// Build a vector Sexp from an owned `Vec<Sexp>`.
+    /// Build a vector.
     pub fn vector(items: Vec<Sexp>) -> Sexp {
         Sexp::Vector(NlVectorRef::new(items))
     }
 
-    /// Build a mutable string Sexp (= `make-string' aset-able backing).
+    /// Build a mutable string.
     pub fn mut_str(s: impl Into<String>) -> Sexp {
         Sexp::MutStr(NlStrRef::new(s.into()))
     }
 
-    /// Build an empty char-table with SUBTYPE / INIT default.
+    /// Build an empty char-table.
     pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
         Sexp::CharTable(NlCharTableRef::new(CharTableInner {
             subtype,
@@ -172,12 +163,12 @@ impl Sexp {
         }))
     }
 
-    /// Build a bool-vector of LEN bits all initialised to INIT.
+    /// Build a bool-vector.
     pub fn bool_vector(len: usize, init: bool) -> Sexp {
         Sexp::BoolVector(NlBoolVectorRef::new(vec![init; len]))
     }
 
-    /// Return Str/MutStr content as owned String, else None.
+    /// Return `Str`/`MutStr` content.
     pub fn as_string_owned(&self) -> Option<String> {
         match self {
             Sexp::Str(s) => Some(s.clone()),
@@ -186,12 +177,12 @@ impl Sexp {
         }
     }
 
-    /// Build a record with TYPE_TAG and INIT slot vector.
+    /// Build a record.
     pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp {
         Sexp::Record(NlRecordRef::new(type_tag, init))
     }
 
-    /// Wrap a form in `(quote <form>)` (= desugaring of `'x`).
+    /// Wrap in `(quote <form>)`.
     pub fn quote(inner: Sexp) -> Sexp {
         Sexp::list_from(&[Sexp::Symbol("quote".to_string()), inner])
     }
@@ -211,15 +202,13 @@ impl Sexp {
         Sexp::list_from(&[Sexp::Symbol("comma-at".to_string()), inner])
     }
 
-    /// Wrap a form in `(function <form>)` (= desugaring of `#'x`).
+    /// Wrap in `(function <form>)`.
     pub fn function(inner: Sexp) -> Sexp {
         Sexp::list_from(&[Sexp::Symbol("function".to_string()), inner])
     }
 }
 
-/// Pretty-printer used by debug + tests.  Not the evaluator's `prin1`;
-/// intentionally lossy where Elisp would diverge (e.g., no round-trip
-/// guarantee for floats with no fractional part).
+/// Pretty-printer used by debug and tests.
 pub fn fmt_sexp(s: &Sexp) -> String {
     let mut out = String::new();
     write_sexp(&mut out, s);
@@ -232,7 +221,7 @@ impl fmt::Display for Sexp {
     }
 }
 
-/// Push `"text"` with backslash escapes for `"`/`\`/`\n`/`\t`/`\r`.
+/// Push `"text"` with standard escapes.
 fn write_quoted_string(out: &mut String, text: &str) {
     out.push('"');
     for ch in text.chars() {
@@ -257,7 +246,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         Sexp::T => out.push('t'),
         Sexp::Int(n) => out.push_str(&n.to_string()),
         Sexp::Float(x) => {
-            // Keep a decimal point so round-trip does not coerce to Int.
+            // Keep a decimal point so the printed form stays float-like.
             let s = format!("{}", x);
             if s.contains('.') || s.contains('e') || s.contains('E') || s == "inf" || s == "-inf"
                 || s == "NaN"
@@ -287,7 +276,6 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             out.push(']');
         }
         Sexp::CharTable(rc) => {
-            // Compact printer — emit subtype, default, populated count.
             let inner = &rc.inner;
             out.push_str("#<char-table");
             if !matches!(inner.subtype, Sexp::Nil) {
@@ -305,8 +293,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             out.push_str("#&");
             out.push_str(&v.len().to_string());
             out.push('"');
-            // Pack 8 bits per char (= upstream bool-vector printer shape,
-            // human inspection only — no round-trip guarantee).
+            // Pack 8 bits per char.
             for chunk in v.chunks(8) {
                 let mut byte = 0u8;
                 for (i, &b) in chunk.iter().enumerate() {
@@ -322,10 +309,8 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
             out.push('"');
         }
-        // Cell — print inner value transparently.
         Sexp::Cell(c) => write_sexp(out, &c.value),
         Sexp::Record(rec) => {
-            // Round-trippable positional shape `#s(TYPE V0 V1 ...)'.
             out.push_str("#s(");
             write_sexp(out, &rec.type_tag);
             for v in rec.slots.iter() {
@@ -354,7 +339,7 @@ fn write_reader_macro(out: &mut String, s: &Sexp) -> bool {
     true
 }
 
-/// Recognise `(SYMBOL ARG)' 2-element list; return cloned (TAG, ARG).
+/// Recognize `(SYMBOL ARG)` and return cloned `(tag, arg)`.
 fn list_tag_and_arg(s: &Sexp) -> Option<(String, Sexp)> {
     match s {
         Sexp::Cons(b) => match (&b.car, &b.cdr) {
@@ -367,8 +352,7 @@ fn list_tag_and_arg(s: &Sexp) -> Option<(String, Sexp)> {
     }
 }
 
-/// Walk a (possibly improper) list, printing body without enclosing
-/// parens.  Non-`Nil` final cdr renders as ` . tail'.
+/// Print a proper or dotted list body without outer parens.
 fn write_list_body(out: &mut String, s: &Sexp) {
     let mut cur: Sexp = s.clone();
     let mut first = true;

@@ -1,8 +1,5 @@
-// Frozen Sexp ABI assertions — compile-time CI gate against layout
-// drift.  Source of truth is `docs/arch/sexp-abi.md`; elisp constants
-// in `lisp/nelisp-sexp-layout.el` must match the values below.
-// `pub' is for the `sexp-abi-emit' driver (`make sexp-abi-check')
-// only; the `const _: ()` assertions run unconditionally.
+// Compile-time Sexp ABI assertions. Elisp constants in
+// `lisp/nelisp-sexp-layout.el` must match these values.
 
 use crate::eval::sexp::{
     Sexp, SEXP_PAYLOAD_OFFSET, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CELL,
@@ -11,9 +8,7 @@ use crate::eval::sexp::{
     SEXP_TAG_VECTOR,
 };
 
-// ---------------------------------------------------------------------------
-// Tag byte values — match `lisp/nelisp-sexp-layout.el' (`nelisp-sexp--tag-*').
-// ---------------------------------------------------------------------------
+// Tag bytes.
 
 const _: () = assert!(SEXP_TAG_NIL == 0);
 const _: () = assert!(SEXP_TAG_T == 1);
@@ -29,40 +24,25 @@ const _: () = assert!(SEXP_TAG_BOOL_VECTOR == 10);
 const _: () = assert!(SEXP_TAG_CELL == 11);
 const _: () = assert!(SEXP_TAG_RECORD == 12);
 
-// ---------------------------------------------------------------------------
-// Layout offsets — match `nelisp-sexp--offset-*' and `nelisp-sexp--slot-size'.
-// ---------------------------------------------------------------------------
+// Layout offsets.
 
 const _: () = assert!(SEXP_PAYLOAD_OFFSET == 8);
 const _: () = assert!(std::mem::size_of::<Sexp>() == 32);
 const _: () = assert!(std::mem::align_of::<Sexp>() == 8);
 
-// ---------------------------------------------------------------------------
-// NlConsBox struct field offsets.  Match `nelisp-nlconsbox--offset-*'
-// in `lisp/nelisp-sexp-layout.el'.  Layout pinned by `#[repr(C)]' in
-// `build-tool/src/eval/nlconsbox.rs'.
-// ---------------------------------------------------------------------------
+// `NlConsBox` field offsets.
 
 const _: () = assert!(std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, car) == 0);
 const _: () = assert!(std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, cdr) == 32);
 const _: () = assert!(std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, refcount) == 64);
 const _: () = assert!(std::mem::size_of::<crate::eval::nlconsbox::NlConsBox>() == 72);
 
-// ---------------------------------------------------------------------------
-// Rust String header within Symbol / Str slots — (capacity, ptr,
-// length) starting at SEXP_PAYLOAD_OFFSET (= 8).  String's internal
-// fields are not public so we assert total size = 24; the runtime
-// driver (`sexp-abi-emit') verifies layout via a probe-built String.
-// ---------------------------------------------------------------------------
+// Rust `String` header within `Symbol` / `Str` payloads.
 
 const _: () = assert!(std::mem::size_of::<String>() == 24);
 const _: () = assert!(std::mem::align_of::<String>() == 8);
 
-// ---------------------------------------------------------------------------
-// NlRecord / NlVector / NlCell struct field offsets — match
-// `nelisp-nlrecord--*', `nelisp-nlvector--*', `nelisp-nlcell--*' in
-// `lisp/nelisp-sexp-layout.el'.
-// ---------------------------------------------------------------------------
+// `NlRecord` / `NlVector` / `NlCell` field offsets.
 
 const _: () = assert!(std::mem::offset_of!(crate::eval::nlrecord::NlRecord, type_tag) == 0);
 const _: () = assert!(std::mem::offset_of!(crate::eval::nlrecord::NlRecord, slots) == 32);
@@ -77,13 +57,9 @@ const _: () = assert!(std::mem::offset_of!(crate::eval::nlcell::NlCell, value) =
 const _: () = assert!(std::mem::offset_of!(crate::eval::nlcell::NlCell, refcount) == 32);
 const _: () = assert!(std::mem::size_of::<crate::eval::nlcell::NlCell>() == 40);
 
-// ---------------------------------------------------------------------------
-// Public exports for the `sexp-abi-emit' driver.
-// ---------------------------------------------------------------------------
+// Public exports for `sexp-abi-emit`.
 
-/// Layout entries exposed to the `make sexp-abi-check' diff driver.
-/// Order matches `nelisp-sexp--abi-export' in
-/// `lisp/nelisp-sexp-layout.el' — keep them in lockstep.
+/// Layout entries for `sexp-abi-emit`; order matches `nelisp-sexp--abi-export`.
 pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("tag-nil", SEXP_TAG_NIL as i64),
     ("tag-t", SEXP_TAG_T as i64),
@@ -186,4 +162,3 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
         std::mem::size_of::<crate::eval::nlcell::NlCell>() as i64,
     ),
 ];
-

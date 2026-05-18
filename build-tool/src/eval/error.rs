@@ -1,16 +1,10 @@
-//! Evaluator error type (Doc 44 §3.3, Doc 86 §86.2 elisp-side mirror
-//! in `lisp/nelisp-stdlib-error.el').  `condition-case' unwinds via
-//! `Result<_, EvalError>'; [`EvalError::error_tag`] returns the Elisp
-//! symbol a clause would catch on.  Read-side errors live here too
-//! since the reader is dev-tooling and the production runtime must
-//! reach `EvalError::Read'.
+//! Evaluator error type mirrored by `lisp/nelisp-stdlib-error.el`.
 
 use std::fmt;
 
 use super::sexp::Sexp;
 
-/// Source position, 1-indexed line + UTF-8-byte column.  Elisp side:
-/// `(LINE . COL)' cons via `nelisp--make-source-pos'.
+/// Source position as 1-indexed line and UTF-8 byte column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourcePos {
     pub line: u32,
@@ -23,8 +17,7 @@ impl fmt::Display for SourcePos {
     }
 }
 
-/// Reader-side failure.  Surfaced through [`EvalError::Read`] so the
-/// elisp `condition-case' on `invalid-read-syntax' catches it.
+/// Reader-side failure surfaced through [`EvalError::Read`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReadError {
     Lex { msg: String, pos: SourcePos },
@@ -62,40 +55,37 @@ impl fmt::Display for ReadError {
 
 impl std::error::Error for ReadError {}
 
-/// Evaluator failure modes.  `condition-case' pattern-matches via
-/// [`EvalError::error_tag`].  Conditions / parents / messages mirrored
-/// in `lisp/nelisp-stdlib-error.el' (Doc 86 §86.2).
+/// Evaluator failure modes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
-    /// `void-variable'.
+    /// `void-variable`.
     UnboundVariable(String),
-    /// `void-function'.
+    /// `void-function`.
     UnboundFunction(String),
-    /// `wrong-type-argument'.
+    /// `wrong-type-argument`.
     WrongType { expected: String, got: Sexp },
-    /// `wrong-number-of-arguments'.
+    /// `wrong-number-of-arguments`.
     WrongNumberOfArguments { function: String, expected: String, got: usize },
-    /// `arith-error'.
+    /// `arith-error`.
     ArithError(String),
-    /// User `(signal 'TAG DATA)' for non-canonical tags.  `error_tag'
-    /// returns `tag', `signal_data' returns `data' verbatim.
+    /// User `(signal 'TAG DATA)`.
     UserError { tag: String, data: Sexp },
-    /// `no-catch' — `(throw TAG VALUE)' off the catch stack.
+    /// `no-catch` for `(throw TAG VALUE)` off the catch stack.
     UncaughtThrow { tag: Sexp, value: Sexp },
-    /// `setting-constant'.
+    /// `setting-constant`.
     SettingConstant(String),
-    /// `error' — bootstrap reader/eval hits a deferred construct.
+    /// `error` for deferred bootstrap constructs.
     NotImplemented(String),
-    /// `invalid-read-syntax' — read-side surfaced via `From<ReadError>'.
+    /// `invalid-read-syntax`.
     Read(ReadError),
-    /// `quit' — distinct from `error' (Doc 51 Track M).
+    /// `quit`.
     Quit,
-    /// `error' (catch-all) — evaluator bug, never `panic!'.
+    /// `error` catch-all for evaluator bugs.
     Internal(String),
 }
 
 impl EvalError {
-    /// Elisp symbol name a `condition-case' clause would catch on.
+    /// Elisp symbol name a `condition-case` clause would catch on.
     pub fn error_tag(&self) -> &str {
         match self {
             EvalError::UnboundVariable(_) => "void-variable",
@@ -141,8 +131,7 @@ impl EvalError {
     }
 }
 
-/// `condition-case' clause-tag matches actual error-tag.  Mirrored on
-/// the elisp side as `condition-of-p' in `nelisp-stdlib-error.el'.
+/// `condition-case` clause-tag match.
 pub fn is_error_subtype(clause_tag: &str, actual_tag: &str) -> bool {
     clause_tag == actual_tag
         || clause_tag == "t"
