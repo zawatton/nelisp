@@ -97,6 +97,73 @@ pub unsafe extern "C" fn nl_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) {
     unsafe { *p = val as u8 };
 }
 
+// ---- Doc 122 §122.J — struct-by-value width-N raw mem ops ----
+//
+// `nl_ptr_read_u16` / `_write_u16` / `_read_u32` / `_write_u32' fill in
+// the SIZE ∈ {2, 4} gap between the existing `_u8' and `_u64' families.
+// Used by the §122.J `struct-field-set' / `struct-field-get' grammar
+// helpers to marshal libc structs whose fields are mixed-width
+// integers (`winsize.ws_row' = u16, `pollfd.fd' = i32, etc.).  All
+// writes use unaligned little-endian semantics (= `ptr::write_unaligned')
+// since libc struct fields are not guaranteed to be naturally aligned
+// inside a raw byte buffer.
+
+/// Raw `u16` read at `ptr + offset` (bytes), zero-extended to `i64`.
+///
+/// # Safety
+/// - `ptr + offset` must be non-null and point at 2 bytes of readable
+///   initialized memory.  No alignment requirement (uses
+///   `read_unaligned`).
+/// - No concurrent non-atomic writes.
+#[no_mangle]
+pub unsafe extern "C" fn nl_ptr_read_u16(ptr: *const u8, offset: i64) -> i64 {
+    let p = (ptr as usize).wrapping_add(offset as usize) as *const u16;
+    // SAFETY: caller-asserted readability.  `read_unaligned' tolerates
+    // any pointer alignment, matching libc-struct-field semantics.
+    let v = unsafe { std::ptr::read_unaligned(p) };
+    v as i64
+}
+
+/// Raw `u16` write at `ptr + offset` (bytes), low 16 bits of `val`.
+///
+/// # Safety
+/// - `ptr + offset` must be non-null and point at 2 bytes of writable
+///   memory.  No alignment requirement.
+/// - No concurrent reads/writes.
+#[no_mangle]
+pub unsafe extern "C" fn nl_ptr_write_u16(ptr: *mut u8, offset: i64, val: i64) {
+    let p = (ptr as usize).wrapping_add(offset as usize) as *mut u16;
+    // SAFETY: caller-asserted writability.
+    unsafe { std::ptr::write_unaligned(p, val as u16) };
+}
+
+/// Raw `u32` read at `ptr + offset` (bytes), zero-extended to `i64`.
+///
+/// # Safety
+/// - `ptr + offset` must be non-null and point at 4 bytes of readable
+///   initialized memory.  No alignment requirement.
+/// - No concurrent non-atomic writes.
+#[no_mangle]
+pub unsafe extern "C" fn nl_ptr_read_u32(ptr: *const u8, offset: i64) -> i64 {
+    let p = (ptr as usize).wrapping_add(offset as usize) as *const u32;
+    // SAFETY: caller-asserted readability.
+    let v = unsafe { std::ptr::read_unaligned(p) };
+    v as i64
+}
+
+/// Raw `u32` write at `ptr + offset` (bytes), low 32 bits of `val`.
+///
+/// # Safety
+/// - `ptr + offset` must be non-null and point at 4 bytes of writable
+///   memory.  No alignment requirement.
+/// - No concurrent reads/writes.
+#[no_mangle]
+pub unsafe extern "C" fn nl_ptr_write_u32(ptr: *mut u8, offset: i64, val: i64) {
+    let p = (ptr as usize).wrapping_add(offset as usize) as *mut u32;
+    // SAFETY: caller-asserted writability.
+    unsafe { std::ptr::write_unaligned(p, val as u32) };
+}
+
 /// Generic byte-level allocator wrapping
 /// `std::alloc::alloc(Layout::from_size_align(size, align))`.  Returns
 /// null on layout error (bad align, isize overflow), zero/negative
@@ -203,6 +270,75 @@ mod tests {
         let v = unsafe { nl_ptr_read_u8(base as *const u8, 3) };
         assert_eq!(v, 0xFF, "u8 read must zero-extend (255, not -1)");
         assert_eq!(buf[3], 0xFF);
+    }
+
+    // ---- Doc 122 §122.J u16 / u32 round-trips ----
+
+    #[test]
+    fn ptr_read_write_u16_round_trip_zero_extends() {
+        let mut buf: [u8; 16] = [0; 16];
+        let base = buf.as_mut_ptr();
+        unsafe {
+            nl_ptr_write_u16(base, 4, 0xABCD);
+        }
+        // 0xABCD should zero-extend to 0x00000000_0000ABCD (not -21555).
+        let v = unsafe { nl_ptr_read_u16(base as *const u8, 4) };
+        assert_eq!(v, 0xABCD, "u16 read must zero-extend (43981, not -21555)");
+        assert_eq!(buf[4], 0xCD, "little-endian: low byte first");
+        assert_eq!(buf[5], 0xAB);
+    }
+
+    #[test]
+    fn ptr_read_write_u32_round_trip_zero_extends() {
+        let mut buf: [u8; 16] = [0; 16];
+        let base = buf.as_mut_ptr();
+        unsafe {
+            nl_ptr_write_u32(base, 4, 0xDEAD_BEEF_u32 as i64);
+        }
+        // 0xDEADBEEF should zero-extend to 0x00000000_DEADBEEF (not -559038737).
+        let v = unsafe { nl_ptr_read_u32(base as *const u8, 4) };
+        assert_eq!(
+            v, 0xDEAD_BEEF_i64,
+            "u32 read must zero-extend (3735928559, not -559038737)"
+        );
+        // Little-endian byte order: 0xEF, 0xBE, 0xAD, 0xDE.
+        assert_eq!(buf[4], 0xEF);
+        assert_eq!(buf[5], 0xBE);
+        assert_eq!(buf[6], 0xAD);
+        assert_eq!(buf[7], 0xDE);
+    }
+
+    #[test]
+    fn ptr_read_write_u16_unaligned() {
+        // Writes at offset 1, 3, 5 — not aligned to u16's natural 2-byte
+        // boundary.  `read_unaligned' / `write_unaligned' must tolerate.
+        let mut buf: [u8; 16] = [0; 16];
+        let base = buf.as_mut_ptr();
+        unsafe {
+            nl_ptr_write_u16(base, 1, 0x1234);
+            nl_ptr_write_u16(base, 3, 0x5678);
+        }
+        assert_eq!(unsafe { nl_ptr_read_u16(base as *const u8, 1) }, 0x1234);
+        assert_eq!(unsafe { nl_ptr_read_u16(base as *const u8, 3) }, 0x5678);
+    }
+
+    #[test]
+    fn winsize_struct_layout_round_trip() {
+        // §122.J winsize struct = 4 × u16 = 8 bytes total.
+        //   ws_row at offset 0, ws_col at offset 2,
+        //   ws_xpixel at offset 4, ws_ypixel at offset 6.
+        let mut buf: [u8; 8] = [0; 8];
+        let base = buf.as_mut_ptr();
+        unsafe {
+            nl_ptr_write_u16(base, 0, 25);
+            nl_ptr_write_u16(base, 2, 80);
+            nl_ptr_write_u16(base, 4, 640);
+            nl_ptr_write_u16(base, 6, 480);
+        }
+        assert_eq!(unsafe { nl_ptr_read_u16(base as *const u8, 0) }, 25);
+        assert_eq!(unsafe { nl_ptr_read_u16(base as *const u8, 2) }, 80);
+        assert_eq!(unsafe { nl_ptr_read_u16(base as *const u8, 4) }, 640);
+        assert_eq!(unsafe { nl_ptr_read_u16(base as *const u8, 6) }, 480);
     }
 
     // ---- alloc / dealloc ----

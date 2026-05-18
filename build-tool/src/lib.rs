@@ -310,6 +310,45 @@ pub mod elisp_cc_spike {
         fn nelisp_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) -> i64;
         fn nelisp_ptr_read_u8(ptr: *const u8, offset: i64) -> i64;
         fn nelisp_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64;
+        // Doc 122 §122.J — width-{2, 4} raw-mem op probes (= the SIZE
+        // gap between `_u8' and `_u64' for libc struct field marshalling).
+        // Each compiles to a 1-line `(ptr-{read,write}-u{16,32} ptr off
+        // [val])' call from `lisp/nelisp-cc-struct-helpers.el' down to
+        // the matching Rust extern in `build-tool/src/eval/raw_mem.rs'.
+        // Unaligned access tolerated (= libc struct fields are not
+        // guaranteed naturally aligned inside a raw byte buffer).
+        fn nelisp_ptr_read_u16(ptr: *const u8, offset: i64) -> i64;
+        fn nelisp_ptr_write_u16(ptr: *mut u8, offset: i64, val: i64) -> i64;
+        fn nelisp_ptr_read_u32(ptr: *const u8, offset: i64) -> i64;
+        fn nelisp_ptr_write_u32(ptr: *mut u8, offset: i64, val: i64) -> i64;
+        // Doc 122 §122.J — `struct-make' / `struct-field-{set,get}'
+        // sugar probes.  Each is a 1-form parser-level desugar that
+        // reduces to existing primitives at parse time (`struct-make'
+        // -> `alloc-bytes', `struct-field-set' -> `ptr-write-uN'
+        // chosen by compile-time SIZE constant, ditto for get).
+        // Exposed here so the integration probe can verify each
+        // dispatch arm independently.
+        fn nelisp_struct_make_winsize() -> *mut u8;
+        fn nelisp_struct_field_set_u16(buf: *mut u8, offset: i64, val: i64) -> i64;
+        fn nelisp_struct_field_get_u16(buf: *const u8, offset: i64) -> i64;
+        fn nelisp_struct_field_set_u32(buf: *mut u8, offset: i64, val: i64) -> i64;
+        fn nelisp_struct_field_get_u32(buf: *const u8, offset: i64) -> i64;
+        // Doc 122 §122.J — composed winsize write-full probe.  Takes a
+        // caller-allocated 8-byte / align-2 buffer + 4 u16 field
+        // values, writes each at the matching offset via
+        // `struct-field-set', returns the (unchanged) buffer pointer.
+        // The ship-gate test for the §122.J spec: drive with values
+        // (R, C, X, Y), then `ioctl(0, TIOCGWINSZ, buf)' on a real
+        // TTY to verify the buffer round-trips through libc + that
+        // the helper writes the same bytes a hand-rolled
+        // `*const struct winsize' cast would produce.
+        fn nelisp_winsize_write_full(
+            buf: *mut u8,
+            row: i64,
+            col: i64,
+            xpixel: i64,
+            ypixel: i64,
+        ) -> *mut u8;
         // Doc 125 §125.A — alloc / dealloc primitive Phase 47 grammar
         // ops compiled from `lisp/nelisp-cc-alloc-dealloc.el'.
         // Substrate gate for Doc 124.G-K (= NlBox Drop kernels'
@@ -1430,6 +1469,56 @@ pub mod elisp_cc_spike {
     cc_wrap!(ptr_write_u64: nelisp_ptr_write_u64, (ptr: *mut u8, offset: i64, val: i64) -> i64);
     cc_wrap!(ptr_read_u8: nelisp_ptr_read_u8, (ptr: *const u8, offset: i64) -> i64);
     cc_wrap!(ptr_write_u8: nelisp_ptr_write_u8, (ptr: *mut u8, offset: i64, val: i64) -> i64);
+
+    // Doc 122 §122.J — width-{2, 4} raw-mem op wrappers.  Same shape
+    // as `_u8' / `_u64' modulo width.  All reads zero-extend to i64
+    // (= 0xABCD returns 43981, not -21555).  Writes use unaligned
+    // store semantics on the Rust side (`std::ptr::write_unaligned')
+    // so libc struct fields at odd offsets inside a packed buffer
+    // round-trip cleanly.
+    cc_wrap!(ptr_read_u16: nelisp_ptr_read_u16, (ptr: *const u8, offset: i64) -> i64);
+    cc_wrap!(ptr_write_u16: nelisp_ptr_write_u16, (ptr: *mut u8, offset: i64, val: i64) -> i64);
+    cc_wrap!(ptr_read_u32: nelisp_ptr_read_u32, (ptr: *const u8, offset: i64) -> i64);
+    cc_wrap!(ptr_write_u32: nelisp_ptr_write_u32, (ptr: *mut u8, offset: i64, val: i64) -> i64);
+
+    // Doc 122 §122.J — `struct-make' / `struct-field-{set,get}'
+    // sugar probe wrappers.  Each calls the matching Phase 47-
+    // compiled `.o' object that exercises the parser-level desugar
+    // path.  Safety contracts mirror the underlying raw-mem ops:
+    // the buffer pointer must be non-null + valid for `(offset +
+    // size)' bytes of read/write at unaligned access; `struct-make'
+    // uses `alloc-bytes' under the hood so its return value
+    // inherits the standard "null = OOM / bad-layout" contract.
+    cc_wrap!(struct_make_winsize: nelisp_struct_make_winsize, () -> *mut u8);
+    cc_wrap!(struct_field_set_u16: nelisp_struct_field_set_u16, (buf: *mut u8, offset: i64, val: i64) -> i64);
+    cc_wrap!(struct_field_get_u16: nelisp_struct_field_get_u16, (buf: *const u8, offset: i64) -> i64);
+    cc_wrap!(struct_field_set_u32: nelisp_struct_field_set_u32, (buf: *mut u8, offset: i64, val: i64) -> i64);
+    cc_wrap!(struct_field_get_u32: nelisp_struct_field_get_u32, (buf: *const u8, offset: i64) -> i64);
+
+    /// Doc 122 §122.J — `nelisp_winsize_write_full(buf, row, col,
+    /// xpixel, ypixel) -> buf' composed winsize struct writer.  Takes
+    /// a caller-allocated 8-byte / align-2 buffer + 4 u16 field
+    /// values, threads them through 4 `struct-field-set' ops, returns
+    /// the (unchanged) buffer pointer.  This is the §122.J ship-gate
+    /// probe — pass the buffer to `ioctl(0, TIOCGWINSZ, _)' on a real
+    /// TTY to verify the layout round-trips through libc.
+    ///
+    /// # Safety
+    /// - `buf' must be non-null + valid for 8 bytes of writable
+    ///   memory (= preferably allocated via `alloc_bytes(8, 2)' or a
+    ///   stack-local `[u8; 8]').
+    /// - `row' / `col' / `xpixel' / `ypixel' values are truncated to
+    ///   the low 16 bits per `u16' field semantics; high bits
+    ///   silently discarded.
+    pub unsafe fn winsize_write_full(
+        buf: *mut u8,
+        row: i64,
+        col: i64,
+        xpixel: i64,
+        ypixel: i64,
+    ) -> *mut u8 {
+        nelisp_winsize_write_full(buf, row, col, xpixel, ypixel)
+    }
 
     /// Doc 125 §125.A — `(alloc-bytes SIZE ALIGN)' generic byte-level
     /// allocator.  Returns the freshly-allocated `*mut u8' on success

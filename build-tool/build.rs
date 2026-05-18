@@ -295,6 +295,15 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // primitives.  Top-level wire-in (`read_str' / `read_all'
         // public entry) is §116.C; Rust parser.rs deletion is §116.D.
         "nelisp-cc-reader-parser.el",
+        // Doc 122 §122.I — CString construction helper (= 1 source
+        // file, multiple `(seq DEFUN ...)' entries in the manifest).
+        // Tracked here so edits trigger build.rs reruns.
+        "nelisp-cc-cstr-helpers.el",
+        // Doc 122 §122.J — struct-by-value grammar helpers (= 10
+        // manifest entries covering `ptr-{read,write}-u{16,32}' probes,
+        // `struct-make' / `struct-field-{set,get}' sugar probes, and
+        // the composed `nelisp_winsize_write_full' ship-gate object).
+        "nelisp-cc-struct-helpers.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

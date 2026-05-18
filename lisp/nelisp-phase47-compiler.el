@@ -1084,6 +1084,120 @@ functions `((NAME . ARITY) ...)'."
                    (nth 2 sexp) env fenv defuns)
           :val (nelisp-phase47-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
+   ;; Doc 122 §122.J — width-{2,4} raw-mem primitives.  Fill the SIZE
+   ;; gap between `_u8' and `_u64' for marshalling libc structs whose
+   ;; fields are mixed-width integers (= `winsize.ws_row' / `pollfd.fd'
+   ;; / `termios.c_iflag').  Same shape as `_u8' / `_u64' modulo helper
+   ;; name + accessor width.  All loads zero-extend to i64 (= no sign
+   ;; extension); all stores write the low N bits of `val'.  Unaligned
+   ;; access tolerated (= libc struct fields are not guaranteed to be
+   ;; naturally aligned inside a raw byte buffer).
+   ((and (consp sexp) (eq (car sexp) 'ptr-read-u16))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-read-u16-arity sexp)))
+    (list :kind 'ptr-read-u16
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'ptr-write-u16))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-write-u16-arity sexp)))
+    (list :kind 'ptr-write-u16
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 2 sexp) env fenv defuns)
+          :val (nelisp-phase47-compiler--parse-value
+                (nth 3 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'ptr-read-u32))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-read-u32-arity sexp)))
+    (list :kind 'ptr-read-u32
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 2 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'ptr-write-u32))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-write-u32-arity sexp)))
+    (list :kind 'ptr-write-u32
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 2 sexp) env fenv defuns)
+          :val (nelisp-phase47-compiler--parse-value
+                (nth 3 sexp) env fenv defuns)))
+   ;; Doc 122 §122.J — struct-by-value sugar.  Desugar to existing
+   ;; primitives at parse time:
+   ;;
+   ;;   (struct-make TAG SIZE ALIGN) → (alloc-bytes SIZE ALIGN)
+   ;;     TAG is a symbol literal used for diagnostic printing only;
+   ;;     no layout effect.  SIZE / ALIGN must be compile-time integer
+   ;;     constants (= same restriction as `alloc-bytes' itself).
+   ;;
+   ;;   (struct-field-set BUF OFFSET SIZE VALUE)
+   ;;     → (ptr-write-uN BUF OFFSET VALUE) where N ∈ {8, 16, 32, 64}
+   ;;     chosen by the compile-time SIZE constant (1, 2, 4, 8 bytes).
+   ;;
+   ;;   (struct-field-get BUF OFFSET SIZE)
+   ;;     → (ptr-read-uN BUF OFFSET) chosen the same way.
+   ;;
+   ;; SIZE constants outside {1, 2, 4, 8} signal `struct-field-bad-size'.
+   ;; Caller is responsible for SIZE / OFFSET correctness against the
+   ;; libc struct's layout — no runtime check.
+   ((and (consp sexp) (eq (car sexp) 'struct-make))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :struct-make-arity sexp)))
+    ;; TAG (nth 1) is ignored at code-gen — diagnostic only.  We don't
+    ;; validate it past arity to keep the surface forgiving (callers
+    ;; routinely pass quoted symbols like ''sigaction).
+    (nelisp-phase47-compiler--parse-value
+     (list 'alloc-bytes (nth 2 sexp) (nth 3 sexp))
+     env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'struct-field-set))
+    (unless (= (length sexp) 5)
+      (signal 'nelisp-phase47-compiler-error
+              (list :struct-field-set-arity sexp)))
+    (let ((size (nth 3 sexp)))
+      (unless (nelisp-phase47-compiler--int-foldable-p size env fenv)
+        (signal 'nelisp-phase47-compiler-error
+                (list :struct-field-set-size-not-const sexp)))
+      (let* ((size-val (nelisp-phase47-compiler--fold-int size env))
+             (op (pcase size-val
+                   (1 'ptr-write-u8)
+                   (2 'ptr-write-u16)
+                   (4 'ptr-write-u32)
+                   (8 'ptr-write-u64)
+                   (_ (signal 'nelisp-phase47-compiler-error
+                              (list :struct-field-bad-size size-val sexp))))))
+        (nelisp-phase47-compiler--parse-value
+         (list op (nth 1 sexp) (nth 2 sexp) (nth 4 sexp))
+         env fenv defuns))))
+   ((and (consp sexp) (eq (car sexp) 'struct-field-get))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :struct-field-get-arity sexp)))
+    (let ((size (nth 3 sexp)))
+      (unless (nelisp-phase47-compiler--int-foldable-p size env fenv)
+        (signal 'nelisp-phase47-compiler-error
+                (list :struct-field-get-size-not-const sexp)))
+      (let* ((size-val (nelisp-phase47-compiler--fold-int size env))
+             (op (pcase size-val
+                   (1 'ptr-read-u8)
+                   (2 'ptr-read-u16)
+                   (4 'ptr-read-u32)
+                   (8 'ptr-read-u64)
+                   (_ (signal 'nelisp-phase47-compiler-error
+                              (list :struct-field-bad-size size-val sexp))))))
+        (nelisp-phase47-compiler--parse-value
+         (list op (nth 1 sexp) (nth 2 sexp))
+         env fenv defuns))))
    ;; Doc 125 §125.A — alloc / dealloc grammar primitives.
    ;; ------------------------------------------------
    ;; `(alloc-bytes SIZE ALIGN)' — generic byte-level allocator
@@ -1914,6 +2028,8 @@ the node's class to consume the result correctly."
              'atomic-fetch-add 'atomic-compare-exchange
              'ptr-read-u64 'ptr-write-u64
              'ptr-read-u8 'ptr-write-u8
+             'ptr-read-u16 'ptr-write-u16
+             'ptr-read-u32 'ptr-write-u32
              'alloc-bytes 'dealloc-bytes
              'cons-make 'cons-set-car 'cons-set-cdr
              'while 'cond 'logic)
@@ -2054,6 +2170,14 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u8"))
       ('ptr-write-u8
        (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u8"))
+      ('ptr-read-u16
+       (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u16"))
+      ('ptr-write-u16
+       (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u16"))
+      ('ptr-read-u32
+       (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u32"))
+      ('ptr-write-u32
+       (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u32"))
       ('alloc-bytes
        (nelisp-phase47-compiler--emit-alloc-bytes node buf))
       ('dealloc-bytes

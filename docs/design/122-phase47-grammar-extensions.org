@@ -754,7 +754,7 @@ Caller pattern:
   `make compile' (per [[memory:feedback_nelisp_ci_make_compile_gate][CI gate]]).
 - Verify probe test: open(2) of /etc/hostname returns fd ≥ 0.
 
-* §122.J — Struct-by-value extern-call (DRAFT 2026-05-18)
+* §122.J — Struct-by-value extern-call (SHIPPED 2026-05-18)
 
 Per Doc 117 §117.D.gaps.3 class 4/5, the =install_sigint_handler= /
 =install_winsize_handler= / =raw-mode-enter= / =read-stdin-byte-
@@ -763,7 +763,7 @@ available= families pass libc structs (=sigaction=, =termios=,
 
 ** Surface
 
-Two helper opcodes:
+Three helper opcodes:
 
 #+begin_src elisp
 ;; (struct-make TAG SIZE ALIGN) → BUF-PTR
@@ -776,13 +776,45 @@ Two helper opcodes:
 ;;   Writes VALUE into BUF-PTR + OFFSET as a SIZE-byte little-endian
 ;;   integer.  SIZE ∈ {1, 2, 4, 8}.
 (struct-field-set sa 0 8 handler-fn-ptr)
+
+;; (struct-field-get BUF-PTR OFFSET SIZE) → I64
+;;   Reads SIZE-byte little-endian integer from BUF-PTR + OFFSET.
+;;   SIZE ∈ {1, 2, 4, 8}.  Returns the value zero-extended to i64.
+(struct-field-get ws 0 2)  ;; winsize.ws_row
 #+end_src
 
-`struct-field-get' similarly.  Composes with existing `extern-call'
-to pass the buffer pointer as a struct argument (= libc treats
-struct-by-value as pass-by-reference for ≥16-byte structs on
-SysV AMD64 ABI; smaller structs ride in registers but the libc
-binding wraps them with `*const struct` wherever possible).
+Composes with existing `extern-call' to pass the buffer pointer as a
+struct argument (= libc treats struct-by-value as pass-by-reference
+for ≥16-byte structs on SysV AMD64 ABI; smaller structs ride in
+registers but the libc binding wraps them with `*const struct`
+wherever possible).
+
+** Implementation strategy
+
+Approach A + B hybrid:
+- §122.E `ptr-{read,write}-u8' / `ptr-{read,write}-u64' already
+  cover SIZE ∈ {1, 8}.  §122.J adds four new raw-mem primitives
+  to fill the SIZE ∈ {2, 4} gap: `ptr-read-u16' / `ptr-write-u16'
+  / `ptr-read-u32' / `ptr-write-u32'.  All use unaligned access
+  on the Rust side (`std::ptr::read_unaligned' /
+  `write_unaligned') since libc struct fields are not guaranteed
+  to be naturally aligned inside a packed byte buffer.
+- `struct-make' / `struct-field-set' / `struct-field-get' are
+  parser-level sugar that desugar to existing primitives at parse
+  time based on the compile-time SIZE constant:
+    (struct-make _ S A)         → (alloc-bytes S A)
+    (struct-field-set B O 1 V)  → (ptr-write-u8  B O V)
+    (struct-field-set B O 2 V)  → (ptr-write-u16 B O V)
+    (struct-field-set B O 4 V)  → (ptr-write-u32 B O V)
+    (struct-field-set B O 8 V)  → (ptr-write-u64 B O V)
+    (struct-field-get B O 1)    → (ptr-read-u8   B O)
+    (struct-field-get B O 2)    → (ptr-read-u16  B O)
+    (struct-field-get B O 4)    → (ptr-read-u32  B O)
+    (struct-field-get B O 8)    → (ptr-read-u64  B O)
+
+  SIZE outside {1, 2, 4, 8} signals `struct-field-bad-size' at
+  parse time.  TAG is symbol literal used for diagnostic printing
+  only — parser ignores it past arity check.
 
 ** Constants
 
@@ -794,10 +826,65 @@ Standard libc struct sizes (linux glibc, x86_64):
 - =stat=      = 144 bytes, align 8 (kernel stat layout differs;
   use =statx=)
 
-** Ship gate
+** Ship gate (SHIPPED 2026-05-18)
 
-Same as §122.I plus a sigaction round-trip probe (install handler
-+ verify handler called on SIGUSR1).
+- `make compile' green (per CI gate per
+  `feedback_nelisp_ci_make_compile_gate' memory) — verified via
+  `find lisp -name "*.elc" -delete && cargo build --release'.
+- 14 / 14 `raw_mem.rs' unit tests pass (= 4 new u16 / u32 round-
+  trip + 1 winsize layout assertion + 9 pre-existing).
+- 8 / 8 `tests/elisp_cc_struct_helpers_probe.rs' integration
+  tests pass: width-2 + width-4 raw-mem ops, `struct-make' sugar,
+  `struct-field-set' / `struct-field-get' SIZE = 2 / 4 dispatch,
+  composed `winsize_write_full' byte-layout assertion against
+  hand-rolled `*const struct winsize' cast, and the
+  ship-gate-named `ioctl(0, TIOCGWINSZ, &ws)' round-trip on a
+  live TTY (= reads back non-zero ws_row / ws_col).
+
+** Files shipped
+
+- =build-tool/src/eval/raw_mem.rs= — 4 new `#[no_mangle]'
+  externs + 4 new unit tests + 1 winsize layout assertion.
+- =lisp/nelisp-phase47-compiler.el= — parser arms for `ptr-{read,
+  write}-u{16,32}' + `struct-make' / `struct-field-{set,get}'
+  sugar desugarers.  Dispatch table + aarch64-unsupported list
+  updated.
+- =lisp/nelisp-cc-struct-helpers.el= — Phase 47 sources for the
+  10 probe `.o' objects (4 raw-mem probes + 4 sugar dispatch
+  probes + `nelisp_winsize_write_full' composed probe + an
+  intermediate `nelisp_struct_make_winsize' 0-arg helper).
+- =scripts/compile-elisp-objects.el= — manifest entries for the
+  10 new objects.
+- =build-tool/build.rs= — `rerun-if-changed' tracking for the
+  struct-helpers + cstr-helpers source files.
+- =build-tool/src/lib.rs= — extern decls + safe `cc_wrap!'
+  wrappers for the 10 new helpers.
+- =build-tool/tests/elisp_cc_struct_helpers_probe.rs= — 8 test
+  cases including the live ioctl round-trip.
+
+** Unlocks
+
+Doc 117 §117.D.gaps.3 class 4/5 — the sigaction / termios /
+pollfd / winsize handlers can now build their libc struct
+arguments entirely in Phase 47 elisp via `struct-make' +
+`struct-field-set', deleting the Rust `MaybeUninit + as_mut_ptr'
+shims that currently populate struct fields one assignment at a
+time.  Concrete next sweeps:
+- =install_sigint_handler= → sigaction struct (152 bytes, mostly
+  u64 + u32 fields) — uses `struct-make 'sigaction 152 8' +
+  `struct-field-set' for sa_handler / sa_mask / sa_flags slots.
+- =raw-mode-enter= → termios struct (60 bytes, mostly u32 +
+  c_cc[32] array) — uses `struct-make 'termios 60 4' + a loop of
+  `struct-field-set' for c_cc[].
+- =read-stdin-byte-available= → pollfd struct (8 bytes, u32 fd +
+  u16 events + u16 revents) — single `struct-make 'pollfd 8 4' +
+  3 `struct-field-set' calls.
+
+Net Rust LOC delta: +60 in `raw_mem.rs' (4 externs + 4 tests + 1
+winsize layout assertion) plus +60 in `lib.rs' (extern decls +
+safe wrappers) for ~+120 LOC.  Each handler sweep unblocked
+above will delete 20-40 LOC of Rust struct-init shim, so the
+substrate cost amortizes after the first 2-3 sweeps land.
 
 * §122.K — libc constants table (DRAFT 2026-05-18)
 
