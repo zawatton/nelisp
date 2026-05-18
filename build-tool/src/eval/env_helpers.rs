@@ -227,13 +227,11 @@ impl Env {
         self.mirror_is_fbound(name)
     }
 
-    /// Capture lexical frames as a flat `((name . cell) ...)' alist for
-    /// closure construction.  Each captured slot reuses the same
-    /// `NlCellRef' so closure `setq' writes through to the let-binding.
-    /// Pre-bootstrap (helper not loaded) returns Nil.
+    /// Capture lexical frames as `((name . cell) ...)' alist (closure
+    /// share via NlCellRef; pre-bootstrap returns Nil).
     pub fn capture_lexical(&mut self) -> Sexp {
-        // Snapshot depth BEFORE dispatch — apply_lambda_inner pushes
-        // its argument frame onto the same record during the call.
+        // Snapshot depth BEFORE dispatch (apply_lambda_inner pushes its
+        // own argument frame onto the same record during the call).
         let depth = match &self.frames_record {
             Sexp::Record(r) => match r.slots.get(1) {
                 Some(Sexp::Int(n)) => *n,
@@ -271,14 +269,12 @@ impl Env {
 }
 
 // SAFETY (file-wide): pointers passed to `elisp_cc_spike::*' refer to
-// stack-local `Sexp' values or `Env'-owned fields that outlive the call.
-// `*_or_insert' helpers handle both hit (in-place slot-set) and miss
-// (auto-vivify) paths internally.
+// stack-local `Sexp' or `Env' fields outliving the call.  `*_or_insert'
+// auto-vivify on miss; `*_clear_*' no-op on miss.
 
 impl Env {
     // ---- Globals mirror helpers ----
 
-    /// Set the value cell.  Doc 119 §119.A — hit + miss both in elisp.
     pub(crate) fn mirror_set_value(&mut self, name: &str, value: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -295,7 +291,6 @@ impl Env {
         }
     }
 
-    /// Function-cell counterpart of `mirror_set_value'.
     pub(crate) fn mirror_set_function(&mut self, name: &str, func: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -312,8 +307,7 @@ impl Env {
         }
     }
 
-    /// `makunbound' — write `unbound_marker' into slot 0 in place.
-    /// Silent no-op when the entry is absent (no auto-vivify).
+    /// `makunbound' — write unbound_marker into slot 0; no-op on miss.
     pub(crate) fn mirror_clear_value(&mut self, name: &str) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -329,7 +323,6 @@ impl Env {
         }
     }
 
-    /// `fmakunbound' — function-cell counterpart of `mirror_clear_value'.
     pub(crate) fn mirror_clear_function(&mut self, name: &str) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -345,9 +338,7 @@ impl Env {
         }
     }
 
-    /// Full symbol-entry installer (value + function + plist + constant).
-    /// Hit-path overwrites all 4 slots; miss-path auto-vivifies (Doc
-    /// 119 §119.A).  Used by `intern_constant'.
+    /// Full 4-slot installer (value/function/plist/constant); auto-vivifies on miss.
     pub fn mirror_install_entry(
         &mut self,
         name: &str,
@@ -380,7 +371,6 @@ impl Env {
         }
     }
 
-    /// Read symbol-entry slot 3 (constant flag).  False on miss / unbuilt mirror.
     pub(crate) fn mirror_is_constant(&self, name: &str) -> bool {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return false;
@@ -394,9 +384,6 @@ impl Env {
         flag != 0
     }
 
-    /// Write symbol-entry slot 3 (constant flag).  Hit + miss both in
-    /// elisp; miss-path vivifies with value/function = `unbound_marker'
-    /// and plist = Nil.
     pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
         if matches!(&self.globals_record, Sexp::Nil) {
             return;
@@ -414,11 +401,7 @@ impl Env {
         }
     }
 
-    /// Walk every bucket of the mirror and invoke `callback(name,
-    /// entry)' for each live symbol-entry.  Callback receives a
-    /// `NlRecordRef' (= refcount-bumped clone) so it may read all
-    /// four slots.  Backs `mirror_snapshot_globals' (integration-
-    /// test only consumer post-baker-retirement).
+    /// Walk every bucket, invoking `callback(name, entry)' per live symbol-entry.
     pub(crate) fn mirror_iter_entries<F>(&self, mut callback: F)
     where
         F: FnMut(&str, &crate::eval::nlrecord::NlRecordRef),
@@ -448,10 +431,7 @@ impl Env {
         }
     }
 
-    /// Snapshot the elisp mirror as a `HashMap<String, SymbolEntry>'.
-    /// Integration-test only post-baker-retirement (see
-    /// `tests/eval_integration.rs').  Kept `pub' so the integration
-    /// test binary in the separate `tests/' crate can reach it.
+    /// Integration-test snapshot — `pub' for separate `tests/' crate access.
     pub fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
         let mut out: HashMap<String, SymbolEntry> = HashMap::new();
         let unbound = self.unbound_marker.clone();
@@ -478,18 +458,11 @@ impl Env {
         out
     }
 
-    /// Rust-direct empty mirror constructor.  Pre-allocates the
-    /// `nelisp-env' / `fast-hash-table' / `buckets' record graph
-    /// without invoking elisp `nelisp-env-make' (= no `apply_function'
-    /// detour, no STDLIB dependency).  Sets `self.unbound_marker' to
-    /// a Rust-defined sentinel `Sexp::Symbol("nelisp--unbound-marker")';
-    /// STDLIB's defvar of the same name will overwrite the post-decode
-    /// value, after which `install_globals_record' refreshes in-place
-    /// sentinels.
+    /// Pre-allocate the nelisp-env/fast-hash-table/buckets record graph
+    /// without STDLIB dependency.  Sentinel `nelisp--unbound-marker' gets
+    /// overwritten by STDLIB's defvar post-bootstrap.
     pub fn install_empty_mirror_rust_direct(&mut self) {
         const BUCKET_COUNT: usize = 1024;
-        // Sentinel for absent slots — replaced post-decode by the
-        // baked elisp `nelisp--unbound-marker'.
         self.unbound_marker = Sexp::Symbol("nelisp--unbound-marker".into());
         let buckets = Sexp::vector(vec![Sexp::Nil; BUCKET_COUNT]);
         let ht_record = Sexp::record(
@@ -503,9 +476,8 @@ impl Env {
         self.install_empty_frames_record_rust_direct();
     }
 
-    /// Value-cell read.  Returns `self.unbound_marker' on miss
-    /// (sentinel re-injected here since the Phase 47 helper writes
-    /// `Sexp::Nil' on miss).
+    /// Value-cell read.  Returns `unbound_marker' on miss (Phase 47
+    /// helper writes Nil; sentinel re-injected here).
     pub fn mirror_lookup_value(&self, name: &str) -> Sexp {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return self.unbound_marker.clone();
@@ -529,7 +501,6 @@ impl Env {
         slot
     }
 
-    /// Function-cell read.  Same sentinel-reinjection as `mirror_lookup_value'.
     pub fn mirror_lookup_function(&self, name: &str) -> Sexp {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return self.unbound_marker.clone();
@@ -553,7 +524,6 @@ impl Env {
         slot
     }
 
-    /// `boundp' equivalent — compares entry's slot 0 against `unbound_marker'.
     pub(crate) fn mirror_is_bound(&self, name: &str) -> bool {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return false;
@@ -570,7 +540,6 @@ impl Env {
         flag != 0
     }
 
-    /// `fboundp' equivalent — function-cell counterpart of `mirror_is_bound'.
     pub fn mirror_is_fbound(&self, name: &str) -> bool {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return false;
@@ -589,12 +558,7 @@ impl Env {
 
     // ---- Lexical frame stack helpers ----
 
-    /// Rust-direct empty lexframe-stack constructor.  Matches the
-    /// layout in `lisp/nelisp-lexframe.el':
-    ///   frames_record = Sexp::Record(`nelisp-lexframe-stack')
-    ///     slots[0] = Sexp::Vector(BACKING, length = INITIAL_CAPACITY,
-    ///                             all entries Sexp::Nil)
-    ///     slots[1] = Sexp::Int(0)            (= DEPTH)
+    /// Build empty `nelisp-lexframe-stack' record: slots = [BACKING_VEC, depth=0].
     pub(crate) fn install_empty_frames_record_rust_direct(&mut self) {
         const INITIAL_CAPACITY: usize = 8;
         let backing = Sexp::vector(vec![Sexp::Nil; INITIAL_CAPACITY]);
@@ -604,9 +568,7 @@ impl Env {
         );
     }
 
-    /// Layout walker — fetch the backing vector + current depth from
-    /// `self.frames_record'.  Returns None when the mirror is unbuilt
-    /// (= `Sexp::Nil', pre-`install_stage0').
+    /// Fetch (stack_rec, backing_vec, depth) from `frames_record'; None if unbuilt.
     pub(crate) fn frame_stack_view(&self) -> Option<(crate::eval::nlrecord::NlRecordRef, crate::eval::nlvector::NlVectorRef, usize)> {
         let stack_rec = match &self.frames_record { Sexp::Record(r) => r.clone(), _ => return None };
         let backing = match stack_rec.slots.get(0)? { Sexp::Vector(v) => v.clone(), _ => return None };
@@ -614,9 +576,6 @@ impl Env {
         Some((stack_rec, backing, depth))
     }
 
-    /// Build a fresh empty `nelisp-lexframe' record (= type-tagged
-    /// record containing a single fast-hash-table slot).  Internal —
-    /// callers use `frame_push_rust_direct' to push it.
     fn make_empty_frame_record() -> Sexp {
         const BUCKET_COUNT: usize = 16;
         let buckets = Sexp::vector(vec![Sexp::Nil; BUCKET_COUNT]);
@@ -630,10 +589,7 @@ impl Env {
         )
     }
 
-    /// Grow `backing' if `needed > backing.len()' via capacity doubling
-    /// + copy-across, mutating `stack_rec.slots[0]' in place to point at
-    /// the new backing vector.  Mirrors
-    /// `nelisp-lexframe-stack--ensure-capacity'.
+    /// Grow `backing' via capacity doubling if `needed > backing.len()'.
     pub(crate) fn frame_stack_ensure_capacity(
         stack_rec: &crate::eval::nlrecord::NlRecordRef,
         backing: &crate::eval::nlvector::NlVectorRef,
@@ -662,8 +618,6 @@ impl Env {
         new_vec_ref
     }
 
-    /// Push a fresh empty frame onto the mirror stack.  No-op when the
-    /// mirror is unbuilt.  Returns the frame's `Sexp::Record' clone.
     pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
         let (stack_rec, backing, depth) = self.frame_stack_view()?;
         let backing = Env::frame_stack_ensure_capacity(&stack_rec, &backing, depth, depth + 1);
@@ -677,9 +631,6 @@ impl Env {
         Some(frame)
     }
 
-    /// Pop the innermost frame.  Silently no-ops on under-pop (= same
-    /// semantics as `Vec::pop' on empty).  No-op when the mirror is
-    /// unbuilt.
     pub(crate) fn frame_pop_rust_direct(&mut self) {
         let Some((stack_rec, backing, depth)) = self.frame_stack_view() else { return };
         if depth == 0 { return; }
@@ -691,9 +642,7 @@ impl Env {
         }
     }
 
-    /// Bind NAME → CELL in the innermost frame.  No-op when the stack
-    /// is empty OR the mirror is unbuilt.  CELL is stored verbatim
-    /// (= callers wrap in `Sexp::Cell' for closure write-through).
+    /// Bind NAME → CELL in innermost frame.  Caller wraps cell in Sexp::Cell.
     pub(crate) fn frame_bind_rust_direct(&mut self, name: &str, cell: Sexp) {
         let Some((_stack_rec, backing, depth)) = self.frame_stack_view() else { return };
         if depth == 0 { return; }
@@ -701,10 +650,7 @@ impl Env {
         Env::frame_bind_into(&frame, name, cell);
     }
 
-    /// Internal — `nelisp-lexframe-bind' for a frame record handle.
-    /// Hashes NAME via the pure-elisp `nelisp_fnv1a' (Doc 115 §115.7)
-    /// + walks the bucket alist to update-in-place or prepend a
-    /// fresh `(NAME . CELL)' pair.
+    /// `nelisp-lexframe-bind' inline: hash NAME via fnv1a, update-or-prepend.
     fn frame_bind_into(frame: &Sexp, name: &str, cell: Sexp) {
         let Sexp::Record(frame_rec) = frame else { return };
         let ht_rec = match frame_rec.slots.get(0) { Some(Sexp::Record(r)) => r.clone(), _ => return };
