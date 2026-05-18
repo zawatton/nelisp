@@ -67,7 +67,7 @@ impl Env {
             e!("nelisp-stdlib.el"),           e!("nelisp-stdlib-list.el"),
             e!("nelisp-stdlib-hof.el"),       e!("nelisp-stdlib-search.el"),
             e!("nelisp-stdlib-plist-str.el"), e!("nelisp-stdlib-format.el"),
-            e!("nelisp-stdlib-misc.el"),      e!("nelisp-cc-ffi-int-helpers.el"),
+            e!("nelisp-stdlib-misc.el"),      e!("nelisp-stdlib-os-int-helpers.el"),
             e!("nelisp-stdlib-os.el"),
             e!("nelisp-pcase.el"),            e!("nelisp-cl-macros.el"),
             e!("nelisp-stdlib-hash.el"),
@@ -787,4 +787,3 @@ impl Env {
         Ok(acc)
     }
 }
-

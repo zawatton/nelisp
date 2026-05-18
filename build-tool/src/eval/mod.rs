@@ -7,7 +7,6 @@ pub mod builtins;
 pub mod env_helpers;
 pub mod env_shim;
 pub mod error;
-pub mod ffi;
 pub mod nlboolvector;
 pub mod nlcell;
 pub mod nlchartable;
@@ -583,4 +582,3 @@ fn expand_macro(macro_form: &Sexp, args: &Sexp, env: &mut Env) -> Result<Sexp, E
     let arg_forms = list_elements(args)?;
     apply_function(inner, &arg_forms, env)
 }
-

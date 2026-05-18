@@ -476,12 +476,12 @@ fn emit_linux_table() -> String {
     // resolver is only INVOKED at user-syscall time which is well
     // after stdlib finishes.  At LOAD time we only `fset' the lambda
     // — its body isn't evaluated.
-    s.push_str("        (let ((cell (assq name nelisp--syscall-nr-table)))\n");
-    s.push_str("          (if cell\n");
-    s.push_str("              (cdr cell)\n");
-    s.push_str("            (signal 'arith-error\n");
-    s.push_str("                    (cons \"nelisp--syscall-nr-resolve: unknown syscall\"\n");
-    s.push_str("                          (cons name nil)))))))\n\n");
+    s.push_str("        (if (integerp name)\n            name\n");
+    s.push_str("          (let ((cell (assq name nelisp--syscall-nr-table)))\n");
+    s.push_str("            (if cell\n");
+    s.push_str("                (cdr cell)\n");
+    s.push_str("              (signal 'arith-error\n                    (cons \"nelisp--syscall-nr-resolve: unknown syscall\"\n");
+    s.push_str("                          (cons name nil))))))))\n\n");
     s.push_str(";; (provide 'nelisp-syscall-table) — omitted: this file is\n");
     s.push_str(";; loaded during bootstrap before `provide' is installed.\n");
     s.push_str(";;; nelisp-syscall-table.el ends here\n");

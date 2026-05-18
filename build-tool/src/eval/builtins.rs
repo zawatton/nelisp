@@ -7,59 +7,40 @@ use super::sexp::Sexp;
 use super::special_forms::is_truthy;
 use std::path::{Path, PathBuf};
 
-/// Install every built-in into the given environment.  Idempotent.
 pub fn install_builtins(env: &mut Env) {
     let names: &[&str] = &[
-        // JIT-lowered arithmetic primitives.
         "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
         "nelisp--num-lt2", "nelisp--num-gt2",
         "nelisp--num-le2", "nelisp--num-ge2",
         "nelisp--num-eq2",
-        // JIT-lowered equality.
         "eq",
-        // Cons/list/vector helpers.
         "car", "cdr", "cons", "length", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes",
         "setcar", "setcdr",
         "aref", "aset", "elt",
         "vector", "make-vector",
-        // Bitwise helpers.
         "ash",
         "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
-        // String/format helpers.
         "truncate",
         "nl-jit-call-format-float",
         "string-match-p",
-        // Filesystem helpers.
         "nelisp--syscall-canonicalize",
         "nelisp--syscall-stat",
         "nelisp--syscall-readdir",
         "nelisp--syscall-read-file",
         "nelisp--read-all-from-string",
-        // Generic POSIX syscall helpers.
         "nelisp--syscall",
         "nelisp--syscall-supported-p",
-        // Symbol/function cell ops and dispatch core.
         "symbol-function", "funcall", "apply", "eval",
         "fset",
-        // Print/error helpers.
         "signal",
         "nelisp--write-stderr-line",
         "nelisp--write-stdout-bytes",
-        // Load orchestration.
         "require",
-        // Self-process stdio.
         "read-stdin-bytes",
-        // Generic FFI primitives.
-        "nl-ffi-call",
-        "nl-ffi-malloc", "nl-ffi-read-bytes", "nl-ffi-free",
-        "nl-ffi-write-bytes", "nl-ffi-errno",
-        "nl-ffi-read-int", "nl-ffi-write-int",
-        // Native-only primitives.
         "nl-secure-hash",
         "nl-downcase", "nl-upcase", "nl-split-by-non-alnum",
         "float", "exp", "log", "nelisp--f64-trunc",
         "nl-write-file", "nl-make-directory",
-        // Interactive TTY plumbing; `_`-prefixed names are test helpers.
         "terminal-raw-mode-enter", "terminal-raw-mode-leave",
         "read-stdin-byte-available",
         "_termios-saved-p", "_raw-mode-hooks-installed-p",
@@ -69,14 +50,11 @@ pub fn install_builtins(env: &mut Env) {
         "terminal-take-winsize-changed", "terminal-current-winsize",
         "install-jobctrl-handlers", "_jobctrl-handlers-installed-p",
         "terminal-take-sigcont",
-        // Reader entry points.
         "read", "read-from-string",
-        // Apply/call/closure/env primitives.
         "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured",
         "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
         "nelisp--set-use-elisp-apply",
         "nelisp--apply-lambda-inner",
-        // JIT bridge primitives.
         "nl-jit-call-i64-i64",
         "nl-jit-call-ptr-ptr",
         "nl-jit-call-syscall",
@@ -98,32 +76,24 @@ pub fn install_builtins(env: &mut Env) {
     }
 }
 
-/// Dispatch a built-in by name.  Called from `super::apply_builtin'.
-/// See module docstring for the surviving surface categories.
 pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match name {
-        // ---- vector core ----
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         "nelisp--length-cons-cc" => bi_length_cons_cc(args),
         "nelisp--recordp-cc" => bi_recordp_cc(args),
         "string-bytes" => bi_string_bytes(args),
-        // ---- string/format helpers ----
         "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float(args),
         "truncate" => bi_truncate(args),
-        // ---- filesystem syscalls ----
         "nelisp--syscall-canonicalize" => bi_syscall_canonicalize(args, env),
         "nelisp--syscall-stat" => bi_syscall_stat(args, env),
         "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
         "nelisp--syscall-read-file" => bi_syscall_read_file(args, env),
         "nelisp--read-all-from-string" => bi_read_all_from_string(args, env),
-        // ---- POSIX syscall ----
         "nelisp--syscall" => bi_syscall(args),
         "nelisp--syscall-supported-p" => bi_syscall_supported_p(args),
-        // ---- symbol / function ----
         "symbol-function" => bi_symbol_function(args, env),
         "fset" => bi_fset(args, env),
-        // ---- apply/closure/env primitives ----
         "nelisp--push-frame" => bi_frame_op("push-frame", args, env),
         "nelisp--pop-frame" => bi_frame_op("pop-frame", args, env),
         "nelisp--push-captured" => bi_frame_op("push-captured", args, env),
@@ -136,32 +106,16 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
             Ok(if truthy { Sexp::T } else { Sexp::Nil })
         }
         "nelisp--apply-lambda-inner" => bi_apply_lambda_inner(args, env),
-        // ---- core dispatch + signal ----
         "funcall" => bi_funcall(args, env),
         "apply" => bi_apply(args, env),
         "eval" => bi_eval(args, env),
         "signal" => bi_signal(args),
-        // ---- print/error helpers ----
         "nelisp--write-stdout-bytes" => bi_write_stdout_bytes(args),
         "nelisp--write-stderr-line" => bi_write_stderr_line(args),
-        // ---- self-process stdio ----
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
-        // ---- FFI primitives (libffi-backed) ----
-        "nl-ffi-call" => super::ffi::nl_ffi_call(args),
-        "nl-ffi-malloc" => super::ffi::nl_ffi_malloc(args),
-        "nl-ffi-read-bytes" => super::ffi::nl_ffi_read_bytes(args),
-        "nl-ffi-free" => super::ffi::nl_ffi_free(args),
-        "nl-ffi-write-bytes" => super::ffi::nl_ffi_write_bytes(args),
-        "nl-ffi-errno" => super::ffi::nl_ffi_errno(args),
-        "nl-ffi-read-int" => super::ffi::nl_ffi_read_int(args),
-        "nl-ffi-write-int" => super::ffi::nl_ffi_write_int(args),
-        // ---- math kernel sliver (= shared f64 div + truncate-mode
-        // for elisp floor/ceiling/round/truncate) ----
         "nelisp--f64-trunc" => bi_f64_trunc(args),
-        // ---- file write + mkdir ----
         "nl-write-file" => bi_nl_write_file(args),
         "nl-make-directory" => bi_nl_make_directory(args),
-        // ---- TTY plumbing (Unix only) ----
         "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter(args),
         "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave(args),
         "read-stdin-byte-available" => bi_read_stdin_byte_available(args),
@@ -179,12 +133,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "install-jobctrl-handlers" => bi_install_jobctrl_handlers(args),
         "_jobctrl-handlers-installed-p" => bi_jobctrl_handlers_installed_p(args),
         "terminal-take-sigcont" => bi_terminal_take_sigcont(args),
-        // ---- reader ----
         "read" => bi_read(args, env),
         "read-from-string" => bi_read_from_string(args, env),
-        // ---- require ----
         "require" => bi_require(args, env),
-        // ---- nl-jit-call-* bridge primitives ----
         "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64(args),
         "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr(args),
         "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall(args),
@@ -198,12 +149,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-fact-i64" => bi_nl_fact_i64(args),
         "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op(args, env),
         _ => {
-            // Externally-registered builtin (test-only in spirit).  Doc 130
-            // (2026-05-18) — ungated for the integration test binary.
-            // Production never inserts into `extern_builtins'; the lookup is
-            // an empty-HashMap probe on the rare unbound-function path.
-            // Clone the Rc first so the `extern_builtins' borrow drops
-            // before we re-borrow `env' through the closure.
             if let Some(f) = env.extern_builtins.get(name).cloned() {
                 return f(args, env);
             }
@@ -211,8 +156,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         }
     }
 }
-
-// ---------- arity helpers ----------
 
 pub(crate) fn require_arity(
     name: &str,
@@ -246,8 +189,6 @@ pub(crate) fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
     }
 }
 
-// ---------- arithmetic helpers ----------
-
 pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
     require_arity(name, args, 2, Some(2))?;
     let af = matches!(args[0], Sexp::Float(_)) || matches!(args[1], Sexp::Float(_));
@@ -264,10 +205,8 @@ pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), Ev
     Ok((to_f64(&args[0])?, to_f64(&args[1])?, af))
 }
 
-/// `(string-bytes STRING)' — UTF-8 byte count.
 fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-bytes", args, 1, Some(1))?;
-    // Present string variants as a uniform `Sexp::Str`.
     let str_view: Sexp = match &args[0] {
         Sexp::Str(_) => args[0].clone(),
         Sexp::MutStr(rc) => Sexp::Str(rc.value.clone()),
@@ -287,8 +226,6 @@ fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     Ok(result_slot)
 }
-
-// ---------- higher-order ----------
 
 fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     let mut out = Vec::new();
@@ -310,9 +247,6 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
         cur = next;
     }
 }
-
-// ---- char-table legacy decode helpers ----
-// User-facing builtins retired; helpers stay for image-format decode.
 
 pub(crate) fn char_table_set_one(
     inner: &mut crate::eval::sexp::CharTableInner,
@@ -378,20 +312,37 @@ fn env_default_directory(env: &Env) -> Option<String> {
     }
 }
 
-/// `(nelisp--syscall-canonicalize PATH)' — libc `realpath' via elisp kernel.
+fn cc_slot_1(
+    arg: &Sexp,
+    f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp,
+) -> Sexp {
+    let mut slot = Sexp::Nil;
+    unsafe { f(arg as *const _, &mut slot as *mut _) };
+    slot
+}
+
+fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> {
+    if rc < 0 {
+        Err(EvalError::Internal(format!("{name}: {path}: kernel returned {rc}")))
+    } else {
+        Ok(Sexp::T)
+    }
+}
+
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-canonicalize", args, 1, Some(1))?;
     let path_sexp = resolve_path_sexp(&args[0], env)?;
     let mut buf = vec![0u8; libc::PATH_MAX as usize];
-    let rc = unsafe {
-        crate::elisp_cc_spike::bi_syscall_canonicalize(&path_sexp as *const Sexp, buf.as_mut_ptr())
-    };
-    if rc == 0 { return Ok(Sexp::Nil); }
+    if unsafe {
+        crate::elisp_cc_spike::bi_syscall_canonicalize(&path_sexp as *const _, buf.as_mut_ptr())
+    } == 0
+    {
+        return Ok(Sexp::Nil);
+    }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     Ok(Sexp::Str(String::from_utf8_lossy(&buf[..len]).into_owned()))
 }
 
-/// `(nelisp--syscall-read-file PATH)' — chained open/read/close via elisp kernel.
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-read-file", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
@@ -402,17 +353,18 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
     if n_bytes == 0 { return Ok(Sexp::Str(String::new())); }
     let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
     let mut buf = vec![0u8; n_bytes];
-    let rc = (unsafe {
+    let rc = unsafe {
         crate::elisp_cc_spike::bi_syscall_read_file(
-            &path_sexp as *const Sexp, buf.as_mut_ptr(), n_bytes as i64,
+            &path_sexp as *const _, buf.as_mut_ptr(), n_bytes as i64,
         )
-    }) as i32 as i64;
-    if rc < 0 { return Ok(Sexp::Nil); }
+    } as i32 as i64;
+    if rc < 0 {
+        return Ok(Sexp::Nil);
+    }
     buf.truncate((rc as usize).min(n_bytes));
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-/// `(nelisp--read-all-from-string STR)' — delegate to the elisp reader.
 fn bi_read_all_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--read-all-from-string", args, 1, Some(1))?;
     let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl").map_err(|_| {
@@ -425,31 +377,29 @@ fn bi_read_all_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalErr
     super::apply_function(&impl_fn, args, env)
 }
 
-// ---------- file I/O helpers ----------
-
 fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     let path = string_value(arg)?;
     let base = env_default_directory(env);
     Ok(normalize_path(&path, base.as_deref()))
 }
 
-/// `resolve_existing_path' + `Sexp::Str' wrap for syscall extern-call shims.
 fn resolve_path_sexp(arg: &Sexp, env: &Env) -> Result<Sexp, EvalError> {
     let p = resolve_existing_path(arg, env)?;
     Ok(Sexp::Str(p.to_string_lossy().into_owned()))
 }
 
-/// `(nelisp--syscall-stat PATH)' — `'absent / 'file / 'directory` via libc stat(2).
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-stat", args, 1, Some(1))?;
     let path_sexp = resolve_path_sexp(&args[0], env)?;
     let mut statbuf: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe {
         crate::elisp_cc_spike::bi_syscall_stat(
-            &path_sexp as *const Sexp, (&mut statbuf as *mut libc::stat) as *mut u8,
+            &path_sexp as *const _, (&mut statbuf as *mut libc::stat) as *mut u8,
         )
     };
-    let tag = if rc < 0 { "absent" } else {
+    let tag = if rc < 0 {
+        "absent"
+    } else {
         match statbuf.st_mode & libc::S_IFMT {
             m if m == libc::S_IFDIR => "directory",
             m if m == libc::S_IFREG => "file",
@@ -459,7 +409,6 @@ fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Symbol(tag.into()))
 }
 
-/// `(nelisp--syscall-readdir DIR)' — return `(ABS-DIR NAME1 NAME2 ...)` or nil.
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-readdir", args, 1, Some(1))?;
     let dir = resolve_existing_path(&args[0], env)?;
@@ -473,8 +422,6 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     };
     Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
 }
-
-// ---- POSIX syscall surface ----
 
 fn bi_syscall_supported_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-supported-p", args, 0, Some(0))?;
@@ -511,8 +458,6 @@ pub(crate) fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
             "dup2"       => Ok(libc::SYS_dup2       as i64),
             "getpid"     => Ok(libc::SYS_getpid     as i64),
             "kill"       => Ok(libc::SYS_kill       as i64),
-            // Int-only-arg syscalls — buffer-using syscalls live in
-            // separate primitives or use nl-ffi.
             "mmap"              => Ok(libc::SYS_mmap              as i64),
             "mprotect"          => Ok(libc::SYS_mprotect          as i64),
             "munmap"            => Ok(libc::SYS_munmap            as i64),
@@ -578,10 +523,7 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(not(target_os = "linux"))]
 syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
-// ---------- symbol / function ----------
-
 fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    // Keep the builtin name in wrong-arity errors.
     require_arity("symbol-function", args, 1, Some(1))?;
     let op_args = [Sexp::Symbol("get-function".into()), args[0].clone()];
     super::env_shim::bi_globals_op(&op_args, env)
@@ -597,9 +539,7 @@ fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
     }
 }
 
-/// `(fset SYMBOL DEFINITION)` — install DEFINITION in SYMBOL's function cell.
 fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    // Keep the builtin name in wrong-arity errors.
     require_arity("fset", args, 2, Some(2))?;
     let def = match &args[1] {
         Sexp::Symbol(s) => env.lookup_function(s)?,
@@ -646,7 +586,6 @@ fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError
     }
 }
 
-/// `(nelisp--apply-builtin-dispatch NAME ARGS)' — direct dispatch by name.
 fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--apply-builtin-dispatch", args, 2, Some(2))?;
     let name = match &args[0] {
@@ -661,7 +600,6 @@ fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalE
     dispatch(&name, &arg_vec, env)
 }
 
-/// `(nelisp--apply-lambda-inner CAPTURED FORMALS BODY ARGS)' — apply a lambda.
 fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--apply-lambda-inner", args, 4, Some(4))?;
     let captured = &args[0];
@@ -671,9 +609,6 @@ fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError
     super::apply_lambda_inner(captured, formals, &body_vec, &args_vec, env)
 }
 
-/// Resolve `arg' to a callable: a symbol points to its function cell,
-/// a quoted lambda `(lambda ...)` / `(closure ...)` / `(builtin ...)`
-/// is returned as-is.
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match arg {
         Sexp::Symbol(s) => env.lookup_function(s),
@@ -690,7 +625,6 @@ fn bi_funcall(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 fn bi_apply(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("apply", args, 2, None)?;
     let func = resolve_callable(&args[0], env)?;
-    // The last arg must be a list; preceding args are spread.
     let mut all_args: Vec<Sexp> = args[1..args.len() - 1].to_vec();
     let tail = list_to_vec(&args[args.len() - 1])?;
     all_args.extend(tail);
@@ -713,11 +647,9 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
             })
         }
     };
-    // `quit` must bypass ordinary `error` handlers.
     if tag == "quit" {
         return Err(EvalError::Quit);
     }
-    // Canonicalize common tags into structured `EvalError` variants.
     if tag == "arith-error" {
         let msg = match &args[1] {
             Sexp::Cons(b) => match &b.car {
@@ -747,18 +679,15 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
         };
         return Err(EvalError::WrongType { expected, got });
     }
-    // Per Elisp, the second arg is the *data list*.
     Err(EvalError::UserError {
         tag,
         data: args[1].clone(),
     })
 }
 
-/// `(nelisp--write-stdout-bytes STR)' — write STR to stdout and flush.
 fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
     require_arity("nelisp--write-stdout-bytes", args, 1, Some(1))?;
-    // Present string variants as a uniform `Sexp::Str`.
     let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
         expected: "stringp".into(),
         got: args[0].clone(),
@@ -781,11 +710,9 @@ fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(args[0].clone())
 }
 
-/// `(nelisp--write-stderr-line STR)' — write STR, newline, and flush.
 fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
     require_arity("nelisp--write-stderr-line", args, 1, Some(1))?;
-    // Present string variants as a uniform `Sexp::Str`.
     let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
         expected: "stringp".into(),
         got: args[0].clone(),
@@ -802,21 +729,10 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(args[0].clone())
 }
 
-/// `(truncate X)' — return X truncated toward zero as an integer.
 fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("truncate", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Int(_) => {
-            // The callee writes a new `Sexp::Int` into `result_slot`.
-            let mut result_slot: Sexp = Sexp::Nil;
-            unsafe {
-                crate::elisp_cc_spike::truncate_int(
-                    &args[0] as *const Sexp,
-                    &mut result_slot as *mut Sexp,
-                );
-            }
-            Ok(result_slot)
-        }
+        Sexp::Int(_) => Ok(cc_slot_1(&args[0], crate::elisp_cc_spike::truncate_int)),
         Sexp::Float(x) => Ok(Sexp::Int(*x as i64)),
         other => Err(EvalError::WrongType {
             expected: "numberp".into(),
@@ -825,20 +741,10 @@ fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Internal `(length X)' cons/nil bridge.
 fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--length-cons-cc", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Cons(_) | Sexp::Nil => {
-            let mut result_slot: Sexp = Sexp::Nil;
-            unsafe {
-                crate::elisp_cc_spike::length_cons(
-                    &args[0] as *const Sexp,
-                    &mut result_slot as *mut Sexp,
-                );
-            }
-            Ok(result_slot)
-        }
+        Sexp::Cons(_) | Sexp::Nil => Ok(cc_slot_1(&args[0], crate::elisp_cc_spike::length_cons)),
         other => Err(EvalError::WrongType {
             expected: "sequencep".into(),
             got: other.clone(),
@@ -846,20 +752,11 @@ fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Internal `(recordp X)' bridge used by the stdlib `recordp' wrapper.
 fn bi_recordp_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--recordp-cc", args, 1, Some(1))?;
-    let mut result_slot: Sexp = Sexp::Nil;
-    unsafe {
-        crate::elisp_cc_spike::recordp(
-            &args[0] as *const Sexp,
-            &mut result_slot as *mut Sexp,
-        );
-    }
-    Ok(result_slot)
+    Ok(cc_slot_1(&args[0], crate::elisp_cc_spike::recordp))
 }
 
-/// `(nl-fact-i64 N)' — compute `N!` for `0 <= N <= 20`.
 fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-fact-i64", args, 1, Some(1))?;
     let n = as_int("nl-fact-i64", &args[0])?;
@@ -873,22 +770,6 @@ fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(result))
 }
 
-/// (read-stdin-bytes LIMIT) — block-read up to LIMIT bytes from fd 0.
-///
-/// Returns:
-/// - `Sexp::Str` of 1..=LIMIT bytes when data is available.
-/// - `Sexp::Nil` on EOF (peer closed stdin).
-///
-/// LIMIT must be a positive integer; otherwise signals `wrong-type-argument`.
-/// I/O errors propagate as `EvalError::Internal` (= `error' tag at the
-/// `condition-case' boundary).
-///
-/// Bytes are stored as a UTF-8 `String' (the Sexp string variant).  LSP
-/// wire bytes are UTF-8 by spec so this is lossless for that consumer.
-/// Pathological stdin containing non-UTF-8 bytes passes through
-/// `from_utf8_lossy`, substituting U+FFFD; strict binary stdio is left
-/// to a later dedicated primitive.
-/// Coerce arg to f64 for math ops.  Accepts int / float / nil (= 0.0).
 fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {
     match arg {
         Sexp::Int(i) => Ok(*i as f64),
@@ -904,7 +785,7 @@ fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {
 fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--f64-trunc", args, 3, Some(3))?;
     let mode = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
+        Sexp::Symbol(s) => s.as_str(),
         other => {
             return Err(EvalError::WrongType {
                 expected: "symbol".into(),
@@ -912,50 +793,39 @@ fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
             });
         }
     };
-    let x = to_f64(&args[1])?;
-    let div = to_f64(&args[2])?;
-    let q = x / div;
-    let r = match mode.as_str() {
-        "floor" => q.floor(),
-        "ceiling" => q.ceil(),
-        "round" => q.round(),
-        "truncate" => q.trunc(),
+    let q = to_f64(&args[1])? / to_f64(&args[2])?;
+    Ok(Sexp::Int(match mode {
+        "floor" => q.floor() as i64,
+        "ceiling" => q.ceil() as i64,
+        "round" => q.round() as i64,
+        "truncate" => q.trunc() as i64,
         _ => {
             return Err(EvalError::Internal(format!(
-                "nelisp--f64-trunc: unknown mode `{}'",
-                mode
+                "nelisp--f64-trunc: unknown mode `{mode}`"
             )));
         }
-    };
-    Ok(Sexp::Int(r as i64))
+    }))
 }
 
-// `string_value` validates stringp; negative rc becomes `Internal`.
 fn bi_nl_write_file(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-write-file", args, 2, Some(2))?;
     let path = string_value(&args[0])?;
     string_value(&args[1])?;
-    let rc = unsafe {
-        crate::elisp_cc_spike::bi_nl_write_file(&args[0] as *const Sexp, &args[1] as *const Sexp)
-    };
-    if rc < 0 {
-        return Err(EvalError::Internal(format!("nl-write-file: {}: kernel returned {}", path, rc)));
-    }
-    Ok(Sexp::T)
+    kernel_path_ok(
+        "nl-write-file",
+        &path,
+        unsafe { crate::elisp_cc_spike::bi_nl_write_file(&args[0] as *const _, &args[1] as *const _) },
+    )
 }
 
-// Sign-extend the 32-bit libc rc so `-1` stays negative.
 fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-make-directory", args, 1, Some(2))?;
     let path = string_value(&args[0])?;
-    let rc = (unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&args[0] as *const Sexp) })
-        as i32 as i64;
-    if rc < 0 {
-        return Err(EvalError::Internal(format!(
-            "nl-make-directory: {}: kernel returned {}", path, rc
-        )));
-    }
-    Ok(Sexp::T)
+    kernel_path_ok(
+        "nl-make-directory",
+        &path,
+        unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&args[0] as *const _) } as i32 as i64,
+    )
 }
 
 fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -970,7 +840,6 @@ fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
         }
     };
     let mut buf = vec![0u8; limit];
-    // Keep the lossy UTF-8 conversion in Rust.
     let rc = unsafe {
         crate::elisp_cc_spike::bi_read_stdin_bytes(
             buf.as_mut_ptr(),
@@ -1061,7 +930,6 @@ mod tty_raw {
             sa.sa_sigaction = sig_handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
             sa.sa_flags = 0;
-            // SIGINT is handled separately through the quit flag.
             for sig in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
                 libc::sigaction(*sig, &sa, std::ptr::null_mut());
             }
@@ -1078,7 +946,6 @@ mod tty_raw {
             )));
         }
 
-        // Write the saved state before publishing the flag.
         unsafe {
             std::ptr::write(
                 std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut libc::termios,
@@ -1104,7 +971,6 @@ mod tty_raw {
     }
 
     pub fn raw_mode_leave() -> Result<(), EvalError> {
-        // Shared claim path with the signal handler.
         if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
             let fd = TTY_FD.load(Ordering::SeqCst);
             if fd >= 0 {
@@ -1130,7 +996,6 @@ mod tty_raw {
     }
 
     pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
-        // Bypass buffered stdin so `poll` and `read` see the same fd state.
         let fd: i32 = 0; // STDIN
         let mut pfd = libc::pollfd {
             fd,
@@ -1159,7 +1024,6 @@ mod tty_raw {
             n if n > 0 => Ok(Some(buf[0])),
             _ => {
                 let errno = std::io::Error::last_os_error();
-                // The constants are equal on Linux but not on all Unix targets.
                 #[allow(unreachable_patterns)]
                 if matches!(
                     errno.raw_os_error(),
@@ -1333,7 +1197,6 @@ fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(_termios-saved-p)' — test helper for raw-mode state.
 fn bi_termios_saved_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("_termios-saved-p", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1346,7 +1209,6 @@ fn bi_termios_saved_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(_raw-mode-hooks-installed-p)' — test helper for raw-mode hooks.
 fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("_raw-mode-hooks-installed-p", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1359,7 +1221,6 @@ fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(set-quit-flag)' — mark the process-wide quit flag.
 fn bi_set_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("set-quit-flag", args, 0, Some(0))?;
     unsafe {
@@ -1368,7 +1229,6 @@ fn bi_set_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// `(clear-quit-flag)' — clear the process-wide quit flag.
 fn bi_clear_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("clear-quit-flag", args, 0, Some(0))?;
     unsafe {
@@ -1377,7 +1237,6 @@ fn bi_clear_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// `(quit-flag-pending-p)' — return t if the quit flag is set.
 fn bi_quit_flag_pending_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("quit-flag-pending-p", args, 0, Some(0))?;
     let raw = unsafe {
@@ -1386,20 +1245,17 @@ fn bi_quit_flag_pending_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(if raw != 0 { Sexp::T } else { Sexp::Nil })
 }
 
-/// `(install-sigint-handler)' — install the SIGINT quit-flag handler.
 fn bi_install_sigint_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("install-sigint-handler", args, 0, Some(0))?;
     quit::install_sigint_handler();
     Ok(Sexp::T)
 }
 
-/// `(_sigint-handler-installed-p)' — test helper for SIGINT hooks.
 fn bi_sigint_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("_sigint-handler-installed-p", args, 0, Some(0))?;
     Ok(if quit::sigint_handler_installed_p() { Sexp::T } else { Sexp::Nil })
 }
 
-/// `(install-winsize-handler)' — install the SIGWINCH handler.
 fn bi_install_winsize_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("install-winsize-handler", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1425,7 +1281,6 @@ fn bi_winsize_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(terminal-take-winsize-changed)' — claim the resize-pending flag.
 fn bi_terminal_take_winsize_changed(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("terminal-take-winsize-changed", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1438,7 +1293,6 @@ fn bi_terminal_take_winsize_changed(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(terminal-current-winsize)' — return `(COLS . ROWS)` or nil.
 fn bi_terminal_current_winsize(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("terminal-current-winsize", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1454,7 +1308,6 @@ fn bi_terminal_current_winsize(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(install-jobctrl-handlers)' — install SIGTSTP/SIGCONT handlers.
 fn bi_install_jobctrl_handlers(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("install-jobctrl-handlers", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1480,7 +1333,6 @@ fn bi_jobctrl_handlers_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(terminal-take-sigcont)' — claim the SIGCONT-arrived flag.
 fn bi_terminal_take_sigcont(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("terminal-take-sigcont", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1493,7 +1345,6 @@ fn bi_terminal_take_sigcont(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(read &optional STREAM)' — parse one elisp form from a string stream.
 fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("read", args, 0, Some(1))?;
     match args.get(0) {
@@ -1506,7 +1357,6 @@ fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
                 )
             })?;
             let result = super::apply_function(&impl_fn, &args[0..1], env)?;
-            // (FORM . CONSUMED-END) → FORM
             match result {
                 Sexp::Cons(b) => Ok(b.car.clone()),
                 other => Err(EvalError::Internal(format!(
@@ -1525,7 +1375,6 @@ fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(read-from-string STRING &optional START END)' — delegate to the elisp reader.
 fn bi_read_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("read-from-string", args, 1, Some(3))?;
     let impl_fn = env.lookup_function("nelisp--read-from-string-impl").map_err(|_| {
@@ -1544,7 +1393,6 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     if elisp_featurep(env, &feature)? {
         return Ok(Sexp::Symbol(feature));
     }
-    // Without a load path or explicit filename, keep bootstrap behavior.
     let filename = match args.get(1) {
         Some(Sexp::Str(s)) => Some(s.clone()),
         _ => None,
@@ -1578,7 +1426,6 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Symbol(feature))
 }
 
-/// Query `featurep` through its function cell.
 fn elisp_featurep(env: &mut Env, feature: &str) -> Result<bool, EvalError> {
     let fn_cell = env.lookup_function("featurep")?;
     let result = super::apply_function(
@@ -1589,7 +1436,6 @@ fn elisp_featurep(env: &mut Env, feature: &str) -> Result<bool, EvalError> {
     Ok(is_truthy(&result))
 }
 
-/// Call `provide` through its function cell.
 fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
     let fn_cell = env.lookup_function("provide")?;
     super::apply_function(
@@ -1600,9 +1446,6 @@ fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
     Ok(())
 }
 
-// ===== Vector / generic accessor helpers =====
-
-/// `(make-vector N INIT)' — allocate a vector filled with `INIT`.
 fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("make-vector", args, 2, Some(2))?;
     let len = as_int("make-vector", &args[0])?;
@@ -1612,13 +1455,6 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
             len
         )));
     }
-    // The elisp body reads N via `sexp-int-unwrap' on `n_ptr', which
-    // requires the slot to be `Sexp::Int'.  `as_int' above guarantees
-    // `args[0]' is one, so passing it directly is sound.  `init_ptr'
-    // is shape-agnostic (= `vector-slot-set' clones whatever Sexp the
-    // pointer references).  `result_slot' must start as `Sexp::Nil'
-    // so `vector-make' can write the tag byte + payload pointer
-    // without colliding with a live heap-tagged Sexp drop.
     let mut result_slot: Sexp = Sexp::Nil;
     unsafe {
         crate::elisp_cc_spike::bi_make_vector(

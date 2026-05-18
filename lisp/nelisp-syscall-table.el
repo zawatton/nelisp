@@ -53,8 +53,8 @@
             (if cell
                 (cdr cell)
               (signal 'arith-error
-                      (cons "nelisp--syscall-nr-resolve: unknown syscall"
-                            (cons name nil))))))))
+                    (cons "nelisp--syscall-nr-resolve: unknown syscall"
+                          (cons name nil))))))))
 
 ;; (provide 'nelisp-syscall-table) — omitted: this file is
 ;; loaded during bootstrap before `provide' is installed.
