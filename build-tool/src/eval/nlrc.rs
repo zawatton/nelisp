@@ -100,89 +100,32 @@ impl<T> Deref for NlRc<T> {
     }
 }
 
-// Doc 124 §124.L / §124.L+ — per-type inner-drop ABI externs for the elisp
-// Drop kernels.  Each `nl_<type>_drop_inner' wraps `nlrc_payload_drop::<T>'
-// (= `drop_in_place::<T>') so the elisp kernel can call it via `extern-call'
-// before the matching `dealloc-bytes'.
+// Per-type inner-drop ABI externs — each `nl_<type>_drop_inner' wraps
+// `drop_in_place::<T>' so elisp Drop kernels can call it via extern-call
+// before `dealloc-bytes'.  Safety: `box_ptr' must point at an initialized
+// box of the named type.
 
-/// Generic in-place drop helper — runs `T`'s destructor without freeing.
-///
-/// # Safety
-/// `ptr` must point at a fully-initialized `T` whose backing alloc the
-/// caller is about to free.
 pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) {
     std::ptr::drop_in_place(ptr as *mut T);
 }
 
-/// §124.L NlConsBox inner-drop ABI extern.
-///
-/// # Safety
-/// `box_ptr' must point at a fully-initialized `NlConsBox'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_consbox_drop_inner(box_ptr: *mut i64) -> i64 {
-    crate::eval::nlconsbox::NlConsBox::DROP_FN(box_ptr as *mut std::ffi::c_void);
-    1
+macro_rules! drop_inner_extern {
+    ($name:ident, $ty:path) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(box_ptr: *mut i64) -> i64 {
+            <$ty>::DROP_FN(box_ptr as *mut std::ffi::c_void);
+            1
+        }
+    };
 }
 
-/// §124.L NlVector inner-drop ABI extern.
-///
-/// # Safety
-/// `box_ptr' must point at a fully-initialized `NlVector'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_vector_drop_inner(box_ptr: *mut i64) -> i64 {
-    crate::eval::nlvector::NlVector::DROP_FN(box_ptr as *mut std::ffi::c_void);
-    1
-}
-
-/// §124.L NlCell inner-drop ABI extern.
-///
-/// # Safety
-/// `box_ptr' must point at a fully-initialized `NlCell'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_cell_drop_inner(box_ptr: *mut i64) -> i64 {
-    crate::eval::nlcell::NlCell::DROP_FN(box_ptr as *mut std::ffi::c_void);
-    1
-}
-
-/// §124.L NlRecord inner-drop ABI extern.
-///
-/// # Safety
-/// `box_ptr' must point at a fully-initialized `NlRecord'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_record_drop_inner(box_ptr: *mut i64) -> i64 {
-    crate::eval::nlrecord::NlRecord::DROP_FN(box_ptr as *mut std::ffi::c_void);
-    1
-}
-
-/// §124.L NlStr inner-drop ABI extern.
-///
-/// # Safety
-/// `box_ptr' must point at a fully-initialized `NlStr'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_str_drop_inner(box_ptr: *mut i64) -> i64 {
-    crate::eval::nlstr::NlStr::DROP_FN(box_ptr as *mut std::ffi::c_void);
-    1
-}
-
-/// §124.L+ NlBoolVector inner-drop ABI extern.
-///
-/// # Safety
-/// `box_ptr' must point at a fully-initialized `NlBoolVector'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_boolvector_drop_inner(box_ptr: *mut i64) -> i64 {
-    crate::eval::nlboolvector::NlBoolVector::DROP_FN(box_ptr as *mut std::ffi::c_void);
-    1
-}
-
-/// §124.L+ NlCharTable inner-drop ABI extern.
-///
-/// # Safety
-/// `box_ptr' must point at a fully-initialized `NlCharTable'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_chartable_drop_inner(box_ptr: *mut i64) -> i64 {
-    crate::eval::nlchartable::NlCharTable::DROP_FN(box_ptr as *mut std::ffi::c_void);
-    1
-}
+drop_inner_extern!(nl_consbox_drop_inner,    crate::eval::nlconsbox::NlConsBox);
+drop_inner_extern!(nl_vector_drop_inner,     crate::eval::nlvector::NlVector);
+drop_inner_extern!(nl_cell_drop_inner,       crate::eval::nlcell::NlCell);
+drop_inner_extern!(nl_record_drop_inner,     crate::eval::nlrecord::NlRecord);
+drop_inner_extern!(nl_str_drop_inner,        crate::eval::nlstr::NlStr);
+drop_inner_extern!(nl_boolvector_drop_inner, crate::eval::nlboolvector::NlBoolVector);
+drop_inner_extern!(nl_chartable_drop_inner,  crate::eval::nlchartable::NlCharTable);
 
 // Compile-time layout assertions — refcount @ 0, value @ 8 for i64 canary.
 const _: () = {

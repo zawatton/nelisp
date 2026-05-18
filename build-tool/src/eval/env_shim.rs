@@ -1,15 +1,8 @@
-//! Globals-only access primitive `nelisp--env-globals-op OP NAME &optional ARG'.
-//! Single dispatcher backing 11 elisp shim wrappers in
-//! `lisp/nelisp-stdlib-env-shim.el'.
-//!
-//! OP tags:
-//!   get-value / set-value / get-function / set-function
-//!   clear-value / clear-function (= makunbound / fmakunbound)
-//!   is-bound / is-fbound / is-constant / set-constant
-//!   capture-lexical (= snapshot frames as alist, 0-arg)
-//!
-//! set-value bypasses constant-rejection (elisp shim enforces);
-//! set-function never errors on existing; clear-* no-op on absent.
+//! `nelisp--env-globals-op OP NAME &optional ARG' dispatcher.  OP tags:
+//! get/set-{value,function}, clear-{value,function}, is-{bound,fbound,constant},
+//! set-constant, capture-lexical.  Backs 11 wrappers in
+//! `lisp/nelisp-stdlib-env-shim.el'.  set-value bypasses constant-reject
+//! (shim enforces); set-function never errors; clear-* no-op on absent.
 
 use super::Env;
 use super::error::EvalError;
@@ -37,13 +30,6 @@ fn bool_sexp(b: bool) -> Sexp {
     if b { Sexp::T } else { Sexp::Nil }
 }
 
-/// Generic `nelisp--env-globals-op OP NAME &optional ARG' dispatcher;
-/// see module doc for OP tag semantics.
-///
-/// Doc 102 Phase 6 (2026-05-17) — promoted from `extern_builtin' to a
-/// `pub(crate)' regular builtin invoked directly from `builtins::dispatch'.
-/// Removes the production binary's dependency on the `extern_builtins'
-/// HashMap (= now a test-only / host-crate extension API surface).
 pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let op = match args.first() {
         Some(Sexp::Symbol(s)) => s.as_str(),
@@ -67,20 +53,9 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         return Ok(env.capture_lexical());
     }
     let name = sym_arg(&args[1])?;
-    // Doc 102 Phase 8 sprint Session 5 — reads route through Rust-direct
-    // `Env::mirror_lookup_*' (no `apply_function' detour); writes dual-
-    // write to the elisp mirror via `env.mirror_set_*' so elisp-driven
-    // mutations stay in sync.  Both paths fall back to the Rust HashMap
-    // during early bootstrap (= globals_record still Sexp::Nil).
-    // Doc 102 Phase 8 Sprint B — mirror is the sole source of truth.
-    // env_shim primitives are dormant during early bootstrap
-    // (`install_env_shim_primitives' only registers; production callers
-    // are STDLIB elisp invoked after `install_globals_record').
+    // `mirror_lookup_*' returns `unbound_marker' for absent; convert to
+    // Unbound{Variable,Function} for the public Result surface.
     match op {
-        // Doc 102 Phase 5.c — `mirror_lookup_*' now returns
-        // `Env::unbound_marker' for the absent case; convert that
-        // sentinel into the explicit `Unbound*' error here so the
-        // env_shim primitive's Result-typed surface stays unchanged.
         "get-value" => {
             let v = env.mirror_lookup_value(&name);
             if v == env.unbound_marker {
@@ -130,21 +105,9 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
     }
 }
 
-/// Install the Doc 102 Phase 2.c generic env-globals dispatcher into
-/// `env`.  Idempotent — re-installing overwrites the previous function
-/// cell.
-///
-/// Called from `Env::new_global` after `install_builtins` has run but
-/// before `STDLIB_IMAGES` are loaded, so the shim file
-/// (`nelisp-stdlib-env-shim.el`) can `funcall` `nelisp--env-globals-op`
-/// at load time (= when its 11 elisp wrappers' bodies expand).
-///
-/// Doc 102 Phase 6 (2026-05-17) — `bi_globals_op' is now invoked
-/// directly from `builtins::dispatch' via a regular match arm; the
-/// `extern_builtins' HashMap detour is retired.  We still register
-/// the function-cell sentinel `(builtin nelisp--env-globals-op)' so
-/// =(funcall #'nelisp--env-globals-op ...)= resolves through the
-/// usual dispatch path.
+/// Install `nelisp--env-globals-op' function-cell sentinel.  Called from
+/// `Env::new_global' after `install_builtins' but before STDLIB load so
+/// the shim file's 11 elisp wrappers can funcall it.  Idempotent.
 pub fn install_env_shim_primitives(env: &mut Env) {
     let sentinel = Sexp::list_from(&[
         Sexp::Symbol("builtin".into()),
