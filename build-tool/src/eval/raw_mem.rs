@@ -1,44 +1,24 @@
-//! Atomic + raw-memory + alloc/dealloc extern "C" primitives.
-//!
-//! Eight `#[no_mangle]` wrappers backing the Phase 47 grammar ops
-//! `atomic-fetch-add` / `atomic-compare-exchange` / `ptr-read-u64` /
-//! `ptr-write-u64` / `ptr-read-u8` / `ptr-write-u8` / `alloc-bytes` /
-//! `dealloc-bytes`.  All atomics use `Ordering::SeqCst`.  Callers
-//! must guarantee alignment (= 8 bytes for u64, 1 for u8) and
-//! liveness; offset is in bytes via `wrapping_add` (no bounds check).
+//! Atomic + raw-memory + alloc/dealloc primitives backing Phase 47
+//! grammar ops.  All atomics SeqCst.  Callers ensure alignment (8 for
+//! u64, 1 for u8) and liveness; offset is byte-wise via `wrapping_add'.
 
 use std::alloc::{self, Layout};
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Atomic fetch-and-add on an `i64` slot, returning the pre-add value.
-///
-/// # Safety
-/// - `ptr` must be non-null, 8-byte aligned, and point at a live
-///   `i64` slot.  Concurrent accesses must all go through atomic ops
-///   (mixing raw `*p` writes is UB).  Slot must outlive the call.
+/// # Safety: `ptr` non-null, 8-byte aligned, live; all accesses atomic.
 #[no_mangle]
 pub unsafe extern "C" fn nl_atomic_fetch_add(ptr: *mut i64, delta: i64) -> i64 {
-    // SAFETY: caller asserts `ptr` is valid + aligned for the lifetime
-    // of this call.  `AtomicI64::from_ptr` re-interprets the slot as
-    // an atomic; this is sound when all concurrent accesses are
-    // atomic.
     let atomic = unsafe { AtomicI64::from_ptr(ptr) };
     atomic.fetch_add(delta, Ordering::SeqCst)
 }
 
-/// Atomic compare-and-exchange on an `i64` slot.  Returns `1` on
-/// success (= slot equal to `expected`, replaced with `new_val`),
-/// `0` on failure (= slot unchanged).
-///
-/// # Safety
-/// Same alignment + lifetime contract as [`nl_atomic_fetch_add`].
+/// Returns 1 on success, 0 on failure.  Safety: same as [`nl_atomic_fetch_add`].
 #[no_mangle]
 pub unsafe extern "C" fn nl_atomic_compare_exchange(
     ptr: *mut i64,
     expected: i64,
     new_val: i64,
 ) -> i64 {
-    // SAFETY: see `nl_atomic_fetch_add`.
     let atomic = unsafe { AtomicI64::from_ptr(ptr) };
     match atomic.compare_exchange(expected, new_val, Ordering::SeqCst, Ordering::SeqCst) {
         Ok(_) => 1,
@@ -46,65 +26,35 @@ pub unsafe extern "C" fn nl_atomic_compare_exchange(
     }
 }
 
-/// Raw `u64` read at `ptr + offset` (bytes), returned as `i64`.
-///
-/// # Safety
-/// - `ptr + offset` must be non-null, 8-byte aligned, and point at 8
-///   bytes of readable initialized memory.
-/// - No concurrent non-atomic writes; mixing with `nl_atomic_*` is UB.
+/// # Safety: `ptr + offset` non-null, 8-byte aligned, readable; no concurrent non-atomic writes.
 #[no_mangle]
 pub unsafe extern "C" fn nl_ptr_read_u64(ptr: *const u8, offset: i64) -> i64 {
     let p = (ptr as usize).wrapping_add(offset as usize) as *const u64;
-    // SAFETY: caller-asserted alignment + readability.
-    let v = unsafe { *p };
-    v as i64
+    unsafe { *p as i64 }
 }
 
-/// Raw `u64` write at `ptr + offset` (bytes), low 64 bits of `val`.
-///
-/// # Safety
-/// - `ptr + offset` must be non-null, 8-byte aligned, writable.
-/// - No concurrent reads/writes (refcount-protected or fresh alloc).
+/// # Safety: `ptr + offset` non-null, 8-byte aligned, writable, no concurrent r/w.
 #[no_mangle]
 pub unsafe extern "C" fn nl_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) {
     let p = (ptr as usize).wrapping_add(offset as usize) as *mut u64;
-    // SAFETY: caller-asserted alignment + writability.
     unsafe { *p = val as u64 };
 }
 
-/// Raw `u8` read at `ptr + offset` (bytes), zero-extended to `i64`.
-///
-/// # Safety
-/// - `ptr + offset` must be a non-null, readable 1-byte slot.
-/// - No concurrent non-atomic writes.
+/// # Safety: `ptr + offset` non-null, readable 1-byte slot.
 #[no_mangle]
 pub unsafe extern "C" fn nl_ptr_read_u8(ptr: *const u8, offset: i64) -> i64 {
     let p = (ptr as usize).wrapping_add(offset as usize) as *const u8;
-    // SAFETY: caller-asserted readability.
-    let v = unsafe { *p };
-    v as i64
+    unsafe { *p as i64 }
 }
 
-/// Raw `u8` write at `ptr + offset` (bytes), low 8 bits of `val`.
-///
-/// # Safety
-/// - `ptr + offset` must be a non-null, writable 1-byte slot.
-/// - No concurrent reads/writes.
+/// # Safety: `ptr + offset` non-null, writable 1-byte slot, no concurrent r/w.
 #[no_mangle]
 pub unsafe extern "C" fn nl_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) {
     let p = (ptr as usize).wrapping_add(offset as usize) as *mut u8;
-    // SAFETY: caller-asserted writability.
     unsafe { *p = val as u8 };
 }
 
-/// Generic byte-level allocator wrapping
-/// `std::alloc::alloc(Layout::from_size_align(size, align))`.  Returns
-/// null on layout error (bad align, isize overflow), zero/negative
-/// args, or OOM.
-///
-/// # Safety
-/// Sound by itself (only touches global allocator); marked `unsafe`
-/// for ABI uniformity with the rest of the `nl_*` extern surface.
+/// Returns null on bad layout / zero/neg args / OOM.
 #[no_mangle]
 pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
     if size <= 0 || align <= 0 {
@@ -113,20 +63,10 @@ pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
     let Ok(layout) = Layout::from_size_align(size as usize, align as usize) else {
         return std::ptr::null_mut();
     };
-    // SAFETY: `Layout::from_size_align` succeeded → layout is valid;
-    // size > 0 by the early return above.  The underlying allocator
-    // may return null on OOM, which propagates to the caller.
     unsafe { alloc::alloc(layout) }
 }
 
-/// Generic byte-level deallocator wrapping `std::alloc::dealloc`.
-/// Null pointer / zero-size / invalid layout args are silent no-ops.
-///
-/// # Safety
-/// - `ptr` must be null or returned by `nl_alloc_bytes` with the
-///   *same* `(size, align)` arguments — `dealloc` is UB on mismatch.
-/// - Slot must not be accessed after this call.
-/// - Concurrent free of the same slot is UB.
+/// # Safety: ptr must be null or from matching `nl_alloc_bytes(size,align)`.
 #[no_mangle]
 pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
     if ptr.is_null() || size <= 0 || align <= 0 {
@@ -135,8 +75,6 @@ pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
     let Ok(layout) = Layout::from_size_align(size as usize, align as usize) else {
         return;
     };
-    // SAFETY: caller's responsibility — see fn-level doc.  Layout
-    // matches the matching alloc call by the doc-comment contract.
     unsafe { alloc::dealloc(ptr, layout) }
 }
 
