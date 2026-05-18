@@ -802,6 +802,17 @@
      :source-var nelisp-cc-nlstr-clone--source
      :output "nelisp_nlstr_clone.o"
      :requires-arch x86_64)
+    ;; Doc 127 — `(signal TAG DATA)' tag-dispatch swap.  Single manifest
+    ;; entry; the body does a 3-way `symbol-eq' chain and returns an
+    ;; i64 discriminant (0=quit / 1=arith-error / 2=wrong-type-argument /
+    ;; 3=user-error).  The Rust shim keeps arity check, WrongType guard,
+    ;; EvalError construction, and data-field extraction; only the symbol
+    ;; name comparison moves into elisp (>= 20 Rust LOC saved).
+    ;; Linux-x86_64 only -- `symbol-eq' uses the x86_64 string-eq-core.
+    (nelisp-cc-bi-signal
+     :source-var nelisp-cc-bi-signal--dispatch-source
+     :output "nelisp_bi_signal_dispatch.o"
+     :requires-arch x86_64)
     ;; Doc 116 §116.A — pure-elisp Reader lexer.  Single manifest
     ;; entry; the source defconst is a `(seq DEFUN ...)' of ~20
     ;; mutually-recursive tail-call helpers and one public entry

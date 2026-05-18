@@ -448,41 +448,20 @@ fn bi_eval(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("eval", args, 1, Some(2))?; super::eval(&args[0], env)
 }
 
-fn signal_list_head(data: &Sexp) -> Option<&Sexp> {
-    match data {
-        Sexp::Cons(b) => Some(&b.car),
-        _ => None,
-    }
-}
-
+// Doc 127: thin Rust shell; symbol-name dispatch delegated to elisp .o.
 fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("signal", args, 2, Some(2))?;
-    let tag = match &args[0] {
-        Sexp::Symbol(s) => s.as_str(),
-        other => return Err(EvalError::WrongType { expected: "symbolp".into(), got: other.clone() }),
-    };
-    match tag {
-        "quit" => Err(EvalError::Quit),
-        "arith-error" => Err(EvalError::ArithError(match signal_list_head(&args[1]).unwrap_or(&args[1]) {
-            Sexp::Str(s) => s.clone(),
-            other => format!("{:?}", other),
-        })),
-        "wrong-type-argument" => {
-            let expected = match signal_list_head(&args[1]) {
-                Some(Sexp::Symbol(s) | Sexp::Str(s)) => s.clone(),
-                Some(other) => format!("{:?}", other),
-                None => "argument".into(),
-            };
-            let got = match &args[1] {
-                Sexp::Cons(b) => match &b.cdr {
-                    Sexp::Cons(c) => c.car.clone(),
-                    other => other.clone(),
-                },
-                other => other.clone(),
-            };
-            Err(EvalError::WrongType { expected, got })
-        }
-        _ => Err(EvalError::UserError { tag: tag.into(), data: args[1].clone() }),
+    let Sexp::Symbol(tag) = &args[0] else { return Err(EvalError::WrongType { expected: "symbolp".into(), got: args[0].clone() }); };
+    let (q, a, w) = (Sexp::Symbol("quit".into()), Sexp::Symbol("arith-error".into()), Sexp::Symbol("wrong-type-argument".into()));
+    fn hd(s: &Sexp) -> Option<&Sexp> { if let Sexp::Cons(b) = s { Some(&b.car) } else { None } }
+    match unsafe { crate::elisp_cc_spike::bi_signal_dispatch(&args[0], &q, &a, &w) } {
+        0 => Err(EvalError::Quit),
+        1 => Err(EvalError::ArithError(match hd(&args[1]).unwrap_or(&args[1]) { Sexp::Str(s) => s.clone(), o => format!("{o:?}") })),
+        2 => Err(EvalError::WrongType {
+            expected: match hd(&args[1]) { Some(Sexp::Symbol(s) | Sexp::Str(s)) => s.clone(), Some(o) => format!("{o:?}"), None => "argument".into() },
+            got: match &args[1] { Sexp::Cons(b) => match &b.cdr { Sexp::Cons(c) => c.car.clone(), o => o.clone() }, o => o.clone() },
+        }),
+        _ => Err(EvalError::UserError { tag: tag.clone(), data: args[1].clone() }),
     }
 }
 

@@ -62,6 +62,12 @@ pub mod elisp_cc_spike {
         fn nelisp_bi_write_stderr_line(str_ptr: *const Sexp) -> i64;
         fn nelisp_bi_write_stdout_bytes(str_ptr: *const Sexp) -> i64;
         fn nelisp_bi_read_stdin_bytes(buf_ptr: *mut u8, limit: i64) -> i64;
+        fn nelisp_bi_signal_dispatch(
+            tag_ptr: *const Sexp,
+            quit_ptr: *const Sexp,
+            arith_ptr: *const Sexp,
+            wrong_type_ptr: *const Sexp,
+        ) -> i64;
         fn nelisp_cell_value(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_cell_set_value(arg0: *const Sexp, val_ptr: *const Sexp);
         fn nelisp_cell_make(val_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
@@ -336,6 +342,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(bi_write_stderr_line: nelisp_bi_write_stderr_line, (str_ptr: *const Sexp) -> i64);
     cc_wrap!(bi_write_stdout_bytes: nelisp_bi_write_stdout_bytes, (str_ptr: *const Sexp) -> i64);
     cc_wrap!(bi_read_stdin_bytes: nelisp_bi_read_stdin_bytes, (buf_ptr: *mut u8, limit: i64) -> i64);
+    cc_wrap!(bi_signal_dispatch: nelisp_bi_signal_dispatch, (tag_ptr: *const Sexp, quit_ptr: *const Sexp, arith_ptr: *const Sexp, wrong_type_ptr: *const Sexp) -> i64);
     cc_wrap!(cell_value: nelisp_cell_value, (arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
     cc_wrap!(cell_set_value: nelisp_cell_set_value, (arg0: *const Sexp, val_ptr: *const Sexp) -> ());
     cc_wrap!(cell_make: nelisp_cell_make, (val_ptr: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
