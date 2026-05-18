@@ -23,13 +23,6 @@ pub unsafe extern "C" fn nl_jit_cons_make(
     TRAMPOLINE_OK
 }
 
-// `nl_cons_car_ptr' moved to Phase 47 elisp:
+// `nl_cons_car_ptr' and `nl_cons_cdr_ptr' moved to Phase 47 elisp:
 //   lisp/nelisp-cc-jit-cons-car-ptr.el  (car_ptr = sexp-payload-ptr)
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_cons_cdr_ptr(arg: *const Sexp) -> *const Sexp {
-    match &*arg {
-        Sexp::Cons(_) => &(*(*arg).cons_box_ptr()).cdr as *const Sexp,
-        _ => std::ptr::null(),
-    }
-}
+//   lisp/nelisp-cc-jit-cons-cdr-ptr.el  (cdr_ptr = sexp-payload-ptr + 32)
