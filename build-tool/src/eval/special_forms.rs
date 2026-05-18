@@ -1,20 +1,14 @@
-//! Special-form dispatcher — head-controlled argument evaluation.
-//! [`apply_special`] returns `Ok(Some(v))' on match, `Ok(None)' to
-//! fall through to function/macro lookup, `Err' on syntax error.
-
 use super::Env;
 use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
 use super::{eval, list_elements};
 
-/// Dispatch 13 Tier 1 irreducible forms; Tier 2 macros (`cond' / `when' / etc.)
-/// return `Ok(None)' and fall through to macro expansion.
 pub fn apply_special(
     name: &str,
     args: &Sexp,
     env: &mut Env,
 ) -> Result<Option<Sexp>, EvalError> {
-    let result = match name {
+    Ok(Some(match name {
         "quote" => sf_quote(args)?,
         "function" => sf_function(args, env)?,
         "if" => sf_if(args, env)?,
@@ -29,20 +23,13 @@ pub fn apply_special(
         "catch" => sf_catch(args, env)?,
         "throw" => sf_throw(args, env)?,
         _ => return Ok(None),
-    };
-    Ok(Some(result))
+    }))
 }
-
-// ---------- helpers ----------
 
 fn first_arg(args: &Sexp, op: &str) -> Result<Sexp, EvalError> {
     match args {
         Sexp::Cons(b) => Ok(b.car.clone()),
-        _ => Err(EvalError::WrongNumberOfArguments {
-            function: op.into(),
-            expected: "≥1".into(),
-            got: 0,
-        }),
+        _ => Err(wrong_args(op, "≥1", 0)),
     }
 }
 
@@ -50,34 +37,53 @@ fn args_vec(args: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     list_elements(args)
 }
 
-/// Boolean truthiness per Elisp: only `nil` is false.
+fn wrong_args(function: &str, expected: &str, got: usize) -> EvalError {
+    EvalError::WrongNumberOfArguments {
+        function: function.into(),
+        expected: expected.into(),
+        got,
+    }
+}
+
+fn expect_len(parts: &[Sexp], name: &str, expected: usize) -> Result<(), EvalError> {
+    if parts.len() == expected {
+        Ok(())
+    } else {
+        Err(wrong_args(name, &expected.to_string(), parts.len()))
+    }
+}
+
+fn expect_min_len(parts: &[Sexp], name: &str, min: usize) -> Result<(), EvalError> {
+    if parts.len() >= min {
+        Ok(())
+    } else {
+        Err(wrong_args(name, &format!("≥{min}"), parts.len()))
+    }
+}
+
+fn with_frame<T>(env: &mut Env, body: impl FnOnce(&mut Env) -> Result<T, EvalError>) -> Result<T, EvalError> {
+    env.push_frame();
+    let result = body(env);
+    env.pop_frame();
+    result
+}
+
 pub fn is_truthy(v: &Sexp) -> bool {
     !matches!(v, Sexp::Nil)
 }
 
-// ---------- quote / function ----------
-
 fn sf_quote(args: &Sexp) -> Result<Sexp, EvalError> {
     let parts = args_vec(args)?;
-    if parts.len() != 1 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "quote".into(),
-            expected: "1".into(),
-            got: parts.len(),
-        });
-    }
-    Ok(parts.into_iter().next().unwrap())
+    expect_len(&parts, "quote", 1)?;
+    Ok(parts[0].clone())
 }
 
 fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // `(function FORM)` = `#'FORM`: lambda → closure, symbol → as-is.
     let form = first_arg(args, "function")?;
     match &form {
         Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "lambda") => {
-            sf_lambda(&Sexp::cons(
-                extract_lambda_args(&form)?,
-                extract_lambda_body(&form)?,
-            ), env)
+            let (params, body) = lambda_rest(&form)?;
+            sf_lambda(&Sexp::cons(params, body), env)
         }
         _ => Ok(form),
     }
@@ -92,26 +98,9 @@ fn lambda_rest(lam: &Sexp) -> Result<(Sexp, Sexp), EvalError> {
     Err(EvalError::Internal("malformed lambda".into()))
 }
 
-fn extract_lambda_args(lam: &Sexp) -> Result<Sexp, EvalError> {
-    Ok(lambda_rest(lam)?.0)
-}
-
-fn extract_lambda_body(lam: &Sexp) -> Result<Sexp, EvalError> {
-    Ok(lambda_rest(lam)?.1)
-}
-
-// ---------- if ----------
-
 fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (if COND THEN ELSE...)
     let parts = args_vec(args)?;
-    if parts.len() < 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "if".into(),
-            expected: "≥2".into(),
-            got: parts.len(),
-        });
-    }
+    expect_min_len(&parts, "if", 2)?;
     let cond = eval(&parts[0], env)?;
     if is_truthy(&cond) {
         eval(&parts[1], env)
@@ -124,27 +113,18 @@ fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
-// ---------- let / let* ----------
-
 fn sf_let(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    sf_let_common(args, env, "let", /*sequential=*/ false)
+    sf_let_common(args, env, "let", false)
 }
 
 fn sf_let_star(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    sf_let_common(args, env, "let*", /*sequential=*/ true)
+    sf_let_common(args, env, "let*", true)
 }
 
 fn sf_let_common(args: &Sexp, env: &mut Env, name: &str, sequential: bool) -> Result<Sexp, EvalError> {
     let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: name.into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
+    expect_min_len(&parts, name, 1)?;
     let bindings = list_elements(&parts[0])?;
-    // `let' pre-evaluates in OUTER env; `let*' evaluates inside the frame.
     let pre_evaluated = if sequential {
         None
     } else {
@@ -154,8 +134,7 @@ fn sf_let_common(args: &Sexp, env: &mut Env, name: &str, sequential: bool) -> Re
         }
         Some(values)
     };
-    env.push_frame();
-    let result = (|| -> Result<Sexp, EvalError> {
+    with_frame(env, |env| {
         if let Some(values) = pre_evaluated {
             for (n, v) in values { env.bind_local(&n, v); }
         } else {
@@ -165,9 +144,7 @@ fn sf_let_common(args: &Sexp, env: &mut Env, name: &str, sequential: bool) -> Re
             }
         }
         eval_body(&parts[1..], env)
-    })();
-    env.pop_frame();
-    result
+    })
 }
 
 fn parse_let_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
@@ -206,18 +183,9 @@ fn eval_body(body: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(last)
 }
 
-// ---------- lambda ----------
-
 fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (lambda ARGS BODY...) → (closure CAPTURED-ENV ARGS BODY...)
     let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "lambda".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
+    expect_min_len(&parts, "lambda", 1)?;
     let formals = parts[0].clone();
     let body: Vec<Sexp> = parts.iter().skip(1).cloned().collect();
     let captured = env.capture_lexical();
@@ -226,17 +194,10 @@ fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::list_from(&chain))
 }
 
-// ---------- setq ----------
-
 fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (setq SYM VAL SYM VAL ...)
     let parts = args_vec(args)?;
     if parts.len() % 2 != 0 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "setq".into(),
-            expected: "even number".into(),
-            got: parts.len(),
-        });
+        return Err(wrong_args("setq", "even number", parts.len()));
     }
     let mut last = Sexp::Nil;
     let mut iter = parts.into_iter();
@@ -244,7 +205,6 @@ fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         let value_form = iter.next().unwrap();
         let name = match name_form {
             Sexp::Symbol(s) => s,
-            // nil/t → name strings so setq raises SettingConstant (= Elisp signal).
             Sexp::Nil => "nil".to_string(),
             Sexp::T => "t".to_string(),
             other => {
@@ -261,17 +221,9 @@ fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(last)
 }
 
-// ---------- while ----------
-
 fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "while".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
+    expect_min_len(&parts, "while", 1)?;
     loop {
         let cond = eval(&parts[0], env)?;
         if !is_truthy(&cond) {
@@ -283,18 +235,38 @@ fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
-// ---------- condition-case / unwind-protect ----------
+fn clause_parts(clause: &Sexp) -> Result<Vec<Sexp>, EvalError> {
+    list_elements(clause)
+}
+
+fn clause_matches(tag_form: &Sexp, tag: &str) -> Result<bool, EvalError> {
+    Ok(match tag_form {
+        Sexp::Symbol(s) => is_error_subtype(s, tag),
+        Sexp::T => true,
+        Sexp::Cons(_) => list_elements(tag_form)?.iter().any(|t| {
+            matches!(t, Sexp::Symbol(s) if is_error_subtype(s, tag))
+        }),
+        _ => false,
+    })
+}
+
+fn eval_handler(
+    env: &mut Env,
+    var: Option<&str>,
+    value: Option<Sexp>,
+    handler: &[Sexp],
+) -> Result<Sexp, EvalError> {
+    with_frame(env, |env| {
+        if let (Some(name), Some(value)) = (var, value) {
+            env.bind_local(name, value);
+        }
+        eval_body(&handler[1..], env)
+    })
+}
 
 fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (condition-case VAR PROTECTED-FORM (TAG BODY...) ...)
     let parts = args_vec(args)?;
-    if parts.len() < 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "condition-case".into(),
-            expected: "≥2".into(),
-            got: parts.len(),
-        });
-    }
+    expect_min_len(&parts, "condition-case", 2)?;
     let var = match &parts[0] {
         Sexp::Symbol(s) if s == "nil" => None,
         Sexp::Symbol(s) => Some(s.clone()),
@@ -308,40 +280,18 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let handlers: Vec<Sexp> = parts.iter().skip(2).cloned().collect();
     match eval(protected, env) {
         Ok(v) => Ok(v),
-        // `throw' is control flow, not error — pass through so the
-        // upstream `catch' can handle it.  Explicit `no-catch'
-        // handler clause catches it here (= Emacs parity).
         Err(EvalError::UncaughtThrow { tag, value }) => {
             for handler in &handlers {
-                let h_parts = list_elements(handler)?;
-                if h_parts.is_empty() {
+                let parts = clause_parts(handler)?;
+                if parts.is_empty() {
                     continue;
                 }
-                let claims_no_catch = match &h_parts[0] {
-                    Sexp::Symbol(s) => s == "no-catch",
-                    Sexp::Cons(_) => {
-                        let tag_list = list_elements(&h_parts[0])?;
-                        tag_list.iter().any(|t| {
-                            matches!(t, Sexp::Symbol(s) if s == "no-catch")
-                        })
-                    }
-                    _ => false,
-                };
-                if claims_no_catch {
-                    env.push_frame();
-                    if let Some(name) = &var {
-                        env.bind_local(
-                            name,
-                            Sexp::cons(
-                                Sexp::Symbol("no-catch".into()),
-                                Sexp::cons(tag.clone(), Sexp::cons(value.clone(), Sexp::Nil)),
-                            ),
-                        );
-                    }
-                    let body: Vec<Sexp> = h_parts.iter().skip(1).cloned().collect();
-                    let r = eval_body(&body, env);
-                    env.pop_frame();
-                    return r;
+                if clause_matches(&parts[0], "no-catch")? {
+                    let data = Sexp::cons(
+                        Sexp::Symbol("no-catch".into()),
+                        Sexp::cons(tag.clone(), Sexp::cons(value.clone(), Sexp::Nil)),
+                    );
+                    return eval_handler(env, var.as_deref(), Some(data), &parts);
                 }
             }
             Err(EvalError::UncaughtThrow { tag, value })
@@ -349,32 +299,12 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         Err(e) => {
             let actual_tag = e.error_tag().to_string();
             for handler in &handlers {
-                let h_parts = list_elements(handler)?;
-                if h_parts.is_empty() {
+                let parts = clause_parts(handler)?;
+                if parts.is_empty() {
                     continue;
                 }
-                let matches = match &h_parts[0] {
-                    Sexp::Symbol(s) => is_error_subtype(s, &actual_tag),
-                    Sexp::T => true,
-                    Sexp::Cons(_) => {
-                        // Tag list — match if any member matches.
-                        let tag_list = list_elements(&h_parts[0])?;
-                        tag_list.iter().any(|t| {
-                            matches!(t, Sexp::Symbol(s) if is_error_subtype(s, &actual_tag))
-                        })
-                    }
-                    Sexp::Nil => false,
-                    _ => false,
-                };
-                if matches {
-                    env.push_frame();
-                    if let Some(name) = &var {
-                        env.bind_local(name, e.signal_data());
-                    }
-                    let body: Vec<Sexp> = h_parts.iter().skip(1).cloned().collect();
-                    let r = eval_body(&body, env);
-                    env.pop_frame();
-                    return r;
+                if clause_matches(&parts[0], &actual_tag)? {
+                    return eval_handler(env, var.as_deref(), Some(e.signal_data()), &parts);
                 }
             }
             Err(e)
@@ -383,15 +313,8 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (unwind-protect BODY-FORM CLEANUP-FORMS...)
     let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "unwind-protect".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
+    expect_min_len(&parts, "unwind-protect", 1)?;
     let body_result = eval(&parts[0], env);
     let mut cleanup_err: Option<EvalError> = None;
     for cleanup in parts.iter().skip(1) {
@@ -401,33 +324,16 @@ fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             }
         }
     }
-    // Cleanup error takes precedence over body's outcome (Emacs parity).
     cleanup_err.map_or(body_result, Err)
 }
 
-// ---------- progn ----------
-
 fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    let mut last = Sexp::Nil;
-    for f in &parts {
-        last = eval(f, env)?;
-    }
-    Ok(last)
+    eval_body(&args_vec(args)?, env)
 }
 
-// ---------- catch / throw ----------
-
 fn sf_catch(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (catch TAG BODY...) — TAG is evaluated.
     let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "catch".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
+    expect_min_len(&parts, "catch", 1)?;
     let tag = eval(&parts[0], env)?;
     let body: Vec<Sexp> = parts.iter().skip(1).cloned().collect();
     match eval_body(&body, env) {
@@ -445,23 +351,11 @@ fn sf_catch(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 
 fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let parts = args_vec(args)?;
-    if parts.len() != 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "throw".into(),
-            expected: "2".into(),
-            got: parts.len(),
-        });
-    }
+    expect_len(&parts, "throw", 2)?;
     let tag = eval(&parts[0], env)?;
     let value = eval(&parts[1], env)?;
     Err(EvalError::UncaughtThrow { tag, value })
 }
-/// `extern "C"` wrapper around [`sexp_eq`] for the Phase-47-compiled
-/// JIT eq trampolines (= reached via `(extern-call nl_sexp_eq A B)`).
-/// Returns i64 = 1 iff equal else 0.
-///
-/// # Safety
-/// `a` and `b` must be non-null pointers to initialized `Sexp` values.
 #[no_mangle]
 pub unsafe extern "C" fn nl_sexp_eq(a: *const Sexp, b: *const Sexp) -> i64 {
     if sexp_eq(&*a, &*b) {
@@ -471,8 +365,6 @@ pub unsafe extern "C" fn nl_sexp_eq(a: *const Sexp, b: *const Sexp) -> i64 {
     }
 }
 
-/// `eq' — symbols by name, integers by value, heap types by
-/// ptr_eq (= same allocation, so cyclic graphs don't recurse).
 pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
     match (a, b) {
         (Sexp::Nil, Sexp::Nil) | (Sexp::T, Sexp::T) => true,
@@ -495,10 +387,8 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         (Sexp::CharTable(a), Sexp::CharTable(b)) => crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b),
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b),
         (Sexp::Record(a), Sexp::Record(b)) => crate::eval::nlrecord::NlRecordRef::ptr_eq(a, b),
-        // Strings + floats: bootstrap structural eq.
         (Sexp::Str(x), Sexp::Str(y)) => x == y,
         (Sexp::Float(x), Sexp::Float(y)) => x.to_bits() == y.to_bits(),
         _ => false,
     }
 }
-
