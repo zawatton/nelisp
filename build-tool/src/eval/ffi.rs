@@ -7,8 +7,6 @@
 //!   SIG  = type-keyword vector — element 0 is return type, rest are args
 //!   Type keywords: :uint{8,16,32,64} :sint{8,16,32,64}
 //!                  :float :double :pointer :void :string
-//!   Returns: Sexp::{Int / Float / Str / Nil} per return type.
-//!   Errors: `ffi-error' tag with descriptive message.
 //! ```
 //! Library handles are cached after `dlopen`.
 
@@ -32,7 +30,6 @@ fn library_cache() -> &'static Mutex<HashMap<String, &'static Library>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Resolve `"libc"' to the platform-specific shared object name.
 fn resolve_libname(path: &str) -> &str {
     if path == "libc" {
         #[cfg(target_os = "linux")]
@@ -56,10 +53,7 @@ fn dlopen(path: &str) -> Result<&'static Library, EvalError> {
     let lib = unsafe { Library::new(resolved) }
         .map_err(|e| ffi_err(format!("nl-ffi-call: dlopen failed for {:?}: {}", resolved, e)))?;
     let leaked: &'static Library = Box::leak(Box::new(lib));
-    library_cache()
-        .lock()
-        .unwrap()
-        .insert(resolved.to_string(), leaked);
+    library_cache().lock().unwrap().insert(resolved.to_string(), leaked);
     Ok(leaked)
 }
 
@@ -72,27 +66,22 @@ fn dlsym(lib: &'static Library, name: &str) -> Result<*const c_void, EvalError> 
 }
 
 enum ArgValue {
-    U8(u8),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    I8(i8),
-    I16(i16),
-    I32(i32),
-    I64(i64),
-    F32(f32),
-    F64(f64),
+    U8(u8), U16(u16), U32(u32), U64(u64),
+    I8(i8), I16(i16), I32(i32), I64(i64),
+    F32(f32), F64(f64),
     Ptr(*const c_void),
-    /// Holds a CString and the pointer passed through libffi.
     Cstr { _owner: CString, ptr: *const c_void },
 }
 
+fn sym_str<'a>(kw: &'a Sexp, ctx: &str) -> Result<&'a str, EvalError> {
+    match kw {
+        Sexp::Symbol(s) => Ok(s.as_str()),
+        _ => Err(ffi_err(format!("nl-ffi-call: {} must be a keyword symbol, got {:?}", ctx, kw))),
+    }
+}
+
 fn parse_type(kw: &Sexp) -> Result<Type, EvalError> {
-    let name = match kw {
-        Sexp::Symbol(s) => s.as_str(),
-        _ => return Err(ffi_err(format!("nl-ffi-call: type designator must be a keyword symbol, got {:?}", kw))),
-    };
-    Ok(match name {
+    Ok(match sym_str(kw, "type designator")? {
         ":uint8" => Type::u8(),
         ":uint16" => Type::u16(),
         ":uint32" => Type::u32(),
@@ -107,13 +96,6 @@ fn parse_type(kw: &Sexp) -> Result<Type, EvalError> {
         ":void" => Type::void(),
         other => return Err(ffi_err(format!("nl-ffi-call: unknown type {:?}", other))),
     })
-}
-
-fn type_name(kw: &Sexp) -> String {
-    match kw {
-        Sexp::Symbol(s) => s.clone(),
-        _ => format!("{:?}", kw),
-    }
 }
 
 fn coerce_int(arg: &Sexp) -> Result<i64, EvalError> {
@@ -134,11 +116,7 @@ fn coerce_float(arg: &Sexp) -> Result<f64, EvalError> {
 }
 
 fn build_arg(ty_kw: &Sexp, value: &Sexp) -> Result<ArgValue, EvalError> {
-    let kw = match ty_kw {
-        Sexp::Symbol(s) => s.as_str(),
-        _ => return Err(ffi_err("nl-ffi-call: bad arg type kw".into())),
-    };
-    Ok(match kw {
+    Ok(match sym_str(ty_kw, "arg type")? {
         ":uint8" => ArgValue::U8(coerce_int(value)? as u8),
         ":uint16" => ArgValue::U16(coerce_int(value)? as u16),
         ":uint32" => ArgValue::U32(coerce_int(value)? as u32),
@@ -152,7 +130,7 @@ fn build_arg(ty_kw: &Sexp, value: &Sexp) -> Result<ArgValue, EvalError> {
         ":pointer" => match value {
             Sexp::Int(i) => ArgValue::Ptr(*i as *const c_void),
             Sexp::Nil => ArgValue::Ptr(std::ptr::null()),
-            _ => return Err(ffi_err(format!("nl-ffi-call: :pointer arg expects integer (raw addr), got {:?}", value))),
+            _ => return Err(ffi_err(format!("nl-ffi-call: :pointer arg expects integer, got {:?}", value))),
         },
         ":string" => match value {
             Sexp::Str(s) => {
@@ -171,16 +149,11 @@ fn build_arg(ty_kw: &Sexp, value: &Sexp) -> Result<ArgValue, EvalError> {
 
 fn arg_to_libffi(slot: &ArgValue) -> Arg {
     match slot {
-        ArgValue::U8(v) => Arg::new(v),
-        ArgValue::U16(v) => Arg::new(v),
-        ArgValue::U32(v) => Arg::new(v),
-        ArgValue::U64(v) => Arg::new(v),
-        ArgValue::I8(v) => Arg::new(v),
-        ArgValue::I16(v) => Arg::new(v),
-        ArgValue::I32(v) => Arg::new(v),
-        ArgValue::I64(v) => Arg::new(v),
-        ArgValue::F32(v) => Arg::new(v),
-        ArgValue::F64(v) => Arg::new(v),
+        ArgValue::U8(v) => Arg::new(v), ArgValue::U16(v) => Arg::new(v),
+        ArgValue::U32(v) => Arg::new(v), ArgValue::U64(v) => Arg::new(v),
+        ArgValue::I8(v) => Arg::new(v), ArgValue::I16(v) => Arg::new(v),
+        ArgValue::I32(v) => Arg::new(v), ArgValue::I64(v) => Arg::new(v),
+        ArgValue::F32(v) => Arg::new(v), ArgValue::F64(v) => Arg::new(v),
         ArgValue::Ptr(p) => Arg::new(p),
         ArgValue::Cstr { ptr, .. } => Arg::new(ptr),
     }
@@ -207,7 +180,7 @@ pub fn nl_ffi_call(args: &[Sexp]) -> Result<Sexp, EvalError> {
         _ => return Err(ffi_err(format!("nl-ffi-call: SIG must be a vector, got {:?}", args[2]))),
     };
     if sig_vec.is_empty() {
-        return Err(ffi_err("nl-ffi-call: SIG vector is empty (need return type + arg types)".into()));
+        return Err(ffi_err("nl-ffi-call: SIG vector is empty".into()));
     }
     let ret_kw = sig_vec[0].clone();
     let arg_kws: Vec<Sexp> = sig_vec.iter().skip(1).cloned().collect();
@@ -215,8 +188,7 @@ pub fn nl_ffi_call(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if call_args.len() != arg_kws.len() {
         return Err(ffi_err(format!(
             "nl-ffi-call: argument count mismatch: SIG declares {} arg(s), got {}",
-            arg_kws.len(),
-            call_args.len()
+            arg_kws.len(), call_args.len()
         )));
     }
 
@@ -227,39 +199,30 @@ pub fn nl_ffi_call(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let arg_types: Vec<Type> = arg_kws.iter().map(parse_type).collect::<Result<_, _>>()?;
     let ret_type = parse_type(&ret_kw)?;
     let cif = Cif::new(arg_types.into_iter(), ret_type);
-
     let lib = dlopen(&path)?;
     let sym = dlsym(lib, &func)?;
     let code = CodePtr::from_ptr(sym);
-
     let arg_refs: Vec<Arg> = slots.iter().map(arg_to_libffi).collect();
-    let ret_name = type_name(&ret_kw);
+    let ret_name = sym_str(&ret_kw, "return type")?.to_string();
     let result = unsafe {
         match ret_name.as_str() {
-            ":uint8" => Sexp::Int(cif.call::<u8>(code, &arg_refs) as i64),
+            ":uint8"  => Sexp::Int(cif.call::<u8>(code, &arg_refs) as i64),
             ":uint16" => Sexp::Int(cif.call::<u16>(code, &arg_refs) as i64),
             ":uint32" => Sexp::Int(cif.call::<u32>(code, &arg_refs) as i64),
             ":uint64" => Sexp::Int(cif.call::<u64>(code, &arg_refs) as i64),
-            ":sint8" => Sexp::Int(cif.call::<i8>(code, &arg_refs) as i64),
+            ":sint8"  => Sexp::Int(cif.call::<i8>(code, &arg_refs) as i64),
             ":sint16" => Sexp::Int(cif.call::<i16>(code, &arg_refs) as i64),
             ":sint32" => Sexp::Int(cif.call::<i32>(code, &arg_refs) as i64),
             ":sint64" => Sexp::Int(cif.call::<i64>(code, &arg_refs)),
-            ":float" => Sexp::Float(cif.call::<f32>(code, &arg_refs) as f64),
+            ":float"  => Sexp::Float(cif.call::<f32>(code, &arg_refs) as f64),
             ":double" => Sexp::Float(cif.call::<f64>(code, &arg_refs)),
             ":pointer" => Sexp::Int(cif.call::<*const c_void>(code, &arg_refs) as i64),
             ":string" => {
                 let p = cif.call::<*const i8>(code, &arg_refs);
-                if p.is_null() {
-                    Sexp::Nil
-                } else {
-                    let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-                    Sexp::Str(s)
-                }
+                if p.is_null() { Sexp::Nil }
+                else { Sexp::Str(CStr::from_ptr(p).to_string_lossy().into_owned()) }
             }
-            ":void" => {
-                cif.call::<()>(code, &arg_refs);
-                Sexp::Nil
-            }
+            ":void" => { cif.call::<()>(code, &arg_refs); Sexp::Nil }
             other => return Err(ffi_err(format!("nl-ffi-call: unknown return type {:?}", other))),
         }
     };
@@ -267,65 +230,41 @@ pub fn nl_ffi_call(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(result)
 }
 
-// ---- Generic out-buffer helpers --------------------------------------------
+// ---- Tracked buffer registry -----------------------------------------------
 
-/// `(nl-ffi-malloc N)` → integer raw pointer (zeroed).
+fn alloc_table() -> &'static Mutex<HashMap<i64, usize>> {
+    static T: OnceLock<Mutex<HashMap<i64, usize>>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Look up a tracked buffer length, returning an error tagged with NAME.
+fn alloc_len(name: &str, p: i64) -> Result<usize, EvalError> {
+    alloc_table().lock().unwrap().get(&p).copied().ok_or_else(|| {
+        ffi_err(format!("{}: pointer {} not from nl-ffi-malloc", name, p))
+    })
+}
+
+/// `(nl-ffi-malloc N)` -> integer raw pointer (zeroed).
 pub fn nl_ffi_malloc(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.len() != 1 {
-        return Err(ffi_err(format!(
-            "nl-ffi-malloc: expected 1 arg (size), got {}",
-            args.len()
-        )));
-    }
+    require_arity("nl-ffi-malloc", args, 1)?;
     let n = coerce_int(&args[0])?;
     if n < 0 {
         return Err(ffi_err(format!("nl-ffi-malloc: negative size {}", n)));
     }
-    let n = n as usize;
-    let mut v: Vec<u8> = vec![0u8; n];
-    let _ptr = v.as_mut_ptr() as i64;
-    // Leak the Vec so the buffer survives until nl-ffi-free.
+    let v: Vec<u8> = vec![0u8; n as usize];
     let len = v.len();
-    let _cap = v.capacity();
     let leaked: *mut u8 = Box::leak(v.into_boxed_slice()).as_mut_ptr();
     alloc_table().lock().unwrap().insert(leaked as i64, len);
     Ok(Sexp::Int(leaked as i64))
 }
 
-/// `(nl-ffi-read-bytes PTR N)` → string of N bytes copied from PTR.
-pub fn nl_ffi_read_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.len() != 2 {
-        return Err(ffi_err(format!(
-            "nl-ffi-read-bytes: expected 2 args (ptr len), got {}",
-            args.len()
-        )));
-    }
-    let p = coerce_int(&args[0])? as *const u8;
-    let n = coerce_int(&args[1])?;
-    if n < 0 {
-        return Err(ffi_err(format!("nl-ffi-read-bytes: negative length {}", n)));
-    }
-    if p.is_null() {
-        return Err(ffi_err("nl-ffi-read-bytes: NULL pointer".into()));
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(p, n as usize) };
-    Ok(Sexp::Str(String::from_utf8_lossy(bytes).into_owned()))
-}
-
-/// `(nl-ffi-free PTR)` → t on success, signals on bad/double-free.
+/// `(nl-ffi-free PTR)` -> t on success, signals on bad/double-free.
 pub fn nl_ffi_free(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.len() != 1 {
-        return Err(ffi_err(format!(
-            "nl-ffi-free: expected 1 arg (ptr), got {}",
-            args.len()
-        )));
-    }
+    require_arity("nl-ffi-free", args, 1)?;
     let p = coerce_int(&args[0])?;
-    let len = alloc_table()
-        .lock()
-        .unwrap()
-        .remove(&p)
-        .ok_or_else(|| ffi_err(format!("nl-ffi-free: pointer {} not from nl-ffi-malloc", p)))?;
+    let len = alloc_table().lock().unwrap().remove(&p).ok_or_else(|| {
+        ffi_err(format!("nl-ffi-free: pointer {} not from nl-ffi-malloc", p))
+    })?;
     unsafe {
         let slice = std::slice::from_raw_parts_mut(p as *mut u8, len);
         let _ = Box::from_raw(slice as *mut [u8]);
@@ -333,195 +272,64 @@ pub fn nl_ffi_free(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-fn alloc_table() -> &'static Mutex<HashMap<i64, usize>> {
-    static T: OnceLock<Mutex<HashMap<i64, usize>>> = OnceLock::new();
-    T.get_or_init(|| Mutex::new(HashMap::new()))
+fn require_arity(name: &str, args: &[Sexp], expected: usize) -> Result<(), EvalError> {
+    if args.len() != expected {
+        return Err(ffi_err(format!(
+            "{}: expected {} arg(s), got {}", name, expected, args.len()
+        )));
+    }
+    Ok(())
 }
 
-/// `(nl-ffi-write-bytes PTR STR)` copies STR into a tracked buffer.
-/// PTR must come from `nl-ffi-malloc`, and the write must fit.
+/// `(nl-ffi-read-bytes PTR LEN)` or `(nl-ffi-read-bytes-at PTR OFFSET LEN)`.
+/// Public dispatch arm chooses based on arity (2 or 3).
+pub fn nl_ffi_read_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, off, n, name) = match args.len() {
+        2 => (coerce_int(&args[0])?, 0i64, coerce_int(&args[1])?, "nl-ffi-read-bytes"),
+        3 => (coerce_int(&args[0])?, coerce_int(&args[1])?, coerce_int(&args[2])?, "nl-ffi-read-bytes-at"),
+        _ => return Err(ffi_err(format!(
+            "nl-ffi-read-bytes: expected 2 or 3 args, got {}", args.len()))),
+    };
+    if p == 0 { return Err(ffi_err(format!("{}: NULL pointer", name))); }
+    if off < 0 || n < 0 {
+        return Err(ffi_err(format!("{}: negative offset/len ({}, {})", name, off, n)));
+    }
+    // `nl-ffi-read-bytes` (2-arg) is grandfathered: it does not require
+    // a tracked buffer (legacy callers pass FFI return pointers).
+    // The 3-arg `-at' form does enforce the tracked-buffer bound.
+    if args.len() == 3 {
+        let len = alloc_len(name, p)?;
+        if (off as usize) + (n as usize) > len {
+            return Err(ffi_err(format!(
+                "{}: read of {} bytes at offset {} exceeds buffer length {}",
+                name, n, off, len)));
+        }
+    }
+    let bytes = unsafe { std::slice::from_raw_parts((p + off) as *const u8, n as usize) };
+    Ok(Sexp::Str(String::from_utf8_lossy(bytes).into_owned()))
+}
+
+/// `(nl-ffi-write-bytes PTR STR)` or `(nl-ffi-write-bytes-at PTR OFFSET STR)`.
 pub fn nl_ffi_write_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.len() != 2 {
-        return Err(ffi_err(format!(
-            "nl-ffi-write-bytes: expected 2 args (ptr str), got {}",
-            args.len()
-        )));
+    let (p, off, str_idx, name) = match args.len() {
+        2 => (coerce_int(&args[0])?, 0i64, 1usize, "nl-ffi-write-bytes"),
+        3 => (coerce_int(&args[0])?, coerce_int(&args[1])?, 2usize, "nl-ffi-write-bytes-at"),
+        _ => return Err(ffi_err(format!(
+            "nl-ffi-write-bytes: expected 2 or 3 args, got {}", args.len()))),
+    };
+    if p == 0 { return Err(ffi_err(format!("{}: NULL pointer", name))); }
+    if off < 0 {
+        return Err(ffi_err(format!("{}: negative offset {}", name, off)));
     }
-    let p = coerce_int(&args[0])?;
-    if p == 0 {
-        return Err(ffi_err("nl-ffi-write-bytes: NULL pointer".into()));
-    }
-    let bytes_owned = args[1].as_string_owned().ok_or_else(|| {
-        ffi_err(format!(
-            "nl-ffi-write-bytes: expected string for arg 2, got {:?}",
-            args[1]
-        ))
+    let bytes_owned = args[str_idx].as_string_owned().ok_or_else(|| {
+        ffi_err(format!("{}: expected string for str arg, got {:?}", name, args[str_idx]))
     })?;
     let bytes = bytes_owned.as_bytes();
-    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
-        ffi_err(format!(
-            "nl-ffi-write-bytes: pointer {} not from nl-ffi-malloc",
-            p
-        ))
-    })?;
-    if bytes.len() > alloc_len {
+    let len = alloc_len(name, p)?;
+    if (off as usize) + bytes.len() > len {
         return Err(ffi_err(format!(
-            "nl-ffi-write-bytes: write of {} bytes exceeds buffer length {}",
-            bytes.len(),
-            alloc_len
-        )));
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, bytes.len());
-    }
-    Ok(Sexp::T)
-}
-
-/// `(nl-ffi-read-i32 PTR OFFSET)` reads an unaligned i32 from a tracked buffer.
-pub fn nl_ffi_read_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.len() != 2 {
-        return Err(ffi_err(format!(
-            "nl-ffi-read-i32: expected 2 args (ptr offset), got {}",
-            args.len()
-        )));
-    }
-    let p = coerce_int(&args[0])?;
-    let off = coerce_int(&args[1])?;
-    if p == 0 {
-        return Err(ffi_err("nl-ffi-read-i32: NULL pointer".into()));
-    }
-    if off < 0 {
-        return Err(ffi_err(format!("nl-ffi-read-i32: negative offset {}", off)));
-    }
-    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
-        ffi_err(format!("nl-ffi-read-i32: pointer {} not from nl-ffi-malloc", p))
-    })?;
-    if (off as usize) + 4 > alloc_len {
-        return Err(ffi_err(format!(
-            "nl-ffi-read-i32: read at offset {} exceeds buffer length {}",
-            off, alloc_len
-        )));
-    }
-    let addr = (p + off) as *const i32;
-    let v = unsafe { std::ptr::read_unaligned(addr) } as i64;
-    Ok(Sexp::Int(v))
-}
-
-/// `(nl-ffi-read-i64 PTR OFFSET)` reads an unaligned i64 from a tracked buffer.
-pub fn nl_ffi_read_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.len() != 2 {
-        return Err(ffi_err(format!(
-            "nl-ffi-read-i64: expected 2 args (ptr offset), got {}",
-            args.len()
-        )));
-    }
-    let p = coerce_int(&args[0])?;
-    let off = coerce_int(&args[1])?;
-    if p == 0 {
-        return Err(ffi_err("nl-ffi-read-i64: NULL pointer".into()));
-    }
-    if off < 0 {
-        return Err(ffi_err(format!("nl-ffi-read-i64: negative offset {}", off)));
-    }
-    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
-        ffi_err(format!("nl-ffi-read-i64: pointer {} not from nl-ffi-malloc", p))
-    })?;
-    if (off as usize) + 8 > alloc_len {
-        return Err(ffi_err(format!(
-            "nl-ffi-read-i64: read at offset {} exceeds buffer length {}",
-            off, alloc_len
-        )));
-    }
-    let addr = (p + off) as *const i64;
-    let v = unsafe { std::ptr::read_unaligned(addr) };
-    Ok(Sexp::Int(v))
-}
-
-/// `(nl-ffi-read-i16 PTR OFFSET)` reads an unaligned i16 from a tracked buffer.
-pub fn nl_ffi_read_i16(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, off) = ffi_read_args("nl-ffi-read-i16", args)?;
-    ffi_read_check_bounds("nl-ffi-read-i16", p, off, 2)?;
-    let v = unsafe { std::ptr::read_unaligned((p + off) as *const i16) } as i64;
-    Ok(Sexp::Int(v))
-}
-
-/// `(nl-ffi-read-u16 PTR OFFSET)` reads an unaligned u16 from a tracked buffer.
-pub fn nl_ffi_read_u16(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, off) = ffi_read_args("nl-ffi-read-u16", args)?;
-    ffi_read_check_bounds("nl-ffi-read-u16", p, off, 2)?;
-    let v = unsafe { std::ptr::read_unaligned((p + off) as *const u16) } as i64;
-    Ok(Sexp::Int(v))
-}
-
-/// `(nl-ffi-read-u32 PTR OFFSET)` reads an unaligned u32 from a tracked buffer.
-pub fn nl_ffi_read_u32(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, off) = ffi_read_args("nl-ffi-read-u32", args)?;
-    ffi_read_check_bounds("nl-ffi-read-u32", p, off, 4)?;
-    let v = unsafe { std::ptr::read_unaligned((p + off) as *const u32) } as i64;
-    Ok(Sexp::Int(v))
-}
-
-/// `(nl-ffi-write-i16 PTR OFFSET VALUE)` stores VALUE as an unaligned i16.
-pub fn nl_ffi_write_i16(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, off, v) = ffi_write_args("nl-ffi-write-i16", args)?;
-    ffi_read_check_bounds("nl-ffi-write-i16", p, off, 2)?;
-    unsafe { std::ptr::write_unaligned((p + off) as *mut i16, v as i16) };
-    Ok(Sexp::T)
-}
-
-/// `(nl-ffi-write-i32 PTR OFFSET VALUE)` stores VALUE as an unaligned i32.
-pub fn nl_ffi_write_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, off, v) = ffi_write_args("nl-ffi-write-i32", args)?;
-    ffi_read_check_bounds("nl-ffi-write-i32", p, off, 4)?;
-    unsafe { std::ptr::write_unaligned((p + off) as *mut i32, v as i32) };
-    Ok(Sexp::T)
-}
-
-/// `(nl-ffi-write-i64 PTR OFFSET VALUE)` stores VALUE as an unaligned i64.
-pub fn nl_ffi_write_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, off, v) = ffi_write_args("nl-ffi-write-i64", args)?;
-    ffi_read_check_bounds("nl-ffi-write-i64", p, off, 8)?;
-    unsafe { std::ptr::write_unaligned((p + off) as *mut i64, v) };
-    Ok(Sexp::T)
-}
-
-/// `(nl-ffi-read-u8 PTR OFFSET)` reads a u8 from a tracked buffer.
-pub fn nl_ffi_read_u8(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, off) = ffi_read_args("nl-ffi-read-u8", args)?;
-    ffi_read_check_bounds("nl-ffi-read-u8", p, off, 1)?;
-    let v = unsafe { std::ptr::read_unaligned((p + off) as *const u8) } as i64;
-    Ok(Sexp::Int(v))
-}
-
-/// `(nl-ffi-write-bytes-at PTR OFFSET STR)` copies STR into `PTR + OFFSET`.
-/// PTR must come from `nl-ffi-malloc`, and the write must fit.
-pub fn nl_ffi_write_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.len() != 3 {
-        return Err(ffi_err(format!(
-            "nl-ffi-write-bytes-at: expected 3 args (ptr offset str), got {}",
-            args.len()
-        )));
-    }
-    let p = coerce_int(&args[0])?;
-    let off = coerce_int(&args[1])?;
-    if p == 0 {
-        return Err(ffi_err("nl-ffi-write-bytes-at: NULL pointer".into()));
-    }
-    if off < 0 {
-        return Err(ffi_err(format!("nl-ffi-write-bytes-at: negative offset {}", off)));
-    }
-    let bytes_owned = args[2].as_string_owned().ok_or_else(|| {
-        ffi_err(format!("nl-ffi-write-bytes-at: expected string for arg 3, got {:?}", args[2]))
-    })?;
-    let bytes = bytes_owned.as_bytes();
-    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
-        ffi_err(format!("nl-ffi-write-bytes-at: pointer {} not from nl-ffi-malloc", p))
-    })?;
-    if (off as usize) + bytes.len() > alloc_len {
-        return Err(ffi_err(format!(
-            "nl-ffi-write-bytes-at: write of {} bytes at offset {} exceeds buffer length {}",
-            bytes.len(), off, alloc_len
-        )));
+            "{}: write of {} bytes at offset {} exceeds buffer length {}",
+            name, bytes.len(), off, len)));
     }
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), (p + off) as *mut u8, bytes.len());
@@ -529,98 +337,142 @@ pub fn nl_ffi_write_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// `(nl-ffi-read-bytes-at PTR OFFSET LEN)` copies bytes from `PTR + OFFSET`.
-/// Decoding matches `nl-ffi-read-bytes`.
-pub fn nl_ffi_read_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.len() != 3 {
-        return Err(ffi_err(format!(
-            "nl-ffi-read-bytes-at: expected 3 args (ptr offset len), got {}",
-            args.len()
-        )));
-    }
-    let p = coerce_int(&args[0])?;
-    let off = coerce_int(&args[1])?;
-    let n = coerce_int(&args[2])?;
-    if p == 0 {
-        return Err(ffi_err("nl-ffi-read-bytes-at: NULL pointer".into()));
-    }
-    if off < 0 || n < 0 {
-        return Err(ffi_err(format!(
-            "nl-ffi-read-bytes-at: negative offset/len ({}, {})", off, n
-        )));
-    }
-    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
-        ffi_err(format!("nl-ffi-read-bytes-at: pointer {} not from nl-ffi-malloc", p))
-    })?;
-    if (off as usize) + (n as usize) > alloc_len {
-        return Err(ffi_err(format!(
-            "nl-ffi-read-bytes-at: read of {} bytes at offset {} exceeds buffer length {}",
-            n, off, alloc_len
-        )));
-    }
-    let bytes = unsafe { std::slice::from_raw_parts((p + off) as *const u8, n as usize) };
-    Ok(Sexp::Str(String::from_utf8_lossy(bytes).into_owned()))
-}
+// ---- Unaligned integer read/write (width-dispatched) ------------------------
 
-/// Internal helper: parse `(PTR OFFSET)` args + null guard.
-fn ffi_read_args(name: &str, args: &[Sexp]) -> Result<(i64, i64), EvalError> {
-    if args.len() != 2 {
-        return Err(ffi_err(format!(
-            "{}: expected 2 args (ptr offset), got {}", name, args.len()
-        )));
-    }
+/// Parse `(PTR OFFSET)` shared by every int read.
+fn read_args(name: &str, args: &[Sexp]) -> Result<(i64, i64), EvalError> {
+    require_arity(name, args, 2)?;
     let p = coerce_int(&args[0])?;
     let off = coerce_int(&args[1])?;
-    if p == 0 {
-        return Err(ffi_err(format!("{}: NULL pointer", name)));
-    }
-    if off < 0 {
-        return Err(ffi_err(format!("{}: negative offset {}", name, off)));
-    }
+    if p == 0 { return Err(ffi_err(format!("{}: NULL pointer", name))); }
+    if off < 0 { return Err(ffi_err(format!("{}: negative offset {}", name, off))); }
     Ok((p, off))
 }
 
-/// Internal helper: parse `(PTR OFFSET VALUE)` args + null guard.
-fn ffi_write_args(name: &str, args: &[Sexp]) -> Result<(i64, i64, i64), EvalError> {
-    if args.len() != 3 {
-        return Err(ffi_err(format!(
-            "{}: expected 3 args (ptr offset value), got {}", name, args.len()
-        )));
-    }
-    let p = coerce_int(&args[0])?;
-    let off = coerce_int(&args[1])?;
-    let v = coerce_int(&args[2])?;
-    if p == 0 {
-        return Err(ffi_err(format!("{}: NULL pointer", name)));
-    }
-    if off < 0 {
-        return Err(ffi_err(format!("{}: negative offset {}", name, off)));
-    }
-    Ok((p, off, v))
-}
-
-/// Internal helper: alloc_table-gated bounds check.
-fn ffi_read_check_bounds(name: &str, p: i64, off: i64, sz: usize) -> Result<(), EvalError> {
-    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
-        ffi_err(format!("{}: pointer {} not from nl-ffi-malloc", name, p))
-    })?;
-    if (off as usize) + sz > alloc_len {
+fn bounds_check(name: &str, p: i64, off: i64, sz: usize) -> Result<(), EvalError> {
+    let len = alloc_len(name, p)?;
+    if (off as usize) + sz > len {
         return Err(ffi_err(format!(
             "{}: access at offset {} (size {}) exceeds buffer length {}",
-            name, off, sz, alloc_len
-        )));
+            name, off, sz, len)));
     }
     Ok(())
 }
 
+/// `(nl-ffi-read-int PTR OFFSET WIDTH SIGNED)` -> Sexp::Int.
+/// WIDTH ∈ {1, 2, 4, 8}; SIGNED = t/nil controls sign extension.
+pub fn nl_ffi_read_int(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let name = "nl-ffi-read-int";
+    require_arity(name, args, 4)?;
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    let width = coerce_int(&args[2])? as usize;
+    let signed = !matches!(&args[3], Sexp::Nil);
+    if p == 0 { return Err(ffi_err(format!("{}: NULL pointer", name))); }
+    if off < 0 { return Err(ffi_err(format!("{}: negative offset {}", name, off))); }
+    bounds_check(name, p, off, width)?;
+    let addr = (p + off) as *const u8;
+    let v: i64 = unsafe {
+        match (width, signed) {
+            (1, true)  => std::ptr::read_unaligned(addr as *const i8) as i64,
+            (1, false) => std::ptr::read_unaligned(addr) as i64,
+            (2, true)  => std::ptr::read_unaligned(addr as *const i16) as i64,
+            (2, false) => std::ptr::read_unaligned(addr as *const u16) as i64,
+            (4, true)  => std::ptr::read_unaligned(addr as *const i32) as i64,
+            (4, false) => std::ptr::read_unaligned(addr as *const u32) as i64,
+            (8, _)     => std::ptr::read_unaligned(addr as *const i64),
+            _ => return Err(ffi_err(format!("{}: unsupported width {}", name, width))),
+        }
+    };
+    Ok(Sexp::Int(v))
+}
+
+/// `(nl-ffi-write-int PTR OFFSET WIDTH VALUE)` -> t.
+pub fn nl_ffi_write_int(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let name = "nl-ffi-write-int";
+    require_arity(name, args, 4)?;
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    let width = coerce_int(&args[2])? as usize;
+    let v = coerce_int(&args[3])?;
+    if p == 0 { return Err(ffi_err(format!("{}: NULL pointer", name))); }
+    if off < 0 { return Err(ffi_err(format!("{}: negative offset {}", name, off))); }
+    bounds_check(name, p, off, width)?;
+    let addr = (p + off) as *mut u8;
+    unsafe {
+        match width {
+            1 => std::ptr::write_unaligned(addr, v as u8),
+            2 => std::ptr::write_unaligned(addr as *mut i16, v as i16),
+            4 => std::ptr::write_unaligned(addr as *mut i32, v as i32),
+            8 => std::ptr::write_unaligned(addr as *mut i64, v),
+            _ => return Err(ffi_err(format!("{}: unsupported width {}", name, width))),
+        }
+    }
+    Ok(Sexp::T)
+}
+
+// ---- Legacy named entry points kept for `read_args`/`bounds_check` ---------
+// (Used by tests and any caller that hasn't been routed through the elisp
+// dispatchers yet.  Each is a 3-line shim.)
+
+pub fn nl_ffi_read_u8(args: &[Sexp])  -> Result<Sexp, EvalError> { read_n(args, 1, false, "nl-ffi-read-u8") }
+pub fn nl_ffi_read_i16(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 2, true,  "nl-ffi-read-i16") }
+pub fn nl_ffi_read_u16(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 2, false, "nl-ffi-read-u16") }
+pub fn nl_ffi_read_i32(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 4, true,  "nl-ffi-read-i32") }
+pub fn nl_ffi_read_u32(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 4, false, "nl-ffi-read-u32") }
+pub fn nl_ffi_read_i64(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 8, true,  "nl-ffi-read-i64") }
+pub fn nl_ffi_write_i16(args: &[Sexp]) -> Result<Sexp, EvalError> { write_n(args, 2, "nl-ffi-write-i16") }
+pub fn nl_ffi_write_i32(args: &[Sexp]) -> Result<Sexp, EvalError> { write_n(args, 4, "nl-ffi-write-i32") }
+pub fn nl_ffi_write_i64(args: &[Sexp]) -> Result<Sexp, EvalError> { write_n(args, 8, "nl-ffi-write-i64") }
+
+fn read_n(args: &[Sexp], width: usize, signed: bool, name: &str) -> Result<Sexp, EvalError> {
+    let (p, off) = read_args(name, args)?;
+    bounds_check(name, p, off, width)?;
+    let addr = (p + off) as *const u8;
+    let v: i64 = unsafe {
+        match (width, signed) {
+            (1, true)  => std::ptr::read_unaligned(addr as *const i8) as i64,
+            (1, false) => std::ptr::read_unaligned(addr) as i64,
+            (2, true)  => std::ptr::read_unaligned(addr as *const i16) as i64,
+            (2, false) => std::ptr::read_unaligned(addr as *const u16) as i64,
+            (4, true)  => std::ptr::read_unaligned(addr as *const i32) as i64,
+            (4, false) => std::ptr::read_unaligned(addr as *const u32) as i64,
+            (8, _)     => std::ptr::read_unaligned(addr as *const i64),
+            _ => unreachable!(),
+        }
+    };
+    Ok(Sexp::Int(v))
+}
+
+fn write_n(args: &[Sexp], width: usize, name: &str) -> Result<Sexp, EvalError> {
+    require_arity(name, args, 3)?;
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    let v = coerce_int(&args[2])?;
+    if p == 0 { return Err(ffi_err(format!("{}: NULL pointer", name))); }
+    if off < 0 { return Err(ffi_err(format!("{}: negative offset {}", name, off))); }
+    bounds_check(name, p, off, width)?;
+    let addr = (p + off) as *mut u8;
+    unsafe {
+        match width {
+            1 => std::ptr::write_unaligned(addr, v as u8),
+            2 => std::ptr::write_unaligned(addr as *mut i16, v as i16),
+            4 => std::ptr::write_unaligned(addr as *mut i32, v as i32),
+            8 => std::ptr::write_unaligned(addr as *mut i64, v),
+            _ => unreachable!(),
+        }
+    }
+    Ok(Sexp::T)
+}
+
+// Legacy 3-arg dispatch alias: callers using `nl-ffi-read-bytes-at` or
+// `nl-ffi-write-bytes-at` route through the unified entry points above.
+pub fn nl_ffi_read_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> { nl_ffi_read_bytes(args) }
+pub fn nl_ffi_write_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> { nl_ffi_write_bytes(args) }
+
 /// `(nl-ffi-errno)` returns the current thread's libc errno value.
 pub fn nl_ffi_errno(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if !args.is_empty() {
-        return Err(ffi_err(format!(
-            "nl-ffi-errno: expected 0 args, got {}",
-            args.len()
-        )));
-    }
+    require_arity("nl-ffi-errno", args, 0)?;
     #[cfg(target_os = "linux")]
     let e = unsafe { *libc::__errno_location() } as i64;
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd",
@@ -638,7 +490,6 @@ pub fn nl_ffi_errno(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 #[cfg(test)]
 mod tests {
-    //! Unit tests for FFI buffer helpers and errno access.
     use super::*;
 
     fn malloc_n(n: i64) -> i64 {
@@ -648,7 +499,7 @@ mod tests {
         }
     }
 
-    fn read_n(p: i64, n: i64) -> String {
+    fn read_n_str(p: i64, n: i64) -> String {
         match nl_ffi_read_bytes(&[Sexp::Int(p), Sexp::Int(n)]).unwrap() {
             Sexp::Str(s) => s,
             other => panic!("nl-ffi-read-bytes returned {:?}", other),
@@ -660,28 +511,24 @@ mod tests {
         let p = malloc_n(16);
         let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str("hello".into())]).unwrap();
         assert_eq!(r, Sexp::T);
-        let s = read_n(p, 5);
-        assert_eq!(s, "hello");
+        assert_eq!(read_n_str(p, 5), "hello");
         nl_ffi_free(&[Sexp::Int(p)]).unwrap();
     }
 
     #[test]
     fn write_bytes_rejects_null_ptr() {
-        let r = nl_ffi_write_bytes(&[Sexp::Int(0), Sexp::Str("x".into())]);
-        assert!(r.is_err(), "NULL ptr must be rejected");
+        assert!(nl_ffi_write_bytes(&[Sexp::Int(0), Sexp::Str("x".into())]).is_err());
     }
 
     #[test]
     fn write_bytes_rejects_unknown_ptr() {
-        let r = nl_ffi_write_bytes(&[Sexp::Int(0xDEAD_BEEF), Sexp::Str("x".into())]);
-        assert!(r.is_err(), "unknown ptr must be rejected");
+        assert!(nl_ffi_write_bytes(&[Sexp::Int(0xDEAD_BEEF), Sexp::Str("x".into())]).is_err());
     }
 
     #[test]
     fn write_bytes_rejects_oversize() {
         let p = malloc_n(4);
-        let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str("12345".into())]);
-        assert!(r.is_err(), "5-byte write into 4-byte buffer must be rejected");
+        assert!(nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str("12345".into())]).is_err());
         nl_ffi_free(&[Sexp::Int(p)]).unwrap();
     }
 
@@ -690,8 +537,7 @@ mod tests {
         let p = malloc_n(4);
         let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str(String::new())]).unwrap();
         assert_eq!(r, Sexp::T);
-        let s = read_n(p, 4);
-        assert_eq!(s.as_bytes(), &[0u8, 0, 0, 0]);
+        assert_eq!(read_n_str(p, 4).as_bytes(), &[0u8, 0, 0, 0]);
         nl_ffi_free(&[Sexp::Int(p)]).unwrap();
     }
 
@@ -699,25 +545,21 @@ mod tests {
     fn errno_reads_thread_local() {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            use std::ffi::CString;
             let bad = CString::new("/this-path-must-not-exist-for-test").unwrap();
             let _ = unsafe { libc::open(bad.as_ptr(), libc::O_RDONLY) };
-            let r = nl_ffi_errno(&[]).unwrap();
-            match r {
-                Sexp::Int(e) => assert!(e > 0, "errno must be set after failing open, got {}", e),
+            match nl_ffi_errno(&[]).unwrap() {
+                Sexp::Int(e) => assert!(e > 0, "errno after failed open: {}", e),
                 other => panic!("nl-ffi-errno returned {:?}", other),
             }
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let r = nl_ffi_errno(&[]).unwrap();
-            assert!(matches!(r, Sexp::Int(_)));
+            assert!(matches!(nl_ffi_errno(&[]).unwrap(), Sexp::Int(_)));
         }
     }
 
     #[test]
     fn errno_rejects_args() {
-        let r = nl_ffi_errno(&[Sexp::Int(0)]);
-        assert!(r.is_err(), "nl-ffi-errno takes 0 args");
+        assert!(nl_ffi_errno(&[Sexp::Int(0)]).is_err());
     }
 }
