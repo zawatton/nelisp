@@ -128,7 +128,6 @@ pub struct CharTableInner {
 }
 
 impl Sexp {
-    /// Build a proper list from a slice.
     pub fn list_from(items: &[Sexp]) -> Sexp {
         let mut acc = Sexp::Nil;
         for item in items.iter().rev() {
@@ -137,22 +136,18 @@ impl Sexp {
         acc
     }
 
-    /// Build a cons cell.
     pub fn cons(car: Sexp, cdr: Sexp) -> Sexp {
         Sexp::Cons(NlConsBoxRef::new(car, cdr))
     }
 
-    /// Build a vector.
     pub fn vector(items: Vec<Sexp>) -> Sexp {
         Sexp::Vector(NlVectorRef::new(items))
     }
 
-    /// Build a mutable string.
     pub fn mut_str(s: impl Into<String>) -> Sexp {
         Sexp::MutStr(NlStrRef::new(s.into()))
     }
 
-    /// Build an empty char-table.
     pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
         Sexp::CharTable(NlCharTableRef::new(CharTableInner {
             subtype,
@@ -163,12 +158,10 @@ impl Sexp {
         }))
     }
 
-    /// Build a bool-vector.
     pub fn bool_vector(len: usize, init: bool) -> Sexp {
         Sexp::BoolVector(NlBoolVectorRef::new(vec![init; len]))
     }
 
-    /// Return `Str`/`MutStr` content.
     pub fn as_string_owned(&self) -> Option<String> {
         match self {
             Sexp::Str(s) => Some(s.clone()),
@@ -177,32 +170,26 @@ impl Sexp {
         }
     }
 
-    /// Build a record.
     pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp {
         Sexp::Record(NlRecordRef::new(type_tag, init))
     }
 
-    /// Wrap in `(quote <form>)`.
     pub fn quote(inner: Sexp) -> Sexp {
         Sexp::list_from(&[Sexp::Symbol("quote".to_string()), inner])
     }
 
-    /// Wrap a form in `(backquote <form>)`.
     pub fn backquote(inner: Sexp) -> Sexp {
         Sexp::list_from(&[Sexp::Symbol("backquote".to_string()), inner])
     }
 
-    /// Wrap a form in `(comma <form>)`.
     pub fn comma(inner: Sexp) -> Sexp {
         Sexp::list_from(&[Sexp::Symbol("comma".to_string()), inner])
     }
 
-    /// Wrap a form in `(comma-at <form>)`.
     pub fn comma_at(inner: Sexp) -> Sexp {
         Sexp::list_from(&[Sexp::Symbol("comma-at".to_string()), inner])
     }
 
-    /// Wrap in `(function <form>)`.
     pub fn function(inner: Sexp) -> Sexp {
         Sexp::list_from(&[Sexp::Symbol("function".to_string()), inner])
     }
