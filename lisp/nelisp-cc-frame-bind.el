@@ -81,9 +81,14 @@
 
 (defconst nelisp-cc-frame-bind--source
   '(seq
-    (defun nelisp_frame_bind_walk_update (box-ptr name-ptr cell-ptr)
+    (defun nelisp_frame_bind_walk_update (box-ptr name-ptr cell-ptr _pad)
       ;; Tail-recursive walk over a bucket's NlConsBox* chain looking
       ;; for an existing (KEY . CELL) pair whose KEY matches NAME-PTR.
+      ;; _pad: unused — Doc 124.F-blocker fix.  Keeps outer arity *even*
+      ;; (= 4) so body-entry rsp ≡ 0 mod 16, which matches the static
+      ;; rsp-alignment of the `cons-set-cdr' static emit (= 2 push +
+      ;; 2 pop + 2 push net before call → +16 bytes preserves the
+      ;; mod-16 parity; only 0 mod 16 lands the call site aligned).
       ;; On hit: `cons-set-cdr' replaces the inner pair's cdr with
       ;; CELL-PTR (= refcount-safe drop+write via `nl_consbox_set_cdr')
       ;; and returns 1.  On miss / end-of-bucket (box-ptr = 0): returns 0
@@ -110,7 +115,7 @@
         (if (= (str-eq (sexp-payload-ptr box-ptr) name-ptr) 1)
             (and (cons-set-cdr box-ptr cell-ptr) 1)
           (nelisp_frame_bind_walk_update
-           (cons-cdr-raw-from-box box-ptr) name-ptr cell-ptr))))
+           (cons-cdr-raw-from-box box-ptr) name-ptr cell-ptr 0))))
     (defun nelisp_frame_bind_install
         (buckets-ptr idx scratch-pair-slot scratch-outer-slot)
       ;; Miss-path tail: populate the empty outer bucket cell in
@@ -213,7 +218,7 @@
                  (extern-call nelisp_fnv1a name-ptr)
                  (- (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
                     1))))
-              name-ptr cell-ptr)
+              name-ptr cell-ptr 0) ; _pad — Doc 124.F-blocker even-arity fix
              1)
           1
         (nelisp_frame_bind_prepend

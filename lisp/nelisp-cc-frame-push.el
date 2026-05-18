@@ -55,14 +55,24 @@
 ;; 6 only holds Sexp::Int values (no box), so refcount discipline is
 ;; trivially preserved when it is overwritten between int writes.
 ;;
-;; Outer-defun arity is 3 (frames-ptr / scratch-vec-ptr / _pad) — odd
-;; arity keeps post-prologue rsp = 8 (mod 16), which matches the
-;; static alignment assumption baked into `vector-make' /
-;; `record-make' (= 2 net live pushes at the call site → call rsp = 0
-;; mod 16).  `record-slot-set' / `vector-slot-set' / `extern-call'
-;; aligns rsp dynamically and thus tolerate either body-entry
-;; alignment.  `_pad' is unused but its presence is what flips body
-;; alignment to the odd-arity branch.
+;; Outer-defun arity is 2 (frames-ptr / scratch-vec-ptr) — even arity
+;; keeps post-prologue rsp ≡ 0 mod 16, which matches the static
+;; alignment assumption baked into `vector-make' / `record-make' /
+;; `vector-slot-set' (= 2 net live pushes at the call site → call rsp
+;; = 0 mod 16).  `record-slot-set' aligns rsp dynamically (= `and rsp,
+;; -16' pattern) and thus tolerates either body-entry alignment;
+;; `extern-call' adds a runtime `sub rsp, 8' when the outer defun's
+;; arity is odd via the `nelisp-phase47-compiler--current-defun-arity'
+;; dynvar.
+;;
+;; HISTORY: the original Doc 115 §115.3 ship used arity 3 with a `_pad'
+;; arg.  That commentary mis-reasoned the alignment: odd-arity body
+;; entry is rsp ≡ 8 mod 16 (= NOT 0), and `vector-make' / `record-make'
+;; do 2 pushes from body-entry which keeps the mod-16 parity
+;; (8 - 16 ≡ 8 mod 16, still misaligned).  The resulting SysV ABI
+;; violation manifested as a SIGSEGV inside `nl_alloc_record' /
+;; `nl_alloc_vector' (= those callees use `movaps' for their stack
+;; locals, which require 16-byte aligned rsp).  Doc 124.F-blocker.
 ;;
 ;; ABI deps satisfied:
 ;;   §111.B  `record-slot-set'     — refcount-safe slot install.
@@ -77,15 +87,13 @@
 ;;; Code:
 
 (defconst nelisp-cc-frame-push--source
-  '(defun nelisp_frame_push (frames-ptr scratch-vec-ptr _pad)
+  '(defun nelisp_frame_push (frames-ptr scratch-vec-ptr)
      ;; frames-ptr:      *const Sexp pointing at Env::frames_record (=
      ;;                  Sexp::Record(`nelisp-lexframe-stack')).
      ;; scratch-vec-ptr: *const Sexp pointing at a Sexp::Vector with 7
      ;;                  slots (= layout above).  Safe wrapper owns the
      ;;                  Sexp; this op only reads slot pointers via
      ;;                  `vector-ref-ptr'.
-     ;; _pad:            unused — kept for outer-defun odd-arity
-     ;;                  alignment (see commentary).
      ;;
      ;; Returns: i64 — 1 on push (= `(and ...)' threads all sub-ops
      ;; through to the final `record-slot-set' which materialises rax=1).

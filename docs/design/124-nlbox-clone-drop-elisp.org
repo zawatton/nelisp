@@ -297,3 +297,129 @@ call `crate::elisp_cc_spike::nl{T}_drop(box_ptr)' and delete the
 the recursive interior-payload Drop via the same dispatch table
 expressed in elisp (= `(let ((tag (rc_kind sexp))) (cond ...))'
 fan-in).  Mirrors §123.F's body-sweep + §124.F's Clone-sweep.
+
+* §124.F.diag — SIGSEGV root-cause (2026-05-18)
+
+** Diagnosis summary
+
+The SIGSEGV blocking §124.F (= sweep 5 `impl Clone' bodies to elisp
+dispatch) was *not* in Doc 124 code at all.  It pre-dated Doc 124 by
+several commits and originated in Doc 115 §115.3 (= the `frame_push'
+elisp化, commit =0cb7d98e=).
+
+Root cause: **SysV AMD64 stack alignment violation in odd-arity GP
+defuns whose body composes static-emit ops (= `vector-make' /
+`record-make' / `cons-set-cdr' / etc.)**.
+
+Mechanism:
+- `--emit-defun' for GP-class param-class emits `push rbp; push <each
+  param reg>'.  For arity N, the prologue does N+1 pushes total.
+- Post-prologue body-entry rsp ≡ (16 + 8*N) mod 16, which simplifies
+  to 0 mod 16 when N is even and 8 mod 16 when N is odd.
+- The "make-family" static emit ops (= `vector-make' / `record-make'
+  / `cell-make' / `cons-make') and several "set-family" ops
+  (= `vector-slot-set' / `cons-set-cdr' / `cons-set-car') were written
+  assuming body-entry rsp ≡ 0 mod 16 — they do an even number of net
+  pushes before the `call' which preserves the rsp mod 16 parity from
+  body-entry.  Result: in an *odd-arity* defun, the call site lands at
+  rsp ≡ 8 mod 16 (= SysV violation).
+- The called Rust helpers (`nl_alloc_record' / `nl_alloc_vector' /
+  `nl_consbox_set_cdr') use `movaps' for their stack-local Sexp slot
+  initialisation (= 16-byte aligned SSE store).  At rsp ≡ 8 mod 16,
+  the post-`sub rsp, FRAME_BYTES' rsp lands at 8 mod 16 inside the
+  helper too, and the `movaps` faults.
+
+Why ASan masks the bug: ASan's redzone instrumentation reshuffles
+stack frame layout (each Sexp local gets +32 bytes of red-zone
+padding), which shifts the effective alignment.  In the ASan build,
+the `movaps' addresses happen to land 16-byte aligned despite the
+mis-aligned rsp.  Plain debug build's tight frame layout makes the
+fault deterministic.
+
+Why this only surfaced now: the only odd-arity defuns that compose
+make-family or set-family static-emit ops are the lexframe helpers
+introduced by Doc 115 §115.3-7 (= the elisp化 of `frame_push' /
+`frame_pop_inner' / `frame_bind_walk_update' /
+`frame_stack_ensure_capacity_grow').  Prior odd-arity defuns either
+had no calls (`sexp-int-make' / inline byte loops) or composed only
+extern-call / intra-text `call' which already had a runtime alignment
+correction (= `--emit-extern-call' / `--emit-call' check
+`current-defun-arity' and emit a `sub rsp, 8' band-aid).
+
+The Doc 124.F partial commit (=6006c0c7=) misattributed the resulting
+crash to the new Doc 124 §A NlConsBox Clone swap.  The SEGV
+reproduces unchanged when §124.A is reverted to inline `fetch_add'
+(verified by bisecting from c60c1f96 = §111.E Group E ship).
+
+** Fix (= 2026-05-18 ship)
+
+Per-defun even-arity fix — the targeted approach.  Cheaper than
+modifying every static-emit function to consult
+`current-defun-arity'.  Changes:
+
+- `frame_push' (arity 3 → 2): removed unused `_pad' arg.  The
+  original commentary justifying `_pad' had inverted reasoning (=
+  "odd arity matches static alignment", but the math goes the other
+  way).
+- `frame_pop_inner' (arity 3 → 4): added unused `_pad' arg.
+- `frame_bind_walk_update' (arity 3 → 4): added unused `_pad' arg.
+- `frame_stack_ensure_capacity_grow' (arity 3 → 4): added unused
+  `_pad' arg.
+
+Each call site bumps the arg list accordingly (= passes `0' as the
+new `_pad' position).
+
+Test results post-fix (=cargo test --features image-baker=):
+- =elisp_cc_frame_push_probe= — 3/3 green.
+- =elisp_cc_frame_pop_probe= — 3/3 green.
+- =elisp_cc_frame_stack_find_probe= — 4/4 green.
+- =elisp_cc_frame_stack_depth_probe= — 3/3 green.
+- =elisp_cc_frame_stack_ensure_capacity_probe= — 3/3 green.
+- =elisp_cc_frame_bind_probe= — 2/3 green (=
+  =frame_bind_update_existing_pair_in_place= still SEGVs; see below).
+
+Doc 124.F sweep is unblocked for §124.B-E (= sibling Clone kernels
+verified individually green and the frame-test gate the partial
+commit cited as the blocker is now green for the push/pop/find/
+depth/ensure-capacity quintet).
+
+** Residual: =frame_bind_update_existing_pair_in_place= still SEGVs
+
+One test case in the bind probe still SEGVs in plain debug builds
+(= passes under ASan).  Reproduces with `cargo test --features
+image-baker --test elisp_cc_frame_bind_probe -- frame_bind_update`.
+
+The SEGV path:
+1. =frame_bind (alpha, cell1)= (= prepend path; works).
+2. =frame_bind (alpha, cell2)= (= walk_update finds existing pair,
+   calls =cons-set-cdr= to replace inner_pair.cdr with cell2;
+   appears to complete without alignment fault per disasm trace).
+3. =frame_stack_find (alpha)= (= returns the cell slot pointer;
+   appears to complete).
+4. Test asserts =c.value == Sexp::Int(2)= via =if let Sexp::Cell(c)
+   = slot=.
+
+The SEGV could be inside step 2's =cons-set-cdr= path (= alignment
+fault we haven't isolated yet), step 3's find-walk (= no
+static-emit ops, all extern-call), or step 4's Sexp dereference
+through a stale pointer.  Static analysis of the disassembly shows
+walk_update's =cons-set-cdr= call site at rsp ≡ 0 mod 16 (=
+aligned), so the bug is likely *not* alignment for this specific
+path — more likely a refcount-discipline use-after-free uncovered
+when the existing inner_pair.cdr (= cell1) is dropped before being
+replaced with cell2.
+
+Next-session recommendation:
+1. Run under valgrind (= more precise UAF reports than the bare
+   SIGSEGV).
+2. Audit =nl_consbox_set_cdr= refcount discipline (= drop_in_place
+   timing vs. caller's stack ownership of cell1).
+3. Consider whether =NlCellRef= Clone (= the §124.C kernel) once
+   swept could expose a separate bug — but §124.B-E kernels haven't
+   landed yet, so this is the *baseline* refcount path.
+
+Suggested escalation:  if the bind-update path turns out to be a
+refcount UAF and not alignment, it's orthogonal to Doc 124.F and
+should ship as a separate doc (or as part of Doc 124.M).  Doc 124.F
+itself (= the 5 Clone-body sweeps) can proceed using the existing
+4 frame-test gates as the regression check.

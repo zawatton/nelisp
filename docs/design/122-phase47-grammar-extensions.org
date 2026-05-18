@@ -689,3 +689,162 @@ ship immediately) + 117.B2 (= varargs, ship after §122.C) +
   crate deleted when elisp equivalent was sufficient.  Doc 122
   advances the same trajectory by enabling further Rust deletion
   in the `jit/*' family.
+
+* §122.I — CString grammar (DRAFT 2026-05-18)
+
+Per [[file:117-builtins-elisp-sweep.org][Doc 117 §117.D.gaps.3]],
+the file-I/O sweep needs a way to construct NUL-terminated byte
+buffers for libc API arguments (=open=, =stat=, =mkdir=, etc.).
+
+** Surface
+
+#+begin_src elisp
+;; (cstr-from-sexp STR-PTR) → BUF-PTR
+;;
+;; Allocates a fresh heap byte buffer of size (str-len + 1), copies
+;; the UTF-8 bytes from STR-PTR's payload, appends a trailing NUL.
+;; Caller owns the buffer and must call `(dealloc-bytes BUF-PTR LEN+1)'.
+;;
+;; STR-PTR must point at Sexp::Str / Sexp::Symbol / Sexp::MutStr;
+;; otherwise behaviour is undefined (= no runtime check; caller
+;; gates).  Returns the i64 buffer address.
+(cstr-from-sexp STR-PTR)
+#+end_src
+
+** Implementation strategy
+
+Pure composition of existing grammar (no new opcode):
+
+#+begin_src elisp
+(defconst nelisp-cc-cstr-helpers--source
+  '(seq
+    (defun nelisp_cstr_copy_loop (buf src i n)
+      (if (< i n)
+          (prog2 (ptr-write-u8 buf i (str-byte-at src i))
+                 (nelisp_cstr_copy_loop buf src (+ i 1) n))
+        (ptr-write-u8 buf n 0)))
+
+    (defun nelisp_cstr_from_sexp (str-ptr)
+      (let* ((n (str-len str-ptr))
+             (buf (alloc-bytes (+ n 1))))
+        (prog2 (nelisp_cstr_copy_loop buf str-ptr 0 n)
+               buf)))))
+#+end_src
+
+The trailing `(ptr-write-u8 buf n 0)' is the explicit NUL terminator.
+Caller pattern:
+
+#+begin_src elisp
+(let* ((path-ptr (nelisp_cstr_from_sexp arg))
+       (rc (extern-call "open" path-ptr O_RDONLY)))
+  (prog2 (dealloc-bytes path-ptr (+ (str-len arg) 1))
+         rc))
+#+end_src
+
+** Out of scope
+
+- Reading back a C string buffer into `Sexp::Str' — covered by
+  §122.X (sexp-write-str-lossy proposed).
+- Wide-char `wchar_t' on Windows — not relevant per Doc 114 (linux-
+  x86_64 only).
+
+** Ship gate
+
+- Audit `lisp/nelisp-cc-cstr-helpers.el' compiles + links via
+  `make compile' (per [[memory:feedback_nelisp_ci_make_compile_gate][CI gate]]).
+- Verify probe test: open(2) of /etc/hostname returns fd ≥ 0.
+
+* §122.J — Struct-by-value extern-call (DRAFT 2026-05-18)
+
+Per Doc 117 §117.D.gaps.3 class 4/5, the =install_sigint_handler= /
+=install_winsize_handler= / =raw-mode-enter= / =read-stdin-byte-
+available= families pass libc structs (=sigaction=, =termios=,
+=winsize=, =pollfd=) by value or by reference to libc functions.
+
+** Surface
+
+Two helper opcodes:
+
+#+begin_src elisp
+;; (struct-make TAG SIZE ALIGN) → BUF-PTR
+;;   Allocates a fresh heap struct buffer.  TAG is a symbol used for
+;;   diagnostic printing (no layout effect).  SIZE / ALIGN are i64
+;;   constants known at compile time.  Caller owns the buffer.
+(struct-make 'sigaction 152 8)
+
+;; (struct-field-set BUF-PTR OFFSET SIZE VALUE)
+;;   Writes VALUE into BUF-PTR + OFFSET as a SIZE-byte little-endian
+;;   integer.  SIZE ∈ {1, 2, 4, 8}.
+(struct-field-set sa 0 8 handler-fn-ptr)
+#+end_src
+
+`struct-field-get' similarly.  Composes with existing `extern-call'
+to pass the buffer pointer as a struct argument (= libc treats
+struct-by-value as pass-by-reference for ≥16-byte structs on
+SysV AMD64 ABI; smaller structs ride in registers but the libc
+binding wraps them with `*const struct` wherever possible).
+
+** Constants
+
+Standard libc struct sizes (linux glibc, x86_64):
+- =sigaction= = 152 bytes, align 8
+- =termios=   = 60 bytes,  align 4
+- =winsize=   = 8 bytes,   align 2
+- =pollfd=    = 8 bytes,   align 4
+- =stat=      = 144 bytes, align 8 (kernel stat layout differs;
+  use =statx=)
+
+** Ship gate
+
+Same as §122.I plus a sigaction round-trip probe (install handler
++ verify handler called on SIGUSR1).
+
+* §122.K — libc constants table (DRAFT 2026-05-18)
+
+Per Doc 117 §117.D.gaps.3, the signal / ioctl / fcntl handlers
+reference libc constants whose values vary by libc version /
+target.
+
+** Surface
+
+Generated at build time into `lisp/nelisp-cc-libc-constants.el':
+
+#+begin_src elisp
+(defconst nelisp-cc--SIGINT 2)
+(defconst nelisp-cc--SIGWINCH 28)
+(defconst nelisp-cc--TIOCGWINSZ #x5413)
+;; ... ~30 constants total
+#+end_src
+
+** Build pipeline
+
+- A new `build-tool/build.rs' step runs a tiny C probe (=cc
+  -dM -E= over libc headers) that emits the constants in a
+  format the elisp file can `(load)' at compile time.
+- Alternatively a hand-rolled =bindgen= invocation over a
+  curated subset.  Pragma: avoid full bindgen — keep ~30
+  constants curated.
+
+** Ship gate
+
+- Constants assertion in =compile-elisp-objects.el= matches a
+  static reference table generated from the build host's libc.
+- Probe test: `(signal-name-from-int nelisp-cc--SIGINT)` → "SIGINT".
+
+* §122.X — sexp-write-str-lossy (PROPOSAL, not yet specced)
+
+Per Doc 117 §117.D.gaps.3, reading a libc-returned `*const u8` +
+len buffer into a `Sexp::Str` with U+FFFD replacement is the
+counterpart of §122.I's outward direction.
+
+Surface sketch (not finalized):
+
+#+begin_src elisp
+;; (sexp-write-str-lossy OUT-PTR BYTE-PTR LEN)
+;;   Read LEN bytes from BYTE-PTR, decode UTF-8 with U+FFFD
+;;   replacement for invalid sequences, write Sexp::Str into OUT-PTR.
+(sexp-write-str-lossy out p n)
+#+end_src
+
+Status: deferred until a Tier B file-I/O sweep actually needs it.
+Spec finalisation expected when first consumer lands.

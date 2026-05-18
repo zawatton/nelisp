@@ -89,10 +89,13 @@
                 src dst (+ i 1) n))
         1))
     (defun nelisp_frame_stack_ensure_capacity_grow
-        (frames-ptr scratch-slot new-cap)
+        (frames-ptr scratch-slot new-cap _pad)
       ;; Allocate new vector of capacity new-cap into scratch-slot,
       ;; copy depth live elements over, install into slots[0], and
       ;; return new-cap.
+      ;; _pad: unused — Doc 124.F-blocker fix.  Outer arity kept *even*
+      ;; (= 4) so body-entry rsp ≡ 0 mod 16, which matches the static
+      ;; rsp-alignment of the `vector-make' / `record-slot-set' emits.
       ;;
       ;; Order matters: copy must happen BEFORE `record-slot-set'
       ;; because (record-slot-ref-ptr frames-ptr 0) gives the slot
@@ -135,7 +138,8 @@
            (nelisp_frame_stack_ensure_capacity_compute_cap
             (nelisp_frame_stack_ensure_capacity_initial
              (vector-len (record-slot-ref-ptr frames-ptr 0)))
-            needed))
+            needed)
+           0) ; _pad — Doc 124.F-blocker even-arity fix
         (vector-len (record-slot-ref-ptr frames-ptr 0)))))
   "Phase 47 source for Doc 111 §111.E #20 / Doc 115 §115.1
 `frame_stack_ensure_capacity'.

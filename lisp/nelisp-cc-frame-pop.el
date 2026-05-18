@@ -65,10 +65,15 @@
 
 (defconst nelisp-cc-frame-pop--source
   '(seq
-    (defun nelisp_frame_pop_inner (frames-ptr scratch-slot new-depth)
+    (defun nelisp_frame_pop_inner (frames-ptr scratch-slot new-depth _pad)
       ;; frames-ptr:   *const Sexp pointing at Env::frames_record.
       ;; scratch-slot: *mut Sexp — currently holds `Sexp::Nil'.
       ;; new-depth:    i64 — the post-pop depth (= old-depth - 1).
+      ;; _pad:         unused — Doc 124.F-blocker fix.  Outer arity is
+      ;;               kept *even* (= 4) so body-entry rsp ≡ 0 mod 16,
+      ;;               which matches the static rsp-alignment of the
+      ;;               `vector-slot-set' emit (= 3 push + 3 pop = net
+      ;;               zero, so call site inherits body-entry parity).
       ;;
       ;; Two-step refcount-safe write: backing[new-depth] := Nil,
       ;; then depth := Int(new-depth).  Order matters because
@@ -108,7 +113,8 @@
           (nelisp_frame_pop_inner
            frames-ptr
            scratch-slot
-           (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1))
+           (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1)
+           0) ; _pad — Doc 124.F-blocker even-arity fix
         0)))
   "Phase 47 source for Doc 111 §111.E #22 / Doc 115 §115.2
 `frame_pop_rust_direct'.
