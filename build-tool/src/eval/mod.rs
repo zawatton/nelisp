@@ -126,8 +126,13 @@ pub fn read_all_with_line_via_elisp(
 }
 
 /// Read exactly one form via the Elisp reader.
-#[cfg(test)]
-pub(crate) fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> {
+///
+/// Doc 130 (= eval/tests.rs → tests/eval_integration.rs carve-out)
+/// promoted this helper from `pub(crate)` + `#[cfg(test)]` to `pub`
+/// so the integration test binary can construct single-form fixtures
+/// without re-implementing the reader bootstrap path.  No production
+/// callsite depends on this — it stays a test-only helper in spirit.
+pub fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> {
     let forms = read_all_via_elisp(input, env)?;
     match forms.as_slice() {
         [single] => Ok(single.clone()),
@@ -600,5 +605,7 @@ fn expand_macro(macro_form: &Sexp, args: &Sexp, env: &mut Env) -> Result<Sexp, E
     apply_function(inner, &arg_forms, env)
 }
 
-#[cfg(test)]
-mod tests;
+// Doc 130 (2026-05-18): the 3,057 LOC `#[cfg(test)] mod tests;` block
+// that previously lived here is now `build-tool/tests/eval_integration.rs'.
+// Keeping `src/eval/' production-only carves -3,057 LOC out of the
+// source tree per repo policy (= pure-elisp化, Rust LOC 削減 only).
