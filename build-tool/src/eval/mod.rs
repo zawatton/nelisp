@@ -29,18 +29,13 @@ pub use env_helpers::{Env, ExternBuiltin, FrameCell, SymbolEntry};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 
-/// Read `input` via the Elisp reader helper.
-/// `eval_str` and `eval_str_all` route through this entry point.
+/// Read `input` via the Elisp reader — entry point for `eval_str` / `eval_str_all`.
 pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let impl_fn = env
         .lookup_function("nelisp--read-all-from-string-impl")
-        .map_err(|_| {
-            EvalError::Internal(
-                "eval_str: `nelisp--read-all-from-string-impl' not loaded \
-                 — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_IMAGES?"
-                    .into(),
-            )
-        })?;
+        .map_err(|_| EvalError::Internal(
+            "nelisp--read-all-from-string-impl not loaded".into(),
+        ))?;
     let arg = Sexp::Str(input.to_string());
     let mut list = apply_function(&impl_fn, &[arg], env)?;
     let mut out = Vec::new();
@@ -62,22 +57,16 @@ pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>
     Ok(out)
 }
 
-/// Read top-level forms via the Elisp reader and return `(LINE, FORM)` pairs.
-/// Line numbers are 1-origin.
+/// Read top-level forms returning `(LINE, FORM)` pairs (1-origin lines).
 pub fn read_all_with_line_via_elisp(
     input: &str,
     env: &mut Env,
 ) -> Result<Vec<(u32, Sexp)>, EvalError> {
     let impl_fn = env
         .lookup_function("nelisp--read-all-with-line-from-string-impl")
-        .map_err(|_| {
-            EvalError::Internal(
-                "read_all_with_line_via_elisp: \
-                 `nelisp--read-all-with-line-from-string-impl' not loaded \
-                 — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_IMAGES?"
-                    .into(),
-            )
-        })?;
+        .map_err(|_| EvalError::Internal(
+            "nelisp--read-all-with-line-from-string-impl not loaded".into(),
+        ))?;
     let arg = Sexp::Str(input.to_string());
     let mut list = apply_function(&impl_fn, &[arg], env)?;
     let mut out = Vec::new();
@@ -124,13 +113,7 @@ pub fn read_all_with_line_via_elisp(
     Ok(out)
 }
 
-/// Read exactly one form via the Elisp reader.
-///
-/// Doc 130 (= eval/tests.rs → tests/eval_integration.rs carve-out)
-/// promoted this helper from `pub(crate)` + `#[cfg(test)]` to `pub`
-/// so the integration test binary can construct single-form fixtures
-/// without re-implementing the reader bootstrap path.  No production
-/// callsite depends on this — it stays a test-only helper in spirit.
+/// Read exactly one form via the Elisp reader — integration test helper.
 pub fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> {
     let forms = read_all_via_elisp(input, env)?;
     match forms.as_slice() {
@@ -604,7 +587,3 @@ fn expand_macro(macro_form: &Sexp, args: &Sexp, env: &mut Env) -> Result<Sexp, E
     apply_function(inner, &arg_forms, env)
 }
 
-// Doc 130 (2026-05-18): the 3,057 LOC `#[cfg(test)] mod tests;` block
-// that previously lived here is now `build-tool/tests/eval_integration.rs'.
-// Keeping `src/eval/' production-only carves -3,057 LOC out of the
-// source tree per repo policy (= pure-elisp化, Rust LOC 削減 only).
