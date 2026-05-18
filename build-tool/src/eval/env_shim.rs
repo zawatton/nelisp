@@ -1,29 +1,15 @@
-//! Tier 0 env shim — globals-only access primitive (Doc 86 §86.3 →
-//! Doc 102 Phase 2.c, 2026-05-13).
+//! Globals-only access primitive `nelisp--env-globals-op OP NAME &optional ARG'.
+//! Single dispatcher backing 11 elisp shim wrappers in
+//! `lisp/nelisp-stdlib-env-shim.el'.
 //!
-//! Exposes ONE generic Rust primitive — `nelisp--env-globals-op OP
-//! NAME &optional ARG' — that wraps the canonical `Env::globals'
-//! HashMap so the elisp shim (`lisp/nelisp-stdlib-env-shim.el') can
-//! read / write the global environment without bypassing the
-//! canonical Rust state.  Doc 102 Phase 2.c consolidated the
-//! pre-existing 11 individual `bi_*' primitives into this single
-//! dispatcher; the 11 user-visible names (`nelisp--env-globals-
-//! get-value' / `set-value' / …) live as elisp `defun's that
-//! delegate via the matching OP tag.
+//! OP tags:
+//!   get-value / set-value / get-function / set-function
+//!   clear-value / clear-function (= makunbound / fmakunbound)
+//!   is-bound / is-fbound / is-constant / set-constant
+//!   capture-lexical (= snapshot frames as alist, 0-arg)
 //!
-//! OP tags + arity (NAME omitted = capture-lexical, otherwise NAME is
-//! a symbol; ARG required for the 3 `set-*' ops):
-//!   get-value / set-value          — value cell read / write
-//!   get-function / set-function    — function cell read / write
-//!   clear-value / clear-function   — drop the cell (= makunbound /
-//!                                    fmakunbound)
-//!   is-bound / is-fbound           — t / nil predicates (globals only)
-//!   is-constant / set-constant     — constant flag predicate / setter
-//!   capture-lexical                — snapshot frames as alist (0-arg)
-//!
-//! Set-value bypasses the constant-rejection path (= elisp shim
-//! enforces); set-function never errors on existing entries; clear-*
-//! is a no-op when the entry is absent.
+//! set-value bypasses constant-rejection (elisp shim enforces);
+//! set-function never errors on existing; clear-* no-op on absent.
 
 use super::env::Env;
 use super::error::EvalError;
