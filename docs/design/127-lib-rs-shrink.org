@@ -1,0 +1,109 @@
+#+TITLE: Doc 127 — lib.rs shrink (extern decl + safe wrapper consolidation)
+#+DATE: 2026-05-18
+#+STATUS: DRAFT
+
+* §127.1 Premise
+
+=build-tool/src/lib.rs= is 2019 LOC.  Of that:
+
+- ~30 LOC: crate-level docs + `pub mod` decls + `compile_error!` guard
+- ~1980 LOC: =elisp_cc_spike= module — 114 `extern "C"` decls + 114
+  safe wrapper functions, one per Phase 47-compiled symbol.
+
+Endpoint target: lib.rs ~30 LOC.  So this doc covers the path to
+−1980 LOC.
+
+* §127.2 Why so much lib.rs
+
+Every Phase 47-compiled elisp helper exposes an =extern "C"=
+trampoline named =nelisp_*= / =nl_jit_*=.  Rust callers don't call
+those directly — they go through a safe wrapper in
+=elisp_cc_spike::FOO= that:
+1. Declares =fn nelisp_FOO(...)= inside an `extern "C"` block.
+2. Provides =pub unsafe fn FOO(...) -> Ret= that delegates.
+
+Both layers exist to centralize unsafe.  Inflation comes from:
+- One extern decl + one wrapper per helper (= 114 × 2 = 228 entries)
+- ~15 LOC per pair counting comments, types, and safety blurbs
+
+* §127.3 Reduction strategies
+
+** §127.A — collapse to macro-generated pairs
+
+Most wrappers are mechanical: extern decl with shape X, safe wrapper
+with same shape that just `unsafe { nelisp_FOO(args) }`.  A macro
+`elisp_cc!(NAME, ($args), $ret)` expands to both halves.  Cuts per-
+helper LOC from ~15 to ~3.
+
+Expected reduction: 1980 → ~500 LOC (= −1480).
+
+** §127.B — move extern decls to module roots
+
+Each consumer (=eval/builtins.rs=, =jit/bridge.rs=, etc.) currently
+imports =crate::elisp_cc_spike::FOO=.  If extern decls live in the
+consuming module, lib.rs drops the entire wrapper layer.
+
+Risk: cross-module discoverability suffers.  Trade-off vs Rust削減
+score: Rust削減 wins per Doc 114.
+
+Expected additional reduction: ~500 → ~50 LOC (= −450).
+
+** §127.C — single dynamic dispatch (long-shot)
+
+Replace the 114-extern static table with a runtime symbol table:
+
+#+begin_src rust
+extern "C" {
+    fn dlsym_strong(name: *const u8) -> *const u8;
+}
+pub unsafe fn call(name: &str, ...) -> i64 { /* dispatch */ }
+#+end_src
+
+ELF static link does pin symbol addresses, so `dlsym` at runtime
+returns valid ptrs.  Callers do `elisp_cc::call("FOO", &[a, b])`.
+Massive削減 — single safe wrapper handles all calls.
+
+Risk: type erasure (= i64-uniform ABI requires every helper to
+return i64 + take i64 args, plus an out-parameter ptr for non-i64
+returns).  Most existing helpers already follow this shape but a few
+(=jit_record_set= with 4 args, =mirror_install_entry= with 6 args)
+need re-signature.
+
+Doc 122 §122.C extended varargs extern-call — same dispatch shape.
+Could merge §127.C into Doc 122's existing infrastructure.
+
+Expected reduction: ~50 → ~20 LOC (= −30).
+
+* §127.4 Sequencing
+
+| Stage   | Description                              | Risk | LOC削減 |
+|---------+------------------------------------------+------+---------|
+| §127.A  | Macro-generate extern + wrapper pairs    | LOW  | −1480   |
+| §127.B  | Move decls to consumer modules           | MED  | −450    |
+| §127.C  | Single dispatch via dlsym (long-shot)    | HIGH | −30     |
+
+Cumulative: lib.rs 2019 → ~30 LOC after all three stages.
+
+* §127.5 Concerns
+
+- §127.A: macros obscure tooling (= rust-analyzer may not jump to def).
+  Mitigation: emit a #[macro_rules] expansion log via `cargo expand`
+  in CI.
+
+- §127.B: cross-module duplicate extern decls produce link warnings
+  unless we centralize the actual extern in one cfg-gated module.
+  Compromise: one `extern_decls.rs` file (~3 LOC) at crate root.
+
+- §127.C: type erasure compromises rustc safety.  Mitigation: gate
+  behind `unsafe` discipline + ert tests proving each helper still
+  works through the dispatcher.
+
+* §127.6 Status
+
+- DRAFT 2026-05-18.  Ship gate: §127.A is mechanical; ship after Doc
+  124.F-blocker resolves (since that may delete some helpers).
+
+* §127.7 References
+
+- Doc 114 (x86_64-linux pivot, Phase 47 helpers single-platform)
+- Doc 122 §122.C (varargs extern-call)

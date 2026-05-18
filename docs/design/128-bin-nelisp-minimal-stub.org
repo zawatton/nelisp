@@ -1,0 +1,91 @@
+#+TITLE: Doc 128 — bin/nelisp.rs minimal stub (~50 LOC ELF _start)
+#+DATE: 2026-05-18
+#+STATUS: DRAFT
+
+* §128.1 Premise
+
+=build-tool/src/bin/nelisp.rs= is 209 LOC.  Endpoint: ~50 LOC.
+
+Of the 209 LOC:
+- ~30 LOC: USAGE banner + module docs
+- ~30 LOC: =parse_args=
+- ~50 LOC: =Command= enum + match in main
+- ~50 LOC: =run_eval= / =run_eval_all= / =exec_eval_all= helpers
+- ~50 LOC: error printing + stderr formatting
+
+* §128.2 Strategy
+
+Push CLI parsing + sub-command dispatch into elisp.
+
+Production binary becomes:
+
+#+begin_src rust
+fn main() -> ExitCode {
+    let env = match nelisp_build_tool::eval::Env::new_global() {
+        Ok(env) => env,
+        Err(e) => { eprintln!("nelisp: bootstrap failed: {}", e); return ExitCode::from(2); }
+    };
+    let args: Vec<String> = std::env::args().collect();
+    let argv_sexp = nelisp_build_tool::eval::sexp::Sexp::list_from(
+        &args.iter().map(|a| Sexp::Str(a.clone())).collect::<Vec<_>>()
+    );
+    match nelisp_build_tool::eval::apply_function(
+        &env.lookup_function("nelisp-cli-main").unwrap(),
+        &[argv_sexp], &mut env
+    ) {
+        Ok(Sexp::Int(code)) => ExitCode::from(code as u8),
+        _ => ExitCode::from(1),
+    }
+}
+#+end_src
+
+~30 LOC.
+
+Push all CLI logic to =lisp/nelisp-cli.el= (= new file):
+- USAGE banner
+- argv → Command parsing
+- per-Command dispatch (eval / load / exec / stdin)
+- exit code mapping
+
+This elisp file adds ~150 LOC to lisp/, but the lisp endpoint
+budget is ~10K LOC so it fits.
+
+* §128.3 Sequencing
+
+| Stage   | Description                              | Risk | LOC削減 |
+|---------+------------------------------------------+------+---------|
+| §128.A  | Write lisp/nelisp-cli.el (port logic)    | LOW  | 0       |
+| §128.B  | Replace bin/nelisp.rs main with stub     | LOW  | −150    |
+| §128.C  | Verify all 5 subcommands round-trip      | LOW  | 0       |
+
+After §128.B: bin/nelisp.rs ≈ 50 LOC.
+
+* §128.4 Boot-error edge case
+
+If =Env::new_global= fails (= STDLIB image decode broken), the elisp
+fallback can't run.  The stub must print a minimal English error and
+exit non-zero.  Already handled in the §128.2 skeleton.
+
+* §128.5 Dependencies
+
+- =nelisp-cli.el= can use any STDLIB primitive after STDLIB images
+  have loaded.  Doc 126 §126.A (eval-boot path) does NOT block §128 —
+  the existing decode_v3 path is fine.
+- =apply_function= is already pub from =eval/mod.rs=.
+
+* §128.6 Out of scope
+
+- =nelisp-baker= binary (= dev-only).  Doc 126 §126.C deletes it.
+- The =sexp-abi-emit= bin (14 LOC) — already minimal.
+
+* §128.7 Status
+
+- DRAFT 2026-05-18.  Ship gate: independent of other docs; can ship
+  whenever Doc 117 settles enough that =apply_function= surface is
+  stable.
+
+* §128.8 References
+
+- Doc 126 (image retirement; orthogonal)
+- Doc 127 (lib.rs shrink; orthogonal)
+- Doc 114 (x86_64-linux pivot)

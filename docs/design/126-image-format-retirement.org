@@ -1,0 +1,132 @@
+#+TITLE: Doc 126 — image.rs retirement (NELIMG v3 → pure-elisp eval boot)
+#+DATE: 2026-05-18
+#+STATUS: DRAFT
+
+* §126.1 Premise
+
+=build-tool/src/image.rs= is 1636 LOC.  It implements NELIMG v3, a
+binary frozen-heap format used to ship STDLIB pre-evaluated into the
+production binary.  Decode bypasses the reader + eval-loop.
+
+After Doc 116 (= elisp reader shipped) + Doc 122 (Phase 47 alloc /
+string / vector / record grammar), the eval-loop can decode source
+forms at startup nearly as fast as binary blob deserialization, while
+deleting *all of image.rs* (= −1636 LOC) plus its baker glue (=
+=bin/nelisp-baker.rs= −299 LOC, =STDLIB_IMAGES= in env.rs and friends).
+
+Endpoint expectation: image.rs deleted entirely.
+
+* §126.2 What image.rs does today
+
+| Surface          | LOC | Role                                                       |
+|------------------+-----+------------------------------------------------------------|
+| encode_v3*       | 280 | Walk Env→graph, serialize NlBox graph + globals + fallback |
+| decode_v3*       | 320 | Parse byte stream → reconstruct NlBox graph → install Env  |
+| NodeTable        | 100 | Dedup + idx assignment during encode                       |
+| write_v3_*       | 250 | Per-variant emitters (Cons, Vector, Record, CharTable, …)  |
+| read_v3_* (in Reader) | 250 | Per-variant readers                                  |
+| iterative_bake_one | 70 | Driver: load one .el → eval → encode_v3 → write .image    |
+| char_table body  | 200 | Special-cased CharTable serialization                     |
+| misc helpers     | 166 | Magic / version / cursor / error types                    |
+
+Used by:
+- =Env::new_global= → =decode_v3_into= for every STDLIB_IMAGES entry
+- =bin/nelisp-baker.rs= → =iterative_bake_one= for `make bake-images`
+- Image-baker integration tests in eval/tests.rs
+
+* §126.3 Replacement strategy
+
+** §126.A — boot path: =.el= source → reader → eval (Phase 1)
+
+Swap =STDLIB_IMAGES= from `include_bytes!("*.image")` to
+`include_str!("*.el")`.  Replace `decode_v3_into` with a 5-line
+loader:
+
+#+begin_src rust
+for (name, source) in STDLIB_SOURCES {
+    let forms = elisp_reader_read_all(source)?;
+    for form in forms { env.eval(&form)?; }
+}
+#+end_src
+
+The elisp reader is already Phase 47-compiled (Doc 116.C); the
+eval-loop is the production hot path.  Startup time becomes
+(parse + eval) instead of (decode_v3); empirically the difference is
+in the 100ms-range for ~10K STDLIB lines (= acceptable for a build-
+tool binary).
+
+** §126.B — delete encode_v3 + NodeTable + write_v3_* (Phase 2)
+
+Once §126.A boots, =encode_v3= has no callers from the production
+binary (only from baker + tests).  Move encode_v3 + supporting
+helpers to =bin/nelisp-baker.rs= as cfg-gated functions, then…
+
+** §126.C — delete the baker (Phase 3)
+
+=iterative_bake_one= becomes dead once `make bake-images` is replaced
+by `make stdlib-test` (= just run the eval-loop on the source and
+verify correctness).  Delete =bin/nelisp-baker.rs= entirely.
+
+** §126.D — delete image.rs (Phase 4)
+
+After §A+B+C, image.rs has no remaining callers.  Delete the file.
+
+Estimated Rust削減 across Phases 1-4: −1636 (image.rs) + −299
+(nelisp-baker.rs) + ~50 (extern decls and module wiring in lib.rs +
+mod.rs) ≈ **−1985 LOC**.
+
+* §126.4 Risks + mitigations
+
+** Risk: startup time regression
+
+Decode binary is ~5x faster than parse-and-eval for the same source.
+For a build-tool / repl binary this is acceptable.  Mitigation:
+benchmark before/after; if >500ms regression, gate via
+`NELISP_IMAGE_FAST_BOOT=1` to keep the binary path for power users.
+
+** Risk: refcount graph isomorphism
+
+NELIMG dedupes shared substructure across STDLIB; re-evaluating
+produces fresh allocations.  Memory usage may grow.  Mitigation:
+benchmark RSS at idle; if >20% growth, add a one-shot
+`(garbage-collect-cycles)` after STDLIB load.
+
+** Risk: image-baker tests in =eval/tests.rs= (~80 tests)
+
+These exercise encode_v3/decode_v3 round-trip.  After §126.B these
+move into baker.rs's #[cfg(test)] mod.  Net 0 LOC削減 from the
+tests themselves; just relocation.
+
+** Risk: =--verify-elisp-fixtures= gate (Doc 95 §95.e)
+
+Cross-impl byte-identity gate uses encode_v3 to compare elisp Sexp
+DSL output against Rust output.  This gate is preserved in §126.B
+(baker-cfg-gated encode_v3 stays).
+
+* §126.5 Sequencing + dependencies
+
+- §126.A depends on: Doc 116.C (reader top-level), Doc 122.A-G (alloc
+  grammar) — all SHIPPED.
+- §126.A depends on: production-quality elisp eval-loop performance
+  for STDLIB.  Doc 117 Tier C completion improves this further but is
+  not blocking.
+- §126.B-D depend on §126.A in serial.
+
+* §126.6 Out of scope
+
+- The =.image= file format is preserved for image-baker tests and the
+  Doc 95 §95.e cross-impl gate.  Doc 126 retires the *production
+  boot path*, not the encode round-trip suite.
+
+* §126.7 Status
+
+- DRAFT 2026-05-18.  Ship gate: §126.A boot path validated against
+  STDLIB benchmark.
+
+* §126.8 References
+
+- Doc 75 (NELIMG v3 origin)
+- Doc 98 §98.3 (form-shim retirement)
+- Doc 116 (elisp reader)
+- Doc 122 (Phase 47 alloc grammar)
+- Doc 95 §95.e (cross-impl gate, kept)
