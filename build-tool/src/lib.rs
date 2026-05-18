@@ -309,6 +309,19 @@ pub mod elisp_cc_spike {
         // `build-tool/src/eval/raw_mem.rs'.
         fn nelisp_alloc_bytes(size: i64, align: i64) -> *mut u8;
         fn nelisp_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) -> i64;
+        // Doc 122 §122.I — pure-elisp CString construction helper
+        // compiled from `lisp/nelisp-cc-cstr-helpers.el'.  Takes a
+        // `*const Sexp` pointing at `Sexp::Str` / `Sexp::Symbol` /
+        // `Sexp::MutStr` and returns a freshly heap-allocated
+        // NUL-terminated byte buffer (= what libc `const char *path'
+        // APIs expect).  Allocation layout is `(size = str-len + 1,
+        // align = 1)' via the §125.A `alloc-bytes' op; caller must
+        // free with `nelisp_cstr_drop' (= `dealloc-bytes' with the
+        // same `(size, align)' pair) once the libc consumer is done.
+        // Substrate gate for Doc 117 §117.D.gaps.3 Tier C (= the
+        // bi_open / bi_stat / bi_mkdir file-I/O sweep).
+        fn nelisp_cstr_from_sexp(str_ptr: *const Sexp) -> *mut u8;
+        fn nelisp_cstr_drop(buf_ptr: *mut u8, size: i64) -> i64;
         // Doc 122 §122.C — Extended extern-call (f64 args + f64 return) probes.
         fn nelisp_libm_sqrt(x: f64) -> f64;
         fn nelisp_libm_sin(x: f64) -> f64;
@@ -1295,6 +1308,45 @@ pub mod elisp_cc_spike {
     /// - Concurrent free of the same slot is UB.
     pub unsafe fn dealloc_bytes(ptr: *mut u8, size: i64, align: i64) -> i64 {
         nelisp_dealloc_bytes(ptr, size, align)
+    }
+
+    /// Doc 122 §122.I — `nelisp_cstr_from_sexp(str-ptr) -> *mut u8'
+    /// pure-elisp CString constructor.  Allocates a fresh heap byte
+    /// buffer of size `(str-len + 1)' bytes at alignment 1, copies
+    /// the UTF-8 payload bytes of `*str_ptr', and appends a trailing
+    /// NUL.  Returns the buffer pointer.  Caller owns the buffer —
+    /// must pair with `cstr_drop(buf_ptr, str_len + 1)' once the libc
+    /// consumer is done.
+    ///
+    /// # Safety
+    /// - `str_ptr' must be non-null and point at an initialised
+    ///   `Sexp::Str' / `Sexp::Symbol' / `Sexp::MutStr'.  Any other
+    ///   tag is undefined behaviour (= the helper reads `String::len'
+    ///   at offset 24 and `String::ptr' at offset 16; both fields
+    ///   are only meaningful for the three string arms).
+    /// - The returned pointer is valid until paired with
+    ///   `cstr_drop' (or a direct `dealloc_bytes' with the same
+    ///   `(size, align)' pair).  Concurrent free or double-free
+    ///   is UB per `std::alloc::dealloc' contracts.
+    pub unsafe fn cstr_from_sexp(str_ptr: *const Sexp) -> *mut u8 {
+        nelisp_cstr_from_sexp(str_ptr)
+    }
+
+    /// Doc 122 §122.I — `nelisp_cstr_drop(buf-ptr, size) -> 1'
+    /// convenience wrapper around `(dealloc-bytes BUF SIZE 1)' for
+    /// buffers allocated by `cstr_from_sexp'.  `SIZE' must equal
+    /// `(str-len ARG + 1)' from the originating allocation; layout
+    /// mismatch is UB.  Returns `1' sentinel for `and'-chain
+    /// composition.
+    ///
+    /// # Safety
+    /// - `buf_ptr' must be either null (= silent no-op) or a
+    ///   pointer returned by `cstr_from_sexp'.  No other source
+    ///   accepted (= mismatched `Layout::from_size_align(size, 1)'
+    ///   on the dealloc).
+    /// - The slot must not be accessed after this call.
+    pub unsafe fn cstr_drop(buf_ptr: *mut u8, size: i64) -> i64 {
+        nelisp_cstr_drop(buf_ptr, size)
     }
 
     // Doc 122 §122.C libm probes + Doc 123 §123.A-C rc primitive

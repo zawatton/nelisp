@@ -572,6 +572,21 @@
      :source-var nelisp-cc-alloc-dealloc--dealloc-bytes-source
      :output "nelisp_dealloc_bytes.o"
      :requires-arch x86_64)
+    ;; Doc 122 §122.I — CString construction helper.  Single `(seq
+    ;; DEFUN ...)' manifest exposing `nelisp_cstr_from_sexp(str-ptr)
+    ;; -> *mut u8' + `nelisp_cstr_drop(buf-ptr, size) -> 1' + the
+    ;; internal `_copy_loop' / `_inner' / `_prog2' helpers.  Composes
+    ;; only existing Phase 47 grammar (§101.C str-len/byte-at, §122.E
+    ;; ptr-write-u8, §125.A alloc-bytes/dealloc-bytes) — no new opcode.
+    ;; Same Linux-x86_64 gate as the §125.A parent (= the underlying
+    ;; alloc-bytes / ptr-write-u8 emit paths are x86_64-only today).
+    ;; Unlocks Doc 117 §117.D.gaps.3 Tier C (= bi_open / bi_stat /
+    ;; bi_mkdir / ~12 file-I/O handlers can materialise libc
+    ;; `const char *path' arguments in pure Phase 47 elisp).
+    (nelisp-cc-cstr-helpers
+     :source-var nelisp-cc-cstr-helpers--source
+     :output "nelisp_cstr_helpers.o"
+     :requires-arch x86_64)
     ;; Doc 123 §123.A — first substrate elisp化 stage.  Replaces the
     ;; simplest macro from `build-tool/src/eval/rc_primitives.rs' (=
     ;; the refcount-inc kernel) with a pure-elisp body that uses the
