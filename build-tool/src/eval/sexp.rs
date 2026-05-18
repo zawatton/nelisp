@@ -92,109 +92,33 @@ pub enum Sexp {
     /// same as `Str'; printers, equality, and format conversions all
     /// share the helper [`Sexp::as_string_owned`].
     ///
-    /// Phase A.4.2 (Doc 77c §4.5.2, 2026-05-09): migrated from
-    /// `Rc<RefCell<String>>' to layout-pinned [`NlStrRef`] for the
-    /// same reason `Cell' moved in A.4.1 — unifies the boxed-variant
-    /// ABI for Phase A.5 JIT direct emit and Phase B elisp self-host.
     MutStr(NlStrRef),
-    /// Cons cell.  Lists are encoded as right-leaning `Cons` chains
-    /// terminated by `Nil`; dotted pairs (`(a . b)`) leave the cdr as
-    /// any non-`Nil` value.
-    ///
-    /// Doc 77c Phase A.2.1 (2026-05-09): the legacy
-    /// `(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>)' tuple was replaced
-    /// with a single `NlConsBoxRef' handle backed by the layout-
-    /// pinned [`NlConsBox`](crate::eval::nlconsbox::NlConsBox).  The
-    /// box embeds `car' / `cdr' / `refcount' at fixed byte offsets
-    /// so the JIT (Phase A.5) and elisp `nl-cons-*' / `nl-rc-*'
-    /// primitives (Phase A.3) can reach them without consulting
-    /// Rust at runtime.  Clone is one refcount bump (= cheaper than
-    /// the old two `Rc::clone'); equality remains structural with a
-    /// `ptr_eq' fast path; `setcar' / `setcdr' mutate the shared box
-    /// in place via [`NlConsBoxRef::set_car`] /
-    /// [`NlConsBoxRef::set_cdr`] so the change is still visible
-    /// through every aliased handle.
+    /// Cons cell.  Lists are right-leaning `Cons' chains terminated by
+    /// `Nil'; dotted pairs `(a . b)' leave cdr as any non-Nil value.
+    /// Backed by [`NlConsBoxRef`] (layout-pinned, refcount-shared);
+    /// `setcar' / `setcdr' mutate through all aliases.
     Cons(NlConsBoxRef),
-    /// `[a b c]` vector literal.
-    ///
-    /// Backed by [`NlVectorRef`] so `aset' / in-place mutation work
-    /// while keeping `Sexp: Clone` cheap (refcount bump only).
-    /// Identity comparison goes through `NlVectorRef::ptr_eq';
-    /// structural equality (the derived `PartialEq') unwraps the
-    /// inner `Vec'.
-    ///
-    /// Phase A.4.3 (Doc 77c §4.5.3, 2026-05-09): migrated from
-    /// `Rc<RefCell<Vec<Sexp>>>' to layout-pinned [`NlVectorRef`].
+    /// `[a b c]' vector literal.  Backed by [`NlVectorRef`].
     Vector(NlVectorRef),
     // Sexp::HashTable variant retired in Doc 50 stage 4f (2026-05-07).
     // Hash-tables are now `(record 'hash-table TEST ENTRIES)' built
     // on top of the Stage 4c record primitives — see
     // lisp/nelisp-stdlib-hash.el for the elisp implementation.
-    /// Char-table (Track F minimum impl): maps integer codepoints
-    /// to arbitrary Sexp values.  Used by Emacs syntax-table /
-    /// category-table / case-table / display-table substrates.
-    /// Sparse linear-scan storage; substrate use cases hold tens
-    /// of entries (= ASCII coverage), occasional whole-range fills
-    /// via `set-char-table-range'.
-    ///
-    /// Backed by [`NlCharTableRef`] so the boxed-variant ABI is
-    /// uniform across Phase A.4.x boxes.  Identity comparison goes
-    /// through `NlCharTableRef::ptr_eq'; structural equality (the
-    /// derived `PartialEq') unwraps the inner [`CharTableInner`].
-    /// The `parent' chain is itself an `Option<NlCharTableRef>',
-    /// which is a self-reference handled by refcount semantics
-    /// (no cycle API exposed — only the child can install a parent).
-    ///
-    /// Phase A.4.6 (Doc 77c §4.5.6, 2026-05-09): migrated from
-    /// `Rc<RefCell<CharTableInner>>' to layout-pinned [`NlCharTableRef`]
-    /// for the same reason `Record' moved in A.4.5 — fixed offset
-    /// of `inner' enables Phase A.5 JIT direct emit and Phase B
-    /// elisp self-host primitive access.
+    /// Char-table — maps integer codepoints to Sexp values.  Used by
+    /// syntax-table / category-table / case-table / display-table.
+    /// Sparse linear-scan; `parent' is `Option<NlCharTableRef>' (no
+    /// cycle API — only the child installs).  Backed by [`NlCharTableRef`].
     CharTable(NlCharTableRef),
-    /// Bool-vector (Track F minimum impl): packed boolean array.
-    /// Used by Emacs syntax classes / region-mark bookkeeping.
-    /// `aref' returns t / nil; `aset' takes any Sexp and stores
-    /// truthy/falsy.  `length' returns the bit count.
-    ///
-    /// Phase A.4.4 (Doc 77c §4.5, 2026-05-09): migrated from
-    /// `Rc<RefCell<Vec<bool>>>' to a layout-pinned [`NlBoolVectorRef`]
-    /// for the same reason `Vector' moved to `NlVectorRef' in Phase
-    /// A.4.3 — fixed offset of `value' enables Phase A.5 JIT direct
-    /// emit and Phase B elisp self-host primitive access.
+    /// Bool-vector — packed boolean array.  `aref' returns t/nil;
+    /// `aset' stores truthy/falsy; `length' returns the bit count.
     BoolVector(NlBoolVectorRef),
-    /// Mutable cell (= write-through reference) used to back let-
-    /// binding storage so `setq' inside a closure mutates the
-    /// captured slot, not a copy.  The reader does NOT produce this
-    /// variant — it appears only inside captured-environment alists
-    /// emitted by `Env::capture_lexical' (build-tool/src/eval/env.rs).
-    /// Identity goes through `NlCellRef::ptr_eq'; structural equality
-    /// unwraps the inner Sexp.
-    ///
-    /// Phase A.4 (Doc 77c §4.5, 2026-05-09): migrated from
-    /// `Rc<RefCell<Sexp>>' to a layout-pinned [`NlCellRef`] for the
-    /// same reason `Cons' moved to `NlConsBoxRef' in Phase A.2.1 —
-    /// fixed offset of `value' enables Phase A.5 JIT direct emit and
-    /// Phase B elisp self-host primitive access.
+    /// Mutable write-through cell.  Backs let-binding storage so
+    /// closure `setq' mutates the captured slot.  Reader doesn't
+    /// produce this; only `Env::capture_lexical' does.
     Cell(NlCellRef),
-    /// Record (= host emacs `record' / pvec subtype).  Underlies
-    /// `cl-defstruct' user types — the first slot (`type_tag') names
-    /// the struct type so `type-of' can return that symbol verbatim
-    /// instead of `record'.  Remaining slots are user-visible and
-    /// `aset'-able.  Doc 52 §2.1 (Doc 50 Stage 4).
-    ///
-    /// Identity goes through `NlRecordRef::ptr_eq' (= same allocation);
-    /// structural equality (the derived `PartialEq') compares both
-    /// `type_tag' and inner slot vector.  Printer round-trips as
-    /// `#s(TYPE V0 V1 ...)' (positional shape — keyword forms are
-    /// desugared by the `cl-defstruct' macro before reaching the
-    /// reader).
-    ///
-    /// Phase A.4.5 (Doc 77c §4.5.5, 2026-05-09): migrated from
-    /// `Record { type_tag: Box<Sexp>, slots: Rc<RefCell<Vec<Sexp>>> }'
-    /// to a single layout-pinned [`NlRecordRef`] allocation that holds
-    /// both fields at fixed offsets — same reason `Cons' moved to
-    /// `NlConsBoxRef' in Phase A.2.1, fixed offsets enable Phase A.5
-    /// JIT direct emit and Phase B elisp self-host primitive access.
+    /// Record (host emacs `record' / pvec subtype).  Underlies
+    /// `cl-defstruct'; slot 0 is `type_tag', remaining are user slots.
+    /// Printer round-trips as `#s(TYPE V0 V1 ...)' (positional).
     Record(NlRecordRef),
 }
 
