@@ -73,32 +73,10 @@ pub unsafe extern "C" fn nl_jit_split_by_non_alnum(
 }
 
 
-/// List of int codepoints → Sexp::Str.  Lossy on invalid codepoints; ERR on shape.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_concat_ints(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    let mut s = String::new();
-    let mut cur = (*arg).clone();
-    loop {
-        match cur {
-            Sexp::Nil => break,
-            Sexp::Cons(b) => {
-                let v = b.car.clone();
-                match &v {
-                    Sexp::Int(n) => {
-                        if let Some(ch) = char::from_u32(*n as u32) {
-                            s.push(ch);
-                        }
-                    }
-                    _ => return TRAMPOLINE_ERR,
-                }
-                cur = b.cdr.clone();
-            }
-            _ => return TRAMPOLINE_ERR,
-        }
-    }
-    *out = Sexp::Str(s);
-    TRAMPOLINE_OK
-}
+// Doc 86 §86.1.e.2 (2026-05-19): `nl_jit_concat_ints' Rust body
+// deleted — replaced by Phase-47-compiled elisp body in
+// `lisp/nelisp-cc-jit-concat-ints.el'.  The `#[no_mangle]' symbol is
+// now provided by the `.o' archive linked by `build.rs'.
 
 /// IEEE-754 float body builder.  CONV ∈ {f/F/e/E/g/G}, PREC ≥ 0.
 /// Writes unsigned/unpadded body; elisp does sign + padding.

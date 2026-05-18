@@ -884,6 +884,23 @@
     (nelisp-cc-jit-sxhash
      :source-var nelisp-cc-jit-sxhash--source
      :output "nl_jit_sxhash.o"
+     :requires-arch x86_64)
+    ;; db33abdd (2026-05-19) — `jit/box_accessor.rs' `nl_record_type_tag_ptr'
+    ;; Rust body deleted; Phase-47-compiled elisp `.o' replaces it.
+    ;; NlRecord::type_tag is at offset 0, so sexp-payload-ptr gives *const Sexp
+    ;; directly.  bridge.rs anchor re-added (was reverted at bf670ee4).
+    (nelisp-cc-jit-record-type-tag-ptr
+     :source-var nelisp-cc-jit-record-type-tag-ptr--source
+     :output "nl_record_type_tag_ptr.o"
+     :requires-arch x86_64)
+    ;; Doc 86 §86.1.e.2 (2026-05-19) — `jit/strings.rs' `nl_jit_concat_ints'
+    ;; Rust body deleted; Phase-47-compiled elisp `.o' replaces it.
+    ;; Uses `mut-str-make-empty' / `mut-str-push-codepoint' / `mut-str-finalize'
+    ;; (§122.B grammar ops) to build the result Sexp::Str incrementally.
+    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' (count 49→51) anchors `nl_jit_concat_ints'.
+    (nelisp-cc-jit-concat-ints
+     :source-var nelisp-cc-jit-concat-ints--source
+     :output "nl_jit_concat_ints.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

@@ -329,6 +329,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Phase 47 elisp migration -- `nl_record_type_tag_ptr' trampoline swap
         // (Rust body deleted from `jit/box_accessor.rs').
         "nelisp-cc-jit-record-type-tag-ptr.el",
+        // Doc 86 §86.1.e.2 (2026-05-19) — `nl_jit_concat_ints' trampoline swap
+        // (Rust body deleted from `jit/strings.rs').
+        "nelisp-cc-jit-concat-ints.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
