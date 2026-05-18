@@ -617,54 +617,6 @@
      :source-var nelisp-cc-cstr-helpers--source
      :output "nelisp_cstr_helpers.o"
      :requires-arch x86_64)
-    ;; Doc 122 §122.J — struct-by-value grammar helpers.  Eight
-    ;; entries cover the four new raw-mem op probes (`ptr-{read,write}-
-    ;; u{16,32}') + the four `struct-make' / `struct-field-set' /
-    ;; `struct-field-get' sugar probes + the composed `nelisp_winsize_
-    ;; write_full' ship-gate object that exercises 4 × `struct-field-
-    ;; set' against a Rust-allocated 8-byte buffer.  Same Linux-x86_64
-    ;; gate as §122.I + §122.E parents.  Unlocks Doc 117 §117.D.gaps.3
-    ;; class 4/5 (= the sigaction / termios / pollfd handlers).
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--read-u16-source
-     :output "nelisp_ptr_read_u16.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--write-u16-source
-     :output "nelisp_ptr_write_u16.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--read-u32-source
-     :output "nelisp_ptr_read_u32.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--write-u32-source
-     :output "nelisp_ptr_write_u32.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--make-source
-     :output "nelisp_struct_make_winsize.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--field-set-u16-source
-     :output "nelisp_struct_field_set_u16.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--field-get-u16-source
-     :output "nelisp_struct_field_get_u16.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--field-set-u32-source
-     :output "nelisp_struct_field_set_u32.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--field-get-u32-source
-     :output "nelisp_struct_field_get_u32.o"
-     :requires-arch x86_64)
-    (nelisp-cc-struct-helpers
-     :source-var nelisp-cc-struct-helpers--winsize-write-full-source
-     :output "nelisp_winsize_write_full.o"
-     :requires-arch x86_64)
     ;; Doc 117 §117.D.gaps.3 file-I/O sweep (powered by the §122.I
     ;; CString helper above).  Three handlers consumed:
     ;;   - `bi_syscall_stat'         -> libc `stat(2)' kernel

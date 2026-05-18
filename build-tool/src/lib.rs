@@ -132,24 +132,6 @@ pub mod elisp_cc_spike {
         fn nelisp_ptr_read_u8(ptr: *const u8, offset: i64) -> i64;
         fn nelisp_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64;
         // Doc 122 §122.J — width-{2,4} raw-mem ops.
-        fn nelisp_ptr_read_u16(ptr: *const u8, offset: i64) -> i64;
-        fn nelisp_ptr_write_u16(ptr: *mut u8, offset: i64, val: i64) -> i64;
-        fn nelisp_ptr_read_u32(ptr: *const u8, offset: i64) -> i64;
-        fn nelisp_ptr_write_u32(ptr: *mut u8, offset: i64, val: i64) -> i64;
-        // Doc 122 §122.J — struct-make/field-{set,get} sugar probes.
-        fn nelisp_struct_make_winsize() -> *mut u8;
-        fn nelisp_struct_field_set_u16(buf: *mut u8, offset: i64, val: i64) -> i64;
-        fn nelisp_struct_field_get_u16(buf: *const u8, offset: i64) -> i64;
-        fn nelisp_struct_field_set_u32(buf: *mut u8, offset: i64, val: i64) -> i64;
-        fn nelisp_struct_field_get_u32(buf: *const u8, offset: i64) -> i64;
-        // Doc 122 §122.J — composed winsize write-full probe.
-        fn nelisp_winsize_write_full(
-            buf: *mut u8,
-            row: i64,
-            col: i64,
-            xpixel: i64,
-            ypixel: i64,
-        ) -> *mut u8;
         // Doc 125 §125.A — alloc/dealloc primitives.
         fn nelisp_alloc_bytes(size: i64, align: i64) -> *mut u8;
         fn nelisp_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) -> i64;
@@ -533,34 +515,6 @@ pub mod elisp_cc_spike {
     cc_wrap!(ptr_write_u64: nelisp_ptr_write_u64, (ptr: *mut u8, offset: i64, val: i64) -> i64);
     cc_wrap!(ptr_read_u8: nelisp_ptr_read_u8, (ptr: *const u8, offset: i64) -> i64);
     cc_wrap!(ptr_write_u8: nelisp_ptr_write_u8, (ptr: *mut u8, offset: i64, val: i64) -> i64);
-
-    // Doc 122 §122.J — width-{2, 4} raw-mem op wrappers.  Same shape
-    // as `_u8' / `_u64' modulo width.  All reads zero-extend to i64
-    // (= 0xABCD returns 43981, not -21555).  Writes use unaligned
-    // store semantics on the Rust side (`std::ptr::write_unaligned')
-    // so libc struct fields at odd offsets inside a packed buffer
-    // round-trip cleanly.
-    cc_wrap!(ptr_read_u16: nelisp_ptr_read_u16, (ptr: *const u8, offset: i64) -> i64);
-    cc_wrap!(ptr_write_u16: nelisp_ptr_write_u16, (ptr: *mut u8, offset: i64, val: i64) -> i64);
-    cc_wrap!(ptr_read_u32: nelisp_ptr_read_u32, (ptr: *const u8, offset: i64) -> i64);
-    cc_wrap!(ptr_write_u32: nelisp_ptr_write_u32, (ptr: *mut u8, offset: i64, val: i64) -> i64);
-
-    // Doc 122 §122.J — `struct-make' / `struct-field-{set,get}'
-    // sugar probe wrappers.  Each calls the matching Phase 47-
-    // compiled `.o' object that exercises the parser-level desugar
-    // path.  Safety contracts mirror the underlying raw-mem ops:
-    // the buffer pointer must be non-null + valid for `(offset +
-    // size)' bytes of read/write at unaligned access; `struct-make'
-    // uses `alloc-bytes' under the hood so its return value
-    // inherits the standard "null = OOM / bad-layout" contract.
-    cc_wrap!(struct_make_winsize: nelisp_struct_make_winsize, () -> *mut u8);
-    cc_wrap!(struct_field_set_u16: nelisp_struct_field_set_u16, (buf: *mut u8, offset: i64, val: i64) -> i64);
-    cc_wrap!(struct_field_get_u16: nelisp_struct_field_get_u16, (buf: *const u8, offset: i64) -> i64);
-    cc_wrap!(struct_field_set_u32: nelisp_struct_field_set_u32, (buf: *mut u8, offset: i64, val: i64) -> i64);
-    cc_wrap!(struct_field_get_u32: nelisp_struct_field_get_u32, (buf: *const u8, offset: i64) -> i64);
-
-    // Doc 122 §122.J — composed winsize struct writer (4 u16 fields).
-    cc_wrap!(winsize_write_full: nelisp_winsize_write_full, (buf: *mut u8, row: i64, col: i64, xpixel: i64, ypixel: i64) -> *mut u8);
 
     // Doc 125 §125.A — generic byte-level alloc / dealloc; Doc 122 §122.I — cstr {from-sexp, drop}.
     cc_wrap!(alloc_bytes: nelisp_alloc_bytes, (size: i64, align: i64) -> *mut u8);
