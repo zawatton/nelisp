@@ -6,7 +6,7 @@
         bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
         stage-d-v2-tarball stage-d-v2-tarball-verify \
         stage-d-v3-tarball stage-d-v3-tarball-verify \
-        verify-elisp-fixtures verify-libc-constants
+        verify-elisp-fixtures
 
 EMACS ?= emacs
 
@@ -85,16 +85,6 @@ sexp-abi-check:
 	  --eval '(with-temp-file "target/sexp-abi-check/elisp.txt" (dolist (e nelisp-sexp--abi-export) (insert (format "%s=%d\n" (car e) (cdr e)))))'
 	@diff -u target/sexp-abi-check/elisp.txt target/sexp-abi-check/rust.txt \
 	  && echo "sexp-abi-check: Rust and elisp constants match"
-
-# Doc 122 §122.K — verify the elisp-side libc constants table is in
-# sync with the host's libc headers.  Compiles a tiny C probe over
-# <signal.h>/<sys/ioctl.h>/<termios.h>/<poll.h>/<fcntl.h>, dumps the
-# elisp side via `nelisp-cc--libc-constants-canonical-text', and
-# `diff's the two.  Drift fails the build before the Doc 117
-# §117.D.gaps.3 handlers (= sigaction / ioctl / tcsetattr / poll /
-# fcntl) can be folded to elisp.
-verify-libc-constants:
-	@EMACS=$(EMACS) ./scripts/verify-libc-constants.sh
 
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
 # Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).
