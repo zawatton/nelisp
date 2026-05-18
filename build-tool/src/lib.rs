@@ -176,6 +176,21 @@ pub mod elisp_cc_spike {
         fn nelisp_bi_set_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_clear_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_quit_flag_pending_p(flag_ptr: *const i64) -> i64;
+        // Doc 117 §117.D.gaps.4 — `(install-sigint-handler)' sigaction-
+        // struct construction + libc dispatch swap.  Phase 47 elisp
+        // body compiled from `lisp/nelisp-cc-bi-install-sigint-handler.el'.
+        // 0-arg function: builds a 152-byte / align-8 `struct sigaction'
+        // via §122.J `struct-make', zeroes `sa_mask' + `sa_restorer'
+        // via 17 × §122.E `ptr-write-u64', writes the handler-fn
+        // pointer (= `nl_sigint_handler_addr' extern) into `sa_sigaction'
+        // (offset 0) + `SA_RESTART' (0x10000000) into `sa_flags'
+        // (offset 136), calls libc `sigaction(SIGINT, &sa, NULL)',
+        // frees the buffer via §125.A `dealloc-bytes', and flips the
+        // `SIGINT_INSTALLED' static (= `nl_sigint_installed_ptr'
+        // extern) from 0 -> 1.  Returns the libc `sigaction(2)' rc;
+        // the Rust shim discards it (matching the pre-swap body which
+        // ignored the rc too).
+        fn nelisp_bi_install_sigint_handler() -> i64;
         // Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
         // Phase 47 elisp body compiled from
         // `lisp/nelisp-cc-bi-write-stderr-line.el'.  Single-arg
@@ -960,6 +975,12 @@ pub mod elisp_cc_spike {
     cc_wrap!(bi_set_quit_flag: nelisp_bi_set_quit_flag, (flag_ptr: *mut i64) -> i64);
     cc_wrap!(bi_clear_quit_flag: nelisp_bi_clear_quit_flag, (flag_ptr: *mut i64) -> i64);
     cc_wrap!(bi_quit_flag_pending_p: nelisp_bi_quit_flag_pending_p, (flag_ptr: *const i64) -> i64);
+
+    // Doc 117 §117.D.gaps.4 — `(install-sigint-handler)' sigaction(SIGINT)
+    // install body via §122.J struct-make + libc `sigaction(2)' call.
+    // Compiled from `lisp/nelisp-cc-bi-install-sigint-handler.el'.  Returns
+    // the libc `sigaction(2)' rc; the Rust shim discards it.
+    cc_wrap!(bi_install_sigint_handler: nelisp_bi_install_sigint_handler, () -> i64);
 
     // Doc 117 §117.B / Doc 122 §122.H — I/O syscall sweep (stderr/stdout/stdin).
     // Single libc `write' / `read' per call; non-string args become 0-length no-ops.
