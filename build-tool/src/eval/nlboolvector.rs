@@ -96,7 +96,15 @@ impl Clone for NlBoolVectorRef {
 }
 
 impl Drop for NlBoolVectorRef {
-    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlBoolVector, crate::eval::sexp::SEXP_TAG_BOOL_VECTOR); } }
+    /// Doc 124 §124.L+ — dispatch through the pure-elisp
+    /// `nlboolvector_drop' kernel.  Runs `atomic-fetch-add(-1)' then,
+    /// on pre-sub == 1, calls `nl_boolvector_drop_inner' (= `drop_in_place
+    /// ::<NlBoolVector>') + `dealloc-bytes(32, 8)'.
+    fn drop(&mut self) {
+        unsafe {
+            crate::elisp_cc_spike::nlboolvector_drop(self.ptr.as_ptr() as *mut i64);
+        }
+    }
 }
 
 impl Deref for NlBoolVectorRef {

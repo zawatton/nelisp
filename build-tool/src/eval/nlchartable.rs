@@ -84,7 +84,15 @@ impl Clone for NlCharTableRef {
 }
 
 impl Drop for NlCharTableRef {
-    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlCharTable, crate::eval::sexp::SEXP_TAG_CHAR_TABLE); } }
+    /// Doc 124 §124.L+ — dispatch through the pure-elisp
+    /// `nlchartable_drop' kernel.  Runs `atomic-fetch-add(-1)' then,
+    /// on pre-sub == 1, calls `nl_chartable_drop_inner' (= `drop_in_place
+    /// ::<NlCharTable>') + `dealloc-bytes(128, 8)'.
+    fn drop(&mut self) {
+        unsafe {
+            crate::elisp_cc_spike::nlchartable_drop(self.ptr.as_ptr() as *mut i64);
+        }
+    }
 }
 
 impl Deref for NlCharTableRef {

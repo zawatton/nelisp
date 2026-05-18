@@ -249,6 +249,28 @@ pub unsafe extern "C" fn nl_str_drop_inner(box_ptr: *mut i64) -> i64 {
     1
 }
 
+/// §124.L+ NlBoolVector inner-drop ABI extern.
+///
+/// # Safety
+/// `box_ptr' must point at a fully-initialized `NlBoolVector' whose
+/// backing alloc the caller is about to free.
+#[no_mangle]
+pub unsafe extern "C" fn nl_boolvector_drop_inner(box_ptr: *mut i64) -> i64 {
+    crate::eval::nlboolvector::NlBoolVector::DROP_FN(box_ptr as *mut std::ffi::c_void);
+    1
+}
+
+/// §124.L+ NlCharTable inner-drop ABI extern.
+///
+/// # Safety
+/// `box_ptr' must point at a fully-initialized `NlCharTable' whose
+/// backing alloc the caller is about to free.
+#[no_mangle]
+pub unsafe extern "C" fn nl_chartable_drop_inner(box_ptr: *mut i64) -> i64 {
+    crate::eval::nlchartable::NlCharTable::DROP_FN(box_ptr as *mut std::ffi::c_void);
+    1
+}
+
 /// Per-tag drop dispatch.  Indexed by `SEXP_TAG_*`; slots 0..=5 panic,
 /// slots 6..=12 forward to each box's `DROP_FN`.
 pub const NLRC_DROP_TABLE: [unsafe fn(*mut std::ffi::c_void); 13] = [

@@ -696,6 +696,20 @@
      :source-var nelisp-cc-nlstr-drop--source
      :output "nelisp_nlstr_drop.o"
      :requires-arch x86_64)
+    ;; Doc 124 §124.L+ — Drop kernels for the remaining 2 NlBox types
+    ;; (NlBoolVector + NlCharTable) so the legacy `nlrc_drop_box!' macro
+    ;; in `build-tool/src/eval/nlrc.rs' has zero callers and is deleted.
+    ;; Same shape as §124.G-K modulo per-type layout literals:
+    ;;   NlBoolVector: REFCOUNT_OFFSET = 24,  SIZE = 32,  ALIGN = 8
+    ;;   NlCharTable:  REFCOUNT_OFFSET = 120, SIZE = 128, ALIGN = 8
+    (nelisp-cc-nlboolvector-drop
+     :source-var nelisp-cc-nlboolvector-drop--source
+     :output "nelisp_nlboolvector_drop.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlchartable-drop
+     :source-var nelisp-cc-nlchartable-drop--source
+     :output "nelisp_nlchartable_drop.o"
+     :requires-arch x86_64)
     ;; Doc 124 §124.B-E — mechanical sibling Clone kernels.  Identical
     ;; shape to §124.A modulo the per-type REFCOUNT_OFFSET literal:
     ;;   §124.B NlVector: 24, §124.C NlCell: 32,

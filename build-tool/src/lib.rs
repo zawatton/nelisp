@@ -433,6 +433,18 @@ pub mod elisp_cc_spike {
         fn nelisp_nlcell_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlrecord_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlstr_clone(box_ptr: *mut i64) -> i64;
+        // Doc 124 §124.L+ — NlBoolVector + NlCharTable Drop kernels
+        // (the remaining 2 NlBox types).  Identical shape as §124.G-K
+        // modulo per-type SIZE / REFCOUNT_OFFSET literals:
+        //   NlBoolVector: REFCOUNT_OFFSET = 24,  SIZE = 32,  ALIGN = 8
+        //                 (= Vec<bool> header @ 0; Vec<T> header size
+        //                  independent of T).
+        //   NlCharTable:  REFCOUNT_OFFSET = 120, SIZE = 128, ALIGN = 8
+        //                 (= CharTableInner @ 0; subtype Sexp + default
+        //                  Sexp + entries Vec + parent Option<NlChar
+        //                  TableRef> + extra Vec = 32+32+24+8+24 = 120).
+        fn nelisp_nlboolvector_drop(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlchartable_drop(box_ptr: *mut i64) -> i64;
         // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 helper
         // compiled from `lisp/nelisp-cc-mirror-lookup-entry.el'.
         // Returns the `*const Sexp' of the matching symbol-entry
@@ -1483,6 +1495,12 @@ pub mod elisp_cc_spike {
     cc_wrap!(nlcell_clone: nelisp_nlcell_clone, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlrecord_clone: nelisp_nlrecord_clone, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlstr_clone: nelisp_nlstr_clone, (box_ptr: *mut i64) -> i64);
+    // Doc 124 §124.L+ — Drop kernels for the remaining 2 NlBox types
+    // (NlBoolVector + NlCharTable).  Per-type layout literals (SIZE /
+    // REFCOUNT_OFFSET / ALIGN) live in `lisp/nelisp-cc-nl{boolvector,
+    // chartable}-drop.el' headers, not duplicated here.
+    cc_wrap!(nlboolvector_drop: nelisp_nlboolvector_drop, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlchartable_drop: nelisp_nlchartable_drop, (box_ptr: *mut i64) -> i64);
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.
     ///
