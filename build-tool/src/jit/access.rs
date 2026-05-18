@@ -4,9 +4,9 @@
 //! the externs on linux-x86_64 (= the crate's only target per
 //! `lib.rs:30').
 //!
-//! The 3 narrow Rust externs below stay — they shrink the elisp body
+//! The 2 narrow Rust externs below stay — they shrink the elisp body
 //! surface area to the bit decode + tag-byte writes when Phase 47 has
-//! no grammar primitive yet (`(str-char-count)' / `bool-vector-*').
+//! no grammar primitive yet (`bool-vector-*').
 //! Reached from the elisp bodies via `(extern-call SYM ARG...)' — same
 //! shape `nl_sexp_eq' uses for the §120.A predicate-eq slow path.
 
@@ -14,29 +14,6 @@ use crate::eval::sexp::Sexp;
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
-
-/// `(length STR)' narrow `Sexp::Str' arm — reached from the
-/// Phase 47 `nelisp_jit_length' body's Str tag arm.  Returns
-/// codepoint count via `s.chars().count()' — the same Unicode-
-/// aware char-walker the pre-§120.D trampoline used, kept in
-/// Rust until Phase 47 grows a `(str-char-count H)' grammar op
-/// (= Doc 122 §122.A `mut-str-char-count' cluster).
-///
-/// # Safety
-/// - `arg' must point at `Sexp::Str(_)' — elisp tag-checks.
-/// - `out' must be non-null + writable for one 32-byte Sexp slot.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_access_length_str_inner(
-    arg: *const Sexp,
-    out: *mut Sexp,
-) -> i64 {
-    if let Sexp::Str(s) = &*arg {
-        *out = Sexp::Int(s.chars().count() as i64);
-        TRAMPOLINE_OK
-    } else {
-        TRAMPOLINE_ERR
-    }
-}
 
 /// `(aref BV INDEX)' narrow BoolVector arm — reached from the
 /// Phase 47 `nelisp_jit_aref' body's BoolVector tag arm.

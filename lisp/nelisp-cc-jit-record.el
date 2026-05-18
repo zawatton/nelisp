@@ -8,13 +8,14 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.B — Phase-47-compiled replacements for 4 of 11
+;; Doc 120 §120.B — Phase-47-compiled replacements for 5 of 11
 ;; `jit/box_accessor.rs' trampolines, covering the record family:
 ;;
 ;;   - `nl_jit_record_type'  → `nelisp_jit_record_type'
 ;;   - `nl_jit_record_len'   → `nelisp_jit_record_len'
 ;;   - `nl_jit_record_ref'   → `nelisp_jit_record_ref'
 ;;   - `nl_jit_record_set'   → `nelisp_jit_record_set'
+;;   - `nl_jit_record_alloc' → `nl_jit_record_alloc'
 ;;
 ;; ABI shapes (matching `nl-jit-call-out-{1,1i,2i}' bridge primitives):
 ;;
@@ -36,14 +37,10 @@
 ;; The tag-byte constant `12' is `nelisp-sexp--tag-record' from
 ;; `lisp/nelisp-sexp-layout.el', pinned by the §100.B ABI assert tests.
 ;;
-;; `nl_jit_record_alloc' SKIP rationale: the trampoline allocates a fresh
-;; record with slot count determined by walking a cons list of slot
-;; values, then refcount-clones each into the new record.  Phase 47's
-;; `record-make' grammar wants a static slot count + caller-side init,
-;; which is fine, but the list-walk-to-count + then-set loop pattern
-;; would require either a 2-pass walk (count, then fill) or a dynamic
-;; `record-resize' primitive that Phase 47 does not yet ship.  Keeping
-;; this trampoline in Rust until either lands.
+;; `nl_jit_record_alloc' now uses that 2-pass walk explicitly:
+;; first count a proper cons list, then `record-make' with that slot
+;; count, then fill each slot via `record-slot-set'.  Improper lists
+;; still return TRAMPOLINE_ERR.
 
 ;;; Code:
 
@@ -151,6 +148,62 @@ Three-arm guard identical to `nl_jit_record_ref'.  On OK arm:
 `extern-call' (= same helper `record-slot-ref' uses internally).
 Matches the Rust trampoline's `*out = (*val).clone()' contract
 bit-for-bit.  Returns 0 / 1 per TRAMPOLINE_{OK,ERR}.")
+
+(defconst nelisp-cc-jit-record-alloc--source
+  '(seq
+    (defun nl_jit_record_alloc_count (cur-box n)
+      (if (= (sexp-tag (+ cur-box 32)) 0)
+          (+ n 1)
+        (if (= (sexp-tag (+ cur-box 32)) 7)
+            (nl_jit_record_alloc_count
+             (sexp-payload-ptr (+ cur-box 32))
+             (+ n 1))
+          -1)))
+    (defun nl_jit_record_alloc_fill (cur-box idx out)
+      (and
+       (record-slot-set out idx cur-box)
+       (if (= (sexp-tag (+ cur-box 32)) 0)
+           1
+         (nl_jit_record_alloc_fill
+          (sexp-payload-ptr (+ cur-box 32))
+          (+ idx 1)
+          out))))
+    (defun nl_jit_record_alloc (tag list out)
+      ;; tag: *const Sexp.  list: *const Sexp.  out: *mut Sexp.
+      ;; Returns: i64 = 0 on OK, 1 on invalid tag / improper list.
+      (if (= (sexp-tag tag) 0)
+          (if (= (sexp-tag list) 0)
+              (and (record-make tag 0 out) 0)
+            (if (= (sexp-tag list) 7)
+                (if (< (nl_jit_record_alloc_count (sexp-payload-ptr list) 0) 0)
+                    1
+                  (and
+                   (record-make tag
+                                (nl_jit_record_alloc_count (sexp-payload-ptr list) 0)
+                                out)
+                   (nl_jit_record_alloc_fill (sexp-payload-ptr list) 0 out)
+                   0))
+              1))
+        (if (= (sexp-tag tag) 4)
+            (if (= (sexp-tag list) 0)
+                (and (record-make tag 0 out) 0)
+              (if (= (sexp-tag list) 7)
+                  (if (< (nl_jit_record_alloc_count (sexp-payload-ptr list) 0) 0)
+                      1
+                    (and
+                     (record-make tag
+                                  (nl_jit_record_alloc_count (sexp-payload-ptr list) 0)
+                                  out)
+                     (nl_jit_record_alloc_fill (sexp-payload-ptr list) 0 out)
+                     0))
+                1))
+          1))))
+  "Phase 47 source for the `nl_jit_record_alloc' trampoline.
+
+Uses a 2-pass proper-list walk: count first, allocate the record
+with `record-make', then fill slots through refcount-safe
+`record-slot-set'.  A non-Symbol/non-Nil tag or any improper list
+tail still returns TRAMPOLINE_ERR, matching the removed Rust body.")
 
 (provide 'nelisp-cc-jit-record)
 

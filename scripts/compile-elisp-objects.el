@@ -415,10 +415,9 @@
      :output "nelisp_jit_ref_eq.o"
      :requires-arch x86_64)
     ;; Doc 120 §120.B — `jit/box_accessor.rs' record family partial swap.
-    ;; 4 of 11 trampolines (= `nl_jit_record_type', `nl_jit_record_len',
-    ;; `nl_jit_record_ref', `nl_jit_record_set') move to Phase 47 elisp.
-    ;; `nl_jit_record_alloc' stays Rust (list-walk-to-count requires a
-    ;; grammar primitive not yet shipped); the 6 non-record trampolines
+    ;; 5 of 11 trampolines (= `nl_jit_record_type', `nl_jit_record_len',
+    ;; `nl_jit_record_ref', `nl_jit_record_set', `nl_jit_record_alloc')
+    ;; move to Phase 47 elisp; the 6 non-record trampolines
     ;; (mut-str / bool-vector / codepoint / char-table) all SKIP with
     ;; documented blockers in `build-tool/src/jit/box_accessor.rs'.
     ;; Linux-x86_64 only — `extern-call' ABI ships aarch64 in follow-up.
@@ -438,6 +437,10 @@
      :source-var nelisp-cc-jit-record-set--source
      :output "nelisp_jit_record_set.o"
      :requires-arch x86_64)
+    (nelisp-cc-jit-record
+     :source-var nelisp-cc-jit-record-alloc--source
+     :output "nl_jit_record_alloc.o"
+     :requires-arch x86_64)
     ;; Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' grammar
     ;; ops.  Two entries, one per op, packaged as standalone
     ;; Phase 47-compiled `defun's so `tests/elisp_cc_sexp_write_str_
@@ -451,6 +454,10 @@
     (nelisp-cc-sexp-write-str
      :source-var nelisp-cc-sexp-write-str--symbol-source
      :output "nelisp_sexp_write_symbol.o"
+     :requires-arch x86_64)
+    (nelisp-cc-sexp-write-str
+     :source-var nelisp-cc-jit-intern--source
+     :output "nl_jit_intern.o"
      :requires-arch x86_64)
     ;; Doc 122 §122.G — `sexp-write-float' grammar op (= Reader Float
     ;; unlock).  Single entry; same Linux-x86_64 gate as the §122.A
@@ -534,6 +541,14 @@
     (nelisp-cc-mut-str
      :source-var nelisp-cc-mut-str--finalize-source
      :output "nelisp_mut_str_finalize.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mut-str
+     :source-var nelisp-cc-jit-make-mut-str--source
+     :output "nl_jit_make_mut_str.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mut-str
+     :source-var nelisp-cc-jit-mut-str-len--source
+     :output "nl_jit_mut_str_len.o"
      :requires-arch x86_64)
     ;; Doc 122 §122.D — UTF-8 helper grammar ops.  Three entries,
     ;; one per op, packaged as standalone Phase 47-compiled `defun's

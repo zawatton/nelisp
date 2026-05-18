@@ -59,6 +59,22 @@
      (sexp-write-symbol slot bytes-ptr len))
   "Phase 47 source for the Doc 122 §122.A `sexp-write-symbol' op probe.")
 
+(defconst nelisp-cc-jit-intern--source
+  '(defun nl_jit_intern (arg out)
+     ;; arg: *const Sexp.  out: *mut Sexp.
+     ;; Returns: i64 = 0 on OK (= Str / MutStr -> Symbol), 1 on ERR.
+     (if (= (sexp-tag arg) 5)
+         (and (sexp-write-symbol out (str-bytes-ptr arg) (str-len arg)) 0)
+       (if (= (sexp-tag arg) 6)
+           (and (sexp-write-symbol out (str-bytes-ptr arg) (str-len arg)) 0)
+         1)))
+  "Phase 47 source for the `nl_jit_intern' trampoline.
+
+Reuses the existing `sexp-write-symbol' allocator op plus the
+`str-bytes-ptr' / `str-len' string-view ops.  Keeps the original
+contract exactly: `Str' and `MutStr' succeed, everything else
+returns TRAMPOLINE_ERR.")
+
 (provide 'nelisp-cc-sexp-write-str)
 
 ;;; nelisp-cc-sexp-write-str.el ends here

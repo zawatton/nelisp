@@ -22,6 +22,8 @@ extern "C" {
     fn nl_jit_float_div(); fn nl_jit_float_lt();  fn nl_jit_float_gt();
     fn nl_jit_float_le();  fn nl_jit_float_ge();  fn nl_jit_float_eq_eps();
     fn nl_jit_float_float(); fn nl_jit_float_exp(); fn nl_jit_float_log();
+    fn nl_jit_intern(); fn nl_jit_make_mut_str(); fn nl_jit_mut_str_len();
+    fn nl_jit_record_alloc();
     fn nelisp_jit_predicate_eq(); fn nelisp_jit_ref_eq();
     fn nelisp_jit_record_type();  fn nelisp_jit_record_len();
     fn nelisp_jit_record_ref();   fn nelisp_jit_record_set();
@@ -34,13 +36,14 @@ extern "C" {
 /// Force-link anchor: `#[used] static' of fn-ptrs so LTO can't elide
 /// the externs above.  Never read; presence keeps the symbols live.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 38] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 42] = [
     nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
     nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
     nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
     nl_jit_float_add, nl_jit_float_sub, nl_jit_float_mul, nl_jit_float_div,
     nl_jit_float_lt,  nl_jit_float_gt,  nl_jit_float_le,  nl_jit_float_ge,
     nl_jit_float_eq_eps, nl_jit_float_float, nl_jit_float_exp, nl_jit_float_log,
+    nl_jit_intern, nl_jit_make_mut_str, nl_jit_mut_str_len, nl_jit_record_alloc,
     nelisp_jit_predicate_eq, nelisp_jit_ref_eq,
     nelisp_jit_record_type, nelisp_jit_record_len,
     nelisp_jit_record_ref,  nelisp_jit_record_set,

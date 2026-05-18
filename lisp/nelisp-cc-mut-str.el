@@ -108,6 +108,63 @@
      (mut-str-finalize ptr slot))
   "Phase 47 source for the Doc 122 §122.B `mut-str-finalize' op probe.")
 
+(defconst nelisp-cc-jit-make-mut-str--source
+  '(seq
+    (defun nl_jit_make_mut_str_cp (arg)
+      (if (< (sexp-int-unwrap (+ (sexp-payload-ptr arg) 32)) 55296)
+          (sexp-int-unwrap (+ (sexp-payload-ptr arg) 32))
+        (if (< (sexp-int-unwrap (+ (sexp-payload-ptr arg) 32)) 57344)
+            32
+          (sexp-int-unwrap (+ (sexp-payload-ptr arg) 32)))))
+    (defun nl_jit_make_mut_str_repeat (out cp remaining)
+      (if (= remaining 0)
+          1
+        (and
+         (mut-str-push-codepoint out cp)
+         (nl_jit_make_mut_str_repeat out cp (- remaining 1)))))
+    (defun nl_jit_make_mut_str (arg out)
+      ;; arg: *const Sexp expected to hold (CONS LEN . CP).
+      ;; out: *mut Sexp.  Returns: i64 = 0 on OK, 1 on shape/type ERR.
+      (if (= (sexp-tag arg) 7)
+          (if (= (sexp-tag (sexp-payload-ptr arg)) 2)
+              (if (= (sexp-tag (+ (sexp-payload-ptr arg) 32)) 2)
+                  (if (< (sexp-int-unwrap (sexp-payload-ptr arg)) 0)
+                      1
+                    (if (< (sexp-int-unwrap (+ (sexp-payload-ptr arg) 32)) 0)
+                        1
+                      (if (> (sexp-int-unwrap (+ (sexp-payload-ptr arg) 32)) 1114111)
+                          1
+                        (and
+                         (mut-str-make-empty out
+                                             (sexp-int-unwrap (sexp-payload-ptr arg)))
+                         (nl_jit_make_mut_str_repeat
+                          out
+                          (nl_jit_make_mut_str_cp arg)
+                          (sexp-int-unwrap (sexp-payload-ptr arg)))
+                         0))))
+                1)
+            1)
+        1)))
+  "Phase 47 source for the `nl_jit_make_mut_str' trampoline.
+
+Builds the result directly in `out' via `mut-str-make-empty' +
+recursive `mut-str-push-codepoint'.  Preserves the Rust contract:
+LEN must be a non-negative Int; CP must be an Int in-range
+0..=0x10FFFF; surrogate codepoints degrade to ASCII space.")
+
+(defconst nelisp-cc-jit-mut-str-len--source
+  '(defun nl_jit_mut_str_len (arg out)
+     ;; arg: *const Sexp.  out: *mut Sexp.
+     ;; Returns: i64 = 0 on OK (= MutStr char-count), 1 on ERR.
+     (if (= (sexp-tag arg) 6)
+         (and (sexp-int-make out (str-char-count arg)) 0)
+       1))
+  "Phase 47 source for the `nl_jit_mut_str_len' trampoline.
+
+Uses the Doc 122 §122.D `str-char-count' op so the trampoline
+returns Unicode codepoint count, matching the former Rust body
+rather than the byte-counting `mut-str-len' probe helper.")
+
 (provide 'nelisp-cc-mut-str)
 
 ;;; nelisp-cc-mut-str.el ends here

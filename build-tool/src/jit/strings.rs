@@ -2,26 +2,15 @@
 //! trampolines.  `(*const Sexp, *mut Sexp) -> i64'; OK=0 / ERR=1.
 //! Reachable via `nl-jit-call-out-1' from `nelisp-jit-strategy.el'.
 //!
-//! All 9 stay in Rust pending Phase 47 grammar extensions for
-//! `sexp-write-{str,symbol}', mut-str allocator + codepoint push,
-//! UTF-8 case-fold + alphanumeric classifier, and f64 → decimal
-//! string conversion (= libc snprintf via extern-call-varargs).
+//! Remaining Rust-only bodies are the Unicode case/tokenize helpers,
+//! float formatting, `concat_ints', and `make_symbol'.  `intern' +
+//! `make_mut_str' now resolve to Phase 47-compiled elisp on
+//! linux-x86_64.
 
 use crate::eval::sexp::Sexp;
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
-
-/// Sexp::Str / MutStr → Sexp::Symbol.  Symbol input ERRs (= elisp
-/// wrapper handles symbolp passthrough before calling).
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_intern(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*arg {
-        Sexp::Str(s) => { *out = Sexp::Symbol(s.clone()); TRAMPOLINE_OK }
-        Sexp::MutStr(rc) => { *out = Sexp::Symbol(rc.value.clone()); TRAMPOLINE_OK }
-        _ => TRAMPOLINE_ERR,
-    }
-}
 
 /// Fresh uninterned symbol via per-process counter — bit-for-bit
 /// identical to pre-§86.1.d `bi_make_symbol' output.  Accepts Str /
@@ -146,32 +135,8 @@ pub unsafe extern "C" fn nl_jit_concat_ints(arg: *const Sexp, out: *mut Sexp) ->
     TRAMPOLINE_OK
 }
 
-/// `nelisp--make-mut-string' — `extern "C" fn(*const Sexp{Cons LEN
-/// CH}, *mut Sexp) -> i64'.  Builds a fresh `Sexp::MutStr' of LEN
-/// copies of CH (= int codepoint).  Validation (= LEN >= 0, CH valid
-/// codepoint) lives in the elisp `make-string' wrapper.  The two
-/// args are packed into a Cons cell so the `:trampoline-unary' shape
-/// suffices; the elisp wrapper builds `(cons LEN CH)' just before
-/// calling.  Mismatched shape surfaces as ERR.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_make_mut_str(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    let pair = match &*arg {
-        Sexp::Cons(b) => b,
-        _ => return TRAMPOLINE_ERR,
-    };
-    let n = match &pair.car {
-        Sexp::Int(n) if *n >= 0 => *n as usize,
-        _ => return TRAMPOLINE_ERR,
-    };
-    let c = match &pair.cdr {
-        Sexp::Int(c) if (0..=0x10FFFF).contains(c) => {
-            char::from_u32(*c as u32).unwrap_or(' ')
-        }
-        _ => return TRAMPOLINE_ERR,
-    };
-    *out = Sexp::mut_str(c.to_string().repeat(n));
-    TRAMPOLINE_OK
-}
+// Doc 122 §122.A/B — `nl_jit_intern' + `nl_jit_make_mut_str' now
+// resolve to Phase-47-compiled elisp bodies on linux-x86_64.
 
 /// `nelisp--format-float-body' — IEEE-754 `format' float-conversion
 /// body builder.  ABI mode `:trampoline-format-float' (= xmm0 + rsi +

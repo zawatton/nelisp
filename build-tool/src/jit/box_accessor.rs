@@ -1,13 +1,12 @@
 //! Box accessor trampolines reached via `nl-jit-call-out-{1,1i,2i}'
-//! bridge primitives.  4 record-family trampolines (type / len / ref /
-//! set) run in Phase 47-compiled elisp on linux-x86_64.
+//! bridge primitives.  5 record-family trampolines (type / len / ref /
+//! set / alloc) run in Phase 47-compiled elisp on linux-x86_64.
 //!
 //! Skipped (grammar gaps):
-//!   - mut_str_len / str_codepoint_at / mut_str_set_codepoint — need
-//!     UTF-8 char-count + codepoint decode + in-place write ops.
+//!   - str_codepoint_at / mut_str_set_codepoint — need UTF-8 decode +
+//!     in-place write ops in the trampoline body.
 //!   - bool_vector_len — needs `(bool-vector-len H)' grammar op.
 //!   - char_table_aref / _aset — parent-chain walk not yet expressible.
-//!   - record_alloc — list-walk-to-count + dynamic slot fill.
 use crate::eval::sexp::Sexp;
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
@@ -34,15 +33,6 @@ pub unsafe extern "C" fn nl_record_type_tag_ptr(arg: *const Sexp) -> *const Sexp
             &rec.type_tag as *const Sexp
         }
         _ => std::ptr::null(),
-    }
-}
-
-/// MutStr length (char count).
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_mut_str_len(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*arg {
-        Sexp::MutStr(rc) => { *out = Sexp::Int(rc.value.chars().count() as i64); TRAMPOLINE_OK }
-        _ => TRAMPOLINE_ERR,
     }
 }
 
@@ -131,34 +121,6 @@ pub unsafe extern "C" fn nl_jit_char_table_aset(
 // via `bridge::box_accessor_link::nelisp_jit_record_*' on linux-x86_64
 // (= the crate's only supported target per `lib.rs:30').
 
-/// `(nelisp--make-record TAG SLOTS-LIST)' trampoline.  Allocates a
-/// fresh record with `type_tag = TAG' (= Symbol or Nil per pre-Doc-86
-/// contract) and slots walked from SLOTS-LIST (= a proper Cons list or
-/// Nil).  ERR for non-symbol/non-nil tag.  Routed through the existing
-/// `nl-jit-call-out-2' bridge primitive; the elisp `nelisp--make-record'
-/// wrapper builds the slots list from `&rest' args.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_record_alloc(
-    tag: *const Sexp, list: *const Sexp, out: *mut Sexp,
-) -> i64 {
-    let tag = (*tag).clone();
-    if !matches!(tag, Sexp::Symbol(_) | Sexp::Nil) {
-        return TRAMPOLINE_ERR;
-    }
-    let mut slots: Vec<Sexp> = Vec::new();
-    let mut p: Sexp = (*list).clone();
-    loop {
-        match p {
-            Sexp::Nil => break,
-            Sexp::Cons(b) => {
-                slots.push(b.car.clone());
-                p = b.cdr.clone();
-            }
-            // Improper list / non-cons mid-chain — treat as ERR so the
-            // elisp wrapper can re-signal as wrong-type-argument.
-            _ => return TRAMPOLINE_ERR,
-        }
-    }
-    *out = Sexp::record(tag, slots);
-    TRAMPOLINE_OK
-}
+// Doc 120 §120.B — `nl_jit_record_alloc' now resolves to a
+// Phase-47-compiled elisp body (`lisp/nelisp-cc-jit-record.el') on
+// linux-x86_64 via `bridge.rs` archive anchors.
