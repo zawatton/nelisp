@@ -35,6 +35,14 @@ compile_error!(
 
 pub mod bridge;
 pub mod eval;
+// Doc 126.C (2026-05-18) — NELIMG v3 frozen-heap image format retired
+// from the production boot path (= Doc 126.B switched `Env::new_global'
+// to `reader::read_all + eval').  `pub mod image' now only exists when
+// the `image-baker' feature is on (= `bin/nelisp-baker.rs' for the
+// `make bake-images' driver + Doc 95 §95.e `--verify-elisp-fixtures'
+// cross-impl byte-identity gate) or under `cfg(test)' for the
+// encode/decode round-trip tests inside image.rs itself.
+#[cfg(any(test, feature = "image-baker"))]
 pub mod image;
 // Phase 5 Stage 5.0 / Doc 77b Stage b.4 — Cranelift JIT.  Lowered
 // primitives flow through elisp wrappers in
