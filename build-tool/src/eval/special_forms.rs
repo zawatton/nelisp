@@ -73,9 +73,9 @@ pub fn is_truthy(v: &Sexp) -> bool {
 }
 
 fn sf_quote(args: &Sexp) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    expect_len(&parts, "quote", 1)?;
-    Ok(parts[0].clone())
+    let mut out = Sexp::Nil;
+    let rc = unsafe { crate::elisp_cc_spike::sf_quote_call(args as *const Sexp, &mut out as *mut Sexp) };
+    if rc == 0 { Ok(out) } else { Err(wrong_args("quote", "1", 0)) }
 }
 
 fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {

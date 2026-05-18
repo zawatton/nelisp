@@ -282,6 +282,8 @@ pub mod elisp_cc_spike {
             slot_pool: *const Sexp,
             depth: i64,
         ) -> i64;
+        // Doc 86 §86.2: `sf_quote' Phase-47 replacement.
+        fn nl_sf_quote(args: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_add2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_sub2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_mul2(a: i64, b: i64) -> i64;
@@ -632,6 +634,8 @@ pub mod elisp_cc_spike {
         jit_float_log: nl_jit_float_log, (x: f64) -> f64
     );
 
+    // Doc 86 §86.2: thin shell for `sf_quote' — body deleted from special_forms.rs.
+    cc_wrap!(sf_quote_call: nl_sf_quote, (args: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(jit_predicate_eq: nelisp_jit_predicate_eq, (a: *const Sexp, b: *const Sexp) -> i64);
     cc_wrap!(jit_ref_eq: nelisp_jit_ref_eq, (a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(jit_record_type: nelisp_jit_record_type, (arg: *const Sexp, out: *mut Sexp) -> i64);

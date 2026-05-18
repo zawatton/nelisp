@@ -332,6 +332,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Doc 86 §86.1.e.2 (2026-05-19) — `nl_jit_concat_ints' trampoline swap
         // (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-concat-ints.el",
+        // Doc 86 §86.2 (2026-05-19) — `sf_quote' Rust body deleted from
+        // `eval/special_forms.rs'; Phase-47 elisp `nl_sf_quote' replaces it.
+        "nelisp-cc-sf-quote.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

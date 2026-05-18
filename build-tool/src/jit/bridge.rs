@@ -37,11 +37,14 @@ extern "C" {
     // Doc 86 §86.1.e.2 (2026-05-19): `nl_jit_concat_ints' — Phase-47
     // elisp body replaces the Rust body in `jit/strings.rs'.
     fn nl_jit_concat_ints();
+    // Doc 86 §86.2 (2026-05-19): `nl_sf_quote' — Phase-47 elisp body
+    // replaces the Rust body of `sf_quote' in `eval/special_forms.rs'.
+    fn nl_sf_quote();
 }
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 51] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 52] = [
     nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
     nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
     nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
@@ -61,6 +64,7 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 51] = [
     nl_jit_make_symbol,
     nl_record_type_tag_ptr,
     nl_jit_concat_ints,
+    nl_sf_quote,
 ];
 
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {

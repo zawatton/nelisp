@@ -901,6 +901,14 @@
     (nelisp-cc-jit-concat-ints
      :source-var nelisp-cc-jit-concat-ints--source
      :output "nl_jit_concat_ints.o"
+     :requires-arch x86_64)
+    ;; Doc 86 §86.2 (2026-05-19) — `sf_quote' Rust body deleted from
+    ;; `build-tool/src/eval/special_forms.rs'; Phase-47-compiled elisp
+    ;; `.o' replaces it.  Thin Rust shell in `sf_quote' calls
+    ;; `crate::elisp_cc_spike::sf_quote_call(args, &mut out)'.
+    (nelisp-cc-sf-quote
+     :source-var nelisp-cc-sf-quote--source
+     :output "nl_sf_quote.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
