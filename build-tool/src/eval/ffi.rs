@@ -1,8 +1,5 @@
-//! Generic FFI primitive `nl-ffi-call' — libffi-backed.  ONE primitive
-//! that calls any function in any cdylib.  Higher-level marshaling
-//! (sqlite-* / nelisp-syscall-* / etc.) stays in pure elisp on top.
+//! Generic libffi-backed `nl-ffi-call`.
 //!
-//! Wire signature mirrors elisp-ffi / nelisp-ffi:
 //! ```elisp
 //! (nl-ffi-call PATH FUNC SIG ARGS...)
 //!   PATH = cdylib basename / abs path / nil (= main process)
@@ -13,9 +10,7 @@
 //!   Returns: Sexp::{Int / Float / Str / Nil} per return type.
 //!   Errors: `ffi-error' tag with descriptive message.
 //! ```
-//!
-//! Library-handle cache: each PATH dlopen'd once, leaked into global
-//! `OnceLock<Mutex<HashMap>>'.  Matches Emacs Dynamic Module semantics.
+//! Library handles are cached after `dlopen`.
 
 use super::error::EvalError;
 use super::sexp::Sexp;
@@ -88,9 +83,7 @@ enum ArgValue {
     F32(f32),
     F64(f64),
     Ptr(*const c_void),
-    /// `:string` argument: the CString owns the bytes; `ptr` is the
-    /// libffi-visible pointer slot.  Stored alongside the owner so the
-    /// reference passed to `Arg::new` lives for the entire `cif.call`.
+    /// Holds a CString and the pointer passed through libffi.
     Cstr { _owner: CString, ptr: *const c_void },
 }
 
@@ -275,11 +268,6 @@ pub fn nl_ffi_call(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 // ---- Generic out-buffer helpers --------------------------------------------
-//
-// nl_sqlite_query and similar "fill caller-provided buffer" C APIs need the
-// Elisp side to allocate a buffer, pass its address as a :pointer arg, and
-// then read N bytes back into a Lisp string.  Three small primitives keep
-// this fully composable without per-function dispatch glue.
 
 /// `(nl-ffi-malloc N)` → integer raw pointer (zeroed).
 pub fn nl_ffi_malloc(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -296,8 +284,7 @@ pub fn nl_ffi_malloc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let n = n as usize;
     let mut v: Vec<u8> = vec![0u8; n];
     let _ptr = v.as_mut_ptr() as i64;
-    // Leak the Vec so the buffer survives until nl-ffi-free.  Track in a
-    // global so free() can reconstruct the Box for proper deallocation.
+    // Leak the Vec so the buffer survives until nl-ffi-free.
     let len = v.len();
     let _cap = v.capacity();
     let leaked: *mut u8 = Box::leak(v.into_boxed_slice()).as_mut_ptr();
@@ -351,27 +338,8 @@ fn alloc_table() -> &'static Mutex<HashMap<i64, usize>> {
     T.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-// ---------------------------------------------------------------------------
-// Doc 76 Stage 0 (2026-05-08) — nl-ffi 基盤拡張.
-//
-// `nl-ffi-write-bytes' + `nl-ffi-errno' add the missing pieces needed for
-// the Doc 76 elisp-side OS surface migration (= Linux/Darwin/Windows
-// unified `nl-ffi-call libc' 経由 syscall family).  Together with the
-// existing `nl-ffi-malloc' / `nl-ffi-read-bytes' / `nl-ffi-free' the elisp
-// side can now build / poke / read back arbitrary C structs (sockaddr_in,
-// pollfd, sigset_t, msghdr+SCM_RIGHTS, etc.) without any per-syscall Rust
-// glue.
-// ---------------------------------------------------------------------------
-
-/// `(nl-ffi-write-bytes PTR STR)` → t on success.  Copies STR bytes (=
-/// raw bytes interpreting STR as Latin-1, matching `nl-ffi-read-bytes'
-/// inverse) into the buffer at PTR.
-///
-/// Safety gate: PTR must be a pointer that came from `nl-ffi-malloc' (=
-/// tracked in `alloc_table') and the write must fit in the buffer's
-/// recorded length.  This is the same alloc-table gate that
-/// `nl-ffi-free' uses; out-of-tracked-set pointers signal `ffi-error'
-/// instead of doing a wild write.
+/// `(nl-ffi-write-bytes PTR STR)` copies STR into a tracked buffer.
+/// PTR must come from `nl-ffi-malloc`, and the write must fit.
 pub fn nl_ffi_write_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.len() != 2 {
         return Err(ffi_err(format!(
@@ -409,14 +377,7 @@ pub fn nl_ffi_write_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// `(nl-ffi-read-i32 PTR OFFSET)` → integer (= sign-extended i32 LE
-/// at PTR + OFFSET).  Doc 76 Stage A.2/A.3 (2026-05-08): added so
-/// `nelisp-os-pipe' / `-fstat' can decode int[2] / struct stat fields
-/// from `nl-ffi-malloc' buffers without going through `nl-ffi-read-bytes'
-/// (= `String::from_utf8_lossy' munges non-UTF-8 bytes).
-///
-/// Safety gate: PTR must be from `nl-ffi-malloc' (= alloc_table) and
-/// OFFSET + 4 ≤ recorded length.
+/// `(nl-ffi-read-i32 PTR OFFSET)` reads an unaligned i32 from a tracked buffer.
 pub fn nl_ffi_read_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.len() != 2 {
         return Err(ffi_err(format!(
@@ -446,8 +407,7 @@ pub fn nl_ffi_read_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(v))
 }
 
-/// `(nl-ffi-read-i64 PTR OFFSET)` → integer (= i64 LE at PTR + OFFSET).
-/// Same safety gate as `nl-ffi-read-i32' but 8-byte read.
+/// `(nl-ffi-read-i64 PTR OFFSET)` reads an unaligned i64 from a tracked buffer.
 pub fn nl_ffi_read_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.len() != 2 {
         return Err(ffi_err(format!(
@@ -477,8 +437,7 @@ pub fn nl_ffi_read_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(v))
 }
 
-/// `(nl-ffi-read-i16 PTR OFFSET)` → integer (= sign-extended i16 LE).
-/// Doc 76 Stage C (2026-05-08): pollfd revents (= short) decode.
+/// `(nl-ffi-read-i16 PTR OFFSET)` reads an unaligned i16 from a tracked buffer.
 pub fn nl_ffi_read_i16(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, off) = ffi_read_args("nl-ffi-read-i16", args)?;
     ffi_read_check_bounds("nl-ffi-read-i16", p, off, 2)?;
@@ -486,8 +445,7 @@ pub fn nl_ffi_read_i16(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(v))
 }
 
-/// `(nl-ffi-read-u16 PTR OFFSET)` → integer (= zero-extended u16 LE).
-/// Doc 76 Stage C: sockaddr_in.sin_port BE-raw read (then `ntohs').
+/// `(nl-ffi-read-u16 PTR OFFSET)` reads an unaligned u16 from a tracked buffer.
 pub fn nl_ffi_read_u16(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, off) = ffi_read_args("nl-ffi-read-u16", args)?;
     ffi_read_check_bounds("nl-ffi-read-u16", p, off, 2)?;
@@ -495,8 +453,7 @@ pub fn nl_ffi_read_u16(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(v))
 }
 
-/// `(nl-ffi-read-u32 PTR OFFSET)` → integer (= zero-extended u32 LE).
-/// Doc 76 Stage C: sockaddr_in.sin_addr BE-raw read (then `ntohl').
+/// `(nl-ffi-read-u32 PTR OFFSET)` reads an unaligned u32 from a tracked buffer.
 pub fn nl_ffi_read_u32(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, off) = ffi_read_args("nl-ffi-read-u32", args)?;
     ffi_read_check_bounds("nl-ffi-read-u32", p, off, 4)?;
@@ -504,8 +461,7 @@ pub fn nl_ffi_read_u32(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(v))
 }
 
-/// `(nl-ffi-write-i16 PTR OFFSET VALUE)` → t.  Truncates VALUE to 16 bits
-/// and stores LE.  Doc 76 Stage C: sockaddr_in / pollfd field write.
+/// `(nl-ffi-write-i16 PTR OFFSET VALUE)` stores VALUE as an unaligned i16.
 pub fn nl_ffi_write_i16(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, off, v) = ffi_write_args("nl-ffi-write-i16", args)?;
     ffi_read_check_bounds("nl-ffi-write-i16", p, off, 2)?;
@@ -513,8 +469,7 @@ pub fn nl_ffi_write_i16(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// `(nl-ffi-write-i32 PTR OFFSET VALUE)` → t.  Truncates VALUE to 32 bits
-/// and stores LE.  Doc 76 Stage C: sockaddr_in.sin_addr / pollfd.fd write.
+/// `(nl-ffi-write-i32 PTR OFFSET VALUE)` stores VALUE as an unaligned i32.
 pub fn nl_ffi_write_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, off, v) = ffi_write_args("nl-ffi-write-i32", args)?;
     ffi_read_check_bounds("nl-ffi-write-i32", p, off, 4)?;
@@ -522,8 +477,7 @@ pub fn nl_ffi_write_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// `(nl-ffi-write-i64 PTR OFFSET VALUE)` → t.  Stores VALUE as 8 bytes LE.
-/// Doc 76 Stage F (2026-05-08): timerfd itimerspec field write.
+/// `(nl-ffi-write-i64 PTR OFFSET VALUE)` stores VALUE as an unaligned i64.
 pub fn nl_ffi_write_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, off, v) = ffi_write_args("nl-ffi-write-i64", args)?;
     ffi_read_check_bounds("nl-ffi-write-i64", p, off, 8)?;
@@ -531,9 +485,7 @@ pub fn nl_ffi_write_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// `(nl-ffi-read-u8 PTR OFFSET)` → integer (= u8 zero-extended to i64).
-/// Doc 76 Stage D (2026-05-08): sockaddr_un sun_path[0] (= abstract
-/// namespace sentinel) check + per-byte sun_path scan.
+/// `(nl-ffi-read-u8 PTR OFFSET)` reads a u8 from a tracked buffer.
 pub fn nl_ffi_read_u8(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, off) = ffi_read_args("nl-ffi-read-u8", args)?;
     ffi_read_check_bounds("nl-ffi-read-u8", p, off, 1)?;
@@ -541,10 +493,8 @@ pub fn nl_ffi_read_u8(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(v))
 }
 
-/// `(nl-ffi-write-bytes-at PTR OFFSET STR)` → t.  Like `nl-ffi-write-bytes'
-/// but the bytes land at PTR + OFFSET instead of PTR.  Doc 76 Stage D:
-/// sockaddr_un sun_path[2..] write.  Same alloc_table gate; `OFFSET +
-/// STR's UTF-8 byte length' must fit in the recorded length.
+/// `(nl-ffi-write-bytes-at PTR OFFSET STR)` copies STR into `PTR + OFFSET`.
+/// PTR must come from `nl-ffi-malloc`, and the write must fit.
 pub fn nl_ffi_write_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.len() != 3 {
         return Err(ffi_err(format!(
@@ -579,11 +529,8 @@ pub fn nl_ffi_write_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// `(nl-ffi-read-bytes-at PTR OFFSET LEN)` → string of LEN bytes copied
-/// from PTR + OFFSET.  Doc 76 Stage D: sockaddr_un sun_path read after
-/// `accept(2)' / `getsockname(2)'.  Returns `String::from_utf8_lossy'
-/// like `nl-ffi-read-bytes' (= raw bytes 0x80-0xFF will be munged; OK
-/// for ASCII filesystem paths and abstract socket names).
+/// `(nl-ffi-read-bytes-at PTR OFFSET LEN)` copies bytes from `PTR + OFFSET`.
+/// Decoding matches `nl-ffi-read-bytes`.
 pub fn nl_ffi_read_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.len() != 3 {
         return Err(ffi_err(format!(
@@ -666,18 +613,7 @@ fn ffi_read_check_bounds(name: &str, p: i64, off: i64, sz: usize) -> Result<(), 
     Ok(())
 }
 
-/// `(nl-ffi-errno)` → integer errno of the last libc call from the
-/// current thread.  Cross-OS thin shim:
-///   - Linux/glibc: `*__errno_location()`
-///   - macOS / *BSD: `*__error()`
-///   - Windows: `*_errno()` (= MSVCRT's CRT errno, distinct from
-///     GetLastError; the libc crate exposes this as `__errno`).
-///
-/// Convention: elisp wrappers call this immediately after a libc
-/// function that returned -1 / NULL to retrieve the canonical errno.
-/// No second alloc must occur between the libc call and `(nl-ffi-errno)`
-/// or the value can be clobbered (= same constraint as C: errno is
-/// thread-local but easily overwritten by the next failing call).
+/// `(nl-ffi-errno)` returns the current thread's libc errno value.
 pub fn nl_ffi_errno(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if !args.is_empty() {
         return Err(ffi_err(format!(
@@ -696,15 +632,13 @@ pub fn nl_ffi_errno(args: &[Sexp]) -> Result<Sexp, EvalError> {
                   target_os = "freebsd", target_os = "netbsd",
                   target_os = "openbsd", target_os = "dragonfly",
                   target_os = "windows")))]
-    let e: i64 = 0; // unsupported platform — return 0 (= "no error")
+    let e: i64 = 0;
     Ok(Sexp::Int(e))
 }
 
 #[cfg(test)]
-mod tests_doc76_stage0 {
-    //! Doc 76 Stage 0 unit tests for `nl-ffi-write-bytes' / `nl-ffi-errno'.
-    //! Covered: round-trip with `nl-ffi-malloc' + `nl-ffi-read-bytes',
-    //! safety gates (NULL / unknown ptr / oversized write), errno read.
+mod tests {
+    //! Unit tests for FFI buffer helpers and errno access.
     use super::*;
 
     fn malloc_n(n: i64) -> i64 {
@@ -726,7 +660,6 @@ mod tests_doc76_stage0 {
         let p = malloc_n(16);
         let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str("hello".into())]).unwrap();
         assert_eq!(r, Sexp::T);
-        // First 5 bytes should be "hello", rest is malloc-zeroed.
         let s = read_n(p, 5);
         assert_eq!(s, "hello");
         nl_ffi_free(&[Sexp::Int(p)]).unwrap();
@@ -740,7 +673,6 @@ mod tests_doc76_stage0 {
 
     #[test]
     fn write_bytes_rejects_unknown_ptr() {
-        // 0xDEAD_BEEF is not a tracked alloc.
         let r = nl_ffi_write_bytes(&[Sexp::Int(0xDEAD_BEEF), Sexp::Str("x".into())]);
         assert!(r.is_err(), "unknown ptr must be rejected");
     }
@@ -758,7 +690,6 @@ mod tests_doc76_stage0 {
         let p = malloc_n(4);
         let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str(String::new())]).unwrap();
         assert_eq!(r, Sexp::T);
-        // buffer should still be zeroed.
         let s = read_n(p, 4);
         assert_eq!(s.as_bytes(), &[0u8, 0, 0, 0]);
         nl_ffi_free(&[Sexp::Int(p)]).unwrap();
@@ -766,9 +697,6 @@ mod tests_doc76_stage0 {
 
     #[test]
     fn errno_reads_thread_local() {
-        // Trigger a known-bad libc call to set errno: open(/nonexistent) → ENOENT (= 2 on Linux).
-        // The exact value differs by OS, but on supported platforms it must be > 0
-        // after a deliberately-failing libc call.
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use std::ffi::CString;
@@ -780,7 +708,6 @@ mod tests_doc76_stage0 {
                 other => panic!("nl-ffi-errno returned {:?}", other),
             }
         }
-        // On unsupported platforms, just check the call returns Int (= 0 stub).
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let r = nl_ffi_errno(&[]).unwrap();
