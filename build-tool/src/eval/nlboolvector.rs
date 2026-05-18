@@ -1,6 +1,5 @@
 //! `NlBoolVector` — layout-pinned mutable Vec<bool> box.  `#[repr(C)]'
 //! with value @ 0, refcount @ sizeof(Vec<bool>).  Backs `Sexp::BoolVector'.
-//! `unsafe set_value' wholesale; `unsafe with_value_mut(f)' for aset.
 
 use std::alloc::{self, Layout};
 use std::marker::PhantomData;
@@ -20,7 +19,11 @@ pub struct NlBoolVectorRef {
     _marker: PhantomData<NlBoolVector>,
 }
 
-impl NlBoolVector { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlBoolVector>; } // Doc 79 v4 C.4-atomic
+impl NlBoolVector {
+    pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
+        crate::eval::nlrc::nlrc_payload_drop::<NlBoolVector>;
+}
+
 impl NlBoolVectorRef {
     /// Allocate a fresh [`NlBoolVector`] on the heap with `refcount = 1'.
     pub fn new(value: Vec<bool>) -> NlBoolVectorRef {
@@ -30,8 +33,7 @@ impl NlBoolVectorRef {
             Some(p) => p,
             None => alloc::handle_alloc_error(layout),
         };
-        // SAFETY: `ptr' was just allocated for `NlBoolVector' and is
-        // exclusively owned here.
+        // SAFETY: `ptr' just allocated; exclusively owned.
         unsafe {
             std::ptr::write(std::ptr::addr_of_mut!((*ptr.as_ptr()).value), value);
             std::ptr::write(
@@ -39,10 +41,7 @@ impl NlBoolVectorRef {
                 AtomicUsize::new(1),
             );
         }
-        NlBoolVectorRef {
-            ptr,
-            _marker: PhantomData,
-        }
+        NlBoolVectorRef { ptr, _marker: PhantomData }
     }
 
     pub fn strong_count(this: &Self) -> usize {
@@ -54,13 +53,10 @@ impl NlBoolVectorRef {
         a.ptr.as_ptr() == b.ptr.as_ptr()
     }
 
-    /// Wholesale replace `value`.  Drops the previous Vec, then
-    /// writes the new one.
+    /// Wholesale replace `value`.
     ///
     /// # Safety
-    ///
-    /// Caller must guarantee no other `&Vec<bool>` borrow into this
-    /// box's `value` is live.  Phase A.2.1 setcar discipline applies.
+    /// No other `&Vec<bool>' borrow into `self.value' may be live.
     pub unsafe fn set_value(&self, val: Vec<bool>) {
         let value_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value);
         unsafe {
@@ -72,10 +68,7 @@ impl NlBoolVectorRef {
     /// In-place mutation closure.
     ///
     /// # Safety
-    ///
-    /// Same as [`set_value`]: no other `&Vec<bool>` borrow into
-    /// `self.value' may be live for the duration of the closure.
-    /// Reentrant calls are UB.
+    /// Same as [`set_value`].  Reentrant calls are UB.
     pub unsafe fn with_value_mut<R>(&self, f: impl FnOnce(&mut Vec<bool>) -> R) -> R {
         let value_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value);
         unsafe { f(&mut *value_ptr) }
@@ -88,18 +81,12 @@ impl Clone for NlBoolVectorRef {
         unsafe {
             (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
         }
-        NlBoolVectorRef {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        }
+        NlBoolVectorRef { ptr: self.ptr, _marker: PhantomData }
     }
 }
 
 impl Drop for NlBoolVectorRef {
-    /// Doc 124 §124.L+ — dispatch through the pure-elisp
-    /// `nlboolvector_drop' kernel.  Runs `atomic-fetch-add(-1)' then,
-    /// on pre-sub == 1, calls `nl_boolvector_drop_inner' (= `drop_in_place
-    /// ::<NlBoolVector>') + `dealloc-bytes(32, 8)'.
+    /// Doc 124 §124.L+ — elisp `nlboolvector_drop' kernel.
     fn drop(&mut self) {
         unsafe {
             crate::elisp_cc_spike::nlboolvector_drop(self.ptr.as_ptr() as *mut i64);
@@ -111,7 +98,7 @@ impl Deref for NlBoolVectorRef {
     type Target = NlBoolVector;
 
     fn deref(&self) -> &NlBoolVector {
-        // SAFETY: see `NlVectorRef::deref'.
+        // SAFETY: handle keeps the box alive.
         unsafe { &*self.ptr.as_ptr() }
     }
 }
@@ -139,4 +126,3 @@ const _: () = {
     assert!(offset_of!(NlBoolVector, refcount) == size_of::<Vec<bool>>());
     assert!(size_of::<AtomicUsize>() == 8);
 };
-

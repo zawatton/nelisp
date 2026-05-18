@@ -1,7 +1,6 @@
 //! `NlRecord` — layout-pinned record cell.  `#[repr(C)]' with
 //! type_tag @ 0, slots @ sizeof(Sexp), refcount @ trailer.  Backs
-//! `Sexp::Record'.  `unsafe with_slots_mut(f)' for `record-set';
-//! type_tag is immutable after construction.
+//! `Sexp::Record'.
 
 use crate::eval::sexp::Sexp;
 use std::alloc::{self, Layout};
@@ -23,7 +22,11 @@ pub struct NlRecordRef {
     _marker: PhantomData<NlRecord>,
 }
 
-impl NlRecord { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlRecord>; } // Doc 79 v4 C.4-atomic
+impl NlRecord {
+    pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
+        crate::eval::nlrc::nlrc_payload_drop::<NlRecord>;
+}
+
 impl NlRecordRef {
     /// Allocate a fresh [`NlRecord`] on the heap with `refcount = 1'.
     pub fn new(type_tag: Sexp, slots: Vec<Sexp>) -> NlRecordRef {
@@ -33,8 +36,7 @@ impl NlRecordRef {
             Some(p) => p,
             None => alloc::handle_alloc_error(layout),
         };
-        // SAFETY: `ptr' was just allocated for `NlRecord' and is
-        // exclusively owned here.
+        // SAFETY: `ptr' just allocated; exclusively owned.
         unsafe {
             std::ptr::write(std::ptr::addr_of_mut!((*ptr.as_ptr()).type_tag), type_tag);
             std::ptr::write(std::ptr::addr_of_mut!((*ptr.as_ptr()).slots), slots);
@@ -43,10 +45,7 @@ impl NlRecordRef {
                 AtomicUsize::new(1),
             );
         }
-        NlRecordRef {
-            ptr,
-            _marker: PhantomData,
-        }
+        NlRecordRef { ptr, _marker: PhantomData }
     }
 
     pub fn strong_count(this: &Self) -> usize {
@@ -61,24 +60,19 @@ impl NlRecordRef {
     /// In-place mutation closure for `slots'.
     ///
     /// # Safety
-    ///
-    /// Caller must guarantee no other `&Vec<Sexp>` borrow into
-    /// `self.slots' is live for the duration of the closure.
-    /// Reentrant calls are UB.  Phase A.2.1 setcar discipline applies.
+    /// No other `&Vec<Sexp>' borrow into `self.slots' may be live.  Reentrant
+    /// calls are UB.
     pub unsafe fn with_slots_mut<R>(&self, f: impl FnOnce(&mut Vec<Sexp>) -> R) -> R {
         let slots_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).slots);
         unsafe { f(&mut *slots_ptr) }
     }
 }
 
-/// Doc 111 §111.E — set the `type_tag' field of an `NlRecord' in place,
-/// refcount-safely cloning `*val' before write.  Companion to
-/// `nl_record_set_slot' (= writes slot N) used by callers that want
-/// to install the type-tag symbol after `nl_alloc_record'.
+/// Doc 111 §111.E — set the `type_tag' field of an `NlRecord' in place.
 ///
 /// # Safety
-/// - `record' must be non-null and point at an initialized `NlRecord'.
-/// - `val' must be non-null and point at an initialized `Sexp'.
+/// - `record' must point at an initialized `NlRecord'.
+/// - `val' must point at an initialized `Sexp'.
 #[no_mangle]
 pub unsafe extern "C" fn nl_record_set_type_tag(
     record: *mut NlRecord,
@@ -89,12 +83,11 @@ pub unsafe extern "C" fn nl_record_set_type_tag(
     r.type_tag = new_val;
 }
 
-/// Doc 111 §111.B — set slot N of an NlRecord in place, dropping the
-/// old value first (refcount-aware via Sexp's Drop impl).
+/// Doc 111 §111.B — set slot N of an NlRecord in place.
 ///
 /// # Safety
-/// - `record` must be non-null and point at an initialized NlRecord.
-/// - `val` must be non-null and point at an initialized Sexp.
+/// - `record` must point at an initialized NlRecord.
+/// - `val` must point at an initialized Sexp.
 /// - `n` must be a valid index into `record.slots`.
 #[no_mangle]
 pub unsafe extern "C" fn nl_record_set_slot(
@@ -107,35 +100,13 @@ pub unsafe extern "C" fn nl_record_set_slot(
     r.slots[n] = new_val;
 }
 
-/// Doc 111 §111.E — allocator helper for Phase 47-compiled
-/// `mirror_install_entry' (= helper #12) and friends.  Returns a
-/// freshly-allocated [`NlRecord`] with `type_tag = (*type_tag_ptr).clone()',
-/// `slot_count' slots all initialised to `Sexp::Nil', and
-/// `refcount = 1'.  Caller is responsible for overwriting individual
-/// slots via `record-slot-set' / `nl_record_set_slot' before
-/// publishing the pointer (= same contract as `nl_alloc_cell' /
-/// `nl_alloc_consbox').
-///
-/// The returned raw `*mut NlRecord' must eventually be wrapped into a
-/// `Sexp::Record(NlRecordRef)' (which takes ownership of the strong
-/// reference) — letting it leak raw counts as a single permanent
-/// refcount.  See Doc 111 §2.4 for the broader allocator audit.
-///
-/// The two-arg shape (= type_tag passed as `*const Sexp' rather than
-/// initialized to `Sexp::Nil' and overwritten by a separate op) was
-/// chosen because Phase 47 currently has no grammar form to write the
-/// record's type_tag field (= only the user-visible slots are
-/// addressable via `record-slot-set').  Adding the tag as an
-/// allocator-time parameter keeps the elisp surface minimal.
+/// Doc 111 §111.E — allocator: fresh NlRecord with `type_tag = (*type_tag_ptr).clone()`,
+/// `slot_count` slots all `Sexp::Nil`, refcount=1.  Caller owns the strong ref;
+/// must wrap into `Sexp::Record(NlRecordRef)`.
 ///
 /// # Safety
-/// Caller must guarantee:
-/// - `type_tag_ptr' is non-null and points at an initialized `Sexp'.
-/// - The returned pointer is eventually freed via `NlRecordRef::drop'
-///   (= owned by a `Sexp::Record(NlRecordRef)`) or via `Box::from_raw'
-///   if it's never wrapped.  Otherwise the allocation leaks.
-/// - `slot_count' is not so large that
-///   `vec![Sexp::Nil; slot_count]' overflows.
+/// - `type_tag_ptr' must point at an initialized `Sexp'.
+/// - `slot_count' must not be so large that `vec![Nil; slot_count]' overflows.
 #[no_mangle]
 pub unsafe extern "C" fn nl_alloc_record(
     type_tag_ptr: *const Sexp,
@@ -152,25 +123,17 @@ pub unsafe extern "C" fn nl_alloc_record(
 }
 
 impl Clone for NlRecordRef {
-    /// Doc 124 §124.F — refcount +1 dispatched to the Phase 47-compiled
-    /// `nelisp_nlrecord_clone' kernel (= §122.E `atomic-fetch-add' delta=+1
-    /// at REFCOUNT_OFFSET=24).
+    /// Doc 124 §124.F — refcount +1 via elisp `nelisp_nlrecord_clone'.
     fn clone(&self) -> Self {
         unsafe {
             crate::elisp_cc_spike::nlrecord_clone(self.ptr.as_ptr() as *mut i64);
         }
-        NlRecordRef {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        }
+        NlRecordRef { ptr: self.ptr, _marker: PhantomData }
     }
 }
 
 impl Drop for NlRecordRef {
-    /// Doc 124 §124.L — dispatch through the pure-elisp `nlrecord_drop'
-    /// kernel.  Runs `atomic-fetch-add(-1)' then, on pre-sub == 1,
-    /// calls `nl_record_drop_inner' (= `drop_in_place::<NlRecord>') +
-    /// `dealloc-bytes(64, 8)'.
+    /// Doc 124 §124.L — elisp `nlrecord_drop' kernel.
     fn drop(&mut self) {
         unsafe {
             crate::elisp_cc_spike::nlrecord_drop(self.ptr.as_ptr() as *mut i64);
@@ -182,7 +145,7 @@ impl Deref for NlRecordRef {
     type Target = NlRecord;
 
     fn deref(&self) -> &NlRecord {
-        // SAFETY: see `NlVectorRef::deref'.
+        // SAFETY: handle keeps the box alive.
         unsafe { &*self.ptr.as_ptr() }
     }
 }
@@ -216,4 +179,3 @@ const _: () = {
     );
     assert!(size_of::<AtomicUsize>() == 8);
 };
-

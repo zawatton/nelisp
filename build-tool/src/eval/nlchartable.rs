@@ -1,8 +1,6 @@
 //! `NlCharTable` — layout-pinned char-table cell.  `#[repr(C)]' with
-//! inner @ 0 (CharTableInner: subtype/default_val/entries/parent/extra)
-//! and refcount @ sizeof(CharTableInner).  Backs `Sexp::CharTable'.
-//! `parent: Option<NlCharTableRef>' is a self-reference; refcount
-//! cascade handles dropping naturally (no cycle API).
+//! inner @ 0 (CharTableInner) and refcount @ sizeof(CharTableInner).
+//! `parent: Option<NlCharTableRef>' self-reference cascades through refcount.
 
 use crate::eval::sexp::CharTableInner;
 use std::alloc::{self, Layout};
@@ -23,7 +21,11 @@ pub struct NlCharTableRef {
     _marker: PhantomData<NlCharTable>,
 }
 
-impl NlCharTable { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlCharTable>; } // Doc 79 v4 C.4-atomic
+impl NlCharTable {
+    pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
+        crate::eval::nlrc::nlrc_payload_drop::<NlCharTable>;
+}
+
 impl NlCharTableRef {
     /// Allocate a fresh [`NlCharTable`] on the heap with `refcount = 1'.
     pub fn new(inner: CharTableInner) -> NlCharTableRef {
@@ -33,8 +35,7 @@ impl NlCharTableRef {
             Some(p) => p,
             None => alloc::handle_alloc_error(layout),
         };
-        // SAFETY: `ptr' was just allocated for `NlCharTable' and is
-        // exclusively owned here.
+        // SAFETY: `ptr' just allocated; exclusively owned.
         unsafe {
             std::ptr::write(std::ptr::addr_of_mut!((*ptr.as_ptr()).inner), inner);
             std::ptr::write(
@@ -42,10 +43,7 @@ impl NlCharTableRef {
                 AtomicUsize::new(1),
             );
         }
-        NlCharTableRef {
-            ptr,
-            _marker: PhantomData,
-        }
+        NlCharTableRef { ptr, _marker: PhantomData }
     }
 
     pub fn strong_count(this: &Self) -> usize {
@@ -60,10 +58,8 @@ impl NlCharTableRef {
     /// In-place mutation closure for the full inner state.
     ///
     /// # Safety
-    ///
-    /// Caller must guarantee no other `&CharTableInner` borrow into
-    /// `self.inner' is live for the duration of the closure.
-    /// Reentrant calls are UB.  Phase A.2.1 setcar discipline applies.
+    /// No other `&CharTableInner' borrow into `self.inner' may be live.
+    /// Reentrant calls are UB.
     pub unsafe fn with_inner_mut<R>(&self, f: impl FnOnce(&mut CharTableInner) -> R) -> R {
         let inner_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).inner);
         unsafe { f(&mut *inner_ptr) }
@@ -76,18 +72,12 @@ impl Clone for NlCharTableRef {
         unsafe {
             (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
         }
-        NlCharTableRef {
-            ptr: self.ptr,
-            _marker: PhantomData,
-        }
+        NlCharTableRef { ptr: self.ptr, _marker: PhantomData }
     }
 }
 
 impl Drop for NlCharTableRef {
-    /// Doc 124 §124.L+ — dispatch through the pure-elisp
-    /// `nlchartable_drop' kernel.  Runs `atomic-fetch-add(-1)' then,
-    /// on pre-sub == 1, calls `nl_chartable_drop_inner' (= `drop_in_place
-    /// ::<NlCharTable>') + `dealloc-bytes(128, 8)'.
+    /// Doc 124 §124.L+ — elisp `nlchartable_drop' kernel.
     fn drop(&mut self) {
         unsafe {
             crate::elisp_cc_spike::nlchartable_drop(self.ptr.as_ptr() as *mut i64);
@@ -99,7 +89,7 @@ impl Deref for NlCharTableRef {
     type Target = NlCharTable;
 
     fn deref(&self) -> &NlCharTable {
-        // SAFETY: see `NlVectorRef::deref'.
+        // SAFETY: handle keeps the box alive.
         unsafe { &*self.ptr.as_ptr() }
     }
 }
@@ -129,4 +119,3 @@ const _: () = {
     assert!(offset_of!(NlCharTable, refcount) == size_of::<CharTableInner>());
     assert!(size_of::<AtomicUsize>() == 8);
 };
-
