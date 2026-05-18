@@ -70,6 +70,19 @@ pub mod reader;
 pub mod elisp_cc_spike {
     use crate::eval::sexp::Sexp;
 
+    /// Doc 127 §127.A — collapse the trivial-dispatch safe wrapper
+    /// pattern to a 1-liner.  Each `nelisp_*' extern has a matching
+    /// `pub unsafe fn FOO(args) -> ret { nelisp_FOO(args) }' wrapper;
+    /// for those whose docstring is just the Doc § reference (=
+    /// derivable from the function name), the wrapper collapses to
+    /// `cc_wrap!(FOO: nelisp_FOO, (args) -> ret);'.
+    macro_rules! cc_wrap {
+        ($name:ident : $extern:ident, ($($arg:ident: $aty:ty),* $(,)?) -> $ret:ty) => {
+            #[allow(clippy::missing_safety_doc)]
+            pub unsafe fn $name($($arg: $aty),*) -> $ret { $extern($($arg),*) }
+        };
+    }
+
     // Sexp is `#[repr(C, u8)]` (see `eval/sexp.rs:57' + the assertions
     // in `eval/sexp_abi_assert.rs') so passing it across an extern "C"
     // boundary by raw pointer is sound — the elisp `.o' only touches
@@ -1245,39 +1258,15 @@ pub mod elisp_cc_spike {
         nelisp_str_is_alphanumeric_at(ptr, idx)
     }
 
-    /// Doc 122 §122.E — `(atomic-fetch-add PTR DELTA)'.  SeqCst.
-    pub unsafe fn atomic_fetch_add(ptr: *mut i64, delta: i64) -> i64 {
-        nelisp_atomic_fetch_add(ptr, delta)
-    }
-
-    /// Doc 122 §122.E — `(atomic-compare-exchange PTR EXPECTED NEW)'.
-    pub unsafe fn atomic_compare_exchange(
-        ptr: *mut i64,
-        expected: i64,
-        new_val: i64,
-    ) -> i64 {
-        nelisp_atomic_compare_exchange(ptr, expected, new_val)
-    }
-
-    /// Doc 122 §122.E — `(ptr-read-u64 PTR OFFSET)'.
-    pub unsafe fn ptr_read_u64(ptr: *const u8, offset: i64) -> i64 {
-        nelisp_ptr_read_u64(ptr, offset)
-    }
-
-    /// Doc 122 §122.E — `(ptr-write-u64 PTR OFFSET VAL)'.
-    pub unsafe fn ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) -> i64 {
-        nelisp_ptr_write_u64(ptr, offset, val)
-    }
-
-    /// Doc 122 §122.E — `(ptr-read-u8 PTR OFFSET)'.
-    pub unsafe fn ptr_read_u8(ptr: *const u8, offset: i64) -> i64 {
-        nelisp_ptr_read_u8(ptr, offset)
-    }
-
-    /// Doc 122 §122.E — `(ptr-write-u8 PTR OFFSET VAL)'.
-    pub unsafe fn ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64 {
-        nelisp_ptr_write_u8(ptr, offset, val)
-    }
+    // Doc 122 §122.E atomic + raw-mem grammar wrappers — collapsed
+    // via §127.A `cc_wrap!'.  All SeqCst ordering except as noted
+    // in the elisp `.el' source headers.
+    cc_wrap!(atomic_fetch_add: nelisp_atomic_fetch_add, (ptr: *mut i64, delta: i64) -> i64);
+    cc_wrap!(atomic_compare_exchange: nelisp_atomic_compare_exchange, (ptr: *mut i64, expected: i64, new_val: i64) -> i64);
+    cc_wrap!(ptr_read_u64: nelisp_ptr_read_u64, (ptr: *const u8, offset: i64) -> i64);
+    cc_wrap!(ptr_write_u64: nelisp_ptr_write_u64, (ptr: *mut u8, offset: i64, val: i64) -> i64);
+    cc_wrap!(ptr_read_u8: nelisp_ptr_read_u8, (ptr: *const u8, offset: i64) -> i64);
+    cc_wrap!(ptr_write_u8: nelisp_ptr_write_u8, (ptr: *mut u8, offset: i64, val: i64) -> i64);
 
     /// Doc 125 §125.A — `(alloc-bytes SIZE ALIGN)' generic byte-level
     /// allocator.  Returns the freshly-allocated `*mut u8' on success
@@ -1310,42 +1299,15 @@ pub mod elisp_cc_spike {
         nelisp_dealloc_bytes(ptr, size, align)
     }
 
-    /// Doc 122 §122.C — Phase 47 extern-call-f64 probe for libm `sqrt'.
-    pub unsafe fn libm_sqrt(x: f64) -> f64 {
-        nelisp_libm_sqrt(x)
-    }
-
-    /// Doc 122 §122.C — Phase 47 extern-call-f64 probe for libm `sin'.
-    pub unsafe fn libm_sin(x: f64) -> f64 {
-        nelisp_libm_sin(x)
-    }
-
-    /// Doc 122 §122.C — Phase 47 extern-call-f64 probe for libm `cos'.
-    pub unsafe fn libm_cos(x: f64) -> f64 {
-        nelisp_libm_cos(x)
-    }
-
-    /// Doc 123 §123.A — pure-elisp `nelisp_rc_inc' kernel.
-    /// Atomic-fetch-add at offset 64 (REFCOUNT_OFFSET).
-    pub unsafe fn rc_inc(box_ptr: *mut i64) -> i64 {
-        nelisp_rc_inc(box_ptr)
-    }
-
-    /// Doc 123 §123.B — pure-elisp `nelisp_rc_dec' kernel.
-    /// Atomic-fetch-add with delta=-1 at offset 64 (= fetch-sub semantics).
-    pub unsafe fn rc_dec(box_ptr: *mut i64) -> i64 {
-        nelisp_rc_dec(box_ptr)
-    }
-
-    /// Doc 123 §123.C — pure-elisp `nelisp_rc_strong_count' kernel.
-    pub unsafe fn rc_strong_count(box_ptr: *const u8) -> i64 {
-        nelisp_rc_strong_count(box_ptr)
-    }
-
-    /// Doc 123 §123.C — pure-elisp `nelisp_rc_kind' kernel.
-    pub unsafe fn rc_kind(sexp_ptr: *const u8) -> i64 {
-        nelisp_rc_kind(sexp_ptr)
-    }
+    // Doc 122 §122.C libm probes + Doc 123 §123.A-C rc primitive
+    // wrappers — collapsed via §127.A `cc_wrap!'.
+    cc_wrap!(libm_sqrt: nelisp_libm_sqrt, (x: f64) -> f64);
+    cc_wrap!(libm_sin: nelisp_libm_sin, (x: f64) -> f64);
+    cc_wrap!(libm_cos: nelisp_libm_cos, (x: f64) -> f64);
+    cc_wrap!(rc_inc: nelisp_rc_inc, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(rc_dec: nelisp_rc_dec, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(rc_strong_count: nelisp_rc_strong_count, (box_ptr: *const u8) -> i64);
+    cc_wrap!(rc_kind: nelisp_rc_kind, (sexp_ptr: *const u8) -> i64);
 
     /// Doc 123 §123.D — pure-elisp `nelisp_rc_payload_ptr' kernel.
     /// Reads the inner NlBox* payload pointer at offset 8 of the
@@ -1387,62 +1349,21 @@ pub mod elisp_cc_spike {
         nelisp_nlconsbox_clone(box_ptr)
     }
 
-    /// Doc 124 §124.G — pure-elisp NlConsBox Drop kernel.
-    pub unsafe fn nlconsbox_drop(box_ptr: *mut i64) -> i64 {
-        nelisp_nlconsbox_drop(box_ptr)
-    }
-
-    /// Doc 124 §124.H — pure-elisp NlVector Drop kernel.  Mechanical
-    /// port of §124.G modulo the per-type layout literals: offset 24
-    /// (= `size_of::<Vec<Sexp>>()'), total size 32, align 8 (=
-    /// `Layout::new::<NlVector>()' per `nlvector.rs:69, 143').
-    pub unsafe fn nlvector_drop(box_ptr: *mut i64) -> i64 {
-        nelisp_nlvector_drop(box_ptr)
-    }
-
-    /// Doc 124 §124.I — pure-elisp NlCell Drop kernel.  Mechanical
-    /// port of §124.G modulo the per-type layout literals: offset 32
-    /// (= `size_of::<Sexp>()'), total size 40, align 8 (=
-    /// `Layout::new::<NlCell>()' per `nlcell.rs:111, 158').
-    pub unsafe fn nlcell_drop(box_ptr: *mut i64) -> i64 {
-        nelisp_nlcell_drop(box_ptr)
-    }
-
-    /// Doc 124 §124.J — pure-elisp NlRecord Drop kernel.  Mechanical
-    /// port of §124.G modulo the per-type layout literals: offset 56
-    /// (= `size_of::<Sexp>() + size_of::<Vec<Sexp>>()'), total size 64,
-    /// align 8 (= `Layout::new::<NlRecord>()' per `nlrecord.rs:77').
-    pub unsafe fn nlrecord_drop(box_ptr: *mut i64) -> i64 {
-        nelisp_nlrecord_drop(box_ptr)
-    }
-
-    /// Doc 124 §124.K — pure-elisp NlStr Drop kernel.  Mechanical
-    /// port of §124.G modulo the per-type layout literals: offset 24
-    /// (= `size_of::<String>()'), total size 32, align 8 (=
-    /// `Layout::new::<NlStr>()' per `nlstr.rs:95').
-    pub unsafe fn nlstr_drop(box_ptr: *mut i64) -> i64 {
-        nelisp_nlstr_drop(box_ptr)
-    }
-
-    /// Doc 124 §124.B — NlVector Clone kernel (offset 24).
-    pub unsafe fn nlvector_clone(box_ptr: *mut i64) -> i64 {
-        nelisp_nlvector_clone(box_ptr)
-    }
-
-    /// Doc 124 §124.C — NlCell Clone kernel (offset 32).
-    pub unsafe fn nlcell_clone(box_ptr: *mut i64) -> i64 {
-        nelisp_nlcell_clone(box_ptr)
-    }
-
-    /// Doc 124 §124.D — NlRecord Clone kernel (offset 56).
-    pub unsafe fn nlrecord_clone(box_ptr: *mut i64) -> i64 {
-        nelisp_nlrecord_clone(box_ptr)
-    }
-
-    /// Doc 124 §124.E — NlStr Clone kernel (offset 24).
-    pub unsafe fn nlstr_clone(box_ptr: *mut i64) -> i64 {
-        nelisp_nlstr_clone(box_ptr)
-    }
+    // Doc 127 §127.A — Doc 124 NlBox Clone/Drop kernel wrappers.
+    // The 9 wrappers below are trivially-identical dispatches to
+    // their `nelisp_nl{type}_{clone,drop}' extern counterparts; the
+    // per-type layout literals (REFCOUNT_OFFSET / SIZE / ALIGN) live
+    // in the elisp .o source headers (lisp/nelisp-cc-nl*-{clone,drop}.el)
+    // and the §124.A-K design doc, not duplicated in Rust docstrings.
+    cc_wrap!(nlconsbox_drop: nelisp_nlconsbox_drop, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlvector_drop: nelisp_nlvector_drop, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlcell_drop: nelisp_nlcell_drop, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlrecord_drop: nelisp_nlrecord_drop, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlstr_drop: nelisp_nlstr_drop, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlvector_clone: nelisp_nlvector_clone, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlcell_clone: nelisp_nlcell_clone, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlrecord_clone: nelisp_nlrecord_clone, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlstr_clone: nelisp_nlstr_clone, (box_ptr: *mut i64) -> i64);
 
     /// Doc 111 §111.E #1 — Phase 47 `mirror_lookup_entry' probe wrapper.
     ///
