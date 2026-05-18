@@ -1,38 +1,8 @@
-//! Doc 77c Phase A.1 — `NlRc<T>` self-managed reference-counted ptr.
-//!
-//! Drop-in replacement for `std::rc::Rc<T>` with a *layout-pinned*
-//! inner box so elisp / Cranelift IR can reach the refcount and
-//! payload at known byte offsets via `nl-ffi-write-i64' (Phase A.3
-//! adds the elisp primitives, Phase A.5 adds the JIT trampolines).
-//!
-//! Layout (locked by Doc 77c §2.1.1):
-//!
-//! ```text
-//! NlRcInner<T>:  +-------------+  offset 0   (8 bytes)  AtomicUsize refcount
-//!                +-------------+  offset 8   (sizeof T) value
-//!                +-------------+
-//! ```
-//!
-//! The 8-byte refcount @ offset 0 + value @ offset 8 invariant is
-//! enforced by compile-time `const _` assertions at the bottom of
-//! this file *and* by runtime layout-tests in `tests' below.  Both
-//! gates are critical because elisp will later read/write the
-//! refcount via fixed offsets and any drift would silently corrupt
-//! GC state.
-//!
-//! Out of scope for Phase A.1:
-//!   - migrating `Sexp` variants to `NlRc` (= Phase A.2)
-//!   - `NlConsBox` layout pin                   (= Phase A.2)
-//!   - elisp `nl-rc-*` primitives               (= Phase A.3)
-//!   - Cranelift trampoline rewrites            (= Phase A.5)
-//!
-//! Threading: `AtomicUsize` is used for the refcount because the
-//! eventual JIT/ffi paths may touch it from any thread that holds a
-//! handle.  The `Rc<T>`-equivalent semantics (= "single-threaded
-//! ownership") still hold from the elisp side; `AtomicUsize` is
-//! defensive plumbing, not a Send/Sync claim.  This struct is
-//! intentionally *not* `Send` / `Sync` for now — Phase A.5 will
-//! re-evaluate once the JIT trampoline contract is concrete.
+//! `NlRc<T>` — self-managed refcounted ptr.  `Rc<T>'-equivalent API
+//! with a layout-pinned `#[repr(C)]' inner: refcount @ offset 0
+//! (8 bytes AtomicUsize), value @ offset 8.  Offsets are asserted
+//! at compile-time + runtime so elisp + Phase 47 helpers can reach
+//! the refcount via fixed-offset arithmetic.  Not `Send` / `Sync'.
 
 use std::alloc::{self, Layout};
 use std::marker::PhantomData;
@@ -40,36 +10,14 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Pinned-layout inner box that owns the payload + refcount.  All
-/// `NlRc<T>` handles share a single `NlRcInner<T>` allocation.
-///
-/// `#[repr(C)]` is mandatory: Doc 77c §2.1.1 contracts that
-/// `refcount` lives at offset 0 and `value` at offset 8 so elisp
-/// `nl-ffi-write-i64` can reach them without going through Rust.
 #[repr(C)]
 pub struct NlRcInner<T> {
-    /// Strong reference count.  Starts at 1 in `NlRc::new`, +1 on
-    /// each `Clone`, -1 on each `Drop`.  When it reaches 0 the
-    /// dropping handle frees the allocation.
     pub refcount: AtomicUsize,
-    /// The payload.  Layout offset is fixed by `#[repr(C)]` + the
-    /// 8-byte refcount predecessor (sizeof `AtomicUsize` = 8 on
-    /// x86_64 / aarch64; we assert this below).
     pub value: T,
 }
 
-/// Self-managed reference-counted smart pointer.  API-equivalent to
-/// `std::rc::Rc<T>` for the subset Doc 77c needs (= `new` / `Clone`
-/// / `Drop` / `Deref` / `strong_count` / `ptr_eq`).
-///
-/// The wrapped `NonNull<NlRcInner<T>>` gives us niche optimization
-/// (= `Option<NlRc<T>>` is the same size as `NlRc<T>`) and rules out
-/// null-ptr UB by construction.
 pub struct NlRc<T> {
     ptr: NonNull<NlRcInner<T>>,
-    /// Tells the borrow-checker we own a `T` even though the field
-    /// is `NonNull<...>` (which is `Copy` and would otherwise let
-    /// `T: ?Sized` slip through unsoundly).  Mirrors `std::rc::Rc`.
     _marker: PhantomData<NlRcInner<T>>,
 }
 
@@ -211,14 +159,8 @@ impl<T> Deref for NlRc<T> {
     }
 }
 
-// ---- Doc 79 v4 Stage C.4-atomic: NLRC_DROP_TABLE + nlrc_drop_box! ----
-//
-// `DROP_FN` const + this table drive the slim `impl Drop for NlXxxRef`
-// bodies (~3 lines each).  Stage C.2 cycle collector (deferred) will
-// reach into the table from elisp via Sexp tag dispatch.  SEXP_TAG_*
-// (sexp.rs:217-229) is non-contiguous: slots 0..=5 (= NIL/T/INT/FLOAT/
-// SYMBOL/STR) are unboxed and route to a panic stub; slots 6..=12 reach
-// the seven boxed kinds.
+// NLRC_DROP_TABLE + nlrc_drop_box! — per-tag drop dispatch.  SEXP_TAG_*
+// slots 0..=5 (unboxed) panic; slots 6..=12 forward to each box's DROP_FN.
 
 /// Generic in-place drop helper — runs `T`'s destructor without freeing
 /// the heap slot.  The `nlrc_drop_box!` macro pairs each invocation
@@ -274,30 +216,10 @@ macro_rules! nlrc_drop_box {
     }};
 }
 
-// ---- Compile-time layout assertions ----
-//
-// These guarantee that elisp / Cranelift can reach `refcount` at
-// byte offset 0 and `value` at byte offset 8 without consulting
-// Rust at runtime.  Phase A.3 (`nl-rc-inc' / `nl-rc-dec' /
-// `nl-rc-count' primitives) and Phase A.5 (JIT trampolines) both
-// rely on these offsets being constants.
-//
-// We pick `i64` as the canary `T` because it is the most common
-// payload Elisp code stores (= integer cells) and because `i64`
-// has the same 8-byte alignment as `AtomicUsize` on x86_64 and
-// aarch64, so its offset comes out exactly 8.  Other `T`s with
-// stricter alignment (= 16-byte) would push the offset further;
-// Phase A.2 will add per-type asserts when `NlConsBox` lands.
-
+// Compile-time layout assertions — refcount @ 0, value @ 8 for i64 canary.
 const _: () = {
-    // `AtomicUsize` is 8 bytes on x86_64 / aarch64; this assert
-    // catches any 32-bit target accidentally pulled into the build.
     assert!(std::mem::size_of::<AtomicUsize>() == 8);
-    // `refcount` is the first field of a `repr(C)` struct, so its
-    // offset is always 0; we assert it explicitly anyway so a future
-    // refactor that reorders fields fails the build.
     assert!(std::mem::offset_of!(NlRcInner<i64>, refcount) == 0);
-    // `value` follows the 8-byte refcount with `i64` alignment = 8.
     assert!(std::mem::offset_of!(NlRcInner<i64>, value) == 8);
 };
 
