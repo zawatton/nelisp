@@ -11,40 +11,16 @@
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
-/// Process-global quit flag — 0 = clear, 1 = pending.  Stored as
-/// `AtomicI64' so the elisp helper can mutate the same memory
-/// through atomic / raw-mem grammar ops (= those operate on `*mut
-/// i64').  Rust mutators normalize to 0/1; elisp side does the same
-/// via CAS.
+/// Process-global quit flag.  Mutators (set/clear/pending-p) live in
+/// elisp Phase 47 (`nelisp-cc-bi-quit-flag.el', atomic-compare-exchange
+/// + ptr-read-u64).  Rust retains the static storage, the pointer
+/// getter the elisp side dereferences, the eval-poll consumer, and
+/// the SIGINT handler that flips the slot from signal context.
 static QUIT_FLAG: AtomicI64 = AtomicI64::new(0);
 
-/// Raw pointer to the static `QUIT_FLAG' storage, for the elisp body
-/// that reads / mutates the slot via `extern-call' + atomic ops.
-///
-/// SAFETY: returns a pointer aliasing a `'static` `AtomicI64`.
-/// x86_64 aligned 64-bit loads are atomic at the hardware level so
-/// `ptr-read-u64` is never torn; writers go through CAS (LOCK CMPXCHG).
 #[no_mangle]
 pub extern "C" fn nl_quit_flag_ptr() -> *mut i64 {
     QUIT_FLAG.as_ptr()
-}
-
-/// Set the global quit flag.  Async-signal-safe: a real `SIGINT`
-/// handler may call this directly.  Idempotent — repeated calls
-/// without an intervening clear simply re-mark the flag.
-pub fn set_quit_flag() {
-    QUIT_FLAG.store(1, Ordering::SeqCst);
-}
-
-/// Clear the global quit flag.  Used by [`take_quit_flag`] and by
-/// `condition-case`'s `quit` clause once a quit has been caught.
-pub fn clear_quit_flag() {
-    QUIT_FLAG.store(0, Ordering::SeqCst);
-}
-
-/// Read the flag without changing it (= `quit-flag-pending-p`).
-pub fn is_quit_pending() -> bool {
-    QUIT_FLAG.load(Ordering::SeqCst) != 0
 }
 
 /// Atomically take the flag.  Returns `true` if it was set, and

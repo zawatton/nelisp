@@ -2146,19 +2146,6 @@ fn track_m_set_quit_flag_raises_at_next_eval() {
 }
 
 #[test]
-fn track_m_clear_quit_flag_via_rust_api() {
-    // From Lisp, `(set-quit-flag)' followed by anything else is
-    // intercepted by eval()'s flag check before the next form runs
-    // — that is the whole *point* of the flag.  But the Rust quit::
-    // module is callable directly (e.g. from a signal handler before
-    // any eval boundary), and clearing there must work.
-    eval_mod::quit::set_quit_flag();
-    eval_mod::quit::clear_quit_flag();
-    assert_eq!(ok_all("'survived"), Sexp::Symbol("survived".into()));
-    assert!(!eval_mod::quit::is_quit_pending());
-}
-
-#[test]
 fn track_m_unwind_protect_runs_on_quit() {
     // unwind-protect cleanup must fire on a quit just like on any
     // other error.  We shadow with a (quit ...) clause to absorb the
@@ -2173,19 +2160,6 @@ fn track_m_unwind_protect_runs_on_quit() {
         ),
         Sexp::T
     );
-}
-
-#[test]
-fn track_m_quit_flag_pending_p_is_non_destructive() {
-    // From Rust: `is_quit_pending` must NOT consume the flag.  Only
-    // `take_quit_flag` (used by eval() at safe-poll boundaries) does.
-    eval_mod::quit::clear_quit_flag(); // start clean
-    eval_mod::quit::set_quit_flag();
-    assert!(eval_mod::quit::is_quit_pending());
-    assert!(eval_mod::quit::is_quit_pending(), "peek must be idempotent");
-    // take consumes
-    assert!(eval_mod::quit::take_quit_flag());
-    assert!(!eval_mod::quit::is_quit_pending());
 }
 
 #[test]
