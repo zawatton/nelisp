@@ -25,35 +25,58 @@ pub use env_helpers::{Env, ExternBuiltin, FrameCell, SymbolEntry};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 
-/// Read `input` via the Elisp reader — entry point for `eval_str` / `eval_str_all`.
+fn collect_list<T>(
+    mut list: Sexp,
+    ctx: &str,
+    mut f: impl FnMut(Sexp) -> Result<T, EvalError>,
+) -> Result<Vec<T>, EvalError> {
+    let mut out = Vec::new();
+    loop {
+        match list {
+            Sexp::Nil => return Ok(out),
+            Sexp::Cons(b) => {
+                out.push(f(b.car.clone())?);
+                list = b.cdr.clone();
+            }
+            other => return Err(EvalError::Internal(format!("{ctx}, got {:?}", other))),
+        }
+    }
+}
+
+fn expect_single_form(forms: Vec<Sexp>, ctx: &str) -> Result<Sexp, EvalError> {
+    match forms.as_slice() {
+        [single] => Ok(single.clone()),
+        [] => Err(EvalError::Internal(format!(
+            "{ctx}: empty input - at least one form required"
+        ))),
+        _ => Err(EvalError::Internal(format!(
+            "{ctx}: expected exactly one form, got {}",
+            forms.len()
+        ))),
+    }
+}
+
+fn eval_forms(forms: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    let mut last = Sexp::Nil;
+    for form in forms {
+        last = eval(form, env)?;
+    }
+    Ok(last)
+}
+
 pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let impl_fn = env
         .lookup_function("nelisp--read-all-from-string-impl")
         .map_err(|_| EvalError::Internal(
             "nelisp--read-all-from-string-impl not loaded".into(),
         ))?;
-    let arg = Sexp::Str(input.to_string());
-    let mut list = apply_function(&impl_fn, &[arg], env)?;
-    let mut out = Vec::new();
-    loop {
-        match list {
-            Sexp::Nil => break,
-            Sexp::Cons(b) => {
-                out.push(b.car.clone());
-                list = b.cdr.clone();
-            }
-            other => {
-                return Err(EvalError::Internal(format!(
-                    "eval_str: expected proper list from elisp reader, got {:?}",
-                    other
-                )));
-            }
-        }
-    }
-    Ok(out)
+    collect_list(
+        apply_function(&impl_fn, &[Sexp::Str(input.to_string())], env)?,
+        "eval_str: expected proper list from elisp reader",
+        Ok,
+    )
 }
 
-/// Read top-level forms returning `(LINE, FORM)` pairs (1-origin lines).
 pub fn read_all_with_line_via_elisp(
     input: &str,
     env: &mut Env,
@@ -63,102 +86,41 @@ pub fn read_all_with_line_via_elisp(
         .map_err(|_| EvalError::Internal(
             "nelisp--read-all-with-line-from-string-impl not loaded".into(),
         ))?;
-    let arg = Sexp::Str(input.to_string());
-    let mut list = apply_function(&impl_fn, &[arg], env)?;
-    let mut out = Vec::new();
-    loop {
-        match list {
-            Sexp::Nil => break,
-            Sexp::Cons(b) => {
-                let pair = b.car.clone();
-                match pair {
-                    Sexp::Cons(inner) => {
-                        let line = match inner.car.clone() {
-                            Sexp::Int(n) if n >= 0 => n as u32,
-                            other => {
-                                return Err(EvalError::Internal(format!(
-                                    "read_all_with_line_via_elisp: \
-                                     expected (LINE . FORM) where LINE is a \
-                                     positive integer, got line = {:?}",
-                                    other
-                                )));
-                            }
-                        };
-                        let form = inner.cdr.clone();
-                        out.push((line, form));
-                    }
-                    other => {
-                        return Err(EvalError::Internal(format!(
-                            "read_all_with_line_via_elisp: \
-                             expected (LINE . FORM) cons element, got {:?}",
-                            other
-                        )));
-                    }
-                }
-                list = b.cdr.clone();
-            }
-            other => {
-                return Err(EvalError::Internal(format!(
-                    "read_all_with_line_via_elisp: \
-                     expected proper list from elisp reader, got {:?}",
+    collect_list(
+        apply_function(&impl_fn, &[Sexp::Str(input.to_string())], env)?,
+        "read_all_with_line_via_elisp: expected proper list from elisp reader",
+        |pair| match pair {
+            Sexp::Cons(inner) => match inner.car.clone() {
+                Sexp::Int(n) if n >= 0 => Ok((n as u32, inner.cdr.clone())),
+                other => Err(EvalError::Internal(format!(
+                    "read_all_with_line_via_elisp: expected (LINE . FORM) with non-negative LINE, got {:?}",
                     other
-                )));
-            }
-        }
-    }
-    Ok(out)
+                ))),
+            },
+            other => Err(EvalError::Internal(format!(
+                "read_all_with_line_via_elisp: expected (LINE . FORM), got {:?}",
+                other
+            ))),
+        },
+    )
 }
 
-/// Read exactly one form via the Elisp reader — integration test helper.
 pub fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> {
-    let forms = read_all_via_elisp(input, env)?;
-    match forms.as_slice() {
-        [single] => Ok(single.clone()),
-        [] => Err(EvalError::Internal(
-            "read_one_via_elisp: empty input — at least one form required".into(),
-        )),
-        _ => Err(EvalError::Internal(format!(
-            "read_one_via_elisp: expected exactly one form, got {}",
-            forms.len()
-        ))),
-    }
+    expect_single_form(read_all_via_elisp(input, env)?, "read_one_via_elisp")
 }
 
-/// Read exactly one form from `input` and evaluate it in a fresh global env.
 pub fn eval_str(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
-    let forms = read_all_via_elisp(input, &mut env)?;
-    let form = match forms.as_slice() {
-        [single] => single.clone(),
-        [] => {
-            return Err(EvalError::Internal(
-                "eval_str: empty input — at least one form required".into(),
-            ));
-        }
-        _ => {
-            return Err(EvalError::Internal(format!(
-                "eval_str: expected exactly one form, got {}",
-                forms.len()
-            )));
-        }
-    };
+    let form = expect_single_form(read_all_via_elisp(input, &mut env)?, "eval_str")?;
     eval(&form, &mut env)
 }
 
-/// Read and evaluate all top-level forms from `input` in a fresh global env.
-/// Returns the last value; empty input returns `nil`.
 pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     let forms = read_all_via_elisp(input, &mut env)?;
-    let mut last = Sexp::Nil;
-    for f in &forms {
-        last = eval(f, &mut env)?;
-    }
-    Ok(last)
+    eval_forms(&forms, &mut env)
 }
 
-/// Like [`eval_str_all`], but seeds path-related globals from `src_path`.
-/// Relative `load` and `require` calls resolve against the source file's directory.
 pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     let path_buf = std::path::PathBuf::from(src_path);
@@ -180,11 +142,7 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
     // Seed `load-path` with the source file's directory.
     env.set_value("load-path", Sexp::cons(Sexp::Str(parent_dir), Sexp::Nil))?;
     let forms = read_all_via_elisp(input, &mut env)?;
-    let mut last = Sexp::Nil;
-    for f in &forms {
-        last = eval(f, &mut env)?;
-    }
-    Ok(last)
+    eval_forms(&forms, &mut env)
 }
 
 /// Recursive evaluator entry point.
@@ -335,51 +293,43 @@ fn is_elisp_apply_helper(name: &str) -> bool {
     )
 }
 
-/// Detect `(builtin NAME)` sentinels to skip Elisp delegation.
 fn is_builtin_value(func: &Sexp) -> bool {
-    if let Sexp::Cons(b) = func {
-        if let Sexp::Symbol(s) = &b.car {
-            return s == "builtin";
-        }
-    }
-    false
+    matches!(func, Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "builtin"))
 }
 
-/// Delegate to Elisp `(nelisp--apply-fn FUNC ARGS)`.
-fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let args_list = Sexp::list_from(args);
-    let dispatch_form = Sexp::list_from(&[
-        Sexp::Symbol("nelisp--apply-fn".into()),
-        Sexp::list_from(&[Sexp::Symbol("quote".into()), func.clone()]),
-        Sexp::list_from(&[Sexp::Symbol("quote".into()), args_list]),
-    ]);
+fn eval_delegated(name: &str, quoted: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    let mut form = Vec::with_capacity(quoted.len() + 1);
+    form.push(Sexp::Symbol(name.into()));
+    form.extend(quoted.iter().map(|arg| {
+        Sexp::list_from(&[Sexp::Symbol("quote".into()), arg.clone()])
+    }));
     env.delegation_depth += 1;
-    let result = eval(&dispatch_form, env);
+    let result = eval(&Sexp::list_from(&form), env);
     env.delegation_depth -= 1;
     result
 }
 
-/// Delegate macro expansion to Elisp, then evaluate the result in the caller's env.
+fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    eval_delegated(
+        "nelisp--apply-fn",
+        &[func.clone(), Sexp::list_from(args)],
+        env,
+    )
+}
+
 fn delegate_macro_to_elisp(
     macro_form: &Sexp,
     arg_forms: &Sexp,
     env: &mut Env,
 ) -> Result<Sexp, EvalError> {
-    let dispatch_form = Sexp::list_from(&[
-        Sexp::Symbol("nelisp--expand-macro".into()),
-        Sexp::list_from(&[Sexp::Symbol("quote".into()), macro_form.clone()]),
-        Sexp::list_from(&[Sexp::Symbol("quote".into()), arg_forms.clone()]),
-    ]);
-    env.delegation_depth += 1;
-    let expansion = eval(&dispatch_form, env);
-    env.delegation_depth -= 1;
-    let expansion = expansion?;
+    let expansion = eval_delegated(
+        "nelisp--expand-macro",
+        &[macro_form.clone(), arg_forms.clone()],
+        env,
+    )?;
     eval(&expansion, env)
 }
 
-/// Apply `func` to `args`.
-/// Accepted shapes are `(builtin NAME)`, `(closure ENV ARGS BODY...)`,
-/// and `(lambda ARGS BODY...)`.
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let wrong_type = || EvalError::WrongType {
         expected: "function".into(),
@@ -412,7 +362,6 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
 }
 
 fn apply_builtin(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    // `(builtin NAME)` dispatches through the builtin registry.
     let Sexp::Cons(outer) = func else {
         return Err(EvalError::Internal("builtin sentinel not a cons".into()));
     };
@@ -426,7 +375,6 @@ fn apply_builtin(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, Eval
     builtins::dispatch(&name, args, env)
 }
 
-/// Shared closure/lambda application path.
 pub(crate) fn apply_lambda_inner(
     captured: &Sexp,
     formals: &Sexp,
@@ -455,98 +403,75 @@ pub(crate) fn apply_lambda_inner(
     result
 }
 
-/// Bind formal parameters in the topmost frame.
-/// Supports `&optional` and `&rest`.
 pub(crate) fn bind_formals(
     formals: &Sexp,
     args: &[Sexp],
     env: &mut Env,
 ) -> Result<(), EvalError> {
     let names = list_elements(formals)?;
+    #[derive(Clone, Copy)]
     enum Mode {
         Required,
         Optional,
         Rest,
     }
-    let mut mode = Mode::Required;
-    let mut idx = 0usize;
-    let mut required_count = 0usize;
-    let mut consumed_rest = false;
-    let mut saw_rest = false;
+    let required = names.iter().take_while(|formal| {
+        !matches!(formal, Sexp::Symbol(s) if s == "&optional" || s == "&rest")
+    }).count();
+    let (mut mode, mut idx, mut saw_rest, mut consumed_rest) =
+        (Mode::Required, 0usize, false, false);
 
-    // First pass: count required arity for diagnostics.
-    for n in &names {
-        if let Sexp::Symbol(s) = n {
-            if s == "&optional" || s == "&rest" {
-                break;
-            }
-        }
-        required_count += 1;
-    }
-
-    for n in names {
-        match n {
-            Sexp::Symbol(s) if s == "&optional" => {
+    for formal in names {
+        let Sexp::Symbol(name) = formal else {
+            return Err(EvalError::WrongType { expected: "symbol".into(), got: formal });
+        };
+        match name.as_str() {
+            "&optional" => {
                 if matches!(mode, Mode::Rest) {
                     return Err(EvalError::WrongType {
                         expected: "formal parameter after &rest".into(),
-                        got: Sexp::Symbol(s),
+                        got: Sexp::Symbol(name),
                     });
                 }
                 mode = Mode::Optional;
             }
-            Sexp::Symbol(s) if s == "&rest" => {
+            "&rest" => {
                 if saw_rest {
                     return Err(EvalError::WrongType {
                         expected: "single &rest marker".into(),
-                        got: Sexp::Symbol(s),
+                        got: Sexp::Symbol(name),
                     });
                 }
                 mode = Mode::Rest;
                 saw_rest = true;
             }
-            Sexp::Symbol(name) => match mode {
-                Mode::Required => {
-                    if idx >= args.len() {
-                        return Err(EvalError::WrongNumberOfArguments {
-                            function: "lambda".into(),
-                            expected: format!("{}", required_count),
-                            got: args.len(),
-                        });
-                    }
-                    env.bind_local(&name, args[idx].clone());
-                    idx += 1;
-                }
-                Mode::Optional => {
-                    let v = if idx < args.len() {
-                        let value = args[idx].clone();
-                        idx += 1;
-                        value
-                    } else {
-                        Sexp::Nil
-                    };
-                    env.bind_local(&name, v);
-                }
-                Mode::Rest => {
-                    if consumed_rest {
-                        return Err(EvalError::WrongType {
-                            expected: "single symbol after &rest".into(),
-                            got: Sexp::Symbol(name),
-                        });
-                    }
-                    let rest = Sexp::list_from(&args[idx..]);
-                    env.bind_local(&name, rest);
-                    idx = args.len();
-                    consumed_rest = true;
-                }
-            },
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "symbol".into(),
-                    got: other,
-                })
+            _ if matches!(mode, Mode::Required) => {
+                let Some(value) = args.get(idx) else {
+                    return Err(EvalError::WrongNumberOfArguments {
+                        function: "lambda".into(),
+                        expected: required.to_string(),
+                        got: args.len(),
+                    });
+                };
+                env.bind_local(&name, value.clone());
+                idx += 1;
             }
-        }
+            _ if matches!(mode, Mode::Optional) => {
+                env.bind_local(&name, args.get(idx).cloned().unwrap_or(Sexp::Nil));
+                idx += usize::from(idx < args.len());
+            }
+            _ => {
+                if consumed_rest {
+                    return Err(EvalError::WrongType {
+                        expected: "single symbol after &rest".into(),
+                        got: Sexp::Symbol(name),
+                    });
+                }
+                env.bind_local(&name, Sexp::list_from(&args[idx..]));
+                idx = args.len();
+                consumed_rest = true;
+            }
+        };
     }
     if idx < args.len() && !consumed_rest {
         return Err(EvalError::WrongNumberOfArguments {
@@ -564,7 +489,6 @@ pub(crate) fn bind_formals(
     Ok(())
 }
 
-/// Detect `(macro ...)` forms.
 fn is_macro(func: &Sexp) -> bool {
     matches!(
         func,
