@@ -1,8 +1,7 @@
-//! Rust-side minimal Elisp evaluator.  Public surface: [`eval_str`],
-//! [`eval_str_all`], [`eval`], [`Env`], [`EvalError`].  Recursive
-//! `eval(form, env)' with special forms dispatched via name match
-//! in [`special_forms::apply_special`].  Errors are `Result<Sexp,
-//! EvalError>` (never panic on user input).
+//! Minimal Elisp evaluator.
+//! Public surface: [`eval_str`], [`eval_str_all`], [`eval`], [`Env`], [`EvalError`].
+//! Special forms dispatch through [`special_forms::apply_special`].
+//! User input failures return `Result<Sexp, EvalError>`.
 
 pub mod builtins;
 pub mod cons_primitives;
@@ -31,10 +30,8 @@ pub use env::{Env, SymbolEntry};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 
-/// Read `input' via the elisp reader
-/// `nelisp--read-all-from-string-impl'.  Production `eval_str' /
-/// `eval_str_all' routes through this so the Rust reader is reached
-/// only by bridge / baker / cargo-test paths.
+/// Read `input` via the Elisp reader helper.
+/// `eval_str` and `eval_str_all` route through this entry point.
 pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let impl_fn = env
         .lookup_function("nelisp--read-all-from-string-impl")
@@ -66,10 +63,8 @@ pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>
     Ok(out)
 }
 
-/// Read every top-level form via the elisp reader and return
-/// `(LINE, FORM)' tuples (1-origin line numbers).  Used by
-/// `bridge::loader::parse_tracked_forms' for source-line-aware
-/// `BridgeError::EvalError' messages.
+/// Read top-level forms via the Elisp reader and return `(LINE, FORM)` pairs.
+/// Line numbers are 1-origin.
 pub fn read_all_with_line_via_elisp(
     input: &str,
     env: &mut Env,
@@ -130,8 +125,7 @@ pub fn read_all_with_line_via_elisp(
     Ok(out)
 }
 
-/// Read exactly one form via the elisp reader; errors on empty or
-/// multi-form input.  Test-fixture helper.
+/// Read exactly one form via the Elisp reader.
 #[cfg(test)]
 pub(crate) fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> {
     let forms = read_all_via_elisp(input, env)?;
@@ -147,8 +141,7 @@ pub(crate) fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, Eva
     }
 }
 
-/// Read exactly one form from `input' (via elisp reader) and
-/// evaluate it in a fresh global env.  Trailing tokens error.
+/// Read exactly one form from `input` and evaluate it in a fresh global env.
 pub fn eval_str(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     let forms = read_all_via_elisp(input, &mut env)?;
@@ -169,9 +162,8 @@ pub fn eval_str(input: &str) -> Result<Sexp, EvalError> {
     eval(&form, &mut env)
 }
 
-/// Read every top-level form from `input' (via elisp reader) and
-/// evaluate in sequence in a fresh global env, returning the last
-/// value (= `progn').  Empty input returns nil.
+/// Read and evaluate all top-level forms from `input` in a fresh global env.
+/// Returns the last value; empty input returns `nil`.
 pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     let forms = read_all_via_elisp(input, &mut env)?;
@@ -182,10 +174,8 @@ pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> {
     Ok(last)
 }
 
-/// Like [`eval_str_all`] but seeds the global env with
-/// `default-directory' / `load-file-name' / `load-path' derived from
-/// `src_path' so `(load "sibling.el")` / `(require 'feature)` resolve
-/// paths relative to the file being evaluated.
+/// Like [`eval_str_all`], but seeds path-related globals from `src_path`.
+/// Relative `load` and `require` calls resolve against the source file's directory.
 pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     let path_buf = std::path::PathBuf::from(src_path);
@@ -204,9 +194,7 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
         .unwrap_or_else(|| "./".into());
     env.set_value("default-directory", Sexp::Str(parent_dir.clone()))?;
     env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?;
-    // Single-element `load-path' = the source file's directory.  Users
-    // who want extra search roots can `(setq load-path (cons "..."
-    // load-path))' inside the source.
+    // Seed `load-path` with the source file's directory.
     env.set_value("load-path", Sexp::cons(Sexp::Str(parent_dir), Sexp::Nil))?;
     let forms = read_all_via_elisp(input, &mut env)?;
     let mut last = Sexp::Nil;
@@ -216,11 +204,9 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
     Ok(last)
 }
 
-/// Canonical recursive entry — atoms self-eval, symbols look up
-/// frames then globals, cons dispatches via head (special form /
-/// macro / function).
+/// Recursive evaluator entry point.
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // Process-wide quit poll (= signal handler / C-g flip the flag).
+    // Process-wide quit poll.
     if quit::take_quit_flag() {
         return Err(EvalError::Quit);
     }
@@ -242,9 +228,9 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             | Sexp::MutStr(_) | Sexp::Vector(_)
             | Sexp::CharTable(_) | Sexp::BoolVector(_)
             | Sexp::Record(_) => Ok(form.clone()),
-        // Cell appears only in captured-env alists; self-eval to value.
+        // Cells appear only in captured-env alists; self-evaluate to the stored value.
         Sexp::Cell(c) => Ok(c.value.clone()),
-        // Keyword symbols (`:foo') self-evaluate.
+        // Keyword symbols self-evaluate.
         Sexp::Symbol(name) if name.starts_with(':') && name.len() > 1 => {
             Ok(form.clone())
         }
@@ -253,22 +239,17 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Apply a combiner head to its (un-evaluated) argument list.
+/// Apply a combiner head to its unevaluated argument list.
 fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match head {
-        // Symbol head — special form? macro? function in fcell?
+        // Symbol heads may name a special form, macro, or function.
         Sexp::Symbol(name) => {
-            // 1) Special forms — argument evaluation order is form-specific.
             if let Some(result) = special_forms::apply_special(name, tail, env)? {
                 return Ok(result);
             }
-            // 2) Macro? — expand once, recurse on expansion.
             if let Ok(func) = env.lookup_function(name) {
                 if is_macro(&func) {
-                    // Post-bootstrap delegate to elisp
-                    // `nelisp--expand-macro'; fall through to Rust
-                    // during bootstrap or inside a delegation /
-                    // helper call to avoid cycles.
+                    // Delegate macro expansion unless bootstrap or helper recursion would cycle.
                     if env.delegation_depth == 0
                         && !is_elisp_apply_helper(name)
                         && env.lookup_function("nelisp--expand-macro").is_ok()
@@ -278,12 +259,8 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
                     let expansion = expand_macro(&func, tail, env)?;
                     return eval(&expansion, env);
                 }
-                // 3) Plain function — evaluate args, apply.
                 let args = eval_arg_list(tail, env)?;
-                // Delegate to elisp `nelisp--apply-fn' at the
-                // outermost user-level call; skip inside delegations
-                // / dispatcher helpers / Rust builtins to avoid
-                // cycles + no-op round-trips.
+                // Delegate only at the outermost user-level call.
                 if env.use_elisp_apply
                     && env.delegation_depth == 0
                     && !is_elisp_apply_helper(name)
@@ -295,9 +272,7 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
             }
             Err(EvalError::UnboundFunction(name.clone()))
         }
-        // Lambda head: `((lambda ARGS BODY...) ARG ARG ...)` — evaluate
-        // the head form in the current env (it is a literal lambda or
-        // closure), then apply.
+        // A lambda head is evaluated first, then applied.
         Sexp::Cons(_) => {
             let func = eval(head, env)?;
             let args = eval_arg_list(tail, env)?;
@@ -316,8 +291,7 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
     }
 }
 
-/// Walk a proper list of forms, evaluating each one; return the
-/// resulting Vec for argument passing.
+/// Evaluate each element of a proper list and collect the results.
 pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let mut out = Vec::new();
     let mut cur: Sexp = args.clone();
@@ -339,9 +313,7 @@ pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, Eva
     }
 }
 
-/// Walk a proper list and collect each element without evaluating —
-/// used by special forms that take their argument list literally
-/// (e.g. `quote`, `lambda` formal-parameter lists, `let` bindings).
+/// Collect each element of a proper list without evaluating it.
 pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     let mut out = Vec::new();
     let mut cur: Sexp = list.clone();
@@ -363,13 +335,7 @@ pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     }
 }
 
-/// Names of the elisp dispatcher's own support stack, exempted from
-/// `delegate_to_elisp_apply' even at the outermost call boundary.
-/// Without this, a user-level direct call to one of these helpers
-/// would dispatch back through `nelisp--apply-fn' and re-enter
-/// itself, shadowing its own internal state vars with the call-
-/// frame formals.  Helper-name skip avoids the recursive-dispatch
-/// chain entirely.
+/// Elisp dispatcher helpers that must not re-enter `delegate_to_elisp_apply`.
 fn is_elisp_apply_helper(name: &str) -> bool {
     matches!(
         name,
@@ -386,8 +352,7 @@ fn is_elisp_apply_helper(name: &str) -> bool {
     )
 }
 
-/// `(builtin NAME)' shape detector — short-circuits elisp delegation
-/// for Rust builtins (no-op round-trip).
+/// Detect `(builtin NAME)` sentinels to skip Elisp delegation.
 fn is_builtin_value(func: &Sexp) -> bool {
     if let Sexp::Cons(b) = func {
         if let Sexp::Symbol(s) = &b.car {
@@ -397,9 +362,7 @@ fn is_builtin_value(func: &Sexp) -> bool {
     false
 }
 
-/// Delegate to elisp `(nelisp--apply-fn FUNC ARGS)`.
-/// `delegation_depth` guard prevents infinite recursion when helpers
-/// inside the dispatcher (consp / null / cond) would re-delegate.
+/// Delegate to Elisp `(nelisp--apply-fn FUNC ARGS)`.
 fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let args_list = Sexp::list_from(args);
     let dispatch_form = Sexp::list_from(&[
@@ -413,10 +376,7 @@ fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<
     result
 }
 
-/// Delegate a macro expansion to elisp `nelisp--expand-macro', then
-/// `eval' the result in the caller's env (= matches Rust
-/// `expand_macro' lexical-scope semantics).  `delegation_depth'
-/// guards helper recursion.
+/// Delegate macro expansion to Elisp, then evaluate the result in the caller's env.
 fn delegate_macro_to_elisp(
     macro_form: &Sexp,
     arg_forms: &Sexp,
@@ -434,15 +394,9 @@ fn delegate_macro_to_elisp(
     eval(&expansion, env)
 }
 
-/// Apply `func` to `args`.  `func` may be:
-///   - a built-in (`(builtin <NAME>)`-shaped sentinel — see
-///     [`builtins::install_builtins`])
-///   - a closure `(closure ENV ARGS BODY...)` — what `lambda`
-///     evaluates to
-///   - a raw `(lambda ARGS BODY...)` — what `defun` writes (closures
-///     in Emacs sense, but we treat them as dynamically resolved
-///     against the call-site env if the leading `closure` marker is
-///     missing)
+/// Apply `func` to `args`.
+/// Accepted shapes are `(builtin NAME)`, `(closure ENV ARGS BODY...)`,
+/// and `(lambda ARGS BODY...)`.
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let wrong_type = || EvalError::WrongType {
         expected: "function".into(),
@@ -453,7 +407,6 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
     match head.as_str() {
         "builtin" => apply_builtin(func, args, env),
         "closure" => {
-            // Shape: (closure CAPTURED-ENV ARGS BODY...)
             let parts = list_elements(func)?;
             if parts.len() < 3 {
                 return Err(EvalError::Internal("closure missing env / args / body".into()));
@@ -461,7 +414,6 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
             apply_lambda_inner(&parts[1], &parts[2], &parts[3..], args, env)
         }
         "lambda" => {
-            // Bare (lambda ARGS BODY...) — empty captured env.
             let parts = list_elements(func)?;
             if parts.len() < 2 {
                 return Err(EvalError::Internal("lambda missing args / body".into()));
@@ -477,7 +429,7 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
 }
 
 fn apply_builtin(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    // (builtin <NAME>) — pull the name out, dispatch via the registry.
+    // `(builtin NAME)` dispatches through the builtin registry.
     let Sexp::Cons(outer) = func else {
         return Err(EvalError::Internal("builtin sentinel not a cons".into()));
     };
@@ -491,9 +443,7 @@ fn apply_builtin(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, Eval
     builtins::dispatch(&name, args, env)
 }
 
-/// Body of `apply_function''s closure/lambda arms (= also reachable
-/// via `bi_apply_lambda_inner').  Evaluates BODY inside the captured
-/// env + a fresh frame for FORMALS.
+/// Shared closure/lambda application path.
 pub(crate) fn apply_lambda_inner(
     captured: &Sexp,
     formals: &Sexp,
@@ -501,11 +451,7 @@ pub(crate) fn apply_lambda_inner(
     args: &[Sexp],
     env: &mut Env,
 ) -> Result<Sexp, EvalError> {
-    // Skip push_captured for `Sexp::Nil' (= top-level defun closure
-    // with no captured state).  Breaks the apply_function recursion
-    // the elisp dispatch otherwise introduces — every closure
-    // application would re-enter push_captured on its own empty env
-    // and never bottom out.  Semantically a no-op (zero entries).
+    // Skip empty captured environments to avoid recursive no-op frame pushes.
     let captured_pushed = !matches!(captured, Sexp::Nil);
     if captured_pushed {
         env.push_captured(captured)?;
@@ -526,9 +472,8 @@ pub(crate) fn apply_lambda_inner(
     result
 }
 
-/// Bind a formal parameter list to actual arguments in the topmost
-/// frame.  Supports `&optional` (default-nil) and `&rest` (collect
-/// remainder as a list).
+/// Bind formal parameters in the topmost frame.
+/// Supports `&optional` and `&rest`.
 pub(crate) fn bind_formals(
     formals: &Sexp,
     args: &[Sexp],
@@ -620,7 +565,6 @@ pub(crate) fn bind_formals(
             }
         }
     }
-    // Reject excess args only if no &rest consumed them.
     if idx < args.len() && !consumed_rest {
         return Err(EvalError::WrongNumberOfArguments {
             function: "lambda".into(),
@@ -637,9 +581,7 @@ pub(crate) fn bind_formals(
     Ok(())
 }
 
-/// Macro detector — `(macro lambda ARGS BODY...)` is the canonical
-/// shape `defmacro` writes.  GNU Emacs also accepts `(macro . FUN)`
-/// where `FUN` is callable; we support both.
+/// Detect `(macro ...)` forms.
 fn is_macro(func: &Sexp) -> bool {
     matches!(
         func,
@@ -648,9 +590,7 @@ fn is_macro(func: &Sexp) -> bool {
 }
 
 fn expand_macro(macro_form: &Sexp, args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // `macro_form` is `(macro lambda ARGS BODY...)` — strip the
-    // `macro` head, get the underlying lambda, and apply it to the
-    // argument forms *un-evaluated* (= macro semantics).
+    // Apply the underlying lambda to the unevaluated argument forms.
     let parts = list_elements(macro_form)?;
     if parts.len() < 2 {
         return Err(EvalError::Internal("malformed macro".into()));
