@@ -597,49 +597,13 @@ pub mod elisp_cc_spike {
             plist_ptr: *const Sexp,
             constant_ptr: *const Sexp,
         ) -> i64;
-        // Doc 119 §119.A — auto-vivify fold helpers + wrappers.
-        // -------------------------------------------------------------
-        // Building blocks:
-        //   `nelisp_mirror_alloc_entry' — fresh `symbol-entry' Record
-        //      alloc + 4-slot install.  TAG-SYM-PTR points at
-        //      `Sexp::Symbol("symbol-entry")' that the safe wrapper
-        //      materialises on the call stack.
-        //   `nelisp_mirror_bucket_prepend' — hash NAME + cons-make
-        //      `(KEY-STR . ENTRY-RECORD)' + `vector-slot-set' install +
-        //      count slot bump.  ENTRY-PTR is the freshly-allocated
-        //      symbol-entry from `alloc_entry'.  SCRATCH-VEC-PTR is a
-        //      `Sexp::Vector' with 5 caller-owned Nil scratch slots
-        //      (= Nil-source / inner-pair / outer-cell / count-int /
-        //      KEY-Str; see `lisp/nelisp-cc-mirror-bucket-prepend.el'
-        //      commentary).
-        //
-        // Wrappers (= absorb the miss-path of helpers #7/#8/#11/#12):
-        //   `nelisp_mirror_set_value_or_insert'    — slot 0 (value).
-        //   `nelisp_mirror_set_function_or_insert' — slot 1 (function).
-        //   `nelisp_mirror_set_constant_or_insert' — slot 3 (constant flag).
-        //   `nelisp_mirror_install_entry_or_insert' — all 4 slots.
-        //
-        // The 4 wrappers share a uniform 4-arg signature `(mirror,
-        // sym, scratch_vec, _pad)' where SCRATCH-VEC-PTR is an
-        // 11-slot `Sexp::Vector' (= 5 prepend scratches at 0..4 +
-        // tag symbol at 5 + entry result at 6 + 4 caller-supplied
-        // value Sexps at 7..10).  The Rust safe wrapper materialises
-        // the value Sexps + tag before the call and drops the
-        // scratch vector after (= refcount balance on auto-vivify).
-        fn nelisp_mirror_alloc_entry(
-            tag_sym_ptr: *const Sexp,
-            value_ptr: *const Sexp,
-            function_ptr: *const Sexp,
-            plist_ptr: *const Sexp,
-            constant_ptr: *const Sexp,
-            result_slot: *mut Sexp,
-        ) -> i64;
-        fn nelisp_mirror_bucket_prepend(
-            mirror_ptr: *const Sexp,
-            sym_ptr: *const Sexp,
-            entry_ptr: *const Sexp,
-            scratch_vec_ptr: *const Sexp,
-        ) -> i64;
+        // Doc 119 §119.A — auto-vivify fold wrappers.  Each absorbs the
+        // miss-path of mirror_set_{value,function,constant} + install_entry
+        // via a 4-arg signature `(mirror, sym, scratch_vec, _pad)' where
+        // SCRATCH-VEC-PTR is an 11-slot `Sexp::Vector' (= 5 prepend
+        // scratches at 0..4 + tag symbol at 5 + entry result at 6 + 4
+        // caller-supplied value Sexps at 7..10).  Safe wrapper builds the
+        // scratch vector + drops it on return (refcount balance).
         fn nelisp_mirror_set_value_or_insert(
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
@@ -902,15 +866,6 @@ pub mod elisp_cc_spike {
             out: *mut Sexp,
         ) -> i64;
         pub fn nelisp_jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
-        // Doc 120 §120.C — `jit/cons.rs' 4 of 5 trampoline swaps.
-        pub fn nelisp_jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64;
-        pub fn nelisp_jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i64;
-        pub fn nelisp_jit_cons_setcar(
-            arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
-        ) -> i64;
-        pub fn nelisp_jit_cons_setcdr(
-            arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
-        ) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -1230,12 +1185,6 @@ pub mod elisp_cc_spike {
     //      slot's `Sexp' clone refcount-decrements, leaving the mirror
     //      as the sole steady-state owner of the entry record graph.
 
-    // Doc 119 §119.A — Phase 47 `mirror_alloc_entry' probe wrapper.
-    cc_wrap!(mirror_alloc_entry: nelisp_mirror_alloc_entry, (tag_sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp, result_slot: *mut Sexp) -> i64);
-
-    // Doc 119 §119.A — Phase 47 `mirror_bucket_prepend' probe wrapper.
-    cc_wrap!(mirror_bucket_prepend: nelisp_mirror_bucket_prepend, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, entry_ptr: *const Sexp, scratch_vec_ptr: *const Sexp) -> i64);
-
     /// Doc 119 §119.A — build the 11-slot scratch `Sexp::Vector' used
     /// by the four `_or_insert' wrappers.  Slots 0..4 are pre-filled
     /// with `Sexp::Nil' (= caller-owned scratches for `bucket_prepend');
@@ -1460,10 +1409,4 @@ pub mod elisp_cc_spike {
     cc_wrap!(jit_aref: nelisp_jit_aref, (arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64);
     cc_wrap!(jit_aset: nelisp_jit_aset, (arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(jit_elt: nelisp_jit_elt, (arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64);
-
-    // Doc 120 §120.C — jit_cons_* (car / cdr / setcar / setcdr) Phase 47 probes.
-    cc_wrap!(jit_cons_car: nelisp_jit_cons_car, (arg: *const Sexp, out: *mut Sexp) -> i64);
-    cc_wrap!(jit_cons_cdr: nelisp_jit_cons_cdr, (arg: *const Sexp, out: *mut Sexp) -> i64);
-    cc_wrap!(jit_cons_setcar: nelisp_jit_cons_setcar, (arg: *const Sexp, val: *const Sexp, out: *mut Sexp) -> i64);
-    cc_wrap!(jit_cons_setcdr: nelisp_jit_cons_setcdr, (arg: *const Sexp, val: *const Sexp, out: *mut Sexp) -> i64);
 }
