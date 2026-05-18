@@ -103,20 +103,6 @@
      :source-var nelisp-cc-bi-quit-flag--pending-p-source
      :output "nelisp_bi_quit_flag_pending_p.o"
      :requires-arch x86_64)
-    ;; Doc 117 §117.D.gaps.4 — `(install-sigint-handler)' sigaction-
-    ;; struct construction + libc `sigaction(SIGINT, &sa, NULL)'
-    ;; dispatch swap.  First handler in the Doc 122 §122.J (struct-by-
-    ;; value) + §122.K (libc constants) sweep.  Composes only existing
-    ;; Phase 47 grammar: §122.J struct-make + ptr-write-uN, §122.E
-    ;; ptr-write-u64, §122.K libc constants (SIGINT / SA_RESTART),
-    ;; §125.A dealloc-bytes, §100.A extern-call to libc sigaction +
-    ;; the `nl_sigint_handler_addr' / `nl_sigint_installed_ptr' getters
-    ;; in `eval/quit.rs'.  Linux-x86_64 only — same arch gate as the
-    ;; §122.J substrate.
-    (nelisp-cc-bi-install-sigint-handler
-     :source-var nelisp-cc-bi-install-sigint-handler--source
-     :output "nelisp_bi_install_sigint_handler.o"
-     :requires-arch x86_64)
     ;; Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
     ;; Algorithmic body of `(nelisp--write-stderr-line STR)' moves
     ;; into Phase 47 elisp via the new §122.H `str-bytes-ptr' grammar

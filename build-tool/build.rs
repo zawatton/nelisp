@@ -102,23 +102,6 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // form using §122.E `atomic-compare-exchange' / `ptr-read-u64'
         // against the `QUIT_FLAG' static slot in `eval/quit.rs'.
         "nelisp-cc-bi-quit-flag.el",
-        // Doc 117 §117.D.gaps.4 — sigaction(SIGINT) install swap.
-        // First handler in the Doc 122 §122.J / §122.K (struct-by-
-        // value + libc constants) sweep.  Builds the sigaction
-        // buffer via §122.J `struct-make' + 17 × `ptr-write-u64',
-        // writes the handler-fn pointer + SA_RESTART flag, calls
-        // libc `sigaction(SIGINT, &sa, NULL)', frees the buffer,
-        // and flips `SIGINT_INSTALLED' (= a §122.E ptr-write-u64
-        // on the `nl_sigint_installed_ptr' getter result).
-        "nelisp-cc-bi-install-sigint-handler.el",
-        // Doc 122 §122.K — libc constants table consumed by the
-        // sigaction installer above.  Hand-curated `defconst' set
-        // covering SIGINT / SA_RESTART / TIOCGWINSZ / TCSANOW /
-        // VMIN / VTIME / POLLIN / POLLHUP — 37 entries pinned to
-        // linux-glibc-x86_64 values, with a CI verifier in
-        // `scripts/verify-libc-constants.sh' diffing the values
-        // against a C probe over the host glibc headers.
-        "nelisp-cc-libc-constants.el",
         // Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
         // `(nelisp--write-stderr-line STR)' body via §122.H
         // `str-bytes-ptr' + libc `write(2, ...)`.

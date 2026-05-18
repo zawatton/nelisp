@@ -9,7 +9,7 @@
 //! safe, so a real `SIGINT` handler can drop the flag from the
 //! signal context.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 /// Process-global quit flag — 0 = clear, 1 = pending.  Stored as
 /// `AtomicI64' so the elisp helper can mutate the same memory
@@ -54,77 +54,35 @@ pub fn take_quit_flag() -> bool {
     QUIT_FLAG.swap(0, Ordering::SeqCst) != 0
 }
 
-/// Async-signal-safe SIGINT handler — hoisted to module scope (per
-/// Doc 117 §117.D.gaps.4) so the elisp dispatcher in
-/// `lisp/nelisp-cc-bi-install-sigint-handler.el' can take its address
-/// via [`nl_sigint_handler_addr`] and stash it into the `sa_sigaction'
-/// slot of a §122.J `struct-make' sigaction buffer.
-///
-/// Signal handlers themselves can never be elisp (= elisp emit needs
-/// the runtime allocator, which is async-signal-unsafe); only the
-/// sigaction-struct construction + libc dispatch moves to elisp.
-///
-/// `AtomicI64::store' is async-signal-safe.  Setting the flag is the
-/// entirety of the handler's job — the next eval-time poll converts
-/// it into `EvalError::Quit`.
-#[cfg(unix)]
-extern "C" fn nl_sigint_handler_impl(_signum: libc::c_int) {
-    QUIT_FLAG.store(1, Ordering::SeqCst);
-}
-
-/// Returns the address of [`nl_sigint_handler_impl`] cast to `i64' so
-/// the elisp body can write it into the `sa_sigaction' slot via
-/// §122.J `struct-field-set' / `ptr-write-u64'.
-///
-/// SAFETY: the returned address aliases a `'static` `extern "C" fn'
-/// in the crate's `.text' segment — never freed, always callable.
-#[cfg(unix)]
-#[no_mangle]
-pub extern "C" fn nl_sigint_handler_addr() -> i64 {
-    nl_sigint_handler_impl as *const () as i64
-}
-
-/// Process-global SIGINT-installed flag — 0 = not installed, 1 =
-/// installed.  Stored as `AtomicI64' (same layout as `QUIT_FLAG') so
-/// the elisp installer can mark it via `ptr-write-u64' and the
-/// diagnostic accessor can read it via `ptr-read-u64'.
-#[cfg(unix)]
-static SIGINT_INSTALLED: AtomicI64 = AtomicI64::new(0);
-
-/// Surface the `SIGINT_INSTALLED' static's address to the elisp
-/// installer (= so it can flip 0 -> 1 once `sigaction(2)' returns).
-///
-/// SAFETY: aliases a `'static` `AtomicI64' — same contract as
-/// [`nl_quit_flag_ptr`].
-#[cfg(unix)]
-#[no_mangle]
-pub extern "C" fn nl_sigint_installed_ptr() -> *mut i64 {
-    SIGINT_INSTALLED.as_ptr()
-}
-
 /// Install a SIGINT handler that flips [`set_quit_flag`] instead of
 /// the system default (= terminate).  The handler does NOT re-raise:
 /// the canonical Emacs flow is "Ctrl+C = `quit`, eval loop unwinds,
-/// command loop continues".  Idempotent; the body short-circuits when
-/// `SIGINT_INSTALLED' is already 1.  Unix-only — on non-Unix this is
-/// a no-op that returns success so callers don't need to cfg-gate.
-///
-/// Doc 117 §117.D.gaps.4: the sigaction-struct construction + libc
-/// `sigaction(2)' dispatch now lives in the Phase 47 elisp object
-/// compiled from `lisp/nelisp-cc-bi-install-sigint-handler.el'.  The
-/// Rust signal-handler fn pointer ([`nl_sigint_handler_impl`]) stays
-/// here — async-signal-safety forbids elisp inside the handler body.
+/// command loop continues".  Idempotent; a Once gate makes repeated
+/// calls a no-op.  Unix-only — on non-Unix this is a no-op that
+/// returns success so callers don't need to cfg-gate.
 #[cfg(unix)]
 pub fn install_sigint_handler() {
-    if SIGINT_INSTALLED.load(Ordering::SeqCst) != 0 {
-        return;
-    }
-    // SAFETY: the elisp object takes no Rust pointers — it builds the
-    // sigaction buffer itself via §122.J `struct-make' + populates the
-    // handler-fn slot via the `nl_sigint_handler_addr' extern.  The
-    // returned i64 is the libc `sigaction(2)' rc which we discard
-    // (matching the pre-swap body which also ignored the rc).
-    let _rc = unsafe { crate::elisp_cc_spike::bi_install_sigint_handler() };
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        extern "C" fn handler(_signum: libc::c_int) {
+            // `AtomicI64::store' is async-signal-safe.  Setting the
+            // flag is the entirety of the handler's job — the next
+            // eval-time poll converts it into `EvalError::Quit`.
+            QUIT_FLAG.store(1, Ordering::SeqCst);
+        }
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = handler as *const () as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            // SA_RESTART so an in-flight `read`/`poll` on stdin
+            // restarts after the handler runs (= the next eval
+            // boundary picks up the flag instead of seeing EINTR).
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
+        }
+        SIGINT_INSTALLED.store(true, Ordering::SeqCst);
+    });
 }
 
 #[cfg(not(unix))]
@@ -135,10 +93,13 @@ pub fn install_sigint_handler() {
 /// Has [`install_sigint_handler`] run yet?  Test/diagnostic helper.
 #[cfg(unix)]
 pub fn sigint_handler_installed_p() -> bool {
-    SIGINT_INSTALLED.load(Ordering::SeqCst) != 0
+    SIGINT_INSTALLED.load(Ordering::SeqCst)
 }
 
 #[cfg(not(unix))]
 pub fn sigint_handler_installed_p() -> bool {
     false
 }
+
+#[cfg(unix)]
+static SIGINT_INSTALLED: AtomicBool = AtomicBool::new(false);
