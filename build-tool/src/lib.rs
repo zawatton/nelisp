@@ -958,15 +958,8 @@ pub mod elisp_cc_spike {
         nelisp_truncate_int(arg0, result_slot)
     }
 
-    /// Doc 101 §101.B — `(length CONS)' proper-list walk, elisp-compiled.
-    ///
-    /// `arg0' must point at `Sexp::Cons(_)` or `Sexp::Nil`;
-    /// `result_slot' must point at a writable 32-byte Sexp slot.
-    /// The elisp body walks the raw `NlConsBox*` chain and writes
-    /// `Sexp::Int(list-length)` into `*result_slot`.
-    pub unsafe fn length_cons(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp {
-        nelisp_length_cons(arg0, result_slot)
-    }
+    // Doc 101 §101.B — `(length CONS)' proper-list walk, elisp-compiled.
+    cc_wrap!(length_cons: nelisp_length_cons, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
 
     /// Doc 101 §101.C — `(eq SYMBOL SYMBOL)' via elisp-compiled
     /// Symbol/Str read ops.
@@ -982,14 +975,8 @@ pub mod elisp_cc_spike {
         nelisp_eq_symbol(arg0, arg1, slot)
     }
 
-    /// Doc 101 §101.D — `(cons A B)' via elisp-compiled Cons
-    /// construction ops.
-    ///
-    /// `arg0` / `arg1` must point at initialized `Sexp` values and
-    /// `slot` must point at a writable 32-byte Sexp slot.
-    pub unsafe fn cons_construct(arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
-        nelisp_cons_construct(arg0, arg1, slot)
-    }
+    // Doc 101 §101.D — `(cons A B)' via elisp-compiled Cons construction ops.
+    cc_wrap!(cons_construct: nelisp_cons_construct, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
 
     /// Doc 117 §117.A.2 — `(string-bytes STR)' byte-length via the
     /// elisp-compiled `str-len' + `sexp-int-make' pair.
@@ -1013,27 +1000,14 @@ pub mod elisp_cc_spike {
         nelisp_bi_string_bytes(arg0, slot)
     }
 
-    /// Doc 111 §111.B — `(recordp X)' via elisp-compiled Record ops.
-    pub unsafe fn recordp(arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
-        nelisp_recordp(arg0, slot)
-    }
+    // Doc 111 §111.B — `(recordp X)' via elisp-compiled Record ops.
+    cc_wrap!(recordp: nelisp_recordp, (arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
 
-    /// Doc 111 §111.C — `(aref VECTOR IDX)' via elisp-compiled
-    /// Vector read ops.
-    ///
-    /// The compiled body emits a `vector-ref' op that copies the
-    /// selected element into `slot` via the refcount-aware
-    /// `nl_sexp_clone_into' helper (Doc 111 §111.C v3 fix).  The
-    /// caller-provided `slot' must be initialized to `Sexp::Nil'
-    /// (bit-shape Copy) so the helper's `ptr::write' does not Drop
-    /// arbitrary bytes.
-    pub unsafe fn aref_vector(
-        arg0: *const Sexp,
-        arg1: *const Sexp,
-        slot: *mut Sexp,
-    ) -> *mut Sexp {
-        nelisp_aref_vector(arg0, arg1, slot)
-    }
+    // Doc 111 §111.C — `(aref VECTOR IDX)' via elisp-compiled Vector read ops.
+    // Caller-provided `slot' must be initialized to `Sexp::Nil' (bit-shape
+    // Copy) so the refcount-aware `nl_sexp_clone_into' helper's `ptr::write'
+    // does not Drop arbitrary bytes.
+    cc_wrap!(aref_vector: nelisp_aref_vector, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
 
     /// Doc 117 §117.A.1 — `(make-vector N INIT)' via elisp-compiled
     /// `vector-make' (§115.1) + `vector-slot-set' (§111.E) fill loop.
@@ -1629,45 +1603,22 @@ pub mod elisp_cc_spike {
     cc_wrap!(rc_strong_count: nelisp_rc_strong_count, (box_ptr: *const u8) -> i64);
     cc_wrap!(rc_kind: nelisp_rc_kind, (sexp_ptr: *const u8) -> i64);
 
-    /// Doc 123 §123.D — pure-elisp `nelisp_rc_payload_ptr' kernel.
-    /// Reads the inner NlBox* payload pointer at offset 8 of the
-    /// outer `Sexp' (= `SEXP_PAYLOAD_OFFSET').  Tag-dispatch (=
-    /// the non-Cons-returns-0 branch of `bi_nl_rc_payload_ptr') is
-    /// the caller's responsibility — this wrapper performs the raw
-    /// load unconditionally.
-    pub unsafe fn rc_payload_ptr(sexp_ptr: *const u8) -> i64 {
-        nelisp_rc_payload_ptr(sexp_ptr)
-    }
+    // Doc 123 §123.D — pure-elisp `nelisp_rc_payload_ptr' kernel.
+    // Reads inner NlBox* payload pointer at offset 8 (= `SEXP_PAYLOAD_OFFSET').
+    // Tag-dispatch is caller's responsibility — this wrapper performs the raw
+    // load unconditionally.
+    cc_wrap!(rc_payload_ptr: nelisp_rc_payload_ptr, (sexp_ptr: *const u8) -> i64);
 
-    /// Doc 123 §123.D — pure-elisp `nelisp_gc_walk_children' kernel.
-    /// Composes two `cons-make' allocations to materialize the
-    /// 2-list `Sexp::Cons((car . (cdr . nil)))' in `result_slot',
-    /// using `tail_slot' as scratch for the inner `(cdr . nil)'.
-    /// Mirrors the Cons arm of `bi_nl_gc_walk_children' bit-for-bit
-    /// via `Sexp::list_from(&[car, cdr])'.  Cons-only — caller
-    /// must filter non-Cons inputs (= §123.F sweep stage will add
-    /// the Rust-side tag-dispatch preamble).  Returns
-    /// `result_slot' for caller ergonomics.
-    pub unsafe fn gc_walk_children(
-        sexp_ptr: *const Sexp,
-        result_slot: *mut Sexp,
-        tail_slot: *mut Sexp,
-    ) -> *mut Sexp {
-        nelisp_gc_walk_children(sexp_ptr, result_slot, tail_slot)
-    }
+    // Doc 123 §123.D — pure-elisp `nelisp_gc_walk_children' kernel.
+    // Materializes the 2-list `Sexp::Cons((car . (cdr . nil)))' in
+    // `result_slot' using `tail_slot' as scratch.  Cons-only — caller must
+    // filter non-Cons inputs.  Returns `result_slot' for caller ergonomics.
+    cc_wrap!(gc_walk_children: nelisp_gc_walk_children, (sexp_ptr: *const Sexp, result_slot: *mut Sexp, tail_slot: *mut Sexp) -> *mut Sexp);
 
-    /// Doc 124 §124.A — pure-elisp `nelisp_nlconsbox_clone' kernel.
-    /// Bumps the refcount at offset 64 (= REFCOUNT_OFFSET for
-    /// NlConsBox) via §122.E `atomic-fetch-add' with delta=+1, then
-    /// returns `box_ptr' unchanged.  The Rust `impl Clone for
-    /// NlConsBoxRef' wraps the return into `Self { ptr, _marker }'
-    /// in the §124.F sweep stage; until then the inline Rust body
-    /// in `nlconsbox.rs:343-355' continues to drive Clone semantics
-    /// — this safe wrapper exists solely for the probe in
-    /// `tests/elisp_cc_nlconsbox_clone_probe.rs'.
-    pub unsafe fn nlconsbox_clone(box_ptr: *mut i64) -> i64 {
-        nelisp_nlconsbox_clone(box_ptr)
-    }
+    // Doc 124 §124.A — pure-elisp `nelisp_nlconsbox_clone' kernel.
+    // Bumps refcount at NlConsBox offset 64 via §122.E `atomic-fetch-add'
+    // (delta=+1), then returns `box_ptr' unchanged.
+    cc_wrap!(nlconsbox_clone: nelisp_nlconsbox_clone, (box_ptr: *mut i64) -> i64);
 
     // Doc 127 §127.A — Doc 124 NlBox Clone/Drop kernel wrappers.
     // The 9 wrappers below are trivially-identical dispatches to
@@ -1724,109 +1675,19 @@ pub mod elisp_cc_spike {
         nelisp_mirror_lookup_entry(mirror_ptr, sym_ptr) as *const Sexp
     }
 
-    /// Doc 111 §111.E #2 — Phase 47 `mirror_lookup_value' probe wrapper.
-    pub unsafe fn mirror_lookup_value(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        result_slot: *mut Sexp,
-    ) -> *mut Sexp {
-        nelisp_mirror_lookup_value(mirror_ptr, sym_ptr, result_slot)
-    }
-
-    /// Doc 111 §111.E #3 — Phase 47 `mirror_lookup_function' probe wrapper.
-    pub unsafe fn mirror_lookup_function(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        result_slot: *mut Sexp,
-    ) -> *mut Sexp {
-        nelisp_mirror_lookup_function(mirror_ptr, sym_ptr, result_slot)
-    }
-
-    /// Doc 111 §111.E #4 — Phase 47 `mirror_is_bound' probe wrapper.
-    pub unsafe fn mirror_is_bound(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        unbound_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_is_bound(mirror_ptr, sym_ptr, unbound_ptr)
-    }
-
-    /// Doc 111 §111.E #5 — Phase 47 `mirror_is_fbound' probe wrapper.
-    pub unsafe fn mirror_is_fbound(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        unbound_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_is_fbound(mirror_ptr, sym_ptr, unbound_ptr)
-    }
-
-    /// Doc 111 §111.E #6 — Phase 47 `mirror_is_constant' probe wrapper.
-    pub unsafe fn mirror_is_constant(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_is_constant(mirror_ptr, sym_ptr)
-    }
-
-    /// Doc 111 §111.E #7 — Phase 47 `mirror_set_value' probe wrapper.
-    pub unsafe fn mirror_set_value(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        val_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_set_value(mirror_ptr, sym_ptr, val_ptr)
-    }
-
-    /// Doc 111 §111.E #8 — Phase 47 `mirror_set_function' probe wrapper.
-    pub unsafe fn mirror_set_function(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        val_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_set_function(mirror_ptr, sym_ptr, val_ptr)
-    }
-
-    /// Doc 111 §111.E #9 — Phase 47 `mirror_clear_value' probe wrapper.
-    pub unsafe fn mirror_clear_value(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        unbound_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_clear_value(mirror_ptr, sym_ptr, unbound_ptr)
-    }
-
-    /// Doc 111 §111.E #10 — Phase 47 `mirror_clear_function' probe wrapper.
-    pub unsafe fn mirror_clear_function(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        unbound_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_clear_function(mirror_ptr, sym_ptr, unbound_ptr)
-    }
-
-    /// Doc 111 §111.E #11 — Phase 47 `mirror_set_constant' probe wrapper.
-    pub unsafe fn mirror_set_constant(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        flag_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_set_constant(mirror_ptr, sym_ptr, flag_ptr)
-    }
-
-    /// Doc 111 §111.E #12 — Phase 47 `mirror_install_entry' probe wrapper.
-    pub unsafe fn mirror_install_entry(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        value_ptr: *const Sexp,
-        function_ptr: *const Sexp,
-        plist_ptr: *const Sexp,
-        constant_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_install_entry(
-            mirror_ptr, sym_ptr,
-            value_ptr, function_ptr, plist_ptr, constant_ptr,
-        )
-    }
+    // Doc 111 §111.E #2-12 — Phase 47 mirror_* probe wrappers, collapsed
+    // via §127.A `cc_wrap!'.
+    cc_wrap!(mirror_lookup_value: nelisp_mirror_lookup_value, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
+    cc_wrap!(mirror_lookup_function: nelisp_mirror_lookup_function, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
+    cc_wrap!(mirror_is_bound: nelisp_mirror_is_bound, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64);
+    cc_wrap!(mirror_is_fbound: nelisp_mirror_is_fbound, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64);
+    cc_wrap!(mirror_is_constant: nelisp_mirror_is_constant, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp) -> i64);
+    cc_wrap!(mirror_set_value: nelisp_mirror_set_value, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, val_ptr: *const Sexp) -> i64);
+    cc_wrap!(mirror_set_function: nelisp_mirror_set_function, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, val_ptr: *const Sexp) -> i64);
+    cc_wrap!(mirror_clear_value: nelisp_mirror_clear_value, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64);
+    cc_wrap!(mirror_clear_function: nelisp_mirror_clear_function, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64);
+    cc_wrap!(mirror_set_constant: nelisp_mirror_set_constant, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, flag_ptr: *const Sexp) -> i64);
+    cc_wrap!(mirror_install_entry: nelisp_mirror_install_entry, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64);
 
     // ---- Doc 119 §119.A auto-vivify fold ---------------------------
     //
@@ -1849,30 +1710,11 @@ pub mod elisp_cc_spike {
     //      slot's `Sexp' clone refcount-decrements, leaving the mirror
     //      as the sole steady-state owner of the entry record graph.
 
-    /// Doc 119 §119.A — Phase 47 `mirror_alloc_entry' probe wrapper.
-    pub unsafe fn mirror_alloc_entry(
-        tag_sym_ptr: *const Sexp,
-        value_ptr: *const Sexp,
-        function_ptr: *const Sexp,
-        plist_ptr: *const Sexp,
-        constant_ptr: *const Sexp,
-        result_slot: *mut Sexp,
-    ) -> i64 {
-        nelisp_mirror_alloc_entry(
-            tag_sym_ptr, value_ptr, function_ptr, plist_ptr, constant_ptr,
-            result_slot,
-        )
-    }
+    // Doc 119 §119.A — Phase 47 `mirror_alloc_entry' probe wrapper.
+    cc_wrap!(mirror_alloc_entry: nelisp_mirror_alloc_entry, (tag_sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp, result_slot: *mut Sexp) -> i64);
 
-    /// Doc 119 §119.A — Phase 47 `mirror_bucket_prepend' probe wrapper.
-    pub unsafe fn mirror_bucket_prepend(
-        mirror_ptr: *const Sexp,
-        sym_ptr: *const Sexp,
-        entry_ptr: *const Sexp,
-        scratch_vec_ptr: *const Sexp,
-    ) -> i64 {
-        nelisp_mirror_bucket_prepend(mirror_ptr, sym_ptr, entry_ptr, scratch_vec_ptr)
-    }
+    // Doc 119 §119.A — Phase 47 `mirror_bucket_prepend' probe wrapper.
+    cc_wrap!(mirror_bucket_prepend: nelisp_mirror_bucket_prepend, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, entry_ptr: *const Sexp, scratch_vec_ptr: *const Sexp) -> i64);
 
     /// Doc 119 §119.A — build the 11-slot scratch `Sexp::Vector' used
     /// by the four `_or_insert' wrappers.  Slots 0..4 are pre-filled
@@ -1997,9 +1839,7 @@ pub mod elisp_cc_spike {
 
     // ---- Doc 111 §111.E Group E (env_lexframe.rs) probes -----------
 
-    pub unsafe fn frame_stack_depth(frames_ptr: *const Sexp) -> i64 {
-        nelisp_frame_stack_depth(frames_ptr)
-    }
+    cc_wrap!(frame_stack_depth: nelisp_frame_stack_depth, (frames_ptr: *const Sexp) -> i64);
 
     pub unsafe fn frame_stack_ensure_capacity(
         frames_ptr: *const Sexp,
@@ -2449,20 +2289,10 @@ pub mod elisp_cc_spike {
     pub unsafe fn jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64 {
         nelisp_jit_cons_car(arg, out)
     }
-    /// See [`jit_cons_car`].
-    pub unsafe fn jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i64 {
-        nelisp_jit_cons_cdr(arg, out)
-    }
-    /// See [`jit_cons_car`].
-    pub unsafe fn jit_cons_setcar(
-        arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
-    ) -> i64 {
-        nelisp_jit_cons_setcar(arg, val, out)
-    }
-    /// See [`jit_cons_car`].
-    pub unsafe fn jit_cons_setcdr(
-        arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
-    ) -> i64 {
-        nelisp_jit_cons_setcdr(arg, val, out)
-    }
+    // See `jit_cons_car`.
+    cc_wrap!(jit_cons_cdr: nelisp_jit_cons_cdr, (arg: *const Sexp, out: *mut Sexp) -> i64);
+    // See `jit_cons_car`.
+    cc_wrap!(jit_cons_setcar: nelisp_jit_cons_setcar, (arg: *const Sexp, val: *const Sexp, out: *mut Sexp) -> i64);
+    // See `jit_cons_car`.
+    cc_wrap!(jit_cons_setcdr: nelisp_jit_cons_setcdr, (arg: *const Sexp, val: *const Sexp, out: *mut Sexp) -> i64);
 }
