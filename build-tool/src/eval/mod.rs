@@ -182,14 +182,10 @@ pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> {
     Ok(last)
 }
 
-/// Doc 47 Stage 8b — like [`eval_str_all`] but seeds the global env
-/// with `default-directory' / `load-file-name' / `load-path' derived
-/// from `src_path' so the source file can do `(load "sibling.el")` /
-/// `(require 'feature)` and have the file I/O builtins resolve paths
-/// relative to the file being evaluated.
-///
-/// `src_path' is taken as-given; callers should pass the same string
-/// that was used to read the source so log messages are consistent.
+/// Like [`eval_str_all`] but seeds the global env with
+/// `default-directory' / `load-file-name' / `load-path' derived from
+/// `src_path' so `(load "sibling.el")` / `(require 'feature)` resolve
+/// paths relative to the file being evaluated.
 pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     let path_buf = std::path::PathBuf::from(src_path);
@@ -368,22 +364,12 @@ pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
 }
 
 /// Names of the elisp dispatcher's own support stack, exempted from
-/// `delegate_to_elisp_apply' even
-/// at the outermost call boundary.  Without this, a *user-level*
-/// direct call to e.g. `(nelisp--apply-lambda-inner ...)' would be
-/// dispatched through the elisp `nelisp--apply-fn' loop, which
-/// recursively re-enters `nelisp--apply-lambda-inner' (= the
-/// helper applies *itself* with its OWN formal-list as the user-
-/// level formal-list).  The recursive bind-local then writes the
-/// helper's `--nl-ali-*' formal NAMES into the topmost user-formals
-/// frame, shadowing the helper's own internal state vars, and the
-/// state-walk loop reads stale values.  Helper-name skip avoids
-/// the entire recursive-dispatch chain; the helper runs straight
-/// through Rust `apply_function' / `apply_lambda_inner', binding
-/// only its own real call-frame slots.  Stage 7.4.b ERT exercises
-/// each helper's behaviour in isolation, and the Stage 7.4.c
-/// flag-on tests dispatch *user* defuns whose formal names do not
-/// collide with `--nl-ali-*'.
+/// `delegate_to_elisp_apply' even at the outermost call boundary.
+/// Without this, a user-level direct call to one of these helpers
+/// would dispatch back through `nelisp--apply-fn' and re-enter
+/// itself, shadowing its own internal state vars with the call-
+/// frame formals.  Helper-name skip avoids the recursive-dispatch
+/// chain entirely.
 fn is_elisp_apply_helper(name: &str) -> bool {
     matches!(
         name,
@@ -400,8 +386,8 @@ fn is_elisp_apply_helper(name: &str) -> bool {
     )
 }
 
-/// `(builtin NAME)' shape detector — short-circuits elisp
-/// delegation for Rust builtins (no-op round-trip).
+/// `(builtin NAME)' shape detector — short-circuits elisp delegation
+/// for Rust builtins (no-op round-trip).
 fn is_builtin_value(func: &Sexp) -> bool {
     if let Sexp::Cons(b) = func {
         if let Sexp::Symbol(s) = &b.car {
@@ -411,10 +397,9 @@ fn is_builtin_value(func: &Sexp) -> bool {
     false
 }
 
-/// Delegate to elisp `(nelisp--apply-fn FUNC ARGS)' (Stage 7.4.c).
-/// `delegation_depth' guard prevents infinite recursion when helpers
-/// inside the dispatcher (= consp / null / cond) would themselves
-/// re-delegate.
+/// Delegate to elisp `(nelisp--apply-fn FUNC ARGS)`.
+/// `delegation_depth` guard prevents infinite recursion when helpers
+/// inside the dispatcher (consp / null / cond) would re-delegate.
 fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let args_list = Sexp::list_from(args);
     let dispatch_form = Sexp::list_from(&[
@@ -516,15 +501,11 @@ pub(crate) fn apply_lambda_inner(
     args: &[Sexp],
     env: &mut Env,
 ) -> Result<Sexp, EvalError> {
-    // Doc 102 Phase 4 — skip push_captured for `Sexp::Nil' (= a
-    // top-level defun closure with no captured state).  The skip
-    // breaks the apply_function recursion that Phase 4's elisp
-    // dispatch otherwise introduces: push_captured (Rust) calls
-    // apply_function(=nelisp-lexframe-stack-push-captured!=), whose
-    // own closure has Nil captured env → without this skip, every
-    // closure application re-enters push_captured on the empty env,
-    // never bottoming out.  Semantically a no-op (= zero entries
-    // pushed onto the mirror, same as before).
+    // Skip push_captured for `Sexp::Nil' (= top-level defun closure
+    // with no captured state).  Breaks the apply_function recursion
+    // the elisp dispatch otherwise introduces — every closure
+    // application would re-enter push_captured on its own empty env
+    // and never bottom out.  Semantically a no-op (zero entries).
     let captured_pushed = !matches!(captured, Sexp::Nil);
     if captured_pushed {
         env.push_captured(captured)?;

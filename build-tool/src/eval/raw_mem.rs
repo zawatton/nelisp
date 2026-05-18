@@ -1,82 +1,21 @@
-//! Doc 122 §122.E + Doc 125 §125.A — atomic + raw memory primitives
-//! + alloc / dealloc primitives.
+//! Atomic + raw-memory + alloc/dealloc extern "C" primitives.
 //!
-//! These eight `#[no_mangle]` `extern "C"` wrappers provide the
-//! substrate gating layer required by Doc 123-128 (= refcount elisp化,
-//! `nl*.rs::Clone/Drop` elisp化, alloc/dealloc handlers).  Without
-//! `atomic-fetch-add` + `atomic-compare-exchange` + raw `ptr-read-*` /
-//! `ptr-write-*` ops, Phase 47 grammar cannot express refcount
-//! semantics; without `alloc-bytes` + `dealloc-bytes`, Phase 47
-//! grammar cannot express the if-zero-refcount free branch in the
-//! Doc 124 NlBox Drop kernels.  Both are blockers for the entire
-//! substrate-internalization chain at the elisp compiler boundary.
-//!
-//! Surface (matching the Phase 47 grammar ops in
-//! `lisp/nelisp-phase47-compiler.el`):
-//!
-//! | extern                                  | grammar op                          |
-//! |-----------------------------------------|-------------------------------------|
-//! | `nl_atomic_fetch_add(ptr, delta)`       | `(atomic-fetch-add PTR DELTA)`      |
-//! | `nl_atomic_compare_exchange(ptr, e, n)` | `(atomic-compare-exchange PTR E N)` |
-//! | `nl_ptr_read_u64(ptr, offset)`          | `(ptr-read-u64 PTR OFFSET)`         |
-//! | `nl_ptr_write_u64(ptr, offset, val)`    | `(ptr-write-u64 PTR OFFSET VAL)`    |
-//! | `nl_ptr_read_u8(ptr, offset)`           | `(ptr-read-u8 PTR OFFSET)`          |
-//! | `nl_ptr_write_u8(ptr, offset, val)`     | `(ptr-write-u8 PTR OFFSET VAL)`     |
-//! | `nl_alloc_bytes(size, align)`           | `(alloc-bytes SIZE ALIGN)`          |
-//! | `nl_dealloc_bytes(ptr, size, align)`    | `(dealloc-bytes PTR SIZE ALIGN)`    |
-//!
-//! All atomic operations use `Ordering::SeqCst`.  The §122.E spec
-//! contemplates per-op memory ordering (= 5-variant integer arg) but
-//! the substrate gating use cases (= refcount + nl*.rs lifecycle) only
-//! require SeqCst, and the elisp callers compose `atomic-fetch-add`
-//! with `cond` branches that already serialize the result inspection.
-//! Future Doc 122.E.2 may widen this surface.
-//!
-//! Memory model contract for callers:
-//!
-//! - The atomic ops require a well-aligned `*mut i64` (= 8-byte
-//!   aligned).  Callers must not pass interior pointers into structs
-//!   without confirming alignment.  Phase 47 emit code does no
-//!   alignment check; the elisp caller is responsible.
-//! - The raw mem ops perform `*p` reads/writes with no ordering
-//!   guarantees beyond what the underlying CPU provides for naturally-
-//!   aligned loads/stores (= x86_64 native atomicity on aligned u64/u8).
-//!   Cross-thread visibility is *not* guaranteed without explicit
-//!   atomic ops; use these ops only on caller-pinned (= refcount
-//!   protected or fresh-alloc) buffers.
-//! - `offset` is in *bytes* and is added as `usize` arithmetic.
-//!   Negative offsets are masked via `as usize` wrap (= caller bug
-//!   if relied upon).
-//!
-//! Refcount elisp化 unblock matrix (= Doc 123):
-//!
-//! - `nl_rc_inc_strong` body shrinks from a `Relaxed::fetch_add(1)`
-//!   Rust macro to an elisp expression: `(atomic-fetch-add
-//!   (rc-counter-ptr SEXP) 1)`.  The current `rc_primitives.rs`
-//!   `NlConsBoxRef::rc_inc_raw` becomes a thin pass-through.
-//! - `nl_rc_dec_strong` body becomes: `(atomic-fetch-add
-//!   (rc-counter-ptr SEXP) -1)` + `cond` branch on the i64 return.
-//! - The Bacon-Rajan cycle collector's CAS-based refcount promotion
-//!   uses `(atomic-compare-exchange COUNTER-PTR OLD NEW)` directly.
+//! Eight `#[no_mangle]` wrappers backing the Phase 47 grammar ops
+//! `atomic-fetch-add` / `atomic-compare-exchange` / `ptr-read-u64` /
+//! `ptr-write-u64` / `ptr-read-u8` / `ptr-write-u8` / `alloc-bytes` /
+//! `dealloc-bytes`.  All atomics use `Ordering::SeqCst`.  Callers
+//! must guarantee alignment (= 8 bytes for u64, 1 for u8) and
+//! liveness; offset is in bytes via `wrapping_add` (no bounds check).
 
 use std::alloc::{self, Layout};
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Doc 122 §122.E — atomic fetch-and-add on an `i64` slot with
-/// `Ordering::SeqCst`.
-///
-/// Returns the *previous* (pre-add) value.  Semantically matches
-/// `std::sync::atomic::AtomicI64::fetch_add(delta, Ordering::SeqCst)`.
+/// Atomic fetch-and-add on an `i64` slot, returning the pre-add value.
 ///
 /// # Safety
 /// - `ptr` must be non-null, 8-byte aligned, and point at a live
-///   `i64` slot.  The slot may be shared with other threads provided
-///   *all* concurrent accesses go through `nl_atomic_*` or
-///   `std::sync::atomic::AtomicI64` — mixing raw `*p` writes with
-///   atomic ops is UB.
-/// - The slot must outlive the call.  Caller (= elisp Phase 47 emit
-///   code) is responsible for keeping the host `Sexp` / `NlConsBox`
-///   pinned via refcount or stack ownership.
+///   `i64` slot.  Concurrent accesses must all go through atomic ops
+///   (mixing raw `*p` writes is UB).  Slot must outlive the call.
 #[no_mangle]
 pub unsafe extern "C" fn nl_atomic_fetch_add(ptr: *mut i64, delta: i64) -> i64 {
     // SAFETY: caller asserts `ptr` is valid + aligned for the lifetime
@@ -87,22 +26,12 @@ pub unsafe extern "C" fn nl_atomic_fetch_add(ptr: *mut i64, delta: i64) -> i64 {
     atomic.fetch_add(delta, Ordering::SeqCst)
 }
 
-/// Doc 122 §122.E — atomic compare-and-exchange on an `i64` slot with
-/// `Ordering::SeqCst` for both success and failure.
-///
-/// Returns `1` on success (= `*ptr` was equal to `expected` and has
-/// been replaced with `new_val`) or `0` on failure (= `*ptr` was not
-/// equal to `expected`; the slot is unchanged).  The Bacon-Rajan
-/// cycle collector's strong-count promotion uses this directly.
-///
-/// We don't expose the previous value on failure (= caller can `re-
-/// load` via `nl_ptr_read_u64` + reinterpret).  Doc 122.E.2 may add
-/// `nl_atomic_compare_exchange_weak` / `_full` variants if a future
-/// caller needs them.
+/// Atomic compare-and-exchange on an `i64` slot.  Returns `1` on
+/// success (= slot equal to `expected`, replaced with `new_val`),
+/// `0` on failure (= slot unchanged).
 ///
 /// # Safety
-/// Same alignment + lifetime contract as
-/// [`nl_atomic_fetch_add`].
+/// Same alignment + lifetime contract as [`nl_atomic_fetch_add`].
 #[no_mangle]
 pub unsafe extern "C" fn nl_atomic_compare_exchange(
     ptr: *mut i64,
@@ -117,21 +46,12 @@ pub unsafe extern "C" fn nl_atomic_compare_exchange(
     }
 }
 
-/// Doc 122 §122.E — raw `u64` read at `ptr + offset` (= bytes).
-///
-/// Returns the read value re-cast to `i64`.  No bounds check, no
-/// alignment check: caller is responsible.  Used by the Doc 123-128
-/// substrate to walk `nl*.rs` headers (= refcount slot, type tag
-/// slot, payload pointer) without going through the Rust accessor
-/// methods.
+/// Raw `u64` read at `ptr + offset` (bytes), returned as `i64`.
 ///
 /// # Safety
-/// - `ptr + offset` (= byte arithmetic) must be a non-null, 8-byte
-///   aligned address pointing at 8 bytes of readable, initialized
-///   memory.
-/// - No concurrent writes via non-atomic stores; mixing with
-///   `nl_atomic_*` is UB (= same as
-///   [`nl_atomic_fetch_add`] contract).
+/// - `ptr + offset` must be non-null, 8-byte aligned, and point at 8
+///   bytes of readable initialized memory.
+/// - No concurrent non-atomic writes; mixing with `nl_atomic_*` is UB.
 #[no_mangle]
 pub unsafe extern "C" fn nl_ptr_read_u64(ptr: *const u8, offset: i64) -> i64 {
     let p = (ptr as usize).wrapping_add(offset as usize) as *const u64;
@@ -140,16 +60,11 @@ pub unsafe extern "C" fn nl_ptr_read_u64(ptr: *const u8, offset: i64) -> i64 {
     v as i64
 }
 
-/// Doc 122 §122.E — raw `u64` write at `ptr + offset` (= bytes).
-///
-/// Writes `val as u64` (= low 64 bits of the elisp i64 argument).
-/// No bounds / alignment / aliasing check.
+/// Raw `u64` write at `ptr + offset` (bytes), low 64 bits of `val`.
 ///
 /// # Safety
-/// - `ptr + offset` must be a non-null, 8-byte aligned, writable
-///   8-byte slot.
-/// - No concurrent reads / writes (= refcount-protected or fresh
-///   alloc).
+/// - `ptr + offset` must be non-null, 8-byte aligned, writable.
+/// - No concurrent reads/writes (refcount-protected or fresh alloc).
 #[no_mangle]
 pub unsafe extern "C" fn nl_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) {
     let p = (ptr as usize).wrapping_add(offset as usize) as *mut u64;
@@ -157,16 +72,11 @@ pub unsafe extern "C" fn nl_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) {
     unsafe { *p = val as u64 };
 }
 
-/// Doc 122 §122.E — raw `u8` read at `ptr + offset` (= bytes).
-///
-/// Returns the byte zero-extended to `i64` (= no sign extension).
-/// Used by the substrate to inspect tag bytes (= `Sexp::tag` at
-/// offset 0 of a `Sexp` slot) without going through `Sexp::tag()`.
+/// Raw `u8` read at `ptr + offset` (bytes), zero-extended to `i64`.
 ///
 /// # Safety
 /// - `ptr + offset` must be a non-null, readable 1-byte slot.
-///   Alignment of 1 suffices for a byte access.
-/// - No concurrent writes via non-atomic stores.
+/// - No concurrent non-atomic writes.
 #[no_mangle]
 pub unsafe extern "C" fn nl_ptr_read_u8(ptr: *const u8, offset: i64) -> i64 {
     let p = (ptr as usize).wrapping_add(offset as usize) as *const u8;
@@ -175,13 +85,11 @@ pub unsafe extern "C" fn nl_ptr_read_u8(ptr: *const u8, offset: i64) -> i64 {
     v as i64
 }
 
-/// Doc 122 §122.E — raw `u8` write at `ptr + offset` (= bytes).
-///
-/// Writes the low 8 bits of `val` (= `val as u8`).
+/// Raw `u8` write at `ptr + offset` (bytes), low 8 bits of `val`.
 ///
 /// # Safety
 /// - `ptr + offset` must be a non-null, writable 1-byte slot.
-/// - No concurrent reads / writes.
+/// - No concurrent reads/writes.
 #[no_mangle]
 pub unsafe extern "C" fn nl_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) {
     let p = (ptr as usize).wrapping_add(offset as usize) as *mut u8;
@@ -189,27 +97,14 @@ pub unsafe extern "C" fn nl_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) {
     unsafe { *p = val as u8 };
 }
 
-/// Doc 125 §125.A — generic byte-level allocator wrapping
-/// `std::alloc::alloc(Layout::from_size_align(size, align))`.
-///
-/// Returns the freshly-allocated `*mut u8` on success or
-/// `std::ptr::null_mut()` on either layout-arg error (= align not a
-/// power of two, or size rounded up to align overflows isize) or
-/// underlying OOM.  The elisp grammar op `(alloc-bytes SIZE ALIGN)`
-/// re-casts the returned pointer to `i64` and the elisp caller must
-/// inspect for 0 before dereferencing.
-///
-/// The 0-sized allocation is rejected up-front (= return null) to
-/// keep the `dealloc-bytes` contract simple — a 0-sized free is a
-/// no-op and we don't want callers to distinguish "alloc returned a
-/// valid 0-size sentinel pointer" from null.
+/// Generic byte-level allocator wrapping
+/// `std::alloc::alloc(Layout::from_size_align(size, align))`.  Returns
+/// null on layout error (bad align, isize overflow), zero/negative
+/// args, or OOM.
 ///
 /// # Safety
-/// This function itself is sound — it only touches the global
-/// allocator.  Marked `unsafe` for ABI uniformity with the rest of
-/// the `nl_*` extern surface (= every Phase 47-lowered grammar op
-/// is `unsafe extern "C"`, so the elisp wrapper crate doesn't need
-/// per-op safety-attr discrimination).
+/// Sound by itself (only touches global allocator); marked `unsafe`
+/// for ABI uniformity with the rest of the `nl_*` extern surface.
 #[no_mangle]
 pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
     if size <= 0 || align <= 0 {
@@ -224,31 +119,14 @@ pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
     unsafe { alloc::alloc(layout) }
 }
 
-/// Doc 125 §125.A — generic byte-level deallocator wrapping
-/// `std::alloc::dealloc(ptr, Layout::from_size_align(size, align))`.
-///
-/// The `(size, align)` pair *must* match the values passed to the
-/// matching `nl_alloc_bytes` call — `std::alloc::dealloc` is UB on
-/// layout mismatch.  Doc 124 NlBox Drop kernels avoid this risk by
-/// going through §125.B-F's per-type externs (= layout pre-baked at
-/// Rust compile time via `Layout::new::<NlT>()`); the generic
-/// dealloc op is for Doc 126-128's bridge GC arena code which
-/// tracks `(size, align)` per allocation in its own metadata.
-///
-/// Null pointer + zero-size are silent no-ops (= matches `free(NULL)`
-/// semantics + avoids the `from_size_align` zero-size rejection).
-/// Invalid layout args (= bad align, overflow) are likewise silent
-/// no-ops — caller cannot recover meaningfully and the alternative
-/// would be a panic across the `extern "C"` boundary.
+/// Generic byte-level deallocator wrapping `std::alloc::dealloc`.
+/// Null pointer / zero-size / invalid layout args are silent no-ops.
 ///
 /// # Safety
-/// - `ptr` must be either null or a pointer returned by
-///   `nl_alloc_bytes` (or compatible `alloc::alloc`) with the *same*
-///   `(size, align)` arguments.
-/// - The slot must not be accessed (read or write) after this call.
-/// - Concurrent free of the same slot is UB; the elisp Drop kernel's
-///   `atomic-fetch-add` decrement-to-zero check is the
-///   single-thread-wins guard.
+/// - `ptr` must be null or returned by `nl_alloc_bytes` with the
+///   *same* `(size, align)` arguments — `dealloc` is UB on mismatch.
+/// - Slot must not be accessed after this call.
+/// - Concurrent free of the same slot is UB.
 #[no_mangle]
 pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
     if ptr.is_null() || size <= 0 || align <= 0 {
@@ -327,7 +205,7 @@ mod tests {
         assert_eq!(buf[3], 0xFF);
     }
 
-    // ---- Doc 125 §125.A alloc / dealloc ----
+    // ---- alloc / dealloc ----
 
     #[test]
     fn alloc_dealloc_bytes_round_trip_with_writes() {

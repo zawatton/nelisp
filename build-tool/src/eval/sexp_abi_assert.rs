@@ -1,16 +1,8 @@
-// Doc 100 v2 §100.B — frozen Sexp ABI assertions.
-//
-// CI gate that fails compilation if the `Sexp' layout drifts from
-// the contract that Phase 47-compiled elisp `.o' objects assume.
-// The single source of truth is `docs/arch/sexp-abi.md'; the elisp
-// constants in `lisp/nelisp-sexp-layout.el' must match the values
-// below.
-//
-// This module is `pub' only so a stand-alone `cargo run' driver
-// (`bin/sexp-abi-emit', invoked by `make sexp-abi-check') can iterate
-// the same set the elisp side iterates and emit a diff-friendly dump.
-// The assertions themselves run at compile time — adding `pub` does
-// not relax them.
+// Frozen Sexp ABI assertions — compile-time CI gate against layout
+// drift.  Source of truth is `docs/arch/sexp-abi.md`; elisp constants
+// in `lisp/nelisp-sexp-layout.el` must match the values below.
+// `pub' is for the `sexp-abi-emit' driver (`make sexp-abi-check')
+// only; the `const _: ()` assertions run unconditionally.
 
 use crate::eval::sexp::{
     Sexp, SEXP_PAYLOAD_OFFSET, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CELL,
@@ -46,9 +38,9 @@ const _: () = assert!(std::mem::size_of::<Sexp>() == 32);
 const _: () = assert!(std::mem::align_of::<Sexp>() == 8);
 
 // ---------------------------------------------------------------------------
-// Doc 101 §101.A — NlConsBox struct field offsets.  Match
-// `nelisp-nlconsbox--offset-*' in `lisp/nelisp-sexp-layout.el'.
-// Layout pinned by `#[repr(C)]` in `build-tool/src/eval/nlconsbox.rs:56-67'.
+// NlConsBox struct field offsets.  Match `nelisp-nlconsbox--offset-*'
+// in `lisp/nelisp-sexp-layout.el'.  Layout pinned by `#[repr(C)]' in
+// `build-tool/src/eval/nlconsbox.rs'.
 // ---------------------------------------------------------------------------
 
 const _: () = assert!(std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, car) == 0);
@@ -57,30 +49,19 @@ const _: () = assert!(std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, re
 const _: () = assert!(std::mem::size_of::<crate::eval::nlconsbox::NlConsBox>() == 72);
 
 // ---------------------------------------------------------------------------
-// Doc 101 §101.A — Rust String header field offsets within a
-// Sexp::Symbol / Sexp::Str slot.  The String header is laid out
-// (capacity, ptr, length) starting at SEXP_PAYLOAD_OFFSET (= 8) within
-// the Sexp slot.  Per std::mem::offset_of on String fields (which are
-// stdlib-internal but stable in practice since Rust 1.0):
-//
-//   String slot offset 0:  Vec<u8> header
-//                          - capacity at offset 0 of header => Sexp slot 8
-//                          - ptr      at offset 8 of header => Sexp slot 16
-//                          - length   at offset 16 of header => Sexp slot 24
-//
-// We cannot directly assert these via `offset_of!(String, ptr)' because
-// String's internal fields are not public; instead we assert the total
-// size matches the 24-byte expectation and let the runtime driver
-// (`sexp-abi-emit') verify the layout via a probe-built String value.
+// Rust String header within Symbol / Str slots — (capacity, ptr,
+// length) starting at SEXP_PAYLOAD_OFFSET (= 8).  String's internal
+// fields are not public so we assert total size = 24; the runtime
+// driver (`sexp-abi-emit') verifies layout via a probe-built String.
 // ---------------------------------------------------------------------------
 
 const _: () = assert!(std::mem::size_of::<String>() == 24);
 const _: () = assert!(std::mem::align_of::<String>() == 8);
 
 // ---------------------------------------------------------------------------
-// Doc 111 §111.A — NlRecord / NlVector / NlCell struct field offsets.
-// Match `nelisp-nlrecord--*', `nelisp-nlvector--*', and
-// `nelisp-nlcell--*' in `lisp/nelisp-sexp-layout.el'.
+// NlRecord / NlVector / NlCell struct field offsets — match
+// `nelisp-nlrecord--*', `nelisp-nlvector--*', `nelisp-nlcell--*' in
+// `lisp/nelisp-sexp-layout.el'.
 // ---------------------------------------------------------------------------
 
 const _: () = assert!(std::mem::offset_of!(crate::eval::nlrecord::NlRecord, type_tag) == 0);
@@ -120,7 +101,6 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("offset-tag", 0),
     ("offset-payload", SEXP_PAYLOAD_OFFSET as i64),
     ("slot-size", std::mem::size_of::<Sexp>() as i64),
-    // Doc 101 §101.A additions
     (
         "nlconsbox-offset-car",
         std::mem::offset_of!(crate::eval::nlconsbox::NlConsBox, car) as i64,
@@ -141,7 +121,6 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("string-offset-ptr", (SEXP_PAYLOAD_OFFSET + 8) as i64),
     ("string-offset-length", (SEXP_PAYLOAD_OFFSET + 16) as i64),
     ("string-header-size", std::mem::size_of::<String>() as i64),
-    // Doc 111 §111.A additions
     (
         "nlrecord-offset-type-tag",
         std::mem::offset_of!(crate::eval::nlrecord::NlRecord, type_tag) as i64,

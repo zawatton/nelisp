@@ -1,47 +1,29 @@
-//! Doc 51 Track M (2026-05-04) — process-global quit-flag plumbing.
-//!
-//! Mirrors GNU Emacs's `Vquit_flag`: any code path that wants to
-//! interrupt the evaluator (= C-g from the keyboard, SIGINT to a
-//! batch process, an external trigger from a sibling thread, …)
-//! flips the flag with [`set_quit_flag`].  The evaluator polls the
-//! flag at every call to [`super::eval`] and converts a pending
-//! flag into [`EvalError::Quit`], which then unwinds through
-//! `condition-case`'s `quit` clause / `unwind-protect` / etc.
-//!
-//! Storage is `AtomicI64` (= 8-byte aligned u64 cell, value 0 = clear,
-//! value 1 = pending) so the Doc 117 §117.B elisp-cc swap can reach
-//! the same memory through the §122.E `(atomic-fetch-add PTR DELTA)`
-//! / `(atomic-compare-exchange PTR EXP NEW)` / `(ptr-read-u64 PTR 0)`
-//! grammar ops (= each one lowers to a SeqCst x86_64 load/CAS/fetch-
-//! add inline).  `AtomicI64::store(0/1, SeqCst)` remains async-signal-
-//! safe on every platform Rust supports (= the same guarantee
-//! `AtomicBool::store' carried), so a real `SIGINT` handler can still
-//! drop the flag from the signal context.
+//! Process-global quit-flag plumbing.  Mirrors GNU Emacs's
+//! `Vquit_flag`: code that wants to interrupt the evaluator (C-g,
+//! SIGINT, …) flips the flag with [`set_quit_flag`]; the evaluator
+//! polls at every [`super::eval`] entry and converts a pending flag
+//! into [`EvalError::Quit`].  Storage is `AtomicI64` (0 = clear, 1 =
+//! pending) so the elisp helper can reach the same memory through
+//! the `atomic-fetch-add` / `atomic-compare-exchange` /
+//! `ptr-read-u64` grammar ops.  `AtomicI64::store` is async-signal-
+//! safe, so a real `SIGINT` handler can drop the flag from the
+//! signal context.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
-/// Process-global quit flag — 0 means clear, 1 means pending.  Stored
-/// as `AtomicI64' (vs the previous `AtomicBool') so the Doc 117 §117.B
-/// elisp helper in `lisp/nelisp-cc-bi-quit-flag.el` can read / mutate
-/// the same memory through the §122.E atomic / raw-mem grammar ops
-/// (= those operate on `*mut i64' for atomicity guarantees).  All Rust
-/// mutators (= `set_quit_flag' / `clear_quit_flag') normalize to the
-/// canonical 0/1 values; the elisp side does the same via CAS.
+/// Process-global quit flag — 0 = clear, 1 = pending.  Stored as
+/// `AtomicI64' so the elisp helper can mutate the same memory
+/// through atomic / raw-mem grammar ops (= those operate on `*mut
+/// i64').  Rust mutators normalize to 0/1; elisp side does the same
+/// via CAS.
 static QUIT_FLAG: AtomicI64 = AtomicI64::new(0);
 
-/// Raw pointer to the static `QUIT_FLAG' storage, intended for the
-/// Phase 47 elisp body in `lisp/nelisp-cc-bi-quit-flag.el' (Doc 117
-/// §117.B).  The elisp body calls this via `extern-call' to obtain
-/// the slot address, then operates on it via §122.E `atomic-
-/// compare-exchange' (= set / clear) / `ptr-read-u64' (= pending-p).
+/// Raw pointer to the static `QUIT_FLAG' storage, for the elisp body
+/// that reads / mutates the slot via `extern-call' + atomic ops.
 ///
-/// SAFETY: the returned pointer aliases a `'static` `AtomicI64`.
-/// Reads via `ptr-read-u64` are racy with respect to concurrent
-/// writers in the strict C++ memory-model sense, but x86_64 aligned
-/// 64-bit loads are atomic at the hardware level (= the `MOV' is
-/// indivisible), so the value observed is always one of the prior
-/// `store' results — never a torn read.  Writers go through the
-/// `atomic-compare-exchange' op which lowers to a `LOCK CMPXCHG'.
+/// SAFETY: returns a pointer aliasing a `'static` `AtomicI64`.
+/// x86_64 aligned 64-bit loads are atomic at the hardware level so
+/// `ptr-read-u64` is never torn; writers go through CAS (LOCK CMPXCHG).
 #[no_mangle]
 pub extern "C" fn nl_quit_flag_ptr() -> *mut i64 {
     QUIT_FLAG.as_ptr()
@@ -84,11 +66,9 @@ pub fn install_sigint_handler() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         extern "C" fn handler(_signum: libc::c_int) {
-            // `AtomicI64::store' is async-signal-safe on every
-            // platform Rust supports (= same guarantee the previous
-            // `AtomicBool::store' carried).  Setting the flag is the
-            // entirety of the handler's job — the next eval-time
-            // poll converts it into `EvalError::Quit`.
+            // `AtomicI64::store' is async-signal-safe.  Setting the
+            // flag is the entirety of the handler's job — the next
+            // eval-time poll converts it into `EvalError::Quit`.
             QUIT_FLAG.store(1, Ordering::SeqCst);
         }
         unsafe {
@@ -107,8 +87,7 @@ pub fn install_sigint_handler() {
 
 #[cfg(not(unix))]
 pub fn install_sigint_handler() {
-    // No-op: Windows uses SetConsoleCtrlHandler which we have not
-    // wired yet (Doc 51 follow-up).
+    // No-op: Windows uses SetConsoleCtrlHandler — not yet wired.
 }
 
 /// Has [`install_sigint_handler`] run yet?  Test/diagnostic helper.

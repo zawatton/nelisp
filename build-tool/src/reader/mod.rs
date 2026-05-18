@@ -1,76 +1,29 @@
-//! Rust-side minimal Elisp reader / sexp parser (Doc 44 §3.2 LOCKED).
+//! Rust-side minimal Elisp reader / sexp parser.  Public surface
+//! (`read_str' / `read_all') is narrow — stops at `Sexp', never
+//! depends on the evaluator.  Every input routes through the pure-
+//! elisp pipeline `nelisp_reader_lex_one' + `nelisp_reader_parse_one'
+//! (via `elisp_cc_spike').  This module retains only the dispatch
+//! layer + deep-clone helper + `ReadError' re-export.  User-visible
+//! `read' / `read-from-string' delegate to the elisp implementation
+//! in `lisp/nelisp-stdlib-reader.el'.  Unsupported features (record
+//! `#s(..)', byte-code `#[..]') surface as `NotYetImplemented'.
 //!
-//! Public surface (= `read_str' / `read_all') is intentionally
-//! narrow — the reader stops at the syntactic value (`Sexp'), never
-//! depending on the evaluator.  Supported subset includes the Doc 44
-//! §3.2 lockset plus the Doc 51 / Doc 52 extensions
-//! (`?\M-X' meta chars, bare `,X' / `,@X' outside backquote,
-//! `#s(...)' struct literals, unknown `\X' as literal X).
-//!
-//! Doc 126.B (2026-05-18) re-promoted this module to the production
-//! boot path — `Env::new_global' dispatches to `read_all + eval' per
-//! top-level STDLIB form, replacing the pre-126 NELIMG v3 frozen-heap
-//! `decode_v3_into' route.  User-visible `read' / `read-from-string'
-//! delegate to the elisp implementation in `lisp/nelisp-stdlib-reader.el'.
-//! The Rust reader also survives in `image-baker' feature builds where
-//! the relocated `iterative_bake_one' (now in `bin/nelisp-baker.rs'
-//! per Doc 126.E) parses each stdlib source on the way to its v3
-//! image, plus the reader's own ERTs.
-//!
-//! Doc 116 §116.C top-level wire-in: `read_str' / `read_all' route
-//! every input through the pure-elisp pipeline composed of §116.A
-//! `nelisp_reader_lex_one' + §116.B `nelisp_reader_parse_one' (via
-//! `crate::elisp_cc_spike::reader_lex_one' /
-//! `crate::elisp_cc_spike::reader_parse_one').  Doc 116 §116.B+
-//! extended the elisp side to cover char literals `?X' (kind 24),
-//! radix integers `#x..'/`#o..'/`#b..' (kind 25), and bare-sign
-//! symbols (= the saw-digit bit in the atom classifier).  Doc 122
-//! §122.G further extended the elisp parser to handle Float
-//! literals `1.5' / `1e3' (kind 21) via the `nl_str_to_float'
-//! extern.
-//!
-//! Doc 116 §116.D (2026-05-13) deleted the legacy Rust `lexer.rs' +
-//! `parser.rs' modules (-1370 LOC).  Doc 116 §116.B+ vector arm
-//! (2026-05-18) wired the elisp parser to handle `[..]' (kind 3) —
-//! `lisp/nelisp-cc-reader-parser.el' grew `nelisp_reader_p_parse_vector'
-//! (= cons-list accumulator + `vector-make' + `vector-slot-set' fill
-//! loop), unblocking the `NELISP_EVAL_BOOT=1' path through
-//! `nelisp-stdlib-os.el' (which uses `[:type :type ...]' literals for
-//! `nl-ffi-call' signatures).  Remaining unsupported features —
-//! record `#s(..)' (kind 11) and byte-code `#[..]' — still surface
-//! as `NotYetImplemented' (the boot stdlib never uses them; the
-//! user-facing reader in `nelisp-stdlib-reader.el' has its own
-//! `nelisp--read-parse-vector' for `read' / `read-from-string').
-//! This module retains the dispatch + deep-clone layer + `ReadError'
-//! re-export only.
-//!
-//! The cons-make MVP refcount discipline (= raw 32-byte payload
-//! copy without inner-box refcount bump, see
-//! `nelisp-phase47-compiler--emit-cons-make') means the parser's
-//! `Sexp::Cons' output shares heap boxes with the caller-owned slot
-//! pool.  We rebuild a refcount-1-owning copy via [`deep_clone`]
-//! before returning so the slot pool can be safely dropped.  A
-//! proper §123.F-style refcount-aware `cons-make' is a future Doc
-//! 123 follow-up that retires this helper.
+//! The cons-make MVP (= raw 32-byte payload copy without inner-box
+//! refcount bump) means parser output aliases the caller-owned slot
+//! pool; [`deep_clone`] rebuilds a refcount-1-owning copy before
+//! return so the pool can be dropped safely.
 
-// Value type (`Sexp', `CharTableInner', tag constants, `fmt_sexp')
-// and read-side error type (`ReadError', `SourcePos') live in
-// `eval/sexp.rs' and `eval/error.rs' since Doc 73 Stage 8.1; re-
-// exported here for any remaining `use crate::reader::Sexp' callsites.
+// Value type + read-side error type live in `eval/sexp.rs' and
+// `eval/error.rs'; re-exported here for legacy `use crate::reader::Sexp'.
 pub use crate::eval::error::{ReadError, SourcePos};
 pub use crate::eval::sexp::{fmt_sexp, Sexp};
 
 use crate::elisp_cc_spike;
 
-/// Slot-pool capacity for the §116.B parser.  The parser depth
-/// counter increments per-element-in-list (= one slot triple per
-/// list element walked) plus per-nesting-level, so a 12-deep
-/// `(cons 1 (cons 2 (...)))' chain consumes ~3*12 = 36 depth slots.
-/// Doc 116 §116.B+ raised the cap to 1024 so the elisp pipeline
-/// can handle the full stdlib subset without OOB indexing into the
-/// pool (= the pre-§116.B+ cap of 32 silently passed all probe
-/// tests but SIGSEGV'd on real stdlib code whose `defmacro' bodies
-/// nest cons chains 12+ deep).  Matches
+/// Slot-pool capacity for the elisp parser.  Depth counter increments
+/// per-list-element + per-nesting-level (= ~3*N slots for N-deep cons
+/// chains).  Cap 1024 covers stdlib `defmacro' bodies whose cons
+/// chains nest 12+ deep.  Matches
 /// `tests/elisp_cc_reader_parser_probe.rs::POOL_SIZE'.
 const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
 
@@ -78,20 +31,15 @@ const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
 /// the boot stdlib without reallocation; mut-str grows as needed.
 const SCRATCH_CAP: i64 = 64;
 
-/// Parse exactly one top-level form from `input`.  Trailing
-/// non-whitespace tokens (after one form is read) are an error — use
-/// [`read_all`] if you want every form.
-///
-/// Doc 116 §116.D: every input routes through the §116.A/B/B+/§122.G
-/// pure-elisp pipeline.  Features the elisp parser cannot handle
-/// (record `#s(..)', byte-code `#[..]') surface as
-/// `NotYetImplemented' read errors.  Vectors `[..]' are now
-/// supported (Doc 116 §116.B+ vector arm, 2026-05-18).
+/// Parse exactly one top-level form from `input`.  Trailing non-
+/// whitespace tokens are an error — use [`read_all`] for multi-form.
+/// Unsupported features (record `#s(..)', byte-code `#[..]') surface
+/// as `NotYetImplemented'.
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
     match try_elisp_read_str(input) {
         Some(result) => result,
         None => Err(ReadError::not_yet_implemented(
-            "feature unsupported by §116.A/B/B+ elisp Reader \
+            "feature unsupported by elisp Reader \
              (record `#s(..)', byte-code `#[..]', or syntax error)",
             SourcePos { line: 1, col: 1 },
         )),
@@ -99,16 +47,13 @@ pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
 }
 
 /// Parse every top-level form in `input`.  Returns an empty vector
-/// if the input is empty (or whitespace + comments only).
-///
-/// Doc 116 §116.D: every input routes through the §116.A/B/B+/§122.G
-/// pure-elisp pipeline.  Features the elisp parser cannot handle
-/// surface as `NotYetImplemented' read errors.
+/// for empty / whitespace-only input.  Unsupported features surface
+/// as `NotYetImplemented' read errors.
 pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
     match try_elisp_read_all(input) {
         Some(result) => result,
         None => Err(ReadError::not_yet_implemented(
-            "feature unsupported by §116.A/B/B+ elisp Reader \
+            "feature unsupported by elisp Reader \
              (record `#s(..)', byte-code `#[..]', or syntax error)",
             SourcePos { line: 1, col: 1 },
         )),
@@ -116,11 +61,11 @@ pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
 }
 
 // ---------------------------------------------------------------------------
-// §116.C elisp dispatch — pure-elisp lex + parse via §116.A + §116.B
+// elisp dispatch — pure-elisp lex + parse via `elisp_cc_spike'
 // ---------------------------------------------------------------------------
 
-/// Try to parse one top-level form through the §116.A / §116.B
-/// elisp pipeline.  Returns:
+/// Try to parse one top-level form through the elisp pipeline.
+/// Returns:
 ///   - `Some(Ok(form))` — elisp succeeded; `form` is a deep-clone'd
 ///     refcount-1-owning tree (= slot-pool independent).
 ///   - `Some(Err(_))`   — elisp succeeded but found genuine input
@@ -175,21 +120,16 @@ enum ElispParseOutcome {
 }
 
 /// Per-call lex+parse state carrying the slot pool, scratch MutStr,
-/// cursor slot, and result slot.  Allocated fresh per `read_str' /
-/// `read_all' call (= no cross-call sharing).
+/// cursor slot, and result slot.  Allocated fresh per call (no
+/// cross-call sharing).
 ///
-/// On `Drop`, the slot pool + result slot are intentionally
-/// `mem::forget'-ed (= leaked) rather than recursively dropped:
-/// the §116.B parser's cons-make MVP creates Sexp::Cons aliases
-/// across the result slot, the per-depth working slots, and any
-/// in-flight intermediates without bumping inner-box refcounts.
-/// Letting Rust drop normally would double-free those shared boxes
-/// (= refcount-1 → 0 once per alias).  The leaked memory is
-/// reclaimed by the process exit between test runs; in production
-/// the wrapper is invoked from image-baker / dev paths where the
-/// leak is acceptable.  A future §123.F refcount-aware cons-make
-/// retires the leak by making the byte-copy aliases actual
-/// refcount bumps.
+/// On `Drop`, the slot pool + result slot are `mem::forget'-ed: the
+/// parser's cons-make MVP creates Sexp::Cons aliases across the
+/// result slot, per-depth working slots, and in-flight intermediates
+/// without bumping inner-box refcounts; letting Rust drop normally
+/// would double-free those shared boxes.  Leaked memory is reclaimed
+/// by process exit (test runs) or kept short-lived (image-baker /
+/// dev paths).  A future refcount-aware cons-make retires the leak.
 struct ElispReadState {
     /// Sexp::Str source (= owns the input bytes for the call).
     src: Sexp,
@@ -198,9 +138,8 @@ struct ElispReadState {
     cursor_slot: Sexp,
     /// Receives the parsed form.
     result_slot: Sexp,
-    /// `Sexp::Vector(N)' slot pool.  Layout matches the §116.B
-    /// parser ABI: slot 0 = MutStr scratch, slot 1 = payload, slot
-    /// 2 = const-Nil, slots 3+ = per-depth working slots.
+    /// `Sexp::Vector(N)' slot pool.  Layout: slot 0 = MutStr scratch,
+    /// slot 1 = payload, slot 2 = const-Nil, slots 3+ = per-depth.
     pool_slot: Sexp,
 }
 
@@ -224,9 +163,8 @@ impl ElispReadState {
         let cursor_slot = Sexp::Int(0);
         let result_slot = Sexp::Nil;
         let mut slots = vec![Sexp::Nil; PARSER_POOL_SIZE];
-        // Pre-allocate the scratch MutStr at slot 0.  The parser
-        // resets it between lex calls via `mut-str-make-empty', so
-        // capacity 64 here is just a non-zero seed.
+        // Pre-allocate scratch MutStr at slot 0; parser resets it
+        // between lex calls via `mut-str-make-empty'.
         slots[0] = Sexp::mut_str(String::with_capacity(SCRATCH_CAP as usize));
         let pool_slot = Sexp::vector(slots);
         ElispReadState {
@@ -250,8 +188,7 @@ impl ElispReadState {
     /// the byte just past the lexed token.  Side-effect: the
     /// payload slot at pool slot 1 may be updated.
     fn lex_peek_advancing(&mut self) -> i64 {
-        // Reset scratch (= drain any prior accumulated bytes) before
-        // each lex call, matching the §116.B parser discipline.
+        // Reset scratch before each lex call (parser discipline).
         unsafe {
             let pool_ptr = &self.pool_slot as *const Sexp;
             let scratch_ptr =
@@ -307,16 +244,11 @@ impl ElispReadState {
         // Reset result slot to Nil before the parse (= the parser
         // overwrites it with the parsed Sexp).
         //
-        // NB: we don't simply assign `self.result_slot = Sexp::Nil'
-        // here, because the previous form's `Sexp::Cons' may have
-        // been raw-byte-copied into the slot pool via cons-make MVP
-        // (= no refcount bump on inner boxes).  If we drop the old
-        // `result_slot' value normally the destructor would
-        // decrement a refcount the pool also aliases; that's the
-        // exact double-free pattern `mem::forget(pool_slot)' in the
-        // §116.B probe sidesteps.  Forget the old value here for
-        // the same reason — the second-form deep-clone has already
-        // detached the live data.
+        // NB: we forget the old result rather than assigning Nil:
+        // the previous form's Sexp::Cons may alias the slot pool
+        // (cons-make MVP byte-copy, no refcount bump), so a normal
+        // drop would double-free.  The deep-clone returned to the
+        // caller already detached the live data.
         let stale = std::mem::replace(&mut self.result_slot, Sexp::Nil);
         std::mem::forget(stale);
         let status = unsafe {
@@ -354,7 +286,7 @@ impl ElispReadState {
 
 /// Return a `*const Sexp` pointing at slot INDEX of `pool_slot' (=
 /// must be a `Sexp::Vector`).  Used to hand individual slots to the
-/// §116.A / §116.B C ABI.
+/// elisp parser C ABI.
 ///
 /// # Safety
 /// `pool_slot' must point at a live `Sexp::Vector' with at least
@@ -375,29 +307,15 @@ unsafe fn vector_slot_ptr(pool_slot: *const Sexp, index: usize) -> *const Sexp {
 }
 
 // ---------------------------------------------------------------------------
-// §116.C deep-clone helper — escape the slot-pool refcount sharing
+// deep-clone helper — escape slot-pool refcount sharing
 // ---------------------------------------------------------------------------
 
-/// Walk `s' and produce a fresh refcount-1-owning copy.  Required
-/// because the §116.B parser's `cons-make' grammar op is MVP-shape
-/// (= raw 32-byte payload copy from per-depth pool slots into the
-/// result without bumping the inner boxes' refcounts).  Without
-/// this, dropping the slot pool would free heap boxes the returned
-/// `Sexp::Cons' still references.
-///
-/// For leaf variants (`Nil` / `T` / `Int` / `Float` / `Symbol` /
-/// `Str` — none of which the §116.B parser shares with the pool
-/// since each call allocates a fresh String) the simple `clone()`
-/// is already a fresh copy.  Only `Cons' / `Vector' / `Record' /
-/// `CharTable' / `Cell' / `BoolVector' / `MutStr' need to walk
-/// children — and of those, only `Cons` is reachable from the
-/// §116.B parser output (the others are unsupported by the §116.B
-/// MVP and route through the Rust fallback path).  The walk is
-/// nonetheless exhaustive so a future §116.B extension that adds
-/// vector / record support can rely on the same helper.
-///
-/// A future §123.F refcount-aware `cons-make' (= bump inner boxes'
-/// refcounts on the payload copy) retires this helper.
+/// Walk `s' and produce a fresh refcount-1-owning copy.  The
+/// parser's `cons-make' grammar op is MVP-shape (raw 32-byte payload
+/// copy without bumping inner boxes' refcounts), so dropping the
+/// slot pool would free heap boxes the returned `Sexp::Cons' still
+/// references without this rebuild.  The walk is exhaustive so
+/// future parser extensions covering vector / record can reuse it.
 fn deep_clone(s: &Sexp) -> Sexp {
     match s {
         Sexp::Nil => Sexp::Nil,
@@ -408,8 +326,7 @@ fn deep_clone(s: &Sexp) -> Sexp {
         Sexp::Str(text) => Sexp::Str(text.clone()),
         Sexp::MutStr(r) => Sexp::mut_str(r.value.clone()),
         Sexp::Cons(b) => {
-            // Allocate a fresh box (= refcount 1) holding deep-
-            // cloned children.  This is the load-bearing arm.
+            // Load-bearing arm — fresh refcount-1 box.
             Sexp::cons(deep_clone(&b.car), deep_clone(&b.cdr))
         }
         Sexp::Vector(v) => {
@@ -417,11 +334,8 @@ fn deep_clone(s: &Sexp) -> Sexp {
             Sexp::vector(items)
         }
         Sexp::CharTable(_) | Sexp::BoolVector(_) | Sexp::Cell(_) | Sexp::Record(_) => {
-            // The §116.B parser does not produce these.  Falling
-            // back to a refcount-bump clone keeps the API total —
-            // any future caller that synthesises one of these from
-            // the parser output through an extension should add an
-            // explicit deep-walk arm.
+            // Parser does not produce these; refcount-bump clone
+            // keeps the API total for future extensions.
             s.clone()
         }
     }
@@ -431,7 +345,7 @@ fn deep_clone(s: &Sexp) -> Sexp {
 mod tests {
     use super::*;
 
-    /// Doc 44 §3.2 ERT smoke #1: trivial atoms.
+    /// Smoke #1: trivial atoms.
     #[test]
     fn smoke_atoms() {
         assert_eq!(read_str("123").unwrap(), Sexp::Int(123));
@@ -488,12 +402,9 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// Doc 116 §116.B+ vector arm (2026-05-18) — `[..]' is now
-    /// handled by the elisp parser (= `nelisp_reader_p_parse_vector'
-    /// + `_step' + `_fill_vec' + `_cons_list_len_walk'), unblocking
-    /// the eval-boot stdlib path which hits `nl-ffi-call' vector
-    /// signature literals.  Empty `[]', nested vectors, and vectors
-    /// inside lists / quotes all compose via `p_dispatch' kind 3.
+    /// Vector arm — `[..]' handled by the elisp parser.  Empty `[]',
+    /// nested vectors, and vectors inside lists / quotes all compose
+    /// via `p_dispatch' kind 3.
     #[test]
     fn smoke_vector_literal() {
         assert_eq!(
@@ -593,10 +504,7 @@ mod tests {
         assert!(read_str("a)").is_err());
     }
 
-    /// Doc 44 §3.2 byte-code-literal `#[...]` is the last remaining
-    /// deferred reader feature (reader-side; the bytecode evaluator
-    /// itself is a Phase 8 concern).  `?\\M-a' was promoted from
-    /// deferred to supported in Doc 51 Phase 3-A''-2.
+    /// Byte-code literal `#[...]` is the last deferred reader feature.
     #[test]
     fn byte_code_literal_still_deferred() {
         match read_str("#[1 2]") {
@@ -606,7 +514,7 @@ mod tests {
         }
     }
 
-    /// Doc 44 §3.2 ERT smoke #6 — five-deep nesting.
+    /// Smoke #6: five-deep nesting.
     #[test]
     fn smoke_deep_nest() {
         let got = read_str("(((((1)))))").unwrap();
@@ -617,7 +525,7 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// Doc 44 §3.2 mentions hex/oct/bin radix integers.
+    /// Hex/oct/bin radix integers.
     #[test]
     fn smoke_radix_integers() {
         assert_eq!(read_str("#x10").unwrap(), Sexp::Int(16));
@@ -674,12 +582,11 @@ mod tests {
         assert_eq!(read_str(&printed).unwrap(), parsed);
     }
 
-    // ---- §116.C wire-in coverage ----
+    // ---- elisp pipeline wire-in coverage ----
 
-    /// §116.C smoke — symbol-only inputs route through the elisp
-    /// pipeline (= no `?' sentinel, no Float, no `[..]', no `#x..').
-    /// Asserts the deep-clone path produces a structurally-equal
-    /// value that survives slot-pool drop.
+    /// Symbol-only inputs route through the elisp pipeline.  Asserts
+    /// the deep-clone path produces a structurally-equal value that
+    /// survives slot-pool drop.
     #[test]
     fn elisp_path_dispatch_smoke() {
         // A construct that exercises only §116.B-supported tokens.
@@ -691,12 +598,9 @@ mod tests {
         assert_eq!(got, reparsed);
     }
 
-    /// §116.C deep-clone discipline — the returned form must not
-    /// alias the parser's slot pool.  Stress-test: parse a deeply
-    /// nested list, drop everything, then walk the result to force
-    /// every cons cell to be touched.  A refcount-leaked alias to
-    /// freed pool memory would surface as garbage `Sexp' variants
-    /// during the walk (or a SIGSEGV under Miri / sanitizers).
+    /// Deep-clone discipline — returned form must not alias the
+    /// parser's slot pool.  Stress: parse deeply nested list, drop
+    /// everything, walk the result to force every cons cell touch.
     #[test]
     fn elisp_path_deep_clone_survives_pool_drop() {
         let got = read_str("(a (b (c (d (e (f (g (h i))))))))").unwrap();
