@@ -1275,20 +1275,13 @@ pub mod elisp_cc_spike {
         ])
     }
 
-    /// Doc 119 §119.A — `mirror_set_value' counterpart that absorbs
-    /// the miss-path.  Auto-vivifies a fresh `symbol-entry' record
-    /// with VALUE in slot 0 and UNBOUND in slot 1 (= function cell
-    /// default) when NAME is not already in the mirror.
+    // Doc 119 §119.A — `mirror_set_value' miss-path: VALUE in slot 0, UNBOUND in slot 1.
     pub unsafe fn mirror_set_value_or_insert(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
         value_ptr: *const Sexp,
         unbound_ptr: *const Sexp,
     ) -> i64 {
-        // SAFETY: `value_ptr' / `unbound_ptr' borrow stack-local /
-        // `Env'-owned `Sexp's that outlive the call.  Clone-into-vector
-        // refcount-bumps the box variants; the scratch vector drop on
-        // wrapper return rebalances the count.
         let scratch = build_or_insert_scratch_vec(
             (*value_ptr).clone(),
             (*unbound_ptr).clone(),
@@ -1302,9 +1295,7 @@ pub mod elisp_cc_spike {
         )
     }
 
-    /// Doc 119 §119.A — `mirror_set_function' counterpart that absorbs
-    /// the miss-path.  Auto-vivifies a fresh `symbol-entry' record
-    /// with UNBOUND in slot 0 and FUNC in slot 1.
+    // Doc 119 §119.A — `mirror_set_function' miss-path: UNBOUND in slot 0, FUNC in slot 1.
     pub unsafe fn mirror_set_function_or_insert(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
@@ -1324,10 +1315,7 @@ pub mod elisp_cc_spike {
         )
     }
 
-    /// Doc 119 §119.A — `mirror_set_constant' counterpart that absorbs
-    /// the miss-path.  Auto-vivifies a fresh `symbol-entry' record
-    /// with UNBOUND in slots 0/1 (= value + function default) and
-    /// FLAG in slot 3.
+    // Doc 119 §119.A — `mirror_set_constant' miss-path: UNBOUND in slots 0/1, FLAG in slot 3.
     pub unsafe fn mirror_set_constant_or_insert(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
@@ -1347,9 +1335,7 @@ pub mod elisp_cc_spike {
         )
     }
 
-    /// Doc 119 §119.A — `mirror_install_entry' counterpart that
-    /// absorbs the miss-path.  All four slot Sexps come from the
-    /// caller (= `intern_constant' / image baker).
+    // Doc 119 §119.A — `mirror_install_entry' miss-path: all 4 slot Sexps from caller.
     pub unsafe fn mirror_install_entry_or_insert(
         mirror_ptr: *const Sexp,
         sym_ptr: *const Sexp,
@@ -1375,134 +1361,56 @@ pub mod elisp_cc_spike {
 
     cc_wrap!(frame_stack_depth: nelisp_frame_stack_depth, (frames_ptr: *const Sexp) -> i64);
 
-    pub unsafe fn frame_stack_ensure_capacity(
-        frames_ptr: *const Sexp,
-        needed: i64,
-    ) -> i64 {
-        // Doc 115 §115.1 — the pure-elisp implementation in
-        // `lisp/nelisp-cc-frame-ensure-capacity.el' takes a 3rd
-        // `scratch_slot' parameter (= caller-owned `*mut Sexp' to
-        // hold the freshly-allocated `Sexp::Vector' before installing
-        // it into the frames-record's slot 0).  We allocate a stack-
-        // local `Sexp::Nil' here and pass its pointer so the public
-        // 2-arg API is preserved for existing callers / probes.
+    // Doc 115 §115.1 — caller-owned scratch slot kept off the public API.
+    pub unsafe fn frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64) -> i64 {
         let mut scratch = Sexp::Nil;
-        nelisp_frame_stack_ensure_capacity(
-            frames_ptr,
-            needed,
-            &mut scratch as *mut Sexp,
-        )
+        nelisp_frame_stack_ensure_capacity(frames_ptr, needed, &mut scratch as *mut Sexp)
     }
 
+    // Doc 115 §115.3 — 7-slot scratch vector (2 tag syms + 5 Nil scratches) + odd-arity pad.
     pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 {
-        // Doc 115 §115.3 — the pure-elisp implementation in
-        // `lisp/nelisp-cc-frame-push.el' takes a 7-slot `Sexp::Vector'
-        // scratch (= two type-tag symbols + five scratch slots) that
-        // the safe wrapper allocates internally so the public 1-arg
-        // API is preserved.  See the elisp commentary for the per-slot
-        // layout and refcount discipline.  The third `_pad' i64 arg is
-        // ignored by the helper but flips outer-defun arity to odd (=
-        // 3), which matches the static rsp-alignment assumption baked
-        // into `vector-make' / `record-make' / `vector-slot-set'.
         let scratch_vec = Sexp::vector(vec![
             Sexp::Symbol("nelisp-lexframe".into()),
             Sexp::Symbol("fast-hash-table".into()),
-            Sexp::Nil, // ensure_capacity scratch
-            Sexp::Nil, // bucket vector scratch
-            Sexp::Nil, // fast-hash-table record scratch
-            Sexp::Nil, // lexframe record scratch
-            Sexp::Nil, // reusable Sexp::Int scratch
+            Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil,
         ]);
-        nelisp_frame_push(
-            frames_ptr,
-            &scratch_vec as *const Sexp,
-            0,
-        )
+        nelisp_frame_push(frames_ptr, &scratch_vec as *const Sexp, 0)
     }
 
+    // Doc 115 §115.2 — single Nil scratch slot kept off the public API.
     pub unsafe fn frame_pop(frames_ptr: *const Sexp) -> i64 {
-        // Doc 115 §115.2 — the pure-elisp implementation in
-        // `lisp/nelisp-cc-frame-pop.el' takes a 2nd `scratch_slot'
-        // parameter (= caller-owned `*mut Sexp' initialised to
-        // `Sexp::Nil'; used both as the Nil-source for `vector-slot-
-        // set' on the backing element and then overwritten in place
-        // with the new depth `Sexp::Int' before `record-slot-set' on
-        // slot 1).  We allocate a stack-local `Sexp::Nil' here and
-        // pass its pointer so the public 1-arg API is preserved for
-        // existing callers / probes.
         let mut scratch = Sexp::Nil;
         nelisp_frame_pop(frames_ptr, &mut scratch as *mut Sexp)
     }
 
+    // Doc 115 §115.5 — 3 caller-owned scratch Nil slots kept off the public API.
     pub unsafe fn frame_bind(
-        frames_ptr: *const Sexp,
-        name_ptr: *const Sexp,
-        cell_ptr: *const Sexp,
+        frames_ptr: *const Sexp, name_ptr: *const Sexp, cell_ptr: *const Sexp,
     ) -> i64 {
-        // Doc 115 §115.5 — the pure-elisp implementation in
-        // `lisp/nelisp-cc-frame-bind.el' takes 3 caller-owned scratch
-        // `*mut Sexp' slots (= the freshly-allocated inner pair, outer
-        // bucket cell, and `Sexp::Int(new-count)' for the slot-2 bump).
-        // We allocate stack-local `Sexp::Nil's here and pass their
-        // pointers so the public 3-arg API is preserved for existing
-        // callers / probes.
         let mut scratch_pair = Sexp::Nil;
         let mut scratch_outer = Sexp::Nil;
         let mut scratch_count = Sexp::Nil;
-        nelisp_frame_bind(
-            frames_ptr,
-            name_ptr,
-            cell_ptr,
+        nelisp_frame_bind(frames_ptr, name_ptr, cell_ptr,
             &mut scratch_pair as *mut Sexp,
             &mut scratch_outer as *mut Sexp,
-            &mut scratch_count as *mut Sexp,
-        )
+            &mut scratch_count as *mut Sexp)
     }
 
-    pub unsafe fn frame_stack_find(
-        frames_ptr: *const Sexp,
-        name_ptr: *const Sexp,
-    ) -> *const Sexp {
-        // Doc 115 §115.6 — the Rust shim `nl_frame_stack_find' has
-        // been replaced by the pure-elisp implementation in
-        // `lisp/nelisp-cc-frame-stack-find.el'.  The elisp body
-        // returns the cell-slot pointer encoded as i64 (or 0 on
-        // miss); we widen back to `*const Sexp' for the public API.
+    // Doc 115 §115.6 — i64-encoded cell-slot ptr → *const Sexp widen (0 = miss).
+    pub unsafe fn frame_stack_find(frames_ptr: *const Sexp, name_ptr: *const Sexp) -> *const Sexp {
         nelisp_frame_stack_find(frames_ptr, name_ptr) as *const Sexp
     }
 
-    pub unsafe fn wrap_alist_cells(
-        alist_ptr: *const Sexp,
-        result_slot: *mut Sexp,
-    ) -> i64 {
-        // Doc 115 §115.4 — the pure-elisp implementation in
-        // `lisp/nelisp-cc-wrap-alist-cells.el' takes 4 extra scratch-
-        // slot pointers for the per-iteration cell-wrap +
-        // name-clone-into + single-slot ping-pong outer-cons build.
-        // Stack-allocate them here as `Sexp::Nil' so the public 2-arg
-        // API is preserved for existing callers.
+    // Doc 115 §115.4 — 4 caller-owned Nil scratch slots; mem-forget on return
+    // to avoid double-decrement (Phase 47 cons-make / cell-make don't bump nested box refs).
+    pub unsafe fn wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp) -> i64 {
         let mut work_slot = Sexp::Nil;
         let mut name_slot = Sexp::Nil;
         let mut cell_slot = Sexp::Nil;
         let mut inner_slot = Sexp::Nil;
-        let rc = nelisp_wrap_alist_cells(
-            alist_ptr,
-            result_slot,
-            &mut work_slot as *mut Sexp,
-            &mut name_slot as *mut Sexp,
-            &mut cell_slot as *mut Sexp,
-            &mut inner_slot as *mut Sexp,
-        );
-        // Mem-forget the work slots' contents to prevent the
-        // wrapper-local Drops from decrementing refcounts on heap
-        // nodes that the result chain already accounts for.  Phase
-        // 47's `cons-make' / `cell-make' raw 32-byte copies do not
-        // bump refcount on nested boxed payloads (= MVP ownership
-        // constraint), so each result-chain reference is matched 1:1
-        // with the original `+1' from `nl_alloc_consbox' /
-        // `nl_alloc_cell' / `nl_sexp_clone_into'.  The work slots
-        // hold "extra" handles whose refcount-claim was never
-        // actually counted; Drop on those would underflow.
+        let rc = nelisp_wrap_alist_cells(alist_ptr, result_slot,
+            &mut work_slot as *mut Sexp, &mut name_slot as *mut Sexp,
+            &mut cell_slot as *mut Sexp, &mut inner_slot as *mut Sexp);
         core::ptr::write(&mut work_slot as *mut Sexp, Sexp::Nil);
         core::ptr::write(&mut name_slot as *mut Sexp, Sexp::Nil);
         core::ptr::write(&mut cell_slot as *mut Sexp, Sexp::Nil);
@@ -1517,14 +1425,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(reader_lex_one: nelisp_reader_lex_one, (str_ptr: *const Sexp, cursor: i64, payload_slot: *mut Sexp, cursor_out_slot: *mut Sexp, scratch_mutstr_slot: *mut Sexp) -> i64);
     cc_wrap!(reader_parse_one: nelisp_reader_parse_one, (str_ptr: *const Sexp, cursor_slot: *mut Sexp, result_slot: *mut Sexp, slot_pool: *const Sexp, depth: i64) -> i64);
 
-    /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the
-    /// 12 elisp-compiled jit/arith trampolines.  Used by
-    /// `tests/elisp_cc_jit_arith_probe.rs' to assert every member of
-    /// the `.o' archive resolves and computes the expected i64 result.
-    /// `unified_fn_ptr` in `jit/bridge.rs` resolves the same symbols
-    /// at runtime via the `arith_link' submodule, but those
-    /// references alone get DCE'd in test-bin builds; surfacing the
-    /// externs through `pub fn' here pins the link.
+    // Doc 100 §100.D Stage 1 — 12 jit/arith trampoline probes (pin link in test-bin).
     pub fn jit_add2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_add2(a, b) } }
     pub fn jit_sub2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_sub2(a, b) } }
     pub fn jit_mul2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_mul2(a, b) } }
@@ -1538,204 +1439,45 @@ pub mod elisp_cc_spike {
     pub fn jit_logxor2(a: i64, b: i64) -> i64 { unsafe { nelisp_jit_logxor2(a, b) } }
     pub fn jit_ash(n: i64, c: i64) -> i64 { unsafe { nelisp_jit_ash(n, c) } }
 
-    /// Doc 110 §110.E.2.a probes — thin safe wrappers around the 4
-    /// elisp-compiled `jit/float.rs' replacements (add / sub / mul /
-    /// div).  Used by `tests/elisp_cc_jit_float_probe.rs' to assert
-    /// every member of the `.o' archive resolves and computes the
-    /// expected f64 result.  The comparison trampolines (eq_eps /
-    /// lt / gt / le / ge) keep their Rust impl until §110.E.2.b.
+    // Doc 110 §110.E.2.a — 4 jit/float trampoline probes (add / sub / mul / div).
     pub fn jit_float_add(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_add(a, b) } }
     pub fn jit_float_sub(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_sub(a, b) } }
     pub fn jit_float_mul(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_mul(a, b) } }
     pub fn jit_float_div(a: f64, b: f64) -> f64 { unsafe { nl_jit_float_div(a, b) } }
 
-    /// Doc 110 §110.C.2.a probes — thin safe wrappers around the 4
-    /// elisp-compiled ordered comparison trampolines (lt / gt / le
-    /// / ge).  Result is 0 or 1 as i64.  NaN inputs return 0 to
-    /// match Rust's `<' / `>' / `<=' / `>=' semantics.  Used by
-    /// `tests/elisp_cc_jit_float_probe.rs' to assert every member
-    /// resolves and produces the expected boolean.
+    // Doc 110 §110.C.2.a — 4 jit/float ordered-cmp trampolines (NaN → 0).
     pub fn jit_float_lt(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_lt(a, b) } }
     pub fn jit_float_gt(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_gt(a, b) } }
     pub fn jit_float_le(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_le(a, b) } }
     pub fn jit_float_ge(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_ge(a, b) } }
 
-    /// Doc 110 §110.C.2.b probe — thin safe wrapper for EQ-EPS.
-    /// Result: 1 iff `(a - b).abs() < 1e-15' AND ordered.
-    /// NaN inputs return 0.
+    // Doc 110 §110.C.2.b — EQ-EPS probe (|a-b| < 1e-15 ∧ ordered).
     pub fn jit_float_eq_eps(a: f64, b: f64) -> i64 { unsafe { nl_jit_float_eq_eps(a, b) } }
 
-    /// Doc 110 §110.F probes — thin safe wrappers around the 3
-    /// elisp-compiled `jit/math.rs' replacements (float identity,
-    /// exp, log).  `float' is pure pass-through; `exp' / `log'
-    /// delegate to libm via the §110.F `(f64-call)' grammar form.
+    // Doc 110 §110.F — 3 jit/math trampolines (float identity / exp / log via libm).
     pub fn jit_float_float(x: f64) -> f64 { unsafe { nl_jit_float_float(x) } }
     pub fn jit_float_exp(x: f64) -> f64 { unsafe { nl_jit_float_exp(x) } }
     pub fn jit_float_log(x: f64) -> f64 { unsafe { nl_jit_float_log(x) } }
 
-    /// Doc 120 §120.A probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_predicate_eq' trampoline.  ABI matches the
-    /// deleted Rust `nl_jit_predicate_eq': `(*const Sexp, *const Sexp)
-    /// -> i64' returning 1 iff `(eq a b)' else 0.
-    ///
-    /// # Safety
-    /// - `a' / `b' must be non-null pointers to initialized `Sexp's.
-    pub unsafe fn jit_predicate_eq(a: *const Sexp, b: *const Sexp) -> i64 {
-        nelisp_jit_predicate_eq(a, b)
-    }
+    // Doc 120 §120.A — jit_predicate_eq / jit_ref_eq Phase 47 probes.
+    cc_wrap!(jit_predicate_eq: nelisp_jit_predicate_eq, (a: *const Sexp, b: *const Sexp) -> i64);
+    cc_wrap!(jit_ref_eq: nelisp_jit_ref_eq, (a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64);
 
-    /// Doc 120 §120.A probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_ref_eq' trampoline.  ABI matches the
-    /// deleted Rust `nl_jit_ref_eq': `(*const Sexp, *const Sexp, *mut
-    /// Sexp) -> i64'; writes `Sexp::T' / `Sexp::Nil' into `*out' and
-    /// returns 0 (= always succeeds).
-    ///
-    /// # Safety
-    /// - `a' / `b' must be non-null pointers to initialized `Sexp's.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_ref_eq(a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64 {
-        nelisp_jit_ref_eq(a, b, out)
-    }
+    // Doc 120 §120.B — jit_record_* (type / len / ref / set) Phase 47 probes.
+    cc_wrap!(jit_record_type: nelisp_jit_record_type, (arg: *const Sexp, out: *mut Sexp) -> i64);
+    cc_wrap!(jit_record_len: nelisp_jit_record_len, (arg: *const Sexp, out: *mut Sexp) -> i64);
+    cc_wrap!(jit_record_ref: nelisp_jit_record_ref, (arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64);
+    cc_wrap!(jit_record_set: nelisp_jit_record_set, (arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64);
 
-    /// Doc 120 §120.B probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_record_type' trampoline.  ABI matches the
-    /// pre-§120.B Rust impl in `jit/box_accessor.rs': `(*const Sexp,
-    /// *mut Sexp) -> i64' returning 0 on OK (Record arg, `*out =
-    /// arg.type_tag'), 1 on ERR (non-Record).
-    ///
-    /// # Safety
-    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_record_type(arg: *const Sexp, out: *mut Sexp) -> i64 {
-        nelisp_jit_record_type(arg, out)
-    }
+    // Doc 120 §120.D — jit_length / jit_aref / jit_aset / jit_elt Phase 47 probes.
+    cc_wrap!(jit_length: nelisp_jit_length, (arg: *const Sexp, out: *mut Sexp) -> i64);
+    cc_wrap!(jit_aref: nelisp_jit_aref, (arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64);
+    cc_wrap!(jit_aset: nelisp_jit_aset, (arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64);
+    cc_wrap!(jit_elt: nelisp_jit_elt, (arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64);
 
-    /// Doc 120 §120.B probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_record_len' trampoline.  ABI matches the
-    /// pre-§120.B Rust impl: `(*const Sexp, *mut Sexp) -> i64'
-    /// returning 0 on OK (Record arg, `*out = Sexp::Int(slots.len)`),
-    /// 1 on ERR (non-Record).
-    ///
-    /// # Safety
-    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_record_len(arg: *const Sexp, out: *mut Sexp) -> i64 {
-        nelisp_jit_record_len(arg, out)
-    }
-
-    /// Doc 120 §120.B probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_record_ref' trampoline.  ABI matches the
-    /// pre-§120.B Rust impl: `(*const Sexp, i64, *mut Sexp) -> i64'
-    /// returning 0 on OK (Record arg + idx in [0, slots.len), `*out =
-    /// arg.slots[idx]'), 1 on ERR (non-Record OR OOR).
-    ///
-    /// # Safety
-    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_record_ref(
-        arg: *const Sexp,
-        idx: i64,
-        out: *mut Sexp,
-    ) -> i64 {
-        nelisp_jit_record_ref(arg, idx, out)
-    }
-
-    /// Doc 120 §120.B probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_record_set' trampoline.  ABI matches the
-    /// pre-§120.B Rust impl: `(*const Sexp, i64, *const Sexp, *mut
-    /// Sexp) -> i64' returning 0 on OK (Record + OOR-valid idx,
-    /// `slots[idx] := clone(*val)` and `*out = clone(*val)`), 1 on ERR.
-    ///
-    /// # Safety
-    /// - `arg' / `val' must be non-null pointers to initialized `Sexp's.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_record_set(
-        arg: *const Sexp,
-        idx: i64,
-        val: *const Sexp,
-        out: *mut Sexp,
-    ) -> i64 {
-        nelisp_jit_record_set(arg, idx, val, out)
-    }
-
-    /// Doc 120 §120.D probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_length' trampoline.  ABI matches the
-    /// pre-§120.D Rust impl in `jit/access.rs': `(*const Sexp, *mut
-    /// Sexp) -> i64' returning 0 on OK (Nil / Vector input, `*out =
-    /// Sexp::Int(len)'), 1 on ERR (Str / other variant — strategy.el
-    /// `condition-case' fallback handles `string' via
-    /// `nelisp--mut-str-len').
-    ///
-    /// # Safety
-    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_length(arg: *const Sexp, out: *mut Sexp) -> i64 {
-        nelisp_jit_length(arg, out)
-    }
-
-    /// Doc 120 §120.D probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_aref' trampoline.  ABI: `(*const Sexp,
-    /// i64, *mut Sexp) -> i64' returning 0 on OK (Vector / BoolVector
-    /// in-range), 1 on ERR (negative idx / OOR / non-array tag).
-    ///
-    /// # Safety
-    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
-        nelisp_jit_aref(arg, idx, out)
-    }
-
-    /// Doc 120 §120.D probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_aset' trampoline.  ABI: `(*const Sexp,
-    /// i64, *const Sexp, *mut Sexp) -> i64' returning 0 on OK
-    /// (Vector / BoolVector in-range), 1 on ERR.
-    ///
-    /// # Safety
-    /// - `arg' / `val' must be non-null pointers to initialized `Sexp's.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_aset(
-        arg: *const Sexp,
-        idx: i64,
-        val: *const Sexp,
-        out: *mut Sexp,
-    ) -> i64 {
-        nelisp_jit_aset(arg, idx, val, out)
-    }
-
-    /// Doc 120 §120.D probe — thin safe wrapper around the Phase 47-
-    /// compiled `nelisp_jit_elt' trampoline.  ABI: `(*const Sexp,
-    /// i64, *mut Sexp) -> i64' returning 0 on OK (Vector / Cons-list
-    /// in-range), 1 on ERR.
-    ///
-    /// # Safety
-    /// - `arg' must be a non-null pointer to an initialized `Sexp'.
-    /// - `out' must be non-null, properly aligned, and writable for
-    ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
-    pub unsafe fn jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
-        nelisp_jit_elt(arg, idx, out)
-    }
-
-    /// Doc 120 §120.C safe wrappers — see `jit/cons.rs' for ABI.
-    ///
-    /// # Safety
-    /// - Pointer args must be non-null and point at initialized `Sexp's.
-    /// - `out' must be writable for one 32-byte slot pre-initialised to
-    ///   `Sexp::Nil'.
-    pub unsafe fn jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64 {
-        nelisp_jit_cons_car(arg, out)
-    }
-    // See `jit_cons_car`.
+    // Doc 120 §120.C — jit_cons_* (car / cdr / setcar / setcdr) Phase 47 probes.
+    cc_wrap!(jit_cons_car: nelisp_jit_cons_car, (arg: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(jit_cons_cdr: nelisp_jit_cons_cdr, (arg: *const Sexp, out: *mut Sexp) -> i64);
-    // See `jit_cons_car`.
     cc_wrap!(jit_cons_setcar: nelisp_jit_cons_setcar, (arg: *const Sexp, val: *const Sexp, out: *mut Sexp) -> i64);
-    // See `jit_cons_car`.
     cc_wrap!(jit_cons_setcdr: nelisp_jit_cons_setcdr, (arg: *const Sexp, val: *const Sexp, out: *mut Sexp) -> i64);
 }
