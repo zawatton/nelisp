@@ -434,30 +434,20 @@ fn env_default_directory(env: &Env) -> Option<String> {
     }
 }
 
-/// `(nelisp--syscall-canonicalize PATH)' — canonicalize a path.
-/// Returns nil on error.
+/// `(nelisp--syscall-canonicalize PATH)' — libc `realpath' via elisp kernel.
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-canonicalize", args, 1, Some(1))?;
-    let p = resolve_existing_path(&args[0], env)?;
-    let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
-    // `realpath` writes a NUL-terminated path here on success.
-    let mut result_buf = vec![0u8; libc::PATH_MAX as usize];
+    let path_sexp = resolve_path_sexp(&args[0], env)?;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
     let rc = unsafe {
-        crate::elisp_cc_spike::bi_syscall_canonicalize(
-            &path_sexp as *const Sexp,
-            result_buf.as_mut_ptr(),
-        )
+        crate::elisp_cc_spike::bi_syscall_canonicalize(&path_sexp as *const Sexp, buf.as_mut_ptr())
     };
-    if rc == 0 {
-        return Ok(Sexp::Nil);
-    }
-    let len = result_buf.iter().position(|&b| b == 0).unwrap_or(result_buf.len());
-    let resolved = String::from_utf8_lossy(&result_buf[..len]).into_owned();
-    Ok(Sexp::Str(resolved))
+    if rc == 0 { return Ok(Sexp::Nil); }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    Ok(Sexp::Str(String::from_utf8_lossy(&buf[..len]).into_owned()))
 }
 
-/// `(nelisp--syscall-read-file PATH)' — read a file into a string.
-/// Returns nil on I/O error.
+/// `(nelisp--syscall-read-file PATH)' — chained open/read/close via elisp kernel.
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-read-file", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
@@ -465,23 +455,16 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
         Ok(m) if m.is_file() => m.len() as usize,
         _ => return Ok(Sexp::Nil),
     };
-    if n_bytes == 0 {
-        return Ok(Sexp::Str(String::new()));
-    }
-    let mut buf = vec![0u8; n_bytes];
+    if n_bytes == 0 { return Ok(Sexp::Str(String::new())); }
     let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
+    let mut buf = vec![0u8; n_bytes];
     let rc = (unsafe {
         crate::elisp_cc_spike::bi_syscall_read_file(
-            &path_sexp as *const Sexp,
-            buf.as_mut_ptr(),
-            n_bytes as i64,
+            &path_sexp as *const Sexp, buf.as_mut_ptr(), n_bytes as i64,
         )
     }) as i32 as i64;
-    if rc < 0 {
-        return Ok(Sexp::Nil);
-    }
-    let actual = (rc as usize).min(n_bytes);
-    buf.truncate(actual);
+    if rc < 0 { return Ok(Sexp::Nil); }
+    buf.truncate((rc as usize).min(n_bytes));
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
@@ -506,28 +489,27 @@ fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     Ok(normalize_path(&path, base.as_deref()))
 }
 
-/// `(nelisp--syscall-stat PATH)' — return `'absent`, `'file`, or `'directory`.
+/// `resolve_existing_path' + `Sexp::Str' wrap for syscall extern-call shims.
+fn resolve_path_sexp(arg: &Sexp, env: &Env) -> Result<Sexp, EvalError> {
+    let p = resolve_existing_path(arg, env)?;
+    Ok(Sexp::Str(p.to_string_lossy().into_owned()))
+}
+
+/// `(nelisp--syscall-stat PATH)' — `'absent / 'file / 'directory` via libc stat(2).
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-stat", args, 1, Some(1))?;
-    let p = resolve_existing_path(&args[0], env)?;
-    let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
+    let path_sexp = resolve_path_sexp(&args[0], env)?;
     let mut statbuf: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe {
         crate::elisp_cc_spike::bi_syscall_stat(
-            &path_sexp as *const Sexp,
-            (&mut statbuf as *mut libc::stat) as *mut u8,
+            &path_sexp as *const Sexp, (&mut statbuf as *mut libc::stat) as *mut u8,
         )
     };
-    let tag = if rc < 0 {
-        "absent"
-    } else {
-        let mode = statbuf.st_mode & libc::S_IFMT;
-        if mode == libc::S_IFDIR {
-            "directory"
-        } else if mode == libc::S_IFREG {
-            "file"
-        } else {
-            "absent"
+    let tag = if rc < 0 { "absent" } else {
+        match statbuf.st_mode & libc::S_IFMT {
+            m if m == libc::S_IFDIR => "directory",
+            m if m == libc::S_IFREG => "file",
+            _ => "absent",
         }
     };
     Ok(Sexp::Symbol(tag.into()))
