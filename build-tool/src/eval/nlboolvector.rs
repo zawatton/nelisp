@@ -1,34 +1,6 @@
-//! Doc 77c Phase A.4.4 — `NlBoolVector` layout-pinned mutable bool vector.
-//!
-//! Specialized self-managed refcounted box carrying one mutable
-//! `Vec<bool>` slot.  Replaces the legacy
-//! `Sexp::BoolVector(Rc<RefCell<Vec<bool>>>)' with a layout-pinned
-//! struct so the boxed-variant ABI is uniform across `Cons' / `Cell' /
-//! `MutStr' / `Vector' / `BoolVector' (= NlConsBox / NlCell / NlStr /
-//! NlVector / NlBoolVector all share the `value @ 0, refcount @
-//! trailer' shape, modulo the cons-specific 2-slot layout).
-//!
-//! Layout (Phase A.4.4 locked):
-//!
-//! ```text
-//! NlBoolVector:  +-----+  offset 0                       (sizeof Vec<bool>)  value
-//!                +-----+  offset sizeof(Vec<bool>)       (8 bytes)           refcount
-//!                +-----+
-//! ```
-//!
-//! As with [`super::nlvector::NlVector`], the `Vec<bool>' header (=
-//! ptr / len / cap triple) keeps its native Rust layout; `#[repr(C)]'
-//! pins the *outer* field order.  Phase B elisp follows the header
-//! ptr to walk elements (= 2-load access pattern, same as Rust today).
-//!
-//! Mutability:
-//! - `unsafe set_value(v: Vec<bool>)' — wholesale replace.
-//! - `unsafe with_value_mut(f)' — closure-style in-place mutation
-//!   (= the `aset' callsite uses this for `vec[idx] = bit' indexing).
-//!
-//! Out of scope for Phase A.4.4:
-//!   - Other variants (Record / CharTable) — A.4.5-A.4.6 follow-up
-//!     sub-stages.
+//! `NlBoolVector` — layout-pinned mutable Vec<bool> box.  `#[repr(C)]'
+//! with value @ 0, refcount @ sizeof(Vec<bool>).  Backs `Sexp::BoolVector'.
+//! `unsafe set_value' wholesale; `unsafe with_value_mut(f)' for aset.
 
 use std::alloc::{self, Layout};
 use std::marker::PhantomData;
@@ -36,25 +8,12 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Layout-pinned mutable bool vector.  Heap-allocated, refcounted
-/// via an `AtomicUsize` trailer.  Accessed through [`NlBoolVectorRef`]
-/// handles.
 #[repr(C)]
 pub struct NlBoolVector {
-    /// The mutable bool vector slot.  Offset 0.
     pub value: Vec<bool>,
-    /// Strong reference count.  Starts at 1 in [`NlBoolVectorRef::new`].
     pub refcount: AtomicUsize,
 }
 
-/// Refcounted handle to an [`NlBoolVector`].  API parity with
-/// [`super::nlvector::NlVectorRef`] / [`super::nlstr::NlStrRef`] /
-/// [`super::nlcell::NlCellRef`] / [`super::nlconsbox::NlConsBoxRef`].
-///
-/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
-/// the layout to `NonNull<NlBoolVector>' so JIT trampolines + Phase B
-/// elisp can read the bool-vector pointer directly off the `Sexp' payload
-/// at offset `SEXP_PAYLOAD_OFFSET'.
 #[repr(transparent)]
 pub struct NlBoolVectorRef {
     ptr: NonNull<NlBoolVector>,

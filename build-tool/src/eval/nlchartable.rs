@@ -1,43 +1,8 @@
-//! Doc 77c Phase A.4.6 — `NlCharTable` layout-pinned char-table cell.
-//!
-//! Final A.4.x sub-stage.  Specialized self-managed refcounted box
-//! carrying the existing [`CharTableInner`] (= subtype / default_val /
-//! entries / parent / extra) in a single allocation.  Replaces the
-//! legacy `Sexp::CharTable(Rc<RefCell<CharTableInner>>)' so the
-//! boxed-variant ABI is uniform across `Cons' / `Cell' / `MutStr' /
-//! `Vector' / `BoolVector' / `Record' / `CharTable' (= every Phase
-//! A.4.x box now shares the `value(s) @ 0, refcount @ trailer' shape).
-//!
-//! Layout (Phase A.4.6 locked):
-//!
-//! ```text
-//! NlCharTable:  +-----+  offset 0                       (sizeof CharTableInner)  inner
-//!               +-----+  offset sizeof(CharTableInner)  (8 bytes)                refcount
-//!               +-----+
-//! ```
-//!
-//! Self-reference caveat: the `parent' field of [`CharTableInner`] is
-//! `Option<NlCharTableRef>' — a self-reference.  Refcount semantics
-//! handle the chain naturally: dropping a child decrements the parent
-//! refcount, which cascades freeing the parent if it was the last
-//! holder.  Cycles cannot form because the only way to install a parent
-//! is via `with_inner_mut' on the *child*, and the parent's own parent
-//! field is independent (no API for "self-parent").
-//!
-//! Identity:
-//! - `eq': `NlCharTableRef::ptr_eq' (= same allocation).  Strictly
-//!   stronger than the legacy `Rc::ptr_eq' on the inner cell, but
-//!   observably equivalent — there is exactly one box per char-table.
-//!
-//! Mutability:
-//! - `unsafe with_inner_mut(f)' — closure-style in-place mutation
-//!   of the entire [`CharTableInner`].  Mirrors the legacy
-//!   `RefCell::borrow_mut()' surface used by `char_table_set_one'
-//!   and image-format decode.
-//!
-//! Out of scope for Phase A.4.6:
-//!   - JIT direct emit (Phase A.5).
-//!   - elisp self-host primitive access (Phase B).
+//! `NlCharTable` — layout-pinned char-table cell.  `#[repr(C)]' with
+//! inner @ 0 (CharTableInner: subtype/default_val/entries/parent/extra)
+//! and refcount @ sizeof(CharTableInner).  Backs `Sexp::CharTable'.
+//! `parent: Option<NlCharTableRef>' is a self-reference; refcount
+//! cascade handles dropping naturally (no cycle API).
 
 use crate::eval::sexp::CharTableInner;
 use std::alloc::{self, Layout};
@@ -46,23 +11,12 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Layout-pinned char-table cell.  Heap-allocated, refcounted via an
-/// `AtomicUsize` trailer.  Accessed through [`NlCharTableRef`] handles.
 #[repr(C)]
 pub struct NlCharTable {
-    /// The full char-table state.  Offset 0.
     pub inner: CharTableInner,
-    /// Strong reference count.  Starts at 1 in [`NlCharTableRef::new`].
     pub refcount: AtomicUsize,
 }
 
-/// Refcounted handle to an [`NlCharTable`].  API parity with
-/// [`super::nlrecord::NlRecordRef`] / [`super::nlboolvector::NlBoolVectorRef`].
-///
-/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
-/// the layout to `NonNull<NlCharTable>' so JIT trampolines + Phase B elisp
-/// can read the char-table pointer directly off the `Sexp' payload at
-/// offset `SEXP_PAYLOAD_OFFSET'.
 #[repr(transparent)]
 pub struct NlCharTableRef {
     ptr: NonNull<NlCharTable>,
