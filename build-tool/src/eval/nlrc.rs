@@ -159,33 +159,15 @@ impl<T> Deref for NlRc<T> {
     }
 }
 
-// NLRC_DROP_TABLE + nlrc_drop_box! — per-tag drop dispatch.  SEXP_TAG_*
-// slots 0..=5 (unboxed) panic; slots 6..=12 forward to each box's DROP_FN.
-
-/// Generic in-place drop helper — runs `T`'s destructor without freeing
-/// the heap slot.  The `nlrc_drop_box!` macro pairs each invocation
-/// with exactly one `dealloc`.
-///
-/// # Safety
-/// `ptr` must point at a fully-initialized `T` whose backing alloc the
-/// caller is about to free.
-pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) {
-    std::ptr::drop_in_place(ptr as *mut T);
-}
-
-/// Panic stub for unboxed `SEXP_TAG_*` slots (NIL/T/INT/FLOAT/SYMBOL/STR).
-unsafe fn nl_rc_unboxed_drop_panic(_ptr: *mut std::ffi::c_void) {
-    panic!("NLRC_DROP_TABLE: unboxed Sexp tag dispatched (= tag corruption?)");
-}
-
-// Doc 124 §124.L — per-type inner-drop ABI externs for the elisp Drop
-// kernels.  Each `nl_<type>_drop_inner' wraps the per-type
+// Doc 124 §124.L / §124.L+ — per-type inner-drop ABI externs for the
+// elisp Drop kernels (now the sole production Drop path for all 7
+// NlBox types).  Each `nl_<type>_drop_inner' wraps the per-type
 // `nlrc_payload_drop::<NlT>' (= `std::ptr::drop_in_place::<NlT>') so
 // the elisp `nl<type>-drop' kernels can call it via `extern-call'
-// before the matching `dealloc-bytes' op.  Mirrors the recursive
-// payload-drop step of `nlrc_drop_box!' (= the
-// `NLRC_DROP_TABLE[tag](raw)' line) but exposed as a name-stable
-// `extern "C"' symbol so the elisp emitter can emit a PLT call.
+// before the matching `dealloc-bytes' op.  This is the recursive
+// payload-drop step that the legacy `nlrc_drop_box!' macro used to
+// dispatch through `NLRC_DROP_TABLE[tag](raw)' before §124.L+
+// migrated all 7 `impl Drop' bodies to elisp.
 //
 // # Safety
 //
@@ -193,6 +175,18 @@ unsafe fn nl_rc_unboxed_drop_panic(_ptr: *mut std::ffi::c_void) {
 // allocation the caller is about to free.  Each function takes
 // `*mut i64' to match the elisp kernel's `box-ptr' arg type and
 // reinterprets through the typed `nlrc_payload_drop::<T>'.
+
+/// Generic in-place drop helper — runs `T`'s destructor without freeing
+/// the heap slot.  Each `nl_<type>_drop_inner' wrapper below
+/// monomorphises this through the corresponding `NlT::DROP_FN'
+/// constant.
+///
+/// # Safety
+/// `ptr` must point at a fully-initialized `T` whose backing alloc the
+/// caller is about to free.
+pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) {
+    std::ptr::drop_in_place(ptr as *mut T);
+}
 
 /// §124.L NlConsBox inner-drop ABI extern.
 ///
@@ -271,43 +265,13 @@ pub unsafe extern "C" fn nl_chartable_drop_inner(box_ptr: *mut i64) -> i64 {
     1
 }
 
-/// Per-tag drop dispatch.  Indexed by `SEXP_TAG_*`; slots 0..=5 panic,
-/// slots 6..=12 forward to each box's `DROP_FN`.
-pub const NLRC_DROP_TABLE: [unsafe fn(*mut std::ffi::c_void); 13] = [
-    nl_rc_unboxed_drop_panic,                          // 0 NIL
-    nl_rc_unboxed_drop_panic,                          // 1 T
-    nl_rc_unboxed_drop_panic,                          // 2 INT
-    nl_rc_unboxed_drop_panic,                          // 3 FLOAT
-    nl_rc_unboxed_drop_panic,                          // 4 SYMBOL
-    nl_rc_unboxed_drop_panic,                          // 5 STR (immutable)
-    crate::eval::nlstr::NlStr::DROP_FN,                // 6 MUT_STR
-    crate::eval::nlconsbox::NlConsBox::DROP_FN,        // 7 CONS
-    crate::eval::nlvector::NlVector::DROP_FN,          // 8 VECTOR
-    crate::eval::nlchartable::NlCharTable::DROP_FN,    // 9 CHAR_TABLE
-    crate::eval::nlboolvector::NlBoolVector::DROP_FN,  // 10 BOOL_VECTOR
-    crate::eval::nlcell::NlCell::DROP_FN,              // 11 CELL
-    crate::eval::nlrecord::NlRecord::DROP_FN,          // 12 RECORD
-];
-
-/// Slim Drop dispatch.  Expansion: `fetch_sub(Release)` → if was 1,
-/// `fence(Acquire)` → `NLRC_DROP_TABLE[tag](ptr)` → `dealloc(layout)`.
-/// Refcount access via `(*typed_ptr).refcount` so each box's trailer
-/// offset resolves correctly per `repr(C)`.
-///
-/// # Safety
-/// Caller must pass a typed `*mut $T` reachable from a live handle.
-#[macro_export]
-macro_rules! nlrc_drop_box {
-    ($ptr:expr, $T:ty, $tag:expr) => {{
-        let raw: *mut $T = $ptr;
-        let prev = (*raw).refcount.fetch_sub(1, ::std::sync::atomic::Ordering::Release);
-        if prev == 1 {
-            ::std::sync::atomic::fence(::std::sync::atomic::Ordering::Acquire);
-            $crate::eval::nlrc::NLRC_DROP_TABLE[$tag as usize](raw as *mut ::std::ffi::c_void);
-            ::std::alloc::dealloc(raw as *mut u8, ::std::alloc::Layout::new::<$T>());
-        }
-    }};
-}
+// Doc 124 §124.L+ — `NLRC_DROP_TABLE' + `nlrc_drop_box!' macro +
+// `nl_rc_unboxed_drop_panic' stub deleted (= zero callers after the
+// 7-of-7 NlBox `impl Drop' bodies all dispatch through the per-type
+// elisp `nelisp_nl<type>_drop' kernels).  The legacy tag-dispatch
+// table is no longer needed because each `impl Drop' now knows its
+// concrete type at the Rust call site and the elisp kernel encodes
+// the per-type layout literals (SIZE / REFCOUNT_OFFSET / ALIGN).
 
 // Compile-time layout assertions — refcount @ 0, value @ 8 for i64 canary.
 const _: () = {
