@@ -1,19 +1,4 @@
-//! Built-in function registry.  [`install_builtins`] writes a
-//! `(builtin <NAME>)' sentinel into the function cell of each symbol;
-//! the evaluator routes calls to [`dispatch`].
-//!
-//! Two surface categories survive in Rust:
-//!
-//! 1. **KEEP arms** — low-level I/O / filesystem / process / signal /
-//!    TTY / reader entry points / vector core / load orchestration.
-//! 2. **Tier 3 bridge plumbing** — `nl-jit-call-*' / `nl-ffi-*' /
-//!    `nl-cons-*' / `nl-rc-*' / `nl-gc-*' / `nelisp--apply-*' /
-//!    `nelisp--*-frame' / dlsym-resolve.
-//!
-//! Tier 1 (predicates / type-of / arithmetic variadics / cXXr / mapcar /
-//! assq) is in `lisp/nelisp-stdlib*.el'.  Tier 2 (float / hash / time /
-//! regex / strings transforms / sxhash / intern / symbol-name) rides
-//! `nl_jit_*' trampolines in `build-tool/src/jit/*.rs'.
+//! Built-in function registry and dispatcher for the Rust eval surface.
 
 use super::env::Env;
 use super::error::EvalError;
@@ -25,50 +10,35 @@ use std::path::{Path, PathBuf};
 /// Install every built-in into the given environment.  Idempotent.
 pub fn install_builtins(env: &mut Env) {
     let names: &[&str] = &[
-        // arithmetic 2-arg primitives (= JIT lowered, see
-        // jit/arith.rs::lowered_*).  `/' rides `nl_jit_float_div'.
+        // JIT-lowered arithmetic primitives.
         "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
         "nelisp--num-lt2", "nelisp--num-gt2",
         "nelisp--num-le2", "nelisp--num-ge2",
         "nelisp--num-eq2",
-        // equality (= JIT lowered_eq in jit/predicate.rs)
+        // JIT-lowered equality.
         "eq",
-        // cons / list (= JIT lowered_{car,cdr,cons,length,setcar,setcdr,
-        // aref,aset,elt}; `nelisp--length-cons-cc' is the internal
-        // bridge to the Doc 101 §101.B elisp-compiled cons walker;
-        // `nelisp--recordp-cc' is the Doc 111 §111.B record predicate
-        // bridge; `string-bytes' stays plain Rust)
+        // Cons/list/vector helpers.
         "car", "cdr", "cons", "length", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes",
         "setcar", "setcdr",
         "aref", "aset", "elt",
         "vector", "make-vector",
-        // bitwise — `ash' stays native for raw shift with clamping;
-        // -logior2 / -logand2 / -logxor2 are JIT lowered.
+        // Bitwise helpers.
         "ash",
         "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
-        // string format/build slivers — `truncate' lets elisp `format'
-        // coerce float→int; `nl-jit-call-format-float' is the bridge
-        // for the IEEE-754 float-body trampoline; `string-match-p'
-        // stays as a registered name even though the body lives in
-        // jit/regex.rs (= elisp wrapper installs the function-cell
-        // override at boot).
+        // String/format helpers.
         "truncate",
         "nl-jit-call-format-float",
         "string-match-p",
-        // file syscall primitives that elisp wrappers ride: canonicalize
-        // / stat / readdir / read-file / read-all-from-string back the
-        // elisp `file-truename' / `file-exists-p' family /
-        // `directory-files' / `load' implementations.
+        // Filesystem helpers.
         "nelisp--syscall-canonicalize",
         "nelisp--syscall-stat",
         "nelisp--syscall-readdir",
         "nelisp--syscall-read-file",
         "nelisp--read-all-from-string",
-        // generic POSIX syscall + supported-p (= Linux nr-table dispatch).
+        // Generic POSIX syscall helpers.
         "nelisp--syscall",
         "nelisp--syscall-supported-p",
-        // Specialised socket primitives — msghdr / cmsg / ucred / scope_id
-        // marshaling too involved for nl-ffi in elisp alone.
+        // Socket primitives.
         "nelisp--syscall-socketpair",
         "nelisp--syscall-sendmsg-fds",
         "nelisp--syscall-recvmsg-fds",
@@ -76,24 +46,18 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--syscall-bind-inet6-scoped",
         "nelisp--syscall-connect-inet6-scoped",
         "nelisp--syscall-accept-inet6-scoped",
-        // symbol/function cell ops + dispatch core.  `symbol-function' +
-        // `fset' stay (env-shim bake reads them before its wrappers load).
+        // Symbol/function cell ops and dispatch core.
         "symbol-function", "funcall", "apply", "eval",
         "fset",
-        // print/error slivers — `signal' is the unwind primitive.
-        // `nelisp--write-stderr-line' / `-write-stdout-bytes' back the
-        // elisp `message' / `princ' / `print' / `prin1-to-string'.
+        // Print/error helpers.
         "signal",
         "nelisp--write-stderr-line",
         "nelisp--write-stdout-bytes",
-        // `require' orchestrates load + post-load verify, calling back
-        // into elisp `load' / `featurep' through their function cells.
+        // Load orchestration.
         "require",
-        // self-process stdio (Phase 9 minimal — needed by stand-alone
-        // Lisp servers such as elisp-lsp running on the `nelisp' binary).
+        // Self-process stdio.
         "read-stdin-bytes",
-        // Generic FFI primitives (libffi-backed) + buffer + accessor
-        // variants for sockaddr_* / pollfd / sigset_t / etc. marshaling.
+        // Generic FFI primitives.
         "nl-ffi-call",
         "nl-ffi-malloc", "nl-ffi-read-bytes", "nl-ffi-free",
         "nl-ffi-write-bytes", "nl-ffi-errno",
@@ -102,13 +66,12 @@ pub fn install_builtins(env: &mut Env) {
         "nl-ffi-write-i16", "nl-ffi-write-i32",
         "nl-ffi-read-u8", "nl-ffi-write-bytes-at", "nl-ffi-read-bytes-at",
         "nl-ffi-write-i64",
-        // Native-only primitives (time / hash / case / math / file I/O).
+        // Native-only primitives.
         "nl-current-unix-time", "nl-secure-hash", "nl-format-unix-time",
         "nl-downcase", "nl-upcase", "nl-split-by-non-alnum",
         "float", "exp", "log", "nelisp--f64-trunc",
         "nl-write-file", "nl-make-directory",
-        // Interactive TTY plumbing (Unix only) — raw mode + signal hooks
-        // (SIGINT/SIGWINCH/SIGTSTP/SIGCONT) + quit-flag.  `_'-prefixed are test helpers.
+        // Interactive TTY plumbing; `_`-prefixed names are test helpers.
         "terminal-raw-mode-enter", "terminal-raw-mode-leave",
         "read-stdin-byte-available",
         "_termios-saved-p", "_raw-mode-hooks-installed-p",
@@ -118,16 +81,14 @@ pub fn install_builtins(env: &mut Env) {
         "terminal-take-winsize-changed", "terminal-current-winsize",
         "install-jobctrl-handlers", "_jobctrl-handlers-installed-p",
         "terminal-take-sigcont",
-        // reader exposed as elisp callable (Track O' Phase 2).
+        // Reader entry points.
         "read", "read-from-string",
-        // apply/call/closure/env primitives + use_elisp_apply toggle +
-        // apply-lambda-inner (frame-capture leak fix).
+        // Apply/call/closure/env primitives.
         "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured",
         "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
         "nelisp--set-use-elisp-apply", "nelisp--get-use-elisp-apply",
         "nelisp--apply-lambda-inner",
-        // `nl-jit-call-*' bridge primitives — i64-i64 / ptr-ptr / syscall +
-        // 4 out-param variants + 3 float bridges.  See `jit/bridge.rs'.
+        // JIT bridge primitives.
         "nl-jit-call-i64-i64",
         "nl-jit-call-ptr-ptr",
         "nl-jit-call-syscall",
@@ -138,7 +99,7 @@ pub fn install_builtins(env: &mut Env) {
         "nl-jit-call-float-float",
         "nl-jit-call-float-cmp",
         "nl-jit-call-float-unary",
-        // Layer 2 cons + rc + gc primitives backing nelisp-stdlib-gc.el.
+        // Layer 2 cons/rc/gc primitives.
         "nl-cons-alloc", "nl-cons-car", "nl-cons-cdr",
         "nl-cons-set-car", "nl-cons-set-cdr",
         "nl-rc-inc", "nl-rc-dec", "nl-rc-count",
@@ -146,9 +107,8 @@ pub fn install_builtins(env: &mut Env) {
         "nl-rc-inc-strong", "nl-rc-dec-strong", "nl-rc-strong-count",
         "nl-rc-kind", "nl-rc-payload-ptr",
         "nl-gc-walk-children", "nl-gc-buffered-decs", "nl-gc-finalize",
-        // dlsym bridge — standalone NeLisp wires it at startup.
+        // dlsym bridge.
         "nelisp-cc--dlsym-resolve",
-        // Phase 47 elisp-only builtin (linux-x86_64 only).
         "nl-fact-i64",
     ];
     for n in names {
@@ -164,34 +124,28 @@ pub fn install_builtins(env: &mut Env) {
 /// See module docstring for the surviving surface categories.
 pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match name {
-        // ---- vector core (= JIT lowered: car/cdr/cons/setcar/setcdr/
-        // length/aref/aset/elt; only `vector' / `make-vector' /
-        // `string-bytes' stay plain Rust) ----
+        // ---- vector core ----
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         "nelisp--length-cons-cc" => bi_length_cons_cc(args),
         "nelisp--recordp-cc" => bi_recordp_cc(args),
         "string-bytes" => bi_string_bytes(args),
-        // ---- string format/build slivers (Doc 86 §86.1.e bridge,
-        // `truncate' float→int helper for elisp `format') ----
+        // ---- string/format helpers ----
         "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float(args),
         "truncate" => bi_truncate(args),
-        // ---- filesystem syscalls (= elisp wrappers ride these) ----
+        // ---- filesystem syscalls ----
         "nelisp--syscall-canonicalize" => bi_syscall_canonicalize(args, env),
         "nelisp--syscall-stat" => bi_syscall_stat(args, env),
         "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
         "nelisp--syscall-read-file" => bi_syscall_read_file(args, env),
         "nelisp--read-all-from-string" => bi_read_all_from_string(args, env),
-        // ---- POSIX syscall (Linux nr-table dispatch) ----
+        // ---- POSIX syscall ----
         "nelisp--syscall" => bi_syscall(args),
         "nelisp--syscall-supported-p" => bi_syscall_supported_p(args),
-        // Specialised socket primitives (SCM_RIGHTS / SO_PEERCRED / scope_id)
-        // dispatch via the externally-registered builtin path below.
-        //
         // ---- symbol / function ----
         "symbol-function" => bi_symbol_function(args, env),
         "fset" => bi_fset(args, env),
-        // ---- apply/closure/env primitives + use_elisp_apply + apply-lambda-inner ----
+        // ---- apply/closure/env primitives ----
         "nelisp--push-frame" => bi_frame_op("push-frame", args, env),
         "nelisp--pop-frame" => bi_frame_op("pop-frame", args, env),
         "nelisp--push-captured" => bi_frame_op("push-captured", args, env),
@@ -213,9 +167,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "apply" => bi_apply(args, env),
         "eval" => bi_eval(args, env),
         "signal" => bi_signal(args),
-        // ---- print/error slivers (= byte-write-to-stdout backs elisp
-        // `princ' / `print' / `prin1-to-string'; writeln-to-stderr
-        // backs elisp `message' / `error') ----
+        // ---- print/error helpers ----
         "nelisp--write-stdout-bytes" => bi_write_stdout_bytes(args),
         "nelisp--write-stderr-line" => bi_write_stderr_line(args),
         // ---- self-process stdio ----
@@ -264,11 +216,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "install-jobctrl-handlers" => bi_install_jobctrl_handlers(args),
         "_jobctrl-handlers-installed-p" => bi_jobctrl_handlers_installed_p(args),
         "terminal-take-sigcont" => bi_terminal_take_sigcont(args),
-        // ---- reader (Track O' Phase 2) ----
+        // ---- reader ----
         "read" => bi_read(args, env),
         "read-from-string" => bi_read_from_string(args, env),
-        // ---- require (orchestrates load + post-load verify; calls
-        // back into elisp `load' / `featurep' through function cells) ----
+        // ---- require ----
         "require" => bi_require(args, env),
         // ---- nl-jit-call-* bridge primitives ----
         "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64(args),
@@ -300,9 +251,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-gc-walk-children" => crate::eval::rc_primitives::bi_nl_gc_walk_children(args),
         "nl-gc-buffered-decs" => crate::eval::rc_primitives::bi_nl_gc_buffered_decs(args),
         "nl-gc-finalize" => crate::eval::rc_primitives::bi_nl_gc_finalize(args),
-        // Phase 47 elisp-only body (`lisp/nelisp-cc-fact-i64.el').
         "nl-fact-i64" => bi_nl_fact_i64(args),
-        // Env-shim slim primitive dispatch arm.
         "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op(args, env),
         _ => {
             // Externally-registered builtin (test-only).
@@ -353,8 +302,7 @@ pub(crate) fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
     }
 }
 
-// ---------- arithmetic helpers (= `num_pair' = the lone
-//   surviving Float-promote helper for jit/bridge.rs) ----------
+// ---------- arithmetic helpers ----------
 
 pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
     require_arity(name, args, 2, Some(2))?;
@@ -372,17 +320,10 @@ pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), Ev
     Ok((to_f64(&args[0])?, to_f64(&args[1])?, af))
 }
 
-/// `(string-bytes STRING)' — UTF-8 byte count.  Body dispatches to
-/// Phase 47-compiled `nelisp_bi_string_bytes' kernel; Rust keeps arity
-/// + tag dispatch + caller-owned out-slot + WrongType error.
+/// `(string-bytes STRING)' — UTF-8 byte count.
 fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-bytes", args, 1, Some(1))?;
-    // Unify the two string variants behind a `*const Sexp' that the
-    // elisp body can `str-len' directly.  `Sexp::Str' is already in
-    // the right shape; `Sexp::MutStr' carries the bytes inside an
-    // `NlStrMutRef.value: String', so we materialise a transient
-    // `Sexp::Str' (= bitwise clone of the same underlying bytes) and
-    // hand the elisp body a pointer into that local.
+    // Present string variants as a uniform `Sexp::Str`.
     let str_view: Sexp = match &args[0] {
         Sexp::Str(_) => args[0].clone(),
         Sexp::MutStr(rc) => Sexp::Str(rc.value.clone()),
@@ -493,26 +434,13 @@ fn env_default_directory(env: &Env) -> Option<String> {
     }
 }
 
-/// `(nelisp--syscall-canonicalize PATH)' — wraps `std::fs::canonicalize'.
-/// Returns nil on any error so elisp `file-truename' can fall back.
-///
-/// Doc 117 §117.D.gaps.3 (2026-05-18): the libc syscall body now runs
-/// through the Phase 47 elisp object compiled from
-/// `lisp/nelisp-cc-bi-syscall-canonicalize.el' (= same shape as the
-/// §117.D.3 sibling `bi_syscall_stat' modulo the libc symbol name).
-/// The Rust shim keeps arity validation + path normalisation + the
-/// PATH_MAX result buffer alloc + the NUL-terminated CStr → Sexp::Str
-/// wrap (= `Sexp::Nil' on NULL).  Behaviour parity with
-/// `std::fs::canonicalize' via `libc::realpath(3)' which both libstd
-/// and this kernel delegate to under the hood.
+/// `(nelisp--syscall-canonicalize PATH)' — canonicalize a path.
+/// Returns nil on error.
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-canonicalize", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
     let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
-    // PATH_MAX on Linux is 4096; we use that as the result-buffer
-    // size.  `libc::realpath' writes a NUL-terminated resolved path
-    // here on success.  `MaybeUninit' avoids the zero-init cost for
-    // bytes the kernel is about to overwrite.
+    // `realpath` writes a NUL-terminated path here on success.
     let mut result_buf = vec![0u8; libc::PATH_MAX as usize];
     let rc = unsafe {
         crate::elisp_cc_spike::bi_syscall_canonicalize(
@@ -521,66 +449,27 @@ fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalErr
         )
     };
     if rc == 0 {
-        // libc `realpath' returned NULL — error / not-found / EACCES /
-        // ENOTDIR.  Pre-swap `Err(_) => Ok(Sexp::Nil)' parity.
         return Ok(Sexp::Nil);
     }
-    // Find the NUL terminator and slice off the resolved path.  The
-    // buffer is owned by us — safe to read until the first 0x00.
     let len = result_buf.iter().position(|&b| b == 0).unwrap_or(result_buf.len());
     let resolved = String::from_utf8_lossy(&result_buf[..len]).into_owned();
     Ok(Sexp::Str(resolved))
 }
 
-/// `(nelisp--syscall-read-file PATH)' — `std::fs::read_to_string'.
-/// Returns nil on I/O error.  Used by elisp `load'.
+/// `(nelisp--syscall-read-file PATH)' — read a file into a string.
+/// Returns nil on I/O error.
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-read-file", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
-    // Doc 117 §117.D.gaps.3 (cont.) — the libc `open(2)' + `read(2)' +
-    // `close(2)' syscall chain now runs through the Phase 47 elisp
-    // object compiled from `lisp/nelisp-cc-bi-syscall-read-file.el'.
-    //
-    // The Rust shim keeps:
-    //   - path normalisation (= `resolve_existing_path' folds
-    //     `default-directory' in).
-    //   - file-size determination via a separate `metadata(&p)' pass
-    //     (= the elisp body has no `i64'-class grammar for `struct
-    //     stat *', so caller-side sizing is the simpler split).
-    //   - destination buffer alloc (= `Vec<u8>` of size n_bytes).
-    //   - bytes-read truncation + `from_utf8_lossy' wrap to `Sexp::Str'
-    //     (= same UTF-8 caveat as `bi_read_stdin_bytes' twin —
-    //     `sexp-write-str' Phase 47 op uses `from_utf8_unchecked').
-    //   - Negative-rc → `Sexp::Nil' branch (matching the pre-swap
-    //     `Err(_) => Ok(Sexp::Nil)' arm).
     let n_bytes = match std::fs::metadata(&p) {
         Ok(m) if m.is_file() => m.len() as usize,
-        // Symlinks / dirs / errors → same as the pre-swap path's
-        // `read_to_string' error arm = `Sexp::Nil'.  Don't even
-        // attempt the open.
         _ => return Ok(Sexp::Nil),
     };
-    // Optimisation: zero-length files skip the syscall chain entirely.
-    // Matches `read_to_string("/dev/null")' → `Ok("")' which is
-    // distinguishable from the `Err(_) => Nil' branch.
     if n_bytes == 0 {
         return Ok(Sexp::Str(String::new()));
     }
     let mut buf = vec![0u8; n_bytes];
-    // Build a `Sexp::Str' the elisp kernel can feed to
-    // `nelisp_cstr_from_sexp'.  `to_string_lossy' matches the pre-swap
-    // path's UTF-8 coercion.
     let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
-    // The elisp body returns one of:
-    //   - `open(2)' rc on open failure (= int -1, undefined upper 32
-    //     bits in rax per SysV ABI),
-    //   - `read(2)' rc on open-success branch (= ssize_t, full i64).
-    // For typical files (size < 2 GiB) the read rc fits in i32 too, so
-    // a uniform `as i32 as i64' sign-extension correctly handles both
-    // arms.  Files >= 2 GiB would lose precision but the pre-swap
-    // `read_to_string' wouldn't tolerate them either (= `String' caps
-    // at usize::MAX on 64-bit but the buffer + UTF-8 wrap cost grows
-    // linearly in file size; not the right shape for >2 GiB reads).
     let rc = (unsafe {
         crate::elisp_cc_spike::bi_syscall_read_file(
             &path_sexp as *const Sexp,
@@ -589,21 +478,14 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
         )
     }) as i32 as i64;
     if rc < 0 {
-        // Open / read failed.  Mirror the pre-swap `Err(_) => Nil'.
         return Ok(Sexp::Nil);
     }
-    // Short read tolerated — truncate to the bytes actually returned.
-    // For regular files on Linux, short reads only happen at EOF, so
-    // `rc' typically equals `n_bytes' (modulo TOCTOU file-size races
-    // which the pre-swap path also had).
     let actual = (rc as usize).min(n_bytes);
     buf.truncate(actual);
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-/// `(nelisp--read-all-from-string STR)' — mandatory delegation to elisp
-/// `nelisp--read-all-from-string-impl' (= `lisp/nelisp-stdlib-reader.el').
-/// Hard error if the elisp impl isn't installed.
+/// `(nelisp--read-all-from-string STR)' — delegate to the elisp reader.
 fn bi_read_all_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--read-all-from-string", args, 1, Some(1))?;
     let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl").map_err(|_| {
@@ -624,32 +506,11 @@ fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     Ok(normalize_path(&path, base.as_deref()))
 }
 
-/// `(nelisp--syscall-stat PATH)' — returns `'absent / `'file / `'directory.
-/// Other file types + any metadata error → `'absent.  Backs 4 elisp wrappers
-/// (file-exists-p / file-readable-p / file-directory-p / file-regular-p).
-///
-/// Doc 117 §117.D.gaps.3 (2026-05-18): the libc syscall body now runs
-/// through the Phase 47 elisp object compiled from
-/// `lisp/nelisp-cc-bi-syscall-stat.el' (= `nelisp_cstr_from_sexp' for
-/// the path CString + `extern-call stat' for the syscall + `dealloc-
-/// bytes' for the CString free, sequenced via a 2-arg `prog2'
-/// helper).  The Rust shim keeps arity validation + path
-/// normalisation + the `struct stat' buffer alloc + the mode-field
-/// inspection + the `'absent / `'file / `'directory' symbol tag
-/// dispatch.  Behaviour parity with the pre-swap
-/// `std::fs::metadata' shape via `libc::S_IFMT' mask of the
-/// populated buffer's `st_mode' field.
+/// `(nelisp--syscall-stat PATH)' — return `'absent`, `'file`, or `'directory`.
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-stat", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
-    // Build a `Sexp::Str' the elisp kernel can read.  `to_string_lossy'
-    // matches the pre-swap path's UTF-8 coercion (= libstd would have
-    // done the same on the way through `metadata(&Path)' since
-    // `PathBuf' is opaque).
     let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
-    // Rust-owned `struct stat' buffer.  `libc::stat' size depends on
-    // glibc / musl — use the libc-crate type directly so the layout
-    // matches the kernel's expectation byte-for-byte.
     let mut statbuf: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe {
         crate::elisp_cc_spike::bi_syscall_stat(
@@ -657,16 +518,9 @@ fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
             (&mut statbuf as *mut libc::stat) as *mut u8,
         )
     };
-    // Map (rc, mode) → tag symbol.  Negative rc = errno-set error =
-    // `'absent (= mirrors the pre-swap `Err(_) => "absent"' arm).
     let tag = if rc < 0 {
         "absent"
     } else {
-        // S_IFMT mask + S_IFDIR / S_IFREG compare.  Exotic file types
-        // (sockets / fifos / block-dev / char-dev) fall through to
-        // `'absent' — same behaviour as the pre-swap `Ok(_) =>
-        // "absent"' arm where both `is_file()' and `is_dir()' returned
-        // false.
         let mode = statbuf.st_mode & libc::S_IFMT;
         if mode == libc::S_IFDIR {
             "directory"
@@ -679,9 +533,7 @@ fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Symbol(tag.into()))
 }
 
-/// `(nelisp--syscall-readdir DIR)' — POSIX readdir.  Returns
-/// `(ABS-DIR NAME1 NAME2 ...)` (unsorted); nil on error.  Backs elisp
-/// `directory-files' which handles sort + regex + FULL + COUNT.
+/// `(nelisp--syscall-readdir DIR)' — return `(ABS-DIR NAME1 NAME2 ...)` or nil.
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-readdir", args, 1, Some(1))?;
     let dir = resolve_existing_path(&args[0], env)?;
@@ -696,9 +548,7 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
 }
 
-// ---- POSIX syscall surface (Linux only via libc::syscall + libc::SYS_*) ----
-// Non-Linux: `-supported-p' returns nil for elisp `nl-ffi-call libc' fallback.
-// Errors normalised via __errno_location() to (result < 0 = -errno).
+// ---- POSIX syscall surface ----
 
 fn bi_syscall_supported_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-supported-p", args, 0, Some(0))?;
@@ -772,8 +622,6 @@ unsafe fn syscall_errno_normalize(r: libc::c_long) -> i64 {
     }
 }
 
-// Phase 5 Stage 5.8 — non-Linux syscall stub macro (loud-fail catch
-// for elisp callers that accidentally bypass the Path B fallback).
 #[cfg(not(target_os = "linux"))]
 macro_rules! syscall_unsupported {
     ($name:ident, $primitive:literal) => {
@@ -807,10 +655,7 @@ syscall_unsupported!(bi_syscall, "nelisp--syscall");
 // ---------- symbol / function ----------
 
 fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    // Doc 117 §117.C — body delegates to the Doc 102 `bi_globals_op'
-    // `get-function' op so the function/value cell access lives in one
-    // place.  `require_arity' stays here so the wrong-args error reports
-    // `"symbol-function"' rather than `"nelisp--env-globals-op"'.
+    // Keep the builtin name in wrong-arity errors.
     require_arity("symbol-function", args, 1, Some(1))?;
     let op_args = [Sexp::Symbol("get-function".into()), args[0].clone()];
     super::env_shim::bi_globals_op(&op_args, env)
@@ -826,16 +671,9 @@ fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
     }
 }
 
-/// `(fset SYMBOL DEFINITION)` — install DEFINITION in SYMBOL's function
-/// cell.  Last Rust function-cell setter (env-shim bake needs it before
-/// its elisp wrappers load).
+/// `(fset SYMBOL DEFINITION)` — install DEFINITION in SYMBOL's function cell.
 fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    // Doc 117 §117.C — body delegates to the Doc 102 `bi_globals_op'
-    // `set-function' op.  The chain-follow (= when DEF is itself a
-    // symbol, install the resolved function cell rather than the symbol
-    // value) is resolved here before delegation, mirroring the existing
-    // elisp `nelisp--shim-fset' contract.  `require_arity' stays for the
-    // canonical `"fset"' error label.
+    // Keep the builtin name in wrong-arity errors.
     require_arity("fset", args, 2, Some(2))?;
     let def = match &args[1] {
         Sexp::Symbol(s) => env.lookup_function(s)?,
@@ -849,9 +687,6 @@ fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     super::env_shim::bi_globals_op(&op_args, env)
 }
 
-// Doc 102 Phase 3.a (2026-05-13): 4 frame primitives' bodies merged.
-// 4 frame primitives merged; elisp `defun' wrappers would break frame
-// semantics (= wrapper pushes a frame, `bind-local' targets the wrapper).
 fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match op {
         "push-frame" => {
@@ -885,9 +720,7 @@ fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError
     }
 }
 
-/// `(nelisp--apply-builtin-dispatch NAME ARGS)' — direct dispatch by
-/// name.  ARGS already evaluated.  Backs elisp `nelisp--apply-fn' for
-/// the `(builtin NAME)' sentinel arm.
+/// `(nelisp--apply-builtin-dispatch NAME ARGS)' — direct dispatch by name.
 fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--apply-builtin-dispatch", args, 2, Some(2))?;
     let name = match &args[0] {
@@ -902,10 +735,7 @@ fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalE
     dispatch(&name, &arg_vec, env)
 }
 
-/// `(nelisp--apply-lambda-inner CAPTURED FORMALS BODY ARGS)' —
-/// Rust-native lambda apply.  Keeps state on the Rust call stack to
-/// avoid closure capture-leak bugs.  BODY + ARGS are proper lists;
-/// ARGS already evaluated.
+/// `(nelisp--apply-lambda-inner CAPTURED FORMALS BODY ARGS)' — apply a lambda.
 fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--apply-lambda-inner", args, 4, Some(4))?;
     let captured = &args[0];
@@ -957,23 +787,11 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
             })
         }
     };
-    // Doc 51 Track M — `(signal 'quit ...)' must surface as the
-    // dedicated `EvalError::Quit` so that `condition-case`'s `error`
-    // clause does NOT catch it (per Elisp manual).  The data list
-    // is discarded — quit carries no payload in Emacs.
+    // `quit` must bypass ordinary `error` handlers.
     if tag == "quit" {
         return Err(EvalError::Quit);
     }
-    // Doc 80 Stage 80.3 (2026-05-09) — canonicalise `arith-error' /
-    // `wrong-type-argument' tags to the structurally-distinct
-    // `EvalError' variants.  Without this, the elisp-side fall-
-    // through dispatch in `lisp/nelisp-jit-strategy.el' (= `aref' /
-    // `aset' / `elt' replacements) would produce `UserError { tag,
-    // data }', which `condition-case' catches identically but every
-    // existing `matches!(e, EvalError::ArithError(_))' /
-    // `EvalError::WrongType { .. })' test would silently break.
-    // See `error.rs::error_tag' for the bidirectional `tag ↔ variant'
-    // map; this is its inverse for `(signal 'TAG DATA)' callsites.
+    // Canonicalize common tags into structured `EvalError` variants.
     if tag == "arith-error" {
         let msg = match &args[1] {
             Sexp::Cons(b) => match &b.car {
@@ -1010,105 +828,48 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     })
 }
 
-/// `(nelisp--write-stdout-bytes STR)' — write STR's bytes to stdout
-/// and flush.  No newline added.  Returns STR unchanged.  Building
-/// block for the elisp `princ' (Rust-min 2026-05-06 batch 6i); the
-/// previous `bi_princ' was just a stringp/Display dispatch wrapped
-/// around this writeln, and moving the dispatch to elisp keeps the
-/// I/O sliver as the only Rust-only piece.
+/// `(nelisp--write-stdout-bytes STR)' — write STR to stdout and flush.
 fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
     require_arity("nelisp--write-stdout-bytes", args, 1, Some(1))?;
-    // Validate stringp + materialise the variant-uniform `Sexp::Str'
-    // view that the elisp body's `str-bytes-ptr' op can read.  Same
-    // dispatch shape as `bi_write_stderr_line' (Doc 117 §117.B /
-    // Doc 122 §122.H) — the elisp body handles all string-y variants
-    // uniformly via `nl_str_bytes_ptr', but routing through `Sexp::Str'
-    // keeps the elisp body free of any variant-specific branching.
+    // Present string variants as a uniform `Sexp::Str`.
     let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
         expected: "stringp".into(),
         got: args[0].clone(),
     })?;
     let body_sexp = Sexp::Str(s);
-    // Doc 117 §117.B (cont): the per-payload byte-write
-    // `out.write_all(s.as_bytes())' step now runs through the Phase
-    // 47 elisp object compiled from
-    // `lisp/nelisp-cc-bi-write-stdout-bytes.el' (= a 3-arg
-    // `extern-call' to libc `write' using the §122.H `str-bytes-ptr'
-    // grammar op + the §101.C `str-len' op).  Return is the libc
-    // `write(2)' i64 — `> 0' = bytes written, `0' = success on
-    // 0-byte payload, `-1' = error.
     let rc = unsafe {
         crate::elisp_cc_spike::bi_write_stdout_bytes(
             &body_sexp as *const Sexp,
         )
     };
     if rc < 0 {
-        // Mirror the pre-swap `map_err' branch: I/O errors propagate
-        // through `EvalError::Internal' with the same prefix.  errno
-        // is not surfaced today (the libc `write' errno would land
-        // here but we don't materialise it across the elisp body);
-        // emit a generic message — callers that match on the prefix
-        // continue to do so.
         return Err(EvalError::Internal(format!(
             "nelisp--write-stdout-bytes: write returned {}",
             rc,
         )));
     }
-    // Flush is kept in the Rust shim — the elisp body is exactly the
-    // syscall, no flush opcode in Phase 47's grammar.
     let mut out = std::io::stdout().lock();
     out.flush()
         .map_err(|e| EvalError::Internal(format!("nelisp--write-stdout-bytes: {}", e)))?;
     Ok(args[0].clone())
 }
 
-/// `(nelisp--write-stderr-line STR)' — write STR followed by a
-/// newline to stderr and flush.  Returns STR unchanged.  Building
-/// block for the elisp `message' (Rust-min 2026-05-06 batch 6h);
-/// the previous `bi_message' was just `bi_format' + this writeln,
-/// and moving the dispatch to elisp means the few-line I/O sliver
-/// is the only piece that genuinely needs Rust.
-///
-/// Doc 117 §117.B / Doc 122 §122.H (2026-05-18): the per-payload
-/// byte-write `out.write_all(s.as_bytes())' step now runs through the
-/// Phase 47 elisp object compiled from
-/// `lisp/nelisp-cc-bi-write-stderr-line.el' (= a 3-arg `extern-call'
-/// to libc `write' using the new §122.H `str-bytes-ptr' grammar op
-/// + the §101.C `str-len' op).  The Rust shim keeps arity validation
-/// + the `WrongType' tag dispatch + the trailing `\n' byte + the
-/// final `err.flush()' so user-observable behaviour matches the
-/// pre-swap `writeln!' exactly.  First I/O syscall in the Doc 117
-/// Tier B sweep — same shape applies to `write-stdout-bytes' /
-/// `read-stdin-bytes' / `read-file' / `write-file' next.
+/// `(nelisp--write-stderr-line STR)' — write STR, newline, and flush.
 fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
     require_arity("nelisp--write-stderr-line", args, 1, Some(1))?;
-    // Validate stringp + materialise the variant-uniform `Sexp::Str'
-    // view that the elisp body's `str-bytes-ptr' op can read.
-    // `as_string_owned()' returns Some for Str / MutStr (= the same
-    // gate the pre-swap body used).  We rebuild a stack-local
-    // `Sexp::Str' so the elisp body sees a single layout — the
-    // §122.H `nl_str_bytes_ptr' extern handles MutStr natively but
-    // routing through `Sexp::Str' keeps the elisp body free of any
-    // variant-specific branching.
+    // Present string variants as a uniform `Sexp::Str`.
     let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
         expected: "stringp".into(),
         got: args[0].clone(),
     })?;
     let body_sexp = Sexp::Str(s);
-    // Dispatch the body write through the Phase 47 elisp object.
-    // The return is the libc `write(2)' i64 (= bytes written or -1);
-    // discarded here for parity with the pre-swap `let _ = writeln!()'.
     unsafe {
         let _ = crate::elisp_cc_spike::bi_write_stderr_line(
             &body_sexp as *const Sexp,
         );
     }
-    // Trailing newline + flush — kept in the Rust shim so the elisp
-    // body is exactly the algorithmic core.  `let _ = ...' preserves
-    // the pre-swap error-suppression (= `writeln!' + `flush' both
-    // ignored I/O errors).
     let mut err = std::io::stderr().lock();
     let _ = err.write_all(b"\n");
     let _ = err.flush();
@@ -1116,30 +877,11 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 /// `(truncate X)' — return X truncated toward zero as an integer.
-///
-/// For a Float argument we cast via `as i64' (= the same trunc-toward-
-/// zero semantics the previous `bi_format' used inline for `%d FLOAT').
-/// Added in Rust-min batch 6m so the elisp `format' dispatcher can
-/// coerce float→int for `%d/%i/%x/%X/%o/%b' without needing a
-/// privileged float-cast.
-///
-/// Doc 100 v2 §100.C (2026-05-12): the Int arm now routes through the
-/// Phase 47-compiled `nelisp_truncate_int' function in
-/// `lisp/nelisp-cc-truncate-int.el'.  The Rust side here is a thin
-/// dispatch + caller-owned-slot setup; the actual identity body
-/// (= unwrap + re-wrap with same payload) lives in elisp.  No Rust
-/// algorithmic line survives the swap for the Int variant.
 fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("truncate", args, 1, Some(1))?;
     match &args[0] {
         Sexp::Int(_) => {
-            // Doc 100 §100.C: route the Int identity through the
-            // elisp `.o'.  The slot is a stack-local Sexp::Nil; the
-            // elisp body writes tag=SEXP_TAG_INT + i64 payload into
-            // bytes [0, 16) of the slot.  Padding bytes [1, 8) +
-            // unused tail [16, 32) remain whatever the Nil
-            // initialization left them as, which is sound because
-            // Sexp::Int reads neither.
+            // The callee writes a new `Sexp::Int` into `result_slot`.
             let mut result_slot: Sexp = Sexp::Nil;
             unsafe {
                 crate::elisp_cc_spike::truncate_int(
@@ -1157,10 +899,7 @@ fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Internal `(length X)' cons/nil arm bridge used by
-/// `lisp/nelisp-jit-strategy.el'.  Doc 101 §101.B moved the proper-list
-/// walk itself into `lisp/nelisp-cc-length-cons.el`; this Rust body is
-/// just arity/type dispatch plus the caller-owned out-slot.
+/// Internal `(length X)' cons/nil bridge.
 fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--length-cons-cc", args, 1, Some(1))?;
     match &args[0] {
@@ -1194,20 +933,7 @@ fn bi_recordp_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(result_slot)
 }
 
-/// (nl-fact-i64 N) — Doc 99 §99.C first elisp-only builtin.
-///
-/// Computes `N!' via the Phase-47-compiled `nelisp_fact_i64' function
-/// in `lisp/nelisp-cc-fact-i64.el'.  The Rust dispatch arm is purely
-/// a Sexp-unwrap / range-check / Sexp-wrap shim — the algorithmic
-/// body lives nowhere except the elisp source.
-///
-/// Range invariant: 0 ≤ N ≤ 20.  `21!' (= 51090942171709440000) does
-/// not fit in i64, so the elisp body's recursion would silently
-/// overflow.  Out-of-range inputs signal `arith-error' so the elisp
-/// caller can `condition-case' around the failure.
-///
-/// Doc 114: Phase 47 helpers are x86_64-linux only; the entire crate
-/// fails to build on non-x86_64-linux via the top-level guard.
+/// `(nl-fact-i64 N)' — compute `N!` for `0 <= N <= 20`.
 fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-fact-i64", args, 1, Some(1))?;
     let n = as_int("nl-fact-i64", &args[0])?;
@@ -1278,77 +1004,29 @@ fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(r as i64))
 }
 
+// `string_value` validates stringp; negative rc becomes `Internal`.
 fn bi_nl_write_file(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-write-file", args, 2, Some(2))?;
-    // Validate stringp for both args + materialise variant-uniform
-    // `Sexp::Str' views the elisp kernel can read.  The kernel does
-    // not introspect the variant tag — it expects `Sexp::Str' /
-    // `Sexp::MutStr' (the §122.I `nelisp_cstr_from_sexp' + §122.H
-    // `nl_str_bytes_ptr' externs handle both natively).  Routing
-    // through `Sexp::Str' keeps the kernel free of variant-specific
-    // branching.
     let path = string_value(&args[0])?;
-    let content = string_value(&args[1])?;
-    let path_sexp = Sexp::Str(path.clone());
-    let content_sexp = Sexp::Str(content);
-    // Doc 117 §117.D.gaps.3 (2026-05-18): the chained libc
-    // `open(2)' + `write(2)' + `close(2)' steps now run through the
-    // Phase 47 elisp object compiled from
-    // `lisp/nelisp-cc-bi-nl-write-file.el'.  Rust keeps the arity
-    // + `stringp' dispatch + the negative-rc → Internal-err
-    // mapping.
+    string_value(&args[1])?;
     let rc = unsafe {
-        crate::elisp_cc_spike::bi_nl_write_file(
-            &path_sexp as *const Sexp,
-            &content_sexp as *const Sexp,
-        )
+        crate::elisp_cc_spike::bi_nl_write_file(&args[0] as *const Sexp, &args[1] as *const Sexp)
     };
     if rc < 0 {
-        // Mirror the pre-swap `map_err' branch: I/O errors propagate
-        // through `EvalError::Internal' with the same `path' prefix.
-        // The elisp kernel collapses open / write errors into a
-        // single negative-i64 return; the Rust shim cannot distinguish
-        // which syscall failed, but neither did the pre-swap
-        // `std::fs::write' which only surfaced an opaque
-        // `std::io::Error' string.
-        return Err(EvalError::Internal(format!(
-            "nl-write-file: {}: kernel returned {}",
-            path, rc,
-        )));
+        return Err(EvalError::Internal(format!("nl-write-file: {}: kernel returned {}", path, rc)));
     }
     Ok(Sexp::T)
 }
 
+// Sign-extend the 32-bit libc rc so `-1` stays negative.
 fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-make-directory", args, 1, Some(2))?;
     let path = string_value(&args[0])?;
-    // Doc 117 §117.D.gaps.3 (cont.) — the libc `mkdir(2)' syscall body
-    // now runs through the Phase 47 elisp object compiled from
-    // `lisp/nelisp-cc-bi-nl-make-directory.el' (= path CString lifecycle
-    // via §122.I cstr_from_sexp + §125.A dealloc-bytes, single
-    // `extern-call mkdir' with mode 0o755).
-    //
-    // Semantic narrowing: pre-swap `std::fs::create_dir_all' was
-    // recursive (creates missing parent components); this elisp kernel
-    // is a *single* `mkdir(2)' call (non-recursive).  No elisp caller
-    // depends on the recursive form — the emacs-compat layer at
-    // `src/nelisp-emacs-compat-fileio.el:340' dispatches through
-    // `nl-syscall-mkdir' instead, and there are no tests for `nl-make-
-    // directory'.  See the elisp source's commentary for the full
-    // rationale.
-    let path_sexp = Sexp::Str(path.clone());
-    // libc `mkdir(2)' returns `int' (32-bit) but the elisp extern-call
-    // ABI lands the value in rax with undefined upper 32 bits per SysV
-    // AMD64 §3.2.3 ("Returning of Values").  Sign-extend the low 32
-    // bits so the `rc < 0' check works correctly (= -1 from a failed
-    // mkdir would otherwise appear as 0xFFFFFFFF = u32::MAX positive).
-    let rc = (unsafe {
-        crate::elisp_cc_spike::bi_nl_make_directory(&path_sexp as *const Sexp)
-    }) as i32 as i64;
+    let rc = (unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&args[0] as *const Sexp) })
+        as i32 as i64;
     if rc < 0 {
         return Err(EvalError::Internal(format!(
-            "nl-make-directory: {}: kernel returned {}",
-            path, rc,
+            "nl-make-directory: {}: kernel returned {}", path, rc
         )));
     }
     Ok(Sexp::T)
@@ -1366,14 +1044,7 @@ fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
         }
     };
     let mut buf = vec![0u8; limit];
-    // Doc 117 §117.B (cont): the `read(0, buf, limit)' libc syscall
-    // step now runs through the Phase 47 elisp object compiled from
-    // `lisp/nelisp-cc-bi-read-stdin-bytes.el' (= a 3-arg `extern-call'
-    // to libc `read').  The Rust shim keeps buffer allocation, EOF /
-    // err branching, and `from_utf8_lossy' wrap because Phase 47's
-    // §122.A `sexp-write-str' op uses `from_utf8_unchecked' (= would
-    // produce UB on non-UTF-8 stdin); a future §122.X
-    // `sexp-write-str-lossy' op would let the wrap migrate too.
+    // Keep the lossy UTF-8 conversion in Rust.
     let rc = unsafe {
         crate::elisp_cc_spike::bi_read_stdin_bytes(
             buf.as_mut_ptr(),
@@ -1381,38 +1052,21 @@ fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
         )
     };
     if rc < 0 {
-        // I/O error — match the pre-swap `Err(e)' arm semantically.
-        // The libc `read' errno would land here but we don't materialise
-        // it across the elisp body; emit a generic message — callers
-        // that match on the prefix continue to do so.
         return Err(EvalError::Internal(format!(
             "read-stdin-bytes: read returned {}",
             rc,
         )));
     }
     if rc == 0 {
-        // EOF — peer closed stdin.
         return Ok(Sexp::Nil);
     }
     let n = rc as usize;
-    // Defensive clamp: libc `read' should never return > limit but
-    // guard the truncate in case of an unexpected return value (= the
-    // pre-swap body trusted `handle.read' which is bounded by buf.len).
     let n = std::cmp::min(n, buf.len());
     buf.truncate(n);
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-// Doc 51 Track E (2026-05-04) — TTY raw-mode + non-blocking byte reader.
-// Doc 51 Track K (2026-05-04) — atexit + SIGINT/SIGTERM/SIGHUP/SIGQUIT
-// hook so that `Ctrl+C` / `kill` / panic / unwind never leaves the user's
-// terminal in raw mode.  Storage is intentionally async-signal-safe
-// (atomic flag + raw static) — `Mutex` is *not* async-signal-safe per
-// POSIX.  `tcsetattr` *is* on the POSIX async-signal-safe list, which is
-// why this works in a signal handler.
-//
-// Unix-only.  On non-Unix the corresponding builtins are no-ops returning
-// nil so substrate code can run on Windows host without errors.
+// Unix raw-mode and non-blocking stdin helpers.
 
 #[cfg(unix)]
 mod tty_raw {
@@ -1475,19 +1129,13 @@ mod tty_raw {
 
     fn install_hooks_once() {
         HOOKS_INSTALLED.call_once(|| unsafe {
-            // atexit cleans up the orderly `exit(N)` / `return from main`
-            // path.  Returns 0 on success; we ignore failure (best-effort).
             libc::atexit(atexit_hook);
 
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = sig_handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
             sa.sa_flags = 0;
-            // SIGINT is intentionally NOT in this list — Doc 51
-            // Track M owns SIGINT (= sets the quit flag instead of
-            // terminating).  These three are the "real shutdown"
-            // signals where restoring termios + re-raising the
-            // default is the correct response.
+            // SIGINT is handled separately through the quit flag.
             for sig in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
                 libc::sigaction(*sig, &sa, std::ptr::null_mut());
             }
@@ -1504,9 +1152,7 @@ mod tty_raw {
             )));
         }
 
-        // Stash the original termios in the signal-safe slot BEFORE
-        // flipping the flag — the handler reads through the flag, so any
-        // write that happens-before the flag is visible by the handler.
+        // Write the saved state before publishing the flag.
         unsafe {
             std::ptr::write(
                 std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut libc::termios,
@@ -1518,14 +1164,10 @@ mod tty_raw {
 
         install_hooks_once();
 
-        // cfmakeraw is the standard setup: -ICANON, -ECHO, etc.
         unsafe { libc::cfmakeraw(&mut term) };
-        // VMIN=1 / VTIME=0: block until at least one byte is available.
         term.c_cc[libc::VMIN] = 1;
         term.c_cc[libc::VTIME] = 0;
         if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
-            // Roll back the saved-state flag so a leave at unwind-time
-            // does not try to restore a half-applied raw mode.
             TERMIOS_SAVED.store(false, Ordering::SeqCst);
             return Err(EvalError::Internal(format!(
                 "terminal-raw-mode-enter: tcsetattr failed: {}",
@@ -1536,9 +1178,7 @@ mod tty_raw {
     }
 
     pub fn raw_mode_leave() -> Result<(), EvalError> {
-        // Race-free claim of the saved state — same primitive the signal
-        // handler uses, so explicit leave and signal-driven leave cannot
-        // both restore.
+        // Shared claim path with the signal handler.
         if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
             let fd = TTY_FD.load(Ordering::SeqCst);
             if fd >= 0 {
@@ -1552,33 +1192,19 @@ mod tty_raw {
                 }
             }
         }
-        // Idempotent — calling without a prior enter is a no-op.
         Ok(())
     }
 
-    // Test helper: report whether the raw-mode flag is currently held.
     pub fn termios_saved_p() -> bool {
         TERMIOS_SAVED.load(Ordering::SeqCst)
     }
 
-    // Test helper: report whether atexit/signal hooks have been installed.
-    // The hooks are install-once and cannot be uninstalled, so this is
-    // monotonic: false until the first enter, true forever after.
     pub fn hooks_installed_p() -> bool {
         HOOKS_INSTALLED.is_completed()
     }
 
     pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
-        // Doc 51 (2026-05-04) — read via libc::read on fd 0 directly,
-        // NOT via `std::io::stdin().lock().read()`.  The Rust stdin
-        // is internally buffered; reading 1 byte through it pulls
-        // many bytes from the kernel into the user-space buffer,
-        // and the next `poll()` then sees no data on the fd —
-        // POLLHUP without POLLIN — so we incorrectly report EOF
-        // while the buffered reader still has the rest queued.
-        //
-        // Going around the buffered reader keeps poll() and read()
-        // looking at the same kernel-side state.
+        // Bypass buffered stdin so `poll` and `read` see the same fd state.
         let fd: i32 = 0; // STDIN
         let mut pfd = libc::pollfd {
             fd,
@@ -1595,10 +1221,6 @@ mod tty_raw {
         if r == 0 {
             return Ok(None);
         }
-        // Some platforms set POLLHUP alongside POLLIN; some only
-        // POLLHUP after the writer closed and the kernel buffer
-        // drained.  Try to read either way — if no data is left,
-        // read() returns 0 (EOF) and we map that to None.
         if pfd.revents & (libc::POLLIN | libc::POLLHUP) == 0 {
             return Ok(None);
         }
@@ -1611,11 +1233,7 @@ mod tty_raw {
             n if n > 0 => Ok(Some(buf[0])),
             _ => {
                 let errno = std::io::Error::last_os_error();
-                // EAGAIN / EWOULDBLOCK can happen between poll and
-                // read on a non-blocking fd; treat as no-byte.  On Linux
-                // these constants share a value so the second arm is
-                // unreachable — keep both written for portability to
-                // BSDs where they differ; allow the lint here.
+                // The constants are equal on Linux but not on all Unix targets.
                 #[allow(unreachable_patterns)]
                 if matches!(
                     errno.raw_os_error(),
@@ -1633,18 +1251,7 @@ mod tty_raw {
     }
 }
 
-// Doc 51 Track P (2026-05-04) — SIGWINCH (terminal resize) plumbing.
-//
-// The handler is the simplest possible: flip an `AtomicBool` and
-// return.  All real work (= ioctl(TIOCGWINSZ), frame-resize, redisplay
-// flush) happens in the event loop on the next iteration.  This is
-// the canonical async-signal-safe pattern — same shape as the
-// quit-flag in `eval::quit`.
-//
-// `terminal-current-winsize` is exposed unconditionally (= can be
-// queried from non-raw-mode contexts too, e.g. a host-driver
-// startup).  The flag query (`terminal-take-winsize-changed`) is
-// only meaningful after `install-winsize-handler` runs.
+// SIGWINCH state shared between the handler and the event loop.
 
 #[cfg(unix)]
 mod tty_winsize {
@@ -1656,8 +1263,6 @@ mod tty_winsize {
     static HANDLER_INSTALLED: Once = Once::new();
 
     extern "C" fn handler(_signum: libc::c_int) {
-        // AtomicBool::store is async-signal-safe.  No allocation,
-        // no Mutex, no formatting — just flip the flag.
         WINSIZE_CHANGED.store(true, Ordering::SeqCst);
     }
 
@@ -1666,12 +1271,8 @@ mod tty_winsize {
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
-            // SA_RESTART so an in-flight `read`/`poll` on stdin
-            // restarts after the handler runs.
             sa.sa_flags = libc::SA_RESTART;
             libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
-            // Pre-seed the flag (already true) — first event-loop
-            // iteration picks up the initial size for matrix realise.
             WINSIZE_CHANGED.store(true, Ordering::SeqCst);
         });
     }
@@ -1680,9 +1281,6 @@ mod tty_winsize {
         HANDLER_INSTALLED.is_completed()
     }
 
-    /// Race-free claim: returns whether the flag was set, and resets
-    /// it.  The event loop calls this once per iteration and acts
-    /// only when the return is true.
     pub fn take_changed() -> bool {
         WINSIZE_CHANGED.swap(false, Ordering::SeqCst)
     }
@@ -1698,21 +1296,7 @@ mod tty_winsize {
     }
 }
 
-// Doc 51 Track Q (2026-05-04) — SIGTSTP / SIGCONT (Ctrl+Z / fg).
-//
-// Pressing Ctrl+Z while the terminal is in raw mode is a multi-step
-// dance:
-//   1. SIGTSTP is delivered.  The handler must restore termios
-//      to "cooked" so the parent shell does not inherit raw mode,
-//      then re-raise SIGTSTP with the default disposition (= the
-//      kernel actually suspends the process).
-//   2. The user types `fg`.  SIGCONT arrives.  The handler must
-//      flip a flag so the event loop knows to re-enter raw mode
-//      and trigger a full redraw.
-//
-// This re-uses Track K's `tty_raw` storage for the saved termios
-// (= the same termios we'd use for a clean shutdown).  The handler
-// pair below extends that contract.
+// SIGTSTP/SIGCONT state for suspending and resuming raw mode cleanly.
 
 #[cfg(unix)]
 mod tty_jobctrl {
@@ -1723,33 +1307,16 @@ mod tty_jobctrl {
     static HANDLER_INSTALLED: Once = Once::new();
 
     extern "C" fn tstp_handler(signum: libc::c_int) {
-        // Restore cooked termios before suspending — the user's
-        // shell must not inherit a raw tty.  Track K's
-        // `restore_termios_signal_safe` is the right primitive, but
-        // it *clears* the saved-state flag.  We need the saved
-        // termios to STAY available so SIGCONT can re-apply raw
-        // mode.  Trick: read the termios via tcgetattr from the
-        // current state (cooked target = whatever we saved before
-        // raw-enter, which lives in tty_raw::SAVED_TERMIOS) by
-        // calling tty_raw::raw_mode_leave-equivalent inline.
-        //
-        // For simplicity and because TSTP is rare, we just call
-        // tty_raw::raw_mode_leave().  The CONT handler re-enters
-        // raw mode through the normal Lisp path, which re-saves
-        // the (now cooked) termios.
+        // Restore cooked termios before suspension.
         let _ = super::tty_raw::raw_mode_leave();
         unsafe {
-            // Reset to default + unblock + re-raise so the kernel
-            // actually stops us.
             libc::signal(signum, libc::SIG_DFL);
             let mut mask: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut mask);
             libc::sigaddset(&mut mask, signum);
             libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut());
             libc::raise(signum);
-            // After we resume (= SIGCONT delivered + this handler
-            // returns), re-install ourselves (libc::signal reset
-            // SIG_DFL in some impls).  Best-effort.
+            // Re-install in case `signal` reset the disposition.
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = tstp_handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
@@ -1759,8 +1326,6 @@ mod tty_jobctrl {
     }
 
     extern "C" fn cont_handler(_signum: libc::c_int) {
-        // Just flip the flag; the event loop picks it up and
-        // re-enters raw mode on the Lisp side.
         SIGCONT_ARRIVED.store(true, Ordering::SeqCst);
     }
 
@@ -1815,11 +1380,7 @@ fn bi_terminal_raw_mode_leave(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(read-stdin-byte-available &optional TIMEOUT-MS)' — non-blocking
-/// 1-byte read with optional timeout.  Returns:
-///   - integer 0..255 when a byte is available
-///   - nil when no input arrived within TIMEOUT-MS (default 0)
-/// On EOF returns nil (= same as timeout, indistinguishable in MVP).
+/// `(read-stdin-byte-available &optional TIMEOUT-MS)' — return one byte or nil.
 fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("read-stdin-byte-available", args, 0, Some(1))?;
     let timeout_ms = match args.get(0) {
@@ -1846,9 +1407,7 @@ fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Doc 51 Track K — test helper.  Returns t if the raw-mode flag is
-/// currently held (= a `terminal-raw-mode-enter` is pending a leave).
-/// Always nil on non-Unix.
+/// `(_termios-saved-p)' — test helper for raw-mode state.
 fn bi_termios_saved_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("_termios-saved-p", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1861,10 +1420,7 @@ fn bi_termios_saved_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Doc 51 Track K — test helper.  Returns t once the atexit + signal
-/// hooks have been installed (= after the first `terminal-raw-mode-enter`
-/// in this process).  Hooks are install-once per process and cannot be
-/// uninstalled, so this is monotonic.
+/// `(_raw-mode-hooks-installed-p)' — test helper for raw-mode hooks.
 fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("_raw-mode-hooks-installed-p", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1877,18 +1433,7 @@ fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Doc 51 Track M — `(set-quit-flag)' marks the process-wide quit
-/// flag.  The next call to [`crate::eval::eval`] will convert the
-/// flag into `EvalError::Quit`.  Used by the C-g key dispatch and
-/// any external interrupt source that wants to stop the evaluator
-/// at the next safe point instead of immediately.
-///
-/// Doc 117 §117.B (2026-05-18): the atomic transition itself now
-/// runs through the Phase 47 elisp object compiled from
-/// `lisp/nelisp-cc-bi-quit-flag.el` (= `atomic-compare-exchange'
-/// against the `QUIT_FLAG' static surfaced by `nl_quit_flag_ptr').
-/// The Rust side keeps arity validation + the `Sexp::T' return; no
-/// algorithmic Rust line survives the swap.
+/// `(set-quit-flag)' — mark the process-wide quit flag.
 fn bi_set_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("set-quit-flag", args, 0, Some(0))?;
     unsafe {
@@ -1897,12 +1442,7 @@ fn bi_set_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// Doc 51 Track M — `(clear-quit-flag)' resets the flag without
-/// raising.  Useful in tests and for flushing a stale flag after
-/// the user dismisses an unrelated condition.
-///
-/// Doc 117 §117.B (2026-05-18): elisp-cc swap, see `bi_set_quit_flag'
-/// for the dispatch convention.
+/// `(clear-quit-flag)' — clear the process-wide quit flag.
 fn bi_clear_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("clear-quit-flag", args, 0, Some(0))?;
     unsafe {
@@ -1911,12 +1451,7 @@ fn bi_clear_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-/// Doc 51 Track M — `(quit-flag-pending-p)' returns t if the flag
-/// is currently set, nil otherwise.  Read-only — does NOT clear.
-///
-/// Doc 117 §117.B (2026-05-18): elisp-cc swap.  The raw `ptr-read-u64'
-/// against the `QUIT_FLAG' slot lives in `lisp/nelisp-cc-bi-quit-flag.el';
-/// the Rust side here is the arity check + 0/non-zero → Nil/T mapping.
+/// `(quit-flag-pending-p)' — return t if the quit flag is set.
 fn bi_quit_flag_pending_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("quit-flag-pending-p", args, 0, Some(0))?;
     let raw = unsafe {
@@ -1925,27 +1460,20 @@ fn bi_quit_flag_pending_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(if raw != 0 { Sexp::T } else { Sexp::Nil })
 }
 
-/// Doc 51 Track M — install a SIGINT handler that flips the
-/// process-wide quit flag instead of terminating.  Idempotent;
-/// repeated calls are a no-op.  Returns t.  No-op (returns t) on
-/// non-Unix.
+/// `(install-sigint-handler)' — install the SIGINT quit-flag handler.
 fn bi_install_sigint_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("install-sigint-handler", args, 0, Some(0))?;
     quit::install_sigint_handler();
     Ok(Sexp::T)
 }
 
-/// Doc 51 Track M — test/diagnostic helper.  Returns t once a
-/// SIGINT → quit-flag handler has been installed.  Always nil on
-/// non-Unix.
+/// `(_sigint-handler-installed-p)' — test helper for SIGINT hooks.
 fn bi_sigint_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("_sigint-handler-installed-p", args, 0, Some(0))?;
     Ok(if quit::sigint_handler_installed_p() { Sexp::T } else { Sexp::Nil })
 }
 
-/// Doc 51 Track P — install a SIGWINCH handler that flips the
-/// resize-pending flag.  Idempotent; pre-seeds the flag so the
-/// first event-loop iteration realises the initial geometry.
+/// `(install-winsize-handler)' — install the SIGWINCH handler.
 fn bi_install_winsize_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("install-winsize-handler", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1971,9 +1499,7 @@ fn bi_winsize_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Doc 51 Track P — race-free claim of the resize-pending flag.
-/// Returns t if a SIGWINCH (or initial-startup seed) is pending,
-/// nil otherwise.  Clears the flag in the same step.
+/// `(terminal-take-winsize-changed)' — claim the resize-pending flag.
 fn bi_terminal_take_winsize_changed(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("terminal-take-winsize-changed", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -1986,9 +1512,7 @@ fn bi_terminal_take_winsize_changed(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Doc 51 Track P — return the controlling tty's current size as
-/// `(COLS . ROWS)' (= integers), or nil if `ioctl(TIOCGWINSZ)`
-/// fails (e.g. stdin is not a tty).
+/// `(terminal-current-winsize)' — return `(COLS . ROWS)` or nil.
 fn bi_terminal_current_winsize(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("terminal-current-winsize", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -2004,9 +1528,7 @@ fn bi_terminal_current_winsize(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Doc 51 Track Q — install SIGTSTP / SIGCONT handlers so Ctrl+Z
-/// suspends cleanly (= termios restored before suspend) and `fg`
-/// triggers re-enter of raw mode + redraw.  Idempotent.
+/// `(install-jobctrl-handlers)' — install SIGTSTP/SIGCONT handlers.
 fn bi_install_jobctrl_handlers(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("install-jobctrl-handlers", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -2032,9 +1554,7 @@ fn bi_jobctrl_handlers_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// Doc 51 Track Q — race-free claim of the SIGCONT-arrived flag.
-/// Returns t if SIGCONT was received since the last claim (= we
-/// just resumed from suspension), nil otherwise.
+/// `(terminal-take-sigcont)' — claim the SIGCONT-arrived flag.
 fn bi_terminal_take_sigcont(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("terminal-take-sigcont", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -2047,15 +1567,7 @@ fn bi_terminal_take_sigcont(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(read &optional STREAM)' — parse one elisp form.  STREAM may be
-/// a string (= read from it), a marker / buffer / function (= NYI),
-/// or absent (= NYI: would read from stdin).
-///
-/// Phase 7 Stage 7.6.a (Doc 71 §3.1): mandatory delegation to elisp
-/// `nelisp--read-from-string-impl' for the string case, matching the
-/// Stage 7.2.d retirement of `bi_read_from_string''s Rust fallback.
-/// `read-from-string-impl' returns `(FORM . CONSUMED-END)'; `read'
-/// returns just FORM, so we take `car' of the result.
+/// `(read &optional STREAM)' — parse one elisp form from a string stream.
 fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("read", args, 0, Some(1))?;
     match args.get(0) {
@@ -2087,14 +1599,7 @@ fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(read-from-string STRING &optional START END)' — dispatches to
-/// the elisp impl `nelisp--read-from-string-impl' bundled in
-/// `lisp/nelisp-stdlib-reader.el' (loaded at bootstrap as the last
-/// stdlib file).  Stage 7.2.d (Doc 66): the Rust `read_str' fallback
-/// previously used here has been retired — elisp impl is mandatory.
-/// Bootstrap-time form parsing still uses `reader::read_all'
-/// directly (separate path); Stage 7.2.e retires the Rust reader
-/// entirely.
+/// `(read-from-string STRING &optional START END)' — delegate to the elisp reader.
 fn bi_read_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("read-from-string", args, 1, Some(3))?;
     let impl_fn = env.lookup_function("nelisp--read-from-string-impl").map_err(|_| {
@@ -2113,13 +1618,7 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     if elisp_featurep(env, &feature)? {
         return Ok(Sexp::Symbol(feature));
     }
-    // Doc 47 Stage 8b — actually try `load' on the feature name when
-    // not yet provided AND a `load-path' is configured.  Without
-    // `load-path' set, fall back to the pre-Stage-8b marker behaviour
-    // (silently provide the feature) so callers driving the evaluator
-    // without file context (= `eval_str_all', most cargo tests) keep
-    // working.  The multi-file driver `eval_str_all_at_path' seeds
-    // `load-path' so this branch fires there.
+    // Without a load path or explicit filename, keep bootstrap behavior.
     let filename = match args.get(1) {
         Some(Sexp::Str(s)) => Some(s.clone()),
         _ => None,
@@ -2132,9 +1631,6 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
     let target = filename.unwrap_or_else(|| feature.clone());
     let load_args = vec![Sexp::Str(target), if noerror { Sexp::T } else { Sexp::Nil }];
-    // Rust-min batch 7f: dispatch to elisp `load' through the function
-    // cell so user-level `(defalias 'load ...)' redefinitions are
-    // honoured (the prior direct-call shape couldn't see them).
     let load_fn = env.lookup_function("load")?;
     match super::apply_function(&load_fn, &load_args, env) {
         Ok(_) => {}
@@ -2156,9 +1652,7 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Symbol(feature))
 }
 
-/// Rust-min batch 7i: query the elisp `featurep' through its function
-/// cell so any user-level `(defalias 'featurep ...)' is honoured (same
-/// rationale as the `bi_require' → elisp `load' dispatch in 7f).
+/// Query `featurep` through its function cell.
 fn elisp_featurep(env: &mut Env, feature: &str) -> Result<bool, EvalError> {
     let fn_cell = env.lookup_function("featurep")?;
     let result = super::apply_function(
@@ -2169,10 +1663,7 @@ fn elisp_featurep(env: &mut Env, feature: &str) -> Result<bool, EvalError> {
     Ok(is_truthy(&result))
 }
 
-/// Rust-min batch 7i: same dispatch shape as `elisp_featurep' for the
-/// auto-provide branch in `bi_require' (= "no load-path / no filename"
-/// fallback that marks the feature provided without actually loading
-/// anything — Phase 8.0.2 no-file-IO bootstrap contract).
+/// Call `provide` through its function cell.
 fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
     let fn_cell = env.lookup_function("provide")?;
     super::apply_function(
@@ -2183,15 +1674,9 @@ fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
     Ok(())
 }
 
-// ===== Vector / generic accessor helpers (Phase 8.x core) =====
+// ===== Vector / generic accessor helpers =====
 
-/// Doc 117 §117.A.1 (2026-05-17): the `(make-vector N INIT)' body
-/// now routes through the Phase 47-compiled `nelisp_bi_make_vector'
-/// function in `lisp/nelisp-cc-bi-make-vector.el'.  The Rust side
-/// here is a thin arity/range-check + caller-owned-slot setup; the
-/// allocation (`vector-make' §115.1) and fill loop (`vector-slot-set'
-/// §111.E, recursive helper) live only in elisp.  No Rust
-/// algorithmic line survives the swap.
+/// `(make-vector N INIT)' — allocate a vector filled with `INIT`.
 fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("make-vector", args, 2, Some(2))?;
     let len = as_int("make-vector", &args[0])?;
