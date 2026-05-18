@@ -787,23 +787,6 @@
      :source-var nelisp-cc-reader-lexer--source
      :output "nelisp_reader_lex_one.o"
      :requires-arch x86_64)
-    ;; Doc 122 §122.C — Extended extern-call (f64 args + f64 return) probes.
-    ;; Three entries wrapping libm `sqrt' / `sin' / `cos' to verify the
-    ;; new type-annotated arg shape + `extern-call-f64' head op + per-
-    ;; class register placement (= f64 → xmm0-7, i64 → rdi-r9).
-    ;; Linux-x86_64 only — `extern-call' ABI ships aarch64 in follow-up.
-    (nelisp-cc-extern-call-f64
-     :source-var nelisp-cc-extern-call-f64--sqrt-source
-     :output "nelisp_libm_sqrt.o"
-     :requires-arch x86_64)
-    (nelisp-cc-extern-call-f64
-     :source-var nelisp-cc-extern-call-f64--sin-source
-     :output "nelisp_libm_sin.o"
-     :requires-arch x86_64)
-    (nelisp-cc-extern-call-f64
-     :source-var nelisp-cc-extern-call-f64--cos-source
-     :output "nelisp_libm_cos.o"
-     :requires-arch x86_64)
     ;; Doc 116 §116.B — pure-elisp Reader parser.  Single manifest
     ;; entry; the source defconst is a `(seq DEFUN ...)' of ~25
     ;; mutually-recursive helpers + one public entry

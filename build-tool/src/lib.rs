@@ -154,10 +154,6 @@ pub mod elisp_cc_spike {
             buf_ptr: *mut u8,
             read_size: i64,
         ) -> i64;
-        // Doc 122 §122.C — Extended extern-call (f64 + varargs) probes.
-        fn nelisp_libm_sqrt(x: f64) -> f64;
-        fn nelisp_libm_sin(x: f64) -> f64;
-        fn nelisp_libm_cos(x: f64) -> f64;
         // Doc 123 §123.A-D — refcount + GC walk kernels (live via tests/).
         fn nelisp_rc_inc(box_ptr: *mut i64) -> i64;
         fn nelisp_rc_dec(box_ptr: *mut i64) -> i64;
@@ -551,11 +547,7 @@ pub mod elisp_cc_spike {
         (path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64
     );
 
-    // Doc 122 §122.C libm probes + Doc 123 §123.A-C rc primitive
-    // wrappers — collapsed via §127.A `cc_wrap!'.
-    cc_wrap!(libm_sqrt: nelisp_libm_sqrt, (x: f64) -> f64);
-    cc_wrap!(libm_sin: nelisp_libm_sin, (x: f64) -> f64);
-    cc_wrap!(libm_cos: nelisp_libm_cos, (x: f64) -> f64);
+    // Doc 123 §123.A-C rc primitive wrappers (collapsed via §127.A cc_wrap!).
     cc_wrap!(rc_inc: nelisp_rc_inc, (box_ptr: *mut i64) -> i64);
     cc_wrap!(rc_dec: nelisp_rc_dec, (box_ptr: *mut i64) -> i64);
     cc_wrap!(rc_strong_count: nelisp_rc_strong_count, (box_ptr: *const u8) -> i64);
