@@ -243,33 +243,6 @@ impl Env {
         self.mirror_set_function(name, func);
     }
 
-    /// `defvar' / `defconst' — install only if unbound.  Post-bootstrap
-    /// dispatches to elisp `nelisp-env-defvar'; pre-bootstrap uses the
-    /// Rust `mirror_*' helpers directly.
-    pub fn defvar(&mut self, name: &str, value: Sexp, is_constant: bool) {
-        let f = match self.lookup_function("nelisp-env-defvar") {
-            Ok(f) => f,
-            Err(_) => {
-                if !self.mirror_is_bound(name) {
-                    self.mirror_set_value(name, value);
-                }
-                if is_constant {
-                    self.mirror_set_constant(name, true);
-                }
-                return;
-            }
-        };
-        // `Sexp::Str' — `nelisp--fast-hash-put' FNV-1a hashes byte
-        // sequences; a Symbol would crash on `(length symbol)'.
-        let args = [
-            self.globals_record.clone(),
-            Sexp::Str(name.to_string()),
-            value,
-            if is_constant { Sexp::T } else { Sexp::Nil },
-        ];
-        let _ = super::apply_function(&f, &args, self);
-    }
-
     pub fn push_frame(&mut self) {
         self.frame_push_rust_direct();
     }
@@ -291,17 +264,6 @@ impl Env {
         } else {
             self.mirror_set_value(name, value);
         }
-    }
-
-    /// `boundp' — true iff `name' resolves in any frame or has a global value.
-    pub fn is_bound(&self, name: &str) -> bool {
-        if self.find_frame_cell(name).is_some() {
-            return true;
-        }
-        if name == "nelisp--unbound-marker" {
-            return true;
-        }
-        self.mirror_is_bound(name)
     }
 
     /// `fboundp' — true iff `name' has a global function cell.
