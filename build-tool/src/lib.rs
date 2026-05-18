@@ -33,7 +33,6 @@ compile_error!(
      (Phase 47 emit is x86_64-linux only).  Build via Docker / Linux VM."
 );
 
-pub mod bridge;
 pub mod eval;
 // Phase 5 Stage 5.0 / Doc 77b Stage b.4 — Cranelift JIT.  Lowered
 // primitives flow through elisp wrappers in
