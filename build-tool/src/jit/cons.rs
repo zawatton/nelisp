@@ -1,18 +1,12 @@
-//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — cons trampolines,
-//! dlsym-exported.
-//!
-//! The 5 `nl_jit_cons_*' trampolines below are `#[no_mangle] pub unsafe
-//! extern "C"' so the binary's dynamic symbol table exposes them (via the
-//! `-rdynamic' link flag in `.cargo/config.toml').  Two callers reach
-//! them at runtime: (1) nelisp-cc compiled hot paths via
-//! `:ssa-call-primitive' + `nelisp-cc--dlsym-resolve' direct fixup, and
-//! (2) `nelisp-jit-substrate.el' / `-strategy.el' via
+//! Cons trampolines, dlsym-exported via `-rdynamic'.  Reached by (1)
+//! nelisp-cc compiled hot paths via `:ssa-call-primitive' +
+//! `nelisp-cc--dlsym-resolve' direct fixup, and (2)
+//! `nelisp-jit-substrate.el' / `-strategy.el' via
 //! `bridge::unified_fn_ptr's name → fn-ptr table.
 //!
-//! Doc 120 §120.C: 4 of 5 trampolines (`car' / `cdr' / `setcar' /
-//! `setcdr') swap to Phase-47-compiled elisp (= `lisp/nelisp-cc-jit-
-//! cons.el').  `nl_jit_cons_make' stays Rust (= needs temporary Sexp
-//! slots that Phase 47 has no grammar for yet).
+//! `car' / `cdr' / `setcar' / `setcdr' delegate to Phase-47-compiled
+//! elisp in `lisp/nelisp-cc-jit-cons.el'.  `nl_jit_cons_make' stays
+//! Rust — needs temporary Sexp slots that Phase 47 has no grammar for yet.
 
 use crate::eval::sexp::Sexp;
 
@@ -33,9 +27,8 @@ pub unsafe extern "C" fn nl_jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i6
 }
 
 /// `(cons A B) -> (A . B)' constructor — never wrong-type, always OK.
-///
-/// Stays Rust through Doc 120 §120.C — see module docstring for the
-/// `nl_cons_clone_pair_into_box' future-fuse extern blocker.
+/// Stays Rust until Phase 47 gains the grammar to allocate temporary
+/// Sexp slots inline.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_cons_make(
     a: *const Sexp,
@@ -79,11 +72,10 @@ pub unsafe extern "C" fn nl_jit_cons_setcdr(
     crate::elisp_cc_spike::jit_cons_setcdr(arg, val, out)
 }
 
-// Doc 120 §120.C — narrow Rust helpers for the Phase 47 elisp bodies
-// in `lisp/nelisp-cc-jit-cons.el'.  Mirror the `nl_record_type_tag_ptr'
-// shape (Doc 120 §120.B): return `*const Sexp' at an inline `NlConsBox'
-// field, then the elisp body composes `nl_sexp_clone_into' for the
-// refcount-safe copy.
+// Narrow Rust helpers for the Phase 47 elisp bodies in
+// `lisp/nelisp-cc-jit-cons.el'.  Return `*const Sexp' at an inline
+// `NlConsBox' field; the elisp body composes `nl_sexp_clone_into' for
+// the refcount-safe copy.
 //
 // # Safety
 // `arg' must be non-null and point at an initialized `Sexp'.

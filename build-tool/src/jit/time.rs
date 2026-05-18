@@ -1,19 +1,12 @@
-//! Doc 87 §86.1.f — Time-family `extern "C"' trampolines replacing the
-//! deleted `bi_nl_current_unix_time' / `bi_nl_format_unix_time' helpers
-//! in `eval/builtins.rs'.
+//! Time-family `extern "C"' trampolines for `nl-current-unix-time' and
+//! `nl-format-unix-time'.
 //!
-//! Two ABI shapes:
-//!   `nl_jit_current_unix_time' = `extern "C" fn(i64, i64) -> i64'
-//!     — 0-arg primitive bridged via `nl-jit-call-i64-i64' which
-//!     always passes 2 i64 padding values that we ignore here.
-//!   `nl_jit_format_unix_time'  = `extern "C" fn(*const Sexp,
-//!     *const Sexp, *mut Sexp) -> i64' — 2-arg Sexp shape via
-//!     `nl-jit-call-out-2', writes a fresh `Sexp::Str' into the
-//!     out-slot.
-//!
-//! Both trampolines preserve the byte-for-byte semantics of the
-//! pre-§86.1.f `bi_*' helpers — see `eval/builtins.rs' git history
-//! for the original bodies.
+//! ABI shapes:
+//!   `nl_jit_current_unix_time' : `extern "C" fn(i64, i64) -> i64'
+//!     (0-arg primitive bridged via `nl-jit-call-i64-i64'; padding args
+//!     ignored).
+//!   `nl_jit_format_unix_time'  : `extern "C" fn(*const Sexp,
+//!     *const Sexp, *mut Sexp) -> i64' (2-arg Sexp via `nl-jit-call-out-2').
 
 use crate::eval::sexp::Sexp;
 
@@ -21,8 +14,7 @@ const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
 
 /// `(nl-current-unix-time)' — seconds since the Unix epoch as i64.
-/// Padding args ignored (= bridged via `nl-jit-call-i64-i64' which
-/// always passes 2 i64 padding values).
+/// Padding args ignored (bridged via `nl-jit-call-i64-i64').
 #[no_mangle]
 pub extern "C" fn nl_jit_current_unix_time(_a: i64, _b: i64) -> i64 {
     std::time::SystemTime::now()
@@ -35,8 +27,7 @@ pub extern "C" fn nl_jit_current_unix_time(_a: i64, _b: i64) -> i64 {
 /// a UTC epoch.  FORMAT must be `Sexp::Str' / `Sexp::MutStr'; EPOCH
 /// must be `Sexp::Int' or `Sexp::Float' (truncated).  Writes a fresh
 /// `Sexp::Str' into OUT.  Returns TRAMPOLINE_ERR on type mismatch or
-/// invalid epoch (= passed back as `wrong-type-argument' by the elisp
-/// wrapper in `lisp/nelisp-stdlib-time.el').
+/// invalid epoch (re-signalled as `wrong-type-argument' by the elisp wrapper).
 #[no_mangle]
 pub extern "C" fn nl_jit_format_unix_time(
     fmt_arg: *const Sexp,

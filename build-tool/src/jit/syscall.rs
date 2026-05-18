@@ -1,30 +1,13 @@
-//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — syscall
-//! trampolines, dlsym-exported.
+//! Syscall trampolines, dlsym-exported via `-rdynamic'.
 //!
-//! Two `#[no_mangle] pub unsafe extern "C"' trampolines:
+//! - `nl_jit_syscall_call(nr, a0..a5) -> i64' — non-variadic wrapper
+//!   around `libc::syscall' with errno normalization (negative on
+//!   error = `-errno', else raw return).
+//! - `nl_jit_syscall_supported_p() -> i64' — cfg-driven 1/0.
 //!
-//!   - `nl_jit_syscall_call(nr, a0..a5) -> i64' — non-variadic wrapper
-//!     around `libc::syscall' with errno normalization (negative on
-//!     error = `-errno', else the raw return value).  This is what the
-//!     elisp `nelisp--syscall' wrapper actually calls.
-//!   - `nl_jit_syscall_supported_p() -> i64' — a 1-line `cfg(target_os
-//!     = "linux")' constant fn returning 1 / 0, mirroring the
-//!     pre-takeover 2-instruction Cranelift IR (`iconst + return').
-//!
-//! Bridge name mapping (in `bridge.rs::unified_fn_ptr'):
-//!
+//! Bridge name map (`bridge.rs::unified_fn_ptr'):
 //!   nelisp_jit_syscall              -> nl_jit_syscall_call
 //!   nelisp_jit_syscall_supported_p  -> nl_jit_syscall_supported_p
-//!
-//! 25 specialized primitives (= `sendmsg' / `recvmsg' / `pollfd' /
-//! `signalfd' / `sockaddr_un' / etc. buffer handling) are unchanged —
-//! they live in `eval::builtins' as Rust dispatcher entries (out of
-//! scope per Doc 62 §2.2.1; Doc 80 Stage 5.8 elisp-ifies these in
-//! parallel).
-//!
-//! The `-rdynamic' link flag in `.cargo/config.toml' pushes these
-//! `#[no_mangle]' symbols into the binary's dynamic symbol table so
-//! `dlsym(RTLD_DEFAULT, ...)' can locate them at runtime.
 
 /// Linux build returns 1, others return 0.
 #[cfg(target_os = "linux")]
@@ -59,9 +42,8 @@ pub unsafe extern "C" fn nl_jit_syscall_call(
     }
 }
 
-/// Non-Linux build: ENOSYS-equivalent so the dlsym entry surface
-/// remains identical across platforms even though the OS surface is
-/// currently Linux-only (Doc 62 §3 5.6 = future Path B).
+/// Non-Linux: ENOSYS so the dlsym entry surface is identical across
+/// platforms even though the OS surface is currently Linux-only.
 #[cfg(not(target_os = "linux"))]
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_syscall_call(

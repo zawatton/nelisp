@@ -1,18 +1,11 @@
-//! Doc 87 §86.1.f — `string-match-p' migrated to elisp on top of this
-//! `extern "C"' trampoline that replaces the deleted `bi_string_match_p'
-//! helper in `eval/builtins.rs'.  Shape: `extern "C" fn(*const Sexp,
-//! *const Sexp, *mut Sexp) -> i64' — 2-arg Sexp shape via
-//! `nl-jit-call-out-2', writes `Sexp::T' / `Sexp::Nil' into the
-//! out-slot.
+//! `string-match-p' trampoline.  Shape: `extern "C" fn(*const Sexp,
+//! *const Sexp, *mut Sexp) -> i64' (2-arg Sexp via `nl-jit-call-out-2');
+//! writes `Sexp::T' / `Sexp::Nil' into the out-slot.
 //!
-//! The body preserves the carefully tuned literal-pattern fast-path
-//! list from the original `bi_string_match_p' (= IPv4 / decimal /
-//! whitespace / brace patterns the standalone NeLisp Elisp consumers
-//! reach for) plus the generic anchored-prefix / anchored-suffix /
-//! contains fallback.  No real regex backend is pulled in — keeping
-//! this trampoline pure-stdlib means the cargo dep graph does not
-//! grow for §86.1.f and the byte-for-byte semantics match the
-//! pre-migration helper.
+//! Hand-tuned literal-pattern fast paths (IPv4 / decimal / whitespace /
+//! brace) + generic anchored-prefix / anchored-suffix / contains
+//! fallback.  Pure-stdlib (no regex backend) to keep the cargo dep
+//! graph small.
 
 use crate::eval::sexp::Sexp;
 
@@ -77,7 +70,7 @@ fn match_inner(pat: &str, text: &str) -> bool {
 
 /// `(string-match-p PATTERN TEXT)' — returns Sexp::T on match,
 /// Sexp::Nil on no match.  TRAMPOLINE_ERR only for non-string PATTERN
-/// or TEXT (= the elisp wrapper re-signals `wrong-type-argument').
+/// or TEXT (elisp wrapper re-signals `wrong-type-argument').
 #[no_mangle]
 pub extern "C" fn nl_jit_string_match_p(
     pat_arg: *const Sexp,

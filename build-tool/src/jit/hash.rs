@@ -1,13 +1,7 @@
-//! Doc 87 §86.1.f — `nl-secure-hash' migrated to elisp on top of this
-//! `extern "C"' trampoline that replaces the deleted `bi_nl_secure_hash'
-//! helper.  Shape: `extern "C" fn(*const Sexp, *const Sexp, *mut Sexp)
-//! -> i64' — 2-arg Sexp shape via `nl-jit-call-out-2', writes the
-//! lowercase hex digest as a fresh `Sexp::Str' into the out-slot.
-//!
-//! Backed by the same `sha1' / `sha2' / `md5' crates the original
-//! helper used so build-tool stays self-contained; algorithm coverage
-//! matches the prior surface (sha1 / sha224 / sha256 / sha384 /
-//! sha512 / md5).
+//! `nl-secure-hash' trampoline.  Shape: `extern "C" fn(*const Sexp,
+//! *const Sexp, *mut Sexp) -> i64' (2-arg Sexp via `nl-jit-call-out-2');
+//! writes lowercase hex digest as a fresh `Sexp::Str' into the out-slot.
+//! Algorithms: sha1 / sha224 / sha256 / sha384 / sha512 / md5.
 
 use crate::eval::sexp::Sexp;
 
@@ -39,11 +33,9 @@ fn text_bytes(v: &Sexp) -> Option<Vec<u8>> {
     }
 }
 
-/// `(nl-secure-hash ALGO STRING)' — see the pre-§86.1.f
-/// `bi_nl_secure_hash' helper in `eval/builtins.rs' git history for
-/// the contract this trampoline preserves.  Returns TRAMPOLINE_ERR
-/// for unsupported ALGO or non-string STRING; the elisp wrapper
-/// re-signals as `wrong-type-argument'.
+/// `(nl-secure-hash ALGO STRING)' — returns TRAMPOLINE_ERR for
+/// unsupported ALGO or non-string STRING; the elisp wrapper re-signals
+/// as `wrong-type-argument'.
 #[no_mangle]
 pub extern "C" fn nl_jit_secure_hash(
     algo_arg: *const Sexp,
