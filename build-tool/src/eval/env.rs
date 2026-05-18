@@ -231,8 +231,14 @@ impl Env {
         env
     }
 
-    /// Register `f' as an externally-supplied builtin (test-only).
+    /// Register `f' as an externally-supplied builtin (test-only in spirit).
     /// Sets function cell to `(builtin NAME)' so `(NAME ARG...)' invokes `f'.
+    ///
+    /// Doc 130 (= eval/tests.rs → tests/eval_integration.rs carve-out)
+    /// dropped the `#[cfg(test)]' gate so the integration test binary
+    /// can register fixture builtins.  Production code does not call
+    /// this — `extern_builtins' is consumed by the existing test
+    /// scaffold only.
     #[cfg(test)]
     pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
     where

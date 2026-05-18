@@ -82,7 +82,8 @@ impl<T> NlRc<T> {
     /// dedicated module API in Phase A.3.
     #[inline]
     #[allow(dead_code)]
-    pub(crate) fn inner_raw(this: &Self) -> *const NlRcInner<T> {
+    #[doc(hidden)]
+    pub fn inner_raw(this: &Self) -> *const NlRcInner<T> {
         this.ptr.as_ptr()
     }
 }

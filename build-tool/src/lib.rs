@@ -85,10 +85,16 @@ pub mod elisp_cc_spike {
     /// `pub unsafe fn FOO(args) -> ret { nelisp_FOO(args) }' wrapper;
     /// for those whose docstring is just the Doc § reference (=
     /// derivable from the function name), the wrapper collapses to
-    /// `cc_wrap!(FOO: nelisp_FOO, (args) -> ret);'.
+    /// `cc_wrap!(FOO: nelisp_FOO, (args) -> ret);'.  Optional 4th arg
+    /// is a literal docstring (= for wrappers that carry a `# Safety'
+    /// block or other narrative beyond the Doc § reference).
     macro_rules! cc_wrap {
         ($name:ident : $extern:ident, ($($arg:ident: $aty:ty),* $(,)?) -> $ret:ty) => {
             #[allow(clippy::missing_safety_doc)]
+            pub unsafe fn $name($($arg: $aty),*) -> $ret { $extern($($arg),*) }
+        };
+        ($name:ident : $extern:ident, ($($arg:ident: $aty:ty),* $(,)?) -> $ret:ty, $doc:literal) => {
+            #[doc = $doc]
             pub unsafe fn $name($($arg: $aty),*) -> $ret { $extern($($arg),*) }
         };
     }
@@ -937,68 +943,20 @@ pub mod elisp_cc_spike {
         unsafe { nelisp_fact_i64(n) }
     }
 
-    /// Doc 100 §100.C — `(truncate INT)' Int arm, elisp-compiled.
-    ///
-    /// `arg0' must point at a valid `Sexp::Int' value; `result_slot'
-    /// must point at a 32-byte writable Sexp slot.  The elisp body
-    /// reads the i64 payload of `*arg0' and writes `Sexp::Int(same)'
-    /// into `*result_slot'.  No allocation, no Rust helpers — every
-    /// memory access is a single `disp8' load / store emitted by
-    /// Phase 47's `sexp-int-unwrap' / `sexp-int-make' grammar forms.
-    ///
-    /// # Safety
-    ///
-    /// - `arg0' must be a non-null pointer to an initialized `Sexp::Int'.
-    /// - `result_slot' must be a non-null, properly aligned 32-byte
-    ///   writable region (= `&mut MaybeUninit<Sexp>' or
-    ///   `&mut Sexp::Nil' both work).  The elisp body writes bytes
-    ///   `[0, 1)` and `[8, 16)` only; the remaining bytes are left
-    ///   unmodified, so callers that read them must initialize first.
-    pub unsafe fn truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp {
-        nelisp_truncate_int(arg0, result_slot)
-    }
+    // Doc 100 §100.C — `(truncate INT)' Int arm, elisp-compiled.
+    cc_wrap!(truncate_int: nelisp_truncate_int, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
 
     // Doc 101 §101.B — `(length CONS)' proper-list walk, elisp-compiled.
     cc_wrap!(length_cons: nelisp_length_cons, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
 
-    /// Doc 101 §101.C — `(eq SYMBOL SYMBOL)' via elisp-compiled
-    /// Symbol/Str read ops.
-    ///
-    /// `arg0' and `arg1' must point at valid `Sexp` values.
-    /// `slot' must point at a writable 32-byte Sexp slot.
-    ///
-    /// # Safety
-    ///
-    /// - `arg0' / `arg1' must be non-null pointers to initialized `Sexp`s.
-    /// - `slot' must be non-null and writable for at least one Sexp slot.
-    pub unsafe fn eq_symbol(arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
-        nelisp_eq_symbol(arg0, arg1, slot)
-    }
+    // Doc 101 §101.C — `(eq SYMBOL SYMBOL)' via elisp-compiled Symbol/Str ops.
+    cc_wrap!(eq_symbol: nelisp_eq_symbol, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
 
     // Doc 101 §101.D — `(cons A B)' via elisp-compiled Cons construction ops.
     cc_wrap!(cons_construct: nelisp_cons_construct, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
 
-    /// Doc 117 §117.A.2 — `(string-bytes STR)' byte-length via the
-    /// elisp-compiled `str-len' + `sexp-int-make' pair.
-    ///
-    /// `arg0' must point at `Sexp::Str(_)' or `Sexp::Symbol(_)' — the
-    /// Rust shim in `eval::builtins::bi_string_bytes' unwraps
-    /// `Sexp::MutStr' into the underlying `Sexp::Str' view before
-    /// calling, so this safe wrapper does not need a MutStr-aware path.
-    /// `slot' must point at a writable 32-byte Sexp slot
-    /// (`Sexp::Nil' default-init works because the elisp body
-    /// overwrites bytes `[0, 1)` for the tag plus `[8, 16)` for the
-    /// i64 payload).  Returns `slot' for caller ergonomics.
-    ///
-    /// # Safety
-    ///
-    /// - `arg0' must be non-null and point at an initialized
-    ///   `Sexp::Str' / `Sexp::Symbol'.
-    /// - `slot' must be non-null, properly aligned, and writable for
-    ///   one Sexp slot.
-    pub unsafe fn bi_string_bytes(arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
-        nelisp_bi_string_bytes(arg0, slot)
-    }
+    // Doc 117 §117.A.2 — `(string-bytes STR)' byte-length via `str-len' + `sexp-int-make'.
+    cc_wrap!(bi_string_bytes: nelisp_bi_string_bytes, (arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
 
     // Doc 111 §111.B — `(recordp X)' via elisp-compiled Record ops.
     cc_wrap!(recordp: nelisp_recordp, (arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
@@ -1009,272 +967,29 @@ pub mod elisp_cc_spike {
     // does not Drop arbitrary bytes.
     cc_wrap!(aref_vector: nelisp_aref_vector, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
 
-    /// Doc 117 §117.A.1 — `(make-vector N INIT)' via elisp-compiled
-    /// `vector-make' (§115.1) + `vector-slot-set' (§111.E) fill loop.
-    ///
-    /// `n_ptr` must point at a `Sexp::Int` with payload N >= 0 (= the
-    /// Rust dispatcher in `eval::builtins::bi_make_vector' enforces
-    /// the non-negative invariant before calling).  `init_ptr` may
-    /// point at any Sexp shape; `vector-slot-set' clones it once per
-    /// slot via the refcount-aware `nl_vector_set_slot' helper, so
-    /// the caller's `*init_ptr' refcount is preserved.  `slot' must
-    /// point at a writable 32-byte Sexp slot pre-initialised to
-    /// `Sexp::Nil'; on return it holds the fresh
-    /// `Sexp::Vector(NlVectorRef)' with N copies of `*init_ptr'.
-    /// Returns `i64' = 1 on success (= the `and' chain terminator
-    /// inside the elisp body — same convention as `frame_push'
-    /// (§115.3) / `frame_pop' (§115.2)).
-    ///
-    /// # Safety
-    ///
-    /// - `n_ptr` must be non-null and point at an initialised
-    ///   `Sexp::Int(N)` with N >= 0.
-    /// - `init_ptr` must be non-null and point at an initialised
-    ///   `Sexp` value.
-    /// - `slot` must be non-null, properly aligned, and writable for
-    ///   one Sexp slot.  Initialise it to `Sexp::Nil` so the
-    ///   `vector-make' op's tag + payload writes do not collide with
-    ///   a live heap-tagged Sexp drop.
-    pub unsafe fn bi_make_vector(
-        n_ptr: *const Sexp,
-        init_ptr: *const Sexp,
-        slot: *mut Sexp,
-    ) -> i64 {
-        nelisp_bi_make_vector(n_ptr, init_ptr, slot)
-    }
+    // Doc 117 §117.A.1 — `(make-vector N INIT)' via `vector-make' (§115.1) + fill loop.
+    cc_wrap!(bi_make_vector: nelisp_bi_make_vector, (n_ptr: *const Sexp, init_ptr: *const Sexp, slot: *mut Sexp) -> i64);
 
-    /// Doc 117 §117.B — `(set-quit-flag)' atomic transition via
-    /// elisp-compiled `atomic-compare-exchange' (§122.E).
-    ///
-    /// `flag_ptr' must point at the `QUIT_FLAG' static i64 slot in
-    /// `eval/quit.rs' (= obtained from `nl_quit_flag_ptr').  The
-    /// elisp body issues `CAS(0, 1, SeqCst)' against the slot; the
-    /// return is the CAS result (1 on transition 0→1, 0 if the slot
-    /// was already 1).  Both outcomes satisfy the post-condition
-    /// (slot == 1), so the Rust shim in `eval::builtins::bi_set_quit_flag'
-    /// discards the return and yields `Sexp::T'.
-    ///
-    /// # Safety
-    /// - `flag_ptr' must be non-null and 8-byte aligned, pointing at
-    ///   the `'static` `AtomicI64` storage of `QUIT_FLAG'.  Aliasing
-    ///   with Rust-side `AtomicI64::{store, load, swap}' calls is
-    ///   sound because the elisp op performs a `LOCK CMPXCHG' which
-    ///   is itself atomic + interferes correctly with the Rust ops.
-    pub unsafe fn bi_set_quit_flag(flag_ptr: *mut i64) -> i64 {
-        nelisp_bi_set_quit_flag(flag_ptr)
-    }
+    // Doc 117 §117.B — QUIT_FLAG atomic ops (set / clear / pending-p) via §122.E CAS.
+    cc_wrap!(bi_set_quit_flag: nelisp_bi_set_quit_flag, (flag_ptr: *mut i64) -> i64);
+    cc_wrap!(bi_clear_quit_flag: nelisp_bi_clear_quit_flag, (flag_ptr: *mut i64) -> i64);
+    cc_wrap!(bi_quit_flag_pending_p: nelisp_bi_quit_flag_pending_p, (flag_ptr: *const i64) -> i64);
 
-    /// Doc 117 §117.B — `(clear-quit-flag)' atomic transition via
-    /// elisp-compiled `atomic-compare-exchange' (§122.E).
-    ///
-    /// Symmetric to [`bi_set_quit_flag`] — CAS(1, 0, SeqCst).  The
-    /// Rust shim discards the return and yields `Sexp::T'.
-    ///
-    /// # Safety
-    /// Identical contract to [`bi_set_quit_flag`].
-    pub unsafe fn bi_clear_quit_flag(flag_ptr: *mut i64) -> i64 {
-        nelisp_bi_clear_quit_flag(flag_ptr)
-    }
+    // Doc 117 §117.B / Doc 122 §122.H — I/O syscall sweep (stderr/stdout/stdin).
+    // Single libc `write' / `read' per call; non-string args become 0-length no-ops.
+    cc_wrap!(bi_write_stderr_line: nelisp_bi_write_stderr_line, (str_ptr: *const Sexp) -> i64);
+    cc_wrap!(bi_write_stdout_bytes: nelisp_bi_write_stdout_bytes, (str_ptr: *const Sexp) -> i64);
+    cc_wrap!(bi_read_stdin_bytes: nelisp_bi_read_stdin_bytes, (buf_ptr: *mut u8, limit: i64) -> i64);
 
-    /// Doc 117 §117.B — `(quit-flag-pending-p)' atomic read via
-    /// elisp-compiled `ptr-read-u64' (§122.E).
-    ///
-    /// `flag_ptr' must point at the `QUIT_FLAG' static i64 slot.  The
-    /// elisp body issues a `ptr-read-u64 flag_ptr 0' op which lowers
-    /// to a `MOV' from the aligned 8-byte slot.  Returns the slot
-    /// value (0 = clear, non-zero = pending); the Rust shim maps
-    /// non-zero → `Sexp::T' / zero → `Sexp::Nil'.
-    ///
-    /// # Safety
-    /// Identical contract to [`bi_set_quit_flag`].
-    pub unsafe fn bi_quit_flag_pending_p(flag_ptr: *const i64) -> i64 {
-        nelisp_bi_quit_flag_pending_p(flag_ptr)
-    }
+    // Doc 111 §111.D — Cell ops (value / set-value / make / null-p) via Phase 47 grammar.
+    cc_wrap!(cell_value: nelisp_cell_value, (arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
+    cc_wrap!(cell_set_value: nelisp_cell_set_value, (arg0: *const Sexp, val_ptr: *const Sexp) -> ());
+    cc_wrap!(cell_make: nelisp_cell_make, (val_ptr: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
+    cc_wrap!(cell_null_p: nelisp_cell_null_p, (arg0: *const Sexp) -> i64);
 
-    /// Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
-    /// `(nelisp--write-stderr-line STR)' algorithmic body via the
-    /// Phase 47 elisp object compiled from
-    /// `lisp/nelisp-cc-bi-write-stderr-line.el'.
-    ///
-    /// The elisp body issues `write(2, str-bytes-ptr(str), str-len(str))'
-    /// — a single libc `write' syscall against fd 2 (stderr) for the
-    /// user payload bytes.  The Rust shim
-    /// (`eval::builtins::bi_write_stderr_line') keeps:
-    ///   - arity check (1 arg)
-    ///   - `WrongType' dispatch (`Sexp::Str' / `Sexp::MutStr' only)
-    ///   - the trailing `\n' byte (= `writeln!' parity)
-    ///   - the final `err.flush()' call
-    ///   - the `Sexp' return value (= `args[0].clone()')
-    /// so that user-observable behaviour matches the pre-swap body.
-    ///
-    /// `str_ptr' must point at a `Sexp::Str' / `Sexp::Symbol' /
-    /// `Sexp::MutStr' (the elisp body's `str-bytes-ptr' op safely
-    /// handles all three variants — non-string variants would return
-    /// a null pointer + length 0, which is a benign no-op `write').
-    /// Returns the libc `write(2)' i64 (= bytes written, or -1 on
-    /// error).  The Rust shim discards the return — the pre-swap
-    /// `let _ = writeln!()` had the same error-suppression contract.
-    ///
-    /// # Safety
-    /// - `str_ptr' must be non-null and point at a live `Sexp' value
-    ///   (= the caller's `&args[0] as *const Sexp').  The elisp body
-    ///   only reads through `nl_str_bytes_ptr' (= variant-safe) +
-    ///   inline `String::len' (= caller-validated tag), so passing a
-    ///   non-string variant yields a 0-length `write' rather than UB.
-    pub unsafe fn bi_write_stderr_line(str_ptr: *const Sexp) -> i64 {
-        nelisp_bi_write_stderr_line(str_ptr)
-    }
-
-    /// Doc 117 §117.B (cont) — `(nelisp--write-stdout-bytes STR)'
-    /// algorithmic body via the Phase 47 elisp object compiled from
-    /// `lisp/nelisp-cc-bi-write-stdout-bytes.el'.
-    ///
-    /// Twin of [`bi_write_stderr_line`] modulo (fd=1, no trailing
-    /// newline).  The elisp body issues
-    /// `write(1, str-bytes-ptr(str), str-len(str))' — a single libc
-    /// `write' syscall against fd 1 (stdout).  The Rust shim
-    /// (`eval::builtins::bi_write_stdout_bytes') keeps:
-    ///   - arity check (1 arg)
-    ///   - `WrongType' dispatch (`Sexp::Str' / `Sexp::MutStr' only)
-    ///   - the final `out.flush()' call
-    ///   - the `Sexp' return value (= `args[0].clone()')
-    ///   - I/O error → `EvalError::Internal' (= the pre-swap behaviour
-    ///                  used `map_err' instead of silently ignoring).
-    ///
-    /// # Safety
-    /// Identical contract to [`bi_write_stderr_line`].
-    pub unsafe fn bi_write_stdout_bytes(str_ptr: *const Sexp) -> i64 {
-        nelisp_bi_write_stdout_bytes(str_ptr)
-    }
-
-    /// Doc 117 §117.B (cont) — `(read-stdin-bytes LIMIT)' syscall body
-    /// via the Phase 47 elisp object compiled from
-    /// `lisp/nelisp-cc-bi-read-stdin-bytes.el'.
-    ///
-    /// Issues a single `read(0, buf_ptr, limit)' libc syscall against
-    /// fd 0 (stdin).  The destination buffer is caller-owned (= Rust
-    /// `Vec<u8>` allocated in the shim before the call).  Returns the
-    /// libc `read(2)' i64: `> 0' = bytes received, `0' = EOF, `-1' =
-    /// errno set.  The Rust shim
-    /// (`eval::builtins::bi_read_stdin_bytes') keeps:
-    ///   - arity check (1 arg)
-    ///   - positive-integer validation (`Sexp::Int(n)' with `n > 0')
-    ///   - destination buffer allocation (`vec![0u8; limit]`)
-    ///   - EOF → `Sexp::Nil' branch (= `n == 0' from this fn)
-    ///   - I/O error → `EvalError::Internal' branch (= `n < 0' from
-    ///                 this fn — `errno' would land here but the libc
-    ///                 syscall's errno is currently not surfaced
-    ///                 through the elisp body; matches the pre-swap
-    ///                 `Err(e)' arm semantically for non-EOF errors).
-    ///   - successful read → truncate buf to `n' bytes + `String::
-    ///                       from_utf8_lossy' → `Sexp::Str'.
-    ///
-    /// # Safety
-    /// - `buf_ptr' must be non-null, properly aligned for `u8' (= any
-    ///   alignment), and writable for `limit' bytes.  Caller (the
-    ///   Rust shim) must hold the `Vec<u8>` alive across the call;
-    ///   `Vec::as_mut_ptr' satisfies the requirement.
-    /// - `limit' must be `> 0' and fit in the host `usize' (= caller-
-    ///   validated by the Rust shim's positive-integer dispatch).
-    pub unsafe fn bi_read_stdin_bytes(buf_ptr: *mut u8, limit: i64) -> i64 {
-        nelisp_bi_read_stdin_bytes(buf_ptr, limit)
-    }
-
-    /// Doc 111 §111.D — `(cell-value H SLOT)' via elisp-compiled Cell ops.
-    ///
-    /// `arg0` must point at `Sexp::Cell(_)`; `slot` must point at a
-    /// writable 32-byte Sexp slot.  The elisp body copies the cell's
-    /// inline `value` Sexp (= NlCell offset 0) into `*slot` via two
-    /// 16-byte `movdqu' pairs.  No refcount maintenance — see the
-    /// MVP note in `lisp/nelisp-cc-cell-ops.el'.
-    ///
-    /// # Safety
-    /// - `arg0` must be non-null and point at `Sexp::Cell(NlCellRef)`.
-    /// - `slot` must be non-null, properly aligned, and writable for
-    ///   one Sexp slot (32 bytes).
-    pub unsafe fn cell_value(arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
-        nelisp_cell_value(arg0, slot)
-    }
-
-    /// Doc 111 §111.D — `(cell-set-value H VAL)' via elisp-compiled Cell ops.
-    ///
-    /// Delegates to the Rust extern `nl_cell_set_value' which calls
-    /// `NlCellRef::set_value' (drop-then-write with refcount-aware
-    /// semantics via `Sexp::Drop' + `Sexp::Clone').
-    ///
-    /// # Safety
-    /// - `arg0` must be non-null and point at `Sexp::Cell(NlCellRef)`.
-    /// - `val_ptr` must be non-null and point at an initialized `Sexp`.
-    /// - No other `&Sexp` borrow into the cell's `value` may be live.
-    pub unsafe fn cell_set_value(arg0: *const Sexp, val_ptr: *const Sexp) {
-        nelisp_cell_set_value(arg0, val_ptr)
-    }
-
-    /// Doc 111 §111.D — `(cell-make VAL SLOT)' via elisp-compiled Cell ops.
-    ///
-    /// Allocates a fresh `NlCell` via the Rust extern `nl_alloc_cell'
-    /// (refcount-aware clone of `*val_ptr` into the new cell) and
-    /// writes `Sexp::Cell(box)` into `*slot`.
-    ///
-    /// # Safety
-    /// - `val_ptr` must be non-null and point at an initialized `Sexp`.
-    /// - `slot` must be non-null, properly aligned, and writable for
-    ///   one Sexp slot (32 bytes).
-    pub unsafe fn cell_make(val_ptr: *const Sexp, slot: *mut Sexp) -> *mut Sexp {
-        nelisp_cell_make(val_ptr, slot)
-    }
-
-    /// Doc 111 §111.D — `(cell-null-p H)' via elisp-compiled Cell ops.
-    ///
-    /// Returns 1 iff the cell's `value` Sexp currently has tag
-    /// `Sexp::Nil', else 0.  Inline tag check, no extern call.
-    ///
-    /// # Safety
-    /// - `arg0` must be non-null and point at `Sexp::Cell(NlCellRef)`.
-    pub unsafe fn cell_null_p(arg0: *const Sexp) -> i64 {
-        nelisp_cell_null_p(arg0)
-    }
-
-    /// Doc 122 §122.A — `(sexp-write-str SLOT BYTES-PTR LEN)' via
-    /// elisp-compiled Phase 47 grammar op.
-    ///
-    /// Calls the Rust `nl_alloc_str' extern which copies `len' bytes
-    /// from `bytes_ptr' into a fresh `String', wraps as
-    /// `Sexp::Str(_)', and writes the resulting 40-byte Sexp value
-    /// into `*slot'.  Returns `slot' for caller ergonomics.
-    ///
-    /// # Safety
-    /// - `slot' must be non-null, properly aligned, and writable for
-    ///   one `Sexp' slot (40 bytes).  Pre-initialise to `Sexp::Nil`
-    ///   so the inline `ptr::write' does not drop arbitrary bytes
-    ///   (same convention as `cons_construct' / `cell_make').
-    /// - `bytes_ptr' must be non-null when `len > 0' and point at
-    ///   `len' initialized bytes of valid UTF-8.  `len == 0' permits
-    ///   a dangling-but-aligned `bytes_ptr'.
-    pub unsafe fn sexp_write_str(
-        slot: *mut Sexp,
-        bytes_ptr: *const u8,
-        len: i64,
-    ) -> *mut Sexp {
-        nelisp_sexp_write_str(slot, bytes_ptr, len)
-    }
-
-    /// Doc 122 §122.A — `(sexp-write-symbol SLOT BYTES-PTR LEN)' via
-    /// elisp-compiled Phase 47 grammar op.
-    ///
-    /// Same shape as [`sexp_write_str`] but produces `Sexp::Symbol(_)`
-    /// instead of `Sexp::Str(_)'.  Does NOT consult any intern table —
-    /// see Doc 122 §5 open question.
-    ///
-    /// # Safety
-    /// Identical to [`sexp_write_str`].
-    pub unsafe fn sexp_write_symbol(
-        slot: *mut Sexp,
-        bytes_ptr: *const u8,
-        len: i64,
-    ) -> *mut Sexp {
-        nelisp_sexp_write_symbol(slot, bytes_ptr, len)
-    }
+    // Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' Phase 47 grammar ops.
+    cc_wrap!(sexp_write_str: nelisp_sexp_write_str, (slot: *mut Sexp, bytes_ptr: *const u8, len: i64) -> *mut Sexp);
+    cc_wrap!(sexp_write_symbol: nelisp_sexp_write_symbol, (slot: *mut Sexp, bytes_ptr: *const u8, len: i64) -> *mut Sexp);
 
     /// Doc 122 §122.G — `(sexp-write-float SLOT VAL)' Phase 47 grammar op.
     ///
@@ -1327,112 +1042,17 @@ pub mod elisp_cc_spike {
         crate::eval::nlstr::nl_str_to_float(bytes_ptr, len, slot)
     }
 
-    /// Doc 122 §122.B — `(mut-str-make-empty SLOT CAP)' via
-    /// elisp-compiled Phase 47 grammar op.
-    ///
-    /// Calls `nl_alloc_mut_str(cap, slot)' which allocates a fresh
-    /// `NlStrRef::new(String::with_capacity(cap))' and writes
-    /// `Sexp::MutStr(rc)' into `*slot'.  Returns `slot'.
-    ///
-    /// # Safety
-    /// - `slot' must be non-null, properly aligned, and writable for
-    ///   one `Sexp' slot.  Pre-init to `Sexp::Nil'.
-    /// - `cap' must be `>= 0' (negative values are clamped to 0).
-    pub unsafe fn mut_str_make_empty(slot: *mut Sexp, cap: i64) -> *mut Sexp {
-        nelisp_mut_str_make_empty(slot, cap)
-    }
+    // Doc 122 §122.B — MutStr Phase 47 grammar ops (make-empty / push / len / finalize).
+    cc_wrap!(mut_str_make_empty: nelisp_mut_str_make_empty, (slot: *mut Sexp, cap: i64) -> *mut Sexp);
+    cc_wrap!(mut_str_push_byte: nelisp_mut_str_push_byte, (ptr: *mut Sexp, byte: i64) -> i64);
+    cc_wrap!(mut_str_push_codepoint: nelisp_mut_str_push_codepoint, (ptr: *mut Sexp, cp: i64) -> i64);
+    cc_wrap!(mut_str_len: nelisp_mut_str_len, (ptr: *const Sexp) -> i64);
+    cc_wrap!(mut_str_finalize: nelisp_mut_str_finalize, (ptr: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
 
-    /// Doc 122 §122.B — `(mut-str-push-byte PTR BYTE)' via Phase 47
-    /// grammar op.  Wraps `nl_mut_str_push_byte'; returns the i64
-    /// sentinel 1 left in rax by the emit code.
-    ///
-    /// # Safety
-    /// `ptr' must be non-null and point at a live `Sexp::MutStr'.
-    /// See `nl_mut_str_push_byte' for the full contract.
-    pub unsafe fn mut_str_push_byte(ptr: *mut Sexp, byte: i64) -> i64 {
-        nelisp_mut_str_push_byte(ptr, byte)
-    }
-
-    /// Doc 122 §122.B — `(mut-str-push-codepoint PTR CP)' via Phase
-    /// 47 grammar op.  Wraps `nl_mut_str_push_codepoint'.
-    ///
-    /// # Safety
-    /// Same as [`mut_str_push_byte`].
-    pub unsafe fn mut_str_push_codepoint(ptr: *mut Sexp, cp: i64) -> i64 {
-        nelisp_mut_str_push_codepoint(ptr, cp)
-    }
-
-    /// Doc 122 §122.B — `(mut-str-len PTR)' via Phase 47 grammar op.
-    /// Wraps `nl_mut_str_len'; returns the current byte length.
-    ///
-    /// # Safety
-    /// `ptr' must be non-null and point at a live `Sexp::MutStr'.
-    pub unsafe fn mut_str_len(ptr: *const Sexp) -> i64 {
-        nelisp_mut_str_len(ptr)
-    }
-
-    /// Doc 122 §122.B — `(mut-str-finalize PTR SLOT)' via Phase 47
-    /// grammar op.  Wraps `nl_mut_str_finalize'; clones the inner
-    /// `String' into a fresh `Sexp::Str' written into `*slot'.
-    /// Source MutStr remains live + push-able.
-    ///
-    /// # Safety
-    /// Both pointers must satisfy the contracts on their underlying
-    /// externs.  See `nl_mut_str_finalize'.
-    pub unsafe fn mut_str_finalize(
-        ptr: *const Sexp,
-        slot: *mut Sexp,
-    ) -> *mut Sexp {
-        nelisp_mut_str_finalize(ptr, slot)
-    }
-
-    /// Doc 122 §122.D — `(str-char-count STR)' via Phase 47 grammar
-    /// op.  Wraps `nl_str_char_count'; returns the UTF-8 codepoint
-    /// count of the inner `String' (= NOT the byte count).
-    ///
-    /// # Safety
-    /// `ptr' must be non-null and point at a live `Sexp::Str' /
-    /// `Sexp::Symbol' / `Sexp::MutStr'.  Non-string variants return 0.
-    pub unsafe fn str_char_count(ptr: *const Sexp) -> i64 {
-        nelisp_str_char_count(ptr)
-    }
-
-    /// Doc 122 §122.D — `(str-codepoint-at STR I CP-SLOT WIDTH-SLOT)'
-    /// via Phase 47 grammar op.  Wraps `nl_str_codepoint_at'.
-    ///
-    /// On success returns 1 and writes the decoded codepoint /
-    /// UTF-8 byte width into `*cp_slot` and `*width_slot`.  On
-    /// failure (= invalid `idx` / malformed UTF-8) returns 0 and
-    /// leaves both out-slots untouched.
-    ///
-    /// # Safety
-    /// - `ptr' must be non-null and point at a live `Sexp::Str' /
-    ///   `Sexp::Symbol' / `Sexp::MutStr'.
-    /// - `cp_slot' / `width_slot' must be non-null + writable for
-    ///   one `i64' each.
-    pub unsafe fn str_codepoint_at(
-        ptr: *const Sexp,
-        idx: i64,
-        cp_slot: *mut i64,
-        width_slot: *mut i64,
-    ) -> i64 {
-        nelisp_str_codepoint_at(ptr, idx, cp_slot, width_slot)
-    }
-
-    /// Doc 122 §122.D — `(str-is-alphanumeric-at STR I)' via Phase
-    /// 47 grammar op.  Wraps `nl_str_is_alphanumeric_at'; returns
-    /// 1 if the codepoint at byte index `idx' is Unicode alphanumeric,
-    /// 0 otherwise (including out-of-range / mid-codepoint indices).
-    ///
-    /// # Safety
-    /// `ptr' must be non-null and point at a live `Sexp::Str' /
-    /// `Sexp::Symbol' / `Sexp::MutStr'.
-    pub unsafe fn str_is_alphanumeric_at(
-        ptr: *const Sexp,
-        idx: i64,
-    ) -> i64 {
-        nelisp_str_is_alphanumeric_at(ptr, idx)
-    }
+    // Doc 122 §122.D — Str Phase 47 grammar ops (char-count / codepoint-at / alphanumeric-at).
+    cc_wrap!(str_char_count: nelisp_str_char_count, (ptr: *const Sexp) -> i64);
+    cc_wrap!(str_codepoint_at: nelisp_str_codepoint_at, (ptr: *const Sexp, idx: i64, cp_slot: *mut i64, width_slot: *mut i64) -> i64);
+    cc_wrap!(str_is_alphanumeric_at: nelisp_str_is_alphanumeric_at, (ptr: *const Sexp, idx: i64) -> i64);
 
     // Doc 122 §122.E atomic + raw-mem grammar wrappers — collapsed
     // via §127.A `cc_wrap!'.  All SeqCst ordering except as noted
@@ -1469,100 +1089,14 @@ pub mod elisp_cc_spike {
     cc_wrap!(struct_field_set_u32: nelisp_struct_field_set_u32, (buf: *mut u8, offset: i64, val: i64) -> i64);
     cc_wrap!(struct_field_get_u32: nelisp_struct_field_get_u32, (buf: *const u8, offset: i64) -> i64);
 
-    /// Doc 122 §122.J — `nelisp_winsize_write_full(buf, row, col,
-    /// xpixel, ypixel) -> buf' composed winsize struct writer.  Takes
-    /// a caller-allocated 8-byte / align-2 buffer + 4 u16 field
-    /// values, threads them through 4 `struct-field-set' ops, returns
-    /// the (unchanged) buffer pointer.  This is the §122.J ship-gate
-    /// probe — pass the buffer to `ioctl(0, TIOCGWINSZ, _)' on a real
-    /// TTY to verify the layout round-trips through libc.
-    ///
-    /// # Safety
-    /// - `buf' must be non-null + valid for 8 bytes of writable
-    ///   memory (= preferably allocated via `alloc_bytes(8, 2)' or a
-    ///   stack-local `[u8; 8]').
-    /// - `row' / `col' / `xpixel' / `ypixel' values are truncated to
-    ///   the low 16 bits per `u16' field semantics; high bits
-    ///   silently discarded.
-    pub unsafe fn winsize_write_full(
-        buf: *mut u8,
-        row: i64,
-        col: i64,
-        xpixel: i64,
-        ypixel: i64,
-    ) -> *mut u8 {
-        nelisp_winsize_write_full(buf, row, col, xpixel, ypixel)
-    }
+    // Doc 122 §122.J — composed winsize struct writer (4 u16 fields).
+    cc_wrap!(winsize_write_full: nelisp_winsize_write_full, (buf: *mut u8, row: i64, col: i64, xpixel: i64, ypixel: i64) -> *mut u8);
 
-    /// Doc 125 §125.A — `(alloc-bytes SIZE ALIGN)' generic byte-level
-    /// allocator.  Returns the freshly-allocated `*mut u8' on success
-    /// or `std::ptr::null_mut()' on either layout-arg error (= align
-    /// not a power of two, or size·align overflow isize) or underlying
-    /// OOM.  Callers must inspect for null before dereferencing.
-    ///
-    /// # Safety
-    /// The call itself is sound — it only touches the global allocator.
-    /// `unsafe` is required for ABI uniformity with the other
-    /// `elisp_cc_spike` wrappers.  The returned pointer's safety
-    /// (= must be paired with `dealloc_bytes` using identical
-    /// `(size, align)` args) is the *caller's* responsibility per
-    /// `std::alloc` contracts.
-    pub unsafe fn alloc_bytes(size: i64, align: i64) -> *mut u8 {
-        nelisp_alloc_bytes(size, align)
-    }
-
-    /// Doc 125 §125.A — `(dealloc-bytes PTR SIZE ALIGN)' generic
-    /// byte-level deallocator.  Returns rax = 1 sentinel for `and'-
-    /// chain composition.  Null pointer + zero-size are silent
-    /// no-ops; layout-arg errors are likewise silent no-ops.
-    ///
-    /// # Safety
-    /// - `ptr` must be either null or a pointer returned by
-    ///   `alloc_bytes' with the *same* `(size, align)' arguments.
-    /// - The slot must not be accessed after this call.
-    /// - Concurrent free of the same slot is UB.
-    pub unsafe fn dealloc_bytes(ptr: *mut u8, size: i64, align: i64) -> i64 {
-        nelisp_dealloc_bytes(ptr, size, align)
-    }
-
-    /// Doc 122 §122.I — `nelisp_cstr_from_sexp(str-ptr) -> *mut u8'
-    /// pure-elisp CString constructor.  Allocates a fresh heap byte
-    /// buffer of size `(str-len + 1)' bytes at alignment 1, copies
-    /// the UTF-8 payload bytes of `*str_ptr', and appends a trailing
-    /// NUL.  Returns the buffer pointer.  Caller owns the buffer —
-    /// must pair with `cstr_drop(buf_ptr, str_len + 1)' once the libc
-    /// consumer is done.
-    ///
-    /// # Safety
-    /// - `str_ptr' must be non-null and point at an initialised
-    ///   `Sexp::Str' / `Sexp::Symbol' / `Sexp::MutStr'.  Any other
-    ///   tag is undefined behaviour (= the helper reads `String::len'
-    ///   at offset 24 and `String::ptr' at offset 16; both fields
-    ///   are only meaningful for the three string arms).
-    /// - The returned pointer is valid until paired with
-    ///   `cstr_drop' (or a direct `dealloc_bytes' with the same
-    ///   `(size, align)' pair).  Concurrent free or double-free
-    ///   is UB per `std::alloc::dealloc' contracts.
-    pub unsafe fn cstr_from_sexp(str_ptr: *const Sexp) -> *mut u8 {
-        nelisp_cstr_from_sexp(str_ptr)
-    }
-
-    /// Doc 122 §122.I — `nelisp_cstr_drop(buf-ptr, size) -> 1'
-    /// convenience wrapper around `(dealloc-bytes BUF SIZE 1)' for
-    /// buffers allocated by `cstr_from_sexp'.  `SIZE' must equal
-    /// `(str-len ARG + 1)' from the originating allocation; layout
-    /// mismatch is UB.  Returns `1' sentinel for `and'-chain
-    /// composition.
-    ///
-    /// # Safety
-    /// - `buf_ptr' must be either null (= silent no-op) or a
-    ///   pointer returned by `cstr_from_sexp'.  No other source
-    ///   accepted (= mismatched `Layout::from_size_align(size, 1)'
-    ///   on the dealloc).
-    /// - The slot must not be accessed after this call.
-    pub unsafe fn cstr_drop(buf_ptr: *mut u8, size: i64) -> i64 {
-        nelisp_cstr_drop(buf_ptr, size)
-    }
+    // Doc 125 §125.A — generic byte-level alloc / dealloc; Doc 122 §122.I — cstr {from-sexp, drop}.
+    cc_wrap!(alloc_bytes: nelisp_alloc_bytes, (size: i64, align: i64) -> *mut u8);
+    cc_wrap!(dealloc_bytes: nelisp_dealloc_bytes, (ptr: *mut u8, size: i64, align: i64) -> i64);
+    cc_wrap!(cstr_from_sexp: nelisp_cstr_from_sexp, (str_ptr: *const Sexp) -> *mut u8);
+    cc_wrap!(cstr_drop: nelisp_cstr_drop, (buf_ptr: *mut u8, size: i64) -> i64);
 
     // Doc 117 §117.D.gaps.3 — file-I/O syscall body sweeps.  Each
     // wrapper trivially dispatches to its matching `nelisp_*' extern;
@@ -1976,103 +1510,12 @@ pub mod elisp_cc_spike {
         rc
     }
 
-    /// Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash, safe wrapper.
-    ///
-    /// `str_ptr' must be non-null and point at a `Sexp::Str(_)' or
-    /// `Sexp::Symbol(_)' (= the two arms whose payload is a `String'
-    /// with byte data at `str_ptr + 24..(+ 24 len)').  The body reads
-    /// `len' bytes via `str-byte-at' and returns the 32-bit FNV-1a
-    /// hash zero-extended to `i64'.  Empty input returns the FNV
-    /// offset basis (= `0x811C9DC5' = 2166136261).
-    ///
-    /// For ASCII inputs (= every elisp identifier that lands in the
-    /// env mirror) the result is bit-equal to the deleted Rust
-    /// `mirror_fnv1a' free fn.  Non-ASCII inputs diverge (= the elisp
-    /// path iterates bytes while the Rust path iterated Unicode
-    /// codepoints) but the env mirror never receives non-ASCII keys
-    /// so the divergence is documentation-only.
-    ///
-    /// # Safety
-    /// - `str_ptr' must be non-null and point at an initialized
-    ///   `Sexp::Str' or `Sexp::Symbol' value.  Any other tag is
-    ///   undefined behaviour (= the helper reads `String::len' at
-    ///   offset 24 and `String::ptr' at offset 16; both fields are
-    ///   only meaningful for the Str / Symbol arms).
-    pub unsafe fn fnv1a(str_ptr: *const Sexp) -> i64 {
-        nelisp_fnv1a(str_ptr)
-    }
+    // Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash (Str/Symbol arms).
+    cc_wrap!(fnv1a: nelisp_fnv1a, (str_ptr: *const Sexp) -> i64);
 
-    /// Doc 116 §116.A — pure-elisp Reader lexer.  Reads ONE token at
-    /// `cursor` from the bytes of `*str_ptr', writes the next-cursor
-    /// into `*cursor_out_slot' as `Sexp::Int(_)', and (for kinds
-    /// 20-23) finalizes the accumulated text into `*payload_slot'
-    /// as `Sexp::Str(_)'.  Returns the i64 kind code.  See the
-    /// `nelisp_reader_lex_one' extern decl above for the full kind
-    /// table and side-effect contract.
-    ///
-    /// # Safety
-    /// - `str_ptr' must be non-null and point at a `Sexp::Str' or
-    ///   `Sexp::Symbol' (the lexer reads bytes via `str-byte-at'
-    ///   which works on either tag's shared 24-byte `String' header).
-    /// - `payload_slot' / `cursor_out_slot' must be non-null +
-    ///   writable + pre-initialized to `Sexp::Nil' (= the
-    ///   `mut-str-finalize' / `sexp-int-make' ops do a raw overwrite
-    ///   without dropping the prior payload).
-    /// - `scratch_mutstr_slot' must point at a live `Sexp::MutStr'
-    ///   allocated via `mut_str_make_empty' on this call OR reset
-    ///   to an empty MutStr (the caller is responsible for draining
-    ///   the inner String between calls).  Allocating a fresh
-    ///   `mut_str_make_empty' per call is the simplest safe pattern.
-    pub unsafe fn reader_lex_one(
-        str_ptr: *const Sexp,
-        cursor: i64,
-        payload_slot: *mut Sexp,
-        cursor_out_slot: *mut Sexp,
-        scratch_mutstr_slot: *mut Sexp,
-    ) -> i64 {
-        nelisp_reader_lex_one(
-            str_ptr,
-            cursor,
-            payload_slot,
-            cursor_out_slot,
-            scratch_mutstr_slot,
-        )
-    }
-
-    /// Doc 116 §116.B — pure-elisp Reader parser.  Parses ONE
-    /// top-level form starting at `*cursor_slot' (a `Sexp::Int'
-    /// holding the byte cursor) and writes the parsed `Sexp' value
-    /// into `*result_slot'.  Returns the i64 status (1 = success,
-    /// other = error).  See `nelisp_reader_parse_one' extern decl
-    /// above for the full ABI contract.
-    ///
-    /// # Safety
-    /// - `str_ptr' must be non-null and point at a `Sexp::Str' /
-    ///   `Sexp::Symbol' value with the source bytes.
-    /// - `cursor_slot' must be non-null + writable + pre-initialised
-    ///   to `Sexp::Int(start_cursor)'.
-    /// - `result_slot' must be non-null + writable + pre-initialised
-    ///   to `Sexp::Nil'.
-    /// - `slot_pool' must point at a `Sexp::Vector' of at least
-    ///   `3 + 4 * max_depth' Nil-initialised slots, with slot 0
-    ///   carrying a fresh `Sexp::MutStr(_)' (= caller calls
-    ///   `mut_str_make_empty' on slot 0 before the parse) and slot
-    ///   2 left as `Sexp::Nil' forever (= "constant nil" source).
-    pub unsafe fn reader_parse_one(
-        str_ptr: *const Sexp,
-        cursor_slot: *mut Sexp,
-        result_slot: *mut Sexp,
-        slot_pool: *const Sexp,
-        depth: i64,
-    ) -> i64 {
-        nelisp_reader_parse_one(
-            str_ptr,
-            cursor_slot,
-            result_slot,
-            slot_pool,
-            depth,
-        )
-    }
+    // Doc 116 §116.A / §116.B — pure-elisp Reader lexer + parser.
+    cc_wrap!(reader_lex_one: nelisp_reader_lex_one, (str_ptr: *const Sexp, cursor: i64, payload_slot: *mut Sexp, cursor_out_slot: *mut Sexp, scratch_mutstr_slot: *mut Sexp) -> i64);
+    cc_wrap!(reader_parse_one: nelisp_reader_parse_one, (str_ptr: *const Sexp, cursor_slot: *mut Sexp, result_slot: *mut Sexp, slot_pool: *const Sexp, depth: i64) -> i64);
 
     /// Doc 100 §100.D Stage 1 probes — thin safe wrappers around the
     /// 12 elisp-compiled jit/arith trampolines.  Used by

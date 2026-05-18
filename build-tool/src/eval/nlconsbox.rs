@@ -246,9 +246,10 @@ impl NlConsBoxRef {
     }
 
     /// Internal raw `*const NlConsBox' for box-walking shims.
+    #[doc(hidden)]
     #[inline]
     #[allow(dead_code)]
-    pub(crate) fn inner_raw(this: &Self) -> *const NlConsBox {
+    pub fn inner_raw(this: &Self) -> *const NlConsBox {
         this.ptr.as_ptr()
     }
 }

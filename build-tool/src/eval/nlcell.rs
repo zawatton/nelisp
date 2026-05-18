@@ -119,6 +119,23 @@ impl NlCellRef {
         }
     }
 
+    /// Wrap an externally-allocated `*mut NlCell' into an owning
+    /// `NlCellRef'.  Used by integration tests that exercise the
+    /// extern `nl_alloc_cell' allocator and need to hand ownership
+    /// back to safe Rust (so `Drop' runs).
+    ///
+    /// # Safety
+    /// - `raw' must point at an initialized `NlCell' with `refcount >= 1'.
+    /// - Ownership of one strong reference is transferred into the
+    ///   returned `NlCellRef'; the caller must not also drop it.
+    #[doc(hidden)]
+    pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef {
+        NlCellRef {
+            ptr: NonNull::new(raw).expect("from_raw_ptr: null pointer"),
+            _marker: PhantomData,
+        }
+    }
+
     /// Read the current strong-reference count.  Mirrors
     /// `NlConsBoxRef::strong_count' / `NlRc::strong_count'.
     ///

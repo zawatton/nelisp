@@ -1,16 +1,22 @@
 //! `nl-jit-call-*' bridge primitives.  Elisp `lowered_X' wrappers in
 //! `lisp/nelisp-jit-strategy.el' call these to invoke JIT entries by
-//! name.  Shapes: `i64-i64' (arith/cmp/bitwise), `ptr-ptr' (eq-inline),
-//! `syscall' (i64 × 7).  Name-keyed lookup in [`unified_fn_ptr`];
-//! `unsafe' fn-ptr casts confined to this module.
+//! name.  Shapes: `i64-i64' / `ptr-ptr' / `syscall' (i64×7) / float /
+//! out-param.  Name-keyed lookup in [`unified_fn_ptr`]; `unsafe' fn-ptr
+//! casts confined to this module.
+//!
+//! Supported targets (= Doc 114, gated by `build.rs::link_elisp_cc_spike'):
+//! linux-x86_64 / linux-aarch64 / macos-aarch64.  On unsupported targets
+//! `unified_fn_ptr' returns `None' for every name (build.rs bails out
+//! before the bridge is ever called).
 
 use crate::eval::builtins::{as_int, require_arity};
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 
-// 12 `nelisp_jit_*' arith trampolines live in Phase-47-compiled elisp
-// `.o' files; `arith_link' just `extern "C"'-declares the names.
-// Supported targets: linux-x86_64 / linux-aarch64 / macos-aarch64.
+// Elisp-side trampolines linked from Phase-47-compiled `.o' files.
+// Three target gates: (a) arith/float/math = supported set, (b) predicate/
+// box_accessor/access record/access = linux-x86_64 only.  On unsupported
+// targets the modules are absent and `unified_fn_ptr' is compiled empty.
 #[cfg(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64"),
@@ -32,75 +38,33 @@ mod arith_link {
     }
 }
 
-// Unsupported targets: stub `arith_link' to keep `cargo check' clean.
-// `build.rs::link_elisp_cc_spike' bails out so these stubs can't fire.
-#[cfg(not(any(
-    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
-    all(target_os = "macos", target_arch = "aarch64"),
-)))]
-mod arith_link {
-    pub unsafe extern "C" fn nelisp_jit_add2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_sub2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_mul2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_eq2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_lt2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_gt2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_le2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_ge2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_logior2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_logand2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_logxor2(_: i64, _: i64) -> i64 { 0 }
-    pub unsafe extern "C" fn nelisp_jit_ash(_: i64, _: i64) -> i64 { 0 }
-}
-
-// 9 f64 trampolines (add/sub/mul/div/eq-eps/lt/gt/le/ge) in
-// Phase-47-compiled elisp `.o'.  Supported: linux-x86_64 / linux-aarch64
-// / macos-aarch64.  Stubs below keep cargo check clean elsewhere.
 #[cfg(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64"),
 ))]
 mod float_link {
+    // 9 f64 trampolines: arith (add/sub/mul/div) + ordered cmp + EQ-EPS
+    // (|a-b| <= ε via SUBSD/FSUB + abs + UCOMISD/FCMP).
     extern "C" {
         pub fn nl_jit_float_add(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_sub(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_mul(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_div(a: f64, b: f64) -> f64;
-        // 4 ordered compare trampolines.
         pub fn nl_jit_float_lt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_gt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_le(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_ge(a: f64, b: f64) -> i64;
-        // EQ-EPS trampoline (|a-b| <= ε via SUBSD/FSUB + abs + UCOMISD/FCMP).
         pub fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64;
     }
 }
 
-// Unsupported targets: stubs to keep `cargo check' clean.
-#[cfg(not(any(
-    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
-    all(target_os = "macos", target_arch = "aarch64"),
-)))]
-mod float_link {
-    pub unsafe extern "C" fn nl_jit_float_add(_: f64, _: f64) -> f64 { 0.0 }
-    pub unsafe extern "C" fn nl_jit_float_sub(_: f64, _: f64) -> f64 { 0.0 }
-    pub unsafe extern "C" fn nl_jit_float_mul(_: f64, _: f64) -> f64 { 0.0 }
-    pub unsafe extern "C" fn nl_jit_float_div(_: f64, _: f64) -> f64 { 0.0 }
-    pub unsafe extern "C" fn nl_jit_float_lt(_: f64, _: f64) -> i64 { 0 }
-    pub unsafe extern "C" fn nl_jit_float_gt(_: f64, _: f64) -> i64 { 0 }
-    pub unsafe extern "C" fn nl_jit_float_le(_: f64, _: f64) -> i64 { 0 }
-    pub unsafe extern "C" fn nl_jit_float_ge(_: f64, _: f64) -> i64 { 0 }
-    pub unsafe extern "C" fn nl_jit_float_eq_eps(_: f64, _: f64) -> i64 { 0 }
-}
-
-// 3 unary f64 math trampolines (identity / exp / log) — `exp' / `log'
-// emit `CALL libm-name' via the `(f64-call SYM ARG)' grammar form;
-// static linker resolves against libm symbols pulled via std.
 #[cfg(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64"),
 ))]
 mod math_link {
+    // Unary f64 (identity / exp / log) — `exp'/`log' emit CALL libm-name
+    // via `(f64-call SYM ARG)' grammar; static linker resolves via std.
     extern "C" {
         pub fn nl_jit_float_float(x: f64) -> f64;
         pub fn nl_jit_float_exp(x: f64) -> f64;
@@ -108,19 +72,6 @@ mod math_link {
     }
 }
 
-#[cfg(not(any(
-    all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
-    all(target_os = "macos", target_arch = "aarch64"),
-)))]
-mod math_link {
-    pub unsafe extern "C" fn nl_jit_float_float(_: f64) -> f64 { 0.0 }
-    pub unsafe extern "C" fn nl_jit_float_exp(_: f64) -> f64 { 0.0 }
-    pub unsafe extern "C" fn nl_jit_float_log(_: f64) -> f64 { 0.0 }
-}
-
-// Predicate trampolines in elisp on linux-x86_64; other targets
-// fall through to legacy Rust impl in `jit/predicate.rs'.
-// `nelisp_jit_sxhash' / `_type_of' stay in Rust (grammar gap).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod predicate_link {
     use crate::eval::sexp::Sexp;
@@ -131,27 +82,6 @@ mod predicate_link {
     }
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-mod predicate_link {
-    use crate::eval::sexp::Sexp;
-    pub unsafe extern "C" fn nelisp_jit_predicate_eq(
-        a: *const Sexp,
-        b: *const Sexp,
-    ) -> i64 {
-        super::super::predicate::nl_jit_predicate_eq(a, b)
-    }
-    pub unsafe extern "C" fn nelisp_jit_ref_eq(
-        a: *const Sexp,
-        b: *const Sexp,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::predicate::nl_jit_ref_eq(a, b, out)
-    }
-}
-
-// Record-family trampolines (type/len/ref/set) in elisp on
-// linux-x86_64; other targets fall through to legacy Rust impl.
-// `record_alloc' + 6 non-record box-accessor arms stay Rust (grammar gap).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod box_accessor_link {
     use crate::eval::sexp::Sexp;
@@ -159,56 +89,13 @@ mod box_accessor_link {
     extern "C" {
         pub fn nelisp_jit_record_type(arg: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_record_len(arg: *const Sexp, out: *mut Sexp) -> i64;
-        pub fn nelisp_jit_record_ref(
-            arg: *const Sexp,
-            idx: i64,
-            out: *mut Sexp,
-        ) -> i64;
+        pub fn nelisp_jit_record_ref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_record_set(
-            arg: *const Sexp,
-            idx: i64,
-            val: *const Sexp,
-            out: *mut Sexp,
+            arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp,
         ) -> i64;
     }
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-mod box_accessor_link {
-    use crate::eval::sexp::Sexp;
-    pub unsafe extern "C" fn nelisp_jit_record_type(
-        arg: *const Sexp,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::box_accessor::nl_jit_record_type(arg, out)
-    }
-    pub unsafe extern "C" fn nelisp_jit_record_len(
-        arg: *const Sexp,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::box_accessor::nl_jit_record_len(arg, out)
-    }
-    pub unsafe extern "C" fn nelisp_jit_record_ref(
-        arg: *const Sexp,
-        idx: i64,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::box_accessor::nl_jit_record_ref(arg, idx, out)
-    }
-    pub unsafe extern "C" fn nelisp_jit_record_set(
-        arg: *const Sexp,
-        idx: i64,
-        val: *const Sexp,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::box_accessor::nl_jit_record_set(arg, idx, val, out)
-    }
-}
-
-// Access trampolines (length / aref / aset / elt) in elisp on
-// linux-x86_64; other targets fall through to legacy Rust impl.
-// BoolVector aref/aset sub-arms have narrow Rust externs for bit decode
-// + tag-byte write (grammar gap).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod access_link {
     use crate::eval::sexp::Sexp;
@@ -217,56 +104,14 @@ mod access_link {
         pub fn nelisp_jit_length(arg: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_aset(
-            arg: *const Sexp,
-            idx: i64,
-            val: *const Sexp,
-            out: *mut Sexp,
+            arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp,
         ) -> i64;
         pub fn nelisp_jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
     }
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-mod access_link {
-    use crate::eval::sexp::Sexp;
-    pub unsafe extern "C" fn nelisp_jit_length(
-        arg: *const Sexp,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::access::nl_jit_access_length(arg, out)
-    }
-    pub unsafe extern "C" fn nelisp_jit_aref(
-        arg: *const Sexp,
-        idx: i64,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::access::nl_jit_access_aref(arg, idx, out)
-    }
-    pub unsafe extern "C" fn nelisp_jit_aset(
-        arg: *const Sexp,
-        idx: i64,
-        val: *const Sexp,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::access::nl_jit_access_aset(arg, idx, val, out)
-    }
-    pub unsafe extern "C" fn nelisp_jit_elt(
-        arg: *const Sexp,
-        idx: i64,
-        out: *mut Sexp,
-    ) -> i64 {
-        super::super::access::nl_jit_access_elt(arg, idx, out)
-    }
-}
-
-// Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
-// `UnifiedJit' struct + `unified_jit()' OnceLock are gone now that
-// every cluster (cons / access / arith / predicate / syscall) goes
-// through `unified_fn_ptr's direct `#[no_mangle]' trampoline mapping.
-
-/// Extract the JIT-entry name argument: accepts `Symbol' or `Str'
-/// (= the 2 forms elisp wrappers will produce — `'nelisp_jit_add2'
-/// reads as `Symbol("nelisp_jit_add2")', `"nelisp_jit_add2"' as `Str').
+/// Extract JIT-entry name: accepts `Symbol' or `Str' (2 forms elisp
+/// wrappers produce).
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
     match v {
         Sexp::Symbol(s) | Sexp::Str(s) => Ok(s.as_str()),
@@ -277,116 +122,140 @@ fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
     }
 }
 
-/// Resolve a `nelisp_jit_*' name to the matching JIT-compiled fn ptr
-/// stored in [`super::UnifiedJit`].  Returned as a raw `*const u8' so
-/// each call shape (= i64/i64, ptr/ptr, 7×i64) casts independently.
+/// Resolve a `nelisp_jit_*' name to the matching trampoline fn ptr.
+/// Returned as a raw `*const u8' so each call shape casts independently.
+/// Unknown names → `None' (caller raises `EvalError::Internal').
 ///
-/// Unknown names return `None' (= the bridge primitive raises
-/// `EvalError::Internal' wrapping the bad name).
+/// Three resolution classes by target:
+///  (a) supported-set elisp trampolines (arith / float / math) — gated;
+///  (b) linux-x86_64-only elisp trampolines (predicate-eq / record-* /
+///      access-*) — fall back to legacy Rust impls on other targets;
+///  (c) always-Rust trampolines (cons / strings / syscall / time / hash
+///      / regex / box-accessor non-record / record_alloc / type_of /
+///      sxhash).
 pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
-    // Phase 7.1.6.e (Doc 28 §3.6.e): `let u = unified_jit()' deleted
-    // — every name now resolves directly to a `#[no_mangle] extern
-    // "C"' Rust trampoline.  No Cranelift wrapper page is constructed
-    // anywhere in `jit::' anymore.
+    // Gate (a): supported set only.  On unsupported targets these names
+    // are not resolvable — `build.rs' has already bailed out, so the
+    // bridge is unreachable from elisp.
+    #[cfg(any(
+        all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+        all(target_os = "macos", target_arch = "aarch64"),
+    ))]
+    {
+        let p: *const u8 = match name {
+            // arith (12)
+            "nelisp_jit_add2" => arith_link::nelisp_jit_add2 as *const u8,
+            "nelisp_jit_sub2" => arith_link::nelisp_jit_sub2 as *const u8,
+            "nelisp_jit_mul2" => arith_link::nelisp_jit_mul2 as *const u8,
+            "nelisp_jit_eq2" => arith_link::nelisp_jit_eq2 as *const u8,
+            "nelisp_jit_lt2" => arith_link::nelisp_jit_lt2 as *const u8,
+            "nelisp_jit_gt2" => arith_link::nelisp_jit_gt2 as *const u8,
+            "nelisp_jit_le2" => arith_link::nelisp_jit_le2 as *const u8,
+            "nelisp_jit_ge2" => arith_link::nelisp_jit_ge2 as *const u8,
+            "nelisp_jit_logior2" => arith_link::nelisp_jit_logior2 as *const u8,
+            "nelisp_jit_logand2" => arith_link::nelisp_jit_logand2 as *const u8,
+            "nelisp_jit_logxor2" => arith_link::nelisp_jit_logxor2 as *const u8,
+            "nelisp_jit_ash" => arith_link::nelisp_jit_ash as *const u8,
+            // float arith + cmp + eq-eps (9)
+            "nl_jit_float_add" => float_link::nl_jit_float_add as *const u8,
+            "nl_jit_float_sub" => float_link::nl_jit_float_sub as *const u8,
+            "nl_jit_float_mul" => float_link::nl_jit_float_mul as *const u8,
+            "nl_jit_float_div" => float_link::nl_jit_float_div as *const u8,
+            "nl_jit_float_eq_eps" => float_link::nl_jit_float_eq_eps as *const u8,
+            "nl_jit_float_lt" => float_link::nl_jit_float_lt as *const u8,
+            "nl_jit_float_gt" => float_link::nl_jit_float_gt as *const u8,
+            "nl_jit_float_le" => float_link::nl_jit_float_le as *const u8,
+            "nl_jit_float_ge" => float_link::nl_jit_float_ge as *const u8,
+            // unary f64 math (3)
+            "nl_jit_float_float" => math_link::nl_jit_float_float as *const u8,
+            "nl_jit_float_exp" => math_link::nl_jit_float_exp as *const u8,
+            "nl_jit_float_log" => math_link::nl_jit_float_log as *const u8,
+            _ => return resolve_rest(name),
+        };
+        return Some(p);
+    }
+    #[cfg(not(any(
+        all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
+        all(target_os = "macos", target_arch = "aarch64"),
+    )))]
+    {
+        resolve_rest(name)
+    }
+}
+
+/// Gate (b) + (c): names available on all supported (= the small linux-
+/// x86_64-only subset routes to elisp trampolines; same names on other
+/// targets fall back to legacy Rust impls in `predicate.rs' / `access.rs'
+/// / `box_accessor.rs').  Always-Rust names share one tail block.
+fn resolve_rest(name: &str) -> Option<*const u8> {
+    // Gate (b) — linux-x86_64-only elisp trampolines.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let gated: Option<*const u8> = match name {
+        "nelisp_jit_eq_inline" => Some(predicate_link::nelisp_jit_predicate_eq as *const u8),
+        "nelisp_jit_ref_eq" => Some(predicate_link::nelisp_jit_ref_eq as *const u8),
+        "nelisp_jit_length" => Some(access_link::nelisp_jit_length as *const u8),
+        "nelisp_jit_aref" => Some(access_link::nelisp_jit_aref as *const u8),
+        "nelisp_jit_aset" => Some(access_link::nelisp_jit_aset as *const u8),
+        "nelisp_jit_elt" => Some(access_link::nelisp_jit_elt as *const u8),
+        "nl_jit_record_type" => Some(box_accessor_link::nelisp_jit_record_type as *const u8),
+        "nl_jit_record_len" => Some(box_accessor_link::nelisp_jit_record_len as *const u8),
+        "nl_jit_record_ref" => Some(box_accessor_link::nelisp_jit_record_ref as *const u8),
+        "nl_jit_record_set" => Some(box_accessor_link::nelisp_jit_record_set as *const u8),
+        _ => None,
+    };
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    let gated: Option<*const u8> = match name {
+        "nelisp_jit_eq_inline" => Some(super::predicate::nl_jit_predicate_eq as *const u8),
+        "nelisp_jit_ref_eq" => Some(super::predicate::nl_jit_ref_eq as *const u8),
+        "nelisp_jit_length" => Some(super::access::nl_jit_access_length as *const u8),
+        "nelisp_jit_aref" => Some(super::access::nl_jit_access_aref as *const u8),
+        "nelisp_jit_aset" => Some(super::access::nl_jit_access_aset as *const u8),
+        "nelisp_jit_elt" => Some(super::access::nl_jit_access_elt as *const u8),
+        "nl_jit_record_type" => Some(super::box_accessor::nl_jit_record_type as *const u8),
+        "nl_jit_record_len" => Some(super::box_accessor::nl_jit_record_len as *const u8),
+        "nl_jit_record_ref" => Some(super::box_accessor::nl_jit_record_ref as *const u8),
+        "nl_jit_record_set" => Some(super::box_accessor::nl_jit_record_set as *const u8),
+        _ => None,
+    };
+    if gated.is_some() {
+        return gated;
+    }
+    // Gate (c) — always-Rust trampolines (target-independent).
     let p: *const u8 = match name {
-        // ---- arith (12) ----
-        // Phase 7.1.6.c (Doc 28 §3.6.c): resolve arith names directly
-        // to the `#[no_mangle] extern "C"' trampolines now that the
-        // Cranelift `JitArith' wrapper page has been deleted.  Unlike
-        // cons / access takeover, arith had no pre-existing Rust
-        // trampoline body — the Cranelift IR was the implementation —
-        // so 12 plain Rust trampolines (`nl_jit_arith_*') were added
-        // in this commit that mirror the Cranelift IR semantics 1-to-1.
-        // nelisp-cc compiled hot paths skip this bridge entirely and
-        // emit the host arithmetic instruction inline via existing
-        // SSA opcodes (no `:ssa-call-primitive' detour needed).
-        "nelisp_jit_add2" => arith_link::nelisp_jit_add2 as *const u8,
-        "nelisp_jit_sub2" => arith_link::nelisp_jit_sub2 as *const u8,
-        "nelisp_jit_mul2" => arith_link::nelisp_jit_mul2 as *const u8,
-        "nelisp_jit_eq2" => arith_link::nelisp_jit_eq2 as *const u8,
-        "nelisp_jit_lt2" => arith_link::nelisp_jit_lt2 as *const u8,
-        "nelisp_jit_gt2" => arith_link::nelisp_jit_gt2 as *const u8,
-        "nelisp_jit_le2" => arith_link::nelisp_jit_le2 as *const u8,
-        "nelisp_jit_ge2" => arith_link::nelisp_jit_ge2 as *const u8,
-        "nelisp_jit_logior2" => arith_link::nelisp_jit_logior2 as *const u8,
-        "nelisp_jit_logand2" => arith_link::nelisp_jit_logand2 as *const u8,
-        "nelisp_jit_logxor2" => arith_link::nelisp_jit_logxor2 as *const u8,
-        "nelisp_jit_ash" => arith_link::nelisp_jit_ash as *const u8,
-        // ---- cons (5) ----
-        // Phase 7.1.6.a.2 (Doc 28 §3.6.a): resolve cons names directly
-        // to the `#[no_mangle] extern "C"' trampolines now that the
-        // Cranelift `JitCons' wrapper page has been deleted.  The
-        // inline-NIL fast path (= the deleted `declare_unary_with_nil_
-        // inline' Cranelift IR shape) is no longer present here; for
-        // car / cdr the NIL case is handled by the trampoline's first
-        // arm (`tag == SEXP_TAG_NIL → OK') without further work, so
-        // semantic behaviour is preserved.  nelisp-cc compiled hot
-        // paths skip this bridge entirely via dlsym + direct CALL.
+        // cons (5)
         "nelisp_jit_car" => super::cons::nl_jit_cons_car as *const u8,
         "nelisp_jit_cdr" => super::cons::nl_jit_cons_cdr as *const u8,
         "nelisp_jit_cons" => super::cons::nl_jit_cons_make as *const u8,
         "nelisp_jit_setcar" => super::cons::nl_jit_cons_setcar as *const u8,
         "nelisp_jit_setcdr" => super::cons::nl_jit_cons_setcdr as *const u8,
-        // ---- access (4): length / aref / aset / elt ----
-        "nelisp_jit_length" => access_link::nelisp_jit_length as *const u8,
-        "nelisp_jit_aref" => access_link::nelisp_jit_aref as *const u8,
-        "nelisp_jit_aset" => access_link::nelisp_jit_aset as *const u8,
-        "nelisp_jit_elt" => access_link::nelisp_jit_elt as *const u8,
-        // ---- predicate (1) ----
-        "nelisp_jit_eq_inline" => predicate_link::nelisp_jit_predicate_eq as *const u8,
-        // `type_of' stays Rust — needs sexp-write-symbol grammar op.
+        // predicate residue (type_of / sxhash stay Rust — grammar gap)
         "nelisp_jit_type_of" => super::predicate::nl_jit_type_of as *const u8,
-        // ---- intern / symbol (3) ----
+        "nelisp_jit_sxhash" => super::predicate::nl_jit_sxhash as *const u8,
+        // intern / symbol (3)
         "nelisp_jit_intern" => super::strings::nl_jit_intern as *const u8,
         "nelisp_jit_symbol_name" => super::strings::nl_jit_symbol_name as *const u8,
         "nelisp_jit_make_symbol" => super::strings::nl_jit_make_symbol as *const u8,
-        "nelisp_jit_ref_eq" => predicate_link::nelisp_jit_ref_eq as *const u8,
-        // `sxhash' stays Rust — DefaultHasher bit-exactness + recursive
-        // variant walk not yet expressible in Phase 47 grammar.
-        "nelisp_jit_sxhash" => super::predicate::nl_jit_sxhash as *const u8,
-        // ---- syscall (2) ----
+        // syscall (2)
         "nelisp_jit_syscall" => super::syscall::nl_jit_syscall_call as *const u8,
-        "nelisp_jit_syscall_supported_p" => {
-            super::syscall::nl_jit_syscall_supported_p as *const u8
-        }
-        // ---- float (9): add/sub/mul/div/eq-eps/lt/gt/le/ge ----
-        "nl_jit_float_add" => float_link::nl_jit_float_add as *const u8,
-        "nl_jit_float_sub" => float_link::nl_jit_float_sub as *const u8,
-        "nl_jit_float_mul" => float_link::nl_jit_float_mul as *const u8,
-        "nl_jit_float_div" => float_link::nl_jit_float_div as *const u8,
-        "nl_jit_float_eq_eps" => float_link::nl_jit_float_eq_eps as *const u8,
-        "nl_jit_float_lt" => float_link::nl_jit_float_lt as *const u8,
-        "nl_jit_float_gt" => float_link::nl_jit_float_gt as *const u8,
-        "nl_jit_float_le" => float_link::nl_jit_float_le as *const u8,
-        "nl_jit_float_ge" => float_link::nl_jit_float_ge as *const u8,
-        // ---- box accessor (6) ----
+        "nelisp_jit_syscall_supported_p" => super::syscall::nl_jit_syscall_supported_p as *const u8,
+        // box accessor (6 non-record)
         "nl_jit_mut_str_len" => super::box_accessor::nl_jit_mut_str_len as *const u8,
         "nl_jit_bool_vector_len" => super::box_accessor::nl_jit_bool_vector_len as *const u8,
         "nl_jit_str_codepoint_at" => super::box_accessor::nl_jit_str_codepoint_at as *const u8,
         "nl_jit_mut_str_set_codepoint" => super::box_accessor::nl_jit_mut_str_set_codepoint as *const u8,
         "nl_jit_char_table_aref" => super::box_accessor::nl_jit_char_table_aref as *const u8,
         "nl_jit_char_table_aset" => super::box_accessor::nl_jit_char_table_aset as *const u8,
-        // ---- record family (5): type / len / ref / set / alloc ----
-        // 4 in elisp on linux-x86_64; `record_alloc' stays Rust (list-walk grammar gap).
-        "nl_jit_record_type" => box_accessor_link::nelisp_jit_record_type as *const u8,
-        "nl_jit_record_len" => box_accessor_link::nelisp_jit_record_len as *const u8,
-        "nl_jit_record_ref" => box_accessor_link::nelisp_jit_record_ref as *const u8,
-        "nl_jit_record_set" => box_accessor_link::nelisp_jit_record_set as *const u8,
+        // record_alloc (list-walk grammar gap)
         "nl_jit_record_alloc" => super::box_accessor::nl_jit_record_alloc as *const u8,
-        // ---- Tier 2 trampolines (time / hash / case / tokenize / regex) ----
+        // Tier 2 (time / hash / case / tokenize / regex)
         "nl_jit_current_unix_time" => super::time::nl_jit_current_unix_time as *const u8,
         "nl_jit_format_unix_time" => super::time::nl_jit_format_unix_time as *const u8,
         "nl_jit_secure_hash" => super::hash::nl_jit_secure_hash as *const u8,
         "nl_jit_downcase" => super::strings::nl_jit_downcase as *const u8,
         "nl_jit_upcase" => super::strings::nl_jit_upcase as *const u8,
-        "nl_jit_split_by_non_alnum"
-            => super::strings::nl_jit_split_by_non_alnum as *const u8,
+        "nl_jit_split_by_non_alnum" => super::strings::nl_jit_split_by_non_alnum as *const u8,
         "nl_jit_string_match_p" => super::regex::nl_jit_string_match_p as *const u8,
-        // ---- unary f64 math (float / exp / log) ----
-        "nl_jit_float_float" => math_link::nl_jit_float_float as *const u8,
-        "nl_jit_float_exp" => math_link::nl_jit_float_exp as *const u8,
-        "nl_jit_float_log" => math_link::nl_jit_float_log as *const u8,
-        // ---- Tier 2 simple (3) — concat-ints / make-mut-str / format-float ----
+        // Tier 2 simple (3)
         "nl_jit_concat_ints" => super::strings::nl_jit_concat_ints as *const u8,
         "nl_jit_make_mut_str" => super::strings::nl_jit_make_mut_str as *const u8,
         "nl_jit_format_float" => super::strings::nl_jit_format_float as *const u8,
@@ -395,10 +264,8 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
     Some(p)
 }
 
-/// Shared lookup preamble: arity-check + name extraction + fn-ptr
-/// resolution.  Returns the raw fn-ptr the caller will `transmute' to
-/// its specific shape.  Collapses ~4 LOC of identical boilerplate at
-/// every `bi_nl_jit_call_*' head.
+/// Lookup preamble: arity check + name extract + resolve.  Returns raw
+/// fn-ptr the caller transmutes to its specific shape.
 fn jit_lookup(
     prim: &str,
     args: &[Sexp],
@@ -413,46 +280,30 @@ fn jit_lookup(
     })
 }
 
-/// `(nl-jit-call-i64-i64 NAME A B) -> Int'.  Looks up NAME in the
-/// unified registry, casts the resolved fn ptr to
-/// `extern "C" fn(i64, i64) -> i64', calls it with `(A, B)', wraps the
-/// `i64' result as `Sexp::Int'.
+/// `(nl-jit-call-i64-i64 NAME A B) -> Int'.  Resolves NAME, casts to
+/// `extern "C" fn(i64, i64) -> i64', calls with `(A, B)'.
 pub fn bi_nl_jit_call_i64_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-i64-i64", args, 3)?;
     let a = as_int("nl-jit-call-i64-i64", &args[1])?;
     let b = as_int("nl-jit-call-i64-i64", &args[2])?;
-    // SAFETY: every name resolved by `unified_fn_ptr' to an arith /
-    // syscall_supported_p slot has the `extern "C" fn(i64, i64) -> i64'
-    // shape (or 0-arg supported_p which we route through
-    // call-syscall instead — caller responsibility).
+    // SAFETY: NAME resolves to an arith slot with `fn(i64, i64) -> i64'.
     let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(p) };
     Ok(Sexp::Int(f(a, b)))
 }
 
-/// `(nl-jit-call-ptr-ptr NAME A B) -> Int'.  Same shape as i64-i64 but
-/// passes raw `*const Sexp' pointers (= what the cons / access /
-/// predicate JIT entries expect).  Wrapping result as `Sexp::Int' so
-/// the elisp wrapper can do `(if (= 0 v) nil t)' for predicate-style
-/// entries or pass the result through for trampoline-OK / -ERR codes.
+/// `(nl-jit-call-ptr-ptr NAME A B) -> Int'.  Passes raw `*const Sexp'
+/// pointers (cons / access / predicate JIT entries).
 pub fn bi_nl_jit_call_ptr_ptr(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-ptr-ptr", args, 3)?;
-    // SAFETY: caller is responsible for passing a name whose JIT entry
-    // has the `(*const Sexp, *const Sexp) -> i64' shape — currently
-    // only `nelisp_jit_eq_inline' qualifies.  Passing a name with a
-    // different shape is UB but the surface stays useful for the
-    // single-purpose elisp-side `eq' wrapper Stage b.4 will ship.
+    // SAFETY: NAME resolves to `(*const Sexp, *const Sexp) -> i64' shape
+    // (= `nelisp_jit_eq_inline').
     let f: extern "C" fn(*const Sexp, *const Sexp) -> i64 =
         unsafe { std::mem::transmute(p) };
     Ok(Sexp::Int(f(&args[1] as *const _, &args[2] as *const _)))
 }
 
 /// `(nl-jit-call-syscall NAME NR A0 A1 A2 A3 A4 A5) -> Int'.  Calls
-/// `extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64'.  The
-/// shape matches `nelisp_jit_syscall' precisely; for
-/// `nelisp_jit_syscall_supported_p' (which has no params) callers
-/// should use `nl-jit-call-i64-i64' with dummy a/b (Cranelift does
-/// not exercise extra args of a 0-arg fn under the host C ABI but
-/// this is technically UB; supported_p is rarely on the hot path).
+/// `fn(i64×7) -> i64' (= `nelisp_jit_syscall').
 pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-syscall", args, 8)?;
     let nr = as_int("nl-jit-call-syscall", &args[1])?;
@@ -462,18 +313,15 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let a3 = as_int("nl-jit-call-syscall", &args[5])?;
     let a4 = as_int("nl-jit-call-syscall", &args[6])?;
     let a5 = as_int("nl-jit-call-syscall", &args[7])?;
-    // SAFETY: caller passes a name whose JIT entry has the
-    // `(i64 × 7) -> i64' shape — currently `nelisp_jit_syscall'.
+    // SAFETY: NAME resolves to `(i64 × 7) -> i64'.
     let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64 =
         unsafe { std::mem::transmute(p) };
     Ok(Sexp::Int(f(nr, a0, a1, a2, a3, a4, a5)))
 }
 
-// Doc 84 §84.1 — Float-family bridge primitives (xmm marshalling).
-// 2 ABI modes (Doc 81 §6): `:trampoline-binary-float-{arith,cmp}'.
-// Resolve NAME via `unified_fn_ptr' → 8 `nl_jit_float_*' in `float.rs',
-// coerce Sexp args via `num_pair' (Float promotion + canonical WrongType),
-// transmute, call.  Arith → Sexp::Float; cmp → Sexp::Int 0/1.
+// Float-family bridge — `:trampoline-binary-float-{arith,cmp}' ABI.
+// Resolve NAME → `nl_jit_float_*' in `float.rs', coerce args via
+// `num_pair', transmute, call.  Arith → Float; cmp → Int 0/1.
 fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> {
     let p = jit_lookup(name, args, 3)?;
     let (a, b, _) = crate::eval::builtins::num_pair(&args[1..], name)?;
@@ -483,7 +331,7 @@ fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalEr
 /// `(nl-jit-call-float-float NAME A B) -> Float'.
 pub fn bi_nl_jit_call_float_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, a, b) = float_pair(args, "nl-jit-call-float-float")?;
-    // SAFETY: NAME resolves to `nl_jit_float_{add,sub,mul}' shape.
+    // SAFETY: NAME resolves to `nl_jit_float_{add,sub,mul,div}' shape.
     let f: extern "C" fn(f64, f64) -> f64 = unsafe { std::mem::transmute(p) };
     Ok(Sexp::Float(f(a, b)))
 }
@@ -496,17 +344,7 @@ pub fn bi_nl_jit_call_float_cmp(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(f(a, b)))
 }
 
-// Doc 87 §86.1.f / §5 (2026-05-10) — `:trampoline-unary-float' bridge.
-// `extern "C" fn(f64) -> f64' shape.  System V AMD64 passes the f64
-// arg in xmm0 and returns the f64 result in xmm0; arm64 AAPCS uses
-// d0 → d0.  Resolves NAME via `unified_fn_ptr', coerces the Sexp arg
-// to f64 via the same Int / Float / Nil → 0.0 path the binary float
-// bridge takes (= `to_f64'-equivalent inlined here to keep the helper
-// local-only), transmutes, calls.
-
-/// Coerce a Sexp to f64 via the float-bridge contract: Int → cast,
-/// Float → identity, Nil → 0.0, anything else → `WrongType { expected:
-/// EXPECTED }'.  Shared by `float_unary' and `bi_nl_jit_call_format_float'.
+/// Coerce Sexp → f64: Int cast, Float identity, Nil → 0.0, else WrongType.
 fn to_f64(v: &Sexp, expected: &str) -> Result<f64, EvalError> {
     match v {
         Sexp::Int(i) => Ok(*i as f64),
@@ -524,11 +362,9 @@ fn float_unary(args: &[Sexp], name: &str) -> Result<(*const u8, f64), EvalError>
     Ok((p, to_f64(&args[1], "number")?))
 }
 
-/// `(nl-jit-call-float-unary NAME X) -> Float'.  Looks up NAME in the
-/// unified registry, casts the resolved fn ptr to
-/// `extern "C" fn(f64) -> f64', calls it with X, wraps result as
-/// `Sexp::Float'.  See `lisp/nelisp-stdlib-math.el' for the elisp
-/// wrappers (= `float' / `exp' / `log').
+/// `(nl-jit-call-float-unary NAME X) -> Float'.  `fn(f64) -> f64' shape
+/// (= `nl_jit_float_{float,exp,log}').  Elisp wrappers in
+/// `lisp/nelisp-stdlib-math.el'.
 pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, x) = float_unary(args, "nl-jit-call-float-unary")?;
     // SAFETY: NAME resolves to `nl_jit_float_{float,exp,log}' shape.
@@ -536,33 +372,16 @@ pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Float(f(x)))
 }
 
-// ---------------------------------------------------------------
-// Doc 77b Stage b.2.5 — out-param trampoline primitives.
-//
-// The remaining 9 lowered_X fns (5 cons + 4 access) follow a
-// different trampoline shape from Stage b.2's 3 primitives: each
-// trampoline takes the input Sexp(s) by `*const Sexp', writes the
-// result Sexp into a caller-supplied `*mut Sexp' out-slot, and
-// returns `i64' as `TRAMPOLINE_OK = 0' / `TRAMPOLINE_ERR = 1'.
-//
-// To keep `unsafe' / fn-ptr casts centralized, we expose 4
-// primitives covering the 4 trampoline shapes (= 2-arg / 3-arg /
-// 3-arg-with-i64 / 4-arg-with-i64).  The ERR case bubbles up as a
-// generic `WrongType { expected: "jit-call-out-N", got: <first
-// arg> }' so the elisp wrapper (Stage b.4) can `condition-case'
-// + re-signal with the proper user-facing message (= same model
-// as the existing `lowered_X' fns in cons.rs / access.rs).
-// ---------------------------------------------------------------
+// Out-param trampoline primitives (9 lowered_X fns: 5 cons + 4 access).
+// Each trampoline takes input Sexp(s) by `*const Sexp', writes result
+// into a `*mut Sexp' out-slot, returns `i64' as OK=0 / ERR=1.  4
+// primitives cover the 4 shapes (2 / 3 / 3+i64 / 4+i64).  ERR → generic
+// `WrongType { expected: "jit-call-out-N", got: first-arg }' for elisp
+// wrapper to `condition-case' + re-signal.
 
-/// Trampoline ABI: `OK = 0' / `ERR = 1' — matches `cons.rs' /
-/// `access.rs'.  Only `OK' is needed here; non-zero is treated as
-/// ERR uniformly so we never spell `TRAMPOLINE_ERR' explicitly.
 const TRAMPOLINE_OK: i64 = 0;
 
-/// Wrap a trampoline's `(rc, out)' tuple as `Result<Sexp, EvalError>'.
-/// On `TRAMPOLINE_OK' returns `out'; otherwise raises `WrongType
-/// { expected: PRIM, got: ARG.clone() }' — the canonical ERR mapping
-/// shared by every `out_*' bridge primitive + `format_float'.
+/// Wrap `(rc, out)' as `Result<Sexp, EvalError>': OK → out, else WrongType.
 fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalError> {
     if rc == TRAMPOLINE_OK {
         Ok(out)
@@ -574,16 +393,11 @@ fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalEr
     }
 }
 
-/// `(nl-jit-call-out-1 NAME ARG) -> Sexp'.  For `car' / `cdr' /
-/// `length' (= shape `extern "C" fn(*const Sexp, *mut Sexp) -> i64').
-/// Allocates an `out = Sexp::Nil' on the host stack, invokes the
-/// resolved trampoline with `(&arg, &mut out)', and returns `out' on
-/// `TRAMPOLINE_OK' or a generic `WrongType' on `TRAMPOLINE_ERR'.
+/// `(nl-jit-call-out-1 NAME ARG) -> Sexp'.  `fn(*const Sexp, *mut Sexp)
+/// -> i64' shape (car / cdr / length).
 pub fn bi_nl_jit_call_out_1(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-out-1", args, 2)?;
-    // SAFETY: caller passes a name whose JIT entry has the
-    // `(*const Sexp, *mut Sexp) -> i64' shape — `nelisp_jit_car' /
-    // `_cdr' / `_length' qualify.  Other shapes are UB.
+    // SAFETY: NAME resolves to `(*const Sexp, *mut Sexp) -> i64' shape.
     let f: extern "C" fn(*const Sexp, *mut Sexp) -> i64 =
         unsafe { std::mem::transmute(p) };
     let mut out = Sexp::Nil;
@@ -591,33 +405,25 @@ pub fn bi_nl_jit_call_out_1(args: &[Sexp]) -> Result<Sexp, EvalError> {
     out_result(r, out, "jit-call-out-1", &args[1])
 }
 
-/// `(nl-jit-call-out-2 NAME ARG1 ARG2) -> Sexp'.  For `cons' /
-/// `setcar' / `setcdr' (= shape `extern "C" fn(*const Sexp, *const
-/// Sexp, *mut Sexp) -> i64').
+/// `(nl-jit-call-out-2 NAME ARG1 ARG2) -> Sexp'.  `fn(*const Sexp,
+/// *const Sexp, *mut Sexp) -> i64' (cons / setcar / setcdr).
 pub fn bi_nl_jit_call_out_2(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-out-2", args, 3)?;
-    // SAFETY: caller passes a name whose JIT entry has the
-    // `(*const Sexp, *const Sexp, *mut Sexp) -> i64' shape —
-    // `nelisp_jit_cons' / `_setcar' / `_setcdr' qualify.
+    // SAFETY: NAME resolves to `(*const Sexp, *const Sexp, *mut Sexp)
+    // -> i64' shape.
     let f: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64 =
         unsafe { std::mem::transmute(p) };
     let mut out = Sexp::Nil;
-    let r = f(
-        &args[1] as *const _,
-        &args[2] as *const _,
-        &mut out as *mut _,
-    );
+    let r = f(&args[1] as *const _, &args[2] as *const _, &mut out as *mut _);
     out_result(r, out, "jit-call-out-2", &args[1])
 }
 
-/// `(nl-jit-call-out-1i NAME ARG IDX) -> Sexp'.  For `aref' / `elt'
-/// (= shape `extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64').
+/// `(nl-jit-call-out-1i NAME ARG IDX) -> Sexp'.  `fn(*const Sexp, i64,
+/// *mut Sexp) -> i64' (aref / elt).
 pub fn bi_nl_jit_call_out_1i(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-out-1i", args, 3)?;
     let idx = as_int("nl-jit-call-out-1i", &args[2])?;
-    // SAFETY: caller passes a name whose JIT entry has the
-    // `(*const Sexp, i64, *mut Sexp) -> i64' shape — `nelisp_jit_aref'
-    // / `_elt' qualify.
+    // SAFETY: NAME resolves to `(*const Sexp, i64, *mut Sexp) -> i64'.
     let f: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64 =
         unsafe { std::mem::transmute(p) };
     let mut out = Sexp::Nil;
@@ -625,43 +431,24 @@ pub fn bi_nl_jit_call_out_1i(args: &[Sexp]) -> Result<Sexp, EvalError> {
     out_result(r, out, "jit-call-out-1i", &args[1])
 }
 
-/// `(nl-jit-call-out-2i NAME ARG IDX VAL) -> Sexp'.  For `aset' (=
-/// shape `extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) ->
-/// i64').
+/// `(nl-jit-call-out-2i NAME ARG IDX VAL) -> Sexp'.  `fn(*const Sexp,
+/// i64, *const Sexp, *mut Sexp) -> i64' (aset).
 pub fn bi_nl_jit_call_out_2i(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-out-2i", args, 4)?;
     let idx = as_int("nl-jit-call-out-2i", &args[2])?;
-    // SAFETY: caller passes a name whose JIT entry has the
-    // `(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64' shape —
-    // `nelisp_jit_aset' qualifies.
+    // SAFETY: NAME resolves to `(*const Sexp, i64, *const Sexp, *mut
+    // Sexp) -> i64'.
     let f: extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64 =
         unsafe { std::mem::transmute(p) };
     let mut out = Sexp::Nil;
-    let r = f(
-        &args[1] as *const _,
-        idx,
-        &args[3] as *const _,
-        &mut out as *mut _,
-    );
+    let r = f(&args[1] as *const _, idx, &args[3] as *const _, &mut out as *mut _);
     out_result(r, out, "jit-call-out-2i", &args[1])
 }
 
-
-// ---------------------------------------------------------------
-// Doc 86 §86.1.e — `:trampoline-format-float' bridge primitive.
-//
-// `(nl-jit-call-format-float NAME X CONV PREC) -> Sexp'.  Resolves
-// NAME via `unified_fn_ptr', casts to `extern "C" fn(f64, u32, i64,
-// *mut Sexp) -> i64' (= the `:trampoline-format-float' ABI mode
-// declared in `src/nelisp-cc-runtime.el'), invokes with X = f64
-// magnitude, CONV = u32 codepoint of the conversion char, PREC =
-// non-negative precision.  Wraps the trampoline's out-Sexp on OK or
-// surfaces ERR as a generic `WrongType' the elisp wrapper translates
-// to its preferred user-facing tag.  Sole caller: `lisp/nelisp-
-// stdlib-format.el' `nelisp--format-float-body'.
-// ---------------------------------------------------------------
-
-/// `(nl-jit-call-format-float NAME X CONV PREC) -> Sexp'.
+/// `(nl-jit-call-format-float NAME X CONV PREC) -> Sexp'.  `fn(f64,
+/// u32, i64, *mut Sexp) -> i64' (= `:trampoline-format-float' in
+/// `src/nelisp-cc-runtime.el').  Sole caller: `lisp/nelisp-stdlib-
+/// format.el' `nelisp--format-float-body'.
 pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-jit-call-format-float", args, 4, Some(4))?;
     let name = as_name("nl-jit-call-format-float", &args[0])?;
