@@ -110,6 +110,22 @@ mod access_link {
     }
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod cons_link {
+    use crate::eval::sexp::Sexp;
+    #[allow(improper_ctypes)]
+    extern "C" {
+        pub fn nelisp_jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_cons_setcar(
+            arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
+        ) -> i64;
+        pub fn nelisp_jit_cons_setcdr(
+            arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
+        ) -> i64;
+    }
+}
+
 /// Extract JIT-entry name: accepts `Symbol' or `Str' (2 forms elisp
 /// wrappers produce).
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
@@ -216,12 +232,13 @@ fn resolve_rest(name: &str) -> Option<*const u8> {
     }
     // Gate (c) — always-Rust trampolines (target-independent).
     let p: *const u8 = match name {
-        // cons (5)
-        "nelisp_jit_car" => super::cons::nl_jit_cons_car as *const u8,
-        "nelisp_jit_cdr" => super::cons::nl_jit_cons_cdr as *const u8,
+        // cons (5): car/cdr/setcar/setcdr → Phase 47 elisp `.o' via
+        // `cons_link'; `nelisp_jit_cons' (= constructor) stays Rust.
+        "nelisp_jit_car" => cons_link::nelisp_jit_cons_car as *const u8,
+        "nelisp_jit_cdr" => cons_link::nelisp_jit_cons_cdr as *const u8,
         "nelisp_jit_cons" => super::cons::nl_jit_cons_make as *const u8,
-        "nelisp_jit_setcar" => super::cons::nl_jit_cons_setcar as *const u8,
-        "nelisp_jit_setcdr" => super::cons::nl_jit_cons_setcdr as *const u8,
+        "nelisp_jit_setcar" => cons_link::nelisp_jit_cons_setcar as *const u8,
+        "nelisp_jit_setcdr" => cons_link::nelisp_jit_cons_setcdr as *const u8,
         // predicate residue (type_of / sxhash stay Rust — grammar gap)
         "nelisp_jit_type_of" => super::predicate::nl_jit_type_of as *const u8,
         "nelisp_jit_sxhash" => super::predicate::nl_jit_sxhash as *const u8,
