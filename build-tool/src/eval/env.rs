@@ -1,6 +1,7 @@
-//! Symbol table + lexical frame stack.  Two-cell symbol model (value /
-//! function); lambdas are `(closure CAPTURED-ENV ARGS BODY...)'.  See
-//! Doc 44 §3.3 + §4.
+//! Symbol table + lexical frame stack.  Two-cell symbol model
+//! (value / function); lambdas are `(closure CAPTURED-ENV ARGS BODY...)'.
+//! Doc 44 §3.3 + §4.  Doc 131 trimmed narrative + carved test mod (= Doc
+//! 130 pattern) — see `tests/env_integration.rs'.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -8,14 +9,10 @@ use std::rc::Rc;
 use super::error::EvalError;
 use super::sexp::Sexp;
 
-/// Host-crate-registered builtin closure.  `Rc' because `Env' is single-threaded.
-///
-/// Doc 102 Phase 7 (2026-05-17) + Doc 130 (2026-05-18) — extension
-/// point for the integration test binary (`tests/eval_integration.rs').
-/// Production binary builds with this type live but never inserts into
-/// the `extern_builtins' HashMap; `nelisp--env-globals-op' (= the sole
-/// former production extern_builtin) is a regular `builtins::dispatch'
-/// match arm (= Doc 102 Phase 6).
+/// Host-crate-registered builtin closure.  Doc 102 Phase 7 + Doc 130 —
+/// extension point for `tests/eval_integration.rs'.  Production binary
+/// never inserts (`nelisp--env-globals-op' is a `builtins::dispatch'
+/// match arm as of Phase 6).
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
 /// Symbol's two cells (Elisp value/function dichotomy) + plist + constant flag.
@@ -32,45 +29,32 @@ pub struct SymbolEntry {
 /// let-binding's slot (= layout-pinned NlCellRef).
 pub type FrameCell = crate::eval::nlcell::NlCellRef;
 
-/// Runtime environment: lexical frame stack + recursion guard +
-/// extern-builtin registry + elisp-side globals mirror + Stage 7.4.c
-/// apply takeover flags.  Doc 102 Phase 2.b Step E removed the legacy
-/// `globals: HashMap<String, SymbolEntry>` field — the canonical
-/// globals state is the elisp `nelisp-env' record reachable via
-/// `globals_record' + `mirror_*' accessors.  Doc 104 Stage 3.e removed
-/// the legacy `frames: Vec<HashMap<String, FrameCell>>' field — the
-/// canonical lexical scope stack is the elisp `nelisp-lexframe-stack'
-/// record reachable via `frames_record' + `frame_*_rust_direct'.
+/// Runtime environment.  Doc 102 Phase 2.b Step E removed the legacy
+/// `globals: HashMap` (canonical is the elisp `nelisp-env' record at
+/// `globals_record').  Doc 104 Stage 3.e removed the legacy
+/// `frames: Vec<HashMap>` (canonical is the elisp `nelisp-lexframe-stack'
+/// record at `frames_record').
 pub struct Env {
     pub max_recursion: u32,
     pub current_recursion: u32,
-    /// Doc 102 Phase 7 — extension-point HashMap for tests; production
-    /// binary builds without this field (`nelisp--env-globals-op' is a
-    /// regular dispatch arm as of Phase 6).
-    /// Doc 130 (2026-05-18) — ungated for the integration test binary
-    /// to register fixture builtins.  Empty HashMap in production = no
-    /// allocation cost (`HashMap::new()' is zero-state).
+    /// Doc 102 Phase 7 + Doc 130 — extension point for the integration
+    /// test binary.  Empty HashMap in production = no allocation cost.
     pub extern_builtins: HashMap<String, ExternBuiltin>,
-    /// Stage 7.4.c — route apply_combiner's plain-fn / lambda-head paths
-    /// through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
+    /// Stage 7.4.c — route apply_combiner's plain-fn / lambda-head
+    /// paths through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
     pub use_elisp_apply: bool,
     pub delegation_depth: u32,
-    /// Doc 102 Phase 8 sprint — elisp-side `nelisp-env' record (see
-    /// `lisp/nelisp-env.el').  `Sexp::Nil' until `install_stage0' (or
-    /// the explicit `install_empty_mirror_rust_direct') constructs
-    /// it.  Step E elevated this from "mirror" to "canonical" — all
-    /// globals reads / writes flow through the `mirror_*' helpers.
+    /// Elisp `nelisp-env' record (see `lisp/nelisp-env.el').  `Sexp::Nil'
+    /// until `install_stage0' constructs it.  Step E elevated this from
+    /// "mirror" to "canonical" — all globals reads/writes flow through
+    /// the `mirror_*' helpers.
     pub globals_record: Sexp,
-    /// Doc 102 Phase 8 Sprint Session 5 — cached `nelisp--unbound-marker'
-    /// sentinel.  `make-symbol' produces counter-disambiguated uninterned
-    /// names like `nelisp--unbound-marker__nelisp-uninterned-0', so the
-    /// mirror's unbound test is `cell == self.unbound_marker' (Sexp value
-    /// equality via the stable cached Sexp::Symbol).
+    /// Cached `nelisp--unbound-marker' sentinel (Doc 102 Phase 8 Session 5).
+    /// Mirror's unbound test is `cell == self.unbound_marker' (stable
+    /// cached `Sexp::Symbol').
     pub unbound_marker: Sexp,
-    /// Doc 104 Stage 3.b — elisp-side `nelisp-lexframe-stack' record (see
-    /// `lisp/nelisp-lexframe.el').  `Sexp::Nil' until `install_stage0'
-    /// (via `install_empty_frames_record_rust_direct') constructs an
-    /// empty stack.  Stage 3.b dual-writes; Stage 3.c+ migrates reads.
+    /// Elisp `nelisp-lexframe-stack' record (Doc 104 Stage 3.b).
+    /// `Sexp::Nil' until `install_stage0' constructs an empty stack.
     pub frames_record: Sexp,
 }
 
@@ -91,78 +75,32 @@ impl Env {
     }
 
     /// Globals-only environment with all built-ins installed (= GNU
-    /// Emacs' empty-buffer top-level equivalent).
-    ///
-    /// Doc 126.B (2026-05-18) — boot path is `reader::read_all(source)' +
-    /// `eval(form, env)' per top-level STDLIB form.  `.el' sources are
-    /// the canonical artifact (= 純 elisp 化 the only metric).  The
-    /// pre-126.B NELIMG v3 `.image' frozen-heap fast path was retired
-    /// (Doc 126.B-E removed the image module + baker bin entirely).
-    /// `NELISP_EVAL_BOOT_TRACE=1' prints per-form load progress.
+    /// Emacs' empty-buffer top-level equivalent).  Doc 126.B — boot
+    /// path is `reader::read_all(source)' + `eval(form, env)' per
+    /// top-level STDLIB form.  `NELISP_EVAL_BOOT_TRACE=1' prints
+    /// per-form load progress.
     pub fn new_global() -> Self {
         // STDLIB load order — see each `.el' header for rationale.
-        const STDLIB_FILES: &[(&str, &str)] = &[
-            ("nelisp-jit-substrate.el",
-             include_str!("../../../lisp/nelisp-jit-substrate.el")),
-            ("nelisp-syscall-table.el",
-             include_str!("../../../lisp/nelisp-syscall-table.el")),
-            ("nelisp-jit-strategy.el",
-             include_str!("../../../lisp/nelisp-jit-strategy.el")),
-            ("nelisp-stdlib-env-shim.el",
-             include_str!("../../../lisp/nelisp-stdlib-env-shim.el")),
-            ("nelisp-stdlib-eval-special.el",
-             include_str!("../../../lisp/nelisp-stdlib-eval-special.el")),
-            ("nelisp-stdlib-error.el",
-             include_str!("../../../lisp/nelisp-stdlib-error.el")),
-            ("nelisp-stdlib.el",
-             include_str!("../../../lisp/nelisp-stdlib.el")),
-            ("nelisp-stdlib-list.el",
-             include_str!("../../../lisp/nelisp-stdlib-list.el")),
-            ("nelisp-stdlib-hof.el",
-             include_str!("../../../lisp/nelisp-stdlib-hof.el")),
-            ("nelisp-stdlib-search.el",
-             include_str!("../../../lisp/nelisp-stdlib-search.el")),
-            ("nelisp-stdlib-plist-str.el",
-             include_str!("../../../lisp/nelisp-stdlib-plist-str.el")),
-            ("nelisp-stdlib-format.el",
-             include_str!("../../../lisp/nelisp-stdlib-format.el")),
-            ("nelisp-stdlib-misc.el",
-             include_str!("../../../lisp/nelisp-stdlib-misc.el")),
-            ("nelisp-stdlib-os.el",
-             include_str!("../../../lisp/nelisp-stdlib-os.el")),
-            ("nelisp-pcase.el",
-             include_str!("../../../lisp/nelisp-pcase.el")),
-            ("nelisp-cl-macros.el",
-             include_str!("../../../lisp/nelisp-cl-macros.el")),
-            ("nelisp-stdlib-hash.el",
-             include_str!("../../../lisp/nelisp-stdlib-hash.el")),
-            ("nelisp-stdlib-gc.el",
-             include_str!("../../../lisp/nelisp-stdlib-gc.el")),
-            ("nelisp-stdlib-equal.el",
-             include_str!("../../../lisp/nelisp-stdlib-equal.el")),
-            ("nelisp-stdlib-prn.el",
-             include_str!("../../../lisp/nelisp-stdlib-prn.el")),
-            ("nelisp-stdlib-reader.el",
-             include_str!("../../../lisp/nelisp-stdlib-reader.el")),
-            ("nelisp-stdlib-eval-core.el",
-             include_str!("../../../lisp/nelisp-stdlib-eval-core.el")),
-            ("nelisp-stdlib-time.el",
-             include_str!("../../../lisp/nelisp-stdlib-time.el")),
-            ("nelisp-stdlib-math.el",
-             include_str!("../../../lisp/nelisp-stdlib-math.el")),
-            ("nelisp-stdlib-regex.el",
-             include_str!("../../../lisp/nelisp-stdlib-regex.el")),
-            ("nelisp-stdlib-fast-hash.el",
-             include_str!("../../../lisp/nelisp-stdlib-fast-hash.el")),
-            ("nelisp-env.el",
-             include_str!("../../../lisp/nelisp-env.el")),
-            ("nelisp-lexframe.el",
-             include_str!("../../../lisp/nelisp-lexframe.el")),
-            ("nelisp-cli.el",
-             include_str!("../../../lisp/nelisp-cli.el")),
-        ];
         // max_recursion=1024 bounds eval-loop nesting under cargo test's
         // 2MB thread stack (see `recursion_depth_guard').
+        macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) } }
+        const STDLIB_FILES: &[(&str, &str)] = &[
+            e!("nelisp-jit-substrate.el"),    e!("nelisp-syscall-table.el"),
+            e!("nelisp-jit-strategy.el"),     e!("nelisp-stdlib-env-shim.el"),
+            e!("nelisp-stdlib-eval-special.el"), e!("nelisp-stdlib-error.el"),
+            e!("nelisp-stdlib.el"),           e!("nelisp-stdlib-list.el"),
+            e!("nelisp-stdlib-hof.el"),       e!("nelisp-stdlib-search.el"),
+            e!("nelisp-stdlib-plist-str.el"), e!("nelisp-stdlib-format.el"),
+            e!("nelisp-stdlib-misc.el"),      e!("nelisp-stdlib-os.el"),
+            e!("nelisp-pcase.el"),            e!("nelisp-cl-macros.el"),
+            e!("nelisp-stdlib-hash.el"),      e!("nelisp-stdlib-gc.el"),
+            e!("nelisp-stdlib-equal.el"),     e!("nelisp-stdlib-prn.el"),
+            e!("nelisp-stdlib-reader.el"),    e!("nelisp-stdlib-eval-core.el"),
+            e!("nelisp-stdlib-time.el"),      e!("nelisp-stdlib-math.el"),
+            e!("nelisp-stdlib-regex.el"),     e!("nelisp-stdlib-fast-hash.el"),
+            e!("nelisp-env.el"),              e!("nelisp-lexframe.el"),
+            e!("nelisp-cli.el"),
+        ];
         let mut env = Env::install_stage0(1024);
         let trace = std::env::var_os("NELISP_EVAL_BOOT_TRACE")
             .map(|v| !v.is_empty() && v != "0")
@@ -178,40 +116,31 @@ impl Env {
                 }
                 if let Err(e) = crate::eval::eval(form, &mut env) {
                     panic!(
-                        "{} eval-boot eval failed at form #{}: {}\n\
-                         form: {}",
-                        name, idx, e,
-                        crate::eval::sexp::fmt_sexp(form),
+                        "{} eval-boot eval failed at form #{}: {}\nform: {}",
+                        name, idx, e, crate::eval::sexp::fmt_sexp(form),
                     );
                 }
             }
         }
-        // Elisp dispatch ON post-bootstrap; `NELISP_USE_RUST_APPLY' env
-        // var pins Rust dispatch as escape hatch.
+        // Elisp dispatch ON post-bootstrap; `NELISP_USE_RUST_APPLY' pins
+        // Rust dispatch as escape hatch.
         env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY")
             .map(|v| v.is_empty())
             .unwrap_or(true);
-        env.install_globals_record();
+        // Pin `nelisp--unbound-marker' value cell to the Rust-defined
+        // sentinel (STDLIB's defvar bakes a counter-suffixed value).
+        let unbound = env.unbound_marker.clone();
+        env.mirror_set_value("nelisp--unbound-marker", unbound);
         env
     }
 
-    /// Empty env (no built-ins).  Integration tests only (see
-    /// `tests/eval_integration.rs::env_empty_has_no_builtins').
+    /// Empty env (no built-ins).  Integration tests only.
     pub fn empty() -> Self {
         Env::fresh(256)
     }
 
-    /// Pin `nelisp--unbound-marker' value cell to the Rust-defined sentinel
-    /// (STDLIB's defvar bakes a `make-symbol' counter-suffixed value that
-    /// we replace here for `(eq cell nelisp--unbound-marker)' identity).
-    fn install_globals_record(&mut self) {
-        let unbound = self.unbound_marker.clone();
-        self.mirror_set_value("nelisp--unbound-marker", unbound);
-    }
-
-    /// Built-ins + env_shim installed, no STDLIB.  Used by the
-    /// `mirror_*' direct-write tests in this file (Doc 104 Stage 3.b)
-    /// where STDLIB load would dwarf the mirror probe under test.
+    /// Built-ins + env_shim installed, no STDLIB.  Used by Doc 104
+    /// Stage 3.b mirror_* direct-write tests in `tests/env_integration.rs'.
     pub fn new_global_no_stdlib() -> Self {
         Env::install_stage0(1024)
     }
@@ -228,11 +157,9 @@ impl Env {
         env
     }
 
-    /// Register `f' as an externally-supplied builtin (test-only in spirit).
-    /// Sets function cell to `(builtin NAME)' so `(NAME ARG...)' invokes `f'.
-    ///
+    /// Register `f' as an externally-supplied builtin (test-only).
     /// Integration test fixture entry — `extern_builtins' is consumed
-    /// by the test scaffold only (production code never registers).
+    /// by the test scaffold only (production never registers).
     pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
     where
         F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,
@@ -248,14 +175,8 @@ impl Env {
         self.mirror_install_entry(name, Some(value), None, None, true);
     }
 
-    /// Innermost-first lexical frame walk.  Doc 104 Stage 3.c — body
-    /// now walks the elisp-side `nelisp-lexframe-stack' mirror via
-    /// `frame_stack_find_rust_direct'.  Returns an `Option<FrameCell>'
-    /// (owned Rc handle, cheap to clone) instead of the previous
-    /// `Option<&FrameCell>'; callers just `cell.value.clone()' or
-    /// `cell.set_value(...)' so the signature widening is transparent.
-    /// Vec is still written by `push_frame/pop_frame/bind_local'
-    /// (Stage 3.d drops those writes); reads no longer touch it.
+    /// Innermost-first lexical frame walk (Doc 104 Stage 3.c — body
+    /// walks the elisp-side `nelisp-lexframe-stack' mirror).
     fn find_frame_cell(&self, name: &str) -> Option<FrameCell> {
         match self.frame_stack_find_rust_direct(name)? {
             Sexp::Cell(c) => Some(c),
@@ -281,8 +202,8 @@ impl Env {
         }
     }
 
-    /// `setq' / `set' — write-through frame cell if bound, else globals mirror.
-    /// Constants raise.
+    /// `setq' / `set' — write-through frame cell if bound, else globals
+    /// mirror.  Constants raise.
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
         if self.mirror_is_constant(name) {
             return Err(EvalError::SettingConstant(name.to_string()));
@@ -312,9 +233,8 @@ impl Env {
     }
 
     /// `defvar' / `defconst' — install only if unbound.  Post-bootstrap
-    /// dispatches to elisp `nelisp-env-defvar'; pre-bootstrap (helper
-    /// not yet loaded) uses the Rust mirror_* helpers directly so STDLIB
-    /// decode-time defvars install correctly.
+    /// dispatches to elisp `nelisp-env-defvar'; pre-bootstrap uses the
+    /// Rust `mirror_*' helpers directly.
     pub fn defvar(&mut self, name: &str, value: Sexp, is_constant: bool) {
         let f = match self.lookup_function("nelisp-env-defvar") {
             Ok(f) => f,
@@ -328,10 +248,10 @@ impl Env {
                 return;
             }
         };
+        // `Sexp::Str' — `nelisp--fast-hash-put' FNV-1a hashes byte
+        // sequences; a Symbol would crash on `(length symbol)'.
         let args = [
             self.globals_record.clone(),
-            // Sexp::Str — `nelisp--fast-hash-put' FNV-1a hashes byte sequences;
-            // a Symbol would crash on `(length symbol)' inside the elisp hash.
             Sexp::Str(name.to_string()),
             value,
             if is_constant { Sexp::T } else { Sexp::Nil },
@@ -340,26 +260,18 @@ impl Env {
     }
 
     pub fn push_frame(&mut self) {
-        // Doc 104 Stage 3.d — Vec write retired; mirror is canonical.
         self.frame_push_rust_direct();
     }
 
     /// Silently no-ops on under-pop (= balanced caller path).
     pub fn pop_frame(&mut self) {
-        // Doc 104 Stage 3.d — Vec write retired.
         self.frame_pop_rust_direct();
     }
 
     /// `let' / `let*' / lambda formals — bind NAME→VALUE in innermost
     /// frame (= fresh FrameCell so closures share the slot); falls
-    /// through to the global slot when no frame is active.  Doc 102
-    /// Phase 2.b Step E retired the HashMap dual-write for the
-    /// no-frame branch.  Doc 104 Stage 3.d retired the Vec write —
-    /// mirror is canonical (= `frame_bind_rust_direct' fast-paths
-    /// "no live frame" by no-op, matching `nelisp-lexframe-stack-depth
-    /// == 0').
+    /// through to the global slot when no frame is active.
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
-        // Check whether the mirror stack has at least one frame.
         let has_frame = matches!(&self.frames_record, Sexp::Record(r)
             if matches!(r.slots.get(1), Some(Sexp::Int(n)) if *n > 0));
         if has_frame {
@@ -371,7 +283,6 @@ impl Env {
     }
 
     /// `boundp' — true iff `name' resolves in any frame or has a global value.
-    /// Sentinel symbol is special-cased to mirror `lookup_value' semantics.
     pub fn is_bound(&self, name: &str) -> bool {
         if self.find_frame_cell(name).is_some() {
             return true;
@@ -392,8 +303,8 @@ impl Env {
     /// `NlCellRef' so closure `setq' writes through to the let-binding.
     /// Pre-bootstrap (helper not loaded) returns Nil.
     pub fn capture_lexical(&mut self) -> Sexp {
-        // Snapshot depth BEFORE dispatch — apply_lambda_inner pushes its
-        // argument frame onto the same record during the helper call.
+        // Snapshot depth BEFORE dispatch — apply_lambda_inner pushes
+        // its argument frame onto the same record during the call.
         let depth = match &self.frames_record {
             Sexp::Record(r) => match r.slots.get(1) {
                 Some(Sexp::Int(n)) => *n,
@@ -410,9 +321,6 @@ impl Env {
     }
 
     /// Push a frame from a captured-env alist (inverse of `capture_lexical').
-    /// `Sexp::Cell' captures reuse the same `Rc' (write-through); plain
-    /// values wrap into a fresh `Sexp::Cell'.  Build dispatches to elisp;
-    /// push stays Rust-direct so depth lands at the caller's stack.
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let normalized = Env::wrap_alist_cells(alist)?;
         let f = match self.lookup_function("nelisp-lexframe-make-from-alist") {
@@ -432,4 +340,3 @@ impl Env {
         Ok(())
     }
 }
-
