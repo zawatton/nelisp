@@ -38,14 +38,6 @@ pub fn install_builtins(env: &mut Env) {
         // Generic POSIX syscall helpers.
         "nelisp--syscall",
         "nelisp--syscall-supported-p",
-        // Socket primitives.
-        "nelisp--syscall-socketpair",
-        "nelisp--syscall-sendmsg-fds",
-        "nelisp--syscall-recvmsg-fds",
-        "nelisp--syscall-getsockopt-peercred",
-        "nelisp--syscall-bind-inet6-scoped",
-        "nelisp--syscall-connect-inet6-scoped",
-        "nelisp--syscall-accept-inet6-scoped",
         // Symbol/function cell ops and dispatch core.
         "symbol-function", "funcall", "apply", "eval",
         "fset",
@@ -82,7 +74,7 @@ pub fn install_builtins(env: &mut Env) {
         // Apply/call/closure/env primitives.
         "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured",
         "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
-        "nelisp--set-use-elisp-apply", "nelisp--get-use-elisp-apply",
+        "nelisp--set-use-elisp-apply",
         "nelisp--apply-lambda-inner",
         // JIT bridge primitives.
         "nl-jit-call-i64-i64",
@@ -142,10 +134,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
             let truthy = !matches!(args[0], Sexp::Nil);
             env.use_elisp_apply = truthy;
             Ok(if truthy { Sexp::T } else { Sexp::Nil })
-        }
-        "nelisp--get-use-elisp-apply" => {
-            require_arity("nelisp--get-use-elisp-apply", args, 0, Some(0))?;
-            Ok(if env.use_elisp_apply { Sexp::T } else { Sexp::Nil })
         }
         "nelisp--apply-lambda-inner" => bi_apply_lambda_inner(args, env),
         // ---- core dispatch + signal ----
