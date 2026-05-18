@@ -572,6 +572,13 @@
        ((= kind 1)
         (nelisp_reader_p_parse_list_step
          str-ptr cursor-slot result-slot slot-pool depth))
+       ;; LBracket → vector literal `[...]' (Doc 116 §116.B+ extension,
+       ;; this commit).  Body parsed as a cons-list at car[d] (terminator
+       ;; = RBracket), then converted to a fresh Sexp::Vector at
+       ;; result-slot via `vector-make' + `vector-slot-set' fill loop.
+       ((= kind 3)
+        (nelisp_reader_p_parse_vector
+         str-ptr cursor-slot result-slot slot-pool depth 0))
        ;; Quote prefixes (5,6,7,8,9) → wrap (HEAD INNER).
        ((= kind 5)
         (nelisp_reader_p_wrap str-ptr cursor-slot result-slot
@@ -592,7 +599,7 @@
        ((>= kind 20)
         (nelisp_reader_p_leaf kind result-slot
                               (vector-ref-ptr slot-pool 1)))
-       ;; Stray close / dot / EOF / error / vec / record → error.
+       ;; Stray close / dot / EOF / error / record / byte-code → error.
        (t -1)))
 
     ;; ===========================================================
@@ -672,8 +679,11 @@
        ((= kind 0) -1)
        ((= kind 4) -1)
        ((< kind 0) -1)
-       ;; Vec / record: out-of-scope for §116.B MVP.
-       ((= kind 3) -1)
+       ;; Record `#s(...)' / byte-code `#[...]' (kind 11) still
+       ;; out-of-scope for §116.B (= the stdlib subset does not need
+       ;; them, only the user-facing reader in `nelisp-stdlib-reader.el'
+       ;; does); kind 3 LBracket falls through to the recursive parse
+       ;; arm below so `[..]' vectors compose inside lists.
        ((= kind 11) -1)
        (t
         (and (= (nelisp_reader_p_dispatch
@@ -696,6 +706,142 @@
              1))))
 
     ;; ===========================================================
+    ;; Vector body parser (= mirror of `parse_list_step' but with
+    ;; RBracket (kind 4) as terminator instead of RParen (kind 2)).
+    ;; Produces a cons-list at LIST-SLOT terminating in Nil.  Dot
+    ;; tokens inside the body are an error (= `(cons . cdr)' shape
+    ;; is meaningless inside `[...]').
+    ;;
+    ;; Arity 6 (even) — though this defun does NOT itself invoke
+    ;; `vector-make' / `vector-slot-set' (those run in the outer
+    ;; `parse_vector' driver), the trailing `_pad' arg keeps the
+    ;; call-site rsp alignment uniform with the rest of the parser
+    ;; family.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_parse_vector_step
+        (str-ptr cursor-slot list-slot slot-pool depth _pad)
+      (nelisp_reader_p_vec_dispatch
+       str-ptr cursor-slot list-slot slot-pool depth
+       (nelisp_reader_p_lex_one
+        str-ptr cursor-slot
+        (vector-ref-ptr slot-pool 1)
+        (vector-ref-ptr slot-pool 0))))
+
+    (defun nelisp_reader_p_vec_dispatch
+        (str-ptr cursor-slot list-slot slot-pool depth kind)
+      (cond
+       ;; RBracket — body terminated.  Force list-slot tag to Nil (= 0).
+       ((= kind 4)
+        (nelisp_reader_p_prog2 (ptr-write-u8 list-slot 0 0) 1))
+       ;; EOF / stray RParen / stray Dot / lex error → parse error.
+       ((= kind 0) -1)
+       ((= kind 2) -1)
+       ((= kind 10) -1)
+       ((< kind 0) -1)
+       ;; Otherwise parse one item into car[d], recurse for tail at
+       ;; cdr[d], cons-make into list-slot.
+       (t
+        (and (= (nelisp_reader_p_dispatch
+                 str-ptr cursor-slot
+                 (vector-ref-ptr slot-pool
+                                 (nelisp_reader_p_car_idx depth))
+                 slot-pool (+ depth 1) kind)
+                1)
+             (= (nelisp_reader_p_parse_vector_step
+                 str-ptr cursor-slot
+                 (vector-ref-ptr slot-pool
+                                 (nelisp_reader_p_cdr_idx depth))
+                 slot-pool (+ depth 1) 0)
+                1)
+             (cons-make (vector-ref-ptr slot-pool
+                                        (nelisp_reader_p_car_idx depth))
+                        (vector-ref-ptr slot-pool
+                                        (nelisp_reader_p_cdr_idx depth))
+                        list-slot)
+             1))))
+
+    ;; ===========================================================
+    ;; Cons-list length walker — raw NlConsBox* iteration via the
+    ;; §101.B `cons-cdr-raw-from-box' op.  Identical shape to
+    ;; `nelisp_length_cons_walk' in `nelisp-cc-length-cons.el'.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_cons_list_len_walk (cur-box-ptr n)
+      (if (= cur-box-ptr 0)
+          n
+        (nelisp_reader_p_cons_list_len_walk
+         (cons-cdr-raw-from-box cur-box-ptr)
+         (+ n 1))))
+
+    ;; ===========================================================
+    ;; Fill the freshly-allocated Sexp::Vector at VEC-HANDLE from
+    ;; the cons-list rooted at CONS-HANDLE.  Walks the list one
+    ;; cell at a time via `nl_cons_car_ptr' / `nl_cons_cdr_ptr'
+    ;; externs (Doc 120 §120.C narrow Rust helpers) to obtain
+    ;; *const Sexp pointers into the inline car/cdr fields, then
+    ;; uses `vector-slot-set' (§111.E) for refcount-safe writes.
+    ;;
+    ;; Arity 6 (even) — required because the body invokes the
+    ;; static-emit `vector-slot-set' op (Doc 124 §124.F.diag SysV
+    ;; AMD64 stack-alignment fix).
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_fill_vec
+        (cons-handle vec-handle i slot-pool depth _pad)
+      (if (= (cons-null-p cons-handle) 1)
+          1
+        (and (vector-slot-set vec-handle i
+                              (extern-call nl_cons_car_ptr cons-handle))
+             (nelisp_reader_p_fill_vec
+              (extern-call nl_cons_cdr_ptr cons-handle)
+              vec-handle (+ i 1) slot-pool depth 0))))
+
+    ;; ===========================================================
+    ;; Top-level vector arm (= `p_dispatch' kind 3).  Three-step
+    ;; pipeline:
+    ;;
+    ;;   1. Parse body items into a cons-list at car[d] (= the
+    ;;      depth's primary working slot).  `parse_vector_step'
+    ;;      recurses at depth+1 so per-element working slots don't
+    ;;      collide with the accumulator.
+    ;;
+    ;;   2. Allocate `Sexp::Vector(N)' at result-slot via the
+    ;;      Doc 115 §115.1 `vector-make' grammar op, where N is
+    ;;      the length of the cons-list (= one raw box walk).
+    ;;
+    ;;   3. Fill vector slots [0, N) by re-walking the cons-list
+    ;;      via `fill_vec' (= refcount-safe `vector-slot-set' per
+    ;;      element).
+    ;;
+    ;; Arity 6 (even) for the static-emit alignment invariant.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_parse_vector
+        (str-ptr cursor-slot result-slot slot-pool depth _pad)
+      (and (= (nelisp_reader_p_parse_vector_step
+               str-ptr cursor-slot
+               (vector-ref-ptr slot-pool
+                               (nelisp_reader_p_car_idx depth))
+               slot-pool (+ depth 1) 0)
+              1)
+           ;; vector-make CAP SLOT — CAP = walker(payload(car[d]), 0).
+           ;; `sexp-payload-ptr' returns the NlConsBox* for Cons and 0
+           ;; for Nil, so the empty-vector case `[]' threads CAP = 0.
+           (vector-make
+            (nelisp_reader_p_cons_list_len_walk
+             (sexp-payload-ptr
+              (vector-ref-ptr slot-pool
+                              (nelisp_reader_p_car_idx depth)))
+             0)
+            result-slot)
+           (= (nelisp_reader_p_fill_vec
+               (vector-ref-ptr slot-pool
+                               (nelisp_reader_p_car_idx depth))
+               result-slot 0 slot-pool depth 0)
+              1)))
+
+    ;; ===========================================================
     ;; Top-level entry — start at depth 0.
     ;; ===========================================================
 
@@ -712,10 +858,12 @@ entry `nelisp_reader_parse_one'.  Consumes the §116.A lexer's
 token stream via `extern-call nelisp_reader_lex_one' and produces
 Sexp values via the §101 / §111 / §122 grammar primitives.
 
-Kinds dispatched: 0 EOF, 1 LParen, 2 RParen, 5 Quote, 6 Backquote,
-7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 20 Int, 21 Float,
-22 Str, 23 Sym, 24 Char, 25 RadixInt.  Kinds 3 LBracket and 11
-SharpsParen drive the vector / record parsers (Doc 116 §116.B+).
+Kinds dispatched: 0 EOF, 1 LParen, 2 RParen, 3 LBracket, 5 Quote,
+6 Backquote, 7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 20 Int,
+21 Float, 22 Str, 23 Sym, 24 Char, 25 RadixInt.  Kind 3 LBracket
+drives the vector parser (Doc 116 §116.B+ — `parse_vector_step'
++ `parse_vector' + `fill_vec' + `cons_list_len_walk').  Kind 11
+SharpsParen (record `#s(...)') still surfaces as a parse error.
 Doc 122 §122.G unlocks kind 21 Float by routing the payload bytes
 through the `nl_str_to_float' extern (= `str::parse::<f64>()' with
 direct `Sexp::Float' write into RESULT-SLOT).

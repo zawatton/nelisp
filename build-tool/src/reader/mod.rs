@@ -28,15 +28,20 @@
 //! literals `1.5' / `1e3' (kind 21) via the `nl_str_to_float'
 //! extern.
 //!
-//! Doc 116 §116.D (this commit) deleted the legacy Rust `lexer.rs' +
-//! `parser.rs' modules (-1370 LOC).  Inputs the elisp parser still
-//! does not support (vector `[..]' kind 3, record `#s(..)' kind 11,
-//! byte-code `#[..]') now surface as `NotYetImplemented' read errors
-//! rather than routing through a Rust fallback.  The boot stdlib
-//! sources never use those literals (verified by grep), so
-//! `image-baker' continues to work end-to-end on the pure-elisp
-//! Reader.  This module retains the dispatch + deep-clone layer +
-//! `ReadError` re-export only.
+//! Doc 116 §116.D (2026-05-13) deleted the legacy Rust `lexer.rs' +
+//! `parser.rs' modules (-1370 LOC).  Doc 116 §116.B+ vector arm
+//! (2026-05-18) wired the elisp parser to handle `[..]' (kind 3) —
+//! `lisp/nelisp-cc-reader-parser.el' grew `nelisp_reader_p_parse_vector'
+//! (= cons-list accumulator + `vector-make' + `vector-slot-set' fill
+//! loop), unblocking the `NELISP_EVAL_BOOT=1' path through
+//! `nelisp-stdlib-os.el' (which uses `[:type :type ...]' literals for
+//! `nl-ffi-call' signatures).  Remaining unsupported features —
+//! record `#s(..)' (kind 11) and byte-code `#[..]' — still surface
+//! as `NotYetImplemented' (the boot stdlib never uses them; the
+//! user-facing reader in `nelisp-stdlib-reader.el' has its own
+//! `nelisp--read-parse-vector' for `read' / `read-from-string').
+//! This module retains the dispatch + deep-clone layer + `ReadError'
+//! re-export only.
 //!
 //! The cons-make MVP refcount discipline (= raw 32-byte payload
 //! copy without inner-box refcount bump, see
@@ -78,15 +83,15 @@ const SCRATCH_CAP: i64 = 64;
 ///
 /// Doc 116 §116.D: every input routes through the §116.A/B/B+/§122.G
 /// pure-elisp pipeline.  Features the elisp parser cannot handle
-/// (vector `[..]', record `#s(..)', byte-code `#[..]') surface as
-/// `NotYetImplemented' read errors.
+/// (record `#s(..)', byte-code `#[..]') surface as
+/// `NotYetImplemented' read errors.  Vectors `[..]' are now
+/// supported (Doc 116 §116.B+ vector arm, 2026-05-18).
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
     match try_elisp_read_str(input) {
         Some(result) => result,
         None => Err(ReadError::not_yet_implemented(
-            "feature unsupported by §116.A/B elisp Reader \
-             (vector `[..]', record `#s(..)', byte-code `#[..]', \
-             or syntax error)",
+            "feature unsupported by §116.A/B/B+ elisp Reader \
+             (record `#s(..)', byte-code `#[..]', or syntax error)",
             SourcePos { line: 1, col: 1 },
         )),
     }
@@ -102,9 +107,8 @@ pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
     match try_elisp_read_all(input) {
         Some(result) => result,
         None => Err(ReadError::not_yet_implemented(
-            "feature unsupported by §116.A/B elisp Reader \
-             (vector `[..]', record `#s(..)', byte-code `#[..]', \
-             or syntax error)",
+            "feature unsupported by §116.A/B/B+ elisp Reader \
+             (record `#s(..)', byte-code `#[..]', or syntax error)",
             SourcePos { line: 1, col: 1 },
         )),
     }
@@ -483,16 +487,50 @@ mod tests {
         assert_eq!(got, expected);
     }
 
-    /// Doc 116 §116.D — vector literals `[..]' were supported by the
-    /// legacy Rust reader but are not yet handled by the §116.A/B
-    /// elisp pipeline.  Post-§116.D they surface as
-    /// `NotYetImplemented'.
+    /// Doc 116 §116.B+ vector arm (2026-05-18) — `[..]' is now
+    /// handled by the elisp parser (= `nelisp_reader_p_parse_vector'
+    /// + `_step' + `_fill_vec' + `_cons_list_len_walk'), unblocking
+    /// the eval-boot stdlib path which hits `nl-ffi-call' vector
+    /// signature literals.  Empty `[]', nested vectors, and vectors
+    /// inside lists / quotes all compose via `p_dispatch' kind 3.
     #[test]
-    fn smoke_vector_not_yet_implemented() {
-        match read_str("[1 2 3]") {
-            Err(ReadError::NotYetImplemented { .. }) => (),
-            other => panic!("expected NotYetImplemented for `[1 2 3]', got {:?}", other),
-        }
+    fn smoke_vector_literal() {
+        assert_eq!(
+            read_str("[1 2 3]").unwrap(),
+            Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)])
+        );
+        assert_eq!(read_str("[]").unwrap(), Sexp::vector(vec![]));
+        assert_eq!(
+            read_str("[:a :b]").unwrap(),
+            Sexp::vector(vec![
+                Sexp::Symbol(":a".into()),
+                Sexp::Symbol(":b".into()),
+            ])
+        );
+        // Vector inside list — exercises the `p_list_dispatch'
+        // fall-through to `p_dispatch' kind 3.
+        let got = read_str("(a [b c] d)").unwrap();
+        assert_eq!(
+            got,
+            Sexp::list_from(&[
+                Sexp::Symbol("a".into()),
+                Sexp::vector(vec![
+                    Sexp::Symbol("b".into()),
+                    Sexp::Symbol("c".into()),
+                ]),
+                Sexp::Symbol("d".into()),
+            ])
+        );
+        // Nested vector — exercises the `p_vec_dispatch'
+        // fall-through to `p_dispatch' kind 3.
+        let nested = read_str("[[1] [2 3]]").unwrap();
+        assert_eq!(
+            nested,
+            Sexp::vector(vec![
+                Sexp::vector(vec![Sexp::Int(1)]),
+                Sexp::vector(vec![Sexp::Int(2), Sexp::Int(3)]),
+            ])
+        );
     }
 
     /// `'x` → `(quote x)`.
