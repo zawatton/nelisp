@@ -1,43 +1,10 @@
-//! Doc 77c Phase A.2.0 — `NlConsBox` layout-pinned cons cell.
+//! `NlConsBox` — layout-pinned cons cell.  `#[repr(C)]' with car / cdr
+//! at byte offsets 0 / sizeof(Sexp) and refcount trailer at 2*sizeof(Sexp).
+//! Phase 47 + elisp `nl-cons-*' / `nl-rc-*' primitives reach the fields
+//! by direct offset arithmetic — no Rust runtime consultation.
 //!
-//! Specialized self-managed refcounted cons cell with `car` / `cdr`
-//! pinned at known byte offsets so the JIT (Phase A.5) and the elisp
-//! `nl-cons-*' / `nl-rc-*' primitives (Phase A.3) can reach them
-//! without consulting Rust at runtime.
-//!
-//! Layout (locked by Doc 77c §2.1.2):
-//!
-//! ```text
-//! NlConsBox:  +----------+  offset 0                     (sizeof Sexp)  car
-//!             +----------+  offset sizeof(Sexp)          (sizeof Sexp)  cdr
-//!             +----------+  offset 2 * sizeof(Sexp)      (8 bytes)      refcount
-//!             +----------+
-//! ```
-//!
-//! Why a specialized box (vs `NlRc<(Sexp, Sexp)>`)?
-//! - JIT IR can emit `mov rax, qword [rdi + 0]' for `car' and
-//!   `mov rax, qword [rdi + sizeof(Sexp)]' for `cdr' without paying
-//!   an 8-byte refcount predecessor on every list walk.
-//! - The refcount-as-trailer keeps the hottest path (= read-only
-//!   `(car ...)' / `(cdr ...)' in list eval) cache-tight.
-//! - Phase A.5 trampoline `nl_jit_cons_car' becomes a direct field
-//!   load through `addr_of!((*box).car)'.
-//!
-//! Phase A.1's [`NlRc<T>`](super::nlrc::NlRc) is a *generic* refcounted
-//! pointer (refcount @ 0, payload @ 8).  This file introduces the
-//! *specialized* counterpart for `Sexp::Cons'.  Both coexist; Phase
-//! A.2.1 will migrate `Sexp::Cons(Rc<...>, Rc<...>)' to
-//! `Sexp::Cons(NlConsBoxRef)'.
-//!
-//! Out of scope for Phase A.2.0:
-//!   - Migrating `Sexp::Cons' callsites                  (= Phase A.2.1)
-//!   - `nl-cons-*' / `nl-rc-*' elisp primitives          (= Phase A.3)
-//!   - Cranelift trampoline rewrites                     (= Phase A.5)
-//!
-//! Threading: `AtomicUsize` mirrors the `NlRc<T>' rationale — the
-//! eventual JIT/ffi paths may touch the refcount from any thread that
-//! holds a handle.  `NlConsBoxRef' is intentionally NOT `Send` /
-//! `Sync` for now; Phase A.5 will re-evaluate.
+//! Not `Send` / `Sync` (eventual cross-thread access reserved for a
+//! future review).
 
 use crate::eval::sexp::Sexp;
 use std::alloc::{self, Layout};
@@ -46,23 +13,13 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Layout-pinned cons cell.  Heap-allocated, refcounted via an
-/// `AtomicUsize` trailer.  Accessed through [`NlConsBoxRef`] handles.
-///
-/// `#[repr(C)]` is mandatory: Phase A.5 JIT will read `car` / `cdr`
-/// at known byte offsets, and Phase A.3 elisp `nl-rc-inc' /
-/// `nl-rc-dec' / `nl-rc-count' primitives will touch the refcount
-/// trailer through the same offset contract.
+/// Layout-pinned cons cell.  `#[repr(C)]' guarantees car @ 0,
+/// cdr @ sizeof(Sexp), refcount @ 2*sizeof(Sexp) — read by Phase 47
+/// and elisp `nl-rc-*' primitives via raw offset arithmetic.
 #[repr(C)]
 pub struct NlConsBox {
-    /// First half of the cons pair.  Offset 0 is the JIT contract.
     pub car: Sexp,
-    /// Second half of the cons pair.  Offset = `size_of::<Sexp>()`
-    /// by `repr(C)' layout rules.
     pub cdr: Sexp,
-    /// Strong reference count.  Starts at 1 in [`NlConsBoxRef::new`],
-    /// +1 on each `Clone`, -1 on each `Drop`.  When it reaches 0 the
-    /// last handle drops the payload and frees the allocation.
     pub refcount: AtomicUsize,
 }
 
@@ -147,17 +104,12 @@ pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const
 /// (= `Option<NlConsBoxRef>' is the same size as `NlConsBoxRef') and
 /// rules out null-ptr UB by construction.
 ///
-/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): pinned to
 /// `#[repr(transparent)]' so the on-disk layout matches `NonNull<NlConsBox>'
-/// exactly.  This is the load-bearing invariant for `Sexp::cons_box_ptr',
-/// which reads the box pointer at offset `SEXP_PAYLOAD_OFFSET' of the
-/// outer `Sexp' enum.
+/// — load-bearing for `Sexp::cons_box_ptr', which reads the box pointer
+/// at offset `SEXP_PAYLOAD_OFFSET' of the outer `Sexp' enum.
 #[repr(transparent)]
 pub struct NlConsBoxRef {
     ptr: NonNull<NlConsBox>,
-    /// Tells the borrow-checker we own an `NlConsBox` even though the
-    /// field is `NonNull<...>'.  Mirrors `std::rc::Rc' /
-    /// `super::nlrc::NlRc'.
     _marker: PhantomData<NlConsBox>,
 }
 
@@ -195,13 +147,8 @@ impl NlConsBoxRef {
         }
     }
 
-    /// Read the current strong-reference count.  Mirrors
-    /// `NlRc::strong_count'; primarily useful for tests and the elisp
-    /// `nl-rc-count' primitive (Phase A.3).
-    ///
-    /// Uses `Acquire` ordering so a caller observing the returned
-    /// value can also rely on having seen all writes published via
-    /// the matching `Release` decrement.
+    /// Read the current strong-reference count.  `Acquire' ordering
+    /// pairs with the `Release' fetch_sub in Drop.
     pub fn strong_count(this: &Self) -> usize {
         // SAFETY: `this.ptr' is alive because we hold a handle.
         unsafe { (*this.ptr.as_ptr()).refcount.load(Ordering::Acquire) }
@@ -214,29 +161,17 @@ impl NlConsBoxRef {
         a.ptr.as_ptr() == b.ptr.as_ptr()
     }
 
-    /// Raw pointer to the box, for ffi shims.  Phase A.3 elisp
-    /// `nl-cons-car' / `nl-rc-inc' will use this through
-    /// `nl-ffi-write-i64' / `nl-ffi-read-i64'.
+    /// Raw pointer to the box, for ffi shims (elisp `nl-cons-*' / `nl-rc-*').
     #[inline]
     pub fn as_ptr(this: &Self) -> *const NlConsBox {
         this.ptr.as_ptr()
     }
 
-    /// Phase A.3: bump the refcount **without acquiring a Rust handle**.
-    /// Backs the elisp `nl-rc-inc' primitive.  Layer 2 elisp takes
-    /// responsibility for matching every `nl-rc-inc' with exactly one
-    /// `nl-rc-dec' — typical use is keeping the box alive while a raw
-    /// pointer / opaque handle is stashed in an elisp data structure
-    /// outside of Rust ownership tracking.
-    ///
-    /// `Relaxed` is the same ordering [`NlConsBoxRef::clone`] uses for
-    /// the corresponding +1; the synchronization story matches.
+    /// Bump the refcount without acquiring a Rust handle.  Backs elisp
+    /// `nl-rc-inc'; caller is responsible for a matching `rc_dec_raw'.
     ///
     /// # Safety
-    ///
-    /// The caller must guarantee a matching [`Self::rc_dec_raw`]
-    /// follows.  Unbalanced calls leak (extra inc) or use-after-free
-    /// (extra dec).
+    /// Caller must guarantee a matching [`Self::rc_dec_raw`] follows.
     pub unsafe fn rc_inc_raw(this: &Self) {
         // SAFETY: `this.ptr' is alive because the caller holds the
         // handle backing `this'.  fetch_add cannot wrap (= would need
@@ -248,20 +183,14 @@ impl NlConsBoxRef {
         }
     }
 
-    /// Phase A.3: decrement the refcount, freeing the box when it
-    /// reaches zero.  Backs the elisp `nl-rc-dec' primitive.  Mirrors
-    /// the body of [`NlConsBoxRef::drop`] but takes `&Self` instead of
-    /// `&mut Self` so it can be invoked from a primitive that received
-    /// the cons through `args: &[Sexp]'.
+    /// Decrement the refcount, freeing the box at 0.  Backs elisp
+    /// `nl-rc-dec'; takes `&Self' so it can fire from `args: &[Sexp]'.
     ///
     /// # Safety
-    ///
-    /// (a) Must be paired with a prior [`Self::rc_inc_raw`] (or be the
-    ///     final balancing decrement of a normal handle's lifecycle).
-    /// (b) If the resulting refcount is 0 the box's `car' / `cdr' are
-    ///     dropped and the allocation is freed; any other handle
-    ///     pointing at this box is then dangling.  Layer 2 elisp must
-    ///     guarantee no such handle survives.
+    /// (a) Must pair with a prior [`Self::rc_inc_raw`] or be the final
+    ///     balancing decrement of a normal handle's lifecycle.
+    /// (b) On refcount=0 the car/cdr are dropped and the allocation
+    ///     freed; surviving dangling handles are caller's responsibility.
     pub unsafe fn rc_dec_raw(this: &Self) {
         // SAFETY: `this.ptr' is alive on entry.  The Release/Acquire
         // pattern matches `Drop' below — we cannot reuse `Drop' here
@@ -292,19 +221,12 @@ impl NlConsBoxRef {
         }
     }
 
-    /// Mutate `car` in place.  Drops the previous `car' value, then
-    /// writes the new one.  Phase A.2.0 deliberately drops the
-    /// `RefCell<>' indirection that the legacy
-    /// `Sexp::Cons(Rc<RefCell<Sexp>>, ..)' used for `setcar' / `setcdr'
-    /// aliasing — Phase A.2.1 callsites observe mutations through any
-    /// clone of the same `NlConsBoxRef' (= shared box semantics).
+    /// Mutate `car' in place — drop previous + write new.  Clones of the
+    /// same `NlConsBoxRef' observe the mutation (shared box semantics).
     ///
     /// # Safety
-    ///
-    /// Caller must guarantee no other `&Sexp` borrow into this box's
-    /// `car` field is live at the time of the write.  In Phase A.2.1
-    /// the `setcar' bridge will document the surrounding invariants;
-    /// in Phase A.2.0 the only callers are this module's tests.
+    /// Caller must guarantee no other `&Sexp' borrow into `self.car'
+    /// is live for the duration of the call.
     pub unsafe fn set_car(&self, val: Sexp) {
         let car_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).car);
         std::ptr::drop_in_place(car_ptr);
@@ -323,10 +245,7 @@ impl NlConsBoxRef {
         std::ptr::write(cdr_ptr, val);
     }
 
-    /// Internal helper — returns a raw `*const NlConsBox' for callers
-    /// that need to walk the box (= future ffi shims).  Hidden from
-    /// the public Phase A.2.0 surface; expose via a dedicated module
-    /// API in Phase A.3.
+    /// Internal raw `*const NlConsBox' for box-walking shims.
     #[inline]
     #[allow(dead_code)]
     pub(crate) fn inner_raw(this: &Self) -> *const NlConsBox {
