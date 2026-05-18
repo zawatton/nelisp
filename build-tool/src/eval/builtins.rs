@@ -809,14 +809,13 @@ syscall_unsupported!(bi_syscall, "nelisp--syscall");
 // ---------- symbol / function ----------
 
 fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    // Doc 117 §117.C — body delegates to the Doc 102 `bi_globals_op'
+    // `get-function' op so the function/value cell access lives in one
+    // place.  `require_arity' stays here so the wrong-args error reports
+    // `"symbol-function"' rather than `"nelisp--env-globals-op"'.
     require_arity("symbol-function", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Symbol(s) => env.lookup_function(s),
-        other => Err(EvalError::WrongType {
-            expected: "symbolp".into(),
-            got: other.clone(),
-        }),
-    }
+    let op_args = [Sexp::Symbol("get-function".into()), args[0].clone()];
+    super::env_shim::bi_globals_op(&op_args, env)
 }
 
 fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
@@ -833,20 +832,23 @@ fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
 /// cell.  Last Rust function-cell setter (env-shim bake needs it before
 /// its elisp wrappers load).
 fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    // Doc 117 §117.C — body delegates to the Doc 102 `bi_globals_op'
+    // `set-function' op.  The chain-follow (= when DEF is itself a
+    // symbol, install the resolved function cell rather than the symbol
+    // value) is resolved here before delegation, mirroring the existing
+    // elisp `nelisp--shim-fset' contract.  `require_arity' stays for the
+    // canonical `"fset"' error label.
     require_arity("fset", args, 2, Some(2))?;
-    let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol".into(),
-            got: other.clone(),
-        }),
-    };
     let def = match &args[1] {
         Sexp::Symbol(s) => env.lookup_function(s)?,
         other => other.clone(),
     };
-    env.set_function(&name, def.clone());
-    Ok(def)
+    let op_args = [
+        Sexp::Symbol("set-function".into()),
+        args[0].clone(),
+        def,
+    ];
+    super::env_shim::bi_globals_op(&op_args, env)
 }
 
 /// `(macroexpand-1 FORM &optional ENV)' — expand FORM by ONE level if
