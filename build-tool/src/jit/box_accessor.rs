@@ -1,6 +1,9 @@
 //! Box accessor trampolines reached via `nl-jit-call-out-*' bridge prims.
 //! Record-family (type/len/ref/set/alloc) lives in Phase 47 elisp; this
-//! file keeps only str/bool-vector/char-table arms not yet elisp-able.
+//! file keeps only char-table arms not yet elisp-able.
+//! `nl_jit_bool_vector_len' and `nl_jit_str_codepoint_at' live in
+//! `lisp/nelisp-cc-jit-bool-vector-len.el' and
+//! `lisp/nelisp-cc-jit-str-codepoint-at.el' (Phase 47 compiled .o).
 
 use crate::eval::sexp::Sexp;
 const TRAMPOLINE_OK: i64 = 0;
@@ -13,31 +16,6 @@ pub unsafe extern "C" fn nl_record_type_tag_ptr(arg: *const Sexp) -> *const Sexp
     match &*arg {
         Sexp::Record(rec) => &rec.type_tag as *const Sexp,
         _ => std::ptr::null(),
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_bool_vector_len(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*arg {
-        Sexp::BoolVector(v) => { *out = Sexp::Int(v.value.len() as i64); TRAMPOLINE_OK }
-        _ => TRAMPOLINE_ERR,
-    }
-}
-
-/// Char-indexed codepoint for Str / MutStr.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_str_codepoint_at(
-    arg: *const Sexp, idx: i64, out: *mut Sexp,
-) -> i64 {
-    if idx < 0 { return TRAMPOLINE_ERR; }
-    let s: &str = match &*arg {
-        Sexp::Str(s) => s.as_str(),
-        Sexp::MutStr(rc) => &rc.value,
-        _ => return TRAMPOLINE_ERR,
-    };
-    match s.chars().nth(idx as usize) {
-        Some(c) => { *out = Sexp::Int(c as i64); TRAMPOLINE_OK }
-        None => TRAMPOLINE_ERR,
     }
 }
 

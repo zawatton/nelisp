@@ -477,9 +477,8 @@
     ;; `condition-case' dispatches to `nelisp--mut-str-len'); the
     ;; BoolVector arms of `aref' / `aset' delegate to narrow Rust
     ;; externs (`nl_jit_access_{aref,aset}_bool_vector_inner') via
-    ;; `extern-call' until Phase 47 grows `bool-vector-*' grammar
-    ;; primitives (= Doc 122 §122.B cluster).  Linux-x86_64 only —
-    ;; `extern-call' ABI ships aarch64 in follow-up.
+    ;; `extern-call' — now provided by Phase-47 elisp objects below
+    ;; (= §120.D BoolVector sub-arm swap, Rust bodies deleted).
     (nelisp-cc-jit-length
      :source-var nelisp-cc-jit-length--source
      :output "nelisp_jit_length.o"
@@ -495,6 +494,18 @@
     (nelisp-cc-jit-elt
      :source-var nelisp-cc-jit-elt--source
      :output "nelisp_jit_elt.o"
+     :requires-arch x86_64)
+    ;; Doc 120 §120.D sub-arm helpers — Phase-47 elisp replacements for
+    ;; the two narrow Rust `#[no_mangle]' externs in `jit/access.rs'
+    ;; that the BoolVector arms of `aref' / `aset' call via `extern-call'.
+    ;; Deleted from Rust; provided by these two objects.
+    (nelisp-cc-jit-access-aref-bool-vector-inner
+     :source-var nelisp-cc-jit-access-aref-bool-vector-inner--source
+     :output "nl_jit_access_aref_bool_vector_inner.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-access-aset-bool-vector-inner
+     :source-var nelisp-cc-jit-access-aset-bool-vector-inner--source
+     :output "nl_jit_access_aset_bool_vector_inner.o"
      :requires-arch x86_64)
     ;; Doc 120 §120.C — `jit/cons.rs' 4 of 5 trampoline swaps
     ;; (`cons_car' / `_cdr' / `_setcar' / `_setcdr'; `_make' stays
@@ -810,6 +821,24 @@
     (nelisp-cc-reader-parser
      :source-var nelisp-cc-reader-parser--source
      :output "nelisp_reader_parse_one.o"
+     :requires-arch x86_64)
+    ;; Doc 122 §122.B / Doc 120 §120.B — `jit/box_accessor.rs'
+    ;; `nl_jit_bool_vector_len' trampoline swap.  Reads Vec<bool>.length
+    ;; via two `ptr-read-u64' hops (Sexp payload → NlBoolVector* → offset
+    ;; 16) and writes `Sexp::Int(len)' to *out.  Rust body deleted.
+    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' anchors the symbol for dlsym.
+    (nelisp-cc-jit-bool-vector-len
+     :source-var nelisp-cc-jit-bool-vector-len--source
+     :output "nl_jit_bool_vector_len.o"
+     :requires-arch x86_64)
+    ;; Doc 122 §122.D / Doc 120 §120.B — `jit/box_accessor.rs'
+    ;; `nl_jit_str_codepoint_at' trampoline swap.  Char-indexed UTF-8
+    ;; codepoint read via a tail-recursive `str-codepoint-at' byte
+    ;; walker with scratch slots at out+8 / out+16.  Rust body deleted.
+    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' anchors the public symbol.
+    (nelisp-cc-jit-str-codepoint-at
+     :source-var nelisp-cc-jit-str-codepoint-at--source
+     :output "nl_jit_str_codepoint_at.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

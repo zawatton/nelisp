@@ -187,14 +187,16 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // entries SKIP per blocker notes in `jit/box_accessor.rs').
         "nelisp-cc-jit-record.el",
         // Doc 120 §120.D — 4 of 4 `jit/access.rs' trampoline swaps
-        // (`length' / `aref' / `aset' / `elt').  Str length + BoolVector
-        // aref/aset sub-arms reach narrow Rust externs via `extern-call'
-        // (= same shape `nl_sexp_eq' uses for the §120.A predicate-eq
-        // slow path).
+        // (`length' / `aref' / `aset' / `elt').  BoolVector aref/aset
+        // sub-arms now provided by Phase-47 elisp objects (Rust deleted).
         "nelisp-cc-jit-length.el",
         "nelisp-cc-jit-aref.el",
         "nelisp-cc-jit-aset.el",
         "nelisp-cc-jit-elt.el",
+        // Doc 120 §120.D sub-arm helpers — Phase-47 replacements for
+        // the two Rust `#[no_mangle]' externs deleted from `jit/access.rs'.
+        "nelisp-cc-jit-access-aref-bool-vector-inner.el",
+        "nelisp-cc-jit-access-aset-bool-vector-inner.el",
         // Doc 120 §120.C — 4 of 5 `jit/cons.rs' trampoline swaps
         // (`cons_car' / `_cdr' / `_setcar' / `_setcdr'; `_make' stays
         // Rust per blocker note in `jit/cons.rs').
@@ -304,6 +306,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // `struct-make' / `struct-field-{set,get}' sugar probes, and
         // the composed `nelisp_winsize_write_full' ship-gate object).
         "nelisp-cc-struct-helpers.el",
+        // Doc 122 §122.B / Doc 120 §120.B — `nl_jit_bool_vector_len'
+        // trampoline swap (Rust body deleted from `jit/box_accessor.rs').
+        "nelisp-cc-jit-bool-vector-len.el",
+        // Doc 122 §122.D / Doc 120 §120.B — `nl_jit_str_codepoint_at'
+        // trampoline swap (Rust body deleted from `jit/box_accessor.rs').
+        "nelisp-cc-jit-str-codepoint-at.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
