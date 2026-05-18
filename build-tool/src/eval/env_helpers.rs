@@ -134,7 +134,15 @@ impl Env {
     /// Phase 47 hit-path overwrites all 4 slots; miss-path falls back to
     /// `mirror_prepend_to_bucket' auto-vivify.  Used by image decode +
     /// `intern_constant'.
-    pub(crate) fn mirror_install_entry(
+    ///
+    /// Doc 126.E (2026-05-18) — promoted to `pub` (from `pub(crate)`) so
+    /// the relocated NELIMG v3 decoder living in
+    /// `build-tool/src/bin/nelisp-baker.rs' (= a separate crate per
+    /// Rust's bin-vs-lib model) can install decoded globals.  The bin
+    /// is feature-gated behind `image-baker' (= `required-features' in
+    /// `Cargo.toml'), so this entry point is only exercised by the
+    /// §95.e cross-impl byte-identity gate, not the production runtime.
+    pub fn mirror_install_entry(
         &mut self,
         name: &str,
         value: Option<Sexp>,
@@ -321,7 +329,8 @@ impl Env {
     /// `(fset)' that wrote ONLY to the mirror).
     ///
     /// Doc 102 Phase 7 — gated; called only by `iterative_bake_one' +
-    /// `encode_v3' (= both image-baker-only paths).
+    /// `encode_v3' (= both image-baker-only paths, both relocated to
+    /// `bin/nelisp-baker.rs' in Doc 126.E).
     #[cfg(any(test, feature = "image-baker"))]
     pub fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
         let mut out: HashMap<String, SymbolEntry> = HashMap::new();
@@ -352,7 +361,8 @@ impl Env {
     /// Per-file diff of the elisp mirror against `before' (= a prior
     /// `mirror_snapshot_globals' result).  Returns a fresh `Env' whose
     /// **mirror** is populated with the changed entries.  Used by
-    /// `image::iterative_bake_one'.
+    /// `iterative_bake_one' in `bin/nelisp-baker.rs' (Doc 126.E —
+    /// formerly `image::iterative_bake_one').
     ///
     /// Doc 102 Phase 7 — gated; only used by `iterative_bake_one'.
     #[cfg(any(test, feature = "image-baker"))]
@@ -383,7 +393,11 @@ impl Env {
     /// the same name will overwrite the post-decode value, after
     /// which `install_globals_record' captures the post-decode value
     /// and walks the mirror to refresh in-place sentinels.
-    pub(crate) fn install_empty_mirror_rust_direct(&mut self) {
+    // Doc 126.E (2026-05-18) — promoted to `pub` (from `pub(crate)`) so
+    // the relocated NELIMG v3 decoder in `bin/nelisp-baker.rs' can call
+    // it before `decode_v3_into'.  See `mirror_install_entry' for the
+    // full rationale.
+    pub fn install_empty_mirror_rust_direct(&mut self) {
         const BUCKET_COUNT: usize = 1024;
         // Sentinel for absent slots — replaced post-decode by the
         // baked elisp `nelisp--unbound-marker'.

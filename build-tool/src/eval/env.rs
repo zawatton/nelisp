@@ -210,7 +210,8 @@ impl Env {
     }
 
     /// Baker accumulator env (built-ins + env_shim installed, no STDLIB).
-    /// Used by `image::iterative_bake_one'.
+    /// Used by `iterative_bake_one' in `bin/nelisp-baker.rs' (Doc 126.E
+    /// — formerly `image::iterative_bake_one').
     #[cfg(any(test, feature = "image-baker"))]
     pub fn new_global_no_stdlib() -> Self {
         Env::install_stage0(1024)

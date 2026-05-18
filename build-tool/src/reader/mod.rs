@@ -7,14 +7,15 @@
 //! (`?\M-X' meta chars, bare `,X' / `,@X' outside backquote,
 //! `#s(...)' struct literals, unknown `\X' as literal X).
 //!
-//! After Doc 98 §98.3 (2026-05-11) the production `nelisp' binary
-//! never touches this module — boot streams pre-baked NELIMG v3
-//! frozen-heap globals via `image::decode_v3_into', and user-visible
-//! `read' / `read-from-string' delegate to the elisp implementation
-//! in `lisp/nelisp-stdlib-reader.el'.  The Rust reader survives only
-//! in `image-baker' feature builds where `image::iterative_bake_one'
-//! parses each stdlib source on the way to its v3 image, plus the
-//! reader's own ERTs.
+//! Doc 126.B (2026-05-18) re-promoted this module to the production
+//! boot path — `Env::new_global' dispatches to `read_all + eval' per
+//! top-level STDLIB form, replacing the pre-126 NELIMG v3 frozen-heap
+//! `decode_v3_into' route.  User-visible `read' / `read-from-string'
+//! delegate to the elisp implementation in `lisp/nelisp-stdlib-reader.el'.
+//! The Rust reader also survives in `image-baker' feature builds where
+//! the relocated `iterative_bake_one' (now in `bin/nelisp-baker.rs'
+//! per Doc 126.E) parses each stdlib source on the way to its v3
+//! image, plus the reader's own ERTs.
 //!
 //! Doc 116 §116.C top-level wire-in: `read_str' / `read_all' route
 //! every input through the pure-elisp pipeline composed of §116.A
