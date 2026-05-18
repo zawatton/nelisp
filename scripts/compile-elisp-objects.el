@@ -876,6 +876,14 @@
     (nelisp-cc-jit-make-symbol
      :source-var nelisp-cc-jit-make-symbol--source
      :output "nl_jit_make_symbol.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-type-of
+     :source-var nelisp-cc-jit-type-of--source
+     :output "nl_jit_type_of.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-sxhash
+     :source-var nelisp-cc-jit-sxhash--source
+     :output "nl_jit_sxhash.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

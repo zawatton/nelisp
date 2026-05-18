@@ -322,6 +322,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Phase 47 elisp migration — `nl_jit_make_symbol' trampoline swap
         // (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-make-symbol.el",
+        // Phase 47 elisp migration — `nl_jit_type_of` + `nl_jit_sxhash`
+        // trampoline swaps (Rust bodies deleted from `jit/predicate.rs').
+        "nelisp-cc-jit-type-of.el",
+        "nelisp-cc-jit-sxhash.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

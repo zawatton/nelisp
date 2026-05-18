@@ -27,18 +27,14 @@ extern "C" {
     fn nelisp_jit_cons_car();    fn nelisp_jit_cons_cdr();
     fn nelisp_jit_cons_setcar(); fn nelisp_jit_cons_setcdr();
     fn nl_jit_bool_vector_len(); fn nl_jit_str_codepoint_at();
-    fn nl_jit_type_of();
-    // Phase 47 elisp replacements for the two `jit/cons.rs' narrow
-    // slot-pointer helpers; previously Rust #[no_mangle] externs.
+    fn nl_jit_type_of();   fn nl_jit_sxhash();
     fn nl_cons_car_ptr();        fn nl_cons_cdr_ptr();
-    // `nl_jit_make_symbol' body migrated to
-    // `lisp/nelisp-cc-jit-make-symbol.el' (Phase 47 elisp .o).
     fn nl_jit_make_symbol();
 }
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 48] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 49] = [
     nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
     nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
     nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
@@ -53,10 +49,8 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 48] = [
     nelisp_jit_cons_car, nelisp_jit_cons_cdr,
     nelisp_jit_cons_setcar, nelisp_jit_cons_setcdr,
     nl_jit_bool_vector_len, nl_jit_str_codepoint_at,
-    nl_jit_type_of,
-    // Phase 47 slot-pointer helpers (moved from jit/cons.rs Rust bodies).
+    nl_jit_type_of, nl_jit_sxhash,
     nl_cons_car_ptr, nl_cons_cdr_ptr,
-    // `nl_jit_make_symbol' moved from strings.rs to elisp .o.
     nl_jit_make_symbol,
 ];
 
