@@ -5,7 +5,7 @@
 //! Doc 130 applied to the 3,057-LOC `src/eval/tests.rs'.
 
 use nelisp_build_tool::eval as eval_mod;
-use nelisp_build_tool::eval::env::Env;
+use nelisp_build_tool::eval::Env;
 use nelisp_build_tool::eval::sexp::Sexp;
 use std::collections::HashMap;
 

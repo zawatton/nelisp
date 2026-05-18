@@ -1,6 +1,6 @@
 //! Built-in function registry and dispatcher for the Rust eval surface.
 
-use super::env::Env;
+use super::Env;
 use super::error::EvalError;
 use super::quit;
 use super::sexp::Sexp;

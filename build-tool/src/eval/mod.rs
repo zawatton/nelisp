@@ -6,7 +6,6 @@
 pub mod builtins;
 pub mod cons_primitives;
 pub mod dlsym_bridge;
-pub mod env;
 pub mod env_helpers;
 pub mod env_shim;
 pub mod error;
@@ -26,7 +25,7 @@ pub mod sexp;
 pub mod sexp_abi_assert;
 pub mod special_forms;
 
-pub use env::{Env, SymbolEntry};
+pub use env_helpers::{Env, ExternBuiltin, FrameCell, SymbolEntry};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 

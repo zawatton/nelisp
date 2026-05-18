@@ -11,7 +11,7 @@
 //! set-value bypasses constant-rejection (elisp shim enforces);
 //! set-function never errors on existing; clear-* no-op on absent.
 
-use super::env::Env;
+use super::Env;
 use super::error::EvalError;
 use super::sexp::Sexp;
 

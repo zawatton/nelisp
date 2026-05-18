@@ -2,7 +2,7 @@
 //! [`apply_special`] returns `Ok(Some(v))' on match, `Ok(None)' to
 //! fall through to function/macro lookup, `Err' on syntax error.
 
-use super::env::Env;
+use super::Env;
 use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
 use super::{eval, list_elements};
