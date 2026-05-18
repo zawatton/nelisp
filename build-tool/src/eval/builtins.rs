@@ -9,69 +9,32 @@ use std::path::{Path, PathBuf};
 
 pub fn install_builtins(env: &mut Env) {
     let names: &[&str] = &[
-        "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
-        "nelisp--num-lt2", "nelisp--num-gt2",
-        "nelisp--num-le2", "nelisp--num-ge2",
-        "nelisp--num-eq2",
-        "eq",
-        "car", "cdr", "cons", "length", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes",
-        "setcar", "setcdr",
-        "aref", "aset", "elt",
-        "vector", "make-vector",
-        "ash",
-        "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
-        "truncate",
-        "nl-jit-call-format-float",
-        "string-match-p",
-        "nelisp--syscall-canonicalize",
-        "nelisp--syscall-stat",
-        "nelisp--syscall-readdir",
-        "nelisp--syscall-read-file",
-        "nelisp--read-all-from-string",
-        "nelisp--syscall",
-        "nelisp--syscall-supported-p",
-        "symbol-function", "funcall", "apply", "eval",
-        "fset",
-        "signal",
-        "nelisp--write-stderr-line",
-        "nelisp--write-stdout-bytes",
-        "require",
-        "read-stdin-bytes",
-        "nl-secure-hash",
-        "nl-downcase", "nl-upcase", "nl-split-by-non-alnum",
-        "float", "exp", "log", "nelisp--f64-trunc",
-        "nl-write-file", "nl-make-directory",
-        "terminal-raw-mode-enter", "terminal-raw-mode-leave",
-        "read-stdin-byte-available",
-        "_termios-saved-p", "_raw-mode-hooks-installed-p",
-        "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p",
-        "install-sigint-handler", "_sigint-handler-installed-p",
-        "install-winsize-handler", "_winsize-handler-installed-p",
-        "terminal-take-winsize-changed", "terminal-current-winsize",
-        "install-jobctrl-handlers", "_jobctrl-handlers-installed-p",
-        "terminal-take-sigcont",
-        "read", "read-from-string",
-        "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured",
-        "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
-        "nelisp--set-use-elisp-apply",
-        "nelisp--apply-lambda-inner",
-        "nl-jit-call-i64-i64",
-        "nl-jit-call-ptr-ptr",
-        "nl-jit-call-syscall",
-        "nl-jit-call-out-1",
-        "nl-jit-call-out-2",
-        "nl-jit-call-out-1i",
-        "nl-jit-call-out-2i",
-        "nl-jit-call-float-float",
-        "nl-jit-call-float-cmp",
-        "nl-jit-call-float-unary",
-        "nl-fact-i64",
+        "nelisp--add2", "nelisp--sub2", "nelisp--mul2", "nelisp--num-lt2", "nelisp--num-gt2",
+        "nelisp--num-le2", "nelisp--num-ge2", "nelisp--num-eq2", "eq", "car", "cdr", "cons",
+        "length", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes", "setcar",
+        "setcdr", "aref", "aset", "elt", "vector", "make-vector", "ash", "nelisp--logior2",
+        "nelisp--logand2", "nelisp--logxor2", "truncate", "nl-jit-call-format-float",
+        "string-match-p", "nelisp--syscall-canonicalize", "nelisp--syscall-stat",
+        "nelisp--syscall-readdir", "nelisp--syscall-read-file", "nelisp--read-all-from-string",
+        "nelisp--syscall", "nelisp--syscall-supported-p", "symbol-function", "funcall", "apply",
+        "eval", "fset", "signal", "nelisp--write-stderr-line", "nelisp--write-stdout-bytes",
+        "require", "read-stdin-bytes", "nl-secure-hash", "nl-downcase", "nl-upcase",
+        "nl-split-by-non-alnum", "float", "exp", "log", "nelisp--f64-trunc", "nl-write-file",
+        "nl-make-directory", "terminal-raw-mode-enter", "terminal-raw-mode-leave",
+        "read-stdin-byte-available", "_termios-saved-p", "_raw-mode-hooks-installed-p",
+        "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p", "install-sigint-handler",
+        "_sigint-handler-installed-p", "install-winsize-handler", "_winsize-handler-installed-p",
+        "terminal-take-winsize-changed", "terminal-current-winsize", "install-jobctrl-handlers",
+        "_jobctrl-handlers-installed-p", "terminal-take-sigcont", "read", "read-from-string",
+        "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured", "nelisp--bind-local",
+        "nelisp--apply-builtin-dispatch", "nelisp--set-use-elisp-apply",
+        "nelisp--apply-lambda-inner", "nl-jit-call-i64-i64", "nl-jit-call-ptr-ptr",
+        "nl-jit-call-syscall", "nl-jit-call-out-1", "nl-jit-call-out-2", "nl-jit-call-out-1i",
+        "nl-jit-call-out-2i", "nl-jit-call-float-float", "nl-jit-call-float-cmp",
+        "nl-jit-call-float-unary", "nl-fact-i64",
     ];
     for n in names {
-        let sentinel = Sexp::list_from(&[
-            Sexp::Symbol("builtin".into()),
-            Sexp::Symbol((*n).into()),
-        ]);
+        let sentinel = Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())]);
         env.set_function(n, sentinel);
     }
 }
@@ -101,9 +64,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--apply-builtin-dispatch" => bi_apply_builtin_dispatch(args, env),
         "nelisp--set-use-elisp-apply" => {
             require_arity("nelisp--set-use-elisp-apply", args, 1, Some(1))?;
-            let truthy = !matches!(args[0], Sexp::Nil);
-            env.use_elisp_apply = truthy;
-            Ok(if truthy { Sexp::T } else { Sexp::Nil })
+            env.use_elisp_apply = !matches!(args[0], Sexp::Nil);
+            Ok(if env.use_elisp_apply { Sexp::T } else { Sexp::Nil })
         }
         "nelisp--apply-lambda-inner" => bi_apply_lambda_inner(args, env),
         "funcall" => bi_funcall(args, env),
@@ -148,21 +110,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary(args),
         "nl-fact-i64" => bi_nl_fact_i64(args),
         "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op(args, env),
-        _ => {
-            if let Some(f) = env.extern_builtins.get(name).cloned() {
-                return f(args, env);
-            }
-            Err(EvalError::UnboundFunction(name.to_string()))
+        _ => match env.extern_builtins.get(name).cloned() {
+            Some(f) => f(args, env),
+            None => Err(EvalError::UnboundFunction(name.to_string())),
         }
     }
 }
 
-pub(crate) fn require_arity(
-    name: &str,
-    args: &[Sexp],
-    min: usize,
-    max: Option<usize>,
-) -> Result<(), EvalError> {
+pub(crate) fn require_arity(name: &str, args: &[Sexp], min: usize, max: Option<usize>) -> Result<(), EvalError> {
     if args.len() < min || max.map_or(false, |m| args.len() > m) {
         let expected = match max {
             Some(m) if m == min => format!("{}", min),
@@ -248,11 +203,7 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     }
 }
 
-pub(crate) fn char_table_set_one(
-    inner: &mut crate::eval::sexp::CharTableInner,
-    c: i64,
-    v: Sexp,
-) {
+pub(crate) fn char_table_set_one(inner: &mut crate::eval::sexp::CharTableInner, c: i64, v: Sexp) {
     for entry in inner.entries.iter_mut() {
         if entry.0 == c {
             entry.1 = v;
@@ -262,10 +213,7 @@ pub(crate) fn char_table_set_one(
     inner.entries.push((c, v));
 }
 
-pub(crate) fn char_table_get(
-    rc: &crate::eval::nlchartable::NlCharTableRef,
-    c: i64,
-) -> Sexp {
+pub(crate) fn char_table_get(rc: &crate::eval::nlchartable::NlCharTableRef, c: i64) -> Sexp {
     let inner = &rc.inner;
     for (k, v) in inner.entries.iter() {
         if *k == c {
@@ -312,10 +260,7 @@ fn env_default_directory(env: &Env) -> Option<String> {
     }
 }
 
-fn cc_slot_1(
-    arg: &Sexp,
-    f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp,
-) -> Sexp {
+fn cc_slot_1(arg: &Sexp, f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp) -> Sexp {
     let mut slot = Sexp::Nil;
     unsafe { f(arg as *const _, &mut slot as *mut _) };
     slot
@@ -525,59 +470,41 @@ syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
 fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("symbol-function", args, 1, Some(1))?;
-    let op_args = [Sexp::Symbol("get-function".into()), args[0].clone()];
-    super::env_shim::bi_globals_op(&op_args, env)
+    super::env_shim::bi_globals_op(&[Sexp::Symbol("get-function".into()), args[0].clone()], env)
 }
 
 fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
     match arg {
         Sexp::Symbol(s) => Ok(s.clone()),
-        other => Err(EvalError::WrongType {
-            expected: format!("symbolp ({} feature)", name),
-            got: other.clone(),
-        }),
+        other => Err(EvalError::WrongType { expected: format!("symbolp ({} feature)", name), got: other.clone() }),
     }
 }
 
 fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("fset", args, 2, Some(2))?;
-    let def = match &args[1] {
-        Sexp::Symbol(s) => env.lookup_function(s)?,
-        other => other.clone(),
-    };
-    let op_args = [
-        Sexp::Symbol("set-function".into()),
-        args[0].clone(),
-        def,
-    ];
-    super::env_shim::bi_globals_op(&op_args, env)
+    super::env_shim::bi_globals_op(
+        &[
+            Sexp::Symbol("set-function".into()),
+            args[0].clone(),
+            match &args[1] {
+                Sexp::Symbol(s) => env.lookup_function(s)?,
+                other => other.clone(),
+            },
+        ],
+        env,
+    )
 }
 
 fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match op {
-        "push-frame" => {
-            require_arity("nelisp--push-frame", args, 0, Some(0))?;
-            env.push_frame();
-            Ok(Sexp::T)
-        }
-        "pop-frame" => {
-            require_arity("nelisp--pop-frame", args, 0, Some(0))?;
-            env.pop_frame();
-            Ok(Sexp::T)
-        }
-        "push-captured" => {
-            require_arity("nelisp--push-captured", args, 1, Some(1))?;
-            env.push_captured(&args[0])?;
-            Ok(Sexp::T)
-        }
+        "push-frame" => { require_arity("nelisp--push-frame", args, 0, Some(0))?; env.push_frame(); Ok(Sexp::T) }
+        "pop-frame" => { require_arity("nelisp--pop-frame", args, 0, Some(0))?; env.pop_frame(); Ok(Sexp::T) }
+        "push-captured" => { require_arity("nelisp--push-captured", args, 1, Some(1))?; env.push_captured(&args[0])?; Ok(Sexp::T) }
         "bind-local" => {
             require_arity("nelisp--bind-local", args, 2, Some(2))?;
             let name = match &args[0] {
                 Sexp::Symbol(s) => s.clone(),
-                other => return Err(EvalError::WrongType {
-                    expected: "symbol".into(),
-                    got: other.clone(),
-                }),
+                other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
             };
             env.bind_local(&name, args[1].clone());
             Ok(args[1].clone())
@@ -591,29 +518,24 @@ fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalE
     let name = match &args[0] {
         Sexp::Symbol(s) => s.clone(),
         Sexp::Str(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol".into(),
-            got: other.clone(),
-        }),
+        other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
     };
-    let arg_vec = super::list_elements(&args[1])?;
-    dispatch(&name, &arg_vec, env)
+    dispatch(&name, &super::list_elements(&args[1])?, env)
 }
 
 fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--apply-lambda-inner", args, 4, Some(4))?;
-    let captured = &args[0];
-    let formals = &args[1];
-    let body_vec = super::list_elements(&args[2])?;
-    let args_vec = super::list_elements(&args[3])?;
-    super::apply_lambda_inner(captured, formals, &body_vec, &args_vec, env)
+    super::apply_lambda_inner(
+        &args[0],
+        &args[1],
+        &super::list_elements(&args[2])?,
+        &super::list_elements(&args[3])?,
+        env,
+    )
 }
 
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    match arg {
-        Sexp::Symbol(s) => env.lookup_function(s),
-        _ => Ok(arg.clone()),
-    }
+    match arg { Sexp::Symbol(s) => env.lookup_function(s), _ => Ok(arg.clone()) }
 }
 
 fn bi_funcall(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -626,63 +548,48 @@ fn bi_apply(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("apply", args, 2, None)?;
     let func = resolve_callable(&args[0], env)?;
     let mut all_args: Vec<Sexp> = args[1..args.len() - 1].to_vec();
-    let tail = list_to_vec(&args[args.len() - 1])?;
-    all_args.extend(tail);
+    all_args.extend(list_to_vec(&args[args.len() - 1])?);
     super::apply_function(&func, &all_args, env)
 }
 
 fn bi_eval(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("eval", args, 1, Some(2))?;
-    super::eval(&args[0], env)
+    require_arity("eval", args, 1, Some(2))?; super::eval(&args[0], env)
 }
 
 fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("signal", args, 2, Some(2))?;
     let tag = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbolp".into(),
-                got: other.clone(),
-            })
-        }
+        Sexp::Symbol(s) => s.as_str(),
+        other => return Err(EvalError::WrongType { expected: "symbolp".into(), got: other.clone() }),
     };
-    if tag == "quit" {
-        return Err(EvalError::Quit);
-    }
-    if tag == "arith-error" {
-        let msg = match &args[1] {
+    match tag {
+        "quit" => Err(EvalError::Quit),
+        "arith-error" => Err(EvalError::ArithError(match &args[1] {
             Sexp::Cons(b) => match &b.car {
                 Sexp::Str(s) => s.clone(),
                 other => format!("{:?}", other),
             },
             Sexp::Str(s) => s.clone(),
-            _ => "arith-error".to_string(),
-        };
-        return Err(EvalError::ArithError(msg));
+            _ => "arith-error".into(),
+        })),
+        "wrong-type-argument" => {
+            let (expected, got) = match &args[1] {
+                Sexp::Cons(b) => (
+                    match &b.car {
+                        Sexp::Symbol(s) | Sexp::Str(s) => s.clone(),
+                        other => format!("{:?}", other),
+                    },
+                    match &b.cdr {
+                        Sexp::Cons(c) => c.car.clone(),
+                        other => other.clone(),
+                    },
+                ),
+                other => ("argument".into(), other.clone()),
+            };
+            Err(EvalError::WrongType { expected, got })
+        }
+        _ => Err(EvalError::UserError { tag: tag.into(), data: args[1].clone() }),
     }
-    if tag == "wrong-type-argument" {
-        let (expected, got) = match &args[1] {
-            Sexp::Cons(b) => {
-                let exp = match &b.car {
-                    Sexp::Symbol(s) => s.clone(),
-                    Sexp::Str(s) => s.clone(),
-                    other => format!("{:?}", other),
-                };
-                let got = match &b.cdr {
-                    Sexp::Cons(c) => c.car.clone(),
-                    other => other.clone(),
-                };
-                (exp, got)
-            }
-            other => ("argument".to_string(), other.clone()),
-        };
-        return Err(EvalError::WrongType { expected, got });
-    }
-    Err(EvalError::UserError {
-        tag,
-        data: args[1].clone(),
-    })
 }
 
 fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -811,53 +718,32 @@ fn bi_nl_write_file(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-write-file", args, 2, Some(2))?;
     let path = string_value(&args[0])?;
     string_value(&args[1])?;
-    kernel_path_ok(
-        "nl-write-file",
-        &path,
-        unsafe { crate::elisp_cc_spike::bi_nl_write_file(&args[0] as *const _, &args[1] as *const _) },
-    )
+    kernel_path_ok("nl-write-file", &path, unsafe {
+        crate::elisp_cc_spike::bi_nl_write_file(&args[0] as *const _, &args[1] as *const _)
+    })
 }
 
 fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-make-directory", args, 1, Some(2))?;
     let path = string_value(&args[0])?;
-    kernel_path_ok(
-        "nl-make-directory",
-        &path,
-        unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&args[0] as *const _) } as i32 as i64,
-    )
+    kernel_path_ok("nl-make-directory", &path, unsafe {
+        crate::elisp_cc_spike::bi_nl_make_directory(&args[0] as *const _) as i32 as i64
+    })
 }
 
 fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("read-stdin-bytes", args, 1, Some(1))?;
     let limit = match &args[0] {
         Sexp::Int(n) if *n > 0 => *n as usize,
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "positive integer".into(),
-                got: other.clone(),
-            });
-        }
+        other => return Err(EvalError::WrongType { expected: "positive integer".into(), got: other.clone() }),
     };
     let mut buf = vec![0u8; limit];
-    let rc = unsafe {
-        crate::elisp_cc_spike::bi_read_stdin_bytes(
-            buf.as_mut_ptr(),
-            limit as i64,
-        )
-    };
+    let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit as i64) };
     if rc < 0 {
-        return Err(EvalError::Internal(format!(
-            "read-stdin-bytes: read returned {}",
-            rc,
-        )));
+        return Err(EvalError::Internal(format!("read-stdin-bytes: read returned {}", rc)));
     }
-    if rc == 0 {
-        return Ok(Sexp::Nil);
-    }
-    let n = rc as usize;
-    let n = std::cmp::min(n, buf.len());
-    buf.truncate(n);
+    if rc == 0 { return Ok(Sexp::Nil); }
+    buf.truncate((rc as usize).min(buf.len()));
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
@@ -1428,21 +1314,13 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 
 fn elisp_featurep(env: &mut Env, feature: &str) -> Result<bool, EvalError> {
     let fn_cell = env.lookup_function("featurep")?;
-    let result = super::apply_function(
-        &fn_cell,
-        &[Sexp::Symbol(feature.to_string())],
-        env,
-    )?;
+    let result = super::apply_function(&fn_cell, &[Sexp::Symbol(feature.to_string())], env)?;
     Ok(is_truthy(&result))
 }
 
 fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
     let fn_cell = env.lookup_function("provide")?;
-    super::apply_function(
-        &fn_cell,
-        &[Sexp::Symbol(feature.to_string())],
-        env,
-    )?;
+    super::apply_function(&fn_cell, &[Sexp::Symbol(feature.to_string())], env)?;
     Ok(())
 }
 
@@ -1450,18 +1328,9 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("make-vector", args, 2, Some(2))?;
     let len = as_int("make-vector", &args[0])?;
     if len < 0 {
-        return Err(EvalError::ArithError(format!(
-            "make-vector: negative length {}",
-            len
-        )));
+        return Err(EvalError::ArithError(format!("make-vector: negative length {}", len)));
     }
     let mut result_slot: Sexp = Sexp::Nil;
-    unsafe {
-        crate::elisp_cc_spike::bi_make_vector(
-            &args[0] as *const Sexp,
-            &args[1] as *const Sexp,
-            &mut result_slot as *mut Sexp,
-        );
-    }
+    unsafe { crate::elisp_cc_spike::bi_make_vector(&args[0] as *const Sexp, &args[1] as *const Sexp, &mut result_slot as *mut Sexp) };
     Ok(result_slot)
 }
