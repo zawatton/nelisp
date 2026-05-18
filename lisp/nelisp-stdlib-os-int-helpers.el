@@ -17,6 +17,9 @@
         value
       (- value modulus))))
 
+(defun nelisp-os-read-u8 (buf off)
+  (ptr-read-u8 buf off))
+
 (defun nelisp-os-read-u16 (buf off)
   (+ (ptr-read-u8 buf off)
      (lsh (ptr-read-u8 buf (+ off 1)) 8)))
