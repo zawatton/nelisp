@@ -225,28 +225,6 @@ impl Env {
         out
     }
 
-    /// Per-file diff of the elisp mirror against `before' (= a prior
-    /// `mirror_snapshot_globals' result).  Returns a fresh `Env' whose
-    /// mirror is populated with the changed entries.  Baker-only.
-    #[cfg(any(test, feature = "image-baker"))]
-    pub fn mirror_diff_view(&self, before: &HashMap<String, SymbolEntry>) -> Env {
-        let mut diff = Env::empty();
-        diff.install_empty_mirror_rust_direct();
-        let after = self.mirror_snapshot_globals();
-        for (name, entry) in after.into_iter().filter(|(k, v)| {
-            before.get(k).map_or(true, |prev| prev != v)
-        }) {
-            diff.mirror_install_entry(
-                &name,
-                entry.value,
-                entry.function,
-                entry.plist,
-                entry.constant,
-            );
-        }
-        diff
-    }
-
     /// Rust-direct empty mirror constructor.  Pre-allocates the
     /// `nelisp-env' / `fast-hash-table' / `buckets' record graph
     /// without invoking elisp `nelisp-env-make' (= no `apply_function'

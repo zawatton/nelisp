@@ -86,22 +86,6 @@ sexp-abi-check:
 	@diff -u target/sexp-abi-check/elisp.txt target/sexp-abi-check/rust.txt \
 	  && echo "sexp-abi-check: Rust and elisp constants match"
 
-# Doc 95 §95.e CI integration: emit the hand-picked NELIMG v3 envelope
-# fixture corpus via the elisp serializer (`nelisp-sexp-bake-dump-
-# fixture'), then run each through the Rust baker's `--verify-elisp-
-# fixtures' branch to confirm byte-identity.  Failure = drift between
-# the elisp encoder (`lisp/nelisp-sexp-dsl.el') and the Rust encoder
-# (`build-tool/src/image.rs::encode_v3_with_fallback').  Depends only
-# on the `nelisp-baker' binary plus an Emacs to run the dumper.
-verify-elisp-fixtures:
-	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
-	@mkdir -p target/elisp-fixtures
-	$(EMACS) --batch -Q -L lisp \
-	  -l nelisp-bake-fixtures \
-	  --eval '(nelisp-bake-fixtures-emit-all "target/elisp-fixtures/")'
-	./target/release/nelisp-baker --verify-elisp-fixtures \
-	  $$(ls target/elisp-fixtures/*.image)
-
 # Doc 122 §122.K — verify the elisp-side libc constants table is in
 # sync with the host's libc headers.  Compiles a tiny C probe over
 # <signal.h>/<sys/ioctl.h>/<termios.h>/<poll.h>/<fcntl.h>, dumps the

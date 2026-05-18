@@ -40,17 +40,3 @@ jobs:
       - name: Run smoke tests
         shell: bash
         run: make test
-
-      # Doc 95 §95.e CI integration: cross-impl byte-identity gate
-      # between the elisp NELIMG v3 envelope encoder
-      # (`lisp/nelisp-sexp-dsl.el') and the Rust encoder
-      # (`build-tool/src/image.rs').  Emits a hand-picked fixture
-      # corpus from the elisp side, then runs `nelisp-baker
-      # --verify-elisp-fixtures' on each; non-zero exit = drift.
-      # Linux-only step (= release nelisp-baker takes ~minutes to
-      # build, Windows/macOS would 2-3x CI wall clock and the
-      # contract is OS-independent — covered on Linux is enough).
-      - name: Verify elisp ↔ Rust fixture byte-identity (Doc 95 §95.e)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: make verify-elisp-fixtures

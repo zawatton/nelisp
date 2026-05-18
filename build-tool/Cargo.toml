@@ -17,40 +17,11 @@ name = "nelisp_build_tool"
 path = "src/lib.rs"
 
 [features]
-# Phase 7 Stage 7.7.c.2 (Doc 72): `image::compile_elisp_to_image' is
-# the only path that calls `reader::read_all' from a non-test, non-
-# bridge production callsite.  It is dev-tooling (= used by the
-# `nelisp-baker' bin to refresh `lisp/*.image' artifacts) and not
-# required by the production runtime, which only `decode_image' /
-# `eval_image's pre-baked bytes.  Gating the encoder behind a feature
-# flag means consumers that only run pre-baked images can build a
-# narrower binary, and the production `nelisp' binary's `compile-
-# image' CLI subcommand likewise becomes opt-in.
 default = []
-image-baker = []
-# Doc 86 §86.3.b / Doc 89 §4.2 (2026-05-10) — env shadow path verify.
-# Retired 2026-05-10 in §86.3.c switch-over: the slim shim primitive
-# IS now the canonical path (= reads / writes the same `Env::globals'
-# HashMap via `eval/env_shim.rs'), so the verify comparison would be
-# tautologically equal.  Feature kept declared as an empty alias for
-# CI workflow compatibility — workflows that pass
-# `--features env-shadow-verify' continue to build cleanly without it
-# affecting the binary.
-env-shadow-verify = []
 
 [[bin]]
 name = "nelisp"
 path = "src/bin/nelisp.rs"
-
-# Phase 7 Stage 7.7.a (Doc 72): STDLIB elisp → AOT image baker.
-# Run via `make bake-images` ahead of `cargo build` to refresh
-# `lisp/*.image` artifacts that Stage 7.7.b's `STDLIB_IMAGES`
-# embeds via `include_bytes!`.  Requires the `image-baker' feature
-# (= Stage 7.7.c.2 gate on `image::compile_elisp_to_image').
-[[bin]]
-name = "nelisp-baker"
-path = "src/bin/nelisp-baker.rs"
-required-features = ["image-baker"]
 
 # Doc 100 v2 §100.B (2026-05-12) — Sexp ABI layout dump driver.
 # Prints the Rust-side `ABI_EXPORT' rows in `NAME=VALUE' form so the
