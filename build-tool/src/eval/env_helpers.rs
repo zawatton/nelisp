@@ -73,7 +73,7 @@ impl Env {
             e!("nelisp-stdlib-hash.el"),      e!("nelisp-stdlib-gc.el"),
             e!("nelisp-stdlib-equal.el"),     e!("nelisp-stdlib-prn.el"),
             e!("nelisp-stdlib-reader.el"),    e!("nelisp-stdlib-eval-core.el"),
-            e!("nelisp-stdlib-time.el"),      e!("nelisp-stdlib-math.el"),
+            e!("nelisp-stdlib-math.el"),
             e!("nelisp-stdlib-regex.el"),     e!("nelisp-stdlib-fast-hash.el"),
             e!("nelisp-env.el"),              e!("nelisp-lexframe.el"),
             e!("nelisp-cli.el"),

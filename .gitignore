@@ -16,6 +16,8 @@
 /dist/
 /.cask/
 /cask-*/
+/target/
+target/
 
 # Coverage
 /coverage/

@@ -32,4 +32,3 @@ mod predicate;
 mod regex;
 mod strings;
 mod syscall;
-mod time;

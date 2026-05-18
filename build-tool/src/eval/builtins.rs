@@ -63,7 +63,7 @@ pub fn install_builtins(env: &mut Env) {
         "nl-ffi-write-bytes", "nl-ffi-errno",
         "nl-ffi-read-int", "nl-ffi-write-int",
         // Native-only primitives.
-        "nl-current-unix-time", "nl-secure-hash", "nl-format-unix-time",
+        "nl-secure-hash",
         "nl-downcase", "nl-upcase", "nl-split-by-non-alnum",
         "float", "exp", "log", "nelisp--f64-trunc",
         "nl-write-file", "nl-make-directory",
