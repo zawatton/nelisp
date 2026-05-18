@@ -250,7 +250,7 @@ impl Env {
     /// Value-cell read.  Returns `self.unbound_marker' on miss
     /// (sentinel re-injected here since the Phase 47 helper writes
     /// `Sexp::Nil' on miss).
-    pub(crate) fn mirror_lookup_value(&self, name: &str) -> Sexp {
+    pub fn mirror_lookup_value(&self, name: &str) -> Sexp {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return self.unbound_marker.clone();
         }
@@ -274,7 +274,7 @@ impl Env {
     }
 
     /// Function-cell read.  Same sentinel-reinjection as `mirror_lookup_value'.
-    pub(crate) fn mirror_lookup_function(&self, name: &str) -> Sexp {
+    pub fn mirror_lookup_function(&self, name: &str) -> Sexp {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return self.unbound_marker.clone();
         }
@@ -315,7 +315,7 @@ impl Env {
     }
 
     /// `fboundp' equivalent — function-cell counterpart of `mirror_is_bound'.
-    pub(crate) fn mirror_is_fbound(&self, name: &str) -> bool {
+    pub fn mirror_is_fbound(&self, name: &str) -> bool {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return false;
         }
@@ -534,7 +534,7 @@ impl Env {
     /// Look up NAME in the innermost frame only.  Returns `None' when
     /// stack is empty / mirror unbuilt / NAME absent.
     #[allow(dead_code)] // used by stack walks + tests
-    pub(crate) fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
+    pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
         let (_stack_rec, backing, depth) = self.frame_stack_view()?;
         if depth == 0 { return None; }
         let frame = backing.value.get(depth - 1)?;
@@ -544,7 +544,7 @@ impl Env {
     /// Innermost-first walk across the entire mirror stack.  Returns
     /// the first NAME hit.  Mirrors `nelisp-lexframe-stack-find';
     /// `find_frame_cell' delegates here.
-    pub(crate) fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
+    pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
         let (_stack_rec, backing, depth) = self.frame_stack_view()?;
         for i in (0..depth).rev() {
             let Some(frame) = backing.value.get(i) else { continue };
