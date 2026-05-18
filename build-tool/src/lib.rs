@@ -131,26 +131,18 @@ pub mod elisp_cc_spike {
         fn nelisp_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) -> i64;
         fn nelisp_ptr_read_u8(ptr: *const u8, offset: i64) -> i64;
         fn nelisp_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) -> i64;
-        // Doc 122 §122.J — width-{2,4} raw-mem ops (= SIZE gap between
-        // `_u8' and `_u64' for libc struct field marshalling).
-        // Unaligned access tolerated.  Lowers to `eval/raw_mem.rs'.
+        // Doc 122 §122.J — width-{2,4} raw-mem ops.
         fn nelisp_ptr_read_u16(ptr: *const u8, offset: i64) -> i64;
         fn nelisp_ptr_write_u16(ptr: *mut u8, offset: i64, val: i64) -> i64;
         fn nelisp_ptr_read_u32(ptr: *const u8, offset: i64) -> i64;
         fn nelisp_ptr_write_u32(ptr: *mut u8, offset: i64, val: i64) -> i64;
-        // Doc 122 §122.J — `struct-make' / `struct-field-{set,get}'
-        // sugar probes (= parse-time desugar to alloc-bytes /
-        // ptr-{read,write}-uN chosen by compile-time SIZE).
+        // Doc 122 §122.J — struct-make/field-{set,get} sugar probes.
         fn nelisp_struct_make_winsize() -> *mut u8;
         fn nelisp_struct_field_set_u16(buf: *mut u8, offset: i64, val: i64) -> i64;
         fn nelisp_struct_field_get_u16(buf: *const u8, offset: i64) -> i64;
         fn nelisp_struct_field_set_u32(buf: *mut u8, offset: i64, val: i64) -> i64;
         fn nelisp_struct_field_get_u32(buf: *const u8, offset: i64) -> i64;
         // Doc 122 §122.J — composed winsize write-full probe.
-        // Caller-allocated 8-byte / align-2 buf + 4 u16 fields →
-        // 4 `struct-field-set' writes, returns the (unchanged) buf
-        // pointer.  Ship-gate verifies round-trip through libc
-        // `ioctl(0, TIOCGWINSZ, buf)' on a real TTY.
         fn nelisp_winsize_write_full(
             buf: *mut u8,
             row: i64,
@@ -158,30 +150,13 @@ pub mod elisp_cc_spike {
             xpixel: i64,
             ypixel: i64,
         ) -> *mut u8;
-        // Doc 125 §125.A — alloc / dealloc primitives.  2-/3-arg
-        // extern-call shape (= rdi/rsi/rdx SysV AMD64) lowering to
-        // `nl_alloc_bytes' / `nl_dealloc_bytes' (`eval/raw_mem.rs').
-        // Substrate gate for Doc 124.G-K + Doc 126-128.
+        // Doc 125 §125.A — alloc/dealloc primitives.
         fn nelisp_alloc_bytes(size: i64, align: i64) -> *mut u8;
         fn nelisp_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) -> i64;
-        // Doc 122 §122.I — `cstr_from_sexp(str) → *mut u8' / `cstr_drop'
-        // pair.  Allocates a NUL-terminated heap byte buffer (size =
-        // str-len+1, align=1) via §125.A alloc-bytes; caller frees with
-        // matching `(size, align)' via dealloc-bytes.  Substrate gate
-        // for Doc 117 §117.D.gaps.3 Tier C file-I/O sweep.
+        // Doc 122 §122.I — CString from/drop (§125.A backed).
         fn nelisp_cstr_from_sexp(str_ptr: *const Sexp) -> *mut u8;
         fn nelisp_cstr_drop(buf_ptr: *mut u8, size: i64) -> i64;
-        // Doc 117 §117.D.gaps.3 — file-I/O syscall body sweeps powered
-        // by the §122.I CString helper.  Each kernel: build CString via
-        // `nelisp_cstr_from_sexp', issue libc syscall(s) against a
-        // Rust-owned result buffer, free the CString, return libc rc.
-        // Rust shim retains arg validation + buffer alloc + Sexp wrap.
-        //   stat            — `stat(2)' → 144-byte buf, rc 0/-1.
-        //   canonicalize    — `realpath(3)' → PATH_MAX buf, rc = buf addr
-        //                     on success / 0 on NULL; Rust wraps result
-        //                     in Sexp::Str (success) or Sexp::Nil (NULL).
-        //   nl_write_file   — `open(2)' + `write(2)' + `close(2)';
-        //                     rc = bytes written or negative syscall rc.
+        // Doc 117 §117.D.gaps.3 — file-I/O sweep via §122.I.
         fn nelisp_bi_syscall_stat(path_ptr: *const Sexp, statbuf: *mut u8) -> i64;
         fn nelisp_bi_syscall_canonicalize(
             path_ptr: *const Sexp,
@@ -191,96 +166,47 @@ pub mod elisp_cc_spike {
             path_ptr: *const Sexp,
             content_ptr: *const Sexp,
         ) -> i64;
-        // Doc 117 §117.D.gaps.3 (cont.) — second file-I/O sweep batch.
-        //   nl_make_directory   — `mkdir(2)' mode 0o755; rc 0/-1 (non-
-        //                         recursive flavour).
-        //   syscall_read_file   — `open(2)' + `read(2)' + `close(2)';
-        //                         Rust pre-sizes buffer via separate
-        //                         `stat(2)'.  rc = bytes read on success
-        //                         or negative syscall rc on error.
         fn nelisp_bi_nl_make_directory(path_ptr: *const Sexp) -> i64;
         fn nelisp_bi_syscall_read_file(
             path_ptr: *const Sexp,
             buf_ptr: *mut u8,
             read_size: i64,
         ) -> i64;
-        // Doc 122 §122.C — Extended extern-call (f64 args + f64 return) probes.
+        // Doc 122 §122.C — Extended extern-call (f64 + varargs) probes.
         fn nelisp_libm_sqrt(x: f64) -> f64;
         fn nelisp_libm_sin(x: f64) -> f64;
         fn nelisp_libm_cos(x: f64) -> f64;
-        // Doc 123 §123.A — first substrate elisp化 of rc_primitives.rs.
-        // Pure-elisp refcount-inc kernel via §122.E atomic-fetch-add.
+        // Doc 123 §123.A-D — refcount + GC walk kernels (live via tests/).
         fn nelisp_rc_inc(box_ptr: *mut i64) -> i64;
-        // Doc 123 §123.B — second substrate elisp化 of rc_primitives.rs.
-        // Pure-elisp refcount-dec kernel via §122.E atomic-fetch-add
-        // with delta=-1 (= fetch-sub semantics).  Returns pre-sub i64.
         fn nelisp_rc_dec(box_ptr: *mut i64) -> i64;
-        // Doc 123 §123.C — refcount-reader twins.
         fn nelisp_rc_strong_count(box_ptr: *const u8) -> i64;
         fn nelisp_rc_kind(sexp_ptr: *const u8) -> i64;
-        // Doc 123 §123.D — payload-ptr reader + walk-children kernel.
-        //   rc_payload_ptr     — reads NlBox* at SEXP_PAYLOAD_OFFSET=8;
-        //                        tag-dispatch is caller's responsibility.
-        //   gc_walk_children   — 2-cons alloc for `(car cdr)' (Cons only;
-        //                        non-Cons tag-dispatch lands §123.F).
-        //                        tail_slot is caller-owned scratch.
         fn nelisp_rc_payload_ptr(sexp_ptr: *const u8) -> i64;
         fn nelisp_gc_walk_children(
             sexp_ptr: *const Sexp,
             result_slot: *mut Sexp,
             tail_slot: *mut Sexp,
         ) -> *mut Sexp;
-        // Doc 124 §124.A — first stage of the `nl*.rs::Clone/Drop'
-        // substrate elisp化.  NlConsBox Clone kernel: bumps the
-        // refcount at offset 64 via §122.E `atomic-fetch-add', then
-        // returns the input pointer (= the cloned-handle's pointer).
-        // The Rust `impl Clone for NlConsBoxRef' wraps the return
-        // into `Self { ptr, _marker }' in §124.F's sweep stage.
+        // Doc 124 §124.A-F — NlBox Clone kernels (refcount-inc + ptr passthrough).
         fn nelisp_nlconsbox_clone(box_ptr: *mut i64) -> i64;
-        // Doc 124 §124.G — first Drop-half stage.  NlConsBox Drop
-        // kernel: fetch-sub then conditional dealloc.
-        fn nelisp_nlconsbox_drop(box_ptr: *mut i64) -> i64;
-        // Doc 124 §124.H — NlVector Drop kernel (REFCOUNT_OFFSET=24,
-        // SIZE=32, ALIGN=8).  Mechanical port of §124.G modulo the
-        // per-type layout literals.
-        fn nelisp_nlvector_drop(box_ptr: *mut i64) -> i64;
-        // Doc 124 §124.I/J/K — sibling Drop kernels.  Same shape as
-        // §124.G/H modulo per-type SIZE / REFCOUNT_OFFSET literals:
-        //   §124.I NlCell:   REFCOUNT_OFFSET = 32, SIZE = 40, ALIGN = 8
-        //   §124.J NlRecord: REFCOUNT_OFFSET = 56, SIZE = 64, ALIGN = 8
-        //   §124.K NlStr:    REFCOUNT_OFFSET = 24, SIZE = 32, ALIGN = 8
-        fn nelisp_nlcell_drop(box_ptr: *mut i64) -> i64;
-        fn nelisp_nlrecord_drop(box_ptr: *mut i64) -> i64;
-        fn nelisp_nlstr_drop(box_ptr: *mut i64) -> i64;
-        // Doc 124 §124.B-E — mechanical sibling Clone kernels.
-        // REFCOUNT_OFFSET = 24/32/56/24 respectively.
         fn nelisp_nlvector_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlcell_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlrecord_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlstr_clone(box_ptr: *mut i64) -> i64;
-        // Doc 124 §124.L+ — NlBoolVector + NlCharTable Drop kernels
-        // (= remaining 2 NlBox types).  Layout literals in each
-        // `lisp/nelisp-cc-nl{boolvector,chartable}-drop.el' header.
+        // Doc 124 §124.G-L+ — NlBox Drop kernels (refcount-dec + cond dealloc).
+        fn nelisp_nlconsbox_drop(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlvector_drop(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlcell_drop(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlrecord_drop(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlstr_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlboolvector_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlchartable_drop(box_ptr: *mut i64) -> i64;
-        // Doc 111 §111.E #1 — `mirror_lookup_entry' helper.  Returns
-        // `*const Sexp' of matching symbol-entry Record inside the
-        // bucket's `(KEY . ENTRY)' cons, or 0 on miss / empty mirror.
-        // Preconditions: mirror_ptr is `Sexp::Record(globals)' whose
-        // slot 0 is `Sexp::Record(fast-hash-table)' with slot 0 =
-        // `Sexp::Int(bucket_count, power of 2)' and slot 1 =
-        // `Sexp::Vector(buckets)'.
+        // Doc 111 §111.E #1 — mirror_lookup_entry (returns *Sexp or 0).
         fn nelisp_mirror_lookup_entry(
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
         ) -> i64;
-        // Doc 111 §111.E #2-6 — Group A compose-on-#1 helpers.  Each
-        // composes `mirror_lookup_entry' with a 1-2 op slot read of
-        // the matched symbol-entry.  lookup_value/function copy entry
-        // slot 0/1 into result_slot (or Nil on miss).  is_bound/fbound
-        // return i64 1 iff entry exists and slot 0/1 != UNBOUND
-        // sentinel.  is_constant returns 1 iff entry's slot 3 has tag
-        // SEXP_TAG_T.  Source: `lisp/nelisp-cc-mirror-*.el'.
+        // Doc 111 §111.E #2-6 — Group A read helpers (compose on #1).
         fn nelisp_mirror_lookup_value(
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
@@ -305,12 +231,7 @@ pub mod elisp_cc_spike {
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
         ) -> i64;
-        // Doc 111 §111.E Group B (#7-#12) — env_mirror.rs write path
-        // Phase 47 helpers.  Each one composes #1 `mirror_lookup_entry'
-        // (via the `extern-call' grammar form) with a §111.B
-        // `record-slot-set' on the matched entry's slot N.  Returns 1
-        // on hit (entry slot was overwritten in place) or 0 on miss
-        // (caller dispatches to the Rust auto-vivify path).
+        // Doc 111 §111.E Group B (#7-#12) — write helpers (compose on #1).
         fn nelisp_mirror_set_value(
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
@@ -344,13 +265,7 @@ pub mod elisp_cc_spike {
             plist_ptr: *const Sexp,
             constant_ptr: *const Sexp,
         ) -> i64;
-        // Doc 119 §119.A — auto-vivify fold wrappers.  Each absorbs the
-        // miss-path of mirror_set_{value,function,constant} + install_entry
-        // via a 4-arg signature `(mirror, sym, scratch_vec, _pad)' where
-        // SCRATCH-VEC-PTR is an 11-slot `Sexp::Vector' (= 5 prepend
-        // scratches at 0..4 + tag symbol at 5 + entry result at 6 + 4
-        // caller-supplied value Sexps at 7..10).  Safe wrapper builds the
-        // scratch vector + drops it on return (refcount balance).
+        // Doc 119 §119.A — auto-vivify fold (11-slot scratch_vec for prepend + entry).
         fn nelisp_mirror_set_value_or_insert(
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
