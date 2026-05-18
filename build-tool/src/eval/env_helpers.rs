@@ -59,9 +59,6 @@ impl Env {
     /// top-level STDLIB form.  `NELISP_EVAL_BOOT_TRACE=1' prints
     /// per-form load progress.
     pub fn new_global() -> Self {
-        // STDLIB load order — see each `.el' header for rationale.
-        // max_recursion=1024 bounds eval-loop nesting under cargo test's
-        // 2MB thread stack (see `recursion_depth_guard').
         macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) } }
         const STDLIB_FILES: &[(&str, &str)] = &[
             e!("nelisp-jit-substrate.el"),    e!("nelisp-syscall-table.el"),
@@ -102,31 +99,24 @@ impl Env {
                 }
             }
         }
-        // Elisp dispatch ON post-bootstrap; `NELISP_USE_RUST_APPLY' pins
-        // Rust dispatch as escape hatch.
         env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY")
             .map(|v| v.is_empty())
             .unwrap_or(true);
-        // Pin `nelisp--unbound-marker' value cell to the Rust-defined
-        // sentinel (STDLIB's defvar bakes a counter-suffixed value).
         let unbound = env.unbound_marker.clone();
         env.mirror_set_value("nelisp--unbound-marker", unbound);
         env
     }
 
-    /// Empty env (no built-ins).  Integration tests only.
+    /// Empty env (no built-ins) — integration tests only.
     pub fn empty() -> Self {
         Env::fresh(256)
     }
 
-    /// Built-ins + env_shim installed, no STDLIB.  Used by Doc 104
-    /// Stage 3.b mirror_* direct-write tests in `tests/env_integration.rs'.
+    /// Built-ins + env_shim installed, no STDLIB — test fixture.
     pub fn new_global_no_stdlib() -> Self {
         Env::install_stage0(1024)
     }
 
-    /// Stage 0 bootstrap: fresh env + empty mirror + intern nil/t +
-    /// install builtins + env_shim primitives.
     fn install_stage0(max_recursion: u32) -> Self {
         let mut env = Env::fresh(max_recursion);
         env.install_empty_mirror_rust_direct();
@@ -137,9 +127,7 @@ impl Env {
         env
     }
 
-    /// Register `f' as an externally-supplied builtin (test-only).
-    /// Integration test fixture entry — `extern_builtins' is consumed
-    /// by the test scaffold only (production never registers).
+    /// Test-fixture builtin — production never registers.
     pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
     where
         F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,
@@ -155,8 +143,7 @@ impl Env {
         self.mirror_install_entry(name, Some(value), None, None, true);
     }
 
-    /// Innermost-first lexical frame walk (Doc 104 Stage 3.c — body
-    /// walks the elisp-side `nelisp-lexframe-stack' mirror).
+    /// Innermost-first lexical frame walk via elisp `nelisp-lexframe-stack'.
     fn find_frame_cell(&self, name: &str) -> Option<FrameCell> {
         match self.frame_stack_find_rust_direct(name)? {
             Sexp::Cell(c) => Some(c),
@@ -169,8 +156,8 @@ impl Env {
         if let Some(cell) = self.find_frame_cell(name) {
             return Ok(cell.value.clone());
         }
-        // The sentinel symbol resolves to the sentinel value, not "unbound"
-        // — required for elisp `(eq cell nelisp--unbound-marker)' identity.
+        // Sentinel: `(eq cell nelisp--unbound-marker)` identity requires
+        // the symbol resolve to the sentinel value, not "unbound".
         if name == "nelisp--unbound-marker" {
             return Ok(self.unbound_marker.clone());
         }
