@@ -23,17 +23,6 @@ pub unsafe extern "C" fn nl_jit_intern(arg: *const Sexp, out: *mut Sexp) -> i64 
     }
 }
 
-/// Symbol(s) → Str(s); Nil → "nil"; T → "t"; else ERR.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*arg {
-        Sexp::Symbol(s) => { *out = Sexp::Str(s.clone()); TRAMPOLINE_OK }
-        Sexp::Nil => { *out = Sexp::Str("nil".into()); TRAMPOLINE_OK }
-        Sexp::T => { *out = Sexp::Str("t".into()); TRAMPOLINE_OK }
-        _ => TRAMPOLINE_ERR,
-    }
-}
-
 /// Fresh uninterned symbol via per-process counter — bit-for-bit
 /// identical to pre-§86.1.d `bi_make_symbol' output.  Accepts Str /
 /// MutStr / Symbol; ERR otherwise.

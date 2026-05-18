@@ -74,7 +74,6 @@ fn alias(name: &str) -> &str {
         "nelisp_jit_type_of"   => "nl_jit_type_of",
         "nelisp_jit_sxhash"    => "nl_jit_sxhash",
         "nelisp_jit_intern"        => "nl_jit_intern",
-        "nelisp_jit_symbol_name"   => "nl_jit_symbol_name",
         "nelisp_jit_make_symbol"   => "nl_jit_make_symbol",
         "nelisp_jit_syscall"             => "nl_jit_syscall_call",
         "nelisp_jit_syscall_supported_p" => "nl_jit_syscall_supported_p",
