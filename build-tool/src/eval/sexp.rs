@@ -193,6 +193,28 @@ pub fn variant_tag(s: &Sexp) -> u8 {
 /// A.5 JIT IR emits direct loads at this offset.
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
 
+/// Emit a `pub unsafe fn $name(&self) -> *const $ty` that reads the
+/// boxed `NonNull<$ty>` from `Sexp` payload at offset 8.  Layout:
+/// `{ tag: u8 @ 0, _pad: [u8; 7], handle: NonNull<$ty> @ 8 }`.
+///
+/// # Safety (every emitted fn)
+///
+/// Caller must guarantee `self.tag() == SEXP_TAG_*` matching `$ty`.
+/// Reading the wrong variant's payload is UB.  The returned pointer is
+/// borrowed for the lifetime of `self`; cloning the pointed-to handle
+/// requires a separate refcount bump (= go through the `Sexp::Variant(rc)`
+/// clone if you need an owned reference).
+macro_rules! sexp_box_ptr_accessor {
+    ($name:ident, $ty:ty) => {
+        #[inline]
+        pub unsafe fn $name(&self) -> *const $ty {
+            let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+                as *const std::ptr::NonNull<$ty>;
+            unsafe { (*payload).as_ptr() }
+        }
+    };
+}
+
 impl Sexp {
     /// Read the discriminant byte (offset 0).  Equivalent to
     /// [`variant_tag`] but spelled as a method for trampoline ergonomics.
@@ -201,74 +223,13 @@ impl Sexp {
         variant_tag(self)
     }
 
-    /// Read the boxed pointer of a [`Sexp::Cons`] without going through
-    /// `match`.  Returns a raw `*const NlConsBox`.
-    ///
-    /// # Safety
-    ///
-    /// Caller must guarantee `self.tag() == SEXP_TAG_CONS`.  The returned
-    /// pointer is borrowed for the lifetime of `self`; cloning the
-    /// pointed-to handle requires a separate refcount bump (= go through
-    /// the `Sexp::Cons(rc)` clone if you need an owned reference).
-    #[inline]
-    pub unsafe fn cons_box_ptr(&self) -> *const crate::eval::nlconsbox::NlConsBox {
-        // Layout: { tag: u8 @ 0, _pad: [u8; 7], handle: NonNull<NlConsBox> @ 8 }
-        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
-            as *const std::ptr::NonNull<crate::eval::nlconsbox::NlConsBox>;
-        unsafe { (*payload).as_ptr() }
-    }
-
-    /// Boxed pointer for [`Sexp::Cell`].  See [`Sexp::cons_box_ptr`].
-    #[inline]
-    pub unsafe fn cell_box_ptr(&self) -> *const crate::eval::nlcell::NlCell {
-        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
-            as *const std::ptr::NonNull<crate::eval::nlcell::NlCell>;
-        unsafe { (*payload).as_ptr() }
-    }
-
-    /// Boxed pointer for [`Sexp::MutStr`].  See [`Sexp::cons_box_ptr`].
-    #[inline]
-    pub unsafe fn mut_str_box_ptr(&self) -> *const crate::eval::nlstr::NlStr {
-        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
-            as *const std::ptr::NonNull<crate::eval::nlstr::NlStr>;
-        unsafe { (*payload).as_ptr() }
-    }
-
-    /// Boxed pointer for [`Sexp::Vector`].  See [`Sexp::cons_box_ptr`].
-    #[inline]
-    pub unsafe fn vector_box_ptr(&self) -> *const crate::eval::nlvector::NlVector {
-        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
-            as *const std::ptr::NonNull<crate::eval::nlvector::NlVector>;
-        unsafe { (*payload).as_ptr() }
-    }
-
-    /// Boxed pointer for [`Sexp::BoolVector`].  See [`Sexp::cons_box_ptr`].
-    #[inline]
-    pub unsafe fn bool_vector_box_ptr(&self)
-        -> *const crate::eval::nlboolvector::NlBoolVector
-    {
-        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
-            as *const std::ptr::NonNull<crate::eval::nlboolvector::NlBoolVector>;
-        unsafe { (*payload).as_ptr() }
-    }
-
-    /// Boxed pointer for [`Sexp::Record`].  See [`Sexp::cons_box_ptr`].
-    #[inline]
-    pub unsafe fn record_box_ptr(&self) -> *const crate::eval::nlrecord::NlRecord {
-        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
-            as *const std::ptr::NonNull<crate::eval::nlrecord::NlRecord>;
-        unsafe { (*payload).as_ptr() }
-    }
-
-    /// Boxed pointer for [`Sexp::CharTable`].  See [`Sexp::cons_box_ptr`].
-    #[inline]
-    pub unsafe fn char_table_box_ptr(&self)
-        -> *const crate::eval::nlchartable::NlCharTable
-    {
-        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
-            as *const std::ptr::NonNull<crate::eval::nlchartable::NlCharTable>;
-        unsafe { (*payload).as_ptr() }
-    }
+    sexp_box_ptr_accessor!(cons_box_ptr, crate::eval::nlconsbox::NlConsBox);
+    sexp_box_ptr_accessor!(cell_box_ptr, crate::eval::nlcell::NlCell);
+    sexp_box_ptr_accessor!(mut_str_box_ptr, crate::eval::nlstr::NlStr);
+    sexp_box_ptr_accessor!(vector_box_ptr, crate::eval::nlvector::NlVector);
+    sexp_box_ptr_accessor!(bool_vector_box_ptr, crate::eval::nlboolvector::NlBoolVector);
+    sexp_box_ptr_accessor!(record_box_ptr, crate::eval::nlrecord::NlRecord);
+    sexp_box_ptr_accessor!(char_table_box_ptr, crate::eval::nlchartable::NlCharTable);
 }
 
 // Compile-time check: every NlXxxRef handle must be exactly pointer-
@@ -503,6 +464,23 @@ impl fmt::Display for Sexp {
     }
 }
 
+/// Push `"text"` with the standard backslash escapes for `"`/`\`/`\n`/`\t`/`\r`.
+/// Shared between [`Sexp::Str`] and [`Sexp::MutStr`] arms of [`write_sexp`].
+fn write_quoted_string(out: &mut String, text: &str) {
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 fn write_sexp(out: &mut String, s: &Sexp) {
     if write_reader_macro(out, s) {
         return;
@@ -526,35 +504,8 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
         }
         Sexp::Symbol(name) => out.push_str(name),
-        Sexp::Str(text) => {
-            out.push('"');
-            for ch in text.chars() {
-                match ch {
-                    '"' => out.push_str("\\\""),
-                    '\\' => out.push_str("\\\\"),
-                    '\n' => out.push_str("\\n"),
-                    '\t' => out.push_str("\\t"),
-                    '\r' => out.push_str("\\r"),
-                    c => out.push(c),
-                }
-            }
-            out.push('"');
-        }
-        Sexp::MutStr(rc) => {
-            let text = &rc.value;
-            out.push('"');
-            for ch in text.chars() {
-                match ch {
-                    '"' => out.push_str("\\\""),
-                    '\\' => out.push_str("\\\\"),
-                    '\n' => out.push_str("\\n"),
-                    '\t' => out.push_str("\\t"),
-                    '\r' => out.push_str("\\r"),
-                    c => out.push(c),
-                }
-            }
-            out.push('"');
-        }
+        Sexp::Str(text) => write_quoted_string(out, text),
+        Sexp::MutStr(rc) => write_quoted_string(out, &rc.value),
         Sexp::Cons(_) => {
             out.push('(');
             write_list_body(out, s);
@@ -834,89 +785,39 @@ mod tests {
         assert_eq!(direct, payload_at_8);
     }
 
-    #[test]
-    fn cons_box_ptr_round_trips_to_match() {
-        let cons = Sexp::cons(Sexp::Int(7), Sexp::Symbol("x".into()));
-        if let Sexp::Cons(rc) = &cons {
-            let via_match = rc.deref() as *const _ as usize;
-            let via_direct = unsafe { cons.cons_box_ptr() } as usize;
-            assert_eq!(via_match, via_direct);
-        } else {
-            panic!("expected Cons");
-        }
+    /// Emit a `*_box_ptr_round_trips_to_match` test for one boxed variant:
+    /// build a Sexp via `$build`, then assert the `$accessor` raw pointer
+    /// equals the pointer obtained via `match` + `Deref`.
+    macro_rules! box_ptr_round_trip_test {
+        ($test:ident, $variant:ident, $build:expr, $accessor:ident) => {
+            #[test]
+            fn $test() {
+                let s = $build;
+                if let Sexp::$variant(rc) = &s {
+                    let via_match = rc.deref() as *const _ as usize;
+                    let via_direct = unsafe { s.$accessor() } as usize;
+                    assert_eq!(via_match, via_direct);
+                } else {
+                    panic!(concat!("expected ", stringify!($variant)));
+                }
+            }
+        };
     }
 
-    #[test]
-    fn cell_box_ptr_round_trips_to_match() {
-        let cell = Sexp::Cell(NlCellRef::new(Sexp::Int(99)));
-        if let Sexp::Cell(rc) = &cell {
-            let via_match = rc.deref() as *const _ as usize;
-            let via_direct = unsafe { cell.cell_box_ptr() } as usize;
-            assert_eq!(via_match, via_direct);
-        } else {
-            panic!("expected Cell");
-        }
-    }
-
-    #[test]
-    fn mut_str_box_ptr_round_trips_to_match() {
-        let s = Sexp::mut_str("hello");
-        if let Sexp::MutStr(rc) = &s {
-            let via_match = rc.deref() as *const _ as usize;
-            let via_direct = unsafe { s.mut_str_box_ptr() } as usize;
-            assert_eq!(via_match, via_direct);
-        } else {
-            panic!("expected MutStr");
-        }
-    }
-
-    #[test]
-    fn vector_box_ptr_round_trips_to_match() {
-        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2)]);
-        if let Sexp::Vector(rc) = &v {
-            let via_match = rc.deref() as *const _ as usize;
-            let via_direct = unsafe { v.vector_box_ptr() } as usize;
-            assert_eq!(via_match, via_direct);
-        } else {
-            panic!("expected Vector");
-        }
-    }
-
-    #[test]
-    fn bool_vector_box_ptr_round_trips_to_match() {
-        let bv = Sexp::bool_vector(8, true);
-        if let Sexp::BoolVector(rc) = &bv {
-            let via_match = rc.deref() as *const _ as usize;
-            let via_direct = unsafe { bv.bool_vector_box_ptr() } as usize;
-            assert_eq!(via_match, via_direct);
-        } else {
-            panic!("expected BoolVector");
-        }
-    }
-
-    #[test]
-    fn record_box_ptr_round_trips_to_match() {
-        let r = Sexp::record(Sexp::Symbol("point".into()), vec![Sexp::Int(3)]);
-        if let Sexp::Record(rc) = &r {
-            let via_match = rc.deref() as *const _ as usize;
-            let via_direct = unsafe { r.record_box_ptr() } as usize;
-            assert_eq!(via_match, via_direct);
-        } else {
-            panic!("expected Record");
-        }
-    }
-
-    #[test]
-    fn char_table_box_ptr_round_trips_to_match() {
-        let ct = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil);
-        if let Sexp::CharTable(rc) = &ct {
-            let via_match = rc.deref() as *const _ as usize;
-            let via_direct = unsafe { ct.char_table_box_ptr() } as usize;
-            assert_eq!(via_match, via_direct);
-        } else {
-            panic!("expected CharTable");
-        }
-    }
+    box_ptr_round_trip_test!(cons_box_ptr_round_trips_to_match, Cons,
+        Sexp::cons(Sexp::Int(7), Sexp::Symbol("x".into())), cons_box_ptr);
+    box_ptr_round_trip_test!(cell_box_ptr_round_trips_to_match, Cell,
+        Sexp::Cell(NlCellRef::new(Sexp::Int(99))), cell_box_ptr);
+    box_ptr_round_trip_test!(mut_str_box_ptr_round_trips_to_match, MutStr,
+        Sexp::mut_str("hello"), mut_str_box_ptr);
+    box_ptr_round_trip_test!(vector_box_ptr_round_trips_to_match, Vector,
+        Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2)]), vector_box_ptr);
+    box_ptr_round_trip_test!(bool_vector_box_ptr_round_trips_to_match, BoolVector,
+        Sexp::bool_vector(8, true), bool_vector_box_ptr);
+    box_ptr_round_trip_test!(record_box_ptr_round_trips_to_match, Record,
+        Sexp::record(Sexp::Symbol("point".into()), vec![Sexp::Int(3)]), record_box_ptr);
+    box_ptr_round_trip_test!(char_table_box_ptr_round_trips_to_match, CharTable,
+        Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil), char_table_box_ptr);
 
     #[test]
     fn tag_method_matches_variant_tag_fn() {
