@@ -6,7 +6,7 @@
         bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
         stage-d-v2-tarball stage-d-v2-tarball-verify \
         stage-d-v3-tarball stage-d-v3-tarball-verify \
-        bake-images bake-check verify-elisp-fixtures
+        verify-elisp-fixtures
 
 EMACS ?= emacs
 
@@ -62,25 +62,12 @@ compile:
 clean:
 	find . -name '*.elc' -type f -delete
 
-# Phase 7 Stage 7.7.a (Doc 72): AOT-bake bundled stdlib elisp into
-# `lisp/*.image' so Stage 7.7.b's `Env::new_global' can `include_bytes!'
-# them and skip the Rust reader at startup.  Run after editing any
-# `lisp/nelisp-stdlib*.el' / `lisp/nelisp-pcase.el' / `lisp/nelisp-cl-
-# macros.el' before the next `cargo build'; otherwise the embedded
-# image bytes drift from the source.  CI should run `bake-check'
-# instead — exits non-zero if a `.el' was edited without rebake.
-bake-images:
-	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
-	./target/release/nelisp-baker --frozen-heap
-	@if [ "$$NELISP_VERIFY_ELISP" = "1" ]; then \
-	  $(MAKE) verify-elisp-fixtures; \
-	else \
-	  echo "(verify-elisp-fixtures skipped — set NELISP_VERIFY_ELISP=1 to enable)"; \
-	fi
-
-bake-check:
-	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
-	./target/release/nelisp-baker --frozen-heap --check
+# Doc 126 (2026-05-18): `bake-images' + `bake-check' retired together
+# with the `lisp/*.image' production boot path.  `Env::new_global' now
+# loads `.el' sources directly via `reader::read_all + eval' (Doc 126.B),
+# so on-disk `.image' artifacts no longer exist and `nelisp-baker' has
+# no bake mode.  `verify-elisp-fixtures' below is the only surviving
+# baker invocation (= Doc 95 §95.e cross-impl gate).
 
 # Doc 100 v2 §100.B (2026-05-12) — Sexp ABI cross-side drift gate.
 # Builds the `sexp-abi-emit' driver to print the Rust-side `ABI_EXPORT'
