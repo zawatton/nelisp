@@ -6,7 +6,7 @@
         bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
         stage-d-v2-tarball stage-d-v2-tarball-verify \
         stage-d-v3-tarball stage-d-v3-tarball-verify \
-        verify-elisp-fixtures
+        verify-elisp-fixtures verify-libc-constants
 
 EMACS ?= emacs
 
@@ -101,6 +101,16 @@ verify-elisp-fixtures:
 	  --eval '(nelisp-bake-fixtures-emit-all "target/elisp-fixtures/")'
 	./target/release/nelisp-baker --verify-elisp-fixtures \
 	  $$(ls target/elisp-fixtures/*.image)
+
+# Doc 122 §122.K — verify the elisp-side libc constants table is in
+# sync with the host's libc headers.  Compiles a tiny C probe over
+# <signal.h>/<sys/ioctl.h>/<termios.h>/<poll.h>/<fcntl.h>, dumps the
+# elisp side via `nelisp-cc--libc-constants-canonical-text', and
+# `diff's the two.  Drift fails the build before the Doc 117
+# §117.D.gaps.3 handlers (= sigaction / ioctl / tcsetattr / poll /
+# fcntl) can be folded to elisp.
+verify-libc-constants:
+	@EMACS=$(EMACS) ./scripts/verify-libc-constants.sh
 
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
 # Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).
