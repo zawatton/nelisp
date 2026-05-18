@@ -218,32 +218,49 @@
            ;; Otherwise -> Int.
            (t 20))
         (cond
-         ;; Digit: set saw-digit bit.
+         ;; Bit 4 tracks "last byte was e/E" for valid exponent-sign detection.
+         ;; All transitions other than e/E clear it; e/E sets bits 1 AND 4.
+         ;; Digit: set saw-digit (bit 3), clear last-was-e (bit 4).
          ((= (nelisp_reader_is_digit (str-byte-at str-ptr i)) 1)
           (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                       (logior class 8)))
-         ;; `.': set dot bit.
+                                       (logior (logand class 15) 8)))
+         ;; `.': set dot (bit 0), clear last-was-e.
          ((= (str-byte-at str-ptr i) 46)
           (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                       (logior class 1)))
-         ;; `e' / `E': set e bit.
+                                       (logior (logand class 15) 1)))
+         ;; `e' / `E': set has-e (bit 1) AND last-was-e (bit 4).
          ((= (str-byte-at str-ptr i) 101)
           (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                       (logior class 2)))
+                                       (logior class 18)))
          ((= (str-byte-at str-ptr i) 69)
           (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                       (logior class 2)))
-         ;; Sign at any position: tolerated, no class change.  The
-         ;; Rust safe-wrapper layer rejects bad placements via
-         ;; `i64::from_str_radix' / `f64::from_str' round-trip.
+                                       (logior class 18)))
+         ;; `+'/`-': sign after digit (bit 3 set) AND not just-after-e
+         ;; (bit 4 clear) forces sym (`1+' / `1-' lex as symbols, not
+         ;; `Int(1)' + dropped sign).  Otherwise (start, after e/E)
+         ;; tolerated.  Clear bit 4 in both branches.
          ((= (str-byte-at str-ptr i) 43)
-          (nelisp_reader_classify_step str-ptr (+ i 1) end class))
+          (if (= (logand class 8) 8)
+              (if (= (logand class 16) 0)
+                  (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                               (logior (logand class 15) 4))
+                (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                             (logand class 15)))
+            (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                         (logand class 15))))
          ((= (str-byte-at str-ptr i) 45)
-          (nelisp_reader_classify_step str-ptr (+ i 1) end class))
-         ;; Anything else: force sym.
+          (if (= (logand class 8) 8)
+              (if (= (logand class 16) 0)
+                  (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                               (logior (logand class 15) 4))
+                (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                             (logand class 15)))
+            (nelisp_reader_classify_step str-ptr (+ i 1) end
+                                         (logand class 15))))
+         ;; Anything else: force sym, clear last-was-e.
          (t
           (nelisp_reader_classify_step str-ptr (+ i 1) end
-                                       (logior class 4))))))
+                                       (logior (logand class 15) 4))))))
 
     (defun nelisp_reader_classify_first_p (b)
       ;; 1 if BYTE starts a numeric atom (digit / `+'/`-' / `.').
