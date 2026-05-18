@@ -35,6 +35,17 @@ fn read_text(v: &Sexp) -> Option<String> {
     }
 }
 
+/// Symbol(s) → Str(s); Nil → "nil"; T → "t"; else ERR.
+/// Called from `nelisp-jit-strategy.el' `symbol-name' wrapper via
+/// `(nl-jit-call-out-1 "nelisp_jit_symbol_name" sym)'.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) -> i64 {
+    match read_text(&*arg) {
+        Some(s) => { *out = Sexp::Str(s); TRAMPOLINE_OK }
+        None => TRAMPOLINE_ERR,
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_downcase(arg: *const Sexp, out: *mut Sexp) -> i64 {
     match read_text(&*arg) {
