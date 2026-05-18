@@ -1,33 +1,17 @@
-//! `nl-jit-call-*' bridge primitives.  Elisp `lowered_X' wrappers in
-//! `lisp/nelisp-jit-strategy.el' call these to invoke JIT entries by
-//! name.  Shapes: `i64-i64' / `ptr-ptr' / `syscall' (i64×7) / float /
-//! out-param.  Name → fn-ptr lookup goes through `unified_fn_ptr',
-//! a thin `dlsym(RTLD_DEFAULT, name)' wrapper.  Every supported entry
-//! name resolves either to a Phase 47-compiled elisp `.o' trampoline
-//! in `libnelisp_elisp_spike.a' or to a `#[no_mangle]' Rust trampoline
-//! in `jit/{access,box_accessor,cons,hash,predicate,regex,strings,
-//! syscall,time}.rs'.  `-rdynamic' (`.cargo/config.toml') exposes
-//! both kinds in the dynsym table.  Bridge-only aliases (cons /
-//! predicate / nl_jit_* vs nelisp_jit_* name mismatch) live in
-//! `alias' below.
-//!
-//! Supported targets: linux-x86_64 only (= `lib.rs' `compile_error!').
+//! `nl-jit-call-*' bridge — invokes JIT entries by name via
+//! `dlsym(RTLD_DEFAULT, alias(name))` (resolves both Phase 47 `.o`
+//! trampolines and `#[no_mangle]` Rust trampolines via `-rdynamic`).
+//! linux-x86_64 only.
 
 use crate::eval::builtins::{as_int, require_arity};
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 use std::ffi::CString;
 
-// Phase 47-compiled elisp trampolines live in `libnelisp_elisp_spike.a'.
-// Each symbol must be force-referenced once so the static linker pulls
-// the archive member into the binary (test executables included);
-// otherwise dlsym returns NULL.  `lib.rs::elisp_cc_spike' declares
-// signature-typed externs for arith / float / math / predicate / record
-// / access, but in a `cargo test --lib' binary those decls alone don't
-// pull the archive members in (no callsite forces the reference).  So
-// repeat the 36 elisp `.o' names here, nullary-typed; the duplicate
-// declaration is harmless (linker sees one symbol, types are irrelevant
-// for `*const u8' transmute callers).
+// Force-reference Phase 47 elisp `.o' archive members so the static
+// linker pulls them into the binary (otherwise dlsym returns NULL).
+// Nullary-typed redecl is intentional — `lib.rs::elisp_cc_spike` has
+// the real signatures; here we only need symbol presence.
 #[allow(dead_code, clashing_extern_declarations)]
 extern "C" {
     fn nelisp_jit_add2(); fn nelisp_jit_sub2(); fn nelisp_jit_mul2();
@@ -77,11 +61,8 @@ fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
     }
 }
 
-/// Translate legacy bridge aliases to actual exported symbol names.
-/// (1) elisp `.o' archive exports cons-family / predicate as `_cons_*' /
-/// `predicate_eq' but elisp wrappers use shorter names; (2) Rust
-/// trampolines (`jit/cons.rs::nl_jit_cons_make' etc.) keep `nl_jit_*'
-/// names but elisp callers pass `nelisp_jit_*'.
+/// Map elisp-wrapper names to exported symbol names (e.g. short-name
+/// → `cons_*' / `predicate_*', or `nelisp_jit_*' → `nl_jit_*').
 fn alias(name: &str) -> &str {
     match name {
         "nelisp_jit_car"       => "nelisp_jit_cons_car",
@@ -101,16 +82,10 @@ fn alias(name: &str) -> &str {
     }
 }
 
-/// Resolve a `nelisp_jit_*' / `nl_jit_*' name to its trampoline fn-ptr
-/// via `dlsym(RTLD_DEFAULT, alias(name))'.  `-rdynamic' exposes every
-/// `#[no_mangle]' Rust trampoline AND every Phase 47-compiled elisp
-/// `.o' symbol in the dynsym table, so this replaces the pre-Doc-128
-/// compile-time `extern "C"' match (~120 LOC + 7 `mod *_link' blocks).
+/// Resolve via `dlsym(RTLD_DEFAULT, alias(name))`.
 pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
     let cstr = CString::new(alias(name)).ok()?;
-    // SAFETY: dlsym is async-signal-safe and may return NULL; we never
-    // deref the returned pointer.  RTLD_DEFAULT covers the nelisp
-    // binary + statically linked elisp `.o' archive + libc / libm.
+    // SAFETY: dlsym never deref'd here; NULL → returned as None.
     let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cstr.as_ptr()) };
     if addr.is_null() { None } else { Some(addr as *const u8) }
 }

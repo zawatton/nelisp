@@ -7,11 +7,8 @@ use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
 use super::{eval, list_elements};
 
-/// Dispatch the 13 Tier 1 irreducible special forms.  Tier 2 forms
-/// (`cond' / `when' / `defvar' / `dolist' / etc.) are elisp macros
-/// in `lisp/nelisp-stdlib-eval-special.el' — they reach this
-/// function as `Ok(None)' and the caller falls through to macro
-/// expansion.
+/// Dispatch 13 Tier 1 irreducible forms; Tier 2 macros (`cond' / `when' / etc.)
+/// return `Ok(None)' and fall through to macro expansion.
 pub fn apply_special(
     name: &str,
     args: &Sexp,
@@ -73,9 +70,7 @@ fn sf_quote(args: &Sexp) -> Result<Sexp, EvalError> {
 }
 
 fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // `(function FORM)` = `#'FORM`.  For a bare lambda it captures the
-    // current lexical environment into a closure; for a symbol it just
-    // returns the symbol (the evaluator will fcell-lookup at funcall).
+    // `(function FORM)` = `#'FORM`: lambda → closure, symbol → as-is.
     let form = first_arg(args, "function")?;
     match &form {
         Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "lambda") => {
@@ -149,8 +144,7 @@ fn sf_let_common(args: &Sexp, env: &mut Env, name: &str, sequential: bool) -> Re
         });
     }
     let bindings = list_elements(&parts[0])?;
-    // `let' evaluates values in the OUTER env first (= before push);
-    // `let*' evaluates inside the growing frame.
+    // `let' pre-evaluates in OUTER env; `let*' evaluates inside the frame.
     let pre_evaluated = if sequential {
         None
     } else {
@@ -250,9 +244,7 @@ fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         let value_form = iter.next().unwrap();
         let name = match name_form {
             Sexp::Symbol(s) => s,
-            // `nil` and `t` are reader-special: surface them as
-            // SettingConstant rather than WrongType so error messages
-            // match Elisp's `setting-constant` signal.
+            // nil/t → name strings so setq raises SettingConstant (= Elisp signal).
             Sexp::Nil => "nil".to_string(),
             Sexp::T => "t".to_string(),
             other => {
