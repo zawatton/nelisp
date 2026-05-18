@@ -1,126 +1,36 @@
-//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — predicate trampoline,
-//! dlsym-exported.
-//!
-//! Single Rust trampoline `nl_jit_predicate_eq' that mirrors the
-//! pre-takeover 7-block Cranelift IR's control flow 1-to-1: (1) same-ref
-//! short-circuit, (2) tag-byte equality test (early-out when variants
-//! differ), (3) Int payload fast path (avoids any helper call for
-//! `Sexp::Int' pairs), (4) `sexp_eq' slow path for variant-specific
-//! equality (Symbol-by-name, Cons-by-Rc-ptr-eq, Str-by-content, etc.).
-//! `#[no_mangle] pub unsafe extern "C"' so the dlsym bridge resolves it
-//! at runtime.
-//!
-//! `nelisp-jit-strategy.el' calls `(nl-jit-call-ptr-ptr
-//! "nelisp_jit_eq_inline" a b)' which goes through
-//! `bridge::unified_fn_ptr's name → fn-ptr table — no Cranelift wrapper
-//! page in between.
-//!
-//! # Doc 120 §120.A swap status (2026-05-18)
-//!
-//! 2 of 4 trampolines moved to Phase-47-compiled elisp on linux-x86_64:
-//!
-//!   - `nl_jit_predicate_eq' → `lisp/nelisp-cc-jit-predicate-eq.el'
-//!     (= elisp body owns the 3 fast paths; slow path delegates to a
-//!     new `nl_sexp_eq' `#[no_mangle]' extern in `eval/special_forms.rs').
-//!   - `nl_jit_ref_eq'       → `lisp/nelisp-cc-jit-ref-eq.el'
-//!     (= same `nl_sexp_eq' slow-path delegate + `sexp-write-t' /
-//!     `sexp-write-nil' tag writers).
-//!
-//! Skipped (= blockers documented inline):
-//!
-//!   - `nl_jit_sxhash'       — needs a recursive variant-walking
-//!     `DefaultHasher' port in Phase 47.  The trampoline composes
-//!     `Hash::hash' over every nested Sexp variant which would require
-//!     a new `(hash-state-update STATE BYTES)' grammar primitive plus
-//!     a port of `std::collections::hash_map::DefaultHasher's
-//!     SipHash-1-3 implementation.  Out of scope for §120.A.
-//!   - `nl_jit_type_of'      — needs `(sexp-write-symbol SLOT
-//!     "type-name")' grammar op which does not yet exist.  The
-//!     trampoline returns one of 9 distinct `Sexp::Symbol' values
-//!     depending on the tag byte; Phase 47 currently only exposes
-//!     `sexp-write-t' / `sexp-write-nil' (= byte-only writers for
-//!     `Sexp::T' / `Sexp::Nil').  Adding a symbol writer is feasible
-//!     but expanding the grammar is out of scope for §120.A.
-//!
-//! On linux-x86_64 the Rust `nl_jit_predicate_eq' / `nl_jit_ref_eq'
-//! functions below are kept for fallback parity + in-file unit tests
-//! (= dead code that the linker keeps via `#[no_mangle]' + `-rdynamic',
-//! similar to other arch-specific reference impls).  Other targets
-//! still route through these Rust trampolines via the `predicate_link'
-//! stub in `bridge.rs' until the §120.A elisp emit is generalized.
+//! Predicate trampolines (`nl_jit_predicate_eq' / `_ref_eq' / `_sxhash'
+//! / `_type_of'), dlsym-exported.  `eq' / `ref_eq' run in elisp on
+//! linux-x86_64 (slow path via `nl_sexp_eq' extern); `sxhash' / `type_of'
+//! stay Rust (grammar gaps — hash composition + sexp-write-symbol).
+//! Other targets fall through to the Rust trampolines via `bridge::predicate_link'.
 
 use crate::eval::sexp::{Sexp, SEXP_TAG_INT};
 
-/// `(eq A B) -> 1 if equal, 0 otherwise' trampoline.
+/// `(eq A B) -> 1 if equal, 0 otherwise' trampoline.  4-stage:
+/// same-ref / tag-eq / Int payload fast path / `sexp_eq' slow path.
 ///
-/// Mirrors the deleted 7-block Cranelift IR semantics:
-///   1. same-ref short-circuit (= `a_ptr == b_ptr' → return 1
-///      regardless of variant; idiom in pcase / cl-typecase guard
-///      chains).
-///   2. tag-byte equality test (= different variants → return 0
-///      without entering the helper).
-///   3. Int payload fast path (= matching `Sexp::Int' tags → compare
-///      i64 payloads at offset 8 directly).
-///   4. `sexp_eq' slow path for variant-specific equality (= same as
-///      the Cranelift IR's `block_slow' arm).
-///
-/// Phase 7.1.6.d dlsym-exported.
-///
-/// SAFETY: caller must pass valid `*const Sexp' pointers.  Same
-/// contract as the deleted Cranelift IR (= identical PTR ABI).
+/// # Safety
+/// Caller must pass valid `*const Sexp' pointers.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_predicate_eq(
     a: *const Sexp,
     b: *const Sexp,
 ) -> i64 {
-    // 1. Same-ref short-circuit.
-    if a == b {
-        return 1;
-    }
-    // 2. Tag-byte equality test (= load discriminant byte at offset 0).
-    //    `Sexp' is `#[repr(C, u8)]' so the tag occupies byte 0; matches
-    //    the deleted IR's `load.i8 [a_ptr + 0]' / `load.i8 [b_ptr + 0]'.
+    if a == b { return 1; }
     let a_tag = *(a as *const u8);
     let b_tag = *(b as *const u8);
-    if a_tag != b_tag {
-        return 0;
-    }
-    // 3. Int fast path: matching `SEXP_TAG_INT' → compare i64 payload at
-    //    offset 8.  Mirrors the deleted IR's `block_int_eq' which loaded
-    //    `[a_ptr + 8]' / `[b_ptr + 8]' as i64 and emitted `icmp Equal +
-    //    uextend'.
+    if a_tag != b_tag { return 0; }
     if a_tag == SEXP_TAG_INT {
         let a_int = *((a as *const u8).add(8) as *const i64);
         let b_int = *((b as *const u8).add(8) as *const i64);
         return (a_int == b_int) as i64;
     }
-    // 4. Slow path: variant-specific equality through `sexp_eq' (=
-    //    Symbol-by-name, Cons-by-Rc-ptr-eq, Str-by-content, etc.).
-    //    Mirrors the deleted IR's `block_slow' arm which called the
-    //    `nl_jit_pred_eq' helper (= itself a thin wrapper around
-    //    `sexp_eq').  Inlining the helper body here saves a hop.
-    if crate::eval::special_forms::sexp_eq(&*a, &*b) {
-        1
-    } else {
-        0
-    }
+    if crate::eval::special_forms::sexp_eq(&*a, &*b) { 1 } else { 0 }
 }
 
-/// Doc 86 §86.1.b (2026-05-10) — `(nelisp--ref-eq A B)' trampoline.
-/// Shape `(*const Sexp, *const Sexp, *mut Sexp) -> i64' (=
-/// `:trampoline-binary-ctor'), reachable via `(nl-jit-call-out-2
-/// "nelisp_jit_ref_eq" a b)'.  Writes `Sexp::T' / `Sexp::Nil' into
-/// `out' directly — distinct from `nl_jit_predicate_eq' which returns
-/// the result as a raw 0/1 i64 and so cannot bypass the `nelisp--int-
-/// eq-zero' bootstrap convert dance.  Always succeeds (= returns 0).
-///
-/// Doc 87 §10.2 judgment call: the body is identical to `sexp_eq'
-/// because `sexp_eq' already uses `Rc::ptr_eq' for every shared-heap
-/// variant.  The deleted `bi_ref_eq' had a multi-arm `match' that
-/// fell through to `sexp_eq' for mismatched / non-shared-heap pairs
-/// — the explicit cases were redundant given `sexp_eq''s coverage.
-/// Reusing `sexp_eq' verbatim preserves the public contract bit-for-
-/// bit while collapsing 30 LOC of repeated `match' arms.
+/// `(nelisp--ref-eq A B)' — writes `Sexp::T' / `Sexp::Nil' into `out'.
+/// Body delegates to `sexp_eq' which uses `Rc::ptr_eq' for shared-heap
+/// variants.  Always succeeds (= returns 0).
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_ref_eq(
     a: *const Sexp,
@@ -135,8 +45,7 @@ pub unsafe extern "C" fn nl_jit_ref_eq(
     0
 }
 
-// Doc 86 §86.1.b — `(sxhash X)' (1:1 port of deleted `bi_sxhash',
-// kept in Rust for `DefaultHasher' bit-exactness, Doc 87 §3.2).
+// `(sxhash X)' — kept in Rust for `DefaultHasher' bit-exactness.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_sxhash(arg: *const Sexp, out: *mut Sexp) -> i64 {
     use std::collections::hash_map::DefaultHasher;
@@ -174,13 +83,8 @@ pub unsafe extern "C" fn nl_jit_sxhash(arg: *const Sexp, out: *mut Sexp) -> i64 
     0
 }
 
-/// Doc 86 §86.1.a — `(type-of OBJECT)' trampoline.
-/// Shape `(*const Sexp, *mut Sexp) -> i64', reachable via
-/// `(nl-jit-call-out-1 "nelisp_jit_type_of" x)'.  Always succeeds
-/// (= returns 0); the err arm is unreachable for 1-arg `type-of'.
-/// Records return their `type_tag' symbol verbatim so `cl-defstruct'
-/// types are first-class.  Closure write-through `Cell's are unwrapped
-/// to mirror the captured identity.
+/// `(type-of OBJECT)' — returns type-name symbol.  Records emit their
+/// `type_tag' verbatim (cl-defstruct first-class); `Cell's unwrap.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_type_of(arg: *const Sexp, out: *mut Sexp) -> i64 {
     let mut v: Sexp = (*arg).clone();

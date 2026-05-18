@@ -1,41 +1,21 @@
-//! Doc 51 Phase 5 — single generic FFI primitive `nl-ffi-call'.
+//! Generic FFI primitive `nl-ffi-call' — libffi-backed.  ONE primitive
+//! that calls any function in any cdylib.  Higher-level marshaling
+//! (sqlite-* / nelisp-syscall-* / etc.) stays in pure elisp on top.
 //!
-//! Design intent (= "elisp で実装可能なものは elisp で" + "build-tool は
-//! 内部 crate dep を持たない" Sweep 6 invariant): expose ONE primitive
-//! that can call ANY function in ANY cdylib via libffi.  All higher-level
-//! marshalling (sqlite-* / nelisp-syscall-* / ...) stays in pure Elisp on
-//! top of this generic bridge.
-//!
-//! Wire signature mirrors the public elisp-ffi / nelisp-ffi API so the
-//! existing wrapper repos (`zawatton/nelisp-ffi') can detect this
-//! primitive at runtime and route in-process instead of spawning the
-//! libffi-glue subprocess.
-//!
+//! Wire signature mirrors elisp-ffi / nelisp-ffi:
 //! ```elisp
 //! (nl-ffi-call PATH FUNC SIG ARGS...)
-//!   PATH = string (cdylib basename or absolute path) | nil (= main process)
-//!   FUNC = string (C symbol name)
-//!   SIG  = vector of type keywords; element 0 is the return type, the
-//!          rest are argument types (= elisp-ffi convention).
-//!   ARGS = the remaining call arguments, count + types must match SIG.
-//!
-//!   Type keywords (= elisp-ffi superset):
-//!     :uint8 :uint16 :uint32 :uint64
-//!     :sint8 :sint16 :sint32 :sint64
-//!     :float :double :pointer :void :string
-//!
-//!   Returns: Sexp::Int for integral / pointer returns, Sexp::Float for
-//!   float / double, Sexp::Str for :string (= NUL-terminated C-string at
-//!   the returned pointer), Sexp::Nil for :void.
-//!
-//!   Errors: signal `ffi-error' with a descriptive message on dlopen /
-//!   dlsym / argument-count / argument-type mismatch.
+//!   PATH = cdylib basename / abs path / nil (= main process)
+//!   FUNC = C symbol name
+//!   SIG  = type-keyword vector — element 0 is return type, rest are args
+//!   Type keywords: :uint{8,16,32,64} :sint{8,16,32,64}
+//!                  :float :double :pointer :void :string
+//!   Returns: Sexp::{Int / Float / Str / Nil} per return type.
+//!   Errors: `ffi-error' tag with descriptive message.
 //! ```
 //!
-//! Library-handle caching: each PATH is dlopen'd once and the
-//! `Library` is leaked into a global `OnceLock<Mutex<HashMap>>`.  This
-//! matches Emacs Dynamic Module semantics (modules cannot be unloaded)
-//! and avoids per-call dlopen cost.
+//! Library-handle cache: each PATH dlopen'd once, leaked into global
+//! `OnceLock<Mutex<HashMap>>'.  Matches Emacs Dynamic Module semantics.
 
 use super::error::EvalError;
 use super::sexp::Sexp;
@@ -57,11 +37,7 @@ fn library_cache() -> &'static Mutex<HashMap<String, &'static Library>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Resolve `"libc"` to the platform-specific shared object name so
-/// elisp wrappers can write `(nl-ffi-call "libc" ...)` portably.
-/// Doc 76 Stage A.1 (2026-05-08): added so file-I/O wrappers don't
-/// have to encode platform-specific filenames; covers the common
-/// libc handle.  Other names pass through unchanged.
+/// Resolve `"libc"' to the platform-specific shared object name.
 fn resolve_libname(path: &str) -> &str {
     if path == "libc" {
         #[cfg(target_os = "linux")]
