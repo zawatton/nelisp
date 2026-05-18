@@ -177,10 +177,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-jit-float.el",
         // Doc 110 §110.F — 3-trampoline `jit/math.rs' swap (float / exp / log).
         "nelisp-cc-jit-math.el",
-        // Doc 120 §120.A — 2 of 4 `jit/predicate.rs' trampoline swaps
-        // (`predicate_eq' + `ref_eq'; `sxhash' + `type_of' stay Rust).
+        // Doc 120 §120.A — 4 of 4 `jit/predicate.rs' trampoline swaps
+        // (`predicate_eq' + `ref_eq' + `type_of' + `sxhash').
         "nelisp-cc-jit-predicate-eq.el",
         "nelisp-cc-jit-ref-eq.el",
+        "nelisp-cc-jit-type-of.el",
+        "nelisp-cc-jit-sxhash.el",
         // Doc 120 §120.B — 4 of 11 `jit/box_accessor.rs' record-family
         // trampoline swaps (`record_type' / `record_len' / `record_ref'
         // / `record_set'; `record_alloc' stays Rust + 6 non-record
@@ -201,6 +203,11 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (`cons_car' / `_cdr' / `_setcar' / `_setcdr'; `_make' stays
         // Rust per blocker note in `jit/cons.rs').
         "nelisp-cc-jit-cons.el",
+        // `nl_cons_car_ptr' / `nl_cons_cdr_ptr' — narrow slot-pointer
+        // helpers used by the §120.C cons trampolines via `extern-call'.
+        // Replaced from Rust `jit/cons.rs' (2 function bodies deleted).
+        "nelisp-cc-jit-cons-car-ptr.el",
+        "nelisp-cc-jit-cons-cdr-ptr.el",
         // Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' grammar
         // ops (= 2 entries, shared source file).
         "nelisp-cc-sexp-write-str.el",
@@ -312,6 +319,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Doc 122 §122.D / Doc 120 §120.B — `nl_jit_str_codepoint_at'
         // trampoline swap (Rust body deleted from `jit/box_accessor.rs').
         "nelisp-cc-jit-str-codepoint-at.el",
+        // Phase 47 elisp migration — `nl_jit_make_symbol' trampoline swap
+        // (Rust body deleted from `jit/strings.rs').
+        "nelisp-cc-jit-make-symbol.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

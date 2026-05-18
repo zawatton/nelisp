@@ -1,27 +1,27 @@
 //! String/symbol trampolines reached via `nl-jit-call-out-1' from
 //! `nelisp-jit-strategy.el'.  Surviving Rust bodies: Unicode case +
-//! tokenize, float-format, concat_ints, make_symbol.  Sig `(*const Sexp,
+//! tokenize, float-format, concat_ints.  Sig `(*const Sexp,
 //! *mut Sexp) -> i64'; OK=0 / ERR=1.
+//!
+//! `nl_jit_make_symbol' body migrated to
+//! `lisp/nelisp-cc-jit-make-symbol.el' (Phase 47 elisp .o).
 
 use crate::eval::sexp::Sexp;
+use std::sync::atomic::AtomicI64;
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
 
-/// Fresh uninterned symbol via per-process counter.  Accepts Str/MutStr/Symbol.
+/// Per-process uninterned-symbol counter.  Pointer surfaced to the
+/// Phase 47 elisp body via `nl_make_symbol_counter_ptr'.
+static MAKE_SYMBOL_COUNTER: AtomicI64 = AtomicI64::new(0);
+
+/// Return `*mut i64' to `MAKE_SYMBOL_COUNTER' for use with the
+/// Phase 47 `atomic-fetch-add' grammar op in the elisp body of
+/// `nl_jit_make_symbol'.
 #[no_mangle]
-pub unsafe extern "C" fn nl_jit_make_symbol(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let name: String = match &*arg {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.value.clone(),
-        Sexp::Symbol(s) => s.clone(),
-        _ => return TRAMPOLINE_ERR,
-    };
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    *out = Sexp::Symbol(format!("{}__nelisp-uninterned-{}", name, n));
-    TRAMPOLINE_OK
+pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 {
+    std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64
 }
 
 fn read_text(v: &Sexp) -> Option<String> {

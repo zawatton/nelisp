@@ -527,6 +527,20 @@
      :source-var nelisp-cc-jit-cons-setcdr--source
      :output "nelisp_jit_cons_setcdr.o"
      :requires-arch x86_64)
+    ;; `nl_cons_car_ptr' / `nl_cons_cdr_ptr' — narrow slot-pointer
+    ;; helpers used by `nelisp_jit_cons_car' / `nelisp_jit_cons_cdr'
+    ;; via `extern-call'.  Replaced from Rust `jit/cons.rs'.
+    ;; car_ptr = sexp-payload-ptr (NlConsBox* = &car @ offset 0).
+    ;; cdr_ptr = sexp-payload-ptr + 32 (= &cdr = box + sizeof::<Sexp>()).
+    ;; Linux-x86_64 only — same arch gate as the §120.C sibling trampolines.
+    (nelisp-cc-jit-cons-car-ptr
+     :source-var nelisp-cc-jit-cons-car-ptr--source
+     :output "nelisp_nl_cons_car_ptr.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-cons-cdr-ptr
+     :source-var nelisp-cc-jit-cons-cdr-ptr--source
+     :output "nelisp_nl_cons_cdr_ptr.o"
+     :requires-arch x86_64)
     ;; Doc 122 §122.B — Mutable string builder grammar ops.  Five
     ;; entries, one per op, packaged as standalone Phase 47-compiled
     ;; `defun's so `tests/elisp_cc_mut_str_probe.rs' can drive each
@@ -850,6 +864,18 @@
     (nelisp-cc-jit-str-codepoint-at
      :source-var nelisp-cc-jit-str-codepoint-at--source
      :output "nl_jit_str_codepoint_at.o"
+     :requires-arch x86_64)
+    ;; Doc 122 §122.A + §122.E — `jit/strings.rs' `nl_jit_make_symbol'
+    ;; trampoline swap.  Per-process counter (surfaced by the Rust
+    ;; `nl_make_symbol_counter_ptr' getter) + name-copy loop + 20-byte
+    ;; literal suffix + 16-nibble hex formatter, all in Phase 47 elisp.
+    ;; Seven-entry `(seq DEFUN ...)' manifest: prog2 + copy + hex + suffix
+    ;; + write + inner + public entry.  Rust body deleted;
+    ;; `MAKE_SYMBOL_COUNTER: AtomicI64' static + getter remain in Rust.
+    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' anchors `nl_jit_make_symbol'.
+    (nelisp-cc-jit-make-symbol
+     :source-var nelisp-cc-jit-make-symbol--source
+     :output "nl_jit_make_symbol.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
