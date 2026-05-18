@@ -459,6 +459,26 @@
      :source-var nelisp-cc-jit-elt--source
      :output "nelisp_jit_elt.o"
      :requires-arch x86_64)
+    ;; Doc 120 §120.C — `jit/cons.rs' 4 of 5 trampoline swaps
+    ;; (`cons_car' / `_cdr' / `_setcar' / `_setcdr'; `_make' stays
+    ;; Rust per blocker note in `jit/cons.rs').  Linux-x86_64 only —
+    ;; `extern-call' ABI ships aarch64 in follow-up.
+    (nelisp-cc-jit-cons
+     :source-var nelisp-cc-jit-cons-car--source
+     :output "nelisp_jit_cons_car.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-cons
+     :source-var nelisp-cc-jit-cons-cdr--source
+     :output "nelisp_jit_cons_cdr.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-cons
+     :source-var nelisp-cc-jit-cons-setcar--source
+     :output "nelisp_jit_cons_setcar.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-cons
+     :source-var nelisp-cc-jit-cons-setcdr--source
+     :output "nelisp_jit_cons_setcdr.o"
+     :requires-arch x86_64)
     ;; Doc 122 §122.B — Mutable string builder grammar ops.  Five
     ;; entries, one per op, packaged as standalone Phase 47-compiled
     ;; `defun's so `tests/elisp_cc_mut_str_probe.rs' can drive each

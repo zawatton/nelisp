@@ -182,6 +182,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-jit-aref.el",
         "nelisp-cc-jit-aset.el",
         "nelisp-cc-jit-elt.el",
+        // Doc 120 §120.C — 4 of 5 `jit/cons.rs' trampoline swaps
+        // (`cons_car' / `_cdr' / `_setcar' / `_setcdr'; `_make' stays
+        // Rust per blocker note in `jit/cons.rs').
+        "nelisp-cc-jit-cons.el",
         // Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' grammar
         // ops (= 2 entries, shared source file).
         "nelisp-cc-sexp-write-str.el",

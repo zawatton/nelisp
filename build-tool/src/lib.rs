@@ -695,6 +695,15 @@ pub mod elisp_cc_spike {
             out: *mut Sexp,
         ) -> i64;
         pub fn nelisp_jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
+        // Doc 120 §120.C — `jit/cons.rs' 4 of 5 trampoline swaps.
+        pub fn nelisp_jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_cons_setcar(
+            arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
+        ) -> i64;
+        pub fn nelisp_jit_cons_setcdr(
+            arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
+        ) -> i64;
     }
 
     /// Doc 99 §99.B probe — call the elisp-compiled function and return
@@ -2015,5 +2024,31 @@ pub mod elisp_cc_spike {
     ///   one 32-byte Sexp slot pre-initialised to `Sexp::Nil'.
     pub unsafe fn jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
         nelisp_jit_elt(arg, idx, out)
+    }
+
+    /// Doc 120 §120.C safe wrappers — see `jit/cons.rs' for ABI.
+    ///
+    /// # Safety
+    /// - Pointer args must be non-null and point at initialized `Sexp's.
+    /// - `out' must be writable for one 32-byte slot pre-initialised to
+    ///   `Sexp::Nil'.
+    pub unsafe fn jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64 {
+        nelisp_jit_cons_car(arg, out)
+    }
+    /// See [`jit_cons_car`].
+    pub unsafe fn jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i64 {
+        nelisp_jit_cons_cdr(arg, out)
+    }
+    /// See [`jit_cons_car`].
+    pub unsafe fn jit_cons_setcar(
+        arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
+    ) -> i64 {
+        nelisp_jit_cons_setcar(arg, val, out)
+    }
+    /// See [`jit_cons_car`].
+    pub unsafe fn jit_cons_setcdr(
+        arg: *const Sexp, val: *const Sexp, out: *mut Sexp,
+    ) -> i64 {
+        nelisp_jit_cons_setcdr(arg, val, out)
     }
 }
