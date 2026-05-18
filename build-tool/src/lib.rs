@@ -290,12 +290,7 @@ pub mod elisp_cc_spike {
             scratch_vec_ptr: *const Sexp,
             _pad: i64,
         ) -> i64;
-        // Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
-        // rewrites.  Each `nelisp_frame_*' below is the Phase 47-
-        // compiled pure-elisp implementation in
-        // `lisp/nelisp-cc-frame-*.el' (Doc 115 §115.1-7).  The former
-        // `nl_frame_*' Rust shims (whole Phase 47 shims module under
-        // `eval/') were deleted in Doc 115 §115.8.
+        // Doc 111 §111.E #19-26 Group E / Doc 115 — frame stack ops (pure elisp).
         fn nelisp_frame_stack_depth(frames_ptr: *const Sexp) -> i64;
         fn nelisp_frame_stack_ensure_capacity(
             frames_ptr: *const Sexp,
@@ -331,21 +326,10 @@ pub mod elisp_cc_spike {
             cell_slot: *mut Sexp,
             inner_slot: *mut Sexp,
         ) -> i64;
-        // Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash.  `str_ptr'
-        // must point at Sexp::Str(_) / Sexp::Symbol(_).  Returns i64 =
-        // hash zero-extended (high 32 bits guaranteed 0 by per-multiply
-        // `(logand h #xFFFFFFFF)').
+        // Doc 115 §115.7 — pure-elisp 32-bit FNV-1a (high 32 bits = 0).
         fn nelisp_fnv1a(str_ptr: *const Sexp) -> i64;
-        // Doc 116 §116.A — pure-elisp Reader lexer (one token at
-        // `cursor' from UTF-8 bytes of `*str_ptr').  Returns i64 token
-        // kind: 0=EOF, 1..11=delim/punct (LParen/RParen/[/]/'/`/,/,@/
-        // #'/./#s(), 20=Int, 21=Float, 22=Str, 23=Sym, 24=Char, 25=Radix
-        // (`x'/`o'/`b' marker byte + digits), -1=Error.  Side effects:
-        // `*cursor_out_slot' ← Sexp::Int(next), `*payload_slot' ←
-        // Sexp::Str(body) when kind >= 20, `*scratch_mutstr_slot' is
-        // mutated.  Caller must pre-init both slots to Nil and allocate
-        // the scratch MutStr via `mut_str_make_empty' before each call.
-        // See `lisp/nelisp-cc-reader-lexer.el' for byte-level layout.
+        // Doc 116 §116.A — Reader lexer (returns kind 0=EOF/1..11=delim/
+        // 20=Int/21=Float/22=Str/23=Sym/24=Char/25=Radix/-1=Error).
         fn nelisp_reader_lex_one(
             str_ptr: *const Sexp,
             cursor: i64,
@@ -353,16 +337,7 @@ pub mod elisp_cc_spike {
             cursor_out_slot: *mut Sexp,
             scratch_mutstr_slot: *mut Sexp,
         ) -> i64;
-        // Doc 116 §116.B — pure-elisp Reader parser.  Consumes the
-        // §116.A token stream (via internal `extern-call' to
-        // `nelisp_reader_lex_one') and writes ONE parsed top-level Sexp
-        // into `*result_slot'.  Returns i64 status (1=success, else
-        // parse error).  Args: cursor_slot = `*mut Sexp::Int' (lexer
-        // writes next cursor back); slot_pool = `*const Sexp::Vector'
-        // with slot 0=scratch MutStr, slot 1=payload, slot 2=const-Nil,
-        // slots 3+4d..6+4d=per-depth working slots; depth=initial
-        // recursion depth (=0 top-level).  See
-        // `lisp/nelisp-cc-reader-parser.el' for slot-pool layout.
+        // Doc 116 §116.B — Reader parser (consumes §116.A tokens; rc 1=OK / else error).
         fn nelisp_reader_parse_one(
             str_ptr: *const Sexp,
             cursor_slot: *mut Sexp,
@@ -370,10 +345,7 @@ pub mod elisp_cc_spike {
             slot_pool: *const Sexp,
             depth: i64,
         ) -> i64;
-        // Doc 100 §100.D Stage 1 — 12 `nl_jit_arith_*' trampoline
-        // swaps.  Wired to `unified_fn_ptr' in `arith_link'.  Decls
-        // here pin symbols into the test binary link line (= prevents
-        // `--gc-sections' DCE of the rlib's own extern block).
+        // Doc 100 §100.D — 12 nl_jit_arith_* trampoline swaps.
         pub fn nelisp_jit_add2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_sub2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_mul2(a: i64, b: i64) -> i64;
@@ -386,44 +358,27 @@ pub mod elisp_cc_spike {
         pub fn nelisp_jit_logand2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_logxor2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_ash(n: i64, c: i64) -> i64;
-        // Doc 110 §110.E.2.a — `jit/float.rs' 4 arithmetic trampoline
-        // swaps (add / sub / mul / div).  Wired through `float_link'.
-        // Decls pin symbols against `--gc-sections' (see arith).
+        // Doc 110 §110 — float arith/cmp/eq-eps + math (= 12 trampolines).
         pub fn nl_jit_float_add(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_sub(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_mul(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_div(a: f64, b: f64) -> f64;
-        // Doc 110 §110.C.2.a — 4 ordered comparison trampoline swaps.
-        // i64 return matches the `extern "C" fn(f64, f64) -> i64'
-        // float.rs cmp shape.  NaN semantics: 0 (= matches Rust).
         pub fn nl_jit_float_lt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_gt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_le(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_ge(a: f64, b: f64) -> i64;
-        // Doc 110 §110.C.2.b — EQ-EPS trampoline.  Returns 1 iff
-        // `(a - b).abs() < 1e-15' AND both inputs are ordered (=
-        // not NaN), matching the Rust float.rs body bit-for-bit.
         pub fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64;
-        // Doc 110 §110.F — 3 `jit/math.rs' trampoline swaps.
-        // `float' = identity, `exp' / `log' = libm extern call
-        // through the new `(f64-call)' grammar form.  Shape is
-        // `extern "C" fn(f64) -> f64' (= xmm0/d0 in, xmm0/d0 out).
         pub fn nl_jit_float_float(x: f64) -> f64;
         pub fn nl_jit_float_exp(x: f64) -> f64;
         pub fn nl_jit_float_log(x: f64) -> f64;
-        // Doc 120 §120.A — `jit/predicate.rs' 2 of 4 trampoline swaps
-        // (predicate_eq + ref_eq; sxhash + type_of stay Rust).  Wired
-        // through `predicate_link'.  Decls pin symbols (see arith).
+        // Doc 120 §120.A — predicate_eq + ref_eq (sxhash/type_of stay Rust).
         pub fn nelisp_jit_predicate_eq(a: *const Sexp, b: *const Sexp) -> i64;
         pub fn nelisp_jit_ref_eq(
             a: *const Sexp,
             b: *const Sexp,
             out: *mut Sexp,
         ) -> i64;
-        // Doc 120 §120.B — `jit/box_accessor.rs' 4 of 11 record-family
-        // trampoline swaps (record_type / _len / _ref / _set; _alloc
-        // stays Rust + 6 non-record entries SKIP).  Wired through
-        // `box_accessor_link'.  Decls pin symbols (see arith).
+        // Doc 120 §120.B — record_{type,len,ref,set} (alloc stays Rust).
         pub fn nelisp_jit_record_type(arg: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_record_len(arg: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_record_ref(
@@ -437,10 +392,7 @@ pub mod elisp_cc_spike {
             val: *const Sexp,
             out: *mut Sexp,
         ) -> i64;
-        // Doc 120 §120.D — `jit/access.rs' 4 of 4 trampoline swaps
-        // (length / aref / aset / elt).  Wired to `unified_fn_ptr' via
-        // `access_link' in `jit/bridge.rs'.  Str / BoolVector sub-arms
-        // reach narrow externs in `jit/access.rs' via `extern-call'.
+        // Doc 120 §120.D — length / aref / aset / elt trampoline swaps.
         pub fn nelisp_jit_length(arg: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_aset(
