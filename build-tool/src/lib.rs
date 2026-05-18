@@ -725,7 +725,7 @@ pub mod elisp_cc_spike {
     /// # Safety
     /// Same as [`sexp_write_float_via_grammar`].
     pub unsafe fn sexp_write_float_extern(slot: *mut Sexp, val: f64) -> *mut Sexp {
-        crate::eval::nlstr::nl_sexp_write_float(slot, val)
+        crate::eval::nlstr_externs::nl_sexp_write_float(slot, val)
     }
 
     /// Doc 122 §122.G — `nl_str_to_float(bytes, len, slot) → i64'.
@@ -741,7 +741,7 @@ pub mod elisp_cc_spike {
         len: i64,
         slot: *mut Sexp,
     ) -> i64 {
-        crate::eval::nlstr::nl_str_to_float(bytes_ptr, len, slot)
+        crate::eval::nlstr_externs::nl_str_to_float(bytes_ptr, len, slot)
     }
 
     // Doc 122 §122.B — MutStr Phase 47 grammar ops (make-empty / push / len / finalize).
