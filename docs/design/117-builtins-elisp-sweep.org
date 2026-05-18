@@ -255,6 +255,196 @@ proceeding.  Tier C waits for Doc 119 (env.rs elisp化).
 Initial commits: 2.  Estimated effort: 1 Agent dispatch per
 handler, parallelizable.
 
+* §117.D.gaps — sweep candidates analyzed + deferred (2026-05-18)
+
+Following the §117.B / §117.B+ quit-flag + write-stderr-line +
+write-stdout-bytes + read-stdin-bytes sweeps (commits 5162c7b7,
+a849cec2, 0ce2446b), the next batch of bool-reader handlers was
+audited but *deferred* on the grounds that the per-handler
+Rust-LOC math is net-positive (= a sweep ADDS Rust LOC instead
+of removing it).  This subsection records the analysis so a
+future sweep does not re-audit them.
+
+** §117.D.gaps.1 — Bool-reader Rust-LOC math (= why thin readers are net-positive)
+
+A typical bool-reader handler in =builtins.rs= is ~11 lines:
+
+#+begin_src rust
+fn bi_termios_saved_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("_termios-saved-p", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        return Ok(if tty_raw::termios_saved_p() { Sexp::T } else { Sexp::Nil });
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+#+end_src
+
+To sweep to elisp dispatch (= the §117.B quit-flag pattern) one
+needs *all* of:
+
+- =nl_*_ptr() -> *const u8= extern in the owning module (~3-5 lines).
+- =extern "C"= decl inside the =extern "C" {}= block in =lib.rs=
+  (1 line).
+- safe wrapper =pub unsafe fn= inside =elisp_cc_spike= (~5 lines
+  with mandatory doc).
+- new entry in =scripts/compile-elisp-objects.el= manifest (~3 lines).
+- new entry in =build-tool/build.rs= rerun-if-changed list (~1
+  line, counted on the elisp side but still review surface).
+- the handler body itself shrinks to ~8 lines (still has
+  =require_arity= + =#[cfg(unix)]= gate + dispatch + 0/non-zero
+  → T/Nil map).
+
+Net Rust LOC per swept bool-reader = ~+5 to +10.  For the entire
+batch (= 5 readers) that's +25 to +50 Rust LOC for zero
+algorithmic gain (= a single =load(SeqCst)= moves into elisp).
+
+The §117.B quit-flag sweep paid this cost (+152 net per commit
+=a849cec2= message) because:
+
+  1. =QUIT_FLAG= read/write happens from elisp-side polling (= the
+     quit-flag-pending-p path is now end-to-end elisp from the
+     eval loop's perspective once Doc 119 lands), so the Rust
+     plumbing dies when the Rust eval loop dies.
+  2. The set / clear ops are *write* paths that need to live in
+     elisp anyway for the Phase 47 cutover.
+
+Neither condition holds for the bool readers below — they are
+consumed by either Rust-side test probes or by other Rust shims,
+not by an elisp polling loop that's already migrating.
+
+** §117.D.gaps.2 — Deferred handlers + their gap classification
+
+*** Class 1: AtomicBool readers, plumbing > body savings
+
+The following handlers each read a single =AtomicBool::load=
+through a thin =*_p()= helper.  All ship-able with §122.E
+=ptr-read-u8= (already shipped via =nelisp-cc-atomic-raw-mem.el=),
+but the per-handler Rust-LOC math (§117.D.gaps.1) says +5..+10
+Rust LOC per sweep.
+
+| Handler                              | Storage                                  | Body LOC | Sweep verdict |
+|--------------------------------------+------------------------------------------+----------+---------------|
+| =bi_sigint_handler_installed_p=      | =quit::SIGINT_INSTALLED: AtomicBool=     | 3        | DEFER         |
+| =bi_termios_saved_p=                 | =tty_raw::TERMIOS_SAVED: AtomicBool=     | 11       | DEFER         |
+
+Re-evaluate when *both* sides of the call (= the eval-loop Rust
+caller AND the body) have migrated to elisp, at which point the
+ptr accessor + extern decl can also be deleted (= net-negative
+Rust LOC).
+
+*** Class 2: Once::is_completed readers, no atomic to expose
+
+The following handlers read =std::sync::Once::is_completed()=.
+The =Once= struct has no stable in-memory representation that
+Phase 47 elisp can poke via =ptr-read-u8= — it's an opaque
+synchronization primitive.  Sweeping requires either:
+
+  (a) Adding a parallel =AtomicBool COMPLETED= flag set after
+      =call_once=, then dispatching the reader through it (cost:
+      ~3 Rust LOC for the parallel atomic + the sweep plumbing
+      cost above = +8..+13 per handler).
+  (b) Replacing =Once::call_once= with a hand-rolled CAS-guarded
+      init using =atomic-compare-exchange= grammar so the whole
+      install path moves to elisp.  Blocked on Doc 122.I/J
+      (CString) + Doc 122.K (sigaction-struct marshalling) for
+      the install bodies themselves.
+
+| Handler                              | Storage                                  | Body LOC | Sweep verdict |
+|--------------------------------------+------------------------------------------+----------+---------------|
+| =bi_raw_mode_hooks_installed_p=      | =tty_raw::HOOKS_INSTALLED: Once=         | 11       | DEFER         |
+| =bi_winsize_handler_installed_p=     | =tty_winsize::HANDLER_INSTALLED: Once=   | 11       | DEFER         |
+| =bi_jobctrl_handlers_installed_p=    | =tty_jobctrl::HANDLER_INSTALLED: Once=   | 11       | DEFER         |
+
+Re-evaluate when path (b) becomes feasible (= post-Doc-122.I/J/K);
+at that point the entire install path moves to elisp and the
+Once + parallel-bool can be deleted together.
+
+*** Class 3: install_* handlers — block on Doc 122.I/J/K
+
+The install handlers all share the same shape: a =Once= gate
+around an =unsafe= block that calls =libc::sigaction= (or
+=libc::atexit= + =libc::sigaction= for =tty_raw=).  =sigaction=
+needs the §122.K =sigaction= struct + signal-number constants;
+=atexit= takes a C function pointer (= already expressible via
+=extern-call=).  All gated on Doc 122.I (CString) + Doc 122.J
+(struct-by-value extern-call).
+
+| Handler                              | Blocker                              | Sweep verdict |
+|--------------------------------------+--------------------------------------+---------------|
+| =bi_install_sigint_handler=          | Doc 122.J struct + Doc 122.K signum  | DEFER         |
+| =bi_install_winsize_handler=         | Doc 122.J struct + Doc 122.K signum  | DEFER         |
+| =bi_install_jobctrl_handlers=        | Doc 122.J struct + Doc 122.K signum  | DEFER         |
+| =bi_terminal_raw_mode_enter=         | =libc::tcgetattr= /=tcsetattr= struct| DEFER         |
+| =bi_terminal_raw_mode_leave=         | =libc::tcsetattr= struct             | DEFER         |
+
+*** Class 4: AtomicBool swap claimants — same math as Class 1
+
+The swap-and-claim pattern (= =AtomicBool::swap(false, SeqCst)=)
+is expressible via §122.E =atomic-compare-exchange= (CAS 1→0,
+read result).  Same +5..+10 Rust LOC per sweep, same DEFER
+verdict.
+
+| Handler                                 | Storage                                | Sweep verdict |
+|-----------------------------------------+----------------------------------------+---------------|
+| =bi_terminal_take_winsize_changed=      | =tty_winsize::WINSIZE_CHANGED=         | DEFER         |
+| =bi_terminal_take_sigcont=              | =tty_jobctrl::SIGCONT_ARRIVED=         | DEFER         |
+
+*** Class 5: ioctl + other syscall wrappers — block on Doc 122.J
+
+| Handler                              | Blocker                              | Sweep verdict |
+|--------------------------------------+--------------------------------------+---------------|
+| =bi_terminal_current_winsize=        | =libc::ioctl(TIOCGWINSZ)= struct out | DEFER         |
+| =bi_read_stdin_byte_available=       | =libc::poll(pollfd)= struct          | DEFER         |
+| =bi_nl_write_file=                   | Doc 122.I CString path               | DEFER         |
+| =bi_nl_make_directory=               | Doc 122.I CString path               | DEFER         |
+| =bi_syscall_canonicalize=            | Doc 122.I CString path + Env access  | DEFER         |
+| =bi_syscall_read_file=               | Doc 122.I CString + Env + alloc      | DEFER         |
+| =bi_syscall_stat=                    | Doc 122.I CString + struct stat out  | DEFER         |
+| =bi_syscall_readdir=                 | Doc 122.I CString + opendir + alloc  | DEFER         |
+| =bi_syscall=                         | Generic syscall dispatch — large     | DEFER         |
+
+** §117.D.gaps.3 — Required Doc 122 grammar extensions
+
+Summary of grammar ops missing on main =42cb1004= that gate the
+remaining Tier B sweep:
+
+- *Doc 122.I — CString grammar*: =(cstr-from-sexp STR-PTR)= →
+  =*const c_char= NUL-terminated.  Owning =CString= management
+  (alloc + drop) lives in the Rust shim.  Unblocks all path-
+  taking syscall handlers.
+- *Doc 122.J — Struct-by-value extern-call*: =(extern-call FN
+  ARGS… STRUCT-ARG)= supporting =sigaction= / =termios= /
+  =winsize= / =pollfd= / =stat= layouts.  Likely needs a
+  =struct-make TAG SIZE ALIGN= constructor + =struct-field-set=
+  / =struct-field-get= ops.  Unblocks the install / raw-mode /
+  ioctl families.
+- *Doc 122.K — libc constants*: signum (=SIGINT=, =SIGWINCH=,
+  =SIGTSTP=, =SIGCONT=, =SIGTERM=, =SIGHUP=, =SIGQUIT=) +
+  =SA_RESTART= + =TIOCGWINSZ= + =TCSANOW= + =VMIN= + =VTIME= +
+  =POLLIN= + =POLLHUP=.  Could land as a generated
+  =nelisp-cc-libc-constants.el= from a Rust build-script (=
+  =bindgen= or a hand-rolled probe binary).  Unblocks any
+  handler that names a libc constant.
+- *Doc 122.X (proposed) — sexp-write-str-lossy*: =from_utf8_lossy=
+  equivalent for reading a raw =*const u8= +len buffer into a
+  =Sexp::Str= with U+FFFD replacement.  Unblocks the
+  =bi_syscall_read_file= / =bi_syscall_readdir= alloc-then-wrap
+  shape entirely.
+
+Until at least 122.I + 122.J ship, the §117.B sweep is parked at
+the four handlers in commits 5162c7b7 / a849cec2 / 0ce2446b
+(quit-flag x3, write-stdout-bytes, write-stderr-line,
+read-stdin-bytes).  The bool readers in classes 1, 2, 4 are
+*technically* ship-able with today's grammar but are not worth
+the Rust-LOC plumbing cost in isolation; they should be batched
+with the corresponding =install_*= sweep so the ptr accessor +
+extern + wrapper land together and amortize across multiple
+swept handlers.
+
 * §6 References
 
 - =/dev/nelisp/CLAUDE.md= — repo existence purpose.
@@ -266,5 +456,7 @@ handler, parallelizable.
   `bi_recordp_cc' precedent.
 - =build-tool/src/eval/builtins.rs= @ main =237582f6= — the 49
   handlers' source.
+- =build-tool/src/eval/builtins.rs= @ main =42cb1004= — post-
+  §117.B+ state (= 3 quit-flag + 3 I/O handlers swept).
 - Memory: =project_nelisp_pure_elisp_roadmap= — overall plan
   Doc 114-128 + final endpoint.
