@@ -1,12 +1,6 @@
-//! Symbol table + lexical frame stack — type definitions and the
-//! globals-mirror / lexframe-stack helpers that walk the elisp-side
-//! `nelisp-env' + `nelisp-lexframe-stack' records (= `Env::globals_record'
-//! / `Env::frames_record').  See `lisp/nelisp-env.el' +
-//! `lisp/nelisp-lexframe.el' for the record layout.
-//!
-//! Doc 131 (2026-05-18) — merged the former `eval/env.rs' content here
-//! (struct Env, type aliases, public methods on Env).  Single-file
-//! consolidation cuts -342 LOC out of `src/eval/'.
+//! Env struct + type defs + globals-mirror / lexframe-stack helpers walking
+//! the elisp `nelisp-env' / `nelisp-lexframe-stack' records.  See
+//! `lisp/nelisp-env.el' + `lisp/nelisp-lexframe.el' for layout.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -14,57 +8,32 @@ use std::rc::Rc;
 use super::error::EvalError;
 use super::sexp::Sexp;
 
-// ===========================================================================
-// Public types (formerly `eval/env.rs').  Doc 44 §3.3 + §4 — two-cell
-// symbol model; lambdas are `(closure CAPTURED-ENV ARGS BODY...)'.
-// ===========================================================================
-
-/// Host-crate-registered builtin closure.  Doc 102 Phase 7 + Doc 130 —
-/// extension point for `tests/eval_integration.rs'.  Production binary
-/// never inserts (`nelisp--env-globals-op' is a `builtins::dispatch'
-/// match arm as of Phase 6).
+/// Test-fixture builtin closure (`tests/eval_integration.rs').  Production
+/// never inserts; `extern_builtins' HashMap stays zero-state.
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
-/// Symbol's two cells (Elisp value/function dichotomy) + plist + constant flag.
+/// Symbol's two cells + plist + constant flag.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SymbolEntry {
     pub value: Option<Sexp>,
     pub function: Option<Sexp>,
     pub plist: Option<Sexp>,
-    /// `setq' / `set' on a constant signals `SettingConstant'.
     pub constant: bool,
 }
 
-/// Write-through cell — captured-closure `setq' mutates the originating
-/// let-binding's slot (= layout-pinned NlCellRef).
+/// Write-through cell — captured-closure `setq' mutates the binding slot.
 pub type FrameCell = crate::eval::nlcell::NlCellRef;
 
-/// Runtime environment.  Doc 102 Phase 2.b Step E removed the legacy
-/// `globals: HashMap` (canonical is the elisp `nelisp-env' record at
-/// `globals_record').  Doc 104 Stage 3.e removed the legacy
-/// `frames: Vec<HashMap>` (canonical is the elisp `nelisp-lexframe-stack'
-/// record at `frames_record').
+/// Runtime environment.  `globals_record` / `frames_record` are the
+/// canonical elisp records (Doc 102 Phase 2.b + Doc 104 Stage 3.e).
 pub struct Env {
     pub max_recursion: u32,
     pub current_recursion: u32,
-    /// Doc 102 Phase 7 + Doc 130 — extension point for the integration
-    /// test binary.  Empty HashMap in production = no allocation cost.
     pub extern_builtins: HashMap<String, ExternBuiltin>,
-    /// Stage 7.4.c — route apply_combiner's plain-fn / lambda-head paths
-    /// through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
     pub use_elisp_apply: bool,
     pub delegation_depth: u32,
-    /// Elisp `nelisp-env' record (see `lisp/nelisp-env.el').  `Sexp::Nil'
-    /// until `install_stage0' constructs it.  Step E elevated this from
-    /// "mirror" to "canonical" — all globals reads/writes flow through
-    /// the `mirror_*' helpers.
     pub globals_record: Sexp,
-    /// Cached `nelisp--unbound-marker' sentinel (Doc 102 Phase 8 Session 5).
-    /// Mirror's unbound test is `cell == self.unbound_marker' (stable
-    /// cached `Sexp::Symbol').
     pub unbound_marker: Sexp,
-    /// Elisp `nelisp-lexframe-stack' record (Doc 104 Stage 3.b).
-    /// `Sexp::Nil' until `install_stage0' constructs an empty stack.
     pub frames_record: Sexp,
 }
 
@@ -314,18 +283,10 @@ impl Env {
     }
 }
 
-// ===========================================================================
-// Globals mirror + lexical frame stack helpers.
-// ===========================================================================
-
-// SAFETY (applies to every `unsafe' block in this file unless noted):
-// pointers passed to `elisp_cc_spike::*' helpers refer to stack-local
-// `Sexp' values or `Env'-owned fields (`globals_record',
-// `frames_record', `unbound_marker') that outlive the call.  The
-// helpers perform refcount-aware clones into result slots; mutating
-// helpers (`*_or_insert', `mirror_clear_*') handle both hit (=
-// in-place slot-set) and miss (= alloc-entry + bucket-prepend, Doc
-// 119 §119.A auto-vivify) paths internally.
+// SAFETY (file-wide): pointers passed to `elisp_cc_spike::*' refer to
+// stack-local `Sexp' values or `Env'-owned fields that outlive the call.
+// `*_or_insert' helpers handle both hit (in-place slot-set) and miss
+// (auto-vivify) paths internally.
 
 impl Env {
     // ---- Globals mirror helpers ----
