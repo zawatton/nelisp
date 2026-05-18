@@ -17,7 +17,6 @@ pub mod nlconsbox;
 pub mod nlrc;
 pub mod nlrecord;
 pub mod nlstr;
-pub mod nlstr_externs;
 pub mod nlvector;
 pub mod quit;
 pub mod raw_mem;
