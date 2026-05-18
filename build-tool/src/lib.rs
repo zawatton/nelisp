@@ -1,31 +1,5 @@
-//! NeLisp build-time tool — Doc 47 §3.1 phase 6 carve-out.
-//!
-//! Hosts the Doc 44 minimal interpreter (reader + evaluator + Elisp
-//! self-host bridge) so the `nelisp-runtime` ship crate stays
-//! image-only.  Per Doc 47 §1.1 the long-term split is:
-//!
-//! ```text
-//! nelisp-runtime    = seed loader + image boot + syscall thin-wrappers
-//!                     (target ≤ 4,000 LOC, image-only)
-//! nelisp-build-tool = reader + minimal evaluator + dumper
-//!                     (Doc 44 minimal interpreter lives here)
-//! ```
-//!
-//! Stage 5a created the workspace + empty crate.  Stage 5b moved
-//! `bin/nelisp.rs` here.  Stage 5c (this commit) `git mv`-ed
-//! `eval/`, `reader/`, `bridge/` across from `nelisp-runtime/src/`
-//! and re-wired the `anvil-runtime` consumer to depend on this
-//! crate instead.  Future Stage 6+ will add the dumper that bakes a
-//! heap evaluated by these modules into a `nelisp.image` v1 file.
-//!
-//! Doc 114: this crate is **x86_64-linux only**.  Phase 47 emit
-//! (`scripts/compile-elisp-objects.el`) produces ELF64 `.o` files
-//! linked directly into the crate; the dispatch sites in `eval/` and
-//! `jit/` assume those symbols are present.  Cross-arch hosts must
-//! build via Docker / Linux VM.  Multi-arch returns later as
-//! additional Phase 47 emit branches (e.g.,
-//! `lisp/nelisp-asm-aarch64.el`), never as a re-introduced Rust
-//! fallback — see `docs/design/114-x86_64-linux-pivot.org`.
+//! NeLisp build-time tool — reader + minimal evaluator + JIT bridge.
+//! x86_64-linux only (Phase 47 ELF emit produces this crate's `.o' deps).
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 compile_error!(
@@ -34,30 +8,15 @@ compile_error!(
 );
 
 pub mod eval;
-// Phase 5 Stage 5.0 / Doc 77b Stage b.4 — Cranelift JIT.  Lowered
-// primitives flow through elisp wrappers in
-// `lisp/nelisp-jit-strategy.el' calling JIT entries via `nl-jit-call-*'.
-// Phase 7.1.7.a narrowed visibility to `pub(crate)' (only crate-internal
-// `bi_*' re-exports for `eval::builtins::dispatch' are needed).
 pub(crate) mod jit;
-// Reader (Doc 73 §2.4 / Doc 98 §98.3 / Doc 126.A §126.A).  Doc 126.B
-// (2026-05-18) promoted the reader to the canonical boot path:
-// `Env::new_global' iterates STDLIB `.el' sources with `reader::read_all'
-// + `eval' per top-level form (= the NELIMG `.image' frozen-heap fast
-// path was retired in Doc 126.B-E, and the encoder/decoder + baker bin
-// were removed in the 099355ea cleanup commit).
 pub mod reader;
 
-// Doc 99 §99.B spike — Rust home for symbols compiled from elisp via
-// the Phase 47 chain (`build.rs' → `scripts/compile-elisp-objects.el'
-// → `target/.../elisp-objects/*.o' → static link).  Without these
-// references cargo would DCE the `.o' symbols out of the binary.
+/// Rust home for elisp `.o' symbols (Phase 47 emit) — prevents DCE.
 pub mod elisp_cc_spike {
     use crate::eval::sexp::Sexp;
 
-    /// Doc 127 §127.A — collapse the trivial-dispatch safe wrapper
-    /// pattern to a 1-liner: `cc_wrap!(FOO: nelisp_FOO, (args) -> ret)'
-    /// expands to `pub unsafe fn FOO(args) -> ret { nelisp_FOO(args) }'.
+    /// `cc_wrap!(FOO: nelisp_FOO, (args) -> ret)` →
+    /// `pub unsafe fn FOO(args) -> ret { nelisp_FOO(args) }`.
     macro_rules! cc_wrap {
         ($name:ident : $extern:ident, ($($arg:ident: $aty:ty),* $(,)?) -> $ret:ty) => {
             #[allow(clippy::missing_safety_doc)]
@@ -65,11 +24,9 @@ pub mod elisp_cc_spike {
         };
     }
 
-    // Sexp is `#[repr(C, u8)]' (see `eval/sexp.rs:57' + the ABI assertions
-    // in `eval/sexp_abi_assert.rs') so passing it by raw pointer across
-    // extern "C" is sound — elisp `.o' only touches offset 0 (tag) and
-    // 8 (Int payload).  `improper_ctypes' allow is needed because variants
-    // embed `String' (= not repr(C)) even though we never pass by value.
+    // Sexp is #[repr(C, u8)] (sexp_abi_assert.rs); elisp .o touches
+    // only offset 0 (tag) + 8 (payload).  improper_ctypes allow:
+    // variants embed String but we never pass by value.
     #[allow(improper_ctypes)]
     extern "C" {
         fn nelisp_spike_noop() -> i64;
@@ -78,98 +35,52 @@ pub mod elisp_cc_spike {
         // (= the fixnum-safe range for i64); the elisp body itself
         // doesn't range-check, so callers in safe Rust must clamp.
         fn nelisp_fact_i64(n: i64) -> i64;
-        // Doc 100 §100.C — `(truncate INT)' Int arm.  Reads the i64
-        // payload at `*arg0' (must be `Sexp::Int' — caller's
-        // precondition, not checked here) and writes a fresh
-        // `Sexp::Int' with the same payload into `*result_slot'.
-        // Returns `result_slot' for caller ergonomics.  Defined in
-        // `lisp/nelisp-cc-truncate-int.el'.
+        // Doc 100 §100.C — `(truncate INT)' Int arm.
         fn nelisp_truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
-        // Doc 101 §101.B — `(length CONS)' proper-list walk compiled
-        // from `lisp/nelisp-cc-length-cons.el'.  `arg0' must point at
-        // `Sexp::Cons(_)` or `Sexp::Nil`; result is written into
-        // `*result_slot` as `Sexp::Int(n)`.
+        // Doc 101 §101.B — `(length CONS)' proper-list walk.
         fn nelisp_length_cons(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
-        // Doc 101 §101.C — `(eq SYMBOL SYMBOL)' through
-        // `lisp/nelisp-cc-eq-symbol.el'.  Returns `result_slot'
-        // after writing the tag byte for `nil' or `t'.
+        // Doc 101 §101.C — `(eq SYMBOL SYMBOL)'.
         fn nelisp_eq_symbol(
             arg0: *const Sexp,
             arg1: *const Sexp,
             result_slot: *mut Sexp,
         ) -> *mut Sexp;
-        // Doc 101 §101.D — `(cons A B)' constructor compiled from
-        // `lisp/nelisp-cc-cons-construct.el'.  Writes `Sexp::Cons(_)'
-        // into `*result_slot' and returns that same pointer.
+        // Doc 101 §101.D — `(cons A B)' constructor.
         fn nelisp_cons_construct(
             arg0: *const Sexp,
             arg1: *const Sexp,
             result_slot: *mut Sexp,
         ) -> *mut Sexp;
-        // Doc 117 §117.A.2 — `(string-bytes STR)' byte-length helper.
-        // `arg0' points at Sexp::Str / Sexp::Symbol (Rust shim unwraps
-        // Sexp::MutStr first).  Writes Sexp::Int(byte_count) into
-        // `*result_slot' and returns it.
+        // Doc 117 §117.A.2 — `(string-bytes STR)' byte-length.
         fn nelisp_bi_string_bytes(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
-        // Doc 111 §111.B — `(recordp X)' predicate compiled from
-        // `lisp/nelisp-cc-recordp.el'.  Writes Sexp::T / Sexp::Nil
-        // into `*result_slot' and returns that same pointer.
+        // Doc 111 §111.B — `(recordp X)' predicate.
         fn nelisp_recordp(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
-        // Doc 111 §111.C — `(aref VECTOR IDX)' Vector arm compiled
-        // from `lisp/nelisp-cc-aref-vector.el'.  Rust pre-validates
-        // that `arg0' is a Vector and `arg1' is an in-range Int.
+        // Doc 111 §111.C — `(aref VECTOR IDX)' Vector arm.
         fn nelisp_aref_vector(
             arg0: *const Sexp,
             arg1: *const Sexp,
             result_slot: *mut Sexp,
         ) -> *mut Sexp;
         // Doc 117 §117.A.1 — `(make-vector N INIT)' alloc + fill.
-        // Rust pre-validates `n_ptr' → Sexp::Int N>=0.  Elisp allocates
-        // Sexp::Vector(N) via §115.1 `vector-make' and fills slots
-        // [0,N) with refcount-aware clones of `*init_ptr' via §111.E
-        // `vector-slot-set'.  Returns i64=1 (and-chain terminator);
-        // caller reads fresh vector from `*result_slot'.
         fn nelisp_bi_make_vector(
             n_ptr: *const Sexp,
             init_ptr: *const Sexp,
             result_slot: *mut Sexp,
         ) -> i64;
-        // Doc 117 §117.B — quit-flag atomic ops.  `flag_ptr' → QUIT_FLAG
-        // static (`eval/quit.rs', `nl_quit_flag_ptr').  set/clear: CAS
-        // (§122.E `atomic-compare-exchange'); rc = 1 transition / 0
-        // no-op (both valid).  pending-p: `ptr-read-u64' → 0 clear /
-        // non-zero pending.
+        // Doc 117 §117.B — quit-flag atomic ops (CAS via §122.E).
         fn nelisp_bi_set_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_clear_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_quit_flag_pending_p(flag_ptr: *const i64) -> i64;
-        // Doc 117 §117.B / Doc 122 §122.H — I/O syscall sweep.  Each:
-        // dispatch through `str-bytes-ptr' (§122.H) + `str-len' (§101.C)
-        // and emit a single libc `write(2,...)' / `write(1,...)' /
-        // `read(0,...)' syscall.  Returns libc rc (= bytes / -1).
-        //   write_stderr_line(str)              — fd=2, with newline.
-        //   write_stdout_bytes(str)             — fd=1, no newline.
-        //   read_stdin_bytes(buf, limit)        — fd=0, Rust-owned buf.
-        // Rust shim wraps read bytes into Sexp::Str via from_utf8_lossy.
+        // Doc 117 §117.B / Doc 122 §122.H — I/O syscall sweep.
         fn nelisp_bi_write_stderr_line(str_ptr: *const Sexp) -> i64;
         fn nelisp_bi_write_stdout_bytes(str_ptr: *const Sexp) -> i64;
         fn nelisp_bi_read_stdin_bytes(buf_ptr: *mut u8, limit: i64) -> i64;
-        // Doc 111 §111.D — Cell ops (= `lisp/nelisp-cc-cell-ops.el').
-        //   cell_value(arg0, slot)     — 32-byte copy of NlCell.value
-        //                                into *slot (no refcount work).
-        //   cell_set_value(arg0, val)  — refcount-aware overwrite via
-        //                                `nl_cell_set_value' extern.
-        //   cell_make(val, slot)       — fresh NlCell alloc + write
-        //                                Sexp::Cell(box) into *slot.
-        //   cell_null_p(arg0)          — i64 1 iff NlCell.value is Nil.
+        // Doc 111 §111.D — Cell ops (nelisp-cc-cell-ops.el).
         fn nelisp_cell_value(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_cell_set_value(arg0: *const Sexp, val_ptr: *const Sexp);
         fn nelisp_cell_make(val_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_cell_null_p(arg0: *const Sexp) -> i64;
-        // Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' Phase
-        // 47 grammar ops.  Args (slot, bytes_ptr, len) → rdi/rsi/rdx,
-        // calls `nl_alloc_str' / `nl_alloc_symbol' (= `eval/nlstr.rs')
-        // which writes the full 40-byte Sexp::Str / Sexp::Symbol inline
-        // (= no NlXXX pointer indirection).  Returns slot pointer.
+        // Doc 122 §122.A — sexp-write-str/symbol grammar ops.
         fn nelisp_sexp_write_str(
             slot: *mut Sexp,
             bytes_ptr: *const u8,
@@ -180,21 +91,12 @@ pub mod elisp_cc_spike {
             bytes_ptr: *const u8,
             len: i64,
         ) -> *mut Sexp;
-        // Doc 122 §122.G — `sexp-write-float' grammar op.  Both params
-        // f64-class (= Phase 47 MVP uniform-class).  Slot ptr bit-cast
-        // through xmm0; elisp unspills back to rdi before calling
-        // `nl_sexp_write_float' (`eval/nlstr.rs') which writes inline
-        // `Sexp::Float(val)' (= tag 3 + f64 at offset 8, no heap box).
+        // Doc 122 §122.G — sexp-write-float (both params f64-class).
         fn nelisp_sexp_write_float(
             slot_bits: f64,
             val: f64,
         ) -> *mut Sexp;
-        // Doc 122 §122.B — Mutable string builder grammar ops.  Each
-        // calls a `nl_mut_str_*' / `nl_alloc_mut_str' Rust extern
-        // (`eval/nlstr.rs').  push/len/finalize deref the MutStr
-        // payload at offset 8 (= one extra indirection vs §122.A's
-        // inline String layout, because Sexp::MutStr wraps an
-        // `NlStrRef' / `NonNull<NlStr>').
+        // Doc 122 §122.B — Mutable string builder grammar ops.
         fn nelisp_mut_str_make_empty(slot: *mut Sexp, cap: i64) -> *mut Sexp;
         fn nelisp_mut_str_push_byte(ptr: *mut Sexp, byte: i64) -> i64;
         fn nelisp_mut_str_push_codepoint(ptr: *mut Sexp, cp: i64) -> i64;
@@ -203,8 +105,7 @@ pub mod elisp_cc_spike {
             ptr: *const Sexp,
             slot: *mut Sexp,
         ) -> *mut Sexp;
-        // Doc 122 §122.D — UTF-8 helper Phase 47 grammar ops compiled
-        // from `lisp/nelisp-cc-utf8.el'.
+        // Doc 122 §122.D — UTF-8 helper grammar ops.
         fn nelisp_str_char_count(ptr: *const Sexp) -> i64;
         fn nelisp_str_codepoint_at(
             ptr: *const Sexp,
