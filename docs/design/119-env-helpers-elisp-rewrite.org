@@ -1,0 +1,144 @@
+#+TITLE: Doc 119 — env_helpers.rs elisp化 (auto-vivify fold)
+#+DATE: 2026-05-18
+#+STATUS: DRAFT
+
+* §119.1 Premise
+
+=build-tool/src/eval/env_helpers.rs= is 880 LOC.  Of that:
+
+- ~430 LOC: =mirror_*= helpers (globals dictionary read/write).
+  Already dispatch the hit-path to Phase 47 (Doc 111 §111.E).  But
+  the *miss-path* (= auto-vivify a new symbol-entry) is still Rust:
+  =mirror_insert_new_entry= (~12 LOC) + =mirror_prepend_to_bucket=
+  (~45 LOC) +  =Sexp::record / Sexp::cons= calls.
+
+- ~250 LOC: =frame_*_rust_direct= helpers (lexical frame stack
+  push/pop/bind/lookup).  Already dispatch most ops to Phase 47.
+  Remaining Rust: =frame_stack_ensure_capacity= bootstrap path,
+  =make_empty_frame_record=, =frame_bind_into= / =frame_lookup_in=
+  inner-bucket walks (= called when Phase 47 misses).
+
+- ~200 LOC: snapshot/diff helpers (=mirror_snapshot_globals=,
+  =mirror_diff_view=, =wrap_alist_cells=).  =mirror_snapshot_globals=
+  is baker-only; rest are test/Closure construction paths.
+
+* §119.2 Staged plan
+
+** §119.A — auto-vivify path → elisp
+
+The Phase 47 helpers currently return `1` on hit and `0` on miss; the
+caller falls back to Rust =mirror_prepend_to_bucket=.  Push the
+prepend step into elisp so the helper handles both paths.
+
+Surface change (per helper):
+- =nelisp_mirror_set_value_or_insert= replaces =nelisp_mirror_set_value=
+  (= absorbs the miss-path).
+- Same for =_set_function=, =_install_entry=, =_set_constant=.
+
+New elisp helpers needed:
+- =nelisp_mirror_alloc_entry= (= replaces =mirror_insert_new_entry=)
+- =nelisp_mirror_bucket_prepend= (= replaces =mirror_prepend_to_bucket=)
+
+Both already have Phase 47 grammar coverage (=record-make=,
+=vector-make=, =cons-make=, =int-logand=, =mut-str-*= unused here,
+=ptr-read/write-u64= for bucket-count slot).
+
+Target: −80 LOC from the 4 wrappers + 2 helpers, −12 LOC from
+=mirror_insert_new_entry= + −45 LOC from =mirror_prepend_to_bucket=
+= −137 LOC.
+
+** §119.B — frame_stack auto-vivify + bucket walks → elisp
+
+Same pattern as §119.A, applied to the frame-stack helpers:
+
+- =frame_stack_ensure_capacity= already moved to elisp in Doc 115
+  §115.1.  Verify the wrapper is now 1-line.
+- =make_empty_frame_record= (~17 LOC) → fold into elisp side of
+  =frame_push_rust_direct=.
+- =frame_bind_into= (~52 LOC) + =frame_lookup_in= (~33 LOC) — these
+  are inner-bucket walks.  Move to elisp helpers
+  =nelisp_frame_bind_into= / =nelisp_frame_lookup_in=.  The Rust
+  callers already pass a =&Sexp= frame ptr that the helpers can
+  consume.
+
+Target: −110 LOC.
+
+** §119.C — wrap_alist_cells → elisp
+
+=Env::wrap_alist_cells= (~50 LOC) wraps a captured-env alist's
+non-Cell values in fresh =NlCellRef= for closure-binding shape.
+Called from =push_captured= only.
+
+Two paths:
+1. Move whole body to elisp =nelisp-env-wrap-alist-cells=.  Requires
+   =cell-make= (already in Phase 47 §122.E).
+2. Keep Rust but inline (= no separate helper).  Lower priority since
+   we'd save ~5 LOC of helper-call overhead.
+
+Recommend Path 1.  Target: −50 LOC.
+
+** §119.D — gate baker-only helpers
+
+=mirror_snapshot_globals= + =mirror_diff_view= are =#[cfg(any(test,
+feature = "image-baker"))]= already, but their bodies remain in the
+production build's =env_helpers.rs= source pre-cfg.  Move to a new
+=eval/env_baker.rs= file (or =cfg-gate the impl Env block).
+Production cargo build (`make build`) carries 0 LOC of these.
+
+Target: −150 LOC from the *production* compile unit; same Rust
+source-LOC total (just relocated).
+
+** §119.E — sweep + delete dead Rust helpers
+
+After §A-D, audit env_helpers.rs for paths that no longer have callers.
+Likely deletions:
+- =mirror_insert_new_entry= (replaced in §119.A)
+- =mirror_prepend_to_bucket= (replaced in §119.A)
+- =make_empty_frame_record= (replaced in §119.B)
+- =frame_bind_into= / =frame_lookup_in= (replaced in §119.B)
+- =wrap_alist_cells= (replaced in §119.C)
+
+Target: −137 + −85 + −50 = −272 LOC verified deletions.
+
+* §119.3 Out of scope
+
+- =impl Env= block existence.  Method dispatch must go through `&self`
+  or `&mut self`, which requires a Rust impl block on a Rust struct.
+  The end state is "1-line method body that delegates to Phase 47 +
+  pointer plumbing", which is the floor we can't pass.
+
+* §119.4 Sequencing + LOC budget
+
+| Stage  | Description                          | LOC削減 (env_helpers.rs) |
+|--------+--------------------------------------+---------------------------|
+| §119.A | Auto-vivify globals helpers          | −137                       |
+| §119.B | Frame-stack auto-vivify + walks      | −110                       |
+| §119.C | wrap_alist_cells → elisp             | −50                        |
+| §119.D | Gate baker-only (production削減)    | −150 (production-only)     |
+| §119.E | Delete dead helpers (audit)          | confirmed via §A-C           |
+
+Cumulative target: env_helpers.rs 880 → ~580 LOC (Stage A-C);
+production compile unit drops further via §D.
+
+* §119.5 Risk + mitigation
+
+- §119.A SIGSEGV risk: Doc 124.F-blocker (NlBox Clone sweep) shows that
+  Phase 47 composed paths can crash.  Mitigate by shipping each helper
+  swap individually + smoke-test before composing.
+
+- =mirror_prepend_to_bucket= mutates =NlVector.value= via
+  =with_value_mut= — this is the same pattern that crashed in §124.F
+  when composed with another Phase 47 call.  Pin investigation result
+  before §A ships.
+
+* §119.6 Status
+
+- DRAFT 2026-05-18.  Ship gate: Doc 124.F-blocker root cause known.
+
+* §119.7 References
+
+- Doc 102 Phase 8 §2.b Step E (mirror canonical)
+- Doc 111 §111.E (mirror helper hit-path cutover)
+- Doc 115 §115.1 (frame_stack_ensure_capacity)
+- Doc 122 §122.E (cell-make grammar)
+- Doc 124 §124.F-blocker (SIGSEGV root cause pending)

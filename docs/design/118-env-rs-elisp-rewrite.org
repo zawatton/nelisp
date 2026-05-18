@@ -1,0 +1,86 @@
+#+TITLE: Doc 118 — env.rs elisp化 (thin facade)
+#+DATE: 2026-05-18
+#+STATUS: DRAFT
+
+* §118.1 Premise
+
+=build-tool/src/eval/env.rs= is 796 LOC.  After Doc 102 §111.E + Doc
+104 Stage 3.b–3.e + Doc 114 Step 5, ~80% of the file is *already*
+thin dispatch shims to either =env_helpers.rs= or Phase 47 helpers.
+
+What remains as Rust-only is structural:
+
+| §  | Scope                                  | LOC | Disposition                  |
+|----+----------------------------------------+-----+-------------------------------|
+| 1  | =pub struct Env= field decl (7 fields) |  30 | KEEP (struct layout pin)     |
+| 2  | =fresh / new_global= ctors             | ~80 | Substrate boot — KEEP        |
+| 3  | =install_stage0 / install_globals_record= | ~30 | KEEP — calls into mirror     |
+| 4  | =register_extern_builtin= (test-only)   | ~12 | KEEP, cfg-gated              |
+| 5  | =lookup_value / set_value / lookup_function / set_function= | ~80 | THIN dispatch — keep |
+| 6  | =defvar=                                | ~30 | KEEP — bootstrap fallback    |
+| 7  | =push_frame / pop_frame / bind_local=   | ~30 | THIN — already 1-line shims  |
+| 8  | =is_bound / is_fbound=                  | ~20 | THIN — already 1-line shims  |
+| 9  | =capture_lexical / push_captured=       | ~80 | KEEP — `apply_function' edge |
+| 10 | tests                                  | ~400| Move to elisp ERT (Doc 121?)|
+
+Total Rust削減 from Doc 118: ~50 LOC by collapsing redundant comments
++ inlining trivially-thin dispatchers.  Real win comes from Doc 119
+(env_helpers.rs −600 LOC).
+
+* §118.2 Staged plan
+
+** §118.A — comment/blank-line削減 + Doc 102 Phase 8 retro-comment cleanup
+
+Many methods carry ~5 LOC of "Doc 102 Phase 8.b Step E ... Session 6
+... retired the HashMap fallback" comments.  These describe historical
+migrations; once Doc 102 is sealed (= no further migration), the
+comments are dead weight.  Reduce each docstring to 1-2 lines.
+
+Target: −80 to −120 LOC from env.rs.
+
+** §118.B — inline =find_frame_cell= into the 2 callers
+
+=find_frame_cell= (~6 LOC) is called only by =lookup_value= +
+=set_value=.  Inlining shaves the helper.
+
+Target: −10 LOC.
+
+** §118.C — fold the test module out
+
+Move the test module body (~400 LOC at end of file) into a new
+=env_tests.rs= or just to =eval/tests.rs= where the Doc 102 Phase 7+
+tests already live.  =env.rs= drops to ~280 LOC.
+
+Target: −400 LOC env.rs (net 0 — tests.rs grows by same amount).
+Not Rust削減 but improves Doc 119 readability.
+
+* §118.3 Out of scope
+
+- =Env= struct field count reduction.  =globals_record= and
+  =frames_record= are runtime-instantiated elisp Sexp values; the
+  Rust struct pins their addresses for Phase 47 helpers.  We need
+  *some* Rust struct to anchor &mut access; the goal is to shrink
+  *bodies*, not the struct.
+
+- =install_stage0= bootstrap.  =install_empty_mirror_rust_direct= +
+  =intern_constant nil/t= + =install_builtins= chain is the
+  substrate boot path.  Elisp can't run until this is up.
+
+* §118.4 Sequencing
+
+1. §118.A (comment cleanup, mechanical)         — ship first
+2. §118.B (find_frame_cell inline)               — depends on §A
+3. §118.C (tests fold-out)                       — independent
+
+Estimated Doc 118 net Rust削減 in env.rs file: ~140 LOC (796 → 656).
+
+* §118.5 Status
+
+- DRAFT 2026-05-18.  Ship gate: pair with Doc 119.
+
+* §118.6 References
+
+- Doc 102 §2.b Step E (mirror canonical)
+- Doc 104 Stage 3.d (Vec write retired)
+- Doc 114 Step 5 (env_mirror/lexframe consolidation)
+- Doc 119 (env_helpers.rs elisp化, where the real LOC削減 lives)
