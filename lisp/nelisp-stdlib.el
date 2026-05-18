@@ -230,6 +230,23 @@
   "Return t if X is callable (= a `lambda' / `closure' / `builtin' form)."
   (and (consp x) (memq (car x) '(lambda closure builtin)) t))
 
+;; Doc 126.C (2026-05-18): `macroexpand-1' now lives in elisp.  The
+;; body keeps the retired Rust contract exactly: non-cons / non-symbol
+;; head / unbound head / non-macro head all return FORM unchanged;
+;; macro cells apply their wrapped lambda to raw arg forms.  `ENV'
+;; stays accepted and ignored for parity.
+(defun macroexpand-1 (form &optional _env)
+  "Expand FORM by one macro layer or return FORM unchanged."
+  (if (and (consp form) (symbolp (car form)))
+      (if (nelisp--env-globals-is-fbound (car form))
+          (let ((fn (nelisp--env-globals-get-function (car form))))
+            (if (and (consp fn) (eq (car fn) 'macro))
+                (let ((inner (cdr fn)))
+                  (apply (if (consp inner) (car inner) inner) (cdr form)))
+              form))
+        form)
+    form))
+
 ;; Doc 111 §111.B — `recordp' now routes through the internal
 ;; `nelisp--recordp-cc' bridge.  Linux x86_64 uses the new
 ;; Phase 47-compiled tag-check object; other targets keep the legacy

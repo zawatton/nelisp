@@ -80,7 +80,6 @@ pub fn install_builtins(env: &mut Env) {
         // `fset' stay (env-shim bake reads them before its wrappers load).
         "symbol-function", "funcall", "apply", "eval",
         "fset",
-        "macroexpand-1",
         // print/error slivers — `signal' is the unwind primitive.
         // `nelisp--write-stderr-line' / `-write-stdout-bytes' back the
         // elisp `message' / `princ' / `print' / `prin1-to-string'.
@@ -192,7 +191,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- symbol / function ----
         "symbol-function" => bi_symbol_function(args, env),
         "fset" => bi_fset(args, env),
-        "macroexpand-1" => bi_macroexpand_1(args, env),
         // ---- apply/closure/env primitives + use_elisp_apply + apply-lambda-inner ----
         "nelisp--push-frame" => bi_frame_op("push-frame", args, env),
         "nelisp--pop-frame" => bi_frame_op("pop-frame", args, env),
@@ -849,44 +847,6 @@ fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         def,
     ];
     super::env_shim::bi_globals_op(&op_args, env)
-}
-
-/// `(macroexpand-1 FORM &optional ENV)' — expand FORM by ONE level if
-/// its head is a macro; otherwise return FORM unchanged.  ENV ignored.
-fn bi_macroexpand_1(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("macroexpand-1", args, 1, Some(2))?;
-    let form = &args[0];
-    // Only `(SYM ARG...)` shape is expandable — atoms / dotted lists /
-    // lambda-headed combiners (= `((lambda ...) X)`) self-expand.
-    let (head_sym, tail) = match form {
-        Sexp::Cons(b) => match &b.car {
-            Sexp::Symbol(s) => (s.clone(), b.cdr.clone()),
-            _ => return Ok(form.clone()),
-        },
-        _ => return Ok(form.clone()),
-    };
-    let func = match env.lookup_function(&head_sym) {
-        Ok(f) => f,
-        // Unbound symbol → return form unchanged (= Emacs parity for
-        // `macroexpand-1' on non-macros).
-        Err(_) => return Ok(form.clone()),
-    };
-    // `(macro . LAMBDA)` shape — expand via the macro's lambda.
-    let is_macro = matches!(
-        &func,
-        Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "macro")
-    );
-    if !is_macro {
-        return Ok(form.clone());
-    }
-    // Strip the `macro' tag, get the underlying lambda.
-    let parts = super::list_elements(&func)?;
-    if parts.len() < 2 {
-        return Err(EvalError::Internal("malformed macro".into()));
-    }
-    let inner = &parts[1];
-    let arg_forms = super::list_elements(&tail)?;
-    super::apply_function(inner, &arg_forms, env)
 }
 
 // Doc 102 Phase 3.a (2026-05-13): 4 frame primitives' bodies merged.
