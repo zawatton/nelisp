@@ -122,12 +122,22 @@
     ;;   cdr      @ 32  (32 bytes — size_of::<Sexp>)
     ;;   refcount @ 64  (8 bytes  — AtomicUsize)
     ;;   total = 72 bytes, align = 8
+    ;; Doc 124 §124.L: thread the per-type `nl_consbox_drop_inner'
+     ;; (= `NlConsBox::DROP_FN' = `drop_in_place::<NlConsBox>') between
+     ;; the fetch-sub and the dealloc-bytes call so the inner car / cdr
+     ;; Sexp payloads (= nested NlBox handles) are recursively dropped
+     ;; before the outer 72-byte allocation is freed.  Matches the
+     ;; `nlrc_drop_box!' macro's ordering: fetch_sub → fence → DROP_FN
+     ;; → dealloc.
     (defun nelisp_nlconsbox_drop (box-ptr)
       (if (= (atomic-fetch-add (+ box-ptr 64) -1) 1)
-          ;; Last ref — pre-sub was 1, new count is 0.  Free the box.
-          ;; Interior payload drop (= drop_in_place car + cdr) deferred
-          ;; to §124.L sweep stage; see file Commentary for rationale.
-          (dealloc-bytes box-ptr 72 8)
+          ;; Last ref — pre-sub was 1, new count is 0.  Drop the
+          ;; interior payload (= recursively walk car + cdr via
+          ;; `drop_in_place::<NlConsBox>') then free the 72-byte
+          ;; allocation.
+          (nelisp_nlconsbox_drop_prog2
+           (extern-call nl_consbox_drop_inner box-ptr)
+           (dealloc-bytes box-ptr 72 8))
         ;; Still alive — pre-sub was > 1.  Return 1 sentinel to match
         ;; the dealloc-bytes arm's return convention so the caller
         ;; sees a uniform `i64 = 1' on both branches.

@@ -176,7 +176,15 @@ impl Clone for NlCellRef {
 }
 
 impl Drop for NlCellRef {
-    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlCell, crate::eval::sexp::SEXP_TAG_CELL); } }
+    /// Doc 124 §124.L — dispatch through the pure-elisp `nlcell_drop'
+    /// kernel.  Runs `atomic-fetch-add(-1)' then, on pre-sub == 1,
+    /// calls `nl_cell_drop_inner' (= `drop_in_place::<NlCell>') +
+    /// `dealloc-bytes(40, 8)'.
+    fn drop(&mut self) {
+        unsafe {
+            crate::elisp_cc_spike::nlcell_drop(self.ptr.as_ptr() as *mut i64);
+        }
+    }
 }
 
 impl Deref for NlCellRef {

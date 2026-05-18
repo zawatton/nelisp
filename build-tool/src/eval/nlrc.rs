@@ -178,6 +178,77 @@ unsafe fn nl_rc_unboxed_drop_panic(_ptr: *mut std::ffi::c_void) {
     panic!("NLRC_DROP_TABLE: unboxed Sexp tag dispatched (= tag corruption?)");
 }
 
+// Doc 124 §124.L — per-type inner-drop ABI externs for the elisp Drop
+// kernels.  Each `nl_<type>_drop_inner' wraps the per-type
+// `nlrc_payload_drop::<NlT>' (= `std::ptr::drop_in_place::<NlT>') so
+// the elisp `nl<type>-drop' kernels can call it via `extern-call'
+// before the matching `dealloc-bytes' op.  Mirrors the recursive
+// payload-drop step of `nlrc_drop_box!' (= the
+// `NLRC_DROP_TABLE[tag](raw)' line) but exposed as a name-stable
+// `extern "C"' symbol so the elisp emitter can emit a PLT call.
+//
+// # Safety
+//
+// `box_ptr' must point at a fully-initialized `NlT' whose backing
+// allocation the caller is about to free.  Each function takes
+// `*mut i64' to match the elisp kernel's `box-ptr' arg type and
+// reinterprets through the typed `nlrc_payload_drop::<T>'.
+
+/// §124.L NlConsBox inner-drop ABI extern.
+///
+/// # Safety
+/// `box_ptr' must point at a fully-initialized `NlConsBox' whose
+/// backing alloc the caller is about to free.
+#[no_mangle]
+pub unsafe extern "C" fn nl_consbox_drop_inner(box_ptr: *mut i64) -> i64 {
+    crate::eval::nlconsbox::NlConsBox::DROP_FN(box_ptr as *mut std::ffi::c_void);
+    1
+}
+
+/// §124.L NlVector inner-drop ABI extern.
+///
+/// # Safety
+/// `box_ptr' must point at a fully-initialized `NlVector' whose
+/// backing alloc the caller is about to free.
+#[no_mangle]
+pub unsafe extern "C" fn nl_vector_drop_inner(box_ptr: *mut i64) -> i64 {
+    crate::eval::nlvector::NlVector::DROP_FN(box_ptr as *mut std::ffi::c_void);
+    1
+}
+
+/// §124.L NlCell inner-drop ABI extern.
+///
+/// # Safety
+/// `box_ptr' must point at a fully-initialized `NlCell' whose
+/// backing alloc the caller is about to free.
+#[no_mangle]
+pub unsafe extern "C" fn nl_cell_drop_inner(box_ptr: *mut i64) -> i64 {
+    crate::eval::nlcell::NlCell::DROP_FN(box_ptr as *mut std::ffi::c_void);
+    1
+}
+
+/// §124.L NlRecord inner-drop ABI extern.
+///
+/// # Safety
+/// `box_ptr' must point at a fully-initialized `NlRecord' whose
+/// backing alloc the caller is about to free.
+#[no_mangle]
+pub unsafe extern "C" fn nl_record_drop_inner(box_ptr: *mut i64) -> i64 {
+    crate::eval::nlrecord::NlRecord::DROP_FN(box_ptr as *mut std::ffi::c_void);
+    1
+}
+
+/// §124.L NlStr inner-drop ABI extern.
+///
+/// # Safety
+/// `box_ptr' must point at a fully-initialized `NlStr' whose
+/// backing alloc the caller is about to free.
+#[no_mangle]
+pub unsafe extern "C" fn nl_str_drop_inner(box_ptr: *mut i64) -> i64 {
+    crate::eval::nlstr::NlStr::DROP_FN(box_ptr as *mut std::ffi::c_void);
+    1
+}
+
 /// Per-tag drop dispatch.  Indexed by `SEXP_TAG_*`; slots 0..=5 panic,
 /// slots 6..=12 forward to each box's `DROP_FN`.
 pub const NLRC_DROP_TABLE: [unsafe fn(*mut std::ffi::c_void); 13] = [

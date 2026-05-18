@@ -39,6 +39,7 @@
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
+use nelisp_build_tool::eval::sexp::Sexp;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// SIZE_OF_NLVECTOR = `size_of::<Vec<Sexp>>() + size_of::<AtomicUsize>()`
@@ -81,6 +82,14 @@ unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
         SIZE_OF_NLVECTOR,
         ALIGN_OF_NLVECTOR,
     );
+    // Doc 124 §124.L: initialize `value: Vec<Sexp>' to a fresh empty
+    // `Vec::new()' so the §124.L inner-drop step (= `drop_in_place
+    // ::<NlVector>') walks a *valid* Vec header rather than
+    // uninitialized bytes (= UB).  An empty Vec has cap=0 so its Drop
+    // skips the heap-dealloc path, making the inner drop a no-op.
+    unsafe {
+        std::ptr::write(ptr as *mut Vec<Sexp>, Vec::new());
+    }
     // Seed the refcount slot via direct AtomicI64 store — the elisp
     // kernel will read/write it through `nl_atomic_fetch_add', so we
     // need a well-defined initial value at the trailer offset.

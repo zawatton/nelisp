@@ -167,7 +167,15 @@ impl Clone for NlRecordRef {
 }
 
 impl Drop for NlRecordRef {
-    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlRecord, crate::eval::sexp::SEXP_TAG_RECORD); } }
+    /// Doc 124 §124.L — dispatch through the pure-elisp `nlrecord_drop'
+    /// kernel.  Runs `atomic-fetch-add(-1)' then, on pre-sub == 1,
+    /// calls `nl_record_drop_inner' (= `drop_in_place::<NlRecord>') +
+    /// `dealloc-bytes(64, 8)'.
+    fn drop(&mut self) {
+        unsafe {
+            crate::elisp_cc_spike::nlrecord_drop(self.ptr.as_ptr() as *mut i64);
+        }
+    }
 }
 
 impl Deref for NlRecordRef {

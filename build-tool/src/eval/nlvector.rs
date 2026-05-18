@@ -161,7 +161,15 @@ impl Clone for NlVectorRef {
 }
 
 impl Drop for NlVectorRef {
-    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlVector, crate::eval::sexp::SEXP_TAG_VECTOR); } }
+    /// Doc 124 §124.L — dispatch through the pure-elisp `nlvector_drop'
+    /// kernel.  Runs `atomic-fetch-add(-1)' then, on pre-sub == 1,
+    /// calls `nl_vector_drop_inner' (= `drop_in_place::<NlVector>') +
+    /// `dealloc-bytes(32, 8)'.
+    fn drop(&mut self) {
+        unsafe {
+            crate::elisp_cc_spike::nlvector_drop(self.ptr.as_ptr() as *mut i64);
+        }
+    }
 }
 
 impl Deref for NlVectorRef {

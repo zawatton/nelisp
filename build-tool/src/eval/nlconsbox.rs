@@ -270,7 +270,15 @@ impl Clone for NlConsBoxRef {
 }
 
 impl Drop for NlConsBoxRef {
-    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlConsBox, crate::eval::sexp::SEXP_TAG_CONS); } }
+    /// Doc 124 §124.L — dispatch through the pure-elisp `nlconsbox_drop'
+    /// kernel.  Runs `atomic-fetch-add(-1)' then, on pre-sub == 1,
+    /// calls `nl_consbox_drop_inner' (= `drop_in_place::<NlConsBox>') +
+    /// `dealloc-bytes(72, 8)'.
+    fn drop(&mut self) {
+        unsafe {
+            crate::elisp_cc_spike::nlconsbox_drop(self.ptr.as_ptr() as *mut i64);
+        }
+    }
 }
 
 impl Deref for NlConsBoxRef {

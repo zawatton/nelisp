@@ -125,12 +125,18 @@
     ;;   value    @ 0   (24 bytes — size_of::<String>)
     ;;   refcount @ 24  (8 bytes  — AtomicUsize)
     ;;   total = 32 bytes, align = 8
+    ;; Doc 124 §124.L: thread `nl_str_drop_inner' (= `drop_in_place
+     ;; ::<NlStr>') between the fetch-sub and the dealloc-bytes call
+     ;; so the inner `value: String' UTF-8 heap buffer is freed before
+     ;; the outer 32-byte allocation is freed.  Matches `nlrc_drop_box!'
+     ;; ordering.
     (defun nelisp_nlstr_drop (box-ptr)
       (if (= (atomic-fetch-add (+ box-ptr 24) -1) 1)
-          ;; Last ref — pre-sub was 1, new count is 0.  Free the box.
-          ;; Interior String UTF-8 buffer drop deferred to §124.L sweep
-          ;; stage; see file Commentary for rationale and leak scope.
-          (dealloc-bytes box-ptr 32 8)
+          ;; Last ref — pre-sub was 1, new count is 0.  Drop interior
+          ;; String UTF-8 buffer then free the 32-byte allocation.
+          (nelisp_nlstr_drop_prog2
+           (extern-call nl_str_drop_inner box-ptr)
+           (dealloc-bytes box-ptr 32 8))
         ;; Still alive — pre-sub was > 1.  Return 1 sentinel to match
         ;; the dealloc-bytes arm's return convention so the caller
         ;; sees a uniform `i64 = 1' on both branches.

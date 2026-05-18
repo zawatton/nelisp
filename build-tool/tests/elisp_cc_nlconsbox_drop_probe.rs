@@ -42,6 +42,7 @@
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
+use nelisp_build_tool::eval::sexp::Sexp;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// SIZE_OF_NLCONSBOX = `2 * size_of::<Sexp>() + size_of::<AtomicUsize>()`
@@ -78,6 +79,16 @@ unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
         SIZE_OF_NLCONSBOX,
         ALIGN_OF_NLCONSBOX,
     );
+    // Doc 124 §124.L: initialize car / cdr to `Sexp::Nil' so the
+    // §124.L inner-drop step (= `drop_in_place::<NlConsBox>') walks
+    // *valid* Sexp values rather than uninitialized bytes (= UB).
+    // `Sexp::Nil' is a trivial drop (tag 0, no heap payload), so the
+    // inner drop becomes a no-op while preserving the kernel's
+    // contract that the box's interior is fully initialized.
+    unsafe {
+        std::ptr::write(ptr as *mut Sexp, Sexp::Nil);
+        std::ptr::write((ptr as usize + 32) as *mut Sexp, Sexp::Nil);
+    }
     // Seed the refcount slot via direct AtomicI64 store — the elisp
     // kernel will read/write it through `nl_atomic_fetch_add', so we
     // need a well-defined initial value at the trailer offset.

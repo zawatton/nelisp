@@ -119,13 +119,18 @@
     ;;   value    @ 0   (32 bytes — size_of::<Sexp>)
     ;;   refcount @ 32  (8 bytes  — AtomicUsize)
     ;;   total = 40 bytes, align = 8
+    ;; Doc 124 §124.L: thread `nl_cell_drop_inner' (= `drop_in_place
+     ;; ::<NlCell>') between the fetch-sub and the dealloc-bytes call
+     ;; so the inner `value: Sexp' (= nested NlBox handle) is dropped
+     ;; before the outer 40-byte allocation is freed.  Matches
+     ;; `nlrc_drop_box!' ordering.
     (defun nelisp_nlcell_drop (box-ptr)
       (if (= (atomic-fetch-add (+ box-ptr 32) -1) 1)
-          ;; Last ref — pre-sub was 1, new count is 0.  Free the box.
-          ;; Interior `value: Sexp' drop (= nested NlBox handle walk)
-          ;; deferred to §124.L sweep stage; see file Commentary for
-          ;; rationale and leak scope.
-          (dealloc-bytes box-ptr 40 8)
+          ;; Last ref — pre-sub was 1, new count is 0.  Drop interior
+          ;; `value: Sexp' then free the 40-byte outer allocation.
+          (nelisp_nlcell_drop_prog2
+           (extern-call nl_cell_drop_inner box-ptr)
+           (dealloc-bytes box-ptr 40 8))
         ;; Still alive — pre-sub was > 1.  Return 1 sentinel to match
         ;; the dealloc-bytes arm's return convention so the caller
         ;; sees a uniform `i64 = 1' on both branches.

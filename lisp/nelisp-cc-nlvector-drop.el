@@ -126,13 +126,18 @@
     ;;   value    @ 0   (24 bytes — size_of::<Vec<Sexp>>)
     ;;   refcount @ 24  (8 bytes  — AtomicUsize)
     ;;   total = 32 bytes, align = 8
+    ;; Doc 124 §124.L: thread `nl_vector_drop_inner' (= `drop_in_place
+     ;; ::<NlVector>') between the fetch-sub and the dealloc-bytes call
+     ;; so the inner `Vec<Sexp>' tail + each element's nested NlBox
+     ;; handles are recursively dropped before the outer 32-byte
+     ;; allocation is freed.  Matches `nlrc_drop_box!' ordering.
     (defun nelisp_nlvector_drop (box-ptr)
       (if (= (atomic-fetch-add (+ box-ptr 24) -1) 1)
-          ;; Last ref — pre-sub was 1, new count is 0.  Free the box.
-          ;; Interior Vec<Sexp> tail + nested Sexp NlBox payloads
-          ;; deferred to §124.L sweep stage; see file Commentary for
-          ;; rationale and leak scope.
-          (dealloc-bytes box-ptr 32 8)
+          ;; Last ref — pre-sub was 1, new count is 0.  Drop interior
+          ;; Vec<Sexp> tail then free the 32-byte outer allocation.
+          (nelisp_nlvector_drop_prog2
+           (extern-call nl_vector_drop_inner box-ptr)
+           (dealloc-bytes box-ptr 32 8))
         ;; Still alive — pre-sub was > 1.  Return 1 sentinel to match
         ;; the dealloc-bytes arm's return convention so the caller
         ;; sees a uniform `i64 = 1' on both branches.

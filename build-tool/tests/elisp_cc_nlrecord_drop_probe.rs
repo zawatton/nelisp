@@ -40,6 +40,7 @@
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
+use nelisp_build_tool::eval::sexp::Sexp;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// SIZE_OF_NLRECORD = `size_of::<Sexp>() + size_of::<Vec<Sexp>>() +
@@ -83,6 +84,15 @@ unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
         SIZE_OF_NLRECORD,
         ALIGN_OF_NLRECORD,
     );
+    // Doc 124 §124.L: initialize `type_tag: Sexp' to `Sexp::Nil' and
+    // `slots: Vec<Sexp>' to a fresh empty `Vec::new()' so the §124.L
+    // inner-drop step (= `drop_in_place::<NlRecord>') walks valid
+    // values rather than uninitialized bytes (= UB).  Both are trivial
+    // drops (Sexp::Nil = no payload, empty Vec = cap=0 skips dealloc).
+    unsafe {
+        std::ptr::write(ptr as *mut Sexp, Sexp::Nil);
+        std::ptr::write((ptr as usize + 32) as *mut Vec<Sexp>, Vec::new());
+    }
     // Seed the refcount slot via direct AtomicI64 store — the elisp
     // kernel will read/write it through `nl_atomic_fetch_add', so we
     // need a well-defined initial value at the trailer offset.

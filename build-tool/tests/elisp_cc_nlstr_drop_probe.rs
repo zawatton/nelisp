@@ -81,6 +81,14 @@ unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
         SIZE_OF_NLSTR,
         ALIGN_OF_NLSTR,
     );
+    // Doc 124 §124.L: initialize `value: String' to a fresh empty
+    // `String::new()' so the §124.L inner-drop step (= `drop_in_place
+    // ::<NlStr>') walks a *valid* String header rather than
+    // uninitialized bytes (= UB).  An empty String has cap=0 so its
+    // Drop skips the heap-dealloc path, making the inner drop a no-op.
+    unsafe {
+        std::ptr::write(ptr as *mut String, String::new());
+    }
     // Seed the refcount slot via direct AtomicI64 store — the elisp
     // kernel will read/write it through `nl_atomic_fetch_add', so we
     // need a well-defined initial value at the trailer offset.

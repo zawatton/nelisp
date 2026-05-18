@@ -124,7 +124,15 @@ impl Clone for NlStrRef {
 }
 
 impl Drop for NlStrRef {
-    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlStr, crate::eval::sexp::SEXP_TAG_MUT_STR); } }
+    /// Doc 124 §124.L — dispatch through the pure-elisp `nlstr_drop'
+    /// kernel.  Runs `atomic-fetch-add(-1)' then, on pre-sub == 1,
+    /// calls `nl_str_drop_inner' (= `drop_in_place::<NlStr>') +
+    /// `dealloc-bytes(32, 8)'.
+    fn drop(&mut self) {
+        unsafe {
+            crate::elisp_cc_spike::nlstr_drop(self.ptr.as_ptr() as *mut i64);
+        }
+    }
 }
 
 impl Deref for NlStrRef {
