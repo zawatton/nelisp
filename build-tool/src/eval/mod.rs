@@ -4,7 +4,6 @@
 //! User input failures return `Result<Sexp, EvalError>`.
 
 pub mod builtins;
-pub mod cons_primitives;
 pub mod env_helpers;
 pub mod env_shim;
 pub mod error;
@@ -19,7 +18,6 @@ pub mod nlstr;
 pub mod nlvector;
 pub mod quit;
 pub mod raw_mem;
-pub mod rc_primitives;
 pub mod sexp;
 pub mod sexp_abi_assert;
 pub mod special_forms;

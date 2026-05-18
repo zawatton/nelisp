@@ -95,14 +95,6 @@ pub fn install_builtins(env: &mut Env) {
         "nl-jit-call-float-float",
         "nl-jit-call-float-cmp",
         "nl-jit-call-float-unary",
-        // Layer 2 cons/rc/gc primitives.
-        "nl-cons-alloc", "nl-cons-car", "nl-cons-cdr",
-        "nl-cons-set-car", "nl-cons-set-cdr",
-        "nl-rc-inc", "nl-rc-dec", "nl-rc-count",
-        "nl-rc-dealloc",
-        "nl-rc-dec-strong", "nl-rc-strong-count",
-        "nl-rc-kind", "nl-rc-payload-ptr",
-        "nl-gc-walk-children", "nl-gc-finalize",
         "nl-fact-i64",
     ];
     for n in names {
@@ -215,22 +207,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float(args),
         "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp(args),
         "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary(args),
-        // ---- Layer 2 cons / rc / gc primitives ----
-        "nl-cons-alloc" => crate::eval::cons_primitives::bi_nl_cons_alloc(args),
-        "nl-cons-car" => crate::eval::cons_primitives::bi_nl_cons_car(args),
-        "nl-cons-cdr" => crate::eval::cons_primitives::bi_nl_cons_cdr(args),
-        "nl-cons-set-car" => crate::eval::cons_primitives::bi_nl_cons_set_car(args),
-        "nl-cons-set-cdr" => crate::eval::cons_primitives::bi_nl_cons_set_cdr(args),
-        "nl-rc-inc" => crate::eval::cons_primitives::bi_nl_rc_inc(args),
-        "nl-rc-dec" => crate::eval::cons_primitives::bi_nl_rc_dec(args),
-        "nl-rc-count" => crate::eval::cons_primitives::bi_nl_rc_count(args),
-        "nl-rc-dealloc" => crate::eval::rc_primitives::bi_nl_rc_dealloc(args),
-        "nl-rc-dec-strong" => crate::eval::rc_primitives::bi_nl_rc_dec_strong(args),
-        "nl-rc-strong-count" => crate::eval::rc_primitives::bi_nl_rc_strong_count(args),
-        "nl-rc-kind" => crate::eval::rc_primitives::bi_nl_rc_kind(args),
-        "nl-rc-payload-ptr" => crate::eval::rc_primitives::bi_nl_rc_payload_ptr(args),
-        "nl-gc-walk-children" => crate::eval::rc_primitives::bi_nl_gc_walk_children(args),
-        "nl-gc-finalize" => crate::eval::rc_primitives::bi_nl_gc_finalize(args),
         "nl-fact-i64" => bi_nl_fact_i64(args),
         "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op(args, env),
         _ => {
