@@ -372,6 +372,29 @@ pub mod elisp_cc_spike {
             path_ptr: *const Sexp,
             content_ptr: *const Sexp,
         ) -> i64;
+        // Doc 117 §117.D.gaps.3 (cont.) — second file-I/O sweep batch.
+        //
+        //   `nelisp_bi_nl_make_directory(path_ptr)' — libc `mkdir(2)'
+        //     against the path CString with mode 0o755.  Returns i64 =
+        //     0 on success / -1 on error (errno set).  Rust maps < 0 →
+        //     `EvalError::Internal' (matching the pre-swap
+        //     `std::fs::create_dir_all' error propagation; this kernel
+        //     is the non-recursive flavour — see the elisp source's
+        //     commentary for the semantic narrowing rationale).
+        //   `nelisp_bi_syscall_read_file(path_ptr, buf_ptr, read_size)'
+        //     — chained libc `open(2)' + `read(2)' + `close(2)'.  Rust
+        //     allocates the buffer + sizes it via a separate `stat(2)'
+        //     pass, the elisp body does the syscall chain.  Returns
+        //     i64 = bytes read on success or negative open/read rc on
+        //     error.  Rust maps < 0 → `Sexp::Nil' (matching the pre-
+        //     swap `Err(_) => Ok(Sexp::Nil)' arm of `bi_syscall_read_
+        //     file').
+        fn nelisp_bi_nl_make_directory(path_ptr: *const Sexp) -> i64;
+        fn nelisp_bi_syscall_read_file(
+            path_ptr: *const Sexp,
+            buf_ptr: *mut u8,
+            read_size: i64,
+        ) -> i64;
         // Doc 122 §122.C — Extended extern-call (f64 args + f64 return) probes.
         fn nelisp_libm_sqrt(x: f64) -> f64;
         fn nelisp_libm_sin(x: f64) -> f64;
@@ -1428,6 +1451,16 @@ pub mod elisp_cc_spike {
     cc_wrap!(
         bi_nl_write_file: nelisp_bi_nl_write_file,
         (path_ptr: *const Sexp, content_ptr: *const Sexp) -> i64
+    );
+    // Doc 117 §117.D.gaps.3 (cont.) — second file-I/O sweep batch.
+    // See the extern decl block above for the per-fn contract.
+    cc_wrap!(
+        bi_nl_make_directory: nelisp_bi_nl_make_directory,
+        (path_ptr: *const Sexp) -> i64
+    );
+    cc_wrap!(
+        bi_syscall_read_file: nelisp_bi_syscall_read_file,
+        (path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64
     );
 
     // Doc 122 §122.C libm probes + Doc 123 §123.A-C rc primitive

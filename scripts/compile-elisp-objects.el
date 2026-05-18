@@ -257,6 +257,36 @@
      :source-var nelisp-cc-mirror-install-entry--source
      :output "nelisp_mirror_install_entry.o"
      :requires-arch x86_64)
+    ;; Doc 119 §119.A — auto-vivify fold.  Two new building-block
+    ;; helpers (`mirror_alloc_entry' + `mirror_bucket_prepend') plus
+    ;; four `_or_insert' wrappers that absorb the miss-path of helpers
+    ;; #7 / #8 / #11 / #12 into pure elisp (= drops `mirror_insert_new_entry'
+    ;; + `mirror_prepend_to_bucket' from `env_helpers.rs').  Linux-
+    ;; x86_64 only — same arch gate as the Group A/B mirror helpers.
+    (nelisp-cc-mirror-alloc-entry
+     :source-var nelisp-cc-mirror-alloc-entry--source
+     :output "nelisp_mirror_alloc_entry.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-bucket-prepend
+     :source-var nelisp-cc-mirror-bucket-prepend--source
+     :output "nelisp_mirror_bucket_prepend.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-set-value-or-insert
+     :source-var nelisp-cc-mirror-set-value-or-insert--source
+     :output "nelisp_mirror_set_value_or_insert.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-set-function-or-insert
+     :source-var nelisp-cc-mirror-set-function-or-insert--source
+     :output "nelisp_mirror_set_function_or_insert.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-set-constant-or-insert
+     :source-var nelisp-cc-mirror-set-constant-or-insert--source
+     :output "nelisp_mirror_set_constant_or_insert.o"
+     :requires-arch x86_64)
+    (nelisp-cc-mirror-install-entry-or-insert
+     :source-var nelisp-cc-mirror-install-entry-or-insert--source
+     :output "nelisp_mirror_install_entry_or_insert.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'
@@ -610,6 +640,22 @@
     (nelisp-cc-bi-nl-write-file
      :source-var nelisp-cc-bi-nl-write-file--source
      :output "nelisp_bi_nl_write_file.o"
+     :requires-arch x86_64)
+    ;; Doc 117 §117.D.gaps.3 (cont.) — second file-I/O sweep batch.
+    ;; Two additional handlers consumed (after the 3-handler initial
+    ;; batch above):
+    ;;   - `bi_nl_make_directory'   -> libc `mkdir(2)' kernel.
+    ;;   - `bi_syscall_read_file'   -> libc `open(2)' + `read(2)' +
+    ;;                                 `close(2)' chained kernel
+    ;;                                 (mirror twin of `bi_nl_write_file').
+    ;; Linux-x86_64 only — same arch gate as the §122.I parent.
+    (nelisp-cc-bi-nl-make-directory
+     :source-var nelisp-cc-bi-nl-make-directory--source
+     :output "nelisp_bi_nl_make_directory.o"
+     :requires-arch x86_64)
+    (nelisp-cc-bi-syscall-read-file
+     :source-var nelisp-cc-bi-syscall-read-file--source
+     :output "nelisp_bi_syscall_read_file.o"
      :requires-arch x86_64)
     ;; Doc 123 §123.A — first substrate elisp化 stage.  Replaces the
     ;; simplest macro from `build-tool/src/eval/rc_primitives.rs' (=

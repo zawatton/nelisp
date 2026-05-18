@@ -539,10 +539,68 @@ fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalErr
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-read-file", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
-    match std::fs::read_to_string(&p) {
-        Ok(s) => Ok(Sexp::Str(s)),
-        Err(_) => Ok(Sexp::Nil),
+    // Doc 117 §117.D.gaps.3 (cont.) — the libc `open(2)' + `read(2)' +
+    // `close(2)' syscall chain now runs through the Phase 47 elisp
+    // object compiled from `lisp/nelisp-cc-bi-syscall-read-file.el'.
+    //
+    // The Rust shim keeps:
+    //   - path normalisation (= `resolve_existing_path' folds
+    //     `default-directory' in).
+    //   - file-size determination via a separate `metadata(&p)' pass
+    //     (= the elisp body has no `i64'-class grammar for `struct
+    //     stat *', so caller-side sizing is the simpler split).
+    //   - destination buffer alloc (= `Vec<u8>` of size n_bytes).
+    //   - bytes-read truncation + `from_utf8_lossy' wrap to `Sexp::Str'
+    //     (= same UTF-8 caveat as `bi_read_stdin_bytes' twin —
+    //     `sexp-write-str' Phase 47 op uses `from_utf8_unchecked').
+    //   - Negative-rc → `Sexp::Nil' branch (matching the pre-swap
+    //     `Err(_) => Ok(Sexp::Nil)' arm).
+    let n_bytes = match std::fs::metadata(&p) {
+        Ok(m) if m.is_file() => m.len() as usize,
+        // Symlinks / dirs / errors → same as the pre-swap path's
+        // `read_to_string' error arm = `Sexp::Nil'.  Don't even
+        // attempt the open.
+        _ => return Ok(Sexp::Nil),
+    };
+    // Optimisation: zero-length files skip the syscall chain entirely.
+    // Matches `read_to_string("/dev/null")' → `Ok("")' which is
+    // distinguishable from the `Err(_) => Nil' branch.
+    if n_bytes == 0 {
+        return Ok(Sexp::Str(String::new()));
     }
+    let mut buf = vec![0u8; n_bytes];
+    // Build a `Sexp::Str' the elisp kernel can feed to
+    // `nelisp_cstr_from_sexp'.  `to_string_lossy' matches the pre-swap
+    // path's UTF-8 coercion.
+    let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
+    // The elisp body returns one of:
+    //   - `open(2)' rc on open failure (= int -1, undefined upper 32
+    //     bits in rax per SysV ABI),
+    //   - `read(2)' rc on open-success branch (= ssize_t, full i64).
+    // For typical files (size < 2 GiB) the read rc fits in i32 too, so
+    // a uniform `as i32 as i64' sign-extension correctly handles both
+    // arms.  Files >= 2 GiB would lose precision but the pre-swap
+    // `read_to_string' wouldn't tolerate them either (= `String' caps
+    // at usize::MAX on 64-bit but the buffer + UTF-8 wrap cost grows
+    // linearly in file size; not the right shape for >2 GiB reads).
+    let rc = (unsafe {
+        crate::elisp_cc_spike::bi_syscall_read_file(
+            &path_sexp as *const Sexp,
+            buf.as_mut_ptr(),
+            n_bytes as i64,
+        )
+    }) as i32 as i64;
+    if rc < 0 {
+        // Open / read failed.  Mirror the pre-swap `Err(_) => Nil'.
+        return Ok(Sexp::Nil);
+    }
+    // Short read tolerated — truncate to the bytes actually returned.
+    // For regular files on Linux, short reads only happen at EOF, so
+    // `rc' typically equals `n_bytes' (modulo TOCTOU file-size races
+    // which the pre-swap path also had).
+    let actual = (rc as usize).min(n_bytes);
+    buf.truncate(actual);
+    Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 /// `(nelisp--read-all-from-string STR)' — mandatory delegation to elisp
@@ -1302,8 +1360,35 @@ fn bi_nl_write_file(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-make-directory", args, 1, Some(2))?;
     let path = string_value(&args[0])?;
-    std::fs::create_dir_all(&path)
-        .map_err(|e| EvalError::Internal(format!("nl-make-directory: {}: {}", path, e)))?;
+    // Doc 117 §117.D.gaps.3 (cont.) — the libc `mkdir(2)' syscall body
+    // now runs through the Phase 47 elisp object compiled from
+    // `lisp/nelisp-cc-bi-nl-make-directory.el' (= path CString lifecycle
+    // via §122.I cstr_from_sexp + §125.A dealloc-bytes, single
+    // `extern-call mkdir' with mode 0o755).
+    //
+    // Semantic narrowing: pre-swap `std::fs::create_dir_all' was
+    // recursive (creates missing parent components); this elisp kernel
+    // is a *single* `mkdir(2)' call (non-recursive).  No elisp caller
+    // depends on the recursive form — the emacs-compat layer at
+    // `src/nelisp-emacs-compat-fileio.el:340' dispatches through
+    // `nl-syscall-mkdir' instead, and there are no tests for `nl-make-
+    // directory'.  See the elisp source's commentary for the full
+    // rationale.
+    let path_sexp = Sexp::Str(path.clone());
+    // libc `mkdir(2)' returns `int' (32-bit) but the elisp extern-call
+    // ABI lands the value in rax with undefined upper 32 bits per SysV
+    // AMD64 §3.2.3 ("Returning of Values").  Sign-extend the low 32
+    // bits so the `rc < 0' check works correctly (= -1 from a failed
+    // mkdir would otherwise appear as 0xFFFFFFFF = u32::MAX positive).
+    let rc = (unsafe {
+        crate::elisp_cc_spike::bi_nl_make_directory(&path_sexp as *const Sexp)
+    }) as i32 as i64;
+    if rc < 0 {
+        return Err(EvalError::Internal(format!(
+            "nl-make-directory: {}: kernel returned {}",
+            path, rc,
+        )));
+    }
     Ok(Sexp::T)
 }
 
