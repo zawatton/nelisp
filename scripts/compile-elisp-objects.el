@@ -791,6 +791,17 @@
      :source-var nelisp-cc-nlstr-clone--source
      :output "nelisp_nlstr_clone.o"
      :requires-arch x86_64)
+    ;; Doc 122 §122.B / Doc 120 §120.B — `jit/box_accessor.rs'
+    ;; `nl_jit_bool_vector_len' trampoline swap.  Reads Vec<bool>.length
+    ;; via two `ptr-read-u64' hops (Sexp payload → NlBoolVector* → offset
+    ;; 16) and writes `Sexp::Int(len)' to *out.  Replaces the Rust body
+    ;; which used `v.value.len()' via safe Rust pattern-match.  Linux-
+    ;; x86_64 only — same arch gate as the other §120.B box_accessor
+    ;; siblings.
+    (nelisp-cc-jit-bool-vector-len
+     :source-var nelisp-cc-jit-bool-vector-len--source
+     :output "nl_jit_bool_vector_len.o"
+     :requires-arch x86_64)
     ;; Doc 116 §116.A — pure-elisp Reader lexer.  Single manifest
     ;; entry; the source defconst is a `(seq DEFUN ...)' of ~20
     ;; mutually-recursive tail-call helpers and one public entry

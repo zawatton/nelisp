@@ -16,14 +16,6 @@ pub unsafe extern "C" fn nl_record_type_tag_ptr(arg: *const Sexp) -> *const Sexp
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_bool_vector_len(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*arg {
-        Sexp::BoolVector(v) => { *out = Sexp::Int(v.value.len() as i64); TRAMPOLINE_OK }
-        _ => TRAMPOLINE_ERR,
-    }
-}
-
 /// Char-indexed codepoint for Str / MutStr.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_str_codepoint_at(
