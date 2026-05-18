@@ -48,11 +48,14 @@
 ;; (`nl_cons_car_ptr' / `nl_cons_cdr_ptr' in `jit/cons.rs') and then
 ;; copy refcount-aware through `nl_sexp_clone_into'.
 ;;
-;; `nl_jit_cons_make' moved to Phase 47 elisp in
-;; `lisp/nelisp-cc-jit-cons-make.el'.  The `cons-make' Phase 47 opcode
-;; passes incoming `*const Sexp' args directly into the NlConsBox raw
-;; copy (= `bi_nl_jit_call_out_2' already provides stable pointers),
-;; so no clone+forget wrapper is needed in the trampoline.
+;; `nl_jit_cons_make' SKIP rationale: the constructor does
+;; `(car.clone(), cdr.clone(), forget pair)' which requires temporary
+;; Sexp slots to hold the clones before `cons-make' moves them into
+;; the box.  Phase 47 has no local-slot allocation primitive yet
+;; (`alloc-bytes' is heap-only) so this trampoline stays in Rust.
+;; Future option: add a tiny `nl_cons_clone_pair_into_box(car, cdr,
+;; out)' extern that fuses the 2 clones + the box alloc + the SIMD
+;; copies + the SEXP_TAG_CONS tag write.
 
 ;;; Code:
 
