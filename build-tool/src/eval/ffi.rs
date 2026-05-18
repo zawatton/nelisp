@@ -423,74 +423,41 @@ pub fn nl_ffi_errno(args: &[Sexp]) -> Result<Sexp, EvalError> {
 mod tests {
     use super::*;
 
-    fn malloc_n(n: i64) -> i64 {
-        match nl_ffi_malloc(&[Sexp::Int(n)]).unwrap() {
-            Sexp::Int(p) => p,
-            other => panic!("nl-ffi-malloc returned {:?}", other),
-        }
+    fn mk(n: i64) -> i64 {
+        let Sexp::Int(p) = nl_ffi_malloc(&[Sexp::Int(n)]).unwrap() else { panic!() };
+        p
     }
-
-    fn read_n_str(p: i64, n: i64) -> String {
-        match nl_ffi_read_bytes(&[Sexp::Int(p), Sexp::Int(n)]).unwrap() {
-            Sexp::Str(s) => s,
-            other => panic!("nl-ffi-read-bytes returned {:?}", other),
-        }
+    fn rd(p: i64, n: i64) -> String {
+        let Sexp::Str(s) = nl_ffi_read_bytes(&[Sexp::Int(p), Sexp::Int(n)]).unwrap() else { panic!() };
+        s
     }
-
-    #[test]
-    fn write_bytes_round_trip_str() {
-        let p = malloc_n(16);
-        let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str("hello".into())]).unwrap();
-        assert_eq!(r, Sexp::T);
-        assert_eq!(read_n_str(p, 5), "hello");
-        nl_ffi_free(&[Sexp::Int(p)]).unwrap();
+    fn wr(p: i64, s: &str) -> Result<Sexp, EvalError> {
+        nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str(s.into())])
     }
+    fn fr(p: i64) { nl_ffi_free(&[Sexp::Int(p)]).unwrap(); }
 
-    #[test]
-    fn write_bytes_rejects_null_ptr() {
-        assert!(nl_ffi_write_bytes(&[Sexp::Int(0), Sexp::Str("x".into())]).is_err());
+    #[test] fn write_bytes_round_trip_str() {
+        let p = mk(16); assert_eq!(wr(p, "hello").unwrap(), Sexp::T);
+        assert_eq!(rd(p, 5), "hello"); fr(p);
     }
-
-    #[test]
-    fn write_bytes_rejects_unknown_ptr() {
-        assert!(nl_ffi_write_bytes(&[Sexp::Int(0xDEAD_BEEF), Sexp::Str("x".into())]).is_err());
+    #[test] fn write_bytes_rejects_null_ptr()    { assert!(wr(0, "x").is_err()); }
+    #[test] fn write_bytes_rejects_unknown_ptr() { assert!(wr(0xDEAD_BEEF, "x").is_err()); }
+    #[test] fn write_bytes_rejects_oversize() {
+        let p = mk(4); assert!(wr(p, "12345").is_err()); fr(p);
     }
-
-    #[test]
-    fn write_bytes_rejects_oversize() {
-        let p = malloc_n(4);
-        assert!(nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str("12345".into())]).is_err());
-        nl_ffi_free(&[Sexp::Int(p)]).unwrap();
+    #[test] fn write_bytes_empty_str_is_noop() {
+        let p = mk(4); assert_eq!(wr(p, "").unwrap(), Sexp::T);
+        assert_eq!(rd(p, 4).as_bytes(), &[0u8; 4]); fr(p);
     }
-
-    #[test]
-    fn write_bytes_empty_str_is_noop() {
-        let p = malloc_n(4);
-        let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str(String::new())]).unwrap();
-        assert_eq!(r, Sexp::T);
-        assert_eq!(read_n_str(p, 4).as_bytes(), &[0u8, 0, 0, 0]);
-        nl_ffi_free(&[Sexp::Int(p)]).unwrap();
-    }
-
-    #[test]
-    fn errno_reads_thread_local() {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let bad = CString::new("/this-path-must-not-exist-for-test").unwrap();
+    #[test] fn errno_reads_thread_local() {
+        #[cfg(any(target_os = "linux", target_os = "macos"))] {
+            let bad = CString::new("/no-such-path").unwrap();
             let _ = unsafe { libc::open(bad.as_ptr(), libc::O_RDONLY) };
-            match nl_ffi_errno(&[]).unwrap() {
-                Sexp::Int(e) => assert!(e > 0, "errno after failed open: {}", e),
-                other => panic!("nl-ffi-errno returned {:?}", other),
-            }
+            let Sexp::Int(e) = nl_ffi_errno(&[]).unwrap() else { panic!() };
+            assert!(e > 0);
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            assert!(matches!(nl_ffi_errno(&[]).unwrap(), Sexp::Int(_)));
-        }
+        { assert!(matches!(nl_ffi_errno(&[]).unwrap(), Sexp::Int(_))); }
     }
-
-    #[test]
-    fn errno_rejects_args() {
-        assert!(nl_ffi_errno(&[Sexp::Int(0)]).is_err());
-    }
+    #[test] fn errno_rejects_args() { assert!(nl_ffi_errno(&[Sexp::Int(0)]).is_err()); }
 }
