@@ -36,17 +36,8 @@ impl Env {
     // Globals mirror helpers (formerly `eval/env_mirror.rs').
     // ============================================================
 
-    /// Doc 111 §111.E cutover — `mirror_set_value' now dispatches to
-    /// the Phase 47-compiled `nelisp_mirror_set_value' helper for the
-    /// in-place slot update.  Phase 47 returns 1 on hit (entry slot was
-    /// overwritten) and 0 on miss; on miss we fall back to the existing
-    /// Rust `mirror_insert_new_entry' auto-vivify path.  No-op when the
-    /// mirror isn't ready (= `globals_record == Sexp::Nil', early
-    /// bootstrap before `install_globals_record').
-    ///
-    /// Replaces the Session-6 Rust-direct walk; same semantics, but the
-    /// FNV-1a + bucket walk now executes in elisp-compiled code (= part
-    /// of the Doc 102 Phase 8.b condition (a) "Rust −520 LOC" target).
+    /// Set the value cell.  Phase 47 in-place update on hit; Rust
+    /// auto-vivify on miss.  No-op when mirror is uninitialised.
     pub(crate) fn mirror_set_value(&mut self, name: &str, value: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -55,27 +46,18 @@ impl Env {
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
         let val_ptr = &value as *const Sexp;
-        // SAFETY: `mirror_ptr' points at a live `Sexp::Record' (=
-        // `globals_record') with the layout the Phase 47 helper
-        // expects.  `sym_ptr' / `val_ptr' point at stack-local
-        // `Sexp' values that outlive the call.
+        // SAFETY: all pointers point at stack-locals or `&self.globals_record'
+        // which outlive the call; helper expects `Sexp::Record' layout.
         let hit = unsafe {
             crate::elisp_cc_spike::mirror_set_value(mirror_ptr, sym_ptr, val_ptr)
         };
         if hit != 0 {
             return;
         }
-        // Phase 47 reported a miss — fall back to the existing
-        // auto-vivify path.  `value' was *not* consumed by the
-        // helper (it operates through `*val_ptr' refcount-aware
-        // clones), so the move below is sound.
-        self.mirror_insert_new_entry(name, /* slot */ 0, value);
+        self.mirror_insert_new_entry(name, 0, value);
     }
 
-    /// Doc 111 §111.E cutover — function-cell counterpart of
-    /// `mirror_set_value', dispatches to Phase 47-compiled
-    /// `nelisp_mirror_set_function'.  See `mirror_set_value' for the
-    /// hit/miss + fallback contract.
+    /// Function-cell counterpart of `mirror_set_value'.
     pub(crate) fn mirror_set_function(&mut self, name: &str, func: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -91,16 +73,11 @@ impl Env {
         if hit != 0 {
             return;
         }
-        self.mirror_insert_new_entry(name, /* slot */ 1, func);
+        self.mirror_insert_new_entry(name, 1, func);
     }
 
-    /// Doc 111 §111.E cutover — clear the entry's value cell (=
-    /// `makunbound').  Dispatches to Phase 47-compiled
-    /// `nelisp_mirror_clear_value', which writes
-    /// `*unbound_ptr' (= `self.unbound_marker') into slot 0 in place.
-    /// No-op (returns 0) when the entry is absent; we silently swallow
-    /// that case to match the original Rust impl (= no auto-vivify on
-    /// `makunbound').
+    /// `makunbound' — write `unbound_marker' into slot 0 in place.
+    /// Silent no-op when the entry is absent (no auto-vivify).
     pub(crate) fn mirror_clear_value(&mut self, name: &str) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -118,9 +95,7 @@ impl Env {
         }
     }
 
-    /// Doc 111 §111.E cutover — function-cell counterpart of
-    /// `mirror_clear_value' (= `fmakunbound').  Dispatches to
-    /// Phase 47-compiled `nelisp_mirror_clear_function'.
+    /// `fmakunbound' — function-cell counterpart of `mirror_clear_value'.
     pub(crate) fn mirror_clear_function(&mut self, name: &str) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -155,15 +130,10 @@ impl Env {
         self.mirror_prepend_to_bucket(name, entry);
     }
 
-    /// Doc 111 §111.E cutover — full symbol-entry installer.
-    /// Dispatches to Phase 47-compiled `nelisp_mirror_install_entry'
-    /// for the hit-path slot overwrite (= all four slots in place).
-    /// Phase 47 returns 1 on hit, 0 on miss; on miss we fall back to
-    /// the Rust `mirror_prepend_to_bucket' auto-vivify path with the
-    /// composed entry record.
-    ///
-    /// Used by image decode (= replaces the old `env.globals.insert'
-    /// call at `image.rs::decode_v3_into') and by `intern_constant'.
+    /// Full symbol-entry installer (value + function + plist + constant).
+    /// Phase 47 hit-path overwrites all 4 slots; miss-path falls back to
+    /// `mirror_prepend_to_bucket' auto-vivify.  Used by image decode +
+    /// `intern_constant'.
     pub(crate) fn mirror_install_entry(
         &mut self,
         name: &str,
@@ -212,11 +182,7 @@ impl Env {
         self.mirror_prepend_to_bucket(name, entry);
     }
 
-    /// Doc 111 §111.E cutover — read symbol-entry slot 3 (= constant
-    /// flag).  Dispatches to Phase 47-compiled
-    /// `nelisp_mirror_is_constant', which composes #1 with a tag
-    /// check on the matched entry's slot 3.  Returns false when the
-    /// entry is absent or the mirror is unbuilt.
+    /// Read symbol-entry slot 3 (constant flag).  False on miss / unbuilt mirror.
     pub(crate) fn mirror_is_constant(&self, name: &str) -> bool {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return false;
@@ -233,14 +199,8 @@ impl Env {
         flag != 0
     }
 
-    /// Doc 111 §111.E cutover — write symbol-entry slot 3.  Dispatches
-    /// to Phase 47-compiled `nelisp_mirror_set_constant'.  Returns 1 on
-    /// hit, 0 on miss; on miss we fall back to the Rust auto-vivify
-    /// path (= construct a fresh symbol-entry with both value+function
-    /// = unbound_marker, plist = nil, constant = `truthy', then
-    /// prepend onto the bucket).
-    ///
-    /// Used by `env_shim::bi_globals_op set-constant' + `intern_constant'.
+    /// Write symbol-entry slot 3 (constant flag).  Phase 47 hit-path;
+    /// miss-path auto-vivifies an entry with value/function = unbound_marker.
     pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
         if matches!(&self.globals_record, Sexp::Nil) {
             return;
@@ -496,16 +456,9 @@ impl Env {
         }
     }
 
-    /// Doc 111 §111.E cutover — value-cell read.  Dispatches to
-    /// Phase 47-compiled `nelisp_mirror_lookup_value'.  Phase 47 writes
-    /// `Sexp::Nil' to the result slot on miss; we re-introduce the
-    /// `self.unbound_marker' sentinel by detecting miss via
-    /// `mirror_lookup_entry' (= the helper returns 0 on miss, non-zero
-    /// on hit) and returning the sentinel.
-    ///
-    /// Doc 102 Phase 5.c sentinel-return convention: returns
-    /// `self.unbound_marker' when the entry is absent OR holds the
-    /// sentinel; the slot's stored `Sexp' otherwise.
+    /// Value-cell read.  Returns `self.unbound_marker' on miss (sentinel
+    /// re-injected via `mirror_lookup_entry' since Phase 47 helper writes
+    /// `Sexp::Nil' on miss instead of the sentinel).
     pub(crate) fn mirror_lookup_value(&self, name: &str) -> Sexp {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return self.unbound_marker.clone();
@@ -533,9 +486,7 @@ impl Env {
         slot
     }
 
-    /// Doc 111 §111.E cutover — function-cell read.  Same sentinel-
-    /// reinjection pattern as `mirror_lookup_value' (= dispatch to #1
-    /// for miss detection, then #3 to fill the slot).
+    /// Function-cell read.  Same sentinel-reinjection as `mirror_lookup_value'.
     pub(crate) fn mirror_lookup_function(&self, name: &str) -> Sexp {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return self.unbound_marker.clone();
@@ -560,10 +511,7 @@ impl Env {
         slot
     }
 
-    /// Doc 111 §111.E cutover — `boundp' equivalent.  Dispatches to
-    /// Phase 47-compiled `nelisp_mirror_is_bound', supplying the
-    /// `self.unbound_marker' sentinel via a borrowed pointer so the
-    /// helper can compare the entry's slot 0 against it.
+    /// `boundp' equivalent — helper compares entry's slot 0 against `unbound_marker'.
     pub(crate) fn mirror_is_bound(&self, name: &str) -> bool {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return false;
@@ -582,8 +530,7 @@ impl Env {
         flag != 0
     }
 
-    /// Doc 111 §111.E cutover — `fboundp' equivalent.  Dispatches to
-    /// Phase 47-compiled `nelisp_mirror_is_fbound'.
+    /// `fboundp' equivalent — function-cell counterpart of `mirror_is_bound'.
     pub(crate) fn mirror_is_fbound(&self, name: &str) -> bool {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return false;
