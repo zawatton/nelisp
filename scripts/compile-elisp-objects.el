@@ -587,6 +587,30 @@
      :source-var nelisp-cc-cstr-helpers--source
      :output "nelisp_cstr_helpers.o"
      :requires-arch x86_64)
+    ;; Doc 117 §117.D.gaps.3 file-I/O sweep (powered by the §122.I
+    ;; CString helper above).  Three handlers consumed:
+    ;;   - `bi_syscall_stat'         -> libc `stat(2)' kernel
+    ;;   - `bi_syscall_canonicalize' -> libc `realpath(3)' kernel
+    ;;   - `bi_nl_write_file'        -> libc `open(2)' + `write(2)' +
+    ;;                                  `close(2)' chained kernel.
+    ;; Each elisp body owns the path CString lifecycle (= alloc via
+    ;; §122.I, free via §125.A) and the libc syscall edge.  The Rust
+    ;; shim retains arg validation + result-buffer allocation + Sexp
+    ;; wrap (= `Sexp::Symbol' tag for stat, `Sexp::Str' for
+    ;; canonicalize, `Sexp::T' / Internal-err for write-file).
+    ;; Linux-x86_64 only — same arch gate as the §122.I parent.
+    (nelisp-cc-bi-syscall-stat
+     :source-var nelisp-cc-bi-syscall-stat--source
+     :output "nelisp_bi_syscall_stat.o"
+     :requires-arch x86_64)
+    (nelisp-cc-bi-syscall-canonicalize
+     :source-var nelisp-cc-bi-syscall-canonicalize--source
+     :output "nelisp_bi_syscall_canonicalize.o"
+     :requires-arch x86_64)
+    (nelisp-cc-bi-nl-write-file
+     :source-var nelisp-cc-bi-nl-write-file--source
+     :output "nelisp_bi_nl_write_file.o"
+     :requires-arch x86_64)
     ;; Doc 123 §123.A — first substrate elisp化 stage.  Replaces the
     ;; simplest macro from `build-tool/src/eval/rc_primitives.rs' (=
     ;; the refcount-inc kernel) with a pure-elisp body that uses the

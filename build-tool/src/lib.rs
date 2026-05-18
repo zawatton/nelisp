@@ -330,6 +330,44 @@ pub mod elisp_cc_spike {
         // bi_open / bi_stat / bi_mkdir file-I/O sweep).
         fn nelisp_cstr_from_sexp(str_ptr: *const Sexp) -> *mut u8;
         fn nelisp_cstr_drop(buf_ptr: *mut u8, size: i64) -> i64;
+        // Doc 117 §117.D.gaps.3 — file-I/O syscall body sweeps powered
+        // by the §122.I CString helper.  Each kernel takes a `*const
+        // Sexp' pointing at a Rust-prepared (= normalised against
+        // `default-directory') `Sexp::Str' / `Sexp::MutStr' path
+        // argument, builds the libc CString via `nelisp_cstr_from_
+        // sexp', issues the relevant libc syscall(s) against a
+        // Rust-owned result buffer, frees the CString, and returns
+        // the libc rc.  The Rust shim retains arg validation +
+        // buffer allocation + Sexp wrap.
+        //
+        //   `nelisp_bi_syscall_stat(path_ptr, statbuf)' — libc
+        //     `stat(2)' against a Rust-owned 144-byte (= sizeof
+        //     `struct stat' on Linux x86_64 glibc) buffer.  Returns
+        //     i64 = 0 on success / -1 on error.  Rust inspects the
+        //     buffer's mode field and maps to `'absent / `'file /
+        //     `'directory' symbols.
+        //   `nelisp_bi_syscall_canonicalize(path_ptr, result_buf)'
+        //     — libc `realpath(3)' against a Rust-owned PATH_MAX
+        //     (= 4096-byte) result buffer.  Returns i64 = result_buf
+        //     address on success or 0/NULL on error.  Rust does
+        //     `CStr::from_ptr' + `Sexp::Str' wrap on success and
+        //     `Sexp::Nil' on NULL.
+        //   `nelisp_bi_nl_write_file(path_ptr, content_ptr)' —
+        //     chained libc `open(2)' + `write(2)' + `close(2)' against
+        //     a path string + content string.  Returns i64 = bytes
+        //     written (>= 0) on success or the failing syscall's
+        //     negative rc on error.  Rust maps < 0 → `EvalError::
+        //     Internal' (matching the pre-swap `std::fs::write'
+        //     error propagation).
+        fn nelisp_bi_syscall_stat(path_ptr: *const Sexp, statbuf: *mut u8) -> i64;
+        fn nelisp_bi_syscall_canonicalize(
+            path_ptr: *const Sexp,
+            result_buf: *mut u8,
+        ) -> i64;
+        fn nelisp_bi_nl_write_file(
+            path_ptr: *const Sexp,
+            content_ptr: *const Sexp,
+        ) -> i64;
         // Doc 122 §122.C — Extended extern-call (f64 args + f64 return) probes.
         fn nelisp_libm_sqrt(x: f64) -> f64;
         fn nelisp_libm_sin(x: f64) -> f64;
@@ -1356,6 +1394,25 @@ pub mod elisp_cc_spike {
     pub unsafe fn cstr_drop(buf_ptr: *mut u8, size: i64) -> i64 {
         nelisp_cstr_drop(buf_ptr, size)
     }
+
+    // Doc 117 §117.D.gaps.3 — file-I/O syscall body sweeps.  Each
+    // wrapper trivially dispatches to its matching `nelisp_*' extern;
+    // the safety preconditions are documented per-function (= the
+    // shared invariant is that the input Sexp pointer must be valid
+    // and point at a string-y variant, and the Rust-owned result
+    // buffer must be appropriately sized).
+    cc_wrap!(
+        bi_syscall_stat: nelisp_bi_syscall_stat,
+        (path_ptr: *const Sexp, statbuf: *mut u8) -> i64
+    );
+    cc_wrap!(
+        bi_syscall_canonicalize: nelisp_bi_syscall_canonicalize,
+        (path_ptr: *const Sexp, result_buf: *mut u8) -> i64
+    );
+    cc_wrap!(
+        bi_nl_write_file: nelisp_bi_nl_write_file,
+        (path_ptr: *const Sexp, content_ptr: *const Sexp) -> i64
+    );
 
     // Doc 122 §122.C libm probes + Doc 123 §123.A-C rc primitive
     // wrappers — collapsed via §127.A `cc_wrap!'.

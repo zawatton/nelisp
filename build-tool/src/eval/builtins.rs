@@ -497,13 +497,41 @@ fn env_default_directory(env: &Env) -> Option<String> {
 
 /// `(nelisp--syscall-canonicalize PATH)' — wraps `std::fs::canonicalize'.
 /// Returns nil on any error so elisp `file-truename' can fall back.
+///
+/// Doc 117 §117.D.gaps.3 (2026-05-18): the libc syscall body now runs
+/// through the Phase 47 elisp object compiled from
+/// `lisp/nelisp-cc-bi-syscall-canonicalize.el' (= same shape as the
+/// §117.D.3 sibling `bi_syscall_stat' modulo the libc symbol name).
+/// The Rust shim keeps arity validation + path normalisation + the
+/// PATH_MAX result buffer alloc + the NUL-terminated CStr → Sexp::Str
+/// wrap (= `Sexp::Nil' on NULL).  Behaviour parity with
+/// `std::fs::canonicalize' via `libc::realpath(3)' which both libstd
+/// and this kernel delegate to under the hood.
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-canonicalize", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
-    match std::fs::canonicalize(&p) {
-        Ok(resolved) => Ok(Sexp::Str(resolved.to_string_lossy().into_owned())),
-        Err(_) => Ok(Sexp::Nil),
+    let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
+    // PATH_MAX on Linux is 4096; we use that as the result-buffer
+    // size.  `libc::realpath' writes a NUL-terminated resolved path
+    // here on success.  `MaybeUninit' avoids the zero-init cost for
+    // bytes the kernel is about to overwrite.
+    let mut result_buf = vec![0u8; libc::PATH_MAX as usize];
+    let rc = unsafe {
+        crate::elisp_cc_spike::bi_syscall_canonicalize(
+            &path_sexp as *const Sexp,
+            result_buf.as_mut_ptr(),
+        )
+    };
+    if rc == 0 {
+        // libc `realpath' returned NULL — error / not-found / EACCES /
+        // ENOTDIR.  Pre-swap `Err(_) => Ok(Sexp::Nil)' parity.
+        return Ok(Sexp::Nil);
     }
+    // Find the NUL terminator and slice off the resolved path.  The
+    // buffer is owned by us — safe to read until the first 0x00.
+    let len = result_buf.iter().position(|&b| b == 0).unwrap_or(result_buf.len());
+    let resolved = String::from_utf8_lossy(&result_buf[..len]).into_owned();
+    Ok(Sexp::Str(resolved))
 }
 
 /// `(nelisp--syscall-read-file PATH)' — `std::fs::read_to_string'.
@@ -543,19 +571,54 @@ fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
 /// `(nelisp--syscall-stat PATH)' — returns `'absent / `'file / `'directory.
 /// Other file types + any metadata error → `'absent.  Backs 4 elisp wrappers
 /// (file-exists-p / file-readable-p / file-directory-p / file-regular-p).
+///
+/// Doc 117 §117.D.gaps.3 (2026-05-18): the libc syscall body now runs
+/// through the Phase 47 elisp object compiled from
+/// `lisp/nelisp-cc-bi-syscall-stat.el' (= `nelisp_cstr_from_sexp' for
+/// the path CString + `extern-call stat' for the syscall + `dealloc-
+/// bytes' for the CString free, sequenced via a 2-arg `prog2'
+/// helper).  The Rust shim keeps arity validation + path
+/// normalisation + the `struct stat' buffer alloc + the mode-field
+/// inspection + the `'absent / `'file / `'directory' symbol tag
+/// dispatch.  Behaviour parity with the pre-swap
+/// `std::fs::metadata' shape via `libc::S_IFMT' mask of the
+/// populated buffer's `st_mode' field.
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-stat", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
-    let tag = match std::fs::metadata(&p) {
-        Ok(m) if m.is_dir()  => "directory",
-        Ok(m) if m.is_file() => "file",
-        // Exotic file types (sockets / fifos / block-dev / char-dev)
-        // are reported `'absent' to mirror the prior behaviour where
-        // both `is_file()' and `is_dir()' returned false → all 4
-        // wrappers returned nil.  A future refinement could split
-        // these out, but no current call site distinguishes.
-        Ok(_)                => "absent",
-        Err(_)               => "absent",
+    // Build a `Sexp::Str' the elisp kernel can read.  `to_string_lossy'
+    // matches the pre-swap path's UTF-8 coercion (= libstd would have
+    // done the same on the way through `metadata(&Path)' since
+    // `PathBuf' is opaque).
+    let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
+    // Rust-owned `struct stat' buffer.  `libc::stat' size depends on
+    // glibc / musl — use the libc-crate type directly so the layout
+    // matches the kernel's expectation byte-for-byte.
+    let mut statbuf: libc::stat = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        crate::elisp_cc_spike::bi_syscall_stat(
+            &path_sexp as *const Sexp,
+            (&mut statbuf as *mut libc::stat) as *mut u8,
+        )
+    };
+    // Map (rc, mode) → tag symbol.  Negative rc = errno-set error =
+    // `'absent (= mirrors the pre-swap `Err(_) => "absent"' arm).
+    let tag = if rc < 0 {
+        "absent"
+    } else {
+        // S_IFMT mask + S_IFDIR / S_IFREG compare.  Exotic file types
+        // (sockets / fifos / block-dev / char-dev) fall through to
+        // `'absent' — same behaviour as the pre-swap `Ok(_) =>
+        // "absent"' arm where both `is_file()' and `is_dir()' returned
+        // false.
+        let mode = statbuf.st_mode & libc::S_IFMT;
+        if mode == libc::S_IFDIR {
+            "directory"
+        } else if mode == libc::S_IFREG {
+            "file"
+        } else {
+            "absent"
+        }
     };
     Ok(Sexp::Symbol(tag.into()))
 }
@@ -1197,10 +1260,42 @@ fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 fn bi_nl_write_file(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-write-file", args, 2, Some(2))?;
+    // Validate stringp for both args + materialise variant-uniform
+    // `Sexp::Str' views the elisp kernel can read.  The kernel does
+    // not introspect the variant tag — it expects `Sexp::Str' /
+    // `Sexp::MutStr' (the §122.I `nelisp_cstr_from_sexp' + §122.H
+    // `nl_str_bytes_ptr' externs handle both natively).  Routing
+    // through `Sexp::Str' keeps the kernel free of variant-specific
+    // branching.
     let path = string_value(&args[0])?;
     let content = string_value(&args[1])?;
-    std::fs::write(&path, content)
-        .map_err(|e| EvalError::Internal(format!("nl-write-file: {}: {}", path, e)))?;
+    let path_sexp = Sexp::Str(path.clone());
+    let content_sexp = Sexp::Str(content);
+    // Doc 117 §117.D.gaps.3 (2026-05-18): the chained libc
+    // `open(2)' + `write(2)' + `close(2)' steps now run through the
+    // Phase 47 elisp object compiled from
+    // `lisp/nelisp-cc-bi-nl-write-file.el'.  Rust keeps the arity
+    // + `stringp' dispatch + the negative-rc → Internal-err
+    // mapping.
+    let rc = unsafe {
+        crate::elisp_cc_spike::bi_nl_write_file(
+            &path_sexp as *const Sexp,
+            &content_sexp as *const Sexp,
+        )
+    };
+    if rc < 0 {
+        // Mirror the pre-swap `map_err' branch: I/O errors propagate
+        // through `EvalError::Internal' with the same `path' prefix.
+        // The elisp kernel collapses open / write errors into a
+        // single negative-i64 return; the Rust shim cannot distinguish
+        // which syscall failed, but neither did the pre-swap
+        // `std::fs::write' which only surfaced an opaque
+        // `std::io::Error' string.
+        return Err(EvalError::Internal(format!(
+            "nl-write-file: {}: kernel returned {}",
+            path, rc,
+        )));
+    }
     Ok(Sexp::T)
 }
 
