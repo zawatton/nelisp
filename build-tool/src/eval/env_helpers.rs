@@ -1,26 +1,7 @@
-//! Doc 102 Phase 8 — globals mirror + lexical frame stack helpers
-//! extracted from `eval/env.rs'.  Doc 114 Step 5 (2026-05-17)
-//! consolidated the previously-separate `env_mirror.rs' +
-//! `env_lexframe.rs' modules into this single helpers file (= the
-//! files were deleted outright; the `pub mod' declarations were
-//! removed from `eval/mod.rs').
-//!
-//! Two responsibilities live here:
-//!
-//! 1. **Globals mirror** — Rust-direct walk of the elisp-side
-//!    `nelisp-env' record (= `Env::globals_record').  Replaces the
-//!    pre-Phase-2.b `globals: HashMap<String, SymbolEntry>' field.
-//!    Phase 5.c sentinel-return convention applies to the lookup
-//!    helpers.  See `lisp/nelisp-env.el' for the elisp layout side
-//!    and Doc 102 §2.1 / §2.2 for the rep + bucket-count rationale.
-//!
-//! 2. **Lexical frame stack** — Rust-direct walk of the elisp-side
-//!    `nelisp-lexframe-stack' record (= `Env::frames_record').
-//!    Replaces the pre-Doc-104 `frames: Vec<HashMap<String,
-//!    FrameCell>>' field; Doc 104 Stage 3.a-3.e covers the Vec →
-//!    Sexp::Record migration, Doc 102 Phase 4.b-4.b adds the elisp-
-//!    dispatch path for `capture_lexical' / `push_captured'.  See
-//!    `lisp/nelisp-lexframe.el' for the elisp layout side.
+//! Globals mirror + lexical frame stack helpers — Rust-direct walks
+//! of the elisp `nelisp-env' / `nelisp-lexframe-stack' records
+//! (= `Env::globals_record' / `Env::frames_record').  See
+//! `lisp/nelisp-env.el' + `lisp/nelisp-lexframe.el' for the layout.
 
 #[cfg(any(test, feature = "image-baker"))]
 use std::collections::HashMap;
@@ -31,14 +12,19 @@ use super::env::SymbolEntry;
 use super::error::EvalError;
 use super::sexp::Sexp;
 
-impl Env {
-    // ============================================================
-    // Globals mirror helpers (formerly `eval/env_mirror.rs').
-    // ============================================================
+// SAFETY (applies to every `unsafe' block in this file unless noted):
+// pointers passed to `elisp_cc_spike::*' helpers refer to stack-local
+// `Sexp' values or `Env'-owned fields (`globals_record',
+// `frames_record', `unbound_marker') that outlive the call.  The
+// helpers perform refcount-aware clones into result slots; mutating
+// helpers (`*_or_insert', `mirror_clear_*') handle both hit (=
+// in-place slot-set) and miss (= alloc-entry + bucket-prepend, Doc
+// 119 §119.A auto-vivify) paths internally.
 
-    /// Set the value cell.  Phase 47 in-place update on hit; Phase 47
-    /// auto-vivify on miss (Doc 119 §119.A — both paths in elisp).
-    /// No-op when mirror is uninitialised.
+impl Env {
+    // ---- Globals mirror helpers ----
+
+    /// Set the value cell.  Doc 119 §119.A — hit + miss both in elisp.
     pub(crate) fn mirror_set_value(&mut self, name: &str, value: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -48,10 +34,6 @@ impl Env {
         let sym_ptr = &sym as *const Sexp;
         let val_ptr = &value as *const Sexp;
         let unbound_ptr = &self.unbound_marker as *const Sexp;
-        // SAFETY: all pointers point at stack-locals or `Env'-owned
-        // fields that outlive the call.  The Phase 47 helper handles
-        // both hit (= record-slot-set) and miss (= alloc-entry +
-        // bucket-prepend) paths internally — see Doc 119 §119.A.
         unsafe {
             crate::elisp_cc_spike::mirror_set_value_or_insert(
                 mirror_ptr, sym_ptr, val_ptr, unbound_ptr,
@@ -59,8 +41,7 @@ impl Env {
         }
     }
 
-    /// Function-cell counterpart of `mirror_set_value'.  Doc 119 §119.A
-    /// — both paths in elisp.
+    /// Function-cell counterpart of `mirror_set_value'.
     pub(crate) fn mirror_set_function(&mut self, name: &str, func: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -70,7 +51,6 @@ impl Env {
         let sym_ptr = &sym as *const Sexp;
         let val_ptr = &func as *const Sexp;
         let unbound_ptr = &self.unbound_marker as *const Sexp;
-        // SAFETY: see `mirror_set_value'.
         unsafe {
             crate::elisp_cc_spike::mirror_set_function_or_insert(
                 mirror_ptr, sym_ptr, val_ptr, unbound_ptr,
@@ -88,8 +68,6 @@ impl Env {
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
         let unbound_ptr = &self.unbound_marker as *const Sexp;
-        // SAFETY: see `mirror_set_value'.  `unbound_ptr' points at
-        // the `Env'-owned sentinel which outlives the call.
         unsafe {
             crate::elisp_cc_spike::mirror_clear_value(
                 mirror_ptr, sym_ptr, unbound_ptr,
@@ -106,7 +84,6 @@ impl Env {
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
         let unbound_ptr = &self.unbound_marker as *const Sexp;
-        // SAFETY: see `mirror_clear_value'.
         unsafe {
             crate::elisp_cc_spike::mirror_clear_function(
                 mirror_ptr, sym_ptr, unbound_ptr,
@@ -115,17 +92,10 @@ impl Env {
     }
 
     /// Full symbol-entry installer (value + function + plist + constant).
-    /// Phase 47 hit-path overwrites all 4 slots; miss-path falls back to
-    /// `mirror_prepend_to_bucket' auto-vivify.  Used by image decode +
-    /// `intern_constant'.
-    ///
-    /// Doc 126.E (2026-05-18) — promoted to `pub` (from `pub(crate)`) so
-    /// the relocated NELIMG v3 decoder living in
-    /// `build-tool/src/bin/nelisp-baker.rs' (= a separate crate per
-    /// Rust's bin-vs-lib model) can install decoded globals.  The bin
-    /// is feature-gated behind `image-baker' (= `required-features' in
-    /// `Cargo.toml'), so this entry point is only exercised by the
-    /// §95.e cross-impl byte-identity gate, not the production runtime.
+    /// Hit-path overwrites all 4 slots; miss-path auto-vivifies (Doc
+    /// 119 §119.A).  Used by image decode + `intern_constant'.
+    /// `pub' (not `pub(crate)') so the `image-baker'-feature-gated
+    /// `bin/nelisp-baker.rs' bin (= separate crate) can call it.
     pub fn mirror_install_entry(
         &mut self,
         name: &str,
@@ -150,11 +120,6 @@ impl Env {
         let function_ptr = &function_slot as *const Sexp;
         let plist_ptr = &plist_slot as *const Sexp;
         let constant_ptr = &constant_slot as *const Sexp;
-        // SAFETY: all pointers refer to stack-local `Sexp' values
-        // (or `&self.globals_record') that outlive the call.  The
-        // helper performs refcount-aware clones into each entry
-        // slot on hit OR allocates + prepends a fresh symbol-entry
-        // record on miss (= Doc 119 §119.A auto-vivify fold).
         unsafe {
             crate::elisp_cc_spike::mirror_install_entry_or_insert(
                 mirror_ptr, sym_ptr,
@@ -171,18 +136,15 @@ impl Env {
         let sym = Sexp::Symbol(name.into());
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
-        // SAFETY: `mirror_ptr' points at a live `Sexp::Record(_)'
-        // and `sym_ptr' at a stack-local `Sexp::Symbol(_)' which
-        // outlives the call.
         let flag = unsafe {
             crate::elisp_cc_spike::mirror_is_constant(mirror_ptr, sym_ptr)
         };
         flag != 0
     }
 
-    /// Write symbol-entry slot 3 (constant flag).  Phase 47 hit-path
-    /// + auto-vivify miss-path (= Doc 119 §119.A).  Miss-path vivifies
-    /// an entry with value/function = `unbound_marker' and plist = Nil.
+    /// Write symbol-entry slot 3 (constant flag).  Hit + miss both in
+    /// elisp; miss-path vivifies with value/function = `unbound_marker'
+    /// and plist = Nil.
     pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
         if matches!(&self.globals_record, Sexp::Nil) {
             return;
@@ -193,7 +155,6 @@ impl Env {
         let sym_ptr = &sym as *const Sexp;
         let flag_ptr = &value as *const Sexp;
         let unbound_ptr = &self.unbound_marker as *const Sexp;
-        // SAFETY: see `mirror_set_value'.
         unsafe {
             crate::elisp_cc_spike::mirror_set_constant_or_insert(
                 mirror_ptr, sym_ptr, flag_ptr, unbound_ptr,
@@ -202,13 +163,9 @@ impl Env {
     }
 
     /// Walk every bucket of the mirror and invoke `callback(name,
-    /// entry)' for each live symbol-entry.  Used by the image baker
-    /// (= replaces `env.globals.iter()').  Callback receives a
-    /// `NlRecordRef' (= refcount-bumped clone) so it may read all
-    /// four slots (value / function / plist / constant).
-    ///
-    /// Doc 102 Phase 7 — gated; only consumer is
-    /// `mirror_snapshot_globals' which is itself baker-only.
+    /// entry)' for each live symbol-entry.  Baker-only (replaces
+    /// `env.globals.iter()').  Callback receives a `NlRecordRef'
+    /// (= refcount-bumped clone) so it may read all four slots.
     #[cfg(any(test, feature = "image-baker"))]
     pub(crate) fn mirror_iter_entries<F>(&self, mut callback: F)
     where
@@ -240,13 +197,9 @@ impl Env {
     }
 
     /// Snapshot the elisp mirror as a `HashMap<String, SymbolEntry>'
-    /// so the baker can diff before / after eval'ing a stdlib `.el'
-    /// file.  Captures elisp-driven mutations (= env_shim `(defun)' /
-    /// `(fset)' that wrote ONLY to the mirror).
-    ///
-    /// Doc 102 Phase 7 — gated; called only by `iterative_bake_one' +
-    /// `encode_v3' (= both image-baker-only paths, both relocated to
-    /// `bin/nelisp-baker.rs' in Doc 126.E).
+    /// so the baker can diff before / after eval'ing a stdlib `.el'.
+    /// Baker-only — called by `iterative_bake_one' + `encode_v3' in
+    /// `bin/nelisp-baker.rs'.
     #[cfg(any(test, feature = "image-baker"))]
     pub fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
         let mut out: HashMap<String, SymbolEntry> = HashMap::new();
@@ -276,11 +229,7 @@ impl Env {
 
     /// Per-file diff of the elisp mirror against `before' (= a prior
     /// `mirror_snapshot_globals' result).  Returns a fresh `Env' whose
-    /// **mirror** is populated with the changed entries.  Used by
-    /// `iterative_bake_one' in `bin/nelisp-baker.rs' (Doc 126.E —
-    /// formerly `image::iterative_bake_one').
-    ///
-    /// Doc 102 Phase 7 — gated; only used by `iterative_bake_one'.
+    /// mirror is populated with the changed entries.  Baker-only.
     #[cfg(any(test, feature = "image-baker"))]
     pub fn mirror_diff_view(&self, before: &HashMap<String, SymbolEntry>) -> Env {
         let mut diff = Env::empty();
@@ -300,19 +249,14 @@ impl Env {
         diff
     }
 
-    /// Sprint B Stage 2 — Rust-direct empty mirror constructor.
-    /// Pre-allocates the `nelisp-env' / `fast-hash-table' /
-    /// `buckets' record graph without invoking elisp `nelisp-env-make'
-    /// (= no `apply_function' detour, no STDLIB dependency).  Sets
-    /// `self.unbound_marker' to a Rust-defined sentinel
-    /// `Sexp::Symbol("nelisp--unbound-marker")'; STDLIB's defvar of
-    /// the same name will overwrite the post-decode value, after
-    /// which `install_globals_record' captures the post-decode value
-    /// and walks the mirror to refresh in-place sentinels.
-    // Doc 126.E (2026-05-18) — promoted to `pub` (from `pub(crate)`) so
-    // the relocated NELIMG v3 decoder in `bin/nelisp-baker.rs' can call
-    // it before `decode_v3_into'.  See `mirror_install_entry' for the
-    // full rationale.
+    /// Rust-direct empty mirror constructor.  Pre-allocates the
+    /// `nelisp-env' / `fast-hash-table' / `buckets' record graph
+    /// without invoking elisp `nelisp-env-make' (= no `apply_function'
+    /// detour, no STDLIB dependency).  Sets `self.unbound_marker' to
+    /// a Rust-defined sentinel `Sexp::Symbol("nelisp--unbound-marker")';
+    /// STDLIB's defvar of the same name will overwrite the post-decode
+    /// value, after which `install_globals_record' refreshes in-place
+    /// sentinels.  `pub' so `bin/nelisp-baker.rs' can call it.
     pub fn install_empty_mirror_rust_direct(&mut self) {
         const BUCKET_COUNT: usize = 1024;
         // Sentinel for absent slots — replaced post-decode by the
@@ -331,12 +275,8 @@ impl Env {
     }
 
     /// Fast read from the elisp env mirror via Rust-direct
-    /// `Sexp::Record' walk.  No `apply_function' (= no FNV-1a
-    /// interpreted loop overhead).  Returns the symbol-entry record's
-    /// `NlRecordRef' handle (= refcount-bumped clone), or None if the
-    /// key is absent.
-    ///
-    /// Layout (= `lisp/nelisp-env.el' + `nelisp-stdlib-fast-hash.el'):
+    /// `Sexp::Record' walk.  Returns the symbol-entry record's
+    /// `NlRecordRef' handle, or None if absent.  Layout:
     ///   globals_record = Sexp::Record(`nelisp-env')
     ///     slots[0] = Sexp::Record(`fast-hash-table')
     ///       slots[0] = Sexp::Int (= bucket count, power-of-2)
@@ -344,23 +284,11 @@ impl Env {
     ///       slots[2] = Sexp::Int (= entry count)
     ///   Bucket alist cell: (Sexp::Cons (Sexp::Str . Sexp::Record(`symbol-entry')))
     ///   Symbol entry slots: [value, function, plist, constant]
-    #[allow(dead_code)] // Doc 114 x86_64-linux pivot: callers dispatch
-                        // directly to Phase 47; the static method is
-                        // retained as a thin wrapper for any future
-                        // call sites.
+    #[allow(dead_code)] // thin wrapper; callers dispatch direct to Phase 47.
     pub(crate) fn mirror_lookup_entry(
         env_record: &Sexp,
         name: &str,
     ) -> Option<crate::eval::nlrecord::NlRecordRef> {
-        // Doc 111 §111.E cutover — dispatch to Phase 47-compiled
-        // `nelisp_mirror_lookup_entry'.  The helper returns the raw
-        // `*const Sexp' of the matching entry slot (= `(KEY . ENTRY)'
-        // pair's CDR slot, which holds a `Sexp::Record(_)' shape), or
-        // 0 on miss / empty mirror.  We deref and clone the
-        // `NlRecordRef' to satisfy the existing `Option<NlRecordRef>'
-        // return shape; the deref is sound because the returned slot
-        // is owned by the bucket's `NlConsBox' pair and stays live as
-        // long as `*env_record' is unchanged.
         if !matches!(env_record, Sexp::Record(_)) {
             return None;
         }
@@ -374,11 +302,8 @@ impl Env {
         if entry_ptr.is_null() {
             return None;
         }
-        // SAFETY: Phase 47 returned a non-null `*const Sexp' that
-        // borrows a slot in the live bucket chain owned by
-        // `*env_record'.  The slot value is `Sexp::Record(_)' by
-        // construction of `install_empty_mirror_rust_direct' +
-        // `mirror_prepend_to_bucket'.
+        // SAFETY: returned slot is owned by the bucket's `NlConsBox'
+        // pair and stays live as long as `*env_record' is unchanged.
         let entry_sexp: &Sexp = unsafe { &*entry_ptr };
         match entry_sexp {
             Sexp::Record(r) => Some(r.clone()),
@@ -386,9 +311,9 @@ impl Env {
         }
     }
 
-    /// Value-cell read.  Returns `self.unbound_marker' on miss (sentinel
-    /// re-injected via `mirror_lookup_entry' since Phase 47 helper writes
-    /// `Sexp::Nil' on miss instead of the sentinel).
+    /// Value-cell read.  Returns `self.unbound_marker' on miss
+    /// (sentinel re-injected here since the Phase 47 helper writes
+    /// `Sexp::Nil' on miss).
     pub(crate) fn mirror_lookup_value(&self, name: &str) -> Sexp {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return self.unbound_marker.clone();
@@ -396,8 +321,6 @@ impl Env {
         let sym = Sexp::Symbol(name.into());
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
-        // Detect miss via #1 first so we can re-inject the sentinel.
-        // SAFETY: pointers are stack-local references to live data.
         let entry_ptr = unsafe {
             crate::elisp_cc_spike::mirror_lookup_entry(mirror_ptr, sym_ptr)
         };
@@ -405,8 +328,6 @@ impl Env {
             return self.unbound_marker.clone();
         }
         let mut slot = Sexp::Nil;
-        // SAFETY: `slot' is a stack-local writable Sexp.  The
-        // helper performs a refcount-aware clone into the slot.
         unsafe {
             crate::elisp_cc_spike::mirror_lookup_value(
                 mirror_ptr, sym_ptr,
@@ -431,7 +352,6 @@ impl Env {
             return self.unbound_marker.clone();
         }
         let mut slot = Sexp::Nil;
-        // SAFETY: see `mirror_lookup_value'.
         unsafe {
             crate::elisp_cc_spike::mirror_lookup_function(
                 mirror_ptr, sym_ptr,
@@ -441,7 +361,7 @@ impl Env {
         slot
     }
 
-    /// `boundp' equivalent — helper compares entry's slot 0 against `unbound_marker'.
+    /// `boundp' equivalent — compares entry's slot 0 against `unbound_marker'.
     pub(crate) fn mirror_is_bound(&self, name: &str) -> bool {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return false;
@@ -450,8 +370,6 @@ impl Env {
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
         let unbound_ptr = &self.unbound_marker as *const Sexp;
-        // SAFETY: pointers are live references to `Env'-owned or
-        // stack-local `Sexp' values.
         let flag = unsafe {
             crate::elisp_cc_spike::mirror_is_bound(
                 mirror_ptr, sym_ptr, unbound_ptr,
@@ -469,7 +387,6 @@ impl Env {
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
         let unbound_ptr = &self.unbound_marker as *const Sexp;
-        // SAFETY: see `mirror_is_bound'.
         let flag = unsafe {
             crate::elisp_cc_spike::mirror_is_fbound(
                 mirror_ptr, sym_ptr, unbound_ptr,
@@ -478,15 +395,10 @@ impl Env {
         flag != 0
     }
 
-    // ============================================================
-    // Lexical frame stack helpers (formerly `eval/env_lexframe.rs').
-    // ============================================================
+    // ---- Lexical frame stack helpers ----
 
-    /// Doc 104 Stage 3.b — Rust-direct empty lexframe-stack constructor.
-    /// Pre-allocates the `nelisp-lexframe-stack' record graph without
-    /// invoking elisp `nelisp-lexframe-stack-make' (= no `apply_function'
-    /// detour, no STDLIB dependency).  Matches the layout in
-    /// `lisp/nelisp-lexframe.el':
+    /// Rust-direct empty lexframe-stack constructor.  Matches the
+    /// layout in `lisp/nelisp-lexframe.el':
     ///   frames_record = Sexp::Record(`nelisp-lexframe-stack')
     ///     slots[0] = Sexp::Vector(BACKING, length = INITIAL_CAPACITY,
     ///                             all entries Sexp::Nil)
@@ -499,12 +411,6 @@ impl Env {
             vec![backing, Sexp::Int(0)],
         );
     }
-
-    // ---- Doc 104 Stage 3.b — Rust-direct frame helpers ----
-    //
-    // These parallel the `mirror_*' globals helpers (= walk the elisp
-    // `nelisp-lexframe-stack' record via NlRecordRef / NlVectorRef
-    // instead of `apply_function').
 
     /// Layout walker — fetch the backing vector + current depth from
     /// `self.frames_record'.  Returns None when the mirror is unbuilt
@@ -658,7 +564,7 @@ impl Env {
     /// Internal — `nelisp-lexframe-lookup' for a frame record handle.
     /// Returns `Some(cell)' when NAME is bound, `None' when absent.
     /// Doc 115 §115.7 — hashes NAME via the pure-elisp `nelisp_fnv1a'.
-    #[allow(dead_code)] // Doc 104 Stage 3.b — used by stack walks + tests
+    #[allow(dead_code)] // used by stack walks + tests
     fn frame_lookup_in(frame: &Sexp, name: &str) -> Option<Sexp> {
         let Sexp::Record(frame_rec) = frame else { return None };
         let ht_rec = match frame_rec.slots.get(0)? { Sexp::Record(r) => r, _ => return None };
@@ -691,7 +597,7 @@ impl Env {
 
     /// Look up NAME in the innermost frame only.  Returns `None' when
     /// stack is empty / mirror unbuilt / NAME absent.
-    #[allow(dead_code)] // Doc 104 Stage 3.b — used by stack walks + tests
+    #[allow(dead_code)] // used by stack walks + tests
     pub(crate) fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
         let (_stack_rec, backing, depth) = self.frame_stack_view()?;
         if depth == 0 { return None; }
@@ -700,9 +606,8 @@ impl Env {
     }
 
     /// Innermost-first walk across the entire mirror stack.  Returns
-    /// the first NAME hit.  Mirrors `nelisp-lexframe-stack-find' +
-    /// `find_frame_cell'.  Doc 104 Stage 3.c — `find_frame_cell' now
-    /// delegates here.
+    /// the first NAME hit.  Mirrors `nelisp-lexframe-stack-find';
+    /// `find_frame_cell' delegates here.
     pub(crate) fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
         let (_stack_rec, backing, depth) = self.frame_stack_view()?;
         for i in (0..depth).rev() {
@@ -745,13 +650,3 @@ impl Env {
     }
 }
 
-// Doc 115 §115.7 — the `mirror_fnv1a' free fn + `nl_mirror_fnv1a_sexp'
-// extern wrapper have been deleted.  Every call site (= the three
-// callers above in `mirror_prepend_to_bucket' / `frame_bind_into' /
-// `frame_lookup_in', plus the elisp `extern-call' sites in
-// `lisp/nelisp-cc-mirror-lookup-entry.el' / `nelisp-cc-frame-bind.el' /
-// `nelisp-cc-frame-stack-find.el') now dispatches through the
-// pure-elisp `nelisp_fnv1a' Phase 47 `.o' compiled from
-// `lisp/nelisp-cc-fnv1a.el'.  The Rust hash bit-equality test for
-// ASCII reference vectors moves to the integration probe at
-// `tests/elisp_cc_fnv1a_probe.rs'.
