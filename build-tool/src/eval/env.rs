@@ -100,52 +100,148 @@ impl Env {
     /// Load-order rationale lives in `nelisp-baker.rs' STDLIB_FILES + each
     /// `.el' header.  `decode_v3_into' streams straight into `env.globals'
     /// (no eval, no reader — Doc 98 §98.3).
+    ///
+    /// Doc 126.A (2026-05-18) — `NELISP_EVAL_BOOT=1' switches the boot
+    /// path from `decode_v3_into(image_bytes)' to `reader::read_all(source)'
+    /// + `eval(form, env)' per top-level form.  The `.el' sources are
+    /// the canonical artifact; the `.image' frozen-heap is a startup
+    /// optimization that Doc 126.B-D will retire entirely once the
+    /// eval-boot path is validated as default.  Both paths share the
+    /// same STDLIB load order (see `STDLIB_FILES' below).
     pub fn new_global() -> Self {
-        const STDLIB_IMAGES: &[(&str, &[u8])] = &[
-            ("nelisp-jit-substrate.el", include_bytes!("../../../lisp/nelisp-jit-substrate.el.image")),
-            ("nelisp-syscall-table.el", include_bytes!("../../../lisp/nelisp-syscall-table.el.image")),
-            ("nelisp-jit-strategy.el", include_bytes!("../../../lisp/nelisp-jit-strategy.el.image")),
-            ("nelisp-stdlib-env-shim.el", include_bytes!("../../../lisp/nelisp-stdlib-env-shim.el.image")),
-            ("nelisp-stdlib-eval-special.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-special.el.image")),
-            ("nelisp-stdlib-error.el", include_bytes!("../../../lisp/nelisp-stdlib-error.el.image")),
-            ("nelisp-stdlib.el", include_bytes!("../../../lisp/nelisp-stdlib.el.image")),
-            ("nelisp-stdlib-list.el", include_bytes!("../../../lisp/nelisp-stdlib-list.el.image")),
-            ("nelisp-stdlib-hof.el", include_bytes!("../../../lisp/nelisp-stdlib-hof.el.image")),
-            ("nelisp-stdlib-search.el", include_bytes!("../../../lisp/nelisp-stdlib-search.el.image")),
-            ("nelisp-stdlib-plist-str.el", include_bytes!("../../../lisp/nelisp-stdlib-plist-str.el.image")),
-            ("nelisp-stdlib-format.el", include_bytes!("../../../lisp/nelisp-stdlib-format.el.image")),
-            ("nelisp-stdlib-misc.el", include_bytes!("../../../lisp/nelisp-stdlib-misc.el.image")),
-            ("nelisp-stdlib-os.el", include_bytes!("../../../lisp/nelisp-stdlib-os.el.image")),
-            ("nelisp-pcase.el", include_bytes!("../../../lisp/nelisp-pcase.el.image")),
-            ("nelisp-cl-macros.el", include_bytes!("../../../lisp/nelisp-cl-macros.el.image")),
-            ("nelisp-stdlib-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-hash.el.image")),
-            ("nelisp-stdlib-gc.el", include_bytes!("../../../lisp/nelisp-stdlib-gc.el.image")),
-            ("nelisp-stdlib-equal.el", include_bytes!("../../../lisp/nelisp-stdlib-equal.el.image")),
-            ("nelisp-stdlib-prn.el", include_bytes!("../../../lisp/nelisp-stdlib-prn.el.image")),
-            ("nelisp-stdlib-reader.el", include_bytes!("../../../lisp/nelisp-stdlib-reader.el.image")),
-            ("nelisp-stdlib-eval-core.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-core.el.image")),
-            ("nelisp-stdlib-time.el", include_bytes!("../../../lisp/nelisp-stdlib-time.el.image")),
-            ("nelisp-stdlib-math.el", include_bytes!("../../../lisp/nelisp-stdlib-math.el.image")),
-            ("nelisp-stdlib-regex.el", include_bytes!("../../../lisp/nelisp-stdlib-regex.el.image")),
-            ("nelisp-stdlib-fast-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-fast-hash.el.image")),
-            ("nelisp-env.el", include_bytes!("../../../lisp/nelisp-env.el.image")),
-            ("nelisp-lexframe.el", include_bytes!("../../../lisp/nelisp-lexframe.el.image")),
+        // (name, .el source, .image bytes) tuples in STDLIB load order.
+        // Doc 126.A keeps both columns so the env-var gate can pick at
+        // boot time.  Doc 126.B-D will drop the image_bytes column.
+        const STDLIB_FILES: &[(&str, &str, &[u8])] = &[
+            ("nelisp-jit-substrate.el",
+             include_str!("../../../lisp/nelisp-jit-substrate.el"),
+             include_bytes!("../../../lisp/nelisp-jit-substrate.el.image")),
+            ("nelisp-syscall-table.el",
+             include_str!("../../../lisp/nelisp-syscall-table.el"),
+             include_bytes!("../../../lisp/nelisp-syscall-table.el.image")),
+            ("nelisp-jit-strategy.el",
+             include_str!("../../../lisp/nelisp-jit-strategy.el"),
+             include_bytes!("../../../lisp/nelisp-jit-strategy.el.image")),
+            ("nelisp-stdlib-env-shim.el",
+             include_str!("../../../lisp/nelisp-stdlib-env-shim.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-env-shim.el.image")),
+            ("nelisp-stdlib-eval-special.el",
+             include_str!("../../../lisp/nelisp-stdlib-eval-special.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-eval-special.el.image")),
+            ("nelisp-stdlib-error.el",
+             include_str!("../../../lisp/nelisp-stdlib-error.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-error.el.image")),
+            ("nelisp-stdlib.el",
+             include_str!("../../../lisp/nelisp-stdlib.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib.el.image")),
+            ("nelisp-stdlib-list.el",
+             include_str!("../../../lisp/nelisp-stdlib-list.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-list.el.image")),
+            ("nelisp-stdlib-hof.el",
+             include_str!("../../../lisp/nelisp-stdlib-hof.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-hof.el.image")),
+            ("nelisp-stdlib-search.el",
+             include_str!("../../../lisp/nelisp-stdlib-search.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-search.el.image")),
+            ("nelisp-stdlib-plist-str.el",
+             include_str!("../../../lisp/nelisp-stdlib-plist-str.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-plist-str.el.image")),
+            ("nelisp-stdlib-format.el",
+             include_str!("../../../lisp/nelisp-stdlib-format.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-format.el.image")),
+            ("nelisp-stdlib-misc.el",
+             include_str!("../../../lisp/nelisp-stdlib-misc.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-misc.el.image")),
+            ("nelisp-stdlib-os.el",
+             include_str!("../../../lisp/nelisp-stdlib-os.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-os.el.image")),
+            ("nelisp-pcase.el",
+             include_str!("../../../lisp/nelisp-pcase.el"),
+             include_bytes!("../../../lisp/nelisp-pcase.el.image")),
+            ("nelisp-cl-macros.el",
+             include_str!("../../../lisp/nelisp-cl-macros.el"),
+             include_bytes!("../../../lisp/nelisp-cl-macros.el.image")),
+            ("nelisp-stdlib-hash.el",
+             include_str!("../../../lisp/nelisp-stdlib-hash.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-hash.el.image")),
+            ("nelisp-stdlib-gc.el",
+             include_str!("../../../lisp/nelisp-stdlib-gc.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-gc.el.image")),
+            ("nelisp-stdlib-equal.el",
+             include_str!("../../../lisp/nelisp-stdlib-equal.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-equal.el.image")),
+            ("nelisp-stdlib-prn.el",
+             include_str!("../../../lisp/nelisp-stdlib-prn.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-prn.el.image")),
+            ("nelisp-stdlib-reader.el",
+             include_str!("../../../lisp/nelisp-stdlib-reader.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-reader.el.image")),
+            ("nelisp-stdlib-eval-core.el",
+             include_str!("../../../lisp/nelisp-stdlib-eval-core.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-eval-core.el.image")),
+            ("nelisp-stdlib-time.el",
+             include_str!("../../../lisp/nelisp-stdlib-time.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-time.el.image")),
+            ("nelisp-stdlib-math.el",
+             include_str!("../../../lisp/nelisp-stdlib-math.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-math.el.image")),
+            ("nelisp-stdlib-regex.el",
+             include_str!("../../../lisp/nelisp-stdlib-regex.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-regex.el.image")),
+            ("nelisp-stdlib-fast-hash.el",
+             include_str!("../../../lisp/nelisp-stdlib-fast-hash.el"),
+             include_bytes!("../../../lisp/nelisp-stdlib-fast-hash.el.image")),
+            ("nelisp-env.el",
+             include_str!("../../../lisp/nelisp-env.el"),
+             include_bytes!("../../../lisp/nelisp-env.el.image")),
+            ("nelisp-lexframe.el",
+             include_str!("../../../lisp/nelisp-lexframe.el"),
+             include_bytes!("../../../lisp/nelisp-lexframe.el.image")),
         ];
         // max_recursion=1024 bounds eval-loop nesting under cargo test's
         // 2MB thread stack (see `recursion_depth_guard').
         let mut env = Env::install_stage0(1024);
-        for (name, image_bytes) in STDLIB_IMAGES {
-            let fallback = match image::decode_v3_into(&mut env, image_bytes) {
-                Ok(f) => f,
-                Err(e) => panic!("{} image decode failed: {}", name, e),
-            };
-            assert!(
-                fallback.is_empty(),
-                "{} image has non-empty FALLBACK_FORMS ({} forms) — \
-                 rebake with `make bake-images' (= --frozen-heap)",
-                name,
-                fallback.len()
-            );
+        // Doc 126.A — env-var gate selects boot strategy.
+        let eval_boot = std::env::var_os("NELISP_EVAL_BOOT")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false);
+        if eval_boot {
+            let trace = std::env::var_os("NELISP_EVAL_BOOT_TRACE")
+                .map(|v| !v.is_empty() && v != "0")
+                .unwrap_or(false);
+            for (name, source, _image_bytes) in STDLIB_FILES {
+                let forms = match crate::reader::read_all(source) {
+                    Ok(f) => f,
+                    Err(e) => panic!("{} eval-boot read failed: {}", name, e),
+                };
+                for (idx, form) in forms.iter().enumerate() {
+                    if trace {
+                        eprintln!("[eval-boot] {}: form #{}", name, idx);
+                    }
+                    if let Err(e) = crate::eval::eval(form, &mut env) {
+                        panic!(
+                            "{} eval-boot eval failed at form #{}: {}\n\
+                             form: {}",
+                            name, idx, e,
+                            crate::eval::sexp::fmt_sexp(form),
+                        );
+                    }
+                }
+            }
+        } else {
+            for (name, _source, image_bytes) in STDLIB_FILES {
+                let fallback = match image::decode_v3_into(&mut env, image_bytes) {
+                    Ok(f) => f,
+                    Err(e) => panic!("{} image decode failed: {}", name, e),
+                };
+                assert!(
+                    fallback.is_empty(),
+                    "{} image has non-empty FALLBACK_FORMS ({} forms) — \
+                     rebake with `make bake-images' (= --frozen-heap)",
+                    name,
+                    fallback.len()
+                );
+            }
         }
         // Elisp dispatch ON post-bootstrap; `NELISP_USE_RUST_APPLY' env
         // var pins Rust dispatch as escape hatch.

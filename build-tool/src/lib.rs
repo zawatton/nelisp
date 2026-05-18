@@ -48,14 +48,12 @@ pub mod image;
 // Keeping this `pub(crate)' lets `UnifiedJit' field types stay
 // `pub(super)' without `private_interfaces' warnings.
 pub(crate) mod jit;
-// Reader feature gate (Doc 73 §2.4 / Doc 98 §98.3).  All production
-// `reader::read_*' callsites are gone: boot reads pre-baked NELIMG v3
-// frozen-heap images via `image::decode_v3_into', and `eval::eval_str'
-// / `eval_str_all' route through the elisp reader.  The Rust reader
-// survives only inside `image-baker' feature builds (= `nelisp-baker'
-// dev tool) where `image::iterative_bake_one' parses each stdlib
-// source on the way to its v3 image, plus the reader's own ERTs.
-#[cfg(any(test, feature = "image-baker"))]
+// Reader (Doc 73 §2.4 / Doc 98 §98.3 / Doc 126.A §126.A).  Doc 126.A
+// (2026-05-18) re-promoted the reader to production: `Env::new_global'
+// dispatches to `reader::read_all' + `eval' per top-level STDLIB form
+// when `NELISP_EVAL_BOOT=1' is set, as the first step toward retiring
+// the entire NELIMG image subsystem (Doc 126.B-D).  The reader's pre-
+// 126.A role of supplying `image-baker' / ERT remains intact.
 pub mod reader;
 
 // Doc 99 §99.B spike — C-callable function compiled from elisp by the

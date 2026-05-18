@@ -122,6 +122,145 @@ DSL output against Rust output.  This gate is preserved in §126.B
 
 - DRAFT 2026-05-18.  Ship gate: §126.A boot path validated against
   STDLIB benchmark.
+- §126.A parallel boot path scaffold SHIPPED 2026-05-18 behind
+  ~NELISP_EVAL_BOOT=1~ env-var gate (= legacy ~decode_v3_into~ path
+  remains default).  Eval-boot path proceeds through 6/28 STDLIB
+  files (jit-substrate, syscall-table, jit-strategy, stdlib-env-shim,
+  stdlib-eval-special, stdlib-error) and panics at form #7 of
+  ~nelisp-stdlib.el~ — see §126.A.diag for root-cause analysis.
+
+* §126.A.diag — eval-boot blocker (2026-05-18)
+
+** Symptom
+
+#+begin_src
+NELISP_EVAL_BOOT=1 ./target/release/nelisp eval '(+ 1 2)'
+=> panic: nelisp-stdlib.el eval-boot eval failed at form #7:
+   wrong-type-argument: (symbolp 1)
+   form: (defun 1 (x) (nelisp--add2 x 1))
+#+end_src
+
+The source form is ~(defun 1+ (x) (nelisp--add2 x 1))~ but the
+Rust-side ~reader::read_all~ (= elisp §116.A/B lexer pipeline via
+~elisp_cc_spike::reader_lex_one~) parses the symbol ~1+~ as the
+integer ~1~ followed by no other token; the trailing ~+~ is silently
+consumed.
+
+Repro (= isolated repro through ~reader::read_all~):
+
+#+begin_src
+"(defun 1+ (x) (nelisp--add2 x 1))"  =>  (defun 1 (x) (nelisp--add2 x 1))
+"1+"                                  =>  1   (Sexp::Int(1))
+"(a 1+)"                              =>  (a 1)
+"(a 1+ b)"                            =>  (a 1 b)
+#+end_src
+
+** Root cause
+
+~lisp/nelisp-cc-reader-lexer.el::nelisp_reader_classify_step~ classifies
+an atom by walking its bytes and updating a 4-bit class field
+(has-dot / has-e / sym-bit / saw-digit).  Sign bytes (`+'/`-') are
+"tolerated, no class change" — they neither set the sym-bit nor
+terminate the atom.  Given ~1+~:
+
+1. byte ~1~ → ~saw-digit~ bit set, class = 8
+2. byte ~+~ → "tolerated", class unchanged
+3. end-of-atom (whitespace/paren) → final classifier:
+   - sym-bit (bit 2) not set
+   - saw-digit (bit 3) set
+   - dot/e (bit 0|1) not set
+   - → returns 20 (kind Int)
+4. Parser converts the captured bytes ~"1+"~ via ~i64::from_str~,
+   which... actually accepts ~"1+"~?  No — ~i64::from_str("1+")~
+   fails in Rust, but the elisp side's ~nelisp_atoi~ in
+   ~nelisp-cc-reader-parser.el~ stops at the non-digit byte and
+   returns 1.
+
+The classifier was designed for ~+1~ / ~-1~ / ~1.5e-3~ where signs
+appear at boundary positions (= start of atom or just after ~e~).
+Post-digit non-exponent signs (~1+~, ~1-~) are not legal numeric
+syntax in any language, but the lexer accepts them as the integer
+prefix and the parser silently drops the suffix.  Standard Elisp
+treats ~1+~ as a single symbol (= the unary increment function name).
+
+** Why ~.image~ baker on disk works
+
+The 28 ~lisp/*.image~ files committed to the repo were baked at
+commit ~a8b322ad~ (Doc 98 §98.3 cutover, 2026-05-11) with a then-
+current reader.  Several reader-evolving commits landed after:
+~60e5c25b~ §116.B+, ~28f8faaa~ §122.G, ~48d2c020~ §116.D delete
+lexer.rs+parser.rs.  Running ~nelisp-baker --check~ on current
+~main~ reproduces the same ~(symbolp 1)~ panic — the on-disk
+.image files predate the lexer regression.
+
+** Impact map
+
+Files containing ~1+~ / ~1-~ as code symbols (= not in comments):
+
+| File                          | Load pos | Has ~1+~/~1-~ as code |
+|-------------------------------+----------+------------------------|
+| nelisp-jit-substrate.el       |        1 | comments only          |
+| nelisp-stdlib-eval-special.el |        5 | comments only          |
+| nelisp-stdlib.el              |        7 | YES (= defun 1+/1-)    |
+| nelisp-stdlib-reader.el       |       21 | YES                    |
+| (rest)                        |    8..28 | varies                 |
+
+The chicken-and-egg: eval-boot needs to load ~nelisp-stdlib.el~
+(position 7) using the Rust reader, but stdlib.el is the first file
+that uses ~1+~ as code, and the post-bootstrap elisp reader
+(~nelisp--read-all-from-string-impl~) lives at position 21
+(~nelisp-stdlib-reader.el~).
+
+** Resolution options
+
+A. **Fix the lexer** (recommended): patch
+   ~nelisp_reader_classify_step~ to treat post-digit ~+~/~-~ as
+   sym-forcing unless preceded by ~e~/~E~ (= exponent context).
+   This is a 4-line patch but requires regenerating the
+   elisp-CC-compiled object files via
+   ~scripts/compile-elisp-objects.el~ (= emacs --batch build
+   step).  Once fixed, eval-boot proceeds; baker also unblocks.
+
+B. **Hot-switch reader mid-boot**: load the first 6 STDLIB files
+   with the Rust reader (= they don't use ~1+~ as code), then
+   re-load ~nelisp-stdlib.el~ + later via a path that doesn't
+   need the post-bootstrap elisp reader.  Doesn't actually work
+   because the post-bootstrap reader requires ~stdlib.el~ for
+   arithmetic.
+
+C. **Rewrite ~1+~/~1-~ in STDLIB sources**: replace every
+   ~(1+ x)~ with ~(nelisp--add2 x 1)~.  Mechanical but invasive
+   across ~20 files.
+
+Recommendation: option A.  Doc 126.A re-engagement after the
+lexer patch lands.
+
+** Scope of §126.A as shipped
+
+The parallel boot path is wired and gated:
+
+- ~build-tool/src/lib.rs~ — un-gates ~pub mod reader~ so the
+  production binary can ~use crate::reader::read_all~ (= the
+  reader was previously ~#[cfg(any(test, feature = "image-baker"))]~).
+- ~build-tool/src/eval/env.rs::new_global~ — augments
+  ~STDLIB_IMAGES~ → ~STDLIB_FILES~ tuple (name, include_str!.el,
+  include_bytes!.image), dispatches on ~NELISP_EVAL_BOOT~ env-var
+  to choose ~reader::read_all~ + ~eval~ per form vs the legacy
+  ~decode_v3_into~ path.  Failure mode includes the failing form
+  + index in the panic message.  Optional ~NELISP_EVAL_BOOT_TRACE=1~
+  prints per-form load progress to stderr.
+
+Verification:
+
+- Legacy ~decode_v3_into~ path: ~nelisp eval '(+ 1 2)'~ → 3 ✓
+- Eval-boot path: ~NELISP_EVAL_BOOT=1 nelisp eval '(+ 1 2)'~ →
+  panic on form #7 of nelisp-stdlib.el (see Symptom).
+
+Rust LOC delta: +59 (env.rs STDLIB_FILES tuple expansion + boot
+dispatch), -7 (lib.rs reader feature gate removed).  Net +52 LOC,
+consistent with §126.A being parallel-path scaffolding.  Doc 126.B-D
+will retire image.rs (~1567 LOC) + nelisp-baker.rs (~299 LOC) once
+the lexer patch lands and eval-boot is validated as default.
 
 * §126.8 References
 
