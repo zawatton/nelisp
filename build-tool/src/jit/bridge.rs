@@ -19,51 +19,86 @@ use crate::eval::sexp::Sexp;
 use std::ffi::CString;
 
 // Phase 47-compiled elisp trampolines live in `libnelisp_elisp_spike.a'.
-// Each symbol must be force-referenced once so the static linker pulls
-// the archive member into the binary (test executables included);
-// otherwise dlsym returns NULL.  `lib.rs::elisp_cc_spike' declares
-// signature-typed externs for arith / float / math / predicate / record
-// / access, but in a `cargo test --lib' binary those decls alone don't
-// pull the archive members in (no callsite forces the reference).  So
-// repeat the 36 elisp `.o' names here, nullary-typed; the duplicate
-// declaration is harmless (linker sees one symbol, types are irrelevant
-// for `*const u8' transmute callers).
-#[allow(dead_code, clashing_extern_declarations)]
+// `lib.rs::elisp_cc_spike' declares signature-typed externs for arith /
+// float / math / predicate / record / access (34 names) but in a
+// `cargo test --lib' binary those decls alone don't pull the archive
+// members in — no callsite reaches them.  Re-reference all 34 via the
+// public `crate::elisp_cc_spike::*' path (= same symbols, signatures
+// inherited so no `clashing_extern_declarations' lint), plus 4 locally-
+// declared cons names lib.rs doesn't cover.  Stored as `*const u8' so
+// the per-arity fn signatures don't need to unify.
+#[allow(dead_code, improper_ctypes)]
 extern "C" {
-    fn nelisp_jit_add2(); fn nelisp_jit_sub2(); fn nelisp_jit_mul2();
-    fn nelisp_jit_eq2();  fn nelisp_jit_lt2();  fn nelisp_jit_gt2();
-    fn nelisp_jit_le2();  fn nelisp_jit_ge2();  fn nelisp_jit_logior2();
-    fn nelisp_jit_logand2(); fn nelisp_jit_logxor2(); fn nelisp_jit_ash();
-    fn nl_jit_float_add(); fn nl_jit_float_sub(); fn nl_jit_float_mul();
-    fn nl_jit_float_div(); fn nl_jit_float_lt();  fn nl_jit_float_gt();
-    fn nl_jit_float_le();  fn nl_jit_float_ge();  fn nl_jit_float_eq_eps();
-    fn nl_jit_float_float(); fn nl_jit_float_exp(); fn nl_jit_float_log();
-    fn nelisp_jit_predicate_eq(); fn nelisp_jit_ref_eq();
-    fn nelisp_jit_record_type();  fn nelisp_jit_record_len();
-    fn nelisp_jit_record_ref();   fn nelisp_jit_record_set();
-    fn nelisp_jit_length(); fn nelisp_jit_aref();
-    fn nelisp_jit_aset();   fn nelisp_jit_elt();
-    fn nelisp_jit_cons_car();    fn nelisp_jit_cons_cdr();
-    fn nelisp_jit_cons_setcar(); fn nelisp_jit_cons_setcdr();
+    fn nelisp_jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64;
+    fn nelisp_jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i64;
+    fn nelisp_jit_cons_setcar(arg: *const Sexp, val: *const Sexp, out: *mut Sexp) -> i64;
+    fn nelisp_jit_cons_setcdr(arg: *const Sexp, val: *const Sexp, out: *mut Sexp) -> i64;
 }
 
-/// Force-link anchor: `#[used] static' of fn-ptrs so LTO can't elide
-/// the externs above.  Never read; presence keeps the symbols live.
+/// Force-link anchor: 4 trait-object wrapped arrays grouped by fn
+/// signature (= one per shape lib.rs declares).  `#[used]' on each
+/// makes LTO retain the symbols; arrays are split by signature to
+/// avoid the `*const u8' Sync limitation in const context.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 38] = [
-    nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
-    nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
-    nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
-    nl_jit_float_add, nl_jit_float_sub, nl_jit_float_mul, nl_jit_float_div,
-    nl_jit_float_lt,  nl_jit_float_gt,  nl_jit_float_le,  nl_jit_float_ge,
-    nl_jit_float_eq_eps, nl_jit_float_float, nl_jit_float_exp, nl_jit_float_log,
-    nelisp_jit_predicate_eq, nelisp_jit_ref_eq,
-    nelisp_jit_record_type, nelisp_jit_record_len,
-    nelisp_jit_record_ref,  nelisp_jit_record_set,
-    nelisp_jit_length, nelisp_jit_aref, nelisp_jit_aset, nelisp_jit_elt,
-    nelisp_jit_cons_car, nelisp_jit_cons_cdr,
-    nelisp_jit_cons_setcar, nelisp_jit_cons_setcdr,
-];
+static _ANCHOR_I64_I64: [unsafe extern "C" fn(i64, i64) -> i64; 12] = {
+    use crate::elisp_cc_spike as e;
+    [
+        e::nelisp_jit_add2, e::nelisp_jit_sub2, e::nelisp_jit_mul2, e::nelisp_jit_eq2,
+        e::nelisp_jit_lt2,  e::nelisp_jit_gt2,  e::nelisp_jit_le2,  e::nelisp_jit_ge2,
+        e::nelisp_jit_logior2, e::nelisp_jit_logand2, e::nelisp_jit_logxor2, e::nelisp_jit_ash,
+    ]
+};
+
+#[used]
+static _ANCHOR_F64_F64: [unsafe extern "C" fn(f64, f64) -> f64; 4] = {
+    use crate::elisp_cc_spike as e;
+    [e::nl_jit_float_add, e::nl_jit_float_sub, e::nl_jit_float_mul, e::nl_jit_float_div]
+};
+
+#[used]
+static _ANCHOR_F64_CMP: [unsafe extern "C" fn(f64, f64) -> i64; 5] = {
+    use crate::elisp_cc_spike as e;
+    [e::nl_jit_float_lt, e::nl_jit_float_gt, e::nl_jit_float_le, e::nl_jit_float_ge, e::nl_jit_float_eq_eps]
+};
+
+#[used]
+static _ANCHOR_F64_UNARY: [unsafe extern "C" fn(f64) -> f64; 3] = {
+    use crate::elisp_cc_spike as e;
+    [e::nl_jit_float_float, e::nl_jit_float_exp, e::nl_jit_float_log]
+};
+
+#[used]
+static _ANCHOR_PTR2: [unsafe extern "C" fn(*const Sexp, *const Sexp) -> i64; 1] = {
+    [crate::elisp_cc_spike::nelisp_jit_predicate_eq]
+};
+
+#[used]
+static _ANCHOR_PTR_OUT: [unsafe extern "C" fn(*const Sexp, *mut Sexp) -> i64; 3] = {
+    use crate::elisp_cc_spike as e;
+    [e::nelisp_jit_record_type, e::nelisp_jit_record_len, e::nelisp_jit_length]
+};
+
+#[used]
+static _ANCHOR_PTR_I64_OUT: [unsafe extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64; 3] = {
+    use crate::elisp_cc_spike as e;
+    [e::nelisp_jit_record_ref, e::nelisp_jit_aref, e::nelisp_jit_elt]
+};
+
+#[used]
+static _ANCHOR_PTR_I64_PTR_OUT: [unsafe extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64; 2] = {
+    use crate::elisp_cc_spike as e;
+    [e::nelisp_jit_record_set, e::nelisp_jit_aset]
+};
+
+#[used]
+static _ANCHOR_PTR2_OUT: [unsafe extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64; 3] = {
+    [crate::elisp_cc_spike::nelisp_jit_ref_eq, nelisp_jit_cons_setcar, nelisp_jit_cons_setcdr]
+};
+
+#[used]
+static _ANCHOR_CONS_OUT_1: [unsafe extern "C" fn(*const Sexp, *mut Sexp) -> i64; 2] = {
+    [nelisp_jit_cons_car, nelisp_jit_cons_cdr]
+};
 
 /// Extract JIT-entry name: accepts `Symbol' or `Str' (2 forms elisp
 /// wrappers produce).
