@@ -1,20 +1,14 @@
-//! intern / symbol-name / make-symbol + 6 other string/symbol
-//! trampolines.  `(*const Sexp, *mut Sexp) -> i64'; OK=0 / ERR=1.
-//! Reachable via `nl-jit-call-out-1' from `nelisp-jit-strategy.el'.
-//!
-//! Remaining Rust-only bodies are the Unicode case/tokenize helpers,
-//! float formatting, `concat_ints', and `make_symbol'.  `intern' +
-//! `make_mut_str' now resolve to Phase 47-compiled elisp on
-//! linux-x86_64.
+//! String/symbol trampolines reached via `nl-jit-call-out-1' from
+//! `nelisp-jit-strategy.el'.  Surviving Rust bodies: Unicode case +
+//! tokenize, float-format, concat_ints, make_symbol.  Sig `(*const Sexp,
+//! *mut Sexp) -> i64'; OK=0 / ERR=1.
 
 use crate::eval::sexp::Sexp;
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
 
-/// Fresh uninterned symbol via per-process counter — bit-for-bit
-/// identical to pre-§86.1.d `bi_make_symbol' output.  Accepts Str /
-/// MutStr / Symbol; ERR otherwise.
+/// Fresh uninterned symbol via per-process counter.  Accepts Str/MutStr/Symbol.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_make_symbol(arg: *const Sexp, out: *mut Sexp) -> i64 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,12 +24,6 @@ pub unsafe extern "C" fn nl_jit_make_symbol(arg: *const Sexp, out: *mut Sexp) ->
     TRAMPOLINE_OK
 }
 
-// Doc 87 §86.1.f (2026-05-10) — string case + tokenize trampolines.
-// Replace the deleted `bi_nl_downcase' / `bi_nl_upcase' /
-// `bi_nl_split_by_non_alnum' helpers in `eval/builtins.rs'.  Bridged
-// via `nl-jit-call-out-1' (1-arg) and `nl-jit-call-out-2' (2-arg, the
-// OMIT-EMPTY flag).
-
 fn read_text(v: &Sexp) -> Option<String> {
     match v {
         Sexp::Str(s) => Some(s.clone()),
@@ -47,33 +35,23 @@ fn read_text(v: &Sexp) -> Option<String> {
     }
 }
 
-/// `(nl-downcase STRING)' — UTF-8 lowercase via Rust stdlib.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_downcase(arg: *const Sexp, out: *mut Sexp) -> i64 {
     match read_text(&*arg) {
-        Some(s) => {
-            *out = Sexp::Str(s.to_lowercase());
-            TRAMPOLINE_OK
-        }
+        Some(s) => { *out = Sexp::Str(s.to_lowercase()); TRAMPOLINE_OK }
         None => TRAMPOLINE_ERR,
     }
 }
 
-/// `(nl-upcase STRING)' — UTF-8 uppercase via Rust stdlib.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_upcase(arg: *const Sexp, out: *mut Sexp) -> i64 {
     match read_text(&*arg) {
-        Some(s) => {
-            *out = Sexp::Str(s.to_uppercase());
-            TRAMPOLINE_OK
-        }
+        Some(s) => { *out = Sexp::Str(s.to_uppercase()); TRAMPOLINE_OK }
         None => TRAMPOLINE_ERR,
     }
 }
 
-/// `(nl-split-by-non-alnum STRING OMIT)' — split on runs of
-/// non-alphanumeric chars.  When OMIT is non-Nil, drops empty
-/// fragments (= the default Elisp `split-string ... t' behaviour).
+/// Split on non-alphanumeric runs.  OMIT non-Nil → drop empties.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_split_by_non_alnum(
     str_arg: *const Sexp,
@@ -95,20 +73,7 @@ pub unsafe extern "C" fn nl_jit_split_by_non_alnum(
 }
 
 
-// Doc 86 §86.1.e (2026-05-10) — Tier 2 simple `bi_*' arms migrated to
-// elisp.  The three trampolines below are bit-for-bit ports of the
-// deleted `bi_concat_ints' / `bi_make_mut_string' / `bi_format_float_
-// body' helpers in `eval/builtins.rs'; type / arity validation that
-// the `bi_*' fns did up front now lives in
-// `lisp/nelisp-stdlib-format.el' before the bridge call, so the
-// trampolines below trust their inputs (or surface ERR for the narrow
-// shape mismatches that survive the elisp pre-checks — e.g. dotted-
-// tail in a list-of-ints).
-
-/// `nelisp--concat-ints' — flat list of int char codepoints →
-/// `Sexp::Str'.  Skips any codepoint that fails `char::from_u32' for
-/// the same lossy-but-stable behaviour the deleted `bi_concat_ints'
-/// had.  Non-Cons / non-Int Cons-car surfaces as ERR.
+/// List of int codepoints → Sexp::Str.  Lossy on invalid codepoints; ERR on shape.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_concat_ints(arg: *const Sexp, out: *mut Sexp) -> i64 {
     let mut s = String::new();
@@ -135,19 +100,8 @@ pub unsafe extern "C" fn nl_jit_concat_ints(arg: *const Sexp, out: *mut Sexp) ->
     TRAMPOLINE_OK
 }
 
-// Doc 122 §122.A/B — `nl_jit_intern' + `nl_jit_make_mut_str' now
-// resolve to Phase-47-compiled elisp bodies on linux-x86_64.
-
-/// `nelisp--format-float-body' — IEEE-754 `format' float-conversion
-/// body builder.  ABI mode `:trampoline-format-float' (= xmm0 + rsi +
-/// rdx + rcx).  CONV is one of ?f / ?F / ?e / ?E / ?g / ?G; PREC is
-/// the precision (= caller passes >= 0).  Writes the unsigned,
-/// unpadded body string into the out-slot.  Sole surviving sliver of
-/// the Rust-min batch 6m `format' migration — the elisp dispatcher in
-/// `lisp/nelisp-stdlib-plist-str.el' does spec parsing / sign /
-/// padding and only delegates the IEEE-754 round-to-nearest-decimal
-/// step (= Rust `{:.*}' / `{:.*e}' / `{:.*E}' format machinery) to
-/// this trampoline.
+/// IEEE-754 float body builder.  CONV ∈ {f/F/e/E/g/G}, PREC ≥ 0.
+/// Writes unsigned/unpadded body; elisp does sign + padding.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_format_float(
     x: f64,
