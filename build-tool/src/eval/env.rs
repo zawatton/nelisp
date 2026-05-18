@@ -160,6 +160,8 @@ impl Env {
              include_str!("../../../lisp/nelisp-env.el")),
             ("nelisp-lexframe.el",
              include_str!("../../../lisp/nelisp-lexframe.el")),
+            ("nelisp-cli.el",
+             include_str!("../../../lisp/nelisp-cli.el")),
         ];
         // max_recursion=1024 bounds eval-loop nesting under cargo test's
         // 2MB thread stack (see `recursion_depth_guard').
