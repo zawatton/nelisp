@@ -10,52 +10,32 @@ use crate::eval::nlstr::NlStrRef;
 use crate::eval::nlvector::NlVectorRef;
 use std::fmt;
 
-/// A parsed s-expression.
-///
-/// **Layout** (Doc 62 Phase 5): `#[repr(C, u8)]` pins the discriminant
-/// as a `u8` at offset 0, followed by the variant payload at the next
-/// 8-byte aligned offset.  The JIT reads the tag inline.  Tag values
-/// are stable via the `SEXP_TAG_*` constants below; any new variant
-/// must be appended at the end.
+/// A parsed s-expression.  `#[repr(C, u8)]` puts the tag byte at offset 0
+/// + 8-byte-aligned payload (JIT reads the tag inline; `SEXP_TAG_*` are
+/// stable — variants must only be appended).
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C, u8)]
 pub enum Sexp {
-    /// `nil` literal — also the empty list `()`.
     Nil,
-    /// `t` literal.
     T,
-    /// 64-bit signed integer.
     Int(i64),
-    /// IEEE-754 double.
     Float(f64),
-    /// Symbol name (reader does NOT intern; evaluator owns obarray).
     Symbol(String),
-    /// Immutable string literal (= `"text"' from reader).
     Str(String),
-    /// Mutable string buffer (= `make-string' / `aset'-able), backed
-    /// by [`NlStrRef`] (refcount-shared, aliases share mutation).
+    /// Mutable string buffer (= `make-string' / `aset'-able), refcount-shared.
     MutStr(NlStrRef),
-    /// Cons cell.  Right-leaning chains ending in `Nil' form lists;
-    /// dotted pairs leave cdr as any non-Nil value.
     Cons(NlConsBoxRef),
-    /// `[a b c]' vector literal.
     Vector(NlVectorRef),
-    /// Char-table — maps integer codepoints to Sexp values
-    /// (syntax-table / category-table / case-table / display-table).
+    /// Maps integer codepoints to Sexp (syntax/category/case/display tables).
     CharTable(NlCharTableRef),
-    /// Bool-vector — packed boolean array.
     BoolVector(NlBoolVectorRef),
-    /// Mutable write-through cell for let-binding closure `setq'.
-    /// Produced by `Env::capture_lexical'.
+    /// Write-through cell for let-binding closure `setq' (Env::capture_lexical).
     Cell(NlCellRef),
-    /// Record (host emacs `record' / pvec subtype).  Underlies
-    /// `cl-defstruct'; slot 0 is `type_tag', remaining are user slots.
+    /// Host emacs `record' / `cl-defstruct': slot 0 = type_tag, rest = user slots.
     Record(NlRecordRef),
 }
 
-// Sexp variant tag constants (Doc 62 Phase 5).  Mirror declaration order
-// of the `Sexp' enum and match the `#[repr(C, u8)]' discriminant byte
-// at offset 0.  JIT depends on stability — append new variants at end.
+// Tag constants — mirror enum declaration order; JIT depends on stability.
 
 pub const SEXP_TAG_NIL: u8 = 0;
 pub const SEXP_TAG_T: u8 = 1;
@@ -79,16 +59,11 @@ pub fn variant_tag(s: &Sexp) -> u8 {
     unsafe { *(s as *const Sexp as *const u8) }
 }
 
-// Sexp ABI direct-access helpers (Doc 77c Phase A.5).  Every boxed
-// variant carries an `NlXxxRef` handle (= single `NonNull<NlXxx>`,
-// 8 bytes), so the box pointer is at offset `SEXP_PAYLOAD_OFFSET`.
-
-/// Byte offset of the variant payload within a `Sexp` value.
+/// Byte offset of the boxed `NonNull<NlXxx>` handle within a Sexp.
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
 
-/// Emit `pub unsafe fn $name(&self) -> *const $ty` loading the boxed
-/// `NonNull<$ty>` at offset 8.  Caller must guarantee matching tag;
-/// reading the wrong variant's payload is UB.
+/// Emit `unsafe fn $name(&self) -> *const $ty` loading the box ptr at
+/// offset 8.  Caller must match tag; wrong-variant access is UB.
 macro_rules! sexp_box_ptr_accessor {
     ($name:ident, $ty:ty) => {
         #[inline]
