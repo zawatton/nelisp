@@ -566,6 +566,73 @@ pub mod elisp_cc_spike {
             plist_ptr: *const Sexp,
             constant_ptr: *const Sexp,
         ) -> i64;
+        // Doc 119 §119.A — auto-vivify fold helpers + wrappers.
+        // -------------------------------------------------------------
+        // Building blocks:
+        //   `nelisp_mirror_alloc_entry' — fresh `symbol-entry' Record
+        //      alloc + 4-slot install.  TAG-SYM-PTR points at
+        //      `Sexp::Symbol("symbol-entry")' that the safe wrapper
+        //      materialises on the call stack.
+        //   `nelisp_mirror_bucket_prepend' — hash NAME + cons-make
+        //      `(KEY-STR . ENTRY-RECORD)' + `vector-slot-set' install +
+        //      count slot bump.  ENTRY-PTR is the freshly-allocated
+        //      symbol-entry from `alloc_entry'.  SCRATCH-VEC-PTR is a
+        //      `Sexp::Vector' with 5 caller-owned Nil scratch slots
+        //      (= Nil-source / inner-pair / outer-cell / count-int /
+        //      KEY-Str; see `lisp/nelisp-cc-mirror-bucket-prepend.el'
+        //      commentary).
+        //
+        // Wrappers (= absorb the miss-path of helpers #7/#8/#11/#12):
+        //   `nelisp_mirror_set_value_or_insert'    — slot 0 (value).
+        //   `nelisp_mirror_set_function_or_insert' — slot 1 (function).
+        //   `nelisp_mirror_set_constant_or_insert' — slot 3 (constant flag).
+        //   `nelisp_mirror_install_entry_or_insert' — all 4 slots.
+        //
+        // The 4 wrappers share a uniform 4-arg signature `(mirror,
+        // sym, scratch_vec, _pad)' where SCRATCH-VEC-PTR is an
+        // 11-slot `Sexp::Vector' (= 5 prepend scratches at 0..4 +
+        // tag symbol at 5 + entry result at 6 + 4 caller-supplied
+        // value Sexps at 7..10).  The Rust safe wrapper materialises
+        // the value Sexps + tag before the call and drops the
+        // scratch vector after (= refcount balance on auto-vivify).
+        fn nelisp_mirror_alloc_entry(
+            tag_sym_ptr: *const Sexp,
+            value_ptr: *const Sexp,
+            function_ptr: *const Sexp,
+            plist_ptr: *const Sexp,
+            constant_ptr: *const Sexp,
+            result_slot: *mut Sexp,
+        ) -> i64;
+        fn nelisp_mirror_bucket_prepend(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            entry_ptr: *const Sexp,
+            scratch_vec_ptr: *const Sexp,
+        ) -> i64;
+        fn nelisp_mirror_set_value_or_insert(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            scratch_vec_ptr: *const Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nelisp_mirror_set_function_or_insert(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            scratch_vec_ptr: *const Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nelisp_mirror_set_constant_or_insert(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            scratch_vec_ptr: *const Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nelisp_mirror_install_entry_or_insert(
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            scratch_vec_ptr: *const Sexp,
+            _pad: i64,
+        ) -> i64;
         // Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
         // rewrites.  Each `nelisp_frame_*' below is the Phase 47-
         // compiled pure-elisp implementation in
@@ -1669,6 +1736,173 @@ pub mod elisp_cc_spike {
         nelisp_mirror_install_entry(
             mirror_ptr, sym_ptr,
             value_ptr, function_ptr, plist_ptr, constant_ptr,
+        )
+    }
+
+    // ---- Doc 119 §119.A auto-vivify fold ---------------------------
+    //
+    // Building-block + wrapper safe wrappers.  Each function manages
+    // the per-call scratch `Sexp::Vector' that the elisp helpers
+    // consume; callers in `eval/env_helpers.rs' don't need to know the
+    // slot layout (see the file commentary of
+    // `lisp/nelisp-cc-mirror-set-value-or-insert.el' for the layout
+    // reference).
+    //
+    // The safe wrappers all follow the same pattern:
+    //   1. Build a `Sexp::Vector' of 11 slots, pre-filling slots 0..6
+    //      with `Sexp::Nil' / tag symbols / scratch and slots 7..10
+    //      with the caller-supplied `value' / `function' / `plist' /
+    //      `constant' Sexps (= cloned into the vector, refcount-bumped
+    //      for box variants).
+    //   2. Call the Phase 47 helper which dispatches hit / miss and
+    //      writes the final state into the mirror record graph.
+    //   3. Drop the scratch vector when the wrapper returns; each
+    //      slot's `Sexp' clone refcount-decrements, leaving the mirror
+    //      as the sole steady-state owner of the entry record graph.
+
+    /// Doc 119 §119.A — Phase 47 `mirror_alloc_entry' probe wrapper.
+    pub unsafe fn mirror_alloc_entry(
+        tag_sym_ptr: *const Sexp,
+        value_ptr: *const Sexp,
+        function_ptr: *const Sexp,
+        plist_ptr: *const Sexp,
+        constant_ptr: *const Sexp,
+        result_slot: *mut Sexp,
+    ) -> i64 {
+        nelisp_mirror_alloc_entry(
+            tag_sym_ptr, value_ptr, function_ptr, plist_ptr, constant_ptr,
+            result_slot,
+        )
+    }
+
+    /// Doc 119 §119.A — Phase 47 `mirror_bucket_prepend' probe wrapper.
+    pub unsafe fn mirror_bucket_prepend(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        entry_ptr: *const Sexp,
+        scratch_vec_ptr: *const Sexp,
+    ) -> i64 {
+        nelisp_mirror_bucket_prepend(mirror_ptr, sym_ptr, entry_ptr, scratch_vec_ptr)
+    }
+
+    /// Doc 119 §119.A — build the 11-slot scratch `Sexp::Vector' used
+    /// by the four `_or_insert' wrappers.  Slots 0..4 are pre-filled
+    /// with `Sexp::Nil' (= caller-owned scratches for `bucket_prepend');
+    /// slot 5 holds the `symbol-entry' tag symbol; slot 6 starts as
+    /// `Sexp::Nil' (= filled by `alloc_entry' on miss).  Slots 7..10
+    /// hold the caller-supplied value / function / plist / constant
+    /// Sexps (= refcount-bumped via Vec clone).
+    fn build_or_insert_scratch_vec(
+        value: Sexp, function: Sexp, plist: Sexp, constant: Sexp,
+    ) -> Sexp {
+        Sexp::vector(vec![
+            Sexp::Nil,                                  // 0: Nil source
+            Sexp::Nil,                                  // 1: inner-pair scratch
+            Sexp::Nil,                                  // 2: outer-cell scratch
+            Sexp::Nil,                                  // 3: count int scratch
+            Sexp::Nil,                                  // 4: KEY str scratch
+            Sexp::Symbol("symbol-entry".into()),        // 5: type tag
+            Sexp::Nil,                                  // 6: entry result
+            value,                                      // 7: value cell
+            function,                                   // 8: function cell
+            plist,                                      // 9: plist
+            constant,                                   // 10: constant flag
+        ])
+    }
+
+    /// Doc 119 §119.A — `mirror_set_value' counterpart that absorbs
+    /// the miss-path.  Auto-vivifies a fresh `symbol-entry' record
+    /// with VALUE in slot 0 and UNBOUND in slot 1 (= function cell
+    /// default) when NAME is not already in the mirror.
+    pub unsafe fn mirror_set_value_or_insert(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        value_ptr: *const Sexp,
+        unbound_ptr: *const Sexp,
+    ) -> i64 {
+        // SAFETY: `value_ptr' / `unbound_ptr' borrow stack-local /
+        // `Env'-owned `Sexp's that outlive the call.  Clone-into-vector
+        // refcount-bumps the box variants; the scratch vector drop on
+        // wrapper return rebalances the count.
+        let scratch = build_or_insert_scratch_vec(
+            (*value_ptr).clone(),
+            (*unbound_ptr).clone(),
+            Sexp::Nil,
+            Sexp::Nil,
+        );
+        nelisp_mirror_set_value_or_insert(
+            mirror_ptr, sym_ptr,
+            &scratch as *const Sexp,
+            0,
+        )
+    }
+
+    /// Doc 119 §119.A — `mirror_set_function' counterpart that absorbs
+    /// the miss-path.  Auto-vivifies a fresh `symbol-entry' record
+    /// with UNBOUND in slot 0 and FUNC in slot 1.
+    pub unsafe fn mirror_set_function_or_insert(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        func_ptr: *const Sexp,
+        unbound_ptr: *const Sexp,
+    ) -> i64 {
+        let scratch = build_or_insert_scratch_vec(
+            (*unbound_ptr).clone(),
+            (*func_ptr).clone(),
+            Sexp::Nil,
+            Sexp::Nil,
+        );
+        nelisp_mirror_set_function_or_insert(
+            mirror_ptr, sym_ptr,
+            &scratch as *const Sexp,
+            0,
+        )
+    }
+
+    /// Doc 119 §119.A — `mirror_set_constant' counterpart that absorbs
+    /// the miss-path.  Auto-vivifies a fresh `symbol-entry' record
+    /// with UNBOUND in slots 0/1 (= value + function default) and
+    /// FLAG in slot 3.
+    pub unsafe fn mirror_set_constant_or_insert(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        flag_ptr: *const Sexp,
+        unbound_ptr: *const Sexp,
+    ) -> i64 {
+        let scratch = build_or_insert_scratch_vec(
+            (*unbound_ptr).clone(),
+            (*unbound_ptr).clone(),
+            Sexp::Nil,
+            (*flag_ptr).clone(),
+        );
+        nelisp_mirror_set_constant_or_insert(
+            mirror_ptr, sym_ptr,
+            &scratch as *const Sexp,
+            0,
+        )
+    }
+
+    /// Doc 119 §119.A — `mirror_install_entry' counterpart that
+    /// absorbs the miss-path.  All four slot Sexps come from the
+    /// caller (= `intern_constant' / image baker).
+    pub unsafe fn mirror_install_entry_or_insert(
+        mirror_ptr: *const Sexp,
+        sym_ptr: *const Sexp,
+        value_ptr: *const Sexp,
+        function_ptr: *const Sexp,
+        plist_ptr: *const Sexp,
+        constant_ptr: *const Sexp,
+    ) -> i64 {
+        let scratch = build_or_insert_scratch_vec(
+            (*value_ptr).clone(),
+            (*function_ptr).clone(),
+            (*plist_ptr).clone(),
+            (*constant_ptr).clone(),
+        );
+        nelisp_mirror_install_entry_or_insert(
+            mirror_ptr, sym_ptr,
+            &scratch as *const Sexp,
+            0,
         )
     }
 

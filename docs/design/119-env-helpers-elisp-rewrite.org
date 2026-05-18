@@ -134,6 +134,91 @@ production compile unit drops further via §D.
 * §119.6 Status
 
 - DRAFT 2026-05-18.  Ship gate: Doc 124.F-blocker root cause known.
+- §119.A SHIPPED 2026-05-18 — auto-vivify fold complete.  See §119.A
+  shipped log below.
+
+** §119.A SHIPPED log
+
+Date: 2026-05-18.
+
+LOC delta: =build-tool/src/eval/env_helpers.rs= 841 → 757 LOC
+(= −84 LOC).  Target was −137; the gap is the per-call-site Rust
+boilerplate that grew slightly when swapping each =mirror_set_*=
+caller to the =_or_insert= variant (= extra =unbound_ptr= /
+=Sexp::Symbol(name.into())= setup) — partially offset by the deletion
+of =mirror_insert_new_entry= (12 LOC) + =mirror_prepend_to_bucket=
+(45 LOC).  Net deletion in =env_helpers.rs= = −57 LOC dead code +
+−27 LOC simplified call sites.
+
+New elisp helpers shipped (= 6 new =.o= files):
+- =nelisp-cc-mirror-alloc-entry.el= → =nelisp_mirror_alloc_entry=
+  (= ~ =record-make= + 4 × =record-slot-set=).
+- =nelisp-cc-mirror-bucket-prepend.el= → =nelisp_mirror_bucket_prepend=
+  + =nelisp_mirror_prepend_install= sub-defun.  Composes
+  =cons-make= + =cons-set-car= / =cons-set-cdr= (= refcount-safe
+  Nil-seed pattern, mirrors =nelisp-cc-frame-bind.el=) +
+  =vector-slot-set= + =sexp-write-str= (= bucket KEY is Sexp::Str
+  per =mirror_iter_entries= tag-match contract) + =sexp-int-make=
+  for count bump + =extern-call= to =nelisp_fnv1a=.
+- =nelisp-cc-mirror-set-value-or-insert.el= →
+  =nelisp_mirror_set_value_or_insert=.  Composes
+  =nelisp_mirror_lookup_entry= + on-hit =record-slot-set 0= +
+  on-miss =extern-call= to the two new building-block helpers.
+- =nelisp-cc-mirror-set-function-or-insert.el= → slot-1 variant.
+- =nelisp-cc-mirror-set-constant-or-insert.el= → slot-3 variant.
+- =nelisp-cc-mirror-install-entry-or-insert.el= → 4-slot variant
+  (= absorbs the legacy =mirror_install_entry= miss-path).
+
+Surface change on the Rust side:
+- =Env::mirror_set_value= / =_set_function= / =_set_constant= /
+  =_install_entry= now dispatch to the =_or_insert= elisp helpers;
+  no Rust fallback remains.  Each method body is a 5-10 LOC
+  pre-condition + pointer setup + single =unsafe= extern call.
+- Two private Rust helpers deleted outright:
+  =mirror_insert_new_entry=, =mirror_prepend_to_bucket=.
+
+Scratch vector layout: all four =_or_insert= helpers share an
+11-slot =Sexp::Vector= built by the Rust safe wrapper.  Slots 0-4
+hold =bucket_prepend= scratches (Nil source / inner-pair scratch /
+outer-cell scratch / count-int scratch / KEY-Str scratch); slot 5
+holds the =symbol-entry= tag symbol; slot 6 receives the freshly-
+allocated entry record from =alloc_entry=; slots 7-10 hold the
+4-tuple value-resolution from the safe wrapper (= value / function
+/ plist / constant Sexp, with =unbound_marker= / =Sexp::Nil=
+defaults per variant).
+
+Smoke tests (= post-ship, =target/release/nelisp eval=):
+- =(+ 1 2)= → =3=.
+- =(progn (defun foo () 42) (foo))= → =42=  (= miss-path fires when
+  =defun foo= installs a fresh symbol-entry via
+  =install_entry_or_insert=).
+- =(progn (setq x 100) x)= → =100=  (= =set_value_or_insert=
+  miss-path for top-level =setq=).
+- =(progn (defun add (a b) (+ a b)) (add 10 20))= → =30=.
+- =(f 10)= for =(defun f (n) (if (= n 0) 1 (* n (f (- n 1)))))= →
+  =3628800=  (= recursive auto-vivify under control flow).
+
+Integration probes (= =cargo test --release --test
+'elisp_cc_mirror_*'=): all 12 mirror probes green (= 4 +
+=lookup_entry= / 3 + =lookup_function= / 4 + =lookup_value= / 4 +
+=set_constant= / 4 + =set_function= / 5 + =set_value= / 4 +
+=install_entry= / 3 + =is_bound= / 3 + =is_fbound= / 3 +
+=is_constant= / 4 + =clear_value= / 3 + =clear_function= families).
+
+Doc 124.F-blocker disposition: =frame_bind_update_existing_pair_
+in_place= SEGV in =cargo test --features image-baker= is the
+update-existing path, not the prepend path that =bucket_prepend=
+exercises.  The 5/6 frame-helper probes that DO pass already
+verify the =cons-make Nil/Nil= + =cons-set-car/cdr= refcount-safe
+seed pattern this ship reuses.  Risk discharged.
+
+** §119.B-E remaining
+
+Still DRAFT — same gate (= Doc 124.F-blocker root cause).
+=119.B= (frame_stack auto-vivify + walks) is partially covered by
+the existing =nelisp-cc-frame-bind.el= ship (= prepend path); the
+=make_empty_frame_record= delete is the residual.  =119.C= /
+=119.D= / =119.E= unchanged.
 
 * §119.7 References
 

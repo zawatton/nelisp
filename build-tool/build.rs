@@ -145,6 +145,19 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-mirror-clear-function.el",
         "nelisp-cc-mirror-set-constant.el",
         "nelisp-cc-mirror-install-entry.el",
+        // Doc 119 §119.A — auto-vivify fold.  Two building-block
+        // helpers (`mirror_alloc_entry' = fresh symbol-entry record
+        // alloc; `mirror_bucket_prepend' = hash + cons + vector-slot-set
+        // + count bump) plus four `_or_insert' wrappers that absorb
+        // the miss-path of helpers #7/#8/#11/#12 into pure elisp.
+        // Together they drop `mirror_insert_new_entry' (~12 LOC) +
+        // `mirror_prepend_to_bucket' (~45 LOC) from `env_helpers.rs'.
+        "nelisp-cc-mirror-alloc-entry.el",
+        "nelisp-cc-mirror-bucket-prepend.el",
+        "nelisp-cc-mirror-set-value-or-insert.el",
+        "nelisp-cc-mirror-set-function-or-insert.el",
+        "nelisp-cc-mirror-set-constant-or-insert.el",
+        "nelisp-cc-mirror-install-entry-or-insert.el",
         // Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
         // rewrites.  Seven entries; each wraps an `nl_frame_*' Rust
         // shim in `env_lexframe_phase47_shims.rs'.

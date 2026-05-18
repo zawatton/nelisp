@@ -36,8 +36,9 @@ impl Env {
     // Globals mirror helpers (formerly `eval/env_mirror.rs').
     // ============================================================
 
-    /// Set the value cell.  Phase 47 in-place update on hit; Rust
-    /// auto-vivify on miss.  No-op when mirror is uninitialised.
+    /// Set the value cell.  Phase 47 in-place update on hit; Phase 47
+    /// auto-vivify on miss (Doc 119 §119.A — both paths in elisp).
+    /// No-op when mirror is uninitialised.
     pub(crate) fn mirror_set_value(&mut self, name: &str, value: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -46,18 +47,20 @@ impl Env {
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
         let val_ptr = &value as *const Sexp;
-        // SAFETY: all pointers point at stack-locals or `&self.globals_record'
-        // which outlive the call; helper expects `Sexp::Record' layout.
-        let hit = unsafe {
-            crate::elisp_cc_spike::mirror_set_value(mirror_ptr, sym_ptr, val_ptr)
-        };
-        if hit != 0 {
-            return;
+        let unbound_ptr = &self.unbound_marker as *const Sexp;
+        // SAFETY: all pointers point at stack-locals or `Env'-owned
+        // fields that outlive the call.  The Phase 47 helper handles
+        // both hit (= record-slot-set) and miss (= alloc-entry +
+        // bucket-prepend) paths internally — see Doc 119 §119.A.
+        unsafe {
+            crate::elisp_cc_spike::mirror_set_value_or_insert(
+                mirror_ptr, sym_ptr, val_ptr, unbound_ptr,
+            );
         }
-        self.mirror_insert_new_entry(name, 0, value);
     }
 
-    /// Function-cell counterpart of `mirror_set_value'.
+    /// Function-cell counterpart of `mirror_set_value'.  Doc 119 §119.A
+    /// — both paths in elisp.
     pub(crate) fn mirror_set_function(&mut self, name: &str, func: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return;
@@ -66,14 +69,13 @@ impl Env {
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
         let val_ptr = &func as *const Sexp;
+        let unbound_ptr = &self.unbound_marker as *const Sexp;
         // SAFETY: see `mirror_set_value'.
-        let hit = unsafe {
-            crate::elisp_cc_spike::mirror_set_function(mirror_ptr, sym_ptr, val_ptr)
-        };
-        if hit != 0 {
-            return;
+        unsafe {
+            crate::elisp_cc_spike::mirror_set_function_or_insert(
+                mirror_ptr, sym_ptr, val_ptr, unbound_ptr,
+            );
         }
-        self.mirror_insert_new_entry(name, 1, func);
     }
 
     /// `makunbound' — write `unbound_marker' into slot 0 in place.
@@ -110,24 +112,6 @@ impl Env {
                 mirror_ptr, sym_ptr, unbound_ptr,
             );
         }
-    }
-
-    /// Insert a fresh symbol-entry record into the bucket alist.
-    /// `slot' selects which cell the caller is filling (0 = value,
-    /// 1 = function); the other cell is initialised to
-    /// `self.unbound_marker'.
-    fn mirror_insert_new_entry(&mut self, name: &str, slot: usize, cell: Sexp) {
-        let unbound = self.unbound_marker.clone();
-        let (value_slot, function_slot) = if slot == 0 {
-            (cell, unbound)
-        } else {
-            (unbound, cell)
-        };
-        let entry = Sexp::record(
-            Sexp::Symbol("symbol-entry".into()),
-            vec![value_slot, function_slot, Sexp::Nil, Sexp::Nil],
-        );
-        self.mirror_prepend_to_bucket(name, entry);
     }
 
     /// Full symbol-entry installer (value + function + plist + constant).
@@ -169,25 +153,14 @@ impl Env {
         // SAFETY: all pointers refer to stack-local `Sexp' values
         // (or `&self.globals_record') that outlive the call.  The
         // helper performs refcount-aware clones into each entry
-        // slot.
-        let hit = unsafe {
-            crate::elisp_cc_spike::mirror_install_entry(
+        // slot on hit OR allocates + prepends a fresh symbol-entry
+        // record on miss (= Doc 119 §119.A auto-vivify fold).
+        unsafe {
+            crate::elisp_cc_spike::mirror_install_entry_or_insert(
                 mirror_ptr, sym_ptr,
                 value_ptr, function_ptr, plist_ptr, constant_ptr,
-            )
-        };
-        if hit != 0 {
-            return;
+            );
         }
-        // Miss — fall back to the Rust prepend.  The four `_slot'
-        // locals were *not* consumed by the helper (it cloned
-        // through pointers); we move them into the fresh entry
-        // record below.
-        let entry = Sexp::record(
-            Sexp::Symbol("symbol-entry".into()),
-            vec![value_slot, function_slot, plist_slot, constant_slot],
-        );
-        self.mirror_prepend_to_bucket(name, entry);
     }
 
     /// Read symbol-entry slot 3 (constant flag).  False on miss / unbuilt mirror.
@@ -207,8 +180,9 @@ impl Env {
         flag != 0
     }
 
-    /// Write symbol-entry slot 3 (constant flag).  Phase 47 hit-path;
-    /// miss-path auto-vivifies an entry with value/function = unbound_marker.
+    /// Write symbol-entry slot 3 (constant flag).  Phase 47 hit-path
+    /// + auto-vivify miss-path (= Doc 119 §119.A).  Miss-path vivifies
+    /// an entry with value/function = `unbound_marker' and plist = Nil.
     pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
         if matches!(&self.globals_record, Sexp::Nil) {
             return;
@@ -218,70 +192,12 @@ impl Env {
         let mirror_ptr = &self.globals_record as *const Sexp;
         let sym_ptr = &sym as *const Sexp;
         let flag_ptr = &value as *const Sexp;
+        let unbound_ptr = &self.unbound_marker as *const Sexp;
         // SAFETY: see `mirror_set_value'.
-        let hit = unsafe {
-            crate::elisp_cc_spike::mirror_set_constant(
-                mirror_ptr, sym_ptr, flag_ptr,
-            )
-        };
-        if hit != 0 {
-            return;
-        }
-        let unbound = self.unbound_marker.clone();
-        let entry = Sexp::record(
-            Sexp::Symbol("symbol-entry".into()),
-            vec![unbound.clone(), unbound, Sexp::Nil, value],
-        );
-        self.mirror_prepend_to_bucket(name, entry);
-    }
-
-    /// Bucket-prepend primitive.  Shared by `mirror_insert_new_entry'
-    /// / `mirror_install_entry' / `mirror_set_constant'.  Hashes NAME,
-    /// locates the bucket, builds `(KEY . ENTRY)', prepends onto the
-    /// bucket head, bumps the entry-count slot.
-    fn mirror_prepend_to_bucket(&mut self, name: &str, entry: Sexp) {
-        let env_rec = match &self.globals_record {
-            Sexp::Record(r) => r.clone(),
-            _ => return,
-        };
-        let ht_rec = match env_rec.slots.get(0) {
-            Some(Sexp::Record(r)) => r.clone(),
-            _ => return,
-        };
-        let bucket_count = match ht_rec.slots.get(0) {
-            Some(Sexp::Int(n)) => *n as u32,
-            _ => return,
-        };
-        let buckets = match ht_rec.slots.get(1) {
-            Some(Sexp::Vector(v)) => v.clone(),
-            _ => return,
-        };
-        // Doc 115 §115.7 — pure-elisp FNV-1a via the
-        // `nelisp_fnv1a' Phase 47 `.o'.  Replaces the deleted
-        // Rust `mirror_fnv1a' free fn.  For the ASCII identifier
-        // names that land here the result is bit-equal.
-        let name_sym = Sexp::Symbol(name.into());
-        let h = unsafe {
-            crate::elisp_cc_spike::fnv1a(&name_sym as *const Sexp)
-        } as u32;
-        let idx = (if bucket_count & (bucket_count - 1) == 0 {
-            h & (bucket_count - 1)
-        } else {
-            h % bucket_count
-        }) as usize;
-        let pair = Sexp::cons(Sexp::Str(name.to_string()), entry);
-        // SAFETY: no other borrow into `buckets.value' / `ht_rec.slots'
-        // is live across the closure boundary.
         unsafe {
-            buckets.with_value_mut(|v| {
-                let old = v.get(idx).cloned().unwrap_or(Sexp::Nil);
-                v[idx] = Sexp::cons(pair, old);
-            });
-            ht_rec.with_slots_mut(|s| {
-                if let Some(Sexp::Int(n)) = s.get_mut(2) {
-                    *n += 1;
-                }
-            });
+            crate::elisp_cc_spike::mirror_set_constant_or_insert(
+                mirror_ptr, sym_ptr, flag_ptr, unbound_ptr,
+            );
         }
     }
 
