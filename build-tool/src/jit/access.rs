@@ -1,68 +1,14 @@
-//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — access trampolines,
-//! dlsym-exported.
+//! Access trampolines (length / aref / aset / elt), dlsym-exported via
+//! `#[no_mangle] pub unsafe extern "C"'.  Body: tag check on the
+//! `#[repr(C, u8)]' Sexp byte → `*_box_ptr()' deref → field clone,
+//! `OK = 0' / `ERR = 1'.
 //!
-//! The 4 `nl_jit_access_*' trampolines below are `#[no_mangle] pub unsafe
-//! extern "C"'.  Body shape: tag check on the `#[repr(C, u8)]' Sexp byte
-//! → `*_box_ptr()' deref → field clone, `OK = 0' / `ERR = 1' status.
-//! The inline-NIL fast path for `length' is the `tag == SEXP_TAG_NIL'
-//! arm (= returns `OK' with `Sexp::Int(0)' in `out').
-//!
-//! Two callers reach the trampolines at runtime: (1) nelisp-cc compiled
-//! hot paths via `:ssa-call-primitive' + `nelisp-cc--dlsym-resolve'
-//! direct fixup (which can also emit the inline-NIL short-circuit as
-//! host machine code before the CALL), and (2) `nelisp-jit-substrate.el'
-//! / `-strategy.el' via `bridge::unified_fn_ptr's name → fn-ptr table.
-//!
-//! # Doc 120 §120.D swap status (2026-05-18)
-//!
-//! 4 of 4 trampolines moved to Phase-47-compiled elisp on linux-x86_64:
-//!
-//!   - `nl_jit_access_length' → `lisp/nelisp-cc-jit-length.el'
-//!     (= Nil + Vector arms inline; Str arm via narrow
-//!     `nl_jit_access_length_str_inner' extern — UTF-8 codepoint
-//!     count not yet expressible in Phase 47, kept in Rust).
-//!   - `nl_jit_access_aref'   → `lisp/nelisp-cc-jit-aref.el'
-//!     (= Vector arm via `vector-ref' + inline bounds check;
-//!     BoolVector arm via `extern-call' to the narrow
-//!     `nl_jit_access_aref_bool_vector_inner' helper below).
-//!   - `nl_jit_access_aset'   → `lisp/nelisp-cc-jit-aset.el'
-//!     (= Vector arm via `vector-slot-set' + `nl_sexp_clone_into';
-//!     BoolVector arm via narrow `_aset_bool_vector_inner' helper).
-//!   - `nl_jit_access_elt'    → `lisp/nelisp-cc-jit-elt.el'
-//!     (= Vector arm same as `aref'; Cons arm via recursive
-//!     `cons-cdr-raw-from-box' walker — same shape §101.B `length'
-//!     established).
-//!
-//! Sub-arms covered by narrow Rust externs (= `extern-call' from
-//! Phase 47 elisp body; each helper is ~10 LOC of bounded scope):
-//!
-//!   - `length' Str arm — `nl_jit_access_length_str_inner' performs
-//!     `s.chars().count()'.  Needs UTF-8 codepoint-count grammar
-//!     primitive to fully swap (= same blocker as §120.B
-//!     `nl_jit_mut_str_len' and §120.C `nl_jit_intern' /
-//!     `_split_by_non_alnum').  Adding a `(str-char-count H)' op
-//!     that walks the UTF-8 byte stream and counts codepoints would
-//!     unblock; Phase 47 currently only reads `String::len' (= byte
-//!     count) via `str-len'.  See Doc 122 §122.A `mut-str-char-
-//!     count' cluster.
-//!
-//!   - `aref' / `aset' BoolVector arms — needs `bool-vector-{len,
-//!     bit,set-bit}' grammar primitives.  Phase 47 has no
-//!     bool-vector ops yet (= mechanical to add per §120.B
-//!     blocker note; same shape as `vector-len' / `vector-ref' at a
-//!     different offset constant + a bit-shift decode).  The narrow
-//!     `nl_jit_access_{aref,aset}_bool_vector_inner' externs below
-//!     are the minimum viable swap — they keep the bool-vector
-//!     codepath alive while consolidating the rest of each
-//!     trampoline body into Phase 47.  See Doc 122 §122.B
-//!     `bool-vector-*' cluster.
-//!
-//! On linux-x86_64 the Rust `nl_jit_access_*' functions below are
-//! kept for fallback parity + in-file unit tests (= dead code that
-//! the linker keeps via `#[no_mangle]' + `-rdynamic', similar to
-//! other arch-specific reference impls).  Other targets still route
-//! through these Rust trampolines via the `access_link' stub in
-//! `bridge.rs' until the §120.D elisp emit is generalized.
+//! On linux-x86_64 the 4 trampolines run in Phase 47-compiled elisp
+//! (`lisp/nelisp-cc-jit-{length,aref,aset,elt}.el').  Sub-arms (`length'
+//! Str via `s.chars().count()', `aref'/`aset' BoolVector bit decode)
+//! call narrow Rust extern helpers below — grammar gap for UTF-8
+//! codepoint count + bool-vector ops.  Other targets fall through to
+//! the Rust trampolines via `bridge::access_link'.
 
 use crate::eval::sexp::{
     Sexp, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CONS, SEXP_TAG_NIL, SEXP_TAG_STR,

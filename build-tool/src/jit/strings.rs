@@ -1,96 +1,11 @@
-//! Doc 86 §86.1.d — intern / symbol-name / make-symbol trampolines.
-//! `(*const Sexp, *mut Sexp) -> i64', OK = 0 / ERR = 1, reachable via
-//! `nl-jit-call-out-1' from `lisp/nelisp-jit-strategy.el'.
+//! intern / symbol-name / make-symbol + 6 other string/symbol
+//! trampolines.  `(*const Sexp, *mut Sexp) -> i64'; OK=0 / ERR=1.
+//! Reachable via `nl-jit-call-out-1' from `nelisp-jit-strategy.el'.
 //!
-//! # Doc 120 §120.C swap status (2026-05-18)
-//!
-//! 0 of 9 trampolines moved to Phase-47-compiled elisp.  Every entry
-//! in `strings.rs' allocates / writes a `Sexp::Str' / `Sexp::Symbol' /
-//! `Sexp::MutStr' value, and Phase 47's current grammar pool exposes
-//! ONLY `(sexp-write-nil SLOT)' / `(sexp-write-t SLOT)' for slot-byte
-//! writes — there is no `sexp-write-str' / `sexp-write-symbol' /
-//! `sexp-write-mut-str' / `mut-str-make' op (= no String-header
-//! allocator, no Rust-side `Vec<u8>::with_capacity' analogue).  The
-//! Doc 120.A predicate-eq swap relied on `extern-call' to a narrow
-//! Rust helper for the slow path (= `nl_sexp_eq'); using `extern-
-//! call' as a wholesale body pass-through for the entire trampoline
-//! defeats the purpose of the swap.
-//!
-//! Skipped (= per-entry blockers):
-//!
-//!   - `nl_jit_intern' — needs `sexp-write-symbol' (= allocate fresh
-//!     `Sexp::Symbol' from a `Sexp::Str's String header).  The Rust
-//!     impl does `s.clone()' which boils down to `String::clone' (=
-//!     fresh `Vec<u8>' allocation + memcpy of the byte range).  Phase
-//!     47 has `str-bytes' / `str-len' for reading String headers but
-//!     no allocator for emitting a new one.
-//!
-//!   - `nl_jit_symbol_name' — needs `sexp-write-str' + `sexp-write-
-//!     str-literal' (= for the Nil → "nil" / T → "t" specialisation).
-//!     The 3-way dispatch (Symbol / Nil / T) is expressible via `if'
-//!     + `sexp-tag', but the slot writes themselves require a new
-//!     primitive that owns a literal byte-string buffer.
-//!
-//!   - `nl_jit_make_symbol' — needs `sexp-write-symbol' (= same as
-//!     `intern' above) PLUS the per-process `AtomicU64' counter, PLUS
-//!     `format!()' string concatenation.  Could partially delegate to
-//!     a narrow `extern-call' on a new `nl_make_uninterned_symbol'
-//!     helper but the swap then degenerates into a 2-line elisp
-//!     dispatch around a single extern call — net zero LOC win.
-//!
-//!   - `nl_jit_downcase' / `nl_jit_upcase' — needs UTF-8 case-folding
-//!     primitive.  The Rust impl calls `String::to_lowercase' /
-//!     `to_uppercase' which run the full Unicode SpecialCasing /
-//!     UnicodeData tables (multi-codepoint expansions e.g. `'ß' →
-//!     "ss"').  ASCII-only fast path is feasible if a new `str-
-//!     ascii-fold-case' grammar op lands (= byte-stream walk + per-
-//!     byte `if 'A' <= b <= 'Z' then b + 32 else b' branchless add),
-//!     but the elisp wrapper would need to fall back to a Rust extern
-//!     for non-ASCII anyway.  Out of scope for §120.C.
-//!
-//!   - `nl_jit_split_by_non_alnum' — needs `char::is_alphanumeric'
-//!     (= multi-byte UTF-8 decode + Unicode property lookup) plus a
-//!     `cons-make' list builder that closes over a fresh `Sexp::Str'
-//!     for each fragment.  The cons-builder shape is fine (`Doc 101
-//!     §101.D' shipped `cons-make') but each fragment needs a fresh
-//!     `Sexp::Str' allocator (same blocker as `intern'/`symbol_name')
-//!     and the alnum classifier needs a UTF-8 decoder (= grammar gap).
-//!
-//!   - `nl_jit_concat_ints' — needs a mutable byte-buffer (= mut-str-
-//!     append-codepoint) to accumulate the result.  Loop over cons
-//!     list is expressible via `while' + `cons-cdr', and `cons-car'
-//!     + `sexp-int-unwrap' yields the codepoint, but Phase 47 cannot
-//!     allocate the accumulator buffer nor encode the codepoint to
-//!     UTF-8 bytes.  Needs `mut-str-make' + `mut-str-push-codepoint'
-//!     + `mut-str-finalize-to-str' grammar ops.
-//!
-//!   - `nl_jit_make_mut_str' — needs `mut-str-make-repeat' (= literal
-//!     port of `String::repeat' or `Vec::resize_with').  Phase 47 has
-//!     no MutStr allocator at all.
-//!
-//!   - `nl_jit_format_float' — needs IEEE-754 → decimal-string
-//!     conversion.  The Rust impl uses `format!("{:.*}")' which is
-//!     the dragon4 / Grisu / Ryu pipeline depending on `core::fmt's
-//!     selected backend.  Porting any of those algorithms to Phase
-//!     47 is a multi-hundred-LOC effort; the realistic path is
-//!     `extern-call' to libc `snprintf' once a new `extern-call-
-//!     varargs' grammar form (= `... + va_list') exists.  Currently
-//!     `extern-call' supports only 6 fixed i64 args (= no f64 / no
-//!     varargs).  Out of scope for §120.C.
-//!
-//! On every target the Rust trampolines below are kept as the
-//! resolved fn-ptr in `bridge::unified_fn_ptr' until the grammar
-//! gaps above land.  Doc 122 should prioritise:
-//!
-//!   1. `sexp-write-str' / `sexp-write-symbol' (= unlocks
-//!      `intern' + `symbol_name' immediately).
-//!   2. `mut-str-make' + `mut-str-push-codepoint' (= unlocks
-//!      `make_mut_str' + `concat_ints').
-//!   3. `extern-call-f64' / `extern-call-varargs' (= unlocks
-//!      `format_float' via libc snprintf bridge).
-//!   4. UTF-8 helpers (`str-char-count' / `str-codepoint-at' /
-//!      `str-is-alphanumeric-at') (= unlocks `downcase' /
-//!      `upcase' / `split_by_non_alnum').
+//! All 9 stay in Rust pending Phase 47 grammar extensions for
+//! `sexp-write-{str,symbol}', mut-str allocator + codepoint push,
+//! UTF-8 case-fold + alphanumeric classifier, and f64 → decimal
+//! string conversion (= libc snprintf via extern-call-varargs).
 
 use crate::eval::sexp::Sexp;
 
