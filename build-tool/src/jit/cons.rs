@@ -23,16 +23,8 @@ pub unsafe extern "C" fn nl_jit_cons_make(
     TRAMPOLINE_OK
 }
 
-// Return pointers to inline cons slots so elisp can clone through
-// `nl_sexp_clone_into`.
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_cons_car_ptr(arg: *const Sexp) -> *const Sexp {
-    match &*arg {
-        Sexp::Cons(_) => (*arg).cons_box_ptr() as *const Sexp,
-        _ => std::ptr::null(),
-    }
-}
+// `nl_cons_car_ptr' moved to Phase 47 elisp:
+//   lisp/nelisp-cc-jit-cons-car-ptr.el  (car_ptr = sexp-payload-ptr)
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_cons_cdr_ptr(arg: *const Sexp) -> *const Sexp {
