@@ -1,33 +1,21 @@
-//! NELIMG v3 frozen-heap image format (Doc 75; Doc 98 §98.3 retired
-//! the form-shim / fallback re-eval path).
-//!
-//! An image is a header + frozen-heap payload describing every
-//! reachable Elisp value as a deduped node graph + the `env.globals'
-//! map.  Decoding via `decode_v3_into' streams the globals straight
-//! into a caller-owned `Env' — production boot
-//! (`Env::new_global') no longer evaluates source on the boot path.
+//! NELIMG v3 frozen-heap image format.  Header + frozen-heap payload
+//! describing reachable Elisp values as a deduped node graph + globals.
+//! `decode_v3_into' streams globals straight into a caller-owned `Env'.
 //!
 //! # Wire format
-//!
 //! ```text
 //! magic   = b"NELIMG\0\x03"  (8 bytes)
-//! version = u32 little-endian = 3
-//! kind    = u8                = 0x01 (frozen-heap; 0x02/0x03 reserved)
-//! payload = §5.2 frozen-heap layout:
+//! version = u32 le = 3
+//! kind    = u8 = 0x01 (frozen-heap)
+//! payload:
 //!   u32 N_NODES,    [NODE_TAG, payload...] × N
 //!   u32 N_GLOBALS,  [name, flags, idxs]    × N
 //!   u32 N_FALLBACK_FORMS, [u32 src_len, utf8] × N
 //! ```
 //!
-//! The `FALLBACK_FORMS' section is always zero-length on the
-//! production boot path (= `iterative_bake_one' emits empty
-//! fallback); it survives in the wire format only for the
-//! `--verify-elisp-fixtures' cross-impl byte-identity gate (Doc 95
-//! §95.e) which still exercises fallback-bearing fixtures generated
-//! by the elisp Sexp DSL.
-//!
-//! Pre-Stage-9.5 v2 form-list bytes still receive a clean `BadMagic'
-//! (regression-locked by `doc75_stage9_4_decode_rejects_v2_magic').
+//! FALLBACK_FORMS is always zero-length on the production boot path;
+//! preserved in the wire format for the `--verify-elisp-fixtures'
+//! cross-impl byte-identity gate.
 
 use crate::eval::{Env, EvalError};
 use crate::eval::env::SymbolEntry;
@@ -46,19 +34,12 @@ use crate::reader;
 use std::collections::HashMap;
 use std::fmt;
 
-// NELIMG v3 magic / version / KIND constants (Doc 75 v3 §3.1, shipped
-// in Stage 9.1).  These are the only image format constants on the
-// production path; the legacy v2 magic / version / TAG_* aliases were
-// deleted by Stage 9.5 once `compile_elisp_to_image' / `decode_image'
-// / `eval_image' moved over to the v3 frozen-heap container.
 pub const NELIMG_V3_MAGIC: &[u8; 8] = b"NELIMG\0\x03";
 pub const NELIMG_V3_VERSION: u8 = 3;
-/// NELIMG v3 KIND byte: frozen-heap variant (= Doc 75 v3 §5.2).
-/// 0x02 reserved for future compressed-frozen-heap, 0x03 for
-/// differential / overlay images.
+/// 0x01 frozen-heap; 0x02/0x03 reserved.
 pub const NELIMG_V3_KIND_FROZEN_HEAP: u8 = 0x01;
 
-// NELIMG v3 NODE_TAG one-byte discriminator (Doc 75 v3 §5.3).
+// NELIMG v3 NODE_TAG one-byte discriminator.
 const TAG_V3_NIL: u8 = 0x00;
 const TAG_V3_T: u8 = 0x01;
 const TAG_V3_INT: u8 = 0x02;
@@ -128,42 +109,17 @@ impl From<EvalError> for ImageError {
     }
 }
 
-/// Doc 98 §98.1/§98.2 — *real* Stage 9.5 iterative baker driver.
-///
-/// Unlike [`compile_elisp_to_image`] (= form-shim wrapper that just
-/// stashes the source verbatim into the FALLBACK_FORMS section),
-/// this driver actually evaluates the source into the caller-owned
-/// `env' and encodes the *diff* of new globals (= both new keys and
-/// mutated entries) as a frozen-heap node-pool image.  Successive
-/// calls accumulate state in `env', matching the STDLIB_IMAGES
-/// bootstrap order.
-///
-/// Strategy:
-///
-/// 1. Snapshot `env.globals' (full SymbolEntry map, not just keys —
-///    `(fset 'cons LAMBDA)' on a Rust-builtin name MUST be captured
-///    as a mutation even though the key already exists).
-/// 2. Parse `source' with the Rust reader.
-/// 3. `eval' each form against `env' so top-level `defvar' / `defun'
-///    / `defmacro' / `fset' / `setq' calls populate `env.globals'.
-/// 4. Build a `globals_diff_view' against the snapshot — new keys
-///    PLUS entries whose `SymbolEntry: PartialEq' no longer matches.
-/// 5. `encode_v3' (= no fallback) → bytes.
-///
-/// The caller's `env' is left in its post-eval cumulative state so
-/// the next file can reuse already-defined symbols.
+/// Iterative baker driver — evaluate `source' into `env', then encode
+/// the diff of new + mutated globals as a frozen-heap node-pool image.
+/// Successive calls accumulate state in `env' (STDLIB_IMAGES order).
 #[cfg(any(test, feature = "image-baker"))]
 pub fn iterative_bake_one(
     env: &mut Env,
     source: &str,
 ) -> Result<Vec<u8>, ImageError> {
-    // Doc 98 §98.2 + Doc 102 Phase 2.b Step B — snapshot the elisp
-    // mirror, not the legacy `env.globals' HashMap.  Elisp-driven
-    // mutations (= env_shim `(defun)' / `(fset)' running through
-    // `nelisp--env-globals-op set-function') land ONLY on the mirror
-    // when the consumer file lives past `nelisp-stdlib-env-shim.el'
-    // in STDLIB load order.  `env.globals.clone()' missed those,
-    // producing 25-byte empty images for everything past file 4.
+    // Snapshot the elisp mirror (not legacy env.globals HashMap) —
+    // env_shim defun/fset mutations land only on the mirror after STDLIB
+    // bootstrap, so HashMap snapshot misses them.
     let before: std::collections::HashMap<String, crate::eval::SymbolEntry> =
         env.mirror_snapshot_globals();
     let forms = reader::read_all(source)?;
@@ -175,22 +131,11 @@ pub fn iterative_bake_one(
 }
 
 
-/// Doc 75 v3 Stage 9.3.b (2026-05-10): NELIMG v3 frozen-heap *encoder*
-/// — full Phase A-E DAG-dedup payload encoder.
-///
-/// Walks the input env's `globals` map, identifies every shared
-/// (`NlXxxRef`-backed) Sexp value reachable from any global slot, and
-/// dedupes them into a single node pool keyed on box pointer
-/// identity.  Atomic Sexp variants (`Nil` / `T` / `Int` / `Float` /
-/// `Symbol` / `Str`) get their own pool entries too — even though
-/// they have no Rc identity — because globals reference all leaves
-/// uniformly via NODE_INDEX in the v3 wire format (= simpler decoder).
-/// Atomic values dedupe by structural value rather than pointer.
-///
-/// The function is gated under `cfg(any(test, feature =
-/// "image-baker"))` — production runtime needs only the *decoder*
-/// path (= [`decode_v3`], unconditional); encoders live in the baker
-/// dev tool.
+/// NELIMG v3 frozen-heap encoder — walks `env.globals', dedupes shared
+/// NlXxxRef-backed Sexp values into a single node pool keyed on box
+/// pointer identity, and emits the v3 wire format.  Atomic variants
+/// (Nil/T/Int/Float/Symbol/Str) dedupe by structural value.  Gated
+/// behind `image-baker' feature; production runtime only needs `decode_v3'.
 ///
 /// Wire format (all little-endian) per §5.2:
 ///
@@ -217,18 +162,14 @@ pub fn iterative_bake_one(
 /// }
 /// ```
 ///
-/// Globals are emitted in alpha-sorted order so the encoded image is
-/// deterministic across [`HashMap`] iteration variations (= Doc 75
-/// §3.3.1 Phase D requirement).
+/// Globals are alpha-sorted for deterministic output.
 #[cfg(any(test, feature = "image-baker"))]
 pub fn encode_v3(env: &Env) -> Result<Vec<u8>, ImageError> {
     encode_v3_with_fallback(env, &[])
 }
 
-/// Variant of [`encode_v3`] that lets the caller stash strategy-C
-/// fallback forms (= source strings to be re-eval'd at boot for
-/// closures with non-empty captured-env, see Doc 75 §1.5) into the
-/// trailing FALLBACK_FORMS section.
+/// Variant with FALLBACK_FORMS — source strings re-eval'd at boot
+/// for closures with non-empty captured-env.
 #[cfg(any(test, feature = "image-baker"))]
 pub fn encode_v3_with_fallback(
     env: &Env,
@@ -236,19 +177,9 @@ pub fn encode_v3_with_fallback(
 ) -> Result<Vec<u8>, ImageError> {
     let mut node_table = NodeTable::default();
 
-    // Phase A — visit + DAG dedup.  Walk every global slot's value /
-    // function / plist, recursively interning each referenced Sexp
-    // into `node_table'.  Boxed variants are keyed by pointer
-    // identity so cycles + sharing are preserved exactly; atomic
-    // variants dedupe structurally because they have no identity.
-    //
-    // Doc 102 Phase 2.b Step C — globals are read from the elisp
-    // mirror (`env.globals_record'), not the legacy `env.globals'
-    // HashMap.  `mirror_snapshot_globals' walks every bucket of the
-    // `nelisp-env' record and reconstructs `SymbolEntry' tuples;
-    // names are sorted afterwards so the visit traversal is
-    // deterministic across runs (= Doc 75 §3.3.1 Phase D
-    // requirement).
+    // Walk every global's value/function/plist, intern each referenced
+    // Sexp into node_table.  Boxed variants dedupe by pointer identity;
+    // atomic variants by structural value.  Names sorted for determinism.
     let entries = env.mirror_snapshot_globals();
     let mut names: Vec<&String> = entries.keys().collect();
     names.sort();
