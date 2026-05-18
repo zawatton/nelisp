@@ -1,55 +1,19 @@
-//! Built-in function registry — Phase 8.0.2 (Doc 44 §3.3 LOCKED).
+//! Built-in function registry.  [`install_builtins`] writes a
+//! `(builtin <NAME>)' sentinel into the function cell of each symbol;
+//! the evaluator routes calls to [`dispatch`].
 //!
-//! Each built-in is registered in [`install_builtins`] which writes a
-//! `(builtin <NAME>)` sentinel into the function cell of the symbol.
-//! At call time the evaluator pulls the name back out and routes to
-//! [`dispatch`].
+//! Two surface categories survive in Rust:
 //!
-//! ## Phase 2 v3 landing state (Doc 86 §86.1.a-g, 2026-05-10)
+//! 1. **KEEP arms** — low-level I/O / filesystem / process / signal /
+//!    TTY / reader entry points / vector core / load orchestration.
+//! 2. **Tier 3 bridge plumbing** — `nl-jit-call-*' / `nl-ffi-*' /
+//!    `nl-cons-*' / `nl-rc-*' / `nl-gc-*' / `nelisp--apply-*' /
+//!    `nelisp--*-frame' / dlsym-resolve.
 //!
-//! After Doc 86 Phase 2 Tier 1 + Tier 2 migrations + §86.1.g cleanup
-//! sub-stage, the surface here is now scoped to:
-//!
-//! 1. **KEEP arms** — primitives that genuinely require Rust:
-//!    - low-level I/O: `read-stdin-bytes`, `nelisp--write-stdout-bytes`,
-//!      `nelisp--write-stderr-line`, `nl-write-file`, `nl-make-directory`
-//!    - filesystem syscalls: `nelisp--syscall-canonicalize`, `-stat`,
-//!      `-readdir`, `-read-file`
-//!    - process / signal / TTY plumbing: `terminal-raw-mode-*`,
-//!      `install-{sigint,winsize,jobctrl}-handler*`, quit-flag,
-//!      `set`/`fset`/`defalias`/`fmakunbound`/`makunbound`,
-//!      `symbol-value`/`-function`/`fboundp`/`boundp`
-//!    - generic syscall + supported-p (Linux nr-table dispatch)
-//!    - reader entry points (`read`, `read-from-string`, `signal`,
-//!      `eval`/`apply`/`funcall`/`macroexpand-1`)
-//!    - vector core (`vector`, `make-vector`, `string-bytes`)
-//!    - require / load orchestration (calls back into elisp `load')
-//!
-//! 2. **Tier 3 bridge plumbing** — primitives that elisp wrappers ride:
-//!    - `nl-jit-call-*` family (i64-i64, ptr-ptr, syscall, out-1/2/1i/2i,
-//!      float-float, float-cmp, float-unary, format-float)
-//!    - `nl-ffi-*` family (call, malloc, read/write-{i16,i32,i64,u8,
-//!      u16,u32}, errno, free, read-bytes, write-bytes, *-at)
-//!    - `nl-cons-*` / `nl-rc-*` / `nl-gc-*` Layer 2 primitives
-//!    - `nelisp--apply-{builtin-dispatch,lambda-inner}` +
-//!      `nelisp--{push,pop}-frame` / `-push-captured` / `-bind-local` +
-//!      `nelisp--{get,set}-use-elisp-apply`
-//!    - `nelisp--syscall-{socketpair,sendmsg-fds,recvmsg-fds,
-//!      getsockopt-peercred,bind-inet6-scoped,connect-inet6-scoped,
-//!      accept-inet6-scoped}` (= residual specialised socket helpers)
-//!    - `nelisp-cc--dlsym-resolve` (= elisp-side dlsym hook)
-//!
-//! Tier 1 (= 1-arg predicates / `type-of` / `recordp` / `eq` / `equal` /
-//! `null` / `not` / `1+` / `1-` / arithmetic variadics + comparisons /
-//! cXXr family / `mapcar` / `assq` / etc.) all live in `lisp/nelisp-
-//! stdlib*.el` now.  Tier 2 (= `float` / `exp` / `log` / `sxhash` /
-//! `string-match-p` / `nl-current-unix-time` / `nl-secure-hash` /
-//! `nl-format-unix-time` / `nl-{down,up}case` / `nl-split-by-non-alnum` /
-//! `intern` / `symbol-name` / `make-symbol` / `nelisp--make-mut-string` /
-//! `nelisp--concat-ints` / `nelisp--format-float-body`) ride matching
-//! `nl_jit_*` trampolines (= `build-tool/src/jit/{predicate,float,hash,
-//! time,strings,regex,math,box_accessor}.rs`) via the bridge
-//! primitives listed above.
+//! Tier 1 (predicates / type-of / arithmetic variadics / cXXr / mapcar /
+//! assq) is in `lisp/nelisp-stdlib*.el'.  Tier 2 (float / hash / time /
+//! regex / strings transforms / sxhash / intern / symbol-name) rides
+//! `nl_jit_*' trampolines in `build-tool/src/jit/*.rs'.
 
 use super::env::Env;
 use super::error::EvalError;
@@ -58,62 +22,7 @@ use super::sexp::Sexp;
 use super::special_forms::is_truthy;
 use std::path::{Path, PathBuf};
 
-/// Install every built-in into the given environment.  Idempotent —
-/// re-running just overwrites the function cells.
-///
-/// ## Migration history (2026-05-06 → 2026-05-10)
-///
-/// The entry list below is the residue after a long sequence of
-/// migrations from Rust → elisp.  Rather than annotating every removed
-/// arm in-line, the consolidated history is:
-///
-/// - **Rust-min batches 3-7k (2026-05-06 to 2026-05-07)**: bulk move
-///   of variadic / dispatching surface to `lisp/nelisp-stdlib*.el`
-///   (arithmetic / comparison / bitwise variadics; cXXr accessors;
-///   list / string / sequence ops; predicates + `type-of`; case
-///   mapping; reverse / nreverse; copy-sequence; format / concat /
-///   substring / split-string / make-string / mapconcat / string-
-///   search / delete-dups / string-trim / regexp-quote; intern-soft /
-///   gensym; vconcat; hash-tables Stage 4f; records Stage 4c;
-///   char-table / bool-vector retirement; `lognot` via `logxor`;
-///   `mod` via `(- a (* b (/ a b)))`; expand-file-name / file-name-*;
-///   message / princ / print / error; provide / featurep on
-///   `features` dynvar; load + locate-library on syscall primitives;
-///   min/max/abs/floor/ceiling/round on shared kernels).
-///
-/// - **Doc 50 stage 1-5b (2026-05-07)**: hash-table iter primitive
-///   collapse, record primitives, file syscalls, equal cycle-safe.
-///
-/// - **Doc 76 Stage A-G (2026-05-08 to 2026-05-09)**: 40 specialised
-///   POSIX syscall primitives retired (= openat/read/write/fstat/pipe;
-///   execve/wait4; setsockopt-int/bind/connect/accept × inet+unix+
-///   inet6 + abstract; poll; signalfd/sigprocmask/timerfd; inotify
-///   add-watch/read; SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6
-///   scope_id) — elisp now drives via `nl-ffi-call libc' + struct
-///   marshaling helpers below.
-///
-/// - **Doc 84 §84.1-84.3 (2026-05-10)**: 8 `nelisp--*-float' arms
-///   collapsed into 2 bridge primitives (`nl-jit-call-float-{float,
-///   cmp}`); `nelisp--syscall-nr-resolve' ported to elisp; 6 Box-
-///   accessor builtins lifted to elisp on `nl_jit_record_*' trampolines.
-///
-/// - **Doc 86 §86.1.a-f (2026-05-10) — Phase 2 Tier 1 + Tier 2**:
-///   1-arg predicates / `type-of' / `recordp' / `eq' / `equal' /
-///   `nelisp--ref-eq' (Tier 1 elisp-only); `intern' / `symbol-name' /
-///   `make-symbol' / `nelisp--make-mut-string' / `nelisp--concat-ints' /
-///   `nelisp--format-float-body' / `string-match-p' / `sxhash' (Tier 2
-///   on `nl_jit_*' trampolines); `float' / `exp' / `log' /
-///   `nl-current-unix-time' / `nl-secure-hash' / `nl-format-unix-time' /
-///   `nl-{down,up}case' / `nl-split-by-non-alnum' (Tier 2 via the new
-///   `:trampoline-unary-float' ABI mode + jit/{time,hash,strings}.rs);
-///   five `bi_record_*' arms (Tier 1.5).
-///
-/// - **Doc 86 §86.1.g (2026-05-10) — this sub-stage**: cleanup-only.
-///   Per-batch comment markers above were collapsed into this block;
-///   no arms changed.  See feat branch `agent-doc-86-1g-impl'.
-///
-/// What remains below is Doc 86 Phase 2 v3 KEEP arms + Tier 3 bridge
-/// plumbing (= see module-level docstring at the top of this file).
+/// Install every built-in into the given environment.  Idempotent.
 pub fn install_builtins(env: &mut Env) {
     let names: &[&str] = &[
         // arithmetic 2-arg primitives (= JIT lowered, see
@@ -158,8 +67,8 @@ pub fn install_builtins(env: &mut Env) {
         // generic POSIX syscall + supported-p (= Linux nr-table dispatch).
         "nelisp--syscall",
         "nelisp--syscall-supported-p",
-        // residual specialised socket primitives (Doc 76 Stage G —
-        // SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6 scope_id).
+        // Specialised socket primitives — msghdr / cmsg / ucred / scope_id
+        // marshaling too involved for nl-ffi in elisp alone.
         "nelisp--syscall-socketpair",
         "nelisp--syscall-sendmsg-fds",
         "nelisp--syscall-recvmsg-fds",
@@ -167,18 +76,8 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--syscall-bind-inet6-scoped",
         "nelisp--syscall-connect-inet6-scoped",
         "nelisp--syscall-accept-inet6-scoped",
-        // symbol / function cells + dispatch core.  Doc 98 §98.4
-        // (2026-05-11): the 7 user-visible Tier 3 names whose elisp
-        // wrappers in `nelisp-stdlib-env-shim.el' route through the
-        // `nelisp--env-globals-*' slim primitives (= `symbol-value' /
-        // `fboundp' / `boundp' / `defalias' / `set' / `fmakunbound' /
-        // `makunbound') are no longer installed here — their dispatch
-        // arms were dead code post-env-shim load and the env-shim
-        // boot file creates the entries via direct
-        // `nelisp--env-globals-set-function' anyway.  `symbol-function'
-        // + `fset' stay because env-shim's own bake reads them via
-        // `(symbol-function 'nelisp--shim-X)' / `(fset ...)' before
-        // their elisp wrappers are installed.
+        // symbol/function cell ops + dispatch core.  `symbol-function' +
+        // `fset' stay (env-shim bake reads them before its wrappers load).
         "symbol-function", "funcall", "apply", "eval",
         "fset",
         "macroexpand-1",
@@ -194,12 +93,8 @@ pub fn install_builtins(env: &mut Env) {
         // self-process stdio (Phase 9 minimal — needed by stand-alone
         // Lisp servers such as elisp-lsp running on the `nelisp' binary).
         "read-stdin-bytes",
-        // Doc 51 Phase 5 generic FFI primitive (libffi-backed) +
-        // companion buffer-management primitives for "fill caller-
-        // provided buffer" C APIs (= nl_sqlite_query, getline, etc.).
-        // Doc 76 Stage 0 added write-bytes + errno; Stage A.2-D added
-        // int / byte / offset accessor variants for sockaddr_* / pollfd /
-        // sigset_t / itimerspec / inotify_event marshaling.
+        // Generic FFI primitives (libffi-backed) + buffer + accessor
+        // variants for sockaddr_* / pollfd / sigset_t / etc. marshaling.
         "nl-ffi-call",
         "nl-ffi-malloc", "nl-ffi-read-bytes", "nl-ffi-free",
         "nl-ffi-write-bytes", "nl-ffi-errno",
@@ -208,17 +103,13 @@ pub fn install_builtins(env: &mut Env) {
         "nl-ffi-write-i16", "nl-ffi-write-i32",
         "nl-ffi-read-u8", "nl-ffi-write-bytes-at", "nl-ffi-read-bytes-at",
         "nl-ffi-write-i64",
-        // Doc 51 Phase 6/8 native-only primitives — time, hash, case
-        // folding, tokenizer, math kernel, file write, mkdir.  Each
-        // requires native syscall / Rust-stdlib precision so a pure-
-        // elisp implementation is impractical.
+        // Native-only primitives (time / hash / case / math / file I/O).
         "nl-current-unix-time", "nl-secure-hash", "nl-format-unix-time",
         "nl-downcase", "nl-upcase", "nl-split-by-non-alnum",
         "float", "exp", "log", "nelisp--f64-trunc",
         "nl-write-file", "nl-make-directory",
-        // Doc 51 Track E/K/M/P/Q — interactive TTY plumbing (Unix only).
-        // raw-mode + atexit/signal hook + quit-flag + SIGWINCH +
-        // SIGTSTP/SIGCONT.  Test-helpers prefixed `_'.
+        // Interactive TTY plumbing (Unix only) — raw mode + signal hooks
+        // (SIGINT/SIGWINCH/SIGTSTP/SIGCONT) + quit-flag.  `_'-prefixed are test helpers.
         "terminal-raw-mode-enter", "terminal-raw-mode-leave",
         "read-stdin-byte-available",
         "_termios-saved-p", "_raw-mode-hooks-installed-p",
@@ -230,19 +121,14 @@ pub fn install_builtins(env: &mut Env) {
         "terminal-take-sigcont",
         // reader exposed as elisp callable (Track O' Phase 2).
         "read", "read-from-string",
-        // Phase 7 Stage 7.4.a/c/e (Doc 68/70) — apply/call/closure/env
-        // elisp 化 用補助 primitives + `use_elisp_apply' takeover toggle +
-        // `apply-lambda-inner' Rust 化 (= Stage 7.4.d frame-capture leak fix).
+        // apply/call/closure/env primitives + use_elisp_apply toggle +
+        // apply-lambda-inner (frame-capture leak fix).
         "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured",
         "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
         "nelisp--set-use-elisp-apply", "nelisp--get-use-elisp-apply",
         "nelisp--apply-lambda-inner",
-        // Doc 77b Stage b.2 / b.2.5 / b.4 (2026-05-09) + Doc 84 §84.1
-        // (2026-05-10) + Doc 87 §86.1.f (2026-05-10) — `nl-jit-call-*'
-        // bridge primitives.  i64-i64 / ptr-ptr / syscall + 4 out-param
-        // variants (out-1 / out-2 / out-1i / out-2i) + 2 float bridges
-        // (float-float / float-cmp) + the new `:trampoline-unary-float'
-        // ABI bridge (float-unary).  See `jit/bridge.rs'.
+        // `nl-jit-call-*' bridge primitives — i64-i64 / ptr-ptr / syscall +
+        // 4 out-param variants + 3 float bridges.  See `jit/bridge.rs'.
         "nl-jit-call-i64-i64",
         "nl-jit-call-ptr-ptr",
         "nl-jit-call-syscall",
@@ -253,11 +139,7 @@ pub fn install_builtins(env: &mut Env) {
         "nl-jit-call-float-float",
         "nl-jit-call-float-cmp",
         "nl-jit-call-float-unary",
-        // Doc 77c Phase A.3 + Doc 79 v7 Phase C Stage 5.3.a (2026-05-09)
-        // — Layer 2 cons-cell primitives (5 nl-cons-* + 3 nl-rc-*) +
-        // generic NlRc surface (alloc / dealloc / inc-strong / dec-strong /
-        // strong-count / kind / payload-ptr) + GC helper trio backing
-        // `lisp/nelisp-stdlib-gc.el' Bacon-Rajan cycle collector skeleton.
+        // Layer 2 cons + rc + gc primitives backing nelisp-stdlib-gc.el.
         "nl-cons-alloc", "nl-cons-car", "nl-cons-cdr",
         "nl-cons-set-car", "nl-cons-set-cdr",
         "nl-rc-inc", "nl-rc-dec", "nl-rc-count",
@@ -265,15 +147,9 @@ pub fn install_builtins(env: &mut Env) {
         "nl-rc-inc-strong", "nl-rc-dec-strong", "nl-rc-strong-count",
         "nl-rc-kind", "nl-rc-payload-ptr",
         "nl-gc-walk-children", "nl-gc-buffered-decs", "nl-gc-finalize",
-        // Phase 7.1.6.a (Doc 28 §3.6.a / Doc 81 §5.4) — dlsym bridge.
-        // Standalone NeLisp wires `nelisp-cc-runtime-resolve-symbol-function'
-        // to call this at startup.
+        // dlsym bridge — standalone NeLisp wires it at startup.
         "nelisp-cc--dlsym-resolve",
-        // Doc 99 §99.C — first elisp-only builtin.  The Rust dispatch
-        // arm is a Sexp-unwrap / Sexp-wrap shim around the extern "C"
-        // call to `nelisp_fact_i64' (= `lisp/nelisp-cc-fact-i64.el').
-        // Linux x86_64 only — other targets get a stub arm that
-        // signals `arith-error' (= the build chain isn't wired).
+        // Phase 47 elisp-only builtin (linux-x86_64 only).
         "nl-fact-i64",
     ];
     for n in names {
@@ -285,29 +161,8 @@ pub fn install_builtins(env: &mut Env) {
     }
 }
 
-/// Dispatch a built-in by name.  Called from `super::apply_builtin`.
-///
-/// ## Comment-block consolidation (Doc 86 §86.1.g, 2026-05-10)
-///
-/// The arms below are the post-Phase-2-Tier-1+2 residue.  Per-arm
-/// migration breadcrumbs that used to annotate every deleted dispatch
-/// case (= `// + / - / * / mod migrated to elisp...', `// car / cdr /
-/// cons / setcar / setcdr migrated to JIT...', `// 1-arg predicates +
-/// type-of all live in elisp now...' etc.) have been collapsed; the
-/// migration history lives once in `install_builtins''s docstring
-/// above.  Each section header below (e.g. `// arithmetic / comparison
-/// / equality (= JIT lowered)') summarises the remaining live arms in
-/// that cluster — it does NOT enumerate the deleted ones.
-///
-/// Surviving categories: arithmetic 2-arg primitives via JIT, vector
-/// core, string format/build slivers, file syscalls, generic POSIX
-/// syscall + Doc 76 Stage G residual specialised socket primitives,
-/// symbol/function cell ops + apply/funcall/eval/macroexpand-1 +
-/// signal, print/error slivers, require + read + read-from-string +
-/// read-stdin-bytes, FFI + native-only primitives (time/hash/case/
-/// math/file write/mkdir), TTY plumbing (raw mode + quit-flag +
-/// SIGWINCH + SIGTSTP/SIGCONT), bridge primitives (`nl-jit-call-*'
-/// + `nl-cons-*' + `nl-rc-*' + `nl-gc-*'), dlsym bridge.
+/// Dispatch a built-in by name.  Called from `super::apply_builtin'.
+/// See module docstring for the surviving surface categories.
 pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match name {
         // ---- vector core (= JIT lowered: car/cdr/cons/setcar/setcdr/
@@ -331,26 +186,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- POSIX syscall (Linux nr-table dispatch) ----
         "nelisp--syscall" => bi_syscall(args),
         "nelisp--syscall-supported-p" => bi_syscall_supported_p(args),
-        // ---- Doc 76 Stage G residual specialised socket primitives:
-        // SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6 scope_id ----
-        // (= the 7 surface points retired all earlier specialised
-        // socket arms; these remain because msghdr/cmsg/ucred/scope_id
-        // marshaling is too involved for nl-ffi in elisp alone.)
-        // -- registered above; bodies are wired via the externally-
-        //    registered builtin path below since the arms were retired
-        //    before reaching this match block in Doc 76 Stage G.
+        // Specialised socket primitives (SCM_RIGHTS / SO_PEERCRED / scope_id)
+        // dispatch via the externally-registered builtin path below.
+        //
         // ---- symbol / function ----
-        // Doc 98 §98.4 (2026-05-11): 7 Tier 3 arms removed
-        // (symbol-value / fboundp / boundp / defalias / set /
-        // fmakunbound / makunbound) — see install_builtins comment
-        // above for rationale.  Only symbol-function + fset remain
-        // because env-shim's own bake needs them before the elisp
-        // wrappers are wired.
         "symbol-function" => bi_symbol_function(args, env),
         "fset" => bi_fset(args, env),
         "macroexpand-1" => bi_macroexpand_1(args, env),
-        // ---- Phase 7 Stage 7.4.a/c/e (Doc 68/70) — apply/closure/env
-        // primitives + `use_elisp_apply' takeover + apply-lambda-inner ----
+        // ---- apply/closure/env primitives + use_elisp_apply + apply-lambda-inner ----
         "nelisp--push-frame" => bi_frame_op("push-frame", args, env),
         "nelisp--pop-frame" => bi_frame_op("pop-frame", args, env),
         "nelisp--push-captured" => bi_frame_op("push-captured", args, env),
@@ -379,9 +222,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--write-stderr-line" => bi_write_stderr_line(args),
         // ---- self-process stdio ----
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
-        // ---- dlsym bridge (Phase 7.1.6.a / Doc 81 §5.4) ----
+        // ---- dlsym bridge ----
         "nelisp-cc--dlsym-resolve" => super::dlsym_bridge::bi_dlsym_resolve(args),
-        // ---- FFI primitives (Doc 51 Phase 5 + Doc 76 Stage 0/A.2-D) ----
+        // ---- FFI primitives (libffi-backed) ----
         "nl-ffi-call" => super::ffi::nl_ffi_call(args),
         "nl-ffi-malloc" => super::ffi::nl_ffi_malloc(args),
         "nl-ffi-read-bytes" => super::ffi::nl_ffi_read_bytes(args),
@@ -402,10 +245,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- math kernel sliver (= shared f64 div + truncate-mode
         // for elisp floor/ceiling/round/truncate) ----
         "nelisp--f64-trunc" => bi_f64_trunc(args),
-        // ---- file write + mkdir (Doc 51 Phase 8) ----
+        // ---- file write + mkdir ----
         "nl-write-file" => bi_nl_write_file(args),
         "nl-make-directory" => bi_nl_make_directory(args),
-        // ---- TTY plumbing (Doc 51 Track E/K/M/P/Q — Unix only) ----
+        // ---- TTY plumbing (Unix only) ----
         "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter(args),
         "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave(args),
         "read-stdin-byte-available" => bi_read_stdin_byte_available(args),
@@ -429,8 +272,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- require (orchestrates load + post-load verify; calls
         // back into elisp `load' / `featurep' through function cells) ----
         "require" => bi_require(args, env),
-        // ---- `nl-jit-call-*' bridge primitives (Doc 77b Stage b.2 /
-        // b.2.5 / b.4 + Doc 84 §84.1 + Doc 87 §86.1.f) ----
+        // ---- nl-jit-call-* bridge primitives ----
         "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64(args),
         "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr(args),
         "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall(args),
@@ -441,8 +283,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float(args),
         "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp(args),
         "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary(args),
-        // ---- Layer 2 cons / RC / GC primitives (Doc 77c Phase A.3 +
-        // Doc 79 v7 Phase C Stage 5.3.a) ----
+        // ---- Layer 2 cons / rc / gc primitives ----
         "nl-cons-alloc" => crate::eval::cons_primitives::bi_nl_cons_alloc(args),
         "nl-cons-car" => crate::eval::cons_primitives::bi_nl_cons_car(args),
         "nl-cons-cdr" => crate::eval::cons_primitives::bi_nl_cons_cdr(args),
@@ -461,19 +302,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-gc-walk-children" => crate::eval::rc_primitives::bi_nl_gc_walk_children(args),
         "nl-gc-buffered-decs" => crate::eval::rc_primitives::bi_nl_gc_buffered_decs(args),
         "nl-gc-finalize" => crate::eval::rc_primitives::bi_nl_gc_finalize(args),
-        // Doc 99 §99.C — elisp-only body in `lisp/nelisp-cc-fact-i64.el'.
+        // Phase 47 elisp-only body (`lisp/nelisp-cc-fact-i64.el').
         "nl-fact-i64" => bi_nl_fact_i64(args),
-        // Doc 102 Phase 6 (2026-05-17) — `nelisp--env-globals-op' moved
-        // from `extern_builtins' to a regular dispatch arm.  Drops the
-        // production binary's dependency on `extern_builtins'; the
-        // HashMap is now a test-only extension surface (Phase 7).
+        // Env-shim slim primitive dispatch arm.
         "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op(args, env),
         _ => {
-            // Externally-registered builtin (`Env::register_extern_builtin').
-            // Doc 102 Phase 7 (2026-05-17) — extern_builtins is
-            // `#[cfg(test)]'-only; production binary never reaches the
-            // HashMap lookup and falls straight through to
-            // `UnboundFunction'.
+            // Externally-registered builtin (test-only).
             #[cfg(test)]
             {
                 // Clone the Rc first so the `extern_builtins' borrow drops
@@ -540,21 +374,9 @@ pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), Ev
     Ok((to_f64(&args[0])?, to_f64(&args[1])?, af))
 }
 
-/// `(string-bytes STRING)' — return the number of bytes in STRING's
-/// UTF-8 representation.  Doc 76 Stage A.1 (2026-05-08): added as
-/// the prerequisite for binary-safe `nelisp-os-write' on top of
-/// `nl-ffi-call libc.write' + `nl-ffi-malloc' / `nl-ffi-write-bytes'
-/// (= without it elisp can only get char count via `length', which
-/// truncates multi-byte payloads at the libc.write boundary).
-///
-/// Doc 117 §117.A.2 (2026-05-17): the per-string byte-length step now
-/// runs through the Phase 47 elisp object compiled from
-/// `lisp/nelisp-cc-bi-string-bytes.el' (= `str-len' + `sexp-int-make').
-/// Rust keeps the arity check, the `Sexp::Str' / `Sexp::MutStr' tag
-/// dispatch (= elisp's `str-len' reads `String::len' at offset 24 from
-/// a plain `Sexp::Str' / `Sexp::Symbol'; the `MutStr' arm is unwrapped
-/// into a transient `Sexp::Str' view first), the caller-owned out-slot,
-/// and the `WrongType' error for non-string inputs.
+/// `(string-bytes STRING)' — UTF-8 byte count.  Body dispatches to
+/// Phase 47-compiled `nelisp_bi_string_bytes' kernel; Rust keeps arity
+/// + tag dispatch + caller-owned out-slot + WrongType error.
 fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-bytes", args, 1, Some(1))?;
     // Unify the two string variants behind a `*const Sexp' that the
@@ -606,13 +428,8 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     }
 }
 
-// ---------- char-table / bool-vector legacy decode helpers ----------
-//
-// `Sexp::CharTable' / `Sexp::BoolVector' user-facing builtins were
-// retired in Rust-min 2026-05-06 batch 5b — see install_builtins
-// docstring.  The variants stay alive for image-format backward-compat
-// decode; the two helpers below let `bi_aref' / `bi_aset' continue to
-// read/write any legacy-decoded instances.
+// ---- char-table legacy decode helpers ----
+// User-facing builtins retired; helpers stay for image-format decode.
 
 pub(crate) fn char_table_set_one(
     inner: &mut crate::eval::sexp::CharTableInner,
@@ -678,13 +495,8 @@ fn env_default_directory(env: &Env) -> Option<String> {
     }
 }
 
-/// `(nelisp--syscall-canonicalize PATH)' — Rust-min batch 7d (Doc 50
-/// stage 2).  Wraps `std::fs::canonicalize' (= follows all symlinks
-/// in PATH and returns the absolute resolved real path).  Returns
-/// nil for any error (= path doesn't exist, broken symlink, etc) so
-/// the elisp `file-truename' wrapper can fall back to the un-resolved
-/// expand-file-name result, mirroring the prior `bi_file_truename'
-/// `unwrap_or(full)' behaviour exactly.
+/// `(nelisp--syscall-canonicalize PATH)' — wraps `std::fs::canonicalize'.
+/// Returns nil on any error so elisp `file-truename' can fall back.
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-canonicalize", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
@@ -694,15 +506,8 @@ fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalErr
     }
 }
 
-/// `(nelisp--syscall-read-file PATH)' — Rust-min batch 7f (Doc 50
-/// stage 2): thin wrapper over `std::fs::read_to_string'.  Returns
-/// the file contents as a string on success, or nil on any I/O error
-/// (= file missing, permission denied, invalid UTF-8, etc).
-///
-/// Used by elisp `load' (lisp/nelisp-stdlib-misc.el) for the file-
-/// content slurp step.  The error → nil flatten lets elisp drive its
-/// own error-message formatting / `noerror' branch, mirroring the
-/// shape used for `nelisp--syscall-canonicalize' (batch 7d).
+/// `(nelisp--syscall-read-file PATH)' — `std::fs::read_to_string'.
+/// Returns nil on I/O error.  Used by elisp `load'.
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-read-file", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
@@ -712,14 +517,9 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
     }
 }
 
-/// `(nelisp--read-all-from-string STR)' — Phase 7 Stage 7.6.a (Doc 71
-/// §3.1): mandatory delegation to elisp
+/// `(nelisp--read-all-from-string STR)' — mandatory delegation to elisp
 /// `nelisp--read-all-from-string-impl' (= `lisp/nelisp-stdlib-reader.el').
-/// Mirrors the Stage 7.2.d retirement pattern that
-/// `bi_read_from_string' adopted: post-bootstrap user-visible reads
-/// MUST go through the elisp reader so the Rust `reader::read_all'
-/// surface is bootstrap-only.  Hard error if the elisp impl isn't
-/// installed (= reader.el missing from STDLIB_SOURCES).
+/// Hard error if the elisp impl isn't installed.
 fn bi_read_all_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--read-all-from-string", args, 1, Some(1))?;
     let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl").map_err(|_| {
@@ -740,24 +540,9 @@ fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     Ok(normalize_path(&path, base.as_deref()))
 }
 
-/// `(nelisp--syscall-stat PATH)' — Rust-min batch 7b (Doc 50 stage 2
-/// first slice).  Resolves PATH against `default-directory' just like
-/// the previous `bi_file_exists_p' family did, then returns one of:
-///
-///   * `'absent'    — path does not exist, no permissions, or any
-///                    `metadata' error.  Note: dangling symlinks land
-///                    here too because `metadata()' follows symlinks
-///                    and errors out at the missing target (= same
-///                    behaviour the prior `is_file()' / `is_dir()'
-///                    `unwrap_or(false)' produced for the 4 wrappers).
-///   * `'file'      — resolves to a regular file.
-///   * `'directory' — resolves to a directory.
-///
-/// 4 elisp wrappers (= `file-exists-p' / `file-readable-p' /
-/// `file-directory-p' / `file-regular-p') ride this 1 primitive — see
-/// lisp/nelisp-stdlib-misc.el.  Doc 50 §3.2 unlock-strategy "POSIX
-/// syscall layer" applied via the same shape as batch 7a (= 1 iter
-/// primitive + N elisp wrappers).
+/// `(nelisp--syscall-stat PATH)' — returns `'absent / `'file / `'directory.
+/// Other file types + any metadata error → `'absent.  Backs 4 elisp wrappers
+/// (file-exists-p / file-readable-p / file-directory-p / file-regular-p).
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-stat", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
@@ -775,19 +560,9 @@ fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Symbol(tag.into()))
 }
 
-/// `(nelisp--syscall-readdir DIR)' — Rust-min batch 7c (Doc 50 stage
-/// 2).  POSIX readdir layer used by elisp `directory-files' (see
-/// lisp/nelisp-stdlib-misc.el).  Returns the cons-headed list
-///
-///   `(ABS-DIR NAME1 NAME2 ...)`
-///
-/// where ABS-DIR is the `default-directory'-resolved absolute path
-/// (= matches what the prior `bi_directory_files' used internally for
-/// FULL-mode prefix), and NAMEi are unsorted directory entry names.
-/// Returns nil for any error (= dir not found, permission denied,
-/// etc) — same as the prior `bi_directory_files' which also collapsed
-/// all errors to nil.  The elisp wrapper handles sort / regex match /
-/// FULL-path / COUNT clipping.
+/// `(nelisp--syscall-readdir DIR)' — POSIX readdir.  Returns
+/// `(ABS-DIR NAME1 NAME2 ...)` (unsorted); nil on error.  Backs elisp
+/// `directory-files' which handles sort + regex + FULL + COUNT.
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-readdir", args, 1, Some(1))?;
     let dir = resolve_existing_path(&args[0], env)?;
@@ -802,13 +577,9 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
 }
 
-// ---------------------------------------------------------------------------
-// Doc 53 Phase 1 — POSIX OS surface (Linux only via libc::syscall +
-// libc::SYS_*).  Non-Linux: `-supported-p' returns nil so the elisp
-// wrapper picks the `nl-ffi-call libc' fallback (Path B); the other
-// primitives Err explicitly.  Errors normalised via __errno_location()
-// to the kernel ABI shape (result < 0 = -errno).
-// ---------------------------------------------------------------------------
+// ---- POSIX syscall surface (Linux only via libc::syscall + libc::SYS_*) ----
+// Non-Linux: `-supported-p' returns nil for elisp `nl-ffi-call libc' fallback.
+// Errors normalised via __errno_location() to (result < 0 = -errno).
 
 fn bi_syscall_supported_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-supported-p", args, 0, Some(0))?;
@@ -845,12 +616,8 @@ pub(crate) fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
             "dup2"       => Ok(libc::SYS_dup2       as i64),
             "getpid"     => Ok(libc::SYS_getpid     as i64),
             "kill"       => Ok(libc::SYS_kill       as i64),
-            // Doc 54 Core-12 / Doc 55 Posix-30 / Doc 57 modern-event /
-            // Doc 59 timerfd additions (= int-only args; ride the
-            // generic dispatch.  fstat / pipe / execve / wait4 / bind /
-            // connect / accept / poll / signalfd / timerfd-settime /
-            // timerfd-gettime / sigprocmask need buffers and live in
-            // separate primitives or were retired into nl-ffi).
+            // Int-only-arg syscalls — buffer-using syscalls live in
+            // separate primitives or use nl-ffi.
             "mmap"              => Ok(libc::SYS_mmap              as i64),
             "mprotect"          => Ok(libc::SYS_mprotect          as i64),
             "munmap"            => Ok(libc::SYS_munmap            as i64),
@@ -920,12 +687,6 @@ syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
 // ---------- symbol / function ----------
 
-// Doc 98 §98.4 (2026-05-11): bi_symbol_value retired together with
-// bi_fboundp / bi_boundp / bi_defalias / bi_set / bi_fmakunbound /
-// bi_makunbound.  All seven were dead-code post-env-shim load — the
-// elisp `nelisp--shim-*' wrappers in `nelisp-stdlib-env-shim.el'
-// route through the `nelisp--env-globals-*' slim primitives.
-
 fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("symbol-function", args, 1, Some(1))?;
     match &args[0] {
@@ -947,13 +708,9 @@ fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
     }
 }
 
-/// `(fset SYMBOL DEFINITION)` — install DEFINITION in the function
-/// cell of SYMBOL.  Doc 98 §98.4 (2026-05-11): the last surviving
-/// Rust function-cell setter — env-shim's own bake needs it for the
-/// 60+ `(fset 'NAME ...)' installs in `nelisp-jit-substrate.el' /
-/// `nelisp-jit-strategy.el' before its own elisp wrappers are
-/// wired.  `defalias' was retired in the same commit (the optional
-/// docstring slot was always discarded).
+/// `(fset SYMBOL DEFINITION)` — install DEFINITION in SYMBOL's function
+/// cell.  Last Rust function-cell setter (env-shim bake needs it before
+/// its elisp wrappers load).
 fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("fset", args, 2, Some(2))?;
     let name = match &args[0] {
@@ -971,20 +728,8 @@ fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(def)
 }
 
-// Doc 98 §98.4 (2026-05-11): bi_fmakunbound retired together with
-// the other 6 user-visible Tier 3 names — see install_builtins
-// comment above.
-
-/// `(macroexpand-1 FORM &optional ENV)` — expand FORM by ONE level if
-/// its head is a macro; otherwise return FORM unchanged.  ENV is
-/// currently ignored (= NeLisp has no environment-override macro
-/// lookup, all macros live in the global function cell).
-///
-/// Phase 7 Stage 7.3.a (Doc 67): added so ERT can verify the expansion
-/// shape of elisp-side Tier 2 macros (= `cond' / `when' / `unless' / ...)
-/// while their dispatch is still preempted by `apply_special' match
-/// arms.  Stage 7.3.d retires the Rust arms and the elisp macros
-/// activate at runtime; `macroexpand-1' remains useful for tests.
+/// `(macroexpand-1 FORM &optional ENV)' — expand FORM by ONE level if
+/// its head is a macro; otherwise return FORM unchanged.  ENV ignored.
 fn bi_macroexpand_1(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("macroexpand-1", args, 1, Some(2))?;
     let form = &args[0];
@@ -1022,10 +767,8 @@ fn bi_macroexpand_1(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 // Doc 102 Phase 3.a (2026-05-13): 4 frame primitives' bodies merged.
-// Each dispatch arm calls `bi_frame_op(OP, args, env)' with its
-// matching tag.  Elisp `defun' wrappers would break frame semantics
-// (= the wrapper itself pushes a frame, making `bind-local' target
-// the wrapper instead of the caller's innermost frame).
+// 4 frame primitives merged; elisp `defun' wrappers would break frame
+// semantics (= wrapper pushes a frame, `bind-local' targets the wrapper).
 fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match op {
         "push-frame" => {
@@ -1059,18 +802,9 @@ fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError
     }
 }
 
-// `bi_set_use_elisp_apply' / `bi_get_use_elisp_apply' (Stage 7.4.c
-// takeover flag accessors) inlined directly into the dispatch arms
-// below — too small to justify separate fn definitions.
-
-/// `(nelisp--apply-builtin-dispatch NAME ARGS)` — direct dispatch to
-/// the builtin registry by name.  ARGS is a proper list whose elements
-/// have ALREADY been evaluated.  Returns the builtin's result.
-///
-/// Used by elisp-side `nelisp--apply-fn' when the dispatched function
-/// is a `(builtin NAME)' sentinel.  Equivalent to the Rust
-/// `apply_builtin' helper, just lifted out so the elisp dispatcher can
-/// reach it without a special form arm.
+/// `(nelisp--apply-builtin-dispatch NAME ARGS)' — direct dispatch by
+/// name.  ARGS already evaluated.  Backs elisp `nelisp--apply-fn' for
+/// the `(builtin NAME)' sentinel arm.
 fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--apply-builtin-dispatch", args, 2, Some(2))?;
     let name = match &args[0] {
@@ -1085,17 +819,10 @@ fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalE
     dispatch(&name, &arg_vec, env)
 }
 
-/// Phase 7 Stage 7.4.e (Doc 70) — `(nelisp--apply-lambda-inner CAPTURED
-/// FORMALS BODY ARGS)`.  Rust builtin replacing the Stage 7.4.b elisp
-/// defun of the same name.  All four state slots plus intermediate
-/// `pairs' / `last' live on the Rust call stack — nothing enters the
-/// elisp lexical env, so a `defun' executed within BODY cannot
-/// snapshot this builtin's "formal slots".  Surgical fix for the
-/// Stage 7.4.d capture-leak bug.
-///
-/// BODY is a proper list of forms (= the elisp dispatcher passes the
-/// closure body cdr directly).  ARGS is a proper list of already-
-/// evaluated arguments (= matches the elisp dispatcher contract).
+/// `(nelisp--apply-lambda-inner CAPTURED FORMALS BODY ARGS)' —
+/// Rust-native lambda apply.  Keeps state on the Rust call stack to
+/// avoid closure capture-leak bugs.  BODY + ARGS are proper lists;
+/// ARGS already evaluated.
 fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--apply-lambda-inner", args, 4, Some(4))?;
     let captured = &args[0];
@@ -1105,10 +832,7 @@ fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError
     super::apply_lambda_inner(captured, formals, &body_vec, &args_vec, env)
 }
 
-// Doc 98 §98.4 (2026-05-11): bi_makunbound retired — see
-// install_builtins comment above for full list of 7 removed arms.
-
-/// Resolve `arg` to a callable: a symbol points to its function cell,
+/// Resolve `arg' to a callable: a symbol points to its function cell,
 /// a quoted lambda `(lambda ...)` / `(closure ...)` / `(builtin ...)`
 /// is returned as-is.
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
