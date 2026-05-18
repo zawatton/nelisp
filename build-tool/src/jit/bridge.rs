@@ -395,10 +395,22 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
     Some(p)
 }
 
-fn unknown_name_err(prim: &str, name: &str) -> EvalError {
-    EvalError::Internal(format!(
-        "{}: unknown JIT entry name `{}'", prim, name
-    ))
+/// Shared lookup preamble: arity-check + name extraction + fn-ptr
+/// resolution.  Returns the raw fn-ptr the caller will `transmute' to
+/// its specific shape.  Collapses ~4 LOC of identical boilerplate at
+/// every `bi_nl_jit_call_*' head.
+fn jit_lookup(
+    prim: &str,
+    args: &[Sexp],
+    arity: usize,
+) -> Result<*const u8, EvalError> {
+    require_arity(prim, args, arity, Some(arity))?;
+    let name = as_name(prim, &args[0])?;
+    unified_fn_ptr(name).ok_or_else(|| {
+        EvalError::Internal(format!(
+            "{}: unknown JIT entry name `{}'", prim, name
+        ))
+    })
 }
 
 /// `(nl-jit-call-i64-i64 NAME A B) -> Int'.  Looks up NAME in the
@@ -406,19 +418,15 @@ fn unknown_name_err(prim: &str, name: &str) -> EvalError {
 /// `extern "C" fn(i64, i64) -> i64', calls it with `(A, B)', wraps the
 /// `i64' result as `Sexp::Int'.
 pub fn bi_nl_jit_call_i64_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-jit-call-i64-i64", args, 3, Some(3))?;
-    let name = as_name("nl-jit-call-i64-i64", &args[0])?;
+    let p = jit_lookup("nl-jit-call-i64-i64", args, 3)?;
     let a = as_int("nl-jit-call-i64-i64", &args[1])?;
     let b = as_int("nl-jit-call-i64-i64", &args[2])?;
-    let p = unified_fn_ptr(name)
-        .ok_or_else(|| unknown_name_err("nl-jit-call-i64-i64", name))?;
     // SAFETY: every name resolved by `unified_fn_ptr' to an arith /
     // syscall_supported_p slot has the `extern "C" fn(i64, i64) -> i64'
     // shape (or 0-arg supported_p which we route through
     // call-syscall instead — caller responsibility).
     let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(p) };
-    let v = f(a, b);
-    Ok(Sexp::Int(v))
+    Ok(Sexp::Int(f(a, b)))
 }
 
 /// `(nl-jit-call-ptr-ptr NAME A B) -> Int'.  Same shape as i64-i64 but
@@ -427,10 +435,7 @@ pub fn bi_nl_jit_call_i64_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// the elisp wrapper can do `(if (= 0 v) nil t)' for predicate-style
 /// entries or pass the result through for trampoline-OK / -ERR codes.
 pub fn bi_nl_jit_call_ptr_ptr(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-jit-call-ptr-ptr", args, 3, Some(3))?;
-    let name = as_name("nl-jit-call-ptr-ptr", &args[0])?;
-    let p = unified_fn_ptr(name)
-        .ok_or_else(|| unknown_name_err("nl-jit-call-ptr-ptr", name))?;
+    let p = jit_lookup("nl-jit-call-ptr-ptr", args, 3)?;
     // SAFETY: caller is responsible for passing a name whose JIT entry
     // has the `(*const Sexp, *const Sexp) -> i64' shape — currently
     // only `nelisp_jit_eq_inline' qualifies.  Passing a name with a
@@ -438,8 +443,7 @@ pub fn bi_nl_jit_call_ptr_ptr(args: &[Sexp]) -> Result<Sexp, EvalError> {
     // single-purpose elisp-side `eq' wrapper Stage b.4 will ship.
     let f: extern "C" fn(*const Sexp, *const Sexp) -> i64 =
         unsafe { std::mem::transmute(p) };
-    let v = f(&args[1] as *const _, &args[2] as *const _);
-    Ok(Sexp::Int(v))
+    Ok(Sexp::Int(f(&args[1] as *const _, &args[2] as *const _)))
 }
 
 /// `(nl-jit-call-syscall NAME NR A0 A1 A2 A3 A4 A5) -> Int'.  Calls
@@ -450,8 +454,7 @@ pub fn bi_nl_jit_call_ptr_ptr(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// not exercise extra args of a 0-arg fn under the host C ABI but
 /// this is technically UB; supported_p is rarely on the hot path).
 pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-jit-call-syscall", args, 8, Some(8))?;
-    let name = as_name("nl-jit-call-syscall", &args[0])?;
+    let p = jit_lookup("nl-jit-call-syscall", args, 8)?;
     let nr = as_int("nl-jit-call-syscall", &args[1])?;
     let a0 = as_int("nl-jit-call-syscall", &args[2])?;
     let a1 = as_int("nl-jit-call-syscall", &args[3])?;
@@ -459,14 +462,11 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let a3 = as_int("nl-jit-call-syscall", &args[5])?;
     let a4 = as_int("nl-jit-call-syscall", &args[6])?;
     let a5 = as_int("nl-jit-call-syscall", &args[7])?;
-    let p = unified_fn_ptr(name)
-        .ok_or_else(|| unknown_name_err("nl-jit-call-syscall", name))?;
     // SAFETY: caller passes a name whose JIT entry has the
     // `(i64 × 7) -> i64' shape — currently `nelisp_jit_syscall'.
     let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64 =
         unsafe { std::mem::transmute(p) };
-    let v = f(nr, a0, a1, a2, a3, a4, a5);
-    Ok(Sexp::Int(v))
+    Ok(Sexp::Int(f(nr, a0, a1, a2, a3, a4, a5)))
 }
 
 // Doc 84 §84.1 — Float-family bridge primitives (xmm marshalling).
@@ -475,9 +475,7 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // coerce Sexp args via `num_pair' (Float promotion + canonical WrongType),
 // transmute, call.  Arith → Sexp::Float; cmp → Sexp::Int 0/1.
 fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> {
-    require_arity(name, args, 3, Some(3))?;
-    let sym = as_name(name, &args[0])?;
-    let p = unified_fn_ptr(sym).ok_or_else(|| unknown_name_err(name, sym))?;
+    let p = jit_lookup(name, args, 3)?;
     let (a, b, _) = crate::eval::builtins::num_pair(&args[1..], name)?;
     Ok((p, a, b))
 }
@@ -506,22 +504,24 @@ pub fn bi_nl_jit_call_float_cmp(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // bridge takes (= `to_f64'-equivalent inlined here to keep the helper
 // local-only), transmutes, calls.
 
+/// Coerce a Sexp to f64 via the float-bridge contract: Int → cast,
+/// Float → identity, Nil → 0.0, anything else → `WrongType { expected:
+/// EXPECTED }'.  Shared by `float_unary' and `bi_nl_jit_call_format_float'.
+fn to_f64(v: &Sexp, expected: &str) -> Result<f64, EvalError> {
+    match v {
+        Sexp::Int(i) => Ok(*i as f64),
+        Sexp::Float(f) => Ok(*f),
+        Sexp::Nil => Ok(0.0),
+        other => Err(EvalError::WrongType {
+            expected: expected.into(),
+            got: other.clone(),
+        }),
+    }
+}
+
 fn float_unary(args: &[Sexp], name: &str) -> Result<(*const u8, f64), EvalError> {
-    require_arity(name, args, 2, Some(2))?;
-    let sym = as_name(name, &args[0])?;
-    let p = unified_fn_ptr(sym).ok_or_else(|| unknown_name_err(name, sym))?;
-    let x = match &args[1] {
-        Sexp::Int(i) => *i as f64,
-        Sexp::Float(f) => *f,
-        Sexp::Nil => 0.0,
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "number".into(),
-                got: other.clone(),
-            });
-        }
-    };
-    Ok((p, x))
+    let p = jit_lookup(name, args, 2)?;
+    Ok((p, to_f64(&args[1], "number")?))
 }
 
 /// `(nl-jit-call-float-unary NAME X) -> Float'.  Looks up NAME in the
@@ -559,16 +559,28 @@ pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// ERR uniformly so we never spell `TRAMPOLINE_ERR' explicitly.
 const TRAMPOLINE_OK: i64 = 0;
 
+/// Wrap a trampoline's `(rc, out)' tuple as `Result<Sexp, EvalError>'.
+/// On `TRAMPOLINE_OK' returns `out'; otherwise raises `WrongType
+/// { expected: PRIM, got: ARG.clone() }' — the canonical ERR mapping
+/// shared by every `out_*' bridge primitive + `format_float'.
+fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalError> {
+    if rc == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        Err(EvalError::WrongType {
+            expected: prim.into(),
+            got: arg.clone(),
+        })
+    }
+}
+
 /// `(nl-jit-call-out-1 NAME ARG) -> Sexp'.  For `car' / `cdr' /
 /// `length' (= shape `extern "C" fn(*const Sexp, *mut Sexp) -> i64').
 /// Allocates an `out = Sexp::Nil' on the host stack, invokes the
 /// resolved trampoline with `(&arg, &mut out)', and returns `out' on
 /// `TRAMPOLINE_OK' or a generic `WrongType' on `TRAMPOLINE_ERR'.
 pub fn bi_nl_jit_call_out_1(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-jit-call-out-1", args, 2, Some(2))?;
-    let name = as_name("nl-jit-call-out-1", &args[0])?;
-    let p = unified_fn_ptr(name)
-        .ok_or_else(|| unknown_name_err("nl-jit-call-out-1", name))?;
+    let p = jit_lookup("nl-jit-call-out-1", args, 2)?;
     // SAFETY: caller passes a name whose JIT entry has the
     // `(*const Sexp, *mut Sexp) -> i64' shape — `nelisp_jit_car' /
     // `_cdr' / `_length' qualify.  Other shapes are UB.
@@ -576,24 +588,14 @@ pub fn bi_nl_jit_call_out_1(args: &[Sexp]) -> Result<Sexp, EvalError> {
         unsafe { std::mem::transmute(p) };
     let mut out = Sexp::Nil;
     let r = f(&args[1] as *const _, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "jit-call-out-1".into(),
-            got: args[1].clone(),
-        })
-    }
+    out_result(r, out, "jit-call-out-1", &args[1])
 }
 
 /// `(nl-jit-call-out-2 NAME ARG1 ARG2) -> Sexp'.  For `cons' /
 /// `setcar' / `setcdr' (= shape `extern "C" fn(*const Sexp, *const
 /// Sexp, *mut Sexp) -> i64').
 pub fn bi_nl_jit_call_out_2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-jit-call-out-2", args, 3, Some(3))?;
-    let name = as_name("nl-jit-call-out-2", &args[0])?;
-    let p = unified_fn_ptr(name)
-        .ok_or_else(|| unknown_name_err("nl-jit-call-out-2", name))?;
+    let p = jit_lookup("nl-jit-call-out-2", args, 3)?;
     // SAFETY: caller passes a name whose JIT entry has the
     // `(*const Sexp, *const Sexp, *mut Sexp) -> i64' shape —
     // `nelisp_jit_cons' / `_setcar' / `_setcdr' qualify.
@@ -605,24 +607,14 @@ pub fn bi_nl_jit_call_out_2(args: &[Sexp]) -> Result<Sexp, EvalError> {
         &args[2] as *const _,
         &mut out as *mut _,
     );
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "jit-call-out-2".into(),
-            got: args[1].clone(),
-        })
-    }
+    out_result(r, out, "jit-call-out-2", &args[1])
 }
 
 /// `(nl-jit-call-out-1i NAME ARG IDX) -> Sexp'.  For `aref' / `elt'
 /// (= shape `extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64').
 pub fn bi_nl_jit_call_out_1i(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-jit-call-out-1i", args, 3, Some(3))?;
-    let name = as_name("nl-jit-call-out-1i", &args[0])?;
+    let p = jit_lookup("nl-jit-call-out-1i", args, 3)?;
     let idx = as_int("nl-jit-call-out-1i", &args[2])?;
-    let p = unified_fn_ptr(name)
-        .ok_or_else(|| unknown_name_err("nl-jit-call-out-1i", name))?;
     // SAFETY: caller passes a name whose JIT entry has the
     // `(*const Sexp, i64, *mut Sexp) -> i64' shape — `nelisp_jit_aref'
     // / `_elt' qualify.
@@ -630,25 +622,15 @@ pub fn bi_nl_jit_call_out_1i(args: &[Sexp]) -> Result<Sexp, EvalError> {
         unsafe { std::mem::transmute(p) };
     let mut out = Sexp::Nil;
     let r = f(&args[1] as *const _, idx, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "jit-call-out-1i".into(),
-            got: args[1].clone(),
-        })
-    }
+    out_result(r, out, "jit-call-out-1i", &args[1])
 }
 
 /// `(nl-jit-call-out-2i NAME ARG IDX VAL) -> Sexp'.  For `aset' (=
 /// shape `extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) ->
 /// i64').
 pub fn bi_nl_jit_call_out_2i(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-jit-call-out-2i", args, 4, Some(4))?;
-    let name = as_name("nl-jit-call-out-2i", &args[0])?;
+    let p = jit_lookup("nl-jit-call-out-2i", args, 4)?;
     let idx = as_int("nl-jit-call-out-2i", &args[2])?;
-    let p = unified_fn_ptr(name)
-        .ok_or_else(|| unknown_name_err("nl-jit-call-out-2i", name))?;
     // SAFETY: caller passes a name whose JIT entry has the
     // `(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64' shape —
     // `nelisp_jit_aset' qualifies.
@@ -661,14 +643,7 @@ pub fn bi_nl_jit_call_out_2i(args: &[Sexp]) -> Result<Sexp, EvalError> {
         &args[3] as *const _,
         &mut out as *mut _,
     );
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "jit-call-out-2i".into(),
-            got: args[1].clone(),
-        })
-    }
+    out_result(r, out, "jit-call-out-2i", &args[1])
 }
 
 
@@ -690,34 +665,21 @@ pub fn bi_nl_jit_call_out_2i(args: &[Sexp]) -> Result<Sexp, EvalError> {
 pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nl-jit-call-format-float", args, 4, Some(4))?;
     let name = as_name("nl-jit-call-format-float", &args[0])?;
-    let x: f64 = match &args[1] {
-        Sexp::Float(v) => *v,
-        Sexp::Int(n) => *n as f64,
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "numberp".into(),
-                got: other.clone(),
-            })
-        }
-    };
+    let x = to_f64(&args[1], "numberp")?;
     let conv = as_int("nl-jit-call-format-float", &args[2])?;
     let prec = as_int("nl-jit-call-format-float", &args[3])?;
-    let p = unified_fn_ptr(name)
-        .ok_or_else(|| unknown_name_err("nl-jit-call-format-float", name))?;
+    let p = unified_fn_ptr(name).ok_or_else(|| {
+        EvalError::Internal(format!(
+            "nl-jit-call-format-float: unknown JIT entry name `{}'", name
+        ))
+    })?;
     // SAFETY: NAME resolves to `nl_jit_format_float' shape (= xmm0 +
     // rsi + rdx + rcx).
     let f: extern "C" fn(f64, u32, i64, *mut Sexp) -> i64 =
         unsafe { std::mem::transmute(p) };
     let mut out = Sexp::Nil;
     let r = f(x, conv as u32, prec, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "jit-call-format-float".into(),
-            got: args[1].clone(),
-        })
-    }
+    out_result(r, out, "jit-call-format-float", &args[1])
 }
 
 #[cfg(test)]
