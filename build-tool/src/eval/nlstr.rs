@@ -172,12 +172,12 @@ impl NlStrRef {
 }
 
 impl Clone for NlStrRef {
-    /// Bump the refcount and return a new handle that shares the
-    /// same inner box.  `Relaxed' for the +1.
+    /// Doc 124 §124.F — refcount +1 dispatched to the Phase 47-compiled
+    /// `nelisp_nlstr_clone' kernel (= §122.E `atomic-fetch-add' delta=+1
+    /// at REFCOUNT_OFFSET=24).
     fn clone(&self) -> Self {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
         unsafe {
-            (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
+            crate::elisp_cc_spike::nlstr_clone(self.ptr.as_ptr() as *mut i64);
         }
         NlStrRef {
             ptr: self.ptr,

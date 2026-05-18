@@ -199,10 +199,12 @@ pub unsafe extern "C" fn nl_alloc_record(
 }
 
 impl Clone for NlRecordRef {
+    /// Doc 124 §124.F — refcount +1 dispatched to the Phase 47-compiled
+    /// `nelisp_nlrecord_clone' kernel (= §122.E `atomic-fetch-add' delta=+1
+    /// at REFCOUNT_OFFSET=24).
     fn clone(&self) -> Self {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
         unsafe {
-            (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
+            crate::elisp_cc_spike::nlrecord_clone(self.ptr.as_ptr() as *mut i64);
         }
         NlRecordRef {
             ptr: self.ptr,

@@ -221,13 +221,12 @@ impl NlCellRef {
 }
 
 impl Clone for NlCellRef {
-    /// Bump the refcount and return a new handle that shares the
-    /// same inner cell.  `Relaxed` ordering for the +1 (= matches
-    /// `NlConsBoxRef::clone' / `std::sync::Arc::clone').
+    /// Doc 124 §124.F — refcount +1 dispatched to the Phase 47-compiled
+    /// `nelisp_nlcell_clone' kernel (= §122.E `atomic-fetch-add' delta=+1
+    /// at REFCOUNT_OFFSET=32).
     fn clone(&self) -> Self {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
         unsafe {
-            (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
+            crate::elisp_cc_spike::nlcell_clone(self.ptr.as_ptr() as *mut i64);
         }
         NlCellRef {
             ptr: self.ptr,

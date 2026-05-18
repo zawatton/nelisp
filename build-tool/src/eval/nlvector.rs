@@ -185,10 +185,13 @@ pub unsafe extern "C" fn nl_vector_set_slot(
 }
 
 impl Clone for NlVectorRef {
+    /// Doc 124 §124.F — refcount +1 dispatched to the Phase 47-compiled
+    /// `nelisp_nlvector_clone' kernel.  SIGSEGV pre-investigation blocker
+    /// turned out to be Doc 115 §115.3 odd-arity GP defun alignment bug;
+    /// per-defun fix shipped in commit 6eb73197 unblocked this sweep.
     fn clone(&self) -> Self {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
         unsafe {
-            (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
+            crate::elisp_cc_spike::nlvector_clone(self.ptr.as_ptr() as *mut i64);
         }
         NlVectorRef {
             ptr: self.ptr,
