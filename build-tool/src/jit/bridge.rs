@@ -1,50 +1,16 @@
-//! Doc 77b Stage b.2 — `nl-jit-call-*` bridge primitives.
-//!
-//! Provides the Rust-side primitives that elisp `lowered_X` wrappers
-//! (= the future replacements for `lowered_X` Rust fns shipped in
-//! Stage b.4) call to invoke JIT entries by name.  The 3 primitives
-//! cover the 3 calling shapes the registered JIT entries need:
-//!
-//! - `nl-jit-call-i64-i64 NAME A B` — `extern "C" fn(i64, i64) -> i64'.
-//!   Used by the 12 arith / cmp / bitwise + `ash' entries (= raw i64
-//!   in / i64 out: `nelisp_jit_add2', `nelisp_jit_eq2' etc.).
-//! - `nl-jit-call-ptr-ptr NAME A B` — `extern "C" fn(*const Sexp,
-//!   *const Sexp) -> i64'.  Used by `nelisp_jit_eq_inline' (= the only
-//!   ptr/ptr/i64 entry today).
-//! - `nl-jit-call-syscall NAME NR A0 A1 A2 A3 A4 A5` — `extern "C"
-//!   fn(i64 × 7) -> i64'.  Used by `nelisp_jit_syscall' /
-//!   `nelisp_jit_syscall_supported_p' (= the latter takes 0 i64s but
-//!   the trampoline shape forwards 7 padding zeros which Cranelift
-//!   ignores when the sig has no params; for supported_p we route
-//!   through the same primitive with NR/A0..A5 = 0 for uniformity).
-//!
-//! The name-keyed lookup is centralized in [`unified_fn_ptr`] which
-//! maps every `nelisp_jit_*' symbol to the matching field in
-//! [`super::UnifiedJit`].  Returns the raw `*const u8' so the call site
-//! casts to the correct shape — the 3 primitives below are the
-//! *only* place where that cast happens, keeping `unsafe' centralized.
-//!
-//! Out of scope for Stage b.2:
-//! - elisp wrapper file (= `lisp/nelisp-jit-strategy.el', Stage b.4).
-//! - DSL-driven rule registration via `nelisp--jit-bootstrap' (= Stage
-//!   b.3 — the registry today is the typed `UnifiedJit' struct, not the
-//!   yet-to-be-built name → FuncId alist from elisp).
+//! `nl-jit-call-*' bridge primitives.  Elisp `lowered_X' wrappers in
+//! `lisp/nelisp-jit-strategy.el' call these to invoke JIT entries by
+//! name.  Shapes: `i64-i64' (arith/cmp/bitwise), `ptr-ptr' (eq-inline),
+//! `syscall' (i64 × 7).  Name-keyed lookup in [`unified_fn_ptr`];
+//! `unsafe' fn-ptr casts confined to this module.
 
 use crate::eval::builtins::{as_int, require_arity};
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 
-// Doc 100 §100.D Stage 1-3 — the 12 `nl_jit_arith_*' trampolines now
-// live exclusively in Phase-47-compiled elisp `.o' files (no Rust
-// `super::arith' module anymore).  `arith_link' just `extern "C"'-
-// declares the names so the linker resolves them against the static
-// archive built by `build.rs::link_elisp_cc_spike'.  Supported targets:
-//   linux + x86_64   (ELF, §100.C/D Stage 1)
-//   linux + aarch64  (ELF, §100.D Stage 2)
-//   macos + aarch64  (Mach-O, §100.D Stage 3)
-// Other targets fall through the `link_elisp_cc_spike' gate in
-// build.rs and consequently fail to link nelisp_jit_* — the bin is
-// not supported on those targets in v1.0 anyway.
+// 12 `nelisp_jit_*' arith trampolines live in Phase-47-compiled elisp
+// `.o' files; `arith_link' just `extern "C"'-declares the names.
+// Supported targets: linux-x86_64 / linux-aarch64 / macos-aarch64.
 #[cfg(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64"),
@@ -66,11 +32,8 @@ mod arith_link {
     }
 }
 
-// Unsupported targets: stub `arith_link' so `unified_fn_ptr's match
-// arms still compile.  The bin is not functional on these targets
-// (= `build.rs::link_elisp_cc_spike' bails out before emitting the
-// elisp archive), so reaching these stubs at runtime should be
-// impossible — they exist purely to keep `cargo check' clean.
+// Unsupported targets: stub `arith_link' to keep `cargo check' clean.
+// `build.rs::link_elisp_cc_spike' bails out so these stubs can't fire.
 #[cfg(not(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64"),
@@ -90,22 +53,9 @@ mod arith_link {
     pub unsafe extern "C" fn nelisp_jit_ash(_: i64, _: i64) -> i64 { 0 }
 }
 
-// Doc 110 §110.E.2.b — `jit/float.rs's 9 trampolines (add / sub /
-// mul / div / eq-eps / lt / gt / le / ge) now live exclusively in
-// Phase-47-compiled elisp `.o' files (= `lisp/nelisp-cc-jit-
-// float.el's defconsts).  `float_link' mirrors `arith_link' shape:
-// `extern "C"' decls so the linker resolves the names against the
-// static archive built by `build.rs::link_elisp_cc_spike'.
-//
-// Three supported targets after §110.D shipped aarch64 f64 emit:
-//   linux + x86_64   (ELF, SSE2: MOVSD / ADDSD / UCOMISD / ANDPD)
-//   linux + aarch64  (ELF, AArch64 SIMD/FP: FADD / FCMP / FABS)
-//   macos + aarch64  (Mach-O, same AArch64 SIMD/FP)
-// Other targets fall through the `link_elisp_cc_spike' gate in
-// build.rs and consequently fail to link nelisp_jit_float_*; the
-// stub `float_link' below makes `unified_fn_ptr's match arms
-// compile cleanly there (the bin is not functional on those
-// targets in v1).
+// 9 f64 trampolines (add/sub/mul/div/eq-eps/lt/gt/le/ge) in
+// Phase-47-compiled elisp `.o'.  Supported: linux-x86_64 / linux-aarch64
+// / macos-aarch64.  Stubs below keep cargo check clean elsewhere.
 #[cfg(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64"),
@@ -116,27 +66,17 @@ mod float_link {
         pub fn nl_jit_float_sub(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_mul(a: f64, b: f64) -> f64;
         pub fn nl_jit_float_div(a: f64, b: f64) -> f64;
-        // Doc 110 §110.C.2.a — 4 ordered compare trampolines.
-        // Bodies compiled from `lisp/nelisp-cc-jit-float.el' using
-        // the §110.C compiler emit path (UCOMISD + SETcc + MOVZX
-        // on x86_64; FCMP + CSET on aarch64).
+        // 4 ordered compare trampolines.
         pub fn nl_jit_float_lt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_gt(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_le(a: f64, b: f64) -> i64;
         pub fn nl_jit_float_ge(a: f64, b: f64) -> i64;
-        // Doc 110 §110.C.2.b — EQ-EPS trampoline.  Compiled body
-        // uses SUBSD + ANDPD abs-mask + UCOMISD on x86_64, FSUB +
-        // FABS + FCMP + CSET-GT on aarch64.
+        // EQ-EPS trampoline (|a-b| <= ε via SUBSD/FSUB + abs + UCOMISD/FCMP).
         pub fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64;
     }
 }
 
-// Unsupported targets: stub `float_link' so `unified_fn_ptr's match
-// arms still compile.  The bin is not functional on these targets
-// (= `build.rs::link_elisp_cc_spike' bails out before emitting the
-// elisp archive), so reaching these stubs at runtime should be
-// impossible — they exist purely to keep `cargo check' clean on
-// every Rust-supported target.
+// Unsupported targets: stubs to keep `cargo check' clean.
 #[cfg(not(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64"),
@@ -153,15 +93,9 @@ mod float_link {
     pub unsafe extern "C" fn nl_jit_float_eq_eps(_: f64, _: f64) -> i64 { 0 }
 }
 
-// Doc 110 §110.F (2026-05-13) — `jit/math.rs's 3 unary f64
-// trampolines (float identity / exp / log) wholly replaced by
-// Phase-47-compiled elisp `.o' files (= `lisp/nelisp-cc-jit-
-// math.el's defconsts).  `math_link' mirrors `float_link' /
-// `arith_link' shape: extern on supported targets, stubbed
-// on others.  The `exp' / `log' bodies emit a `CALL libm-name'
-// via the new `(f64-call SYM ARG)' grammar form; the static
-// linker resolves the relocs against the libm symbols `bin/
-// nelisp' already pulls in transitively through `std'.
+// 3 unary f64 math trampolines (identity / exp / log) — `exp' / `log'
+// emit `CALL libm-name' via the `(f64-call SYM ARG)' grammar form;
+// static linker resolves against libm symbols pulled via std.
 #[cfg(any(
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64"),
@@ -184,24 +118,9 @@ mod math_link {
     pub unsafe extern "C" fn nl_jit_float_log(_: f64) -> f64 { 0.0 }
 }
 
-// Doc 120 §120.A — `jit/predicate.rs's 2 of 4 trampolines (=
-// `nelisp_jit_predicate_eq' for `(eq A B)' and `nelisp_jit_ref_eq'
-// for `(nelisp--ref-eq A B)') now live in Phase-47-compiled elisp
-// `.o' files (= `lisp/nelisp-cc-jit-predicate-eq.el' +
-// `lisp/nelisp-cc-jit-ref-eq.el').  `predicate_link' mirrors
-// `arith_link' / `float_link' / `math_link' shape: `extern "C"'
-// decls so the linker resolves the symbols against the static
-// archive built by `build.rs::link_elisp_cc_spike'.
-//
-// Currently linux-x86_64 only — the `extern-call' grammar form
-// the elisp bodies use to call into `nl_sexp_eq' ships aarch64
-// in a follow-up.  Other targets fall through to the legacy
-// `super::predicate::nl_jit_predicate_eq' / `nl_jit_ref_eq' Rust
-// trampolines (kept under the inverse `#[cfg(not(...))]' gate in
-// `jit/predicate.rs').  `nelisp_jit_sxhash' + `nelisp_jit_type_of'
-// stay in Rust on every target — see the blocker comments in
-// `predicate.rs' (= they need symbol-write + DefaultHasher port
-// not yet expressible in the Phase 47 grammar).
+// Predicate trampolines in elisp on linux-x86_64; other targets
+// fall through to legacy Rust impl in `jit/predicate.rs'.
+// `nelisp_jit_sxhash' / `_type_of' stay in Rust (grammar gap).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod predicate_link {
     use crate::eval::sexp::Sexp;
@@ -230,24 +149,9 @@ mod predicate_link {
     }
 }
 
-// Doc 120 §120.B — `jit/box_accessor.rs's 4 of 11 trampolines (=
-// the record family `nl_jit_record_type' / `_len' / `_ref' / `_set')
-// now live in Phase-47-compiled elisp `.o' files (=
-// `lisp/nelisp-cc-jit-record.el').  `box_accessor_link' mirrors
-// `predicate_link' shape: `extern "C"' decls so the linker resolves
-// the symbols against the static archive built by
-// `build.rs::link_elisp_cc_spike'.
-//
-// `nl_jit_record_alloc' stays in Rust on every target (list-walk-
-// to-count needs a grammar primitive not yet shipped); the 6
-// non-record box-accessor trampolines (mut-str / bool-vector /
-// codepoint / char-table) all SKIP with documented blockers in
-// `jit/box_accessor.rs'.
-//
-// Currently linux-x86_64 only — `extern-call' grammar form ships
-// aarch64 in a follow-up.  Other targets fall through to the
-// legacy `super::box_accessor::nl_jit_record_*' Rust trampolines
-// via the inverse `#[cfg(not(...))]' stub below.
+// Record-family trampolines (type/len/ref/set) in elisp on
+// linux-x86_64; other targets fall through to legacy Rust impl.
+// `record_alloc' + 6 non-record box-accessor arms stay Rust (grammar gap).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod box_accessor_link {
     use crate::eval::sexp::Sexp;
@@ -301,27 +205,10 @@ mod box_accessor_link {
     }
 }
 
-// Doc 120 §120.D — `jit/access.rs's 4 of 4 trampolines (=
-// `nl_jit_access_length' / `_aref' / `_aset' / `_elt') now live in
-// Phase-47-compiled elisp `.o' files (=
-// `lisp/nelisp-cc-jit-{length,aref,aset,elt}.el').  `access_link'
-// mirrors `predicate_link' / `box_accessor_link' shape: `extern "C"'
-// decls so the linker resolves the symbols against the static archive
-// built by `build.rs::link_elisp_cc_spike'.
-//
-// Sub-arms covered by narrow Rust externs (= `extern-call' from elisp
-// body, same shape `nl_sexp_eq' / `nl_sexp_clone_into' use):
-//   - `length' Str arm — strategy.el's `condition-case' fallback to
-//     `nelisp--mut-str-len' takes over on ERR; no extern needed.
-//   - `aref' / `aset' BoolVector arms — `nl_jit_access_{aref,aset}_
-//     bool_vector_inner' narrow externs in `jit/access.rs' do the
-//     bit decode + tag-byte write that Phase 47 can't emit yet (see
-//     Doc 122 §122.B `bool-vector-*' cluster).
-//
-// Currently linux-x86_64 only — `extern-call' ABI ships aarch64 in
-// a follow-up.  Other targets fall through to the legacy
-// `super::access::nl_jit_access_*' Rust trampolines via the inverse
-// `#[cfg(not(...))]' stub below.
+// Access trampolines (length / aref / aset / elt) in elisp on
+// linux-x86_64; other targets fall through to legacy Rust impl.
+// BoolVector aref/aset sub-arms have narrow Rust externs for bit decode
+// + tag-byte write (grammar gap).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod access_link {
     use crate::eval::sexp::Sexp;
@@ -440,93 +327,29 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nelisp_jit_cons" => super::cons::nl_jit_cons_make as *const u8,
         "nelisp_jit_setcar" => super::cons::nl_jit_cons_setcar as *const u8,
         "nelisp_jit_setcdr" => super::cons::nl_jit_cons_setcdr as *const u8,
-        // ---- access (4) ----
-        // Phase 7.1.6.b (Doc 28 §3.6.b): resolve access names directly
-        // to the `#[no_mangle] extern "C"' trampolines now that the
-        // Cranelift `JitAccess' wrapper page has been deleted.  The
-        // inline-NIL fast path for `length' (= the deleted `declare_
-        // length_with_inline_nil' Cranelift IR shape) is no longer
-        // present here; the NIL case is handled by the trampoline's
-        // first arm (`tag == SEXP_TAG_NIL → write Sexp::Int(0) /
-        // return OK') without further work, so semantic behaviour is
-        // preserved.  nelisp-cc compiled hot paths skip this bridge
-        // entirely via dlsym + direct CALL.
-        // Doc 120 §120.D — all 4 trampolines (`length' / `aref' /
-        // `aset' / `elt') wholly replaced by Phase-47-compiled elisp
-        // `.o' on linux-x86_64; other targets fall through to the
-        // Rust trampolines in `super::access' via the `access_link'
-        // stub.  Sub-arms (= Str length, BoolVector aref/aset) reach
-        // narrow Rust externs via `extern-call' from elisp.
+        // ---- access (4): length / aref / aset / elt ----
         "nelisp_jit_length" => access_link::nelisp_jit_length as *const u8,
         "nelisp_jit_aref" => access_link::nelisp_jit_aref as *const u8,
         "nelisp_jit_aset" => access_link::nelisp_jit_aset as *const u8,
         "nelisp_jit_elt" => access_link::nelisp_jit_elt as *const u8,
         // ---- predicate (1) ----
-        // Phase 7.1.6.d (Doc 28 §3.6.d): resolve predicate name directly
-        // to the `#[no_mangle] extern "C"' trampoline now that the
-        // Cranelift `JitPredicate' wrapper page has been deleted.  Like
-        // arith (7.1.6.c), predicate had only a partial Rust helper
-        // body (`nl_jit_pred_eq') covering the slow `sexp_eq' arm; the
-        // full 7-block fast-path semantics (= same-ref / tag-eq / int-
-        // payload) lived in Cranelift IR.  The takeover consolidates
-        // all 7 blocks into a single `nl_jit_predicate_eq' trampoline
-        // body (see `jit::predicate').  nelisp-cc compiled hot paths
-        // skip this bridge entirely via dlsym + direct CALL.  The `_u'
-        // binding is now unused since no field of `UnifiedJit' is
-        // looked up on this match arm.
-        // Doc 120 §120.A — `nl_jit_predicate_eq' wholly replaced by
-        // Phase-47-compiled elisp `.o' on linux-x86_64; other targets
-        // fall through to the Rust trampoline in `super::predicate' via
-        // the `predicate_link' stub.
         "nelisp_jit_eq_inline" => predicate_link::nelisp_jit_predicate_eq as *const u8,
-        // Doc 86 §86.1.a (2026-05-10): `type-of' migrated to elisp on
-        // top of this trampoline (= reachable via `(nl-jit-call-out-1
-        // "nelisp_jit_type_of" x)' from `lisp/nelisp-stdlib.el').
-        // Doc 120 §120.A — stays in Rust: needs `sexp-write-symbol' op
-        // not yet in the Phase 47 grammar.
+        // `type_of' stays Rust — needs sexp-write-symbol grammar op.
         "nelisp_jit_type_of" => super::predicate::nl_jit_type_of as *const u8,
-        // ---- intern / symbol (3) ---- Doc 86 §86.1.d (2026-05-10).
+        // ---- intern / symbol (3) ----
         "nelisp_jit_intern" => super::strings::nl_jit_intern as *const u8,
         "nelisp_jit_symbol_name" => super::strings::nl_jit_symbol_name as *const u8,
         "nelisp_jit_make_symbol" => super::strings::nl_jit_make_symbol as *const u8,
-        // Doc 86 §86.1.b (2026-05-10): `nelisp--ref-eq' migrated to
-        // elisp on top of this trampoline (= reachable via
-        // `(nl-jit-call-out-2 "nelisp_jit_ref_eq" a b)' from
-        // `lisp/nelisp-jit-strategy.el').  Returns `Sexp::T' / `Sexp::Nil'
-        // directly so the elisp wrapper can avoid the `nelisp--int-eq-
-        // zero' convert dance that `eq' uses.
-        // Doc 120 §120.A — `nl_jit_ref_eq' wholly replaced by Phase-47-
-        // compiled elisp `.o' on linux-x86_64; other targets fall through
-        // to the Rust trampoline in `super::predicate' via the
-        // `predicate_link' stub.
         "nelisp_jit_ref_eq" => predicate_link::nelisp_jit_ref_eq as *const u8,
-        // Doc 86 §86.1.b — `sxhash' trampoline (1:1 port, kept in
-        // Rust for `DefaultHasher' bit-exactness, Doc 87 §3.2).
-        // Doc 120 §120.A — stays in Rust: recursive variant-walking
-        // hash composition not yet expressible in Phase 47 grammar.
+        // `sxhash' stays Rust — DefaultHasher bit-exactness + recursive
+        // variant walk not yet expressible in Phase 47 grammar.
         "nelisp_jit_sxhash" => super::predicate::nl_jit_sxhash as *const u8,
         // ---- syscall (2) ----
-        // Phase 7.1.6.e (Doc 28 §3.6.e): resolve syscall names directly
-        // to the `#[no_mangle] extern "C"' trampolines now that the
-        // Cranelift `JitSyscall' wrapper page has been deleted.  Like
-        // arith / predicate, syscall's Cranelift IR was an
-        // `iconst+return' (supported_p) + a single-`call' pass-through
-        // to the existing `nl_jit_syscall_call' Rust helper; the
-        // takeover re-exposes that helper as `#[no_mangle]' (no body
-        // change) and adds a sibling `#[no_mangle]' for the const
-        // predicate.  nelisp-cc compiled hot paths skip this bridge
-        // entirely via dlsym + direct CALL.
         "nelisp_jit_syscall" => super::syscall::nl_jit_syscall_call as *const u8,
         "nelisp_jit_syscall_supported_p" => {
             super::syscall::nl_jit_syscall_supported_p as *const u8
         }
-        // ---- float (9) ---- Doc 110 §110.E.2.b: all 9 float.rs
-        // trampolines (add / sub / mul / div / eq-eps / lt / gt /
-        // le / ge) wholly replaced by elisp `.o' files on all 3
-        // supported targets.  Dispatch always goes through
-        // `float_link' — the module is `extern "C"' on supported
-        // targets and stubbed (= zero-returning) on unsupported
-        // ones (= same shape as `arith_link').
+        // ---- float (9): add/sub/mul/div/eq-eps/lt/gt/le/ge ----
         "nl_jit_float_add" => float_link::nl_jit_float_add as *const u8,
         "nl_jit_float_sub" => float_link::nl_jit_float_sub as *const u8,
         "nl_jit_float_mul" => float_link::nl_jit_float_mul as *const u8,
@@ -536,62 +359,34 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nl_jit_float_gt" => float_link::nl_jit_float_gt as *const u8,
         "nl_jit_float_le" => float_link::nl_jit_float_le as *const u8,
         "nl_jit_float_ge" => float_link::nl_jit_float_ge as *const u8,
-        // ---- box accessor (6) ---- Doc 84 §84.3 (2026-05-10).
+        // ---- box accessor (6) ----
         "nl_jit_mut_str_len" => super::box_accessor::nl_jit_mut_str_len as *const u8,
         "nl_jit_bool_vector_len" => super::box_accessor::nl_jit_bool_vector_len as *const u8,
         "nl_jit_str_codepoint_at" => super::box_accessor::nl_jit_str_codepoint_at as *const u8,
         "nl_jit_mut_str_set_codepoint" => super::box_accessor::nl_jit_mut_str_set_codepoint as *const u8,
         "nl_jit_char_table_aref" => super::box_accessor::nl_jit_char_table_aref as *const u8,
         "nl_jit_char_table_aset" => super::box_accessor::nl_jit_char_table_aset as *const u8,
-        // ---- record family (5) ---- Doc 86 §86.1.c (2026-05-10).
-        // Same `nl-jit-call-out-{1,1i,2i,2}' bridge primitives as box
-        // accessor above; trampolines live in `box_accessor.rs'.
-        // Doc 120 §120.B — 4 of 5 (`record_type', `_len', `_ref',
-        // `_set') wholly replaced by Phase-47-compiled elisp `.o' on
-        // linux-x86_64; other targets fall through to the Rust
-        // trampolines in `super::box_accessor' via `box_accessor_link'.
-        // `record_alloc' stays Rust on every target (list-walk-to-
-        // count grammar primitive not yet shipped).
+        // ---- record family (5): type / len / ref / set / alloc ----
+        // 4 in elisp on linux-x86_64; `record_alloc' stays Rust (list-walk grammar gap).
         "nl_jit_record_type" => box_accessor_link::nelisp_jit_record_type as *const u8,
         "nl_jit_record_len" => box_accessor_link::nelisp_jit_record_len as *const u8,
         "nl_jit_record_ref" => box_accessor_link::nelisp_jit_record_ref as *const u8,
         "nl_jit_record_set" => box_accessor_link::nelisp_jit_record_set as *const u8,
         "nl_jit_record_alloc" => super::box_accessor::nl_jit_record_alloc as *const u8,
-        // ---- Doc 87 §86.1.f (2026-05-10): Tier 2 trampolines ----
-        // Time + hash (= 2-arg / 0-arg `bi_*' helpers retired in
-        // `eval/builtins.rs').  Reachable via `nl-jit-call-i64-i64'
-        // (= 0-arg current_unix_time padding) and `nl-jit-call-out-2'
-        // (= format_unix_time / secure_hash 2-arg out-Sexp shape).
+        // ---- Tier 2 trampolines (time / hash / case / tokenize / regex) ----
         "nl_jit_current_unix_time" => super::time::nl_jit_current_unix_time as *const u8,
         "nl_jit_format_unix_time" => super::time::nl_jit_format_unix_time as *const u8,
         "nl_jit_secure_hash" => super::hash::nl_jit_secure_hash as *const u8,
-        // String case + tokenize trampolines (= `nl-jit-call-out-1' /
-        // `nl-jit-call-out-2' bridges).
         "nl_jit_downcase" => super::strings::nl_jit_downcase as *const u8,
         "nl_jit_upcase" => super::strings::nl_jit_upcase as *const u8,
         "nl_jit_split_by_non_alnum"
             => super::strings::nl_jit_split_by_non_alnum as *const u8,
-        // Regex backend — single trampoline replacing
-        // `bi_string_match_p'.  Reachable via `nl-jit-call-out-2'.
         "nl_jit_string_match_p" => super::regex::nl_jit_string_match_p as *const u8,
-        // Unary float math (= `:trampoline-unary-float' ABI mode,
-        // Doc 87 §5).  Reachable via `nl-jit-call-float-unary' (new
-        // bridge primitive shipped in this commit).
-        // Doc 110 §110.F (2026-05-13) — `jit/math.rs's 3 unary
-        // f64 trampolines (float / exp / log) wholly replaced by
-        // Phase-47-compiled elisp `.o' files on all 3 supported
-        // targets.  Routing always goes through `math_link' (=
-        // extern on supported targets, stubbed on others, same
-        // shape as `float_link' from §110.E.2.b).
+        // ---- unary f64 math (float / exp / log) ----
         "nl_jit_float_float" => math_link::nl_jit_float_float as *const u8,
         "nl_jit_float_exp" => math_link::nl_jit_float_exp as *const u8,
         "nl_jit_float_log" => math_link::nl_jit_float_log as *const u8,
-        // ---- Doc 86 §86.1.e Tier 2 simple (3) ---- (2026-05-10).
-        // First two share the existing `:trampoline-unary' shape (=
-        // reachable via `nl-jit-call-out-1' from `lisp/nelisp-stdlib-
-        // format.el').  `nl_jit_format_float' uses the new
-        // `:trampoline-format-float' ABI mode (= xmm0 + rsi + rdx +
-        // rcx, reachable via `bi_nl_jit_call_format_float' below).
+        // ---- Tier 2 simple (3) — concat-ints / make-mut-str / format-float ----
         "nl_jit_concat_ints" => super::strings::nl_jit_concat_ints as *const u8,
         "nl_jit_make_mut_str" => super::strings::nl_jit_make_mut_str as *const u8,
         "nl_jit_format_float" => super::strings::nl_jit_format_float as *const u8,
