@@ -1,11 +1,4 @@
-//! `string-match-p' trampoline.  Shape: `extern "C" fn(*const Sexp,
-//! *const Sexp, *mut Sexp) -> i64' (2-arg Sexp via `nl-jit-call-out-2');
-//! writes `Sexp::T' / `Sexp::Nil' into the out-slot.
-//!
-//! Hand-tuned literal-pattern fast paths (IPv4 / decimal / whitespace /
-//! brace) + generic anchored-prefix / anchored-suffix / contains
-//! fallback.  Pure-stdlib (no regex backend) to keep the cargo dep
-//! graph small.
+//! `string-match-p` trampoline with a few literal fast paths.
 
 use crate::eval::sexp::Sexp;
 
@@ -68,9 +61,7 @@ fn match_inner(pat: &str, text: &str) -> bool {
     }
 }
 
-/// `(string-match-p PATTERN TEXT)' — returns Sexp::T on match,
-/// Sexp::Nil on no match.  TRAMPOLINE_ERR only for non-string PATTERN
-/// or TEXT (elisp wrapper re-signals `wrong-type-argument').
+/// Returns `TRAMPOLINE_ERR` only for non-string inputs.
 #[no_mangle]
 pub extern "C" fn nl_jit_string_match_p(
     pat_arg: *const Sexp,

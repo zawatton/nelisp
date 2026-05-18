@@ -1,28 +1,11 @@
-//! Syscall trampolines, dlsym-exported via `-rdynamic'.
-//!
-//! - `nl_jit_syscall_call(nr, a0..a5) -> i64' — non-variadic wrapper
-//!   around `libc::syscall' with errno normalization (negative on
-//!   error = `-errno', else raw return).
-//! - `nl_jit_syscall_supported_p() -> i64' — cfg-driven 1/0.
-//!
-//! Bridge name map (`bridge.rs::unified_fn_ptr'):
-//!   nelisp_jit_syscall              -> nl_jit_syscall_call
-//!   nelisp_jit_syscall_supported_p  -> nl_jit_syscall_supported_p
+//! Syscall trampolines exported for `bridge.rs`.
 
-/// Linux build returns 1, others return 0.
 #[cfg(target_os = "linux")]
 const SUPPORTED_CONST: i64 = 1;
 #[cfg(not(target_os = "linux"))]
 const SUPPORTED_CONST: i64 = 0;
 
-/// `nl_jit_syscall_call(nr, a0..a5) -> i64' — non-variadic wrapper for
-/// `libc::syscall' that dlsym-resolved nelisp-cc code calls through a
-/// direct CALL fixup.  Errno is normalized in-wrapper so the call site
-/// returns one i64 (negative on error = `-errno', else the raw return
-/// value).
-///
-/// SAFETY: caller must pass a valid syscall NR + appropriately-typed
-/// integer args per the Linux syscall ABI.  `(i64 × 7) -> i64' shape.
+/// `libc::syscall` with `-errno` normalization.
 #[cfg(target_os = "linux")]
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_syscall_call(
@@ -42,8 +25,7 @@ pub unsafe extern "C" fn nl_jit_syscall_call(
     }
 }
 
-/// Non-Linux: ENOSYS so the dlsym entry surface is identical across
-/// platforms even though the OS surface is currently Linux-only.
+/// Non-Linux keeps the same symbol surface and returns `-ENOSYS`.
 #[cfg(not(target_os = "linux"))]
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_syscall_call(
@@ -58,8 +40,6 @@ pub unsafe extern "C" fn nl_jit_syscall_call(
     -38 /* ENOSYS */
 }
 
-/// `nl_jit_syscall_supported_p() -> i64' — 0-arg constant predicate.
-/// Returns 1 on Linux, 0 otherwise.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_syscall_supported_p() -> i64 {
     SUPPORTED_CONST
@@ -71,7 +51,6 @@ mod tests {
 
     #[test]
     fn jit_syscall_supported_p_returns_const() {
-        // On Linux must be 1; on other hosts 0.
         assert_eq!(unsafe { nl_jit_syscall_supported_p() }, SUPPORTED_CONST);
     }
 
@@ -88,7 +67,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn jit_syscall_invalid_fd_returns_neg_ebadf() {
-        // SYS_read with fd=999 → -EBADF.
         let nr = libc::SYS_read as i64;
         let mut buf = [0u8; 8];
         let r = unsafe {

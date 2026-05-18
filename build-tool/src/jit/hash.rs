@@ -1,7 +1,4 @@
-//! `nl-secure-hash' trampoline.  Shape: `extern "C" fn(*const Sexp,
-//! *const Sexp, *mut Sexp) -> i64' (2-arg Sexp via `nl-jit-call-out-2');
-//! writes lowercase hex digest as a fresh `Sexp::Str' into the out-slot.
-//! Algorithms: sha1 / sha224 / sha256 / sha384 / sha512 / md5.
+//! `nl-secure-hash` trampoline.
 
 use crate::eval::sexp::Sexp;
 
@@ -33,9 +30,7 @@ fn text_bytes(v: &Sexp) -> Option<Vec<u8>> {
     }
 }
 
-/// `(nl-secure-hash ALGO STRING)' — returns TRAMPOLINE_ERR for
-/// unsupported ALGO or non-string STRING; the elisp wrapper re-signals
-/// as `wrong-type-argument'.
+/// Returns `TRAMPOLINE_ERR` for bad algorithm or non-string input.
 #[no_mangle]
 pub extern "C" fn nl_jit_secure_hash(
     algo_arg: *const Sexp,

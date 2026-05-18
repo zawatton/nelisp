@@ -1,12 +1,7 @@
-//! Predicate trampolines.  `eq' / `ref_eq' bodies live in
-//! `lisp/nelisp-cc-jit-predicate-eq.el' + `nelisp-cc-jit-ref-eq.el'
-//! (Phase 47-compiled `.o' in `libnelisp_elisp_spike.a'); `bridge::
-//! predicate_link' resolves the externs.  `sxhash' / `type_of' stay
-//! Rust — grammar gaps (hash composition + sexp-write-symbol).
+//! Rust predicate helpers still used by the JIT bridge.
 
 use crate::eval::sexp::Sexp;
 
-// `(sxhash X)' — kept in Rust for `DefaultHasher' bit-exactness.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_sxhash(arg: *const Sexp, out: *mut Sexp) -> i64 {
     use std::collections::hash_map::DefaultHasher;
@@ -44,8 +39,7 @@ pub unsafe extern "C" fn nl_jit_sxhash(arg: *const Sexp, out: *mut Sexp) -> i64 
     0
 }
 
-/// `(type-of OBJECT)' — returns type-name symbol.  Records emit their
-/// `type_tag' verbatim (cl-defstruct first-class); `Cell's unwrap.
+/// `type-of` that preserves record `type_tag`.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_type_of(arg: *const Sexp, out: *mut Sexp) -> i64 {
     let mut v: Sexp = (*arg).clone();
