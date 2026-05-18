@@ -203,19 +203,13 @@ fn resolve_rest(name: &str) -> Option<*const u8> {
         "nl_jit_record_set" => Some(box_accessor_link::nelisp_jit_record_set as *const u8),
         _ => None,
     };
+    // Doc 114: crate is linux-x86_64-only (`compile_error!' at `lib.rs:30').
+    // The Phase 47 `.o' archive provides every gated name via `*_link'
+    // above; no Rust trampoline fallback survives.
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-    let gated: Option<*const u8> = match name {
-        "nelisp_jit_eq_inline" => Some(super::predicate::nl_jit_predicate_eq as *const u8),
-        "nelisp_jit_ref_eq" => Some(super::predicate::nl_jit_ref_eq as *const u8),
-        "nelisp_jit_length" => Some(super::access::nl_jit_access_length as *const u8),
-        "nelisp_jit_aref" => Some(super::access::nl_jit_access_aref as *const u8),
-        "nelisp_jit_aset" => Some(super::access::nl_jit_access_aset as *const u8),
-        "nelisp_jit_elt" => Some(super::access::nl_jit_access_elt as *const u8),
-        "nl_jit_record_type" => Some(super::box_accessor::nl_jit_record_type as *const u8),
-        "nl_jit_record_len" => Some(super::box_accessor::nl_jit_record_len as *const u8),
-        "nl_jit_record_ref" => Some(super::box_accessor::nl_jit_record_ref as *const u8),
-        "nl_jit_record_set" => Some(super::box_accessor::nl_jit_record_set as *const u8),
-        _ => None,
+    let gated: Option<*const u8> = {
+        let _ = name;
+        None
     };
     if gated.is_some() {
         return gated;
