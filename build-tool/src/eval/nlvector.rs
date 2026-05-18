@@ -1,8 +1,6 @@
-//! `NlVector` — layout-pinned mutable Vec<Sexp> box.  `#[repr(C)]' with
-//! value @ 0, refcount @ sizeof(Vec<Sexp>).  Backs `Sexp::Vector'.
+//! `NlVector` backs `Sexp::Vector`: `value` at 0, `refcount` in the trailer.
 
 use crate::eval::sexp::Sexp;
-use std::alloc::{self, Layout};
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
@@ -23,30 +21,33 @@ pub struct NlVectorRef {
 impl NlVector {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
         crate::eval::nlrc::nlrc_payload_drop::<NlVector>;
+
+    /// # Safety
+    /// No other `&Vec<Sexp>` borrow into `self.value` may be live.
+    pub unsafe fn set_value(&self, val: Vec<Sexp>) {
+        let value_ptr = std::ptr::addr_of!(self.value) as *mut Vec<Sexp>;
+        std::ptr::drop_in_place(value_ptr);
+        std::ptr::write(value_ptr, val);
+    }
+
+    /// # Safety
+    /// Same as [`NlVector::set_value`]; reentrant calls are UB.
+    pub unsafe fn with_value_mut<R>(&self, f: impl FnOnce(&mut Vec<Sexp>) -> R) -> R {
+        let value_ptr = std::ptr::addr_of!(self.value) as *mut Vec<Sexp>;
+        f(&mut *value_ptr)
+    }
 }
 
 impl NlVectorRef {
-    /// Allocate a fresh [`NlVector`] on the heap with `refcount = 1'.
     pub fn new(value: Vec<Sexp>) -> NlVectorRef {
-        let layout = Layout::new::<NlVector>();
-        let raw = unsafe { alloc::alloc(layout) } as *mut NlVector;
-        let ptr = match NonNull::new(raw) {
-            Some(p) => p,
-            None => alloc::handle_alloc_error(layout),
-        };
-        // SAFETY: `ptr' just allocated; exclusively owned.
-        unsafe {
-            std::ptr::write(std::ptr::addr_of_mut!((*ptr.as_ptr()).value), value);
-            std::ptr::write(
-                std::ptr::addr_of_mut!((*ptr.as_ptr()).refcount),
-                AtomicUsize::new(1),
-            );
-        }
+        let ptr = NonNull::from(Box::leak(Box::new(NlVector {
+            value,
+            refcount: AtomicUsize::new(1),
+        })));
         NlVectorRef { ptr, _marker: PhantomData }
     }
 
     pub fn strong_count(this: &Self) -> usize {
-        // SAFETY: `this.ptr' is alive because we hold a handle.
         unsafe { (*this.ptr.as_ptr()).refcount.load(Ordering::Acquire) }
     }
 
@@ -54,90 +55,40 @@ impl NlVectorRef {
         a.ptr.as_ptr() == b.ptr.as_ptr()
     }
 
-    /// Wholesale replace `value`.
-    ///
-    /// # Safety
-    /// No other `&Vec<Sexp>' borrow into `self.value' may be live.
-    pub unsafe fn set_value(&self, val: Vec<Sexp>) {
-        let value_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value);
-        unsafe {
-            std::ptr::drop_in_place(value_ptr);
-            std::ptr::write(value_ptr, val);
-        }
-    }
-
-    /// In-place mutation closure.
-    ///
-    /// # Safety
-    /// Same as [`set_value`].  Reentrant calls are UB.
-    pub unsafe fn with_value_mut<R>(&self, f: impl FnOnce(&mut Vec<Sexp>) -> R) -> R {
-        let value_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value);
-        unsafe { f(&mut *value_ptr) }
-    }
 }
 
-/// Doc 111 §111.E — C-callable allocator: fresh NlVector pre-filled with
-/// `capacity` `Sexp::Nil' elements, refcount=1.
-///
 /// # Safety
-/// Caller must wrap the pointer into a `Sexp::Vector(_)' whose `Drop'
-/// decrements the refcount, or call into the standard Rust drop path.
+/// Caller transfers the returned strong ref into a matching drop path.
 #[no_mangle]
 pub unsafe extern "C" fn nl_alloc_vector(capacity: i64) -> *mut NlVector {
     let cap = if capacity < 0 { 0 } else { capacity as usize };
-    let layout = Layout::new::<NlVector>();
-    let raw = unsafe { alloc::alloc(layout) } as *mut NlVector;
-    if raw.is_null() {
-        alloc::handle_alloc_error(layout);
-    }
-    // SAFETY: `raw' just allocated; exclusively owned.
-    unsafe {
-        std::ptr::write(
-            std::ptr::addr_of_mut!((*raw).value),
-            vec![Sexp::Nil; cap],
-        );
-        std::ptr::write(
-            std::ptr::addr_of_mut!((*raw).refcount),
-            AtomicUsize::new(1),
-        );
-    }
-    raw
+    Box::into_raw(Box::new(NlVector {
+        value: vec![Sexp::Nil; cap],
+        refcount: AtomicUsize::new(1),
+    }))
 }
 
-/// Doc 111 §111.E — set element N of an NlVector in place (refcount-safe).
-///
 /// # Safety
-/// - `vec_ptr' must point at a live `NlVector'.
-/// - `val' must point at an initialized `Sexp'.
-/// - `n' must be a valid index into `vec.value'.
-/// - No other `&Vec<Sexp>' borrow into `vec.value' may be live.
+/// `vec_ptr` must be live, `val` initialised, and `n` in range.
 #[no_mangle]
 pub unsafe extern "C" fn nl_vector_set_slot(
     vec_ptr: *mut NlVector,
     n: i64,
     val: *const Sexp,
 ) {
-    let v = unsafe { &mut *vec_ptr };
-    let new_val = unsafe { (*val).clone() };
-    v.value[n as usize] = new_val;
+    (&mut (*vec_ptr).value)[n as usize] = (*val).clone();
 }
 
 impl Clone for NlVectorRef {
-    /// Doc 124 §124.F — refcount +1 via elisp `nelisp_nlvector_clone'.
     fn clone(&self) -> Self {
-        unsafe {
-            crate::elisp_cc_spike::nlvector_clone(self.ptr.as_ptr() as *mut i64);
-        }
+        unsafe { crate::elisp_cc_spike::nlvector_clone(self.ptr.as_ptr() as *mut i64) };
         NlVectorRef { ptr: self.ptr, _marker: PhantomData }
     }
 }
 
 impl Drop for NlVectorRef {
-    /// Doc 124 §124.L — elisp `nlvector_drop' kernel.
     fn drop(&mut self) {
-        unsafe {
-            crate::elisp_cc_spike::nlvector_drop(self.ptr.as_ptr() as *mut i64);
-        }
+        unsafe { crate::elisp_cc_spike::nlvector_drop(self.ptr.as_ptr() as *mut i64) };
     }
 }
 
@@ -145,7 +96,6 @@ impl Deref for NlVectorRef {
     type Target = NlVector;
 
     fn deref(&self) -> &NlVector {
-        // SAFETY: handle keeps the box alive.
         unsafe { &*self.ptr.as_ptr() }
     }
 }
@@ -164,8 +114,6 @@ impl PartialEq for NlVectorRef {
         self.value == other.value
     }
 }
-
-// ---- Compile-time layout assertions ----
 
 const _: () = {
     use std::mem::{offset_of, size_of};
