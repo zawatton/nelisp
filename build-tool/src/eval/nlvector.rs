@@ -1,34 +1,7 @@
-//! Doc 77c Phase A.4.3 — `NlVector` layout-pinned mutable Sexp vector.
-//!
-//! Specialized self-managed refcounted box carrying one mutable
-//! `Vec<Sexp>` slot.  Replaces the legacy
-//! `Sexp::Vector(Rc<RefCell<Vec<Sexp>>>)' with a layout-pinned struct
-//! so the boxed-variant ABI is uniform across `Cons' / `Cell' /
-//! `MutStr' / `Vector' (= NlConsBox / NlCell / NlStr / NlVector all
-//! share the `value @ 0, refcount @ trailer' shape, modulo the
-//! cons-specific 2-slot layout).
-//!
-//! Layout (Phase A.4.3 locked):
-//!
-//! ```text
-//! NlVector:  +-----+  offset 0                       (sizeof Vec<Sexp>)  value
-//!            +-----+  offset sizeof(Vec<Sexp>)       (8 bytes)           refcount
-//!            +-----+
-//! ```
-//!
-//! As with [`super::nlstr::NlStr`], the `Vec<Sexp>' header (= ptr /
-//! len / cap triple) keeps its native Rust layout; `#[repr(C)]'
-//! pins the *outer* field order.  Phase B elisp follows the header
-//! ptr to walk elements (= 2-load access pattern, same as Rust today).
-//!
-//! Mutability:
-//! - `unsafe set_value(v: Vec<Sexp>)' — wholesale replace.
-//! - `unsafe with_value_mut(f)' — closure-style in-place mutation
-//!   (= the `aset' callsite uses this for `vec[idx] = val' indexing).
-//!
-//! Out of scope for Phase A.4.3:
-//!   - Other variants (BoolVector / Record / CharTable) — A.4.4-A.4.6
-//!     follow-up sub-stages.
+//! `NlVector` — layout-pinned mutable Vec<Sexp> box.  `#[repr(C)]' with
+//! value @ 0, refcount @ sizeof(Vec<Sexp>).  Backs `Sexp::Vector'.
+//! `unsafe set_value' wholesale replaces; `unsafe with_value_mut(f)' for
+//! in-place (aset).
 
 use crate::eval::sexp::Sexp;
 use std::alloc::{self, Layout};
@@ -37,25 +10,12 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Layout-pinned mutable Sexp vector.  Heap-allocated, refcounted
-/// via an `AtomicUsize` trailer.  Accessed through [`NlVectorRef`]
-/// handles.
 #[repr(C)]
 pub struct NlVector {
-    /// The mutable vector slot.  Offset 0.
     pub value: Vec<Sexp>,
-    /// Strong reference count.  Starts at 1 in [`NlVectorRef::new`].
     pub refcount: AtomicUsize,
 }
 
-/// Refcounted handle to an [`NlVector`].  API parity with
-/// [`super::nlstr::NlStrRef`] / [`super::nlcell::NlCellRef`] /
-/// [`super::nlconsbox::NlConsBoxRef`].
-///
-/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
-/// the layout to `NonNull<NlVector>' so JIT trampolines + Phase B elisp
-/// can read the vector pointer directly off the `Sexp' payload at offset
-/// `SEXP_PAYLOAD_OFFSET'.
 #[repr(transparent)]
 pub struct NlVectorRef {
     ptr: NonNull<NlVector>,

@@ -1,42 +1,7 @@
-//! Doc 77c Phase A.4.5 — `NlRecord` layout-pinned record cell.
-//!
-//! Specialized self-managed refcounted box carrying a record's
-//! `type_tag: Sexp` and `slots: Vec<Sexp>` in a single allocation.
-//! Replaces the legacy
-//! `Sexp::Record { type_tag: Box<Sexp>, slots: Rc<RefCell<Vec<Sexp>>> }'
-//! struct variant with one boxed cell so the boxed-variant ABI is
-//! uniform across `Cons' / `Cell' / `MutStr' / `Vector' / `BoolVector'
-//! / `Record' (= NlConsBox / NlCell / NlStr / NlVector / NlBoolVector
-//! / NlRecord all share the `value(s) @ 0, refcount @ trailer' shape).
-//!
-//! Layout (Phase A.4.5 locked):
-//!
-//! ```text
-//! NlRecord:  +-----+  offset 0                       (sizeof Sexp)        type_tag
-//!            +-----+  offset sizeof(Sexp)            (sizeof Vec<Sexp>)   slots
-//!            +-----+  offset sizeof(Sexp)+sizeof(Vec) (8 bytes)           refcount
-//!            +-----+
-//! ```
-//!
-//! Like [`super::nlconsbox::NlConsBox`] this is a 2-payload-field box.
-//! Phase B elisp follows the type_tag value at offset 0 (= a single
-//! Sexp inline) and the slots vector header at offset
-//! `sizeof(Sexp)' for `record-type' / `record-ref' / `record-set'.
-//!
-//! Identity:
-//! - `eq': `NlRecordRef::ptr_eq' (= same allocation).  This is
-//!   strictly stronger than the legacy "same slots Rc + value-equal
-//!   type_tag" rule but consistent in practice — the ONLY constructor
-//!   in `Sexp::record' allocates a fresh box each call, so two records
-//!   with shared slots are unreachable from elisp.
-//!
-//! Mutability:
-//! - Slot mutation: `unsafe with_slots_mut(f)' for `record-set'.
-//! - The `type_tag' is immutable after construction in elisp surface
-//!   (= `cl-defstruct' fixes it once); no setter is exposed.
-//!
-//! Out of scope for Phase A.4.5:
-//!   - `CharTable' (= self-ref parent field) — A.4.6 follow-up.
+//! `NlRecord` — layout-pinned record cell.  `#[repr(C)]' with
+//! type_tag @ 0, slots @ sizeof(Sexp), refcount @ trailer.  Backs
+//! `Sexp::Record'.  `unsafe with_slots_mut(f)' for `record-set';
+//! type_tag is immutable after construction.
 
 use crate::eval::sexp::Sexp;
 use std::alloc::{self, Layout};
@@ -45,25 +10,13 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Layout-pinned record cell.  Heap-allocated, refcounted via an
-/// `AtomicUsize` trailer.  Accessed through [`NlRecordRef`] handles.
 #[repr(C)]
 pub struct NlRecord {
-    /// Type tag (= struct type symbol).  Offset 0.
     pub type_tag: Sexp,
-    /// User-visible slots vector.  Offset `sizeof(Sexp)'.
     pub slots: Vec<Sexp>,
-    /// Strong reference count.  Starts at 1 in [`NlRecordRef::new`].
     pub refcount: AtomicUsize,
 }
 
-/// Refcounted handle to an [`NlRecord`].  API parity with
-/// [`super::nlvector::NlVectorRef`] / [`super::nlconsbox::NlConsBoxRef`].
-///
-/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
-/// the layout to `NonNull<NlRecord>' so JIT trampolines + Phase B elisp
-/// can read the record pointer directly off the `Sexp' payload at offset
-/// `SEXP_PAYLOAD_OFFSET'.
 #[repr(transparent)]
 pub struct NlRecordRef {
     ptr: NonNull<NlRecord>,

@@ -1,43 +1,6 @@
-//! Doc 77c Phase A.4 — `NlCell` layout-pinned single-slot mutable cell.
-//!
-//! Specialized self-managed refcounted cell carrying one mutable
-//! `Sexp` slot.  Replaces the legacy `Sexp::Cell(Rc<RefCell<Sexp>>)' /
-//! `FrameCell = Rc<RefCell<Sexp>>' pair with a layout-pinned struct so:
-//!
-//! 1. The JIT can later (Phase A.5 follow-up) emit `mov rax, qword
-//!    [rdi + 0]' to read the cell's value through `addr_of!`.
-//! 2. Phase B elisp self-host can reach the slot at known offsets
-//!    via the same mechanism `nl-cons-*' uses for cons cells.
-//! 3. The `RefCell' borrow-flag overhead drops out — eval-time access
-//!    is a single load instead of `borrow().clone()'.
-//!
-//! Layout (Phase A.4 locked):
-//!
-//! ```text
-//! NlCell:  +----------+  offset 0                  (sizeof Sexp)  value
-//!          +----------+  offset sizeof(Sexp)       (8 bytes)      refcount
-//!          +----------+
-//! ```
-//!
-//! The single-`Sexp' shape mirrors [`super::nlconsbox::NlConsBox`]'s
-//! `(car, cdr, refcount)' triple but with one slot instead of two.
-//! [`NlRc<T>`](super::nlrc::NlRc) is the generic counterpart with
-//! `(refcount, value)' ordering — `NlCell' deliberately puts the
-//! value first so eval / closure access doesn't pay the 8-byte
-//! refcount predecessor.
-//!
-//! Mutability: like `NlConsBox::set_car' / `set_cdr', mutation is
-//! through `unsafe fn set_value'.  Callers (= eval frame setq path,
-//! closure capture) take responsibility for not holding `&Sexp'
-//! borrows into the slot at the time of the write — the same
-//! discipline `setcar' relies on (Phase A.2.1).
-//!
-//! Out of scope for Phase A.4 Cell pilot:
-//!   - Other variants (= MutStr / Vector / CharTable / BoolVector /
-//!     Record) — separate sub-stages
-//!   - Cranelift JIT trampoline using `addr_of!' — Phase A.5
-//!
-//! Threading: `AtomicUsize` mirrors `NlRc' / `NlConsBox' rationale.
+//! `NlCell` — layout-pinned single-slot mutable cell.  `#[repr(C)]'
+//! with value at offset 0 and refcount trailer at sizeof(Sexp).  Backs
+//! the `Sexp::Cell' variant + `FrameCell' (closure-capture write-through).
 //! Not `Send` / `Sync`.
 
 use crate::eval::sexp::Sexp;
@@ -47,40 +10,17 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Layout-pinned single-slot cell.  Heap-allocated, refcounted via an
-/// `AtomicUsize` trailer.  Accessed through [`NlCellRef`] handles.
-///
-/// `#[repr(C)]` is mandatory: Phase A.5 / Phase B elisp will read
-/// `value` at offset 0 and (eventually) the refcount trailer at the
-/// next 8-byte aligned offset without consulting Rust.
 #[repr(C)]
 pub struct NlCell {
-    /// The mutable slot.  Offset 0 is the JIT contract.
     pub value: Sexp,
-    /// Strong reference count.  Starts at 1 in [`NlCellRef::new`],
-    /// +1 on each `Clone`, -1 on each `Drop`.  When it reaches 0 the
-    /// last handle drops `value' and frees the allocation.
     pub refcount: AtomicUsize,
 }
 
-/// Refcounted handle to an [`NlCell`].  API parity with
-/// [`super::nlconsbox::NlConsBoxRef`]: `new` / `Clone` / `Drop` /
-/// `Deref` (returns `&NlCell`).
-///
-/// The `NonNull<NlCell>' inner gives niche optimization
-/// (= `Option<NlCellRef>' is the same size as `NlCellRef') and
-/// rules out null-ptr UB by construction.
-///
-/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]'
-/// pins the layout to `NonNull<NlCell>' so JIT trampolines + Phase B
-/// elisp can read the cell pointer directly off the `Sexp' payload at
-/// offset `SEXP_PAYLOAD_OFFSET'.
+/// Refcounted handle.  `#[repr(transparent)]' so the on-disk layout
+/// matches `NonNull<NlCell>' — read from `Sexp::Cell' payload offset.
 #[repr(transparent)]
 pub struct NlCellRef {
     ptr: NonNull<NlCell>,
-    /// Tells the borrow-checker we own an `NlCell` even though the
-    /// field is `NonNull<...>'.  Mirrors `std::rc::Rc' /
-    /// `super::nlrc::NlRc'.
     _marker: PhantomData<NlCell>,
 }
 

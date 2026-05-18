@@ -1,50 +1,7 @@
-//! Doc 77c Phase A.4.2 — `NlStr` layout-pinned single-slot mutable
-//! string buffer.
-//!
-//! Specialized self-managed refcounted cell carrying one mutable
-//! `String` slot.  Replaces the legacy `Sexp::MutStr(Rc<RefCell<String>>)'
-//! with a layout-pinned struct so:
-//!
-//! 1. The refcount lives at a known offset relative to the `value`
-//!    field (= same architectural shape as [`super::nlcell::NlCell`]
-//!    and [`super::nlconsbox::NlConsBox`]), unifying the elisp /
-//!    Phase B self-host ABI across `Sexp' boxed variants.
-//! 2. The `RefCell' borrow-flag overhead drops out — eval-time read
-//!    is a single load of the `String' header instead of `borrow()'.
-//! 3. `make-string' / `aset' on a mutable string get the same write
-//!    contract as `setcar' / `setcdr' (= `unsafe set_value' /
-//!    `with_value_mut').
-//!
-//! Layout (Phase A.4.2 locked):
-//!
-//! ```text
-//! NlStr:  +----------+  offset 0                    (sizeof String)  value
-//!         +----------+  offset sizeof(String)       (8 bytes)        refcount
-//!         +----------+
-//! ```
-//!
-//! Note: `String' itself is `#[repr(Rust)]'.  The `#[repr(C)]' on the
-//! outer `NlStr' fixes field *ordering* + offsets, but the `String'
-//! header (= `(ptr, len, cap)' triple) keeps its native Rust layout.
-//! Phase B elisp will reach the chars via the String's `ptr' field
-//! (= 2-load) — same access pattern Rust uses today.
-//!
-//! Mutability:
-//! - `unsafe set_value(s: String)' — wholesale replace (= the legacy
-//!   `*borrow_mut() = new_str' pattern used by `aset' on MutStr).
-//! - `unsafe with_value_mut(f: FnOnce(&mut String) -> R) -> R' — in-
-//!   place mutation closure (= the `let mut s = borrow_mut(); s.push_str' /
-//!   `s.replace_range' style; not currently used by the migrated call
-//!   sites but exposed for future Phase B / `nelisp-text-buffer' code).
-//!
-//! Out of scope for Phase A.4.2 MutStr migrate:
-//!   - Other variants (Vector / BoolVector / Record / CharTable) —
-//!     A.4.3-A.4.6 follow-up sub-stages.
-//!   - elisp `nl-str-*' primitives — Phase B (`nelisp-text-buffer'
-//!     uses host MutStr today).
-//!
-//! Threading: `AtomicUsize` mirrors `NlCell' / `NlConsBox' rationale.
-//! Not `Send` / `Sync`.
+//! `NlStr` — layout-pinned mutable String box.  `#[repr(C)]' with
+//! value @ 0, refcount @ sizeof(String).  Backs `Sexp::MutStr'.
+//! `unsafe set_value' wholesale replaces; `unsafe with_value_mut(f)' for
+//! in-place mutation.  Not `Send' / `Sync'.
 
 use std::alloc::{self, Layout};
 use std::marker::PhantomData;
@@ -52,35 +9,15 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Layout-pinned mutable string buffer.  Heap-allocated, refcounted
-/// via an `AtomicUsize` trailer.  Accessed through [`NlStrRef`]
-/// handles.
 #[repr(C)]
 pub struct NlStr {
-    /// The mutable string slot.  Offset 0 — same JIT contract as
-    /// `NlCell.value' / `NlConsBox.car'.
     pub value: String,
-    /// Strong reference count.  Starts at 1 in [`NlStrRef::new`],
-    /// +1 on each `Clone`, -1 on each `Drop`.  When it reaches 0 the
-    /// last handle drops `value' (= frees the heap chars buffer) and
-    /// frees the [`NlStr`] allocation itself.
     pub refcount: AtomicUsize,
 }
 
-/// Refcounted handle to an [`NlStr`].  API parity with
-/// [`super::nlcell::NlCellRef`] + [`super::nlconsbox::NlConsBoxRef`]:
-/// `new` / `Clone` / `Drop` / `Deref` (returns `&NlStr`).
-///
-/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
-/// the layout to `NonNull<NlStr>' so JIT trampolines + Phase B elisp can
-/// read the string pointer directly off the `Sexp' payload at offset
-/// `SEXP_PAYLOAD_OFFSET'.
 #[repr(transparent)]
 pub struct NlStrRef {
     ptr: NonNull<NlStr>,
-    /// Tells the borrow-checker we own an `NlStr` even though the
-    /// field is `NonNull<...>'.  Mirrors `std::rc::Rc' / `NlCellRef' /
-    /// `NlConsBoxRef'.
     _marker: PhantomData<NlStr>,
 }
 
