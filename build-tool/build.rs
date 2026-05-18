@@ -326,6 +326,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // trampoline swaps (Rust bodies deleted from `jit/predicate.rs').
         "nelisp-cc-jit-type-of.el",
         "nelisp-cc-jit-sxhash.el",
+        // Phase 47 elisp migration -- `nl_record_type_tag_ptr' trampoline swap
+        // (Rust body deleted from `jit/box_accessor.rs').
+        "nelisp-cc-jit-record-type-tag-ptr.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

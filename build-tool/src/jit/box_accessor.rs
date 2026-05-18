@@ -1,23 +1,14 @@
 //! Box accessor trampolines reached via `nl-jit-call-out-*' bridge prims.
 //! Record-family (type/len/ref/set/alloc) lives in Phase 47 elisp; this
 //! file keeps only char-table arms not yet elisp-able.
-//! `nl_jit_bool_vector_len' and `nl_jit_str_codepoint_at' live in
-//! `lisp/nelisp-cc-jit-bool-vector-len.el' and
-//! `lisp/nelisp-cc-jit-str-codepoint-at.el' (Phase 47 compiled .o).
+//! `nl_jit_bool_vector_len', `nl_jit_str_codepoint_at', and
+//! `nl_record_type_tag_ptr' live in Phase 47 compiled .o files.
+//! `nl_jit_mut_str_set_codepoint' keeps its Rust body (requires
+//! NlStrRef::set_value; no Phase 47 grammar op for in-place String replace).
 
 use crate::eval::sexp::Sexp;
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
-
-/// Returns `*const Sexp' to record's inline `type_tag', or null on non-Record.
-/// # Safety: `arg' non-null + initialized Sexp.
-#[no_mangle]
-pub unsafe extern "C" fn nl_record_type_tag_ptr(arg: *const Sexp) -> *const Sexp {
-    match &*arg {
-        Sexp::Record(rec) => &rec.type_tag as *const Sexp,
-        _ => std::ptr::null(),
-    }
-}
 
 /// In-place MutStr codepoint mutation; writes `*out = CP'.
 #[no_mangle]
