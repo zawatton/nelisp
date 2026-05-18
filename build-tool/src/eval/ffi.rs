@@ -339,16 +339,6 @@ pub fn nl_ffi_write_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 // ---- Unaligned integer read/write (width-dispatched) ------------------------
 
-/// Parse `(PTR OFFSET)` shared by every int read.
-fn read_args(name: &str, args: &[Sexp]) -> Result<(i64, i64), EvalError> {
-    require_arity(name, args, 2)?;
-    let p = coerce_int(&args[0])?;
-    let off = coerce_int(&args[1])?;
-    if p == 0 { return Err(ffi_err(format!("{}: NULL pointer", name))); }
-    if off < 0 { return Err(ffi_err(format!("{}: negative offset {}", name, off))); }
-    Ok((p, off))
-}
-
 fn bounds_check(name: &str, p: i64, off: i64, sz: usize) -> Result<(), EvalError> {
     let len = alloc_len(name, p)?;
     if (off as usize) + sz > len {
@@ -410,65 +400,6 @@ pub fn nl_ffi_write_int(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     Ok(Sexp::T)
 }
-
-// ---- Legacy named entry points kept for `read_args`/`bounds_check` ---------
-// (Used by tests and any caller that hasn't been routed through the elisp
-// dispatchers yet.  Each is a 3-line shim.)
-
-pub fn nl_ffi_read_u8(args: &[Sexp])  -> Result<Sexp, EvalError> { read_n(args, 1, false, "nl-ffi-read-u8") }
-pub fn nl_ffi_read_i16(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 2, true,  "nl-ffi-read-i16") }
-pub fn nl_ffi_read_u16(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 2, false, "nl-ffi-read-u16") }
-pub fn nl_ffi_read_i32(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 4, true,  "nl-ffi-read-i32") }
-pub fn nl_ffi_read_u32(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 4, false, "nl-ffi-read-u32") }
-pub fn nl_ffi_read_i64(args: &[Sexp]) -> Result<Sexp, EvalError> { read_n(args, 8, true,  "nl-ffi-read-i64") }
-pub fn nl_ffi_write_i16(args: &[Sexp]) -> Result<Sexp, EvalError> { write_n(args, 2, "nl-ffi-write-i16") }
-pub fn nl_ffi_write_i32(args: &[Sexp]) -> Result<Sexp, EvalError> { write_n(args, 4, "nl-ffi-write-i32") }
-pub fn nl_ffi_write_i64(args: &[Sexp]) -> Result<Sexp, EvalError> { write_n(args, 8, "nl-ffi-write-i64") }
-
-fn read_n(args: &[Sexp], width: usize, signed: bool, name: &str) -> Result<Sexp, EvalError> {
-    let (p, off) = read_args(name, args)?;
-    bounds_check(name, p, off, width)?;
-    let addr = (p + off) as *const u8;
-    let v: i64 = unsafe {
-        match (width, signed) {
-            (1, true)  => std::ptr::read_unaligned(addr as *const i8) as i64,
-            (1, false) => std::ptr::read_unaligned(addr) as i64,
-            (2, true)  => std::ptr::read_unaligned(addr as *const i16) as i64,
-            (2, false) => std::ptr::read_unaligned(addr as *const u16) as i64,
-            (4, true)  => std::ptr::read_unaligned(addr as *const i32) as i64,
-            (4, false) => std::ptr::read_unaligned(addr as *const u32) as i64,
-            (8, _)     => std::ptr::read_unaligned(addr as *const i64),
-            _ => unreachable!(),
-        }
-    };
-    Ok(Sexp::Int(v))
-}
-
-fn write_n(args: &[Sexp], width: usize, name: &str) -> Result<Sexp, EvalError> {
-    require_arity(name, args, 3)?;
-    let p = coerce_int(&args[0])?;
-    let off = coerce_int(&args[1])?;
-    let v = coerce_int(&args[2])?;
-    if p == 0 { return Err(ffi_err(format!("{}: NULL pointer", name))); }
-    if off < 0 { return Err(ffi_err(format!("{}: negative offset {}", name, off))); }
-    bounds_check(name, p, off, width)?;
-    let addr = (p + off) as *mut u8;
-    unsafe {
-        match width {
-            1 => std::ptr::write_unaligned(addr, v as u8),
-            2 => std::ptr::write_unaligned(addr as *mut i16, v as i16),
-            4 => std::ptr::write_unaligned(addr as *mut i32, v as i32),
-            8 => std::ptr::write_unaligned(addr as *mut i64, v),
-            _ => unreachable!(),
-        }
-    }
-    Ok(Sexp::T)
-}
-
-// Legacy 3-arg dispatch alias: callers using `nl-ffi-read-bytes-at` or
-// `nl-ffi-write-bytes-at` route through the unified entry points above.
-pub fn nl_ffi_read_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> { nl_ffi_read_bytes(args) }
-pub fn nl_ffi_write_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> { nl_ffi_write_bytes(args) }
 
 /// `(nl-ffi-errno)` returns the current thread's libc errno value.
 pub fn nl_ffi_errno(args: &[Sexp]) -> Result<Sexp, EvalError> {
