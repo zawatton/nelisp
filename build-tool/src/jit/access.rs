@@ -1,27 +1,14 @@
-//! Narrow BoolVector helpers used by Phase 47 access trampolines.
+//! Phase-47-elisp-compiled BoolVector sub-arm helpers (§120.D swap).
+//!
+//! `nl_jit_access_aref_bool_vector_inner' is provided by the static
+//! archive `libnelisp_elisp_spike.a' (= compiled from
+//! `lisp/nelisp-cc-jit-access-aref-bool-vector-inner.el' by
+//! `scripts/compile-elisp-objects.el').  Rust body deleted.
 
 use crate::eval::sexp::Sexp;
 
-const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
-
-/// BoolVector arm for `nelisp_jit_aref`.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_access_aref_bool_vector_inner(
-    arg: *const Sexp,
-    idx: i64,
-    out: *mut Sexp,
-) -> i64 {
-    if idx < 0 {
-        return TRAMPOLINE_ERR;
-    }
-    let box_ref = &*(*arg).bool_vector_box_ptr();
-    if let Some(b) = box_ref.value.get(idx as usize) {
-        *out = if *b { Sexp::T } else { Sexp::Nil };
-        return TRAMPOLINE_OK;
-    }
-    TRAMPOLINE_ERR
-}
+const TRAMPOLINE_OK: i64 = 0;
 
 /// BoolVector arm for `nelisp_jit_aset`.
 #[no_mangle]
