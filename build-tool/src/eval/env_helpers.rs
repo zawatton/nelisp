@@ -3,11 +3,9 @@
 //! (= `Env::globals_record' / `Env::frames_record').  See
 //! `lisp/nelisp-env.el' + `lisp/nelisp-lexframe.el' for the layout.
 
-#[cfg(any(test, feature = "image-baker"))]
 use std::collections::HashMap;
 
 use super::env::{Env, FrameCell};
-#[cfg(any(test, feature = "image-baker"))]
 use super::env::SymbolEntry;
 use super::error::EvalError;
 use super::sexp::Sexp;
@@ -166,7 +164,8 @@ impl Env {
     /// entry)' for each live symbol-entry.  Baker-only (replaces
     /// `env.globals.iter()').  Callback receives a `NlRecordRef'
     /// (= refcount-bumped clone) so it may read all four slots.
-    #[cfg(any(test, feature = "image-baker"))]
+    /// Doc 130 (2026-05-18) — ungated to keep `mirror_snapshot_globals'
+    /// compilable on default features (integration test binary uses it).
     pub(crate) fn mirror_iter_entries<F>(&self, mut callback: F)
     where
         F: FnMut(&str, &crate::eval::nlrecord::NlRecordRef),
@@ -200,7 +199,6 @@ impl Env {
     /// so the baker can diff before / after eval'ing a stdlib `.el'.
     /// Baker-only — called by `iterative_bake_one' + `encode_v3' in
     /// `bin/nelisp-baker.rs'.
-    #[cfg(any(test, feature = "image-baker"))]
     pub fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
         let mut out: HashMap<String, SymbolEntry> = HashMap::new();
         let unbound = self.unbound_marker.clone();

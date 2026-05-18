@@ -2,9 +2,7 @@
 //! function); lambdas are `(closure CAPTURED-ENV ARGS BODY...)'.  See
 //! Doc 44 §3.3 + §4.
 
-#[cfg(test)]
 use std::collections::HashMap;
-#[cfg(test)]
 use std::rc::Rc;
 
 use super::error::EvalError;
@@ -12,12 +10,12 @@ use super::sexp::Sexp;
 
 /// Host-crate-registered builtin closure.  `Rc' because `Env' is single-threaded.
 ///
-/// Doc 102 Phase 7 (2026-05-17) — gated behind `#[cfg(test)]`.
-/// Production binary doesn't ship this surface; `nelisp--env-globals-op'
-/// (= the sole former production extern_builtin) is now a regular
-/// `builtins::dispatch' match arm (= Doc 102 Phase 6).  Tests retain
-/// the extension point for verifying the dispatch fall-through path.
-#[cfg(test)]
+/// Doc 102 Phase 7 (2026-05-17) + Doc 130 (2026-05-18) — extension
+/// point for the integration test binary (`tests/eval_integration.rs').
+/// Production binary builds with this type live but never inserts into
+/// the `extern_builtins' HashMap; `nelisp--env-globals-op' (= the sole
+/// former production extern_builtin) is a regular `builtins::dispatch'
+/// match arm (= Doc 102 Phase 6).
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
 /// Symbol's two cells (Elisp value/function dichotomy) + plist + constant flag.
@@ -49,7 +47,9 @@ pub struct Env {
     /// Doc 102 Phase 7 — extension-point HashMap for tests; production
     /// binary builds without this field (`nelisp--env-globals-op' is a
     /// regular dispatch arm as of Phase 6).
-    #[cfg(test)]
+    /// Doc 130 (2026-05-18) — ungated for the integration test binary
+    /// to register fixture builtins.  Empty HashMap in production = no
+    /// allocation cost (`HashMap::new()' is zero-state).
     pub extern_builtins: HashMap<String, ExternBuiltin>,
     /// Stage 7.4.c — route apply_combiner's plain-fn / lambda-head paths
     /// through elisp `nelisp--apply-fn' (flip via `NELISP_USE_RUST_APPLY').
@@ -81,7 +81,6 @@ impl Env {
         Env {
             max_recursion,
             current_recursion: 0,
-            #[cfg(test)]
             extern_builtins: HashMap::new(),
             use_elisp_apply: false,
             delegation_depth: 0,
@@ -198,7 +197,6 @@ impl Env {
     }
 
     /// Empty env (no built-ins).  Tests + image-baker round-trip only.
-    #[cfg(any(test, feature = "image-baker"))]
     pub fn empty() -> Self {
         Env::fresh(256)
     }
@@ -214,7 +212,6 @@ impl Env {
     /// Baker accumulator env (built-ins + env_shim installed, no STDLIB).
     /// Used by `iterative_bake_one' in `bin/nelisp-baker.rs' (Doc 126.E
     /// — formerly `image::iterative_bake_one').
-    #[cfg(any(test, feature = "image-baker"))]
     pub fn new_global_no_stdlib() -> Self {
         Env::install_stage0(1024)
     }
@@ -234,12 +231,8 @@ impl Env {
     /// Register `f' as an externally-supplied builtin (test-only in spirit).
     /// Sets function cell to `(builtin NAME)' so `(NAME ARG...)' invokes `f'.
     ///
-    /// Doc 130 (= eval/tests.rs → tests/eval_integration.rs carve-out)
-    /// dropped the `#[cfg(test)]' gate so the integration test binary
-    /// can register fixture builtins.  Production code does not call
-    /// this — `extern_builtins' is consumed by the existing test
-    /// scaffold only.
-    #[cfg(test)]
+    /// Integration test fixture entry — `extern_builtins' is consumed
+    /// by the test scaffold only (production code never registers).
     pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
     where
         F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,

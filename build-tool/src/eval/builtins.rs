@@ -254,14 +254,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-fact-i64" => bi_nl_fact_i64(args),
         "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op(args, env),
         _ => {
-            // Externally-registered builtin (test-only).
-            #[cfg(test)]
-            {
-                // Clone the Rc first so the `extern_builtins' borrow drops
-                // before we re-borrow `env' through the closure.
-                if let Some(f) = env.extern_builtins.get(name).cloned() {
-                    return f(args, env);
-                }
+            // Externally-registered builtin (test-only in spirit).  Doc 130
+            // (2026-05-18) — ungated for the integration test binary.
+            // Production never inserts into `extern_builtins'; the lookup is
+            // an empty-HashMap probe on the rare unbound-function path.
+            // Clone the Rc first so the `extern_builtins' borrow drops
+            // before we re-borrow `env' through the closure.
+            if let Some(f) = env.extern_builtins.get(name).cloned() {
+                return f(args, env);
             }
             Err(EvalError::UnboundFunction(name.to_string()))
         }
