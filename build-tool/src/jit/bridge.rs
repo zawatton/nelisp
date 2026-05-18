@@ -21,18 +21,28 @@ use std::ffi::CString;
 // Phase 47-compiled elisp trampolines live in `libnelisp_elisp_spike.a'.
 // Each symbol must be force-referenced once so the static linker pulls
 // the archive member into the binary (test executables included);
-// otherwise dlsym returns NULL.  `lib.rs::elisp_cc_spike' already pins
-// the arith (12) + predicate (2) + record (4) + access (4) sets via
-// signature-typed extern declarations.  The 16 here cover the rest:
-// 12 float (arith+cmp+unary) + 4 cons (car/cdr/setcar/setcdr).
-// Declared nullary `extern "C"' — we never call them, the dynsym entry
-// is all that matters.
-#[allow(dead_code)]
+// otherwise dlsym returns NULL.  `lib.rs::elisp_cc_spike' declares
+// signature-typed externs for arith / float / math / predicate / record
+// / access, but in a `cargo test --lib' binary those decls alone don't
+// pull the archive members in (no callsite forces the reference).  So
+// repeat the 36 elisp `.o' names here, nullary-typed; the duplicate
+// declaration is harmless (linker sees one symbol, types are irrelevant
+// for `*const u8' transmute callers).
+#[allow(dead_code, clashing_extern_declarations)]
 extern "C" {
+    fn nelisp_jit_add2(); fn nelisp_jit_sub2(); fn nelisp_jit_mul2();
+    fn nelisp_jit_eq2();  fn nelisp_jit_lt2();  fn nelisp_jit_gt2();
+    fn nelisp_jit_le2();  fn nelisp_jit_ge2();  fn nelisp_jit_logior2();
+    fn nelisp_jit_logand2(); fn nelisp_jit_logxor2(); fn nelisp_jit_ash();
     fn nl_jit_float_add(); fn nl_jit_float_sub(); fn nl_jit_float_mul();
     fn nl_jit_float_div(); fn nl_jit_float_lt();  fn nl_jit_float_gt();
     fn nl_jit_float_le();  fn nl_jit_float_ge();  fn nl_jit_float_eq_eps();
     fn nl_jit_float_float(); fn nl_jit_float_exp(); fn nl_jit_float_log();
+    fn nelisp_jit_predicate_eq(); fn nelisp_jit_ref_eq();
+    fn nelisp_jit_record_type();  fn nelisp_jit_record_len();
+    fn nelisp_jit_record_ref();   fn nelisp_jit_record_set();
+    fn nelisp_jit_length(); fn nelisp_jit_aref();
+    fn nelisp_jit_aset();   fn nelisp_jit_elt();
     fn nelisp_jit_cons_car();    fn nelisp_jit_cons_cdr();
     fn nelisp_jit_cons_setcar(); fn nelisp_jit_cons_setcdr();
 }
@@ -40,10 +50,17 @@ extern "C" {
 /// Force-link anchor: `#[used] static' of fn-ptrs so LTO can't elide
 /// the externs above.  Never read; presence keeps the symbols live.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 16] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 38] = [
+    nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
+    nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
+    nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
     nl_jit_float_add, nl_jit_float_sub, nl_jit_float_mul, nl_jit_float_div,
     nl_jit_float_lt,  nl_jit_float_gt,  nl_jit_float_le,  nl_jit_float_ge,
     nl_jit_float_eq_eps, nl_jit_float_float, nl_jit_float_exp, nl_jit_float_log,
+    nelisp_jit_predicate_eq, nelisp_jit_ref_eq,
+    nelisp_jit_record_type, nelisp_jit_record_len,
+    nelisp_jit_record_ref,  nelisp_jit_record_set,
+    nelisp_jit_length, nelisp_jit_aref, nelisp_jit_aset, nelisp_jit_elt,
     nelisp_jit_cons_car, nelisp_jit_cons_cdr,
     nelisp_jit_cons_setcar, nelisp_jit_cons_setcdr,
 ];
