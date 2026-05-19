@@ -25,16 +25,18 @@ pub enum ReadError {
     NotYetImplemented { feature: String, pos: SourcePos },
 }
 
+macro_rules! readerr_ctor {
+    ($fn:ident => $variant:ident, $field:ident) => {
+        pub fn $fn(s: impl Into<String>, pos: SourcePos) -> Self {
+            ReadError::$variant { $field: s.into(), pos }
+        }
+    };
+}
+
 impl ReadError {
-    pub fn parse(msg: impl Into<String>, pos: SourcePos) -> Self {
-        ReadError::Parse { msg: msg.into(), pos }
-    }
-    pub fn unexpected_eof(msg: impl Into<String>, pos: SourcePos) -> Self {
-        ReadError::UnexpectedEof { msg: msg.into(), pos }
-    }
-    pub fn not_yet_implemented(feature: impl Into<String>, pos: SourcePos) -> Self {
-        ReadError::NotYetImplemented { feature: feature.into(), pos }
-    }
+    readerr_ctor!(parse => Parse, msg);
+    readerr_ctor!(unexpected_eof => UnexpectedEof, msg);
+    readerr_ctor!(not_yet_implemented => NotYetImplemented, feature);
 }
 
 impl fmt::Display for ReadError {
@@ -132,14 +134,8 @@ impl fmt::Display for EvalError {
         match self {
             EvalError::UnboundVariable(n) => write!(f, "void-variable: {}", n),
             EvalError::UnboundFunction(n) => write!(f, "void-function: {}", n),
-            EvalError::WrongType { expected, got } => {
-                write!(f, "wrong-type-argument: ({} {})", expected, got)
-            }
-            EvalError::WrongNumberOfArguments { function, expected, got } => write!(
-                f,
-                "wrong-number-of-arguments: {} (expected {}, got {})",
-                function, expected, got
-            ),
+            EvalError::WrongType { expected, got } => write!(f, "wrong-type-argument: ({} {})", expected, got),
+            EvalError::WrongNumberOfArguments { function, expected, got } => write!(f, "wrong-number-of-arguments: {} (expected {}, got {})", function, expected, got),
             EvalError::ArithError(m) => write!(f, "arith-error: {}", m),
             EvalError::UserError { tag, data } => write!(f, "{}: {}", tag, data),
             EvalError::SettingConstant(n) => write!(f, "setting-constant: {}", n),
