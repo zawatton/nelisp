@@ -366,9 +366,14 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // nl_apply_lambda_inner replaces it via the new nl_push_and_bind /
         // nl_env_push_captured externs in eval/special_forms.rs.
         "nelisp-cc-apply-lambda-inner.el",
+        // Phase 47 — nl_bf_formal_tag (9-LOC Rust → elisp, special_forms.rs).
+        "nelisp-cc-bf-formal-tag.el",
+        // Phase 47 — nl_bf_args_nth_ptr (11-LOC Rust → elisp, special_forms.rs).
+        "nelisp-cc-bf-args-nth-ptr.el",
         // Phase 47 Tier-C — bind_formals_impl Stage 1 parallel implementation.
         // nl_bind_formals_impl implements Required/Optional/Rest formals binding
         // in elisp.  Stage 2 will rewire nl_bind_formals/nl_push_and_bind.
+        // nl_bf_formal_tag + nl_bf_args_nth_ptr now resolved from their own .o.
         "nelisp-cc-bind-formals.el",
         // Doc 122 §122.A — `nl_jit_symbol_name' trampoline swap
         // (Rust body deleted from `jit/strings.rs').

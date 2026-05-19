@@ -251,43 +251,6 @@ pub unsafe extern "C" fn nl_bf_precompute(formals_ptr: *const Sexp, args_ptr: *c
     (args_len_clamped << 20) | (required_clamped << 36)
 }
 
-/// `nl_bf_formal_tag(name_ptr) -> i64`
-/// Returns the role of the formal symbol pointed to by `name_ptr':
-///   0 = regular binding symbol (bind a value)
-///   1 = `&optional' marker (switch mode to Optional)
-///   2 = `&rest' marker    (switch mode to Rest)
-///  -1 = not a Symbol (WrongType — caller should signal error)
-#[no_mangle]
-pub unsafe extern "C" fn nl_bf_formal_tag(name_ptr: *const Sexp) -> i64 {
-    match &*name_ptr {
-        Sexp::Symbol(s) => match s.as_str() {
-            "&optional" => 1,
-            "&rest" => 2,
-            _ => 0,
-        },
-        _ => -1,
-    }
-}
-
-/// `nl_bf_args_nth_ptr(args_ptr, idx) -> *const Sexp`
-/// Returns a raw pointer (as i64) to the Sexp at position `idx' in the
-/// cons list `*args_ptr'.  Returns 0 (null) when `idx >= list length'.
-/// Used by the Required and Optional mode branches to fetch the argument
-/// value without materialising the full Vec.
-#[no_mangle]
-pub unsafe extern "C" fn nl_bf_args_nth_ptr(args_ptr: *const Sexp, idx: i64) -> i64 {
-    let mut cur = &*args_ptr;
-    let mut remaining = idx;
-    while let Sexp::Cons(b) = cur {
-        if remaining == 0 {
-            return &b.car as *const Sexp as i64;
-        }
-        remaining -= 1;
-        cur = &b.cdr;
-    }
-    0
-}
-
 /// `nl_bf_args_tail(args_ptr, idx, out) -> i64`
 /// Builds a new Sexp::Cons list from `args[idx..]' and writes it into
 /// `*out'.  Used by the Rest mode branch to collect remaining args.

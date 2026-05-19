@@ -1086,12 +1086,30 @@
      :source-var nelisp-cc-apply-lambda-inner--source
      :output "nl_apply_lambda_inner.o"
      :requires-arch x86_64)
+    ;; Phase 47 — `nl_bf_formal_tag' formal-parameter tag classifier.
+    ;; Replaces the 9-LOC Rust extern in `special_forms.rs'.
+    ;; Returns 1=&optional, 2=&rest, 0=other-symbol, -1=non-symbol.
+    ;; Called from `nl_bind_formals_impl.o' via extern-call.
+    (nelisp-cc-bf-formal-tag
+     :source-var nelisp-cc-bf-formal-tag--source
+     :output "nl_bf_formal_tag.o"
+     :requires-arch x86_64)
+    ;; Phase 47 — `nl_bf_args_nth_ptr' cons-list indexed fetch.
+    ;; Replaces the 11-LOC Rust extern in `special_forms.rs'.
+    ;; Returns *const Sexp of args[idx].car, or 0 when idx >= len.
+    ;; `nl_bf_args_nth_step' is the private recursive walker helper.
+    ;; Called from `nl_bind_formals_impl.o' via extern-call.
+    (nelisp-cc-bf-args-nth-ptr
+     :source-var nelisp-cc-bf-args-nth-ptr--source
+     :output "nl_bf_args_nth_ptr.o"
+     :requires-arch x86_64)
     ;; Phase 47 Tier-C — `bind_formals_impl' Stage 1 parallel implementation.
     ;; `nl_bind_formals_impl' implements the full Required/Optional/Rest state
     ;; machine in elisp.  Stage 2 will rewire `nl_bind_formals' / `nl_push_and_bind'
     ;; to delegate to this elisp entry.  New externs: nl_bf_precompute,
-    ;; nl_bf_formal_tag, nl_bf_args_nth_ptr, nl_bf_bind_sym, nl_bf_bind_optional,
+    ;; nl_bf_bind_sym, nl_bf_bind_optional,
     ;; nl_bf_bind_rest, nl_bf_err_arity, nl_bf_err_type, nl_bf_err_dangling_rest.
+    ;; (nl_bf_formal_tag, nl_bf_args_nth_ptr now resolved from their own .o)
     (nelisp-cc-bind-formals
      :source-var nelisp-cc-bind-formals--source
      :output "nl_bind_formals_impl.o"
