@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 macro_rules! builtin_names {
     () => { &[
         "vector", "make-vector", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes", "nl-jit-call-format-float", "truncate", "nelisp--syscall-canonicalize",
-        "nelisp--syscall-stat", "nelisp--syscall-readdir", "nelisp--syscall-read-file", "nelisp--syscall", "nelisp--syscall-supported-p",
+        "nelisp--syscall-stat", "nelisp--syscall-readdir", "nelisp--syscall-read-file", "nelisp--syscall",
         "symbol-function", "fset", "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured", "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
         "nelisp--set-use-elisp-apply", "nelisp--apply-lambda-inner", "funcall", "apply", "eval", "signal", "nelisp--write-stdout-bytes", "nelisp--write-stderr-line",
         "read-stdin-bytes", "nelisp--f64-trunc", "nl-write-file", "nl-make-directory", "terminal-raw-mode-enter", "terminal-raw-mode-leave", "read-stdin-byte-available",
@@ -58,7 +58,6 @@ macro_rules! builtin_dispatch {
             },
             "nelisp--syscall-canonicalize" => bi_syscall_canonicalize($args, $env), "nelisp--syscall-stat" => bi_syscall_stat($args, $env), "nelisp--syscall-readdir" => bi_syscall_readdir($args, $env),
             "nelisp--syscall-read-file" => bi_syscall_read_file($args, $env), "nelisp--syscall" => bi_syscall($args),
-            "nelisp--syscall-supported-p" => bi_syscall_supported_p($args),
             "symbol-function" => {
                 require_arity("symbol-function", $args, 1, Some(1))?;
                 super::env_shim::bi_globals_op(&[Sexp::Symbol("get-function".into()), $args[0].clone()], $env)
@@ -398,14 +397,6 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         Err(_) => return Ok(Sexp::Nil),
     };
     Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
-}
-
-fn bi_syscall_supported_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-supported-p", args, 0, Some(0))?;
-    #[cfg(target_os = "linux")]
-    { Ok(Sexp::T) }
-    #[cfg(not(target_os = "linux"))]
-    { Ok(Sexp::Nil) }
 }
 
 #[cfg(target_os = "linux")]
