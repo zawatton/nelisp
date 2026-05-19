@@ -912,6 +912,24 @@ operand width; the upper 64 bits of XMM-DST are zero-extended."
     (nelisp-asm-x86_64--append-bytes
      buf (unibyte-string #x66 rex #x0F #x6E modrm))))
 
+(defun nelisp-asm-x86_64-cvtsi2sd-xmm-r64 (buf xmm-dst gp-src)
+  "Emit `CVTSI2SD XMM-DST, GP-SRC' = F2 + REX.W + 0F 2A + ModR/M (5 bytes).
+Convert signed i64 in GP-SRC's full register to f64 in XMM-DST's low
+64 bits.  Inverse of `cvttsd2si-r64-xmm'.  Used to lift Sexp::Int
+payloads into f64-class for arithmetic chains.
+
+ModR/M encoding: reg field = XMM-DST.low3, rm field = GP-SRC.low3.
+REX.R extends the xmm reg; REX.B extends the GP src."
+  (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext xmm-dst))
+         (ext-b (nelisp-asm-x86_64--reg-ext gp-src))
+         (rex (nelisp-asm-x86_64--rex 1 ext-r 0 ext-b))
+         (modrm (nelisp-asm-x86_64--modrm
+                 3
+                 (nelisp-asm-x86_64--xmm-reg-low3 xmm-dst)
+                 (nelisp-asm-x86_64--reg-low3 gp-src))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string #xF2 rex #x0F #x2A modrm))))
+
 (defun nelisp-asm-x86_64-cvttsd2si-r64-xmm (buf gp-dst xmm-src)
   "Emit `CVTTSD2SI GP-DST, XMM-SRC' = F2 + REX.W + 0F 2C + ModR/M (5 bytes).
 Convert (with truncation) the f64 in XMM-SRC's low 64 bits to a signed

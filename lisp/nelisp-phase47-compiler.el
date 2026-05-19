@@ -518,6 +518,18 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'sexp-tag
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
+   ;; (i64-to-f64 INT-EXPR) — G6 grammar bridge.  Converts a gp-class
+   ;; signed i64 to an f64-class value via `CVTSI2SD xmm-dst, rax'.
+   ;; Inverse of `f64-to-i64-trunc'.  Only meaningful as an f64-leaf
+   ;; in f64-call / sexp-write-float / f64-to-i64-trunc contexts.
+   ((and (consp sexp) (eq (car sexp) 'i64-to-f64))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :i64-to-f64-arity sexp)))
+    (list :kind 'i64-to-f64
+          :class 'f64
+          :int-expr (nelisp-phase47-compiler--parse-value
+                     (nth 1 sexp) env fenv defuns)))
    ;; (bits-to-f64 INT-EXPR) — G5 grammar bridge.  Lifts a gp-class
    ;; i64 (= raw bit pattern, typically from `sexp-float-unwrap') into
    ;; an f64-class value via `MOVQ xmm-dst, rax'.  Only meaningful as
@@ -1903,6 +1915,12 @@ trivial until xmm spill machinery lands."
       (nelisp-phase47-compiler--emit-value
        (plist-get node :int-expr) buf)
       (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax))
+     ((eq kind 'i64-to-f64)
+      ;; Evaluate INT-EXPR → rax (= gp-class signed i64), then
+      ;; CVTSI2SD xmm-dst, rax (= f64 representation of the int).
+      (nelisp-phase47-compiler--emit-value
+       (plist-get node :int-expr) buf)
+      (nelisp-asm-x86_64-cvtsi2sd-xmm-r64 buf xmm-dst 'rax))
      ((eq kind 'f64-call)
       ;; Existing f64-call ABI lands its result in xmm0.  If XMM-DST is
       ;; xmm0, just emit the call; otherwise pre-call-shuffle is
