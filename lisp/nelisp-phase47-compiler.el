@@ -518,6 +518,30 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'sexp-tag
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
+   ;; (bits-to-f64 INT-EXPR) — G5 grammar bridge.  Lifts a gp-class
+   ;; i64 (= raw bit pattern, typically from `sexp-float-unwrap') into
+   ;; an f64-class value via `MOVQ xmm-dst, rax'.  Only meaningful as
+   ;; an f64-leaf in f64-call / sexp-write-float / f64-to-i64-trunc
+   ;; contexts; using it as a plain gp-class value-expr is an error.
+   ((and (consp sexp) (eq (car sexp) 'bits-to-f64))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :bits-to-f64-arity sexp)))
+    (list :kind 'bits-to-f64
+          :class 'f64
+          :int-expr (nelisp-phase47-compiler--parse-value
+                     (nth 1 sexp) env fenv defuns)))
+   ;; (f64-to-i64-trunc F64-EXPR) — G5 grammar bridge.  Truncates an
+   ;; f64-class value to a signed i64 in rax via `CVTTSD2SI'.  F64-EXPR
+   ;; must be an f64-leaf-into target (= ref :class f64, bits-to-f64,
+   ;; f64-call, etc.).  Result class: gp.
+   ((and (consp sexp) (eq (car sexp) 'f64-to-i64-trunc))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :f64-to-i64-trunc-arity sexp)))
+    (list :kind 'f64-to-i64-trunc
+          :f64-expr (nelisp-phase47-compiler--parse-value
+                     (nth 1 sexp) env fenv defuns)))
    ;; (sexp-float-unwrap PTR) — read the 8-byte f64 payload of a
    ;; `Sexp::Float(f)' as raw bits, returned as i64 in rax (= xmm0
    ;; bit-pattern reinterpreted via MOVQ).  No tag check — caller
@@ -1874,6 +1898,19 @@ trivial until xmm spill machinery lands."
      ((and (eq kind 'ref) (eq (plist-get node :class) 'f64))
       (nelisp-phase47-compiler--emit-f64-ref-load
        buf (plist-get node :slot) xmm-dst))
+     ((eq kind 'bits-to-f64)
+      ;; Evaluate INT-EXPR → rax (= gp-class), then MOVQ xmm-dst, rax.
+      (nelisp-phase47-compiler--emit-value
+       (plist-get node :int-expr) buf)
+      (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax))
+     ((eq kind 'f64-call)
+      ;; Existing f64-call ABI lands its result in xmm0.  If XMM-DST is
+      ;; xmm0, just emit the call; otherwise pre-call-shuffle is
+      ;; needed (= not implemented at MVP, signal error).
+      (unless (eq xmm-dst 'xmm0)
+        (signal 'nelisp-phase47-compiler-error
+                (list :f64-call-leaf-into-nonzero-dst xmm-dst)))
+      (nelisp-phase47-compiler--emit-f64-call node buf))
      ((memq kind '(f64-binop f64-cmp))
       (signal 'nelisp-phase47-compiler-error
               (list :nested-f64-binop-needs-doc-112 node)))
@@ -2069,7 +2106,7 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-f64-cmp node buf))
         ('f64-call
          (nelisp-phase47-compiler--emit-f64-call node buf))
-        ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make 'sexp-float-unwrap
+        ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make 'sexp-float-unwrap 'f64-to-i64-trunc
              'cons-null-p 'cons-car 'cons-cdr 'cons-cdr-raw
              'sexp-payload-ptr
              'record-type-tag 'record-slot-count 'record-slot-ref
@@ -2132,6 +2169,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-sexp-int-unwrap node buf))
       ('sexp-float-unwrap
        (nelisp-phase47-compiler--emit-sexp-float-unwrap node buf))
+      ('f64-to-i64-trunc
+       (nelisp-phase47-compiler--emit-f64-to-i64-trunc node buf))
       ('sexp-int-make
        (nelisp-phase47-compiler--emit-sexp-int-make node buf))
       ('cons-null-p
@@ -2531,6 +2570,21 @@ zero-extended to a 64-bit value in rax.  See `docs/arch/sexp-abi.md'
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)))
+
+(defun nelisp-phase47-compiler--emit-f64-to-i64-trunc (node buf)
+  "Emit `CVTTSD2SI rax, xmm0' after computing NODE's :f64-expr into xmm0.
+Result: signed i64 truncation of the f64 value, returned in rax (= gp
+class).  Per Intel SDM, out-of-range f64 inputs (NaN / +- inf /
+magnitude > INT64_MAX) yield the indefinite integer sentinel
+0x8000000000000000 — same behaviour as Rust's `f as i64' / C
+`(int64_t) f' cast.  Caller is responsible for range checking when
+semantic differs from this default.
+
+F64-EXPR is emitted via `--emit-f64-leaf-into' which now accepts
+`bits-to-f64' / `f64-call' / `ref :class f64' as valid producers."
+  (let ((f64-expr (plist-get node :f64-expr)))
+    (nelisp-phase47-compiler--emit-f64-leaf-into f64-expr buf 'xmm0)
+    (nelisp-asm-x86_64-cvttsd2si-r64-xmm buf 'rax 'xmm0)))
 
 (defun nelisp-phase47-compiler--emit-sexp-float-unwrap (node buf)
   "Emit f64-payload read for a `Sexp::Float(f)' value, returning the

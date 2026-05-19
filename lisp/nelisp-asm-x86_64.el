@@ -912,6 +912,29 @@ operand width; the upper 64 bits of XMM-DST are zero-extended."
     (nelisp-asm-x86_64--append-bytes
      buf (unibyte-string #x66 rex #x0F #x6E modrm))))
 
+(defun nelisp-asm-x86_64-cvttsd2si-r64-xmm (buf gp-dst xmm-src)
+  "Emit `CVTTSD2SI GP-DST, XMM-SRC' = F2 + REX.W + 0F 2C + ModR/M (5 bytes).
+Convert (with truncation) the f64 in XMM-SRC's low 64 bits to a signed
+i64 in GP-DST.  Per SDM Vol. 2A §3.3 (= `Out-of-range f64 → 0x8000_0000_0000_0000'
+sentinel, no trap), this is the standard f64 → i64 cast used by
+C `(int64_t) f' / Rust `f as i64'.  GP-DST and XMM-SRC must be in the
+low 16-register class (= rax..r15 / xmm0..xmm15); the REX.W prefix
+carries the 64-bit mode and REX.R / REX.B encode the high half of the
+GP / xmm regs.
+
+ModR/M encoding: reg field = GP-DST.low3 (= destination on reg side
+since CVTTSD2SI's syntax is `gpr, xmm/m64'), rm field = XMM-SRC.low3.
+REX.R extends the GP reg; REX.B extends the xmm src."
+  (let* ((ext-r (nelisp-asm-x86_64--reg-ext gp-dst))
+         (ext-b (nelisp-asm-x86_64--xmm-reg-ext xmm-src))
+         (rex (nelisp-asm-x86_64--rex 1 ext-r 0 ext-b))
+         (modrm (nelisp-asm-x86_64--modrm
+                 3
+                 (nelisp-asm-x86_64--reg-low3 gp-dst)
+                 (nelisp-asm-x86_64--xmm-reg-low3 xmm-src))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string #xF2 rex #x0F #x2C modrm))))
+
 (defun nelisp-asm-x86_64-movq-r64-xmm (buf gp-dst xmm-src)
   "Emit `MOVQ GP-DST, XMM-SRC' = 66 REX.W [REX.R/B?] 0F 7E ModR/M.
 Doc 122 §122.C — xmm-to-GP 64-bit transfer used by `extern-call-
