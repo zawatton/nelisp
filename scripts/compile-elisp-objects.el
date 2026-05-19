@@ -1097,6 +1097,18 @@
     (nelisp-cc-sexp-fmt
      :source-var nelisp-cc-sexp-fmt--source
      :output "nelisp_fmt_sexp.o"
+     :requires-arch x86_64)
+    ;; Phase 47 — `sf_unwind_protect' Rust body deleted from
+    ;; `build-tool/src/eval/special_forms.rs'; Phase-47-compiled elisp
+    ;; `.o' replaces it.  8 defuns (seq form) walk `(BODYFORM CLEANUP...)'
+    ;; args: eval body via `nelisp_eval_call', then eval each cleanup form
+    ;; via `nl_eval_is_truthy' (errors silently discarded — does NOT touch
+    ;; `nelisp--last-signal-data').  Final rc = body-rc; body error stash
+    ;; survives all cleanup steps.  Linux-x86_64 only — same arch gate
+    ;; as the other sf_* migrations above.
+    (nelisp-cc-sf-unwind-protect
+     :source-var nelisp-cc-sf-unwind-protect--source
+     :output "nl_sf_unwind_protect.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

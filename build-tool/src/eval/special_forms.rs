@@ -65,7 +65,7 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
         "condition-case" => {
             sf_call_with_s1!("sf_condition_case", sf_condition_case_call, args, env)?
         }
-        "unwind-protect" => sf_unwind_protect(args, env)?,
+        "unwind-protect" => sf_call_4arg!("sf_unwind_protect", sf_unwind_protect_call, args, env)?,
         "progn" => sf_call_4arg!("sf_progn", sf_progn_call, args, env)?,
         _ => return Ok(None),
     }))
@@ -76,14 +76,6 @@ fn wrong_args(function: &str, expected: &str, got: usize) -> EvalError {
         function: function.into(),
         expected: expected.into(),
         got,
-    }
-}
-
-fn expect_min_len(parts: &[Sexp], name: &str, min: usize) -> Result<(), EvalError> {
-    if parts.len() >= min {
-        Ok(())
-    } else {
-        Err(wrong_args(name, &format!("≥{min}"), parts.len()))
     }
 }
 
@@ -488,21 +480,6 @@ pub unsafe extern "C" fn nl_cons_prepend_clone(
     let cdr_owned = (*cdr_ptr).clone();
     *out = Sexp::cons(car_owned, cdr_owned);
     0
-}
-
-fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = list_elements(args)?;
-    expect_min_len(&parts, "unwind-protect", 1)?;
-    let body_result = eval(&parts[0], env);
-    let mut cleanup_err: Option<EvalError> = None;
-    for cleanup in parts.iter().skip(1) {
-        if let Err(e) = eval(cleanup, env) {
-            if cleanup_err.is_none() {
-                cleanup_err = Some(e);
-            }
-        }
-    }
-    cleanup_err.map_or(body_result, Err)
 }
 
 #[no_mangle]

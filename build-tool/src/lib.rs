@@ -289,6 +289,12 @@ pub mod elisp_cc_spike {
             out: *mut Sexp,
             s1: *mut Sexp,
         ) -> i64;
+        fn nl_sf_unwind_protect(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            _pad: i64,
+        ) -> i64;
         fn nl_apply_lambda_inner(
             captured: *const Sexp,
             formals: *const Sexp,
@@ -595,6 +601,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(sf_lambda_call: nl_sf_lambda, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64);
     cc_wrap!(sf_function_call: nl_sf_function, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64);
     cc_wrap!(sf_condition_case_call: nl_sf_condition_case, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64);
+    cc_wrap!(sf_unwind_protect_call: nl_sf_unwind_protect, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(apply_lambda_inner_call: nl_apply_lambda_inner,
         (captured: *const Sexp, formals: *const Sexp, body_list: *const Sexp,
          args_list: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64);
