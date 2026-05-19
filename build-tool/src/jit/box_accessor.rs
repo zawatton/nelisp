@@ -18,13 +18,11 @@ pub unsafe extern "C" fn nl_jit_mut_str_set_codepoint(
     if idx < 0 { return TRAMPOLINE_ERR; }
     let rc = match &*arg { Sexp::MutStr(r) => r, _ => return TRAMPOLINE_ERR };
     let cp = match &*val { Sexp::Int(n) => *n, _ => return TRAMPOLINE_ERR };
-    let new_ch = match char::from_u32(cp as u32) {
-        Some(c) => c, None => return TRAMPOLINE_ERR,
-    };
-    let chars: Vec<char> = rc.value.chars().collect();
-    if (idx as usize) >= chars.len() { return TRAMPOLINE_ERR; }
-    let new_str: String = chars.iter().enumerate()
-        .map(|(i, c)| if i == idx as usize { new_ch } else { *c }).collect();
+    let new_ch = match char::from_u32(cp as u32) { Some(c) => c, None => return TRAMPOLINE_ERR };
+    let (i, len) = (idx as usize, rc.value.chars().count());
+    if i >= len { return TRAMPOLINE_ERR; }
+    let new_str: String = rc.value.chars().enumerate()
+        .map(|(j, c)| if j == i { new_ch } else { c }).collect();
     rc.set_value(new_str);
     *out = (*val).clone();
     TRAMPOLINE_OK
@@ -34,24 +32,17 @@ pub unsafe extern "C" fn nl_jit_mut_str_set_codepoint(
 pub unsafe extern "C" fn nl_jit_char_table_aref(
     arg: *const Sexp, idx: i64, out: *mut Sexp,
 ) -> i64 {
-    match &*arg {
-        Sexp::CharTable(r) => {
-            *out = crate::eval::builtins::char_table_get(r, idx); TRAMPOLINE_OK
-        }
-        _ => TRAMPOLINE_ERR,
-    }
+    let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
+    *out = crate::eval::builtins::char_table_get(r, idx);
+    TRAMPOLINE_OK
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_char_table_aset(
     arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp,
 ) -> i64 {
-    match &*arg {
-        Sexp::CharTable(r) => {
-            r.with_inner_mut(|i|
-                crate::eval::builtins::char_table_set_one(i, idx, (*val).clone()));
-            *out = (*val).clone(); TRAMPOLINE_OK
-        }
-        _ => TRAMPOLINE_ERR,
-    }
+    let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
+    r.with_inner_mut(|i| crate::eval::builtins::char_table_set_one(i, idx, (*val).clone()));
+    *out = (*val).clone();
+    TRAMPOLINE_OK
 }
