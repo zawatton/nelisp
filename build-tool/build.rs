@@ -97,6 +97,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-aref-vector.el",
         // Doc 117 §117.A.1 — `make-vector' allocate + fill swap.
         "nelisp-cc-bi-make-vector.el",
+        // `nl-fact-i64' Rust wrapper swap (range check + fact_i64 ABI call).
+        "nelisp-cc-bi-nl-fact-i64.el",
         // Doc 117 §117.B — quit-flag atomic ops swap (3 entries,
         // shared source file).  Each kernel is a 1-op composed value
         // form using §122.E `atomic-compare-exchange' / `ptr-read-u64'

@@ -42,11 +42,12 @@ extern "C" {
     fn nl_sf_while();
     fn nl_sf_lambda();
     fn nl_sf_function();
+    fn nelisp_bi_nl_fact_i64();
 }
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 61] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 62] = [
     nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
     nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
     nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
@@ -76,6 +77,7 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 61] = [
     nl_sf_while,
     nl_sf_lambda,
     nl_sf_function,
+    nelisp_bi_nl_fact_i64,
 ];
 
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {

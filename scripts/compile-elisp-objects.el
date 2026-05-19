@@ -85,6 +85,11 @@
      :source-var nelisp-cc-bi-make-vector--source
      :output "nelisp_bi_make_vector.o"
      :requires-arch x86_64)
+    ;; `nl-fact-i64' Rust wrapper swap — range-check + extern-call fact_i64.
+    (nelisp-cc-bi-nl-fact-i64
+     :source-var nelisp-cc-bi-nl-fact-i64--source
+     :output "nelisp_bi_nl_fact_i64.o"
+     :requires-arch x86_64)
     ;; Doc 117 §117.B — quit-flag atomic ops swap (3 entries, shared
     ;; source file).  Rust shim calls `nl_quit_flag_ptr' to obtain the
     ;; static slot's address, then dispatches to one of these kernels

@@ -207,7 +207,16 @@ macro_rules! builtin_dispatch {
             "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64($args), "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr($args), "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall($args),
             "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1($args), "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2($args), "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args),
             "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i($args), "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float($args),
-            "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp($args), "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary($args), "nl-fact-i64" => bi_nl_fact_i64($args),
+            "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp($args), "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary($args),
+            "nl-fact-i64" => {
+                require_arity("nl-fact-i64", $args, 1, Some(1))?;
+                let Sexp::Int(_) = &$args[0] else {
+                    return Err(EvalError::WrongType { expected: "integerp".into(), got: $args[0].clone() });
+                };
+                let mut out = Sexp::Nil;
+                let rc = unsafe { crate::elisp_cc_spike::bi_nl_fact_i64(&$args[0] as *const _, &mut out as *mut _) };
+                if rc == 0 { Ok(out) } else { Err(EvalError::Internal("nl-fact-i64: argument out of i64-safe range 0..=20".into())) }
+            },
             "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op($args, $env),
             _ => match $env.extern_builtins.get($name).cloned() { Some(f) => f($args, $env), None => Err(EvalError::UnboundFunction($name.to_string())) }
         }
@@ -567,19 +576,6 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let _ = err.write_all(b"\n");
     let _ = err.flush();
     Ok(args[0].clone())
-}
-
-fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-fact-i64", args, 1, Some(1))?;
-    let n = as_int("nl-fact-i64", &args[0])?;
-    if !(0..=20).contains(&n) {
-        return Err(EvalError::Internal(format!(
-            "nl-fact-i64: argument {} out of i64-safe range 0..=20",
-            n
-        )));
-    }
-    let result = crate::elisp_cc_spike::fact_i64(n);
-    Ok(Sexp::Int(result))
 }
 
 fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {

@@ -56,6 +56,7 @@ pub mod elisp_cc_spike {
             init_ptr: *const Sexp,
             result_slot: *mut Sexp,
         ) -> i64;
+        fn nelisp_bi_nl_fact_i64(arg_ptr: *const Sexp, result_slot: *mut Sexp) -> i64;
         fn nelisp_bi_set_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_clear_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_quit_flag_pending_p(flag_ptr: *const i64) -> i64;
@@ -353,6 +354,7 @@ pub mod elisp_cc_spike {
     // `slot` must start as `Sexp::Nil`.
     cc_wrap!(aref_vector: nelisp_aref_vector, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
     cc_wrap!(bi_make_vector: nelisp_bi_make_vector, (n_ptr: *const Sexp, init_ptr: *const Sexp, slot: *mut Sexp) -> i64);
+    cc_wrap!(bi_nl_fact_i64: nelisp_bi_nl_fact_i64, (arg_ptr: *const Sexp, slot: *mut Sexp) -> i64);
     cc_wrap!(bi_set_quit_flag: nelisp_bi_set_quit_flag, (flag_ptr: *mut i64) -> i64);
     cc_wrap!(bi_clear_quit_flag: nelisp_bi_clear_quit_flag, (flag_ptr: *mut i64) -> i64);
     cc_wrap!(bi_quit_flag_pending_p: nelisp_bi_quit_flag_pending_p, (flag_ptr: *const i64) -> i64);
