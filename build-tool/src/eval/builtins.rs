@@ -52,7 +52,21 @@ macro_rules! builtin_dispatch {
             "nelisp--push-frame" => bi_frame_op("push-frame", $args, $env), "nelisp--pop-frame" => bi_frame_op("pop-frame", $args, $env), "nelisp--push-captured" => bi_frame_op("push-captured", $args, $env),
             "nelisp--bind-local" => bi_frame_op("bind-local", $args, $env), "nelisp--apply-builtin-dispatch" => bi_apply_builtin_dispatch($args, $env),
             "nelisp--set-use-elisp-apply" => { require_arity("nelisp--set-use-elisp-apply", $args, 1, Some(1))?; $env.use_elisp_apply = !matches!($args[0], Sexp::Nil); Ok(bool_sexp($env.use_elisp_apply)) },
-            "nelisp--apply-lambda-inner" => bi_apply_lambda_inner($args, $env), "funcall" => bi_funcall($args, $env), "apply" => bi_apply($args, $env), "eval" => bi_eval($args, $env), "signal" => bi_signal($args),
+            "nelisp--apply-lambda-inner" => bi_apply_lambda_inner($args, $env),
+            "funcall" => {
+                require_arity("funcall", $args, 1, None)?;
+                let func = resolve_callable(&$args[0], $env)?;
+                super::apply_function(&func, &$args[1..], $env)
+            },
+            "apply" => {
+                require_arity("apply", $args, 2, None)?;
+                let func = resolve_callable(&$args[0], $env)?;
+                let mut all_args: Vec<Sexp> = $args[1..$args.len() - 1].to_vec();
+                all_args.extend(list_to_vec(&$args[$args.len() - 1])?);
+                super::apply_function(&func, &all_args, $env)
+            },
+            "eval" => { require_arity("eval", $args, 1, Some(2))?; super::eval(&$args[0], $env) },
+            "signal" => bi_signal($args),
             "nelisp--write-stdout-bytes" => bi_write_stdout_bytes($args), "nelisp--write-stderr-line" => bi_write_stderr_line($args), "read-stdin-bytes" => bi_read_stdin_bytes($args),
             "nelisp--f64-trunc" => bi_f64_trunc($args), "nl-write-file" => bi_nl_write_file($args), "nl-make-directory" => bi_nl_make_directory($args),
             "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter($args), "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave($args), "read-stdin-byte-available" => bi_read_stdin_byte_available($args),
@@ -449,25 +463,6 @@ fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match arg { Sexp::Symbol(s) => env.lookup_function(s), _ => Ok(arg.clone()) }
 }
 
-fn bi_funcall(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("funcall", args, 1, None)?;
-    let func = resolve_callable(&args[0], env)?;
-    super::apply_function(&func, &args[1..], env)
-}
-
-fn bi_apply(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("apply", args, 2, None)?;
-    let func = resolve_callable(&args[0], env)?;
-    let mut all_args: Vec<Sexp> = args[1..args.len() - 1].to_vec();
-    all_args.extend(list_to_vec(&args[args.len() - 1])?);
-    super::apply_function(&func, &all_args, env)
-}
-
-fn bi_eval(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("eval", args, 1, Some(2))?; super::eval(&args[0], env)
-}
-
-// Doc 127: thin Rust shell; symbol-name dispatch delegated to elisp .o.
 fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("signal", args, 2, Some(2))?;
     let Sexp::Symbol(tag) = &args[0] else { return Err(EvalError::WrongType { expected: "symbolp".into(), got: args[0].clone() }); };
