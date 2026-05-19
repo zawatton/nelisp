@@ -392,11 +392,15 @@ fn string_value(v: &Sexp) -> Result<String, EvalError> {
         other => Err(EvalError::WrongType { expected: "stringp or symbolp".into(), got: other.clone() }),
     }
 }
-fn normalize_path(path: &str, base: Option<&str>) -> PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() { p.to_path_buf() } else if let Some(base) = base { Path::new(base).join(p) } else if let Ok(cwd) = std::env::current_dir() { cwd.join(p) } else { p.to_path_buf() }
+fn resolve_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
+    let path = string_value(arg)?;
+    let p = Path::new(&path);
+    if p.is_absolute() { return Ok(p.to_path_buf()); }
+    let base = match env.lookup_value("default-directory") { Ok(Sexp::Str(s)) => Some(s), _ => None };
+    Ok(if let Some(b) = base { Path::new(&b).join(p) }
+       else if let Ok(cwd) = std::env::current_dir() { cwd.join(p) }
+       else { p.to_path_buf() })
 }
-fn env_default_directory(env: &Env) -> Option<String> { match env.lookup_value("default-directory") { Ok(Sexp::Str(s)) => Some(s), _ => None } }
 fn cc_slot_1(arg: &Sexp, f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp) -> Sexp { let mut slot = Sexp::Nil; unsafe { f(arg as *const _, &mut slot as *mut _) }; slot }
 fn bool_sexp(v: bool) -> Sexp { if v { Sexp::T } else { Sexp::Nil } }
 
@@ -410,12 +414,9 @@ fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> {
 
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-canonicalize", args, 1, Some(1))?;
-    let path_sexp = resolve_path_sexp(&args[0], env)?;
+    let path_sexp = Sexp::Str(resolve_path(&args[0], env)?.to_string_lossy().into_owned());
     let mut buf = vec![0u8; libc::PATH_MAX as usize];
-    if unsafe {
-        crate::elisp_cc_spike::bi_syscall_canonicalize(&path_sexp as *const _, buf.as_mut_ptr())
-    } == 0
-    {
+    if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&path_sexp as *const _, buf.as_mut_ptr()) } == 0 {
         return Ok(Sexp::Nil);
     }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
@@ -424,67 +425,34 @@ fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalErr
 
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-read-file", args, 1, Some(1))?;
-    let p = resolve_existing_path(&args[0], env)?;
-    let n_bytes = match std::fs::metadata(&p) {
-        Ok(m) if m.is_file() => m.len() as usize,
-        _ => return Ok(Sexp::Nil),
-    };
+    let p = resolve_path(&args[0], env)?;
+    let n_bytes = match std::fs::metadata(&p) { Ok(m) if m.is_file() => m.len() as usize, _ => return Ok(Sexp::Nil) };
     if n_bytes == 0 { return Ok(Sexp::Str(String::new())); }
     let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
     let mut buf = vec![0u8; n_bytes];
-    let rc = unsafe {
-        crate::elisp_cc_spike::bi_syscall_read_file(
-            &path_sexp as *const _, buf.as_mut_ptr(), n_bytes as i64,
-        )
-    } as i32 as i64;
-    if rc < 0 {
-        return Ok(Sexp::Nil);
-    }
+    let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&path_sexp as *const _, buf.as_mut_ptr(), n_bytes as i64) } as i32 as i64;
+    if rc < 0 { return Ok(Sexp::Nil); }
     buf.truncate((rc as usize).min(n_bytes));
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
-    let path = string_value(arg)?;
-    let base = env_default_directory(env);
-    Ok(normalize_path(&path, base.as_deref()))
-}
-
-fn resolve_path_sexp(arg: &Sexp, env: &Env) -> Result<Sexp, EvalError> {
-    let p = resolve_existing_path(arg, env)?;
-    Ok(Sexp::Str(p.to_string_lossy().into_owned()))
-}
-
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-stat", args, 1, Some(1))?;
-    let path_sexp = resolve_path_sexp(&args[0], env)?;
+    let path_sexp = Sexp::Str(resolve_path(&args[0], env)?.to_string_lossy().into_owned());
     let mut statbuf: libc::stat = unsafe { std::mem::zeroed() };
-    let rc = unsafe {
-        crate::elisp_cc_spike::bi_syscall_stat(
-            &path_sexp as *const _, (&mut statbuf as *mut libc::stat) as *mut u8,
-        )
-    };
-    let tag = if rc < 0 {
-        "absent"
-    } else {
-        match statbuf.st_mode & libc::S_IFMT {
-            m if m == libc::S_IFDIR => "directory",
-            m if m == libc::S_IFREG => "file",
-            _ => "absent",
-        }
-    };
+    let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&path_sexp as *const _, (&mut statbuf as *mut libc::stat) as *mut u8) };
+    let tag = if rc < 0 { "absent" } else { match statbuf.st_mode & libc::S_IFMT {
+        m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent",
+    } };
     Ok(Sexp::Symbol(tag.into()))
 }
 
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--syscall-readdir", args, 1, Some(1))?;
-    let dir = resolve_existing_path(&args[0], env)?;
+    let dir = resolve_path(&args[0], env)?;
     let dir_str = dir.to_string_lossy().into_owned();
     let entries: Vec<Sexp> = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned()))
-            .collect(),
+        Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect(),
         Err(_) => return Ok(Sexp::Nil),
     };
     Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
