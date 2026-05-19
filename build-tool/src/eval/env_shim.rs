@@ -8,38 +8,25 @@ use super::Env;
 use super::error::EvalError;
 use super::sexp::Sexp;
 
-fn wrong_args(arity: &str, got: usize) -> EvalError {
+fn wrong_args(expected: usize, got: usize) -> EvalError {
     EvalError::WrongNumberOfArguments {
         function: "nelisp--env-globals-op".to_string(),
-        expected: arity.to_string(),
+        expected: expected.to_string(),
         got,
     }
 }
 
-fn sym_arg(arg: &Sexp) -> Result<String, EvalError> {
-    match arg {
-        Sexp::Symbol(s) => Ok(s.clone()),
-        other => Err(EvalError::WrongType {
-            expected: "symbolp".into(),
-            got: other.clone(),
-        }),
-    }
+fn wrong_type(got: &Sexp) -> EvalError {
+    EvalError::WrongType { expected: "symbolp".into(), got: got.clone() }
 }
 
-fn bool_sexp(b: bool) -> Sexp {
-    if b { Sexp::T } else { Sexp::Nil }
-}
+fn bool_sexp(b: bool) -> Sexp { if b { Sexp::T } else { Sexp::Nil } }
 
 pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let op = match args.first() {
         Some(Sexp::Symbol(s)) => s.as_str(),
-        Some(o) => {
-            return Err(EvalError::WrongType {
-                expected: "symbolp".into(),
-                got: o.clone(),
-            });
-        }
-        None => return Err(wrong_args(">= 1", 0)),
+        Some(o) => return Err(wrong_type(o)),
+        None => return Err(wrong_args(1, 0)),
     };
     let expected: usize = match op {
         "capture-lexical" => 1,
@@ -47,22 +34,21 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         _ => 2,
     };
     if args.len() != expected {
-        return Err(wrong_args(&format!("{}", expected), args.len()));
+        return Err(wrong_args(expected, args.len()));
     }
     if op == "capture-lexical" {
         return Ok(env.capture_lexical());
     }
-    let name = sym_arg(&args[1])?;
+    let name = match &args[1] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(wrong_type(other)),
+    };
     // `mirror_lookup_*' returns `unbound_marker' for absent; convert to
     // Unbound{Variable,Function} for the public Result surface.
     match op {
         "get-value" => {
             let v = env.mirror_lookup_value(&name);
-            if v == env.unbound_marker {
-                Err(EvalError::UnboundVariable(name))
-            } else {
-                Ok(v)
-            }
+            if v == env.unbound_marker { Err(EvalError::UnboundVariable(name)) } else { Ok(v) }
         }
         "set-value" => {
             let v = args[2].clone();
@@ -71,25 +57,15 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         }
         "get-function" => {
             let f = env.mirror_lookup_function(&name);
-            if f == env.unbound_marker {
-                Err(EvalError::UnboundFunction(name))
-            } else {
-                Ok(f)
-            }
+            if f == env.unbound_marker { Err(EvalError::UnboundFunction(name)) } else { Ok(f) }
         }
         "set-function" => {
             let def = args[2].clone();
             env.mirror_set_function(&name, def.clone());
             Ok(def)
         }
-        "clear-value" => {
-            env.mirror_clear_value(&name);
-            Ok(args[1].clone())
-        }
-        "clear-function" => {
-            env.mirror_clear_function(&name);
-            Ok(args[1].clone())
-        }
+        "clear-value" => { env.mirror_clear_value(&name); Ok(args[1].clone()) }
+        "clear-function" => { env.mirror_clear_function(&name); Ok(args[1].clone()) }
         "is-bound" => Ok(bool_sexp(env.mirror_is_bound(&name))),
         "is-fbound" => Ok(bool_sexp(env.mirror_is_fbound(&name))),
         "is-constant" => Ok(bool_sexp(env.mirror_is_constant(&name))),
@@ -99,8 +75,7 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
             Ok(bool_sexp(truthy))
         }
         other => Err(EvalError::Internal(format!(
-            "nelisp--env-globals-op: unknown OP `{}`",
-            other
+            "nelisp--env-globals-op: unknown OP `{}`", other
         ))),
     }
 }

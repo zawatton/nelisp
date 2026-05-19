@@ -152,27 +152,18 @@ impl Env {
         self.mirror_set_function(name, func);
     }
 
-    pub fn push_frame(&mut self) {
-        self.frame_push_rust_direct();
-    }
-
-    pub fn pop_frame(&mut self) {
-        self.frame_pop_rust_direct();
-    }
+    pub fn push_frame(&mut self) { self.frame_push_rust_direct(); }
+    pub fn pop_frame(&mut self) { self.frame_pop_rust_direct(); }
+    pub fn is_fbound(&self, name: &str) -> bool { self.mirror_is_fbound(name) }
 
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         let has_frame = matches!(&self.frames_record, Sexp::Record(r)
             if matches!(r.slots.get(1), Some(Sexp::Int(n)) if *n > 0));
         if has_frame {
-            let cell = FrameCell::new(value);
-            self.frame_bind_rust_direct(name, Sexp::Cell(cell));
+            self.frame_bind_rust_direct(name, Sexp::Cell(FrameCell::new(value)));
         } else {
             self.mirror_set_value(name, value);
         }
-    }
-
-    pub fn is_fbound(&self, name: &str) -> bool {
-        self.mirror_is_fbound(name)
     }
 
     pub fn capture_lexical(&mut self) -> Sexp {
@@ -183,9 +174,8 @@ impl Env {
             },
             _ => return Sexp::Nil,
         };
-        let f = match self.lookup_function("nelisp-lexframe-stack-capture-to-depth") {
-            Ok(f) => f,
-            Err(_) => return Sexp::Nil,
+        let Ok(f) = self.lookup_function("nelisp-lexframe-stack-capture-to-depth") else {
+            return Sexp::Nil;
         };
         let args = [self.frames_record.clone(), Sexp::Int(depth)];
         super::apply_function(&f, &args, self).unwrap_or(Sexp::Nil)
@@ -242,27 +232,32 @@ impl Env {
         Some((ht_rec, buckets, idx))
     }
 
+    fn mirror_mutate_with(
+        &mut self,
+        name: &str,
+        payload: &Sexp,
+        op: unsafe fn(*const Sexp, *const Sexp, *const Sexp, *const Sexp) -> i64,
+    ) {
+        self.with_mirror_unbound(name, |m, s, u| unsafe { op(m, s, payload, u); });
+    }
+
     pub(crate) fn mirror_set_value(&mut self, name: &str, value: Sexp) {
-        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_set_value_or_insert(mirror_ptr, sym_ptr, &value, unbound_ptr);
-        });
+        self.mirror_mutate_with(name, &value, crate::elisp_cc_spike::mirror_set_value_or_insert);
     }
 
     pub(crate) fn mirror_set_function(&mut self, name: &str, func: Sexp) {
-        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_set_function_or_insert(mirror_ptr, sym_ptr, &func, unbound_ptr);
-        });
+        self.mirror_mutate_with(name, &func, crate::elisp_cc_spike::mirror_set_function_or_insert);
     }
 
     pub(crate) fn mirror_clear_value(&mut self, name: &str) {
-        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_clear_value(mirror_ptr, sym_ptr, unbound_ptr);
+        self.with_mirror_unbound(name, |m, s, u| unsafe {
+            crate::elisp_cc_spike::mirror_clear_value(m, s, u);
         });
     }
 
     pub(crate) fn mirror_clear_function(&mut self, name: &str) {
-        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_clear_function(mirror_ptr, sym_ptr, unbound_ptr);
+        self.with_mirror_unbound(name, |m, s, u| unsafe {
+            crate::elisp_cc_spike::mirror_clear_function(m, s, u);
         });
     }
 
@@ -295,9 +290,7 @@ impl Env {
 
     pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
         let value = if truthy { Sexp::T } else { Sexp::Nil };
-        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_set_constant_or_insert(mirror_ptr, sym_ptr, &value, unbound_ptr);
-        });
+        self.mirror_mutate_with(name, &value, crate::elisp_cc_spike::mirror_set_constant_or_insert);
     }
 
     pub fn install_empty_mirror_rust_direct(&mut self) {
@@ -315,42 +308,45 @@ impl Env {
         self.install_empty_frames_record_rust_direct();
     }
 
-    pub fn mirror_lookup_value(&self, name: &str) -> Sexp {
+    fn mirror_lookup_slot(
+        &self,
+        name: &str,
+        getter: unsafe fn(*const Sexp, *const Sexp, *mut Sexp) -> *mut Sexp,
+    ) -> Sexp {
         self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| unsafe {
             if crate::elisp_cc_spike::mirror_lookup_entry(mirror_ptr, sym_ptr).is_null() {
                 return self.unbound_marker.clone();
             }
             let mut slot = Sexp::Nil;
-            crate::elisp_cc_spike::mirror_lookup_value(mirror_ptr, sym_ptr, &mut slot);
+            getter(mirror_ptr, sym_ptr, &mut slot);
             slot
         })
         .unwrap_or_else(|| self.unbound_marker.clone())
+    }
+
+    pub fn mirror_lookup_value(&self, name: &str) -> Sexp {
+        self.mirror_lookup_slot(name, crate::elisp_cc_spike::mirror_lookup_value)
     }
 
     pub fn mirror_lookup_function(&self, name: &str) -> Sexp {
-        self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| unsafe {
-            if crate::elisp_cc_spike::mirror_lookup_entry(mirror_ptr, sym_ptr).is_null() {
-                return self.unbound_marker.clone();
-            }
-            let mut slot = Sexp::Nil;
-            crate::elisp_cc_spike::mirror_lookup_function(mirror_ptr, sym_ptr, &mut slot);
-            slot
-        })
-        .unwrap_or_else(|| self.unbound_marker.clone())
+        self.mirror_lookup_slot(name, crate::elisp_cc_spike::mirror_lookup_function)
+    }
+
+    fn mirror_is_pred(
+        &self,
+        name: &str,
+        pred: unsafe fn(*const Sexp, *const Sexp, *const Sexp) -> i64,
+    ) -> bool {
+        self.with_mirror_unbound(name, |m, s, u| unsafe { pred(m, s, u) != 0 })
+            .unwrap_or(false)
     }
 
     pub(crate) fn mirror_is_bound(&self, name: &str) -> bool {
-        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_is_bound(mirror_ptr, sym_ptr, unbound_ptr) != 0
-        })
-        .unwrap_or(false)
+        self.mirror_is_pred(name, crate::elisp_cc_spike::mirror_is_bound)
     }
 
     pub fn mirror_is_fbound(&self, name: &str) -> bool {
-        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_is_fbound(mirror_ptr, sym_ptr, unbound_ptr) != 0
-        })
-        .unwrap_or(false)
+        self.mirror_is_pred(name, crate::elisp_cc_spike::mirror_is_fbound)
     }
 
     pub(crate) fn install_empty_frames_record_rust_direct(&mut self) {
@@ -466,17 +462,13 @@ impl Env {
         }
     }
 
-    #[allow(dead_code)] // used by stack walks + tests
     fn frame_lookup_in(frame: &Sexp, name: &str) -> Option<Sexp> {
         let (_, buckets, idx) = Env::frame_bucket(frame, name)?;
-        let bucket = buckets.value.get(idx)?;
-        let mut cur = bucket;
+        let mut cur = buckets.value.get(idx)?;
         while let Sexp::Cons(c) = cur {
             if let Sexp::Cons(pair) = &c.car {
                 if let Sexp::Str(k) = &pair.car {
-                    if k == name {
-                        return Some(pair.cdr.clone());
-                    }
+                    if k == name { return Some(pair.cdr.clone()); }
                 }
             }
             cur = &c.cdr;
@@ -484,12 +476,10 @@ impl Env {
         None
     }
 
-    #[allow(dead_code)] // used by stack walks + tests
     pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
         let (_stack_rec, backing, depth) = self.frame_stack_view()?;
         if depth == 0 { return None; }
-        let frame = backing.value.get(depth - 1)?;
-        Env::frame_lookup_in(frame, name)
+        Env::frame_lookup_in(backing.value.get(depth - 1)?, name)
     }
 
     pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {

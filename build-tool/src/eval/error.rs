@@ -20,16 +20,12 @@ impl fmt::Display for SourcePos {
 /// Reader-side failure surfaced through [`EvalError::Read`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReadError {
-    Lex { msg: String, pos: SourcePos },
     Parse { msg: String, pos: SourcePos },
     UnexpectedEof { msg: String, pos: SourcePos },
     NotYetImplemented { feature: String, pos: SourcePos },
 }
 
 impl ReadError {
-    pub fn lex(msg: impl Into<String>, pos: SourcePos) -> Self {
-        ReadError::Lex { msg: msg.into(), pos }
-    }
     pub fn parse(msg: impl Into<String>, pos: SourcePos) -> Self {
         ReadError::Parse { msg: msg.into(), pos }
     }
@@ -44,7 +40,6 @@ impl ReadError {
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (kind, body, pos) = match self {
-            ReadError::Lex { msg, pos } => ("lex error", msg.as_str(), pos),
             ReadError::Parse { msg, pos } => ("parse error", msg.as_str(), pos),
             ReadError::UnexpectedEof { msg, pos } => ("unexpected EOF", msg.as_str(), pos),
             ReadError::NotYetImplemented { feature, pos } => ("not-yet-implemented", feature.as_str(), pos),
