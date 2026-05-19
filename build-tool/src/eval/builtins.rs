@@ -454,49 +454,28 @@ mod tty_raw {
     use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
     use std::sync::Once;
 
-    // ---- Async-signal-safe state ------------------------------------------------
-    // The flag tells us whether SAVED_TERMIOS is initialised + the tty is
-    // currently in raw mode.  `swap` provides the "claim and clear"
-    // primitive both the explicit leave and the signal/atexit hook use.
     static TERMIOS_SAVED: AtomicBool = AtomicBool::new(false);
     static TTY_FD: AtomicI32 = AtomicI32::new(-1);
-    // SAFETY contract: only written while TERMIOS_SAVED is false (which
-    // implies no signal handler can race on it — handlers early-return on
-    // a false flag).  Read only after TERMIOS_SAVED.swap(false) returns
-    // true, which transfers ownership to the reader.
+    // SAFETY contract: SAVED_TERMIOS is only written while TERMIOS_SAVED is
+    // false (handlers early-return on a false flag, so no signal-handler
+    // race).  Read only after TERMIOS_SAVED.swap(false) returns true.
     static mut SAVED_TERMIOS: MaybeUninit<libc::termios> = MaybeUninit::uninit();
     static HOOKS_INSTALLED: Once = Once::new();
 
-    // Restore the saved termios.  Called from BOTH the explicit
-    // `terminal-raw-mode-leave` path AND the signal/atexit hook, so it
-    // must be async-signal-safe — no allocation, no Mutex, no Rust
-    // formatting.  `tcsetattr` is async-signal-safe per POSIX.
+    // Async-signal-safe restore (tcsetattr is AS-safe per POSIX).
     fn restore_termios_signal_safe() {
         if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
             let fd = TTY_FD.load(Ordering::SeqCst);
-            if fd >= 0 {
-                unsafe {
-                    let term_ptr = (*std::ptr::addr_of!(SAVED_TERMIOS)).as_ptr();
-                    // Ignore the return code — we are best-effort in signal
-                    // context; nothing actionable we can do on failure.
-                    libc::tcsetattr(fd, libc::TCSANOW, term_ptr);
-                }
-            }
+            if fd >= 0 { unsafe { libc::tcsetattr(fd, libc::TCSANOW, (*std::ptr::addr_of!(SAVED_TERMIOS)).as_ptr()); } }
         }
     }
 
-    extern "C" fn atexit_hook() {
-        restore_termios_signal_safe();
-    }
+    extern "C" fn atexit_hook() { restore_termios_signal_safe(); }
 
     extern "C" fn sig_handler(signum: libc::c_int) {
         restore_termios_signal_safe();
-        // Reset to the system default and re-raise so the canonical
-        // disposition (terminate / dump core / etc.) actually runs.
         unsafe {
             libc::signal(signum, libc::SIG_DFL);
-            // Unblock the signal in case sigaction's default mask blocked
-            // it while we were in this handler.
             let mut mask: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut mask);
             libc::sigaddset(&mut mask, signum);
@@ -508,7 +487,6 @@ mod tty_raw {
     fn install_hooks_once() {
         HOOKS_INSTALLED.call_once(|| unsafe {
             libc::atexit(atexit_hook);
-
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = sig_handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
@@ -523,32 +501,18 @@ mod tty_raw {
         let fd = std::io::stdin().lock().as_raw_fd();
         let mut term: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(fd, &mut term) } != 0 {
-            return Err(EvalError::Internal(format!(
-                "terminal-raw-mode-enter: tcgetattr failed: {}",
-                std::io::Error::last_os_error()
-            )));
+            return Err(EvalError::Internal(format!("terminal-raw-mode-enter: tcgetattr failed: {}", std::io::Error::last_os_error())));
         }
-
-        unsafe {
-            std::ptr::write(
-                std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut libc::termios,
-                term,
-            );
-        }
+        unsafe { std::ptr::write(std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut libc::termios, term); }
         TTY_FD.store(fd, Ordering::SeqCst);
         TERMIOS_SAVED.store(true, Ordering::SeqCst);
-
         install_hooks_once();
-
         unsafe { libc::cfmakeraw(&mut term) };
         term.c_cc[libc::VMIN] = 1;
         term.c_cc[libc::VTIME] = 0;
         if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
             TERMIOS_SAVED.store(false, Ordering::SeqCst);
-            return Err(EvalError::Internal(format!(
-                "terminal-raw-mode-enter: tcsetattr failed: {}",
-                std::io::Error::last_os_error()
-            )));
+            return Err(EvalError::Internal(format!("terminal-raw-mode-enter: tcsetattr failed: {}", std::io::Error::last_os_error())));
         }
         Ok(())
     }
@@ -557,74 +521,38 @@ mod tty_raw {
         if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
             let fd = TTY_FD.load(Ordering::SeqCst);
             if fd >= 0 {
-                let term =
-                    unsafe { (*std::ptr::addr_of!(SAVED_TERMIOS)).assume_init() };
+                let term = unsafe { (*std::ptr::addr_of!(SAVED_TERMIOS)).assume_init() };
                 if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
-                    return Err(EvalError::Internal(format!(
-                        "terminal-raw-mode-leave: tcsetattr failed: {}",
-                        std::io::Error::last_os_error()
-                    )));
+                    return Err(EvalError::Internal(format!("terminal-raw-mode-leave: tcsetattr failed: {}", std::io::Error::last_os_error())));
                 }
             }
         }
         Ok(())
     }
 
-    pub fn termios_saved_p() -> bool {
-        TERMIOS_SAVED.load(Ordering::SeqCst)
-    }
-
-    pub fn hooks_installed_p() -> bool {
-        HOOKS_INSTALLED.is_completed()
-    }
+    pub fn termios_saved_p() -> bool { TERMIOS_SAVED.load(Ordering::SeqCst) }
+    pub fn hooks_installed_p() -> bool { HOOKS_INSTALLED.is_completed() }
 
     pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
-        let fd: i32 = 0; // STDIN
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let fd: i32 = 0;
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
         let r = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-        if r < 0 {
-            return Err(EvalError::Internal(format!(
-                "read-stdin-byte-available: poll failed: {}",
-                std::io::Error::last_os_error()
-            )));
-        }
-        if r == 0 {
-            return Ok(None);
-        }
-        if pfd.revents & (libc::POLLIN | libc::POLLHUP) == 0 {
-            return Ok(None);
-        }
+        if r < 0 { return Err(EvalError::Internal(format!("read-stdin-byte-available: poll failed: {}", std::io::Error::last_os_error()))); }
+        if r == 0 || pfd.revents & (libc::POLLIN | libc::POLLHUP) == 0 { return Ok(None); }
         let mut buf = [0u8; 1];
-        let n = unsafe {
-            libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1)
-        };
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
         match n {
-            0 => Ok(None), // EOF
+            0 => Ok(None),
             n if n > 0 => Ok(Some(buf[0])),
             _ => {
                 let errno = std::io::Error::last_os_error();
                 #[allow(unreachable_patterns)]
-                if matches!(
-                    errno.raw_os_error(),
-                    Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK)
-                ) {
-                    Ok(None)
-                } else {
-                    Err(EvalError::Internal(format!(
-                        "read-stdin-byte-available: read failed: {}",
-                        errno
-                    )))
-                }
+                if matches!(errno.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK)) { Ok(None) }
+                else { Err(EvalError::Internal(format!("read-stdin-byte-available: read failed: {}", errno))) }
             }
         }
     }
 }
-
-// SIGWINCH state shared between the handler and the event loop.
 
 #[cfg(unix)]
 mod tty_winsize {
@@ -635,9 +563,7 @@ mod tty_winsize {
     static WINSIZE_CHANGED: AtomicBool = AtomicBool::new(true);
     static HANDLER_INSTALLED: Once = Once::new();
 
-    extern "C" fn handler(_signum: libc::c_int) {
-        WINSIZE_CHANGED.store(true, Ordering::SeqCst);
-    }
+    extern "C" fn handler(_signum: libc::c_int) { WINSIZE_CHANGED.store(true, Ordering::SeqCst); }
 
     pub fn install_handler() {
         HANDLER_INSTALLED.call_once(|| unsafe {
@@ -650,26 +576,15 @@ mod tty_winsize {
         });
     }
 
-    pub fn handler_installed_p() -> bool {
-        HANDLER_INSTALLED.is_completed()
-    }
-
-    pub fn take_changed() -> bool {
-        WINSIZE_CHANGED.swap(false, Ordering::SeqCst)
-    }
+    pub fn handler_installed_p() -> bool { HANDLER_INSTALLED.is_completed() }
+    pub fn take_changed() -> bool { WINSIZE_CHANGED.swap(false, Ordering::SeqCst) }
 
     pub fn current_size() -> Option<(u16, u16)> {
         let fd = std::io::stdin().lock().as_raw_fd();
         let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
-            Some((ws.ws_col, ws.ws_row))
-        } else {
-            None
-        }
+        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 { Some((ws.ws_col, ws.ws_row)) } else { None }
     }
 }
-
-// SIGTSTP/SIGCONT state for suspending and resuming raw mode cleanly.
 
 #[cfg(unix)]
 mod tty_jobctrl {
@@ -680,7 +595,6 @@ mod tty_jobctrl {
     static HANDLER_INSTALLED: Once = Once::new();
 
     extern "C" fn tstp_handler(signum: libc::c_int) {
-        // Restore cooked termios before suspension.
         let _ = super::tty_raw::raw_mode_leave();
         unsafe {
             libc::signal(signum, libc::SIG_DFL);
@@ -698,9 +612,7 @@ mod tty_jobctrl {
         }
     }
 
-    extern "C" fn cont_handler(_signum: libc::c_int) {
-        SIGCONT_ARRIVED.store(true, Ordering::SeqCst);
-    }
+    extern "C" fn cont_handler(_signum: libc::c_int) { SIGCONT_ARRIVED.store(true, Ordering::SeqCst); }
 
     pub fn install_handlers() {
         HANDLER_INSTALLED.call_once(|| unsafe {
@@ -709,7 +621,6 @@ mod tty_jobctrl {
             libc::sigemptyset(&mut sa_tstp.sa_mask);
             sa_tstp.sa_flags = libc::SA_RESTART;
             libc::sigaction(libc::SIGTSTP, &sa_tstp, std::ptr::null_mut());
-
             let mut sa_cont: libc::sigaction = std::mem::zeroed();
             sa_cont.sa_sigaction = cont_handler as *const () as usize;
             libc::sigemptyset(&mut sa_cont.sa_mask);
@@ -718,13 +629,8 @@ mod tty_jobctrl {
         });
     }
 
-    pub fn handlers_installed_p() -> bool {
-        HANDLER_INSTALLED.is_completed()
-    }
-
-    pub fn take_cont() -> bool {
-        SIGCONT_ARRIVED.swap(false, Ordering::SeqCst)
-    }
+    pub fn handlers_installed_p() -> bool { HANDLER_INSTALLED.is_completed() }
+    pub fn take_cont() -> bool { SIGCONT_ARRIVED.swap(false, Ordering::SeqCst) }
 }
 
 
