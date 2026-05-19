@@ -442,6 +442,26 @@ pub unsafe extern "C" fn nelisp_eval_call(
     }
 }
 
+/// Sibling of `nelisp_eval_call' that ALSO writes the `signal_data()` sexp
+/// directly into `err_out` on rc=1.  Used by Phase 47 elisp .o that need
+/// to INTERCEPT (not propagate) errors — e.g., `nl_sf_condition_case_call`.
+#[no_mangle]
+pub unsafe extern "C" fn nelisp_eval_call_with_err(
+    form: *const Sexp,
+    env: *mut std::ffi::c_void,
+    out: *mut Sexp,
+    err_out: *mut Sexp,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    match eval(&*form, env_ref) {
+        Ok(v) => { std::ptr::write(out, v); 0 }
+        Err(e) => {
+            std::ptr::write(err_out, e.signal_data());
+            1
+        }
+    }
+}
+
 /// Re-construct EvalError from a `(tag . data)' sexp produced by `signal_data()`.
 pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fallback_name: &str) -> EvalError {
     let Sexp::Cons(b) = sexp else { return EvalError::Internal(fallback_name.to_string()) };
