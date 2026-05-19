@@ -389,19 +389,17 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn syscall_arg_int(name: &str, idx: usize, s: &Sexp) -> Result<i64, EvalError> {
-    match s {
-        Sexp::Int(n) => Ok(*n), Sexp::Nil => Ok(0), Sexp::T => Ok(1),
-        other => Err(EvalError::WrongType { expected: format!("integer (arg {} of {})", idx, name), got: other.clone() }),
-    }
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> {
+    Err(EvalError::Internal("nelisp--syscall: unsupported platform".into()))
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
-    match name_or_nr {
-        Sexp::Int(n) => Ok(*n),
-        Sexp::Symbol(s) => Ok(match s.as_str() {
+fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.is_empty() { return Err(EvalError::Internal("nelisp--syscall: at least one argument (syscall nr / name) required".into())); }
+    let nr = match &args[0] {
+        Sexp::Int(n) => *n,
+        Sexp::Symbol(s) => (match s.as_str() {
             "read" => libc::SYS_read, "write" => libc::SYS_write, "close" => libc::SYS_close,
             "openat" => libc::SYS_openat, "exit_group" => libc::SYS_exit_group, "lseek" => libc::SYS_lseek,
             "dup2" => libc::SYS_dup2, "getpid" => libc::SYS_getpid, "kill" => libc::SYS_kill,
@@ -413,31 +411,18 @@ pub(crate) fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
             "inotify_rm_watch" => libc::SYS_inotify_rm_watch, "eventfd2" => libc::SYS_eventfd2,
             "timerfd_create" => libc::SYS_timerfd_create,
             other => return Err(EvalError::Internal(format!("nelisp--syscall: unknown syscall name `{}'", other))),
-        } as i64),
-        other => Err(EvalError::WrongType { expected: "syscall name (symbol) or number (integer)".into(), got: other.clone() }),
-    }
-}
-
-#[cfg(target_os = "linux")]
-unsafe fn syscall_errno_normalize(r: libc::c_long) -> i64 {
-    if r == -1 { -(*libc::__errno_location() as i64) } else { r as i64 }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> {
-    Err(EvalError::Internal("nelisp--syscall: unsupported platform".into()))
-}
-
-#[cfg(target_os = "linux")]
-fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.is_empty() { return Err(EvalError::Internal("nelisp--syscall: at least one argument (syscall nr / name) required".into())); }
-    let nr = syscall_nr(&args[0])?;
+        }) as i64,
+        other => return Err(EvalError::WrongType { expected: "syscall name (symbol) or number (integer)".into(), got: other.clone() }),
+    };
     let mut a = [0i64; 6];
     for (i, sexp) in args[1..].iter().enumerate().take(6) {
-        a[i] = syscall_arg_int("nelisp--syscall", i + 1, sexp)?;
+        a[i] = match sexp {
+            Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1,
+            other => return Err(EvalError::WrongType { expected: format!("integer (arg {} of nelisp--syscall)", i + 1), got: other.clone() }),
+        };
     }
     let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) };
-    Ok(Sexp::Int(unsafe { syscall_errno_normalize(r) }))
+    Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 }))
 }
 
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
