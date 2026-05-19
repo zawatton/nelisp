@@ -48,7 +48,22 @@ macro_rules! builtin_dispatch {
             },
             "nelisp--syscall-canonicalize" => bi_syscall_canonicalize($args, $env), "nelisp--syscall-stat" => bi_syscall_stat($args, $env), "nelisp--syscall-readdir" => bi_syscall_readdir($args, $env),
             "nelisp--syscall-read-file" => bi_syscall_read_file($args, $env), "nelisp--read-all-from-string" => bi_read_all_from_string($args, $env), "nelisp--syscall" => bi_syscall($args),
-            "nelisp--syscall-supported-p" => bi_syscall_supported_p($args), "symbol-function" => bi_symbol_function($args, $env), "fset" => bi_fset($args, $env),
+            "nelisp--syscall-supported-p" => bi_syscall_supported_p($args),
+            "symbol-function" => {
+                require_arity("symbol-function", $args, 1, Some(1))?;
+                super::env_shim::bi_globals_op(&[Sexp::Symbol("get-function".into()), $args[0].clone()], $env)
+            },
+            "fset" => {
+                require_arity("fset", $args, 2, Some(2))?;
+                super::env_shim::bi_globals_op(&[
+                    Sexp::Symbol("set-function".into()),
+                    $args[0].clone(),
+                    match &$args[1] {
+                        Sexp::Symbol(s) => $env.lookup_function(s)?,
+                        other => other.clone(),
+                    },
+                ], $env)
+            },
             "nelisp--push-frame" => bi_frame_op("push-frame", $args, $env), "nelisp--pop-frame" => bi_frame_op("pop-frame", $args, $env), "nelisp--push-captured" => bi_frame_op("push-captured", $args, $env),
             "nelisp--bind-local" => bi_frame_op("bind-local", $args, $env),
             "nelisp--apply-builtin-dispatch" => {
@@ -466,11 +481,6 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(not(target_os = "linux"))]
 syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
-fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("symbol-function", args, 1, Some(1))?;
-    super::env_shim::bi_globals_op(&[Sexp::Symbol("get-function".into()), args[0].clone()], env)
-}
-
 fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
     match arg {
         Sexp::Symbol(s) => Ok(s.clone()),
@@ -480,21 +490,6 @@ fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
 
 fn lookup_fn_or(env: &mut Env, name: &str, err: &'static str) -> Result<Sexp, EvalError> {
     env.lookup_function(name).map_err(|_| EvalError::Internal(err.into()))
-}
-
-fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("fset", args, 2, Some(2))?;
-    super::env_shim::bi_globals_op(
-        &[
-            Sexp::Symbol("set-function".into()),
-            args[0].clone(),
-            match &args[1] {
-                Sexp::Symbol(s) => env.lookup_function(s)?,
-                other => other.clone(),
-            },
-        ],
-        env,
-    )
 }
 
 fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
