@@ -143,8 +143,7 @@ macro_rules! builtin_dispatch {
 
 pub fn install_builtins(env: &mut Env) {
     for n in builtin_names!() {
-        let sentinel = Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())]);
-        env.set_function(n, sentinel);
+        env.set_function(n, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())]));
     }
 }
 
@@ -154,9 +153,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
 
 pub(crate) fn require_arity(name: &str, args: &[Sexp], min: usize, max: Option<usize>) -> Result<(), EvalError> {
     if args.len() < min || max.map_or(false, |m| args.len() > m) {
-        let expected = match max {
-            Some(m) if m == min => min.to_string(), Some(m) => format!("{}-{}", min, m), None => format!("≥{}", min),
-        };
+        let expected = match max { Some(m) if m == min => min.to_string(), Some(m) => format!("{}-{}", min, m), None => format!("≥{}", min) };
         return Err(EvalError::WrongNumberOfArguments { function: name.into(), expected, got: args.len() });
     }
     Ok(())
@@ -264,8 +261,7 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> {
     require_arity(name, args, 1, Some(1))?;
     let p = resolve_path(&args[0], env)?;
-    let s = Sexp::Str(p.to_string_lossy().into_owned());
-    Ok((p, s))
+    Ok((p.clone(), Sexp::Str(p.to_string_lossy().into_owned())))
 }
 
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -401,34 +397,20 @@ mod tty_raw {
     }
 
     pub fn raw_mode_enter() -> Result<(), EvalError> {
-        let fd = std::io::stdin().lock().as_raw_fd();
-        let mut term: libc::termios = unsafe { std::mem::zeroed() };
-        if unsafe { libc::tcgetattr(fd, &mut term) } != 0 {
-            return Err(EvalError::Internal(format!("terminal-raw-mode-enter: tcgetattr failed: {}", std::io::Error::last_os_error())));
-        }
+        let (fd, mut term) = (std::io::stdin().lock().as_raw_fd(), unsafe { std::mem::zeroed::<libc::termios>() });
+        if unsafe { libc::tcgetattr(fd, &mut term) } != 0 { return Err(EvalError::Internal(format!("terminal-raw-mode-enter: tcgetattr failed: {}", std::io::Error::last_os_error()))); }
         unsafe { std::ptr::write(std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut libc::termios, term); }
-        TTY_FD.store(fd, Ordering::SeqCst);
-        TERMIOS_SAVED.store(true, Ordering::SeqCst);
-        install_hooks_once();
+        TTY_FD.store(fd, Ordering::SeqCst); TERMIOS_SAVED.store(true, Ordering::SeqCst); install_hooks_once();
         unsafe { libc::cfmakeraw(&mut term) };
-        term.c_cc[libc::VMIN] = 1;
-        term.c_cc[libc::VTIME] = 0;
-        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
-            TERMIOS_SAVED.store(false, Ordering::SeqCst);
-            return Err(EvalError::Internal(format!("terminal-raw-mode-enter: tcsetattr failed: {}", std::io::Error::last_os_error())));
-        }
+        term.c_cc[libc::VMIN] = 1; term.c_cc[libc::VTIME] = 0;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 { TERMIOS_SAVED.store(false, Ordering::SeqCst); return Err(EvalError::Internal(format!("terminal-raw-mode-enter: tcsetattr failed: {}", std::io::Error::last_os_error()))); }
         Ok(())
     }
 
     pub fn raw_mode_leave() -> Result<(), EvalError> {
         if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
-            let fd = TTY_FD.load(Ordering::SeqCst);
-            if fd >= 0 {
-                let term = unsafe { (*std::ptr::addr_of!(SAVED_TERMIOS)).assume_init() };
-                if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
-                    return Err(EvalError::Internal(format!("terminal-raw-mode-leave: tcsetattr failed: {}", std::io::Error::last_os_error())));
-                }
-            }
+            let (fd, term) = (TTY_FD.load(Ordering::SeqCst), unsafe { (*std::ptr::addr_of!(SAVED_TERMIOS)).assume_init() });
+            if fd >= 0 && unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 { return Err(EvalError::Internal(format!("terminal-raw-mode-leave: tcsetattr failed: {}", std::io::Error::last_os_error()))); }
         }
         Ok(())
     }
@@ -437,8 +419,7 @@ mod tty_raw {
     pub fn hooks_installed_p() -> bool { HOOKS_INSTALLED.is_completed() }
 
     pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
-        let fd: i32 = 0;
-        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let (fd, mut pfd) = (0i32, libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 });
         let r = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
         if r < 0 { return Err(EvalError::Internal(format!("read-stdin-byte-available: poll failed: {}", std::io::Error::last_os_error()))); }
         if r == 0 || pfd.revents & (libc::POLLIN | libc::POLLHUP) == 0 { return Ok(None); }
