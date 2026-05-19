@@ -225,11 +225,7 @@ impl Env {
         };
         let frame = super::apply_function(&f, &[normalized], self)?;
         if let Some((stack_rec, backing, depth)) = self.frame_stack_view() {
-            let backing = Env::frame_stack_ensure_capacity(&stack_rec, &backing, depth, depth + 1);
-            unsafe {
-                backing.with_value_mut(|v| v[depth] = frame);
-                stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
-            }
+            Env::frame_stack_install(&stack_rec, &backing, depth, frame);
         }
         Ok(())
     }
@@ -380,14 +376,18 @@ impl Env {
         new_vec_ref
     }
 
-    pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
-        let (stack_rec, backing, depth) = self.frame_stack_view()?;
-        let backing = Env::frame_stack_ensure_capacity(&stack_rec, &backing, depth, depth + 1);
-        let frame = Env::make_empty_frame_record();
+    fn frame_stack_install(stack_rec: &NlRecordRef, backing: &NlVectorRef, depth: usize, frame: Sexp) {
+        let backing = Env::frame_stack_ensure_capacity(stack_rec, backing, depth, depth + 1);
         unsafe {
-            backing.with_value_mut(|v| v[depth] = frame.clone());
+            backing.with_value_mut(|v| v[depth] = frame);
             stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
         }
+    }
+
+    pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
+        let (stack_rec, backing, depth) = self.frame_stack_view()?;
+        let frame = Env::make_empty_frame_record();
+        Env::frame_stack_install(&stack_rec, &backing, depth, frame.clone());
         Some(frame)
     }
 
