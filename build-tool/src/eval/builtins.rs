@@ -201,16 +201,8 @@ macro_rules! builtin_dispatch {
                     crate::elisp_cc_spike::bi_nl_make_directory(&$args[0] as *const _) as i32 as i64
                 })
             },
-            "terminal-raw-mode-enter" => {
-                require_arity("terminal-raw-mode-enter", $args, 0, Some(0))?;
-                #[cfg(unix)]    { tty_raw::raw_mode_enter()?; Ok(Sexp::T) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "terminal-raw-mode-leave" => {
-                require_arity("terminal-raw-mode-leave", $args, 0, Some(0))?;
-                #[cfg(unix)]    { tty_raw::raw_mode_leave()?; Ok(Sexp::T) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
+            "terminal-raw-mode-enter" => { require_arity("terminal-raw-mode-enter", $args, 0, Some(0))?; #[cfg(unix)] { tty_raw::raw_mode_enter()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-raw-mode-leave" => { require_arity("terminal-raw-mode-leave", $args, 0, Some(0))?; #[cfg(unix)] { tty_raw::raw_mode_leave()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "read-stdin-byte-available" => {
                 require_arity("read-stdin-byte-available", $args, 0, Some(1))?;
                 let timeout_ms = match $args.get(0) {
@@ -221,77 +213,20 @@ macro_rules! builtin_dispatch {
                 #[cfg(unix)]    { Ok(tty_raw::stdin_byte_available(timeout_ms)?.map_or(Sexp::Nil, |b| Sexp::Int(b as i64))) }
                 #[cfg(not(unix))] { let _ = timeout_ms; Ok(Sexp::Nil) }
             },
-            "_termios-saved-p" => {
-                require_arity("_termios-saved-p", $args, 0, Some(0))?;
-                #[cfg(unix)]    { Ok(bool_sexp(tty_raw::termios_saved_p())) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "_raw-mode-hooks-installed-p" => {
-                require_arity("_raw-mode-hooks-installed-p", $args, 0, Some(0))?;
-                #[cfg(unix)]    { Ok(bool_sexp(tty_raw::hooks_installed_p())) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "set-quit-flag" => {
-                require_arity("set-quit-flag", $args, 0, Some(0))?;
-                unsafe { crate::elisp_cc_spike::bi_set_quit_flag(quit::nl_quit_flag_ptr()); }
-                Ok(Sexp::T)
-            },
-            "clear-quit-flag" => {
-                require_arity("clear-quit-flag", $args, 0, Some(0))?;
-                unsafe { crate::elisp_cc_spike::bi_clear_quit_flag(quit::nl_quit_flag_ptr()); }
-                Ok(Sexp::T)
-            },
-            "quit-flag-pending-p" => {
-                require_arity("quit-flag-pending-p", $args, 0, Some(0))?;
-                Ok(bool_sexp(unsafe { crate::elisp_cc_spike::bi_quit_flag_pending_p(quit::nl_quit_flag_ptr()) } != 0))
-            },
-            "install-sigint-handler" => {
-                require_arity("install-sigint-handler", $args, 0, Some(0))?;
-                quit::install_sigint_handler();
-                Ok(Sexp::T)
-            },
-            "_sigint-handler-installed-p" => {
-                require_arity("_sigint-handler-installed-p", $args, 0, Some(0))?;
-                Ok(bool_sexp(quit::sigint_handler_installed_p()))
-            },
-            "install-winsize-handler" => {
-                require_arity("install-winsize-handler", $args, 0, Some(0))?;
-                #[cfg(unix)]    { tty_winsize::install_handler(); Ok(Sexp::T) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "_winsize-handler-installed-p" => {
-                require_arity("_winsize-handler-installed-p", $args, 0, Some(0))?;
-                #[cfg(unix)]    { Ok(bool_sexp(tty_winsize::handler_installed_p())) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "terminal-take-winsize-changed" => {
-                require_arity("terminal-take-winsize-changed", $args, 0, Some(0))?;
-                #[cfg(unix)]    { Ok(bool_sexp(tty_winsize::take_changed())) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "terminal-current-winsize" => {
-                require_arity("terminal-current-winsize", $args, 0, Some(0))?;
-                #[cfg(unix)]    { Ok(match tty_winsize::current_size() {
-                    Some((c, r)) => Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)),
-                    None => Sexp::Nil,
-                }) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "install-jobctrl-handlers" => {
-                require_arity("install-jobctrl-handlers", $args, 0, Some(0))?;
-                #[cfg(unix)]    { tty_jobctrl::install_handlers(); Ok(Sexp::T) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "_jobctrl-handlers-installed-p" => {
-                require_arity("_jobctrl-handlers-installed-p", $args, 0, Some(0))?;
-                #[cfg(unix)]    { Ok(bool_sexp(tty_jobctrl::handlers_installed_p())) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
-            "terminal-take-sigcont" => {
-                require_arity("terminal-take-sigcont", $args, 0, Some(0))?;
-                #[cfg(unix)]    { Ok(bool_sexp(tty_jobctrl::take_cont())) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) }
-            },
+            "_termios-saved-p" => { require_arity("_termios-saved-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_raw::termios_saved_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "_raw-mode-hooks-installed-p" => { require_arity("_raw-mode-hooks-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_raw::hooks_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "set-quit-flag" => { require_arity("set-quit-flag", $args, 0, Some(0))?; unsafe { crate::elisp_cc_spike::bi_set_quit_flag(quit::nl_quit_flag_ptr()); } Ok(Sexp::T) },
+            "clear-quit-flag" => { require_arity("clear-quit-flag", $args, 0, Some(0))?; unsafe { crate::elisp_cc_spike::bi_clear_quit_flag(quit::nl_quit_flag_ptr()); } Ok(Sexp::T) },
+            "quit-flag-pending-p" => { require_arity("quit-flag-pending-p", $args, 0, Some(0))?; Ok(bool_sexp(unsafe { crate::elisp_cc_spike::bi_quit_flag_pending_p(quit::nl_quit_flag_ptr()) } != 0)) },
+            "install-sigint-handler" => { require_arity("install-sigint-handler", $args, 0, Some(0))?; quit::install_sigint_handler(); Ok(Sexp::T) },
+            "_sigint-handler-installed-p" => { require_arity("_sigint-handler-installed-p", $args, 0, Some(0))?; Ok(bool_sexp(quit::sigint_handler_installed_p())) },
+            "install-winsize-handler" => { require_arity("install-winsize-handler", $args, 0, Some(0))?; #[cfg(unix)] { tty_winsize::install_handler(); Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "_winsize-handler-installed-p" => { require_arity("_winsize-handler-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_winsize::handler_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-take-winsize-changed" => { require_arity("terminal-take-winsize-changed", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_winsize::take_changed())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-current-winsize" => { require_arity("terminal-current-winsize", $args, 0, Some(0))?; #[cfg(unix)] { Ok(match tty_winsize::current_size() { Some((c, r)) => Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)), None => Sexp::Nil }) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "install-jobctrl-handlers" => { require_arity("install-jobctrl-handlers", $args, 0, Some(0))?; #[cfg(unix)] { tty_jobctrl::install_handlers(); Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "_jobctrl-handlers-installed-p" => { require_arity("_jobctrl-handlers-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_jobctrl::handlers_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-take-sigcont" => { require_arity("terminal-take-sigcont", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_jobctrl::take_cont())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64($args), "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr($args), "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall($args),
             "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1($args), "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2($args), "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args),
             "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i($args), "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float($args),
@@ -405,11 +340,7 @@ fn cc_slot_1(arg: &Sexp, f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp) -> S
 fn bool_sexp(v: bool) -> Sexp { if v { Sexp::T } else { Sexp::Nil } }
 
 fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> {
-    if rc < 0 {
-        Err(EvalError::Internal(format!("{name}: {path}: kernel returned {rc}")))
-    } else {
-        Ok(Sexp::T)
-    }
+    if rc < 0 { Err(EvalError::Internal(format!("{name}: {path}: kernel returned {rc}"))) } else { Ok(Sexp::T) }
 }
 
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -461,13 +392,8 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 #[cfg(target_os = "linux")]
 pub(crate) fn syscall_arg_int(name: &str, idx: usize, s: &Sexp) -> Result<i64, EvalError> {
     match s {
-        Sexp::Int(n) => Ok(*n),
-        Sexp::Nil => Ok(0),
-        Sexp::T => Ok(1),
-        other => Err(EvalError::WrongType {
-            expected: format!("integer (arg {} of {})", idx, name),
-            got: other.clone(),
-        }),
+        Sexp::Int(n) => Ok(*n), Sexp::Nil => Ok(0), Sexp::T => Ok(1),
+        other => Err(EvalError::WrongType { expected: format!("integer (arg {} of {})", idx, name), got: other.clone() }),
     }
 }
 
@@ -475,69 +401,36 @@ pub(crate) fn syscall_arg_int(name: &str, idx: usize, s: &Sexp) -> Result<i64, E
 pub(crate) fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
     match name_or_nr {
         Sexp::Int(n) => Ok(*n),
-        Sexp::Symbol(s) => match s.as_str() {
-            "read"       => Ok(libc::SYS_read       as i64),
-            "write"      => Ok(libc::SYS_write      as i64),
-            "close"      => Ok(libc::SYS_close      as i64),
-            "openat"     => Ok(libc::SYS_openat     as i64),
-            "exit_group" => Ok(libc::SYS_exit_group as i64),
-            "lseek"      => Ok(libc::SYS_lseek      as i64),
-            "dup2"       => Ok(libc::SYS_dup2       as i64),
-            "getpid"     => Ok(libc::SYS_getpid     as i64),
-            "kill"       => Ok(libc::SYS_kill       as i64),
-            "mmap"              => Ok(libc::SYS_mmap              as i64),
-            "mprotect"          => Ok(libc::SYS_mprotect          as i64),
-            "munmap"            => Ok(libc::SYS_munmap            as i64),
-            "fcntl"             => Ok(libc::SYS_fcntl             as i64),
-            "fork"              => Ok(libc::SYS_fork              as i64),
-            "socket"            => Ok(libc::SYS_socket            as i64),
-            "listen"            => Ok(libc::SYS_listen            as i64),
-            "wait4"             => Ok(libc::SYS_wait4             as i64),
-            "getppid"           => Ok(libc::SYS_getppid           as i64),
-            "setpgid"           => Ok(libc::SYS_setpgid           as i64),
-            "pidfd_open"        => Ok(libc::SYS_pidfd_open        as i64),
-            "pidfd_send_signal" => Ok(libc::SYS_pidfd_send_signal as i64),
-            "inotify_init1"     => Ok(libc::SYS_inotify_init1     as i64),
-            "inotify_rm_watch"  => Ok(libc::SYS_inotify_rm_watch  as i64),
-            "eventfd2"          => Ok(libc::SYS_eventfd2          as i64),
-            "timerfd_create"    => Ok(libc::SYS_timerfd_create    as i64),
-            other => Err(EvalError::Internal(format!(
-                "nelisp--syscall: unknown syscall name `{}'", other))),
-        },
-        other => Err(EvalError::WrongType {
-            expected: "syscall name (symbol) or number (integer)".into(),
-            got: other.clone(),
-        }),
+        Sexp::Symbol(s) => Ok(match s.as_str() {
+            "read" => libc::SYS_read, "write" => libc::SYS_write, "close" => libc::SYS_close,
+            "openat" => libc::SYS_openat, "exit_group" => libc::SYS_exit_group, "lseek" => libc::SYS_lseek,
+            "dup2" => libc::SYS_dup2, "getpid" => libc::SYS_getpid, "kill" => libc::SYS_kill,
+            "mmap" => libc::SYS_mmap, "mprotect" => libc::SYS_mprotect, "munmap" => libc::SYS_munmap,
+            "fcntl" => libc::SYS_fcntl, "fork" => libc::SYS_fork, "socket" => libc::SYS_socket,
+            "listen" => libc::SYS_listen, "wait4" => libc::SYS_wait4, "getppid" => libc::SYS_getppid,
+            "setpgid" => libc::SYS_setpgid, "pidfd_open" => libc::SYS_pidfd_open,
+            "pidfd_send_signal" => libc::SYS_pidfd_send_signal, "inotify_init1" => libc::SYS_inotify_init1,
+            "inotify_rm_watch" => libc::SYS_inotify_rm_watch, "eventfd2" => libc::SYS_eventfd2,
+            "timerfd_create" => libc::SYS_timerfd_create,
+            other => return Err(EvalError::Internal(format!("nelisp--syscall: unknown syscall name `{}'", other))),
+        } as i64),
+        other => Err(EvalError::WrongType { expected: "syscall name (symbol) or number (integer)".into(), got: other.clone() }),
     }
 }
 
 #[cfg(target_os = "linux")]
 unsafe fn syscall_errno_normalize(r: libc::c_long) -> i64 {
-    if r == -1 {
-        -(*libc::__errno_location() as i64)
-    } else {
-        r as i64
-    }
+    if r == -1 { -(*libc::__errno_location() as i64) } else { r as i64 }
 }
 
 #[cfg(not(target_os = "linux"))]
-macro_rules! syscall_unsupported {
-    ($name:ident, $primitive:literal) => {
-        fn $name(args: &[Sexp]) -> Result<Sexp, EvalError> {
-            let _ = args;
-            Err(EvalError::Internal(
-                concat!($primitive, ": unsupported platform").into(),
-            ))
-        }
-    };
+fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> {
+    Err(EvalError::Internal("nelisp--syscall: unsupported platform".into()))
 }
 
 #[cfg(target_os = "linux")]
 fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.is_empty() {
-        return Err(EvalError::Internal(
-            "nelisp--syscall: at least one argument (syscall nr / name) required".into()));
-    }
+    if args.is_empty() { return Err(EvalError::Internal("nelisp--syscall: at least one argument (syscall nr / name) required".into())); }
     let nr = syscall_nr(&args[0])?;
     let mut a = [0i64; 6];
     for (i, sexp) in args[1..].iter().enumerate().take(6) {
@@ -546,9 +439,6 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) };
     Ok(Sexp::Int(unsafe { syscall_errno_normalize(r) }))
 }
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match arg { Sexp::Symbol(s) => env.lookup_function(s), _ => Ok(arg.clone()) }
