@@ -115,7 +115,7 @@ macro_rules! builtin_dispatch {
                 require_arity("apply", $args, 2, None)?;
                 let func = resolve_callable(&$args[0], $env)?;
                 let mut all_args: Vec<Sexp> = $args[1..$args.len() - 1].to_vec();
-                all_args.extend(list_to_vec(&$args[$args.len() - 1])?);
+                all_args.extend(super::list_elements(&$args[$args.len() - 1])?);
                 super::apply_function(&func, &all_args, $env)
             },
             "eval" => { require_arity("eval", $args, 1, Some(2))?; super::eval(&$args[0], $env) },
@@ -286,19 +286,6 @@ pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), Ev
     Ok((to_f64(&args[0])?, to_f64(&args[1])?, af))
 }
 
-fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
-    let mut out = Vec::new();
-    let mut cur: Sexp = v.clone();
-    loop {
-        let next = match &cur {
-            Sexp::Nil => return Ok(out),
-            Sexp::Cons(b) => { out.push(b.car.clone()); b.cdr.clone() },
-            other => return Err(EvalError::WrongType { expected: "listp".into(), got: other.clone() }),
-        };
-        cur = next;
-    }
-}
-
 pub(crate) fn char_table_set_one(inner: &mut crate::eval::sexp::CharTableInner, c: i64, v: Sexp) {
     for entry in inner.entries.iter_mut() {
         if entry.0 == c {
@@ -416,10 +403,8 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     };
     let mut a = [0i64; 6];
     for (i, sexp) in args[1..].iter().enumerate().take(6) {
-        a[i] = match sexp {
-            Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1,
-            other => return Err(EvalError::WrongType { expected: format!("integer (arg {} of nelisp--syscall)", i + 1), got: other.clone() }),
-        };
+        a[i] = match sexp { Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1,
+            other => return Err(EvalError::WrongType { expected: format!("integer (arg {} of nelisp--syscall)", i + 1), got: other.clone() }) };
     }
     let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) };
     Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 }))
@@ -430,6 +415,15 @@ fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 // Unix raw-mode and non-blocking stdin helpers.
+
+#[cfg(unix)]
+unsafe fn install_sigaction(signum: libc::c_int, handler: extern "C" fn(libc::c_int), flags: libc::c_int) {
+    let mut sa: libc::sigaction = std::mem::zeroed();
+    sa.sa_sigaction = handler as *const () as usize;
+    libc::sigemptyset(&mut sa.sa_mask);
+    sa.sa_flags = flags;
+    libc::sigaction(signum, &sa, std::ptr::null_mut());
+}
 
 #[cfg(unix)]
 mod tty_raw {
@@ -472,12 +466,8 @@ mod tty_raw {
     fn install_hooks_once() {
         HOOKS_INSTALLED.call_once(|| unsafe {
             libc::atexit(atexit_hook);
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = sig_handler as *const () as usize;
-            libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_flags = 0;
             for sig in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
-                libc::sigaction(*sig, &sa, std::ptr::null_mut());
+                super::install_sigaction(*sig, sig_handler, 0);
             }
         });
     }
@@ -552,11 +542,7 @@ mod tty_winsize {
 
     pub fn install_handler() {
         HANDLER_INSTALLED.call_once(|| unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = handler as *const () as usize;
-            libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_flags = libc::SA_RESTART;
-            libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
+            super::install_sigaction(libc::SIGWINCH, handler, libc::SA_RESTART);
             WINSIZE_CHANGED.store(true, Ordering::SeqCst);
         });
     }
@@ -589,11 +575,7 @@ mod tty_jobctrl {
             libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut());
             libc::raise(signum);
             // Re-install in case `signal` reset the disposition.
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = tstp_handler as *const () as usize;
-            libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_flags = libc::SA_RESTART;
-            libc::sigaction(libc::SIGTSTP, &sa, std::ptr::null_mut());
+            super::install_sigaction(libc::SIGTSTP, tstp_handler, libc::SA_RESTART);
         }
     }
 
@@ -601,16 +583,8 @@ mod tty_jobctrl {
 
     pub fn install_handlers() {
         HANDLER_INSTALLED.call_once(|| unsafe {
-            let mut sa_tstp: libc::sigaction = std::mem::zeroed();
-            sa_tstp.sa_sigaction = tstp_handler as *const () as usize;
-            libc::sigemptyset(&mut sa_tstp.sa_mask);
-            sa_tstp.sa_flags = libc::SA_RESTART;
-            libc::sigaction(libc::SIGTSTP, &sa_tstp, std::ptr::null_mut());
-            let mut sa_cont: libc::sigaction = std::mem::zeroed();
-            sa_cont.sa_sigaction = cont_handler as *const () as usize;
-            libc::sigemptyset(&mut sa_cont.sa_mask);
-            sa_cont.sa_flags = libc::SA_RESTART;
-            libc::sigaction(libc::SIGCONT, &sa_cont, std::ptr::null_mut());
+            super::install_sigaction(libc::SIGTSTP, tstp_handler, libc::SA_RESTART);
+            super::install_sigaction(libc::SIGCONT, cont_handler, libc::SA_RESTART);
         });
     }
 
