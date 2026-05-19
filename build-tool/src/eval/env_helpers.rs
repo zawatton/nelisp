@@ -383,20 +383,13 @@ impl Env {
         needed: usize,
     ) -> NlVectorRef {
         let cap = backing.value.len();
-        if cap >= needed {
-            return backing.clone();
-        }
+        if cap >= needed { return backing.clone(); }
         let mut new_cap = cap.max(1);
-        while new_cap < needed {
-            new_cap *= 2;
-        }
-        let mut new_buf: Vec<Sexp> = Vec::with_capacity(new_cap);
-        for i in 0..depth {
-            new_buf.push(backing.value.get(i).cloned().unwrap_or(Sexp::Nil));
-        }
-        while new_buf.len() < new_cap {
-            new_buf.push(Sexp::Nil);
-        }
+        while new_cap < needed { new_cap *= 2; }
+        let mut new_buf: Vec<Sexp> = (0..depth)
+            .map(|i| backing.value.get(i).cloned().unwrap_or(Sexp::Nil))
+            .collect();
+        new_buf.resize(new_cap, Sexp::Nil);
         let new_vec_sexp = Sexp::vector(new_buf);
         let new_vec_ref = match &new_vec_sexp { Sexp::Vector(v) => v.clone(), _ => unreachable!() };
         unsafe { stack_rec.with_slots_mut(|s| s[0] = new_vec_sexp) };
@@ -497,21 +490,18 @@ impl Env {
             let Sexp::Cons(inner) = &outer.car else {
                 return Err(EvalError::Internal("closure env entry not a cons".into()));
             };
-            let name = inner.car.clone();
             let cell = match &inner.cdr {
                 Sexp::Cell(_) => inner.cdr.clone(),
                 v => Sexp::Cell(FrameCell::new(v.clone())),
             };
-            entries.push((name, cell));
+            entries.push((inner.car.clone(), cell));
             cur = &outer.cdr;
         }
         if !matches!(cur, Sexp::Nil) {
             return Err(EvalError::Internal("closure env not a proper list".into()));
         }
-        let mut acc = Sexp::Nil;
-        for (name, cell) in entries.into_iter().rev() {
-            acc = Sexp::cons(Sexp::cons(name, cell), acc);
-        }
-        Ok(acc)
+        Ok(entries.into_iter().rev().fold(Sexp::Nil, |acc, (n, c)| {
+            Sexp::cons(Sexp::cons(n, c), acc)
+        }))
     }
 }
