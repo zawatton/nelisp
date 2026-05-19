@@ -269,6 +269,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (car=Nil, cdr=Nil, refcount=1) via alloc-bytes + sexp-write-nil
         // + ptr-write-u64; replaces the Rust body in nlconsbox.rs.
         "nelisp-cc-nlconsbox-alloc.el",
+        // nl_alloc_cell, nl_alloc_vector, nl_alloc_record elisp swaps —
+        // Phase 47 migrations replacing the Rust bodies in nlcell.rs,
+        // nlvector.rs, nlrecord.rs respectively.
+        "nelisp-cc-nlcell-alloc.el",
+        "nelisp-cc-nlvector-alloc.el",
+        "nelisp-cc-nlrecord-alloc.el",
         // Doc 124 §124.H — NlVector Drop kernel (REFCOUNT_OFFSET=24,
         // SIZE=32, ALIGN=8).  Mechanical port of §124.G to the
         // `Vec<Sexp>' header + AtomicUsize trailer layout.

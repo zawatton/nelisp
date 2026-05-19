@@ -798,6 +798,28 @@
      :source-var nelisp-cc-nlconsbox-alloc--source
      :output "nl_alloc_consbox.o"
      :requires-arch x86_64)
+    ;; nl_alloc_cell — Phase 47 migration of `nl_alloc_cell' from
+    ;; `build-tool/src/eval/nlcell.rs'.  Allocates a 40-byte NlCell
+    ;; (value = clone of *initial via nl_sexp_clone_into, refcount = 1).
+    (nelisp-cc-nlcell-alloc
+     :source-var nelisp-cc-nlcell-alloc--source
+     :output "nl_alloc_cell.o"
+     :requires-arch x86_64)
+    ;; nl_alloc_vector — Phase 47 migration of `nl_alloc_vector' from
+    ;; `build-tool/src/eval/nlvector.rs'.  Allocates a 32-byte NlVector
+    ;; with a cap*32-byte Nil-filled element buffer (Vec.capacity, ptr,
+    ;; len = cap; refcount = 1).
+    (nelisp-cc-nlvector-alloc
+     :source-var nelisp-cc-nlvector-alloc--source
+     :output "nl_alloc_vector.o"
+     :requires-arch x86_64)
+    ;; nl_alloc_record — Phase 47 migration of `nl_alloc_record' from
+    ;; `build-tool/src/eval/nlrecord.rs'.  Allocates a 64-byte NlRecord
+    ;; with type_tag clone + n*32-byte Nil-filled slots buffer (refcount = 1).
+    (nelisp-cc-nlrecord-alloc
+     :source-var nelisp-cc-nlrecord-alloc--source
+     :output "nl_alloc_record.o"
+     :requires-arch x86_64)
     ;; Doc 124 §124.H — NlVector Drop elisp kernel.  Identical shape
     ;; to §124.G modulo per-type layout: REFCOUNT_OFFSET = 24,
     ;; SIZE_OF_NLVECTOR = 32 (= 24-byte Vec<Sexp> header + 8-byte

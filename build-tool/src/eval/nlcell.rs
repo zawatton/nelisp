@@ -80,15 +80,9 @@ const _: () = {
     assert!(size_of::<AtomicUsize>() == 8);
 };
 
-/// # Safety
-/// `initial` must point at an initialised `Sexp`.
-#[no_mangle]
-pub unsafe extern "C" fn nl_alloc_cell(initial: *const Sexp) -> *mut NlCell {
-    Box::into_raw(Box::new(NlCell {
-        value: (*initial).clone(),
-        refcount: AtomicUsize::new(1),
-    }))
-}
+// nl_alloc_cell body migrated to lisp/nelisp-cc-nlcell-alloc.el (Phase 47 .o).
+#[allow(improper_ctypes)]
+extern "C" { pub fn nl_alloc_cell(initial: *const Sexp) -> *mut NlCell; }
 
 /// # Safety
 /// `cell` must be live and `val` initialised.

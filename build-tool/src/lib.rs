@@ -117,12 +117,15 @@ pub mod elisp_cc_spike {
             result_slot: *mut Sexp,
             tail_slot: *mut Sexp,
         ) -> *mut Sexp;
-        // nl_alloc_consbox — exported by the elisp `.o'; kept alive
-        // here so the static archive is pulled into the link and other
-        // elisp `.o' PLT refs to this symbol resolve correctly.
-        // Returns `*mut NlConsBox' cast to `*mut u8' to avoid importing
-        // the type in this module.
+        // nl_alloc_consbox / nl_alloc_cell / nl_alloc_vector / nl_alloc_record
+        // — exported by their respective elisp `.o' files; declared here so
+        // the static archive is pulled into the link and other elisp `.o' PLT
+        // refs to these symbols resolve correctly.  Types cast to *mut u8 to
+        // avoid importing the concrete types in this module.
         fn nl_alloc_consbox() -> *mut u8;
+        fn nl_alloc_cell(initial: *const u8) -> *mut u8;
+        fn nl_alloc_vector(capacity: i64) -> *mut u8;
+        fn nl_alloc_record(type_tag_ptr: *const u8, slot_count: i64) -> *mut u8;
         fn nelisp_nlconsbox_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlvector_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlcell_clone(box_ptr: *mut i64) -> i64;
@@ -448,6 +451,11 @@ pub mod elisp_cc_spike {
     /// Pin `nl_alloc_consbox' symbol from the elisp `.o' archive so
     /// other elisp `.o' PLT references to it are resolved at link time.
     pub unsafe fn nl_alloc_consbox_raw() -> *mut u8 { nl_alloc_consbox() }
+    /// Pin `nl_alloc_cell', `nl_alloc_vector', `nl_alloc_record' symbols
+    /// from their elisp `.o' archives (same rationale as nl_alloc_consbox_raw).
+    pub unsafe fn nl_alloc_cell_raw(initial: *const u8) -> *mut u8 { nl_alloc_cell(initial) }
+    pub unsafe fn nl_alloc_vector_raw(capacity: i64) -> *mut u8 { nl_alloc_vector(capacity) }
+    pub unsafe fn nl_alloc_record_raw(type_tag_ptr: *const u8, slot_count: i64) -> *mut u8 { nl_alloc_record(type_tag_ptr, slot_count) }
     cc_wrap!(nlconsbox_clone: nelisp_nlconsbox_clone, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlconsbox_drop: nelisp_nlconsbox_drop, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlvector_drop: nelisp_nlvector_drop, (box_ptr: *mut i64) -> i64);

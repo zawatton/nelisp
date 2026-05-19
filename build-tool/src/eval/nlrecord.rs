@@ -47,21 +47,7 @@ pub unsafe extern "C" fn nl_record_set_slot(record: *mut NlRecord, n: usize, val
     (&mut (*record).slots)[n] = (*val).clone();
 }
 
-/// # Safety
-/// `type_tag_ptr` must point at an initialised `Sexp`.
-#[no_mangle]
-pub unsafe extern "C" fn nl_alloc_record(
-    type_tag_ptr: *const Sexp,
-    slot_count: i64,
-) -> *mut NlRecord {
-    let n = slot_count as usize;
-    let tag = unsafe { (*type_tag_ptr).clone() };
-    Box::into_raw(Box::new(NlRecord {
-        type_tag: tag,
-        slots: vec![Sexp::Nil; n],
-        refcount: AtomicUsize::new(1),
-    }))
-}
+// nl_alloc_record body migrated to lisp/nelisp-cc-nlrecord-alloc.el (Phase 47 .o).
 
 impl Clone for NlRecordRef {
     fn clone(&self) -> Self {

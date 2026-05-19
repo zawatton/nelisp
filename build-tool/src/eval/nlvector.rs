@@ -39,16 +39,7 @@ impl NlVectorRef {
     }
 }
 
-/// # Safety
-/// Caller transfers the returned strong ref into a matching drop path.
-#[no_mangle]
-pub unsafe extern "C" fn nl_alloc_vector(capacity: i64) -> *mut NlVector {
-    let cap = if capacity < 0 { 0 } else { capacity as usize };
-    Box::into_raw(Box::new(NlVector {
-        value: vec![Sexp::Nil; cap],
-        refcount: AtomicUsize::new(1),
-    }))
-}
+// nl_alloc_vector body migrated to lisp/nelisp-cc-nlvector-alloc.el (Phase 47 .o).
 
 /// # Safety
 /// `vec_ptr` must be live, `val` initialised, and `n` in range.
