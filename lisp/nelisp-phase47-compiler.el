@@ -4168,10 +4168,33 @@ return reg, untouched by epilogue)."
       (nelisp-asm-x86_64-push buf 'rbp)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rbp 'rsp)
       (cond
-       ;; GP class — existing per-param `push reg' path.
+       ;; GP class — per-param `push reg' followed by a one-shot
+       ;; `sub rsp, 8' alignment pad when the parameter count is odd.
+       ;;
+       ;; SysV AMD64 requires rsp to be 16-byte aligned at the call
+       ;; site.  The function entry has rsp ≡ 8 (mod 16) because the
+       ;; caller's `call' pushed an 8-byte return address; the
+       ;; standard `push rbp; mov rbp, rsp' brings us to rsp ≡ 0
+       ;; (mod 16).  Each subsequent `push' subtracts 8, so after K
+       ;; total prologue pushes the residue is (8 - 8*K) mod 16:
+       ;;   K=1 (rbp only)         → 0   (no extra spills, aligned)
+       ;;   K=2 (rbp + 1 spill)    → 8   (misaligned)
+       ;;   K=3 (rbp + 2 spills)   → 0   (aligned)
+       ;;   K=4 (rbp + 3 spills)   → 8   (misaligned)
+       ;;   ...
+       ;; So whenever the spill count (= parameter count) is ODD we
+       ;; must add one extra 8-byte gap before the body runs, or the
+       ;; first nested `call' (= `--emit-call' / `--emit-extern-call'
+       ;; / `--emit-f64-call') lands at rsp ≡ 8 (mod 16) and SIGSEGVs
+       ;; inside the callee on the first SSE / movaps instruction.
+       ;; The fix mirrors the f64 path's `arity-rounded' trick (line
+       ;; 2415 above): an explicit `sub rsp, 8' fixed-width instr
+       ;; that the epilogue's `mov rsp, rbp' tears down for free.
        ((eq param-class 'gp)
         (dolist (preg param-regs)
-          (nelisp-asm-x86_64-push buf preg)))
+          (nelisp-asm-x86_64-push buf preg))
+        (when (= 1 (logand (length param-regs) 1))
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8)))
        ;; f64 class — one bulk `sub rsp, 8*ARITY-ROUNDED', then
        ;; per-param `movsd [rbp - 8*(slot+1)], xmmN'.  ARITY-
        ;; ROUNDED is `arity' rounded up to the next even value
