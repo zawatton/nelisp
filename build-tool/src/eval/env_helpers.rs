@@ -5,6 +5,8 @@ use std::rc::Rc;
 
 use super::error::EvalError;
 use super::sexp::Sexp;
+use crate::eval::nlrecord::NlRecordRef;
+use crate::eval::nlvector::NlVectorRef;
 
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
@@ -221,7 +223,7 @@ impl Env {
     fn frame_bucket(
         frame: &Sexp,
         name: &str,
-    ) -> Option<(crate::eval::nlrecord::NlRecordRef, crate::eval::nlvector::NlVectorRef, usize)> {
+    ) -> Option<(NlRecordRef, NlVectorRef, usize)> {
         let Sexp::Record(frame_rec) = frame else { return None };
         let ht_rec = match frame_rec.slots.get(0)? { Sexp::Record(r) => r.clone(), _ => return None };
         let bucket_count = match ht_rec.slots.get(0)? { Sexp::Int(n) => *n as u32, _ => return None };
@@ -293,17 +295,19 @@ impl Env {
         self.mirror_mutate_with(name, &value, crate::elisp_cc_spike::mirror_set_constant_or_insert);
     }
 
-    pub fn install_empty_mirror_rust_direct(&mut self) {
-        const BUCKET_COUNT: usize = 1024;
-        self.unbound_marker = Sexp::Symbol("nelisp--unbound-marker".into());
-        let buckets = Sexp::vector(vec![Sexp::Nil; BUCKET_COUNT]);
-        let ht_record = Sexp::record(
+    fn make_fast_hash_table(bucket_count: usize) -> Sexp {
+        let buckets = Sexp::vector(vec![Sexp::Nil; bucket_count]);
+        Sexp::record(
             Sexp::Symbol("fast-hash-table".into()),
-            vec![Sexp::Int(BUCKET_COUNT as i64), buckets, Sexp::Int(0)],
-        );
+            vec![Sexp::Int(bucket_count as i64), buckets, Sexp::Int(0)],
+        )
+    }
+
+    pub fn install_empty_mirror_rust_direct(&mut self) {
+        self.unbound_marker = Sexp::Symbol("nelisp--unbound-marker".into());
         self.globals_record = Sexp::record(
             Sexp::Symbol("nelisp-env".into()),
-            vec![ht_record, Sexp::Nil, Sexp::Nil],
+            vec![Env::make_fast_hash_table(1024), Sexp::Nil, Sexp::Nil],
         );
         self.install_empty_frames_record_rust_direct();
     }
@@ -358,7 +362,7 @@ impl Env {
         );
     }
 
-    pub(crate) fn frame_stack_view(&self) -> Option<(crate::eval::nlrecord::NlRecordRef, crate::eval::nlvector::NlVectorRef, usize)> {
+    pub(crate) fn frame_stack_view(&self) -> Option<(NlRecordRef, NlVectorRef, usize)> {
         let stack_rec = match &self.frames_record { Sexp::Record(r) => r.clone(), _ => return None };
         let backing = match stack_rec.slots.get(0)? { Sexp::Vector(v) => v.clone(), _ => return None };
         let depth = match stack_rec.slots.get(1)? { Sexp::Int(n) => *n as usize, _ => return None };
@@ -366,24 +370,18 @@ impl Env {
     }
 
     fn make_empty_frame_record() -> Sexp {
-        const BUCKET_COUNT: usize = 16;
-        let buckets = Sexp::vector(vec![Sexp::Nil; BUCKET_COUNT]);
-        let ht_record = Sexp::record(
-            Sexp::Symbol("fast-hash-table".into()),
-            vec![Sexp::Int(BUCKET_COUNT as i64), buckets, Sexp::Int(0)],
-        );
         Sexp::record(
             Sexp::Symbol("nelisp-lexframe".into()),
-            vec![ht_record],
+            vec![Env::make_fast_hash_table(16)],
         )
     }
 
     pub(crate) fn frame_stack_ensure_capacity(
-        stack_rec: &crate::eval::nlrecord::NlRecordRef,
-        backing: &crate::eval::nlvector::NlVectorRef,
+        stack_rec: &NlRecordRef,
+        backing: &NlVectorRef,
         depth: usize,
         needed: usize,
-    ) -> crate::eval::nlvector::NlVectorRef {
+    ) -> NlVectorRef {
         let cap = backing.value.len();
         if cap >= needed {
             return backing.clone();
@@ -419,17 +417,16 @@ impl Env {
     pub(crate) fn frame_pop_rust_direct(&mut self) {
         let Some((stack_rec, backing, depth)) = self.frame_stack_view() else { return };
         if depth == 0 { return; }
-        let new_depth = depth - 1;
         unsafe {
-            backing.with_value_mut(|v| v[new_depth] = Sexp::Nil);
-            stack_rec.with_slots_mut(|s| s[1] = Sexp::Int(new_depth as i64));
+            backing.with_value_mut(|v| v[depth - 1] = Sexp::Nil);
+            stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth - 1) as i64));
         }
     }
 
     pub(crate) fn frame_bind_rust_direct(&mut self, name: &str, cell: Sexp) {
-        let Some((_stack_rec, backing, depth)) = self.frame_stack_view() else { return };
+        let Some((_, backing, depth)) = self.frame_stack_view() else { return };
         if depth == 0 { return; }
-        let frame = match backing.value.get(depth - 1) { Some(f) => f.clone(), None => return };
+        let Some(frame) = backing.value.get(depth - 1).cloned() else { return };
         Env::frame_bind_into(&frame, name, cell);
     }
 
