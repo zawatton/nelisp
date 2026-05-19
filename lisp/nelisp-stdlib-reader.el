@@ -845,12 +845,24 @@ Stage 7.2.b takeover for the `read-all' style read used by `load'."
         (setq tokens (cdr sub))))
     (nreverse forms)))
 
-;; Public alias — the Rust dispatch arm previously routed
-;; `nelisp--read-all-from-string' through a thin shell that just
-;; looked up the `-impl' function cell and applied it.  Replacing
-;; the shell with a `defalias' moves the indirection into elisp
-;; (= zero Rust glue) since both names share the same function cell.
+;; Public aliases — Rust `bi_read_all_from_string' / `bi_read_from_string'
+;; were thin shells looking up the `-impl' cell and applying.  Defalias
+;; routes both names to the same function cell with zero Rust glue.
 (defalias 'nelisp--read-all-from-string 'nelisp--read-all-from-string-impl)
+(defalias 'read-from-string 'nelisp--read-from-string-impl)
+
+(defun read (&optional stream)
+  "Read one form from STREAM (a string) and return the FORM.
+Unlike `read-from-string' which returns (FORM . CONSUMED-END), this
+extracts only the FORM.  Signals `error' if STREAM is missing
+(= stdin not yet implemented) or if the impl returns a non-cons."
+  (if (null stream)
+      (signal 'error (list "read: no STREAM (= stdin not implemented)"))
+    (let ((result (nelisp--read-from-string-impl stream)))
+      (if (consp result)
+          (car result)
+        (signal 'error (list (format "read: expected (FORM . END), got %s"
+                                     result)))))))
 
 (defun nelisp--read-all-with-line-from-string-impl (string)
   "Like `nelisp--read-all-from-string-impl' but each result is a

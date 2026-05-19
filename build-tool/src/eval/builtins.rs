@@ -15,7 +15,7 @@ macro_rules! builtin_names {
         "read-stdin-bytes", "nelisp--f64-trunc", "nl-write-file", "nl-make-directory", "terminal-raw-mode-enter", "terminal-raw-mode-leave", "read-stdin-byte-available",
         "_termios-saved-p", "_raw-mode-hooks-installed-p", "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p", "install-sigint-handler", "_sigint-handler-installed-p",
         "install-winsize-handler", "_winsize-handler-installed-p", "terminal-take-winsize-changed", "terminal-current-winsize", "install-jobctrl-handlers",
-        "_jobctrl-handlers-installed-p", "terminal-take-sigcont", "read", "read-from-string", "nl-jit-call-i64-i64", "nl-jit-call-ptr-ptr",
+        "_jobctrl-handlers-installed-p", "terminal-take-sigcont", "nl-jit-call-i64-i64", "nl-jit-call-ptr-ptr",
         "nl-jit-call-syscall", "nl-jit-call-out-1", "nl-jit-call-out-2", "nl-jit-call-out-1i", "nl-jit-call-out-2i", "nl-jit-call-float-float",
         "nl-jit-call-float-cmp", "nl-jit-call-float-unary", "nl-fact-i64",
     ] };
@@ -202,7 +202,6 @@ macro_rules! builtin_dispatch {
                 #[cfg(unix)]    { Ok(bool_sexp(tty_jobctrl::take_cont())) }
                 #[cfg(not(unix))] { Ok(Sexp::Nil) }
             },
-            "read" => bi_read($args, $env), "read-from-string" => bi_read_from_string($args, $env),
             "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64($args), "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr($args), "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall($args),
             "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1($args), "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2($args), "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args),
             "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i($args), "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float($args),
@@ -951,29 +950,6 @@ fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-
-fn read_from_string_impl(env: &mut Env, caller: &'static str) -> Result<Sexp, EvalError> {
-    env.lookup_function("nelisp--read-from-string-impl").map_err(|_| EvalError::Internal(format!(
-        "{caller}: `nelisp--read-from-string-impl' not loaded — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_SOURCES?"
-    )))
-}
-
-fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("read", args, 0, Some(1))?;
-    match args.get(0) {
-        Some(Sexp::Str(_)) | Some(Sexp::MutStr(_)) => match super::apply_function(&read_from_string_impl(env, "read")?, &args[0..1], env)? {
-            Sexp::Cons(b) => Ok(b.car.clone()),
-            other => Err(EvalError::Internal(format!("read: expected `(FORM . CONSUMED-END)' from impl, got {:?}", other))),
-        },
-        Some(other) => Err(EvalError::NotImplemented(format!("read STREAM type: {:?}", other))),
-        None => Err(EvalError::NotImplemented("read from stdin (= no STREAM arg) is deferred".into())),
-    }
-}
-
-fn bi_read_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("read-from-string", args, 1, Some(3))?;
-    super::apply_function(&read_from_string_impl(env, "read-from-string")?, args, env)
-}
 
 
 fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
