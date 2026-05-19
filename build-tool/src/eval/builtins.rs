@@ -81,7 +81,16 @@ macro_rules! builtin_dispatch {
             "nelisp--write-stdout-bytes" => bi_write_stdout_bytes($args), "nelisp--write-stderr-line" => bi_write_stderr_line($args), "read-stdin-bytes" => bi_read_stdin_bytes($args),
             "nelisp--f64-trunc" => bi_f64_trunc($args), "nl-write-file" => bi_nl_write_file($args), "nl-make-directory" => bi_nl_make_directory($args),
             "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter($args), "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave($args), "read-stdin-byte-available" => bi_read_stdin_byte_available($args),
-            "_termios-saved-p" => bi_termios_saved_p($args), "_raw-mode-hooks-installed-p" => bi_raw_mode_hooks_installed_p($args),
+            "_termios-saved-p" => {
+                require_arity("_termios-saved-p", $args, 0, Some(0))?;
+                #[cfg(unix)]    { Ok(bool_sexp(tty_raw::termios_saved_p())) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "_raw-mode-hooks-installed-p" => {
+                require_arity("_raw-mode-hooks-installed-p", $args, 0, Some(0))?;
+                #[cfg(unix)]    { Ok(bool_sexp(tty_raw::hooks_installed_p())) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
             "set-quit-flag" => {
                 require_arity("set-quit-flag", $args, 0, Some(0))?;
                 unsafe { crate::elisp_cc_spike::bi_set_quit_flag(quit::nl_quit_flag_ptr()); }
@@ -105,9 +114,44 @@ macro_rules! builtin_dispatch {
                 require_arity("_sigint-handler-installed-p", $args, 0, Some(0))?;
                 Ok(bool_sexp(quit::sigint_handler_installed_p()))
             },
-            "install-winsize-handler" => bi_install_winsize_handler($args), "_winsize-handler-installed-p" => bi_winsize_handler_installed_p($args),
-            "terminal-take-winsize-changed" => bi_terminal_take_winsize_changed($args), "terminal-current-winsize" => bi_terminal_current_winsize($args),
-            "install-jobctrl-handlers" => bi_install_jobctrl_handlers($args), "_jobctrl-handlers-installed-p" => bi_jobctrl_handlers_installed_p($args), "terminal-take-sigcont" => bi_terminal_take_sigcont($args),
+            "install-winsize-handler" => {
+                require_arity("install-winsize-handler", $args, 0, Some(0))?;
+                #[cfg(unix)]    { tty_winsize::install_handler(); Ok(Sexp::T) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "_winsize-handler-installed-p" => {
+                require_arity("_winsize-handler-installed-p", $args, 0, Some(0))?;
+                #[cfg(unix)]    { Ok(bool_sexp(tty_winsize::handler_installed_p())) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "terminal-take-winsize-changed" => {
+                require_arity("terminal-take-winsize-changed", $args, 0, Some(0))?;
+                #[cfg(unix)]    { Ok(bool_sexp(tty_winsize::take_changed())) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "terminal-current-winsize" => {
+                require_arity("terminal-current-winsize", $args, 0, Some(0))?;
+                #[cfg(unix)]    { Ok(match tty_winsize::current_size() {
+                    Some((c, r)) => Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)),
+                    None => Sexp::Nil,
+                }) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "install-jobctrl-handlers" => {
+                require_arity("install-jobctrl-handlers", $args, 0, Some(0))?;
+                #[cfg(unix)]    { tty_jobctrl::install_handlers(); Ok(Sexp::T) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "_jobctrl-handlers-installed-p" => {
+                require_arity("_jobctrl-handlers-installed-p", $args, 0, Some(0))?;
+                #[cfg(unix)]    { Ok(bool_sexp(tty_jobctrl::handlers_installed_p())) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "terminal-take-sigcont" => {
+                require_arity("terminal-take-sigcont", $args, 0, Some(0))?;
+                #[cfg(unix)]    { Ok(bool_sexp(tty_jobctrl::take_cont())) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
             "read" => bi_read($args, $env), "read-from-string" => bi_read_from_string($args, $env), "require" => bi_require($args, $env),
             "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64($args), "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr($args), "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall($args),
             "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1($args), "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2($args), "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args),
@@ -951,118 +995,6 @@ fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn bi_termios_saved_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("_termios-saved-p", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        return Ok(bool_sexp(tty_raw::termios_saved_p()));
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("_raw-mode-hooks-installed-p", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        return Ok(bool_sexp(tty_raw::hooks_installed_p()));
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_install_winsize_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("install-winsize-handler", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        tty_winsize::install_handler();
-        return Ok(Sexp::T);
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_winsize_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("_winsize-handler-installed-p", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        return Ok(bool_sexp(tty_winsize::handler_installed_p()));
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_terminal_take_winsize_changed(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("terminal-take-winsize-changed", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        return Ok(bool_sexp(tty_winsize::take_changed()));
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_terminal_current_winsize(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("terminal-current-winsize", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        return Ok(match tty_winsize::current_size() {
-            Some((c, r)) => Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)),
-            None => Sexp::Nil,
-        });
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_install_jobctrl_handlers(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("install-jobctrl-handlers", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        tty_jobctrl::install_handlers();
-        return Ok(Sexp::T);
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_jobctrl_handlers_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("_jobctrl-handlers-installed-p", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        return Ok(bool_sexp(tty_jobctrl::handlers_installed_p()));
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_terminal_take_sigcont(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("terminal-take-sigcont", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        return Ok(bool_sexp(tty_jobctrl::take_cont()));
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
 
 fn read_from_string_impl(env: &mut Env, caller: &'static str) -> Result<Sexp, EvalError> {
     lookup_fn_or(
