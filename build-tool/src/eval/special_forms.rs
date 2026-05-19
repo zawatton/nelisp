@@ -3,23 +3,58 @@ use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
 use super::{eval, list_elements};
 
+macro_rules! sf_call_4arg {
+    ($name:literal, $ext:ident, $args:expr, $env:expr) => {{
+        let mut out = Sexp::Nil;
+        let rc = unsafe {
+            crate::elisp_cc_spike::$ext(
+                $args as *const Sexp,
+                $env as *mut Env as *mut std::ffi::c_void,
+                &mut out as *mut Sexp,
+                0,
+            )
+        };
+        if rc == 0 { Ok::<_, EvalError>(out) } else { Err(EvalError::Internal($name.into())) }
+    }};
+}
+
+macro_rules! sf_call_with_s1 {
+    ($name:literal, $ext:ident, $args:expr, $env:expr) => {{
+        let mut out = Sexp::Nil;
+        let mut s1 = Sexp::Nil;
+        let rc = unsafe {
+            crate::elisp_cc_spike::$ext(
+                $args as *const Sexp,
+                $env as *mut Env as *mut std::ffi::c_void,
+                &mut out as *mut Sexp,
+                &mut s1 as *mut Sexp,
+            )
+        };
+        if rc == 0 { Ok::<_, EvalError>(out) } else { Err(EvalError::Internal($name.into())) }
+    }};
+}
+
 pub fn apply_special(
     name: &str,
     args: &Sexp,
     env: &mut Env,
 ) -> Result<Option<Sexp>, EvalError> {
     Ok(Some(match name {
-        "quote" => sf_quote(args)?,
-        "function" => sf_function(args, env)?,
-        "if" => sf_if(args, env)?,
-        "let" => sf_let(args, env)?,
-        "let*" => sf_let_star(args, env)?,
-        "lambda" => sf_lambda(args, env)?,
-        "setq" => sf_setq(args, env)?,
-        "while" => sf_while(args, env)?,
+        "quote" => {
+            let mut out = Sexp::Nil;
+            let rc = unsafe { crate::elisp_cc_spike::sf_quote_call(args as *const Sexp, &mut out as *mut Sexp) };
+            if rc == 0 { out } else { return Err(wrong_args("quote", "1", 0)); }
+        }
+        "function" => sf_call_with_s1!("sf_function", sf_function_call, args, env)?,
+        "if" => sf_call_4arg!("sf_if", sf_if_call, args, env)?,
+        "let" => sf_call_4arg!("sf_let", sf_let_call, args, env)?,
+        "let*" => sf_call_4arg!("sf_let_star", sf_let_star_call, args, env)?,
+        "lambda" => sf_call_with_s1!("sf_lambda", sf_lambda_call, args, env)?,
+        "setq" => sf_call_4arg!("sf_setq", sf_setq_call, args, env)?,
+        "while" => sf_call_4arg!("sf_while", sf_while_call, args, env)?,
         "condition-case" => sf_condition_case(args, env)?,
         "unwind-protect" => sf_unwind_protect(args, env)?,
-        "progn" => sf_progn(args, env)?,
+        "progn" => sf_call_4arg!("sf_progn", sf_progn_call, args, env)?,
         "catch" => sf_catch(args, env)?,
         "throw" => sf_throw(args, env)?,
         _ => return Ok(None),
@@ -35,82 +70,17 @@ fn wrong_args(function: &str, expected: &str, got: usize) -> EvalError {
 }
 
 fn expect_len(parts: &[Sexp], name: &str, expected: usize) -> Result<(), EvalError> {
-    if parts.len() == expected {
-        Ok(())
-    } else {
-        Err(wrong_args(name, &expected.to_string(), parts.len()))
-    }
+    if parts.len() == expected { Ok(()) }
+    else { Err(wrong_args(name, &expected.to_string(), parts.len())) }
 }
 
 fn expect_min_len(parts: &[Sexp], name: &str, min: usize) -> Result<(), EvalError> {
-    if parts.len() >= min {
-        Ok(())
-    } else {
-        Err(wrong_args(name, &format!("≥{min}"), parts.len()))
-    }
+    if parts.len() >= min { Ok(()) }
+    else { Err(wrong_args(name, &format!("≥{min}"), parts.len())) }
 }
 
 pub fn is_truthy(v: &Sexp) -> bool {
     !matches!(v, Sexp::Nil)
-}
-
-fn sf_quote(args: &Sexp) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let rc = unsafe { crate::elisp_cc_spike::sf_quote_call(args as *const Sexp, &mut out as *mut Sexp) };
-    if rc == 0 { Ok(out) } else { Err(wrong_args("quote", "1", 0)) }
-}
-
-fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let mut s1 = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::sf_function_call(
-            args as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            &mut s1 as *mut Sexp,
-        )
-    };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_function".into())) }
-}
-
-fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::sf_if_call(
-            args as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            0,
-        )
-    };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_if".into())) }
-}
-
-fn sf_let(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::sf_let_call(
-            args as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            0,
-        )
-    };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_let".into())) }
-}
-
-fn sf_let_star(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::sf_let_star_call(
-            args as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            0,
-        )
-    };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_let_star".into())) }
 }
 
 /// `let' / `let*' frame setup: sequential=1 = `let*'.
