@@ -506,3 +506,27 @@ fn expand_macro(macro_form: &Sexp, args: &Sexp, env: &mut Env) -> Result<Sexp, E
     let arg_forms = list_elements(args)?;
     apply_function(inner, &arg_forms, env)
 }
+
+/// Phase 47 elisp .o から Rust eval() を再帰呼出するための ABI primitive。
+/// elisp 側は `(extern-call nelisp_eval_call FORM ENV OUT)` で利用。
+/// 戻り値: 0=Ok / 1=Err。エラー詳細は別 channel (後続 wave で実装)。
+///
+/// # Safety
+/// - form: live `*const Sexp`
+/// - env: live `&mut Env` を `*mut c_void` に reinterpret したもの
+/// - out: 32-byte writable Sexp slot
+#[no_mangle]
+pub unsafe extern "C" fn nelisp_eval_call(
+    form: *const Sexp,
+    env: *mut std::ffi::c_void,
+    out: *mut Sexp,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    match eval(&*form, env_ref) {
+        Ok(v) => {
+            std::ptr::write(out, v);
+            0
+        }
+        Err(_) => 1,
+    }
+}
