@@ -198,6 +198,21 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
     1
 }
 
+fn bad_sym(expected: &str, name: String) -> EvalError {
+    EvalError::WrongType {
+        expected: expected.into(),
+        got: Sexp::Symbol(name),
+    }
+}
+
+fn wrong_lambda_arity(expected: String, got: usize) -> EvalError {
+    EvalError::WrongNumberOfArguments {
+        function: "lambda".into(),
+        expected,
+        got,
+    }
+}
+
 fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(), EvalError> {
     let names = super::list_elements(formals)?;
     #[derive(Clone, Copy)]
@@ -214,30 +229,20 @@ fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(),
         match name.as_str() {
             "&optional" => {
                 if matches!(mode, Mode::Rest) {
-                    return Err(EvalError::WrongType {
-                        expected: "formal parameter after &rest".into(),
-                        got: Sexp::Symbol(name),
-                    });
+                    return Err(bad_sym("formal parameter after &rest", name));
                 }
                 mode = Mode::Optional;
             }
             "&rest" => {
                 if saw_rest {
-                    return Err(EvalError::WrongType {
-                        expected: "single &rest marker".into(),
-                        got: Sexp::Symbol(name),
-                    });
+                    return Err(bad_sym("single &rest marker", name));
                 }
                 mode = Mode::Rest;
                 saw_rest = true;
             }
             _ if matches!(mode, Mode::Required) => {
                 let Some(value) = args.get(idx) else {
-                    return Err(EvalError::WrongNumberOfArguments {
-                        function: "lambda".into(),
-                        expected: required.to_string(),
-                        got: args.len(),
-                    });
+                    return Err(wrong_lambda_arity(required.to_string(), args.len()));
                 };
                 env.bind_local(&name, value.clone());
                 idx += 1;
@@ -248,10 +253,7 @@ fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(),
             }
             _ => {
                 if consumed_rest {
-                    return Err(EvalError::WrongType {
-                        expected: "single symbol after &rest".into(),
-                        got: Sexp::Symbol(name),
-                    });
+                    return Err(bad_sym("single symbol after &rest", name));
                 }
                 env.bind_local(&name, Sexp::list_from(&args[idx..]));
                 idx = args.len();
@@ -260,19 +262,37 @@ fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(),
         };
     }
     if idx < args.len() && !consumed_rest {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "lambda".into(),
-            expected: format!("at most {}", idx),
-            got: args.len(),
-        });
+        return Err(wrong_lambda_arity(format!("at most {}", idx), args.len()));
     }
     if saw_rest && !consumed_rest {
-        return Err(EvalError::WrongType {
-            expected: "symbol after &rest".into(),
-            got: Sexp::Symbol("&rest".into()),
-        });
+        return Err(bad_sym("symbol after &rest", "&rest".into()));
     }
     Ok(())
+}
+
+unsafe fn bind_formals_common(
+    formals_ptr: *const Sexp,
+    args_list_ptr: *const Sexp,
+    env: *mut std::ffi::c_void,
+    push: bool,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let args = match super::list_elements(&*args_list_ptr) {
+        Ok(v) => v,
+        Err(_) => return 1,
+    };
+    if push {
+        env_ref.push_frame();
+    }
+    match bind_formals_impl(&*formals_ptr, &args, env_ref) {
+        Ok(()) => 0,
+        Err(_) => {
+            if push {
+                env_ref.pop_frame();
+            }
+            1
+        }
+    }
 }
 
 #[no_mangle]
@@ -281,21 +301,7 @@ pub unsafe extern "C" fn nl_push_and_bind(
     args_list_ptr: *const Sexp,
     env: *mut std::ffi::c_void,
 ) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    let formals = &*formals_ptr;
-    let args_list = &*args_list_ptr;
-    let args = match super::list_elements(args_list) {
-        Ok(v) => v,
-        Err(_) => return 1,
-    };
-    env_ref.push_frame();
-    match bind_formals_impl(formals, &args, env_ref) {
-        Ok(()) => 0,
-        Err(_) => {
-            env_ref.pop_frame();
-            1
-        }
-    }
+    bind_formals_common(formals_ptr, args_list_ptr, env, true)
 }
 
 #[no_mangle]
@@ -304,17 +310,7 @@ pub unsafe extern "C" fn nl_bind_formals(
     args_list_ptr: *const Sexp,
     env: *mut std::ffi::c_void,
 ) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    let formals = &*formals_ptr;
-    let args_list = &*args_list_ptr;
-    let args = match super::list_elements(args_list) {
-        Ok(v) => v,
-        Err(_) => return 1,
-    };
-    match bind_formals_impl(formals, &args, env_ref) {
-        Ok(()) => 0,
-        Err(_) => 1,
-    }
+    bind_formals_common(formals_ptr, args_list_ptr, env, false)
 }
 
 #[no_mangle]
