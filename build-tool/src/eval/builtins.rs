@@ -94,7 +94,22 @@ macro_rules! builtin_dispatch {
             "eval" => { require_arity("eval", $args, 1, Some(2))?; super::eval(&$args[0], $env) },
             "signal" => bi_signal($args),
             "nelisp--write-stdout-bytes" => bi_write_stdout_bytes($args), "nelisp--write-stderr-line" => bi_write_stderr_line($args), "read-stdin-bytes" => bi_read_stdin_bytes($args),
-            "nelisp--f64-trunc" => bi_f64_trunc($args), "nl-write-file" => bi_nl_write_file($args), "nl-make-directory" => bi_nl_make_directory($args),
+            "nelisp--f64-trunc" => bi_f64_trunc($args),
+            "nl-write-file" => {
+                require_arity("nl-write-file", $args, 2, Some(2))?;
+                let path = string_value(&$args[0])?;
+                string_value(&$args[1])?;
+                kernel_path_ok("nl-write-file", &path, unsafe {
+                    crate::elisp_cc_spike::bi_nl_write_file(&$args[0] as *const _, &$args[1] as *const _)
+                })
+            },
+            "nl-make-directory" => {
+                require_arity("nl-make-directory", $args, 1, Some(2))?;
+                let path = string_value(&$args[0])?;
+                kernel_path_ok("nl-make-directory", &path, unsafe {
+                    crate::elisp_cc_spike::bi_nl_make_directory(&$args[0] as *const _) as i32 as i64
+                })
+            },
             "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter($args), "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave($args), "read-stdin-byte-available" => bi_read_stdin_byte_available($args),
             "_termios-saved-p" => {
                 require_arity("_termios-saved-p", $args, 0, Some(0))?;
@@ -622,23 +637,6 @@ fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
             )));
         }
     }))
-}
-
-fn bi_nl_write_file(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-write-file", args, 2, Some(2))?;
-    let path = string_value(&args[0])?;
-    string_value(&args[1])?;
-    kernel_path_ok("nl-write-file", &path, unsafe {
-        crate::elisp_cc_spike::bi_nl_write_file(&args[0] as *const _, &args[1] as *const _)
-    })
-}
-
-fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-make-directory", args, 1, Some(2))?;
-    let path = string_value(&args[0])?;
-    kernel_path_ok("nl-make-directory", &path, unsafe {
-        crate::elisp_cc_spike::bi_nl_make_directory(&args[0] as *const _) as i32 as i64
-    })
 }
 
 fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
