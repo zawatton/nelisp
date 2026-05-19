@@ -99,18 +99,16 @@ fn lambda_rest(lam: &Sexp) -> Result<(Sexp, Sexp), EvalError> {
 }
 
 fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    expect_min_len(&parts, "if", 2)?;
-    let cond = eval(&parts[0], env)?;
-    if is_truthy(&cond) {
-        eval(&parts[1], env)
-    } else {
-        let mut last = Sexp::Nil;
-        for f in parts.iter().skip(2) {
-            last = eval(f, env)?;
-        }
-        Ok(last)
-    }
+    let mut out = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::sf_if_call(
+            args as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            0, // _pad: alignment pad (nl_sf_if is arity 4/even)
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_if".into())) }
 }
 
 fn sf_let(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {

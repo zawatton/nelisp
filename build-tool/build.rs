@@ -345,7 +345,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Phase 47 Tier-1 special forms elisp化 — Rust bodies deleted from
         // `eval/special_forms.rs'.
         "nelisp-cc-sf-progn.el",
-        // "nelisp-cc-sf-if.el",
+        "nelisp-cc-sf-if.el",
         // "nelisp-cc-sf-setq.el",
         // "nelisp-cc-sf-while.el",
     ];
