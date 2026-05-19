@@ -81,7 +81,7 @@ fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             args as *const Sexp,
             env as *mut Env as *mut std::ffi::c_void,
             &mut out as *mut Sexp,
-            0, // _pad: alignment pad (nl_sf_if is arity 4/even)
+            0,
         )
     };
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_if".into())) }
@@ -94,7 +94,7 @@ fn sf_let(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             args as *const Sexp,
             env as *mut Env as *mut std::ffi::c_void,
             &mut out as *mut Sexp,
-            0, // _pad: alignment pad (nl_sf_let is arity 4/even)
+            0,
         )
     };
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_let".into())) }
@@ -107,26 +107,13 @@ fn sf_let_star(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             args as *const Sexp,
             env as *mut Env as *mut std::ffi::c_void,
             &mut out as *mut Sexp,
-            0, // _pad: alignment pad (nl_sf_let_star is arity 4/even)
+            0,
         )
     };
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_let_star".into())) }
 }
 
-/// Phase 47 elisp primitive — parse + evaluate all bindings in a `let' or
-/// `let*' binding list, push a new lexical frame, and bind each variable.
-///
-/// bindings_list: *const Sexp — the raw bindings list (car of the let form's args).
-/// env:           *mut c_void — &mut Env cast.
-/// sequential:    i64 — 0 = parallel (let), 1 = sequential (let*).
-///
-/// For sequential=0: all values are evaluated in the outer frame before any
-/// are bound (= standard `let' semantics).
-/// For sequential=1: the frame is pushed first, then each binding is evaluated
-/// and bound in order (= `let*' semantics: later bindings see earlier ones).
-///
-/// Returns: 0=Ok (frame IS pushed and all vars are bound),
-///          1=Err (frame is NOT pushed; error details via separate channel).
+/// `let' / `let*' frame setup: sequential=1 = `let*'.
 #[no_mangle]
 pub unsafe extern "C" fn nl_let_setup(
     bindings_list: *const Sexp,
@@ -139,7 +126,6 @@ pub unsafe extern "C" fn nl_let_setup(
         Err(_) => return 1,
     };
     if sequential != 0 {
-        // let*: push frame first, then eval+bind sequentially.
         env_ref.push_frame();
         for b in &bindings {
             let (name, val) = match nl_let_parse_binding(b, env_ref) {
@@ -149,7 +135,6 @@ pub unsafe extern "C" fn nl_let_setup(
             env_ref.bind_local(&name, val);
         }
     } else {
-        // let: pre-eval all bindings in the outer frame.
         let mut values = Vec::with_capacity(bindings.len());
         for b in &bindings {
             match nl_let_parse_binding(b, env_ref) {
@@ -165,8 +150,6 @@ pub unsafe extern "C" fn nl_let_setup(
     0
 }
 
-/// Internal helper: parse a single `let' binding form and evaluate its value.
-/// Mirrors the deleted `parse_let_binding' private fn.
 fn nl_let_parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
     match b {
         Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
@@ -189,9 +172,6 @@ fn nl_let_parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalE
     }
 }
 
-/// Phase 47 elisp primitive — pop the topmost lexical frame from env.
-/// env: *mut c_void = &mut Env cast.
-/// Returns: 0 always.
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 {
     let env_ref = &mut *(env as *mut Env);
@@ -199,10 +179,6 @@ pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 {
     0
 }
 
-/// Phase 47 ABI — push captured alist as a new lexical frame.
-/// env:       *mut c_void  = &mut Env cast.
-/// alist_ptr: *const Sexp  = captured alist (Nil = no-op).
-/// Returns: 0=Ok, 1=Err.
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_push_captured(
     env: *mut std::ffi::c_void,
@@ -215,11 +191,6 @@ pub unsafe extern "C" fn nl_env_push_captured(
     }
 }
 
-/// Internal helper — bind formal parameter list to argument slice.
-/// Contains the actual logic for `bind_formals', factored out so both
-/// the Rust thin-shell `bind_formals' in `eval/mod.rs' and the ABI
-/// externs `nl_push_and_bind' / `nl_bind_formals' can share it without
-/// a circular call chain.
 fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(), EvalError> {
     let names = super::list_elements(formals)?;
     #[derive(Clone, Copy)]
@@ -297,15 +268,6 @@ fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(),
     Ok(())
 }
 
-/// Phase 47 ABI — push a new (empty) lexical frame, then bind formals to args.
-/// If the bind fails, the frame is popped before returning 1.
-///
-/// formals_ptr:   *const Sexp = cons list of formal parameter symbols.
-/// args_list_ptr: *const Sexp = cons list of evaluated argument values.
-/// env:           *mut c_void = &mut Env cast.
-///
-/// Returns: 0=Ok (frame pushed, all formals bound),
-///          1=Err (frame popped on failure; no net frame change on error).
 #[no_mangle]
 pub unsafe extern "C" fn nl_push_and_bind(
     formals_ptr: *const Sexp,
@@ -329,13 +291,6 @@ pub unsafe extern "C" fn nl_push_and_bind(
     }
 }
 
-/// Phase 47 ABI — bind formals to arguments in the CURRENT lexical frame.
-/// Does NOT push a frame; caller must have already pushed one.
-///
-/// formals_ptr:   *const Sexp = cons list of formal parameter symbols.
-/// args_list_ptr: *const Sexp = cons list of evaluated argument values.
-/// env:           *mut c_void = &mut Env cast.
-/// Returns: 0=Ok, 1=Err.
 #[no_mangle]
 pub unsafe extern "C" fn nl_bind_formals(
     formals_ptr: *const Sexp,
@@ -377,7 +332,6 @@ fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_lambda".into())) }
 }
 
-/// Phase 47 ABI — capture lexical environment to *out. Returns 0.
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_capture_lexical(
     env: *mut std::ffi::c_void,
@@ -388,7 +342,6 @@ pub unsafe extern "C" fn nl_env_capture_lexical(
     0
 }
 
-/// Phase 47 ABI — check if Sexp is Symbol("lambda").
 #[no_mangle]
 pub unsafe extern "C" fn nl_symbol_is_lambda(sym: *const Sexp) -> i64 {
     match &*sym {
@@ -397,7 +350,6 @@ pub unsafe extern "C" fn nl_symbol_is_lambda(sym: *const Sexp) -> i64 {
     }
 }
 
-/// Phase 47 ABI — prepend new car to existing list (refcount-safe clone).
 #[no_mangle]
 pub unsafe extern "C" fn nl_cons_prepend_clone(
     car_ptr: *const Sexp,
@@ -417,7 +369,7 @@ fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             args as *const Sexp,
             env as *mut Env as *mut std::ffi::c_void,
             &mut out as *mut Sexp,
-            0, // _pad: alignment pad (nl_sf_setq is arity 4/even)
+            0,
         )
     };
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_setq".into())) }
@@ -430,7 +382,7 @@ fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             args as *const Sexp,
             env as *mut Env as *mut std::ffi::c_void,
             &mut out as *mut Sexp,
-            0, // _pad: alignment pad (nl_sf_while is arity 4/even)
+            0,
         )
     };
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_while".into())) }
@@ -532,7 +484,7 @@ fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             args as *const Sexp,
             env as *mut Env as *mut std::ffi::c_void,
             &mut out as *mut Sexp,
-            0, // _pad: alignment pad (nl_sf_progn is arity 4/even)
+            0,
         )
     };
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_progn".into())) }
@@ -564,9 +516,6 @@ fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     Err(EvalError::UncaughtThrow { tag, value })
 }
 
-/// Phase 47 elisp primitive — evaluate a form and return its truthiness.
-/// Returns: 1=truthy, 0=nil/false, -1=eval error.
-/// Called from elisp as `(extern-call nl_eval_is_truthy FORM-PTR ENV)'.
 #[no_mangle]
 pub unsafe extern "C" fn nl_eval_is_truthy(
     form: *const Sexp,
@@ -579,12 +528,6 @@ pub unsafe extern "C" fn nl_eval_is_truthy(
     }
 }
 
-/// Phase 47 elisp primitive — set a variable in the environment.
-/// env: *mut c_void (= *mut Env).
-/// sym: *const Sexp pointing to a Symbol.
-/// val: *const Sexp — the already-evaluated value (in the out slot).
-/// Returns: 0=Ok, 1=Err.
-/// Called from elisp as `(extern-call nl_env_set_value ENV SYM-PTR VAL-PTR)'.
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_set_value(
     env: *mut std::ffi::c_void,
