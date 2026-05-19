@@ -342,18 +342,6 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Phase 47 elisp migration — `nl_jit_split_by_non_alnum'
         // non-alphanumeric splitter (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-split-by-non-alnum.el",
-        // Phase 47 elisp migration — `nl_jit_format_float'
-        // IEEE-754 float formatter via libc snprintf (Rust body deleted from
-        // `jit/strings.rs').  Bridge passes x as x.to_bits() as i64;
-        // elisp uses (:varargs (:f64 x-bits)) to MOVQ into xmm0.
-        "nelisp-cc-jit-format-float.el",
-        // Phase 47 elisp migration — Tier 1 special form swaps.
-        // `sf_if' / `sf_setq' / `sf_progn' / `sf_while' Rust bodies
-        // deleted from `eval/special_forms.rs'.
-        "nelisp-cc-sf-if.el",
-        "nelisp-cc-sf-setq.el",
-        "nelisp-cc-sf-progn.el",
-        "nelisp-cc-sf-while.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

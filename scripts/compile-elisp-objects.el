@@ -937,55 +937,6 @@
     (nelisp-cc-jit-split-by-non-alnum
      :source-var nelisp-cc-jit-split-by-non-alnum--source
      :output "nl_jit_split_by_non_alnum.o"
-     :requires-arch x86_64)
-    ;; Phase 47 elisp migration — `nl_jit_format_float' trampoline swap.
-    ;; IEEE-754 float → formatted Sexp::Str via libc snprintf.  Rust body
-    ;; deleted from `jit/strings.rs'; bridge passes x as x.to_bits() as i64
-    ;; (GP class) and the elisp body uses (:varargs (:f64 x-bits)) to MOVQ
-    ;; the bit-pattern into xmm0 for snprintf's variadic double argument.
-    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' (count 59→60) anchors
-    ;; `nl_jit_format_float'.
-    (nelisp-cc-jit-format-float
-     :source-var nelisp-cc-jit-format-float--source
-     :output "nl_jit_format_float.o"
-     :requires-arch x86_64)
-    ;; Phase 47 elisp migration — Tier 1 special form swaps.
-    ;; `sf_if' / `sf_setq' / `sf_progn' / `sf_while' Rust bodies deleted
-    ;; from `eval/special_forms.rs'; Phase-47-compiled elisp `.o' replaces
-    ;; each.  Each entry exports one `nl_sf_NAME' entry point called from
-    ;; the thin Rust dispatcher shell in `apply_special'.  Two shared thin
-    ;; Rust helpers are added: `nl_eval_is_truthy' (condition test without
-    ;; elisp scratch slot) and `nl_env_set_value' (setq env mutation).
-    ;; All four entries are Linux-x86_64 only — same arch gate as the
-    ;; §86.2 `nl_sf_quote' sibling.
-    (nelisp-cc-sf-if
-     :source-var nelisp-cc-sf-if--source
-     :output "nl_sf_if.o"
-     :requires-arch x86_64)
-    (nelisp-cc-sf-setq
-     :source-var nelisp-cc-sf-setq--source
-     :output "nl_sf_setq.o"
-     :requires-arch x86_64)
-    (nelisp-cc-sf-progn
-     :source-var nelisp-cc-sf-progn--source
-     :output "nl_sf_progn.o"
-     :requires-arch x86_64)
-    (nelisp-cc-sf-while
-     :source-var nelisp-cc-sf-while--source
-     :output "nl_sf_while.o"
-     :requires-arch x86_64)
-    ;; bind_formals Phase 47 elisp migration — replaces the ~85 LOC Rust
-    ;; body of `bind_formals' in `build-tool/src/eval/mod.rs'.  Exports
-    ;; four defuns: `nelisp_bind_formals_rest' / `_opt' / `_req' / entry
-    ;; `nelisp_bind_formals'.  Uses `extern-call nelisp_env_bind_local'
-    ;; (new `#[no_mangle]' in `eval/mod.rs') for each formal binding.
-    ;; Rust thin shell converts `args: &[Sexp]' to a cons list, passes
-    ;; stack-local &optional / &rest / Nil sentinels, and maps the i64
-    ;; return code to `EvalError'.  Linux-x86_64 only — same arch gate
-    ;; as the other `extern-call' + `symbol-eq' grammar users.
-    (nelisp-cc-bind-formals
-     :source-var nelisp-cc-bind-formals--source
-     :output "nelisp_bind_formals.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

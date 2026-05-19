@@ -1,6 +1,6 @@
 //! String/symbol trampolines reached via `nl-jit-call-out-1' (1-arg)
 //! or `nl-jit-call-out-2' (2-arg) from `nelisp-jit-strategy.el'.
-//! Surviving Rust bodies: symbol-name.
+//! Surviving Rust bodies: symbol-name, float-format.
 //! All others migrated to Phase 47 elisp `.o' bodies.
 //!
 //! Migrated to elisp .o:
@@ -9,7 +9,6 @@
 //!   `nl_jit_upcase'            → `lisp/nelisp-cc-jit-upcase.el'
 //!   `nl_jit_concat_ints'       → `lisp/nelisp-cc-jit-concat-ints.el'
 //!   `nl_jit_split_by_non_alnum' → `lisp/nelisp-cc-jit-split-by-non-alnum.el'
-//!   `nl_jit_format_float'       → `lisp/nelisp-cc-jit-format-float.el'
 
 use crate::eval::sexp::Sexp;
 use std::sync::atomic::AtomicI64;
@@ -68,12 +67,38 @@ pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) ->
 // `lisp/nelisp-cc-jit-concat-ints.el'.  The `#[no_mangle]' symbol is
 // now provided by the `.o' archive linked by `build.rs'.
 
-// Phase 47 elisp migration: `nl_jit_format_float' Rust body deleted —
-// replaced by Phase-47-compiled elisp body in
-// `lisp/nelisp-cc-jit-format-float.el'.  The `#[no_mangle]' symbol is
-// now provided by the `.o' archive linked by `build.rs'.
-// Bridge change: `bi_nl_jit_call_format_float' now casts to
-// `fn(i64, i64, i64, *mut Sexp) -> i64' and passes x as
-// `x.to_bits() as i64'; the elisp body uses `(:varargs (:f64 x-bits))'
-// (= MOVQ rax → xmm0) to reconstruct the f64 for libc `snprintf'.
-// `_ELISP_ARCHIVE_ANCHOR' count 59→60.
+/// IEEE-754 float body builder.  CONV ∈ {f/F/e/E/g/G}, PREC ≥ 0.
+/// Writes unsigned/unpadded body; elisp does sign + padding.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_format_float(
+    x: f64,
+    conv: u32,
+    prec: i64,
+    out: *mut Sexp,
+) -> i64 {
+    let conv_ch = match char::from_u32(conv) {
+        Some(c) => c,
+        None => return TRAMPOLINE_ERR,
+    };
+    if prec < 0 {
+        return TRAMPOLINE_ERR;
+    }
+    let p = prec as usize;
+    let body = match conv_ch {
+        'f' | 'F' => format!("{:.*}", p, x),
+        'e' => format!("{:.*e}", p, x),
+        'E' => format!("{:.*E}", p, x),
+        'g' | 'G' => {
+            let f = format!("{:.*}", p, x);
+            let e = format!("{:.*e}", p, x);
+            if f.len() <= e.len() {
+                f
+            } else {
+                e
+            }
+        }
+        _ => return TRAMPOLINE_ERR,
+    };
+    *out = Sexp::Str(body);
+    TRAMPOLINE_OK
+}
