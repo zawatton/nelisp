@@ -925,6 +925,18 @@
     (nelisp-cc-jit-upcase
      :source-var nelisp-cc-jit-upcase--source
      :output "nl_jit_upcase.o"
+     :requires-arch x86_64)
+    ;; Phase 47 elisp migration — `nl_jit_split_by_non_alnum' trampoline
+    ;; swap.  Splits STR-ARG at non-alphanumeric bytes (ASCII [0-9A-Za-z]
+    ;; + bytes>=128 as word-continuation); builds a reversed cons list of
+    ;; Sexp::Str parts in *OUT via `sexp-write-str' + `cons-make' +
+    ;; `ptr-write-u8' (RC-safe byte-copy pattern).  The Elisp wrapper
+    ;; applies `nreverse' to restore forward order.  Rust body deleted
+    ;; from `jit/strings.rs'.  `bridge.rs::_ELISP_ARCHIVE_ANCHOR'
+    ;; (count 54→55) anchors `nl_jit_split_by_non_alnum'.
+    (nelisp-cc-jit-split-by-non-alnum
+     :source-var nelisp-cc-jit-split-by-non-alnum--source
+     :output "nl_jit_split_by_non_alnum.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

@@ -1,10 +1,14 @@
-//! String/symbol trampolines reached via `nl-jit-call-out-1' from
-//! `nelisp-jit-strategy.el'.  Surviving Rust bodies: Unicode case +
-//! tokenize, float-format, concat_ints.  Sig `(*const Sexp,
-//! *mut Sexp) -> i64'; OK=0 / ERR=1.
+//! String/symbol trampolines reached via `nl-jit-call-out-1' (1-arg)
+//! or `nl-jit-call-out-2' (2-arg) from `nelisp-jit-strategy.el'.
+//! Surviving Rust bodies: symbol-name, float-format.
+//! All others migrated to Phase 47 elisp `.o' bodies.
 //!
-//! `nl_jit_make_symbol' body migrated to
-//! `lisp/nelisp-cc-jit-make-symbol.el' (Phase 47 elisp .o).
+//! Migrated to elisp .o:
+//!   `nl_jit_make_symbol'       → `lisp/nelisp-cc-jit-make-symbol.el'
+//!   `nl_jit_downcase'          → `lisp/nelisp-cc-jit-downcase.el'
+//!   `nl_jit_upcase'            → `lisp/nelisp-cc-jit-upcase.el'
+//!   `nl_jit_concat_ints'       → `lisp/nelisp-cc-jit-concat-ints.el'
+//!   `nl_jit_split_by_non_alnum' → `lisp/nelisp-cc-jit-split-by-non-alnum.el'
 
 use crate::eval::sexp::Sexp;
 use std::sync::atomic::AtomicI64;
@@ -52,27 +56,11 @@ pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) ->
 // The `#[no_mangle]' symbols are now provided by the `.o' archive linked
 // by `build.rs'.
 
-/// Split on non-alphanumeric runs.  OMIT non-Nil → drop empties.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_split_by_non_alnum(
-    str_arg: *const Sexp,
-    omit_arg: *const Sexp,
-    out: *mut Sexp,
-) -> i64 {
-    let s = match read_text(&*str_arg) {
-        Some(v) => v,
-        None => return TRAMPOLINE_ERR,
-    };
-    let omit_empty = !matches!(&*omit_arg, Sexp::Nil);
-    let parts: Vec<Sexp> = s
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|p| if omit_empty { !p.is_empty() } else { true })
-        .map(|p| Sexp::Str(p.to_string()))
-        .collect();
-    *out = Sexp::list_from(&parts);
-    TRAMPOLINE_OK
-}
-
+// Phase 47 elisp migration: `nl_jit_split_by_non_alnum' Rust body deleted —
+// replaced by Phase-47-compiled elisp body in
+// `lisp/nelisp-cc-jit-split-by-non-alnum.el'.  The `#[no_mangle]' symbol
+// is now provided by the `.o' archive linked by `build.rs'.
+// `_ELISP_ARCHIVE_ANCHOR' count 54→55.
 
 // Doc 86 §86.1.e.2 (2026-05-19): `nl_jit_concat_ints' Rust body
 // deleted — replaced by Phase-47-compiled elisp body in

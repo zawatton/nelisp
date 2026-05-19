@@ -339,6 +339,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // trampoline swaps (Rust bodies deleted from `jit/strings.rs').
         "nelisp-cc-jit-downcase.el",
         "nelisp-cc-jit-upcase.el",
+        // Phase 47 elisp migration — `nl_jit_split_by_non_alnum'
+        // non-alphanumeric splitter (Rust body deleted from `jit/strings.rs').
+        "nelisp-cc-jit-split-by-non-alnum.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
