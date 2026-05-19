@@ -292,6 +292,8 @@ pub mod elisp_cc_spike {
         fn nl_sf_while(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
         fn nl_sf_let(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
         fn nl_sf_let_star(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_sf_lambda(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
+        fn nl_sf_function(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
         pub fn nelisp_jit_add2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_sub2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_mul2(a: i64, b: i64) -> i64;
@@ -651,6 +653,8 @@ pub mod elisp_cc_spike {
     cc_wrap!(sf_while_call: nl_sf_while, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(sf_let_call: nl_sf_let, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(sf_let_star_call: nl_sf_let_star, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64);
+    cc_wrap!(sf_lambda_call: nl_sf_lambda, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64);
+    cc_wrap!(sf_function_call: nl_sf_function, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64);
     cc_wrap!(jit_predicate_eq: nelisp_jit_predicate_eq, (a: *const Sexp, b: *const Sexp) -> i64);
     cc_wrap!(jit_ref_eq: nelisp_jit_ref_eq, (a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(jit_record_type: nelisp_jit_record_type, (arg: *const Sexp, out: *mut Sexp) -> i64);

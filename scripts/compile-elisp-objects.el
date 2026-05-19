@@ -974,6 +974,15 @@
     (nelisp-cc-sf-let-star
      :source-var nelisp-cc-sf-let-star--source
      :output "nl_sf_let_star.o"
+     :requires-arch x86_64)
+    ;; `nl_sf_lambda' + `nl_sf_function' replace lambda + function Rust bodies.
+    (nelisp-cc-sf-lambda
+     :source-var nelisp-cc-sf-lambda--source
+     :output "nl_sf_lambda.o"
+     :requires-arch x86_64)
+    (nelisp-cc-sf-function
+     :source-var nelisp-cc-sf-function--source
+     :output "nl_sf_function.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

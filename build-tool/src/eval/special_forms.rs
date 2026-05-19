@@ -79,23 +79,17 @@ fn sf_quote(args: &Sexp) -> Result<Sexp, EvalError> {
 }
 
 fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let form = first_arg(args, "function")?;
-    match &form {
-        Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "lambda") => {
-            let (params, body) = lambda_rest(&form)?;
-            sf_lambda(&Sexp::cons(params, body), env)
-        }
-        _ => Ok(form),
-    }
-}
-
-fn lambda_rest(lam: &Sexp) -> Result<(Sexp, Sexp), EvalError> {
-    if let Sexp::Cons(outer) = lam {
-        if let Sexp::Cons(rest) = &outer.cdr {
-            return Ok((rest.car.clone(), rest.cdr.clone()));
-        }
-    }
-    Err(EvalError::Internal("malformed lambda".into()))
+    let mut out = Sexp::Nil;
+    let mut s1 = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::sf_function_call(
+            args as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            &mut s1 as *mut Sexp,
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_function".into())) }
 }
 
 fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -232,14 +226,50 @@ fn eval_body(body: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    expect_min_len(&parts, "lambda", 1)?;
-    let formals = parts[0].clone();
-    let body: Vec<Sexp> = parts.iter().skip(1).cloned().collect();
-    let captured = env.capture_lexical();
-    let mut chain = vec![Sexp::Symbol("closure".into()), captured, formals];
-    chain.extend(body);
-    Ok(Sexp::list_from(&chain))
+    let mut out = Sexp::Nil;
+    let mut s1 = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::sf_lambda_call(
+            args as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            &mut s1 as *mut Sexp,
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_lambda".into())) }
+}
+
+/// Phase 47 ABI — capture lexical environment to *out. Returns 0.
+#[no_mangle]
+pub unsafe extern "C" fn nl_env_capture_lexical(
+    env: *mut std::ffi::c_void,
+    out: *mut Sexp,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    std::ptr::write(out, env_ref.capture_lexical());
+    0
+}
+
+/// Phase 47 ABI — check if Sexp is Symbol("lambda").
+#[no_mangle]
+pub unsafe extern "C" fn nl_symbol_is_lambda(sym: *const Sexp) -> i64 {
+    match &*sym {
+        Sexp::Symbol(s) if s == "lambda" => 1,
+        _ => 0,
+    }
+}
+
+/// Phase 47 ABI — prepend new car to existing list (refcount-safe clone).
+#[no_mangle]
+pub unsafe extern "C" fn nl_cons_prepend_clone(
+    car_ptr: *const Sexp,
+    cdr_ptr: *const Sexp,
+    out: *mut Sexp,
+) -> i64 {
+    let car_owned = (*car_ptr).clone();
+    let cdr_owned = (*cdr_ptr).clone();
+    *out = Sexp::cons(car_owned, cdr_owned);
+    0
 }
 
 fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {

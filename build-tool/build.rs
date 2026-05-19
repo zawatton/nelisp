@@ -354,6 +354,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // externs in `eval/special_forms.rs'.
         "nelisp-cc-sf-let.el",
         "nelisp-cc-sf-let-star.el",
+        // Phase 47 Tier-1 special forms elisp化 — lambda / function.
+        "nelisp-cc-sf-lambda.el",
+        "nelisp-cc-sf-function.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
