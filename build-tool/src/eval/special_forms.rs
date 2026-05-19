@@ -14,7 +14,7 @@ macro_rules! sf_call_4arg {
                 0,
             )
         };
-        if rc == 0 { Ok::<_, EvalError>(out) } else { Err(EvalError::Internal($name.into())) }
+        if rc == 0 { Ok::<_, EvalError>(out) } else { Err(super::consume_stashed_error($env, $name)) }
     }};
 }
 
@@ -30,7 +30,7 @@ macro_rules! sf_call_with_s1 {
                 &mut s1 as *mut Sexp,
             )
         };
-        if rc == 0 { Ok::<_, EvalError>(out) } else { Err(EvalError::Internal($name.into())) }
+        if rc == 0 { Ok::<_, EvalError>(out) } else { Err(super::consume_stashed_error($env, $name)) }
     }};
 }
 
@@ -55,8 +55,6 @@ pub fn apply_special(
         "condition-case" => sf_condition_case(args, env)?,
         "unwind-protect" => sf_unwind_protect(args, env)?,
         "progn" => sf_call_4arg!("sf_progn", sf_progn_call, args, env)?,
-        "catch" => sf_catch(args, env)?,
-        "throw" => sf_throw(args, env)?,
         _ => return Ok(None),
     }))
 }
@@ -67,11 +65,6 @@ fn wrong_args(function: &str, expected: &str, got: usize) -> EvalError {
         expected: expected.into(),
         got,
     }
-}
-
-fn expect_len(parts: &[Sexp], name: &str, expected: usize) -> Result<(), EvalError> {
-    if parts.len() == expected { Ok(()) }
-    else { Err(wrong_args(name, &expected.to_string(), parts.len())) }
 }
 
 fn expect_min_len(parts: &[Sexp], name: &str, min: usize) -> Result<(), EvalError> {
@@ -458,32 +451,6 @@ fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         )
     };
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_progn".into())) }
-}
-
-fn sf_catch(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = list_elements(args)?;
-    expect_min_len(&parts, "catch", 1)?;
-    let tag = eval(&parts[0], env)?;
-    let body: Vec<Sexp> = parts.iter().skip(1).cloned().collect();
-    match eval_body(&body, env) {
-        Ok(v) => Ok(v),
-        Err(EvalError::UncaughtThrow { tag: thrown, value }) => {
-            if sexp_eq(&tag, &thrown) {
-                Ok(value)
-            } else {
-                Err(EvalError::UncaughtThrow { tag: thrown, value })
-            }
-        }
-        Err(other) => Err(other),
-    }
-}
-
-fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = list_elements(args)?;
-    expect_len(&parts, "throw", 2)?;
-    let tag = eval(&parts[0], env)?;
-    let value = eval(&parts[1], env)?;
-    Err(EvalError::UncaughtThrow { tag, value })
 }
 
 #[no_mangle]

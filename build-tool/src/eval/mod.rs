@@ -395,7 +395,7 @@ pub(crate) fn apply_lambda_inner(
             &mut out as *mut Sexp,
         )
     };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("apply_lambda_inner".into())) }
+    if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda_inner")) }
 }
 
 
@@ -433,10 +433,39 @@ pub unsafe extern "C" fn nelisp_eval_call(
 ) -> i64 {
     let env_ref = &mut *(env as *mut Env);
     match eval(&*form, env_ref) {
-        Ok(v) => {
-            std::ptr::write(out, v);
-            0
+        Ok(v) => { std::ptr::write(out, v); 0 }
+        Err(e) => {
+            // Stash signal data so Phase 47 .o rc=1 callers can recover variant.
+            let _ = env_ref.set_value("nelisp--last-signal-data", e.signal_data());
+            1
         }
-        Err(_) => 1,
+    }
+}
+
+/// Re-construct EvalError from a `(tag . data)' sexp produced by `signal_data()`.
+pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fallback_name: &str) -> EvalError {
+    let Sexp::Cons(b) = sexp else { return EvalError::Internal(fallback_name.to_string()) };
+    let Sexp::Symbol(tag) = &b.car else { return EvalError::Internal(fallback_name.to_string()) };
+    let data = &b.cdr;
+    match tag.as_str() {
+        "quit" => EvalError::Quit,
+        "no-catch" => {
+            if let Sexp::Cons(c) = data {
+                if let Sexp::Cons(cc) = &c.cdr {
+                    return EvalError::UncaughtThrow { tag: c.car.clone(), value: cc.car.clone() };
+                }
+            }
+            EvalError::Internal(fallback_name.to_string())
+        }
+        _ => EvalError::UserError { tag: tag.clone(), data: data.clone() },
+    }
+}
+
+/// Read stashed signal from `nelisp--last-signal-data' and reconstruct EvalError.
+/// Used by Phase 47 special-form dispatch macros on rc=1.
+pub(crate) fn consume_stashed_error(env: &mut Env, fallback_name: &str) -> EvalError {
+    match env.lookup_value("nelisp--last-signal-data") {
+        Ok(sexp) => sexp_to_eval_error(&sexp, fallback_name),
+        Err(_) => EvalError::Internal(fallback_name.to_string()),
     }
 }

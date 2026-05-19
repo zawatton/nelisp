@@ -469,6 +469,46 @@ Rust `sf_cl_defun' (build-tool/src/eval/special_forms.rs:389)."
              (let-form (cons 'let* (cons bindings body))))
         (cons 'defun (cons name (cons new-formals (cons let-form nil))))))))
 
+;;;; --- throw / catch (Phase A elisp化, replaces sf_throw / sf_catch) ----
+;;
+;; `(throw TAG VALUE)' は `(signal 'no-catch (list TAG VALUE))' に展開、
+;; `(catch TAG BODY)' は `(condition-case e BODY (no-catch ...))' に展開。
+;; Rust 側は `consume_stashed_error' で Phase 47 .o の rc=1 経由でも
+;; signal data から `EvalError::UserError("no-catch", ...)' を再構築する
+;; ので、progn / lambda 越えでも throw が tag eq で catch される。
+
+(defmacro throw (tag value)
+  ;; expands to: (signal 'no-catch (list TAG VALUE))
+  (cons 'signal
+        (cons (cons 'quote (cons 'no-catch nil))
+              (cons (cons 'list (cons tag (cons value nil))) nil))))
+
+(defmacro catch (tag &rest body)
+  ;; expands to:
+  ;; (condition-case --nl-catch-e (progn BODY...)
+  ;;   (no-catch (if (eq (car (cdr --nl-catch-e)) TAG)
+  ;;                 (car (cdr (cdr --nl-catch-e)))
+  ;;               (signal (car --nl-catch-e) (cdr --nl-catch-e)))))
+  (cons 'condition-case
+        (cons '--nl-catch-e
+              (cons (cons 'progn body)
+                    (cons (cons 'no-catch
+                                (cons (cons 'if
+                                            (cons (cons 'eq
+                                                        (cons (cons 'car
+                                                                    (cons (cons 'cdr (cons '--nl-catch-e nil)) nil))
+                                                              (cons tag nil)))
+                                                  (cons (cons 'car
+                                                              (cons (cons 'cdr
+                                                                          (cons (cons 'cdr (cons '--nl-catch-e nil)) nil))
+                                                                    nil))
+                                                        (cons (cons 'signal
+                                                                    (cons (cons 'car (cons '--nl-catch-e nil))
+                                                                          (cons (cons 'cdr (cons '--nl-catch-e nil)) nil)))
+                                                              nil))))
+                                      nil))
+                          nil)))))
+
 ;; (provide 'nelisp-stdlib-eval-special) is intentionally omitted:
 ;; Layer A loads BEFORE `nelisp-stdlib*.el' where `provide' itself is
 ;; defined.  Callers should not `(require 'nelisp-stdlib-eval-special)'.
