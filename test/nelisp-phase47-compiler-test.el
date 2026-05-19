@@ -1485,6 +1485,46 @@ inline more `cmp imm32' instructions)."
       (should (integerp long))
       (should (> long short)))))
 
+;; ---- §T.sexp-float-unwrap grammar (G4) ----
+
+(ert-deftest nelisp-phase47-compiler/parse-sexp-float-unwrap-shape ()
+  "Parse `(sexp-float-unwrap PTR)' to an IR node with :kind sexp-float-unwrap."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun probe (p) (sexp-float-unwrap p))))
+         (body (plist-get ir :body)))
+    (should (eq (plist-get body :kind) 'sexp-float-unwrap))
+    (let ((ptr (plist-get body :ptr)))
+      (should (eq (plist-get ptr :kind) 'ref))
+      (should (eq (plist-get ptr :var) 'p)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-sexp-float-unwrap-arity-error ()
+  "`(sexp-float-unwrap)' (= no arg) raises arity error."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun probe (p) (sexp-float-unwrap)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/emit-sexp-float-unwrap-produces-bytes ()
+  "Emit phase for `sexp-float-unwrap' compiles to a non-empty .o file
+matching the byte-pattern of `sexp-int-unwrap' (= identical payload
+offset 8 read; only the tag interpretation differs at the type-system
+level, not in the emitted machine code)."
+  (let ((path-fl (nelisp-phase47-compiler-test--tmp-binary "sfu"))
+        (path-in (nelisp-phase47-compiler-test--tmp-binary "siu")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe (p) (sexp-float-unwrap p)) path-fl)
+          (nelisp-phase47-compile-to-object
+           '(defun probe (p) (sexp-int-unwrap p)) path-in)
+          (let ((sz-fl (nth 7 (file-attributes path-fl)))
+                (sz-in (nth 7 (file-attributes path-in))))
+            (should (integerp sz-fl))
+            (should (integerp sz-in))
+            (should (= sz-fl sz-in))))
+      (ignore-errors (delete-file path-fl))
+      (ignore-errors (delete-file path-in)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here

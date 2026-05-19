@@ -518,6 +518,21 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'sexp-tag
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
+   ;; (sexp-float-unwrap PTR) — read the 8-byte f64 payload of a
+   ;; `Sexp::Float(f)' as raw bits, returned as i64 in rax (= xmm0
+   ;; bit-pattern reinterpreted via MOVQ).  No tag check — caller
+   ;; must ensure PTR points at a `Sexp::Float' variant.  Returns the
+   ;; bit pattern (= can be transferred to xmm0 via a future MOVQ
+   ;; grammar op for f64 arithmetic chains, or compared as raw u64
+   ;; for NaN-bit equality).  Companion to the existing
+   ;; `sexp-write-float SLOT VALUE' op (Doc 122.G).  G4 grammar.
+   ((and (consp sexp) (eq (car sexp) 'sexp-float-unwrap))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-float-unwrap-arity sexp)))
+    (list :kind 'sexp-float-unwrap
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-int-unwrap))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
@@ -2054,7 +2069,7 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-f64-cmp node buf))
         ('f64-call
          (nelisp-phase47-compiler--emit-f64-call node buf))
-        ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make
+        ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make 'sexp-float-unwrap
              'cons-null-p 'cons-car 'cons-cdr 'cons-cdr-raw
              'sexp-payload-ptr
              'record-type-tag 'record-slot-count 'record-slot-ref
@@ -2115,6 +2130,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-sexp-tag node buf))
       ('sexp-int-unwrap
        (nelisp-phase47-compiler--emit-sexp-int-unwrap node buf))
+      ('sexp-float-unwrap
+       (nelisp-phase47-compiler--emit-sexp-float-unwrap node buf))
       ('sexp-int-make
        (nelisp-phase47-compiler--emit-sexp-int-make node buf))
       ('cons-null-p
@@ -2514,6 +2531,32 @@ zero-extended to a 64-bit value in rax.  See `docs/arch/sexp-abi.md'
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)))
+
+(defun nelisp-phase47-compiler--emit-sexp-float-unwrap (node buf)
+  "Emit f64-payload read for a `Sexp::Float(f)' value, returning the
+raw 8-byte bit pattern as i64 in rax.
+
+Strategy:
+  1. Evaluate NODE's :ptr into rax (= gp class default).
+  2. mov rdi, rax  — preserve the pointer for the load.
+  3. mov rax, qword ptr [rdi + 8]  — read the f64 bit pattern
+     directly as i64 from the Sexp payload offset (= same offset 8
+     used by `sexp-int-unwrap' since Sexp::Int and Sexp::Float share
+     the payload starting position; only the tag byte differs).
+
+Returns f64 bits in rax — callers needing actual f64 arithmetic
+can MOVQ to xmm0 once the bits-to-f64 grammar op (G5 TBD) ships,
+or pass the i64 bits to a Rust extern via `extern-call' that does
+the bit-cast internally.  No tag check — caller responsibility.
+
+Mirror of `--emit-sexp-int-unwrap' (= same byte sequence, same
+offset); separated as a distinct op for emit-time class clarity
+and for future f64-class composition with `--emit-f64-leaf-into'."
+  (let ((ptr (plist-get node :ptr)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-sexp--offset-payload)))
 
 (defun nelisp-phase47-compiler--emit-sexp-int-unwrap (node buf)
   "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr into rdi.
