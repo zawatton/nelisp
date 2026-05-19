@@ -198,103 +198,6 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
     1
 }
 
-fn bad_sym(expected: &str, name: String) -> EvalError {
-    EvalError::WrongType {
-        expected: expected.into(),
-        got: Sexp::Symbol(name),
-    }
-}
-
-fn wrong_lambda_arity(expected: String, got: usize) -> EvalError {
-    EvalError::WrongNumberOfArguments {
-        function: "lambda".into(),
-        expected,
-        got,
-    }
-}
-
-fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(), EvalError> {
-    let names = super::list_elements(formals)?;
-    #[derive(Clone, Copy)]
-    enum Mode { Required, Optional, Rest }
-    let required = names.iter().take_while(|formal| {
-        !matches!(formal, Sexp::Symbol(s) if s == "&optional" || s == "&rest")
-    }).count();
-    let (mut mode, mut idx, mut saw_rest, mut consumed_rest) =
-        (Mode::Required, 0usize, false, false);
-    for formal in names {
-        let Sexp::Symbol(name) = formal else {
-            return Err(EvalError::WrongType { expected: "symbol".into(), got: formal });
-        };
-        match name.as_str() {
-            "&optional" => {
-                if matches!(mode, Mode::Rest) {
-                    return Err(bad_sym("formal parameter after &rest", name));
-                }
-                mode = Mode::Optional;
-            }
-            "&rest" => {
-                if saw_rest {
-                    return Err(bad_sym("single &rest marker", name));
-                }
-                mode = Mode::Rest;
-                saw_rest = true;
-            }
-            _ if matches!(mode, Mode::Required) => {
-                let Some(value) = args.get(idx) else {
-                    return Err(wrong_lambda_arity(required.to_string(), args.len()));
-                };
-                env.bind_local(&name, value.clone());
-                idx += 1;
-            }
-            _ if matches!(mode, Mode::Optional) => {
-                env.bind_local(&name, args.get(idx).cloned().unwrap_or(Sexp::Nil));
-                idx += usize::from(idx < args.len());
-            }
-            _ => {
-                if consumed_rest {
-                    return Err(bad_sym("single symbol after &rest", name));
-                }
-                env.bind_local(&name, Sexp::list_from(&args[idx..]));
-                idx = args.len();
-                consumed_rest = true;
-            }
-        };
-    }
-    if idx < args.len() && !consumed_rest {
-        return Err(wrong_lambda_arity(format!("at most {}", idx), args.len()));
-    }
-    if saw_rest && !consumed_rest {
-        return Err(bad_sym("symbol after &rest", "&rest".into()));
-    }
-    Ok(())
-}
-
-unsafe fn bind_formals_common(
-    formals_ptr: *const Sexp,
-    args_list_ptr: *const Sexp,
-    env: *mut std::ffi::c_void,
-    push: bool,
-) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    let args = match super::list_elements(&*args_list_ptr) {
-        Ok(v) => v,
-        Err(_) => return 1,
-    };
-    if push {
-        env_ref.push_frame();
-    }
-    match bind_formals_impl(&*formals_ptr, &args, env_ref) {
-        Ok(()) => 0,
-        Err(_) => {
-            if push {
-                env_ref.pop_frame();
-            }
-            1
-        }
-    }
-}
-
 /// Phase 47 .o bind_formals_impl helpers.
 ///
 /// All functions below are called from `nl_bind_formals_impl' in
@@ -518,7 +421,13 @@ pub unsafe extern "C" fn nl_push_and_bind(
     args_list_ptr: *const Sexp,
     env: *mut std::ffi::c_void,
 ) -> i64 {
-    bind_formals_common(formals_ptr, args_list_ptr, env, true)
+    let env_ref = &mut *(env as *mut Env);
+    env_ref.push_frame();
+    let rc = crate::elisp_cc_spike::bind_formals_impl_call(formals_ptr, args_list_ptr, env, 0);
+    if rc != 0 {
+        env_ref.pop_frame();
+    }
+    rc
 }
 
 #[no_mangle]
@@ -527,7 +436,7 @@ pub unsafe extern "C" fn nl_bind_formals(
     args_list_ptr: *const Sexp,
     env: *mut std::ffi::c_void,
 ) -> i64 {
-    bind_formals_common(formals_ptr, args_list_ptr, env, false)
+    crate::elisp_cc_spike::bind_formals_impl_call(formals_ptr, args_list_ptr, env, 0)
 }
 
 #[no_mangle]
