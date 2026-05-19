@@ -233,40 +233,10 @@ pub mod elisp_cc_spike {
             scratch_vec_ptr: *const Sexp,
             _pad: i64,
         ) -> i64;
-        fn nelisp_frame_stack_depth(frames_ptr: *const Sexp) -> i64;
         fn nelisp_frame_stack_ensure_capacity(
             frames_ptr: *const Sexp,
             needed: i64,
             scratch_slot: *mut Sexp,
-        ) -> i64;
-        fn nelisp_frame_push(
-            frames_ptr: *const Sexp,
-            scratch_vec_ptr: *const Sexp,
-            _pad: i64,
-        ) -> i64;
-        fn nelisp_frame_pop(
-            frames_ptr: *const Sexp,
-            scratch_slot: *mut Sexp,
-        ) -> i64;
-        fn nelisp_frame_bind(
-            frames_ptr: *const Sexp,
-            name_ptr: *const Sexp,
-            cell_ptr: *const Sexp,
-            scratch_pair_slot: *mut Sexp,
-            scratch_outer_slot: *mut Sexp,
-            scratch_count_slot: *mut Sexp,
-        ) -> i64;
-        fn nelisp_frame_stack_find(
-            frames_ptr: *const Sexp,
-            name_ptr: *const Sexp,
-        ) -> i64;
-        fn nelisp_wrap_alist_cells(
-            alist_ptr: *const Sexp,
-            result_slot: *mut Sexp,
-            work_slot: *mut Sexp,
-            name_slot: *mut Sexp,
-            cell_slot: *mut Sexp,
-            inner_slot: *mut Sexp,
         ) -> i64;
         fn nelisp_fnv1a(str_ptr: *const Sexp) -> i64;
         fn nelisp_reader_lex_one(
@@ -567,57 +537,9 @@ pub mod elisp_cc_spike {
         )
     }
 
-    cc_wrap!(frame_stack_depth: nelisp_frame_stack_depth, (frames_ptr: *const Sexp) -> i64);
-
     pub unsafe fn frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64) -> i64 {
         let mut scratch = Sexp::Nil;
         nelisp_frame_stack_ensure_capacity(frames_ptr, needed, &mut scratch as *mut Sexp)
-    }
-
-    pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 {
-        let scratch_vec = Sexp::vector(vec![
-            Sexp::Symbol("nelisp-lexframe".into()),
-            Sexp::Symbol("fast-hash-table".into()),
-            Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil,
-        ]);
-        nelisp_frame_push(frames_ptr, &scratch_vec as *const Sexp, 0)
-    }
-
-    pub unsafe fn frame_pop(frames_ptr: *const Sexp) -> i64 {
-        let mut scratch = Sexp::Nil;
-        nelisp_frame_pop(frames_ptr, &mut scratch as *mut Sexp)
-    }
-
-    pub unsafe fn frame_bind(
-        frames_ptr: *const Sexp, name_ptr: *const Sexp, cell_ptr: *const Sexp,
-    ) -> i64 {
-        let mut scratch_pair = Sexp::Nil;
-        let mut scratch_outer = Sexp::Nil;
-        let mut scratch_count = Sexp::Nil;
-        nelisp_frame_bind(frames_ptr, name_ptr, cell_ptr,
-            &mut scratch_pair as *mut Sexp,
-            &mut scratch_outer as *mut Sexp,
-            &mut scratch_count as *mut Sexp)
-    }
-
-    pub unsafe fn frame_stack_find(frames_ptr: *const Sexp, name_ptr: *const Sexp) -> *const Sexp {
-        nelisp_frame_stack_find(frames_ptr, name_ptr) as *const Sexp
-    }
-
-    // Reset scratch slots to avoid double-decrement.
-    pub unsafe fn wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp) -> i64 {
-        let mut work_slot = Sexp::Nil;
-        let mut name_slot = Sexp::Nil;
-        let mut cell_slot = Sexp::Nil;
-        let mut inner_slot = Sexp::Nil;
-        let rc = nelisp_wrap_alist_cells(alist_ptr, result_slot,
-            &mut work_slot as *mut Sexp, &mut name_slot as *mut Sexp,
-            &mut cell_slot as *mut Sexp, &mut inner_slot as *mut Sexp);
-        core::ptr::write(&mut work_slot as *mut Sexp, Sexp::Nil);
-        core::ptr::write(&mut name_slot as *mut Sexp, Sexp::Nil);
-        core::ptr::write(&mut cell_slot as *mut Sexp, Sexp::Nil);
-        core::ptr::write(&mut inner_slot as *mut Sexp, Sexp::Nil);
-        rc
     }
 
     cc_wrap!(fnv1a: nelisp_fnv1a, (str_ptr: *const Sexp) -> i64);
