@@ -236,33 +236,6 @@ impl Env {
         })
     }
 
-    fn mirror_lookup_slot(
-        &self,
-        name: &str,
-        lookup: unsafe fn(*const Sexp, *const Sexp, *mut Sexp) -> *mut Sexp,
-    ) -> Sexp {
-        self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| unsafe {
-            if crate::elisp_cc_spike::mirror_lookup_entry(mirror_ptr, sym_ptr).is_null() {
-                return self.unbound_marker.clone();
-            }
-            let mut slot = Sexp::Nil;
-            lookup(mirror_ptr, sym_ptr, &mut slot);
-            slot
-        })
-        .unwrap_or_else(|| self.unbound_marker.clone())
-    }
-
-    fn mirror_has(
-        &self,
-        name: &str,
-        lookup: impl FnOnce(*const Sexp, *const Sexp, *const Sexp) -> i64,
-    ) -> bool {
-        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| {
-            lookup(mirror_ptr, sym_ptr, unbound_ptr) != 0
-        })
-        .unwrap_or(false)
-    }
-
     fn frame_bucket(
         frame: &Sexp,
         name: &str,
@@ -406,23 +379,41 @@ impl Env {
     }
 
     pub fn mirror_lookup_value(&self, name: &str) -> Sexp {
-        self.mirror_lookup_slot(name, crate::elisp_cc_spike::mirror_lookup_value)
+        self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| unsafe {
+            if crate::elisp_cc_spike::mirror_lookup_entry(mirror_ptr, sym_ptr).is_null() {
+                return self.unbound_marker.clone();
+            }
+            let mut slot = Sexp::Nil;
+            crate::elisp_cc_spike::mirror_lookup_value(mirror_ptr, sym_ptr, &mut slot);
+            slot
+        })
+        .unwrap_or_else(|| self.unbound_marker.clone())
     }
 
     pub fn mirror_lookup_function(&self, name: &str) -> Sexp {
-        self.mirror_lookup_slot(name, crate::elisp_cc_spike::mirror_lookup_function)
+        self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| unsafe {
+            if crate::elisp_cc_spike::mirror_lookup_entry(mirror_ptr, sym_ptr).is_null() {
+                return self.unbound_marker.clone();
+            }
+            let mut slot = Sexp::Nil;
+            crate::elisp_cc_spike::mirror_lookup_function(mirror_ptr, sym_ptr, &mut slot);
+            slot
+        })
+        .unwrap_or_else(|| self.unbound_marker.clone())
     }
 
     pub(crate) fn mirror_is_bound(&self, name: &str) -> bool {
-        self.mirror_has(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_is_bound(mirror_ptr, sym_ptr, unbound_ptr)
+        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
+            crate::elisp_cc_spike::mirror_is_bound(mirror_ptr, sym_ptr, unbound_ptr) != 0
         })
+        .unwrap_or(false)
     }
 
     pub fn mirror_is_fbound(&self, name: &str) -> bool {
-        self.mirror_has(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_is_fbound(mirror_ptr, sym_ptr, unbound_ptr)
+        self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
+            crate::elisp_cc_spike::mirror_is_fbound(mirror_ptr, sym_ptr, unbound_ptr) != 0
         })
+        .unwrap_or(false)
     }
 
     pub(crate) fn install_empty_frames_record_rust_direct(&mut self) {
