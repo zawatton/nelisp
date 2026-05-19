@@ -194,39 +194,30 @@ fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalEr
     else { Err(EvalError::WrongType { expected: prim.into(), got: arg.clone() }) }
 }
 
-pub fn bi_nl_jit_call_out_1(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let p = jit_lookup("nl-jit-call-out-1", args, 2)?;
-    let f: extern "C" fn(*const Sexp, *mut Sexp) -> i64 = unsafe { cast(p) };
-    let mut out = Sexp::Nil;
-    let r = f(&args[1] as *const _, &mut out as *mut _);
-    out_result(r, out, "jit-call-out-1", &args[1])
+// Out-slot trampolines: lookup, cast, alloc `out`, call, dispatch.
+macro_rules! out_call {
+    ($fn:ident, $tag:literal, $n:literal, |$a:ident,$o:ident $(,$i:ident)?|,
+     ($($t:ty),+), ($($e:expr),+ $(,)?)) => {
+        pub fn $fn($a: &[Sexp]) -> Result<Sexp, EvalError> {
+            let p = jit_lookup(concat!("nl-", $tag), $a, $n)?;
+            $(let $i = as_int(concat!("nl-", $tag), &$a[2])?;)?
+            let f: extern "C" fn($($t),+) -> i64 = unsafe { cast(p) };
+            let mut $o = Sexp::Nil;
+            out_result(f($($e),+), $o, $tag, &$a[1])
+        }
+    };
 }
-
-pub fn bi_nl_jit_call_out_2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let p = jit_lookup("nl-jit-call-out-2", args, 3)?;
-    let f: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64 = unsafe { cast(p) };
-    let mut out = Sexp::Nil;
-    let r = f(&args[1] as *const _, &args[2] as *const _, &mut out as *mut _);
-    out_result(r, out, "jit-call-out-2", &args[1])
-}
-
-pub fn bi_nl_jit_call_out_1i(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let p = jit_lookup("nl-jit-call-out-1i", args, 3)?;
-    let idx = as_int("nl-jit-call-out-1i", &args[2])?;
-    let f: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64 = unsafe { cast(p) };
-    let mut out = Sexp::Nil;
-    let r = f(&args[1] as *const _, idx, &mut out as *mut _);
-    out_result(r, out, "jit-call-out-1i", &args[1])
-}
-
-pub fn bi_nl_jit_call_out_2i(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let p = jit_lookup("nl-jit-call-out-2i", args, 4)?;
-    let idx = as_int("nl-jit-call-out-2i", &args[2])?;
-    let f: extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64 = unsafe { cast(p) };
-    let mut out = Sexp::Nil;
-    let r = f(&args[1] as *const _, idx, &args[3] as *const _, &mut out as *mut _);
-    out_result(r, out, "jit-call-out-2i", &args[1])
-}
+out_call!(bi_nl_jit_call_out_1, "jit-call-out-1", 2, |args,out|,
+    (*const Sexp, *mut Sexp), (&args[1] as *const _, &mut out as *mut _));
+out_call!(bi_nl_jit_call_out_2, "jit-call-out-2", 3, |args,out|,
+    (*const Sexp, *const Sexp, *mut Sexp),
+    (&args[1] as *const _, &args[2] as *const _, &mut out as *mut _));
+out_call!(bi_nl_jit_call_out_1i, "jit-call-out-1i", 3, |args,out,idx|,
+    (*const Sexp, i64, *mut Sexp),
+    (&args[1] as *const _, idx, &mut out as *mut _));
+out_call!(bi_nl_jit_call_out_2i, "jit-call-out-2i", 4, |args,out,idx|,
+    (*const Sexp, i64, *const Sexp, *mut Sexp),
+    (&args[1] as *const _, idx, &args[3] as *const _, &mut out as *mut _));
 
 pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-format-float", args, 4)?;
