@@ -342,6 +342,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Phase 47 elisp migration — `nl_jit_split_by_non_alnum'
         // non-alphanumeric splitter (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-split-by-non-alnum.el",
+        // Phase 47 Tier-1 special forms elisp化 — Rust bodies deleted from
+        // `eval/special_forms.rs'.
+        "nelisp-cc-sf-progn.el",
+        // "nelisp-cc-sf-if.el",
+        // "nelisp-cc-sf-setq.el",
+        // "nelisp-cc-sf-while.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

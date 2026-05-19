@@ -328,7 +328,16 @@ fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    eval_body(&args_vec(args)?, env)
+    let mut out = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::sf_progn_call(
+            args as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            0, // _pad: alignment pad (nl_sf_progn is arity 4/even)
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_progn".into())) }
 }
 
 fn sf_catch(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -356,6 +365,45 @@ fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let value = eval(&parts[1], env)?;
     Err(EvalError::UncaughtThrow { tag, value })
 }
+
+/// Phase 47 elisp primitive — evaluate a form and return its truthiness.
+/// Returns: 1=truthy, 0=nil/false, -1=eval error.
+/// Called from elisp as `(extern-call nl_eval_is_truthy FORM-PTR ENV)'.
+#[no_mangle]
+pub unsafe extern "C" fn nl_eval_is_truthy(
+    form: *const Sexp,
+    env: *mut std::ffi::c_void,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    match super::eval(&*form, env_ref) {
+        Ok(v) => if !matches!(v, Sexp::Nil) { 1 } else { 0 },
+        Err(_) => -1,
+    }
+}
+
+/// Phase 47 elisp primitive — set a variable in the environment.
+/// env: *mut c_void (= *mut Env).
+/// sym: *const Sexp pointing to a Symbol.
+/// val: *const Sexp — the already-evaluated value (in the out slot).
+/// Returns: 0=Ok, 1=Err.
+/// Called from elisp as `(extern-call nl_env_set_value ENV SYM-PTR VAL-PTR)'.
+#[no_mangle]
+pub unsafe extern "C" fn nl_env_set_value(
+    env: *mut std::ffi::c_void,
+    sym: *const Sexp,
+    val: *const Sexp,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let name = match &*sym {
+        Sexp::Symbol(s) | Sexp::Str(s) => s.as_str(),
+        _ => return 1,
+    };
+    match env_ref.set_value(name, (*val).clone()) {
+        Ok(_) => 0,
+        Err(_) => 1,
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn nl_sexp_eq(a: *const Sexp, b: *const Sexp) -> i64 {
     if sexp_eq(&*a, &*b) {

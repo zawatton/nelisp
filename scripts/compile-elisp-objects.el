@@ -937,6 +937,28 @@
     (nelisp-cc-jit-split-by-non-alnum
      :source-var nelisp-cc-jit-split-by-non-alnum--source
      :output "nl_jit_split_by_non_alnum.o"
+     :requires-arch x86_64)
+    ;; Phase 47 Tier-1 special forms elisp化.
+    ;; `nl_sf_progn' replaces the `sf_progn' Rust body in
+    ;; `eval/special_forms.rs'.
+    (nelisp-cc-sf-progn
+     :source-var nelisp-cc-sf-progn--source
+     :output "nl_sf_progn.o"
+     :requires-arch x86_64)
+    ;; `nl_sf_if' replaces the `sf_if' Rust body.
+    (nelisp-cc-sf-if
+     :source-var nelisp-cc-sf-if--source
+     :output "nl_sf_if.o"
+     :requires-arch x86_64)
+    ;; `nl_sf_setq' replaces the `sf_setq' Rust body.
+    (nelisp-cc-sf-setq
+     :source-var nelisp-cc-sf-setq--source
+     :output "nl_sf_setq.o"
+     :requires-arch x86_64)
+    ;; `nl_sf_while' replaces the `sf_while' Rust body.
+    (nelisp-cc-sf-while
+     :source-var nelisp-cc-sf-while--source
+     :output "nl_sf_while.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
