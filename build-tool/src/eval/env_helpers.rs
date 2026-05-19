@@ -8,14 +8,6 @@ use super::sexp::Sexp;
 
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct SymbolEntry {
-    pub value: Option<Sexp>,
-    pub function: Option<Sexp>,
-    pub plist: Option<Sexp>,
-    pub constant: bool,
-}
-
 pub type FrameCell = crate::eval::nlcell::NlCellRef;
 
 pub struct Env {
@@ -306,61 +298,6 @@ impl Env {
         self.with_mirror_unbound(name, |mirror_ptr, sym_ptr, unbound_ptr| unsafe {
             crate::elisp_cc_spike::mirror_set_constant_or_insert(mirror_ptr, sym_ptr, &value, unbound_ptr);
         });
-    }
-
-    pub(crate) fn mirror_iter_entries<F>(&self, mut callback: F)
-    where
-        F: FnMut(&str, &crate::eval::nlrecord::NlRecordRef),
-    {
-        let env_rec = match &self.globals_record {
-            Sexp::Record(r) => r,
-            _ => return,
-        };
-        let ht_rec = match env_rec.slots.get(0) {
-            Some(Sexp::Record(r)) => r,
-            _ => return,
-        };
-        let buckets = match ht_rec.slots.get(1) {
-            Some(Sexp::Vector(v)) => v,
-            _ => return,
-        };
-        for bucket in buckets.value.iter() {
-            let mut cur = bucket;
-            while let Sexp::Cons(c) = cur {
-                if let Sexp::Cons(pair) = &c.car {
-                    if let (Sexp::Str(k), Sexp::Record(r)) = (&pair.car, &pair.cdr) {
-                        callback(k, r);
-                    }
-                }
-                cur = &c.cdr;
-            }
-        }
-    }
-
-    pub fn mirror_snapshot_globals(&self) -> HashMap<String, SymbolEntry> {
-        let mut out: HashMap<String, SymbolEntry> = HashMap::new();
-        let unbound = self.unbound_marker.clone();
-        self.mirror_iter_entries(|name, record| {
-            let slots = &record.slots;
-            let value = match slots.get(0) {
-                Some(s) if *s != unbound => Some(s.clone()),
-                _ => None,
-            };
-            let function = match slots.get(1) {
-                Some(s) if *s != unbound => Some(s.clone()),
-                _ => None,
-            };
-            let plist = match slots.get(2) {
-                Some(Sexp::Nil) | None => None,
-                Some(s) => Some(s.clone()),
-            };
-            let constant = matches!(slots.get(3), Some(Sexp::T));
-            out.insert(
-                name.to_string(),
-                SymbolEntry { value, function, plist, constant },
-            );
-        });
-        out
     }
 
     pub fn install_empty_mirror_rust_direct(&mut self) {

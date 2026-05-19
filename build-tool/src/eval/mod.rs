@@ -21,7 +21,7 @@ pub mod sexp;
 pub mod sexp_abi_assert;
 pub mod special_forms;
 
-pub use env_helpers::{Env, ExternBuiltin, FrameCell, SymbolEntry};
+pub use env_helpers::{Env, ExternBuiltin, FrameCell};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 
