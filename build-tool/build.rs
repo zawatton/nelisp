@@ -384,6 +384,11 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Phase 47 swap — `nl_symbol_is_lambda' single symbol-name-eq check
         // replacing the `#[no_mangle] extern "C" fn nl_symbol_is_lambda'.
         "nelisp-cc-symbol-is-lambda.el",
+        // Phase 47 — `nl_cons_prepend_clone' Rust body deleted from
+        // `eval/special_forms.rs'.  Single defun using `cons-make-with-clone'
+        // (Doc 120.E); deep-clones car + cdr into a fresh NlConsBox and
+        // writes `Sexp::Cons(box)' into *out.
+        "nelisp-cc-cons-prepend-clone.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

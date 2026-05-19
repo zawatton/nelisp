@@ -1126,6 +1126,17 @@
      :source-var nelisp-cc-sexp-fmt--source
      :output "nelisp_fmt_sexp.o"
      :requires-arch x86_64)
+    ;; Phase 47 — `nl_cons_prepend_clone' Rust body deleted from
+    ;; `build-tool/src/eval/special_forms.rs'; Phase-47-compiled elisp
+    ;; `.o' replaces it.  Single defun using the Doc 120.E fused
+    ;; `cons-make-with-clone' grammar op (= nl_alloc_consbox + two
+    ;; nl_sexp_clone_into calls + tag/payload write into *out).  Alias-safe
+    ;; when out = one of the source pointers.  Linux-x86_64 only — same
+    ;; arch gate as the other Phase 47 cons-family migrations.
+    (nelisp-cc-cons-prepend-clone
+     :source-var nelisp-cc-cons-prepend-clone--source
+     :output "nl_cons_prepend_clone.o"
+     :requires-arch x86_64)
     ;; Phase 47 — `sf_unwind_protect' Rust body deleted from
     ;; `build-tool/src/eval/special_forms.rs'; Phase-47-compiled elisp
     ;; `.o' replaces it.  8 defuns (seq form) walk `(BODYFORM CLEANUP...)'

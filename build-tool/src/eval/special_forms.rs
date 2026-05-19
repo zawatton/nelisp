@@ -425,17 +425,11 @@ pub unsafe extern "C" fn nl_env_capture_lexical(env: *mut std::ffi::c_void, out:
     0
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn nl_cons_prepend_clone(
-    car_ptr: *const Sexp,
-    cdr_ptr: *const Sexp,
-    out: *mut Sexp,
-) -> i64 {
-    let car_owned = (*car_ptr).clone();
-    let cdr_owned = (*cdr_ptr).clone();
-    *out = Sexp::cons(car_owned, cdr_owned);
-    0
-}
+// Body migrated to Phase 47 elisp: lisp/nelisp-cc-cons-prepend-clone.el
+// Symbol `nl_cons_prepend_clone' is now provided by the elisp .o archive;
+// bridge.rs extern decl + anchor keeps it live for extern-call resolution.
+// `nl_symbol_is_lambda' also migrated to lisp/nelisp-cc-symbol-is-lambda.el
+// in the prior commit on this branch.
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_eval_is_truthy(form: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
