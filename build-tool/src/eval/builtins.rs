@@ -37,7 +37,18 @@ macro_rules! builtin_dispatch {
                 require_arity("nelisp--recordp-cc", $args, 1, Some(1))?;
                 Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::recordp))
             },
-            "string-bytes" => bi_string_bytes($args), "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float($args),
+            "string-bytes" => {
+                require_arity("string-bytes", $args, 1, Some(1))?;
+                let str_view: Sexp = match &$args[0] {
+                    Sexp::Str(_) => $args[0].clone(),
+                    Sexp::MutStr(rc) => Sexp::Str(rc.value.clone()),
+                    other => return Err(EvalError::WrongType { expected: "string".into(), got: other.clone() }),
+                };
+                let mut result_slot: Sexp = Sexp::Nil;
+                unsafe { crate::elisp_cc_spike::bi_string_bytes(&str_view as *const Sexp, &mut result_slot as *mut Sexp); }
+                Ok(result_slot)
+            },
+            "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float($args),
             "truncate" => {
                 require_arity("truncate", $args, 1, Some(1))?;
                 match &$args[0] {
@@ -231,18 +242,6 @@ pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), Ev
         }
     };
     Ok((to_f64(&args[0])?, to_f64(&args[1])?, af))
-}
-
-fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-bytes", args, 1, Some(1))?;
-    let str_view: Sexp = match &args[0] {
-        Sexp::Str(_) => args[0].clone(),
-        Sexp::MutStr(rc) => Sexp::Str(rc.value.clone()),
-        other => return Err(EvalError::WrongType { expected: "string".into(), got: other.clone() }),
-    };
-    let mut result_slot: Sexp = Sexp::Nil;
-    unsafe { crate::elisp_cc_spike::bi_string_bytes(&str_view as *const Sexp, &mut result_slot as *mut Sexp); }
-    Ok(result_slot)
 }
 
 fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
