@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 macro_rules! builtin_names {
     () => { &[
         "vector", "make-vector", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes", "nl-jit-call-format-float", "truncate", "nelisp--syscall-canonicalize",
-        "nelisp--syscall-stat", "nelisp--syscall-readdir", "nelisp--syscall-read-file", "nelisp--read-all-from-string", "nelisp--syscall", "nelisp--syscall-supported-p",
+        "nelisp--syscall-stat", "nelisp--syscall-readdir", "nelisp--syscall-read-file", "nelisp--syscall", "nelisp--syscall-supported-p",
         "symbol-function", "fset", "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured", "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
         "nelisp--set-use-elisp-apply", "nelisp--apply-lambda-inner", "funcall", "apply", "eval", "signal", "nelisp--write-stdout-bytes", "nelisp--write-stderr-line",
         "read-stdin-bytes", "nelisp--f64-trunc", "nl-write-file", "nl-make-directory", "terminal-raw-mode-enter", "terminal-raw-mode-leave", "read-stdin-byte-available",
@@ -57,7 +57,7 @@ macro_rules! builtin_dispatch {
                 }
             },
             "nelisp--syscall-canonicalize" => bi_syscall_canonicalize($args, $env), "nelisp--syscall-stat" => bi_syscall_stat($args, $env), "nelisp--syscall-readdir" => bi_syscall_readdir($args, $env),
-            "nelisp--syscall-read-file" => bi_syscall_read_file($args, $env), "nelisp--read-all-from-string" => bi_read_all_from_string($args, $env), "nelisp--syscall" => bi_syscall($args),
+            "nelisp--syscall-read-file" => bi_syscall_read_file($args, $env), "nelisp--syscall" => bi_syscall($args),
             "nelisp--syscall-supported-p" => bi_syscall_supported_p($args),
             "symbol-function" => {
                 require_arity("symbol-function", $args, 1, Some(1))?;
@@ -353,18 +353,6 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
     }
     buf.truncate((rc as usize).min(n_bytes));
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
-}
-
-fn bi_read_all_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--read-all-from-string", args, 1, Some(1))?;
-    let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl").map_err(|_| {
-        EvalError::Internal(
-            "nelisp--read-all-from-string: `nelisp--read-all-from-string-impl' not loaded \
-             — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_SOURCES?"
-                .into(),
-        )
-    })?;
-    super::apply_function(&impl_fn, args, env)
 }
 
 fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {

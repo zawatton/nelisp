@@ -845,6 +845,13 @@ Stage 7.2.b takeover for the `read-all' style read used by `load'."
         (setq tokens (cdr sub))))
     (nreverse forms)))
 
+;; Public alias — the Rust dispatch arm previously routed
+;; `nelisp--read-all-from-string' through a thin shell that just
+;; looked up the `-impl' function cell and applied it.  Replacing
+;; the shell with a `defalias' moves the indirection into elisp
+;; (= zero Rust glue) since both names share the same function cell.
+(defalias 'nelisp--read-all-from-string 'nelisp--read-all-from-string-impl)
+
 (defun nelisp--read-all-with-line-from-string-impl (string)
   "Like `nelisp--read-all-from-string-impl' but each result is a
 \(LINE . FORM\) cons where LINE is the 1-origin source line at
