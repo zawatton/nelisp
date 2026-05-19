@@ -449,14 +449,6 @@ pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fallback_name: &str) -> EvalError 
     let data = &b.cdr;
     match tag.as_str() {
         "quit" => EvalError::Quit,
-        "no-catch" => {
-            if let Sexp::Cons(c) = data {
-                if let Sexp::Cons(cc) = &c.cdr {
-                    return EvalError::UncaughtThrow { tag: c.car.clone(), value: cc.car.clone() };
-                }
-            }
-            EvalError::Internal(fallback_name.to_string())
-        }
         _ => EvalError::UserError { tag: tag.clone(), data: data.clone() },
     }
 }

@@ -65,8 +65,6 @@ pub enum EvalError {
     ArithError(String),
     /// User `(signal 'TAG DATA)`.
     UserError { tag: String, data: Sexp },
-    /// `no-catch` for `(throw TAG VALUE)` off the catch stack.
-    UncaughtThrow { tag: Sexp, value: Sexp },
     /// `setting-constant`.
     SettingConstant(String),
     /// `error` for deferred bootstrap constructs.
@@ -89,7 +87,6 @@ impl EvalError {
             EvalError::WrongNumberOfArguments { .. } => "wrong-number-of-arguments",
             EvalError::ArithError(_) => "arith-error",
             EvalError::UserError { tag, .. } => tag.as_str(),
-            EvalError::UncaughtThrow { .. } => "no-catch",
             EvalError::SettingConstant(_) => "setting-constant",
             EvalError::Read(_) => "invalid-read-syntax",
             EvalError::Quit => "quit",
@@ -116,9 +113,6 @@ impl EvalError {
             | EvalError::NotImplemented(m)
             | EvalError::Internal(m) => str1(m),
             EvalError::UserError { data, .. } => data.clone(),
-            EvalError::UncaughtThrow { tag: t, value } => {
-                Sexp::list_from(&[t.clone(), value.clone()])
-            }
             EvalError::Read(e) => str1(&e.to_string()),
             EvalError::Quit => Sexp::Nil,
         };
@@ -148,9 +142,6 @@ impl fmt::Display for EvalError {
             ),
             EvalError::ArithError(m) => write!(f, "arith-error: {}", m),
             EvalError::UserError { tag, data } => write!(f, "{}: {}", tag, data),
-            EvalError::UncaughtThrow { tag, value } => {
-                write!(f, "no-catch: ({} {})", tag, value)
-            }
             EvalError::SettingConstant(n) => write!(f, "setting-constant: {}", n),
             EvalError::NotImplemented(m) => write!(f, "not-implemented: {}", m),
             EvalError::Read(e) => write!(f, "{}", e),

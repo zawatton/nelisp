@@ -393,29 +393,11 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let handlers: Vec<Sexp> = parts.iter().skip(2).cloned().collect();
     match eval(protected, env) {
         Ok(v) => Ok(v),
-        Err(EvalError::UncaughtThrow { tag, value }) => {
-            for handler in &handlers {
-                let parts = list_elements(handler)?;
-                if parts.is_empty() {
-                    continue;
-                }
-                if clause_matches(&parts[0], "no-catch")? {
-                    let data = Sexp::cons(
-                        Sexp::Symbol("no-catch".into()),
-                        Sexp::cons(tag.clone(), Sexp::cons(value.clone(), Sexp::Nil)),
-                    );
-                    return eval_handler(env, var.as_deref(), Some(data), &parts);
-                }
-            }
-            Err(EvalError::UncaughtThrow { tag, value })
-        }
         Err(e) => {
             let actual_tag = e.error_tag().to_string();
             for handler in &handlers {
                 let parts = list_elements(handler)?;
-                if parts.is_empty() {
-                    continue;
-                }
+                if parts.is_empty() { continue; }
                 if clause_matches(&parts[0], &actual_tag)? {
                     return eval_handler(env, var.as_deref(), Some(e.signal_data()), &parts);
                 }
