@@ -989,6 +989,14 @@
      :source-var nelisp-cc-sf-function--source
      :output "nl_sf_function.o"
      :requires-arch x86_64)
+    ;; Phase 47 — `nl_sf_condition_case' replaces `sf_condition_case' +
+    ;; `clause_matches' + `eval_handler' Rust bodies via the new
+    ;; `nl_cc_match_and_bind' + existing `nelisp_eval_call_with_err' +
+    ;; `nl_env_pop_frame' externs in `eval/special_forms.rs' / `eval/mod.rs'.
+    (nelisp-cc-sf-condition-case
+     :source-var nelisp-cc-sf-condition-case--source
+     :output "nl_sf_condition_case.o"
+     :requires-arch x86_64)
     ;; Phase 47 — `apply_lambda_inner' body deleted from `eval/mod.rs'.
     ;; `nl_apply_lambda_inner' orchestrates frame-push + formals-bind +
     ;; body-eval + frame-pop in elisp.  Actual formals-binding delegated

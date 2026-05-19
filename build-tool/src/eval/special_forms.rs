@@ -52,7 +52,7 @@ pub fn apply_special(
         "lambda" => sf_call_with_s1!("sf_lambda", sf_lambda_call, args, env)?,
         "setq" => sf_call_4arg!("sf_setq", sf_setq_call, args, env)?,
         "while" => sf_call_4arg!("sf_while", sf_while_call, args, env)?,
-        "condition-case" => sf_condition_case(args, env)?,
+        "condition-case" => sf_call_with_s1!("sf_condition_case", sf_condition_case_call, args, env)?,
         "unwind-protect" => sf_unwind_protect(args, env)?,
         "progn" => sf_call_4arg!("sf_progn", sf_progn_call, args, env)?,
         _ => return Ok(None),
@@ -152,6 +152,54 @@ pub unsafe extern "C" fn nl_env_push_captured(
         Ok(()) => 0,
         Err(_) => 1,
     }
+}
+
+/// Phase 47 `nl_sf_condition_case' clause matcher + frame setup.  On match:
+/// push frame, bind `var' to err, write BODY into `*err_inout', return 0.
+/// On miss: re-stash err into `nelisp--last-signal-data' for the dispatch
+/// macro's `consume_stashed_error', return 1.
+#[no_mangle]
+pub unsafe extern "C" fn nl_cc_match_and_bind(
+    clauses: *const Sexp,
+    err_inout: *mut Sexp,
+    var: *const Sexp,
+    env: *mut std::ffi::c_void,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let err_owned = (*err_inout).clone();
+    let actual_tag = match &err_owned {
+        Sexp::Cons(b) => match &b.car {
+            Sexp::Symbol(s) => s.clone(),
+            _ => return 1,
+        },
+        _ => return 1,
+    };
+    let mut cur = &*clauses;
+    while let Sexp::Cons(cc) = cur {
+        if let Sexp::Cons(cb) = &cc.car {
+            let m = match &cb.car {
+                Sexp::Symbol(s) => is_error_subtype(s, &actual_tag),
+                Sexp::T => true,
+                Sexp::Cons(_) => list_elements(&cb.car).ok().map_or(false, |elts| {
+                    elts.iter().any(|t| matches!(t, Sexp::Symbol(s) if is_error_subtype(s, &actual_tag)))
+                }),
+                _ => false,
+            };
+            if m {
+                env_ref.push_frame();
+                if let Sexp::Symbol(name) = &*var {
+                    if name != "nil" {
+                        env_ref.bind_local(name, err_owned.clone());
+                    }
+                }
+                std::ptr::write(err_inout, cb.cdr.clone());
+                return 0;
+            }
+        }
+        cur = &cc.cdr;
+    }
+    let _ = env_ref.set_value("nelisp--last-signal-data", err_owned);
+    1
 }
 
 fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(), EvalError> {
@@ -349,62 +397,6 @@ fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         )
     };
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_while".into())) }
-}
-
-fn clause_matches(tag_form: &Sexp, tag: &str) -> Result<bool, EvalError> {
-    Ok(match tag_form {
-        Sexp::Symbol(s) => is_error_subtype(s, tag),
-        Sexp::T => true,
-        Sexp::Cons(_) => list_elements(tag_form)?.iter().any(|t| {
-            matches!(t, Sexp::Symbol(s) if is_error_subtype(s, tag))
-        }),
-        _ => false,
-    })
-}
-
-fn eval_handler(
-    env: &mut Env,
-    var: Option<&str>,
-    value: Option<Sexp>,
-    handler: &[Sexp],
-) -> Result<Sexp, EvalError> {
-    env.push_frame();
-    if let (Some(name), Some(value)) = (var, value) {
-        env.bind_local(name, value);
-    }
-    let result = eval_body(&handler[1..], env);
-    env.pop_frame();
-    result
-}
-
-fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = list_elements(args)?;
-    expect_min_len(&parts, "condition-case", 2)?;
-    let var = match &parts[0] {
-        Sexp::Symbol(s) if s == "nil" => None,
-        Sexp::Symbol(s) => Some(s.clone()),
-        Sexp::Nil => None,
-        other => return Err(EvalError::WrongType {
-            expected: "symbol or nil".into(),
-            got: other.clone(),
-        }),
-    };
-    let protected = &parts[1];
-    let handlers: Vec<Sexp> = parts.iter().skip(2).cloned().collect();
-    match eval(protected, env) {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            let actual_tag = e.error_tag().to_string();
-            for handler in &handlers {
-                let parts = list_elements(handler)?;
-                if parts.is_empty() { continue; }
-                if clause_matches(&parts[0], &actual_tag)? {
-                    return eval_handler(env, var.as_deref(), Some(e.signal_data()), &parts);
-                }
-            }
-            Err(e)
-        }
-    }
 }
 
 fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {

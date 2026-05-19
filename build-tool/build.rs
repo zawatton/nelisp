@@ -359,6 +359,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Phase 47 Tier-1 special forms elisp化 — lambda / function.
         "nelisp-cc-sf-lambda.el",
         "nelisp-cc-sf-function.el",
+        // Phase 47 — `nl_sf_condition_case' replaces `sf_condition_case' +
+        // `clause_matches' + `eval_handler' via new `nl_cc_match_and_bind' +
+        // existing `nelisp_eval_call_with_err' + `nl_env_pop_frame' externs.
+        "nelisp-cc-sf-condition-case.el",
         // Phase 47 — apply_lambda_inner body deleted from eval/mod.rs.
         // nl_apply_lambda_inner replaces it via the new nl_push_and_bind /
         // nl_env_push_captured externs in eval/special_forms.rs.
