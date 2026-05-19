@@ -265,6 +265,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-nlconsbox-clone.el",
         // Doc 124 §124.G — first Drop-half stage.
         "nelisp-cc-nlconsbox-drop.el",
+        // nl_alloc_consbox elisp swap — allocates fresh NlConsBox
+        // (car=Nil, cdr=Nil, refcount=1) via alloc-bytes + sexp-write-nil
+        // + ptr-write-u64; replaces the Rust body in nlconsbox.rs.
+        "nelisp-cc-nlconsbox-alloc.el",
         // Doc 124 §124.H — NlVector Drop kernel (REFCOUNT_OFFSET=24,
         // SIZE=32, ALIGN=8).  Mechanical port of §124.G to the
         // `Vec<Sexp>' header + AtomicUsize trailer layout.

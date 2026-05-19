@@ -117,6 +117,12 @@ pub mod elisp_cc_spike {
             result_slot: *mut Sexp,
             tail_slot: *mut Sexp,
         ) -> *mut Sexp;
+        // nl_alloc_consbox — exported by the elisp `.o'; kept alive
+        // here so the static archive is pulled into the link and other
+        // elisp `.o' PLT refs to this symbol resolve correctly.
+        // Returns `*mut NlConsBox' cast to `*mut u8' to avoid importing
+        // the type in this module.
+        fn nl_alloc_consbox() -> *mut u8;
         fn nelisp_nlconsbox_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlvector_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlcell_clone(box_ptr: *mut i64) -> i64;
@@ -421,6 +427,9 @@ pub mod elisp_cc_spike {
     cc_wrap!(rc_kind: nelisp_rc_kind, (sexp_ptr: *const u8) -> i64);
     cc_wrap!(rc_payload_ptr: nelisp_rc_payload_ptr, (sexp_ptr: *const u8) -> i64);
     cc_wrap!(gc_walk_children: nelisp_gc_walk_children, (sexp_ptr: *const Sexp, result_slot: *mut Sexp, tail_slot: *mut Sexp) -> *mut Sexp);
+    /// Pin `nl_alloc_consbox' symbol from the elisp `.o' archive so
+    /// other elisp `.o' PLT references to it are resolved at link time.
+    pub unsafe fn nl_alloc_consbox_raw() -> *mut u8 { nl_alloc_consbox() }
     cc_wrap!(nlconsbox_clone: nelisp_nlconsbox_clone, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlconsbox_drop: nelisp_nlconsbox_drop, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlvector_drop: nelisp_nlvector_drop, (box_ptr: *mut i64) -> i64);

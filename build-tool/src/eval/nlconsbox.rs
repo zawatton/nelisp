@@ -31,17 +31,6 @@ impl NlConsBox {
     crate::nlinner_set!(set_cdr, cdr, Sexp);
 }
 
-/// Fresh NlConsBox(Nil, Nil, refcount=1).  Safety: caller wraps in `Sexp::Cons(_)'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_alloc_consbox() -> *mut NlConsBox {
-    let boxed = Box::new(NlConsBox {
-        car: Sexp::Nil,
-        cdr: Sexp::Nil,
-        refcount: AtomicUsize::new(1),
-    });
-    Box::into_raw(boxed)
-}
-
 /// # Safety: live box + initialized Sexp.
 #[no_mangle]
 pub unsafe extern "C" fn nl_consbox_set_car(box_ptr: *mut NlConsBox, val: *const Sexp) {

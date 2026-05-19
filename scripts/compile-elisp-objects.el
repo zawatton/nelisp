@@ -778,6 +778,16 @@
      :source-var nelisp-cc-nlconsbox-drop--source
      :output "nelisp_nlconsbox_drop.o"
      :requires-arch x86_64)
+    ;; nl_alloc_consbox elisp swap — allocates a fresh NlConsBox
+    ;; (car=Nil, cdr=Nil, refcount=1) using alloc-bytes + sexp-write-nil
+    ;; + ptr-write-u64.  Replaces the Rust `nl_alloc_consbox' body in
+    ;; `build-tool/src/eval/nlconsbox.rs'.  Output symbol name matches
+    ;; the PLT reloc target emitted by the Phase 47 cons-make /
+    ;; cons-make-with-clone emitters.
+    (nelisp-cc-nlconsbox-alloc
+     :source-var nelisp-cc-nlconsbox-alloc--source
+     :output "nl_alloc_consbox.o"
+     :requires-arch x86_64)
     ;; Doc 124 §124.H — NlVector Drop elisp kernel.  Identical shape
     ;; to §124.G modulo per-type layout: REFCOUNT_OFFSET = 24,
     ;; SIZE_OF_NLVECTOR = 32 (= 24-byte Vec<Sexp> header + 8-byte
