@@ -426,14 +426,6 @@ pub unsafe extern "C" fn nl_env_capture_lexical(env: *mut std::ffi::c_void, out:
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_symbol_is_lambda(sym: *const Sexp) -> i64 {
-    match &*sym {
-        Sexp::Symbol(s) if s == "lambda" => 1,
-        _ => 0,
-    }
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn nl_cons_prepend_clone(
     car_ptr: *const Sexp,
     cdr_ptr: *const Sexp,
@@ -474,15 +466,6 @@ pub unsafe extern "C" fn nl_env_set_value(
     match env_ref.set_value(name, (*val).clone()) {
         Ok(_) => 0,
         Err(_) => 1,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_sexp_eq(a: *const Sexp, b: *const Sexp) -> i64 {
-    if sexp_eq(&*a, &*b) {
-        1
-    } else {
-        0
     }
 }
 

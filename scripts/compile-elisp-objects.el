@@ -1137,7 +1137,20 @@
     (nelisp-cc-sf-unwind-protect
      :source-var nelisp-cc-sf-unwind-protect--source
      :output "nl_sf_unwind_protect.o"
-     :requires-arch x86_64))
+     :requires-arch x86_64)
+    ;; Phase 47 swap — `nl_sexp_eq': tag-dispatch equality test replacing
+    ;; the `#[no_mangle] extern "C" fn nl_sexp_eq' in special_forms.rs.
+    ;; Callers using `extern-call nl_sexp_eq' resolve to this .o unchanged.
+    (nelisp-cc-sexp-eq
+     :source-var nelisp-cc-sexp-eq--source
+     :output "nl_sexp_eq.o")
+    ;; Phase 47 swap — `nl_symbol_is_lambda': single `symbol-name-eq' op
+    ;; replacing the `#[no_mangle] extern "C" fn nl_symbol_is_lambda' in
+    ;; special_forms.rs.  Callers using `extern-call nl_symbol_is_lambda'
+    ;; resolve to this .o unchanged.
+    (nelisp-cc-symbol-is-lambda
+     :source-var nelisp-cc-symbol-is-lambda--source
+     :output "nl_symbol_is_lambda.o"))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding

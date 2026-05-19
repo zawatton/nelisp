@@ -378,6 +378,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Doc 122 §122.A — `nl_jit_symbol_name' trampoline swap
         // (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-symbol-name.el",
+        // Phase 47 swap — `nl_sexp_eq' tag-dispatch equality test replacing
+        // the `#[no_mangle] extern "C" fn nl_sexp_eq' in special_forms.rs.
+        "nelisp-cc-sexp-eq.el",
+        // Phase 47 swap — `nl_symbol_is_lambda' single symbol-name-eq check
+        // replacing the `#[no_mangle] extern "C" fn nl_symbol_is_lambda'.
+        "nelisp-cc-symbol-is-lambda.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
