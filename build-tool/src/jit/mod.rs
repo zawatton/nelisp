@@ -8,13 +8,7 @@
 //!      code calls directly via `nelisp-cc--dlsym-resolve' (`-rdynamic'
 //!      in `.cargo/config.toml' exposes the `#[no_mangle]' symbols).
 
-mod access;
-// `jit/arith.rs' deleted — 12 arith trampolines now live as Phase-47-
-// compiled elisp `.o' in `libnelisp_elisp_spike.a'.  See
-// `bridge.rs::arith_link' for the extern declarations.
 mod box_accessor;
-// `bridge': `nl-jit-call-*' primitives (3 calling shapes: i64/i64,
-// ptr/ptr, 7×i64) — see `bridge.rs' header.
 pub(super) mod bridge;
 pub(crate) use bridge::{
     bi_nl_jit_call_float_cmp, bi_nl_jit_call_float_float, bi_nl_jit_call_float_unary,
@@ -23,12 +17,7 @@ pub(crate) use bridge::{
     bi_nl_jit_call_syscall,
 };
 mod cons;
-// `jit/float.rs' (9 cmp/arith trampolines) and `jit/math.rs' (3 unary
-// f64) deleted — both now live as Phase-47-compiled elisp `.o' in
-// `libnelisp_elisp_spike.a'.  See `bridge.rs::{float,math}_link' for
-// the extern declarations.
 mod hash;
-mod predicate;
 mod regex;
 mod strings;
 mod syscall;
