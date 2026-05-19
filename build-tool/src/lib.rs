@@ -351,26 +351,11 @@ pub mod elisp_cc_spike {
     cc_wrap!(cstr_from_sexp: nelisp_cstr_from_sexp, (str_ptr: *const Sexp) -> *mut u8);
     cc_wrap!(cstr_drop: nelisp_cstr_drop, (buf_ptr: *mut u8, size: i64) -> i64);
 
-    cc_wrap!(
-        bi_syscall_stat: nelisp_bi_syscall_stat,
-        (path_ptr: *const Sexp, statbuf: *mut u8) -> i64
-    );
-    cc_wrap!(
-        bi_syscall_canonicalize: nelisp_bi_syscall_canonicalize,
-        (path_ptr: *const Sexp, result_buf: *mut u8) -> i64
-    );
-    cc_wrap!(
-        bi_nl_write_file: nelisp_bi_nl_write_file,
-        (path_ptr: *const Sexp, content_ptr: *const Sexp) -> i64
-    );
-    cc_wrap!(
-        bi_nl_make_directory: nelisp_bi_nl_make_directory,
-        (path_ptr: *const Sexp) -> i64
-    );
-    cc_wrap!(
-        bi_syscall_read_file: nelisp_bi_syscall_read_file,
-        (path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64
-    );
+    cc_wrap!(bi_syscall_stat: nelisp_bi_syscall_stat, (path_ptr: *const Sexp, statbuf: *mut u8) -> i64);
+    cc_wrap!(bi_syscall_canonicalize: nelisp_bi_syscall_canonicalize, (path_ptr: *const Sexp, result_buf: *mut u8) -> i64);
+    cc_wrap!(bi_nl_write_file: nelisp_bi_nl_write_file, (path_ptr: *const Sexp, content_ptr: *const Sexp) -> i64);
+    cc_wrap!(bi_nl_make_directory: nelisp_bi_nl_make_directory, (path_ptr: *const Sexp) -> i64);
+    cc_wrap!(bi_syscall_read_file: nelisp_bi_syscall_read_file, (path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64);
     cc_wrap!(rc_inc: nelisp_rc_inc, (box_ptr: *mut i64) -> i64);
     cc_wrap!(rc_dec: nelisp_rc_dec, (box_ptr: *mut i64) -> i64);
     cc_wrap!(rc_strong_count: nelisp_rc_strong_count, (box_ptr: *const u8) -> i64);

@@ -16,17 +16,20 @@ const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
 /// Initial scratch MutStr capacity (= covers ~all stdlib atoms without realloc).
 const SCRATCH_CAP: i64 = 64;
 
+/// Shared message for features the elisp Reader cannot yet handle.
+const NYI_MSG: &str =
+    "feature unsupported by elisp Reader (record `#s(..)', byte-code `#[..]', or syntax error)";
+
+/// Default position attached to whole-input errors before lex positions exist.
+const START_POS: SourcePos = SourcePos { line: 1, col: 1 };
+
 /// Parse one top-level form.  Trailing tokens error — use [`read_all`]
 /// for multi-form.  Unsupported features (`#s(..)', `#[..]') surface
 /// as `NotYetImplemented'.
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
     match try_elisp_read_str(input) {
         Some(result) => result,
-        None => Err(ReadError::not_yet_implemented(
-            "feature unsupported by elisp Reader \
-             (record `#s(..)', byte-code `#[..]', or syntax error)",
-            SourcePos { line: 1, col: 1 },
-        )),
+        None => Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
     }
 }
 
@@ -34,11 +37,7 @@ pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
 pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
     match try_elisp_read_all(input) {
         Some(result) => result,
-        None => Err(ReadError::not_yet_implemented(
-            "feature unsupported by elisp Reader \
-             (record `#s(..)', byte-code `#[..]', or syntax error)",
-            SourcePos { line: 1, col: 1 },
-        )),
+        None => Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
     }
 }
 
@@ -49,15 +48,12 @@ fn try_elisp_read_str(input: &str) -> Option<Result<Sexp, ReadError>> {
             if state.has_trailing_token() {
                 return Some(Err(ReadError::parse(
                     "trailing token after first form".to_string(),
-                    SourcePos { line: 1, col: 1 },
+                    START_POS,
                 )));
             }
             Some(Ok(form))
         }
-        ElispParseOutcome::Empty => Some(Err(ReadError::unexpected_eof(
-            "empty input",
-            SourcePos { line: 1, col: 1 },
-        ))),
+        ElispParseOutcome::Empty => Some(Err(ReadError::unexpected_eof("empty input", START_POS))),
     }
 }
 
