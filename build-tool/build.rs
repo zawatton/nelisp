@@ -370,6 +370,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // nl_bind_formals_impl implements Required/Optional/Rest formals binding
         // in elisp.  Stage 2 will rewire nl_bind_formals/nl_push_and_bind.
         "nelisp-cc-bind-formals.el",
+        // Doc 122 §122.A — `nl_jit_symbol_name' trampoline swap
+        // (Rust body deleted from `jit/strings.rs').
+        "nelisp-cc-jit-symbol-name.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

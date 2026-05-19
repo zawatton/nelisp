@@ -1,10 +1,10 @@
-//! String/symbol trampolines: symbol-name + float-format Rust bodies.
-//! Other entries served by Phase 47 elisp `.o' archive.
+//! String trampolines: float-format Rust body + make-symbol counter.
+//! `nl_jit_symbol_name' migrated to Phase 47 elisp `.o' (Doc 122 §122.A).
 
 use crate::eval::sexp::Sexp;
 use std::sync::atomic::AtomicI64;
 
-use super::{read_sexp_str, TRAMPOLINE_ERR, TRAMPOLINE_OK};
+use super::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
 
 /// Per-process uninterned-symbol counter.  Pointer surfaced to the
 /// Phase 47 elisp body via `nl_make_symbol_counter_ptr'.
@@ -16,20 +16,6 @@ static MAKE_SYMBOL_COUNTER: AtomicI64 = AtomicI64::new(0);
 #[no_mangle]
 pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 {
     std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64
-}
-
-/// Symbol(s) → Str(s); Nil → "nil"; T → "t"; else ERR.
-/// Called from `nelisp-jit-strategy.el' `symbol-name' wrapper via
-/// `(nl-jit-call-out-1 "nelisp_jit_symbol_name" sym)'.
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match read_sexp_str(&*arg) {
-        Some(s) => {
-            *out = Sexp::Str(s);
-            TRAMPOLINE_OK
-        }
-        None => TRAMPOLINE_ERR,
-    }
 }
 
 /// IEEE-754 float body builder.  CONV ∈ {f/F/e/E/g/G}, PREC ≥ 0.

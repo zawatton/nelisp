@@ -72,12 +72,13 @@ extern "C" {
     fn nl_sf_lambda();
     fn nl_sf_function();
     fn nl_sf_condition_case();
+    fn nl_jit_symbol_name();
     fn nelisp_bi_nl_fact_i64();
 }
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 64] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 65] = [
     nelisp_jit_add2,
     nelisp_jit_sub2,
     nelisp_jit_mul2,
@@ -141,6 +142,7 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 64] = [
     nl_sf_lambda,
     nl_sf_function,
     nl_sf_condition_case,
+    nl_jit_symbol_name,
     nelisp_bi_nl_fact_i64,
 ];
 

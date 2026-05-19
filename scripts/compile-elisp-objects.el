@@ -949,6 +949,14 @@
      :source-var nelisp-cc-jit-type-of--source
      :output "nl_jit_type_of.o"
      :requires-arch x86_64)
+    ;; Doc 122 §122.A — `jit/strings.rs' `nl_jit_symbol_name' Rust body
+    ;; deleted; Phase-47-compiled elisp `.o' replaces it.  Symbol(4)/Str(5)
+    ;; copy content via str-bytes-ptr + str-len; Nil(0) → "nil"; T(1) → "t".
+    ;; bridge.rs anchor entry added; alias("nelisp_jit_symbol_name") unchanged.
+    (nelisp-cc-jit-symbol-name
+     :source-var nelisp-cc-jit-symbol-name--source
+     :output "nl_jit_symbol_name.o"
+     :requires-arch x86_64)
     (nelisp-cc-jit-sxhash
      :source-var nelisp-cc-jit-sxhash--source
      :output "nl_jit_sxhash.o"
