@@ -335,6 +335,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Doc 86 §86.2 (2026-05-19) — `sf_quote' Rust body deleted from
         // `eval/special_forms.rs'; Phase-47 elisp `nl_sf_quote' replaces it.
         "nelisp-cc-sf-quote.el",
+        // Phase 47 elisp migration — `nl_jit_downcase' + `nl_jit_upcase'
+        // trampoline swaps (Rust bodies deleted from `jit/strings.rs').
+        "nelisp-cc-jit-downcase.el",
+        "nelisp-cc-jit-upcase.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

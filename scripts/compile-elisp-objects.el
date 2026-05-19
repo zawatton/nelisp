@@ -909,6 +909,22 @@
     (nelisp-cc-sf-quote
      :source-var nelisp-cc-sf-quote--source
      :output "nl_sf_quote.o"
+     :requires-arch x86_64)
+    ;; Phase 47 elisp migration — `nl_jit_downcase' trampoline swap.
+    ;; ASCII A-Z fold (bytes 65-90 → +32); non-ASCII bytes pass
+    ;; through unchanged.  Rust body deleted from `jit/strings.rs'.
+    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' anchors `nl_jit_downcase'.
+    (nelisp-cc-jit-downcase
+     :source-var nelisp-cc-jit-downcase--source
+     :output "nl_jit_downcase.o"
+     :requires-arch x86_64)
+    ;; Phase 47 elisp migration — `nl_jit_upcase' trampoline swap.
+    ;; ASCII a-z fold (bytes 97-122 → -32); non-ASCII bytes pass
+    ;; through unchanged.  Rust body deleted from `jit/strings.rs'.
+    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' anchors `nl_jit_upcase'.
+    (nelisp-cc-jit-upcase
+     :source-var nelisp-cc-jit-upcase--source
+     :output "nl_jit_upcase.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

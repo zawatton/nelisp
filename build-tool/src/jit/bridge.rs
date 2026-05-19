@@ -40,11 +40,15 @@ extern "C" {
     // Doc 86 §86.2 (2026-05-19): `nl_sf_quote' — Phase-47 elisp body
     // replaces the Rust body of `sf_quote' in `eval/special_forms.rs'.
     fn nl_sf_quote();
+    // Phase 47 elisp migration: `nl_jit_downcase' + `nl_jit_upcase' —
+    // ASCII case-fold trampolines; Rust bodies deleted from `jit/strings.rs'.
+    fn nl_jit_downcase();
+    fn nl_jit_upcase();
 }
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 52] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 54] = [
     nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
     nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
     nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
@@ -65,6 +69,8 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 52] = [
     nl_record_type_tag_ptr,
     nl_jit_concat_ints,
     nl_sf_quote,
+    nl_jit_downcase,
+    nl_jit_upcase,
 ];
 
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {

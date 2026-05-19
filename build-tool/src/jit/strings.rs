@@ -46,21 +46,11 @@ pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) ->
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_downcase(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match read_text(&*arg) {
-        Some(s) => { *out = Sexp::Str(s.to_lowercase()); TRAMPOLINE_OK }
-        None => TRAMPOLINE_ERR,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_upcase(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match read_text(&*arg) {
-        Some(s) => { *out = Sexp::Str(s.to_uppercase()); TRAMPOLINE_OK }
-        None => TRAMPOLINE_ERR,
-    }
-}
+// Phase 47 elisp migration: `nl_jit_downcase' + `nl_jit_upcase' Rust bodies
+// deleted — replaced by Phase-47-compiled elisp bodies in
+// `lisp/nelisp-cc-jit-downcase.el' and `lisp/nelisp-cc-jit-upcase.el'.
+// The `#[no_mangle]' symbols are now provided by the `.o' archive linked
+// by `build.rs'.
 
 /// Split on non-alphanumeric runs.  OMIT non-Nil → drop empties.
 #[no_mangle]
