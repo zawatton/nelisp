@@ -112,7 +112,41 @@ macro_rules! builtin_dispatch {
             },
             "eval" => { require_arity("eval", $args, 1, Some(2))?; super::eval(&$args[0], $env) },
             "signal" => bi_signal($args),
-            "nelisp--write-stdout-bytes" => bi_write_stdout_bytes($args), "nelisp--write-stderr-line" => bi_write_stderr_line($args), "read-stdin-bytes" => bi_read_stdin_bytes($args),
+            "nelisp--write-stdout-bytes" => {
+                use std::io::Write;
+                require_arity("nelisp--write-stdout-bytes", $args, 1, Some(1))?;
+                let s = $args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: $args[0].clone() })?;
+                let body_sexp = Sexp::Str(s);
+                let rc = unsafe { crate::elisp_cc_spike::bi_write_stdout_bytes(&body_sexp as *const Sexp) };
+                if rc < 0 { return Err(EvalError::Internal(format!("nelisp--write-stdout-bytes: write returned {}", rc))); }
+                std::io::stdout().lock().flush().map_err(|e| EvalError::Internal(format!("nelisp--write-stdout-bytes: {}", e)))?;
+                Ok($args[0].clone())
+            },
+            "nelisp--write-stderr-line" => {
+                use std::io::Write;
+                require_arity("nelisp--write-stderr-line", $args, 1, Some(1))?;
+                let s = $args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: $args[0].clone() })?;
+                let body_sexp = Sexp::Str(s);
+                unsafe { let _ = crate::elisp_cc_spike::bi_write_stderr_line(&body_sexp as *const Sexp); }
+                let mut err = std::io::stderr().lock();
+                let _ = err.write_all(b"\n");
+                let _ = err.flush();
+                Ok($args[0].clone())
+            },
+            "read-stdin-bytes" => {
+                require_arity("read-stdin-bytes", $args, 1, Some(1))?;
+                let limit = match &$args[0] {
+                    Sexp::Int(n) if *n > 0 => *n as usize,
+                    other => return Err(EvalError::WrongType { expected: "positive integer".into(), got: other.clone() }),
+                };
+                let mut buf = vec![0u8; limit];
+                let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit as i64) };
+                if rc < 0 { return Err(EvalError::Internal(format!("read-stdin-bytes: read returned {}", rc))); }
+                if rc == 0 { Ok(Sexp::Nil) } else {
+                    buf.truncate((rc as usize).min(buf.len()));
+                    Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
+                }
+            },
             "nelisp--f64-trunc" => bi_f64_trunc($args),
             "nl-write-file" => {
                 require_arity("nl-write-file", $args, 2, Some(2))?;
@@ -129,7 +163,26 @@ macro_rules! builtin_dispatch {
                     crate::elisp_cc_spike::bi_nl_make_directory(&$args[0] as *const _) as i32 as i64
                 })
             },
-            "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter($args), "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave($args), "read-stdin-byte-available" => bi_read_stdin_byte_available($args),
+            "terminal-raw-mode-enter" => {
+                require_arity("terminal-raw-mode-enter", $args, 0, Some(0))?;
+                #[cfg(unix)]    { tty_raw::raw_mode_enter()?; Ok(Sexp::T) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "terminal-raw-mode-leave" => {
+                require_arity("terminal-raw-mode-leave", $args, 0, Some(0))?;
+                #[cfg(unix)]    { tty_raw::raw_mode_leave()?; Ok(Sexp::T) }
+                #[cfg(not(unix))] { Ok(Sexp::Nil) }
+            },
+            "read-stdin-byte-available" => {
+                require_arity("read-stdin-byte-available", $args, 0, Some(1))?;
+                let timeout_ms = match $args.get(0) {
+                    None | Some(Sexp::Nil) => 0i32,
+                    Some(Sexp::Int(n)) => *n as i32,
+                    Some(other) => return Err(EvalError::WrongType { expected: "integer (timeout-ms)".into(), got: other.clone() }),
+                };
+                #[cfg(unix)]    { Ok(tty_raw::stdin_byte_available(timeout_ms)?.map_or(Sexp::Nil, |b| Sexp::Int(b as i64))) }
+                #[cfg(not(unix))] { let _ = timeout_ms; Ok(Sexp::Nil) }
+            },
             "_termios-saved-p" => {
                 require_arity("_termios-saved-p", $args, 0, Some(0))?;
                 #[cfg(unix)]    { Ok(bool_sexp(tty_raw::termios_saved_p())) }
@@ -511,50 +564,6 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    use std::io::Write;
-    require_arity("nelisp--write-stdout-bytes", args, 1, Some(1))?;
-    let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "stringp".into(),
-        got: args[0].clone(),
-    })?;
-    let body_sexp = Sexp::Str(s);
-    let rc = unsafe {
-        crate::elisp_cc_spike::bi_write_stdout_bytes(
-            &body_sexp as *const Sexp,
-        )
-    };
-    if rc < 0 {
-        return Err(EvalError::Internal(format!(
-            "nelisp--write-stdout-bytes: write returned {}",
-            rc,
-        )));
-    }
-    let mut out = std::io::stdout().lock();
-    out.flush()
-        .map_err(|e| EvalError::Internal(format!("nelisp--write-stdout-bytes: {}", e)))?;
-    Ok(args[0].clone())
-}
-
-fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    use std::io::Write;
-    require_arity("nelisp--write-stderr-line", args, 1, Some(1))?;
-    let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "stringp".into(),
-        got: args[0].clone(),
-    })?;
-    let body_sexp = Sexp::Str(s);
-    unsafe {
-        let _ = crate::elisp_cc_spike::bi_write_stderr_line(
-            &body_sexp as *const Sexp,
-        );
-    }
-    let mut err = std::io::stderr().lock();
-    let _ = err.write_all(b"\n");
-    let _ = err.flush();
-    Ok(args[0].clone())
-}
-
 fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {
     match arg {
         Sexp::Int(i) => Ok(*i as f64),
@@ -590,22 +599,6 @@ fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
             )));
         }
     }))
-}
-
-fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("read-stdin-bytes", args, 1, Some(1))?;
-    let limit = match &args[0] {
-        Sexp::Int(n) if *n > 0 => *n as usize,
-        other => return Err(EvalError::WrongType { expected: "positive integer".into(), got: other.clone() }),
-    };
-    let mut buf = vec![0u8; limit];
-    let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit as i64) };
-    if rc < 0 {
-        return Err(EvalError::Internal(format!("read-stdin-bytes: read returned {}", rc)));
-    }
-    if rc == 0 { return Ok(Sexp::Nil); }
-    buf.truncate((rc as usize).min(buf.len()));
-    Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 // Unix raw-mode and non-blocking stdin helpers.
@@ -888,56 +881,6 @@ mod tty_jobctrl {
 
     pub fn take_cont() -> bool {
         SIGCONT_ARRIVED.swap(false, Ordering::SeqCst)
-    }
-}
-
-fn bi_terminal_raw_mode_enter(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("terminal-raw-mode-enter", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        tty_raw::raw_mode_enter()?;
-        return Ok(Sexp::T);
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-fn bi_terminal_raw_mode_leave(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("terminal-raw-mode-leave", args, 0, Some(0))?;
-    #[cfg(unix)]
-    {
-        tty_raw::raw_mode_leave()?;
-        return Ok(Sexp::T);
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(Sexp::Nil)
-    }
-}
-
-/// `(read-stdin-byte-available &optional TIMEOUT-MS)' — return one byte or nil.
-fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("read-stdin-byte-available", args, 0, Some(1))?;
-    let timeout_ms = match args.get(0) {
-        None | Some(Sexp::Nil) => 0,
-        Some(Sexp::Int(n)) => *n as i32,
-        Some(other) => {
-            return Err(EvalError::WrongType {
-                expected: "integer (timeout-ms)".into(),
-                got: other.clone(),
-            });
-        }
-    };
-    #[cfg(unix)]
-    {
-        Ok(tty_raw::stdin_byte_available(timeout_ms)?.map_or(Sexp::Nil, |b| Sexp::Int(b as i64)))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = timeout_ms;
-        Ok(Sexp::Nil)
     }
 }
 
