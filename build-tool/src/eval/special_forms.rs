@@ -26,10 +26,6 @@ pub fn apply_special(
     }))
 }
 
-fn args_vec(args: &Sexp) -> Result<Vec<Sexp>, EvalError> {
-    list_elements(args)
-}
-
 fn wrong_args(function: &str, expected: &str, got: usize) -> EvalError {
     EvalError::WrongNumberOfArguments {
         function: function.into(),
@@ -440,10 +436,6 @@ fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_while".into())) }
 }
 
-fn clause_parts(clause: &Sexp) -> Result<Vec<Sexp>, EvalError> {
-    list_elements(clause)
-}
-
 fn clause_matches(tag_form: &Sexp, tag: &str) -> Result<bool, EvalError> {
     Ok(match tag_form {
         Sexp::Symbol(s) => is_error_subtype(s, tag),
@@ -471,7 +463,7 @@ fn eval_handler(
 }
 
 fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
+    let parts = list_elements(args)?;
     expect_min_len(&parts, "condition-case", 2)?;
     let var = match &parts[0] {
         Sexp::Symbol(s) if s == "nil" => None,
@@ -488,7 +480,7 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         Ok(v) => Ok(v),
         Err(EvalError::UncaughtThrow { tag, value }) => {
             for handler in &handlers {
-                let parts = clause_parts(handler)?;
+                let parts = list_elements(handler)?;
                 if parts.is_empty() {
                     continue;
                 }
@@ -505,7 +497,7 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         Err(e) => {
             let actual_tag = e.error_tag().to_string();
             for handler in &handlers {
-                let parts = clause_parts(handler)?;
+                let parts = list_elements(handler)?;
                 if parts.is_empty() {
                     continue;
                 }
@@ -519,7 +511,7 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
+    let parts = list_elements(args)?;
     expect_min_len(&parts, "unwind-protect", 1)?;
     let body_result = eval(&parts[0], env);
     let mut cleanup_err: Option<EvalError> = None;
@@ -547,7 +539,7 @@ fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_catch(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
+    let parts = list_elements(args)?;
     expect_min_len(&parts, "catch", 1)?;
     let tag = eval(&parts[0], env)?;
     let body: Vec<Sexp> = parts.iter().skip(1).cloned().collect();
@@ -565,7 +557,7 @@ fn sf_catch(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
+    let parts = list_elements(args)?;
     expect_len(&parts, "throw", 2)?;
     let tag = eval(&parts[0], env)?;
     let value = eval(&parts[1], env)?;
