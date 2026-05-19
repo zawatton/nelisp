@@ -1,14 +1,5 @@
-//! String/symbol trampolines reached via `nl-jit-call-out-1' (1-arg)
-//! or `nl-jit-call-out-2' (2-arg) from `nelisp-jit-strategy.el'.
-//! Surviving Rust bodies: symbol-name, float-format.
-//! All others migrated to Phase 47 elisp `.o' bodies.
-//!
-//! Migrated to elisp .o:
-//!   `nl_jit_make_symbol'       → `lisp/nelisp-cc-jit-make-symbol.el'
-//!   `nl_jit_downcase'          → `lisp/nelisp-cc-jit-downcase.el'
-//!   `nl_jit_upcase'            → `lisp/nelisp-cc-jit-upcase.el'
-//!   `nl_jit_concat_ints'       → `lisp/nelisp-cc-jit-concat-ints.el'
-//!   `nl_jit_split_by_non_alnum' → `lisp/nelisp-cc-jit-split-by-non-alnum.el'
+//! String/symbol trampolines: symbol-name + float-format Rust bodies.
+//! Other entries served by Phase 47 elisp `.o' archive.
 
 use crate::eval::sexp::Sexp;
 use std::sync::atomic::AtomicI64;
@@ -49,23 +40,6 @@ pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) ->
         None => TRAMPOLINE_ERR,
     }
 }
-
-// Phase 47 elisp migration: `nl_jit_downcase' + `nl_jit_upcase' Rust bodies
-// deleted — replaced by Phase-47-compiled elisp bodies in
-// `lisp/nelisp-cc-jit-downcase.el' and `lisp/nelisp-cc-jit-upcase.el'.
-// The `#[no_mangle]' symbols are now provided by the `.o' archive linked
-// by `build.rs'.
-
-// Phase 47 elisp migration: `nl_jit_split_by_non_alnum' Rust body deleted —
-// replaced by Phase-47-compiled elisp body in
-// `lisp/nelisp-cc-jit-split-by-non-alnum.el'.  The `#[no_mangle]' symbol
-// is now provided by the `.o' archive linked by `build.rs'.
-// `_ELISP_ARCHIVE_ANCHOR' count 54→55.
-
-// Doc 86 §86.1.e.2 (2026-05-19): `nl_jit_concat_ints' Rust body
-// deleted — replaced by Phase-47-compiled elisp body in
-// `lisp/nelisp-cc-jit-concat-ints.el'.  The `#[no_mangle]' symbol is
-// now provided by the `.o' archive linked by `build.rs'.
 
 /// IEEE-754 float body builder.  CONV ∈ {f/F/e/E/g/G}, PREC ≥ 0.
 /// Writes unsigned/unpadded body; elisp does sign + padding.
