@@ -295,6 +295,223 @@ unsafe fn bind_formals_common(
     }
 }
 
+/// Phase 47 .o bind_formals_impl helpers.
+///
+/// All functions below are called from `nl_bind_formals_impl' in
+/// `lisp/nelisp-cc-bind-formals.el' (Stage 1 parallel implementation).
+/// They provide the primitive operations needed by the elisp CPS chain.
+///
+/// `nl_bf_precompute(formals, args) -> i64`
+/// Returns the initial `state' word for the `nl_bind_formals_impl' CPS
+/// chain.  State layout (packed i64):
+///   bits 0-3:    mode=0, saw-rest=0, consumed-rest=0  (all zero initially)
+///   bits 4-19:   idx=0                                (all zero initially)
+///   bits 20-35:  args_len (clamped to 16 bits)
+///   bits 36+:    required (clamped to 16 bits)
+///
+/// Both counts are clamped to 0xFFFF; real Lisp functions never approach
+/// that limit.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_precompute(
+    formals_ptr: *const Sexp,
+    args_ptr: *const Sexp,
+) -> i64 {
+    let names = match super::list_elements(&*formals_ptr) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let args_len = match super::list_elements(&*args_ptr) {
+        Ok(v) => v.len(),
+        Err(_) => return 0,
+    };
+    let required = names
+        .iter()
+        .take_while(|f| !matches!(f, Sexp::Symbol(s) if s == "&optional" || s == "&rest"))
+        .count();
+    let required_clamped = required.min(0xFFFF) as i64;
+    let args_len_clamped = args_len.min(0xFFFF) as i64;
+    // bits 20-35 = args_len, bits 36+ = required, bits 0-19 = 0 (mode/idx/flags)
+    (args_len_clamped << 20) | (required_clamped << 36)
+}
+
+/// `nl_bf_formal_tag(name_ptr) -> i64`
+/// Returns the role of the formal symbol pointed to by `name_ptr':
+///   0 = regular binding symbol (bind a value)
+///   1 = `&optional' marker (switch mode to Optional)
+///   2 = `&rest' marker    (switch mode to Rest)
+///  -1 = not a Symbol (WrongType — caller should signal error)
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_formal_tag(name_ptr: *const Sexp) -> i64 {
+    match &*name_ptr {
+        Sexp::Symbol(s) => match s.as_str() {
+            "&optional" => 1,
+            "&rest"     => 2,
+            _           => 0,
+        },
+        _ => -1,
+    }
+}
+
+/// `nl_bf_args_nth_ptr(args_ptr, idx) -> *const Sexp`
+/// Returns a raw pointer (as i64) to the Sexp at position `idx' in the
+/// cons list `*args_ptr'.  Returns 0 (null) when `idx >= list length'.
+/// Used by the Required and Optional mode branches to fetch the argument
+/// value without materialising the full Vec.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_args_nth_ptr(args_ptr: *const Sexp, idx: i64) -> i64 {
+    let mut cur = &*args_ptr;
+    let mut remaining = idx;
+    while let Sexp::Cons(b) = cur {
+        if remaining == 0 {
+            return &b.car as *const Sexp as i64;
+        }
+        remaining -= 1;
+        cur = &b.cdr;
+    }
+    0
+}
+
+/// `nl_bf_args_tail(args_ptr, idx, out) -> i64`
+/// Builds a new Sexp::Cons list from `args[idx..]' and writes it into
+/// `*out'.  Used by the Rest mode branch to collect remaining args.
+/// Returns 0 (always succeeds — worst case writes Sexp::Nil when empty).
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_args_tail(
+    args_ptr: *const Sexp,
+    idx: i64,
+    out: *mut Sexp,
+) -> i64 {
+    let args = match super::list_elements(&*args_ptr) {
+        Ok(v) => v,
+        Err(_) => { std::ptr::write(out, Sexp::Nil); return 0; }
+    };
+    let tail_start = (idx as usize).min(args.len());
+    std::ptr::write(out, Sexp::list_from(&args[tail_start..]));
+    0
+}
+
+/// `nl_bf_bind_sym(env, name_ptr, val_ptr) -> i64`
+/// Calls `env.bind_local(name, val.clone())'.  `name_ptr' must point to a
+/// `Sexp::Symbol'; if it points to any other variant the bind is skipped
+/// and 0 is still returned (caller already validated tag == Symbol).
+/// Returns 0 always.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_bind_sym(
+    env: *mut std::ffi::c_void,
+    name_ptr: *const Sexp,
+    val_ptr: *const Sexp,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    if let Sexp::Symbol(name) = &*name_ptr {
+        env_ref.bind_local(name, (*val_ptr).clone());
+    }
+    0
+}
+
+/// `nl_bf_bind_optional(env, name_ptr, args_ptr, idx) -> i64`
+/// Optional-mode bind: binds `args[idx]' if idx < len(args), else Nil.
+/// Advances idx by 1 if the arg was consumed.
+/// Returns the new idx (= idx+1 if consumed, else idx).
+/// Used by the Optional branch in `nl_bind_formals_impl' so the elisp
+/// does not need a *const Sexp pointing at Nil.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_bind_optional(
+    env: *mut std::ffi::c_void,
+    name_ptr: *const Sexp,
+    args_ptr: *const Sexp,
+    idx: i64,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    if let Sexp::Symbol(name) = &*name_ptr {
+        let args = match super::list_elements(&*args_ptr) {
+            Ok(v) => v,
+            Err(_) => { env_ref.bind_local(name, Sexp::Nil); return idx; }
+        };
+        let idx_usize = idx as usize;
+        let val = args.get(idx_usize).cloned().unwrap_or(Sexp::Nil);
+        let new_idx = if idx_usize < args.len() { idx + 1 } else { idx };
+        env_ref.bind_local(name, val);
+        return new_idx;
+    }
+    idx
+}
+
+/// `nl_bf_err_arity(env, required, got) -> i64`
+/// Stashes a `WrongNumberOfArguments' error into
+/// `nelisp--last-signal-data' and returns 1.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_err_arity(
+    env: *mut std::ffi::c_void,
+    required: i64,
+    got: i64,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let err = EvalError::WrongNumberOfArguments {
+        function: "lambda".into(),
+        expected: required.to_string(),
+        got: got as usize,
+    };
+    let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
+    1
+}
+
+/// `nl_bf_err_type(env, name_ptr) -> i64`
+/// Stashes a `WrongType' error into `nelisp--last-signal-data'.
+/// Used for: non-Symbol formal, `&optional' after `&rest', double `&rest',
+/// and extra symbol after `&rest'.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_err_type(
+    env: *mut std::ffi::c_void,
+    name_ptr: *const Sexp,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let got = (*name_ptr).clone();
+    let err = EvalError::WrongType {
+        expected: "symbol".into(),
+        got,
+    };
+    let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
+    1
+}
+
+/// `nl_bf_bind_rest(env, name_ptr, args_ptr, idx) -> i64`
+/// Rest-mode bind: builds `list(args[idx..])' and calls
+/// `env.bind_local(name, list)'.  Returns 0.
+/// Combines nl_bf_args_tail + nl_bf_bind_sym to avoid needing a
+/// scratch *mut Sexp slot in the elisp CPS chain.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_bind_rest(
+    env: *mut std::ffi::c_void,
+    name_ptr: *const Sexp,
+    args_ptr: *const Sexp,
+    idx: i64,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    if let Sexp::Symbol(name) = &*name_ptr {
+        let args = match super::list_elements(&*args_ptr) {
+            Ok(v) => v,
+            Err(_) => { env_ref.bind_local(name, Sexp::Nil); return 0; }
+        };
+        let tail_start = (idx as usize).min(args.len());
+        env_ref.bind_local(name, Sexp::list_from(&args[tail_start..]));
+    }
+    0
+}
+
+/// `nl_bf_err_dangling_rest(env) -> i64`
+/// Stashes `WrongType { expected: "symbol after &rest", got: Symbol("&rest") }`
+/// for the case where `&rest' appears in formals but no symbol follows it.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bf_err_dangling_rest(env: *mut std::ffi::c_void) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let err = EvalError::WrongType {
+        expected: "symbol after &rest".into(),
+        got: Sexp::Symbol("&rest".into()),
+    };
+    let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
+    1
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn nl_push_and_bind(
     formals_ptr: *const Sexp,

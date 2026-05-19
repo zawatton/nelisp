@@ -367,6 +367,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // nl_apply_lambda_inner replaces it via the new nl_push_and_bind /
         // nl_env_push_captured externs in eval/special_forms.rs.
         "nelisp-cc-apply-lambda-inner.el",
+        // Phase 47 Tier-C — bind_formals_impl Stage 1 parallel implementation.
+        // nl_bind_formals_impl implements Required/Optional/Rest formals binding
+        // in elisp.  Stage 2 will rewire nl_bind_formals/nl_push_and_bind.
+        "nelisp-cc-bind-formals.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

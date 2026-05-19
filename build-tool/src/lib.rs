@@ -247,6 +247,14 @@ pub mod elisp_cc_spike {
             env: *mut std::ffi::c_void,
             out: *mut Sexp,
         ) -> i64;
+        // Phase 47 — nl_bind_formals_impl: pure-elisp bind_formals_impl
+        // (Stage 1 parallel implementation in nelisp-cc-bind-formals.el).
+        fn nl_bind_formals_impl(
+            formals: *const Sexp,
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            _pad: i64,
+        ) -> i64;
         pub fn nelisp_jit_add2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_sub2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_mul2(a: i64, b: i64) -> i64;
@@ -525,6 +533,9 @@ pub mod elisp_cc_spike {
     cc_wrap!(apply_lambda_inner_call: nl_apply_lambda_inner,
         (captured: *const Sexp, formals: *const Sexp, body_list: *const Sexp,
          args_list: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64);
+    cc_wrap!(bind_formals_impl_call: nl_bind_formals_impl,
+        (formals: *const Sexp, args: *const Sexp,
+         env: *mut std::ffi::c_void, _pad: i64) -> i64);
     cc_wrap!(jit_predicate_eq: nelisp_jit_predicate_eq, (a: *const Sexp, b: *const Sexp) -> i64);
     cc_wrap!(jit_ref_eq: nelisp_jit_ref_eq, (a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(jit_record_type: nelisp_jit_record_type, (arg: *const Sexp, out: *mut Sexp) -> i64);

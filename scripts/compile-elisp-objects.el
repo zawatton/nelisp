@@ -1004,6 +1004,16 @@
     (nelisp-cc-apply-lambda-inner
      :source-var nelisp-cc-apply-lambda-inner--source
      :output "nl_apply_lambda_inner.o"
+     :requires-arch x86_64)
+    ;; Phase 47 Tier-C — `bind_formals_impl' Stage 1 parallel implementation.
+    ;; `nl_bind_formals_impl' implements the full Required/Optional/Rest state
+    ;; machine in elisp.  Stage 2 will rewire `nl_bind_formals' / `nl_push_and_bind'
+    ;; to delegate to this elisp entry.  New externs: nl_bf_precompute,
+    ;; nl_bf_formal_tag, nl_bf_args_nth_ptr, nl_bf_bind_sym, nl_bf_bind_optional,
+    ;; nl_bf_bind_rest, nl_bf_err_arity, nl_bf_err_type, nl_bf_err_dangling_rest.
+    (nelisp-cc-bind-formals
+     :source-var nelisp-cc-bind-formals--source
+     :output "nl_bind_formals_impl.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
