@@ -26,13 +26,6 @@ pub fn apply_special(
     }))
 }
 
-fn first_arg(args: &Sexp, op: &str) -> Result<Sexp, EvalError> {
-    match args {
-        Sexp::Cons(b) => Ok(b.car.clone()),
-        _ => Err(wrong_args(op, "≥1", 0)),
-    }
-}
-
 fn args_vec(args: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     list_elements(args)
 }

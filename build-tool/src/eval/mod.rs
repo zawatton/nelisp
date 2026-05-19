@@ -400,23 +400,6 @@ pub(crate) fn apply_lambda_inner(
     if rc == 0 { Ok(out) } else { Err(EvalError::Internal("apply_lambda_inner".into())) }
 }
 
-pub(crate) fn bind_formals(
-    formals: &Sexp,
-    args: &[Sexp],
-    env: &mut Env,
-) -> Result<(), EvalError> {
-    // Phase 47: body deleted → logic lives in nl_bind_formals extern
-    // (eval/special_forms.rs).  Build cons list from slice for the extern.
-    let args_list = Sexp::list_from(args);
-    let rc = unsafe {
-        crate::eval::special_forms::nl_bind_formals(
-            formals as *const Sexp,
-            &args_list as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-        )
-    };
-    if rc == 0 { Ok(()) } else { Err(EvalError::Internal("bind_formals".into())) }
-}
 
 fn is_macro(func: &Sexp) -> bool {
     matches!(
