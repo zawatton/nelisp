@@ -169,35 +169,26 @@ pub(crate) fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
     }
 }
 
+fn num_to_f64(v: &Sexp) -> Result<f64, EvalError> {
+    match v { Sexp::Int(n) => Ok(*n as f64), Sexp::Float(x) => Ok(*x),
+        other => Err(EvalError::WrongType { expected: "numberp".into(), got: other.clone() }) }
+}
 pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
     require_arity(name, args, 2, Some(2))?;
     let af = matches!(args[0], Sexp::Float(_)) || matches!(args[1], Sexp::Float(_));
-    let to_f64 = |v: &Sexp| -> Result<f64, EvalError> {
-        match v {
-            Sexp::Int(n) => Ok(*n as f64), Sexp::Float(x) => Ok(*x),
-            other => Err(EvalError::WrongType { expected: "numberp".into(), got: other.clone() }),
-        }
-    };
-    Ok((to_f64(&args[0])?, to_f64(&args[1])?, af))
+    Ok((num_to_f64(&args[0])?, num_to_f64(&args[1])?, af))
 }
 
 pub(crate) fn char_table_set_one(inner: &mut crate::eval::sexp::CharTableInner, c: i64, v: Sexp) {
-    for entry in inner.entries.iter_mut() {
-        if entry.0 == c {
-            entry.1 = v;
-            return;
-        }
+    match inner.entries.iter_mut().find(|(k, _)| *k == c) {
+        Some(e) => e.1 = v,
+        None => inner.entries.push((c, v)),
     }
-    inner.entries.push((c, v));
 }
 
 pub(crate) fn char_table_get(rc: &crate::eval::nlchartable::NlCharTableRef, c: i64) -> Sexp {
     let inner = &rc.inner;
-    inner
-        .entries
-        .iter()
-        .find(|(k, _)| *k == c)
-        .map(|(_, v)| v.clone())
+    inner.entries.iter().find(|(k, _)| *k == c).map(|(_, v)| v.clone())
         .or_else(|| inner.parent.as_ref().map(|parent| char_table_get(parent, c)))
         .unwrap_or_else(|| inner.default_val.clone())
 }
@@ -214,9 +205,7 @@ fn resolve_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     let p = Path::new(&path);
     if p.is_absolute() { return Ok(p.to_path_buf()); }
     let base = match env.lookup_value("default-directory") { Ok(Sexp::Str(s)) => Some(s), _ => None };
-    Ok(if let Some(b) = base { Path::new(&b).join(p) }
-       else if let Ok(cwd) = std::env::current_dir() { cwd.join(p) }
-       else { p.to_path_buf() })
+    Ok(base.as_deref().map(|b| Path::new(b).join(p)).or_else(|| std::env::current_dir().ok().map(|c| c.join(p))).unwrap_or_else(|| p.to_path_buf()))
 }
 fn cc_slot_1(arg: &Sexp, f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp) -> Sexp { let mut slot = Sexp::Nil; unsafe { f(arg as *const _, &mut slot as *mut _) }; slot }
 fn bool_sexp(v: bool) -> Sexp { if v { Sexp::T } else { Sexp::Nil } }
@@ -253,16 +242,14 @@ fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let mut buf = vec![0u8; limit];
     let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit as i64) };
     if rc < 0 { return Err(EvalError::Internal(format!("read-stdin-bytes: read returned {}", rc))); }
-    if rc == 0 { return Ok(Sexp::Nil); }
-    buf.truncate((rc as usize).min(buf.len()));
+    if rc == 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(buf.len()));
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
     require_arity("nelisp--write-stdout-bytes", args, 1, Some(1))?;
-    let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: args[0].clone() })?;
-    let body_sexp = Sexp::Str(s);
-    let rc = unsafe { crate::elisp_cc_spike::bi_write_stdout_bytes(&body_sexp as *const Sexp) };
+    let bs = Sexp::Str(args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: args[0].clone() })?);
+    let rc = unsafe { crate::elisp_cc_spike::bi_write_stdout_bytes(&bs as *const Sexp) };
     if rc < 0 { return Err(EvalError::Internal(format!("nelisp--write-stdout-bytes: write returned {}", rc))); }
     std::io::stdout().lock().flush().map_err(|e| EvalError::Internal(format!("nelisp--write-stdout-bytes: {}", e)))?;
     Ok(args[0].clone())
@@ -270,11 +257,9 @@ fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
     require_arity("nelisp--write-stderr-line", args, 1, Some(1))?;
-    let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: args[0].clone() })?;
-    let body_sexp = Sexp::Str(s);
-    unsafe { let _ = crate::elisp_cc_spike::bi_write_stderr_line(&body_sexp as *const Sexp); }
-    let mut err = std::io::stderr().lock();
-    let _ = err.write_all(b"\n"); let _ = err.flush();
+    let bs = Sexp::Str(args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: args[0].clone() })?);
+    unsafe { let _ = crate::elisp_cc_spike::bi_write_stderr_line(&bs as *const Sexp); }
+    let mut err = std::io::stderr().lock(); let _ = err.write_all(b"\n"); let _ = err.flush();
     Ok(args[0].clone())
 }
 /// Validate arity=1 and resolve arg[0] to an absolute path string Sexp.
@@ -299,8 +284,7 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
     if n_bytes == 0 { return Ok(Sexp::Str(String::new())); }
     let mut buf = vec![0u8; n_bytes];
     let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&path_sexp as *const _, buf.as_mut_ptr(), n_bytes as i64) } as i32 as i64;
-    if rc < 0 { return Ok(Sexp::Nil); }
-    buf.truncate((rc as usize).min(n_bytes));
+    if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n_bytes));
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 
@@ -308,18 +292,14 @@ fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (_, path_sexp) = path_arg1("nelisp--syscall-stat", args, env)?;
     let mut statbuf: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&path_sexp as *const _, (&mut statbuf as *mut libc::stat) as *mut u8) };
-    let tag = if rc < 0 { "absent" } else { match statbuf.st_mode & libc::S_IFMT {
-        m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent",
-    }};
+    let tag = if rc < 0 { "absent" } else { match statbuf.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" }};
     Ok(Sexp::Symbol(tag.into()))
 }
 
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (dir, dir_sexp) = path_arg1("nelisp--syscall-readdir", args, env)?;
-    let entries: Vec<Sexp> = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect(),
-        Err(_) => return Ok(Sexp::Nil),
-    };
+    let rd = match std::fs::read_dir(&dir) { Ok(rd) => rd, Err(_) => return Ok(Sexp::Nil) };
+    let entries: Vec<Sexp> = rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect();
     Ok(Sexp::cons(dir_sexp, Sexp::list_from(&entries)))
 }
 
