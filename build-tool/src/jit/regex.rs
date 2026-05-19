@@ -7,13 +7,16 @@ const TRAMPOLINE_ERR: i64 = 1;
 
 fn read_str(v: &Sexp) -> Option<String> {
     match v {
-        Sexp::Str(s) => Some(s.clone()),
+        Sexp::Str(s) | Sexp::Symbol(s) => Some(s.clone()),
         Sexp::MutStr(rc) => Some(rc.value.clone()),
-        Sexp::Symbol(s) => Some(s.clone()),
         Sexp::Nil => Some("nil".into()),
         Sexp::T => Some("t".into()),
         _ => None,
     }
+}
+
+fn all_digits(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
 }
 
 fn match_inner(pat: &str, text: &str) -> bool {
@@ -23,17 +26,12 @@ fn match_inner(pat: &str, text: &str) -> bool {
             let mut parts = s.split('.');
             let first = parts.next().unwrap_or("");
             let second = parts.next();
-            parts.next().is_none()
-                && !first.is_empty()
-                && first.chars().all(|c| c.is_ascii_digit())
-                && second
-                    .map_or(true, |tail| !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()))
+            parts.next().is_none() && all_digits(first) && second.map_or(true, all_digits)
         }
         "\\`{.*}\\'" => text.starts_with('{') && text.ends_with('}'),
         "\\`[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+\\'" => {
             let parts: Vec<&str> = text.split('.').collect();
-            parts.len() == 4
-                && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            parts.len() == 4 && parts.iter().all(|p| all_digits(p))
         }
         "^[[:space:]]*$" | "\\`[[:space:]]*\\'" => text.chars().all(|c| c.is_whitespace()),
         "^[\u{00A0}]*$" => text.chars().all(|c| c == '\u{00A0}'),
@@ -42,20 +40,14 @@ fn match_inner(pat: &str, text: &str) -> bool {
             let anchored_start = pat.starts_with("\\`") || pat.starts_with('^');
             let anchored_end = pat.ends_with("\\'") || pat.ends_with('$');
             let literal = pat
-                .replace("\\`", "")
-                .replace("\\'", "")
-                .replace('^', "")
-                .replace('$', "")
-                .replace("\\.", ".")
-                .replace("\\\\", "\\");
-            if anchored_start && anchored_end {
-                text == literal
-            } else if anchored_start {
-                text.starts_with(&literal)
-            } else if anchored_end {
-                text.ends_with(&literal)
-            } else {
-                text.contains(&literal)
+                .replace("\\`", "").replace("\\'", "")
+                .replace('^', "").replace('$', "")
+                .replace("\\.", ".").replace("\\\\", "\\");
+            match (anchored_start, anchored_end) {
+                (true, true) => text == literal,
+                (true, false) => text.starts_with(&literal),
+                (false, true) => text.ends_with(&literal),
+                (false, false) => text.contains(&literal),
             }
         }
     }
@@ -76,13 +68,6 @@ pub extern "C" fn nl_jit_string_match_p(
         Some(t) => t,
         None => return TRAMPOLINE_ERR,
     };
-    let result = if match_inner(&pat, &text) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    };
-    unsafe {
-        *out = result;
-    }
+    unsafe { *out = if match_inner(&pat, &text) { Sexp::T } else { Sexp::Nil }; }
     TRAMPOLINE_OK
 }

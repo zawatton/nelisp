@@ -21,9 +21,8 @@ pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 {
 
 fn read_text(v: &Sexp) -> Option<String> {
     match v {
-        Sexp::Str(s) => Some(s.clone()),
+        Sexp::Str(s) | Sexp::Symbol(s) => Some(s.clone()),
         Sexp::MutStr(rc) => Some(rc.value.clone()),
-        Sexp::Symbol(s) => Some(s.clone()),
         Sexp::Nil => Some("nil".into()),
         Sexp::T => Some("t".into()),
         _ => None,
@@ -63,13 +62,8 @@ pub unsafe extern "C" fn nl_jit_format_float(
         'e' => format!("{:.*e}", p, x),
         'E' => format!("{:.*E}", p, x),
         'g' | 'G' => {
-            let f = format!("{:.*}", p, x);
-            let e = format!("{:.*e}", p, x);
-            if f.len() <= e.len() {
-                f
-            } else {
-                e
-            }
+            let (f, e) = (format!("{:.*}", p, x), format!("{:.*e}", p, x));
+            if f.len() <= e.len() { f } else { e }
         }
         _ => return TRAMPOLINE_ERR,
     };
