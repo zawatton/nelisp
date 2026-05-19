@@ -382,8 +382,6 @@ pub(crate) fn apply_lambda_inner(
     args: &[Sexp],
     env: &mut Env,
 ) -> Result<Sexp, EvalError> {
-    // Phase 47: body deleted → delegated to nl_apply_lambda_inner elisp .o.
-    // Build cons lists from slices for the elisp side.
     let body_list = Sexp::list_from(body);
     let args_list = Sexp::list_from(args);
     let mut out = Sexp::Nil;

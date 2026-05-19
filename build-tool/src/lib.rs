@@ -282,10 +282,7 @@ pub mod elisp_cc_spike {
             slot_pool: *const Sexp,
             depth: i64,
         ) -> i64;
-        // Doc 86 §86.2: `sf_quote' Phase-47 replacement.
         fn nl_sf_quote(args: *const Sexp, out: *mut Sexp) -> i64;
-        // Phase 47 Tier-1 special forms.  Arity 4 (even) — 4th param is
-        // unused alignment pad; callers pass 0 explicitly.
         fn nl_sf_if(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
         fn nl_sf_setq(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
         fn nl_sf_progn(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
@@ -294,8 +291,6 @@ pub mod elisp_cc_spike {
         fn nl_sf_let_star(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
         fn nl_sf_lambda(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
         fn nl_sf_function(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
-        // Phase 47 — apply_lambda_inner body deleted from eval/mod.rs.
-        // nl_apply_lambda_inner replaces it via elisp .o (arity 6 = even).
         fn nl_apply_lambda_inner(
             captured: *const Sexp,
             formals: *const Sexp,
@@ -654,9 +649,7 @@ pub mod elisp_cc_spike {
         jit_float_log: nl_jit_float_log, (x: f64) -> f64
     );
 
-    // Doc 86 §86.2: thin shell for `sf_quote' — body deleted from special_forms.rs.
     cc_wrap!(sf_quote_call: nl_sf_quote, (args: *const Sexp, out: *mut Sexp) -> i64);
-    // Phase 47 Tier-1 special form elisp化 — bodies deleted from special_forms.rs.
     cc_wrap!(sf_if_call: nl_sf_if, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(sf_setq_call: nl_sf_setq, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(sf_progn_call: nl_sf_progn, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64);
@@ -665,7 +658,6 @@ pub mod elisp_cc_spike {
     cc_wrap!(sf_let_star_call: nl_sf_let_star, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(sf_lambda_call: nl_sf_lambda, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64);
     cc_wrap!(sf_function_call: nl_sf_function, (args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64);
-    // Phase 47 — apply_lambda_inner body deleted from eval/mod.rs.
     cc_wrap!(apply_lambda_inner_call: nl_apply_lambda_inner,
         (captured: *const Sexp, formals: *const Sexp, body_list: *const Sexp,
          args_list: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64);
