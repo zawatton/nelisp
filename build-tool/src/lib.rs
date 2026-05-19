@@ -73,16 +73,8 @@ pub mod elisp_cc_spike {
         fn nelisp_cell_set_value(arg0: *const Sexp, val_ptr: *const Sexp);
         fn nelisp_cell_make(val_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_cell_null_p(arg0: *const Sexp) -> i64;
-        fn nelisp_sexp_write_str(
-            slot: *mut Sexp,
-            bytes_ptr: *const u8,
-            len: i64,
-        ) -> *mut Sexp;
-        fn nelisp_sexp_write_symbol(
-            slot: *mut Sexp,
-            bytes_ptr: *const u8,
-            len: i64,
-        ) -> *mut Sexp;
+        fn nelisp_sexp_write_str(slot: *mut Sexp, bytes_ptr: *const u8, len: i64) -> *mut Sexp;
+        fn nelisp_sexp_write_symbol(slot: *mut Sexp, bytes_ptr: *const u8, len: i64) -> *mut Sexp;
         fn nelisp_sexp_write_float(slot_bits: f64, val: f64) -> *mut Sexp;
         fn nelisp_mut_str_make_empty(slot: *mut Sexp, cap: i64) -> *mut Sexp;
         fn nelisp_mut_str_push_byte(ptr: *mut Sexp, byte: i64) -> i64;
@@ -98,11 +90,7 @@ pub mod elisp_cc_spike {
         ) -> i64;
         fn nelisp_str_is_alphanumeric_at(ptr: *const Sexp, idx: i64) -> i64;
         fn nelisp_atomic_fetch_add(ptr: *mut i64, delta: i64) -> i64;
-        fn nelisp_atomic_compare_exchange(
-            ptr: *mut i64,
-            expected: i64,
-            new_val: i64,
-        ) -> i64;
+        fn nelisp_atomic_compare_exchange(ptr: *mut i64, expected: i64, new_val: i64) -> i64;
         fn nelisp_ptr_read_u64(ptr: *const u8, offset: i64) -> i64;
         fn nelisp_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) -> i64;
         fn nelisp_ptr_read_u8(ptr: *const u8, offset: i64) -> i64;
@@ -112,14 +100,8 @@ pub mod elisp_cc_spike {
         fn nelisp_cstr_from_sexp(str_ptr: *const Sexp) -> *mut u8;
         fn nelisp_cstr_drop(buf_ptr: *mut u8, size: i64) -> i64;
         fn nelisp_bi_syscall_stat(path_ptr: *const Sexp, statbuf: *mut u8) -> i64;
-        fn nelisp_bi_syscall_canonicalize(
-            path_ptr: *const Sexp,
-            result_buf: *mut u8,
-        ) -> i64;
-        fn nelisp_bi_nl_write_file(
-            path_ptr: *const Sexp,
-            content_ptr: *const Sexp,
-        ) -> i64;
+        fn nelisp_bi_syscall_canonicalize(path_ptr: *const Sexp, result_buf: *mut u8) -> i64;
+        fn nelisp_bi_nl_write_file(path_ptr: *const Sexp, content_ptr: *const Sexp) -> i64;
         fn nelisp_bi_nl_make_directory(path_ptr: *const Sexp) -> i64;
         fn nelisp_bi_syscall_read_file(
             path_ptr: *const Sexp,
@@ -148,10 +130,7 @@ pub mod elisp_cc_spike {
         fn nelisp_nlstr_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlboolvector_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlchartable_drop(box_ptr: *mut i64) -> i64;
-        fn nelisp_mirror_lookup_entry(
-            mirror_ptr: *const Sexp,
-            sym_ptr: *const Sexp,
-        ) -> i64;
+        fn nelisp_mirror_lookup_entry(mirror_ptr: *const Sexp, sym_ptr: *const Sexp) -> i64;
         fn nelisp_mirror_lookup_value(
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
@@ -172,10 +151,7 @@ pub mod elisp_cc_spike {
             sym_ptr: *const Sexp,
             unbound_ptr: *const Sexp,
         ) -> i64;
-        fn nelisp_mirror_is_constant(
-            mirror_ptr: *const Sexp,
-            sym_ptr: *const Sexp,
-        ) -> i64;
+        fn nelisp_mirror_is_constant(mirror_ptr: *const Sexp, sym_ptr: *const Sexp) -> i64;
         fn nelisp_mirror_set_value(
             mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp,
@@ -341,10 +317,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(sexp_write_symbol: nelisp_sexp_write_symbol, (slot: *mut Sexp, bytes_ptr: *const u8, len: i64) -> *mut Sexp);
 
     /// Grammar path for `sexp-write-float`; caller bit-casts `slot` through `f64`.
-    pub unsafe fn sexp_write_float_via_grammar(
-        slot: *mut Sexp,
-        val: f64,
-    ) -> *mut Sexp {
+    pub unsafe fn sexp_write_float_via_grammar(slot: *mut Sexp, val: f64) -> *mut Sexp {
         let slot_bits = f64::from_bits(slot as u64);
         nelisp_sexp_write_float(slot_bits, val)
     }
@@ -355,11 +328,7 @@ pub mod elisp_cc_spike {
     }
 
     /// Thin wrapper over `nl_str_to_float`.
-    pub unsafe fn str_to_float(
-        bytes_ptr: *const u8,
-        len: i64,
-        slot: *mut Sexp,
-    ) -> i64 {
+    pub unsafe fn str_to_float(bytes_ptr: *const u8, len: i64, slot: *mut Sexp) -> i64 {
         crate::eval::nlstr::nl_str_to_float(bytes_ptr, len, slot)
     }
 
@@ -472,11 +441,7 @@ pub mod elisp_cc_spike {
             Sexp::Nil,
             Sexp::Nil,
         );
-        nelisp_mirror_set_value_or_insert(
-            mirror_ptr, sym_ptr,
-            &scratch as *const Sexp,
-            0,
-        )
+        nelisp_mirror_set_value_or_insert(mirror_ptr, sym_ptr, &scratch as *const Sexp, 0)
     }
 
     pub unsafe fn mirror_set_function_or_insert(
@@ -491,11 +456,7 @@ pub mod elisp_cc_spike {
             Sexp::Nil,
             Sexp::Nil,
         );
-        nelisp_mirror_set_function_or_insert(
-            mirror_ptr, sym_ptr,
-            &scratch as *const Sexp,
-            0,
-        )
+        nelisp_mirror_set_function_or_insert(mirror_ptr, sym_ptr, &scratch as *const Sexp, 0)
     }
 
     pub unsafe fn mirror_set_constant_or_insert(
@@ -510,11 +471,7 @@ pub mod elisp_cc_spike {
             Sexp::Nil,
             (*flag_ptr).clone(),
         );
-        nelisp_mirror_set_constant_or_insert(
-            mirror_ptr, sym_ptr,
-            &scratch as *const Sexp,
-            0,
-        )
+        nelisp_mirror_set_constant_or_insert(mirror_ptr, sym_ptr, &scratch as *const Sexp, 0)
     }
 
     pub unsafe fn mirror_install_entry_or_insert(
@@ -531,11 +488,7 @@ pub mod elisp_cc_spike {
             (*plist_ptr).clone(),
             (*constant_ptr).clone(),
         );
-        nelisp_mirror_install_entry_or_insert(
-            mirror_ptr, sym_ptr,
-            &scratch as *const Sexp,
-            0,
-        )
+        nelisp_mirror_install_entry_or_insert(mirror_ptr, sym_ptr, &scratch as *const Sexp, 0)
     }
 
     pub unsafe fn frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64) -> i64 {
