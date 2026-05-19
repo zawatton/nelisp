@@ -505,17 +505,6 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(not(target_os = "linux"))]
 syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
-fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
-    match arg {
-        Sexp::Symbol(s) => Ok(s.clone()),
-        other => Err(EvalError::WrongType { expected: format!("symbolp ({} feature)", name), got: other.clone() }),
-    }
-}
-
-fn lookup_fn_or(env: &mut Env, name: &str, err: &'static str) -> Result<Sexp, EvalError> {
-    env.lookup_function(name).map_err(|_| EvalError::Internal(err.into()))
-}
-
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match arg { Sexp::Symbol(s) => env.lookup_function(s), _ => Ok(arg.clone()) }
 }
@@ -981,16 +970,9 @@ fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 
 fn read_from_string_impl(env: &mut Env, caller: &'static str) -> Result<Sexp, EvalError> {
-    lookup_fn_or(
-        env,
-        "nelisp--read-from-string-impl",
-        match caller {
-            "read" => "read: `nelisp--read-from-string-impl' not loaded \
-                       — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_SOURCES?",
-            _ => "read-from-string: `nelisp--read-from-string-impl' not loaded \
-                  — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_SOURCES?",
-        },
-    )
+    env.lookup_function("nelisp--read-from-string-impl").map_err(|_| EvalError::Internal(format!(
+        "{caller}: `nelisp--read-from-string-impl' not loaded — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_SOURCES?"
+    )))
 }
 
 fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -1012,7 +994,10 @@ fn bi_read_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> 
 
 fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("require", args, 1, Some(3))?;
-    let feature = feature_name_arg("require", &args[0])?;
+    let feature = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType { expected: "symbolp (require feature)".into(), got: other.clone() }),
+    };
     if elisp_featurep(env, &feature)? {
         return Ok(Sexp::Symbol(feature));
     }
