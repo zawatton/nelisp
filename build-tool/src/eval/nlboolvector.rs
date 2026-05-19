@@ -31,16 +31,24 @@ impl NlBoolVectorRef {
             value,
             refcount: AtomicUsize::new(1),
         })));
-        NlBoolVectorRef { ptr, _marker: PhantomData }
+        NlBoolVectorRef {
+            ptr,
+            _marker: PhantomData,
+        }
     }
 }
 
 impl Clone for NlBoolVectorRef {
     fn clone(&self) -> Self {
         unsafe {
-            (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
+            (*self.ptr.as_ptr())
+                .refcount
+                .fetch_add(1, Ordering::Relaxed);
         }
-        NlBoolVectorRef { ptr: self.ptr, _marker: PhantomData }
+        NlBoolVectorRef {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
     }
 }
 

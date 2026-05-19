@@ -19,7 +19,10 @@ fn run_cons_construct(car: Sexp, cdr: Sexp) -> Sexp {
     };
     std::mem::forget(car_owned);
     std::mem::forget(cdr_owned);
-    assert_eq!(returned, slot_ptr, "extern must return the caller-provided slot pointer");
+    assert_eq!(
+        returned, slot_ptr,
+        "extern must return the caller-provided slot pointer"
+    );
     slot
 }
 
@@ -32,7 +35,10 @@ fn cons_construct_int_dot_int() {
 #[test]
 fn cons_construct_symbol_dot_symbol() {
     let got = run_cons_construct(Sexp::Symbol("a".into()), Sexp::Symbol("b".into()));
-    assert_eq!(got, Sexp::cons(Sexp::Symbol("a".into()), Sexp::Symbol("b".into())));
+    assert_eq!(
+        got,
+        Sexp::cons(Sexp::Symbol("a".into()), Sexp::Symbol("b".into()))
+    );
 }
 
 #[test]
@@ -43,15 +49,15 @@ fn cons_construct_int_nil_list() {
 
 #[test]
 fn cons_construct_nested_list() {
-    let got = run_cons_construct(
-        Sexp::Int(1),
-        Sexp::cons(Sexp::Int(2), Sexp::Nil),
-    );
+    let got = run_cons_construct(Sexp::Int(1), Sexp::cons(Sexp::Int(2), Sexp::Nil));
     assert_eq!(got, Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2)]));
 }
 
 #[test]
 fn cons_construct_string_dot_string() {
     let got = run_cons_construct(Sexp::Str("hello".into()), Sexp::Str("world".into()));
-    assert_eq!(got, Sexp::cons(Sexp::Str("hello".into()), Sexp::Str("world".into())));
+    assert_eq!(
+        got,
+        Sexp::cons(Sexp::Str("hello".into()), Sexp::Str("world".into()))
+    );
 }

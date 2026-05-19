@@ -6,10 +6,9 @@ use nelisp_build_tool::eval::nlboolvector::NlBoolVectorRef;
 use nelisp_build_tool::eval::nlcell::NlCellRef;
 use nelisp_build_tool::eval::nlrecord::NlRecordRef;
 use nelisp_build_tool::eval::sexp::{
-    fmt_sexp, variant_tag, Sexp, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CELL,
-    SEXP_TAG_CHAR_TABLE, SEXP_TAG_CONS, SEXP_TAG_FLOAT, SEXP_TAG_INT,
-    SEXP_TAG_MUT_STR, SEXP_TAG_NIL, SEXP_TAG_RECORD, SEXP_TAG_STR,
-    SEXP_TAG_SYMBOL, SEXP_TAG_T, SEXP_TAG_VECTOR,
+    fmt_sexp, variant_tag, Sexp, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CELL, SEXP_TAG_CHAR_TABLE,
+    SEXP_TAG_CONS, SEXP_TAG_FLOAT, SEXP_TAG_INT, SEXP_TAG_MUT_STR, SEXP_TAG_NIL, SEXP_TAG_RECORD,
+    SEXP_TAG_STR, SEXP_TAG_SYMBOL, SEXP_TAG_T, SEXP_TAG_VECTOR,
 };
 use std::ops::Deref;
 
@@ -23,10 +22,7 @@ fn list_from_three_elements_chains_right() {
     let got = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
     let expected = Sexp::cons(
         Sexp::Int(1),
-        Sexp::cons(
-            Sexp::Int(2),
-            Sexp::cons(Sexp::Int(3), Sexp::Nil),
-        ),
+        Sexp::cons(Sexp::Int(2), Sexp::cons(Sexp::Int(3), Sexp::Nil)),
     );
     assert_eq!(got, expected);
 }
@@ -47,9 +43,18 @@ fn fmt_reader_macros() {
         fmt_sexp(&wrap_reader_macro("backquote", Sexp::Symbol("x".into()))),
         "`x"
     );
-    assert_eq!(fmt_sexp(&wrap_reader_macro("comma", Sexp::Symbol("x".into()))), ",x");
-    assert_eq!(fmt_sexp(&wrap_reader_macro("comma-at", Sexp::Symbol("x".into()))), ",@x");
-    assert_eq!(fmt_sexp(&wrap_reader_macro("function", Sexp::Symbol("x".into()))), "#'x");
+    assert_eq!(
+        fmt_sexp(&wrap_reader_macro("comma", Sexp::Symbol("x".into()))),
+        ",x"
+    );
+    assert_eq!(
+        fmt_sexp(&wrap_reader_macro("comma-at", Sexp::Symbol("x".into()))),
+        ",@x"
+    );
+    assert_eq!(
+        fmt_sexp(&wrap_reader_macro("function", Sexp::Symbol("x".into()))),
+        "#'x"
+    );
 }
 
 #[test]
@@ -60,10 +65,7 @@ fn fmt_dotted_pair() {
 
 #[test]
 fn fmt_string_escapes() {
-    assert_eq!(
-        fmt_sexp(&Sexp::Str("hi\n\"\\".into())),
-        "\"hi\\n\\\"\\\\\""
-    );
+    assert_eq!(fmt_sexp(&Sexp::Str("hi\n\"\\".into())), "\"hi\\n\\\"\\\\\"");
 }
 
 #[test]
@@ -125,7 +127,11 @@ fn sexp_layout_alignment_and_size_sane() {
     // String is 24 bytes (3 × usize on 64-bit), payload at offset 8
     // → minimum total 32 bytes.  Allow up to 40 for niche slack.
     let sz = std::mem::size_of::<Sexp>();
-    assert!(sz >= 32 && sz <= 48, "Sexp size = {} (expected 32..=48)", sz);
+    assert!(
+        sz >= 32 && sz <= 48,
+        "Sexp size = {} (expected 32..=48)",
+        sz
+    );
 }
 
 // ----------------------------------------------------------------
@@ -144,7 +150,8 @@ fn sexp_payload_offset_is_eight() {
     // Read offset 8 manually through the *const Sexp.
     let raw = (&cons as *const Sexp) as *const u8;
     let payload_at_8 = unsafe {
-        let p = raw.add(8) as *const std::ptr::NonNull<nelisp_build_tool::eval::nlconsbox::NlConsBox>;
+        let p =
+            raw.add(8) as *const std::ptr::NonNull<nelisp_build_tool::eval::nlconsbox::NlConsBox>;
         (*p).as_ptr()
     } as usize;
     assert_eq!(direct, payload_at_8);
@@ -169,20 +176,48 @@ macro_rules! box_ptr_round_trip_test {
     };
 }
 
-box_ptr_round_trip_test!(cons_box_ptr_round_trips_to_match, Cons,
-    Sexp::cons(Sexp::Int(7), Sexp::Symbol("x".into())), cons_box_ptr);
-box_ptr_round_trip_test!(cell_box_ptr_round_trips_to_match, Cell,
-    Sexp::Cell(NlCellRef::new(Sexp::Int(99))), cell_box_ptr);
-box_ptr_round_trip_test!(mut_str_box_ptr_round_trips_to_match, MutStr,
-    Sexp::mut_str("hello"), mut_str_box_ptr);
-box_ptr_round_trip_test!(vector_box_ptr_round_trips_to_match, Vector,
-    Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2)]), vector_box_ptr);
-box_ptr_round_trip_test!(bool_vector_box_ptr_round_trips_to_match, BoolVector,
-    Sexp::bool_vector(8, true), bool_vector_box_ptr);
-box_ptr_round_trip_test!(record_box_ptr_round_trips_to_match, Record,
-    Sexp::record(Sexp::Symbol("point".into()), vec![Sexp::Int(3)]), record_box_ptr);
-box_ptr_round_trip_test!(char_table_box_ptr_round_trips_to_match, CharTable,
-    Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil), char_table_box_ptr);
+box_ptr_round_trip_test!(
+    cons_box_ptr_round_trips_to_match,
+    Cons,
+    Sexp::cons(Sexp::Int(7), Sexp::Symbol("x".into())),
+    cons_box_ptr
+);
+box_ptr_round_trip_test!(
+    cell_box_ptr_round_trips_to_match,
+    Cell,
+    Sexp::Cell(NlCellRef::new(Sexp::Int(99))),
+    cell_box_ptr
+);
+box_ptr_round_trip_test!(
+    mut_str_box_ptr_round_trips_to_match,
+    MutStr,
+    Sexp::mut_str("hello"),
+    mut_str_box_ptr
+);
+box_ptr_round_trip_test!(
+    vector_box_ptr_round_trips_to_match,
+    Vector,
+    Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2)]),
+    vector_box_ptr
+);
+box_ptr_round_trip_test!(
+    bool_vector_box_ptr_round_trips_to_match,
+    BoolVector,
+    Sexp::bool_vector(8, true),
+    bool_vector_box_ptr
+);
+box_ptr_round_trip_test!(
+    record_box_ptr_round_trips_to_match,
+    Record,
+    Sexp::record(Sexp::Symbol("point".into()), vec![Sexp::Int(3)]),
+    record_box_ptr
+);
+box_ptr_round_trip_test!(
+    char_table_box_ptr_round_trips_to_match,
+    CharTable,
+    Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil),
+    char_table_box_ptr
+);
 
 #[test]
 fn tag_method_matches_variant_tag_fn() {

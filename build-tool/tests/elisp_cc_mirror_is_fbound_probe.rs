@@ -16,8 +16,10 @@ fn fnv1a(s: &str) -> u32 {
 }
 
 fn build_empty_mirror(bucket_count: usize) -> Sexp {
-    assert!(bucket_count.is_power_of_two(),
-            "bucket count must be a power of 2");
+    assert!(
+        bucket_count.is_power_of_two(),
+        "bucket count must be a power of 2"
+    );
     let buckets = Sexp::vector(vec![Sexp::Nil; bucket_count]);
     let ht = Sexp::record(
         Sexp::Symbol("fast-hash-table".into()),

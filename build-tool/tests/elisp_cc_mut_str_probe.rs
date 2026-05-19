@@ -34,9 +34,7 @@ use nelisp_build_tool::eval::sexp::Sexp;
 /// and call this only for its side-effect on `*slot`.
 fn make_empty_mut_str(slot: &mut Sexp, cap: i64) {
     let slot_ptr = slot as *mut Sexp;
-    let returned = unsafe {
-        nelisp_build_tool::elisp_cc_spike::mut_str_make_empty(slot_ptr, cap)
-    };
+    let returned = unsafe { nelisp_build_tool::elisp_cc_spike::mut_str_make_empty(slot_ptr, cap) };
     assert_eq!(
         returned, slot_ptr,
         "mut-str-make-empty must return the caller-provided slot pointer"
@@ -70,9 +68,7 @@ fn mut_str_byte_len(ptr: &Sexp) -> i64 {
 fn finalize_into(src: &Sexp, dst: &mut Sexp) {
     let src_p = src as *const Sexp;
     let dst_p = dst as *mut Sexp;
-    let returned = unsafe {
-        nelisp_build_tool::elisp_cc_spike::mut_str_finalize(src_p, dst_p)
-    };
+    let returned = unsafe { nelisp_build_tool::elisp_cc_spike::mut_str_finalize(src_p, dst_p) };
     assert_eq!(
         returned, dst_p,
         "mut-str-finalize must return the caller-provided slot pointer"
@@ -86,11 +82,19 @@ fn mut_str_empty_then_finalize_yields_empty_str() {
     let mut mut_slot = Sexp::Nil;
     let mut out = Sexp::Nil;
     make_empty_mut_str(&mut mut_slot, 0);
-    assert_eq!(mut_str_byte_len(&mut_slot), 0, "fresh empty mut-str must have len 0");
+    assert_eq!(
+        mut_str_byte_len(&mut_slot),
+        0,
+        "fresh empty mut-str must have len 0"
+    );
     finalize_into(&mut_slot, &mut out);
     match out {
         Sexp::Str(ref text) => {
-            assert_eq!(text.len(), 0, "finalize of empty mut-str must yield empty Str");
+            assert_eq!(
+                text.len(),
+                0,
+                "finalize of empty mut-str must yield empty Str"
+            );
             assert_eq!(text, "");
         }
         other => panic!("expected Sexp::Str, got {:?}", other),
@@ -105,7 +109,11 @@ fn mut_str_single_byte_push_finalize_yields_one_byte_str() {
     let mut out = Sexp::Nil;
     make_empty_mut_str(&mut mut_slot, 4);
     push_byte(&mut mut_slot, b'A' as i64);
-    assert_eq!(mut_str_byte_len(&mut_slot), 1, "after 1 push byte-len must be 1");
+    assert_eq!(
+        mut_str_byte_len(&mut_slot),
+        1,
+        "after 1 push byte-len must be 1"
+    );
     finalize_into(&mut_slot, &mut out);
     match out {
         Sexp::Str(ref text) => {

@@ -306,19 +306,11 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.is_empty() { return Err(EvalError::Internal("nelisp--syscall: at least one argument (syscall nr / name) required".into())); }
     let nr = match &args[0] {
         Sexp::Int(n) => *n,
-        Sexp::Symbol(s) => (match s.as_str() {
-            "read" => libc::SYS_read, "write" => libc::SYS_write, "close" => libc::SYS_close,
-            "openat" => libc::SYS_openat, "exit_group" => libc::SYS_exit_group, "lseek" => libc::SYS_lseek,
-            "dup2" => libc::SYS_dup2, "getpid" => libc::SYS_getpid, "kill" => libc::SYS_kill,
-            "mmap" => libc::SYS_mmap, "mprotect" => libc::SYS_mprotect, "munmap" => libc::SYS_munmap,
-            "fcntl" => libc::SYS_fcntl, "fork" => libc::SYS_fork, "socket" => libc::SYS_socket,
-            "listen" => libc::SYS_listen, "wait4" => libc::SYS_wait4, "getppid" => libc::SYS_getppid,
-            "setpgid" => libc::SYS_setpgid, "pidfd_open" => libc::SYS_pidfd_open,
-            "pidfd_send_signal" => libc::SYS_pidfd_send_signal, "inotify_init1" => libc::SYS_inotify_init1,
-            "inotify_rm_watch" => libc::SYS_inotify_rm_watch, "eventfd2" => libc::SYS_eventfd2,
-            "timerfd_create" => libc::SYS_timerfd_create,
-            other => return Err(EvalError::Internal(format!("nelisp--syscall: unknown syscall name `{}'", other))),
-        }) as i64,
+        Sexp::Symbol(s) => {
+            let r = unsafe { crate::elisp_cc_spike::bi_syscall_resolve_nr(&args[0] as *const _) };
+            if r < 0 { return Err(EvalError::Internal(format!("nelisp--syscall: unknown syscall name `{}'", s.as_str()))); }
+            r
+        }
         other => return Err(EvalError::WrongType { expected: "syscall name (symbol) or number (integer)".into(), got: other.clone() }),
     };
     let mut a = [0i64; 6];

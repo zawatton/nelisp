@@ -43,15 +43,14 @@ fn fnv1a_bytes(s: &str) -> u32 {
 /// against `fnv1a_bytes' obvious.
 fn run_fnv1a(s: &str) -> u32 {
     let sym = Sexp::Symbol(s.into());
-    let raw = unsafe {
-        nelisp_build_tool::elisp_cc_spike::fnv1a(&sym as *const Sexp)
-    };
+    let raw = unsafe { nelisp_build_tool::elisp_cc_spike::fnv1a(&sym as *const Sexp) };
     // High 32 bits must be zero (= the `(logand h #xFFFFFFFF)' mask).
     assert_eq!(
         raw as u64 >> 32,
         0,
         "nelisp_fnv1a returned i64 with non-zero high 32 bits ({:#x}) for {:?}",
-        raw, s,
+        raw,
+        s,
     );
     raw as u32
 }
@@ -118,9 +117,7 @@ fn fnv1a_accepts_str_arm_in_addition_to_symbol() {
     // Confirm by feeding a `Sexp::Str' and asserting the same hash.
     let s = "hello";
     let str_arm = Sexp::Str(s.into());
-    let raw = unsafe {
-        nelisp_build_tool::elisp_cc_spike::fnv1a(&str_arm as *const Sexp)
-    };
+    let raw = unsafe { nelisp_build_tool::elisp_cc_spike::fnv1a(&str_arm as *const Sexp) };
     assert_eq!(raw as u32, fnv1a_bytes(s));
     assert_eq!(raw as u64 >> 32, 0);
 }

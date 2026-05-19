@@ -129,8 +129,7 @@ fn mirror_set_value_positive_hit_overwrites_slot_0() {
     let rc = run_set_value(&mirror, &sym, &new_val);
     assert_eq!(rc, 1, "set_value of existing key must return 1");
 
-    let observed = read_value_slot(&mirror, "alpha")
-        .expect("entry must exist post-set");
+    let observed = read_value_slot(&mirror, "alpha").expect("entry must exist post-set");
     assert_eq!(
         observed,
         Sexp::Int(99),
@@ -150,8 +149,7 @@ fn mirror_set_value_negative_miss_returns_zero_no_change() {
     assert_eq!(rc, 0, "set_value of absent key must return 0");
 
     // alpha's slot 0 must be untouched.
-    let observed = read_value_slot(&mirror, "alpha")
-        .expect("alpha must still exist");
+    let observed = read_value_slot(&mirror, "alpha").expect("alpha must still exist");
     assert_eq!(
         observed,
         Sexp::Int(42),
@@ -179,12 +177,7 @@ fn mirror_set_value_overwrites_boxed_value_refcount_safely() {
     // value back; a refcount bug would surface as a crash or wrong
     // observation.
     let mirror = build_empty_mirror(1024);
-    install_entry(
-        &mirror,
-        "key",
-        Sexp::Str("initial".into()),
-        Sexp::Nil,
-    );
+    install_entry(&mirror, "key", Sexp::Str("initial".into()), Sexp::Nil);
 
     let sym = Sexp::Symbol("key".into());
     let new_val = Sexp::Str("overwritten".into());

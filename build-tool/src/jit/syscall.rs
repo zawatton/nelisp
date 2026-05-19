@@ -21,7 +21,9 @@ pub unsafe extern "C" fn nl_jit_syscall_call(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_jit_syscall_supported_p() -> i64 { 1 }
+pub unsafe extern "C" fn nl_jit_syscall_supported_p() -> i64 {
+    1
+}
 
 #[cfg(test)]
 mod tests {
@@ -42,7 +44,14 @@ mod tests {
     #[test]
     fn jit_syscall_invalid_fd_returns_neg_ebadf() {
         let mut buf = [0u8; 8];
-        let r = unsafe { call(libc::SYS_read as i64, 999, buf.as_mut_ptr() as i64, buf.len() as i64) };
+        let r = unsafe {
+            call(
+                libc::SYS_read as i64,
+                999,
+                buf.as_mut_ptr() as i64,
+                buf.len() as i64,
+            )
+        };
         assert_eq!(r, -(libc::EBADF as i64), "expected -EBADF, got {}", r);
     }
 }

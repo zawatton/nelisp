@@ -67,9 +67,7 @@ fn eval_forms(forms: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let impl_fn = env
         .lookup_function("nelisp--read-all-from-string-impl")
-        .map_err(|_| EvalError::Internal(
-            "nelisp--read-all-from-string-impl not loaded".into(),
-        ))?;
+        .map_err(|_| EvalError::Internal("nelisp--read-all-from-string-impl not loaded".into()))?;
     collect_list(
         apply_function(&impl_fn, &[Sexp::Str(input.to_string())], env)?,
         "eval_str: expected proper list from elisp reader",
@@ -83,13 +81,14 @@ pub fn read_all_with_line_via_elisp(
 ) -> Result<Vec<(u32, Sexp)>, EvalError> {
     let impl_fn = env
         .lookup_function("nelisp--read-all-with-line-from-string-impl")
-        .map_err(|_| EvalError::Internal(
-            "nelisp--read-all-with-line-from-string-impl not loaded".into(),
-        ))?;
+        .map_err(|_| {
+            EvalError::Internal("nelisp--read-all-with-line-from-string-impl not loaded".into())
+        })?;
     collect_list(
         apply_function(&impl_fn, &[Sexp::Str(input.to_string())], env)?,
         "read_all_with_line_via_elisp: expected proper list from elisp reader",
-        |pair| match pair {
+        |pair| {
+            match pair {
             Sexp::Cons(inner) => match inner.car.clone() {
                 Sexp::Int(n) if n >= 0 => Ok((n as u32, inner.cdr.clone())),
                 other => Err(EvalError::Internal(format!(
@@ -101,6 +100,7 @@ pub fn read_all_with_line_via_elisp(
                 "read_all_with_line_via_elisp: expected (LINE . FORM), got {:?}",
                 other
             ))),
+        }
         },
     )
 }
@@ -165,16 +165,20 @@ pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 
 fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match form {
-        Sexp::Nil | Sexp::T | Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_)
-            | Sexp::MutStr(_) | Sexp::Vector(_)
-            | Sexp::CharTable(_) | Sexp::BoolVector(_)
-            | Sexp::Record(_) => Ok(form.clone()),
+        Sexp::Nil
+        | Sexp::T
+        | Sexp::Int(_)
+        | Sexp::Float(_)
+        | Sexp::Str(_)
+        | Sexp::MutStr(_)
+        | Sexp::Vector(_)
+        | Sexp::CharTable(_)
+        | Sexp::BoolVector(_)
+        | Sexp::Record(_) => Ok(form.clone()),
         // Cells appear only in captured-env alists; self-evaluate to the stored value.
         Sexp::Cell(c) => Ok(c.value.clone()),
         // Keyword symbols self-evaluate.
-        Sexp::Symbol(name) if name.starts_with(':') && name.len() > 1 => {
-            Ok(form.clone())
-        }
+        Sexp::Symbol(name) if name.starts_with(':') && name.len() > 1 => Ok(form.clone()),
         Sexp::Symbol(name) => env.lookup_value(name),
         Sexp::Cons(b) => apply_combiner(&b.car, &b.cdr, env),
     }
@@ -217,10 +221,7 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
         Sexp::Cons(_) => {
             let func = eval(head, env)?;
             let args = eval_arg_list(tail, env)?;
-            if env.use_elisp_apply
-                && env.delegation_depth == 0
-                && !is_builtin_value(&func)
-            {
+            if env.use_elisp_apply && env.delegation_depth == 0 && !is_builtin_value(&func) {
                 return delegate_to_elisp_apply(&func, &args, env);
             }
             apply_function(&func, &args, env)
@@ -290,9 +291,11 @@ fn is_builtin_value(func: &Sexp) -> bool {
 fn eval_delegated(name: &str, quoted: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let mut form = Vec::with_capacity(quoted.len() + 1);
     form.push(Sexp::Symbol(name.into()));
-    form.extend(quoted.iter().map(|arg| {
-        Sexp::list_from(&[Sexp::Symbol("quote".into()), arg.clone()])
-    }));
+    form.extend(
+        quoted
+            .iter()
+            .map(|arg| Sexp::list_from(&[Sexp::Symbol("quote".into()), arg.clone()])),
+    );
     env.delegation_depth += 1;
     let result = eval(&Sexp::list_from(&form), env);
     env.delegation_depth -= 1;
@@ -325,14 +328,20 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
         expected: "function".into(),
         got: func.clone(),
     };
-    let Sexp::Cons(b) = func else { return Err(wrong_type()); };
-    let Sexp::Symbol(head) = &b.car else { return Err(wrong_type()); };
+    let Sexp::Cons(b) = func else {
+        return Err(wrong_type());
+    };
+    let Sexp::Symbol(head) = &b.car else {
+        return Err(wrong_type());
+    };
     match head.as_str() {
         "builtin" => apply_builtin(func, args, env),
         "closure" => {
             let parts = list_elements(func)?;
             if parts.len() < 3 {
-                return Err(EvalError::Internal("closure missing env / args / body".into()));
+                return Err(EvalError::Internal(
+                    "closure missing env / args / body".into(),
+                ));
             }
             apply_lambda_inner(&parts[1], &parts[2], &parts[3..], args, env)
         }
@@ -360,7 +369,11 @@ fn apply_builtin(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, Eval
     };
     let name = match &inner.car {
         Sexp::Symbol(s) | Sexp::Str(s) => s.clone(),
-        _ => return Err(EvalError::Internal("builtin sentinel name not a symbol".into())),
+        _ => {
+            return Err(EvalError::Internal(
+                "builtin sentinel name not a symbol".into(),
+            ))
+        }
     };
     builtins::dispatch(&name, args, env)
 }
@@ -385,9 +398,12 @@ pub(crate) fn apply_lambda_inner(
             &mut out as *mut Sexp,
         )
     };
-    if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda_inner")) }
+    if rc == 0 {
+        Ok(out)
+    } else {
+        Err(consume_stashed_error(env, "apply_lambda_inner"))
+    }
 }
-
 
 fn is_macro(func: &Sexp) -> bool {
     matches!(
@@ -423,7 +439,10 @@ pub unsafe extern "C" fn nelisp_eval_call(
 ) -> i64 {
     let env_ref = &mut *(env as *mut Env);
     match eval(&*form, env_ref) {
-        Ok(v) => { std::ptr::write(out, v); 0 }
+        Ok(v) => {
+            std::ptr::write(out, v);
+            0
+        }
         Err(e) => {
             // Stash signal data so Phase 47 .o rc=1 callers can recover variant.
             let _ = env_ref.set_value("nelisp--last-signal-data", e.signal_data());
@@ -444,7 +463,10 @@ pub unsafe extern "C" fn nelisp_eval_call_with_err(
 ) -> i64 {
     let env_ref = &mut *(env as *mut Env);
     match eval(&*form, env_ref) {
-        Ok(v) => { std::ptr::write(out, v); 0 }
+        Ok(v) => {
+            std::ptr::write(out, v);
+            0
+        }
         Err(e) => {
             std::ptr::write(err_out, e.signal_data());
             1
@@ -454,12 +476,19 @@ pub unsafe extern "C" fn nelisp_eval_call_with_err(
 
 /// Re-construct EvalError from a `(tag . data)' sexp produced by `signal_data()`.
 pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fallback_name: &str) -> EvalError {
-    let Sexp::Cons(b) = sexp else { return EvalError::Internal(fallback_name.to_string()) };
-    let Sexp::Symbol(tag) = &b.car else { return EvalError::Internal(fallback_name.to_string()) };
+    let Sexp::Cons(b) = sexp else {
+        return EvalError::Internal(fallback_name.to_string());
+    };
+    let Sexp::Symbol(tag) = &b.car else {
+        return EvalError::Internal(fallback_name.to_string());
+    };
     let data = &b.cdr;
     match tag.as_str() {
         "quit" => EvalError::Quit,
-        _ => EvalError::UserError { tag: tag.clone(), data: data.clone() },
+        _ => EvalError::UserError {
+            tag: tag.clone(),
+            data: data.clone(),
+        },
     }
 }
 

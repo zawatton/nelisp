@@ -6,10 +6,9 @@ use crate::eval::nlconsbox::NlConsBox;
 use crate::eval::nlrecord::NlRecord;
 use crate::eval::nlvector::NlVector;
 use crate::eval::sexp::{
-    Sexp, SEXP_PAYLOAD_OFFSET, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CELL,
-    SEXP_TAG_CHAR_TABLE, SEXP_TAG_CONS, SEXP_TAG_FLOAT, SEXP_TAG_INT, SEXP_TAG_MUT_STR,
-    SEXP_TAG_NIL, SEXP_TAG_RECORD, SEXP_TAG_STR, SEXP_TAG_SYMBOL, SEXP_TAG_T,
-    SEXP_TAG_VECTOR,
+    Sexp, SEXP_PAYLOAD_OFFSET, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CELL, SEXP_TAG_CHAR_TABLE,
+    SEXP_TAG_CONS, SEXP_TAG_FLOAT, SEXP_TAG_INT, SEXP_TAG_MUT_STR, SEXP_TAG_NIL, SEXP_TAG_RECORD,
+    SEXP_TAG_STR, SEXP_TAG_SYMBOL, SEXP_TAG_T, SEXP_TAG_VECTOR,
 };
 
 // Tag bytes.
@@ -78,28 +77,52 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("offset-tag", 0),
     ("offset-payload", SEXP_PAYLOAD_OFFSET as i64),
     ("slot-size", std::mem::size_of::<Sexp>() as i64),
-    ("nlconsbox-offset-car", std::mem::offset_of!(NlConsBox, car) as i64),
-    ("nlconsbox-offset-cdr", std::mem::offset_of!(NlConsBox, cdr) as i64),
-    ("nlconsbox-offset-refcount", std::mem::offset_of!(NlConsBox, refcount) as i64),
+    (
+        "nlconsbox-offset-car",
+        std::mem::offset_of!(NlConsBox, car) as i64,
+    ),
+    (
+        "nlconsbox-offset-cdr",
+        std::mem::offset_of!(NlConsBox, cdr) as i64,
+    ),
+    (
+        "nlconsbox-offset-refcount",
+        std::mem::offset_of!(NlConsBox, refcount) as i64,
+    ),
     ("nlconsbox-size", std::mem::size_of::<NlConsBox>() as i64),
     ("string-offset-capacity", SEXP_PAYLOAD_OFFSET as i64),
     ("string-offset-ptr", (SEXP_PAYLOAD_OFFSET + 8) as i64),
     ("string-offset-length", (SEXP_PAYLOAD_OFFSET + 16) as i64),
     ("string-header-size", std::mem::size_of::<String>() as i64),
-    ("nlrecord-offset-type-tag", std::mem::offset_of!(NlRecord, type_tag) as i64),
+    (
+        "nlrecord-offset-type-tag",
+        std::mem::offset_of!(NlRecord, type_tag) as i64,
+    ),
     ("nlrecord-offset-slots-vec", NLREC_SLOTS as i64),
     ("nlrecord-offset-slots-ptr", NLREC_SLOTS as i64),
     ("nlrecord-offset-slots-capacity", (NLREC_SLOTS + 8) as i64),
     ("nlrecord-offset-slots-length", (NLREC_SLOTS + 16) as i64),
-    ("nlrecord-offset-refcount", std::mem::offset_of!(NlRecord, refcount) as i64),
+    (
+        "nlrecord-offset-refcount",
+        std::mem::offset_of!(NlRecord, refcount) as i64,
+    ),
     ("nlrecord-size", std::mem::size_of::<NlRecord>() as i64),
     ("nlvector-offset-value-vec", NLVEC_VALUE as i64),
     ("nlvector-offset-value-ptr", NLVEC_VALUE as i64),
     ("nlvector-offset-value-capacity", (NLVEC_VALUE + 8) as i64),
     ("nlvector-offset-value-length", (NLVEC_VALUE + 16) as i64),
-    ("nlvector-offset-refcount", std::mem::offset_of!(NlVector, refcount) as i64),
+    (
+        "nlvector-offset-refcount",
+        std::mem::offset_of!(NlVector, refcount) as i64,
+    ),
     ("nlvector-size", std::mem::size_of::<NlVector>() as i64),
-    ("nlcell-offset-value", std::mem::offset_of!(NlCell, value) as i64),
-    ("nlcell-offset-refcount", std::mem::offset_of!(NlCell, refcount) as i64),
+    (
+        "nlcell-offset-value",
+        std::mem::offset_of!(NlCell, value) as i64,
+    ),
+    (
+        "nlcell-offset-refcount",
+        std::mem::offset_of!(NlCell, refcount) as i64,
+    ),
     ("nlcell-size", std::mem::size_of::<NlCell>() as i64),
 ];

@@ -137,11 +137,8 @@ fn elisp_cc_bi_write_stderr_line_round_trip() {
     // — the trailing `\n' is the Rust shim's responsibility.
     let payload = "doc-122-H probe stderr line\n";
     let sexp = Sexp::Str(payload.to_string());
-    let rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::bi_write_stderr_line(
-            &sexp as *const Sexp,
-        )
-    };
+    let rc =
+        unsafe { nelisp_build_tool::elisp_cc_spike::bi_write_stderr_line(&sexp as *const Sexp) };
     // libc `write(2, fd=stderr, ...)' returns the byte count on
     // success; -1 only on EBADF / EIO / EPIPE etc.  Inside cargo test
     // the test harness keeps fd 2 open so success is the only path.
@@ -157,11 +154,8 @@ fn elisp_cc_bi_write_stderr_line_empty_str() {
     // Empty payload → `write(2, ptr, 0)' is a documented no-op that
     // returns 0.  Tests the `str-len = 0' edge of the elisp body.
     let sexp = Sexp::Str(String::new());
-    let rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::bi_write_stderr_line(
-            &sexp as *const Sexp,
-        )
-    };
+    let rc =
+        unsafe { nelisp_build_tool::elisp_cc_spike::bi_write_stderr_line(&sexp as *const Sexp) };
     assert_eq!(rc, 0, "empty-payload write must return 0 bytes");
 }
 
@@ -172,11 +166,8 @@ fn elisp_cc_bi_write_stderr_line_utf8_payload() {
     // emits the full byte count, not the char count.
     let payload = "藤澤 §122.H";
     let sexp = Sexp::Str(payload.to_string());
-    let rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::bi_write_stderr_line(
-            &sexp as *const Sexp,
-        )
-    };
+    let rc =
+        unsafe { nelisp_build_tool::elisp_cc_spike::bi_write_stderr_line(&sexp as *const Sexp) };
     assert_eq!(
         rc,
         payload.len() as i64,

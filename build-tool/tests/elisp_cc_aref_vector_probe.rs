@@ -16,7 +16,10 @@ fn run_aref_vector(vector: Sexp, idx: i64) -> Sexp {
             slot_ptr,
         )
     };
-    assert_eq!(returned, slot_ptr, "extern must return the caller-provided slot pointer");
+    assert_eq!(
+        returned, slot_ptr,
+        "extern must return the caller-provided slot pointer"
+    );
     slot
 }
 

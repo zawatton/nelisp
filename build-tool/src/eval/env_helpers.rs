@@ -72,23 +72,39 @@ impl Env {
     }
 
     pub fn new_global() -> Self {
-        macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) } }
+        macro_rules! e {
+            ($n:literal) => {
+                ($n, include_str!(concat!("../../../lisp/", $n)))
+            };
+        }
         const STDLIB_FILES: &[(&str, &str)] = &[
-            e!("nelisp-jit-substrate.el"),    e!("nelisp-syscall-table.el"),
-            e!("nelisp-jit-strategy.el"),     e!("nelisp-stdlib-env-shim.el"),
-            e!("nelisp-stdlib-eval-special.el"), e!("nelisp-stdlib-error.el"),
-            e!("nelisp-stdlib.el"),           e!("nelisp-stdlib-list.el"),
-            e!("nelisp-stdlib-hof.el"),       e!("nelisp-stdlib-search.el"),
-            e!("nelisp-stdlib-plist-str.el"), e!("nelisp-stdlib-format.el"),
-            e!("nelisp-stdlib-misc.el"),      e!("nelisp-stdlib-os-int-helpers.el"),
+            e!("nelisp-jit-substrate.el"),
+            e!("nelisp-syscall-table.el"),
+            e!("nelisp-jit-strategy.el"),
+            e!("nelisp-stdlib-env-shim.el"),
+            e!("nelisp-stdlib-eval-special.el"),
+            e!("nelisp-stdlib-error.el"),
+            e!("nelisp-stdlib.el"),
+            e!("nelisp-stdlib-list.el"),
+            e!("nelisp-stdlib-hof.el"),
+            e!("nelisp-stdlib-search.el"),
+            e!("nelisp-stdlib-plist-str.el"),
+            e!("nelisp-stdlib-format.el"),
+            e!("nelisp-stdlib-misc.el"),
+            e!("nelisp-stdlib-os-int-helpers.el"),
             e!("nelisp-stdlib-os.el"),
-            e!("nelisp-pcase.el"),            e!("nelisp-cl-macros.el"),
+            e!("nelisp-pcase.el"),
+            e!("nelisp-cl-macros.el"),
             e!("nelisp-stdlib-hash.el"),
-            e!("nelisp-stdlib-equal.el"),     e!("nelisp-stdlib-prn.el"),
-            e!("nelisp-stdlib-reader.el"),    e!("nelisp-stdlib-eval-core.el"),
+            e!("nelisp-stdlib-equal.el"),
+            e!("nelisp-stdlib-prn.el"),
+            e!("nelisp-stdlib-reader.el"),
+            e!("nelisp-stdlib-eval-core.el"),
             e!("nelisp-stdlib-math.el"),
-            e!("nelisp-stdlib-regex.el"),     e!("nelisp-stdlib-fast-hash.el"),
-            e!("nelisp-env.el"),              e!("nelisp-lexframe.el"),
+            e!("nelisp-stdlib-regex.el"),
+            e!("nelisp-stdlib-fast-hash.el"),
+            e!("nelisp-env.el"),
+            e!("nelisp-lexframe.el"),
             e!("nelisp-cli.el"),
         ];
         let mut env = Env::install_stage0(1024);
@@ -107,7 +123,10 @@ impl Env {
                 if let Err(e) = crate::eval::eval(form, &mut env) {
                     panic!(
                         "{} eval-boot eval failed at form #{}: {}\nform: {}",
-                        name, idx, e, crate::eval::sexp::fmt_sexp(form),
+                        name,
+                        idx,
+                        e,
+                        crate::eval::sexp::fmt_sexp(form),
                     );
                 }
             }
@@ -153,7 +172,10 @@ impl Env {
     }
 
     fn find_frame_cell(&self, name: &str) -> Option<FrameCell> {
-        match self.frame_stack_find_rust_direct(name)? { Sexp::Cell(c) => Some(c), _ => None }
+        match self.frame_stack_find_rust_direct(name)? {
+            Sexp::Cell(c) => Some(c),
+            _ => None,
+        }
     }
 
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
@@ -164,7 +186,11 @@ impl Env {
             return Ok(self.unbound_marker.clone());
         }
         let v = self.mirror_lookup_value(name);
-        if v == self.unbound_marker { Err(EvalError::UnboundVariable(name.to_string())) } else { Ok(v) }
+        if v == self.unbound_marker {
+            Err(EvalError::UnboundVariable(name.to_string()))
+        } else {
+            Ok(v)
+        }
     }
 
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
@@ -181,16 +207,26 @@ impl Env {
 
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
         let f = self.mirror_lookup_function(name);
-        if f == self.unbound_marker { Err(EvalError::UnboundFunction(name.to_string())) } else { Ok(f) }
+        if f == self.unbound_marker {
+            Err(EvalError::UnboundFunction(name.to_string()))
+        } else {
+            Ok(f)
+        }
     }
 
     pub fn set_function(&mut self, name: &str, func: Sexp) {
         self.mirror_set_function(name, func);
     }
 
-    pub fn push_frame(&mut self) { self.frame_push_rust_direct(); }
-    pub fn pop_frame(&mut self) { self.frame_pop_rust_direct(); }
-    pub fn is_fbound(&self, name: &str) -> bool { self.mirror_is_fbound(name) }
+    pub fn push_frame(&mut self) {
+        self.frame_push_rust_direct();
+    }
+    pub fn pop_frame(&mut self) {
+        self.frame_pop_rust_direct();
+    }
+    pub fn is_fbound(&self, name: &str) -> bool {
+        self.mirror_is_fbound(name)
+    }
 
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         let has_frame = matches!(&self.frames_record, Sexp::Record(r)
@@ -232,7 +268,11 @@ impl Env {
 }
 
 impl Env {
-    fn with_mirror_symbol<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp) -> T) -> Option<T> {
+    fn with_mirror_symbol<T>(
+        &self,
+        name: &str,
+        f: impl FnOnce(*const Sexp, *const Sexp) -> T,
+    ) -> Option<T> {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
             return None;
         }
@@ -250,17 +290,29 @@ impl Env {
         })
     }
 
-    fn frame_bucket(
-        frame: &Sexp,
-        name: &str,
-    ) -> Option<(NlRecordRef, NlVectorRef, usize)> {
-        let Sexp::Record(frame_rec) = frame else { return None };
-        let ht_rec = match frame_rec.slots.get(0)? { Sexp::Record(r) => r.clone(), _ => return None };
-        let bucket_count = match ht_rec.slots.get(0)? { Sexp::Int(n) => *n as u32, _ => return None };
-        let buckets = match ht_rec.slots.get(1)? { Sexp::Vector(v) => v.clone(), _ => return None };
+    fn frame_bucket(frame: &Sexp, name: &str) -> Option<(NlRecordRef, NlVectorRef, usize)> {
+        let Sexp::Record(frame_rec) = frame else {
+            return None;
+        };
+        let ht_rec = match frame_rec.slots.get(0)? {
+            Sexp::Record(r) => r.clone(),
+            _ => return None,
+        };
+        let bucket_count = match ht_rec.slots.get(0)? {
+            Sexp::Int(n) => *n as u32,
+            _ => return None,
+        };
+        let buckets = match ht_rec.slots.get(1)? {
+            Sexp::Vector(v) => v.clone(),
+            _ => return None,
+        };
         let name_sym = Sexp::Symbol(name.into());
         let h = unsafe { crate::elisp_cc_spike::fnv1a(&name_sym) } as u32;
-        let idx = (if bucket_count & (bucket_count - 1) == 0 { h & (bucket_count - 1) } else { h % bucket_count }) as usize;
+        let idx = (if bucket_count & (bucket_count - 1) == 0 {
+            h & (bucket_count - 1)
+        } else {
+            h % bucket_count
+        }) as usize;
         Some((ht_rec, buckets, idx))
     }
 
@@ -270,7 +322,9 @@ impl Env {
         payload: &Sexp,
         op: unsafe fn(*const Sexp, *const Sexp, *const Sexp, *const Sexp) -> i64,
     ) {
-        self.with_mirror_unbound(name, |m, s, u| unsafe { op(m, s, payload, u); });
+        self.with_mirror_unbound(name, |m, s, u| unsafe {
+            op(m, s, payload, u);
+        });
     }
 
     mirror_op!(mutate: mirror_set_value => mirror_set_value_or_insert);
@@ -293,7 +347,12 @@ impl Env {
         let constant_slot = if constant { Sexp::T } else { Sexp::Nil };
         self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| unsafe {
             crate::elisp_cc_spike::mirror_install_entry_or_insert(
-                mirror_ptr, sym_ptr, &value_slot, &function_slot, &plist_slot, &constant_slot,
+                mirror_ptr,
+                sym_ptr,
+                &value_slot,
+                &function_slot,
+                &plist_slot,
+                &constant_slot,
             );
         });
     }
@@ -307,7 +366,11 @@ impl Env {
 
     pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
         let value = if truthy { Sexp::T } else { Sexp::Nil };
-        self.mirror_mutate_with(name, &value, crate::elisp_cc_spike::mirror_set_constant_or_insert);
+        self.mirror_mutate_with(
+            name,
+            &value,
+            crate::elisp_cc_spike::mirror_set_constant_or_insert,
+        );
     }
 
     fn make_fast_hash_table(bucket_count: usize) -> Sexp {
@@ -343,9 +406,18 @@ impl Env {
     }
 
     pub(crate) fn frame_stack_view(&self) -> Option<(NlRecordRef, NlVectorRef, usize)> {
-        let stack_rec = match &self.frames_record { Sexp::Record(r) => r.clone(), _ => return None };
-        let backing = match stack_rec.slots.get(0)? { Sexp::Vector(v) => v.clone(), _ => return None };
-        let depth = match stack_rec.slots.get(1)? { Sexp::Int(n) => *n as usize, _ => return None };
+        let stack_rec = match &self.frames_record {
+            Sexp::Record(r) => r.clone(),
+            _ => return None,
+        };
+        let backing = match stack_rec.slots.get(0)? {
+            Sexp::Vector(v) => v.clone(),
+            _ => return None,
+        };
+        let depth = match stack_rec.slots.get(1)? {
+            Sexp::Int(n) => *n as usize,
+            _ => return None,
+        };
         Some((stack_rec, backing, depth))
     }
 
@@ -363,20 +435,32 @@ impl Env {
         needed: usize,
     ) -> NlVectorRef {
         let cap = backing.value.len();
-        if cap >= needed { return backing.clone(); }
+        if cap >= needed {
+            return backing.clone();
+        }
         let mut new_cap = cap.max(1);
-        while new_cap < needed { new_cap *= 2; }
+        while new_cap < needed {
+            new_cap *= 2;
+        }
         let mut new_buf: Vec<Sexp> = (0..depth)
             .map(|i| backing.value.get(i).cloned().unwrap_or(Sexp::Nil))
             .collect();
         new_buf.resize(new_cap, Sexp::Nil);
         let new_vec_sexp = Sexp::vector(new_buf);
-        let new_vec_ref = match &new_vec_sexp { Sexp::Vector(v) => v.clone(), _ => unreachable!() };
+        let new_vec_ref = match &new_vec_sexp {
+            Sexp::Vector(v) => v.clone(),
+            _ => unreachable!(),
+        };
         unsafe { stack_rec.with_slots_mut(|s| s[0] = new_vec_sexp) };
         new_vec_ref
     }
 
-    fn frame_stack_install(stack_rec: &NlRecordRef, backing: &NlVectorRef, depth: usize, frame: Sexp) {
+    fn frame_stack_install(
+        stack_rec: &NlRecordRef,
+        backing: &NlVectorRef,
+        depth: usize,
+        frame: Sexp,
+    ) {
         let backing = Env::frame_stack_ensure_capacity(stack_rec, backing, depth, depth + 1);
         unsafe {
             backing.with_value_mut(|v| v[depth] = frame);
@@ -392,8 +476,12 @@ impl Env {
     }
 
     pub(crate) fn frame_pop_rust_direct(&mut self) {
-        let Some((stack_rec, backing, depth)) = self.frame_stack_view() else { return };
-        if depth == 0 { return; }
+        let Some((stack_rec, backing, depth)) = self.frame_stack_view() else {
+            return;
+        };
+        if depth == 0 {
+            return;
+        }
         unsafe {
             backing.with_value_mut(|v| v[depth - 1] = Sexp::Nil);
             stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth - 1) as i64));
@@ -401,15 +489,26 @@ impl Env {
     }
 
     pub(crate) fn frame_bind_rust_direct(&mut self, name: &str, cell: Sexp) {
-        let Some((_, backing, depth)) = self.frame_stack_view() else { return };
-        if depth == 0 { return; }
-        let Some(frame) = backing.value.get(depth - 1).cloned() else { return };
+        let Some((_, backing, depth)) = self.frame_stack_view() else {
+            return;
+        };
+        if depth == 0 {
+            return;
+        }
+        let Some(frame) = backing.value.get(depth - 1).cloned() else {
+            return;
+        };
         Env::frame_bind_into(&frame, name, cell);
     }
 
     fn frame_bind_into(frame: &Sexp, name: &str, cell: Sexp) {
-        let Some((ht_rec, buckets, idx)) = Env::frame_bucket(frame, name) else { return };
-        let bucket = match buckets.value.get(idx) { Some(b) => b.clone(), None => return };
+        let Some((ht_rec, buckets, idx)) = Env::frame_bucket(frame, name) else {
+            return;
+        };
+        let bucket = match buckets.value.get(idx) {
+            Some(b) => b.clone(),
+            None => return,
+        };
         let mut cur = bucket;
         while let Sexp::Cons(c) = &cur {
             if let Sexp::Cons(pair) = &c.car {
@@ -442,7 +541,9 @@ impl Env {
         while let Sexp::Cons(c) = cur {
             if let Sexp::Cons(pair) = &c.car {
                 if let Sexp::Str(k) = &pair.car {
-                    if k == name { return Some(pair.cdr.clone()); }
+                    if k == name {
+                        return Some(pair.cdr.clone());
+                    }
                 }
             }
             cur = &c.cdr;
@@ -452,14 +553,18 @@ impl Env {
 
     pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
         let (_stack_rec, backing, depth) = self.frame_stack_view()?;
-        if depth == 0 { return None; }
+        if depth == 0 {
+            return None;
+        }
         Env::frame_lookup_in(backing.value.get(depth - 1)?, name)
     }
 
     pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
         let (_stack_rec, backing, depth) = self.frame_stack_view()?;
         for i in (0..depth).rev() {
-            let Some(frame) = backing.value.get(i) else { continue };
+            let Some(frame) = backing.value.get(i) else {
+                continue;
+            };
             if let Some(cell) = Env::frame_lookup_in(frame, name) {
                 return Some(cell);
             }
@@ -484,8 +589,9 @@ impl Env {
         if !matches!(cur, Sexp::Nil) {
             return Err(EvalError::Internal("closure env not a proper list".into()));
         }
-        Ok(entries.into_iter().rev().fold(Sexp::Nil, |acc, (n, c)| {
-            Sexp::cons(Sexp::cons(n, c), acc)
-        }))
+        Ok(entries
+            .into_iter()
+            .rev()
+            .fold(Sexp::Nil, |acc, (n, c)| Sexp::cons(Sexp::cons(n, c), acc)))
     }
 }

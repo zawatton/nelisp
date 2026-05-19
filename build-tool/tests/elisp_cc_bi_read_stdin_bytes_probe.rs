@@ -41,11 +41,7 @@ where
 
         // Pre-feed the pipe.  Writes <= PIPE_BUF are atomic on Linux.
         if !data.is_empty() {
-            let n = libc::write(
-                wr,
-                data.as_ptr() as *const libc::c_void,
-                data.len(),
-            );
+            let n = libc::write(wr, data.as_ptr() as *const libc::c_void, data.len());
             assert_eq!(
                 n as usize,
                 data.len(),
@@ -76,13 +72,8 @@ where
 
 fn run_read_stdin_bytes(limit: i64, fed: &[u8]) -> (i64, Vec<u8>) {
     let mut buf = vec![0u8; limit as usize];
-    let rc = with_stdin_from_bytes(fed, || {
-        unsafe {
-            nelisp_build_tool::elisp_cc_spike::bi_read_stdin_bytes(
-                buf.as_mut_ptr(),
-                limit,
-            )
-        }
+    let rc = with_stdin_from_bytes(fed, || unsafe {
+        nelisp_build_tool::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit)
     });
     (rc, buf)
 }

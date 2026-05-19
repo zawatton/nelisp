@@ -19,8 +19,7 @@ fn run_string_bytes(input: Sexp) -> Sexp {
         )
     };
     assert_eq!(
-        returned,
-        &mut slot as *mut Sexp,
+        returned, &mut slot as *mut Sexp,
         "bi_string_bytes must return the caller-provided slot pointer",
     );
     slot

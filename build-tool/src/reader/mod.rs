@@ -122,8 +122,7 @@ impl ElispReadState {
     fn lex_peek_advancing(&mut self) -> i64 {
         unsafe {
             let pool_ptr = &self.pool_slot as *const Sexp;
-            let scratch_ptr =
-                vector_slot_ptr(pool_ptr, 0) as *mut Sexp;
+            let scratch_ptr = vector_slot_ptr(pool_ptr, 0) as *mut Sexp;
             elisp_cc_spike::mut_str_make_empty(scratch_ptr, SCRATCH_CAP);
         }
         let cursor = self.cursor();
@@ -223,4 +222,3 @@ fn deep_clone(s: &Sexp) -> Sexp {
         Sexp::CharTable(_) | Sexp::BoolVector(_) | Sexp::Cell(_) | Sexp::Record(_) => s.clone(),
     }
 }
-

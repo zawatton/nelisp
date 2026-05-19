@@ -28,11 +28,10 @@ mod box_accessor;
 pub(super) mod bridge;
 pub(crate) use bridge::{
     bi_nl_jit_call_float_cmp, bi_nl_jit_call_float_float, bi_nl_jit_call_float_unary,
-    bi_nl_jit_call_format_float, bi_nl_jit_call_i64_i64, bi_nl_jit_call_out_1, bi_nl_jit_call_out_1i,
-    bi_nl_jit_call_out_2, bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr,
+    bi_nl_jit_call_format_float, bi_nl_jit_call_i64_i64, bi_nl_jit_call_out_1,
+    bi_nl_jit_call_out_1i, bi_nl_jit_call_out_2, bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr,
     bi_nl_jit_call_syscall,
 };
-mod cons;
 mod hash;
 mod regex;
 mod strings;

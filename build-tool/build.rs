@@ -27,8 +27,8 @@ fn main() {
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR must be set by cargo");
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by cargo");
     let out_path = std::path::Path::new(&manifest_dir)
         .join("..")
         .join("lisp")
@@ -57,8 +57,7 @@ fn main() {
     //   macos + aarch64   (Mach-O + AAPCS,   §100.D Stage 3)
     // Other targets fall through to the Rust trampoline path until
     // their object-format / asm support lands.
-    let supported = (target_os == "linux"
-        && (target_arch == "x86_64" || target_arch == "aarch64"))
+    let supported = (target_os == "linux" && (target_arch == "x86_64" || target_arch == "aarch64"))
         || (target_os == "macos" && target_arch == "aarch64");
     if supported {
         link_elisp_cc_spike(&manifest_dir, &target_os, &target_arch);
@@ -68,12 +67,8 @@ fn main() {
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
     let script = repo_root.join("scripts").join("compile-elisp-objects.el");
-    let compiler_src = repo_root
-        .join("lisp")
-        .join("nelisp-phase47-compiler.el");
-    let layout_src = repo_root
-        .join("lisp")
-        .join("nelisp-sexp-layout.el");
+    let compiler_src = repo_root.join("lisp").join("nelisp-phase47-compiler.el");
+    let layout_src = repo_root.join("lisp").join("nelisp-sexp-layout.el");
 
     // Re-run when any elisp source the manifest can consume changes.
     // Keep this list in sync with `compile-elisp-objects-manifest' in
@@ -394,8 +389,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         }
     };
 
-    let out_dir = std::env::var("OUT_DIR")
-        .expect("OUT_DIR must be set by cargo");
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");
     let elisp_obj_dir = std::path::Path::new(&out_dir).join("elisp-objects");
     std::fs::create_dir_all(&elisp_obj_dir)
         .unwrap_or_else(|e| panic!("create_dir_all {}: {}", elisp_obj_dir.display(), e));
@@ -479,35 +473,35 @@ fn emit_linux_table() -> String {
     // of truth pair).  Each entry is `(NAME . NUMBER)' where NAME is
     // a symbol string and NUMBER is the host `libc::SYS_*' i64.
     let entries: &[(&str, i64)] = &[
-        ("read",              libc::SYS_read              as i64),
-        ("write",             libc::SYS_write             as i64),
-        ("close",             libc::SYS_close             as i64),
-        ("openat",            libc::SYS_openat            as i64),
-        ("exit_group",        libc::SYS_exit_group        as i64),
-        ("lseek",             libc::SYS_lseek             as i64),
-        ("dup2",              libc::SYS_dup2              as i64),
-        ("getpid",            libc::SYS_getpid            as i64),
-        ("kill",              libc::SYS_kill              as i64),
+        ("read", libc::SYS_read as i64),
+        ("write", libc::SYS_write as i64),
+        ("close", libc::SYS_close as i64),
+        ("openat", libc::SYS_openat as i64),
+        ("exit_group", libc::SYS_exit_group as i64),
+        ("lseek", libc::SYS_lseek as i64),
+        ("dup2", libc::SYS_dup2 as i64),
+        ("getpid", libc::SYS_getpid as i64),
+        ("kill", libc::SYS_kill as i64),
         // Doc 54 Phase 3 — Core-12 additions.
-        ("mmap",              libc::SYS_mmap              as i64),
-        ("mprotect",          libc::SYS_mprotect          as i64),
-        ("munmap",            libc::SYS_munmap            as i64),
-        ("fcntl",             libc::SYS_fcntl             as i64),
+        ("mmap", libc::SYS_mmap as i64),
+        ("mprotect", libc::SYS_mprotect as i64),
+        ("munmap", libc::SYS_munmap as i64),
+        ("fcntl", libc::SYS_fcntl as i64),
         // Doc 55 Phase 4 — Posix-30 int-only additions.
-        ("fork",              libc::SYS_fork              as i64),
-        ("socket",            libc::SYS_socket            as i64),
-        ("listen",            libc::SYS_listen            as i64),
-        ("wait4",             libc::SYS_wait4             as i64),
-        ("getppid",           libc::SYS_getppid           as i64),
-        ("setpgid",           libc::SYS_setpgid           as i64),
+        ("fork", libc::SYS_fork as i64),
+        ("socket", libc::SYS_socket as i64),
+        ("listen", libc::SYS_listen as i64),
+        ("wait4", libc::SYS_wait4 as i64),
+        ("getppid", libc::SYS_getppid as i64),
+        ("setpgid", libc::SYS_setpgid as i64),
         // Doc 57 Phase 4.3 — modern Linux event surface.
-        ("pidfd_open",        libc::SYS_pidfd_open        as i64),
+        ("pidfd_open", libc::SYS_pidfd_open as i64),
         ("pidfd_send_signal", libc::SYS_pidfd_send_signal as i64),
-        ("inotify_init1",     libc::SYS_inotify_init1     as i64),
-        ("inotify_rm_watch",  libc::SYS_inotify_rm_watch  as i64),
-        ("eventfd2",          libc::SYS_eventfd2          as i64),
+        ("inotify_init1", libc::SYS_inotify_init1 as i64),
+        ("inotify_rm_watch", libc::SYS_inotify_rm_watch as i64),
+        ("eventfd2", libc::SYS_eventfd2 as i64),
         // Doc 59 Phase 4.2 + 4.3.1 — timerfd_create int-only.
-        ("timerfd_create",    libc::SYS_timerfd_create    as i64),
+        ("timerfd_create", libc::SYS_timerfd_create as i64),
     ];
 
     let mut s = String::new();
@@ -559,7 +553,10 @@ fn emit_unsupported_stub(target_os: &str) -> String {
     let mut s = String::new();
     s.push_str(";;; nelisp-syscall-table.el --- Doc 84 §84.2 syscall nr table (non-Linux stub)  -*- lexical-binding: t; -*-\n");
     s.push_str("\n;;; Commentary:\n\n");
-    s.push_str(&format!(";; AUTO-GENERATED by `build-tool/build.rs' for target_os = {}.\n", target_os));
+    s.push_str(&format!(
+        ";; AUTO-GENERATED by `build-tool/build.rs' for target_os = {}.\n",
+        target_os
+    ));
     s.push_str(";; Per Doc 62 Phase 5 §5.8, non-Linux nelisp routes syscall\n");
     s.push_str(";; callers through `nl-ffi-call' libc bindings; this resolver\n");
     s.push_str(";; is a dead path and signals `arith-error' if invoked.\n\n");
@@ -570,7 +567,9 @@ fn emit_unsupported_stub(target_os: &str) -> String {
     s.push_str("      (lambda (name)\n");
     s.push_str("        (let ((_ name))\n");
     s.push_str("          (signal 'arith-error\n");
-    s.push_str("                  (cons \"nelisp--syscall-nr-resolve: unsupported platform\" nil)))))\n\n");
+    s.push_str(
+        "                  (cons \"nelisp--syscall-nr-resolve: unsupported platform\" nil)))))\n\n",
+    );
     s.push_str(";;; nelisp-syscall-table.el ends here\n");
     s
 }

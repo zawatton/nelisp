@@ -314,11 +314,7 @@ pub unsafe extern "C" fn nl_syscall_dup2(old_fd: i32, new_fd: i32) -> i64 {
 /// child pid in a typical waitpid).  `out_status` may be NULL if the
 /// caller does not care about the exit status word.
 #[no_mangle]
-pub unsafe extern "C" fn nl_syscall_waitpid(
-    pid: i32,
-    options: i32,
-    out_status: *mut i32,
-) -> i64 {
+pub unsafe extern "C" fn nl_syscall_waitpid(pid: i32, options: i32, out_status: *mut i32) -> i64 {
     let mut status: c_int = 0;
     let rc = libc::waitpid(pid as pid_t, &mut status as *mut c_int, options as c_int);
     if rc < 0 {
@@ -458,10 +454,13 @@ pub unsafe extern "C" fn nl_syscall_select(
     timeout_ms: i64,
 ) -> i64 {
     let (tv_ptr, mut tv) = if timeout_ms < 0 {
-        (ptr::null_mut::<libc::timeval>(), libc::timeval {
-            tv_sec: 0,
-            tv_usec: 0,
-        })
+        (
+            ptr::null_mut::<libc::timeval>(),
+            libc::timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            },
+        )
     } else {
         let tv = libc::timeval {
             tv_sec: (timeout_ms / 1000) as libc::time_t,
@@ -591,8 +590,7 @@ mod tests {
                 let path = CString::new("/bin/echo").unwrap();
                 let arg0 = CString::new("echo").unwrap();
                 let arg1 = CString::new("nelisp-9dJ-fork-ok").unwrap();
-                let argv: [*const c_char; 3] =
-                    [arg0.as_ptr(), arg1.as_ptr(), ptr::null()];
+                let argv: [*const c_char; 3] = [arg0.as_ptr(), arg1.as_ptr(), ptr::null()];
                 let envp: [*const c_char; 1] = [ptr::null()];
                 let _ = nl_syscall_execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
                 libc::_exit(12); // exec failed
@@ -727,18 +725,13 @@ mod tests {
             // Lower the *soft* limit only by 1 (raising would need
             // CAP_SYS_RESOURCE on most distros).
             let new_soft = if soft > 64 { soft - 1 } else { soft };
-            let r =
-                nl_syscall_setrlimit(libc::RLIMIT_NOFILE as i32, new_soft, hard);
+            let r = nl_syscall_setrlimit(libc::RLIMIT_NOFILE as i32, new_soft, hard);
             assert_eq!(r, 0);
 
             let mut got_soft: u64 = 0;
             let mut got_hard: u64 = 0;
             assert_eq!(
-                nl_syscall_getrlimit(
-                    libc::RLIMIT_NOFILE as i32,
-                    &mut got_soft,
-                    &mut got_hard
-                ),
+                nl_syscall_getrlimit(libc::RLIMIT_NOFILE as i32, &mut got_soft, &mut got_hard),
                 0
             );
             assert_eq!(got_soft, new_soft);

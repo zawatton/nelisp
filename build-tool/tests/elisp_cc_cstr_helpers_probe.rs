@@ -32,11 +32,7 @@ use nelisp_build_tool::eval::sexp::Sexp;
 /// `(size, align=1)' the matching `cstr_drop' must use.
 fn build_cstr(s: &str) -> (*mut u8, i64) {
     let sexp = Sexp::Str(s.into());
-    let buf = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cstr_from_sexp(
-            &sexp as *const Sexp,
-        )
-    };
+    let buf = unsafe { nelisp_build_tool::elisp_cc_spike::cstr_from_sexp(&sexp as *const Sexp) };
     assert!(
         !buf.is_null(),
         "cstr_from_sexp({:?}) must succeed on a healthy host",
@@ -71,9 +67,7 @@ fn cstr_empty_input_yields_single_nul_byte() {
     let bytes = unsafe { buf_to_vec(buf, 0) };
     assert_eq!(bytes, vec![0u8]);
 
-    let rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cstr_drop(buf, size)
-    };
+    let rc = unsafe { nelisp_build_tool::elisp_cc_spike::cstr_drop(buf, size) };
     assert_eq!(rc, 1, "cstr_drop must return rax = 1 sentinel");
 }
 
@@ -89,9 +83,7 @@ fn cstr_single_ascii_byte_then_nul() {
     let bytes = unsafe { buf_to_vec(buf, 1) };
     assert_eq!(bytes, vec![b'x', 0u8]);
 
-    let rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cstr_drop(buf, size)
-    };
+    let rc = unsafe { nelisp_build_tool::elisp_cc_spike::cstr_drop(buf, size) };
     assert_eq!(rc, 1);
 }
 
@@ -112,9 +104,7 @@ fn cstr_real_path_bytes_match_input_plus_nul() {
         "cstr_from_sexp must copy payload bytes verbatim + append NUL"
     );
 
-    let rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cstr_drop(buf, size)
-    };
+    let rc = unsafe { nelisp_build_tool::elisp_cc_spike::cstr_drop(buf, size) };
     assert_eq!(rc, 1);
 }
 
@@ -147,8 +137,6 @@ fn cstr_buffer_works_with_libc_open() {
     let close_rc = unsafe { close(fd) };
     assert_eq!(close_rc, 0, "close(fd) must succeed");
 
-    let rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cstr_drop(buf, size)
-    };
+    let rc = unsafe { nelisp_build_tool::elisp_cc_spike::cstr_drop(buf, size) };
     assert_eq!(rc, 1);
 }

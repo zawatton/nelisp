@@ -58,12 +58,8 @@ where
 }
 
 fn run_write_stdout(input: Sexp) -> i64 {
-    with_stdout_to_devnull(|| {
-        unsafe {
-            nelisp_build_tool::elisp_cc_spike::bi_write_stdout_bytes(
-                &input as *const Sexp,
-            )
-        }
+    with_stdout_to_devnull(|| unsafe {
+        nelisp_build_tool::elisp_cc_spike::bi_write_stdout_bytes(&input as *const Sexp)
     })
 }
 

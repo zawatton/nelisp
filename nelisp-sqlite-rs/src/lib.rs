@@ -146,9 +146,7 @@ fn value_ref_to_json(vr: ValueRef<'_>) -> serde_json::Value {
         VR::Real(f) => serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        VR::Text(t) => serde_json::Value::String(
-            std::str::from_utf8(t).unwrap_or("").to_string(),
-        ),
+        VR::Text(t) => serde_json::Value::String(std::str::from_utf8(t).unwrap_or("").to_string()),
         // Blobs are surfaced as base64 strings so JSON stays valid.
         // anvil-XXX call sites do not currently use BLOB columns, so a
         // simple lossy hex encoding is acceptable for the substrate
@@ -166,9 +164,7 @@ fn value_ref_to_json(vr: ValueRef<'_>) -> serde_json::Value {
 
 /// Decode the `args_json` argument into a Vec of boxed `ToSql`.  Empty
 /// pointer / empty string / "null" / "[]" all map to "no parameters".
-unsafe fn decode_args(
-    args_json: *const c_char,
-) -> Result<Vec<Box<dyn ToSql>>, SqliteFfiError> {
+unsafe fn decode_args(args_json: *const c_char) -> Result<Vec<Box<dyn ToSql>>, SqliteFfiError> {
     if args_json.is_null() {
         return Ok(Vec::new());
     }
@@ -193,11 +189,7 @@ unsafe fn decode_args(
 
 /// Write `payload` into `out_buf` if it fits; otherwise return
 /// `NeedMore - required`.  Returns bytes written (≥ 0) on success.
-unsafe fn write_buf(
-    out_buf: *mut u8,
-    out_buf_len: usize,
-    payload: &str,
-) -> i64 {
+unsafe fn write_buf(out_buf: *mut u8, out_buf_len: usize, payload: &str) -> i64 {
     let bytes = payload.as_bytes();
     if out_buf.is_null() {
         return SqliteFfiError::BadOutBuf.code();
@@ -474,27 +466,12 @@ mod tests {
         unsafe {
             let h = nl_sqlite_open(path.as_ptr());
             assert!(h > 0);
-            assert_eq!(
-                nl_sqlite_execute(h, create.as_ptr(), null.as_ptr()),
-                0
-            );
-            assert_eq!(
-                nl_sqlite_execute(h, insert.as_ptr(), args1.as_ptr()),
-                1
-            );
-            assert_eq!(
-                nl_sqlite_execute(h, insert.as_ptr(), args2.as_ptr()),
-                1
-            );
+            assert_eq!(nl_sqlite_execute(h, create.as_ptr(), null.as_ptr()), 0);
+            assert_eq!(nl_sqlite_execute(h, insert.as_ptr(), args1.as_ptr()), 1);
+            assert_eq!(nl_sqlite_execute(h, insert.as_ptr(), args2.as_ptr()), 1);
 
             // Probe required size.
-            let probe = nl_sqlite_query(
-                h,
-                select.as_ptr(),
-                null.as_ptr(),
-                std::ptr::null_mut(),
-                0,
-            );
+            let probe = nl_sqlite_query(h, select.as_ptr(), null.as_ptr(), std::ptr::null_mut(), 0);
             let need_more = SqliteFfiError::NeedMore.code();
             assert!(probe < need_more, "probe got {}", probe);
             let needed = (need_more - probe) as usize;
@@ -529,10 +506,7 @@ mod tests {
             assert_eq!(nl_sqlite_execute(h, create.as_ptr(), null.as_ptr()), 0);
             for i in 0..50 {
                 let arg = cs(&format!("[{}]", i));
-                assert_eq!(
-                    nl_sqlite_execute(h, insert.as_ptr(), arg.as_ptr()),
-                    1
-                );
+                assert_eq!(nl_sqlite_execute(h, insert.as_ptr(), arg.as_ptr()), 1);
             }
             let mut tiny = vec![0u8; 4];
             let r = nl_sqlite_query(
@@ -578,10 +552,7 @@ mod tests {
                 ),
                 SqliteFfiError::BadHandle.code()
             );
-            assert_eq!(
-                nl_sqlite_close(99999),
-                SqliteFfiError::BadHandle.code()
-            );
+            assert_eq!(nl_sqlite_close(99999), SqliteFfiError::BadHandle.code());
         }
     }
 
@@ -598,13 +569,7 @@ mod tests {
             let h = nl_sqlite_open(path.as_ptr());
             assert_eq!(nl_sqlite_execute(h, create.as_ptr(), null.as_ptr()), 0);
             assert_eq!(nl_sqlite_execute(h, insert.as_ptr(), args.as_ptr()), 1);
-            let probe = nl_sqlite_query(
-                h,
-                select.as_ptr(),
-                null.as_ptr(),
-                std::ptr::null_mut(),
-                0,
-            );
+            let probe = nl_sqlite_query(h, select.as_ptr(), null.as_ptr(), std::ptr::null_mut(), 0);
             let need = (SqliteFfiError::NeedMore.code() - probe) as usize;
             let mut buf = vec![0u8; need];
             let n = nl_sqlite_query(

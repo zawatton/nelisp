@@ -54,8 +54,7 @@ fn call_walk(input: &Sexp) -> (Sexp, Sexp) {
         )
     };
     assert_eq!(
-        returned,
-        &mut *result_slot as *mut Sexp,
+        returned, &mut *result_slot as *mut Sexp,
         "nelisp_gc_walk_children must return its result_slot argument \
          (= matches §101.D `cons-make' caller-ergonomics contract)"
     );

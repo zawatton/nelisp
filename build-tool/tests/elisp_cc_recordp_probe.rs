@@ -8,10 +8,12 @@ use nelisp_build_tool::eval::sexp::Sexp;
 fn run_recordp(input: Sexp) -> Sexp {
     let mut slot = Sexp::Nil;
     let slot_ptr = &mut slot as *mut Sexp;
-    let returned = unsafe {
-        nelisp_build_tool::elisp_cc_spike::recordp(&input as *const Sexp, slot_ptr)
-    };
-    assert_eq!(returned, slot_ptr, "extern must return the caller-provided slot pointer");
+    let returned =
+        unsafe { nelisp_build_tool::elisp_cc_spike::recordp(&input as *const Sexp, slot_ptr) };
+    assert_eq!(
+        returned, slot_ptr,
+        "extern must return the caller-provided slot pointer"
+    );
     slot
 }
 

@@ -13,11 +13,7 @@ pub struct NlStr {
     pub refcount: AtomicUsize,
 }
 
-crate::nl_ref_common!(
-    NlStrRef,
-    NlStr,
-    drop_fn = crate::elisp_cc_spike::nlstr_drop
-);
+crate::nl_ref_common!(NlStrRef, NlStr, drop_fn = crate::elisp_cc_spike::nlstr_drop);
 
 impl NlStr {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
@@ -30,7 +26,10 @@ impl NlStrRef {
             value,
             refcount: AtomicUsize::new(1),
         })));
-        Self { ptr, _marker: PhantomData }
+        Self {
+            ptr,
+            _marker: PhantomData,
+        }
     }
 
     pub unsafe fn set_value(&self, val: String) {
@@ -50,7 +49,10 @@ impl NlStrRef {
 impl Clone for NlStrRef {
     fn clone(&self) -> Self {
         unsafe { crate::elisp_cc_spike::nlstr_clone(self.ptr.as_ptr() as *mut i64) };
-        Self { ptr: self.ptr, _marker: PhantomData }
+        Self {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -76,7 +78,11 @@ fn sexp_as_str(s: &Sexp) -> Option<&str> {
 
 unsafe fn build_string(bytes_ptr: *const u8, len: i64) -> String {
     let n = if len <= 0 { 0 } else { len as usize };
-    let slice = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes_ptr, n) } };
+    let slice = if n == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes_ptr, n) }
+    };
     unsafe { String::from_utf8_unchecked(slice.to_vec()) }
 }
 
@@ -114,7 +120,12 @@ pub unsafe extern "C" fn nl_alloc_symbol(
 #[no_mangle]
 pub unsafe extern "C" fn nl_alloc_mut_str(cap: i64, result_slot: *mut Sexp) -> *mut Sexp {
     let n = if cap < 0 { 0 } else { cap as usize };
-    unsafe { write_slot(result_slot, Sexp::MutStr(NlStrRef::new(String::with_capacity(n)))) }
+    unsafe {
+        write_slot(
+            result_slot,
+            Sexp::MutStr(NlStrRef::new(String::with_capacity(n))),
+        )
+    }
 }
 
 #[no_mangle]
@@ -124,7 +135,11 @@ pub unsafe extern "C" fn nl_mut_str_push_byte(mut_str_ptr: *mut Sexp, byte: i64)
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_mut_str_push_codepoint(mut_str_ptr: *mut Sexp, codepoint: i64) {
-    let cp_u32 = if !(0..=0x10_FFFF).contains(&codepoint) { 0xFFFD } else { codepoint as u32 };
+    let cp_u32 = if !(0..=0x10_FFFF).contains(&codepoint) {
+        0xFFFD
+    } else {
+        codepoint as u32
+    };
     let ch = char::from_u32(cp_u32).unwrap_or('\u{FFFD}');
     unsafe { mut_str_value_mut(mut_str_ptr) }.push(ch);
 }
@@ -155,7 +170,9 @@ pub unsafe extern "C" fn nl_str_codepoint_at(
     out_codepoint: *mut i64,
     out_byte_width: *mut i64,
 ) -> i64 {
-    let Some(s) = sexp_as_str(unsafe { &*str_ptr }) else { return 0 };
+    let Some(s) = sexp_as_str(unsafe { &*str_ptr }) else {
+        return 0;
+    };
     if byte_idx < 0 {
         return 0;
     }
@@ -163,7 +180,9 @@ pub unsafe extern "C" fn nl_str_codepoint_at(
     if idx >= s.len() || !s.is_char_boundary(idx) {
         return 0;
     }
-    let Some(ch) = s[idx..].chars().next() else { return 0 };
+    let Some(ch) = s[idx..].chars().next() else {
+        return 0;
+    };
     unsafe {
         *out_codepoint = ch as i64;
         *out_byte_width = ch.len_utf8() as i64;
@@ -173,7 +192,9 @@ pub unsafe extern "C" fn nl_str_codepoint_at(
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_str_is_alphanumeric_at(str_ptr: *const Sexp, byte_idx: i64) -> i64 {
-    let Some(s) = sexp_as_str(unsafe { &*str_ptr }) else { return 0 };
+    let Some(s) = sexp_as_str(unsafe { &*str_ptr }) else {
+        return 0;
+    };
     if byte_idx < 0 {
         return 0;
     }
@@ -211,7 +232,11 @@ pub unsafe extern "C" fn nl_sexp_write_float(slot: *mut Sexp, val: f64) -> *mut 
 #[no_mangle]
 pub unsafe extern "C" fn nl_str_to_float(bytes_ptr: *const u8, len: i64, slot: *mut Sexp) -> i64 {
     let n = if len < 0 { 0 } else { len as usize };
-    let slice = if n == 0 { &[] } else { unsafe { std::slice::from_raw_parts(bytes_ptr, n) } };
+    let slice = if n == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes_ptr, n) }
+    };
     let text = unsafe { std::str::from_utf8_unchecked(slice) };
     match text.parse::<f64>() {
         Ok(f) => {

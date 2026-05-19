@@ -28,7 +28,10 @@ pub enum ReadError {
 macro_rules! readerr_ctor {
     ($fn:ident => $variant:ident, $field:ident) => {
         pub fn $fn(s: impl Into<String>, pos: SourcePos) -> Self {
-            ReadError::$variant { $field: s.into(), pos }
+            ReadError::$variant {
+                $field: s.into(),
+                pos,
+            }
         }
     };
 }
@@ -44,7 +47,9 @@ impl fmt::Display for ReadError {
         let (kind, body, pos) = match self {
             ReadError::Parse { msg, pos } => ("parse error", msg.as_str(), pos),
             ReadError::UnexpectedEof { msg, pos } => ("unexpected EOF", msg.as_str(), pos),
-            ReadError::NotYetImplemented { feature, pos } => ("not-yet-implemented", feature.as_str(), pos),
+            ReadError::NotYetImplemented { feature, pos } => {
+                ("not-yet-implemented", feature.as_str(), pos)
+            }
         };
         write!(f, "{} at {}: {}", kind, pos, body)
     }
@@ -62,7 +67,11 @@ pub enum EvalError {
     /// `wrong-type-argument`.
     WrongType { expected: String, got: Sexp },
     /// `wrong-number-of-arguments`.
-    WrongNumberOfArguments { function: String, expected: String, got: usize },
+    WrongNumberOfArguments {
+        function: String,
+        expected: String,
+        got: usize,
+    },
     /// `arith-error`.
     ArithError(String),
     /// User `(signal 'TAG DATA)`.
@@ -111,9 +120,9 @@ impl EvalError {
             EvalError::WrongNumberOfArguments { function, got, .. } => {
                 Sexp::list_from(&[Sexp::Symbol(function.clone()), Sexp::Int(*got as i64)])
             }
-            EvalError::ArithError(m)
-            | EvalError::NotImplemented(m)
-            | EvalError::Internal(m) => str1(m),
+            EvalError::ArithError(m) | EvalError::NotImplemented(m) | EvalError::Internal(m) => {
+                str1(m)
+            }
             EvalError::UserError { data, .. } => data.clone(),
             EvalError::Read(e) => str1(&e.to_string()),
             EvalError::Quit => Sexp::Nil,
@@ -124,9 +133,7 @@ impl EvalError {
 
 /// `condition-case` clause-tag match.
 pub fn is_error_subtype(clause_tag: &str, actual_tag: &str) -> bool {
-    clause_tag == actual_tag
-        || clause_tag == "t"
-        || (clause_tag == "error" && actual_tag != "quit")
+    clause_tag == actual_tag || clause_tag == "t" || (clause_tag == "error" && actual_tag != "quit")
 }
 
 impl fmt::Display for EvalError {
@@ -134,8 +141,18 @@ impl fmt::Display for EvalError {
         match self {
             EvalError::UnboundVariable(n) => write!(f, "void-variable: {}", n),
             EvalError::UnboundFunction(n) => write!(f, "void-function: {}", n),
-            EvalError::WrongType { expected, got } => write!(f, "wrong-type-argument: ({} {})", expected, got),
-            EvalError::WrongNumberOfArguments { function, expected, got } => write!(f, "wrong-number-of-arguments: {} (expected {}, got {})", function, expected, got),
+            EvalError::WrongType { expected, got } => {
+                write!(f, "wrong-type-argument: ({} {})", expected, got)
+            }
+            EvalError::WrongNumberOfArguments {
+                function,
+                expected,
+                got,
+            } => write!(
+                f,
+                "wrong-number-of-arguments: {} (expected {}, got {})",
+                function, expected, got
+            ),
             EvalError::ArithError(m) => write!(f, "arith-error: {}", m),
             EvalError::UserError { tag, data } => write!(f, "{}: {}", tag, data),
             EvalError::SettingConstant(n) => write!(f, "setting-constant: {}", n),

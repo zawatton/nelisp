@@ -105,10 +105,7 @@ fn parse_symbol_atom() {
 
 #[test]
 fn parse_symbol_with_dashes() {
-    assert_eq!(
-        parse_one("foo-bar"),
-        Sexp::Symbol("foo-bar".to_string())
-    );
+    assert_eq!(parse_one("foo-bar"), Sexp::Symbol("foo-bar".to_string()));
 }
 
 #[test]
@@ -148,22 +145,14 @@ fn parse_four_element_list() {
     let got = parse_one("(1 2 3 4)");
     assert_eq!(
         got,
-        Sexp::list_from(&[
-            Sexp::Int(1),
-            Sexp::Int(2),
-            Sexp::Int(3),
-            Sexp::Int(4),
-        ])
+        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3), Sexp::Int(4),])
     );
 }
 
 #[test]
 fn parse_two_element_list() {
     let got = parse_one("(1 2)");
-    assert_eq!(
-        got,
-        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2)])
-    );
+    assert_eq!(got, Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2)]));
 }
 
 #[test]
@@ -171,10 +160,7 @@ fn parse_one_then_inner() {
     let got = parse_one("(1 (2))");
     assert_eq!(
         got,
-        Sexp::list_from(&[
-            Sexp::Int(1),
-            Sexp::list_from(&[Sexp::Int(2)]),
-        ])
+        Sexp::list_from(&[Sexp::Int(1), Sexp::list_from(&[Sexp::Int(2)]),])
     );
 }
 
@@ -198,10 +184,7 @@ fn parse_dotted_pair() {
     let got = parse_one("(a . b)");
     assert_eq!(
         got,
-        Sexp::cons(
-            Sexp::Symbol("a".to_string()),
-            Sexp::Symbol("b".to_string()),
-        )
+        Sexp::cons(Sexp::Symbol("a".to_string()), Sexp::Symbol("b".to_string()),)
     );
 }
 
@@ -214,10 +197,7 @@ fn parse_nested_list_left() {
     assert_eq!(
         got,
         Sexp::list_from(&[
-            Sexp::list_from(&[
-                Sexp::Symbol("a".to_string()),
-                Sexp::Symbol("b".to_string()),
-            ]),
+            Sexp::list_from(&[Sexp::Symbol("a".to_string()), Sexp::Symbol("b".to_string()),]),
             Sexp::Symbol("c".to_string()),
         ])
     );
@@ -231,10 +211,7 @@ fn parse_nested_list_right() {
         got,
         Sexp::list_from(&[
             Sexp::Symbol("a".to_string()),
-            Sexp::list_from(&[
-                Sexp::Symbol("b".to_string()),
-                Sexp::Symbol("c".to_string()),
-            ]),
+            Sexp::list_from(&[Sexp::Symbol("b".to_string()), Sexp::Symbol("c".to_string()),]),
         ])
     );
 }
@@ -271,10 +248,7 @@ fn parse_quote_int() {
     let got = parse_one("'7");
     assert_eq!(
         got,
-        Sexp::list_from(&[
-            Sexp::Symbol("quote".to_string()),
-            Sexp::Int(7),
-        ])
+        Sexp::list_from(&[Sexp::Symbol("quote".to_string()), Sexp::Int(7),])
     );
 }
 
@@ -286,10 +260,7 @@ fn parse_quote_list() {
         got,
         Sexp::list_from(&[
             Sexp::Symbol("quote".to_string()),
-            Sexp::list_from(&[
-                Sexp::Symbol("a".to_string()),
-                Sexp::Symbol("b".to_string()),
-            ]),
+            Sexp::list_from(&[Sexp::Symbol("a".to_string()), Sexp::Symbol("b".to_string()),]),
         ])
     );
 }
@@ -352,10 +323,7 @@ fn parse_leading_whitespace() {
 #[test]
 fn parse_comments_between_atoms() {
     let got = parse_one("(1 ; comment\n 2)");
-    assert_eq!(
-        got,
-        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2)])
-    );
+    assert_eq!(got, Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2)]));
 }
 
 // ---------- two-level quote ----------
@@ -485,11 +453,7 @@ fn parse_negative_int_in_list() {
     let got = parse_one("(- 1 -2)");
     assert_eq!(
         got,
-        Sexp::list_from(&[
-            Sexp::Symbol("-".to_string()),
-            Sexp::Int(1),
-            Sexp::Int(-2),
-        ])
+        Sexp::list_from(&[Sexp::Symbol("-".to_string()), Sexp::Int(1), Sexp::Int(-2),])
     );
 }
 

@@ -70,7 +70,10 @@ impl NlConsBoxRef {
                 AtomicUsize::new(1),
             );
         }
-        NlConsBoxRef { ptr, _marker: PhantomData }
+        NlConsBoxRef {
+            ptr,
+            _marker: PhantomData,
+        }
     }
 
     #[inline]
@@ -133,13 +136,19 @@ impl Clone for NlConsBoxRef {
         unsafe {
             crate::elisp_cc_spike::nlconsbox_clone(self.ptr.as_ptr() as *mut i64);
         }
-        NlConsBoxRef { ptr: self.ptr, _marker: PhantomData }
+        NlConsBoxRef {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
     }
 }
 
 impl std::fmt::Debug for NlConsBoxRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Cons").field(&self.car).field(&self.cdr).finish()
+        f.debug_tuple("Cons")
+            .field(&self.car)
+            .field(&self.cdr)
+            .finish()
     }
 }
 
@@ -157,7 +166,5 @@ const _: () = {
     assert!(std::mem::size_of::<AtomicUsize>() == 8);
     assert!(std::mem::offset_of!(NlConsBox, car) == 0);
     assert!(std::mem::offset_of!(NlConsBox, cdr) == std::mem::size_of::<Sexp>());
-    assert!(
-        std::mem::offset_of!(NlConsBox, refcount) == 2 * std::mem::size_of::<Sexp>()
-    );
+    assert!(std::mem::offset_of!(NlConsBox, refcount) == 2 * std::mem::size_of::<Sexp>());
 };

@@ -1,8 +1,8 @@
 //! Integration tests for `reader' (= moved out of `src/reader/mod.rs's
 //! `#[cfg(test)] mod tests' for src LOC reduction).  Same coverage.
 
-use nelisp_build_tool::reader::{read_all, read_str, ReadError};
 use nelisp_build_tool::eval::sexp::{fmt_sexp, Sexp};
+use nelisp_build_tool::reader::{read_all, read_str, ReadError};
 
 /// Smoke #1: trivial atoms.
 #[test]
@@ -17,7 +17,10 @@ fn smoke_atoms() {
 /// String escapes per prompt scope.
 #[test]
 fn smoke_string_escapes() {
-    assert_eq!(read_str("\"hello\\n\"").unwrap(), Sexp::Str("hello\n".into()));
+    assert_eq!(
+        read_str("\"hello\\n\"").unwrap(),
+        Sexp::Str("hello\n".into())
+    );
     assert_eq!(read_str("\"a\\tb\"").unwrap(), Sexp::Str("a\tb".into()));
     assert_eq!(read_str("\"\\\\\"").unwrap(), Sexp::Str("\\".into()));
     assert_eq!(read_str("\"\\\"\"").unwrap(), Sexp::Str("\"".into()));
@@ -26,14 +29,8 @@ fn smoke_string_escapes() {
 /// Symbols allow alnum + - _ . :
 #[test]
 fn smoke_symbol_punctuation() {
-    assert_eq!(
-        read_str("foo-bar").unwrap(),
-        Sexp::Symbol("foo-bar".into())
-    );
-    assert_eq!(
-        read_str("ns:name").unwrap(),
-        Sexp::Symbol("ns:name".into())
-    );
+    assert_eq!(read_str("foo-bar").unwrap(), Sexp::Symbol("foo-bar".into()));
+    assert_eq!(read_str("ns:name").unwrap(), Sexp::Symbol("ns:name".into()));
     assert_eq!(
         read_str("file.ext").unwrap(),
         Sexp::Symbol("file.ext".into())
@@ -73,10 +70,7 @@ fn smoke_vector_literal() {
     assert_eq!(read_str("[]").unwrap(), Sexp::vector(vec![]));
     assert_eq!(
         read_str("[:a :b]").unwrap(),
-        Sexp::vector(vec![
-            Sexp::Symbol(":a".into()),
-            Sexp::Symbol(":b".into()),
-        ])
+        Sexp::vector(vec![Sexp::Symbol(":a".into()), Sexp::Symbol(":b".into()),])
     );
     // Vector inside list — exercises the `p_list_dispatch'
     // fall-through to `p_dispatch' kind 3.
@@ -85,10 +79,7 @@ fn smoke_vector_literal() {
         got,
         Sexp::list_from(&[
             Sexp::Symbol("a".into()),
-            Sexp::vector(vec![
-                Sexp::Symbol("b".into()),
-                Sexp::Symbol("c".into()),
-            ]),
+            Sexp::vector(vec![Sexp::Symbol("b".into()), Sexp::Symbol("c".into()),]),
             Sexp::Symbol("d".into()),
         ])
     );
@@ -121,11 +112,14 @@ fn smoke_backquote_family() {
     let got = read_str("`(a ,b ,@c)").unwrap();
     assert_eq!(
         got,
-        wrap_reader_macro("backquote", Sexp::list_from(&[
-            Sexp::Symbol("a".into()),
-            wrap_reader_macro("comma", Sexp::Symbol("b".into())),
-            wrap_reader_macro("comma-at", Sexp::Symbol("c".into())),
-        ]))
+        wrap_reader_macro(
+            "backquote",
+            Sexp::list_from(&[
+                Sexp::Symbol("a".into()),
+                wrap_reader_macro("comma", Sexp::Symbol("b".into())),
+                wrap_reader_macro("comma-at", Sexp::Symbol("c".into())),
+            ])
+        )
     );
 }
 
@@ -141,7 +135,10 @@ fn smoke_char_literals() {
 #[test]
 fn smoke_function_quote() {
     let got = read_str("#'foo").unwrap();
-    assert_eq!(got, wrap_reader_macro("function", Sexp::Symbol("foo".into())));
+    assert_eq!(
+        got,
+        wrap_reader_macro("function", Sexp::Symbol("foo".into()))
+    );
 }
 
 /// Backslash-newline in strings is a line continuation.

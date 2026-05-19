@@ -2,9 +2,7 @@
 //! x86_64-linux only.
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!(
-    "Doc 114: nelisp-build-tool requires x86_64-linux. Build via Docker / Linux VM."
-);
+compile_error!("Doc 114: nelisp-build-tool requires x86_64-linux. Build via Docker / Linux VM.");
 
 pub mod eval;
 pub(crate) mod jit;
@@ -108,6 +106,7 @@ pub mod elisp_cc_spike {
             buf_ptr: *mut u8,
             read_size: i64,
         ) -> i64;
+        fn nelisp_bi_syscall_resolve_nr(sym_ptr: *const Sexp) -> i64;
         fn nelisp_rc_inc(box_ptr: *mut i64) -> i64;
         fn nelisp_rc_dec(box_ptr: *mut i64) -> i64;
         fn nelisp_rc_strong_count(box_ptr: *const u8) -> i64;
@@ -230,15 +229,60 @@ pub mod elisp_cc_spike {
             depth: i64,
         ) -> i64;
         fn nl_sf_quote(args: *const Sexp, out: *mut Sexp) -> i64;
-        fn nl_sf_if(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_setq(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_progn(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_while(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_let(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_let_star(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_lambda(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
-        fn nl_sf_function(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
-        fn nl_sf_condition_case(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
+        fn nl_sf_if(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nl_sf_setq(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nl_sf_progn(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nl_sf_while(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nl_sf_let(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nl_sf_let_star(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            _pad: i64,
+        ) -> i64;
+        fn nl_sf_lambda(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            s1: *mut Sexp,
+        ) -> i64;
+        fn nl_sf_function(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            s1: *mut Sexp,
+        ) -> i64;
+        fn nl_sf_condition_case(
+            args: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            s1: *mut Sexp,
+        ) -> i64;
         fn nl_apply_lambda_inner(
             captured: *const Sexp,
             formals: *const Sexp,
@@ -284,10 +328,16 @@ pub mod elisp_cc_spike {
         pub fn nelisp_jit_record_type(arg: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_record_len(arg: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_record_ref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
-        pub fn nelisp_jit_record_set(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_record_set(
+            arg: *const Sexp,
+            idx: i64,
+            val: *const Sexp,
+            out: *mut Sexp,
+        ) -> i64;
         pub fn nelisp_jit_length(arg: *const Sexp, out: *mut Sexp) -> i64;
         pub fn nelisp_jit_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
-        pub fn nelisp_jit_aset(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64;
+        pub fn nelisp_jit_aset(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp)
+            -> i64;
         pub fn nelisp_jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
     }
 
@@ -364,6 +414,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(bi_nl_write_file: nelisp_bi_nl_write_file, (path_ptr: *const Sexp, content_ptr: *const Sexp) -> i64);
     cc_wrap!(bi_nl_make_directory: nelisp_bi_nl_make_directory, (path_ptr: *const Sexp) -> i64);
     cc_wrap!(bi_syscall_read_file: nelisp_bi_syscall_read_file, (path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64);
+    cc_wrap!(bi_syscall_resolve_nr: nelisp_bi_syscall_resolve_nr, (sym_ptr: *const Sexp) -> i64);
     cc_wrap!(rc_inc: nelisp_rc_inc, (box_ptr: *mut i64) -> i64);
     cc_wrap!(rc_dec: nelisp_rc_dec, (box_ptr: *mut i64) -> i64);
     cc_wrap!(rc_strong_count: nelisp_rc_strong_count, (box_ptr: *const u8) -> i64);
@@ -405,20 +456,23 @@ pub mod elisp_cc_spike {
 
     /// Scratch vector for the four `_or_insert` wrappers.
     fn build_or_insert_scratch_vec(
-        value: Sexp, function: Sexp, plist: Sexp, constant: Sexp,
+        value: Sexp,
+        function: Sexp,
+        plist: Sexp,
+        constant: Sexp,
     ) -> Sexp {
         Sexp::vector(vec![
-            Sexp::Nil,                                  // 0: Nil source
-            Sexp::Nil,                                  // 1: inner-pair scratch
-            Sexp::Nil,                                  // 2: outer-cell scratch
-            Sexp::Nil,                                  // 3: count int scratch
-            Sexp::Nil,                                  // 4: KEY str scratch
-            Sexp::Symbol("symbol-entry".into()),        // 5: type tag
-            Sexp::Nil,                                  // 6: entry result
-            value,                                      // 7: value cell
-            function,                                   // 8: function cell
-            plist,                                      // 9: plist
-            constant,                                   // 10: constant flag
+            Sexp::Nil,                           // 0: Nil source
+            Sexp::Nil,                           // 1: inner-pair scratch
+            Sexp::Nil,                           // 2: outer-cell scratch
+            Sexp::Nil,                           // 3: count int scratch
+            Sexp::Nil,                           // 4: KEY str scratch
+            Sexp::Symbol("symbol-entry".into()), // 5: type tag
+            Sexp::Nil,                           // 6: entry result
+            value,                               // 7: value cell
+            function,                            // 8: function cell
+            plist,                               // 9: plist
+            constant,                            // 10: constant flag
         ])
     }
 

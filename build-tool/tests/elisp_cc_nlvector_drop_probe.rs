@@ -71,10 +71,7 @@ const REFCOUNT_OFFSET: i64 = 24;
 /// "no dealloc this call" probe paths.
 unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
     let ptr = unsafe {
-        nelisp_build_tool::elisp_cc_spike::alloc_bytes(
-            SIZE_OF_NLVECTOR,
-            ALIGN_OF_NLVECTOR,
-        )
+        nelisp_build_tool::elisp_cc_spike::alloc_bytes(SIZE_OF_NLVECTOR, ALIGN_OF_NLVECTOR)
     };
     assert!(
         !ptr.is_null(),
@@ -126,9 +123,7 @@ fn nlvector_drop_with_refcount_2_no_dealloc() {
     let initial = unsafe { read_refcount(ptr) };
     assert_eq!(initial, 2, "seeded refcount slot must read back as 2");
 
-    let ret = unsafe {
-        nelisp_build_tool::elisp_cc_spike::nlvector_drop(ptr as *mut i64)
-    };
+    let ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlvector_drop(ptr as *mut i64) };
     // Both branches return 1 sentinel.  The "still alive" branch
     // produces the literal 1; the "dealloc" branch returns
     // `dealloc-bytes`'s 1 sentinel.
@@ -151,11 +146,7 @@ fn nlvector_drop_with_refcount_2_no_dealloc() {
     // also doubles as a self-consistency check: dealloc-bytes
     // matching the alloc-bytes call must succeed and return 1.
     let cleanup_rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(
-            ptr,
-            SIZE_OF_NLVECTOR,
-            ALIGN_OF_NLVECTOR,
-        )
+        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(ptr, SIZE_OF_NLVECTOR, ALIGN_OF_NLVECTOR)
     };
     assert_eq!(cleanup_rc, 1);
 }
@@ -168,9 +159,7 @@ fn nlvector_drop_with_refcount_1_dealloc_happens() {
     let initial = unsafe { read_refcount(ptr) };
     assert_eq!(initial, 1, "seeded refcount slot must read back as 1");
 
-    let ret = unsafe {
-        nelisp_build_tool::elisp_cc_spike::nlvector_drop(ptr as *mut i64)
-    };
+    let ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlvector_drop(ptr as *mut i64) };
     // Drop with pre-sub == 1 should take the dealloc branch, which
     // calls §125.A `dealloc-bytes' and returns its 1 sentinel.  We
     // cannot read the slot after this — the block has been freed
@@ -194,10 +183,7 @@ fn nlvector_drop_with_refcount_1_dealloc_happens() {
     // `alloc-bytes-then-dealloc' probe already covering the
     // round-trip — is sufficient to call the dealloc effective.
     let probe = unsafe {
-        nelisp_build_tool::elisp_cc_spike::alloc_bytes(
-            SIZE_OF_NLVECTOR,
-            ALIGN_OF_NLVECTOR,
-        )
+        nelisp_build_tool::elisp_cc_spike::alloc_bytes(SIZE_OF_NLVECTOR, ALIGN_OF_NLVECTOR)
     };
     assert!(
         !probe.is_null(),
@@ -205,11 +191,7 @@ fn nlvector_drop_with_refcount_1_dealloc_happens() {
          (= alloc-bytes for a fresh block succeeds)"
     );
     let probe_rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(
-            probe,
-            SIZE_OF_NLVECTOR,
-            ALIGN_OF_NLVECTOR,
-        )
+        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(probe, SIZE_OF_NLVECTOR, ALIGN_OF_NLVECTOR)
     };
     assert_eq!(probe_rc, 1);
 }
@@ -227,14 +209,8 @@ fn nlvector_drop_n_consecutive_reaches_zero_and_deallocs() {
     // advances from N → N-1 → ... → 2 → 1.  After this loop the
     // slot holds 1 and the box is on the brink of dealloc.
     for i in 1..N {
-        let ret = unsafe {
-            nelisp_build_tool::elisp_cc_spike::nlvector_drop(ptr as *mut i64)
-        };
-        assert_eq!(
-            ret, 1,
-            "drop {} of {}: must return 1 sentinel",
-            i, N - 1
-        );
+        let ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlvector_drop(ptr as *mut i64) };
+        assert_eq!(ret, 1, "drop {} of {}: must return 1 sentinel", i, N - 1);
         let after = unsafe { read_refcount(ptr) };
         assert_eq!(
             after,
@@ -251,9 +227,7 @@ fn nlvector_drop_n_consecutive_reaches_zero_and_deallocs() {
 
     // The N-th drop is the dealloc-triggering one.  Pre-sub = 1, the
     // `if' branch takes the dealloc-bytes arm.
-    let final_ret = unsafe {
-        nelisp_build_tool::elisp_cc_spike::nlvector_drop(ptr as *mut i64)
-    };
+    let final_ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlvector_drop(ptr as *mut i64) };
     assert_eq!(
         final_ret, 1,
         "final drop on pre-sub=1 must hit dealloc-bytes and return 1"
@@ -263,10 +237,7 @@ fn nlvector_drop_n_consecutive_reaches_zero_and_deallocs() {
     // block has been freed.  Best-effort sanity: a fresh alloc
     // succeeds, demonstrating the allocator is still healthy.
     let probe = unsafe {
-        nelisp_build_tool::elisp_cc_spike::alloc_bytes(
-            SIZE_OF_NLVECTOR,
-            ALIGN_OF_NLVECTOR,
-        )
+        nelisp_build_tool::elisp_cc_spike::alloc_bytes(SIZE_OF_NLVECTOR, ALIGN_OF_NLVECTOR)
     };
     assert!(!probe.is_null());
     unsafe {

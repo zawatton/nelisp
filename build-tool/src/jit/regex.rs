@@ -29,9 +29,12 @@ fn match_inner(pat: &str, text: &str) -> bool {
             let anchored_start = pat.starts_with("\\`") || pat.starts_with('^');
             let anchored_end = pat.ends_with("\\'") || pat.ends_with('$');
             let literal = pat
-                .replace("\\`", "").replace("\\'", "")
-                .replace('^', "").replace('$', "")
-                .replace("\\.", ".").replace("\\\\", "\\");
+                .replace("\\`", "")
+                .replace("\\'", "")
+                .replace('^', "")
+                .replace('$', "")
+                .replace("\\.", ".")
+                .replace("\\\\", "\\");
             match (anchored_start, anchored_end) {
                 (true, true) => text == literal,
                 (true, false) => text.starts_with(&literal),
@@ -57,6 +60,12 @@ pub extern "C" fn nl_jit_string_match_p(
         Some(t) => t,
         None => return TRAMPOLINE_ERR,
     };
-    unsafe { *out = if match_inner(&pat, &text) { Sexp::T } else { Sexp::Nil }; }
+    unsafe {
+        *out = if match_inner(&pat, &text) {
+            Sexp::T
+        } else {
+            Sexp::Nil
+        };
+    }
     TRAMPOLINE_OK
 }

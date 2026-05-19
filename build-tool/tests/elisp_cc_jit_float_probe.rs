@@ -34,9 +34,8 @@
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::{
-    jit_float_add, jit_float_div, jit_float_eq_eps, jit_float_exp, jit_float_float,
-    jit_float_ge, jit_float_gt, jit_float_le, jit_float_log, jit_float_lt, jit_float_mul,
-    jit_float_sub,
+    jit_float_add, jit_float_div, jit_float_eq_eps, jit_float_exp, jit_float_float, jit_float_ge,
+    jit_float_gt, jit_float_le, jit_float_log, jit_float_lt, jit_float_mul, jit_float_sub,
 };
 
 // ---- ADDSD coverage ----
@@ -153,7 +152,7 @@ fn float_nan_propagates() {
 fn float_lt_basics() {
     assert_eq!(jit_float_lt(1.0, 2.0), 1);
     assert_eq!(jit_float_lt(2.0, 1.0), 0);
-    assert_eq!(jit_float_lt(1.0, 1.0), 0);  // equal → not less
+    assert_eq!(jit_float_lt(1.0, 1.0), 0); // equal → not less
     assert_eq!(jit_float_lt(-1.0, 0.0), 1);
     assert_eq!(jit_float_lt(0.0, -0.0), 0); // ±0 compare equal
 }
@@ -171,7 +170,7 @@ fn float_gt_basics() {
 #[test]
 fn float_le_basics() {
     assert_eq!(jit_float_le(1.0, 2.0), 1);
-    assert_eq!(jit_float_le(1.0, 1.0), 1);  // equal → yes
+    assert_eq!(jit_float_le(1.0, 1.0), 1); // equal → yes
     assert_eq!(jit_float_le(2.0, 1.0), 0);
 }
 
@@ -282,8 +281,8 @@ fn float_eq_eps_matches_rust() {
     let samples: [(f64, f64); 9] = [
         (0.0, 0.0),
         (-0.0, 0.0),
-        (1e-16, 0.0),   // below eps → eq
-        (1e-14, 0.0),   // above eps → ne
+        (1e-16, 0.0), // below eps → eq
+        (1e-14, 0.0), // above eps → ne
         (1.0, 1.0),
         (1.0, 1.0 + 1e-16),
         (1.0, 1.0 + 1e-14),
@@ -296,7 +295,9 @@ fn float_eq_eps_matches_rust() {
             jit_float_eq_eps(a, b),
             want,
             "eq-eps({}, {}) — Rust expected {}",
-            a, b, want
+            a,
+            b,
+            want
         );
     }
 }
@@ -311,7 +312,7 @@ fn float_cmp_matches_rust() {
     let samples = [
         (0.0, 0.0),
         (-0.0, 0.0),
-        (1e-308, 0.0),   // smallest normal vs 0
+        (1e-308, 0.0), // smallest normal vs 0
         (1.0, 1.0 + f64::EPSILON),
         (1e15, 1e15 + 1.0),
         (-1.0, 1.0),
@@ -396,6 +397,11 @@ fn float_exp_log_round_trip() {
     let samples: [f64; 5] = [0.0, 1.0, -1.0, 3.14, -2.71];
     for x in samples {
         let round_trip = jit_float_log(jit_float_exp(x));
-        assert!((round_trip - x).abs() < 1e-10, "log(exp({})) = {}", x, round_trip);
+        assert!(
+            (round_trip - x).abs() < 1e-10,
+            "log(exp({})) = {}",
+            x,
+            round_trip
+        );
     }
 }

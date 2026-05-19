@@ -14,15 +14,19 @@
 use nelisp_build_tool::eval::sexp::Sexp;
 use nelisp_build_tool::eval::Env;
 
-fn sym(s: &str) -> Sexp { Sexp::Symbol(s.into()) }
-fn int(n: i64) -> Sexp { Sexp::Int(n) }
+fn sym(s: &str) -> Sexp {
+    Sexp::Symbol(s.into())
+}
+fn int(n: i64) -> Sexp {
+    Sexp::Int(n)
+}
 
 /// Call nl_bind_formals_impl(formals, args, env, 0) directly.
 fn call_bf(formals: Sexp, args: Sexp, env: &mut Env) -> i64 {
     unsafe {
         nelisp_build_tool::elisp_cc_spike::bind_formals_impl_call(
             &formals as *const Sexp,
-            &args    as *const Sexp,
+            &args as *const Sexp,
             env as *mut Env as *mut std::ffi::c_void,
             0,
         )
@@ -41,7 +45,7 @@ fn lookup(env: &mut Env, name: &str) -> Option<Sexp> {
 fn bf_required_exact_args_binds_all() {
     // (lambda (a b) ...) with args (1 2)
     let formals = Sexp::list_from(&[sym("a"), sym("b")]);
-    let args    = Sexp::list_from(&[int(1), int(2)]);
+    let args = Sexp::list_from(&[int(1), int(2)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -54,7 +58,7 @@ fn bf_required_exact_args_binds_all() {
 fn bf_required_no_args_no_formals_succeeds() {
     // (lambda () ...) with args ()
     let formals = Sexp::Nil;
-    let args    = Sexp::Nil;
+    let args = Sexp::Nil;
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -65,7 +69,7 @@ fn bf_required_no_args_no_formals_succeeds() {
 fn bf_required_too_few_args_returns_err() {
     // (lambda (a b) ...) with args (1) → WrongNumberOfArguments
     let formals = Sexp::list_from(&[sym("a"), sym("b")]);
-    let args    = Sexp::list_from(&[int(1)]);
+    let args = Sexp::list_from(&[int(1)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -76,7 +80,7 @@ fn bf_required_too_few_args_returns_err() {
 fn bf_required_too_many_args_returns_err() {
     // (lambda (a) ...) with args (1 2) → WrongNumberOfArguments
     let formals = Sexp::list_from(&[sym("a")]);
-    let args    = Sexp::list_from(&[int(1), int(2)]);
+    let args = Sexp::list_from(&[int(1), int(2)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -89,7 +93,7 @@ fn bf_required_too_many_args_returns_err() {
 fn bf_optional_all_provided() {
     // (lambda (a &optional b) ...) with args (1 2)
     let formals = Sexp::list_from(&[sym("a"), sym("&optional"), sym("b")]);
-    let args    = Sexp::list_from(&[int(1), int(2)]);
+    let args = Sexp::list_from(&[int(1), int(2)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -102,7 +106,7 @@ fn bf_optional_all_provided() {
 fn bf_optional_missing_binds_nil() {
     // (lambda (a &optional b) ...) with args (1)
     let formals = Sexp::list_from(&[sym("a"), sym("&optional"), sym("b")]);
-    let args    = Sexp::list_from(&[int(1)]);
+    let args = Sexp::list_from(&[int(1)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -115,7 +119,7 @@ fn bf_optional_missing_binds_nil() {
 fn bf_optional_all_missing() {
     // (lambda (&optional a b) ...) with args ()
     let formals = Sexp::list_from(&[sym("&optional"), sym("a"), sym("b")]);
-    let args    = Sexp::Nil;
+    let args = Sexp::Nil;
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -130,7 +134,7 @@ fn bf_optional_all_missing() {
 fn bf_rest_collects_remaining_args() {
     // (lambda (a &rest rest) ...) with args (1 2 3)
     let formals = Sexp::list_from(&[sym("a"), sym("&rest"), sym("rest")]);
-    let args    = Sexp::list_from(&[int(1), int(2), int(3)]);
+    let args = Sexp::list_from(&[int(1), int(2), int(3)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -145,7 +149,7 @@ fn bf_rest_collects_remaining_args() {
 fn bf_rest_empty_rest_binds_nil() {
     // (lambda (a &rest rest) ...) with args (1)
     let formals = Sexp::list_from(&[sym("a"), sym("&rest"), sym("rest")]);
-    let args    = Sexp::list_from(&[int(1)]);
+    let args = Sexp::list_from(&[int(1)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -158,12 +162,15 @@ fn bf_rest_empty_rest_binds_nil() {
 fn bf_rest_only() {
     // (lambda (&rest args) ...) with args (1 2 3)
     let formals = Sexp::list_from(&[sym("&rest"), sym("args")]);
-    let args    = Sexp::list_from(&[int(1), int(2), int(3)]);
+    let args = Sexp::list_from(&[int(1), int(2), int(3)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
     assert_eq!(rc, 0);
-    assert_eq!(lookup(&mut env, "args"), Some(Sexp::list_from(&[int(1), int(2), int(3)])));
+    assert_eq!(
+        lookup(&mut env, "args"),
+        Some(Sexp::list_from(&[int(1), int(2), int(3)]))
+    );
 }
 
 // ---- Arity error return code tests ----
@@ -176,7 +183,7 @@ fn bf_rest_only() {
 fn bf_too_few_args_returns_rc1() {
     // (lambda (a b) ...) with args (1) — too few → rc=1
     let formals = Sexp::list_from(&[sym("a"), sym("b")]);
-    let args    = Sexp::list_from(&[int(1)]);
+    let args = Sexp::list_from(&[int(1)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);
@@ -187,7 +194,7 @@ fn bf_too_few_args_returns_rc1() {
 fn bf_too_many_args_returns_rc1() {
     // (lambda (a) ...) with args (1 2) → too many → rc=1
     let formals = Sexp::list_from(&[sym("a")]);
-    let args    = Sexp::list_from(&[int(1), int(2)]);
+    let args = Sexp::list_from(&[int(1), int(2)]);
     let mut env = Env::new_global_no_stdlib();
     env.push_frame();
     let rc = call_bf(formals, args, &mut env);

@@ -49,8 +49,7 @@ fn write_float_extern(val: f64) -> Sexp {
 fn write_float_via_grammar(val: f64) -> Sexp {
     let mut slot = Sexp::Nil;
     let slot_ptr = &mut slot as *mut Sexp;
-    let returned =
-        unsafe { elisp_cc_spike::sexp_write_float_via_grammar(slot_ptr, val) };
+    let returned = unsafe { elisp_cc_spike::sexp_write_float_via_grammar(slot_ptr, val) };
     assert_eq!(
         returned, slot_ptr,
         "sexp-write-float grammar op must return the caller-provided slot pointer"
@@ -61,9 +60,8 @@ fn write_float_via_grammar(val: f64) -> Sexp {
 fn parse_float(bytes: &[u8]) -> (i64, Sexp) {
     let mut slot = Sexp::Nil;
     let slot_ptr = &mut slot as *mut Sexp;
-    let status = unsafe {
-        elisp_cc_spike::str_to_float(bytes.as_ptr(), bytes.len() as i64, slot_ptr)
-    };
+    let status =
+        unsafe { elisp_cc_spike::str_to_float(bytes.as_ptr(), bytes.len() as i64, slot_ptr) };
     (status, slot)
 }
 

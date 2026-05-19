@@ -741,6 +741,27 @@ functions `((NAME . ARITY) ...)'."
    ;; the record kind); SLOT-COUNT is evaluated as an i64; the new record
    ;; has SLOT-COUNT slots all pre-filled with `Sexp::Nil' by
    ;; `nl_alloc_record'.
+   ;; (cons-make-with-clone CAR-PTR CDR-PTR SLOT)
+   ;;   — Doc 120.E fused constructor: allocate fresh `NlConsBox' via
+   ;;     `nl_alloc_consbox', deep-clone `*CAR-PTR' into `box->car' and
+   ;;     `*CDR-PTR' into `box->cdr' via the existing
+   ;;     `nl_sexp_clone_into' extern (= variant-aware refcount inc /
+   ;;     String deep copy), then write `Sexp::Cons(box)' into SLOT.
+   ;;   Required because the simpler `cons-make' op does raw 32-byte
+   ;;   SIMD copies that double-free the inner payloads when CAR/CDR
+   ;;   are refcounted variants.  Replaces the Rust `nl_jit_cons_make'
+   ;;   trampoline (= -24 LOC `build-tool/src/jit/cons.rs').
+   ((and (consp sexp) (eq (car sexp) 'cons-make-with-clone))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :cons-make-with-clone-arity sexp)))
+    (list :kind 'cons-make-with-clone
+          :car-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 1 sexp) env fenv defuns)
+          :cdr-ptr (nelisp-phase47-compiler--parse-value
+                    (nth 2 sexp) env fenv defuns)
+          :slot (nelisp-phase47-compiler--parse-value
+                 (nth 3 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'record-make))
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
@@ -825,6 +846,29 @@ functions `((NAME . ARITY) ...)'."
               (nth 1 sexp) env fenv defuns)
           :b (nelisp-phase47-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
+   ;; (symbol-name-eq SYM_PTR LITERAL_STR)
+   ;;   — Tag-check SYM_PTR == `Sexp::Symbol' (offset 0 byte),
+   ;;     length-check vs `(length LITERAL_STR)' bytes (at offset 24),
+   ;;     then byte-loop compare against compile-time literal bytes
+   ;;     loaded via `[r9]; add r9, 1'.  Returns i64 0 or 1.
+   ;;   Allows multi-entry symbol-table dispatch (= `bi_syscall' 25-entry
+   ;;   name→nr table) without forcing the caller to allocate N
+   ;;   `Sexp::Symbol' stack literals.  LITERAL_STR is encoded UTF-8 at
+   ;;   compile time and emitted inline as `cmp imm32' against each
+   ;;   payload byte.
+   ((and (consp sexp) (eq (car sexp) 'symbol-name-eq))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :symbol-name-eq-arity sexp)))
+    (let ((lit (nth 2 sexp)))
+      (unless (stringp lit)
+        (signal 'nelisp-phase47-compiler-error
+                (list :symbol-name-eq-literal-must-be-string sexp)))
+      (list :kind 'symbol-name-eq
+            :id (nelisp-phase47-compiler--gensym "symbol-name-eq")
+            :ptr (nelisp-phase47-compiler--parse-value
+                  (nth 1 sexp) env fenv defuns)
+            :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
    ((and (consp sexp) (eq (car sexp) 'sexp-write-nil))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
@@ -2020,6 +2064,7 @@ the node's class to consume the result correctly."
              'record-make
              'cell-value 'cell-set-value 'cell-make 'cell-null-p
              'str-len 'str-bytes 'str-bytes-ptr 'str-byte-at 'str-eq 'symbol-eq
+             'symbol-name-eq
              'sexp-write-nil 'sexp-write-t
              'sexp-write-str 'sexp-write-symbol 'sexp-write-float
              'mut-str-make-empty 'mut-str-push-byte 'mut-str-push-codepoint
@@ -2031,7 +2076,7 @@ the node's class to consume the result correctly."
              'ptr-read-u16 'ptr-write-u16
              'ptr-read-u32 'ptr-write-u32
              'alloc-bytes 'dealloc-bytes
-             'cons-make 'cons-set-car 'cons-set-cdr
+             'cons-make 'cons-make-with-clone 'cons-set-car 'cons-set-cdr
              'while 'cond 'logic)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (plist-get node :kind) node))
@@ -2126,6 +2171,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-str-eq node buf))
       ('symbol-eq
        (nelisp-phase47-compiler--emit-symbol-eq node buf))
+      ('symbol-name-eq
+       (nelisp-phase47-compiler--emit-symbol-name-eq node buf))
       ('sexp-write-nil
        (nelisp-phase47-compiler--emit-sexp-write-tag
         node buf nelisp-sexp--tag-nil))
@@ -2184,6 +2231,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-dealloc-bytes node buf))
       ('cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
+      ('cons-make-with-clone
+       (nelisp-phase47-compiler--emit-cons-make-with-clone node buf))
       ('cons-set-car
        (nelisp-phase47-compiler--emit-cons-set-slot
         node buf 'nl_consbox_set_car))
@@ -3304,6 +3353,55 @@ values whose payload layout matches Rust `String' (=`Sexp::Str' or
     (nelisp-asm-x86_64-pop buf 'rdi)
     (nelisp-phase47-compiler--emit-string-eq-core buf 'rdi 'rsi id)))
 
+(defun nelisp-phase47-compiler--emit-symbol-name-eq (node buf)
+  "Emit `symbol-name-eq': tag-check SYM_PTR == Sexp::Symbol, length
+check against LITERAL_LEN, then byte-loop compare against compile-time
+literal bytes.  Returns i64 0/1 in rax.
+
+Register usage:
+  rdi       = `*const Sexp' SYM_PTR (caller-emitted into rax then moved)
+  rax/rdx   = scratch (tag / length / per-byte read)
+  r9        = current payload byte pointer (NlString::ptr + i)
+
+No PLT calls — entirely inline; the literal bytes are encoded as
+`cmp imm32' immediates so each byte costs ~10 bytes of code.  A 4-byte
+literal expands to ~50 bytes of code, a 20-byte literal to ~210 bytes."
+  (let* ((ptr (plist-get node :ptr))
+         (bytes (plist-get node :bytes))
+         (id (plist-get node :id))
+         (len (length bytes))
+         (false-lbl (intern (format "%s-false" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    ;; Tag check: byte [rdi] == Sexp::Symbol tag (= 4).
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-symbol)
+    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+    ;; Length check: NlString::len at offset 24 == LITERAL_LEN.
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-string--offset-length)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax len)
+    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+    ;; r9 = NlString::ptr at offset 16; this is the start of the
+    ;; payload byte buffer that we'll walk byte-by-byte below.
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r9 'rdi nelisp-string--offset-ptr)
+    ;; Per-byte: movzx rax, byte [r9]; cmp rax, byte_i; jnz false-lbl;
+    ;; add r9, 1.  The final byte's `add r9, 1' is harmless dead code
+    ;; but kept for symmetry / simpler emitter.
+    (dolist (b bytes)
+      (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'r9)
+      (nelisp-asm-x86_64-cmp-imm32 buf 'rax b)
+      (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+      (nelisp-asm-x86_64-add-imm32 buf 'r9 1))
+    ;; All bytes match -> rax = 1.
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf false-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
+    (nelisp-asm-x86_64-define-label buf end-lbl)))
+
 (defun nelisp-phase47-compiler--emit-symbol-eq (node buf)
   "Emit `symbol-eq': tag-check both inputs, then compare name bytes."
   (let ((a (plist-get node :a))
@@ -3798,6 +3896,93 @@ refcount-aware nested-box increments."
     (nelisp-asm-x86_64-mov-mem-imm8 buf 'rsi nelisp-sexp--tag-cons)
     (nelisp-asm-x86_64-mov-mem-reg-disp8
      buf 'rsi nelisp-sexp--offset-payload 'r10)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+
+(defun nelisp-phase47-compiler--emit-cons-make-with-clone (node buf)
+  "Emit Doc 120.E fused `cons-make-with-clone' constructor.
+Strategy parallels `--emit-cons-make' but replaces the two 32-byte
+`movdqu' pairs with two `nl_sexp_clone_into' PLT calls so refcounted
+payloads get a deep / refcount-aware clone instead of a raw memcpy.
+
+Stack discipline matches `--emit-cons-make':
+
+  1. Push CAR-PTR / CDR-PTR / SLOT and one alignment scratch (4 pushes
+     → rsp ≡ 0 mod 16 for the upcoming extern call).
+  2. `call nl_alloc_consbox@PLT' → rax = fresh `NlConsBox*' (car/cdr
+     pre-initialised to `Sexp::Nil', refcount = 1).  Move into r10.
+  3. Pop alignment / SLOT / CDR-PTR / CAR-PTR (LIFO) into rsi / rdx /
+     rdi.
+  4. First clone: save rsi+rdx+r10 across the call, then `mov rsi,
+     r10; call nl_sexp_clone_into@PLT' (rdi already = CAR-PTR).  3 pushes
+     + 1 alignment push keeps rsp ≡ 0 mod 16.  Pop everything back.
+  5. Second clone: save rsi+r10, set rdi=rdx (CDR-PTR), rsi=r10+32
+     (= `&box->cdr'), 2 pushes + 2 alignment pushes for SysV alignment.
+     `call nl_sexp_clone_into@PLT' then restore.
+  6. Write `Sexp::Cons(box)' into SLOT: tag byte 7 at offset 0,
+     `mov [rsi+8], r10' for the payload pointer.
+  7. Return SLOT in rax (matches `cons-make' ABI).
+
+No refcount bumps are needed at this layer — `nl_sexp_clone_into'
+performs the variant-aware refcount inc / String deep copy itself,
+and the fresh NlConsBox already starts at refcount = 1."
+  (let ((car-ptr (plist-get node :car-ptr))
+        (cdr-ptr (plist-get node :cdr-ptr))
+        (slot (plist-get node :slot)))
+    ;; Step 1: spill the 3 input pointers + 1 alignment scratch.
+    (nelisp-phase47-compiler--emit-value car-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value cdr-ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Step 2: call nl_alloc_consbox -> rax; stash in r10.
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_alloc_consbox" -4 'text)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+    ;; Step 3: restore alignment / slot / cdr-ptr / car-ptr.
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    ;; Step 4: nl_sexp_clone_into(car-ptr, box).  Save rsi/rdx/r10
+    ;; across the call (= all caller-saved) plus a 4th push for the
+    ;; 16-byte alignment.
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-push buf 'rdx)
+    (nelisp-asm-x86_64-push buf 'r10)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r10)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_sexp_clone_into" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'r10)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    ;; Step 5: nl_sexp_clone_into(cdr-ptr, box + 32).  rdi := cdr-ptr,
+    ;; rsi := box + 32.  Save rsi/r10 across the call plus 2 alignment
+    ;; pushes (= 4 push = 16-byte aligned).
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-push buf 'r10)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rdx)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r10)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsi nelisp-nlconsbox--offset-cdr)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_sexp_clone_into" -4 'text)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-pop buf 'r10)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    ;; Step 6: write Sexp::Cons(box) into slot.
+    (nelisp-asm-x86_64-mov-mem-imm8 buf 'rsi nelisp-sexp--tag-cons)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rsi nelisp-sexp--offset-payload 'r10)
+    ;; Step 7: return slot in rax (matches cons-make ABI).
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
 (defun nelisp-phase47-compiler--emit-cons-set-slot (node buf helper-name)

@@ -32,7 +32,10 @@ impl NlVectorRef {
             value,
             refcount: AtomicUsize::new(1),
         })));
-        NlVectorRef { ptr, _marker: PhantomData }
+        NlVectorRef {
+            ptr,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -50,18 +53,17 @@ pub unsafe extern "C" fn nl_alloc_vector(capacity: i64) -> *mut NlVector {
 /// # Safety
 /// `vec_ptr` must be live, `val` initialised, and `n` in range.
 #[no_mangle]
-pub unsafe extern "C" fn nl_vector_set_slot(
-    vec_ptr: *mut NlVector,
-    n: i64,
-    val: *const Sexp,
-) {
+pub unsafe extern "C" fn nl_vector_set_slot(vec_ptr: *mut NlVector, n: i64, val: *const Sexp) {
     (&mut (*vec_ptr).value)[n as usize] = (*val).clone();
 }
 
 impl Clone for NlVectorRef {
     fn clone(&self) -> Self {
         unsafe { crate::elisp_cc_spike::nlvector_clone(self.ptr.as_ptr() as *mut i64) };
-        NlVectorRef { ptr: self.ptr, _marker: PhantomData }
+        NlVectorRef {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
     }
 }
 

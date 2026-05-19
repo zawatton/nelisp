@@ -145,7 +145,10 @@ fn sexp_write_str_round_trip_content_matches_input() {
     let bytes = input.as_bytes();
     let got = write_str_into_slot(bytes);
     let expected = Sexp::Str(input.to_string());
-    assert_eq!(got, expected, "round-trip Str must equal a fresh Rust-side Sexp::Str");
+    assert_eq!(
+        got, expected,
+        "round-trip Str must equal a fresh Rust-side Sexp::Str"
+    );
 }
 
 // ---- Case 6: Symbol round-trip ----
@@ -157,5 +160,8 @@ fn sexp_write_symbol_round_trip_content_matches_input() {
     let bytes = input.as_bytes();
     let got = write_symbol_into_slot(bytes);
     let expected = Sexp::Symbol(input.to_string());
-    assert_eq!(got, expected, "round-trip Symbol must equal Rust-side Sexp::Symbol");
+    assert_eq!(
+        got, expected,
+        "round-trip Symbol must equal Rust-side Sexp::Symbol"
+    );
 }

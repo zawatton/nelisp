@@ -5,8 +5,8 @@
 //! Doc 130 applied to the 3,057-LOC `src/eval/tests.rs'.
 
 use nelisp_build_tool::eval as eval_mod;
-use nelisp_build_tool::eval::Env;
 use nelisp_build_tool::eval::sexp::Sexp;
+use nelisp_build_tool::eval::Env;
 use std::collections::HashMap;
 
 #[test]
@@ -53,12 +53,13 @@ fn phase8_session2_globals_record_mirrors_rust_hashmap_sentinels() {
     let lookup_value_fn = env
         .lookup_function("nelisp-env-lookup-value")
         .expect("nelisp-env-lookup-value not loaded");
-    let t_result = eval_mod::apply_function(
-        &lookup_value_fn,
-        &[record, Sexp::Str("t".into())],
-        &mut env,
+    let t_result =
+        eval_mod::apply_function(&lookup_value_fn, &[record, Sexp::Str("t".into())], &mut env);
+    assert!(
+        matches!(t_result, Ok(Sexp::T)),
+        "mirror missing `t': {:?}",
+        t_result
     );
-    assert!(matches!(t_result, Ok(Sexp::T)), "mirror missing `t': {:?}", t_result);
 }
 
 #[test]
@@ -79,8 +80,11 @@ fn phase8_session3_post_bootstrap_set_value_propagates_to_mirror() {
         &[record, Sexp::Str("doc-102-phase-8-session-3-probe".into())],
         &mut env,
     );
-    assert!(matches!(result, Ok(Sexp::Int(4242))),
-            "mirror did not observe post-bootstrap set_value: {:?}", result);
+    assert!(
+        matches!(result, Ok(Sexp::Int(4242))),
+        "mirror did not observe post-bootstrap set_value: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -88,10 +92,7 @@ fn phase8_session3_post_bootstrap_set_function_propagates_to_mirror() {
     // Counterpart for the function cell — validate `set_function'
     // dual-writes through `mirror_set_function'.
     let mut env = Env::new_global();
-    let sentinel = Sexp::list_from(&[
-        Sexp::Symbol("builtin".into()),
-        Sexp::Symbol("car".into()),
-    ]);
+    let sentinel = Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol("car".into())]);
     env.set_function("doc-102-phase-8-session-3-fn-probe", sentinel.clone());
     let lookup_fn = env
         .lookup_function("nelisp-env-lookup-function")
@@ -99,11 +100,17 @@ fn phase8_session3_post_bootstrap_set_function_propagates_to_mirror() {
     let record = env.globals_record.clone();
     let result = eval_mod::apply_function(
         &lookup_fn,
-        &[record, Sexp::Str("doc-102-phase-8-session-3-fn-probe".into())],
+        &[
+            record,
+            Sexp::Str("doc-102-phase-8-session-3-fn-probe".into()),
+        ],
         &mut env,
     );
-    assert!(matches!(&result, Ok(v) if *v == sentinel),
-            "mirror did not observe post-bootstrap set_function: {:?}", result);
+    assert!(
+        matches!(&result, Ok(v) if *v == sentinel),
+        "mirror did not observe post-bootstrap set_function: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -118,7 +125,8 @@ fn phase8_session4_rust_direct_lookup_function_matches_rust_hashmap() {
         let mirror_side = env.mirror_lookup_function(name);
         assert!(
             mirror_side != env.unbound_marker,
-            "mirror missing function `{}'", name,
+            "mirror missing function `{}'",
+            name,
         );
         assert_eq!(rust_side, mirror_side, "mismatch for `{}'", name);
     }
@@ -185,13 +193,21 @@ fn doc104_stage3b_push_pop_dual_writes_keep_depths_aligned() {
     let mut env = Env::new_global_no_stdlib();
     for i in 0..20 {
         env.push_frame();
-        assert_eq!(frames_record_depth(&env), (i + 1) as i64,
-                   "mirror depth wrong after push #{}", i);
+        assert_eq!(
+            frames_record_depth(&env),
+            (i + 1) as i64,
+            "mirror depth wrong after push #{}",
+            i
+        );
     }
     for i in 0..20 {
         env.pop_frame();
-        assert_eq!(frames_record_depth(&env), (19 - i) as i64,
-                   "mirror depth wrong after pop #{}", i);
+        assert_eq!(
+            frames_record_depth(&env),
+            (19 - i) as i64,
+            "mirror depth wrong after pop #{}",
+            i
+        );
     }
     assert_eq!(frames_record_depth(&env), 0);
 }
@@ -269,8 +285,11 @@ fn doc104_stage3b_bind_local_preserves_cell_identity_across_stacks() {
     };
     // Mutate via one handle; the other must observe.
     unsafe { mirror_cell.set_value(Sexp::Int(99)) };
-    assert_eq!(cell_via_find.value.clone(), Sexp::Int(99),
-               "write through mirror handle not visible via find handle");
+    assert_eq!(
+        cell_via_find.value.clone(),
+        Sexp::Int(99),
+        "write through mirror handle not visible via find handle"
+    );
 }
 
 #[test]

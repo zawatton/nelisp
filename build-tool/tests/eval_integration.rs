@@ -98,7 +98,10 @@ fn demo_condition_case_signal() {
     // is whatever was passed in as the second arg to signal.  The
     // prompt accepts "Int(42) or similar".  We supply the second arg
     // as 42 directly, so e = (my-err . 42), (cdr e) = 42.
-    assert_eq!(ok("(condition-case e (signal 'my-err 42) (my-err (cdr e)))"), Sexp::Int(42));
+    assert_eq!(
+        ok("(condition-case e (signal 'my-err 42) (my-err (cdr e)))"),
+        Sexp::Int(42)
+    );
 }
 
 // ============================================================
@@ -127,7 +130,10 @@ fn eval_str_all_empty_returns_nil() {
 
 #[test]
 fn quote_returns_form_unevaluated() {
-    assert_eq!(ok("(quote (1 2 3))"), Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]));
+    assert_eq!(
+        ok("(quote (1 2 3))"),
+        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)])
+    );
 }
 
 #[test]
@@ -227,10 +233,7 @@ fn defmacro_expands_before_eval() {
 #[test]
 fn defvar_idempotent() {
     // First defvar binds; second is a no-op (Elisp semantics).
-    assert_eq!(
-        ok_all("(defvar foo 1) (defvar foo 2) foo"),
-        Sexp::Int(1)
-    );
+    assert_eq!(ok_all("(defvar foo 1) (defvar foo 2) foo"), Sexp::Int(1));
 }
 
 #[test]
@@ -255,7 +258,10 @@ fn provide_marks_feature_present() {
 
 #[test]
 fn require_returns_feature_and_is_idempotent() {
-    assert_eq!(ok_all("(require 'foo) (require 'foo)"), Sexp::Symbol("foo".into()));
+    assert_eq!(
+        ok_all("(require 'foo) (require 'foo)"),
+        Sexp::Symbol("foo".into())
+    );
     assert_eq!(ok_all("(require 'foo) (featurep 'foo)"), Sexp::T);
 }
 
@@ -297,8 +303,14 @@ fn defgroup_returns_name_without_binding_value() {
     // `env.globals' as an empty entry, but that was unobservable
     // (the value cell stays unbound — `boundp' returns nil), so the
     // observable contract still matches host Emacs.
-    assert_eq!(ok("(defgroup my-group nil \"doc\")"), Sexp::Symbol("my-group".into()));
-    assert_eq!(ok_all("(defgroup my-group nil \"doc\") (boundp 'my-group)"), Sexp::Nil);
+    assert_eq!(
+        ok("(defgroup my-group nil \"doc\")"),
+        Sexp::Symbol("my-group".into())
+    );
+    assert_eq!(
+        ok_all("(defgroup my-group nil \"doc\") (boundp 'my-group)"),
+        Sexp::Nil
+    );
 }
 
 // Stage 7.3.d removed the runtime type-check on `defgroup' name —
@@ -333,7 +345,10 @@ fn cl_defun_supports_rest_arguments() {
 
 #[test]
 fn cl_defun_wrong_type_name_errors() {
-    assert!(matches!(err("(cl-defun 1 () 42)"), EvalError::WrongType { .. }));
+    assert!(matches!(
+        err("(cl-defun 1 () 42)"),
+        EvalError::WrongType { .. }
+    ));
 }
 
 // ============================================================
@@ -342,8 +357,14 @@ fn cl_defun_wrong_type_name_errors() {
 
 #[test]
 fn pcase_matches_literal_and_wildcard() {
-    assert_eq!(ok("(pcase 5 (5 'five) (_ 'other))"), Sexp::Symbol("five".into()));
-    assert_eq!(ok("(pcase 7 (5 'five) (_ 'other))"), Sexp::Symbol("other".into()));
+    assert_eq!(
+        ok("(pcase 5 (5 'five) (_ 'other))"),
+        Sexp::Symbol("five".into())
+    );
+    assert_eq!(
+        ok("(pcase 7 (5 'five) (_ 'other))"),
+        Sexp::Symbol("other".into())
+    );
 }
 
 #[test]
@@ -426,7 +447,8 @@ fn setq_innermost_lexical_wins() {
 
 #[test]
 fn while_counts_down() {
-    let v = ok_all("(setq i 0) (setq sum 0) (while (< i 5) (setq sum (+ sum i)) (setq i (1+ i))) sum");
+    let v =
+        ok_all("(setq i 0) (setq sum 0) (while (< i 5) (setq sum (+ sum i)) (setq i (1+ i))) sum");
     assert_eq!(v, Sexp::Int(0 + 1 + 2 + 3 + 4));
 }
 
@@ -471,7 +493,10 @@ fn condition_case_no_match_propagates() {
 fn unwind_protect_runs_cleanup_after_success() {
     let v = ok_all("(setq cleaned nil) (unwind-protect 42 (setq cleaned t))");
     let _ = v;
-    assert_eq!(eval_str_all("(setq cleaned nil) (unwind-protect 42 (setq cleaned t)) cleaned").unwrap(), Sexp::T);
+    assert_eq!(
+        eval_str_all("(setq cleaned nil) (unwind-protect 42 (setq cleaned t)) cleaned").unwrap(),
+        Sexp::T
+    );
 }
 
 #[test]
@@ -721,10 +746,7 @@ fn ref_eq_returns_t_for_same_cons() {
         ok_all("(let ((a (cons 1 2))) (nelisp--ref-eq a a))"),
         Sexp::T,
     );
-    assert_eq!(
-        ok_all("(nelisp--ref-eq (cons 1 2) (cons 1 2))"),
-        Sexp::Nil,
-    );
+    assert_eq!(ok_all("(nelisp--ref-eq (cons 1 2) (cons 1 2))"), Sexp::Nil,);
 }
 
 #[test]
@@ -1093,7 +1115,10 @@ fn plist_get_returns_value() {
 
 #[test]
 fn plist_put_replaces_existing_key() {
-    assert_eq!(ok("(plist-put '(:a 1 :b 2) ':b 9)"), read_form("(:a 1 :b 9)"));
+    assert_eq!(
+        ok("(plist-put '(:a 1 :b 2) ':b 9)"),
+        read_form("(:a 1 :b 9)")
+    );
 }
 
 #[test]
@@ -1125,12 +1150,18 @@ fn string_prefix_p_ignore_case() {
 
 #[test]
 fn regexp_quote_escapes_metacharacters() {
-    assert_eq!(ok("(regexp-quote \"a+b.c\")"), Sexp::Str("a\\+b\\.c".into()));
+    assert_eq!(
+        ok("(regexp-quote \"a+b.c\")"),
+        Sexp::Str("a\\+b\\.c".into())
+    );
 }
 
 #[test]
 fn string_match_p_handles_common_anchored_numeric_pattern() {
-    assert_eq!(ok("(string-match-p \"\\\\`-?[0-9]+\\\\(\\\\.[0-9]+\\\\)?\\\\'\" \"-42.5\")"), Sexp::T);
+    assert_eq!(
+        ok("(string-match-p \"\\\\`-?[0-9]+\\\\(\\\\.[0-9]+\\\\)?\\\\'\" \"-42.5\")"),
+        Sexp::T
+    );
 }
 
 #[test]
@@ -1162,10 +1193,7 @@ fn eval_str_all_handles_macro_extension_synthetic_snippet() {
         (provide 'pkg)
         (describe-answer \"state\" 'ready '(x y))
     ";
-    assert_eq!(
-        ok_all(input),
-        read_form("(ready \"state\" 42 ((x y)))")
-    );
+    assert_eq!(ok_all(input), read_form("(ready \"state\" 42 ((x y)))"));
 }
 
 // ============================================================
@@ -1193,10 +1221,7 @@ fn keyword_self_evaluates_inside_list() {
 #[test]
 fn keyword_works_with_plist_get() {
     // Round-trip a plist value through `plist-get'.
-    assert_eq!(
-        ok("(plist-get (list :a 1 :b 2) :b)"),
-        Sexp::Int(2)
-    );
+    assert_eq!(ok("(plist-get (list :a 1 :b 2) :b)"), Sexp::Int(2));
 }
 
 #[test]
@@ -1316,12 +1341,14 @@ fn aset_mutation_visible_through_shared_binding() {
     // when two bindings share the same vector, aset on one is
     // visible through the other.
     assert_eq!(
-        ok_all("
+        ok_all(
+            "
             (setq v (vector 1 2 3))
             (setq w v)
             (aset v 0 99)
             (aref w 0)
-        "),
+        "
+        ),
         Sexp::Int(99)
     );
 }
@@ -1329,11 +1356,13 @@ fn aset_mutation_visible_through_shared_binding() {
 #[test]
 fn aset_followed_by_aref_returns_new_value() {
     assert_eq!(
-        ok_all("
+        ok_all(
+            "
             (setq v (vector 1 2 3))
             (aset v 1 42)
             (aref v 1)
-        "),
+        "
+        ),
         Sexp::Int(42)
     );
 }
@@ -1382,12 +1411,14 @@ fn setcdr_returns_assigned_value() {
 fn setcar_mutation_visible_through_shared_binding() {
     // The load-bearing guarantee: setcar on c is visible through d.
     assert_eq!(
-        ok_all("
+        ok_all(
+            "
             (setq c (cons 1 2))
             (setq d c)
             (setcar c 99)
             (car d)
-        "),
+        "
+        ),
         Sexp::Int(99)
     );
 }
@@ -1395,12 +1426,14 @@ fn setcar_mutation_visible_through_shared_binding() {
 #[test]
 fn setcdr_mutation_visible_through_shared_binding() {
     assert_eq!(
-        ok_all("
+        ok_all(
+            "
             (setq c (cons 1 2))
             (setq d c)
             (setcdr c 88)
             (cdr d)
-        "),
+        "
+        ),
         Sexp::Int(88)
     );
 }
@@ -1523,10 +1556,7 @@ fn load_signals_when_missing_and_not_noerror() {
 
 #[test]
 fn load_returns_nil_with_noerror_when_missing() {
-    assert_eq!(
-        ok_all(r#"(load "/no/such/file/here.el" t)"#),
-        Sexp::Nil
-    );
+    assert_eq!(ok_all(r#"(load "/no/such/file/here.el" t)"#), Sexp::Nil);
 }
 
 #[test]
@@ -1544,8 +1574,7 @@ fn require_loads_file_via_load_path() {
     // Drive through `eval_str_all_at_path' so load-path = dir/.
     let source = "(require 'foo) (foo-answer)";
     let dummy_main = dir.join("main.el");
-    let result =
-        eval_str_all_at_path(source, dummy_main.to_str().unwrap()).unwrap();
+    let result = eval_str_all_at_path(source, dummy_main.to_str().unwrap()).unwrap();
     assert_eq!(result, Sexp::Int(7));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1655,7 +1684,10 @@ fn elisp_g1_nth_in_let() {
 
 #[test]
 fn elisp_g2_mapcar_inc() {
-    assert_eq!(ok("(mapcar (lambda (x) (1+ x)) (list 1 2 3))"), ok("(list 2 3 4)"));
+    assert_eq!(
+        ok("(mapcar (lambda (x) (1+ x)) (list 1 2 3))"),
+        ok("(list 2 3 4)")
+    );
 }
 
 #[test]
@@ -1665,7 +1697,10 @@ fn elisp_g2_mapcar_empty() {
 
 #[test]
 fn elisp_g2_mapcar_identity() {
-    assert_eq!(ok("(mapcar (lambda (x) x) (list 'a 'b 'c))"), ok("(list 'a 'b 'c)"));
+    assert_eq!(
+        ok("(mapcar (lambda (x) x) (list 'a 'b 'c))"),
+        ok("(list 'a 'b 'c)")
+    );
 }
 
 #[test]
@@ -1678,7 +1713,10 @@ fn elisp_g2_mapcar_order() {
 
 #[test]
 fn elisp_g2_mapc_returns_input() {
-    assert_eq!(ok("(mapc (lambda (x) x) (list 'a 'b 'c))"), ok("(list 'a 'b 'c)"));
+    assert_eq!(
+        ok("(mapc (lambda (x) x) (list 'a 'b 'c))"),
+        ok("(list 'a 'b 'c)")
+    );
 }
 
 #[test]
@@ -1742,10 +1780,7 @@ fn elisp_g3_assq_hit() {
 
 #[test]
 fn elisp_g3_assq_miss() {
-    assert_eq!(
-        ok("(assq 'z (list (cons 'a 1) (cons 'b 2)))"),
-        Sexp::Nil
-    );
+    assert_eq!(ok("(assq 'z (list (cons 'a 1) (cons 'b 2)))"), Sexp::Nil);
 }
 
 #[test]
@@ -1788,10 +1823,7 @@ fn elisp_g4_plist_get_empty() {
 
 #[test]
 fn elisp_g4_plist_member_present() {
-    assert_eq!(
-        ok("(plist-member (list :a 1 :b 2) :b)"),
-        ok("(list :b 2)")
-    );
+    assert_eq!(ok("(plist-member (list :a 1 :b 2) :b)"), ok("(list :b 2)"));
 }
 
 #[test]
@@ -1809,10 +1841,7 @@ fn elisp_g4_plist_put_replace() {
 
 #[test]
 fn elisp_g4_plist_put_append() {
-    assert_eq!(
-        ok("(plist-put (list :a 1) :b 2)"),
-        ok("(list :a 1 :b 2)")
-    );
+    assert_eq!(ok("(plist-put (list :a 1) :b 2)"), ok("(list :a 1 :b 2)"));
 }
 
 #[test]
@@ -1857,26 +1886,17 @@ fn elisp_s10_alist_get_present_default_test() {
 
 #[test]
 fn elisp_s10_alist_get_missing_default_nil() {
-    assert_eq!(
-        ok("(alist-get 'z (list (cons 'a 1)))"),
-        Sexp::Nil
-    );
+    assert_eq!(ok("(alist-get 'z (list (cons 'a 1)))"), Sexp::Nil);
 }
 
 #[test]
 fn elisp_s10_alist_get_missing_with_default() {
-    assert_eq!(
-        ok("(alist-get 'z (list (cons 'a 1)) 99)"),
-        Sexp::Int(99)
-    );
+    assert_eq!(ok("(alist-get 'z (list (cons 'a 1)) 99)"), Sexp::Int(99));
 }
 
 #[test]
 fn elisp_s10_alist_get_dotted_pair() {
-    assert_eq!(
-        ok("(alist-get 'a (list (cons 'a 5)))"),
-        Sexp::Int(5)
-    );
+    assert_eq!(ok("(alist-get 'a (list (cons 'a 5)))"), Sexp::Int(5));
 }
 
 #[test]
@@ -1976,9 +1996,7 @@ fn track_h_throw_from_uw_cleanup_overrides() {
     // A throw raised inside the cleanup block should override the body's
     // result (= matches Emacs semantics).
     assert_eq!(
-        ok_all(
-            "(catch 'a (unwind-protect (throw 'a 1) (throw 'a 2)))"
-        ),
+        ok_all("(catch 'a (unwind-protect (throw 'a 1) (throw 'a 2)))"),
         Sexp::Int(2)
     );
 }
@@ -2104,9 +2122,7 @@ fn track_m_signal_quit_raises_quit_variant() {
 #[test]
 fn track_m_signal_quit_not_caught_by_error_clause() {
     // The handler must re-raise: `error' is not a parent of `quit'.
-    let e = err_all(
-        "(condition-case _ (signal 'quit nil) (error 'wrongly-caught))"
-    );
+    let e = err_all("(condition-case _ (signal 'quit nil) (error 'wrongly-caught))");
     assert!(matches!(e, EvalError::Quit), "expected Quit, got {:?}", e);
 }
 
@@ -2136,9 +2152,7 @@ fn track_m_set_quit_flag_raises_at_next_eval() {
     // conversion to EvalError::Quit.  We use a `quit` clause to absorb
     // it so the test ends cleanly without polluting the global flag.
     assert_eq!(
-        ok_all(
-            "(condition-case _ (progn (set-quit-flag) 'reached) (quit 'after-quit))"
-        ),
+        ok_all("(condition-case _ (progn (set-quit-flag) 'reached) (quit 'after-quit))"),
         Sexp::Symbol("after-quit".into())
     );
     // Sanity: the flag was consumed by the eval-time `take`, not left set.
@@ -2182,10 +2196,7 @@ fn track_m_error_tag_for_quit() {
 fn track_m_signal_data_for_quit_is_nil_payload() {
     // `(signal-data quit) => (quit . nil)` matches Emacs convention.
     let sd = EvalError::Quit.signal_data();
-    assert_eq!(
-        sd,
-        Sexp::cons(Sexp::Symbol("quit".into()), Sexp::Nil)
-    );
+    assert_eq!(sd, Sexp::cons(Sexp::Symbol("quit".into()), Sexp::Nil));
 }
 
 #[cfg(unix)]
@@ -2348,7 +2359,10 @@ fn extern_builtin_unregistered_signals_unbound_function() {
 fn record_make_and_predicate() {
     assert_eq!(
         ok("(nelisp--make-record 'point 3 4)"),
-        Sexp::record(Sexp::Symbol("point".into()), vec![Sexp::Int(3), Sexp::Int(4)]),
+        Sexp::record(
+            Sexp::Symbol("point".into()),
+            vec![Sexp::Int(3), Sexp::Int(4)]
+        ),
     );
     assert_eq!(ok("(recordp (nelisp--make-record 'p))"), Sexp::T);
     assert_eq!(ok("(recordp 42)"), Sexp::Nil);
@@ -2391,7 +2405,10 @@ fn record_ref_set_round_trip() {
 
 #[test]
 fn record_length_excludes_type_tag() {
-    assert_eq!(ok("(nelisp--record-length (nelisp--make-record 'p))"), Sexp::Int(0));
+    assert_eq!(
+        ok("(nelisp--record-length (nelisp--make-record 'p))"),
+        Sexp::Int(0)
+    );
     assert_eq!(
         ok("(nelisp--record-length (nelisp--make-record 'p 1 2 3))"),
         Sexp::Int(3),
@@ -2490,10 +2507,7 @@ fn defstruct_copier_default_shallow_copy() {
                 (b (copy-point a)))
            (list (point-x b) (point-y b) (eq a b)))",
     );
-    assert_eq!(
-        v,
-        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Nil]),
-    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Nil]),);
 }
 
 #[test]
@@ -2537,10 +2551,7 @@ fn defstruct_constructor_renamed() {
                (point-x (build-point :x 9 :y 4))
                (point-y (build-point :x 9 :y 4)))",
     );
-    assert_eq!(
-        v,
-        Sexp::list_from(&[Sexp::Nil, Sexp::Int(9), Sexp::Int(4)]),
-    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::Nil, Sexp::Int(9), Sexp::Int(4)]),);
 }
 
 #[test]
@@ -2572,8 +2583,7 @@ fn defstruct_include_inherits_slots() {
     );
     assert_eq!(
         v,
-        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2),
-                          Sexp::Symbol("red".into())]),
+        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Symbol("red".into())]),
     );
 }
 
@@ -2602,10 +2612,7 @@ fn defstruct_include_predicate_chain() {
            (list (point-p par) (point-p chl)
                  (cpoint-p par) (cpoint-p chl)))",
     );
-    assert_eq!(
-        v,
-        Sexp::list_from(&[Sexp::T, Sexp::T, Sexp::Nil, Sexp::T]),
-    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::T, Sexp::T, Sexp::Nil, Sexp::T]),);
 }
 
 #[test]
@@ -2622,8 +2629,12 @@ fn defstruct_include_three_level_chain() {
     assert_eq!(
         v,
         Sexp::list_from(&[
-            Sexp::T, Sexp::T, Sexp::T,
-            Sexp::Int(1), Sexp::Int(2), Sexp::Int(3),
+            Sexp::T,
+            Sexp::T,
+            Sexp::T,
+            Sexp::Int(1),
+            Sexp::Int(2),
+            Sexp::Int(3),
         ]),
     );
 }
@@ -2645,10 +2656,7 @@ fn defstruct_include_distinct_records_have_distinct_tags() {
     );
     assert_eq!(
         v,
-        Sexp::list_from(&[
-            Sexp::Symbol("point".into()),
-            Sexp::Symbol("cpoint".into()),
-        ]),
+        Sexp::list_from(&[Sexp::Symbol("point".into()), Sexp::Symbol("cpoint".into()),]),
     );
 }
 
@@ -2663,10 +2671,12 @@ fn elisp_hash_table_basic_round_trip() {
     // (eql) test.  After Stage 4f the storage is a Record, so the
     // result must come back unchanged from elisp wrappers.
     assert_eq!(
-        ok_all("(let ((h (make-hash-table)))
+        ok_all(
+            "(let ((h (make-hash-table)))
                   (puthash 'a 1 h)
                   (puthash 'b 2 h)
-                  (gethash 'b h))"),
+                  (gethash 'b h))"
+        ),
         Sexp::Int(2),
     );
 }
@@ -2690,18 +2700,22 @@ fn elisp_hash_table_overwrite_in_place() {
     // binding (= no duplicate entries).  Verified via length of the
     // pairs snapshot.
     assert_eq!(
-        ok_all("(let ((h (make-hash-table)))
+        ok_all(
+            "(let ((h (make-hash-table)))
                   (puthash 'k 1 h)
                   (puthash 'k 2 h)
                   (puthash 'k 3 h)
-                  (length (nelisp--hash-pairs h)))"),
+                  (length (nelisp--hash-pairs h)))"
+        ),
         Sexp::Int(1),
     );
     assert_eq!(
-        ok_all("(let ((h (make-hash-table)))
+        ok_all(
+            "(let ((h (make-hash-table)))
                   (puthash 'k 1 h)
                   (puthash 'k 99 h)
-                  (gethash 'k h))"),
+                  (gethash 'k h))"
+        ),
         Sexp::Int(99),
     );
 }
@@ -2709,23 +2723,29 @@ fn elisp_hash_table_overwrite_in_place() {
 #[test]
 fn elisp_hash_table_remhash() {
     assert_eq!(
-        ok_all("(let ((h (make-hash-table)))
+        ok_all(
+            "(let ((h (make-hash-table)))
                   (puthash 'a 1 h)
                   (puthash 'b 2 h)
                   (remhash 'a h)
-                  (gethash 'a h 'missing))"),
+                  (gethash 'a h 'missing))"
+        ),
         Sexp::Symbol("missing".into()),
     );
     // remhash returns t on hit, nil on miss.
     assert_eq!(
-        ok_all("(let ((h (make-hash-table)))
+        ok_all(
+            "(let ((h (make-hash-table)))
                   (puthash 'a 1 h)
-                  (remhash 'a h))"),
+                  (remhash 'a h))"
+        ),
         Sexp::T,
     );
     assert_eq!(
-        ok_all("(let ((h (make-hash-table)))
-                  (remhash 'never h))"),
+        ok_all(
+            "(let ((h (make-hash-table)))
+                  (remhash 'never h))"
+        ),
         Sexp::Nil,
     );
 }
@@ -2733,11 +2753,13 @@ fn elisp_hash_table_remhash() {
 #[test]
 fn elisp_hash_table_clrhash() {
     assert_eq!(
-        ok_all("(let ((h (make-hash-table)))
+        ok_all(
+            "(let ((h (make-hash-table)))
                   (puthash 'a 1 h)
                   (puthash 'b 2 h)
                   (clrhash h)
-                  (length (nelisp--hash-pairs h)))"),
+                  (length (nelisp--hash-pairs h)))"
+        ),
         Sexp::Int(0),
     );
 }
@@ -2746,9 +2768,11 @@ fn elisp_hash_table_clrhash() {
 fn elisp_hash_table_test_equal() {
     // :test 'equal compares strings + lists structurally.
     assert_eq!(
-        ok_all("(let ((h (make-hash-table :test 'equal)))
+        ok_all(
+            "(let ((h (make-hash-table :test 'equal)))
                   (puthash \"foo\" 1 h)
-                  (gethash \"foo\" h))"),
+                  (gethash \"foo\" h))"
+        ),
         Sexp::Int(1),
     );
 }
@@ -2781,10 +2805,12 @@ fn elisp_hash_table_count_via_misc() {
     // is a fold over `nelisp--hash-pairs'; verify it still works after
     // we swap the underlying storage to a Record.
     assert_eq!(
-        ok_all("(let ((h (make-hash-table)))
+        ok_all(
+            "(let ((h (make-hash-table)))
                   (puthash 'a 1 h)
                   (puthash 'b 2 h)
-                  (hash-table-count h))"),
+                  (hash-table-count h))"
+        ),
         Sexp::Int(2),
     );
 }
@@ -2846,8 +2872,11 @@ fn stage74a_bind_local_rejects_non_symbol() {
     // NAME が symbol でなければ wrong-type.  elisp 側が誤った
     // formal-param walk をした時の早期検知.
     let err = err_all("(nelisp--bind-local 42 'foo)");
-    assert!(matches!(err, EvalError::WrongType { .. }),
-            "expected WrongType, got {:?}", err);
+    assert!(
+        matches!(err, EvalError::WrongType { .. }),
+        "expected WrongType, got {:?}",
+        err
+    );
 }
 
 #[test]
@@ -2871,6 +2900,48 @@ fn stage74a_apply_builtin_dispatch_cons() {
         other => panic!("expected (1 . 2), got {:?}", other),
     }
 }
+#[cfg(target_os = "linux")]
+#[test]
+fn doc_117_d_bi_syscall_symbol_name_dispatch_via_resolver() {
+    // Doc 117.D — bi_syscall's 25-entry name-to-nr table moved to a
+    // Phase 47 .o (`lisp/nelisp-cc-bi-syscall-resolve-nr.el', uses G1
+    // `symbol-name-eq' grammar).  Reach the Rust `bi_syscall' path via
+    // `apply-builtin-dispatch' (= the elisp wrapper at
+    // `nelisp-jit-strategy.el' L734 normally pre-resolves the Symbol
+    // via `nelisp--syscall-nr-resolve' before reaching Rust, so the
+    // Rust shim's Symbol arm only sees traffic from the debug /
+    // bridge dispatch surface).  Verify `getpid' resolves to the
+    // matching libc pid via the new .o resolver.
+    let result =
+        ok_all("(nelisp--apply-builtin-dispatch 'nelisp--syscall '(getpid))");
+    match result {
+        Sexp::Int(n) => {
+            let expected = unsafe { libc::getpid() } as i64;
+            assert_eq!(n, expected, "getpid via elisp .o resolver mismatch");
+            assert!(n > 0, "expected positive pid, got {}", n);
+        }
+        other => panic!("expected Int(pid), got {:?}", other),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn doc_117_d_bi_syscall_unknown_symbol_name_signals_internal_error() {
+    // Doc 117.D — the .o resolver returns -1 sentinel for names not
+    // in the 25-entry table; the Rust shim turns that into
+    // `EvalError::Internal' with the offending name in the message.
+    let err = err_all(
+        "(nelisp--apply-builtin-dispatch 'nelisp--syscall '(no-such-syscall-xyzzy))",
+    );
+    assert!(
+        matches!(&err, EvalError::Internal(msg)
+                 if msg.contains("unknown syscall name")
+                 && msg.contains("no-such-syscall-xyzzy")),
+        "expected Internal `unknown syscall name', got {:?}",
+        err
+    );
+}
+
 
 #[test]
 fn stage74a_apply_builtin_dispatch_arith() {
@@ -2891,16 +2962,22 @@ fn stage74a_apply_builtin_dispatch_arith() {
 fn stage74a_apply_builtin_dispatch_unbound() {
     // 未登録 NAME は通常 dispatch と同じく UnboundFunction.
     let err = err_all("(nelisp--apply-builtin-dispatch 'no-such-builtin '())");
-    assert!(matches!(err, EvalError::UnboundFunction(_)),
-            "expected UnboundFunction, got {:?}", err);
+    assert!(
+        matches!(err, EvalError::UnboundFunction(_)),
+        "expected UnboundFunction, got {:?}",
+        err
+    );
 }
 
 #[test]
 fn stage74a_apply_builtin_dispatch_rejects_non_symbol_name() {
     // NAME が symbol / string でなければ wrong-type.
     let err = err_all("(nelisp--apply-builtin-dispatch 42 '())");
-    assert!(matches!(err, EvalError::WrongType { .. }),
-            "expected WrongType, got {:?}", err);
+    assert!(
+        matches!(err, EvalError::WrongType { .. }),
+        "expected WrongType, got {:?}",
+        err
+    );
 }
 
 #[test]
@@ -2917,9 +2994,11 @@ fn stage74a_push_captured_with_alist_installs_bindings() {
     // 問題なし、かつ prog1/let 等の "frame を pushする macro" と
     // 手動 pop_frame を混ぜると pop 対象を取り違えるため.
     assert_eq!(
-        ok_all("(progn
+        ok_all(
+            "(progn
                   (nelisp--push-captured '((alpha . 11) (beta . 22)))
-                  (+ alpha beta))"),
+                  (+ alpha beta))"
+        ),
         Sexp::Int(33),
     );
 }
@@ -2950,10 +3029,12 @@ fn stage74e1_apply_lambda_inner_binds_required_formals() {
 fn stage74e1_apply_lambda_inner_handles_optional_and_rest() {
     // &optional 既定 nil, &rest 残余を list で receive.
     assert_eq!(
-        ok_all("(nelisp--apply-lambda-inner nil
+        ok_all(
+            "(nelisp--apply-lambda-inner nil
                                             '(x &optional y &rest zs)
                                             '((list x y zs))
-                                            '(1 2 3 4 5))"),
+                                            '(1 2 3 4 5))"
+        ),
         Sexp::list_from(&[
             Sexp::Int(1),
             Sexp::Int(2),
@@ -2969,13 +3050,15 @@ fn stage74e1_apply_lambda_inner_does_not_leak_formal_slots() {
     // Stage 7.4.d では elisp defun 版が同 slot を leak していた (=
     // 本 builtin の存在意義).
     assert_eq!(
-        ok_all("(progn
+        ok_all(
+            "(progn
                   (nelisp--apply-lambda-inner nil '() '((defun __probe () 42)) '())
                   (let ((c (symbol-function '__probe)))
                     (and (consp c)
                          (eq (car c) 'closure)
                          (let ((captured (car (cdr c))))
-                           (not (assq '--nl-ali-captured captured))))))"),
+                           (not (assq '--nl-ali-captured captured))))))"
+        ),
         Sexp::T,
     );
 }

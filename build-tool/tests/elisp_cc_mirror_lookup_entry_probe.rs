@@ -187,18 +187,16 @@ fn mirror_lookup_entry_walks_past_collisions() {
     let mirror = build_empty_mirror(4);
     let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
     for n in &names {
-        install_entry(
-            &mirror,
-            n,
-            Sexp::Str(format!("v-{}", n)),
-            Sexp::Nil,
-        );
+        install_entry(&mirror, n, Sexp::Str(format!("v-{}", n)), Sexp::Nil);
     }
     for n in &names {
         let sym = Sexp::Symbol((*n).to_string());
         let entry_ptr = run_lookup(&mirror, &sym);
-        assert!(!entry_ptr.is_null(),
-                "lookup of `{}' must succeed in 4-bucket layout", n);
+        assert!(
+            !entry_ptr.is_null(),
+            "lookup of `{}' must succeed in 4-bucket layout",
+            n
+        );
         let entry = unsafe { &*entry_ptr };
         match entry {
             Sexp::Record(r) => {
@@ -222,22 +220,21 @@ fn mirror_lookup_entry_str_key_lookup_round_trip() {
     // `if let Sexp::Str(k) = &pair.car { if k == name { ... } }'
     // semantics).
     let mirror = build_empty_mirror(1024);
-    install_entry(
-        &mirror,
-        "hello",
-        Sexp::Int(123),
-        Sexp::Nil,
-    );
+    install_entry(&mirror, "hello", Sexp::Int(123), Sexp::Nil);
 
     // Lookup via Sexp::Str (= same tag as the stored KEY) — must hit.
     let str_sym = Sexp::Str("hello".into());
-    assert!(!run_lookup(&mirror, &str_sym).is_null(),
-            "Str-keyed lookup must hit");
+    assert!(
+        !run_lookup(&mirror, &str_sym).is_null(),
+        "Str-keyed lookup must hit"
+    );
 
     // Lookup via Sexp::Symbol (= the production caller's tag) — must
     // also hit, because `str-eq' compares only the inner `String'
     // payload.
     let sym_sym = Sexp::Symbol("hello".into());
-    assert!(!run_lookup(&mirror, &sym_sym).is_null(),
-            "Symbol-keyed lookup must hit (str-eq is tag-agnostic)");
+    assert!(
+        !run_lookup(&mirror, &sym_sym).is_null(),
+        "Symbol-keyed lookup must hit (str-eq is tag-agnostic)"
+    );
 }

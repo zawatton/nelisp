@@ -108,7 +108,9 @@ const _: () = {
 #[no_mangle]
 pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) {
     let cloned: Sexp = unsafe { (*src).clone() };
-    unsafe { core::ptr::write(dst, cloned); }
+    unsafe {
+        core::ptr::write(dst, cloned);
+    }
 }
 
 /// Inner storage for [`Sexp::CharTable`].
@@ -173,7 +175,6 @@ impl Sexp {
     pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp {
         Sexp::Record(NlRecordRef::new(type_tag, init))
     }
-
 }
 
 /// Pretty-printer used by debug and tests.
@@ -216,7 +217,11 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         Sexp::Float(x) => {
             // Keep a decimal point so the printed form stays float-like.
             let s = format!("{}", x);
-            if s.contains('.') || s.contains('e') || s.contains('E') || s == "inf" || s == "-inf"
+            if s.contains('.')
+                || s.contains('e')
+                || s.contains('E')
+                || s == "inf"
+                || s == "-inf"
                 || s == "NaN"
             {
                 out.push_str(&s);

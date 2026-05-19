@@ -1431,6 +1431,60 @@ with rax (= the round-tripped 77) as status."
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
+;; ---- §T.symbol-name-eq grammar (G1) ----
+
+(ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-encodes-utf8-bytes ()
+  "Literal string in `(symbol-name-eq P LIT)' is UTF-8 byte-encoded at parse."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun probe (p) (symbol-name-eq p "read"))))
+         (body (plist-get ir :body)))
+    (should (eq (plist-get body :kind) 'symbol-name-eq))
+    (should (equal (plist-get body :bytes) '(114 101 97 100)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-rejects-non-string ()
+  "Second argument must be a string literal."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun probe (p) (symbol-name-eq p 42)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-arity-error ()
+  "`(symbol-name-eq P)' (= 1-arg) raises arity error."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun probe (p) (symbol-name-eq p)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-empty-literal ()
+  "Empty literal string is a legal zero-byte comparison (= length-check only)."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun probe (p) (symbol-name-eq p ""))))
+         (body (plist-get ir :body)))
+    (should (eq (plist-get body :kind) 'symbol-name-eq))
+    (should (equal (plist-get body :bytes) '()))))
+
+(ert-deftest nelisp-phase47-compiler/emit-symbol-name-eq-produces-bytes ()
+  "Emit phase for `symbol-name-eq' produces a non-empty byte string and
+the size grows monotonically with literal length (= longer literals
+inline more `cmp imm32' instructions)."
+  (cl-labels ((emit-len (lit)
+                (let* ((path (nelisp-phase47-compiler-test--tmp-binary
+                              "symname"))
+                       (sexp `(defun probe (p)
+                                (sexp-int-make
+                                 p (symbol-name-eq p ,lit)))))
+                  (unwind-protect
+                      (progn
+                        (nelisp-phase47-compile-to-object sexp path)
+                        (let ((sz (nth 7 (file-attributes path))))
+                          sz))
+                    (ignore-errors (delete-file path))))))
+    (let ((short (emit-len "x"))
+          (long  (emit-len "exit_group")))
+      (should (integerp short))
+      (should (integerp long))
+      (should (> long short)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here

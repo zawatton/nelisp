@@ -56,7 +56,9 @@ fn aref_ok_bool_vector_in_range() {
     // bv = [false, true, false].
     let bv = Sexp::bool_vector(3, false);
     if let Sexp::BoolVector(rc) = &bv {
-        unsafe { rc.with_value_mut(|v| v[1] = true); }
+        unsafe {
+            rc.with_value_mut(|v| v[1] = true);
+        }
     } else {
         panic!("bool_vector did not produce BoolVector");
     }

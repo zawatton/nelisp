@@ -15,7 +15,10 @@ fn run_eq_symbol(left: Sexp, right: Sexp) -> Sexp {
             slot_ptr,
         )
     };
-    assert_eq!(returned, slot_ptr, "extern must return the caller-provided slot pointer");
+    assert_eq!(
+        returned, slot_ptr,
+        "extern must return the caller-provided slot pointer"
+    );
     slot
 }
 
@@ -28,7 +31,11 @@ fn eq_symbol_same_short_returns_t() {
 #[test]
 fn eq_symbol_diff_short_returns_nil() {
     let slot = run_eq_symbol(Sexp::Symbol("foo".into()), Sexp::Symbol("bar".into()));
-    assert_eq!(slot, Sexp::Nil, "expected `(eq 'foo 'bar)' probe to return nil");
+    assert_eq!(
+        slot,
+        Sexp::Nil,
+        "expected `(eq 'foo 'bar)' probe to return nil"
+    );
 }
 
 #[test]

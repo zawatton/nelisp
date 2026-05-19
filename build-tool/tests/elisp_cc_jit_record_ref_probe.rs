@@ -48,10 +48,7 @@ fn record_ref_err_negative_idx() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn record_ref_err_idx_at_len() {
-    let r = Sexp::record(
-        Sexp::Symbol("x".into()),
-        vec![Sexp::Int(7), Sexp::Int(8)],
-    );
+    let r = Sexp::record(Sexp::Symbol("x".into()), vec![Sexp::Int(7), Sexp::Int(8)]);
     let mut out = Sexp::Nil;
     let rc = unsafe { jit_record_ref(&r, 2, &mut out) };
     assert_eq!(rc, 1);

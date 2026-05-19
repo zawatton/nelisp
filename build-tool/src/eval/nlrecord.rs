@@ -33,18 +33,17 @@ impl NlRecordRef {
             slots,
             refcount: AtomicUsize::new(1),
         })));
-        NlRecordRef { ptr, _marker: PhantomData }
+        NlRecordRef {
+            ptr,
+            _marker: PhantomData,
+        }
     }
 }
 
 /// # Safety
 /// `record` must be live, `val` initialised, and `n` in range.
 #[no_mangle]
-pub unsafe extern "C" fn nl_record_set_slot(
-    record: *mut NlRecord,
-    n: usize,
-    val: *const Sexp,
-) {
+pub unsafe extern "C" fn nl_record_set_slot(record: *mut NlRecord, n: usize, val: *const Sexp) {
     (&mut (*record).slots)[n] = (*val).clone();
 }
 
@@ -67,7 +66,10 @@ pub unsafe extern "C" fn nl_alloc_record(
 impl Clone for NlRecordRef {
     fn clone(&self) -> Self {
         unsafe { crate::elisp_cc_spike::nlrecord_clone(self.ptr.as_ptr() as *mut i64) };
-        NlRecordRef { ptr: self.ptr, _marker: PhantomData }
+        NlRecordRef {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -93,8 +95,6 @@ const _: () = {
     use std::mem::{offset_of, size_of};
     assert!(offset_of!(NlRecord, type_tag) == 0);
     assert!(offset_of!(NlRecord, slots) == size_of::<Sexp>());
-    assert!(
-        offset_of!(NlRecord, refcount) == size_of::<Sexp>() + size_of::<Vec<Sexp>>()
-    );
+    assert!(offset_of!(NlRecord, refcount) == size_of::<Sexp>() + size_of::<Vec<Sexp>>());
     assert!(size_of::<AtomicUsize>() == 8);
 };

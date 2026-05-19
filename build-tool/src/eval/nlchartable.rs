@@ -31,16 +31,24 @@ impl NlCharTableRef {
             inner,
             refcount: AtomicUsize::new(1),
         })));
-        NlCharTableRef { ptr, _marker: PhantomData }
+        NlCharTableRef {
+            ptr,
+            _marker: PhantomData,
+        }
     }
 }
 
 impl Clone for NlCharTableRef {
     fn clone(&self) -> Self {
         unsafe {
-            (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
+            (*self.ptr.as_ptr())
+                .refcount
+                .fetch_add(1, Ordering::Relaxed);
         }
-        NlCharTableRef { ptr: self.ptr, _marker: PhantomData }
+        NlCharTableRef {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
     }
 }
 

@@ -91,9 +91,7 @@ mod tests {
     #[test]
     fn atomic_compare_exchange_success_writes_new() {
         let mut slot: i64 = 42;
-        let rc = unsafe {
-            nl_atomic_compare_exchange(&mut slot as *mut i64, 42, 99)
-        };
+        let rc = unsafe { nl_atomic_compare_exchange(&mut slot as *mut i64, 42, 99) };
         assert_eq!(rc, 1, "CAS must return 1 on success");
         assert_eq!(slot, 99, "slot must be replaced on success");
     }
@@ -101,9 +99,7 @@ mod tests {
     #[test]
     fn atomic_compare_exchange_failure_leaves_slot() {
         let mut slot: i64 = 42;
-        let rc = unsafe {
-            nl_atomic_compare_exchange(&mut slot as *mut i64, 7, 99)
-        };
+        let rc = unsafe { nl_atomic_compare_exchange(&mut slot as *mut i64, 7, 99) };
         assert_eq!(rc, 0, "CAS must return 0 on mismatch");
         assert_eq!(slot, 42, "slot must be untouched on failure");
     }

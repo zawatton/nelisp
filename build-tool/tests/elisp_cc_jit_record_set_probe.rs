@@ -57,10 +57,7 @@ fn record_set_err_negative_idx() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn record_set_err_oor() {
-    let r = Sexp::record(
-        Sexp::Symbol("x".into()),
-        vec![Sexp::Int(7), Sexp::Int(8)],
-    );
+    let r = Sexp::record(Sexp::Symbol("x".into()), vec![Sexp::Int(7), Sexp::Int(8)]);
     let val = Sexp::Int(99);
     let mut out = Sexp::Nil;
     let rc = unsafe { jit_record_set(&r, 2, &val, &mut out) };

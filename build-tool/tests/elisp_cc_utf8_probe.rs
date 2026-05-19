@@ -45,7 +45,11 @@ fn codepoint_at(text: &str, idx: i64) -> Option<(i64, i64)> {
             &mut width as *mut i64,
         )
     };
-    if rc == 1 { Some((cp, width)) } else { None }
+    if rc == 1 {
+        Some((cp, width))
+    } else {
+        None
+    }
 }
 
 fn is_alphanumeric_at(text: &str, idx: i64) -> i64 {

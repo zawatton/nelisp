@@ -1,6 +1,6 @@
-use super::Env;
 use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
+use super::Env;
 use super::{eval, list_elements};
 
 macro_rules! sf_call_4arg {
@@ -14,7 +14,11 @@ macro_rules! sf_call_4arg {
                 0,
             )
         };
-        if rc == 0 { Ok::<_, EvalError>(out) } else { Err(super::consume_stashed_error($env, $name)) }
+        if rc == 0 {
+            Ok::<_, EvalError>(out)
+        } else {
+            Err(super::consume_stashed_error($env, $name))
+        }
     }};
 }
 
@@ -30,20 +34,26 @@ macro_rules! sf_call_with_s1 {
                 &mut s1 as *mut Sexp,
             )
         };
-        if rc == 0 { Ok::<_, EvalError>(out) } else { Err(super::consume_stashed_error($env, $name)) }
+        if rc == 0 {
+            Ok::<_, EvalError>(out)
+        } else {
+            Err(super::consume_stashed_error($env, $name))
+        }
     }};
 }
 
-pub fn apply_special(
-    name: &str,
-    args: &Sexp,
-    env: &mut Env,
-) -> Result<Option<Sexp>, EvalError> {
+pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Sexp>, EvalError> {
     Ok(Some(match name {
         "quote" => {
             let mut out = Sexp::Nil;
-            let rc = unsafe { crate::elisp_cc_spike::sf_quote_call(args as *const Sexp, &mut out as *mut Sexp) };
-            if rc == 0 { out } else { return Err(wrong_args("quote", "1", 0)); }
+            let rc = unsafe {
+                crate::elisp_cc_spike::sf_quote_call(args as *const Sexp, &mut out as *mut Sexp)
+            };
+            if rc == 0 {
+                out
+            } else {
+                return Err(wrong_args("quote", "1", 0));
+            }
         }
         "function" => sf_call_with_s1!("sf_function", sf_function_call, args, env)?,
         "if" => sf_call_4arg!("sf_if", sf_if_call, args, env)?,
@@ -52,7 +62,9 @@ pub fn apply_special(
         "lambda" => sf_call_with_s1!("sf_lambda", sf_lambda_call, args, env)?,
         "setq" => sf_call_4arg!("sf_setq", sf_setq_call, args, env)?,
         "while" => sf_call_4arg!("sf_while", sf_while_call, args, env)?,
-        "condition-case" => sf_call_with_s1!("sf_condition_case", sf_condition_case_call, args, env)?,
+        "condition-case" => {
+            sf_call_with_s1!("sf_condition_case", sf_condition_case_call, args, env)?
+        }
         "unwind-protect" => sf_unwind_protect(args, env)?,
         "progn" => sf_call_4arg!("sf_progn", sf_progn_call, args, env)?,
         _ => return Ok(None),
@@ -68,8 +80,11 @@ fn wrong_args(function: &str, expected: &str, got: usize) -> EvalError {
 }
 
 fn expect_min_len(parts: &[Sexp], name: &str, min: usize) -> Result<(), EvalError> {
-    if parts.len() >= min { Ok(()) }
-    else { Err(wrong_args(name, &format!("≥{min}"), parts.len())) }
+    if parts.len() >= min {
+        Ok(())
+    } else {
+        Err(wrong_args(name, &format!("≥{min}"), parts.len()))
+    }
 }
 
 /// `let' / `let*' frame setup: sequential=1 = `let*'.
@@ -89,7 +104,10 @@ pub unsafe extern "C" fn nl_let_setup(
         for b in &bindings {
             let (name, val) = match nl_let_parse_binding(b, env_ref) {
                 Ok(pair) => pair,
-                Err(_) => { env_ref.pop_frame(); return 1; }
+                Err(_) => {
+                    env_ref.pop_frame();
+                    return 1;
+                }
             };
             env_ref.bind_local(&name, val);
         }
@@ -116,12 +134,18 @@ fn nl_let_parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalE
             let parts = list_elements(b)?;
             let name = match &parts[0] {
                 Sexp::Symbol(s) => s.clone(),
-                other => return Err(EvalError::WrongType {
-                    expected: "symbol".into(),
-                    got: other.clone(),
-                }),
+                other => {
+                    return Err(EvalError::WrongType {
+                        expected: "symbol".into(),
+                        got: other.clone(),
+                    })
+                }
             };
-            let val = if parts.len() >= 2 { eval(&parts[1], env)? } else { Sexp::Nil };
+            let val = if parts.len() >= 2 {
+                eval(&parts[1], env)?
+            } else {
+                Sexp::Nil
+            };
             Ok((name, val))
         }
         other => Err(EvalError::WrongType {
@@ -177,7 +201,8 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
                 Sexp::Symbol(s) => is_error_subtype(s, &actual_tag),
                 Sexp::T => true,
                 Sexp::Cons(_) => list_elements(&cb.car).ok().map_or(false, |elts| {
-                    elts.iter().any(|t| matches!(t, Sexp::Symbol(s) if is_error_subtype(s, &actual_tag)))
+                    elts.iter()
+                        .any(|t| matches!(t, Sexp::Symbol(s) if is_error_subtype(s, &actual_tag)))
                 }),
                 _ => false,
             };
@@ -215,10 +240,7 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
 /// Both counts are clamped to 0xFFFF; real Lisp functions never approach
 /// that limit.
 #[no_mangle]
-pub unsafe extern "C" fn nl_bf_precompute(
-    formals_ptr: *const Sexp,
-    args_ptr: *const Sexp,
-) -> i64 {
+pub unsafe extern "C" fn nl_bf_precompute(formals_ptr: *const Sexp, args_ptr: *const Sexp) -> i64 {
     let names = match super::list_elements(&*formals_ptr) {
         Ok(v) => v,
         Err(_) => return 0,
@@ -248,8 +270,8 @@ pub unsafe extern "C" fn nl_bf_formal_tag(name_ptr: *const Sexp) -> i64 {
     match &*name_ptr {
         Sexp::Symbol(s) => match s.as_str() {
             "&optional" => 1,
-            "&rest"     => 2,
-            _           => 0,
+            "&rest" => 2,
+            _ => 0,
         },
         _ => -1,
     }
@@ -279,14 +301,13 @@ pub unsafe extern "C" fn nl_bf_args_nth_ptr(args_ptr: *const Sexp, idx: i64) -> 
 /// `*out'.  Used by the Rest mode branch to collect remaining args.
 /// Returns 0 (always succeeds — worst case writes Sexp::Nil when empty).
 #[no_mangle]
-pub unsafe extern "C" fn nl_bf_args_tail(
-    args_ptr: *const Sexp,
-    idx: i64,
-    out: *mut Sexp,
-) -> i64 {
+pub unsafe extern "C" fn nl_bf_args_tail(args_ptr: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     let args = match super::list_elements(&*args_ptr) {
         Ok(v) => v,
-        Err(_) => { std::ptr::write(out, Sexp::Nil); return 0; }
+        Err(_) => {
+            std::ptr::write(out, Sexp::Nil);
+            return 0;
+        }
     };
     let tail_start = (idx as usize).min(args.len());
     std::ptr::write(out, Sexp::list_from(&args[tail_start..]));
@@ -328,7 +349,10 @@ pub unsafe extern "C" fn nl_bf_bind_optional(
     if let Sexp::Symbol(name) = &*name_ptr {
         let args = match super::list_elements(&*args_ptr) {
             Ok(v) => v,
-            Err(_) => { env_ref.bind_local(name, Sexp::Nil); return idx; }
+            Err(_) => {
+                env_ref.bind_local(name, Sexp::Nil);
+                return idx;
+            }
         };
         let idx_usize = idx as usize;
         let val = args.get(idx_usize).cloned().unwrap_or(Sexp::Nil);
@@ -363,10 +387,7 @@ pub unsafe extern "C" fn nl_bf_err_arity(
 /// Used for: non-Symbol formal, `&optional' after `&rest', double `&rest',
 /// and extra symbol after `&rest'.
 #[no_mangle]
-pub unsafe extern "C" fn nl_bf_err_type(
-    env: *mut std::ffi::c_void,
-    name_ptr: *const Sexp,
-) -> i64 {
+pub unsafe extern "C" fn nl_bf_err_type(env: *mut std::ffi::c_void, name_ptr: *const Sexp) -> i64 {
     let env_ref = &mut *(env as *mut Env);
     let got = (*name_ptr).clone();
     let err = EvalError::WrongType {
@@ -393,7 +414,10 @@ pub unsafe extern "C" fn nl_bf_bind_rest(
     if let Sexp::Symbol(name) = &*name_ptr {
         let args = match super::list_elements(&*args_ptr) {
             Ok(v) => v,
-            Err(_) => { env_ref.bind_local(name, Sexp::Nil); return 0; }
+            Err(_) => {
+                env_ref.bind_local(name, Sexp::Nil);
+                return 0;
+            }
         };
         let tail_start = (idx as usize).min(args.len());
         env_ref.bind_local(name, Sexp::list_from(&args[tail_start..]));
@@ -440,10 +464,7 @@ pub unsafe extern "C" fn nl_bind_formals(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_env_capture_lexical(
-    env: *mut std::ffi::c_void,
-    out: *mut Sexp,
-) -> i64 {
+pub unsafe extern "C" fn nl_env_capture_lexical(env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let env_ref = &mut *(env as *mut Env);
     std::ptr::write(out, env_ref.capture_lexical());
     0
@@ -484,15 +505,17 @@ fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     cleanup_err.map_or(body_result, Err)
 }
 
-
 #[no_mangle]
-pub unsafe extern "C" fn nl_eval_is_truthy(
-    form: *const Sexp,
-    env: *mut std::ffi::c_void,
-) -> i64 {
+pub unsafe extern "C" fn nl_eval_is_truthy(form: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
     let env_ref = &mut *(env as *mut Env);
     match super::eval(&*form, env_ref) {
-        Ok(v) => if !matches!(v, Sexp::Nil) { 1 } else { 0 },
+        Ok(v) => {
+            if !matches!(v, Sexp::Nil) {
+                1
+            } else {
+                0
+            }
+        }
         Err(_) => -1,
     }
 }
@@ -542,8 +565,12 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         (Sexp::Cons(a), Sexp::Cons(b)) => crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b),
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
-        (Sexp::CharTable(a), Sexp::CharTable(b)) => crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b),
-        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b),
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => {
+            crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b)
+        }
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
+            crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
+        }
         (Sexp::Record(a), Sexp::Record(b)) => crate::eval::nlrecord::NlRecordRef::ptr_eq(a, b),
         (Sexp::Str(x), Sexp::Str(y)) => x == y,
         (Sexp::Float(x), Sexp::Float(y)) => x.to_bits() == y.to_bits(),

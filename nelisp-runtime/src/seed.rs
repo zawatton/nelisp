@@ -72,7 +72,10 @@ impl std::fmt::Display for SeedError {
             }
             SeedError::BadRelocationTable => f.write_str("bad seed relocation table"),
             SeedError::HashMismatch { expected, actual } => {
-                write!(f, "seed payload hash mismatch: expected {expected:016x}, got {actual:016x}")
+                write!(
+                    f,
+                    "seed payload hash mismatch: expected {expected:016x}, got {actual:016x}"
+                )
             }
             SeedError::MmapFailed(name) => write!(f, "mmap failed for seed {name} segment"),
             SeedError::MprotectFailed => f.write_str("mprotect failed for seed code segment"),
@@ -131,13 +134,31 @@ pub fn parse_header(bytes: &[u8]) -> Result<SeedHeader, SeedError> {
 
 pub fn payload_hash(bytes: &[u8], header: &SeedHeader) -> Result<u64, SeedError> {
     let mut ranges = Vec::new();
-    push_segment(&mut ranges, "heap", bytes.len(), header.heap_offset, header.heap_size)?;
-    push_segment(&mut ranges, "code", bytes.len(), header.code_offset, header.code_size)?;
+    push_segment(
+        &mut ranges,
+        "heap",
+        bytes.len(),
+        header.heap_offset,
+        header.heap_size,
+    )?;
+    push_segment(
+        &mut ranges,
+        "code",
+        bytes.len(),
+        header.code_offset,
+        header.code_size,
+    )?;
     let reloc_len = header
         .reloc_count
         .checked_mul(8)
         .ok_or(SeedError::BadRelocationTable)?;
-    push_segment(&mut ranges, "reloc", bytes.len(), header.reloc_offset, reloc_len)?;
+    push_segment(
+        &mut ranges,
+        "reloc",
+        bytes.len(),
+        header.reloc_offset,
+        reloc_len,
+    )?;
 
     let mut hash = 0xcbf29ce484222325u64;
     for (start, end) in ranges {
@@ -201,7 +222,11 @@ pub unsafe extern "C" fn nelisp_seed_load_and_run(
 fn validate_image(bytes: &[u8], header: &SeedHeader) -> Result<(), SeedError> {
     require_page_aligned("heap", header.heap_offset, header.heap_size)?;
     require_page_aligned("code", header.code_offset, header.code_size)?;
-    require_page_aligned("reloc", header.reloc_offset, header.reloc_count.saturating_mul(8))?;
+    require_page_aligned(
+        "reloc",
+        header.reloc_offset,
+        header.reloc_count.saturating_mul(8),
+    )?;
     if header.code_size == 0 || header.entry_offset >= header.code_size {
         return Err(SeedError::EntryOutOfBounds);
     }

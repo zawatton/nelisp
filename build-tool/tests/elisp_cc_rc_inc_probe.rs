@@ -89,7 +89,8 @@ fn rc_inc_multiple_calls_accumulate() {
     for expected_prev in 5..15 {
         let prev = unsafe { nelisp_build_tool::elisp_cc_spike::rc_inc(bx.as_box_ptr()) };
         assert_eq!(
-            prev, expected_prev,
+            prev,
+            expected_prev,
             "iteration {} must return the count seen before the +1",
             expected_prev - 5
         );

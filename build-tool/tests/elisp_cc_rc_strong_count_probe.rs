@@ -73,9 +73,7 @@ fn rc_strong_count_fresh_alloc_reads_one() {
     );
 
     let bx = ProbeBox::new(1);
-    let count = unsafe {
-        nelisp_build_tool::elisp_cc_spike::rc_strong_count(bx.as_box_ptr())
-    };
+    let count = unsafe { nelisp_build_tool::elisp_cc_spike::rc_strong_count(bx.as_box_ptr()) };
     assert_eq!(
         count, 1,
         "nelisp_rc_strong_count must return the current refcount value (= 1 here)"
@@ -95,14 +93,10 @@ fn rc_strong_count_after_single_inc_reads_two() {
     let bx = ProbeBox::new(1);
     // Bump via §123.A `nelisp_rc_inc' (= layout-share confirmation; same
     // REFCOUNT_OFFSET = 64 constant compiled into both kernels).
-    let prev = unsafe {
-        nelisp_build_tool::elisp_cc_spike::rc_inc(bx.as_box_ptr_mut())
-    };
+    let prev = unsafe { nelisp_build_tool::elisp_cc_spike::rc_inc(bx.as_box_ptr_mut()) };
     assert_eq!(prev, 1, "rc_inc must return pre-add value");
 
-    let count = unsafe {
-        nelisp_build_tool::elisp_cc_spike::rc_strong_count(bx.as_box_ptr())
-    };
+    let count = unsafe { nelisp_build_tool::elisp_cc_spike::rc_strong_count(bx.as_box_ptr()) };
     assert_eq!(
         count, 2,
         "nelisp_rc_strong_count after one inc must read back as 2 \
@@ -123,11 +117,10 @@ fn rc_strong_count_after_multi_inc_tracks_total() {
         }
     }
 
-    let count = unsafe {
-        nelisp_build_tool::elisp_cc_spike::rc_strong_count(bx.as_box_ptr())
-    };
+    let count = unsafe { nelisp_build_tool::elisp_cc_spike::rc_strong_count(bx.as_box_ptr()) };
     assert_eq!(
-        count, 1 + N,
+        count,
+        1 + N,
         "nelisp_rc_strong_count after {} incs must read back as {} \
          (= initial + N)",
         N,
@@ -153,9 +146,7 @@ fn rc_strong_count_high_value_no_sign_extension() {
     // accidental u32 truncation in the lowering.
     let bx = ProbeBox::new(0x0123_4567_89AB_CDEF_i64);
 
-    let count = unsafe {
-        nelisp_build_tool::elisp_cc_spike::rc_strong_count(bx.as_box_ptr())
-    };
+    let count = unsafe { nelisp_build_tool::elisp_cc_spike::rc_strong_count(bx.as_box_ptr()) };
     assert_eq!(
         count, 0x0123_4567_89AB_CDEF_i64,
         "nelisp_rc_strong_count must perform a full 64-bit load \

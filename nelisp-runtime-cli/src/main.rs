@@ -16,14 +16,9 @@ fn parse_exec_i64_args(args: &[String]) -> Result<[i64; 6], String> {
 
     let mut parsed = [0_i64; 6];
     for (idx, raw) in args.iter().enumerate() {
-        parsed[idx] = raw.parse::<i64>().map_err(|e| {
-            format!(
-                "exec-bytes: invalid i64 arg #{} {:?}: {}",
-                idx + 1,
-                raw,
-                e
-            )
-        })?;
+        parsed[idx] = raw
+            .parse::<i64>()
+            .map_err(|e| format!("exec-bytes: invalid i64 arg #{} {:?}: {}", idx + 1, raw, e))?;
     }
     Ok(parsed)
 }
@@ -56,9 +51,8 @@ fn exec_bytes(path: &str, raw_args: &[String]) -> i32 {
     unsafe {
         let map_jit = nelisp_runtime::NELISP_MAP_JIT;
         let prot_rw = nelisp_runtime::NELISP_PROT_READ | nelisp_runtime::NELISP_PROT_WRITE;
-        let flags = nelisp_runtime::NELISP_MAP_PRIVATE
-            | nelisp_runtime::NELISP_MAP_ANONYMOUS
-            | map_jit;
+        let flags =
+            nelisp_runtime::NELISP_MAP_PRIVATE | nelisp_runtime::NELISP_MAP_ANONYMOUS | map_jit;
 
         let p = nelisp_runtime::nelisp_syscall_mmap_jit(
             std::ptr::null_mut(),
@@ -89,8 +83,7 @@ fn exec_bytes(path: &str, raw_args: &[String]) -> i32 {
 
         let _ = nelisp_runtime::nelisp_syscall_clear_icache(p, p.add(len));
 
-        let func: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 =
-            std::mem::transmute(p);
+        let func: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 = std::mem::transmute(p);
         let result = func(args[0], args[1], args[2], args[3], args[4], args[5]);
 
         println!("RESULT: {}", result);
@@ -133,8 +126,7 @@ mod tests {
 
     #[test]
     fn parse_exec_i64_args_rejects_too_many() {
-        let err = parse_exec_i64_args(&strings(&["1", "2", "3", "4", "5", "6", "7"]))
-            .unwrap_err();
+        let err = parse_exec_i64_args(&strings(&["1", "2", "3", "4", "5", "6", "7"])).unwrap_err();
         assert!(err.contains("at most 6"));
     }
 

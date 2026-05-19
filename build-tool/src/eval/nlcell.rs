@@ -31,7 +31,10 @@ impl NlCellRef {
             value,
             refcount: AtomicUsize::new(1),
         })));
-        NlCellRef { ptr, _marker: PhantomData }
+        NlCellRef {
+            ptr,
+            _marker: PhantomData,
+        }
     }
 
     /// # Safety
@@ -48,7 +51,10 @@ impl NlCellRef {
 impl Clone for NlCellRef {
     fn clone(&self) -> Self {
         unsafe { crate::elisp_cc_spike::nlcell_clone(self.ptr.as_ptr() as *mut i64) };
-        NlCellRef { ptr: self.ptr, _marker: PhantomData }
+        NlCellRef {
+            ptr: self.ptr,
+            _marker: PhantomData,
+        }
     }
 }
 

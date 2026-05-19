@@ -39,14 +39,7 @@ fn syscall_smoke() -> i32 {
     unsafe {
         let prot = nelisp_runtime::NELISP_PROT_READ | nelisp_runtime::NELISP_PROT_WRITE;
         let flags = nelisp_runtime::NELISP_MAP_PRIVATE | nelisp_runtime::NELISP_MAP_ANONYMOUS;
-        let p = nelisp_runtime::nelisp_syscall_mmap(
-            std::ptr::null_mut(),
-            4096,
-            prot,
-            flags,
-            -1,
-            0,
-        );
+        let p = nelisp_runtime::nelisp_syscall_mmap(std::ptr::null_mut(), 4096, prot, flags, -1, 0);
         if p.is_null() || p as isize == -1 {
             return 3;
         }

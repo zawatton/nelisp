@@ -4,9 +4,9 @@
 //! `lisp/nelisp-stdlib-env-shim.el'.  set-value bypasses constant-reject
 //! (shim enforces); set-function never errors; clear-* no-op on absent.
 
-use super::Env;
 use super::error::EvalError;
 use super::sexp::Sexp;
+use super::Env;
 
 fn wrong_args(expected: usize, got: usize) -> EvalError {
     EvalError::WrongNumberOfArguments {
@@ -17,10 +17,19 @@ fn wrong_args(expected: usize, got: usize) -> EvalError {
 }
 
 fn wrong_type(got: &Sexp) -> EvalError {
-    EvalError::WrongType { expected: "symbolp".into(), got: got.clone() }
+    EvalError::WrongType {
+        expected: "symbolp".into(),
+        got: got.clone(),
+    }
 }
 
-fn bool_sexp(b: bool) -> Sexp { if b { Sexp::T } else { Sexp::Nil } }
+fn bool_sexp(b: bool) -> Sexp {
+    if b {
+        Sexp::T
+    } else {
+        Sexp::Nil
+    }
+}
 
 pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let op = match args.first() {
@@ -47,13 +56,31 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
     // Unbound{Variable,Function} for the public Result surface.  Macro
     // arms collapse 5 op families (get / set / clear / is / set-const).
     macro_rules! arm {
-        (get $l:ident, $e:ident) => {{ let v = env.$l(&name);
-            if v == env.unbound_marker { Err(EvalError::$e(name)) } else { Ok(v) } }};
-        (set $s:ident) => {{ let v = args[2].clone(); env.$s(&name, v.clone()); Ok(v) }};
-        (clear $c:ident) => {{ env.$c(&name); Ok(args[1].clone()) }};
-        (is $p:ident) => { Ok(bool_sexp(env.$p(&name))) };
-        (set-const) => {{ let t = !matches!(args[2], Sexp::Nil);
-            env.mirror_set_constant(&name, t); Ok(bool_sexp(t)) }};
+        (get $l:ident, $e:ident) => {{
+            let v = env.$l(&name);
+            if v == env.unbound_marker {
+                Err(EvalError::$e(name))
+            } else {
+                Ok(v)
+            }
+        }};
+        (set $s:ident) => {{
+            let v = args[2].clone();
+            env.$s(&name, v.clone());
+            Ok(v)
+        }};
+        (clear $c:ident) => {{
+            env.$c(&name);
+            Ok(args[1].clone())
+        }};
+        (is $p:ident) => {
+            Ok(bool_sexp(env.$p(&name)))
+        };
+        (set-const) => {{
+            let t = !matches!(args[2], Sexp::Nil);
+            env.mirror_set_constant(&name, t);
+            Ok(bool_sexp(t))
+        }};
     }
     match op {
         "get-value" => arm!(get mirror_lookup_value, UnboundVariable),
@@ -67,7 +94,9 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "is-constant" => arm!(is mirror_is_constant),
         "set-constant" => arm!(set-const),
         other => Err(EvalError::Internal(format!(
-            "nelisp--env-globals-op: unknown OP `{}`", other))),
+            "nelisp--env-globals-op: unknown OP `{}`",
+            other
+        ))),
     }
 }
 
@@ -87,9 +116,15 @@ mod tests {
     use super::*;
     use crate::eval::{eval_str, eval_str_all};
 
-    fn eval_all_ok(src: &str) -> Sexp { eval_str_all(src).unwrap() }
-    fn assert_t(v: Sexp) { assert!(matches!(v, Sexp::T)); }
-    fn assert_nil(v: Sexp) { assert!(matches!(v, Sexp::Nil)); }
+    fn eval_all_ok(src: &str) -> Sexp {
+        eval_str_all(src).unwrap()
+    }
+    fn assert_t(v: Sexp) {
+        assert!(matches!(v, Sexp::T));
+    }
+    fn assert_nil(v: Sexp) {
+        assert!(matches!(v, Sexp::Nil));
+    }
 
     #[test]
     fn primitive_get_set_value_round_trip() {

@@ -46,18 +46,17 @@ pub mod syscall;
 // Re-export the FFI surface at the crate root for `cargo test` and
 // `main.rs` so callers can write `nelisp_runtime::nelisp_syscall_write`
 // without having to spell `::syscall::` each time.
-pub use syscall::{
-    nelisp_syscall_clear_icache, nelisp_syscall_close, nelisp_syscall_exit,
-    nelisp_syscall_fstat, nelisp_syscall_getenv, nelisp_syscall_jit_write_protect,
-    nelisp_syscall_mmap, nelisp_syscall_mmap_jit, nelisp_syscall_mprotect,
-    nelisp_syscall_munmap, nelisp_syscall_open, nelisp_syscall_read,
-    nelisp_syscall_setenv, nelisp_syscall_stat, nelisp_syscall_write, NelispStat,
-    SyscallError,
-};
 pub use seed::{
-    nelisp_seed_load_and_run, parse_header as nelisp_seed_parse_header, payload_hash as nelisp_seed_payload_hash,
-    SeedError, SeedHeader, SeedSyscallTable, SEED_ABI_VERSION, SEED_HEADER_LEN, SEED_MAGIC,
-    SYSCALL_ABI_VERSION,
+    nelisp_seed_load_and_run, parse_header as nelisp_seed_parse_header,
+    payload_hash as nelisp_seed_payload_hash, SeedError, SeedHeader, SeedSyscallTable,
+    SEED_ABI_VERSION, SEED_HEADER_LEN, SEED_MAGIC, SYSCALL_ABI_VERSION,
+};
+pub use syscall::{
+    nelisp_syscall_clear_icache, nelisp_syscall_close, nelisp_syscall_exit, nelisp_syscall_fstat,
+    nelisp_syscall_getenv, nelisp_syscall_jit_write_protect, nelisp_syscall_mmap,
+    nelisp_syscall_mmap_jit, nelisp_syscall_mprotect, nelisp_syscall_munmap, nelisp_syscall_open,
+    nelisp_syscall_read, nelisp_syscall_setenv, nelisp_syscall_stat, nelisp_syscall_write,
+    NelispStat, SyscallError,
 };
 pub use syscall::{
     NELISP_MAP_ANONYMOUS, NELISP_MAP_JIT, NELISP_MAP_PRIVATE, NELISP_O_APPEND, NELISP_O_CREAT,
@@ -96,9 +95,9 @@ pub use syscall::{
 // cleanly.
 #[cfg(feature = "process-syscalls")]
 pub use syscall::{
-    nl_syscall_dup2, nl_syscall_execve, nl_syscall_fork, nl_syscall_getrlimit,
-    nl_syscall_kill, nl_syscall_pipe2, nl_syscall_posix_spawn, nl_syscall_prlimit,
-    nl_syscall_select, nl_syscall_setrlimit, nl_syscall_setsid, nl_syscall_waitpid,
+    nl_syscall_dup2, nl_syscall_execve, nl_syscall_fork, nl_syscall_getrlimit, nl_syscall_kill,
+    nl_syscall_pipe2, nl_syscall_posix_spawn, nl_syscall_prlimit, nl_syscall_select,
+    nl_syscall_setrlimit, nl_syscall_setsid, nl_syscall_waitpid,
 };
 
 // T77 (Wave 1 agent C) — SQLite FFI surface.  Five public symbols for

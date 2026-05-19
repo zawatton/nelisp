@@ -46,14 +46,26 @@ pub extern "C" fn nl_jit_secure_hash(
         Some(b) => b,
         None => return TRAMPOLINE_ERR,
     };
-    macro_rules! sha2_hex { ($ty:ty) => {{ use sha2::Digest; let mut h = <$ty>::new(); h.update(&bytes); hex_lower(&h.finalize()) }}; }
+    macro_rules! sha2_hex {
+        ($ty:ty) => {{
+            use sha2::Digest;
+            let mut h = <$ty>::new();
+            h.update(&bytes);
+            hex_lower(&h.finalize())
+        }};
+    }
     let hex = match algo.as_str() {
-        "sha1"   => { use sha1::Digest; let mut h = sha1::Sha1::new(); h.update(&bytes); hex_lower(&h.finalize()) }
+        "sha1" => {
+            use sha1::Digest;
+            let mut h = sha1::Sha1::new();
+            h.update(&bytes);
+            hex_lower(&h.finalize())
+        }
         "sha256" => sha2_hex!(sha2::Sha256),
         "sha224" => sha2_hex!(sha2::Sha224),
         "sha384" => sha2_hex!(sha2::Sha384),
         "sha512" => sha2_hex!(sha2::Sha512),
-        "md5"    => hex_lower(&md5::compute(&bytes).0),
+        "md5" => hex_lower(&md5::compute(&bytes).0),
         _ => return TRAMPOLINE_ERR,
     };
     unsafe {

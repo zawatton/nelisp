@@ -24,11 +24,7 @@ fn main() -> ExitCode {
         "nelisp--cli-version",
         Sexp::Str(env!("CARGO_PKG_VERSION").to_string()),
     );
-    let argv = Sexp::list_from(
-        &std::env::args()
-            .map(Sexp::Str)
-            .collect::<Vec<Sexp>>(),
-    );
+    let argv = Sexp::list_from(&std::env::args().map(Sexp::Str).collect::<Vec<Sexp>>());
     let cli_main = match env.lookup_function("nelisp-cli-main") {
         Ok(f) => f,
         Err(_) => {

@@ -69,12 +69,8 @@ const REFCOUNT_OFFSET: i64 = 24;
 /// block) or explicitly calling `dealloc_bytes(ptr, 32, 8)' for the
 /// "no dealloc this call" probe paths.
 unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
-    let ptr = unsafe {
-        nelisp_build_tool::elisp_cc_spike::alloc_bytes(
-            SIZE_OF_NLSTR,
-            ALIGN_OF_NLSTR,
-        )
-    };
+    let ptr =
+        unsafe { nelisp_build_tool::elisp_cc_spike::alloc_bytes(SIZE_OF_NLSTR, ALIGN_OF_NLSTR) };
     assert!(
         !ptr.is_null(),
         "alloc-bytes({}, {}) must succeed on a healthy host",
@@ -123,13 +119,8 @@ fn nlstr_drop_with_refcount_2_no_dealloc() {
     let initial = unsafe { read_refcount(ptr) };
     assert_eq!(initial, 2, "seeded refcount slot must read back as 2");
 
-    let ret = unsafe {
-        nelisp_build_tool::elisp_cc_spike::nlstr_drop(ptr as *mut i64)
-    };
-    assert_eq!(
-        ret, 1,
-        "nlstr_drop must return 1 sentinel on both branches"
-    );
+    let ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlstr_drop(ptr as *mut i64) };
+    assert_eq!(ret, 1, "nlstr_drop must return 1 sentinel on both branches");
 
     let after = unsafe { read_refcount(ptr) };
     assert_eq!(
@@ -139,11 +130,7 @@ fn nlstr_drop_with_refcount_2_no_dealloc() {
     );
 
     let cleanup_rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(
-            ptr,
-            SIZE_OF_NLSTR,
-            ALIGN_OF_NLSTR,
-        )
+        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(ptr, SIZE_OF_NLSTR, ALIGN_OF_NLSTR)
     };
     assert_eq!(cleanup_rc, 1);
 }
@@ -156,31 +143,21 @@ fn nlstr_drop_with_refcount_1_dealloc_happens() {
     let initial = unsafe { read_refcount(ptr) };
     assert_eq!(initial, 1, "seeded refcount slot must read back as 1");
 
-    let ret = unsafe {
-        nelisp_build_tool::elisp_cc_spike::nlstr_drop(ptr as *mut i64)
-    };
+    let ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlstr_drop(ptr as *mut i64) };
     assert_eq!(
         ret, 1,
         "nlstr_drop on last-ref must return dealloc-bytes's 1 sentinel"
     );
 
-    let probe = unsafe {
-        nelisp_build_tool::elisp_cc_spike::alloc_bytes(
-            SIZE_OF_NLSTR,
-            ALIGN_OF_NLSTR,
-        )
-    };
+    let probe =
+        unsafe { nelisp_build_tool::elisp_cc_spike::alloc_bytes(SIZE_OF_NLSTR, ALIGN_OF_NLSTR) };
     assert!(
         !probe.is_null(),
         "post-drop allocator must still be functional \
          (= alloc-bytes for a fresh block succeeds)"
     );
     let probe_rc = unsafe {
-        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(
-            probe,
-            SIZE_OF_NLSTR,
-            ALIGN_OF_NLSTR,
-        )
+        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(probe, SIZE_OF_NLSTR, ALIGN_OF_NLSTR)
     };
     assert_eq!(probe_rc, 1);
 }
@@ -195,14 +172,8 @@ fn nlstr_drop_n_consecutive_reaches_zero_and_deallocs() {
     assert_eq!(unsafe { read_refcount(ptr) }, N);
 
     for i in 1..N {
-        let ret = unsafe {
-            nelisp_build_tool::elisp_cc_spike::nlstr_drop(ptr as *mut i64)
-        };
-        assert_eq!(
-            ret, 1,
-            "drop {} of {}: must return 1 sentinel",
-            i, N - 1
-        );
+        let ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlstr_drop(ptr as *mut i64) };
+        assert_eq!(ret, 1, "drop {} of {}: must return 1 sentinel", i, N - 1);
         let after = unsafe { read_refcount(ptr) };
         assert_eq!(
             after,
@@ -216,26 +187,16 @@ fn nlstr_drop_n_consecutive_reaches_zero_and_deallocs() {
     }
     assert_eq!(unsafe { read_refcount(ptr) }, 1);
 
-    let final_ret = unsafe {
-        nelisp_build_tool::elisp_cc_spike::nlstr_drop(ptr as *mut i64)
-    };
+    let final_ret = unsafe { nelisp_build_tool::elisp_cc_spike::nlstr_drop(ptr as *mut i64) };
     assert_eq!(
         final_ret, 1,
         "final drop on pre-sub=1 must hit dealloc-bytes and return 1"
     );
 
-    let probe = unsafe {
-        nelisp_build_tool::elisp_cc_spike::alloc_bytes(
-            SIZE_OF_NLSTR,
-            ALIGN_OF_NLSTR,
-        )
-    };
+    let probe =
+        unsafe { nelisp_build_tool::elisp_cc_spike::alloc_bytes(SIZE_OF_NLSTR, ALIGN_OF_NLSTR) };
     assert!(!probe.is_null());
     unsafe {
-        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(
-            probe,
-            SIZE_OF_NLSTR,
-            ALIGN_OF_NLSTR,
-        );
+        nelisp_build_tool::elisp_cc_spike::dealloc_bytes(probe, SIZE_OF_NLSTR, ALIGN_OF_NLSTR);
     }
 }

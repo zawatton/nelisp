@@ -26,12 +26,7 @@ fn elt_ok_vector_path() {
 #[test]
 fn elt_ok_list_walks_to_index() {
     let mut out = Sexp::Nil;
-    let lst = Sexp::list_from(&[
-        Sexp::Int(1),
-        Sexp::Int(2),
-        Sexp::Int(3),
-        Sexp::Int(4),
-    ]);
+    let lst = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3), Sexp::Int(4)]);
     let r = unsafe { jit_elt(&lst, 2, &mut out) };
     assert_eq!(r, 0);
     assert!(matches!(out, Sexp::Int(3)));

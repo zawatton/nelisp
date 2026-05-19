@@ -24,7 +24,10 @@ pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 {
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) -> i64 {
     match read_sexp_str(&*arg) {
-        Some(s) => { *out = Sexp::Str(s); TRAMPOLINE_OK }
+        Some(s) => {
+            *out = Sexp::Str(s);
+            TRAMPOLINE_OK
+        }
         None => TRAMPOLINE_ERR,
     }
 }
@@ -32,12 +35,7 @@ pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) ->
 /// IEEE-754 float body builder.  CONV ∈ {f/F/e/E/g/G}, PREC ≥ 0.
 /// Writes unsigned/unpadded body; elisp does sign + padding.
 #[no_mangle]
-pub unsafe extern "C" fn nl_jit_format_float(
-    x: f64,
-    conv: u32,
-    prec: i64,
-    out: *mut Sexp,
-) -> i64 {
+pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: *mut Sexp) -> i64 {
     let conv_ch = match char::from_u32(conv) {
         Some(c) => c,
         None => return TRAMPOLINE_ERR,
@@ -52,7 +50,11 @@ pub unsafe extern "C" fn nl_jit_format_float(
         'E' => format!("{:.*E}", p, x),
         'g' | 'G' => {
             let (f, e) = (format!("{:.*}", p, x), format!("{:.*e}", p, x));
-            if f.len() <= e.len() { f } else { e }
+            if f.len() <= e.len() {
+                f
+            } else {
+                e
+            }
         }
         _ => return TRAMPOLINE_ERR,
     };

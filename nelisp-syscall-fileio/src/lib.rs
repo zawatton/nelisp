@@ -135,11 +135,7 @@ pub unsafe extern "C" fn nl_syscall_opendir(path: *const u8, len: usize) -> i64 
 ///     stream cursor advanced (matches glibc `readdir_r` semantics).
 ///   * On error: return `-errno`.
 #[no_mangle]
-pub unsafe extern "C" fn nl_syscall_readdir(
-    handle: i64,
-    buf: *mut u8,
-    buf_len: usize,
-) -> i64 {
+pub unsafe extern "C" fn nl_syscall_readdir(handle: i64, buf: *mut u8, buf_len: usize) -> i64 {
     if handle <= 0 {
         return -(libc::EBADF as i64);
     }
@@ -193,11 +189,7 @@ pub unsafe extern "C" fn nl_syscall_closedir(handle: i64) -> i64 {
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_syscall_mkdir(
-    path: *const u8,
-    len: usize,
-    mode: u32,
-) -> i64 {
+pub unsafe extern "C" fn nl_syscall_mkdir(path: *const u8, len: usize, mode: u32) -> i64 {
     let pb = match PathBuf::new(path, len) {
         Ok(p) => p,
         Err(e) => return e,
@@ -236,11 +228,7 @@ pub unsafe extern "C" fn nl_syscall_rename(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_syscall_access(
-    path: *const u8,
-    len: usize,
-    mode: i32,
-) -> i64 {
+pub unsafe extern "C" fn nl_syscall_access(path: *const u8, len: usize, mode: i32) -> i64 {
     let pb = match PathBuf::new(path, len) {
         Ok(p) => p,
         Err(e) => return e,
@@ -507,7 +495,10 @@ mod tests {
             assert_eq!(nl_syscall_rename(sp, sl, dp, dl), 0);
 
             // src no longer accessible.
-            assert_eq!(nl_syscall_access(sp, sl, libc::F_OK), -(libc::ENOENT as i64));
+            assert_eq!(
+                nl_syscall_access(sp, sl, libc::F_OK),
+                -(libc::ENOENT as i64)
+            );
             assert_eq!(nl_syscall_access(dp, dl, libc::F_OK), 0);
 
             assert_eq!(nl_syscall_unlink(dp, dl), 0);
@@ -542,7 +533,11 @@ mod tests {
             assert_eq!(nl_syscall_stat_ex(fp, fl, &mut sb), 0);
             assert_eq!(sb.st_size, 1024);
             // mtime sec must be a recent UNIX timestamp (post-2020).
-            assert!(sb.st_mtime_sec > 1_577_836_800, "mtime {} too small", sb.st_mtime_sec);
+            assert!(
+                sb.st_mtime_sec > 1_577_836_800,
+                "mtime {} too small",
+                sb.st_mtime_sec
+            );
             // mode bit S_IFREG must be set on a regular file.
             let s_ifmt: u32 = 0o170000;
             let s_ifreg: u32 = 0o100000;
@@ -609,7 +604,10 @@ mod tests {
                 }
                 assert!(n > 0);
             }
-            assert!(saw_erange, "readdir never reported ERANGE for a 20-char name in a 2-byte buffer");
+            assert!(
+                saw_erange,
+                "readdir never reported ERANGE for a 20-char name in a 2-byte buffer"
+            );
             assert_eq!(nl_syscall_closedir(h), 0);
 
             // cleanup
@@ -633,5 +631,4 @@ mod tests {
             );
         }
     }
-
 }

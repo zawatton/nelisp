@@ -29,9 +29,9 @@ pub mod unix;
 
 #[cfg(feature = "process-syscalls")]
 pub use nelisp_syscall_process::{
-    nl_syscall_dup2, nl_syscall_execve, nl_syscall_fork, nl_syscall_getrlimit,
-    nl_syscall_kill, nl_syscall_pipe2, nl_syscall_posix_spawn, nl_syscall_prlimit,
-    nl_syscall_select, nl_syscall_setrlimit, nl_syscall_setsid, nl_syscall_waitpid,
+    nl_syscall_dup2, nl_syscall_execve, nl_syscall_fork, nl_syscall_getrlimit, nl_syscall_kill,
+    nl_syscall_pipe2, nl_syscall_posix_spawn, nl_syscall_prlimit, nl_syscall_select,
+    nl_syscall_setrlimit, nl_syscall_setsid, nl_syscall_waitpid,
 };
 
 // Phase 9d.A1 (T76 / T54 Wave 1 agent A) — re-export the eight new
@@ -108,20 +108,12 @@ pub static NELISP_O_APPEND: c_int = libc::O_APPEND;
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
-pub unsafe extern "C" fn nelisp_syscall_read(
-    fd: c_int,
-    buf: *mut u8,
-    len: size_t,
-) -> ssize_t {
+pub unsafe extern "C" fn nelisp_syscall_read(fd: c_int, buf: *mut u8, len: size_t) -> ssize_t {
     unix::read(fd, buf, len)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nelisp_syscall_write(
-    fd: c_int,
-    buf: *const u8,
-    len: size_t,
-) -> ssize_t {
+pub unsafe extern "C" fn nelisp_syscall_write(fd: c_int, buf: *const u8, len: size_t) -> ssize_t {
     unix::write(fd, buf, len)
 }
 
@@ -179,11 +171,7 @@ pub unsafe extern "C" fn nelisp_syscall_jit_write_protect(enabled: c_int) -> c_i
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nelisp_syscall_mprotect(
-    addr: *mut u8,
-    len: size_t,
-    prot: c_int,
-) -> c_int {
+pub unsafe extern "C" fn nelisp_syscall_mprotect(addr: *mut u8, len: size_t, prot: c_int) -> c_int {
     unix::mprotect(addr, len, prot)
 }
 
@@ -207,10 +195,7 @@ pub unsafe extern "C" fn nelisp_syscall_setenv(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nelisp_syscall_stat(
-    path: *const c_char,
-    out: *mut NelispStat,
-) -> c_int {
+pub unsafe extern "C" fn nelisp_syscall_stat(path: *const c_char, out: *mut NelispStat) -> c_int {
     unix::stat(path, out)
 }
 

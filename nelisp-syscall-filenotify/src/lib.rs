@@ -228,11 +228,7 @@ pub unsafe extern "C" fn nl_filenotify_init() -> i64 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_filenotify_add_watch(
-    fd: i64,
-    path: *const c_char,
-    mask: u32,
-) -> i64 {
+pub unsafe extern "C" fn nl_filenotify_add_watch(fd: i64, path: *const c_char, mask: u32) -> i64 {
     backend::add_watch(fd, path, mask)
 }
 

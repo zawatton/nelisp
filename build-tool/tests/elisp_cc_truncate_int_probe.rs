@@ -49,8 +49,7 @@ fn truncate_int_signed_extremes_round_trip() {
             )
         };
         assert_eq!(
-            returned,
-            &mut slot as *mut Sexp,
+            returned, &mut slot as *mut Sexp,
             "truncate_int({n}): expected returned slot pointer to equal caller-provided slot",
         );
         // Pattern-match Sexp::Int from the slot.  Each value must be
@@ -95,8 +94,7 @@ fn truncate_int_writes_correct_payload_bytes() {
             &mut slot as *mut Sexp,
         );
     }
-    let payload_ptr =
-        unsafe { (&slot as *const Sexp as *const u8).add(8) as *const i64 };
+    let payload_ptr = unsafe { (&slot as *const Sexp as *const u8).add(8) as *const i64 };
     let got = unsafe { *payload_ptr };
     assert_eq!(
         got, 0x0123_4567_89AB_CDEFi64,
@@ -111,7 +109,16 @@ fn truncate_int_eight_value_spread_matches_input_clone() {
     // exponential spread plus the small-number band heavily used by
     // production callers.
     let cases: &[i64] = &[
-        0, 1, -1, 7, -7, 100, 1_000, 1_000_000_000, -2_147_483_648, 9_223_372_036_854_775_807,
+        0,
+        1,
+        -1,
+        7,
+        -7,
+        100,
+        1_000,
+        1_000_000_000,
+        -2_147_483_648,
+        9_223_372_036_854_775_807,
     ];
     for &n in cases {
         let input = Sexp::Int(n);

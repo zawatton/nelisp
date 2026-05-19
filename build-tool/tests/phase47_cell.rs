@@ -5,21 +5,17 @@
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use nelisp_build_tool::eval::sexp::Sexp;
 use nelisp_build_tool::eval::nlcell::NlCellRef;
 use nelisp_build_tool::eval::nlvector::NlVectorRef;
+use nelisp_build_tool::eval::sexp::Sexp;
 
 // ---- cell-make + cell-value round-trip ----
 
 fn make_cell(initial: Sexp) -> Sexp {
     let mut slot = Sexp::Nil;
     let slot_ptr = &mut slot as *mut Sexp;
-    let returned = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_make(
-            &initial as *const Sexp,
-            slot_ptr,
-        )
-    };
+    let returned =
+        unsafe { nelisp_build_tool::elisp_cc_spike::cell_make(&initial as *const Sexp, slot_ptr) };
     assert_eq!(
         returned, slot_ptr,
         "cell-make extern must return the caller-provided slot pointer"
@@ -32,8 +28,11 @@ fn make_cell(initial: Sexp) -> Sexp {
 #[test]
 fn cell_make_returns_sexp_cell_tag() {
     let cell = make_cell(Sexp::Int(42));
-    assert!(matches!(cell, Sexp::Cell(_)),
-            "cell-make must produce a Sexp::Cell variant, got {:?}", cell);
+    assert!(
+        matches!(cell, Sexp::Cell(_)),
+        "cell-make must produce a Sexp::Cell variant, got {:?}",
+        cell
+    );
 }
 
 #[test]
@@ -41,12 +40,8 @@ fn cell_make_initial_value_int_read_back() {
     let cell = make_cell(Sexp::Int(42));
     let mut out = Sexp::Nil;
     let out_ptr = &mut out as *mut Sexp;
-    let returned = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_value(
-            &cell as *const Sexp,
-            out_ptr,
-        )
-    };
+    let returned =
+        unsafe { nelisp_build_tool::elisp_cc_spike::cell_value(&cell as *const Sexp, out_ptr) };
     assert_eq!(returned, out_ptr);
     assert_eq!(out, Sexp::Int(42));
     // The cell-value op did an inline copy (= MVP, no refcount work);
@@ -59,12 +54,7 @@ fn cell_make_initial_value_nil_read_back() {
     let cell = make_cell(Sexp::Nil);
     let mut out = Sexp::Int(99);
     let out_ptr = &mut out as *mut Sexp;
-    unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_value(
-            &cell as *const Sexp,
-            out_ptr,
-        )
-    };
+    unsafe { nelisp_build_tool::elisp_cc_spike::cell_value(&cell as *const Sexp, out_ptr) };
     assert_eq!(out, Sexp::Nil);
 }
 
@@ -85,27 +75,21 @@ fn cell_make_refcount_is_one_after_construction() {
 #[test]
 fn cell_null_p_returns_1_for_nil_value() {
     let cell = make_cell(Sexp::Nil);
-    let got = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_null_p(&cell as *const Sexp)
-    };
+    let got = unsafe { nelisp_build_tool::elisp_cc_spike::cell_null_p(&cell as *const Sexp) };
     assert_eq!(got, 1);
 }
 
 #[test]
 fn cell_null_p_returns_0_for_int_value() {
     let cell = make_cell(Sexp::Int(0));
-    let got = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_null_p(&cell as *const Sexp)
-    };
+    let got = unsafe { nelisp_build_tool::elisp_cc_spike::cell_null_p(&cell as *const Sexp) };
     assert_eq!(got, 0, "cell holding Sexp::Int(0) is not Nil");
 }
 
 #[test]
 fn cell_null_p_returns_0_for_symbol_value() {
     let cell = make_cell(Sexp::Symbol("foo".into()));
-    let got = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_null_p(&cell as *const Sexp)
-    };
+    let got = unsafe { nelisp_build_tool::elisp_cc_spike::cell_null_p(&cell as *const Sexp) };
     assert_eq!(got, 0);
 }
 
@@ -124,10 +108,7 @@ fn cell_set_value_int_to_int() {
     // Read back via cell-value.
     let mut out = Sexp::Nil;
     unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_value(
-            &cell as *const Sexp,
-            &mut out as *mut Sexp,
-        );
+        nelisp_build_tool::elisp_cc_spike::cell_value(&cell as *const Sexp, &mut out as *mut Sexp);
     }
     assert_eq!(out, Sexp::Int(99));
 }
@@ -143,10 +124,11 @@ fn cell_set_value_int_to_nil() {
         );
     }
     // cell-null-p should now report 1.
-    let null_p = unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_null_p(&cell as *const Sexp)
-    };
-    assert_eq!(null_p, 1, "after cell-set-value to Nil, cell-null-p should be 1");
+    let null_p = unsafe { nelisp_build_tool::elisp_cc_spike::cell_null_p(&cell as *const Sexp) };
+    assert_eq!(
+        null_p, 1,
+        "after cell-set-value to Nil, cell-null-p should be 1"
+    );
 }
 
 #[test]
@@ -167,8 +149,11 @@ fn cell_set_value_drops_old_boxed_value_refcount_safe() {
     // the elisp side which clones.  The local `initial' inside
     // `make_cell' goes out of scope at end of fn -> dropped -> back
     // to 2 (= 1 outside + 1 inside the cell).
-    assert_eq!(NlVectorRef::strong_count(&probe), 2,
-               "after cell-make: 1 outside + 1 in cell");
+    assert_eq!(
+        NlVectorRef::strong_count(&probe),
+        2,
+        "after cell-make: 1 outside + 1 in cell"
+    );
     // Overwrite with Sexp::Int — old vector inside the cell must be
     // dropped, refcount back to 1.
     let new_val = Sexp::Int(99);
@@ -178,8 +163,11 @@ fn cell_set_value_drops_old_boxed_value_refcount_safe() {
             &new_val as *const Sexp,
         );
     }
-    assert_eq!(NlVectorRef::strong_count(&probe), 1,
-               "cell-set-value should drop the previous Sexp::Vector");
+    assert_eq!(
+        NlVectorRef::strong_count(&probe),
+        1,
+        "cell-set-value should drop the previous Sexp::Vector"
+    );
     // Now drop the cell — no double-free should occur because the
     // overwrite already released the old vector.
     drop(cell);
@@ -208,10 +196,7 @@ fn round_trip_make_set_get() {
     }
     let mut out = Sexp::Nil;
     unsafe {
-        nelisp_build_tool::elisp_cc_spike::cell_value(
-            &cell as *const Sexp,
-            &mut out as *mut Sexp,
-        );
+        nelisp_build_tool::elisp_cc_spike::cell_value(&cell as *const Sexp, &mut out as *mut Sexp);
     }
     // The read-back `out' is an inline 32-byte copy of the cell's
     // current value (= new_val's structure).  Drop it carefully: the
@@ -219,6 +204,6 @@ fn round_trip_make_set_get() {
     // bumping refcount, so we MUST forget `out' to avoid double-free
     // (this is the MVP `cell-value' contract — see TODO in the emit
     // function for `nl_sexp_clone_into' future swap).
-    let _ = matches!(out, Sexp::Cons(_));  // structural check
+    let _ = matches!(out, Sexp::Cons(_)); // structural check
     std::mem::forget(out);
 }

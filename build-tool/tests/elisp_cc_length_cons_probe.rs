@@ -11,8 +11,7 @@ fn run_length(input: Sexp) -> Sexp {
         )
     };
     assert_eq!(
-        returned,
-        &mut slot as *mut Sexp,
+        returned, &mut slot as *mut Sexp,
         "length_cons must return the caller-provided slot pointer",
     );
     slot

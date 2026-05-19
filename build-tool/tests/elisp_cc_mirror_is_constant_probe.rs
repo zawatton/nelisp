@@ -18,8 +18,10 @@ fn fnv1a(s: &str) -> u32 {
 }
 
 fn build_empty_mirror(bucket_count: usize) -> Sexp {
-    assert!(bucket_count.is_power_of_two(),
-            "bucket count must be a power of 2");
+    assert!(
+        bucket_count.is_power_of_two(),
+        "bucket count must be a power of 2"
+    );
     let buckets = Sexp::vector(vec![Sexp::Nil; bucket_count]);
     let ht = Sexp::record(
         Sexp::Symbol("fast-hash-table".into()),
@@ -85,13 +87,7 @@ fn run_is_constant(mirror: &Sexp, sym: &Sexp) -> i64 {
 #[test]
 fn mirror_is_constant_positive_t_slot_returns_1() {
     let mirror = build_empty_mirror(1024);
-    install_entry_with_constant(
-        &mirror,
-        "pi",
-        Sexp::Int(3),
-        Sexp::Nil,
-        Sexp::T,
-    );
+    install_entry_with_constant(&mirror, "pi", Sexp::Int(3), Sexp::Nil, Sexp::T);
 
     let sym = Sexp::Symbol("pi".into());
     assert_eq!(run_is_constant(&mirror, &sym), 1);
@@ -100,13 +96,7 @@ fn mirror_is_constant_positive_t_slot_returns_1() {
 #[test]
 fn mirror_is_constant_negative_nil_slot_returns_0() {
     let mirror = build_empty_mirror(1024);
-    install_entry_with_constant(
-        &mirror,
-        "x",
-        Sexp::Int(42),
-        Sexp::Nil,
-        Sexp::Nil,
-    );
+    install_entry_with_constant(&mirror, "x", Sexp::Int(42), Sexp::Nil, Sexp::Nil);
 
     let sym = Sexp::Symbol("x".into());
     assert_eq!(run_is_constant(&mirror, &sym), 0);

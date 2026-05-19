@@ -532,6 +532,22 @@
      :source-var nelisp-cc-jit-cons-setcdr--source
      :output "nelisp_jit_cons_setcdr.o"
      :requires-arch x86_64)
+    ;; Doc 120.E — fused `cons-make-with-clone' grammar replaces the
+    ;; last `jit/cons.rs' trampoline (`nl_jit_cons_make').  Allocates
+    ;; an `NlConsBox' + deep-clones car/cdr via `nl_sexp_clone_into' +
+    ;; tags the out slot as `Sexp::Cons(box)' — all in elisp.
+    (nelisp-cc-jit-cons-make
+     :source-var nelisp-cc-jit-cons-make--source
+     :output "nelisp_jit_cons_make.o"
+     :requires-arch x86_64)
+    ;; Doc 117.D — bi_syscall name→nr resolver Phase 47 swap.  25-entry
+    ;; (symbol-name-eq) chain replaces the inline `match' arm in the
+    ;; Linux x86_64 `bi_syscall' body, letting the Rust shim shrink to
+    ;; arity-check + Int passthrough + extern dispatch.
+    (nelisp-cc-bi-syscall-resolve-nr
+     :source-var nelisp-cc-bi-syscall-resolve-nr--source
+     :output "nelisp_bi_syscall_resolve_nr.o"
+     :requires-arch x86_64)
     ;; `nl_cons_car_ptr' / `nl_cons_cdr_ptr' — narrow slot-pointer
     ;; helpers used by `nelisp_jit_cons_car' / `nelisp_jit_cons_cdr'
     ;; via `extern-call'.  Replaced from Rust `jit/cons.rs'.

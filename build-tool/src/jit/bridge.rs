@@ -9,26 +9,55 @@ use std::ffi::CString;
 // can see them. Nullary redecls are enough here; only symbol presence matters.
 #[allow(dead_code, clashing_extern_declarations)]
 extern "C" {
-    fn nelisp_jit_add2(); fn nelisp_jit_sub2(); fn nelisp_jit_mul2();
-    fn nelisp_jit_eq2();  fn nelisp_jit_lt2();  fn nelisp_jit_gt2();
-    fn nelisp_jit_le2();  fn nelisp_jit_ge2();  fn nelisp_jit_logior2();
-    fn nelisp_jit_logand2(); fn nelisp_jit_logxor2(); fn nelisp_jit_ash();
-    fn nl_jit_float_add(); fn nl_jit_float_sub(); fn nl_jit_float_mul();
-    fn nl_jit_float_div(); fn nl_jit_float_lt();  fn nl_jit_float_gt();
-    fn nl_jit_float_le();  fn nl_jit_float_ge();  fn nl_jit_float_eq_eps();
-    fn nl_jit_float_float(); fn nl_jit_float_exp(); fn nl_jit_float_log();
-    fn nl_jit_intern(); fn nl_jit_make_mut_str(); fn nl_jit_mut_str_len();
+    fn nelisp_jit_add2();
+    fn nelisp_jit_sub2();
+    fn nelisp_jit_mul2();
+    fn nelisp_jit_eq2();
+    fn nelisp_jit_lt2();
+    fn nelisp_jit_gt2();
+    fn nelisp_jit_le2();
+    fn nelisp_jit_ge2();
+    fn nelisp_jit_logior2();
+    fn nelisp_jit_logand2();
+    fn nelisp_jit_logxor2();
+    fn nelisp_jit_ash();
+    fn nl_jit_float_add();
+    fn nl_jit_float_sub();
+    fn nl_jit_float_mul();
+    fn nl_jit_float_div();
+    fn nl_jit_float_lt();
+    fn nl_jit_float_gt();
+    fn nl_jit_float_le();
+    fn nl_jit_float_ge();
+    fn nl_jit_float_eq_eps();
+    fn nl_jit_float_float();
+    fn nl_jit_float_exp();
+    fn nl_jit_float_log();
+    fn nl_jit_intern();
+    fn nl_jit_make_mut_str();
+    fn nl_jit_mut_str_len();
     fn nl_jit_record_alloc();
-    fn nelisp_jit_predicate_eq(); fn nelisp_jit_ref_eq();
-    fn nelisp_jit_record_type();  fn nelisp_jit_record_len();
-    fn nelisp_jit_record_ref();   fn nelisp_jit_record_set();
-    fn nelisp_jit_length(); fn nelisp_jit_aref();
-    fn nelisp_jit_aset();   fn nelisp_jit_elt();
-    fn nelisp_jit_cons_car();    fn nelisp_jit_cons_cdr();
-    fn nelisp_jit_cons_setcar(); fn nelisp_jit_cons_setcdr();
-    fn nl_jit_bool_vector_len(); fn nl_jit_str_codepoint_at();
-    fn nl_jit_type_of();   fn nl_jit_sxhash();
-    fn nl_cons_car_ptr();        fn nl_cons_cdr_ptr();
+    fn nelisp_jit_predicate_eq();
+    fn nelisp_jit_ref_eq();
+    fn nelisp_jit_record_type();
+    fn nelisp_jit_record_len();
+    fn nelisp_jit_record_ref();
+    fn nelisp_jit_record_set();
+    fn nelisp_jit_length();
+    fn nelisp_jit_aref();
+    fn nelisp_jit_aset();
+    fn nelisp_jit_elt();
+    fn nelisp_jit_cons_car();
+    fn nelisp_jit_cons_cdr();
+    fn nelisp_jit_cons_setcar();
+    fn nelisp_jit_cons_setcdr();
+    fn nelisp_jit_cons_make();
+    fn nl_jit_bool_vector_len();
+    fn nl_jit_str_codepoint_at();
+    fn nl_jit_type_of();
+    fn nl_jit_sxhash();
+    fn nl_cons_car_ptr();
+    fn nl_cons_cdr_ptr();
     fn nl_jit_make_symbol();
     fn nl_record_type_tag_ptr();
     fn nl_jit_concat_ints();
@@ -48,23 +77,56 @@ extern "C" {
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 63] = [
-    nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
-    nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
-    nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
-    nl_jit_float_add, nl_jit_float_sub, nl_jit_float_mul, nl_jit_float_div,
-    nl_jit_float_lt,  nl_jit_float_gt,  nl_jit_float_le,  nl_jit_float_ge,
-    nl_jit_float_eq_eps, nl_jit_float_float, nl_jit_float_exp, nl_jit_float_log,
-    nl_jit_intern, nl_jit_make_mut_str, nl_jit_mut_str_len, nl_jit_record_alloc,
-    nelisp_jit_predicate_eq, nelisp_jit_ref_eq,
-    nelisp_jit_record_type, nelisp_jit_record_len,
-    nelisp_jit_record_ref,  nelisp_jit_record_set,
-    nelisp_jit_length, nelisp_jit_aref, nelisp_jit_aset, nelisp_jit_elt,
-    nelisp_jit_cons_car, nelisp_jit_cons_cdr,
-    nelisp_jit_cons_setcar, nelisp_jit_cons_setcdr,
-    nl_jit_bool_vector_len, nl_jit_str_codepoint_at,
-    nl_jit_type_of, nl_jit_sxhash,
-    nl_cons_car_ptr, nl_cons_cdr_ptr,
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 64] = [
+    nelisp_jit_add2,
+    nelisp_jit_sub2,
+    nelisp_jit_mul2,
+    nelisp_jit_eq2,
+    nelisp_jit_lt2,
+    nelisp_jit_gt2,
+    nelisp_jit_le2,
+    nelisp_jit_ge2,
+    nelisp_jit_logior2,
+    nelisp_jit_logand2,
+    nelisp_jit_logxor2,
+    nelisp_jit_ash,
+    nl_jit_float_add,
+    nl_jit_float_sub,
+    nl_jit_float_mul,
+    nl_jit_float_div,
+    nl_jit_float_lt,
+    nl_jit_float_gt,
+    nl_jit_float_le,
+    nl_jit_float_ge,
+    nl_jit_float_eq_eps,
+    nl_jit_float_float,
+    nl_jit_float_exp,
+    nl_jit_float_log,
+    nl_jit_intern,
+    nl_jit_make_mut_str,
+    nl_jit_mut_str_len,
+    nl_jit_record_alloc,
+    nelisp_jit_predicate_eq,
+    nelisp_jit_ref_eq,
+    nelisp_jit_record_type,
+    nelisp_jit_record_len,
+    nelisp_jit_record_ref,
+    nelisp_jit_record_set,
+    nelisp_jit_length,
+    nelisp_jit_aref,
+    nelisp_jit_aset,
+    nelisp_jit_elt,
+    nelisp_jit_cons_car,
+    nelisp_jit_cons_cdr,
+    nelisp_jit_cons_setcar,
+    nelisp_jit_cons_setcdr,
+    nelisp_jit_cons_make,
+    nl_jit_bool_vector_len,
+    nl_jit_str_codepoint_at,
+    nl_jit_type_of,
+    nl_jit_sxhash,
+    nl_cons_car_ptr,
+    nl_cons_cdr_ptr,
     nl_jit_make_symbol,
     nl_record_type_tag_ptr,
     nl_jit_concat_ints,
@@ -94,18 +156,18 @@ fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
 
 fn alias(name: &str) -> &str {
     match name {
-        "nelisp_jit_car"       => "nelisp_jit_cons_car",
-        "nelisp_jit_cdr"       => "nelisp_jit_cons_cdr",
-        "nelisp_jit_setcar"    => "nelisp_jit_cons_setcar",
-        "nelisp_jit_setcdr"    => "nelisp_jit_cons_setcdr",
+        "nelisp_jit_car" => "nelisp_jit_cons_car",
+        "nelisp_jit_cdr" => "nelisp_jit_cons_cdr",
+        "nelisp_jit_setcar" => "nelisp_jit_cons_setcar",
+        "nelisp_jit_setcdr" => "nelisp_jit_cons_setcdr",
         "nelisp_jit_eq_inline" => "nelisp_jit_predicate_eq",
-        "nelisp_jit_cons"      => "nl_jit_cons_make",
-        "nelisp_jit_type_of"   => "nl_jit_type_of",
-        "nelisp_jit_sxhash"    => "nl_jit_sxhash",
-        "nelisp_jit_intern"        => "nl_jit_intern",
-        "nelisp_jit_symbol_name"   => "nl_jit_symbol_name",
-        "nelisp_jit_make_symbol"   => "nl_jit_make_symbol",
-        "nelisp_jit_syscall"             => "nl_jit_syscall_call",
+        "nelisp_jit_cons" => "nelisp_jit_cons_make",
+        "nelisp_jit_type_of" => "nl_jit_type_of",
+        "nelisp_jit_sxhash" => "nl_jit_sxhash",
+        "nelisp_jit_intern" => "nl_jit_intern",
+        "nelisp_jit_symbol_name" => "nl_jit_symbol_name",
+        "nelisp_jit_make_symbol" => "nl_jit_make_symbol",
+        "nelisp_jit_syscall" => "nl_jit_syscall_call",
         "nelisp_jit_syscall_supported_p" => "nl_jit_syscall_supported_p",
         other => other,
     }
@@ -114,15 +176,18 @@ fn alias(name: &str) -> &str {
 pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
     let cstr = CString::new(alias(name)).ok()?;
     let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cstr.as_ptr()) };
-    if addr.is_null() { None } else { Some(addr as *const u8) }
+    if addr.is_null() {
+        None
+    } else {
+        Some(addr as *const u8)
+    }
 }
 
 fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, EvalError> {
     require_arity(prim, args, arity, Some(arity))?;
     let name = as_name(prim, &args[0])?;
-    unified_fn_ptr(name).ok_or_else(|| {
-        EvalError::Internal(format!("{}: unknown JIT entry name `{}'", prim, name))
-    })
+    unified_fn_ptr(name)
+        .ok_or_else(|| EvalError::Internal(format!("{}: unknown JIT entry name `{}'", prim, name)))
 }
 
 unsafe fn cast<T: Copy>(p: *const u8) -> T {
@@ -150,7 +215,9 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
         *slot = as_int("nl-jit-call-syscall", &args[i + 1])?;
     }
     let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64 = unsafe { cast(p) };
-    Ok(Sexp::Int(f(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6])))
+    Ok(Sexp::Int(f(
+        ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
+    )))
 }
 
 fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> {
@@ -176,7 +243,10 @@ fn to_f64(v: &Sexp, expected: &str) -> Result<f64, EvalError> {
         Sexp::Int(i) => Ok(*i as f64),
         Sexp::Float(f) => Ok(*f),
         Sexp::Nil => Ok(0.0),
-        other => Err(EvalError::WrongType { expected: expected.into(), got: other.clone() }),
+        other => Err(EvalError::WrongType {
+            expected: expected.into(),
+            got: other.clone(),
+        }),
     }
 }
 
@@ -190,8 +260,14 @@ pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
 use super::TRAMPOLINE_OK;
 
 fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalError> {
-    if rc == TRAMPOLINE_OK { Ok(out) }
-    else { Err(EvalError::WrongType { expected: prim.into(), got: arg.clone() }) }
+    if rc == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        Err(EvalError::WrongType {
+            expected: prim.into(),
+            got: arg.clone(),
+        })
+    }
 }
 
 // Out-slot trampolines: lookup, cast, alloc `out`, call, dispatch.
@@ -234,14 +310,22 @@ pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
 mod tests {
     use super::*;
 
-    fn sym(name: &str) -> Sexp { Sexp::Symbol(name.into()) }
+    fn sym(name: &str) -> Sexp {
+        Sexp::Symbol(name.into())
+    }
 
     #[test]
     fn unified_fn_ptr_resolves_core_entries() {
         for n in [
-            "nelisp_jit_add2", "nelisp_jit_eq_inline", "nelisp_jit_car",
-            "nelisp_jit_length", "nelisp_jit_aref", "nelisp_jit_intern",
-            "nelisp_jit_syscall", "nl_jit_float_add", "nl_jit_float_exp",
+            "nelisp_jit_add2",
+            "nelisp_jit_eq_inline",
+            "nelisp_jit_car",
+            "nelisp_jit_length",
+            "nelisp_jit_aref",
+            "nelisp_jit_intern",
+            "nelisp_jit_syscall",
+            "nl_jit_float_add",
+            "nl_jit_float_exp",
         ] {
             let p = unified_fn_ptr(n);
             assert!(p.is_some(), "missing `{}'", n);
@@ -266,8 +350,10 @@ mod tests {
     fn call_i64_i64_accepts_string_name() {
         let r = bi_nl_jit_call_i64_i64(&[
             Sexp::Str("nelisp_jit_mul2".into()),
-            Sexp::Int(6), Sexp::Int(7),
-        ]).expect("mul2 (str name) must succeed");
+            Sexp::Int(6),
+            Sexp::Int(7),
+        ])
+        .expect("mul2 (str name) must succeed");
         assert_eq!(r, Sexp::Int(42));
     }
 
@@ -286,8 +372,10 @@ mod tests {
 
     #[test]
     fn call_ptr_ptr_eq_inline() {
-        let eq = |a, b| bi_nl_jit_call_ptr_ptr(&[sym("nelisp_jit_eq_inline"), a, b])
-            .expect("eq_inline must succeed");
+        let eq = |a, b| {
+            bi_nl_jit_call_ptr_ptr(&[sym("nelisp_jit_eq_inline"), a, b])
+                .expect("eq_inline must succeed")
+        };
         assert_eq!(eq(Sexp::Int(7), Sexp::Int(7)), Sexp::Int(1));
         assert_eq!(eq(Sexp::Int(7), Sexp::Int(8)), Sexp::Int(0));
     }
@@ -308,13 +396,14 @@ mod tests {
     #[test]
     fn call_out_1_car_cdr_length() {
         let lst = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
-        let car = bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"), lst.clone()])
-            .expect("car must succeed");
+        let car =
+            bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"), lst.clone()]).expect("car must succeed");
         assert_eq!(car, Sexp::Int(1));
         let cdr = bi_nl_jit_call_out_1(&[sym("nelisp_jit_cdr"), lst]).expect("cdr must succeed");
         assert_eq!(cdr, Sexp::list_from(&[Sexp::Int(2), Sexp::Int(3)]));
         let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
-        let len = bi_nl_jit_call_out_1(&[sym("nelisp_jit_length"), v]).expect("length must succeed");
+        let len =
+            bi_nl_jit_call_out_1(&[sym("nelisp_jit_length"), v]).expect("length must succeed");
         assert_eq!(len, Sexp::Int(3));
     }
 

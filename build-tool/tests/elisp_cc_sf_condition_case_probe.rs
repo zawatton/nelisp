@@ -16,7 +16,9 @@
 use nelisp_build_tool::eval::sexp::Sexp;
 use nelisp_build_tool::eval::Env;
 
-fn sym(s: &str) -> Sexp { Sexp::Symbol(s.into()) }
+fn sym(s: &str) -> Sexp {
+    Sexp::Symbol(s.into())
+}
 
 fn call_cc(args: Sexp, env: &mut Env) -> (i64, Sexp, Sexp) {
     let mut out = Sexp::Nil;
@@ -38,7 +40,10 @@ fn cc_success_path_returns_value_unchanged() {
     let args = Sexp::list_from(&[
         sym("e"),
         Sexp::Int(42),
-        Sexp::list_from(&[sym("error"), Sexp::list_from(&[sym("quote"), sym("handler-fired")])]),
+        Sexp::list_from(&[
+            sym("error"),
+            Sexp::list_from(&[sym("quote"), sym("handler-fired")]),
+        ]),
     ]);
     let mut env = Env::new_global_no_stdlib();
     let (rc, out, _) = call_cc(args, &mut env);

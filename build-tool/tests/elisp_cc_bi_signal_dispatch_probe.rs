@@ -32,12 +32,10 @@ use nelisp_build_tool::eval::sexp::Sexp;
 /// `tag_name' is compared against the three reference names.
 fn dispatch(tag_name: &str) -> i64 {
     let tag = Sexp::Symbol(tag_name.into());
-    let q   = Sexp::Symbol("quit".into());
-    let a   = Sexp::Symbol("arith-error".into());
-    let w   = Sexp::Symbol("wrong-type-argument".into());
-    unsafe {
-        nelisp_build_tool::elisp_cc_spike::bi_signal_dispatch(&tag, &q, &a, &w)
-    }
+    let q = Sexp::Symbol("quit".into());
+    let a = Sexp::Symbol("arith-error".into());
+    let w = Sexp::Symbol("wrong-type-argument".into());
+    unsafe { nelisp_build_tool::elisp_cc_spike::bi_signal_dispatch(&tag, &q, &a, &w) }
 }
 
 // ---- Case 1: "quit" → 0 ----

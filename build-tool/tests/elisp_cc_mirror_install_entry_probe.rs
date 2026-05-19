@@ -38,10 +38,22 @@ fn install_entry_with_slots(
     plist: Sexp,
     constant: Sexp,
 ) {
-    let env_rec = match mirror { Sexp::Record(r) => r, _ => panic!() };
-    let ht_rec = match env_rec.slots.get(0) { Some(Sexp::Record(r)) => r, _ => panic!() };
-    let bucket_count = match ht_rec.slots.get(0) { Some(Sexp::Int(n)) => *n as u32, _ => panic!() };
-    let buckets = match ht_rec.slots.get(1) { Some(Sexp::Vector(v)) => v, _ => panic!() };
+    let env_rec = match mirror {
+        Sexp::Record(r) => r,
+        _ => panic!(),
+    };
+    let ht_rec = match env_rec.slots.get(0) {
+        Some(Sexp::Record(r)) => r,
+        _ => panic!(),
+    };
+    let bucket_count = match ht_rec.slots.get(0) {
+        Some(Sexp::Int(n)) => *n as u32,
+        _ => panic!(),
+    };
+    let buckets = match ht_rec.slots.get(1) {
+        Some(Sexp::Vector(v)) => v,
+        _ => panic!(),
+    };
     let idx = (fnv1a(name) & (bucket_count - 1)) as usize;
     let entry = Sexp::record(
         Sexp::Symbol("symbol-entry".into()),
@@ -57,10 +69,22 @@ fn install_entry_with_slots(
 }
 
 fn read_slot(mirror: &Sexp, name: &str, n: usize) -> Option<Sexp> {
-    let env_rec = match mirror { Sexp::Record(r) => r, _ => return None };
-    let ht_rec = match env_rec.slots.get(0)? { Sexp::Record(r) => r, _ => return None };
-    let bucket_count = match ht_rec.slots.get(0)? { Sexp::Int(n) => *n as u32, _ => return None };
-    let buckets = match ht_rec.slots.get(1)? { Sexp::Vector(v) => v, _ => return None };
+    let env_rec = match mirror {
+        Sexp::Record(r) => r,
+        _ => return None,
+    };
+    let ht_rec = match env_rec.slots.get(0)? {
+        Sexp::Record(r) => r,
+        _ => return None,
+    };
+    let bucket_count = match ht_rec.slots.get(0)? {
+        Sexp::Int(n) => *n as u32,
+        _ => return None,
+    };
+    let buckets = match ht_rec.slots.get(1)? {
+        Sexp::Vector(v) => v,
+        _ => return None,
+    };
     let idx = (fnv1a(name) & (bucket_count - 1)) as usize;
     let mut cur = buckets.value.get(idx)?;
     while let Sexp::Cons(c) = cur {
@@ -101,14 +125,7 @@ fn run_install_entry(
 #[test]
 fn mirror_install_entry_positive_hit_overwrites_all_4_slots() {
     let mirror = build_empty_mirror(1024);
-    install_entry_with_slots(
-        &mirror,
-        "k",
-        Sexp::Int(0),
-        Sexp::Nil,
-        Sexp::Nil,
-        Sexp::Nil,
-    );
+    install_entry_with_slots(&mirror, "k", Sexp::Int(0), Sexp::Nil, Sexp::Nil, Sexp::Nil);
 
     let sym = Sexp::Symbol("k".into());
     let v = Sexp::Int(42);
@@ -150,14 +167,7 @@ fn mirror_install_entry_edge_empty_mirror_returns_zero() {
 #[test]
 fn mirror_install_entry_idempotent_double_install() {
     let mirror = build_empty_mirror(1024);
-    install_entry_with_slots(
-        &mirror,
-        "k",
-        Sexp::Int(0),
-        Sexp::Nil,
-        Sexp::Nil,
-        Sexp::Nil,
-    );
+    install_entry_with_slots(&mirror, "k", Sexp::Int(0), Sexp::Nil, Sexp::Nil, Sexp::Nil);
 
     let sym = Sexp::Symbol("k".into());
     let v1 = Sexp::Int(1);
