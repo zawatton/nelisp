@@ -47,11 +47,22 @@ extern "C" {
     // Phase 47 elisp migration: `nl_jit_split_by_non_alnum' —
     // non-alphanumeric splitter; Rust body deleted from `jit/strings.rs'.
     fn nl_jit_split_by_non_alnum();
+    // Phase 47 elisp migration: `nl_jit_format_float' — IEEE-754 float
+    // formatter using libc snprintf; Rust body deleted from `jit/strings.rs'.
+    // Bridge passes x as x.to_bits() as i64 (GP register); elisp uses
+    // (:varargs (:f64 x-bits)) to MOVQ the bit-pattern into xmm0 for snprintf.
+    fn nl_jit_format_float();
+    // Phase 47 Tier 1 special form swaps: sf_if / sf_setq / sf_progn /
+    // sf_while — Rust bodies deleted from `eval/special_forms.rs'.
+    fn nl_sf_if();
+    fn nl_sf_setq();
+    fn nl_sf_progn();
+    fn nl_sf_while();
 }
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 55] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 60] = [
     nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
     nelisp_jit_lt2,  nelisp_jit_gt2,  nelisp_jit_le2,  nelisp_jit_ge2,
     nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
@@ -75,6 +86,11 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 55] = [
     nl_jit_downcase,
     nl_jit_upcase,
     nl_jit_split_by_non_alnum,
+    nl_jit_format_float,
+    nl_sf_if,
+    nl_sf_setq,
+    nl_sf_progn,
+    nl_sf_while,
 ];
 
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
@@ -228,9 +244,14 @@ pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let x = to_f64(&args[1], "numberp")?;
     let conv = as_int("nl-jit-call-format-float", &args[2])?;
     let prec = as_int("nl-jit-call-format-float", &args[3])?;
-    let f: extern "C" fn(f64, u32, i64, *mut Sexp) -> i64 = unsafe { cast(p) };
+    // Phase 47 elisp migration: the elisp body is a GP-class defun
+    // (uniform-class restriction).  x is passed as its IEEE-754 bit
+    // pattern (i64 via rdi) and the elisp body reconstructs the f64
+    // for libc snprintf via `(:varargs (:f64 x-bits))' (= MOVQ rax →
+    // xmm0, same bit pattern, SysV AMD64 variadic double contract).
+    let f: extern "C" fn(i64, i64, i64, *mut Sexp) -> i64 = unsafe { cast(p) };
     let mut out = Sexp::Nil;
-    let r = f(x, conv as u32, prec, &mut out as *mut _);
+    let r = f(x.to_bits() as i64, conv, prec, &mut out as *mut _);
     out_result(r, out, "jit-call-format-float", &args[1])
 }
 
