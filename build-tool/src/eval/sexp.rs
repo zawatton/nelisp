@@ -178,174 +178,18 @@ impl Sexp {
 }
 
 /// Pretty-printer used by debug and tests.
+/// Body replaced by Phase 47 elisp kernel `nelisp_fmt_sexp' (Doc 122 §122.J).
 pub fn fmt_sexp(s: &Sexp) -> String {
-    let mut out = String::new();
-    write_sexp(&mut out, s);
-    out
+    let mut slot = Sexp::Nil;
+    unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) };
+    match slot {
+        Sexp::Str(text) => text,
+        _ => String::from("<fmt_sexp:error>"),
+    }
 }
 
 impl fmt::Display for Sexp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&fmt_sexp(self))
-    }
-}
-
-/// Push `"text"` with standard escapes.
-fn write_quoted_string(out: &mut String, text: &str) {
-    out.push('"');
-    for ch in text.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
-
-fn write_sexp(out: &mut String, s: &Sexp) {
-    if write_reader_macro(out, s) {
-        return;
-    }
-    match s {
-        Sexp::Nil => out.push_str("nil"),
-        Sexp::T => out.push('t'),
-        Sexp::Int(n) => out.push_str(&n.to_string()),
-        Sexp::Float(x) => {
-            // Keep a decimal point so the printed form stays float-like.
-            let s = format!("{}", x);
-            if s.contains('.')
-                || s.contains('e')
-                || s.contains('E')
-                || s == "inf"
-                || s == "-inf"
-                || s == "NaN"
-            {
-                out.push_str(&s);
-            } else {
-                out.push_str(&s);
-                out.push_str(".0");
-            }
-        }
-        Sexp::Symbol(name) => out.push_str(name),
-        Sexp::Str(text) => write_quoted_string(out, text),
-        Sexp::MutStr(rc) => write_quoted_string(out, &rc.value),
-        Sexp::Cons(_) => {
-            out.push('(');
-            write_list_body(out, s);
-            out.push(')');
-        }
-        Sexp::Vector(items) => {
-            out.push('[');
-            for (i, item) in items.value.iter().enumerate() {
-                if i > 0 {
-                    out.push(' ');
-                }
-                write_sexp(out, item);
-            }
-            out.push(']');
-        }
-        Sexp::CharTable(rc) => {
-            let inner = &rc.inner;
-            out.push_str("#<char-table");
-            if !matches!(inner.subtype, Sexp::Nil) {
-                out.push(' ');
-                write_sexp(out, &inner.subtype);
-            }
-            out.push_str(" default=");
-            write_sexp(out, &inner.default_val);
-            out.push_str(" entries=");
-            out.push_str(&inner.entries.len().to_string());
-            out.push('>');
-        }
-        Sexp::BoolVector(rc) => {
-            let v = &rc.value;
-            out.push_str("#&");
-            out.push_str(&v.len().to_string());
-            out.push('"');
-            // Pack 8 bits per char.
-            for chunk in v.chunks(8) {
-                let mut byte = 0u8;
-                for (i, &b) in chunk.iter().enumerate() {
-                    if b {
-                        byte |= 1 << i;
-                    }
-                }
-                if byte == b'"' || byte == b'\\' || byte < 0x20 || byte >= 0x7F {
-                    out.push_str(&format!("\\{:03o}", byte));
-                } else {
-                    out.push(byte as char);
-                }
-            }
-            out.push('"');
-        }
-        Sexp::Cell(c) => write_sexp(out, &c.value),
-        Sexp::Record(rec) => {
-            out.push_str("#s(");
-            write_sexp(out, &rec.type_tag);
-            for v in rec.slots.iter() {
-                out.push(' ');
-                write_sexp(out, v);
-            }
-            out.push(')');
-        }
-    }
-}
-
-fn write_reader_macro(out: &mut String, s: &Sexp) -> bool {
-    let Some((head, arg)) = list_tag_and_arg(s) else {
-        return false;
-    };
-    let prefix = match head.as_str() {
-        "quote" => "'",
-        "backquote" => "`",
-        "comma" => ",",
-        "comma-at" => ",@",
-        "function" => "#'",
-        _ => return false,
-    };
-    out.push_str(prefix);
-    write_sexp(out, &arg);
-    true
-}
-
-/// Recognize `(SYMBOL ARG)` and return cloned `(tag, arg)`.
-fn list_tag_and_arg(s: &Sexp) -> Option<(String, Sexp)> {
-    match s {
-        Sexp::Cons(b) => match (&b.car, &b.cdr) {
-            (Sexp::Symbol(tag), Sexp::Cons(rest)) if matches!(&rest.cdr, Sexp::Nil) => {
-                Some((tag.clone(), rest.car.clone()))
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Print a proper or dotted list body without outer parens.
-fn write_list_body(out: &mut String, s: &Sexp) {
-    let mut cur: Sexp = s.clone();
-    let mut first = true;
-    loop {
-        let next = match &cur {
-            Sexp::Cons(b) => {
-                if !first {
-                    out.push(' ');
-                }
-                first = false;
-                write_sexp(out, &b.car);
-                b.cdr.clone()
-            }
-            Sexp::Nil => return,
-            other => {
-                out.push_str(" . ");
-                write_sexp(out, other);
-                return;
-            }
-        };
-        cur = next;
     }
 }

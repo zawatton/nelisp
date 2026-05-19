@@ -250,6 +250,43 @@ pub unsafe extern "C" fn nl_str_to_float(bytes_ptr: *const u8, len: i64, slot: *
     }
 }
 
+/// Append the decimal representation of `n` to `*buf` (must be `Sexp::MutStr`).
+/// Returns 0 on success, 1 if `*buf` is not a MutStr.
+#[no_mangle]
+pub unsafe extern "C" fn nl_i64_append_to_mut_str(n: i64, buf: *mut Sexp) -> i64 {
+    let s = unsafe { &mut *buf };
+    if let Sexp::MutStr(rc) = s {
+        unsafe { (*rc.ptr.as_ptr()).value.push_str(&n.to_string()) };
+        0
+    } else {
+        1
+    }
+}
+
+/// Append the decimal float representation of the f64 whose bit
+/// pattern is `bits` to `*buf` (must be `Sexp::MutStr`).
+/// Appends ".0" suffix when the formatted string lacks a decimal
+/// point / exponent marker, preserving Elisp float-literal semantics.
+/// Returns 0 on success, 1 if `*buf` is not a MutStr.
+#[no_mangle]
+pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp) -> i64 {
+    let x = f64::from_bits(bits as u64);
+    let s = unsafe { &mut *buf };
+    if let Sexp::MutStr(rc) = s {
+        let formatted = format!("{}", x);
+        let val = unsafe { &mut (*rc.ptr.as_ptr()).value };
+        val.push_str(&formatted);
+        if !formatted.contains('.') && !formatted.contains('e') && !formatted.contains('E')
+            && formatted != "inf" && formatted != "-inf" && formatted != "NaN"
+        {
+            val.push_str(".0");
+        }
+        0
+    } else {
+        1
+    }
+}
+
 const _: () = {
     use std::mem::{offset_of, size_of};
     assert!(offset_of!(NlStr, value) == 0);

@@ -345,6 +345,8 @@ pub mod elisp_cc_spike {
         pub fn nelisp_jit_aset(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp)
             -> i64;
         pub fn nelisp_jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
+        // Doc 122 §122.J — sexp.rs formatter chain elisp化.
+        fn nelisp_fmt_sexp(s: *const Sexp, slot: *mut Sexp) -> i64;
     }
 
     pub fn probe() -> i64 {
@@ -599,6 +601,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(bind_formals_impl_call: nl_bind_formals_impl,
         (formals: *const Sexp, args: *const Sexp,
          env: *mut std::ffi::c_void, _pad: i64) -> i64);
+    cc_wrap!(fmt_sexp_call: nelisp_fmt_sexp, (s: *const Sexp, slot: *mut Sexp) -> i64);
     cc_wrap!(jit_predicate_eq: nelisp_jit_predicate_eq, (a: *const Sexp, b: *const Sexp) -> i64);
     cc_wrap!(jit_ref_eq: nelisp_jit_ref_eq, (a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(jit_record_type: nelisp_jit_record_type, (arg: *const Sexp, out: *mut Sexp) -> i64);

@@ -1040,6 +1040,18 @@
     (nelisp-cc-bind-formals
      :source-var nelisp-cc-bind-formals--source
      :output "nl_bind_formals_impl.o"
+     :requires-arch x86_64)
+    ;; Doc 122 §122.J — `sexp.rs' formatter chain elisp化.  Replaces
+    ;; `write_quoted_string' / `write_sexp' / `write_reader_macro' /
+    ;; `list_tag_and_arg' / `write_list_body' (~155 LOC) with a single
+    ;; Phase 47-compiled `.o' that calls two new Rust helpers
+    ;; (`nl_i64_append_to_mut_str' / `nl_f64_bits_append_to_mut_str')
+    ;; in `nlstr.rs' for int/float formatting.  The Rust `fmt_sexp'
+    ;; entry point becomes a thin `cc_wrap' call to `nelisp_fmt_sexp'.
+    ;; Linux-x86_64 only — same arch gate as the §122.A/B siblings.
+    (nelisp-cc-sexp-fmt
+     :source-var nelisp-cc-sexp-fmt--source
+     :output "nelisp_fmt_sexp.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
