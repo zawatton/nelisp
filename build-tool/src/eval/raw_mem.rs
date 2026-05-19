@@ -19,63 +19,53 @@ pub unsafe extern "C" fn nl_atomic_compare_exchange(
     expected: i64,
     new_val: i64,
 ) -> i64 {
-    let atomic = unsafe { AtomicI64::from_ptr(ptr) };
-    match atomic.compare_exchange(expected, new_val, Ordering::SeqCst, Ordering::SeqCst) {
-        Ok(_) => 1,
-        Err(_) => 0,
-    }
+    unsafe { AtomicI64::from_ptr(ptr) }
+        .compare_exchange(expected, new_val, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok() as i64
 }
 
-/// # Safety: `ptr + offset` non-null, 8-byte aligned, readable; no concurrent non-atomic writes.
-#[no_mangle]
-pub unsafe extern "C" fn nl_ptr_read_u64(ptr: *const u8, offset: i64) -> i64 {
-    let p = (ptr as usize).wrapping_add(offset as usize) as *const u64;
-    unsafe { *p as i64 }
+// # Safety (read):  `ptr + offset` non-null, aligned to T, readable; no
+// concurrent non-atomic writes.  Reads zero-extend.
+// # Safety (write): same alignment + writable, no concurrent r/w.
+macro_rules! ptr_rw {
+    (r $name:ident, $t:ty) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(ptr: *const u8, offset: i64) -> i64 {
+            unsafe { *((ptr as usize).wrapping_add(offset as usize) as *const $t) as i64 }
+        }
+    };
+    (w $name:ident, $t:ty) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(ptr: *mut u8, offset: i64, val: i64) {
+            unsafe { *((ptr as usize).wrapping_add(offset as usize) as *mut $t) = val as $t };
+        }
+    };
 }
+ptr_rw!(r nl_ptr_read_u64,  u64);
+ptr_rw!(w nl_ptr_write_u64, u64);
+ptr_rw!(r nl_ptr_read_u8,   u8);
+ptr_rw!(w nl_ptr_write_u8,  u8);
 
-/// # Safety: `ptr + offset` non-null, 8-byte aligned, writable, no concurrent r/w.
-#[no_mangle]
-pub unsafe extern "C" fn nl_ptr_write_u64(ptr: *mut u8, offset: i64, val: i64) {
-    let p = (ptr as usize).wrapping_add(offset as usize) as *mut u64;
-    unsafe { *p = val as u64 };
-}
-
-/// # Safety: `ptr + offset` non-null, readable 1-byte slot.
-#[no_mangle]
-pub unsafe extern "C" fn nl_ptr_read_u8(ptr: *const u8, offset: i64) -> i64 {
-    let p = (ptr as usize).wrapping_add(offset as usize) as *const u8;
-    unsafe { *p as i64 }
-}
-
-/// # Safety: `ptr + offset` non-null, writable 1-byte slot, no concurrent r/w.
-#[no_mangle]
-pub unsafe extern "C" fn nl_ptr_write_u8(ptr: *mut u8, offset: i64, val: i64) {
-    let p = (ptr as usize).wrapping_add(offset as usize) as *mut u8;
-    unsafe { *p = val as u8 };
+fn nl_layout(size: i64, align: i64) -> Option<Layout> {
+    (size > 0 && align > 0)
+        .then(|| Layout::from_size_align(size as usize, align as usize).ok())
+        .flatten()
 }
 
 /// Returns null on bad layout / zero/neg args / OOM.
 #[no_mangle]
 pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
-    if size <= 0 || align <= 0 {
-        return std::ptr::null_mut();
-    }
-    let Ok(layout) = Layout::from_size_align(size as usize, align as usize) else {
-        return std::ptr::null_mut();
-    };
-    unsafe { alloc::alloc(layout) }
+    nl_layout(size, align).map_or(std::ptr::null_mut(), |l| unsafe { alloc::alloc(l) })
 }
 
 /// # Safety: ptr must be null or from matching `nl_alloc_bytes(size,align)`.
 #[no_mangle]
 pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
-    if ptr.is_null() || size <= 0 || align <= 0 {
-        return;
+    if !ptr.is_null() {
+        if let Some(l) = nl_layout(size, align) {
+            unsafe { alloc::dealloc(ptr, l) };
+        }
     }
-    let Ok(layout) = Layout::from_size_align(size as usize, align as usize) else {
-        return;
-    };
-    unsafe { alloc::dealloc(ptr, layout) }
 }
 
 #[cfg(test)]

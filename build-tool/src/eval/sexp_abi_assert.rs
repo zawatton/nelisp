@@ -13,7 +13,6 @@ use crate::eval::sexp::{
 };
 
 // Tag bytes.
-
 const _: () = assert!(SEXP_TAG_NIL == 0);
 const _: () = assert!(SEXP_TAG_T == 1);
 const _: () = assert!(SEXP_TAG_INT == 2);
@@ -29,25 +28,21 @@ const _: () = assert!(SEXP_TAG_CELL == 11);
 const _: () = assert!(SEXP_TAG_RECORD == 12);
 
 // Layout offsets.
-
 const _: () = assert!(SEXP_PAYLOAD_OFFSET == 8);
 const _: () = assert!(std::mem::size_of::<Sexp>() == 32);
 const _: () = assert!(std::mem::align_of::<Sexp>() == 8);
 
 // `NlConsBox` field offsets.
-
 const _: () = assert!(std::mem::offset_of!(NlConsBox, car) == 0);
 const _: () = assert!(std::mem::offset_of!(NlConsBox, cdr) == 32);
 const _: () = assert!(std::mem::offset_of!(NlConsBox, refcount) == 64);
 const _: () = assert!(std::mem::size_of::<NlConsBox>() == 72);
 
 // Rust `String` header within `Symbol` / `Str` payloads.
-
 const _: () = assert!(std::mem::size_of::<String>() == 24);
 const _: () = assert!(std::mem::align_of::<String>() == 8);
 
 // `NlRecord` / `NlVector` / `NlCell` field offsets.
-
 const _: () = assert!(std::mem::offset_of!(NlRecord, type_tag) == 0);
 const _: () = assert!(std::mem::offset_of!(NlRecord, slots) == 32);
 const _: () = assert!(std::mem::offset_of!(NlRecord, refcount) == 56);
@@ -62,7 +57,6 @@ const _: () = assert!(std::mem::offset_of!(NlCell, refcount) == 32);
 const _: () = assert!(std::mem::size_of::<NlCell>() == 40);
 
 // Public exports for `sexp-abi-emit`.
-
 const NLREC_SLOTS: usize = std::mem::offset_of!(NlRecord, slots);
 const NLVEC_VALUE: usize = std::mem::offset_of!(NlVector, value);
 
