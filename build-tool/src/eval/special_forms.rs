@@ -217,6 +217,162 @@ pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 {
     0
 }
 
+/// Phase 47 ABI — push captured alist as a new lexical frame.
+/// env:       *mut c_void  = &mut Env cast.
+/// alist_ptr: *const Sexp  = captured alist (Nil = no-op).
+/// Returns: 0=Ok, 1=Err.
+#[no_mangle]
+pub unsafe extern "C" fn nl_env_push_captured(
+    env: *mut std::ffi::c_void,
+    alist_ptr: *const Sexp,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    match env_ref.push_captured(&*alist_ptr) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
+/// Internal helper — bind formal parameter list to argument slice.
+/// Contains the actual logic for `bind_formals', factored out so both
+/// the Rust thin-shell `bind_formals' in `eval/mod.rs' and the ABI
+/// externs `nl_push_and_bind' / `nl_bind_formals' can share it without
+/// a circular call chain.
+fn bind_formals_impl(formals: &Sexp, args: &[Sexp], env: &mut Env) -> Result<(), EvalError> {
+    let names = super::list_elements(formals)?;
+    #[derive(Clone, Copy)]
+    enum Mode { Required, Optional, Rest }
+    let required = names.iter().take_while(|formal| {
+        !matches!(formal, Sexp::Symbol(s) if s == "&optional" || s == "&rest")
+    }).count();
+    let (mut mode, mut idx, mut saw_rest, mut consumed_rest) =
+        (Mode::Required, 0usize, false, false);
+    for formal in names {
+        let Sexp::Symbol(name) = formal else {
+            return Err(EvalError::WrongType { expected: "symbol".into(), got: formal });
+        };
+        match name.as_str() {
+            "&optional" => {
+                if matches!(mode, Mode::Rest) {
+                    return Err(EvalError::WrongType {
+                        expected: "formal parameter after &rest".into(),
+                        got: Sexp::Symbol(name),
+                    });
+                }
+                mode = Mode::Optional;
+            }
+            "&rest" => {
+                if saw_rest {
+                    return Err(EvalError::WrongType {
+                        expected: "single &rest marker".into(),
+                        got: Sexp::Symbol(name),
+                    });
+                }
+                mode = Mode::Rest;
+                saw_rest = true;
+            }
+            _ if matches!(mode, Mode::Required) => {
+                let Some(value) = args.get(idx) else {
+                    return Err(EvalError::WrongNumberOfArguments {
+                        function: "lambda".into(),
+                        expected: required.to_string(),
+                        got: args.len(),
+                    });
+                };
+                env.bind_local(&name, value.clone());
+                idx += 1;
+            }
+            _ if matches!(mode, Mode::Optional) => {
+                env.bind_local(&name, args.get(idx).cloned().unwrap_or(Sexp::Nil));
+                idx += usize::from(idx < args.len());
+            }
+            _ => {
+                if consumed_rest {
+                    return Err(EvalError::WrongType {
+                        expected: "single symbol after &rest".into(),
+                        got: Sexp::Symbol(name),
+                    });
+                }
+                env.bind_local(&name, Sexp::list_from(&args[idx..]));
+                idx = args.len();
+                consumed_rest = true;
+            }
+        };
+    }
+    if idx < args.len() && !consumed_rest {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "lambda".into(),
+            expected: format!("at most {}", idx),
+            got: args.len(),
+        });
+    }
+    if saw_rest && !consumed_rest {
+        return Err(EvalError::WrongType {
+            expected: "symbol after &rest".into(),
+            got: Sexp::Symbol("&rest".into()),
+        });
+    }
+    Ok(())
+}
+
+/// Phase 47 ABI — push a new (empty) lexical frame, then bind formals to args.
+/// If the bind fails, the frame is popped before returning 1.
+///
+/// formals_ptr:   *const Sexp = cons list of formal parameter symbols.
+/// args_list_ptr: *const Sexp = cons list of evaluated argument values.
+/// env:           *mut c_void = &mut Env cast.
+///
+/// Returns: 0=Ok (frame pushed, all formals bound),
+///          1=Err (frame popped on failure; no net frame change on error).
+#[no_mangle]
+pub unsafe extern "C" fn nl_push_and_bind(
+    formals_ptr: *const Sexp,
+    args_list_ptr: *const Sexp,
+    env: *mut std::ffi::c_void,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let formals = &*formals_ptr;
+    let args_list = &*args_list_ptr;
+    let args = match super::list_elements(args_list) {
+        Ok(v) => v,
+        Err(_) => return 1,
+    };
+    env_ref.push_frame();
+    match bind_formals_impl(formals, &args, env_ref) {
+        Ok(()) => 0,
+        Err(_) => {
+            env_ref.pop_frame();
+            1
+        }
+    }
+}
+
+/// Phase 47 ABI — bind formals to arguments in the CURRENT lexical frame.
+/// Does NOT push a frame; caller must have already pushed one.
+///
+/// formals_ptr:   *const Sexp = cons list of formal parameter symbols.
+/// args_list_ptr: *const Sexp = cons list of evaluated argument values.
+/// env:           *mut c_void = &mut Env cast.
+/// Returns: 0=Ok, 1=Err.
+#[no_mangle]
+pub unsafe extern "C" fn nl_bind_formals(
+    formals_ptr: *const Sexp,
+    args_list_ptr: *const Sexp,
+    env: *mut std::ffi::c_void,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let formals = &*formals_ptr;
+    let args_list = &*args_list_ptr;
+    let args = match super::list_elements(args_list) {
+        Ok(v) => v,
+        Err(_) => return 1,
+    };
+    match bind_formals_impl(formals, &args, env_ref) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
 fn eval_body(body: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let mut last = Sexp::Nil;
     for f in body {

@@ -408,85 +408,17 @@ pub(crate) fn bind_formals(
     args: &[Sexp],
     env: &mut Env,
 ) -> Result<(), EvalError> {
-    let names = list_elements(formals)?;
-    #[derive(Clone, Copy)]
-    enum Mode {
-        Required,
-        Optional,
-        Rest,
-    }
-    let required = names.iter().take_while(|formal| {
-        !matches!(formal, Sexp::Symbol(s) if s == "&optional" || s == "&rest")
-    }).count();
-    let (mut mode, mut idx, mut saw_rest, mut consumed_rest) =
-        (Mode::Required, 0usize, false, false);
-
-    for formal in names {
-        let Sexp::Symbol(name) = formal else {
-            return Err(EvalError::WrongType { expected: "symbol".into(), got: formal });
-        };
-        match name.as_str() {
-            "&optional" => {
-                if matches!(mode, Mode::Rest) {
-                    return Err(EvalError::WrongType {
-                        expected: "formal parameter after &rest".into(),
-                        got: Sexp::Symbol(name),
-                    });
-                }
-                mode = Mode::Optional;
-            }
-            "&rest" => {
-                if saw_rest {
-                    return Err(EvalError::WrongType {
-                        expected: "single &rest marker".into(),
-                        got: Sexp::Symbol(name),
-                    });
-                }
-                mode = Mode::Rest;
-                saw_rest = true;
-            }
-            _ if matches!(mode, Mode::Required) => {
-                let Some(value) = args.get(idx) else {
-                    return Err(EvalError::WrongNumberOfArguments {
-                        function: "lambda".into(),
-                        expected: required.to_string(),
-                        got: args.len(),
-                    });
-                };
-                env.bind_local(&name, value.clone());
-                idx += 1;
-            }
-            _ if matches!(mode, Mode::Optional) => {
-                env.bind_local(&name, args.get(idx).cloned().unwrap_or(Sexp::Nil));
-                idx += usize::from(idx < args.len());
-            }
-            _ => {
-                if consumed_rest {
-                    return Err(EvalError::WrongType {
-                        expected: "single symbol after &rest".into(),
-                        got: Sexp::Symbol(name),
-                    });
-                }
-                env.bind_local(&name, Sexp::list_from(&args[idx..]));
-                idx = args.len();
-                consumed_rest = true;
-            }
-        };
-    }
-    if idx < args.len() && !consumed_rest {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "lambda".into(),
-            expected: format!("at most {}", idx),
-            got: args.len(),
-        });
-    }
-    if saw_rest && !consumed_rest {
-        return Err(EvalError::WrongType {
-            expected: "symbol after &rest".into(),
-            got: Sexp::Symbol("&rest".into()),
-        });
-    }
-    Ok(())
+    // Phase 47: body deleted → logic lives in nl_bind_formals extern
+    // (eval/special_forms.rs).  Build cons list from slice for the extern.
+    let args_list = Sexp::list_from(args);
+    let rc = unsafe {
+        crate::eval::special_forms::nl_bind_formals(
+            formals as *const Sexp,
+            &args_list as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+        )
+    };
+    if rc == 0 { Ok(()) } else { Err(EvalError::Internal("bind_formals".into())) }
 }
 
 fn is_macro(func: &Sexp) -> bool {
