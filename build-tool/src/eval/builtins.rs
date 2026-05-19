@@ -50,9 +50,20 @@ macro_rules! builtin_dispatch {
             "nelisp--syscall-read-file" => bi_syscall_read_file($args, $env), "nelisp--read-all-from-string" => bi_read_all_from_string($args, $env), "nelisp--syscall" => bi_syscall($args),
             "nelisp--syscall-supported-p" => bi_syscall_supported_p($args), "symbol-function" => bi_symbol_function($args, $env), "fset" => bi_fset($args, $env),
             "nelisp--push-frame" => bi_frame_op("push-frame", $args, $env), "nelisp--pop-frame" => bi_frame_op("pop-frame", $args, $env), "nelisp--push-captured" => bi_frame_op("push-captured", $args, $env),
-            "nelisp--bind-local" => bi_frame_op("bind-local", $args, $env), "nelisp--apply-builtin-dispatch" => bi_apply_builtin_dispatch($args, $env),
+            "nelisp--bind-local" => bi_frame_op("bind-local", $args, $env),
+            "nelisp--apply-builtin-dispatch" => {
+                require_arity("nelisp--apply-builtin-dispatch", $args, 2, Some(2))?;
+                let name = match &$args[0] {
+                    Sexp::Symbol(s) | Sexp::Str(s) => s.clone(),
+                    other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
+                };
+                dispatch(&name, &super::list_elements(&$args[1])?, $env)
+            },
             "nelisp--set-use-elisp-apply" => { require_arity("nelisp--set-use-elisp-apply", $args, 1, Some(1))?; $env.use_elisp_apply = !matches!($args[0], Sexp::Nil); Ok(bool_sexp($env.use_elisp_apply)) },
-            "nelisp--apply-lambda-inner" => bi_apply_lambda_inner($args, $env),
+            "nelisp--apply-lambda-inner" => {
+                require_arity("nelisp--apply-lambda-inner", $args, 4, Some(4))?;
+                super::apply_lambda_inner(&$args[0], &$args[1], &super::list_elements(&$args[2])?, &super::list_elements(&$args[3])?, $env)
+            },
             "funcall" => {
                 require_arity("funcall", $args, 1, None)?;
                 let func = resolve_callable(&$args[0], $env)?;
@@ -436,27 +447,6 @@ fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError
         }
         _ => unreachable!("op verified at dispatch arm"),
     }
-}
-
-fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--apply-builtin-dispatch", args, 2, Some(2))?;
-    let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        Sexp::Str(s) => s.clone(),
-        other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
-    };
-    dispatch(&name, &super::list_elements(&args[1])?, env)
-}
-
-fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--apply-lambda-inner", args, 4, Some(4))?;
-    super::apply_lambda_inner(
-        &args[0],
-        &args[1],
-        &super::list_elements(&args[2])?,
-        &super::list_elements(&args[3])?,
-        env,
-    )
 }
 
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
