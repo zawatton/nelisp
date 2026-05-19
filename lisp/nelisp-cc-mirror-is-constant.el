@@ -26,35 +26,40 @@
 ;;; Code:
 
 (defconst nelisp-cc-mirror-is-constant--source
-  '(defun nelisp_mirror_is_constant (mirror-ptr sym-ptr)
-     ;; Compose §111.E #1 + slot-3-ptr + sexp-tag tag-byte read.
-     ;;
-     ;; `SEXP_TAG_T' = 1 per
-     ;; `build-tool/src/eval/sexp.rs::SEXP_TAG_T'.  The Rust impl
-     ;; matches `Some(Sexp::T)' (= slot 3 = `Sexp::T'); any other
-     ;; value (including the default `Sexp::Nil') yields false.
-     (if (= (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr) 0)
-         0
-       (if (= (sexp-tag
-               (record-slot-ref-ptr
-                (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-                3))
-              1)
-           1
-         0)))
+  '(seq
+    ;; entry-ptr: result of nelisp_mirror_lookup_entry, pre-fetched as
+    ;; register arg 0 (no alignment hazard).
+    ;; Arity 4 (even): body-entry rsp ≡ 0 mod 16.
+    ;; `record-slot-ref-ptr' and `sexp-tag' are inline ops — no CALL.
+    ;; `SEXP_TAG_T' = 1 per `build-tool/src/eval/sexp.rs::SEXP_TAG_T'.
+    ;; Guard: if entry-ptr = 0 (symbol not found), return 0 — no slot access.
+    ;; `(= entry-ptr 0)' is safe: entry-ptr is a register arg, not an
+    ;; extern-call result pushed mid-expression.
+    (defun nelisp_mirror_is_constant_check (entry-ptr _mirror-ptr _sym-ptr _pad)
+      (if (= entry-ptr 0)
+          0
+        (if (= (sexp-tag (record-slot-ref-ptr entry-ptr 3)) 1) 1 0)))
+
+    ;; Public entry: nelisp_mirror_is_constant(mirror-ptr, sym-ptr) → i64
+    ;; Arity 2 (even): body-entry rsp ≡ 0.
+    ;; extern-call `nelisp_mirror_lookup_entry' at position 0 → rsp ≡ 0 ✓.
+    (defun nelisp_mirror_is_constant (mirror-ptr sym-ptr)
+      (nelisp_mirror_is_constant_check
+       (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
+       mirror-ptr sym-ptr 0)))
   "Phase 47 source for Doc 111 §111.E #6 `mirror_is_constant'.
+
+Two defuns (seq form).  Alignment-safe CPS structure.
 
 Reads symbol-entry slot 3 (= the constant-flag cell, initialised to
 `Sexp::Nil' and set to `Sexp::T' by `intern_constant' / `defconst').
 Returns 1 iff the tag byte equals `SEXP_TAG_T' (= 1), matching the
 Rust impl's `matches!(slot, Some(Sexp::T))' classification.
 
-This helper takes only `(MIRROR-PTR SYM-PTR)' — no unbound-marker
-parameter — because constancy is a direct tag-byte check, not a
-sentinel comparison.  Slot 3 absent (= record with fewer than 4
-slots) is impossible under `mirror_install_entry' which always
-allocates 4 slots; if a malformed mirror is ever supplied the
-out-of-bounds `record-slot-ref-ptr' is on the caller.")
+Alignment fix: the original single-defun version had
+`(= (extern-call nelisp_mirror_lookup_entry ...) 0)' in arity-2
+which caused rsp ≡ 8 at the extern-call → SIGSEGV.  The check
+helper receives entry-ptr at arg position 0 → safe.")
 
 (provide 'nelisp-cc-mirror-is-constant)
 
