@@ -30,25 +30,12 @@ extern "C" {
     fn nl_jit_type_of();   fn nl_jit_sxhash();
     fn nl_cons_car_ptr();        fn nl_cons_cdr_ptr();
     fn nl_jit_make_symbol();
-    // db33abdd (2026-05-19): `nl_record_type_tag_ptr' — Phase-47 elisp
-    // body replaced the Rust body in `jit/box_accessor.rs'; re-anchored
-    // here after the revert at bf670ee4 dropped it from the array.
     fn nl_record_type_tag_ptr();
-    // Doc 86 §86.1.e.2 (2026-05-19): `nl_jit_concat_ints' — Phase-47
-    // elisp body replaces the Rust body in `jit/strings.rs'.
     fn nl_jit_concat_ints();
-    // Doc 86 §86.2 (2026-05-19): `nl_sf_quote' — Phase-47 elisp body
-    // replaces the Rust body of `sf_quote' in `eval/special_forms.rs'.
     fn nl_sf_quote();
-    // Phase 47 elisp migration: `nl_jit_downcase' + `nl_jit_upcase' —
-    // ASCII case-fold trampolines; Rust bodies deleted from `jit/strings.rs'.
     fn nl_jit_downcase();
     fn nl_jit_upcase();
-    // Phase 47 elisp migration: `nl_jit_split_by_non_alnum' —
-    // non-alphanumeric splitter; Rust body deleted from `jit/strings.rs'.
     fn nl_jit_split_by_non_alnum();
-    // Phase 47 Tier-1 special forms elisp化 — Rust bodies deleted from
-    // `eval/special_forms.rs'.
     fn nl_sf_if();
     fn nl_sf_setq();
     fn nl_sf_progn();
