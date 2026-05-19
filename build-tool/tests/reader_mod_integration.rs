@@ -104,11 +104,15 @@ fn smoke_vector_literal() {
     );
 }
 
+fn wrap_reader_macro(tag: &str, inner: Sexp) -> Sexp {
+    Sexp::list_from(&[Sexp::Symbol(tag.into()), inner])
+}
+
 /// `'x` → `(quote x)`.
 #[test]
 fn smoke_quote() {
     let got = read_str("'x").unwrap();
-    assert_eq!(got, Sexp::quote(Sexp::Symbol("x".into())));
+    assert_eq!(got, wrap_reader_macro("quote", Sexp::Symbol("x".into())));
 }
 
 /// Backquote / unquote / splice desugar to tagged lists.
@@ -117,10 +121,10 @@ fn smoke_backquote_family() {
     let got = read_str("`(a ,b ,@c)").unwrap();
     assert_eq!(
         got,
-        Sexp::backquote(Sexp::list_from(&[
+        wrap_reader_macro("backquote", Sexp::list_from(&[
             Sexp::Symbol("a".into()),
-            Sexp::comma(Sexp::Symbol("b".into())),
-            Sexp::comma_at(Sexp::Symbol("c".into())),
+            wrap_reader_macro("comma", Sexp::Symbol("b".into())),
+            wrap_reader_macro("comma-at", Sexp::Symbol("c".into())),
         ]))
     );
 }
@@ -137,7 +141,7 @@ fn smoke_char_literals() {
 #[test]
 fn smoke_function_quote() {
     let got = read_str("#'foo").unwrap();
-    assert_eq!(got, Sexp::function(Sexp::Symbol("foo".into())));
+    assert_eq!(got, wrap_reader_macro("function", Sexp::Symbol("foo".into())));
 }
 
 /// Backslash-newline in strings is a line continuation.

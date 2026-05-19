@@ -174,25 +174,6 @@ impl Sexp {
         Sexp::Record(NlRecordRef::new(type_tag, init))
     }
 
-    pub fn quote(inner: Sexp) -> Sexp {
-        Sexp::list_from(&[Sexp::Symbol("quote".to_string()), inner])
-    }
-
-    pub fn backquote(inner: Sexp) -> Sexp {
-        Sexp::list_from(&[Sexp::Symbol("backquote".to_string()), inner])
-    }
-
-    pub fn comma(inner: Sexp) -> Sexp {
-        Sexp::list_from(&[Sexp::Symbol("comma".to_string()), inner])
-    }
-
-    pub fn comma_at(inner: Sexp) -> Sexp {
-        Sexp::list_from(&[Sexp::Symbol("comma-at".to_string()), inner])
-    }
-
-    pub fn function(inner: Sexp) -> Sexp {
-        Sexp::list_from(&[Sexp::Symbol("function".to_string()), inner])
-    }
 }
 
 /// Pretty-printer used by debug and tests.

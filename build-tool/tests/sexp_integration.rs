@@ -31,21 +31,25 @@ fn list_from_three_elements_chains_right() {
     assert_eq!(got, expected);
 }
 
+fn wrap_reader_macro(tag: &str, inner: Sexp) -> Sexp {
+    Sexp::list_from(&[Sexp::Symbol(tag.into()), inner])
+}
+
 #[test]
 fn quote_wraps_form() {
-    let got = Sexp::quote(Sexp::Symbol("x".into()));
+    let got = wrap_reader_macro("quote", Sexp::Symbol("x".into()));
     assert_eq!(fmt_sexp(&got), "'x");
 }
 
 #[test]
 fn fmt_reader_macros() {
     assert_eq!(
-        fmt_sexp(&Sexp::backquote(Sexp::Symbol("x".into()))),
+        fmt_sexp(&wrap_reader_macro("backquote", Sexp::Symbol("x".into()))),
         "`x"
     );
-    assert_eq!(fmt_sexp(&Sexp::comma(Sexp::Symbol("x".into()))), ",x");
-    assert_eq!(fmt_sexp(&Sexp::comma_at(Sexp::Symbol("x".into()))), ",@x");
-    assert_eq!(fmt_sexp(&Sexp::function(Sexp::Symbol("x".into()))), "#'x");
+    assert_eq!(fmt_sexp(&wrap_reader_macro("comma", Sexp::Symbol("x".into()))), ",x");
+    assert_eq!(fmt_sexp(&wrap_reader_macro("comma-at", Sexp::Symbol("x".into()))), ",@x");
+    assert_eq!(fmt_sexp(&wrap_reader_macro("function", Sexp::Symbol("x".into()))), "#'x");
 }
 
 #[test]
