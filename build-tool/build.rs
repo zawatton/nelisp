@@ -348,6 +348,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-sf-if.el",
         "nelisp-cc-sf-setq.el",
         "nelisp-cc-sf-while.el",
+        // Phase 47 Tier-1 special forms elisp化 — let / let*.
+        // `nl_sf_let' + `nl_sf_let_star' replace `sf_let' / `sf_let_star'
+        // Rust bodies via the new `nl_let_setup' + `nl_env_pop_frame'
+        // externs in `eval/special_forms.rs'.
+        "nelisp-cc-sf-let.el",
+        "nelisp-cc-sf-let-star.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

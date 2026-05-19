@@ -959,6 +959,21 @@
     (nelisp-cc-sf-while
      :source-var nelisp-cc-sf-while--source
      :output "nl_sf_while.o"
+     :requires-arch x86_64)
+    ;; Phase 47 Tier-1 special forms elisp化 — let / let*.
+    ;; `nl_sf_let' replaces the `sf_let' Rust body.  Uses the new
+    ;; `nl_let_setup(bindings, env, sequential=0)' + `nl_env_pop_frame(env)'
+    ;; externs to delegate frame-push + bind to Rust, keeping the
+    ;; body-eval + frame-pop control flow in elisp.
+    (nelisp-cc-sf-let
+     :source-var nelisp-cc-sf-let--source
+     :output "nl_sf_let.o"
+     :requires-arch x86_64)
+    ;; `nl_sf_let_star' replaces the `sf_let_star' Rust body.  Identical
+    ;; structure to `nl_sf_let' but calls nl_let_setup with sequential=1.
+    (nelisp-cc-sf-let-star
+     :source-var nelisp-cc-sf-let-star--source
+     :output "nl_sf_let_star.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

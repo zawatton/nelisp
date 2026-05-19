@@ -112,58 +112,98 @@ fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_let(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    sf_let_common(args, env, "let", false)
+    let mut out = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::sf_let_call(
+            args as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            0, // _pad: alignment pad (nl_sf_let is arity 4/even)
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_let".into())) }
 }
 
 fn sf_let_star(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    sf_let_common(args, env, "let*", true)
+    let mut out = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::sf_let_star_call(
+            args as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            0, // _pad: alignment pad (nl_sf_let_star is arity 4/even)
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_let_star".into())) }
 }
 
-fn sf_let_common(args: &Sexp, env: &mut Env, name: &str, sequential: bool) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    expect_min_len(&parts, name, 1)?;
-    let bindings = list_elements(&parts[0])?;
-    let pre_evaluated = if sequential {
-        None
+/// Phase 47 elisp primitive — parse + evaluate all bindings in a `let' or
+/// `let*' binding list, push a new lexical frame, and bind each variable.
+///
+/// bindings_list: *const Sexp — the raw bindings list (car of the let form's args).
+/// env:           *mut c_void — &mut Env cast.
+/// sequential:    i64 — 0 = parallel (let), 1 = sequential (let*).
+///
+/// For sequential=0: all values are evaluated in the outer frame before any
+/// are bound (= standard `let' semantics).
+/// For sequential=1: the frame is pushed first, then each binding is evaluated
+/// and bound in order (= `let*' semantics: later bindings see earlier ones).
+///
+/// Returns: 0=Ok (frame IS pushed and all vars are bound),
+///          1=Err (frame is NOT pushed; error details via separate channel).
+#[no_mangle]
+pub unsafe extern "C" fn nl_let_setup(
+    bindings_list: *const Sexp,
+    env: *mut std::ffi::c_void,
+    sequential: i64,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let bindings = match list_elements(&*bindings_list) {
+        Ok(b) => b,
+        Err(_) => return 1,
+    };
+    if sequential != 0 {
+        // let*: push frame first, then eval+bind sequentially.
+        env_ref.push_frame();
+        for b in &bindings {
+            let (name, val) = match nl_let_parse_binding(b, env_ref) {
+                Ok(pair) => pair,
+                Err(_) => { env_ref.pop_frame(); return 1; }
+            };
+            env_ref.bind_local(&name, val);
+        }
     } else {
+        // let: pre-eval all bindings in the outer frame.
         let mut values = Vec::with_capacity(bindings.len());
         for b in &bindings {
-            values.push(parse_let_binding(b, env)?);
-        }
-        Some(values)
-    };
-    with_frame(env, |env| {
-        if let Some(values) = pre_evaluated {
-            for (n, v) in values { env.bind_local(&n, v); }
-        } else {
-            for b in &bindings {
-                let (n, v) = parse_let_binding(b, env)?;
-                env.bind_local(&n, v);
+            match nl_let_parse_binding(b, env_ref) {
+                Ok(pair) => values.push(pair),
+                Err(_) => return 1,
             }
         }
-        eval_body(&parts[1..], env)
-    })
+        env_ref.push_frame();
+        for (name, val) in values {
+            env_ref.bind_local(&name, val);
+        }
+    }
+    0
 }
 
-fn parse_let_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
+/// Internal helper: parse a single `let' binding form and evaluate its value.
+/// Mirrors the deleted `parse_let_binding' private fn.
+fn nl_let_parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
     match b {
         Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
         Sexp::Cons(_) => {
             let parts = list_elements(b)?;
             let name = match &parts[0] {
                 Sexp::Symbol(s) => s.clone(),
-                other => {
-                    return Err(EvalError::WrongType {
-                        expected: "symbol".into(),
-                        got: other.clone(),
-                    })
-                }
+                other => return Err(EvalError::WrongType {
+                    expected: "symbol".into(),
+                    got: other.clone(),
+                }),
             };
-            let val = if parts.len() >= 2 {
-                eval(&parts[1], env)?
-            } else {
-                Sexp::Nil
-            };
+            let val = if parts.len() >= 2 { eval(&parts[1], env)? } else { Sexp::Nil };
             Ok((name, val))
         }
         other => Err(EvalError::WrongType {
@@ -171,6 +211,16 @@ fn parse_let_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalErro
             got: other.clone(),
         }),
     }
+}
+
+/// Phase 47 elisp primitive — pop the topmost lexical frame from env.
+/// env: *mut c_void = &mut Env cast.
+/// Returns: 0 always.
+#[no_mangle]
+pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    env_ref.pop_frame();
+    0
 }
 
 fn eval_body(body: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
