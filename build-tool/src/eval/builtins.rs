@@ -24,7 +24,15 @@ macro_rules! builtin_names {
 macro_rules! builtin_dispatch {
     ($name:ident, $args:ident, $env:ident) => {
         match $name {
-            "vector" => Ok(Sexp::vector($args.to_vec())), "make-vector" => bi_make_vector($args),
+            "vector" => Ok(Sexp::vector($args.to_vec())),
+            "make-vector" => {
+                require_arity("make-vector", $args, 2, Some(2))?;
+                let len = as_int("make-vector", &$args[0])?;
+                if len < 0 { return Err(EvalError::ArithError(format!("make-vector: negative length {}", len))); }
+                let mut result_slot: Sexp = Sexp::Nil;
+                unsafe { crate::elisp_cc_spike::bi_make_vector(&$args[0] as *const Sexp, &$args[1] as *const Sexp, &mut result_slot as *mut Sexp) };
+                Ok(result_slot)
+            },
             "nelisp--length-cons-cc" => {
                 require_arity("nelisp--length-cons-cc", $args, 1, Some(1))?;
                 match &$args[0] {
@@ -111,7 +119,21 @@ macro_rules! builtin_dispatch {
                 super::apply_function(&func, &all_args, $env)
             },
             "eval" => { require_arity("eval", $args, 1, Some(2))?; super::eval(&$args[0], $env) },
-            "signal" => bi_signal($args),
+            "signal" => {
+                require_arity("signal", $args, 2, Some(2))?;
+                let Sexp::Symbol(tag) = &$args[0] else { return Err(EvalError::WrongType { expected: "symbolp".into(), got: $args[0].clone() }); };
+                let (q, a, w) = (Sexp::Symbol("quit".into()), Sexp::Symbol("arith-error".into()), Sexp::Symbol("wrong-type-argument".into()));
+                let hd = |s: &Sexp| -> Option<Sexp> { if let Sexp::Cons(b) = s { Some(b.car.clone()) } else { None } };
+                match unsafe { crate::elisp_cc_spike::bi_signal_dispatch(&$args[0], &q, &a, &w) } {
+                    0 => Err(EvalError::Quit),
+                    1 => Err(EvalError::ArithError(match hd(&$args[1]).as_ref().unwrap_or(&$args[1]) { Sexp::Str(s) => s.clone(), o => format!("{o:?}") })),
+                    2 => Err(EvalError::WrongType {
+                        expected: match hd(&$args[1]) { Some(Sexp::Symbol(s) | Sexp::Str(s)) => s.clone(), Some(o) => format!("{o:?}"), None => "argument".into() },
+                        got: match &$args[1] { Sexp::Cons(b) => match &b.cdr { Sexp::Cons(c) => c.car.clone(), o => o.clone() }, o => o.clone() },
+                    }),
+                    _ => Err(EvalError::UserError { tag: tag.clone(), data: $args[1].clone() }),
+                }
+            },
             "nelisp--write-stdout-bytes" => {
                 use std::io::Write;
                 require_arity("nelisp--write-stdout-bytes", $args, 1, Some(1))?;
@@ -147,7 +169,23 @@ macro_rules! builtin_dispatch {
                     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
                 }
             },
-            "nelisp--f64-trunc" => bi_f64_trunc($args),
+            "nelisp--f64-trunc" => {
+                require_arity("nelisp--f64-trunc", $args, 3, Some(3))?;
+                let mode = match &$args[0] {
+                    Sexp::Symbol(s) => s.as_str(),
+                    other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
+                };
+                let f = |a: &Sexp| -> Result<f64, EvalError> { match a {
+                    Sexp::Int(i) => Ok(*i as f64), Sexp::Float(f) => Ok(*f), Sexp::Nil => Ok(0.0),
+                    other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }),
+                } };
+                let q = f(&$args[1])? / f(&$args[2])?;
+                Ok(Sexp::Int(match mode {
+                    "floor" => q.floor() as i64, "ceiling" => q.ceil() as i64,
+                    "round" => q.round() as i64, "truncate" => q.trunc() as i64,
+                    _ => return Err(EvalError::Internal(format!("nelisp--f64-trunc: unknown mode `{mode}`"))),
+                }))
+            },
             "nl-write-file" => {
                 require_arity("nl-write-file", $args, 2, Some(2))?;
                 let path = string_value(&$args[0])?;
@@ -548,59 +586,6 @@ fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match arg { Sexp::Symbol(s) => env.lookup_function(s), _ => Ok(arg.clone()) }
 }
 
-fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("signal", args, 2, Some(2))?;
-    let Sexp::Symbol(tag) = &args[0] else { return Err(EvalError::WrongType { expected: "symbolp".into(), got: args[0].clone() }); };
-    let (q, a, w) = (Sexp::Symbol("quit".into()), Sexp::Symbol("arith-error".into()), Sexp::Symbol("wrong-type-argument".into()));
-    fn hd(s: &Sexp) -> Option<&Sexp> { if let Sexp::Cons(b) = s { Some(&b.car) } else { None } }
-    match unsafe { crate::elisp_cc_spike::bi_signal_dispatch(&args[0], &q, &a, &w) } {
-        0 => Err(EvalError::Quit),
-        1 => Err(EvalError::ArithError(match hd(&args[1]).unwrap_or(&args[1]) { Sexp::Str(s) => s.clone(), o => format!("{o:?}") })),
-        2 => Err(EvalError::WrongType {
-            expected: match hd(&args[1]) { Some(Sexp::Symbol(s) | Sexp::Str(s)) => s.clone(), Some(o) => format!("{o:?}"), None => "argument".into() },
-            got: match &args[1] { Sexp::Cons(b) => match &b.cdr { Sexp::Cons(c) => c.car.clone(), o => o.clone() }, o => o.clone() },
-        }),
-        _ => Err(EvalError::UserError { tag: tag.clone(), data: args[1].clone() }),
-    }
-}
-
-fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {
-    match arg {
-        Sexp::Int(i) => Ok(*i as f64),
-        Sexp::Float(f) => Ok(*f),
-        Sexp::Nil => Ok(0.0),
-        other => Err(EvalError::WrongType {
-            expected: "number".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--f64-trunc", args, 3, Some(3))?;
-    let mode = match &args[0] {
-        Sexp::Symbol(s) => s.as_str(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbol".into(),
-                got: other.clone(),
-            });
-        }
-    };
-    let q = to_f64(&args[1])? / to_f64(&args[2])?;
-    Ok(Sexp::Int(match mode {
-        "floor" => q.floor() as i64,
-        "ceiling" => q.ceil() as i64,
-        "round" => q.round() as i64,
-        "truncate" => q.trunc() as i64,
-        _ => {
-            return Err(EvalError::Internal(format!(
-                "nelisp--f64-trunc: unknown mode `{mode}`"
-            )));
-        }
-    }))
-}
-
 // Unix raw-mode and non-blocking stdin helpers.
 
 #[cfg(unix)]
@@ -886,13 +871,3 @@ mod tty_jobctrl {
 
 
 
-fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("make-vector", args, 2, Some(2))?;
-    let len = as_int("make-vector", &args[0])?;
-    if len < 0 {
-        return Err(EvalError::ArithError(format!("make-vector: negative length {}", len)));
-    }
-    let mut result_slot: Sexp = Sexp::Nil;
-    unsafe { crate::elisp_cc_spike::bi_make_vector(&args[0] as *const Sexp, &args[1] as *const Sexp, &mut result_slot as *mut Sexp) };
-    Ok(result_slot)
-}
