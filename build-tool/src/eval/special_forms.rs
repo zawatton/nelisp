@@ -193,44 +193,29 @@ fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.len() % 2 != 0 {
-        return Err(wrong_args("setq", "even number", parts.len()));
-    }
-    let mut last = Sexp::Nil;
-    let mut iter = parts.into_iter();
-    while let Some(name_form) = iter.next() {
-        let value_form = iter.next().unwrap();
-        let name = match name_form {
-            Sexp::Symbol(s) => s,
-            Sexp::Nil => "nil".to_string(),
-            Sexp::T => "t".to_string(),
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "symbol".into(),
-                    got: other,
-                })
-            }
-        };
-        let val = eval(&value_form, env)?;
-        env.set_value(&name, val.clone())?;
-        last = val;
-    }
-    Ok(last)
+    let mut out = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::sf_setq_call(
+            args as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            0, // _pad: alignment pad (nl_sf_setq is arity 4/even)
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_setq".into())) }
 }
 
 fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    expect_min_len(&parts, "while", 1)?;
-    loop {
-        let cond = eval(&parts[0], env)?;
-        if !is_truthy(&cond) {
-            return Ok(Sexp::Nil);
-        }
-        for f in parts.iter().skip(1) {
-            eval(f, env)?;
-        }
-    }
+    let mut out = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::sf_while_call(
+            args as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            0, // _pad: alignment pad (nl_sf_while is arity 4/even)
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_while".into())) }
 }
 
 fn clause_parts(clause: &Sexp) -> Result<Vec<Sexp>, EvalError> {

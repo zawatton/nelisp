@@ -346,8 +346,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // `eval/special_forms.rs'.
         "nelisp-cc-sf-progn.el",
         "nelisp-cc-sf-if.el",
-        // "nelisp-cc-sf-setq.el",
-        // "nelisp-cc-sf-while.el",
+        "nelisp-cc-sf-setq.el",
+        "nelisp-cc-sf-while.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
