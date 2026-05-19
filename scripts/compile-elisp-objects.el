@@ -292,6 +292,16 @@
      :source-var nelisp-cc-mirror-install-entry-or-insert--source
      :output "nelisp_mirror_install_entry_or_insert.o"
      :requires-arch x86_64)
+    ;; Doc 86 §86.4 — `nelisp--env-globals-op' read/clear/pred dispatch
+    ;; (7 of 10 arms): get-value / get-function / is-bound / is-fbound /
+    ;; is-constant / clear-value / clear-function.  Returns i64 result code;
+    ;; set-* and capture-lexical handled by Rust.  Linux-x86_64 only —
+    ;; same `extern-call' + symbol-name-eq ABI gate as the §111.E sibling
+    ;; helpers.
+    (nelisp-cc-env-shim-op
+     :source-var nelisp-cc-env-shim-op--source
+     :output "nelisp_env_shim_op.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

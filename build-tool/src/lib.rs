@@ -353,6 +353,16 @@ pub mod elisp_cc_spike {
         pub fn nelisp_jit_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64;
         // Doc 122 §122.J — sexp.rs formatter chain elisp化.
         fn nelisp_fmt_sexp(s: *const Sexp, slot: *mut Sexp) -> i64;
+        // Doc 86 §86.4 — 7-arm OP dispatcher (get/is/clear); returns i64
+        // result code (1=hit, 0=unbound-var, -1=unbound-fn, -2=Rust handles).
+        fn nelisp_env_shim_op(
+            op_ptr: *const Sexp,
+            mirror_ptr: *const Sexp,
+            sym_ptr: *const Sexp,
+            unbound_ptr: *const Sexp,
+            result_slot: *mut Sexp,
+            vec_scratch: *mut Sexp,
+        ) -> i64;
     }
 
     pub fn probe() -> i64 {
@@ -470,6 +480,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(mirror_clear_function: nelisp_mirror_clear_function, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64);
     cc_wrap!(mirror_set_constant: nelisp_mirror_set_constant, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, flag_ptr: *const Sexp) -> i64);
     cc_wrap!(mirror_install_entry: nelisp_mirror_install_entry, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64);
+    cc_wrap!(env_shim_op: nelisp_env_shim_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp, result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64);
 
     /// Scratch vector for the four `_or_insert` wrappers.
     fn build_or_insert_scratch_vec(

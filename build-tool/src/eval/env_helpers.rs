@@ -153,7 +153,9 @@ impl Env {
         env.intern_constant("nil", Sexp::Nil);
         env.intern_constant("t", Sexp::T);
         super::builtins::install_builtins(&mut env);
-        super::env_shim::install_env_shim_primitives(&mut env);
+        env.register_extern_builtin("nelisp--env-globals-op", |args, env| {
+            super::env_shim::bi_globals_op(args, env)
+        });
         env
     }
 

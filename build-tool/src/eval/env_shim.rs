@@ -1,114 +1,29 @@
-//! `nelisp--env-globals-op OP NAME &optional ARG' dispatcher.  OP tags:
-//! get/set-{value,function}, clear-{value,function}, is-{bound,fbound,constant},
-//! set-constant, capture-lexical.  Backs 11 wrappers in
-//! `lisp/nelisp-stdlib-env-shim.el'.  set-value bypasses constant-reject
-//! (shim enforces); set-function never errors; clear-* no-op on absent.
+//! `nelisp--env-globals-op OP NAME &optional ARG' dispatcher (Phase 47).
+//! 7 read/clear/pred arms handled by `nelisp_env_shim_op' (.o, Doc 86 §86.4).
+//! set-{value,function,constant} and capture-lexical stay in Rust.
 
 use super::error::EvalError;
 use super::sexp::Sexp;
 use super::Env;
 
-fn wrong_args(expected: usize, got: usize) -> EvalError {
-    EvalError::WrongNumberOfArguments {
-        function: "nelisp--env-globals-op".to_string(),
-        expected: expected.to_string(),
-        got,
-    }
-}
-
-fn wrong_type(got: &Sexp) -> EvalError {
-    EvalError::WrongType {
-        expected: "symbolp".into(),
-        got: got.clone(),
-    }
-}
-
-fn bool_sexp(b: bool) -> Sexp {
-    if b {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    }
-}
-
+/// Thin arg-check + Phase-47 call + error-mapping shim.
 pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let op = match args.first() {
-        Some(Sexp::Symbol(s)) => s.as_str(),
-        Some(o) => return Err(wrong_type(o)),
-        None => return Err(wrong_args(1, 0)),
-    };
-    let expected: usize = match op {
-        "capture-lexical" => 1,
-        "set-value" | "set-function" | "set-constant" => 3,
-        _ => 2,
-    };
-    if args.len() != expected {
-        return Err(wrong_args(expected, args.len()));
-    }
-    if op == "capture-lexical" {
-        return Ok(env.capture_lexical());
-    }
-    let name = match &args[1] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(wrong_type(other)),
-    };
-    // `mirror_lookup_*' returns `unbound_marker' for absent; convert to
-    // Unbound{Variable,Function} for the public Result surface.  Macro
-    // arms collapse 5 op families (get / set / clear / is / set-const).
-    macro_rules! arm {
-        (get $l:ident, $e:ident) => {{
-            let v = env.$l(&name);
-            if v == env.unbound_marker {
-                Err(EvalError::$e(name))
-            } else {
-                Ok(v)
-            }
-        }};
-        (set $s:ident) => {{
-            let v = args[2].clone();
-            env.$s(&name, v.clone());
-            Ok(v)
-        }};
-        (clear $c:ident) => {{
-            env.$c(&name);
-            Ok(args[1].clone())
-        }};
-        (is $p:ident) => {
-            Ok(bool_sexp(env.$p(&name)))
-        };
-        (set-const) => {{
-            let t = !matches!(args[2], Sexp::Nil);
-            env.mirror_set_constant(&name, t);
-            Ok(bool_sexp(t))
-        }};
-    }
+    let sym = |s: &Sexp| match s { Sexp::Symbol(n) => Ok(n.clone()), o => Err(EvalError::WrongType { expected: "symbolp".into(), got: o.clone() }) };
+    let arity = |n: usize| EvalError::WrongNumberOfArguments { function: "nelisp--env-globals-op".to_string(), expected: n.to_string(), got: args.len() };
+    let op = sym(args.first().ok_or_else(|| arity(1))?)?;
+    let (exp, op) = match op.as_str() { "capture-lexical" => (1, op.as_str()), "set-value"|"set-function"|"set-constant" => (3, op.as_str()), _ => (2, op.as_str()) };
+    if args.len() != exp { return Err(arity(exp)); }
+    if op == "capture-lexical" { return Ok(env.capture_lexical()); }
+    let name = sym(&args[1])?;
     match op {
-        "get-value" => arm!(get mirror_lookup_value, UnboundVariable),
-        "get-function" => arm!(get mirror_lookup_function, UnboundFunction),
-        "set-value" => arm!(set mirror_set_value),
-        "set-function" => arm!(set mirror_set_function),
-        "clear-value" => arm!(clear mirror_clear_value),
-        "clear-function" => arm!(clear mirror_clear_function),
-        "is-bound" => arm!(is mirror_is_bound),
-        "is-fbound" => arm!(is mirror_is_fbound),
-        "is-constant" => arm!(is mirror_is_constant),
-        "set-constant" => arm!(set-const),
-        other => Err(EvalError::Internal(format!(
-            "nelisp--env-globals-op: unknown OP `{}`",
-            other
-        ))),
+        "set-value"    => { env.mirror_set_value(&name, args[2].clone());    return Ok(args[2].clone()); }
+        "set-function" => { env.mirror_set_function(&name, args[2].clone()); return Ok(args[2].clone()); }
+        "set-constant" => { let t = !matches!(args[2], Sexp::Nil); env.mirror_set_constant(&name, t); return Ok(if t { Sexp::T } else { Sexp::Nil }); }
+        _ => {}
     }
-}
-
-/// Install `nelisp--env-globals-op' function-cell sentinel.  Called from
-/// `Env::new_global' after `install_builtins' but before STDLIB load so
-/// the shim file's 11 elisp wrappers can funcall it.  Idempotent.
-pub fn install_env_shim_primitives(env: &mut Env) {
-    let sentinel = Sexp::list_from(&[
-        Sexp::Symbol("builtin".into()),
-        Sexp::Symbol("nelisp--env-globals-op".into()),
-    ]);
-    env.set_function("nelisp--env-globals-op", sentinel);
+    let (mut result, mut scratch) = (Sexp::Nil, Sexp::Nil);
+    let rc = unsafe { crate::elisp_cc_spike::env_shim_op(&args[0], &env.globals_record, &args[1], &env.unbound_marker, &mut result, &mut scratch) };
+    match rc { 1 => Ok(result), 0 => Err(EvalError::UnboundVariable(name)), -1 => Err(EvalError::UnboundFunction(name)), _ => Err(EvalError::Internal(format!("nelisp--env-globals-op: unknown OP `{op}'"))) }
 }
 
 #[cfg(test)]

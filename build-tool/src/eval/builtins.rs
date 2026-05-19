@@ -135,7 +135,6 @@ macro_rules! builtin_dispatch {
                 let rc = unsafe { crate::elisp_cc_spike::bi_nl_fact_i64(&$args[0] as *const _, &mut out as *mut _) };
                 if rc == 0 { Ok(out) } else { Err(EvalError::Internal("nl-fact-i64: argument out of i64-safe range 0..=20".into())) }
             },
-            "nelisp--env-globals-op" => crate::eval::env_shim::bi_globals_op($args, $env),
             _ => match $env.extern_builtins.get($name).cloned() { Some(f) => f($args, $env), None => Err(EvalError::UnboundFunction($name.to_string())) }
         }
     };
