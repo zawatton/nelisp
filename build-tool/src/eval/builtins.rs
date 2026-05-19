@@ -81,9 +81,31 @@ macro_rules! builtin_dispatch {
             "nelisp--write-stdout-bytes" => bi_write_stdout_bytes($args), "nelisp--write-stderr-line" => bi_write_stderr_line($args), "read-stdin-bytes" => bi_read_stdin_bytes($args),
             "nelisp--f64-trunc" => bi_f64_trunc($args), "nl-write-file" => bi_nl_write_file($args), "nl-make-directory" => bi_nl_make_directory($args),
             "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter($args), "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave($args), "read-stdin-byte-available" => bi_read_stdin_byte_available($args),
-            "_termios-saved-p" => bi_termios_saved_p($args), "_raw-mode-hooks-installed-p" => bi_raw_mode_hooks_installed_p($args), "set-quit-flag" => bi_set_quit_flag($args),
-            "clear-quit-flag" => bi_clear_quit_flag($args), "quit-flag-pending-p" => bi_quit_flag_pending_p($args), "install-sigint-handler" => bi_install_sigint_handler($args),
-            "_sigint-handler-installed-p" => bi_sigint_handler_installed_p($args), "install-winsize-handler" => bi_install_winsize_handler($args), "_winsize-handler-installed-p" => bi_winsize_handler_installed_p($args),
+            "_termios-saved-p" => bi_termios_saved_p($args), "_raw-mode-hooks-installed-p" => bi_raw_mode_hooks_installed_p($args),
+            "set-quit-flag" => {
+                require_arity("set-quit-flag", $args, 0, Some(0))?;
+                unsafe { crate::elisp_cc_spike::bi_set_quit_flag(quit::nl_quit_flag_ptr()); }
+                Ok(Sexp::T)
+            },
+            "clear-quit-flag" => {
+                require_arity("clear-quit-flag", $args, 0, Some(0))?;
+                unsafe { crate::elisp_cc_spike::bi_clear_quit_flag(quit::nl_quit_flag_ptr()); }
+                Ok(Sexp::T)
+            },
+            "quit-flag-pending-p" => {
+                require_arity("quit-flag-pending-p", $args, 0, Some(0))?;
+                Ok(bool_sexp(unsafe { crate::elisp_cc_spike::bi_quit_flag_pending_p(quit::nl_quit_flag_ptr()) } != 0))
+            },
+            "install-sigint-handler" => {
+                require_arity("install-sigint-handler", $args, 0, Some(0))?;
+                quit::install_sigint_handler();
+                Ok(Sexp::T)
+            },
+            "_sigint-handler-installed-p" => {
+                require_arity("_sigint-handler-installed-p", $args, 0, Some(0))?;
+                Ok(bool_sexp(quit::sigint_handler_installed_p()))
+            },
+            "install-winsize-handler" => bi_install_winsize_handler($args), "_winsize-handler-installed-p" => bi_winsize_handler_installed_p($args),
             "terminal-take-winsize-changed" => bi_terminal_take_winsize_changed($args), "terminal-current-winsize" => bi_terminal_current_winsize($args),
             "install-jobctrl-handlers" => bi_install_jobctrl_handlers($args), "_jobctrl-handlers-installed-p" => bi_jobctrl_handlers_installed_p($args), "terminal-take-sigcont" => bi_terminal_take_sigcont($args),
             "read" => bi_read($args, $env), "read-from-string" => bi_read_from_string($args, $env), "require" => bi_require($args, $env),
@@ -951,41 +973,6 @@ fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     {
         Ok(Sexp::Nil)
     }
-}
-
-fn bi_set_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("set-quit-flag", args, 0, Some(0))?;
-    unsafe {
-        crate::elisp_cc_spike::bi_set_quit_flag(quit::nl_quit_flag_ptr());
-    }
-    Ok(Sexp::T)
-}
-
-fn bi_clear_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("clear-quit-flag", args, 0, Some(0))?;
-    unsafe {
-        crate::elisp_cc_spike::bi_clear_quit_flag(quit::nl_quit_flag_ptr());
-    }
-    Ok(Sexp::T)
-}
-
-fn bi_quit_flag_pending_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("quit-flag-pending-p", args, 0, Some(0))?;
-    let raw = unsafe {
-        crate::elisp_cc_spike::bi_quit_flag_pending_p(quit::nl_quit_flag_ptr())
-    };
-    Ok(bool_sexp(raw != 0))
-}
-
-fn bi_install_sigint_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("install-sigint-handler", args, 0, Some(0))?;
-    quit::install_sigint_handler();
-    Ok(Sexp::T)
-}
-
-fn bi_sigint_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("_sigint-handler-installed-p", args, 0, Some(0))?;
-    Ok(bool_sexp(quit::sigint_handler_installed_p()))
 }
 
 fn bi_install_winsize_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
