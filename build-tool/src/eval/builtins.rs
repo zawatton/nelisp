@@ -44,17 +44,7 @@ macro_rules! builtin_dispatch {
                 require_arity("nelisp--recordp-cc", $args, 1, Some(1))?;
                 Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::recordp))
             },
-            "string-bytes" => {
-                require_arity("string-bytes", $args, 1, Some(1))?;
-                let str_view: Sexp = match &$args[0] {
-                    Sexp::Str(_) => $args[0].clone(),
-                    Sexp::MutStr(rc) => Sexp::Str(rc.value.clone()),
-                    other => return Err(EvalError::WrongType { expected: "string".into(), got: other.clone() }),
-                };
-                let mut result_slot: Sexp = Sexp::Nil;
-                unsafe { crate::elisp_cc_spike::bi_string_bytes(&str_view as *const Sexp, &mut result_slot as *mut Sexp); }
-                Ok(result_slot)
-            },
+            "string-bytes" => bi_string_bytes($args),
             "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float($args),
             "truncate" => {
                 require_arity("truncate", $args, 1, Some(1))?;
@@ -134,58 +124,10 @@ macro_rules! builtin_dispatch {
                     _ => Err(EvalError::UserError { tag: tag.clone(), data: $args[1].clone() }),
                 }
             },
-            "nelisp--write-stdout-bytes" => {
-                use std::io::Write;
-                require_arity("nelisp--write-stdout-bytes", $args, 1, Some(1))?;
-                let s = $args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: $args[0].clone() })?;
-                let body_sexp = Sexp::Str(s);
-                let rc = unsafe { crate::elisp_cc_spike::bi_write_stdout_bytes(&body_sexp as *const Sexp) };
-                if rc < 0 { return Err(EvalError::Internal(format!("nelisp--write-stdout-bytes: write returned {}", rc))); }
-                std::io::stdout().lock().flush().map_err(|e| EvalError::Internal(format!("nelisp--write-stdout-bytes: {}", e)))?;
-                Ok($args[0].clone())
-            },
-            "nelisp--write-stderr-line" => {
-                use std::io::Write;
-                require_arity("nelisp--write-stderr-line", $args, 1, Some(1))?;
-                let s = $args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: $args[0].clone() })?;
-                let body_sexp = Sexp::Str(s);
-                unsafe { let _ = crate::elisp_cc_spike::bi_write_stderr_line(&body_sexp as *const Sexp); }
-                let mut err = std::io::stderr().lock();
-                let _ = err.write_all(b"\n");
-                let _ = err.flush();
-                Ok($args[0].clone())
-            },
-            "read-stdin-bytes" => {
-                require_arity("read-stdin-bytes", $args, 1, Some(1))?;
-                let limit = match &$args[0] {
-                    Sexp::Int(n) if *n > 0 => *n as usize,
-                    other => return Err(EvalError::WrongType { expected: "positive integer".into(), got: other.clone() }),
-                };
-                let mut buf = vec![0u8; limit];
-                let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit as i64) };
-                if rc < 0 { return Err(EvalError::Internal(format!("read-stdin-bytes: read returned {}", rc))); }
-                if rc == 0 { Ok(Sexp::Nil) } else {
-                    buf.truncate((rc as usize).min(buf.len()));
-                    Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
-                }
-            },
-            "nelisp--f64-trunc" => {
-                require_arity("nelisp--f64-trunc", $args, 3, Some(3))?;
-                let mode = match &$args[0] {
-                    Sexp::Symbol(s) => s.as_str(),
-                    other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
-                };
-                let f = |a: &Sexp| -> Result<f64, EvalError> { match a {
-                    Sexp::Int(i) => Ok(*i as f64), Sexp::Float(f) => Ok(*f), Sexp::Nil => Ok(0.0),
-                    other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }),
-                } };
-                let q = f(&$args[1])? / f(&$args[2])?;
-                Ok(Sexp::Int(match mode {
-                    "floor" => q.floor() as i64, "ceiling" => q.ceil() as i64,
-                    "round" => q.round() as i64, "truncate" => q.trunc() as i64,
-                    _ => return Err(EvalError::Internal(format!("nelisp--f64-trunc: unknown mode `{mode}`"))),
-                }))
-            },
+            "nelisp--write-stdout-bytes" => bi_write_stdout_bytes($args),
+            "nelisp--write-stderr-line" => bi_write_stderr_line($args),
+            "read-stdin-bytes" => bi_read_stdin_bytes($args),
+            "nelisp--f64-trunc" => bi_f64_trunc($args),
             "nl-write-file" => {
                 require_arity("nl-write-file", $args, 2, Some(2))?;
                 let path = string_value(&$args[0])?;
@@ -330,23 +272,78 @@ fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> {
     if rc < 0 { Err(EvalError::Internal(format!("{name}: {path}: kernel returned {rc}"))) } else { Ok(Sexp::T) }
 }
 
+fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-bytes", args, 1, Some(1))?;
+    let sv = match &args[0] { Sexp::Str(_) => args[0].clone(), Sexp::MutStr(rc) => Sexp::Str(rc.value.clone()),
+        other => return Err(EvalError::WrongType { expected: "string".into(), got: other.clone() }) };
+    Ok(cc_slot_1(&sv, crate::elisp_cc_spike::bi_string_bytes))
+}
+fn sexp_to_f64(a: &Sexp) -> Result<f64, EvalError> {
+    match a { Sexp::Int(i) => Ok(*i as f64), Sexp::Float(f) => Ok(*f), Sexp::Nil => Ok(0.0),
+        other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }) }
+}
+fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--f64-trunc", args, 3, Some(3))?;
+    let mode = match &args[0] { Sexp::Symbol(s) => s.as_str(), other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }) };
+    let q = sexp_to_f64(&args[1])? / sexp_to_f64(&args[2])?;
+    Ok(Sexp::Int(match mode {
+        "floor" => q.floor() as i64, "ceiling" => q.ceil() as i64, "round" => q.round() as i64, "truncate" => q.trunc() as i64,
+        _ => return Err(EvalError::Internal(format!("nelisp--f64-trunc: unknown mode `{mode}`"))),
+    }))
+}
+fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("read-stdin-bytes", args, 1, Some(1))?;
+    let limit = match &args[0] {
+        Sexp::Int(n) if *n > 0 => *n as usize,
+        other => return Err(EvalError::WrongType { expected: "positive integer".into(), got: other.clone() }),
+    };
+    let mut buf = vec![0u8; limit];
+    let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit as i64) };
+    if rc < 0 { return Err(EvalError::Internal(format!("read-stdin-bytes: read returned {}", rc))); }
+    if rc == 0 { return Ok(Sexp::Nil); }
+    buf.truncate((rc as usize).min(buf.len()));
+    Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
+}
+fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::io::Write;
+    require_arity("nelisp--write-stdout-bytes", args, 1, Some(1))?;
+    let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: args[0].clone() })?;
+    let body_sexp = Sexp::Str(s);
+    let rc = unsafe { crate::elisp_cc_spike::bi_write_stdout_bytes(&body_sexp as *const Sexp) };
+    if rc < 0 { return Err(EvalError::Internal(format!("nelisp--write-stdout-bytes: write returned {}", rc))); }
+    std::io::stdout().lock().flush().map_err(|e| EvalError::Internal(format!("nelisp--write-stdout-bytes: {}", e)))?;
+    Ok(args[0].clone())
+}
+fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::io::Write;
+    require_arity("nelisp--write-stderr-line", args, 1, Some(1))?;
+    let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType { expected: "stringp".into(), got: args[0].clone() })?;
+    let body_sexp = Sexp::Str(s);
+    unsafe { let _ = crate::elisp_cc_spike::bi_write_stderr_line(&body_sexp as *const Sexp); }
+    let mut err = std::io::stderr().lock();
+    let _ = err.write_all(b"\n"); let _ = err.flush();
+    Ok(args[0].clone())
+}
+/// Validate arity=1 and resolve arg[0] to an absolute path string Sexp.
+fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> {
+    require_arity(name, args, 1, Some(1))?;
+    let p = resolve_path(&args[0], env)?;
+    let s = Sexp::Str(p.to_string_lossy().into_owned());
+    Ok((p, s))
+}
+
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-canonicalize", args, 1, Some(1))?;
-    let path_sexp = Sexp::Str(resolve_path(&args[0], env)?.to_string_lossy().into_owned());
+    let (_, path_sexp) = path_arg1("nelisp--syscall-canonicalize", args, env)?;
     let mut buf = vec![0u8; libc::PATH_MAX as usize];
-    if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&path_sexp as *const _, buf.as_mut_ptr()) } == 0 {
-        return Ok(Sexp::Nil);
-    }
+    if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&path_sexp as *const _, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     Ok(Sexp::Str(String::from_utf8_lossy(&buf[..len]).into_owned()))
 }
 
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-read-file", args, 1, Some(1))?;
-    let p = resolve_path(&args[0], env)?;
+    let (p, path_sexp) = path_arg1("nelisp--syscall-read-file", args, env)?;
     let n_bytes = match std::fs::metadata(&p) { Ok(m) if m.is_file() => m.len() as usize, _ => return Ok(Sexp::Nil) };
     if n_bytes == 0 { return Ok(Sexp::Str(String::new())); }
-    let path_sexp = Sexp::Str(p.to_string_lossy().into_owned());
     let mut buf = vec![0u8; n_bytes];
     let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&path_sexp as *const _, buf.as_mut_ptr(), n_bytes as i64) } as i32 as i64;
     if rc < 0 { return Ok(Sexp::Nil); }
@@ -355,25 +352,22 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
 }
 
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-stat", args, 1, Some(1))?;
-    let path_sexp = Sexp::Str(resolve_path(&args[0], env)?.to_string_lossy().into_owned());
+    let (_, path_sexp) = path_arg1("nelisp--syscall-stat", args, env)?;
     let mut statbuf: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&path_sexp as *const _, (&mut statbuf as *mut libc::stat) as *mut u8) };
     let tag = if rc < 0 { "absent" } else { match statbuf.st_mode & libc::S_IFMT {
         m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent",
-    } };
+    }};
     Ok(Sexp::Symbol(tag.into()))
 }
 
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-readdir", args, 1, Some(1))?;
-    let dir = resolve_path(&args[0], env)?;
-    let dir_str = dir.to_string_lossy().into_owned();
+    let (dir, dir_sexp) = path_arg1("nelisp--syscall-readdir", args, env)?;
     let entries: Vec<Sexp> = match std::fs::read_dir(&dir) {
         Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect(),
         Err(_) => return Ok(Sexp::Nil),
     };
-    Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
+    Ok(Sexp::cons(dir_sexp, Sexp::list_from(&entries)))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -591,6 +585,4 @@ mod tty_jobctrl {
     pub fn handlers_installed_p() -> bool { HANDLER_INSTALLED.is_completed() }
     pub fn take_cont() -> bool { SIGCONT_ARRIVED.swap(false, Ordering::SeqCst) }
 }
-
-
 
