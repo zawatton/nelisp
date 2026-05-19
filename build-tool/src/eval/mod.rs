@@ -232,15 +232,17 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
     }
 }
 
-/// Evaluate each element of a proper list and collect the results.
-pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
+fn walk_proper_list(
+    head: &Sexp,
+    mut yield_elem: impl FnMut(&Sexp) -> Result<Sexp, EvalError>,
+) -> Result<Vec<Sexp>, EvalError> {
     let mut out = Vec::new();
-    let mut cur: Sexp = args.clone();
+    let mut cur: Sexp = head.clone();
     loop {
         let next = match &cur {
             Sexp::Nil => return Ok(out),
             Sexp::Cons(b) => {
-                out.push(eval(&b.car, env)?);
+                out.push(yield_elem(&b.car)?);
                 b.cdr.clone()
             }
             _ => {
@@ -254,26 +256,14 @@ pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, Eva
     }
 }
 
+/// Evaluate each element of a proper list and collect the results.
+pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
+    walk_proper_list(args, |car| eval(car, env))
+}
+
 /// Collect each element of a proper list without evaluating it.
 pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
-    let mut out = Vec::new();
-    let mut cur: Sexp = list.clone();
-    loop {
-        let next = match &cur {
-            Sexp::Nil => return Ok(out),
-            Sexp::Cons(b) => {
-                out.push(b.car.clone());
-                b.cdr.clone()
-            }
-            _ => {
-                return Err(EvalError::WrongType {
-                    expected: "list".into(),
-                    got: cur.clone(),
-                })
-            }
-        };
-        cur = next;
-    }
+    walk_proper_list(list, |car| Ok(car.clone()))
 }
 
 /// Elisp dispatcher helpers that must not re-enter `delegate_to_elisp_apply`.
