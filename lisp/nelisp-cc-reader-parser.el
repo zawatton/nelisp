@@ -13,9 +13,15 @@
 ;; `build-tool/src/reader/parser.rs' (~485 LOC Rust → ~500 LOC elisp).
 ;; Consumes the Token stream emitted by §116.A's
 ;; `nelisp_reader_lex_one' and produces final `Sexp' values via the
-;; existing Phase 47 grammar primitives (cons-make / sexp-write-symbol
-;; / sexp-write-str / sexp-int-make + the §122.E raw-mem ops for
-;; String header decoding).
+;; existing Phase 47 grammar primitives (cons-make-with-clone /
+;; sexp-write-symbol / sexp-write-str / sexp-int-make + the §122.E
+;; raw-mem ops for String header decoding).
+;;
+;; cons-make-with-clone (Doc 120.E) is used everywhere a Cons cell is
+;; written into the result-slot or a depth-level working slot that the
+;; caller will own after parse_one returns.  This ensures NlConsBoxRef
+;; refcounts are properly bumped so the Rust wrapper can drop the
+;; slot-pool normally without double-freeing shared inner boxes.
 ;;
 ;; ABI shape:
 ;;
@@ -80,10 +86,10 @@
 ;;                       `sexp-int-make'.
 ;;
 ;; Quote-family desugar: each prefix `'`, `` ` ``, `,`, `,@`, `#''
-;; becomes `(HEAD INNER)' via two cons-makes (= (cons HEAD (cons
-;; INNER nil))).  HEAD symbol bytes are pushed into SCRATCH-MUTSTR
-;; via `mut-str-push-byte' then finalised + retag-byte-overwritten
-;; to Sexp::Symbol.
+;; becomes `(HEAD INNER)' via two cons-make-with-clones (= (cons HEAD
+;; (cons INNER nil))).  HEAD symbol bytes are pushed into
+;; SCRATCH-MUTSTR via `mut-str-push-byte' then finalised +
+;; retag-byte-overwritten to Sexp::Symbol.
 
 ;;; Code:
 
@@ -618,11 +624,11 @@
                slot-pool (+ depth 1))
               1)
            ;; tail = (INNER . nil) at cdr[d].  nil source = slot 2.
-           (cons-make (vector-ref-ptr slot-pool
-                                      (nelisp_reader_p_car_idx depth))
-                      (vector-ref-ptr slot-pool 2)
-                      (vector-ref-ptr slot-pool
-                                      (nelisp_reader_p_cdr_idx depth)))
+           (cons-make-with-clone (vector-ref-ptr slot-pool
+                                                 (nelisp_reader_p_car_idx depth))
+                                 (vector-ref-ptr slot-pool 2)
+                                 (vector-ref-ptr slot-pool
+                                                 (nelisp_reader_p_cdr_idx depth)))
            ;; Build HEAD symbol at head[d].
            (= (nelisp_reader_p_build_head_symbol
                (vector-ref-ptr slot-pool
@@ -630,12 +636,12 @@
                (vector-ref-ptr slot-pool 0)
                tag-byte)
               1)
-           ;; cons-make HEAD TAIL -> result-slot.
-           (cons-make (vector-ref-ptr slot-pool
-                                      (nelisp_reader_p_head_idx depth))
-                      (vector-ref-ptr slot-pool
-                                      (nelisp_reader_p_cdr_idx depth))
-                      result-slot)
+           ;; cons-make-with-clone HEAD TAIL -> result-slot.
+           (cons-make-with-clone (vector-ref-ptr slot-pool
+                                                 (nelisp_reader_p_head_idx depth))
+                                 (vector-ref-ptr slot-pool
+                                                 (nelisp_reader_p_cdr_idx depth))
+                                 result-slot)
            1))
 
     ;; ===========================================================
@@ -643,7 +649,7 @@
     ;;
     ;; RParen     -> result-slot := Nil
     ;; Dot        -> parse one form into result-slot, expect RParen
-    ;; otherwise  -> parse item; recurse for tail; cons-make
+    ;; otherwise  -> parse item; recurse for tail; cons-make-with-clone
     ;; ===========================================================
 
     (defun nelisp_reader_p_parse_list_step
@@ -698,11 +704,11 @@
                                  (nelisp_reader_p_cdr_idx depth))
                  slot-pool (+ depth 1))
                 1)
-             (cons-make (vector-ref-ptr slot-pool
-                                        (nelisp_reader_p_car_idx depth))
-                        (vector-ref-ptr slot-pool
-                                        (nelisp_reader_p_cdr_idx depth))
-                        result-slot)
+             (cons-make-with-clone (vector-ref-ptr slot-pool
+                                                   (nelisp_reader_p_car_idx depth))
+                                   (vector-ref-ptr slot-pool
+                                                   (nelisp_reader_p_cdr_idx depth))
+                                   result-slot)
              1))))
 
     ;; ===========================================================
@@ -740,7 +746,7 @@
        ((= kind 10) -1)
        ((< kind 0) -1)
        ;; Otherwise parse one item into car[d], recurse for tail at
-       ;; cdr[d], cons-make into list-slot.
+       ;; cdr[d], cons-make-with-clone into list-slot.
        (t
         (and (= (nelisp_reader_p_dispatch
                  str-ptr cursor-slot
@@ -754,11 +760,11 @@
                                  (nelisp_reader_p_cdr_idx depth))
                  slot-pool (+ depth 1) 0)
                 1)
-             (cons-make (vector-ref-ptr slot-pool
-                                        (nelisp_reader_p_car_idx depth))
-                        (vector-ref-ptr slot-pool
-                                        (nelisp_reader_p_cdr_idx depth))
-                        list-slot)
+             (cons-make-with-clone (vector-ref-ptr slot-pool
+                                                   (nelisp_reader_p_car_idx depth))
+                                   (vector-ref-ptr slot-pool
+                                                   (nelisp_reader_p_cdr_idx depth))
+                                   list-slot)
              1))))
 
     ;; ===========================================================
@@ -867,6 +873,11 @@ SharpsParen (record `#s(...)') still surfaces as a parse error.
 Doc 122 §122.G unlocks kind 21 Float by routing the payload bytes
 through the `nl_str_to_float' extern (= `str::parse::<f64>()' with
 direct `Sexp::Float' write into RESULT-SLOT).
+
+All cons-cell construction uses `cons-make-with-clone' (Doc 120.E)
+so NlConsBoxRef refcounts are bumped at write time.  The Rust
+wrapper can therefore drop the slot-pool and stale result-slot
+normally — no deep_clone pass and no mem::forget are required.
 
 Slot-pool layout (= safe Rust wrapper allocates a Sexp::Vector of
 3 + 4 * MAX_DEPTH slots, all pre-Nil):

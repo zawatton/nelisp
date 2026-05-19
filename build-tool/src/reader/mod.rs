@@ -1,8 +1,8 @@
 //! Reader dispatch layer.  Every input routes through the pure-elisp
 //! pipeline `nelisp_reader_lex_one' + `nelisp_reader_parse_one' (via
-//! `elisp_cc_spike').  `deep_clone' rebuilds a refcount-1-owning tree
-//! before return since the parser's cons-make MVP aliases the slot
-//! pool without bumping inner-box refcounts.
+//! `elisp_cc_spike').  The parser uses `cons-make-with-clone' (Doc 120.E)
+//! so every NlConsBoxRef in the result tree is refcount-1-owned; normal
+//! Drop handles the slot pool and stale results without mem::forget.
 
 pub use crate::eval::error::{ReadError, SourcePos};
 pub use crate::eval::sexp::{fmt_sexp, Sexp};
@@ -74,25 +74,15 @@ enum ElispParseOutcome {
     Empty,
 }
 
-/// Per-call lex+parse state.  Drop `mem::forget's pool + result_slot
-/// since cons-make MVP creates Sexp::Cons aliases without refcount
-/// bumps — normal drop would double-free.  Leak reclaimed by process
-/// exit; a future refcount-aware cons-make retires it.
+/// Per-call lex+parse state.  `cons-make-with-clone' in the parser .o
+/// bumps all inner-box refcounts at write time, so Rust's default Drop
+/// handles pool_slot and result_slot correctly.
 struct ElispReadState {
     src: Sexp,
     cursor_slot: Sexp,
     result_slot: Sexp,
     /// Slot pool: slot 0 = MutStr scratch, 1 = payload, 2 = const-Nil, 3+ per-depth.
     pool_slot: Sexp,
-}
-
-impl Drop for ElispReadState {
-    fn drop(&mut self) {
-        let stale_result = std::mem::replace(&mut self.result_slot, Sexp::Nil);
-        std::mem::forget(stale_result);
-        let stale_pool = std::mem::replace(&mut self.pool_slot, Sexp::Nil);
-        std::mem::forget(stale_pool);
-    }
 }
 
 impl ElispReadState {
@@ -161,10 +151,9 @@ impl ElispReadState {
         if self.at_eof_after_skip() {
             return Some(ElispParseOutcome::Empty);
         }
-        // mem::forget the stale result (cons-make MVP aliases — normal
-        // drop would double-free; deep_clone already detached the prior form).
-        let stale = std::mem::replace(&mut self.result_slot, Sexp::Nil);
-        std::mem::forget(stale);
+        // Drop the previous result normally — cons-make-with-clone in the .o
+        // bumped inner-box refcounts so Drop decrements them correctly.
+        self.result_slot = Sexp::Nil;
         let status = unsafe {
             elisp_cc_spike::reader_parse_one(
                 &self.src as *const Sexp,
@@ -177,8 +166,8 @@ impl ElispReadState {
         if status != 1 {
             return None;
         }
-        let cloned = deep_clone(&self.result_slot);
-        Some(ElispParseOutcome::Form(cloned))
+        let result = std::mem::replace(&mut self.result_slot, Sexp::Nil);
+        Some(ElispParseOutcome::Form(result))
     }
 
     fn has_trailing_token(&mut self) -> bool {
@@ -199,26 +188,5 @@ unsafe fn vector_slot_ptr(pool_slot: *const Sexp, index: usize) -> *const Sexp {
             &slice[index] as *const Sexp
         }
         _ => unreachable!("pool_slot must be a Sexp::Vector"),
-    }
-}
-
-/// Walk `s' producing a refcount-1-owning copy.  Cons-make MVP aliases
-/// inner boxes without refcount bumps; deep_clone detaches before the
-/// pool drops.
-fn deep_clone(s: &Sexp) -> Sexp {
-    match s {
-        Sexp::Nil => Sexp::Nil,
-        Sexp::T => Sexp::T,
-        Sexp::Int(n) => Sexp::Int(*n),
-        Sexp::Float(f) => Sexp::Float(*f),
-        Sexp::Symbol(name) => Sexp::Symbol(name.clone()),
-        Sexp::Str(text) => Sexp::Str(text.clone()),
-        Sexp::MutStr(r) => Sexp::mut_str(r.value.clone()),
-        Sexp::Cons(b) => Sexp::cons(deep_clone(&b.car), deep_clone(&b.cdr)),
-        Sexp::Vector(v) => {
-            let items: Vec<Sexp> = v.value.iter().map(deep_clone).collect();
-            Sexp::vector(items)
-        }
-        Sexp::CharTable(_) | Sexp::BoolVector(_) | Sexp::Cell(_) | Sexp::Record(_) => s.clone(),
     }
 }
