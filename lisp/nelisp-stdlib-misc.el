@@ -446,6 +446,27 @@ already there.  Returns FEATURE."
   "Return t if FEATURE (a symbol) has been provided, else nil."
   (if (memq feature features) t nil))
 
+(defun require (feature &optional filename noerror)
+  "If FEATURE is not already provided, `load' FILENAME (or the symbol-name
+of FEATURE if FILENAME is nil) and verify the load did `provide' it.
+Returns FEATURE on success, nil on failure when NOERROR is non-nil,
+or signals `error' otherwise.  Replaces the deleted Rust `bi_require'."
+  (if (featurep feature)
+      feature
+    (if (and (not filename) (not (boundp 'load-path)))
+        (progn (provide feature) feature)
+      (let ((load-ok (condition-case _
+                         (progn (load (or filename (symbol-name feature)) noerror) t)
+                       (error nil))))
+        (if (featurep feature)
+            feature
+          (if (or noerror (not load-ok))
+              (if noerror nil
+                (signal 'error (list (format "Required feature `%s' was not provided"
+                                             feature))))
+            (signal 'error (list (format "Required feature `%s' was not provided"
+                                         feature)))))))))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the

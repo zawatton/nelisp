@@ -4,7 +4,6 @@ use super::Env;
 use super::error::EvalError;
 use super::quit;
 use super::sexp::Sexp;
-use super::special_forms::is_truthy;
 use std::path::{Path, PathBuf};
 
 macro_rules! builtin_names {
@@ -16,7 +15,7 @@ macro_rules! builtin_names {
         "read-stdin-bytes", "nelisp--f64-trunc", "nl-write-file", "nl-make-directory", "terminal-raw-mode-enter", "terminal-raw-mode-leave", "read-stdin-byte-available",
         "_termios-saved-p", "_raw-mode-hooks-installed-p", "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p", "install-sigint-handler", "_sigint-handler-installed-p",
         "install-winsize-handler", "_winsize-handler-installed-p", "terminal-take-winsize-changed", "terminal-current-winsize", "install-jobctrl-handlers",
-        "_jobctrl-handlers-installed-p", "terminal-take-sigcont", "read", "read-from-string", "require", "nl-jit-call-i64-i64", "nl-jit-call-ptr-ptr",
+        "_jobctrl-handlers-installed-p", "terminal-take-sigcont", "read", "read-from-string", "nl-jit-call-i64-i64", "nl-jit-call-ptr-ptr",
         "nl-jit-call-syscall", "nl-jit-call-out-1", "nl-jit-call-out-2", "nl-jit-call-out-1i", "nl-jit-call-out-2i", "nl-jit-call-float-float",
         "nl-jit-call-float-cmp", "nl-jit-call-float-unary", "nl-fact-i64",
     ] };
@@ -203,7 +202,7 @@ macro_rules! builtin_dispatch {
                 #[cfg(unix)]    { Ok(bool_sexp(tty_jobctrl::take_cont())) }
                 #[cfg(not(unix))] { Ok(Sexp::Nil) }
             },
-            "read" => bi_read($args, $env), "read-from-string" => bi_read_from_string($args, $env), "require" => bi_require($args, $env),
+            "read" => bi_read($args, $env), "read-from-string" => bi_read_from_string($args, $env),
             "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64($args), "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr($args), "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall($args),
             "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1($args), "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2($args), "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args),
             "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i($args), "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float($args),
@@ -988,60 +987,6 @@ fn bi_read_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> 
     super::apply_function(&read_from_string_impl(env, "read-from-string")?, args, env)
 }
 
-fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("require", args, 1, Some(3))?;
-    let feature = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType { expected: "symbolp (require feature)".into(), got: other.clone() }),
-    };
-    if elisp_featurep(env, &feature)? {
-        return Ok(Sexp::Symbol(feature));
-    }
-    let filename = match args.get(1) {
-        Some(Sexp::Str(s)) => Some(s.clone()),
-        _ => None,
-    };
-    let noerror = args.get(2).map(is_truthy).unwrap_or(false);
-    if env.lookup_value("load-path").is_err() && filename.is_none() {
-        elisp_provide(env, &feature)?;
-        return Ok(Sexp::Symbol(feature));
-    }
-    if let Err(e) = super::apply_function(
-        &env.lookup_function("load")?,
-        &[Sexp::Str(filename.unwrap_or_else(|| feature.clone())), bool_sexp(noerror)],
-        env,
-    ) {
-        if noerror {
-            return Ok(Sexp::Nil);
-        }
-        return Err(e);
-    }
-    if elisp_featurep(env, &feature)? {
-        Ok(Sexp::Symbol(feature))
-    } else if noerror {
-        Ok(Sexp::Nil)
-    } else {
-        Err(EvalError::UserError {
-            tag: "error".into(),
-            data: Sexp::list_from(&[Sexp::Str(format!(
-                "Required feature `{}' was not provided",
-                feature
-            ))]),
-        })
-    }
-}
-
-fn elisp_featurep(env: &mut Env, feature: &str) -> Result<bool, EvalError> {
-    let fn_cell = env.lookup_function("featurep")?;
-    let result = super::apply_function(&fn_cell, &[Sexp::Symbol(feature.to_string())], env)?;
-    Ok(is_truthy(&result))
-}
-
-fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
-    let fn_cell = env.lookup_function("provide")?;
-    super::apply_function(&fn_cell, &[Sexp::Symbol(feature.to_string())], env)?;
-    Ok(())
-}
 
 fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("make-vector", args, 2, Some(2))?;
