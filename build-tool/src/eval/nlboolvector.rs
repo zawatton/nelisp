@@ -20,20 +20,9 @@ impl NlBoolVector {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
         crate::eval::nlrc::nlrc_payload_drop::<NlBoolVector>;
 
-    /// # Safety
-    /// No other `&Vec<bool>` borrow into `self.value` may be live.
-    pub unsafe fn set_value(&self, val: Vec<bool>) {
-        let value_ptr = std::ptr::addr_of!(self.value) as *mut Vec<bool>;
-        std::ptr::drop_in_place(value_ptr);
-        std::ptr::write(value_ptr, val);
-    }
-
-    /// # Safety
-    /// Same as [`NlBoolVector::set_value`]; reentrant calls are UB.
-    pub unsafe fn with_value_mut<R>(&self, f: impl FnOnce(&mut Vec<bool>) -> R) -> R {
-        let value_ptr = std::ptr::addr_of!(self.value) as *mut Vec<bool>;
-        f(&mut *value_ptr)
-    }
+    // Safety: no live borrow into `self.value` (see nlinner_set!/nlinner_with_mut! contracts).
+    crate::nlinner_set!(set_value, value, Vec<bool>);
+    crate::nlinner_with_mut!(with_value_mut, value, Vec<bool>);
 }
 
 impl NlBoolVectorRef {

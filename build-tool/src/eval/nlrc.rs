@@ -45,6 +45,31 @@ macro_rules! nl_ref_common {
     };
 }
 
+/// In-place `set_$field` on an inner struct via `&self` (const-to-mut cast).
+/// Safety: no concurrent borrow of the field; `val` is fully initialized.
+#[macro_export]
+macro_rules! nlinner_set {
+    ($name:ident, $field:ident, $ty:ty) => {
+        pub unsafe fn $name(&self, val: $ty) {
+            let p = ::std::ptr::addr_of!(self.$field) as *mut $ty;
+            ::std::ptr::drop_in_place(p);
+            ::std::ptr::write(p, val);
+        }
+    };
+}
+
+/// Mutable accessor for an inner-struct field via `&self`.
+/// Safety: no concurrent borrow of the field; reentrant calls are UB.
+#[macro_export]
+macro_rules! nlinner_with_mut {
+    ($name:ident, $field:ident, $ty:ty) => {
+        pub unsafe fn $name<R>(&self, f: impl FnOnce(&mut $ty) -> R) -> R {
+            let p = ::std::ptr::addr_of!(self.$field) as *mut $ty;
+            f(&mut *p)
+        }
+    };
+}
+
 macro_rules! drop_inner_extern {
     ($name:ident, $ty:path) => {
         #[no_mangle]

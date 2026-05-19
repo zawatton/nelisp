@@ -21,12 +21,8 @@ impl NlCharTable {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
         crate::eval::nlrc::nlrc_payload_drop::<NlCharTable>;
 
-    /// # Safety
-    /// No other `&CharTableInner` borrow into `self.inner` may be live.
-    pub unsafe fn with_inner_mut<R>(&self, f: impl FnOnce(&mut CharTableInner) -> R) -> R {
-        let inner_ptr = std::ptr::addr_of!(self.inner) as *mut CharTableInner;
-        f(&mut *inner_ptr)
-    }
+    // Safety: no live borrow into `self.inner` (see nlinner_with_mut! contract).
+    crate::nlinner_with_mut!(with_inner_mut, inner, CharTableInner);
 }
 
 impl NlCharTableRef {

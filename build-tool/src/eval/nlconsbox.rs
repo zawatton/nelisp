@@ -26,21 +26,9 @@ impl NlConsBox {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
         crate::eval::nlrc::nlrc_payload_drop::<NlConsBox>;
 
-    /// # Safety: no other `&Sexp' borrow into `self.car' may be live.
-    #[inline]
-    pub unsafe fn set_car(&self, val: Sexp) {
-        let car_ptr = std::ptr::addr_of!(self.car) as *mut Sexp;
-        std::ptr::drop_in_place(car_ptr);
-        std::ptr::write(car_ptr, val);
-    }
-
-    /// # Safety: see [`NlConsBox::set_car`].
-    #[inline]
-    pub unsafe fn set_cdr(&self, val: Sexp) {
-        let cdr_ptr = std::ptr::addr_of!(self.cdr) as *mut Sexp;
-        std::ptr::drop_in_place(cdr_ptr);
-        std::ptr::write(cdr_ptr, val);
-    }
+    // Safety: no live `&Sexp` borrow into the field (see nlinner_set! contract).
+    crate::nlinner_set!(set_car, car, Sexp);
+    crate::nlinner_set!(set_cdr, cdr, Sexp);
 }
 
 /// Fresh NlConsBox(Nil, Nil, refcount=1).  Safety: caller wraps in `Sexp::Cons(_)'.

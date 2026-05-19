@@ -21,13 +21,8 @@ impl NlCell {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
         crate::eval::nlrc::nlrc_payload_drop::<NlCell>;
 
-    /// # Safety
-    /// No other `&Sexp` borrow into `self.value` may be live.
-    pub unsafe fn set_value(&self, val: Sexp) {
-        let value_ptr = std::ptr::addr_of!(self.value) as *mut Sexp;
-        std::ptr::drop_in_place(value_ptr);
-        std::ptr::write(value_ptr, val);
-    }
+    // Safety: no live `&Sexp` borrow into `self.value` (see nlinner_set! contract).
+    crate::nlinner_set!(set_value, value, Sexp);
 }
 
 impl NlCellRef {

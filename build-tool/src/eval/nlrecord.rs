@@ -22,12 +22,8 @@ impl NlRecord {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
         crate::eval::nlrc::nlrc_payload_drop::<NlRecord>;
 
-    /// # Safety
-    /// No other `&Vec<Sexp>` borrow into `self.slots` may be live.
-    pub unsafe fn with_slots_mut<R>(&self, f: impl FnOnce(&mut Vec<Sexp>) -> R) -> R {
-        let slots_ptr = std::ptr::addr_of!(self.slots) as *mut Vec<Sexp>;
-        f(&mut *slots_ptr)
-    }
+    // Safety: no live borrow into `self.slots` (see nlinner_with_mut! contract).
+    crate::nlinner_with_mut!(with_slots_mut, slots, Vec<Sexp>);
 }
 
 impl NlRecordRef {
