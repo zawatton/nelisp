@@ -54,13 +54,6 @@ fn expect_min_len(parts: &[Sexp], name: &str, min: usize) -> Result<(), EvalErro
     }
 }
 
-fn with_frame<T>(env: &mut Env, body: impl FnOnce(&mut Env) -> Result<T, EvalError>) -> Result<T, EvalError> {
-    env.push_frame();
-    let result = body(env);
-    env.pop_frame();
-    result
-}
-
 pub fn is_truthy(v: &Sexp) -> bool {
     !matches!(v, Sexp::Nil)
 }
@@ -468,12 +461,13 @@ fn eval_handler(
     value: Option<Sexp>,
     handler: &[Sexp],
 ) -> Result<Sexp, EvalError> {
-    with_frame(env, |env| {
-        if let (Some(name), Some(value)) = (var, value) {
-            env.bind_local(name, value);
-        }
-        eval_body(&handler[1..], env)
-    })
+    env.push_frame();
+    if let (Some(name), Some(value)) = (var, value) {
+        env.bind_local(name, value);
+    }
+    let result = eval_body(&handler[1..], env);
+    env.pop_frame();
+    result
 }
 
 fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
