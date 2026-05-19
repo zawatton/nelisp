@@ -2,7 +2,7 @@
 
 use crate::eval::sexp::Sexp;
 
-const TRAMPOLINE_OK: i64 = 0;
+use super::TRAMPOLINE_OK;
 
 /// `cons` constructor; still Rust because Phase 47 has no temp `Sexp` slots.
 #[no_mangle]

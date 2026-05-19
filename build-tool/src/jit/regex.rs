@@ -2,18 +2,7 @@
 
 use crate::eval::sexp::Sexp;
 
-const TRAMPOLINE_OK: i64 = 0;
-const TRAMPOLINE_ERR: i64 = 1;
-
-fn read_str(v: &Sexp) -> Option<String> {
-    match v {
-        Sexp::Str(s) | Sexp::Symbol(s) => Some(s.clone()),
-        Sexp::MutStr(rc) => Some(rc.value.clone()),
-        Sexp::Nil => Some("nil".into()),
-        Sexp::T => Some("t".into()),
-        _ => None,
-    }
-}
+use super::{read_sexp_str, TRAMPOLINE_ERR, TRAMPOLINE_OK};
 
 fn all_digits(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
@@ -60,11 +49,11 @@ pub extern "C" fn nl_jit_string_match_p(
     text_arg: *const Sexp,
     out: *mut Sexp,
 ) -> i64 {
-    let pat = match read_str(unsafe { &*pat_arg }) {
+    let pat = match read_sexp_str(unsafe { &*pat_arg }) {
         Some(p) => p,
         None => return TRAMPOLINE_ERR,
     };
-    let text = match read_str(unsafe { &*text_arg }) {
+    let text = match read_sexp_str(unsafe { &*text_arg }) {
         Some(t) => t,
         None => return TRAMPOLINE_ERR,
     };

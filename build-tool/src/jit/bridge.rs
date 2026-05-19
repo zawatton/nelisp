@@ -187,7 +187,7 @@ pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Float(f(x)))
 }
 
-const TRAMPOLINE_OK: i64 = 0;
+use super::TRAMPOLINE_OK;
 
 fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalError> {
     if rc == TRAMPOLINE_OK { Ok(out) }

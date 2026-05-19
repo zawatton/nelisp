@@ -4,8 +4,7 @@
 use crate::eval::sexp::Sexp;
 use std::sync::atomic::AtomicI64;
 
-const TRAMPOLINE_OK: i64 = 0;
-const TRAMPOLINE_ERR: i64 = 1;
+use super::{read_sexp_str, TRAMPOLINE_ERR, TRAMPOLINE_OK};
 
 /// Per-process uninterned-symbol counter.  Pointer surfaced to the
 /// Phase 47 elisp body via `nl_make_symbol_counter_ptr'.
@@ -19,22 +18,12 @@ pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 {
     std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64
 }
 
-fn read_text(v: &Sexp) -> Option<String> {
-    match v {
-        Sexp::Str(s) | Sexp::Symbol(s) => Some(s.clone()),
-        Sexp::MutStr(rc) => Some(rc.value.clone()),
-        Sexp::Nil => Some("nil".into()),
-        Sexp::T => Some("t".into()),
-        _ => None,
-    }
-}
-
 /// Symbol(s) → Str(s); Nil → "nil"; T → "t"; else ERR.
 /// Called from `nelisp-jit-strategy.el' `symbol-name' wrapper via
 /// `(nl-jit-call-out-1 "nelisp_jit_symbol_name" sym)'.
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_symbol_name(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match read_text(&*arg) {
+    match read_sexp_str(&*arg) {
         Some(s) => { *out = Sexp::Str(s); TRAMPOLINE_OK }
         None => TRAMPOLINE_ERR,
     }

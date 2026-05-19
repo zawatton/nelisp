@@ -7,8 +7,7 @@
 //! NlStrRef::set_value; no Phase 47 grammar op for in-place String replace).
 
 use crate::eval::sexp::Sexp;
-const TRAMPOLINE_OK: i64 = 0;
-const TRAMPOLINE_ERR: i64 = 1;
+use super::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
 
 /// In-place MutStr codepoint mutation; writes `*out = CP'.
 #[no_mangle]

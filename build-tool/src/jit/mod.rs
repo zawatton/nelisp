@@ -8,6 +8,22 @@
 //!      code calls directly via `nelisp-cc--dlsym-resolve' (`-rdynamic'
 //!      in `.cargo/config.toml' exposes the `#[no_mangle]' symbols).
 
+pub(super) const TRAMPOLINE_OK: i64 = 0;
+pub(super) const TRAMPOLINE_ERR: i64 = 1;
+
+/// Extract a string from `Sexp::Str`, `Symbol`, `MutStr`, `Nil`, or `T`.
+/// Returns `None` for all other variants.
+pub(super) fn read_sexp_str(v: &crate::eval::sexp::Sexp) -> Option<String> {
+    use crate::eval::sexp::Sexp;
+    match v {
+        Sexp::Str(s) | Sexp::Symbol(s) => Some(s.clone()),
+        Sexp::MutStr(rc) => Some(rc.value.clone()),
+        Sexp::Nil => Some("nil".into()),
+        Sexp::T => Some("t".into()),
+        _ => None,
+    }
+}
+
 mod box_accessor;
 pub(super) mod bridge;
 pub(crate) use bridge::{

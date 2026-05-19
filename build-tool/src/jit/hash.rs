@@ -2,8 +2,7 @@
 
 use crate::eval::sexp::Sexp;
 
-const TRAMPOLINE_OK: i64 = 0;
-const TRAMPOLINE_ERR: i64 = 1;
+use super::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
 
 fn hex_lower(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
