@@ -25,8 +25,27 @@ macro_rules! builtin_names {
 macro_rules! builtin_dispatch {
     ($name:ident, $args:ident, $env:ident) => {
         match $name {
-            "vector" => Ok(Sexp::vector($args.to_vec())), "make-vector" => bi_make_vector($args), "nelisp--length-cons-cc" => bi_length_cons_cc($args), "nelisp--recordp-cc" => bi_recordp_cc($args),
-            "string-bytes" => bi_string_bytes($args), "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float($args), "truncate" => bi_truncate($args),
+            "vector" => Ok(Sexp::vector($args.to_vec())), "make-vector" => bi_make_vector($args),
+            "nelisp--length-cons-cc" => {
+                require_arity("nelisp--length-cons-cc", $args, 1, Some(1))?;
+                match &$args[0] {
+                    Sexp::Cons(_) | Sexp::Nil => Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::length_cons)),
+                    other => Err(EvalError::WrongType { expected: "sequencep".into(), got: other.clone() }),
+                }
+            },
+            "nelisp--recordp-cc" => {
+                require_arity("nelisp--recordp-cc", $args, 1, Some(1))?;
+                Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::recordp))
+            },
+            "string-bytes" => bi_string_bytes($args), "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float($args),
+            "truncate" => {
+                require_arity("truncate", $args, 1, Some(1))?;
+                match &$args[0] {
+                    Sexp::Int(_) => Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::truncate_int)),
+                    Sexp::Float(x) => Ok(Sexp::Int(*x as i64)),
+                    other => Err(EvalError::WrongType { expected: "numberp".into(), got: other.clone() }),
+                }
+            },
             "nelisp--syscall-canonicalize" => bi_syscall_canonicalize($args, $env), "nelisp--syscall-stat" => bi_syscall_stat($args, $env), "nelisp--syscall-readdir" => bi_syscall_readdir($args, $env),
             "nelisp--syscall-read-file" => bi_syscall_read_file($args, $env), "nelisp--read-all-from-string" => bi_read_all_from_string($args, $env), "nelisp--syscall" => bi_syscall($args),
             "nelisp--syscall-supported-p" => bi_syscall_supported_p($args), "symbol-function" => bi_symbol_function($args, $env), "fset" => bi_fset($args, $env),
@@ -507,34 +526,6 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let _ = err.write_all(b"\n");
     let _ = err.flush();
     Ok(args[0].clone())
-}
-
-fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("truncate", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Int(_) => Ok(cc_slot_1(&args[0], crate::elisp_cc_spike::truncate_int)),
-        Sexp::Float(x) => Ok(Sexp::Int(*x as i64)),
-        other => Err(EvalError::WrongType {
-            expected: "numberp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_length_cons_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--length-cons-cc", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Cons(_) | Sexp::Nil => Ok(cc_slot_1(&args[0], crate::elisp_cc_spike::length_cons)),
-        other => Err(EvalError::WrongType {
-            expected: "sequencep".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_recordp_cc(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--recordp-cc", args, 1, Some(1))?;
-    Ok(cc_slot_1(&args[0], crate::elisp_cc_spike::recordp))
 }
 
 fn bi_nl_fact_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
