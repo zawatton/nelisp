@@ -75,8 +75,18 @@ macro_rules! builtin_dispatch {
                     },
                 ], $env)
             },
-            "nelisp--push-frame" => bi_frame_op("push-frame", $args, $env), "nelisp--pop-frame" => bi_frame_op("pop-frame", $args, $env), "nelisp--push-captured" => bi_frame_op("push-captured", $args, $env),
-            "nelisp--bind-local" => bi_frame_op("bind-local", $args, $env),
+            "nelisp--push-frame" => { require_arity("nelisp--push-frame", $args, 0, Some(0))?; $env.push_frame(); Ok(Sexp::T) },
+            "nelisp--pop-frame" => { require_arity("nelisp--pop-frame", $args, 0, Some(0))?; $env.pop_frame(); Ok(Sexp::T) },
+            "nelisp--push-captured" => { require_arity("nelisp--push-captured", $args, 1, Some(1))?; $env.push_captured(&$args[0])?; Ok(Sexp::T) },
+            "nelisp--bind-local" => {
+                require_arity("nelisp--bind-local", $args, 2, Some(2))?;
+                let name = match &$args[0] {
+                    Sexp::Symbol(s) => s.clone(),
+                    other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
+                };
+                $env.bind_local(&name, $args[1].clone());
+                Ok($args[1].clone())
+            },
             "nelisp--apply-builtin-dispatch" => {
                 require_arity("nelisp--apply-builtin-dispatch", $args, 2, Some(2))?;
                 let name = match &$args[0] {
@@ -504,24 +514,6 @@ fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
 
 fn lookup_fn_or(env: &mut Env, name: &str, err: &'static str) -> Result<Sexp, EvalError> {
     env.lookup_function(name).map_err(|_| EvalError::Internal(err.into()))
-}
-
-fn bi_frame_op(op: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    match op {
-        "push-frame" => { require_arity("nelisp--push-frame", args, 0, Some(0))?; env.push_frame(); Ok(Sexp::T) }
-        "pop-frame" => { require_arity("nelisp--pop-frame", args, 0, Some(0))?; env.pop_frame(); Ok(Sexp::T) }
-        "push-captured" => { require_arity("nelisp--push-captured", args, 1, Some(1))?; env.push_captured(&args[0])?; Ok(Sexp::T) }
-        "bind-local" => {
-            require_arity("nelisp--bind-local", args, 2, Some(2))?;
-            let name = match &args[0] {
-                Sexp::Symbol(s) => s.clone(),
-                other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
-            };
-            env.bind_local(&name, args[1].clone());
-            Ok(args[1].clone())
-        }
-        _ => unreachable!("op verified at dispatch arm"),
-    }
 }
 
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
