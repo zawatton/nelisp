@@ -76,16 +76,6 @@ fn sexp_as_str(s: &Sexp) -> Option<&str> {
     }
 }
 
-unsafe fn build_string(bytes_ptr: *const u8, len: i64) -> String {
-    let n = if len <= 0 { 0 } else { len as usize };
-    let slice = if n == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(bytes_ptr, n) }
-    };
-    unsafe { String::from_utf8_unchecked(slice.to_vec()) }
-}
-
 unsafe fn write_slot(slot: *mut Sexp, sexp: Sexp) -> *mut Sexp {
     unsafe { std::ptr::write(slot, sexp) };
     slot
@@ -93,39 +83,6 @@ unsafe fn write_slot(slot: *mut Sexp, sexp: Sexp) -> *mut Sexp {
 
 unsafe fn mut_str_value_mut<'a>(p: *mut Sexp) -> &'a mut String {
     unsafe { &mut (*((*p).mut_str_box_ptr() as *mut NlStr)).value }
-}
-
-unsafe fn mut_str_value<'a>(p: *const Sexp) -> &'a String {
-    unsafe { &(*(*p).mut_str_box_ptr()).value }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_alloc_str(
-    bytes_ptr: *const u8,
-    len: i64,
-    result_slot: *mut Sexp,
-) -> *mut Sexp {
-    unsafe { write_slot(result_slot, Sexp::Str(build_string(bytes_ptr, len))) }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_alloc_symbol(
-    bytes_ptr: *const u8,
-    len: i64,
-    result_slot: *mut Sexp,
-) -> *mut Sexp {
-    unsafe { write_slot(result_slot, Sexp::Symbol(build_string(bytes_ptr, len))) }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_alloc_mut_str(cap: i64, result_slot: *mut Sexp) -> *mut Sexp {
-    let n = if cap < 0 { 0 } else { cap as usize };
-    unsafe {
-        write_slot(
-            result_slot,
-            Sexp::MutStr(NlStrRef::new(String::with_capacity(n))),
-        )
-    }
 }
 
 #[no_mangle]
@@ -142,20 +99,6 @@ pub unsafe extern "C" fn nl_mut_str_push_codepoint(mut_str_ptr: *mut Sexp, codep
     };
     let ch = char::from_u32(cp_u32).unwrap_or('\u{FFFD}');
     unsafe { mut_str_value_mut(mut_str_ptr) }.push(ch);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_mut_str_len(mut_str_ptr: *const Sexp) -> i64 {
-    unsafe { mut_str_value(mut_str_ptr) }.len() as i64
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_mut_str_finalize(
-    mut_str_ptr: *const Sexp,
-    result_slot: *mut Sexp,
-) -> *mut Sexp {
-    let cloned = unsafe { mut_str_value(mut_str_ptr) }.clone();
-    unsafe { write_slot(result_slot, Sexp::Str(cloned)) }
 }
 
 #[no_mangle]
@@ -212,15 +155,6 @@ pub unsafe extern "C" fn nl_str_is_alphanumeric_at(str_ptr: *const Sexp, byte_id
     match s[idx..].chars().next() {
         Some(c) if c.is_alphanumeric() => 1,
         _ => 0,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_str_bytes_ptr(str_ptr: *const Sexp) -> *const u8 {
-    match unsafe { &*str_ptr } {
-        Sexp::Str(s) | Sexp::Symbol(s) => s.as_ptr(),
-        Sexp::MutStr(rc) => rc.value.as_ptr(),
-        _ => std::ptr::null(),
     }
 }
 

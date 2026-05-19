@@ -847,6 +847,43 @@
      :source-var nelisp-cc-nlstr-clone--source
      :output "nelisp_nlstr_clone.o"
      :requires-arch x86_64)
+    ;; Doc 128 §128.A — nlstr.rs direct-symbol Phase 47 migrations.
+    ;; Each entry exports the original `nl_*' C-linkage symbol, replacing
+    ;; the Rust `#[no_mangle]' body.  Grammar-op PLT stubs that called the
+    ;; Rust externs now resolve to these Phase 47 implementations.
+    ;;
+    ;;   nl_mut_str_len    — ptr-read-u64 two-hop (sexp→NlStr*→len@16).
+    ;;   nl_str_bytes_ptr  — tag-dispatch: MutStr→[NlStr*+8]; Str/Sym→[sexp+16].
+    ;;   nl_alloc_str      — alloc-bytes + byte-copy + Sexp::Str header.
+    ;;   nl_alloc_symbol   — same as nl_alloc_str with tag=4 (Symbol).
+    ;;   nl_alloc_mut_str  — alloc-bytes NlStr box + char buf, write headers.
+    ;;   nl_mut_str_finalize — clone MutStr String into fresh Sexp::Str.
+    ;;
+    ;; `nl_alloc_str' and `nl_alloc_symbol' share a `(seq DEFUN ...)' source
+    ;; form compiled into a single `.o'; `nl_mut_str_finalize' similarly
+    ;; packages its private copy-loop helper in a `(seq DEFUN ...)'.
+    ;; Net Rust LOC deleted: ~58 lines (bodies + private helpers with no
+    ;; remaining callers: build_string + mut_str_value).
+    (nelisp-cc-nlstr-direct-ops
+     :source-var nelisp-cc-nlstr-direct-ops--mut-str-len-source
+     :output "nl_mut_str_len.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlstr-direct-ops
+     :source-var nelisp-cc-nlstr-direct-ops--str-bytes-ptr-source
+     :output "nl_str_bytes_ptr.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlstr-direct-ops
+     :source-var nelisp-cc-nlstr-direct-ops--alloc-str-source
+     :output "nl_alloc_str.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlstr-direct-ops
+     :source-var nelisp-cc-nlstr-direct-ops--alloc-mut-str-source
+     :output "nl_alloc_mut_str.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlstr-direct-ops
+     :source-var nelisp-cc-nlstr-direct-ops--mut-str-finalize-source
+     :output "nl_mut_str_finalize.o"
+     :requires-arch x86_64)
     ;; Doc 127 — `(signal TAG DATA)' tag-dispatch swap.  Single manifest
     ;; entry; the body does a 3-way `symbol-eq' chain and returns an
     ;; i64 discriminant (0=quit / 1=arith-error / 2=wrong-type-argument /
