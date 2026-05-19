@@ -235,10 +235,8 @@ fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("read-stdin-bytes", args, 1, Some(1))?;
-    let limit = match &args[0] {
-        Sexp::Int(n) if *n > 0 => *n as usize,
-        other => return Err(EvalError::WrongType { expected: "positive integer".into(), got: other.clone() }),
-    };
+    let limit = match &args[0] { Sexp::Int(n) if *n > 0 => *n as usize,
+        other => return Err(EvalError::WrongType { expected: "positive integer".into(), got: other.clone() }) };
     let mut buf = vec![0u8; limit];
     let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit as i64) };
     if rc < 0 { return Err(EvalError::Internal(format!("read-stdin-bytes: read returned {}", rc))); }
@@ -274,8 +272,7 @@ fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalErr
     let (_, path_sexp) = path_arg1("nelisp--syscall-canonicalize", args, env)?;
     let mut buf = vec![0u8; libc::PATH_MAX as usize];
     if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&path_sexp as *const _, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
-    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    Ok(Sexp::Str(String::from_utf8_lossy(&buf[..len]).into_owned()))
+    Ok(Sexp::Str(String::from_utf8_lossy(&buf[..buf.iter().position(|&b| b == 0).unwrap_or(buf.len())]).into_owned()))
 }
 
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -351,6 +348,15 @@ unsafe fn install_sigaction(signum: libc::c_int, handler: extern "C" fn(libc::c_
     sa.sa_flags = flags;
     libc::sigaction(signum, &sa, std::ptr::null_mut());
 }
+#[cfg(unix)]
+unsafe fn reraise_as_default(signum: libc::c_int) {
+    libc::signal(signum, libc::SIG_DFL);
+    let mut mask: libc::sigset_t = std::mem::zeroed();
+    libc::sigemptyset(&mut mask);
+    libc::sigaddset(&mut mask, signum);
+    libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut());
+    libc::raise(signum);
+}
 
 #[cfg(unix)]
 mod tty_raw {
@@ -381,12 +387,7 @@ mod tty_raw {
     extern "C" fn sig_handler(signum: libc::c_int) {
         restore_termios_signal_safe();
         unsafe {
-            libc::signal(signum, libc::SIG_DFL);
-            let mut mask: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut mask);
-            libc::sigaddset(&mut mask, signum);
-            libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut());
-            libc::raise(signum);
+            super::reraise_as_default(signum);
         }
     }
 
@@ -446,12 +447,10 @@ mod tty_raw {
         match n {
             0 => Ok(None),
             n if n > 0 => Ok(Some(buf[0])),
-            _ => {
-                let errno = std::io::Error::last_os_error();
+            _ => { let errno = std::io::Error::last_os_error();
                 #[allow(unreachable_patterns)]
                 if matches!(errno.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK)) { Ok(None) }
-                else { Err(EvalError::Internal(format!("read-stdin-byte-available: read failed: {}", errno))) }
-            }
+                else { Err(EvalError::Internal(format!("read-stdin-byte-available: read failed: {}", errno))) } }
         }
     }
 }
@@ -495,12 +494,7 @@ mod tty_jobctrl {
     extern "C" fn tstp_handler(signum: libc::c_int) {
         let _ = super::tty_raw::raw_mode_leave();
         unsafe {
-            libc::signal(signum, libc::SIG_DFL);
-            let mut mask: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut mask);
-            libc::sigaddset(&mut mask, signum);
-            libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut());
-            libc::raise(signum);
+            super::reraise_as_default(signum);
             // Re-install in case `signal` reset the disposition.
             super::install_sigaction(libc::SIGTSTP, tstp_handler, libc::SA_RESTART);
         }
