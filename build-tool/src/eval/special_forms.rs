@@ -72,10 +72,6 @@ fn expect_min_len(parts: &[Sexp], name: &str, min: usize) -> Result<(), EvalErro
     else { Err(wrong_args(name, &format!("≥{min}"), parts.len())) }
 }
 
-pub fn is_truthy(v: &Sexp) -> bool {
-    !matches!(v, Sexp::Nil)
-}
-
 /// `let' / `let*' frame setup: sequential=1 = `let*'.
 #[no_mangle]
 pub unsafe extern "C" fn nl_let_setup(
@@ -321,28 +317,6 @@ pub unsafe extern "C" fn nl_bind_formals(
     }
 }
 
-fn eval_body(body: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut last = Sexp::Nil;
-    for f in body {
-        last = eval(f, env)?;
-    }
-    Ok(last)
-}
-
-fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let mut s1 = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::sf_lambda_call(
-            args as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            &mut s1 as *mut Sexp,
-        )
-    };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_lambda".into())) }
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_capture_lexical(
     env: *mut std::ffi::c_void,
@@ -373,32 +347,6 @@ pub unsafe extern "C" fn nl_cons_prepend_clone(
     0
 }
 
-fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::sf_setq_call(
-            args as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            0,
-        )
-    };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_setq".into())) }
-}
-
-fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::sf_while_call(
-            args as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            0,
-        )
-    };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_while".into())) }
-}
-
 fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let parts = list_elements(args)?;
     expect_min_len(&parts, "unwind-protect", 1)?;
@@ -414,18 +362,6 @@ fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     cleanup_err.map_or(body_result, Err)
 }
 
-fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut out = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::sf_progn_call(
-            args as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            0,
-        )
-    };
-    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("sf_progn".into())) }
-}
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_eval_is_truthy(
