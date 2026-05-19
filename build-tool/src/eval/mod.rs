@@ -382,25 +382,22 @@ pub(crate) fn apply_lambda_inner(
     args: &[Sexp],
     env: &mut Env,
 ) -> Result<Sexp, EvalError> {
-    // Skip empty captured environments to avoid recursive no-op frame pushes.
-    let captured_pushed = !matches!(captured, Sexp::Nil);
-    if captured_pushed {
-        env.push_captured(captured)?;
-    }
-    env.push_frame();
-    let result = (|| {
-        bind_formals(formals, args, env)?;
-        let mut last = Sexp::Nil;
-        for form in body {
-            last = eval(form, env)?;
-        }
-        Ok(last)
-    })();
-    env.pop_frame();
-    if captured_pushed {
-        env.pop_frame();
-    }
-    result
+    // Phase 47: body deleted → delegated to nl_apply_lambda_inner elisp .o.
+    // Build cons lists from slices for the elisp side.
+    let body_list = Sexp::list_from(body);
+    let args_list = Sexp::list_from(args);
+    let mut out = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::apply_lambda_inner_call(
+            captured as *const Sexp,
+            formals as *const Sexp,
+            &body_list as *const Sexp,
+            &args_list as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+        )
+    };
+    if rc == 0 { Ok(out) } else { Err(EvalError::Internal("apply_lambda_inner".into())) }
 }
 
 pub(crate) fn bind_formals(

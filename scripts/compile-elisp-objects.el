@@ -983,6 +983,22 @@
     (nelisp-cc-sf-function
      :source-var nelisp-cc-sf-function--source
      :output "nl_sf_function.o"
+     :requires-arch x86_64)
+    ;; Phase 47 — `apply_lambda_inner' body deleted from `eval/mod.rs'.
+    ;; `nl_apply_lambda_inner' orchestrates frame-push + formals-bind +
+    ;; body-eval + frame-pop in elisp.  Actual formals-binding delegated
+    ;; to `nl_push_and_bind' Rust extern in `eval/special_forms.rs'.
+    (nelisp-cc-apply-lambda-inner
+     :source-var nelisp-cc-apply-lambda-inner--source
+     :output "nl_apply_lambda_inner.o"
+     :requires-arch x86_64)
+    ;; Phase 47 elisp migration — `nl_jit_string_match_p' trampoline swap.
+    ;; Rust body deleted from `jit/regex.rs'.
+    ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' count 61→62 anchors
+    ;; `nl_jit_string_match_p'.
+    (nelisp-cc-jit-string-match-p
+     :source-var nelisp-cc-jit-string-match-p--source
+     :output "nl_jit_string_match_p.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
