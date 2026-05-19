@@ -2,9 +2,8 @@
 //! `String`. Clone/Drop dispatch through the elisp kernels.
 
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 use crate::eval::sexp::Sexp;
 
@@ -14,11 +13,11 @@ pub struct NlStr {
     pub refcount: AtomicUsize,
 }
 
-#[repr(transparent)]
-pub struct NlStrRef {
-    ptr: NonNull<NlStr>,
-    _marker: PhantomData<NlStr>,
-}
+crate::nl_ref_common!(
+    NlStrRef,
+    NlStr,
+    drop_fn = crate::elisp_cc_spike::nlstr_drop
+);
 
 impl NlStr {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
@@ -32,14 +31,6 @@ impl NlStrRef {
             refcount: AtomicUsize::new(1),
         })));
         Self { ptr, _marker: PhantomData }
-    }
-
-    pub fn strong_count(this: &Self) -> usize {
-        unsafe { (*this.ptr.as_ptr()).refcount.load(Ordering::Acquire) }
-    }
-
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        a.ptr.as_ptr() == b.ptr.as_ptr()
     }
 
     pub unsafe fn set_value(&self, val: String) {
@@ -60,19 +51,6 @@ impl Clone for NlStrRef {
     fn clone(&self) -> Self {
         unsafe { crate::elisp_cc_spike::nlstr_clone(self.ptr.as_ptr() as *mut i64) };
         Self { ptr: self.ptr, _marker: PhantomData }
-    }
-}
-
-impl Drop for NlStrRef {
-    fn drop(&mut self) {
-        unsafe { crate::elisp_cc_spike::nlstr_drop(self.ptr.as_ptr() as *mut i64) };
-    }
-}
-
-impl Deref for NlStrRef {
-    type Target = NlStr;
-    fn deref(&self) -> &NlStr {
-        unsafe { &*self.ptr.as_ptr() }
     }
 }
 

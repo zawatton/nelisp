@@ -2,9 +2,8 @@
 
 use crate::eval::sexp::Sexp;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 #[repr(C)]
 pub struct NlCell {
@@ -12,12 +11,11 @@ pub struct NlCell {
     pub refcount: AtomicUsize,
 }
 
-/// Refcounted handle.  `#[repr(transparent)]' matches `NonNull<NlCell>'.
-#[repr(transparent)]
-pub struct NlCellRef {
-    ptr: NonNull<NlCell>,
-    _marker: PhantomData<NlCell>,
-}
+crate::nl_ref_common!(
+    NlCellRef,
+    NlCell,
+    drop_fn = crate::elisp_cc_spike::nlcell_drop
+);
 
 impl NlCell {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
@@ -50,34 +48,12 @@ impl NlCellRef {
             _marker: PhantomData,
         }
     }
-
-    pub fn strong_count(this: &Self) -> usize {
-        unsafe { (*this.ptr.as_ptr()).refcount.load(Ordering::Acquire) }
-    }
-
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        a.ptr.as_ptr() == b.ptr.as_ptr()
-    }
 }
 
 impl Clone for NlCellRef {
     fn clone(&self) -> Self {
         unsafe { crate::elisp_cc_spike::nlcell_clone(self.ptr.as_ptr() as *mut i64) };
         NlCellRef { ptr: self.ptr, _marker: PhantomData }
-    }
-}
-
-impl Drop for NlCellRef {
-    fn drop(&mut self) {
-        unsafe { crate::elisp_cc_spike::nlcell_drop(self.ptr.as_ptr() as *mut i64) };
-    }
-}
-
-impl Deref for NlCellRef {
-    type Target = NlCell;
-
-    fn deref(&self) -> &NlCell {
-        unsafe { &*self.ptr.as_ptr() }
     }
 }
 

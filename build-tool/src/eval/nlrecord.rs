@@ -2,9 +2,8 @@
 
 use crate::eval::sexp::Sexp;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 #[repr(C)]
 pub struct NlRecord {
@@ -13,11 +12,11 @@ pub struct NlRecord {
     pub refcount: AtomicUsize,
 }
 
-#[repr(transparent)]
-pub struct NlRecordRef {
-    ptr: NonNull<NlRecord>,
-    _marker: PhantomData<NlRecord>,
-}
+crate::nl_ref_common!(
+    NlRecordRef,
+    NlRecord,
+    drop_fn = crate::elisp_cc_spike::nlrecord_drop
+);
 
 impl NlRecord {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
@@ -40,15 +39,6 @@ impl NlRecordRef {
         })));
         NlRecordRef { ptr, _marker: PhantomData }
     }
-
-    pub fn strong_count(this: &Self) -> usize {
-        unsafe { (*this.ptr.as_ptr()).refcount.load(Ordering::Acquire) }
-    }
-
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        a.ptr.as_ptr() == b.ptr.as_ptr()
-    }
-
 }
 
 /// # Safety
@@ -82,20 +72,6 @@ impl Clone for NlRecordRef {
     fn clone(&self) -> Self {
         unsafe { crate::elisp_cc_spike::nlrecord_clone(self.ptr.as_ptr() as *mut i64) };
         NlRecordRef { ptr: self.ptr, _marker: PhantomData }
-    }
-}
-
-impl Drop for NlRecordRef {
-    fn drop(&mut self) {
-        unsafe { crate::elisp_cc_spike::nlrecord_drop(self.ptr.as_ptr() as *mut i64) };
-    }
-}
-
-impl Deref for NlRecordRef {
-    type Target = NlRecord;
-
-    fn deref(&self) -> &NlRecord {
-        unsafe { &*self.ptr.as_ptr() }
     }
 }
 

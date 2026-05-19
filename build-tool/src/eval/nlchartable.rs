@@ -2,7 +2,6 @@
 
 use crate::eval::sexp::CharTableInner;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -12,11 +11,11 @@ pub struct NlCharTable {
     pub refcount: AtomicUsize,
 }
 
-#[repr(transparent)]
-pub struct NlCharTableRef {
-    ptr: NonNull<NlCharTable>,
-    _marker: PhantomData<NlCharTable>,
-}
+crate::nl_ref_common!(
+    NlCharTableRef,
+    NlCharTable,
+    drop_fn = crate::elisp_cc_spike::nlchartable_drop
+);
 
 impl NlCharTable {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
@@ -38,15 +37,6 @@ impl NlCharTableRef {
         })));
         NlCharTableRef { ptr, _marker: PhantomData }
     }
-
-    pub fn strong_count(this: &Self) -> usize {
-        unsafe { (*this.ptr.as_ptr()).refcount.load(Ordering::Acquire) }
-    }
-
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        a.ptr.as_ptr() == b.ptr.as_ptr()
-    }
-
 }
 
 impl Clone for NlCharTableRef {
@@ -55,20 +45,6 @@ impl Clone for NlCharTableRef {
             (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
         }
         NlCharTableRef { ptr: self.ptr, _marker: PhantomData }
-    }
-}
-
-impl Drop for NlCharTableRef {
-    fn drop(&mut self) {
-        unsafe { crate::elisp_cc_spike::nlchartable_drop(self.ptr.as_ptr() as *mut i64) };
-    }
-}
-
-impl Deref for NlCharTableRef {
-    type Target = NlCharTable;
-
-    fn deref(&self) -> &NlCharTable {
-        unsafe { &*self.ptr.as_ptr() }
     }
 }
 

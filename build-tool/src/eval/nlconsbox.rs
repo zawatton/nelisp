@@ -6,7 +6,6 @@
 use crate::eval::sexp::Sexp;
 use std::alloc::{self, Layout};
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -16,6 +15,12 @@ pub struct NlConsBox {
     pub cdr: Sexp,
     pub refcount: AtomicUsize,
 }
+
+crate::nl_ref_common!(
+    NlConsBoxRef,
+    NlConsBox,
+    drop_fn = crate::elisp_cc_spike::nlconsbox_drop
+);
 
 impl NlConsBox {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
@@ -61,13 +66,6 @@ pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const
     (*box_ptr).set_cdr((*val).clone());
 }
 
-/// `#[repr(transparent)]' — layout matches NonNull<NlConsBox> for `cons_box_ptr'.
-#[repr(transparent)]
-pub struct NlConsBoxRef {
-    ptr: NonNull<NlConsBox>,
-    _marker: PhantomData<NlConsBox>,
-}
-
 impl NlConsBoxRef {
     pub fn new(car: Sexp, cdr: Sexp) -> NlConsBoxRef {
         let layout = Layout::new::<NlConsBox>();
@@ -85,14 +83,6 @@ impl NlConsBoxRef {
             );
         }
         NlConsBoxRef { ptr, _marker: PhantomData }
-    }
-
-    pub fn strong_count(this: &Self) -> usize {
-        unsafe { (*this.ptr.as_ptr()).refcount.load(Ordering::Acquire) }
-    }
-
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        a.ptr.as_ptr() == b.ptr.as_ptr()
     }
 
     #[inline]
@@ -156,22 +146,6 @@ impl Clone for NlConsBoxRef {
             crate::elisp_cc_spike::nlconsbox_clone(self.ptr.as_ptr() as *mut i64);
         }
         NlConsBoxRef { ptr: self.ptr, _marker: PhantomData }
-    }
-}
-
-impl Drop for NlConsBoxRef {
-    fn drop(&mut self) {
-        unsafe {
-            crate::elisp_cc_spike::nlconsbox_drop(self.ptr.as_ptr() as *mut i64);
-        }
-    }
-}
-
-impl Deref for NlConsBoxRef {
-    type Target = NlConsBox;
-
-    fn deref(&self) -> &NlConsBox {
-        unsafe { &*self.ptr.as_ptr() }
     }
 }
 

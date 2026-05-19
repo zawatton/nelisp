@@ -1,7 +1,6 @@
 //! `NlBoolVector` backs `Sexp::BoolVector`: `value` at 0, refcount trailer.
 
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,11 +10,11 @@ pub struct NlBoolVector {
     pub refcount: AtomicUsize,
 }
 
-#[repr(transparent)]
-pub struct NlBoolVectorRef {
-    ptr: NonNull<NlBoolVector>,
-    _marker: PhantomData<NlBoolVector>,
-}
+crate::nl_ref_common!(
+    NlBoolVectorRef,
+    NlBoolVector,
+    drop_fn = crate::elisp_cc_spike::nlboolvector_drop
+);
 
 impl NlBoolVector {
     pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
@@ -45,15 +44,6 @@ impl NlBoolVectorRef {
         })));
         NlBoolVectorRef { ptr, _marker: PhantomData }
     }
-
-    pub fn strong_count(this: &Self) -> usize {
-        unsafe { (*this.ptr.as_ptr()).refcount.load(Ordering::Acquire) }
-    }
-
-    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
-        a.ptr.as_ptr() == b.ptr.as_ptr()
-    }
-
 }
 
 impl Clone for NlBoolVectorRef {
@@ -62,20 +52,6 @@ impl Clone for NlBoolVectorRef {
             (*self.ptr.as_ptr()).refcount.fetch_add(1, Ordering::Relaxed);
         }
         NlBoolVectorRef { ptr: self.ptr, _marker: PhantomData }
-    }
-}
-
-impl Drop for NlBoolVectorRef {
-    fn drop(&mut self) {
-        unsafe { crate::elisp_cc_spike::nlboolvector_drop(self.ptr.as_ptr() as *mut i64) };
-    }
-}
-
-impl Deref for NlBoolVectorRef {
-    type Target = NlBoolVector;
-
-    fn deref(&self) -> &NlBoolVector {
-        unsafe { &*self.ptr.as_ptr() }
     }
 }
 

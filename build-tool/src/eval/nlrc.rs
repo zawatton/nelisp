@@ -1,9 +1,48 @@
 //! Per-type inner-drop ABI externs — each `nl_<type>_drop_inner' wraps
 //! `drop_in_place::<T>' so elisp Drop kernels can call it via extern-call
 //! before `dealloc-bytes'.
+//!
+//! Also exports `nl_ref_common!' — emits the structural items shared by
+//! every `NlXxxRef' wrapper (struct def, `strong_count'/`ptr_eq', `Drop',
+//! `Deref').  Clone / Debug / PartialEq stay per-file (Clone uses either
+//! extern kernel or inline fetch_add; Debug / Eq formats vary).
 
 pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) {
     std::ptr::drop_in_place(ptr as *mut T);
+}
+
+#[macro_export]
+macro_rules! nl_ref_common {
+    ($ref:ident, $inner:ident, drop_fn = $drop:path) => {
+        #[repr(transparent)]
+        pub struct $ref {
+            ptr: ::std::ptr::NonNull<$inner>,
+            _marker: ::std::marker::PhantomData<$inner>,
+        }
+        impl $ref {
+            pub fn strong_count(this: &Self) -> usize {
+                unsafe {
+                    (*this.ptr.as_ptr())
+                        .refcount
+                        .load(::std::sync::atomic::Ordering::Acquire)
+                }
+            }
+            pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+                a.ptr.as_ptr() == b.ptr.as_ptr()
+            }
+        }
+        impl ::std::ops::Drop for $ref {
+            fn drop(&mut self) {
+                unsafe { $drop(self.ptr.as_ptr() as *mut i64) };
+            }
+        }
+        impl ::std::ops::Deref for $ref {
+            type Target = $inner;
+            fn deref(&self) -> &$inner {
+                unsafe { &*self.ptr.as_ptr() }
+            }
+        }
+    };
 }
 
 macro_rules! drop_inner_extern {
