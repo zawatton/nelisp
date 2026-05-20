@@ -36,51 +36,38 @@ mod tests {
     use super::*;
     use crate::eval::{eval_str, eval_str_all};
 
-    fn eval_all_ok(src: &str) -> Sexp {
-        eval_str_all(src).unwrap()
-    }
-    fn assert_t(v: Sexp) {
-        assert!(matches!(v, Sexp::T));
-    }
-    fn assert_nil(v: Sexp) {
-        assert!(matches!(v, Sexp::Nil));
-    }
+    fn ok(src: &str) -> Sexp { eval_str_all(src).unwrap() }
+    fn assert_t(v: Sexp) { assert!(matches!(v, Sexp::T)); }
+    fn assert_nil(v: Sexp) { assert!(matches!(v, Sexp::Nil)); }
 
     #[test]
     fn primitive_get_set_value_round_trip() {
-        // Set then read back in one input so the same env services
-        // both forms (= eval_str_all threads state across forms).
-        let v = eval_all_ok(
+        assert!(matches!(ok(
             "(nelisp--env-globals-set-value 'doc-86-3a-foo 42) \
-             (nelisp--env-globals-get-value 'doc-86-3a-foo)",
-        );
-        assert!(matches!(v, Sexp::Int(42)));
+             (nelisp--env-globals-get-value 'doc-86-3a-foo)"
+        ), Sexp::Int(42)));
     }
 
     #[test]
     fn primitive_get_value_unbound_signals() {
-        let res = eval_str("(nelisp--env-globals-get-value 'doc-86-3a-undef-symbol)");
-        assert!(res.is_err(), "expected void-variable on unbound get");
+        assert!(eval_str("(nelisp--env-globals-get-value 'doc-86-3a-undef-symbol)").is_err());
     }
 
     #[test]
     fn primitive_is_bound_reflects_set_value() {
         assert_nil(eval_str("(nelisp--env-globals-is-bound 'doc-86-3a-bar)").unwrap());
-        assert_t(eval_all_ok(
-            "(nelisp--env-globals-set-value 'doc-86-3a-bar 7) \
-             (nelisp--env-globals-is-bound 'doc-86-3a-bar)",
-        ));
+        assert_t(ok("(nelisp--env-globals-set-value 'doc-86-3a-bar 7) \
+                     (nelisp--env-globals-is-bound 'doc-86-3a-bar)"));
     }
 
     #[test]
     fn primitive_set_function_round_trip() {
-        // Use `eq's function cell so we have a valid Sexp to install.
-        assert_t(eval_all_ok(
+        assert_t(ok(
             "(nelisp--env-globals-set-function 'doc-86-3a-fn \
                 (nelisp--env-globals-get-function 'eq)) \
              (nelisp--env-globals-is-fbound 'doc-86-3a-fn)",
         ));
-        assert_nil(eval_all_ok(
+        assert_nil(ok(
             "(nelisp--env-globals-set-function 'doc-86-3a-fn2 \
                 (nelisp--env-globals-get-function 'eq)) \
              (nelisp--env-globals-clear-function 'doc-86-3a-fn2) \
@@ -91,29 +78,20 @@ mod tests {
     #[test]
     fn primitive_constant_flag_round_trip() {
         assert_nil(eval_str("(nelisp--env-globals-is-constant 'doc-86-3a-cflag)").unwrap());
-        assert_t(eval_all_ok(
-            "(nelisp--env-globals-set-constant 'doc-86-3a-cflag t) \
-             (nelisp--env-globals-is-constant 'doc-86-3a-cflag)",
-        ));
+        assert_t(ok("(nelisp--env-globals-set-constant 'doc-86-3a-cflag t) \
+                     (nelisp--env-globals-is-constant 'doc-86-3a-cflag)"));
     }
 
     #[test]
     fn primitive_capture_lexical_at_top_level_is_nil() {
-        // No active frames → capture returns nil (= empty alist).
-        // Doc 102 Phase 2.c: call the Rust primitive directly (= the
-        // OP-tag form), bypassing the elisp `nelisp--env-globals-
-        // capture-lexical' wrapper.  The wrapper IS a `defun' that
-        // `push_frame's an empty closure-body frame around the call,
-        // which `capture_lexical' would then walk — calling the OP
-        // form keeps the test scoped to the Rust dispatcher's
-        // zero-frame contract.
+        // Doc 102 Phase 2.c: call Rust primitive directly (OP-tag form),
+        // bypassing the elisp wrapper which would push an extra frame.
         assert_nil(eval_str("(nelisp--env-globals-op 'capture-lexical)").unwrap());
     }
 
     #[test]
     fn primitive_clear_value_drops_binding() {
-        // After clear, is-bound returns nil.
-        assert_nil(eval_all_ok(
+        assert_nil(ok(
             "(nelisp--env-globals-set-value 'doc-86-3a-baz 1) \
              (nelisp--env-globals-clear-value 'doc-86-3a-baz) \
              (nelisp--env-globals-is-bound 'doc-86-3a-baz)",
