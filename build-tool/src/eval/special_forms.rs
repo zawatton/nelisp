@@ -41,13 +41,13 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
     if sequential != 0 {
         e.frame_push_rust_direct();
         for b in &bindings { match parse(b, e) { Ok((n, v)) => e.bind_local(&n, v), Err(_) => { e.frame_pop_rust_direct(); return 1; } } }
-        0
     } else {
         let mut values = Vec::with_capacity(bindings.len());
         for b in &bindings { match parse(b, e) { Ok(pair) => values.push(pair), Err(_) => return 1 } }
         e.frame_push_rust_direct();
-        for (name, val) in values { e.bind_local(&name, val); } 0
+        for (name, val) in values { e.bind_local(&name, val); }
     }
+    0
 }
 #[no_mangle] pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 { (&mut *(env as *mut Env)).frame_pop_rust_direct(); 0 }
 #[no_mangle] pub unsafe extern "C" fn nl_env_push_captured(env: *mut std::ffi::c_void, alist_ptr: *const Sexp) -> i64 { i64::from((&mut *(env as *mut Env)).push_captured(&*alist_ptr).is_err()) }
@@ -112,11 +112,9 @@ macro_rules! stash_err {
     macro_rules! stash { ($er:expr) => {{ let _=e.set_value("nelisp--last-signal-data",$er.signal_data()); return 1; }}; }
     macro_rules! quote_wrap { ($v:expr) => { Sexp::list_from(&[Sexp::Symbol("quote".into()), $v]) }; }
     macro_rules! elisp_delegate {
-        ($e:expr, $func:expr, $al:expr) => {{
-            let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()), quote_wrap!($func.clone()), quote_wrap!($al)]);
+        ($e:expr, $func:expr, $al:expr) => {{ let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()), quote_wrap!($func.clone()), quote_wrap!($al)]);
             $e.delegation_depth += 1; let r = super::eval(&f, $e); $e.delegation_depth -= 1;
-            match r { Ok(v) => { put!(v) } Err(er) => { stash!(er) } }
-        }};
+            match r { Ok(v) => { put!(v) } Err(er) => { stash!(er) } } }};
     }
     let (head, tail) = (&*head_ptr, &*tail_ptr);
     let Sexp::Symbol(name) = head else {

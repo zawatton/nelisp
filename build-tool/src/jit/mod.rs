@@ -4,37 +4,25 @@ use crate::eval::builtins::{as_int, require_arity};
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 use std::ffi::CString;
-#[allow(dead_code, clashing_extern_declarations)]
+#[allow(dead_code, clashing_extern_declarations, improper_ctypes)]
 extern "C" {
-    fn nelisp_jit_add2(); fn nelisp_jit_sub2(); fn nelisp_jit_mul2(); fn nelisp_jit_eq2(); fn nelisp_jit_lt2(); fn nelisp_jit_gt2();
-    fn nelisp_jit_le2(); fn nelisp_jit_ge2(); fn nelisp_jit_logior2(); fn nelisp_jit_logand2(); fn nelisp_jit_logxor2(); fn nelisp_jit_ash();
-    fn nl_jit_float_add(); fn nl_jit_float_sub(); fn nl_jit_float_mul(); fn nl_jit_float_div(); fn nl_jit_float_lt(); fn nl_jit_float_gt();
-    fn nl_jit_float_le(); fn nl_jit_float_ge(); fn nl_jit_float_eq_eps(); fn nl_jit_float_float(); fn nl_jit_float_exp(); fn nl_jit_float_log();
-    fn nl_jit_intern(); fn nl_jit_make_mut_str(); fn nl_jit_mut_str_len(); fn nl_jit_record_alloc(); fn nelisp_jit_predicate_eq(); fn nelisp_jit_ref_eq();
-    fn nelisp_jit_record_type(); fn nelisp_jit_record_len(); fn nelisp_jit_record_ref(); fn nelisp_jit_record_set(); fn nelisp_jit_length(); fn nelisp_jit_aref();
-    fn nelisp_jit_aset(); fn nelisp_jit_elt(); fn nelisp_jit_cons_car(); fn nelisp_jit_cons_cdr(); fn nelisp_jit_cons_setcar(); fn nelisp_jit_cons_setcdr();
-    fn nelisp_jit_cons_make(); fn nl_jit_bool_vector_len(); fn nl_jit_str_codepoint_at(); fn nl_jit_type_of(); fn nl_jit_sxhash(); fn nl_cons_car_ptr();
-    fn nl_cons_cdr_ptr(); fn nl_jit_make_symbol(); fn nl_record_type_tag_ptr(); fn nl_jit_concat_ints(); fn nl_sf_quote(); fn nl_jit_downcase();
-    fn nl_jit_upcase(); fn nl_jit_split_by_non_alnum(); fn nl_sf_if(); fn nl_sf_setq(); fn nl_sf_progn(); fn nl_sf_while();
-    fn nl_sf_lambda(); fn nl_sf_function(); fn nl_sf_condition_case(); fn nl_jit_symbol_name(); fn nelisp_bi_nl_fact_i64(); fn nl_cons_prepend_clone();
-    fn nl_jit_secure_hash(); fn nl_jit_secure_hash_non_sha1_ext(); fn nl_jit_string_match_p(); fn nl_eval_inner(); fn nl_jit_alias();
+    fn nelisp_jit_add2(); fn nelisp_jit_sub2(); fn nelisp_jit_mul2(); fn nelisp_jit_eq2(); fn nelisp_jit_lt2(); fn nelisp_jit_gt2(); fn nelisp_jit_le2(); fn nelisp_jit_ge2(); fn nelisp_jit_logior2(); fn nelisp_jit_logand2(); fn nelisp_jit_logxor2(); fn nelisp_jit_ash();
+    fn nl_jit_float_add(); fn nl_jit_float_sub(); fn nl_jit_float_mul(); fn nl_jit_float_div(); fn nl_jit_float_lt(); fn nl_jit_float_gt(); fn nl_jit_float_le(); fn nl_jit_float_ge(); fn nl_jit_float_eq_eps(); fn nl_jit_float_float(); fn nl_jit_float_exp(); fn nl_jit_float_log();
+    fn nl_jit_intern(); fn nl_jit_make_mut_str(); fn nl_jit_mut_str_len(); fn nl_jit_record_alloc(); fn nelisp_jit_predicate_eq(); fn nelisp_jit_ref_eq(); fn nelisp_jit_record_type(); fn nelisp_jit_record_len(); fn nelisp_jit_record_ref(); fn nelisp_jit_record_set(); fn nelisp_jit_length(); fn nelisp_jit_aref();
+    fn nelisp_jit_aset(); fn nelisp_jit_elt(); fn nelisp_jit_cons_car(); fn nelisp_jit_cons_cdr(); fn nelisp_jit_cons_setcar(); fn nelisp_jit_cons_setcdr(); fn nelisp_jit_cons_make(); fn nl_jit_bool_vector_len(); fn nl_jit_str_codepoint_at(); fn nl_jit_type_of(); fn nl_jit_sxhash(); fn nl_cons_car_ptr();
+    fn nl_cons_cdr_ptr(); fn nl_jit_make_symbol(); fn nl_record_type_tag_ptr(); fn nl_jit_concat_ints(); fn nl_sf_quote(); fn nl_jit_downcase(); fn nl_jit_upcase(); fn nl_jit_split_by_non_alnum(); fn nl_sf_if(); fn nl_sf_setq(); fn nl_sf_progn(); fn nl_sf_while();
+    fn nl_sf_lambda(); fn nl_sf_function(); fn nl_sf_condition_case(); fn nl_jit_symbol_name(); fn nelisp_bi_nl_fact_i64(); fn nl_cons_prepend_clone(); fn nl_jit_secure_hash(); fn nl_jit_secure_hash_non_sha1_ext(); fn nl_jit_string_match_p(); fn nl_eval_inner(); fn nl_jit_alias();
     fn nl_jit_syscall_call(); fn nl_jit_syscall_supported_p(); fn nl_jit_char_table_aref(); fn nl_jit_char_table_aset(); fn nl_jit_mut_str_set_codepoint();
     #[link_name = "nl_jit_alias"] fn nl_jit_alias_call(name: *const Sexp, out: *mut Sexp) -> i64;
 }
 #[used]
 static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
-    nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2, nelisp_jit_lt2, nelisp_jit_gt2,
-    nelisp_jit_le2, nelisp_jit_ge2, nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
-    nl_jit_float_add, nl_jit_float_sub, nl_jit_float_mul, nl_jit_float_div, nl_jit_float_lt, nl_jit_float_gt,
-    nl_jit_float_le, nl_jit_float_ge, nl_jit_float_eq_eps, nl_jit_float_float, nl_jit_float_exp, nl_jit_float_log,
-    nl_jit_intern, nl_jit_make_mut_str, nl_jit_mut_str_len, nl_jit_record_alloc, nelisp_jit_predicate_eq, nelisp_jit_ref_eq,
-    nelisp_jit_record_type, nelisp_jit_record_len, nelisp_jit_record_ref, nelisp_jit_record_set, nelisp_jit_length, nelisp_jit_aref,
-    nelisp_jit_aset, nelisp_jit_elt, nelisp_jit_cons_car, nelisp_jit_cons_cdr, nelisp_jit_cons_setcar, nelisp_jit_cons_setcdr,
-    nelisp_jit_cons_make, nl_jit_bool_vector_len, nl_jit_str_codepoint_at, nl_jit_type_of, nl_jit_sxhash, nl_cons_car_ptr,
-    nl_cons_cdr_ptr, nl_jit_make_symbol, nl_record_type_tag_ptr, nl_jit_concat_ints, nl_sf_quote, nl_jit_downcase,
-    nl_jit_upcase, nl_jit_split_by_non_alnum, nl_sf_if, nl_sf_setq, nl_sf_progn, nl_sf_while,
-    nl_sf_lambda, nl_sf_function, nl_sf_condition_case, nl_jit_symbol_name, nelisp_bi_nl_fact_i64, nl_cons_prepend_clone,
-    nl_jit_secure_hash, nl_jit_secure_hash_non_sha1_ext, nl_jit_string_match_p, nl_jit_alias, nl_eval_inner,
+    nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2, nelisp_jit_lt2, nelisp_jit_gt2, nelisp_jit_le2, nelisp_jit_ge2, nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
+    nl_jit_float_add, nl_jit_float_sub, nl_jit_float_mul, nl_jit_float_div, nl_jit_float_lt, nl_jit_float_gt, nl_jit_float_le, nl_jit_float_ge, nl_jit_float_eq_eps, nl_jit_float_float, nl_jit_float_exp, nl_jit_float_log,
+    nl_jit_intern, nl_jit_make_mut_str, nl_jit_mut_str_len, nl_jit_record_alloc, nelisp_jit_predicate_eq, nelisp_jit_ref_eq, nelisp_jit_record_type, nelisp_jit_record_len, nelisp_jit_record_ref, nelisp_jit_record_set, nelisp_jit_length, nelisp_jit_aref,
+    nelisp_jit_aset, nelisp_jit_elt, nelisp_jit_cons_car, nelisp_jit_cons_cdr, nelisp_jit_cons_setcar, nelisp_jit_cons_setcdr, nelisp_jit_cons_make, nl_jit_bool_vector_len, nl_jit_str_codepoint_at, nl_jit_type_of, nl_jit_sxhash, nl_cons_car_ptr,
+    nl_cons_cdr_ptr, nl_jit_make_symbol, nl_record_type_tag_ptr, nl_jit_concat_ints, nl_sf_quote, nl_jit_downcase, nl_jit_upcase, nl_jit_split_by_non_alnum, nl_sf_if, nl_sf_setq, nl_sf_progn, nl_sf_while,
+    nl_sf_lambda, nl_sf_function, nl_sf_condition_case, nl_jit_symbol_name, nelisp_bi_nl_fact_i64, nl_cons_prepend_clone, nl_jit_secure_hash, nl_jit_secure_hash_non_sha1_ext, nl_jit_string_match_p, nl_jit_alias, nl_eval_inner,
     nl_jit_syscall_call, nl_jit_syscall_supported_p, nl_jit_char_table_aref, nl_jit_char_table_aset, nl_jit_mut_str_set_codepoint,
 ];
 pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {

@@ -42,14 +42,10 @@ impl Env {
     pub fn new_global() -> Self {
         macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) }; }
         const STDLIB_FILES: &[(&str, &str)] = &[
-            e!("nelisp-jit-substrate.el"), e!("nelisp-syscall-table.el"), e!("nelisp-jit-strategy.el"),
-            e!("nelisp-stdlib-env-shim.el"), e!("nelisp-stdlib-eval-special.el"), e!("nelisp-stdlib-error.el"),
-            e!("nelisp-stdlib.el"), e!("nelisp-stdlib-list.el"), e!("nelisp-stdlib-hof.el"),
-            e!("nelisp-stdlib-search.el"), e!("nelisp-stdlib-plist-str.el"), e!("nelisp-stdlib-format.el"),
-            e!("nelisp-stdlib-misc.el"), e!("nelisp-stdlib-os-int-helpers.el"), e!("nelisp-stdlib-os.el"),
-            e!("nelisp-pcase.el"), e!("nelisp-cl-macros.el"), e!("nelisp-stdlib-hash.el"),
-            e!("nelisp-stdlib-equal.el"), e!("nelisp-stdlib-prn.el"), e!("nelisp-stdlib-reader.el"),
-            e!("nelisp-stdlib-eval-core.el"), e!("nelisp-stdlib-math.el"), e!("nelisp-stdlib-regex.el"),
+            e!("nelisp-jit-substrate.el"), e!("nelisp-syscall-table.el"), e!("nelisp-jit-strategy.el"), e!("nelisp-stdlib-env-shim.el"), e!("nelisp-stdlib-eval-special.el"), e!("nelisp-stdlib-error.el"),
+            e!("nelisp-stdlib.el"), e!("nelisp-stdlib-list.el"), e!("nelisp-stdlib-hof.el"), e!("nelisp-stdlib-search.el"), e!("nelisp-stdlib-plist-str.el"), e!("nelisp-stdlib-format.el"),
+            e!("nelisp-stdlib-misc.el"), e!("nelisp-stdlib-os-int-helpers.el"), e!("nelisp-stdlib-os.el"), e!("nelisp-pcase.el"), e!("nelisp-cl-macros.el"), e!("nelisp-stdlib-hash.el"),
+            e!("nelisp-stdlib-equal.el"), e!("nelisp-stdlib-prn.el"), e!("nelisp-stdlib-reader.el"), e!("nelisp-stdlib-eval-core.el"), e!("nelisp-stdlib-math.el"), e!("nelisp-stdlib-regex.el"),
             e!("nelisp-stdlib-fast-hash.el"), e!("nelisp-env.el"), e!("nelisp-lexframe.el"), e!("nelisp-cli.el"),
         ];
         let mut env = Env::install_stage0(1024);

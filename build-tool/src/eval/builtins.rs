@@ -7,16 +7,10 @@ use super::sexp::Sexp;
 use std::path::{Path, PathBuf};
 macro_rules! builtin_names {
     () => { &[
-        "vector", "make-vector", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes", "nl-jit-call-format-float", "truncate", "nelisp--syscall-canonicalize",
-        "nelisp--syscall-stat", "nelisp--syscall-readdir", "nelisp--syscall-read-file", "nelisp--syscall",
-        "symbol-function", "fset", "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured", "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
-        "nelisp--set-use-elisp-apply", "nelisp--apply-lambda-inner", "funcall", "apply", "eval", "signal", "nelisp--write-stdout-bytes", "nelisp--write-stderr-line",
-        "read-stdin-bytes", "nelisp--f64-trunc", "nl-write-file", "nl-make-directory", "terminal-raw-mode-enter", "terminal-raw-mode-leave", "read-stdin-byte-available",
-        "_termios-saved-p", "_raw-mode-hooks-installed-p", "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p", "install-sigint-handler", "_sigint-handler-installed-p",
-        "install-winsize-handler", "_winsize-handler-installed-p", "terminal-take-winsize-changed", "terminal-current-winsize", "install-jobctrl-handlers",
-        "_jobctrl-handlers-installed-p", "terminal-take-sigcont", "nl-jit-call-i64-i64", "nl-jit-call-ptr-ptr",
-        "nl-jit-call-syscall", "nl-jit-call-out-1", "nl-jit-call-out-2", "nl-jit-call-out-1i", "nl-jit-call-out-2i", "nl-jit-call-float-float",
-        "nl-jit-call-float-cmp", "nl-jit-call-float-unary", "nl-fact-i64",
+        "vector", "make-vector", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes", "nl-jit-call-format-float", "truncate", "nelisp--syscall-canonicalize", "nelisp--syscall-stat", "nelisp--syscall-readdir", "nelisp--syscall-read-file", "nelisp--syscall",
+        "symbol-function", "fset", "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured", "nelisp--bind-local", "nelisp--apply-builtin-dispatch", "nelisp--set-use-elisp-apply", "nelisp--apply-lambda-inner", "funcall", "apply", "eval", "signal", "nelisp--write-stdout-bytes", "nelisp--write-stderr-line",
+        "read-stdin-bytes", "nelisp--f64-trunc", "nl-write-file", "nl-make-directory", "terminal-raw-mode-enter", "terminal-raw-mode-leave", "read-stdin-byte-available", "_termios-saved-p", "_raw-mode-hooks-installed-p", "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p", "install-sigint-handler", "_sigint-handler-installed-p",
+        "install-winsize-handler", "_winsize-handler-installed-p", "terminal-take-winsize-changed", "terminal-current-winsize", "install-jobctrl-handlers", "_jobctrl-handlers-installed-p", "terminal-take-sigcont", "nl-jit-call-i64-i64", "nl-jit-call-ptr-ptr", "nl-jit-call-syscall", "nl-jit-call-out-1", "nl-jit-call-out-2", "nl-jit-call-out-1i", "nl-jit-call-out-2i", "nl-jit-call-float-float", "nl-jit-call-float-cmp", "nl-jit-call-float-unary", "nl-fact-i64",
     ] };
 }
 macro_rules! builtin_dispatch {
@@ -53,18 +47,14 @@ macro_rules! builtin_dispatch {
                 let name = match &$args[0] { Sexp::Symbol(s) | Sexp::Str(s) => s.clone(), other => return Err(EvalError::wrong_type("symbol", other.clone())) };
                 dispatch(&name, &super::list_elements(&$args[1])?, $env) },
             "nelisp--set-use-elisp-apply" => { require_arity("nelisp--set-use-elisp-apply", $args, 1, Some(1))?; $env.use_elisp_apply = !matches!($args[0], Sexp::Nil); Ok(bool_sexp($env.use_elisp_apply)) },
-            "nelisp--apply-lambda-inner" => {
-                require_arity("nelisp--apply-lambda-inner", $args, 4, Some(4))?;
-                let al = Sexp::list_from(&super::list_elements(&$args[3])?);
-                let mut out = Sexp::Nil;
+            "nelisp--apply-lambda-inner" => { require_arity("nelisp--apply-lambda-inner", $args, 4, Some(4))?;
+                let al = Sexp::list_from(&super::list_elements(&$args[3])?); let mut out = Sexp::Nil;
                 let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(&$args[0], &$args[1], &$args[2], &al, $env as *mut super::Env as *mut std::ffi::c_void, &mut out) };
-                if rc == 0 { Ok(out) } else { Err(super::consume_stashed_error($env, "nelisp--apply-lambda-inner")) }
-            },
+                if rc == 0 { Ok(out) } else { Err(super::consume_stashed_error($env, "nelisp--apply-lambda-inner")) } },
             "funcall" => { require_arity("funcall", $args, 1, None)?; let func = match &$args[0] { Sexp::Symbol(s) => $env.lookup_function(s)?, _ => $args[0].clone() }; super::apply_function(&func, &$args[1..], $env) },
             "apply" => { require_arity("apply", $args, 2, None)?;
                 let func = match &$args[0] { Sexp::Symbol(s) => $env.lookup_function(s)?, _ => $args[0].clone() };
-                let mut aa: Vec<Sexp> = $args[1..$args.len()-1].to_vec();
-                aa.extend(super::list_elements(&$args[$args.len()-1])?); super::apply_function(&func, &aa, $env) },
+                let mut aa: Vec<Sexp> = $args[1..$args.len()-1].to_vec(); aa.extend(super::list_elements(&$args[$args.len()-1])?); super::apply_function(&func, &aa, $env) },
             "eval" => { require_arity("eval", $args, 1, Some(2))?; super::eval(&$args[0], $env) },
             "signal" => {
                 require_arity("signal", $args, 2, Some(2))?;
@@ -74,10 +64,7 @@ macro_rules! builtin_dispatch {
                 match unsafe { crate::elisp_cc_spike::bi_signal_dispatch(&$args[0], &q, &a, &w) } {
                     0 => Err(EvalError::Quit),
                     1 => Err(EvalError::arith(match hd(&$args[1]).as_ref().unwrap_or(&$args[1]) { Sexp::Str(s) => s.clone(), o => format!("{o:?}") })),
-                    2 => Err(EvalError::wrong_type(
-                        match hd(&$args[1]) { Some(Sexp::Symbol(s) | Sexp::Str(s)) => s.clone(), Some(o) => format!("{o:?}"), None => "argument".into() },
-                        match &$args[1] { Sexp::Cons(b) => match &b.cdr { Sexp::Cons(c) => c.car.clone(), o => o.clone() }, o => o.clone() },
-                    )),
+                    2 => Err(EvalError::wrong_type(match hd(&$args[1]) { Some(Sexp::Symbol(s)|Sexp::Str(s)) => s.clone(), Some(o) => format!("{o:?}"), None => "argument".into() }, match &$args[1] { Sexp::Cons(b) => match &b.cdr { Sexp::Cons(c) => c.car.clone(), o => o.clone() }, o => o.clone() })),
                     _ => Err(EvalError::user(tag.clone(), $args[1].clone())),
                 }
             },
