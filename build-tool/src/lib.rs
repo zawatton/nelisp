@@ -50,11 +50,7 @@ pub mod elisp_cc_spike {
         fn nelisp_bi_syscall_read_file(path_ptr: *const Sexp, buf_ptr: *mut u8,
             read_size: i64) -> i64;
         fn nelisp_bi_syscall_resolve_nr(sym_ptr: *const Sexp) -> i64;
-        // nl_alloc_consbox / nl_alloc_cell / nl_alloc_vector / nl_alloc_record
-        // — exported by their respective elisp `.o' files; declared here so
-        // the static archive is pulled into the link and other elisp `.o' PLT
-        // refs to these symbols resolve correctly.  Types cast to *mut u8 to
-        // avoid importing the concrete types in this module.
+        // nl_alloc_* — pin archive members so PLT refs in other .o files resolve.
         fn nl_alloc_consbox() -> *mut u8;
         fn nl_alloc_cell(initial: *const u8) -> *mut u8;
         fn nl_alloc_vector(capacity: i64) -> *mut u8;
@@ -102,7 +98,6 @@ pub mod elisp_cc_spike {
             scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
         fn nelisp_frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64,
             scratch_slot: *mut Sexp) -> i64;
-        // Wave i — frame_stack_install_sexp body → Phase 47 .o.
         fn nelisp_frame_stack_install(frames_ptr: *const Sexp, frame_ptr: *const Sexp, scratch_slot: *mut Sexp) -> i64;
         fn nelisp_fnv1a(str_ptr: *const Sexp) -> i64;
         fn nelisp_reader_lex_one(str_ptr: *const Sexp, cursor: i64,
@@ -135,11 +130,8 @@ pub mod elisp_cc_spike {
         fn nl_apply_lambda_inner(captured: *const Sexp, formals: *const Sexp,
             body_list: *const Sexp, args_list: *const Sexp,
             env: *mut std::ffi::c_void, out: *mut Sexp) -> i64;
-        // Phase 47 — nl_bind_formals_impl: pure-elisp bind_formals_impl
-        // (Stage 1 parallel implementation in nelisp-cc-bind-formals.el).
         fn nl_bind_formals_impl(formals: *const Sexp, args: *const Sexp,
             env: *mut std::ffi::c_void, _pad: i64) -> i64;
-        // Phase 47 — nl_eval_inner: sexp-tag dispatch; cons path → nl_eval_inner_cons.
         fn nl_eval_inner(form: *const Sexp, env: *mut std::ffi::c_void,
             out: *mut Sexp, _pad: i64) -> i64;
         // Doc 122 §122.J — sexp.rs formatter chain elisp化.
@@ -151,21 +143,15 @@ pub mod elisp_cc_spike {
             result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64;
         fn nl_bi_f64_trunc_impl(mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64; // Doc 118
         fn nelisp_wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp, work_slot: *mut Sexp, name_slot: *mut Sexp, cell_slot: *mut Sexp, inner_slot: *mut Sexp) -> i64; // Doc 115 §115.4
-        // Wave a-2 — Env::{lookup_value,set_value,lookup_function} Phase 47 .o.
         fn nelisp_env_lookup_value(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64;
         fn nelisp_env_set_value(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
         fn nelisp_env_lookup_function(mirror_ptr: *const Sexp, unbound_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64;
-        // Wave c+ — 3-arm set-* dispatcher; Rust pre-builds scratch vec.
         fn nelisp_env_shim_set_op(op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_ptr: *const Sexp, result_slot: *mut Sexp, _pad: i64) -> i64;
-        // Wave b — Env::bind_local Phase 47 .o.
         fn nelisp_env_bind_local(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
-        // Wave f — frame_bind / frame_stack_find / frame_push Phase 47 .o.
         fn nelisp_frame_bind(frames_ptr: *const Sexp, name_ptr: *const Sexp, cell_ptr: *const Sexp, scratch_pair: *mut Sexp, scratch_outer: *mut Sexp, scratch_count: *mut Sexp) -> i64;
         fn nelisp_frame_stack_find(frames_ptr: *const Sexp, name_ptr: *const Sexp) -> i64;
         fn nelisp_frame_push(frames_ptr: *const Sexp, scratch_vec_ptr: *const Sexp) -> i64;
-        // Wave h — install empty globals mirror + frame stack Phase 47 .o.
         fn nelisp_env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
-        // Wave k — tty raw-mode / winsize / jobctrl Phase 47 .o.
         fn nelisp_tty_raw_enter(statbuf: *mut u8) -> i64;
         fn nelisp_tty_raw_leave(saved_buf: *const u8) -> i64;
         fn nelisp_tty_stdin_byte_avail(pfd_buf: *mut u8, timeout_ms: i64) -> i64;
@@ -200,17 +186,12 @@ pub mod elisp_cc_spike {
     cc_wrap!(bi_nl_make_directory: nelisp_bi_nl_make_directory, (path_ptr: *const Sexp) -> i64);
     cc_wrap!(bi_syscall_read_file: nelisp_bi_syscall_read_file, (path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64);
     cc_wrap!(bi_syscall_resolve_nr: nelisp_bi_syscall_resolve_nr, (sym_ptr: *const Sexp) -> i64);
-    // Wave k — tty Phase 47 .o wrappers.
     cc_wrap!(tty_raw_enter: nelisp_tty_raw_enter, (statbuf: *mut u8) -> i64);
     cc_wrap!(tty_raw_leave: nelisp_tty_raw_leave, (saved_buf: *const u8) -> i64);
     cc_wrap!(tty_stdin_byte_avail: nelisp_tty_stdin_byte_avail, (pfd_buf: *mut u8, timeout_ms: i64) -> i64);
     cc_wrap!(tty_winsize_current: nelisp_tty_winsize_current, (ws_buf: *mut u8) -> i64);
     cc_wrap!(tty_take_atomic: nelisp_tty_take_atomic, (flag_ptr: *mut i64) -> i64);
-    /// Pin `nl_alloc_consbox' symbol from the elisp `.o' archive so
-    /// other elisp `.o' PLT references to it are resolved at link time.
     pub unsafe fn nl_alloc_consbox_raw() -> *mut u8 { nl_alloc_consbox() }
-    /// Pin `nl_alloc_cell', `nl_alloc_vector', `nl_alloc_record' symbols
-    /// from their elisp `.o' archives (same rationale as nl_alloc_consbox_raw).
     pub unsafe fn nl_alloc_cell_raw(initial: *const u8) -> *mut u8 { nl_alloc_cell(initial) }
     pub unsafe fn nl_alloc_vector_raw(capacity: i64) -> *mut u8 { nl_alloc_vector(capacity) }
     pub unsafe fn nl_alloc_record_raw(type_tag_ptr: *const u8, slot_count: i64) -> *mut u8 { nl_alloc_record(type_tag_ptr, slot_count) }
@@ -229,7 +210,6 @@ pub mod elisp_cc_spike {
     cc_wrap!(nlchartable_drop: nelisp_nlchartable_drop, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlchartable_clone: nelisp_nlchartable_clone, (box_ptr: *mut i64) -> i64);
 
-    /// Raw mirror entry lookup; borrowed pointer, 0 on miss.
     pub unsafe fn mirror_lookup_entry(mirror_ptr: *const Sexp, sym_ptr: *const Sexp) -> *const Sexp {
         nelisp_mirror_lookup_entry(mirror_ptr, sym_ptr) as *const Sexp
     }
@@ -245,7 +225,6 @@ pub mod elisp_cc_spike {
     cc_wrap!(mirror_install_entry: nelisp_mirror_install_entry, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64);
     cc_wrap!(env_shim_op: nelisp_env_shim_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp, result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64);
 
-    /// Scratch vector for the four `_or_insert` wrappers and Wave a-2 `set_value'.
     pub fn build_or_insert_scratch_vec(
         value: Sexp,
         function: Sexp,
@@ -253,21 +232,12 @@ pub mod elisp_cc_spike {
         constant: Sexp,
     ) -> Sexp {
         Sexp::vector(vec![
-            Sexp::Nil,                           // 0: Nil source
-            Sexp::Nil,                           // 1: inner-pair scratch
-            Sexp::Nil,                           // 2: outer-cell scratch
-            Sexp::Nil,                           // 3: count int scratch
-            Sexp::Nil,                           // 4: KEY str scratch
+            Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, // 0-4: scratch
             Sexp::Symbol("symbol-entry".into()), // 5: type tag
-            Sexp::Nil,                           // 6: entry result
-            value,                               // 7: value cell
-            function,                            // 8: function cell
-            plist,                               // 9: plist
-            constant,                            // 10: constant flag
+            Sexp::Nil, value, function, plist, constant, // 6: entry, 7-10: payload
         ])
     }
 
-    // Macro for the four `_or_insert' scratch-vec wrappers (each: build vec, call extern, return i64).
     macro_rules! or_insert_wrap {
         ($pub_name:ident: $ext:ident($mirror:ident, $sym:ident $(, $a:ident: $at:ty)*) => $v:expr, $f:expr, $p:expr, $c:expr) => {
             pub unsafe fn $pub_name($mirror: *const Sexp, $sym: *const Sexp $(, $a: $at)*) -> i64 {
@@ -286,7 +256,6 @@ pub mod elisp_cc_spike {
         nelisp_frame_stack_ensure_capacity(frames_ptr, needed, &mut scratch as *mut Sexp)
     }
 
-    // Wave i — install frame into backing[depth] + bump depth counter.
     pub unsafe fn frame_stack_install(frames_ptr: *const Sexp, frame_ptr: *const Sexp) -> i64 {
         let mut s = Sexp::Nil; nelisp_frame_stack_install(frames_ptr, frame_ptr, &mut s)
     }
@@ -332,16 +301,13 @@ pub mod elisp_cc_spike {
     cc_wrap!(env_shim_set_op: nelisp_env_shim_set_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_ptr: *const Sexp, result_slot: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(env_bind_local: nelisp_env_bind_local, (mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64);
 
-    // Wave f — frame_bind: bind NAME→CELL in innermost lexframe (3 scratch slots).
     pub unsafe fn frame_bind(frames_ptr: *const Sexp, name_ptr: *const Sexp, cell_ptr: *const Sexp) -> i64 {
         let (mut sp, mut so, mut sc) = (Sexp::Nil, Sexp::Nil, Sexp::Nil);
         nelisp_frame_bind(frames_ptr, name_ptr, cell_ptr, &mut sp, &mut so, &mut sc)
     }
-    // Wave f — frame_stack_find: walk stack innermost-first; returns *const Sexp of cell (0=miss).
     pub unsafe fn frame_stack_find_raw(frames_ptr: *const Sexp, name_ptr: *const Sexp) -> *const Sexp {
         nelisp_frame_stack_find(frames_ptr, name_ptr) as *const Sexp
     }
-    // Wave f — frame_push: allocate fresh empty lexframe; 7-slot scratch required by the .o.
     pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 {
         let s = Sexp::vector(vec![
             Sexp::Symbol("nelisp-lexframe".into()),   // 0: frame type-tag
@@ -350,7 +316,6 @@ pub mod elisp_cc_spike {
         ]);
         nelisp_frame_push(frames_ptr, &s as *const Sexp)
     }
-    // Wave h — install empty globals mirror + frame stack .o wrapper.
     pub unsafe fn env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp) -> i64 {
         let s = Sexp::vector(vec![Sexp::Symbol("nelisp-env".into()), Sexp::Symbol("fast-hash-table".into()), Sexp::Symbol("nelisp-lexframe-stack".into()), Sexp::Nil, Sexp::Nil, Sexp::Nil]);
         nelisp_env_install_empty_globals_frames(globals_out, frames_out, &s as *const Sexp, 0)

@@ -265,11 +265,6 @@ impl Env {
     mirror_op!(mutate: mirror_set_value => mirror_set_value_or_insert);
     mirror_op!(mutate: mirror_set_function => mirror_set_function_or_insert);
 
-    pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
-        let value = if truthy { Sexp::T } else { Sexp::Nil };
-        self.mirror_mutate_with(name, &value, crate::elisp_cc_spike::mirror_set_constant_or_insert);
-    }
-
     pub fn install_empty_mirror_rust_direct(&mut self) {
         self.unbound_marker = Sexp::Symbol("nelisp--unbound-marker".into());
         unsafe {

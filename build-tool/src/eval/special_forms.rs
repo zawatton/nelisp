@@ -40,7 +40,6 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
     }))
 }
 
-// nl_let_setup: sequential=1 = let*.
 #[no_mangle]
 pub unsafe extern "C" fn nl_let_setup(
     bindings_list: *const Sexp, env: *mut std::ffi::c_void, sequential: i64,
@@ -91,7 +90,6 @@ pub unsafe extern "C" fn nl_env_push_captured(env: *mut std::ffi::c_void, alist_
     match (&mut *(env as *mut Env)).push_captured(&*alist_ptr) { Ok(()) => 0, Err(_) => 1 }
 }
 
-// nl_cc_match_and_bind: clause match+bind; 0=matched, 1=miss (err re-stashed).
 #[no_mangle]
 pub unsafe extern "C" fn nl_cc_match_and_bind(
     clauses: *const Sexp, err_inout: *mut Sexp, var: *const Sexp, env: *mut std::ffi::c_void,
@@ -128,8 +126,7 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
     1
 }
 
-// bf helpers — called from nelisp-cc-bind-formals.el CPS chain.
-// nl_bf_precompute migrated to lisp/nelisp-cc-bf-precompute.el (Wave j).
+// nl_bf_* — bind_formals_impl helpers (nelisp-cc-bind-formals.el).
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_bind_sym(
     env: *mut std::ffi::c_void, name_ptr: *const Sexp, val_ptr: *const Sexp,
@@ -204,7 +201,6 @@ pub unsafe extern "C" fn nl_env_capture_lexical(env: *mut std::ffi::c_void, out:
     std::ptr::write(out, (&mut *(env as *mut Env)).capture_lexical()); 0
 }
 
-// nl_cons_prepend_clone / nl_symbol_is_lambda: migrated to Phase 47 elisp .o.
 #[no_mangle]
 pub unsafe extern "C" fn nl_eval_is_truthy(form: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
     match super::eval(&*form, &mut *(env as *mut Env)) {
@@ -220,7 +216,6 @@ pub unsafe extern "C" fn nl_env_set_value(env: *mut std::ffi::c_void, sym: *cons
     match e.set_value(name, (*val).clone()) { Ok(_) => 0, Err(_) => 1 }
 }
 
-// eval_inner bridge — called from nelisp-cc-eval-inner.o (nl_eval_inner).
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_lookup_val(
     name_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp,
@@ -290,4 +285,3 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
     match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
 }
 
-// sexp_eq deleted — replaced by Phase 47 nl_sexp_eq in nelisp-cc-sexp-eq.el

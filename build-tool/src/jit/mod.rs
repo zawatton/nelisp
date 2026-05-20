@@ -9,8 +9,6 @@ use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 use std::ffi::CString;
 
-// Pull Phase 47 `.o` archive members into the final binary so `dlsym`
-// can see them. Nullary redecls are enough; only symbol presence matters.
 #[allow(dead_code, clashing_extern_declarations)]
 extern "C" {
     fn nelisp_jit_add2(); fn nelisp_jit_sub2(); fn nelisp_jit_mul2(); fn nelisp_jit_eq2();
@@ -34,12 +32,10 @@ extern "C" {
     fn nl_jit_string_match_p(); fn nl_eval_inner(); fn nl_jit_alias();
     fn nl_jit_syscall_call(); fn nl_jit_syscall_supported_p();
     fn nl_jit_char_table_aref(); fn nl_jit_char_table_aset(); fn nl_jit_mut_str_set_codepoint();
-    // Typed entry for `unified_fn_ptr'; same ELF symbol as nullary `nl_jit_alias' above.
     #[link_name = "nl_jit_alias"]
     fn nl_jit_alias_call(name: *const Sexp, out: *mut Sexp) -> i64;
 }
 
-/// Keep the archive symbols live through LTO.
 #[used]
 static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
     nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
@@ -64,8 +60,6 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
     nl_jit_char_table_aref, nl_jit_char_table_aset, nl_jit_mut_str_set_codepoint,
 ];
 
-/// Resolve a JIT name `sexp` (Symbol or Str) to a function pointer via the
-/// Phase 47 `nl_jit_alias` object, then calls `dlsym(RTLD_DEFAULT, resolved)`.
 pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {
     let mut resolved = Sexp::Nil;
     let rc = unsafe { nl_jit_alias_call(sexp as *const _, &mut resolved as *mut _) };
@@ -137,7 +131,6 @@ pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Float(f(to_f64(&args[1], "number")?)))
 }
 
-// Out-slot trampolines: lookup, cast, alloc `out`, call, dispatch.
 macro_rules! out_call {
     ($fn:ident, $tag:literal, $n:literal, |$a:ident,$o:ident $(,$i:ident)?|,
      ($($t:ty),+), ($($e:expr),+ $(,)?)) => {
