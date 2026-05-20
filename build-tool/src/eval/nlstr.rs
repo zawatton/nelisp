@@ -22,12 +22,9 @@ pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: 
 }
 
 crate::define_nlbox!(
-    inner          = NlStr,
-    ref_ty         = NlStrRef,
-    fields         = { value: String },
-    clone_fn       = crate::elisp_cc_spike::nlstr_clone,
-    drop_fn        = crate::elisp_cc_spike::nlstr_drop,
-    layout_asserts = {
+    inner=NlStr, ref_ty=NlStrRef, fields={value: String},
+    clone_fn=crate::elisp_cc_spike::nlstr_clone, drop_fn=crate::elisp_cc_spike::nlstr_drop,
+    layout_asserts={
         use ::std::mem::{offset_of, size_of};
         assert!(offset_of!(NlStr, value) == 0);
         assert!(offset_of!(NlStr, refcount) == size_of::<String>());

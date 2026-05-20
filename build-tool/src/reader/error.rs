@@ -7,9 +7,7 @@ pub struct SourcePos {
 }
 
 impl fmt::Display for SourcePos {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.line, self.col)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}:{}", self.line, self.col) }
 }
 
 #[derive(Debug, Clone, PartialEq)]

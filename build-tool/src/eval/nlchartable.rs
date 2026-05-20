@@ -2,12 +2,9 @@ use crate::eval::sexp::{CharTableInner, Sexp};
 use crate::jit::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
 
 crate::define_nlbox!(
-    inner          = NlCharTable,
-    ref_ty         = NlCharTableRef,
-    fields         = { inner: CharTableInner },
-    clone_fn       = crate::elisp_cc_spike::nlchartable_clone,
-    drop_fn        = crate::elisp_cc_spike::nlchartable_drop,
-    layout_asserts = {
+    inner=NlCharTable, ref_ty=NlCharTableRef, fields={inner: CharTableInner},
+    clone_fn=crate::elisp_cc_spike::nlchartable_clone, drop_fn=crate::elisp_cc_spike::nlchartable_drop,
+    layout_asserts={
         use ::std::mem::{offset_of, size_of};
         assert!(offset_of!(NlCharTable, inner) == 0);
         assert!(offset_of!(NlCharTable, refcount) == size_of::<CharTableInner>());
@@ -15,10 +12,7 @@ crate::define_nlbox!(
     }
 );
 
-impl NlCharTable {
-    // Safety: no live borrow into `self.inner` (see nlinner_with_mut! contract).
-    crate::nlinner_with_mut!(with_inner_mut, inner, CharTableInner);
-}
+impl NlCharTable { crate::nlinner_with_mut!(with_inner_mut, inner, CharTableInner); }
 
 impl std::fmt::Debug for NlCharTableRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_struct("CharTable").field("inner", &self.inner).finish() }

@@ -113,7 +113,6 @@ impl Env {
 
     pub fn empty() -> Self { Env::fresh(256) }
     pub fn new_global_no_stdlib() -> Self { Env::install_stage0(1024) }
-
     fn install_stage0(max_recursion: u32) -> Self {
         let mut env = Env::fresh(max_recursion);
         env.install_empty_mirror_rust_direct();
@@ -167,7 +166,6 @@ impl Env {
     pub fn push_frame(&mut self) { self.frame_push_rust_direct(); }
     pub fn pop_frame(&mut self) { self.frame_pop_rust_direct(); }
     pub fn set_function(&mut self, name: &str, value: Sexp) { self.mirror_set_function(name, value); }
-
     pub fn capture_lexical(&mut self) -> Sexp {
         let Sexp::Record(r) = &self.frames_record else { return Sexp::Nil };
         let Some(Sexp::Int(depth)) = r.slots.get(1) else { return Sexp::Nil };
@@ -183,7 +181,6 @@ impl Env {
         unsafe { crate::elisp_cc_spike::frame_stack_install(&self.frames_record, &frame); } Ok(())
     }
 }
-
 impl Env {
     fn with_mirror_symbol<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp) -> T) -> Option<T> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return None; }
@@ -200,7 +197,6 @@ impl Env {
 
     mirror_op!(mutate: mirror_set_value => mirror_set_value_or_insert);
     mirror_op!(mutate: mirror_set_function => mirror_set_function_or_insert);
-
     pub fn install_empty_mirror_rust_direct(&mut self) {
         self.unbound_marker = Sexp::Symbol("nelisp--unbound-marker".into());
         unsafe {
@@ -212,7 +208,6 @@ impl Env {
     mirror_op!(lookup: mirror_lookup_value(pub) => mirror_lookup_value);
     mirror_op!(lookup: mirror_lookup_function(pub) => mirror_lookup_function);
     mirror_op!(pred: mirror_is_fbound(pub) => mirror_is_fbound);
-
     pub(crate) fn frame_push_rust_direct(&mut self) {
         if !matches!(&self.frames_record, Sexp::Record(_)) { return; }
         unsafe { crate::elisp_cc_spike::frame_push(&self.frames_record as *const Sexp) };
@@ -237,7 +232,6 @@ impl Env {
         Some(unsafe { (*raw).clone() })
     }
     pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> { self.frame_stack_find_rust_direct(name) }
-
     pub(crate) fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> {
         let mut result = Sexp::Nil;
         let rc = unsafe { crate::elisp_cc_spike::wrap_alist_cells(alist as *const Sexp, &mut result) };

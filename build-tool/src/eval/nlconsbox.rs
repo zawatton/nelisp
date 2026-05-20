@@ -1,12 +1,9 @@
 use crate::eval::sexp::Sexp;
 
 crate::define_nlbox!(
-    inner          = NlConsBox,
-    ref_ty         = NlConsBoxRef,
-    fields         = { car: Sexp, cdr: Sexp },
-    clone_fn       = crate::elisp_cc_spike::nlconsbox_clone,
-    drop_fn        = crate::elisp_cc_spike::nlconsbox_drop,
-    layout_asserts = {
+    inner=NlConsBox, ref_ty=NlConsBoxRef, fields={car: Sexp, cdr: Sexp},
+    clone_fn=crate::elisp_cc_spike::nlconsbox_clone, drop_fn=crate::elisp_cc_spike::nlconsbox_drop,
+    layout_asserts={
         use ::std::mem::{offset_of, size_of};
         assert!(size_of::<AtomicUsize>() == 8);
         assert!(offset_of!(NlConsBox, car) == 0);

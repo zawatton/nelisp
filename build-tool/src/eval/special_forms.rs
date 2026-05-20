@@ -236,4 +236,3 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
     if e.use_elisp_apply && e.delegation_depth==0 && !is_hlp && !is_bi { elisp_delegate!(e, func, Sexp::list_from(&args)); }
     match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
 }
-

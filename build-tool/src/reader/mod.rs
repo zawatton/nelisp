@@ -5,12 +5,8 @@ pub use crate::eval::sexp::{fmt_sexp, Sexp};
 use crate::elisp_cc_spike;
 
 const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
-
 const SCRATCH_CAP: i64 = 64;
-
-const NYI_MSG: &str =
-    "feature unsupported by elisp Reader (record `#s(..)', byte-code `#[..]', or syntax error)";
-
+const NYI_MSG: &str = "feature unsupported by elisp Reader (record `#s(..)', byte-code `#[..]', or syntax error)";
 const START_POS: SourcePos = SourcePos { line: 1, col: 1 };
 
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
@@ -43,12 +39,7 @@ enum ElispParseOutcome {
     Empty,
 }
 
-struct ElispReadState {
-    src: Sexp,
-    cursor_slot: Sexp,
-    result_slot: Sexp,
-    pool_slot: Sexp,
-}
+struct ElispReadState { src: Sexp, cursor_slot: Sexp, result_slot: Sexp, pool_slot: Sexp }
 
 impl ElispReadState {
     fn new(input: &str) -> Self {
@@ -58,7 +49,6 @@ impl ElispReadState {
     }
 
     fn cursor(&self) -> i64 { match self.cursor_slot { Sexp::Int(n) => n, _ => 0 } }
-
     fn lex_peek_advancing(&mut self) -> i64 {
         let cursor = self.cursor();
         unsafe {
@@ -74,7 +64,6 @@ impl ElispReadState {
     fn peek_token_kind(&mut self) -> i64 {
         let saved = self.cursor(); let kind = self.lex_peek_advancing(); self.cursor_slot = Sexp::Int(saved); kind
     }
-
     fn parse_one_form(&mut self) -> Option<ElispParseOutcome> {
         let saved = self.cursor(); let kind = self.lex_peek_advancing();
         if kind == 0 { return Some(ElispParseOutcome::Empty); }

@@ -1,12 +1,9 @@
 use crate::eval::sexp::Sexp;
 
 crate::define_nlbox!(
-    inner          = NlVector,
-    ref_ty         = NlVectorRef,
-    fields         = { value: Vec<Sexp> },
-    clone_fn       = crate::elisp_cc_spike::nlvector_clone,
-    drop_fn        = crate::elisp_cc_spike::nlvector_drop,
-    layout_asserts = {
+    inner=NlVector, ref_ty=NlVectorRef, fields={value: Vec<Sexp>},
+    clone_fn=crate::elisp_cc_spike::nlvector_clone, drop_fn=crate::elisp_cc_spike::nlvector_drop,
+    layout_asserts={
         use ::std::mem::{offset_of, size_of};
         assert!(offset_of!(NlVector, value) == 0);
         assert!(offset_of!(NlVector, refcount) == size_of::<Vec<Sexp>>());
@@ -15,7 +12,6 @@ crate::define_nlbox!(
 );
 
 impl NlVector {
-    // Safety: no live borrow into `self.value` (see nlinner_set!/nlinner_with_mut! contracts).
     crate::nlinner_set!(set_value, value, Vec<Sexp>);
     crate::nlinner_with_mut!(with_value_mut, value, Vec<Sexp>);
 }

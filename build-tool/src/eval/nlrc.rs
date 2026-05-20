@@ -1,15 +1,10 @@
-pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) {
-    std::ptr::drop_in_place(ptr as *mut T);
-}
+pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) { std::ptr::drop_in_place(ptr as *mut T); }
 
 #[macro_export]
 macro_rules! nl_ref_common {
     ($ref:ident, $inner:ident, drop_fn = $drop:path) => {
         #[repr(transparent)]
-        pub struct $ref {
-            ptr: ::std::ptr::NonNull<$inner>,
-            _marker: ::std::marker::PhantomData<$inner>,
-        }
+        pub struct $ref { ptr: ::std::ptr::NonNull<$inner>, _marker: ::std::marker::PhantomData<$inner> }
         impl $ref {
             pub fn strong_count(this: &Self) -> usize {
                 unsafe { (*this.ptr.as_ptr()).refcount.load(::std::sync::atomic::Ordering::Acquire) }
@@ -28,30 +23,17 @@ macro_rules! nl_ref_common {
 
 #[macro_export]
 macro_rules! define_nlbox {
-    (
-        inner          = $inner:ident,
-        ref_ty         = $ref:ident,
-        fields         = { $($fname:ident : $fty:ty),+ },
-        clone_fn       = $clone_fn:path,
-        drop_fn        = $drop_fn:path,
-        layout_asserts = { $($la_tt:tt)* }
-    ) => {
+    (inner=$inner:ident, ref_ty=$ref:ident, fields={$($fname:ident:$fty:ty),+},
+     clone_fn=$clone_fn:path, drop_fn=$drop_fn:path, layout_asserts={$($la_tt:tt)*}) => {
         use ::std::marker::PhantomData;
         use ::std::ptr::NonNull;
         use ::std::sync::atomic::AtomicUsize;
-
         #[repr(C)]
-        pub struct $inner {
-            $(pub $fname: $fty,)+
-            pub refcount: AtomicUsize,
-        }
-
+        pub struct $inner { $(pub $fname: $fty,)+ pub refcount: AtomicUsize }
         crate::nl_ref_common!($ref, $inner, drop_fn = $drop_fn);
-
         impl $inner {
             pub(crate) const DROP_FN: unsafe fn(*mut ::std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<$inner>;
         }
-
         impl $ref {
             pub fn new($($fname: $fty),+) -> $ref {
                 let ptr = NonNull::from(Box::leak(Box::new($inner { $($fname,)+ refcount: AtomicUsize::new(1) })));
@@ -64,7 +46,6 @@ macro_rules! define_nlbox {
                 $ref { ptr: self.ptr, _marker: PhantomData }
             }
         }
-
         const _: () = { $($la_tt)* };
     };
 }
@@ -93,7 +74,6 @@ macro_rules! drop_inner_extern {
         pub unsafe extern "C" fn $name(box_ptr: *mut i64) -> i64 { <$ty>::DROP_FN(box_ptr as *mut std::ffi::c_void); 1 }
     };
 }
-
 drop_inner_extern!(nl_consbox_drop_inner, crate::eval::nlconsbox::NlConsBox);
 drop_inner_extern!(nl_vector_drop_inner, crate::eval::nlvector::NlVector);
 drop_inner_extern!(nl_cell_drop_inner, crate::eval::nlcell::NlCell);

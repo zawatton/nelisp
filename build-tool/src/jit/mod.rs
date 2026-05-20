@@ -160,92 +160,63 @@ pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn sym(name: &str) -> Sexp { Sexp::Symbol(name.into()) }
 
     #[test]
     fn unified_fn_ptr_resolves_core_entries() {
-        for n in ["nelisp_jit_add2", "nelisp_jit_eq_inline", "nelisp_jit_car",
-                  "nelisp_jit_length", "nelisp_jit_aref", "nelisp_jit_intern",
-                  "nelisp_jit_syscall", "nl_jit_float_add", "nl_jit_float_exp"] {
+        for n in ["nelisp_jit_add2","nelisp_jit_eq_inline","nelisp_jit_car",
+                  "nelisp_jit_length","nelisp_jit_aref","nelisp_jit_intern",
+                  "nelisp_jit_syscall","nl_jit_float_add","nl_jit_float_exp"] {
             let p = unified_fn_ptr(&sym(n));
             assert!(p.is_some(), "missing `{}'", n);
             assert!(!p.unwrap().is_null(), "`{}' is null", n);
         }
     }
-
     #[test]
     fn unified_fn_ptr_unknown_returns_none() {
         assert!(unified_fn_ptr(&sym("nelisp_jit_does_not_exist")).is_none());
         assert!(unified_fn_ptr(&sym("")).is_none());
     }
-
     #[test]
     fn call_i64_i64_add2_smoke() {
-        let r = bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_add2"), Sexp::Int(7), Sexp::Int(8)])
-            .expect("add2 must succeed");
-        assert_eq!(r, Sexp::Int(15));
+        assert_eq!(bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_add2"),Sexp::Int(7),Sexp::Int(8)]).expect("add2"), Sexp::Int(15));
     }
-
     #[test]
     fn call_i64_i64_accepts_string_name() {
-        let r = bi_nl_jit_call_i64_i64(&[Sexp::Str("nelisp_jit_mul2".into()), Sexp::Int(6), Sexp::Int(7)])
-            .expect("mul2 (str name) must succeed");
-        assert_eq!(r, Sexp::Int(42));
+        assert_eq!(bi_nl_jit_call_i64_i64(&[Sexp::Str("nelisp_jit_mul2".into()),Sexp::Int(6),Sexp::Int(7)]).expect("mul2"), Sexp::Int(42));
     }
-
     #[test]
     fn call_i64_i64_errors() {
-        let err = bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_no_such"), Sexp::Int(0), Sexp::Int(0)])
-            .expect_err("unknown name must error");
-        assert!(matches!(err, EvalError::Generic(ref t, _) if t == "error"));
-        let err = bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_add2"), Sexp::Int(1)])
-            .expect_err("arity 2 must reject");
-        assert!(matches!(err, EvalError::Generic(ref t, _) if t == "wrong-number-of-arguments"));
-        let err = bi_nl_jit_call_i64_i64(&[Sexp::Int(0), Sexp::Int(1), Sexp::Int(2)])
-            .expect_err("Int as name must error");
-        assert!(matches!(err, EvalError::Generic(ref t, _) if t == "wrong-type-argument"));
+        assert!(matches!(bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_no_such"),Sexp::Int(0),Sexp::Int(0)]).unwrap_err(), EvalError::Generic(ref t,_) if t=="error"));
+        assert!(matches!(bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_add2"),Sexp::Int(1)]).unwrap_err(), EvalError::Generic(ref t,_) if t=="wrong-number-of-arguments"));
+        assert!(matches!(bi_nl_jit_call_i64_i64(&[Sexp::Int(0),Sexp::Int(1),Sexp::Int(2)]).unwrap_err(), EvalError::Generic(ref t,_) if t=="wrong-type-argument"));
     }
-
     #[test]
     fn call_ptr_ptr_eq_inline() {
-        let eq = |a, b| bi_nl_jit_call_ptr_ptr(&[sym("nelisp_jit_eq_inline"), a, b])
-            .expect("eq_inline must succeed");
-        assert_eq!(eq(Sexp::Int(7), Sexp::Int(7)), Sexp::Int(1));
-        assert_eq!(eq(Sexp::Int(7), Sexp::Int(8)), Sexp::Int(0));
+        let eq = |a,b| bi_nl_jit_call_ptr_ptr(&[sym("nelisp_jit_eq_inline"),a,b]).expect("eq_inline");
+        assert_eq!(eq(Sexp::Int(7),Sexp::Int(7)),Sexp::Int(1));
+        assert_eq!(eq(Sexp::Int(7),Sexp::Int(8)),Sexp::Int(0));
     }
-
     #[test]
     fn call_syscall_errors() {
-        let err = bi_nl_jit_call_syscall(&vec![sym("nelisp_jit_syscall"); 7])
-            .expect_err("arity 7 must reject");
-        assert!(matches!(err, EvalError::Generic(ref t, _) if t == "wrong-number-of-arguments"));
+        assert!(matches!(bi_nl_jit_call_syscall(&vec![sym("nelisp_jit_syscall");7]).unwrap_err(), EvalError::Generic(ref t,_) if t=="wrong-number-of-arguments"));
         let mut args = vec![sym("nelisp_jit_no_syscall")];
         args.extend(std::iter::repeat(Sexp::Int(0)).take(7));
-        assert!(matches!(
-            bi_nl_jit_call_syscall(&args).expect_err("unknown name must error"),
-            EvalError::Generic(ref t, _) if t == "error"
-        ));
+        assert!(matches!(bi_nl_jit_call_syscall(&args).unwrap_err(), EvalError::Generic(ref t,_) if t=="error"));
     }
-
     #[test]
     fn call_out_1_car_cdr_length() {
-        let lst = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
-        let car = bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"), lst.clone()]).expect("car must succeed");
-        assert_eq!(car, Sexp::Int(1));
-        let cdr = bi_nl_jit_call_out_1(&[sym("nelisp_jit_cdr"), lst]).expect("cdr must succeed");
-        assert_eq!(cdr, Sexp::list_from(&[Sexp::Int(2), Sexp::Int(3)]));
-        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
-        let len = bi_nl_jit_call_out_1(&[sym("nelisp_jit_length"), v]).expect("length must succeed");
-        assert_eq!(len, Sexp::Int(3));
+        let lst = Sexp::list_from(&[Sexp::Int(1),Sexp::Int(2),Sexp::Int(3)]);
+        assert_eq!(bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"),lst.clone()]).expect("car"), Sexp::Int(1));
+        assert_eq!(bi_nl_jit_call_out_1(&[sym("nelisp_jit_cdr"),lst]).expect("cdr"), Sexp::list_from(&[Sexp::Int(2),Sexp::Int(3)]));
+        let v = Sexp::vector(vec![Sexp::Int(1),Sexp::Int(2),Sexp::Int(3)]);
+        assert_eq!(bi_nl_jit_call_out_1(&[sym("nelisp_jit_length"),v]).expect("length"), Sexp::Int(3));
     }
-
     #[test]
     fn call_out_1_wrong_type_errors() {
-        let err = bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"), Sexp::Int(7)])
-            .expect_err("car of int must error");
+        let err = bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"),Sexp::Int(7)]).unwrap_err();
         match err {
-            EvalError::Generic(ref tag, ref data) if tag == "wrong-type-argument" => {
+            EvalError::Generic(ref tag,ref data) if tag=="wrong-type-argument" => {
                 let elems: Vec<_> = crate::eval::list_elements(data).expect("data is list");
                 assert_eq!(elems.get(0), Some(&Sexp::Symbol("jit-call-out-1".into())));
                 assert_eq!(elems.get(1), Some(&Sexp::Int(7)));
@@ -253,17 +224,13 @@ mod tests {
             other => panic!("expected wrong-type-argument, got {:?}", other),
         }
     }
-
     #[test]
     fn call_out_1i_aref() {
-        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
-        let r = bi_nl_jit_call_out_1i(&[sym("nelisp_jit_aref"), v.clone(), Sexp::Int(1)])
-            .expect("aref in-range must succeed");
-        assert_eq!(r, Sexp::Int(2));
-        let err = bi_nl_jit_call_out_1i(&[sym("nelisp_jit_aref"), v.clone(), Sexp::Int(5)])
-            .expect_err("aref out-of-range must error");
+        let v = Sexp::vector(vec![Sexp::Int(1),Sexp::Int(2),Sexp::Int(3)]);
+        assert_eq!(bi_nl_jit_call_out_1i(&[sym("nelisp_jit_aref"),v.clone(),Sexp::Int(1)]).expect("aref"), Sexp::Int(2));
+        let err = bi_nl_jit_call_out_1i(&[sym("nelisp_jit_aref"),v.clone(),Sexp::Int(5)]).unwrap_err();
         match err {
-            EvalError::Generic(ref tag, ref data) if tag == "wrong-type-argument" => {
+            EvalError::Generic(ref tag,ref data) if tag=="wrong-type-argument" => {
                 let elems: Vec<_> = crate::eval::list_elements(data).expect("data is list");
                 assert_eq!(elems.get(0), Some(&Sexp::Symbol("jit-call-out-1i".into())));
                 assert_eq!(elems.get(1), Some(&v));

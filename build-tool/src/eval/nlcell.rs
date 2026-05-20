@@ -1,12 +1,9 @@
 use crate::eval::sexp::Sexp;
 
 crate::define_nlbox!(
-    inner          = NlCell,
-    ref_ty         = NlCellRef,
-    fields         = { value: Sexp },
-    clone_fn       = crate::elisp_cc_spike::nlcell_clone,
-    drop_fn        = crate::elisp_cc_spike::nlcell_drop,
-    layout_asserts = {
+    inner=NlCell, ref_ty=NlCellRef, fields={value: Sexp},
+    clone_fn=crate::elisp_cc_spike::nlcell_clone, drop_fn=crate::elisp_cc_spike::nlcell_drop,
+    layout_asserts={
         use ::std::mem::{offset_of, size_of};
         assert!(offset_of!(NlCell, value) == 0);
         assert!(offset_of!(NlCell, refcount) == size_of::<Sexp>());
@@ -14,13 +11,8 @@ crate::define_nlbox!(
     }
 );
 
-impl NlCell {
-    // Safety: no live `&Sexp` borrow into `self.value` (see nlinner_set! contract).
-    crate::nlinner_set!(set_value, value, Sexp);
-}
-
+impl NlCell { crate::nlinner_set!(set_value, value, Sexp); }
 impl NlCellRef {
-    #[doc(hidden)]
     pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef { NlCellRef { ptr: ::std::ptr::NonNull::new(raw).expect("null"), _marker: ::std::marker::PhantomData } }
 }
 impl std::fmt::Debug for NlCellRef {

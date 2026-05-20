@@ -1,10 +1,7 @@
 crate::define_nlbox!(
-    inner          = NlBoolVector,
-    ref_ty         = NlBoolVectorRef,
-    fields         = { value: Vec<bool> },
-    clone_fn       = crate::elisp_cc_spike::nlboolvector_clone,
-    drop_fn        = crate::elisp_cc_spike::nlboolvector_drop,
-    layout_asserts = {
+    inner=NlBoolVector, ref_ty=NlBoolVectorRef, fields={value: Vec<bool>},
+    clone_fn=crate::elisp_cc_spike::nlboolvector_clone, drop_fn=crate::elisp_cc_spike::nlboolvector_drop,
+    layout_asserts={
         use ::std::mem::{offset_of, size_of};
         assert!(offset_of!(NlBoolVector, value) == 0);
         assert!(offset_of!(NlBoolVector, refcount) == size_of::<Vec<bool>>());
@@ -13,7 +10,6 @@ crate::define_nlbox!(
 );
 
 impl NlBoolVector {
-    // Safety: no live borrow into `self.value` (see nlinner_set!/nlinner_with_mut! contracts).
     crate::nlinner_set!(set_value, value, Vec<bool>);
     crate::nlinner_with_mut!(with_value_mut, value, Vec<bool>);
 }

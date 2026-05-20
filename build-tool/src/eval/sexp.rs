@@ -52,23 +52,20 @@ impl Sexp {
     #[inline]
     pub fn tag(&self) -> u8 { unsafe { *(self as *const Sexp as *const u8) } }
 
-    sexp_box_ptr_accessor!(cons_box_ptr, crate::eval::nlconsbox::NlConsBox);
-    sexp_box_ptr_accessor!(cell_box_ptr, crate::eval::nlcell::NlCell);
-    sexp_box_ptr_accessor!(mut_str_box_ptr, crate::eval::nlstr::NlStr);
-    sexp_box_ptr_accessor!(vector_box_ptr, crate::eval::nlvector::NlVector);
-    sexp_box_ptr_accessor!(bool_vector_box_ptr, crate::eval::nlboolvector::NlBoolVector);
-    sexp_box_ptr_accessor!(record_box_ptr, crate::eval::nlrecord::NlRecord);
+    sexp_box_ptr_accessor!(cons_box_ptr,       crate::eval::nlconsbox::NlConsBox);
+    sexp_box_ptr_accessor!(cell_box_ptr,       crate::eval::nlcell::NlCell);
+    sexp_box_ptr_accessor!(mut_str_box_ptr,    crate::eval::nlstr::NlStr);
+    sexp_box_ptr_accessor!(vector_box_ptr,     crate::eval::nlvector::NlVector);
+    sexp_box_ptr_accessor!(bool_vector_box_ptr,crate::eval::nlboolvector::NlBoolVector);
+    sexp_box_ptr_accessor!(record_box_ptr,     crate::eval::nlrecord::NlRecord);
     sexp_box_ptr_accessor!(char_table_box_ptr, crate::eval::nlchartable::NlCharTable);
 }
 
-const _: () = { use std::mem::size_of;
-    assert!(size_of::<crate::eval::nlconsbox::NlConsBoxRef>() == 8);
-    assert!(size_of::<crate::eval::nlcell::NlCellRef>() == 8);
-    assert!(size_of::<crate::eval::nlstr::NlStrRef>() == 8);
-    assert!(size_of::<crate::eval::nlvector::NlVectorRef>() == 8);
-    assert!(size_of::<crate::eval::nlboolvector::NlBoolVectorRef>() == 8);
-    assert!(size_of::<crate::eval::nlrecord::NlRecordRef>() == 8);
-    assert!(size_of::<crate::eval::nlchartable::NlCharTableRef>() == 8); };
+const _: () = { use std::mem::size_of; use crate::eval::*;
+    assert!(size_of::<nlconsbox::NlConsBoxRef>()==8); assert!(size_of::<nlcell::NlCellRef>()==8);
+    assert!(size_of::<nlstr::NlStrRef>()==8); assert!(size_of::<nlvector::NlVectorRef>()==8);
+    assert!(size_of::<nlboolvector::NlBoolVectorRef>()==8); assert!(size_of::<nlrecord::NlRecordRef>()==8);
+    assert!(size_of::<nlchartable::NlCharTableRef>()==8); };
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) {
@@ -118,36 +115,36 @@ const NLREC_SLOTS: usize = std::mem::offset_of!(NlRecord, slots);
 const NLVEC_VALUE: usize = std::mem::offset_of!(NlVector, value);
 
 pub const ABI_EXPORT: &[(&str, i64)] = &[
-    ("tag-nil", SEXP_TAG_NIL as i64), ("tag-t", SEXP_TAG_T as i64),
-    ("tag-int", SEXP_TAG_INT as i64), ("tag-float", SEXP_TAG_FLOAT as i64),
-    ("tag-symbol", SEXP_TAG_SYMBOL as i64), ("tag-str", SEXP_TAG_STR as i64),
-    ("tag-mut-str", SEXP_TAG_MUT_STR as i64), ("tag-cons", SEXP_TAG_CONS as i64),
-    ("tag-vector", SEXP_TAG_VECTOR as i64), ("tag-char-table", SEXP_TAG_CHAR_TABLE as i64),
-    ("tag-bool-vector", SEXP_TAG_BOOL_VECTOR as i64), ("tag-cell", SEXP_TAG_CELL as i64),
-    ("tag-record", SEXP_TAG_RECORD as i64),
-    ("offset-tag", 0), ("offset-payload", SEXP_PAYLOAD_OFFSET as i64), ("slot-size", std::mem::size_of::<Sexp>() as i64),
-    ("nlconsbox-offset-car", std::mem::offset_of!(NlConsBox, car) as i64),
-    ("nlconsbox-offset-cdr", std::mem::offset_of!(NlConsBox, cdr) as i64),
-    ("nlconsbox-offset-refcount", std::mem::offset_of!(NlConsBox, refcount) as i64),
-    ("nlconsbox-size", std::mem::size_of::<NlConsBox>() as i64),
-    ("string-offset-capacity", SEXP_PAYLOAD_OFFSET as i64),
-    ("string-offset-ptr", (SEXP_PAYLOAD_OFFSET + 8) as i64),
-    ("string-offset-length", (SEXP_PAYLOAD_OFFSET + 16) as i64),
-    ("string-header-size", std::mem::size_of::<String>() as i64),
-    ("nlrecord-offset-type-tag", std::mem::offset_of!(NlRecord, type_tag) as i64),
-    ("nlrecord-offset-slots-vec", NLREC_SLOTS as i64), ("nlrecord-offset-slots-ptr", NLREC_SLOTS as i64),
-    ("nlrecord-offset-slots-capacity", (NLREC_SLOTS + 8) as i64),
-    ("nlrecord-offset-slots-length", (NLREC_SLOTS + 16) as i64),
-    ("nlrecord-offset-refcount", std::mem::offset_of!(NlRecord, refcount) as i64),
-    ("nlrecord-size", std::mem::size_of::<NlRecord>() as i64),
-    ("nlvector-offset-value-vec", NLVEC_VALUE as i64), ("nlvector-offset-value-ptr", NLVEC_VALUE as i64),
-    ("nlvector-offset-value-capacity", (NLVEC_VALUE + 8) as i64),
-    ("nlvector-offset-value-length", (NLVEC_VALUE + 16) as i64),
-    ("nlvector-offset-refcount", std::mem::offset_of!(NlVector, refcount) as i64),
-    ("nlvector-size", std::mem::size_of::<NlVector>() as i64),
-    ("nlcell-offset-value", std::mem::offset_of!(NlCell, value) as i64),
-    ("nlcell-offset-refcount", std::mem::offset_of!(NlCell, refcount) as i64),
-    ("nlcell-size", std::mem::size_of::<NlCell>() as i64),
+    ("tag-nil",SEXP_TAG_NIL as i64), ("tag-t",SEXP_TAG_T as i64),
+    ("tag-int",SEXP_TAG_INT as i64), ("tag-float",SEXP_TAG_FLOAT as i64),
+    ("tag-symbol",SEXP_TAG_SYMBOL as i64), ("tag-str",SEXP_TAG_STR as i64),
+    ("tag-mut-str",SEXP_TAG_MUT_STR as i64), ("tag-cons",SEXP_TAG_CONS as i64),
+    ("tag-vector",SEXP_TAG_VECTOR as i64), ("tag-char-table",SEXP_TAG_CHAR_TABLE as i64),
+    ("tag-bool-vector",SEXP_TAG_BOOL_VECTOR as i64), ("tag-cell",SEXP_TAG_CELL as i64),
+    ("tag-record",SEXP_TAG_RECORD as i64),
+    ("offset-tag",0), ("offset-payload",SEXP_PAYLOAD_OFFSET as i64), ("slot-size",std::mem::size_of::<Sexp>() as i64),
+    ("nlconsbox-offset-car",std::mem::offset_of!(NlConsBox,car) as i64),
+    ("nlconsbox-offset-cdr",std::mem::offset_of!(NlConsBox,cdr) as i64),
+    ("nlconsbox-offset-refcount",std::mem::offset_of!(NlConsBox,refcount) as i64),
+    ("nlconsbox-size",std::mem::size_of::<NlConsBox>() as i64),
+    ("string-offset-capacity",SEXP_PAYLOAD_OFFSET as i64),
+    ("string-offset-ptr",(SEXP_PAYLOAD_OFFSET+8) as i64),
+    ("string-offset-length",(SEXP_PAYLOAD_OFFSET+16) as i64),
+    ("string-header-size",std::mem::size_of::<String>() as i64),
+    ("nlrecord-offset-type-tag",std::mem::offset_of!(NlRecord,type_tag) as i64),
+    ("nlrecord-offset-slots-vec",NLREC_SLOTS as i64), ("nlrecord-offset-slots-ptr",NLREC_SLOTS as i64),
+    ("nlrecord-offset-slots-capacity",(NLREC_SLOTS+8) as i64),
+    ("nlrecord-offset-slots-length",(NLREC_SLOTS+16) as i64),
+    ("nlrecord-offset-refcount",std::mem::offset_of!(NlRecord,refcount) as i64),
+    ("nlrecord-size",std::mem::size_of::<NlRecord>() as i64),
+    ("nlvector-offset-value-vec",NLVEC_VALUE as i64), ("nlvector-offset-value-ptr",NLVEC_VALUE as i64),
+    ("nlvector-offset-value-capacity",(NLVEC_VALUE+8) as i64),
+    ("nlvector-offset-value-length",(NLVEC_VALUE+16) as i64),
+    ("nlvector-offset-refcount",std::mem::offset_of!(NlVector,refcount) as i64),
+    ("nlvector-size",std::mem::size_of::<NlVector>() as i64),
+    ("nlcell-offset-value",std::mem::offset_of!(NlCell,value) as i64),
+    ("nlcell-offset-refcount",std::mem::offset_of!(NlCell,refcount) as i64),
+    ("nlcell-size",std::mem::size_of::<NlCell>() as i64),
 ];
 
 pub fn fmt_sexp(s: &Sexp) -> String {

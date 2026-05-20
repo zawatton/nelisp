@@ -43,18 +43,15 @@ pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>
 pub fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> {
     expect_single_form(read_all_via_elisp(input, env)?, "read_one_via_elisp")
 }
-
 pub fn eval_str(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     let form = expect_single_form(read_all_via_elisp(input, &mut env)?, "eval_str")?;
     eval(&form, &mut env)
 }
-
 pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env)
 }
-
 pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
     let raw_dir = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
@@ -93,13 +90,8 @@ fn walk_proper_list(head: &Sexp, mut f: impl FnMut(&Sexp) -> Result<Sexp, EvalEr
     }}
 }
 
-pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
-    walk_proper_list(args, |car| eval(car, env))
-}
-pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
-    walk_proper_list(list, |car| Ok(car.clone()))
-}
-
+pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(args, |car| eval(car, env)) }
+pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(list, |car| Ok(car.clone())) }
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let wrong_type = || EvalError::wrong_type("function", func.clone());
     let Sexp::Cons(b) = func else {
