@@ -1,10 +1,7 @@
 use std::fmt;
 use super::sexp::Sexp;
 #[derive(Debug, Clone, PartialEq)]
-pub enum EvalError {
-    Generic(String, Sexp), // any `signal` tag + data list
-    Quit,
-}
+pub enum EvalError { Generic(String, Sexp), Quit }
 impl EvalError {
     pub fn error_tag(&self) -> &str { match self { EvalError::Generic(tag, _) => tag.as_str(), EvalError::Quit => "quit" } }
     pub fn signal_data(&self) -> Sexp {

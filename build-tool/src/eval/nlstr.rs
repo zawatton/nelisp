@@ -15,7 +15,6 @@ pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: 
     };
     *out = Sexp::Str(body); 0
 }
-
 crate::define_nlbox!(
     inner=NlStr, ref_ty=NlStrRef, fields={value: String},
     clone_fn=crate::elisp_cc_spike::nlstr_clone, drop_fn=crate::elisp_cc_spike::nlstr_drop,
@@ -32,8 +31,7 @@ impl NlStrRef {
 impl std::fmt::Debug for NlStrRef { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("MutStr").field(&self.value).finish() } }
 impl PartialEq for NlStrRef { fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.value == other.value } }
 macro_rules! mut_str_val_mut { ($p:expr) => { &mut (*((*$p).mut_str_box_ptr() as *mut NlStr)).value }; }
-#[no_mangle]
-pub extern "C" fn nl_is_char_alphanumeric(cp: i64) -> i64 { char::from_u32(cp as u32).map_or(0, |c| c.is_alphanumeric() as i64) }
+#[no_mangle] pub extern "C" fn nl_is_char_alphanumeric(cp: i64) -> i64 { char::from_u32(cp as u32).map_or(0, |c| c.is_alphanumeric() as i64) }
 #[no_mangle]
 pub unsafe extern "C" fn nl_mut_str_set_codepoint_raw(arg: *const Sexp, idx: i64, val_cp: i64, out: *mut Sexp) -> i64 {
     use crate::jit::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
@@ -44,8 +42,7 @@ pub unsafe extern "C" fn nl_mut_str_set_codepoint_raw(arg: *const Sexp, idx: i64
     rc.set_value(rc.value.chars().enumerate().map(|(j, c)| if j == i { new_ch } else { c }).collect());
     *out = Sexp::Int(val_cp); TRAMPOLINE_OK
 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_mut_str_push_byte(mut_str_ptr: *mut Sexp, byte: i64) { mut_str_val_mut!(mut_str_ptr).as_mut_vec().push((byte & 0xFF) as u8); }
+#[no_mangle] pub unsafe extern "C" fn nl_mut_str_push_byte(mut_str_ptr: *mut Sexp, byte: i64) { mut_str_val_mut!(mut_str_ptr).as_mut_vec().push((byte & 0xFF) as u8); }
 #[no_mangle]
 pub unsafe extern "C" fn nl_mut_str_push_codepoint(mut_str_ptr: *mut Sexp, codepoint: i64) {
     let cp_u32 = if !(0..=0x10_FFFF).contains(&codepoint) { 0xFFFD } else { codepoint as u32 };
@@ -58,8 +55,7 @@ pub unsafe extern "C" fn nl_str_to_float(bytes_ptr: *const u8, len: i64, slot: *
     let slice = if n == 0 { &[] } else { std::slice::from_raw_parts(bytes_ptr, n) };
     match std::str::from_utf8_unchecked(slice).parse::<f64>() { Ok(f) => { std::ptr::write(slot, Sexp::Float(f)); 1 } Err(_) => { std::ptr::write(slot, Sexp::Nil); 0 } }
 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_i64_append_to_mut_str(n: i64, buf: *mut Sexp) -> i64 { if matches!(&*buf, Sexp::MutStr(_)) { mut_str_val_mut!(buf).push_str(&n.to_string()); 0 } else { 1 } }
+#[no_mangle] pub unsafe extern "C" fn nl_i64_append_to_mut_str(n: i64, buf: *mut Sexp) -> i64 { if matches!(&*buf, Sexp::MutStr(_)) { mut_str_val_mut!(buf).push_str(&n.to_string()); 0 } else { 1 } }
 #[no_mangle]
 pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp) -> i64 {
     if !matches!(&*buf, Sexp::MutStr(_)) { return 1; }
@@ -68,4 +64,3 @@ pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp
     if !s.contains(['.', 'e', 'E']) && s != "inf" && s != "-inf" && s != "NaN" { val.push_str(".0"); }
     0
 }
-

@@ -49,9 +49,7 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
 }
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if quit::take_quit_flag() { return Err(EvalError::Quit); }
-    if env.current_recursion >= env.max_recursion {
-        return Err(EvalError::internal(format!("max-lisp-eval-depth exceeded ({})", env.max_recursion)));
-    }
+    if env.current_recursion >= env.max_recursion { return Err(EvalError::internal(format!("max-lisp-eval-depth exceeded ({})", env.max_recursion))); }
     env.current_recursion += 1;
     let mut out = Sexp::Nil;
     let rc = unsafe { crate::elisp_cc_spike::eval_inner_call(form as *const Sexp, env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp, 0) };
@@ -94,7 +92,6 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
         _ => Err(wt()),
     }
 }
-
 #[inline]
 unsafe fn eval_stash_err(env: &mut Env, result: Result<Sexp, EvalError>, out: *mut Sexp) -> i64 {
     match result { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { let _ = env.set_value("nelisp--last-signal-data", e.signal_data()); 1 } }

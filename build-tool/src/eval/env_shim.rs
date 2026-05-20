@@ -29,12 +29,8 @@ mod tests {
     fn ok(src: &str) -> Sexp { eval_str_all(src).unwrap() }
     fn assert_t(v: Sexp) { assert!(matches!(v, Sexp::T)); }
     fn assert_nil(v: Sexp) { assert!(matches!(v, Sexp::Nil)); }
-    #[test]
-    fn primitive_get_set_value_round_trip() {
-        assert!(matches!(ok("(nelisp--env-globals-set-value 'doc-86-3a-foo 42) (nelisp--env-globals-get-value 'doc-86-3a-foo)"), Sexp::Int(42)));
-    }
-    #[test]
-    fn primitive_get_value_unbound_signals() { assert!(eval_str("(nelisp--env-globals-get-value 'doc-86-3a-undef-symbol)").is_err()); }
+    #[test] fn primitive_get_set_value_round_trip() { assert!(matches!(ok("(nelisp--env-globals-set-value 'doc-86-3a-foo 42) (nelisp--env-globals-get-value 'doc-86-3a-foo)"), Sexp::Int(42))); }
+    #[test] fn primitive_get_value_unbound_signals() { assert!(eval_str("(nelisp--env-globals-get-value 'doc-86-3a-undef-symbol)").is_err()); }
     #[test]
     fn primitive_is_bound_reflects_set_value() {
         assert_nil(eval_str("(nelisp--env-globals-is-bound 'doc-86-3a-bar)").unwrap());
@@ -50,10 +46,8 @@ mod tests {
         assert_nil(eval_str("(nelisp--env-globals-is-constant 'doc-86-3a-cflag)").unwrap());
         assert_t(ok("(nelisp--env-globals-set-constant 'doc-86-3a-cflag t) (nelisp--env-globals-is-constant 'doc-86-3a-cflag)"));
     }
-    #[test]
-    fn primitive_capture_lexical_at_top_level_is_nil() { assert_nil(eval_str("(nelisp--env-globals-op 'capture-lexical)").unwrap()); }
-    #[test]
-    fn primitive_clear_value_drops_binding() {
+    #[test] fn primitive_capture_lexical_at_top_level_is_nil() { assert_nil(eval_str("(nelisp--env-globals-op 'capture-lexical)").unwrap()); }
+    #[test] fn primitive_clear_value_drops_binding() {
         assert_nil(ok("(nelisp--env-globals-set-value 'doc-86-3a-baz 1) (nelisp--env-globals-clear-value 'doc-86-3a-baz) (nelisp--env-globals-is-bound 'doc-86-3a-baz)"));
     }
 }

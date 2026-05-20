@@ -1,16 +1,13 @@
 use std::fmt;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourcePos { pub line: u32, pub col: u32 }
 impl fmt::Display for SourcePos { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}:{}", self.line, self.col) } }
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReadError {
     Parse { msg: String, pos: SourcePos },
     UnexpectedEof { msg: String, pos: SourcePos },
     NotYetImplemented { feature: String, pos: SourcePos },
 }
-
 macro_rules! readerr_ctor {
     ($fn:ident => $variant:ident, $field:ident) => {
         pub fn $fn(s: impl Into<String>, pos: SourcePos) -> Self { ReadError::$variant { $field: s.into(), pos } }
