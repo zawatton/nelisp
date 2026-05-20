@@ -31,6 +31,7 @@ pub mod elisp_cc_spike {
         fn nelisp_spike_noop() -> i64;
         fn nelisp_fact_i64(n: i64) -> i64;
         fn nelisp_truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
+        fn nelisp_truncate_float(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_length_cons(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_eq_symbol(
             arg0: *const Sexp,
@@ -386,6 +387,7 @@ pub mod elisp_cc_spike {
     }
 
     cc_wrap!(truncate_int: nelisp_truncate_int, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
+    cc_wrap!(truncate_float: nelisp_truncate_float, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
     cc_wrap!(length_cons: nelisp_length_cons, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
     cc_wrap!(eq_symbol: nelisp_eq_symbol, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
     cc_wrap!(cons_construct: nelisp_cons_construct, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp);

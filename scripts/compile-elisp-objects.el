@@ -52,6 +52,14 @@
     (nelisp-cc-truncate-int
      :source-var nelisp-cc-truncate-int--source
      :output "nelisp_truncate_int.o")
+    ;; Doc 119 §119.A — `(truncate FLOAT)' Float arm via G4+G5.
+    ;; `sexp-float-unwrap' + `bits-to-f64' + `f64-to-i64-trunc' replaces
+    ;; the Rust inline `Sexp::Float(x) => Ok(Sexp::Int(*x as i64))'.
+    ;; Linux-x86_64 only (f64-to-i64-trunc / bits-to-f64 MVP scope).
+    (nelisp-cc-truncate-float
+     :source-var nelisp-cc-truncate-float--source
+     :output "nelisp_truncate_float.o"
+     :requires-arch x86_64)
     ;; Doc 101 §101.B — `(length CONS)' proper-list walk.
     (nelisp-cc-length-cons
      :source-var nelisp-cc-length-cons--source

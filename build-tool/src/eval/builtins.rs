@@ -39,7 +39,7 @@ macro_rules! builtin_dispatch {
             "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float($args),
             "truncate" => { require_arity("truncate", $args, 1, Some(1))?; match &$args[0] {
                 Sexp::Int(_) => Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::truncate_int)),
-                Sexp::Float(x) => Ok(Sexp::Int(*x as i64)),
+                Sexp::Float(_) => Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::truncate_float)),
                 other => Err(EvalError::WrongType { expected: "numberp".into(), got: other.clone() }) } },
             "nelisp--syscall-canonicalize" => bi_syscall_canonicalize($args, $env), "nelisp--syscall-stat" => bi_syscall_stat($args, $env), "nelisp--syscall-readdir" => bi_syscall_readdir($args, $env),
             "nelisp--syscall-read-file" => bi_syscall_read_file($args, $env), "nelisp--syscall" => bi_syscall($args),
