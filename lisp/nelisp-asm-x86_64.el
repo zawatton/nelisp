@@ -1273,6 +1273,105 @@ Doc 97.c comparison emitters."
   (nelisp-asm-x86_64--append-bytes
    buf (unibyte-string #x0F #xB6 #xC0)))
 
+;; ---- Doc 131 §131.A — atomic + raw-memory inline asm helpers ----
+;;
+;; These helpers replace the PLT-call pattern used by the Phase 47
+;; grammar ops `atomic-fetch-add', `atomic-compare-exchange',
+;; `ptr-read-u{8,16,32,64}', and `ptr-write-u{8,16,32,64}'.  Each
+;; emits a single inline x86_64 instruction (or minimal prefix+opcode
+;; sequence) that is semantically equivalent to the Rust `#[no_mangle]'
+;; extern body it replaces.  All helpers follow the existing register
+;; contract: RDI = ptr / base, RSI = delta / offset / index, RDX =
+;; new-val / store value (ptr-write only).  Result lands in RAX.
+;;
+;; Encodings:
+;;   LOCK XADD  r/m64, r64  — F0 REX.W 0F C1 ModR/M
+;;   LOCK CMPXCHG r/m64, r64 — F0 REX.W 0F B1 ModR/M
+;;   SETE AL                 — 0F 94 C0
+;;   MOV  RAX, [RDI+RSI]     — REX.W 8B 04 37  (SIB: base=rdi, index=rsi)
+;;   MOV  [RDI+RSI], RDX     — REX.W 89 14 37
+;;   MOVZX RAX, BYTE  [RDI+RSI] — REX.W 0F B6 04 37
+;;   MOV   BYTE  [RDI+RSI], DL  — 88 14 37
+;;   MOVZX RAX, WORD  [RDI+RSI] — REX.W 0F B7 04 37
+;;   MOV   WORD  [RDI+RSI], DX  — 66 89 14 37
+;;   MOV  EAX, [RDI+RSI]        — 8B 04 37  (32→64 zero-extend by CPU)
+;;   MOV  DWORD [RDI+RSI], EDX  — 89 14 37  (no REX.W)
+;;
+;; SIB byte 0x37 = {SS=00, INDEX=110(rsi), BASE=111(rdi)}.
+;; SIB byte 0x14 trick for write: ModR/M encodes /2 (rdx) with RM=100
+;; (SIB follows), SIB 0x37 = base=rdi index=rsi.
+
+(defun nelisp-asm-x86_64-lock-xadd-mem-rax-rdi (buf)
+  "Emit `LOCK XADD QWORD PTR [RDI], RAX' (5 bytes).
+Exchange RAX with [RDI] and add; on exit RAX = old [RDI],
+[RDI] = old + RAX.  Used for SeqCst `atomic-fetch-add':
+caller puts delta in RAX before calling this helper."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #xF0 #x48 #x0F #xC1 #x07)))
+
+(defun nelisp-asm-x86_64-lock-cmpxchg-mem-rdx-rdi (buf)
+  "Emit `LOCK CMPXCHG QWORD PTR [RDI], RDX' (5 bytes).
+Compare RAX with [RDI]; if equal write RDX to [RDI] and set ZF.
+Used for SeqCst `atomic-compare-exchange': caller puts expected
+in RAX and new-val in RDX before calling this helper."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #xF0 #x48 #x0F #xB1 #x17)))
+
+(defun nelisp-asm-x86_64-sete-al (buf)
+  "Emit `SETE AL' (3 bytes).
+Sets AL to 1 if ZF is set (= previous CMPXCHG succeeded), 0 otherwise."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x0F #x94 #xC0)))
+
+(defun nelisp-asm-x86_64-mov-rax-qword-rdi-rsi (buf)
+  "Emit `MOV RAX, QWORD PTR [RDI+RSI]' (4 bytes: REX.W 8B 04 37).
+Loads 8 bytes from address RDI+RSI into RAX (zero-extends)."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x48 #x8B #x04 #x37)))
+
+(defun nelisp-asm-x86_64-mov-qword-rdi-rsi-rdx (buf)
+  "Emit `MOV QWORD PTR [RDI+RSI], RDX' (4 bytes: REX.W 89 14 37).
+Stores 8 bytes from RDX to address RDI+RSI."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x48 #x89 #x14 #x37)))
+
+(defun nelisp-asm-x86_64-movzx-rax-byte-rdi-rsi (buf)
+  "Emit `MOVZX RAX, BYTE PTR [RDI+RSI]' (5 bytes: REX.W 0F B6 04 37).
+Loads 1 byte from address RDI+RSI, zero-extends to 64 bits in RAX."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x48 #x0F #xB6 #x04 #x37)))
+
+(defun nelisp-asm-x86_64-mov-byte-rdi-rsi-dl (buf)
+  "Emit `MOV BYTE PTR [RDI+RSI], DL' (3 bytes: 88 14 37).
+Stores the low byte of RDX to address RDI+RSI."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x88 #x14 #x37)))
+
+(defun nelisp-asm-x86_64-movzx-rax-word-rdi-rsi (buf)
+  "Emit `MOVZX RAX, WORD PTR [RDI+RSI]' (5 bytes: REX.W 0F B7 04 37).
+Loads 2 bytes from address RDI+RSI, zero-extends to 64 bits in RAX."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x48 #x0F #xB7 #x04 #x37)))
+
+(defun nelisp-asm-x86_64-mov-word-rdi-rsi-dx (buf)
+  "Emit `MOV WORD PTR [RDI+RSI], DX' (4 bytes: 66 89 14 37).
+Stores the low 2 bytes of RDX to address RDI+RSI."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x66 #x89 #x14 #x37)))
+
+(defun nelisp-asm-x86_64-mov-eax-dword-rdi-rsi (buf)
+  "Emit `MOV EAX, DWORD PTR [RDI+RSI]' (3 bytes: 8B 04 37).
+Loads 4 bytes from address RDI+RSI into EAX.  The CPU implicitly
+zero-extends EAX to RAX (clears high 32 bits)."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x8B #x04 #x37)))
+
+(defun nelisp-asm-x86_64-mov-dword-rdi-rsi-edx (buf)
+  "Emit `MOV DWORD PTR [RDI+RSI], EDX' (3 bytes: 89 14 37).
+Stores the low 4 bytes of RDX to address RDI+RSI."
+  (nelisp-asm-x86_64--append-bytes
+   buf (unibyte-string #x89 #x14 #x37)))
+
 ;; ---- §92.d benchmark helper (= chunk-build perf gate) ----
 
 (defun nelisp-asm-x86_64-benchmark-emit (buf nbytes)

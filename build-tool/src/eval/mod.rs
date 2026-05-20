@@ -15,8 +15,8 @@ pub mod nlrc;
 pub mod nlrecord;
 pub mod nlstr;
 pub mod nlvector;
+pub mod alloc_mem;
 pub mod quit;
-pub mod raw_mem;
 pub mod sexp;
 pub mod special_forms;
 

@@ -4124,76 +4124,108 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
 ;; ---- Doc 122 §122.E — Atomic + raw memory primitives emit ----
 
 (defun nelisp-phase47-compiler--emit-atomic-fetch-add (node buf)
-  "Emit `atomic-fetch-add' — call `nl_atomic_fetch_add(ptr, delta) -> i64'."
+  "Emit `atomic-fetch-add' — inline `LOCK XADD [RDI], RAX' (no PLT call).
+Doc 131 §131.A: ptr → rdi, delta → rax, then LOCK XADD [rdi], rax.
+On exit rax = old [rdi] (= the pre-add value), [rdi] = old+delta."
   (let ((ptr (plist-get node :ptr))
         (delta (plist-get node :delta)))
+    ;; Evaluate ptr into rax, save it to rdi via push/pop.
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
+    ;; Evaluate delta into rax (= the XADD source operand).
     (nelisp-phase47-compiler--emit-value delta buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
+    ;; rdi = ptr, rax = delta (XADD src/dst).
     (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_atomic_fetch_add" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    ;; LOCK XADD [rdi], rax  →  rax = old [rdi], [rdi] = old + delta.
+    (nelisp-asm-x86_64-lock-xadd-mem-rax-rdi buf)))
 
 (defun nelisp-phase47-compiler--emit-atomic-compare-exchange (node buf)
-  "Emit `atomic-compare-exchange' — 3-arg call to `nl_atomic_compare_exchange'."
+  "Emit `atomic-compare-exchange' — inline `LOCK CMPXCHG [RDI], RDX' (no PLT call).
+Doc 131 §131.A: ptr → rdi, expected → rax, new-val → rdx.
+LOCK CMPXCHG [rdi], rdx: if [rdi]==rax write rdx, set ZF; else clear ZF.
+SETE AL + MOVZX RAX, AL: rax = 1 on success, 0 on failure."
   (let ((ptr (plist-get node :ptr))
         (expected (plist-get node :expected))
         (new-val (plist-get node :new-val)))
+    ;; Evaluate ptr → rax, stash.
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
+    ;; Evaluate expected → rax, stash.
     (nelisp-phase47-compiler--emit-value expected buf)
     (nelisp-asm-x86_64-push buf 'rax)
+    ;; Evaluate new-val → rax; pop into rdx (new-val), rax (expected), rdi (ptr).
     (nelisp-phase47-compiler--emit-value new-val buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_atomic_compare_exchange" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rax)   ; rdx = new-val
+    (nelisp-asm-x86_64-pop buf 'rax)                 ; rax = expected
+    (nelisp-asm-x86_64-pop buf 'rdi)                 ; rdi = ptr
+    ;; LOCK CMPXCHG [rdi], rdx  (ZF set on success).
+    (nelisp-asm-x86_64-lock-cmpxchg-mem-rdx-rdi buf)
+    ;; SETE AL; MOVZX RAX, AL  → rax = 1 (success) or 0 (failure).
+    (nelisp-asm-x86_64-sete-al buf)
+    (nelisp-asm-x86_64-movzx-eax-al buf)))
 
 (defun nelisp-phase47-compiler--emit-ptr-read (node buf helper-name)
-  "Emit `ptr-read-u64' / `ptr-read-u8' — 2-arg call to HELPER-NAME."
+  "Emit `ptr-read-u{8,16,32,64}' — inline MOV/MOVZX at [RDI+RSI] (no PLT call).
+Doc 131 §131.A: HELPER-NAME selects the width-specific load instruction:
+  nl_ptr_read_u64 → MOV  RAX, QWORD PTR [RDI+RSI]
+  nl_ptr_read_u8  → MOVZX RAX, BYTE  PTR [RDI+RSI]
+  nl_ptr_read_u16 → MOVZX RAX, WORD  PTR [RDI+RSI]
+  nl_ptr_read_u32 → MOV  EAX, DWORD PTR [RDI+RSI]  (CPU zero-extends to RAX)
+Result is zero-extended to i64 in rax in all cases."
   (let ((ptr (plist-get node :ptr))
         (offset (plist-get node :offset)))
+    ;; Evaluate ptr → rax, save; evaluate offset → rax (= rsi after pop).
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value offset buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf helper-name -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'rax)   ; rsi = offset
+    (nelisp-asm-x86_64-pop buf 'rdi)                 ; rdi = ptr
+    ;; Inline load — width determined by helper-name.
+    (cond
+     ((string= helper-name "nl_ptr_read_u64")
+      (nelisp-asm-x86_64-mov-rax-qword-rdi-rsi buf))
+     ((string= helper-name "nl_ptr_read_u8")
+      (nelisp-asm-x86_64-movzx-rax-byte-rdi-rsi buf))
+     ((string= helper-name "nl_ptr_read_u16")
+      (nelisp-asm-x86_64-movzx-rax-word-rdi-rsi buf))
+     ((string= helper-name "nl_ptr_read_u32")
+      (nelisp-asm-x86_64-mov-eax-dword-rdi-rsi buf))
+     (t (signal 'nelisp-phase47-compiler-error
+                (list :unknown-ptr-read-helper helper-name))))))
 
 (defun nelisp-phase47-compiler--emit-ptr-write (node buf helper-name)
-  "Emit `ptr-write-u64' / `ptr-write-u8' — 3-arg call to HELPER-NAME, sentinel rax=1."
+  "Emit `ptr-write-u{8,16,32,64}' — inline MOV store at [RDI+RSI] (no PLT call).
+Doc 131 §131.A: HELPER-NAME selects the width-specific store instruction:
+  nl_ptr_write_u64 → MOV QWORD PTR [RDI+RSI], RDX
+  nl_ptr_write_u8  → MOV BYTE  PTR [RDI+RSI], DL
+  nl_ptr_write_u16 → MOV WORD  PTR [RDI+RSI], DX
+  nl_ptr_write_u32 → MOV DWORD PTR [RDI+RSI], EDX
+Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-extern contract)."
   (let ((ptr (plist-get node :ptr))
         (offset (plist-get node :offset))
         (val (plist-get node :val)))
+    ;; Evaluate ptr, offset, val; assign to rdi, rsi, rdx.
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value offset buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value val buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf helper-name -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rax)   ; rdx = val
+    (nelisp-asm-x86_64-pop buf 'rsi)                 ; rsi = offset
+    (nelisp-asm-x86_64-pop buf 'rdi)                 ; rdi = ptr
+    ;; Inline store — width determined by helper-name.
+    (cond
+     ((string= helper-name "nl_ptr_write_u64")
+      (nelisp-asm-x86_64-mov-qword-rdi-rsi-rdx buf))
+     ((string= helper-name "nl_ptr_write_u8")
+      (nelisp-asm-x86_64-mov-byte-rdi-rsi-dl buf))
+     ((string= helper-name "nl_ptr_write_u16")
+      (nelisp-asm-x86_64-mov-word-rdi-rsi-dx buf))
+     ((string= helper-name "nl_ptr_write_u32")
+      (nelisp-asm-x86_64-mov-dword-rdi-rsi-edx buf))
+     (t (signal 'nelisp-phase47-compiler-error
+                (list :unknown-ptr-write-helper helper-name))))
+    ;; rax = 1 sentinel (matches Rust void extern contract for and-chain).
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
 ;; ---- Doc 125 §125.A — alloc / dealloc primitives emit ----
