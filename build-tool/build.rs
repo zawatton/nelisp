@@ -429,6 +429,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-env-lookup-value.el",
         "nelisp-cc-env-set-value.el",
         "nelisp-cc-env-lookup-function.el",
+        // Wave c+ — `bi_globals_op' set-{value,function,constant} arms replaced
+        // by this Phase 47 .o; Rust thin wrapper pre-builds the scratch vector
+        // and routes through `env_shim_set_op'.
+        "nelisp-cc-env-shim-set-op.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

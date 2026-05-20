@@ -310,6 +310,14 @@
      :source-var nelisp-cc-env-shim-op--source
      :output "nelisp_env_shim_op.o"
      :requires-arch x86_64)
+    ;; Wave c+ — `nelisp--env-globals-op' set-* dispatch (3 arms):
+    ;; set-value / set-function / set-constant.  Replaces 3 Rust match
+    ;; arms in `env_shim.rs::bi_globals_op'; Rust thin wrapper pre-builds
+    ;; the scratch vector and this .o dispatches + clones result back.
+    (nelisp-cc-env-shim-set-op
+     :source-var nelisp-cc-env-shim-set-op--source
+     :output "nelisp_env_shim_set_op.o"
+     :requires-arch x86_64)
     ;; Doc 100 §100.D — `jit/arith.rs' 12-trampoline swap.  Each entry
     ;; emits one `.o' file exporting one `nelisp_jit_NAME' symbol that
     ;; the `unified_fn_ptr' table in `build-tool/src/jit/bridge.rs'

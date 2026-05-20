@@ -1,6 +1,7 @@
 //! `nelisp--env-globals-op OP NAME &optional ARG' dispatcher (Phase 47).
-//! 7 read/clear/pred arms handled by `nelisp_env_shim_op' (.o, Doc 86 §86.4).
-//! set-{value,function,constant} and capture-lexical stay in Rust.
+//! 7 read/clear/pred arms: `nelisp_env_shim_op' .o (Doc 86 §86.4).
+//! 3 set-* arms: `nelisp_env_shim_set_op' .o (Wave c+).
+//! capture-lexical stays in Rust.
 
 use super::error::EvalError;
 use super::sexp::Sexp;
@@ -15,14 +16,18 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
     if args.len() != exp { return Err(arity(exp)); }
     if op == "capture-lexical" { return Ok(env.capture_lexical()); }
     let name = sym(&args[1])?;
-    match op {
-        "set-value"    => { env.mirror_set_value(&name, args[2].clone());    return Ok(args[2].clone()); }
-        "set-function" => { env.mirror_set_function(&name, args[2].clone()); return Ok(args[2].clone()); }
-        "set-constant" => { let t = !matches!(args[2], Sexp::Nil); env.mirror_set_constant(&name, t); return Ok(if t { Sexp::T } else { Sexp::Nil }); }
-        _ => {}
-    }
     let (mut result, mut scratch) = (Sexp::Nil, Sexp::Nil);
-    let rc = unsafe { crate::elisp_cc_spike::env_shim_op(&args[0], &env.globals_record, &args[1], &env.unbound_marker, &mut result, &mut scratch) };
+    let rc = if op == "set-value" || op == "set-function" || op == "set-constant" {
+        let flag = if matches!(args[2], Sexp::Nil) { Sexp::Nil } else { Sexp::T };
+        let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(
+            if op == "set-value" { args[2].clone() } else { env.unbound_marker.clone() },
+            if op == "set-function" { args[2].clone() } else { env.unbound_marker.clone() },
+            Sexp::Nil, if op == "set-constant" { flag } else { Sexp::Nil },
+        );
+        unsafe { crate::elisp_cc_spike::env_shim_set_op(&args[0], &env.globals_record, &args[1], &sc, &mut result, 0) }
+    } else {
+        unsafe { crate::elisp_cc_spike::env_shim_op(&args[0], &env.globals_record, &args[1], &env.unbound_marker, &mut result, &mut scratch) }
+    };
     match rc { 1 => Ok(result), 0 => Err(EvalError::unbound_var(name)), -1 => Err(EvalError::unbound_fn(name)), _ => Err(EvalError::internal(format!("nelisp--env-globals-op: unknown OP `{op}'"))) }
 }
 
