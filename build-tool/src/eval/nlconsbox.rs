@@ -23,23 +23,13 @@ macro_rules! consbox_set_field {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_consbox_set_car(box_ptr: *mut NlConsBox, val: *const Sexp) {
-    consbox_set_field!(box_ptr, car, (*val).clone());
-}
-
+pub unsafe extern "C" fn nl_consbox_set_car(box_ptr: *mut NlConsBox, val: *const Sexp) { consbox_set_field!(box_ptr, car, (*val).clone()); }
 #[no_mangle]
-pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const Sexp) {
-    consbox_set_field!(box_ptr, cdr, (*val).clone());
-}
+pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const Sexp) { consbox_set_field!(box_ptr, cdr, (*val).clone()); }
 
 impl std::fmt::Debug for NlConsBoxRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Cons").field(&self.car).field(&self.cdr).finish()
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("Cons").field(&self.car).field(&self.cdr).finish() }
 }
-
 impl PartialEq for NlConsBoxRef {
-    fn eq(&self, other: &Self) -> bool {
-        Self::ptr_eq(self, other) || (self.car == other.car && self.cdr == other.cdr)
-    }
+    fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || (self.car == other.car && self.cdr == other.cdr) }
 }

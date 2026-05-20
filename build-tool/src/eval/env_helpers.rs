@@ -55,16 +55,9 @@ macro_rules! mirror_op {
 
 impl Env {
     fn fresh(max_recursion: u32) -> Self {
-        Env {
-            max_recursion,
-            current_recursion: 0,
-            extern_builtins: HashMap::new(),
-            use_elisp_apply: false,
-            delegation_depth: 0,
-            globals_record: Sexp::Nil,
-            unbound_marker: Sexp::Nil,
-            frames_record: Sexp::Nil,
-        }
+        Env { max_recursion, current_recursion: 0, extern_builtins: HashMap::new(),
+              use_elisp_apply: false, delegation_depth: 0,
+              globals_record: Sexp::Nil, unbound_marker: Sexp::Nil, frames_record: Sexp::Nil }
     }
 
     pub fn new_global() -> Self {
@@ -131,9 +124,7 @@ impl Env {
             });
         }
         super::builtins::install_builtins(&mut env);
-        env.register_extern_builtin("nelisp--env-globals-op", |args, env| {
-            super::env_shim::bi_globals_op(args, env)
-        });
+        env.register_extern_builtin("nelisp--env-globals-op", |args, env| super::env_shim::bi_globals_op(args, env));
         env
     }
 
@@ -169,10 +160,8 @@ impl Env {
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return; }
         let n = Sexp::Symbol(name.into());
-        let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(
-            value.clone(), self.unbound_marker.clone(), Sexp::Nil, Sexp::Nil);
-        unsafe { crate::elisp_cc_spike::env_bind_local(
-            &self.globals_record, &self.frames_record, &n, &value, &sc, 0) };
+        let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(value.clone(), self.unbound_marker.clone(), Sexp::Nil, Sexp::Nil);
+        unsafe { crate::elisp_cc_spike::env_bind_local(&self.globals_record, &self.frames_record, &n, &value, &sc, 0) };
     }
 
     pub fn push_frame(&mut self) { self.frame_push_rust_direct(); }
@@ -184,16 +173,14 @@ impl Env {
         let Some(Sexp::Int(depth)) = r.slots.get(1) else { return Sexp::Nil };
         let depth = *depth;
         let Ok(f) = self.lookup_function("nelisp-lexframe-stack-capture-to-depth") else { return Sexp::Nil };
-        let args = [self.frames_record.clone(), Sexp::Int(depth)];
-        super::apply_function(&f, &args, self).unwrap_or(Sexp::Nil)
+        super::apply_function(&f, &[self.frames_record.clone(), Sexp::Int(depth)], self).unwrap_or(Sexp::Nil)
     }
 
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let normalized = Env::wrap_alist_cells(alist)?;
         let Ok(f) = self.lookup_function("nelisp-lexframe-make-from-alist") else { return Ok(()) };
         let frame = super::apply_function(&f, &[normalized], self)?;
-        unsafe { crate::elisp_cc_spike::frame_stack_install(&self.frames_record, &frame); }
-        Ok(())
+        unsafe { crate::elisp_cc_spike::frame_stack_install(&self.frames_record, &frame); } Ok(())
     }
 }
 
@@ -236,13 +223,10 @@ impl Env {
         let stack_rec = stack_rec.clone();
         let (Some(Sexp::Vector(backing)), Some(Sexp::Int(d))) =
             (stack_rec.slots.get(0), stack_rec.slots.get(1)) else { return };
-        let depth = *d as usize;
+        let (depth, backing) = (*d as usize, backing.clone());
         if depth == 0 { return; }
-        let backing = backing.clone();
-        unsafe {
-            backing.with_value_mut(|v| v[depth - 1] = Sexp::Nil);
-            stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth - 1) as i64));
-        }
+        unsafe { backing.with_value_mut(|v| v[depth - 1] = Sexp::Nil);
+                 stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth - 1) as i64)); }
     }
 
     pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {

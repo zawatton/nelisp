@@ -1,16 +1,12 @@
 use std::alloc::{self, Layout};
 
 fn nl_layout(size: i64, align: i64) -> Option<Layout> {
-    (size > 0 && align > 0)
-        .then(|| Layout::from_size_align(size as usize, align as usize).ok())
-        .flatten()
+    (size > 0 && align > 0).then(|| Layout::from_size_align(size as usize, align as usize).ok()).flatten()
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
     nl_layout(size, align).map_or(std::ptr::null_mut(), |l| unsafe { alloc::alloc(l) })
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
     if !ptr.is_null() { if let Some(l) = nl_layout(size, align) { unsafe { alloc::dealloc(ptr, l) }; } }
@@ -19,30 +15,22 @@ pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn alloc_dealloc_bytes_round_trip() {
-        let size: i64 = 64;
-        let align: i64 = 8;
+        let (size, align) = (64i64, 8i64);
         let ptr = unsafe { nl_alloc_bytes(size, align) };
         assert!(!ptr.is_null(), "alloc-bytes(64, 8) must succeed");
         unsafe { nl_dealloc_bytes(ptr, size, align) };
     }
-
     #[test]
     fn alloc_bytes_rejects_bad_alignment() {
-        let ptr = unsafe { nl_alloc_bytes(32, 3) };
-        assert!(ptr.is_null(), "alloc-bytes must reject non-pow2 align");
+        assert!(unsafe { nl_alloc_bytes(32, 3) }.is_null(), "alloc-bytes must reject non-pow2 align");
         assert!(unsafe { nl_alloc_bytes(0, 8) }.is_null());
         assert!(unsafe { nl_alloc_bytes(-1, 8) }.is_null());
         assert!(unsafe { nl_alloc_bytes(32, 0) }.is_null());
     }
-
     #[test]
-    fn dealloc_bytes_null_is_no_op() {
-        unsafe { nl_dealloc_bytes(std::ptr::null_mut(), 32, 8) };
-    }
-
+    fn dealloc_bytes_null_is_no_op() { unsafe { nl_dealloc_bytes(std::ptr::null_mut(), 32, 8) }; }
     #[test]
     fn alloc_bytes_16_byte_aligned() {
         let ptr = unsafe { nl_alloc_bytes(128, 16) };

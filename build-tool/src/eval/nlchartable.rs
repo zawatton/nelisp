@@ -21,22 +21,13 @@ impl NlCharTable {
 }
 
 impl std::fmt::Debug for NlCharTableRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CharTable").field("inner", &self.inner).finish()
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_struct("CharTable").field("inner", &self.inner).finish() }
 }
-
 impl PartialEq for NlCharTableRef {
-    fn eq(&self, other: &Self) -> bool {
-        Self::ptr_eq(self, other) || self.inner == other.inner
-    }
+    fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.inner == other.inner }
 }
-
 fn ct_set(inner: &mut CharTableInner, c: i64, v: Sexp) {
-    match inner.entries.iter_mut().find(|(k, _)| *k == c) {
-        Some(e) => e.1 = v,
-        None => inner.entries.push((c, v)),
-    }
+    match inner.entries.iter_mut().find(|(k, _)| *k == c) { Some(e) => e.1 = v, None => inner.entries.push((c, v)) }
 }
 
 fn ct_get(rc: &NlCharTableRef, c: i64) -> Sexp {
@@ -44,18 +35,13 @@ fn ct_get(rc: &NlCharTableRef, c: i64) -> Sexp {
         .or_else(|| rc.inner.parent.as_ref().map(|parent| ct_get(parent, c)))
         .unwrap_or_else(|| rc.inner.default_val.clone())
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_char_table_get_raw(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
-    *out = ct_get(r, idx);
-    TRAMPOLINE_OK
+    *out = ct_get(r, idx); TRAMPOLINE_OK
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_char_table_set_raw(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64 {
     let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
-    r.with_inner_mut(|i| ct_set(i, idx, (*val).clone()));
-    *out = (*val).clone();
-    TRAMPOLINE_OK
+    r.with_inner_mut(|i| ct_set(i, idx, (*val).clone())); *out = (*val).clone(); TRAMPOLINE_OK
 }

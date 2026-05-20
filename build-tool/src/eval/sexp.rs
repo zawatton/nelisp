@@ -121,22 +121,14 @@ const NLREC_SLOTS: usize = std::mem::offset_of!(NlRecord, slots);
 const NLVEC_VALUE: usize = std::mem::offset_of!(NlVector, value);
 
 pub const ABI_EXPORT: &[(&str, i64)] = &[
-    ("tag-nil", SEXP_TAG_NIL as i64),
-    ("tag-t", SEXP_TAG_T as i64),
-    ("tag-int", SEXP_TAG_INT as i64),
-    ("tag-float", SEXP_TAG_FLOAT as i64),
-    ("tag-symbol", SEXP_TAG_SYMBOL as i64),
-    ("tag-str", SEXP_TAG_STR as i64),
-    ("tag-mut-str", SEXP_TAG_MUT_STR as i64),
-    ("tag-cons", SEXP_TAG_CONS as i64),
-    ("tag-vector", SEXP_TAG_VECTOR as i64),
-    ("tag-char-table", SEXP_TAG_CHAR_TABLE as i64),
-    ("tag-bool-vector", SEXP_TAG_BOOL_VECTOR as i64),
-    ("tag-cell", SEXP_TAG_CELL as i64),
+    ("tag-nil", SEXP_TAG_NIL as i64), ("tag-t", SEXP_TAG_T as i64),
+    ("tag-int", SEXP_TAG_INT as i64), ("tag-float", SEXP_TAG_FLOAT as i64),
+    ("tag-symbol", SEXP_TAG_SYMBOL as i64), ("tag-str", SEXP_TAG_STR as i64),
+    ("tag-mut-str", SEXP_TAG_MUT_STR as i64), ("tag-cons", SEXP_TAG_CONS as i64),
+    ("tag-vector", SEXP_TAG_VECTOR as i64), ("tag-char-table", SEXP_TAG_CHAR_TABLE as i64),
+    ("tag-bool-vector", SEXP_TAG_BOOL_VECTOR as i64), ("tag-cell", SEXP_TAG_CELL as i64),
     ("tag-record", SEXP_TAG_RECORD as i64),
-    ("offset-tag", 0),
-    ("offset-payload", SEXP_PAYLOAD_OFFSET as i64),
-    ("slot-size", std::mem::size_of::<Sexp>() as i64),
+    ("offset-tag", 0), ("offset-payload", SEXP_PAYLOAD_OFFSET as i64), ("slot-size", std::mem::size_of::<Sexp>() as i64),
     ("nlconsbox-offset-car", std::mem::offset_of!(NlConsBox, car) as i64),
     ("nlconsbox-offset-cdr", std::mem::offset_of!(NlConsBox, cdr) as i64),
     ("nlconsbox-offset-refcount", std::mem::offset_of!(NlConsBox, refcount) as i64),
@@ -146,14 +138,12 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("string-offset-length", (SEXP_PAYLOAD_OFFSET + 16) as i64),
     ("string-header-size", std::mem::size_of::<String>() as i64),
     ("nlrecord-offset-type-tag", std::mem::offset_of!(NlRecord, type_tag) as i64),
-    ("nlrecord-offset-slots-vec", NLREC_SLOTS as i64),
-    ("nlrecord-offset-slots-ptr", NLREC_SLOTS as i64),
+    ("nlrecord-offset-slots-vec", NLREC_SLOTS as i64), ("nlrecord-offset-slots-ptr", NLREC_SLOTS as i64),
     ("nlrecord-offset-slots-capacity", (NLREC_SLOTS + 8) as i64),
     ("nlrecord-offset-slots-length", (NLREC_SLOTS + 16) as i64),
     ("nlrecord-offset-refcount", std::mem::offset_of!(NlRecord, refcount) as i64),
     ("nlrecord-size", std::mem::size_of::<NlRecord>() as i64),
-    ("nlvector-offset-value-vec", NLVEC_VALUE as i64),
-    ("nlvector-offset-value-ptr", NLVEC_VALUE as i64),
+    ("nlvector-offset-value-vec", NLVEC_VALUE as i64), ("nlvector-offset-value-ptr", NLVEC_VALUE as i64),
     ("nlvector-offset-value-capacity", (NLVEC_VALUE + 8) as i64),
     ("nlvector-offset-value-length", (NLVEC_VALUE + 16) as i64),
     ("nlvector-offset-refcount", std::mem::offset_of!(NlVector, refcount) as i64),
@@ -166,11 +156,8 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
 pub fn fmt_sexp(s: &Sexp) -> String {
     let mut slot = Sexp::Nil;
     unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) };
-    match slot { Sexp::Str(text) => text, _ => String::from("<fmt_sexp:error>") }
+    match slot { Sexp::Str(text) => text, _ => "<fmt_sexp:error>".into() }
 }
-
 impl fmt::Display for Sexp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&fmt_sexp(self))
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&fmt_sexp(self)) }
 }

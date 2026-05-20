@@ -19,13 +19,8 @@ impl NlBoolVector {
 }
 
 impl std::fmt::Debug for NlBoolVectorRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("BoolVector").field(&self.value).finish()
-    }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("BoolVector").field(&self.value).finish() }
 }
-
 impl PartialEq for NlBoolVectorRef {
-    fn eq(&self, other: &Self) -> bool {
-        Self::ptr_eq(self, other) || self.value == other.value
-    }
+    fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.value == other.value }
 }

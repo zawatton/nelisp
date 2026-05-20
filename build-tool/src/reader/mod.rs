@@ -54,20 +54,10 @@ impl ElispReadState {
     fn new(input: &str) -> Self {
         let mut slots = vec![Sexp::Nil; PARSER_POOL_SIZE];
         slots[0] = Sexp::mut_str(String::with_capacity(SCRATCH_CAP as usize));
-        ElispReadState {
-            src: Sexp::Str(input.to_string()),
-            cursor_slot: Sexp::Int(0),
-            result_slot: Sexp::Nil,
-            pool_slot: Sexp::vector(slots),
-        }
+        ElispReadState { src: Sexp::Str(input.to_string()), cursor_slot: Sexp::Int(0), result_slot: Sexp::Nil, pool_slot: Sexp::vector(slots) }
     }
 
-    fn cursor(&self) -> i64 {
-        match self.cursor_slot {
-            Sexp::Int(n) => n,
-            _ => 0,
-        }
-    }
+    fn cursor(&self) -> i64 { match self.cursor_slot { Sexp::Int(n) => n, _ => 0 } }
 
     fn lex_peek_advancing(&mut self) -> i64 {
         let cursor = self.cursor();
@@ -82,10 +72,7 @@ impl ElispReadState {
     }
 
     fn peek_token_kind(&mut self) -> i64 {
-        let saved = self.cursor();
-        let kind = self.lex_peek_advancing();
-        self.cursor_slot = Sexp::Int(saved);
-        kind
+        let saved = self.cursor(); let kind = self.lex_peek_advancing(); self.cursor_slot = Sexp::Int(saved); kind
     }
 
     fn parse_one_form(&mut self) -> Option<ElispParseOutcome> {
