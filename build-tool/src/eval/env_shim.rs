@@ -8,8 +8,8 @@ use super::Env;
 
 /// Thin arg-check + Phase-47 call + error-mapping shim.
 pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let sym = |s: &Sexp| match s { Sexp::Symbol(n) => Ok(n.clone()), o => Err(EvalError::WrongType { expected: "symbolp".into(), got: o.clone() }) };
-    let arity = |n: usize| EvalError::WrongNumberOfArguments { function: "nelisp--env-globals-op".to_string(), expected: n.to_string(), got: args.len() };
+    let sym = |s: &Sexp| match s { Sexp::Symbol(n) => Ok(n.clone()), o => Err(EvalError::wrong_type("symbolp", o.clone())) };
+    let arity = |n: usize| EvalError::wrong_arity("nelisp--env-globals-op", n.to_string(), args.len());
     let op = sym(args.first().ok_or_else(|| arity(1))?)?;
     let (exp, op) = match op.as_str() { "capture-lexical" => (1, op.as_str()), "set-value"|"set-function"|"set-constant" => (3, op.as_str()), _ => (2, op.as_str()) };
     if args.len() != exp { return Err(arity(exp)); }
@@ -23,7 +23,7 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
     }
     let (mut result, mut scratch) = (Sexp::Nil, Sexp::Nil);
     let rc = unsafe { crate::elisp_cc_spike::env_shim_op(&args[0], &env.globals_record, &args[1], &env.unbound_marker, &mut result, &mut scratch) };
-    match rc { 1 => Ok(result), 0 => Err(EvalError::UnboundVariable(name)), -1 => Err(EvalError::UnboundFunction(name)), _ => Err(EvalError::Internal(format!("nelisp--env-globals-op: unknown OP `{op}'"))) }
+    match rc { 1 => Ok(result), 0 => Err(EvalError::unbound_var(name)), -1 => Err(EvalError::unbound_fn(name)), _ => Err(EvalError::internal(format!("nelisp--env-globals-op: unknown OP `{op}'"))) }
 }
 
 #[cfg(test)]

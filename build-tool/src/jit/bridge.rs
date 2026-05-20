@@ -186,10 +186,7 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
     match v {
         Sexp::Symbol(s) | Sexp::Str(s) => Ok(s.as_str()),
-        other => Err(EvalError::WrongType {
-            expected: format!("symbol or string ({} arg 0)", name_arg),
-            got: other.clone(),
-        }),
+        other => Err(EvalError::wrong_type(format!("symbol or string ({} arg 0)", name_arg), other.clone())),
     }
 }
 
@@ -221,10 +218,7 @@ fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, Eval
     // Validate type eagerly so errors match the old `as_name` message style.
     let name_str = as_name(prim, name_sexp)?;
     unified_fn_ptr(name_sexp).ok_or_else(|| {
-        EvalError::Internal(format!(
-            "{}: unknown JIT entry name `{}'",
-            prim, name_str
-        ))
+        EvalError::internal(format!("{}: unknown JIT entry name `{}'", prim, name_str))
     })
 }
 
@@ -281,10 +275,7 @@ fn to_f64(v: &Sexp, expected: &str) -> Result<f64, EvalError> {
         Sexp::Int(i) => Ok(*i as f64),
         Sexp::Float(f) => Ok(*f),
         Sexp::Nil => Ok(0.0),
-        other => Err(EvalError::WrongType {
-            expected: expected.into(),
-            got: other.clone(),
-        }),
+        other => Err(EvalError::wrong_type(expected, other.clone())),
     }
 }
 
@@ -301,10 +292,7 @@ fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalEr
     if rc == TRAMPOLINE_OK {
         Ok(out)
     } else {
-        Err(EvalError::WrongType {
-            expected: prim.into(),
-            got: arg.clone(),
-        })
+        Err(EvalError::wrong_type(prim, arg.clone()))
     }
 }
 
@@ -399,13 +387,13 @@ mod tests {
     fn call_i64_i64_errors() {
         let err = bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_no_such"), Sexp::Int(0), Sexp::Int(0)])
             .expect_err("unknown name must error");
-        assert!(matches!(err, EvalError::Internal(_)));
+        assert!(matches!(err, EvalError::Generic(ref t, _) if t == "error"));
         let err = bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_add2"), Sexp::Int(1)])
             .expect_err("arity 2 must reject");
-        assert!(matches!(err, EvalError::WrongNumberOfArguments { .. }));
+        assert!(matches!(err, EvalError::Generic(ref t, _) if t == "wrong-number-of-arguments"));
         let err = bi_nl_jit_call_i64_i64(&[Sexp::Int(0), Sexp::Int(1), Sexp::Int(2)])
             .expect_err("Int as name must error");
-        assert!(matches!(err, EvalError::WrongType { .. }));
+        assert!(matches!(err, EvalError::Generic(ref t, _) if t == "wrong-type-argument"));
     }
 
     #[test]
@@ -422,12 +410,12 @@ mod tests {
     fn call_syscall_errors() {
         let err = bi_nl_jit_call_syscall(&vec![sym("nelisp_jit_syscall"); 7])
             .expect_err("arity 7 must reject");
-        assert!(matches!(err, EvalError::WrongNumberOfArguments { .. }));
+        assert!(matches!(err, EvalError::Generic(ref t, _) if t == "wrong-number-of-arguments"));
         let mut args = vec![sym("nelisp_jit_no_syscall")];
         args.extend(std::iter::repeat(Sexp::Int(0)).take(7));
         assert!(matches!(
             bi_nl_jit_call_syscall(&args).expect_err("unknown name must error"),
-            EvalError::Internal(_)
+            EvalError::Generic(ref t, _) if t == "error"
         ));
     }
 
@@ -450,11 +438,12 @@ mod tests {
         let err = bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"), Sexp::Int(7)])
             .expect_err("car of int must error");
         match err {
-            EvalError::WrongType { expected, got } => {
-                assert_eq!(expected, "jit-call-out-1");
-                assert_eq!(got, Sexp::Int(7));
+            EvalError::Generic(ref tag, ref data) if tag == "wrong-type-argument" => {
+                let elems: Vec<_> = crate::eval::list_elements(data).expect("data is list");
+                assert_eq!(elems.get(0), Some(&Sexp::Symbol("jit-call-out-1".into())));
+                assert_eq!(elems.get(1), Some(&Sexp::Int(7)));
             }
-            other => panic!("expected WrongType, got {:?}", other),
+            other => panic!("expected wrong-type-argument, got {:?}", other),
         }
     }
 
@@ -467,11 +456,12 @@ mod tests {
         let err = bi_nl_jit_call_out_1i(&[sym("nelisp_jit_aref"), v.clone(), Sexp::Int(5)])
             .expect_err("aref out-of-range must error");
         match err {
-            EvalError::WrongType { expected, got } => {
-                assert_eq!(expected, "jit-call-out-1i");
-                assert_eq!(got, v);
+            EvalError::Generic(ref tag, ref data) if tag == "wrong-type-argument" => {
+                let elems: Vec<_> = crate::eval::list_elements(data).expect("data is list");
+                assert_eq!(elems.get(0), Some(&Sexp::Symbol("jit-call-out-1i".into())));
+                assert_eq!(elems.get(1), Some(&v));
             }
-            other => panic!("expected WrongType, got {:?}", other),
+            other => panic!("expected wrong-type-argument, got {:?}", other),
         }
     }
 }

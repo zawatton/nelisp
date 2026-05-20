@@ -5,68 +5,62 @@ use std::fmt;
 use super::sexp::Sexp;
 
 /// Evaluator failure modes.
+/// `Generic(tag, data)` covers all named signals; `Quit` is kept separate
+/// so callers can distinguish the quit condition cheaply without string comparison.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
-    /// `void-variable`.
-    UnboundVariable(String),
-    /// `void-function`.
-    UnboundFunction(String),
-    /// `wrong-type-argument`.
-    WrongType { expected: String, got: Sexp },
-    /// `wrong-number-of-arguments`.
-    WrongNumberOfArguments {
-        function: String,
-        expected: String,
-        got: usize,
-    },
-    /// `arith-error`.
-    ArithError(String),
-    /// User `(signal 'TAG DATA)`.
-    UserError { tag: String, data: Sexp },
-    /// `setting-constant`.
-    SettingConstant(String),
+    /// Any named signal: `(TAG . DATA)`.  `tag` is an elisp symbol name;
+    /// `data` is the signal data list (same layout as Emacs `signal').
+    Generic(String, Sexp),
     /// `quit`.
     Quit,
-    /// `error` catch-all for evaluator bugs.
-    Internal(String),
 }
 
 impl EvalError {
     /// Elisp symbol name a `condition-case` clause would catch on.
     pub fn error_tag(&self) -> &str {
         match self {
-            EvalError::UnboundVariable(_) => "void-variable",
-            EvalError::UnboundFunction(_) => "void-function",
-            EvalError::WrongType { .. } => "wrong-type-argument",
-            EvalError::WrongNumberOfArguments { .. } => "wrong-number-of-arguments",
-            EvalError::ArithError(_) => "arith-error",
-            EvalError::UserError { tag, .. } => tag.as_str(),
-            EvalError::SettingConstant(_) => "setting-constant",
+            EvalError::Generic(tag, _) => tag.as_str(),
             EvalError::Quit => "quit",
-            EvalError::Internal(_) => "error",
         }
     }
 
-    /// `(SYMBOL . DATA)' cons that `condition-case' binds the var to.
+    /// `(SYMBOL . DATA)` cons that `condition-case` binds the var to.
     pub fn signal_data(&self) -> Sexp {
-        let tag = Sexp::Symbol(self.error_tag().to_string());
-        let sym = |s: &str| Sexp::list_from(&[Sexp::Symbol(s.to_string())]);
-        let str1 = |s: &str| Sexp::list_from(&[Sexp::Str(s.to_string())]);
-        let data = match self {
-            EvalError::UnboundVariable(n)
-            | EvalError::UnboundFunction(n)
-            | EvalError::SettingConstant(n) => sym(n),
-            EvalError::WrongType { expected, got } => {
-                Sexp::list_from(&[Sexp::Symbol(expected.clone()), got.clone()])
-            }
-            EvalError::WrongNumberOfArguments { function, got, .. } => {
-                Sexp::list_from(&[Sexp::Symbol(function.clone()), Sexp::Int(*got as i64)])
-            }
-            EvalError::ArithError(m) | EvalError::Internal(m) => str1(m),
-            EvalError::UserError { data, .. } => data.clone(),
-            EvalError::Quit => Sexp::Nil,
-        };
-        Sexp::cons(tag, data)
+        match self {
+            EvalError::Generic(tag, data) => Sexp::cons(Sexp::Symbol(tag.clone()), data.clone()),
+            EvalError::Quit => Sexp::cons(Sexp::Symbol("quit".into()), Sexp::Nil),
+        }
+    }
+}
+
+/// Convenience constructors so callsites stay compact.
+impl EvalError {
+    #[inline] pub fn wrong_type(expected: impl Into<String>, got: Sexp) -> Self {
+        Self::Generic("wrong-type-argument".into(),
+            Sexp::list_from(&[Sexp::Symbol(expected.into()), got]))
+    }
+    #[inline] pub fn wrong_arity(function: impl Into<String>, _expected: impl Into<String>, got: usize) -> Self {
+        Self::Generic("wrong-number-of-arguments".into(),
+            Sexp::list_from(&[Sexp::Symbol(function.into()), Sexp::Int(got as i64)]))
+    }
+    #[inline] pub fn unbound_var(name: impl Into<String>) -> Self {
+        Self::Generic("void-variable".into(), Sexp::list_from(&[Sexp::Symbol(name.into())]))
+    }
+    #[inline] pub fn unbound_fn(name: impl Into<String>) -> Self {
+        Self::Generic("void-function".into(), Sexp::list_from(&[Sexp::Symbol(name.into())]))
+    }
+    #[inline] pub fn setting_constant(name: impl Into<String>) -> Self {
+        Self::Generic("setting-constant".into(), Sexp::list_from(&[Sexp::Symbol(name.into())]))
+    }
+    #[inline] pub fn arith(msg: impl Into<String>) -> Self {
+        Self::Generic("arith-error".into(), Sexp::list_from(&[Sexp::Str(msg.into())]))
+    }
+    #[inline] pub fn internal(msg: impl Into<String>) -> Self {
+        Self::Generic("error".into(), Sexp::list_from(&[Sexp::Str(msg.into())]))
+    }
+    #[inline] pub fn user(tag: impl Into<String>, data: Sexp) -> Self {
+        Self::Generic(tag.into(), data)
     }
 }
 
@@ -78,27 +72,8 @@ pub fn is_error_subtype(clause_tag: &str, actual_tag: &str) -> bool {
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EvalError::UnboundVariable(n) => write!(f, "void-variable: {}", n),
-            EvalError::UnboundFunction(n) => write!(f, "void-function: {}", n),
-            EvalError::WrongType { expected, got } => {
-                write!(f, "wrong-type-argument: ({} {})", expected, got)
-            }
-            EvalError::WrongNumberOfArguments {
-                function,
-                expected,
-                got,
-            } => write!(
-                f,
-                "wrong-number-of-arguments: {} (expected {}, got {})",
-                function, expected, got
-            ),
-            EvalError::ArithError(m) => write!(f, "arith-error: {}", m),
-            EvalError::UserError { tag, data } => write!(f, "{}: {}", tag, data),
-            EvalError::SettingConstant(n) => write!(f, "setting-constant: {}", n),
+            EvalError::Generic(tag, data) => write!(f, "{}: {}", tag, data),
             EvalError::Quit => write!(f, "quit"),
-            EvalError::Internal(m) => write!(f, "internal: {}", m),
         }
     }
 }
-
-impl std::error::Error for EvalError {}

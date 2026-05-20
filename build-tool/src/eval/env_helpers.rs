@@ -189,7 +189,7 @@ impl Env {
         }
         let v = self.mirror_lookup_value(name);
         if v == self.unbound_marker {
-            Err(EvalError::UnboundVariable(name.to_string()))
+            Err(EvalError::unbound_var(name))
         } else {
             Ok(v)
         }
@@ -197,7 +197,7 @@ impl Env {
 
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
         if self.mirror_is_constant(name) {
-            return Err(EvalError::SettingConstant(name.to_string()));
+            return Err(EvalError::setting_constant(name));
         }
         if let Some(cell) = self.find_frame_cell(name) {
             unsafe { cell.set_value(value.clone()) };
@@ -210,7 +210,7 @@ impl Env {
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
         let f = self.mirror_lookup_function(name);
         if f == self.unbound_marker {
-            Err(EvalError::UnboundFunction(name.to_string()))
+            Err(EvalError::unbound_fn(name))
         } else {
             Ok(f)
         }
@@ -582,7 +582,7 @@ impl Env {
         if rc == 1 {
             Ok(result)
         } else {
-            Err(EvalError::Internal("wrap_alist_cells: malformed closure env alist".into()))
+            Err(EvalError::internal("wrap_alist_cells: malformed closure env alist"))
         }
     }
 }

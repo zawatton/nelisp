@@ -72,11 +72,7 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
 }
 
 fn wrong_args(function: &str, expected: &str, got: usize) -> EvalError {
-    EvalError::WrongNumberOfArguments {
-        function: function.into(),
-        expected: expected.into(),
-        got,
-    }
+    EvalError::wrong_arity(function, expected, got)
 }
 
 /// `let' / `let*' frame setup: sequential=1 = `let*'.
@@ -96,12 +92,12 @@ pub unsafe extern "C" fn nl_let_setup(
                 let parts = list_elements(b)?;
                 let name = match &parts[0] {
                     Sexp::Symbol(s) => s.clone(),
-                    other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
+                    other => return Err(EvalError::wrong_type("symbol", other.clone())),
                 };
                 let val = if parts.len() >= 2 { eval(&parts[1], env)? } else { Sexp::Nil };
                 Ok((name, val))
             }
-            other => Err(EvalError::WrongType { expected: "symbol or (symbol value) pair".into(), got: other.clone() }),
+            other => Err(EvalError::wrong_type("symbol or (symbol value) pair", other.clone())),
         }
     }
     let env_ref = &mut *(env as *mut Env);
@@ -317,11 +313,7 @@ pub unsafe extern "C" fn nl_bf_err_arity(
     got: i64,
 ) -> i64 {
     let env_ref = &mut *(env as *mut Env);
-    let err = EvalError::WrongNumberOfArguments {
-        function: "lambda".into(),
-        expected: required.to_string(),
-        got: got as usize,
-    };
+    let err = EvalError::wrong_arity("lambda", required.to_string(), got as usize);
     let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
     1
 }
@@ -333,11 +325,7 @@ pub unsafe extern "C" fn nl_bf_err_arity(
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_err_type(env: *mut std::ffi::c_void, name_ptr: *const Sexp) -> i64 {
     let env_ref = &mut *(env as *mut Env);
-    let got = (*name_ptr).clone();
-    let err = EvalError::WrongType {
-        expected: "symbol".into(),
-        got,
-    };
+    let err = EvalError::wrong_type("symbol", (*name_ptr).clone());
     let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
     1
 }
@@ -375,10 +363,7 @@ pub unsafe extern "C" fn nl_bf_bind_rest(
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_err_dangling_rest(env: *mut std::ffi::c_void) -> i64 {
     let env_ref = &mut *(env as *mut Env);
-    let err = EvalError::WrongType {
-        expected: "symbol after &rest".into(),
-        got: Sexp::Symbol("&rest".into()),
-    };
+    let err = EvalError::wrong_type("symbol after &rest", Sexp::Symbol("&rest".into()));
     let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
     1
 }
@@ -517,7 +502,7 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
             return match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
         }
         let parts = tri!(super::list_elements(&func));
-        if parts.len()<2 { stash!(super::error::EvalError::Internal("malformed macro".into())) }
+        if parts.len()<2 { stash!(super::error::EvalError::internal("malformed macro")) }
         let af = tri!(super::list_elements(tail));
         let exp = tri!(super::apply_function(&parts[1], &af, e));
         return match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
