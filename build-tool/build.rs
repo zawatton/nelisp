@@ -444,6 +444,11 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-env-bind-local.el",
         // Wave h — empty globals mirror + frame stack via Phase 47 .o.
         "nelisp-cc-env-install-empty.el",
+        // Wave n2 §n2.A — nl_str_char_count + nl_str_codepoint_at +
+        // nl_str_is_alphanumeric_at direct-symbol migrations from nlstr.rs.
+        // Also adds thin nl_is_char_alphanumeric Rust delegate (4 LOC) and
+        // deletes sexp_as_str helper + with_value_mut dead code. Net: -59 LOC.
+        "nelisp-cc-nlstr-utf8-direct.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

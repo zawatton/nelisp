@@ -966,6 +966,22 @@
      :source-var nelisp-cc-nlstr-direct-ops--mut-str-finalize-source
      :output "nl_mut_str_finalize.o"
      :requires-arch x86_64)
+    ;; Wave n2 §n2.A — UTF-8 direct-symbol migrations from nlstr.rs.
+    ;; nl_str_char_count: count codepoints by counting non-continuation bytes.
+    ;; nl_str_codepoint_at: decode one UTF-8 codepoint at byte_idx.
+    ;; nl_str_is_alphanumeric_at: ASCII fast-path + Unicode delegate.
+    (nelisp-cc-nlstr-utf8-direct
+     :source-var nelisp-cc-nlstr-utf8-direct--char-count-source
+     :output "nl_str_char_count.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlstr-utf8-direct
+     :source-var nelisp-cc-nlstr-utf8-direct--codepoint-at-source
+     :output "nl_str_codepoint_at.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlstr-utf8-direct
+     :source-var nelisp-cc-nlstr-utf8-direct--is-alphanumeric-at-source
+     :output "nl_str_is_alphanumeric_at.o"
+     :requires-arch x86_64)
     ;; Doc 127 — `(signal TAG DATA)' tag-dispatch swap.  Single manifest
     ;; entry; the body does a 3-way `symbol-eq' chain and returns an
     ;; i64 discriminant (0=quit / 1=arith-error / 2=wrong-type-argument /

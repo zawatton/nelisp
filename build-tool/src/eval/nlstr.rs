@@ -80,11 +80,6 @@ impl NlStrRef {
             std::ptr::write(value_ptr, val);
         }
     }
-
-    pub unsafe fn with_value_mut<R>(&self, f: impl FnOnce(&mut String) -> R) -> R {
-        let value_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value);
-        unsafe { f(&mut *value_ptr) }
-    }
 }
 
 impl Clone for NlStrRef {
@@ -109,14 +104,6 @@ impl PartialEq for NlStrRef {
     }
 }
 
-fn sexp_as_str(s: &Sexp) -> Option<&str> {
-    match s {
-        Sexp::Str(s) | Sexp::Symbol(s) => Some(s.as_str()),
-        Sexp::MutStr(rc) => Some(rc.value.as_str()),
-        _ => None,
-    }
-}
-
 unsafe fn write_slot(slot: *mut Sexp, sexp: Sexp) -> *mut Sexp {
     unsafe { std::ptr::write(slot, sexp) };
     slot
@@ -124,6 +111,13 @@ unsafe fn write_slot(slot: *mut Sexp, sexp: Sexp) -> *mut Sexp {
 
 unsafe fn mut_str_value_mut<'a>(p: *mut Sexp) -> &'a mut String {
     unsafe { &mut (*((*p).mut_str_box_ptr() as *mut NlStr)).value }
+}
+
+/// Phase 47 delegate for `nl_str_is_alphanumeric_at' unicode slow-path.
+/// `cp' is a Unicode codepoint (i64); returns 1 if alphanumeric, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn nl_is_char_alphanumeric(cp: i64) -> i64 {
+    char::from_u32(cp as u32).map_or(0, |c| c.is_alphanumeric() as i64)
 }
 
 /// Phase 47 delegate: replace codepoint at char-index `idx'; caller guards MutStr+idx.
@@ -172,63 +166,6 @@ pub unsafe extern "C" fn nl_mut_str_push_codepoint(mut_str_ptr: *mut Sexp, codep
     };
     let ch = char::from_u32(cp_u32).unwrap_or('\u{FFFD}');
     unsafe { mut_str_value_mut(mut_str_ptr) }.push(ch);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_str_char_count(str_ptr: *const Sexp) -> i64 {
-    sexp_as_str(unsafe { &*str_ptr }).map_or(0, |s| s.chars().count() as i64)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_str_codepoint_at(
-    str_ptr: *const Sexp,
-    byte_idx: i64,
-    out_codepoint: *mut i64,
-    out_byte_width: *mut i64,
-) -> i64 {
-    let Some(s) = sexp_as_str(unsafe { &*str_ptr }) else {
-        return 0;
-    };
-    if byte_idx < 0 {
-        return 0;
-    }
-    let idx = byte_idx as usize;
-    if idx >= s.len() || !s.is_char_boundary(idx) {
-        return 0;
-    }
-    let Some(ch) = s[idx..].chars().next() else {
-        return 0;
-    };
-    unsafe {
-        *out_codepoint = ch as i64;
-        *out_byte_width = ch.len_utf8() as i64;
-    }
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_str_is_alphanumeric_at(str_ptr: *const Sexp, byte_idx: i64) -> i64 {
-    let Some(s) = sexp_as_str(unsafe { &*str_ptr }) else {
-        return 0;
-    };
-    if byte_idx < 0 {
-        return 0;
-    }
-    let idx = byte_idx as usize;
-    let bytes = s.as_bytes();
-    if idx >= bytes.len() {
-        return 0;
-    }
-    if bytes[idx].is_ascii_alphanumeric() {
-        return 1;
-    }
-    if !s.is_char_boundary(idx) {
-        return 0;
-    }
-    match s[idx..].chars().next() {
-        Some(c) if c.is_alphanumeric() => 1,
-        _ => 0,
-    }
 }
 
 #[no_mangle]
