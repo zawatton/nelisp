@@ -220,6 +220,21 @@ impl Env {
             &self.globals_record, &self.frames_record, &n, &value, &sc, 0) };
     }
 
+    /// Push a fresh empty lexframe onto the frame stack.
+    pub fn push_frame(&mut self) {
+        self.frame_push_rust_direct();
+    }
+
+    /// Pop the top lexframe from the frame stack.
+    pub fn pop_frame(&mut self) {
+        self.frame_pop_rust_direct();
+    }
+
+    /// Set (or insert) the function cell for NAME in the globals mirror.
+    pub fn set_function(&mut self, name: &str, value: Sexp) {
+        self.mirror_set_function(name, value);
+    }
+
     pub fn capture_lexical(&mut self) -> Sexp {
         let depth = match &self.frames_record {
             Sexp::Record(r) => match r.slots.get(1) {
@@ -270,32 +285,6 @@ impl Env {
         self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| {
             f(mirror_ptr, sym_ptr, &self.unbound_marker)
         })
-    }
-
-    fn frame_bucket(frame: &Sexp, name: &str) -> Option<(NlRecordRef, NlVectorRef, usize)> {
-        let Sexp::Record(frame_rec) = frame else {
-            return None;
-        };
-        let ht_rec = match frame_rec.slots.get(0)? {
-            Sexp::Record(r) => r.clone(),
-            _ => return None,
-        };
-        let bucket_count = match ht_rec.slots.get(0)? {
-            Sexp::Int(n) => *n as u32,
-            _ => return None,
-        };
-        let buckets = match ht_rec.slots.get(1)? {
-            Sexp::Vector(v) => v.clone(),
-            _ => return None,
-        };
-        let name_sym = Sexp::Symbol(name.into());
-        let h = unsafe { crate::elisp_cc_spike::fnv1a(&name_sym) } as u32;
-        let idx = (if bucket_count & (bucket_count - 1) == 0 {
-            h & (bucket_count - 1)
-        } else {
-            h % bucket_count
-        }) as usize;
-        Some((ht_rec, buckets, idx))
     }
 
     fn mirror_mutate_with(
@@ -368,13 +357,6 @@ impl Env {
         Some((stack_rec, backing, depth))
     }
 
-    fn make_empty_frame_record() -> Sexp {
-        Sexp::record(
-            Sexp::Symbol("nelisp-lexframe".into()),
-            vec![Env::make_fast_hash_table(16)],
-        )
-    }
-
     pub(crate) fn frame_stack_ensure_capacity(
         stack_rec: &NlRecordRef,
         backing: &NlVectorRef,
@@ -416,10 +398,12 @@ impl Env {
     }
 
     pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
-        let (stack_rec, backing, depth) = self.frame_stack_view()?;
-        let frame = Env::make_empty_frame_record();
-        Env::frame_stack_install(&stack_rec, &backing, depth, frame.clone());
-        Some(frame)
+        // Wave f: delegate to nelisp_frame_push .o.
+        if !matches!(&self.frames_record, Sexp::Record(_)) {
+            return None;
+        }
+        unsafe { crate::elisp_cc_spike::frame_push(&self.frames_record as *const Sexp) };
+        Some(Sexp::Nil) // return value is always discarded by callers
     }
 
     pub(crate) fn frame_pop_rust_direct(&mut self) {
@@ -436,87 +420,40 @@ impl Env {
     }
 
     pub(crate) fn frame_bind_rust_direct(&mut self, name: &str, cell: Sexp) {
-        let Some((_, backing, depth)) = self.frame_stack_view() else {
-            return;
-        };
-        if depth == 0 {
+        // Wave f: delegate to nelisp_frame_bind .o.
+        if !matches!(&self.frames_record, Sexp::Record(_)) {
             return;
         }
-        let Some(frame) = backing.value.get(depth - 1).cloned() else {
-            return;
-        };
-        Env::frame_bind_into(&frame, name, cell);
-    }
-
-    fn frame_bind_into(frame: &Sexp, name: &str, cell: Sexp) {
-        let Some((ht_rec, buckets, idx)) = Env::frame_bucket(frame, name) else {
-            return;
-        };
-        let bucket = match buckets.value.get(idx) {
-            Some(b) => b.clone(),
-            None => return,
-        };
-        let mut cur = bucket;
-        while let Sexp::Cons(c) = &cur {
-            if let Sexp::Cons(pair) = &c.car {
-                if let Sexp::Str(k) = &pair.car {
-                    if k == name {
-                        unsafe { pair.set_cdr(cell) };
-                        return;
-                    }
-                }
-            }
-            cur = c.cdr.clone();
-        }
-        let pair = Sexp::cons(Sexp::Str(name.to_string()), cell);
-        unsafe {
-            buckets.with_value_mut(|v| {
-                let old = v.get(idx).cloned().unwrap_or(Sexp::Nil);
-                v[idx] = Sexp::cons(pair, old);
-            });
-            ht_rec.with_slots_mut(|s| {
-                if let Some(Sexp::Int(n)) = s.get_mut(2) {
-                    *n += 1;
-                }
-            });
-        }
-    }
-
-    fn frame_lookup_in(frame: &Sexp, name: &str) -> Option<Sexp> {
-        let (_, buckets, idx) = Env::frame_bucket(frame, name)?;
-        let mut cur = buckets.value.get(idx)?;
-        while let Sexp::Cons(c) = cur {
-            if let Sexp::Cons(pair) = &c.car {
-                if let Sexp::Str(k) = &pair.car {
-                    if k == name {
-                        return Some(pair.cdr.clone());
-                    }
-                }
-            }
-            cur = &c.cdr;
-        }
-        None
+        let name_sexp = Sexp::Str(name.to_string());
+        unsafe { crate::elisp_cc_spike::frame_bind(&self.frames_record, &name_sexp, &cell) };
     }
 
     pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
-        let (_stack_rec, backing, depth) = self.frame_stack_view()?;
-        if depth == 0 {
+        // Wave f: delegate to nelisp_frame_stack_find .o (innermost frame).
+        // Build a temporary 1-depth frames record pointing at only the top frame.
+        if !matches!(&self.frames_record, Sexp::Record(_)) {
             return None;
         }
-        Env::frame_lookup_in(backing.value.get(depth - 1)?, name)
+        let name_sexp = Sexp::Str(name.to_string());
+        let raw = unsafe { crate::elisp_cc_spike::frame_stack_find_raw(&self.frames_record, &name_sexp) };
+        if raw.is_null() {
+            return None;
+        }
+        // raw points at the CDR slot of the (NAME . CELL) pair — i.e. the cell Sexp.
+        Some(unsafe { (*raw).clone() })
     }
 
     pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
-        let (_stack_rec, backing, depth) = self.frame_stack_view()?;
-        for i in (0..depth).rev() {
-            let Some(frame) = backing.value.get(i) else {
-                continue;
-            };
-            if let Some(cell) = Env::frame_lookup_in(frame, name) {
-                return Some(cell);
-            }
+        // Wave f: delegate to nelisp_frame_stack_find .o (full stack walk).
+        if !matches!(&self.frames_record, Sexp::Record(_)) {
+            return None;
         }
-        None
+        let name_sexp = Sexp::Str(name.to_string());
+        let raw = unsafe { crate::elisp_cc_spike::frame_stack_find_raw(&self.frames_record, &name_sexp) };
+        if raw.is_null() {
+            return None;
+        }
+        Some(unsafe { (*raw).clone() })
     }
 
     pub(crate) fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> {

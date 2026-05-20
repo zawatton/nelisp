@@ -281,6 +281,10 @@ pub mod elisp_cc_spike {
         fn nelisp_env_shim_set_op(op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_ptr: *const Sexp, result_slot: *mut Sexp, _pad: i64) -> i64;
         // Wave b — Env::bind_local Phase 47 .o.
         fn nelisp_env_bind_local(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
+        // Wave f — frame_bind / frame_stack_find / frame_push Phase 47 .o.
+        fn nelisp_frame_bind(frames_ptr: *const Sexp, name_ptr: *const Sexp, cell_ptr: *const Sexp, scratch_pair: *mut Sexp, scratch_outer: *mut Sexp, scratch_count: *mut Sexp) -> i64;
+        fn nelisp_frame_stack_find(frames_ptr: *const Sexp, name_ptr: *const Sexp) -> i64;
+        fn nelisp_frame_push(frames_ptr: *const Sexp, scratch_vec_ptr: *const Sexp) -> i64;
     }
 
     pub fn probe() -> i64 {
@@ -486,4 +490,31 @@ pub mod elisp_cc_spike {
     cc_wrap!(env_lookup_function: nelisp_env_lookup_function, (mirror_ptr: *const Sexp, unbound_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(env_shim_set_op: nelisp_env_shim_set_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_ptr: *const Sexp, result_slot: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(env_bind_local: nelisp_env_bind_local, (mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64);
+
+    // Wave f — frame_bind: bind NAME→CELL in innermost lexframe.
+    // Allocates 3 scratch Sexp::Nil slots on the call stack.
+    pub unsafe fn frame_bind(frames_ptr: *const Sexp, name_ptr: *const Sexp, cell_ptr: *const Sexp) -> i64 {
+        let (mut sp, mut so, mut sc) = (Sexp::Nil, Sexp::Nil, Sexp::Nil);
+        nelisp_frame_bind(frames_ptr, name_ptr, cell_ptr, &mut sp, &mut so, &mut sc)
+    }
+
+    // Wave f — frame_stack_find: walk stack innermost-first; returns *const Sexp of cell (0=miss).
+    pub unsafe fn frame_stack_find_raw(frames_ptr: *const Sexp, name_ptr: *const Sexp) -> *const Sexp {
+        nelisp_frame_stack_find(frames_ptr, name_ptr) as *const Sexp
+    }
+
+    // Wave f — frame_push: allocate fresh empty lexframe and push onto stack.
+    // Builds the 7-slot scratch vector required by the .o.
+    pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 {
+        let scratch = Sexp::vector(vec![
+            Sexp::Symbol("nelisp-lexframe".into()),  // slot 0: frame type-tag
+            Sexp::Symbol("fast-hash-table".into()),  // slot 1: ht type-tag
+            Sexp::Nil,                               // slot 2: ensure-cap scratch
+            Sexp::Nil,                               // slot 3: bucket vec scratch
+            Sexp::Nil,                               // slot 4: ht record scratch
+            Sexp::Nil,                               // slot 5: frame record scratch
+            Sexp::Nil,                               // slot 6: int scratch
+        ]);
+        nelisp_frame_push(frames_ptr, &scratch as *const Sexp)
+    }
 }
