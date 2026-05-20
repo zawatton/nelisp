@@ -374,6 +374,7 @@ pub mod elisp_cc_spike {
             vec_scratch: *mut Sexp,
         ) -> i64;
         fn nl_bi_f64_trunc_impl(mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64; // Doc 118
+        fn nelisp_wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp, work_slot: *mut Sexp, name_slot: *mut Sexp, cell_slot: *mut Sexp, inner_slot: *mut Sexp) -> i64; // Doc 115 §115.4
     }
 
     pub fn probe() -> i64 {
@@ -585,6 +586,15 @@ pub mod elisp_cc_spike {
     pub unsafe fn frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64) -> i64 {
         let mut scratch = Sexp::Nil;
         nelisp_frame_stack_ensure_capacity(frames_ptr, needed, &mut scratch as *mut Sexp)
+    }
+
+    pub unsafe fn wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp) -> i64 {
+        let (mut w, mut n, mut c, mut i) = (Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil);
+        let rc = nelisp_wrap_alist_cells(alist_ptr, result_slot, &mut w, &mut n, &mut c, &mut i);
+        // Prevent double-free: cons-make raw-copies without Rc::clone; zero
+        // scratch slots via ptr::write (= Nil-fill without calling Drop).
+        for s in [&mut w, &mut n, &mut c, &mut i] { core::ptr::write(s, Sexp::Nil); }
+        rc
     }
 
     cc_wrap!(fnv1a: nelisp_fnv1a, (str_ptr: *const Sexp) -> i64);

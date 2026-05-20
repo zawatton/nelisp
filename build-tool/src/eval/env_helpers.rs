@@ -575,25 +575,14 @@ impl Env {
     }
 
     pub(crate) fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> {
-        let mut entries: Vec<(Sexp, Sexp)> = Vec::new();
-        let mut cur = alist;
-        while let Sexp::Cons(outer) = cur {
-            let Sexp::Cons(inner) = &outer.car else {
-                return Err(EvalError::Internal("closure env entry not a cons".into()));
-            };
-            let cell = match &inner.cdr {
-                Sexp::Cell(_) => inner.cdr.clone(),
-                v => Sexp::Cell(FrameCell::new(v.clone())),
-            };
-            entries.push((inner.car.clone(), cell));
-            cur = &outer.cdr;
+        let mut result = Sexp::Nil;
+        let rc = unsafe {
+            crate::elisp_cc_spike::wrap_alist_cells(alist as *const Sexp, &mut result)
+        };
+        if rc == 1 {
+            Ok(result)
+        } else {
+            Err(EvalError::Internal("wrap_alist_cells: malformed closure env alist".into()))
         }
-        if !matches!(cur, Sexp::Nil) {
-            return Err(EvalError::Internal("closure env not a proper list".into()));
-        }
-        Ok(entries
-            .into_iter()
-            .rev()
-            .fold(Sexp::Nil, |acc, (n, c)| Sexp::cons(Sexp::cons(n, c), acc)))
     }
 }
