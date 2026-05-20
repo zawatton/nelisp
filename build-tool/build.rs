@@ -108,6 +108,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // use the same §122.H grammar shape modulo (fd, direction).
         "nelisp-cc-bi-write-stdout-bytes.el",
         "nelisp-cc-bi-read-stdin-bytes.el",
+        // Doc 118 — `nelisp--f64-trunc' mode-dispatch + div + truncation swap.
+        "nelisp-cc-bi-f64-trunc.el",
         // Doc 111 §111.D — Cell read+write op probes (4 entries,
         // shared source file, one .o per op).
         "nelisp-cc-cell-ops.el",

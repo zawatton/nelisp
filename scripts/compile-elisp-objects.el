@@ -558,6 +558,14 @@
      :source-var nelisp-cc-bi-syscall-resolve-nr--source
      :output "nelisp_bi_syscall_resolve_nr.o"
      :requires-arch x86_64)
+    ;; Doc 118 — `nelisp--f64-trunc' mode-dispatch + div + truncate swap.
+    ;; Rust shim keeps arity check + WrongType guard; computation moves
+    ;; to Phase 47 elisp via `nl_bi_f64_trunc_div_bits' Rust helper.
+    ;; Linux-x86_64 only (f64-to-i64-trunc / bits-to-f64 MVP scope).
+    (nelisp-cc-bi-f64-trunc
+     :source-var nelisp-cc-bi-f64-trunc--source
+     :output "nl_bi_f64_trunc_impl.o"
+     :requires-arch x86_64)
     ;; `nl_cons_car_ptr' / `nl_cons_cdr_ptr' — narrow slot-pointer
     ;; helpers used by `nelisp_jit_cons_car' / `nelisp_jit_cons_cdr'
     ;; via `extern-call'.  Replaced from Rust `jit/cons.rs'.

@@ -366,6 +366,7 @@ pub mod elisp_cc_spike {
             result_slot: *mut Sexp,
             vec_scratch: *mut Sexp,
         ) -> i64;
+        fn nl_bi_f64_trunc_impl(mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64; // Doc 118
     }
 
     pub fn probe() -> i64 {
@@ -638,4 +639,5 @@ pub mod elisp_cc_spike {
     cc_wrap!(jit_aref: nelisp_jit_aref, (arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64);
     cc_wrap!(jit_aset: nelisp_jit_aset, (arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(jit_elt: nelisp_jit_elt, (arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64);
+    cc_wrap!(f64_trunc_impl: nl_bi_f64_trunc_impl, (mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64);
 }

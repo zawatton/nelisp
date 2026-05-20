@@ -216,18 +216,15 @@ fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
         other => return Err(EvalError::WrongType { expected: "string".into(), got: other.clone() }) };
     Ok(cc_slot_1(&sv, crate::elisp_cc_spike::bi_string_bytes))
 }
-fn sexp_to_f64(a: &Sexp) -> Result<f64, EvalError> {
-    match a { Sexp::Int(i) => Ok(*i as f64), Sexp::Float(f) => Ok(*f), Sexp::Nil => Ok(0.0),
-        other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }) }
-}
+/// Rust helper called from the Phase 47 `.o' for `bi_f64_trunc'.
+/// Converts num/denom Sexps to f64, divides, returns quotient bits as i64.
+#[no_mangle] pub extern "C" fn nl_bi_f64_trunc_div_bits(n: *const Sexp, d: *const Sexp) -> i64 { let f=|p:*const Sexp|match unsafe{&*p}{Sexp::Int(i)=>*i as f64,Sexp::Float(v)=>*v,_=>0.0}; (f(n)/f(d)).to_bits() as i64 }
 fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--f64-trunc", args, 3, Some(3))?;
-    let mode = match &args[0] { Sexp::Symbol(s) => s.as_str(), other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }) };
-    let q = sexp_to_f64(&args[1])? / sexp_to_f64(&args[2])?;
-    Ok(Sexp::Int(match mode {
-        "floor" => q.floor() as i64, "ceiling" => q.ceil() as i64, "round" => q.round() as i64, "truncate" => q.trunc() as i64,
-        _ => return Err(EvalError::Internal(format!("nelisp--f64-trunc: unknown mode `{mode}`"))),
-    }))
+    if let Sexp::Symbol(_) = &args[0] {} else { return Err(EvalError::WrongType { expected: "symbol".into(), got: args[0].clone() }); }
+    let mut out = Sexp::Nil;
+    unsafe { crate::elisp_cc_spike::f64_trunc_impl(&args[0] as *const _, &args[1] as *const _, &args[2] as *const _, &mut out as *mut _) };
+    if let Sexp::Nil = out { Err(EvalError::Internal("nelisp--f64-trunc: unknown mode".into())) } else { Ok(out) }
 }
 fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("read-stdin-bytes", args, 1, Some(1))?;
