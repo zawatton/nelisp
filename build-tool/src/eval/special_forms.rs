@@ -2,7 +2,6 @@ use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
 use super::Env;
 use super::{eval, list_elements};
-
 macro_rules! sf_call_4arg {
     ($name:literal, $ext:ident, $args:expr, $env:expr) => {{ let mut out = Sexp::Nil;
         let rc = unsafe { crate::elisp_cc_spike::$ext($args as *const Sexp, $env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp, 0) };
@@ -13,7 +12,6 @@ macro_rules! sf_call_with_s1 {
         let rc = unsafe { crate::elisp_cc_spike::$ext($args as *const Sexp, $env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp, &mut s1 as *mut Sexp) };
         if rc == 0 { Ok::<_, EvalError>(out) } else { Err(super::consume_stashed_error($env, $name)) } }};
 }
-
 pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Sexp>, EvalError> {
     Ok(Some(match name {
         "quote" => { let mut out = Sexp::Nil;
@@ -32,7 +30,6 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
         _ => return Ok(None),
     }))
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_let_setup(bindings_list: *const Sexp, env: *mut std::ffi::c_void, sequential: i64) -> i64 {
     fn parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
@@ -61,12 +58,10 @@ pub unsafe extern "C" fn nl_let_setup(bindings_list: *const Sexp, env: *mut std:
     }
     0
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 { (&mut *(env as *mut Env)).frame_pop_rust_direct(); 0 }
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_push_captured(env: *mut std::ffi::c_void, alist_ptr: *const Sexp) -> i64 { match (&mut *(env as *mut Env)).push_captured(&*alist_ptr) { Ok(()) => 0, Err(_) => 1 } }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_cc_match_and_bind(clauses: *const Sexp, err_inout: *mut Sexp, var: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
     let env_ref = &mut *(env as *mut Env);
@@ -91,7 +86,6 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(clauses: *const Sexp, err_inout: *
     }
     let _ = env_ref.set_value("nelisp--last-signal-data", err_owned); 1
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_bind_sym(env: *mut std::ffi::c_void, name_ptr: *const Sexp, val_ptr: *const Sexp) -> i64 {
     if let Sexp::Symbol(name) = &*name_ptr { (&mut *(env as *mut Env)).bind_local(name, (*val_ptr).clone()); } 0
@@ -125,7 +119,6 @@ pub unsafe extern "C" fn nl_bf_bind_rest(env: *mut std::ffi::c_void, name_ptr: *
     }
     0
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_push_and_bind(formals_ptr: *const Sexp, args_list_ptr: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
     let e = &mut *(env as *mut Env); e.frame_push_rust_direct();

@@ -30,7 +30,6 @@ extern "C" {
     #[link_name = "nl_jit_alias"]
     fn nl_jit_alias_call(name: *const Sexp, out: *mut Sexp) -> i64;
 }
-
 #[used]
 static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
     nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2,
@@ -94,15 +93,8 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(f(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6])))
 }
 pub fn bi_nl_jit_call_float_float(args: &[Sexp]) -> Result<Sexp, EvalError> { let (p,a,b)=float_pair(args,"nl-jit-call-float-float")?; let f:extern "C" fn(f64,f64)->f64=unsafe{cast(p)}; Ok(Sexp::Float(f(a,b))) }
-pub fn bi_nl_jit_call_float_cmp(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, a, b) = float_pair(args, "nl-jit-call-float-cmp")?;
-    let f: extern "C" fn(f64, f64) -> i64 = unsafe { cast(p) }; Ok(Sexp::Int(f(a, b)))
-}
-pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let p = jit_lookup("nl-jit-call-float-unary", args, 2)?;
-    let f: extern "C" fn(f64) -> f64 = unsafe { cast(p) };
-    Ok(Sexp::Float(f(to_f64(&args[1], "number")?)))
-}
+pub fn bi_nl_jit_call_float_cmp(args: &[Sexp]) -> Result<Sexp, EvalError> { let (p,a,b)=float_pair(args,"nl-jit-call-float-cmp")?; let f:extern "C" fn(f64,f64)->i64=unsafe{cast(p)}; Ok(Sexp::Int(f(a,b))) }
+pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> { let p=jit_lookup("nl-jit-call-float-unary",args,2)?; let f: extern "C" fn(f64)->f64=unsafe{cast(p)}; Ok(Sexp::Float(f(to_f64(&args[1],"number")?))) }
 macro_rules! out_call {
     ($fn:ident, $tag:literal, $n:literal, |$a:ident,$o:ident $(,$i:ident)?|,
      ($($t:ty),+), ($($e:expr),+ $(,)?)) => {

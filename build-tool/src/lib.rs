@@ -19,12 +19,10 @@ pub mod elisp_cc_spike {
         fn nelisp_truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_truncate_float(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_length_cons(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
-        fn nelisp_eq_symbol(arg0: *const Sexp, arg1: *const Sexp,
-            result_slot: *mut Sexp) -> *mut Sexp;
+        fn nelisp_eq_symbol(arg0: *const Sexp, arg1: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_bi_string_bytes(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
         fn nelisp_recordp(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
-        fn nelisp_bi_make_vector(n_ptr: *const Sexp, init_ptr: *const Sexp,
-            result_slot: *mut Sexp) -> i64;
+        fn nelisp_bi_make_vector(n_ptr: *const Sexp, init_ptr: *const Sexp, result_slot: *mut Sexp) -> i64;
         fn nelisp_bi_nl_fact_i64(arg_ptr: *const Sexp, result_slot: *mut Sexp) -> i64;
         fn nelisp_bi_set_quit_flag(flag_ptr: *mut i64) -> i64;
         fn nelisp_bi_clear_quit_flag(flag_ptr: *mut i64) -> i64;
@@ -32,15 +30,13 @@ pub mod elisp_cc_spike {
         fn nelisp_bi_write_stderr_line(str_ptr: *const Sexp) -> i64;
         fn nelisp_bi_write_stdout_bytes(str_ptr: *const Sexp) -> i64;
         fn nelisp_bi_read_stdin_bytes(buf_ptr: *mut u8, limit: i64) -> i64;
-        fn nelisp_bi_signal_dispatch(tag_ptr: *const Sexp, quit_ptr: *const Sexp,
-            arith_ptr: *const Sexp, wrong_type_ptr: *const Sexp) -> i64;
+        fn nelisp_bi_signal_dispatch(tag_ptr: *const Sexp, quit_ptr: *const Sexp, arith_ptr: *const Sexp, wrong_type_ptr: *const Sexp) -> i64;
         fn nelisp_mut_str_make_empty(slot: *mut Sexp, cap: i64) -> *mut Sexp;
         fn nelisp_bi_syscall_stat(path_ptr: *const Sexp, statbuf: *mut u8) -> i64;
         fn nelisp_bi_syscall_canonicalize(path_ptr: *const Sexp, result_buf: *mut u8) -> i64;
         fn nelisp_bi_nl_write_file(path_ptr: *const Sexp, content_ptr: *const Sexp) -> i64;
         fn nelisp_bi_nl_make_directory(path_ptr: *const Sexp) -> i64;
-        fn nelisp_bi_syscall_read_file(path_ptr: *const Sexp, buf_ptr: *mut u8,
-            read_size: i64) -> i64;
+        fn nelisp_bi_syscall_read_file(path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64;
         fn nelisp_bi_syscall_resolve_nr(sym_ptr: *const Sexp) -> i64;
         fn nl_alloc_consbox() -> *mut u8;
         fn nl_alloc_cell(initial: *const u8) -> *mut u8;
@@ -61,74 +57,40 @@ pub mod elisp_cc_spike {
         fn nelisp_nlchartable_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlchartable_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_mirror_lookup_entry(mirror_ptr: *const Sexp, sym_ptr: *const Sexp) -> i64;
-        fn nelisp_mirror_lookup_value(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            result_slot: *mut Sexp) -> *mut Sexp;
-        fn nelisp_mirror_lookup_function(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            result_slot: *mut Sexp) -> *mut Sexp;
-        fn nelisp_mirror_is_bound(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            unbound_ptr: *const Sexp) -> i64;
-        fn nelisp_mirror_is_fbound(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            unbound_ptr: *const Sexp) -> i64;
+        fn nelisp_mirror_lookup_value(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
+        fn nelisp_mirror_lookup_function(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
+        fn nelisp_mirror_is_bound(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64;
+        fn nelisp_mirror_is_fbound(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64;
         fn nelisp_mirror_is_constant(mirror_ptr: *const Sexp, sym_ptr: *const Sexp) -> i64;
-        fn nelisp_mirror_clear_value(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            unbound_ptr: *const Sexp) -> i64;
-        fn nelisp_mirror_clear_function(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            unbound_ptr: *const Sexp) -> i64;
-        fn nelisp_mirror_set_constant(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            flag_ptr: *const Sexp) -> i64;
-        fn nelisp_mirror_install_entry(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            value_ptr: *const Sexp, function_ptr: *const Sexp,
-            plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64;
-        fn nelisp_mirror_set_value_or_insert(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
-        fn nelisp_mirror_set_function_or_insert(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
-        fn nelisp_mirror_set_constant_or_insert(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
-        fn nelisp_mirror_install_entry_or_insert(mirror_ptr: *const Sexp, sym_ptr: *const Sexp,
-            scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
-        fn nelisp_frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64,
-            scratch_slot: *mut Sexp) -> i64;
+        fn nelisp_mirror_clear_value(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64;
+        fn nelisp_mirror_clear_function(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64;
+        fn nelisp_mirror_set_constant(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, flag_ptr: *const Sexp) -> i64;
+        fn nelisp_mirror_install_entry(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64;
+        fn nelisp_mirror_set_value_or_insert(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
+        fn nelisp_mirror_set_function_or_insert(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
+        fn nelisp_mirror_set_constant_or_insert(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
+        fn nelisp_mirror_install_entry_or_insert(mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_vec_ptr: *const Sexp, _pad: i64) -> i64;
+        fn nelisp_frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64, scratch_slot: *mut Sexp) -> i64;
         fn nelisp_frame_stack_install(frames_ptr: *const Sexp, frame_ptr: *const Sexp, scratch_slot: *mut Sexp) -> i64;
         fn nelisp_fnv1a(str_ptr: *const Sexp) -> i64;
-        fn nelisp_reader_lex_one(str_ptr: *const Sexp, cursor: i64,
-            payload_slot: *mut Sexp, cursor_out_slot: *mut Sexp,
-            scratch_mutstr_slot: *mut Sexp) -> i64;
-        fn nelisp_reader_parse_one(str_ptr: *const Sexp, cursor_slot: *mut Sexp,
-            result_slot: *mut Sexp, slot_pool: *const Sexp,
-            depth: i64) -> i64;
+        fn nelisp_reader_lex_one(str_ptr: *const Sexp, cursor: i64, payload_slot: *mut Sexp, cursor_out_slot: *mut Sexp, scratch_mutstr_slot: *mut Sexp) -> i64;
+        fn nelisp_reader_parse_one(str_ptr: *const Sexp, cursor_slot: *mut Sexp, result_slot: *mut Sexp, slot_pool: *const Sexp, depth: i64) -> i64;
         fn nl_sf_quote(args: *const Sexp, out: *mut Sexp) -> i64;
-        fn nl_sf_if(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_setq(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_progn(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_while(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_let(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_let_star(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_sf_lambda(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, s1: *mut Sexp) -> i64;
-        fn nl_sf_function(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, s1: *mut Sexp) -> i64;
-        fn nl_sf_condition_case(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, s1: *mut Sexp) -> i64;
-        fn nl_sf_unwind_protect(args: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, _pad: i64) -> i64;
-        fn nl_apply_lambda_inner(captured: *const Sexp, formals: *const Sexp,
-            body_list: *const Sexp, args_list: *const Sexp,
-            env: *mut std::ffi::c_void, out: *mut Sexp) -> i64;
-        fn nl_bind_formals_impl(formals: *const Sexp, args: *const Sexp,
-            env: *mut std::ffi::c_void, _pad: i64) -> i64;
-        fn nl_eval_inner(form: *const Sexp, env: *mut std::ffi::c_void,
-            out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_sf_if(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_sf_setq(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_sf_progn(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_sf_while(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_sf_let(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_sf_let_star(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_sf_lambda(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
+        fn nl_sf_function(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
+        fn nl_sf_condition_case(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, s1: *mut Sexp) -> i64;
+        fn nl_sf_unwind_protect(args: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
+        fn nl_apply_lambda_inner(captured: *const Sexp, formals: *const Sexp, body_list: *const Sexp, args_list: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64;
+        fn nl_bind_formals_impl(formals: *const Sexp, args: *const Sexp, env: *mut std::ffi::c_void, _pad: i64) -> i64;
+        fn nl_eval_inner(form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64;
         fn nelisp_fmt_sexp(s: *const Sexp, slot: *mut Sexp) -> i64;
-        fn nelisp_env_shim_op(op_ptr: *const Sexp, mirror_ptr: *const Sexp,
-            sym_ptr: *const Sexp, unbound_ptr: *const Sexp,
-            result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64;
+        fn nelisp_env_shim_op(op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp, result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64;
         fn nl_bi_f64_trunc_impl(mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64;
         fn nelisp_wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp, work_slot: *mut Sexp, name_slot: *mut Sexp, cell_slot: *mut Sexp, inner_slot: *mut Sexp) -> i64;
         fn nelisp_env_lookup_value(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64;

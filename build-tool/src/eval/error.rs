@@ -10,9 +10,6 @@ impl EvalError {
     pub fn signal_data(&self) -> Sexp {
         match self { EvalError::Generic(tag, data) => Sexp::cons(Sexp::Symbol(tag.clone()), data.clone()), EvalError::Quit => Sexp::cons(Sexp::Symbol("quit".into()), Sexp::Nil) }
     }
-}
-
-impl EvalError {
     #[inline] pub fn wrong_type(expected: impl Into<String>, got: Sexp) -> Self { Self::Generic("wrong-type-argument".into(), Sexp::list_from(&[Sexp::Symbol(expected.into()), got])) }
     #[inline] pub fn wrong_arity(function: impl Into<String>, _expected: impl Into<String>, got: usize) -> Self { Self::Generic("wrong-number-of-arguments".into(), Sexp::list_from(&[Sexp::Symbol(function.into()), Sexp::Int(got as i64)])) }
     #[inline] pub fn unbound_var(name: impl Into<String>) -> Self { Self::Generic("void-variable".into(), Sexp::list_from(&[Sexp::Symbol(name.into())])) }
