@@ -236,30 +236,21 @@ impl Env {
     }
 
     pub fn capture_lexical(&mut self) -> Sexp {
-        let depth = match &self.frames_record {
-            Sexp::Record(r) => match r.slots.get(1) {
-                Some(Sexp::Int(n)) => *n,
-                _ => return Sexp::Nil,
-            },
-            _ => return Sexp::Nil,
-        };
-        let Ok(f) = self.lookup_function("nelisp-lexframe-stack-capture-to-depth") else {
-            return Sexp::Nil;
-        };
+        // Wave g: compressed with let..else; same logic, -7 LOC.
+        let Sexp::Record(r) = &self.frames_record else { return Sexp::Nil };
+        let Some(Sexp::Int(depth)) = r.slots.get(1) else { return Sexp::Nil };
+        let depth = *depth;
+        let Ok(f) = self.lookup_function("nelisp-lexframe-stack-capture-to-depth") else { return Sexp::Nil };
         let args = [self.frames_record.clone(), Sexp::Int(depth)];
         super::apply_function(&f, &args, self).unwrap_or(Sexp::Nil)
     }
 
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
+        // Wave g: let..else + nelisp_frame_stack_install_sexp; -7 LOC.
         let normalized = Env::wrap_alist_cells(alist)?;
-        let f = match self.lookup_function("nelisp-lexframe-make-from-alist") {
-            Ok(f) => f,
-            Err(_) => return Ok(()),
-        };
+        let Ok(f) = self.lookup_function("nelisp-lexframe-make-from-alist") else { return Ok(()) };
         let frame = super::apply_function(&f, &[normalized], self)?;
-        if let Some((stack_rec, backing, depth)) = self.frame_stack_view() {
-            Env::frame_stack_install(&stack_rec, &backing, depth, frame);
-        }
+        unsafe { nelisp_frame_stack_install_sexp(&self.frames_record, &frame); }
         Ok(())
     }
 }
@@ -357,46 +348,6 @@ impl Env {
         Some((stack_rec, backing, depth))
     }
 
-    pub(crate) fn frame_stack_ensure_capacity(
-        stack_rec: &NlRecordRef,
-        backing: &NlVectorRef,
-        depth: usize,
-        needed: usize,
-    ) -> NlVectorRef {
-        let cap = backing.value.len();
-        if cap >= needed {
-            return backing.clone();
-        }
-        let mut new_cap = cap.max(1);
-        while new_cap < needed {
-            new_cap *= 2;
-        }
-        let mut new_buf: Vec<Sexp> = (0..depth)
-            .map(|i| backing.value.get(i).cloned().unwrap_or(Sexp::Nil))
-            .collect();
-        new_buf.resize(new_cap, Sexp::Nil);
-        let new_vec_sexp = Sexp::vector(new_buf);
-        let new_vec_ref = match &new_vec_sexp {
-            Sexp::Vector(v) => v.clone(),
-            _ => unreachable!(),
-        };
-        unsafe { stack_rec.with_slots_mut(|s| s[0] = new_vec_sexp) };
-        new_vec_ref
-    }
-
-    fn frame_stack_install(
-        stack_rec: &NlRecordRef,
-        backing: &NlVectorRef,
-        depth: usize,
-        frame: Sexp,
-    ) {
-        let backing = Env::frame_stack_ensure_capacity(stack_rec, backing, depth, depth + 1);
-        unsafe {
-            backing.with_value_mut(|v| v[depth] = frame);
-            stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
-        }
-    }
-
     pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
         // Wave f: delegate to nelisp_frame_push .o.
         if !matches!(&self.frames_record, Sexp::Record(_)) {
@@ -467,4 +418,27 @@ impl Env {
             Err(EvalError::internal("wrap_alist_cells: malformed closure env alist"))
         }
     }
+}
+
+/// Wave g — frame_stack_install as C-callable ABI primitive.
+/// frames_ptr の backing[depth] に frame を install し depth を +1 する。
+/// 容量不足時は nelisp_frame_stack_ensure_capacity (elisp .o) を経由して grow する。
+/// frame_stack_install + frame_stack_ensure_capacity の Rust 実装を置換 (-38 LOC)。
+/// 戻り値: 1=成功, 0=frames_ptr が Record でない (no-op)。
+///
+/// # Safety
+/// - frames_ptr: live `*const Sexp` (Sexp::Record — frames_record)
+/// - frame_ptr:  live `*const Sexp` (Sexp::Record — newly created lexframe)
+#[no_mangle]
+pub unsafe extern "C" fn nelisp_frame_stack_install_sexp(
+    frames_ptr: *const Sexp,
+    frame_ptr: *const Sexp,
+) -> i64 {
+    let stack_rec = match &*frames_ptr { Sexp::Record(r) => r.clone(), _ => return 0 };
+    let depth = match stack_rec.slots.get(1) { Some(Sexp::Int(n)) => *n as usize, _ => return 0 };
+    crate::elisp_cc_spike::frame_stack_ensure_capacity(frames_ptr, (depth + 1) as i64);
+    let backing = match stack_rec.slots.get(0) { Some(Sexp::Vector(v)) => v.clone(), _ => return 0 };
+    backing.with_value_mut(|v| v[depth] = (*frame_ptr).clone());
+    stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth + 1) as i64));
+    1
 }

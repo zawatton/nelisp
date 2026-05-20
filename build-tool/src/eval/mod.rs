@@ -332,6 +332,31 @@ pub unsafe extern "C" fn nelisp_eval_call_with_err(
     }
 }
 
+/// Wave g — apply_function as C-callable ABI primitive.
+/// Phase 47 elisp .o が関数を apply するための外部エントリ。
+/// args_list は cons リスト形式 (= Sexp::list_from で構築)。
+/// 戻り値: 0=Ok (*out に書込み済), 1=Err (signal は nelisp--last-signal-data にスタッシュ)。
+///
+/// # Safety
+/// - func: live `*const Sexp` (closure / lambda / builtin sentinel)
+/// - args_list: live `*const Sexp` (proper cons list of arguments)
+/// - env: live `&mut Env` を `*mut c_void` に reinterpret したもの
+/// - out: 32-byte writable Sexp slot
+#[no_mangle]
+pub unsafe extern "C" fn nelisp_apply_function(
+    func: *const Sexp,
+    args_list: *const Sexp,
+    env: *mut std::ffi::c_void,
+    out: *mut Sexp,
+) -> i64 {
+    let env_ref = &mut *(env as *mut Env);
+    let args = list_elements(&*args_list).unwrap_or_default();
+    match apply_function(&*func, &args, env_ref) {
+        Ok(v) => { std::ptr::write(out, v); 0 }
+        Err(e) => { let _ = env_ref.set_value("nelisp--last-signal-data", e.signal_data()); 1 }
+    }
+}
+
 /// Re-construct EvalError from a `(tag . data)' sexp produced by `signal_data()'.
 pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fb: &str) -> EvalError {
     match sexp {
