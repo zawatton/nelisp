@@ -10,23 +10,13 @@ const START_POS: SourcePos = SourcePos { line: 1, col: 1 };
 
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
     let mut state = ElispReadState::new(input);
-    let form = match state.parse_one_form() {
-        Some(ElispParseOutcome::Form(f)) => f,
-        Some(ElispParseOutcome::Empty) => return Err(ReadError::unexpected_eof("empty input", START_POS)),
-        None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
-    };
+    let form = match state.parse_one_form() { Some(ElispParseOutcome::Form(f)) => f, Some(ElispParseOutcome::Empty) => return Err(ReadError::unexpected_eof("empty input", START_POS)), None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)) };
     if state.has_trailing_token() { return Err(ReadError::parse("trailing token after first form".to_string(), START_POS)); }
     Ok(form)
 }
 pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
     let mut state = ElispReadState::new(input); let mut forms = Vec::new();
-    loop {
-        match state.parse_one_form() {
-            Some(ElispParseOutcome::Form(form)) => forms.push(form),
-            Some(ElispParseOutcome::Empty) => return Ok(forms),
-            None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
-        }
-    }
+    loop { match state.parse_one_form() { Some(ElispParseOutcome::Form(form)) => forms.push(form), Some(ElispParseOutcome::Empty) => return Ok(forms), None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)) } }
 }
 
 enum ElispParseOutcome { Form(Sexp), Empty }

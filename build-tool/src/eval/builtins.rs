@@ -185,8 +185,7 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?;
-    let mut sb: libc::stat = unsafe { std::mem::zeroed() };
+    let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps as *const _, (&mut sb as *mut libc::stat) as *mut u8) };
     let tag = if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" }};
     Ok(Sexp::Symbol(tag.into()))
@@ -201,20 +200,11 @@ fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> { Err(EvalError::intern
 #[cfg(target_os = "linux")]
 fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.is_empty() { return Err(EvalError::internal("nelisp--syscall: at least one argument (syscall nr / name) required")); }
-    let nr = match &args[0] {
-        Sexp::Int(n) => *n,
-        Sexp::Symbol(s) => {
-            let r = unsafe { crate::elisp_cc_spike::bi_syscall_resolve_nr(&args[0] as *const _) };
-            if r < 0 { return Err(EvalError::internal(format!("nelisp--syscall: unknown syscall name `{}'", s))); }
-            r
-        }
-        other => return Err(EvalError::wrong_type("syscall name (symbol) or number (integer)", other.clone())),
-    };
+    let nr = match &args[0] { Sexp::Int(n) => *n,
+        Sexp::Symbol(s) => { let r = unsafe { crate::elisp_cc_spike::bi_syscall_resolve_nr(&args[0] as *const _) }; if r < 0 { return Err(EvalError::internal(format!("nelisp--syscall: unknown syscall name `{}'", s))); } r }
+        other => return Err(EvalError::wrong_type("syscall name (symbol) or number (integer)", other.clone())) };
     let mut a = [0i64; 6];
-    for (i, sexp) in args[1..].iter().enumerate().take(6) {
-        a[i] = match sexp { Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1,
-            other => return Err(EvalError::wrong_type(format!("integer (arg {} of nelisp--syscall)", i + 1), other.clone())) };
-    }
+    for (i, sexp) in args[1..].iter().enumerate().take(6) { a[i] = match sexp { Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1, other => return Err(EvalError::wrong_type(format!("integer (arg {} of nelisp--syscall)", i + 1), other.clone())) }; }
     let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) };
     Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 }))
 }

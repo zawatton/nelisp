@@ -5,18 +5,13 @@ macro_rules! nl_ref_common {
         #[repr(transparent)]
         pub struct $ref { ptr: ::std::ptr::NonNull<$inner>, _marker: ::std::marker::PhantomData<$inner> }
         impl $ref {
-            pub fn strong_count(this: &Self) -> usize {
-                unsafe { (*this.ptr.as_ptr()).refcount.load(::std::sync::atomic::Ordering::Acquire) }
-            }
+            pub fn strong_count(this: &Self) -> usize { unsafe { (*this.ptr.as_ptr()).refcount.load(::std::sync::atomic::Ordering::Acquire) } }
             pub fn ptr_eq(a: &Self, b: &Self) -> bool { a.ptr.as_ptr() == b.ptr.as_ptr() }
         }
         impl ::std::ops::Drop for $ref {
             fn drop(&mut self) { unsafe { $drop(self.ptr.as_ptr() as *mut i64) }; }
         }
-        impl ::std::ops::Deref for $ref {
-            type Target = $inner;
-            fn deref(&self) -> &$inner { unsafe { &*self.ptr.as_ptr() } }
-        }
+        impl ::std::ops::Deref for $ref { type Target = $inner; fn deref(&self) -> &$inner { unsafe { &*self.ptr.as_ptr() } } }
     };
 }
 #[macro_export]
@@ -33,16 +28,10 @@ macro_rules! define_nlbox {
             pub(crate) const DROP_FN: unsafe fn(*mut ::std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<$inner>;
         }
         impl $ref {
-            pub fn new($($fname: $fty),+) -> $ref {
-                let ptr = NonNull::from(Box::leak(Box::new($inner { $($fname,)+ refcount: AtomicUsize::new(1) })));
-                $ref { ptr, _marker: PhantomData }
-            }
+            pub fn new($($fname: $fty),+) -> $ref { let ptr = NonNull::from(Box::leak(Box::new($inner { $($fname,)+ refcount: AtomicUsize::new(1) }))); $ref { ptr, _marker: PhantomData } }
         }
         impl Clone for $ref {
-            fn clone(&self) -> Self {
-                unsafe { $clone_fn(self.ptr.as_ptr() as *mut i64) };
-                $ref { ptr: self.ptr, _marker: PhantomData }
-            }
+            fn clone(&self) -> Self { unsafe { $clone_fn(self.ptr.as_ptr() as *mut i64) }; $ref { ptr: self.ptr, _marker: PhantomData } }
         }
         const _: () = { $($la_tt)* };
     };

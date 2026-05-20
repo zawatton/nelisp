@@ -11,22 +11,9 @@ pub(crate) static SIGCONT_ARRIVED: AtomicI64 = AtomicI64::new(0);
 static HOOKS_ONCE: Once = Once::new();
 static WINSIZE_ONCE: Once = Once::new();
 static JOBCTRL_ONCE: Once = Once::new();
-fn restore_signal_safe() {
-    if TERMIOS_SAVED.swap(0, Ordering::SeqCst) != 0 {
-        let fd = TTY_FD.load(Ordering::SeqCst) as libc::c_int;
-        if fd >= 0 { unsafe { libc::tcsetattr(fd, libc::TCSANOW, std::ptr::addr_of!(SAVED_TERMIOS) as *const libc::termios); } }
-    }
-}
-unsafe fn sa(sig: libc::c_int, h: extern "C" fn(libc::c_int), fl: libc::c_int) {
-    let mut a: libc::sigaction = std::mem::zeroed();
-    a.sa_sigaction = h as *const () as usize; libc::sigemptyset(&mut a.sa_mask); a.sa_flags = fl;
-    libc::sigaction(sig, &a, std::ptr::null_mut());
-}
-unsafe fn reraise(sig: libc::c_int) {
-    libc::signal(sig, libc::SIG_DFL);
-    let mut m: libc::sigset_t = std::mem::zeroed(); libc::sigemptyset(&mut m); libc::sigaddset(&mut m, sig);
-    libc::sigprocmask(libc::SIG_UNBLOCK, &m, std::ptr::null_mut()); libc::raise(sig);
-}
+fn restore_signal_safe() { if TERMIOS_SAVED.swap(0, Ordering::SeqCst) != 0 { let fd = TTY_FD.load(Ordering::SeqCst) as libc::c_int; if fd >= 0 { unsafe { libc::tcsetattr(fd, libc::TCSANOW, std::ptr::addr_of!(SAVED_TERMIOS) as *const libc::termios); } } } }
+unsafe fn sa(sig: libc::c_int, h: extern "C" fn(libc::c_int), fl: libc::c_int) { let mut a: libc::sigaction = std::mem::zeroed(); a.sa_sigaction = h as *const () as usize; libc::sigemptyset(&mut a.sa_mask); a.sa_flags = fl; libc::sigaction(sig, &a, std::ptr::null_mut()); }
+unsafe fn reraise(sig: libc::c_int) { libc::signal(sig, libc::SIG_DFL); let mut m: libc::sigset_t = std::mem::zeroed(); libc::sigemptyset(&mut m); libc::sigaddset(&mut m, sig); libc::sigprocmask(libc::SIG_UNBLOCK, &m, std::ptr::null_mut()); libc::raise(sig); }
 extern "C" fn atexit_hook() { restore_signal_safe(); }
 extern "C" fn sig_handler(s: libc::c_int) { restore_signal_safe(); unsafe { reraise(s); } }
 extern "C" fn winsize_h(_: libc::c_int) { WINSIZE_CHANGED.store(1, Ordering::SeqCst); }

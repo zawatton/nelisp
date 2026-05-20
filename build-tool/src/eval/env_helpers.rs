@@ -56,10 +56,8 @@ impl Env {
         let trace = std::env::var_os("NELISP_EVAL_BOOT_TRACE").map_or(false, |v| !v.is_empty() && v != "0");
         for (name, source) in STDLIB_FILES {
             let forms = crate::reader::read_all(source).unwrap_or_else(|e| panic!("{name} eval-boot read failed: {e}"));
-            for (idx, form) in forms.iter().enumerate() {
-                if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
-                crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval-boot eval failed at form #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form)));
-            }
+            for (idx, form) in forms.iter().enumerate() { if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
+                crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval-boot eval failed at form #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form))); }
         }
         env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty());
         env.mirror_set_value("nelisp--unbound-marker", env.unbound_marker.clone()); env
@@ -108,15 +106,13 @@ impl Env {
     pub fn capture_lexical(&mut self) -> Sexp {
         let Sexp::Record(r) = &self.frames_record else { return Sexp::Nil };
         let Some(Sexp::Int(d)) = r.slots.get(1) else { return Sexp::Nil };
-        let d = *d;
-        let Ok(f) = self.lookup_function("nelisp-lexframe-stack-capture-to-depth") else { return Sexp::Nil };
+        let d = *d; let Ok(f) = self.lookup_function("nelisp-lexframe-stack-capture-to-depth") else { return Sexp::Nil };
         super::apply_function(&f, &[self.frames_record.clone(), Sexp::Int(d)], self).unwrap_or(Sexp::Nil)
     }
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let n = Env::wrap_alist_cells(alist)?;
         let Ok(f) = self.lookup_function("nelisp-lexframe-make-from-alist") else { return Ok(()) };
-        let frame = super::apply_function(&f, &[n], self)?;
-        unsafe { crate::elisp_cc_spike::frame_stack_install(&self.frames_record, &frame); } Ok(())
+        let frame = super::apply_function(&f, &[n], self)?; unsafe { crate::elisp_cc_spike::frame_stack_install(&self.frames_record, &frame); } Ok(())
     }
     fn with_mirror_symbol<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp) -> T) -> Option<T> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return None; }
@@ -125,9 +121,7 @@ impl Env {
     fn with_mirror_unbound<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp, *const Sexp) -> T) -> Option<T> {
         self.with_mirror_symbol(name, |m, s| f(m, s, &self.unbound_marker))
     }
-    fn mirror_mutate_with(&mut self, name: &str, payload: &Sexp, op: unsafe fn(*const Sexp, *const Sexp, *const Sexp, *const Sexp) -> i64) {
-        self.with_mirror_unbound(name, |m, s, u| unsafe { op(m, s, payload, u); });
-    }
+    fn mirror_mutate_with(&mut self, name: &str, payload: &Sexp, op: unsafe fn(*const Sexp, *const Sexp, *const Sexp, *const Sexp) -> i64) { self.with_mirror_unbound(name, |m, s, u| unsafe { op(m, s, payload, u); }); }
     mirror_op!(mutate: mirror_set_value => mirror_set_value_or_insert);
     mirror_op!(mutate: mirror_set_function => mirror_set_function_or_insert);
     pub fn install_empty_mirror_rust_direct(&mut self) {

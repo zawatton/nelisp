@@ -44,14 +44,10 @@ macro_rules! sexp_box_ptr_accessor {
     };
 }
 impl Sexp {
-    #[inline]
-    pub fn tag(&self) -> u8 { unsafe { *(self as *const Sexp as *const u8) } }
-    sexp_box_ptr_accessor!(cons_box_ptr,       crate::eval::nlconsbox::NlConsBox);
-    sexp_box_ptr_accessor!(cell_box_ptr,       crate::eval::nlcell::NlCell);
-    sexp_box_ptr_accessor!(mut_str_box_ptr,    crate::eval::nlstr::NlStr);
-    sexp_box_ptr_accessor!(vector_box_ptr,     crate::eval::nlvector::NlVector);
-    sexp_box_ptr_accessor!(bool_vector_box_ptr,crate::eval::nlboolvector::NlBoolVector);
-    sexp_box_ptr_accessor!(record_box_ptr,     crate::eval::nlrecord::NlRecord);
+    #[inline] pub fn tag(&self) -> u8 { unsafe { *(self as *const Sexp as *const u8) } }
+    sexp_box_ptr_accessor!(cons_box_ptr, crate::eval::nlconsbox::NlConsBox); sexp_box_ptr_accessor!(cell_box_ptr, crate::eval::nlcell::NlCell);
+    sexp_box_ptr_accessor!(mut_str_box_ptr, crate::eval::nlstr::NlStr); sexp_box_ptr_accessor!(vector_box_ptr, crate::eval::nlvector::NlVector);
+    sexp_box_ptr_accessor!(bool_vector_box_ptr, crate::eval::nlboolvector::NlBoolVector); sexp_box_ptr_accessor!(record_box_ptr, crate::eval::nlrecord::NlRecord);
     sexp_box_ptr_accessor!(char_table_box_ptr, crate::eval::nlchartable::NlCharTable);
 }
 const _: () = { use std::mem::size_of; use crate::eval::*;
@@ -64,11 +60,8 @@ pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) { 
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
 pub struct CharTableInner {
-    pub subtype: Sexp,
-    pub default_val: Sexp,
-    pub entries: Vec<(i64, Sexp)>,
-    pub parent: Option<NlCharTableRef>,
-    pub extra: Vec<Sexp>,
+    pub subtype: Sexp, pub default_val: Sexp,
+    pub entries: Vec<(i64, Sexp)>, pub parent: Option<NlCharTableRef>, pub extra: Vec<Sexp>,
 }
 impl Sexp {
     pub fn list_from(items: &[Sexp]) -> Sexp {

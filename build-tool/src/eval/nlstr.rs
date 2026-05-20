@@ -7,12 +7,8 @@ pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 { std::ptr::addr_of!(
 pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: *mut Sexp) -> i64 {
     let (Some(conv_ch), false) = (char::from_u32(conv), prec < 0) else { return 1 };
     let p = prec as usize;
-    let body = match conv_ch {
-        'f' | 'F' => format!("{:.*}", p, x),
-        'e' => format!("{:.*e}", p, x), 'E' => format!("{:.*E}", p, x),
-        'g' | 'G' => { let (f, e) = (format!("{:.*}", p, x), format!("{:.*e}", p, x)); if f.len() <= e.len() { f } else { e } }
-        _ => return 1,
-    };
+    let body = match conv_ch { 'f' | 'F' => format!("{:.*}", p, x), 'e' => format!("{:.*e}", p, x), 'E' => format!("{:.*E}", p, x),
+        'g' | 'G' => { let (f, e) = (format!("{:.*}", p, x), format!("{:.*e}", p, x)); if f.len() <= e.len() { f } else { e } } _ => return 1 };
     *out = Sexp::Str(body); 0
 }
 crate::define_nlbox!(
@@ -59,8 +55,6 @@ pub unsafe extern "C" fn nl_str_to_float(bytes_ptr: *const u8, len: i64, slot: *
 #[no_mangle]
 pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp) -> i64 {
     if !matches!(&*buf, Sexp::MutStr(_)) { return 1; }
-    let s = format!("{}", f64::from_bits(bits as u64));
-    let val = mut_str_val_mut!(buf); val.push_str(&s);
-    if !s.contains(['.', 'e', 'E']) && s != "inf" && s != "-inf" && s != "NaN" { val.push_str(".0"); }
-    0
+    let s = format!("{}", f64::from_bits(bits as u64)); let val = mut_str_val_mut!(buf); val.push_str(&s);
+    if !s.contains(['.', 'e', 'E']) && s != "inf" && s != "-inf" && s != "NaN" { val.push_str(".0"); } 0
 }
