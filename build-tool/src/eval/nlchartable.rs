@@ -25,13 +25,11 @@ fn ct_get(rc: &NlCharTableRef, c: i64) -> Sexp {
         .or_else(|| rc.inner.parent.as_ref().map(|parent| ct_get(parent, c)))
         .unwrap_or_else(|| rc.inner.default_val.clone())
 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_char_table_get_raw(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_char_table_get_raw(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
     *out = ct_get(r, idx); TRAMPOLINE_OK
 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_char_table_set_raw(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_char_table_set_raw(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64 {
     let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
     r.with_inner_mut(|i| ct_set(i, idx, (*val).clone())); *out = (*val).clone(); TRAMPOLINE_OK
 }

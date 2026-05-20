@@ -1,8 +1,7 @@
 use std::sync::atomic::AtomicI64;
 use crate::eval::sexp::Sexp;
 static MAKE_SYMBOL_COUNTER: AtomicI64 = AtomicI64::new(0);
-#[no_mangle]
-pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 { std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64 }
+#[no_mangle] pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 { std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64 }
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: *mut Sexp) -> i64 {
     let (Some(conv_ch), false) = (char::from_u32(conv), prec < 0) else { return 1 };
@@ -28,8 +27,7 @@ impl std::fmt::Debug for NlStrRef { fn fmt(&self, f: &mut std::fmt::Formatter<'_
 impl PartialEq for NlStrRef { fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.value == other.value } }
 macro_rules! mut_str_val_mut { ($p:expr) => { &mut (*((*$p).mut_str_box_ptr() as *mut NlStr)).value }; }
 #[no_mangle] pub extern "C" fn nl_is_char_alphanumeric(cp: i64) -> i64 { char::from_u32(cp as u32).map_or(0, |c| c.is_alphanumeric() as i64) }
-#[no_mangle]
-pub unsafe extern "C" fn nl_mut_str_set_codepoint_raw(arg: *const Sexp, idx: i64, val_cp: i64, out: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_mut_str_set_codepoint_raw(arg: *const Sexp, idx: i64, val_cp: i64, out: *mut Sexp) -> i64 {
     use crate::jit::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
     let rc = match &*arg { Sexp::MutStr(r) => r, _ => return TRAMPOLINE_ERR };
     let new_ch = match char::from_u32(val_cp as u32) { Some(c) => c, None => return TRAMPOLINE_ERR };
@@ -39,21 +37,18 @@ pub unsafe extern "C" fn nl_mut_str_set_codepoint_raw(arg: *const Sexp, idx: i64
     *out = Sexp::Int(val_cp); TRAMPOLINE_OK
 }
 #[no_mangle] pub unsafe extern "C" fn nl_mut_str_push_byte(mut_str_ptr: *mut Sexp, byte: i64) { mut_str_val_mut!(mut_str_ptr).as_mut_vec().push((byte & 0xFF) as u8); }
-#[no_mangle]
-pub unsafe extern "C" fn nl_mut_str_push_codepoint(mut_str_ptr: *mut Sexp, codepoint: i64) {
+#[no_mangle] pub unsafe extern "C" fn nl_mut_str_push_codepoint(mut_str_ptr: *mut Sexp, codepoint: i64) {
     let cp_u32 = if !(0..=0x10_FFFF).contains(&codepoint) { 0xFFFD } else { codepoint as u32 };
     mut_str_val_mut!(mut_str_ptr).push(char::from_u32(cp_u32).unwrap_or('\u{FFFD}'));
 }
 #[no_mangle] pub unsafe extern "C" fn nl_sexp_write_float(slot: *mut Sexp, val: f64) -> *mut Sexp { std::ptr::write(slot, Sexp::Float(val)); slot }
-#[no_mangle]
-pub unsafe extern "C" fn nl_str_to_float(bytes_ptr: *const u8, len: i64, slot: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_str_to_float(bytes_ptr: *const u8, len: i64, slot: *mut Sexp) -> i64 {
     let n = len.max(0) as usize;
     let slice = if n == 0 { &[] } else { std::slice::from_raw_parts(bytes_ptr, n) };
     match std::str::from_utf8_unchecked(slice).parse::<f64>() { Ok(f) => { std::ptr::write(slot, Sexp::Float(f)); 1 } Err(_) => { std::ptr::write(slot, Sexp::Nil); 0 } }
 }
 #[no_mangle] pub unsafe extern "C" fn nl_i64_append_to_mut_str(n: i64, buf: *mut Sexp) -> i64 { if matches!(&*buf, Sexp::MutStr(_)) { mut_str_val_mut!(buf).push_str(&n.to_string()); 0 } else { 1 } }
-#[no_mangle]
-pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp) -> i64 {
     if !matches!(&*buf, Sexp::MutStr(_)) { return 1; }
     let s = format!("{}", f64::from_bits(bits as u64)); let val = mut_str_val_mut!(buf); val.push_str(&s);
     if !s.contains(['.', 'e', 'E']) && s != "inf" && s != "-inf" && s != "NaN" { val.push_str(".0"); } 0

@@ -2,8 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 static QUIT_FLAG: AtomicI64 = AtomicI64::new(0);
 #[cfg(unix)]
 static SIGINT_INSTALLED: AtomicBool = AtomicBool::new(false);
-#[no_mangle]
-pub extern "C" fn nl_quit_flag_ptr() -> *mut i64 { QUIT_FLAG.as_ptr() }
+#[no_mangle] pub extern "C" fn nl_quit_flag_ptr() -> *mut i64 { QUIT_FLAG.as_ptr() }
 pub fn take_quit_flag() -> bool { QUIT_FLAG.swap(0, Ordering::SeqCst) != 0 }
 #[cfg(unix)]
 pub fn install_sigint_handler() {

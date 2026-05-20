@@ -21,5 +21,4 @@ impl PartialEq for NlCellRef {
 }
 #[allow(improper_ctypes)]
 extern "C" { pub fn nl_alloc_cell(initial: *const Sexp) -> *mut NlCell; }
-#[no_mangle]
-pub unsafe extern "C" fn nl_cell_set_value(cell: *mut NlCell, val: *const Sexp) { (*cell).set_value((*val).clone()); }
+#[no_mangle] pub unsafe extern "C" fn nl_cell_set_value(cell: *mut NlCell, val: *const Sexp) { (*cell).set_value((*val).clone()); }

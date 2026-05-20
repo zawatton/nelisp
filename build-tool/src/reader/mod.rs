@@ -2,12 +2,10 @@ mod error;
 pub use error::{ReadError, SourcePos};
 pub use crate::eval::sexp::{fmt_sexp, Sexp};
 use crate::elisp_cc_spike;
-
 const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
 const SCRATCH_CAP: i64 = 64;
 const NYI_MSG: &str = "feature unsupported by elisp Reader (record `#s(..)', byte-code `#[..]', or syntax error)";
 const START_POS: SourcePos = SourcePos { line: 1, col: 1 };
-
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
     let mut state = ElispReadState::new(input);
     let form = match state.parse_one_form() { Some(ElispParseOutcome::Form(f)) => f, Some(ElispParseOutcome::Empty) => return Err(ReadError::unexpected_eof("empty input", START_POS)), None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)) };
@@ -18,10 +16,8 @@ pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
     let mut state = ElispReadState::new(input); let mut forms = Vec::new();
     loop { match state.parse_one_form() { Some(ElispParseOutcome::Form(form)) => forms.push(form), Some(ElispParseOutcome::Empty) => return Ok(forms), None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)) } }
 }
-
 enum ElispParseOutcome { Form(Sexp), Empty }
 struct ElispReadState { src: Sexp, cursor_slot: Sexp, result_slot: Sexp, pool_slot: Sexp }
-
 impl ElispReadState {
     fn new(input: &str) -> Self {
         let mut slots = vec![Sexp::Nil; PARSER_POOL_SIZE];

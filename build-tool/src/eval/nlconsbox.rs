@@ -16,10 +16,8 @@ macro_rules! consbox_set_field {
         ::std::ptr::drop_in_place(p); ::std::ptr::write(p, $val);
     }};
 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_consbox_set_car(box_ptr: *mut NlConsBox, val: *const Sexp) { consbox_set_field!(box_ptr, car, (*val).clone()); }
-#[no_mangle]
-pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const Sexp) { consbox_set_field!(box_ptr, cdr, (*val).clone()); }
+#[no_mangle] pub unsafe extern "C" fn nl_consbox_set_car(box_ptr: *mut NlConsBox, val: *const Sexp) { consbox_set_field!(box_ptr, car, (*val).clone()); }
+#[no_mangle] pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const Sexp) { consbox_set_field!(box_ptr, cdr, (*val).clone()); }
 impl std::fmt::Debug for NlConsBoxRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("Cons").field(&self.car).field(&self.cdr).finish() }
 }

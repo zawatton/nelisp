@@ -82,16 +82,13 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
 unsafe fn eval_stash_err(env: &mut Env, result: Result<Sexp, EvalError>, out: *mut Sexp) -> i64 {
     match result { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { let _ = env.set_value("nelisp--last-signal-data", e.signal_data()); 1 } }
 }
-#[no_mangle]
-pub unsafe extern "C" fn nelisp_eval_call(form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nelisp_eval_call(form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let r = &mut *(env as *mut Env); let res = eval(&*form, r); eval_stash_err(r, res, out)
 }
-#[no_mangle]
-pub unsafe extern "C" fn nelisp_eval_call_with_err(form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, err_out: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nelisp_eval_call_with_err(form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, err_out: *mut Sexp) -> i64 {
     let r = &mut *(env as *mut Env); match eval(&*form, r) { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { std::ptr::write(err_out, e.signal_data()); 1 } }
 }
-#[no_mangle]
-pub unsafe extern "C" fn nelisp_apply_function(func: *const Sexp, args_list: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nelisp_apply_function(func: *const Sexp, args_list: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let r = &mut *(env as *mut Env); let res = apply_function(&*func, &list_elements(&*args_list).unwrap_or_default(), r); eval_stash_err(r, res, out)
 }
 pub(crate) fn consume_stashed_error(env: &mut Env, fallback: &str) -> EvalError {

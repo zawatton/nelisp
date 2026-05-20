@@ -17,5 +17,4 @@ impl std::fmt::Debug for NlRecordRef {
 impl PartialEq for NlRecordRef {
     fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || (self.type_tag == other.type_tag && self.slots == other.slots) }
 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_record_set_slot(record: *mut NlRecord, n: usize, val: *const Sexp) { (&mut (*record).slots)[n] = (*val).clone(); }
+#[no_mangle] pub unsafe extern "C" fn nl_record_set_slot(record: *mut NlRecord, n: usize, val: *const Sexp) { (&mut (*record).slots)[n] = (*val).clone(); }

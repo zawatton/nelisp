@@ -56,8 +56,10 @@ impl Env {
         let trace = std::env::var_os("NELISP_EVAL_BOOT_TRACE").map_or(false, |v| !v.is_empty() && v != "0");
         for (name, source) in STDLIB_FILES {
             let forms = crate::reader::read_all(source).unwrap_or_else(|e| panic!("{name} eval-boot read failed: {e}"));
-            for (idx, form) in forms.iter().enumerate() { if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
-                crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval-boot eval failed at form #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form))); }
+            for (idx, form) in forms.iter().enumerate() {
+                if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
+                crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval-boot eval failed at form #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form)));
+            }
         }
         env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty());
         env.mirror_set_value("nelisp--unbound-marker", env.unbound_marker.clone()); env

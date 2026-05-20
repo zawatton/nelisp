@@ -55,8 +55,7 @@ const _: () = { use std::mem::size_of; use crate::eval::*;
     assert!(size_of::<nlstr::NlStrRef>()==8); assert!(size_of::<nlvector::NlVectorRef>()==8);
     assert!(size_of::<nlboolvector::NlBoolVectorRef>()==8); assert!(size_of::<nlrecord::NlRecordRef>()==8);
     assert!(size_of::<nlchartable::NlCharTableRef>()==8); };
-#[no_mangle]
-pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) { core::ptr::write(dst, (*src).clone()); }
+#[no_mangle] pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) { core::ptr::write(dst, (*src).clone()); }
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
 pub struct CharTableInner {

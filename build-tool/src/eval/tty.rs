@@ -2,7 +2,6 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Once;
 use crate::eval::error::EvalError;
-
 static TERMIOS_SAVED: AtomicI64 = AtomicI64::new(0);
 static TTY_FD: AtomicI64 = AtomicI64::new(-1);
 static mut SAVED_TERMIOS: [u8; 60] = [0u8; 60];

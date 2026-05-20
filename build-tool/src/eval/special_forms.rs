@@ -30,8 +30,7 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
         _ => return Ok(None),
     }))
 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_let_setup(bindings_list: *const Sexp, env: *mut std::ffi::c_void, sequential: i64) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_let_setup(bindings_list: *const Sexp, env: *mut std::ffi::c_void, sequential: i64) -> i64 {
     fn parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
         match b {
             Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
@@ -58,8 +57,7 @@ pub unsafe extern "C" fn nl_let_setup(bindings_list: *const Sexp, env: *mut std:
 }
 #[no_mangle] pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 { (&mut *(env as *mut Env)).frame_pop_rust_direct(); 0 }
 #[no_mangle] pub unsafe extern "C" fn nl_env_push_captured(env: *mut std::ffi::c_void, alist_ptr: *const Sexp) -> i64 { match (&mut *(env as *mut Env)).push_captured(&*alist_ptr) { Ok(()) => 0, Err(_) => 1 } }
-#[no_mangle]
-pub unsafe extern "C" fn nl_cc_match_and_bind(clauses: *const Sexp, err_inout: *mut Sexp, var: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_cc_match_and_bind(clauses: *const Sexp, err_inout: *mut Sexp, var: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
     let e = &mut *(env as *mut Env); let err = (*err_inout).clone();
     let actual_tag = match &err { Sexp::Cons(b) => match &b.car { Sexp::Symbol(s) => s.clone(), _ => return 1 }, _ => return 1 };
     let mut cur = &*clauses;
@@ -83,8 +81,7 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(clauses: *const Sexp, err_inout: *
 #[no_mangle] pub unsafe extern "C" fn nl_bf_bind_sym(env: *mut std::ffi::c_void, name_ptr: *const Sexp, val_ptr: *const Sexp) -> i64 {
     if let Sexp::Symbol(name) = &*name_ptr { (&mut *(env as *mut Env)).bind_local(name, (*val_ptr).clone()); } 0
 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_bf_bind_optional(env: *mut std::ffi::c_void, name_ptr: *const Sexp, args_ptr: *const Sexp, idx: i64) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_bf_bind_optional(env: *mut std::ffi::c_void, name_ptr: *const Sexp, args_ptr: *const Sexp, idx: i64) -> i64 {
     let e = &mut *(env as *mut Env);
     let Sexp::Symbol(name) = &*name_ptr else { return idx };
     let args = match super::list_elements(&*args_ptr) { Ok(v) => v, Err(_) => { e.bind_local(name, Sexp::Nil); return idx; } };
@@ -97,8 +94,7 @@ macro_rules! stash_err {
 #[no_mangle] pub unsafe extern "C" fn nl_bf_err_arity(env: *mut std::ffi::c_void, required: i64, got: i64) -> i64 { stash_err!(env, EvalError::wrong_arity("lambda", required.to_string(), got as usize)) }
 #[no_mangle] pub unsafe extern "C" fn nl_bf_err_type(env: *mut std::ffi::c_void, name_ptr: *const Sexp) -> i64 { stash_err!(env, EvalError::wrong_type("symbol", (*name_ptr).clone())) }
 #[no_mangle] pub unsafe extern "C" fn nl_bf_err_dangling_rest(env: *mut std::ffi::c_void) -> i64 { stash_err!(env, EvalError::wrong_type("symbol after &rest", Sexp::Symbol("&rest".into()))) }
-#[no_mangle]
-pub unsafe extern "C" fn nl_bf_bind_rest(env: *mut std::ffi::c_void, name_ptr: *const Sexp, args_ptr: *const Sexp, idx: i64) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_bf_bind_rest(env: *mut std::ffi::c_void, name_ptr: *const Sexp, args_ptr: *const Sexp, idx: i64) -> i64 {
     let e = &mut *(env as *mut Env); let Sexp::Symbol(name) = &*name_ptr else { return 0 };
     let args = match super::list_elements(&*args_ptr) { Ok(v) => v, Err(_) => { e.bind_local(name, Sexp::Nil); return 0; } };
     e.bind_local(name, Sexp::list_from(&args[(idx as usize).min(args.len())..])); 0
@@ -120,8 +116,7 @@ pub unsafe extern "C" fn nl_bf_bind_rest(env: *mut std::ffi::c_void, name_ptr: *
     match e.lookup_value(n) { Ok(v) => { std::ptr::write(out, v); 0 } Err(er) => { let _ = e.set_value("nelisp--last-signal-data", er.signal_data()); 1 } }
 }
 #[no_mangle] pub unsafe extern "C" fn nl_cell_get_value(cell_ptr: *const Sexp, out: *mut Sexp) -> i64 { match &*cell_ptr { Sexp::Cell(c) => { std::ptr::write(out, c.value.clone()); 0 } _ => 1 } }
-#[no_mangle]
-pub unsafe extern "C" fn nl_eval_inner_cons(head_ptr: *const Sexp, tail_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_eval_inner_cons(head_ptr: *const Sexp, tail_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let e = &mut *(env as *mut Env);
     macro_rules! tri { ($x:expr) => { match $x { Ok(v)=>v, Err(er)=>{ let _=e.set_value("nelisp--last-signal-data",er.signal_data()); return 1; } } }; }
     macro_rules! put { ($v:expr) => {{ std::ptr::write(out,$v); return 0; }}; }
