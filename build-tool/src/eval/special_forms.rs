@@ -126,7 +126,6 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
     1
 }
 
-// nl_bf_* — bind_formals_impl helpers (nelisp-cc-bind-formals.el).
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_bind_sym(
     env: *mut std::ffi::c_void, name_ptr: *const Sexp, val_ptr: *const Sexp,

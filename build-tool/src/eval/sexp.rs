@@ -64,7 +64,6 @@ impl Sexp {
     sexp_box_ptr_accessor!(char_table_box_ptr, crate::eval::nlchartable::NlCharTable);
 }
 
-// Every NlXxxRef must stay pointer-sized so payload remains at offset 8.
 const _: () = { use std::mem::size_of;
     assert!(size_of::<crate::eval::nlconsbox::NlConsBoxRef>() == 8);
     assert!(size_of::<crate::eval::nlcell::NlCellRef>() == 8);
@@ -118,8 +117,6 @@ impl Sexp {
     }
 }
 
-// ABI export table — used by `sexp-abi-emit' binary and `make sexp-abi-check'.
-// Mirrors `nelisp-sexp--abi-export' in `lisp/nelisp-sexp-layout.el'.
 const NLREC_SLOTS: usize = std::mem::offset_of!(NlRecord, slots);
 const NLVEC_VALUE: usize = std::mem::offset_of!(NlVector, value);
 
@@ -169,10 +166,7 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
 pub fn fmt_sexp(s: &Sexp) -> String {
     let mut slot = Sexp::Nil;
     unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) };
-    match slot {
-        Sexp::Str(text) => text,
-        _ => String::from("<fmt_sexp:error>"),
-    }
+    match slot { Sexp::Str(text) => text, _ => String::from("<fmt_sexp:error>") }
 }
 
 impl fmt::Display for Sexp {

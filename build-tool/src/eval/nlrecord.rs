@@ -10,9 +10,7 @@ crate::define_nlbox!(
         use ::std::mem::{offset_of, size_of};
         assert!(offset_of!(NlRecord, type_tag) == 0);
         assert!(offset_of!(NlRecord, slots) == size_of::<Sexp>());
-        assert!(
-            offset_of!(NlRecord, refcount) == size_of::<Sexp>() + size_of::<Vec<Sexp>>()
-        );
+        assert!(offset_of!(NlRecord, refcount) == size_of::<Sexp>() + size_of::<Vec<Sexp>>());
         assert!(size_of::<AtomicUsize>() == 8);
     }
 );
@@ -24,10 +22,7 @@ impl NlRecord {
 
 impl std::fmt::Debug for NlRecordRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Record")
-            .field("type_tag", &self.type_tag)
-            .field("slots", &self.slots)
-            .finish()
+        f.debug_struct("Record").field("type_tag", &self.type_tag).field("slots", &self.slots).finish()
     }
 }
 
@@ -42,4 +37,3 @@ pub unsafe extern "C" fn nl_record_set_slot(record: *mut NlRecord, n: usize, val
     (&mut (*record).slots)[n] = (*val).clone();
 }
 
-// nl_alloc_record body migrated to lisp/nelisp-cc-nlrecord-alloc.el (Phase 47 .o).

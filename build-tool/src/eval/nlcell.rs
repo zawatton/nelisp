@@ -22,10 +22,7 @@ impl NlCell {
 impl NlCellRef {
     #[doc(hidden)]
     pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef {
-        NlCellRef {
-            ptr: ::std::ptr::NonNull::new(raw).expect("from_raw_ptr: null pointer"),
-            _marker: ::std::marker::PhantomData,
-        }
+        NlCellRef { ptr: ::std::ptr::NonNull::new(raw).expect("from_raw_ptr: null pointer"), _marker: ::std::marker::PhantomData }
     }
 }
 
@@ -41,7 +38,6 @@ impl PartialEq for NlCellRef {
     }
 }
 
-// nl_alloc_cell body migrated to lisp/nelisp-cc-nlcell-alloc.el (Phase 47 .o).
 #[allow(improper_ctypes)]
 extern "C" { pub fn nl_alloc_cell(initial: *const Sexp) -> *mut NlCell; }
 

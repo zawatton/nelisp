@@ -78,8 +78,6 @@ mod tests {
 
     #[test]
     fn primitive_capture_lexical_at_top_level_is_nil() {
-        // Doc 102 Phase 2.c: call Rust primitive directly (OP-tag form),
-        // bypassing the elisp wrapper which would push an extra frame.
         assert_nil(eval_str("(nelisp--env-globals-op 'capture-lexical)").unwrap());
     }
 

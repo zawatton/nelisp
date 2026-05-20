@@ -23,7 +23,7 @@ pub fn install_sigint_handler() {
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_flags = libc::SA_RESTART; // restart interrupted read/poll
+            sa.sa_flags = libc::SA_RESTART;
             libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
         }
         SIGINT_INSTALLED.store(true, Ordering::SeqCst);
@@ -31,7 +31,7 @@ pub fn install_sigint_handler() {
 }
 
 #[cfg(not(unix))]
-pub fn install_sigint_handler() {} // no-op: Windows not yet wired
+pub fn install_sigint_handler() {}
 
 #[cfg(unix)]
 pub fn sigint_handler_installed_p() -> bool { SIGINT_INSTALLED.load(Ordering::SeqCst) }

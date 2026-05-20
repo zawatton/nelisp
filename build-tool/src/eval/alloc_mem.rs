@@ -13,11 +13,7 @@ pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
-    if !ptr.is_null() {
-        if let Some(l) = nl_layout(size, align) {
-            unsafe { alloc::dealloc(ptr, l) };
-        }
-    }
+    if !ptr.is_null() { if let Some(l) = nl_layout(size, align) { unsafe { alloc::dealloc(ptr, l) }; } }
 }
 
 #[cfg(test)]
@@ -35,7 +31,6 @@ mod tests {
 
     #[test]
     fn alloc_bytes_rejects_bad_alignment() {
-        // 3 is not a power of two — `Layout::from_size_align' rejects.
         let ptr = unsafe { nl_alloc_bytes(32, 3) };
         assert!(ptr.is_null(), "alloc-bytes must reject non-pow2 align");
         assert!(unsafe { nl_alloc_bytes(0, 8) }.is_null());
@@ -52,11 +47,7 @@ mod tests {
     fn alloc_bytes_16_byte_aligned() {
         let ptr = unsafe { nl_alloc_bytes(128, 16) };
         assert!(!ptr.is_null());
-        assert_eq!(
-            (ptr as usize) & 0xF,
-            0,
-            "alloc-bytes(_, 16) must return 16-byte aligned pointer"
-        );
+        assert_eq!((ptr as usize) & 0xF, 0, "alloc-bytes(_, 16) must return 16-byte aligned pointer");
         unsafe { nl_dealloc_bytes(ptr, 128, 16) };
     }
 }

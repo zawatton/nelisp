@@ -165,12 +165,9 @@ impl Env {
     }
 
     pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
-    where
-        F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,
-    {
+    where F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static {
         self.extern_builtins.insert(name.to_string(), Rc::new(f));
-        let sentinel =
-            Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol(name.into())]);
+        let sentinel = Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol(name.into())]);
         self.mirror_set_function(name, sentinel);
     }
 
@@ -231,32 +228,16 @@ impl Env {
 }
 
 impl Env {
-    fn with_mirror_symbol<T>(
-        &self,
-        name: &str,
-        f: impl FnOnce(*const Sexp, *const Sexp) -> T,
-    ) -> Option<T> {
+    fn with_mirror_symbol<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp) -> T) -> Option<T> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return None; }
-        let sym = Sexp::Symbol(name.into());
-        Some(f(&self.globals_record, &sym))
+        let sym = Sexp::Symbol(name.into()); Some(f(&self.globals_record, &sym))
     }
 
-    fn with_mirror_unbound<T>(
-        &self,
-        name: &str,
-        f: impl FnOnce(*const Sexp, *const Sexp, *const Sexp) -> T,
-    ) -> Option<T> {
-        self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| {
-            f(mirror_ptr, sym_ptr, &self.unbound_marker)
-        })
+    fn with_mirror_unbound<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp, *const Sexp) -> T) -> Option<T> {
+        self.with_mirror_symbol(name, |m, s| f(m, s, &self.unbound_marker))
     }
 
-    fn mirror_mutate_with(
-        &mut self,
-        name: &str,
-        payload: &Sexp,
-        op: unsafe fn(*const Sexp, *const Sexp, *const Sexp, *const Sexp) -> i64,
-    ) {
+    fn mirror_mutate_with(&mut self, name: &str, payload: &Sexp, op: unsafe fn(*const Sexp, *const Sexp, *const Sexp, *const Sexp) -> i64) {
         self.with_mirror_unbound(name, |m, s, u| unsafe { op(m, s, payload, u); });
     }
 

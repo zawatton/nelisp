@@ -91,72 +91,39 @@ impl ElispReadState {
     }
 
     fn lex_peek_advancing(&mut self) -> i64 {
+        let cursor = self.cursor();
         unsafe {
             let pool_ptr = &self.pool_slot as *const Sexp;
             let scratch_ptr = vector_slot_ptr(pool_ptr, 0) as *mut Sexp;
+            let payload_ptr = vector_slot_ptr(pool_ptr, 1) as *mut Sexp;
+            let cursor_out_ptr = &mut self.cursor_slot as *mut Sexp;
             elisp_cc_spike::mut_str_make_empty(scratch_ptr, SCRATCH_CAP);
-        }
-        let cursor = self.cursor();
-        let payload_ptr;
-        let scratch_ptr;
-        let cursor_out_ptr;
-        unsafe {
-            let pool_ptr = &self.pool_slot as *const Sexp;
-            payload_ptr = vector_slot_ptr(pool_ptr, 1) as *mut Sexp;
-            scratch_ptr = vector_slot_ptr(pool_ptr, 0) as *mut Sexp;
-            cursor_out_ptr = &mut self.cursor_slot as *mut Sexp;
-        }
-        unsafe {
-            elisp_cc_spike::reader_lex_one(
-                &self.src as *const Sexp,
-                cursor,
-                payload_ptr,
-                cursor_out_ptr,
-                scratch_ptr,
-            )
+            elisp_cc_spike::reader_lex_one(&self.src as *const Sexp, cursor, payload_ptr, cursor_out_ptr, scratch_ptr)
         }
     }
 
     fn at_eof_after_skip(&mut self) -> bool {
         let saved = self.cursor();
         let kind = self.lex_peek_advancing();
-        if kind == 0 {
-            true
-        } else {
-            self.cursor_slot = Sexp::Int(saved);
-            false
-        }
+        if kind != 0 { self.cursor_slot = Sexp::Int(saved); false } else { true }
     }
 
     fn parse_one_form(&mut self) -> Option<ElispParseOutcome> {
-        if self.at_eof_after_skip() {
-            return Some(ElispParseOutcome::Empty);
-        }
-        // Drop the previous result normally — cons-make-with-clone in the .o
-        // bumped inner-box refcounts so Drop decrements them correctly.
+        if self.at_eof_after_skip() { return Some(ElispParseOutcome::Empty); }
         self.result_slot = Sexp::Nil;
         let status = unsafe {
             elisp_cc_spike::reader_parse_one(
-                &self.src as *const Sexp,
-                &mut self.cursor_slot as *mut Sexp,
-                &mut self.result_slot as *mut Sexp,
-                &self.pool_slot as *const Sexp,
-                0,
+                &self.src as *const Sexp, &mut self.cursor_slot as *mut Sexp,
+                &mut self.result_slot as *mut Sexp, &self.pool_slot as *const Sexp, 0,
             )
         };
-        if status != 1 {
-            return None;
-        }
-        let result = std::mem::replace(&mut self.result_slot, Sexp::Nil);
-        Some(ElispParseOutcome::Form(result))
+        if status != 1 { return None; }
+        Some(ElispParseOutcome::Form(std::mem::replace(&mut self.result_slot, Sexp::Nil)))
     }
 
     fn has_trailing_token(&mut self) -> bool {
-        let saved = self.cursor();
-        let kind = self.lex_peek_advancing();
-        let trailing = kind != 0;
-        self.cursor_slot = Sexp::Int(saved);
-        trailing
+        let saved = self.cursor(); let kind = self.lex_peek_advancing();
+        self.cursor_slot = Sexp::Int(saved); kind != 0
     }
 }
 

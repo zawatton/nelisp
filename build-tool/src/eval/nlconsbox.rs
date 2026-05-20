@@ -38,15 +38,13 @@ impl NlConsBoxRef {
     }
 
     pub unsafe fn set_car(&self, val: Sexp) {
-        let car_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).car);
-        std::ptr::drop_in_place(car_ptr);
-        std::ptr::write(car_ptr, val);
+        let p = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).car);
+        std::ptr::drop_in_place(p); std::ptr::write(p, val);
     }
 
     pub unsafe fn set_cdr(&self, val: Sexp) {
-        let cdr_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).cdr);
-        std::ptr::drop_in_place(cdr_ptr);
-        std::ptr::write(cdr_ptr, val);
+        let p = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).cdr);
+        std::ptr::drop_in_place(p); std::ptr::write(p, val);
     }
 
     #[doc(hidden)]

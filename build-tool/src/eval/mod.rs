@@ -127,8 +127,6 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
             };
             builtins::dispatch(&name, args, env)
         }
-        // closure: (closure CAPTURED FORMALS BODY...) / lambda: (lambda FORMALS BODY...)
-        // Both delegate to nl_apply_lambda_inner Phase 47 elisp .o.
         head @ ("closure" | "lambda") => {
             let parts = list_elements(func)?;
             let (captured, formals_idx, body_start) = if head == "closure" {
@@ -157,45 +155,22 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nelisp_eval_call(
-    form: *const Sexp,
-    env: *mut std::ffi::c_void,
-    out: *mut Sexp,
-) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    match eval(&*form, env_ref) {
-        Ok(v) => { std::ptr::write(out, v); 0 }
-        Err(e) => { let _ = env_ref.set_value("nelisp--last-signal-data", e.signal_data()); 1 }
-    }
+pub unsafe extern "C" fn nelisp_eval_call(form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
+    let r = &mut *(env as *mut Env);
+    match eval(&*form, r) { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { let _ = r.set_value("nelisp--last-signal-data", e.signal_data()); 1 } }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nelisp_eval_call_with_err(
-    form: *const Sexp,
-    env: *mut std::ffi::c_void,
-    out: *mut Sexp,
-    err_out: *mut Sexp,
-) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    match eval(&*form, env_ref) {
-        Ok(v) => { std::ptr::write(out, v); 0 }
-        Err(e) => { std::ptr::write(err_out, e.signal_data()); 1 }
-    }
+pub unsafe extern "C" fn nelisp_eval_call_with_err(form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, err_out: *mut Sexp) -> i64 {
+    let r = &mut *(env as *mut Env);
+    match eval(&*form, r) { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { std::ptr::write(err_out, e.signal_data()); 1 } }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nelisp_apply_function(
-    func: *const Sexp,
-    args_list: *const Sexp,
-    env: *mut std::ffi::c_void,
-    out: *mut Sexp,
-) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
+pub unsafe extern "C" fn nelisp_apply_function(func: *const Sexp, args_list: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
+    let r = &mut *(env as *mut Env);
     let args = list_elements(&*args_list).unwrap_or_default();
-    match apply_function(&*func, &args, env_ref) {
-        Ok(v) => { std::ptr::write(out, v); 0 }
-        Err(e) => { let _ = env_ref.set_value("nelisp--last-signal-data", e.signal_data()); 1 }
-    }
+    match apply_function(&*func, &args, r) { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { let _ = r.set_value("nelisp--last-signal-data", e.signal_data()); 1 } }
 }
 
 pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fb: &str) -> EvalError {

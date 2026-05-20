@@ -15,7 +15,6 @@ pub mod elisp_cc_spike {
         };
     }
 
-    // Sexp is #[repr(C, u8)]; elisp touches tag + payload only.
     #[allow(improper_ctypes)]
     extern "C" {
         fn nelisp_spike_noop() -> i64;
@@ -46,7 +45,6 @@ pub mod elisp_cc_spike {
         fn nelisp_bi_syscall_read_file(path_ptr: *const Sexp, buf_ptr: *mut u8,
             read_size: i64) -> i64;
         fn nelisp_bi_syscall_resolve_nr(sym_ptr: *const Sexp) -> i64;
-        // nl_alloc_* — pin archive members so PLT refs in other .o files resolve.
         fn nl_alloc_consbox() -> *mut u8;
         fn nl_alloc_cell(initial: *const u8) -> *mut u8;
         fn nl_alloc_vector(capacity: i64) -> *mut u8;
@@ -130,15 +128,12 @@ pub mod elisp_cc_spike {
             env: *mut std::ffi::c_void, _pad: i64) -> i64;
         fn nl_eval_inner(form: *const Sexp, env: *mut std::ffi::c_void,
             out: *mut Sexp, _pad: i64) -> i64;
-        // Doc 122 §122.J — sexp.rs formatter chain elisp化.
         fn nelisp_fmt_sexp(s: *const Sexp, slot: *mut Sexp) -> i64;
-        // Doc 86 §86.4 — 7-arm OP dispatcher (get/is/clear); returns i64
-        // result code (1=hit, 0=unbound-var, -1=unbound-fn, -2=Rust handles).
         fn nelisp_env_shim_op(op_ptr: *const Sexp, mirror_ptr: *const Sexp,
             sym_ptr: *const Sexp, unbound_ptr: *const Sexp,
             result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64;
-        fn nl_bi_f64_trunc_impl(mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64; // Doc 118
-        fn nelisp_wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp, work_slot: *mut Sexp, name_slot: *mut Sexp, cell_slot: *mut Sexp, inner_slot: *mut Sexp) -> i64; // Doc 115 §115.4
+        fn nl_bi_f64_trunc_impl(mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64;
+        fn nelisp_wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp, work_slot: *mut Sexp, name_slot: *mut Sexp, cell_slot: *mut Sexp, inner_slot: *mut Sexp) -> i64;
         fn nelisp_env_lookup_value(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64;
         fn nelisp_env_set_value(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
         fn nelisp_env_lookup_function(mirror_ptr: *const Sexp, unbound_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64;
@@ -228,9 +223,9 @@ pub mod elisp_cc_spike {
         constant: Sexp,
     ) -> Sexp {
         Sexp::vector(vec![
-            Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, // 0-4: scratch
-            Sexp::Symbol("symbol-entry".into()), // 5: type tag
-            Sexp::Nil, value, function, plist, constant, // 6: entry, 7-10: payload
+            Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil,
+            Sexp::Symbol("symbol-entry".into()),
+            Sexp::Nil, value, function, plist, constant,
         ])
     }
 
@@ -306,9 +301,8 @@ pub mod elisp_cc_spike {
     }
     pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 {
         let s = Sexp::vector(vec![
-            Sexp::Symbol("nelisp-lexframe".into()),   // 0: frame type-tag
-            Sexp::Symbol("fast-hash-table".into()),   // 1: ht type-tag
-            Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, // 2-6: scratch
+            Sexp::Symbol("nelisp-lexframe".into()), Sexp::Symbol("fast-hash-table".into()),
+            Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil,
         ]);
         nelisp_frame_push(frames_ptr, &s as *const Sexp)
     }

@@ -32,8 +32,6 @@ impl PartialEq for NlVectorRef {
     }
 }
 
-// nl_alloc_vector body migrated to lisp/nelisp-cc-nlvector-alloc.el (Phase 47 .o).
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_vector_set_slot(vec_ptr: *mut NlVector, n: i64, val: *const Sexp) {
     (&mut (*vec_ptr).value)[n as usize] = (*val).clone();
