@@ -386,6 +386,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-bf-formal-tag.el",
         // Phase 47 — nl_bf_args_nth_ptr (11-LOC Rust → elisp, special_forms.rs).
         "nelisp-cc-bf-args-nth-ptr.el",
+        // Wave j — nl_bf_precompute (19-LOC Rust → elisp, special_forms.rs).
+        // Counts required formals + total args; packs into initial state word.
+        "nelisp-cc-bf-precompute.el",
         // Phase 47 Tier-C — bind_formals_impl Stage 1 parallel implementation.
         // nl_bind_formals_impl implements Required/Optional/Rest formals binding
         // in elisp.  Stage 2 will rewire nl_bind_formals/nl_push_and_bind.

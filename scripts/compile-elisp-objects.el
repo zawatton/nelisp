@@ -1175,6 +1175,14 @@
      :source-var nelisp-cc-bf-args-nth-ptr--source
      :output "nl_bf_args_nth_ptr.o"
      :requires-arch x86_64)
+    ;; Wave j — `nl_bf_precompute' Rust body (19 LOC) → Phase 47 elisp.
+    ;; CPS chain: counts required formals (stopping at &optional/&rest),
+    ;; counts total args, packs as (req << 36) | (args_len << 20).
+    ;; Uses nl_bf_formal_tag extern.  Called from nl_bind_formals_impl.o.
+    (nelisp-cc-bf-precompute
+     :source-var nelisp-cc-bf-precompute--source
+     :output "nl_bf_precompute.o"
+     :requires-arch x86_64)
     ;; Phase 47 Tier-C — `bind_formals_impl' Stage 1 parallel implementation.
     ;; `nl_bind_formals_impl' implements the full Required/Optional/Rest state
     ;; machine in elisp.  Stage 2 will rewire `nl_bind_formals' / `nl_push_and_bind'

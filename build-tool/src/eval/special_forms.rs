@@ -202,35 +202,8 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
 /// `lisp/nelisp-cc-bind-formals.el' (Stage 1 parallel implementation).
 /// They provide the primitive operations needed by the elisp CPS chain.
 ///
-/// `nl_bf_precompute(formals, args) -> i64`
-/// Returns the initial `state' word for the `nl_bind_formals_impl' CPS
-/// chain.  State layout (packed i64):
-///   bits 0-3:    mode=0, saw-rest=0, consumed-rest=0  (all zero initially)
-///   bits 4-19:   idx=0                                (all zero initially)
-///   bits 20-35:  args_len (clamped to 16 bits)
-///   bits 36+:    required (clamped to 16 bits)
-///
-/// Both counts are clamped to 0xFFFF; real Lisp functions never approach
-/// that limit.
-#[no_mangle]
-pub unsafe extern "C" fn nl_bf_precompute(formals_ptr: *const Sexp, args_ptr: *const Sexp) -> i64 {
-    let names = match super::list_elements(&*formals_ptr) {
-        Ok(v) => v,
-        Err(_) => return 0,
-    };
-    let args_len = match super::list_elements(&*args_ptr) {
-        Ok(v) => v.len(),
-        Err(_) => return 0,
-    };
-    let required = names
-        .iter()
-        .take_while(|f| !matches!(f, Sexp::Symbol(s) if s == "&optional" || s == "&rest"))
-        .count();
-    let required_clamped = required.min(0xFFFF) as i64;
-    let args_len_clamped = args_len.min(0xFFFF) as i64;
-    // bits 20-35 = args_len, bits 36+ = required, bits 0-19 = 0 (mode/idx/flags)
-    (args_len_clamped << 20) | (required_clamped << 36)
-}
+// nl_bf_precompute body migrated to Phase 47 elisp:
+// lisp/nelisp-cc-bf-precompute.el (Wave j).
 
 /// `nl_bf_bind_sym(env, name_ptr, val_ptr) -> i64`
 /// Calls `env.bind_local(name, val.clone())'.  `name_ptr' must point to a
