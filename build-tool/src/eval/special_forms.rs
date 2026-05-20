@@ -37,24 +37,22 @@ pub unsafe extern "C" fn nl_let_setup(bindings_list: *const Sexp, env: *mut std:
             Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
             Sexp::Cons(_) => {
                 let parts = list_elements(b)?;
-                let name = match &parts[0] { Sexp::Symbol(s) => s.clone(), other => return Err(EvalError::wrong_type("symbol", other.clone())) };
+                let name = match &parts[0] { Sexp::Symbol(s) => s.clone(), o => return Err(EvalError::wrong_type("symbol", o.clone())) };
                 Ok((name, if parts.len() >= 2 { eval(&parts[1], env)? } else { Sexp::Nil }))
             }
-            other => Err(EvalError::wrong_type("symbol or (symbol value) pair", other.clone())),
+            o => Err(EvalError::wrong_type("symbol or (symbol value) pair", o.clone())),
         }
     }
-    let env_ref = &mut *(env as *mut Env);
+    let e = &mut *(env as *mut Env);
     let bindings = match list_elements(&*bindings_list) { Ok(b) => b, Err(_) => return 1 };
     if sequential != 0 {
-        env_ref.frame_push_rust_direct();
-        for b in &bindings {
-            match parse_binding(b, env_ref) { Ok((n, v)) => env_ref.bind_local(&n, v), Err(_) => { env_ref.frame_pop_rust_direct(); return 1; } }
-        }
+        e.frame_push_rust_direct();
+        for b in &bindings { match parse_binding(b, e) { Ok((n, v)) => e.bind_local(&n, v), Err(_) => { e.frame_pop_rust_direct(); return 1; } } }
     } else {
         let mut values = Vec::with_capacity(bindings.len());
-        for b in &bindings { match parse_binding(b, env_ref) { Ok(pair) => values.push(pair), Err(_) => return 1 } }
-        env_ref.frame_push_rust_direct();
-        for (name, val) in values { env_ref.bind_local(&name, val); }
+        for b in &bindings { match parse_binding(b, e) { Ok(pair) => values.push(pair), Err(_) => return 1 } }
+        e.frame_push_rust_direct();
+        for (name, val) in values { e.bind_local(&name, val); }
     }
     0
 }
@@ -64,27 +62,26 @@ pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 { (
 pub unsafe extern "C" fn nl_env_push_captured(env: *mut std::ffi::c_void, alist_ptr: *const Sexp) -> i64 { match (&mut *(env as *mut Env)).push_captured(&*alist_ptr) { Ok(()) => 0, Err(_) => 1 } }
 #[no_mangle]
 pub unsafe extern "C" fn nl_cc_match_and_bind(clauses: *const Sexp, err_inout: *mut Sexp, var: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    let err_owned = (*err_inout).clone();
-    let actual_tag = match &err_owned { Sexp::Cons(b) => match &b.car { Sexp::Symbol(s) => s.clone(), _ => return 1 }, _ => return 1 };
+    let e = &mut *(env as *mut Env);
+    let err = (*err_inout).clone();
+    let actual_tag = match &err { Sexp::Cons(b) => match &b.car { Sexp::Symbol(s) => s.clone(), _ => return 1 }, _ => return 1 };
     let mut cur = &*clauses;
     while let Sexp::Cons(cc) = cur {
         if let Sexp::Cons(cb) = &cc.car {
             let m = match &cb.car {
-                Sexp::Symbol(s) => is_error_subtype(s, &actual_tag),
-                Sexp::T => true,
-                Sexp::Cons(_) => list_elements(&cb.car).ok().map_or(false, |elts| elts.iter().any(|t| matches!(t, Sexp::Symbol(s) if is_error_subtype(s, &actual_tag)))),
+                Sexp::Symbol(s) => is_error_subtype(s, &actual_tag), Sexp::T => true,
+                Sexp::Cons(_) => list_elements(&cb.car).ok().map_or(false, |el| el.iter().any(|t| matches!(t, Sexp::Symbol(s) if is_error_subtype(s, &actual_tag)))),
                 _ => false,
             };
             if m {
-                env_ref.frame_push_rust_direct();
-                if let Sexp::Symbol(name) = &*var { if name != "nil" { env_ref.bind_local(name, err_owned.clone()); } }
+                e.frame_push_rust_direct();
+                if let Sexp::Symbol(name) = &*var { if name != "nil" { e.bind_local(name, err.clone()); } }
                 std::ptr::write(err_inout, cb.cdr.clone()); return 0;
             }
         }
         cur = &cc.cdr;
     }
-    let _ = env_ref.set_value("nelisp--last-signal-data", err_owned); 1
+    let _ = e.set_value("nelisp--last-signal-data", err); 1
 }
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_bind_sym(env: *mut std::ffi::c_void, name_ptr: *const Sexp, val_ptr: *const Sexp) -> i64 {
@@ -95,8 +92,7 @@ pub unsafe extern "C" fn nl_bf_bind_optional(env: *mut std::ffi::c_void, name_pt
     let e = &mut *(env as *mut Env);
     if let Sexp::Symbol(name) = &*name_ptr {
         let args = match super::list_elements(&*args_ptr) { Ok(v) => v, Err(_) => { e.bind_local(name, Sexp::Nil); return idx; } };
-        let i = idx as usize;
-        e.bind_local(name, args.get(i).cloned().unwrap_or(Sexp::Nil));
+        let i = idx as usize; e.bind_local(name, args.get(i).cloned().unwrap_or(Sexp::Nil));
         return if i < args.len() { idx + 1 } else { idx };
     }
     idx
@@ -116,8 +112,7 @@ pub unsafe extern "C" fn nl_bf_bind_rest(env: *mut std::ffi::c_void, name_ptr: *
     if let Sexp::Symbol(name) = &*name_ptr {
         let args = match super::list_elements(&*args_ptr) { Ok(v) => v, Err(_) => { e.bind_local(name, Sexp::Nil); return 0; } };
         e.bind_local(name, Sexp::list_from(&args[(idx as usize).min(args.len())..]));
-    }
-    0
+    } 0
 }
 #[no_mangle]
 pub unsafe extern "C" fn nl_push_and_bind(formals_ptr: *const Sexp, args_list_ptr: *const Sexp, env: *mut std::ffi::c_void) -> i64 {

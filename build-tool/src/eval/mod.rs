@@ -20,7 +20,7 @@ pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 fn expect_single_form(forms: Vec<Sexp>, ctx: &str) -> Result<Sexp, EvalError> {
     match forms.as_slice() {
-        [single] => Ok(single.clone()),
+        [s] => Ok(s.clone()),
         [] => Err(EvalError::internal(format!("{ctx}: empty input - at least one form required"))),
         _ => Err(EvalError::internal(format!("{ctx}: expected exactly one form, got {}", forms.len()))),
     }
@@ -40,8 +40,8 @@ pub fn eval_str(input: &str) -> Result<Sexp, EvalError> {
 pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> { let mut env = Env::new_global(); eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env) }
 pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
-    let raw_dir = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
-    let dir = if raw_dir.is_empty() { ".".into() } else if raw_dir.ends_with('/') { raw_dir } else { raw_dir + "/" };
+    let rd = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+    let dir = if rd.is_empty() { ".".into() } else if rd.ends_with('/') { rd } else { rd + "/" };
     env.set_value("default-directory", Sexp::Str(dir.clone()))?;
     env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?;
     env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?;
@@ -59,19 +59,18 @@ pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "eval_inner")) }
 }
 fn walk_proper_list(head: &Sexp, mut f: impl FnMut(&Sexp) -> Result<Sexp, EvalError>) -> Result<Vec<Sexp>, EvalError> {
-    let mut out = Vec::new(); let mut cur = head.clone();
+    let (mut out, mut cur) = (Vec::new(), head.clone());
     loop { match cur.clone() {
-        Sexp::Nil => return Ok(out),
-        Sexp::Cons(b) => { out.push(f(&b.car)?); cur = b.cdr.clone(); }
-        other => return Err(EvalError::wrong_type("list", other)),
+        Sexp::Nil => return Ok(out), Sexp::Cons(b) => { out.push(f(&b.car)?); cur = b.cdr.clone(); }
+        o => return Err(EvalError::wrong_type("list", o)),
     }}
 }
 pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(args, |car| eval(car, env)) }
 pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(list, |car| Ok(car.clone())) }
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let wrong_type = || EvalError::wrong_type("function", func.clone());
-    let Sexp::Cons(b) = func else { return Err(wrong_type()); };
-    let Sexp::Symbol(head) = &b.car else { return Err(wrong_type()); };
+    let wt = || EvalError::wrong_type("function", func.clone());
+    let Sexp::Cons(b) = func else { return Err(wt()); };
+    let Sexp::Symbol(head) = &b.car else { return Err(wt()); };
     match head.as_str() {
         "builtin" => {
             let Sexp::Cons(inner) = &b.cdr else { return Err(EvalError::internal("builtin sentinel missing name")); };
@@ -88,13 +87,11 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
                 (Sexp::Nil, 1, 2)
             };
             let mut out = Sexp::Nil;
-            let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(
-                &captured, &parts[fi], &Sexp::list_from(&parts[bs..]), &Sexp::list_from(args),
-                env as *mut Env as *mut std::ffi::c_void, &mut out) };
+            let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(&captured, &parts[fi], &Sexp::list_from(&parts[bs..]), &Sexp::list_from(args), env as *mut Env as *mut std::ffi::c_void, &mut out) };
             if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) }
         }
         "macro" => Err(EvalError::wrong_type("function (not macro)", func.clone())),
-        _ => Err(wrong_type()),
+        _ => Err(wt()),
     }
 }
 
@@ -115,10 +112,6 @@ pub unsafe extern "C" fn nelisp_apply_function(func: *const Sexp, args_list: *co
     let r = &mut *(env as *mut Env); let res = apply_function(&*func, &list_elements(&*args_list).unwrap_or_default(), r); eval_stash_err(r, res, out)
 }
 pub(crate) fn consume_stashed_error(env: &mut Env, fallback: &str) -> EvalError {
-    let Ok(Sexp::Cons(b)) = env.lookup_value("nelisp--last-signal-data") else { return EvalError::internal(fallback) };
-    match &b.car {
-        Sexp::Symbol(s) if s == "quit" => EvalError::Quit,
-        Sexp::Symbol(tag) => EvalError::Generic(tag.clone(), b.cdr.clone()),
-        _ => EvalError::internal(fallback),
-    }
+    let Ok(Sexp::Cons(b)) = env.lookup_value("nelisp--last-signal-data") else { return EvalError::internal(fallback); };
+    match &b.car { Sexp::Symbol(s) if s == "quit" => EvalError::Quit, Sexp::Symbol(t) => EvalError::Generic(t.clone(), b.cdr.clone()), _ => EvalError::internal(fallback) }
 }
