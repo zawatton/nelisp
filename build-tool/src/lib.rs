@@ -314,6 +314,13 @@ pub mod elisp_cc_spike {
             env: *mut std::ffi::c_void,
             _pad: i64,
         ) -> i64;
+        // Phase 47 — nl_eval_inner: sexp-tag dispatch; cons path → nl_eval_inner_cons.
+        fn nl_eval_inner(
+            form: *const Sexp,
+            env: *mut std::ffi::c_void,
+            out: *mut Sexp,
+            _pad: i64,
+        ) -> i64;
         pub fn nelisp_jit_add2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_sub2(a: i64, b: i64) -> i64;
         pub fn nelisp_jit_mul2(a: i64, b: i64) -> i64;
@@ -628,6 +635,9 @@ pub mod elisp_cc_spike {
     cc_wrap!(bind_formals_impl_call: nl_bind_formals_impl,
         (formals: *const Sexp, args: *const Sexp,
          env: *mut std::ffi::c_void, _pad: i64) -> i64);
+    cc_wrap!(eval_inner_call: nl_eval_inner,
+        (form: *const Sexp, env: *mut std::ffi::c_void,
+         out: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(fmt_sexp_call: nelisp_fmt_sexp, (s: *const Sexp, slot: *mut Sexp) -> i64);
     cc_wrap!(jit_predicate_eq: nelisp_jit_predicate_eq, (a: *const Sexp, b: *const Sexp) -> i64);
     cc_wrap!(jit_ref_eq: nelisp_jit_ref_eq, (a: *const Sexp, b: *const Sexp, out: *mut Sexp) -> i64);

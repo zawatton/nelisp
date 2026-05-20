@@ -158,78 +158,20 @@ pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         )));
     }
     env.current_recursion += 1;
-    let result = eval_inner(form, env);
+    let mut out = Sexp::Nil;
+    let rc = unsafe {
+        crate::elisp_cc_spike::eval_inner_call(
+            form as *const Sexp,
+            env as *mut Env as *mut std::ffi::c_void,
+            &mut out as *mut Sexp,
+            0,
+        )
+    };
     env.current_recursion -= 1;
-    result
-}
-
-fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    match form {
-        Sexp::Nil
-        | Sexp::T
-        | Sexp::Int(_)
-        | Sexp::Float(_)
-        | Sexp::Str(_)
-        | Sexp::MutStr(_)
-        | Sexp::Vector(_)
-        | Sexp::CharTable(_)
-        | Sexp::BoolVector(_)
-        | Sexp::Record(_) => Ok(form.clone()),
-        // Cells appear only in captured-env alists; self-evaluate to the stored value.
-        Sexp::Cell(c) => Ok(c.value.clone()),
-        // Keyword symbols self-evaluate.
-        Sexp::Symbol(name) if name.starts_with(':') && name.len() > 1 => Ok(form.clone()),
-        Sexp::Symbol(name) => env.lookup_value(name),
-        Sexp::Cons(b) => apply_combiner(&b.car, &b.cdr, env),
-    }
-}
-
-/// Apply a combiner head to its unevaluated argument list.
-fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    match head {
-        // Symbol heads may name a special form, macro, or function.
-        Sexp::Symbol(name) => {
-            if let Some(result) = special_forms::apply_special(name, tail, env)? {
-                return Ok(result);
-            }
-            if let Ok(func) = env.lookup_function(name) {
-                if is_macro(&func) {
-                    // Delegate macro expansion unless bootstrap or helper recursion would cycle.
-                    if env.delegation_depth == 0
-                        && !is_elisp_apply_helper(name)
-                        && env.lookup_function("nelisp--expand-macro").is_ok()
-                    {
-                        return delegate_macro_to_elisp(&func, tail, env);
-                    }
-                    let expansion = expand_macro(&func, tail, env)?;
-                    return eval(&expansion, env);
-                }
-                let args = eval_arg_list(tail, env)?;
-                // Delegate only at the outermost user-level call.
-                if env.use_elisp_apply
-                    && env.delegation_depth == 0
-                    && !is_elisp_apply_helper(name)
-                    && !is_builtin_value(&func)
-                {
-                    return delegate_to_elisp_apply(&func, &args, env);
-                }
-                return apply_function(&func, &args, env);
-            }
-            Err(EvalError::UnboundFunction(name.clone()))
-        }
-        // A lambda head is evaluated first, then applied.
-        Sexp::Cons(_) => {
-            let func = eval(head, env)?;
-            let args = eval_arg_list(tail, env)?;
-            if env.use_elisp_apply && env.delegation_depth == 0 && !is_builtin_value(&func) {
-                return delegate_to_elisp_apply(&func, &args, env);
-            }
-            apply_function(&func, &args, env)
-        }
-        other => Err(EvalError::WrongType {
-            expected: "function".into(),
-            got: other.clone(),
-        }),
+    if rc == 0 {
+        Ok(out)
+    } else {
+        Err(consume_stashed_error(env, "eval_inner"))
     }
 }
 
@@ -265,62 +207,6 @@ pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, Eva
 /// Collect each element of a proper list without evaluating it.
 pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     walk_proper_list(list, |car| Ok(car.clone()))
-}
-
-/// Elisp dispatcher helpers that must not re-enter `delegate_to_elisp_apply`.
-fn is_elisp_apply_helper(name: &str) -> bool {
-    matches!(
-        name,
-        "nelisp--apply-fn"
-            | "nelisp--apply-closure"
-            | "nelisp--apply-lambda"
-            | "nelisp--bind-formals--compute"
-            | "nelisp--bind-formals--required-count"
-            | "nelisp--builtinp"
-            | "nelisp--closurep"
-            | "nelisp--lambdap"
-            | "nelisp--macrop"
-            | "nelisp--expand-macro"
-    )
-}
-
-fn is_builtin_value(func: &Sexp) -> bool {
-    matches!(func, Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "builtin"))
-}
-
-fn eval_delegated(name: &str, quoted: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let mut form = Vec::with_capacity(quoted.len() + 1);
-    form.push(Sexp::Symbol(name.into()));
-    form.extend(
-        quoted
-            .iter()
-            .map(|arg| Sexp::list_from(&[Sexp::Symbol("quote".into()), arg.clone()])),
-    );
-    env.delegation_depth += 1;
-    let result = eval(&Sexp::list_from(&form), env);
-    env.delegation_depth -= 1;
-    result
-}
-
-fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    eval_delegated(
-        "nelisp--apply-fn",
-        &[func.clone(), Sexp::list_from(args)],
-        env,
-    )
-}
-
-fn delegate_macro_to_elisp(
-    macro_form: &Sexp,
-    arg_forms: &Sexp,
-    env: &mut Env,
-) -> Result<Sexp, EvalError> {
-    let expansion = eval_delegated(
-        "nelisp--expand-macro",
-        &[macro_form.clone(), arg_forms.clone()],
-        env,
-    )?;
-    eval(&expansion, env)
 }
 
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -405,24 +291,6 @@ pub(crate) fn apply_lambda_inner(
     }
 }
 
-fn is_macro(func: &Sexp) -> bool {
-    matches!(
-        func,
-        Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "macro")
-    )
-}
-
-fn expand_macro(macro_form: &Sexp, args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // Apply the underlying lambda to the unevaluated argument forms.
-    let parts = list_elements(macro_form)?;
-    if parts.len() < 2 {
-        return Err(EvalError::Internal("malformed macro".into()));
-    }
-    let inner = &parts[1];
-    let arg_forms = list_elements(args)?;
-    apply_function(inner, &arg_forms, env)
-}
-
 /// Phase 47 elisp .o から Rust eval() を再帰呼出するための ABI primitive。
 /// elisp 側は `(extern-call nelisp_eval_call FORM ENV OUT)` で利用。
 /// 戻り値: 0=Ok / 1=Err。エラー詳細は別 channel (後続 wave で実装)。
@@ -474,21 +342,30 @@ pub unsafe extern "C" fn nelisp_eval_call_with_err(
     }
 }
 
-/// Re-construct EvalError from a `(tag . data)' sexp produced by `signal_data()`.
-pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fallback_name: &str) -> EvalError {
-    let Sexp::Cons(b) = sexp else {
-        return EvalError::Internal(fallback_name.to_string());
+/// Re-construct EvalError from a `(tag . data)' sexp produced by `signal_data()'.
+/// Restores all known variants; falls back to `UserError' for unknown tags.
+pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fb: &str) -> EvalError {
+    let (tag, data) = match sexp {
+        Sexp::Cons(b) => match &b.car { Sexp::Symbol(s) => (s.as_str(), &b.cdr), _ => return EvalError::Internal(fb.into()) },
+        _ => return EvalError::Internal(fb.into()),
     };
-    let Sexp::Symbol(tag) = &b.car else {
-        return EvalError::Internal(fallback_name.to_string());
-    };
-    let data = &b.cdr;
-    match tag.as_str() {
+    let sym0 = |d: &Sexp| if let Sexp::Cons(c) = d { match &c.car { Sexp::Symbol(s)|Sexp::Str(s) => Some(s.clone()), _ => None } } else { None };
+    match tag {
         "quit" => EvalError::Quit,
-        _ => EvalError::UserError {
-            tag: tag.clone(),
-            data: data.clone(),
+        "void-variable" => sym0(data).map(EvalError::UnboundVariable).unwrap_or_else(|| EvalError::Internal(fb.into())),
+        "void-function" => sym0(data).map(EvalError::UnboundFunction).unwrap_or_else(|| EvalError::Internal(fb.into())),
+        "setting-constant" => sym0(data).map(EvalError::SettingConstant).unwrap_or_else(|| EvalError::Internal(fb.into())),
+        "wrong-type-argument" => match data {
+            Sexp::Cons(c) => match &c.car { Sexp::Symbol(ex) => EvalError::WrongType { expected: ex.clone(), got: match &c.cdr { Sexp::Cons(c2) => c2.car.clone(), _ => Sexp::Nil } }, _ => EvalError::Internal(fb.into()) },
+            _ => EvalError::Internal(fb.into()),
         },
+        "wrong-number-of-arguments" => match data {
+            Sexp::Cons(c) => { let f = match &c.car { Sexp::Symbol(s) => s.clone(), _ => fb.into() }; let g = match &c.cdr { Sexp::Cons(c2) => match &c2.car { Sexp::Int(n) => *n as usize, _ => 0 }, _ => 0 }; EvalError::WrongNumberOfArguments { function: f, expected: "?".into(), got: g } },
+            _ => EvalError::Internal(fb.into()),
+        },
+        "arith-error" => EvalError::ArithError(sym0(data).unwrap_or_else(|| "arith-error".into())),
+        "error" => match data { Sexp::Cons(c) => match &c.car { Sexp::Str(s) => EvalError::Internal(s.clone()), _ => EvalError::Internal(fb.into()) }, _ => EvalError::Internal(fb.into()) },
+        _ => EvalError::UserError { tag: tag.into(), data: data.clone() },
     }
 }
 

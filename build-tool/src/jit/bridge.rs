@@ -77,6 +77,7 @@ extern "C" {
     fn nl_cons_prepend_clone();
     fn nl_jit_secure_hash();
     fn nl_jit_string_match_p();
+    fn nl_eval_inner();
     // Nullary redecl — symbol-presence only for `_ELISP_ARCHIVE_ANCHOR'.
     fn nl_jit_alias();
 }
@@ -92,7 +93,7 @@ extern "C" {
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 69] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 70] = [
     nelisp_jit_add2,
     nelisp_jit_sub2,
     nelisp_jit_mul2,
@@ -162,6 +163,7 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 69] = [
     nl_jit_secure_hash,
     nl_jit_string_match_p,
     nl_jit_alias,
+    nl_eval_inner,
 ];
 
 /// Type-guard a JIT name argument: accept Symbol or Str, reject others.

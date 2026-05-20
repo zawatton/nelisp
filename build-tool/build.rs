@@ -405,6 +405,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // JIT names (e.g. `nelisp_jit_car') to canonical dlsym names,
         // replacing the 18-LOC Rust `alias' fn in `jit/bridge.rs'.
         "nelisp-cc-jit-alias.el",
+        // Phase 47 — `eval_inner' + `apply_combiner' cluster (~141 LOC)
+        // deleted from `eval/mod.rs'.  `nl_eval_inner' dispatches on
+        // sexp-tag and delegates to Rust externs for symbol/cons paths.
+        "nelisp-cc-eval-inner.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

@@ -463,6 +463,87 @@ pub unsafe extern "C" fn nl_env_set_value(
     }
 }
 
+// ─── Phase 47 eval_inner / apply_combiner ABI bridge ─────────────────────────
+// Called from `nelisp-cc-eval-inner.o' which exports `nl_eval_inner'.
+// The .o handles sexp-tag dispatch; these externs do the heavy lifting.
+
+/// Variable lookup for a Symbol form (keywords self-evaluate).
+/// Returns 0=found (value in *out), 1=err (stashed in nelisp--last-signal-data).
+#[no_mangle]
+pub unsafe extern "C" fn nl_env_lookup_val(
+    name_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp,
+) -> i64 {
+    let e = &mut *(env as *mut Env);
+    let Sexp::Symbol(n) = &*name_ptr else { return 1; };
+    if n.starts_with(':') && n.len() > 1 { super::sexp::nl_sexp_clone_into(name_ptr, out); return 0; }
+    match e.lookup_value(n) {
+        Ok(v) => { std::ptr::write(out, v); 0 }
+        Err(er) => { let _ = e.set_value("nelisp--last-signal-data", er.signal_data()); 1 }
+    }
+}
+
+/// Cell form: extract stored value into *out. Returns 0=ok, 1=not-a-cell.
+#[no_mangle]
+pub unsafe extern "C" fn nl_cell_get_value(cell_ptr: *const Sexp, out: *mut Sexp) -> i64 {
+    match &*cell_ptr { Sexp::Cell(c) => { std::ptr::write(out, c.value.clone()); 0 } _ => 1 }
+}
+
+/// apply_combiner for both Symbol-head and Cons/other-head forms.
+/// head_ptr: car of the Cons being evaluated (may be Symbol or any Sexp).
+/// tail_ptr: cdr of the Cons (unevaluated arg list).
+/// Returns 0=ok (result in *out), 1=err (stashed in nelisp--last-signal-data).
+#[no_mangle]
+pub unsafe extern "C" fn nl_eval_inner_cons(
+    head_ptr: *const Sexp, tail_ptr: *const Sexp,
+    env: *mut std::ffi::c_void, out: *mut Sexp,
+) -> i64 {
+    let e = &mut *(env as *mut Env);
+    macro_rules! tri { ($x:expr) => { match $x { Ok(v)=>v, Err(er)=>{ let _=e.set_value("nelisp--last-signal-data",er.signal_data()); return 1; } } }; }
+    macro_rules! put { ($v:expr) => {{ std::ptr::write(out,$v); return 0; }}; }
+    macro_rules! stash { ($er:expr) => {{ let _=e.set_value("nelisp--last-signal-data",$er.signal_data()); return 1; }}; }
+    let (head, tail) = (&*head_ptr, &*tail_ptr);
+    let Sexp::Symbol(name) = head else {
+        let func = tri!(super::eval(head, e));
+        let args = tri!(super::eval_arg_list(tail, e));
+        let is_bi = matches!(&func, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="builtin"));
+        if e.use_elisp_apply && e.delegation_depth==0 && !is_bi {
+            let al = Sexp::list_from(&args);
+            let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()),Sexp::list_from(&[Sexp::Symbol("quote".into()),func.clone()]),Sexp::list_from(&[Sexp::Symbol("quote".into()),al])]);
+            e.delegation_depth+=1; let r=super::eval(&f,e); e.delegation_depth-=1;
+            return match r { Ok(v)=>{ put!(v) } Err(er)=>{ let _=e.set_value("nelisp--last-signal-data",er.signal_data()); 1 } };
+        }
+        return match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
+    };
+    match apply_special(name, tail, e) {
+        Ok(Some(v)) => put!(v), Ok(None) => {}, Err(er) => stash!(er),
+    }
+    let func = tri!(e.lookup_function(name));
+    let is_mac = matches!(&func, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="macro"));
+    let is_hlp = matches!(name.as_str(),"nelisp--apply-fn"|"nelisp--apply-closure"|"nelisp--apply-lambda"|"nelisp--bind-formals--compute"|"nelisp--bind-formals--required-count"|"nelisp--builtinp"|"nelisp--closurep"|"nelisp--lambdap"|"nelisp--macrop"|"nelisp--expand-macro");
+    if is_mac {
+        if e.delegation_depth==0 && !is_hlp && e.lookup_function("nelisp--expand-macro").is_ok() {
+            let f = Sexp::list_from(&[Sexp::Symbol("nelisp--expand-macro".into()),Sexp::list_from(&[Sexp::Symbol("quote".into()),func.clone()]),Sexp::list_from(&[Sexp::Symbol("quote".into()),tail.clone()])]);
+            e.delegation_depth+=1;
+            let exp = match super::eval(&f,e) { Ok(v)=>{e.delegation_depth-=1;v}, Err(er)=>{e.delegation_depth-=1; stash!(er)} };
+            return match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
+        }
+        let parts = tri!(super::list_elements(&func));
+        if parts.len()<2 { stash!(super::error::EvalError::Internal("malformed macro".into())) }
+        let af = tri!(super::list_elements(tail));
+        let exp = tri!(super::apply_function(&parts[1], &af, e));
+        return match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
+    }
+    let args = tri!(super::eval_arg_list(tail, e));
+    let is_bi = matches!(&func, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="builtin"));
+    if e.use_elisp_apply && e.delegation_depth==0 && !is_hlp && !is_bi {
+        let al = Sexp::list_from(&args);
+        let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()),Sexp::list_from(&[Sexp::Symbol("quote".into()),func.clone()]),Sexp::list_from(&[Sexp::Symbol("quote".into()),al])]);
+        e.delegation_depth+=1; let r=super::eval(&f,e); e.delegation_depth-=1;
+        return match r { Ok(v)=>{ put!(v) } Err(er)=>{ let _=e.set_value("nelisp--last-signal-data",er.signal_data()); 1 } };
+    }
+    match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
+}
+
 pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
     match (a, b) {
         (Sexp::Nil, Sexp::Nil) | (Sexp::T, Sexp::T) => true,

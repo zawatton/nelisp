@@ -1214,6 +1214,18 @@
     (nelisp-cc-jit-alias
      :source-var nelisp-cc-jit-alias--source
      :output "nl_jit_alias.o"
+     :requires-arch x86_64)
+    ;; Phase 47 — `eval_inner' body + `apply_combiner' cluster (~141 LOC)
+    ;; deleted from `build-tool/src/eval/mod.rs'.
+    ;; `nl_eval_inner' dispatches on sexp-tag: self-eval / symbol / cons / cell.
+    ;; Symbol and Cons paths delegate to new Rust extern helpers
+    ;; `nl_apply_symbol_fn' + `nl_eval_apply_cons_head' in `eval/special_forms.rs'
+    ;; which implement the full apply_combiner logic (special forms, macros,
+    ;; delegation, arg eval, apply_function).  The thin Rust `eval' function
+    ;; calls `nl_eval_inner' via cc_wrap.
+    (nelisp-cc-eval-inner
+     :source-var nelisp-cc-eval-inner--source
+     :output "nl_eval_inner.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
