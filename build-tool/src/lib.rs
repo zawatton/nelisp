@@ -289,6 +289,12 @@ pub mod elisp_cc_spike {
         fn nelisp_frame_push(frames_ptr: *const Sexp, scratch_vec_ptr: *const Sexp) -> i64;
         // Wave h — install empty globals mirror + frame stack Phase 47 .o.
         fn nelisp_env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
+        // Wave k — tty raw-mode / winsize / jobctrl Phase 47 .o.
+        fn nelisp_tty_raw_enter(statbuf: *mut u8) -> i64;
+        fn nelisp_tty_raw_leave(saved_buf: *const u8) -> i64;
+        fn nelisp_tty_stdin_byte_avail(pfd_buf: *mut u8, timeout_ms: i64) -> i64;
+        fn nelisp_tty_winsize_current(ws_buf: *mut u8) -> i64;
+        fn nelisp_tty_take_atomic(flag_ptr: *mut i64) -> i64;
     }
 
     pub fn probe() -> i64 {
@@ -323,6 +329,12 @@ pub mod elisp_cc_spike {
     cc_wrap!(bi_nl_make_directory: nelisp_bi_nl_make_directory, (path_ptr: *const Sexp) -> i64);
     cc_wrap!(bi_syscall_read_file: nelisp_bi_syscall_read_file, (path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64);
     cc_wrap!(bi_syscall_resolve_nr: nelisp_bi_syscall_resolve_nr, (sym_ptr: *const Sexp) -> i64);
+    // Wave k — tty Phase 47 .o wrappers.
+    cc_wrap!(tty_raw_enter: nelisp_tty_raw_enter, (statbuf: *mut u8) -> i64);
+    cc_wrap!(tty_raw_leave: nelisp_tty_raw_leave, (saved_buf: *const u8) -> i64);
+    cc_wrap!(tty_stdin_byte_avail: nelisp_tty_stdin_byte_avail, (pfd_buf: *mut u8, timeout_ms: i64) -> i64);
+    cc_wrap!(tty_winsize_current: nelisp_tty_winsize_current, (ws_buf: *mut u8) -> i64);
+    cc_wrap!(tty_take_atomic: nelisp_tty_take_atomic, (flag_ptr: *mut i64) -> i64);
     /// Pin `nl_alloc_consbox' symbol from the elisp `.o' archive so
     /// other elisp `.o' PLT references to it are resolved at link time.
     pub unsafe fn nl_alloc_consbox_raw() -> *mut u8 { nl_alloc_consbox() }

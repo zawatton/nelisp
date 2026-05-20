@@ -3,6 +3,8 @@
 use super::Env;
 use super::error::EvalError;
 use super::quit;
+#[cfg(unix)]
+use super::tty;
 use super::sexp::Sexp;
 use std::path::{Path, PathBuf};
 
@@ -120,29 +122,29 @@ macro_rules! builtin_dispatch {
                 let path = string_value(&$args[0])?;
                 kernel_path_ok("nl-make-directory", &path, unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&$args[0] as *const _) as i32 as i64 })
             },
-            "terminal-raw-mode-enter" => { require_arity("terminal-raw-mode-enter", $args, 0, Some(0))?; #[cfg(unix)] { tty_raw::raw_mode_enter()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "terminal-raw-mode-leave" => { require_arity("terminal-raw-mode-leave", $args, 0, Some(0))?; #[cfg(unix)] { tty_raw::raw_mode_leave()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-raw-mode-enter" => { require_arity("terminal-raw-mode-enter", $args, 0, Some(0))?; #[cfg(unix)] { tty::raw_mode_enter()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-raw-mode-leave" => { require_arity("terminal-raw-mode-leave", $args, 0, Some(0))?; #[cfg(unix)] { tty::raw_mode_leave()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "read-stdin-byte-available" => {
                 require_arity("read-stdin-byte-available", $args, 0, Some(1))?;
                 let timeout_ms = match $args.get(0) { None | Some(Sexp::Nil) => 0i32, Some(Sexp::Int(n)) => *n as i32,
                     Some(other) => return Err(EvalError::wrong_type("integer (timeout-ms)", other.clone())) };
-                #[cfg(unix)] { Ok(tty_raw::stdin_byte_available(timeout_ms)?.map_or(Sexp::Nil, |b| Sexp::Int(b as i64))) }
+                #[cfg(unix)] { Ok(tty::stdin_byte_available(timeout_ms)?.map_or(Sexp::Nil, |b| Sexp::Int(b as i64))) }
                 #[cfg(not(unix))] { let _ = timeout_ms; Ok(Sexp::Nil) }
             },
-            "_termios-saved-p" => { require_arity("_termios-saved-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_raw::termios_saved_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "_raw-mode-hooks-installed-p" => { require_arity("_raw-mode-hooks-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_raw::hooks_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "_termios-saved-p" => { require_arity("_termios-saved-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::termios_saved_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "_raw-mode-hooks-installed-p" => { require_arity("_raw-mode-hooks-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::hooks_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "set-quit-flag" => { require_arity("set-quit-flag", $args, 0, Some(0))?; unsafe { crate::elisp_cc_spike::bi_set_quit_flag(quit::nl_quit_flag_ptr()); } Ok(Sexp::T) },
             "clear-quit-flag" => { require_arity("clear-quit-flag", $args, 0, Some(0))?; unsafe { crate::elisp_cc_spike::bi_clear_quit_flag(quit::nl_quit_flag_ptr()); } Ok(Sexp::T) },
             "quit-flag-pending-p" => { require_arity("quit-flag-pending-p", $args, 0, Some(0))?; Ok(bool_sexp(unsafe { crate::elisp_cc_spike::bi_quit_flag_pending_p(quit::nl_quit_flag_ptr()) } != 0)) },
             "install-sigint-handler" => { require_arity("install-sigint-handler", $args, 0, Some(0))?; quit::install_sigint_handler(); Ok(Sexp::T) },
             "_sigint-handler-installed-p" => { require_arity("_sigint-handler-installed-p", $args, 0, Some(0))?; Ok(bool_sexp(quit::sigint_handler_installed_p())) },
-            "install-winsize-handler" => { require_arity("install-winsize-handler", $args, 0, Some(0))?; #[cfg(unix)] { tty_winsize::install_handler(); Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "_winsize-handler-installed-p" => { require_arity("_winsize-handler-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_winsize::handler_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "terminal-take-winsize-changed" => { require_arity("terminal-take-winsize-changed", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_winsize::take_changed())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "terminal-current-winsize" => { require_arity("terminal-current-winsize", $args, 0, Some(0))?; #[cfg(unix)] { Ok(match tty_winsize::current_size() { Some((c, r)) => Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)), None => Sexp::Nil }) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "install-jobctrl-handlers" => { require_arity("install-jobctrl-handlers", $args, 0, Some(0))?; #[cfg(unix)] { tty_jobctrl::install_handlers(); Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "_jobctrl-handlers-installed-p" => { require_arity("_jobctrl-handlers-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_jobctrl::handlers_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "terminal-take-sigcont" => { require_arity("terminal-take-sigcont", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty_jobctrl::take_cont())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "install-winsize-handler" => { require_arity("install-winsize-handler", $args, 0, Some(0))?; #[cfg(unix)] { tty::install_winsize_handler(); Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "_winsize-handler-installed-p" => { require_arity("_winsize-handler-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::winsize_handler_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-take-winsize-changed" => { require_arity("terminal-take-winsize-changed", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::take_winsize_changed())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-current-winsize" => { require_arity("terminal-current-winsize", $args, 0, Some(0))?; #[cfg(unix)] { Ok(match tty::current_winsize() { Some((c, r)) => Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)), None => Sexp::Nil }) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "install-jobctrl-handlers" => { require_arity("install-jobctrl-handlers", $args, 0, Some(0))?; #[cfg(unix)] { tty::install_jobctrl_handlers(); Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "_jobctrl-handlers-installed-p" => { require_arity("_jobctrl-handlers-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::jobctrl_handlers_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-take-sigcont" => { require_arity("terminal-take-sigcont", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::take_sigcont())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64($args), "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr($args), "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall($args),
             "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1($args), "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2($args), "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args),
             "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i($args), "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float($args),
@@ -340,164 +342,5 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn resolve_callable(arg: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match arg { Sexp::Symbol(s) => env.lookup_function(s), _ => Ok(arg.clone()) }
 }
-
-// Unix raw-mode and non-blocking stdin helpers.
-
-#[cfg(unix)]
-unsafe fn install_sigaction(signum: libc::c_int, handler: extern "C" fn(libc::c_int), flags: libc::c_int) {
-    let mut sa: libc::sigaction = std::mem::zeroed();
-    sa.sa_sigaction = handler as *const () as usize;
-    libc::sigemptyset(&mut sa.sa_mask);
-    sa.sa_flags = flags;
-    libc::sigaction(signum, &sa, std::ptr::null_mut());
-}
-#[cfg(unix)]
-unsafe fn reraise_as_default(signum: libc::c_int) {
-    libc::signal(signum, libc::SIG_DFL);
-    let mut mask: libc::sigset_t = std::mem::zeroed();
-    libc::sigemptyset(&mut mask);
-    libc::sigaddset(&mut mask, signum);
-    libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut());
-    libc::raise(signum);
-}
-
-#[cfg(unix)]
-mod tty_raw {
-    use super::*;
-    use std::mem::MaybeUninit;
-    use std::os::unix::io::AsRawFd;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-    use std::sync::Once;
-
-    static TERMIOS_SAVED: AtomicBool = AtomicBool::new(false);
-    static TTY_FD: AtomicI32 = AtomicI32::new(-1);
-    // SAFETY contract: SAVED_TERMIOS is only written while TERMIOS_SAVED is
-    // false (handlers early-return on a false flag, so no signal-handler
-    // race).  Read only after TERMIOS_SAVED.swap(false) returns true.
-    static mut SAVED_TERMIOS: MaybeUninit<libc::termios> = MaybeUninit::uninit();
-    static HOOKS_INSTALLED: Once = Once::new();
-
-    // Async-signal-safe restore (tcsetattr is AS-safe per POSIX).
-    fn restore_termios_signal_safe() {
-        if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
-            let fd = TTY_FD.load(Ordering::SeqCst);
-            if fd >= 0 { unsafe { libc::tcsetattr(fd, libc::TCSANOW, (*std::ptr::addr_of!(SAVED_TERMIOS)).as_ptr()); } }
-        }
-    }
-
-    extern "C" fn atexit_hook() { restore_termios_signal_safe(); }
-
-    extern "C" fn sig_handler(signum: libc::c_int) {
-        restore_termios_signal_safe();
-        unsafe {
-            super::reraise_as_default(signum);
-        }
-    }
-
-    fn install_hooks_once() {
-        HOOKS_INSTALLED.call_once(|| unsafe {
-            libc::atexit(atexit_hook);
-            for sig in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
-                super::install_sigaction(*sig, sig_handler, 0);
-            }
-        });
-    }
-
-    pub fn raw_mode_enter() -> Result<(), EvalError> {
-        let (fd, mut term) = (std::io::stdin().lock().as_raw_fd(), unsafe { std::mem::zeroed::<libc::termios>() });
-        if unsafe { libc::tcgetattr(fd, &mut term) } != 0 { return Err(EvalError::internal(format!("terminal-raw-mode-enter: tcgetattr failed: {}", std::io::Error::last_os_error()))); }
-        unsafe { std::ptr::write(std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut libc::termios, term); }
-        TTY_FD.store(fd, Ordering::SeqCst); TERMIOS_SAVED.store(true, Ordering::SeqCst); install_hooks_once();
-        unsafe { libc::cfmakeraw(&mut term) };
-        term.c_cc[libc::VMIN] = 1; term.c_cc[libc::VTIME] = 0;
-        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 { TERMIOS_SAVED.store(false, Ordering::SeqCst); return Err(EvalError::internal(format!("terminal-raw-mode-enter: tcsetattr failed: {}", std::io::Error::last_os_error()))); }
-        Ok(())
-    }
-
-    pub fn raw_mode_leave() -> Result<(), EvalError> {
-        if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
-            let (fd, term) = (TTY_FD.load(Ordering::SeqCst), unsafe { (*std::ptr::addr_of!(SAVED_TERMIOS)).assume_init() });
-            if fd >= 0 && unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 { return Err(EvalError::internal(format!("terminal-raw-mode-leave: tcsetattr failed: {}", std::io::Error::last_os_error()))); }
-        }
-        Ok(())
-    }
-
-    pub fn termios_saved_p() -> bool { TERMIOS_SAVED.load(Ordering::SeqCst) }
-    pub fn hooks_installed_p() -> bool { HOOKS_INSTALLED.is_completed() }
-
-    pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
-        let (fd, mut pfd) = (0i32, libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 });
-        let r = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
-        if r < 0 { return Err(EvalError::internal(format!("read-stdin-byte-available: poll failed: {}", std::io::Error::last_os_error()))); }
-        if r == 0 || pfd.revents & (libc::POLLIN | libc::POLLHUP) == 0 { return Ok(None); }
-        let mut buf = [0u8; 1];
-        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-        match n {
-            0 => Ok(None),
-            n if n > 0 => Ok(Some(buf[0])),
-            _ => { let errno = std::io::Error::last_os_error();
-                #[allow(unreachable_patterns)]
-                if matches!(errno.raw_os_error(), Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK)) { Ok(None) }
-                else { Err(EvalError::internal(format!("read-stdin-byte-available: read failed: {}", errno))) } }
-        }
-    }
-}
-
-#[cfg(unix)]
-mod tty_winsize {
-    use std::os::unix::io::AsRawFd;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Once;
-
-    static WINSIZE_CHANGED: AtomicBool = AtomicBool::new(true);
-    static HANDLER_INSTALLED: Once = Once::new();
-
-    extern "C" fn handler(_signum: libc::c_int) { WINSIZE_CHANGED.store(true, Ordering::SeqCst); }
-
-    pub fn install_handler() {
-        HANDLER_INSTALLED.call_once(|| unsafe {
-            super::install_sigaction(libc::SIGWINCH, handler, libc::SA_RESTART);
-            WINSIZE_CHANGED.store(true, Ordering::SeqCst);
-        });
-    }
-
-    pub fn handler_installed_p() -> bool { HANDLER_INSTALLED.is_completed() }
-    pub fn take_changed() -> bool { WINSIZE_CHANGED.swap(false, Ordering::SeqCst) }
-
-    pub fn current_size() -> Option<(u16, u16)> {
-        let fd = std::io::stdin().lock().as_raw_fd();
-        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 { Some((ws.ws_col, ws.ws_row)) } else { None }
-    }
-}
-
-#[cfg(unix)]
-mod tty_jobctrl {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Once;
-
-    static SIGCONT_ARRIVED: AtomicBool = AtomicBool::new(false);
-    static HANDLER_INSTALLED: Once = Once::new();
-
-    extern "C" fn tstp_handler(signum: libc::c_int) {
-        let _ = super::tty_raw::raw_mode_leave();
-        unsafe {
-            super::reraise_as_default(signum);
-            // Re-install in case `signal` reset the disposition.
-            super::install_sigaction(libc::SIGTSTP, tstp_handler, libc::SA_RESTART);
-        }
-    }
-
-    extern "C" fn cont_handler(_signum: libc::c_int) { SIGCONT_ARRIVED.store(true, Ordering::SeqCst); }
-
-    pub fn install_handlers() {
-        HANDLER_INSTALLED.call_once(|| unsafe {
-            super::install_sigaction(libc::SIGTSTP, tstp_handler, libc::SA_RESTART);
-            super::install_sigaction(libc::SIGCONT, cont_handler, libc::SA_RESTART);
-        });
-    }
-
-    pub fn handlers_installed_p() -> bool { HANDLER_INSTALLED.is_completed() }
-    pub fn take_cont() -> bool { SIGCONT_ARRIVED.swap(false, Ordering::SeqCst) }
-}
+// Unix TTY raw-mode, winsize, and job-control dispatch delegated to tty.rs.
 

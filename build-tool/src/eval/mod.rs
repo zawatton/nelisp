@@ -5,6 +5,8 @@
 
 pub mod builtins;
 pub mod env_helpers;
+#[cfg(unix)]
+pub mod tty;
 pub mod env_shim;
 pub mod error;
 pub mod nlboolvector;

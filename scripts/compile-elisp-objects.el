@@ -1331,6 +1331,15 @@
     (nelisp-cc-env-install-empty
      :source-var nelisp-cc-env-install-empty--source
      :output "nelisp_env_install_empty_globals_frames.o"
+     :requires-arch x86_64)
+    ;; Wave k — tty raw-mode / winsize / jobctrl Phase 47 .o.
+    ;; Moves tcgetattr/cfmakeraw/tcsetattr/poll/read/ioctl syscall bodies from
+    ;; build-tool/src/eval/builtins.rs tty_raw / tty_winsize / tty_jobctrl
+    ;; inline modules (~160 LOC) into elisp .o.  Rust shim keeps signal
+    ;; handlers, Once-gated installers, and static storage.
+    (nelisp-cc-bi-tty-raw
+     :source-var nelisp-cc-bi-tty-raw--source
+     :output "nelisp_tty_raw.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
