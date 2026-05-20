@@ -5,8 +5,6 @@ use std::rc::Rc;
 
 use super::error::EvalError;
 use super::sexp::Sexp;
-use crate::eval::nlrecord::NlRecordRef;
-use crate::eval::nlvector::NlVectorRef;
 
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
@@ -208,8 +206,6 @@ impl Env {
         if rc == 0 { Ok(o) } else { Err(EvalError::unbound_fn(name)) }
     }
 
-
-
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         // Wave b: delegate to Phase 47 .o.  Guard: mirror not ready → no-op.
         if !matches!(&self.globals_record, Sexp::Record(_)) { return; }
@@ -305,70 +301,35 @@ impl Env {
 
     mirror_op!(pred: mirror_is_fbound(pub) => mirror_is_fbound);
 
-    pub(crate) fn frame_stack_view(&self) -> Option<(NlRecordRef, NlVectorRef, usize)> {
-        let stack_rec = match &self.frames_record {
-            Sexp::Record(r) => r.clone(),
-            _ => return None,
-        };
-        let backing = match stack_rec.slots.get(0)? {
-            Sexp::Vector(v) => v.clone(),
-            _ => return None,
-        };
-        let depth = match stack_rec.slots.get(1)? {
-            Sexp::Int(n) => *n as usize,
-            _ => return None,
-        };
-        Some((stack_rec, backing, depth))
-    }
-
-    pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
-        // Wave f: delegate to nelisp_frame_push .o.
-        if !matches!(&self.frames_record, Sexp::Record(_)) {
-            return None;
-        }
+    pub(crate) fn frame_push_rust_direct(&mut self) {
+        if !matches!(&self.frames_record, Sexp::Record(_)) { return; }
         unsafe { crate::elisp_cc_spike::frame_push(&self.frames_record as *const Sexp) };
-        Some(Sexp::Nil) // return value is always discarded by callers
     }
 
     pub(crate) fn frame_pop_rust_direct(&mut self) {
-        let Some((stack_rec, backing, depth)) = self.frame_stack_view() else {
-            return;
-        };
-        if depth == 0 {
-            return;
-        }
+        let Sexp::Record(stack_rec) = &self.frames_record else { return };
+        let Some(Sexp::Vector(backing)) = stack_rec.slots.get(0) else { return };
+        let Some(Sexp::Int(depth_i)) = stack_rec.slots.get(1) else { return };
+        let depth = *depth_i as usize;
+        if depth == 0 { return; }
+        let (stack_rec, backing) = (stack_rec.clone(), backing.clone());
         unsafe {
             backing.with_value_mut(|v| v[depth - 1] = Sexp::Nil);
             stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth - 1) as i64));
         }
     }
 
-    pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
-        // Wave f: delegate to nelisp_frame_stack_find .o (innermost frame).
-        // Build a temporary 1-depth frames record pointing at only the top frame.
-        if !matches!(&self.frames_record, Sexp::Record(_)) {
-            return None;
-        }
+    pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
+        if !matches!(&self.frames_record, Sexp::Record(_)) { return None; }
         let name_sexp = Sexp::Str(name.to_string());
         let raw = unsafe { crate::elisp_cc_spike::frame_stack_find_raw(&self.frames_record, &name_sexp) };
-        if raw.is_null() {
-            return None;
-        }
-        // raw points at the CDR slot of the (NAME . CELL) pair — i.e. the cell Sexp.
+        if raw.is_null() { return None; }
         Some(unsafe { (*raw).clone() })
     }
 
-    pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
-        // Wave f: delegate to nelisp_frame_stack_find .o (full stack walk).
-        if !matches!(&self.frames_record, Sexp::Record(_)) {
-            return None;
-        }
-        let name_sexp = Sexp::Str(name.to_string());
-        let raw = unsafe { crate::elisp_cc_spike::frame_stack_find_raw(&self.frames_record, &name_sexp) };
-        if raw.is_null() {
-            return None;
-        }
-        Some(unsafe { (*raw).clone() })
+    /// Alias for `frame_stack_find_rust_direct` (innermost-frame variant).
+    pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
+        self.frame_stack_find_rust_direct(name)
     }
 
     pub(crate) fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> {
