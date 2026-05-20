@@ -1445,6 +1445,39 @@ functions `((NAME . ARITY) ...)'."
             :args (plist-get parsed :args)
             :varargs-p (plist-get parsed :varargs-p)
             :f64-count (plist-get parsed :f64-count))))
+   ;; (syscall-direct NR A0 A1 A2 A3 A4 A5) — Linux x86_64 raw SYSCALL.
+   ;;
+   ;; Evaluates 7 i64 value expressions and emits the Linux SYSCALL
+   ;; instruction with the kernel ABI register placement:
+   ;;   rax = NR (syscall number)
+   ;;   rdi = A0, rsi = A1, rdx = A2, r10 = A3, r8 = A4, r9 = A5
+   ;; Returns the kernel's result in rax (negative = -errno on error).
+   ;;
+   ;; Linux x86_64 only.  Signals `:syscall-direct-aarch64-unsupported'
+   ;; at compile time on aarch64 targets (matching the `--emit-aarch64-
+   ;; unsupported' pattern used by other x86_64-only ops).
+   ;;
+   ;; Byte-count is fixed across pass-1 and pass-2: 7 × (emit_arg + push)
+   ;; + 7 × pop + SYSCALL = deterministic sizes independent of arg content.
+   ((and (consp sexp) (eq (car sexp) 'syscall-direct))
+    (unless (= (length sexp) 8)
+      (signal 'nelisp-phase47-compiler-error
+              (list :syscall-direct-arity sexp)))
+    (list :kind 'syscall-direct
+          :nr (nelisp-phase47-compiler--parse-value
+               (nth 1 sexp) env fenv defuns)
+          :a0 (nelisp-phase47-compiler--parse-value
+               (nth 2 sexp) env fenv defuns)
+          :a1 (nelisp-phase47-compiler--parse-value
+               (nth 3 sexp) env fenv defuns)
+          :a2 (nelisp-phase47-compiler--parse-value
+               (nth 4 sexp) env fenv defuns)
+          :a3 (nelisp-phase47-compiler--parse-value
+               (nth 5 sexp) env fenv defuns)
+          :a4 (nelisp-phase47-compiler--parse-value
+               (nth 6 sexp) env fenv defuns)
+          :a5 (nelisp-phase47-compiler--parse-value
+               (nth 7 sexp) env fenv defuns)))
    ;; Function call (= head is a defined function name).
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
@@ -2254,7 +2287,8 @@ the node's class to consume the result correctly."
              'ptr-read-u32 'ptr-write-u32
              'alloc-bytes 'dealloc-bytes
              'cons-make 'cons-make-with-clone 'cons-set-car 'cons-set-cdr
-             'while 'cond 'logic)
+             'while 'cond 'logic
+             'syscall-direct)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (plist-get node :kind) node))
         (kind
@@ -2441,6 +2475,8 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-value value-ir buf)
          (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
          (nelisp-phase47-compiler--emit-value (plist-get node :body) buf)))
+      ('syscall-direct
+       (nelisp-phase47-compiler--emit-syscall-direct node buf))
       (kind
        (signal 'nelisp-phase47-compiler-error
                (list :unknown-value-kind kind))))))
@@ -2693,6 +2729,51 @@ args are rejected at parse time per class."
     ;; in rax (default) or f64 in xmm0 (when :ret-class = f64).  Both
     ;; are already in place by SysV ABI; nothing else to do.
     (ignore ret-class)))
+
+(defun nelisp-phase47-compiler--emit-syscall-direct (node buf)
+  "Emit a Linux x86_64 raw SYSCALL instruction for NODE into BUF.
+NODE is a `:kind syscall-direct' IR node with keys :nr, :a0, :a1,
+:a2, :a3, :a4, :a5 (all value-producing sub-nodes returning i64).
+
+Evaluation strategy (push/pop avoids clobbering param spill slots):
+  1. Evaluate each argument in left-to-right (NR, A0..A5) order,
+     pushing rax after each evaluation (7 pushes total; TOS = A5
+     after the final push, NR is deepest).
+  2. Pop in reverse into the Linux SYSCALL ABI registers:
+       pop r9   ← A5   pop r8   ← A4   pop r10  ← A3
+       pop rdx  ← A2   pop rsi  ← A1   pop rdi  ← A0
+       pop rax  ← NR
+  3. Emit SYSCALL (0F 05).
+  Returns the kernel's raw i64 in rax (negative = -errno on error).
+
+Byte-count is fixed per pass so the pass-1/pass-2 invariant holds:
+  7 × (emit_arg: variable, but same in both passes) + 7 × push +
+  7 × pop + SYSCALL = deterministic per defun.
+
+x86_64 only — callers should gate with `:requires-arch x86_64' in
+the compile-elisp-objects manifest."
+  (let ((nr (plist-get node :nr))
+        (a0 (plist-get node :a0))
+        (a1 (plist-get node :a1))
+        (a2 (plist-get node :a2))
+        (a3 (plist-get node :a3))
+        (a4 (plist-get node :a4))
+        (a5 (plist-get node :a5)))
+    ;; 1. Evaluate and push each arg onto the stack (NR first = deepest).
+    (dolist (arg (list nr a0 a1 a2 a3 a4 a5))
+      (nelisp-phase47-compiler--emit-value arg buf)
+      (nelisp-asm-x86_64-push buf 'rax))
+    ;; 2. Pop into Linux SYSCALL ABI regs (reverse order = TOS = A5 first).
+    ;;    Linux SYSCALL: rax=nr, rdi=a0, rsi=a1, rdx=a2, r10=a3, r8=a4, r9=a5.
+    (nelisp-asm-x86_64-pop buf 'r9)
+    (nelisp-asm-x86_64-pop buf 'r8)
+    (nelisp-asm-x86_64-pop buf 'r10)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-pop buf 'rax)
+    ;; 3. Execute SYSCALL.
+    (nelisp-asm-x86_64-syscall buf)))
 
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access emit ----
 

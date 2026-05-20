@@ -34,4 +34,3 @@ pub(crate) use bridge::{
 };
 mod hash;
 mod strings;
-mod syscall;

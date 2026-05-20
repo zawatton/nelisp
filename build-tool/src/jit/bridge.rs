@@ -80,6 +80,10 @@ extern "C" {
     fn nl_eval_inner();
     // Nullary redecl — symbol-presence only for `_ELISP_ARCHIVE_ANCHOR'.
     fn nl_jit_alias();
+    // Phase 47 swap — nl_jit_syscall_call + nl_jit_syscall_supported_p
+    // moved from `jit/syscall.rs' to Phase 47 .o.
+    fn nl_jit_syscall_call();
+    fn nl_jit_syscall_supported_p();
 }
 
 // Typed declaration for the actual `nl_jit_alias' call in `unified_fn_ptr'.
@@ -93,7 +97,7 @@ extern "C" {
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 70] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 72] = [
     nelisp_jit_add2,
     nelisp_jit_sub2,
     nelisp_jit_mul2,
@@ -164,6 +168,8 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 70] = [
     nl_jit_string_match_p,
     nl_jit_alias,
     nl_eval_inner,
+    nl_jit_syscall_call,
+    nl_jit_syscall_supported_p,
 ];
 
 /// Type-guard a JIT name argument: accept Symbol or Str, reject others.

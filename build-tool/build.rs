@@ -409,6 +409,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // deleted from `eval/mod.rs'.  `nl_eval_inner' dispatches on
         // sexp-tag and delegates to Rust externs for symbol/cons paths.
         "nelisp-cc-eval-inner.el",
+        // Phase 47 — `nl_jit_syscall_call' + `nl_jit_syscall_supported_p'
+        // Rust bodies deleted from `build-tool/src/jit/syscall.rs' (full
+        // file delete, -57 LOC).  Uses the new `syscall-direct' grammar op.
+        "nelisp-cc-jit-syscall-call.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

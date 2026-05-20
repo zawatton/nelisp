@@ -1234,6 +1234,14 @@
     (nelisp-cc-eval-inner
      :source-var nelisp-cc-eval-inner--source
      :output "nl_eval_inner.o"
+     :requires-arch x86_64)
+    ;; Phase 47 — `nl_jit_syscall_call' + `nl_jit_syscall_supported_p'
+    ;; Rust bodies deleted from `build-tool/src/jit/syscall.rs' (full
+    ;; file delete, -57 LOC).  Uses the new `syscall-direct' grammar op
+    ;; that emits the Linux raw SYSCALL instruction directly.
+    (nelisp-cc-jit-syscall-call
+     :source-var nelisp-cc-jit-syscall-call--source
+     :output "nl_jit_syscall_call.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
