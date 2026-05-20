@@ -404,6 +404,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // writes `Sexp::Cons(box)' into *out.
         "nelisp-cc-cons-prepend-clone.el",
         "nelisp-cc-jit-secure-hash.el",
+        // Phase 47 swap — sha224/256/384/512/md5 ext arm.
+        // Replaces `nl_jit_secure_hash_non_sha1' Rust function in hash.rs.
+        "nelisp-cc-jit-secure-hash-ext.el",
         // Phase 47 swap — `nl_jit_string_match_p' literal/anchored fast-path
         // migration from `build-tool/src/jit/regex.rs'.
         "nelisp-cc-jit-regex.el",

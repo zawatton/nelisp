@@ -9,11 +9,11 @@
 ;;; Commentary:
 
 ;; Phase 47 migration of the SHA1 arm of `nl_jit_secure_hash' from
-;; `build-tool/src/jit/hash.rs'.  The Rust function now handles only
-;; sha224/sha256/sha384/sha512/md5 under the name
-;; `nl_jit_secure_hash_non_sha1'; this object provides the new
-;; `nl_jit_secure_hash' trampoline that intercepts sha1 Symbol calls
-;; and delegates everything else to the Rust fallback.
+;; `build-tool/src/jit/hash.rs'.  The sha224/sha256/sha384/sha512/md5
+;; arms are now handled by `nl_jit_secure_hash_non_sha1_ext' from
+;; `nelisp-cc-jit-secure-hash-ext.el' (Phase 47 elisp, not Rust).
+;; This object provides the `nl_jit_secure_hash' trampoline that
+;; intercepts sha1 calls and delegates everything else to the ext object.
 ;;
 ;; Trampoline signature: `(*const Sexp, *const Sexp, *mut Sexp) -> i64'
 ;; (OK=0 / ERR=1), reached via `nl-jit-call-out-2' from
@@ -61,8 +61,8 @@
 ;;   `scripts/compile-elisp-objects.el' manifest entry -> `nl_jit_secure_hash.o'
 ;;   `build-tool/build.rs' manifest_sources: `"nelisp-cc-jit-secure-hash.el"'
 ;;   `build-tool/src/jit/bridge.rs': extern nl_jit_secure_hash + anchor entry
-;;   `build-tool/src/jit/hash.rs': renamed to `nl_jit_secure_hash_non_sha1',
-;;     sha1 arm + sha1 crate import deleted.
+;;   `build-tool/src/jit/hash.rs': DELETED (Wave 18t-W+ext: full migration)
+;;   `nelisp-cc-jit-secure-hash-ext.el': sha224/256/384/512/md5 Phase 47 impl
 
 ;;; Code:
 
@@ -372,7 +372,7 @@
        (nl_sha1_hex_word hex-buf 24 (ptr-read-u64 buf 704))
        (nl_sha1_hex_word hex-buf 32 (ptr-read-u64 buf 712))))
 
-    ;; ---- Stack-alignment trampoline for non-SHA1 extern-call ----------------
+    ;; ---- Stack-alignment trampoline for non-SHA1 elisp-call ----------------
     ;;
     ;; Phase 47 calling convention (see `a440f4af' / `1cdc2d9c'):
     ;;   - An odd-arity (1, 3, 5) GP defun has a `sub $8, rsp' in its
@@ -385,23 +385,20 @@
     ;;   body-entry rsp ≡ 0.  Calling any sub-function:
     ;;     push/pop N args → rsp back to 0
     ;;     sub $8 (needs-align=true) → rsp ≡ 8
-    ;;     call → callee entry rsp ≡ 0   ← wrong SysV entry for Rust callees
+    ;;     call → callee entry rsp ≡ 0   ← wrong SysV entry for callees
     ;;
     ;; This wrapper has ODD arity (3).  Called from nl_jit_secure_hash
     ;; it therefore receives entry rsp ≡ 0.  Its odd-arity prologue:
     ;;   push rbp (-8 → 8), 3 param pushes (-24 → 0), sub $8 (-8 → 8)
     ;;   body-entry rsp ≡ 8 mod 16
-    ;; extern-call from odd-arity body (needs-align=true):
+    ;; call from odd-arity body (needs-align=true):
     ;;   3 arg pushes (-24 → 0), 3 pops (+24 → 8), sub $8 (-8 → 0)
-    ;;   call → nl_jit_secure_hash_non_sha1 entry rsp ≡ 8 ✓ (SysV correct)
+    ;;   call → nl_jit_secure_hash_non_sha1_ext entry rsp ≡ 8 ✓
     ;;
-    ;; Using even arity (4) does NOT fix the problem: the misaligned call
-    ;; from nl_jit_secure_hash would give entry rsp ≡ 0 to the wrapper,
-    ;; then with even-arity no prologue sub + no needs-align sub → the
-    ;; extern-call still arrives at nl_jit_secure_hash_non_sha1 with
-    ;; entry rsp ≡ 0 (wrong).
+    ;; nl_jit_secure_hash_non_sha1_ext is the Phase 47 elisp object
+    ;; from nelisp-cc-jit-secure-hash-ext.el (sha256/sha224/sha512/sha384/md5).
     (defun nl_sha1_call_non_sha1 (algo-ptr str-ptr out)
-      (extern-call nl_jit_secure_hash_non_sha1 algo-ptr str-ptr out))
+      (extern-call nl_jit_secure_hash_non_sha1_ext algo-ptr str-ptr out))
 
     ;; ---- Main trampoline: nl_jit_secure_hash ----------------------------
     ;;

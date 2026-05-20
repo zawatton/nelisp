@@ -41,8 +41,8 @@ path = "src/bin/sexp-abi-emit.rs"
 # crate, no native asset constants, no seed loader / sqlite / syscall
 # pull-in.  build-tool now has zero internal-crate deps.
 #
-sha2 = "0.10"
-md5 = "0.7"
+# sha2 and md5 crates removed — Wave 18t-W+ext: migrated to Phase 47 elisp
+# in nelisp-cc-jit-secure-hash-ext.el
 # Doc 51 Track E (2026-05-04): libc for termios raw-mode + poll() to
 # enable interactive TTY input wiring under the nelisp driver.  Used
 # only by `terminal-raw-mode-enter' / `-leave' / `read-stdin-byte' /

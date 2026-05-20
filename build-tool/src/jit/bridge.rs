@@ -76,6 +76,8 @@ extern "C" {
     fn nelisp_bi_nl_fact_i64();
     fn nl_cons_prepend_clone();
     fn nl_jit_secure_hash();
+    // Phase 47 swap — nl_jit_secure_hash_non_sha1_ext from nelisp-cc-jit-secure-hash-ext.el
+    fn nl_jit_secure_hash_non_sha1_ext();
     fn nl_jit_string_match_p();
     fn nl_eval_inner();
     // Nullary redecl — symbol-presence only for `_ELISP_ARCHIVE_ANCHOR'.
@@ -101,7 +103,7 @@ extern "C" {
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 75] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
     nelisp_jit_add2,
     nelisp_jit_sub2,
     nelisp_jit_mul2,
@@ -169,6 +171,7 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 75] = [
     nelisp_bi_nl_fact_i64,
     nl_cons_prepend_clone,
     nl_jit_secure_hash,
+    nl_jit_secure_hash_non_sha1_ext,
     nl_jit_string_match_p,
     nl_jit_alias,
     nl_eval_inner,

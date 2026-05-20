@@ -1222,12 +1222,18 @@
      :source-var nelisp-cc-symbol-is-lambda--source
      :output "nl_symbol_is_lambda.o")
     ;; Phase 47 swap — `nl_jit_secure_hash' SHA1 arm migration from
-    ;; `build-tool/src/jit/hash.rs'.  SHA1 is now implemented in pure
-    ;; Phase 47 bitwise arithmetic; sha224/256/384/512/md5 are delegated
-    ;; to `nl_jit_secure_hash_non_sha1' (Rust fallback) via extern-call.
+    ;; `build-tool/src/jit/hash.rs'.  SHA1 is implemented in pure
+    ;; Phase 47 bitwise arithmetic; sha224/256/384/512/md5 are now also
+    ;; implemented in Phase 47 via nl_jit_secure_hash_non_sha1_ext.
     (nelisp-cc-jit-secure-hash
      :source-var nelisp-cc-jit-secure-hash--source
      :output "nl_jit_secure_hash.o")
+    ;; Phase 47 swap — sha224/256/384/512/md5 ext arm.
+    ;; Replaces `nl_jit_secure_hash_non_sha1' Rust function in
+    ;; `build-tool/src/jit/hash.rs' (-69 LOC, sha2+md5 crates removed).
+    (nelisp-cc-jit-secure-hash-ext
+     :source-var nelisp-cc-jit-secure-hash-ext--source
+     :output "nl_jit_secure_hash_ext.o")
     ;; Phase 47 swap — `nl_jit_string_match_p' literal/anchored fast-path
     ;; migration from `build-tool/src/jit/regex.rs'.  Implements the 7
     ;; hard-coded pattern branches and the fallback literal match in pure

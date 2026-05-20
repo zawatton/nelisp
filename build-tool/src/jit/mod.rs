@@ -31,4 +31,6 @@ pub(crate) use bridge::{
     bi_nl_jit_call_out_1i, bi_nl_jit_call_out_2, bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr,
     bi_nl_jit_call_syscall,
 };
-mod hash;
+// hash.rs deleted — sha224/256/384/512/md5 migrated to Phase 47 elisp
+// in nelisp-cc-jit-secure-hash-ext.el (Wave 18t-W+ext).
+// strings.rs deleted — nl_jit_format_float migrated to nlstr.rs (Wave 18z-YY).
