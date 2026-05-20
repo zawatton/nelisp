@@ -304,8 +304,6 @@ impl Env {
 
     mirror_op!(mutate: mirror_set_value => mirror_set_value_or_insert);
     mirror_op!(mutate: mirror_set_function => mirror_set_function_or_insert);
-    mirror_op!(clear: mirror_clear_value => mirror_clear_value);
-    mirror_op!(clear: mirror_clear_function => mirror_clear_function);
 
     pub fn mirror_install_entry(
         &mut self,
@@ -330,13 +328,6 @@ impl Env {
                 &constant_slot,
             );
         });
-    }
-
-    pub(crate) fn mirror_is_constant(&self, name: &str) -> bool {
-        self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_is_constant(mirror_ptr, sym_ptr) != 0
-        })
-        .unwrap_or(false)
     }
 
     pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
@@ -368,7 +359,6 @@ impl Env {
     mirror_op!(lookup: mirror_lookup_value(pub) => mirror_lookup_value);
     mirror_op!(lookup: mirror_lookup_function(pub) => mirror_lookup_function);
 
-    mirror_op!(pred: mirror_is_bound(pub(crate)) => mirror_is_bound);
     mirror_op!(pred: mirror_is_fbound(pub) => mirror_is_fbound);
 
     pub(crate) fn install_empty_frames_record_rust_direct(&mut self) {
