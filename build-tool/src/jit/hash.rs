@@ -1,4 +1,5 @@
-//! `nl-secure-hash` trampoline.
+//! `nl-secure-hash` non-SHA1 fallback (sha224/256/384/512/md5).
+//! SHA1 is handled by Phase 47 elisp object `nl_jit_secure_hash.o'.
 
 use crate::eval::sexp::Sexp;
 
@@ -29,9 +30,8 @@ fn text_bytes(v: &Sexp) -> Option<Vec<u8>> {
     }
 }
 
-/// Returns `TRAMPOLINE_ERR` for bad algorithm or non-string input.
 #[no_mangle]
-pub extern "C" fn nl_jit_secure_hash(
+pub extern "C" fn nl_jit_secure_hash_non_sha1(
     algo_arg: *const Sexp,
     str_arg: *const Sexp,
     out: *mut Sexp,
@@ -55,12 +55,6 @@ pub extern "C" fn nl_jit_secure_hash(
         }};
     }
     let hex = match algo.as_str() {
-        "sha1" => {
-            use sha1::Digest;
-            let mut h = sha1::Sha1::new();
-            h.update(&bytes);
-            hex_lower(&h.finalize())
-        }
         "sha256" => sha2_hex!(sha2::Sha256),
         "sha224" => sha2_hex!(sha2::Sha224),
         "sha384" => sha2_hex!(sha2::Sha384),

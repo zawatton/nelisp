@@ -75,11 +75,12 @@ extern "C" {
     fn nl_jit_symbol_name();
     fn nelisp_bi_nl_fact_i64();
     fn nl_cons_prepend_clone();
+    fn nl_jit_secure_hash();
 }
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 66] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 67] = [
     nelisp_jit_add2,
     nelisp_jit_sub2,
     nelisp_jit_mul2,
@@ -146,6 +147,7 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 66] = [
     nl_jit_symbol_name,
     nelisp_bi_nl_fact_i64,
     nl_cons_prepend_clone,
+    nl_jit_secure_hash,
 ];
 
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {

@@ -1191,7 +1191,14 @@
     ;; resolve to this .o unchanged.
     (nelisp-cc-symbol-is-lambda
      :source-var nelisp-cc-symbol-is-lambda--source
-     :output "nl_symbol_is_lambda.o"))
+     :output "nl_symbol_is_lambda.o")
+    ;; Phase 47 swap — `nl_jit_secure_hash' SHA1 arm migration from
+    ;; `build-tool/src/jit/hash.rs'.  SHA1 is now implemented in pure
+    ;; Phase 47 bitwise arithmetic; sha224/256/384/512/md5 are delegated
+    ;; to `nl_jit_secure_hash_non_sha1' (Rust fallback) via extern-call.
+    (nelisp-cc-jit-secure-hash
+     :source-var nelisp-cc-jit-secure-hash--source
+     :output "nl_jit_secure_hash.o"))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding

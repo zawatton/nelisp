@@ -397,6 +397,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (Doc 120.E); deep-clones car + cdr into a fresh NlConsBox and
         // writes `Sexp::Cons(box)' into *out.
         "nelisp-cc-cons-prepend-clone.el",
+        "nelisp-cc-jit-secure-hash.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
