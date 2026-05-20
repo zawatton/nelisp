@@ -143,6 +143,14 @@ within one compile but never collide between control-flow nodes.")
 Emit helpers consult this dynvar to pick the x86_64 or aarch64 code
 path while sharing the same parsed IR.")
 
+(defvar nelisp-phase47-compiler--next-rt-let-slot nil
+  "Cons cell `(N)' holding the next free runtime-let frame slot index.
+Bound by the `defun' parser around body parsing; N starts at the
+defun's param count (= first slot after param spill area).  Each
+`let-rt' parse bumps N by 1 and records the old N as the slot for
+that binding.  Nil at top level (= outside any defun parse), where
+runtime `let' is not yet supported.")
+
 (defvar nelisp-phase47-compiler--current-defun-arity nil
   "Arity of the defun currently being emitted, or nil during main `_start'.
 Bound dynamically by `--emit-defun' so inner emit helpers (= those
@@ -1456,6 +1464,53 @@ functions `((NAME . ARITY) ...)'."
                             (nelisp-phase47-compiler--parse-value
                              a env fenv defuns))
                           args))))
+   ;; (let ((VAR VAL)) BODY) — value context (= inside defun body).
+   ;; Compile-time-foldable values fold into ENV (= compile-time fold
+   ;; path, same as `--parse-stmt'); non-foldable values allocate a
+   ;; runtime frame slot (= `let-rt' IR node) so the var is reachable
+   ;; via the existing `ref' slot-load mechanism.  Requires an enclosing
+   ;; `defun' parse to have established `--next-rt-let-slot'.
+   ((and (consp sexp) (eq (car sexp) 'let))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :let-arity sexp)))
+    (let ((bindings (nth 1 sexp))
+          (body-sexp (nth 2 sexp)))
+      (unless (and (consp bindings) (= (length bindings) 1))
+        (signal 'nelisp-phase47-compiler-error
+                (list :let-multi-binding bindings)))
+      (let* ((binding (car bindings))
+             (var (car binding))
+             (val-sexp (cadr binding)))
+        (unless (symbolp var)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :let-var-not-symbol var)))
+        (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+            ;; Compile-time path: fold and extend ENV as before.
+            (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
+                   (new-env (cons (cons var val) env)))
+              (nelisp-phase47-compiler--parse-value
+               body-sexp new-env fenv defuns))
+          ;; Runtime path: allocate a frame slot, emit a `let-rt' node.
+          (unless nelisp-phase47-compiler--next-rt-let-slot
+            (signal 'nelisp-phase47-compiler-error
+                    (list :let-rt-requires-defun-context var)))
+          (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
+                 (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
+                            (1+ slot)))
+                 (val-ir (nelisp-phase47-compiler--parse-value
+                          val-sexp env fenv defuns))
+                 ;; Extend FENV: var → slot (gp class, no reg = not
+                 ;; a param but loads via the same `ref' mechanism).
+                 (new-fenv (cons (cons var (list :slot slot :class 'gp))
+                                 fenv))
+                 (body-ir (nelisp-phase47-compiler--parse-value
+                           body-sexp env new-fenv defuns)))
+            (list :kind 'let-rt
+                  :var var
+                  :slot slot
+                  :value-ir val-ir
+                  :body body-ir))))))
    (t
     (signal 'nelisp-phase47-compiler-error
             (list :not-value-expr sexp)))))
@@ -1547,15 +1602,31 @@ Returns one of:
         (unless (symbolp var)
           (signal 'nelisp-phase47-compiler-error
                   (list :let-var-not-symbol var)))
-        (unless (nelisp-phase47-compiler--int-foldable-p
-                 val-sexp env fenv)
-          (signal 'nelisp-phase47-compiler-error
-                  (list :let-non-const val-sexp)))
-        (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
-               (new-env (cons (cons var val) env))
-               (body-ir (nelisp-phase47-compiler--parse-stmt
-                         body new-env fenv defuns)))
-          (list :kind 'let :var var :value val :body body-ir)))))
+        (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+            (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
+                   (new-env (cons (cons var val) env))
+                   (body-ir (nelisp-phase47-compiler--parse-stmt
+                             body new-env fenv defuns)))
+              (list :kind 'let :var var :value val :body body-ir))
+          ;; Runtime path: mirrors the `--parse-value' `let-rt' path.
+          ;; Statement-context `let-rt' also requires an enclosing defun.
+          (unless nelisp-phase47-compiler--next-rt-let-slot
+            (signal 'nelisp-phase47-compiler-error
+                    (list :let-rt-requires-defun-context var)))
+          (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
+                 (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
+                            (1+ slot)))
+                 (val-ir (nelisp-phase47-compiler--parse-value
+                          val-sexp env fenv defuns))
+                 (new-fenv (cons (cons var (list :slot slot :class 'gp))
+                                 fenv))
+                 (body-ir (nelisp-phase47-compiler--parse-stmt
+                           body env new-fenv defuns)))
+            (list :kind 'let-rt
+                  :var var
+                  :slot slot
+                  :value-ir val-ir
+                  :body body-ir))))))
    ;; (defun NAME (PARAMS...) BODY)
    ;;
    ;; Doc 110 §110.E.1: PARAMS accept either bare symbols (= GP /
@@ -1619,13 +1690,22 @@ Returns one of:
                    (cons p (list :reg r :slot idx :class uniform-class)))
                  params param-regs)))
              ;; Body is a value-producing expression (= implicit return).
-             (body-ir (nelisp-phase47-compiler--parse-value
-                       body env new-fenv defuns)))
+             ;; Bind `--next-rt-let-slot' starting at arity so runtime
+             ;; `let-rt' bindings occupy slots arity, arity+1, ...
+             ;; The slot counter is a mutable cons cell; the final value
+             ;; gives us `rt-slot-count = (car cell) - arity'.
+             (rt-slot-cell (list arity))
+             (body-ir (let ((nelisp-phase47-compiler--next-rt-let-slot
+                             rt-slot-cell))
+                        (nelisp-phase47-compiler--parse-value
+                         body env new-fenv defuns)))
+             (rt-slot-count (- (car rt-slot-cell) arity)))
         (list :kind 'defun
               :name name
               :params params
               :param-regs param-regs
               :param-class uniform-class
+              :rt-slot-count rt-slot-count
               :body body-ir))))
    ;; Bare call in statement position (= side-effect; value discarded).
    ((and (consp sexp) (symbolp (car sexp))
@@ -1707,6 +1787,9 @@ defun bodies too so functions can call `write'."
                   (walk (cdr cl))))
                ('logic
                 (mapc #'walk (plist-get node :forms)))
+               ('let-rt
+                (walk (plist-get node :value-ir))
+                (walk (plist-get node :body)))
                (_ nil)))))
       (walk ir))
     (cons offsets rodata)))
@@ -1731,6 +1814,9 @@ walk; the emitter substitutes a no-op for the original site."
                ('defun (push node acc))
                ('seq (mapc #'walk (plist-get node :forms)))
                ('let (walk (plist-get node :body)))
+               ('let-rt
+                (walk (plist-get node :value-ir))
+                (walk (plist-get node :body)))
                (_ nil)))))
       (walk ir))
     (nreverse acc)))
@@ -1799,7 +1885,10 @@ the local frame.  Encoding: REX.W (= 0x48), MOV r64, r/m64 opcode
 disp8 = (- 8*(SLOT+1)) as a signed byte.  SLOT ranges over 0..5
 so the displacement is always in disp8 range; signals if SLOT is
 out of range for the current Doc 97 arity cap."
-  (unless (and (integerp slot) (<= 0 slot 5))
+  ;; Slot 0..5 = GP params (SysV AMD64 arity cap).  Slots 6+ are
+  ;; runtime `let-rt' bindings allocated beyond the param spill area.
+  ;; Upper bound 13 keeps the disp8 in [-128,0] range (= 8*(13+1)=112).
+  (unless (and (integerp slot) (<= 0 slot 13))
     (signal 'nelisp-phase47-compiler-error
             (list :ref-slot-out-of-range slot)))
   (if (eq nelisp-phase47-compiler--arch 'aarch64)
@@ -2343,6 +2432,15 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-cond node buf))
       ('logic
        (nelisp-phase47-compiler--emit-logic node buf))
+      ('let-rt
+       ;; Runtime let in value context: evaluate value-ir → rax, spill
+       ;; to frame slot, then evaluate body → rax (= function return).
+       (let* ((slot (plist-get node :slot))
+              (value-ir (plist-get node :value-ir))
+              (disp (- (* 8 (1+ slot)))))
+         (nelisp-phase47-compiler--emit-value value-ir buf)
+         (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
+         (nelisp-phase47-compiler--emit-value (plist-get node :body) buf)))
       (kind
        (signal 'nelisp-phase47-compiler-error
                (list :unknown-value-kind kind))))))
@@ -4451,6 +4549,16 @@ skipped here — they're emitted separately by the orchestrator."
       ('let
        (nelisp-phase47-compiler--emit-stmt
         (plist-get ir :body) buf str-offsets rodata-vaddr))
+      ('let-rt
+       ;; Runtime let: evaluate value-ir → rax, spill to frame slot,
+       ;; then walk body as statement.
+       (let* ((slot (plist-get ir :slot))
+              (value-ir (plist-get ir :value-ir))
+              (disp (- (* 8 (1+ slot)))))
+         (nelisp-phase47-compiler--emit-value value-ir buf)
+         (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
+         (nelisp-phase47-compiler--emit-stmt
+          (plist-get ir :body) buf str-offsets rodata-vaddr)))
       ('defun
        ;; Skip — handled by `--emit-defun' separately.
        nil)
@@ -4497,11 +4605,15 @@ return reg, untouched by epilogue)."
          (param-regs (plist-get defun-ir :param-regs))
          (param-class (or (plist-get defun-ir :param-class) 'gp))
          (body (plist-get defun-ir :body))
+         (rt-slot-count (or (plist-get defun-ir :rt-slot-count) 0))
          ;; Track this defun's arity for `--emit-extern-call' (Doc 111
          ;; §111.E #19-#26 stack alignment fix).  Inner emit helpers
          ;; bound under this `let*' see the param count via the dynvar
          ;; and can issue an extra `sub rsp, 8' before extern `call's
          ;; when arity is odd, restoring rsp ≡ 0 mod 16 SysV alignment.
+         ;; For rt-let: by the time the body runs rsp is already aligned
+         ;; (= param pad + rt-let pad both applied below), so arity here
+         ;; still reflects the param count for the extern-call pad calc.
          (nelisp-phase47-compiler--current-defun-arity (length param-regs)))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
         (let ((gp-arg-regs '(x0 x1 x2 x3 x4 x5))
@@ -4569,7 +4681,15 @@ return reg, untouched by epilogue)."
         (dolist (preg param-regs)
           (nelisp-asm-x86_64-push buf preg))
         (when (= 1 (logand (length param-regs) 1))
-          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8)))
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+        ;; Reserve frame slots for runtime `let-rt' bindings.
+        ;; Round up to even so the post-prologue rsp stays 16-byte
+        ;; aligned (each slot is 8 bytes; 2 slots = 16 bytes).
+        (when (> rt-slot-count 0)
+          (let ((rt-rounded (if (zerop (logand rt-slot-count 1))
+                                rt-slot-count
+                              (1+ rt-slot-count))))
+            (nelisp-asm-x86_64-sub-imm32 buf 'rsp (* 8 rt-rounded)))))
        ;; f64 class — one bulk `sub rsp, 8*ARITY-ROUNDED', then
        ;; per-param `movsd [rbp - 8*(slot+1)], xmmN'.  ARITY-
        ;; ROUNDED is `arity' rounded up to the next even value

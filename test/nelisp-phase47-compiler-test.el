@@ -1525,6 +1525,119 @@ level, not in the emitted machine code)."
       (ignore-errors (delete-file path-fl))
       (ignore-errors (delete-file path-in)))))
 
+;; ---- §T.let-rt Runtime let tests (Wave 18w+) ----
+
+(ert-deftest nelisp-phase47-compiler/parse-let-rt-call-value ()
+  "Parse `(defun f (x) (let ((y (id x))) y))' — let with a call value.
+The `id' call is not foldable so the `let' becomes a `let-rt' IR node
+with a slot index beyond the param count."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq (defun id (x) x)
+                    (defun f (x) (let ((y (id x))) y)))))
+         ;; `seq' → second form is the `f' defun.
+         (f-ir (nth 1 (plist-get ir :forms)))
+         (body (plist-get f-ir :body)))
+    (should (eq (plist-get f-ir :kind) 'defun))
+    ;; body is a `let-rt' node (= non-foldable value).
+    (should (eq (plist-get body :kind) 'let-rt))
+    (should (eq (plist-get body :var) 'y))
+    ;; Slot must be ≥ arity (= 1 for `f (x)').
+    (should (>= (plist-get body :slot) 1))
+    ;; value-ir is a `call' to `id'.
+    (let ((val-ir (plist-get body :value-ir)))
+      (should (eq (plist-get val-ir :kind) 'call))
+      (should (eq (plist-get val-ir :name) 'id)))
+    ;; body body is a `ref' for `y' via the rt slot.
+    (let* ((body-ir (plist-get body :body))
+           (slot (plist-get body :slot)))
+      (should (eq (plist-get body-ir :kind) 'ref))
+      (should (eq (plist-get body-ir :var) 'y))
+      (should (= (plist-get body-ir :slot) slot)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-let-rt-slot-beyond-params ()
+  "Runtime let slot is param-count + rt-let-index."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun g (a b) (let ((t1 (+ a b))) t1))))
+         (body (plist-get ir :body)))
+    ;; `g' has 2 params (slots 0, 1); runtime let must use slot >= 2.
+    (should (eq (plist-get body :kind) 'let-rt))
+    (should (>= (plist-get body :slot) 2))))
+
+(ert-deftest nelisp-phase47-compiler/parse-let-rt-rt-slot-count ()
+  "`defun' IR carries `:rt-slot-count' equal to number of runtime lets."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq (defun id (x) x)
+                    (defun f (x) (let ((y (id x))) y))))))
+    (let ((f-ir (nth 1 (plist-get ir :forms))))
+      (should (= (plist-get f-ir :rt-slot-count) 1)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-let-ct-in-defun-body-no-let-rt ()
+  "Compile-time `let' inside defun body does NOT produce `let-rt'."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun f (x) (let ((k 7)) (+ x k)))))
+         (body (plist-get ir :body)))
+    ;; Compile-time fold: body is `arith', no `let-rt'.
+    (should (eq (plist-get body :kind) 'arith))
+    (should (= (plist-get ir :rt-slot-count) 0))))
+
+(ert-deftest nelisp-phase47-compiler/let-rt-requires-defun-context ()
+  "Runtime `let' outside any defun context signals an error."
+  ;; Top-level `let' where the value is not foldable (= extern-call ref
+  ;; in a synthetic fenv that would block folding).  The easiest way to
+  ;; trigger this is a symbol in the outer fenv (= defun param), but
+  ;; `--parse' starts with fenv=nil.  Use a direct test of the raw
+  ;; parser path: a `let' whose value is an extern-call form.
+  ;; At top level `--next-rt-let-slot' is nil → should signal.
+  (should-error
+   (nelisp-phase47-compiler--parse
+    ;; `extern-call' is never compile-time foldable, so this forces
+    ;; the runtime path.  At top level (= no enclosing defun parse)
+    ;; `--next-rt-let-slot' is nil → error.
+    '(let ((x (extern-call getpid))) (exit x)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/e2e-let-rt-call-result ()
+  "`(let ((y (id x))) (+ y 1))' inside a defun exits with x+1."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "let-rt-call"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun id (x) x)
+           (defun f (x) (let ((y (id x))) (+ y 1)))
+           (exit (f 6)))
+     path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 7)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-let-rt-arith-value ()
+  "`(let ((y (+ a b))) (+ y 1))' where a+b is a runtime arith."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "let-rt-arith"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun f (a b) (let ((y (+ a b))) (+ y 1)))
+           (exit (f 3 4)))
+     path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 8)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-let-rt-two-bindings ()
+  "Two sequential runtime `let' bindings (= nested) resolve correctly."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "let-rt-two"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun id (x) x)
+           (defun f (x)
+             (let ((a (id x)))
+               (let ((b (+ a 10)))
+                 (+ a b))))
+           (exit (f 5)))
+     path)
+    ;; a = id(5) = 5; b = a + 10 = 15; result = a + b = 20.
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 20)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here
