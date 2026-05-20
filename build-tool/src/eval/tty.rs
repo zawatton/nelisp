@@ -1,7 +1,7 @@
 //! Unix TTY: statics, signal handlers, Once installers, pointer getters.
 //! Syscall bodies live in Phase 47 elisp .o (nelisp-cc-bi-tty-raw.el).
 #![cfg(unix)]
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Once;
 use crate::eval::error::EvalError;
 
@@ -14,7 +14,6 @@ pub(crate) static SIGCONT_ARRIVED: AtomicI64 = AtomicI64::new(0);
 static HOOKS_ONCE: Once = Once::new();
 static WINSIZE_ONCE: Once = Once::new();
 static JOBCTRL_ONCE: Once = Once::new();
-static SIGINT_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 fn restore_signal_safe() {
     if TERMIOS_SAVED.swap(0, Ordering::SeqCst) != 0 {
@@ -90,6 +89,3 @@ pub fn current_winsize() -> Option<(u16, u16)> {
 }
 pub fn take_winsize_changed() -> bool { unsafe { crate::elisp_cc_spike::tty_take_atomic(WINSIZE_CHANGED.as_ptr()) != 0 } }
 pub fn take_sigcont() -> bool { unsafe { crate::elisp_cc_spike::tty_take_atomic(SIGCONT_ARRIVED.as_ptr()) != 0 } }
-
-// SIGINT_INSTALLED compat shim (AtomicBool, read only; not used by Phase 47 elisp).
-pub fn sigint_installed_compat() -> bool { SIGINT_INSTALLED.load(Ordering::SeqCst) }
