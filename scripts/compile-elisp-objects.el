@@ -894,6 +894,10 @@
      :source-var nelisp-cc-nlchartable-drop--source
      :output "nelisp_nlchartable_drop.o"
      :requires-arch x86_64)
+    (nelisp-cc-nlchartable-clone
+     :source-var nelisp-cc-nlchartable-clone--source
+     :output "nelisp_nlchartable_clone.o"
+     :requires-arch x86_64)
     ;; Doc 124 §124.B-E — mechanical sibling Clone kernels.  Identical
     ;; shape to §124.A modulo the per-type REFCOUNT_OFFSET literal:
     ;;   §124.B NlVector: 24, §124.C NlCell: 32,

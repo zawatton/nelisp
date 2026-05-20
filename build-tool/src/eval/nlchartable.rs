@@ -3,7 +3,7 @@
 use crate::eval::sexp::CharTableInner;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 #[repr(C)]
 pub struct NlCharTable {
@@ -40,11 +40,7 @@ impl NlCharTableRef {
 
 impl Clone for NlCharTableRef {
     fn clone(&self) -> Self {
-        unsafe {
-            (*self.ptr.as_ptr())
-                .refcount
-                .fetch_add(1, Ordering::Relaxed);
-        }
+        unsafe { crate::elisp_cc_spike::nlchartable_clone(self.ptr.as_ptr() as *mut i64) };
         NlCharTableRef {
             ptr: self.ptr,
             _marker: PhantomData,

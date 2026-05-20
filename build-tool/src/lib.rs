@@ -140,6 +140,7 @@ pub mod elisp_cc_spike {
         fn nelisp_nlstr_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlboolvector_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlchartable_drop(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlchartable_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_mirror_lookup_entry(mirror_ptr: *const Sexp, sym_ptr: *const Sexp) -> i64;
         fn nelisp_mirror_lookup_value(
             mirror_ptr: *const Sexp,
@@ -481,6 +482,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(nlboolvector_clone: nelisp_nlboolvector_clone, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlboolvector_drop: nelisp_nlboolvector_drop, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlchartable_drop: nelisp_nlchartable_drop, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlchartable_clone: nelisp_nlchartable_clone, (box_ptr: *mut i64) -> i64);
 
     /// Raw mirror entry lookup; borrowed pointer, 0 on miss.
     pub unsafe fn mirror_lookup_entry(
