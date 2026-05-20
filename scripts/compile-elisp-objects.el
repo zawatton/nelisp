@@ -1198,7 +1198,14 @@
     ;; to `nl_jit_secure_hash_non_sha1' (Rust fallback) via extern-call.
     (nelisp-cc-jit-secure-hash
      :source-var nelisp-cc-jit-secure-hash--source
-     :output "nl_jit_secure_hash.o"))
+     :output "nl_jit_secure_hash.o")
+    ;; Phase 47 swap — `nl_jit_string_match_p' literal/anchored fast-path
+    ;; migration from `build-tool/src/jit/regex.rs'.  Implements the 7
+    ;; hard-coded pattern branches and the fallback literal match in pure
+    ;; Phase 47 byte-level ops.  Rust `regex.rs' body deleted (-71 LOC).
+    (nelisp-cc-jit-regex
+     :source-var nelisp-cc-jit-regex--source
+     :output "nl_jit_string_match_p.o"))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding
