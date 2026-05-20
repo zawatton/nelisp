@@ -31,25 +31,19 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
     }))
 }
 #[no_mangle] pub unsafe extern "C" fn nl_let_setup(bindings_list: *const Sexp, env: *mut std::ffi::c_void, sequential: i64) -> i64 {
-    fn parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
-        match b {
-            Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
-            Sexp::Cons(_) => {
-                let parts = list_elements(b)?;
-                let name = match &parts[0] { Sexp::Symbol(s) => s.clone(), o => return Err(EvalError::wrong_type("symbol", o.clone())) };
-                Ok((name, if parts.len() >= 2 { eval(&parts[1], env)? } else { Sexp::Nil }))
-            }
-            o => Err(EvalError::wrong_type("symbol or (symbol value) pair", o.clone())),
-        }
-    }
+    let parse = |b: &Sexp, e: &mut Env| -> Result<(String, Sexp), EvalError> { match b {
+        Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
+        Sexp::Cons(_) => { let parts = list_elements(b)?; let name = match &parts[0] { Sexp::Symbol(s) => s.clone(), o => return Err(EvalError::wrong_type("symbol", o.clone())) }; Ok((name, if parts.len() >= 2 { eval(&parts[1], e)? } else { Sexp::Nil })) }
+        o => Err(EvalError::wrong_type("symbol or (symbol value) pair", o.clone())),
+    }};
     let e = &mut *(env as *mut Env);
     let bindings = match list_elements(&*bindings_list) { Ok(b) => b, Err(_) => return 1 };
     if sequential != 0 {
         e.frame_push_rust_direct();
-        for b in &bindings { match parse_binding(b, e) { Ok((n, v)) => e.bind_local(&n, v), Err(_) => { e.frame_pop_rust_direct(); return 1; } } }
+        for b in &bindings { match parse(b, e) { Ok((n, v)) => e.bind_local(&n, v), Err(_) => { e.frame_pop_rust_direct(); return 1; } } }
     } else {
         let mut values = Vec::with_capacity(bindings.len());
-        for b in &bindings { match parse_binding(b, e) { Ok(pair) => values.push(pair), Err(_) => return 1 } }
+        for b in &bindings { match parse(b, e) { Ok(pair) => values.push(pair), Err(_) => return 1 } }
         e.frame_push_rust_direct();
         for (name, val) in values { e.bind_local(&name, val); }
     }

@@ -4,9 +4,7 @@ pub struct SourcePos { pub line: u32, pub col: u32 }
 impl fmt::Display for SourcePos { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}:{}", self.line, self.col) } }
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReadError {
-    Parse { msg: String, pos: SourcePos },
-    UnexpectedEof { msg: String, pos: SourcePos },
-    NotYetImplemented { feature: String, pos: SourcePos },
+    Parse { msg: String, pos: SourcePos }, UnexpectedEof { msg: String, pos: SourcePos }, NotYetImplemented { feature: String, pos: SourcePos },
 }
 macro_rules! readerr_ctor {
     ($fn:ident => $variant:ident, $field:ident) => {
@@ -14,9 +12,7 @@ macro_rules! readerr_ctor {
     };
 }
 impl ReadError {
-    readerr_ctor!(parse => Parse, msg);
-    readerr_ctor!(unexpected_eof => UnexpectedEof, msg);
-    readerr_ctor!(not_yet_implemented => NotYetImplemented, feature);
+    readerr_ctor!(parse => Parse, msg); readerr_ctor!(unexpected_eof => UnexpectedEof, msg); readerr_ctor!(not_yet_implemented => NotYetImplemented, feature);
 }
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

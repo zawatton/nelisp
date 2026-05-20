@@ -165,15 +165,13 @@ fn cc_slot_1(arg: &Sexp, f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp) -> S
 fn bool_sexp(v: bool) -> Sexp { if v { Sexp::T } else { Sexp::Nil } }
 fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> { if rc < 0 { Err(EvalError::internal(format!("{name}: {path}: kernel returned {rc}"))) } else { Ok(Sexp::T) } }
 #[no_mangle] pub extern "C" fn nl_bi_f64_trunc_div_bits(n: *const Sexp, d: *const Sexp) -> i64 { let f=|p:*const Sexp|match unsafe{&*p}{Sexp::Int(i)=>*i as f64,Sexp::Float(v)=>*v,_=>0.0}; (f(n)/f(d)).to_bits() as i64 }
-fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> {
-    require_arity(name, args, 1, Some(1))?;
-    let p = resolve_path(&args[0], env)?; Ok((p.clone(), Sexp::Str(p.to_string_lossy().into_owned())))
-}
+fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> { require_arity(name, args, 1, Some(1))?; let p = resolve_path(&args[0], env)?; Ok((p.clone(), Sexp::Str(p.to_string_lossy().into_owned()))) }
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (_, ps) = path_arg1("nelisp--syscall-canonicalize", args, env)?;
     let mut buf = vec![0u8; libc::PATH_MAX as usize];
     if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&ps as *const _, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
-    Ok(Sexp::Str(String::from_utf8_lossy(&buf[..buf.iter().position(|&b| b == 0).unwrap_or(buf.len())]).into_owned()))
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    Ok(Sexp::Str(String::from_utf8_lossy(&buf[..end]).into_owned()))
 }
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (p, ps) = path_arg1("nelisp--syscall-read-file", args, env)?;
@@ -181,11 +179,13 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
     if n == 0 { return Ok(Sexp::Str(String::new())); }
     let mut buf = vec![0u8; n];
     let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&ps as *const _, buf.as_mut_ptr(), n as i64) } as i32 as i64;
-    if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n));
+    if rc < 0 { return Ok(Sexp::Nil); }
+    buf.truncate((rc as usize).min(n));
     Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
 }
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() };
+    let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?;
+    let mut sb: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps as *const _, (&mut sb as *mut libc::stat) as *mut u8) };
     let tag = if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" }};
     Ok(Sexp::Symbol(tag.into()))

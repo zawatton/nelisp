@@ -28,9 +28,7 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
     let mut env = Env::new_global();
     let rd = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
     let dir = if rd.is_empty() { ".".into() } else if rd.ends_with('/') { rd } else { rd + "/" };
-    env.set_value("default-directory", Sexp::Str(dir.clone()))?;
-    env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?;
-    env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?;
+    env.set_value("default-directory", Sexp::Str(dir.clone()))?; env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?; env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?;
     eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env)
 }
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -66,10 +64,7 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
             let (captured, fi, bs) = if head == "closure" {
                 if parts.len() < 3 { return Err(EvalError::internal("closure missing env / args / body")); }
                 (parts[1].clone(), 2usize, 3usize)
-            } else {
-                if parts.len() < 2 { return Err(EvalError::internal("lambda missing args / body")); }
-                (Sexp::Nil, 1, 2)
-            };
+            } else { if parts.len() < 2 { return Err(EvalError::internal("lambda missing args / body")); } (Sexp::Nil, 1, 2) };
             let mut out = Sexp::Nil;
             let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(&captured, &parts[fi], &Sexp::list_from(&parts[bs..]), &Sexp::list_from(args), env as *mut Env as *mut std::ffi::c_void, &mut out) };
             if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) }
