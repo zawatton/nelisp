@@ -1,6 +1,3 @@
-//! Integration tests for `nelisp_build_tool::eval::nlchartable`.
-//! Moved from `src/eval/nlchartable.rs#[cfg(test)] mod tests`.
-
 use nelisp_build_tool::eval::nlchartable::*;
 use nelisp_build_tool::eval::sexp::{CharTableInner, Sexp};
 

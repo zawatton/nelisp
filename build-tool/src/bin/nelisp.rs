@@ -1,16 +1,3 @@
-//! End-user `nelisp` CLI — minimal bootstrap stub (Doc 128).
-//!
-//! All CLI parsing + sub-command dispatch lives in
-//! `lisp/nelisp-cli.el::nelisp-cli-main'.  This binary's only job is
-//! to bring up the global eval environment, hand the (Rust-owned)
-//! argv across the boundary as a Lisp list of strings, and translate
-//! the elisp integer exit code into a `std::process::ExitCode'.
-//!
-//! Pre-Doc-128 this file was ~209 LOC of `Command' enum + match +
-//! per-subcommand helpers; the move keeps the CLI surface (= every
-//! flag and behaviour) identical while shrinking the Rust side to a
-//! pure transport layer.
-
 use std::process::ExitCode;
 
 use nelisp_build_tool::eval::sexp::Sexp;

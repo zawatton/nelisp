@@ -1,14 +1,3 @@
-//! Doc 111 §111.E #2 probe — direct calls into the Phase 47-compiled
-//! `mirror_lookup_value' helper.  Verifies the elisp body's
-//! composition of #1 (`mirror_lookup_entry') + §111.B
-//! `record-slot-ref' over slot 0 end-to-end.
-//!
-//! Mirror construction helpers (`build_empty_mirror' + `install_entry')
-//! are duplicated from `elisp_cc_mirror_lookup_entry_probe.rs' rather
-//! than shared via `tests/common/mod.rs' — Doc 111 §111.E batch keeps
-//! one-probe-file-per-helper for clean composition and copy-cost is
-//! ~30 LOC.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

@@ -1,35 +1,7 @@
-//! Doc 127 probe — pure-elisp `nelisp_bi_signal_dispatch' kernel.
-//!
-//! Validates the Doc 127 tag-dispatch swap: the body of `bi_signal'
-//! delegates the three-way symbol-name comparison ("quit" / "arith-error"
-//! / "wrong-type-argument") to the elisp .o kernel
-//! `nelisp_bi_signal_dispatch'.  The kernel receives four `*const Sexp'
-//! pointers — the TAG symbol and three reference symbols — and returns
-//! an i64 discriminant:
-//!
-//!   0  — TAG == "quit"
-//!   1  — TAG == "arith-error"
-//!   2  — TAG == "wrong-type-argument"
-//!   3  — any other tag  (= `EvalError::UserError')
-//!
-//! Test cases (≥ 4, one per discriminant value):
-//!   1. "quit"                 → 0
-//!   2. "arith-error"          → 1
-//!   3. "wrong-type-argument"  → 2
-//!   4. "my-custom-error"      → 3
-//!
-//! Pattern mirrors `elisp_cc_rc_kind_probe.rs' — stack-local `Sexp'
-//! values are passed by raw pointer to the unsafe extern call.  The
-//! three reference symbols (`q', `a', `w') are constructed with the
-//! exact same strings the thin Rust shell uses in `bi_signal', so the
-//! `symbol-eq' byte comparison in the elisp body always matches.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// Build a `Sexp::Symbol' on the stack and invoke the kernel.
-/// `tag_name' is compared against the three reference names.
 fn dispatch(tag_name: &str) -> i64 {
     let tag = Sexp::Symbol(tag_name.into());
     let q = Sexp::Symbol("quit".into());

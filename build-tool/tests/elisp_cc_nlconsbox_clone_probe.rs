@@ -1,45 +1,7 @@
-//! Doc 124 §124.A probe — pure-elisp `nelisp_nlconsbox_clone' kernel.
-//!
-//! Validates the first stage of the `nl*.rs::Clone/Drop' substrate
-//! elisp化 chain: the `impl Clone for NlConsBoxRef' body can be
-//! expressed as `rc_inc + return-the-pointer' in pure elisp via the
-//! §122.E `atomic-fetch-add' grammar op.  Mirrors the Doc 123 §123.A
-//! `nelisp_rc_inc' probe layout — the elisp body computes
-//! `box_ptr + 64` internally (= REFCOUNT_OFFSET for NlConsBox) so the
-//! probe just lays out a buffer where the refcount slot lives at
-//! byte offset 64 from the supplied `box_ptr'.
-//!
-//! Test cases (≥ 3):
-//!   1. Clone single — refcount slot must advance by exactly 1 and
-//!      the returned pointer must equal the input `box_ptr'.
-//!   2. Clone N times — refcount slot must equal initial + N and
-//!      every call must return the same pointer (= the cloned-
-//!      handle's pointer is an alias, not a payload copy).
-//!   3. Concurrent clone from 2 threads — final refcount must
-//!      equal initial + (per_thread * 2) with no lost updates
-//!      under the SeqCst `atomic-fetch-add' contract.
-//!
-//! Substrate gating role: each case exercises the exact contract
-//! that §124.B-E's NlVector / NlCell / NlRecord / NlStr Clone
-//! kernels will reuse — the only per-type variable is the
-//! REFCOUNT_OFFSET literal (= 64 here, 24/32/24/24 for the rest
-//! per Doc 124 §1 audit).  Until §124.F's Rust impl Clone sweep
-//! lands, the production `impl Clone for NlConsBoxRef' continues
-//! to use the inline `unsafe { ... fetch_add(1, Relaxed); }' body;
-//! this probe runs the elisp kernel through a separate path
-//! (`elisp_cc_spike::nlconsbox_clone') to keep the two implementations
-//! testable side-by-side during the staging window.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Layout-pinned struct matching `NlConsBox' for the probe:
-/// `#[repr(C)]` keeps `refcount' at byte offset 64 (= same offset
-/// as the production `NlConsBox' per `nlrc.rs:292' compile-time
-/// assert).  We use `[u8; 32]` for car/cdr instead of `Sexp` because
-/// the elisp body never dereferences those bytes — it only adds 64
-/// to the base pointer and atomic-fetches the i64 slot there.
 #[repr(C)]
 struct ProbeBox {
     car: [u8; 32],
@@ -56,8 +18,6 @@ impl ProbeBox {
         }
     }
 
-    /// Cast to the elisp body's `*mut i64' arg type.  The elisp body
-    /// adds 64 internally; we pass the *base* address.
     fn as_box_ptr(&self) -> *mut i64 {
         self as *const ProbeBox as *mut i64
     }

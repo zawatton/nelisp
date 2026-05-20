@@ -1,13 +1,3 @@
-//! Doc 117 §117.A.1 probe — direct calls into the
-//! Phase 47-compiled `make-vector' object.
-//!
-//! Verifies the allocate + fill body wired from
-//! `lisp/nelisp-cc-bi-make-vector.el' through
-//! `nelisp_build_tool::elisp_cc_spike::bi_make_vector'.  The Rust
-//! dispatcher in `eval::builtins::bi_make_vector' validates the
-//! non-negative N invariant before calling, so the probe stays in
-//! the contract (N >= 0) for every case here.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

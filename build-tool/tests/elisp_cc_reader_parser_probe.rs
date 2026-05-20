@@ -1,48 +1,10 @@
-//! Doc 116 §116.B probes — direct calls into the Phase 47-compiled
-//! pure-elisp Reader parser (`nelisp_reader_parse_one').  Pattern
-//! mirrors `elisp_cc_reader_lexer_probe.rs' for the §116.A lexer.
-//!
-//! Each test allocates a `Sexp::Str' source, sets up the slot pool
-//! Vector (= MutStr scratch slot, payload slot, const-Nil source slot,
-//! per-depth working slots), allocates a `Sexp::Int(0)' cursor slot
-//! + a `Sexp::Nil' result slot, then calls `reader_parse_one' and
-//! asserts the produced Sexp value matches the expected shape.
-//!
-//! Scope (= §116.B MVP):
-//!   - Atom leaves: Nil / T / Int / Symbol / Str / Char / RadixInt /
-//!     Float (= Doc 122 §122.G unlock).
-//!   - Proper list construction `(a b c)' + empty list `()'.
-//!   - Dotted-pair construction `(a . b)'.
-//!   - Quote-family desugar `'x' / `` `x `` / `,x' / `,@x' / `#'x'.
-//!   - Nested lists `((a b) c)' / `(1 (2 3))'.
-//!
-//! Out of scope (= §116.C top-level + §116.D file deletion):
-//!   vectors `[..]', records `#s(..)', byte-code `#[..]', the public
-//!   `(read-str S)' / `(read-all S)' helpers.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::elisp_cc_spike;
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// Per-test slot-pool capacity (= covers nesting depth ~32 with
-/// 4 working slots per depth + 3 fixed-position slots).
 const POOL_SIZE: usize = 3 + 4 * 32;
 
-/// Parse one top-level form from SOURCE.  Returns the parsed Sexp
-/// (= `*result_slot' after the call).  Panics if the parser reports
-/// a non-success status.
-/// Returns the parsed Sexp.  Leaks `pool_slot' (= via `mem::forget')
-/// because cons-make's MVP refcount semantics (= raw 32-byte payload
-/// copy without refcount bump on inner boxes) means `result_slot'
-/// shares heap boxes with `pool_slot[*]'; dropping pool first would
-/// trigger use-after-free on the shared boxes (= the test would
-/// observe garbage Sexp values or hit a SIGSEGV during the drop
-/// chain).  The leaked memory is reclaimed by the test process exit.
-/// See `nelisp-phase47-compiler--emit-cons-make' for the constraint;
-/// a future §116.C top-level wrapper will either deep-clone the
-/// parser output before returning to the caller OR refcount-bump
-/// the shared boxes in `cons-make' itself (= Doc 123 cluster).
 fn parse_one(source: &str) -> Sexp {
     let src = Sexp::Str(source.to_string());
     let mut cursor_slot = Sexp::Int(0);

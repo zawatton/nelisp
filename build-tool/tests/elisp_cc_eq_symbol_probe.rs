@@ -1,6 +1,3 @@
-//! Doc 101 §101.C probe — `(eq SYMBOL SYMBOL)' swapped from the Rust
-//! `sexp_eq' symbol arm into a Phase 47-compiled elisp `.o'.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

@@ -1,6 +1,3 @@
-//! Integration tests for `nelisp_build_tool::eval::nlstr`.
-//! Moved from `src/eval/nlstr.rs#[cfg(test)] mod tests`.
-
 use nelisp_build_tool::eval::nlstr::*;
 
 #[test]

@@ -1,9 +1,3 @@
-//! Doc 120 §120.D probe — exercises the Phase-47-compiled elisp
-//! replacement for `build-tool/src/jit/access.rs's `nl_jit_access_
-//! aref' trampoline.  ABI: `(*const Sexp, i64, *mut Sexp) -> i64'
-//! returning 0 on OK (Vector / BoolVector in-range), 1 on ERR
-//! (negative idx / OOR / non-array tag).
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::jit_aref;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

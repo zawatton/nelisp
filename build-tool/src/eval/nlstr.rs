@@ -1,25 +1,14 @@
-//! `NlStr` backs `Sexp::MutStr`: `value` at offset 0, refcount trailer after
-//! `String`. Clone/Drop dispatch through the elisp kernels.
-
 use std::sync::atomic::AtomicI64;
 
 use crate::eval::sexp::Sexp;
 
-/// Per-process uninterned-symbol counter.  Pointer surfaced to the
-/// Phase 47 elisp body via `nl_make_symbol_counter_ptr'.
 static MAKE_SYMBOL_COUNTER: AtomicI64 = AtomicI64::new(0);
 
-/// Return `*mut i64' to `MAKE_SYMBOL_COUNTER' for use with the
-/// Phase 47 `atomic-fetch-add' grammar op in the elisp body of
-/// `nl_jit_make_symbol'.
 #[no_mangle]
 pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 {
     std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64
 }
 
-/// IEEE-754 float body builder.  CONV ∈ {f/F/e/E/g/G}, PREC ≥ 0.
-/// Writes unsigned/unpadded body; elisp does sign + padding.
-/// Migrated from `build-tool/src/jit/strings.rs' (file deleted).
 #[no_mangle]
 pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: *mut Sexp) -> i64 {
     let conv_ch = match char::from_u32(conv) {
@@ -89,14 +78,11 @@ unsafe fn mut_str_value_mut<'a>(p: *mut Sexp) -> &'a mut String {
     unsafe { &mut (*((*p).mut_str_box_ptr() as *mut NlStr)).value }
 }
 
-/// Phase 47 delegate for `nl_str_is_alphanumeric_at' unicode slow-path.
-/// `cp' is a Unicode codepoint (i64); returns 1 if alphanumeric, 0 otherwise.
 #[no_mangle]
 pub extern "C" fn nl_is_char_alphanumeric(cp: i64) -> i64 {
     char::from_u32(cp as u32).map_or(0, |c| c.is_alphanumeric() as i64)
 }
 
-/// Phase 47 delegate: replace codepoint at char-index `idx'; caller guards MutStr+idx.
 #[no_mangle]
 pub unsafe extern "C" fn nl_mut_str_set_codepoint_raw(
     arg: *const Sexp,
@@ -170,8 +156,6 @@ pub unsafe extern "C" fn nl_str_to_float(bytes_ptr: *const u8, len: i64, slot: *
     }
 }
 
-/// Append the decimal representation of `n` to `*buf` (must be `Sexp::MutStr`).
-/// Returns 0 on success, 1 if `*buf` is not a MutStr.
 #[no_mangle]
 pub unsafe extern "C" fn nl_i64_append_to_mut_str(n: i64, buf: *mut Sexp) -> i64 {
     let s = unsafe { &mut *buf };
@@ -183,11 +167,6 @@ pub unsafe extern "C" fn nl_i64_append_to_mut_str(n: i64, buf: *mut Sexp) -> i64
     }
 }
 
-/// Append the decimal float representation of the f64 whose bit
-/// pattern is `bits` to `*buf` (must be `Sexp::MutStr`).
-/// Appends ".0" suffix when the formatted string lacks a decimal
-/// point / exponent marker, preserving Elisp float-literal semantics.
-/// Returns 0 on success, 1 if `*buf` is not a MutStr.
 #[no_mangle]
 pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp) -> i64 {
     let x = f64::from_bits(bits as u64);

@@ -1,18 +1,3 @@
-//! Doc 99 §99.C probe — recursive i64 factorial implemented in elisp,
-//! validated end-to-end against a Rust reference implementation.
-//!
-//! This is the smallest "real swap" pattern: the algorithmic body
-//! lives only in `lisp/nelisp-cc-fact-i64.el', compiled to a `.o' by
-//! the Phase 47 chain and linked into the binary via §99.B's wiring.
-//! The Rust `bi_nl_fact_i64' dispatch arm is a Sexp-unwrap / range-
-//! check / Sexp-wrap shim — no Rust copy of the computation exists in
-//! production.
-//!
-//! The cross-impl check below has a *test-only* Rust reference
-//! `rust_fact_i64_reference' so we can prove the elisp result is
-//! correct (= matches the canonical factorial sequence).  This
-//! reference is not used in production code paths.
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn rust_fact_i64_reference(n: i64) -> i64 {
     if n <= 1 {

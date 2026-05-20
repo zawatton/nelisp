@@ -1,31 +1,3 @@
-//! Doc 123 §123.C probe — pure-elisp `nelisp_rc_kind' kernel.
-//!
-//! Validates the tag-byte reader twin of §123.A: the body of
-//! `bi_nl_rc_kind' (= `args[0].tag() as i64' which reads the
-//! `#[repr(C, u8)]' discriminant byte at offset 0 of the outer
-//! `Sexp' enum) migrates to elisp via the §122.E `ptr-read-u8'
-//! grammar op.
-//!
-//! Pattern mirrors `elisp_cc_rc_inc_probe.rs' (§123.A sibling).
-//! The elisp body reads `*(u8*)sexp_ptr' (= offset 0); the probe
-//! constructs real `Sexp' enum values on the stack and passes their
-//! addresses to the elisp kernel.
-//!
-//! Test cases (≥ 3):
-//!   1. Nil variant — tag = `SEXP_TAG_NIL = 0'.
-//!   2. T variant — tag = `SEXP_TAG_T = 1'.
-//!   3. Int variant — tag = `SEXP_TAG_INT = 2'.
-//!   4. Cons variant — tag = `SEXP_TAG_CONS = 7' (= the refcount-bearing
-//!      variant, the one §123.A's inc kernel targets).
-//!   5. Vector / Cell / Record — coverage across the boxed-variant tag
-//!      range to confirm offset-0 read works for every variant shape.
-//!
-//! Substrate gating role: `nelisp_rc_kind' is the dispatch primitive
-//! the §123.D walk-children + future GC walker uses to decide which
-//! per-kind subroutine to invoke.  Verifying every tag round-trips
-//! here proves the cycle collector's dispatch table will work after
-//! the §123.F sweep swaps the Rust body for the elisp kernel.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::nlcell::NlCellRef;
@@ -36,9 +8,6 @@ use nelisp_build_tool::eval::sexp::{
     SEXP_TAG_VECTOR,
 };
 
-/// Cast a `&Sexp' to the elisp kernel's `*const u8' arg type.  The
-/// kernel reads offset 0 of the address, which is the `#[repr(C, u8)]'
-/// discriminant byte.
 fn sexp_as_ptr(s: &Sexp) -> *const u8 {
     s as *const Sexp as *const u8
 }

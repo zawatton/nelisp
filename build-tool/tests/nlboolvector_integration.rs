@@ -1,6 +1,3 @@
-//! Integration tests for `nelisp_build_tool::eval::nlboolvector`.
-//! Moved from `src/eval/nlboolvector.rs#[cfg(test)] mod tests`.
-
 use nelisp_build_tool::eval::nlboolvector::*;
 
 #[test]

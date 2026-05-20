@@ -1,6 +1,3 @@
-//! Integration tests for `nelisp_build_tool::eval::nlrecord`.
-//! Moved from `src/eval/nlrecord.rs#[cfg(test)] mod tests`.
-
 use nelisp_build_tool::eval::nlrecord::*;
 use nelisp_build_tool::eval::sexp::Sexp;
 

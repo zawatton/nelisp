@@ -1,9 +1,3 @@
-//! Doc 111 §111.E #12 probe — `mirror_install_entry' (= all-4-slots
-//! update on existing entry).  The auto-vivify branch (= prepend new
-//! cons cell to bucket) stays in Rust under the dispatcher for now;
-//! this probe exercises only the existing-entry update path which
-//! returns 1 on hit.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

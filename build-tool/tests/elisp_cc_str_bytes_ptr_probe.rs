@@ -1,39 +1,5 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-//! Doc 122 §122.H — probe for the new `str-bytes-ptr' Phase 47 grammar op
-//! (= Rust `nl_str_bytes_ptr' extern) and the first I/O syscall sweep
-//! consumer `nelisp_bi_write_stderr_line' (Doc 117 §117.B).
-//!
-//! The `nl_str_bytes_ptr' extern is the *outward* counterpart of §122.A's
-//! `sexp-write-str' allocator: given a `Sexp::Str' / `Sexp::Symbol' /
-//! `Sexp::MutStr', return the raw `*const u8' data pointer of the inner
-//! byte buffer.  Pair with `str-len' (= byte count) to reach exactly
-//! `len' UTF-8 bytes at `[ptr, ptr + len)'.
-//!
-//! Coverage:
-//!
-//!   1. `empty_str' / `empty_symbol' / `empty_mut_str' — the
-//!      `String::as_ptr()' contract permits a `dangling-but-aligned'
-//!      pointer for the empty case; we don't dereference but assert
-//!      non-null is *not* required (= can be anything).
-//!   2. `ascii_str_round_trip' — read the bytes back from the elisp-
-//!      returned pointer using `std::slice::from_raw_parts(ptr, len)'
-//!      and check byte-for-byte against the original input.  Exercises
-//!      the `Sexp::Str' arm + the full lib.rs round-trip.
-//!   3. `utf8_str_round_trip' — same shape with a multi-byte UTF-8
-//!      payload (Japanese 藤澤 = 6 bytes / 2 chars).  Proves the data
-//!      pointer reaches the raw UTF-8 byte stream, not a pre-decoded
-//!      `&str' view.
-//!   4. `symbol_round_trip' — `Sexp::Symbol(String)' shares the inline
-//!      `String' header with `Sexp::Str' but has a different tag byte;
-//!      the §122.H Rust extern's match arm covers both.
-//!   5. `mut_str_round_trip' — `Sexp::MutStr(NlStrRef)' lives one
-//!      indirection away from the bytes (= the §122.H Rust extern's
-//!      reason for existing).  Proves the dispatch handles the
-//!      heap-resident `NlStr.value: String' the same way.
-//!   6. `non_string_returns_null' — passing `Sexp::Int(42)' returns
-//!      `null' (= the catch-all match arm).
-
 use nelisp_build_tool::eval::sexp::Sexp;
 
 // `Sexp' is `#[repr(C, u8)]' (= see `eval/sexp_abi_assert.rs') so passing

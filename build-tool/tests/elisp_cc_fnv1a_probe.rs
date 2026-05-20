@@ -1,32 +1,7 @@
-//! Doc 115 §115.7 — probe test for the pure-elisp `nelisp_fnv1a' helper.
-//!
-//! Verifies the Phase 47 `.o' compiled from `lisp/nelisp-cc-fnv1a.el'
-//! computes the 32-bit FNV-1a hash bit-for-bit against the algorithm's
-//! published reference vectors plus the byte-for-byte transcription of
-//! the deleted Rust `env_helpers::mirror_fnv1a' free fn (= the impl
-//! whose responsibilities `nelisp_fnv1a' now owns).
-//!
-//! Coverage axes:
-//!   1. Empty input — returns the FNV offset basis `0x811C9DC5'.
-//!   2. Single-byte ASCII — matches reference vector `0xE40C292C' (= "a").
-//!   3. Short ASCII word — matches reference vector `0xBF9CF968' (= "foobar").
-//!   4. Multi-byte UTF-8 — matches the byte-iteration reference (= the
-//!      elisp body uses `str-byte-at', not codepoint iteration; this
-//!      diverges from the old Rust `s.chars()' loop but is benign
-//!      because env mirror keys are pure ASCII).
-//!   5. Long string (100+ chars) — matches the byte-iteration reference,
-//!      proving the tail-recursive inner loop terminates correctly past
-//!      Phase 47's usual short-input fast path.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// FNV-1a 32-bit hash iterating raw bytes — bit-for-bit equivalent to
-/// the pure-elisp `nelisp_fnv1a' body's `str-byte-at' loop.
-///
-/// This is the byte-iteration reference oracle used to compare the
-/// elisp `.o' output for arbitrary inputs (including multi-byte UTF-8).
 fn fnv1a_bytes(s: &str) -> u32 {
     let mut h: u32 = 0x811C9DC5;
     for b in s.bytes() {
@@ -36,11 +11,6 @@ fn fnv1a_bytes(s: &str) -> u32 {
     h
 }
 
-/// Drive the elisp `.o' for a fresh `Sexp::Symbol(s)' and return the
-/// low 32 bits of the returned i64 as a `u32`.  The Phase 47 body
-/// truncates after every multiply (= `(logand h #xFFFFFFFF)') so the
-/// high 32 bits are always 0; we cast to u32 to make the comparison
-/// against `fnv1a_bytes' obvious.
 fn run_fnv1a(s: &str) -> u32 {
     let sym = Sexp::Symbol(s.into());
     let raw = unsafe { nelisp_build_tool::elisp_cc_spike::fnv1a(&sym as *const Sexp) };

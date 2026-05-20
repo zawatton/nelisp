@@ -1,33 +1,3 @@
-//! Doc 122 §122.G probes — direct calls into the Rust externs +
-//! the Phase 47-compiled `sexp-write-float' grammar op for the
-//! Float allocator pair (`nl_sexp_write_float' /
-//! `nl_str_to_float').  Verifies end-to-end round-trips:
-//!
-//!   - `nl_sexp_write_float' writes `Sexp::Float(val)' inline.
-//!   - `nl_str_to_float' parses byte ranges into f64 + writes
-//!     `Sexp::Float(_)' / `Sexp::Nil' on success / failure.
-//!   - The elisp `sexp-write-float' Phase 47 grammar op compiles
-//!     and links against `nl_sexp_write_float' (= driven via the
-//!     `nelisp_sexp_write_float' probe defun which takes both args
-//!     as f64-class params and bit-casts the slot pointer through
-//!     xmm0).
-//!
-//! Substrate role: §122.G is the Reader Float unlock (Doc 116.B+
-//! extension).  After this stage, the §116.B elisp parser handles
-//! kind 21 Float tokens directly via the `nl_str_to_float' extern
-//! — no more Rust fallback for `1.5' / `1e3' inputs.  Future Doc
-//! 124.E NlStr Drop + Doc 120.E `format_float' swap also reuse
-//! the `nl_sexp_write_float' lowering.
-//!
-//! Test cases:
-//!   1. Write 0.0 — boundary, simplest f64.
-//!   2. Write 1.5 — typical Reader input.
-//!   3. Write NaN — bit-pattern round-trip check.
-//!   4. Write -0.0 — sign-bit preservation.
-//!   5. `nl_str_to_float' parse "3.14" success.
-//!   6. `nl_str_to_float' parse "not-a-number" failure.
-//!   7. Grammar op end-to-end via `nelisp_sexp_write_float'.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::elisp_cc_spike;

@@ -1,5 +1,3 @@
-//! `NlCell` backs `Sexp::Cell`: `value` at 0, refcount in the trailer.
-
 use crate::eval::sexp::Sexp;
 
 crate::define_nlbox!(
@@ -22,8 +20,6 @@ impl NlCell {
 }
 
 impl NlCellRef {
-    /// # Safety
-    /// `raw` must be non-null, live, and transfer one strong ref.
     #[doc(hidden)]
     pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef {
         NlCellRef {
@@ -49,8 +45,6 @@ impl PartialEq for NlCellRef {
 #[allow(improper_ctypes)]
 extern "C" { pub fn nl_alloc_cell(initial: *const Sexp) -> *mut NlCell; }
 
-/// # Safety
-/// `cell` must be live and `val` initialised.
 #[no_mangle]
 pub unsafe extern "C" fn nl_cell_set_value(cell: *mut NlCell, val: *const Sexp) {
     (*cell).set_value((*val).clone());

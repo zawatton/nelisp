@@ -1,6 +1,3 @@
-//! Integration tests for `nelisp_build_tool::eval::nlconsbox`.
-//! Moved from `src/eval/nlconsbox.rs#[cfg(test)] mod tests`.
-
 use nelisp_build_tool::eval::nlconsbox::*;
 use nelisp_build_tool::eval::sexp::Sexp;
 use std::sync::atomic::{AtomicUsize, Ordering};

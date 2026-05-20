@@ -1,7 +1,3 @@
-//! Integration tests for `eval::sexp` (= moved out of the source file's
-//! `#[cfg(test)] mod tests' for src LOC reduction).  Same coverage,
-//! just lives next to the other integration probes.
-
 use nelisp_build_tool::eval::nlboolvector::NlBoolVectorRef;
 use nelisp_build_tool::eval::nlcell::NlCellRef;
 use nelisp_build_tool::eval::nlrecord::NlRecordRef;
@@ -74,12 +70,6 @@ fn fmt_float_keeps_decimal() {
     assert_eq!(fmt_sexp(&Sexp::Float(3.14)), "3.14");
 }
 
-/// Doc 62 Phase 5 — pin every `SEXP_TAG_*' constant to the actual
-/// `#[repr(C, u8)]' discriminant byte.  JIT-emitted code reads the
-/// tag from offset 0 of every Sexp pointer; if a re-ordering of
-/// variants ever changes the discriminant numeric values, this
-/// test fails BEFORE the JIT silently mis-classifies cons cells
-/// as integers (or worse).
 #[test]
 fn variant_tags_are_stable() {
     assert_eq!(variant_tag(&Sexp::Nil), SEXP_TAG_NIL);
@@ -115,12 +105,6 @@ fn variant_tags_are_stable() {
     );
 }
 
-/// `#[repr(C, u8)]' should keep the Sexp footprint at the same
-/// alignment / largest-payload bound it had under default repr.
-/// We don't pin the exact byte size (= depends on String/Rc layout
-/// details that are stable in practice but not guaranteed by spec)
-/// but the alignment is fixed, and the size must accommodate the
-/// largest payload.
 #[test]
 fn sexp_layout_alignment_and_size_sane() {
     assert_eq!(std::mem::align_of::<Sexp>(), 8);
@@ -134,12 +118,10 @@ fn sexp_layout_alignment_and_size_sane() {
     );
 }
 
-// ----------------------------------------------------------------
 // Phase A.5 ABI helpers — round-trip read of `*_box_ptr' against
 // the existing match-arm path.  If the payload offset (= 8) ever
 // shifts under us (= compiler change, repr override), these fail
 // BEFORE JIT-emitted IR mis-decodes a Sexp value.
-// ----------------------------------------------------------------
 
 #[test]
 fn sexp_payload_offset_is_eight() {
@@ -157,9 +139,6 @@ fn sexp_payload_offset_is_eight() {
     assert_eq!(direct, payload_at_8);
 }
 
-/// Emit a `*_box_ptr_round_trips_to_match` test for one boxed variant:
-/// build a Sexp via `$build`, then assert the `$accessor` raw pointer
-/// equals the pointer obtained via `match` + `Deref`.
 macro_rules! box_ptr_round_trip_test {
     ($test:ident, $variant:ident, $build:expr, $accessor:ident) => {
         #[test]

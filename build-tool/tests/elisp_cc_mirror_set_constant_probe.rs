@@ -1,6 +1,3 @@
-//! Doc 111 §111.E #11 probe — `mirror_set_constant' (= slot 3
-//! constant-flag write).
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

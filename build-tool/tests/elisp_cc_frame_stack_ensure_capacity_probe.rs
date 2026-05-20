@@ -1,8 +1,3 @@
-//! Doc 111 §111.E #20 probe — `frame_stack_ensure_capacity' Phase 47
-//! helper.  The elisp body checks current cap < needed via §111.C
-//! `vector-len' + §111.B `record-slot-ref-ptr', then delegates the
-//! grow to the `nl_frame_stack_ensure_capacity' Rust shim.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

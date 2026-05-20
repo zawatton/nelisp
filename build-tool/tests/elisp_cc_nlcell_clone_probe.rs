@@ -1,27 +1,7 @@
-//! Doc 124 §124.C probe — pure-elisp `nelisp_nlcell_clone' kernel.
-//!
-//! Mechanical port of §124.A's NlConsBox Clone probe to NlCell.
-//! Only difference: REFCOUNT_OFFSET = 32 instead of 64 (= NlCell
-//! holds one `Sexp' slot at offset 0 — half the value-payload of
-//! NlConsBox's `(car, cdr)' pair — so the refcount trails at +32).
-//!
-//! Test cases (≥ 3):
-//!   1. Clone single — refcount @ +32 must advance by 1 and the
-//!      returned pointer must equal the input.
-//!   2. Clone N times — slot must equal initial + N.
-//!   3. Concurrent clone from 2 threads × 10 000 iters — final slot
-//!      must equal 20 000 (= no lost updates under SeqCst).
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Layout-pinned struct matching `NlCell' for the probe:
-/// `#[repr(C)]' keeps `refcount' at byte offset 32 (= same offset
-/// as the production `NlCell' per the `offset_of!(NlCell, refcount)
-/// == size_of::<Sexp>()' assertion at `nlcell.rs:285').  We use
-/// `[u8; 32]' for the Sexp slot because the elisp body never reads
-/// the value bytes.
 #[repr(C)]
 struct ProbeBox {
     value: [u8; 32],

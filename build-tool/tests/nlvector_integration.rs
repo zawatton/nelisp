@@ -1,6 +1,3 @@
-//! Integration tests for `nelisp_build_tool::eval::nlvector`.
-//! Moved from `src/eval/nlvector.rs#[cfg(test)] mod tests`.
-
 use nelisp_build_tool::eval::nlvector::*;
 use nelisp_build_tool::eval::sexp::Sexp;
 

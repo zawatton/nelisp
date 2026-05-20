@@ -1,32 +1,18 @@
-//! Reader dispatch layer.  Every input routes through the pure-elisp
-//! pipeline `nelisp_reader_lex_one' + `nelisp_reader_parse_one' (via
-//! `elisp_cc_spike').  The parser uses `cons-make-with-clone' (Doc 120.E)
-//! so every NlConsBoxRef in the result tree is refcount-1-owned; normal
-//! Drop handles the slot pool and stale results without mem::forget.
-
 mod error;
 pub use error::{ReadError, SourcePos};
 pub use crate::eval::sexp::{fmt_sexp, Sexp};
 
 use crate::elisp_cc_spike;
 
-/// Slot-pool capacity (= ~3*N slots for N-deep cons; 1024 covers
-/// stdlib defmacro bodies).  Matches `elisp_cc_reader_parser_probe::POOL_SIZE'.
 const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
 
-/// Initial scratch MutStr capacity (= covers ~all stdlib atoms without realloc).
 const SCRATCH_CAP: i64 = 64;
 
-/// Shared message for features the elisp Reader cannot yet handle.
 const NYI_MSG: &str =
     "feature unsupported by elisp Reader (record `#s(..)', byte-code `#[..]', or syntax error)";
 
-/// Default position attached to whole-input errors before lex positions exist.
 const START_POS: SourcePos = SourcePos { line: 1, col: 1 };
 
-/// Parse one top-level form.  Trailing tokens error — use [`read_all`]
-/// for multi-form.  Unsupported features (`#s(..)', `#[..]') surface
-/// as `NotYetImplemented'.
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
     match try_elisp_read_str(input) {
         Some(result) => result,
@@ -34,7 +20,6 @@ pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
     }
 }
 
-/// Parse every top-level form.  Empty input → empty vector.
 pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
     match try_elisp_read_all(input) {
         Some(result) => result,
@@ -75,14 +60,10 @@ enum ElispParseOutcome {
     Empty,
 }
 
-/// Per-call lex+parse state.  `cons-make-with-clone' in the parser .o
-/// bumps all inner-box refcounts at write time, so Rust's default Drop
-/// handles pool_slot and result_slot correctly.
 struct ElispReadState {
     src: Sexp,
     cursor_slot: Sexp,
     result_slot: Sexp,
-    /// Slot pool: slot 0 = MutStr scratch, 1 = payload, 2 = const-Nil, 3+ per-depth.
     pool_slot: Sexp,
 }
 
@@ -109,7 +90,6 @@ impl ElispReadState {
         }
     }
 
-    /// Lex one token; returns kind code, advances cursor_slot, may update payload slot 1.
     fn lex_peek_advancing(&mut self) -> i64 {
         unsafe {
             let pool_ptr = &self.pool_slot as *const Sexp;
@@ -180,8 +160,6 @@ impl ElispReadState {
     }
 }
 
-/// # Safety
-/// `pool_slot' must be a live `Sexp::Vector' with > `index' slots.
 unsafe fn vector_slot_ptr(pool_slot: *const Sexp, index: usize) -> *const Sexp {
     match &*pool_slot {
         Sexp::Vector(v) => {

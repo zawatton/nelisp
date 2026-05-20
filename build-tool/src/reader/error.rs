@@ -1,9 +1,5 @@
-//! Reader-side error types, kept in the reader crate to avoid pulling
-//! them into `eval/error.rs`.
-
 use std::fmt;
 
-/// Source position as 1-indexed line and UTF-8 byte column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourcePos {
     pub line: u32,
@@ -16,7 +12,6 @@ impl fmt::Display for SourcePos {
     }
 }
 
-/// Reader-side failure.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReadError {
     Parse { msg: String, pos: SourcePos },

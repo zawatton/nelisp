@@ -1,6 +1,3 @@
-//! Minimal Elisp evaluator — public surface: [`eval_str`], [`eval_str_all`], [`eval`], [`Env`], [`EvalError`].
-//! Special forms dispatch through [`special_forms::apply_special`].
-
 pub mod builtins;
 pub mod env_helpers;
 #[cfg(unix)]
@@ -72,7 +69,6 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
     eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env)
 }
 
-/// Recursive evaluator entry point.
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if quit::take_quit_flag() { return Err(EvalError::Quit); }
     if env.current_recursion >= env.max_recursion {
@@ -160,8 +156,6 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
     }
 }
 
-/// Phase 47 ABI: elisp .o → Rust eval() re-entry. 0=Ok/1=Err; error stashed in nelisp--last-signal-data.
-/// # Safety: form/env/out are live pointers; env is `&mut Env` reinterpreted as `*mut c_void`.
 #[no_mangle]
 pub unsafe extern "C" fn nelisp_eval_call(
     form: *const Sexp,
@@ -175,7 +169,6 @@ pub unsafe extern "C" fn nelisp_eval_call(
     }
 }
 
-/// Like `nelisp_eval_call` but writes signal_data into err_out on rc=1 (for condition-case).
 #[no_mangle]
 pub unsafe extern "C" fn nelisp_eval_call_with_err(
     form: *const Sexp,
@@ -190,8 +183,6 @@ pub unsafe extern "C" fn nelisp_eval_call_with_err(
     }
 }
 
-/// Phase 47 ABI: apply a function (closure/lambda/builtin). args_list is a proper cons list.
-/// # Safety: all pointer args are live; env is `&mut Env` as `*mut c_void`.
 #[no_mangle]
 pub unsafe extern "C" fn nelisp_apply_function(
     func: *const Sexp,
@@ -207,7 +198,6 @@ pub unsafe extern "C" fn nelisp_apply_function(
     }
 }
 
-/// Re-construct EvalError from a `(tag . data)' sexp produced by `signal_data()'.
 pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fb: &str) -> EvalError {
     match sexp {
         Sexp::Cons(b) => match &b.car {
@@ -219,7 +209,6 @@ pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fb: &str) -> EvalError {
     }
 }
 
-/// Read stashed signal from `nelisp--last-signal-data' and reconstruct EvalError.
 pub(crate) fn consume_stashed_error(env: &mut Env, fallback_name: &str) -> EvalError {
     match env.lookup_value("nelisp--last-signal-data") {
         Ok(sexp) => sexp_to_eval_error(&sexp, fallback_name),

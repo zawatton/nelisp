@@ -1,19 +1,3 @@
-//! Doc 122 §122.A probes — direct calls into the two Phase 47-
-//! compiled `sexp-write-str' / `sexp-write-symbol' grammar ops.
-//! Verifies end-to-end round-trips:
-//!
-//!   - Empty string allocation
-//!   - Single-byte ASCII string ("A")
-//!   - Multi-byte UTF-8 input passed as raw bytes
-//!   - Symbol allocation
-//!   - Round-trip: `(sexp-write-str slot bytes len)' followed by
-//!     reading `Sexp::Str(s)' back and asserting the string value.
-//!
-//! The probe matches the pattern in `phase47_cell.rs' (Doc 111
-//! §111.D) — each test allocates a `Sexp::Nil' slot, invokes the
-//! elisp-compiled extern via the safe `elisp_cc_spike' wrapper, and
-//! asserts the slot's new `Sexp::Str' / `Sexp::Symbol' contents.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

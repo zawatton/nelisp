@@ -1,7 +1,3 @@
-//! Doc 111 §111.E #9 probe — `mirror_clear_value' (= slot 0 cleared
-//! to the unbound-marker sentinel passed in by caller, mirrors
-//! `makunbound').
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

@@ -1,14 +1,3 @@
-//! Stage 1 probe — pure-elisp `nl_bind_formals_impl' Phase 47 `.o' kernel.
-//!
-//! Validates the CPS state-machine implementation of formals binding:
-//! Required / Optional / Rest modes, arity errors, and type errors.
-//! Each test constructs formals and args cons lists, calls
-//! nl_bind_formals_impl, then inspects the Env for bound values.
-//!
-//! The parallel Rust implementation (`nl_bind_formals' / `nl_push_and_bind')
-//! is untouched at Stage 1; these tests verify behavior parity between
-//! the new elisp `.o' and the Rust reference.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
@@ -21,7 +10,6 @@ fn int(n: i64) -> Sexp {
     Sexp::Int(n)
 }
 
-/// Call nl_bind_formals_impl(formals, args, env, 0) directly.
 fn call_bf(formals: Sexp, args: Sexp, env: &mut Env) -> i64 {
     unsafe {
         nelisp_build_tool::elisp_cc_spike::bind_formals_impl_call(
@@ -33,7 +21,6 @@ fn call_bf(formals: Sexp, args: Sexp, env: &mut Env) -> i64 {
     }
 }
 
-/// Look up a bound value in Env — returns None if not found.
 fn lookup(env: &mut Env, name: &str) -> Option<Sexp> {
     // Use eval to call the variable reference.
     env.lookup_value(name).ok()

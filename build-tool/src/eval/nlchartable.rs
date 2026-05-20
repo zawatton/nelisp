@@ -1,5 +1,3 @@
-//! `NlCharTable` backs `Sexp::CharTable`: `inner` at 0, refcount trailer.
-
 use crate::eval::sexp::{CharTableInner, Sexp};
 use crate::jit::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
 
@@ -48,7 +46,6 @@ fn ct_get(rc: &NlCharTableRef, c: i64) -> Sexp {
         .unwrap_or_else(|| inner.default_val.clone())
 }
 
-/// Phase 47 delegate: char_table_get lookup; caller guarantees CharTable tag.
 #[no_mangle]
 pub unsafe extern "C" fn nl_char_table_get_raw(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
@@ -56,7 +53,6 @@ pub unsafe extern "C" fn nl_char_table_get_raw(arg: *const Sexp, idx: i64, out: 
     TRAMPOLINE_OK
 }
 
-/// Phase 47 delegate: char_table_set_one mutation; caller guarantees CharTable tag.
 #[no_mangle]
 pub unsafe extern "C" fn nl_char_table_set_raw(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64 {
     let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };

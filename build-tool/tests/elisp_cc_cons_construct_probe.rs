@@ -1,6 +1,3 @@
-//! Doc 101 §101.D probe — `(cons A B)' swapped from the Rust/JIT
-//! constructor body into a Phase 47-compiled elisp `.o'.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

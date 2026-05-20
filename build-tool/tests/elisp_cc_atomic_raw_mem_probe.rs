@@ -1,29 +1,3 @@
-//! Doc 122 §122.E probes — direct calls into the six Phase 47-
-//! compiled atomic + raw memory grammar ops (= mirrors
-//! `elisp_cc_sexp_write_str_probe.rs` (§122.A) and
-//! `elisp_cc_mut_str_probe.rs` (§122.B) patterns).
-//!
-//! Verifies end-to-end round-trips:
-//!
-//!   - atomic-fetch-add on zero slot → returns 0, slot becomes delta
-//!   - atomic-fetch-add on existing slot → returns old, slot becomes old+delta
-//!   - atomic-compare-exchange success → returns 1, slot replaced
-//!   - atomic-compare-exchange failure → returns 0, slot untouched
-//!   - ptr-read-u64 / ptr-write-u64 round-trip with byte offset
-//!   - ptr-read-u8 / ptr-write-u8 round-trip + zero-extension verification
-//!
-//! Each test:
-//!   1. Allocates a host-side i64 / u64 / u8 buffer.
-//!   2. Calls the elisp-compiled grammar op through the public
-//!      wrapper in `nelisp_build_tool::elisp_cc_spike`.
-//!   3. Asserts the returned value AND the post-call buffer state
-//!      match the expected SeqCst / wrap semantics.
-//!
-//! Substrate gating role (= Doc 123-128 unblock): every test exercises
-//! the exact contract that the refcount + nl*.rs Clone/Drop elisp化
-//! patterns need.  Verifying the contract here proves the substrate
-//! is ready before Doc 123 lands the first elisp用 refcount macro.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 // ---- Case 1: atomic-fetch-add on a zero slot returns 0 and writes delta ----

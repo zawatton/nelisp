@@ -1,6 +1,3 @@
-//! Alloc/dealloc primitives for Phase 47 `alloc-bytes'/`dealloc-bytes` ops.
-//! Atomic + raw-memory ops were eliminated in Doc 131 §131.A (now inline asm).
-
 use std::alloc::{self, Layout};
 
 fn nl_layout(size: i64, align: i64) -> Option<Layout> {
@@ -9,13 +6,11 @@ fn nl_layout(size: i64, align: i64) -> Option<Layout> {
         .flatten()
 }
 
-/// Returns null on bad layout / zero/neg args / OOM.
 #[no_mangle]
 pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
     nl_layout(size, align).map_or(std::ptr::null_mut(), |l| unsafe { alloc::alloc(l) })
 }
 
-/// # Safety: ptr must be null or from matching `nl_alloc_bytes(size,align)`.
 #[no_mangle]
 pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
     if !ptr.is_null() {

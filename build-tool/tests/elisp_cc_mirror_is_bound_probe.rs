@@ -1,8 +1,3 @@
-//! Doc 111 §111.E #4 probe — direct calls into the Phase 47-compiled
-//! `mirror_is_bound' helper.  Verifies the elisp body's composition
-//! of #1 (`mirror_lookup_entry') + §111.B `record-slot-ref-ptr' +
-//! §101.C `symbol-eq' against a caller-supplied unbound-marker.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

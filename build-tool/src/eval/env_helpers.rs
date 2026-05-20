@@ -1,5 +1,3 @@
-//! Env + globals-mirror / lexframe-stack helpers over elisp records.
-
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -301,7 +299,6 @@ impl Env {
         if raw.is_null() { return None; }
         Some(unsafe { (*raw).clone() })
     }
-    /// Alias for `frame_stack_find_rust_direct`; retained for test compatibility.
     pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
         self.frame_stack_find_rust_direct(name)
     }

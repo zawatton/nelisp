@@ -1,18 +1,3 @@
-//! Doc 120 §120.A probe — exercises the Phase-47-compiled elisp
-//! replacement for `build-tool/src/jit/predicate.rs's `nl_jit_ref_eq'
-//! trampoline.  ABI: `(*const Sexp, *const Sexp, *mut Sexp) -> i64'
-//! writing `Sexp::T' / `Sexp::Nil' into `*out' and returning 0.
-//!
-//! The elisp body delegates to the `nl_sexp_eq' Rust extern (= thin
-//! `#[no_mangle]' wrapper around `eval::special_forms::sexp_eq')
-//! through `(extern-call nl_sexp_eq A B)' and then writes the result
-//! tag byte into `*out' via `sexp-write-t' / `sexp-write-nil'.
-//!
-//! Non-linux / non-x86_64 builds skip the test for the same reasons
-//! as the predicate_eq probe (= elisp `.o' only emitted on x86_64-
-//! linux; Rust trampoline `super::predicate::nl_jit_ref_eq' is
-//! still live on other targets through the `predicate_link' stub).
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::jit_ref_eq;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

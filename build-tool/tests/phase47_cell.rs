@@ -1,8 +1,3 @@
-//! Doc 111 §111.D probes — direct calls into the four Phase 47-
-//! compiled cell ops (`cell-value' / `cell-set-value' / `cell-make'
-//! / `cell-null-p').  Verifies end-to-end round-trips including
-//! refcount-safe overwrite for box-tagged payloads.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::nlcell::NlCellRef;

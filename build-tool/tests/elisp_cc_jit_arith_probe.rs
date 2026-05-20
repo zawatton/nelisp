@@ -1,31 +1,3 @@
-//! Doc 100 §100.D Stage 1 probe — exercises every one of the 12
-//! Phase-47-compiled elisp `.o' replacements for `build-tool/src/
-//! jit/arith.rs's `nl_jit_arith_*' trampolines (= `nelisp_jit_add2'
-//! / `sub2' / `mul2' / 5 signed comparisons / 3 bitwise binops /
-//! `ash').
-//!
-//! When this test passes, every step of the §100.D pipeline has
-//! worked on linux-x86_64:
-//!
-//!   1. `lisp/nelisp-cc-jit-arith.el's 12 `defconst' source forms
-//!      survived `nelisp-phase47-compile-to-object' into 12 ET_REL
-//!      `.o' files (= 12 manifest entries in
-//!      `scripts/compile-elisp-objects.el').
-//!   2. `build.rs::link_elisp_cc_spike' bundled all 15 `.o' (= 12
-//!      arith + `truncate_int' + `fact_i64' + `spike_noop') into
-//!      `libnelisp_elisp_spike.a' via `ar rcs'.
-//!   3. The linker resolved every `nelisp_jit_*' symbol in this
-//!      file's `extern "C"' block against the archive's STT_FUNC
-//!      entries.
-//!   4. Each function's compiled body computed the same i64
-//!      arithmetic the deleted Rust trampoline used to compute (=
-//!      `wrapping_add' / signed compare / `|' / `&' / `^' / `<<' /
-//!      `>>' under the matching x86_64 instruction).
-//!
-//! Non-linux / non-x86_64 builds skip the test because `mod arith'
-//! is still the live implementation there and the elisp `.o' files
-//! are not emitted (= `build.rs' bails out).
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::{
     jit_add2, jit_ash, jit_eq2, jit_ge2, jit_gt2, jit_le2, jit_logand2, jit_logior2, jit_logxor2,

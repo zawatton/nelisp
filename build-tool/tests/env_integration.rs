@@ -1,9 +1,3 @@
-//! Doc 102 Phase 8 + Doc 104 Stage 3.b regression tests.
-//!
-//! Relocated from `src/eval/env.rs::tests' into `tests/' (Doc 131, 2026-05-18)
-//! to keep `src/eval/env.rs' production-only — same carve-out pattern that
-//! Doc 130 applied to the 3,057-LOC `src/eval/tests.rs'.
-
 use nelisp_build_tool::eval as eval_mod;
 use nelisp_build_tool::eval::sexp::Sexp;
 use nelisp_build_tool::eval::Env;

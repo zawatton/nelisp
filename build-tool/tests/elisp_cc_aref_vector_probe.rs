@@ -1,6 +1,3 @@
-//! Doc 111 §111.C probe — direct calls into the
-//! Phase 47-compiled `aref` Vector object.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

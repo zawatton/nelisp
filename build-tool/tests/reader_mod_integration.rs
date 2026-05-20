@@ -1,10 +1,6 @@
-//! Integration tests for `reader' (= moved out of `src/reader/mod.rs's
-//! `#[cfg(test)] mod tests' for src LOC reduction).  Same coverage.
-
 use nelisp_build_tool::eval::sexp::{fmt_sexp, Sexp};
 use nelisp_build_tool::reader::{read_all, read_str, ReadError};
 
-/// Smoke #1: trivial atoms.
 #[test]
 fn smoke_atoms() {
     assert_eq!(read_str("123").unwrap(), Sexp::Int(123));
@@ -14,7 +10,6 @@ fn smoke_atoms() {
     assert_eq!(read_str("t").unwrap(), Sexp::T);
 }
 
-/// String escapes per prompt scope.
 #[test]
 fn smoke_string_escapes() {
     assert_eq!(
@@ -26,7 +21,6 @@ fn smoke_string_escapes() {
     assert_eq!(read_str("\"\\\"\"").unwrap(), Sexp::Str("\"".into()));
 }
 
-/// Symbols allow alnum + - _ . :
 #[test]
 fn smoke_symbol_punctuation() {
     assert_eq!(read_str("foo-bar").unwrap(), Sexp::Symbol("foo-bar".into()));
@@ -38,7 +32,6 @@ fn smoke_symbol_punctuation() {
     assert_eq!(read_str("a_b").unwrap(), Sexp::Symbol("a_b".into()));
 }
 
-/// `(a b c)` → cons chain.
 #[test]
 fn smoke_proper_list() {
     let got = read_str("(a b c)").unwrap();
@@ -50,7 +43,6 @@ fn smoke_proper_list() {
     assert_eq!(got, expected);
 }
 
-/// `(a . b)` → dotted pair.
 #[test]
 fn smoke_dotted_pair() {
     let got = read_str("(a . b)").unwrap();
@@ -58,9 +50,6 @@ fn smoke_dotted_pair() {
     assert_eq!(got, expected);
 }
 
-/// Vector arm — `[..]' handled by the elisp parser.  Empty `[]',
-/// nested vectors, and vectors inside lists / quotes all compose
-/// via `p_dispatch' kind 3.
 #[test]
 fn smoke_vector_literal() {
     assert_eq!(
@@ -99,14 +88,12 @@ fn wrap_reader_macro(tag: &str, inner: Sexp) -> Sexp {
     Sexp::list_from(&[Sexp::Symbol(tag.into()), inner])
 }
 
-/// `'x` → `(quote x)`.
 #[test]
 fn smoke_quote() {
     let got = read_str("'x").unwrap();
     assert_eq!(got, wrap_reader_macro("quote", Sexp::Symbol("x".into())));
 }
 
-/// Backquote / unquote / splice desugar to tagged lists.
 #[test]
 fn smoke_backquote_family() {
     let got = read_str("`(a ,b ,@c)").unwrap();
@@ -123,7 +110,6 @@ fn smoke_backquote_family() {
     );
 }
 
-/// Character literals read as integer codepoints.
 #[test]
 fn smoke_char_literals() {
     assert_eq!(read_str("?a").unwrap(), Sexp::Int(97));
@@ -131,7 +117,6 @@ fn smoke_char_literals() {
     assert_eq!(read_str("?\\C-a").unwrap(), Sexp::Int(1));
 }
 
-/// `#'foo` → `(function foo)`.
 #[test]
 fn smoke_function_quote() {
     let got = read_str("#'foo").unwrap();
@@ -141,7 +126,6 @@ fn smoke_function_quote() {
     );
 }
 
-/// Backslash-newline in strings is a line continuation.
 #[test]
 fn smoke_string_backslash_newline() {
     assert_eq!(
@@ -150,21 +134,18 @@ fn smoke_string_backslash_newline() {
     );
 }
 
-/// Comment skip — the `;` line is gone, the int after stands.
 #[test]
 fn smoke_comment_skip() {
     let got = read_str("; comment\n42").unwrap();
     assert_eq!(got, Sexp::Int(42));
 }
 
-/// Unbalanced paren is a hard error (not silent).
 #[test]
 fn smoke_unbalanced_paren_errors() {
     assert!(read_str("(a b").is_err());
     assert!(read_str("a)").is_err());
 }
 
-/// Byte-code literal `#[...]` is the last deferred reader feature.
 #[test]
 fn byte_code_literal_still_deferred() {
     match read_str("#[1 2]") {
@@ -174,7 +155,6 @@ fn byte_code_literal_still_deferred() {
     }
 }
 
-/// Smoke #6: five-deep nesting.
 #[test]
 fn smoke_deep_nest() {
     let got = read_str("(((((1)))))").unwrap();
@@ -185,7 +165,6 @@ fn smoke_deep_nest() {
     assert_eq!(got, expected);
 }
 
-/// Hex/oct/bin radix integers.
 #[test]
 fn smoke_radix_integers() {
     assert_eq!(read_str("#x10").unwrap(), Sexp::Int(16));
@@ -193,34 +172,29 @@ fn smoke_radix_integers() {
     assert_eq!(read_str("#b1010").unwrap(), Sexp::Int(10));
 }
 
-/// Float w/ exponent.
 #[test]
 fn smoke_float_exponent() {
     assert_eq!(read_str("1e3").unwrap(), Sexp::Float(1000.0));
     assert_eq!(read_str("-1.5e-2").unwrap(), Sexp::Float(-0.015));
 }
 
-/// `read_all` consumes multiple forms.
 #[test]
 fn read_all_multi_form() {
     let got = read_all("1 2 3 ; tail comment\n").unwrap();
     assert_eq!(got, vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
 }
 
-/// `read_str` rejects trailing forms.
 #[test]
 fn read_str_rejects_trailing() {
     assert!(read_str("1 2").is_err());
 }
 
-/// `read_all` on empty / whitespace-only returns empty Vec.
 #[test]
 fn read_all_empty_inputs() {
     assert_eq!(read_all("").unwrap(), Vec::<Sexp>::new());
     assert_eq!(read_all("   ; only comment\n").unwrap(), Vec::<Sexp>::new());
 }
 
-/// `fmt_sexp` round-trip on a non-trivial form.
 #[test]
 fn fmt_sexp_roundtrip_shape() {
     let src = "(let ((x 1) (y 2)) (+ x y))";
@@ -244,9 +218,6 @@ fn fmt_sexp_roundtrip_new_reader_forms() {
 
 // ---- elisp pipeline wire-in coverage ----
 
-/// Symbol-only inputs route through the elisp pipeline.  Asserts
-/// the deep-clone path produces a structurally-equal value that
-/// survives slot-pool drop.
 #[test]
 fn elisp_path_dispatch_smoke() {
     // A construct that exercises only §116.B-supported tokens.
@@ -258,9 +229,6 @@ fn elisp_path_dispatch_smoke() {
     assert_eq!(got, reparsed);
 }
 
-/// Deep-clone discipline — returned form must not alias the
-/// parser's slot pool.  Stress: parse deeply nested list, drop
-/// everything, walk the result to force every cons cell touch.
 #[test]
 fn elisp_path_deep_clone_survives_pool_drop() {
     let got = read_str("(a (b (c (d (e (f (g (h i))))))))").unwrap();

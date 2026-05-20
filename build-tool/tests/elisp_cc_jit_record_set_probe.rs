@@ -1,9 +1,3 @@
-//! Doc 120 §120.B probe — exercises the Phase-47-compiled elisp
-//! replacement for `build-tool/src/jit/box_accessor.rs's
-//! `nl_jit_record_set' trampoline.  ABI: `(*const Sexp, i64, *const
-//! Sexp, *mut Sexp) -> i64' returning 0 on OK (`slots[idx] :=
-//! clone(*val)` and `*out = clone(*val)`) / 1 on ERR.
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::{jit_record_ref, jit_record_set};
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

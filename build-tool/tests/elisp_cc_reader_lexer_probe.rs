@@ -1,22 +1,3 @@
-//! Doc 116 §116.A probes — direct calls into the Phase 47-compiled
-//! pure-elisp Reader lexer (`nelisp_reader_lex_one').  Pattern mirrors
-//! `elisp_cc_mut_str_probe.rs' / `elisp_cc_utf8_probe.rs'.
-//!
-//! Each test allocates a `Sexp::Str' source, a `Sexp::Nil' payload
-//! slot, a `Sexp::Nil' cursor-out slot, and a fresh `Sexp::MutStr'
-//! scratch slot via `mut_str_make_empty', then calls
-//! `reader_lex_one' once and inspects the returned kind code plus
-//! the side-effect outputs.  Covers all 16+ token kinds the §116.A
-//! scope discipline targets:
-//!
-//!   - Single-byte punctuation: ( ) [ ] ' ` , .
-//!   - Two-byte tokens: `,@', `#''.
-//!   - Three-byte token: `#s('.
-//!   - Atom kinds: Int / Float / Sym.
-//!   - String literals with `\\n \\t \\\\ \\\"' escapes.
-//!   - Whitespace + comment skip + EOF.
-//!   - Error path: lone `#X' (unknown sharpsign form).
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::elisp_cc_spike;
@@ -24,8 +5,6 @@ use nelisp_build_tool::eval::sexp::Sexp;
 
 // ---------- helpers ----------
 
-/// Lex one token from SOURCE starting at CURSOR.  Returns
-/// (kind, next-cursor, payload-as-string-if-any).
 fn lex_one_at(source: &str, cursor: i64) -> (i64, i64, Option<String>) {
     let src = Sexp::Str(source.to_string());
     let mut payload_slot = Sexp::Nil;
@@ -65,7 +44,6 @@ fn lex_one_at(source: &str, cursor: i64) -> (i64, i64, Option<String>) {
     (kind, next_cursor, payload)
 }
 
-/// Convenience wrapper: lex one token from byte 0.
 fn lex_one(source: &str) -> (i64, i64, Option<String>) {
     lex_one_at(source, 0)
 }

@@ -1,10 +1,7 @@
-//! Evaluator error type mirrored by `lisp/nelisp-stdlib-error.el`.
-
 use std::fmt;
 
 use super::sexp::Sexp;
 
-/// Evaluator failure modes: `Generic(tag, data)` for named signals, `Quit` for C-g.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
     Generic(String, Sexp), // any `signal` tag + data list
@@ -12,11 +9,9 @@ pub enum EvalError {
 }
 
 impl EvalError {
-    /// Elisp symbol name a `condition-case` clause catches on.
     pub fn error_tag(&self) -> &str {
         match self { EvalError::Generic(tag, _) => tag.as_str(), EvalError::Quit => "quit" }
     }
-    /// `(SYMBOL . DATA)` cons that `condition-case` binds the var to.
     pub fn signal_data(&self) -> Sexp {
         match self {
             EvalError::Generic(tag, data) => Sexp::cons(Sexp::Symbol(tag.clone()), data.clone()),
@@ -54,7 +49,6 @@ impl EvalError {
     }
 }
 
-/// Returns true if `clause_tag` catches `actual_tag` in `condition-case`.
 pub fn is_error_subtype(clause_tag: &str, actual_tag: &str) -> bool {
     clause_tag == actual_tag || clause_tag == "t" || (clause_tag == "error" && actual_tag != "quit")
 }

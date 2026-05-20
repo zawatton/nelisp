@@ -1,9 +1,3 @@
-//! Doc 111 §111.E #6 probe — direct calls into the Phase 47-compiled
-//! `mirror_is_constant' helper.  Verifies the elisp body's
-//! composition of #1 (`mirror_lookup_entry') + §111.B
-//! `record-slot-ref-ptr' (slot 3) + §100 `sexp-tag' equality against
-//! `SEXP_TAG_T' (= 1).
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
@@ -33,9 +27,6 @@ fn build_empty_mirror(bucket_count: usize) -> Sexp {
     )
 }
 
-/// Install a 4-slot symbol-entry with caller-controlled slot 3
-/// (= constant flag) so the probe can build both `Sexp::T' (= const)
-/// and `Sexp::Nil' (= non-const) cases.
 fn install_entry_with_constant(
     mirror: &Sexp,
     name: &str,

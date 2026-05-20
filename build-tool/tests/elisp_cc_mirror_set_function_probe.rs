@@ -1,6 +1,3 @@
-//! Doc 111 §111.E #8 probe — `mirror_set_function' (= slot 1 sibling
-//! of `mirror_set_value').  Verifies the function-cell write path.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
@@ -58,7 +55,6 @@ fn install_entry(mirror: &Sexp, name: &str, value: Sexp, function: Sexp) {
     }
 }
 
-/// Read slot N of the symbol-entry record installed under `name'.
 fn read_slot(mirror: &Sexp, name: &str, n: usize) -> Option<Sexp> {
     let env_rec = match mirror {
         Sexp::Record(r) => r,

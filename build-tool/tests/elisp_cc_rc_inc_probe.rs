@@ -1,38 +1,7 @@
-//! Doc 123 §123.A probe — pure-elisp `nelisp_rc_inc' kernel.
-//!
-//! Validates the first substrate elisp化 stage: the refcount-inc
-//! kernel pulled out of `build-tool/src/eval/rc_primitives.rs' is
-//! functional in elisp via the §122.E `atomic-fetch-add' grammar op.
-//!
-//! Pattern mirrors `elisp_cc_atomic_raw_mem_probe.rs' (= §122.E
-//! sibling) — the elisp body computes `box_ptr + 64` internally
-//! (= REFCOUNT_OFFSET) before calling `atomic-fetch-add', so the
-//! probe just needs to lay out a buffer where the refcount slot
-//! lives at byte offset 64 from the supplied `box_ptr'.
-//!
-//! Test cases (≥ 3):
-//!   1. Single inc on a refcount=1 slot returns 1 (pre-add value)
-//!      and writes 2 to the slot.
-//!   2. Multiple inc accumulates monotonically; each call returns
-//!      the previous count and the slot advances by exactly 1.
-//!   3. Atomic ordering check via concurrent inc from 2 host
-//!      threads — final slot value equals total iteration count
-//!      across both threads (= no lost updates under SeqCst).
-//!
-//! Substrate gating role: each test case exercises the exact
-//! contract that §123.B's `nelisp_rc_dec' (= `delta=-1' twin) and
-//! §123.C-E's payload-pointer + tag-byte readers will reuse.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Layout-pinned struct matching `NlConsBox' for the probe:
-/// `#[repr(C)]` keeps `refcount' at byte offset 64 (= same offset
-/// as the production `NlConsBox' per `nlrc.rs:292' compile-time
-/// assert).  We use `[u8; 32]` for car/cdr instead of `Sexp` because
-/// the elisp body never dereferences those bytes — it only adds 64
-/// to the base pointer and atomic-fetches the i64 slot there.
 #[repr(C)]
 struct ProbeBox {
     car: [u8; 32],
@@ -49,8 +18,6 @@ impl ProbeBox {
         }
     }
 
-    /// Cast to the elisp body's `*mut i64' arg type.  The elisp body
-    /// adds 64 internally; we pass the *base* address.
     fn as_box_ptr(&self) -> *mut i64 {
         self as *const ProbeBox as *mut i64
     }

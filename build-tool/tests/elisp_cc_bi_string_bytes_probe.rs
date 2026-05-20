@@ -1,13 +1,5 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-//! Doc 117 §117.A.2 — probe test for the `bi_string_bytes' elisp swap.
-//!
-//! Exercises the Phase 47 `.o' compiled from
-//! `lisp/nelisp-cc-bi-string-bytes.el' through the safe wrapper
-//! `nelisp_build_tool::elisp_cc_spike::bi_string_bytes'.  Each case
-//! checks both the byte-count payload (`Sexp::Int(_)`) and the
-//! ergonomic return value (= the caller-provided slot pointer).
-
 use nelisp_build_tool::eval::sexp::Sexp;
 
 fn run_string_bytes(input: Sexp) -> Sexp {

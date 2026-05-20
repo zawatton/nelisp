@@ -1,6 +1,3 @@
-//! JIT bridge: hot-path trampoline constants + `nl-jit-call-*` dispatch
-//! via `dlsym(RTLD_DEFAULT, alias(name))` (Phase 47 bridge).
-
 pub(crate) const TRAMPOLINE_OK: i64 = 0;
 pub(crate) const TRAMPOLINE_ERR: i64 = 1;
 

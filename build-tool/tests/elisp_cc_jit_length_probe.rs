@@ -1,9 +1,3 @@
-//! Doc 120 §120.D probe — exercises the Phase-47-compiled elisp
-//! replacement for `build-tool/src/jit/access.rs's `nl_jit_access_
-//! length' trampoline.  ABI: `(*const Sexp, *mut Sexp) -> i64'
-//! returning 0 on OK (Nil / Vector input, `*out = Sexp::Int(len)'),
-//! 1 on ERR (Str input degraded — strategy.el handles fallback).
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::jit_length;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

@@ -1,6 +1,3 @@
-//! NeLisp build-time tool: reader + eval + JIT bridge.
-//! x86_64-linux only.
-
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 compile_error!("Doc 114: nelisp-build-tool requires x86_64-linux. Build via Docker / Linux VM.");
 
@@ -8,7 +5,6 @@ pub mod eval;
 pub(crate) mod jit;
 pub mod reader;
 
-/// Rust home for elisp `.o` symbols; keeps linked elisp objects alive.
 pub mod elisp_cc_spike {
     use crate::eval::sexp::Sexp;
 

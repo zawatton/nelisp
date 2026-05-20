@@ -1,49 +1,12 @@
-//! Doc 123 §123.D probe — pure-elisp `nelisp_gc_walk_children' kernel.
-//!
-//! Validates the cycle-collector edge enumerator of
-//! `bi_nl_gc_walk_children' (= `Sexp::list_from(&[r.car.clone(),
-//! r.cdr.clone()])' at `build-tool/src/eval/rc_primitives.rs:247-262')
-//! migrating to elisp via two composed §101.D `cons-make' allocations
-//! driven by §122.E `ptr-read-u64' for the box-ptr extraction.
-//!
-//! The kernel is *Cons-only* in this stage; non-Cons inputs are
-//! filtered out by the §123.F sweep stage's Rust shim before
-//! reaching the elisp body.  These probes therefore exercise the
-//! Cons arm exhaustively, matching the Rust unit test
-//! `rc_primitives::tests::rc_prim_walk_children_cons' bit-for-bit.
-//!
-//! Caller contract:
-//!   - `sexp_ptr' must point at a `Sexp::Cons' (= caller pre-checked
-//!     tag via §123.C `rc_kind').
-//!   - `result_slot' / `tail_slot' must each be writable
-//!     32-byte-aligned Sexp slots (= the elisp body raw-copies
-//!     into them via `cons-make').
-//!
-//! Test cases (≥ 3):
-//!   1. (11 . 22) — Int car/cdr round-trip; the resulting 2-list
-//!      is `(11 22) = (Cons 11 (Cons 22 Nil))'.
-//!   2. (Nil . T) — atom-pair with distinct tag bytes; verifies
-//!      the raw-copy preserves the discriminant for both kids.
-//!   3. ((1 . 2) . (3 . 4)) — nested Cons; verifies the inner
-//!      box pointers survive the raw-copy round-trip (= the
-//!      MVP byte-copy refcount semantics from the kernel commentary).
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::nlconsbox::NlConsBoxRef;
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// Materialize a fresh result-slot + tail-slot pair the kernel can
-/// write into.  Pre-fills each slot with `Sexp::Nil' so the
-/// `cons-make' raw-copies land on initialized memory.
 fn fresh_slots() -> (Box<Sexp>, Box<Sexp>) {
     (Box::new(Sexp::Nil), Box::new(Sexp::Nil))
 }
 
-/// Run the elisp kernel against an input `Sexp::Cons' and return the
-/// materialized 2-list head from `result_slot'.  The boxes survive
-/// for the duration of the returned `Sexp' because `Sexp::Cons'
-/// owns its `NlConsBoxRef'.
 fn call_walk(input: &Sexp) -> (Sexp, Sexp) {
     let (mut result_slot, mut tail_slot) = fresh_slots();
     let returned = unsafe {

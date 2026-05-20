@@ -1,5 +1,3 @@
-//! `NlBoolVector` backs `Sexp::BoolVector`: `value` at 0, refcount trailer.
-
 crate::define_nlbox!(
     inner          = NlBoolVector,
     ref_ty         = NlBoolVectorRef,

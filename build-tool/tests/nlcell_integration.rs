@@ -1,6 +1,3 @@
-//! Integration tests for `nelisp_build_tool::eval::nlcell`.
-//! Moved from `src/eval/nlcell.rs#[cfg(test)] mod tests`.
-
 use nelisp_build_tool::eval::nlcell::*;
 use nelisp_build_tool::eval::sexp::Sexp;
 use std::sync::atomic::AtomicUsize;

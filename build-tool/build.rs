@@ -1,25 +1,3 @@
-//! Doc 84 §84.2 (2026-05-10) — Syscall name → number table codegen.
-//!
-//! Emits `lisp/nelisp-syscall-table.el` containing the
-//! `nelisp--syscall-nr-table' alist + `nelisp--syscall-nr-resolve'
-//! resolver consumed by `lisp/nelisp-jit-strategy.el' (= the
-//! `nelisp--syscall' wrapper's `nr-int' lookup).  Replaces the
-//! pre-Doc-84 Rust `bi_syscall_nr_resolve' primitive in
-//! `build-tool/src/jit/strategy.rs' (= -13 Rust LOC in `src/').
-//!
-//! The 1:1 source-of-truth for the syscall name → number map is the
-//! `syscall_nr` helper in `build-tool/src/eval/builtins.rs' which the
-//! `bi_syscall' primitive still consumes for the bare `(nelisp--
-//! syscall NR &rest ARGS)' fast path.  This codegen mirrors that map
-//! into elisp so the wrapper's symbol → number step is pure elisp.
-//!
-//! Cross-platform: on non-Linux targets the generated file emits a
-//! `nelisp--syscall-nr-resolve' that signals `arith-error' (= same
-//! semantics as the pre-Doc-84 `cfg(not(target_os = "linux"))'
-//! variant).  Per Doc 62 Phase 5 §5.8, non-Linux nelisp routes all
-//! syscall callers through `nl-ffi-call' libc instead, so the
-//! resolver is a dead path there but still callable.
-
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");

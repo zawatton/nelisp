@@ -1,76 +1,14 @@
-//! Doc 124 §124.J probe — pure-elisp `nelisp_nlrecord_drop' kernel.
-//!
-//! Mechanical port of §124.G/H's NlConsBox/NlVector Drop probes to
-//! NlRecord.  Only differences from §124.H: REFCOUNT_OFFSET = 56
-//! (= `size_of::<Sexp>() + size_of::<Vec<Sexp>>()'),
-//! SIZE_OF_NLRECORD = 64 (= 56 + 8 AtomicUsize trailer).  Align is
-//! unchanged at 8.
-//!
-//! Kernel body (verbatim from `lisp/nelisp-cc-nlrecord-drop.el'):
-//!
-//!   (if (= (atomic-fetch-add (+ box-ptr 56) -1) 1)
-//!       (dealloc-bytes box-ptr 64 8)
-//!     1)
-//!
-//! Test cases (≥ 3):
-//!   1. Drop from refcount=2 — no dealloc, slot lands at 1.  The
-//!      box stays alive; this is the "still has clones" path.
-//!   2. Drop from refcount=1 — dealloc happens, return = 1 sentinel.
-//!      The 64-byte outer allocation is returned to the global
-//!      allocator (= cannot inspect post-call slot without UB; the
-//!      probe verifies the return sentinel + best-effort allocator-
-//!      healthy probe after).
-//!   3. N consecutive drops — starting from refcount=N, each drop
-//!      decrements the slot by exactly 1; the *last* drop hits
-//!      pre-sub=1 → free.  Verifies sequential composition matches
-//!      the Rust `nlrc_drop_box!' macro's per-call contract.
-//!
-//! Substrate gating role: §124.J is the fourth Drop-half kernel
-//! (after §124.G NlConsBox + §124.H NlVector + §124.I NlCell).
-//! Reuses the same §122.E `atomic-fetch-add' + §125.A `dealloc-bytes'
-//! composition with NlRecord-specific layout literals.  §124.L sweep
-//! stage will swap the 5 sibling `impl Drop' bodies once §124.H-K all
-//! green.
-//!
-//! Allocator note: as with §124.G/H/I, we allocate the probe boxes
-//! via §125.A `alloc_bytes(64, 8)' rather than constructing a
-//! `ProbeBox' on the stack — the kernel's last-ref branch calls
-//! `dealloc-bytes' on the pointer, which expects the matching
-//! `alloc_bytes' allocation per `std::alloc::dealloc' contracts.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// SIZE_OF_NLRECORD = `size_of::<Sexp>() + size_of::<Vec<Sexp>>() +
-/// size_of::<AtomicUsize>()` = 32 + 24 + 8 = 64.  Pinned by
-/// `build-tool/src/eval/nlrecord.rs:248-254' compile-time asserts:
-/// `offset_of!(NlRecord, type_tag) == 0' +
-/// `offset_of!(NlRecord, slots) == size_of::<Sexp>() = 32' +
-/// `offset_of!(NlRecord, refcount) == size_of::<Sexp>() +
-/// size_of::<Vec<Sexp>>() = 56' + `size_of::<AtomicUsize>() == 8'.
-/// This matches `Layout::new::<NlRecord>()' used by `NlRecordRef::new'
-/// (`nlrecord.rs:77') — the same layout drives the matching
-/// `std::alloc::dealloc' call in production Drop.
 const SIZE_OF_NLRECORD: i64 = 64;
 
-/// alignof::<NlRecord> = max(alignof::<Sexp>, alignof::<Vec<Sexp>>,
-/// alignof::<AtomicUsize>) = 8.
 const ALIGN_OF_NLRECORD: i64 = 8;
 
-/// REFCOUNT_OFFSET — byte offset of the AtomicUsize trailer from the
-/// NlRecord base, per `repr(C)' layout rules + the compile-time assert
-/// at `nlrecord.rs:251-253' (= `size_of::<Sexp>() + size_of::<Vec<Sexp>>()
-/// = 32 + 24 = 56').  Same constant §124.D's clone kernel bakes in.
 const REFCOUNT_OFFSET: i64 = 56;
 
-/// Helper: allocate a NlRecord-shaped 64-byte block via §125.A's
-/// `alloc-bytes' wrapper and seed the refcount slot to the requested
-/// initial value.  Returns the base pointer; caller is responsible
-/// for either driving the slot to 0 via `nlrecord_drop' (= frees the
-/// block) or explicitly calling `dealloc_bytes(ptr, 64, 8)' for the
-/// "no dealloc this call" probe paths.
 unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
     let ptr = unsafe {
         nelisp_build_tool::elisp_cc_spike::alloc_bytes(SIZE_OF_NLRECORD, ALIGN_OF_NLRECORD)
@@ -100,8 +38,6 @@ unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
     ptr
 }
 
-/// Helper: read the current refcount slot value.  Safe to call only
-/// if the block has not been freed.
 unsafe fn read_refcount(ptr: *mut u8) -> i64 {
     let refcount_slot = (ptr as usize + REFCOUNT_OFFSET as usize) as *const AtomicI64;
     unsafe { (*refcount_slot).load(Ordering::SeqCst) }

@@ -1,29 +1,3 @@
-//! Doc 120 §120.B probe — exercises the Phase-47-compiled elisp
-//! replacement for `build-tool/src/jit/box_accessor.rs's
-//! `nl_jit_record_type' trampoline.  ABI: `(*const Sexp, *mut Sexp)
-//! -> i64' returning 0 on OK (Record arg, `*out = arg.type_tag') /
-//! 1 on ERR (non-Record).
-//!
-//! When this test passes, every step of the §120.B pipeline has
-//! worked on linux-x86_64:
-//!
-//!   1. `lisp/nelisp-cc-jit-record.el's `nelisp-cc-jit-record-type-
-//!      -source' survived `nelisp-phase47-compile-to-object' into an
-//!      ET_REL `.o' file.
-//!   2. `build.rs::link_elisp_cc_spike' bundled the `.o' into
-//!      `libnelisp_elisp_spike.a' via `ar rcs'.
-//!   3. The linker resolved the `nelisp_jit_record_type' STT_FUNC
-//!      symbol against the archive.
-//!   4. The compiled body computes the same result the deleted Rust
-//!      trampoline computed: tag-check vs `Sexp::Record' / extern
-//!      `record-type-tag' op for the OK arm.
-//!
-//! Non-linux / non-x86_64 builds skip the test because the elisp
-//! `.o' is not emitted (= `compile-elisp-objects.el' `:requires-arch
-//! x86_64' gate) and the Rust trampoline `super::box_accessor::
-//! nl_jit_record_type' is still live on those targets through the
-//! `box_accessor_link' stub.
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::jit_record_type;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

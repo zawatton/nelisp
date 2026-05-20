@@ -1,31 +1,7 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-//! Doc 117 §117.B (cont) — probe test for the `bi_read_stdin_bytes'
-//! elisp swap.
-//!
-//! Exercises the Phase 47 `.o' compiled from
-//! `lisp/nelisp-cc-bi-read-stdin-bytes.el' through the safe wrapper
-//! `nelisp_build_tool::elisp_cc_spike::bi_read_stdin_bytes'.  The
-//! handler is a single 3-arg `extern-call' to libc `read(0, buf, limit)';
-//! the assertion targets are
-//!
-//!   * the `read(2)' i64 return value (= bytes received, 0 = EOF,
-//!                                       -1 = errno).
-//!   * the destination buffer's `[0, rc)' prefix matching the data
-//!     the test pre-fed into fd 0 via a pipe pair.
-//!
-//! Each test sets up a `pipe(2)' pair, writes a known byte sequence
-//! into the write end, dup2s the read end onto fd 0, then drives the
-//! elisp body.  The pre-fed payload is bounded above by `PIPE_BUF`
-//! (= 4096 on Linux) so the writes are atomic; `--test-threads=1' in
-//! the standing integration cargo invocation ensures the fd 0 swap
-//! doesn't race other tests reading from stdin.
-
 use std::os::unix::io::RawFd;
 
-/// Run `f' with fd 0 replaced by a pipe whose write end has been
-/// pre-fed `data', then dup2 the saved fd 0 back.  Returns the value
-/// `f' produced.
 fn with_stdin_from_bytes<F, R>(data: &[u8], f: F) -> R
 where
     F: FnOnce() -> R,

@@ -1,19 +1,7 @@
-//! Doc 111 §111.E #7 probe — direct calls into the Phase 47-compiled
-//! `mirror_set_value' helper.  Verifies the elisp body's composition
-//! of `extern-call' into `nelisp_mirror_lookup_entry' (= §111.E #1) +
-//! `record-slot-set' (§111.B) end-to-end.
-//!
-//! The mirror layout is constructed by hand (= same shape as
-//! `Env::install_empty_mirror_rust_direct' + `mirror_prepend_to_bucket')
-//! so the probe runs without any crate-private API surface; it asserts
-//! on the post-call `slots[0]' value of the matched symbol-entry
-//! record.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// FNV-1a 32-bit hash — same loop as `env_helpers::mirror_fnv1a'.
 fn fnv1a(s: &str) -> u32 {
     let mut h: u32 = 0x811C9DC5;
     for c in s.chars() {
@@ -67,10 +55,6 @@ fn install_entry(mirror: &Sexp, name: &str, value: Sexp, function: Sexp) {
     }
 }
 
-/// Read `slots[0]' of the symbol-entry record installed under `name'.
-/// Walks the mirror by hand (= test-side mirror_lookup_entry that
-/// returns the entry record by clone, not a raw pointer) so the
-/// post-write assertion runs against a known-good observation path.
 fn read_value_slot(mirror: &Sexp, name: &str) -> Option<Sexp> {
     let env_rec = match mirror {
         Sexp::Record(r) => r,

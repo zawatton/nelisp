@@ -1,7 +1,3 @@
-//! Doc 111 §111.E #3 probe — direct calls into the Phase 47-compiled
-//! `mirror_lookup_function' helper.  Slot 1 counterpart of #2;
-//! shares the mirror construction helpers.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

@@ -1,35 +1,7 @@
-//! Doc 122 §122.I probe — pure-elisp CString construction helper.
-//!
-//! Verifies the Phase 47 `.o' compiled from
-//! `lisp/nelisp-cc-cstr-helpers.el' builds a fresh NUL-terminated
-//! heap byte buffer whose contents match the source `Sexp::Str' /
-//! `Sexp::Symbol' payload bit-for-bit, then exercises the buffer as
-//! a libc `const char *path' argument by calling `open(2)' on
-//! `/etc/hostname' (= a file every linux host has + is readable
-//! without privileges).
-//!
-//! Coverage axes:
-//!   1. Empty input — returned buffer is 1 byte holding only `\0'.
-//!   2. Single ASCII byte — buffer = `['x', '\0']'.
-//!   3. Real path string — buffer matches the original bytes with a
-//!      trailing NUL appended.
-//!   4. libc `open(2)' round-trip — proves the buffer is acceptable
-//!      to a real-world C API: `open("/etc/hostname", O_RDONLY)' must
-//!      return fd >= 0.
-//!
-//! Substrate gating role (= Doc 117 §117.D.gaps.3 Tier C unblock): the
-//! file-I/O sweep needs exactly this contract from Phase 47 grammar
-//! before `bi_open' / `bi_stat' / `bi_mkdir' / sibling handlers can
-//! materialise their `const char *path' argument without a Rust
-//! `CString::new(s)?' shim.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// Drive `cstr_from_sexp' on a fresh `Sexp::Str(s)' and return a
-/// `(buf, total_size)' pair where `total_size = s.len() + 1' is the
-/// `(size, align=1)' the matching `cstr_drop' must use.
 fn build_cstr(s: &str) -> (*mut u8, i64) {
     let sexp = Sexp::Str(s.into());
     let buf = unsafe { nelisp_build_tool::elisp_cc_spike::cstr_from_sexp(&sexp as *const Sexp) };
@@ -41,10 +13,6 @@ fn build_cstr(s: &str) -> (*mut u8, i64) {
     (buf, (s.len() as i64) + 1)
 }
 
-/// Read `n + 1' bytes from `buf' (= the helper-allocated buffer,
-/// including the trailing NUL) into a `Vec<u8>` so we can assert on
-/// the contents without invoking libc.  Caller must ensure `buf' is
-/// valid for `n + 1' byte reads.
 unsafe fn buf_to_vec(buf: *mut u8, n: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(n + 1);
     for i in 0..=n {

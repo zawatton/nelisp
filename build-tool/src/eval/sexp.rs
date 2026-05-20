@@ -1,5 +1,3 @@
-//! Eval-owned s-expression value type.
-
 use crate::eval::nlboolvector::NlBoolVectorRef;
 use crate::eval::nlcell::{NlCell, NlCellRef};
 use crate::eval::nlchartable::NlCharTableRef;
@@ -9,8 +7,6 @@ use crate::eval::nlstr::NlStrRef;
 use crate::eval::nlvector::{NlVector, NlVectorRef};
 use std::fmt;
 
-/// Parsed s-expression. `#[repr(C, u8)]` keeps the tag at offset 0; `SEXP_TAG_*`
-/// are ABI and variants must only be appended.
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C, u8)]
 pub enum Sexp {
@@ -20,16 +16,12 @@ pub enum Sexp {
     Float(f64),
     Symbol(String),
     Str(String),
-    /// Mutable string buffer.
     MutStr(NlStrRef),
     Cons(NlConsBoxRef),
     Vector(NlVectorRef),
-    /// Integer codepoint map.
     CharTable(NlCharTableRef),
     BoolVector(NlBoolVectorRef),
-    /// Write-through lexical cell.
     Cell(NlCellRef),
-    /// Host `record' / `cl-defstruct`.
     Record(NlRecordRef),
 }
 
@@ -43,10 +35,8 @@ sexp_tags! {
     SEXP_TAG_CELL=11; SEXP_TAG_RECORD=12;
 }
 
-/// Byte offset of the boxed handle within a `Sexp`.
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
 
-/// Emit `unsafe fn $name(&self) -> *const $ty` loading the box ptr at offset 8.
 macro_rules! sexp_box_ptr_accessor {
     ($name:ident, $ty:ty) => {
         #[inline]
@@ -59,7 +49,6 @@ macro_rules! sexp_box_ptr_accessor {
 }
 
 impl Sexp {
-    /// Read the discriminant byte (`#[repr(C, u8)]` stores it at offset 0).
     #[inline]
     pub fn tag(&self) -> u8 {
         // SAFETY: `#[repr(C, u8)]` stores the discriminant as a `u8` at offset 0.
@@ -85,13 +74,11 @@ const _: () = { use std::mem::size_of;
     assert!(size_of::<crate::eval::nlrecord::NlRecordRef>() == 8);
     assert!(size_of::<crate::eval::nlchartable::NlCharTableRef>() == 8); };
 
-/// Clone `*src` into `*dst` (uninit slot). Safety: both pointers are live and valid.
 #[no_mangle]
 pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) {
     core::ptr::write(dst, (*src).clone());
 }
 
-/// Inner storage for [`Sexp::CharTable`].
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
 pub struct CharTableInner {
@@ -136,7 +123,6 @@ impl Sexp {
 const NLREC_SLOTS: usize = std::mem::offset_of!(NlRecord, slots);
 const NLVEC_VALUE: usize = std::mem::offset_of!(NlVector, value);
 
-/// Layout entries for `sexp-abi-emit`; order matches `nelisp-sexp--abi-export`.
 pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("tag-nil", SEXP_TAG_NIL as i64),
     ("tag-t", SEXP_TAG_T as i64),
@@ -180,8 +166,6 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("nlcell-size", std::mem::size_of::<NlCell>() as i64),
 ];
 
-/// Pretty-printer used by debug and tests.
-/// Body replaced by Phase 47 elisp kernel `nelisp_fmt_sexp' (Doc 122 §122.J).
 pub fn fmt_sexp(s: &Sexp) -> String {
     let mut slot = Sexp::Nil;
     unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) };

@@ -1,29 +1,8 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-//! Doc 117 §117.B (cont) — probe test for the
-//! `bi_write_stdout_bytes' elisp swap.
-//!
-//! Exercises the Phase 47 `.o' compiled from
-//! `lisp/nelisp-cc-bi-write-stdout-bytes.el' through the safe wrapper
-//! `nelisp_build_tool::elisp_cc_spike::bi_write_stdout_bytes'.  The
-//! handler is a single 3-arg `extern-call' to libc `write(1, ptr, len)';
-//! the assertion target is the `write(2)' i64 return:
-//!   * non-empty `Sexp::Str' → bytes-written count (= `String::len`).
-//!   * empty `Sexp::Str'     → 0.
-//!   * `Sexp::Symbol'        → same as Str (= shared inline String header).
-//!
-//! Each test redirects fd 1 to `/dev/null' for the duration of the
-//! call so the probe doesn't pollute cargo's test output stream; the
-//! return value is what we assert against (not the actual bytes
-//! landing anywhere).  `--test-threads=1' in the standing
-//! integration-tests cargo invocation prevents the redirect from
-//! racing other tests that print.
-
 use nelisp_build_tool::eval::sexp::Sexp;
 use std::os::unix::io::RawFd;
 
-/// Redirect fd 1 to `/dev/null' for the duration of `f', then restore
-/// the original fd via `dup2'.  Returns the value `f' produced.
 fn with_stdout_to_devnull<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,

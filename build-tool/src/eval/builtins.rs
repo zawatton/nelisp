@@ -1,5 +1,3 @@
-//! Built-in function registry and dispatcher for the Rust eval surface.
-
 use super::Env;
 use super::error::EvalError;
 use super::quit;
@@ -212,8 +210,6 @@ fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> {
     if rc < 0 { Err(EvalError::internal(format!("{name}: {path}: kernel returned {rc}"))) } else { Ok(Sexp::T) }
 }
 
-/// Rust helper called from the Phase 47 `.o' for `bi_f64_trunc'.
-/// Converts num/denom Sexps to f64, divides, returns quotient bits as i64.
 #[no_mangle] pub extern "C" fn nl_bi_f64_trunc_div_bits(n: *const Sexp, d: *const Sexp) -> i64 { let f=|p:*const Sexp|match unsafe{&*p}{Sexp::Int(i)=>*i as f64,Sexp::Float(v)=>*v,_=>0.0}; (f(n)/f(d)).to_bits() as i64 }
 
 fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> {

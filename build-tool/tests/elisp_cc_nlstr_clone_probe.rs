@@ -1,26 +1,7 @@
-//! Doc 124 §124.E probe — pure-elisp `nelisp_nlstr_clone' kernel.
-//!
-//! Mechanical port of §124.A's NlConsBox Clone probe to NlStr.
-//! Only difference: REFCOUNT_OFFSET = 24 instead of 64 (= 24-byte
-//! `String' header trailer; `String' is structurally a `Vec<u8>'
-//! so the offset matches §124.B NlVector).
-//!
-//! Test cases (≥ 3):
-//!   1. Clone single — refcount @ +24 must advance by 1.
-//!   2. Clone N times — slot equals initial + N.
-//!   3. Concurrent clone × 2 threads × 10 000 iters — slot equals
-//!      20 000.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Layout-pinned struct matching `NlStr' for the probe:
-/// `#[repr(C)]' keeps `refcount' at byte offset 24 (= same offset
-/// as the production `NlStr' per the `offset_of!(NlStr, refcount)
-/// == size_of::<String>()' assertion at `nlstr.rs:686').  Bytes
-/// 0-23 stand in for the `String' header; the elisp body never
-/// reads them.
 #[repr(C)]
 struct ProbeBox {
     value: [u8; 24],

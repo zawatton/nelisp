@@ -1,36 +1,7 @@
-//! Doc 123 §123.C probe — pure-elisp `nelisp_rc_strong_count' kernel.
-//!
-//! Validates the refcount-reader twin of §123.A: the body of
-//! `bi_nl_rc_strong_count' (= `NlConsBoxRef::strong_count' Acquire-load)
-//! migrates to elisp via the §122.E `ptr-read-u64' grammar op.
-//!
-//! Pattern mirrors `elisp_cc_rc_inc_probe.rs' (§123.A sibling) — the
-//! elisp body computes `box_ptr + 64` internally (= REFCOUNT_OFFSET)
-//! before calling `ptr-read-u64', so the probe just lays out a
-//! `ProbeBox' where the refcount slot lives at byte offset 64 from
-//! the supplied `box_ptr'.
-//!
-//! Test cases (≥ 3):
-//!   1. Fresh-allocation snapshot — `refcount = 1' reads back as 1.
-//!   2. Post-inc snapshot — after one `nelisp_rc_inc' the slot reads
-//!      back as 2 (= layout-share check with the §123.A inc kernel).
-//!   3. Post-multi-inc snapshot — after N inc calls the slot reads
-//!      back as 1 + N (= confirms count tracking under repeated
-//!      mutation).
-//!
-//! Substrate gating role: each test case exercises the exact contract
-//! that §123.F's dispatch-swap site will use (= the Rust shim hands
-//! the `NlConsBoxRef::as_ptr' result to the elisp kernel, which adds
-//! 64 internally and returns the current count via the §122.E
-//! `ptr-read-u64' op).
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Layout-pinned struct matching `NlConsBox' for the probe (= same
-/// shape as the §123.A `elisp_cc_rc_inc_probe.rs::ProbeBox').
-/// `#[repr(C)]` keeps `refcount' at byte offset 64.
 #[repr(C)]
 struct ProbeBox {
     car: [u8; 32],
@@ -47,14 +18,10 @@ impl ProbeBox {
         }
     }
 
-    /// Cast to the elisp body's `*const u8' arg type (= base address;
-    /// the elisp body adds 64 internally).
     fn as_box_ptr(&self) -> *const u8 {
         self as *const ProbeBox as *const u8
     }
 
-    /// `*mut i64' variant for sharing with §123.A's `rc_inc' which
-    /// expects a writable pointer.
     fn as_box_ptr_mut(&self) -> *mut i64 {
         self as *const ProbeBox as *mut i64
     }

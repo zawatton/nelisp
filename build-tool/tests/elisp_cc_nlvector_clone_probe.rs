@@ -1,31 +1,7 @@
-//! Doc 124 §124.B probe — pure-elisp `nelisp_nlvector_clone' kernel.
-//!
-//! Mechanical port of §124.A's NlConsBox Clone probe to NlVector.
-//! Only difference: REFCOUNT_OFFSET = 24 instead of 64 (= 24-byte
-//! `Vec<Sexp>' header trailer instead of NlConsBox's 64-byte
-//! `(car: Sexp, cdr: Sexp)' pair).
-//!
-//! Test cases (≥ 3):
-//!   1. Clone single — refcount slot @ +24 must advance by 1 and the
-//!      returned pointer must equal the input `box_ptr'.
-//!   2. Clone N times — slot must equal initial + N; every call
-//!      returns the same alias pointer.
-//!   3. Concurrent clone from 2 threads × 10 000 iters each — final
-//!      slot must equal 20 000 (= no lost updates under SeqCst
-//!      `atomic-fetch-add').
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Layout-pinned struct matching `NlVector' for the probe:
-/// `#[repr(C)]' keeps `refcount' at byte offset 24 (= same offset
-/// as the production `NlVector' per the `offset_of!(NlVector,
-/// refcount) == size_of::<Vec<Sexp>>()' assert at `nlvector.rs:233').
-/// We use `[u8; 24]' for the Vec header instead of a real
-/// `Vec<Sexp>' because the elisp body never dereferences those
-/// bytes — it only adds 24 to the base pointer and atomic-fetches
-/// the i64 slot there.
 #[repr(C)]
 struct ProbeBox {
     value: [u8; 24],

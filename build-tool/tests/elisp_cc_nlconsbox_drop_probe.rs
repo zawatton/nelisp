@@ -1,71 +1,14 @@
-//! Doc 124 §124.G probe — pure-elisp `nelisp_nlconsbox_drop' kernel.
-//!
-//! Validates the first Drop-half stage of the `nl*.rs::Clone/Drop'
-//! substrate elisp化 chain.  The kernel composes Doc 123 §123.B's
-//! `fetch_sub' refcount semantics with Doc 125 §125.A's
-//! `dealloc-bytes' to express `impl Drop for NlConsBoxRef' in pure
-//! elisp:
-//!
-//!   (if (= (atomic-fetch-add (+ box-ptr 64) -1) 1)
-//!       (dealloc-bytes box-ptr 72 8)
-//!     1)
-//!
-//! Test cases (≥ 3):
-//!   1. Drop from refcount=2 — no dealloc, slot lands at 1.  The
-//!      box stays alive; this is the "still has clones" path.
-//!   2. Drop from refcount=1 — dealloc happens, return = 1 sentinel.
-//!      The box's underlying allocation is freed back to the global
-//!      allocator (= cannot inspect post-call slot without UB; the
-//!      probe verifies the return sentinel + uses a `Drop'-tracking
-//!      sentinel to confirm dealloc-bytes was reached).
-//!   3. N consecutive drops — starting from refcount=N, each drop
-//!      decrements the slot by exactly 1; the *last* drop hits
-//!      pre-sub=1 → free.  Verifies sequential composition matches
-//!      the Rust `nlrc_drop_box!' macro's per-call contract.
-//!
-//! Substrate gating role: §124.G is the first Drop-half kernel; the
-//! probe verifies the §122.E `atomic-fetch-add' + §125.A
-//! `dealloc-bytes' composition end-to-end.  §124.H-K (NlVector /
-//! NlCell / NlRecord / NlStr Drop) reuse the same composition with
-//! per-type SIZE / REFCOUNT_OFFSET literals; §124.L's sweep stage
-//! swaps the 5 sibling `impl Drop' bodies once §124.H-K all green.
-//!
-//! Allocator note: we allocate the probe boxes via §125.A
-//! `alloc_bytes(72, 8)' rather than constructing a `ProbeBox' on the
-//! stack — the kernel's last-ref branch calls `dealloc-bytes' on the
-//! pointer, which expects the matching `alloc_bytes' allocation per
-//! `std::alloc::dealloc' contracts.  Stack-allocating a struct and
-//! then calling `dealloc-bytes' on its address is UB (= would free a
-//! non-heap pointer).  Using the elisp-compiled `alloc-bytes' wrapper
-//! makes the probe self-consistent (= same allocator drives both
-//! sides) and exercises the full Doc 125 §125.A round-trip.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// SIZE_OF_NLCONSBOX = `2 * size_of::<Sexp>() + size_of::<AtomicUsize>()`
-/// = 32 + 32 + 8 = 72.  Locked by `build-tool/src/eval/sexp_abi_assert.rs:45'
-/// (size_of::<Sexp> = 32) + `build-tool/src/eval/nlconsbox.rs:418-431'
-/// (compile-time field-offset asserts).  Layout: car @ 0 (32) + cdr @ 32
-/// (32) + refcount @ 64 (8).
 const SIZE_OF_NLCONSBOX: i64 = 72;
 
-/// alignof::<NlConsBox> = max(alignof::<Sexp>, alignof::<AtomicUsize>) = 8.
 const ALIGN_OF_NLCONSBOX: i64 = 8;
 
-/// REFCOUNT_OFFSET — byte offset of the AtomicUsize trailer from the
-/// NlConsBox base, per `repr(C)' layout rules.  Same constant §123.A /
-/// §123.B / §124.A bake into their kernels.
 const REFCOUNT_OFFSET: i64 = 64;
 
-/// Helper: allocate a NlConsBox-shaped 72-byte block via §125.A's
-/// `alloc-bytes' wrapper and seed the refcount slot to the requested
-/// initial value.  Returns the base pointer; caller is responsible for
-/// either driving the slot to 0 via `nlconsbox_drop' (= frees the
-/// block) or explicitly calling `dealloc_bytes(ptr, 72, 8)' for the
-/// "no dealloc this call" probe paths.
 unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
     let ptr = unsafe {
         nelisp_build_tool::elisp_cc_spike::alloc_bytes(SIZE_OF_NLCONSBOX, ALIGN_OF_NLCONSBOX)
@@ -98,8 +41,6 @@ unsafe fn alloc_probe_box(initial_refcount: i64) -> *mut u8 {
     ptr
 }
 
-/// Helper: read the current refcount slot value.  Safe to call only if
-/// the block has not been freed.
 unsafe fn read_refcount(ptr: *mut u8) -> i64 {
     let refcount_slot = (ptr as usize + REFCOUNT_OFFSET as usize) as *const AtomicI64;
     unsafe { (*refcount_slot).load(Ordering::SeqCst) }

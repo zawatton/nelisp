@@ -1,44 +1,7 @@
-//! Doc 123 §123.B probe — pure-elisp `nelisp_rc_dec' kernel.
-//!
-//! Validates the second substrate elisp化 stage: the refcount-dec
-//! kernel (= twin of §123.A's `nelisp_rc_inc') pulled out of
-//! `build-tool/src/eval/rc_primitives.rs' (specifically the
-//! `rc_dec_no_drop' helper + the mutation half of
-//! `bi_nl_rc_dec_strong') is functional in elisp via the §122.E
-//! `atomic-fetch-add' grammar op with delta = -1.
-//!
-//! Pattern mirrors `elisp_cc_rc_inc_probe.rs' (= §123.A sibling) —
-//! the elisp body computes `box_ptr + 64' internally
-//! (= REFCOUNT_OFFSET) before calling `atomic-fetch-add', so the
-//! probe just needs to lay out a buffer where the refcount slot
-//! lives at byte offset 64 from the supplied `box_ptr'.
-//!
-//! Test cases (≥ 3):
-//!   1. Single dec on a refcount=2 slot returns 2 (pre-sub value)
-//!      and writes 1 to the slot.
-//!   2. Sequential inc + dec round trip — a sequence of `rc_inc'
-//!      followed by `rc_dec' calls leaves the slot at the expected
-//!      net delta, and each dec sees the latest count.
-//!   3. Atomic ordering check via concurrent dec from 2 host threads
-//!      — final slot value equals start minus total iteration count
-//!      across both threads (= no lost updates under SeqCst).
-//!
-//! Substrate gating role: each test case exercises the exact
-//! contract that §123.F's dispatch swap (= `rc_dec_no_drop' /
-//! `bi_nl_rc_dec_strong' calling `nelisp_rc_dec' instead of the
-//! inline `fetch_sub') will rely on.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Layout-pinned struct matching `NlConsBox' for the probe.  Same
-/// shape as §123.A's `ProbeBox' — `#[repr(C)]` keeps `refcount' at
-/// byte offset 64 (= same offset as the production `NlConsBox' per
-/// `nlrc.rs:292' compile-time assert).  `[u8; 32]' stands in for
-/// `Sexp' on car/cdr because the elisp body never dereferences
-/// those bytes — it only adds 64 to the base pointer and atomic-
-/// fetches the i64 slot there.
 #[repr(C)]
 struct ProbeBox {
     car: [u8; 32],
@@ -55,8 +18,6 @@ impl ProbeBox {
         }
     }
 
-    /// Cast to the elisp body's `*mut i64' arg type.  The elisp body
-    /// adds 64 internally; we pass the *base* address.
     fn as_box_ptr(&self) -> *mut i64 {
         self as *const ProbeBox as *mut i64
     }

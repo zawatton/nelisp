@@ -1,5 +1,3 @@
-//! `NlVector` backs `Sexp::Vector`: `value` at 0, `refcount` in the trailer.
-
 use crate::eval::sexp::Sexp;
 
 crate::define_nlbox!(
@@ -36,8 +34,6 @@ impl PartialEq for NlVectorRef {
 
 // nl_alloc_vector body migrated to lisp/nelisp-cc-nlvector-alloc.el (Phase 47 .o).
 
-/// # Safety
-/// `vec_ptr` must be live, `val` initialised, and `n` in range.
 #[no_mangle]
 pub unsafe extern "C" fn nl_vector_set_slot(vec_ptr: *mut NlVector, n: i64, val: *const Sexp) {
     (&mut (*vec_ptr).value)[n as usize] = (*val).clone();

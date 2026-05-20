@@ -1,5 +1,3 @@
-//! Unix TTY: statics, signal handlers, Once installers, pointer getters.
-//! Syscall bodies live in Phase 47 elisp .o (nelisp-cc-bi-tty-raw.el).
 #![cfg(unix)]
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Once;

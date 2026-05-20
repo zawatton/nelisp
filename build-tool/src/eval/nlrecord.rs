@@ -1,5 +1,3 @@
-//! `NlRecord` backs `Sexp::Record`: `type_tag` at 0, `slots` next, refcount last.
-
 use crate::eval::sexp::Sexp;
 
 crate::define_nlbox!(
@@ -39,8 +37,6 @@ impl PartialEq for NlRecordRef {
     }
 }
 
-/// # Safety
-/// `record` must be live, `val` initialised, and `n` in range.
 #[no_mangle]
 pub unsafe extern "C" fn nl_record_set_slot(record: *mut NlRecord, n: usize, val: *const Sexp) {
     (&mut (*record).slots)[n] = (*val).clone();

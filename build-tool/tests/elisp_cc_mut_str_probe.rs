@@ -1,37 +1,9 @@
-//! Doc 122 §122.B probes — direct calls into the five Phase 47-
-//! compiled MutStr builder grammar ops (= mirrors
-//! `phase47_cell.rs` (§111.D) and `elisp_cc_sexp_write_str_probe.rs`
-//! (§122.A) patterns).
-//!
-//! Verifies end-to-end round-trips:
-//!
-//!   - Empty mut-str + finalize → empty Str
-//!   - Single-byte push + finalize → 1-byte Str
-//!   - Multi-byte ASCII push via push-byte → finalize round-trip
-//!   - UTF-8 push-codepoint encodes 1-4 bytes correctly
-//!   - mut-str-len reports running byte count as ops accumulate
-//!
-//! Each test:
-//!   1. Allocates a `Sexp::Nil` slot for the MutStr.
-//!   2. Calls `mut_str_make_empty(slot, cap)` via the elisp-compiled
-//!      grammar op.
-//!   3. Runs push ops via `mut_str_push_byte` / `mut_str_push_codepoint`.
-//!   4. Reads `mut_str_len` and/or `mut_str_finalize` into a second
-//!      `Sexp::Nil` slot.
-//!   5. Asserts the final `Sexp::Str` byte content matches the
-//!      Rust-side expected value.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
 
 // ---- helpers ----
 
-/// Allocate a fresh `Sexp::MutStr` into a caller-owned slot and
-/// return the slot value.  Caller must pin the slot with a `&mut`
-/// binding because we hand back a `Sexp` (= the value moved out of
-/// the slot).  Instead, the per-test bodies keep the slot in scope
-/// and call this only for its side-effect on `*slot`.
 fn make_empty_mut_str(slot: &mut Sexp, cap: i64) {
     let slot_ptr = slot as *mut Sexp;
     let returned = unsafe { nelisp_build_tool::elisp_cc_spike::mut_str_make_empty(slot_ptr, cap) };

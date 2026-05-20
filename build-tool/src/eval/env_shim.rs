@@ -1,13 +1,7 @@
-//! `nelisp--env-globals-op OP NAME &optional ARG' dispatcher (Phase 47).
-//! 7 read/clear/pred arms: `nelisp_env_shim_op' .o (Doc 86 §86.4).
-//! 3 set-* arms: `nelisp_env_shim_set_op' .o (Wave c+).
-//! capture-lexical stays in Rust.
-
 use super::error::EvalError;
 use super::sexp::Sexp;
 use super::Env;
 
-/// Thin arg-check + Phase-47 call + error-mapping shim.
 pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let sym = |s: &Sexp| match s { Sexp::Symbol(n) => Ok(n.clone()), o => Err(EvalError::wrong_type("symbolp", o.clone())) };
     let arity = |n: usize| EvalError::wrong_arity("nelisp--env-globals-op", n.to_string(), args.len());

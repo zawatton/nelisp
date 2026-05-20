@@ -1,22 +1,7 @@
-//! Doc 119 §119.A probe — `(truncate FLOAT)' Float arm, swapped from Rust
-//! inline into Phase 47-compiled elisp via G4+G5 grammar.
-//!
-//! `bi_truncate''s Float branch used to compute `Sexp::Float(x) =>
-//! Ok(Sexp::Int(*x as i64))' inline (= 1 LOC of Rust algorithm).  Doc 119
-//! §119.A replaced that line with a delegation to `elisp_cc_spike::
-//! truncate_float', whose body lives in `lisp/nelisp-cc-truncate-float.el'
-//! and only there.  The probe validates:
-//!
-//! 1.  Cross-impl equivalence — a spread of f64 values including ±inf / NaN
-//!     borderlines, whole integers, halves, and extremes.
-//! 2.  Direct Sexp-slot inspection for tag byte (= SEXP_TAG_INT) and payload.
-//! 3.  Round-trip through the public `bi_truncate' dispatch in a small Env.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::{Sexp, SEXP_TAG_INT};
 
-/// Helper: call `truncate_float' and return the resulting `Sexp::Int(n)'.
 fn truncate_float_call(x: f64) -> Sexp {
     let input = Sexp::Float(x);
     let mut slot: Sexp = Sexp::Nil;

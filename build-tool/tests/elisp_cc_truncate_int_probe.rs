@@ -1,23 +1,3 @@
-//! Doc 100 §100.C probe — `(truncate INT)' Int arm, swapped from Rust
-//! algorithm-bearing code into Phase 47-compiled elisp.
-//!
-//! `bi_truncate''s Int branch used to read `n' from `Sexp::Int(*n)' and
-//! return `Sexp::Int(*n)' directly (= 1 LOC of Rust algorithm).  Doc
-//! 100 §100.C replaced that line with a delegation to `elisp_cc_spike::
-//! truncate_int', whose body lives in `lisp/nelisp-cc-truncate-int.el'
-//! and only there.  The probe validates the swap byte-precisely:
-//!
-//! 1.  Cross-impl equivalence on the boundary values (= `i64::MIN+1' /
-//!     0 / 1 / `i64::MAX', plus a spread of in-between magnitudes).
-//! 2.  Direct Sexp-slot inspection via the `unsafe' extern interface
-//!     to confirm the elisp `.o' writes byte offsets `[0, 1)` (= tag =
-//!     SEXP_TAG_INT) and `[8, 16)` (= i64 payload) and nothing else
-//!     within `[0, 16)`.
-//! 3.  Round-trip through the public `bi_truncate' dispatch (= via
-//!     evaluating a `truncate' invocation in a small Env) to confirm
-//!     the swap is wired through the production codepath, not just the
-//!     extern.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::{Sexp, SEXP_TAG_INT};

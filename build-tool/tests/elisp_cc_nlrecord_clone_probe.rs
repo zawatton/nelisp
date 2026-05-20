@@ -1,29 +1,7 @@
-//! Doc 124 §124.D probe — pure-elisp `nelisp_nlrecord_clone' kernel.
-//!
-//! Mechanical port of §124.A's NlConsBox Clone probe to NlRecord.
-//! Only difference: REFCOUNT_OFFSET = 56 instead of 64.  Note: Doc 124
-//! §1's audit table listed 24 (= the Vec header portion only) — the
-//! byte-accurate `repr(C)' offset is 56 because `NlRecord' has both a
-//! `type_tag: Sexp' (32 bytes) and a `slots: Vec<Sexp>' (24 bytes)
-//! ahead of the trailer.  See `nlrecord.rs:248-253' compile-time
-//! assert.
-//!
-//! Test cases (≥ 3):
-//!   1. Clone single — refcount @ +56 must advance by 1.
-//!   2. Clone N times — slot equals initial + N.
-//!   3. Concurrent clone × 2 threads × 10 000 iters — slot equals
-//!      20 000.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-/// Layout-pinned struct matching `NlRecord' for the probe:
-/// `#[repr(C)]' keeps `refcount' at byte offset 56 (= 32 + 24, per
-/// `offset_of!(NlRecord, refcount) == size_of::<Sexp>() +
-/// size_of::<Vec<Sexp>>()' at `nlrecord.rs:248-253').  Bytes 0-31
-/// stand in for the `type_tag: Sexp' slot; 32-55 stand in for the
-/// `slots: Vec<Sexp>' header.  The elisp body never reads them.
 #[repr(C)]
 struct ProbeBox {
     type_tag: [u8; 32],

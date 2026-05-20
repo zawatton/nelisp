@@ -1,25 +1,3 @@
-//! Doc 122 §122.D probes — direct calls into the three Phase 47-
-//! compiled UTF-8 helper grammar ops (= `str-char-count' /
-//! `str-codepoint-at' / `str-is-alphanumeric-at').  Pattern mirrors
-//! `elisp_cc_sexp_write_str_probe.rs' (§122.A) and
-//! `elisp_cc_mut_str_probe.rs' (§122.B).
-//!
-//! Verifies:
-//!
-//!   - Empty string char count = 0.
-//!   - ASCII-only char count == byte count.
-//!   - Multi-byte UTF-8 char count != byte count (`"藤澤"` = 6
-//!     bytes / 2 chars).
-//!   - Codepoint-at edge cases (start / mid-stream / past end /
-//!     mid-codepoint byte index).
-//!   - Alphanumeric ASCII + non-ASCII alphanumeric (Greek alpha
-//!     `"α"`, fullwidth digit `"１"`) + non-alnum punctuation +
-//!     whitespace.
-//!
-//! Each test allocates a `Sexp::Str` Rust-side, takes its raw
-//! pointer, and invokes the elisp-compiled extern via the safe
-//! `elisp_cc_spike` wrapper.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

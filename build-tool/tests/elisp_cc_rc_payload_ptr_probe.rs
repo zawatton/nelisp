@@ -1,43 +1,8 @@
-//! Doc 123 §123.D probe — pure-elisp `nelisp_rc_payload_ptr' kernel.
-//!
-//! Validates the box-pointer extractor of `bi_nl_rc_payload_ptr'
-//! (= `Sexp::Cons(r) => NlConsBoxRef::as_ptr(r) as usize as i64' at
-//! `build-tool/src/eval/rc_primitives.rs:230-244') migrating to elisp
-//! via the §122.E `ptr-read-u64' grammar op at offset 8 of the outer
-//! `Sexp' enum.
-//!
-//! The kernel is unconditional — it performs the raw load regardless
-//! of variant tag.  Tag-dispatch (= the non-Cons-returns-0 branch of
-//! the Rust primitive) is the caller's responsibility and lands in
-//! §123.F's sweep stage.  These cases therefore verify two
-//! independent properties:
-//!
-//!   (a) For `Sexp::Cons' the load reads back exactly
-//!       `NlConsBoxRef::as_ptr' (= layout-share check against
-//!       `SEXP_PAYLOAD_OFFSET = 8' per `sexp.rs:270').
-//!   (b) For atom variants (Nil / T / Int) the load returns
-//!       *something* — bytes at offset 8 of the enum's stack value —
-//!       but the caller must use the tag (§123.C `rc_kind') to know
-//!       whether to interpret the result as a valid pointer.
-//!
-//! Test cases (≥ 3):
-//!   1. Sexp::Cons round-trip — kernel returns `NlConsBoxRef::as_ptr'.
-//!   2. Sexp::Vector round-trip — same layout slot used by every
-//!      boxed variant (= confirms the offset constant is shared,
-//!      so §123.F's tag-dispatch sweep can route Vector/Record/Cell
-//!      through the same kernel once their elisp walkers ship).
-//!   3. Sexp::Nil — atom variant; the read is well-defined (no UB)
-//!      but its value is meaningless without a tag check.  Verifies
-//!      the kernel does not panic / segfault on a zero-payload Sexp.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::nlconsbox::NlConsBoxRef;
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// Cast a `&Sexp' to the elisp kernel's `*const u8' arg type.  The
-/// kernel reads offset 8 of the address, which is the payload-union
-/// position inside the outer `#[repr(C, u8)]' enum.
 fn sexp_as_ptr(s: &Sexp) -> *const u8 {
     s as *const Sexp as *const u8
 }

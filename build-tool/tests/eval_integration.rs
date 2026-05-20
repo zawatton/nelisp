@@ -1,20 +1,3 @@
-//! Phase 8.0.2 evaluator unit tests (Doc 44 §3.3 LOCKED).
-//!
-//! Coverage targets per prompt:
-//!   - 6 acceptance demo forms (top of suite)
-//!   - every special form has at least one test
-//!   - every built-in category has at least one test
-//!   - error path tested (unbound var, wrong-arg-count, etc.)
-//!   - target ~50+ tests
-//!
-//! Style: each test is one assertion or a tight cluster.  Helpers are
-//! defined once below.
-
-//! Relocated from `src/eval/tests.rs' into `tests/' to keep the
-//! source tree (= `src/eval/') focused on production code.  All
-//! references previously written as `super::*' or `super::xxx::yyy'
-//! now go through the `nelisp_build_tool::eval' lib crate path.
-
 use nelisp_build_tool::eval as eval_mod;
 use nelisp_build_tool::eval::*;
 
@@ -34,27 +17,18 @@ fn err_all(input: &str) -> EvalError {
     eval_str_all(input).expect_err(&format!("eval_str_all({:?}) unexpectedly succeeded", input))
 }
 
-/// Stage 7.7.d (Doc 72) — parse a single form via the elisp reader for
-/// fixture construction.  Spins up a fresh global env (= ~stdlib load
-/// cost on each call).  Use `read_form_in' if an env is already in
-/// scope to avoid the bootstrap cost.
 fn read_form(input: &str) -> Sexp {
     let mut env = Env::new_global();
     eval_mod::read_one_via_elisp(input, &mut env)
         .unwrap_or_else(|e| panic!("read_form({:?}) failed: {:?}", input, e))
 }
 
-/// Stage 7.7.d (Doc 72) — parse a single form via the elisp reader,
-/// reusing an existing env (= cheaper than `read_form' when one is
-/// already constructed for the test).
 fn read_form_in(input: &str, env: &mut Env) -> Sexp {
     eval_mod::read_one_via_elisp(input, env)
         .unwrap_or_else(|e| panic!("read_form_in({:?}) failed: {:?}", input, e))
 }
 
-// ============================================================
 // Acceptance demo (Doc 44 §3.3 + prompt acceptance)
-// ============================================================
 
 #[test]
 fn demo_arithmetic_add() {
@@ -104,9 +78,7 @@ fn demo_condition_case_signal() {
     );
 }
 
-// ============================================================
 // Reader integration (eval_str_all)
-// ============================================================
 
 #[test]
 fn eval_str_all_returns_last_value() {
@@ -124,9 +96,7 @@ fn eval_str_all_empty_returns_nil() {
     assert_eq!(ok_all(""), Sexp::Nil);
 }
 
-// ============================================================
 // Special forms — quote / function
-// ============================================================
 
 #[test]
 fn quote_returns_form_unevaluated() {
@@ -158,9 +128,7 @@ fn function_on_lambda_makes_closure() {
     }
 }
 
-// ============================================================
 // Special forms — if / cond / when / unless
-// ============================================================
 
 #[test]
 fn if_else_branch() {
@@ -185,9 +153,7 @@ fn unless_skips_body_on_truthy() {
     assert_eq!(ok("(unless t 1 2 3)"), Sexp::Nil);
 }
 
-// ============================================================
 // Special forms — let / let* / lambda
-// ============================================================
 
 #[test]
 fn let_isolates_bindings() {
@@ -209,9 +175,7 @@ fn lambda_apply_inline() {
     assert_eq!(ok("((lambda (x y) (* x y)) 3 4)"), Sexp::Int(12));
 }
 
-// ============================================================
 // Special forms — defun / defmacro / defvar / defconst
-// ============================================================
 
 #[test]
 fn defun_then_recursive_call() {
@@ -247,9 +211,7 @@ fn defconst_binds_value() {
     assert_eq!(ok_all("(defconst k 10) k"), Sexp::Int(10));
 }
 
-// ============================================================
 // Built-ins — provide / require / featurep
-// ============================================================
 
 #[test]
 fn provide_marks_feature_present() {
@@ -275,9 +237,7 @@ fn featurep_non_symbol_returns_nil() {
     assert_eq!(ok("(featurep \"foo\")"), Sexp::Nil);
 }
 
-// ============================================================
 // Special forms — defcustom / defgroup / cl-defun
-// ============================================================
 
 #[test]
 fn defcustom_binds_like_defvar() {
@@ -351,9 +311,7 @@ fn cl_defun_wrong_type_name_errors() {
     ));
 }
 
-// ============================================================
 // Special forms — pcase
-// ============================================================
 
 #[test]
 fn pcase_matches_literal_and_wildcard() {
@@ -426,9 +384,7 @@ fn pcase_guard_pattern_filters_value() {
     );
 }
 
-// ============================================================
 // Special forms — setq / set
-// ============================================================
 
 #[test]
 fn setq_pair_returns_last_value() {
@@ -441,9 +397,7 @@ fn setq_innermost_lexical_wins() {
     assert_eq!(ok("(let ((x 1)) (setq x 9) x)"), Sexp::Int(9));
 }
 
-// ============================================================
 // Special forms — while / dolist / dotimes
-// ============================================================
 
 #[test]
 fn while_counts_down() {
@@ -464,9 +418,7 @@ fn dotimes_with_result_form() {
     assert_eq!(v, Sexp::Int(0 + 1 + 2 + 3 + 4));
 }
 
-// ============================================================
 // Special forms — condition-case / unwind-protect
-// ============================================================
 
 #[test]
 fn condition_case_catches_division_error() {
@@ -509,9 +461,7 @@ fn unwind_protect_runs_cleanup_after_error() {
     assert_eq!(v, Sexp::T);
 }
 
-// ============================================================
 // Special forms — progn / prog1 / prog2 / and / or
-// ============================================================
 
 #[test]
 fn progn_returns_last() {
@@ -548,9 +498,7 @@ fn or_all_nil_returns_nil() {
     assert_eq!(ok("(or nil nil)"), Sexp::Nil);
 }
 
-// ============================================================
 // Special forms — catch / throw
-// ============================================================
 
 #[test]
 fn catch_throw_unwinds_to_matching_tag() {
@@ -562,9 +510,7 @@ fn catch_passes_value_through_when_no_throw() {
     assert_eq!(ok("(catch 'tag (+ 1 2))"), Sexp::Int(3));
 }
 
-// ============================================================
 // Built-ins — arithmetic
-// ============================================================
 
 #[test]
 fn arith_subtraction_negation() {
@@ -607,9 +553,7 @@ fn arith_eq_neq() {
     assert_eq!(ok("(/= 3 4)"), Sexp::T);
 }
 
-// ============================================================
 // Built-ins — equality
-// ============================================================
 
 #[test]
 fn eq_symbol_identity() {
@@ -623,10 +567,8 @@ fn equal_structural() {
     assert_eq!(ok("(equal \"x\" \"x\")"), Sexp::T);
 }
 
-// ============================================================
 // Doc 50 stage 5b/5c — cycle-safe `equal' (elisp impl on top of
 // `nelisp--ref-eq' + visited hash-table).
-// ============================================================
 
 #[test]
 fn equal_self_referential_cons_does_not_loop() {
@@ -734,9 +676,7 @@ fn equal_atoms_match_eq() {
     assert_eq!(ok_all("(equal 0 0.0)"), Sexp::Nil);
 }
 
-// ============================================================
 // Doc 50 stage 5a — `nelisp--ref-eq' identity primitive
-// ============================================================
 
 #[test]
 fn ref_eq_returns_t_for_same_cons() {
@@ -804,9 +744,7 @@ fn ref_eq_distinguishes_aliased_subtree_in_cons() {
     );
 }
 
-// ============================================================
 // Built-ins — cons / list
-// ============================================================
 
 #[test]
 fn cons_car_cdr_roundtrip() {
@@ -860,9 +798,7 @@ fn append_concatenates() {
     );
 }
 
-// ============================================================
 // Built-ins — higher-order
-// ============================================================
 
 #[test]
 fn mapc_returns_input_list() {
@@ -902,9 +838,7 @@ fn assoc_uses_equal() {
     assert_eq!(v, expected);
 }
 
-// ============================================================
 // Built-ins — predicates
-// ============================================================
 
 #[test]
 fn null_recognises_empty_list_and_nil() {
@@ -928,9 +862,7 @@ fn type_predicates_basic() {
     assert_eq!(ok("(not t)"), Sexp::Nil);
 }
 
-// ============================================================
 // Built-ins — string
-// ============================================================
 
 #[test]
 fn concat_strings() {
@@ -957,9 +889,7 @@ fn intern_and_symbol_name() {
     assert_eq!(ok("(symbol-name 'bar)"), Sexp::Str("bar".into()));
 }
 
-// ============================================================
 // Built-ins — symbol / function
-// ============================================================
 
 #[test]
 fn fboundp_and_boundp() {
@@ -996,9 +926,7 @@ fn signal_user_error_packaged() {
     }
 }
 
-// ============================================================
 // Error paths
-// ============================================================
 
 #[test]
 fn unbound_variable_errors() {
@@ -1083,9 +1011,7 @@ fn recursion_depth_guard() {
     }
 }
 
-// ============================================================
 // `Env` API
-// ============================================================
 
 #[test]
 fn env_new_global_installs_builtins() {
@@ -1196,9 +1122,7 @@ fn eval_str_all_handles_macro_extension_synthetic_snippet() {
     assert_eq!(ok_all(input), read_form("(ready \"state\" 42 ((x y)))"));
 }
 
-// ============================================================
 // Keywords (Elisp manual §11.2 "Constant Variables")
-// ============================================================
 
 #[test]
 fn keyword_self_evaluates() {
@@ -1233,10 +1157,8 @@ fn bare_colon_symbol_is_not_a_keyword() {
     assert!(matches!(e, EvalError::UnboundVariable(_)));
 }
 
-// ============================================================
 // Generic accessors (aref / elt / arrayp / sequencep)
 // Elisp manual §6.6 "Sequences, Arrays, and Vectors"
-// ============================================================
 
 #[test]
 fn aref_string_returns_codepoint() {
@@ -1325,9 +1247,7 @@ fn make_vector_negative_errors() {
     assert!(matches!(e, EvalError::ArithError(_)));
 }
 
-// ============================================================
 // aset — in-place vector mutation (Rc<RefCell<Vec<Sexp>>>)
-// ============================================================
 
 #[test]
 fn aset_returns_assigned_value() {
@@ -1393,9 +1313,7 @@ fn aset_on_int_errors() {
     assert!(matches!(e, EvalError::WrongType { .. }));
 }
 
-// ============================================================
 // setcar / setcdr — in-place cons mutation (Rc<RefCell<Sexp>>)
-// ============================================================
 
 #[test]
 fn setcar_returns_assigned_value() {
@@ -1468,9 +1386,7 @@ fn setcdr_on_nil_errors() {
     assert!(matches!(e, EvalError::WrongType { .. }));
 }
 
-// ============================================================
 // Doc 47 Stage 8b — file I/O builtins + load chain
-// ============================================================
 
 #[test]
 fn file_name_directory_returns_dir_with_slash() {
@@ -2351,9 +2267,7 @@ fn extern_builtin_unregistered_signals_unbound_function() {
     }
 }
 
-// ============================================================
 // Doc 50 stage 4c — record primitives
-// ============================================================
 
 #[test]
 fn record_make_and_predicate() {
@@ -2427,9 +2341,7 @@ fn record_make_rejects_non_symbol_tag() {
     assert!(matches!(e, EvalError::WrongType { .. }));
 }
 
-// ============================================================
 // Doc 50 stage 4e — cl-defstruct macro (lisp/nelisp-cl-macros.el)
-// ============================================================
 
 #[test]
 fn defstruct_predicate_and_constructor() {
@@ -2492,10 +2404,8 @@ fn defstruct_slot_with_default() {
     assert_eq!(v, Sexp::Int(0));
 }
 
-// ============================================================
 // Doc 50 stage 4f-3 — cl-defstruct `:copier' / `:constructor'
 // options.  Pure elisp (lisp/nelisp-cl-macros.el).
-// ============================================================
 
 #[test]
 fn defstruct_copier_default_shallow_copy() {
@@ -2567,10 +2477,8 @@ fn defstruct_copier_preserves_record_type() {
     assert_eq!(v, Sexp::list_from(&[Sexp::T, Sexp::T]));
 }
 
-// ============================================================
 // Doc 50 stage 4f-4 — cl-defstruct `:include' (slot inheritance
 // + predicate chain).  Pure elisp.
-// ============================================================
 
 #[test]
 fn defstruct_include_inherits_slots() {
@@ -2660,10 +2568,8 @@ fn defstruct_include_distinct_records_have_distinct_tags() {
     );
 }
 
-// ============================================================
 // Doc 50 stage 4f — hash-table re-implemented in elisp
 // (lisp/nelisp-stdlib-hash.el on top of Stage 4c record primitives)
-// ============================================================
 
 #[test]
 fn elisp_hash_table_basic_round_trip() {
@@ -2815,9 +2721,7 @@ fn elisp_hash_table_count_via_misc() {
     );
 }
 
-// ============================================================
 // Phase 7 Stage 7.4.a — apply / call / closure / env primitives
-// ============================================================
 //
 // Doc 68 §3.1 で定めた auxiliary primitives の動作確認.  本 stage
 // では elisp 側 `nelisp-stdlib-eval-core.el' は **未 install**
@@ -2942,7 +2846,6 @@ fn doc_117_d_bi_syscall_unknown_symbol_name_signals_internal_error() {
     );
 }
 
-
 #[test]
 fn stage74a_apply_builtin_dispatch_arith() {
     // Doc 77b Stage b.4 (2026-05-09): `nelisp--add2' is no longer a
@@ -3003,9 +2906,7 @@ fn stage74a_push_captured_with_alist_installs_bindings() {
     );
 }
 
-// ============================================================
 // Phase 7 Stage 7.4.e (Doc 70) — apply-lambda-inner Rust builtin
-// ============================================================
 //
 // Stage 7.4.b で elisp defun として導入した
 // `nelisp--apply-lambda-inner' を Rust builtin に降ろした.  Stage

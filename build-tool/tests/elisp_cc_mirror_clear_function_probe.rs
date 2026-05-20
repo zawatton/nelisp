@@ -1,6 +1,3 @@
-//! Doc 111 §111.E #10 probe — `mirror_clear_function' (= slot 1
-//! cleared to unbound-marker, mirrors `fmakunbound').
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

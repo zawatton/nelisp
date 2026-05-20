@@ -1,29 +1,3 @@
-//! Doc 120 §120.A probe — exercises the Phase-47-compiled elisp
-//! replacement for `build-tool/src/jit/predicate.rs's
-//! `nl_jit_predicate_eq' trampoline.
-//!
-//! When this test passes, every step of the §120.A pipeline has
-//! worked on linux-x86_64:
-//!
-//!   1. `lisp/nelisp-cc-jit-predicate-eq.el' survived
-//!      `nelisp-phase47-compile-to-object' into an ET_REL `.o' file.
-//!   2. `build.rs::link_elisp_cc_spike' bundled the `.o' into
-//!      `libnelisp_elisp_spike.a' via `ar rcs'.
-//!   3. The linker resolved the `nelisp_jit_predicate_eq' STT_FUNC
-//!      symbol against the archive AND the `nl_sexp_eq' SHN_UNDEF
-//!      reloc against the Rust `#[no_mangle]' wrapper in
-//!      `eval/special_forms.rs'.
-//!   4. The compiled body computes the same boolean the deleted Rust
-//!      trampoline computed: same-ref short-circuit / tag-byte
-//!      mismatch / Int payload compare / slow-path `sexp_eq' for
-//!      heap variants (= Symbol-by-name / Cons-by-Rc-ptr-eq).
-//!
-//! Non-linux / non-x86_64 builds skip the test because the elisp
-//! `.o' is not emitted (= `compile-elisp-objects.el' `:requires-arch
-//! x86_64' gate) and the Rust trampoline `super::predicate::nl_jit_
-//! predicate_eq' is still live on those targets through the
-//! `predicate_link' stub.
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use nelisp_build_tool::elisp_cc_spike::jit_predicate_eq;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

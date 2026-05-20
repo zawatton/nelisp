@@ -1,6 +1,3 @@
-//! Shared macros for NlXxx box types: `nl_ref_common!`, `define_nlbox!`,
-//! `nlinner_set!`, `nlinner_with_mut!`, `drop_inner_extern!` + per-type externs.
-
 pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) {
     std::ptr::drop_in_place(ptr as *mut T);
 }
@@ -39,8 +36,6 @@ macro_rules! nl_ref_common {
     };
 }
 
-/// `#[repr(C)]` struct + `NlXxxRef` wrapper boilerplate: DROP_FN, new(), Clone,
-/// layout const-assert.  Debug/PartialEq stay per-type (hygiene limitation).
 #[macro_export]
 macro_rules! define_nlbox {
     (
@@ -89,8 +84,6 @@ macro_rules! define_nlbox {
     };
 }
 
-/// In-place `set_$field` on an inner struct via `&self` (const-to-mut cast).
-/// Safety: no concurrent borrow of the field; `val` is fully initialized.
 #[macro_export]
 macro_rules! nlinner_set {
     ($name:ident, $field:ident, $ty:ty) => {
@@ -102,8 +95,6 @@ macro_rules! nlinner_set {
     };
 }
 
-/// Mutable accessor for an inner-struct field via `&self`.
-/// Safety: no concurrent borrow of the field; reentrant calls are UB.
 #[macro_export]
 macro_rules! nlinner_with_mut {
     ($name:ident, $field:ident, $ty:ty) => {

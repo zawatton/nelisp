@@ -1,26 +1,7 @@
-//! Doc 111 §111.E #1 probe — direct calls into the Phase 47-compiled
-//! `mirror_lookup_entry' helper.  Verifies the elisp body's
-//! composition of `record-slot-ref-ptr' (§111.B) + `vector-ref-ptr'
-//! (§111.C) + `sexp-payload-ptr' / `cons-cdr-raw-from-box' (§101.B)
-//! + `str-eq' (§101.C) + `extern-call' into `nl_mirror_fnv1a_sexp'
-//! (§100.A) end-to-end.
-//!
-//! The mirror layout is constructed by hand here (= the same shape
-//! produced by `Env::install_empty_mirror_rust_direct' +
-//! `mirror_prepend_to_bucket') so the probe runs without any
-//! crate-private API surface; it asserts only on the `*const Sexp'
-//! identity of the returned slot vs. the slot known to hold the
-//! installed `symbol-entry' record.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;
 
-/// FNV-1a 32-bit hash matching `nl_mirror_fnv1a_sexp' (= same loop as
-/// `env_helpers::mirror_fnv1a').  Duplicated locally because the
-/// upstream function is `pub(crate)' and integration tests live in a
-/// separate compilation unit.  Used to pick the bucket index the
-/// elisp walker will land on.
 fn fnv1a(s: &str) -> u32 {
     let mut h: u32 = 0x811C9DC5;
     for c in s.chars() {
@@ -30,11 +11,6 @@ fn fnv1a(s: &str) -> u32 {
     h
 }
 
-/// Build an empty mirror: `Sexp::Record("nelisp-env", [ht, Nil, Nil])'
-/// where `ht = Sexp::Record("fast-hash-table", [Int(count), Vector,
-/// Int(0)])'.  `count' is required to be a power of 2 because the
-/// elisp body uses the cheap `(h & (count - 1))' mask matching the
-/// Rust fast path.
 fn build_empty_mirror(bucket_count: usize) -> Sexp {
     assert!(
         bucket_count.is_power_of_two(),
@@ -51,10 +27,6 @@ fn build_empty_mirror(bucket_count: usize) -> Sexp {
     )
 }
 
-/// Install one `(KEY . ENTRY)' pair into the mirror, mirroring
-/// `mirror_prepend_to_bucket'.  ENTRY is a fresh `symbol-entry' record
-/// with the supplied value/function slots (plist/constant default to
-/// `Nil').
 fn install_entry(mirror: &Sexp, name: &str, value: Sexp, function: Sexp) {
     let env_rec = match mirror {
         Sexp::Record(r) => r,

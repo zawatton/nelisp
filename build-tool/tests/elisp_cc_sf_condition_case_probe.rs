@@ -1,16 +1,3 @@
-//! Step 3 probe — pure-elisp `nl_sf_condition_case' Phase 47 `.o' kernel.
-//!
-//! Validates the boot-critical condition-case special form. The kernel
-//! receives the raw arg list `(VAR PROTECTED CLAUSE...)' plus an `Env'
-//! pointer, evaluates the protected form (via `nelisp_eval_call_with_err'
-//! intercepting errors into the s1 slot), walks clauses via the
-//! `nl_cc_match_and_bind' Rust helper, and either returns the matching
-//! handler body's result or propagates the error stash.
-//!
-//! Test cases exercise Rust-originated errors only (UnboundFunction
-//! via undefined-symbol call) to avoid depending on stdlib boot that
-//! the stage0 Env does not include.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use nelisp_build_tool::eval::sexp::Sexp;

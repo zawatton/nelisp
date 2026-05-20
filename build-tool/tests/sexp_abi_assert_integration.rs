@@ -1,9 +1,3 @@
-//! Integration tests for `eval::sexp_abi_assert` (= moved out of the
-//! source file's `#[cfg(test)] mod tests' for src LOC reduction).
-//! The real compile-time assertions remain in the source file as
-//! `const _: ()' blocks; these runtime tests provide a crystal-clear
-//! failure mode if the compile-time gates are ever feature-gated off.
-
 use nelisp_build_tool::eval::sexp::{Sexp, SEXP_PAYLOAD_OFFSET, SEXP_TAG_INT};
 use nelisp_build_tool::eval::sexp_abi_assert::ABI_EXPORT;
 

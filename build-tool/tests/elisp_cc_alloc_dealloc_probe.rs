@@ -1,29 +1,3 @@
-//! Doc 125 §125.A probes — direct calls into the two Phase 47-compiled
-//! alloc / dealloc grammar ops (= mirrors
-//! `elisp_cc_atomic_raw_mem_probe.rs' §122.E pattern).
-//!
-//! Verifies end-to-end round-trips:
-//!
-//!   - alloc-bytes + dealloc-bytes round-trip with write+read in
-//!     between to verify the returned pointer is valid memory.
-//!   - Multiple alloc with different sizes (= 8, 64, 4096) all at
-//!     align=8, each followed by its matching dealloc.
-//!   - Aligned alloc (= 16-byte alignment) returns a pointer whose
-//!     low 4 bits are zero; the same applies to a 32-byte alignment.
-//!
-//! Each test:
-//!   1. Calls the elisp-compiled `alloc_bytes' wrapper in
-//!      `nelisp_build_tool::elisp_cc_spike'.
-//!   2. (where applicable) Drives the allocated block via the §122.E
-//!      `ptr_write_u64' / `ptr_read_u64' grammar ops to verify the
-//!      pointer is valid for the requested layout.
-//!   3. Asserts the dealloc returns the 1 sentinel.
-//!
-//! Substrate gating role (= Doc 124.G-K unblock): every test exercises
-//! the exact contract that the NlBox Drop kernels' if-zero-refcount
-//! free branch needs.  Verifying it here proves the substrate is
-//! ready before Doc 124.G lands the first NlBox Drop elisp kernel.
-
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 // ---- Case 1: alloc + write + read + dealloc round-trip ----
