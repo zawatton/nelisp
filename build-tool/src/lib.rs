@@ -160,6 +160,8 @@ pub mod elisp_cc_spike {
             needed: i64,
             scratch_slot: *mut Sexp,
         ) -> i64;
+        // Wave i — frame_stack_install_sexp body → Phase 47 .o.
+        fn nelisp_frame_stack_install(frames_ptr: *const Sexp, frame_ptr: *const Sexp, scratch_slot: *mut Sexp) -> i64;
         fn nelisp_fnv1a(str_ptr: *const Sexp) -> i64;
         fn nelisp_reader_lex_one(
             str_ptr: *const Sexp,
@@ -450,6 +452,12 @@ pub mod elisp_cc_spike {
     pub unsafe fn frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64) -> i64 {
         let mut scratch = Sexp::Nil;
         nelisp_frame_stack_ensure_capacity(frames_ptr, needed, &mut scratch as *mut Sexp)
+    }
+
+    // Wave i — install frame into backing[depth] + bump depth counter.
+    pub unsafe fn frame_stack_install(frames_ptr: *const Sexp, frame_ptr: *const Sexp) -> i64 {
+        let mut s = Sexp::Nil;
+        nelisp_frame_stack_install(frames_ptr, frame_ptr, &mut s)
     }
 
     pub unsafe fn wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp) -> i64 {

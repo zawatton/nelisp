@@ -228,6 +228,11 @@
      :source-var nelisp-cc-frame-stack-find--source
      :output "nelisp_frame_stack_find.o"
      :requires-arch x86_64)
+    ;; Wave i — frame_stack_install_sexp body → Phase 47 .o.
+    (nelisp-cc-frame-stack-install
+     :source-var nelisp-cc-frame-stack-install--source
+     :output "nelisp_frame_stack_install.o"
+     :requires-arch x86_64)
     (nelisp-cc-wrap-alist-cells
      :source-var nelisp-cc-wrap-alist-cells--source
      :output "nelisp_wrap_alist_cells.o"

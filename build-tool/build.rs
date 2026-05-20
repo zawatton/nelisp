@@ -166,6 +166,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-frame-pop.el",
         "nelisp-cc-frame-bind.el",
         "nelisp-cc-frame-stack-find.el",
+        // Wave i — frame_stack_install_sexp body → Phase 47 .o.
+        "nelisp-cc-frame-stack-install.el",
         "nelisp-cc-wrap-alist-cells.el",
         // Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash.  Replaces
         // the Rust `mirror_fnv1a' + `nl_mirror_fnv1a_sexp' extern.
