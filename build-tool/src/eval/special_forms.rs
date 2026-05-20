@@ -52,7 +52,7 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
             if rc == 0 {
                 out
             } else {
-                return Err(wrong_args("quote", "1", 0));
+                return Err(EvalError::wrong_arity("quote", "1", 0));
             }
         }
         "function" => sf_call_with_s1!("sf_function", sf_function_call, args, env)?,
@@ -69,10 +69,6 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
         "progn" => sf_call_4arg!("sf_progn", sf_progn_call, args, env)?,
         _ => return Ok(None),
     }))
-}
-
-fn wrong_args(function: &str, expected: &str, got: usize) -> EvalError {
-    EvalError::wrong_arity(function, expected, got)
 }
 
 /// `let' / `let*' frame setup: sequential=1 = `let*'.
@@ -236,24 +232,6 @@ pub unsafe extern "C" fn nl_bf_precompute(formals_ptr: *const Sexp, args_ptr: *c
     (args_len_clamped << 20) | (required_clamped << 36)
 }
 
-/// `nl_bf_args_tail(args_ptr, idx, out) -> i64`
-/// Builds a new Sexp::Cons list from `args[idx..]' and writes it into
-/// `*out'.  Used by the Rest mode branch to collect remaining args.
-/// Returns 0 (always succeeds — worst case writes Sexp::Nil when empty).
-#[no_mangle]
-pub unsafe extern "C" fn nl_bf_args_tail(args_ptr: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
-    let args = match super::list_elements(&*args_ptr) {
-        Ok(v) => v,
-        Err(_) => {
-            std::ptr::write(out, Sexp::Nil);
-            return 0;
-        }
-    };
-    let tail_start = (idx as usize).min(args.len());
-    std::ptr::write(out, Sexp::list_from(&args[tail_start..]));
-    0
-}
-
 /// `nl_bf_bind_sym(env, name_ptr, val_ptr) -> i64`
 /// Calls `env.bind_local(name, val.clone())'.  `name_ptr' must point to a
 /// `Sexp::Symbol'; if it points to any other variant the bind is skipped
@@ -381,15 +359,6 @@ pub unsafe extern "C" fn nl_push_and_bind(
         env_ref.frame_pop_rust_direct();
     }
     rc
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn nl_bind_formals(
-    formals_ptr: *const Sexp,
-    args_list_ptr: *const Sexp,
-    env: *mut std::ffi::c_void,
-) -> i64 {
-    crate::elisp_cc_spike::bind_formals_impl_call(formals_ptr, args_list_ptr, env, 0)
 }
 
 #[no_mangle]
