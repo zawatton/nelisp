@@ -161,7 +161,7 @@ macro_rules! builtin_dispatch {
 
 pub fn install_builtins(env: &mut Env) {
     for n in builtin_names!() {
-        env.set_function(n, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())]));
+        env.mirror_set_function(n, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())]));
     }
 }
 

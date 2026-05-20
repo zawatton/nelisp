@@ -166,7 +166,7 @@ impl Env {
         self.extern_builtins.insert(name.to_string(), Rc::new(f));
         let sentinel =
             Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol(name.into())]);
-        self.set_function(name, sentinel);
+        self.mirror_set_function(name, sentinel);
     }
 
     pub fn intern_constant(&mut self, name: &str, value: Sexp) {
@@ -198,9 +198,6 @@ impl Env {
         if rc == 0 { Ok(o) } else { Err(EvalError::unbound_fn(name)) }
     }
 
-    pub fn set_function(&mut self, name: &str, func: Sexp) {
-        self.mirror_set_function(name, func);
-    }
 
 
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
