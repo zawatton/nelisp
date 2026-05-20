@@ -920,6 +920,24 @@ functions `((NAME . ARITY) ...)'."
             :ptr (nelisp-phase47-compiler--parse-value
                   (nth 1 sexp) env fenv defuns)
             :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
+   ;; (sexp-name-eq SEXP_PTR LITERAL_STR)
+   ;;   — Like `symbol-name-eq' but accepts both `Sexp::Symbol' (tag 4) and
+   ;;     `Sexp::Str' (tag 5) inputs.  Tag check is: byte[rdi]==4 OR byte[rdi]==5.
+   ;;     Used to dispatch on names that callers pass either as quoted symbols
+   ;;     or as unquoted string literals.
+   ((and (consp sexp) (eq (car sexp) 'sexp-name-eq))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-name-eq-arity sexp)))
+    (let ((lit (nth 2 sexp)))
+      (unless (stringp lit)
+        (signal 'nelisp-phase47-compiler-error
+                (list :sexp-name-eq-literal-must-be-string sexp)))
+      (list :kind 'sexp-name-eq
+            :id (nelisp-phase47-compiler--gensym "sexp-name-eq")
+            :ptr (nelisp-phase47-compiler--parse-value
+                  (nth 1 sexp) env fenv defuns)
+            :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
    ((and (consp sexp) (eq (car sexp) 'sexp-write-nil))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
@@ -2134,7 +2152,7 @@ the node's class to consume the result correctly."
              'record-make
              'cell-value 'cell-set-value 'cell-make 'cell-null-p
              'str-len 'str-bytes 'str-bytes-ptr 'str-byte-at 'str-eq 'symbol-eq
-             'symbol-name-eq
+             'symbol-name-eq 'sexp-name-eq
              'sexp-write-nil 'sexp-write-t
              'sexp-write-str 'sexp-write-symbol 'sexp-write-float
              'mut-str-make-empty 'mut-str-push-byte 'mut-str-push-codepoint
@@ -2247,6 +2265,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-symbol-eq node buf))
       ('symbol-name-eq
        (nelisp-phase47-compiler--emit-symbol-name-eq node buf))
+      ('sexp-name-eq
+       (nelisp-phase47-compiler--emit-sexp-name-eq node buf))
       ('sexp-write-nil
        (nelisp-phase47-compiler--emit-sexp-write-tag
         node buf nelisp-sexp--tag-nil))
@@ -3505,6 +3525,61 @@ literal expands to ~50 bytes of code, a 20-byte literal to ~210 bytes."
     ;; Per-byte: movzx rax, byte [r9]; cmp rax, byte_i; jnz false-lbl;
     ;; add r9, 1.  The final byte's `add r9, 1' is harmless dead code
     ;; but kept for symmetry / simpler emitter.
+    (dolist (b bytes)
+      (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'r9)
+      (nelisp-asm-x86_64-cmp-imm32 buf 'rax b)
+      (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+      (nelisp-asm-x86_64-add-imm32 buf 'r9 1))
+    ;; All bytes match -> rax = 1.
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf false-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
+    (nelisp-asm-x86_64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-sexp-name-eq (node buf)
+  "Emit `sexp-name-eq': tag-check SEXP_PTR == Symbol (4) OR Str (5), length
+check against LITERAL_LEN, then byte-loop compare against compile-time
+literal bytes.  Returns i64 0/1 in rax.
+
+Extends `symbol-name-eq' to accept both Sexp::Symbol (tag 4) and
+Sexp::Str (tag 5) inputs.  The tag check emits:
+  movzx rax, byte [rdi]
+  cmp rax, 4       ; Symbol?
+  jz <bytes-check>
+  cmp rax, 5       ; Str?
+  jnz <false-lbl>
+  <bytes-check>: ...
+
+Register usage matches `symbol-name-eq' exactly; only the tag-check block
+differs (adds one cmp+jnz for the Str arm)."
+  (let* ((ptr (plist-get node :ptr))
+         (bytes (plist-get node :bytes))
+         (id (plist-get node :id))
+         (len (length bytes))
+         (bytes-check-lbl (intern (format "%s-bytes" id)))
+         (false-lbl (intern (format "%s-false" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    ;; Tag check: byte [rdi] == 4 (Symbol) → bytes_check
+    ;;            byte [rdi] == 5 (Str)    → bytes_check
+    ;;            anything else             → false_lbl
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-symbol)
+    (nelisp-asm-x86_64-jz-rel32 buf bytes-check-lbl)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-str)
+    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+    (nelisp-asm-x86_64-define-label buf bytes-check-lbl)
+    ;; Length check: NlString::len at offset 24 == LITERAL_LEN.
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-string--offset-length)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax len)
+    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+    ;; r9 = NlString::ptr at offset 16.
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r9 'rdi nelisp-string--offset-ptr)
+    ;; Per-byte comparison.
     (dolist (b bytes)
       (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'r9)
       (nelisp-asm-x86_64-cmp-imm32 buf 'rax b)

@@ -401,6 +401,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Phase 47 swap — `nl_jit_string_match_p' literal/anchored fast-path
         // migration from `build-tool/src/jit/regex.rs'.
         "nelisp-cc-jit-regex.el",
+        // Doc 120 alias — `nl_jit_alias' Phase 47 swap: maps user-facing
+        // JIT names (e.g. `nelisp_jit_car') to canonical dlsym names,
+        // replacing the 18-LOC Rust `alias' fn in `jit/bridge.rs'.
+        "nelisp-cc-jit-alias.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

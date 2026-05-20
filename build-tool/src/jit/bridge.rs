@@ -77,11 +77,22 @@ extern "C" {
     fn nl_cons_prepend_clone();
     fn nl_jit_secure_hash();
     fn nl_jit_string_match_p();
+    // Nullary redecl — symbol-presence only for `_ELISP_ARCHIVE_ANCHOR'.
+    fn nl_jit_alias();
+}
+
+// Typed declaration for the actual `nl_jit_alias' call in `unified_fn_ptr'.
+// Uses `#[link_name]` to resolve to the same ELF symbol as the nullary
+// `nl_jit_alias' above, without triggering the array-type mismatch.
+#[allow(dead_code, clashing_extern_declarations)]
+extern "C" {
+    #[link_name = "nl_jit_alias"]
+    fn nl_jit_alias_call(name: *const Sexp, out: *mut Sexp) -> i64;
 }
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 68] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 69] = [
     nelisp_jit_add2,
     nelisp_jit_sub2,
     nelisp_jit_mul2,
@@ -150,8 +161,10 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 68] = [
     nl_cons_prepend_clone,
     nl_jit_secure_hash,
     nl_jit_string_match_p,
+    nl_jit_alias,
 ];
 
+/// Type-guard a JIT name argument: accept Symbol or Str, reject others.
 fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
     match v {
         Sexp::Symbol(s) | Sexp::Str(s) => Ok(s.as_str()),
@@ -162,27 +175,20 @@ fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
     }
 }
 
-fn alias(name: &str) -> &str {
-    match name {
-        "nelisp_jit_car" => "nelisp_jit_cons_car",
-        "nelisp_jit_cdr" => "nelisp_jit_cons_cdr",
-        "nelisp_jit_setcar" => "nelisp_jit_cons_setcar",
-        "nelisp_jit_setcdr" => "nelisp_jit_cons_setcdr",
-        "nelisp_jit_eq_inline" => "nelisp_jit_predicate_eq",
-        "nelisp_jit_cons" => "nelisp_jit_cons_make",
-        "nelisp_jit_type_of" => "nl_jit_type_of",
-        "nelisp_jit_sxhash" => "nl_jit_sxhash",
-        "nelisp_jit_intern" => "nl_jit_intern",
-        "nelisp_jit_symbol_name" => "nl_jit_symbol_name",
-        "nelisp_jit_make_symbol" => "nl_jit_make_symbol",
-        "nelisp_jit_syscall" => "nl_jit_syscall_call",
-        "nelisp_jit_syscall_supported_p" => "nl_jit_syscall_supported_p",
-        other => other,
+/// Resolve a JIT name `sexp` (Symbol or Str) to a function pointer via the
+/// Phase 47 `nl_jit_alias` object which maps user-facing names to canonical
+/// dlsym names, then calls `dlsym(RTLD_DEFAULT, resolved)`.
+pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {
+    let mut resolved = Sexp::Nil;
+    let rc = unsafe { nl_jit_alias_call(sexp as *const _, &mut resolved as *mut _) };
+    if rc != 0 {
+        return None;
     }
-}
-
-pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
-    let cstr = CString::new(alias(name)).ok()?;
+    let name = match &resolved {
+        Sexp::Str(s) => s.as_str(),
+        _ => return None,
+    };
+    let cstr = CString::new(name).ok()?;
     let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cstr.as_ptr()) };
     if addr.is_null() {
         None
@@ -193,9 +199,15 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
 
 fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, EvalError> {
     require_arity(prim, args, arity, Some(arity))?;
-    let name = as_name(prim, &args[0])?;
-    unified_fn_ptr(name)
-        .ok_or_else(|| EvalError::Internal(format!("{}: unknown JIT entry name `{}'", prim, name)))
+    let name_sexp = &args[0];
+    // Validate type eagerly so errors match the old `as_name` message style.
+    let name_str = as_name(prim, name_sexp)?;
+    unified_fn_ptr(name_sexp).ok_or_else(|| {
+        EvalError::Internal(format!(
+            "{}: unknown JIT entry name `{}'",
+            prim, name_str
+        ))
+    })
 }
 
 unsafe fn cast<T: Copy>(p: *const u8) -> T {
@@ -335,7 +347,7 @@ mod tests {
             "nl_jit_float_add",
             "nl_jit_float_exp",
         ] {
-            let p = unified_fn_ptr(n);
+            let p = unified_fn_ptr(&sym(n));
             assert!(p.is_some(), "missing `{}'", n);
             assert!(!p.unwrap().is_null(), "`{}' is null", n);
         }
@@ -343,8 +355,8 @@ mod tests {
 
     #[test]
     fn unified_fn_ptr_unknown_returns_none() {
-        assert!(unified_fn_ptr("nelisp_jit_does_not_exist").is_none());
-        assert!(unified_fn_ptr("").is_none());
+        assert!(unified_fn_ptr(&sym("nelisp_jit_does_not_exist")).is_none());
+        assert!(unified_fn_ptr(&sym("")).is_none());
     }
 
     #[test]

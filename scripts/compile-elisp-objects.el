@@ -1205,7 +1205,16 @@
     ;; Phase 47 byte-level ops.  Rust `regex.rs' body deleted (-71 LOC).
     (nelisp-cc-jit-regex
      :source-var nelisp-cc-jit-regex--source
-     :output "nl_jit_string_match_p.o"))
+     :output "nl_jit_string_match_p.o")
+    ;; Doc 120 alias — `nl_jit_alias' Phase 47 swap: maps user-facing
+    ;; JIT names (e.g. `nelisp_jit_car') to canonical dlsym names
+    ;; (e.g. `nelisp_jit_cons_car'), replacing the 18-LOC Rust `alias'
+    ;; fn in `build-tool/src/jit/bridge.rs'.  Uses the new `sexp-name-eq'
+    ;; grammar op (accepts both Symbol tag=4 and Str tag=5).
+    (nelisp-cc-jit-alias
+     :source-var nelisp-cc-jit-alias--source
+     :output "nl_jit_alias.o"
+     :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
 FEATURE is the feature to `require', SYM is the defconst holding
