@@ -1,10 +1,5 @@
-//! Alloc/dealloc primitives backing Phase 47 `alloc-bytes' /
-//! `dealloc-bytes' grammar ops.  The atomic + raw-memory ops
-//! (formerly `nl_atomic_fetch_add', `nl_atomic_compare_exchange',
-//! `nl_ptr_read_*', `nl_ptr_write_*') have been eliminated: the Phase 47
-//! compiler now emits inline x86_64 instructions for those ops directly
-//! (Doc 131 §131.A), making the corresponding Rust externs dead code that
-//! has been deleted as part of the raw_mem.rs substrate elimination.
+//! Alloc/dealloc primitives for Phase 47 `alloc-bytes'/`dealloc-bytes` ops.
+//! Atomic + raw-memory ops were eliminated in Doc 131 §131.A (now inline asm).
 
 use std::alloc::{self, Layout};
 
