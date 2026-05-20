@@ -137,13 +137,8 @@ impl Env {
         env
     }
 
-    pub fn empty() -> Self {
-        Env::fresh(256)
-    }
-
-    pub fn new_global_no_stdlib() -> Self {
-        Env::install_stage0(1024)
-    }
+    pub fn empty() -> Self { Env::fresh(256) }
+    pub fn new_global_no_stdlib() -> Self { Env::install_stage0(1024) }
 
     fn install_stage0(max_recursion: u32) -> Self {
         let mut env = Env::fresh(max_recursion);
@@ -207,7 +202,6 @@ impl Env {
     }
 
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
-        // Wave b: delegate to Phase 47 .o.  Guard: mirror not ready → no-op.
         if !matches!(&self.globals_record, Sexp::Record(_)) { return; }
         let n = Sexp::Symbol(name.into());
         let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(
@@ -216,23 +210,11 @@ impl Env {
             &self.globals_record, &self.frames_record, &n, &value, &sc, 0) };
     }
 
-    /// Push a fresh empty lexframe onto the frame stack.
-    pub fn push_frame(&mut self) {
-        self.frame_push_rust_direct();
-    }
-
-    /// Pop the top lexframe from the frame stack.
-    pub fn pop_frame(&mut self) {
-        self.frame_pop_rust_direct();
-    }
-
-    /// Set (or insert) the function cell for NAME in the globals mirror.
-    pub fn set_function(&mut self, name: &str, value: Sexp) {
-        self.mirror_set_function(name, value);
-    }
+    pub fn push_frame(&mut self) { self.frame_push_rust_direct(); }
+    pub fn pop_frame(&mut self) { self.frame_pop_rust_direct(); }
+    pub fn set_function(&mut self, name: &str, value: Sexp) { self.mirror_set_function(name, value); }
 
     pub fn capture_lexical(&mut self) -> Sexp {
-        // Wave g: compressed with let..else; same logic, -7 LOC.
         let Sexp::Record(r) = &self.frames_record else { return Sexp::Nil };
         let Some(Sexp::Int(depth)) = r.slots.get(1) else { return Sexp::Nil };
         let depth = *depth;
@@ -242,7 +224,6 @@ impl Env {
     }
 
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
-        // Wave i: delegate install+depth-bump to Phase 47 .o.
         let normalized = Env::wrap_alist_cells(alist)?;
         let Ok(f) = self.lookup_function("nelisp-lexframe-make-from-alist") else { return Ok(()) };
         let frame = super::apply_function(&f, &[normalized], self)?;
@@ -257,9 +238,7 @@ impl Env {
         name: &str,
         f: impl FnOnce(*const Sexp, *const Sexp) -> T,
     ) -> Option<T> {
-        if !matches!(&self.globals_record, Sexp::Record(_)) {
-            return None;
-        }
+        if !matches!(&self.globals_record, Sexp::Record(_)) { return None; }
         let sym = Sexp::Symbol(name.into());
         Some(f(&self.globals_record, &sym))
     }
@@ -280,13 +259,16 @@ impl Env {
         payload: &Sexp,
         op: unsafe fn(*const Sexp, *const Sexp, *const Sexp, *const Sexp) -> i64,
     ) {
-        self.with_mirror_unbound(name, |m, s, u| unsafe {
-            op(m, s, payload, u);
-        });
+        self.with_mirror_unbound(name, |m, s, u| unsafe { op(m, s, payload, u); });
     }
 
     mirror_op!(mutate: mirror_set_value => mirror_set_value_or_insert);
     mirror_op!(mutate: mirror_set_function => mirror_set_function_or_insert);
+
+    pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
+        let value = if truthy { Sexp::T } else { Sexp::Nil };
+        self.mirror_mutate_with(name, &value, crate::elisp_cc_spike::mirror_set_constant_or_insert);
+    }
 
     pub fn install_empty_mirror_rust_direct(&mut self) {
         self.unbound_marker = Sexp::Symbol("nelisp--unbound-marker".into());
@@ -298,21 +280,19 @@ impl Env {
 
     mirror_op!(lookup: mirror_lookup_value(pub) => mirror_lookup_value);
     mirror_op!(lookup: mirror_lookup_function(pub) => mirror_lookup_function);
-
     mirror_op!(pred: mirror_is_fbound(pub) => mirror_is_fbound);
 
-    pub(crate) fn frame_push_rust_direct(&mut self) {
-        if !matches!(&self.frames_record, Sexp::Record(_)) { return; }
+    pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
+        if !matches!(&self.frames_record, Sexp::Record(_)) { return None; }
         unsafe { crate::elisp_cc_spike::frame_push(&self.frames_record as *const Sexp) };
+        Some(Sexp::Nil)
     }
 
     pub(crate) fn frame_pop_rust_direct(&mut self) {
-        let Sexp::Record(stack_rec) = &self.frames_record else { return };
-        let Some(Sexp::Vector(backing)) = stack_rec.slots.get(0) else { return };
-        let Some(Sexp::Int(depth_i)) = stack_rec.slots.get(1) else { return };
-        let depth = *depth_i as usize;
+        let stack_rec = match &self.frames_record { Sexp::Record(r) => r.clone(), _ => return };
+        let Some(backing) = stack_rec.slots.get(0).and_then(|s| if let Sexp::Vector(v) = s { Some(v.clone()) } else { None }) else { return };
+        let depth = match stack_rec.slots.get(1) { Some(Sexp::Int(n)) => *n as usize, _ => return };
         if depth == 0 { return; }
-        let (stack_rec, backing) = (stack_rec.clone(), backing.clone());
         unsafe {
             backing.with_value_mut(|v| v[depth - 1] = Sexp::Nil);
             stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth - 1) as i64));
@@ -326,21 +306,14 @@ impl Env {
         if raw.is_null() { return None; }
         Some(unsafe { (*raw).clone() })
     }
-
-    /// Alias for `frame_stack_find_rust_direct` (innermost-frame variant).
+    /// Alias for `frame_stack_find_rust_direct`; retained for test compatibility.
     pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
         self.frame_stack_find_rust_direct(name)
     }
 
     pub(crate) fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> {
         let mut result = Sexp::Nil;
-        let rc = unsafe {
-            crate::elisp_cc_spike::wrap_alist_cells(alist as *const Sexp, &mut result)
-        };
-        if rc == 1 {
-            Ok(result)
-        } else {
-            Err(EvalError::internal("wrap_alist_cells: malformed closure env alist"))
-        }
+        let rc = unsafe { crate::elisp_cc_spike::wrap_alist_cells(alist as *const Sexp, &mut result) };
+        if rc == 1 { Ok(result) } else { Err(EvalError::internal("wrap_alist_cells: malformed closure env alist")) }
     }
 }

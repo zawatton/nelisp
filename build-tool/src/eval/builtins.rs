@@ -67,10 +67,9 @@ macro_rules! builtin_dispatch {
             "nelisp--set-use-elisp-apply" => { require_arity("nelisp--set-use-elisp-apply", $args, 1, Some(1))?; $env.use_elisp_apply = !matches!($args[0], Sexp::Nil); Ok(bool_sexp($env.use_elisp_apply)) },
             "nelisp--apply-lambda-inner" => {
                 require_arity("nelisp--apply-lambda-inner", $args, 4, Some(4))?;
-                // Call nl_apply_lambda_inner Phase 47 elisp .o directly.
                 let captured  = &$args[0];
                 let formals   = &$args[1];
-                let body_list = &$args[2]; // already a cons list
+                let body_list = &$args[2];
                 let args_list = Sexp::list_from(&super::list_elements(&$args[3])?);
                 let mut out = Sexp::Nil;
                 let rc = unsafe {
@@ -209,7 +208,6 @@ fn resolve_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
 }
 fn cc_slot_1(arg: &Sexp, f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp) -> Sexp { let mut slot = Sexp::Nil; unsafe { f(arg as *const _, &mut slot as *mut _) }; slot }
 fn bool_sexp(v: bool) -> Sexp { if v { Sexp::T } else { Sexp::Nil } }
-
 fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> {
     if rc < 0 { Err(EvalError::internal(format!("{name}: {path}: kernel returned {rc}"))) } else { Ok(Sexp::T) }
 }
@@ -217,7 +215,7 @@ fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> {
 /// Rust helper called from the Phase 47 `.o' for `bi_f64_trunc'.
 /// Converts num/denom Sexps to f64, divides, returns quotient bits as i64.
 #[no_mangle] pub extern "C" fn nl_bi_f64_trunc_div_bits(n: *const Sexp, d: *const Sexp) -> i64 { let f=|p:*const Sexp|match unsafe{&*p}{Sexp::Int(i)=>*i as f64,Sexp::Float(v)=>*v,_=>0.0}; (f(n)/f(d)).to_bits() as i64 }
-/// Validate arity=1 and resolve arg[0] to an absolute path string Sexp.
+
 fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> {
     require_arity(name, args, 1, Some(1))?;
     let p = resolve_path(&args[0], env)?;
@@ -281,6 +279,3 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) };
     Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 }))
 }
-
-// Unix TTY raw-mode, winsize, and job-control dispatch delegated to tty.rs.
-
