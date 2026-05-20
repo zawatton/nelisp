@@ -5,7 +5,48 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 
+use std::sync::atomic::AtomicI64;
+
 use crate::eval::sexp::Sexp;
+
+/// Per-process uninterned-symbol counter.  Pointer surfaced to the
+/// Phase 47 elisp body via `nl_make_symbol_counter_ptr'.
+static MAKE_SYMBOL_COUNTER: AtomicI64 = AtomicI64::new(0);
+
+/// Return `*mut i64' to `MAKE_SYMBOL_COUNTER' for use with the
+/// Phase 47 `atomic-fetch-add' grammar op in the elisp body of
+/// `nl_jit_make_symbol'.
+#[no_mangle]
+pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 {
+    std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64
+}
+
+/// IEEE-754 float body builder.  CONV ∈ {f/F/e/E/g/G}, PREC ≥ 0.
+/// Writes unsigned/unpadded body; elisp does sign + padding.
+/// Migrated from `build-tool/src/jit/strings.rs' (file deleted).
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: *mut Sexp) -> i64 {
+    let conv_ch = match char::from_u32(conv) {
+        Some(c) => c,
+        None => return 1,
+    };
+    if prec < 0 {
+        return 1;
+    }
+    let p = prec as usize;
+    let body = match conv_ch {
+        'f' | 'F' => format!("{:.*}", p, x),
+        'e' => format!("{:.*e}", p, x),
+        'E' => format!("{:.*E}", p, x),
+        'g' | 'G' => {
+            let (f, e) = (format!("{:.*}", p, x), format!("{:.*e}", p, x));
+            if f.len() <= e.len() { f } else { e }
+        }
+        _ => return 1,
+    };
+    unsafe { *out = Sexp::Str(body) };
+    0
+}
 
 #[repr(C)]
 pub struct NlStr {
