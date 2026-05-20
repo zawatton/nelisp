@@ -126,9 +126,18 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     )))
 }
 
+fn num_to_f64_local(v: &Sexp) -> Result<f64, EvalError> {
+    match v { Sexp::Int(n) => Ok(*n as f64), Sexp::Float(x) => Ok(*x),
+        other => Err(EvalError::wrong_type("numberp", other.clone())) }
+}
+fn num_pair_local(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
+    crate::eval::builtins::require_arity(name, args, 2, Some(2))?;
+    let af = matches!(args[0], Sexp::Float(_)) || matches!(args[1], Sexp::Float(_));
+    Ok((num_to_f64_local(&args[0])?, num_to_f64_local(&args[1])?, af))
+}
 fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> {
     let p = jit_lookup(name, args, 3)?;
-    let (a, b, _) = crate::eval::builtins::num_pair(&args[1..], name)?;
+    let (a, b, _) = num_pair_local(&args[1..], name)?;
     Ok((p, a, b))
 }
 

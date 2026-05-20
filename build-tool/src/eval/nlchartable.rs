@@ -34,34 +34,33 @@ impl PartialEq for NlCharTableRef {
     }
 }
 
+pub(crate) fn char_table_set_one(inner: &mut CharTableInner, c: i64, v: Sexp) {
+    match inner.entries.iter_mut().find(|(k, _)| *k == c) {
+        Some(e) => e.1 = v,
+        None => inner.entries.push((c, v)),
+    }
+}
+
+pub(crate) fn char_table_get(rc: &NlCharTableRef, c: i64) -> Sexp {
+    let inner = &rc.inner;
+    inner.entries.iter().find(|(k, _)| *k == c).map(|(_, v)| v.clone())
+        .or_else(|| inner.parent.as_ref().map(|parent| char_table_get(parent, c)))
+        .unwrap_or_else(|| inner.default_val.clone())
+}
+
 /// Phase 47 delegate: char_table_get lookup; caller guarantees CharTable tag.
 #[no_mangle]
-pub unsafe extern "C" fn nl_char_table_get_raw(
-    arg: *const Sexp,
-    idx: i64,
-    out: *mut Sexp,
-) -> i64 {
-    let r = match &*arg {
-        Sexp::CharTable(r) => r,
-        _ => return TRAMPOLINE_ERR,
-    };
-    *out = crate::eval::builtins::char_table_get(r, idx);
+pub unsafe extern "C" fn nl_char_table_get_raw(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
+    let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
+    *out = char_table_get(r, idx);
     TRAMPOLINE_OK
 }
 
 /// Phase 47 delegate: char_table_set_one mutation; caller guarantees CharTable tag.
 #[no_mangle]
-pub unsafe extern "C" fn nl_char_table_set_raw(
-    arg: *const Sexp,
-    idx: i64,
-    val: *const Sexp,
-    out: *mut Sexp,
-) -> i64 {
-    let r = match &*arg {
-        Sexp::CharTable(r) => r,
-        _ => return TRAMPOLINE_ERR,
-    };
-    r.with_inner_mut(|i| crate::eval::builtins::char_table_set_one(i, idx, (*val).clone()));
+pub unsafe extern "C" fn nl_char_table_set_raw(arg: *const Sexp, idx: i64, val: *const Sexp, out: *mut Sexp) -> i64 {
+    let r = match &*arg { Sexp::CharTable(r) => r, _ => return TRAMPOLINE_ERR };
+    r.with_inner_mut(|i| char_table_set_one(i, idx, (*val).clone()));
     *out = (*val).clone();
     TRAMPOLINE_OK
 }
