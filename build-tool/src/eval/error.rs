@@ -4,59 +4,6 @@ use std::fmt;
 
 use super::sexp::Sexp;
 
-/// Source position as 1-indexed line and UTF-8 byte column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourcePos {
-    pub line: u32,
-    pub col: u32,
-}
-
-impl fmt::Display for SourcePos {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.line, self.col)
-    }
-}
-
-/// Reader-side failure surfaced through [`EvalError::Read`].
-#[derive(Debug, Clone, PartialEq)]
-pub enum ReadError {
-    Parse { msg: String, pos: SourcePos },
-    UnexpectedEof { msg: String, pos: SourcePos },
-    NotYetImplemented { feature: String, pos: SourcePos },
-}
-
-macro_rules! readerr_ctor {
-    ($fn:ident => $variant:ident, $field:ident) => {
-        pub fn $fn(s: impl Into<String>, pos: SourcePos) -> Self {
-            ReadError::$variant {
-                $field: s.into(),
-                pos,
-            }
-        }
-    };
-}
-
-impl ReadError {
-    readerr_ctor!(parse => Parse, msg);
-    readerr_ctor!(unexpected_eof => UnexpectedEof, msg);
-    readerr_ctor!(not_yet_implemented => NotYetImplemented, feature);
-}
-
-impl fmt::Display for ReadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (kind, body, pos) = match self {
-            ReadError::Parse { msg, pos } => ("parse error", msg.as_str(), pos),
-            ReadError::UnexpectedEof { msg, pos } => ("unexpected EOF", msg.as_str(), pos),
-            ReadError::NotYetImplemented { feature, pos } => {
-                ("not-yet-implemented", feature.as_str(), pos)
-            }
-        };
-        write!(f, "{} at {}: {}", kind, pos, body)
-    }
-}
-
-impl std::error::Error for ReadError {}
-
 /// Evaluator failure modes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
@@ -78,10 +25,6 @@ pub enum EvalError {
     UserError { tag: String, data: Sexp },
     /// `setting-constant`.
     SettingConstant(String),
-    /// `error` for deferred bootstrap constructs.
-    NotImplemented(String),
-    /// `invalid-read-syntax`.
-    Read(ReadError),
     /// `quit`.
     Quit,
     /// `error` catch-all for evaluator bugs.
@@ -99,9 +42,8 @@ impl EvalError {
             EvalError::ArithError(_) => "arith-error",
             EvalError::UserError { tag, .. } => tag.as_str(),
             EvalError::SettingConstant(_) => "setting-constant",
-            EvalError::Read(_) => "invalid-read-syntax",
             EvalError::Quit => "quit",
-            EvalError::NotImplemented(_) | EvalError::Internal(_) => "error",
+            EvalError::Internal(_) => "error",
         }
     }
 
@@ -120,11 +62,8 @@ impl EvalError {
             EvalError::WrongNumberOfArguments { function, got, .. } => {
                 Sexp::list_from(&[Sexp::Symbol(function.clone()), Sexp::Int(*got as i64)])
             }
-            EvalError::ArithError(m) | EvalError::NotImplemented(m) | EvalError::Internal(m) => {
-                str1(m)
-            }
+            EvalError::ArithError(m) | EvalError::Internal(m) => str1(m),
             EvalError::UserError { data, .. } => data.clone(),
-            EvalError::Read(e) => str1(&e.to_string()),
             EvalError::Quit => Sexp::Nil,
         };
         Sexp::cons(tag, data)
@@ -156,8 +95,6 @@ impl fmt::Display for EvalError {
             EvalError::ArithError(m) => write!(f, "arith-error: {}", m),
             EvalError::UserError { tag, data } => write!(f, "{}: {}", tag, data),
             EvalError::SettingConstant(n) => write!(f, "setting-constant: {}", n),
-            EvalError::NotImplemented(m) => write!(f, "not-implemented: {}", m),
-            EvalError::Read(e) => write!(f, "{}", e),
             EvalError::Quit => write!(f, "quit"),
             EvalError::Internal(m) => write!(f, "internal: {}", m),
         }
@@ -165,9 +102,3 @@ impl fmt::Display for EvalError {
 }
 
 impl std::error::Error for EvalError {}
-
-impl From<ReadError> for EvalError {
-    fn from(e: ReadError) -> Self {
-        EvalError::Read(e)
-    }
-}

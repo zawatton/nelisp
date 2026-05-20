@@ -4,7 +4,8 @@
 //! so every NlConsBoxRef in the result tree is refcount-1-owned; normal
 //! Drop handles the slot pool and stale results without mem::forget.
 
-pub use crate::eval::error::{ReadError, SourcePos};
+mod error;
+pub use error::{ReadError, SourcePos};
 pub use crate::eval::sexp::{fmt_sexp, Sexp};
 
 use crate::elisp_cc_spike;
