@@ -33,19 +33,15 @@ pub enum Sexp {
     Record(NlRecordRef),
 }
 
-pub const SEXP_TAG_NIL: u8 = 0;
-pub const SEXP_TAG_T: u8 = 1;
-pub const SEXP_TAG_INT: u8 = 2;
-pub const SEXP_TAG_FLOAT: u8 = 3;
-pub const SEXP_TAG_SYMBOL: u8 = 4;
-pub const SEXP_TAG_STR: u8 = 5;
-pub const SEXP_TAG_MUT_STR: u8 = 6;
-pub const SEXP_TAG_CONS: u8 = 7;
-pub const SEXP_TAG_VECTOR: u8 = 8;
-pub const SEXP_TAG_CHAR_TABLE: u8 = 9;
-pub const SEXP_TAG_BOOL_VECTOR: u8 = 10;
-pub const SEXP_TAG_CELL: u8 = 11;
-pub const SEXP_TAG_RECORD: u8 = 12;
+macro_rules! sexp_tags {
+    ($($name:ident = $val:expr;)*) => { $(pub const $name: u8 = $val;)* }
+}
+sexp_tags! {
+    SEXP_TAG_NIL=0; SEXP_TAG_T=1; SEXP_TAG_INT=2; SEXP_TAG_FLOAT=3;
+    SEXP_TAG_SYMBOL=4; SEXP_TAG_STR=5; SEXP_TAG_MUT_STR=6; SEXP_TAG_CONS=7;
+    SEXP_TAG_VECTOR=8; SEXP_TAG_CHAR_TABLE=9; SEXP_TAG_BOOL_VECTOR=10;
+    SEXP_TAG_CELL=11; SEXP_TAG_RECORD=12;
+}
 
 /// Byte offset of the boxed handle within a `Sexp`.
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
@@ -80,82 +76,49 @@ impl Sexp {
 }
 
 // Every NlXxxRef must stay pointer-sized so payload remains at offset 8.
-const _: () = {
-    use std::mem::size_of;
+const _: () = { use std::mem::size_of;
     assert!(size_of::<crate::eval::nlconsbox::NlConsBoxRef>() == 8);
     assert!(size_of::<crate::eval::nlcell::NlCellRef>() == 8);
     assert!(size_of::<crate::eval::nlstr::NlStrRef>() == 8);
     assert!(size_of::<crate::eval::nlvector::NlVectorRef>() == 8);
     assert!(size_of::<crate::eval::nlboolvector::NlBoolVectorRef>() == 8);
     assert!(size_of::<crate::eval::nlrecord::NlRecordRef>() == 8);
-    assert!(size_of::<crate::eval::nlchartable::NlCharTableRef>() == 8);
-};
+    assert!(size_of::<crate::eval::nlchartable::NlCharTableRef>() == 8); };
 
-/// Clone `*src` into `*dst` without dropping prior contents.
-///
-/// # Safety
-/// - `src` must point at an initialized `Sexp` valid for the call.
-/// - `dst` must be a writable 32-byte `Sexp` slot treated as *uninit*
-///   (caller must drop prior contents first, or `*dst` was `Nil`).
+/// Clone `*src` into `*dst` (uninit slot). Safety: both pointers are live and valid.
 #[no_mangle]
 pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) {
-    let cloned: Sexp = unsafe { (*src).clone() };
-    unsafe {
-        core::ptr::write(dst, cloned);
-    }
+    core::ptr::write(dst, (*src).clone());
 }
 
 /// Inner storage for [`Sexp::CharTable`].
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
 pub struct CharTableInner {
-    /// Subtype symbol.
     pub subtype: Sexp,
-    /// Default value.
     pub default_val: Sexp,
-    /// Sparse char -> value map.
     pub entries: Vec<(i64, Sexp)>,
-    /// Optional parent.
     pub parent: Option<NlCharTableRef>,
-    /// Extra slots.
     pub extra: Vec<Sexp>,
 }
 
 impl Sexp {
     pub fn list_from(items: &[Sexp]) -> Sexp {
         let mut acc = Sexp::Nil;
-        for item in items.iter().rev() {
-            acc = Sexp::cons(item.clone(), acc);
-        }
+        for item in items.iter().rev() { acc = Sexp::cons(item.clone(), acc); }
         acc
     }
-
-    pub fn cons(car: Sexp, cdr: Sexp) -> Sexp {
-        Sexp::Cons(NlConsBoxRef::new(car, cdr))
-    }
-
-    pub fn vector(items: Vec<Sexp>) -> Sexp {
-        Sexp::Vector(NlVectorRef::new(items))
-    }
-
-    pub fn mut_str(s: impl Into<String>) -> Sexp {
-        Sexp::MutStr(NlStrRef::new(s.into()))
-    }
-
+    pub fn cons(car: Sexp, cdr: Sexp) -> Sexp { Sexp::Cons(NlConsBoxRef::new(car, cdr)) }
+    pub fn vector(items: Vec<Sexp>) -> Sexp { Sexp::Vector(NlVectorRef::new(items)) }
+    pub fn mut_str(s: impl Into<String>) -> Sexp { Sexp::MutStr(NlStrRef::new(s.into())) }
     pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
         Sexp::CharTable(NlCharTableRef::new(CharTableInner {
-            subtype,
-            default_val: init,
-            entries: Vec::new(),
-            parent: None,
-            extra: Vec::new(),
+            subtype, default_val: init, entries: Vec::new(), parent: None, extra: Vec::new(),
         }))
     }
-
     pub fn bool_vector(len: usize, init: bool) -> Sexp {
         Sexp::BoolVector(NlBoolVectorRef::new(vec![init; len]))
     }
-
     pub fn as_string_owned(&self) -> Option<String> {
         match self {
             Sexp::Str(s) => Some(s.clone()),
@@ -163,18 +126,13 @@ impl Sexp {
             _ => None,
         }
     }
-
     pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp {
         Sexp::Record(NlRecordRef::new(type_tag, init))
     }
 }
 
-// ---------------------------------------------------------------------------
 // ABI export table — used by `sexp-abi-emit' binary and `make sexp-abi-check'.
 // Mirrors `nelisp-sexp--abi-export' in `lisp/nelisp-sexp-layout.el'.
-// (Moved here from sexp_abi_assert.rs so that file could be deleted.)
-// ---------------------------------------------------------------------------
-
 const NLREC_SLOTS: usize = std::mem::offset_of!(NlRecord, slots);
 const NLVEC_VALUE: usize = std::mem::offset_of!(NlVector, value);
 
