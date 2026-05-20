@@ -150,8 +150,22 @@ impl Env {
     fn install_stage0(max_recursion: u32) -> Self {
         let mut env = Env::fresh(max_recursion);
         env.install_empty_mirror_rust_direct();
-        env.mirror_install_entry("nil", Some(Sexp::Nil), None, None, true);
-        env.mirror_install_entry("t", Some(Sexp::T), None, None, true);
+        {
+            let unbound = env.unbound_marker.clone();
+            let plist_slot = Sexp::Nil;
+            let constant_slot = Sexp::T;
+            env.with_mirror_symbol("nil", |mirror_ptr, sym_ptr| unsafe {
+                crate::elisp_cc_spike::mirror_install_entry_or_insert(
+                    mirror_ptr, sym_ptr, &Sexp::Nil, &unbound, &plist_slot, &constant_slot,
+                );
+            });
+            let unbound2 = env.unbound_marker.clone();
+            env.with_mirror_symbol("t", |mirror_ptr, sym_ptr| unsafe {
+                crate::elisp_cc_spike::mirror_install_entry_or_insert(
+                    mirror_ptr, sym_ptr, &Sexp::T, &unbound2, &plist_slot, &constant_slot,
+                );
+            });
+        }
         super::builtins::install_builtins(&mut env);
         env.register_extern_builtin("nelisp--env-globals-op", |args, env| {
             super::env_shim::bi_globals_op(args, env)
@@ -297,31 +311,6 @@ impl Env {
 
     mirror_op!(mutate: mirror_set_value => mirror_set_value_or_insert);
     mirror_op!(mutate: mirror_set_function => mirror_set_function_or_insert);
-
-    pub fn mirror_install_entry(
-        &mut self,
-        name: &str,
-        value: Option<Sexp>,
-        function: Option<Sexp>,
-        plist: Option<Sexp>,
-        constant: bool,
-    ) {
-        let unbound = self.unbound_marker.clone();
-        let value_slot = value.unwrap_or_else(|| unbound.clone());
-        let function_slot = function.unwrap_or(unbound);
-        let plist_slot = plist.unwrap_or(Sexp::Nil);
-        let constant_slot = if constant { Sexp::T } else { Sexp::Nil };
-        self.with_mirror_symbol(name, |mirror_ptr, sym_ptr| unsafe {
-            crate::elisp_cc_spike::mirror_install_entry_or_insert(
-                mirror_ptr,
-                sym_ptr,
-                &value_slot,
-                &function_slot,
-                &plist_slot,
-                &constant_slot,
-            );
-        });
-    }
 
     pub(crate) fn mirror_set_constant(&mut self, name: &str, truthy: bool) {
         let value = if truthy { Sexp::T } else { Sexp::Nil };
