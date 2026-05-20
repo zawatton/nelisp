@@ -45,6 +45,67 @@ macro_rules! nl_ref_common {
     };
 }
 
+/// Generate a standard `NlXxx` inner struct + `NlXxxRef` wrapper boilerplate:
+/// `#[repr(C)]` struct, `nl_ref_common!`, `DROP_FN`, `new()`, `Clone`, and
+/// layout const-assert.  `Debug` / `PartialEq` are written per-type (they
+/// reference `self`/`other`/`f` whose hygiene cannot cross macro invocations).
+///
+/// Parameters:
+///   inner          — name of the inner struct (e.g. `NlVector`)
+///   ref_ty         — name of the Ref wrapper  (e.g. `NlVectorRef`)
+///   fields         — comma-separated `name: Type` pairs for the *payload* fields
+///                    (refcount is appended automatically)
+///   clone_fn       — path to the elisp Clone ABI trampoline
+///   drop_fn        — path to the elisp Drop ABI trampoline
+///   layout_asserts — block with `assert!(offset_of!(...) == ...)` lines
+#[macro_export]
+macro_rules! define_nlbox {
+    (
+        inner          = $inner:ident,
+        ref_ty         = $ref:ident,
+        fields         = { $($fname:ident : $fty:ty),+ },
+        clone_fn       = $clone_fn:path,
+        drop_fn        = $drop_fn:path,
+        layout_asserts = { $($la_tt:tt)* }
+    ) => {
+        use ::std::marker::PhantomData;
+        use ::std::ptr::NonNull;
+        use ::std::sync::atomic::AtomicUsize;
+
+        #[repr(C)]
+        pub struct $inner {
+            $(pub $fname: $fty,)+
+            pub refcount: AtomicUsize,
+        }
+
+        crate::nl_ref_common!($ref, $inner, drop_fn = $drop_fn);
+
+        impl $inner {
+            pub(crate) const DROP_FN: unsafe fn(*mut ::std::ffi::c_void) =
+                crate::eval::nlrc::nlrc_payload_drop::<$inner>;
+        }
+
+        impl $ref {
+            pub fn new($($fname: $fty),+) -> $ref {
+                let ptr = NonNull::from(Box::leak(Box::new($inner {
+                    $($fname,)+
+                    refcount: AtomicUsize::new(1),
+                })));
+                $ref { ptr, _marker: PhantomData }
+            }
+        }
+
+        impl Clone for $ref {
+            fn clone(&self) -> Self {
+                unsafe { $clone_fn(self.ptr.as_ptr() as *mut i64) };
+                $ref { ptr: self.ptr, _marker: PhantomData }
+            }
+        }
+
+        const _: () = { $($la_tt)* };
+    };
+}
+
 /// In-place `set_$field` on an inner struct via `&self` (const-to-mut cast).
 /// Safety: no concurrent borrow of the field; `val` is fully initialized.
 #[macro_export]
