@@ -204,13 +204,13 @@ impl Env {
 
 
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
-        let has_frame = matches!(&self.frames_record, Sexp::Record(r)
-            if matches!(r.slots.get(1), Some(Sexp::Int(n)) if *n > 0));
-        if has_frame {
-            self.frame_bind_rust_direct(name, Sexp::Cell(FrameCell::new(value)));
-        } else {
-            self.mirror_set_value(name, value);
-        }
+        // Wave b: delegate to Phase 47 .o.  Guard: mirror not ready → no-op.
+        if !matches!(&self.globals_record, Sexp::Record(_)) { return; }
+        let n = Sexp::Symbol(name.into());
+        let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(
+            value.clone(), self.unbound_marker.clone(), Sexp::Nil, Sexp::Nil);
+        unsafe { crate::elisp_cc_spike::env_bind_local(
+            &self.globals_record, &self.frames_record, &n, &value, &sc, 0) };
     }
 
     pub fn capture_lexical(&mut self) -> Sexp {

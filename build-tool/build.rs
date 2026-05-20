@@ -433,6 +433,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // by this Phase 47 .o; Rust thin wrapper pre-builds the scratch vector
         // and routes through `env_shim_set_op'.
         "nelisp-cc-env-shim-set-op.el",
+        // Wave b — Env::bind_local Phase 47 .o.
+        // Thin wrapper; frame_record depth check + cell-make + nelisp_frame_bind
+        // on frame path, nelisp_mirror_set_value_or_insert on mirror path.
+        "nelisp-cc-env-bind-local.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

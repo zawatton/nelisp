@@ -1312,6 +1312,13 @@
     (nelisp-cc-env-lookup-function
      :source-var nelisp-cc-env-lookup-function--source
      :output "nelisp_env_lookup_function.o"
+     :requires-arch x86_64)
+    ;; Wave b — Env::bind_local Phase 47 .o.
+    ;; depth check → frame path (cell-make + nelisp_frame_bind)
+    ;;           or mirror path (nelisp_mirror_set_value_or_insert).
+    (nelisp-cc-env-bind-local
+     :source-var nelisp-cc-env-bind-local--source
+     :output "nelisp_env_bind_local.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
