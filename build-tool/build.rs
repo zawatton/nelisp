@@ -422,6 +422,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Rust bodies deleted from `build-tool/src/jit/syscall.rs' (full
         // file delete, -57 LOC).  Uses the new `syscall-direct' grammar op.
         "nelisp-cc-jit-syscall-call.el",
+        // Wave a-2 — Env::{lookup_value,set_value,lookup_function} Phase 47 .o.
+        // Three thin wrappers delegating to these elisp objects; `find_frame_cell'
+        // helper (6 LOC) deleted.  Uses `nl_cell_get_value' for refcount-safe
+        // cell read (fixes Wave a SIGABRT double-free root cause).
+        "nelisp-cc-env-lookup-value.el",
+        "nelisp-cc-env-set-value.el",
+        "nelisp-cc-env-lookup-function.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

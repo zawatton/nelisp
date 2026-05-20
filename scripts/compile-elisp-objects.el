@@ -1287,6 +1287,23 @@
     (nelisp-cc-jit-mut-str-set-codepoint
      :source-var nelisp-cc-jit-mut-str-set-codepoint--source
      :output "nl_jit_mut_str_set_codepoint.o"
+     :requires-arch x86_64)
+    ;; Wave a-2 — Env::{lookup_value,set_value,lookup_function} Phase 47 .o.
+    ;; lookup_value: frame-first (nl_cell_get_value = refcount-safe clone)
+    ;;   then mirror check.  Fixes Wave a double-free SIGABRT.
+    ;; set_value: constant guard → frame write (cell-set-value) → mirror vivify.
+    ;; lookup_function: mirror entry check → mirror_lookup_function fill.
+    (nelisp-cc-env-lookup-value
+     :source-var nelisp-cc-env-lookup-value--source
+     :output "nelisp_env_lookup_value.o"
+     :requires-arch x86_64)
+    (nelisp-cc-env-set-value
+     :source-var nelisp-cc-env-set-value--source
+     :output "nelisp_env_set_value.o"
+     :requires-arch x86_64)
+    (nelisp-cc-env-lookup-function
+     :source-var nelisp-cc-env-lookup-function--source
+     :output "nelisp_env_lookup_function.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

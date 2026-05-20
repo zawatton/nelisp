@@ -273,6 +273,10 @@ pub mod elisp_cc_spike {
         ) -> i64;
         fn nl_bi_f64_trunc_impl(mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64; // Doc 118
         fn nelisp_wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp, work_slot: *mut Sexp, name_slot: *mut Sexp, cell_slot: *mut Sexp, inner_slot: *mut Sexp) -> i64; // Doc 115 §115.4
+        // Wave a-2 — Env::{lookup_value,set_value,lookup_function} Phase 47 .o.
+        fn nelisp_env_lookup_value(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64;
+        fn nelisp_env_set_value(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
+        fn nelisp_env_lookup_function(mirror_ptr: *const Sexp, unbound_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64;
     }
 
     pub fn probe() -> i64 {
@@ -349,8 +353,8 @@ pub mod elisp_cc_spike {
     cc_wrap!(mirror_install_entry: nelisp_mirror_install_entry, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64);
     cc_wrap!(env_shim_op: nelisp_env_shim_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp, result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64);
 
-    /// Scratch vector for the four `_or_insert` wrappers.
-    fn build_or_insert_scratch_vec(
+    /// Scratch vector for the four `_or_insert` wrappers and Wave a-2 `set_value'.
+    pub fn build_or_insert_scratch_vec(
         value: Sexp,
         function: Sexp,
         plist: Sexp,
@@ -473,4 +477,7 @@ pub mod elisp_cc_spike {
          out: *mut Sexp, _pad: i64) -> i64);
     cc_wrap!(fmt_sexp_call: nelisp_fmt_sexp, (s: *const Sexp, slot: *mut Sexp) -> i64);
     cc_wrap!(f64_trunc_impl: nl_bi_f64_trunc_impl, (mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64);
+    cc_wrap!(env_lookup_value: nelisp_env_lookup_value, (mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64);
+    cc_wrap!(env_set_value: nelisp_env_set_value, (mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64);
+    cc_wrap!(env_lookup_function: nelisp_env_lookup_function, (mirror_ptr: *const Sexp, unbound_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64);
 }
