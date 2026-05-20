@@ -220,7 +220,20 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
         return Err(wrong_type());
     };
     match head.as_str() {
-        "builtin" => apply_builtin(func, args, env),
+        "builtin" => {
+            // Dispatch builtin directly via name sentinel.
+            let Sexp::Cons(outer) = func else {
+                return Err(EvalError::Internal("builtin sentinel not a cons".into()));
+            };
+            let Sexp::Cons(inner) = &outer.cdr else {
+                return Err(EvalError::Internal("builtin sentinel missing name".into()));
+            };
+            let name = match &inner.car {
+                Sexp::Symbol(s) | Sexp::Str(s) => s.clone(),
+                _ => return Err(EvalError::Internal("builtin sentinel name not a symbol".into())),
+            };
+            builtins::dispatch(&name, args, env)
+        }
         "closure" => {
             let parts = list_elements(func)?;
             if parts.len() < 3 {
@@ -228,14 +241,46 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
                     "closure missing env / args / body".into(),
                 ));
             }
-            apply_lambda_inner(&parts[1], &parts[2], &parts[3..], args, env)
+            // Phase 47: call nl_apply_lambda_inner elisp .o directly.
+            let captured = &parts[1];
+            let formals  = &parts[2];
+            let body_list = Sexp::list_from(&parts[3..]);
+            let args_list = Sexp::list_from(args);
+            let mut out = Sexp::Nil;
+            let rc = unsafe {
+                crate::elisp_cc_spike::apply_lambda_inner_call(
+                    captured as *const Sexp,
+                    formals as *const Sexp,
+                    &body_list as *const Sexp,
+                    &args_list as *const Sexp,
+                    env as *mut Env as *mut std::ffi::c_void,
+                    &mut out as *mut Sexp,
+                )
+            };
+            if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_closure")) }
         }
         "lambda" => {
             let parts = list_elements(func)?;
             if parts.len() < 2 {
                 return Err(EvalError::Internal("lambda missing args / body".into()));
             }
-            apply_lambda_inner(&Sexp::Nil, &parts[1], &parts[2..], args, env)
+            // Phase 47: call nl_apply_lambda_inner elisp .o directly.
+            let captured = &Sexp::Nil;
+            let formals  = &parts[1];
+            let body_list = Sexp::list_from(&parts[2..]);
+            let args_list = Sexp::list_from(args);
+            let mut out = Sexp::Nil;
+            let rc = unsafe {
+                crate::elisp_cc_spike::apply_lambda_inner_call(
+                    captured as *const Sexp,
+                    formals as *const Sexp,
+                    &body_list as *const Sexp,
+                    &args_list as *const Sexp,
+                    env as *mut Env as *mut std::ffi::c_void,
+                    &mut out as *mut Sexp,
+                )
+            };
+            if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) }
         }
         "macro" => Err(EvalError::WrongType {
             expected: "function (not macro)".into(),
@@ -245,50 +290,9 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
     }
 }
 
-fn apply_builtin(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let Sexp::Cons(outer) = func else {
-        return Err(EvalError::Internal("builtin sentinel not a cons".into()));
-    };
-    let Sexp::Cons(inner) = &outer.cdr else {
-        return Err(EvalError::Internal("builtin sentinel missing name".into()));
-    };
-    let name = match &inner.car {
-        Sexp::Symbol(s) | Sexp::Str(s) => s.clone(),
-        _ => {
-            return Err(EvalError::Internal(
-                "builtin sentinel name not a symbol".into(),
-            ))
-        }
-    };
-    builtins::dispatch(&name, args, env)
-}
-
-pub(crate) fn apply_lambda_inner(
-    captured: &Sexp,
-    formals: &Sexp,
-    body: &[Sexp],
-    args: &[Sexp],
-    env: &mut Env,
-) -> Result<Sexp, EvalError> {
-    let body_list = Sexp::list_from(body);
-    let args_list = Sexp::list_from(args);
-    let mut out = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::apply_lambda_inner_call(
-            captured as *const Sexp,
-            formals as *const Sexp,
-            &body_list as *const Sexp,
-            &args_list as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-        )
-    };
-    if rc == 0 {
-        Ok(out)
-    } else {
-        Err(consume_stashed_error(env, "apply_lambda_inner"))
-    }
-}
+// apply_lambda_inner Rust thin-shell deleted — Phase 47 elisp .o
+// (nl_apply_lambda_inner in nelisp-cc-apply-lambda-inner.el) is called
+// directly via apply_lambda_inner_call at each call site in apply_function.
 
 /// Phase 47 elisp .o から Rust eval() を再帰呼出するための ABI primitive。
 /// elisp 側は `(extern-call nelisp_eval_call FORM ENV OUT)` で利用。

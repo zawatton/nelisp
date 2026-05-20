@@ -63,7 +63,26 @@ macro_rules! builtin_dispatch {
                 dispatch(&name, &super::list_elements(&$args[1])?, $env)
             },
             "nelisp--set-use-elisp-apply" => { require_arity("nelisp--set-use-elisp-apply", $args, 1, Some(1))?; $env.use_elisp_apply = !matches!($args[0], Sexp::Nil); Ok(bool_sexp($env.use_elisp_apply)) },
-            "nelisp--apply-lambda-inner" => { require_arity("nelisp--apply-lambda-inner", $args, 4, Some(4))?; super::apply_lambda_inner(&$args[0], &$args[1], &super::list_elements(&$args[2])?, &super::list_elements(&$args[3])?, $env) },
+            "nelisp--apply-lambda-inner" => {
+                require_arity("nelisp--apply-lambda-inner", $args, 4, Some(4))?;
+                // Call nl_apply_lambda_inner Phase 47 elisp .o directly.
+                let captured  = &$args[0];
+                let formals   = &$args[1];
+                let body_list = &$args[2]; // already a cons list
+                let args_list = Sexp::list_from(&super::list_elements(&$args[3])?);
+                let mut out = Sexp::Nil;
+                let rc = unsafe {
+                    crate::elisp_cc_spike::apply_lambda_inner_call(
+                        captured as *const Sexp,
+                        formals as *const Sexp,
+                        body_list as *const Sexp,
+                        &args_list as *const Sexp,
+                        $env as *mut super::Env as *mut std::ffi::c_void,
+                        &mut out as *mut Sexp,
+                    )
+                };
+                if rc == 0 { Ok(out) } else { Err(super::consume_stashed_error($env, "nelisp--apply-lambda-inner")) }
+            },
             "funcall" => { require_arity("funcall", $args, 1, None)?; let func = resolve_callable(&$args[0], $env)?; super::apply_function(&func, &$args[1..], $env) },
             "apply" => {
                 require_arity("apply", $args, 2, None)?;

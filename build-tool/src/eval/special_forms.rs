@@ -86,6 +86,24 @@ pub unsafe extern "C" fn nl_let_setup(
     env: *mut std::ffi::c_void,
     sequential: i64,
 ) -> i64 {
+    // Inline helper: parse one let-binding into (name, evaluated-value).
+    // Returns Err on malformed binding or eval failure.
+    #[inline(always)]
+    fn parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
+        match b {
+            Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
+            Sexp::Cons(_) => {
+                let parts = list_elements(b)?;
+                let name = match &parts[0] {
+                    Sexp::Symbol(s) => s.clone(),
+                    other => return Err(EvalError::WrongType { expected: "symbol".into(), got: other.clone() }),
+                };
+                let val = if parts.len() >= 2 { eval(&parts[1], env)? } else { Sexp::Nil };
+                Ok((name, val))
+            }
+            other => Err(EvalError::WrongType { expected: "symbol or (symbol value) pair".into(), got: other.clone() }),
+        }
+    }
     let env_ref = &mut *(env as *mut Env);
     let bindings = match list_elements(&*bindings_list) {
         Ok(b) => b,
@@ -94,19 +112,16 @@ pub unsafe extern "C" fn nl_let_setup(
     if sequential != 0 {
         env_ref.push_frame();
         for b in &bindings {
-            let (name, val) = match nl_let_parse_binding(b, env_ref) {
+            let (name, val) = match parse_binding(b, env_ref) {
                 Ok(pair) => pair,
-                Err(_) => {
-                    env_ref.pop_frame();
-                    return 1;
-                }
+                Err(_) => { env_ref.pop_frame(); return 1; }
             };
             env_ref.bind_local(&name, val);
         }
     } else {
         let mut values = Vec::with_capacity(bindings.len());
         for b in &bindings {
-            match nl_let_parse_binding(b, env_ref) {
+            match parse_binding(b, env_ref) {
                 Ok(pair) => values.push(pair),
                 Err(_) => return 1,
             }
@@ -119,33 +134,7 @@ pub unsafe extern "C" fn nl_let_setup(
     0
 }
 
-fn nl_let_parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
-    match b {
-        Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
-        Sexp::Cons(_) => {
-            let parts = list_elements(b)?;
-            let name = match &parts[0] {
-                Sexp::Symbol(s) => s.clone(),
-                other => {
-                    return Err(EvalError::WrongType {
-                        expected: "symbol".into(),
-                        got: other.clone(),
-                    })
-                }
-            };
-            let val = if parts.len() >= 2 {
-                eval(&parts[1], env)?
-            } else {
-                Sexp::Nil
-            };
-            Ok((name, val))
-        }
-        other => Err(EvalError::WrongType {
-            expected: "symbol or (symbol value) pair".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// nl_let_parse_binding inlined into nl_let_setup as parse_binding closure.
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 {
@@ -544,34 +533,4 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
     match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
 }
 
-pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
-    match (a, b) {
-        (Sexp::Nil, Sexp::Nil) | (Sexp::T, Sexp::T) => true,
-        (Sexp::Int(x), Sexp::Int(y)) => x == y,
-        (Sexp::Symbol(x), Sexp::Symbol(y)) => {
-            let _ = (x, y);
-            let mut slot = Sexp::Nil;
-            unsafe {
-                crate::elisp_cc_spike::eq_symbol(
-                    a as *const Sexp,
-                    b as *const Sexp,
-                    &mut slot as *mut Sexp,
-                );
-            }
-            matches!(slot, Sexp::T)
-        }
-        (Sexp::Cons(a), Sexp::Cons(b)) => crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b),
-        (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
-        (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
-        (Sexp::CharTable(a), Sexp::CharTable(b)) => {
-            crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b)
-        }
-        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
-            crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
-        }
-        (Sexp::Record(a), Sexp::Record(b)) => crate::eval::nlrecord::NlRecordRef::ptr_eq(a, b),
-        (Sexp::Str(x), Sexp::Str(y)) => x == y,
-        (Sexp::Float(x), Sexp::Float(y)) => x.to_bits() == y.to_bits(),
-        _ => false,
-    }
-}
+// sexp_eq deleted — replaced by Phase 47 nl_sexp_eq in nelisp-cc-sexp-eq.el
