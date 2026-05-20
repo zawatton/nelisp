@@ -49,8 +49,8 @@ macro_rules! builtin_dispatch {
                 let resolved = match &$args[1] { Sexp::Symbol(s) => $env.lookup_function(s)?, other => other.clone() };
                 super::env_shim::bi_globals_op(&[Sexp::Symbol("set-function".into()), $args[0].clone(), resolved], $env)
             },
-            "nelisp--push-frame" => { require_arity("nelisp--push-frame", $args, 0, Some(0))?; $env.push_frame(); Ok(Sexp::T) },
-            "nelisp--pop-frame" => { require_arity("nelisp--pop-frame", $args, 0, Some(0))?; $env.pop_frame(); Ok(Sexp::T) },
+            "nelisp--push-frame" => { require_arity("nelisp--push-frame", $args, 0, Some(0))?; $env.frame_push_rust_direct(); Ok(Sexp::T) },
+            "nelisp--pop-frame" => { require_arity("nelisp--pop-frame", $args, 0, Some(0))?; $env.frame_pop_rust_direct(); Ok(Sexp::T) },
             "nelisp--push-captured" => { require_arity("nelisp--push-captured", $args, 1, Some(1))?; $env.push_captured(&$args[0])?; Ok(Sexp::T) },
             "nelisp--bind-local" => {
                 require_arity("nelisp--bind-local", $args, 2, Some(2))?;

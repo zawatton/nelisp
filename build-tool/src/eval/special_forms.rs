@@ -106,11 +106,11 @@ pub unsafe extern "C" fn nl_let_setup(
         Err(_) => return 1,
     };
     if sequential != 0 {
-        env_ref.push_frame();
+        env_ref.frame_push_rust_direct();
         for b in &bindings {
             let (name, val) = match parse_binding(b, env_ref) {
                 Ok(pair) => pair,
-                Err(_) => { env_ref.pop_frame(); return 1; }
+                Err(_) => { env_ref.frame_pop_rust_direct(); return 1; }
             };
             env_ref.bind_local(&name, val);
         }
@@ -122,7 +122,7 @@ pub unsafe extern "C" fn nl_let_setup(
                 Err(_) => return 1,
             }
         }
-        env_ref.push_frame();
+        env_ref.frame_push_rust_direct();
         for (name, val) in values {
             env_ref.bind_local(&name, val);
         }
@@ -135,7 +135,7 @@ pub unsafe extern "C" fn nl_let_setup(
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 {
     let env_ref = &mut *(env as *mut Env);
-    env_ref.pop_frame();
+    env_ref.frame_pop_rust_direct();
     0
 }
 
@@ -184,7 +184,7 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
                 _ => false,
             };
             if m {
-                env_ref.push_frame();
+                env_ref.frame_push_rust_direct();
                 if let Sexp::Symbol(name) = &*var {
                     if name != "nil" {
                         env_ref.bind_local(name, err_owned.clone());
@@ -375,10 +375,10 @@ pub unsafe extern "C" fn nl_push_and_bind(
     env: *mut std::ffi::c_void,
 ) -> i64 {
     let env_ref = &mut *(env as *mut Env);
-    env_ref.push_frame();
+    env_ref.frame_push_rust_direct();
     let rc = crate::elisp_cc_spike::bind_formals_impl_call(formals_ptr, args_list_ptr, env, 0);
     if rc != 0 {
-        env_ref.pop_frame();
+        env_ref.frame_pop_rust_direct();
     }
     rc
 }

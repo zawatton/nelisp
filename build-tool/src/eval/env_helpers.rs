@@ -202,12 +202,6 @@ impl Env {
         self.mirror_set_function(name, func);
     }
 
-    pub fn push_frame(&mut self) {
-        self.frame_push_rust_direct();
-    }
-    pub fn pop_frame(&mut self) {
-        self.frame_pop_rust_direct();
-    }
 
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         let has_frame = matches!(&self.frames_record, Sexp::Record(r)
