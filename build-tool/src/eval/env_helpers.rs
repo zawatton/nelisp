@@ -83,35 +83,31 @@ impl Env {
     }
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return if name == "nelisp--unbound-marker" { Ok(self.unbound_marker.clone()) } else { Err(EvalError::unbound_var(name)) }; }
-        let n = Sexp::Symbol(name.into()); let mut o = Sexp::Nil;
+        let (n, mut o) = (Sexp::Symbol(name.into()), Sexp::Nil);
         if unsafe { crate::elisp_cc_spike::env_lookup_value(&self.globals_record, &self.frames_record, &n, &mut o) } == 0 { Ok(o) } else { Err(EvalError::unbound_var(name)) }
     }
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return Err(EvalError::unbound_var(name)); }
-        let n = Sexp::Symbol(name.into());
-        let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(value.clone(), self.unbound_marker.clone(), Sexp::Nil, Sexp::Nil);
+        let n = Sexp::Symbol(name.into()); let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(value.clone(), self.unbound_marker.clone(), Sexp::Nil, Sexp::Nil);
         if unsafe { crate::elisp_cc_spike::env_set_value(&self.globals_record, &self.frames_record, &n, &value, &sc, 0) } == 0 { Ok(value) } else { Err(EvalError::setting_constant(name)) }
     }
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return Err(EvalError::unbound_fn(name)); }
-        let n = Sexp::Symbol(name.into()); let mut o = Sexp::Nil;
+        let (n, mut o) = (Sexp::Symbol(name.into()), Sexp::Nil);
         if unsafe { crate::elisp_cc_spike::env_lookup_function(&self.globals_record, &self.unbound_marker, &n, &mut o) } == 0 { Ok(o) } else { Err(EvalError::unbound_fn(name)) }
     }
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return; }
-        let n = Sexp::Symbol(name.into());
-        let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(value.clone(), self.unbound_marker.clone(), Sexp::Nil, Sexp::Nil);
+        let n = Sexp::Symbol(name.into()); let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(value.clone(), self.unbound_marker.clone(), Sexp::Nil, Sexp::Nil);
         unsafe { crate::elisp_cc_spike::env_bind_local(&self.globals_record, &self.frames_record, &n, &value, &sc, 0) };
     }
     pub fn capture_lexical(&mut self) -> Sexp {
         let Sexp::Record(r) = &self.frames_record else { return Sexp::Nil };
-        let Some(Sexp::Int(d)) = r.slots.get(1) else { return Sexp::Nil };
-        let d = *d; let Ok(f) = self.lookup_function("nelisp-lexframe-stack-capture-to-depth") else { return Sexp::Nil };
-        super::apply_function(&f, &[self.frames_record.clone(), Sexp::Int(d)], self).unwrap_or(Sexp::Nil)
+        let (Some(Sexp::Int(d)), Ok(f)) = (r.slots.get(1), self.lookup_function("nelisp-lexframe-stack-capture-to-depth")) else { return Sexp::Nil };
+        let d = *d; super::apply_function(&f, &[self.frames_record.clone(), Sexp::Int(d)], self).unwrap_or(Sexp::Nil)
     }
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
-        let n = Env::wrap_alist_cells(alist)?;
-        let Ok(f) = self.lookup_function("nelisp-lexframe-make-from-alist") else { return Ok(()) };
+        let n = Env::wrap_alist_cells(alist)?; let Ok(f) = self.lookup_function("nelisp-lexframe-make-from-alist") else { return Ok(()) };
         let frame = super::apply_function(&f, &[n], self)?; unsafe { crate::elisp_cc_spike::frame_stack_install(&self.frames_record, &frame); } Ok(())
     }
     fn with_mirror_symbol<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp) -> T) -> Option<T> {
@@ -136,8 +132,7 @@ impl Env {
         unsafe { crate::elisp_cc_spike::frame_push(&self.frames_record as *const Sexp) };
     }
     pub(crate) fn frame_pop_rust_direct(&mut self) {
-        let Sexp::Record(sr) = &self.frames_record else { return };
-        let sr = sr.clone();
+        let Sexp::Record(sr) = &self.frames_record else { return }; let sr = sr.clone();
         let (Some(Sexp::Vector(bk)), Some(Sexp::Int(d))) = (sr.slots.get(0), sr.slots.get(1)) else { return };
         let (d, bk) = (*d as usize, bk.clone()); if d == 0 { return; }
         unsafe { bk.with_value_mut(|v| v[d-1] = Sexp::Nil); sr.with_slots_mut(|s| s[1] = Sexp::Int((d-1) as i64)); }

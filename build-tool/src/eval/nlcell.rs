@@ -9,7 +9,6 @@ crate::define_nlbox!(
         assert!(size_of::<AtomicUsize>() == 8);
     }
 );
-
 impl NlCell { crate::nlinner_set!(set_value, value, Sexp); }
 impl NlCellRef {
     pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef { NlCellRef { ptr: ::std::ptr::NonNull::new(raw).expect("null"), _marker: ::std::marker::PhantomData } }

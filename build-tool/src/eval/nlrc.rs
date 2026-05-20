@@ -39,24 +39,18 @@ macro_rules! define_nlbox {
 #[macro_export]
 macro_rules! nlinner_set {
     ($name:ident, $field:ident, $ty:ty) => {
-        pub unsafe fn $name(&self, val: $ty) {
-            let p = ::std::ptr::addr_of!(self.$field) as *mut $ty;
-            ::std::ptr::drop_in_place(p); ::std::ptr::write(p, val);
-        }
+        pub unsafe fn $name(&self, val: $ty) { let p = ::std::ptr::addr_of!(self.$field) as *mut $ty; ::std::ptr::drop_in_place(p); ::std::ptr::write(p, val); }
     };
 }
 #[macro_export]
 macro_rules! nlinner_with_mut {
     ($name:ident, $field:ident, $ty:ty) => {
-        pub unsafe fn $name<R>(&self, f: impl FnOnce(&mut $ty) -> R) -> R {
-            f(&mut *(::std::ptr::addr_of!(self.$field) as *mut $ty))
-        }
+        pub unsafe fn $name<R>(&self, f: impl FnOnce(&mut $ty) -> R) -> R { f(&mut *(::std::ptr::addr_of!(self.$field) as *mut $ty)) }
     };
 }
 macro_rules! drop_inner_extern {
     ($name:ident, $ty:path) => {
-        #[no_mangle]
-        pub unsafe extern "C" fn $name(box_ptr: *mut i64) -> i64 { <$ty>::DROP_FN(box_ptr as *mut std::ffi::c_void); 1 }
+        #[no_mangle] pub unsafe extern "C" fn $name(box_ptr: *mut i64) -> i64 { <$ty>::DROP_FN(box_ptr as *mut std::ffi::c_void); 1 }
     };
 }
 drop_inner_extern!(nl_consbox_drop_inner, crate::eval::nlconsbox::NlConsBox);
