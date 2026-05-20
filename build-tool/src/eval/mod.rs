@@ -18,7 +18,6 @@ pub mod nlvector;
 pub mod quit;
 pub mod raw_mem;
 pub mod sexp;
-pub mod sexp_abi_assert;
 pub mod special_forms;
 
 pub use env_helpers::{Env, ExternBuiltin, FrameCell};

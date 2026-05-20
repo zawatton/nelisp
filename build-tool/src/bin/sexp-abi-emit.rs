@@ -5,7 +5,7 @@
 // side (= `lisp/nelisp-sexp-layout.el' iterated by an `emacs --batch'
 // dump).  See `docs/arch/sexp-abi.md' for the contract.
 
-use nelisp_build_tool::eval::sexp_abi_assert::ABI_EXPORT;
+use nelisp_build_tool::eval::sexp::ABI_EXPORT;
 
 fn main() {
     for (name, value) in ABI_EXPORT {
