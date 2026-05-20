@@ -208,9 +208,6 @@ impl Env {
     pub fn pop_frame(&mut self) {
         self.frame_pop_rust_direct();
     }
-    pub fn is_fbound(&self, name: &str) -> bool {
-        self.mirror_is_fbound(name)
-    }
 
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         let has_frame = matches!(&self.frames_record, Sexp::Record(r)
