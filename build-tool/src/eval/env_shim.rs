@@ -1,7 +1,6 @@
 use super::error::EvalError;
 use super::sexp::Sexp;
 use super::Env;
-
 pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let sym = |s: &Sexp| match s { Sexp::Symbol(n) => Ok(n.clone()), o => Err(EvalError::wrong_type("symbolp", o.clone())) };
     let arity = |n: usize| EvalError::wrong_arity("nelisp--env-globals-op", n.to_string(), args.len());
@@ -24,7 +23,6 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
     };
     match rc { 1 => Ok(result), 0 => Err(EvalError::unbound_var(name)), -1 => Err(EvalError::unbound_fn(name)), _ => Err(EvalError::internal(format!("nelisp--env-globals-op: unknown OP `{op}'"))) }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*; use crate::eval::{eval_str, eval_str_all};

@@ -11,7 +11,6 @@ pub(crate) static SIGCONT_ARRIVED: AtomicI64 = AtomicI64::new(0);
 static HOOKS_ONCE: Once = Once::new();
 static WINSIZE_ONCE: Once = Once::new();
 static JOBCTRL_ONCE: Once = Once::new();
-
 fn restore_signal_safe() {
     if TERMIOS_SAVED.swap(0, Ordering::SeqCst) != 0 {
         let fd = TTY_FD.load(Ordering::SeqCst) as libc::c_int;
@@ -33,7 +32,6 @@ extern "C" fn sig_handler(s: libc::c_int) { restore_signal_safe(); unsafe { rera
 extern "C" fn winsize_h(_: libc::c_int) { WINSIZE_CHANGED.store(1, Ordering::SeqCst); }
 extern "C" fn tstp_h(s: libc::c_int) { restore_signal_safe(); unsafe { reraise(s); sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); } }
 extern "C" fn cont_h(_: libc::c_int) { SIGCONT_ARRIVED.store(1, Ordering::SeqCst); }
-
 macro_rules! install_once { ($once:expr, $body:block) => { $once.call_once(|| unsafe { $body }) }; }
 pub fn install_hooks_once() { install_once!(HOOKS_ONCE, { libc::atexit(atexit_hook); for s in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] { sa(*s, sig_handler, 0); } }); }
 pub fn install_winsize_handler() { install_once!(WINSIZE_ONCE, { sa(libc::SIGWINCH, winsize_h, libc::SA_RESTART); WINSIZE_CHANGED.store(1, Ordering::SeqCst); }); }
@@ -42,14 +40,12 @@ pub fn hooks_installed_p() -> bool { HOOKS_ONCE.is_completed() }
 pub fn winsize_handler_installed_p() -> bool { WINSIZE_ONCE.is_completed() }
 pub fn jobctrl_handlers_installed_p() -> bool { JOBCTRL_ONCE.is_completed() }
 pub fn termios_saved_p() -> bool { TERMIOS_SAVED.load(Ordering::SeqCst) != 0 }
-
 #[no_mangle] pub extern "C" fn nl_tty_saved_flag_ptr() -> *mut i64 { TERMIOS_SAVED.as_ptr() }
 #[no_mangle] pub extern "C" fn nl_tty_fd_ptr() -> *mut i64 { TTY_FD.as_ptr() }
 #[no_mangle] pub extern "C" fn nl_tty_saved_termios_ptr() -> *mut u8 { std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut u8 }
 #[no_mangle] pub unsafe extern "C" fn nl_tty_memcpy_to_saved(src: *const u8) { std::ptr::copy_nonoverlapping(src, std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut u8, 60); }
 #[no_mangle] pub extern "C" fn nl_tty_raw_install_hooks() -> i64 { install_hooks_once(); 0 }
 #[no_mangle] pub extern "C" fn nl_tty_read_byte() -> i64 { let mut b = [0u8; 1]; let n = unsafe { libc::read(0, b.as_mut_ptr() as *mut libc::c_void, 1) }; if n == 1 { b[0] as i64 } else { -1 } }
-
 pub fn raw_mode_enter() -> Result<(), EvalError> {
     match unsafe { crate::elisp_cc_spike::tty_raw_enter([0u8; 60].as_mut_ptr()) } { 0 => Ok(()), -1 => Err(EvalError::internal("terminal-raw-mode-enter: tcgetattr failed")), _ => Err(EvalError::internal("terminal-raw-mode-enter: tcsetattr failed")) }
 }

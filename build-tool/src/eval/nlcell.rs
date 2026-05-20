@@ -1,5 +1,4 @@
 use crate::eval::sexp::Sexp;
-
 crate::define_nlbox!(
     inner=NlCell, ref_ty=NlCellRef, fields={value: Sexp},
     clone_fn=crate::elisp_cc_spike::nlcell_clone, drop_fn=crate::elisp_cc_spike::nlcell_drop,

@@ -1,5 +1,4 @@
 use std::alloc::{self, Layout};
-
 fn nl_layout(size: i64, align: i64) -> Option<Layout> {
     (size > 0 && align > 0).then(|| Layout::from_size_align(size as usize, align as usize).ok()).flatten()
 }
@@ -11,7 +10,6 @@ pub unsafe extern "C" fn nl_alloc_bytes(size: i64, align: i64) -> *mut u8 {
 pub unsafe extern "C" fn nl_dealloc_bytes(ptr: *mut u8, size: i64, align: i64) {
     if !ptr.is_null() { if let Some(l) = nl_layout(size, align) { unsafe { alloc::dealloc(ptr, l) }; } }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

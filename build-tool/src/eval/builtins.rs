@@ -5,7 +5,6 @@ use super::quit;
 use super::tty;
 use super::sexp::Sexp;
 use std::path::{Path, PathBuf};
-
 macro_rules! builtin_names {
     () => { &[
         "vector", "make-vector", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes", "nl-jit-call-format-float", "truncate", "nelisp--syscall-canonicalize",
@@ -20,7 +19,6 @@ macro_rules! builtin_names {
         "nl-jit-call-float-cmp", "nl-jit-call-float-unary", "nl-fact-i64",
     ] };
 }
-
 macro_rules! builtin_dispatch {
     ($name:ident, $args:ident, $env:ident) => {
         match $name {
@@ -140,17 +138,10 @@ macro_rules! builtin_dispatch {
         }
     };
 }
-
 pub fn install_builtins(env: &mut Env) {
-    for n in builtin_names!() {
-        env.mirror_set_function(n, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())]));
-    }
+    for n in builtin_names!() { env.mirror_set_function(n, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())])); }
 }
-
-pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    builtin_dispatch!(name, args, env)
-}
-
+pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { builtin_dispatch!(name, args, env) }
 pub(crate) fn require_arity(name: &str, args: &[Sexp], min: usize, max: Option<usize>) -> Result<(), EvalError> {
     if args.len() < min || max.map_or(false, |m| args.len() > m) {
         let e = match max { Some(m) if m == min => min.to_string(), Some(m) => format!("{}-{}", min, m), None => format!("≥{}", min) };
@@ -158,17 +149,14 @@ pub(crate) fn require_arity(name: &str, args: &[Sexp], min: usize, max: Option<u
     }
     Ok(())
 }
-
 pub(crate) fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
     match v { Sexp::Int(n) => Ok(*n), Sexp::Float(x) => Ok(*x as i64),
         other => Err(EvalError::wrong_type(format!("number ({} arg)", name), other.clone())) }
 }
-
 fn string_value(v: &Sexp) -> Result<String, EvalError> {
     match v { Sexp::Str(s) | Sexp::Symbol(s) => Ok(s.clone()), Sexp::MutStr(rc) => Ok(rc.value.clone()),
         Sexp::Nil => Ok("nil".into()), Sexp::T => Ok("t".into()),
-        other => Err(EvalError::wrong_type("stringp or symbolp", other.clone())) }
-}
+        other => Err(EvalError::wrong_type("stringp or symbolp", other.clone())) } }
 fn resolve_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     let path = string_value(arg)?; let p = Path::new(&path);
     if p.is_absolute() { return Ok(p.to_path_buf()); }
@@ -179,7 +167,6 @@ fn cc_slot_1(arg: &Sexp, f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp) -> S
 fn bool_sexp(v: bool) -> Sexp { if v { Sexp::T } else { Sexp::Nil } }
 fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> { if rc < 0 { Err(EvalError::internal(format!("{name}: {path}: kernel returned {rc}"))) } else { Ok(Sexp::T) } }
 #[no_mangle] pub extern "C" fn nl_bi_f64_trunc_div_bits(n: *const Sexp, d: *const Sexp) -> i64 { let f=|p:*const Sexp|match unsafe{&*p}{Sexp::Int(i)=>*i as f64,Sexp::Float(v)=>*v,_=>0.0}; (f(n)/f(d)).to_bits() as i64 }
-
 fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> {
     require_arity(name, args, 1, Some(1))?;
     let p = resolve_path(&args[0], env)?;
@@ -216,7 +203,6 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> {
     Err(EvalError::internal("nelisp--syscall: unsupported platform"))
 }
-
 #[cfg(target_os = "linux")]
 fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.is_empty() { return Err(EvalError::internal("nelisp--syscall: at least one argument (syscall nr / name) required")); }

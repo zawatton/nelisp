@@ -1,5 +1,4 @@
 pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) { std::ptr::drop_in_place(ptr as *mut T); }
-
 #[macro_export]
 macro_rules! nl_ref_common {
     ($ref:ident, $inner:ident, drop_fn = $drop:path) => {
@@ -20,7 +19,6 @@ macro_rules! nl_ref_common {
         }
     };
 }
-
 #[macro_export]
 macro_rules! define_nlbox {
     (inner=$inner:ident, ref_ty=$ref:ident, fields={$($fname:ident:$fty:ty),+},
@@ -49,7 +47,6 @@ macro_rules! define_nlbox {
         const _: () = { $($la_tt)* };
     };
 }
-
 #[macro_export]
 macro_rules! nlinner_set {
     ($name:ident, $field:ident, $ty:ty) => {
@@ -67,7 +64,6 @@ macro_rules! nlinner_with_mut {
         }
     };
 }
-
 macro_rules! drop_inner_extern {
     ($name:ident, $ty:path) => {
         #[no_mangle]

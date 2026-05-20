@@ -6,7 +6,6 @@ use crate::eval::nlrecord::{NlRecord, NlRecordRef};
 use crate::eval::nlstr::NlStrRef;
 use crate::eval::nlvector::{NlVector, NlVectorRef};
 use std::fmt;
-
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C, u8)]
 pub enum Sexp {
@@ -24,7 +23,6 @@ pub enum Sexp {
     Cell(NlCellRef),
     Record(NlRecordRef),
 }
-
 macro_rules! sexp_tags {
     ($($name:ident = $val:expr;)*) => { $(pub const $name: u8 = $val;)* }
 }
@@ -34,9 +32,7 @@ sexp_tags! {
     SEXP_TAG_VECTOR=8; SEXP_TAG_CHAR_TABLE=9; SEXP_TAG_BOOL_VECTOR=10;
     SEXP_TAG_CELL=11; SEXP_TAG_RECORD=12;
 }
-
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
-
 macro_rules! sexp_box_ptr_accessor {
     ($name:ident, $ty:ty) => {
         #[inline]
@@ -47,11 +43,9 @@ macro_rules! sexp_box_ptr_accessor {
         }
     };
 }
-
 impl Sexp {
     #[inline]
     pub fn tag(&self) -> u8 { unsafe { *(self as *const Sexp as *const u8) } }
-
     sexp_box_ptr_accessor!(cons_box_ptr,       crate::eval::nlconsbox::NlConsBox);
     sexp_box_ptr_accessor!(cell_box_ptr,       crate::eval::nlcell::NlCell);
     sexp_box_ptr_accessor!(mut_str_box_ptr,    crate::eval::nlstr::NlStr);
@@ -60,18 +54,13 @@ impl Sexp {
     sexp_box_ptr_accessor!(record_box_ptr,     crate::eval::nlrecord::NlRecord);
     sexp_box_ptr_accessor!(char_table_box_ptr, crate::eval::nlchartable::NlCharTable);
 }
-
 const _: () = { use std::mem::size_of; use crate::eval::*;
     assert!(size_of::<nlconsbox::NlConsBoxRef>()==8); assert!(size_of::<nlcell::NlCellRef>()==8);
     assert!(size_of::<nlstr::NlStrRef>()==8); assert!(size_of::<nlvector::NlVectorRef>()==8);
     assert!(size_of::<nlboolvector::NlBoolVectorRef>()==8); assert!(size_of::<nlrecord::NlRecordRef>()==8);
     assert!(size_of::<nlchartable::NlCharTableRef>()==8); };
-
 #[no_mangle]
-pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) {
-    core::ptr::write(dst, (*src).clone());
-}
-
+pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) { core::ptr::write(dst, (*src).clone()); }
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
 pub struct CharTableInner {
@@ -81,7 +70,6 @@ pub struct CharTableInner {
     pub parent: Option<NlCharTableRef>,
     pub extra: Vec<Sexp>,
 }
-
 impl Sexp {
     pub fn list_from(items: &[Sexp]) -> Sexp {
         let mut acc = Sexp::Nil;
@@ -98,10 +86,8 @@ impl Sexp {
     pub fn as_string_owned(&self) -> Option<String> { match self { Sexp::Str(s) => Some(s.clone()), Sexp::MutStr(s) => Some(s.value.clone()), _ => None } }
     pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp { Sexp::Record(NlRecordRef::new(type_tag, init)) }
 }
-
 const NLREC_SLOTS: usize = std::mem::offset_of!(NlRecord, slots);
 const NLVEC_VALUE: usize = std::mem::offset_of!(NlVector, value);
-
 pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("tag-nil",SEXP_TAG_NIL as i64), ("tag-t",SEXP_TAG_T as i64), ("tag-int",SEXP_TAG_INT as i64),
     ("tag-float",SEXP_TAG_FLOAT as i64), ("tag-symbol",SEXP_TAG_SYMBOL as i64), ("tag-str",SEXP_TAG_STR as i64),
@@ -123,7 +109,6 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("nlcell-offset-value",std::mem::offset_of!(NlCell,value) as i64), ("nlcell-offset-refcount",std::mem::offset_of!(NlCell,refcount) as i64),
     ("nlcell-size",std::mem::size_of::<NlCell>() as i64),
 ];
-
 pub fn fmt_sexp(s: &Sexp) -> String {
     let mut slot = Sexp::Nil;
     unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) };

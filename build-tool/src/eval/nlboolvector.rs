@@ -8,12 +8,10 @@ crate::define_nlbox!(
         assert!(size_of::<AtomicUsize>() == 8);
     }
 );
-
 impl NlBoolVector {
     crate::nlinner_set!(set_value, value, Vec<bool>);
     crate::nlinner_with_mut!(with_value_mut, value, Vec<bool>);
 }
-
 impl std::fmt::Debug for NlBoolVectorRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("BoolVector").field(&self.value).finish() }
 }

@@ -1,11 +1,9 @@
 pub(crate) const TRAMPOLINE_OK: i64 = 0;
 pub(crate) const TRAMPOLINE_ERR: i64 = 1;
-
 use crate::eval::builtins::{as_int, require_arity};
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 use std::ffi::CString;
-
 #[allow(dead_code, clashing_extern_declarations)]
 extern "C" {
     fn nelisp_jit_add2(); fn nelisp_jit_sub2(); fn nelisp_jit_mul2(); fn nelisp_jit_eq2();
@@ -56,7 +54,6 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
     nl_jit_syscall_call, nl_jit_syscall_supported_p,
     nl_jit_char_table_aref, nl_jit_char_table_aset, nl_jit_mut_str_set_codepoint,
 ];
-
 pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {
     let mut resolved = Sexp::Nil;
     let rc = unsafe { nl_jit_alias_call(sexp as *const _, &mut resolved as *mut _) };
@@ -66,7 +63,6 @@ pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {
     let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cstr.as_ptr()) };
     if addr.is_null() { None } else { Some(addr as *const u8) }
 }
-
 fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, EvalError> {
     require_arity(prim, args, arity, Some(arity))?;
     let name_sexp = &args[0];
@@ -74,24 +70,11 @@ fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, Eval
         other => return Err(EvalError::wrong_type(format!("symbol or string ({} arg 0)", prim), other.clone())) };
     unified_fn_ptr(name_sexp).ok_or_else(|| EvalError::internal(format!("{}: unknown JIT entry name `{}'", prim, name_str)))
 }
-
 unsafe fn cast<T: Copy>(p: *const u8) -> T { std::mem::transmute_copy(&p) }
-fn num_to_f64(v: &Sexp) -> Result<f64, EvalError> {
-    match v { Sexp::Int(n) => Ok(*n as f64), Sexp::Float(x) => Ok(*x),
-        other => Err(EvalError::wrong_type("numberp", other.clone())) }
-}
-fn to_f64(v: &Sexp, expected: &str) -> Result<f64, EvalError> {
-    match v { Sexp::Int(i) => Ok(*i as f64), Sexp::Float(f) => Ok(*f), Sexp::Nil => Ok(0.0),
-        other => Err(EvalError::wrong_type(expected, other.clone())) }
-}
-fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> {
-    let p = jit_lookup(name, args, 3)?;
-    Ok((p, num_to_f64(&args[1])?, num_to_f64(&args[2])?))
-}
-fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalError> {
-    if rc == TRAMPOLINE_OK { Ok(out) } else { Err(EvalError::wrong_type(prim, arg.clone())) }
-}
-
+fn num_to_f64(v: &Sexp) -> Result<f64, EvalError> { match v { Sexp::Int(n) => Ok(*n as f64), Sexp::Float(x) => Ok(*x), other => Err(EvalError::wrong_type("numberp", other.clone())) } }
+fn to_f64(v: &Sexp, expected: &str) -> Result<f64, EvalError> { match v { Sexp::Int(i) => Ok(*i as f64), Sexp::Float(f) => Ok(*f), Sexp::Nil => Ok(0.0), other => Err(EvalError::wrong_type(expected, other.clone())) } }
+fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> { let p = jit_lookup(name, args, 3)?; Ok((p, num_to_f64(&args[1])?, num_to_f64(&args[2])?)) }
+fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalError> { if rc == TRAMPOLINE_OK { Ok(out) } else { Err(EvalError::wrong_type(prim, arg.clone())) } }
 pub fn bi_nl_jit_call_i64_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-i64-i64", args, 3)?;
     let (a, b) = (as_int("nl-jit-call-i64-i64", &args[1])?, as_int("nl-jit-call-i64-i64", &args[2])?);
@@ -110,10 +93,7 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64 = unsafe { cast(p) };
     Ok(Sexp::Int(f(ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6])))
 }
-pub fn bi_nl_jit_call_float_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (p, a, b) = float_pair(args, "nl-jit-call-float-float")?;
-    let f: extern "C" fn(f64, f64) -> f64 = unsafe { cast(p) }; Ok(Sexp::Float(f(a, b)))
-}
+pub fn bi_nl_jit_call_float_float(args: &[Sexp]) -> Result<Sexp, EvalError> { let (p,a,b)=float_pair(args,"nl-jit-call-float-float")?; let f:extern "C" fn(f64,f64)->f64=unsafe{cast(p)}; Ok(Sexp::Float(f(a,b))) }
 pub fn bi_nl_jit_call_float_cmp(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let (p, a, b) = float_pair(args, "nl-jit-call-float-cmp")?;
     let f: extern "C" fn(f64, f64) -> i64 = unsafe { cast(p) }; Ok(Sexp::Int(f(a, b)))
@@ -123,7 +103,6 @@ pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let f: extern "C" fn(f64) -> f64 = unsafe { cast(p) };
     Ok(Sexp::Float(f(to_f64(&args[1], "number")?)))
 }
-
 macro_rules! out_call {
     ($fn:ident, $tag:literal, $n:literal, |$a:ident,$o:ident $(,$i:ident)?|,
      ($($t:ty),+), ($($e:expr),+ $(,)?)) => {
@@ -147,7 +126,6 @@ out_call!(bi_nl_jit_call_out_1i, "jit-call-out-1i", 3, |args,out,idx|,
 out_call!(bi_nl_jit_call_out_2i, "jit-call-out-2i", 4, |args,out,idx|,
     (*const Sexp, i64, *const Sexp, *mut Sexp),
     (&args[1] as *const _, idx, &args[3] as *const _, &mut out as *mut _));
-
 pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-format-float", args, 4)?;
     let x = to_f64(&args[1], "numberp")?;
@@ -156,13 +134,11 @@ pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let mut out = Sexp::Nil;
     out_result(f(x, conv as u32, prec, &mut out as *mut _), out, "jit-call-format-float", &args[1])
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     fn sym(name: &str) -> Sexp { Sexp::Symbol(name.into()) }
     fn is_err(e: &EvalError, tag: &str) -> bool { matches!(e, EvalError::Generic(t, _) if t == tag) }
-
     #[test]
     fn unified_fn_ptr_resolves_core_entries() {
         for n in ["nelisp_jit_add2","nelisp_jit_eq_inline","nelisp_jit_car",

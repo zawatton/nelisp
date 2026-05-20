@@ -1,5 +1,4 @@
 use crate::eval::sexp::Sexp;
-
 crate::define_nlbox!(
     inner=NlVector, ref_ty=NlVectorRef, fields={value: Vec<Sexp>},
     clone_fn=crate::elisp_cc_spike::nlvector_clone, drop_fn=crate::elisp_cc_spike::nlvector_drop,
@@ -10,12 +9,10 @@ crate::define_nlbox!(
         assert!(size_of::<AtomicUsize>() == 8);
     }
 );
-
 impl NlVector {
     crate::nlinner_set!(set_value, value, Vec<Sexp>);
     crate::nlinner_with_mut!(with_value_mut, value, Vec<Sexp>);
 }
-
 impl std::fmt::Debug for NlVectorRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("Vector").field(&self.value).finish() }
 }

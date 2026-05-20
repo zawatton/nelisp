@@ -15,11 +15,9 @@ pub mod alloc_mem;
 pub mod quit;
 pub mod sexp;
 pub mod special_forms;
-
 pub use env_helpers::{Env, ExternBuiltin, FrameCell};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
-
 fn expect_single_form(forms: Vec<Sexp>, ctx: &str) -> Result<Sexp, EvalError> {
     match forms.as_slice() {
         [single] => Ok(single.clone()),
@@ -28,7 +26,6 @@ fn expect_single_form(forms: Vec<Sexp>, ctx: &str) -> Result<Sexp, EvalError> {
     }
 }
 fn eval_forms(forms: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { forms.iter().try_fold(Sexp::Nil, |_, f| eval(f, env)) }
-
 pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl")
         .map_err(|_| EvalError::internal("nelisp--read-all-from-string-impl not loaded"))?;
@@ -50,7 +47,6 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
     env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?;
     eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env)
 }
-
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if quit::take_quit_flag() { return Err(EvalError::Quit); }
     if env.current_recursion >= env.max_recursion {
@@ -58,18 +54,10 @@ pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     }
     env.current_recursion += 1;
     let mut out = Sexp::Nil;
-    let rc = unsafe {
-        crate::elisp_cc_spike::eval_inner_call(
-            form as *const Sexp,
-            env as *mut Env as *mut std::ffi::c_void,
-            &mut out as *mut Sexp,
-            0,
-        )
-    };
+    let rc = unsafe { crate::elisp_cc_spike::eval_inner_call(form as *const Sexp, env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp, 0) };
     env.current_recursion -= 1;
     if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "eval_inner")) }
 }
-
 fn walk_proper_list(head: &Sexp, mut f: impl FnMut(&Sexp) -> Result<Sexp, EvalError>) -> Result<Vec<Sexp>, EvalError> {
     let mut out = Vec::new(); let mut cur = head.clone();
     loop { match cur.clone() {
@@ -78,7 +66,6 @@ fn walk_proper_list(head: &Sexp, mut f: impl FnMut(&Sexp) -> Result<Sexp, EvalEr
         other => return Err(EvalError::wrong_type("list", other)),
     }}
 }
-
 pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(args, |car| eval(car, env)) }
 pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(list, |car| Ok(car.clone())) }
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -121,13 +108,11 @@ pub unsafe extern "C" fn nelisp_eval_call(form: *const Sexp, env: *mut std::ffi:
 }
 #[no_mangle]
 pub unsafe extern "C" fn nelisp_eval_call_with_err(form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, err_out: *mut Sexp) -> i64 {
-    let r = &mut *(env as *mut Env);
-    match eval(&*form, r) { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { std::ptr::write(err_out, e.signal_data()); 1 } }
+    let r = &mut *(env as *mut Env); match eval(&*form, r) { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { std::ptr::write(err_out, e.signal_data()); 1 } }
 }
 #[no_mangle]
 pub unsafe extern "C" fn nelisp_apply_function(func: *const Sexp, args_list: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
-    let r = &mut *(env as *mut Env);
-    let res = apply_function(&*func, &list_elements(&*args_list).unwrap_or_default(), r); eval_stash_err(r, res, out)
+    let r = &mut *(env as *mut Env); let res = apply_function(&*func, &list_elements(&*args_list).unwrap_or_default(), r); eval_stash_err(r, res, out)
 }
 pub(crate) fn consume_stashed_error(env: &mut Env, fallback: &str) -> EvalError {
     let Ok(Sexp::Cons(b)) = env.lookup_value("nelisp--last-signal-data") else { return EvalError::internal(fallback) };
