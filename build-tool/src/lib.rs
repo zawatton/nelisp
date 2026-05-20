@@ -216,16 +216,10 @@ pub mod elisp_cc_spike {
     cc_wrap!(mirror_install_entry: nelisp_mirror_install_entry, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64);
     cc_wrap!(env_shim_op: nelisp_env_shim_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp, result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64);
 
-    pub fn build_or_insert_scratch_vec(
-        value: Sexp,
-        function: Sexp,
-        plist: Sexp,
-        constant: Sexp,
-    ) -> Sexp {
+    pub fn build_or_insert_scratch_vec(value: Sexp, function: Sexp, plist: Sexp, constant: Sexp) -> Sexp {
         Sexp::vector(vec![
             Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil,
-            Sexp::Symbol("symbol-entry".into()),
-            Sexp::Nil, value, function, plist, constant,
+            Sexp::Symbol("symbol-entry".into()), Sexp::Nil, value, function, plist, constant,
         ])
     }
 

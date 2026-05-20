@@ -14,45 +14,28 @@ const NYI_MSG: &str =
 const START_POS: SourcePos = SourcePos { line: 1, col: 1 };
 
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
-    match try_elisp_read_str(input) {
-        Some(result) => result,
-        None => Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
+    let mut state = ElispReadState::new(input);
+    let form = match state.parse_one_form() {
+        Some(ElispParseOutcome::Form(f)) => f,
+        Some(ElispParseOutcome::Empty) => return Err(ReadError::unexpected_eof("empty input", START_POS)),
+        None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
+    };
+    if state.has_trailing_token() {
+        return Err(ReadError::parse("trailing token after first form".to_string(), START_POS));
     }
+    Ok(form)
 }
 
 pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
-    match try_elisp_read_all(input) {
-        Some(result) => result,
-        None => Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
-    }
-}
-
-fn try_elisp_read_str(input: &str) -> Option<Result<Sexp, ReadError>> {
-    let mut state = ElispReadState::new(input);
-    match state.parse_one_form()? {
-        ElispParseOutcome::Form(form) => {
-            if state.has_trailing_token() {
-                return Some(Err(ReadError::parse(
-                    "trailing token after first form".to_string(),
-                    START_POS,
-                )));
-            }
-            Some(Ok(form))
-        }
-        ElispParseOutcome::Empty => Some(Err(ReadError::unexpected_eof("empty input", START_POS))),
-    }
-}
-
-fn try_elisp_read_all(input: &str) -> Option<Result<Vec<Sexp>, ReadError>> {
     let mut state = ElispReadState::new(input);
     let mut forms = Vec::new();
     loop {
-        match state.parse_one_form()? {
-            ElispParseOutcome::Form(form) => forms.push(form),
-            ElispParseOutcome::Empty => break,
+        match state.parse_one_form() {
+            Some(ElispParseOutcome::Form(form)) => forms.push(form),
+            Some(ElispParseOutcome::Empty) => return Ok(forms),
+            None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
         }
     }
-    Some(Ok(forms))
 }
 
 enum ElispParseOutcome {
@@ -102,14 +85,19 @@ impl ElispReadState {
         }
     }
 
-    fn at_eof_after_skip(&mut self) -> bool {
+    fn peek_token_kind(&mut self) -> i64 {
         let saved = self.cursor();
         let kind = self.lex_peek_advancing();
-        if kind != 0 { self.cursor_slot = Sexp::Int(saved); false } else { true }
+        self.cursor_slot = Sexp::Int(saved);
+        kind
     }
 
     fn parse_one_form(&mut self) -> Option<ElispParseOutcome> {
-        if self.at_eof_after_skip() { return Some(ElispParseOutcome::Empty); }
+        // Advance past whitespace/comments; if EOF return Empty.
+        let saved = self.cursor();
+        let kind = self.lex_peek_advancing();
+        if kind == 0 { return Some(ElispParseOutcome::Empty); }
+        self.cursor_slot = Sexp::Int(saved); // restore — parser re-lexes from here
         self.result_slot = Sexp::Nil;
         let status = unsafe {
             elisp_cc_spike::reader_parse_one(
@@ -121,10 +109,7 @@ impl ElispReadState {
         Some(ElispParseOutcome::Form(std::mem::replace(&mut self.result_slot, Sexp::Nil)))
     }
 
-    fn has_trailing_token(&mut self) -> bool {
-        let saved = self.cursor(); let kind = self.lex_peek_advancing();
-        self.cursor_slot = Sexp::Int(saved); kind != 0
-    }
+    fn has_trailing_token(&mut self) -> bool { self.peek_token_kind() != 0 }
 }
 
 unsafe fn vector_slot_ptr(pool_slot: *const Sexp, index: usize) -> *const Sexp {

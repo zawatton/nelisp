@@ -104,32 +104,16 @@ impl Env {
             e!("nelisp-cli.el"),
         ];
         let mut env = Env::install_stage0(1024);
-        let trace = std::env::var_os("NELISP_EVAL_BOOT_TRACE")
-            .map(|v| !v.is_empty() && v != "0")
-            .unwrap_or(false);
+        let trace = std::env::var_os("NELISP_EVAL_BOOT_TRACE").map_or(false, |v| !v.is_empty() && v != "0");
         for (name, source) in STDLIB_FILES {
-            let forms = match crate::reader::read_all(source) {
-                Ok(f) => f,
-                Err(e) => panic!("{} eval-boot read failed: {}", name, e),
-            };
+            let forms = crate::reader::read_all(source).unwrap_or_else(|e| panic!("{name} eval-boot read failed: {e}"));
             for (idx, form) in forms.iter().enumerate() {
-                if trace {
-                    eprintln!("[eval-boot] {}: form #{}", name, idx);
-                }
-                if let Err(e) = crate::eval::eval(form, &mut env) {
-                    panic!(
-                        "{} eval-boot eval failed at form #{}: {}\nform: {}",
-                        name,
-                        idx,
-                        e,
-                        crate::eval::sexp::fmt_sexp(form),
-                    );
-                }
+                if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
+                crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!(
+                    "{name} eval-boot eval failed at form #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form)));
             }
         }
-        env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY")
-            .map(|v| v.is_empty())
-            .unwrap_or(true);
+        env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty());
         let unbound = env.unbound_marker.clone();
         env.mirror_set_value("nelisp--unbound-marker", unbound);
         env
@@ -143,19 +127,12 @@ impl Env {
         env.install_empty_mirror_rust_direct();
         {
             let unbound = env.unbound_marker.clone();
-            let plist_slot = Sexp::Nil;
-            let constant_slot = Sexp::T;
-            env.with_mirror_symbol("nil", |mirror_ptr, sym_ptr| unsafe {
-                crate::elisp_cc_spike::mirror_install_entry_or_insert(
-                    mirror_ptr, sym_ptr, &Sexp::Nil, &unbound, &plist_slot, &constant_slot,
-                );
-            });
-            let unbound2 = env.unbound_marker.clone();
-            env.with_mirror_symbol("t", |mirror_ptr, sym_ptr| unsafe {
-                crate::elisp_cc_spike::mirror_install_entry_or_insert(
-                    mirror_ptr, sym_ptr, &Sexp::T, &unbound2, &plist_slot, &constant_slot,
-                );
-            });
+            let plist = Sexp::Nil; let constant = Sexp::T;
+            for (sym_name, val) in [("nil", Sexp::Nil), ("t", Sexp::T)] {
+                env.with_mirror_symbol(sym_name, |m, s| unsafe {
+                    crate::elisp_cc_spike::mirror_install_entry_or_insert(m, s, &val, &unbound, &plist, &constant);
+                });
+            }
         }
         super::builtins::install_builtins(&mut env);
         env.register_extern_builtin("nelisp--env-globals-op", |args, env| {
@@ -173,8 +150,7 @@ impl Env {
 
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
         if !matches!(&self.globals_record, Sexp::Record(_)) {
-            return if name == "nelisp--unbound-marker" { Ok(self.unbound_marker.clone()) }
-                   else { Err(EvalError::unbound_var(name)) };
+            return if name == "nelisp--unbound-marker" { Ok(self.unbound_marker.clone()) } else { Err(EvalError::unbound_var(name)) };
         }
         let n = Sexp::Symbol(name.into()); let mut o = Sexp::Nil;
         let rc = unsafe { crate::elisp_cc_spike::env_lookup_value(&self.globals_record, &self.frames_record, &n, &mut o) };
@@ -263,10 +239,13 @@ impl Env {
     }
 
     pub(crate) fn frame_pop_rust_direct(&mut self) {
-        let stack_rec = match &self.frames_record { Sexp::Record(r) => r.clone(), _ => return };
-        let Some(backing) = stack_rec.slots.get(0).and_then(|s| if let Sexp::Vector(v) = s { Some(v.clone()) } else { None }) else { return };
-        let depth = match stack_rec.slots.get(1) { Some(Sexp::Int(n)) => *n as usize, _ => return };
+        let Sexp::Record(stack_rec) = &self.frames_record else { return };
+        let stack_rec = stack_rec.clone();
+        let (Some(Sexp::Vector(backing)), Some(Sexp::Int(d))) =
+            (stack_rec.slots.get(0), stack_rec.slots.get(1)) else { return };
+        let depth = *d as usize;
         if depth == 0 { return; }
+        let backing = backing.clone();
         unsafe {
             backing.with_value_mut(|v| v[depth - 1] = Sexp::Nil);
             stack_rec.with_slots_mut(|s| s[1] = Sexp::Int((depth - 1) as i64));

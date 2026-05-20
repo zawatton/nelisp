@@ -154,16 +154,21 @@ pub unsafe extern "C" fn nl_bf_bind_optional(
     idx
 }
 
+macro_rules! stash_err {
+    ($env:expr, $err:expr) => {{
+        let _ = (&mut *($env as *mut Env)).set_value("nelisp--last-signal-data", $err.signal_data());
+        1i64
+    }};
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_err_arity(env: *mut std::ffi::c_void, required: i64, got: i64) -> i64 {
-    let _ = (&mut *(env as *mut Env)).set_value("nelisp--last-signal-data", EvalError::wrong_arity("lambda", required.to_string(), got as usize).signal_data());
-    1
+    stash_err!(env, EvalError::wrong_arity("lambda", required.to_string(), got as usize))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_err_type(env: *mut std::ffi::c_void, name_ptr: *const Sexp) -> i64 {
-    let _ = (&mut *(env as *mut Env)).set_value("nelisp--last-signal-data", EvalError::wrong_type("symbol", (*name_ptr).clone()).signal_data());
-    1
+    stash_err!(env, EvalError::wrong_type("symbol", (*name_ptr).clone()))
 }
 
 #[no_mangle]
@@ -183,8 +188,7 @@ pub unsafe extern "C" fn nl_bf_bind_rest(
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_err_dangling_rest(env: *mut std::ffi::c_void) -> i64 {
-    let _ = (&mut *(env as *mut Env)).set_value("nelisp--last-signal-data", EvalError::wrong_type("symbol after &rest", Sexp::Symbol("&rest".into())).signal_data());
-    1
+    stash_err!(env, EvalError::wrong_type("symbol after &rest", Sexp::Symbol("&rest".into())))
 }
 
 #[no_mangle]
@@ -241,17 +245,20 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
     macro_rules! tri { ($x:expr) => { match $x { Ok(v)=>v, Err(er)=>{ let _=e.set_value("nelisp--last-signal-data",er.signal_data()); return 1; } } }; }
     macro_rules! put { ($v:expr) => {{ std::ptr::write(out,$v); return 0; }}; }
     macro_rules! stash { ($er:expr) => {{ let _=e.set_value("nelisp--last-signal-data",$er.signal_data()); return 1; }}; }
+    macro_rules! quote_wrap { ($v:expr) => { Sexp::list_from(&[Sexp::Symbol("quote".into()), $v]) }; }
+    macro_rules! elisp_delegate {
+        ($e:expr, $func:expr, $al:expr) => {{
+            let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()), quote_wrap!($func.clone()), quote_wrap!($al)]);
+            $e.delegation_depth += 1; let r = super::eval(&f, $e); $e.delegation_depth -= 1;
+            match r { Ok(v) => { put!(v) } Err(er) => { stash!(er) } }
+        }};
+    }
     let (head, tail) = (&*head_ptr, &*tail_ptr);
     let Sexp::Symbol(name) = head else {
         let func = tri!(super::eval(head, e));
         let args = tri!(super::eval_arg_list(tail, e));
         let is_bi = matches!(&func, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="builtin"));
-        if e.use_elisp_apply && e.delegation_depth==0 && !is_bi {
-            let al = Sexp::list_from(&args);
-            let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()),Sexp::list_from(&[Sexp::Symbol("quote".into()),func.clone()]),Sexp::list_from(&[Sexp::Symbol("quote".into()),al])]);
-            e.delegation_depth+=1; let r=super::eval(&f,e); e.delegation_depth-=1;
-            return match r { Ok(v)=>{ put!(v) } Err(er)=>{ let _=e.set_value("nelisp--last-signal-data",er.signal_data()); 1 } };
-        }
+        if e.use_elisp_apply && e.delegation_depth==0 && !is_bi { elisp_delegate!(e, func, Sexp::list_from(&args)); }
         return match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
     };
     match apply_special(name, tail, e) {
@@ -262,7 +269,7 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
     let is_hlp = matches!(name.as_str(),"nelisp--apply-fn"|"nelisp--apply-closure"|"nelisp--apply-lambda"|"nelisp--bind-formals--compute"|"nelisp--bind-formals--required-count"|"nelisp--builtinp"|"nelisp--closurep"|"nelisp--lambdap"|"nelisp--macrop"|"nelisp--expand-macro");
     if is_mac {
         if e.delegation_depth==0 && !is_hlp && e.lookup_function("nelisp--expand-macro").is_ok() {
-            let f = Sexp::list_from(&[Sexp::Symbol("nelisp--expand-macro".into()),Sexp::list_from(&[Sexp::Symbol("quote".into()),func.clone()]),Sexp::list_from(&[Sexp::Symbol("quote".into()),tail.clone()])]);
+            let f = Sexp::list_from(&[Sexp::Symbol("nelisp--expand-macro".into()), quote_wrap!(func.clone()), quote_wrap!(tail.clone())]);
             e.delegation_depth+=1;
             let exp = match super::eval(&f,e) { Ok(v)=>{e.delegation_depth-=1;v}, Err(er)=>{e.delegation_depth-=1; stash!(er)} };
             return match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
@@ -275,12 +282,7 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
     }
     let args = tri!(super::eval_arg_list(tail, e));
     let is_bi = matches!(&func, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="builtin"));
-    if e.use_elisp_apply && e.delegation_depth==0 && !is_hlp && !is_bi {
-        let al = Sexp::list_from(&args);
-        let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()),Sexp::list_from(&[Sexp::Symbol("quote".into()),func.clone()]),Sexp::list_from(&[Sexp::Symbol("quote".into()),al])]);
-        e.delegation_depth+=1; let r=super::eval(&f,e); e.delegation_depth-=1;
-        return match r { Ok(v)=>{ put!(v) } Err(er)=>{ let _=e.set_value("nelisp--last-signal-data",er.signal_data()); 1 } };
-    }
+    if e.use_elisp_apply && e.delegation_depth==0 && !is_hlp && !is_bi { elisp_delegate!(e, func, Sexp::list_from(&args)); }
     match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
 }
 

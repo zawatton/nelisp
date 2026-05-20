@@ -41,9 +41,12 @@ extern "C" fn winsize_h(_: libc::c_int) { WINSIZE_CHANGED.store(1, Ordering::Seq
 extern "C" fn tstp_h(s: libc::c_int) { restore_signal_safe(); unsafe { reraise(s); sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); } }
 extern "C" fn cont_h(_: libc::c_int) { SIGCONT_ARRIVED.store(1, Ordering::SeqCst); }
 
-pub fn install_hooks_once() { HOOKS_ONCE.call_once(|| unsafe { libc::atexit(atexit_hook); for s in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] { sa(*s, sig_handler, 0); } }); }
-pub fn install_winsize_handler() { WINSIZE_ONCE.call_once(|| unsafe { sa(libc::SIGWINCH, winsize_h, libc::SA_RESTART); WINSIZE_CHANGED.store(1, Ordering::SeqCst); }); }
-pub fn install_jobctrl_handlers() { JOBCTRL_ONCE.call_once(|| unsafe { sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); sa(libc::SIGCONT, cont_h, libc::SA_RESTART); }); }
+macro_rules! install_once {
+    ($once:expr, $body:block) => { $once.call_once(|| unsafe { $body }) };
+}
+pub fn install_hooks_once() { install_once!(HOOKS_ONCE, { libc::atexit(atexit_hook); for s in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] { sa(*s, sig_handler, 0); } }); }
+pub fn install_winsize_handler() { install_once!(WINSIZE_ONCE, { sa(libc::SIGWINCH, winsize_h, libc::SA_RESTART); WINSIZE_CHANGED.store(1, Ordering::SeqCst); }); }
+pub fn install_jobctrl_handlers() { install_once!(JOBCTRL_ONCE, { sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); sa(libc::SIGCONT, cont_h, libc::SA_RESTART); }); }
 pub fn hooks_installed_p() -> bool { HOOKS_ONCE.is_completed() }
 pub fn winsize_handler_installed_p() -> bool { WINSIZE_ONCE.is_completed() }
 pub fn jobctrl_handlers_installed_p() -> bool { JOBCTRL_ONCE.is_completed() }

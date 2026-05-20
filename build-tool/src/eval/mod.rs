@@ -57,10 +57,8 @@ pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> {
 
 pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
-    let mut dir = std::path::PathBuf::from(src_path)
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| ".".into());
+    let mut dir = std::path::PathBuf::from(src_path).parent()
+        .map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
     if dir.is_empty() { dir.push('.'); }
     if !dir.ends_with('/') { dir.push('/'); }
     env.set_value("default-directory", Sexp::Str(dir.clone()))?;
@@ -118,13 +116,8 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
     };
     match head.as_str() {
         "builtin" => {
-            let Sexp::Cons(inner) = &b.cdr else {
-                return Err(EvalError::internal("builtin sentinel missing name"));
-            };
-            let name = match &inner.car {
-                Sexp::Symbol(s) | Sexp::Str(s) => s.clone(),
-                _ => return Err(EvalError::internal("builtin sentinel name not a symbol")),
-            };
+            let Sexp::Cons(inner) = &b.cdr else { return Err(EvalError::internal("builtin sentinel missing name")); };
+            let name = match &inner.car { Sexp::Symbol(s) | Sexp::Str(s) => s.clone(), _ => return Err(EvalError::internal("builtin sentinel name not a symbol")) };
             builtins::dispatch(&name, args, env)
         }
         head @ ("closure" | "lambda") => {
@@ -136,17 +129,12 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
                 if parts.len() < 2 { return Err(EvalError::internal("lambda missing args / body")); }
                 (Sexp::Nil, 1, 2)
             };
-            let formals = &parts[formals_idx];
-            let body_list = Sexp::list_from(&parts[body_start..]);
-            let args_list = Sexp::list_from(args);
+            let body_list = Sexp::list_from(&parts[body_start..]); let args_list = Sexp::list_from(args);
             let mut out = Sexp::Nil;
-            let rc = unsafe {
-                crate::elisp_cc_spike::apply_lambda_inner_call(
-                    &captured as *const Sexp, formals as *const Sexp,
-                    &body_list as *const Sexp, &args_list as *const Sexp,
-                    env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp,
-                )
-            };
+            let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(
+                &captured as *const Sexp, &parts[formals_idx] as *const Sexp,
+                &body_list as *const Sexp, &args_list as *const Sexp,
+                env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp) };
             if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) }
         }
         "macro" => Err(EvalError::wrong_type("function (not macro)", func.clone())),
@@ -173,20 +161,14 @@ pub unsafe extern "C" fn nelisp_apply_function(func: *const Sexp, args_list: *co
     match apply_function(&*func, &args, r) { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { let _ = r.set_value("nelisp--last-signal-data", e.signal_data()); 1 } }
 }
 
-pub(crate) fn sexp_to_eval_error(sexp: &Sexp, fb: &str) -> EvalError {
+pub(crate) fn consume_stashed_error(env: &mut Env, fallback: &str) -> EvalError {
+    let sexp = match env.lookup_value("nelisp--last-signal-data") { Ok(s) => s, Err(_) => return EvalError::internal(fallback) };
     match sexp {
-        Sexp::Cons(b) => match &b.car {
+        Sexp::Cons(ref b) => match &b.car {
             Sexp::Symbol(s) if s == "quit" => EvalError::Quit,
             Sexp::Symbol(tag) => EvalError::Generic(tag.clone(), b.cdr.clone()),
-            _ => EvalError::internal(fb),
+            _ => EvalError::internal(fallback),
         },
-        _ => EvalError::internal(fb),
-    }
-}
-
-pub(crate) fn consume_stashed_error(env: &mut Env, fallback_name: &str) -> EvalError {
-    match env.lookup_value("nelisp--last-signal-data") {
-        Ok(sexp) => sexp_to_eval_error(&sexp, fallback_name),
-        Err(_) => EvalError::internal(fallback_name),
+        _ => EvalError::internal(fallback),
     }
 }

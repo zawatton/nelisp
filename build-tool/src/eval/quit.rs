@@ -15,17 +15,13 @@ pub fn take_quit_flag() -> bool {
 pub fn install_sigint_handler() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        extern "C" fn handler(_signum: libc::c_int) {
-            QUIT_FLAG.store(1, Ordering::SeqCst);
-        }
-        unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = handler as *const () as usize;
-            libc::sigemptyset(&mut sa.sa_mask);
-            sa.sa_flags = libc::SA_RESTART;
-            libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
-        }
+    ONCE.call_once(|| unsafe {
+        extern "C" fn handler(_: libc::c_int) { QUIT_FLAG.store(1, Ordering::SeqCst); }
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = handler as *const () as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
         SIGINT_INSTALLED.store(true, Ordering::SeqCst);
     });
 }

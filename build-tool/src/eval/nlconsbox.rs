@@ -15,20 +15,21 @@ crate::define_nlbox!(
     }
 );
 
-impl NlConsBox {
-    // Safety: no live `&Sexp` borrow into the field (see nlinner_set! contract).
-    crate::nlinner_set!(set_car, car, Sexp);
-    crate::nlinner_set!(set_cdr, cdr, Sexp);
+macro_rules! consbox_set_field {
+    ($box_ptr:expr, $field:ident, $val:expr) => {{
+        let p = ::std::ptr::addr_of_mut!((*$box_ptr).$field);
+        ::std::ptr::drop_in_place(p); ::std::ptr::write(p, $val);
+    }};
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_consbox_set_car(box_ptr: *mut NlConsBox, val: *const Sexp) {
-    (*box_ptr).set_car((*val).clone());
+    consbox_set_field!(box_ptr, car, (*val).clone());
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const Sexp) {
-    (*box_ptr).set_cdr((*val).clone());
+    consbox_set_field!(box_ptr, cdr, (*val).clone());
 }
 
 impl NlConsBoxRef {
