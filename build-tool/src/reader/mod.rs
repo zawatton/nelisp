@@ -52,17 +52,13 @@ struct ElispReadState {
 
 impl ElispReadState {
     fn new(input: &str) -> Self {
-        let src = Sexp::Str(input.to_string());
-        let cursor_slot = Sexp::Int(0);
-        let result_slot = Sexp::Nil;
         let mut slots = vec![Sexp::Nil; PARSER_POOL_SIZE];
         slots[0] = Sexp::mut_str(String::with_capacity(SCRATCH_CAP as usize));
-        let pool_slot = Sexp::vector(slots);
         ElispReadState {
-            src,
-            cursor_slot,
-            result_slot,
-            pool_slot,
+            src: Sexp::Str(input.to_string()),
+            cursor_slot: Sexp::Int(0),
+            result_slot: Sexp::Nil,
+            pool_slot: Sexp::vector(slots),
         }
     }
 
@@ -113,11 +109,6 @@ impl ElispReadState {
 }
 
 unsafe fn vector_slot_ptr(pool_slot: *const Sexp, index: usize) -> *const Sexp {
-    match &*pool_slot {
-        Sexp::Vector(v) => {
-            let slice: &[Sexp] = v.value.as_slice();
-            &slice[index] as *const Sexp
-        }
-        _ => unreachable!("pool_slot must be a Sexp::Vector"),
-    }
+    let Sexp::Vector(v) = &*pool_slot else { unreachable!("pool_slot must be a Sexp::Vector") };
+    &v.value.as_slice()[index] as *const Sexp
 }

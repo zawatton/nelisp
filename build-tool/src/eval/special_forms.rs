@@ -259,7 +259,7 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
         let args = tri!(super::eval_arg_list(tail, e));
         let is_bi = matches!(&func, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="builtin"));
         if e.use_elisp_apply && e.delegation_depth==0 && !is_bi { elisp_delegate!(e, func, Sexp::list_from(&args)); }
-        return match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
+        match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
     };
     match apply_special(name, tail, e) {
         Ok(Some(v)) => put!(v), Ok(None) => {}, Err(er) => stash!(er),
@@ -272,13 +272,13 @@ pub unsafe extern "C" fn nl_eval_inner_cons(
             let f = Sexp::list_from(&[Sexp::Symbol("nelisp--expand-macro".into()), quote_wrap!(func.clone()), quote_wrap!(tail.clone())]);
             e.delegation_depth+=1;
             let exp = match super::eval(&f,e) { Ok(v)=>{e.delegation_depth-=1;v}, Err(er)=>{e.delegation_depth-=1; stash!(er)} };
-            return match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
+            match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
         }
         let parts = tri!(super::list_elements(&func));
         if parts.len()<2 { stash!(super::error::EvalError::internal("malformed macro")) }
         let af = tri!(super::list_elements(tail));
         let exp = tri!(super::apply_function(&parts[1], &af, e));
-        return match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } };
+        match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
     }
     let args = tri!(super::eval_arg_list(tail, e));
     let is_bi = matches!(&func, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="builtin"));

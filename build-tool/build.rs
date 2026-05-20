@@ -442,12 +442,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     // Emacs is the build tool here — gated so users without Emacs see
     // a friendly skip rather than a cryptic exec failure.  The spike
     // is single-entry so a skip just disables the §99.B probe test.
-    let emacs = match which_or_skip("emacs") {
-        Some(p) => p,
-        None => {
-            println!("cargo:warning=skipping §99.B elisp-object link: emacs not on PATH");
-            return;
-        }
+    let Some(emacs) = which_or_skip("emacs") else {
+        println!("cargo:warning=skipping §99.B elisp-object link: emacs not on PATH");
+        return;
     };
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");
@@ -469,13 +466,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         .env("NELISP_PHASE47_TARGET_OS", target_os)
         .status()
         .unwrap_or_else(|e| panic!("emacs --batch failed to spawn: {}", e));
-    if !status.success() {
-        panic!(
-            "compile-elisp-objects-emit-all exited with {} (script={})",
-            status,
-            script.display()
-        );
-    }
+    if !status.success() { panic!("compile-elisp-objects-emit-all exited with {} (script={})", status, script.display()); }
 
     // Collect every `.o' the orchestrator wrote into the dir and
     // bundle them into a single static archive via `ar rcs'.  Cargo
@@ -489,12 +480,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("o"))
         .collect();
-    if obj_paths.is_empty() {
-        panic!(
-            "no .o files in {} after orchestrator run (manifest empty? silent failure?)",
-            elisp_obj_dir.display()
-        );
-    }
+    if obj_paths.is_empty() { panic!("no .o files in {} after orchestrator run (manifest empty? silent failure?)", elisp_obj_dir.display()); }
     obj_paths.sort();
     let ar = which_or_skip("ar").unwrap_or_else(|| "ar".to_string());
     let archive = std::path::Path::new(&out_dir).join("libnelisp_elisp_spike.a");
@@ -503,15 +489,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let _ = std::fs::remove_file(&archive);
     let mut cmd = std::process::Command::new(&ar);
     cmd.arg("rcs").arg(&archive);
-    for p in &obj_paths {
-        cmd.arg(p);
-    }
-    let status = cmd
-        .status()
-        .unwrap_or_else(|e| panic!("ar failed to spawn: {}", e));
-    if !status.success() {
-        panic!("ar rcs {} exited with {}", archive.display(), status);
-    }
+    for p in &obj_paths { cmd.arg(p); }
+    let status = cmd.status().unwrap_or_else(|e| panic!("ar failed to spawn: {}", e));
+    if !status.success() { panic!("ar rcs {} exited with {}", archive.display(), status); }
 
     println!("cargo:rustc-link-search=native={}", out_dir);
     println!("cargo:rustc-link-lib=static=nelisp_elisp_spike");
@@ -519,13 +499,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
 
 fn which_or_skip(prog: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let cand = dir.join(prog);
-        if cand.is_file() {
-            return Some(cand.to_string_lossy().into_owned());
-        }
-    }
-    None
+    std::env::split_paths(&path)
+        .map(|d| d.join(prog))
+        .find(|c| c.is_file())
+        .map(|c| c.to_string_lossy().into_owned())
 }
 
 fn emit_linux_table() -> String {
@@ -573,35 +550,18 @@ fn emit_linux_table() -> String {
     s.push_str(";; will be clobbered on the next `cargo build'.  When the Rust\n");
     s.push_str(";; `syscall_nr' helper in `build-tool/src/eval/builtins.rs'\n");
     s.push_str(";; gains a new arm, add a matching entry to `emit_linux_table'\n");
-    s.push_str(";; in `build-tool/build.rs'.\n");
-    s.push_str(";;\n");
+    s.push_str(";; in `build-tool/build.rs'.\n;;\n");
     s.push_str(";; Doc 84 §84.2 (2026-05-10) replaces the Rust `bi_syscall_nr_\n");
     s.push_str(";; resolve' primitive (= `jit/strategy.rs') with this elisp\n");
     s.push_str(";; lookup; consumed by `nelisp-jit-strategy.el' for the\n");
-    s.push_str(";; `nelisp--syscall' wrapper's symbol → i64 step.\n\n");
-    s.push_str(";;; Code:\n\n");
-    // Use bare `setq' instead of `defconst' because this file loads
-    // BEFORE `nelisp-stdlib-eval-special.el' which provides the
-    // `defconst' macro.  `setq' is a Tier 1 special form available
-    // from the very first `eval' call.  The resulting binding is
-    // mutable from elisp's perspective but conceptually a constant.
+    s.push_str(";; `nelisp--syscall' wrapper's symbol → i64 step.\n\n;;; Code:\n\n");
     s.push_str("(setq nelisp--syscall-nr-table\n      '(\n");
-    for (name, nr) in entries {
-        s.push_str(&format!("        ({} . {})\n", name, nr));
-    }
+    for (name, nr) in entries { s.push_str(&format!("        ({} . {})\n", name, nr)); }
     s.push_str("        ))\n\n");
-    s.push_str("(fset 'nelisp--syscall-nr-resolve\n");
-    s.push_str("      (lambda (name)\n");
-    // Body uses only Tier 1 forms (`let' / `if') and Rust builtins
-    // (`assq' / `cdr' / `signal' / `cons').  `assq' is itself defined
-    // in `nelisp-stdlib-search.el' (loaded after this file), but the
-    // resolver is only INVOKED at user-syscall time which is well
-    // after stdlib finishes.  At LOAD time we only `fset' the lambda
-    // — its body isn't evaluated.
+    s.push_str("(fset 'nelisp--syscall-nr-resolve\n      (lambda (name)\n");
     s.push_str("        (if (integerp name)\n            name\n");
     s.push_str("          (let ((cell (assq name nelisp--syscall-nr-table)))\n");
-    s.push_str("            (if cell\n");
-    s.push_str("                (cdr cell)\n");
+    s.push_str("            (if cell\n                (cdr cell)\n");
     s.push_str("              (signal 'arith-error\n                    (cons \"nelisp--syscall-nr-resolve: unknown syscall\"\n");
     s.push_str("                          (cons name nil))))))))\n\n");
     s.push_str(";; (provide 'nelisp-syscall-table) — omitted: this file is\n");
@@ -611,26 +571,20 @@ fn emit_linux_table() -> String {
 }
 
 fn emit_unsupported_stub(target_os: &str) -> String {
-    let mut s = String::new();
-    s.push_str(";;; nelisp-syscall-table.el --- Doc 84 §84.2 syscall nr table (non-Linux stub)  -*- lexical-binding: t; -*-\n");
-    s.push_str("\n;;; Commentary:\n\n");
-    s.push_str(&format!(
-        ";; AUTO-GENERATED by `build-tool/build.rs' for target_os = {}.\n",
-        target_os
-    ));
-    s.push_str(";; Per Doc 62 Phase 5 §5.8, non-Linux nelisp routes syscall\n");
-    s.push_str(";; callers through `nl-ffi-call' libc bindings; this resolver\n");
-    s.push_str(";; is a dead path and signals `arith-error' if invoked.\n\n");
-    s.push_str(";;; Code:\n\n");
-    // See Linux variant for the `setq'-instead-of-`defconst' rationale.
-    s.push_str("(setq nelisp--syscall-nr-table nil)\n\n");
-    s.push_str("(fset 'nelisp--syscall-nr-resolve\n");
-    s.push_str("      (lambda (name)\n");
-    s.push_str("        (let ((_ name))\n");
-    s.push_str("          (signal 'arith-error\n");
-    s.push_str(
-        "                  (cons \"nelisp--syscall-nr-resolve: unsupported platform\" nil)))))\n\n",
-    );
-    s.push_str(";;; nelisp-syscall-table.el ends here\n");
-    s
+    format!(
+        ";;; nelisp-syscall-table.el --- Doc 84 §84.2 syscall nr table (non-Linux stub)  -*- lexical-binding: t; -*-\n\
+         \n;;; Commentary:\n\n\
+         ;; AUTO-GENERATED by `build-tool/build.rs' for target_os = {target_os}.\n\
+         ;; Per Doc 62 Phase 5 §5.8, non-Linux nelisp routes syscall\n\
+         ;; callers through `nl-ffi-call' libc bindings; this resolver\n\
+         ;; is a dead path and signals `arith-error' if invoked.\n\n\
+         ;;; Code:\n\n\
+         (setq nelisp--syscall-nr-table nil)\n\n\
+         (fset 'nelisp--syscall-nr-resolve\n\
+               (lambda (name)\n\
+               (let ((_ name))\n\
+               (signal 'arith-error\n\
+                       (cons \"nelisp--syscall-nr-resolve: unsupported platform\" nil)))))\n\n\
+         ;;; nelisp-syscall-table.el ends here\n"
+    )
 }

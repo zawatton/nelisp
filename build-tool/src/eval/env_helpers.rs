@@ -114,8 +114,7 @@ impl Env {
             }
         }
         env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty());
-        let unbound = env.unbound_marker.clone();
-        env.mirror_set_value("nelisp--unbound-marker", unbound);
+        env.mirror_set_value("nelisp--unbound-marker", env.unbound_marker.clone());
         env
     }
 
@@ -125,14 +124,11 @@ impl Env {
     fn install_stage0(max_recursion: u32) -> Self {
         let mut env = Env::fresh(max_recursion);
         env.install_empty_mirror_rust_direct();
-        {
-            let unbound = env.unbound_marker.clone();
-            let plist = Sexp::Nil; let constant = Sexp::T;
-            for (sym_name, val) in [("nil", Sexp::Nil), ("t", Sexp::T)] {
-                env.with_mirror_symbol(sym_name, |m, s| unsafe {
-                    crate::elisp_cc_spike::mirror_install_entry_or_insert(m, s, &val, &unbound, &plist, &constant);
-                });
-            }
+        let (unbound, plist, constant) = (env.unbound_marker.clone(), Sexp::Nil, Sexp::T);
+        for (sym_name, val) in [("nil", Sexp::Nil), ("t", Sexp::T)] {
+            env.with_mirror_symbol(sym_name, |m, s| unsafe {
+                crate::elisp_cc_spike::mirror_install_entry_or_insert(m, s, &val, &unbound, &plist, &constant);
+            });
         }
         super::builtins::install_builtins(&mut env);
         env.register_extern_builtin("nelisp--env-globals-op", |args, env| {
@@ -258,9 +254,7 @@ impl Env {
         if raw.is_null() { return None; }
         Some(unsafe { (*raw).clone() })
     }
-    pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> {
-        self.frame_stack_find_rust_direct(name)
-    }
+    pub fn frame_lookup_rust_direct(&self, name: &str) -> Option<Sexp> { self.frame_stack_find_rust_direct(name) }
 
     pub(crate) fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> {
         let mut result = Sexp::Nil;

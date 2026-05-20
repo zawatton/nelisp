@@ -70,13 +70,9 @@ pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {
 fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, EvalError> {
     require_arity(prim, args, arity, Some(arity))?;
     let name_sexp = &args[0];
-    let name_str = match name_sexp {
-        Sexp::Symbol(s) | Sexp::Str(s) => s.as_str(),
-        other => return Err(EvalError::wrong_type(
-            format!("symbol or string ({} arg 0)", prim), other.clone())),
-    };
-    unified_fn_ptr(name_sexp)
-        .ok_or_else(|| EvalError::internal(format!("{}: unknown JIT entry name `{}'", prim, name_str)))
+    let name_str = match name_sexp { Sexp::Symbol(s) | Sexp::Str(s) => s.as_str(),
+        other => return Err(EvalError::wrong_type(format!("symbol or string ({} arg 0)", prim), other.clone())) };
+    unified_fn_ptr(name_sexp).ok_or_else(|| EvalError::internal(format!("{}: unknown JIT entry name `{}'", prim, name_str)))
 }
 
 unsafe fn cast<T: Copy>(p: *const u8) -> T { std::mem::transmute_copy(&p) }

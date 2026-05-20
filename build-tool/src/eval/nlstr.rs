@@ -41,7 +41,7 @@ crate::define_nlbox!(
 impl NlStrRef {
     pub unsafe fn set_value(&self, val: String) {
         let p = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value);
-        unsafe { std::ptr::drop_in_place(p); std::ptr::write(p, val); }
+        std::ptr::drop_in_place(p); std::ptr::write(p, val);
     }
 }
 

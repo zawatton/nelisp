@@ -217,7 +217,7 @@ fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (dir, dir_sexp) = path_arg1("nelisp--syscall-readdir", args, env)?;
-    let rd = match std::fs::read_dir(&dir) { Ok(rd) => rd, Err(_) => return Ok(Sexp::Nil) };
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) };
     let entries: Vec<Sexp> = rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect();
     Ok(Sexp::cons(dir_sexp, Sexp::list_from(&entries)))
 }

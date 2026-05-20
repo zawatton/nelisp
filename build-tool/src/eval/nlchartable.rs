@@ -40,10 +40,9 @@ fn ct_set(inner: &mut CharTableInner, c: i64, v: Sexp) {
 }
 
 fn ct_get(rc: &NlCharTableRef, c: i64) -> Sexp {
-    let inner = &rc.inner;
-    inner.entries.iter().find(|(k, _)| *k == c).map(|(_, v)| v.clone())
-        .or_else(|| inner.parent.as_ref().map(|parent| ct_get(parent, c)))
-        .unwrap_or_else(|| inner.default_val.clone())
+    rc.inner.entries.iter().find(|(k, _)| *k == c).map(|(_, v)| v.clone())
+        .or_else(|| rc.inner.parent.as_ref().map(|parent| ct_get(parent, c)))
+        .unwrap_or_else(|| rc.inner.default_val.clone())
 }
 
 #[no_mangle]

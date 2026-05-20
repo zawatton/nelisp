@@ -21,12 +21,7 @@ pub enum ReadError {
 
 macro_rules! readerr_ctor {
     ($fn:ident => $variant:ident, $field:ident) => {
-        pub fn $fn(s: impl Into<String>, pos: SourcePos) -> Self {
-            ReadError::$variant {
-                $field: s.into(),
-                pos,
-            }
-        }
+        pub fn $fn(s: impl Into<String>, pos: SourcePos) -> Self { ReadError::$variant { $field: s.into(), pos } }
     };
 }
 
