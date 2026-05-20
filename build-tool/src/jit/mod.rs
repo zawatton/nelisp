@@ -24,7 +24,6 @@ pub(super) fn read_sexp_str(v: &crate::eval::sexp::Sexp) -> Option<String> {
     }
 }
 
-mod box_accessor;
 pub(super) mod bridge;
 pub(crate) use bridge::{
     bi_nl_jit_call_float_cmp, bi_nl_jit_call_float_float, bi_nl_jit_call_float_unary,

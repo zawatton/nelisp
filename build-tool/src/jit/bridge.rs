@@ -84,6 +84,10 @@ extern "C" {
     // moved from `jit/syscall.rs' to Phase 47 .o.
     fn nl_jit_syscall_call();
     fn nl_jit_syscall_supported_p();
+    // box_accessor.rs deleted; symbols now from Phase 47 .o.
+    fn nl_jit_char_table_aref();
+    fn nl_jit_char_table_aset();
+    fn nl_jit_mut_str_set_codepoint();
 }
 
 // Typed declaration for the actual `nl_jit_alias' call in `unified_fn_ptr'.
@@ -97,7 +101,7 @@ extern "C" {
 
 /// Keep the archive symbols live through LTO.
 #[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 72] = [
+static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 75] = [
     nelisp_jit_add2,
     nelisp_jit_sub2,
     nelisp_jit_mul2,
@@ -170,6 +174,9 @@ static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 72] = [
     nl_eval_inner,
     nl_jit_syscall_call,
     nl_jit_syscall_supported_p,
+    nl_jit_char_table_aref,
+    nl_jit_char_table_aset,
+    nl_jit_mut_str_set_codepoint,
 ];
 
 /// Type-guard a JIT name argument: accept Symbol or Str, reject others.

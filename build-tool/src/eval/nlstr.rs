@@ -126,6 +126,38 @@ unsafe fn mut_str_value_mut<'a>(p: *mut Sexp) -> &'a mut String {
     unsafe { &mut (*((*p).mut_str_box_ptr() as *mut NlStr)).value }
 }
 
+/// Phase 47 delegate: replace codepoint at char-index `idx'; caller guards MutStr+idx.
+#[no_mangle]
+pub unsafe extern "C" fn nl_mut_str_set_codepoint_raw(
+    arg: *const Sexp,
+    idx: i64,
+    val_cp: i64,
+    out: *mut Sexp,
+) -> i64 {
+    use crate::jit::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
+    let rc = match &*arg {
+        Sexp::MutStr(r) => r,
+        _ => return TRAMPOLINE_ERR,
+    };
+    let new_ch = match char::from_u32(val_cp as u32) {
+        Some(c) => c,
+        None => return TRAMPOLINE_ERR,
+    };
+    let (i, len) = (idx as usize, rc.value.chars().count());
+    if i >= len {
+        return TRAMPOLINE_ERR;
+    }
+    let new_str: String = rc
+        .value
+        .chars()
+        .enumerate()
+        .map(|(j, c)| if j == i { new_ch } else { c })
+        .collect();
+    rc.set_value(new_str);
+    *out = Sexp::Int(val_cp);
+    TRAMPOLINE_OK
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn nl_mut_str_push_byte(mut_str_ptr: *mut Sexp, byte: i64) {
     unsafe { mut_str_value_mut(mut_str_ptr).as_mut_vec() }.push((byte & 0xFF) as u8);

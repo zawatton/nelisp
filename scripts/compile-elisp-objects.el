@@ -437,12 +437,10 @@
      :source-var nelisp-cc-jit-ref-eq--source
      :output "nelisp_jit_ref_eq.o"
      :requires-arch x86_64)
-    ;; Doc 120 §120.B — `jit/box_accessor.rs' record family partial swap.
-    ;; 5 of 11 trampolines (= `nl_jit_record_type', `nl_jit_record_len',
-    ;; `nl_jit_record_ref', `nl_jit_record_set', `nl_jit_record_alloc')
-    ;; move to Phase 47 elisp; the 6 non-record trampolines
-    ;; (mut-str / bool-vector / codepoint / char-table) all SKIP with
-    ;; documented blockers in `build-tool/src/jit/box_accessor.rs'.
+    ;; Doc 120 §120.B — `jit/box_accessor.rs' record family swap + later full delete.
+    ;; 5 record trampolines moved first; 3 remaining (mut-str-set-codepoint /
+    ;; char-table-aref / char-table-aset) moved last + file deleted (-74 LOC).
+    ;; See manifest tail for the 3 final entries.
     ;; Linux-x86_64 only — `extern-call' ABI ships aarch64 in follow-up.
     (nelisp-cc-jit-record
      :source-var nelisp-cc-jit-record-type--source
@@ -1265,6 +1263,24 @@
     (nelisp-cc-jit-syscall-call
      :source-var nelisp-cc-jit-syscall-call--source
      :output "nl_jit_syscall_call.o"
+     :requires-arch x86_64)
+    ;; Doc 120.B residuals — `jit/box_accessor.rs' final 3 trampolines
+    ;; (char-table-aref / char-table-aset / mut-str-set-codepoint).
+    ;; box_accessor.rs deleted (-74 LOC); thin Rust helpers for the
+    ;; opaque CharTable Vec iteration and MutStr set_value moved to
+    ;; nlchartable.rs / nlstr.rs; elisp bodies export the ABI symbols.
+    ;; Linux-x86_64 only — same extern-call gate as other box_accessor swaps.
+    (nelisp-cc-jit-char-table-aref
+     :source-var nelisp-cc-jit-char-table-aref--source
+     :output "nl_jit_char_table_aref.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-char-table-aset
+     :source-var nelisp-cc-jit-char-table-aset--source
+     :output "nl_jit_char_table_aset.o"
+     :requires-arch x86_64)
+    (nelisp-cc-jit-mut-str-set-codepoint
+     :source-var nelisp-cc-jit-mut-str-set-codepoint--source
+     :output "nl_jit_mut_str_set_codepoint.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
