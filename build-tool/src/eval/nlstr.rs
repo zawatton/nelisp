@@ -1,10 +1,6 @@
 //! `NlStr` backs `Sexp::MutStr`: `value` at offset 0, refcount trailer after
 //! `String`. Clone/Drop dispatch through the elisp kernels.
 
-use std::marker::PhantomData;
-use std::ptr::NonNull;
-use std::sync::atomic::AtomicUsize;
-
 use std::sync::atomic::AtomicI64;
 
 use crate::eval::sexp::Sexp;
@@ -48,46 +44,26 @@ pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: 
     0
 }
 
-#[repr(C)]
-pub struct NlStr {
-    pub value: String,
-    pub refcount: AtomicUsize,
-}
-
-crate::nl_ref_common!(NlStrRef, NlStr, drop_fn = crate::elisp_cc_spike::nlstr_drop);
-
-impl NlStr {
-    pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) =
-        crate::eval::nlrc::nlrc_payload_drop::<NlStr>;
-}
+crate::define_nlbox!(
+    inner          = NlStr,
+    ref_ty         = NlStrRef,
+    fields         = { value: String },
+    clone_fn       = crate::elisp_cc_spike::nlstr_clone,
+    drop_fn        = crate::elisp_cc_spike::nlstr_drop,
+    layout_asserts = {
+        use ::std::mem::{offset_of, size_of};
+        assert!(offset_of!(NlStr, value) == 0);
+        assert!(offset_of!(NlStr, refcount) == size_of::<String>());
+        assert!(size_of::<AtomicUsize>() == 8);
+    }
+);
 
 impl NlStrRef {
-    pub fn new(value: String) -> NlStrRef {
-        let ptr = NonNull::from(Box::leak(Box::new(NlStr {
-            value,
-            refcount: AtomicUsize::new(1),
-        })));
-        Self {
-            ptr,
-            _marker: PhantomData,
-        }
-    }
-
     pub unsafe fn set_value(&self, val: String) {
         let value_ptr = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value);
         unsafe {
             std::ptr::drop_in_place(value_ptr);
             std::ptr::write(value_ptr, val);
-        }
-    }
-}
-
-impl Clone for NlStrRef {
-    fn clone(&self) -> Self {
-        unsafe { crate::elisp_cc_spike::nlstr_clone(self.ptr.as_ptr() as *mut i64) };
-        Self {
-            ptr: self.ptr,
-            _marker: PhantomData,
         }
     }
 }
@@ -231,9 +207,3 @@ pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp
     }
 }
 
-const _: () = {
-    use std::mem::{offset_of, size_of};
-    assert!(offset_of!(NlStr, value) == 0);
-    assert!(offset_of!(NlStr, refcount) == size_of::<String>());
-    assert!(size_of::<AtomicUsize>() == 8);
-};
