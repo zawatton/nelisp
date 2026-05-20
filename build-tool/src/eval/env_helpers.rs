@@ -149,8 +149,7 @@ impl Env {
             return if name == "nelisp--unbound-marker" { Ok(self.unbound_marker.clone()) } else { Err(EvalError::unbound_var(name)) };
         }
         let n = Sexp::Symbol(name.into()); let mut o = Sexp::Nil;
-        let rc = unsafe { crate::elisp_cc_spike::env_lookup_value(&self.globals_record, &self.frames_record, &n, &mut o) };
-        if rc == 0 { Ok(o) } else { Err(EvalError::unbound_var(name)) }
+        if unsafe { crate::elisp_cc_spike::env_lookup_value(&self.globals_record, &self.frames_record, &n, &mut o) } == 0 { Ok(o) } else { Err(EvalError::unbound_var(name)) }
     }
 
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
@@ -164,8 +163,7 @@ impl Env {
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return Err(EvalError::unbound_fn(name)); }
         let n = Sexp::Symbol(name.into()); let mut o = Sexp::Nil;
-        let rc = unsafe { crate::elisp_cc_spike::env_lookup_function(&self.globals_record, &self.unbound_marker, &n, &mut o) };
-        if rc == 0 { Ok(o) } else { Err(EvalError::unbound_fn(name)) }
+        if unsafe { crate::elisp_cc_spike::env_lookup_function(&self.globals_record, &self.unbound_marker, &n, &mut o) } == 0 { Ok(o) } else { Err(EvalError::unbound_fn(name)) }
     }
 
     pub fn bind_local(&mut self, name: &str, value: Sexp) {

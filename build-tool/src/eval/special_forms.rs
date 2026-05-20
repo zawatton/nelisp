@@ -162,14 +162,9 @@ macro_rules! stash_err {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_bf_err_arity(env: *mut std::ffi::c_void, required: i64, got: i64) -> i64 {
-    stash_err!(env, EvalError::wrong_arity("lambda", required.to_string(), got as usize))
-}
-
+pub unsafe extern "C" fn nl_bf_err_arity(env: *mut std::ffi::c_void, required: i64, got: i64) -> i64 { stash_err!(env, EvalError::wrong_arity("lambda", required.to_string(), got as usize)) }
 #[no_mangle]
-pub unsafe extern "C" fn nl_bf_err_type(env: *mut std::ffi::c_void, name_ptr: *const Sexp) -> i64 {
-    stash_err!(env, EvalError::wrong_type("symbol", (*name_ptr).clone()))
-}
+pub unsafe extern "C" fn nl_bf_err_type(env: *mut std::ffi::c_void, name_ptr: *const Sexp) -> i64 { stash_err!(env, EvalError::wrong_type("symbol", (*name_ptr).clone())) }
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_bind_rest(
@@ -187,55 +182,38 @@ pub unsafe extern "C" fn nl_bf_bind_rest(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_bf_err_dangling_rest(env: *mut std::ffi::c_void) -> i64 {
-    stash_err!(env, EvalError::wrong_type("symbol after &rest", Sexp::Symbol("&rest".into())))
-}
+pub unsafe extern "C" fn nl_bf_err_dangling_rest(env: *mut std::ffi::c_void) -> i64 { stash_err!(env, EvalError::wrong_type("symbol after &rest", Sexp::Symbol("&rest".into()))) }
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_push_and_bind(formals_ptr: *const Sexp, args_list_ptr: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
-    let e = &mut *(env as *mut Env);
-    e.frame_push_rust_direct();
+    let e = &mut *(env as *mut Env); e.frame_push_rust_direct();
     let rc = crate::elisp_cc_spike::bind_formals_impl_call(formals_ptr, args_list_ptr, env, 0);
-    if rc != 0 { e.frame_pop_rust_direct(); }
-    rc
+    if rc != 0 { e.frame_pop_rust_direct(); } rc
 }
 #[no_mangle]
-pub unsafe extern "C" fn nl_env_capture_lexical(env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
-    std::ptr::write(out, (&mut *(env as *mut Env)).capture_lexical()); 0
-}
+pub unsafe extern "C" fn nl_env_capture_lexical(env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 { std::ptr::write(out, (&mut *(env as *mut Env)).capture_lexical()); 0 }
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_eval_is_truthy(form: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
-    match super::eval(&*form, &mut *(env as *mut Env)) {
-        Ok(v) => if !matches!(v, Sexp::Nil) { 1 } else { 0 },
-        Err(_) => -1,
-    }
+    match super::eval(&*form, &mut *(env as *mut Env)) { Ok(Sexp::Nil) => 0, Ok(_) => 1, Err(_) => -1 }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_set_value(env: *mut std::ffi::c_void, sym: *const Sexp, val: *const Sexp) -> i64 {
     let e = &mut *(env as *mut Env);
-    let name = match &*sym { Sexp::Symbol(s) | Sexp::Str(s) => s.as_str(), _ => return 1 };
-    match e.set_value(name, (*val).clone()) { Ok(_) => 0, Err(_) => 1 }
+    match &*sym { Sexp::Symbol(s) | Sexp::Str(s) => match e.set_value(s.as_str(), (*val).clone()) { Ok(_) => 0, Err(_) => 1 }, _ => 1 }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_env_lookup_val(
-    name_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp,
-) -> i64 {
+pub unsafe extern "C" fn nl_env_lookup_val(name_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let e = &mut *(env as *mut Env);
     let Sexp::Symbol(n) = &*name_ptr else { return 1; };
     if n.starts_with(':') && n.len() > 1 { super::sexp::nl_sexp_clone_into(name_ptr, out); return 0; }
-    match e.lookup_value(n) {
-        Ok(v) => { std::ptr::write(out, v); 0 }
-        Err(er) => { let _ = e.set_value("nelisp--last-signal-data", er.signal_data()); 1 }
-    }
+    match e.lookup_value(n) { Ok(v) => { std::ptr::write(out, v); 0 } Err(er) => { let _ = e.set_value("nelisp--last-signal-data", er.signal_data()); 1 } }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_cell_get_value(cell_ptr: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*cell_ptr { Sexp::Cell(c) => { std::ptr::write(out, c.value.clone()); 0 } _ => 1 }
-}
+pub unsafe extern "C" fn nl_cell_get_value(cell_ptr: *const Sexp, out: *mut Sexp) -> i64 { match &*cell_ptr { Sexp::Cell(c) => { std::ptr::write(out, c.value.clone()); 0 } _ => 1 } }
 #[no_mangle]
 pub unsafe extern "C" fn nl_eval_inner_cons(
     head_ptr: *const Sexp, tail_ptr: *const Sexp,

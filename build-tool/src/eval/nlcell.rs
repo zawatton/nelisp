@@ -21,7 +21,7 @@ impl NlCell {
 
 impl NlCellRef {
     #[doc(hidden)]
-    pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef { NlCellRef { ptr: ::std::ptr::NonNull::new(raw).expect("from_raw_ptr: null pointer"), _marker: ::std::marker::PhantomData } }
+    pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef { NlCellRef { ptr: ::std::ptr::NonNull::new(raw).expect("null"), _marker: ::std::marker::PhantomData } }
 }
 
 impl std::fmt::Debug for NlCellRef {

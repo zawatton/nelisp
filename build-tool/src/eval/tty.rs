@@ -31,8 +31,7 @@ unsafe fn sa(sig: libc::c_int, h: extern "C" fn(libc::c_int), fl: libc::c_int) {
 }
 unsafe fn reraise(sig: libc::c_int) {
     libc::signal(sig, libc::SIG_DFL);
-    let mut m: libc::sigset_t = std::mem::zeroed();
-    libc::sigemptyset(&mut m); libc::sigaddset(&mut m, sig);
+    let mut m: libc::sigset_t = std::mem::zeroed(); libc::sigemptyset(&mut m); libc::sigaddset(&mut m, sig);
     libc::sigprocmask(libc::SIG_UNBLOCK, &m, std::ptr::null_mut()); libc::raise(sig);
 }
 extern "C" fn atexit_hook() { restore_signal_safe(); }
@@ -65,27 +64,15 @@ pub fn termios_saved_p() -> bool { TERMIOS_SAVED.load(Ordering::SeqCst) != 0 }
 
 pub fn raw_mode_enter() -> Result<(), EvalError> {
     let mut buf = [0u8; 60];
-    match unsafe { crate::elisp_cc_spike::tty_raw_enter(buf.as_mut_ptr()) } {
-        0 => Ok(()),
-        -1 => Err(EvalError::internal("terminal-raw-mode-enter: tcgetattr failed")),
-        _  => Err(EvalError::internal("terminal-raw-mode-enter: tcsetattr failed")),
-    }
+    match unsafe { crate::elisp_cc_spike::tty_raw_enter(buf.as_mut_ptr()) } { 0 => Ok(()), -1 => Err(EvalError::internal("terminal-raw-mode-enter: tcgetattr failed")), _ => Err(EvalError::internal("terminal-raw-mode-enter: tcsetattr failed")) }
 }
-pub fn raw_mode_leave() -> Result<(), EvalError> {
-    unsafe { crate::elisp_cc_spike::tty_raw_leave(nl_tty_saved_termios_ptr()); }
-    Ok(())
-}
+pub fn raw_mode_leave() -> Result<(), EvalError> { unsafe { crate::elisp_cc_spike::tty_raw_leave(nl_tty_saved_termios_ptr()); } Ok(()) }
 pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
     let mut pfd = [0u8, 0, 0, 0, 1, 0, 0, 0]; // fd=0 (i32 LE), events=POLLIN(1) (i16 LE), revents=0
-    match unsafe { crate::elisp_cc_spike::tty_stdin_byte_avail(pfd.as_mut_ptr(), timeout_ms as i64) } {
-        -2 => Err(EvalError::internal("read-stdin-byte-available: poll failed")),
-        n if n < 0 => Ok(None),
-        b => Ok(Some(b as u8)),
-    }
+    match unsafe { crate::elisp_cc_spike::tty_stdin_byte_avail(pfd.as_mut_ptr(), timeout_ms as i64) } { -2 => Err(EvalError::internal("read-stdin-byte-available: poll failed")), n if n < 0 => Ok(None), b => Ok(Some(b as u8)) }
 }
 pub fn current_winsize() -> Option<(u16, u16)> {
-    let mut ws = [0u8; 8];
-    let p = unsafe { crate::elisp_cc_spike::tty_winsize_current(ws.as_mut_ptr()) };
+    let p = unsafe { crate::elisp_cc_spike::tty_winsize_current([0u8; 8].as_mut_ptr()) };
     if p < 0 { None } else { Some((((p >> 16) & 0xFFFF) as u16, (p & 0xFFFF) as u16)) }
 }
 pub fn take_winsize_changed() -> bool { unsafe { crate::elisp_cc_spike::tty_take_atomic(WINSIZE_CHANGED.as_ptr()) != 0 } }
