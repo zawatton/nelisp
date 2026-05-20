@@ -285,6 +285,8 @@ pub mod elisp_cc_spike {
         fn nelisp_frame_bind(frames_ptr: *const Sexp, name_ptr: *const Sexp, cell_ptr: *const Sexp, scratch_pair: *mut Sexp, scratch_outer: *mut Sexp, scratch_count: *mut Sexp) -> i64;
         fn nelisp_frame_stack_find(frames_ptr: *const Sexp, name_ptr: *const Sexp) -> i64;
         fn nelisp_frame_push(frames_ptr: *const Sexp, scratch_vec_ptr: *const Sexp) -> i64;
+        // Wave h — install empty globals mirror + frame stack Phase 47 .o.
+        fn nelisp_env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
     }
 
     pub fn probe() -> i64 {
@@ -516,5 +518,11 @@ pub mod elisp_cc_spike {
             Sexp::Nil,                               // slot 6: int scratch
         ]);
         nelisp_frame_push(frames_ptr, &scratch as *const Sexp)
+    }
+
+    // Wave h — install empty globals mirror + frame stack .o wrapper.
+    pub unsafe fn env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp) -> i64 {
+        let s = Sexp::vector(vec![Sexp::Symbol("nelisp-env".into()), Sexp::Symbol("fast-hash-table".into()), Sexp::Symbol("nelisp-lexframe-stack".into()), Sexp::Nil, Sexp::Nil, Sexp::Nil]);
+        nelisp_env_install_empty_globals_frames(globals_out, frames_out, &s as *const Sexp, 0)
     }
 }

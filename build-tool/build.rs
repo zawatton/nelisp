@@ -437,6 +437,8 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Thin wrapper; frame_record depth check + cell-make + nelisp_frame_bind
         // on frame path, nelisp_mirror_set_value_or_insert on mirror path.
         "nelisp-cc-env-bind-local.el",
+        // Wave h — empty globals mirror + frame stack via Phase 47 .o.
+        "nelisp-cc-env-install-empty.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

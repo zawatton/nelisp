@@ -301,36 +301,18 @@ impl Env {
         );
     }
 
-    fn make_fast_hash_table(bucket_count: usize) -> Sexp {
-        let buckets = Sexp::vector(vec![Sexp::Nil; bucket_count]);
-        Sexp::record(
-            Sexp::Symbol("fast-hash-table".into()),
-            vec![Sexp::Int(bucket_count as i64), buckets, Sexp::Int(0)],
-        )
-    }
-
     pub fn install_empty_mirror_rust_direct(&mut self) {
         self.unbound_marker = Sexp::Symbol("nelisp--unbound-marker".into());
-        self.globals_record = Sexp::record(
-            Sexp::Symbol("nelisp-env".into()),
-            vec![Env::make_fast_hash_table(1024), Sexp::Nil, Sexp::Nil],
-        );
-        self.install_empty_frames_record_rust_direct();
+        unsafe {
+            crate::elisp_cc_spike::env_install_empty_globals_frames(
+                &mut self.globals_record, &mut self.frames_record);
+        }
     }
 
     mirror_op!(lookup: mirror_lookup_value(pub) => mirror_lookup_value);
     mirror_op!(lookup: mirror_lookup_function(pub) => mirror_lookup_function);
 
     mirror_op!(pred: mirror_is_fbound(pub) => mirror_is_fbound);
-
-    pub(crate) fn install_empty_frames_record_rust_direct(&mut self) {
-        const INITIAL_CAPACITY: usize = 8;
-        let backing = Sexp::vector(vec![Sexp::Nil; INITIAL_CAPACITY]);
-        self.frames_record = Sexp::record(
-            Sexp::Symbol("nelisp-lexframe-stack".into()),
-            vec![backing, Sexp::Int(0)],
-        );
-    }
 
     pub(crate) fn frame_stack_view(&self) -> Option<(NlRecordRef, NlVectorRef, usize)> {
         let stack_rec = match &self.frames_record {
