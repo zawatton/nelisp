@@ -33,8 +33,6 @@ pub enum Sexp {
     Record(NlRecordRef),
 }
 
-// Tag constants mirror enum declaration order.
-
 pub const SEXP_TAG_NIL: u8 = 0;
 pub const SEXP_TAG_T: u8 = 1;
 pub const SEXP_TAG_INT: u8 = 2;
@@ -48,13 +46,6 @@ pub const SEXP_TAG_CHAR_TABLE: u8 = 9;
 pub const SEXP_TAG_BOOL_VECTOR: u8 = 10;
 pub const SEXP_TAG_CELL: u8 = 11;
 pub const SEXP_TAG_RECORD: u8 = 12;
-
-/// Read the discriminant byte.
-#[inline]
-pub fn variant_tag(s: &Sexp) -> u8 {
-    // SAFETY: `#[repr(C, u8)]` stores the discriminant as a `u8` at offset 0.
-    unsafe { *(s as *const Sexp as *const u8) }
-}
 
 /// Byte offset of the boxed handle within a `Sexp`.
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
@@ -72,10 +63,11 @@ macro_rules! sexp_box_ptr_accessor {
 }
 
 impl Sexp {
-    /// Equivalent to [`variant_tag`].
+    /// Read the discriminant byte (`#[repr(C, u8)]` stores it at offset 0).
     #[inline]
     pub fn tag(&self) -> u8 {
-        variant_tag(self)
+        // SAFETY: `#[repr(C, u8)]` stores the discriminant as a `u8` at offset 0.
+        unsafe { *(self as *const Sexp as *const u8) }
     }
 
     sexp_box_ptr_accessor!(cons_box_ptr, crate::eval::nlconsbox::NlConsBox);
@@ -204,53 +196,29 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("offset-tag", 0),
     ("offset-payload", SEXP_PAYLOAD_OFFSET as i64),
     ("slot-size", std::mem::size_of::<Sexp>() as i64),
-    (
-        "nlconsbox-offset-car",
-        std::mem::offset_of!(NlConsBox, car) as i64,
-    ),
-    (
-        "nlconsbox-offset-cdr",
-        std::mem::offset_of!(NlConsBox, cdr) as i64,
-    ),
-    (
-        "nlconsbox-offset-refcount",
-        std::mem::offset_of!(NlConsBox, refcount) as i64,
-    ),
+    ("nlconsbox-offset-car", std::mem::offset_of!(NlConsBox, car) as i64),
+    ("nlconsbox-offset-cdr", std::mem::offset_of!(NlConsBox, cdr) as i64),
+    ("nlconsbox-offset-refcount", std::mem::offset_of!(NlConsBox, refcount) as i64),
     ("nlconsbox-size", std::mem::size_of::<NlConsBox>() as i64),
     ("string-offset-capacity", SEXP_PAYLOAD_OFFSET as i64),
     ("string-offset-ptr", (SEXP_PAYLOAD_OFFSET + 8) as i64),
     ("string-offset-length", (SEXP_PAYLOAD_OFFSET + 16) as i64),
     ("string-header-size", std::mem::size_of::<String>() as i64),
-    (
-        "nlrecord-offset-type-tag",
-        std::mem::offset_of!(NlRecord, type_tag) as i64,
-    ),
+    ("nlrecord-offset-type-tag", std::mem::offset_of!(NlRecord, type_tag) as i64),
     ("nlrecord-offset-slots-vec", NLREC_SLOTS as i64),
     ("nlrecord-offset-slots-ptr", NLREC_SLOTS as i64),
     ("nlrecord-offset-slots-capacity", (NLREC_SLOTS + 8) as i64),
     ("nlrecord-offset-slots-length", (NLREC_SLOTS + 16) as i64),
-    (
-        "nlrecord-offset-refcount",
-        std::mem::offset_of!(NlRecord, refcount) as i64,
-    ),
+    ("nlrecord-offset-refcount", std::mem::offset_of!(NlRecord, refcount) as i64),
     ("nlrecord-size", std::mem::size_of::<NlRecord>() as i64),
     ("nlvector-offset-value-vec", NLVEC_VALUE as i64),
     ("nlvector-offset-value-ptr", NLVEC_VALUE as i64),
     ("nlvector-offset-value-capacity", (NLVEC_VALUE + 8) as i64),
     ("nlvector-offset-value-length", (NLVEC_VALUE + 16) as i64),
-    (
-        "nlvector-offset-refcount",
-        std::mem::offset_of!(NlVector, refcount) as i64,
-    ),
+    ("nlvector-offset-refcount", std::mem::offset_of!(NlVector, refcount) as i64),
     ("nlvector-size", std::mem::size_of::<NlVector>() as i64),
-    (
-        "nlcell-offset-value",
-        std::mem::offset_of!(NlCell, value) as i64,
-    ),
-    (
-        "nlcell-offset-refcount",
-        std::mem::offset_of!(NlCell, refcount) as i64,
-    ),
+    ("nlcell-offset-value", std::mem::offset_of!(NlCell, value) as i64),
+    ("nlcell-offset-refcount", std::mem::offset_of!(NlCell, refcount) as i64),
     ("nlcell-size", std::mem::size_of::<NlCell>() as i64),
 ];
 
