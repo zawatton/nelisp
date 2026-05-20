@@ -25,12 +25,10 @@ macro_rules! builtin_dispatch {
     ($name:ident, $args:ident, $env:ident) => {
         match $name {
             "vector" => Ok(Sexp::vector($args.to_vec())),
-            "make-vector" => {
-                require_arity("make-vector", $args, 2, Some(2))?;
+            "make-vector" => { require_arity("make-vector", $args, 2, Some(2))?;
                 let len = as_int("make-vector", &$args[0])?;
                 if len < 0 { return Err(EvalError::arith(format!("make-vector: negative length {}", len))); }
-                let mut r = Sexp::Nil; unsafe { crate::elisp_cc_spike::bi_make_vector(&$args[0] as *const _, &$args[1] as *const _, &mut r as *mut _) }; Ok(r)
-            },
+                let mut r = Sexp::Nil; unsafe { crate::elisp_cc_spike::bi_make_vector(&$args[0], &$args[1], &mut r) }; Ok(r) },
             "nelisp--length-cons-cc" => { require_arity("nelisp--length-cons-cc", $args, 1, Some(1))?; match &$args[0] {
                 Sexp::Cons(_) | Sexp::Nil => Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::length_cons)),
                 other => Err(EvalError::wrong_type("sequencep", other.clone())) } },
@@ -44,51 +42,31 @@ macro_rules! builtin_dispatch {
             "nelisp--syscall-canonicalize" => bi_syscall_canonicalize($args, $env), "nelisp--syscall-stat" => bi_syscall_stat($args, $env), "nelisp--syscall-readdir" => bi_syscall_readdir($args, $env),
             "nelisp--syscall-read-file" => bi_syscall_read_file($args, $env), "nelisp--syscall" => bi_syscall($args),
             "symbol-function" => { require_arity("symbol-function", $args, 1, Some(1))?; super::env_shim::bi_globals_op(&[Sexp::Symbol("get-function".into()), $args[0].clone()], $env) },
-            "fset" => {
-                require_arity("fset", $args, 2, Some(2))?;
+            "fset" => { require_arity("fset", $args, 2, Some(2))?;
                 let resolved = match &$args[1] { Sexp::Symbol(s) => $env.lookup_function(s)?, other => other.clone() };
-                super::env_shim::bi_globals_op(&[Sexp::Symbol("set-function".into()), $args[0].clone(), resolved], $env)
-            },
+                super::env_shim::bi_globals_op(&[Sexp::Symbol("set-function".into()), $args[0].clone(), resolved], $env) },
             "nelisp--push-frame" => { require_arity("nelisp--push-frame", $args, 0, Some(0))?; $env.frame_push_rust_direct(); Ok(Sexp::T) },
             "nelisp--pop-frame" => { require_arity("nelisp--pop-frame", $args, 0, Some(0))?; $env.frame_pop_rust_direct(); Ok(Sexp::T) },
             "nelisp--push-captured" => { require_arity("nelisp--push-captured", $args, 1, Some(1))?; $env.push_captured(&$args[0])?; Ok(Sexp::T) },
-            "nelisp--bind-local" => {
-                require_arity("nelisp--bind-local", $args, 2, Some(2))?;
+            "nelisp--bind-local" => { require_arity("nelisp--bind-local", $args, 2, Some(2))?;
                 let name = match &$args[0] { Sexp::Symbol(s) => s.clone(), other => return Err(EvalError::wrong_type("symbol", other.clone())) };
-                $env.bind_local(&name, $args[1].clone()); Ok($args[1].clone())
-            },
-            "nelisp--apply-builtin-dispatch" => {
-                require_arity("nelisp--apply-builtin-dispatch", $args, 2, Some(2))?;
+                $env.bind_local(&name, $args[1].clone()); Ok($args[1].clone()) },
+            "nelisp--apply-builtin-dispatch" => { require_arity("nelisp--apply-builtin-dispatch", $args, 2, Some(2))?;
                 let name = match &$args[0] { Sexp::Symbol(s) | Sexp::Str(s) => s.clone(), other => return Err(EvalError::wrong_type("symbol", other.clone())) };
-                dispatch(&name, &super::list_elements(&$args[1])?, $env)
-            },
+                dispatch(&name, &super::list_elements(&$args[1])?, $env) },
             "nelisp--set-use-elisp-apply" => { require_arity("nelisp--set-use-elisp-apply", $args, 1, Some(1))?; $env.use_elisp_apply = !matches!($args[0], Sexp::Nil); Ok(bool_sexp($env.use_elisp_apply)) },
             "nelisp--apply-lambda-inner" => {
                 require_arity("nelisp--apply-lambda-inner", $args, 4, Some(4))?;
-                let captured  = &$args[0];
-                let formals   = &$args[1];
-                let body_list = &$args[2];
-                let args_list = Sexp::list_from(&super::list_elements(&$args[3])?);
+                let al = Sexp::list_from(&super::list_elements(&$args[3])?);
                 let mut out = Sexp::Nil;
-                let rc = unsafe {
-                    crate::elisp_cc_spike::apply_lambda_inner_call(
-                        captured as *const Sexp,
-                        formals as *const Sexp,
-                        body_list as *const Sexp,
-                        &args_list as *const Sexp,
-                        $env as *mut super::Env as *mut std::ffi::c_void,
-                        &mut out as *mut Sexp,
-                    )
-                };
+                let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(&$args[0], &$args[1], &$args[2], &al, $env as *mut super::Env as *mut std::ffi::c_void, &mut out) };
                 if rc == 0 { Ok(out) } else { Err(super::consume_stashed_error($env, "nelisp--apply-lambda-inner")) }
             },
             "funcall" => { require_arity("funcall", $args, 1, None)?; let func = match &$args[0] { Sexp::Symbol(s) => $env.lookup_function(s)?, _ => $args[0].clone() }; super::apply_function(&func, &$args[1..], $env) },
-            "apply" => {
-                require_arity("apply", $args, 2, None)?;
+            "apply" => { require_arity("apply", $args, 2, None)?;
                 let func = match &$args[0] { Sexp::Symbol(s) => $env.lookup_function(s)?, _ => $args[0].clone() };
-                let mut all_args: Vec<Sexp> = $args[1..$args.len() - 1].to_vec();
-                all_args.extend(super::list_elements(&$args[$args.len() - 1])?); super::apply_function(&func, &all_args, $env)
-            },
+                let mut aa: Vec<Sexp> = $args[1..$args.len()-1].to_vec();
+                aa.extend(super::list_elements(&$args[$args.len()-1])?); super::apply_function(&func, &aa, $env) },
             "eval" => { require_arity("eval", $args, 1, Some(2))?; super::eval(&$args[0], $env) },
             "signal" => {
                 require_arity("signal", $args, 2, Some(2))?;
@@ -107,29 +85,25 @@ macro_rules! builtin_dispatch {
             },
             "nelisp--write-stdout-bytes" => { use std::io::Write; require_arity("nelisp--write-stdout-bytes", $args, 1, Some(1))?;
                 let bs = Sexp::Str($args[0].as_string_owned().ok_or_else(|| EvalError::wrong_type("stringp", $args[0].clone()))?);
-                let rc = unsafe { crate::elisp_cc_spike::bi_write_stdout_bytes(&bs as *const Sexp) };
-                if rc < 0 { return Err(EvalError::internal(format!("nelisp--write-stdout-bytes: write returned {}", rc))); }
-                std::io::stdout().lock().flush().map_err(|e| EvalError::internal(format!("nelisp--write-stdout-bytes: {}", e)))?; Ok($args[0].clone()) },
+                let rc = unsafe { crate::elisp_cc_spike::bi_write_stdout_bytes(&bs) };
+                if rc < 0 { return Err(EvalError::internal(format!("nelisp--write-stdout-bytes: write returned {rc}"))); }
+                std::io::stdout().lock().flush().map_err(|e| EvalError::internal(format!("nelisp--write-stdout-bytes: {e}")))?; Ok($args[0].clone()) },
             "nelisp--write-stderr-line" => { use std::io::Write; require_arity("nelisp--write-stderr-line", $args, 1, Some(1))?;
                 let bs = Sexp::Str($args[0].as_string_owned().ok_or_else(|| EvalError::wrong_type("stringp", $args[0].clone()))?);
-                unsafe { let _ = crate::elisp_cc_spike::bi_write_stderr_line(&bs as *const Sexp); }
-                let mut err = std::io::stderr().lock(); let _ = err.write_all(b"\n"); let _ = err.flush(); Ok($args[0].clone()) },
+                unsafe { let _ = crate::elisp_cc_spike::bi_write_stderr_line(&bs); }
+                let mut e = std::io::stderr().lock(); let _ = e.write_all(b"\n"); let _ = e.flush(); Ok($args[0].clone()) },
             "read-stdin-bytes" => { require_arity("read-stdin-bytes", $args, 1, Some(1))?;
                 let limit = match &$args[0] { Sexp::Int(n) if *n > 0 => *n as usize, other => return Err(EvalError::wrong_type("positive integer", other.clone())) };
                 let mut buf = vec![0u8; limit]; let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), limit as i64) };
                 if rc < 0 { return Err(EvalError::internal(format!("read-stdin-bytes: read returned {}", rc))); }
                 if rc == 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(buf.len())); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) },
             "nelisp--f64-trunc" => { require_arity("nelisp--f64-trunc", $args, 3, Some(3))?; if let Sexp::Symbol(_) = &$args[0] {} else { return Err(EvalError::wrong_type("symbol", $args[0].clone())); } let mut out = Sexp::Nil; unsafe { crate::elisp_cc_spike::f64_trunc_impl(&$args[0] as *const _, &$args[1] as *const _, &$args[2] as *const _, &mut out as *mut _) }; if let Sexp::Nil = out { Err(EvalError::internal("nelisp--f64-trunc: unknown mode")) } else { Ok(out) } },
-            "nl-write-file" => {
-                require_arity("nl-write-file", $args, 2, Some(2))?;
+            "nl-write-file" => { require_arity("nl-write-file", $args, 2, Some(2))?;
                 let path = string_value(&$args[0])?; string_value(&$args[1])?;
-                kernel_path_ok("nl-write-file", &path, unsafe { crate::elisp_cc_spike::bi_nl_write_file(&$args[0] as *const _, &$args[1] as *const _) })
-            },
-            "nl-make-directory" => {
-                require_arity("nl-make-directory", $args, 1, Some(2))?;
+                kernel_path_ok("nl-write-file", &path, unsafe { crate::elisp_cc_spike::bi_nl_write_file(&$args[0], &$args[1]) }) },
+            "nl-make-directory" => { require_arity("nl-make-directory", $args, 1, Some(2))?;
                 let path = string_value(&$args[0])?;
-                kernel_path_ok("nl-make-directory", &path, unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&$args[0] as *const _) as i32 as i64 })
-            },
+                kernel_path_ok("nl-make-directory", &path, unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&$args[0]) as i32 as i64 }) },
             "terminal-raw-mode-enter" => { require_arity("terminal-raw-mode-enter", $args, 0, Some(0))?; #[cfg(unix)] { tty::raw_mode_enter()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "terminal-raw-mode-leave" => { require_arity("terminal-raw-mode-leave", $args, 0, Some(0))?; #[cfg(unix)] { tty::raw_mode_leave()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "read-stdin-byte-available" => {
@@ -157,13 +131,11 @@ macro_rules! builtin_dispatch {
             "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1($args), "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2($args), "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args),
             "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i($args), "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float($args),
             "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp($args), "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary($args),
-            "nl-fact-i64" => {
-                require_arity("nl-fact-i64", $args, 1, Some(1))?;
+            "nl-fact-i64" => { require_arity("nl-fact-i64", $args, 1, Some(1))?;
                 let Sexp::Int(_) = &$args[0] else { return Err(EvalError::wrong_type("integerp", $args[0].clone())); };
                 let mut out = Sexp::Nil;
-                let rc = unsafe { crate::elisp_cc_spike::bi_nl_fact_i64(&$args[0] as *const _, &mut out as *mut _) };
-                if rc == 0 { Ok(out) } else { Err(EvalError::internal("nl-fact-i64: argument out of i64-safe range 0..=20")) }
-            },
+                let rc = unsafe { crate::elisp_cc_spike::bi_nl_fact_i64(&$args[0], &mut out) };
+                if rc == 0 { Ok(out) } else { Err(EvalError::internal("nl-fact-i64: argument out of i64-safe range 0..=20")) } },
             _ => match $env.extern_builtins.get($name).cloned() { Some(f) => f($args, $env), None => Err(EvalError::unbound_fn($name)) }
         }
     };

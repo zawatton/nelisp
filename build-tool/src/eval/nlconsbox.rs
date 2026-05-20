@@ -32,28 +32,6 @@ pub unsafe extern "C" fn nl_consbox_set_cdr(box_ptr: *mut NlConsBox, val: *const
     consbox_set_field!(box_ptr, cdr, (*val).clone());
 }
 
-impl NlConsBoxRef {
-    #[inline]
-    pub fn as_ptr(this: &Self) -> *const NlConsBox {
-        this.ptr.as_ptr()
-    }
-
-    pub unsafe fn set_car(&self, val: Sexp) {
-        let p = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).car);
-        std::ptr::drop_in_place(p); std::ptr::write(p, val);
-    }
-
-    pub unsafe fn set_cdr(&self, val: Sexp) {
-        let p = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).cdr);
-        std::ptr::drop_in_place(p); std::ptr::write(p, val);
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    pub fn inner_raw(this: &Self) -> *const NlConsBox {
-        this.ptr.as_ptr()
-    }
-}
 
 impl std::fmt::Debug for NlConsBoxRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

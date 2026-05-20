@@ -232,10 +232,9 @@ impl Env {
     mirror_op!(lookup: mirror_lookup_function(pub) => mirror_lookup_function);
     mirror_op!(pred: mirror_is_fbound(pub) => mirror_is_fbound);
 
-    pub(crate) fn frame_push_rust_direct(&mut self) -> Option<Sexp> {
-        if !matches!(&self.frames_record, Sexp::Record(_)) { return None; }
+    pub(crate) fn frame_push_rust_direct(&mut self) {
+        if !matches!(&self.frames_record, Sexp::Record(_)) { return; }
         unsafe { crate::elisp_cc_spike::frame_push(&self.frames_record as *const Sexp) };
-        Some(Sexp::Nil)
     }
 
     pub(crate) fn frame_pop_rust_direct(&mut self) {
