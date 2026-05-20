@@ -18,23 +18,12 @@ fn main() {
         emit_unsupported_stub(&target_os)
     };
 
-    // Only write if content differs (= avoid touching mtime + spurious
-    // image rebakes on no-op rebuilds).
     let existing = std::fs::read_to_string(&out_path).unwrap_or_default();
     if existing != body {
         std::fs::write(&out_path, &body)
             .unwrap_or_else(|e| panic!("write {} failed: {}", out_path.display(), e));
     }
 
-    // Doc 99 §99.B spike — compile `lisp/nelisp-cc-spike-noop.el' to a
-    // C-callable ELF / Mach-O object via `scripts/compile-elisp-objects.el',
-    // wrap the result in a static archive, and link it into the final
-    // `nelisp' binary.  §100.D Stage 2/3 extends the matrix to:
-    //   linux + x86_64    (ELF + SysV AMD64, §100.C/D Stage 1)
-    //   linux + aarch64   (ELF + AAPCS,      §100.D Stage 2)
-    //   macos + aarch64   (Mach-O + AAPCS,   §100.D Stage 3)
-    // Other targets fall through to the Rust trampoline path until
-    // their object-format / asm support lands.
     let supported = (target_os == "linux" && (target_arch == "x86_64" || target_arch == "aarch64"))
         || (target_os == "macos" && target_arch == "aarch64");
     if supported {
@@ -48,384 +37,141 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let compiler_src = repo_root.join("lisp").join("nelisp-phase47-compiler.el");
     let layout_src = repo_root.join("lisp").join("nelisp-sexp-layout.el");
 
-    // Re-run when any elisp source the manifest can consume changes.
-    // Keep this list in sync with `compile-elisp-objects-manifest' in
-    // `scripts/compile-elisp-objects.el'.
     let manifest_sources = [
         "nelisp-cc-spike-noop.el",
         "nelisp-cc-fact-i64.el",
-        // Doc 100 §100.C — `bi_truncate' Int swap.
         "nelisp-cc-truncate-int.el",
-        // Doc 101 §101.B — `length' Cons/Nil swap.
         "nelisp-cc-length-cons.el",
-        // Doc 101 §101.C — `bi_eq' Symbol swap.
         "nelisp-cc-eq-symbol.el",
-        // Doc 101 §101.D — `cons' constructor swap.
         "nelisp-cc-cons-construct.el",
-        // Doc 117 §117.A.2 — `bi_string_bytes' byte-length swap.
         "nelisp-cc-bi-string-bytes.el",
-        // Doc 111 §111.B — `recordp' predicate swap.
         "nelisp-cc-recordp.el",
-        // Doc 111 §111.C — `aref' Vector arm swap.
         "nelisp-cc-aref-vector.el",
-        // Doc 117 §117.A.1 — `make-vector' allocate + fill swap.
         "nelisp-cc-bi-make-vector.el",
-        // `nl-fact-i64' Rust wrapper swap (range check + fact_i64 ABI call).
         "nelisp-cc-bi-nl-fact-i64.el",
-        // Doc 117 §117.B — quit-flag atomic ops swap (3 entries,
-        // shared source file).  Each kernel is a 1-op composed value
-        // form using §122.E `atomic-compare-exchange' / `ptr-read-u64'
-        // against the `QUIT_FLAG' static slot in `eval/quit.rs'.
         "nelisp-cc-bi-quit-flag.el",
-        // Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
-        // `(nelisp--write-stderr-line STR)' body via §122.H
-        // `str-bytes-ptr' + libc `write(2, ...)`.
         "nelisp-cc-bi-write-stderr-line.el",
-        // Doc 117 §117.B (cont) — I/O syscall sweep batch.  Twin
-        // write-side (stdout) + read-side (stdin) handlers.  Both
-        // use the same §122.H grammar shape modulo (fd, direction).
         "nelisp-cc-bi-write-stdout-bytes.el",
         "nelisp-cc-bi-read-stdin-bytes.el",
-        // Doc 118 — `nelisp--f64-trunc' mode-dispatch + div + truncation swap.
         "nelisp-cc-bi-f64-trunc.el",
-        // Doc 111 §111.D — Cell read+write op probes (4 entries,
-        // shared source file, one .o per op).
         "nelisp-cc-cell-ops.el",
-        // Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 rewrite
-        // (= Group A read-path foundation, composed by 5 sibling
-        // helpers).  Doc 115 §115.7 — calls the pure-elisp
-        // `nelisp_fnv1a' helper for the bucket-index hash (previously
-        // routed through the now-deleted `nl_mirror_fnv1a_sexp' Rust
-        // extern wrapping `env_helpers::mirror_fnv1a').
         "nelisp-cc-mirror-lookup-entry.el",
-        // Doc 111 §111.E #2-6 — Group A compose-on-#1 read helpers
-        // (lookup_value / lookup_function / is_bound / is_fbound /
-        // is_constant).  Each calls `nelisp_mirror_lookup_entry' via
-        // `extern-call' and adds a 1-2 op tail to read the requested
-        // symbol-entry slot.
         "nelisp-cc-mirror-lookup-value.el",
         "nelisp-cc-mirror-lookup-function.el",
         "nelisp-cc-mirror-is-bound.el",
         "nelisp-cc-mirror-is-fbound.el",
         "nelisp-cc-mirror-is-constant.el",
-        // Doc 111 §111.E #7-#12 — `mirror_set_value' / `mirror_set_function'
-        // / `mirror_clear_value' / `mirror_clear_function' /
-        // `mirror_set_constant' / `mirror_install_entry' Phase 47 helpers
-        // (= Group B write path).  All six compose on `mirror_lookup_entry'
-        // (= #1) via `extern-call' and use the §111.B `record-slot-set'
-        // ABI to overwrite the matched entry's slots refcount-safely.
-        // The miss / auto-vivify branch stays in Rust under the
-        // dispatcher for now (returns 0 from these helpers).
         "nelisp-cc-mirror-set-value.el",
         "nelisp-cc-mirror-set-function.el",
         "nelisp-cc-mirror-clear-value.el",
         "nelisp-cc-mirror-clear-function.el",
         "nelisp-cc-mirror-set-constant.el",
         "nelisp-cc-mirror-install-entry.el",
-        // Doc 119 §119.A — auto-vivify fold.  Two building-block
-        // helpers (`mirror_alloc_entry' = fresh symbol-entry record
-        // alloc; `mirror_bucket_prepend' = hash + cons + vector-slot-set
-        // + count bump) plus four `_or_insert' wrappers that absorb
-        // the miss-path of helpers #7/#8/#11/#12 into pure elisp.
-        // Together they drop `mirror_insert_new_entry' (~12 LOC) +
-        // `mirror_prepend_to_bucket' (~45 LOC) from `env_helpers.rs'.
         "nelisp-cc-mirror-alloc-entry.el",
         "nelisp-cc-mirror-bucket-prepend.el",
         "nelisp-cc-mirror-set-value-or-insert.el",
         "nelisp-cc-mirror-set-function-or-insert.el",
         "nelisp-cc-mirror-set-constant-or-insert.el",
         "nelisp-cc-mirror-install-entry-or-insert.el",
-        // Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
-        // rewrites.  Seven entries; each wraps an `nl_frame_*' Rust
-        // shim in `env_lexframe_phase47_shims.rs'.
         "nelisp-cc-frame-stack-view.el",
         "nelisp-cc-frame-ensure-capacity.el",
         "nelisp-cc-frame-push.el",
         "nelisp-cc-frame-pop.el",
         "nelisp-cc-frame-bind.el",
         "nelisp-cc-frame-stack-find.el",
-        // Wave i — frame_stack_install_sexp body → Phase 47 .o.
         "nelisp-cc-frame-stack-install.el",
         "nelisp-cc-wrap-alist-cells.el",
-        // Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash.  Replaces
-        // the Rust `mirror_fnv1a' + `nl_mirror_fnv1a_sexp' extern.
         "nelisp-cc-fnv1a.el",
-        // Doc 100 §100.D Stage 1 — 12-trampoline `jit/arith.rs' swap.
         "nelisp-cc-jit-arith.el",
-        // Doc 110 §110.E.2.a — 4-trampoline `jit/float.rs' partial swap.
         "nelisp-cc-jit-float.el",
-        // Doc 110 §110.F — 3-trampoline `jit/math.rs' swap (float / exp / log).
         "nelisp-cc-jit-math.el",
-        // Doc 120 §120.A — 4 of 4 `jit/predicate.rs' trampoline swaps
-        // (`predicate_eq' + `ref_eq' + `type_of' + `sxhash').
         "nelisp-cc-jit-predicate-eq.el",
         "nelisp-cc-jit-ref-eq.el",
         "nelisp-cc-jit-type-of.el",
         "nelisp-cc-jit-sxhash.el",
-        // Doc 120 §120.B — 4 of 11 `jit/box_accessor.rs' record-family
-        // trampoline swaps (`record_type' / `record_len' / `record_ref'
-        // / `record_set'; `record_alloc' stays Rust + 6 non-record
-        // entries SKIP per blocker notes in `jit/box_accessor.rs').
         "nelisp-cc-jit-record.el",
-        // Doc 120 §120.D — 4 of 4 `jit/access.rs' trampoline swaps
-        // (`length' / `aref' / `aset' / `elt').  BoolVector aref/aset
-        // sub-arms now provided by Phase-47 elisp objects (Rust deleted).
         "nelisp-cc-jit-length.el",
         "nelisp-cc-jit-aref.el",
         "nelisp-cc-jit-aset.el",
         "nelisp-cc-jit-elt.el",
-        // Doc 120 §120.D sub-arm helpers — Phase-47 replacements for
-        // the two Rust `#[no_mangle]' externs deleted from `jit/access.rs'.
         "nelisp-cc-jit-access-aref-bool-vector-inner.el",
         "nelisp-cc-jit-access-aset-bool-vector-inner.el",
-        // Doc 120 §120.C — 4 of 5 `jit/cons.rs' trampoline swaps
-        // (`cons_car' / `_cdr' / `_setcar' / `_setcdr'; `_make' stays
-        // Rust per blocker note in `jit/cons.rs').
         "nelisp-cc-jit-cons.el",
-        // `nl_cons_car_ptr' / `nl_cons_cdr_ptr' — narrow slot-pointer
-        // helpers used by the §120.C cons trampolines via `extern-call'.
-        // Replaced from Rust `jit/cons.rs' (2 function bodies deleted).
         "nelisp-cc-jit-cons-car-ptr.el",
         "nelisp-cc-jit-cons-cdr-ptr.el",
-        // Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' grammar
-        // ops (= 2 entries, shared source file).
         "nelisp-cc-sexp-write-str.el",
-        // Doc 122 §122.G — `sexp-write-float' grammar op (= Reader Float
-        // unlock).  Single entry; same Linux-x86_64 gate as §122.A.
         "nelisp-cc-sexp-write-float.el",
-        // Doc 122 §122.B — Mutable string builder grammar ops (= 5
-        // entries, shared source file).
         "nelisp-cc-mut-str.el",
-        // Doc 122 §122.E — Atomic + raw memory primitive grammar ops
-        // (= 6 entries, shared source file).  Substrate gate for
-        // Doc 123-128 refcount / nl*.rs lifecycle elisp化.
         "nelisp-cc-atomic-raw-mem.el",
-        // Doc 125 §125.B — mmap-based nl_alloc_bytes / nl_dealloc_bytes
-        // via syscall-direct grammar op.  Replaces std::alloc Rust externs.
         "nelisp-cc-alloc-mem.el",
-        // Doc 125 §125.A — alloc / dealloc primitive grammar ops
-        // (= 2 entries, shared source file).  Substrate gate for
-        // Doc 124.G-K NlBox Drop kernels + Doc 126-128 GC arena.
         "nelisp-cc-alloc-dealloc.el",
-        // Doc 123 §123.A — first substrate elisp化 stage.  Single
-        // entry: `nelisp_rc_inc' = the refcount-inc kernel pulled
-        // out of `build-tool/src/eval/rc_primitives.rs' using the
-        // §122.E `atomic-fetch-add' op.  Proof of concept that the
-        // substrate gate is functional; §123.B-E sweep the remaining
-        // rc primitive bodies onto the same pattern.
         "nelisp-cc-rc-inc.el",
-        // Doc 123 §123.B — second substrate elisp化 stage.  Single
-        // entry: `nelisp_rc_dec' = the refcount-dec twin of §123.A,
-        // pulled out of `build-tool/src/eval/rc_primitives.rs'
-        // (= `rc_dec_no_drop' + `bi_nl_rc_dec_strong' mutation half)
-        // using the §122.E `atomic-fetch-add' op with delta = -1
-        // (= fetch-sub semantics).  Dispatch swap lands in §123.F.
         "nelisp-cc-rc-dec.el",
-        // Doc 123 §123.C — refcount-reader twins.  Two source files:
-        // `nelisp_rc_strong_count' (= `ptr-read-u64' at offset 64 of
-        // an `NlConsBox') and `nelisp_rc_kind' (= `ptr-read-u8' at
-        // offset 0 of the outer `Sexp' enum's `#[repr(C, u8)]'
-        // discriminant).
         "nelisp-cc-rc-strong-count.el",
         "nelisp-cc-rc-kind.el",
-        // Doc 123 §123.D — the last MEDIUM stage of Doc 123's
-        // substrate elisp化 chain.  Two source files:
-        // `nelisp_rc_payload_ptr' (= `ptr-read-u64' at offset 8 of
-        // the outer `Sexp' = `SEXP_PAYLOAD_OFFSET'; mirrors the
-        // `bi_nl_rc_payload_ptr' Cons arm body in `rc_primitives.rs:
-        // 230-244') and `nelisp_gc_walk_children' (= two `cons-make'
-        // allocations driven by `ptr-read-u64' for the box-ptr
-        // extraction; mirrors `bi_nl_gc_walk_children' Cons arm
-        // body via `Sexp::list_from(&[car, cdr])').  Dispatch swap
-        // lands in a future §123.F-like sweep stage that also handles
-        // non-Cons tag-dispatch fallback.
         "nelisp-cc-rc-payload-ptr.el",
         "nelisp-cc-gc-walk-children.el",
-        // Doc 124 §124.A — first stage of the `nl*.rs::Clone/Drop'
-        // substrate elisp化 chain.  Ships the NlConsBox Clone kernel
-        // (= `rc_inc' + return-the-pointer) as PoC; §124.B-E sweep the
-        // remaining 4 NlBox types onto the same pattern.  Reuses Doc
-        // 123 §123.A's `atomic-fetch-add' at REFCOUNT_OFFSET = 64.
-        // Drop half (§124.G-K) gated on Doc 125 alloc/dealloc grammar.
         "nelisp-cc-nlconsbox-clone.el",
-        // Doc 124 §124.G — first Drop-half stage.
         "nelisp-cc-nlconsbox-drop.el",
-        // nl_alloc_consbox elisp swap — allocates fresh NlConsBox
-        // (car=Nil, cdr=Nil, refcount=1) via alloc-bytes + sexp-write-nil
-        // + ptr-write-u64; replaces the Rust body in nlconsbox.rs.
         "nelisp-cc-nlconsbox-alloc.el",
-        // nl_alloc_cell, nl_alloc_vector, nl_alloc_record elisp swaps —
-        // Phase 47 migrations replacing the Rust bodies in nlcell.rs,
-        // nlvector.rs, nlrecord.rs respectively.
         "nelisp-cc-nlcell-alloc.el",
         "nelisp-cc-nlvector-alloc.el",
         "nelisp-cc-nlrecord-alloc.el",
-        // Doc 124 §124.H — NlVector Drop kernel (REFCOUNT_OFFSET=24,
-        // SIZE=32, ALIGN=8).  Mechanical port of §124.G to the
-        // `Vec<Sexp>' header + AtomicUsize trailer layout.
         "nelisp-cc-nlvector-drop.el",
-        // Doc 124 §124.I/J/K — sibling Drop kernels.  Same shape as
-        // §124.G/H modulo per-type SIZE / REFCOUNT_OFFSET literals:
-        //   §124.I NlCell:   REFCOUNT_OFFSET = 32, SIZE = 40, ALIGN = 8
-        //   §124.J NlRecord: REFCOUNT_OFFSET = 56, SIZE = 64, ALIGN = 8
-        //   §124.K NlStr:    REFCOUNT_OFFSET = 24, SIZE = 32, ALIGN = 8
         "nelisp-cc-nlcell-drop.el",
         "nelisp-cc-nlrecord-drop.el",
         "nelisp-cc-nlstr-drop.el",
-        // Doc 124 §124.B-E — mechanical sibling Clone kernels for the
-        // remaining 4 nl*.rs box types (NlVector / NlCell / NlRecord /
-        // NlStr).  REFCOUNT_OFFSET = 24 / 32 / 56 / 24 respectively.
         "nelisp-cc-nlvector-clone.el",
         "nelisp-cc-nlcell-clone.el",
         "nelisp-cc-nlrecord-clone.el",
         "nelisp-cc-nlstr-clone.el",
-        // Doc 124 §124.M — NlBoolVector Clone kernel (REFCOUNT_OFFSET=24,
-        // same as NlVector since Vec<bool> header = Vec<Sexp> header = 24 bytes).
         "nelisp-cc-nlboolvector-clone.el",
-        // Doc 116 §116.A — pure-elisp Reader lexer.  Single source
-        // file defining `nelisp_reader_lex_one' + ~20 tail-call
-        // helpers; replaces the eventual deletion of
-        // `build-tool/src/reader/lexer.rs' (= -885 LOC Rust) once
-        // §116.B parser + §116.C top-level wrapper SHIP.
         "nelisp-cc-reader-lexer.el",
-        // Doc 122 §122.C — Extended extern-call f64 probes (= 3
-        // entries wrapping libm sqrt / sin / cos for the
-        // `tests/elisp_cc_extern_call_f64_probe.rs' round-trip).
         "nelisp-cc-extern-call-f64.el",
-        // Doc 116 §116.B — pure-elisp Reader parser.  Single source
-        // file defining `nelisp_reader_parse_one' + ~25 tail-call
-        // helpers; consumes §116.A's tokens via `extern-call' and
-        // builds Sexp values via the §101/§111/§122 grammar
-        // primitives.  Top-level wire-in (`read_str' / `read_all'
-        // public entry) is §116.C; Rust parser.rs deletion is §116.D.
         "nelisp-cc-reader-parser.el",
-        // Doc 122 §122.I — CString construction helper (= 1 source
-        // file, multiple `(seq DEFUN ...)' entries in the manifest).
-        // Tracked here so edits trigger build.rs reruns.
         "nelisp-cc-cstr-helpers.el",
-        // Doc 122 §122.J — struct-by-value grammar helpers (= 10
-        // manifest entries covering `ptr-{read,write}-u{16,32}' probes,
-        // `struct-make' / `struct-field-{set,get}' sugar probes, and
-        // the composed `nelisp_winsize_write_full' ship-gate object).
         "nelisp-cc-struct-helpers.el",
-        // Doc 122 §122.B / Doc 120 §120.B — `nl_jit_bool_vector_len'
-        // trampoline swap (Rust body deleted from `jit/box_accessor.rs').
         "nelisp-cc-jit-bool-vector-len.el",
-        // Doc 122 §122.D / Doc 120 §120.B — `nl_jit_str_codepoint_at'
-        // trampoline swap (Rust body deleted from `jit/box_accessor.rs').
         "nelisp-cc-jit-str-codepoint-at.el",
-        // Phase 47 elisp migration — `nl_jit_make_symbol' trampoline swap
-        // (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-make-symbol.el",
-        // Phase 47 elisp migration — `nl_jit_type_of` + `nl_jit_sxhash`
-        // trampoline swaps (Rust bodies deleted from `jit/predicate.rs').
         "nelisp-cc-jit-type-of.el",
         "nelisp-cc-jit-sxhash.el",
-        // Phase 47 elisp migration -- `nl_record_type_tag_ptr' trampoline swap
-        // (Rust body deleted from `jit/box_accessor.rs').
         "nelisp-cc-jit-record-type-tag-ptr.el",
-        // Doc 86 §86.1.e.2 (2026-05-19) — `nl_jit_concat_ints' trampoline swap
-        // (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-concat-ints.el",
-        // Doc 86 §86.2 (2026-05-19) — `sf_quote' Rust body deleted from
-        // `eval/special_forms.rs'; Phase-47 elisp `nl_sf_quote' replaces it.
         "nelisp-cc-sf-quote.el",
-        // Phase 47 elisp migration — `nl_jit_downcase' + `nl_jit_upcase'
-        // trampoline swaps (Rust bodies deleted from `jit/strings.rs').
         "nelisp-cc-jit-downcase.el",
         "nelisp-cc-jit-upcase.el",
-        // Phase 47 elisp migration — `nl_jit_split_by_non_alnum'
-        // non-alphanumeric splitter (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-split-by-non-alnum.el",
-        // Phase 47 Tier-1 special forms elisp化 — Rust bodies deleted from
-        // `eval/special_forms.rs'.
         "nelisp-cc-sf-progn.el",
         "nelisp-cc-sf-if.el",
         "nelisp-cc-sf-setq.el",
         "nelisp-cc-sf-while.el",
-        // Phase 47 Tier-1 special forms elisp化 — let / let*.
-        // `nl_sf_let' + `nl_sf_let_star' replace `sf_let' / `sf_let_star'
-        // Rust bodies via the new `nl_let_setup' + `nl_env_pop_frame'
-        // externs in `eval/special_forms.rs'.
         "nelisp-cc-sf-let.el",
         "nelisp-cc-sf-let-star.el",
-        // Phase 47 Tier-1 special forms elisp化 — lambda / function.
         "nelisp-cc-sf-lambda.el",
         "nelisp-cc-sf-function.el",
-        // Phase 47 — `nl_sf_condition_case' replaces `sf_condition_case' +
-        // `clause_matches' + `eval_handler' via new `nl_cc_match_and_bind' +
-        // existing `nelisp_eval_call_with_err' + `nl_env_pop_frame' externs.
         "nelisp-cc-sf-condition-case.el",
-        // Phase 47 — apply_lambda_inner body deleted from eval/mod.rs.
-        // nl_apply_lambda_inner replaces it via the new nl_push_and_bind /
-        // nl_env_push_captured externs in eval/special_forms.rs.
         "nelisp-cc-apply-lambda-inner.el",
-        // Phase 47 — nl_bf_formal_tag (9-LOC Rust → elisp, special_forms.rs).
         "nelisp-cc-bf-formal-tag.el",
-        // Phase 47 — nl_bf_args_nth_ptr (11-LOC Rust → elisp, special_forms.rs).
         "nelisp-cc-bf-args-nth-ptr.el",
-        // Wave j — nl_bf_precompute (19-LOC Rust → elisp, special_forms.rs).
-        // Counts required formals + total args; packs into initial state word.
         "nelisp-cc-bf-precompute.el",
-        // Phase 47 Tier-C — bind_formals_impl Stage 1 parallel implementation.
-        // nl_bind_formals_impl implements Required/Optional/Rest formals binding
-        // in elisp.  Stage 2 will rewire nl_bind_formals/nl_push_and_bind.
-        // nl_bf_formal_tag + nl_bf_args_nth_ptr now resolved from their own .o.
         "nelisp-cc-bind-formals.el",
-        // Doc 122 §122.A — `nl_jit_symbol_name' trampoline swap
-        // (Rust body deleted from `jit/strings.rs').
         "nelisp-cc-jit-symbol-name.el",
-        // Phase 47 swap — `nl_sexp_eq' tag-dispatch equality test replacing
-        // the `#[no_mangle] extern "C" fn nl_sexp_eq' in special_forms.rs.
         "nelisp-cc-sexp-eq.el",
-        // Phase 47 swap — `nl_symbol_is_lambda' single symbol-name-eq check
-        // replacing the `#[no_mangle] extern "C" fn nl_symbol_is_lambda'.
         "nelisp-cc-symbol-is-lambda.el",
-        // Phase 47 — `nl_cons_prepend_clone' Rust body deleted from
-        // `eval/special_forms.rs'.  Single defun using `cons-make-with-clone'
-        // (Doc 120.E); deep-clones car + cdr into a fresh NlConsBox and
-        // writes `Sexp::Cons(box)' into *out.
         "nelisp-cc-cons-prepend-clone.el",
         "nelisp-cc-jit-secure-hash.el",
-        // Phase 47 swap — sha224/256/384/512/md5 ext arm.
-        // Replaces `nl_jit_secure_hash_non_sha1' Rust function in hash.rs.
         "nelisp-cc-jit-secure-hash-ext.el",
-        // Phase 47 swap — `nl_jit_string_match_p' literal/anchored fast-path
-        // migration from `build-tool/src/jit/regex.rs'.
         "nelisp-cc-jit-regex.el",
-        // Doc 120 alias — `nl_jit_alias' Phase 47 swap: maps user-facing
-        // JIT names (e.g. `nelisp_jit_car') to canonical dlsym names,
-        // replacing the 18-LOC Rust `alias' fn in `jit/bridge.rs'.
         "nelisp-cc-jit-alias.el",
-        // Phase 47 — `eval_inner' + `apply_combiner' cluster (~141 LOC)
-        // deleted from `eval/mod.rs'.  `nl_eval_inner' dispatches on
-        // sexp-tag and delegates to Rust externs for symbol/cons paths.
         "nelisp-cc-eval-inner.el",
-        // Phase 47 — `nl_jit_syscall_call' + `nl_jit_syscall_supported_p'
-        // Rust bodies deleted from `build-tool/src/jit/syscall.rs' (full
-        // file delete, -57 LOC).  Uses the new `syscall-direct' grammar op.
         "nelisp-cc-jit-syscall-call.el",
-        // Wave a-2 — Env::{lookup_value,set_value,lookup_function} Phase 47 .o.
-        // Three thin wrappers delegating to these elisp objects; `find_frame_cell'
-        // helper (6 LOC) deleted.  Uses `nl_cell_get_value' for refcount-safe
-        // cell read (fixes Wave a SIGABRT double-free root cause).
         "nelisp-cc-env-lookup-value.el",
         "nelisp-cc-env-set-value.el",
         "nelisp-cc-env-lookup-function.el",
-        // Wave c+ — `bi_globals_op' set-{value,function,constant} arms replaced
-        // by this Phase 47 .o; Rust thin wrapper pre-builds the scratch vector
-        // and routes through `env_shim_set_op'.
         "nelisp-cc-env-shim-set-op.el",
-        // Wave b — Env::bind_local Phase 47 .o.
-        // Thin wrapper; frame_record depth check + cell-make + nelisp_frame_bind
-        // on frame path, nelisp_mirror_set_value_or_insert on mirror path.
         "nelisp-cc-env-bind-local.el",
-        // Wave h — empty globals mirror + frame stack via Phase 47 .o.
         "nelisp-cc-env-install-empty.el",
-        // Wave n2 §n2.A — nl_str_char_count + nl_str_codepoint_at +
-        // nl_str_is_alphanumeric_at direct-symbol migrations from nlstr.rs.
-        // Also adds thin nl_is_char_alphanumeric Rust delegate (4 LOC) and
-        // deletes sexp_as_str helper + with_value_mut dead code. Net: -59 LOC.
         "nelisp-cc-nlstr-utf8-direct.el",
     ];
 
@@ -439,9 +185,6 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         );
     }
 
-    // Emacs is the build tool here — gated so users without Emacs see
-    // a friendly skip rather than a cryptic exec failure.  The spike
-    // is single-entry so a skip just disables the §99.B probe test.
     let Some(emacs) = which_or_skip("emacs") else {
         println!("cargo:warning=skipping §99.B elisp-object link: emacs not on PATH");
         return;
@@ -468,12 +211,6 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         .unwrap_or_else(|e| panic!("emacs --batch failed to spawn: {}", e));
     if !status.success() { panic!("compile-elisp-objects-emit-all exited with {} (script={})", status, script.display()); }
 
-    // Collect every `.o' the orchestrator wrote into the dir and
-    // bundle them into a single static archive via `ar rcs'.  Cargo
-    // takes a single `-lstatic=...' that covers the whole manifest;
-    // adding a new entry to `compile-elisp-objects-manifest' costs
-    // zero extra build.rs lines.  Order is sorted for determinism
-    // across filesystem traversal quirks.
     let mut obj_paths: Vec<std::path::PathBuf> = std::fs::read_dir(&elisp_obj_dir)
         .unwrap_or_else(|e| panic!("read_dir {}: {}", elisp_obj_dir.display(), e))
         .filter_map(|e| e.ok())
@@ -484,8 +221,6 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     obj_paths.sort();
     let ar = which_or_skip("ar").unwrap_or_else(|| "ar".to_string());
     let archive = std::path::Path::new(&out_dir).join("libnelisp_elisp_spike.a");
-    // `ar rcs' replaces / creates the archive in one step; remove any
-    // stale .a first so we don't accumulate orphan members across rebuilds.
     let _ = std::fs::remove_file(&archive);
     let mut cmd = std::process::Command::new(&ar);
     cmd.arg("rcs").arg(&archive);
@@ -506,10 +241,6 @@ fn which_or_skip(prog: &str) -> Option<String> {
 }
 
 fn emit_linux_table() -> String {
-    // 1:1 mirror of `syscall_nr' in `src/eval/builtins.rs'.  When that
-    // map gains entries, add them here too (= sole syscall-nr source
-    // of truth pair).  Each entry is `(NAME . NUMBER)' where NAME is
-    // a symbol string and NUMBER is the host `libc::SYS_*' i64.
     let entries: &[(&str, i64)] = &[
         ("read", libc::SYS_read as i64),
         ("write", libc::SYS_write as i64),
@@ -520,71 +251,41 @@ fn emit_linux_table() -> String {
         ("dup2", libc::SYS_dup2 as i64),
         ("getpid", libc::SYS_getpid as i64),
         ("kill", libc::SYS_kill as i64),
-        // Doc 54 Phase 3 — Core-12 additions.
         ("mmap", libc::SYS_mmap as i64),
         ("mprotect", libc::SYS_mprotect as i64),
         ("munmap", libc::SYS_munmap as i64),
         ("fcntl", libc::SYS_fcntl as i64),
-        // Doc 55 Phase 4 — Posix-30 int-only additions.
         ("fork", libc::SYS_fork as i64),
         ("socket", libc::SYS_socket as i64),
         ("listen", libc::SYS_listen as i64),
         ("wait4", libc::SYS_wait4 as i64),
         ("getppid", libc::SYS_getppid as i64),
         ("setpgid", libc::SYS_setpgid as i64),
-        // Doc 57 Phase 4.3 — modern Linux event surface.
         ("pidfd_open", libc::SYS_pidfd_open as i64),
         ("pidfd_send_signal", libc::SYS_pidfd_send_signal as i64),
         ("inotify_init1", libc::SYS_inotify_init1 as i64),
         ("inotify_rm_watch", libc::SYS_inotify_rm_watch as i64),
         ("eventfd2", libc::SYS_eventfd2 as i64),
-        // Doc 59 Phase 4.2 + 4.3.1 — timerfd_create int-only.
         ("timerfd_create", libc::SYS_timerfd_create as i64),
     ];
 
-    let mut s = String::new();
-    s.push_str(";;; nelisp-syscall-table.el --- Doc 84 §84.2 syscall nr table  -*- lexical-binding: t; -*-\n");
-    s.push_str("\n;;; Commentary:\n\n");
-    s.push_str(";; AUTO-GENERATED by `build-tool/build.rs' from `libc::SYS_*'\n");
-    s.push_str(";; constants on the host target.  DO NOT EDIT BY HAND — edits\n");
-    s.push_str(";; will be clobbered on the next `cargo build'.  When the Rust\n");
-    s.push_str(";; `syscall_nr' helper in `build-tool/src/eval/builtins.rs'\n");
-    s.push_str(";; gains a new arm, add a matching entry to `emit_linux_table'\n");
-    s.push_str(";; in `build-tool/build.rs'.\n;;\n");
-    s.push_str(";; Doc 84 §84.2 (2026-05-10) replaces the Rust `bi_syscall_nr_\n");
-    s.push_str(";; resolve' primitive (= `jit/strategy.rs') with this elisp\n");
-    s.push_str(";; lookup; consumed by `nelisp-jit-strategy.el' for the\n");
-    s.push_str(";; `nelisp--syscall' wrapper's symbol → i64 step.\n\n;;; Code:\n\n");
-    s.push_str("(setq nelisp--syscall-nr-table\n      '(\n");
-    for (name, nr) in entries { s.push_str(&format!("        ({} . {})\n", name, nr)); }
-    s.push_str("        ))\n\n");
-    s.push_str("(fset 'nelisp--syscall-nr-resolve\n      (lambda (name)\n");
-    s.push_str("        (if (integerp name)\n            name\n");
-    s.push_str("          (let ((cell (assq name nelisp--syscall-nr-table)))\n");
-    s.push_str("            (if cell\n                (cdr cell)\n");
-    s.push_str("              (signal 'arith-error\n                    (cons \"nelisp--syscall-nr-resolve: unknown syscall\"\n");
-    s.push_str("                          (cons name nil))))))))\n\n");
-    s.push_str(";; (provide 'nelisp-syscall-table) — omitted: this file is\n");
-    s.push_str(";; loaded during bootstrap before `provide' is installed.\n");
-    s.push_str(";;; nelisp-syscall-table.el ends here\n");
-    s
+    let table: String = entries.iter().map(|(n, nr)| format!("        ({} . {})\n", n, nr)).collect();
+    format!(";;; nelisp-syscall-table.el --- Doc 84 §84.2 syscall nr table  -*- lexical-binding: t; -*-\n\
+             \n;;; Commentary:\n\n\
+             ;; AUTO-GENERATED by build-tool/build.rs. DO NOT EDIT.\n\n\
+             ;;; Code:\n\n\
+             (setq nelisp--syscall-nr-table\n      '(\n{table}        ))\n\n\
+             (fset 'nelisp--syscall-nr-resolve\n      (lambda (name)\n\
+               (if (integerp name)\n            name\n\
+               (let ((cell (assq name nelisp--syscall-nr-table)))\n\
+               (if cell (cdr cell)\n\
+               (signal 'arith-error (cons \"nelisp--syscall-nr-resolve: unknown syscall\" (cons name nil))))))))\n\n\
+             ;;; nelisp-syscall-table.el ends here\n")
 }
 
 fn emit_unsupported_stub(target_os: &str) -> String {
-    format!(
-        ";;; nelisp-syscall-table.el --- Doc 84 §84.2 syscall nr table (non-Linux stub)  -*- lexical-binding: t; -*-\n\
-         \n;;; Commentary:\n\n\
-         ;; AUTO-GENERATED by `build-tool/build.rs' for target_os = {target_os}.\n\
-         ;; Per Doc 62 Phase 5 §5.8, non-Linux nelisp routes syscall\n\
-         ;; callers through `nl-ffi-call' libc bindings; this resolver\n\
-         ;; is a dead path and signals `arith-error' if invoked.\n\n\
-         ;;; Code:\n\n\
-         (setq nelisp--syscall-nr-table nil)\n\n\
-         (fset 'nelisp--syscall-nr-resolve\n\
-               (lambda (name)\n\
-               (let ((_ name))\n\
-               (signal 'arith-error\n\
-                       (cons \"nelisp--syscall-nr-resolve: unsupported platform\" nil)))))\n\n\
-         ;;; nelisp-syscall-table.el ends here\n"
-    )
+    format!(";;; nelisp-syscall-table.el --- stub for {target_os}  -*- lexical-binding: t; -*-\n\
+             ;;; Code:\n(setq nelisp--syscall-nr-table nil)\n\
+             (fset 'nelisp--syscall-nr-resolve (lambda (name) (signal 'arith-error (cons \"unsupported\" (cons name nil)))))\n\
+             ;;; nelisp-syscall-table.el ends here\n")
 }

@@ -43,9 +43,6 @@ unsafe fn libc_errno_location() -> *mut i32 {
     target_os = "ios"
 )))]
 unsafe fn libc_errno_location() -> *mut i32 {
-    // Fallback for *BSD / Solaris / Windows-via-msys.  Phase 7.5 will
-    // narrow this; for Phase 7.0 a stub keeps the crate compiling on
-    // platforms we don't gate at the test layer yet.
     static mut DUMMY: i32 = 0;
     &raw mut DUMMY
 }

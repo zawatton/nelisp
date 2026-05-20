@@ -34,11 +34,6 @@ pub use nelisp_syscall_process::{
     nl_syscall_setrlimit, nl_syscall_setsid, nl_syscall_waitpid,
 };
 
-// Phase 9d.A1 (T76 / T54 Wave 1 agent A) — re-export the eight new
-// file I/O extern "C" symbols at `syscall::*` so the lib.rs surface
-// can pick them up alongside the Phase 7.0 base set.  Behind the
-// `fileio-syscalls` feature flag (default ON) so a future "mini build"
-// without file I/O can opt out without code surgery.
 #[cfg(feature = "fileio-syscalls")]
 pub use nelisp_syscall_fileio::{
     nl_syscall_access, nl_syscall_closedir, nl_syscall_mkdir, nl_syscall_opendir,
@@ -46,12 +41,6 @@ pub use nelisp_syscall_fileio::{
     NELISP_FILEIO_PATH_MAX,
 };
 
-// Phase 9d.A4 (T82) file-notify FFI re-exports.  See `filenotify.rs`
-// for the per-OS backend choice (Linux inotify primary, macOS FSEvents
-// secondary, other OSes stubbed at -ENOSYS so NeLisp can branch to its
-// stat-poll fallback without a per-host #ifdef cascade).  Doc 47
-// Stage 11: gated behind `filenotify-syscalls' (default ON) so a
-// mini build can opt out for the LOC target.
 #[cfg(feature = "filenotify-syscalls")]
 pub use nelisp_syscall_filenotify::{
     nl_filenotify_add_watch, nl_filenotify_close, nl_filenotify_init, nl_filenotify_read,
@@ -63,11 +52,6 @@ pub use error::SyscallError;
 pub use unix::NelispStat;
 
 use libc::{c_char, c_int, mode_t, off_t, size_t, ssize_t};
-
-// ---------------------------------------------------------------------------
-// Constants — re-exported under the NeLisp prefix so NeLisp side has a
-// single source of truth without depending on libc per host.
-// ---------------------------------------------------------------------------
 
 #[no_mangle]
 pub static NELISP_PROT_NONE: c_int = libc::PROT_NONE;
@@ -83,9 +67,6 @@ pub static NELISP_MAP_PRIVATE: c_int = libc::MAP_PRIVATE;
 #[no_mangle]
 pub static NELISP_MAP_ANONYMOUS: c_int = libc::MAP_ANON;
 
-// `NELISP_MAP_JIT` is defined in `unix.rs` so the per-OS `cfg` lives
-// next to the rest of the unix mod; we re-export it here so callers
-// reach it via the same `syscall::*` path as other constants.
 pub use unix::NELISP_MAP_JIT;
 
 #[no_mangle]
@@ -100,12 +81,6 @@ pub static NELISP_O_CREAT: c_int = libc::O_CREAT;
 pub static NELISP_O_TRUNC: c_int = libc::O_TRUNC;
 #[no_mangle]
 pub static NELISP_O_APPEND: c_int = libc::O_APPEND;
-
-// ---------------------------------------------------------------------------
-// FFI-stable extern "C" re-exports.  These are the dlsym names NeLisp
-// will resolve in Phase 7.5.  Phase 7.0 only requires them to exist
-// in the cdylib symbol table; the smoke binary calls them directly.
-// ---------------------------------------------------------------------------
 
 #[no_mangle]
 pub unsafe extern "C" fn nelisp_syscall_read(fd: c_int, buf: *mut u8, len: size_t) -> ssize_t {

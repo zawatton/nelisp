@@ -52,11 +52,6 @@ use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
-// ---------------------------------------------------------------------------
-// Return-code conventions.  Negative = error (see SqliteFfiError); 0+ = data
-// or row-count.
-// ---------------------------------------------------------------------------
-
 /// Opaque handle ID for a SQLite connection.  `0` is a sentinel for
 /// "no connection" — `nl_sqlite_open` never issues 0.
 pub type SqliteHandle = i64;
@@ -91,11 +86,6 @@ impl SqliteFfiError {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Global connection registry.  Wrapped in a Mutex; rusqlite::Connection is
-// `Send` but not `Sync`.
-// ---------------------------------------------------------------------------
-
 static CONNS: Lazy<Mutex<HashMap<SqliteHandle, Connection>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
@@ -103,10 +93,6 @@ static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
 fn issue_handle() -> SqliteHandle {
     NEXT_HANDLE.fetch_add(1, Ordering::SeqCst)
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers (string conversion, JSON arg decoding, value -> JSON).
-// ---------------------------------------------------------------------------
 
 unsafe fn cstr_to_str<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
@@ -130,10 +116,6 @@ fn json_value_to_sql(v: &serde_json::Value) -> Box<dyn ToSql> {
             }
         }
         Value::String(s) => Box::new(s.clone()),
-        // JSON arrays / objects are flattened to their string form so the
-        // caller can still round-trip via JSON columns.  This matches
-        // Emacs 30 builtin behavior, which treats vector / list args
-        // verbatim.
         other => Box::new(other.to_string()),
     }
 }
@@ -147,11 +129,6 @@ fn value_ref_to_json(vr: ValueRef<'_>) -> serde_json::Value {
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
         VR::Text(t) => serde_json::Value::String(std::str::from_utf8(t).unwrap_or("").to_string()),
-        // Blobs are surfaced as base64 strings so JSON stays valid.
-        // anvil-XXX call sites do not currently use BLOB columns, so a
-        // simple lossy hex encoding is acceptable for the substrate
-        // round-trip.  Phase 7.5+ may revisit if a binary-blob consumer
-        // appears.
         VR::Blob(b) => {
             let mut s = String::with_capacity(b.len() * 2);
             for byte in b {
@@ -180,8 +157,6 @@ unsafe fn decode_args(args_json: *const c_char) -> Result<Vec<Box<dyn ToSql>>, S
         serde_json::from_str(trimmed).map_err(|_| SqliteFfiError::BadArgs)?;
     let arr = match v {
         serde_json::Value::Array(a) => a,
-        // Single scalar -> one-element vec.  Convenience for callers
-        // that pass `42` instead of `[42]`.
         other => vec![other],
     };
     Ok(arr.iter().map(json_value_to_sql).collect())
@@ -195,19 +170,12 @@ unsafe fn write_buf(out_buf: *mut u8, out_buf_len: usize, payload: &str) -> i64 
         return SqliteFfiError::BadOutBuf.code();
     }
     if bytes.len() > out_buf_len {
-        // Negative encoding: NEED_MORE - required.  Caller decodes by
-        // taking abs().  Cap at i64::MIN/2 to avoid overflow in pathological
-        // sizes (>= 2^62 bytes would have bigger problems).
         let needed = bytes.len() as i64;
         return SqliteFfiError::NeedMore.code().saturating_sub(needed);
     }
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, bytes.len());
     bytes.len() as i64
 }
-
-// ---------------------------------------------------------------------------
-// Public C ABI surface — 5 symbols + 1 buffer-size probe.
-// ---------------------------------------------------------------------------
 
 /// Open a connection to `path` (UTF-8 C string).  Pass `:memory:` for
 /// an in-memory database.  Returns a positive handle on success, or a
@@ -277,13 +245,6 @@ pub unsafe extern "C" fn nl_sqlite_execute(
         None => return SqliteFfiError::BadHandle.code(),
     };
     let arg_refs: Vec<&dyn ToSql> = args.iter().map(|b| b.as_ref()).collect();
-    // Use prepare + raw_execute path so PRAGMA-style statements that
-    // return rows (e.g. `PRAGMA busy_timeout = 5000') do not trip
-    // rusqlite's `Connection::execute' "Execute returned results"
-    // guard.  Anvil's call sites mix DDL / DML / PRAGMA / SELECT under
-    // a single `sqlite-execute' shape, so we mirror the host Emacs 30
-    // builtin which is also tolerant of row-returning statements via
-    // execute.
     let mut stmt = match conn.prepare(sql_str) {
         Ok(s) => s,
         Err(e) => {
@@ -298,8 +259,6 @@ pub unsafe extern "C" fn nl_sqlite_execute(
             return SqliteFfiError::SqliteError.code();
         }
     };
-    // Drain the (possibly empty) result set so the statement runs to
-    // completion before we read `changes()'.
     loop {
         match rows.next() {
             Ok(Some(_)) => continue,
@@ -398,7 +357,6 @@ pub unsafe extern "C" fn nl_sqlite_query(
             return SqliteFfiError::Generic.code();
         }
     };
-    // Probe mode: caller passed a NULL buffer purely to learn the size.
     if out_buf.is_null() && out_buf_len == 0 {
         let needed = payload.as_bytes().len() as i64;
         return SqliteFfiError::NeedMore.code().saturating_sub(needed);
@@ -425,11 +383,6 @@ pub unsafe extern "C" fn nl_sqlite_alive(handle: SqliteHandle) -> i64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests (cargo test --release runs these against the same registry as the
-// FFI consumer).
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,7 +401,6 @@ mod tests {
             assert_eq!(nl_sqlite_alive(h), 1);
             assert_eq!(nl_sqlite_close(h), 0);
             assert_eq!(nl_sqlite_alive(h), 0);
-            // Double-close = BadHandle.
             assert_eq!(nl_sqlite_close(h), SqliteFfiError::BadHandle.code());
         }
     }
@@ -470,7 +422,6 @@ mod tests {
             assert_eq!(nl_sqlite_execute(h, insert.as_ptr(), args1.as_ptr()), 1);
             assert_eq!(nl_sqlite_execute(h, insert.as_ptr(), args2.as_ptr()), 1);
 
-            // Probe required size.
             let probe = nl_sqlite_query(h, select.as_ptr(), null.as_ptr(), std::ptr::null_mut(), 0);
             let need_more = SqliteFfiError::NeedMore.code();
             assert!(probe < need_more, "probe got {}", probe);

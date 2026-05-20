@@ -87,10 +87,6 @@ type NlRlimitResource = c_int;
 use std::mem::MaybeUninit;
 use std::ptr;
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SyscallError(i32);
 
@@ -143,10 +139,6 @@ unsafe fn value_or_errno(r: i64) -> i64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// fork / execve / posix_spawn
-// ---------------------------------------------------------------------------
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_syscall_fork() -> i64 {
     let rc = libc::fork();
@@ -162,12 +154,6 @@ pub unsafe extern "C" fn nl_syscall_execve(
     if path.is_null() || argv.is_null() {
         return -(libc::EFAULT as i64);
     }
-    // execve only returns on failure; on success the process image is
-    // replaced and we never reach this line.  We pass `envp` straight
-    // through; a NULL `envp` is *not* portable on every libc, so we
-    // synthesise a single-NULL stub when the caller passes NULL.  The
-    // local stack array is only read (no mutation) before execve, so
-    // the lifetime is fine even though execve "shouldn't return".
     let empty_envp: [*const c_char; 1] = [ptr::null()];
     let env: *const *const c_char = if envp.is_null() {
         empty_envp.as_ptr()
@@ -175,7 +161,6 @@ pub unsafe extern "C" fn nl_syscall_execve(
         envp
     };
     let _ = libc::execve(path, argv, env);
-    // Only reachable on error.
     -(SyscallError::last_os_error().raw() as i64)
 }
 
@@ -211,16 +196,11 @@ pub unsafe extern "C" fn nl_syscall_posix_spawn(
         env as *const *mut c_char,
     );
     if rc != 0 {
-        // posix_spawn returns the error code directly.
         -(rc as i64)
     } else {
         pid as i64
     }
 }
-
-// ---------------------------------------------------------------------------
-// pipe2 / dup2
-// ---------------------------------------------------------------------------
 
 /// `pipe2(flags, out_fds[2])`.
 ///
@@ -249,12 +229,10 @@ pub unsafe extern "C" fn nl_syscall_pipe2(flags: i32, out_fds: *mut i32) -> i64 
 
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
-        // macOS / BSD: emulate pipe2 via pipe + fcntl.
         let r = libc::pipe(fds.as_mut_ptr());
         if r != 0 {
             return -(SyscallError::last_os_error().raw() as i64);
         }
-        // Apply FD_CLOEXEC on both ends.
         for fd in fds.iter() {
             let cur = libc::fcntl(*fd, libc::F_GETFD);
             if cur < 0 {
@@ -270,7 +248,6 @@ pub unsafe extern "C" fn nl_syscall_pipe2(flags: i32, out_fds: *mut i32) -> i64 
                 return -(e as i64);
             }
         }
-        // Apply O_NONBLOCK if caller requested it.
         if combined_flags & libc::O_NONBLOCK != 0 {
             for fd in fds.iter() {
                 let cur = libc::fcntl(*fd, libc::F_GETFL);
@@ -300,10 +277,6 @@ pub unsafe extern "C" fn nl_syscall_dup2(old_fd: i32, new_fd: i32) -> i64 {
     let r = libc::dup2(old_fd as c_int, new_fd as c_int);
     value_or_errno(r as i64)
 }
-
-// ---------------------------------------------------------------------------
-// waitpid / kill / setsid
-// ---------------------------------------------------------------------------
 
 /// `waitpid(pid, &status, options)`.
 ///
@@ -337,10 +310,6 @@ pub unsafe extern "C" fn nl_syscall_setsid() -> i64 {
     let r = libc::setsid();
     value_or_errno(r as i64)
 }
-
-// ---------------------------------------------------------------------------
-// rlimit family (T93 review #7)
-// ---------------------------------------------------------------------------
 
 /// `getrlimit(resource, &rlim)` — fills `out_soft` / `out_hard` with
 /// the current limits.  Either output pointer may be NULL if the
@@ -398,8 +367,6 @@ pub unsafe extern "C" fn nl_syscall_prlimit(
             rlim_max: _new_hard as rlim_t,
         };
         let mut old_rl: MaybeUninit<libc::rlimit> = MaybeUninit::uninit();
-        // If both new_soft & new_hard are u64::MAX we treat it as "no change"
-        // by passing NULL for the new value.
         let new_ptr = if _new_soft == u64::MAX && _new_hard == u64::MAX {
             ptr::null()
         } else {
@@ -428,10 +395,6 @@ pub unsafe extern "C" fn nl_syscall_prlimit(
         -(libc::ENOSYS as i64)
     }
 }
-
-// ---------------------------------------------------------------------------
-// select — eventloop multiplexer prerequisite (9d.K)
-// ---------------------------------------------------------------------------
 
 /// `select(nfds, readfds, writefds, exceptfds, timeout)`.
 ///
@@ -481,16 +444,6 @@ pub unsafe extern "C" fn nl_syscall_select(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests — gated behind `#[cfg(test)]`.  The runtime crate gates this
-// whole package behind its `process-syscalls` feature, so the package
-// can test its own subprocess surface directly.
-//
-// All tests run under `cargo test --release` and must finish in
-// well under a second each.  They exercise the FFI symbols directly
-// (no NeLisp side, no eventloop, no shell interpreter).
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,7 +472,6 @@ mod tests {
             let r = nl_syscall_pipe2(0, fds.as_mut_ptr());
             assert_eq!(r, 0, "pipe2 failed: {}", r);
             assert!(fds[0] >= 0 && fds[1] >= 0);
-            // Confirm O_CLOEXEC was set on both ends.
             for fd in fds.iter() {
                 let flags = libc::fcntl(*fd, libc::F_GETFD);
                 assert!(flags >= 0);
@@ -554,10 +506,8 @@ mod tests {
         unsafe {
             let mut fds: [i32; 2] = [-1, -1];
             assert_eq!(nl_syscall_pipe2(0, fds.as_mut_ptr()), 0);
-            // dup2 the read end onto fd 100.
             let r = nl_syscall_dup2(fds[0], 100);
             assert_eq!(r, 100);
-            // fd 100 should now be a valid (open) file descriptor.
             let ok = libc::fcntl(100, libc::F_GETFD);
             assert!(ok >= 0);
             libc::close(100);
@@ -568,9 +518,6 @@ mod tests {
 
     #[test]
     fn test_fork_exec_pipe_roundtrip() {
-        // fork + child = exec /bin/echo "nelisp-9dJ-fork-ok" + parent =
-        // read pipe + waitpid.  Asserts the bytes written by echo arrive
-        // unchanged.
         unsafe {
             let mut fds: [i32; 2] = [-1, -1];
             assert_eq!(nl_syscall_pipe2(0, fds.as_mut_ptr()), 0);
@@ -578,15 +525,12 @@ mod tests {
             let pid = nl_syscall_fork();
             assert!(pid >= 0, "fork failed: {pid}");
             if pid == 0 {
-                // child
                 libc::close(fds[0]);
-                // Redirect stdout to the pipe write end.
                 let r = nl_syscall_dup2(fds[1], 1);
                 if r < 0 {
                     libc::_exit(11);
                 }
                 libc::close(fds[1]);
-                // exec /bin/echo
                 let path = CString::new("/bin/echo").unwrap();
                 let arg0 = CString::new("echo").unwrap();
                 let arg1 = CString::new("nelisp-9dJ-fork-ok").unwrap();
@@ -595,11 +539,8 @@ mod tests {
                 let _ = nl_syscall_execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
                 libc::_exit(12); // exec failed
             } else {
-                // parent
                 libc::close(fds[1]);
                 let mut buf = [0u8; 64];
-                // Read until EOF or first chunk; echo writes <19 bytes
-                // followed by \n so a single read suffices on Linux.
                 let n = libc::read(fds[0], buf.as_mut_ptr() as *mut _, buf.len());
                 assert!(n > 0, "parent read returned {n}");
                 let s = std::str::from_utf8(&buf[..n as usize]).unwrap();
@@ -621,7 +562,6 @@ mod tests {
             let pid = nl_syscall_fork();
             assert!(pid >= 0);
             if pid == 0 {
-                // child: exit with status 7
                 libc::_exit(7);
             } else {
                 let mut status: i32 = 0;
@@ -639,16 +579,12 @@ mod tests {
             let pid = nl_syscall_fork();
             assert!(pid >= 0);
             if pid == 0 {
-                // child: sleep briefly so the parent's WNOHANG sees us still alive.
                 libc::usleep(200_000); // 200 ms
                 libc::_exit(0);
             } else {
-                // Immediate WNOHANG must return 0 (not -errno) since the
-                // child is still running.
                 let mut status: i32 = 0;
                 let r = nl_syscall_waitpid(pid as i32, libc::WNOHANG, &mut status);
                 assert_eq!(r, 0, "expected 0 (no-children-ready) got {r}");
-                // Final blocking wait reaps the child.
                 let r = nl_syscall_waitpid(pid as i32, 0, &mut status);
                 assert_eq!(r, pid);
             }
@@ -661,11 +597,9 @@ mod tests {
             let pid = nl_syscall_fork();
             assert!(pid >= 0);
             if pid == 0 {
-                // child: long sleep so the parent's SIGTERM lands first.
                 libc::sleep(60);
                 libc::_exit(0);
             } else {
-                // Give the child a chance to enter sleep().
                 libc::usleep(50_000);
                 let r = nl_syscall_kill(pid as i32, libc::SIGTERM);
                 assert_eq!(r, 0);
@@ -715,15 +649,12 @@ mod tests {
     #[test]
     fn test_setrlimit_roundtrip() {
         unsafe {
-            // Read current RLIMIT_NOFILE, set both ends to soft, read back.
             let mut soft: u64 = 0;
             let mut hard: u64 = 0;
             assert_eq!(
                 nl_syscall_getrlimit(libc::RLIMIT_NOFILE as i32, &mut soft, &mut hard),
                 0
             );
-            // Lower the *soft* limit only by 1 (raising would need
-            // CAP_SYS_RESOURCE on most distros).
             let new_soft = if soft > 64 { soft - 1 } else { soft };
             let r = nl_syscall_setrlimit(libc::RLIMIT_NOFILE as i32, new_soft, hard);
             assert_eq!(r, 0);
@@ -737,8 +668,6 @@ mod tests {
             assert_eq!(got_soft, new_soft);
             assert_eq!(got_hard, hard);
 
-            // Restore (best-effort; if test was launched at NOFILE 64 we already are
-            // at the floor and the previous setrlimit was a no-op).
             let _ = nl_syscall_setrlimit(libc::RLIMIT_NOFILE as i32, soft, hard);
         }
     }
@@ -748,7 +677,6 @@ mod tests {
         unsafe {
             let mut old_soft: u64 = 0;
             let mut old_hard: u64 = 0;
-            // pid = 0 means "self" on Linux.
             let r = nl_syscall_prlimit(
                 0,
                 libc::RLIMIT_NOFILE as i32,
@@ -775,7 +703,6 @@ mod tests {
             let mut fds: [i32; 2] = [-1, -1];
             assert_eq!(nl_syscall_pipe2(0, fds.as_mut_ptr()), 0);
 
-            // Initially the read end is *not* ready.
             let mut rset: MaybeUninit<libc::fd_set> = MaybeUninit::uninit();
             libc::FD_ZERO(rset.as_mut_ptr());
             let mut rset = rset.assume_init();
@@ -789,7 +716,6 @@ mod tests {
             );
             assert_eq!(r, 0, "select with no data should report 0 ready");
 
-            // Write a byte; select should now report 1.
             let payload = b"X";
             let n = libc::write(fds[1], payload.as_ptr() as *const _, payload.len());
             assert_eq!(n, 1);
@@ -813,9 +739,6 @@ mod tests {
 
     #[test]
     fn test_select_negative_timeout_blocks_until_data() {
-        // Use a forked writer that pushes data after 50 ms; the parent
-        // calls select with a -1 (block-forever) timeout.  The test passes
-        // if select returns 1 once the data arrives.
         unsafe {
             let mut fds: [i32; 2] = [-1, -1];
             assert_eq!(nl_syscall_pipe2(0, fds.as_mut_ptr()), 0);
@@ -853,9 +776,6 @@ mod tests {
 
     #[test]
     fn test_kill_zero_signal_probes_existence() {
-        // kill(pid, 0) is a no-op that returns 0 if the pid exists,
-        // -ESRCH if it does not.  Doc 39 §6.5 PID-race hygiene: the
-        // syscall layer reports the kernel's view, the caller decides.
         unsafe {
             let pid = nl_syscall_fork();
             assert!(pid >= 0);
@@ -869,7 +789,6 @@ mod tests {
                 let _ = nl_syscall_kill(pid as i32, libc::SIGKILL);
                 let mut status: i32 = 0;
                 let _ = nl_syscall_waitpid(pid as i32, 0, &mut status);
-                // After reap, kill(0) must return -ESRCH.
                 let r = nl_syscall_kill(pid as i32, 0);
                 assert_eq!(r, -(libc::ESRCH as i64));
             }
@@ -878,9 +797,6 @@ mod tests {
 
     #[test]
     fn test_setsid_in_child_creates_new_session() {
-        // setsid only succeeds when the caller is *not* a session leader.
-        // The test process IS a session leader (cargo test forks it
-        // already), so we exercise setsid inside a child.
         unsafe {
             let pid = nl_syscall_fork();
             assert!(pid >= 0);

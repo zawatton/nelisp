@@ -50,10 +50,7 @@ macro_rules! sexp_box_ptr_accessor {
 
 impl Sexp {
     #[inline]
-    pub fn tag(&self) -> u8 {
-        // SAFETY: `#[repr(C, u8)]` stores the discriminant as a `u8` at offset 0.
-        unsafe { *(self as *const Sexp as *const u8) }
-    }
+    pub fn tag(&self) -> u8 { unsafe { *(self as *const Sexp as *const u8) } }
 
     sexp_box_ptr_accessor!(cons_box_ptr, crate::eval::nlconsbox::NlConsBox);
     sexp_box_ptr_accessor!(cell_box_ptr, crate::eval::nlcell::NlCell);

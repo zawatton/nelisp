@@ -248,8 +248,6 @@ pub mod elisp_cc_spike {
     pub unsafe fn wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp) -> i64 {
         let (mut w, mut n, mut c, mut i) = (Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil);
         let rc = nelisp_wrap_alist_cells(alist_ptr, result_slot, &mut w, &mut n, &mut c, &mut i);
-        // Prevent double-free: cons-make raw-copies without Rc::clone; zero
-        // scratch slots via ptr::write (= Nil-fill without calling Drop).
         for s in [&mut w, &mut n, &mut c, &mut i] { core::ptr::write(s, Sexp::Nil); }
         rc
     }

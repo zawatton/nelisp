@@ -23,7 +23,6 @@ use std::env;
 use std::ffi::CString;
 
 fn syscall_smoke() -> i32 {
-    // 1. write to stdout via the nelisp_syscall_write FFI symbol
     let msg: &[u8] = b"nelisp-runtime syscall smoke OK\n";
     unsafe {
         let n = nelisp_runtime::nelisp_syscall_write(1, msg.as_ptr(), msg.len());
@@ -32,10 +31,6 @@ fn syscall_smoke() -> i32 {
         }
     }
 
-    // 2. mmap an anonymous private 4 KiB page, touch it, munmap.  This
-    //    is the path Phase 7.2 (allocator) and Phase 7.1 (native code
-    //    pages via PROT_EXEC) will both inherit, so we want a hard
-    //    failure here if the symbol or constants are wrong.
     unsafe {
         let prot = nelisp_runtime::NELISP_PROT_READ | nelisp_runtime::NELISP_PROT_WRITE;
         let flags = nelisp_runtime::NELISP_MAP_PRIVATE | nelisp_runtime::NELISP_MAP_ANONYMOUS;
@@ -43,16 +38,12 @@ fn syscall_smoke() -> i32 {
         if p.is_null() || p as isize == -1 {
             return 3;
         }
-        // Touch first byte to prove the page is actually mapped, then
-        // release it.
         *p = 0x42;
         if nelisp_runtime::nelisp_syscall_munmap(p, 4096) != 0 {
             return 3;
         }
     }
 
-    // 3. getenv("PATH") — should not be NULL on any reasonable host
-    //    that runs `cargo test` or `make test-runtime`.
     unsafe {
         let name = CString::new("PATH").unwrap();
         let v = nelisp_runtime::nelisp_syscall_getenv(name.as_ptr());
@@ -61,9 +52,6 @@ fn syscall_smoke() -> i32 {
         }
     }
 
-    // 4. stat the binary itself.  argv[0] may not be an absolute path,
-    //    but `/proc/self/exe` (Linux) or `current_exe` (cross-platform)
-    //    reliably points at a file the kernel just executed.
     unsafe {
         if let Ok(exe) = env::current_exe() {
             let cpath = CString::new(exe.to_string_lossy().as_bytes()).unwrap();

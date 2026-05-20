@@ -9,43 +9,9 @@
 //! of `NELISP_PROT_*` / `NELISP_MAP_*` / `NELISP_O_*` constants so
 //! NeLisp does not need a per-OS libc clone.
 
-// Doc 47 §3.1 phase 6 / Stage 5c (2026-04-30) — `bridge`, `eval`, and
-// `reader` carved out into the sibling `nelisp-build-tool` crate so
-// `nelisp-runtime` stays image-only (seed loader + syscall stubs +
-// sqlite + image boot).  External consumers that previously wrote
-// `nelisp_runtime::{bridge,eval,reader}` should switch to
-// `nelisp_build_tool::{...}`.
-//
-// Sweep 6 (2026-04-30): the older `image/` subsystem (~2,420 LOC of
-// native-code-in-image / reloc / heap / boot machinery) was deleted in
-// favour of the simpler walking-skeleton image format that lives in
-// `nelisp_build_tool::image` (= sexp serialization evaluated by the
-// existing eval/).  `nelisp-runtime` now hosts no image surface at all.
-// Doc 49 Phase 49.3 (2026-04-30) — sqlite FFI extracted to the
-// sibling `nelisp-sqlite-rs` crate.  The `sqlite-ffi' feature stays
-// default-ON as a compatibility shim and re-exports the same five
-// `nl_sqlite_*' symbols, so existing callers keep linking through
-// `nelisp_runtime::nl_sqlite_*'.  Without the feature the path-dep
-// disappears entirely (drops ~623 LOC + libsqlite3 static link).
-//
-// Doc 49 Phase 49.4 (2026-04-30) — seed image loader.  Rust-min core
-// validates a NLSEED-formatted native image, mmaps the heap + code
-// segments, applies relocations, flips the code segment to RX,
-// flushes icache, and jumps into the native-compiled Elisp seed.
-// Rust never parses or evaluates the Elisp source itself.
 pub mod seed;
 pub mod syscall;
 
-// Architecture α (Wave 3, 2026-04-29) — anvil_*_registry + mcp + the
-// `anvil-runtime' / `anvil-mcp-demo' binaries moved to the sibling
-// `anvil-runtime' crate so this crate stays a pure NeLisp interpreter.
-// External consumers should depend on `anvil-runtime' for those
-// surfaces; the path dependency in `anvil-runtime/Cargo.toml' delegates
-// the evaluator-facing types (bridge / eval / reader) back here.
-
-// Re-export the FFI surface at the crate root for `cargo test` and
-// `main.rs` so callers can write `nelisp_runtime::nelisp_syscall_write`
-// without having to spell `::syscall::` each time.
 pub use seed::{
     nelisp_seed_load_and_run, parse_header as nelisp_seed_parse_header,
     payload_hash as nelisp_seed_payload_hash, SeedError, SeedHeader, SeedSyscallTable,
@@ -64,11 +30,6 @@ pub use syscall::{
     NELISP_PROT_NONE, NELISP_PROT_READ, NELISP_PROT_WRITE,
 };
 
-// Phase 9d.A1 — file I/O syscall extension.  The eight new `nl_syscall_*`
-// symbols are wired through here so callers can write
-// `nelisp_runtime::nl_syscall_mkdir` without spelling `::syscall::fileio::`.
-// Gated behind the `fileio-syscalls` feature (default ON) per Doc 27 §3
-// 7.0 freeze contract: a "mini build" without file I/O still compiles.
 #[cfg(feature = "fileio-syscalls")]
 pub use syscall::{
     nl_syscall_access, nl_syscall_closedir, nl_syscall_mkdir, nl_syscall_opendir,
@@ -76,10 +37,6 @@ pub use syscall::{
     NELISP_FILEIO_PATH_MAX,
 };
 
-// Phase 9d.A4 (T82) file-notify FFI surface.  Re-exported at crate
-// root so cargo-side tests in `tests/filenotify_test.rs` can call the
-// symbols without spelling `::syscall::filenotify::` each time.  Doc
-// 47 Stage 11: gated behind `filenotify-syscalls' (default ON).
 #[cfg(feature = "filenotify-syscalls")]
 pub use syscall::{
     nl_filenotify_add_watch, nl_filenotify_close, nl_filenotify_init, nl_filenotify_read,
@@ -87,12 +44,6 @@ pub use syscall::{
     NL_IN_MOVED_FROM, NL_IN_MOVED_TO,
 };
 
-// Phase 9d.J (T100 / Doc 39 LOCKED-2026-04-25-v2 §3.J) subprocess FFI
-// surface.  Twelve `nl_syscall_*` symbols wired at the crate root so
-// callers can write `nelisp_runtime::nl_syscall_fork`.  Gated behind
-// the `process-syscalls` feature (default ON) per Doc 39 §3.J — a
-// future "mini build" without subprocess support still compiles
-// cleanly.
 #[cfg(feature = "process-syscalls")]
 pub use syscall::{
     nl_syscall_dup2, nl_syscall_execve, nl_syscall_fork, nl_syscall_getrlimit, nl_syscall_kill,
@@ -100,10 +51,6 @@ pub use syscall::{
     nl_syscall_setrlimit, nl_syscall_setsid, nl_syscall_waitpid,
 };
 
-// T77 (Wave 1 agent C) — SQLite FFI surface.  Five public symbols for
-// the Emacs 30 `sqlite-*' compat layer in `src/nelisp-sqlite.el', plus
-// a `nl_sqlite_alive' liveness probe used by the `nelisp-sqlitep'
-// predicate.  Doc 47 Stage 10: gated behind `sqlite-ffi' (default ON).
 #[cfg(feature = "sqlite-ffi")]
 pub use nelisp_sqlite_rs::{
     nl_sqlite_alive, nl_sqlite_close, nl_sqlite_execute, nl_sqlite_open, nl_sqlite_query,

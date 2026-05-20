@@ -45,12 +45,6 @@ use nelisp_syscall_types::NelispStat;
 /// for everything anvil's bootstrap code would plausibly reach.
 pub const NELISP_FILEIO_PATH_MAX: usize = 4096;
 
-// ---------------------------------------------------------------------------
-// Internal helpers — copy `(ptr, len)` into a NUL-terminated stack buffer
-// without dragging `std::ffi::CString` (= heap alloc per call) into the
-// hot path.
-// ---------------------------------------------------------------------------
-
 /// Stack scratch buffer for converting `(*const u8, len)` → `*const c_char`.
 ///
 /// Heap-free path so the syscall thin wrapper stays as cheap as the
@@ -68,14 +62,9 @@ impl PathBuf {
             return Err(-(libc::ENAMETOOLONG as i64));
         }
         let mut bytes = [0u8; NELISP_FILEIO_PATH_MAX + 1];
-        // SAFETY: caller is responsible for `ptr..ptr+len` being a
-        // valid byte range; len has been bounded above so we never
-        // overrun `bytes`.
         unsafe {
             std::ptr::copy_nonoverlapping(ptr, bytes.as_mut_ptr(), len);
         }
-        // Reject embedded NUL bytes — POSIX paths cannot contain them,
-        // and the libc call would silently truncate.
         if bytes[..len].iter().any(|b| *b == 0) {
             return Err(-(libc::EINVAL as i64));
         }
@@ -96,18 +85,6 @@ unsafe fn negate_errno(r: c_int) -> i64 {
         -(last_errno() as i64)
     }
 }
-
-// ---------------------------------------------------------------------------
-// opendir / readdir / closedir
-//
-// Handle representation:
-//   `opendir` returns the raw `*mut DIR` re-cast to `i64`.  Phase 7.0
-//   already exposes `*mut u8` pointers (mmap return) the same way, so
-//   keeping the convention shrinks the FFI surface NeLisp has to learn.
-//   We never zero or rewrite the handle on close — calling `closedir`
-//   on it once is the contract, and the return value of libc::closedir
-//   propagates verbatim.
-// ---------------------------------------------------------------------------
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_syscall_opendir(path: *const u8, len: usize) -> i64 {
@@ -144,22 +121,16 @@ pub unsafe extern "C" fn nl_syscall_readdir(handle: i64, buf: *mut u8, buf_len: 
     }
     let dirp = handle as *mut DIR;
 
-    // Clear errno so we can distinguish "end of stream" (NULL + errno
-    // unchanged) from "error" (NULL + errno set).  POSIX dictates this
-    // dance for `readdir`.
     *libc_errno_mut() = 0;
     let ent = libc::readdir(dirp);
     if ent.is_null() {
         let e = last_errno();
         if e == 0 {
-            // True end of stream.
             return 0;
         }
         return -(e as i64);
     }
 
-    // The name field is a NUL-terminated `[c_char; N]` whose length we
-    // discover with `strlen`.  We never read past the NUL.
     let name_ptr = (*ent).d_name.as_ptr();
     let name_len = libc::strlen(name_ptr);
     if name_len > buf_len {
@@ -183,10 +154,6 @@ pub unsafe extern "C" fn nl_syscall_closedir(handle: i64) -> i64 {
     let r = libc::closedir(dirp.as_ptr());
     negate_errno(r)
 }
-
-// ---------------------------------------------------------------------------
-// mkdir / unlink / rename / access
-// ---------------------------------------------------------------------------
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_syscall_mkdir(path: *const u8, len: usize, mode: u32) -> i64 {
@@ -236,15 +203,6 @@ pub unsafe extern "C" fn nl_syscall_access(path: *const u8, len: usize, mode: i3
     let r = libc::access(pb.as_c_ptr(), mode as c_int);
     negate_errno(r)
 }
-
-// ---------------------------------------------------------------------------
-// stat_ex
-//
-// Functionally a clone of Phase 7.0 `stat`, but with `(*const u8, len)`
-// for the path so unibyte Lisp strings flow through unchanged.  We keep
-// the original `nelisp_syscall_stat` symbol untouched (Phase 7.0 freeze
-// promise to existing callers); `stat_ex` is the future-facing API.
-// ---------------------------------------------------------------------------
 
 #[no_mangle]
 pub unsafe extern "C" fn nl_syscall_stat_ex(
@@ -308,12 +266,6 @@ unsafe fn last_errno() -> i32 {
     *libc_errno_mut()
 }
 
-// ---------------------------------------------------------------------------
-// errno mutator — needed for the readdir end-of-stream / error
-// distinction.  Mirrors the read-only helper in `error.rs` but returns
-// a `*mut i32` so we can clear it before calling `readdir`.
-// ---------------------------------------------------------------------------
-
 #[cfg(any(target_os = "linux", target_os = "android"))]
 unsafe fn libc_errno_mut() -> *mut i32 {
     libc::__errno_location()
@@ -335,10 +287,6 @@ unsafe fn libc_errno_mut() -> *mut i32 {
     &raw mut DUMMY
 }
 
-// ---------------------------------------------------------------------------
-// Tests for the standalone extension crate.
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,8 +296,6 @@ mod tests {
 
     fn temp_root() -> StdPathBuf {
         let mut p = std::env::temp_dir();
-        // Distinguish from other Phase 7.0 tests so parallel cargo
-        // workers don't fight over the same name.
         let pid = std::process::id();
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -371,14 +317,11 @@ mod tests {
             let (p, l) = as_bytes(&root_str);
             assert_eq!(nl_syscall_mkdir(p, l, 0o755), 0);
 
-            // mkdir on existing dir must return -EEXIST.
             assert_eq!(nl_syscall_mkdir(p, l, 0o755), -(libc::EEXIST as i64));
 
-            // Create then remove a file inside.
             let mut child = root.clone();
             child.push("hello.txt");
             let child_str = child.to_string_lossy().to_string();
-            // touch the file via libc::open.
             let cpath = CString::new(child.as_os_str().as_bytes()).unwrap();
             let fd = libc::open(cpath.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o644);
             assert!(fd >= 0);
@@ -386,10 +329,8 @@ mod tests {
 
             let (cp, cl) = as_bytes(&child_str);
             assert_eq!(nl_syscall_unlink(cp, cl), 0);
-            // Second unlink → -ENOENT.
             assert_eq!(nl_syscall_unlink(cp, cl), -(libc::ENOENT as i64));
 
-            // rmdir via libc, since `unlink` doesn't remove dirs.
             let rcp = CString::new(root.as_os_str().as_bytes()).unwrap();
             assert_eq!(libc::rmdir(rcp.as_ptr()), 0);
         }
@@ -403,7 +344,6 @@ mod tests {
             let (p, l) = as_bytes(&root_str);
             assert_eq!(nl_syscall_mkdir(p, l, 0o755), 0);
 
-            // Create three files: a, b, c.
             for name in &["a", "b", "c"] {
                 let mut f = root.clone();
                 f.push(name);
@@ -433,7 +373,6 @@ mod tests {
                 assert!(found.contains(*name), "missing entry {name} in {found:?}");
             }
 
-            // Cleanup.
             for name in &["a", "b", "c"] {
                 let mut f = root.clone();
                 f.push(name);
@@ -449,13 +388,11 @@ mod tests {
     #[test]
     fn test_access_returns_zero_for_existing() {
         unsafe {
-            // /dev/null exists and is r/w accessible to any user.
             let s = "/dev/null";
             let (p, l) = as_bytes(s);
             assert_eq!(nl_syscall_access(p, l, libc::F_OK), 0);
             assert_eq!(nl_syscall_access(p, l, libc::R_OK), 0);
 
-            // A guaranteed-nonexistent path returns -ENOENT.
             let bogus = "/nelisp-fileio-does-not-exist-12345";
             let (bp, bl) = as_bytes(bogus);
             assert_eq!(
@@ -494,7 +431,6 @@ mod tests {
             let (dp, dl) = as_bytes(&dst_str);
             assert_eq!(nl_syscall_rename(sp, sl, dp, dl), 0);
 
-            // src no longer accessible.
             assert_eq!(
                 nl_syscall_access(sp, sl, libc::F_OK),
                 -(libc::ENOENT as i64)
@@ -532,13 +468,11 @@ mod tests {
             let (fp, fl) = as_bytes(&f_str);
             assert_eq!(nl_syscall_stat_ex(fp, fl, &mut sb), 0);
             assert_eq!(sb.st_size, 1024);
-            // mtime sec must be a recent UNIX timestamp (post-2020).
             assert!(
                 sb.st_mtime_sec > 1_577_836_800,
                 "mtime {} too small",
                 sb.st_mtime_sec
             );
-            // mode bit S_IFREG must be set on a regular file.
             let s_ifmt: u32 = 0o170000;
             let s_ifreg: u32 = 0o100000;
             assert_eq!(sb.st_mode & s_ifmt, s_ifreg);
@@ -576,7 +510,6 @@ mod tests {
             let (rp, rl) = as_bytes(&root_str);
             assert_eq!(nl_syscall_mkdir(rp, rl, 0o755), 0);
 
-            // Long-name file that won't fit in a 2-byte buffer.
             let mut f = root.clone();
             f.push("verylongfilename.txt");
             let cpath = CString::new(f.as_os_str().as_bytes()).unwrap();
@@ -588,10 +521,6 @@ mod tests {
             assert!(h > 0);
 
             let mut tiny = [0u8; 2];
-            // Skip "." and ".." which fit in 2 bytes; iterate until we
-            // see ERANGE on the long name OR end-of-stream (which means
-            // the OS happens to expose the long entry first; in either
-            // case the call sequence must terminate cleanly).
             let mut saw_erange = false;
             for _ in 0..16 {
                 let n = nl_syscall_readdir(h, tiny.as_mut_ptr(), tiny.len());
@@ -610,7 +539,6 @@ mod tests {
             );
             assert_eq!(nl_syscall_closedir(h), 0);
 
-            // cleanup
             let f_str = f.to_string_lossy().to_string();
             let (fp, fl) = as_bytes(&f_str);
             assert_eq!(nl_syscall_unlink(fp, fl), 0);
