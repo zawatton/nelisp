@@ -132,6 +132,7 @@ pub mod elisp_cc_spike {
         fn nelisp_nlcell_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlrecord_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlstr_clone(box_ptr: *mut i64) -> i64;
+        fn nelisp_nlboolvector_clone(box_ptr: *mut i64) -> i64;
         fn nelisp_nlconsbox_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlvector_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlcell_drop(box_ptr: *mut i64) -> i64;
@@ -477,6 +478,7 @@ pub mod elisp_cc_spike {
     cc_wrap!(nlcell_clone: nelisp_nlcell_clone, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlrecord_clone: nelisp_nlrecord_clone, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlstr_clone: nelisp_nlstr_clone, (box_ptr: *mut i64) -> i64);
+    cc_wrap!(nlboolvector_clone: nelisp_nlboolvector_clone, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlboolvector_drop: nelisp_nlboolvector_drop, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlchartable_drop: nelisp_nlchartable_drop, (box_ptr: *mut i64) -> i64);
 

@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 #[repr(C)]
 pub struct NlBoolVector {
@@ -40,11 +40,7 @@ impl NlBoolVectorRef {
 
 impl Clone for NlBoolVectorRef {
     fn clone(&self) -> Self {
-        unsafe {
-            (*self.ptr.as_ptr())
-                .refcount
-                .fetch_add(1, Ordering::Relaxed);
-        }
+        unsafe { crate::elisp_cc_spike::nlboolvector_clone(self.ptr.as_ptr() as *mut i64) };
         NlBoolVectorRef {
             ptr: self.ptr,
             _marker: PhantomData,

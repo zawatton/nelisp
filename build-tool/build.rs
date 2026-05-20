@@ -299,6 +299,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-nlcell-clone.el",
         "nelisp-cc-nlrecord-clone.el",
         "nelisp-cc-nlstr-clone.el",
+        // Doc 124 §124.M — NlBoolVector Clone kernel (REFCOUNT_OFFSET=24,
+        // same as NlVector since Vec<bool> header = Vec<Sexp> header = 24 bytes).
+        "nelisp-cc-nlboolvector-clone.el",
         // Doc 116 §116.A — pure-elisp Reader lexer.  Single source
         // file defining `nelisp_reader_lex_one' + ~20 tail-call
         // helpers; replaces the eventual deletion of

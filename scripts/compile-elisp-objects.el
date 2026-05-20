@@ -886,6 +886,10 @@
      :source-var nelisp-cc-nlboolvector-drop--source
      :output "nelisp_nlboolvector_drop.o"
      :requires-arch x86_64)
+    (nelisp-cc-nlboolvector-clone
+     :source-var nelisp-cc-nlboolvector-clone--source
+     :output "nelisp_nlboolvector_clone.o"
+     :requires-arch x86_64)
     (nelisp-cc-nlchartable-drop
      :source-var nelisp-cc-nlchartable-drop--source
      :output "nelisp_nlchartable_drop.o"
