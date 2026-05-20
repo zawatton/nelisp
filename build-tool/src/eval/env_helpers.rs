@@ -150,8 +150,8 @@ impl Env {
     fn install_stage0(max_recursion: u32) -> Self {
         let mut env = Env::fresh(max_recursion);
         env.install_empty_mirror_rust_direct();
-        env.intern_constant("nil", Sexp::Nil);
-        env.intern_constant("t", Sexp::T);
+        env.mirror_install_entry("nil", Some(Sexp::Nil), None, None, true);
+        env.mirror_install_entry("t", Some(Sexp::T), None, None, true);
         super::builtins::install_builtins(&mut env);
         env.register_extern_builtin("nelisp--env-globals-op", |args, env| {
             super::env_shim::bi_globals_op(args, env)
@@ -167,10 +167,6 @@ impl Env {
         let sentinel =
             Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol(name.into())]);
         self.mirror_set_function(name, sentinel);
-    }
-
-    pub fn intern_constant(&mut self, name: &str, value: Sexp) {
-        self.mirror_install_entry(name, Some(value), None, None, true);
     }
 
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
