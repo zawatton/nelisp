@@ -92,58 +92,35 @@ impl Sexp {
     pub fn vector(items: Vec<Sexp>) -> Sexp { Sexp::Vector(NlVectorRef::new(items)) }
     pub fn mut_str(s: impl Into<String>) -> Sexp { Sexp::MutStr(NlStrRef::new(s.into())) }
     pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
-        Sexp::CharTable(NlCharTableRef::new(CharTableInner {
-            subtype, default_val: init, entries: Vec::new(), parent: None, extra: Vec::new(),
-        }))
+        Sexp::CharTable(NlCharTableRef::new(CharTableInner { subtype, default_val: init, entries: Vec::new(), parent: None, extra: Vec::new() }))
     }
-    pub fn bool_vector(len: usize, init: bool) -> Sexp {
-        Sexp::BoolVector(NlBoolVectorRef::new(vec![init; len]))
-    }
-    pub fn as_string_owned(&self) -> Option<String> {
-        match self {
-            Sexp::Str(s) => Some(s.clone()),
-            Sexp::MutStr(s) => Some(s.value.clone()),
-            _ => None,
-        }
-    }
-    pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp {
-        Sexp::Record(NlRecordRef::new(type_tag, init))
-    }
+    pub fn bool_vector(len: usize, init: bool) -> Sexp { Sexp::BoolVector(NlBoolVectorRef::new(vec![init; len])) }
+    pub fn as_string_owned(&self) -> Option<String> { match self { Sexp::Str(s) => Some(s.clone()), Sexp::MutStr(s) => Some(s.value.clone()), _ => None } }
+    pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp { Sexp::Record(NlRecordRef::new(type_tag, init)) }
 }
 
 const NLREC_SLOTS: usize = std::mem::offset_of!(NlRecord, slots);
 const NLVEC_VALUE: usize = std::mem::offset_of!(NlVector, value);
 
 pub const ABI_EXPORT: &[(&str, i64)] = &[
-    ("tag-nil",SEXP_TAG_NIL as i64), ("tag-t",SEXP_TAG_T as i64),
-    ("tag-int",SEXP_TAG_INT as i64), ("tag-float",SEXP_TAG_FLOAT as i64),
-    ("tag-symbol",SEXP_TAG_SYMBOL as i64), ("tag-str",SEXP_TAG_STR as i64),
-    ("tag-mut-str",SEXP_TAG_MUT_STR as i64), ("tag-cons",SEXP_TAG_CONS as i64),
-    ("tag-vector",SEXP_TAG_VECTOR as i64), ("tag-char-table",SEXP_TAG_CHAR_TABLE as i64),
-    ("tag-bool-vector",SEXP_TAG_BOOL_VECTOR as i64), ("tag-cell",SEXP_TAG_CELL as i64),
-    ("tag-record",SEXP_TAG_RECORD as i64),
+    ("tag-nil",SEXP_TAG_NIL as i64), ("tag-t",SEXP_TAG_T as i64), ("tag-int",SEXP_TAG_INT as i64),
+    ("tag-float",SEXP_TAG_FLOAT as i64), ("tag-symbol",SEXP_TAG_SYMBOL as i64), ("tag-str",SEXP_TAG_STR as i64),
+    ("tag-mut-str",SEXP_TAG_MUT_STR as i64), ("tag-cons",SEXP_TAG_CONS as i64), ("tag-vector",SEXP_TAG_VECTOR as i64),
+    ("tag-char-table",SEXP_TAG_CHAR_TABLE as i64), ("tag-bool-vector",SEXP_TAG_BOOL_VECTOR as i64),
+    ("tag-cell",SEXP_TAG_CELL as i64), ("tag-record",SEXP_TAG_RECORD as i64),
     ("offset-tag",0), ("offset-payload",SEXP_PAYLOAD_OFFSET as i64), ("slot-size",std::mem::size_of::<Sexp>() as i64),
-    ("nlconsbox-offset-car",std::mem::offset_of!(NlConsBox,car) as i64),
-    ("nlconsbox-offset-cdr",std::mem::offset_of!(NlConsBox,cdr) as i64),
-    ("nlconsbox-offset-refcount",std::mem::offset_of!(NlConsBox,refcount) as i64),
-    ("nlconsbox-size",std::mem::size_of::<NlConsBox>() as i64),
-    ("string-offset-capacity",SEXP_PAYLOAD_OFFSET as i64),
-    ("string-offset-ptr",(SEXP_PAYLOAD_OFFSET+8) as i64),
-    ("string-offset-length",(SEXP_PAYLOAD_OFFSET+16) as i64),
-    ("string-header-size",std::mem::size_of::<String>() as i64),
+    ("nlconsbox-offset-car",std::mem::offset_of!(NlConsBox,car) as i64), ("nlconsbox-offset-cdr",std::mem::offset_of!(NlConsBox,cdr) as i64),
+    ("nlconsbox-offset-refcount",std::mem::offset_of!(NlConsBox,refcount) as i64), ("nlconsbox-size",std::mem::size_of::<NlConsBox>() as i64),
+    ("string-offset-capacity",SEXP_PAYLOAD_OFFSET as i64), ("string-offset-ptr",(SEXP_PAYLOAD_OFFSET+8) as i64),
+    ("string-offset-length",(SEXP_PAYLOAD_OFFSET+16) as i64), ("string-header-size",std::mem::size_of::<String>() as i64),
     ("nlrecord-offset-type-tag",std::mem::offset_of!(NlRecord,type_tag) as i64),
     ("nlrecord-offset-slots-vec",NLREC_SLOTS as i64), ("nlrecord-offset-slots-ptr",NLREC_SLOTS as i64),
-    ("nlrecord-offset-slots-capacity",(NLREC_SLOTS+8) as i64),
-    ("nlrecord-offset-slots-length",(NLREC_SLOTS+16) as i64),
-    ("nlrecord-offset-refcount",std::mem::offset_of!(NlRecord,refcount) as i64),
-    ("nlrecord-size",std::mem::size_of::<NlRecord>() as i64),
+    ("nlrecord-offset-slots-capacity",(NLREC_SLOTS+8) as i64), ("nlrecord-offset-slots-length",(NLREC_SLOTS+16) as i64),
+    ("nlrecord-offset-refcount",std::mem::offset_of!(NlRecord,refcount) as i64), ("nlrecord-size",std::mem::size_of::<NlRecord>() as i64),
     ("nlvector-offset-value-vec",NLVEC_VALUE as i64), ("nlvector-offset-value-ptr",NLVEC_VALUE as i64),
-    ("nlvector-offset-value-capacity",(NLVEC_VALUE+8) as i64),
-    ("nlvector-offset-value-length",(NLVEC_VALUE+16) as i64),
-    ("nlvector-offset-refcount",std::mem::offset_of!(NlVector,refcount) as i64),
-    ("nlvector-size",std::mem::size_of::<NlVector>() as i64),
-    ("nlcell-offset-value",std::mem::offset_of!(NlCell,value) as i64),
-    ("nlcell-offset-refcount",std::mem::offset_of!(NlCell,refcount) as i64),
+    ("nlvector-offset-value-capacity",(NLVEC_VALUE+8) as i64), ("nlvector-offset-value-length",(NLVEC_VALUE+16) as i64),
+    ("nlvector-offset-refcount",std::mem::offset_of!(NlVector,refcount) as i64), ("nlvector-size",std::mem::size_of::<NlVector>() as i64),
+    ("nlcell-offset-value",std::mem::offset_of!(NlCell,value) as i64), ("nlcell-offset-refcount",std::mem::offset_of!(NlCell,refcount) as i64),
     ("nlcell-size",std::mem::size_of::<NlCell>() as i64),
 ];
 

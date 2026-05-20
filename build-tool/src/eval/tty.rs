@@ -15,12 +15,7 @@ static JOBCTRL_ONCE: Once = Once::new();
 fn restore_signal_safe() {
     if TERMIOS_SAVED.swap(0, Ordering::SeqCst) != 0 {
         let fd = TTY_FD.load(Ordering::SeqCst) as libc::c_int;
-        if fd >= 0 {
-            unsafe {
-                let p = std::ptr::addr_of!(SAVED_TERMIOS) as *const libc::termios;
-                libc::tcsetattr(fd, libc::TCSANOW, p);
-            }
-        }
+        if fd >= 0 { unsafe { libc::tcsetattr(fd, libc::TCSANOW, std::ptr::addr_of!(SAVED_TERMIOS) as *const libc::termios); } }
     }
 }
 unsafe fn sa(sig: libc::c_int, h: extern "C" fn(libc::c_int), fl: libc::c_int) {
@@ -53,20 +48,14 @@ pub fn termios_saved_p() -> bool { TERMIOS_SAVED.load(Ordering::SeqCst) != 0 }
 #[no_mangle] pub extern "C" fn nl_tty_saved_termios_ptr() -> *mut u8 { std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut u8 }
 #[no_mangle] pub unsafe extern "C" fn nl_tty_memcpy_to_saved(src: *const u8) { std::ptr::copy_nonoverlapping(src, std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut u8, 60); }
 #[no_mangle] pub extern "C" fn nl_tty_raw_install_hooks() -> i64 { install_hooks_once(); 0 }
-#[no_mangle] pub extern "C" fn nl_tty_read_byte() -> i64 {
-    let mut b = [0u8; 1];
-    let n = unsafe { libc::read(0, b.as_mut_ptr() as *mut libc::c_void, 1) };
-    if n == 1 { b[0] as i64 } else { -1 }
-}
+#[no_mangle] pub extern "C" fn nl_tty_read_byte() -> i64 { let mut b = [0u8; 1]; let n = unsafe { libc::read(0, b.as_mut_ptr() as *mut libc::c_void, 1) }; if n == 1 { b[0] as i64 } else { -1 } }
 
 pub fn raw_mode_enter() -> Result<(), EvalError> {
-    let mut buf = [0u8; 60];
-    match unsafe { crate::elisp_cc_spike::tty_raw_enter(buf.as_mut_ptr()) } { 0 => Ok(()), -1 => Err(EvalError::internal("terminal-raw-mode-enter: tcgetattr failed")), _ => Err(EvalError::internal("terminal-raw-mode-enter: tcsetattr failed")) }
+    match unsafe { crate::elisp_cc_spike::tty_raw_enter([0u8; 60].as_mut_ptr()) } { 0 => Ok(()), -1 => Err(EvalError::internal("terminal-raw-mode-enter: tcgetattr failed")), _ => Err(EvalError::internal("terminal-raw-mode-enter: tcsetattr failed")) }
 }
 pub fn raw_mode_leave() -> Result<(), EvalError> { unsafe { crate::elisp_cc_spike::tty_raw_leave(nl_tty_saved_termios_ptr()); } Ok(()) }
 pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
-    let mut pfd = [0u8, 0, 0, 0, 1, 0, 0, 0];
-    match unsafe { crate::elisp_cc_spike::tty_stdin_byte_avail(pfd.as_mut_ptr(), timeout_ms as i64) } { -2 => Err(EvalError::internal("read-stdin-byte-available: poll failed")), n if n < 0 => Ok(None), b => Ok(Some(b as u8)) }
+    match unsafe { crate::elisp_cc_spike::tty_stdin_byte_avail([0u8, 0, 0, 0, 1, 0, 0, 0].as_mut_ptr(), timeout_ms as i64) } { -2 => Err(EvalError::internal("read-stdin-byte-available: poll failed")), n if n < 0 => Ok(None), b => Ok(Some(b as u8)) }
 }
 pub fn current_winsize() -> Option<(u16, u16)> {
     let p = unsafe { crate::elisp_cc_spike::tty_winsize_current([0u8; 8].as_mut_ptr()) };

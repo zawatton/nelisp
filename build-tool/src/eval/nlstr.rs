@@ -14,7 +14,8 @@ pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: 
     let (Some(conv_ch), false) = (char::from_u32(conv), prec < 0) else { return 1 };
     let p = prec as usize;
     let body = match conv_ch {
-        'f' | 'F' => format!("{:.*}", p, x), 'e' => format!("{:.*e}", p, x), 'E' => format!("{:.*E}", p, x),
+        'f' | 'F' => format!("{:.*}", p, x),
+        'e' => format!("{:.*e}", p, x), 'E' => format!("{:.*E}", p, x),
         'g' | 'G' => { let (f, e) = (format!("{:.*}", p, x), format!("{:.*e}", p, x)); if f.len() <= e.len() { f } else { e } }
         _ => return 1,
     };
@@ -33,17 +34,10 @@ crate::define_nlbox!(
 );
 
 impl NlStrRef {
-    pub unsafe fn set_value(&self, val: String) {
-        let p = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value);
-        std::ptr::drop_in_place(p); std::ptr::write(p, val);
-    }
+    pub unsafe fn set_value(&self, val: String) { let p = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value); std::ptr::drop_in_place(p); std::ptr::write(p, val); }
 }
-impl std::fmt::Debug for NlStrRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("MutStr").field(&self.value).finish() }
-}
-impl PartialEq for NlStrRef {
-    fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.value == other.value }
-}
+impl std::fmt::Debug for NlStrRef { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("MutStr").field(&self.value).finish() } }
+impl PartialEq for NlStrRef { fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.value == other.value } }
 
 macro_rules! mut_str_val_mut {
     ($p:expr) => { &mut (*((*$p).mut_str_box_ptr() as *mut NlStr)).value };
@@ -64,38 +58,27 @@ pub unsafe extern "C" fn nl_mut_str_set_codepoint_raw(arg: *const Sexp, idx: i64
     rc.set_value(rc.value.chars().enumerate().map(|(j, c)| if j == i { new_ch } else { c }).collect());
     *out = Sexp::Int(val_cp); TRAMPOLINE_OK
 }
-
 #[no_mangle]
-pub unsafe extern "C" fn nl_mut_str_push_byte(mut_str_ptr: *mut Sexp, byte: i64) {
-    mut_str_val_mut!(mut_str_ptr).as_mut_vec().push((byte & 0xFF) as u8);
-}
-
+pub unsafe extern "C" fn nl_mut_str_push_byte(mut_str_ptr: *mut Sexp, byte: i64) { mut_str_val_mut!(mut_str_ptr).as_mut_vec().push((byte & 0xFF) as u8); }
 #[no_mangle]
 pub unsafe extern "C" fn nl_mut_str_push_codepoint(mut_str_ptr: *mut Sexp, codepoint: i64) {
     let cp_u32 = if !(0..=0x10_FFFF).contains(&codepoint) { 0xFFFD } else { codepoint as u32 };
     mut_str_val_mut!(mut_str_ptr).push(char::from_u32(cp_u32).unwrap_or('\u{FFFD}'));
 }
-
 #[no_mangle]
-pub unsafe extern "C" fn nl_sexp_write_float(slot: *mut Sexp, val: f64) -> *mut Sexp {
-    std::ptr::write(slot, Sexp::Float(val)); slot
-}
-
+pub unsafe extern "C" fn nl_sexp_write_float(slot: *mut Sexp, val: f64) -> *mut Sexp { std::ptr::write(slot, Sexp::Float(val)); slot }
 #[no_mangle]
 pub unsafe extern "C" fn nl_str_to_float(bytes_ptr: *const u8, len: i64, slot: *mut Sexp) -> i64 {
     let n = len.max(0) as usize;
     let slice = if n == 0 { &[] } else { std::slice::from_raw_parts(bytes_ptr, n) };
     match std::str::from_utf8_unchecked(slice).parse::<f64>() {
-        Ok(f) => { std::ptr::write(slot, Sexp::Float(f)); 1 }
-        Err(_) => { std::ptr::write(slot, Sexp::Nil); 0 }
+        Ok(f) => { std::ptr::write(slot, Sexp::Float(f)); 1 } Err(_) => { std::ptr::write(slot, Sexp::Nil); 0 }
     }
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_i64_append_to_mut_str(n: i64, buf: *mut Sexp) -> i64 {
     if matches!(&*buf, Sexp::MutStr(_)) { mut_str_val_mut!(buf).push_str(&n.to_string()); 0 } else { 1 }
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_f64_bits_append_to_mut_str(bits: i64, buf: *mut Sexp) -> i64 {
     if !matches!(&*buf, Sexp::MutStr(_)) { return 1; }

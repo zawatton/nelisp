@@ -1,7 +1,6 @@
 mod error;
 pub use error::{ReadError, SourcePos};
 pub use crate::eval::sexp::{fmt_sexp, Sexp};
-
 use crate::elisp_cc_spike;
 
 const PARSER_POOL_SIZE: usize = 3 + 4 * 1024;
@@ -16,15 +15,11 @@ pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
         Some(ElispParseOutcome::Empty) => return Err(ReadError::unexpected_eof("empty input", START_POS)),
         None => return Err(ReadError::not_yet_implemented(NYI_MSG, START_POS)),
     };
-    if state.has_trailing_token() {
-        return Err(ReadError::parse("trailing token after first form".to_string(), START_POS));
-    }
+    if state.has_trailing_token() { return Err(ReadError::parse("trailing token after first form".to_string(), START_POS)); }
     Ok(form)
 }
-
 pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
-    let mut state = ElispReadState::new(input);
-    let mut forms = Vec::new();
+    let mut state = ElispReadState::new(input); let mut forms = Vec::new();
     loop {
         match state.parse_one_form() {
             Some(ElispParseOutcome::Form(form)) => forms.push(form),
@@ -34,11 +29,7 @@ pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
     }
 }
 
-enum ElispParseOutcome {
-    Form(Sexp),
-    Empty,
-}
-
+enum ElispParseOutcome { Form(Sexp), Empty }
 struct ElispReadState { src: Sexp, cursor_slot: Sexp, result_slot: Sexp, pool_slot: Sexp }
 
 impl ElispReadState {
@@ -47,7 +38,6 @@ impl ElispReadState {
         slots[0] = Sexp::mut_str(String::with_capacity(SCRATCH_CAP as usize));
         ElispReadState { src: Sexp::Str(input.to_string()), cursor_slot: Sexp::Int(0), result_slot: Sexp::Nil, pool_slot: Sexp::vector(slots) }
     }
-
     fn cursor(&self) -> i64 { match self.cursor_slot { Sexp::Int(n) => n, _ => 0 } }
     fn lex_peek_advancing(&mut self) -> i64 {
         let cursor = self.cursor();
@@ -60,10 +50,7 @@ impl ElispReadState {
             elisp_cc_spike::reader_lex_one(&self.src as *const Sexp, cursor, payload_ptr, &mut self.cursor_slot as *mut Sexp, scratch_ptr)
         }
     }
-
-    fn peek_token_kind(&mut self) -> i64 {
-        let saved = self.cursor(); let kind = self.lex_peek_advancing(); self.cursor_slot = Sexp::Int(saved); kind
-    }
+    fn peek_token_kind(&mut self) -> i64 { let saved = self.cursor(); let kind = self.lex_peek_advancing(); self.cursor_slot = Sexp::Int(saved); kind }
     fn parse_one_form(&mut self) -> Option<ElispParseOutcome> {
         let saved = self.cursor(); let kind = self.lex_peek_advancing();
         if kind == 0 { return Some(ElispParseOutcome::Empty); }
@@ -72,6 +59,5 @@ impl ElispReadState {
         if status != 1 { return None; }
         Some(ElispParseOutcome::Form(std::mem::replace(&mut self.result_slot, Sexp::Nil)))
     }
-
     fn has_trailing_token(&mut self) -> bool { self.peek_token_kind() != 0 }
 }
