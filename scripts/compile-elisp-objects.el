@@ -672,6 +672,21 @@
      :source-var nelisp-cc-atomic-raw-mem--write-u8-source
      :output "nelisp_ptr_write_u8.o"
      :requires-arch x86_64)
+    ;; Doc 125 §125.B — mmap-backed `nl_alloc_bytes' / `nl_dealloc_bytes'
+    ;; implementations.  These replace the `std::alloc'-based Rust bodies
+    ;; in `build-tool/src/eval/raw_mem.rs' with Phase 47-compiled elisp
+    ;; that emits inline SYSCALL via the new `syscall-direct' grammar op.
+    ;; Must precede the §125.A alloc-dealloc entries below so the PLT
+    ;; calls from `nelisp_alloc_bytes.o' / `nelisp_dealloc_bytes.o'
+    ;; resolve to these mmap implementations rather than the Rust externs.
+    (nelisp-cc-alloc-mem
+     :source-var nelisp-cc-alloc-mem--alloc-source
+     :output "nl_alloc_bytes_mmap.o"
+     :requires-arch x86_64)
+    (nelisp-cc-alloc-mem
+     :source-var nelisp-cc-alloc-mem--dealloc-source
+     :output "nl_dealloc_bytes_mmap.o"
+     :requires-arch x86_64)
     ;; Doc 125 §125.A — alloc / dealloc primitive grammar ops.  Two
     ;; entries, one per op, packaged as standalone Phase 47-compiled
     ;; `defun's so `tests/elisp_cc_alloc_dealloc_probe.rs' can drive

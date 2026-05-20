@@ -1353,6 +1353,32 @@ functions `((NAME . ARITY) ...)'."
                  (nth 2 sexp) env fenv defuns)
           :align (nelisp-phase47-compiler--parse-value
                   (nth 3 sexp) env fenv defuns)))
+   ;; Doc 125 §125.B — inline Linux syscall.
+   ;; `(syscall-direct NR A0 A1 A2 A3 A4 A5)' — emit inline SYSCALL
+   ;; instruction with rax=NR, rdi=A0, rsi=A1, rdx=A2, r10=A3, r8=A4,
+   ;; r9=A5.  Returns kernel return value in rax (-errno on error).
+   ;; All seven arguments are mandatory; pass 0 for unused trailing args.
+   ;; align is ignored (mmap is always page-aligned).  This op bypasses
+   ;; Rust's global allocator entirely.  Linux x86_64 only.
+   ((and (consp sexp) (eq (car sexp) 'syscall-direct))
+    (unless (= (length sexp) 8)
+      (signal 'nelisp-phase47-compiler-error
+              (list :syscall-direct-arity sexp)))
+    (list :kind 'syscall-direct
+          :nr   (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)
+          :a0   (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)
+          :a1   (nelisp-phase47-compiler--parse-value
+                 (nth 3 sexp) env fenv defuns)
+          :a2   (nelisp-phase47-compiler--parse-value
+                 (nth 4 sexp) env fenv defuns)
+          :a3   (nelisp-phase47-compiler--parse-value
+                 (nth 5 sexp) env fenv defuns)
+          :a4   (nelisp-phase47-compiler--parse-value
+                 (nth 6 sexp) env fenv defuns)
+          :a5   (nelisp-phase47-compiler--parse-value
+                 (nth 7 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.D Cons construction ops ----
    ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
    ;; payloads into a fresh `NlConsBox' and therefore assume the input
@@ -2285,7 +2311,7 @@ the node's class to consume the result correctly."
              'ptr-read-u8 'ptr-write-u8
              'ptr-read-u16 'ptr-write-u16
              'ptr-read-u32 'ptr-write-u32
-             'alloc-bytes 'dealloc-bytes
+             'alloc-bytes 'dealloc-bytes 'syscall-direct
              'cons-make 'cons-make-with-clone 'cons-set-car 'cons-set-cdr
              'while 'cond 'logic
              'syscall-direct)
@@ -2446,6 +2472,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-alloc-bytes node buf))
       ('dealloc-bytes
        (nelisp-phase47-compiler--emit-dealloc-bytes node buf))
+      ('syscall-direct
+       (nelisp-phase47-compiler--emit-syscall-direct node buf))
       ('cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
       ('cons-make-with-clone
@@ -4210,6 +4238,41 @@ extern is `void')."
      buf "nl_dealloc_bytes" -4 'text)
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
+
+;; ---- Doc 125 §125.B inline syscall op ----
+
+(defun nelisp-phase47-compiler--emit-syscall-direct (node buf)
+  "Emit `syscall-direct' — inline SYSCALL with 7 fixed args.
+ABI: rax=NR rdi=A0 rsi=A1 rdx=A2 r10=A3 r8=A4 r9=A5 → rax.
+Strategy: evaluate each arg into rax and push; then pop in reverse
+order (A5→r9, A4→r8, A3→r10, A2→rdx, A1→rsi, A0→rdi, NR→rax).
+SYSCALL clobbers rcx and r11; the result is left in rax.
+Stack alignment: 7 pushes (= 56 bytes offset); SYSCALL itself does
+not require 16-byte alignment, so no extra pad is needed."
+  ;; Push NR first, then A0..A5 (will be popped in reverse).
+  (nelisp-phase47-compiler--emit-value (plist-get node :nr) buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value (plist-get node :a0) buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value (plist-get node :a1) buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value (plist-get node :a2) buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value (plist-get node :a3) buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value (plist-get node :a4) buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-phase47-compiler--emit-value (plist-get node :a5) buf)
+  (nelisp-asm-x86_64-push buf 'rax)
+  ;; Pop into syscall registers (reverse of push order).
+  (nelisp-asm-x86_64-pop buf 'r9)
+  (nelisp-asm-x86_64-pop buf 'r8)
+  (nelisp-asm-x86_64-pop buf 'r10)
+  (nelisp-asm-x86_64-pop buf 'rdx)
+  (nelisp-asm-x86_64-pop buf 'rsi)
+  (nelisp-asm-x86_64-pop buf 'rdi)
+  (nelisp-asm-x86_64-pop buf 'rax)
+  (nelisp-asm-x86_64-syscall buf))
 
 ;; ---- Doc 101 §101.D Cons construction ops ----
 

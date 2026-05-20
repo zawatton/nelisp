@@ -220,6 +220,9 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (= 6 entries, shared source file).  Substrate gate for
         // Doc 123-128 refcount / nl*.rs lifecycle elisp化.
         "nelisp-cc-atomic-raw-mem.el",
+        // Doc 125 §125.B — mmap-based nl_alloc_bytes / nl_dealloc_bytes
+        // via syscall-direct grammar op.  Replaces std::alloc Rust externs.
+        "nelisp-cc-alloc-mem.el",
         // Doc 125 §125.A — alloc / dealloc primitive grammar ops
         // (= 2 entries, shared source file).  Substrate gate for
         // Doc 124.G-K NlBox Drop kernels + Doc 126-128 GC arena.
