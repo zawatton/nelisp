@@ -71,15 +71,13 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
     }))
 }
 
-/// `let' / `let*' frame setup: sequential=1 = `let*'.
+// nl_let_setup: sequential=1 = let*.
 #[no_mangle]
 pub unsafe extern "C" fn nl_let_setup(
     bindings_list: *const Sexp,
     env: *mut std::ffi::c_void,
     sequential: i64,
 ) -> i64 {
-    // Inline helper: parse one let-binding into (name, evaluated-value).
-    // Returns Err on malformed binding or eval failure.
     #[inline(always)]
     fn parse_binding(b: &Sexp, env: &mut Env) -> Result<(String, Sexp), EvalError> {
         match b {
@@ -126,31 +124,16 @@ pub unsafe extern "C" fn nl_let_setup(
     0
 }
 
-// nl_let_parse_binding inlined into nl_let_setup as parse_binding closure.
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    env_ref.frame_pop_rust_direct();
-    0
+    (&mut *(env as *mut Env)).frame_pop_rust_direct(); 0
 }
-
 #[no_mangle]
-pub unsafe extern "C" fn nl_env_push_captured(
-    env: *mut std::ffi::c_void,
-    alist_ptr: *const Sexp,
-) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    match env_ref.push_captured(&*alist_ptr) {
-        Ok(()) => 0,
-        Err(_) => 1,
-    }
+pub unsafe extern "C" fn nl_env_push_captured(env: *mut std::ffi::c_void, alist_ptr: *const Sexp) -> i64 {
+    match (&mut *(env as *mut Env)).push_captured(&*alist_ptr) { Ok(()) => 0, Err(_) => 1 }
 }
 
-/// Phase 47 `nl_sf_condition_case' clause matcher + frame setup.  On match:
-/// push frame, bind `var' to err, write BODY into `*err_inout', return 0.
-/// On miss: re-stash err into `nelisp--last-signal-data' for the dispatch
-/// macro's `consume_stashed_error', return 1.
+// nl_cc_match_and_bind: clause match+bind; 0=matched, 1=miss (err re-stashed).
 #[no_mangle]
 pub unsafe extern "C" fn nl_cc_match_and_bind(
     clauses: *const Sexp,
@@ -196,20 +179,8 @@ pub unsafe extern "C" fn nl_cc_match_and_bind(
     1
 }
 
-/// Phase 47 .o bind_formals_impl helpers.
-///
-/// All functions below are called from `nl_bind_formals_impl' in
-/// `lisp/nelisp-cc-bind-formals.el' (Stage 1 parallel implementation).
-/// They provide the primitive operations needed by the elisp CPS chain.
-///
-// nl_bf_precompute body migrated to Phase 47 elisp:
-// lisp/nelisp-cc-bf-precompute.el (Wave j).
-
-/// `nl_bf_bind_sym(env, name_ptr, val_ptr) -> i64`
-/// Calls `env.bind_local(name, val.clone())'.  `name_ptr' must point to a
-/// `Sexp::Symbol'; if it points to any other variant the bind is skipped
-/// and 0 is still returned (caller already validated tag == Symbol).
-/// Returns 0 always.
+// bf helpers — called from nelisp-cc-bind-formals.el CPS chain.
+// nl_bf_precompute migrated to lisp/nelisp-cc-bf-precompute.el (Wave j).
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_bind_sym(
     env: *mut std::ffi::c_void,
@@ -223,12 +194,6 @@ pub unsafe extern "C" fn nl_bf_bind_sym(
     0
 }
 
-/// `nl_bf_bind_optional(env, name_ptr, args_ptr, idx) -> i64`
-/// Optional-mode bind: binds `args[idx]' if idx < len(args), else Nil.
-/// Advances idx by 1 if the arg was consumed.
-/// Returns the new idx (= idx+1 if consumed, else idx).
-/// Used by the Optional branch in `nl_bind_formals_impl' so the elisp
-/// does not need a *const Sexp pointing at Nil.
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_bind_optional(
     env: *mut std::ffi::c_void,
@@ -254,38 +219,20 @@ pub unsafe extern "C" fn nl_bf_bind_optional(
     idx
 }
 
-/// `nl_bf_err_arity(env, required, got) -> i64`
-/// Stashes a `WrongNumberOfArguments' error into
-/// `nelisp--last-signal-data' and returns 1.
 #[no_mangle]
-pub unsafe extern "C" fn nl_bf_err_arity(
-    env: *mut std::ffi::c_void,
-    required: i64,
-    got: i64,
-) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    let err = EvalError::wrong_arity("lambda", required.to_string(), got as usize);
-    let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
+pub unsafe extern "C" fn nl_bf_err_arity(env: *mut std::ffi::c_void, required: i64, got: i64) -> i64 {
+    let e = &mut *(env as *mut Env);
+    let _ = e.set_value("nelisp--last-signal-data", EvalError::wrong_arity("lambda", required.to_string(), got as usize).signal_data());
     1
 }
 
-/// `nl_bf_err_type(env, name_ptr) -> i64`
-/// Stashes a `WrongType' error into `nelisp--last-signal-data'.
-/// Used for: non-Symbol formal, `&optional' after `&rest', double `&rest',
-/// and extra symbol after `&rest'.
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_err_type(env: *mut std::ffi::c_void, name_ptr: *const Sexp) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    let err = EvalError::wrong_type("symbol", (*name_ptr).clone());
-    let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
+    let e = &mut *(env as *mut Env);
+    let _ = e.set_value("nelisp--last-signal-data", EvalError::wrong_type("symbol", (*name_ptr).clone()).signal_data());
     1
 }
 
-/// `nl_bf_bind_rest(env, name_ptr, args_ptr, idx) -> i64`
-/// Rest-mode bind: builds `list(args[idx..])' and calls
-/// `env.bind_local(name, list)'.  Returns 0.
-/// Combines nl_bf_args_tail + nl_bf_bind_sym to avoid needing a
-/// scratch *mut Sexp slot in the elisp CPS chain.
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_bind_rest(
     env: *mut std::ffi::c_void,
@@ -308,83 +255,44 @@ pub unsafe extern "C" fn nl_bf_bind_rest(
     0
 }
 
-/// `nl_bf_err_dangling_rest(env) -> i64`
-/// Stashes `WrongType { expected: "symbol after &rest", got: Symbol("&rest") }`
-/// for the case where `&rest' appears in formals but no symbol follows it.
 #[no_mangle]
 pub unsafe extern "C" fn nl_bf_err_dangling_rest(env: *mut std::ffi::c_void) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    let err = EvalError::wrong_type("symbol after &rest", Sexp::Symbol("&rest".into()));
-    let _ = env_ref.set_value("nelisp--last-signal-data", err.signal_data());
+    let e = &mut *(env as *mut Env);
+    let _ = e.set_value("nelisp--last-signal-data", EvalError::wrong_type("symbol after &rest", Sexp::Symbol("&rest".into())).signal_data());
     1
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_push_and_bind(
-    formals_ptr: *const Sexp,
-    args_list_ptr: *const Sexp,
-    env: *mut std::ffi::c_void,
-) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    env_ref.frame_push_rust_direct();
+pub unsafe extern "C" fn nl_push_and_bind(formals_ptr: *const Sexp, args_list_ptr: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
+    let e = &mut *(env as *mut Env);
+    e.frame_push_rust_direct();
     let rc = crate::elisp_cc_spike::bind_formals_impl_call(formals_ptr, args_list_ptr, env, 0);
-    if rc != 0 {
-        env_ref.frame_pop_rust_direct();
-    }
+    if rc != 0 { e.frame_pop_rust_direct(); }
     rc
 }
-
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_capture_lexical(env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    std::ptr::write(out, env_ref.capture_lexical());
-    0
+    std::ptr::write(out, (&mut *(env as *mut Env)).capture_lexical()); 0
 }
 
-// Body migrated to Phase 47 elisp: lisp/nelisp-cc-cons-prepend-clone.el
-// Symbol `nl_cons_prepend_clone' is now provided by the elisp .o archive;
-// bridge.rs extern decl + anchor keeps it live for extern-call resolution.
-// `nl_symbol_is_lambda' also migrated to lisp/nelisp-cc-symbol-is-lambda.el
-// in the prior commit on this branch.
-
+// nl_cons_prepend_clone / nl_symbol_is_lambda: migrated to Phase 47 elisp .o.
 #[no_mangle]
 pub unsafe extern "C" fn nl_eval_is_truthy(form: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    match super::eval(&*form, env_ref) {
-        Ok(v) => {
-            if !matches!(v, Sexp::Nil) {
-                1
-            } else {
-                0
-            }
-        }
+    let e = &mut *(env as *mut Env);
+    match super::eval(&*form, e) {
+        Ok(v) => if !matches!(v, Sexp::Nil) { 1 } else { 0 },
         Err(_) => -1,
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn nl_env_set_value(
-    env: *mut std::ffi::c_void,
-    sym: *const Sexp,
-    val: *const Sexp,
-) -> i64 {
-    let env_ref = &mut *(env as *mut Env);
-    let name = match &*sym {
-        Sexp::Symbol(s) | Sexp::Str(s) => s.as_str(),
-        _ => return 1,
-    };
-    match env_ref.set_value(name, (*val).clone()) {
-        Ok(_) => 0,
-        Err(_) => 1,
-    }
+pub unsafe extern "C" fn nl_env_set_value(env: *mut std::ffi::c_void, sym: *const Sexp, val: *const Sexp) -> i64 {
+    let e = &mut *(env as *mut Env);
+    let name = match &*sym { Sexp::Symbol(s) | Sexp::Str(s) => s.as_str(), _ => return 1 };
+    match e.set_value(name, (*val).clone()) { Ok(_) => 0, Err(_) => 1 }
 }
 
-// ─── Phase 47 eval_inner / apply_combiner ABI bridge ─────────────────────────
-// Called from `nelisp-cc-eval-inner.o' which exports `nl_eval_inner'.
-// The .o handles sexp-tag dispatch; these externs do the heavy lifting.
-
-/// Variable lookup for a Symbol form (keywords self-evaluate).
-/// Returns 0=found (value in *out), 1=err (stashed in nelisp--last-signal-data).
+// eval_inner bridge — called from nelisp-cc-eval-inner.o (nl_eval_inner).
 #[no_mangle]
 pub unsafe extern "C" fn nl_env_lookup_val(
     name_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp,
@@ -398,16 +306,10 @@ pub unsafe extern "C" fn nl_env_lookup_val(
     }
 }
 
-/// Cell form: extract stored value into *out. Returns 0=ok, 1=not-a-cell.
 #[no_mangle]
 pub unsafe extern "C" fn nl_cell_get_value(cell_ptr: *const Sexp, out: *mut Sexp) -> i64 {
     match &*cell_ptr { Sexp::Cell(c) => { std::ptr::write(out, c.value.clone()); 0 } _ => 1 }
 }
-
-/// apply_combiner for both Symbol-head and Cons/other-head forms.
-/// head_ptr: car of the Cons being evaluated (may be Symbol or any Sexp).
-/// tail_ptr: cdr of the Cons (unevaluated arg list).
-/// Returns 0=ok (result in *out), 1=err (stashed in nelisp--last-signal-data).
 #[no_mangle]
 pub unsafe extern "C" fn nl_eval_inner_cons(
     head_ptr: *const Sexp, tail_ptr: *const Sexp,
