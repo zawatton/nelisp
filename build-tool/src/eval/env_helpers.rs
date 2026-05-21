@@ -1,16 +1,13 @@
 use std::collections::HashMap; use std::rc::Rc; use super::error::EvalError; use super::sexp::Sexp;
 pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>; pub type FrameCell = crate::eval::nlcell::NlCellRef;
 pub struct Env {
-    pub max_recursion: u32, pub current_recursion: u32,
-    pub extern_builtins: HashMap<String, ExternBuiltin>,
-    pub use_elisp_apply: bool, pub delegation_depth: u32,
-    pub globals_record: Sexp, pub unbound_marker: Sexp, pub frames_record: Sexp,
+    pub max_recursion: u32, pub current_recursion: u32, pub extern_builtins: HashMap<String, ExternBuiltin>,
+    pub use_elisp_apply: bool, pub delegation_depth: u32, pub globals_record: Sexp, pub unbound_marker: Sexp, pub frames_record: Sexp,
 }
 macro_rules! mirror_op {
     (mutate: $name:ident => $extern_fn:ident) => { pub(crate) fn $name(&mut self, name: &str, value: Sexp) { self.with_mirror_unbound(name, |m,s,u| unsafe { crate::elisp_cc_spike::$extern_fn(m,s,&value,u); }); } };
     (pred: $name:ident($vis:vis) => $extern_fn:ident) => { $vis fn $name(&self, name: &str) -> bool { self.with_mirror_unbound(name, |m,s,u| unsafe { crate::elisp_cc_spike::$extern_fn(m,s,u)!=0 }).unwrap_or(false) } };
-    (lookup: $name:ident($vis:vis) => $extern_fn:ident) => { $vis fn $name(&self, name: &str) -> Sexp { self.with_mirror_symbol(name, |m,s| unsafe { if crate::elisp_cc_spike::mirror_lookup_entry(m,s).is_null() { return self.unbound_marker.clone(); } let mut slot=Sexp::Nil; crate::elisp_cc_spike::$extern_fn(m,s,&mut slot); slot }).unwrap_or_else(|| self.unbound_marker.clone()) } };
-}
+    (lookup: $name:ident($vis:vis) => $extern_fn:ident) => { $vis fn $name(&self, name: &str) -> Sexp { self.with_mirror_symbol(name, |m,s| unsafe { if crate::elisp_cc_spike::mirror_lookup_entry(m,s).is_null() { return self.unbound_marker.clone(); } let mut slot=Sexp::Nil; crate::elisp_cc_spike::$extern_fn(m,s,&mut slot); slot }).unwrap_or_else(|| self.unbound_marker.clone()) } }; }
 impl Env {
     fn fresh(max_recursion: u32) -> Self { Env { max_recursion, current_recursion: 0, extern_builtins: HashMap::new(), use_elisp_apply: false, delegation_depth: 0, globals_record: Sexp::Nil, unbound_marker: Sexp::Nil, frames_record: Sexp::Nil } }
     pub fn new_global() -> Self { macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) }; }
