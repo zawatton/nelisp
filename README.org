@@ -303,6 +303,20 @@ Older release lines, for reference only:
 - =README-stage-d-v2.0.org= — bundled-Emacs tarball, ~25 MB
 - =README-stage-d.org= — legacy host-Emacs-required path
 
+*** Cross-PC verification
+
+After clone + build, run the smoke script for your platform:
+
+#+begin_src shell
+# Linux / macOS:
+scripts/verify-cross-platform.sh
+
+# Windows (PowerShell):
+.\scripts\verify-cross-platform.ps1
+#+end_src
+
+Expected output ends with =Cross-platform verify PASS=.
+
 ** Launch
 
 The pre-built tarball ships a tiny =nelisp= CLI that wraps the
