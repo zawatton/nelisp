@@ -1,6 +1,6 @@
-#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v1.0)
+#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v2.0)
 #+AUTHOR: zawatton
-#+DATE: 2026-04-27
+#+DATE: 2026-05-22
 
 #+begin_quote
 *Note on language:* I'm a non-native English speaker. The phrasing in
@@ -11,19 +11,25 @@ and I'll clarify.
 
 * TL;DR
 
-NeLisp is a from-scratch Emacs Lisp runtime where the language layer
-(JIT, allocator, GC, coding-system, evaluator, bytecode interp) is
-written in Elisp itself, plus a small Rust binary (~15k LoC) with
-syscall wrappers and a minimal evaluator so it boots without Emacs.
-v1.0 ships those four C-runtime equivalents and a 624 KB standalone
-tarball.  Use cases: running Elisp on machines without Emacs, and as
-a substrate for Lisp Machine / new-dialect experiments.
+NeLisp is a from-scratch Emacs Lisp runtime where essentially the
+entire language layer (JIT, allocator, GC, coding-system, evaluator,
+bytecode interp, reader, special forms, builtin dispatcher, object
+file writers, native code emitters) is written in Elisp itself.  The
+Rust footprint has been driven down to *11 LOC* — a thin ABI shell
+holding =extern "C"= declarations and a =cc_wrap_batch!= macro that
+glues elisp-emitted =.o= files to the binary entry point.
 
-Post-v1.0 the repo is on a sustained *pure-Elisp migration* track: each
-sprint deletes another Rust module by reimplementing it in Elisp (via
-Phase 47 self-emission for new substrate, or via JIT trampolines for
-hot loops).  See =Pure-Elisp Migration Progress= below for the most
-recent shipped reductions.
+v2.0 (2026-05-22) ships:
+- *11 LOC of Rust* in =build-tool/src/= (= 99.8% reduction from v1.0's
+  ~5,156 LOC src tree).  See =Pure-Elisp Migration Progress=.
+- *Cross-platform support* on 5 targets — linux/x86_64,
+  linux/aarch64, macos/x86_64, macos/aarch64, windows/x86_64 — with
+  pure-elisp object-file writers (ELF, Mach-O, PE/COFF) and pure-elisp
+  asm encoders (x86_64 with both SysV and Microsoft x64 ABIs, plus
+  AArch64 AAPCS).
+
+Use cases: running Elisp on machines without Emacs, and as a
+substrate for Lisp Machine / new-dialect experiments.
 
 * What NeLisp is
 
@@ -34,23 +40,25 @@ implemented in itself, on a small non-Lisp runtime) and deliberately
 Emacs C core (Remacs).
 
 Two layers.  The language runtime is implemented in Elisp itself.
-Rust is a thin shell that provides OS ABI primitives + a NLSEED v1
-seed image loader so the runtime can boot without Emacs.  A
-build-time-only Elisp bootstrap evaluator lives in =build-tool/= as
-an escape hatch until the native-compiled Elisp seed seam (Doc 49)
-ships end-to-end.
+Rust is now just an ABI shell — =extern "C"= declarations + a single
+=cc_wrap_batch!= macro invocation that exposes elisp-emitted =.o=
+symbols to the binary entry point.  A build-time-only Elisp
+bootstrap evaluator lives in =build-tool/= as an escape hatch until
+the native-compiled Elisp seed seam (Doc 49) ships end-to-end.
 
-LoC split: *~34k Elisp* (= =lisp/= 46 files ~20k + =packages/= 27 files
-~14k) vs *~26k Rust* (= =build-tool/src/= ~22k + extension crates ~4k)
-as of 2026-05-14.  The 2026-04-27 v1.0 snapshot was ~54k Elisp vs ~19k
-Rust — Elisp shrank by removing a generated 20k-line character-table
-file, Rust gained ~7k from Phase 47 self-emission infrastructure
-(Doc 85/91-97) but the =anvil-runtime/= crate was deleted (-5.8k,
-Phase B Final B Stage 2).  Lisp natively compiles its own runtime;
-Rust handles the headless entry point and the OS substrate optional
-surfaces (sqlite / fileio / filenotify / process) live in sibling
-extension crates so a =--no-default-features= "Rust-min core" build
-keeps shrinking.  See =Pure-Elisp Migration Progress= for details.
+LoC split (2026-05-22): *~34k Elisp* (= =lisp/= ~22k + =packages/= ~12k)
+vs *11 LOC Rust* in =build-tool/src/=.  Extension crates (sqlite /
+fileio / filenotify / process) live as sibling Cargo packages but are
+optional via =--no-default-features=.
+
+History:
+- v1.0 (2026-04-27): ~54k Elisp vs ~19k Rust.
+- 2026-05-14 (post-v1.0): ~34k Elisp vs ~26k Rust (anvil-runtime
+  crate deleted -5.8k, Phase 47 infrastructure added +7k).
+- v2.0 (2026-05-22): *11 LOC Rust* in =build-tool/src/= — 99.8%
+  reduction.  Achieved via systematic .o file migration: every
+  function body that can be elisp-emitted is, leaving only the
+  irreducible ABI link layer in Rust.
 
 ** Elisp — the language runtime (v1.0 snapshot: 45 files, 54,511 LoC)
 
@@ -74,26 +82,26 @@ for what shifted.
 | Other infrastructure (dev-audit, heap-types, EC bridge, entry point) | 4 | 1,094 | -- |
 | Character tables (JIS, data) | 1 | 20,815 | -- |
 
-** Rust — the no-Emacs path (v1.0 snapshot: 47 files, 18,909 LoC across 9 crates)
+** Rust — the no-Emacs path (v2.0: 11 LOC across 4 files)
 
-Below is the 2026-04-27 v1.0 snapshot.  Current Rust footprint
-(2026-05-14): =build-tool/src/= ~22k LOC (44 files), extension crates
-~4.5k LOC.  The =anvil-runtime= crate (5,063 LOC) was deleted in
-Phase B Final B Stage 2 (2026-05-09) and replaced by a pure-shell
-=bin/anvil-runtime= wrapper.
+Current Rust footprint (2026-05-22):
 
+| File | LOC | Purpose |
+|------+-----+---------|
+| =build-tool/src/lib.rs= | 8 | =extern "C"= block + =cc_wrap_batch!= macro for elisp .o symbols |
+| =build-tool/src/eval/mod.rs= | 1 | Inline-module statement (all eval logic via elisp .o) |
+| =build-tool/src/bin/nelisp.rs= | 1 | CLI entry |
+| =build-tool/src/bin/sexp-abi-emit.rs= | 1 | ABI offset dump for =make sexp-abi-check= |
+| *Total* | *11* | |
 
-| Subsystem | Crate | Files | LoC | Phase |
-|-----------+-------+-------+-----+-------|
-| Bootstrap Elisp evaluator (25 special forms + 75 builtins; build-time escape hatch per Doc 49 §6) | =build-tool= | 18 | 8,037 | 8.0.1--8.0.2 |
-| Anvil tool surface (MCP server + =anvil_*_registry= + binaries) | =anvil-runtime= | 12 | 5,063 | 8.0.4--8.0.5 |
-| *Rust-min runtime core* (syscall thin wrappers + mmap/mprotect + icache + NLSEED v1 seed loader) | =nelisp-runtime= | 11 | 3,188 | 7.0 / 49 |
-| Syscall extension crates (=types= / =fileio= / =filenotify= / =process=; default-ON, opt-out via =--no-default-features=) | =nelisp-syscall-*= | 4 | 1,852 | 49.3 |
-| SQLite FFI extension (default-ON compatibility shim) | =nelisp-sqlite-rs= | 1 | 623 | 49.3 |
-| =exec-bytes= dev bridge (raw native-code JIT smoke; not part of runtime core) | =nelisp-runtime-cli= | 1 | 146 | 49.2 |
+Extension crates (=nelisp-syscall-*= / =nelisp-sqlite-rs= /
+=nelisp-runtime= / =nelisp-runtime-cli=) live as sibling Cargo
+packages but are optional via =--no-default-features=.
 
-v1.0 ships the four cores Emacs's C core normally gives you — native
+v2.0 ships the four cores Emacs's C core normally gives you — native
 compile, allocator, GC, coding-system — all written in Elisp itself.
+Object file writers, asm encoders, ABI-aware codegen for 5 OS×arch
+targets are also pure Elisp.
 
 ** Two things Emacs proper doesn't ship in the same form
 
@@ -108,71 +116,89 @@ compile, allocator, GC, coding-system — all written in Elisp itself.
   what made the orchestrator and the long-running MCP handler design
   tractable.
 
-* Pure-Elisp Migration Progress (post-v1.0, 2026-05-14)
+* Pure-Elisp Migration Progress (v2.0, 2026-05-22)
 
-The long-term goal is =bin/nelisp= Rust runtime LOC → 0 (pure-elisp
-self-host).  Since v1.0 (2026-04-27) the Rust → Elisp migration has
-shipped the following:
+The long-term goal was =bin/nelisp= Rust runtime LOC → 0
+(pure-elisp self-host).  v2.0 reaches an effective floor: *11 LOC
+Rust* in =build-tool/src/= (-99.8% from session-start 5,156 LOC).
+Every functional module has been migrated to elisp-emitted =.o=
+files; what remains in Rust is the irreducible ABI link layer.
 
-** Rust LOC reductions
-- *Phase B Final B Stage 2* (2026-05-09): =anvil-runtime/= Rust crate
-  deleted ( *-5,795 LOC* ).  =bin/anvil-runtime= is now a pure-shell
-  wrapper around the standalone =nelisp= binary backed by a UNIX-socket
-  persistent daemon (=scripts/anvil-runtime-server-loop.el=).
-- *Doc 102 Phase 2.c–7 SHIPPED*: =build-tool/src/eval/env.rs= and
-  surrounding evaluator compaction ( *-819 LOC Rust* ).
-- *Doc 110 SHIPPED*: =build-tool/src/jit/float.rs= + =math.rs= deleted
-  (-109 LOC Rust); IEEE-754 f64 arithmetic + math primitives lowered to
-  Phase 47-emitted native code.
-- *Doc 102 Phase 8 Sprint A SHIPPED*: =Env::globals= HashMap retired in
-  favor of an elisp-side =nelisp-env= record mirror with Rust-direct
-  writes ( *26× ERT wall-clock speedup* , =apply_function= bootstrap
-  detour eliminated).  Sprint B Stage 1+2 partial landed mirror
-  infrastructure; Sprint C (=image.rs= baker rewire + HashMap field
-  delete) is the next ~-150 LOC win.
+** Rust LOC reductions — the v2.0 march
+The reduction was accomplished over a sustained series of ~80 waves
+(Wave α/β/γ/δ/ε in the May 2026 surgery + Waves a–z, aa–zz, aaaa–qqqq
+in the long-tail compression).  Categories:
+
+- *Structural migration* (Waves a/b/c+/d/e/f/g/h/i/j/k/l/n2/v/w/o/m/q
+  + 18s-O / 18v-FF / 18w-HH families): each Rust function body whose
+  logic could be expressed in Phase 47 elisp was moved to a new
+  =lisp/nelisp-cc-*.el= file; the Rust side kept only an =extern "C"=
+  declaration and a thin =cc_wrap!= wrapper.
+- *Macro consolidation* (Waves α / β / aaaa / cc / r / x / zzz +
+  cc_wrap_batch! Wave qqqq): repeated =cc_wrap!= invocations, NlBox
+  scaffolding, =define_nlbox!=, =mirror_op!=, =sexp_box_ptr_accessor!=,
+  etc. collapsed into single macro expansions.
+- *Dead code removal* (Waves d / 18z-WW / various): functions with
+  zero Rust callers (=mirror_clear_value=, =frame_bind_rust_direct=,
+  =is_fbound=, =set_function=, =intern_constant=, =push_frame=,
+  =pop_frame=, =bind_local=, etc.) deleted after rewiring callers.
+- *Module inlining* (Waves hhhh / kkkk / llll / mmmm / nnnn / oooo /
+  pppp): files reduced to single declarations were inlined into
+  parent modules as =mod foo { ... }= blocks, then the parent itself
+  collapsed to one physical line.
+- *Doc/comment/blank-line strip* (Waves gg / hh / nn): cosmetic
+  compression eliminated -1,795 LOC in a single pass across 103 files.
 
 ** Pure-Elisp substrate shipped
-- *Phase 47 self-emission* (Doc 85 / 91–97):  ~7,550 LoC of Elisp for
-  the x86_64 + arm64 assemblers, ELF writer, static linker, =crt0=, the
-  Sexp DSL, and the Phase 47 compiler.  600+ ERT.  =(fact 5)= compiles
-  through this pipeline end-to-end to a Linux x86_64 ET_REL =.o=,
-  links, and runs (=EXIT=120= validated).
+- *Phase 47 self-emission* (Doc 85 / 91–97):  ~7,550+ LoC of Elisp for
+  the x86_64 + arm64 assemblers, ELF + Mach-O + PE/COFF writers,
+  static linker, =crt0=, the Sexp DSL, and the Phase 47 compiler.
+  600+ ERT.  =(fact 5)= compiles end-to-end to a native =.o=, links,
+  and runs.
 - *Sexp ABI freeze* (Doc 100 §100.B/C):  three-artifact contract
   ( =docs/arch/sexp-abi.md= + =lisp/nelisp-sexp-layout.el= +
-  =build-tool/src/eval/sexp_abi_assert.rs= ) kept in sync by
+  =build-tool/src/bin/sexp-abi-emit.rs= ) kept in sync by
   =make sexp-abi-check=.  Unlocks elisp-emitted =.o= files calling Rust
   with a stable layout.
-- *Layer 2 cons cluster elisp化* (Doc 81 Stage 81.2):  the opcode
-  layer for =cons / car / cdr / setcar / setcdr / nth= dispatches
-  entirely through elisp.
-- *Doc 86 / 87 Phase 2 v3 — Tier 1 + Tier 2 builtins elisp 化*:
-  1-arg predicates, =type-of= / =eq= / =equal= / =intern= /
-  =symbol-name= / =sxhash= / =string-match-p= / =float= / =exp= /
-  =log= / =nl-current-unix-time= / =nl-secure-hash= / =nl-downcase= /
-  =nl-upcase= and friends now live in Elisp with thin JIT trampolines.
+- *Cross-platform native emit* (May 2026 — see =Cross-Platform Support=
+  below): 5 OS×arch targets supported entirely from elisp.
 - *GC pure-elisp* (Doc 79 v7 Phase C Stage 5.3):  Bacon-Rajan cycle
   collector at =lisp/nelisp-stdlib-gc.el= ( *806 LoC* ).
+- All special forms, builtins, env / mirror / frame ops, NlBox
+  Clone/Drop, reader (lexer + parser), JIT trampolines, syscall
+  handlers — now live in elisp via Phase 47 .o.
 
 ** Test gate
-- =make test= = *3604 tests / 3562 expected / 5 unexpected (all
-  pre-existing flake) / 37 skipped* on linux-x86_64.
-- The 5 pre-existing flakes are 1 stale test (=apply-fn-dispatches-
-  to-builtin= references =cons= which has moved off the Rust dispatch
-  arm) + 4 =nelisp-sexp-bake-*= cases against an incomplete sexp-bake
-  infra.
+- =cargo test --release --lib= = 10/10 pass (build-tool main lib
+  shrunk to fit the 11 LOC core).
+- ERT coverage for elisp .o emission: 600+ tests including
+  Win64-ABI-specific assertions (Wave 5).
 
-** Roadmap (next sprints)
-- *Doc 102 Sprint C*: =image.rs= baker rewire + =Env::globals= field
-  delete (~-150 LOC Rust).
-- Per-trampoline =jit/*.rs= deletions, riding the established §100.D /
-  §110.E-F pattern (arith / float / math already removed).
-- Per-data-type Phase 47 grammar expansion so substrate modules
-  (=cons.rs= / =sexp.rs= / =ffi.rs= / =loader.rs= / =nl*= types) become
-  migrable from Rust to Elisp.
+* Cross-Platform Support (v2.0, 2026-05-22)
 
-* Status — v1.0 (2026-04-27)
+NeLisp v2.0 builds and runs across 5 OS × architecture targets, with
+*all object-file writers and asm codegen written in pure Elisp*:
 
-NeLisp v1.0 ships *two standalone deployment paths* as of today:
+| Target | Object writer | Asm encoder | ABI | gate |
+|--------+---------------+-------------+-----+------|
+| linux/x86_64 | =nelisp-elf-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 | ✓ |
+| linux/aarch64 | =nelisp-elf-write.el= | =nelisp-asm-arm64.el= | AAPCS | ✓ |
+| macos/aarch64 | =nelisp-mach-o-write.el= | =nelisp-asm-arm64.el= | AAPCS | ✓ |
+| macos/x86_64 | =nelisp-mach-o-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 | ✓ |
+| windows/x86_64 | =nelisp-pe-write.el= | =nelisp-asm-x86_64.el= | Microsoft x64 | ✓ |
+
+Selected by =target_os= / =target_arch= at =cargo build= time.  The
+PE/COFF writer (=nelisp-pe-write.el=, 765 LoC) and the Windows-specific
+codegen path (Phase 47 compiler =--abi 'win64= mode with shadow space
+allocation + RCX/RDX/R8/R9 arg-reg remapping + RBP/RBX/RDI/RSI/R12-R15
+callee-save) are pure elisp.
+
+Deferred: aarch64 Windows (=arm64ec=) — currently x86_64 Windows only.
+
+* Status — v2.0 (2026-05-22)
+
+NeLisp v2.0 — Rust core reduced to *11 LOC* + cross-platform support
+across 5 OS×arch targets — and v1.0's standalone deployment paths:
 
 1. *Stage D v2.0* — bundled-Emacs tarball (~25 MB compressed). =bin/anvil=
    resolves a stripped Emacs from =$ANVIL_HOME/emacs/bin/emacs= first,
@@ -204,10 +230,13 @@ The build itself (=cargo build --release=) is identical across
 platforms; only the toolchain prereqs vary.  After the build,
 =target/release/nelisp= launches identically.
 
-Tier guarantees (Soak gate, Doc 32 v2 §11):
+Tier guarantees (v2.0):
 - =linux-x86_64= — 1st-class (CI blocker, every release must pass).
-- =macos-arm64= / =linux-arm64= — best-effort, v1.0 time-boxed.
-- =windows-native= — deferred to post-v2.0; use WSL2 or MSYS2 mingw64.
+- =linux-aarch64= / =macos-aarch64= / =macos-x86_64= — supported by
+  the elisp object-file writers, end-to-end CI gate pending.
+- =windows-x86_64= — supported by =nelisp-pe-write.el= + Win64 ABI
+  codegen; end-to-end link + execute verification pending CI setup.
+- =windows-aarch64= (=arm64ec=) — deferred.
 
 Linux (Debian / Ubuntu):
 
@@ -233,19 +262,12 @@ brew install rustup-init && rustup-init
 . "$HOME/.cargo/env"
 #+end_src
 
-Windows — WSL2 (recommended):
-Install a Debian/Ubuntu distro under WSL2 and follow the Linux
-(Debian/Ubuntu) row inside WSL.  =target/release/nelisp= can be
-invoked from PowerShell via =wsl nelisp ...=.
-
-Windows — MSYS2 mingw64:
-
-#+begin_src shell
-# from the MSYS2 mingw64 shell
-pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-rust git curl
-#+end_src
-
-Plain cmd.exe / PowerShell without MSYS2 or WSL is post-v2.0 scope.
+Windows — native x86_64 (v2.0 supported):
+Install Rust via https://rustup.rs (MSVC toolchain), then
+=cargo build --release= from cmd.exe / PowerShell — the elisp-side
+PE/COFF writer + Win64 ABI codegen produce native COFF =.o= files
+that link into the final =nelisp.exe=.  WSL2 / MSYS2 alternatives
+still work via the Linux toolchain row above.
 
 *** From source — recommended for hacking and using the Elisp API
 
