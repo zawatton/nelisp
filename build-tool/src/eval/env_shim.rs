@@ -14,9 +14,7 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         let flag = if matches!(args[2], Sexp::Nil) { Sexp::Nil } else { Sexp::T };
         let sc = crate::elisp_cc_spike::build_or_insert_scratch_vec(if op == "set-value" { args[2].clone() } else { env.unbound_marker.clone() }, if op == "set-function" { args[2].clone() } else { env.unbound_marker.clone() }, Sexp::Nil, if op == "set-constant" { flag } else { Sexp::Nil });
         unsafe { crate::elisp_cc_spike::env_shim_set_op(&args[0], &env.globals_record, &args[1], &sc, &mut result, 0) }
-    } else {
-        unsafe { crate::elisp_cc_spike::env_shim_op(&args[0], &env.globals_record, &args[1], &env.unbound_marker, &mut result, &mut scratch) }
-    };
+    } else { unsafe { crate::elisp_cc_spike::env_shim_op(&args[0], &env.globals_record, &args[1], &env.unbound_marker, &mut result, &mut scratch) } };
     match rc { 1 => Ok(result), 0 => Err(EvalError::unbound_var(name)), -1 => Err(EvalError::unbound_fn(name)), _ => Err(EvalError::internal(format!("nelisp--env-globals-op: unknown OP `{op}'"))) }
 }
 #[cfg(test)]

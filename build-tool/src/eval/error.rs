@@ -16,9 +16,7 @@ impl EvalError {
     #[inline] pub fn internal(msg: impl Into<String>) -> Self { Self::Generic("error".into(), Sexp::list_from(&[Sexp::Str(msg.into())])) }
     #[inline] pub fn user(tag: impl Into<String>, data: Sexp) -> Self { Self::Generic(tag.into(), data) }
 }
-pub fn is_error_subtype(clause_tag: &str, actual_tag: &str) -> bool {
-    clause_tag == actual_tag || clause_tag == "t" || (clause_tag == "error" && actual_tag != "quit")
-}
+pub fn is_error_subtype(clause_tag: &str, actual_tag: &str) -> bool { clause_tag == actual_tag || clause_tag == "t" || (clause_tag == "error" && actual_tag != "quit") }
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { match self { EvalError::Generic(tag, data) => write!(f, "{}: {}", tag, data), EvalError::Quit => write!(f, "quit") } }
 }

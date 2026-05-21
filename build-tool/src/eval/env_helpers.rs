@@ -11,25 +11,17 @@ pub struct Env {
     pub globals_record: Sexp, pub unbound_marker: Sexp, pub frames_record: Sexp,
 }
 macro_rules! mirror_op {
-    (mutate: $name:ident => $extern_fn:ident) => {
-        pub(crate) fn $name(&mut self, name: &str, value: Sexp) { self.with_mirror_unbound(name, |m,s,u| unsafe { crate::elisp_cc_spike::$extern_fn(m,s,&value,u); }); }
-    };
-    (pred: $name:ident($vis:vis) => $extern_fn:ident) => {
-        $vis fn $name(&self, name: &str) -> bool { self.with_mirror_unbound(name, |m,s,u| unsafe { crate::elisp_cc_spike::$extern_fn(m,s,u)!=0 }).unwrap_or(false) }
-    };
-    (lookup: $name:ident($vis:vis) => $extern_fn:ident) => {
-        $vis fn $name(&self, name: &str) -> Sexp { self.with_mirror_symbol(name, |m,s| unsafe { if crate::elisp_cc_spike::mirror_lookup_entry(m,s).is_null() { return self.unbound_marker.clone(); } let mut slot=Sexp::Nil; crate::elisp_cc_spike::$extern_fn(m,s,&mut slot); slot }).unwrap_or_else(|| self.unbound_marker.clone()) }
-    };
+    (mutate: $name:ident => $extern_fn:ident) => { pub(crate) fn $name(&mut self, name: &str, value: Sexp) { self.with_mirror_unbound(name, |m,s,u| unsafe { crate::elisp_cc_spike::$extern_fn(m,s,&value,u); }); } };
+    (pred: $name:ident($vis:vis) => $extern_fn:ident) => { $vis fn $name(&self, name: &str) -> bool { self.with_mirror_unbound(name, |m,s,u| unsafe { crate::elisp_cc_spike::$extern_fn(m,s,u)!=0 }).unwrap_or(false) } };
+    (lookup: $name:ident($vis:vis) => $extern_fn:ident) => { $vis fn $name(&self, name: &str) -> Sexp { self.with_mirror_symbol(name, |m,s| unsafe { if crate::elisp_cc_spike::mirror_lookup_entry(m,s).is_null() { return self.unbound_marker.clone(); } let mut slot=Sexp::Nil; crate::elisp_cc_spike::$extern_fn(m,s,&mut slot); slot }).unwrap_or_else(|| self.unbound_marker.clone()) } };
 }
 impl Env {
     fn fresh(max_recursion: u32) -> Self { Env { max_recursion, current_recursion: 0, extern_builtins: HashMap::new(), use_elisp_apply: false, delegation_depth: 0, globals_record: Sexp::Nil, unbound_marker: Sexp::Nil, frames_record: Sexp::Nil } }
-    pub fn new_global() -> Self {
-        macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) }; }
+    pub fn new_global() -> Self { macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) }; }
         const SF: &[(&str,&str)] = &[e!("nelisp-jit-substrate.el"),e!("nelisp-syscall-table.el"),e!("nelisp-jit-strategy.el"),e!("nelisp-stdlib-env-shim.el"),e!("nelisp-stdlib-eval-special.el"),e!("nelisp-stdlib-error.el"),e!("nelisp-stdlib.el"),e!("nelisp-stdlib-list.el"),e!("nelisp-stdlib-hof.el"),e!("nelisp-stdlib-search.el"),e!("nelisp-stdlib-plist-str.el"),e!("nelisp-stdlib-format.el"),e!("nelisp-stdlib-misc.el"),e!("nelisp-stdlib-os-int-helpers.el"),e!("nelisp-stdlib-os.el"),e!("nelisp-pcase.el"),e!("nelisp-cl-macros.el"),e!("nelisp-stdlib-hash.el"),e!("nelisp-stdlib-equal.el"),e!("nelisp-stdlib-prn.el"),e!("nelisp-stdlib-reader.el"),e!("nelisp-stdlib-eval-core.el"),e!("nelisp-stdlib-math.el"),e!("nelisp-stdlib-regex.el"),e!("nelisp-stdlib-fast-hash.el"),e!("nelisp-env.el"),e!("nelisp-lexframe.el"),e!("nelisp-cli.el")];
         let mut env = Env::install_stage0(1024); let tr = std::env::var_os("NELISP_EVAL_BOOT_TRACE").map_or(false, |v| !v.is_empty() && v != "0");
         for (name, src) in SF { for (idx, form) in crate::reader::read_all(src).unwrap_or_else(|e| panic!("{name} read failed: {e}")).iter().enumerate() { if tr { eprintln!("[eval-boot] {name}: form #{idx}"); } crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval failed at #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form))); } }
-        env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty()); env.mirror_set_value("nelisp--unbound-marker", env.unbound_marker.clone()); env
-    }
+        env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty()); env.mirror_set_value("nelisp--unbound-marker", env.unbound_marker.clone()); env }
     pub fn empty() -> Self { Env::fresh(256) }
     pub fn new_global_no_stdlib() -> Self { Env::install_stage0(1024) }
     fn install_stage0(max_recursion: u32) -> Self { let mut env = Env::fresh(max_recursion); env.install_empty_mirror_rust_direct(); let (u, p, c) = (env.unbound_marker.clone(), Sexp::Nil, Sexp::T); for (n, v) in [("nil", Sexp::Nil), ("t", Sexp::T)] { env.with_mirror_symbol(n, |m, s| unsafe { crate::elisp_cc_spike::mirror_install_entry_or_insert(m, s, &v, &u, &p, &c); }); } super::builtins::install_builtins(&mut env); env.register_extern_builtin("nelisp--env-globals-op", |args, env| super::env_shim::bi_globals_op(args, env)); env }

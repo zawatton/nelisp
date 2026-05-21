@@ -6,6 +6,6 @@ fn nl_layout(size: i64, align: i64) -> Option<Layout> { (size > 0 && align > 0).
 mod tests {
     use super::*;
     #[test] fn alloc_round_trip() { let p=unsafe{nl_alloc_bytes(64,8)}; assert!(!p.is_null()); unsafe{nl_dealloc_bytes(p,64,8)} }
-    #[test] fn alloc_bad() { for(s,a) in [(32,3),(0,8),(-1,8),(32,0)] { assert!(unsafe{nl_alloc_bytes(s,a)}.is_null()); } }
+    #[test] fn alloc_bad() { for(s,a)in[(32,3),(0,8),(-1,8),(32,0)]{assert!(unsafe{nl_alloc_bytes(s,a)}.is_null());} }
     #[test] fn alloc_null_aligned() { unsafe{nl_dealloc_bytes(std::ptr::null_mut(),32,8)}; let p=unsafe{nl_alloc_bytes(128,16)}; assert!(!p.is_null()&&(p as usize)&0xF==0); unsafe{nl_dealloc_bytes(p,128,16)} }
 }
