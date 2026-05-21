@@ -62,30 +62,25 @@ macro_rules! builtin_dispatch {
                     2 => Err(EvalError::wrong_type(match hd(&$args[1]) { Some(Sexp::Symbol(s)|Sexp::Str(s)) => s.clone(), Some(o) => format!("{o:?}"), None => "argument".into() }, match &$args[1] { Sexp::Cons(b) => match &b.cdr { Sexp::Cons(c) => c.car.clone(), o => o.clone() }, o => o.clone() })),
                     _ => Err(EvalError::user(tag.clone(), $args[1].clone())),
                 } },
-            "nelisp--write-stdout-bytes" => { use std::io::Write; require_arity("nelisp--write-stdout-bytes", $args, 1, Some(1))?; let bs = Sexp::Str($args[0].as_string_owned().ok_or_else(|| EvalError::wrong_type("stringp", $args[0].clone()))?);
+            "nelisp--write-stdout-bytes" => { use std::io::Write; require_arity("nelisp--write-stdout-bytes", $args, 1, Some(1))?;
+                let bs = Sexp::Str($args[0].as_string_owned().ok_or_else(|| EvalError::wrong_type("stringp", $args[0].clone()))?);
                 let rc = unsafe { crate::elisp_cc_spike::bi_write_stdout_bytes(&bs) }; if rc < 0 { return Err(EvalError::internal(format!("nelisp--write-stdout-bytes: write returned {rc}"))); }
                 std::io::stdout().lock().flush().map_err(|e| EvalError::internal(format!("nelisp--write-stdout-bytes: {e}")))?; Ok($args[0].clone()) },
-            "nelisp--write-stderr-line" => { use std::io::Write; require_arity("nelisp--write-stderr-line", $args, 1, Some(1))?; let bs = Sexp::Str($args[0].as_string_owned().ok_or_else(|| EvalError::wrong_type("stringp", $args[0].clone()))?);
+            "nelisp--write-stderr-line" => { use std::io::Write; require_arity("nelisp--write-stderr-line", $args, 1, Some(1))?;
+                let bs = Sexp::Str($args[0].as_string_owned().ok_or_else(|| EvalError::wrong_type("stringp", $args[0].clone()))?);
                 unsafe { let _ = crate::elisp_cc_spike::bi_write_stderr_line(&bs); } let mut e = std::io::stderr().lock(); let _ = e.write_all(b"\n"); let _ = e.flush(); Ok($args[0].clone()) },
-            "read-stdin-bytes" => { require_arity("read-stdin-bytes", $args, 1, Some(1))?; let lim = match &$args[0] { Sexp::Int(n) if *n > 0 => *n as usize, o => return Err(EvalError::wrong_type("positive integer", o.clone())) };
+            "read-stdin-bytes" => { require_arity("read-stdin-bytes", $args, 1, Some(1))?;
+                let lim = match &$args[0] { Sexp::Int(n) if *n > 0 => *n as usize, o => return Err(EvalError::wrong_type("positive integer", o.clone())) };
                 let mut buf = vec![0u8; lim]; let rc = unsafe { crate::elisp_cc_spike::bi_read_stdin_bytes(buf.as_mut_ptr(), lim as i64) }; if rc < 0 { return Err(EvalError::internal(format!("read-stdin-bytes: read returned {}", rc))); }
                 if rc == 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(lim)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) },
-            "nelisp--f64-trunc" => { require_arity("nelisp--f64-trunc", $args, 3, Some(3))?; if let Sexp::Symbol(_) = &$args[0] {} else { return Err(EvalError::wrong_type("symbol", $args[0].clone())); } let mut out = Sexp::Nil; unsafe { crate::elisp_cc_spike::f64_trunc_impl(&$args[0] as *const _, &$args[1] as *const _, &$args[2] as *const _, &mut out as *mut _) }; if let Sexp::Nil = out { Err(EvalError::internal("nelisp--f64-trunc: unknown mode")) } else { Ok(out) } },
-            "nl-write-file" => { require_arity("nl-write-file", $args, 2, Some(2))?;
-                let path = string_value(&$args[0])?; string_value(&$args[1])?;
-                kernel_path_ok("nl-write-file", &path, unsafe { crate::elisp_cc_spike::bi_nl_write_file(&$args[0], &$args[1]) }) },
-            "nl-make-directory" => { require_arity("nl-make-directory", $args, 1, Some(2))?;
-                let path = string_value(&$args[0])?;
-                kernel_path_ok("nl-make-directory", &path, unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&$args[0]) as i32 as i64 }) },
+            "nelisp--f64-trunc" => { require_arity("nelisp--f64-trunc", $args, 3, Some(3))?; if !matches!($args[0], Sexp::Symbol(_)) { return Err(EvalError::wrong_type("symbol", $args[0].clone())); } let mut out = Sexp::Nil; unsafe { crate::elisp_cc_spike::f64_trunc_impl(&$args[0], &$args[1], &$args[2], &mut out) }; if matches!(out, Sexp::Nil) { Err(EvalError::internal("nelisp--f64-trunc: unknown mode")) } else { Ok(out) } },
+            "nl-write-file" => { require_arity("nl-write-file", $args, 2, Some(2))?; let path = string_value(&$args[0])?; string_value(&$args[1])?; kernel_path_ok("nl-write-file", &path, unsafe { crate::elisp_cc_spike::bi_nl_write_file(&$args[0], &$args[1]) }) },
+            "nl-make-directory" => { require_arity("nl-make-directory", $args, 1, Some(2))?; let path = string_value(&$args[0])?; kernel_path_ok("nl-make-directory", &path, unsafe { crate::elisp_cc_spike::bi_nl_make_directory(&$args[0]) as i32 as i64 }) },
             "terminal-raw-mode-enter" => { require_arity("terminal-raw-mode-enter", $args, 0, Some(0))?; #[cfg(unix)] { tty::raw_mode_enter()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "terminal-raw-mode-leave" => { require_arity("terminal-raw-mode-leave", $args, 0, Some(0))?; #[cfg(unix)] { tty::raw_mode_leave()?; Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "read-stdin-byte-available" => {
-                require_arity("read-stdin-byte-available", $args, 0, Some(1))?;
-                let timeout_ms = match $args.get(0) { None | Some(Sexp::Nil) => 0i32, Some(Sexp::Int(n)) => *n as i32,
-                    Some(other) => return Err(EvalError::wrong_type("integer (timeout-ms)", other.clone())) };
-                #[cfg(unix)] { Ok(tty::stdin_byte_available(timeout_ms)?.map_or(Sexp::Nil, |b| Sexp::Int(b as i64))) }
-                #[cfg(not(unix))] { let _ = timeout_ms; Ok(Sexp::Nil) }
-            },
+            "read-stdin-byte-available" => { require_arity("read-stdin-byte-available", $args, 0, Some(1))?;
+                let timeout_ms = match $args.get(0) { None|Some(Sexp::Nil) => 0i32, Some(Sexp::Int(n)) => *n as i32, Some(o) => return Err(EvalError::wrong_type("integer (timeout-ms)", o.clone())) };
+                #[cfg(unix)] { Ok(tty::stdin_byte_available(timeout_ms)?.map_or(Sexp::Nil, |b| Sexp::Int(b as i64))) } #[cfg(not(unix))] { let _=timeout_ms; Ok(Sexp::Nil) } },
             "_termios-saved-p" => { require_arity("_termios-saved-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::termios_saved_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "_raw-mode-hooks-installed-p" => { require_arity("_raw-mode-hooks-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::hooks_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "set-quit-flag" => { require_arity("set-quit-flag", $args, 0, Some(0))?; unsafe { crate::elisp_cc_spike::bi_set_quit_flag(quit::nl_quit_flag_ptr()); } Ok(Sexp::T) },
@@ -96,9 +91,7 @@ macro_rules! builtin_dispatch {
             "install-winsize-handler" => { require_arity("install-winsize-handler", $args, 0, Some(0))?; #[cfg(unix)] { tty::install_winsize_handler(); Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "_winsize-handler-installed-p" => { require_arity("_winsize-handler-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::winsize_handler_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "terminal-take-winsize-changed" => { require_arity("terminal-take-winsize-changed", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::take_winsize_changed())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
-            "terminal-current-winsize" => { require_arity("terminal-current-winsize", $args, 0, Some(0))?;
-                #[cfg(unix)] { Ok(tty::current_winsize().map_or(Sexp::Nil, |(c,r)| Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)))) }
-                #[cfg(not(unix))] { Ok(Sexp::Nil) } },
+            "terminal-current-winsize" => { require_arity("terminal-current-winsize", $args, 0, Some(0))?; #[cfg(unix)] { Ok(tty::current_winsize().map_or(Sexp::Nil, |(c,r)| Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)))) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "install-jobctrl-handlers" => { require_arity("install-jobctrl-handlers", $args, 0, Some(0))?; #[cfg(unix)] { tty::install_jobctrl_handlers(); Ok(Sexp::T) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "_jobctrl-handlers-installed-p" => { require_arity("_jobctrl-handlers-installed-p", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::jobctrl_handlers_installed_p())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
             "terminal-take-sigcont" => { require_arity("terminal-take-sigcont", $args, 0, Some(0))?; #[cfg(unix)] { Ok(bool_sexp(tty::take_sigcont())) } #[cfg(not(unix))] { Ok(Sexp::Nil) } },
@@ -106,11 +99,7 @@ macro_rules! builtin_dispatch {
             "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1($args), "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2($args), "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args),
             "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i($args), "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float($args),
             "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp($args), "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary($args),
-            "nl-fact-i64" => { require_arity("nl-fact-i64", $args, 1, Some(1))?;
-                let Sexp::Int(_) = &$args[0] else { return Err(EvalError::wrong_type("integerp", $args[0].clone())); };
-                let mut out = Sexp::Nil;
-                let rc = unsafe { crate::elisp_cc_spike::bi_nl_fact_i64(&$args[0], &mut out) };
-                if rc == 0 { Ok(out) } else { Err(EvalError::internal("nl-fact-i64: argument out of i64-safe range 0..=20")) } },
+            "nl-fact-i64" => { require_arity("nl-fact-i64", $args, 1, Some(1))?; let Sexp::Int(_) = &$args[0] else { return Err(EvalError::wrong_type("integerp", $args[0].clone())); }; let mut out = Sexp::Nil; let rc = unsafe { crate::elisp_cc_spike::bi_nl_fact_i64(&$args[0], &mut out) }; if rc == 0 { Ok(out) } else { Err(EvalError::internal("nl-fact-i64: argument out of i64-safe range 0..=20")) } },
             _ => match $env.extern_builtins.get($name).cloned() { Some(f) => f($args, $env), None => Err(EvalError::unbound_fn($name)) }
         }
     };
@@ -131,15 +120,19 @@ fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> { 
 fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> { require_arity(name,args,1,Some(1))?; let p=resolve_path(&args[0],env)?; Ok((p.clone(),Sexp::Str(p.to_string_lossy().into_owned()))) }
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (_, ps) = path_arg1("nelisp--syscall-canonicalize", args, env)?; let mut buf = vec![0u8; libc::PATH_MAX as usize];
-    if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&ps as *const _, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
+    if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&ps, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
     Ok(Sexp::Str(String::from_utf8_lossy(&buf[..buf.iter().position(|&b|b==0).unwrap_or(buf.len())]).into_owned())) }
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (p, ps) = path_arg1("nelisp--syscall-read-file", args, env)?; let n = match std::fs::metadata(&p) { Ok(m) if m.is_file() => m.len() as usize, _ => return Ok(Sexp::Nil) }; if n == 0 { return Ok(Sexp::Str(String::new())); }
-    let mut buf = vec![0u8; n]; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&ps as *const _, buf.as_mut_ptr(), n as i64) } as i32 as i64; if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) }
+    let (p, ps) = path_arg1("nelisp--syscall-read-file", args, env)?;
+    let n = match std::fs::metadata(&p) { Ok(m) if m.is_file() => m.len() as usize, _ => return Ok(Sexp::Nil) }; if n == 0 { return Ok(Sexp::Str(String::new())); }
+    let mut buf = vec![0u8; n]; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&ps, buf.as_mut_ptr(), n as i64) } as i32 as i64;
+    if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) }
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() }; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps as *const _, (&mut sb as *mut libc::stat) as *mut u8) };
+    let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() };
+    let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps, (&mut sb as *mut libc::stat) as *mut u8) };
     Ok(Sexp::Symbol((if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" } }).into())) }
-fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { let (dir, ds) = path_arg1("nelisp--syscall-readdir", args, env)?; let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) };
+fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    let (dir, ds) = path_arg1("nelisp--syscall-readdir", args, env)?; let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) };
     Ok(Sexp::cons(ds, Sexp::list_from(&rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>()))) }
 #[cfg(not(target_os = "linux"))]
 fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> { Err(EvalError::internal("nelisp--syscall: unsupported platform")) }

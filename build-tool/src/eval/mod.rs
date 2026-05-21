@@ -5,16 +5,17 @@ pub use env_helpers::{Env, ExternBuiltin, FrameCell};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 fn expect_single_form(forms: Vec<Sexp>, ctx: &str) -> Result<Sexp, EvalError> {
-    match forms.as_slice() { [s] => Ok(s.clone()), [] => Err(EvalError::internal(format!("{ctx}: empty input - at least one form required"))), _ => Err(EvalError::internal(format!("{ctx}: expected exactly one form, got {}", forms.len()))) } }
+    match forms.as_slice() { [s] => Ok(s.clone()), [] => Err(EvalError::internal(format!("{ctx}: empty input"))), _ => Err(EvalError::internal(format!("{ctx}: expected 1 form, got {}", forms.len()))) } }
 fn eval_forms(forms: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { forms.iter().try_fold(Sexp::Nil, |_, f| eval(f, env)) }
 pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
-    let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl").map_err(|_| EvalError::internal("nelisp--read-all-from-string-impl not loaded"))?;
-    list_elements(&apply_function(&impl_fn, &[Sexp::Str(input.to_string())], env)?) }
+    let f = env.lookup_function("nelisp--read-all-from-string-impl").map_err(|_| EvalError::internal("nelisp--read-all-from-string-impl not loaded"))?;
+    list_elements(&apply_function(&f, &[Sexp::Str(input.to_string())], env)?) }
 pub fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> { expect_single_form(read_all_via_elisp(input, env)?, "read_one_via_elisp") }
 pub fn eval_str(input: &str) -> Result<Sexp, EvalError> { let mut env = Env::new_global(); let form = expect_single_form(read_all_via_elisp(input, &mut env)?, "eval_str")?; eval(&form, &mut env) }
 pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> { let mut env = Env::new_global(); eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env) }
 pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
-    let mut env = Env::new_global(); let rd = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+    let mut env = Env::new_global();
+    let rd = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
     let dir = if rd.is_empty() { ".".into() } else if rd.ends_with('/') { rd } else { rd + "/" };
     env.set_value("default-directory", Sexp::Str(dir.clone()))?; env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?;
     env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?; eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env) }
@@ -24,8 +25,7 @@ pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     env.current_recursion += 1; let mut out = Sexp::Nil; let rc = unsafe { crate::elisp_cc_spike::eval_inner_call(form as *const Sexp, env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp, 0) };
     env.current_recursion -= 1; if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "eval_inner")) } }
 fn walk_proper_list(head: &Sexp, mut f: impl FnMut(&Sexp) -> Result<Sexp, EvalError>) -> Result<Vec<Sexp>, EvalError> {
-    let (mut out, mut cur) = (Vec::new(), head.clone()); loop { match cur.clone() { Sexp::Nil => return Ok(out), Sexp::Cons(b) => { out.push(f(&b.car)?); cur = b.cdr.clone(); } o => return Err(EvalError::wrong_type("list", o)) } }
-}
+    let (mut out, mut cur) = (Vec::new(), head.clone()); loop { match cur.clone() { Sexp::Nil => return Ok(out), Sexp::Cons(b) => { out.push(f(&b.car)?); cur = b.cdr.clone(); } o => return Err(EvalError::wrong_type("list", o)) } } }
 pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(args, |car| eval(car, env)) }
 pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(list, |car| Ok(car.clone())) }
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -36,10 +36,8 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
         "builtin" => { let Sexp::Cons(inner) = &b.cdr else { return Err(EvalError::internal("builtin sentinel missing name")); };
             let name = match &inner.car { Sexp::Symbol(s)|Sexp::Str(s) => s.clone(), _ => return Err(EvalError::internal("builtin sentinel name not a symbol")) };
             builtins::dispatch(&name, args, env) }
-        head @ ("closure"|"lambda") => {
-            let parts = list_elements(func)?;
-            let (captured, fi, bs) = if head == "closure" { if parts.len() < 3 { return Err(EvalError::internal("closure missing env / args / body")); } (parts[1].clone(), 2usize, 3usize)
-            } else { if parts.len() < 2 { return Err(EvalError::internal("lambda missing args / body")); } (Sexp::Nil, 1, 2) };
+        head @ ("closure"|"lambda") => { let parts = list_elements(func)?;
+            let (captured, fi, bs) = if head == "closure" { if parts.len()<3 { return Err(EvalError::internal("closure missing env/args/body")); } (parts[1].clone(),2usize,3usize) } else { if parts.len()<2 { return Err(EvalError::internal("lambda missing args/body")); } (Sexp::Nil,1,2) };
             let mut out = Sexp::Nil; let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(&captured, &parts[fi], &Sexp::list_from(&parts[bs..]), &Sexp::list_from(args), env as *mut Env as *mut std::ffi::c_void, &mut out) };
             if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) } }
         "macro" => Err(EvalError::wrong_type("function (not macro)", func.clone())),
