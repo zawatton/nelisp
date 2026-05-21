@@ -2,9 +2,7 @@ use std::sync::atomic::AtomicI64; use crate::eval::sexp::Sexp;
 static MAKE_SYMBOL_COUNTER: AtomicI64 = AtomicI64::new(0);
 #[no_mangle] pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 { std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64 }
 #[no_mangle] pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: *mut Sexp) -> i64 { let (Some(ch), false) = (char::from_u32(conv), prec < 0) else { return 1 }; let p = prec as usize; let body = match ch { 'f'|'F' => format!("{:.*}",p,x), 'e' => format!("{:.*e}",p,x), 'E' => format!("{:.*E}",p,x), 'g'|'G' => { let (f,e)=(format!("{:.*}",p,x),format!("{:.*e}",p,x)); if f.len()<=e.len(){f}else{e} } _ => return 1 }; *out = Sexp::Str(body); 0 }
-crate::define_nlbox!(inner=NlStr, ref_ty=NlStrRef, fields={value: String},
-    clone_fn=crate::elisp_cc_spike::nlstr_clone, drop_fn=crate::elisp_cc_spike::nlstr_drop,
-    layout_asserts={ assert!(offset_of!(NlStr, value) == 0); assert!(offset_of!(NlStr, refcount) == size_of::<String>()); });
+crate::define_nlbox!(inner=NlStr, ref_ty=NlStrRef, fields={value: String}, clone_fn=crate::elisp_cc_spike::nlstr_clone, drop_fn=crate::elisp_cc_spike::nlstr_drop, layout_asserts={ assert!(offset_of!(NlStr, value) == 0); assert!(offset_of!(NlStr, refcount) == size_of::<String>()); });
 impl NlStrRef { pub unsafe fn set_value(&self, val: String) { let p = std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value); std::ptr::drop_in_place(p); std::ptr::write(p, val); } } impl std::fmt::Debug for NlStrRef { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("MutStr").field(&self.value).finish() } }
 impl PartialEq for NlStrRef { fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.value == other.value } }
 macro_rules! mut_str_val_mut { ($p:expr) => { &mut (*((*$p).mut_str_box_ptr() as *mut NlStr)).value }; }

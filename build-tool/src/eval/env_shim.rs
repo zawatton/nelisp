@@ -1,6 +1,4 @@
-use super::error::EvalError;
-use super::sexp::Sexp;
-use super::Env;
+use super::error::EvalError; use super::sexp::Sexp; use super::Env;
 pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let sym = |s: &Sexp| match s { Sexp::Symbol(n) => Ok(n.clone()), o => Err(EvalError::wrong_type("symbolp", o.clone())) };
     let arity = |n: usize| EvalError::wrong_arity("nelisp--env-globals-op", n.to_string(), args.len());

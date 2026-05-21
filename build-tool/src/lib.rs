@@ -25,8 +25,6 @@ pub mod elisp_cc_spike {
         fn nelisp_bi_syscall_canonicalize(path_ptr: *const Sexp, result_buf: *mut u8) -> i64; fn nelisp_bi_nl_write_file(path_ptr: *const Sexp, content_ptr: *const Sexp) -> i64;
         fn nelisp_bi_nl_make_directory(path_ptr: *const Sexp) -> i64; fn nelisp_bi_syscall_resolve_nr(sym_ptr: *const Sexp) -> i64;
         fn nelisp_bi_syscall_read_file(path_ptr: *const Sexp, buf_ptr: *mut u8, read_size: i64) -> i64;
-        fn nl_alloc_consbox() -> *mut u8; fn nl_alloc_cell(initial: *const u8) -> *mut u8; fn nl_alloc_vector(capacity: i64) -> *mut u8;
-        fn nl_alloc_record(type_tag_ptr: *const u8, slot_count: i64) -> *mut u8;
         fn nelisp_nlconsbox_clone(box_ptr: *mut i64) -> i64; fn nelisp_nlconsbox_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlvector_clone(box_ptr: *mut i64) -> i64; fn nelisp_nlvector_drop(box_ptr: *mut i64) -> i64;
         fn nelisp_nlcell_clone(box_ptr: *mut i64) -> i64; fn nelisp_nlcell_drop(box_ptr: *mut i64) -> i64;
@@ -101,10 +99,6 @@ pub mod elisp_cc_spike {
     cc_wrap!(tty_stdin_byte_avail: nelisp_tty_stdin_byte_avail, (pfd_buf: *mut u8, timeout_ms: i64) -> i64);
     cc_wrap!(tty_winsize_current: nelisp_tty_winsize_current, (ws_buf: *mut u8) -> i64);
     cc_wrap!(tty_take_atomic: nelisp_tty_take_atomic, (flag_ptr: *mut i64) -> i64);
-    pub unsafe fn nl_alloc_consbox_raw() -> *mut u8 { nl_alloc_consbox() }
-    pub unsafe fn nl_alloc_cell_raw(initial: *const u8) -> *mut u8 { nl_alloc_cell(initial) }
-    pub unsafe fn nl_alloc_vector_raw(capacity: i64) -> *mut u8 { nl_alloc_vector(capacity) }
-    pub unsafe fn nl_alloc_record_raw(type_tag_ptr: *const u8, slot_count: i64) -> *mut u8 { nl_alloc_record(type_tag_ptr, slot_count) }
     cc_wrap!(nlconsbox_clone: nelisp_nlconsbox_clone, (box_ptr: *mut i64) -> i64); cc_wrap!(nlconsbox_drop: nelisp_nlconsbox_drop, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlvector_drop: nelisp_nlvector_drop, (box_ptr: *mut i64) -> i64); cc_wrap!(nlcell_drop: nelisp_nlcell_drop, (box_ptr: *mut i64) -> i64);
     cc_wrap!(nlrecord_drop: nelisp_nlrecord_drop, (box_ptr: *mut i64) -> i64); cc_wrap!(nlstr_drop: nelisp_nlstr_drop, (box_ptr: *mut i64) -> i64);
@@ -120,17 +114,9 @@ pub mod elisp_cc_spike {
     cc_wrap!(mirror_install_entry: nelisp_mirror_install_entry, (mirror_ptr: *const Sexp, sym_ptr: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64);
     cc_wrap!(env_shim_op: nelisp_env_shim_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, unbound_ptr: *const Sexp, result_slot: *mut Sexp, vec_scratch: *mut Sexp) -> i64);
     pub fn build_or_insert_scratch_vec(value: Sexp, function: Sexp, plist: Sexp, constant: Sexp) -> Sexp { Sexp::vector(vec![Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Symbol("symbol-entry".into()), Sexp::Nil, value, function, plist, constant]) }
-    macro_rules! or_insert_wrap {
-        ($pub_name:ident: $ext:ident($mirror:ident, $sym:ident $(, $a:ident: $at:ty)*) => $v:expr, $f:expr, $p:expr, $c:expr) => {
-            pub unsafe fn $pub_name($mirror: *const Sexp, $sym: *const Sexp $(, $a: $at)*) -> i64 { let s = build_or_insert_scratch_vec($v, $f, $p, $c); $ext($mirror, $sym, &s as *const Sexp, 0) }
-        };
-    }
-    or_insert_wrap!(mirror_set_value_or_insert: nelisp_mirror_set_value_or_insert(m, s, value_ptr: *const Sexp, unbound_ptr: *const Sexp) => (*value_ptr).clone(), (*unbound_ptr).clone(), Sexp::Nil, Sexp::Nil);
-    or_insert_wrap!(mirror_set_function_or_insert: nelisp_mirror_set_function_or_insert(m, s, func_ptr: *const Sexp, unbound_ptr: *const Sexp) => (*unbound_ptr).clone(), (*func_ptr).clone(), Sexp::Nil, Sexp::Nil);
-    or_insert_wrap!(mirror_set_constant_or_insert: nelisp_mirror_set_constant_or_insert(m, s, flag_ptr: *const Sexp, unbound_ptr: *const Sexp) => (*unbound_ptr).clone(), (*unbound_ptr).clone(), Sexp::Nil, (*flag_ptr).clone());
-    or_insert_wrap!(mirror_install_entry_or_insert: nelisp_mirror_install_entry_or_insert(m, s, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) => (*value_ptr).clone(), (*function_ptr).clone(), (*plist_ptr).clone(), (*constant_ptr).clone());
-    pub unsafe fn frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64) -> i64 { let mut scratch = Sexp::Nil; nelisp_frame_stack_ensure_capacity(frames_ptr, needed, &mut scratch as *mut Sexp) }
-    pub unsafe fn frame_stack_install(frames_ptr: *const Sexp, frame_ptr: *const Sexp) -> i64 { let mut s = Sexp::Nil; nelisp_frame_stack_install(frames_ptr, frame_ptr, &mut s) }
+    pub unsafe fn mirror_set_value_or_insert(m: *const Sexp, s: *const Sexp, value_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64 { let sc=build_or_insert_scratch_vec((*value_ptr).clone(),(*unbound_ptr).clone(),Sexp::Nil,Sexp::Nil); nelisp_mirror_set_value_or_insert(m,s,&sc,0) } pub unsafe fn mirror_set_function_or_insert(m: *const Sexp, s: *const Sexp, func_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64 { let sc=build_or_insert_scratch_vec((*unbound_ptr).clone(),(*func_ptr).clone(),Sexp::Nil,Sexp::Nil); nelisp_mirror_set_function_or_insert(m,s,&sc,0) }
+    pub unsafe fn mirror_set_constant_or_insert(m: *const Sexp, s: *const Sexp, flag_ptr: *const Sexp, unbound_ptr: *const Sexp) -> i64 { let sc=build_or_insert_scratch_vec((*unbound_ptr).clone(),(*unbound_ptr).clone(),Sexp::Nil,(*flag_ptr).clone()); nelisp_mirror_set_constant_or_insert(m,s,&sc,0) } pub unsafe fn mirror_install_entry_or_insert(m: *const Sexp, s: *const Sexp, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) -> i64 { let sc=build_or_insert_scratch_vec((*value_ptr).clone(),(*function_ptr).clone(),(*plist_ptr).clone(),(*constant_ptr).clone()); nelisp_mirror_install_entry_or_insert(m,s,&sc,0) }
+    pub unsafe fn frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64) -> i64 { let mut scratch = Sexp::Nil; nelisp_frame_stack_ensure_capacity(frames_ptr, needed, &mut scratch as *mut Sexp) } pub unsafe fn frame_stack_install(frames_ptr: *const Sexp, frame_ptr: *const Sexp) -> i64 { let mut s = Sexp::Nil; nelisp_frame_stack_install(frames_ptr, frame_ptr, &mut s) }
     pub unsafe fn wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp) -> i64 { let (mut a, mut b, mut c, mut d) = (Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil); let rc = nelisp_wrap_alist_cells(alist_ptr, result_slot, &mut a, &mut b, &mut c, &mut d); for s in [&mut a, &mut b, &mut c, &mut d] { core::ptr::write(s, Sexp::Nil); } rc }
     cc_wrap!(fnv1a: nelisp_fnv1a, (str_ptr: *const Sexp) -> i64); cc_wrap!(sf_quote_call: nl_sf_quote, (args: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(reader_lex_one: nelisp_reader_lex_one, (str_ptr: *const Sexp, cursor: i64, payload_slot: *mut Sexp, cursor_out_slot: *mut Sexp, scratch_mutstr_slot: *mut Sexp) -> i64);
@@ -148,7 +134,6 @@ pub mod elisp_cc_spike {
     cc_wrap!(env_shim_set_op: nelisp_env_shim_set_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_ptr: *const Sexp, result_slot: *mut Sexp, _pad: i64) -> i64);
     pub unsafe fn frame_bind(frames_ptr: *const Sexp, name_ptr: *const Sexp, cell_ptr: *const Sexp) -> i64 { let (mut a, mut b, mut c) = (Sexp::Nil, Sexp::Nil, Sexp::Nil); nelisp_frame_bind(frames_ptr, name_ptr, cell_ptr, &mut a, &mut b, &mut c) }
     pub unsafe fn frame_stack_find_raw(frames_ptr: *const Sexp, name_ptr: *const Sexp) -> *const Sexp { nelisp_frame_stack_find(frames_ptr, name_ptr) as *const Sexp }
-    #[inline] fn sym(s: &str) -> Sexp { Sexp::Symbol(s.into()) }
-    pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 { let v = Sexp::vector(vec![sym("nelisp-lexframe"), sym("fast-hash-table"), Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil]); nelisp_frame_push(frames_ptr, &v) }
-    pub unsafe fn env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp) -> i64 { let v = Sexp::vector(vec![sym("nelisp-env"), sym("fast-hash-table"), sym("nelisp-lexframe-stack"), Sexp::Nil, Sexp::Nil, Sexp::Nil]); nelisp_env_install_empty_globals_frames(globals_out, frames_out, &v, 0) }
+    pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 { let v=Sexp::vector(vec![Sexp::Symbol("nelisp-lexframe".into()),Sexp::Symbol("fast-hash-table".into()),Sexp::Nil,Sexp::Nil,Sexp::Nil,Sexp::Nil,Sexp::Nil]); nelisp_frame_push(frames_ptr,&v) }
+    pub unsafe fn env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp) -> i64 { let v=Sexp::vector(vec![Sexp::Symbol("nelisp-env".into()),Sexp::Symbol("fast-hash-table".into()),Sexp::Symbol("nelisp-lexframe-stack".into()),Sexp::Nil,Sexp::Nil,Sexp::Nil]); nelisp_env_install_empty_globals_frames(globals_out,frames_out,&v,0) }
 }
