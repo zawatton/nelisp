@@ -15,16 +15,14 @@ extern "C" {
     fn nl_jit_syscall_call(); fn nl_jit_syscall_supported_p(); fn nl_jit_char_table_aref(); fn nl_jit_char_table_aset(); fn nl_jit_mut_str_set_codepoint();
     #[link_name = "nl_jit_alias"] fn nl_jit_alias_call(name: *const Sexp, out: *mut Sexp) -> i64;
 }
-#[used]
-static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
-    nelisp_jit_add2, nelisp_jit_sub2, nelisp_jit_mul2, nelisp_jit_eq2, nelisp_jit_lt2, nelisp_jit_gt2, nelisp_jit_le2, nelisp_jit_ge2, nelisp_jit_logior2, nelisp_jit_logand2, nelisp_jit_logxor2, nelisp_jit_ash,
-    nl_jit_float_add, nl_jit_float_sub, nl_jit_float_mul, nl_jit_float_div, nl_jit_float_lt, nl_jit_float_gt, nl_jit_float_le, nl_jit_float_ge, nl_jit_float_eq_eps, nl_jit_float_float, nl_jit_float_exp, nl_jit_float_log,
-    nl_jit_intern, nl_jit_make_mut_str, nl_jit_mut_str_len, nl_jit_record_alloc, nelisp_jit_predicate_eq, nelisp_jit_ref_eq, nelisp_jit_record_type, nelisp_jit_record_len, nelisp_jit_record_ref, nelisp_jit_record_set, nelisp_jit_length, nelisp_jit_aref,
-    nelisp_jit_aset, nelisp_jit_elt, nelisp_jit_cons_car, nelisp_jit_cons_cdr, nelisp_jit_cons_setcar, nelisp_jit_cons_setcdr, nelisp_jit_cons_make, nl_jit_bool_vector_len, nl_jit_str_codepoint_at, nl_jit_type_of, nl_jit_sxhash, nl_cons_car_ptr,
-    nl_cons_cdr_ptr, nl_jit_make_symbol, nl_record_type_tag_ptr, nl_jit_concat_ints, nl_sf_quote, nl_jit_downcase, nl_jit_upcase, nl_jit_split_by_non_alnum, nl_sf_if, nl_sf_setq, nl_sf_progn, nl_sf_while,
-    nl_sf_lambda, nl_sf_function, nl_sf_condition_case, nl_jit_symbol_name, nelisp_bi_nl_fact_i64, nl_cons_prepend_clone, nl_jit_secure_hash, nl_jit_secure_hash_non_sha1_ext, nl_jit_string_match_p, nl_jit_alias, nl_eval_inner,
-    nl_jit_syscall_call, nl_jit_syscall_supported_p, nl_jit_char_table_aref, nl_jit_char_table_aset, nl_jit_mut_str_set_codepoint,
-];
+#[used] static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
+    nelisp_jit_add2,nelisp_jit_sub2,nelisp_jit_mul2,nelisp_jit_eq2,nelisp_jit_lt2,nelisp_jit_gt2,nelisp_jit_le2,nelisp_jit_ge2,nelisp_jit_logior2,nelisp_jit_logand2,nelisp_jit_logxor2,nelisp_jit_ash,
+    nl_jit_float_add,nl_jit_float_sub,nl_jit_float_mul,nl_jit_float_div,nl_jit_float_lt,nl_jit_float_gt,nl_jit_float_le,nl_jit_float_ge,nl_jit_float_eq_eps,nl_jit_float_float,nl_jit_float_exp,nl_jit_float_log,
+    nl_jit_intern,nl_jit_make_mut_str,nl_jit_mut_str_len,nl_jit_record_alloc,nelisp_jit_predicate_eq,nelisp_jit_ref_eq,nelisp_jit_record_type,nelisp_jit_record_len,nelisp_jit_record_ref,nelisp_jit_record_set,nelisp_jit_length,nelisp_jit_aref,
+    nelisp_jit_aset,nelisp_jit_elt,nelisp_jit_cons_car,nelisp_jit_cons_cdr,nelisp_jit_cons_setcar,nelisp_jit_cons_setcdr,nelisp_jit_cons_make,nl_jit_bool_vector_len,nl_jit_str_codepoint_at,nl_jit_type_of,nl_jit_sxhash,nl_cons_car_ptr,
+    nl_cons_cdr_ptr,nl_jit_make_symbol,nl_record_type_tag_ptr,nl_jit_concat_ints,nl_sf_quote,nl_jit_downcase,nl_jit_upcase,nl_jit_split_by_non_alnum,nl_sf_if,nl_sf_setq,nl_sf_progn,nl_sf_while,
+    nl_sf_lambda,nl_sf_function,nl_sf_condition_case,nl_jit_symbol_name,nelisp_bi_nl_fact_i64,nl_cons_prepend_clone,nl_jit_secure_hash,nl_jit_secure_hash_non_sha1_ext,nl_jit_string_match_p,nl_jit_alias,nl_eval_inner,
+    nl_jit_syscall_call,nl_jit_syscall_supported_p,nl_jit_char_table_aref,nl_jit_char_table_aset,nl_jit_mut_str_set_codepoint];
 pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {
     let mut resolved = Sexp::Nil;
     let rc = unsafe { nl_jit_alias_call(sexp as *const _, &mut resolved as *mut _) }; if rc != 0 { return None; }
@@ -77,33 +75,33 @@ pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn sym(n: &str) -> Sexp { Sexp::Symbol(n.into()) }
     fn is_err(e: &EvalError, tag: &str) -> bool { matches!(e, EvalError::Generic(t, _) if t == tag) }
+    fn s(n: &str) -> Sexp { Sexp::Symbol(n.into()) }
     #[test] fn unified_fn_ptr_resolves_core_entries() {
         for n in ["nelisp_jit_add2","nelisp_jit_eq_inline","nelisp_jit_car","nelisp_jit_length","nelisp_jit_aref","nelisp_jit_intern","nelisp_jit_syscall","nl_jit_float_add","nl_jit_float_exp"] {
-            let p = unified_fn_ptr(&sym(n)); assert!(p.is_some()&&!p.unwrap().is_null(), "`{}'", n); } }
-    #[test] fn unified_fn_ptr_unknown_returns_none() { assert!(unified_fn_ptr(&sym("nelisp_jit_does_not_exist")).is_none()); assert!(unified_fn_ptr(&sym("")).is_none()); }
+            let p = unified_fn_ptr(&s(n)); assert!(p.is_some()&&!p.unwrap().is_null(), "`{}'", n); } }
+    #[test] fn unified_fn_ptr_unknown_returns_none() { assert!(unified_fn_ptr(&s("nelisp_jit_does_not_exist")).is_none()); assert!(unified_fn_ptr(&s("")).is_none()); }
     #[test] fn call_i64_i64_smoke() {
-        assert_eq!(bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_add2"),Sexp::Int(7),Sexp::Int(8)]).unwrap(), Sexp::Int(15));
+        assert_eq!(bi_nl_jit_call_i64_i64(&[s("nelisp_jit_add2"),Sexp::Int(7),Sexp::Int(8)]).unwrap(), Sexp::Int(15));
         assert_eq!(bi_nl_jit_call_i64_i64(&[Sexp::Str("nelisp_jit_mul2".into()),Sexp::Int(6),Sexp::Int(7)]).unwrap(), Sexp::Int(42));
-        assert!(is_err(&bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_no_such"),Sexp::Int(0),Sexp::Int(0)]).unwrap_err(), "error"));
-        assert!(is_err(&bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_add2"),Sexp::Int(1)]).unwrap_err(), "wrong-number-of-arguments"));
+        assert!(is_err(&bi_nl_jit_call_i64_i64(&[s("nelisp_jit_no_such"),Sexp::Int(0),Sexp::Int(0)]).unwrap_err(), "error"));
+        assert!(is_err(&bi_nl_jit_call_i64_i64(&[s("nelisp_jit_add2"),Sexp::Int(1)]).unwrap_err(), "wrong-number-of-arguments"));
         assert!(is_err(&bi_nl_jit_call_i64_i64(&[Sexp::Int(0),Sexp::Int(1),Sexp::Int(2)]).unwrap_err(), "wrong-type-argument")); }
     #[test] fn call_ptr_ptr_eq_inline() {
-        let eq = |a,b| bi_nl_jit_call_ptr_ptr(&[sym("nelisp_jit_eq_inline"),a,b]).unwrap();
+        let eq = |a,b| bi_nl_jit_call_ptr_ptr(&[s("nelisp_jit_eq_inline"),a,b]).unwrap();
         assert_eq!(eq(Sexp::Int(7),Sexp::Int(7)),Sexp::Int(1)); assert_eq!(eq(Sexp::Int(7),Sexp::Int(8)),Sexp::Int(0)); }
     #[test] fn call_syscall_errors() {
-        assert!(is_err(&bi_nl_jit_call_syscall(&vec![sym("nelisp_jit_syscall");7]).unwrap_err(), "wrong-number-of-arguments"));
-        let mut a = vec![sym("nelisp_jit_no_syscall")]; a.extend(std::iter::repeat(Sexp::Int(0)).take(7));
+        assert!(is_err(&bi_nl_jit_call_syscall(&vec![s("nelisp_jit_syscall");7]).unwrap_err(), "wrong-number-of-arguments"));
+        let mut a = vec![s("nelisp_jit_no_syscall")]; a.extend(std::iter::repeat(Sexp::Int(0)).take(7));
         assert!(is_err(&bi_nl_jit_call_syscall(&a).unwrap_err(), "error")); }
     #[test] fn call_out_1_ops() {
         let lst = Sexp::list_from(&[Sexp::Int(1),Sexp::Int(2),Sexp::Int(3)]);
-        assert_eq!(bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"),lst.clone()]).unwrap(), Sexp::Int(1));
-        assert_eq!(bi_nl_jit_call_out_1(&[sym("nelisp_jit_cdr"),lst]).unwrap(), Sexp::list_from(&[Sexp::Int(2),Sexp::Int(3)]));
-        assert!(matches!(bi_nl_jit_call_out_1(&[sym("nelisp_jit_length"),Sexp::vector(vec![Sexp::Int(1),Sexp::Int(2)])]).unwrap(),Sexp::Int(_)));
-        assert!(is_err(&bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"),Sexp::Int(7)]).unwrap_err(), "wrong-type-argument")); }
+        assert_eq!(bi_nl_jit_call_out_1(&[s("nelisp_jit_car"),lst.clone()]).unwrap(), Sexp::Int(1));
+        assert_eq!(bi_nl_jit_call_out_1(&[s("nelisp_jit_cdr"),lst]).unwrap(), Sexp::list_from(&[Sexp::Int(2),Sexp::Int(3)]));
+        assert!(matches!(bi_nl_jit_call_out_1(&[s("nelisp_jit_length"),Sexp::vector(vec![Sexp::Int(1),Sexp::Int(2)])]).unwrap(),Sexp::Int(_)));
+        assert!(is_err(&bi_nl_jit_call_out_1(&[s("nelisp_jit_car"),Sexp::Int(7)]).unwrap_err(), "wrong-type-argument")); }
     #[test] fn call_out_1i_aref() {
         let v = Sexp::vector(vec![Sexp::Int(1),Sexp::Int(2),Sexp::Int(3)]);
-        assert_eq!(bi_nl_jit_call_out_1i(&[sym("nelisp_jit_aref"),v.clone(),Sexp::Int(1)]).unwrap(), Sexp::Int(2));
-        assert!(is_err(&bi_nl_jit_call_out_1i(&[sym("nelisp_jit_aref"),v,Sexp::Int(5)]).unwrap_err(), "wrong-type-argument")); }
+        assert_eq!(bi_nl_jit_call_out_1i(&[s("nelisp_jit_aref"),v.clone(),Sexp::Int(1)]).unwrap(), Sexp::Int(2));
+        assert!(is_err(&bi_nl_jit_call_out_1i(&[s("nelisp_jit_aref"),v,Sexp::Int(5)]).unwrap_err(), "wrong-type-argument")); }
 }

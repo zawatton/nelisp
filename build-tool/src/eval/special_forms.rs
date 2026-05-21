@@ -2,29 +2,27 @@ use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
 use super::Env;
 use super::{eval, list_elements};
-macro_rules! sf_call_4arg {
+macro_rules! sf_call {
     ($name:literal, $ext:ident, $args:expr, $env:expr) => {{ let mut out = Sexp::Nil;
         let rc = unsafe { crate::elisp_cc_spike::$ext($args as *const Sexp, $env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp, 0) };
         if rc == 0 { Ok::<_, EvalError>(out) } else { Err(super::consume_stashed_error($env, $name)) } }};
-}
-macro_rules! sf_call_with_s1 {
-    ($name:literal, $ext:ident, $args:expr, $env:expr) => {{ let (mut out, mut s1) = (Sexp::Nil, Sexp::Nil);
+    ($name:literal, $ext:ident, $args:expr, $env:expr, s1) => {{ let (mut out, mut s1) = (Sexp::Nil, Sexp::Nil);
         let rc = unsafe { crate::elisp_cc_spike::$ext($args as *const Sexp, $env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp, &mut s1 as *mut Sexp) };
         if rc == 0 { Ok::<_, EvalError>(out) } else { Err(super::consume_stashed_error($env, $name)) } }};
 }
 pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Sexp>, EvalError> {
     Ok(Some(match name {
         "quote" => { let mut out = Sexp::Nil; let rc = unsafe { crate::elisp_cc_spike::sf_quote_call(args as *const Sexp, &mut out as *mut Sexp) }; if rc == 0 { out } else { return Err(EvalError::wrong_arity("quote", "1", 0)); } }
-        "function" => sf_call_with_s1!("sf_function", sf_function_call, args, env)?,
-        "if" => sf_call_4arg!("sf_if", sf_if_call, args, env)?,
-        "let" => sf_call_4arg!("sf_let", sf_let_call, args, env)?,
-        "let*" => sf_call_4arg!("sf_let_star", sf_let_star_call, args, env)?,
-        "lambda" => sf_call_with_s1!("sf_lambda", sf_lambda_call, args, env)?,
-        "setq" => sf_call_4arg!("sf_setq", sf_setq_call, args, env)?,
-        "while" => sf_call_4arg!("sf_while", sf_while_call, args, env)?,
-        "condition-case" => sf_call_with_s1!("sf_condition_case", sf_condition_case_call, args, env)?,
-        "unwind-protect" => sf_call_4arg!("sf_unwind_protect", sf_unwind_protect_call, args, env)?,
-        "progn" => sf_call_4arg!("sf_progn", sf_progn_call, args, env)?,
+        "function" => sf_call!("sf_function", sf_function_call, args, env, s1)?,
+        "if" => sf_call!("sf_if", sf_if_call, args, env)?,
+        "let" => sf_call!("sf_let", sf_let_call, args, env)?,
+        "let*" => sf_call!("sf_let_star", sf_let_star_call, args, env)?,
+        "lambda" => sf_call!("sf_lambda", sf_lambda_call, args, env, s1)?,
+        "setq" => sf_call!("sf_setq", sf_setq_call, args, env)?,
+        "while" => sf_call!("sf_while", sf_while_call, args, env)?,
+        "condition-case" => sf_call!("sf_condition_case", sf_condition_case_call, args, env, s1)?,
+        "unwind-protect" => sf_call!("sf_unwind_protect", sf_unwind_protect_call, args, env)?,
+        "progn" => sf_call!("sf_progn", sf_progn_call, args, env)?,
         _ => return Ok(None),
     }))
 }
@@ -68,7 +66,6 @@ fn stash_err(env: *mut std::ffi::c_void, e: EvalError) -> i64 { let _ = unsafe {
 #[no_mangle] pub unsafe extern "C" fn nl_env_set_value(env: *mut std::ffi::c_void, sym: *const Sexp, val: *const Sexp) -> i64 { let e = &mut *(env as *mut Env); match &*sym { Sexp::Symbol(s) | Sexp::Str(s) => i64::from(e.set_value(s.as_str(), (*val).clone()).is_err()), _ => 1 } }
 #[no_mangle] pub unsafe extern "C" fn nl_env_lookup_val(name_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let e = &mut *(env as *mut Env); let Sexp::Symbol(n) = &*name_ptr else { return 1; }; if n.starts_with(':') && n.len() > 1 { super::sexp::nl_sexp_clone_into(name_ptr, out); return 0; } match e.lookup_value(n) { Ok(v) => { std::ptr::write(out, v); 0 } Err(er) => { let _ = e.set_value("nelisp--last-signal-data", er.signal_data()); 1 } } }
-
 #[no_mangle] pub unsafe extern "C" fn nl_cell_get_value(cell_ptr: *const Sexp, out: *mut Sexp) -> i64 { match &*cell_ptr { Sexp::Cell(c) => { std::ptr::write(out, c.value.clone()); 0 } _ => 1 } }
 #[no_mangle] pub unsafe extern "C" fn nl_eval_inner_cons(head_ptr: *const Sexp, tail_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let e = &mut *(env as *mut Env);

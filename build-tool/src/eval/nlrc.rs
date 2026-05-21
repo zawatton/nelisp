@@ -41,10 +41,5 @@ macro_rules! drop_inner_extern {
         #[no_mangle] pub unsafe extern "C" fn $name(box_ptr: *mut i64) -> i64 { <$ty>::DROP_FN(box_ptr as *mut std::ffi::c_void); 1 }
     };
 }
-drop_inner_extern!(nl_consbox_drop_inner, crate::eval::nlconsbox::NlConsBox);
-drop_inner_extern!(nl_vector_drop_inner, crate::eval::nlvector::NlVector);
-drop_inner_extern!(nl_cell_drop_inner, crate::eval::nlcell::NlCell);
-drop_inner_extern!(nl_record_drop_inner, crate::eval::nlrecord::NlRecord);
-drop_inner_extern!(nl_str_drop_inner, crate::eval::nlstr::NlStr);
-drop_inner_extern!(nl_boolvector_drop_inner, crate::eval::nlboolvector::NlBoolVector);
-drop_inner_extern!(nl_chartable_drop_inner, crate::eval::nlchartable::NlCharTable);
+drop_inner_extern!(nl_consbox_drop_inner, crate::eval::nlconsbox::NlConsBox); drop_inner_extern!(nl_vector_drop_inner, crate::eval::nlvector::NlVector); drop_inner_extern!(nl_cell_drop_inner, crate::eval::nlcell::NlCell); drop_inner_extern!(nl_record_drop_inner, crate::eval::nlrecord::NlRecord);
+drop_inner_extern!(nl_str_drop_inner, crate::eval::nlstr::NlStr); drop_inner_extern!(nl_boolvector_drop_inner, crate::eval::nlboolvector::NlBoolVector); drop_inner_extern!(nl_chartable_drop_inner, crate::eval::nlchartable::NlCharTable);

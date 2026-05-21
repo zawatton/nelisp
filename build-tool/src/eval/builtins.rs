@@ -6,12 +6,10 @@ use super::tty;
 use super::sexp::Sexp;
 use std::path::{Path, PathBuf};
 macro_rules! builtin_names {
-    () => { &[
-        "vector", "make-vector", "nelisp--length-cons-cc", "nelisp--recordp-cc", "string-bytes", "nl-jit-call-format-float", "truncate", "nelisp--syscall-canonicalize", "nelisp--syscall-stat", "nelisp--syscall-readdir", "nelisp--syscall-read-file", "nelisp--syscall",
-        "symbol-function", "fset", "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured", "nelisp--bind-local", "nelisp--apply-builtin-dispatch", "nelisp--set-use-elisp-apply", "nelisp--apply-lambda-inner", "funcall", "apply", "eval", "signal", "nelisp--write-stdout-bytes", "nelisp--write-stderr-line",
-        "read-stdin-bytes", "nelisp--f64-trunc", "nl-write-file", "nl-make-directory", "terminal-raw-mode-enter", "terminal-raw-mode-leave", "read-stdin-byte-available", "_termios-saved-p", "_raw-mode-hooks-installed-p", "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p", "install-sigint-handler", "_sigint-handler-installed-p",
-        "install-winsize-handler", "_winsize-handler-installed-p", "terminal-take-winsize-changed", "terminal-current-winsize", "install-jobctrl-handlers", "_jobctrl-handlers-installed-p", "terminal-take-sigcont", "nl-jit-call-i64-i64", "nl-jit-call-ptr-ptr", "nl-jit-call-syscall", "nl-jit-call-out-1", "nl-jit-call-out-2", "nl-jit-call-out-1i", "nl-jit-call-out-2i", "nl-jit-call-float-float", "nl-jit-call-float-cmp", "nl-jit-call-float-unary", "nl-fact-i64",
-    ] };
+    () => { &["vector","make-vector","nelisp--length-cons-cc","nelisp--recordp-cc","string-bytes","nl-jit-call-format-float","truncate","nelisp--syscall-canonicalize","nelisp--syscall-stat","nelisp--syscall-readdir","nelisp--syscall-read-file","nelisp--syscall",
+        "symbol-function","fset","nelisp--push-frame","nelisp--pop-frame","nelisp--push-captured","nelisp--bind-local","nelisp--apply-builtin-dispatch","nelisp--set-use-elisp-apply","nelisp--apply-lambda-inner","funcall","apply","eval","signal","nelisp--write-stdout-bytes","nelisp--write-stderr-line",
+        "read-stdin-bytes","nelisp--f64-trunc","nl-write-file","nl-make-directory","terminal-raw-mode-enter","terminal-raw-mode-leave","read-stdin-byte-available","_termios-saved-p","_raw-mode-hooks-installed-p","set-quit-flag","clear-quit-flag","quit-flag-pending-p","install-sigint-handler","_sigint-handler-installed-p",
+        "install-winsize-handler","_winsize-handler-installed-p","terminal-take-winsize-changed","terminal-current-winsize","install-jobctrl-handlers","_jobctrl-handlers-installed-p","terminal-take-sigcont","nl-jit-call-i64-i64","nl-jit-call-ptr-ptr","nl-jit-call-syscall","nl-jit-call-out-1","nl-jit-call-out-2","nl-jit-call-out-1i","nl-jit-call-out-2i","nl-jit-call-float-float","nl-jit-call-float-cmp","nl-jit-call-float-unary","nl-fact-i64"] };
 }
 macro_rules! builtin_dispatch {
     ($name:ident, $args:ident, $env:ident) => {
