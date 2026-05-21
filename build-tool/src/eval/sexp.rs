@@ -1,10 +1,6 @@
 use crate::eval::nlboolvector::NlBoolVectorRef; use crate::eval::nlcell::{NlCell, NlCellRef}; use crate::eval::nlchartable::NlCharTableRef; use crate::eval::nlconsbox::{NlConsBox, NlConsBoxRef}; use crate::eval::nlrecord::{NlRecord, NlRecordRef}; use crate::eval::nlstr::NlStrRef; use crate::eval::nlvector::{NlVector, NlVectorRef}; use std::fmt;
 #[derive(Debug, Clone, PartialEq)] #[repr(C, u8)]
-pub enum Sexp {
-    Nil, T, Int(i64), Float(f64), Symbol(String), Str(String),
-    MutStr(NlStrRef), Cons(NlConsBoxRef), Vector(NlVectorRef),
-    CharTable(NlCharTableRef), BoolVector(NlBoolVectorRef), Cell(NlCellRef), Record(NlRecordRef),
-}
+pub enum Sexp { Nil, T, Int(i64), Float(f64), Symbol(String), Str(String), MutStr(NlStrRef), Cons(NlConsBoxRef), Vector(NlVectorRef), CharTable(NlCharTableRef), BoolVector(NlBoolVectorRef), Cell(NlCellRef), Record(NlRecordRef), }
 pub const SEXP_TAG_NIL: u8 = 0; pub const SEXP_TAG_T: u8 = 1; pub const SEXP_TAG_INT: u8 = 2; pub const SEXP_TAG_FLOAT: u8 = 3; pub const SEXP_TAG_SYMBOL: u8 = 4; pub const SEXP_TAG_STR: u8 = 5; pub const SEXP_TAG_MUT_STR: u8 = 6; pub const SEXP_TAG_CONS: u8 = 7; pub const SEXP_TAG_VECTOR: u8 = 8; pub const SEXP_TAG_CHAR_TABLE: u8 = 9; pub const SEXP_TAG_BOOL_VECTOR: u8 = 10; pub const SEXP_TAG_CELL: u8 = 11; pub const SEXP_TAG_RECORD: u8 = 12; pub const SEXP_PAYLOAD_OFFSET: usize = 8;
 macro_rules! sexp_box_ptr_accessor { ($name:ident, $ty:ty) => { #[inline] pub unsafe fn $name(&self) -> *const $ty { let p = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET) as *const std::ptr::NonNull<$ty>; unsafe { (*p).as_ptr() } } }; }
 impl Sexp { #[inline] pub fn tag(&self) -> u8 { unsafe { *(self as *const Sexp as *const u8) } } sexp_box_ptr_accessor!(cons_box_ptr, crate::eval::nlconsbox::NlConsBox); sexp_box_ptr_accessor!(cell_box_ptr, crate::eval::nlcell::NlCell); sexp_box_ptr_accessor!(mut_str_box_ptr, crate::eval::nlstr::NlStr); sexp_box_ptr_accessor!(vector_box_ptr, crate::eval::nlvector::NlVector); sexp_box_ptr_accessor!(bool_vector_box_ptr, crate::eval::nlboolvector::NlBoolVector); sexp_box_ptr_accessor!(record_box_ptr, crate::eval::nlrecord::NlRecord); sexp_box_ptr_accessor!(char_table_box_ptr, crate::eval::nlchartable::NlCharTable); }
