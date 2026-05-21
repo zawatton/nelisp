@@ -12,8 +12,7 @@ crate::define_nlbox!(
 );
 macro_rules! consbox_set_field {
     ($box_ptr:expr, $field:ident, $val:expr) => {{
-        let p = ::std::ptr::addr_of_mut!((*$box_ptr).$field);
-        ::std::ptr::drop_in_place(p); ::std::ptr::write(p, $val);
+        let p = ::std::ptr::addr_of_mut!((*$box_ptr).$field); ::std::ptr::drop_in_place(p); ::std::ptr::write(p, $val);
     }};
 }
 #[no_mangle] pub unsafe extern "C" fn nl_consbox_set_car(box_ptr: *mut NlConsBox, val: *const Sexp) { consbox_set_field!(box_ptr, car, (*val).clone()); }

@@ -14,7 +14,7 @@ extern "C" fn sig_handler(s: libc::c_int) { restore_signal_safe(); unsafe { rera
 extern "C" fn winsize_h(_: libc::c_int) { WINSIZE_CHANGED.store(1, Ordering::SeqCst); }
 extern "C" fn tstp_h(s: libc::c_int) { restore_signal_safe(); unsafe { reraise(s); sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); } }
 extern "C" fn cont_h(_: libc::c_int) { SIGCONT_ARRIVED.store(1, Ordering::SeqCst); }
-macro_rules! once { ($once:expr, $body:block) => { $once.call_once(|| unsafe { $body }) }; }
+macro_rules! once { ($o:expr, $b:block) => { $o.call_once(|| unsafe { $b }) }; }
 pub fn install_hooks_once() { once!(HOOKS_ONCE, { libc::atexit(atexit_hook); for s in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] { sa(*s, sig_handler, 0); } }); }
 pub fn install_winsize_handler() { once!(WINSIZE_ONCE, { sa(libc::SIGWINCH, winsize_h, libc::SA_RESTART); WINSIZE_CHANGED.store(1, Ordering::SeqCst); }); }
 pub fn install_jobctrl_handlers() { once!(JOBCTRL_ONCE, { sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); sa(libc::SIGCONT, cont_h, libc::SA_RESTART); }); }
@@ -30,7 +30,7 @@ pub fn termios_saved_p() -> bool { TERMIOS_SAVED.load(Ordering::SeqCst) != 0 }
 #[no_mangle] pub extern "C" fn nl_tty_read_byte() -> i64 { let mut b = [0u8; 1]; let n = unsafe { libc::read(0, b.as_mut_ptr() as *mut libc::c_void, 1) }; if n == 1 { b[0] as i64 } else { -1 } }
 pub fn raw_mode_enter() -> Result<(), EvalError> {
     match unsafe { crate::elisp_cc_spike::tty_raw_enter([0u8; 60].as_mut_ptr()) } { 0 => Ok(()), -1 => Err(EvalError::internal("terminal-raw-mode-enter: tcgetattr failed")), _ => Err(EvalError::internal("terminal-raw-mode-enter: tcsetattr failed")) } }
-pub fn raw_mode_leave() -> Result<(), EvalError> { unsafe { crate::elisp_cc_spike::tty_raw_leave(nl_tty_saved_termios_ptr()); } Ok(()) }
+pub fn raw_mode_leave() -> Result<(), EvalError> { unsafe { crate::elisp_cc_spike::tty_raw_leave(nl_tty_saved_termios_ptr()) }; Ok(()) }
 pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
     match unsafe { crate::elisp_cc_spike::tty_stdin_byte_avail([0u8, 0, 0, 0, 1, 0, 0, 0].as_mut_ptr(), timeout_ms as i64) } { -2 => Err(EvalError::internal("read-stdin-byte-available: poll failed")), n if n < 0 => Ok(None), b => Ok(Some(b as u8)) } }
 pub fn current_winsize() -> Option<(u16, u16)> { let p = unsafe { crate::elisp_cc_spike::tty_winsize_current([0u8; 8].as_mut_ptr()) }; if p < 0 { None } else { Some((((p >> 16) & 0xFFFF) as u16, (p & 0xFFFF) as u16)) } }

@@ -22,15 +22,16 @@ impl ElispReadState {
         ElispReadState { src: Sexp::Str(input.to_string()), cursor_slot: Sexp::Int(0), result_slot: Sexp::Nil, pool_slot: Sexp::vector(slots) }
     }
     fn cursor(&self) -> i64 { match self.cursor_slot { Sexp::Int(n) => n, _ => 0 } }
-    fn lex_peek_advancing(&mut self) -> i64 { let cursor = self.cursor(); unsafe {
+    fn lex_advancing(&mut self) -> i64 { let cur = self.cursor(); unsafe {
         let Sexp::Vector(v) = &self.pool_slot else { unreachable!() }; let sl = v.value.as_slice();
-        let scratch_ptr = &sl[0] as *const Sexp as *mut Sexp; let payload_ptr = &sl[1] as *const Sexp as *mut Sexp;
-        elisp_cc_spike::mut_str_make_empty(scratch_ptr, SCRATCH_CAP); elisp_cc_spike::reader_lex_one(&self.src as *const Sexp, cursor, payload_ptr, &mut self.cursor_slot as *mut Sexp, scratch_ptr) } }
-    fn peek_token_kind(&mut self) -> i64 { let saved = self.cursor(); let kind = self.lex_peek_advancing(); self.cursor_slot = Sexp::Int(saved); kind }
+        let sp = &sl[0] as *const Sexp as *mut Sexp; let pp = &sl[1] as *const Sexp as *mut Sexp;
+        elisp_cc_spike::mut_str_make_empty(sp, SCRATCH_CAP); elisp_cc_spike::reader_lex_one(&self.src, cur, pp, &mut self.cursor_slot, sp) } }
+    fn peek_kind(&mut self) -> i64 { let s = self.cursor(); let k = self.lex_advancing(); self.cursor_slot = Sexp::Int(s); k }
     fn parse_one_form(&mut self) -> Option<ElispParseOutcome> {
-        let saved = self.cursor(); let kind = self.lex_peek_advancing(); if kind == 0 { return Some(ElispParseOutcome::Empty); }
-        self.cursor_slot = Sexp::Int(saved); self.result_slot = Sexp::Nil; let status = unsafe { elisp_cc_spike::reader_parse_one(&self.src as *const Sexp, &mut self.cursor_slot as *mut Sexp, &mut self.result_slot as *mut Sexp, &self.pool_slot as *const Sexp, 0) };
-        if status != 1 { return None; } Some(ElispParseOutcome::Form(std::mem::replace(&mut self.result_slot, Sexp::Nil)))
+        let saved = self.cursor(); if self.lex_advancing() == 0 { return Some(ElispParseOutcome::Empty); }
+        self.cursor_slot = Sexp::Int(saved); self.result_slot = Sexp::Nil;
+        let ok = unsafe { elisp_cc_spike::reader_parse_one(&self.src, &mut self.cursor_slot, &mut self.result_slot, &self.pool_slot, 0) } == 1;
+        ok.then(|| ElispParseOutcome::Form(std::mem::replace(&mut self.result_slot, Sexp::Nil)))
     }
-    fn has_trailing_token(&mut self) -> bool { self.peek_token_kind() != 0 }
+    fn has_trailing_token(&mut self) -> bool { self.peek_kind() != 0 }
 }
