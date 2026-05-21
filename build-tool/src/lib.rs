@@ -177,8 +177,7 @@ pub mod elisp_cc_spike {
     or_insert_wrap!(mirror_install_entry_or_insert: nelisp_mirror_install_entry_or_insert(m, s, value_ptr: *const Sexp, function_ptr: *const Sexp, plist_ptr: *const Sexp, constant_ptr: *const Sexp) => (*value_ptr).clone(), (*function_ptr).clone(), (*plist_ptr).clone(), (*constant_ptr).clone());
     pub unsafe fn frame_stack_ensure_capacity(frames_ptr: *const Sexp, needed: i64) -> i64 { let mut scratch = Sexp::Nil; nelisp_frame_stack_ensure_capacity(frames_ptr, needed, &mut scratch as *mut Sexp) }
     pub unsafe fn frame_stack_install(frames_ptr: *const Sexp, frame_ptr: *const Sexp) -> i64 { let mut s = Sexp::Nil; nelisp_frame_stack_install(frames_ptr, frame_ptr, &mut s) }
-    pub unsafe fn wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp) -> i64 { let (mut a, mut b, mut c, mut d) = (Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil);
-        let rc = nelisp_wrap_alist_cells(alist_ptr, result_slot, &mut a, &mut b, &mut c, &mut d); for s in [&mut a, &mut b, &mut c, &mut d] { core::ptr::write(s, Sexp::Nil); } rc }
+    pub unsafe fn wrap_alist_cells(alist_ptr: *const Sexp, result_slot: *mut Sexp) -> i64 { let (mut a, mut b, mut c, mut d) = (Sexp::Nil, Sexp::Nil, Sexp::Nil, Sexp::Nil); let rc = nelisp_wrap_alist_cells(alist_ptr, result_slot, &mut a, &mut b, &mut c, &mut d); for s in [&mut a, &mut b, &mut c, &mut d] { core::ptr::write(s, Sexp::Nil); } rc }
     cc_wrap!(fnv1a: nelisp_fnv1a, (str_ptr: *const Sexp) -> i64);
     cc_wrap!(reader_lex_one: nelisp_reader_lex_one, (str_ptr: *const Sexp, cursor: i64, payload_slot: *mut Sexp, cursor_out_slot: *mut Sexp, scratch_mutstr_slot: *mut Sexp) -> i64);
     cc_wrap!(reader_parse_one: nelisp_reader_parse_one, (str_ptr: *const Sexp, cursor_slot: *mut Sexp, result_slot: *mut Sexp, slot_pool: *const Sexp, depth: i64) -> i64);

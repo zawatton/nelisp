@@ -118,27 +118,16 @@ fn bool_sexp(v: bool) -> Sexp { if v { Sexp::T } else { Sexp::Nil } }
 fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> { if rc < 0 { Err(EvalError::internal(format!("{name}: {path}: kernel returned {rc}"))) } else { Ok(Sexp::T) } }
 #[no_mangle] pub extern "C" fn nl_bi_f64_trunc_div_bits(n: *const Sexp, d: *const Sexp) -> i64 { let f=|p:*const Sexp|match unsafe{&*p}{Sexp::Int(i)=>*i as f64,Sexp::Float(v)=>*v,_=>0.0}; (f(n)/f(d)).to_bits() as i64 }
 fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> { require_arity(name,args,1,Some(1))?; let p=resolve_path(&args[0],env)?; Ok((p.clone(),Sexp::Str(p.to_string_lossy().into_owned()))) }
-fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (_, ps) = path_arg1("nelisp--syscall-canonicalize", args, env)?; let mut buf = vec![0u8; libc::PATH_MAX as usize];
-    if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&ps, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
-    Ok(Sexp::Str(String::from_utf8_lossy(&buf[..buf.iter().position(|&b|b==0).unwrap_or(buf.len())]).into_owned())) }
+fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { let (_, ps) = path_arg1("nelisp--syscall-canonicalize", args, env)?; let mut buf = vec![0u8; libc::PATH_MAX as usize]; if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&ps, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); } Ok(Sexp::Str(String::from_utf8_lossy(&buf[..buf.iter().position(|&b|b==0).unwrap_or(buf.len())]).into_owned())) }
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (p, ps) = path_arg1("nelisp--syscall-read-file", args, env)?;
-    let n = match std::fs::metadata(&p) { Ok(m) if m.is_file() => m.len() as usize, _ => return Ok(Sexp::Nil) }; if n == 0 { return Ok(Sexp::Str(String::new())); }
-    let mut buf = vec![0u8; n]; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&ps, buf.as_mut_ptr(), n as i64) } as i32 as i64;
-    if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) }
-fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() };
-    let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps, (&mut sb as *mut libc::stat) as *mut u8) };
-    Ok(Sexp::Symbol((if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" } }).into())) }
-fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (dir, ds) = path_arg1("nelisp--syscall-readdir", args, env)?; let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) };
-    Ok(Sexp::cons(ds, Sexp::list_from(&rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>()))) }
+    let (p, ps) = path_arg1("nelisp--syscall-read-file", args, env)?; let n = match std::fs::metadata(&p) { Ok(m) if m.is_file() => m.len() as usize, _ => return Ok(Sexp::Nil) }; if n == 0 { return Ok(Sexp::Str(String::new())); }
+    let mut buf = vec![0u8; n]; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&ps, buf.as_mut_ptr(), n as i64) } as i32 as i64; if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) }
+fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() }; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps, (&mut sb as *mut libc::stat) as *mut u8) }; Ok(Sexp::Symbol((if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" } }).into())) }
+fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { let (dir, ds) = path_arg1("nelisp--syscall-readdir", args, env)?; let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) }; Ok(Sexp::cons(ds, Sexp::list_from(&rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>()))) }
 #[cfg(not(target_os = "linux"))]
 fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> { Err(EvalError::internal("nelisp--syscall: unsupported platform")) }
 #[cfg(target_os = "linux")]
-fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.is_empty() { return Err(EvalError::internal("nelisp--syscall: at least one argument (syscall nr / name) required")); }
+fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> { if args.is_empty() { return Err(EvalError::internal("nelisp--syscall: at least one argument (syscall nr / name) required")); }
     let nr = match &args[0] { Sexp::Int(n) => *n, Sexp::Symbol(s) => { let r = unsafe { crate::elisp_cc_spike::bi_syscall_resolve_nr(&args[0] as *const _) }; if r < 0 { return Err(EvalError::internal(format!("nelisp--syscall: unknown syscall name `{}'", s))); } r } other => return Err(EvalError::wrong_type("syscall name (symbol) or number (integer)", other.clone())) };
     let mut a = [0i64; 6]; for (i, sexp) in args[1..].iter().enumerate().take(6) { a[i] = match sexp { Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1, other => return Err(EvalError::wrong_type(format!("integer (arg {} of nelisp--syscall)", i + 1), other.clone())) }; }
     let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) }; Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 })) }

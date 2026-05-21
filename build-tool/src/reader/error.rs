@@ -9,8 +9,5 @@ impl ReadError {
     pub fn unexpected_eof(s: impl Into<String>, pos: SourcePos) -> Self { ReadError::UnexpectedEof(s.into(), pos) }
     pub fn not_yet_implemented(s: impl Into<String>, pos: SourcePos) -> Self { ReadError::NotYetImplemented(s.into(), pos) }
 }
-impl fmt::Display for ReadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self { ReadError::Parse(m,p) => write!(f, "parse error at {p}: {m}"), ReadError::UnexpectedEof(m,p) => write!(f, "unexpected EOF at {p}: {m}"), ReadError::NotYetImplemented(m,p) => write!(f, "not-yet-implemented at {p}: {m}") } }
-}
+impl fmt::Display for ReadError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { match self { ReadError::Parse(m,p) => write!(f, "parse error at {p}: {m}"), ReadError::UnexpectedEof(m,p) => write!(f, "unexpected EOF at {p}: {m}"), ReadError::NotYetImplemented(m,p) => write!(f, "not-yet-implemented at {p}: {m}") } } }
 impl std::error::Error for ReadError {}
