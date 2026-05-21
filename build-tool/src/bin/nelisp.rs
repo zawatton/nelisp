@@ -9,7 +9,5 @@ fn main() -> ExitCode {
         Ok(f) => match apply_function(&f, &[argv], &mut env) {
             Ok(Sexp::Int(code)) => ExitCode::from((code as u8).min(255)),
             Ok(_) => ExitCode::SUCCESS,
-            Err(e) => { eprintln!("nelisp: {}", e); ExitCode::from(1) }
-        }
-    }
+            Err(e) => { eprintln!("nelisp: {}", e); ExitCode::from(1) } } }
 }
