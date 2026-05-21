@@ -1,15 +1,8 @@
-use super::Env;
-use super::error::EvalError;
-use super::quit;
-#[cfg(unix)] use super::tty;
-use super::sexp::Sexp;
-use std::path::{Path, PathBuf};
+use super::Env; use super::error::EvalError; use super::quit; #[cfg(unix)] use super::tty; use super::sexp::Sexp; use std::path::{Path, PathBuf};
 const BUILTIN_NAMES: &[&str] = &["vector","make-vector","nelisp--length-cons-cc","nelisp--recordp-cc","string-bytes","nl-jit-call-format-float","truncate","nelisp--syscall-canonicalize","nelisp--syscall-stat","nelisp--syscall-readdir","nelisp--syscall-read-file","nelisp--syscall","symbol-function","fset","nelisp--push-frame","nelisp--pop-frame","nelisp--push-captured","nelisp--bind-local","nelisp--apply-builtin-dispatch","nelisp--set-use-elisp-apply","nelisp--apply-lambda-inner","funcall","apply","eval","signal","nelisp--write-stdout-bytes","nelisp--write-stderr-line",
     "read-stdin-bytes","nelisp--f64-trunc","nl-write-file","nl-make-directory","terminal-raw-mode-enter","terminal-raw-mode-leave","read-stdin-byte-available","_termios-saved-p","_raw-mode-hooks-installed-p","set-quit-flag","clear-quit-flag","quit-flag-pending-p","install-sigint-handler","_sigint-handler-installed-p","install-winsize-handler","_winsize-handler-installed-p","terminal-take-winsize-changed","terminal-current-winsize","install-jobctrl-handlers","_jobctrl-handlers-installed-p","terminal-take-sigcont","nl-jit-call-i64-i64","nl-jit-call-ptr-ptr","nl-jit-call-syscall","nl-jit-call-out-1","nl-jit-call-out-2","nl-jit-call-out-1i","nl-jit-call-out-2i","nl-jit-call-float-float","nl-jit-call-float-cmp","nl-jit-call-float-unary","nl-fact-i64"];
-macro_rules! builtin_dispatch {
-    ($name:ident, $args:ident, $env:ident) => {
-        match $name {
-            "vector" => Ok(Sexp::vector($args.to_vec())),
+macro_rules! builtin_dispatch { ($name:ident, $args:ident, $env:ident) => { match $name {
+    "vector" => Ok(Sexp::vector($args.to_vec())),
             "make-vector" => { require_arity("make-vector", $args, 2, Some(2))?; let len = as_int("make-vector", &$args[0])?; if len < 0 { return Err(EvalError::arith(format!("make-vector: negative length {}", len))); } let mut r = Sexp::Nil; unsafe { crate::elisp_cc_spike::bi_make_vector(&$args[0], &$args[1], &mut r) }; Ok(r) },
             "nelisp--length-cons-cc" => { require_arity("nelisp--length-cons-cc", $args, 1, Some(1))?; match &$args[0] { Sexp::Cons(_) | Sexp::Nil => Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::length_cons)), other => Err(EvalError::wrong_type("sequencep", other.clone())) } },
             "nelisp--recordp-cc" => { require_arity("nelisp--recordp-cc", $args, 1, Some(1))?; Ok(cc_slot_1(&$args[0], crate::elisp_cc_spike::recordp)) },
@@ -47,9 +40,7 @@ macro_rules! builtin_dispatch {
             "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i($args), "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i($args), "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float($args), "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp($args), "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary($args),
             "nl-fact-i64" => { require_arity("nl-fact-i64", $args, 1, Some(1))?; let Sexp::Int(_) = &$args[0] else { return Err(EvalError::wrong_type("integerp", $args[0].clone())); }; let mut out = Sexp::Nil; let rc = unsafe { crate::elisp_cc_spike::bi_nl_fact_i64(&$args[0], &mut out) }; if rc == 0 { Ok(out) } else { Err(EvalError::internal("nl-fact-i64: argument out of i64-safe range 0..=20")) } },
             _ => match $env.extern_builtins.get($name).cloned() { Some(f) => f($args, $env), None => Err(EvalError::unbound_fn($name)) }
-        }
-    };
-}
+    } }; }
 pub fn install_builtins(env: &mut Env) { for n in BUILTIN_NAMES { env.mirror_set_function(n, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())])); } }
 pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { builtin_dispatch!(name, args, env) }
 pub(crate) fn require_arity(name: &str, args: &[Sexp], min: usize, max: Option<usize>) -> Result<(), EvalError> { if args.len() < min || max.map_or(false, |m| args.len() > m) { Err(EvalError::wrong_arity(name, match max { Some(m) if m == min => min.to_string(), Some(m) => format!("{}-{}", min, m), None => format!("≥{}", min) }, args.len())) } else { Ok(()) } }

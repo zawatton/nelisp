@@ -1,5 +1,4 @@
-pub mod builtins; pub mod env_helpers; #[cfg(unix)] pub mod tty; pub mod env_shim; pub mod error;
-pub mod nlboolvector; pub mod nlcell; pub mod nlchartable; pub mod nlconsbox; pub mod nlrc;
+pub mod builtins; pub mod env_helpers; #[cfg(unix)] pub mod tty; pub mod env_shim; pub mod error; pub mod nlboolvector; pub mod nlcell; pub mod nlchartable; pub mod nlconsbox; pub mod nlrc;
 pub mod nlrecord; pub mod nlstr; pub mod nlvector; pub mod alloc_mem; pub mod quit; pub mod sexp; pub mod special_forms;
 pub use env_helpers::{Env, ExternBuiltin, FrameCell}; pub use error::{is_error_subtype, EvalError}; pub use sexp::Sexp;
 fn expect_single_form(forms: Vec<Sexp>, ctx: &str) -> Result<Sexp, EvalError> { match forms.as_slice() { [s] => Ok(s.clone()), [] => Err(EvalError::internal(format!("{ctx}: empty input"))), _ => Err(EvalError::internal(format!("{ctx}: expected 1 form, got {}", forms.len()))) } } fn eval_forms(forms: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { forms.iter().try_fold(Sexp::Nil, |_, f| eval(f, env)) }

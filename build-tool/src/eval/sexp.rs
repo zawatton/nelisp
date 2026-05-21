@@ -1,27 +1,11 @@
-use crate::eval::nlboolvector::NlBoolVectorRef;
-use crate::eval::nlcell::{NlCell, NlCellRef};
-use crate::eval::nlchartable::NlCharTableRef;
-use crate::eval::nlconsbox::{NlConsBox, NlConsBoxRef};
-use crate::eval::nlrecord::{NlRecord, NlRecordRef};
-use crate::eval::nlstr::NlStrRef;
-use crate::eval::nlvector::{NlVector, NlVectorRef};
-use std::fmt;
-#[derive(Debug, Clone, PartialEq)]
-#[repr(C, u8)]
+use crate::eval::nlboolvector::NlBoolVectorRef; use crate::eval::nlcell::{NlCell, NlCellRef}; use crate::eval::nlchartable::NlCharTableRef;
+use crate::eval::nlconsbox::{NlConsBox, NlConsBoxRef}; use crate::eval::nlrecord::{NlRecord, NlRecordRef};
+use crate::eval::nlstr::NlStrRef; use crate::eval::nlvector::{NlVector, NlVectorRef}; use std::fmt;
+#[derive(Debug, Clone, PartialEq)] #[repr(C, u8)]
 pub enum Sexp {
-    Nil,
-    T,
-    Int(i64),
-    Float(f64),
-    Symbol(String),
-    Str(String),
-    MutStr(NlStrRef),
-    Cons(NlConsBoxRef),
-    Vector(NlVectorRef),
-    CharTable(NlCharTableRef),
-    BoolVector(NlBoolVectorRef),
-    Cell(NlCellRef),
-    Record(NlRecordRef),
+    Nil, T, Int(i64), Float(f64), Symbol(String), Str(String),
+    MutStr(NlStrRef), Cons(NlConsBoxRef), Vector(NlVectorRef),
+    CharTable(NlCharTableRef), BoolVector(NlBoolVectorRef), Cell(NlCellRef), Record(NlRecordRef),
 }
 pub const SEXP_TAG_NIL: u8 = 0; pub const SEXP_TAG_T: u8 = 1; pub const SEXP_TAG_INT: u8 = 2; pub const SEXP_TAG_FLOAT: u8 = 3; pub const SEXP_TAG_SYMBOL: u8 = 4; pub const SEXP_TAG_STR: u8 = 5; pub const SEXP_TAG_MUT_STR: u8 = 6; pub const SEXP_TAG_CONS: u8 = 7;
 pub const SEXP_TAG_VECTOR: u8 = 8; pub const SEXP_TAG_CHAR_TABLE: u8 = 9; pub const SEXP_TAG_BOOL_VECTOR: u8 = 10; pub const SEXP_TAG_CELL: u8 = 11; pub const SEXP_TAG_RECORD: u8 = 12; pub const SEXP_PAYLOAD_OFFSET: usize = 8;
