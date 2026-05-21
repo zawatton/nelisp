@@ -1400,12 +1400,14 @@ Signals a clear error on unsupported values."
 (defun compile-elisp-objects--target-format ()
   "Return the Phase 47 output format symbol for this batch run.
 Looks at `NELISP_PHASE47_TARGET_OS' (forwarded by `build.rs')
-and picks `'mach-o' for macOS, `'elf' otherwise (= linux + the
-default).  Doc 100 §100.D Stage 3 added Mach-O support for
-macos-aarch64; other OS / format combinations stay on ELF."
+and picks `'mach-o' for macOS, `'coff' for Windows (= mingw / msvc
+targets), `'elf' otherwise (= linux + the default).
+  Doc 100 §100.D Stage 3 added Mach-O for macos-aarch64.
+  Doc 101 §101.A adds COFF for windows-x86_64."
   (pcase (or (getenv "NELISP_PHASE47_TARGET_OS") "linux")
-    ("macos" 'mach-o)
-    (_ 'elf)))
+    ("macos"   'mach-o)
+    ("windows" 'coff)
+    (_         'elf)))
 
 (defun compile-elisp-objects-emit-all ()
   "Compile every manifest entry to its output `.o' file.

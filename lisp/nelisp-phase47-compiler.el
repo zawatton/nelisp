@@ -5185,6 +5185,19 @@ drift (= a Doc 92 emitter invariant violation)."
             (list :text text-bytes
                   :symbols all-symbols
                   :machine arch)))
+          ('coff
+           ;; Doc 101 §101.A: Windows uses PE32+/COFF instead of ELF.
+           ;; Only x86_64 is supported in v1; aarch64 COFF is deferred.
+           (unless (eq arch 'x86_64)
+             (signal 'nelisp-phase47-compiler-error
+                     (list :coff-only-supports-x86_64 arch)))
+           (require 'nelisp-pe-write)
+           (nelisp-pe-write-binary
+            file-path
+            (list :text     text-bytes
+                  :symbols  all-symbols
+                  :relocs   relocs
+                  :machine  arch)))
           (other
            (signal 'nelisp-phase47-compiler-error
                    (list :unknown-output-format other))))
