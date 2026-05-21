@@ -2,8 +2,7 @@ use std::sync::atomic::AtomicI64;
 use crate::eval::sexp::Sexp;
 static MAKE_SYMBOL_COUNTER: AtomicI64 = AtomicI64::new(0);
 #[no_mangle] pub extern "C" fn nl_make_symbol_counter_ptr() -> *mut i64 { std::ptr::addr_of!(MAKE_SYMBOL_COUNTER) as *mut i64 }
-#[no_mangle]
-pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: *mut Sexp) -> i64 {
+#[no_mangle] pub unsafe extern "C" fn nl_jit_format_float(x: f64, conv: u32, prec: i64, out: *mut Sexp) -> i64 {
     let (Some(ch), false) = (char::from_u32(conv), prec < 0) else { return 1 };
     let p = prec as usize; let body = match ch { 'f'|'F' => format!("{:.*}",p,x), 'e' => format!("{:.*e}",p,x), 'E' => format!("{:.*E}",p,x), 'g'|'G' => { let (f,e)=(format!("{:.*}",p,x),format!("{:.*e}",p,x)); if f.len()<=e.len(){f}else{e} } _ => return 1 };
     *out = Sexp::Str(body); 0

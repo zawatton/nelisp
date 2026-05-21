@@ -18,12 +18,7 @@ macro_rules! mirror_op {
         $vis fn $name(&self, name: &str) -> bool { self.with_mirror_unbound(name, |m,s,u| unsafe { crate::elisp_cc_spike::$extern_fn(m,s,u)!=0 }).unwrap_or(false) }
     };
     (lookup: $name:ident($vis:vis) => $extern_fn:ident) => {
-        $vis fn $name(&self, name: &str) -> Sexp {
-            self.with_mirror_symbol(name, |m,s| unsafe {
-                if crate::elisp_cc_spike::mirror_lookup_entry(m,s).is_null() { return self.unbound_marker.clone(); }
-                let mut slot=Sexp::Nil; crate::elisp_cc_spike::$extern_fn(m,s,&mut slot); slot
-            }).unwrap_or_else(|| self.unbound_marker.clone())
-        }
+        $vis fn $name(&self, name: &str) -> Sexp { self.with_mirror_symbol(name, |m,s| unsafe { if crate::elisp_cc_spike::mirror_lookup_entry(m,s).is_null() { return self.unbound_marker.clone(); } let mut slot=Sexp::Nil; crate::elisp_cc_spike::$extern_fn(m,s,&mut slot); slot }).unwrap_or_else(|| self.unbound_marker.clone()) }
     };
 }
 impl Env {
