@@ -35,13 +35,9 @@ sexp_tags! {
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
 macro_rules! sexp_box_ptr_accessor {
     ($name:ident, $ty:ty) => {
-        #[inline]
-        pub unsafe fn $name(&self) -> *const $ty {
-            let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
-                as *const std::ptr::NonNull<$ty>;
-            unsafe { (*payload).as_ptr() }
-        }
-    };
+        #[inline] pub unsafe fn $name(&self) -> *const $ty {
+            let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET) as *const std::ptr::NonNull<$ty>;
+            unsafe { (*payload).as_ptr() } } };
 }
 impl Sexp {
     #[inline] pub fn tag(&self) -> u8 { unsafe { *(self as *const Sexp as *const u8) } }
@@ -64,16 +60,11 @@ pub struct CharTableInner {
 }
 impl Sexp {
     pub fn list_from(items: &[Sexp]) -> Sexp {
-        let mut acc = Sexp::Nil;
-        for item in items.iter().rev() { acc = Sexp::cons(item.clone(), acc); }
-        acc
-    }
+        let mut acc = Sexp::Nil; for item in items.iter().rev() { acc = Sexp::cons(item.clone(), acc); } acc }
     pub fn cons(car: Sexp, cdr: Sexp) -> Sexp { Sexp::Cons(NlConsBoxRef::new(car, cdr)) }
     pub fn vector(items: Vec<Sexp>) -> Sexp { Sexp::Vector(NlVectorRef::new(items)) }
     pub fn mut_str(s: impl Into<String>) -> Sexp { Sexp::MutStr(NlStrRef::new(s.into())) }
-    pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
-        Sexp::CharTable(NlCharTableRef::new(CharTableInner { subtype, default_val: init, entries: Vec::new(), parent: None, extra: Vec::new() }))
-    }
+    pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp { Sexp::CharTable(NlCharTableRef::new(CharTableInner { subtype, default_val: init, entries: Vec::new(), parent: None, extra: Vec::new() })) }
     pub fn bool_vector(len: usize, init: bool) -> Sexp { Sexp::BoolVector(NlBoolVectorRef::new(vec![init; len])) }
     pub fn as_string_owned(&self) -> Option<String> { match self { Sexp::Str(s) => Some(s.clone()), Sexp::MutStr(s) => Some(s.value.clone()), _ => None } }
     pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp { Sexp::Record(NlRecordRef::new(type_tag, init)) }
@@ -91,10 +82,8 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("nlcell-offset-value",std::mem::offset_of!(NlCell,value) as i64), ("nlcell-offset-refcount",std::mem::offset_of!(NlCell,refcount) as i64), ("nlcell-size",std::mem::size_of::<NlCell>() as i64),
 ];
 pub fn fmt_sexp(s: &Sexp) -> String {
-    let mut slot = Sexp::Nil;
-    unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) };
-    match slot { Sexp::Str(text) => text, _ => "<fmt_sexp:error>".into() }
-}
+    let mut slot = Sexp::Nil; unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) };
+    match slot { Sexp::Str(text) => text, _ => "<fmt_sexp:error>".into() } }
 impl fmt::Display for Sexp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&fmt_sexp(self)) }
 }

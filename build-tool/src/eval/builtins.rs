@@ -132,20 +132,16 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
 pub(crate) fn require_arity(name: &str, args: &[Sexp], min: usize, max: Option<usize>) -> Result<(), EvalError> {
     if args.len() < min || max.map_or(false, |m| args.len() > m) {
         let e = match max { Some(m) if m == min => min.to_string(), Some(m) => format!("{}-{}", min, m), None => format!("≥{}", min) };
-        Err(EvalError::wrong_arity(name, e, args.len()))
-    } else { Ok(()) }
-}
+        Err(EvalError::wrong_arity(name, e, args.len())) } else { Ok(()) } }
 pub(crate) fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
     match v { Sexp::Int(n) => Ok(*n), Sexp::Float(x) => Ok(*x as i64),
-        other => Err(EvalError::wrong_type(format!("number ({} arg)", name), other.clone())) }
-}
+        other => Err(EvalError::wrong_type(format!("number ({} arg)", name), other.clone())) } }
 fn string_value(v: &Sexp) -> Result<String, EvalError> {
     match v { Sexp::Str(s) | Sexp::Symbol(s) => Ok(s.clone()), Sexp::MutStr(rc) => Ok(rc.value.clone()), Sexp::Nil => Ok("nil".into()), Sexp::T => Ok("t".into()), o => Err(EvalError::wrong_type("stringp or symbolp", o.clone())) } }
 fn resolve_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     let path = string_value(arg)?; let p = Path::new(&path); if p.is_absolute() { return Ok(p.to_path_buf()); }
     let base = match env.lookup_value("default-directory") { Ok(Sexp::Str(s)) => Some(s), _ => None };
-    Ok(base.as_deref().map(|b| Path::new(b).join(p)).or_else(|| std::env::current_dir().ok().map(|c| c.join(p))).unwrap_or_else(|| p.to_path_buf()))
-}
+    Ok(base.as_deref().map(|b| Path::new(b).join(p)).or_else(|| std::env::current_dir().ok().map(|c| c.join(p))).unwrap_or_else(|| p.to_path_buf())) }
 fn cc_slot_1(arg: &Sexp, f: unsafe fn(*const Sexp, *mut Sexp) -> *mut Sexp) -> Sexp { let mut slot = Sexp::Nil; unsafe { f(arg as *const _, &mut slot as *mut _) }; slot }
 fn bool_sexp(v: bool) -> Sexp { if v { Sexp::T } else { Sexp::Nil } }
 fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> { if rc < 0 { Err(EvalError::internal(format!("{name}: {path}: kernel returned {rc}"))) } else { Ok(Sexp::T) } }
@@ -154,25 +150,21 @@ fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp)
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (_, ps) = path_arg1("nelisp--syscall-canonicalize", args, env)?; let mut buf = vec![0u8; libc::PATH_MAX as usize];
     if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&ps as *const _, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
-    Ok(Sexp::Str(String::from_utf8_lossy(&buf[..buf.iter().position(|&b| b == 0).unwrap_or(buf.len())]).into_owned()))
-}
+    Ok(Sexp::Str(String::from_utf8_lossy(&buf[..buf.iter().position(|&b| b == 0).unwrap_or(buf.len())]).into_owned())) }
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (p, ps) = path_arg1("nelisp--syscall-read-file", args, env)?;
     let n = match std::fs::metadata(&p) { Ok(m) if m.is_file() => m.len() as usize, _ => return Ok(Sexp::Nil) };
     if n == 0 { return Ok(Sexp::Str(String::new())); }
     let mut buf = vec![0u8; n]; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&ps as *const _, buf.as_mut_ptr(), n as i64) } as i32 as i64;
-    if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
-}
+    if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) }
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() };
     let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps as *const _, (&mut sb as *mut libc::stat) as *mut u8) };
-    Ok(Sexp::Symbol((if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" } }).into()))
-}
+    Ok(Sexp::Symbol((if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" } }).into())) }
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (dir, ds) = path_arg1("nelisp--syscall-readdir", args, env)?;
     let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) };
-    Ok(Sexp::cons(ds, Sexp::list_from(&rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>())))
-}
+    Ok(Sexp::cons(ds, Sexp::list_from(&rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>()))) }
 #[cfg(not(target_os = "linux"))]
 fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> { Err(EvalError::internal("nelisp--syscall: unsupported platform")) }
 #[cfg(target_os = "linux")]
@@ -183,5 +175,4 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
         other => return Err(EvalError::wrong_type("syscall name (symbol) or number (integer)", other.clone())) };
     let mut a = [0i64; 6]; for (i, sexp) in args[1..].iter().enumerate().take(6) { a[i] = match sexp { Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1, other => return Err(EvalError::wrong_type(format!("integer (arg {} of nelisp--syscall)", i + 1), other.clone())) }; }
     let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) };
-    Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 }))
-}
+    Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 })) }

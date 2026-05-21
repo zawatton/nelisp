@@ -4,10 +4,8 @@ macro_rules! nl_ref_common {
     ($ref:ident, $inner:ident, drop_fn = $drop:path) => {
         #[repr(transparent)]
         pub struct $ref { ptr: ::std::ptr::NonNull<$inner>, _marker: ::std::marker::PhantomData<$inner> }
-        impl $ref {
-            pub fn strong_count(this: &Self) -> usize { unsafe { (*this.ptr.as_ptr()).refcount.load(::std::sync::atomic::Ordering::Acquire) } }
-            pub fn ptr_eq(a: &Self, b: &Self) -> bool { a.ptr.as_ptr() == b.ptr.as_ptr() }
-        }
+        impl $ref { pub fn strong_count(this: &Self) -> usize { unsafe { (*this.ptr.as_ptr()).refcount.load(::std::sync::atomic::Ordering::Acquire) } }
+            pub fn ptr_eq(a: &Self, b: &Self) -> bool { a.ptr.as_ptr() == b.ptr.as_ptr() } }
         impl ::std::ops::Drop for $ref { fn drop(&mut self) { unsafe { $drop(self.ptr.as_ptr() as *mut i64) }; } }
         impl ::std::ops::Deref for $ref { type Target = $inner; fn deref(&self) -> &$inner { unsafe { &*self.ptr.as_ptr() } } }
     };

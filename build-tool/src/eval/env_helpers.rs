@@ -42,17 +42,14 @@ impl Env {
     pub fn new_global() -> Self {
         macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) }; }
         const STDLIB_FILES: &[(&str, &str)] = &[
-            e!("nelisp-jit-substrate.el"), e!("nelisp-syscall-table.el"), e!("nelisp-jit-strategy.el"), e!("nelisp-stdlib-env-shim.el"), e!("nelisp-stdlib-eval-special.el"), e!("nelisp-stdlib-error.el"),
-            e!("nelisp-stdlib.el"), e!("nelisp-stdlib-list.el"), e!("nelisp-stdlib-hof.el"), e!("nelisp-stdlib-search.el"), e!("nelisp-stdlib-plist-str.el"), e!("nelisp-stdlib-format.el"),
-            e!("nelisp-stdlib-misc.el"), e!("nelisp-stdlib-os-int-helpers.el"), e!("nelisp-stdlib-os.el"), e!("nelisp-pcase.el"), e!("nelisp-cl-macros.el"), e!("nelisp-stdlib-hash.el"),
-            e!("nelisp-stdlib-equal.el"), e!("nelisp-stdlib-prn.el"), e!("nelisp-stdlib-reader.el"), e!("nelisp-stdlib-eval-core.el"), e!("nelisp-stdlib-math.el"), e!("nelisp-stdlib-regex.el"),
-            e!("nelisp-stdlib-fast-hash.el"), e!("nelisp-env.el"), e!("nelisp-lexframe.el"), e!("nelisp-cli.el"),
+            e!("nelisp-jit-substrate.el"), e!("nelisp-syscall-table.el"), e!("nelisp-jit-strategy.el"), e!("nelisp-stdlib-env-shim.el"), e!("nelisp-stdlib-eval-special.el"), e!("nelisp-stdlib-error.el"), e!("nelisp-stdlib.el"), e!("nelisp-stdlib-list.el"), e!("nelisp-stdlib-hof.el"),
+            e!("nelisp-stdlib-search.el"), e!("nelisp-stdlib-plist-str.el"), e!("nelisp-stdlib-format.el"), e!("nelisp-stdlib-misc.el"), e!("nelisp-stdlib-os-int-helpers.el"), e!("nelisp-stdlib-os.el"), e!("nelisp-pcase.el"), e!("nelisp-cl-macros.el"), e!("nelisp-stdlib-hash.el"),
+            e!("nelisp-stdlib-equal.el"), e!("nelisp-stdlib-prn.el"), e!("nelisp-stdlib-reader.el"), e!("nelisp-stdlib-eval-core.el"), e!("nelisp-stdlib-math.el"), e!("nelisp-stdlib-regex.el"), e!("nelisp-stdlib-fast-hash.el"), e!("nelisp-env.el"), e!("nelisp-lexframe.el"), e!("nelisp-cli.el"),
         ];
         let mut env = Env::install_stage0(1024);
         let trace = std::env::var_os("NELISP_EVAL_BOOT_TRACE").map_or(false, |v| !v.is_empty() && v != "0");
         for (name, source) in STDLIB_FILES {
-            for (idx, form) in crate::reader::read_all(source).unwrap_or_else(|e| panic!("{name} eval-boot read failed: {e}")).iter().enumerate() {
-                if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
+            for (idx, form) in crate::reader::read_all(source).unwrap_or_else(|e| panic!("{name} eval-boot read failed: {e}")).iter().enumerate() { if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
                 crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval-boot eval failed at form #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form)));
             }
         }
@@ -65,47 +62,36 @@ impl Env {
         let mut env = Env::fresh(max_recursion);
         env.install_empty_mirror_rust_direct();
         let (u, p, c) = (env.unbound_marker.clone(), Sexp::Nil, Sexp::T);
-        for (n, v) in [("nil", Sexp::Nil), ("t", Sexp::T)] {
-            env.with_mirror_symbol(n, |m, s| unsafe { crate::elisp_cc_spike::mirror_install_entry_or_insert(m, s, &v, &u, &p, &c); });
-        }
+        for (n, v) in [("nil", Sexp::Nil), ("t", Sexp::T)] { env.with_mirror_symbol(n, |m, s| unsafe { crate::elisp_cc_spike::mirror_install_entry_or_insert(m, s, &v, &u, &p, &c); }); }
         super::builtins::install_builtins(&mut env);
-        env.register_extern_builtin("nelisp--env-globals-op", |args, env| super::env_shim::bi_globals_op(args, env));
-        env
-    }
+        env.register_extern_builtin("nelisp--env-globals-op", |args, env| super::env_shim::bi_globals_op(args, env)); env }
     pub fn register_extern_builtin<F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static>(&mut self, name: &str, f: F) {
         self.extern_builtins.insert(name.to_string(), Rc::new(f));
-        self.mirror_set_function(name, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol(name.into())]));
-    }
+        self.mirror_set_function(name, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol(name.into())])); }
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return if name == "nelisp--unbound-marker" { Ok(self.unbound_marker.clone()) } else { Err(EvalError::unbound_var(name)) }; }
         let (n, mut o) = (Sexp::Symbol(name.into()), Sexp::Nil);
-        if unsafe { crate::elisp_cc_spike::env_lookup_value(&self.globals_record, &self.frames_record, &n, &mut o) } == 0 { Ok(o) } else { Err(EvalError::unbound_var(name)) }
-    }
+        if unsafe { crate::elisp_cc_spike::env_lookup_value(&self.globals_record, &self.frames_record, &n, &mut o) } == 0 { Ok(o) } else { Err(EvalError::unbound_var(name)) } }
     fn unbound_scratch(&self, value: Sexp) -> Sexp { crate::elisp_cc_spike::build_or_insert_scratch_vec(value, self.unbound_marker.clone(), Sexp::Nil, Sexp::Nil) }
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return Err(EvalError::unbound_var(name)); }
         let n = Sexp::Symbol(name.into()); let sc = self.unbound_scratch(value.clone());
-        if unsafe { crate::elisp_cc_spike::env_set_value(&self.globals_record, &self.frames_record, &n, &value, &sc, 0) } == 0 { Ok(value) } else { Err(EvalError::setting_constant(name)) }
-    }
+        if unsafe { crate::elisp_cc_spike::env_set_value(&self.globals_record, &self.frames_record, &n, &value, &sc, 0) } == 0 { Ok(value) } else { Err(EvalError::setting_constant(name)) } }
     pub fn lookup_function(&self, name: &str) -> Result<Sexp, EvalError> {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return Err(EvalError::unbound_fn(name)); }
         let (n, mut o) = (Sexp::Symbol(name.into()), Sexp::Nil);
-        if unsafe { crate::elisp_cc_spike::env_lookup_function(&self.globals_record, &self.unbound_marker, &n, &mut o) } == 0 { Ok(o) } else { Err(EvalError::unbound_fn(name)) }
-    }
+        if unsafe { crate::elisp_cc_spike::env_lookup_function(&self.globals_record, &self.unbound_marker, &n, &mut o) } == 0 { Ok(o) } else { Err(EvalError::unbound_fn(name)) } }
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if !matches!(&self.globals_record, Sexp::Record(_)) { return; }
         let n = Sexp::Symbol(name.into()); let sc = self.unbound_scratch(value.clone());
-        unsafe { crate::elisp_cc_spike::env_bind_local(&self.globals_record, &self.frames_record, &n, &value, &sc, 0) };
-    }
+        unsafe { crate::elisp_cc_spike::env_bind_local(&self.globals_record, &self.frames_record, &n, &value, &sc, 0) }; }
     pub fn capture_lexical(&mut self) -> Sexp {
         let Sexp::Record(r) = &self.frames_record else { return Sexp::Nil };
         let (Some(Sexp::Int(d)), Ok(f)) = (r.slots.get(1), self.lookup_function("nelisp-lexframe-stack-capture-to-depth")) else { return Sexp::Nil };
-        super::apply_function(&f, &[self.frames_record.clone(), Sexp::Int(*d)], self).unwrap_or(Sexp::Nil)
-    }
+        super::apply_function(&f, &[self.frames_record.clone(), Sexp::Int(*d)], self).unwrap_or(Sexp::Nil) }
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let n = Env::wrap_alist_cells(alist)?; let Ok(f) = self.lookup_function("nelisp-lexframe-make-from-alist") else { return Ok(()) };
-        let frame = super::apply_function(&f, &[n], self)?; unsafe { crate::elisp_cc_spike::frame_stack_install(&self.frames_record, &frame); } Ok(())
-    }
+        let frame = super::apply_function(&f, &[n], self)?; unsafe { crate::elisp_cc_spike::frame_stack_install(&self.frames_record, &frame); } Ok(()) }
     fn with_mirror_symbol<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp) -> T) -> Option<T> { if !matches!(&self.globals_record, Sexp::Record(_)) { return None; } let sym = Sexp::Symbol(name.into()); Some(f(&self.globals_record, &sym)) }
     fn with_mirror_unbound<T>(&self, name: &str, f: impl FnOnce(*const Sexp, *const Sexp, *const Sexp) -> T) -> Option<T> { self.with_mirror_symbol(name, |m, s| f(m, s, &self.unbound_marker)) }
     fn mirror_mutate_with(&mut self, name: &str, payload: &Sexp, op: unsafe fn(*const Sexp, *const Sexp, *const Sexp, *const Sexp) -> i64) { self.with_mirror_unbound(name, |m, s, u| unsafe { op(m, s, payload, u); }); }
@@ -120,13 +106,10 @@ impl Env {
         let Sexp::Record(sr) = &self.frames_record else { return }; let sr = sr.clone();
         let (Some(Sexp::Vector(bk)), Some(Sexp::Int(d))) = (sr.slots.get(0), sr.slots.get(1)) else { return };
         let (d, bk) = (*d as usize, bk.clone()); if d == 0 { return; }
-        unsafe { bk.with_value_mut(|v| v[d-1] = Sexp::Nil); sr.with_slots_mut(|s| s[1] = Sexp::Int(d as i64 - 1)); }
-    }
+        unsafe { bk.with_value_mut(|v| v[d-1] = Sexp::Nil); sr.with_slots_mut(|s| s[1] = Sexp::Int(d as i64 - 1)) } }
     pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
         if !matches!(&self.frames_record, Sexp::Record(_)) { return None; }
-        let raw = unsafe { crate::elisp_cc_spike::frame_stack_find_raw(&self.frames_record, &Sexp::Str(name.to_string())) }; if raw.is_null() { None } else { Some(unsafe { (*raw).clone() }) }
-    }
+        let raw = unsafe { crate::elisp_cc_spike::frame_stack_find_raw(&self.frames_record, &Sexp::Str(name.to_string())) }; if raw.is_null() { None } else { Some(unsafe { (*raw).clone() }) } }
     pub(crate) fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> {
-        let mut r = Sexp::Nil; if unsafe { crate::elisp_cc_spike::wrap_alist_cells(alist, &mut r) } == 1 { Ok(r) } else { Err(EvalError::internal("wrap_alist_cells: malformed closure env alist")) }
-    }
+        let mut r = Sexp::Nil; if unsafe { crate::elisp_cc_spike::wrap_alist_cells(alist, &mut r) } == 1 { Ok(r) } else { Err(EvalError::internal("wrap_alist_cells: malformed closure env alist")) } }
 }

@@ -15,8 +15,7 @@ macro_rules! sf_call_with_s1 {
 pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Sexp>, EvalError> {
     Ok(Some(match name {
         "quote" => { let mut out = Sexp::Nil;
-            let rc = unsafe { crate::elisp_cc_spike::sf_quote_call(args as *const Sexp, &mut out as *mut Sexp) };
-            if rc == 0 { out } else { return Err(EvalError::wrong_arity("quote", "1", 0)); } }
+            let rc = unsafe { crate::elisp_cc_spike::sf_quote_call(args as *const Sexp, &mut out as *mut Sexp) }; if rc == 0 { out } else { return Err(EvalError::wrong_arity("quote", "1", 0)); } }
         "function" => sf_call_with_s1!("sf_function", sf_function_call, args, env)?,
         "if" => sf_call_4arg!("sf_if", sf_if_call, args, env)?,
         "let" => sf_call_4arg!("sf_let", sf_let_call, args, env)?,
@@ -44,11 +43,9 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
     } else {
         let mut values = Vec::with_capacity(bindings.len());
         for b in &bindings { match parse(b, e) { Ok(pair) => values.push(pair), Err(_) => return 1 } }
-        e.frame_push_rust_direct();
-        for (name, val) in values { e.bind_local(&name, val); }
+        e.frame_push_rust_direct(); for (name, val) in values { e.bind_local(&name, val); }
     }
-    0
-}
+    0 }
 #[no_mangle] pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 { (&mut *(env as *mut Env)).frame_pop_rust_direct(); 0 }
 #[no_mangle] pub unsafe extern "C" fn nl_env_push_captured(env: *mut std::ffi::c_void, alist_ptr: *const Sexp) -> i64 { i64::from((&mut *(env as *mut Env)).push_captured(&*alist_ptr).is_err()) }
 #[no_mangle] pub unsafe extern "C" fn nl_cc_match_and_bind(clauses: *const Sexp, err_inout: *mut Sexp, var: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
@@ -62,23 +59,19 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
                 Sexp::Cons(_) => list_elements(&cb.car).ok().map_or(false, |el| el.iter().any(|t| matches!(t, Sexp::Symbol(s) if is_error_subtype(s, &actual_tag)))),
                 _ => false,
             };
-            if m {
-                e.frame_push_rust_direct();
+            if m { e.frame_push_rust_direct();
                 if let Sexp::Symbol(name) = &*var { if name != "nil" { e.bind_local(name, err.clone()); } }
-                std::ptr::write(err_inout, cb.cdr.clone()); return 0;
-            }
+                std::ptr::write(err_inout, cb.cdr.clone()); return 0; }
         }
         cur = &cc.cdr;
     }
-    let _ = e.set_value("nelisp--last-signal-data", err); 1
-}
+    let _ = e.set_value("nelisp--last-signal-data", err); 1 }
 #[no_mangle] pub unsafe extern "C" fn nl_bf_bind_sym(env: *mut std::ffi::c_void, name_ptr: *const Sexp, val_ptr: *const Sexp) -> i64 { if let Sexp::Symbol(name) = &*name_ptr { (&mut *(env as *mut Env)).bind_local(name, (*val_ptr).clone()); } 0 }
 #[no_mangle] pub unsafe extern "C" fn nl_bf_bind_optional(env: *mut std::ffi::c_void, name_ptr: *const Sexp, args_ptr: *const Sexp, idx: i64) -> i64 {
     let e = &mut *(env as *mut Env); let Sexp::Symbol(name) = &*name_ptr else { return idx };
     let args = match super::list_elements(&*args_ptr) { Ok(v) => v, Err(_) => { e.bind_local(name, Sexp::Nil); return idx; } };
     let i = idx as usize; e.bind_local(name, args.get(i).cloned().unwrap_or(Sexp::Nil));
-    if i < args.len() { idx + 1 } else { idx }
-}
+    if i < args.len() { idx + 1 } else { idx } }
 macro_rules! stash_err {
     ($env:expr, $err:expr) => {{ let _ = (&mut *($env as *mut Env)).set_value("nelisp--last-signal-data", $err.signal_data()); 1i64 }};
 }
@@ -88,22 +81,18 @@ macro_rules! stash_err {
 #[no_mangle] pub unsafe extern "C" fn nl_bf_bind_rest(env: *mut std::ffi::c_void, name_ptr: *const Sexp, args_ptr: *const Sexp, idx: i64) -> i64 {
     let e = &mut *(env as *mut Env); let Sexp::Symbol(name) = &*name_ptr else { return 0 };
     let args = match super::list_elements(&*args_ptr) { Ok(v) => v, Err(_) => { e.bind_local(name, Sexp::Nil); return 0; } };
-    e.bind_local(name, Sexp::list_from(&args[(idx as usize).min(args.len())..])); 0
-}
+    e.bind_local(name, Sexp::list_from(&args[(idx as usize).min(args.len())..])); 0 }
 #[no_mangle] pub unsafe extern "C" fn nl_push_and_bind(formals_ptr: *const Sexp, args_list_ptr: *const Sexp, env: *mut std::ffi::c_void) -> i64 {
     let e = &mut *(env as *mut Env); e.frame_push_rust_direct();
-    let rc = crate::elisp_cc_spike::bind_formals_impl_call(formals_ptr, args_list_ptr, env, 0); if rc != 0 { e.frame_pop_rust_direct(); } rc
-}
+    let rc = crate::elisp_cc_spike::bind_formals_impl_call(formals_ptr, args_list_ptr, env, 0); if rc != 0 { e.frame_pop_rust_direct(); } rc }
 #[no_mangle] pub unsafe extern "C" fn nl_env_capture_lexical(env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 { std::ptr::write(out, (&mut *(env as *mut Env)).capture_lexical()); 0 }
 #[no_mangle] pub unsafe extern "C" fn nl_eval_is_truthy(form: *const Sexp, env: *mut std::ffi::c_void) -> i64 { match super::eval(&*form, &mut *(env as *mut Env)) { Ok(Sexp::Nil) => 0, Ok(_) => 1, Err(_) => -1 } }
 #[no_mangle] pub unsafe extern "C" fn nl_env_set_value(env: *mut std::ffi::c_void, sym: *const Sexp, val: *const Sexp) -> i64 {
-    let e = &mut *(env as *mut Env); match &*sym { Sexp::Symbol(s) | Sexp::Str(s) => i64::from(e.set_value(s.as_str(), (*val).clone()).is_err()), _ => 1 }
-}
+    let e = &mut *(env as *mut Env); match &*sym { Sexp::Symbol(s) | Sexp::Str(s) => i64::from(e.set_value(s.as_str(), (*val).clone()).is_err()), _ => 1 } }
 #[no_mangle] pub unsafe extern "C" fn nl_env_lookup_val(name_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let e = &mut *(env as *mut Env); let Sexp::Symbol(n) = &*name_ptr else { return 1; };
     if n.starts_with(':') && n.len() > 1 { super::sexp::nl_sexp_clone_into(name_ptr, out); return 0; }
-    match e.lookup_value(n) { Ok(v) => { std::ptr::write(out, v); 0 } Err(er) => { let _ = e.set_value("nelisp--last-signal-data", er.signal_data()); 1 } }
-}
+    match e.lookup_value(n) { Ok(v) => { std::ptr::write(out, v); 0 } Err(er) => { let _ = e.set_value("nelisp--last-signal-data", er.signal_data()); 1 } } }
 #[no_mangle] pub unsafe extern "C" fn nl_cell_get_value(cell_ptr: *const Sexp, out: *mut Sexp) -> i64 { match &*cell_ptr { Sexp::Cell(c) => { std::ptr::write(out, c.value.clone()); 0 } _ => 1 } }
 #[no_mangle] pub unsafe extern "C" fn nl_eval_inner_cons(head_ptr: *const Sexp, tail_ptr: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp) -> i64 {
     let e = &mut *(env as *mut Env);
@@ -112,8 +101,7 @@ macro_rules! stash_err {
     macro_rules! stash { ($er:expr) => {{ let _=e.set_value("nelisp--last-signal-data",$er.signal_data()); return 1; }}; }
     macro_rules! quote_wrap { ($v:expr) => { Sexp::list_from(&[Sexp::Symbol("quote".into()), $v]) }; }
     macro_rules! elisp_delegate {
-        ($e:expr, $func:expr, $al:expr) => {{ let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()), quote_wrap!($func.clone()), quote_wrap!($al)]);
-            $e.delegation_depth += 1; let r = super::eval(&f, $e); $e.delegation_depth -= 1;
+        ($e:expr, $func:expr, $al:expr) => {{ let f = Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()), quote_wrap!($func.clone()), quote_wrap!($al)]); $e.delegation_depth += 1; let r = super::eval(&f, $e); $e.delegation_depth -= 1;
             match r { Ok(v) => { put!(v) } Err(er) => { stash!(er) } } }};
     }
     let (head, tail) = (&*head_ptr, &*tail_ptr);
@@ -137,10 +125,8 @@ macro_rules! stash_err {
             let exp = match super::eval(&f,e) { Ok(v)=>{e.delegation_depth-=1;v}, Err(er)=>{e.delegation_depth-=1; stash!(er)} };
             match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
         }
-        let parts = tri!(super::list_elements(&func));
-        if parts.len()<2 { stash!(super::error::EvalError::internal("malformed macro")) }
-        let af = tri!(super::list_elements(tail));
-        let exp = tri!(super::apply_function(&parts[1], &af, e));
+        let parts = tri!(super::list_elements(&func)); if parts.len()<2 { stash!(super::error::EvalError::internal("malformed macro")) }
+        let af = tri!(super::list_elements(tail)); let exp = tri!(super::apply_function(&parts[1], &af, e));
         match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
     }
     let args = tri!(super::eval_arg_list(tail, e));

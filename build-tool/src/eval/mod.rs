@@ -5,24 +5,18 @@ pub use env_helpers::{Env, ExternBuiltin, FrameCell};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 fn expect_single_form(forms: Vec<Sexp>, ctx: &str) -> Result<Sexp, EvalError> {
-    match forms.as_slice() {
-        [s] => Ok(s.clone()),
+    match forms.as_slice() { [s] => Ok(s.clone()),
         [] => Err(EvalError::internal(format!("{ctx}: empty input - at least one form required"))),
-        _ => Err(EvalError::internal(format!("{ctx}: expected exactly one form, got {}", forms.len()))),
-    }
-}
+        _ => Err(EvalError::internal(format!("{ctx}: expected exactly one form, got {}", forms.len()))) } }
 fn eval_forms(forms: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { forms.iter().try_fold(Sexp::Nil, |_, f| eval(f, env)) }
 pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl")
         .map_err(|_| EvalError::internal("nelisp--read-all-from-string-impl not loaded"))?;
-    list_elements(&apply_function(&impl_fn, &[Sexp::Str(input.to_string())], env)?)
-}
+    list_elements(&apply_function(&impl_fn, &[Sexp::Str(input.to_string())], env)?) }
 pub fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> { expect_single_form(read_all_via_elisp(input, env)?, "read_one_via_elisp") }
 pub fn eval_str(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
-    let form = expect_single_form(read_all_via_elisp(input, &mut env)?, "eval_str")?;
-    eval(&form, &mut env)
-}
+    let form = expect_single_form(read_all_via_elisp(input, &mut env)?, "eval_str")?; eval(&form, &mut env) }
 pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> { let mut env = Env::new_global(); eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env) }
 pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
@@ -33,12 +27,9 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if quit::take_quit_flag() { return Err(EvalError::Quit); }
     if env.current_recursion >= env.max_recursion { return Err(EvalError::internal(format!("max-lisp-eval-depth exceeded ({})", env.max_recursion))); }
-    env.current_recursion += 1;
-    let mut out = Sexp::Nil;
+    env.current_recursion += 1; let mut out = Sexp::Nil;
     let rc = unsafe { crate::elisp_cc_spike::eval_inner_call(form as *const Sexp, env as *mut Env as *mut std::ffi::c_void, &mut out as *mut Sexp, 0) };
-    env.current_recursion -= 1;
-    if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "eval_inner")) }
-}
+    env.current_recursion -= 1; if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "eval_inner")) } }
 fn walk_proper_list(head: &Sexp, mut f: impl FnMut(&Sexp) -> Result<Sexp, EvalError>) -> Result<Vec<Sexp>, EvalError> {
     let (mut out, mut cur) = (Vec::new(), head.clone());
     loop { match cur.clone() {
@@ -56,8 +47,7 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
         "builtin" => {
             let Sexp::Cons(inner) = &b.cdr else { return Err(EvalError::internal("builtin sentinel missing name")); };
             let name = match &inner.car { Sexp::Symbol(s)|Sexp::Str(s) => s.clone(), _ => return Err(EvalError::internal("builtin sentinel name not a symbol")) };
-            builtins::dispatch(&name, args, env)
-        }
+            builtins::dispatch(&name, args, env) }
         head @ ("closure"|"lambda") => {
             let parts = list_elements(func)?;
             let (captured, fi, bs) = if head == "closure" {
@@ -66,12 +56,10 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
             } else { if parts.len() < 2 { return Err(EvalError::internal("lambda missing args / body")); } (Sexp::Nil, 1, 2) };
             let mut out = Sexp::Nil;
             let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(&captured, &parts[fi], &Sexp::list_from(&parts[bs..]), &Sexp::list_from(args), env as *mut Env as *mut std::ffi::c_void, &mut out) };
-            if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) }
-        }
+            if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) } }
         "macro" => Err(EvalError::wrong_type("function (not macro)", func.clone())),
         _ => Err(wt()),
-    }
-}
+    } }
 #[inline]
 unsafe fn eval_stash_err(env: &mut Env, result: Result<Sexp, EvalError>, out: *mut Sexp) -> i64 {
     match result { Ok(v) => { std::ptr::write(out, v); 0 } Err(e) => { let _ = env.set_value("nelisp--last-signal-data", e.signal_data()); 1 } }
