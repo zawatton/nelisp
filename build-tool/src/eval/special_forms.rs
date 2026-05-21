@@ -29,8 +29,7 @@ pub fn apply_special(name: &str, args: &Sexp, env: &mut Env) -> Result<Option<Se
 #[no_mangle] pub unsafe extern "C" fn nl_let_setup(bindings_list: *const Sexp, env: *mut std::ffi::c_void, sequential: i64) -> i64 {
     fn parse(b: &Sexp, e: &mut Env) -> Result<(String, Sexp), EvalError> { match b { Sexp::Symbol(n) => Ok((n.clone(), Sexp::Nil)), Sexp::Cons(_) => { let p = list_elements(b)?; let n = match &p[0] { Sexp::Symbol(s) => s.clone(), o => return Err(EvalError::wrong_type("symbol", o.clone())) }; Ok((n, if p.len() >= 2 { eval(&p[1], e)? } else { Sexp::Nil })) } o => Err(EvalError::wrong_type("symbol or (symbol value) pair", o.clone())) } }
     let e = &mut *(env as *mut Env); let Ok(bindings) = list_elements(&*bindings_list) else { return 1 };
-    if sequential != 0 { e.frame_push_rust_direct(); for b in &bindings { match parse(b, e) { Ok((n,v)) => e.bind_local(&n,v), Err(_) => { e.frame_pop_rust_direct(); return 1; } } }
-    } else { let mut values = Vec::with_capacity(bindings.len()); for b in &bindings { match parse(b, e) { Ok(p) => values.push(p), Err(_) => return 1 } } e.frame_push_rust_direct(); for (n,v) in values { e.bind_local(&n,v); } }
+    if sequential != 0 { e.frame_push_rust_direct(); for b in &bindings { match parse(b, e) { Ok((n,v)) => e.bind_local(&n,v), Err(_) => { e.frame_pop_rust_direct(); return 1; } } } } else { let mut values = Vec::with_capacity(bindings.len()); for b in &bindings { match parse(b, e) { Ok(p) => values.push(p), Err(_) => return 1 } } e.frame_push_rust_direct(); for (n,v) in values { e.bind_local(&n,v); } }
     0 }
 #[no_mangle] pub unsafe extern "C" fn nl_env_pop_frame(env: *mut std::ffi::c_void) -> i64 { (&mut *(env as *mut Env)).frame_pop_rust_direct(); 0 }
 #[no_mangle] pub unsafe extern "C" fn nl_env_push_captured(env: *mut std::ffi::c_void, alist_ptr: *const Sexp) -> i64 { i64::from((&mut *(env as *mut Env)).push_captured(&*alist_ptr).is_err()) }
@@ -58,26 +57,15 @@ fn stash_err(env: *mut std::ffi::c_void, e: EvalError) -> i64 { let _ = unsafe {
     macro_rules! delegate { ($e:expr,$func:expr,$al:expr) => {{ let f=Sexp::list_from(&[Sexp::Symbol("nelisp--apply-fn".into()),qw!($func.clone()),qw!($al)]); $e.delegation_depth+=1; let r=super::eval(&f,$e); $e.delegation_depth-=1; match r{Ok(v)=>{put!(v)}Err(er)=>{stash!(er)}} }}; }
     fn is_bi(f: &Sexp) -> bool { matches!(f, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="builtin")) }
     let (head, tail) = (&*head_ptr, &*tail_ptr);
-    let Sexp::Symbol(name) = head else {
-        let func = tri!(super::eval(head, e)); let args = tri!(super::eval_arg_list(tail, e));
-        if e.use_elisp_apply && e.delegation_depth==0 && !is_bi(&func) { delegate!(e, func, Sexp::list_from(&args)); }
-        match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
-    };
+    let Sexp::Symbol(name) = head else { let func=tri!(super::eval(head,e)); let args=tri!(super::eval_arg_list(tail,e)); if e.use_elisp_apply&&e.delegation_depth==0&&!is_bi(&func){delegate!(e,func,Sexp::list_from(&args));} match super::apply_function(&func,&args,e){Ok(v)=>{put!(v)}Err(er)=>{stash!(er)}} };
     match apply_special(name, tail, e) { Ok(Some(v)) => put!(v), Ok(None) => {}, Err(er) => stash!(er) }
     let func = tri!(e.lookup_function(name));
     let is_mac = matches!(&func, Sexp::Cons(c) if matches!(&c.car, Sexp::Symbol(s) if s=="macro"));
     let is_hlp = matches!(name.as_str(),"nelisp--apply-fn"|"nelisp--apply-closure"|"nelisp--apply-lambda"|"nelisp--bind-formals--compute"|"nelisp--bind-formals--required-count"|"nelisp--builtinp"|"nelisp--closurep"|"nelisp--lambdap"|"nelisp--macrop"|"nelisp--expand-macro");
     if is_mac {
-        if e.delegation_depth==0 && !is_hlp && e.lookup_function("nelisp--expand-macro").is_ok() {
-            let f=Sexp::list_from(&[Sexp::Symbol("nelisp--expand-macro".into()),qw!(func.clone()),qw!(tail.clone())]);
-            e.delegation_depth+=1; let exp=match super::eval(&f,e){Ok(v)=>{e.delegation_depth-=1;v},Err(er)=>{e.delegation_depth-=1;stash!(er)}};
-            match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
-        }
-        let parts=tri!(super::list_elements(&func)); if parts.len()<2{stash!(super::error::EvalError::internal("malformed macro"))}
-        let af=tri!(super::list_elements(tail)); let exp=tri!(super::apply_function(&parts[1],&af,e));
-        match super::eval(&exp,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
+        if e.delegation_depth==0 && !is_hlp && e.lookup_function("nelisp--expand-macro").is_ok() { let f=Sexp::list_from(&[Sexp::Symbol("nelisp--expand-macro".into()),qw!(func.clone()),qw!(tail.clone())]); e.delegation_depth+=1; let exp=match super::eval(&f,e){Ok(v)=>{e.delegation_depth-=1;v},Err(er)=>{e.delegation_depth-=1;stash!(er)}}; match super::eval(&exp,e){Ok(v)=>{put!(v)}Err(er)=>{stash!(er)}} }
+        let parts=tri!(super::list_elements(&func)); if parts.len()<2{stash!(super::error::EvalError::internal("malformed macro"))} let af=tri!(super::list_elements(tail)); let exp=tri!(super::apply_function(&parts[1],&af,e)); match super::eval(&exp,e){Ok(v)=>{put!(v)}Err(er)=>{stash!(er)}}
     }
-    let args=tri!(super::eval_arg_list(tail,e));
-    if e.use_elisp_apply && e.delegation_depth==0 && !is_hlp && !is_bi(&func) { delegate!(e, func, Sexp::list_from(&args)); }
+    let args=tri!(super::eval_arg_list(tail,e)); if e.use_elisp_apply&&e.delegation_depth==0&&!is_hlp&&!is_bi(&func){delegate!(e,func,Sexp::list_from(&args));}
     match super::apply_function(&func,&args,e) { Ok(v)=>{ put!(v) } Err(er)=>{ stash!(er) } }
 }

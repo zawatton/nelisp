@@ -11,10 +11,7 @@ pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>
 pub fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> { expect_single_form(read_all_via_elisp(input, env)?, "read_one_via_elisp") }
 pub fn eval_str(input: &str) -> Result<Sexp, EvalError> { let mut env = Env::new_global(); let form = expect_single_form(read_all_via_elisp(input, &mut env)?, "eval_str")?; eval(&form, &mut env) }
 pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> { let mut env = Env::new_global(); eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env) }
-pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> { let mut env = Env::new_global();
-    let rd = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
-    let dir = if rd.is_empty() { ".".into() } else if rd.ends_with('/') { rd } else { rd + "/" };
-    env.set_value("default-directory", Sexp::Str(dir.clone()))?; env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?; env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?; eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env) }
+pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> { let mut env = Env::new_global(); let rd = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into()); let dir = if rd.is_empty() { ".".into() } else if rd.ends_with('/') { rd } else { rd + "/" }; env.set_value("default-directory", Sexp::Str(dir.clone()))?; env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?; env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?; eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env) }
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if quit::take_quit_flag() { return Err(EvalError::Quit); }
     if env.current_recursion >= env.max_recursion { return Err(EvalError::internal(format!("max-lisp-eval-depth exceeded ({})", env.max_recursion))); }
@@ -29,8 +26,8 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
     let Sexp::Cons(b) = func else { return Err(wt()); };
     let Sexp::Symbol(head) = &b.car else { return Err(wt()); };
     match head.as_str() {
-        "builtin" => { let Sexp::Cons(inner) = &b.cdr else { return Err(EvalError::internal("builtin sentinel missing name")); }; let name = match &inner.car { Sexp::Symbol(s)|Sexp::Str(s) => s.clone(), _ => return Err(EvalError::internal("builtin sentinel name not a symbol")) }; builtins::dispatch(&name, args, env) }
-        head @ ("closure"|"lambda") => { let parts = list_elements(func)?; let (captured, fi, bs) = if head == "closure" { if parts.len()<3 { return Err(EvalError::internal("closure missing env/args/body")); } (parts[1].clone(),2usize,3usize) } else { if parts.len()<2 { return Err(EvalError::internal("lambda missing args/body")); } (Sexp::Nil,1,2) }; let mut out = Sexp::Nil; let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(&captured, &parts[fi], &Sexp::list_from(&parts[bs..]), &Sexp::list_from(args), env as *mut Env as *mut std::ffi::c_void, &mut out) }; if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) } }
+        "builtin" => { let Sexp::Cons(inner) = &b.cdr else { return Err(EvalError::internal("builtin sentinel missing name")); }; let name = match &inner.car { Sexp::Symbol(s)|Sexp::Str(s) => s.clone(), _ => return Err(EvalError::internal("builtin sentinel name not a symbol")) }; builtins::dispatch(&name, args, env) },
+        head @ ("closure"|"lambda") => { let parts = list_elements(func)?; let (captured, fi, bs) = if head == "closure" { if parts.len()<3 { return Err(EvalError::internal("closure missing env/args/body")); } (parts[1].clone(),2usize,3usize) } else { if parts.len()<2 { return Err(EvalError::internal("lambda missing args/body")); } (Sexp::Nil,1,2) }; let mut out = Sexp::Nil; let rc = unsafe { crate::elisp_cc_spike::apply_lambda_inner_call(&captured, &parts[fi], &Sexp::list_from(&parts[bs..]), &Sexp::list_from(args), env as *mut Env as *mut std::ffi::c_void, &mut out) }; if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "apply_lambda")) } },
         "macro" => Err(EvalError::wrong_type("function (not macro)", func.clone())),
         _ => Err(wt()),
     } }

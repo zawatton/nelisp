@@ -10,6 +10,4 @@ impl NlVector {
 }
 impl std::fmt::Debug for NlVectorRef { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("Vector").field(&self.value).finish() } }
 impl PartialEq for NlVectorRef { fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.value == other.value } }
-#[no_mangle] pub unsafe extern "C" fn nl_vector_set_slot(vec_ptr: *mut NlVector, n: i64, val: *const Sexp) {
-    (&mut (*vec_ptr).value)[n as usize] = (*val).clone();
-}
+#[no_mangle] pub unsafe extern "C" fn nl_vector_set_slot(vec_ptr: *mut NlVector, n: i64, val: *const Sexp) { (&mut (*vec_ptr).value)[n as usize] = (*val).clone(); }

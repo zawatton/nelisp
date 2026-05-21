@@ -26,11 +26,9 @@ impl Env {
     pub fn new_global() -> Self {
         macro_rules! e { ($n:literal) => { ($n, include_str!(concat!("../../../lisp/", $n))) }; }
         const SF: &[(&str,&str)] = &[e!("nelisp-jit-substrate.el"),e!("nelisp-syscall-table.el"),e!("nelisp-jit-strategy.el"),e!("nelisp-stdlib-env-shim.el"),e!("nelisp-stdlib-eval-special.el"),e!("nelisp-stdlib-error.el"),e!("nelisp-stdlib.el"),e!("nelisp-stdlib-list.el"),e!("nelisp-stdlib-hof.el"),e!("nelisp-stdlib-search.el"),e!("nelisp-stdlib-plist-str.el"),e!("nelisp-stdlib-format.el"),e!("nelisp-stdlib-misc.el"),e!("nelisp-stdlib-os-int-helpers.el"),e!("nelisp-stdlib-os.el"),e!("nelisp-pcase.el"),e!("nelisp-cl-macros.el"),e!("nelisp-stdlib-hash.el"),e!("nelisp-stdlib-equal.el"),e!("nelisp-stdlib-prn.el"),e!("nelisp-stdlib-reader.el"),e!("nelisp-stdlib-eval-core.el"),e!("nelisp-stdlib-math.el"),e!("nelisp-stdlib-regex.el"),e!("nelisp-stdlib-fast-hash.el"),e!("nelisp-env.el"),e!("nelisp-lexframe.el"),e!("nelisp-cli.el")];
-        let mut env = Env::install_stage0(1024);
-        let tr = std::env::var_os("NELISP_EVAL_BOOT_TRACE").map_or(false, |v| !v.is_empty() && v != "0");
+        let mut env = Env::install_stage0(1024); let tr = std::env::var_os("NELISP_EVAL_BOOT_TRACE").map_or(false, |v| !v.is_empty() && v != "0");
         for (name, src) in SF { for (idx, form) in crate::reader::read_all(src).unwrap_or_else(|e| panic!("{name} read failed: {e}")).iter().enumerate() { if tr { eprintln!("[eval-boot] {name}: form #{idx}"); } crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval failed at #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form))); } }
-        env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty());
-        env.mirror_set_value("nelisp--unbound-marker", env.unbound_marker.clone()); env
+        env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty()); env.mirror_set_value("nelisp--unbound-marker", env.unbound_marker.clone()); env
     }
     pub fn empty() -> Self { Env::fresh(256) }
     pub fn new_global_no_stdlib() -> Self { Env::install_stage0(1024) }
@@ -51,7 +49,7 @@ impl Env {
     mirror_op!(lookup: mirror_lookup_function(pub) => mirror_lookup_function);
     mirror_op!(pred: mirror_is_fbound(pub) => mirror_is_fbound);
     pub(crate) fn frame_push_rust_direct(&mut self) { if matches!(&self.frames_record, Sexp::Record(_)) { unsafe { crate::elisp_cc_spike::frame_push(&self.frames_record as *const Sexp) }; } }
-    pub(crate) fn frame_pop_rust_direct(&mut self) { let Sexp::Record(sr) = &self.frames_record else { return }; let sr = sr.clone(); let (Some(Sexp::Vector(bk)), Some(Sexp::Int(d))) = (sr.slots.get(0), sr.slots.get(1)) else { return }; let (d, bk) = (*d as usize, bk.clone()); if d == 0 { return; } unsafe { bk.with_value_mut(|v| v[d-1]=Sexp::Nil); sr.with_slots_mut(|s| s[1]=Sexp::Int(d as i64-1)) } }
+    pub(crate) fn frame_pop_rust_direct(&mut self) { let Sexp::Record(sr)=&self.frames_record else{return}; let sr=sr.clone(); let(Some(Sexp::Vector(bk)),Some(Sexp::Int(d)))=(sr.slots.get(0),sr.slots.get(1))else{return}; let(d,bk)=(*d as usize,bk.clone()); if d==0{return;} unsafe{bk.with_value_mut(|v|v[d-1]=Sexp::Nil);sr.with_slots_mut(|s|s[1]=Sexp::Int(d as i64-1))} }
     pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> { if !matches!(&self.frames_record, Sexp::Record(_)) { return None; } let raw = unsafe { crate::elisp_cc_spike::frame_stack_find_raw(&self.frames_record, &Sexp::Str(name.to_string())) }; if raw.is_null() { None } else { Some(unsafe { (*raw).clone() }) } }
     pub(crate) fn wrap_alist_cells(alist: &Sexp) -> Result<Sexp, EvalError> { let mut r = Sexp::Nil; if unsafe { crate::elisp_cc_spike::wrap_alist_cells(alist, &mut r) } == 1 { Ok(r) } else { Err(EvalError::internal("wrap_alist_cells: malformed closure env alist")) } }
 }
