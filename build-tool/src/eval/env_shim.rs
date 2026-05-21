@@ -28,6 +28,5 @@ mod tests {
     #[test] fn is_bound_reflects_set() { ok!("(nelisp--env-globals-is-bound 'doc-86-3a-bar)" => Sexp::Nil); ok!("(nelisp--env-globals-set-value 'doc-86-3a-bar 7) (nelisp--env-globals-is-bound 'doc-86-3a-bar)" => all => Sexp::T); }
     #[test] fn set_function_round_trip() { ok!("(nelisp--env-globals-set-function 'doc-86-3a-fn (nelisp--env-globals-get-function 'eq)) (nelisp--env-globals-is-fbound 'doc-86-3a-fn)" => all => Sexp::T); ok!("(nelisp--env-globals-set-function 'doc-86-3a-fn2 (nelisp--env-globals-get-function 'eq)) (nelisp--env-globals-clear-function 'doc-86-3a-fn2) (nelisp--env-globals-is-fbound 'doc-86-3a-fn2)" => all => Sexp::Nil); }
     #[test] fn constant_flag_round_trip() { ok!("(nelisp--env-globals-is-constant 'doc-86-3a-cflag)" => Sexp::Nil); ok!("(nelisp--env-globals-set-constant 'doc-86-3a-cflag t) (nelisp--env-globals-is-constant 'doc-86-3a-cflag)" => all => Sexp::T); }
-    #[test] fn capture_lexical_top_level() { ok!("(nelisp--env-globals-op 'capture-lexical)" => Sexp::Nil); }
-    #[test] fn clear_value_drops_binding() { ok!("(nelisp--env-globals-set-value 'doc-86-3a-baz 1) (nelisp--env-globals-clear-value 'doc-86-3a-baz) (nelisp--env-globals-is-bound 'doc-86-3a-baz)" => all => Sexp::Nil); }
+    #[test] fn capture_lexical_and_clear() { ok!("(nelisp--env-globals-op 'capture-lexical)" => Sexp::Nil); ok!("(nelisp--env-globals-set-value 'doc-86-3a-baz 1) (nelisp--env-globals-clear-value 'doc-86-3a-baz) (nelisp--env-globals-is-bound 'doc-86-3a-baz)" => all => Sexp::Nil); }
 }
