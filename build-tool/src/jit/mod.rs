@@ -27,8 +27,7 @@ pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {
     let mut resolved = Sexp::Nil;
     let rc = unsafe { nl_jit_alias_call(sexp as *const _, &mut resolved as *mut _) }; if rc != 0 { return None; }
     let name = match &resolved { Sexp::Str(s) => s.as_str(), _ => return None };
-    let cstr = CString::new(name).ok()?;
-    let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cstr.as_ptr()) };
+    let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, CString::new(name).ok()?.as_ptr()) };
     if addr.is_null() { None } else { Some(addr as *const u8) }
 }
 fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, EvalError> {

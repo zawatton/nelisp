@@ -29,9 +29,7 @@ pub const SEXP_TAG_VECTOR: u8 = 8; pub const SEXP_TAG_CHAR_TABLE: u8 = 9; pub co
 pub const SEXP_TAG_CELL: u8 = 11; pub const SEXP_TAG_RECORD: u8 = 12;
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
 macro_rules! sexp_box_ptr_accessor {
-    ($name:ident, $ty:ty) => {
-        #[inline] pub unsafe fn $name(&self) -> *const $ty { let p = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET) as *const std::ptr::NonNull<$ty>; unsafe { (*p).as_ptr() } }
-    };
+    ($name:ident, $ty:ty) => { #[inline] pub unsafe fn $name(&self) -> *const $ty { let p = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET) as *const std::ptr::NonNull<$ty>; unsafe { (*p).as_ptr() } } };
 }
 impl Sexp {
     #[inline] pub fn tag(&self) -> u8 { unsafe { *(self as *const Sexp as *const u8) } }
@@ -44,8 +42,7 @@ const _: () = { use std::mem::size_of; use crate::eval::*;
 #[repr(C)]
 pub struct CharTableInner { pub subtype: Sexp, pub default_val: Sexp, pub entries: Vec<(i64, Sexp)>, pub parent: Option<NlCharTableRef>, pub extra: Vec<Sexp> }
 impl Sexp {
-    pub fn list_from(items: &[Sexp]) -> Sexp {
-        let mut acc = Sexp::Nil; for item in items.iter().rev() { acc = Sexp::cons(item.clone(), acc); } acc }
+    pub fn list_from(items: &[Sexp]) -> Sexp { let mut acc = Sexp::Nil; for item in items.iter().rev() { acc = Sexp::cons(item.clone(), acc); } acc }
     pub fn cons(car: Sexp, cdr: Sexp) -> Sexp { Sexp::Cons(NlConsBoxRef::new(car, cdr)) }
     pub fn vector(items: Vec<Sexp>) -> Sexp { Sexp::Vector(NlVectorRef::new(items)) }
     pub fn mut_str(s: impl Into<String>) -> Sexp { Sexp::MutStr(NlStrRef::new(s.into())) }

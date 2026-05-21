@@ -18,13 +18,9 @@ macro_rules! once { ($o:expr, $b:block) => { $o.call_once(|| unsafe { $b }) }; }
 pub fn install_hooks_once() { once!(HOOKS_ONCE, { libc::atexit(atexit_hook); for s in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] { sa(*s, sig_handler, 0); } }); }
 pub fn install_winsize_handler() { once!(WINSIZE_ONCE, { sa(libc::SIGWINCH, winsize_h, libc::SA_RESTART); WINSIZE_CHANGED.store(1, Ordering::SeqCst); }); }
 pub fn install_jobctrl_handlers() { once!(JOBCTRL_ONCE, { sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); sa(libc::SIGCONT, cont_h, libc::SA_RESTART); }); }
-pub fn hooks_installed_p() -> bool { HOOKS_ONCE.is_completed() }
-pub fn winsize_handler_installed_p() -> bool { WINSIZE_ONCE.is_completed() }
-pub fn jobctrl_handlers_installed_p() -> bool { JOBCTRL_ONCE.is_completed() }
+pub fn hooks_installed_p() -> bool { HOOKS_ONCE.is_completed() } pub fn winsize_handler_installed_p() -> bool { WINSIZE_ONCE.is_completed() } pub fn jobctrl_handlers_installed_p() -> bool { JOBCTRL_ONCE.is_completed() }
 pub fn termios_saved_p() -> bool { TERMIOS_SAVED.load(Ordering::SeqCst) != 0 }
-#[no_mangle] pub extern "C" fn nl_tty_saved_flag_ptr() -> *mut i64 { TERMIOS_SAVED.as_ptr() }
-#[no_mangle] pub extern "C" fn nl_tty_fd_ptr() -> *mut i64 { TTY_FD.as_ptr() }
-#[no_mangle] pub extern "C" fn nl_tty_saved_termios_ptr() -> *mut u8 { std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut u8 }
+#[no_mangle] pub extern "C" fn nl_tty_saved_flag_ptr() -> *mut i64 { TERMIOS_SAVED.as_ptr() } #[no_mangle] pub extern "C" fn nl_tty_fd_ptr() -> *mut i64 { TTY_FD.as_ptr() } #[no_mangle] pub extern "C" fn nl_tty_saved_termios_ptr() -> *mut u8 { std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut u8 }
 #[no_mangle] pub unsafe extern "C" fn nl_tty_memcpy_to_saved(src: *const u8) { std::ptr::copy_nonoverlapping(src, std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut u8, 60); }
 #[no_mangle] pub extern "C" fn nl_tty_raw_install_hooks() -> i64 { install_hooks_once(); 0 }
 #[no_mangle] pub extern "C" fn nl_tty_read_byte() -> i64 { let mut b=[0u8;1]; let n=unsafe{libc::read(0,b.as_mut_ptr() as *mut libc::c_void,1)}; if n==1{b[0] as i64}else{-1} }
