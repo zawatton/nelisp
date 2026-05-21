@@ -1,6 +1,5 @@
 use std::process::ExitCode;
-use nelisp_build_tool::eval::sexp::Sexp;
-use nelisp_build_tool::eval::{apply_function, Env};
+use nelisp_build_tool::eval::sexp::Sexp; use nelisp_build_tool::eval::{apply_function, Env};
 fn main() -> ExitCode {
     let mut env = Env::new_global();
     let _ = env.set_value("nelisp--cli-version", Sexp::Str(env!("CARGO_PKG_VERSION").to_string()));
