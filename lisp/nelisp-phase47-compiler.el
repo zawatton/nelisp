@@ -5172,9 +5172,10 @@ drift (= a Doc 92 emitter invariant violation)."
            ;; does not emit relocation entries — the 12 jit_arith
            ;; trampolines have no external relocs, so this is sound
            ;; for the §100.D Stage 1-3 swap set.
-           (unless (eq arch 'aarch64)
+           ;; Wave 3: x86_64 added alongside aarch64.
+           (unless (memq arch '(aarch64 x86_64))
              (signal 'nelisp-phase47-compiler-error
-                     (list :mach-o-only-supports-aarch64 arch)))
+                     (list :mach-o-unsupported-arch arch)))
            (when relocs
              (signal 'nelisp-phase47-compiler-error
                      (list :mach-o-no-reloc-support relocs)))

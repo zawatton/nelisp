@@ -25,7 +25,7 @@ fn main() {
     }
 
     let supported = (target_os == "linux" && (target_arch == "x86_64" || target_arch == "aarch64"))
-        || (target_os == "macos" && target_arch == "aarch64");
+        || (target_os == "macos" && (target_arch == "aarch64" || target_arch == "x86_64"));
     if supported {
         link_elisp_cc_spike(&manifest_dir, &target_os, &target_arch);
     }

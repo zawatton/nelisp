@@ -9,8 +9,9 @@
 ;;; Commentary:
 
 ;; Doc 100 §100.D Stage 2/3 — pure-elisp Mach-O ET_REL emitter for
-;; macOS-arm64 object files.  The public contract matches the existing
-;; ELF writer's rich plist shape but emits a minimal MH_OBJECT file:
+;; macOS arm64 and x86_64 object files.  The public contract matches
+;; the existing ELF writer's rich plist shape but emits a minimal
+;; MH_OBJECT file:
 ;;
 ;;   Mach-O header (32 bytes)
 ;;   LC_SEGMENT_64 + embedded __text section_64
@@ -18,12 +19,16 @@
 ;;   __text bytes
 ;;   nlist_64 symbol table
 ;;   string table
+;;
+;; Supported :machine values: `aarch64' and `x86_64'.
 
 ;;; Code:
 
 (defconst nelisp-mach-o--mh-magic-64 #xFEEDFACF "MH_MAGIC_64.")
-(defconst nelisp-mach-o--cpu-type-arm64 #x0100000C "CPU_TYPE_ARM64.")
+(defconst nelisp-mach-o--cpu-type-arm64  #x0100000C "CPU_TYPE_ARM64.")
+(defconst nelisp-mach-o--cpu-type-x86-64 #x01000007 "CPU_TYPE_X86_64.")
 (defconst nelisp-mach-o--cpu-subtype-arm64-all 0 "CPU_SUBTYPE_ARM64_ALL.")
+(defconst nelisp-mach-o--cpu-subtype-x86-64-all 3 "CPU_SUBTYPE_X86_64_ALL.")
 (defconst nelisp-mach-o--mh-object 1 "MH_OBJECT.")
 (defconst nelisp-mach-o--lc-segment-64 #x19 "LC_SEGMENT_64.")
 (defconst nelisp-mach-o--lc-symtab 2 "LC_SYMTAB.")
@@ -32,6 +37,13 @@
   "__text flags = S_REGULAR | S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS.")
 (defconst nelisp-mach-o--n-ext #x01 "N_EXT.")
 (defconst nelisp-mach-o--n-sect #x0E "N_SECT.")
+
+;; x86_64 relocation type constants (for future reloc-aware emission).
+(defconst nelisp-mach-o--x86-64-reloc-unsigned    0 "X86_64_RELOC_UNSIGNED.")
+(defconst nelisp-mach-o--x86-64-reloc-signed       1 "X86_64_RELOC_SIGNED.")
+(defconst nelisp-mach-o--x86-64-reloc-branch       2 "X86_64_RELOC_BRANCH.")
+(defconst nelisp-mach-o--x86-64-reloc-got-load     4 "X86_64_RELOC_GOT_LOAD.")
+(defconst nelisp-mach-o--x86-64-reloc-got          5 "X86_64_RELOC_GOT.")
 
 (defconst nelisp-mach-o--header-size 32 "sizeof(struct mach_header_64).")
 (defconst nelisp-mach-o--segment-command-size 72 "sizeof(struct segment_command_64).")
@@ -115,10 +127,13 @@
      (t (signal 'error (list "nelisp-mach-o: unsupported symbol bind" bind))))))
 
 (defun nelisp-mach-o--validate-machine (machine)
-  "Validate MACHINE and return the Mach-O cputype."
-  (if (eq machine 'aarch64)
-      nelisp-mach-o--cpu-type-arm64
-    (signal 'error (list :mach-o-unsupported-machine machine))))
+  "Validate MACHINE and return a cons (CPUTYPE . CPUSUBTYPE)."
+  (pcase machine
+    ('aarch64 (cons nelisp-mach-o--cpu-type-arm64
+                    nelisp-mach-o--cpu-subtype-arm64-all))
+    ('x86_64  (cons nelisp-mach-o--cpu-type-x86-64
+                    nelisp-mach-o--cpu-subtype-x86-64-all))
+    (_ (signal 'error (list :mach-o-unsupported-machine machine)))))
 
 (defun nelisp-mach-o--verify-entry-symbol (symbols entry-sym)
   "Verify ENTRY-SYM exists in SYMBOLS when non-nil."
@@ -138,7 +153,9 @@
                       (error "nelisp-mach-o: :symbols is required")))
          (machine (or (plist-get sections :machine)
                       (error "nelisp-mach-o: :machine is required")))
-         (_cpu-type (nelisp-mach-o--validate-machine machine))
+         (cpu-pair (nelisp-mach-o--validate-machine machine))
+         (cpu-type    (car cpu-pair))
+         (cpu-subtype (cdr cpu-pair))
          (entry-sym (plist-get sections :entry-sym))
          (ncmds 2)
          (sizeofcmds (+ nelisp-mach-o--segment-command-size
@@ -169,8 +186,8 @@
       (set-buffer-multibyte nil)
       ;; mach_header_64
       (nelisp-mach-o--write-le32 (current-buffer) nelisp-mach-o--mh-magic-64)
-      (nelisp-mach-o--write-le32 (current-buffer) nelisp-mach-o--cpu-type-arm64)
-      (nelisp-mach-o--write-le32 (current-buffer) nelisp-mach-o--cpu-subtype-arm64-all)
+      (nelisp-mach-o--write-le32 (current-buffer) cpu-type)
+      (nelisp-mach-o--write-le32 (current-buffer) cpu-subtype)
       (nelisp-mach-o--write-le32 (current-buffer) nelisp-mach-o--mh-object)
       (nelisp-mach-o--write-le32 (current-buffer) ncmds)
       (nelisp-mach-o--write-le32 (current-buffer) sizeofcmds)
@@ -238,7 +255,7 @@
 SECTIONS matches the ELF writer's plist contract for the ET_REL case:
   :text       unibyte instruction bytes (required)
   :symbols    list of symbol plists (required)
-  :machine    must be `aarch64' (required)
+  :machine    `aarch64' or `x86_64' (required)
   :entry-sym  optional symbol name used only for verification"
   (let ((bytes (nelisp-mach-o--build-bytes sections))
         (coding-system-for-write 'no-conversion))
