@@ -1,7 +1,5 @@
 #![cfg(unix)]
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Once;
-use crate::eval::error::EvalError;
+use std::sync::atomic::{AtomicI64, Ordering}; use std::sync::Once; use crate::eval::error::EvalError;
 static TERMIOS_SAVED: AtomicI64 = AtomicI64::new(0); static TTY_FD: AtomicI64 = AtomicI64::new(-1);
 static mut SAVED_TERMIOS: [u8; 60] = [0u8; 60];
 pub(crate) static WINSIZE_CHANGED: AtomicI64 = AtomicI64::new(1); pub(crate) static SIGCONT_ARRIVED: AtomicI64 = AtomicI64::new(0);
@@ -12,8 +10,7 @@ unsafe fn reraise(s: libc::c_int) { libc::signal(s, libc::SIG_DFL); let mut m: l
 extern "C" fn atexit_hook() { restore_signal_safe(); } extern "C" fn sig_handler(s: libc::c_int) { restore_signal_safe(); unsafe { reraise(s); } }
 extern "C" fn winsize_h(_: libc::c_int) { WINSIZE_CHANGED.store(1, Ordering::SeqCst); } extern "C" fn tstp_h(s: libc::c_int) { restore_signal_safe(); unsafe { reraise(s); sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); } } extern "C" fn cont_h(_: libc::c_int) { SIGCONT_ARRIVED.store(1, Ordering::SeqCst); }
 macro_rules! once { ($o:expr, $b:block) => { $o.call_once(|| unsafe { $b }) }; }
-pub fn install_hooks_once() { once!(HOOKS_ONCE, { libc::atexit(atexit_hook); for s in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] { sa(*s, sig_handler, 0); } }); } pub fn install_winsize_handler() { once!(WINSIZE_ONCE, { sa(libc::SIGWINCH, winsize_h, libc::SA_RESTART); WINSIZE_CHANGED.store(1, Ordering::SeqCst); }); }
-pub fn install_jobctrl_handlers() { once!(JOBCTRL_ONCE, { sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); sa(libc::SIGCONT, cont_h, libc::SA_RESTART); }); }
+pub fn install_hooks_once() { once!(HOOKS_ONCE, { libc::atexit(atexit_hook); for s in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] { sa(*s, sig_handler, 0); } }); } pub fn install_winsize_handler() { once!(WINSIZE_ONCE, { sa(libc::SIGWINCH, winsize_h, libc::SA_RESTART); WINSIZE_CHANGED.store(1, Ordering::SeqCst); }); } pub fn install_jobctrl_handlers() { once!(JOBCTRL_ONCE, { sa(libc::SIGTSTP, tstp_h, libc::SA_RESTART); sa(libc::SIGCONT, cont_h, libc::SA_RESTART); }); }
 pub fn hooks_installed_p() -> bool { HOOKS_ONCE.is_completed() } pub fn winsize_handler_installed_p() -> bool { WINSIZE_ONCE.is_completed() } pub fn jobctrl_handlers_installed_p() -> bool { JOBCTRL_ONCE.is_completed() }
 pub fn termios_saved_p() -> bool { TERMIOS_SAVED.load(Ordering::SeqCst) != 0 }
 #[no_mangle] pub extern "C" fn nl_tty_saved_flag_ptr() -> *mut i64 { TERMIOS_SAVED.as_ptr() } #[no_mangle] pub extern "C" fn nl_tty_fd_ptr() -> *mut i64 { TTY_FD.as_ptr() } #[no_mangle] pub extern "C" fn nl_tty_saved_termios_ptr() -> *mut u8 { std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut u8 }

@@ -17,9 +17,7 @@ pub(crate) fn bi_globals_op(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
     } else { unsafe { crate::elisp_cc_spike::env_shim_op(&args[0], &env.globals_record, &args[1], &env.unbound_marker, &mut result, &mut scratch) } };
     match rc { 1 => Ok(result), 0 => Err(EvalError::unbound_var(name)), -1 => Err(EvalError::unbound_fn(name)), _ => Err(EvalError::internal(format!("nelisp--env-globals-op: unknown OP `{op}'"))) }
 }
-#[cfg(test)]
-mod tests {
-    use super::*; use crate::eval::{eval_str, eval_str_all};
+#[cfg(test)] mod tests { use super::*; use crate::eval::{eval_str, eval_str_all};
     macro_rules! ok { ($e:expr) => { eval_str_all($e).unwrap() }; ($s:literal => $p:pat) => { assert!(matches!(eval_str($s).unwrap(), $p)) }; ($s:literal => all => $p:pat) => { assert!(matches!(eval_str_all($s).unwrap(), $p)) }; }
     #[test] fn set_get_value() { assert!(matches!(ok!("(nelisp--env-globals-set-value 'doc-86-3a-foo 42) (nelisp--env-globals-get-value 'doc-86-3a-foo)"), Sexp::Int(42))); }
     #[test] fn get_unbound_errors() { assert!(eval_str("(nelisp--env-globals-get-value 'doc-86-3a-undef-symbol)").is_err()); }

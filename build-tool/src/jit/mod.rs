@@ -20,8 +20,7 @@ extern "C" {
     nl_jit_intern,nl_jit_make_mut_str,nl_jit_mut_str_len,nl_jit_record_alloc,nelisp_jit_predicate_eq,nelisp_jit_ref_eq,nelisp_jit_record_type,nelisp_jit_record_len,nelisp_jit_record_ref,nelisp_jit_record_set,nelisp_jit_length,nelisp_jit_aref,
     nelisp_jit_aset,nelisp_jit_elt,nelisp_jit_cons_car,nelisp_jit_cons_cdr,nelisp_jit_cons_setcar,nelisp_jit_cons_setcdr,nelisp_jit_cons_make,nl_jit_bool_vector_len,nl_jit_str_codepoint_at,nl_jit_type_of,nl_jit_sxhash,nl_cons_car_ptr,
     nl_cons_cdr_ptr,nl_jit_make_symbol,nl_record_type_tag_ptr,nl_jit_concat_ints,nl_sf_quote,nl_jit_downcase,nl_jit_upcase,nl_jit_split_by_non_alnum,nl_sf_if,nl_sf_setq,nl_sf_progn,nl_sf_while,
-    nl_sf_lambda,nl_sf_function,nl_sf_condition_case,nl_jit_symbol_name,nelisp_bi_nl_fact_i64,nl_cons_prepend_clone,nl_jit_secure_hash,nl_jit_secure_hash_non_sha1_ext,nl_jit_string_match_p,nl_jit_alias,nl_eval_inner,
-    nl_jit_syscall_call,nl_jit_syscall_supported_p,nl_jit_char_table_aref,nl_jit_char_table_aset,nl_jit_mut_str_set_codepoint];
+    nl_sf_lambda,nl_sf_function,nl_sf_condition_case,nl_jit_symbol_name,nelisp_bi_nl_fact_i64,nl_cons_prepend_clone,nl_jit_secure_hash,nl_jit_secure_hash_non_sha1_ext,nl_jit_string_match_p,nl_jit_alias,nl_eval_inner,nl_jit_syscall_call,nl_jit_syscall_supported_p,nl_jit_char_table_aref,nl_jit_char_table_aset,nl_jit_mut_str_set_codepoint];
 pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> { let mut resolved = Sexp::Nil;
     let rc = unsafe { nl_jit_alias_call(sexp as *const _, &mut resolved as *mut _) }; if rc != 0 { return None; }
     let name = match &resolved { Sexp::Str(s) => s.as_str(), _ => return None }; let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, CString::new(name).ok()?.as_ptr()) }; if addr.is_null() { None } else { Some(addr as *const u8) } }
@@ -52,9 +51,7 @@ out_call!(bi_nl_jit_call_out_2i, "jit-call-out-2i", 4, |args,out,idx|, (*const S
 pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p=jit_lookup("nl-jit-call-format-float",args,4)?; let(x,conv,prec)=(to_f64(&args[1],"numberp")?,as_int("nl-jit-call-format-float",&args[2])?,as_int("nl-jit-call-format-float",&args[3])?);
     let f:extern "C" fn(f64,u32,i64,*mut Sexp)->i64=unsafe{cast(p)}; let mut out=Sexp::Nil; out_result(f(x,conv as u32,prec,&mut out),out,"jit-call-format-float",&args[1]) }
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[cfg(test)] mod tests { use super::*;
     fn err(e: &EvalError, tag: &str) -> bool { matches!(e, EvalError::Generic(t, _) if t == tag) }
     fn s(n: &str) -> Sexp { Sexp::Symbol(n.into()) } fn i(n: i64) -> Sexp { Sexp::Int(n) }
     #[test] fn unified_fn_ptr_smoke() { for n in ["nelisp_jit_add2","nelisp_jit_eq_inline","nelisp_jit_car","nelisp_jit_length","nelisp_jit_aref","nelisp_jit_intern","nelisp_jit_syscall","nl_jit_float_add","nl_jit_float_exp"] { let p=unified_fn_ptr(&s(n)); assert!(p.is_some()&&!p.unwrap().is_null(),"`{}'",n); } assert!(unified_fn_ptr(&s("nelisp_jit_does_not_exist")).is_none()); assert!(unified_fn_ptr(&s("")).is_none()); }

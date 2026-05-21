@@ -1,9 +1,5 @@
-use std::collections::HashMap;
-use std::rc::Rc;
-use super::error::EvalError;
-use super::sexp::Sexp;
-pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
-pub type FrameCell = crate::eval::nlcell::NlCellRef;
+use std::collections::HashMap; use std::rc::Rc; use super::error::EvalError; use super::sexp::Sexp;
+pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>; pub type FrameCell = crate::eval::nlcell::NlCellRef;
 pub struct Env {
     pub max_recursion: u32, pub current_recursion: u32,
     pub extern_builtins: HashMap<String, ExternBuiltin>,
