@@ -117,9 +117,7 @@ macro_rules! builtin_dispatch {
         }
     };
 }
-pub fn install_builtins(env: &mut Env) {
-    for n in builtin_names!() { env.mirror_set_function(n, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())])); }
-}
+pub fn install_builtins(env: &mut Env) { for n in builtin_names!() { env.mirror_set_function(n, Sexp::list_from(&[Sexp::Symbol("builtin".into()), Sexp::Symbol((*n).into())])); } }
 pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { builtin_dispatch!(name, args, env) }
 pub(crate) fn require_arity(name: &str, args: &[Sexp], min: usize, max: Option<usize>) -> Result<(), EvalError> {
     if args.len() < min || max.map_or(false, |m| args.len() > m) { Err(EvalError::wrong_arity(name, match max { Some(m) if m == min => min.to_string(), Some(m) => format!("{}-{}", min, m), None => format!("≥{}", min) }, args.len())) } else { Ok(()) } }
@@ -134,17 +132,16 @@ fn kernel_path_ok(name: &str, path: &str, rc: i64) -> Result<Sexp, EvalError> { 
 #[no_mangle] pub extern "C" fn nl_bi_f64_trunc_div_bits(n: *const Sexp, d: *const Sexp) -> i64 { let f=|p:*const Sexp|match unsafe{&*p}{Sexp::Int(i)=>*i as f64,Sexp::Float(v)=>*v,_=>0.0}; (f(n)/f(d)).to_bits() as i64 }
 fn path_arg1(name: &str, args: &[Sexp], env: &mut Env) -> Result<(PathBuf, Sexp), EvalError> { require_arity(name,args,1,Some(1))?; let p=resolve_path(&args[0],env)?; Ok((p.clone(),Sexp::Str(p.to_string_lossy().into_owned()))) }
 fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (_, ps) = path_arg1("nelisp--syscall-canonicalize", args, env)?; let mut buf = vec![0u8; libc::PATH_MAX as usize]; if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&ps as *const _, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
+    let (_, ps) = path_arg1("nelisp--syscall-canonicalize", args, env)?; let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    if unsafe { crate::elisp_cc_spike::bi_syscall_canonicalize(&ps as *const _, buf.as_mut_ptr()) } == 0 { return Ok(Sexp::Nil); }
     Ok(Sexp::Str(String::from_utf8_lossy(&buf[..buf.iter().position(|&b|b==0).unwrap_or(buf.len())]).into_owned())) }
 fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (p, ps) = path_arg1("nelisp--syscall-read-file", args, env)?; let n = match std::fs::metadata(&p) { Ok(m) if m.is_file() => m.len() as usize, _ => return Ok(Sexp::Nil) }; if n == 0 { return Ok(Sexp::Str(String::new())); }
-    let mut buf = vec![0u8; n]; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&ps as *const _, buf.as_mut_ptr(), n as i64) } as i32 as i64; if rc < 0 { return Ok(Sexp::Nil); }
-    buf.truncate((rc as usize).min(n)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) }
+    let mut buf = vec![0u8; n]; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_read_file(&ps as *const _, buf.as_mut_ptr(), n as i64) } as i32 as i64; if rc < 0 { return Ok(Sexp::Nil); } buf.truncate((rc as usize).min(n)); Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned())) }
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() }; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps as *const _, (&mut sb as *mut libc::stat) as *mut u8) };
     Ok(Sexp::Symbol((if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" } }).into())) }
-fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    let (dir, ds) = path_arg1("nelisp--syscall-readdir", args, env)?; let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) };
+fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { let (dir, ds) = path_arg1("nelisp--syscall-readdir", args, env)?; let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) };
     Ok(Sexp::cons(ds, Sexp::list_from(&rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>()))) }
 #[cfg(not(target_os = "linux"))]
 fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> { Err(EvalError::internal("nelisp--syscall: unsupported platform")) }

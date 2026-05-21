@@ -2,14 +2,10 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Once;
 use crate::eval::error::EvalError;
-static TERMIOS_SAVED: AtomicI64 = AtomicI64::new(0);
-static TTY_FD: AtomicI64 = AtomicI64::new(-1);
+static TERMIOS_SAVED: AtomicI64 = AtomicI64::new(0); static TTY_FD: AtomicI64 = AtomicI64::new(-1);
 static mut SAVED_TERMIOS: [u8; 60] = [0u8; 60];
-pub(crate) static WINSIZE_CHANGED: AtomicI64 = AtomicI64::new(1);
-pub(crate) static SIGCONT_ARRIVED: AtomicI64 = AtomicI64::new(0);
-static HOOKS_ONCE: Once = Once::new();
-static WINSIZE_ONCE: Once = Once::new();
-static JOBCTRL_ONCE: Once = Once::new();
+pub(crate) static WINSIZE_CHANGED: AtomicI64 = AtomicI64::new(1); pub(crate) static SIGCONT_ARRIVED: AtomicI64 = AtomicI64::new(0);
+static HOOKS_ONCE: Once = Once::new(); static WINSIZE_ONCE: Once = Once::new(); static JOBCTRL_ONCE: Once = Once::new();
 fn restore_signal_safe() { if TERMIOS_SAVED.swap(0, Ordering::SeqCst) != 0 { let fd = TTY_FD.load(Ordering::SeqCst) as libc::c_int; if fd >= 0 { unsafe { libc::tcsetattr(fd, libc::TCSANOW, std::ptr::addr_of!(SAVED_TERMIOS) as *const libc::termios); } } } }
 unsafe fn sa(sig: libc::c_int, h: extern "C" fn(libc::c_int), fl: libc::c_int) { let mut a: libc::sigaction = std::mem::zeroed(); a.sa_sigaction = h as *const () as usize; libc::sigemptyset(&mut a.sa_mask); a.sa_flags = fl; libc::sigaction(sig, &a, std::ptr::null_mut()); }
 unsafe fn reraise(s: libc::c_int) { libc::signal(s, libc::SIG_DFL); let mut m: libc::sigset_t = std::mem::zeroed(); libc::sigemptyset(&mut m); libc::sigaddset(&mut m, s); libc::sigprocmask(libc::SIG_UNBLOCK, &m, std::ptr::null_mut()); libc::raise(s); }
@@ -37,8 +33,7 @@ pub fn raw_mode_enter() -> Result<(), EvalError> {
 pub fn raw_mode_leave() -> Result<(), EvalError> { unsafe { crate::elisp_cc_spike::tty_raw_leave(nl_tty_saved_termios_ptr()); } Ok(()) }
 pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
     match unsafe { crate::elisp_cc_spike::tty_stdin_byte_avail([0u8, 0, 0, 0, 1, 0, 0, 0].as_mut_ptr(), timeout_ms as i64) } { -2 => Err(EvalError::internal("read-stdin-byte-available: poll failed")), n if n < 0 => Ok(None), b => Ok(Some(b as u8)) } }
-pub fn current_winsize() -> Option<(u16, u16)> {
-    let p = unsafe { crate::elisp_cc_spike::tty_winsize_current([0u8; 8].as_mut_ptr()) };
+pub fn current_winsize() -> Option<(u16, u16)> { let p = unsafe { crate::elisp_cc_spike::tty_winsize_current([0u8; 8].as_mut_ptr()) };
     if p < 0 { None } else { Some((((p >> 16) & 0xFFFF) as u16, (p & 0xFFFF) as u16)) } }
 pub fn take_winsize_changed() -> bool { unsafe { crate::elisp_cc_spike::tty_take_atomic(WINSIZE_CHANGED.as_ptr()) != 0 } }
 pub fn take_sigcont() -> bool { unsafe { crate::elisp_cc_spike::tty_take_atomic(SIGCONT_ARRIVED.as_ptr()) != 0 } }

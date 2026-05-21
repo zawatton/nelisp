@@ -13,6 +13,6 @@ impl ReadError {
 }
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (kind, body, pos) = match self { ReadError::Parse { msg, pos } => ("parse error", msg.as_str(), pos), ReadError::UnexpectedEof { msg, pos } => ("unexpected EOF", msg.as_str(), pos), ReadError::NotYetImplemented { feature, pos } => ("not-yet-implemented", feature.as_str(), pos) }; write!(f, "{kind} at {pos}: {body}") }
+        match self { ReadError::Parse { msg, pos } => write!(f, "parse error at {pos}: {msg}"), ReadError::UnexpectedEof { msg, pos } => write!(f, "unexpected EOF at {pos}: {msg}"), ReadError::NotYetImplemented { feature, pos } => write!(f, "not-yet-implemented at {pos}: {feature}") } }
 }
 impl std::error::Error for ReadError {}
