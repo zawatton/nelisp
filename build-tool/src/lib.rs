@@ -1,16 +1,8 @@
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!("Doc 114: nelisp-build-tool requires x86_64-linux. Build via Docker / Linux VM.");
-pub mod eval;
-pub(crate) mod jit;
-pub mod reader;
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))] compile_error!("Doc 114: nelisp-build-tool requires x86_64-linux. Build via Docker / Linux VM.");
+pub mod eval; pub(crate) mod jit; pub mod reader;
 pub mod elisp_cc_spike {
     use crate::eval::sexp::Sexp;
-    macro_rules! cc_wrap {
-        ($name:ident : $extern:ident, ($($arg:ident: $aty:ty),* $(,)?) -> $ret:ty) => {
-            #[allow(clippy::missing_safety_doc)]
-            pub unsafe fn $name($($arg: $aty),*) -> $ret { $extern($($arg),*) }
-        };
-    }
+    macro_rules! cc_wrap { ($name:ident : $extern:ident, ($($arg:ident: $aty:ty),* $(,)?) -> $ret:ty) => { #[allow(clippy::missing_safety_doc)] pub unsafe fn $name($($arg: $aty),*) -> $ret { $extern($($arg),*) } }; }
     #[allow(improper_ctypes, dead_code)]
     extern "C" {
         fn nelisp_truncate_int(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp; fn nelisp_truncate_float(arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp;
@@ -47,8 +39,7 @@ pub mod elisp_cc_spike {
         fn nelisp_env_lookup_function(mirror_ptr: *const Sexp, unbound_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64; fn nelisp_env_set_value(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
         fn nelisp_env_shim_set_op(op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_ptr: *const Sexp, result_slot: *mut Sexp, _pad: i64) -> i64; fn nelisp_env_bind_local(mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
         fn nelisp_frame_push(frames_ptr: *const Sexp, scratch_vec_ptr: *const Sexp) -> i64; fn nelisp_env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64;
-        fn nelisp_tty_raw_enter(statbuf: *mut u8) -> i64; fn nelisp_tty_raw_leave(saved_buf: *const u8) -> i64; fn nelisp_tty_winsize_current(ws_buf: *mut u8) -> i64; fn nelisp_tty_take_atomic(flag_ptr: *mut i64) -> i64; fn nelisp_tty_stdin_byte_avail(pfd_buf: *mut u8, timeout_ms: i64) -> i64;
-    }
+        fn nelisp_tty_raw_enter(statbuf: *mut u8) -> i64; fn nelisp_tty_raw_leave(saved_buf: *const u8) -> i64; fn nelisp_tty_winsize_current(ws_buf: *mut u8) -> i64; fn nelisp_tty_take_atomic(flag_ptr: *mut i64) -> i64; fn nelisp_tty_stdin_byte_avail(pfd_buf: *mut u8, timeout_ms: i64) -> i64; }
     cc_wrap!(truncate_int: nelisp_truncate_int, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp); cc_wrap!(truncate_float: nelisp_truncate_float, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp); cc_wrap!(length_cons: nelisp_length_cons, (arg0: *const Sexp, result_slot: *mut Sexp) -> *mut Sexp);
     cc_wrap!(eq_symbol: nelisp_eq_symbol, (arg0: *const Sexp, arg1: *const Sexp, slot: *mut Sexp) -> *mut Sexp); cc_wrap!(bi_string_bytes: nelisp_bi_string_bytes, (arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp); cc_wrap!(recordp: nelisp_recordp, (arg0: *const Sexp, slot: *mut Sexp) -> *mut Sexp);
     cc_wrap!(bi_make_vector: nelisp_bi_make_vector, (n_ptr: *const Sexp, init_ptr: *const Sexp, slot: *mut Sexp) -> i64); cc_wrap!(bi_nl_fact_i64: nelisp_bi_nl_fact_i64, (arg_ptr: *const Sexp, slot: *mut Sexp) -> i64);
@@ -76,5 +67,4 @@ pub mod elisp_cc_spike {
     cc_wrap!(bind_formals_impl_call: nl_bind_formals_impl, (formals: *const Sexp, args: *const Sexp, env: *mut std::ffi::c_void, _pad: i64) -> i64); cc_wrap!(eval_inner_call: nl_eval_inner, (form: *const Sexp, env: *mut std::ffi::c_void, out: *mut Sexp, _pad: i64) -> i64); cc_wrap!(fmt_sexp_call: nelisp_fmt_sexp, (s: *const Sexp, slot: *mut Sexp) -> i64); cc_wrap!(f64_trunc_impl: nl_bi_f64_trunc_impl, (mode: *const Sexp, num: *const Sexp, den: *const Sexp, out: *mut Sexp) -> i64);
     cc_wrap!(env_lookup_value: nelisp_env_lookup_value, (mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64); cc_wrap!(env_lookup_function: nelisp_env_lookup_function, (mirror_ptr: *const Sexp, unbound_ptr: *const Sexp, name_ptr: *const Sexp, out: *mut Sexp) -> i64); cc_wrap!(env_set_value: nelisp_env_set_value, (mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64); cc_wrap!(env_bind_local: nelisp_env_bind_local, (mirror_ptr: *const Sexp, frames_ptr: *const Sexp, name_ptr: *const Sexp, val_ptr: *const Sexp, scratch_ptr: *const Sexp, _pad: i64) -> i64);
     cc_wrap!(env_shim_set_op: nelisp_env_shim_set_op, (op_ptr: *const Sexp, mirror_ptr: *const Sexp, sym_ptr: *const Sexp, scratch_ptr: *const Sexp, result_slot: *mut Sexp, _pad: i64) -> i64);
-    pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 { let v=Sexp::vector(vec![Sexp::Symbol("nelisp-lexframe".into()),Sexp::Symbol("fast-hash-table".into()),Sexp::Nil,Sexp::Nil,Sexp::Nil,Sexp::Nil,Sexp::Nil]); nelisp_frame_push(frames_ptr,&v) } pub unsafe fn env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp) -> i64 { let v=Sexp::vector(vec![Sexp::Symbol("nelisp-env".into()),Sexp::Symbol("fast-hash-table".into()),Sexp::Symbol("nelisp-lexframe-stack".into()),Sexp::Nil,Sexp::Nil,Sexp::Nil]); nelisp_env_install_empty_globals_frames(globals_out,frames_out,&v,0) }
-}
+    pub unsafe fn frame_push(frames_ptr: *const Sexp) -> i64 { let v=Sexp::vector(vec![Sexp::Symbol("nelisp-lexframe".into()),Sexp::Symbol("fast-hash-table".into()),Sexp::Nil,Sexp::Nil,Sexp::Nil,Sexp::Nil,Sexp::Nil]); nelisp_frame_push(frames_ptr,&v) } pub unsafe fn env_install_empty_globals_frames(globals_out: *mut Sexp, frames_out: *mut Sexp) -> i64 { let v=Sexp::vector(vec![Sexp::Symbol("nelisp-env".into()),Sexp::Symbol("fast-hash-table".into()),Sexp::Symbol("nelisp-lexframe-stack".into()),Sexp::Nil,Sexp::Nil,Sexp::Nil]); nelisp_env_install_empty_globals_frames(globals_out,frames_out,&v,0) } }
