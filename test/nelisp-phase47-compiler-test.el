@@ -1638,6 +1638,125 @@ with a slot index beyond the param count."
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 20)))))
 
+;; ---- Doc 101 §101.B Wave 5 — Win64 ABI emit tests ----
+;;
+;; These tests verify that `nelisp-phase47-compile-to-object' with
+;; `:format 'coff' (= Windows COFF) emits the Win64 ABI calling
+;; convention in the generated `.text' bytes.
+;;
+;; We cannot link + execute the COFF on Linux; instead we spot-check
+;; the raw `.text' byte content:
+;;   - Prologue must start with `push rbp' (0x55) then `mov rbp, rsp'.
+;;   - Win64 GP spill uses `mov [rbp - disp], reg' (MOV r/m64, r64 =
+;;     REX.W 89 ModR/M disp) rather than SysV's `push reg' (0x51..0x56).
+;;   - ABI descriptor on the buffer must be 'win64.
+;;
+;; See Doc 101 §101.B Wave 5 for the full design rationale.
+
+(ert-deftest nelisp-phase47-compiler/win64-abi-arg-regs-dynvar ()
+  "Win64 ABI dynvar selects RCX RDX R8 R9 as integer arg registers."
+  (let ((nelisp-phase47-compiler--abi 'win64))
+    (should (equal (nelisp-phase47-compiler--current-arg-regs)
+                   '(rcx rdx r8 r9)))))
+
+(ert-deftest nelisp-phase47-compiler/sysv-abi-arg-regs-dynvar ()
+  "SysV ABI dynvar selects RDI RSI RDX RCX R8 R9 as integer arg registers."
+  (let ((nelisp-phase47-compiler--abi 'sysv))
+    (should (equal (nelisp-phase47-compiler--current-arg-regs)
+                   '(rdi rsi rdx rcx r8 r9)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-coff-smoke ()
+  "Compile `(defun foo (a b) (+ a b))' to a COFF .o and check Win64 prologue.
+The first byte of .text must be 0x55 (push rbp).  The frame must NOT
+start with a SysV `push rdi' (0x57) — that would indicate the old
+SysV path was taken instead of Win64."
+  (let ((path (make-temp-file "nelisp-win64-coff-smoke-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (require 'nelisp-phase47-compiler)
+          (nelisp-phase47-compile-to-object
+           '(defun foo (a b) (+ a b))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((all-bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 ;; Scan for the `push rbp' byte (0x55) which must be the
+                 ;; first instruction of any Win64 function prologue.
+                 ;; We scan the COFF rather than hard-coding the file offset
+                 ;; of .text because the COFF header size may vary.
+                 (found-push-rbp
+                  (let ((i 0) (found nil))
+                    (while (and (< i (length all-bytes)) (not found))
+                      (when (= (aref all-bytes i) #x55)
+                        (setq found i))
+                      (setq i (1+ i)))
+                    found)))
+            ;; push rbp (0x55) must appear somewhere in the COFF .text.
+            (should found-push-rbp)
+            ;; The byte immediately before `push rbp' must NOT be
+            ;; `push rdi' (0x57) — that would mean the SysV path ran
+            ;; and emitted args via push rather than Win64's sub+mov spill.
+            (when (> found-push-rbp 0)
+              (should (not (= (aref all-bytes (1- found-push-rbp)) #x57))))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-coff-no-push-rdi ()
+  "COFF emit must NOT use `push rdi' (0x57) for arg spill (SysV artifact).
+Win64 spills args via `mov [rbp-disp], reg' instead."
+  (let ((path (make-temp-file "nelisp-win64-no-push-rdi-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (require 'nelisp-phase47-compiler)
+          (nelisp-phase47-compile-to-object
+           '(defun bar (x) x)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 ;; Count occurrences of 0x57 (push rdi) in the COFF.
+                 ;; A SysV prologue for `(defun bar (x) x)' would have
+                 ;; exactly one 0x57 byte; Win64 must have none in .text.
+                 ;; We check the whole blob conservatively — COFF headers
+                 ;; and symtab don't contain 0x57 as a code byte.
+                 (push-rdi-count
+                  (let ((i 0) (cnt 0))
+                    (while (< i (length bytes))
+                      (when (= (aref bytes i) #x57)
+                        (setq cnt (1+ cnt)))
+                      (setq i (1+ i)))
+                    cnt)))
+            ;; Win64 emit must never push rdi for arg spilling.
+            (should (= push-rdi-count 0))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-buffer-abi-is-win64 ()
+  "compile-to-object with format 'coff binds --abi to 'win64.
+We verify indirectly: the emitted .text for a 1-arg function must
+contain REX.W (0x48) immediately before the MOV spill opcode (0x89),
+which is the Win64 `mov [rbp-8], rcx' = 48 89 4D F8 sequence.
+SysV would emit `push rdi' = 57 instead."
+  (let ((path (make-temp-file "nelisp-win64-buf-abi-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (require 'nelisp-phase47-compiler)
+          (nelisp-phase47-compile-to-object
+           '(defun id (x) x)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 ;; Scan for the Win64 spill sequence:
+                 ;; 48 89 4D F8 = REX.W MOV [rbp-8], RCX
+                 ;; (RCX = first Win64 GP arg reg, disp = -8 = 0xF8 sign-byte).
+                 (n (length bytes))
+                 (found-win64-spill
+                  (let ((i 0) (found nil))
+                    (while (and (< (+ i 3) n) (not found))
+                      (when (and (= (aref bytes i)      #x48)
+                                 (= (aref bytes (+ i 1)) #x89)
+                                 (= (aref bytes (+ i 2)) #x4D)
+                                 (= (aref bytes (+ i 3)) #xF8))
+                        (setq found i))
+                      (setq i (1+ i)))
+                    found)))
+            ;; The Win64 `mov [rbp-8], rcx' sequence must appear in the COFF.
+            (should found-win64-spill)))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here

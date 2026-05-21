@@ -251,52 +251,60 @@ safe — shifts one byte at a time."
 
 (defun nelisp-asm-x86_64-abi-arg-regs (abi)
   "Return the integer argument register list for ABI ('sysv or 'win64).
-Signals `nelisp-asm-x86_64-error' with :abi-not-implemented for
-any ABI other than 'sysv (Wave 4 BLOCKER — Win64 full emit is
-deferred to a subsequent Wave)."
+Doc 101 §101.B Wave 5: both ABIs fully implemented.
+  'sysv  — RDI RSI RDX RCX R8 R9 (System V AMD64)
+  'win64 — RCX RDX R8 R9 (Microsoft x64)
+Signals `nelisp-asm-x86_64-error' with :unknown-abi for any other value."
   (cond
    ((eq abi 'sysv)  nelisp-asm-x86_64--abi-sysv-arg-regs)
-   ((eq abi 'win64)
-    (signal 'nelisp-asm-x86_64-error
-            (list :abi-not-implemented abi
-                  :reason "Win64 ABI full emission deferred to Wave 5")))
+   ((eq abi 'win64) nelisp-asm-x86_64--abi-win64-arg-regs)
    (t
     (signal 'nelisp-asm-x86_64-error
             (list :unknown-abi abi)))))
 
 (defun nelisp-asm-x86_64-abi-callee-saved (abi)
   "Return the callee-saved integer register list for ABI ('sysv or 'win64).
-Signals `nelisp-asm-x86_64-error' with :abi-not-implemented for
-'win64 (Wave 4 BLOCKER — deferred to a subsequent Wave)."
+Doc 101 §101.B Wave 5: both ABIs fully implemented.
+  'sysv  — RBP RBX R12-R15
+  'win64 — RBP RBX RDI RSI R12-R15 (XMM6-XMM15 GP-only list)
+Signals `nelisp-asm-x86_64-error' with :unknown-abi for any other value."
   (cond
    ((eq abi 'sysv)  nelisp-asm-x86_64--abi-sysv-callee-saved)
-   ((eq abi 'win64)
-    (signal 'nelisp-asm-x86_64-error
-            (list :abi-not-implemented abi
-                  :reason "Win64 ABI full emission deferred to Wave 5")))
+   ((eq abi 'win64) nelisp-asm-x86_64--abi-win64-callee-saved)
    (t
     (signal 'nelisp-asm-x86_64-error
             (list :unknown-abi abi)))))
+
+(defun nelisp-asm-x86_64-abi-shadow-space (abi)
+  "Return the shadow-space byte count that caller must reserve before CALL.
+Doc 101 §101.B Wave 5:
+  'sysv  → 0   (SysV has no shadow space requirement)
+  'win64 → 32  (4 register home slots × 8 bytes each)
+Signals `nelisp-asm-x86_64-error' with :unknown-abi for unknown ABI."
+  (cond
+   ((eq abi 'sysv)  0)
+   ((eq abi 'win64) 32)
+   (t (signal 'nelisp-asm-x86_64-error (list :unknown-abi abi)))))
 
 (defun nelisp-asm-x86_64-make-buffer (&optional abi)
   "Return a fresh empty x86_64 assembler buffer.
 Optional ABI argument selects the calling convention:
   'sysv  (default) — System V AMD64 (Linux / macOS)
-  'win64            — Microsoft x64 (Windows x86_64, Wave 4 BLOCKER)
+  'win64            — Microsoft x64 (Windows x86_64)
 
 The buffer is opaque; use the accessors below to inspect or
 extend it.  §92.d chunk-build: :chunks holds the reverse-order
 list of unibyte-string chunks pushed by per-instruction emitters,
 :length tracks the running cumulative byte count (= O(1) read).
 
-Doc 101 §101.B Wave 4: the :abi field is stored in the buffer plist
-so that emitters can gate Win64-specific codegen.  'win64 is accepted
-here (stored) but signals :abi-not-implemented when ABI-dependent
-helpers (arg-reg mapping, prologue/epilogue) are invoked."
+Doc 101 §101.B Wave 5: both 'sysv and 'win64 are fully operational.
+The :abi field is stored in the buffer plist so that emitters can
+gate Win64-specific codegen (shadow space, arg register selection)."
   (let ((resolved-abi (or abi 'sysv)))
     (unless (memq resolved-abi '(sysv win64))
       (signal 'nelisp-asm-x86_64-error
               (list :unknown-abi resolved-abi)))
+    ;; Wave 5: all ABI values accepted and fully operational.
     (vector (list :chunks nil :length 0 :labels nil
                   :fixups nil :relocs nil :abi resolved-abi))))
 

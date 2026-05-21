@@ -743,6 +743,84 @@
     ;; mov-imm64 = REX.W + opcode + imm64 = 10 bytes.
     (should (= (nelisp-asm-x86_64-buffer-pos b) 111))))
 
+;; ---- Doc 101 §101.B Wave 5 — Win64 ABI tests ----
+
+(ert-deftest nelisp-asm-x86_64-abi-arg-regs-sysv ()
+  ;; SysV arg regs: RDI RSI RDX RCX R8 R9.
+  (should (equal (nelisp-asm-x86_64-abi-arg-regs 'sysv)
+                 '(rdi rsi rdx rcx r8 r9))))
+
+(ert-deftest nelisp-asm-x86_64-abi-arg-regs-win64 ()
+  ;; Win64 arg regs: RCX RDX R8 R9 (4 slots only).
+  (let ((regs (nelisp-asm-x86_64-abi-arg-regs 'win64)))
+    (should (equal regs '(rcx rdx r8 r9)))
+    (should (= (length regs) 4))))
+
+(ert-deftest nelisp-asm-x86_64-abi-callee-saved-sysv ()
+  ;; SysV callee-saved: RBP RBX R12-R15 (6 regs).
+  (let ((saved (nelisp-asm-x86_64-abi-callee-saved 'sysv)))
+    (should (equal saved '(rbp rbx r12 r13 r14 r15)))
+    (should (= (length saved) 6))))
+
+(ert-deftest nelisp-asm-x86_64-abi-callee-saved-win64 ()
+  ;; Win64 callee-saved GP regs: RBP RBX RDI RSI R12-R15 (8 regs).
+  ;; RDI and RSI are caller-saved in SysV but callee-saved in Win64.
+  (let ((saved (nelisp-asm-x86_64-abi-callee-saved 'win64)))
+    (should (equal saved '(rbp rbx rdi rsi r12 r13 r14 r15)))
+    (should (= (length saved) 8))
+    ;; RDI and RSI must be present in Win64 but are absent from SysV.
+    (should (memq 'rdi saved))
+    (should (memq 'rsi saved))
+    (should (not (memq 'rdi (nelisp-asm-x86_64-abi-callee-saved 'sysv))))
+    (should (not (memq 'rsi (nelisp-asm-x86_64-abi-callee-saved 'sysv))))))
+
+(ert-deftest nelisp-asm-x86_64-abi-shadow-space-sysv ()
+  ;; SysV has no shadow space requirement.
+  (should (= (nelisp-asm-x86_64-abi-shadow-space 'sysv) 0)))
+
+(ert-deftest nelisp-asm-x86_64-abi-shadow-space-win64 ()
+  ;; Win64 mandates 32 bytes of shadow space on the caller's stack.
+  (should (= (nelisp-asm-x86_64-abi-shadow-space 'win64) 32)))
+
+(ert-deftest nelisp-asm-x86_64-abi-unknown-signals-error ()
+  ;; Unknown ABI signals `nelisp-asm-x86_64-error'.
+  (should-error (nelisp-asm-x86_64-abi-arg-regs 'mips)
+                :type 'nelisp-asm-x86_64-error)
+  (should-error (nelisp-asm-x86_64-abi-callee-saved 'mips)
+                :type 'nelisp-asm-x86_64-error)
+  (should-error (nelisp-asm-x86_64-abi-shadow-space 'mips)
+                :type 'nelisp-asm-x86_64-error))
+
+(ert-deftest nelisp-asm-x86_64-make-buffer-win64-abi ()
+  ;; make-buffer accepts 'win64 and stores it in the :abi field.
+  (let ((buf (nelisp-asm-x86_64-make-buffer 'win64)))
+    (should (eq (nelisp-asm-x86_64-buffer-abi buf) 'win64))
+    (should (= (nelisp-asm-x86_64-buffer-pos buf) 0))))
+
+(ert-deftest nelisp-asm-x86_64-make-buffer-sysv-default ()
+  ;; Default ABI is 'sysv.
+  (let ((buf (nelisp-asm-x86_64-make-buffer)))
+    (should (eq (nelisp-asm-x86_64-buffer-abi buf) 'sysv))))
+
+(ert-deftest nelisp-asm-x86_64-make-buffer-explicit-sysv ()
+  ;; Explicit 'sysv accepted.
+  (let ((buf (nelisp-asm-x86_64-make-buffer 'sysv)))
+    (should (eq (nelisp-asm-x86_64-buffer-abi buf) 'sysv))))
+
+(ert-deftest nelisp-asm-x86_64-win64-buffer-emit-bytes ()
+  ;; Win64 buffer can emit bytes identically to a SysV buffer — the
+  ;; ABI field affects caller-convention logic only, not raw encoding.
+  (let ((buf (nelisp-asm-x86_64-make-buffer 'win64)))
+    ;; push rbp = 0x55, mov rbp,rsp = REX.W 89 E5
+    (nelisp-asm-x86_64-push buf 'rbp)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rbp 'rsp)
+    (nelisp-asm-x86_64-ret buf)
+    (let ((bytes (nelisp-asm-x86_64-buffer-bytes buf)))
+      (should (= (aref bytes 0) #x55))        ; push rbp
+      (should (= (aref bytes 1) #x48))        ; REX.W
+      (should (= (aref bytes 2) #x89))        ; mov r/m, r
+      (should (= (aref bytes (1- (length bytes))) #xC3))))) ; ret
+
 (provide 'nelisp-asm-x86_64-test)
 
 ;;; nelisp-asm-x86_64-test.el ends here

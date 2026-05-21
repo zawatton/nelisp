@@ -143,6 +143,15 @@ within one compile but never collide between control-flow nodes.")
 Emit helpers consult this dynvar to pick the x86_64 or aarch64 code
 path while sharing the same parsed IR.")
 
+(defvar nelisp-phase47-compiler--abi 'sysv
+  "Calling convention ABI bound by the public compile entry points.
+Doc 101 §101.B Wave 5: selects SysV vs Win64 emit paths for x86_64.
+  'sysv  — System V AMD64 (Linux / macOS); default
+  'win64 — Microsoft x64 (Windows x86_64)
+Emit helpers consult this dynvar for arg-register selection, shadow
+space allocation, and prologue/epilogue layout.  The aarch64 path
+ignores this var (= AAPCS64 only).")
+
 (defvar nelisp-phase47-compiler--next-rt-let-slot nil
   "Cons cell `(N)' holding the next free runtime-let frame slot index.
 Bound by the `defun' parser around body parsing; N starts at the
@@ -166,6 +175,13 @@ shim's SSE-aligned stack accesses; the pre-existing fix is the
 manual `push %rsi' inside `--emit-record-slot-ref' (= 3-arg defun,
 also odd) which the design notes call out as a stack-alignment
 band-aid.  This dynvar generalises the pattern.")
+
+(defsubst nelisp-phase47-compiler--current-arg-regs ()
+  "Return the GP argument register list for the current ABI.
+Doc 101 §101.B Wave 5: dispatches on `nelisp-phase47-compiler--abi'."
+  (if (eq nelisp-phase47-compiler--abi 'win64)
+      nelisp-asm-x86_64--abi-win64-arg-regs
+    nelisp-phase47-compiler--arg-regs))
 
 (defun nelisp-phase47-compiler--gensym (prefix)
   "Return a fresh symbol `PREFIX-N' for control-flow labelling.
@@ -2606,37 +2622,41 @@ live parameter register in the surrounding defun."
                 (list :unknown-shift-op op)))))))
 
 (defun nelisp-phase47-compiler--emit-call (node buf)
-  "Emit a SysV AMD64 call to NODE's named function.
-Strategy:
-  1. Evaluate each arg into rax then push rax (= reverse order so
-     first arg sits on top of the saved stack).
-  2. Pop each arg into its assigned register (rdi, rsi, rdx, rcx,
-     r8, r9) so concurrent args don't clobber each other.
-  3. call <NAME> (intra-text rel32 fixup).
-  4. Return value already in rax."
+  "Emit a call to NODE's named function using the current ABI.
+Strategy (ABI-agnostic):
+  1. Evaluate each arg into rax then push rax (= stack-save order).
+  2. Pop each arg into its ABI-assigned register (SysV: rdi/rsi/rdx/rcx/r8/r9;
+     Win64: rcx/rdx/r8/r9) so concurrent args don't clobber each other.
+  3. Win64: sub rsp, 32 (shadow space) before call; add rsp, 32 after.
+  4. call <NAME> (intra-text rel32 fixup).
+  5. Return value already in rax."
   (let* ((name (plist-get node :name))
          (args (plist-get node :args))
          (n (length args))
-         (regs (cl-subseq nelisp-phase47-compiler--arg-regs 0 n))
-         ;; Stack alignment correction (Doc 111 §111.E fix) — same
-         ;; reasoning as `--emit-extern-call'.  Intra-text recursive
-         ;; calls also need rsp ≡ 0 mod 16 at the call site; otherwise
-         ;; the callee's prologue lands at rsp ≡ 0 mod 16 (= ABI
-         ;; violation) and any SSE/aligned access inside crashes.
+         (cur-arg-regs (nelisp-phase47-compiler--current-arg-regs))
+         (regs (cl-subseq cur-arg-regs 0 n))
+         ;; Stack alignment correction (Doc 111 §111.E fix).
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (= (logand arity 1) 1)))
+         (needs-align (= (logand arity 1) 1))
+         ;; Win64 shadow space: 32 bytes reserved by caller before CALL.
+         (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0)))
     ;; Push each evaluated arg.
     (dolist (a args)
       (nelisp-phase47-compiler--emit-value a buf)
       (nelisp-asm-x86_64-push buf 'rax))
-    ;; Pop into arg-regs in reverse (= last pushed is first popped, =
-    ;; the last arg; so iterate regs reversed).
+    ;; Pop into arg-regs in reverse (= last pushed is first popped).
     (dolist (r (reverse regs))
       (nelisp-asm-x86_64-pop buf r))
     (when needs-align
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+    ;; Allocate Win64 shadow space (0 for SysV).
+    (when (> shadow 0)
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow))
     ;; call <NAME> — intra-text rel32 resolved at finalize time.
     (nelisp-asm-x86_64-call-rel32 buf name)
+    ;; Reclaim shadow space.
+    (when (> shadow 0)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow))
     (when needs-align
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))
 
@@ -2683,7 +2703,7 @@ args are rejected at parse time per class."
                    (lambda (a) (eq (plist-get a :cls) 'gp)) args))
          (f64-args (cl-remove-if-not
                     (lambda (a) (eq (plist-get a :cls) 'f64)) args))
-         (gp-regs (cl-subseq nelisp-phase47-compiler--arg-regs
+         (gp-regs (cl-subseq (nelisp-phase47-compiler--current-arg-regs)
                              0 (length gp-args)))
          (xmm-regs (cl-subseq nelisp-phase47-compiler--xmm-arg-regs
                               0 (length f64-args)))
@@ -2742,20 +2762,28 @@ args are rejected at parse time per class."
     ;; data — `sub rsp, 8' doesn't touch any GPR so both survive.
     (when needs-align
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
-    ;; Emit the `call rel32' opcode (0xE8) + 4-byte zero placeholder
-    ;; + record a PLT32 reloc at the placeholder offset.  Section is
-    ;; `text' (default) since we are inside an `.text' defun body.
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf (symbol-name name) -4 'text)
+    ;; Win64: allocate 32-byte shadow space before CALL.
+    ;; SysV: shadow = 0, this is a no-op.
+    (let ((shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0)))
+      (when (> shadow 0)
+        (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow))
+      ;; Emit the `call rel32' opcode (0xE8) + 4-byte zero placeholder
+      ;; + record a PLT32 reloc at the placeholder offset.  Section is
+      ;; `text' (default) since we are inside an `.text' defun body.
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf (symbol-name name) -4 'text)
+      ;; Reclaim shadow space.
+      (when (> shadow 0)
+        (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow)))
     ;; Undo the alignment correction.  rax (= i64 return) or xmm0
     ;; (= f64 return) is preserved because `add rsp, 8' doesn't
     ;; touch any GPR / xmm.
     (when needs-align
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))
-    ;; Doc 122 §122.C — caller convention: extern-call result is i64
-    ;; in rax (default) or f64 in xmm0 (when :ret-class = f64).  Both
-    ;; are already in place by SysV ABI; nothing else to do.
+    ;; Caller convention: extern-call result is i64 in rax (default)
+    ;; or f64 in xmm0 (when :ret-class = f64).  Both ABIs agree on the
+    ;; return register convention for scalar values.
     (ignore ret-class)))
 
 (defun nelisp-phase47-compiler--emit-syscall-direct (node buf)
@@ -4830,72 +4858,151 @@ return reg, untouched by epilogue)."
       ;; Prologue: push rbp; mov rbp, rsp; spill each param reg.
       (nelisp-asm-x86_64-push buf 'rbp)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rbp 'rsp)
-      (cond
-       ;; GP class — per-param `push reg' followed by a one-shot
-       ;; `sub rsp, 8' alignment pad when the parameter count is odd.
-       ;;
-       ;; SysV AMD64 requires rsp to be 16-byte aligned at the call
-       ;; site.  The function entry has rsp ≡ 8 (mod 16) because the
-       ;; caller's `call' pushed an 8-byte return address; the
-       ;; standard `push rbp; mov rbp, rsp' brings us to rsp ≡ 0
-       ;; (mod 16).  Each subsequent `push' subtracts 8, so after K
-       ;; total prologue pushes the residue is (8 - 8*K) mod 16:
-       ;;   K=1 (rbp only)         → 0   (no extra spills, aligned)
-       ;;   K=2 (rbp + 1 spill)    → 8   (misaligned)
-       ;;   K=3 (rbp + 2 spills)   → 0   (aligned)
-       ;;   K=4 (rbp + 3 spills)   → 8   (misaligned)
-       ;;   ...
-       ;; So whenever the spill count (= parameter count) is ODD we
-       ;; must add one extra 8-byte gap before the body runs, or the
-       ;; first nested `call' (= `--emit-call' / `--emit-extern-call'
-       ;; / `--emit-f64-call') lands at rsp ≡ 8 (mod 16) and SIGSEGVs
-       ;; inside the callee on the first SSE / movaps instruction.
-       ;; The fix mirrors the f64 path's `arity-rounded' trick (line
-       ;; 2415 above): an explicit `sub rsp, 8' fixed-width instr
-       ;; that the epilogue's `mov rsp, rbp' tears down for free.
-       ((eq param-class 'gp)
-        (dolist (preg param-regs)
-          (nelisp-asm-x86_64-push buf preg))
-        (when (= 1 (logand (length param-regs) 1))
-          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
-        ;; Reserve frame slots for runtime `let-rt' bindings.
-        ;; Round up to even so the post-prologue rsp stays 16-byte
-        ;; aligned (each slot is 8 bytes; 2 slots = 16 bytes).
-        (when (> rt-slot-count 0)
-          (let ((rt-rounded (if (zerop (logand rt-slot-count 1))
-                                rt-slot-count
-                              (1+ rt-slot-count))))
-            (nelisp-asm-x86_64-sub-imm32 buf 'rsp (* 8 rt-rounded)))))
-       ;; f64 class — one bulk `sub rsp, 8*ARITY-ROUNDED', then
-       ;; per-param `movsd [rbp - 8*(slot+1)], xmmN'.  ARITY-
-       ;; ROUNDED is `arity' rounded up to the next even value
-       ;; (= 1→2, 2→2, 3→4, ...) so the post-prologue rsp stays
-       ;; 16-byte aligned per SysV AMD64.  The internal CALL
-       ;; emitted by `--emit-f64-call' (Doc 110 §3.F) only
-       ;; observes a correctly-aligned rsp when this rounding
-       ;; happens; arity=1 cases without it would land at rsp ≡
-       ;; 8 mod 16 (= ABI violation).  Even rounding wastes 8
-       ;; bytes for odd-arity frames; cheap vs the alternative
-       ;; of materialising a one-shot pad.
-       ((eq param-class 'f64)
-        (let* ((arity (length param-regs))
-               (arity-rounded (if (zerop (logand arity 1))
-                                  arity
-                                (1+ arity)))
-               (frame-bytes (* 8 arity-rounded))
-               (slot-idx -1))
-          (when (> arity 0)
-            (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))
-          (dolist (xreg param-regs)
-            (setq slot-idx (1+ slot-idx))
-            (nelisp-asm-x86_64-movsd-mem-disp8-xmm
-             buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
-       (t
-        (signal 'nelisp-phase47-compiler-error
-                (list :unknown-defun-param-class param-class))))
+      (if (eq nelisp-phase47-compiler--abi 'win64)
+          ;; ---- Win64 ABI prologue ----
+          ;;
+          ;; Microsoft x64 ABI differs from SysV in three ways:
+          ;;
+          ;; 1. Argument registers: RCX RDX R8 R9 (not RDI RSI RDX RCX R8 R9).
+          ;;    The first 4 integer args arrive in RCX/RDX/R8/R9 which we
+          ;;    must move into our SysV-convention stack slots so the body's
+          ;;    `ref' loads from `[rbp - 8*(slot+1)]' still work correctly.
+          ;;
+          ;; 2. Shadow space: caller already reserved 32 bytes below RSP
+          ;;    for the register home area.  We don't use those bytes but
+          ;;    the epilogue's `mov rsp, rbp' pops them for free.
+          ;;
+          ;; 3. Callee-saved: RDI and RSI are callee-saved under Win64
+          ;;    (they are caller-saved in SysV).  Since our arg-pushing
+          ;;    strategy pushes the incoming Win64 regs (RCX/RDX/R8/R9)
+          ;;    we never write to RDI/RSI in the prologue, so no extra
+          ;;    save/restore is needed for them in this simple prologue.
+          ;;
+          ;; Strategy for GP params:
+          ;;   a. `sub rsp, 8*ROUNDED' to allocate the spill frame.
+          ;;   b. `mov [rbp - 8*(i+1)], rcx/rdx/r8/r9' per param.
+          ;;   The frame layout matches the SysV path so `--emit-ref-load'
+          ;;   (= `[rbp - 8*(slot+1)]') reads the right value.
+          ;;
+          ;; Stack alignment (Win64): call sets rsp ≡ 8 mod 16 (= return
+          ;; addr pushed).  `push rbp' brings rsp to 0 mod 16.  We then
+          ;; allocate spill slots via `sub rsp, 8*ROUNDED'; ROUNDED must
+          ;; be even (= 16-byte aligned allocation) — same rounding rule
+          ;; as SysV but win64 arg regs differ.
+          (cond
+           ((eq param-class 'gp)
+            (let* ((arity (length param-regs))
+                   (rounded (if (zerop (logand arity 1)) arity (1+ arity)))
+                   (frame-bytes (* 8 rounded))
+                   (win64-arg-regs nelisp-asm-x86_64--abi-win64-arg-regs))
+              ;; Allocate the spill frame in one shot (= deterministic
+              ;; byte count regardless of arity, matching pass-1 = pass-2).
+              (when (> arity 0)
+                (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))
+              ;; Spill each incoming Win64 arg register to its frame slot
+              ;; via `mov [rbp - 8*(i+1)], REG'.  disp8 covers [-128,127]
+              ;; so slot offsets up to 15 args are in range.
+              (let ((i 0))
+                (dolist (preg param-regs)
+                  (ignore preg)
+                  (let ((src-reg (nth i win64-arg-regs))
+                        (disp (- (* 8 (1+ i)))))
+                    (nelisp-asm-x86_64-mov-mem-reg-disp8
+                     buf 'rbp disp src-reg))
+                  (setq i (1+ i))))
+              ;; Reserve runtime let-rt slots (same as SysV path).
+              (when (> rt-slot-count 0)
+                (let ((rt-rounded (if (zerop (logand rt-slot-count 1))
+                                      rt-slot-count
+                                    (1+ rt-slot-count))))
+                  (nelisp-asm-x86_64-sub-imm32 buf 'rsp (* 8 rt-rounded))))))
+           ;; f64 class under Win64: XMM0-XMM3 carry the first 4 float args
+           ;; (same xmm reg numbers as SysV, just fewer GP-class args allowed
+           ;; concurrently).  The MOVSD spill layout is identical to SysV.
+           ((eq param-class 'f64)
+            (let* ((arity (length param-regs))
+                   (arity-rounded (if (zerop (logand arity 1))
+                                      arity
+                                    (1+ arity)))
+                   (frame-bytes (* 8 arity-rounded))
+                   (slot-idx -1))
+              (when (> arity 0)
+                (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))
+              (dolist (xreg param-regs)
+                (setq slot-idx (1+ slot-idx))
+                (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+                 buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
+           (t
+            (signal 'nelisp-phase47-compiler-error
+                    (list :unknown-defun-param-class param-class))))
+        ;; ---- SysV ABI prologue (unchanged) ----
+        (cond
+         ;; GP class — per-param `push reg' followed by a one-shot
+         ;; `sub rsp, 8' alignment pad when the parameter count is odd.
+         ;;
+         ;; SysV AMD64 requires rsp to be 16-byte aligned at the call
+         ;; site.  The function entry has rsp ≡ 8 (mod 16) because the
+         ;; caller's `call' pushed an 8-byte return address; the
+         ;; standard `push rbp; mov rbp, rsp' brings us to rsp ≡ 0
+         ;; (mod 16).  Each subsequent `push' subtracts 8, so after K
+         ;; total prologue pushes the residue is (8 - 8*K) mod 16:
+         ;;   K=1 (rbp only)         → 0   (no extra spills, aligned)
+         ;;   K=2 (rbp + 1 spill)    → 8   (misaligned)
+         ;;   K=3 (rbp + 2 spills)   → 0   (aligned)
+         ;;   K=4 (rbp + 3 spills)   → 8   (misaligned)
+         ;;   ...
+         ;; So whenever the spill count (= parameter count) is ODD we
+         ;; must add one extra 8-byte gap before the body runs, or the
+         ;; first nested `call' (= `--emit-call' / `--emit-extern-call'
+         ;; / `--emit-f64-call') lands at rsp ≡ 8 (mod 16) and SIGSEGVs
+         ;; inside the callee on the first SSE / movaps instruction.
+         ;; The fix mirrors the f64 path's `arity-rounded' trick (line
+         ;; 2415 above): an explicit `sub rsp, 8' fixed-width instr
+         ;; that the epilogue's `mov rsp, rbp' tears down for free.
+         ((eq param-class 'gp)
+          (dolist (preg param-regs)
+            (nelisp-asm-x86_64-push buf preg))
+          (when (= 1 (logand (length param-regs) 1))
+            (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+          ;; Reserve frame slots for runtime `let-rt' bindings.
+          ;; Round up to even so the post-prologue rsp stays 16-byte
+          ;; aligned (each slot is 8 bytes; 2 slots = 16 bytes).
+          (when (> rt-slot-count 0)
+            (let ((rt-rounded (if (zerop (logand rt-slot-count 1))
+                                  rt-slot-count
+                                (1+ rt-slot-count))))
+              (nelisp-asm-x86_64-sub-imm32 buf 'rsp (* 8 rt-rounded)))))
+         ;; f64 class — one bulk `sub rsp, 8*ARITY-ROUNDED', then
+         ;; per-param `movsd [rbp - 8*(slot+1)], xmmN'.  ARITY-
+         ;; ROUNDED is `arity' rounded up to the next even value
+         ;; (= 1→2, 2→2, 3→4, ...) so the post-prologue rsp stays
+         ;; 16-byte aligned per SysV AMD64.  The internal CALL
+         ;; emitted by `--emit-f64-call' (Doc 110 §3.F) only
+         ;; observes a correctly-aligned rsp when this rounding
+         ;; happens; arity=1 cases without it would land at rsp ≡
+         ;; 8 mod 16 (= ABI violation).  Even rounding wastes 8
+         ;; bytes for odd-arity frames; cheap vs the alternative
+         ;; of materialising a one-shot pad.
+         ((eq param-class 'f64)
+          (let* ((arity (length param-regs))
+                 (arity-rounded (if (zerop (logand arity 1))
+                                    arity
+                                  (1+ arity)))
+                 (frame-bytes (* 8 arity-rounded))
+                 (slot-idx -1))
+            (when (> arity 0)
+              (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))
+            (dolist (xreg param-regs)
+              (setq slot-idx (1+ slot-idx))
+              (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+               buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
+         (t
+          (signal 'nelisp-phase47-compiler-error
+                  (list :unknown-defun-param-class param-class)))))
       ;; Body — value walked into rax (gp class) or xmm0 (f64 class).
       (nelisp-phase47-compiler--emit-value body buf)
       ;; Epilogue: deallocate param spill via mov rsp, rbp; pop rbp; ret.
+      ;; (Identical for SysV and Win64 — frame pointer teardown is ABI-agnostic.)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'rbp)
       (nelisp-asm-x86_64-pop buf 'rbp)
       (nelisp-asm-x86_64-ret buf))))
@@ -4909,8 +5016,11 @@ but skipped during emit), DEFUNS is the list of defun IR nodes
 collected in encounter order, STR-OFFSETS is the dedup table, and
 RODATA-VADDR is the absolute vaddr of .rodata (= 0 during pass-1).
 The intra-text `call' fixups are *not* resolved here; the caller
-finalizes via `resolve-fixups' after measuring."
-  (let ((buf (nelisp-asm-x86_64-make-buffer)))
+finalizes via `resolve-fixups' after measuring.
+
+Doc 101 §101.B Wave 5: buffer is created with the current
+`nelisp-phase47-compiler--abi' so Win64 callers get a 'win64 buffer."
+  (let ((buf (nelisp-asm-x86_64-make-buffer nelisp-phase47-compiler--abi)))
     ;; Main `_start' body first (= the program's entry point).
     (nelisp-phase47-compiler--emit-stmt
      ir buf str-offsets rodata-vaddr)
@@ -5075,9 +5185,15 @@ drift (= a Doc 92 emitter invariant violation)."
     ;; intra-`.text' cross-defun calls bake their rel32 in place
     ;; (= the linker only sees external R_X86_64_PC32 / R_X86_64_PLT32
     ;; entries when we eventually emit them; v1 has none).
-    (let* ((buf (if (eq arch 'aarch64)
+    ;;
+    ;; Doc 101 §101.B Wave 5: COFF/Windows targets bind --abi to 'win64
+    ;; so that --emit-defun / --emit-call use Win64 register conventions.
+    (let* ((nelisp-phase47-compiler--abi
+            (if (and (eq arch 'x86_64) (eq format 'coff)) 'win64 'sysv))
+           (buf (if (eq arch 'aarch64)
                     (nelisp-asm-arm64-make-buffer)
-                  (nelisp-asm-x86_64-make-buffer))))
+                  (nelisp-asm-x86_64-make-buffer
+                   nelisp-phase47-compiler--abi))))
       (dolist (d defuns)
         (nelisp-phase47-compiler--emit-defun d buf))
       (let* ((text-bytes (if (eq arch 'aarch64)
