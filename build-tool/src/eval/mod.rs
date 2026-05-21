@@ -22,8 +22,8 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
     let mut env = Env::new_global();
     let rd = std::path::PathBuf::from(src_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
     let dir = if rd.is_empty() { ".".into() } else if rd.ends_with('/') { rd } else { rd + "/" };
-    env.set_value("default-directory", Sexp::Str(dir.clone()))?; env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?; env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?; eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env)
-}
+    env.set_value("default-directory", Sexp::Str(dir.clone()))?; env.set_value("load-file-name", Sexp::Str(src_path.to_string()))?;
+    env.set_value("load-path", Sexp::cons(Sexp::Str(dir), Sexp::Nil))?; eval_forms(&read_all_via_elisp(input, &mut env)?, &mut env) }
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     if quit::take_quit_flag() { return Err(EvalError::Quit); }
     if env.current_recursion >= env.max_recursion { return Err(EvalError::internal(format!("max-lisp-eval-depth exceeded ({})", env.max_recursion))); }
@@ -32,10 +32,7 @@ pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     env.current_recursion -= 1; if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "eval_inner")) } }
 fn walk_proper_list(head: &Sexp, mut f: impl FnMut(&Sexp) -> Result<Sexp, EvalError>) -> Result<Vec<Sexp>, EvalError> {
     let (mut out, mut cur) = (Vec::new(), head.clone());
-    loop { match cur.clone() {
-        Sexp::Nil => return Ok(out), Sexp::Cons(b) => { out.push(f(&b.car)?); cur = b.cdr.clone(); }
-        o => return Err(EvalError::wrong_type("list", o)),
-    }}
+    loop { match cur.clone() { Sexp::Nil => return Ok(out), Sexp::Cons(b) => { out.push(f(&b.car)?); cur = b.cdr.clone(); } o => return Err(EvalError::wrong_type("list", o)) } }
 }
 pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(args, |car| eval(car, env)) }
 pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> { walk_proper_list(list, |car| Ok(car.clone())) }

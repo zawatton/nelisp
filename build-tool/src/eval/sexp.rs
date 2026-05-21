@@ -23,15 +23,10 @@ pub enum Sexp {
     Cell(NlCellRef),
     Record(NlRecordRef),
 }
-macro_rules! sexp_tags {
-    ($($name:ident = $val:expr;)*) => { $(pub const $name: u8 = $val;)* }
-}
-sexp_tags! {
-    SEXP_TAG_NIL=0; SEXP_TAG_T=1; SEXP_TAG_INT=2; SEXP_TAG_FLOAT=3;
-    SEXP_TAG_SYMBOL=4; SEXP_TAG_STR=5; SEXP_TAG_MUT_STR=6; SEXP_TAG_CONS=7;
-    SEXP_TAG_VECTOR=8; SEXP_TAG_CHAR_TABLE=9; SEXP_TAG_BOOL_VECTOR=10;
-    SEXP_TAG_CELL=11; SEXP_TAG_RECORD=12;
-}
+pub const SEXP_TAG_NIL: u8 = 0; pub const SEXP_TAG_T: u8 = 1; pub const SEXP_TAG_INT: u8 = 2; pub const SEXP_TAG_FLOAT: u8 = 3;
+pub const SEXP_TAG_SYMBOL: u8 = 4; pub const SEXP_TAG_STR: u8 = 5; pub const SEXP_TAG_MUT_STR: u8 = 6; pub const SEXP_TAG_CONS: u8 = 7;
+pub const SEXP_TAG_VECTOR: u8 = 8; pub const SEXP_TAG_CHAR_TABLE: u8 = 9; pub const SEXP_TAG_BOOL_VECTOR: u8 = 10;
+pub const SEXP_TAG_CELL: u8 = 11; pub const SEXP_TAG_RECORD: u8 = 12;
 pub const SEXP_PAYLOAD_OFFSET: usize = 8;
 macro_rules! sexp_box_ptr_accessor {
     ($name:ident, $ty:ty) => {
@@ -47,10 +42,7 @@ impl Sexp {
     sexp_box_ptr_accessor!(char_table_box_ptr, crate::eval::nlchartable::NlCharTable);
 }
 const _: () = { use std::mem::size_of; use crate::eval::*;
-    assert!(size_of::<nlconsbox::NlConsBoxRef>()==8); assert!(size_of::<nlcell::NlCellRef>()==8);
-    assert!(size_of::<nlstr::NlStrRef>()==8); assert!(size_of::<nlvector::NlVectorRef>()==8);
-    assert!(size_of::<nlboolvector::NlBoolVectorRef>()==8); assert!(size_of::<nlrecord::NlRecordRef>()==8);
-    assert!(size_of::<nlchartable::NlCharTableRef>()==8); };
+    assert!(size_of::<nlconsbox::NlConsBoxRef>()==8); assert!(size_of::<nlcell::NlCellRef>()==8); assert!(size_of::<nlstr::NlStrRef>()==8); assert!(size_of::<nlvector::NlVectorRef>()==8); assert!(size_of::<nlboolvector::NlBoolVectorRef>()==8); assert!(size_of::<nlrecord::NlRecordRef>()==8); assert!(size_of::<nlchartable::NlCharTableRef>()==8); };
 #[no_mangle] pub unsafe extern "C" fn nl_sexp_clone_into(src: *const Sexp, dst: *mut Sexp) { core::ptr::write(dst, (*src).clone()); }
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]
@@ -81,9 +73,5 @@ pub const ABI_EXPORT: &[(&str, i64)] = &[
     ("nlvector-offset-value-vec",NLVEC_VALUE as i64), ("nlvector-offset-value-ptr",NLVEC_VALUE as i64), ("nlvector-offset-value-capacity",(NLVEC_VALUE+8) as i64), ("nlvector-offset-value-length",(NLVEC_VALUE+16) as i64), ("nlvector-offset-refcount",std::mem::offset_of!(NlVector,refcount) as i64), ("nlvector-size",std::mem::size_of::<NlVector>() as i64),
     ("nlcell-offset-value",std::mem::offset_of!(NlCell,value) as i64), ("nlcell-offset-refcount",std::mem::offset_of!(NlCell,refcount) as i64), ("nlcell-size",std::mem::size_of::<NlCell>() as i64),
 ];
-pub fn fmt_sexp(s: &Sexp) -> String {
-    let mut slot = Sexp::Nil; unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) };
-    match slot { Sexp::Str(text) => text, _ => "<fmt_sexp:error>".into() } }
-impl fmt::Display for Sexp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&fmt_sexp(self)) }
-}
+pub fn fmt_sexp(s: &Sexp) -> String { let mut slot = Sexp::Nil; unsafe { crate::elisp_cc_spike::fmt_sexp_call(s as *const Sexp, &mut slot) }; match slot { Sexp::Str(text) => text, _ => "<fmt_sexp:error>".into() } }
+impl fmt::Display for Sexp { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&fmt_sexp(self)) } }

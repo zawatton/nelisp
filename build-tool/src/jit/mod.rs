@@ -39,9 +39,8 @@ fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, Eval
         other => return Err(EvalError::wrong_type(format!("symbol or string ({} arg 0)", prim), other.clone())) };
     unified_fn_ptr(name_sexp).ok_or_else(|| EvalError::internal(format!("{}: unknown JIT entry name `{}'", prim, name_str))) }
 unsafe fn cast<T: Copy>(p: *const u8) -> T { std::mem::transmute_copy(&p) }
-fn num_to_f64(v: &Sexp) -> Result<f64, EvalError> { match v { Sexp::Int(n) => Ok(*n as f64), Sexp::Float(x) => Ok(*x), other => Err(EvalError::wrong_type("numberp", other.clone())) } }
 fn to_f64(v: &Sexp, expected: &str) -> Result<f64, EvalError> { match v { Sexp::Int(i) => Ok(*i as f64), Sexp::Float(f) => Ok(*f), Sexp::Nil => Ok(0.0), other => Err(EvalError::wrong_type(expected, other.clone())) } }
-fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> { let p = jit_lookup(name, args, 3)?; Ok((p, num_to_f64(&args[1])?, num_to_f64(&args[2])?)) }
+fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> { let p = jit_lookup(name, args, 3)?; Ok((p, to_f64(&args[1], "numberp")?, to_f64(&args[2], "numberp")?)) }
 fn out_result(rc: i64, out: Sexp, prim: &str, arg: &Sexp) -> Result<Sexp, EvalError> { if rc == TRAMPOLINE_OK { Ok(out) } else { Err(EvalError::wrong_type(prim, arg.clone())) } }
 pub fn bi_nl_jit_call_i64_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let p = jit_lookup("nl-jit-call-i64-i64", args, 3)?;
@@ -78,12 +77,11 @@ pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn sym(name: &str) -> Sexp { Sexp::Symbol(name.into()) }
+    fn sym(n: &str) -> Sexp { Sexp::Symbol(n.into()) }
     fn is_err(e: &EvalError, tag: &str) -> bool { matches!(e, EvalError::Generic(t, _) if t == tag) }
     #[test] fn unified_fn_ptr_resolves_core_entries() {
         for n in ["nelisp_jit_add2","nelisp_jit_eq_inline","nelisp_jit_car","nelisp_jit_length","nelisp_jit_aref","nelisp_jit_intern","nelisp_jit_syscall","nl_jit_float_add","nl_jit_float_exp"] {
-            let p = unified_fn_ptr(&sym(n)); assert!(p.is_some(), "missing `{}'", n); assert!(!p.unwrap().is_null(), "`{}' is null", n); }
-    }
+            let p = unified_fn_ptr(&sym(n)); assert!(p.is_some(), "missing `{}'", n); assert!(!p.unwrap().is_null(), "`{}' is null", n); } }
     #[test] fn unified_fn_ptr_unknown_returns_none() { assert!(unified_fn_ptr(&sym("nelisp_jit_does_not_exist")).is_none()); assert!(unified_fn_ptr(&sym("")).is_none()); }
     #[test] fn call_i64_i64_smoke() {
         assert_eq!(bi_nl_jit_call_i64_i64(&[sym("nelisp_jit_add2"),Sexp::Int(7),Sexp::Int(8)]).expect("add2"), Sexp::Int(15));
@@ -96,8 +94,8 @@ mod tests {
         assert_eq!(eq(Sexp::Int(7),Sexp::Int(7)),Sexp::Int(1)); assert_eq!(eq(Sexp::Int(7),Sexp::Int(8)),Sexp::Int(0)); }
     #[test] fn call_syscall_errors() {
         assert!(is_err(&bi_nl_jit_call_syscall(&vec![sym("nelisp_jit_syscall");7]).unwrap_err(), "wrong-number-of-arguments"));
-        let mut args = vec![sym("nelisp_jit_no_syscall")]; args.extend(std::iter::repeat(Sexp::Int(0)).take(7));
-        assert!(is_err(&bi_nl_jit_call_syscall(&args).unwrap_err(), "error")); }
+        let mut a = vec![sym("nelisp_jit_no_syscall")]; a.extend(std::iter::repeat(Sexp::Int(0)).take(7));
+        assert!(is_err(&bi_nl_jit_call_syscall(&a).unwrap_err(), "error")); }
     #[test] fn call_out_1_ops() {
         let lst = Sexp::list_from(&[Sexp::Int(1),Sexp::Int(2),Sexp::Int(3)]);
         assert_eq!(bi_nl_jit_call_out_1(&[sym("nelisp_jit_car"),lst.clone()]).expect("car"), Sexp::Int(1));

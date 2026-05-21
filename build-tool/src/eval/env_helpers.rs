@@ -49,10 +49,9 @@ impl Env {
         let mut env = Env::install_stage0(1024);
         let trace = std::env::var_os("NELISP_EVAL_BOOT_TRACE").map_or(false, |v| !v.is_empty() && v != "0");
         for (name, source) in STDLIB_FILES {
-            for (idx, form) in crate::reader::read_all(source).unwrap_or_else(|e| panic!("{name} eval-boot read failed: {e}")).iter().enumerate() { if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
-                crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval-boot eval failed at form #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form)));
-            }
-        }
+            for (idx, form) in crate::reader::read_all(source).unwrap_or_else(|e| panic!("{name} eval-boot read failed: {e}")).iter().enumerate() {
+                if trace { eprintln!("[eval-boot] {name}: form #{idx}"); }
+                crate::eval::eval(form, &mut env).unwrap_or_else(|e| panic!("{name} eval-boot eval failed at form #{idx}: {e}\nform: {}", crate::eval::sexp::fmt_sexp(form))); } }
         env.use_elisp_apply = std::env::var_os("NELISP_USE_RUST_APPLY").map_or(true, |v| v.is_empty());
         env.mirror_set_value("nelisp--unbound-marker", env.unbound_marker.clone()); env
     }
@@ -106,7 +105,7 @@ impl Env {
         let Sexp::Record(sr) = &self.frames_record else { return }; let sr = sr.clone();
         let (Some(Sexp::Vector(bk)), Some(Sexp::Int(d))) = (sr.slots.get(0), sr.slots.get(1)) else { return };
         let (d, bk) = (*d as usize, bk.clone()); if d == 0 { return; }
-        unsafe { bk.with_value_mut(|v| v[d-1] = Sexp::Nil); sr.with_slots_mut(|s| s[1] = Sexp::Int(d as i64 - 1)) } }
+        unsafe { bk.with_value_mut(|v| v[d-1] = Sexp::Nil); sr.with_slots_mut(|s| s[1] = Sexp::Int((d-1) as i64)) } }
     pub fn frame_stack_find_rust_direct(&self, name: &str) -> Option<Sexp> {
         if !matches!(&self.frames_record, Sexp::Record(_)) { return None; }
         let raw = unsafe { crate::elisp_cc_spike::frame_stack_find_raw(&self.frames_record, &Sexp::Str(name.to_string())) }; if raw.is_null() { None } else { Some(unsafe { (*raw).clone() }) } }
