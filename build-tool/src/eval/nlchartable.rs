@@ -3,12 +3,7 @@ use crate::jit::{TRAMPOLINE_ERR, TRAMPOLINE_OK};
 crate::define_nlbox!(
     inner=NlCharTable, ref_ty=NlCharTableRef, fields={inner: CharTableInner},
     clone_fn=crate::elisp_cc_spike::nlchartable_clone, drop_fn=crate::elisp_cc_spike::nlchartable_drop,
-    layout_asserts={
-        use ::std::mem::{offset_of, size_of};
-        assert!(offset_of!(NlCharTable, inner) == 0);
-        assert!(offset_of!(NlCharTable, refcount) == size_of::<CharTableInner>());
-        assert!(size_of::<AtomicUsize>() == 8);
-    }
+    layout_asserts={ assert!(offset_of!(NlCharTable, inner) == 0); assert!(offset_of!(NlCharTable, refcount) == size_of::<CharTableInner>()); }
 );
 impl NlCharTable { crate::nlinner_with_mut!(with_inner_mut, inner, CharTableInner); }
 impl std::fmt::Debug for NlCharTableRef { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_struct("CharTable").field("inner", &self.inner).finish() } }

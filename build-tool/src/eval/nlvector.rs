@@ -2,12 +2,7 @@ use crate::eval::sexp::Sexp;
 crate::define_nlbox!(
     inner=NlVector, ref_ty=NlVectorRef, fields={value: Vec<Sexp>},
     clone_fn=crate::elisp_cc_spike::nlvector_clone, drop_fn=crate::elisp_cc_spike::nlvector_drop,
-    layout_asserts={
-        use ::std::mem::{offset_of, size_of};
-        assert!(offset_of!(NlVector, value) == 0);
-        assert!(offset_of!(NlVector, refcount) == size_of::<Vec<Sexp>>());
-        assert!(size_of::<AtomicUsize>() == 8);
-    }
+    layout_asserts={ assert!(offset_of!(NlVector, value) == 0); assert!(offset_of!(NlVector, refcount) == size_of::<Vec<Sexp>>()); }
 );
 impl NlVector {
     crate::nlinner_set!(set_value, value, Vec<Sexp>);

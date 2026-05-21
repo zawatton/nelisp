@@ -78,15 +78,13 @@ mod tests {
         assert_eq!(eq(i(7),i(7)),i(1)); assert_eq!(eq(i(7),i(8)),i(0)); }
     #[test] fn call_syscall_errors() {
         assert!(err(&bi_nl_jit_call_syscall(&vec![s("nelisp_jit_syscall");7]).unwrap_err(), "wrong-number-of-arguments"));
-        let mut a = vec![s("nelisp_jit_no_syscall")]; a.extend(std::iter::repeat(i(0)).take(7));
-        assert!(err(&bi_nl_jit_call_syscall(&a).unwrap_err(), "error")); }
+        let mut a = vec![s("nelisp_jit_no_syscall")]; a.extend(std::iter::repeat(i(0)).take(7)); assert!(err(&bi_nl_jit_call_syscall(&a).unwrap_err(), "error")); }
     #[test] fn call_out_ops() {
         let lst = Sexp::list_from(&[i(1),i(2),i(3)]);
         assert_eq!(bi_nl_jit_call_out_1(&[s("nelisp_jit_car"),lst.clone()]).unwrap(), i(1));
         assert_eq!(bi_nl_jit_call_out_1(&[s("nelisp_jit_cdr"),lst]).unwrap(), Sexp::list_from(&[i(2),i(3)]));
         assert!(matches!(bi_nl_jit_call_out_1(&[s("nelisp_jit_length"),Sexp::vector(vec![i(1),i(2)])]).unwrap(),Sexp::Int(_)));
         assert!(err(&bi_nl_jit_call_out_1(&[s("nelisp_jit_car"),i(7)]).unwrap_err(), "wrong-type-argument"));
-        let v = Sexp::vector(vec![i(1),i(2),i(3)]);
-        assert_eq!(bi_nl_jit_call_out_1i(&[s("nelisp_jit_aref"),v.clone(),i(1)]).unwrap(), i(2));
+        let v = Sexp::vector(vec![i(1),i(2),i(3)]); assert_eq!(bi_nl_jit_call_out_1i(&[s("nelisp_jit_aref"),v.clone(),i(1)]).unwrap(), i(2));
         assert!(err(&bi_nl_jit_call_out_1i(&[s("nelisp_jit_aref"),v,i(5)]).unwrap_err(), "wrong-type-argument")); }
 }

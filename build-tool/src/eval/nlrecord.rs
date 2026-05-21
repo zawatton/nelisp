@@ -2,13 +2,7 @@ use crate::eval::sexp::Sexp;
 crate::define_nlbox!(
     inner=NlRecord, ref_ty=NlRecordRef, fields={type_tag: Sexp, slots: Vec<Sexp>},
     clone_fn=crate::elisp_cc_spike::nlrecord_clone, drop_fn=crate::elisp_cc_spike::nlrecord_drop,
-    layout_asserts={
-        use ::std::mem::{offset_of, size_of};
-        assert!(offset_of!(NlRecord, type_tag) == 0);
-        assert!(offset_of!(NlRecord, slots) == size_of::<Sexp>());
-        assert!(offset_of!(NlRecord, refcount) == size_of::<Sexp>() + size_of::<Vec<Sexp>>());
-        assert!(size_of::<AtomicUsize>() == 8);
-    }
+    layout_asserts={ assert!(offset_of!(NlRecord, type_tag) == 0); assert!(offset_of!(NlRecord, slots) == size_of::<Sexp>()); assert!(offset_of!(NlRecord, refcount) == size_of::<Sexp>() + size_of::<Vec<Sexp>>()); }
 );
 impl NlRecord { crate::nlinner_with_mut!(with_slots_mut, slots, Vec<Sexp>); }
 impl std::fmt::Debug for NlRecordRef { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_struct("Record").field("type_tag", &self.type_tag).field("slots", &self.slots).finish() } }

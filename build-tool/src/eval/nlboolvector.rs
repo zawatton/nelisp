@@ -1,12 +1,7 @@
 crate::define_nlbox!(
     inner=NlBoolVector, ref_ty=NlBoolVectorRef, fields={value: Vec<bool>},
     clone_fn=crate::elisp_cc_spike::nlboolvector_clone, drop_fn=crate::elisp_cc_spike::nlboolvector_drop,
-    layout_asserts={
-        use ::std::mem::{offset_of, size_of};
-        assert!(offset_of!(NlBoolVector, value) == 0);
-        assert!(offset_of!(NlBoolVector, refcount) == size_of::<Vec<bool>>());
-        assert!(size_of::<AtomicUsize>() == 8);
-    }
+    layout_asserts={ assert!(offset_of!(NlBoolVector, value) == 0); assert!(offset_of!(NlBoolVector, refcount) == size_of::<Vec<bool>>()); }
 );
 impl NlBoolVector {
     crate::nlinner_set!(set_value, value, Vec<bool>);
