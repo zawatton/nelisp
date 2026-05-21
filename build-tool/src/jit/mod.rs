@@ -15,21 +15,16 @@ extern "C" {
     fn nl_jit_syscall_call(); fn nl_jit_syscall_supported_p(); fn nl_jit_char_table_aref(); fn nl_jit_char_table_aset(); fn nl_jit_mut_str_set_codepoint();
     #[link_name = "nl_jit_alias"] fn nl_jit_alias_call(name: *const Sexp, out: *mut Sexp) -> i64;
 }
-#[used] static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [
-    nelisp_jit_add2,nelisp_jit_sub2,nelisp_jit_mul2,nelisp_jit_eq2,nelisp_jit_lt2,nelisp_jit_gt2,nelisp_jit_le2,nelisp_jit_ge2,nelisp_jit_logior2,nelisp_jit_logand2,nelisp_jit_logxor2,nelisp_jit_ash,
+#[used] static _ELISP_ARCHIVE_ANCHOR: [unsafe extern "C" fn(); 76] = [nelisp_jit_add2,nelisp_jit_sub2,nelisp_jit_mul2,nelisp_jit_eq2,nelisp_jit_lt2,nelisp_jit_gt2,nelisp_jit_le2,nelisp_jit_ge2,nelisp_jit_logior2,nelisp_jit_logand2,nelisp_jit_logxor2,nelisp_jit_ash,
     nl_jit_float_add,nl_jit_float_sub,nl_jit_float_mul,nl_jit_float_div,nl_jit_float_lt,nl_jit_float_gt,nl_jit_float_le,nl_jit_float_ge,nl_jit_float_eq_eps,nl_jit_float_float,nl_jit_float_exp,nl_jit_float_log,
     nl_jit_intern,nl_jit_make_mut_str,nl_jit_mut_str_len,nl_jit_record_alloc,nelisp_jit_predicate_eq,nelisp_jit_ref_eq,nelisp_jit_record_type,nelisp_jit_record_len,nelisp_jit_record_ref,nelisp_jit_record_set,nelisp_jit_length,nelisp_jit_aref,
     nelisp_jit_aset,nelisp_jit_elt,nelisp_jit_cons_car,nelisp_jit_cons_cdr,nelisp_jit_cons_setcar,nelisp_jit_cons_setcdr,nelisp_jit_cons_make,nl_jit_bool_vector_len,nl_jit_str_codepoint_at,nl_jit_type_of,nl_jit_sxhash,nl_cons_car_ptr,
     nl_cons_cdr_ptr,nl_jit_make_symbol,nl_record_type_tag_ptr,nl_jit_concat_ints,nl_sf_quote,nl_jit_downcase,nl_jit_upcase,nl_jit_split_by_non_alnum,nl_sf_if,nl_sf_setq,nl_sf_progn,nl_sf_while,
     nl_sf_lambda,nl_sf_function,nl_sf_condition_case,nl_jit_symbol_name,nelisp_bi_nl_fact_i64,nl_cons_prepend_clone,nl_jit_secure_hash,nl_jit_secure_hash_non_sha1_ext,nl_jit_string_match_p,nl_jit_alias,nl_eval_inner,
     nl_jit_syscall_call,nl_jit_syscall_supported_p,nl_jit_char_table_aref,nl_jit_char_table_aset,nl_jit_mut_str_set_codepoint];
-pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> {
-    let mut resolved = Sexp::Nil;
+pub(super) fn unified_fn_ptr(sexp: &Sexp) -> Option<*const u8> { let mut resolved = Sexp::Nil;
     let rc = unsafe { nl_jit_alias_call(sexp as *const _, &mut resolved as *mut _) }; if rc != 0 { return None; }
-    let name = match &resolved { Sexp::Str(s) => s.as_str(), _ => return None };
-    let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, CString::new(name).ok()?.as_ptr()) };
-    if addr.is_null() { None } else { Some(addr as *const u8) }
-}
+    let name = match &resolved { Sexp::Str(s) => s.as_str(), _ => return None }; let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, CString::new(name).ok()?.as_ptr()) }; if addr.is_null() { None } else { Some(addr as *const u8) } }
 fn jit_lookup(prim: &str, args: &[Sexp], arity: usize) -> Result<*const u8, EvalError> {
     require_arity(prim, args, arity, Some(arity))?;
     let ns = match &args[0] { Sexp::Symbol(s)|Sexp::Str(s) => s.as_str(), o => return Err(EvalError::wrong_type(format!("symbol or string ({} arg 0)", prim), o.clone())) };
@@ -61,8 +56,7 @@ pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
 mod tests {
     use super::*;
     fn err(e: &EvalError, tag: &str) -> bool { matches!(e, EvalError::Generic(t, _) if t == tag) }
-    fn s(n: &str) -> Sexp { Sexp::Symbol(n.into()) }
-    fn i(n: i64) -> Sexp { Sexp::Int(n) }
+    fn s(n: &str) -> Sexp { Sexp::Symbol(n.into()) } fn i(n: i64) -> Sexp { Sexp::Int(n) }
     #[test] fn unified_fn_ptr_smoke() { for n in ["nelisp_jit_add2","nelisp_jit_eq_inline","nelisp_jit_car","nelisp_jit_length","nelisp_jit_aref","nelisp_jit_intern","nelisp_jit_syscall","nl_jit_float_add","nl_jit_float_exp"] { let p=unified_fn_ptr(&s(n)); assert!(p.is_some()&&!p.unwrap().is_null(),"`{}'",n); } assert!(unified_fn_ptr(&s("nelisp_jit_does_not_exist")).is_none()); assert!(unified_fn_ptr(&s("")).is_none()); }
     #[test] fn call_i64_i64_smoke() { assert_eq!(bi_nl_jit_call_i64_i64(&[s("nelisp_jit_add2"),i(7),i(8)]).unwrap(),i(15)); assert_eq!(bi_nl_jit_call_i64_i64(&[Sexp::Str("nelisp_jit_mul2".into()),i(6),i(7)]).unwrap(),i(42)); assert!(err(&bi_nl_jit_call_i64_i64(&[s("nelisp_jit_no_such"),i(0),i(0)]).unwrap_err(),"error")); assert!(err(&bi_nl_jit_call_i64_i64(&[s("nelisp_jit_add2"),i(1)]).unwrap_err(),"wrong-number-of-arguments")); assert!(err(&bi_nl_jit_call_i64_i64(&[i(0),i(1),i(2)]).unwrap_err(),"wrong-type-argument")); let eq=|a,b|bi_nl_jit_call_ptr_ptr(&[s("nelisp_jit_eq_inline"),a,b]).unwrap(); assert_eq!(eq(i(7),i(7)),i(1)); assert_eq!(eq(i(7),i(8)),i(0)); }
     #[test] fn call_syscall_errors() { assert!(err(&bi_nl_jit_call_syscall(&vec![s("nelisp_jit_syscall");7]).unwrap_err(),"wrong-number-of-arguments")); let mut a=vec![s("nelisp_jit_no_syscall")]; a.extend(std::iter::repeat(i(0)).take(7)); assert!(err(&bi_nl_jit_call_syscall(&a).unwrap_err(),"error")); }

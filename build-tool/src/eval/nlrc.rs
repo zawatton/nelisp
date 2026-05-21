@@ -15,8 +15,7 @@ macro_rules! define_nlbox {
         crate::nl_ref_common!($ref, $inner, drop_fn = $drop_fn);
         impl $inner { pub(crate) const DROP_FN: unsafe fn(*mut ::std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<$inner>; }
         impl $ref { pub fn new($($fname: $fty),+) -> $ref { let ptr = NonNull::from(Box::leak(Box::new($inner { $($fname,)+ refcount: AtomicUsize::new(1) }))); $ref { ptr, _marker: PhantomData } } }
-        impl Clone for $ref { fn clone(&self) -> Self { unsafe { $clone_fn(self.ptr.as_ptr() as *mut i64) }; $ref { ptr: self.ptr, _marker: PhantomData } } }
-        const _: () = { use ::std::mem::{offset_of, size_of}; assert!(size_of::<AtomicUsize>() == 8); $($la_tt)* };
+        impl Clone for $ref { fn clone(&self) -> Self { unsafe { $clone_fn(self.ptr.as_ptr() as *mut i64) }; $ref { ptr: self.ptr, _marker: PhantomData } } } const _: () = { use ::std::mem::{offset_of, size_of}; assert!(size_of::<AtomicUsize>() == 8); $($la_tt)* };
     };
 }
 #[macro_export]

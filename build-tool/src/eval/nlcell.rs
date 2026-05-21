@@ -5,9 +5,7 @@ crate::define_nlbox!(
     layout_asserts={ assert!(offset_of!(NlCell, value) == 0); assert!(offset_of!(NlCell, refcount) == size_of::<Sexp>()); }
 );
 impl NlCell { crate::nlinner_set!(set_value, value, Sexp); }
-impl NlCellRef {
-    pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef { NlCellRef { ptr: ::std::ptr::NonNull::new(raw).expect("null"), _marker: ::std::marker::PhantomData } }
-}
+impl NlCellRef { pub unsafe fn from_raw_ptr(raw: *mut NlCell) -> NlCellRef { NlCellRef { ptr: ::std::ptr::NonNull::new(raw).expect("null"), _marker: ::std::marker::PhantomData } } }
 impl std::fmt::Debug for NlCellRef { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.debug_tuple("Cell").field(&self.value).finish() } }
 impl PartialEq for NlCellRef { fn eq(&self, other: &Self) -> bool { Self::ptr_eq(self, other) || self.value == other.value } }
 #[allow(improper_ctypes)]

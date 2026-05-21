@@ -4,9 +4,7 @@ use super::sexp::Sexp;
 pub enum EvalError { Generic(String, Sexp), Quit }
 impl EvalError {
     pub fn error_tag(&self) -> &str { match self { EvalError::Generic(tag, _) => tag.as_str(), EvalError::Quit => "quit" } }
-    pub fn signal_data(&self) -> Sexp {
-        match self { EvalError::Generic(tag, data) => Sexp::cons(Sexp::Symbol(tag.clone()), data.clone()), EvalError::Quit => Sexp::cons(Sexp::Symbol("quit".into()), Sexp::Nil) }
-    }
+    pub fn signal_data(&self) -> Sexp { match self { EvalError::Generic(tag, data) => Sexp::cons(Sexp::Symbol(tag.clone()), data.clone()), EvalError::Quit => Sexp::cons(Sexp::Symbol("quit".into()), Sexp::Nil) } }
     #[inline] pub fn wrong_type(expected: impl Into<String>, got: Sexp) -> Self { Self::Generic("wrong-type-argument".into(), Sexp::list_from(&[Sexp::Symbol(expected.into()), got])) }
     #[inline] pub fn wrong_arity(function: impl Into<String>, _expected: impl Into<String>, got: usize) -> Self { Self::Generic("wrong-number-of-arguments".into(), Sexp::list_from(&[Sexp::Symbol(function.into()), Sexp::Int(got as i64)])) }
     #[inline] pub fn unbound_var(name: impl Into<String>) -> Self { Self::Generic("void-variable".into(), Sexp::list_from(&[Sexp::Symbol(name.into())])) }
@@ -17,6 +15,4 @@ impl EvalError {
     #[inline] pub fn user(tag: impl Into<String>, data: Sexp) -> Self { Self::Generic(tag.into(), data) }
 }
 pub fn is_error_subtype(clause_tag: &str, actual_tag: &str) -> bool { clause_tag == actual_tag || clause_tag == "t" || (clause_tag == "error" && actual_tag != "quit") }
-impl fmt::Display for EvalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { match self { EvalError::Generic(tag, data) => write!(f, "{}: {}", tag, data), EvalError::Quit => write!(f, "quit") } }
-}
+impl fmt::Display for EvalError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { match self { EvalError::Generic(tag, data) => write!(f, "{}: {}", tag, data), EvalError::Quit => write!(f, "quit") } } }

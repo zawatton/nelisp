@@ -1,8 +1,7 @@
 use super::Env;
 use super::error::EvalError;
 use super::quit;
-#[cfg(unix)]
-use super::tty;
+#[cfg(unix)] use super::tty;
 use super::sexp::Sexp;
 use std::path::{Path, PathBuf};
 const BUILTIN_NAMES: &[&str] = &["vector","make-vector","nelisp--length-cons-cc","nelisp--recordp-cc","string-bytes","nl-jit-call-format-float","truncate","nelisp--syscall-canonicalize","nelisp--syscall-stat","nelisp--syscall-readdir","nelisp--syscall-read-file","nelisp--syscall",
@@ -81,7 +80,5 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
 fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { let (_, ps) = path_arg1("nelisp--syscall-stat", args, env)?; let mut sb: libc::stat = unsafe { std::mem::zeroed() }; let rc = unsafe { crate::elisp_cc_spike::bi_syscall_stat(&ps, (&mut sb as *mut libc::stat) as *mut u8) }; Ok(Sexp::Symbol((if rc < 0 { "absent" } else { match sb.st_mode & libc::S_IFMT { m if m == libc::S_IFDIR => "directory", m if m == libc::S_IFREG => "file", _ => "absent" } }).into())) }
 fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> { let (dir, ds) = path_arg1("nelisp--syscall-readdir", args, env)?; let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Sexp::Nil) }; Ok(Sexp::cons(ds, Sexp::list_from(&rd.filter_map(|e| e.ok()).map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned())).collect::<Vec<_>>()))) }
 #[cfg(not(target_os = "linux"))] fn bi_syscall(_args: &[Sexp]) -> Result<Sexp, EvalError> { Err(EvalError::internal("nelisp--syscall: unsupported platform")) }
-#[cfg(target_os = "linux")] fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.is_empty() { return Err(EvalError::internal("nelisp--syscall: at least one argument (syscall nr / name) required")); }
-    let nr = match &args[0] { Sexp::Int(n) => *n, Sexp::Symbol(s) => { let r = unsafe { crate::elisp_cc_spike::bi_syscall_resolve_nr(&args[0] as *const _) }; if r < 0 { return Err(EvalError::internal(format!("nelisp--syscall: unknown syscall name `{}'", s))); } r }, other => return Err(EvalError::wrong_type("syscall name (symbol) or number (integer)", other.clone())) };
-    let mut a = [0i64; 6]; for (i, sexp) in args[1..].iter().enumerate().take(6) { a[i] = match sexp { Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1, other => return Err(EvalError::wrong_type(format!("integer (arg {} of nelisp--syscall)", i + 1), other.clone())) }; }; let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) }; Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 })) }
+#[cfg(target_os = "linux")] fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> { if args.is_empty() { return Err(EvalError::internal("nelisp--syscall: at least one argument (syscall nr / name) required")); }
+    let nr = match &args[0] { Sexp::Int(n) => *n, Sexp::Symbol(s) => { let r = unsafe { crate::elisp_cc_spike::bi_syscall_resolve_nr(&args[0] as *const _) }; if r < 0 { return Err(EvalError::internal(format!("nelisp--syscall: unknown syscall name `{}'", s))); } r }, other => return Err(EvalError::wrong_type("syscall name (symbol) or number (integer)", other.clone())) }; let mut a = [0i64; 6]; for (i, sexp) in args[1..].iter().enumerate().take(6) { a[i] = match sexp { Sexp::Int(n) => *n, Sexp::Nil => 0, Sexp::T => 1, other => return Err(EvalError::wrong_type(format!("integer (arg {} of nelisp--syscall)", i + 1), other.clone())) }; }; let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) }; Ok(Sexp::Int(if r == -1 { -(unsafe { *libc::__errno_location() } as i64) } else { r as i64 })) }
