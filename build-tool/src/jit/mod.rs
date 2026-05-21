@@ -71,8 +71,7 @@ mod tests {
         assert_eq!(bi_nl_jit_call_i64_i64(&[s("nelisp_jit_add2"),i(7),i(8)]).unwrap(), i(15)); assert_eq!(bi_nl_jit_call_i64_i64(&[Sexp::Str("nelisp_jit_mul2".into()),i(6),i(7)]).unwrap(), i(42));
         assert!(err(&bi_nl_jit_call_i64_i64(&[s("nelisp_jit_no_such"),i(0),i(0)]).unwrap_err(), "error")); assert!(err(&bi_nl_jit_call_i64_i64(&[s("nelisp_jit_add2"),i(1)]).unwrap_err(), "wrong-number-of-arguments")); assert!(err(&bi_nl_jit_call_i64_i64(&[i(0),i(1),i(2)]).unwrap_err(), "wrong-type-argument"));
         let eq = |a,b| bi_nl_jit_call_ptr_ptr(&[s("nelisp_jit_eq_inline"),a,b]).unwrap(); assert_eq!(eq(i(7),i(7)),i(1)); assert_eq!(eq(i(7),i(8)),i(0)); }
-    #[test] fn call_syscall_errors() {
-        assert!(err(&bi_nl_jit_call_syscall(&vec![s("nelisp_jit_syscall");7]).unwrap_err(), "wrong-number-of-arguments")); let mut a = vec![s("nelisp_jit_no_syscall")]; a.extend(std::iter::repeat(i(0)).take(7)); assert!(err(&bi_nl_jit_call_syscall(&a).unwrap_err(), "error")); }
+    #[test] fn call_syscall_errors() { assert!(err(&bi_nl_jit_call_syscall(&vec![s("nelisp_jit_syscall");7]).unwrap_err(), "wrong-number-of-arguments")); let mut a = vec![s("nelisp_jit_no_syscall")]; a.extend(std::iter::repeat(i(0)).take(7)); assert!(err(&bi_nl_jit_call_syscall(&a).unwrap_err(), "error")); }
     #[test] fn call_out_ops() {
         let lst = Sexp::list_from(&[i(1),i(2),i(3)]); assert_eq!(bi_nl_jit_call_out_1(&[s("nelisp_jit_car"),lst.clone()]).unwrap(), i(1)); assert_eq!(bi_nl_jit_call_out_1(&[s("nelisp_jit_cdr"),lst]).unwrap(), Sexp::list_from(&[i(2),i(3)]));
         assert!(matches!(bi_nl_jit_call_out_1(&[s("nelisp_jit_length"),Sexp::vector(vec![i(1),i(2)])]).unwrap(),Sexp::Int(_))); assert!(err(&bi_nl_jit_call_out_1(&[s("nelisp_jit_car"),i(7)]).unwrap_err(), "wrong-type-argument"));
