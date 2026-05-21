@@ -213,14 +213,92 @@ safe — shifts one byte at a time."
   (aset buf 0 plist)
   buf)
 
-(defun nelisp-asm-x86_64-make-buffer ()
+;; ---- ABI descriptor (= Doc 101 §101.B Wave 4 framework) ----
+;;
+;; Two ABI flavours are modelled:
+;;
+;;   'sysv   — System V AMD64 ABI (Linux / macOS).
+;;             Integer args: RDI RSI RDX RCX R8 R9.
+;;             Callee-saved: RBP RBX R12-R15.
+;;             No shadow space.
+;;
+;;   'win64  — Microsoft x64 ABI (Windows x86_64).
+;;             Integer args: RCX RDX R8 R9.
+;;             Callee-saved: RBP RBX RDI RSI R12-R15 (XMM6-XMM15).
+;;             Caller allocates 32-byte shadow space before CALL.
+;;
+;; Wave 4 ships the framework skeleton only: 'sysv passes through
+;; unchanged; 'win64 signals :abi-not-implemented so that callers
+;; obtain a clear BLOCKER rather than silently wrong code.
+;; Full Win64 ABI emission (shadow space alloc, callee-save push/pop,
+;; register remapping) is deferred to a subsequent Wave.
+
+(defconst nelisp-asm-x86_64--abi-sysv-arg-regs
+  '(rdi rsi rdx rcx r8 r9)
+  "System V AMD64 ABI integer argument registers (positional 1..6).")
+
+(defconst nelisp-asm-x86_64--abi-win64-arg-regs
+  '(rcx rdx r8 r9)
+  "Microsoft x64 ABI integer argument registers (positional 1..4).")
+
+(defconst nelisp-asm-x86_64--abi-sysv-callee-saved
+  '(rbp rbx r12 r13 r14 r15)
+  "System V AMD64 ABI callee-saved integer registers.")
+
+(defconst nelisp-asm-x86_64--abi-win64-callee-saved
+  '(rbp rbx rdi rsi r12 r13 r14 r15)
+  "Microsoft x64 ABI callee-saved integer registers (XMM6-XMM15 omitted; GP only).")
+
+(defun nelisp-asm-x86_64-abi-arg-regs (abi)
+  "Return the integer argument register list for ABI ('sysv or 'win64).
+Signals `nelisp-asm-x86_64-error' with :abi-not-implemented for
+any ABI other than 'sysv (Wave 4 BLOCKER — Win64 full emit is
+deferred to a subsequent Wave)."
+  (cond
+   ((eq abi 'sysv)  nelisp-asm-x86_64--abi-sysv-arg-regs)
+   ((eq abi 'win64)
+    (signal 'nelisp-asm-x86_64-error
+            (list :abi-not-implemented abi
+                  :reason "Win64 ABI full emission deferred to Wave 5")))
+   (t
+    (signal 'nelisp-asm-x86_64-error
+            (list :unknown-abi abi)))))
+
+(defun nelisp-asm-x86_64-abi-callee-saved (abi)
+  "Return the callee-saved integer register list for ABI ('sysv or 'win64).
+Signals `nelisp-asm-x86_64-error' with :abi-not-implemented for
+'win64 (Wave 4 BLOCKER — deferred to a subsequent Wave)."
+  (cond
+   ((eq abi 'sysv)  nelisp-asm-x86_64--abi-sysv-callee-saved)
+   ((eq abi 'win64)
+    (signal 'nelisp-asm-x86_64-error
+            (list :abi-not-implemented abi
+                  :reason "Win64 ABI full emission deferred to Wave 5")))
+   (t
+    (signal 'nelisp-asm-x86_64-error
+            (list :unknown-abi abi)))))
+
+(defun nelisp-asm-x86_64-make-buffer (&optional abi)
   "Return a fresh empty x86_64 assembler buffer.
+Optional ABI argument selects the calling convention:
+  'sysv  (default) — System V AMD64 (Linux / macOS)
+  'win64            — Microsoft x64 (Windows x86_64, Wave 4 BLOCKER)
+
 The buffer is opaque; use the accessors below to inspect or
 extend it.  §92.d chunk-build: :chunks holds the reverse-order
 list of unibyte-string chunks pushed by per-instruction emitters,
-:length tracks the running cumulative byte count (= O(1) read)."
-  (vector (list :chunks nil :length 0 :labels nil
-                :fixups nil :relocs nil)))
+:length tracks the running cumulative byte count (= O(1) read).
+
+Doc 101 §101.B Wave 4: the :abi field is stored in the buffer plist
+so that emitters can gate Win64-specific codegen.  'win64 is accepted
+here (stored) but signals :abi-not-implemented when ABI-dependent
+helpers (arg-reg mapping, prologue/epilogue) are invoked."
+  (let ((resolved-abi (or abi 'sysv)))
+    (unless (memq resolved-abi '(sysv win64))
+      (signal 'nelisp-asm-x86_64-error
+              (list :unknown-abi resolved-abi)))
+    (vector (list :chunks nil :length 0 :labels nil
+                  :fixups nil :relocs nil :abi resolved-abi))))
 
 (defun nelisp-asm-x86_64-buffer-bytes (buf)
   "Return BUF's accumulated bytes as a unibyte-string.
@@ -236,6 +314,12 @@ entries are pending."
   "Return BUF's current byte offset (= number of bytes written).
 §92.d: read from the cached `:length' field (= O(1))."
   (plist-get (nelisp-asm-x86_64--unwrap buf) :length))
+
+(defun nelisp-asm-x86_64-buffer-abi (buf)
+  "Return BUF's ABI symbol ('sysv or 'win64).
+Doc 101 §101.B Wave 4 accessor.  Returns 'sysv for buffers created
+before the :abi field was introduced (= legacy nil → fallback)."
+  (or (plist-get (nelisp-asm-x86_64--unwrap buf) :abi) 'sysv))
 
 (defun nelisp-asm-x86_64-buffer-labels (buf)
   "Return BUF's labels alist `((NAME . POS) ...)' (reverse-defn order)."
