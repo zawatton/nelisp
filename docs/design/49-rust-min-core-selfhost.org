@@ -447,23 +447,38 @@ R6c に続いて Gate 2 (=wrong-number-of-arguments lambda 3=) を着地
 Wave 7 compile gate の残 blockers (= 各々別 wave 候補、Doc 49 §7
 scope 外):
 
-- **Gate-env**: =getenv= が =process-environment= を OS env から
-  populate しない。回避策確定 = =--setenv VAR=VAL= CLI flag (= 既存
-  =nelisp-cli.el= で実装済、=build-tool/build.rs= が現在 =Command::env=
-  経由で渡している箇所を =--setenv= 引数経由に置換すれば nelisp 経路で
-  通る)。code change 必要、ただし Wave 7 自体の =emacs= → =nelisp=
-  swap commit と bundle した方が clean (Rust LOC は build glue ~6 行
-  変更のみ)。
-- **Gate-zerop**: =(void-function zerop)= — Phase 47 compiler 内部の
-  arith helper として使用。=(defun zerop (n) (= n 0))= 1 行 stub で
-  解決可能 (=lisp/nelisp-cl-macros.el= か =nelisp-stdlib-misc.el= の
-  arith section 追加)。
-- **Gate-segv**: zerop stub 後の =nelisp-phase47-compile-to-object=
-  呼出で **SIGSEGV** (Rust-side panic in compiler internals)。
-  cargo build は warning のみで release binary は生成されているが
-  実行時 panic。要 backtrace / RUST_BACKTRACE=1 で trace。深さ未知、
-  Wave 7 自体の根本問題か Phase 47 compiler 内 stale assumption。
-  別 wave (Wave 7 final swap audit) で扱う方向。
+- **Gate-env**: RESOLVED R6f SHIPPED 2026-05-22 (commit =dfc7cac6= main、
+  +8 LOC build glue、codex 経由)。=build-tool/build.rs= に =--eval
+  (setenv ...)= 引数 forwarding 追加。=.env(...)= 呼出は emacs 互換
+  維持で保持、Wave 7 final binary swap は segv fix 後 1 行変更。
+- **Gate-zerop**: RESOLVED R6e SHIPPED 2026-05-22 (commit =f72e7b62=
+  main、+1 LOC、codex 経由)。=(unless (fboundp 'zerop) (defun zerop
+  (n) (= n 0)))= を =nelisp-cl-macros.el= 末尾に追加。
+- **Gate-segv** (root cause 特定済、未 fix): 2026-05-22 subagent
+  trace 完了 (=wave-7-r6g-segv-trace= worktree、commit 無し report only)。
+  - 真因: =nelisp-phase47-compiler--emit-sexp-payload-ptr=
+    (=lisp/nelisp-phase47-compiler.el:3158-3177=) は Cons (tag=7)
+    only emit、Record (tag=12) など他 boxed 変種では NULL (rax=0)
+    を返す。docstring "Other tags also return 0" が事実上の bug、
+    boxed variants でも box pointer 読み込みが必要。
+  - 連鎖: =nelisp-cc-jit-record-type-tag-ptr.el= の =(if (= tag 12)
+    (sexp-payload-ptr arg) 0)= は tag guard で Record で正しく
+    分岐するが、内側の =(sexp-payload-ptr arg)= が Cons-only 実装
+    なので Record では NULL 返却 → caller =nl_jit_type_of_inner=
+    が NULL を =movzbq (%rdi),%rax= で deref → SIGSEGV。
+  - 発火経路: =nelisp-elf-write-binary= 内の =(make-hash-table)=
+    (= Record alloc) → =(format "%S" ...)= → =type-of= → JIT helper
+    chain (Wave 7 fix の 4 段 unblock を経て初めて触れる経路)。
+  - Fix scope (= Rust LOC 0 確定):
+    - **trivial (~5 LOC elisp)**: =nelisp-cc-jit-record-type-tag-ptr.el=
+      の =(sexp-payload-ptr arg)= を inline box-ptr 読みに置換
+    - **clean (~30-60 LOC elisp)**: =box-payload-ptr= grammar op を
+      新設 (all boxed tags ≥ 5 で offset 8 を読む)、callers 2 ファイル
+      audit + 更新
+  - 環境 note: =[profile.release] strip = true= のため backtrace は
+    raw addresses のみ。subagent は =pyelftools + addr2line + objdump=
+    + core dump で trace を復元。本格 trace は =strip = false; debug = 2=
+    一時切替推奨、gdb は env に未 install。
 
 完全 unblock までは Doc 49 とは別の Wave 7-cl-extras wave で扱う方が
 clean (= Doc 49 §7 の主役は reader/cl-lib subset/backquote、残りは別
@@ -479,12 +494,15 @@ wave でブレイクダウン)。
   +85 LOC elisp、Rust 0 LOC).
 - Wave 7 cl-mapcar BLOCKER: **RESOLVED** (R6d SHIPPED 2026-05-22、
   codex 経由 +40/-2 LOC、Rust 0 LOC、commit =f46ee766=).
-- Wave 7 残存 gate (Gate-env / Gate-zerop / Gate-segv): **partial** —
-  Gate-zerop は trivial 1 行、Gate-env は CLI 経由解決済 (build.rs
-  swap commit と bundle)、Gate-segv は Rust-side panic で深さ未知。
-  別 wave (Wave 7-final-swap-audit) で 1 個ずつ進める方針。
-- =build.rs= が =emacs --batch= を spawn する現状は維持 (上記 gate 全
-  unblock 後の最終 swap が別 commit)。
+- Wave 7 Gate-zerop: **RESOLVED** (R6e SHIPPED 2026-05-22、+1 LOC、
+  commit =f72e7b62=).
+- Wave 7 Gate-env: **RESOLVED** (R6f SHIPPED 2026-05-22、+8 LOC build
+  glue、commit =dfc7cac6=).
+- Wave 7 Gate-segv: **root cause 特定済、未 fix** — trivial 5 LOC
+  elisp fix を =wave-7-r6g-segv-trace= worktree 報告書に明記、Rust
+  LOC 0 で着地可能。次 session で R6g として dispatch 候補。
+- =build.rs= が =emacs --batch= を spawn する現状は維持 (Gate-segv
+  fix 後の =emacs= → =nelisp= 1 行 swap が最終 commit)。
 - end-user が pre-built tarball で nelisp を動かす経路は無影響継続。
 
 ** 関連 commit / artifact
@@ -499,7 +517,15 @@ wave でブレイクダウン)。
 - =f46ee766= — R6d (codex 経由): cl-mapcar/cl-mapc variadic
   (+40/-2 LOC、Rust 0 LOC)、cl-mapcar BLOCKER RESOLVED → 次 gate =
   zerop / SIGSEGV (Gate-segv)
-- (this commit) — design 更新のみ、R6d 取込後の残 gate 整理
+- =3e0fa31e= — design 更新のみ、R6d 取込後の残 gate 整理
+- =f72e7b62= — R6e (codex 経由): zerop 1-line stub (+1 LOC、Rust 0 LOC)、
+  Gate-zerop RESOLVED
+- =dfc7cac6= — R6f (codex 経由): build.rs =--eval (setenv ...)= prep
+  (+8 LOC build glue、Rust 0 LOC)、Gate-env RESOLVED
+- =a041b42a= subagent (no commit) — Gate-segv RUST_BACKTRACE trace
+  完了、root cause = =--emit-sexp-payload-ptr= Cons-only 仕様、fix
+  scope trivial 5 LOC elisp / Rust LOC 0
+- (this commit) — design 更新のみ、R6e+R6f+segv 知見の triage
 - =scripts/compile-elisp-objects.el= — 既存 build orchestrator
 - =lisp/nelisp-cc-reader-lexer.el= / =-parser.el= — Doc 116 §116.A/B
   Phase 47 native reader (= 既 built、R6a で runtime に配線)
