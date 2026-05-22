@@ -419,17 +419,51 @@ R6b に続いて backquote BLOCKER を着地:
 - =(load "scripts/compile-elisp-objects.el")= → t (manifest 208 entries
   bound、compile-elisp-objects-emit-all bound)
 
-*** 残存 gate (R6c 後の調査)
+*** cl-mapcar / cl-mapc variadic SHIPPED (R6d, 2026-05-22, codex 経由)
 
-=compile-elisp-objects-emit-all= 実行で順次表面化した次の blockers
-(= 各々別 wave 相当の独立修正、Doc 49 §7 scope 外):
+R6c に続いて Gate 2 (=wrong-number-of-arguments lambda 3=) を着地
+(commit =f46ee766= main、原 commit =61bb9973= worktree
+=.worktrees/wave-7-r6d-cl-mapcar=):
 
-- =getenv= が =process-environment= を OS env から populate しない
-  (= standalone NeLisp は env auto-import なし。回避: =setenv= を CLI
-  =--eval= で先行投入、もしくは CLI に =--setenv VAR=VAL= flag 追加)
-- 最初の =phase47-compile-to-object= 呼出で =(wrong-number-of-arguments
-  lambda 3)= (= 別 missing builtin / signature mismatch、要 trace)
-- 以降の gate は 1 個ずつ潰す段階的アプローチ (各 ~30 分目安)
+- 真因: R6b で入れた =(defalias 'cl-mapc 'mapc)= /
+  =(defalias 'cl-mapcar 'mapcar)= の手抜き stub。NeLisp の
+  =mapc= / =mapcar= は 2-arg only、=cl-mapcar= が (FN SEQ1 SEQ2 ...)
+  variadic を期待する箇所
+  (=lisp/nelisp-phase47-compiler.el:1767= 2-seq parallel walk) で
+  lambda 引数不一致で死んでいた
+- =lisp/nelisp-cl-macros.el= line 503-504 を実 variadic 実装に差替
+  (+40/-2 LOC、Rust 0 LOC)
+- anvil-orchestrator + codex (default model) で並列 dispatch、worktree
+  経由で commit、claude が main へ cherry-pick
+
+実測 (R6d 後):
+- =(cl-mapcar fn '(1 2 3) '(x y z))= → =((1 x) (2 y) (3 z))=
+- =(cl-mapcar fn '(1 2) '(10 20) '(100 200))= → =(111 222)=
+- Wave 7 first manifest entry =nelisp-cc-spike-noop= は次 gate
+  =(void-function zerop)= まで進む
+
+*** 次 gate (R6d 後の調査、2026-05-22)
+
+Wave 7 compile gate の残 blockers (= 各々別 wave 候補、Doc 49 §7
+scope 外):
+
+- **Gate-env**: =getenv= が =process-environment= を OS env から
+  populate しない。回避策確定 = =--setenv VAR=VAL= CLI flag (= 既存
+  =nelisp-cli.el= で実装済、=build-tool/build.rs= が現在 =Command::env=
+  経由で渡している箇所を =--setenv= 引数経由に置換すれば nelisp 経路で
+  通る)。code change 必要、ただし Wave 7 自体の =emacs= → =nelisp=
+  swap commit と bundle した方が clean (Rust LOC は build glue ~6 行
+  変更のみ)。
+- **Gate-zerop**: =(void-function zerop)= — Phase 47 compiler 内部の
+  arith helper として使用。=(defun zerop (n) (= n 0))= 1 行 stub で
+  解決可能 (=lisp/nelisp-cl-macros.el= か =nelisp-stdlib-misc.el= の
+  arith section 追加)。
+- **Gate-segv**: zerop stub 後の =nelisp-phase47-compile-to-object=
+  呼出で **SIGSEGV** (Rust-side panic in compiler internals)。
+  cargo build は warning のみで release binary は生成されているが
+  実行時 panic。要 backtrace / RUST_BACKTRACE=1 で trace。深さ未知、
+  Wave 7 自体の根本問題か Phase 47 compiler 内 stale assumption。
+  別 wave (Wave 7 final swap audit) で扱う方向。
 
 完全 unblock までは Doc 49 とは別の Wave 7-cl-extras wave で扱う方が
 clean (= Doc 49 §7 の主役は reader/cl-lib subset/backquote、残りは別
@@ -443,9 +477,12 @@ wave でブレイクダウン)。
 - Wave 7 cl-lib BLOCKER: **RESOLVED** (R6b SHIPPED 2026-05-22).
 - Wave 7 backquote BLOCKER: **RESOLVED** (R6c SHIPPED 2026-05-22、
   +85 LOC elisp、Rust 0 LOC).
-- Wave 7 残存 gate (getenv auto-populate / wrong-number-of-arguments
-  lambda 3 in compile path / 以降): **未着手** — 各 ~30 分目安、
-  別 wave (Wave 7-cl-extras) で 1 個ずつ進める方針。
+- Wave 7 cl-mapcar BLOCKER: **RESOLVED** (R6d SHIPPED 2026-05-22、
+  codex 経由 +40/-2 LOC、Rust 0 LOC、commit =f46ee766=).
+- Wave 7 残存 gate (Gate-env / Gate-zerop / Gate-segv): **partial** —
+  Gate-zerop は trivial 1 行、Gate-env は CLI 経由解決済 (build.rs
+  swap commit と bundle)、Gate-segv は Rust-side panic で深さ未知。
+  別 wave (Wave 7-final-swap-audit) で 1 個ずつ進める方針。
 - =build.rs= が =emacs --batch= を spawn する現状は維持 (上記 gate 全
   unblock 後の最終 swap が別 commit)。
 - end-user が pre-built tarball で nelisp を動かす経路は無影響継続。
@@ -457,8 +494,12 @@ wave でブレイクダウン)。
 - =1fa1f579= — §7 BLOCKER deferred (誤診の「真因」分析含む)
 - =637f08ff= — R6a: Phase 47 native reader wired, reader BLOCKER RESOLVED
 - =9615c134= — R6b: cl-lib subset + defsubst stubs, cl-lib BLOCKER RESOLVED
-- (this commit) — R6c: backquote macro (+85 LOC、Rust 0 LOC)、
-  backquote BLOCKER RESOLVED → 次 gate = getenv auto-populate
+- =239f18ed= — R6c: backquote macro (+85 LOC、Rust 0 LOC)、
+  backquote BLOCKER RESOLVED → 次 gate = cl-mapcar variadic
+- =f46ee766= — R6d (codex 経由): cl-mapcar/cl-mapc variadic
+  (+40/-2 LOC、Rust 0 LOC)、cl-mapcar BLOCKER RESOLVED → 次 gate =
+  zerop / SIGSEGV (Gate-segv)
+- (this commit) — design 更新のみ、R6d 取込後の残 gate 整理
 - =scripts/compile-elisp-objects.el= — 既存 build orchestrator
 - =lisp/nelisp-cc-reader-lexer.el= / =-parser.el= — Doc 116 §116.A/B
   Phase 47 native reader (= 既 built、R6a で runtime に配線)
