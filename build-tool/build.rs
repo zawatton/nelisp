@@ -196,11 +196,19 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     std::fs::create_dir_all(&elisp_obj_dir)
         .unwrap_or_else(|e| panic!("create_dir_all {}: {}", elisp_obj_dir.display(), e));
 
+    let elisp_obj_dir_str = elisp_obj_dir.display().to_string();
+    // Forward env vars via --eval (setenv ...) so nelisp --batch sees them after Wave 7 swap (emacs is no-op).
     let status = std::process::Command::new(&emacs)
         .arg("--batch")
         .arg("-Q")
         .arg("-L")
         .arg(repo_root.join("lisp"))
+        .arg("--eval")
+        .arg(format!("(setenv \"NELISP_ELISP_OBJECTS_DIR\" \"{}\")", elisp_obj_dir_str))
+        .arg("--eval")
+        .arg(format!("(setenv \"NELISP_PHASE47_TARGET_ARCH\" \"{}\")", target_arch))
+        .arg("--eval")
+        .arg(format!("(setenv \"NELISP_PHASE47_TARGET_OS\" \"{}\")", target_os))
         .arg("-l")
         .arg(&script)
         .arg("-f")
