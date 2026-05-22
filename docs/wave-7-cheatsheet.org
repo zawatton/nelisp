@@ -1,0 +1,154 @@
+#+TITLE: Wave 7 Cheatsheet — subagent pre-flight knowledge
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-05-22
+#+STATUS: 必読 (subagent prompt の最初に Read 指示)
+
+Wave 7 (Doc 49 §7) = `emacs --batch` を `nelisp --batch` に swap する
+self-host gate。R6a〜R6g landed (commits 637f08ff..56a7c575 main 上)、
+R6h/R6i 連続 REPORT ONLY、R6j 進行中。
+
+本 cheatsheet の目的 = subagent の cold-start audit コスト (5〜15 min)
+を 2-3 min に短縮。必ず prompt 最初に Read してから work 開始する。
+
+* 既存 bridge arm (`build-tool/src/lib.rs` の `out_call!` macro)
+
+すべて `extern "C" fn(...) -> i64` で `0 = OK`、non-zero = ERR。
+**void-returning slim extern は ABI 不一致で使えない** (= R6i 結論)。
+
+| Macro arm name              | Elisp 名         | Args | C signature                                       |
+|-----------------------------+------------------+------+---------------------------------------------------|
+| =bi_nl_jit_call_out_1=      | =jit-call-out-1= |    2 | =(*const Sexp, *mut Sexp) -> i64=                 |
+| =bi_nl_jit_call_out_2=      | =jit-call-out-2= |    3 | =(*const Sexp, *const Sexp, *mut Sexp) -> i64=    |
+| =bi_nl_jit_call_out_1i=     | =jit-call-out-1i=|    3 | =(*const Sexp, i64, *mut Sexp) -> i64=            |
+| =bi_nl_jit_call_out_2i=     | =jit-call-out-2i=|    4 | =(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64=|
+
+Elisp 側 dispatch alias: `lisp/nelisp-cc-jit-alias.el:300-348`。
+`jit_lookup` → `unified_fn_ptr` → `nl_jit_alias_call` → `dlsym`。
+
+* Slim Rust externs in `build-tool/src/eval/mod.rs`
+
+ChatGPT account でも grep 可: `grep -oE 'fn nl_[a-z_]+\b' build-tool/src/eval/mod.rs`。
+
+| Extern name              | Signature                                            | 状態                      |
+|--------------------------+------------------------------------------------------+---------------------------|
+| =nl_record_set_slot=     | =(*mut NlRecord, usize, *const Sexp) -> ()=          | Rust impl、bridge 不可 (void)|
+| =nl_sexp_clone_into=     | =(*const Sexp, *mut Sexp) -> ()=                     | Rust impl、bridge 不可 (void)|
+| =nl_record_type_tag_ptr= | =(*const Sexp) -> *const Sexp=                       | **Phase-47-compiled のみ** (Rust 削除済、commit =fe3ae8f3= 2026-05-18) |
+| =nl_jit_format_float=    | numeric helper                                       | Rust impl                 |
+| =nl_sexp_write_float=    | f64 → Sexp::Float writer                             | Rust impl                 |
+
+**Phase-47-compiled** = `target/.../elisp-objects/nelisp_jit_record_*.o` 経由、
+=_ELISP_ARCHIVE_ANCHOR= で linker exposed。**buggy** (~50
+globals-table-insert cycle 超で CPU 100% hang、record-slot-set
+rsp-alignment trampoline at =lisp/nelisp-phase47-compiler.el:3289-3393=
+が有力)。
+
+* Phase 47 grammar ops (`lisp/nelisp-phase47-compiler.el`)
+
+Phase 47 source は =(defun NAME (...) BODY)= で書かれ、emit する。
+`BODY` 内で使える primitive 群:
+
+| Op                       | Semantics                                          | 出処               |
+|--------------------------+----------------------------------------------------+--------------------|
+| =(sexp-tag PTR)=         | Sexp の tag byte (offset 0) を読む                 | 既存               |
+| =(sexp-payload-ptr PTR)= | **Cons (tag=7) only**、offset 8 から box ptr 読む    | 既存 (Cons-only)   |
+| =(sexp-payload-ptr-record PTR)= | Record (tag=12) only、offset 8 から box ptr     | R6g `56a7c575`     |
+
+新 grammar op 追加コスト = elisp ~25-40 LOC (parser + dispatch + emit)、
+Rust LOC 0、R6g pattern を流用。
+
+* Sexp tag byte 表 (`lisp/nelisp-sexp-layout.el:28-40`)
+
+| Tag | Variant              | Boxed? |
+|-----+----------------------+--------|
+|   0 | Sexp::Nil            | no     |
+|   1 | Sexp::T              | no     |
+|   2 | Sexp::Int(i64)       | no     |
+|   3 | Sexp::Float(f64)     | no     |
+|   4 | Sexp::Symbol(String) | (boxed string inside) |
+|   5 | Sexp::Str            | yes    |
+|   6 | Sexp::MutStr         | yes    |
+|   7 | Sexp::Cons           | yes (= `(sexp-payload-ptr)` で box ptr 取得可) |
+|   8 | Sexp::Vector         | yes    |
+|   9 | Sexp::CharTable      | yes    |
+|  10 | Sexp::BoolVector     | yes    |
+|  11 | Sexp::Cell           | yes    |
+|  12 | Sexp::Record         | yes (= `(sexp-payload-ptr-record)` で NlRecord ptr) |
+
+* NlRecord struct layout (`lisp/nelisp-sexp-layout.el:123+`)
+
+| Field                  | Offset | Type        |
+|------------------------+--------+-------------|
+| =type-tag=             | 0      | =Sexp= (32B)|
+| =slots-vec=            | 32     | (= ptr+cap+len triple) |
+| =slots-ptr=            | 32     | =*const Sexp= |
+| =slots-capacity=       | 40     | =u64=       |
+| =slots-length=         | 48     | =u64=       |
+| =refcount=             | 56     | atomic      |
+
+`(make-hash-table)` returns =Sexp::Record= (tag=12) — `nelisp-stdlib-hash.el:55-71`
+が =(nelisp--make-record 'hash-table test nil)= で作る。
+
+* よく踏む罠 (= 過去 subagent の教訓)
+
+** Relative path probe の `default-directory=/tmp/` 罠
+`./target/release/nelisp --batch -l /tmp/probe.el` で probe 内
+`(expand-file-name "lisp")` は **=/tmp/lisp= に resolve** される
+(= 失敗パス)。**絶対 path を必ず使う**。
+
+** `condition-case t` を escape する error
+`nl-jit-call-out-1` 失敗時の inner =(error ...)= → 再 signal が
+外側 =condition-case= を escape する secondary bug あり (= R6h subagent
+確認、=nl-jit-call-out-1= + Record carrying error data + 再 signal の
+三重組合せで発火)。回避は inner で signal せず boolean を返す pattern。
+
+** Phase-47 emit `nelisp_jit_record_*` の latent hang
+~50 globals-table-insert cycle 超で deterministic hang (R6h stress
+test = iter 14 で再現)。**caller を `nl_jit_record_*` (typo) のまま
+にすると常に dlsym miss → wrapper fallback signal で hide される**
+古典 masking pattern。R6h rename で露呈、R6h reverted。
+
+** =[profile.release] strip = true=、gdb 未 install
+RUST_BACKTRACE=1 で elisp signal は反応しない。core dump trace は
+`pyelftools + addr2line + objdump` で復元可能 (= R6h subagent 実績)。
+gdb 必要時は `Cargo.toml` で =strip = false; debug = 2= 一時切替。
+
+** Rust LOC「never increase」 hard rule (2026-05-19 設定)
+全 fix は Rust LOC 0 が基本。waiver は user 明示承認時のみ、最小 LOC
+(= R6j で 3-10 LOC waiver 試行中)。
+
+* よく使うコマンド一発集
+
+** 既存 helper grep
+```
+grep -n "fn nl_record_\|fn nl_sexp_" build-tool/src/eval/mod.rs | head
+grep -n "out_call!\|bi_nl_jit_call_" build-tool/src/lib.rs
+grep -n "^\\$op\\b\|--emit-sexp-\\|--emit-record-" lisp/nelisp-phase47-compiler.el
+```
+
+** 再ビルド (cl-macros / jit-strategy 等は include_str! 焼き込み)
+```
+cargo build --release --bin nelisp 2>&1 | tail -3
+```
+
+** Probe (詳細は =test/wave-7-probes/= 参照)
+```
+./target/release/nelisp --batch -l /home/madblack-21/Cowork/Notes/dev/nelisp/test/wave-7-probes/probe-single.el
+./target/release/nelisp --batch -l /home/madblack-21/Cowork/Notes/dev/nelisp/test/wave-7-probes/probe-chain.el
+NELISP_PROBE_LIMIT=10 ./target/release/nelisp --batch -l /home/madblack-21/Cowork/Notes/dev/nelisp/test/wave-7-probes/probe-first-n.el
+```
+
+* Wave 7 commit chain (= 2026-05-22 progress)
+
+| Commit   | Gate      | Status            |
+|----------+-----------+-------------------|
+| 637f08ff | reader    | R6a SHIPPED (+1 Rust line) |
+| 9615c134 | cl-lib    | R6b SHIPPED       |
+| 239f18ed | backquote | R6c SHIPPED       |
+| f46ee766 | cl-mapcar | R6d SHIPPED (codex) |
+| f72e7b62 | zerop     | R6e SHIPPED (codex) |
+| dfc7cac6 | env-prep  | R6f SHIPPED (codex) |
+| 56a7c575 | sexp-payload-ptr-record | R6g SHIPPED (codex trivial 採用、clean reject) |
+| —        | WTA path 2| R6h reject / R6i reject / R6j 進行中 |
+
+次 final = build.rs =emacs= → =nelisp= 1 行 swap commit。
