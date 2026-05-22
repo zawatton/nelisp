@@ -503,17 +503,44 @@ compile-to-object= 呼出が =Wrong type argument= で死ぬ。subagent
 - subagent option (b) (~80 LOC alias-dispatch arms) もしくは別 path が
   正解候補、ただし regression の原因特定が先
 
-**次 session 開始時の punch list**:
-1. R6h trivial が hang する原因を deeper subagent trace で特定
-   (= Phase 47 emit の =nelisp_jit_record_*= 4 functions の defun body
-   読解 + Rust extern =nl_jit_record_*= 4 functions の grep 比較
-   + dlsym chain 確認)
-2. fix path 選定 (option (a)+secondary bug fix / option (b) alias-arms
-   / 別 path)
-3. 実装 + verify
+**R6h deeper trace 結果 (subagent =a98cdb83a332ef9ea=、2026-05-22)**:
+4 fix path 全て reject、REPORT ONLY 帰結。
 
-Fix scope estimate: trivial fix は外れ確定、medium (~30-80 LOC)
-推定、Rust LOC 0 維持可能性高い (subagent もそう推定)。
+- **真因確定**: =nl_jit_record_{type,len,ref,set}= の Rust 実装は
+  commit =fe3ae8f3= (2026-05-18) で削除済、唯一の impl が
+  Phase-47-compiled =target/.../elisp-objects/nelisp_jit_record_*.o=。
+  =.o= 自体に **latent bug** (= ~50 globals-table-insert cycle 超で
+  hang、CPU 100% wchan=0 = pure CPU loop、refcount/clone mishandling
+  in =nl_sexp_clone_into × nl_record_type_tag_ptr= or =record-slot-set=
+  rsp-alignment trampoline at =lisp/nelisp-phase47-compiler.el:3335-3393=
+  が有力)。typo path =(nl-jit-call-out-1 "nl_jit_record_type" ...)= は
+  常に dlsym miss → fallback wrapper signal で **bug を masking**
+  していた。
+- **Reject 表**:
+  - (a) trivial rename → latent bug 露呈 → hang (reject)
+  - (b) alias arms in =nelisp-cc-jit-alias.el= → 同じ buggy =.o= → 同じ
+    hang (reject)
+  - (c) Rust thin wrappers (=#[no_mangle] nl_jit_record_*=、~30 LOC) →
+    "Rust LOC never increase" hard rule 違反 (reject)
+  - (d) Phase-47 emit deep fix → ~days scope、session 内不可 (defer)
+- **Verification 確認**:
+  - rename 後単体 probe =(prin1-to-string (make-hash-table))= ok
+  - =(require 'nelisp-asm-arm64)= で form 19 (defun) hang 再現
+    (3/3 trials)
+  - baseline (rename なし) で arm64 load <2s、3/3 trials clean
+  - Stress probe = =N defun eval= が N≥55 で hang trigger
+
+**次 session 開始時の punch list (path 2 推奨)**:
+1. **path 2 = pure-elisp re-implementation**: =nelisp--record-{type,
+   length,ref,set}= を pure elisp で再実装、slim Rust extern
+   (=nl_record_type_tag_ptr= / =nl_sexp_clone_into= / =nl_record_set_slot=)
+   を direct call、新 =nl-jit-call-out-*= arm 経由で buggy =.o= bypass。
+   ~80-120 LOC elisp、Rust LOC 0。
+2. (alt) path 1 = disassembly + step-debugging of =record-slot-set=
+   rsp-alignment block (=lisp/nelisp-phase47-compiler.el:3335-3393=)、
+   r10/rbx clobber / slots-len read-during-write race の特定。
+3. fix 実装後 = 208 manifest pass rate で verify、Wave 7 final binary
+   swap (build.rs =emacs= → =nelisp= 1 行変更) を bundle。
 
 完全 unblock までは Doc 49 とは別の Wave 7-cl-extras wave で扱う方が
 clean (= Doc 49 §7 の主役は reader/cl-lib subset/backquote、残りは別
