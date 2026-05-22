@@ -326,23 +326,92 @@ compiler の subset (= seq + defun + cond + while + integer + symbol +
 =src/nelisp-bytecode.el= の opcodes 実装を進め、.elc を nelisp で
 読める状態にする。これが揃えば Option D が unlock される。
 
-** Deferral 判断
+** Re-investigation (2026-05-22, R6a) — 「真因」は reader、eval ではなかった
 
-- BLOCKER は **architectural**、surgical 1-patch 修正は存在しない。
-- Wave 7 SHIPPED 部分 (=nelisp-build-host.el= + =nelisp-cli.el=
-  =--batch= 系) は将来 BLOCKER 解消時にそのまま活きる、捨て work では
-  ない。
-- =build.rs= が =emacs --batch= を spawn する現状は維持。end-user が
-  pre-built tarball で nelisp を動かす経路は影響なし (この BLOCKER は
-  CI / dev build path のみ)。
-- 次の進捗ゲート: Doc 100+ 系での Phase 47 grammar 拡張、または
-  Phase 3b bytecode VM 完成。どちらも今期 (2026-Q2) は scope 外。
+上記 §7 の「真因」分析は誤診。再計測で真の bottleneck を特定:
+
+| Test            | 内容                                  | Time    | per-form |
+|-----------------+---------------------------------------+---------+----------|
+| p-eval-list     | 1000 form list を while で =(eval x)= | 3.6s    | 3.6ms    |
+| p-tokenize-only | 1000-form file を tokenize のみ        | 132s    | 26ms/tok |
+| p-read-only     | 1000-form file を tokenize+parse      | 143s    | 142ms    |
+
+決定的発見:
+
+- =(eval form)= 自体は **3.6ms/call** で速い (= 既存 §7 の「eval 10 段
+  dispatch 累積 140ms」は誤り)
+- 真因は =nelisp--read-tokenize= (=lisp/nelisp-stdlib-reader.el=) の
+  per-token cost **~26ms** — standalone NeLisp elisp interpreter の
+  per-op floor (= setq / aref / eq が ~0.2-1ms ずつ) に律速され、
+  1 token あたり 30+ fcalls 連鎖
+- T6/T7/T9 が全部 ~142s だった理由は「3 ケース全部 reader を通過する」
+  から (T9 は eval 不要だが parse は同じ); これが本来「真因 = reader」
+  の決定的証拠だったが見落とした
+
+** R6a 配線 (SHIPPED 2026-05-22)
+
+未配線だった Phase 47 native reader (= Doc 116 §116.A =nelisp_reader_lex_one=
++ §116.B =nelisp_reader_parse_one=) を runtime =load= 経路に wire:
+
+- =build-tool/src/eval/mod.rs= の =builtin_dispatch!= に 1 entry 追加
+  (=+1 line Rust=、内容は既存 =crate::reader::read_all= の elisp 露出 only):
+  : "nelisp--read-all-from-string-native" =>
+  :   { require_arity(...,$args,1,Some(1))?;
+  :     let s = match &$args[0] { Sexp::Str(s) => s.as_str(), o => ... };
+  :     crate::reader::read_all(s)
+  :       .map(|forms| Sexp::list_from(&forms))
+  :       .map_err(|e| EvalError::internal(e.to_string())) }
+- =install_builtins= の name list に同名追加 (=+1 token=)
+- =lisp/nelisp-stdlib-reader.el= の =nelisp--read-all-from-string-impl=
+  body を =(if (fboundp 'nelisp--read-all-from-string-native) (...native...)
+  (...legacy elisp...))= に変更
+
+実測 (= 同じ t6-toplevel-1000.el を再 load):
+
+| Path             | Before  | After   | Factor  |
+|------------------+---------+---------+---------|
+| Reader (T6 load) | 142s    | 0.36s   | **394x** |
+| make test (load) | green   | green   | -       |
+| cargo test       | 10/10   | 10/10   | -       |
+| Reader ERT       | 67/75   | 67/75   | (8 pre-existing failures unchanged) |
+
+Phase 47 native reader は元々 binary に baked (= =crate::reader::read_all=
+が boot 時に既使用)、runtime に dispatch entry 1 行が抜けていただけ。
+
+** 残存 BLOCKER (Wave 7 完全 unblock のために必要な次の作業)
+
+reader 経路は 390x 高速化したが、=nelisp --batch -L lisp -l
+scripts/compile-elisp-objects.el -f compile-elisp-objects-emit-all= は
+別の理由で fail:
+
+- =(require 'cl-lib)= が standalone NeLisp に file 不在 (=
+  =lisp/cl-lib.el= なし) で =file-error=
+- =nelisp-phase47-compiler.el:191= =(cl-incf ...)= +
+  =:1739= =(cl-every ...)= の 2 箇所のみ実使用
+- 解消パス候補:
+  1. =lisp/cl-lib.el= stub 新設 — =defmacro cl-incf= + =defun cl-every= 程度
+  2. compiler 側の 2 箇所を inline 書き換え (=(setq x (1+ x))= / while loop)
+- 上記 fix 後 compile gate を再計測し、Wave 7 full unblock を判定
+
+** Deferral 判断 (更新)
+
+- Wave 7 reader BLOCKER: **RESOLVED** (R6a SHIPPED 2026-05-22, 1 line Rust
+  + 1 line elisp、Phase 47 swap = elisp reader path elided in production
+  load, retained as legacy fallback for non-native Emacs test runs).
+- Wave 7 cl-lib BLOCKER: **partial deferred** — 小規模 (~30 LOC stub or
+  2 inline rewrites) で次 session 解消可能。
+- =build.rs= が =emacs --batch= を spawn する現状は維持 (cl-lib gate
+  + Wave 7 自身の cargo build.rs 統合は別 wave)。
+- end-user が pre-built tarball で nelisp を動かす経路は無影響継続。
 
 ** 関連 commit / artifact
 
 - =c7302830= — Wave 7 partial SHIPPED (BLOCKER 注記つき commit)
 - =449d2b96= / =9c97fd47= — W7.6a/b emit 最適化
+- =1fa1f579= — §7 BLOCKER deferred (誤診の「真因」分析含む)
+- (this commit) — R6a: Phase 47 native reader wired, reader BLOCKER RESOLVED
 - =scripts/compile-elisp-objects.el= — 既存 build orchestrator
+- =lisp/nelisp-cc-reader-lexer.el= / =-parser.el= — Doc 116 §116.A/B
+  Phase 47 native reader (= 既 built、R6a で runtime に配線)
 - =build-tool/build.rs= の =link_elisp_cc_spike()= — =emacs --batch=
   起動箇所
-- Elisp seed can evaluate/compile/load additional Elisp

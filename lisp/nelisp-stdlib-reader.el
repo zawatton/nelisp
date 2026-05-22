@@ -836,14 +836,28 @@ the head, returns 0; if it's nil, returns `(length sub)'."
 
 (defun nelisp--read-all-from-string-impl (string)
   "Read every top-level form from STRING, return as a list.
-Stage 7.2.b takeover for the `read-all' style read used by `load'."
-  (let* ((tokens (nelisp--read-tokenize string))
-         (forms nil))
-    (while tokens
-      (let ((sub (nelisp--read-parse-one tokens)))
-        (push (car sub) forms)
-        (setq tokens (cdr sub))))
-    (nreverse forms)))
+Stage 7.2.b takeover for the `read-all' style read used by `load'.
+
+Doc 49 Wave 7 follow-up (2026-05-22): when the
+`nelisp--read-all-from-string-native' builtin (= Doc 116 §116.A+B
+Phase 47 native reader) is present, delegate to it.  The native
+path is what `crate::reader::read_all' already uses to bake-load
+elisp at binary startup; before this delegation the runtime `load'
+path stayed on the pure-elisp tokenizer (Doc 49 §7 profile: 142ms
+per form-parse on standalone NeLisp -> 132s for 1000-form load,
+the BLOCKER root cause for Wave 7's `nelisp --batch' build-host
+self-host).  The legacy `nelisp--read-tokenize' +
+`nelisp--read-parse-one' helpers remain as the test-time / fallback
+implementation."
+  (if (fboundp 'nelisp--read-all-from-string-native)
+      (nelisp--read-all-from-string-native string)
+    (let* ((tokens (nelisp--read-tokenize string))
+           (forms nil))
+      (while tokens
+        (let ((sub (nelisp--read-parse-one tokens)))
+          (push (car sub) forms)
+          (setq tokens (cdr sub))))
+      (nreverse forms))))
 
 ;; Public aliases — Rust `bi_read_all_from_string' / `bi_read_from_string'
 ;; were thin shells looking up the `-impl' cell and applying.  Defalias
