@@ -500,8 +500,46 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 ;;   `cl-defstruct' — line 352
 ;; ---------------------------------------------------------------------------
 
-(defalias 'cl-mapc 'mapc)
-(defalias 'cl-mapcar 'mapcar)
+(defun cl-mapcar (fn seq &rest more-seqs)
+  "Apply FN to corresponding elements of SEQ and MORE-SEQS, returning a list.
+The walk stops at the shortest sequence.  Like Emacs `cl-mapcar'."
+  (let ((all (cons seq more-seqs))
+        (result nil)
+        (done nil))
+    (while (not done)
+      (let ((heads nil) (tails nil) (any-empty nil) (cur all))
+        (while (and cur (not any-empty))
+          (let ((s (car cur)))
+            (if (null s)
+                (setq any-empty t)
+              (setq heads (cons (car s) heads))
+              (setq tails (cons (cdr s) tails))))
+          (setq cur (cdr cur)))
+        (if any-empty
+            (setq done t)
+          (setq result (cons (apply fn (nreverse heads)) result))
+          (setq all (nreverse tails)))))
+    (nreverse result)))
+
+(defun cl-mapc (fn seq &rest more-seqs)
+  "Apply FN to corresponding elements of SEQ and MORE-SEQS for side effect.
+Returns SEQ (= first sequence) like Emacs `cl-mapc'."
+  (let ((all (cons seq more-seqs))
+        (done nil))
+    (while (not done)
+      (let ((heads nil) (tails nil) (any-empty nil) (cur all))
+        (while (and cur (not any-empty))
+          (let ((s (car cur)))
+            (if (null s)
+                (setq any-empty t)
+              (setq heads (cons (car s) heads))
+              (setq tails (cons (cdr s) tails))))
+          (setq cur (cdr cur)))
+        (if any-empty
+            (setq done t)
+          (apply fn (nreverse heads))
+          (setq all (nreverse tails)))))
+    seq))
 
 (defun cl-subseq (seq start &optional end)
   "Return the subsequence of SEQ from START up to END (default end of SEQ).
