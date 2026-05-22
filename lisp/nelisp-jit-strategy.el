@@ -344,19 +344,19 @@
 (fset 'nelisp--record-type
       (lambda (rec)
         (condition-case _err
-            (nl-jit-call-out-1 "nl_jit_record_type" rec)
+            (nl-jit-call-out-1 "nelisp_jit_record_type" rec)
           (error (nelisp--signal-wrong-type 'recordp rec)))))
 
 (fset 'nelisp--record-length
       (lambda (rec)
         (condition-case _err
-            (nl-jit-call-out-1 "nl_jit_record_len" rec)
+            (nl-jit-call-out-1 "nelisp_jit_record_len" rec)
           (error (nelisp--signal-wrong-type 'recordp rec)))))
 
 (fset 'nelisp--record-ref
       (lambda (rec idx)
         (condition-case _err
-            (nl-jit-call-out-1i "nl_jit_record_ref" rec idx)
+            (nl-jit-call-out-1i "nelisp_jit_record_ref" rec idx)
           (error
            ;; ERR = non-Record OR out-of-range.  Probe via inner
            ;; `condition-case' returning a boolean (= no nested signal
@@ -364,7 +364,7 @@
            ;; re-catch the dispatched signal below).
            (let ((is-rec (condition-case _err2
                              (progn (nl-jit-call-out-1
-                                     "nl_jit_record_type" rec)
+                                     "nelisp_jit_record_type" rec)
                                     t)
                            (error nil))))
              (if is-rec
@@ -375,11 +375,11 @@
 (fset 'nelisp--record-set
       (lambda (rec idx val)
         (condition-case _err
-            (nl-jit-call-out-2i "nl_jit_record_set" rec idx val)
+            (nl-jit-call-out-2i "nelisp_jit_record_set" rec idx val)
           (error
            (let ((is-rec (condition-case _err2
                              (progn (nl-jit-call-out-1
-                                     "nl_jit_record_type" rec)
+                                     "nelisp_jit_record_type" rec)
                                     t)
                            (error nil))))
              (if is-rec

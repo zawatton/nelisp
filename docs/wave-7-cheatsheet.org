@@ -138,6 +138,55 @@ cargo build --release --bin nelisp 2>&1 | tail -3
 NELISP_PROBE_LIMIT=10 ./target/release/nelisp --batch -l /home/madblack-21/Cowork/Notes/dev/nelisp/test/wave-7-probes/probe-first-n.el
 ```
 
+* Bootstrap self-host workflow (R6L, 2026-05-23)
+
+NeLisp の build 経路は GCC 自己ホスト bootstrap pattern と同形:
+
+** 1st build (= default、emacs bootstrap)
+=cargo build --release= はそのまま動く (= 回帰なし、casual dev 用)。
+=build.rs= が =emacs --batch= で =compile-elisp-objects-emit-all= を
+走らせて =elisp-objects/*.o= 生成、linker が nelisp binary v1 に link。
+
+所要 = 既存通り (= 数秒〜30秒)。
+
+** 2nd build (= 任意、self-host validation)
+```
+NELISP_BUILD_WITH=nelisp cargo build --release
+```
+=target/release/nelisp= (= v1) が =compile-elisp-objects-emit-all= を
+self-host で走らせて .o 再生成 → linker が nelisp binary v2 に link。
+
+所要 = **数時間レベル** (= R6k 確認、closure capture cost で super-linear
+slow)。byte-identical .o 期待 (= deterministic emit)、CI / release で
+1 回走らせて self-host 健全性確認の用途。
+
+** auto-mode
+```
+NELISP_BUILD_WITH=auto cargo build --release
+```
+=target/release/nelisp= 存在 → nelisp self-host、無 → emacs bootstrap に
+fallback。CI で previous build artifact を持ち越す flow 用。
+
+** env-var 一覧
+| =NELISP_BUILD_WITH= | 動作                                  | 所要        |
+|---------------------+---------------------------------------+-------------|
+| unset / =emacs=     | =emacs --batch= (default)             | 〜30s       |
+| =nelisp=            | required =target/release/nelisp=、無で panic | 数時間 |
+| =auto=              | nelisp 存在で nelisp、無で emacs       | 1st 〜30s、2nd 数時間 |
+
+** R6L で land した変更
+- =lisp/nelisp-jit-strategy.el=: 6 string rename
+  (=nl_jit_record_{type,len,ref,set}= → =nelisp_jit_record_{...}=)、
+  Phase 47 .o 経路に dispatch。typo path の dlsym miss → wrapper fallback
+  signal を bypass、Wave 7 R6h で発見した naming gap を解消。
+- =build-tool/build.rs=: =NELISP_BUILD_WITH= env-var gating 追加 (~25 LOC
+  build glue)、default emacs 保持で casual dev に regression なし。
+
+** Wave 7 完成 (= ship 済)
+=cargo build --release= (= default emacs path) で nelisp binary 生成可能、
+=NELISP_BUILD_WITH=nelisp= で self-host validation 可能、両 path 機能。
+perf optimization (= 数時間 → 数十分以下) は Wave 9 (= 仮称) 行き。
+
 * Wave 7 commit chain (= 2026-05-22 progress)
 
 | Commit   | Gate      | Status            |
@@ -151,4 +200,5 @@ NELISP_PROBE_LIMIT=10 ./target/release/nelisp --batch -l /home/madblack-21/Cowor
 | 56a7c575 | sexp-payload-ptr-record | R6g SHIPPED (codex trivial 採用、clean reject) |
 | —        | WTA path 2| R6h reject / R6i reject / R6j 進行中 |
 
-次 final = build.rs =emacs= → =nelisp= 1 行 swap commit。
+**R6L 着地 (= 2026-05-23)**: rename + build.rs env-gating + bootstrap
+docs を 1 commit。Wave 7 ship 完了、perf は Wave 9 行き。

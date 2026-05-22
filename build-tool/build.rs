@@ -186,9 +186,36 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         );
     }
 
-    let Some(emacs) = which_or_skip("emacs") else {
-        println!("cargo:warning=skipping §99.B elisp-object link: emacs not on PATH");
-        return;
+    // Doc 49 §7 R6L: Wave 7 self-host bootstrap.  `NELISP_BUILD_WITH` env:
+    //   "emacs" / unset → use emacs --batch (default, fast, no regression)
+    //   "nelisp"        → require target/release/nelisp (release validation, slow)
+    //   "auto"          → prefer nelisp if target/release/nelisp exists, else emacs
+    // The nelisp path exists only for self-host validation in CI / release builds;
+    // casual dev builds stay on the emacs path (cargo:rerun-if-changed semantics
+    // unchanged).
+    let build_with = std::env::var("NELISP_BUILD_WITH").unwrap_or_default();
+    println!("cargo:rerun-if-env-changed=NELISP_BUILD_WITH");
+    let nelisp_candidate = repo_root.join("target/release/nelisp");
+    let interpreter: std::path::PathBuf = match build_with.as_str() {
+        "nelisp" => {
+            if !nelisp_candidate.exists() {
+                panic!("NELISP_BUILD_WITH=nelisp but {} not found — run a default \
+                        emacs-bootstrapped `cargo build --release` first", nelisp_candidate.display());
+            }
+            println!("cargo:warning=§99.B using nelisp self-host (NELISP_BUILD_WITH=nelisp)");
+            nelisp_candidate.clone()
+        }
+        "auto" if nelisp_candidate.exists() => {
+            println!("cargo:warning=§99.B using nelisp self-host (NELISP_BUILD_WITH=auto, found target/release/nelisp)");
+            nelisp_candidate.clone()
+        }
+        _ => {
+            let Some(emacs) = which_or_skip("emacs") else {
+                println!("cargo:warning=skipping §99.B elisp-object link: emacs not on PATH (set NELISP_BUILD_WITH=nelisp if target/release/nelisp exists)");
+                return;
+            };
+            emacs.into()
+        }
     };
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");
@@ -198,7 +225,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
 
     let elisp_obj_dir_str = elisp_obj_dir.display().to_string();
     // Forward env vars via --eval (setenv ...) so nelisp --batch sees them after Wave 7 swap (emacs is no-op).
-    let status = std::process::Command::new(&emacs)
+    let status = std::process::Command::new(&interpreter)
         .arg("--batch")
         .arg("-Q")
         .arg("-L")
@@ -217,7 +244,7 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         .env("NELISP_PHASE47_TARGET_ARCH", target_arch)
         .env("NELISP_PHASE47_TARGET_OS", target_os)
         .status()
-        .unwrap_or_else(|e| panic!("emacs --batch failed to spawn: {}", e));
+        .unwrap_or_else(|e| panic!("{} --batch failed to spawn: {}", interpreter.display(), e));
     if !status.success() { panic!("compile-elisp-objects-emit-all exited with {} (script={})", status, script.display()); }
 
     let mut obj_paths: Vec<std::path::PathBuf> = std::fs::read_dir(&elisp_obj_dir)
