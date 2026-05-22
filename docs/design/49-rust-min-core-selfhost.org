@@ -473,19 +473,47 @@ scope 外):
     発火 = =nelisp-elf-write-binary= 内 =(make-hash-table)= →
     =(format "%S")= → =type-of= JIT helper chain。
 
-*** 次 gate (R6g 後): Wrong type argument
+*** 次 gate (R6g 後): Wrong type argument — R6h 試行で regression
 
 R6g 後の =compile-elisp-objects-emit-all= 実行で =nelisp-phase47-
-compile-to-object= 呼出 (=defun nelisp_spike_noop nil 42= の compile
-試行) が =Wrong type argument= で死ぬ。
+compile-to-object= 呼出が =Wrong type argument= で死ぬ。subagent
+(=wave-7-r6h-wta-trace=) trace で root cause 特定:
 
-特徴:
-- =condition-case t= でも catch 不可 — elisp signal handler を escape
-- =RUST_BACKTRACE=1= で Rust panic backtrace 出ず — elisp 経路の error
-  だが handler chain の何らかの bug で escape している模様
-- 詳細不明、要 trace (次 session で subagent dispatch 候補)
+- 真因: =lisp/nelisp-jit-strategy.el:344-388= の =nelisp--record-{type,
+  length,ref,set}= helper が =(nl-jit-call-out-1 "nl_jit_record_type" ...)=
+  を呼ぶが、Phase 47 .o emit は =nelisp_jit_record_*= 命名 (Doc 120 §120.B
+  + =scripts/compile-elisp-objects.el:458-472=)、=dlsym= miss で
+  =EvalError::internal= → inner =(error ...)= 経由で再 signal
+  → 外側 =condition-case= を escape (secondary bug:
+  =nl-jit-call-out-1= + Record carrying error data + 再 signal
+  の三重組合せで catch されない)。
+- hash-table = =Sexp::Record= (tag=12) を確認、R6g の
+  =sexp-payload-ptr-record= は正常動作 (subagent verify 済)。
 
-Fix scope estimate 未定、Rust LOC 変更 0 で済むかも未確認。
+**R6h trivial 試行 = 失敗 (uncommitted、main 6102ee61 unchanged)**:
+- =lisp/nelisp-jit-strategy.el= 6 string rename
+  (=nl_jit_record_{type,len,ref,set}= → =nelisp_jit_record_{...}=)
+- 単体 probe =(prin1-to-string (make-hash-table))= → ok (=#s(hash-table
+  equal nil)=)、=(puthash "foo" 1 h)= → ok
+- だが =(require 'nelisp-asm-arm64)= が 非決定的に hang (form 28-59
+  のどこか、re-run で位置変化、CPU 99% 19+min stuck)
+- 仮説: Phase-47-emitted =nelisp_jit_record_*= の semantics が
+  Rust extern =nl_jit_record_*= と微妙に違う、もしくは loader 経路で
+  recursion / table 競合あり
+- subagent option (b) (~80 LOC alias-dispatch arms) もしくは別 path が
+  正解候補、ただし regression の原因特定が先
+
+**次 session 開始時の punch list**:
+1. R6h trivial が hang する原因を deeper subagent trace で特定
+   (= Phase 47 emit の =nelisp_jit_record_*= 4 functions の defun body
+   読解 + Rust extern =nl_jit_record_*= 4 functions の grep 比較
+   + dlsym chain 確認)
+2. fix path 選定 (option (a)+secondary bug fix / option (b) alias-arms
+   / 別 path)
+3. 実装 + verify
+
+Fix scope estimate: trivial fix は外れ確定、medium (~30-80 LOC)
+推定、Rust LOC 0 維持可能性高い (subagent もそう推定)。
 
 完全 unblock までは Doc 49 とは別の Wave 7-cl-extras wave で扱う方が
 clean (= Doc 49 §7 の主役は reader/cl-lib subset/backquote、残りは別
@@ -507,8 +535,12 @@ wave でブレイクダウン)。
   glue、commit =dfc7cac6=).
 - Wave 7 Gate-segv: **RESOLVED** (R6g SHIPPED 2026-05-22、trivial
   variant、+43/-11 LOC、commit =56a7c575=)。
-- Wave 7 次 gate (Wrong type argument): **未着手** — condition-case
-  escape 系の error、要 trace (詳細上記)。
+- Wave 7 次 gate (Wrong type argument): **root cause 特定済、fix 未着手**
+  — subagent trace で =nl_jit_record_*= naming mismatch (=
+  caller=Rust extern 名、actual=Phase-47 =nelisp_jit_record_*=) 判明。
+  trivial 6-string rename は uncommitted で試行→ arm64 load 中
+  non-deterministic hang regression、reverted。option (b) alias-arms
+  または別 path を次 session 検討。
 - =build.rs= が =emacs --batch= を spawn する現状は維持 (Gate-segv
   fix 後の =emacs= → =nelisp= 1 行 swap が最終 commit)。
 - end-user が pre-built tarball で nelisp を動かす経路は無影響継続。
@@ -538,8 +570,15 @@ wave でブレイクダウン)。
   cherry-pick): =sexp-payload-ptr-record= sibling op 追加、
   Gate-segv RESOLVED (Rust LOC 0、+43/-11)。clean variant
   (=wave-7-r6g-clean=、commit =49f98716=) は regression で廃案
-- (this commit) — design 更新のみ、R6g landed + Wrong type argument
+- =6102ee61= — design 更新のみ、R6g landed + Wrong type argument
   next blocker 記録
+- =ac9145082a18cd497= subagent (no commit、=wave-7-r6h-wta-trace=
+  worktree) — Wrong type argument の root cause = =nl_jit_record_*=
+  naming mismatch、=nl-jit-call-out-1= 内 secondary bug、fix proposal
+  (trivial / medium / deep) 提示
+- R6h trivial 試行 (= 6 string rename、uncommitted、main unchanged) →
+  =arm64 load= 中 non-deterministic hang regression、reverted
+- (this commit) — R6h regression triage、次 session の punch list 記録
 - =scripts/compile-elisp-objects.el= — 既存 build orchestrator
 - =lisp/nelisp-cc-reader-lexer.el= / =-parser.el= — Doc 116 §116.A/B
   Phase 47 native reader (= 既 built、R6a で runtime に配線)
