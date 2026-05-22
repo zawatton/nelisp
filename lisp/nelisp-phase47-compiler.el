@@ -2621,15 +2621,83 @@ live parameter register in the surrounding defun."
         (signal 'nelisp-phase47-compiler-error
                 (list :unknown-shift-op op)))))))
 
+(defun nelisp-phase47-compiler--call-arg-trivial-p (node)
+  "Return non-nil if NODE is a Phase 47 IR value that emits to a GP reg
+without clobbering any other register.
+
+A `trivial' arg is one whose `--emit-value' realization in `rax' is
+equivalent to a single `mov target-reg, <something>' once we steer
+the destination away from `rax'.  Specifically:
+
+  (:kind imm   :value INT)    -> `mov target, imm32' (= 7 bytes)
+  (:kind ref   :class gp/nil  -> `mov target, [rbp - 8*(slot+1)]'
+         :slot 0..13)            (= 4 bytes, disp8 in range)
+
+Anything else (arith, call, extern-call, cmp, if, while, cond, logic,
+nested forms, or an `f64'-class ref) is *complex* — its emit may
+touch rax / r10 / r11 / xmm regs and must spill via push/pop before
+the trivial-suffix landing pad runs.
+
+Byte-length invariance (Doc 92): pass1 and pass2 see identical
+parse-time-fixed `:kind' / `:value' / `:slot' / `:class' fields, so
+the classification is deterministic and emits the same byte count
+across both passes for the same NODE."
+  (let ((kind (plist-get node :kind)))
+    (cond
+     ((eq kind 'imm)
+      (let ((v (plist-get node :value)))
+        ;; mov-imm32 accepts signed [-2^31, 2^31-1] or unsigned [0, 2^32-1];
+        ;; reject out-of-range integers conservatively (fall back to the
+        ;; existing emit-value path which may use a wider form).
+        (and (integerp v)
+             (>= v (- (ash 1 31)))
+             (< v (ash 1 32)))))
+     ((eq kind 'ref)
+      (and (memq (or (plist-get node :class) 'gp) '(gp nil))
+           (let ((s (plist-get node :slot)))
+             (and (integerp s) (<= 0 s 13))))))))
+
+(defun nelisp-phase47-compiler--emit-trivial-into-reg (node target buf)
+  "Emit NODE's value directly into TARGET register (no spill).
+NODE must satisfy `nelisp-phase47-compiler--call-arg-trivial-p'."
+  (let ((kind (plist-get node :kind)))
+    (cond
+     ((eq kind 'imm)
+      ;; mov TARGET, imm32   = 7 bytes (REX.W + 0xC7 /0 + imm32)
+      (nelisp-asm-x86_64-mov-imm32 buf target (plist-get node :value)))
+     ((eq kind 'ref)
+      ;; mov TARGET, [rbp - 8*(slot+1)]  = 4 bytes (REX.W + 0x8B + ModR/M + disp8)
+      (let ((disp (- (* 8 (1+ (plist-get node :slot))))))
+        (nelisp-asm-x86_64-mov-reg-mem-disp8 buf target 'rbp disp)))
+     (t
+      (signal 'nelisp-phase47-compiler-error
+              (list :trivial-emit-unexpected-kind kind))))))
+
 (defun nelisp-phase47-compiler--emit-call (node buf)
   "Emit a call to NODE's named function using the current ABI.
-Strategy (ABI-agnostic):
-  1. Evaluate each arg into rax then push rax (= stack-save order).
-  2. Pop each arg into its ABI-assigned register (SysV: rdi/rsi/rdx/rcx/r8/r9;
-     Win64: rcx/rdx/r8/r9) so concurrent args don't clobber each other.
-  3. Win64: sub rsp, 32 (shadow space) before call; add rsp, 32 after.
-  4. call <NAME> (intra-text rel32 fixup).
-  5. Return value already in rax."
+
+Strategy (ABI-agnostic), with W7.6a trivial-suffix optimization:
+  1. Classify args into a *complex* prefix and a *trivial* suffix
+     (trailing run of `imm' / GP-class `ref' nodes).
+  2. Complex prefix: evaluate each into rax, then push rax (stack-save
+     order).  After all complex args are pushed, pop into their target
+     ABI registers in reverse (= last pushed is first popped).  This
+     preserves the original spill semantics for args that may clobber
+     each other's regs.
+  3. Trivial suffix: emit each directly into its target ABI register
+     via `mov target, imm32' (= imm) or `mov target, [rbp - disp8]'
+     (= ref).  No stack spill — trivial emits don't touch other regs.
+  4. Win64: sub rsp, 32 (shadow space) before call; add rsp, 32 after.
+  5. call <NAME> (intra-text rel32 fixup).
+  6. Return value already in rax.
+
+The number of pushes equals the *complex* arg count, which is
+parse-time fixed, so net rsp change is still zero across the call
+sequence.  Pre-call `needs-align' / `shadow' bookkeeping is
+unaffected.  Byte-length invariance holds (Doc 92): for any given
+NODE, pass1 and pass2 traverse the same branch (each arg's kind /
+class / slot / value is parse-time fixed) and emit the same byte
+count."
   (let* ((name (plist-get node :name))
          (args (plist-get node :args))
          (n (length args))
@@ -2639,14 +2707,39 @@ Strategy (ABI-agnostic):
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
          (needs-align (= (logand arity 1) 1))
          ;; Win64 shadow space: 32 bytes reserved by caller before CALL.
-         (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0)))
-    ;; Push each evaluated arg.
-    (dolist (a args)
+         (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0))
+         ;; W7.6a: split args into [complex-prefix | trivial-suffix].
+         ;; Count trailing trivial args (right-to-left, stop at first
+         ;; complex).  Walking the reverse of args lets us count
+         ;; without consing the full reverse list twice.
+         (trivial-suffix-len
+          (let ((count 0)
+                (rest (reverse args))
+                (done nil))
+            (while (and rest (not done))
+              (if (nelisp-phase47-compiler--call-arg-trivial-p (car rest))
+                  (progn (setq count (1+ count))
+                         (setq rest (cdr rest)))
+                (setq done t)))
+            count))
+         (complex-count (- n trivial-suffix-len))
+         (complex-args (cl-subseq args 0 complex-count))
+         (trivial-args (cl-subseq args complex-count))
+         (complex-regs (cl-subseq regs 0 complex-count))
+         (trivial-regs (cl-subseq regs complex-count)))
+    ;; (1) Complex prefix: evaluate -> push rax.
+    (dolist (a complex-args)
       (nelisp-phase47-compiler--emit-value a buf)
       (nelisp-asm-x86_64-push buf 'rax))
-    ;; Pop into arg-regs in reverse (= last pushed is first popped).
-    (dolist (r (reverse regs))
+    ;; (2) Pop complex args into their target regs in reverse order.
+    (dolist (r (reverse complex-regs))
       (nelisp-asm-x86_64-pop buf r))
+    ;; (3) Trivial suffix: emit each directly into its target reg.
+    ;; Order is free since trivial emits never clobber other arg regs;
+    ;; we walk source order for deterministic byte layout.
+    (cl-mapc (lambda (a r)
+               (nelisp-phase47-compiler--emit-trivial-into-reg a r buf))
+             trivial-args trivial-regs)
     (when needs-align
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
     ;; Allocate Win64 shadow space (0 for SysV).
