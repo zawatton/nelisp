@@ -579,6 +579,107 @@ byte-compiler so defsubst is a strict synonym for `defun'."
       (setq cur (cdr cur)))
     all))
 
+;; ---------------------------------------------------------------------------
+;; Doc 49 Wave 7 R6c (2026-05-22) — minimal `backquote' macro.
+;;
+;; The reader (`nelisp-stdlib-reader.el') desugars source-level `\`'
+;; and `,' / `,@' into `(backquote FORM)' / `(comma X)' / `(comma-at X)'
+;; cons forms.  Without a `backquote' macro, evaluating these dies with
+;; `(void-function backquote)' — observed when loading
+;; `nelisp-sexp-layout.el' whose final `defconst' uses `((NAME . ,V) ...)'.
+;;
+;; Scope (Minimal):
+;;   `atom              =>  'atom
+;;   `,X                =>  X
+;;   `(A B C)           =>  (list 'A 'B 'C)
+;;   `(A ,X B)          =>  (list 'A X 'B)
+;;   `(A ,@X B)         =>  (append (list 'A) X (list 'B))
+;;   `(A . ,X)          =>  (cons 'A X)
+;;   `(A . X)           =>  (cons 'A 'X)
+;; Unsupported (signal):  nested ``X, vector quasi `[A ,X B].
+;; ---------------------------------------------------------------------------
+
+(defun nelisp--bq-expand (form)
+  "Return the expansion of FORM under `backquote'."
+  (cond
+   ((vectorp form)
+    (signal 'error (list "nelisp-bq: vector quasi not supported")))
+   ((not (consp form))
+    (list 'quote form))
+   ((eq (car form) 'comma) (cadr form))
+   ((eq (car form) 'comma-at)
+    (signal 'error (list "nelisp-bq: top-level ,@ not allowed")))
+   ((eq (car form) 'backquote)
+    (signal 'error (list "nelisp-bq: nested backquote not supported")))
+   (t (nelisp--bq-expand-list form))))
+
+(defun nelisp--bq-expand-list (form)
+  "Walk list FORM, producing the expansion.
+Recognises both (... ,X ...) interior unquote and (... . ,X) dotted
+unquote / (... . ,@X) dotted splice patterns."
+  (let ((parts nil)        ; alist entries (KIND . EXPR) where KIND = list|splice
+        (cur form)
+        (tail-expr nil)
+        (done nil)
+        (has-splice nil))
+    (while (and (not done) (consp cur))
+      (let ((head (car cur)))
+        (cond
+         ;; cdr-position bare `comma' → source had `. ,X'.
+         ((eq head 'comma)
+          (setq tail-expr (cadr cur))
+          (setq done t))
+         ;; cdr-position bare `comma-at' → source had `. ,@X'.
+         ((eq head 'comma-at)
+          (setq tail-expr (cadr cur))
+          (setq has-splice t)
+          (setq done t))
+         (t
+          (let ((elem head))
+            (cond
+             ((and (consp elem) (eq (car elem) 'comma-at))
+              (setq has-splice t)
+              (push (cons 'splice (cadr elem)) parts))
+             ((and (consp elem) (eq (car elem) 'comma))
+              (push (cons 'list (cadr elem)) parts))
+             (t
+              (push (cons 'list (nelisp--bq-expand elem)) parts))))
+          (setq cur (cdr cur))))))
+    (when (and (not done) (not (null cur)) (not (consp cur)))
+      (setq tail-expr (list 'quote cur)))
+    (nelisp--bq-build (nreverse parts) tail-expr has-splice)))
+
+(defun nelisp--bq-build (parts tail has-splice)
+  "Build the final form from PARTS list, TAIL expression, HAS-SPLICE flag."
+  (cond
+   ((and (null parts) (null tail))
+    (list 'quote nil))
+   ((null parts) tail)
+   ((and (not has-splice) (null tail))
+    (cons 'list (mapcar 'cdr parts)))
+   ((not has-splice)
+    (let ((acc tail) (rp (reverse parts)))
+      (while rp
+        (setq acc (list 'cons (cdr (car rp)) acc))
+        (setq rp (cdr rp)))
+      acc))
+   (t
+    (let ((args nil) (p parts))
+      (while p
+        (let ((kind (car (car p))) (val (cdr (car p))))
+          (cond
+           ((eq kind 'list) (push (list 'list val) args))
+           ((eq kind 'splice) (push val args))))
+        (setq p (cdr p)))
+      (setq args (nreverse args))
+      (when tail (setq args (append args (list tail))))
+      (cons 'append args)))))
+
+(defmacro backquote (form)
+  "Expand FORM as a quasiquoted template (NeLisp minimal subset).
+See `nelisp--bq-expand' for the supported shapes."
+  (nelisp--bq-expand form))
+
 (provide 'cl-lib)
 (provide 'nelisp-cl-macros)
 

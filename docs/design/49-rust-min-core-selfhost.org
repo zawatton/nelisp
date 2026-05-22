@@ -400,30 +400,54 @@ reader (R6a) に続いて cl-lib BLOCKER を着地:
 - =(load "lisp/nelisp-phase47-compiler.el")= → 次の missing feature
   (=nelisp-sexp-layout=) で fail
 
-*** 次 gate: backquote / その他 missing builtins
+*** backquote macro SHIPPED (R6c, 2026-05-22)
 
-=nelisp-sexp-layout.el= が =backquote= (= ` 構文) を defconst で使用、
-standalone NeLisp に =(defmacro backquote ...)= 実装が無く void-function
-error。
+R6b に続いて backquote BLOCKER を着地:
 
-- backquote macro は recursive walker: =,X= → X-value、=,@X= → splice。
-  ~50 LOC elisp で実装可能、=lisp/nelisp-cl-macros.el= 末尾に追加候補。
-- backquote 解消後は順次次の missing builtin を埋めて compile gate を
-  通す段階的アプローチ (= 各 gate ~30 分以下の小修正で進む見込み)。
+- =lisp/nelisp-cl-macros.el= 末尾に追加 (+85 LOC、Rust 0 LOC):
+  - =backquote= macro (= ` 構文を =list= / =cons= / =append= に展開)
+  - =nelisp--bq-expand= / =nelisp--bq-expand-list= / =nelisp--bq-build=
+    helper functions
+- Minimal scope (合意済): atom 自己 quote、=,X= unquote、=,@X= splice、
+  =(A . ,X)= dotted unquote、=(A . ,@X)= dotted splice。nested ``X /
+  vector quasi は signal で reject (= 当面 unused)。
+
+実測:
+- =(load "lisp/nelisp-sexp-layout.el")= → t (= 末尾 =defconst nelisp-sexp--abi-export=
+  の =((NAME . ,VALUE) ...)= が正常展開、40 entries cdr-side dotted-pair
+  に decode、host Emacs と byte-identical な layout map)
+- =(load "scripts/compile-elisp-objects.el")= → t (manifest 208 entries
+  bound、compile-elisp-objects-emit-all bound)
+
+*** 残存 gate (R6c 後の調査)
+
+=compile-elisp-objects-emit-all= 実行で順次表面化した次の blockers
+(= 各々別 wave 相当の独立修正、Doc 49 §7 scope 外):
+
+- =getenv= が =process-environment= を OS env から populate しない
+  (= standalone NeLisp は env auto-import なし。回避: =setenv= を CLI
+  =--eval= で先行投入、もしくは CLI に =--setenv VAR=VAL= flag 追加)
+- 最初の =phase47-compile-to-object= 呼出で =(wrong-number-of-arguments
+  lambda 3)= (= 別 missing builtin / signature mismatch、要 trace)
+- 以降の gate は 1 個ずつ潰す段階的アプローチ (各 ~30 分目安)
 
 完全 unblock までは Doc 49 とは別の Wave 7-cl-extras wave で扱う方が
-clean (= Doc 49 §7 の主役は reader/cl-lib subset、残りは別 wave で
-ブレイクダウン)。
+clean (= Doc 49 §7 の主役は reader/cl-lib subset/backquote、残りは別
+wave でブレイクダウン)。
 
 ** Deferral 判断 (更新)
 
 - Wave 7 reader BLOCKER: **RESOLVED** (R6a SHIPPED 2026-05-22, 1 line Rust
   + 1 line elisp、Phase 47 swap = elisp reader path elided in production
   load, retained as legacy fallback for non-native Emacs test runs).
-- Wave 7 cl-lib BLOCKER: **partial deferred** — 小規模 (~30 LOC stub or
-  2 inline rewrites) で次 session 解消可能。
-- =build.rs= が =emacs --batch= を spawn する現状は維持 (cl-lib gate
-  + Wave 7 自身の cargo build.rs 統合は別 wave)。
+- Wave 7 cl-lib BLOCKER: **RESOLVED** (R6b SHIPPED 2026-05-22).
+- Wave 7 backquote BLOCKER: **RESOLVED** (R6c SHIPPED 2026-05-22、
+  +85 LOC elisp、Rust 0 LOC).
+- Wave 7 残存 gate (getenv auto-populate / wrong-number-of-arguments
+  lambda 3 in compile path / 以降): **未着手** — 各 ~30 分目安、
+  別 wave (Wave 7-cl-extras) で 1 個ずつ進める方針。
+- =build.rs= が =emacs --batch= を spawn する現状は維持 (上記 gate 全
+  unblock 後の最終 swap が別 commit)。
 - end-user が pre-built tarball で nelisp を動かす経路は無影響継続。
 
 ** 関連 commit / artifact
@@ -431,7 +455,10 @@ clean (= Doc 49 §7 の主役は reader/cl-lib subset、残りは別 wave で
 - =c7302830= — Wave 7 partial SHIPPED (BLOCKER 注記つき commit)
 - =449d2b96= / =9c97fd47= — W7.6a/b emit 最適化
 - =1fa1f579= — §7 BLOCKER deferred (誤診の「真因」分析含む)
-- (this commit) — R6a: Phase 47 native reader wired, reader BLOCKER RESOLVED
+- =637f08ff= — R6a: Phase 47 native reader wired, reader BLOCKER RESOLVED
+- =9615c134= — R6b: cl-lib subset + defsubst stubs, cl-lib BLOCKER RESOLVED
+- (this commit) — R6c: backquote macro (+85 LOC、Rust 0 LOC)、
+  backquote BLOCKER RESOLVED → 次 gate = getenv auto-populate
 - =scripts/compile-elisp-objects.el= — 既存 build orchestrator
 - =lisp/nelisp-cc-reader-lexer.el= / =-parser.el= — Doc 116 §116.A/B
   Phase 47 native reader (= 既 built、R6a で runtime に配線)
