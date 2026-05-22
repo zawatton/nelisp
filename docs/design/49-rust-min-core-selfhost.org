@@ -503,19 +503,26 @@ compile-to-object= 呼出が =Wrong type argument= で死ぬ。subagent
 - subagent option (b) (~80 LOC alias-dispatch arms) もしくは別 path が
   正解候補、ただし regression の原因特定が先
 
-**R6h deeper trace 結果 (subagent =a98cdb83a332ef9ea=、2026-05-22)**:
-4 fix path 全て reject、REPORT ONLY 帰結。
+**R6k トレース結果 (subagent =a9a8d383ca101c117=、2026-05-23 00:11 完了)** —
+**R6h〜R6j の「Phase 47 emit bug」の前提を完全に覆す**:
 
-- **真因確定**: =nl_jit_record_{type,len,ref,set}= の Rust 実装は
-  commit =fe3ae8f3= (2026-05-18) で削除済、唯一の impl が
-  Phase-47-compiled =target/.../elisp-objects/nelisp_jit_record_*.o=。
-  =.o= 自体に **latent bug** (= ~50 globals-table-insert cycle 超で
-  hang、CPU 100% wchan=0 = pure CPU loop、refcount/clone mishandling
-  in =nl_sexp_clone_into × nl_record_type_tag_ptr= or =record-slot-set=
-  rsp-alignment trampoline at =lisp/nelisp-phase47-compiler.el:3335-3393=
-  が有力)。typo path =(nl-jit-call-out-1 "nl_jit_record_type" ...)= は
-  常に dlsym miss → fallback wrapper signal で **bug を masking**
-  していた。
+- **trampoline は correct**: =lisp/nelisp-phase47-compiler.el:3335-3399= の
+  =record-slot-set= rsp-alignment dance (=mov r10, rsp; and rsp, -16;
+  push r10; sub rsp, 8; call; add rsp, 8; pop r10; mov rsp, r10=) は
+  balanced + correct。disassembly =nelisp_jit_record_set.o= offset
+  0xa5-0xbd 確認、r10 caller-saved だが stack push が生存、post-call
+  restore で問題なし。
+- **「~50 cycle で deterministic hang」は誤診**: 実態 = **super-linear
+  slow** (= quadratic-ish growth)。Claude main 検証:
+  - puthash N=100: 7s
+  - puthash N=500: timeout 120s で kill (= まだ走行中)
+  - 50-iter fset with fresh-lambda capture: 54s completion (= NOT hang)
+- **真の bottleneck**: =fset= hot path の lambda capture + closure
+  construction + globals_record drop chain の cumulative cost。1024-bucket
+  FNV-1a は O(1) per op だが chain depth が grow するか他要因あり。
+- **typo (caller "nl_jit_record_*" → dlsym miss → wrapper fallback
+  signal) が「bug を masking」というのも誤診**: typo path も同じ slow
+  path を経由している (= R6k 確認、baseline でも puthash slow)。
 - **Reject 表**:
   - (a) trivial rename → latent bug 露呈 → hang (reject)
   - (b) alias arms in =nelisp-cc-jit-alias.el= → 同じ buggy =.o= → 同じ
@@ -530,17 +537,32 @@ compile-to-object= 呼出が =Wrong type argument= で死ぬ。subagent
   - baseline (rename なし) で arm64 load <2s、3/3 trials clean
   - Stress probe = =N defun eval= が N≥55 で hang trigger
 
-**次 session 開始時の punch list (path 2 推奨)**:
-1. **path 2 = pure-elisp re-implementation**: =nelisp--record-{type,
-   length,ref,set}= を pure elisp で再実装、slim Rust extern
-   (=nl_record_type_tag_ptr= / =nl_sexp_clone_into= / =nl_record_set_slot=)
-   を direct call、新 =nl-jit-call-out-*= arm 経由で buggy =.o= bypass。
-   ~80-120 LOC elisp、Rust LOC 0。
-2. (alt) path 1 = disassembly + step-debugging of =record-slot-set=
-   rsp-alignment block (=lisp/nelisp-phase47-compiler.el:3335-3393=)、
-   r10/rbx clobber / slots-len read-during-write race の特定。
-3. fix 実装後 = 208 manifest pass rate で verify、Wave 7 final binary
-   swap (build.rs =emacs= → =nelisp= 1 行変更) を bundle。
+**R6k 後の Next-session 候補 (= perf optimization scope に転換)**:
+
+R6k 訂正で問題は「bug」ではなく「performance」と判明。Wave 7 manifest 全走は
+理論的には完走可能 (= 数時間レベル想定)、ただし実用的でない。
+
+- **(opt-1) perf profiling**: =cargo flamegraph= / =perf= で fset hot
+  path の actual hot 箇所を特定 (= lambda capture vs globals_record
+  drop vs 他)、targeted optimization。
+- **(opt-2) Rust fast-path for top-level defun installation**: =fset=
+  hot path を Rust に部分的に戻す (= elisp-on-elisp closure capture
+  cost 回避)、Rust LOC 要審査。
+- **(opt-3) Path 2 pure-elisp re-impl** (R6j で prototype 済、9 LOC
+  Rust bridge arms + 4 elisp helper bypass): 18 callers が同じ slow
+  path を経由するため部分対症療法のみ。
+- **(opt-4) accept slow + long timeout で 208 manifest 完走確認**:
+  Wave 7 一旦 ship、performance は別 wave (= 仮称 Wave 9 perf wave)
+  で後追い。先 ship 候補として用意。
+
+**重要な lesson** (= R6k で R6h/R6i/R6j の誤診を訂正):
+- 「~50 cycle hang」は **誤り**。実際は 100s+ で完走するだけの
+  super-linear slow。
+- timeout 30s で「hang」と判定して 5 subagent 連続 REPORT ONLY を
+  生んだ = **timeout 設定と「hang」判定の閾値を疑え** という rule
+  を memory に追加。
+- subagent 報告は必ず claude main で cross-verify、特に「hang」「regression」
+  系の語が出たら timeout を 5x にして再確認。
 
 完全 unblock までは Doc 49 とは別の Wave 7-cl-extras wave で扱う方が
 clean (= Doc 49 §7 の主役は reader/cl-lib subset/backquote、残りは別
