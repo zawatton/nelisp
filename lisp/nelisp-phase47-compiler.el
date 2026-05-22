@@ -2767,27 +2767,45 @@ instead of an intra-text label fixup.  The ELF writer's
 against the final linked binary (= libc / libm / Rust `.rlib'
 exporting matching `#[no_mangle] pub extern \"C\"' helpers).
 
-Arg placement strategy:
-  1. Evaluate each arg in source order, transferring an f64 result
-     from xmm0 → rax via MOVQ before the unified `push rax' save.
-     This keeps the spill pipeline uniform so the second arg's
-     emit can clobber xmm0 / rax freely.
-  2. Pop in reverse, dispatching each value into rdi-r9 (gp args)
-     or xmm0-7 (f64 args) per its `:cls' tag.  f64 pops first
-     land in rax, then MOVQ rax → target xmm reg.
-  3. For variadic calls, materialise `:f64-count' in AL via
+Arg placement strategy (W7.6b trivial-suffix opt):
+  1. Classify args into a *complex* prefix and a *trivial* suffix.
+     A trailing arg qualifies for the suffix iff it is `:cls' gp
+     AND `--call-arg-trivial-p' (= literal int / GP-class ref).
+     f64 args and non-trivial gp args belong to the complex prefix,
+     and any non-trivial / f64 arg stops the suffix walk.
+  2. Complex prefix: evaluate each in source order, transferring an
+     f64 result from xmm0 → rax via MOVQ before the unified `push
+     rax' save.  This keeps the spill pipeline uniform so the next
+     arg's emit can clobber xmm0 / rax freely.
+  3. Pop the complex prefix in reverse, dispatching each value into
+     rdi-r9 (gp args) or xmm0-7 (f64 args) per its `:cls' tag.  f64
+     pops first land in rax, then MOVQ rax → target xmm reg.
+  4. Trivial suffix: emit each directly into its target gp-reg via
+     `mov target, imm32' (= imm) or `mov target, [rbp - disp8]'
+     (= ref).  No stack spill — trivial emits don't touch other
+     regs, and trivial suffix targets are all distinct gp-regs
+     that the prefix pops did not write.
+  5. For variadic calls, materialise `:f64-count' in AL via
      `mov eax, imm32' (= zero-extended, satisfies SysV ABI §3.5.7
-     contract that AL contains the upper bound on f64 args).
+     contract that AL contains the upper bound on f64 args).  This
+     runs after both the pops and the trivial emits so rax is free
+     to clobber by then.
 
 Unlike `--emit-call' the target name is NOT validated against the
 compile-time defuns alist; the parser already accepted SYM as a
 bare symbol literal under `(extern-call SYM ...)'.  Out-of-budget
-args are rejected at parse time per class."
+args are rejected at parse time per class.
+
+Byte-length invariance (Doc 92): the suffix-vs-prefix split is
+deterministic from parse-time-fixed fields (`:cls', `:kind',
+`:value', `:slot', `:class') so pass1 and pass2 traverse the
+same branch and emit the same byte count."
   (let* ((name (plist-get node :name))
          (args (plist-get node :args))
          (ret-class (or (plist-get node :ret-class) 'gp))
          (varargs-p (plist-get node :varargs-p))
          (f64-count (or (plist-get node :f64-count) 0))
+         (n (length args))
          ;; Per-class register pools, sliced to the number of args
          ;; of that class.  Iteration order matches source order:
          ;; the Nth gp arg → Nth GP reg, the Nth f64 arg → Nth xmm
@@ -2814,6 +2832,27 @@ args are rejected at parse time per class."
                         (setq gp-cursor (1+ gp-cursor))
                         r)))
                   args))
+         ;; W7.6b: split args into [complex-prefix | trivial-suffix].
+         ;; Suffix eligibility is :cls gp AND --call-arg-trivial-p;
+         ;; an f64 arg or a non-trivial gp arg stops the walk.  Walk
+         ;; the reverse of args to count trailing trivial gp args.
+         (trivial-suffix-len
+          (let ((count 0)
+                (rest (reverse args))
+                (done nil))
+            (while (and rest (not done))
+              (let ((a (car rest)))
+                (if (and (eq (plist-get a :cls) 'gp)
+                         (nelisp-phase47-compiler--call-arg-trivial-p a))
+                    (progn (setq count (1+ count))
+                           (setq rest (cdr rest)))
+                  (setq done t))))
+            count))
+         (complex-count (- n trivial-suffix-len))
+         (complex-args (cl-subseq args 0 complex-count))
+         (trivial-args (cl-subseq args complex-count))
+         (complex-targets (cl-subseq arg-targets 0 complex-count))
+         (trivial-targets (cl-subseq arg-targets complex-count))
          ;; Stack alignment correction (Doc 111 §111.E fix).
          ;; Post-prologue body-entry rsp:
          ;;   - even arity (= 0, 2, 4, 6): rsp ≡ 0 mod 16 (good for call)
@@ -2823,17 +2862,17 @@ args are rejected at parse time per class."
          ;; only gp-class defuns need the runtime correction below.
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
          (needs-align (= (logand arity 1) 1)))
-    ;; Push each evaluated arg.  f64 args land in xmm0 (per
-    ;; `--emit-value' contract for f64 nodes) so we transfer to rax
-    ;; first before the unified push.
-    (dolist (a args)
+    ;; (1) Complex prefix: push each evaluated arg.  f64 args land
+    ;; in xmm0 (per `--emit-value' contract for f64 nodes) so we
+    ;; transfer to rax first before the unified push.
+    (dolist (a complex-args)
       (nelisp-phase47-compiler--emit-value a buf)
       (when (eq (plist-get a :cls) 'f64)
         ;; xmm0 → rax (64-bit bit pattern, preserves the f64 value).
         (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
       (nelisp-asm-x86_64-push buf 'rax))
-    ;; Pop in reverse (= last pushed → first popped) and dispatch.
-    (dolist (target (reverse arg-targets))
+    ;; (2) Pop in reverse (= last pushed → first popped) and dispatch.
+    (dolist (target (reverse complex-targets))
       (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
           ;; f64 target — pop into rax then MOVQ → xmm.
           (progn
@@ -2841,6 +2880,13 @@ args are rejected at parse time per class."
             (nelisp-asm-x86_64-movq-xmm-r64 buf target 'rax))
         ;; GP target — pop directly.
         (nelisp-asm-x86_64-pop buf target)))
+    ;; (3) Trivial suffix: emit each directly into its target gp-reg.
+    ;; Order is free since trivial emits never clobber other arg regs;
+    ;; we walk source order for deterministic byte layout.  All targets
+    ;; here are gp-regs (suffix gating restricts to :cls gp).
+    (cl-mapc (lambda (a r)
+               (nelisp-phase47-compiler--emit-trivial-into-reg a r buf))
+             trivial-args trivial-targets)
     ;; Materialise AL = f64-count for variadic calls (SysV ABI §3.5.7).
     ;; `mov eax, imm32' is a 5-byte sequence (= REX-less; the imm32
     ;; zero-extends into RAX, clearing the upper 32 bits which is
