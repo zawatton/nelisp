@@ -1,4 +1,4 @@
-;;; nelisp-cli.el --- Doc 128 — End-user `nelisp' CLI dispatch (elisp side)  -*- lexical-binding: t; -*-
+;;; nelisp-cli.el --- Doc 128 / Doc 49 Wave 7 — CLI dispatch (elisp side)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -13,13 +13,22 @@
 ;; production binary is a ~50 LOC bootstrap stub (= Env::new_global
 ;; + lookup `nelisp-cli-main' + apply + map ExitCode).
 ;;
-;; Surface (unchanged from the pre-Doc-128 Rust impl):
+;; Doc 49 Wave 7 — extends CLI with Emacs-style batch-mode flags so the
+;; nelisp binary can drive `scripts/compile-elisp-objects.el' without
+;; requiring a host Emacs installation.  New flags (processed left-to-
+;; right in order, before -l loads):
 ;;
-;;   nelisp --version | -V         print version + exit
-;;   nelisp eval EXPR              evaluate EXPR + print result
-;;   nelisp -l FILE | --load FILE  load + eval FILE, print last value
-;;   nelisp exec FILE              load + eval FILE silently
-;;   nelisp -                      read stdin + eval, print last value
+;;   --batch              enable batch mode (sets `noninteractive' t)
+;;   -Q | --quick         ignore init files (no-op; compatibility)
+;;   -L DIR | --directory DIR   prepend DIR to `load-path'
+;;   -l FILE | --load FILE      load FILE silently (no final-value print)
+;;                              (batch mode: silent; old mode: prints last)
+;;   -f FUNC | --funcall FUNC   call FUNC with no arguments
+;;   --eval EXPR          evaluate EXPR; used to call setup forms (setenv …)
+;;   --setenv VAR=VAL     shorthand for (setenv VAR VAL) — injected before -l
+;;
+;; The batch flags are detected when argv[1] == "--batch".  All other
+;; argv forms fall through to the original single-command dispatcher.
 ;;
 ;; Exit code contract (consumed by the Rust stub's
 ;; `ExitCode::from((code as u8).min(255))'):
@@ -46,8 +55,10 @@ constant before the elisp `nelisp-cli-main' dispatch runs.")
        nelisp eval EXPR                 # evaluate EXPR and print the result
        nelisp -l FILE                   # load FILE and print the last result
        nelisp exec FILE                 # load FILE silently (no final-value print)
-       nelisp -                         # read from stdin and print the last result"
-  "USAGE banner — adapted verbatim from the pre-Doc-128 Rust const.")
+       nelisp -                         # read from stdin and print the last result
+       nelisp --batch [-Q] [-L DIR...] [--setenv VAR=VAL...] [--eval EXPR...] [-l FILE...] [-f FUNC]
+                                        # Doc 49 build-host batch mode"
+  "USAGE banner — Doc 128 + Doc 49 Wave 7 batch-mode flags.")
 
 (defun nelisp--cli-print-error (msg)
   "Write MSG to stderr with the `nelisp: ' prefix + newline."
@@ -144,6 +155,216 @@ to stderr / exit 1."
       nil)
      (t src))))
 
+;; ---------------------------------------------------------------------------
+;; Doc 49 Wave 7 — batch-mode dispatcher
+;; ---------------------------------------------------------------------------
+
+(defun nelisp--cli-batch-load-file (path)
+  "Load PATH silently (batch mode: no final-value print).
+Returns 0 on success, 1 on load error."
+  (condition-case err
+      (progn (load path) 0)
+    (error
+     (nelisp--cli-print-error
+      (format "load error in %s: %s" path (error-message-string err)))
+     1)))
+
+(defun nelisp--cli-batch-eval-expr (expr)
+  "Evaluate the string EXPR (a single or multi-form expression).
+Used for --eval EXPR batch args.  Returns 0 on success, 1 on error."
+  (condition-case err
+      (let ((forms (nelisp--read-all-from-string-impl expr)))
+        (let ((cur forms))
+          (while cur
+            (eval (car cur))
+            (setq cur (cdr cur))))
+        0)
+    (error
+     (nelisp--cli-print-error
+      (format "eval error: %s" (error-message-string err)))
+     1)))
+
+(defun nelisp--cli-batch-funcall (name)
+  "Call function named NAME (a string) with no arguments.
+Returns 0 on success, 1 on error."
+  (condition-case err
+      (let ((sym (intern name)))
+        (unless (fboundp sym)
+          (signal 'error (list (format "Undefined function: %s" name))))
+        (funcall sym)
+        0)
+    (error
+     (nelisp--cli-print-error
+      (format "funcall error (%s): %s" name (error-message-string err)))
+     1)))
+
+(defun nelisp--cli-batch-ensure-host ()
+  "Ensure `nelisp-build-host' functions are available.
+
+Called lazily after the first -L dir is added to `load-path'.
+Loads `nelisp-build-host' from `load-path' if not already provided.
+If the load fails, installs a minimal inline stub that covers the
+pre-load phase (add-to-list + load-path + bare getenv/setenv).
+
+This split (inline stub first, proper load after -L) means
+`compile-elisp-objects.el' can use the full API."
+  (unless (featurep 'nelisp-build-host)
+    (condition-case _
+        (load "nelisp-build-host" nil t)
+      (error nil))
+    ;; Minimal inline stub for the pre-load phase when load failed.
+    (unless (boundp 'load-path)
+      (setq load-path nil))
+    (unless (fboundp 'add-to-list)
+      (fset 'add-to-list
+            (lambda (list-var element &optional append compare-fn)
+              (let* ((lst    (symbol-value list-var))
+                     (cmp-fn (or compare-fn 'equal))
+                     (present (let ((cur lst))
+                                (catch 'hit
+                                  (while cur
+                                    (when (funcall cmp-fn (car cur) element)
+                                      (throw 'hit t))
+                                    (setq cur (cdr cur)))
+                                  nil))))
+                (unless present
+                  (if append
+                      (set list-var (append lst (list element)))
+                    (set list-var (cons element lst))))
+                (symbol-value list-var)))))
+    (unless (boundp 'process-environment)
+      (setq process-environment nil))
+    (unless (fboundp 'getenv)
+      (fset 'getenv
+            (lambda (variable)
+              (when (boundp 'process-environment)
+                (let ((prefix (concat variable "="))
+                      (plen   (+ (length variable) 1))
+                      (found  nil)
+                      (cur    process-environment))
+                  (while (and cur (not found))
+                    (let ((entry (car cur)))
+                      (when (and (stringp entry)
+                                 (>= (length entry) plen)
+                                 (string-equal (substring entry 0 plen) prefix))
+                        (setq found (substring entry plen))))
+                    (setq cur (cdr cur)))
+                  found)))))
+    (unless (fboundp 'setenv)
+      (fset 'setenv
+            (lambda (variable &optional value _substitute)
+              (unless (boundp 'process-environment)
+                (setq process-environment nil))
+              (let ((prefix (concat variable "="))
+                    (plen   (+ (length variable) 1))
+                    (new-env nil))
+                (let ((cur process-environment))
+                  (while cur
+                    (let ((entry (car cur)))
+                      (unless (and (stringp entry)
+                                   (>= (length entry) plen)
+                                   (string-equal (substring entry 0 plen) prefix))
+                        (setq new-env (cons entry new-env))))
+                    (setq cur (cdr cur))))
+                (setq new-env (nreverse new-env))
+                (when value
+                  (setq new-env (cons (concat variable "=" value) new-env)))
+                (setq process-environment new-env)
+                value)))
+      )
+    (unless (fboundp 'make-directory)
+      (fset 'make-directory
+            (lambda (dir &optional parents)
+              (nl-make-directory dir (if parents t nil))
+              nil)))))
+
+(defun nelisp--cli-batch-dispatch (args)
+  "Process the batch-mode ARGS list (argv without binary name + --batch).
+
+ARGS is a list of strings.  We walk it left-to-right:
+
+  -Q | --quick           skip (no init file to worry about)
+  -L DIR | --directory DIR   add DIR to load-path, then try to load
+                             nelisp-build-host for full host API
+  -l FILE | --load FILE      load FILE silently
+  -f FUNC | --funcall FUNC   call FUNC
+  --eval EXPR                evaluate EXPR
+  --setenv VAR=VAL           shorthand: (setenv VAR VAL)
+
+Returns an integer exit code (0 = success, 1 = error, 2 = bad args)."
+  ;; Bare minimum bootstrap so -L and --setenv work before any file is loaded.
+  (nelisp--cli-batch-ensure-host)
+  (let ((exit-code 0)
+        (cur args))
+    (while (and cur (= exit-code 0))
+      (let ((flag (car cur)))
+        (setq cur (cdr cur))
+        (cond
+         ;; -Q / --quick — ignore init file; no-op here
+         ((or (equal flag "-Q") (equal flag "--quick"))
+          nil)
+         ;; -L DIR / --directory DIR
+         ((or (equal flag "-L") (equal flag "--directory"))
+          (let ((dir (car cur)))
+            (setq cur (cdr cur))
+            (if dir
+                (progn
+                  (add-to-list 'load-path dir)
+                  ;; Retry build-host load now that load-path is non-empty.
+                  (nelisp--cli-batch-ensure-host))
+              (nelisp--cli-print-error "-L requires a directory argument")
+              (setq exit-code 2))))
+         ;; -l FILE / --load FILE
+         ((or (equal flag "-l") (equal flag "--load"))
+          (let ((file (car cur)))
+            (setq cur (cdr cur))
+            (if file
+                (setq exit-code (nelisp--cli-batch-load-file file))
+              (nelisp--cli-print-error "-l requires a file argument")
+              (setq exit-code 2))))
+         ;; -f FUNC / --funcall FUNC
+         ((or (equal flag "-f") (equal flag "--funcall"))
+          (let ((func (car cur)))
+            (setq cur (cdr cur))
+            (if func
+                (setq exit-code (nelisp--cli-batch-funcall func))
+              (nelisp--cli-print-error "-f requires a function name argument")
+              (setq exit-code 2))))
+         ;; --eval EXPR
+         ((equal flag "--eval")
+          (let ((expr (car cur)))
+            (setq cur (cdr cur))
+            (if expr
+                (setq exit-code (nelisp--cli-batch-eval-expr expr))
+              (nelisp--cli-print-error "--eval requires an expression argument")
+              (setq exit-code 2))))
+         ;; --setenv VAR=VAL
+         ((equal flag "--setenv")
+          (let ((pair (car cur)))
+            (setq cur (cdr cur))
+            (if (and pair (stringp pair))
+                (let* ((eq-pos (let ((i 0) (found nil))
+                                 (while (and (< i (length pair)) (not found))
+                                   (when (= (aref pair i) ?=)
+                                     (setq found i))
+                                   (setq i (1+ i)))
+                                 found))
+                       (var (and eq-pos (substring pair 0 eq-pos)))
+                       (val (and eq-pos (substring pair (1+ eq-pos)))))
+                  (if var
+                      (setenv var val)
+                    (nelisp--cli-print-error
+                     (format "--setenv argument must be VAR=VAL, got: %s" pair))
+                    (setq exit-code 2)))
+              (nelisp--cli-print-error "--setenv requires a VAR=VAL argument")
+              (setq exit-code 2))))
+         ;; Unknown flag
+         (t
+          (nelisp--cli-print-error
+           (format "unrecognized batch flag: %s" flag))
+          (setq exit-code 2)))))
+    exit-code))
+
 (defun nelisp-cli-main (argv)
   "Entry point invoked by `build-tool/src/bin/nelisp.rs'.
 
@@ -155,6 +376,9 @@ See file header for the CLI surface + exit-code contract."
   (let* ((args (and (listp argv) (cdr argv)))
          (n (length args)))
     (cond
+     ;; --batch mode (Doc 49 Wave 7) — Emacs-style multi-flag processing
+     ((and (>= n 1) (equal (nth 0 args) "--batch"))
+      (nelisp--cli-batch-dispatch (cdr args)))
      ;; --version / -V
      ((and (= n 1)
            (or (equal (nth 0 args) "--version")
