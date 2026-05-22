@@ -454,31 +454,38 @@ scope 外):
 - **Gate-zerop**: RESOLVED R6e SHIPPED 2026-05-22 (commit =f72e7b62=
   main、+1 LOC、codex 経由)。=(unless (fboundp 'zerop) (defun zerop
   (n) (= n 0)))= を =nelisp-cl-macros.el= 末尾に追加。
-- **Gate-segv** (root cause 特定済、未 fix): 2026-05-22 subagent
-  trace 完了 (=wave-7-r6g-segv-trace= worktree、commit 無し report only)。
-  - 真因: =nelisp-phase47-compiler--emit-sexp-payload-ptr=
-    (=lisp/nelisp-phase47-compiler.el:3158-3177=) は Cons (tag=7)
-    only emit、Record (tag=12) など他 boxed 変種では NULL (rax=0)
-    を返す。docstring "Other tags also return 0" が事実上の bug、
-    boxed variants でも box pointer 読み込みが必要。
-  - 連鎖: =nelisp-cc-jit-record-type-tag-ptr.el= の =(if (= tag 12)
-    (sexp-payload-ptr arg) 0)= は tag guard で Record で正しく
-    分岐するが、内側の =(sexp-payload-ptr arg)= が Cons-only 実装
-    なので Record では NULL 返却 → caller =nl_jit_type_of_inner=
-    が NULL を =movzbq (%rdi),%rax= で deref → SIGSEGV。
-  - 発火経路: =nelisp-elf-write-binary= 内の =(make-hash-table)=
-    (= Record alloc) → =(format "%S" ...)= → =type-of= → JIT helper
-    chain (Wave 7 fix の 4 段 unblock を経て初めて触れる経路)。
-  - Fix scope (= Rust LOC 0 確定):
-    - **trivial (~5 LOC elisp)**: =nelisp-cc-jit-record-type-tag-ptr.el=
-      の =(sexp-payload-ptr arg)= を inline box-ptr 読みに置換
-    - **clean (~30-60 LOC elisp)**: =box-payload-ptr= grammar op を
-      新設 (all boxed tags ≥ 5 で offset 8 を読む)、callers 2 ファイル
-      audit + 更新
-  - 環境 note: =[profile.release] strip = true= のため backtrace は
-    raw addresses のみ。subagent は =pyelftools + addr2line + objdump=
-    + core dump で trace を復元。本格 trace は =strip = false; debug = 2=
-    一時切替推奨、gdb は env に未 install。
+- **Gate-segv**: RESOLVED R6g SHIPPED 2026-05-22 (commit =56a7c575=
+  main、+43/-11 LOC、Rust 0 LOC、codex 経由 trivial variant)。
+  Record 専用 sibling op =sexp-payload-ptr-record= を Phase 47
+  grammar に追加 (parser + dispatch + emit、3 箇所)。既存
+  =sexp-payload-ptr= の Cons-only 意味論は維持 (= list walk 用
+  caller ~20 ファイルに回帰なし)。
+  - 並列比較で実装: trivial (=sexp-payload-ptr-record= sibling op、
+    本採用) vs clean (=sexp-payload-ptr-of EXPECTED-TAG PTR= 一般化
+    op、worktree =wave-7-r6g-clean= 廃案)。clean は Wave 7 first
+    entry compile で =Wrong type argument= regression、208/208
+    pass rate と称した codex 報告は再現不能。trivial は
+    SIGSEGV → =Wrong type argument= 推移を確認 (= segv は確実に
+    fix、ただし downstream に新 blocker)。
+  - 真因 (subagent trace、保留): =--emit-sexp-payload-ptr= は
+    Cons (tag=7) only emit、Record (tag=12) で NULL 返却。
+    連鎖 = =nl_record_type_tag_ptr= → NULL deref → SIGSEGV、
+    発火 = =nelisp-elf-write-binary= 内 =(make-hash-table)= →
+    =(format "%S")= → =type-of= JIT helper chain。
+
+*** 次 gate (R6g 後): Wrong type argument
+
+R6g 後の =compile-elisp-objects-emit-all= 実行で =nelisp-phase47-
+compile-to-object= 呼出 (=defun nelisp_spike_noop nil 42= の compile
+試行) が =Wrong type argument= で死ぬ。
+
+特徴:
+- =condition-case t= でも catch 不可 — elisp signal handler を escape
+- =RUST_BACKTRACE=1= で Rust panic backtrace 出ず — elisp 経路の error
+  だが handler chain の何らかの bug で escape している模様
+- 詳細不明、要 trace (次 session で subagent dispatch 候補)
+
+Fix scope estimate 未定、Rust LOC 変更 0 で済むかも未確認。
 
 完全 unblock までは Doc 49 とは別の Wave 7-cl-extras wave で扱う方が
 clean (= Doc 49 §7 の主役は reader/cl-lib subset/backquote、残りは別
@@ -498,9 +505,10 @@ wave でブレイクダウン)。
   commit =f72e7b62=).
 - Wave 7 Gate-env: **RESOLVED** (R6f SHIPPED 2026-05-22、+8 LOC build
   glue、commit =dfc7cac6=).
-- Wave 7 Gate-segv: **root cause 特定済、未 fix** — trivial 5 LOC
-  elisp fix を =wave-7-r6g-segv-trace= worktree 報告書に明記、Rust
-  LOC 0 で着地可能。次 session で R6g として dispatch 候補。
+- Wave 7 Gate-segv: **RESOLVED** (R6g SHIPPED 2026-05-22、trivial
+  variant、+43/-11 LOC、commit =56a7c575=)。
+- Wave 7 次 gate (Wrong type argument): **未着手** — condition-case
+  escape 系の error、要 trace (詳細上記)。
 - =build.rs= が =emacs --batch= を spawn する現状は維持 (Gate-segv
   fix 後の =emacs= → =nelisp= 1 行 swap が最終 commit)。
 - end-user が pre-built tarball で nelisp を動かす経路は無影響継続。
@@ -525,7 +533,13 @@ wave でブレイクダウン)。
 - =a041b42a= subagent (no commit) — Gate-segv RUST_BACKTRACE trace
   完了、root cause = =--emit-sexp-payload-ptr= Cons-only 仕様、fix
   scope trivial 5 LOC elisp / Rust LOC 0
-- (this commit) — design 更新のみ、R6e+R6f+segv 知見の triage
+- =e24ff7fb= — design 更新のみ、R6e+R6f+segv 知見の triage (中間)
+- =56a7c575= — R6g (codex trivial、worktree =wave-7-r6g-trivial=
+  cherry-pick): =sexp-payload-ptr-record= sibling op 追加、
+  Gate-segv RESOLVED (Rust LOC 0、+43/-11)。clean variant
+  (=wave-7-r6g-clean=、commit =49f98716=) は regression で廃案
+- (this commit) — design 更新のみ、R6g landed + Wrong type argument
+  next blocker 記録
 - =scripts/compile-elisp-objects.el= — 既存 build orchestrator
 - =lisp/nelisp-cc-reader-lexer.el= / =-parser.el= — Doc 116 §116.A/B
   Phase 47 native reader (= 既 built、R6a で runtime に配線)
