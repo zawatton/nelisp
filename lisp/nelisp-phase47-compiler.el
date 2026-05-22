@@ -188,8 +188,9 @@ Doc 101 §101.B Wave 5: dispatches on `nelisp-phase47-compiler--abi'."
 N is the next value of `nelisp-phase47-compiler--label-counter'.
 The result is interned (= comparable with `eq') so it slots
 straight into Doc 92's labels alist."
-  (let ((id (cl-incf nelisp-phase47-compiler--label-counter)))
-    (intern (format "%s-%d" prefix id))))
+  (setq nelisp-phase47-compiler--label-counter
+        (1+ nelisp-phase47-compiler--label-counter))
+  (intern (format "%s-%d" prefix nelisp-phase47-compiler--label-counter)))
 
 ;; ---- §97.1 frontend = parser + IR builder ----
 ;;
@@ -1736,9 +1737,13 @@ Returns one of:
            (params (mapcar #'car param-pairs))
            (classes (mapcar #'cdr param-pairs))
            (uniform-class (car classes)))
-      (unless (cl-every (lambda (c) (eq c uniform-class)) classes)
-        (signal 'nelisp-phase47-compiler-error
-                (list :defun-mixed-param-classes name classes)))
+      (let ((all-uniform t) (cs classes))
+        (while (and all-uniform cs)
+          (unless (eq (car cs) uniform-class) (setq all-uniform nil))
+          (setq cs (cdr cs)))
+        (unless all-uniform
+          (signal 'nelisp-phase47-compiler-error
+                  (list :defun-mixed-param-classes name classes))))
       (let* ((max-arity
               (length (if (eq uniform-class 'f64)
                           nelisp-phase47-compiler--xmm-arg-regs

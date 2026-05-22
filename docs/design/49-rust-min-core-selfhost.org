@@ -380,18 +380,40 @@ Phase 47 native reader は元々 binary に baked (= =crate::reader::read_all=
 
 ** 残存 BLOCKER (Wave 7 完全 unblock のために必要な次の作業)
 
-reader 経路は 390x 高速化したが、=nelisp --batch -L lisp -l
-scripts/compile-elisp-objects.el -f compile-elisp-objects-emit-all= は
-別の理由で fail:
+*** cl-lib + defsubst SHIPPED (R6b, 2026-05-22)
 
-- =(require 'cl-lib)= が standalone NeLisp に file 不在 (=
-  =lisp/cl-lib.el= なし) で =file-error=
-- =nelisp-phase47-compiler.el:191= =(cl-incf ...)= +
-  =:1739= =(cl-every ...)= の 2 箇所のみ実使用
-- 解消パス候補:
-  1. =lisp/cl-lib.el= stub 新設 — =defmacro cl-incf= + =defun cl-every= 程度
-  2. compiler 側の 2 箇所を inline 書き換え (=(setq x (1+ x))= / while loop)
-- 上記 fix 後 compile gate を再計測し、Wave 7 full unblock を判定
+reader (R6a) に続いて cl-lib BLOCKER を着地:
+
+- =lisp/nelisp-cl-macros.el= に追加 (+96 LOC、Rust 0 LOC):
+  - =cl-incf= macro, =cl-every= / =cl-mapc= / =cl-mapcar= / =cl-subseq= /
+    =cl-remove-if-not= function、=cl-labels= macro
+  - =defsubst= macro (= standalone NeLisp は byte-compile しないので
+    plain =defun= と意味的に等価)
+  - =(provide 'cl-lib)= で =(require 'cl-lib)= を featurep 経由で
+    解決
+- =lisp/nelisp-phase47-compiler.el= で =cl-incf= / =cl-every= を inline
+  書き換え (= 上記 stub 経由でも動くが、依存を減らす方向のクリーンアップ)
+
+実測:
+- =(require 'cl-lib)= → t (cl-lib feature 解決)
+- =(load "lisp/nelisp-asm-arm64.el")= → t (defsubst も解決)
+- =(load "lisp/nelisp-phase47-compiler.el")= → 次の missing feature
+  (=nelisp-sexp-layout=) で fail
+
+*** 次 gate: backquote / その他 missing builtins
+
+=nelisp-sexp-layout.el= が =backquote= (= ` 構文) を defconst で使用、
+standalone NeLisp に =(defmacro backquote ...)= 実装が無く void-function
+error。
+
+- backquote macro は recursive walker: =,X= → X-value、=,@X= → splice。
+  ~50 LOC elisp で実装可能、=lisp/nelisp-cl-macros.el= 末尾に追加候補。
+- backquote 解消後は順次次の missing builtin を埋めて compile gate を
+  通す段階的アプローチ (= 各 gate ~30 分以下の小修正で進む見込み)。
+
+完全 unblock までは Doc 49 とは別の Wave 7-cl-extras wave で扱う方が
+clean (= Doc 49 §7 の主役は reader/cl-lib subset、残りは別 wave で
+ブレイクダウン)。
 
 ** Deferral 判断 (更新)
 

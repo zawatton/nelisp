@@ -486,4 +486,100 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
             (append (nreverse forms)
                     (list (list 'quote name)))))))
 
+;; ---------------------------------------------------------------------------
+;; Doc 49 Wave 7 follow-up (2026-05-22): minimal cl-lib subset wired into
+;; the same module so `(require 'cl-lib)' resolves via featurep without
+;; needing a separate `lisp/cl-lib.el' bake entry.  Coverage = what
+;; `nelisp-phase47-compiler.el' and `scripts/compile-elisp-objects.el'
+;; need to run end-to-end under `nelisp --batch'.
+;;
+;; Already provided elsewhere (kept here for reference):
+;;   `cl-defun'   — lisp/nelisp-stdlib-eval-special.el:432 (full &key)
+;;   `cl-loop'    — line 230 above
+;;   `cl-block' / `cl-return' / `cl-return-from' — lines 42-56
+;;   `cl-defstruct' — line 352
+;; ---------------------------------------------------------------------------
+
+(defalias 'cl-mapc 'mapc)
+(defalias 'cl-mapcar 'mapcar)
+
+(defun cl-subseq (seq start &optional end)
+  "Return the subsequence of SEQ from START up to END (default end of SEQ).
+Supports proper lists only (= what `nelisp-phase47-compiler.el' uses)."
+  (let ((tail (nthcdr start seq))
+        (n (if end (- end start) nil))
+        (acc nil))
+    (if (null n)
+        (copy-sequence tail)
+      (let ((i 0))
+        (while (and (< i n) tail)
+          (setq acc (cons (car tail) acc))
+          (setq tail (cdr tail))
+          (setq i (1+ i)))
+        (nreverse acc)))))
+
+(defun cl-remove-if-not (pred seq)
+  "Return a list of SEQ elements where (PRED ELT) is non-nil.
+Linear, allocates a fresh list; preserves order."
+  (let ((acc nil) (cur seq))
+    (while cur
+      (when (funcall pred (car cur))
+        (setq acc (cons (car cur) acc)))
+      (setq cur (cdr cur)))
+    (nreverse acc)))
+
+(defmacro cl-labels (bindings &rest body)
+  "Bind locally-recursive functions BINDINGS and run BODY.
+BINDINGS = ((NAME (ARGS...) BODY...) ...).  Expands to a `let'-bound
+funarg + `flet'-style cl-flet substitution so each binding can call
+itself by NAME.  This is the minimal shape used by
+`nelisp-phase47-compiler.el' (single-binding walk-helper recursion);
+sibling cross-calls within a single `cl-labels' block are NOT
+supported (= would need a forward-declared placeholder set, deferred)."
+  (let ((let-bindings nil)
+        (defalias-forms nil)
+        (unalias-forms nil))
+    (dolist (b bindings)
+      (let* ((name (car b))
+             (fn-formals (car (cdr b)))
+             (fn-body (cdr (cdr b)))
+             (saved (intern (format "--cl-labels-saved-%s" name))))
+        (setq let-bindings
+              (cons (list saved (list 'and (list 'fboundp (list 'quote name))
+                                      (list 'symbol-function (list 'quote name))))
+                    let-bindings))
+        (setq defalias-forms
+              (cons (list 'defalias (list 'quote name)
+                          (cons 'lambda (cons fn-formals fn-body)))
+                    defalias-forms))
+        (setq unalias-forms
+              (cons (list 'if saved
+                          (list 'defalias (list 'quote name) saved)
+                          (list 'fmakunbound (list 'quote name)))
+                    unalias-forms))))
+    (list 'let (nreverse let-bindings)
+          (cons 'unwind-protect
+                (cons (cons 'progn (append (nreverse defalias-forms) body))
+                      (nreverse unalias-forms))))))
+
+(defmacro cl-incf (place &optional delta)
+  "Increment PLACE by DELTA (default 1).  Expands to (setq PLACE (+ PLACE DELTA))."
+  (list 'setq place (list '+ place (or delta 1))))
+
+(defmacro defsubst (name args &rest body)
+  "Define NAME as an inline function.  Standalone NeLisp has no
+byte-compiler so defsubst is a strict synonym for `defun'."
+  (cons 'defun (cons name (cons args body))))
+
+(defun cl-every (pred seq)
+  "Return non-nil iff (PRED ELT) is non-nil for every ELT in SEQ."
+  (let ((all t) (cur seq))
+    (while (and all cur)
+      (unless (funcall pred (car cur)) (setq all nil))
+      (setq cur (cdr cur)))
+    all))
+
+(provide 'cl-lib)
+(provide 'nelisp-cl-macros)
+
 ;; nelisp-cl-macros.el ends here
