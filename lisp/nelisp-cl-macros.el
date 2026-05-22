@@ -718,6 +718,7 @@ unquote / (... . ,@X) dotted splice patterns."
 See `nelisp--bq-expand' for the supported shapes."
   (nelisp--bq-expand form))
 
+(unless (fboundp 'zerop) (defun zerop (n) "Return t if N is zero." (= n 0)))
 (provide 'cl-lib)
 (provide 'nelisp-cl-macros)
 
