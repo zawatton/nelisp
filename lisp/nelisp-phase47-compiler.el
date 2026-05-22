@@ -651,6 +651,13 @@ functions `((NAME . ARITY) ...)'."
     (list :kind 'sexp-payload-ptr
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
+   ((and (consp sexp) (eq (car sexp) 'sexp-payload-ptr-record))
+    (unless (= (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-payload-ptr-record-arity sexp)))
+    (list :kind 'sexp-payload-ptr-record
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)))
    ;; ---- Doc 111 §111.B Record read+write ops ----
    ((and (consp sexp) (eq (car sexp) 'record-type-tag))
     (unless (= (length sexp) 3)
@@ -2313,7 +2320,7 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-f64-call node buf))
         ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make 'sexp-float-unwrap 'f64-to-i64-trunc
              'cons-null-p 'cons-car 'cons-cdr 'cons-cdr-raw
-             'sexp-payload-ptr
+             'sexp-payload-ptr 'sexp-payload-ptr-record
              'record-type-tag 'record-slot-count 'record-slot-ref
              'record-slot-ref-ptr 'record-slot-set
              'vector-len 'vector-ref 'vector-ref-ptr 'vector-slot-set
@@ -2391,6 +2398,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-cons-cdr-raw node buf))
       ('sexp-payload-ptr
        (nelisp-phase47-compiler--emit-sexp-payload-ptr node buf))
+      ('sexp-payload-ptr-record
+       (nelisp-phase47-compiler--emit-sexp-payload-ptr-record node buf))
       ('record-type-tag
        (nelisp-phase47-compiler--emit-record-type-tag node buf))
       ('record-slot-count
@@ -3168,6 +3177,28 @@ safe to use as the loop seed in the length walker."
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-cons)
+    (nelisp-asm-x86_64-jnz-rel32 buf zero-lbl)
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-sexp--offset-payload)
+    (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+    (nelisp-asm-x86_64-define-label buf zero-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
+    (nelisp-asm-x86_64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-sexp-payload-ptr-record (node buf)
+  "Emit a Record-only boxed-payload pointer read for NODE's `:ptr' Sexp pointer.
+Doc 49 R6g (Gate-segv fix): identical to `--emit-sexp-payload-ptr' but
+tag-guards on `Sexp::Record' (tag=12) instead of `Sexp::Cons' (tag=7).
+Non-Record inputs return 0 (NULL) - caller must tag-check before
+deref.  Used by `nl_record_type_tag_ptr' to read NlRecord*."
+  (let* ((ptr (plist-get node :ptr))
+         (id (nelisp-phase47-compiler--gensym "sexp-payload-ptr-record"))
+         (zero-lbl (intern (format "%s-zero" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-record)
     (nelisp-asm-x86_64-jnz-rel32 buf zero-lbl)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-sexp--offset-payload)
