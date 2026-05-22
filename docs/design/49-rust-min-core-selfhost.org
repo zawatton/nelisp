@@ -219,4 +219,130 @@ Doc 49 is complete when:
 - runtime Rust core has no reader/evaluator/compiler
 - runtime Rust core has no sqlite/process/filenotify/high-level file API
 - runtime starts from native-compiled Elisp seed
+
+* §7 Wave 7 — NeLisp as build host (partial, BLOCKER deferred)
+:PROPERTIES:
+:STATUS: SHIPPED-partial / BLOCKER deferred
+:DATE: 2026-05-22
+:END:
+
+** Goal
+
+Replace =build.rs= の =emacs --batch -l scripts/compile-elisp-objects.el
+-f compile-elisp-objects-emit-all= 起動を =target/release/nelisp --batch=
+で代替する。これにより Doc 49 の最終ゴールである「build-time にも host
+Emacs を要求しない」状態に一歩近付く。
+
+** SHIPPED part (commits c7302830 / 449d2b96 / 9c97fd47)
+
+- =lisp/nelisp-build-host.el= (187 LOC) — =noninteractive= /
+  =load-path= / =process-environment= の defvar、=getenv/setenv= /
+  =add-to-list= / =make-directory= / =system-name= の Emacs compat
+  stub。
+- =lisp/nelisp-cli.el= 拡張 (+224/-9 LOC) — =nelisp--cli-batch-dispatch=
+  が =--batch / -Q / -L / -l / -f / --eval / --setenv= を左右順に処理、
+  =nelisp--cli-batch-ensure-host= が =-L= 後に build-host を遅延 load
+  する。
+- W7.6a/b 最適化 (=emit-call= / =emit-extern-call= trivial-suffix
+  optimization)。
+- cargo build / cargo test 10/10 / make compile すべて green、Rust LOC
+  変更なし。
+
+** BLOCKER
+
+=target/release/nelisp --batch -L lisp -l scripts/compile-elisp-objects.el
+-f compile-elisp-objects-emit-all= が 600s timeout で 0 個 .o ファイル
+出力。
+
+*** 真因 (2026-05-22 実測)
+
+| Test | 内容                                  | Time   | per-form |
+|------+---------------------------------------+--------+----------|
+| T0   | 起動のみ                              | 0.376s | —        |
+| T1   | 10 trivial defun (toplevel)           | 2.52s  | 215ms    |
+| T2   | 100 trivial defun                     | 21.72s | 213ms    |
+| T4   | 100 trivial defconst                  | 21.85s | 215ms    |
+| T5   | 10 defun × 50 body form               | 82.09s | 159ms    |
+| T6   | 1000 toplevel =(+ 1 1)=               | 142s   | 141ms    |
+| T7   | progn で 1000 =(+ 1 1)= 包む           | 142s   | 142ms    |
+| T8   | while ループ内 1000 反復 (3000 sub-eval)| 2.29s  | 0.6ms    |
+| T9   | =(if nil ...)= で 1000 form を skip    | 142s   | 141ms    |
+
+決定的観察:
+
+- T9 が T7 と同コスト → eval 実行中であろうとなかろうと =1 form parse
+  あたり ~140ms= 払う。**ボトルネックは reader/parser ではなく、=load=
+  の =(while cur (eval (car cur)) ...)= が呼ぶ =eval= builtin の per-call
+  コスト全体**。
+- T8 と T7 の 200x 差 (0.6ms vs 142ms) は =while= body が既に深い call
+  stack 内で動くため。表面的 quick win ではない。
+- per-form コストは eval 経由ディスパッチ 10 段の累積:
+  : Phase 47 progn body
+  :   → extern-call nelisp_eval_call (FFI)
+  :     → Rust eval()
+  :       → eval_inner_call (Phase 47 native, tag dispatch)
+  :         → nl_eval_inner_cons (Rust extern)
+  :           → apply_special / funcall + delegate gate
+  :             → elisp nelisp--apply-fn (cond + predicates)
+  :               → nelisp--apply-lambda (elisp)
+  :                 → lambda body eval (再帰)
+- =nelisp-phase47-compiler.el= は 5463 行 / 103 defun + 多数 defconst +
+  各 defun に 50-200 body form。total form 数 = 数千 〜 数万。140ms ×
+  10000 = ~30 分 (実測タイムアウト推定と一致)。
+
+** 短期 quick win 候補の検証結果 (すべて却下)
+
+*** Option A: nelisp-phase47-compiler.el 自身を manifest 経由 .o 化
+
+却下。Phase 47 grammar は =seq= / =let= (compile-time const のみ) /
+=defun= / =if= / =while= / =cond= / 比較 / =+/-/*= / =and= / =or= の
+最小集合。compiler 本体は =cl-lib= / =pcase= / =seq.el= /
+=make-hash-table= / =cl-defstruct= / =cl-loop= / =signal= を計 163 箇所
+使用。self-compile には grammar の大幅拡張が必要 (Option F へ)。
+
+*** Option B: delegate gate を skip
+
+却下。=NELISP_USE_RUST_APPLY=1= を boot 後に =(nelisp--set-use-elisp-apply
+nil)= で turn off して T7 再実行 → 142s で変化なし。delegate は
+ボトルネックの一段に過ぎず、skip しても残り 9 段の累積コストが残る。
+
+*** Option D: compiler を Emacs で byte-compile → .elc 化 → bake → bytecode interp
+
+却下 (前提不成立)。=src/nelisp-bytecode.el= は Phase 3b "scaffolding"
+段階で =nelisp-bc-compile= / =nelisp-bc-run= が =unimplemented= を投げる。
+動作する bytecode interpreter が未だ存在しない。
+
+** 長期解 (Option F)
+
+*** Phase 47 grammar 拡張
+
+compiler の subset (= seq + defun + cond + while + integer + symbol +
+比較 + arith) で書ける ~hot fn~ だけ self-host し、richer な部分
+(=pcase= / =cl-defstruct= 等) は引き続き Emacs build-host に残す段階的
+移行。具体的設計は別 doc (Doc 100+ 系) で記述予定。
+
+*** または bytecode VM 完成 (Phase 3b)
+
+=src/nelisp-bytecode.el= の opcodes 実装を進め、.elc を nelisp で
+読める状態にする。これが揃えば Option D が unlock される。
+
+** Deferral 判断
+
+- BLOCKER は **architectural**、surgical 1-patch 修正は存在しない。
+- Wave 7 SHIPPED 部分 (=nelisp-build-host.el= + =nelisp-cli.el=
+  =--batch= 系) は将来 BLOCKER 解消時にそのまま活きる、捨て work では
+  ない。
+- =build.rs= が =emacs --batch= を spawn する現状は維持。end-user が
+  pre-built tarball で nelisp を動かす経路は影響なし (この BLOCKER は
+  CI / dev build path のみ)。
+- 次の進捗ゲート: Doc 100+ 系での Phase 47 grammar 拡張、または
+  Phase 3b bytecode VM 完成。どちらも今期 (2026-Q2) は scope 外。
+
+** 関連 commit / artifact
+
+- =c7302830= — Wave 7 partial SHIPPED (BLOCKER 注記つき commit)
+- =449d2b96= / =9c97fd47= — W7.6a/b emit 最適化
+- =scripts/compile-elisp-objects.el= — 既存 build orchestrator
+- =build-tool/build.rs= の =link_elisp_cc_spike()= — =emacs --batch=
+  起動箇所
 - Elisp seed can evaluate/compile/load additional Elisp
