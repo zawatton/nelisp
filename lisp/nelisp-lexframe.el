@@ -254,79 +254,37 @@ pre-wrap bare values in `Sexp::Cell' for write-through."
 (defun nelisp-lexframe-stack-capture-to-depth (stack max-depth)
   "Walk STACK innermost-first up to MAX-DEPTH; return an alist of
 \(NAME . CELL).  Frames at index >= MAX-DEPTH are skipped.  Inner
-shadows outer (= only the first-seen binding per NAME appears).
+shadows outer (= the consumer-side `fast-hash-put' UPDATE-existing
+semantics implement this: the alist may contain duplicate NAME
+entries with OUTER ones at the head end + INNER ones nearer the
+tail; `nelisp-lexframe-stack-push-captured!' iterates head-first
+and each later bind UPDATES the earlier hash entry → INNER wins).
 The cell identity is preserved exactly (= no clone), so closure
 write-through holds.
 
 Doc 102 Phase 4.b — MAX-DEPTH is the caller's pre-apply depth
 snapshot.  apply_lambda_inner pushes its argument frame at depth
 MAX-DEPTH during the dispatch, so capping the walk at MAX-DEPTH-1
-(via the `(>= i 0)' guard against `i = (1- MAX-DEPTH)') skips
-that contamination.
+skips that contamination.
 
-The bucket walk is inlined here rather than using
-`nelisp--fast-hash-iter' (= which takes a callback lambda) to keep
-the body lambda-literal-free.  Any inner `(lambda ...)' literal in
-this body would trigger `sf_lambda' → `capture_lexical' →
-re-entry into this dispatch → infinite recursion.
-
-R11b Wave 9 fast paths:
-  MAX-DEPTH = 0 → return nil with zero allocation (= no hash-table,
-                   no acc list, no frame walk).
-  MAX-DEPTH = 1 → single-frame walk; skip the `seen' hash-table
-                   allocation since shadowing only matters across
-                   frames (= each NAME appears at most once in one
-                   frame's hash-table).
-  MAX-DEPTH ≥ 2 → original general path (= seen hash-table +
-                   inner-shadows-outer dedup)."
-  (cond
-   ;; Fast path: empty capture (= top-level call with no live frames).
-   ((= max-depth 0)
-    nil)
-   ;; Fast path: single-frame capture (= no shadowing possible).
-   ((= max-depth 1)
-    (let* ((backing (nelisp-lexframe-stack--backing stack))
-           (acc nil)
-           (frame (aref backing 0))
-           (ht (nelisp-lexframe--ht frame))
-           (bc (nelisp--record-ref ht 0))
-           (buckets (nelisp--record-ref ht 1))
-           (j 0))
-      (while (< j bc)
-        (let ((cur (aref buckets j)))
-          (while cur
-            (let* ((pair (car cur))
-                   (name (car pair))
-                   (cell (cdr pair)))
-              (setq acc (cons (cons name cell) acc)))
-            (setq cur (cdr cur))))
-        (setq j (1+ j)))
-      acc))
-   ;; General path (= depth >= 2): seen hash-table for shadowing.
-   (t
-    (let* ((backing (nelisp-lexframe-stack--backing stack))
-           (seen (make-hash-table :test 'equal))
-           (acc nil)
-           (i (1- max-depth)))
-      (while (>= i 0)
-        (let* ((frame (aref backing i))
-               (ht (nelisp-lexframe--ht frame))
-               (bc (nelisp--record-ref ht 0))
-               (buckets (nelisp--record-ref ht 1))
-               (j 0))
-          (while (< j bc)
-            (let ((cur (aref buckets j)))
-              (while cur
-                (let* ((pair (car cur))
-                       (name (car pair))
-                       (cell (cdr pair)))
-                  (unless (gethash name seen)
-                    (puthash name t seen)
-                    (setq acc (cons (cons name cell) acc))))
-                (setq cur (cdr cur))))
-            (setq j (1+ j))))
-        (setq i (1- i)))
-      acc))))
+Doc 49 Wave 10.1d-retry — Phase 47 native fast path: dispatches
+to `nl_capture_descend_native' (co-located in
+`nelisp-cc-frame-stack-find.o') via `nl-jit-call-out-1', eliding
+the elisp interpretation cost of the original R11b
+`while'-loop + `gethash'/`puthash' dedup body.  The 3-slot scratch
+vector is freshly allocated per call (= one `Sexp::Vector(3)' +
+two `Sexp::Nil' init writes, far cheaper than the elided body's
+`make-hash-table' + per-entry `puthash' allocs).  Walks
+innermost-first + prepends — see the dedup-via-consumer note above
+for the correctness argument."
+  ;; scratch[0] = stack record (passed through)
+  ;; scratch[1] = max-depth Sexp::Int (passed through)
+  ;; scratch[2] = pair-slot scratch (Sexp::Nil — Phase 47 helper
+  ;;              reuses this as the destination for each inner
+  ;;              (NAME . CELL) cons cell; refcount-safe per the
+  ;;              `cons-make-with-clone' alias-safety contract).
+  (nl-jit-call-out-1 "nl_capture_descend_native"
+                     (vector stack max-depth nil)))
 
 (defun nelisp-lexframe-stack-push-captured! (stack alist)
   "Build a fresh frame populated from ALIST = ((NAME . CELL) ...),
