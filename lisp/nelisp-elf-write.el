@@ -135,12 +135,30 @@ write; `nelisp-elf-buffer-bytes' reverses and concatenates."
 Idempotent for already-unibyte strings.  For multibyte strings that
 hold raw bytes (= chars in 0..255), each char is collapsed to its
 8-bit byte via a temporary unibyte buffer (= safe across emacs
-versions, unlike the obsolete `string-make-unibyte')."
+versions, unlike the obsolete `string-make-unibyte').
+
+NeLisp standalone has no multibyte/unibyte distinction at the
+string level (= all strings are internally UTF-8) and the buffer
+stubs are no-ops, so the `with-temp-buffer' trick would silently
+return \"\" and starve all downstream writers.  Detect the stub
+environment by checking whether the buffer trick preserved length
+and fall back to returning STR as-is when it did not (= NeLisp
+standalone) — char codes 0..255 stored via `unibyte-string' are
+already byte-equivalent for the ASCII range that the ELF
+infrastructure relies on."
   (if (multibyte-string-p str)
-      (with-temp-buffer
-        (set-buffer-multibyte nil)
-        (insert str)
-        (buffer-substring-no-properties (point-min) (point-max)))
+      (let ((converted
+             (with-temp-buffer
+               (set-buffer-multibyte nil)
+               (insert str)
+               (buffer-substring-no-properties (point-min) (point-max)))))
+        ;; NeLisp standalone: buffer ops are stubs, conversion produces
+        ;; an empty string regardless of input — keep STR so downstream
+        ;; writers see the original char sequence (char-value == byte
+        ;; for chars 0..127, which covers all ELF header literals).
+        (if (= (length converted) (length str))
+            converted
+          str))
     str))
 
 (defun nelisp-elf-buffer-bytes (cbuf)
