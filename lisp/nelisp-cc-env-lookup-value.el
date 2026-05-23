@@ -58,88 +58,61 @@
 
 (defconst nelisp-cc-env-lookup-value--source
   '(seq
-    ;; nelisp_env_lkv_cell_hit
-    ;;
-    ;; Frame hit path: extract value from the lexical cell at cell-ptr
-    ;; into out-ptr using `nl_cell_get_value' — a refcount-aware clone.
-    ;;
-    ;; cell-ptr: i64 = *const Sexp pointing at Sexp::Cell(_) (returned
-    ;;           by `nelisp_frame_stack_find' as the cdr slot of the
-    ;;           inner (NAME . CELL) pair in the frame's hash bucket).
-    ;; out-ptr:  *mut Sexp — 32-byte result slot.
-    ;;
-    ;; `nl_cell_get_value' calls `match &*cell_ptr { Sexp::Cell(c) =>
-    ;; { ptr::write(out, c.value.clone()); 0 } _ => 1 }' on the Rust
-    ;; side — the clone() increments the Rc before writing into out-ptr,
-    ;; preventing double-free when the cell is later mutated.
-    ;;
-    ;; Returns: i64 result of nl_cell_get_value (0=ok, 1=not-a-cell).
-    ;; In practice cell-ptr was obtained from nelisp_frame_stack_find
-    ;; which only returns non-zero for real Sexp::Cell-CDR pointers,
-    ;; so the 1=not-a-cell path is unreachable in production.
-    ;;
-    ;; Arity 2 (even) ✓; extern-call is the top-level expression ✓.
-    (defun nelisp_env_lkv_cell_hit (cell-ptr out-ptr)
-      (extern-call nl_cell_get_value cell-ptr out-ptr))
-
     ;; nelisp_env_lkv_mirror
     ;;
     ;; Mirror path (called on frame miss): check entry existence then
     ;; fill out-ptr with value Sexp.  Returns 1 if unbound, 0 if found.
     ;;
-    ;; mirror-ptr: *const Sexp — Env::globals_record.
-    ;; name-ptr:   *const Sexp — symbol name sexp.
-    ;; out-ptr:    *mut Sexp   — result slot.
-    ;; _pad:       i64         — alignment padding (even arity).
-    ;;
-    ;; Arity 4 (even) ✓.
-    ;; Two extern-calls, but each is in a different branch — only one
-    ;; executes per path.  extern-call is arg 0 of `=' resp. arg 0 of
-    ;; `and' ✓.
+    ;; R11a CSE-hoist: bind the entry pointer once via `let' (= let-rt
+    ;; frame slot) and read slot 0 directly via `record-slot-ref' on
+    ;; the hit path — bypassing the `nelisp_mirror_lookup_value'
+    ;; wrapper (which would re-hash).  2 hashes → 1 per call on hit;
+    ;; semantics identical (= `record-slot-ref' uses the same refcount-
+    ;; safe `nl_sexp_clone_into' as the wrapper).
     (defun nelisp_env_lkv_mirror (mirror-ptr name-ptr out-ptr _pad)
-      (if (= (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr) 0)
-          1
-        (and (extern-call nelisp_mirror_lookup_value mirror-ptr name-ptr out-ptr)
-             0)))
+      (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+        (if (= entry 0)
+            1
+          (and (record-slot-ref entry 0 out-ptr) 0))))
 
     ;; nelisp_env_lookup_value
     ;;
     ;; Main entry: check frame stack first (lexical scoping), then fall
     ;; through to the mirror (global scope).
     ;;
-    ;; The `nelisp_frame_stack_find' call is duplicated in the false
-    ;; branch (= frame hit path) to avoid the `let' binding constraint;
-    ;; the second call traverses the same stack, hits the same bucket,
-    ;; and returns the identical cell pointer.  This is the established
-    ;; Phase 47 repeat-on-hit pattern (= identical to the double extern-
-    ;; call in `nelisp_frame_stack_find_descend' and `nelisp_mirror_is_bound').
-    ;;
-    ;; Arity 4 (even) ✓.
-    ;; Each execution path passes through at most one extern-call site in
-    ;; this defun before delegating to a helper.  extern-call is arg 0
-    ;; of `=' in both branches ✓.
+    ;; R11a CSE-hoist: bind `frame_stack_find' result once via `let' so
+    ;; both the miss-test `(= cell-ptr 0)' and the hit-path
+    ;; `nl_cell_get_value' reuse the same i64 cell pointer.  Previous
+    ;; shape called `frame_stack_find' twice (once for the if-test,
+    ;; once for the cell-hit dispatch).  On frame-hit: 1 hash instead
+    ;; of 2.  On frame-miss + mirror-hit: 2 hashes instead of 3.
     (defun nelisp_env_lookup_value (mirror-ptr frames-ptr name-ptr out-ptr)
-      (if (= (extern-call nelisp_frame_stack_find frames-ptr name-ptr) 0)
-          ;; Frame miss: check mirror.
-          (nelisp_env_lkv_mirror mirror-ptr name-ptr out-ptr 0)
-        ;; Frame hit: read cell value (refcount-safe).
-        (nelisp_env_lkv_cell_hit
-         (extern-call nelisp_frame_stack_find frames-ptr name-ptr)
-         out-ptr))))
+      (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+        (if (= cell-ptr 0)
+            ;; Frame miss: check mirror.
+            (nelisp_env_lkv_mirror mirror-ptr name-ptr out-ptr 0)
+          ;; Frame hit: read cell value (refcount-safe).
+          (extern-call nl_cell_get_value cell-ptr out-ptr)))))
   "Phase 47 source for Wave a-2 `Env::lookup_value' body.
 
-Three-defun CPS composition:
-  `nelisp_env_lookup_value' — frame check (4 args, even); dispatches to
-    cell-hit or mirror path.  extern-call `nelisp_frame_stack_find' is
-    duplicated in the hit branch (same result, no let-binding needed).
-  `nelisp_env_lkv_mirror' — mirror hit/miss (4 args, even); exactly one
-    extern-call per branch ✓.
-  `nelisp_env_lkv_cell_hit' — cell value extract (2 args, even);
-    delegates to `nl_cell_get_value' for refcount-aware clone ✓.
+R11a (Doc 49 Wave 9): two-tier `let-rt' CSE hoist:
+  1. `nelisp_env_lookup_value' binds the `frame_stack_find' result
+     once; the miss-test and the cell-hit `nl_cell_get_value' share
+     the same i64 pointer (= 2 hashes → 1 on frame-hit path).
+  2. `nelisp_env_lkv_mirror' binds the `mirror_lookup_entry' result
+     once and reads slot 0 directly via `record-slot-ref' (= bypasses
+     the `nelisp_mirror_lookup_value' wrapper, 2 hashes → 1 on
+     mirror-hit).  `record-slot-ref' delegates to `nl_sexp_clone_into'
+     for the same refcount-safe clone semantics as the wrapper.
 
-Critical fix vs Wave a: `cell-value' (raw SIMD copy) replaced by
-`(extern-call nl_cell_get_value ...)' which calls `c.value.clone()'
-on the Rust side — refcount-safe, eliminates the double-free SIGABRT.")
+The previous CPS `nelisp_env_lkv_cell_hit' helper was inlined since
+the only call site now consumes a let-bound cell pointer that's
+already on the stack — no need for a separate hop.
+
+Critical fix vs Wave a (retained): `cell-value' (raw SIMD copy) is
+still replaced by `(extern-call nl_cell_get_value ...)' which calls
+`c.value.clone()' on the Rust side — refcount-safe, eliminates the
+double-free SIGABRT.")
 
 (provide 'nelisp-cc-env-lookup-value)
 

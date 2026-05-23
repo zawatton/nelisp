@@ -63,33 +63,38 @@
     ;;
     ;; Called after nelisp_mirror_lookup_entry to check entry existence.
     ;; entry-ptr: result of nelisp_mirror_lookup_entry (0 = miss, else hit).
-    ;; mirror-ptr / sym-ptr / unbound-ptr: forwarded args for lookup_value.
+    ;; mirror-ptr / sym-ptr / unbound-ptr: forwarded args (unused now;
+    ;;   kept for arity stability with the dispatcher call sites).
     ;; result-slot: *mut Sexp — written on hit.
     ;; miss-code: i64 to return on miss (0 for get-value, -1 for get-function).
     ;;
-    ;; Arity 6 (even) — body-entry rsp ≡ 0 mod 16.
-    ;; extern-call nelisp_mirror_lookup_value = 3 args → rsp after 3 pushes
-    ;; ≡ 0 - 24 ≡ 8 mod 16; call adds 8 → callee entry ≡ 0 mod 16. ✓
+    ;; R11a CSE-hoist: previous shape called `nelisp_mirror_lookup_value'
+    ;; on the hit branch (= a wrapper that re-hashes via `lookup_entry'
+    ;; + reads slot 0 via record-slot-ref).  We already hold the entry
+    ;; pointer from the dispatcher's outer `lookup_entry' call, so call
+    ;; `record-slot-ref' on entry-ptr slot 0 directly — bypassing the
+    ;; wrapper and its redundant FNV-1a hash + bucket walk.  2 hashes →
+    ;; 1 per get-value/get-function call; semantics identical
+    ;; (= `record-slot-ref' uses the same `nl_sexp_clone_into').
+    ;;
+    ;; Arity 6 (even) — body-entry rsp ≡ 0 mod 16.  `record-slot-ref' is
+    ;; a 3-arg helper whose extern-call invocation is arg 0 of `and' ✓.
     (defun nelisp_env_shim_check_lookup
         (entry-ptr mirror-ptr sym-ptr result-slot miss-code _pad)
       (if (= entry-ptr 0)
           miss-code
-        (and
-         (extern-call nelisp_mirror_lookup_value mirror-ptr sym-ptr result-slot)
-         1)))
+        (and (record-slot-ref entry-ptr 0 result-slot) 1)))
 
     ;; nelisp_env_shim_check_lookup_fn
     ;;
     ;; Same as nelisp_env_shim_check_lookup but for the function cell
-    ;; (nelisp_mirror_lookup_function instead of _value).
+    ;; (= slot 1 instead of slot 0).  Same R11a hoist rationale.
     ;; Arity 6 (even).
     (defun nelisp_env_shim_check_lookup_fn
         (entry-ptr mirror-ptr sym-ptr result-slot miss-code _pad)
       (if (= entry-ptr 0)
           miss-code
-        (and
-         (extern-call nelisp_mirror_lookup_function mirror-ptr sym-ptr result-slot)
-         1)))
+        (and (record-slot-ref entry-ptr 1 result-slot) 1)))
 
     ;; nelisp_env_shim_write_bool
     ;;

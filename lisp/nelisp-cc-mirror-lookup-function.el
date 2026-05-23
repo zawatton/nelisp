@@ -24,18 +24,22 @@
 (defconst nelisp-cc-mirror-lookup-function--source
   '(defun nelisp_mirror_lookup_function (mirror-ptr sym-ptr result-slot)
      ;; Compose §111.E #1 + §111.B `record-slot-ref' over slot 1.
-     (if (= (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr) 0)
-         (sexp-write-nil result-slot)
-       (record-slot-ref
-        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-        1
-        result-slot)))
+     ;; CSE-hoisted via `let' — see `mirror-lookup-value' for the full
+     ;; rationale; this file mirrors that fix on slot 1 (function cell).
+     (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)))
+       (if (= entry 0)
+           (sexp-write-nil result-slot)
+         (record-slot-ref entry 1 result-slot))))
   "Phase 47 source for Doc 111 §111.E #3 `mirror_lookup_function'.
 
 Identical to `mirror_lookup_value' (#2) except it reads slot 1 (=
 symbol-entry function cell) instead of slot 0 (= value cell).  The
 sentinel-return convention matches #2: `Sexp::Nil' on miss, the
-caller-facing dispatcher re-introduces the unbound marker.")
+caller-facing dispatcher re-introduces the unbound marker.
+
+R11a (Doc 49 Wave 9): `let-rt' CSE hoist — 2 FNV-1a hashes + 2
+bucket walks reduced to 1 per call (= bit-for-bit identical to the
+previous double-call shape).")
 
 (provide 'nelisp-cc-mirror-lookup-function)
 

@@ -43,44 +43,38 @@
 ;;; Code:
 
 (defconst nelisp-cc-env-lookup-function--source
-  '(seq
-    ;; nelisp_env_lkf_hit
-    ;;
-    ;; Hit path: fill out-ptr with the function Sexp via
-    ;; `nelisp_mirror_lookup_function' (= record-slot-ref slot 1, which
-    ;; clones via `nl_sexp_clone_into' — refcount-safe).
-    ;; Returns 0 (= found sentinel).
-    ;;
-    ;; Arity 4 (even) — `sub rsp, 8' NOT needed; rsp ≡ 0 mod 16 at body.
-    ;; extern-call `nelisp_mirror_lookup_function' is arg 0 of `and'. ✓
-    (defun nelisp_env_lkf_hit (mirror-ptr name-ptr out-ptr _pad)
-      (and (extern-call nelisp_mirror_lookup_function mirror-ptr name-ptr out-ptr)
-           0))
-
-    ;; nelisp_env_lookup_function
-    ;;
-    ;; Main entry: check mirror for the function entry; return 1 on miss
-    ;; or call `nelisp_env_lkf_hit' to fill out-ptr and return 0 on hit.
-    ;;
-    ;; Arity 4 (even) ✓.
-    ;; `(extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)' is
-    ;; arg 0 of `='; only one extern-call per code path ✓.
-    (defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
-      (if (= (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr) 0)
-          1
-        (nelisp_env_lkf_hit mirror-ptr name-ptr out-ptr 0))))
+  '(defun nelisp_env_lookup_function (mirror-ptr unbound-ptr name-ptr out-ptr)
+     ;; Main entry: check mirror for the function entry; return 1 on
+     ;; miss or fill out-ptr with the function Sexp on hit (= 0).
+     ;;
+     ;; R11a CSE-hoist: the previous two-defun CPS shape called
+     ;; `nelisp_mirror_lookup_entry' for the existence check and then
+     ;; `nelisp_mirror_lookup_function' on hit (= 2 FNV-1a hashes).
+     ;; The hoisted shape calls `nelisp_mirror_lookup_entry' once via
+     ;; `let' (= let-rt frame slot) and reads slot 1 directly via
+     ;; `record-slot-ref' — bypassing the `nelisp_mirror_lookup_function'
+     ;; wrapper since we already hold the entry pointer.  `record-slot-
+     ;; ref' delegates to `nl_sexp_clone_into' (refcount-safe, same
+     ;; semantics as the previous wrapper).
+     ;;
+     ;; Arity 4 (even) ✓.  `(extern-call nelisp_mirror_lookup_entry ...)'
+     ;; is arg 0 of the let-binding (= itself the value-form of let-rt,
+     ;; satisfying the "extern-call as arg 0" alignment rule).
+     (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr name-ptr)))
+       (if (= entry 0)
+           1
+         (and (record-slot-ref entry 1 out-ptr) 0))))
   "Phase 47 source for Wave a-2 `Env::lookup_function' body.
 
-Two-defun CPS composition:
-  `nelisp_env_lookup_function' — mirror entry check; dispatches to
-    hit or miss path (extern-call as arg 0 of `=' ✓).
-  `nelisp_env_lkf_hit' — fills out-ptr via refcount-safe
-    `nelisp_mirror_lookup_function' (record-slot-ref slot 1, delegates
-    to `nl_sexp_clone_into' per Doc 111 §111.C v3).
+R11a (Doc 49 Wave 9): collapsed two-defun CPS to a single defun
+using `let-rt' CSE hoist of the entry pointer + `record-slot-ref'
+direct slot-1 read.  Previous shape paid 2 FNV-1a hashes per call
+(`lookup_entry' + `lookup_function'); hoisted shape pays 1.
 
 The `unbound-ptr' parameter is unused (retained for call-site symmetry
 with `lookup_value' and to keep even arity).  The miss sentinel is 1
-(= unbound-fn), found is 0 (= out-ptr filled with function Sexp).")
+(= unbound-fn), found is 0 (= out-ptr filled with function Sexp via
+the refcount-safe `nl_sexp_clone_into' invoked by `record-slot-ref').")
 
 (provide 'nelisp-cc-env-lookup-function)
 

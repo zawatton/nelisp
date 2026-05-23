@@ -41,12 +41,14 @@
      ;; entry slot; `record-slot-ref' then dereferences `.payload' to
      ;; reach the inner `NlRecord' and refcount-aware-clones slot[0]
      ;; into `result-slot' (= `nl_sexp_clone_into' under the hood).
-     (if (= (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr) 0)
-         (sexp-write-nil result-slot)
-       (record-slot-ref
-        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-        0
-        result-slot)))
+     ;;
+     ;; CSE-hoisted: bind the entry pointer once via `let' (= `let-rt'
+     ;; runtime slot) and reuse in both the miss test and the
+     ;; record-slot-ref hit path.  Cuts 2 hashes → 1 hash per call.
+     (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)))
+       (if (= entry 0)
+           (sexp-write-nil result-slot)
+         (record-slot-ref entry 0 result-slot))))
   "Phase 47 source for Doc 111 §111.E #2 `mirror_lookup_value'.
 
 Composes §111.E #1 `mirror_lookup_entry' (via `extern-call' into
@@ -54,13 +56,14 @@ Composes §111.E #1 `mirror_lookup_entry' (via `extern-call' into
 slot 0 (the symbol-entry value cell).  On miss the result slot is
 written to `Sexp::Nil' via `sexp-write-nil' (= zeroed tag byte).
 
-The double `extern-call' is the simplest expression of the compose-
-on-#1 contract; the second call hits the same bucket and pays the
-same FNV-1a hash + walk, but Phase 47 has no `let' binding for i64
-intermediates yet, so we eat the duplicate call to keep this helper
-under the §3.E Group A \"minimal new logic\" gate.  Doc 111 §111.E
-optimisation pass (= post-Group-A) will fold the duplicate via the
-Phase 47 grammar `let' that lands with §111.E Group B.")
+R11a (Doc 49 Wave 9): `let-rt' CSE hoist of the entry pointer.  The
+duplicate extern-call into `nelisp_mirror_lookup_entry' (the
+previous compose-on-#1 shape) is replaced by a single call whose
+result lives in a frame slot; the `if' test and the hit-branch
+`record-slot-ref' both consume the same slot.  Cuts 2 FNV-1a hashes
++ 2 bucket walks down to 1 per call; semantics bit-for-bit
+identical (= the second hash always observed the same memory and
+returned the same pointer).")
 
 (provide 'nelisp-cc-mirror-lookup-value)
 

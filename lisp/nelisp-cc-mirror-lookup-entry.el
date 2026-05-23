@@ -66,13 +66,19 @@
       ;; bucket entry, treated as end-of-list).  The inner pair box
       ;; b2 starts with the KEY Sexp at offset 0 and the ENTRY Sexp
       ;; at offset 32, so `(+ b2 32)' is the entry's `*const Sexp'.
+      ;;
+      ;; R11a CSE-hoist: `(sexp-payload-ptr box-ptr)' lifted into a
+      ;; `let' so both the str-eq compare and the hit-branch
+      ;; `(+ b2 32)' reuse the same payload pointer (= one tag check
+      ;; + one payload-offset load per bucket step instead of two).
       (if (= box-ptr 0)
           0
-        (if (= (str-eq (sexp-payload-ptr box-ptr) sym-ptr) 1)
-            (+ (sexp-payload-ptr box-ptr) 32)
-          (nelisp_mirror_walk_bucket
-           (cons-cdr-raw-from-box box-ptr)
-           sym-ptr))))
+        (let ((b2 (sexp-payload-ptr box-ptr)))
+          (if (= (str-eq b2 sym-ptr) 1)
+              (+ b2 32)
+            (nelisp_mirror_walk_bucket
+             (cons-cdr-raw-from-box box-ptr)
+             sym-ptr)))))
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record
       ;;             (= `globals_record', tag `nelisp-env').

@@ -32,23 +32,19 @@
   '(defun nelisp_mirror_is_bound (mirror-ptr sym-ptr unbound-ptr)
      ;; Compose §111.E #1 + slot-0-ptr + symbol-eq.
      ;;
-     ;; The double `extern-call' into `nelisp_mirror_lookup_entry'
-     ;; matches the pattern in #2 / #3: Phase 47 grammar does not yet
-     ;; have an i64 `let' binding for raw pointer results, and the
-     ;; FNV-1a + bucket walk is fast enough that the duplicate call is
-     ;; not measurable in the production hot path (= `defvar' init).
-     ;; Folding the duplicate is deferred to the §111.E optimisation
-     ;; pass after Group B lands the `let' grammar form.
-     (if (= (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr) 0)
-         0
-       (if (= (symbol-eq
-               (record-slot-ref-ptr
-                (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
-                0)
-               unbound-ptr)
-              1)
+     ;; R11a CSE-hoist: bind the entry pointer once via `let' (= let-rt
+     ;; frame slot) and reuse for both the existence check and the
+     ;; slot-0 unbound-marker comparison.  2 FNV-1a hashes + 2 bucket
+     ;; walks → 1 per call; semantics bit-for-bit identical.
+     (let ((entry (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)))
+       (if (= entry 0)
            0
-         1)))
+         (if (= (symbol-eq
+                 (record-slot-ref-ptr entry 0)
+                 unbound-ptr)
+                1)
+             0
+           1))))
   "Phase 47 source for Doc 111 §111.E #4 `mirror_is_bound'.
 
 `boundp' equivalent against the elisp env mirror.  Returns 1 iff the
@@ -57,7 +53,10 @@ the caller-supplied unbound-marker sentinel; else 0.
 
 `symbol-eq' returns 0 for tag-mismatched inputs (= the value cell
 holds a non-Symbol like `Sexp::Int' / `Sexp::Cons' / etc.), so this
-helper correctly classifies any non-Symbol value cell as bound.")
+helper correctly classifies any non-Symbol value cell as bound.
+
+R11a (Doc 49 Wave 9): `let-rt' CSE hoist — single entry lookup,
+reused in the miss test and the slot-0 unbound-marker comparison.")
 
 (provide 'nelisp-cc-mirror-is-bound)
 

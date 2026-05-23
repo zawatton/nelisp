@@ -93,43 +93,52 @@
     ;;
     ;; Main entry: constant guard → frame check → mirror write.
     ;;
-    ;; The `nelisp_frame_stack_find' call is duplicated in the false
-    ;; branch (frame hit path) following the established Phase 47 repeat-
-    ;; on-hit pattern (same result, no let-binding needed).
+    ;; R11a CSE-hoist: bind `frame_stack_find' result once via `let'
+    ;; (= let-rt frame slot) so both the miss-test `(= cell-ptr 0)' and
+    ;; the hit-branch `cell-set-value' reuse the same i64 cell pointer.
+    ;; Previous shape called `frame_stack_find' twice on the hit path
+    ;; (= 2 FNV-1a hashes + 2 stack walks); hoisted shape pays 1.
     ;;
     ;; Arity 6 (even) ✓.
     ;; Execution paths:
     ;;   constant path: one extern-call (is_constant = 1), return 1.
     ;;   frame-miss path: two sequential extern-calls (is_constant=0,
     ;;     frame_stack_find=0), then delegate to mirror helper.
-    ;;   frame-hit path: two sequential + one repeat extern-call
-    ;;     (is_constant=0, frame_stack_find=0→false, frame_stack_find again),
-    ;;     then cell-set-value in helper.
-    ;; In all paths the extern-calls are in if-conditions (arg 0 of `='),
-    ;; consuming their result before the next extern-call executes ✓.
+    ;;   frame-hit path: two sequential extern-calls (is_constant=0,
+    ;;     frame_stack_find=non-zero bound via let-rt), then
+    ;;     cell-set-value in helper consuming the bound cell-ptr.
+    ;; In all paths the extern-calls are arg 0 of `=' resp. of the
+    ;; let-binding value-form, consuming each result before the next
+    ;; extern-call executes ✓.
     (defun nelisp_env_set_value
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
       (if (= (extern-call nelisp_mirror_is_constant mirror-ptr name-ptr) 1)
           1
-        (if (= (extern-call nelisp_frame_stack_find frames-ptr name-ptr) 0)
-            ;; Frame miss: write to mirror.
-            (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0)
-          ;; Frame hit: overwrite lexical cell.
-          (nelisp_env_setv_cell_hit
-           (extern-call nelisp_frame_stack_find frames-ptr name-ptr)
-           val-ptr)))))
+        (let ((cell-ptr (extern-call nelisp_frame_stack_find frames-ptr name-ptr)))
+          (if (= cell-ptr 0)
+              ;; Frame miss: write to mirror.
+              (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0)
+            ;; Frame hit: overwrite lexical cell (refcount-safe).
+            (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))
   "Phase 47 source for Wave a-2 `Env::set_value' body.
 
-Three-defun CPS composition:
-  `nelisp_env_set_value' — constant guard + frame check (6 args, even).
-    Two sequential extern-calls in the non-constant path (is_constant then
-    frame_stack_find); each result is consumed by `(= ... N)' before the
-    next extern-call executes, so the stack is always back at baseline.
-    The frame_stack_find is repeated in the hit branch (same result,
-    Phase 47 repeat-on-hit pattern).
-  `nelisp_env_setv_mirror' — mirror write (4 args, even); one extern-call ✓.
-  `nelisp_env_setv_cell_hit' — cell overwrite (2 args, even); cell-set-value
-    (= `nl_cell_set_value' Rust helper, refcount-safe) ✓.
+R11a (Doc 49 Wave 9): `let-rt' CSE hoist on the `frame_stack_find'
+result.  Frame-hit path now pays 1 FNV-1a hash + 1 stack walk
+instead of 2 (= second walk was the established repeat-on-hit
+pattern, now obsoleted by the let-rt frame slot).  Semantics
+bit-for-bit identical — both calls observed the same stack memory
+and returned the same cell pointer.
+
+Three-defun composition:
+  `nelisp_env_set_value' — constant guard + let-bound frame check
+    (6 args, even).  Sequential extern-calls in the non-constant
+    path: `is_constant' (arg 0 of `='), then `frame_stack_find'
+    (arg 0 of let-binding value-form); each result consumed before
+    the next extern-call executes.
+  `nelisp_env_setv_mirror' — mirror write (4 args, even); one
+    extern-call into `nelisp_mirror_set_value_or_insert' ✓.
+  `nelisp_env_setv_cell_hit' — cell overwrite (2 args, even);
+    `cell-set-value' delegates to refcount-safe `nl_cell_set_value' ✓.
 
 The SCRATCH-PTR arg carries the pre-built 11-slot scratch vector prepared
 by the Rust thin wrapper (= `build_or_insert_scratch_vec(value, unbound,
