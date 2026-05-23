@@ -200,17 +200,74 @@ safe — shifts one byte at a time."
 
 ;; ---- buffer abstraction (= §92.a (1)) ----
 ;;
-;; The buffer is a single-cell vector wrapping a plist.  This gives
-;; us reference semantics without cl-defstruct's accessor cost — the
-;; spike API surface is small enough to keep direct plist access.
+;; Wave 19 — flat-vector buffer layout.  The buffer is a 7-slot
+;; vector with one cell per field; `aref' / `aset' replace the legacy
+;; plist-get / plist-put O(7) scan that dominated per-emit overhead in
+;; the standalone NeLisp interpreter (= ~38% wall on trivial entry per
+;; Wave 18 trace).  Slot order is fixed and documented below.
+;;
+;; Slot indices (= the canonical buffer layout):
+;;
+;;   0  CHUNKS        ; reverse-order list of unibyte-string chunks
+;;   1  LENGTH        ; running cumulative byte count (= O(1) read)
+;;   2  LABELS        ; alist ((NAME . POS) ...) reverse-defn order
+;;   3  FIXUPS        ; alist ((SLOT-OFFSET . LABEL) ...) pending
+;;   4  RELOCS        ; list of plists, emission order preserved
+;;   5  ABI           ; 'sysv | 'win64 (immutable after make-buffer)
+;;   6  EXTERN-NAMES  ; reserved for Wave 20+ extern-name dedup cache
+;;
+;; The `--unwrap' / `--rewrap' / `--slot-*' helpers below are
+;; `defsubst' so the host-Emacs byte-compiler inlines them to bare
+;; aref / aset.  The standalone NeLisp interpreter, where defsubst
+;; inline does not fire, still benefits because each helper is a
+;; single primitive call instead of a plist-get scan + plist-put copy.
 
-(defsubst nelisp-asm-x86_64--unwrap (buf)
-  "Return the plist held inside BUF (= buffer state vector)."
-  (aref buf 0))
+(defconst nelisp-asm-x86_64--slot-chunks 0)
+(defconst nelisp-asm-x86_64--slot-length 1)
+(defconst nelisp-asm-x86_64--slot-labels 2)
+(defconst nelisp-asm-x86_64--slot-fixups 3)
+(defconst nelisp-asm-x86_64--slot-relocs 4)
+(defconst nelisp-asm-x86_64--slot-abi    5)
+(defconst nelisp-asm-x86_64--slot-extern-names 6)
 
-(defsubst nelisp-asm-x86_64--rewrap (buf plist)
-  "Replace BUF's backing plist with PLIST.  Mutates BUF in place."
-  (aset buf 0 plist)
+(defsubst nelisp-asm-x86_64--get-chunks (buf) (aref buf 0))
+(defsubst nelisp-asm-x86_64--set-chunks (buf v) (aset buf 0 v))
+(defsubst nelisp-asm-x86_64--get-length (buf) (aref buf 1))
+(defsubst nelisp-asm-x86_64--set-length (buf v) (aset buf 1 v))
+(defsubst nelisp-asm-x86_64--get-labels (buf) (aref buf 2))
+(defsubst nelisp-asm-x86_64--set-labels (buf v) (aset buf 2 v))
+(defsubst nelisp-asm-x86_64--get-fixups (buf) (aref buf 3))
+(defsubst nelisp-asm-x86_64--set-fixups (buf v) (aset buf 3 v))
+(defsubst nelisp-asm-x86_64--get-relocs (buf) (aref buf 4))
+(defsubst nelisp-asm-x86_64--set-relocs (buf v) (aset buf 4 v))
+(defsubst nelisp-asm-x86_64--get-abi    (buf) (aref buf 5))
+
+;; Legacy plist-shape compatibility shim.  `--unwrap' reconstructs the
+;; old `(:chunks ... :length ... :labels ... :fixups ... :relocs ...
+;; :abi ...)' plist on demand so any external caller that still pokes
+;; at the inner shape keeps working.  `--rewrap' splats a plist back
+;; into the slot vector.  Internal call sites all use the flat-vector
+;; accessors above — these shims exist only to preserve back-compat
+;; for code outside this file that might inspect the buffer.
+(defun nelisp-asm-x86_64--unwrap (buf)
+  "Return BUF's state as a legacy plist (back-compat helper).
+Internal hot-path code uses `--get-*' / `--set-*' accessors directly
+to avoid the plist materialization cost."
+  (list :chunks (aref buf 0)
+        :length (aref buf 1)
+        :labels (aref buf 2)
+        :fixups (aref buf 3)
+        :relocs (aref buf 4)
+        :abi    (aref buf 5)))
+
+(defun nelisp-asm-x86_64--rewrap (buf plist)
+  "Replace BUF's slots from PLIST (back-compat helper).  Mutates BUF."
+  (aset buf 0 (plist-get plist :chunks))
+  (aset buf 1 (plist-get plist :length))
+  (aset buf 2 (plist-get plist :labels))
+  (aset buf 3 (plist-get plist :fixups))
+  (aset buf 4 (plist-get plist :relocs))
+  (aset buf 5 (plist-get plist :abi))
   buf)
 
 ;; ---- ABI descriptor (= Doc 101 §101.B Wave 4 framework) ----
@@ -293,82 +350,82 @@ Optional ABI argument selects the calling convention:
   'win64            — Microsoft x64 (Windows x86_64)
 
 The buffer is opaque; use the accessors below to inspect or
-extend it.  §92.d chunk-build: :chunks holds the reverse-order
+extend it.  §92.d chunk-build: slot 0 holds the reverse-order
 list of unibyte-string chunks pushed by per-instruction emitters,
-:length tracks the running cumulative byte count (= O(1) read).
+slot 1 tracks the running cumulative byte count (= O(1) read).
+
+Wave 19 flat-vector layout: the buffer is a 7-slot vector — see
+the `--slot-*' defconsts above for the canonical slot order.  The
+prior plist-in-vector wrapper was replaced because plist-get /
+plist-put dominated the per-emit cost on the standalone NeLisp
+interpreter (= Wave 18 trace, ~38% wall on trivial entry).
 
 Doc 101 §101.B Wave 5: both 'sysv and 'win64 are fully operational.
-The :abi field is stored in the buffer plist so that emitters can
-gate Win64-specific codegen (shadow space, arg register selection)."
+Slot 5 stores the ABI so emitters can gate Win64-specific codegen
+(shadow space, arg register selection)."
   (let ((resolved-abi (or abi 'sysv)))
     (unless (memq resolved-abi '(sysv win64))
       (signal 'nelisp-asm-x86_64-error
               (list :unknown-abi resolved-abi)))
     ;; Wave 5: all ABI values accepted and fully operational.
-    (vector (list :chunks nil :length 0 :labels nil
-                  :fixups nil :relocs nil :abi resolved-abi))))
+    ;; Wave 19: flat 7-slot vector layout.
+    ;;   [CHUNKS LENGTH LABELS FIXUPS RELOCS ABI EXTERN-NAMES]
+    (vector nil 0 nil nil nil resolved-abi nil)))
 
 (defun nelisp-asm-x86_64-buffer-bytes (buf)
   "Return BUF's accumulated bytes as a unibyte-string.
 Finalizes the §92.d chunk-build accumulator via one
-`(apply #\\='concat (nreverse :chunks))' call (= O(total-bytes)
-not O(N²)).  The string is not patched — call
+`(apply #\\='concat (nreverse ...))' call (= O(total-bytes) not
+O(N²)).  The string is not patched — call
 `nelisp-asm-x86_64-resolve-fixups' first if any `emit-fixup'
 entries are pending."
-  (let ((plist (nelisp-asm-x86_64--unwrap buf)))
-    (apply #'concat (nreverse (copy-sequence (plist-get plist :chunks))))))
+  (apply #'concat (nreverse (copy-sequence (aref buf 0)))))
 
 (defun nelisp-asm-x86_64-buffer-pos (buf)
   "Return BUF's current byte offset (= number of bytes written).
-§92.d: read from the cached `:length' field (= O(1))."
-  (plist-get (nelisp-asm-x86_64--unwrap buf) :length))
+§92.d: read from slot 1 (= O(1))."
+  (aref buf 1))
 
 (defun nelisp-asm-x86_64-buffer-abi (buf)
   "Return BUF's ABI symbol ('sysv or 'win64).
 Doc 101 §101.B Wave 4 accessor.  Returns 'sysv for buffers created
 before the :abi field was introduced (= legacy nil → fallback)."
-  (or (plist-get (nelisp-asm-x86_64--unwrap buf) :abi) 'sysv))
+  (or (aref buf 5) 'sysv))
 
 (defun nelisp-asm-x86_64-buffer-labels (buf)
   "Return BUF's labels alist `((NAME . POS) ...)' (reverse-defn order)."
-  (plist-get (nelisp-asm-x86_64--unwrap buf) :labels))
+  (aref buf 2))
 
 (defun nelisp-asm-x86_64-buffer-fixups (buf)
   "Return BUF's pending fixups alist `((SLOT-OFFSET . LABEL) ...)'."
-  (plist-get (nelisp-asm-x86_64--unwrap buf) :fixups))
+  (aref buf 3))
 
 (defun nelisp-asm-x86_64-buffer-relocs (buf)
   "Return BUF's pending relocations as a list of plists.
 Each entry is `(:type TYPE :sym SYM :offset OFFSET :addend N)' —
 order matches emit order, suitable for Doc 93 linker handoff."
-  (plist-get (nelisp-asm-x86_64--unwrap buf) :relocs))
+  (aref buf 4))
 
 (defun nelisp-asm-x86_64--append-bytes (buf bs)
   "Append unibyte-string BS to BUF's byte stream and advance pos.
 Internal mutator — call sites are the per-instruction emitters.
-§92.d chunk-build: cons BS onto :chunks (= O(1) push) and bump
-:length, instead of `(concat old bs)' which was O(N²) for long
-buffers."
-  (let* ((plist (nelisp-asm-x86_64--unwrap buf))
-         (chunks (plist-get plist :chunks))
-         (len (plist-get plist :length)))
-    (setq plist (plist-put plist :chunks (cons bs chunks)))
-    (setq plist (plist-put plist :length (+ len (length bs))))
-    (nelisp-asm-x86_64--rewrap buf plist)))
+§92.d chunk-build: cons BS onto the chunks slot (= O(1) push) and
+bump the length slot, instead of `(concat old bs)' which was O(N²)
+for long buffers.  Wave 19: direct aref / aset on the flat-vector
+layout replaces the plist-get / plist-put roundtrip."
+  (aset buf 0 (cons bs (aref buf 0)))
+  (aset buf 1 (+ (aref buf 1) (length bs)))
+  buf)
 
 (defun nelisp-asm-x86_64-define-label (buf name)
   "Mark NAME as resolved at BUF's current byte position.
 Signals `nelisp-asm-x86_64-error' on duplicate label — silent
 shadow would mask codegen bugs."
-  (let* ((plist (nelisp-asm-x86_64--unwrap buf))
-         (labels (plist-get plist :labels)))
-    (when (assq name labels)
-      (signal 'nelisp-asm-x86_64-error
-              (list :duplicate-label name)))
-    (setq plist (plist-put plist :labels
-                           (cons (cons name (plist-get plist :length))
-                                 labels)))
-    (nelisp-asm-x86_64--rewrap buf plist)))
+  (when (assq name (aref buf 2))
+    (signal 'nelisp-asm-x86_64-error
+            (list :duplicate-label name)))
+  (aset buf 2 (cons (cons name (aref buf 1)) (aref buf 2)))
+  buf)
 
 (defun nelisp-asm-x86_64-emit-fixup (buf slot-offset label)
   "Record a 4-byte rel32 fixup at SLOT-OFFSET against LABEL.
@@ -378,11 +435,8 @@ byte little-endian displacement begins.  Resolution computes
 records only — the placeholder bytes themselves must already
 have been emitted by the caller (= `call-rel32' / `jmp-rel32'
 write 4 zero bytes before recording the fixup)."
-  (let* ((plist (nelisp-asm-x86_64--unwrap buf))
-         (fixups (plist-get plist :fixups)))
-    (setq plist (plist-put plist :fixups
-                           (cons (cons slot-offset label) fixups)))
-    (nelisp-asm-x86_64--rewrap buf plist)))
+  (aset buf 3 (cons (cons slot-offset label) (aref buf 3)))
+  buf)
 
 (defun nelisp-asm-x86_64-emit-reloc (buf type sym &optional addend
                                          &rest keyword-args)
@@ -404,17 +458,15 @@ common path so existing callers keep working."
     (signal 'nelisp-asm-x86_64-error
             (list :unknown-reloc-type type)))
   (let* ((section (or (plist-get keyword-args :section) 'text))
-         (plist (nelisp-asm-x86_64--unwrap buf))
-         (offset (plist-get plist :length))
-         (relocs (plist-get plist :relocs))
+         (offset (aref buf 1))
          (entry (list :offset offset
                       :type type
                       :symbol sym
                       :sym sym
                       :addend (or addend 0)
                       :section section)))
-    (setq plist (plist-put plist :relocs (append relocs (list entry))))
-    (nelisp-asm-x86_64--rewrap buf plist)))
+    (aset buf 4 (append (aref buf 4) (list entry)))
+    buf))
 
 (defun nelisp-asm-x86_64-extract-relocs (buf)
   "Return BUF's relocs in Doc 93 §93.a-compatible plist form.
@@ -431,7 +483,7 @@ public `:symbol' key is kept)."
                               (plist-get r :sym))
                   :addend (or (plist-get r :addend) 0)
                   :section (or (plist-get r :section) 'text)))
-          (plist-get (nelisp-asm-x86_64--unwrap buf) :relocs)))
+          (aref buf 4)))
 
 (defun nelisp-asm-x86_64-reloc-pc32-here (buf sym-name addend
                                               &optional section)
@@ -444,19 +496,16 @@ usage:
 
   (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
   (nelisp-asm-x86_64-reloc-pc32-here buf \"main\" -4)"
-  (let ((offset (nelisp-asm-x86_64-buffer-pos buf)))
+  (let ((offset (aref buf 1)))
     (nelisp-asm-x86_64--append-bytes buf (unibyte-string 0 0 0 0))
     (nelisp-asm-x86_64-emit-reloc buf 'pc32 sym-name addend
                                   :section (or section 'text))
     ;; The reloc was recorded at the *new* pos (= post-append) so
     ;; rewrite the last entry's `:offset' to the placeholder start.
-    (let* ((plist (nelisp-asm-x86_64--unwrap buf))
-           (relocs (plist-get plist :relocs))
+    (let* ((relocs (aref buf 4))
            (last (car (last relocs))))
       (setq last (plist-put last :offset offset))
-      (setq plist (plist-put plist :relocs
-                             (append (butlast relocs) (list last))))
-      (nelisp-asm-x86_64--rewrap buf plist))
+      (aset buf 4 (append (butlast relocs) (list last))))
     offset))
 
 (defun nelisp-asm-x86_64-reloc-abs64-here (buf sym-name addend
@@ -465,18 +514,15 @@ usage:
 BUF is mutated; SYM-NAME and ADDEND are forwarded to
 `nelisp-asm-x86_64-emit-reloc'.  SECTION defaults to `text'.
 Returns the offset where the placeholder begins."
-  (let ((offset (nelisp-asm-x86_64-buffer-pos buf)))
+  (let ((offset (aref buf 1)))
     (nelisp-asm-x86_64--append-bytes
      buf (unibyte-string 0 0 0 0 0 0 0 0))
     (nelisp-asm-x86_64-emit-reloc buf 'abs64 sym-name addend
                                   :section (or section 'text))
-    (let* ((plist (nelisp-asm-x86_64--unwrap buf))
-           (relocs (plist-get plist :relocs))
+    (let* ((relocs (aref buf 4))
            (last (car (last relocs))))
       (setq last (plist-put last :offset offset))
-      (setq plist (plist-put plist :relocs
-                             (append (butlast relocs) (list last))))
-      (nelisp-asm-x86_64--rewrap buf plist))
+      (aset buf 4 (append (butlast relocs) (list last))))
     offset))
 
 (defun nelisp-asm-x86_64-reloc-plt32-here (buf sym-name addend
@@ -487,17 +533,14 @@ ET_EXEC static linking (= no PLT trampoline needed) but emits
 R_X86_64_PLT32 so the linker can distinguish PIC-aware call
 sites.  SECTION defaults to `text'.  Returns the placeholder
 offset."
-  (let ((offset (nelisp-asm-x86_64-buffer-pos buf)))
+  (let ((offset (aref buf 1)))
     (nelisp-asm-x86_64--append-bytes buf (unibyte-string 0 0 0 0))
     (nelisp-asm-x86_64-emit-reloc buf 'plt32 sym-name addend
                                   :section (or section 'text))
-    (let* ((plist (nelisp-asm-x86_64--unwrap buf))
-           (relocs (plist-get plist :relocs))
+    (let* ((relocs (aref buf 4))
            (last (car (last relocs))))
       (setq last (plist-put last :offset offset))
-      (setq plist (plist-put plist :relocs
-                             (append (butlast relocs) (list last))))
-      (nelisp-asm-x86_64--rewrap buf plist))
+      (aset buf 4 (append (butlast relocs) (list last))))
     offset))
 
 (defun nelisp-asm-x86_64-buffer-to-unit (buf name &rest section-extras)
@@ -569,11 +612,9 @@ unibyte-string; BUF is mutated in place.
 unibyte-string, patch via a mutable vector, then store back as a
 single chunk (= the cached chunk list collapses to length 1 so
 subsequent `buffer-bytes' calls remain O(total-bytes))."
-  (let* ((plist  (nelisp-asm-x86_64--unwrap buf))
-         (chunks (plist-get plist :chunks))
-         (bytes  (apply #'concat (nreverse (copy-sequence chunks))))
-         (labels (plist-get plist :labels))
-         (fixups (plist-get plist :fixups))
+  (let* ((bytes  (apply #'concat (nreverse (copy-sequence (aref buf 0)))))
+         (labels (aref buf 2))
+         (fixups (aref buf 3))
          ;; Build mutable vector so we can aset.
          (n (length bytes))
          (vec (make-vector n 0))
@@ -597,8 +638,7 @@ subsequent `buffer-bytes' calls remain O(total-bytes))."
     (let ((patched (apply #'unibyte-string (append vec nil))))
       ;; Collapse chunk list to a single materialized chunk so
       ;; subsequent `buffer-bytes' calls return the patched form.
-      (setq plist (plist-put plist :chunks (list patched)))
-      (nelisp-asm-x86_64--rewrap buf plist)
+      (aset buf 0 (list patched))
       patched)))
 
 ;; ---- instruction emitters (= §92.a (5)) ----

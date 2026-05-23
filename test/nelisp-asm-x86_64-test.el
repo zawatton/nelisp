@@ -637,14 +637,16 @@
 ;; ---- §92.d chunk-build invariants + perf gate ----
 
 (ert-deftest nelisp-asm-x86_64-92d-chunks-field-exists-after-emit ()
-  ;; §92.d invariant: emitter must push onto :chunks (= reverse-order
-  ;; list) and bump :length, instead of concatenating onto :bytes.
+  ;; §92.d invariant: emitter must push onto the chunks slot (= reverse-
+  ;; order list) and bump the length slot, instead of concatenating onto
+  ;; a flat byte-string.  Wave 19: probes the flat-vector slot layout
+  ;; (= chunks at slot 0, length at slot 1) replacing the prior plist
+  ;; wrapper.
   (let* ((b (nelisp-asm-x86_64-make-buffer)))
     (nelisp-asm-x86_64-nop b)
     (nelisp-asm-x86_64-ret b)
-    (let* ((plist (aref b 0))
-           (chunks (plist-get plist :chunks))
-           (len (plist-get plist :length)))
+    (let ((chunks (aref b nelisp-asm-x86_64--slot-chunks))
+          (len    (aref b nelisp-asm-x86_64--slot-length)))
       (should (listp chunks))
       (should (= (length chunks) 2))
       ;; Most-recent push at head -> ret (0xC3) first, nop (0x90) second.
@@ -693,8 +695,8 @@
                      (nelisp-asm-x86_64-test--ub
                       #xE8 #x00 #x00 #x00 #x00 #xC3)))
       ;; After resolve, chunks list is collapsed to a single chunk.
-      (let* ((plist (aref b 0))
-             (chunks (plist-get plist :chunks)))
+      ;; Wave 19: probes the flat-vector chunks slot directly.
+      (let ((chunks (aref b nelisp-asm-x86_64--slot-chunks)))
         (should (= (length chunks) 1))
         (should (equal (car chunks) patched)))
       ;; And `buffer-bytes' returns the patched form.
