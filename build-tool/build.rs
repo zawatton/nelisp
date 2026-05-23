@@ -32,6 +32,12 @@ fn main() {
     }
 }
 
+/// Manifest entry count, kept in sync with `compile-elisp-objects-manifest'
+/// in scripts/compile-elisp-objects.el.  Used only for chunk partitioning;
+/// over-shooting is harmless (= elisp clamps end to manifest length, extra
+/// chunks no-op), under-shooting silently skips entries.
+const N_MANIFEST_ENTRIES: usize = 208;
+
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
     let script = repo_root.join("scripts").join("compile-elisp-objects.el");
@@ -224,28 +230,49 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         .unwrap_or_else(|e| panic!("create_dir_all {}: {}", elisp_obj_dir.display(), e));
 
     let elisp_obj_dir_str = elisp_obj_dir.display().to_string();
-    // Forward env vars via --eval (setenv ...) so nelisp --batch sees them after Wave 7 swap (emacs is no-op).
-    let status = std::process::Command::new(&interpreter)
-        .arg("--batch")
-        .arg("-Q")
-        .arg("-L")
-        .arg(repo_root.join("lisp"))
-        .arg("--eval")
-        .arg(format!("(setenv \"NELISP_ELISP_OBJECTS_DIR\" \"{}\")", elisp_obj_dir_str))
-        .arg("--eval")
-        .arg(format!("(setenv \"NELISP_PHASE47_TARGET_ARCH\" \"{}\")", target_arch))
-        .arg("--eval")
-        .arg(format!("(setenv \"NELISP_PHASE47_TARGET_OS\" \"{}\")", target_os))
-        .arg("-l")
-        .arg(&script)
-        .arg("-f")
-        .arg("compile-elisp-objects-emit-all")
-        .env("NELISP_ELISP_OBJECTS_DIR", &elisp_obj_dir)
-        .env("NELISP_PHASE47_TARGET_ARCH", target_arch)
-        .env("NELISP_PHASE47_TARGET_OS", target_os)
-        .status()
-        .unwrap_or_else(|e| panic!("{} --batch failed to spawn: {}", interpreter.display(), e));
-    if !status.success() { panic!("compile-elisp-objects-emit-all exited with {} (script={})", status, script.display()); }
+    // Doc 49 Wave 9 R8: multi-process build parallelism.  Partition the
+    // 208-entry manifest into NELISP_BUILD_THREADS (default 4) chunks; each
+    // subprocess runs `compile-elisp-objects-emit-range' with disjoint
+    // RANGE_START/END.  All chunks share the same elisp-objects dir (disjoint
+    // output filenames, no race).  N=1 ≈ legacy single-process path.
+    println!("cargo:rerun-if-env-changed=NELISP_BUILD_THREADS");
+    let total = N_MANIFEST_ENTRIES;
+    let n_threads = std::env::var("NELISP_BUILD_THREADS").ok()
+        .and_then(|s| s.parse::<usize>().ok()).filter(|n| *n >= 1).unwrap_or(4).min(total);
+    let chunk = (total + n_threads - 1) / n_threads;
+    let shared = std::sync::Arc::new((interpreter.clone(), script.clone(), repo_root.join("lisp"),
+        elisp_obj_dir_str.clone(), target_arch.to_string(), target_os.to_string()));
+    let mut handles = Vec::with_capacity(n_threads);
+    for i in 0..n_threads {
+        let (start_i, end_i) = (i * chunk, ((i + 1) * chunk).min(total));
+        if start_i >= end_i { break; }
+        let sh = shared.clone();
+        handles.push(std::thread::spawn(move || {
+            let (interp, scr, lisp_dir, obj_dir, arch, os_) = (&sh.0, &sh.1, &sh.2, &sh.3, &sh.4, &sh.5);
+            let st = std::process::Command::new(interp)
+                .arg("--batch").arg("-Q").arg("-L").arg(lisp_dir)
+                .arg("--eval").arg(format!("(setenv \"NELISP_ELISP_OBJECTS_DIR\" \"{}\")", obj_dir))
+                .arg("--eval").arg(format!("(setenv \"NELISP_PHASE47_TARGET_ARCH\" \"{}\")", arch))
+                .arg("--eval").arg(format!("(setenv \"NELISP_PHASE47_TARGET_OS\" \"{}\")", os_))
+                .arg("--eval").arg(format!("(setenv \"NELISP_RANGE_START\" \"{}\")", start_i))
+                .arg("--eval").arg(format!("(setenv \"NELISP_RANGE_END\" \"{}\")", end_i))
+                .arg("-l").arg(scr).arg("-f").arg("compile-elisp-objects-emit-range")
+                .env("NELISP_ELISP_OBJECTS_DIR", obj_dir).env("NELISP_PHASE47_TARGET_ARCH", arch)
+                .env("NELISP_PHASE47_TARGET_OS", os_).env("NELISP_RANGE_START", start_i.to_string())
+                .env("NELISP_RANGE_END", end_i.to_string()).status();
+            (start_i, end_i, st)
+        }));
+    }
+    let failures: Vec<String> = handles.into_iter().filter_map(|h| match h.join() {
+        Ok((_, _, Ok(st))) if st.success() => None,
+        Ok((s, e, Ok(st))) => Some(format!("chunk [{},{}) exit {}", s, e, st)),
+        Ok((s, e, Err(err))) => Some(format!("chunk [{},{}) spawn err {}", s, e, err)),
+        Err(_) => Some("chunk thread panicked".to_string()),
+    }).collect();
+    if !failures.is_empty() {
+        panic!("compile-elisp-objects-emit-range failed: {} (script={})",
+               failures.join("; "), script.display());
+    }
 
     let mut obj_paths: Vec<std::path::PathBuf> = std::fs::read_dir(&elisp_obj_dir)
         .unwrap_or_else(|e| panic!("read_dir {}: {}", elisp_obj_dir.display(), e))

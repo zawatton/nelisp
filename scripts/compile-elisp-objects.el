@@ -1454,6 +1454,56 @@ fall through to the Rust trampolines that remain in
             (push out-path written))))))
     (nreverse written)))
 
+(defun compile-elisp-objects-emit-range ()
+  "Compile manifest entries in [NELISP_RANGE_START, NELISP_RANGE_END).
+Reads bounds from env (0-based half-open).  Wave 9 R8 multi-process
+parallelism: `build.rs' partitions the 208-entry manifest into N
+chunks and spawns N nelisp processes, each calling this function
+with its own START/END.  Same per-entry behaviour as
+`compile-elisp-objects-emit-all' (= :requires-arch skip honored,
+same out-dir, same :arch/:format)."
+  (let* ((out-dir (compile-elisp-objects--out-dir))
+         (arch (compile-elisp-objects--target-arch))
+         (format (compile-elisp-objects--target-format))
+         (total (length compile-elisp-objects-manifest))
+         (start (string-to-number (or (getenv "NELISP_RANGE_START") "0")))
+         (end (let ((e (getenv "NELISP_RANGE_END")))
+                (if (and e (> (length e) 0)) (string-to-number e) total)))
+         (written nil)
+         (idx 0))
+    (when (< start 0) (setq start 0))
+    (when (> end total) (setq end total))
+    (unless (file-directory-p out-dir)
+      (make-directory out-dir t))
+    (dolist (entry compile-elisp-objects-manifest)
+      (when (and (>= idx start) (< idx end))
+        (let* ((feature (car entry))
+               (props   (cdr entry))
+               (src-var (plist-get props :source-var))
+               (output  (plist-get props :output))
+               (requires-arch (plist-get props :requires-arch))
+               (out-path (expand-file-name output out-dir)))
+          (cond
+           ((and requires-arch
+                 (cond ((symbolp requires-arch) (not (eq requires-arch arch)))
+                       ((listp requires-arch) (not (memq arch requires-arch)))
+                       (t t)))
+            (message "[compile-elisp-objects] skipping %s -> %s (= requires %S, building %S)"
+                     feature output requires-arch arch))
+           (t
+            (require feature)
+            (unless (boundp src-var)
+              (error "compile-elisp-objects: %S has no :source-var %S"
+                     feature src-var))
+            (let ((sexp (symbol-value src-var)))
+              (message "[compile-elisp-objects] [%d/%d) %s -> %s"
+                       idx end feature out-path)
+              (nelisp-phase47-compile-to-object sexp out-path
+                                                :arch arch :format format)
+              (push out-path written))))))
+      (setq idx (1+ idx)))
+    (nreverse written)))
+
 (provide 'compile-elisp-objects)
 
 ;;; compile-elisp-objects.el ends here
