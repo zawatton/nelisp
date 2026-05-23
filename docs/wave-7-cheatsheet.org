@@ -144,18 +144,45 @@ R7 が 14% speedup (99.9→85.9s for N=100) だったのは、N=100 で plateau
 21s + per-iter cost を測っており、per-iter 部分の改善が部分的に効いた。
 R7 を N=5 で probe するなら 21s baseline → 6s 等の改善幅で見えるはず。
 
-** verify infrastructure (R7 後の改善、2026-05-23)
-=test/wave-7-probes/probe-fast.el= = N=5 lambda、~21s 一回 で diff verify
-=test/wave-7-probes/probe-fast-cap.el= = N=5 captured lambda、~1.25s
+** verify infrastructure (R7 → R10 改善 2026-05-23)
 
-subagent prompt 推奨 verify gate (= 5 probe gate の縮小版、~3 min budget):
-1. probe-fast (~21s baseline) — 主要 perf metric
-2. =cargo test --lib= (~10s) — regression detector
-3. correctness 4-scenario inline probe (~5s)
-着地条件 = probe-fast ≤ 10s (= 2x speedup minimum) + cargo test 維持 +
-correctness pass。
+*** 2-tier verify protocol (= R11+ で標準化)
 
-baseline 数値は本 table を固定参照、subagent は再計測不要。
+| Phase | Command                                | 所要      | 用途                  |
+|-------+----------------------------------------+-----------+-----------------------|
+| iter  | =scripts/verify-quick.sh=              | ~10s      | impl 中の試行錯誤     |
+| iter  | =scripts/verify-quick.sh PATTERN=      | ~15s      | + 1 matching test     |
+| final | =scripts/verify-full.sh=               | ~21s      | commit 前 sanity      |
+| final | =scripts/verify-full.sh PATTERN=       | ~21+5×N s | + 全 matching tests   |
+
+R10 比 (= 50 min total / verify ~20 min) → R11 想定 (= verify ~5 min total
+= iter 10s × N回 + final 21s 1回) で **約 4x 短縮**。
+
+*** Probes (test/wave-7-probes/)
+
+| Probe                       | 所要 | 用途                                     |
+|-----------------------------+------+------------------------------------------|
+| =probe-fast.el=             | ~6s  | lambda N=5 perf metric (= R9 で 6.3s plateau) |
+| =probe-fast-cap.el=         | ~6s  | captured lambda perf                     |
+| =probe-verify-combo.el=     | ~50s | correctness + perf + chain (= chain heavy、 verify-full でなく直接呼出 OK) |
+| =probe-single.el=           | <1s  | Record sanity                            |
+| =probe-chain.el=            | ~2s  | require chain (= R10 で hang 観測あり)   |
+| =probe-stress.el=           | <30s | fset loop                                |
+| =probe-first-n.el=          | ~5-30s | first N manifest entries                |
+| =probe-208.el=              | 60-600s | full manifest                          |
+
+*** subagent 推奨 verify gate
+
+iter (= 5 回 想定):
+1. =scripts/verify-quick.sh PATTERN= で ~15s/回 → 5 iter = 1.25 min
+
+final commit 前 1 回:
+2. =scripts/verify-full.sh PATTERN= で ~80s → 1 min ちょい
+
+合計 verify ~3-5 min (= R10 の 20 min から 4x 短縮)。
+
+着地条件は **probe-fast の % speedup + 全 test pass** で評価、
+baseline は本 cheatsheet table を固定参照、subagent 再計測不要。
 
 * よく使うコマンド一発集
 
