@@ -117,6 +117,46 @@ gdb 必要時は `Cargo.toml` で =strip = false; debug = 2= 一時切替。
 全 fix は Rust LOC 0 が基本。waiver は user 明示承認時のみ、最小 LOC
 (= R6j で 3-10 LOC waiver 試行中)。
 
+* Wave 9 perf baseline (= main ed6659b9 実測 2026-05-23、subagent verify 短縮用)
+
+** Lambda cost mystery (= R7 後の追加調査結果)
+Wave 9 profile が「1.14s/lambda × N の linear」と推定したが claude main 実測:
+
+| Probe                                            | N=1   | N=5   | N=10  | N=20  |
+|--------------------------------------------------+-------+-------+-------+-------|
+| =loop-only=                                      | 1.25s | 1.25s | 1.25s | 1.25s |
+| =(cons 1 2)=                                     | -     | 1.23s | -     | -     |
+| =(lambda () 42)= (bare)                          | 2.13s | 21.0s | 20.9s | 21.0s |
+| =(let nil (lambda () 42))= (wrapped)             | -     | 6.19s | -     | -     |
+| =(function (lambda () 42))= (explicit fn)        | -     | 6.14s | -     | -     |
+| =(let ((c i)) (lambda () c))= (capture)          | -     | 1.25s | -     | -     |
+| =(quote (lambda () 42))= (no eval)               | -     | 1.24s | -     | -     |
+
+**観測** = 真の cost は **bare =(lambda ...)= の N≥5 で 21s plateau**。
+N>=5 saturates (= per-lambda growth ではない、特定 path の one-time cost)。
+=(let ((c i)) (lambda () c))= で captured-var 形にすると 1.25s に落ちる
+= 真因は **captured nothing の bare lambda evaluator path 専用 cost**。
+profile 仮説「depth=0 が遅い」も実は **lambda evaluator の特定 branch
+が一度走ると 20s** で saturate していたのを「lambda 当たり 1s × N」と
+誤推定していた可能性大。
+
+R7 が 14% speedup (99.9→85.9s for N=100) だったのは、N=100 で plateau
+21s + per-iter cost を測っており、per-iter 部分の改善が部分的に効いた。
+R7 を N=5 で probe するなら 21s baseline → 6s 等の改善幅で見えるはず。
+
+** verify infrastructure (R7 後の改善、2026-05-23)
+=test/wave-7-probes/probe-fast.el= = N=5 lambda、~21s 一回 で diff verify
+=test/wave-7-probes/probe-fast-cap.el= = N=5 captured lambda、~1.25s
+
+subagent prompt 推奨 verify gate (= 5 probe gate の縮小版、~3 min budget):
+1. probe-fast (~21s baseline) — 主要 perf metric
+2. =cargo test --lib= (~10s) — regression detector
+3. correctness 4-scenario inline probe (~5s)
+着地条件 = probe-fast ≤ 10s (= 2x speedup minimum) + cargo test 維持 +
+correctness pass。
+
+baseline 数値は本 table を固定参照、subagent は再計測不要。
+
 * よく使うコマンド一発集
 
 ** 既存 helper grep
