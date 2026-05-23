@@ -1174,6 +1174,23 @@ RCX) per x86_64 ISA."
   (nelisp-asm-x86_64--append-bytes
    buf (unibyte-string #x48 #xD3 #xE0)))
 
+(defun nelisp-asm-x86_64-shl-reg-imm8 (buf reg count)
+  "Emit `SHL REG, COUNT' = REX.W + C1 /4 + ModR/M + ib (4 bytes).
+REG is a 64-bit GP register symbol (`rax', `rsi', `r10', ...).
+COUNT is the unsigned shift amount [0, 63] (logical-left shift).
+A 4-byte fixed-width instruction — pass-1/pass-2 byte invariance
+holds.  Doc 49 Wave 11.1 dependency for `static-imm32-table-
+lookup' INDEX*4 byte-offset computation (= shl reg, 2)."
+  (unless (and (integerp count) (<= 0 count 63))
+    (signal 'nelisp-asm-x86_64-error
+            (list :shl-count-out-of-range count)))
+  (let* ((rex (nelisp-asm-x86_64--rex
+               1 0 0 (nelisp-asm-x86_64--reg-ext reg)))
+         (modrm (nelisp-asm-x86_64--modrm
+                 3 4 (nelisp-asm-x86_64--reg-low3 reg))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string rex #xC1 modrm (logand count #xFF)))))
+
 (defun nelisp-asm-x86_64-sar-rax-cl (buf)
   "Emit `SAR RAX, CL' = REX.W + D3 /7 + ModR/M=0xF8 (3 bytes).
 Arithmetic-right shift; the count is implicit in CL and the sign

@@ -160,6 +160,14 @@ defun's param count (= first slot after param spill area).  Each
 that binding.  Nil at top level (= outside any defun parse), where
 runtime `let' is not yet supported.")
 
+(defvar nelisp-phase47-compiler--table-vaddrs nil
+  "Alist `((NAME . VADDR) ...)' of absolute vaddrs for static-imm32 tables.
+Bound by `--pass' before emit so `--emit-table-lookup' can resolve
+the table name to its absolute virtual address.  During pass-1
+sizing every VADDR is 0 (= placeholder); during pass-2 the values
+are the real `.rodata' vaddrs.  Nil outside compile passes (=
+default top-level binding).  See Doc 49 Wave 11.1.")
+
 (defvar nelisp-phase47-compiler--current-defun-arity nil
   "Arity of the defun currently being emitted, or nil during main `_start'.
 Bound dynamically by `--emit-defun' so inner emit helpers (= those
@@ -536,6 +544,27 @@ functions `((NAME . ARITY) ...)'."
    ;; (sexp-int-unwrap PTR)     — read i64 payload at offset 8 in rax.
    ;; (sexp-int-make SLOT N)    — write Sexp::Int(N) into SLOT,
    ;;                              return SLOT pointer in rax.
+   ;;
+   ;; Doc 49 Wave 11.1: (static-imm32-table-lookup NAME INDEX-EXPR)
+   ;;
+   ;; Runtime O(1) load of the u32 at `TABLE_NAME[INDEX]'.  NAME must
+   ;; match a `static-imm32-table-define' declared in the same compile
+   ;; unit.  INDEX-EXPR is any value-producing expr (= integer in rax).
+   ;; Result class = gp (u32 zero-extended to i64 in rax).  Bounds
+   ;; check is not emitted — caller responsibility (= Wave 11.2+ may
+   ;; add a safe variant).
+   ((and (consp sexp) (eq (car sexp) 'static-imm32-table-lookup))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :static-imm32-table-lookup-arity sexp)))
+    (let ((name (nth 1 sexp)))
+      (unless (stringp name)
+        (signal 'nelisp-phase47-compiler-error
+                (list :static-imm32-table-lookup-name-not-string name)))
+      (list :kind 'table-lookup
+            :name name
+            :index (nelisp-phase47-compiler--parse-value
+                    (nth 2 sexp) env fenv defuns))))
    ((and (consp sexp) (eq (car sexp) 'sexp-tag))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
@@ -1621,6 +1650,34 @@ Returns one of:
         (signal 'nelisp-phase47-compiler-error
                 (list :write-not-string arg)))
       (list :kind 'write :str arg)))
+   ;; Doc 49 Wave 11.1: (static-imm32-table-define NAME (E1 E2 ...))
+   ;;
+   ;; Declares a build-time u32 array in .rodata, indexable by NAME.
+   ;; Each element must be an integer literal in [-2^31, 2^32 - 1]
+   ;; (= fits one signed or unsigned i32).  NAME is a string (= the
+   ;; lookup key); duplicate defines raise an error during the
+   ;; collector pass.  Emits no text bytes — purely a rodata
+   ;; declaration.  Statement-only (= no value-producing form).
+   ((and (consp sexp) (eq (car sexp) 'static-imm32-table-define))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :static-imm32-table-define-arity sexp)))
+    (let ((name (nth 1 sexp))
+          (elements (nth 2 sexp)))
+      (unless (stringp name)
+        (signal 'nelisp-phase47-compiler-error
+                (list :static-imm32-table-define-name-not-string name)))
+      (unless (and (listp elements) (consp elements))
+        (signal 'nelisp-phase47-compiler-error
+                (list :static-imm32-table-define-elements-not-list
+                      elements)))
+      (dolist (e elements)
+        (unless (and (integerp e)
+                     (<= (- (ash 1 31)) e (1- (ash 1 32))))
+          (signal 'nelisp-phase47-compiler-error
+                  (list :static-imm32-table-define-element-out-of-range
+                        e))))
+      (list :kind 'table-define :name name :elements elements)))
    ;; (exit VALUE-EXPR)
    ((and (consp sexp) (eq (car sexp) 'exit))
     (unless (= (length sexp) 2)
@@ -1880,6 +1937,75 @@ defun bodies too so functions can call `write'."
                (_ nil)))))
       (walk ir))
     (cons offsets rodata)))
+
+;; ---- Doc 49 Wave 11.1 §11.1.1 static-imm32-table collector ----
+;;
+;; Walks the IR collecting every `static-imm32-table-define' node and
+;; assigns each a byte offset within the table-rodata sub-buffer
+;; (= placed *after* the string rodata so existing string vaddrs do
+;; not shift).  Each element is encoded as 4 little-endian bytes (=
+;; u32 zero-extended to i64 at runtime by `MOV EAX, [RDI+RSI]').
+;; Duplicate names raise an error.  No-op when no defines exist.
+
+(defun nelisp-phase47-compiler--collect-tables (ir)
+  "Walk IR, return alist `((NAME . (:offset N :len L)) ...)' + bytes.
+The return shape is (TABLE-OFFSETS . TABLE-BYTES).  Each NAME
+maps to a plist with :offset (= byte offset within TABLE-BYTES,
+NOT the overall .rodata buffer) and :len (= byte length = 4 *
+element count).  TABLE-BYTES is the concatenation of all tables
+in declaration-encounter order.
+
+Walks through `defun' bodies, `let' bodies, `seq' children, etc.
+recursively to mirror `--collect-strings'.  Signals
+`nelisp-phase47-compiler-error' with `:duplicate-static-imm32-table'
+when two `table-define' nodes share a NAME."
+  (let ((offsets nil)
+        (bytes "")
+        (cursor 0))
+    (cl-labels
+        ((encode-u32 (v)
+           (let ((u (logand v #xFFFFFFFF)))
+             (unibyte-string (logand u #xFF)
+                             (logand (ash u  -8) #xFF)
+                             (logand (ash u -16) #xFF)
+                             (logand (ash u -24) #xFF))))
+         (walk (node)
+           (when node
+             (pcase (plist-get node :kind)
+               ('table-define
+                (let ((name (plist-get node :name))
+                      (elements (plist-get node :elements)))
+                  (when (assoc name offsets)
+                    (signal 'nelisp-phase47-compiler-error
+                            (list :duplicate-static-imm32-table name)))
+                  (let ((blob ""))
+                    (dolist (e elements)
+                      (setq blob (concat blob (encode-u32 e))))
+                    (setq offsets
+                          (append offsets
+                                  (list (cons name
+                                              (list :offset cursor
+                                                    :len (length blob))))))
+                    (setq bytes (concat bytes blob))
+                    (setq cursor (+ cursor (length blob))))))
+               ('seq
+                (mapc #'walk (plist-get node :forms)))
+               ('let
+                (walk (plist-get node :body)))
+               ('defun
+                (walk (plist-get node :body)))
+               ('let-rt
+                (walk (plist-get node :value-ir))
+                (walk (plist-get node :body)))
+               ;; table-lookup is value-producing; the `:index' child
+               ;; is itself an IR node walked for nested defines (=
+               ;; defensive, normal source has table-define at top
+               ;; level only).
+               ('table-lookup
+                (walk (plist-get node :index)))
+               (_ nil)))))
+      (walk ir))
+    (cons offsets bytes)))
 
 ;; ---- §97.3 defun collector ----
 ;;
@@ -2535,6 +2661,9 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-value (plist-get node :body) buf)))
       ('syscall-direct
        (nelisp-phase47-compiler--emit-syscall-direct node buf))
+      ('table-lookup
+       ;; Doc 49 Wave 11.1: static-imm32-table-lookup → u32 in rax.
+       (nelisp-phase47-compiler--emit-table-lookup node buf))
       (kind
        (signal 'nelisp-phase47-compiler-error
                (list :unknown-value-kind kind))))))
@@ -4871,6 +5000,41 @@ Final emit:
 
 ;; ---- §97.5 emit walker — statements ----
 
+(defun nelisp-phase47-compiler--emit-table-lookup (node buf)
+  "Emit `static-imm32-table-lookup' value op, result u32 → rax.
+NODE is `(:kind table-lookup :name NAME :index INDEX-IR)'.
+BUF is the asm buffer.  Sequence (= fixed 20 bytes after INDEX-IR):
+  <eval INDEX-IR → rax>     ; varies
+  mov rsi, rax              ; 3 bytes (REX.W 89 C6)
+  shl rsi, 2                ; 4 bytes (REX.W C1 E6 02)  = index*4
+  mov rdi, TABLE_VADDR      ; 10 bytes (REX.W B8+rd imm64)
+  mov eax, [rdi+rsi]        ; 3 bytes (8B 04 37)        = u32 load
+The CPU zero-extends EAX to RAX on the 32-bit load, so the high
+32 bits are guaranteed clear.  TABLE_VADDR is resolved via
+`nelisp-phase47-compiler--table-vaddrs' (= bound by `--pass').
+Pass-1 sees vaddr=0 (= sentinel); pass-2 sees the real .rodata
+absolute address.  Byte width is identical in both passes (= the
+imm64 size is fixed) so the byte invariant holds."
+  (let* ((name (plist-get node :name))
+         (index-ir (plist-get node :index))
+         (vaddr (or (cdr (assoc name
+                                nelisp-phase47-compiler--table-vaddrs))
+                    ;; Missing entry only legal during pre-collector
+                    ;; invocation (= shouldn't happen at emit time).
+                    (signal 'nelisp-phase47-compiler-error
+                            (list :static-imm32-table-vaddr-missing
+                                  name)))))
+    ;; 1. Eval INDEX-IR → rax (= variable size).
+    (nelisp-phase47-compiler--emit-value index-ir buf)
+    ;; 2. mov rsi, rax (= snapshot index into rsi).
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'rax)
+    ;; 3. shl rsi, 2 (= rsi = index * 4 bytes).
+    (nelisp-asm-x86_64-shl-reg-imm8 buf 'rsi 2)
+    ;; 4. mov rdi, IMM64 (= absolute address of table[0]).
+    (nelisp-asm-x86_64-mov-imm64 buf 'rdi vaddr)
+    ;; 5. mov eax, [rdi+rsi] (= load u32, zero-extends to rax).
+    (nelisp-asm-x86_64-mov-eax-dword-rdi-rsi buf)))
+
 (defun nelisp-phase47-compiler--emit-write (buf str str-offsets rodata-vaddr)
   "Emit a write(1, addr, len) syscall for STR to BUF.
 STR-OFFSETS is the alist from `--collect-strings'.  RODATA-VADDR is
@@ -4941,6 +5105,14 @@ skipped here — they're emitted separately by the orchestrator."
       ('defun
        ;; Skip — handled by `--emit-defun' separately.
        nil)
+      ('table-define
+       ;; Doc 49 Wave 11.1: skip — placed in `.rodata' by the
+       ;; collector pass, no .text bytes.
+       nil)
+      ('table-lookup
+       ;; Statement-context lookup discards rax (= side-effect free,
+       ;; but we still emit so any address-of-table refs land).
+       (nelisp-phase47-compiler--emit-table-lookup ir buf))
       ('call
        ;; Statement-context call discards rax.
        (nelisp-phase47-compiler--emit-call ir buf))
@@ -5184,7 +5356,8 @@ return reg, untouched by epilogue)."
 
 ;; ---- §97.6 orchestrator ----
 
-(defun nelisp-phase47-compiler--pass (ir defuns str-offsets rodata-vaddr)
+(defun nelisp-phase47-compiler--pass (ir defuns str-offsets rodata-vaddr
+                                         &optional table-vaddrs)
   "Run a fresh emit pass returning the buffer.
 IR is the parsed program (= main body, with defuns inlined too
 but skipped during emit), DEFUNS is the list of defun IR nodes
@@ -5193,9 +5366,17 @@ RODATA-VADDR is the absolute vaddr of .rodata (= 0 during pass-1).
 The intra-text `call' fixups are *not* resolved here; the caller
 finalizes via `resolve-fixups' after measuring.
 
+Doc 49 Wave 11.1: TABLE-VADDRS is an alist `((NAME . VADDR) ...)'
+that resolves `static-imm32-table-lookup' name lookups to
+absolute virtual addresses.  Bound dynamically as
+`nelisp-phase47-compiler--table-vaddrs' so deeply-nested value-
+emit dispatchers can read it without plumbing it through every
+helper signature.  Pass nil when no static-imm32 tables exist.
+
 Doc 101 §101.B Wave 5: buffer is created with the current
 `nelisp-phase47-compiler--abi' so Win64 callers get a 'win64 buffer."
-  (let ((buf (nelisp-asm-x86_64-make-buffer nelisp-phase47-compiler--abi)))
+  (let ((nelisp-phase47-compiler--table-vaddrs table-vaddrs)
+        (buf (nelisp-asm-x86_64-make-buffer nelisp-phase47-compiler--abi)))
     ;; Main `_start' body first (= the program's entry point).
     (nelisp-phase47-compiler--emit-stmt
      ir buf str-offsets rodata-vaddr)
@@ -5251,16 +5432,42 @@ drift (= a Doc 92 emitter invariant violation)."
          (ir (nelisp-phase47-compiler--parse sexp nil))
          (collected (nelisp-phase47-compiler--collect-strings ir))
          (str-offsets (car collected))
-         (rodata-bytes (cdr collected))
+         (str-rodata-bytes (cdr collected))
+         ;; Doc 49 Wave 11.1: collect static-imm32 tables; their bytes
+         ;; are appended *after* string rodata so existing string
+         ;; vaddrs are unchanged (= zero regression for non-table
+         ;; programs).  Table offsets are relative to the table sub-
+         ;; buffer base, not the overall .rodata buffer.
+         (table-collected (nelisp-phase47-compiler--collect-tables ir))
+         (table-offsets (car table-collected))
+         (table-bytes (cdr table-collected))
+         (str-rodata-len (length str-rodata-bytes))
+         (rodata-bytes (concat str-rodata-bytes table-bytes))
          (defuns (nelisp-phase47-compiler--collect-defuns ir))
+         ;; Pass 1 placeholder table-vaddrs: every table maps to 0.
+         ;; Byte width of the emit sequence is independent of the
+         ;; vaddr value (= mov-imm64 is fixed 10 bytes regardless),
+         ;; so pass-1 / pass-2 byte invariance holds.
+         (pass1-table-vaddrs
+          (mapcar (lambda (entry) (cons (car entry) 0)) table-offsets))
          ;; Pass 1: dry size measurement.
          (pass1 (nelisp-phase47-compiler--pass
-                 ir defuns str-offsets 0))
+                 ir defuns str-offsets 0 pass1-table-vaddrs))
          (text-size (nelisp-asm-x86_64-buffer-pos pass1))
          (rodata-vaddr (+ nelisp-phase47-compiler--text-vaddr text-size))
+         ;; Resolve each table's absolute vaddr.  Tables live in
+         ;; .rodata after the string sub-section, so each table's
+         ;; vaddr is `rodata-vaddr + str-rodata-len + table-offset'.
+         (table-vaddrs
+          (mapcar (lambda (entry)
+                    (let* ((name (car entry))
+                           (info (cdr entry))
+                           (offset (plist-get info :offset)))
+                      (cons name (+ rodata-vaddr str-rodata-len offset))))
+                  table-offsets))
          ;; Pass 2: real emit with the resolved address.
          (pass2 (nelisp-phase47-compiler--pass
-                 ir defuns str-offsets rodata-vaddr))
+                 ir defuns str-offsets rodata-vaddr table-vaddrs))
          (text-bytes (nelisp-asm-x86_64-resolve-fixups pass2)))
     ;; Pass-1's fixups remain unresolved (= we never inspect them);
     ;; only pass-2's resolved bytes ship to the ELF writer.
