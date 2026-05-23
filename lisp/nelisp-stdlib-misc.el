@@ -557,6 +557,80 @@ Only `utf-8' CODING is supported; others signal `error'."
 (unless (fboundp 'goto-char)
   (defun goto-char (_p) "NeLisp stub: no-op." nil))
 
+;; Wave 13 self-host follow-up (2026-05-23): write-region stub.
+;; NeLisp standalone has no buffer object, so the
+;; (write-region START END FILENAME ...) buffer-substring path
+;; (= START / END as integer positions) is unsupported.  Three
+;; live callers — nelisp-elf-write, nelisp-pe-write, nelisp-mach-o-
+;; write — all pass a unibyte string as START and nil as END, then
+;; APPEND=nil and VISIT='silent.  We support that subset.
+;;
+;; Behavior:
+;;   START   = string of bytes to write (other type -> wrong-type)
+;;   END     = nil (= write all of START)
+;;             integer N (= write first N bytes; substring slice)
+;;             other types currently unsupported
+;;   APPEND  = nil  -> truncate-write (= nl-write-file's
+;;             open(O_WRONLY|O_CREAT|O_TRUNC) semantic)
+;;             non-nil -> signaled as unsupported (no APPEND caller
+;;             in NeLisp standalone today)
+;;   VISIT / LOCKNAME / MUSTBENEW = ignored
+;;
+;; Delegates the actual three-syscall chain (open + write + close)
+;; to `nl-write-file', which is the Phase 47 elisp object swap of
+;; the same syscall body (Doc 117 §117.D.gaps.3 /
+;; lisp/nelisp-cc-bi-nl-write-file.el).  `nl-write-file' uses
+;; str-bytes-ptr / str-len so it is binary-safe; raw byte
+;; sequences (= concat of unibyte-string chunks built by
+;; nelisp-elf-write etc.) reach the kernel as-is.
+;;
+;; Returns nil to match the Emacs contract (= write-region returns
+;; nil unless VISIT is a string, which our subset does not handle).
+(unless (fboundp 'write-region)
+  (defun write-region (start end filename &optional append _visit _lockname _mustbenew)
+    "NeLisp stub: write the bytes of STRING START to FILENAME.
+
+Subset signature for build-time .o / executable emission used by
+`nelisp-elf-write-binary' and siblings.  See module commentary
+for the full contract."
+    (unless (stringp start)
+      (signal 'wrong-type-argument (list 'stringp start)))
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
+    (when append
+      (signal 'error
+              (list "write-region stub: APPEND not supported")))
+    (let ((bytes (cond
+                  ((null end) start)
+                  ((integerp end) (substring start 0 end))
+                  (t (signal 'wrong-type-argument
+                             (list '(or null integerp) end))))))
+      ;; `nl-write-file' returns `t' on success (Rust shim's
+      ;; `kernel_path_ok' wraps the i64 rc as `Sexp::T').  On
+      ;; kernel error it signals via `EvalError::internal' from
+      ;; Rust, which surfaces here as an `error' before this
+      ;; line runs — so a non-t return is unexpected.
+      (let ((rc (nl-write-file filename bytes)))
+        (unless (eq rc t)
+          (signal 'error
+                  (list (format "write-region stub: nl-write-file returned %S (expected t) path=%s"
+                                rc filename))))))
+    nil))
+
+;; Wave 13 follow-up: set-file-modes stub.  `nelisp-elf-write-binary'
+;; chmod's its output to #o755 after write-region.  NeLisp standalone
+;; has no chmod primitive yet; nl-write-file already opens with mode
+;; 0644 which is fine for .o files (= input to ld, not directly
+;; exec'd).  Final-link executables that need +x will need a real
+;; chmod primitive in a later wave; for now this stub silently no-
+;; ops so the elf-write success path returns cleanly.
+(unless (fboundp 'set-file-modes)
+  (defun set-file-modes (_filename _mode)
+    "NeLisp stub: no-op (= no chmod primitive yet).
+Mode bits are not applied; nl-write-file's default 0644 stands.
+Final executables needing +x must use a later wave with chmod."
+    nil))
+
 ;; nelisp-stdlib-misc.el ends here
 (unless (fboundp 'buffer-substring-no-properties)
   (defun buffer-substring-no-properties (_start _end)
