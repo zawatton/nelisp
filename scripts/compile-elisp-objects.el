@@ -1409,6 +1409,60 @@ targets), `'elf' otherwise (= linux + the default).
     ("windows" 'coff)
     (_         'elf)))
 
+;; ---------------------------------------------------------------------------
+;; Wave 9 incremental compile: skip entries whose .o is newer than its source.
+;; ---------------------------------------------------------------------------
+
+(defun compile-elisp-objects--source-file (feature)
+  "Return absolute path to the .el source file backing FEATURE, or nil.
+Uses `locate-file' on `load-path' (= the same lookup `require' performs)
+to find `<feature>.el'.  Returns nil if FEATURE isn't a file-backed
+feature (e.g. tangled from somewhere we can't trace)."
+  (let* ((basename (concat (symbol-name feature) ".el"))
+         (path (locate-file basename load-path)))
+    (and path (expand-file-name path))))
+
+(defvar compile-elisp-objects--compiler-deps nil
+  "Cached mtime of compiler core files.  If any of these is newer than a
+manifest entry's .o, the entry rebuilds even when its own .el is older.")
+
+(defun compile-elisp-objects--compiler-mtime ()
+  "Return the latest mtime among core compiler/layout files (memoized).
+Returns nil if files can't be located.  Used as a coarse cache-invalidator:
+when phase47-compiler.el / sexp-layout.el / asm-* change, EVERY .o needs
+to be rebuilt because the emitted code may shift."
+  (or compile-elisp-objects--compiler-deps
+      (setq compile-elisp-objects--compiler-deps
+            (let ((latest nil))
+              (dolist (basename '("nelisp-phase47-compiler.el"
+                                  "nelisp-sexp-layout.el"
+                                  "nelisp-asm-x86_64.el"
+                                  "nelisp-asm-arm64.el"
+                                  "nelisp-elf-write.el"))
+                (let ((path (locate-file basename load-path)))
+                  (when path
+                    (let ((mt (file-attribute-modification-time
+                               (file-attributes path))))
+                      (when (or (null latest) (time-less-p latest mt))
+                        (setq latest mt))))))
+              latest))))
+
+(defun compile-elisp-objects--up-to-date-p (feature out-path)
+  "Return non-nil if OUT-PATH exists and is newer than FEATURE source +
+compiler core.  Returns nil → rebuild needed."
+  (and (file-exists-p out-path)
+       (let* ((out-mtime (file-attribute-modification-time
+                          (file-attributes out-path)))
+              (src-path (compile-elisp-objects--source-file feature))
+              (src-mtime (and src-path
+                              (file-attribute-modification-time
+                               (file-attributes src-path))))
+              (cc-mtime (compile-elisp-objects--compiler-mtime)))
+         (and src-mtime
+              (not (time-less-p out-mtime src-mtime))
+              (or (null cc-mtime)
+                  (not (time-less-p out-mtime cc-mtime)))))))
+
 (defun compile-elisp-objects-emit-all ()
   "Compile every manifest entry to its output `.o' file.
 Returns the list of absolute paths written.  Used by
@@ -1420,11 +1474,15 @@ Each manifest entry may specify a `:requires-arch SYM' keyword
 does not match SYM, the entry is silently skipped.  This lets
 Stage 2.a ship the x86_64 f64 swap entries while aarch64 builds
 fall through to the Rust trampolines that remain in
-`build-tool/src/jit/float.rs' under an inverse cfg gate."
+`build-tool/src/jit/float.rs' under an inverse cfg gate.
+
+Wave 9 incremental: entries whose `.o' is newer than the source `.el'
+AND the compiler core files are skipped (= up-to-date)."
   (let* ((out-dir (compile-elisp-objects--out-dir))
          (arch (compile-elisp-objects--target-arch))
          (format (compile-elisp-objects--target-format))
-         (written nil))
+         (written nil)
+         (skipped 0))
     (unless (file-directory-p out-dir)
       (make-directory out-dir t))
     (dolist (entry compile-elisp-objects-manifest)
@@ -1441,6 +1499,9 @@ fall through to the Rust trampolines that remain in
                      (t t)))
           (message "[compile-elisp-objects] skipping %s -> %s (= requires %S, building %S)"
                    feature output requires-arch arch))
+         ((compile-elisp-objects--up-to-date-p feature out-path)
+          (setq skipped (1+ skipped))
+          (push out-path written))
          (t
           (require feature)
           (unless (boundp src-var)
@@ -1452,6 +1513,8 @@ fall through to the Rust trampolines that remain in
             (nelisp-phase47-compile-to-object sexp out-path
                                               :arch arch :format format)
             (push out-path written))))))
+    (when (> skipped 0)
+      (message "[compile-elisp-objects] incremental: %d up-to-date skipped" skipped))
     (nreverse written)))
 
 (defun compile-elisp-objects-emit-range ()
@@ -1490,6 +1553,9 @@ same out-dir, same :arch/:format)."
                        (t t)))
             (message "[compile-elisp-objects] skipping %s -> %s (= requires %S, building %S)"
                      feature output requires-arch arch))
+           ((compile-elisp-objects--up-to-date-p feature out-path)
+            ;; Wave 9 incremental: .o newer than .el + compiler core → skip.
+            (push out-path written))
            (t
             (require feature)
             (unless (boundp src-var)
