@@ -484,4 +484,80 @@ or signals `error' otherwise.  Replaces the deleted Rust `bi_require'."
 (defalias 'string= 'string-equal)
 (defalias 'print 'princ)
 
+;; Wave 10.1d self-host follow-up (2026-05-23): coding-system stubs.
+;; NeLisp standalone has no encode-coding-system infrastructure but
+;; Phase 47 / elf-write / pe-write / mach-o-write helpers use
+;; (encode-coding-string s 'utf-8 t) to convert to UTF-8 bytes.
+;; NeLisp strings are internally UTF-8 multibyte (verified via
+;; (string-bytes "あ") = 3), so for 'utf-8 the encode is identity.
+;; Other codings unsupported (= error if requested).
+(unless (fboundp 'encode-coding-string)
+  (defun encode-coding-string (str coding &optional _nocopy)
+    "NeLisp stub: returns STR as-is (UTF-8 internal repr).
+Only `utf-8' CODING is supported; others signal `error'."
+    (when (and coding (not (eq coding 'utf-8)))
+      (signal 'error
+              (list (format "encode-coding-string stub: only utf-8 supported, got %S"
+                            coding))))
+    str))
+
+(unless (fboundp 'decode-coding-string)
+  (defun decode-coding-string (str coding &optional _nocopy)
+    "NeLisp stub: returns STR as-is (UTF-8 internal repr).
+Only `utf-8' CODING is supported; others signal `error'."
+    (when (and coding (not (eq coding 'utf-8)))
+      (signal 'error
+              (list (format "decode-coding-string stub: only utf-8 supported, got %S"
+                            coding))))
+    str))
+
+;; NeLisp standalone has no buffer object, only string I/O.
+;; Phase 47 helpers (= elf-write etc.) call bufferp for defensive
+;; type checks; stub returns nil (= no Sexp is a buffer).
+(unless (fboundp 'bufferp)
+  (defun bufferp (_obj) "NeLisp stub: no buffer Sexp exists." nil))
+
+;; multibyte/unibyte distinction collapsed in NeLisp standalone
+;; (= all strings are internally UTF-8 multibyte). Stubs return t
+;; for stringp inputs so existing callers see a "multibyte string"
+;; and don't take a unibyte conversion branch.
+(unless (fboundp 'multibyte-string-p)
+  (defun multibyte-string-p (obj) "NeLisp stub: t for stringp." (stringp obj)))
+(unless (fboundp 'unibyte-string-p)
+  (defun unibyte-string-p (_obj) "NeLisp stub: nil (= all strings multibyte)." nil))
+(unless (fboundp 'string-as-multibyte)
+  (defun string-as-multibyte (s) "NeLisp stub: identity." s))
+(unless (fboundp 'string-as-unibyte)
+  (defun string-as-unibyte (s) "NeLisp stub: identity (= already UTF-8 bytes)." s))
+(unless (fboundp 'string-make-multibyte)
+  (defun string-make-multibyte (s) "NeLisp stub: identity." s))
+(unless (fboundp 'string-make-unibyte)
+  (defun string-make-unibyte (s) "NeLisp stub: identity." s))
+
+;; Buffer ops collapsed = NeLisp standalone has no buffer Sexp,
+;; all I/O is string-based.  Stubs are no-op / nil.
+(unless (fboundp 'set-buffer-multibyte)
+  (defun set-buffer-multibyte (_arg) "NeLisp stub: no-op (= no buffer)." nil))
+(unless (fboundp 'buffer-string)
+  (defun buffer-string () "NeLisp stub: returns empty (= no buffer)." ""))
+(unless (fboundp 'current-buffer)
+  (defun current-buffer () "NeLisp stub: nil (= no buffer)." nil))
+(unless (fboundp 'with-temp-buffer)
+  (defmacro with-temp-buffer (&rest body)
+    "NeLisp stub: run BODY (= no buffer to set up)."
+    (cons 'progn body)))
+(unless (fboundp 'insert)
+  (defun insert (&rest _args) "NeLisp stub: no-op (= no buffer to insert into)." nil))
+(unless (fboundp 'insert-file-contents)
+  (defun insert-file-contents (_path) "NeLisp stub: no-op." nil))
+(unless (fboundp 'point-min)
+  (defun point-min () "NeLisp stub: 1." 1))
+(unless (fboundp 'point-max)
+  (defun point-max () "NeLisp stub: 1." 1))
+(unless (fboundp 'goto-char)
+  (defun goto-char (_p) "NeLisp stub: no-op." nil))
+
 ;; nelisp-stdlib-misc.el ends here
+(unless (fboundp 'buffer-substring-no-properties)
+  (defun buffer-substring-no-properties (_start _end)
+    "NeLisp stub: empty string (= no buffer)." ""))
