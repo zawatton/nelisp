@@ -269,3 +269,47 @@ perf optimization (= 数時間 → 数十分以下) は Wave 9 (= 仮称) 行き
 
 **R6L 着地 (= 2026-05-23)**: rename + build.rs env-gating + bootstrap
 docs を 1 commit。Wave 7 ship 完了、perf は Wave 9 行き。
+
+* Wave 9 final state (= 2026-05-23 close)
+
+** SHIPPED commits
+| Commit   | Round | 内容                                              |
+|----------+-------+---------------------------------------------------|
+| 88ad592a | R8    | multi-process build parallelism (NELISP_BUILD_THREADS) |
+| a36e03b0 | -     | verify infra v1 (probe-fast + baseline)           |
+| ba3e32ab | -     | 2-tier verify infra (scripts/verify-quick + full) |
+| 210f90b1 | R11a  | mirror+env CSE hoist (11% standalone)             |
+| 543b6b00 | R11b  | frame+fnv1a+lexframe opt (7% standalone)          |
+| ffa16bf1 | -     | incremental compile (mtime skip in emit-all/range) |
+| 1f118cd4 | -     | verify-iter.sh (3rd tier, 1s sanity)              |
+
+** 実測 (= main HEAD 1f118cd4)
+- probe-fast N=5: **5.34s** (= R11a+b combined、baseline 6.33s から **15.6% speedup**)
+- 3-tier verify: iter 1s / quick 10s / full 21s (= R10 比 4x 短縮達成)
+- self-host build (= NELISP_BUILD_WITH=nelisp) は **依然数十分** =
+  Wave 10 (= deeper opt) 待ち、実用化未達
+
+** Wave 10 attempts (= 4 subagent REPORT ONLY 2026-05-23)
+
+| Round | 試行                                | 結果 / 阻害要因                       |
+|-------+-------------------------------------+---------------------------------------|
+| W10.1 | Phase 47 migration (= capture-to-depth) | Rust glue 必要 (Env::capture_lexical 拡張) |
+| W10.1' | path fix retry                     | 同 reject 理由                        |
+| W10.1d | extern-call 経由再構築             | extern-call は Phase 47 grammar form のみ、`nl-jit-call-out-2` でなら可能だが scope 過大 (~250-400 LOC Phase 47、grammar に hashtable 無し) |
+| W10.1e | precomputed stdlib symbol hashes   | Phase 47 grammar に array index/hash lookup primitive 無し、`symbol-name-eq` × 1005 cond cascade は fnv1a 4-byte unroll より遅い |
+
+** Wave 10 結論 (= 「elisp-only 15.6% が実用最大値」確定)
+
+R11 の 15.6% は **「Rust LOC 0 + Phase 47 grammar 現状」 で elisp-only
+達成可能な実用最大値**。それ以上の speedup には以下のどれか必要:
+
+- **Phase 47 grammar 拡張 wave** (~250-500 LOC elisp、1-2 wave):
+  hash-table primitive / array index lookup / static table emit を
+  grammar に追加 → W10.1d/e の re-dispatch unblock
+- **Rust LOC waiver** (~5-30 LOC、user hard rule 緩和):
+  capture_lexical / lookup_function 等に direct fast path、~2-5x speedup
+- **architectural rework** (= daemon / persistent / shared image、multi-wave):
+  startup cost 償却、self-host build 実用化に必要
+
+= [[feedback_nelisp_rust_loc_never_increase]] rule の根本的見直しが
+trade-off の核心。次 session 開始時に user と再 align。
