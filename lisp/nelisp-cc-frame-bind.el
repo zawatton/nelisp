@@ -100,9 +100,9 @@
       ;;                      live `NlConsBox*' of the bucket cell.
       ;;   sexp-payload-ptr   reads the box's CAR Sexp; for the bucket
       ;;                      cell this is the inner (KEY . CELL) pair's
-      ;;                      `NlConsBox*' (= b2).  b2 starts with the
-      ;;                      KEY Sexp at offset 0, so b2 itself is the
-      ;;                      KEY `*const Sexp' for `str-eq'.
+      ;;                      `NlConsBox*' (= b2 = inner-ptr).  b2 starts
+      ;;                      with the KEY Sexp at offset 0, so b2 itself
+      ;;                      is the KEY `*const Sexp' for `str-eq'.
       ;;   cons-set-cdr       takes box-ptr treated as `Sexp::Cons' ptr.
       ;;                      Internally reads `[box-ptr + 8]' = the CAR
       ;;                      Sexp's payload = inner-pair box ptr, then
@@ -110,12 +110,22 @@
       ;;                      to overwrite the pair's cdr (= the cell
       ;;                      slot).  Net effect: the (NAME . OLD-CELL)
       ;;                      pair becomes (NAME . CELL-PTR).
+      ;;
+      ;; R11b Wave 9 CSE-hoist: `(sexp-payload-ptr box-ptr)' is read
+      ;; once per bucket-walk step (= the inner-pair box ptr used for
+      ;; the KEY str-eq comparison).  Hoisting to a let-rt frame slot
+      ;; (`inner-ptr') ahead of the comparison is a no-op for the miss
+      ;; tail-call path but trims a redundant memory read on every
+      ;; comparison — matters because bind walks one bucket per call
+      ;; site, and there are many call sites in deep-recursion lambda
+      ;; evaluator paths.
       (if (= box-ptr 0)
           0
-        (if (= (str-eq (sexp-payload-ptr box-ptr) name-ptr) 1)
-            (and (cons-set-cdr box-ptr cell-ptr) 1)
-          (nelisp_frame_bind_walk_update
-           (cons-cdr-raw-from-box box-ptr) name-ptr cell-ptr 0))))
+        (let ((inner-ptr (sexp-payload-ptr box-ptr)))
+          (if (= (str-eq inner-ptr name-ptr) 1)
+              (and (cons-set-cdr box-ptr cell-ptr) 1)
+            (nelisp_frame_bind_walk_update
+             (cons-cdr-raw-from-box box-ptr) name-ptr cell-ptr 0)))))
     (defun nelisp_frame_bind_install
         (buckets-ptr idx scratch-pair-slot scratch-outer-slot)
       ;; Miss-path tail: populate the empty outer bucket cell in

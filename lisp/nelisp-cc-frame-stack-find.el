@@ -64,16 +64,24 @@
       ;;   name-ptr: `*const Sexp' pointing at Sexp::Symbol /
       ;;             Sexp::Str being looked up.
       ;;
-      ;; Returns: i64.  On hit, `(+ b2 32)' where b2 is the inner
-      ;; (KEY . CELL) pair's NlConsBox* — that's the address of the
-      ;; CELL slot.  On miss, 0.
+      ;; Returns: i64.  On hit, `(+ inner-ptr 32)' where inner-ptr is
+      ;; the inner (KEY . CELL) pair's NlConsBox* — that's the address
+      ;; of the CELL slot.  On miss, 0.
+      ;;
+      ;; R11b Wave 9 CSE-hoist: the inner (KEY . CELL) pair pointer is
+      ;; read twice on the hit path (= once for `str-eq' against KEY,
+      ;; once for the `(+ ... 32)' cell-slot offset).  Hoisting
+      ;; `(sexp-payload-ptr box-ptr)' into `inner-ptr' via let-rt frame
+      ;; slot eliminates the redundant memory read on every bucket
+      ;; comparison.
       (if (= box-ptr 0)
           0
-        (if (= (str-eq (sexp-payload-ptr box-ptr) name-ptr) 1)
-            (+ (sexp-payload-ptr box-ptr) 32)
-          (nelisp_frame_stack_find_walk_bucket
-           (cons-cdr-raw-from-box box-ptr)
-           name-ptr))))
+        (let ((inner-ptr (sexp-payload-ptr box-ptr)))
+          (if (= (str-eq inner-ptr name-ptr) 1)
+              (+ inner-ptr 32)
+            (nelisp_frame_stack_find_walk_bucket
+             (cons-cdr-raw-from-box box-ptr)
+             name-ptr)))))
     (defun nelisp_frame_stack_find_in_frame (frame-ptr name-ptr)
       ;; Look up NAME in a single frame's hash table.  frame-ptr
       ;; points at the outer `Sexp::Record(`nelisp-lexframe')'; its
@@ -107,22 +115,22 @@
       ;;              starts at depth-1.
       ;; name-ptr:    `*const Sexp' for the lookup key.
       ;;
-      ;; The hit branch re-evaluates `nelisp_frame_stack_find_in_frame'
-      ;; (= second call site) because Phase 47 has no `let' binding
-      ;; for the intermediate i64 result; the second call observes the
-      ;; same memory + recomputes the same hash + walk, returning the
-      ;; identical pointer.  Cost is constant — one redundant hash +
-      ;; bucket-walk per hit — vs. zero on miss path.
+      ;; R11b Wave 9 CSE-hoist: the pre-R11b version re-evaluated
+      ;; `nelisp_frame_stack_find_in_frame' on the hit branch (= second
+      ;; call site) because the original Phase 47 source elided the
+      ;; let-binding.  This paid a redundant FNV-1a hash + bucket walk
+      ;; per hit — non-negligible since lookup hit rate dominates.
+      ;; We now hoist the first call's result into `found' via let-rt
+      ;; and return it directly on the non-zero branch, saving one
+      ;; full hash+walk per successful frame lookup.
       (if (< i 0)
           0
-        (if (= (nelisp_frame_stack_find_in_frame
-                (vector-ref-ptr backing-ptr i)
-                name-ptr)
-               0)
-            (nelisp_frame_stack_find_descend backing-ptr (- i 1) name-ptr)
-          (nelisp_frame_stack_find_in_frame
-           (vector-ref-ptr backing-ptr i)
-           name-ptr))))
+        (let ((found (nelisp_frame_stack_find_in_frame
+                      (vector-ref-ptr backing-ptr i)
+                      name-ptr)))
+          (if (= found 0)
+              (nelisp_frame_stack_find_descend backing-ptr (- i 1) name-ptr)
+            found))))
     (defun nelisp_frame_stack_find (frames-ptr name-ptr)
       ;; frames-ptr: *const Sexp pointing at Env::frames_record (=
       ;;             Sexp::Record(`nelisp-lexframe-stack')).

@@ -70,35 +70,73 @@
 
 (defconst nelisp-cc-fnv1a--source
   '(seq
-    (defun nelisp_fnv1a_step (h str-ptr i n)
-      ;; Tail-recursive inner loop.
+    (defun nelisp_fnv1a_step (h str-ptr i n mask)
+      ;; Tail-recursive 1-byte tail handler (= 0-3 leftover bytes after
+      ;; the 4-byte unrolled main loop has consumed the bulk of the
+      ;; string).  R11b Wave 9: extra MASK arg threads the precomputed
+      ;; 32-bit mask (= `(- (shl 1 32) 1)') through the recursion so
+      ;; each step avoids re-materialising the constant.
       ;;
       ;;   h:       current 32-bit hash state (zero-extended to i64).
       ;;   str-ptr: *const Sexp pointing at Sexp::Str / Sexp::Symbol.
       ;;   i:       current byte index into the string payload.
       ;;   n:       byte count of the string (= `str-len' on str-ptr).
+      ;;   mask:    0x00000000_FFFFFFFF (= per-step low-32 mask).
       ;;
       ;; Each step XORs the byte at position `i', multiplies by the
       ;; FNV_PRIME (0x01000193), masks back to 32 bits, then recurses
       ;; on (i+1).  Base case: `(< i n)' false → return the final hash.
-      ;;
-      ;; 32-bit truncation note: the obvious encoding
-      ;; `(logand X 4294967295)' breaks because Phase 47's `MOV r/m64,
-      ;; imm32' opcode sign-extends, turning `0xFFFFFFFF' into the
-      ;; all-ones 64-bit `0xFFFFFFFF_FFFFFFFF' mask (= identity).
-      ;; Instead we compose the mask register-only via two shifts plus
-      ;; a subtract: `(- (shl 1 32) 1) = 0x00000000_FFFFFFFF', where
-      ;; the `shl' uses the variable-shift path (rcx) so no sign
-      ;; extension creeps in.  The intermediate `(shl 1 32)' value
-      ;; `0x1_00000000' is the smallest 64-bit literal larger than
-      ;; 32 bits; subtracting 1 yields exactly the unsigned 32-bit
-      ;; mask we need.
       (if (< i n)
           (nelisp_fnv1a_step
-           (logand (* (logxor h (str-byte-at str-ptr i)) 16777619)
-                   (- (shl 1 32) 1))
-           str-ptr (+ i 1) n)
+           (logand (* (logxor h (str-byte-at str-ptr i)) 16777619) mask)
+           str-ptr (+ i 1) n mask)
         h))
+    (defun nelisp_fnv1a_step4 (h str-ptr i n mask)
+      ;; Tail-recursive 4-byte unrolled inner loop.  R11b Wave 9
+      ;; perf opt: each recursion processes 4 bytes per cycle when
+      ;; `(<= (+ i 4) n)' (= at least 4 bytes remain), halving the
+      ;; recursive-call overhead (= call+ret+arg-shuffle) for the
+      ;; bulk of typical symbol-name strings.  Once fewer than 4
+      ;; bytes remain, hand off to `nelisp_fnv1a_step' which handles
+      ;; the 0-3 byte tail.
+      ;;
+      ;; The 4 inline FNV steps each consist of:
+      ;;   h = (h XOR byte[i+k]) * FNV_PRIME masked to 32 bits
+      ;; matching the Rust impl bit-for-bit.  The arithmetic is
+      ;; commutative-free (= each step depends on the previous h)
+      ;; so the unroll is purely a recursion-overhead win, not a
+      ;; SIMD/ILP win — but for ASCII symbol names of length ~8-20
+      ;; bytes (= typical elisp identifiers) the call-overhead
+      ;; saving is the dominant cost.
+      ;;
+      ;;   h:       current 32-bit hash state.
+      ;;   str-ptr: *const Sexp pointing at Sexp::Str / Sexp::Symbol.
+      ;;   i:       current byte index into the string payload.
+      ;;   n:       byte count of the string (= `str-len' on str-ptr).
+      ;;   mask:    0x00000000_FFFFFFFF threaded through the recursion.
+      (if (<= (+ i 4) n)
+          (nelisp_fnv1a_step4
+           (logand
+            (* (logxor
+                (logand
+                 (* (logxor
+                     (logand
+                      (* (logxor
+                          (logand
+                           (* (logxor h (str-byte-at str-ptr i))
+                              16777619)
+                           mask)
+                          (str-byte-at str-ptr (+ i 1)))
+                         16777619)
+                      mask)
+                     (str-byte-at str-ptr (+ i 2)))
+                    16777619)
+                 mask)
+                (str-byte-at str-ptr (+ i 3)))
+               16777619)
+            mask)
+           str-ptr (+ i 4) n mask)
+        (nelisp_fnv1a_step h str-ptr i n mask)))
     (defun nelisp_fnv1a (str-ptr)
       ;; str-ptr: *const Sexp pointing at Sexp::Str / Sexp::Symbol.
       ;; Returns: i64 — the 32-bit FNV-1a hash of the string's bytes,
@@ -117,8 +155,16 @@
       ;; `0x80000000' (bit 31 set, all high bits 0) and adding the
       ;; positive low-31-bits remainder yields exactly 0x811C9DC5
       ;; in the low 32 bits, zeros in the high 32 bits.
-      (nelisp_fnv1a_step (+ (shl 1 31) 18652613)
-                         str-ptr 0 (str-len str-ptr))))
+      ;;
+      ;; R11b: dispatch through the 4-byte unrolled `nelisp_fnv1a_step4'
+      ;; entry which handles the bulk of the string and tails off to
+      ;; the 1-byte `nelisp_fnv1a_step' for the final 0-3 bytes.  The
+      ;; mask `(- (shl 1 32) 1)' is computed once in the caller and
+      ;; threaded through both recursions as an explicit arg, avoiding
+      ;; the repeated `(shl 1 32)' shift in every inner step.
+      (nelisp_fnv1a_step4 (+ (shl 1 31) 18652613)
+                          str-ptr 0 (str-len str-ptr)
+                          (- (shl 1 32) 1))))
   "Phase 47 source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp
 replacement.
 
@@ -126,6 +172,15 @@ Implements the 32-bit FNV-1a hash via tail-recursive byte iteration
 over a Sexp::Str / Sexp::Symbol payload.  Composes `str-len' /
 `str-byte-at' (§101.C) + `logxor' / `logand' (§115.0) + `*' (§100.D)
 through plain Phase 47 grammar — no `extern-call'.
+
+R11b Wave 9: split the inner loop into a 4-byte unrolled main path
+(`nelisp_fnv1a_step4') + a 1-byte tail path (`nelisp_fnv1a_step') and
+hoist the 32-bit mask (= `(- (shl 1 32) 1)') to a caller-supplied arg
+threaded through both recursions.  Bit-identical hash output vs. the
+pre-R11b 1-byte loop (= same algebraic sequence of XOR / mul / mask
+applied per byte in the same order); 8/8 oracle correctness test
+pass.  Perf win comes from amortising call+ret+arg-shuffle overhead
+across 4 bytes per cycle in the bulk path.
 
 Replaces the ~25 LOC Rust `mirror_fnv1a' free fn + ~8 LOC
 `nl_mirror_fnv1a_sexp' extern wrapper in `env_helpers.rs'.
