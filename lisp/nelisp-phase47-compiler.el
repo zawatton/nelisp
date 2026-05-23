@@ -168,6 +168,183 @@ sizing every VADDR is 0 (= placeholder); during pass-2 the values
 are the real `.rodata' vaddrs.  Nil outside compile passes (=
 default top-level binding).  See Doc 49 Wave 11.1.")
 
+;; ---- Doc 49 Wave 11.2 hash-table primitive desugar ----
+;;
+;; Wave 11.2 introduces four runtime hash-table primitives — `hash-
+;; table-make' / `hash-table-put' / `hash-table-get' / `hash-table-
+;; contains-p' — implemented as **parse-time macros** that desugar
+;; into compositions of existing Phase 47 primitives (`record-make',
+;; `record-slot-ref-ptr', `record-slot-set', `cons-make-with-clone',
+;; `sexp-payload-ptr', `extern-call nelisp_fnv1a', `str-eq', etc.).
+;;
+;; No new emit functions, no new asm helpers, no new collector
+;; passes are required — the desugar produces nested sexp forms that
+;; the existing parser handles directly.  This keeps the Rust LOC
+;; delta = 0 (= NlRecord / NlConsBox alloc paths re-used unchanged)
+;; and the elisp delta minimal.
+;;
+;; Storage layout (= simpler than the bucket-array hashtable in
+;; `nelisp-stdlib-fast-hash.el' — the record IS the bucket array):
+;;
+;;   Sexp::Record(tag = HT-TAG-PTR, slots = capacity)
+;;     slot[i] = Sexp::Cons(bucket-head) or Sexp::Nil
+;;       Each bucket cell = ((KEY . VALUE) . NEXT) where KEY is the
+;;       lookup pointer (Sexp::Symbol / Sexp::Str) and NEXT is the
+;;       next bucket cell or Sexp::Nil.
+;;
+;; The bucket index = `(logand (extern-call nelisp_fnv1a KEY)
+;; (- CAPACITY 1))' — CAPACITY must be a power of two (caller is
+;; responsible).  This matches the env-mirror fast-path mask
+;; pattern already used by `nelisp_mirror_lookup_entry'.
+;;
+;; Caller-owned scratch slot convention (= mirrors `record-make' /
+;; `cons-make' / `cons-make-with-clone'): every constructor takes
+;; an explicit `SLOT' parameter (= `*mut Sexp') for the result.
+
+(defun nelisp-phase47-compiler--ht-desugar-make (cap-expr slot-expr tag-ptr-expr)
+  "Desugar `(hash-table-make TAG-PTR CAP SLOT)' to a `record-make' form.
+TAG-PTR-EXPR is a value-form producing a `*const Sexp' that
+points at the type-tag symbol for the new record (caller
+typically passes a static `Sexp::Symbol' allocated elsewhere).
+CAP-EXPR evaluates to the bucket count (= power of two for the
+fast-path mask) and SLOT-EXPR is the `*mut Sexp' destination.
+
+Returns the equivalent sexp `(record-make TAG-PTR CAP SLOT)' — the
+new record's slots are already pre-filled with `Sexp::Nil' by
+`nl_alloc_record', which is exactly the empty-bucket sentinel."
+  `(record-make ,tag-ptr-expr ,cap-expr ,slot-expr))
+
+(defun nelisp-phase47-compiler--ht-desugar-bucket-idx (ht-expr key-expr)
+  "Build the sexp computing `(fnv1a(KEY) & (CAP - 1))'.
+HT-EXPR is the hash-table `*const Sexp', KEY-EXPR is the lookup
+key `*const Sexp'.  Capacity comes from the record's slot count
+(= `record-slot-count' returns the live slot count).  Power-of-
+two CAP is the caller's responsibility — non-pow2 capacity
+yields a uniform hash but the index will not span all buckets."
+  `(logand (extern-call nelisp_fnv1a ,key-expr)
+           (- (record-slot-count ,ht-expr) 1)))
+
+(defun nelisp-phase47-compiler--ht-desugar-put
+    (ht-expr key-expr val-expr cons-slot-expr pair-slot-expr)
+  "Desugar `(hash-table-put HT KEY VAL CONS-SLOT PAIR-SLOT)'.
+Conceptually evaluates to:
+
+  bucket_idx = fnv1a(KEY) & (CAP - 1)
+  pair      = cons-with-clone(KEY, VAL)           ; PAIR-SLOT
+  new_head  = cons-with-clone(pair, HT.slot[idx]) ; CONS-SLOT
+  record-slot-set(HT, bucket_idx, new_head)
+  return HT
+
+CONS-SLOT-EXPR and PAIR-SLOT-EXPR are caller-owned scratch `*mut
+Sexp' slots used as the destination for the two intermediate
+cons cells.  Both must be distinct (= the put writes through
+both).  The returned form is itself a value-producing IR that
+evaluates to the HT pointer.
+
+Implementation note: the bucket index gets re-computed twice (=
+once for `record-slot-ref' to read the existing head, once for
+`record-slot-set' to write the new head) because nesting a
+runtime `let' here would require an enclosing defun context that
+the desugar cannot enforce.  The duplicated fnv1a is acceptable
+(= rest of the operation is already dominated by the two cons
+clones); a future optimisation may inline a let when the desugar
+runs inside a defun body."
+  (let ((idx-expr (nelisp-phase47-compiler--ht-desugar-bucket-idx
+                   ht-expr key-expr)))
+    `(record-slot-set
+      ,ht-expr
+      ,idx-expr
+      (cons-make-with-clone
+       (cons-make-with-clone ,key-expr ,val-expr ,pair-slot-expr)
+       (record-slot-ref ,ht-expr ,idx-expr ,cons-slot-expr)
+       ,cons-slot-expr))))
+
+(defun nelisp-phase47-compiler--ht-desugar-get
+    (ht-expr key-expr slot-expr)
+  "Desugar `(hash-table-get HT KEY SLOT)'.
+Walks the bucket chain at `HT.slots[fnv1a(KEY) & (CAP-1)]'.  On
+hit, copies the matching VALUE into SLOT and returns SLOT.  On
+miss, writes `Sexp::Nil' into SLOT and returns SLOT.
+
+Calls the helper defun `nelisp_ht_walk' (= shared with `hash-
+table-contains-p') which iterates the bucket chain; the helper
+must be present in the compile unit (= the user must include
+`(hash-table-helpers)' once, or include the helper defun
+explicitly).  Returns a value-producing IR.
+
+The walk returns the `*const Sexp' of the matching VALUE slot on
+hit, or 0 on miss; the wrapper copies that pointer into SLOT
+via `sexp-write-nil' + memcpy-style — simpler at MVP: the walk
+returns the value pointer directly and SLOT is unused (= the
+caller treats the return value as the lookup result)."
+  ;; MVP: the get returns the matching value's *const Sexp directly
+  ;; in rax (= 0 means miss).  SLOT is the destination for the
+  ;; `Sexp::Nil' sentinel on miss; on hit the caller dereferences
+  ;; the returned pointer.  This matches the `nelisp_mirror_lookup_
+  ;; entry' ABI shape.
+  ;;
+  ;; The walk helper is called by name; the compile unit must
+  ;; include the helper defun via `(hash-table-helpers)' sugar.
+  `(nelisp_ht_walk
+    (sexp-payload-ptr
+     (record-slot-ref-ptr ,ht-expr
+                          ,(nelisp-phase47-compiler--ht-desugar-bucket-idx
+                            ht-expr key-expr)))
+    ,key-expr
+    ,slot-expr))
+
+(defun nelisp-phase47-compiler--ht-desugar-contains-p
+    (ht-expr key-expr slot-expr)
+  "Desugar `(hash-table-contains-p HT KEY SLOT)' → 1 if KEY found else 0.
+Re-uses the `nelisp_ht_walk' helper (= same defun `hash-table-
+get' calls); returns 1 when the returned pointer is non-zero,
+else 0.  SLOT is the same throwaway scratch the `get' variant
+uses."
+  `(if (= (nelisp_ht_walk
+           (sexp-payload-ptr
+            (record-slot-ref-ptr ,ht-expr
+                                 ,(nelisp-phase47-compiler--ht-desugar-bucket-idx
+                                   ht-expr key-expr)))
+           ,key-expr
+           ,slot-expr)
+          0)
+       0
+     1))
+
+(defconst nelisp-phase47-compiler--ht-helpers-source
+  '(seq
+    ;; `nelisp_ht_walk' is the shared bucket-chain walker used by
+    ;; `hash-table-get' and `hash-table-contains-p'.  Mirrors the
+    ;; `nelisp_mirror_walk_bucket' impl in
+    ;; `lisp/nelisp-cc-mirror-lookup-entry.el' but specialised for
+    ;; the W11.2 layout (= bucket cell = ((KEY . VALUE) . NEXT),
+    ;; KEY at box+0, VALUE at box+32 inside the inner pair).
+    ;;
+    ;; box-ptr: i64.  0 = end-of-bucket.  Otherwise a live
+    ;;          `NlConsBox*' addressing the current bucket cell
+    ;;          (= car holds the (KEY . VALUE) pair, cdr holds the
+    ;;          next bucket cell or Sexp::Nil).
+    ;; key-ptr: `*const Sexp' for the lookup key.
+    ;; nil-slot: caller-owned `*mut Sexp' used as the Sexp::Nil
+    ;;           sentinel scratch on miss (= future-proof; the MVP
+    ;;           impl ignores it but the helper accepts it so the
+    ;;           caller's stack discipline is uniform between hit
+    ;;           and miss paths).
+    ;;
+    ;; Returns: i64.  On hit, the `*const Sexp' of the matching
+    ;; VALUE (= the pair box's cdr slot, at offset 32 inside the
+    ;; inner pair).  On miss / end-of-bucket, 0.
+    (defun nelisp_ht_walk (box-ptr key-ptr nil-slot)
+      (if (= box-ptr 0)
+          0
+        (let ((pair-box (sexp-payload-ptr box-ptr)))
+          (if (= (str-eq pair-box key-ptr) 1)
+              (+ pair-box 32)
+            (nelisp_ht_walk
+             (cons-cdr-raw-from-box box-ptr)
+             key-ptr
+             nil-slot)))))))
+
 (defvar nelisp-phase47-compiler--current-defun-arity nil
   "Arity of the defun currently being emitted, or nil during main `_start'.
 Bound dynamically by `--emit-defun' so inner emit helpers (= those
@@ -545,6 +722,56 @@ functions `((NAME . ARITY) ...)'."
    ;; (sexp-int-make SLOT N)    — write Sexp::Int(N) into SLOT,
    ;;                              return SLOT pointer in rax.
    ;;
+   ;; Doc 49 Wave 11.2: hash-table primitives (parse-time desugar).
+   ;;
+   ;; `(hash-table-make TAG-PTR CAP SLOT)' → `(record-make TAG-PTR CAP SLOT)'
+   ;; `(hash-table-put HT KEY VAL CONS-SLOT PAIR-SLOT)' → record-slot-set
+   ;;     of (cons-make-with-clone (cons-make-with-clone KEY VAL)
+   ;;                              (record-slot-ref ...))
+   ;; `(hash-table-get HT KEY SLOT)' → call to `nelisp_ht_walk' helper
+   ;; `(hash-table-contains-p HT KEY SLOT)' → (if (= (call ...) 0) 0 1)
+   ;;
+   ;; The desugar produces nested sexps that the existing parser
+   ;; handles directly — no new emit functions or asm helpers are
+   ;; required, and the Rust LOC delta = 0.  See the
+   ;; `--ht-desugar-*' helpers above.  The bucket index is computed
+   ;; via `(extern-call nelisp_fnv1a KEY)' so the `nelisp-cc-fnv1a'
+   ;; defun must be linked into the compile unit (= shipped via the
+   ;; existing `nelisp-cc-fnv1a' object) or the caller must inline
+   ;; `(nelisp_ht_helpers-source)' source which depends on str-eq.
+   ((and (consp sexp) (eq (car sexp) 'hash-table-make))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :hash-table-make-arity sexp)))
+    (nelisp-phase47-compiler--parse-value
+     (nelisp-phase47-compiler--ht-desugar-make
+      (nth 2 sexp) (nth 3 sexp) (nth 1 sexp))
+     env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'hash-table-put))
+    (unless (= (length sexp) 6)
+      (signal 'nelisp-phase47-compiler-error
+              (list :hash-table-put-arity sexp)))
+    (nelisp-phase47-compiler--parse-value
+     (nelisp-phase47-compiler--ht-desugar-put
+      (nth 1 sexp) (nth 2 sexp) (nth 3 sexp)
+      (nth 4 sexp) (nth 5 sexp))
+     env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'hash-table-get))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :hash-table-get-arity sexp)))
+    (nelisp-phase47-compiler--parse-value
+     (nelisp-phase47-compiler--ht-desugar-get
+      (nth 1 sexp) (nth 2 sexp) (nth 3 sexp))
+     env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'hash-table-contains-p))
+    (unless (= (length sexp) 4)
+      (signal 'nelisp-phase47-compiler-error
+              (list :hash-table-contains-p-arity sexp)))
+    (nelisp-phase47-compiler--parse-value
+     (nelisp-phase47-compiler--ht-desugar-contains-p
+      (nth 1 sexp) (nth 2 sexp) (nth 3 sexp))
+     env fenv defuns))
    ;; Doc 49 Wave 11.1: (static-imm32-table-lookup NAME INDEX-EXPR)
    ;;
    ;; Runtime O(1) load of the u32 at `TABLE_NAME[INDEX]'.  NAME must
@@ -1861,6 +2088,14 @@ Returns one of:
    ;; the surrounding statement context drops on the floor.
    ((and (consp sexp)
          (memq (car sexp) '(if while cond and or)))
+    (nelisp-phase47-compiler--parse-value sexp env fenv defuns))
+   ;; Doc 49 Wave 11.2 hash-table primitives in statement position.
+   ;; Each desugars to a value-producing form whose result the stmt
+   ;; context discards (= same shape as the `if'/`while' arm above).
+   ((and (consp sexp)
+         (memq (car sexp)
+               '(hash-table-make hash-table-put
+                                 hash-table-get hash-table-contains-p)))
     (nelisp-phase47-compiler--parse-value sexp env fenv defuns))
    (t
     (signal 'nelisp-phase47-compiler-error
