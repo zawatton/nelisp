@@ -266,26 +266,203 @@ the iteration + decision shell will be Phase 47-compiled in A25.3."
                                         :arch arch :format format)
       out-path))))
 
-(defun compile-elisp-objects-meta--walk (manifest idx end out-dir arch format)
-  "Tail-recursive iteration kernel.
-Walks MANIFEST entries in the half-open range [IDX, END), compiling
-each via `compile-elisp-objects-meta--compile-one'.  Returns the list
-of output paths written or kept (= same accumulator shape as the
-legacy driver's `compile-elisp-objects-emit-all').
+(defun compile-elisp-objects-meta--collect-path-vectors (manifest out-dir arch)
+  "Build parallel `srcs' / `outs' vectors + an `entries' vector for MANIFEST.
+Used by the Wave A26 walker dispatch (= `nelisp_meta_walk') which
+takes two parallel `Sexp::Vec' of `Sexp::Str' path arguments instead
+of a single record vector.
 
-Even arity (6) — written in the shape the future Phase 47 walker
-will take.  In Phase 47 the recursion will use the existing
-`if'-dispatch + named-recursive-defun pattern (= same shape as
-`nelisp_bi_getenv_cstrlen' or `nelisp_fnv1a_step').  Host Emacs
-keeps the cl-loop accumulator for now because tail-call optimisation
-is not guaranteed by the host emacs."
-  (let ((acc nil)
-        (i idx))
-    (while (< i end)
+Returns a plist `(:srcs SRCS-VEC :outs OUTS-VEC :entries ENTRIES-VEC
+:dirty-arch-mask MASK)' where:
+
+  SRCS-VEC       - vector of source `.el' absolute paths (strings).
+  OUTS-VEC       - vector of output `.o' absolute paths (strings).
+  ENTRIES-VEC    - vector of the original manifest entries (= the
+                   4-slot records the walker dispatches against
+                   after the bitmask comes back).
+  DIRTY-ARCH-MASK - i64 bitmask; bit i set iff entry i should be
+                   skipped due to `:requires-arch' mismatch.  The
+                   walker still processes those entries (their
+                   bitmask bit is unreliable) but the elisp driver
+                   ignores both the walker-bit AND the entry on
+                   the emit pass when the arch-skip bit is set.
+
+ENTRIES-VEC is parallel to SRCS-VEC / OUTS-VEC (= same length, same
+order), so bit `i' of the walker's returned bitmask maps to
+ENTRIES-VEC[i] / SRCS-VEC[i] / OUTS-VEC[i] one-to-one."
+  (let ((n (length manifest))
+        (srcs (make-vector (length manifest) ""))
+        (outs (make-vector (length manifest) ""))
+        (entries (make-vector (length manifest) nil))
+        (arch-skip 0)
+        (i 0))
+    (while (< i n)
       (let* ((entry (aref manifest i))
-             (path  (compile-elisp-objects-meta--compile-one
-                     entry out-dir arch format)))
-        (when path (push path acc)))
+             (feature       (aref entry 0))
+             (output        (aref entry 2))
+             (requires-arch (aref entry 3))
+             (out-path      (expand-file-name output out-dir))
+             (src-path      (compile-elisp-objects--source-file feature)))
+        (aset srcs i (or src-path ""))
+        (aset outs i out-path)
+        (aset entries i entry)
+        (unless (compile-elisp-objects-meta--arch-ok-p requires-arch arch)
+          (setq arch-skip (logior arch-skip (ash 1 i))))
+        (setq i (1+ i))))
+    (list :srcs srcs :outs outs :entries entries
+          :dirty-arch-mask arch-skip)))
+
+(defun compile-elisp-objects-meta--missing-file-mask (srcs outs)
+  "Return a bitmask of entries with a missing src OR missing out file.
+Bit i is set iff `srcs[i]' is empty / does not exist, OR `outs[i]'
+does not exist.  Used to pre-flight the walker dispatch so the
+Phase 47 `nelisp_meta_should_rebuild' kernel only sees entries
+where both files are stat-able (= same pre-flight invariant the
+pre-A26 `compile-elisp-objects-meta--should-rebuild' shim relied
+on)."
+  (let ((n (length srcs))
+        (mask 0)
+        (i 0))
+    (while (< i n)
+      (let ((src (aref srcs i))
+            (out (aref outs i)))
+        (when (or (null src)
+                  (not (stringp src))
+                  (string-empty-p src)
+                  (not (file-exists-p src))
+                  (not (file-exists-p out)))
+          (setq mask (logior mask (ash 1 i)))))
+      (setq i (1+ i)))
+    mask))
+
+(defun compile-elisp-objects-meta--compute-bitmask (srcs outs)
+  "Return an i64 bitmask of per-entry rebuild decisions.
+Bit i is 1 iff `nelisp_meta_should_rebuild' decided entry i needs
+rebuilding (= source newer than output, or output missing, or src
+missing).
+
+Wave A26 — when the standalone NeLisp interpreter's
+`nl-jit-call-out-2' bridge is bound (= standalone runtime with the
+A26 `nelisp_meta_walk' kernel linked into `+whole-archive'), this
+function makes a SINGLE bridge call into the Phase 47 walker:
+
+  (nl-jit-call-out-2 \"nelisp_meta_walk\" SRCS OUTS)
+
+The walker iterates internally via Phase 47-native tail recursion,
+calling `nelisp_meta_should_rebuild' for each (src, out) pair, and
+packs the 0/1 decisions into a single `Sexp::Int(bitmask)' return.
+This collapses N elisp -> native bridge calls into 1 (= the A26
+walker is the iteration kernel itself, not a per-entry shim).
+
+Missing-file pre-flight: the A25.2 `nelisp_meta_should_rebuild'
+kernel's `extern-call stat' currently masks the stat-failure rc
+indistinguishably from the rc-success branch (= the kernel's
+`(if (< rc 0) -1 ...)' check is x86_64-correct but the elisp-side
+extern-call return-shape returns 0 for the rc<0 branch as well, so
+the kernel's missing-file decision-bit is unreliable).  We work
+around this by pre-flighting missing files on the elisp side via
+`compile-elisp-objects-meta--missing-file-mask' and OR-ing the
+result into the walker's bitmask — same byte-identity contract,
+same safety, just without depending on the kernel's missing-file
+branch.  When the kernel-side stat-failure path is fixed in a
+later wave the pre-flight can be dropped.
+
+On host Emacs (= no `nl-jit-call-out-2'), the function falls back
+to the per-entry `compile-elisp-objects-meta--should-rebuild' shim
+called in an elisp loop.  The bitmask is built one bit at a time
+so the byte-identity reference path stays untouched."
+  (let ((missing-mask
+         (compile-elisp-objects-meta--missing-file-mask srcs outs)))
+    (cond
+     ((fboundp 'nl-jit-call-out-2)
+      ;; Standalone NeLisp path — single bridge call into the Phase 47
+      ;; walker.  The bridge returns `Sexp::Int(bitmask)' via the result
+      ;; slot; on dlsym miss or arity mismatch we fall back to the
+      ;; per-entry safe-over-build (= mark every entry dirty).  OR with
+      ;; the missing-file pre-flight so entries with missing src or out
+      ;; are flagged dirty regardless of what the walker decided (= the
+      ;; kernel's `extern-call stat' rc<0 branch is unreliable, see
+      ;; docstring).
+      (logior missing-mask
+              (condition-case _err
+                  (let ((result (nl-jit-call-out-2 "nelisp_meta_walk"
+                                                   srcs outs)))
+                    (if (integerp result) result
+                      ;; Walker miss — mark every entry dirty so the
+                      ;; emit pass still produces correct output (=
+                      ;; safe over-build).
+                      (1- (ash 1 (length srcs)))))
+                (error
+                 ;; Walker dispatch failed — mark every entry dirty.
+                 (1- (ash 1 (length srcs)))))))
+     (t
+      ;; Host Emacs reference path — per-entry shim in an elisp loop.
+      ;; Byte-identity-safe: the per-entry shim is the same code the
+      ;; pre-A26 walker called, just lifted out of the iteration body.
+      (let ((n (length srcs))
+            (mask 0)
+            (i 0))
+        (while (< i n)
+          (let* ((src (aref srcs i))
+                 (out (aref outs i))
+                 (decision (compile-elisp-objects-meta--should-rebuild
+                            (and (not (string-empty-p src)) src)
+                            out)))
+            (when (not (zerop decision))
+              (setq mask (logior mask (ash 1 i)))))
+          (setq i (1+ i)))
+        mask)))))
+
+(defun compile-elisp-objects-meta--walk (manifest _idx _end out-dir arch format)
+  "Wave A26 manifest walker.
+Drives the per-entry up-to-date decision through the Phase 47-
+compiled `nelisp_meta_walk' kernel (= a single bridge call returns
+an i64 bitmask of dirty-bit decisions) when running under
+standalone NeLisp, or falls back to the host-Emacs per-entry shim
+for ERT / batch reference runs.
+
+The elisp driver then iterates the manifest once more to dispatch
+the actual `nelisp-phase47-compile-to-object' emit step for every
+entry whose bit is set in the bitmask, skipping arch-mismatched
+entries by consulting the `:dirty-arch-mask' value the path-vector
+builder produced alongside the parallel `srcs' / `outs' vectors.
+
+The IDX / END args are kept for ABI compatibility with the legacy
+caller in `compile-elisp-objects-meta-emit-subset' (= which always
+passed [0, N)); the walker now consumes the full MANIFEST.
+
+Returns the same accumulator shape as the pre-A26 walker — a list
+of absolute output paths written or kept up-to-date — so
+byte-identity probes / ERT references continue to pass through
+unchanged."
+  (let* ((paths (compile-elisp-objects-meta--collect-path-vectors
+                 manifest out-dir arch))
+         (srcs (plist-get paths :srcs))
+         (outs (plist-get paths :outs))
+         (entries (plist-get paths :entries))
+         (arch-skip (plist-get paths :dirty-arch-mask))
+         (n (length entries))
+         (bitmask (compile-elisp-objects-meta--compute-bitmask srcs outs))
+         (acc nil)
+         (i 0))
+    (while (< i n)
+      (let* ((entry (aref entries i))
+             (feature (aref entry 0))
+             (sexp    (aref entry 1))
+             (out-path (aref outs i))
+             (arch-skip-p (not (zerop (logand arch-skip (ash 1 i))))))
+        (cond
+         (arch-skip-p
+          nil)
+         ((zerop (logand bitmask (ash 1 i)))
+          ;; Up-to-date — return existing path for caller's accumulator.
+          (push out-path acc))
+         (t
+          (message "[compile-elisp-objects-meta] %s -> %s"
+                   feature out-path)
+          (nelisp-phase47-compile-to-object sexp out-path
+                                            :arch arch :format format)
+          (push out-path acc))))
       (setq i (1+ i)))
     (nreverse acc)))
 

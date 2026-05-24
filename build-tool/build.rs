@@ -189,6 +189,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // helper twice + a pure-arithmetic 0/1 decision.  Foundation for
         // the future A25.3 standalone bootstrap of the iteration loop.
         "nelisp-cc-meta-driver.el",
+        // Wave A26 — Phase 47 manifest walker kernel.  `nelisp_meta_walk'
+        // chains `extern-call' into the A25.2 `nelisp_meta_should_rebuild'
+        // helper for every (src, out) pair and packs the decisions into
+        // a single i64 bitmask.  Closes the chain elisp -> walker ->
+        // should-rebuild -> stat-mtime -> libc syscall = Phase 47 native
+        // end-to-end (= manifest walker Phase 47 self-application).
+        "nelisp-cc-bi-meta-walk.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

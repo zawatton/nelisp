@@ -780,6 +780,20 @@
      :source-var nelisp-cc-meta-driver--source
      :output "nelisp_meta_should_rebuild.o"
      :requires-arch x86_64)
+    ;; Wave A26 — Phase 47 manifest walker kernel.  `nelisp_meta_walk'
+    ;; batch-evaluates the per-entry up-to-date check by chaining
+    ;; `extern-call' calls into the A25.2 `nelisp_meta_should_rebuild'
+    ;; kernel for every (src, out) pair in the input vector pair, then
+    ;; packs the 0/1 decisions into a single i64 bitmask written to
+    ;; the caller's result slot.  Collapses N elisp -> native bridge
+    ;; calls into 1 bridge call; the elisp driver only walks the
+    ;; returned bitmask to dispatch the (heavy) emit step.  Composes
+    ;; only existing Phase 47 grammar — no new opcode.  Linux-x86_64
+    ;; only (= same gate as the A25.2 parent).
+    (nelisp-cc-bi-meta-walk
+     :source-var nelisp-cc-bi-meta-walk--source
+     :output "nelisp_meta_walk.o"
+     :requires-arch x86_64)
     ;; Doc 117 §117.D.gaps.3 (cont.) — second file-I/O sweep batch.
     ;; Two additional handlers consumed (after the 3-handler initial
     ;; batch above):
