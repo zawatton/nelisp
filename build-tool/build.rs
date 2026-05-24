@@ -292,7 +292,16 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     if !status.success() { panic!("ar rcs {} exited with {}", archive.display(), status); }
 
     println!("cargo:rustc-link-search=native={}", out_dir);
-    println!("cargo:rustc-link-lib=static=nelisp_elisp_spike");
+    // Wave A22-unblock: `+whole-archive' modifier forces the linker to keep every
+    // .o member of `libnelisp_elisp_spike.a' in the final binary, regardless of
+    // whether any Rust code references the symbol.  This obsoletes the previous
+    // `_ELISP_ARCHIVE_ANCHOR' bogus-signature array in src/lib.rs (which had to be
+    // manually extended every time a new Phase 47 helper was added — a Rust-LOC
+    // tax that blocked the carve-out waves).  Cost is ~10-15 KB binary size for
+    // the ~57 helper symbols that were previously DCE'd; benefit is zero Rust LOC
+    // per future Phase 47 helper.  Supported on GNU ld / lld / macOS ld / lld-link
+    // via rustc's portable `whole-archive' modifier (stable since rustc 1.61).
+    println!("cargo:rustc-link-lib=static:+whole-archive=nelisp_elisp_spike");
 }
 
 fn which_or_skip(prog: &str) -> Option<String> {
