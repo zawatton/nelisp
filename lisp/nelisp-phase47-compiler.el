@@ -522,6 +522,16 @@ already distinguishes `extern-call' (i64 return) from
             :varargs-p varargs-p
             :f64-count (length f64-args)))))
 
+(defsubst nelisp-phase47-compiler--make-ir (kind &rest plist)
+  "Construct an IR node tagged KIND carrying PLIST.
+A33.1 — currently returns a symbol-keyed plist (= the unchanged
+representation `(list :kind KIND . PLIST)'), so the emitted object
+bytes are bit-identical to the pre-A33.1 inline `(list :kind ...)'
+construction sites.  Centralizing construction here means the A33.4
+representation swap (plist -> record tag) touches this one site
+instead of all 90 IR constructors."
+  (cons :kind (cons kind plist)))
+
 (defun nelisp-phase47-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
@@ -541,7 +551,7 @@ functions `((NAME . ARITY) ...)'."
   (cond
    ;; Compile-time foldable -> immediate.
    ((nelisp-phase47-compiler--int-foldable-p sexp env fenv)
-    (list :kind 'imm
+    (nelisp-phase47-compiler--make-ir 'imm
           :value (nelisp-phase47-compiler--fold-int sexp env)))
    ;; Parameter reference.
    ((symbolp sexp)
@@ -558,7 +568,7 @@ functions `((NAME . ARITY) ...)'."
       ;; stable copy) and the reg class (= gp or f64, picks the
       ;; load instruction MOV vs MOVSD).
       (let ((info (cdr pcell)))
-        (list :kind 'ref :var sexp
+        (nelisp-phase47-compiler--make-ir 'ref :var sexp
               :reg (plist-get info :reg)
               :slot (plist-get info :slot)
               :class (or (plist-get info :class) 'gp)))))
@@ -570,7 +580,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :arith-arity (car sexp) sexp)))
-    (list :kind 'arith
+    (nelisp-phase47-compiler--make-ir 'arith
           :op (car sexp)
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -586,7 +596,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :f64-binop-arity (car sexp) sexp)))
-    (list :kind 'f64-binop
+    (nelisp-phase47-compiler--make-ir 'f64-binop
           :op (car sexp)
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -606,7 +616,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :f64-cmp-arity (car sexp) sexp)))
-    (list :kind 'f64-cmp
+    (nelisp-phase47-compiler--make-ir 'f64-cmp
           :op (car sexp)
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -623,7 +633,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :shift-arity (car sexp) sexp)))
-    (list :kind 'shift
+    (nelisp-phase47-compiler--make-ir 'shift
           :op (car sexp)
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -634,7 +644,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :cmp-arity (car sexp) sexp)))
-    (list :kind 'cmp
+    (nelisp-phase47-compiler--make-ir 'cmp
           :op (car sexp)
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -645,7 +655,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :if-arity sexp)))
-    (list :kind 'if
+    (nelisp-phase47-compiler--make-ir 'if
           :id (nelisp-phase47-compiler--gensym "if")
           :test (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
@@ -668,7 +678,7 @@ functions `((NAME . ARITY) ...)'."
                          (nelisp-phase47-compiler--parse-value
                           e env fenv defuns))
                        (cddr sexp))))
-      (list :kind 'while
+      (nelisp-phase47-compiler--make-ir 'while
             :id (nelisp-phase47-compiler--gensym "while")
             :test test
             :body body-forms)))
@@ -694,7 +704,7 @@ functions `((NAME . ARITY) ...)'."
                    (nelisp-phase47-compiler--parse-value
                     body env fenv defuns))))
               raw-clauses)))
-        (list :kind 'cond
+        (nelisp-phase47-compiler--make-ir 'cond
               :id (nelisp-phase47-compiler--gensym "cond")
               :clauses clauses))))
    ;; (and EXPR ...) / (or EXPR ...) short-circuit.
@@ -704,7 +714,7 @@ functions `((NAME . ARITY) ...)'."
       (when (null args)
         (signal 'nelisp-phase47-compiler-error
                 (list :logic-empty sexp)))
-      (list :kind 'logic
+      (nelisp-phase47-compiler--make-ir 'logic
             :op op
             :id (nelisp-phase47-compiler--gensym (symbol-name op))
             :forms (mapcar (lambda (e)
@@ -788,7 +798,7 @@ functions `((NAME . ARITY) ...)'."
       (unless (stringp name)
         (signal 'nelisp-phase47-compiler-error
                 (list :static-imm32-table-lookup-name-not-string name)))
-      (list :kind 'table-lookup
+      (nelisp-phase47-compiler--make-ir 'table-lookup
             :name name
             :index (nelisp-phase47-compiler--parse-value
                     (nth 2 sexp) env fenv defuns))))
@@ -796,7 +806,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-tag-arity sexp)))
-    (list :kind 'sexp-tag
+    (nelisp-phase47-compiler--make-ir 'sexp-tag
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; (i64-to-f64 INT-EXPR) — G6 grammar bridge.  Converts a gp-class
@@ -807,7 +817,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :i64-to-f64-arity sexp)))
-    (list :kind 'i64-to-f64
+    (nelisp-phase47-compiler--make-ir 'i64-to-f64
           :class 'f64
           :int-expr (nelisp-phase47-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)))
@@ -820,7 +830,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :bits-to-f64-arity sexp)))
-    (list :kind 'bits-to-f64
+    (nelisp-phase47-compiler--make-ir 'bits-to-f64
           :class 'f64
           :int-expr (nelisp-phase47-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)))
@@ -832,7 +842,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :f64-to-i64-trunc-arity sexp)))
-    (list :kind 'f64-to-i64-trunc
+    (nelisp-phase47-compiler--make-ir 'f64-to-i64-trunc
           :f64-expr (nelisp-phase47-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)))
    ;; (sexp-float-unwrap PTR) — read the 8-byte f64 payload of a
@@ -847,21 +857,21 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-float-unwrap-arity sexp)))
-    (list :kind 'sexp-float-unwrap
+    (nelisp-phase47-compiler--make-ir 'sexp-float-unwrap
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-int-unwrap))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-int-unwrap-arity sexp)))
-    (list :kind 'sexp-int-unwrap
+    (nelisp-phase47-compiler--make-ir 'sexp-int-unwrap
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-int-make))
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-int-make-arity sexp)))
-    (list :kind 'sexp-int-make
+    (nelisp-phase47-compiler--make-ir 'sexp-int-make
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
           :val (nelisp-phase47-compiler--parse-value
@@ -871,14 +881,14 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :cons-null-p-arity sexp)))
-    (list :kind 'cons-null-p
+    (nelisp-phase47-compiler--make-ir 'cons-null-p
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'cons-car))
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :cons-car-arity sexp)))
-    (list :kind 'cons-car
+    (nelisp-phase47-compiler--make-ir 'cons-car
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
@@ -887,7 +897,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :cons-cdr-arity sexp)))
-    (list :kind 'cons-cdr
+    (nelisp-phase47-compiler--make-ir 'cons-cdr
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
@@ -896,7 +906,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :cons-cdr-raw-arity sexp)))
-    (list :kind 'cons-cdr-raw
+    (nelisp-phase47-compiler--make-ir 'cons-cdr-raw
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :from-box (eq (car sexp) 'cons-cdr-raw-from-box)))
@@ -904,14 +914,14 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-payload-ptr-arity sexp)))
-    (list :kind 'sexp-payload-ptr
+    (nelisp-phase47-compiler--make-ir 'sexp-payload-ptr
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-payload-ptr-record))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-payload-ptr-record-arity sexp)))
-    (list :kind 'sexp-payload-ptr-record
+    (nelisp-phase47-compiler--make-ir 'sexp-payload-ptr-record
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; ---- Doc 111 §111.B Record read+write ops ----
@@ -919,7 +929,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :record-type-tag-arity sexp)))
-    (list :kind 'record-type-tag
+    (nelisp-phase47-compiler--make-ir 'record-type-tag
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
@@ -928,14 +938,14 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :record-slot-count-arity sexp)))
-    (list :kind 'record-slot-count
+    (nelisp-phase47-compiler--make-ir 'record-slot-count
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'record-slot-ref))
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :record-slot-ref-arity sexp)))
-    (list :kind 'record-slot-ref
+    (nelisp-phase47-compiler--make-ir 'record-slot-ref
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -946,7 +956,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :record-slot-ref-ptr-arity sexp)))
-    (list :kind 'record-slot-ref-ptr
+    (nelisp-phase47-compiler--make-ir 'record-slot-ref-ptr
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -955,7 +965,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :record-slot-set-arity sexp)))
-    (list :kind 'record-slot-set
+    (nelisp-phase47-compiler--make-ir 'record-slot-set
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -967,14 +977,14 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :vector-len-arity sexp)))
-    (list :kind 'vector-len
+    (nelisp-phase47-compiler--make-ir 'vector-len
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'vector-ref))
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :vector-ref-arity sexp)))
-    (list :kind 'vector-ref
+    (nelisp-phase47-compiler--make-ir 'vector-ref
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -985,7 +995,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :vector-ref-ptr-arity sexp)))
-    (list :kind 'vector-ref-ptr
+    (nelisp-phase47-compiler--make-ir 'vector-ref-ptr
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -1000,7 +1010,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :vector-slot-set-arity sexp)))
-    (list :kind 'vector-slot-set
+    (nelisp-phase47-compiler--make-ir 'vector-slot-set
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -1025,7 +1035,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :cell-value-arity sexp)))
-    (list :kind 'cell-value
+    (nelisp-phase47-compiler--make-ir 'cell-value
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
@@ -1034,7 +1044,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :cell-set-value-arity sexp)))
-    (list :kind 'cell-set-value
+    (nelisp-phase47-compiler--make-ir 'cell-set-value
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :val-ptr (nelisp-phase47-compiler--parse-value
@@ -1043,7 +1053,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :cell-make-arity sexp)))
-    (list :kind 'cell-make
+    (nelisp-phase47-compiler--make-ir 'cell-make
           :val-ptr (nelisp-phase47-compiler--parse-value
                     (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
@@ -1052,7 +1062,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :cell-null-p-arity sexp)))
-    (list :kind 'cell-null-p
+    (nelisp-phase47-compiler--make-ir 'cell-null-p
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; Doc 115 §115.1 — `(vector-make CAP SLOT)' allocates a fresh
@@ -1066,7 +1076,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :vector-make-arity sexp)))
-    (list :kind 'vector-make
+    (nelisp-phase47-compiler--make-ir 'vector-make
           :cap (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
@@ -1094,7 +1104,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :cons-make-with-clone-arity sexp)))
-    (list :kind 'cons-make-with-clone
+    (nelisp-phase47-compiler--make-ir 'cons-make-with-clone
           :car-ptr (nelisp-phase47-compiler--parse-value
                     (nth 1 sexp) env fenv defuns)
           :cdr-ptr (nelisp-phase47-compiler--parse-value
@@ -1105,7 +1115,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :record-make-arity sexp)))
-    (list :kind 'record-make
+    (nelisp-phase47-compiler--make-ir 'record-make
           :tag-ptr (nelisp-phase47-compiler--parse-value
                     (nth 1 sexp) env fenv defuns)
           :slot-count (nelisp-phase47-compiler--parse-value
@@ -1128,14 +1138,14 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :str-len-arity sexp)))
-    (list :kind 'str-len
+    (nelisp-phase47-compiler--make-ir 'str-len
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'str-bytes))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :str-bytes-arity sexp)))
-    (list :kind 'str-bytes
+    (nelisp-phase47-compiler--make-ir 'str-bytes
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; Doc 122 §122.H — `(str-bytes-ptr STR-PTR)' returns the raw
@@ -1153,14 +1163,14 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :str-bytes-ptr-arity sexp)))
-    (list :kind 'str-bytes-ptr
+    (nelisp-phase47-compiler--make-ir 'str-bytes-ptr
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'str-byte-at))
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :str-byte-at-arity sexp)))
-    (list :kind 'str-byte-at
+    (nelisp-phase47-compiler--make-ir 'str-byte-at
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -1169,7 +1179,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :str-eq-arity sexp)))
-    (list :kind 'str-eq
+    (nelisp-phase47-compiler--make-ir 'str-eq
           :id (nelisp-phase47-compiler--gensym "str-eq")
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -1179,7 +1189,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :symbol-eq-arity sexp)))
-    (list :kind 'symbol-eq
+    (nelisp-phase47-compiler--make-ir 'symbol-eq
           :id (nelisp-phase47-compiler--gensym "symbol-eq")
           :a (nelisp-phase47-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
@@ -1203,7 +1213,7 @@ functions `((NAME . ARITY) ...)'."
       (unless (stringp lit)
         (signal 'nelisp-phase47-compiler-error
                 (list :symbol-name-eq-literal-must-be-string sexp)))
-      (list :kind 'symbol-name-eq
+      (nelisp-phase47-compiler--make-ir 'symbol-name-eq
             :id (nelisp-phase47-compiler--gensym "symbol-name-eq")
             :ptr (nelisp-phase47-compiler--parse-value
                   (nth 1 sexp) env fenv defuns)
@@ -1221,7 +1231,7 @@ functions `((NAME . ARITY) ...)'."
       (unless (stringp lit)
         (signal 'nelisp-phase47-compiler-error
                 (list :sexp-name-eq-literal-must-be-string sexp)))
-      (list :kind 'sexp-name-eq
+      (nelisp-phase47-compiler--make-ir 'sexp-name-eq
             :id (nelisp-phase47-compiler--gensym "sexp-name-eq")
             :ptr (nelisp-phase47-compiler--parse-value
                   (nth 1 sexp) env fenv defuns)
@@ -1230,14 +1240,14 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-write-nil-arity sexp)))
-    (list :kind 'sexp-write-nil
+    (nelisp-phase47-compiler--make-ir 'sexp-write-nil
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-write-t))
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-write-t-arity sexp)))
-    (list :kind 'sexp-write-t
+    (nelisp-phase47-compiler--make-ir 'sexp-write-t
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)))
    ;; Doc 122 §122.A — `(sexp-write-str SLOT BYTES-PTR LEN)' allocates a
@@ -1255,7 +1265,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-write-str-arity sexp)))
-    (list :kind 'sexp-write-str
+    (nelisp-phase47-compiler--make-ir 'sexp-write-str
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
           :bytes-ptr (nelisp-phase47-compiler--parse-value
@@ -1271,7 +1281,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-write-symbol-arity sexp)))
-    (list :kind 'sexp-write-symbol
+    (nelisp-phase47-compiler--make-ir 'sexp-write-symbol
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
           :bytes-ptr (nelisp-phase47-compiler--parse-value
@@ -1292,7 +1302,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :sexp-write-float-arity sexp)))
-    (list :kind 'sexp-write-float
+    (nelisp-phase47-compiler--make-ir 'sexp-write-float
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
           :value (nelisp-phase47-compiler--parse-value
@@ -1307,7 +1317,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :mut-str-make-empty-arity sexp)))
-    (list :kind 'mut-str-make-empty
+    (nelisp-phase47-compiler--make-ir 'mut-str-make-empty
           :slot (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
           :cap (nelisp-phase47-compiler--parse-value
@@ -1320,7 +1330,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :mut-str-push-byte-arity sexp)))
-    (list :kind 'mut-str-push-byte
+    (nelisp-phase47-compiler--make-ir 'mut-str-push-byte
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :byte (nelisp-phase47-compiler--parse-value
@@ -1332,7 +1342,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :mut-str-push-codepoint-arity sexp)))
-    (list :kind 'mut-str-push-codepoint
+    (nelisp-phase47-compiler--make-ir 'mut-str-push-codepoint
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :cp (nelisp-phase47-compiler--parse-value
@@ -1343,7 +1353,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :mut-str-len-arity sexp)))
-    (list :kind 'mut-str-len
+    (nelisp-phase47-compiler--make-ir 'mut-str-len
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; `(mut-str-finalize PTR SLOT)' — clone the MutStr's current
@@ -1355,7 +1365,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :mut-str-finalize-arity sexp)))
-    (list :kind 'mut-str-finalize
+    (nelisp-phase47-compiler--make-ir 'mut-str-finalize
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :slot (nelisp-phase47-compiler--parse-value
@@ -1371,7 +1381,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :str-char-count-arity sexp)))
-    (list :kind 'str-char-count
+    (nelisp-phase47-compiler--make-ir 'str-char-count
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; `(str-codepoint-at STR I CP-SLOT WIDTH-SLOT)' — decode the
@@ -1384,7 +1394,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 5)
       (signal 'nelisp-phase47-compiler-error
               (list :str-codepoint-at-arity sexp)))
-    (list :kind 'str-codepoint-at
+    (nelisp-phase47-compiler--make-ir 'str-codepoint-at
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -1402,7 +1412,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :str-is-alphanumeric-at-arity sexp)))
-    (list :kind 'str-is-alphanumeric-at
+    (nelisp-phase47-compiler--make-ir 'str-is-alphanumeric-at
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :idx (nelisp-phase47-compiler--parse-value
@@ -1417,7 +1427,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :atomic-fetch-add-arity sexp)))
-    (list :kind 'atomic-fetch-add
+    (nelisp-phase47-compiler--make-ir 'atomic-fetch-add
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :delta (nelisp-phase47-compiler--parse-value
@@ -1429,7 +1439,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :atomic-compare-exchange-arity sexp)))
-    (list :kind 'atomic-compare-exchange
+    (nelisp-phase47-compiler--make-ir 'atomic-compare-exchange
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :expected (nelisp-phase47-compiler--parse-value
@@ -1443,7 +1453,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :ptr-read-u64-arity sexp)))
-    (list :kind 'ptr-read-u64
+    (nelisp-phase47-compiler--make-ir 'ptr-read-u64
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :offset (nelisp-phase47-compiler--parse-value
@@ -1454,7 +1464,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :ptr-write-u64-arity sexp)))
-    (list :kind 'ptr-write-u64
+    (nelisp-phase47-compiler--make-ir 'ptr-write-u64
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :offset (nelisp-phase47-compiler--parse-value
@@ -1467,7 +1477,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :ptr-read-u8-arity sexp)))
-    (list :kind 'ptr-read-u8
+    (nelisp-phase47-compiler--make-ir 'ptr-read-u8
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :offset (nelisp-phase47-compiler--parse-value
@@ -1478,7 +1488,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :ptr-write-u8-arity sexp)))
-    (list :kind 'ptr-write-u8
+    (nelisp-phase47-compiler--make-ir 'ptr-write-u8
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :offset (nelisp-phase47-compiler--parse-value
@@ -1497,7 +1507,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :ptr-read-u16-arity sexp)))
-    (list :kind 'ptr-read-u16
+    (nelisp-phase47-compiler--make-ir 'ptr-read-u16
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :offset (nelisp-phase47-compiler--parse-value
@@ -1506,7 +1516,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :ptr-write-u16-arity sexp)))
-    (list :kind 'ptr-write-u16
+    (nelisp-phase47-compiler--make-ir 'ptr-write-u16
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :offset (nelisp-phase47-compiler--parse-value
@@ -1517,7 +1527,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :ptr-read-u32-arity sexp)))
-    (list :kind 'ptr-read-u32
+    (nelisp-phase47-compiler--make-ir 'ptr-read-u32
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :offset (nelisp-phase47-compiler--parse-value
@@ -1526,7 +1536,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :ptr-write-u32-arity sexp)))
-    (list :kind 'ptr-write-u32
+    (nelisp-phase47-compiler--make-ir 'ptr-write-u32
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :offset (nelisp-phase47-compiler--parse-value
@@ -1611,7 +1621,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :alloc-bytes-arity sexp)))
-    (list :kind 'alloc-bytes
+    (nelisp-phase47-compiler--make-ir 'alloc-bytes
           :size (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
           :align (nelisp-phase47-compiler--parse-value
@@ -1626,7 +1636,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :dealloc-bytes-arity sexp)))
-    (list :kind 'dealloc-bytes
+    (nelisp-phase47-compiler--make-ir 'dealloc-bytes
           :ptr (nelisp-phase47-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :size (nelisp-phase47-compiler--parse-value
@@ -1644,7 +1654,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 8)
       (signal 'nelisp-phase47-compiler-error
               (list :syscall-direct-arity sexp)))
-    (list :kind 'syscall-direct
+    (nelisp-phase47-compiler--make-ir 'syscall-direct
           :nr   (nelisp-phase47-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
           :a0   (nelisp-phase47-compiler--parse-value
@@ -1669,7 +1679,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :cons-make-arity sexp)))
-    (list :kind 'cons-make
+    (nelisp-phase47-compiler--make-ir 'cons-make
           :car-ptr (nelisp-phase47-compiler--parse-value
                     (nth 1 sexp) env fenv defuns)
           :cdr-ptr (nelisp-phase47-compiler--parse-value
@@ -1680,7 +1690,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :cons-set-car-arity sexp)))
-    (list :kind 'cons-set-car
+    (nelisp-phase47-compiler--make-ir 'cons-set-car
           :handle (nelisp-phase47-compiler--parse-value
                    (nth 1 sexp) env fenv defuns)
           :val-ptr (nelisp-phase47-compiler--parse-value
@@ -1689,7 +1699,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :cons-set-cdr-arity sexp)))
-    (list :kind 'cons-set-cdr
+    (nelisp-phase47-compiler--make-ir 'cons-set-cdr
           :handle (nelisp-phase47-compiler--parse-value
                    (nth 1 sexp) env fenv defuns)
           :val-ptr (nelisp-phase47-compiler--parse-value
@@ -1711,7 +1721,7 @@ functions `((NAME . ARITY) ...)'."
       (unless (symbolp name)
         (signal 'nelisp-phase47-compiler-error
                 (list :f64-call-name-not-symbol name)))
-      (list :kind 'f64-call
+      (nelisp-phase47-compiler--make-ir 'f64-call
             :name name
             :arg (nelisp-phase47-compiler--parse-value
                   arg env fenv defuns))))
@@ -1745,7 +1755,7 @@ functions `((NAME . ARITY) ...)'."
       (unless (symbolp name)
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-name-not-symbol name)))
-      (list :kind 'extern-call
+      (nelisp-phase47-compiler--make-ir 'extern-call
             :name name
             :ret-class (if (eq op 'extern-call-f64) 'f64 'gp)
             :args (plist-get parsed :args)
@@ -1769,7 +1779,7 @@ functions `((NAME . ARITY) ...)'."
     (unless (= (length sexp) 8)
       (signal 'nelisp-phase47-compiler-error
               (list :syscall-direct-arity sexp)))
-    (list :kind 'syscall-direct
+    (nelisp-phase47-compiler--make-ir 'syscall-direct
           :nr (nelisp-phase47-compiler--parse-value
                (nth 1 sexp) env fenv defuns)
           :a0 (nelisp-phase47-compiler--parse-value
@@ -1797,7 +1807,7 @@ functions `((NAME . ARITY) ...)'."
       (when (> arity (length nelisp-phase47-compiler--arg-regs))
         (signal 'nelisp-phase47-compiler-error
                 (list :too-many-args name arity)))
-      (list :kind 'call
+      (nelisp-phase47-compiler--make-ir 'call
             :name name
             :args (mapcar (lambda (a)
                             (nelisp-phase47-compiler--parse-value
@@ -1845,7 +1855,7 @@ functions `((NAME . ARITY) ...)'."
                                  fenv))
                  (body-ir (nelisp-phase47-compiler--parse-value
                            body-sexp env new-fenv defuns)))
-            (list :kind 'let-rt
+            (nelisp-phase47-compiler--make-ir 'let-rt
                   :var var
                   :slot slot
                   :value-ir val-ir
@@ -1876,7 +1886,7 @@ Returns one of:
       (unless (stringp arg)
         (signal 'nelisp-phase47-compiler-error
                 (list :write-not-string arg)))
-      (list :kind 'write :str arg)))
+      (nelisp-phase47-compiler--make-ir 'write :str arg)))
    ;; Doc 49 Wave 11.1: (static-imm32-table-define NAME (E1 E2 ...))
    ;;
    ;; Declares a build-time u32 array in .rodata, indexable by NAME.
@@ -1904,7 +1914,7 @@ Returns one of:
           (signal 'nelisp-phase47-compiler-error
                   (list :static-imm32-table-define-element-out-of-range
                         e))))
-      (list :kind 'table-define :name name :elements elements)))
+      (nelisp-phase47-compiler--make-ir 'table-define :name name :elements elements)))
    ;; (exit VALUE-EXPR)
    ((and (consp sexp) (eq (car sexp) 'exit))
     (unless (= (length sexp) 2)
@@ -1918,7 +1928,7 @@ Returns one of:
           (unless (and (integerp n) (<= 0 n 255))
             (signal 'nelisp-phase47-compiler-error
                     (list :status-out-of-range n)))))
-      (list :kind 'exit :value vnode)))
+      (nelisp-phase47-compiler--make-ir 'exit :value vnode)))
    ;; (seq EXPR...)
    ((and (consp sexp) (eq (car sexp) 'seq))
     (let ((children (cdr sexp)))
@@ -1952,7 +1962,7 @@ Returns one of:
           (push (nelisp-phase47-compiler--parse-stmt
                  c env fenv cur-defuns)
                 acc))
-        (list :kind 'seq :forms (nreverse acc)))))
+        (nelisp-phase47-compiler--make-ir 'seq :forms (nreverse acc)))))
    ;; (let ((VAR VAL)) BODY)
    ((and (consp sexp) (eq (car sexp) 'let))
     (unless (= (length sexp) 3)
@@ -1974,7 +1984,7 @@ Returns one of:
                    (new-env (cons (cons var val) env))
                    (body-ir (nelisp-phase47-compiler--parse-stmt
                              body new-env fenv defuns)))
-              (list :kind 'let :var var :value val :body body-ir))
+              (nelisp-phase47-compiler--make-ir 'let :var var :value val :body body-ir))
           ;; Runtime path: mirrors the `--parse-value' `let-rt' path.
           ;; Statement-context `let-rt' also requires an enclosing defun.
           (unless nelisp-phase47-compiler--next-rt-let-slot
@@ -1989,7 +1999,7 @@ Returns one of:
                                  fenv))
                  (body-ir (nelisp-phase47-compiler--parse-stmt
                            body env new-fenv defuns)))
-            (list :kind 'let-rt
+            (nelisp-phase47-compiler--make-ir 'let-rt
                   :var var
                   :slot slot
                   :value-ir val-ir
@@ -2071,7 +2081,7 @@ Returns one of:
                         (nelisp-phase47-compiler--parse-value
                          body env new-fenv defuns)))
              (rt-slot-count (- (car rt-slot-cell) arity)))
-        (list :kind 'defun
+        (nelisp-phase47-compiler--make-ir 'defun
               :name name
               :params params
               :param-regs param-regs
