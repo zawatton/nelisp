@@ -109,6 +109,16 @@
     ;; Even arity (4) — no Doc 124.F alignment workaround needed.
     (defun nelisp_meta_seq4 (val _e1 _e2 _e3) val)
 
+    ;; Wave A25.6 — 2-arg discard-and-return sequencer used by the
+    ;; public entry to swap the inner driver's slot-pointer return for
+    ;; a TRAMPOLINE_OK (0) i64.  This makes the public symbol
+    ;; `nelisp_meta_should_rebuild' directly addressable from the elisp
+    ;; interpreter via the existing `nl-jit-call-out-2' bridge (which
+    ;; expects the kernel to return 0 on success and reads the decision
+    ;; from the caller's result slot).  Even arity (2) — no rsp pad
+    ;; needed for the outer caller's dispatch into this entry.
+    (defun nelisp_meta_zero2 (_x ret) ret)
+
     ;; 2-arg branch helper — given two i64 mtime values, decide whether
     ;; the destination is stale.  Pure arithmetic, no syscalls.  Returns
     ;; 1 (rebuild) or 0 (up-to-date).
@@ -180,20 +190,40 @@
     ;; discriminant + 8-byte payload + tail padding, see
     ;; `nelisp-sexp-layout.el`).  Align 8 matches the slot's
     ;; alignment requirement.
+    ;; Wave A25.6 — public entry returns TRAMPOLINE_OK (0) instead of
+    ;; the inner driver's slot-pointer.  The `nl-jit-call-out-2' bridge
+    ;; in the standalone NeLisp interpreter casts the symbol's return
+    ;; value to `i64' and treats anything other than 0 as
+    ;; TRAMPOLINE_ERR; the actual rebuild decision is communicated via
+    ;; the caller-owned RESULT-SLOT, which the bridge surfaces as the
+    ;; `Sexp::Int(0|1)' return of `(nl-jit-call-out-2 "nelisp_meta
+    ;; _should_rebuild" SRC-PATH OUT-PATH)'.  Wrapping the inner call
+    ;; in `nelisp_meta_zero2 ... 0' threads the slot pointer through
+    ;; (discarded) and emits `mov rax, 0' at function exit — no other
+    ;; behavioural change.  Future Phase 47 callers that want the slot
+    ;; pointer back continue to dispatch into
+    ;; `nelisp_meta_should_rebuild_inner' directly.
     (defun nelisp_meta_should_rebuild (src-path out-path result-slot)
-      (nelisp_meta_should_rebuild_inner
-       (alloc-bytes 32 8)
-       (alloc-bytes 32 8)
-       src-path
-       out-path
-       result-slot)))
+      (nelisp_meta_zero2
+       (nelisp_meta_should_rebuild_inner
+        (alloc-bytes 32 8)
+        (alloc-bytes 32 8)
+        src-path
+        out-path
+        result-slot)
+       0)))
   "Phase 47 source for the Wave A25.2 meta-driver kernel
 `(nelisp_meta_should_rebuild SRC-PATH OUT-PATH RESULT-SLOT)'.
 
-Four-entry `(seq DEFUN ...)' manifest:
+Five-entry `(seq DEFUN ...)' manifest (Wave A25.6 + 1 sequencer):
 
 - `nelisp_meta_seq4 (val _e1 _e2 _e3) -> val' — 4-arg side-effect
   sequencer (= result + 2 dealloc effects + pad).
+
+- `nelisp_meta_zero2 (_x ret) -> ret' — 2-arg discard-and-return
+  sequencer (Wave A25.6).  Wraps the inner driver's slot-pointer
+  return so the public entry returns TRAMPOLINE_OK (0) for the
+  elisp interpreter's `nl-jit-call-out-2' bridge.
 
 - `nelisp_meta_decide_rebuild (src-mtime out-mtime) -> 0|1' —
   pure-arithmetic decision: src missing / out missing / out older →
@@ -204,9 +234,11 @@ Four-entry `(seq DEFUN ...)' manifest:
   `extern-call nelisp_bi_syscall_stat_mtime' invocations + i64
   payload unwrap + decision + result write + scratch-slot cleanup.
 
-- `nelisp_meta_should_rebuild (src-path out-path result-slot) ->
-  result-slot' — public 3-arg entry; allocates the two 32-byte
-  scratch slots and dispatches to the inner driver.
+- `nelisp_meta_should_rebuild (src-path out-path result-slot) -> 0'
+  — public 3-arg entry; allocates the two 32-byte scratch slots,
+  dispatches to the inner driver, then returns TRAMPOLINE_OK (0)
+  so the elisp `nl-jit-call-out-2' bridge can surface the decision
+  via the caller-owned RESULT-SLOT (= `Sexp::Int(0|1)').
 
 Composes only existing Phase 47 grammar — no new opcode:
 

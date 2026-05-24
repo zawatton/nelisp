@@ -37,9 +37,11 @@
 ;; The PoC stays callable from host Emacs (= ert / batch mode); the
 ;; `nelisp_meta_should_rebuild' delegation is wrapped in a host-side
 ;; shim that calls the existing `compile-elisp-objects--up-to-date-p'
-;; predicate when running under `emacs --batch'.  Wave A25.3 will swap
-;; the shim for a direct `extern-call' into the compiled `.o' once the
-;; standalone bootstrap is wired.
+;; predicate when running under `emacs --batch'.  Wave A25.6 swaps
+;; the shim's standalone-NeLisp branch for a direct `nl-jit-call-out-
+;; 2' dispatch into the compiled `.o' kernel (host Emacs path
+;; unchanged — falls back to `file-attribute-modification-time' for
+;; ERT / byte-identity reference runs).
 ;;
 ;; Scope.  This driver does NOT replace `compile-elisp-objects.el' for
 ;; production builds.  It runs a 5-entry subset of the manifest end-to-
@@ -181,19 +183,51 @@ form that fits the future Phase 47 walker's single-`if' shape."
         (t nil)))
 
 (defun compile-elisp-objects-meta--should-rebuild (src-path out-path)
-  "Host-Emacs shim for the future `nelisp_meta_should_rebuild' kernel.
-Returns 1 when OUT-PATH needs to be rebuilt against SRC-PATH (= out
-missing, out_mtime < src_mtime, or src missing).  Returns 0 when
-up-to-date.
+  "Decide whether OUT-PATH must be rebuilt against SRC-PATH.
+Returns 1 when out missing, out_mtime < src_mtime, or src missing.
+Returns 0 when up-to-date.
 
-Wave A25.3 will replace this body with a direct `extern-call' into
-the Phase 47-compiled `nelisp_meta_should_rebuild' kernel from
-`lisp/nelisp-cc-meta-driver.el'.  Until then the host-Emacs path
-uses the same predicate as the legacy driver so PoC output stays
-byte-identical to the production build."
+Wave A25.6 — extern-call swap.  When the standalone NeLisp
+interpreter's `nl-jit-call-out-2' bridge is bound (= standalone
+runtime with the A25.2 `nelisp_meta_should_rebuild' kernel linked
+into the binary's `+whole-archive' Phase 47 helper set), this
+function dispatches directly into the compiled `.o' kernel:
+
+  (nl-jit-call-out-2 \"nelisp_meta_should_rebuild\" SRC OUT)
+
+The bridge marshals SRC / OUT as `*const Sexp', allocates a Rust-
+local `Sexp::Nil' result slot, casts `dlsym(\"nelisp_meta_should_
+rebuild\")' to `extern \"C\" fn(*const Sexp, *const Sexp, *mut Sexp)
+-> i64', invokes it (= the Phase 47 kernel writes `Sexp::Int(0|1)'
+into the result slot, returns TRAMPOLINE_OK), and surfaces the slot
+contents as the call's `Sexp::Int' return.  `eq'-comparing the
+return against the integer 0 yields the 0/1 decision the caller
+needs.
+
+On host Emacs (= no `nl-jit-call-out-2'), the function falls back
+to the pure-elisp predicate (`file-attribute-modification-time' +
+`time-less-p') so the meta-driver stays callable from `emacs
+--batch' for byte-identity reference runs and ERT smoke.
+
+Both paths share the same decision table — out missing → 1; src
+missing → 1; out_mtime < src_mtime → 1; else 0 — so the standalone
+extern-call swap is byte-identity-safe by construction."
   (cond
    ((not (file-exists-p out-path)) 1)
    ((not (and src-path (file-exists-p src-path))) 1)
+   ((fboundp 'nl-jit-call-out-2)
+    ;; Standalone NeLisp path — dispatch into the Phase 47 .o.  The
+    ;; bridge returns `Sexp::Int(0|1)' via the result slot; comparing
+    ;; against the integer 0 yields the 0/1 decision shape this
+    ;; predicate's callers expect.  `condition-case' is intentional:
+    ;; on dlsym miss or arity mismatch the bridge signals and we want
+    ;; to surface a clear rebuild=1 (= safe over-build) rather than
+    ;; silently skip up-to-date entries.
+    (condition-case _err
+        (let ((decision (nl-jit-call-out-2 "nelisp_meta_should_rebuild"
+                                           src-path out-path)))
+          (if (eq decision 0) 0 1))
+      (error 1)))
    (t
     (let ((src-mtime (file-attribute-modification-time
                       (file-attributes src-path)))
