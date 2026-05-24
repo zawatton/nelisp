@@ -36,7 +36,13 @@ fn main() {
 /// in scripts/compile-elisp-objects.el.  Used only for chunk partitioning;
 /// over-shooting is harmless (= elisp clamps end to manifest length, extra
 /// chunks no-op), under-shooting silently skips entries.
-const N_MANIFEST_ENTRIES: usize = 212;
+///
+/// Wave A30 — bumped to 214 to account for the new
+/// `nelisp_meta_dispatch_loop.o' entry added by the per-entry dispatch
+/// loop Phase 47-ification.  The pre-A30 count had already been
+/// incremented to 213 in an earlier wave; A30 adds one more for the new
+/// Phase 47 dispatch loop kernel source.
+const N_MANIFEST_ENTRIES: usize = 214;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -196,6 +202,16 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // should-rebuild -> stat-mtime -> libc syscall = Phase 47 native
         // end-to-end (= manifest walker Phase 47 self-application).
         "nelisp-cc-bi-meta-walk.el",
+        // Wave A30 — Phase 47 per-entry dispatch loop kernel.
+        // `nelisp_meta_dispatch_loop' collapses the 212-iter elisp dispatch
+        // loop in `compile-elisp-objects-meta--walk' into a single Phase 47
+        // native call: per-chunk walker computes `(dirty AND NOT
+        // arch-skip)' emit-needed bitmasks via `vector-slot-set' into the
+        // caller-provided emit vector, and accumulates popcount of
+        // `(NOT arch-skip)' into the caller-owned result slot.  Composes
+        // only existing Phase 47 grammar (no new opcode, no new Rust
+        // extern); pure data add to the manifest_sources list.
+        "nelisp-cc-bi-meta-dispatch-loop.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

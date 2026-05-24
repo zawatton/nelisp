@@ -794,6 +794,21 @@
      :source-var nelisp-cc-bi-meta-walk--source
      :output "nelisp_meta_walk.o"
      :requires-arch x86_64)
+    ;; Wave A30 — Phase 47 per-entry dispatch loop kernel.
+    ;; `nelisp_meta_dispatch_loop' collapses the 212-iter elisp dispatch
+    ;; loop in `compile-elisp-objects-meta--walk' (= the final cached-path
+    ;; bottleneck after A26-A29 walker chain) into a single Phase 47
+    ;; native call.  Per-chunk walker computes `(dirty AND NOT arch-skip)'
+    ;; emit-needed bitmasks via `vector-slot-set' into a pre-allocated
+    ;; result vector, and accumulates popcount of `(NOT arch-skip)' into
+    ;; the caller-owned result slot.  Composes only existing Phase 47
+    ;; grammar (= §111.C vector ops + §125.A alloc-bytes + §100.D logand/
+    ;; logxor + §100 sexp-int) — no new opcode, no Rust extern added.
+    ;; Linux-x86_64 only (= same gate as the A25.2 / A26 parents).
+    (nelisp-cc-bi-meta-dispatch-loop
+     :source-var nelisp-cc-bi-meta-dispatch-loop--source
+     :output "nelisp_meta_dispatch_loop.o"
+     :requires-arch x86_64)
     ;; Doc 117 §117.D.gaps.3 (cont.) — second file-I/O sweep batch.
     ;; Two additional handlers consumed (after the 3-handler initial
     ;; batch above):

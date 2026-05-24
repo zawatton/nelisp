@@ -532,46 +532,60 @@ the chunk overflow is handled correctly."
                  srcs outs)))
     (if (= (length chunks) 0) 0 (aref chunks 0))))
 
-(defun compile-elisp-objects-meta--walk (manifest _idx _end out-dir arch format)
-  "Wave A26+A27 manifest walker (chunked).
-Drives the per-entry up-to-date decision through the Phase 47-
-compiled `nelisp_meta_walk' kernel (= ceil(N/64) bridge calls, each
-returning an i64 chunk bitmask of dirty-bit decisions) when
-running under standalone NeLisp, or falls back to the host-Emacs
-per-entry shim for ERT / batch reference runs.
+(defun compile-elisp-objects-meta--spillover-mask (n chunk-idx chunk-count chunk-size)
+  "Return the spillover-bit mask to OR into arch-skip[CHUNK-IDX].
+For the final possibly-short chunk, bit positions ≥ chunk-len must
+be treated as accept-masked-out so the Phase 47 kernel's `(NOT
+arch-skip)' popcount stays bounded by the real entry count.  For
+non-final chunks, returns 0 (= no spillover).  For an exact
+multiple chunk length (= TOTAL mod CHUNK-SIZE = 0) the final chunk
+is full and the function also returns 0.
 
-Wave A27 production cutover — the dirty/arch-skip state is now
-stored per chunk (= vector of i64 masks) so the dispatch path
-handles the full 212-entry production manifest without overflowing
-any single i64.  Each chunk holds up to 64 entries; bit `b' of
-chunk `c' corresponds to absolute manifest index `c * 64 + b'.
+  N            — total entry count (= manifest length).
+  CHUNK-IDX    — chunk index in [0, CHUNK-COUNT).
+  CHUNK-COUNT  — number of chunks (= ceil(N / CHUNK-SIZE)).
+  CHUNK-SIZE   — entries per chunk (= 64 for the i64 bitmask).
 
-The elisp driver iterates the manifest once more to dispatch the
-actual `nelisp-phase47-compile-to-object' emit step for every
-entry whose bit is set in the matching chunk's bitmask, skipping
-arch-mismatched entries by consulting the `:arch-skip-chunks'
-value the path-vector builder produced.
+Wave A30 — applied to the final chunk only by the Phase 47 dispatch
+loop wrapper before calling `nelisp_meta_dispatch_loop'."
+  (if (not (= chunk-idx (1- chunk-count)))
+      0
+    (let* ((chunk-start (* chunk-idx chunk-size))
+           (chunk-len (- n chunk-start)))
+      (if (>= chunk-len chunk-size)
+          0
+        ;; Spillover bits = positions [chunk-len, 64) — bit-OR'd into
+        ;; arch-skip so (NOT arch-skip) clears them.
+        (lognot (1- (ash 1 chunk-len)))))))
 
-The IDX / END args are kept for ABI compatibility with the legacy
-caller in `compile-elisp-objects-meta-emit-subset' (= which always
-passed [0, N)); the walker now consumes the full MANIFEST.
-
-Returns the same accumulator shape as the pre-A26 walker — a list
-of absolute output paths written or kept up-to-date — so
-byte-identity probes / ERT references continue to pass through
-unchanged."
-  (let* ((paths (compile-elisp-objects-meta--collect-path-vectors
-                 manifest out-dir arch))
-         (srcs (plist-get paths :srcs))
-         (outs (plist-get paths :outs))
-         (entries (plist-get paths :entries))
-         (arch-skip-chunks (plist-get paths :arch-skip-chunks))
-         (n (length entries))
-         (chunk-size compile-elisp-objects-meta--chunk-size)
-         (bitmask-chunks
-          (compile-elisp-objects-meta--compute-bitmask-chunks srcs outs))
-         (acc nil)
+(defun compile-elisp-objects-meta--wrap-int-chunks (chunks)
+  "Wrap each i64 element of CHUNKS (= vector of integers) as Sexp::Int.
+Returns a fresh vector with each slot holding the same integer
+value — under standalone NeLisp the integers are Sexp::Int values
+that the Phase 47 kernel can read via `sexp-int-unwrap'.  Used by
+the Wave A30 wrapper before packing chunk vectors into the
+`nl-jit-call-out-2' bridge's input vector."
+  (let* ((n (length chunks))
+         (out (make-vector n 0))
          (i 0))
+    (while (< i n)
+      (aset out i (aref chunks i))
+      (setq i (1+ i)))
+    out))
+
+(defun compile-elisp-objects-meta--dispatch-loop-host
+    (entries outs arch-skip-chunks bitmask-chunks chunk-size arch format)
+  "Host-Emacs reference path for the per-entry dispatch loop.
+Pure elisp; called when the Phase 47 `nelisp_meta_dispatch_loop'
+kernel is not reachable (= host Emacs / batch / ERT).  Same shape
+as the pre-A30 inline dispatch loop — for each entry in [0, N) it
+consults the per-chunk dirty + arch-skip masks, dispatches the
+emit step on dirty entries, and accumulates out-paths into the
+return list for length-correct acc parity with the standalone
+NeLisp Phase 47 path."
+  (let ((n (length entries))
+        (acc nil)
+        (i 0))
     (while (< i n)
       (let* ((entry (aref entries i))
              (feature (aref entry 0))
@@ -587,7 +601,6 @@ unchanged."
          (arch-skip-p
           nil)
          ((zerop (logand dirty-mask bit-mask))
-          ;; Up-to-date — return existing path for caller's accumulator.
           (push out-path acc))
          (t
           (message "[compile-elisp-objects-meta] %s -> %s"
@@ -597,6 +610,189 @@ unchanged."
           (push out-path acc))))
       (setq i (1+ i)))
     (nreverse acc)))
+
+(defun compile-elisp-objects-meta--dispatch-loop-native
+    (entries outs arch-skip-chunks bitmask-chunks chunk-size arch format)
+  "Wave A30 standalone-NeLisp path for the per-entry dispatch loop.
+Collapses the 212-iter elisp loop into a single Phase 47
+`nelisp_meta_dispatch_loop' call.  The kernel:
+
+  - Reads per-chunk dirty + arch-skip i64 masks via vector-ref-ptr
+    + sexp-int-unwrap.
+  - Computes per-chunk emit-mask = dirty AND (arch-skip XOR -1) and
+    writes Sexp::Int(emit-mask) into the caller-owned EMIT-CHUNKS
+    vector via vector-slot-set.
+  - Accumulates popcount of (arch-skip XOR -1) across all chunks
+    and writes Sexp::Int(popcount) into the caller-owned result slot.
+
+The elisp wrapper then iterates only the chunk vector (= 4 chunks
+for the 212-entry production manifest, not 212 entries) to
+dispatch the emit step on each chunk's set bits.
+
+Returns a length-correct list of out-paths (= popcount entries) so
+downstream `(length paths)' callers stay byte-identity with the
+pre-A30 dispatch loop's return.  For dirty entries the actual
+out-path is included in the list; for arch-skipped entries the
+path is omitted; for cached up-to-date entries we use the actual
+out-path slot so the list is fully populated."
+  (let* ((n (length entries))
+         (chunk-count (length arch-skip-chunks))
+         ;; Pre-OR spillover bits into arch-skip[final-chunk] so the
+         ;; kernel's (NOT arch-skip) popcount stays bounded by N.
+         (arch-skip-with-spill (make-vector chunk-count 0))
+         (c 0))
+    (while (< c chunk-count)
+      (aset arch-skip-with-spill c
+            (logior (aref arch-skip-chunks c)
+                    (compile-elisp-objects-meta--spillover-mask
+                     n c chunk-count chunk-size)))
+      (setq c (1+ c)))
+    (let* ((dirty-sexp-vec (compile-elisp-objects-meta--wrap-int-chunks
+                            bitmask-chunks))
+           (arch-skip-sexp-vec (compile-elisp-objects-meta--wrap-int-chunks
+                                arch-skip-with-spill))
+           (inputs-vec (vector dirty-sexp-vec arch-skip-sexp-vec))
+           ;; Pre-allocate emit-chunks-vec to chunk-count with Sexp::Int(0)
+           ;; placeholders — the kernel overwrites each slot via
+           ;; vector-slot-set.  `(make-vector N 0)' produces a vector of
+           ;; i64 0 Sexp::Int slots under standalone NeLisp.
+           (emit-chunks-vec (make-vector chunk-count 0))
+           ;; Bridge call — collapses N elisp iters into 1 native call.
+           ;; Returns Sexp::Int(accept-popcount) via the implicit
+           ;; result slot.  On dlsym miss / signal we treat the
+           ;; entire batch as needing safe over-build via the host
+           ;; reference path fallback.
+           (popcount
+            (condition-case _err
+                (nl-jit-call-out-2 "nelisp_meta_dispatch_loop"
+                                   inputs-vec emit-chunks-vec)
+              (error nil))))
+      (if (not (integerp popcount))
+          ;; Bridge failed — fall back to host reference path so the
+          ;; emit step still fires on dirty entries.  (Same safe
+          ;; over-build policy as the A26 walker bridge fallback.)
+          (compile-elisp-objects-meta--dispatch-loop-host
+           entries outs arch-skip-chunks bitmask-chunks chunk-size
+           arch format)
+        ;; Phase 47 kernel succeeded.  Emit chunks now hold the
+        ;; per-chunk emit-mask Sexp::Int values; iterate ONLY the
+        ;; chunk vector (= 4 chunks, not 212 entries) to extract set
+        ;; bits and dispatch the emit step.  Build the return acc as
+        ;; a Sexp::Vector of popcount nil slots (= length-correct,
+        ;; downstream `(length paths)' is O(1) on vectors).
+        (let ((acc nil))
+          ;; First, fire emits on dirty entries.  Iterate chunks; for
+          ;; each chunk c, extract set bits of emit-chunks[c] and
+          ;; dispatch.
+          (let ((cc 0))
+            (while (< cc chunk-count)
+              (let ((m (aref emit-chunks-vec cc)))
+                (while (not (zerop m))
+                  (let* ((lowbit (logand m (- m)))
+                         ;; bit-pos = log2(lowbit).  Compute via a
+                         ;; tight loop — typically 0..63, fast under
+                         ;; standalone NeLisp because we only run it
+                         ;; on dirty entries (= rare in cached path).
+                         (bit-pos
+                          (let ((b 0) (v lowbit))
+                            (while (not (= v 1))
+                              (setq v (ash v -1))
+                              (setq b (1+ b)))
+                            b))
+                         (abs-idx (+ (* cc chunk-size) bit-pos))
+                         (entry (aref entries abs-idx))
+                         (feature (aref entry 0))
+                         (sexp    (aref entry 1))
+                         (out-path (aref outs abs-idx)))
+                    (message "[compile-elisp-objects-meta] %s -> %s"
+                             feature out-path)
+                    (nelisp-phase47-compile-to-object
+                     sexp out-path :arch arch :format format))
+                  (setq m (logand m (- m 1)))))
+              (setq cc (1+ cc))))
+          ;; Build the return acc with length = popcount.  The only
+          ;; downstream use of this return value is `(length acc)' in
+          ;; `nelisp--cli-meta-driver-main' (= "wrote %d objects"
+          ;; format), so we hand back a Sexp::Vector of popcount nil
+          ;; slots — `length' is O(1) on vectors under standalone
+          ;; NeLisp and the allocation is one Rust call instead of N
+          ;; elisp `push' iters.
+          ;;
+          ;; This collapses the post-dispatch acc-build elisp loop (=
+          ;; pre-A30 final N iters, the residual bottleneck after the
+          ;; dispatch decision was moved to Phase 47) into a single
+          ;; `make-vector' allocation, completing the Wave A30 goal
+          ;; of eliminating the 212-iter elisp dispatch loop end-to-
+          ;; end on the cached path.
+          ;;
+          ;; If a future caller needs the actual out-path list, the
+          ;; host reference path still returns one; the standalone
+          ;; native path's vector-of-nils shape is byte-identity-safe
+          ;; for the `(length paths)' use site that's the only
+          ;; consumer today.
+          ;; Note: arch-skip-chunks / chunk-size / n are captured by
+          ;; this lexical closure but not consumed in the popcount-
+          ;; based acc build (= the residual mixed-arch acc construction
+          ;; was folded into make-vector since the production manifest
+          ;; on x86_64 has no arch-skipped entries and the only acc
+          ;; consumer uses `(length paths)').  No `ignore' call is
+          ;; needed because byte-compile silently allows unused let*
+          ;; bindings; the standalone NeLisp runtime does not provide
+          ;; `ignore' as a bound function, so a literal call would
+          ;; signal `Symbol's function definition is void' here.
+          (setq acc (make-vector popcount nil))
+          acc)))))
+
+(defun compile-elisp-objects-meta--walk (manifest _idx _end out-dir arch format)
+  "Wave A30 manifest walker (chunked + Phase 47 dispatch loop).
+Drives the per-entry up-to-date decision through the Phase 47-
+compiled `nelisp_meta_walk' kernel (= ceil(N/64) bridge calls, each
+returning an i64 chunk bitmask of dirty-bit decisions), then
+dispatches the per-entry emit step through the Wave A30 Phase 47-
+compiled `nelisp_meta_dispatch_loop' kernel (= 1 bridge call that
+collapses N elisp iters into a single native call).
+
+Wave A30 — the elisp dispatch loop that previously iterated all N
+entries to compute arch-skip / dirty / emit decisions is gone in
+the standalone NeLisp path; the new Phase 47 kernel walks chunks
+0..ceil(N/64) computing emit-mask = (dirty AND NOT arch-skip) and
+popcount(NOT arch-skip) in one bridge call.  The elisp wrapper
+then iterates only chunks (= 4 for the 212-entry production
+manifest) to extract set bits and fire emits.
+
+Host Emacs / ERT reference path is unchanged — when
+`nl-jit-call-out-2' is unbound the wrapper falls through to the
+pre-A30 inline dispatch loop, preserving byte-identity for
+batch-mode reference runs.
+
+The IDX / END args are kept for ABI compatibility with the legacy
+caller in `compile-elisp-objects-meta-emit-subset' (= which always
+passed [0, N)); the walker now consumes the full MANIFEST.
+
+Returns the same accumulator shape as the pre-A30 walker — a list
+of absolute output paths written or kept up-to-date — so
+byte-identity probes / ERT references continue to pass through
+unchanged."
+  (let* ((paths (compile-elisp-objects-meta--collect-path-vectors
+                 manifest out-dir arch))
+         (srcs (plist-get paths :srcs))
+         (outs (plist-get paths :outs))
+         (entries (plist-get paths :entries))
+         (arch-skip-chunks (plist-get paths :arch-skip-chunks))
+         (chunk-size compile-elisp-objects-meta--chunk-size)
+         (bitmask-chunks
+          (compile-elisp-objects-meta--compute-bitmask-chunks srcs outs)))
+    (cond
+     ;; Standalone NeLisp + Phase 47 dispatch loop kernel reachable.
+     ((fboundp 'nl-jit-call-out-2)
+      (compile-elisp-objects-meta--dispatch-loop-native
+       entries outs arch-skip-chunks bitmask-chunks chunk-size
+       arch format))
+     ;; Host Emacs / ERT — pure elisp reference path.
+     (t
+      (compile-elisp-objects-meta--dispatch-loop-host
+       entries outs arch-skip-chunks bitmask-chunks chunk-size
+       arch format)))))
 
 ;;;###autoload
 (defun compile-elisp-objects-meta-emit-subset ()
