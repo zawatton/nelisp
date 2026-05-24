@@ -323,13 +323,25 @@ of the macro's expansion (so that AOT-compiled callers and
 predicates see the same data).  `assq' takes the most-recent
 push, which keeps re-loading idempotent.")
 
+(defvar nelisp-cl-macros--accessor-info nil
+  "Alist of (ACCESSOR-SYM . INDEX) for every cl-defstruct slot accessor.
+`setf' consults this at expansion time to rewrite
+`(setf (ACCESSOR REC) VAL)' into `(nelisp--record-set REC INDEX VAL)'.")
+
 (defun nelisp-cl-macros--struct-record (name parent slot-names)
   "Push (NAME . (:slot-names SLOT-NAMES :parent PARENT)) into the
 runtime struct registry.  Re-pushes shadow earlier entries — the
-front-of-list wins on lookup."
+front-of-list wins on lookup.  Also (re-)registers every accessor's
+slot index in `nelisp-cl-macros--accessor-info' so `setf' can find it."
   (setq nelisp-cl-macros--struct-info
         (cons (cons name (list :slot-names slot-names :parent parent))
-              nelisp-cl-macros--struct-info)))
+              nelisp-cl-macros--struct-info))
+  (let ((i 0))
+    (dolist (s slot-names)
+      (let ((acc (intern (format "%s-%s" name s))))
+        (setq nelisp-cl-macros--accessor-info
+              (cons (cons acc i) nelisp-cl-macros--accessor-info)))
+      (setq i (1+ i)))))
 
 (defun nelisp-cl-macros--struct-isa (tag target)
   "Return non-nil iff TAG = TARGET or one of TAG's :include ancestors
@@ -601,8 +613,17 @@ supported (= would need a forward-declared placeholder set, deferred)."
                       (nreverse unalias-forms))))))
 
 (defmacro cl-incf (place &optional delta)
-  "Increment PLACE by DELTA (default 1).  Expands to (setq PLACE (+ PLACE DELTA))."
-  (list 'setq place (list '+ place (or delta 1))))
+  "Increment PLACE by DELTA (default 1).
+Symbol PLACE expands to `(setq PLACE (+ PLACE DELTA))'; generalised
+PLACE (= cl-defstruct accessor, `car' / `cdr' / `aref' / `nth')
+delegates to `setf' so the same call works on records and lists.
+
+Note: PLACE is read TWICE in the generalised path because that
+matches what `setf' supports; if PLACE has side-effects, hoist
+it into a `let' first."
+  (if (symbolp place)
+      (list 'setq place (list '+ place (or delta 1)))
+    (list 'setf place (list '+ place (or delta 1)))))
 
 (defmacro defsubst (name args &rest body)
   "Define NAME as an inline function.  Standalone NeLisp has no
@@ -719,6 +740,304 @@ See `nelisp--bq-expand' for the supported shapes."
   (nelisp--bq-expand form))
 
 (unless (fboundp 'zerop) (defun zerop (n) "Return t if N is zero." (= n 0)))
+
+;; ---------------------------------------------------------------------------
+;; Wave A21-fix (2026-05-24) — cl-case / cl-position / cl-set-difference /
+;; cl-gensym / cl-macrolet.  Standalone NeLisp loads `nelisp-bytecode.el'
+;; which uses these five `cl-' helpers — host Emacs provides them through
+;; `cl-lib.el', NeLisp ships them here so the same source compiles + runs
+;; identically on both substrates (= byte-identity, Rust LOC delta = 0).
+;; ---------------------------------------------------------------------------
+
+(defmacro cl-case (expr &rest clauses)
+  "Common Lisp `case' macro: dispatch on EXPR equality.
+Each CLAUSE = (KEYS BODY...).  KEYS is either a single literal
+(matched with `eql' = NeLisp `equal') or a list of literals
+(matched with `memq'/`member'); `t' or `otherwise' matches any.
+Expands to a `let' + `cond'."
+  (let* ((sym (intern (format "--cl-case-%s"
+                              (if (fboundp 'cl-gensym)
+                                  (symbol-name (cl-gensym "v"))
+                                "v"))))
+         (cond-clauses
+          (mapcar (lambda (clause)
+                    (let ((keys (car clause)) (body (cdr clause)))
+                      (cond
+                       ((or (eq keys t) (eq keys 'otherwise))
+                        (cons t body))
+                       ((and (consp keys) (consp (cdr keys)))
+                        ;; List of keys.
+                        (cons (list 'or
+                                    (cons 'and
+                                          (mapcar (lambda (k)
+                                                    (list 'eql sym
+                                                          (list 'quote k)))
+                                                  (list (car keys))))
+                                    (list 'member sym (list 'quote keys)))
+                              body))
+                       ((consp keys)
+                        ;; Single-element list (KEY).
+                        (cons (list 'eql sym (list 'quote (car keys)))
+                              body))
+                       (t
+                        ;; Bare symbol/atom = single key.
+                        (cons (list 'eql sym (list 'quote keys))
+                              body)))))
+                  clauses)))
+    (list 'let (list (list sym expr))
+          (cons 'cond cond-clauses))))
+
+(defun cl-position (item seq &rest keys)
+  "Return the 0-based index of ITEM in SEQ (list), or nil if absent.
+NeLisp minimal: list-only.  Recognised KEYS:
+  :test FN   — predicate to use (default `equal').
+Unknown keys are silently ignored."
+  (let* ((test (or (let ((p keys) (v nil))
+                     (while p
+                       (when (eq (car p) :test)
+                         (setq v (car (cdr p))))
+                       (setq p (cdr (cdr p))))
+                     v)
+                   #'equal))
+         (i 0) (cur seq) (found nil))
+    (while (and cur (not found))
+      (if (funcall test (car cur) item)
+          (setq found i)
+        (setq i (1+ i))
+        (setq cur (cdr cur))))
+    found))
+
+(defun cl-set-difference (list1 list2)
+  "Return elements of LIST1 not present in LIST2, preserving order.
+NeLisp minimal: no `:test' / `:key' keywords; uses `equal'."
+  (let ((acc nil) (cur list1))
+    (while cur
+      (unless (member (car cur) list2)
+        (setq acc (cons (car cur) acc)))
+      (setq cur (cdr cur)))
+    (nreverse acc)))
+
+(defvar nelisp-cl-macros--gensym-counter 0
+  "Monotone counter used by `cl-gensym' for unique symbol names.")
+
+(defun cl-gensym (&optional prefix)
+  "Return a fresh uninterned symbol named PREFIX (default \"G\") + counter.
+NeLisp uses `intern' (= the standalone runtime has no
+`make-symbol' equivalent that yields a usable callable name)."
+  (setq nelisp-cl-macros--gensym-counter
+        (1+ nelisp-cl-macros--gensym-counter))
+  (intern (format "%s%d"
+                  (or prefix "G")
+                  nelisp-cl-macros--gensym-counter)))
+
+;; ---------------------------------------------------------------------------
+;; cl-macrolet — lexical macro bindings.
+;;
+;; Strategy: at expansion time, walk BODY and replace each call to a
+;; bound macro NAME with its expansion.  The macro body is evaluated
+;; under a `let' that binds the macro's formal parameters to the raw
+;; (unevaluated) argument forms — same contract as host `defmacro' /
+;; `cl-macrolet'.  Result is spliced back into BODY in place of the
+;; call.  Sub-forms of the call's args are walked first so nested
+;; cl-macrolet calls expand inside-out.
+;;
+;; Walker honours common special forms: `quote' / `function' / `lambda'
+;; pass their inert subforms through unchanged; other lists recurse.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp-cl-macros--macrolet-expand-one (entry args)
+  "Expand a single cl-macrolet call.
+ENTRY = (NAME FORMALS BODY...).  ARGS = the raw (unevaluated)
+argument forms from the call site.  Returns the expansion form."
+  (let* ((formals (car (cdr entry)))
+         (body    (cdr (cdr entry)))
+         (bindings nil)
+         (rest-args args)
+         (rest-mode nil)
+         (rest-var nil))
+    (while formals
+      (let ((f (car formals)))
+        (cond
+         ((eq f '&rest)
+          (setq rest-mode t)
+          (setq rest-var (car (cdr formals)))
+          (setq formals nil))
+         (t
+          (setq bindings (cons (list f (list 'quote (car rest-args)))
+                               bindings))
+          (setq rest-args (cdr rest-args))
+          (setq formals (cdr formals))))))
+    (when rest-mode
+      (setq bindings (cons (list rest-var (list 'quote rest-args))
+                           bindings)))
+    (eval (list 'let (nreverse bindings)
+                (cons 'progn body)))))
+
+(defun nelisp-cl-macros--macrolet-walk-bindings (bindings env)
+  "Walk BINDINGS (a list of (VAR INIT) pairs or bare symbols) for `let'."
+  (mapcar (lambda (b)
+            (cond
+             ((symbolp b) b)
+             ((and (consp b) (consp (cdr b)))
+              (list (car b)
+                    (nelisp-cl-macros--macrolet-walk (car (cdr b)) env)))
+             (t b)))
+          bindings))
+
+(defun nelisp-cl-macros--macrolet-walk-list (forms env)
+  "Walk a list of FORMS."
+  (mapcar (lambda (s) (nelisp-cl-macros--macrolet-walk s env)) forms))
+
+(defun nelisp-cl-macros--macrolet-walk (form env)
+  "Walk FORM, replacing calls to macros bound in ENV with their expansions.
+ENV is an alist (NAME . (FORMALS BODY...))."
+  (cond
+   ((not (consp form)) form)
+   ((eq (car form) 'quote) form)
+   ((eq (car form) 'function)
+    ;; Recur into the body of a lambda inside #'(lambda ...), but
+    ;; leave the wrapper intact.
+    (let ((arg (car (cdr form))))
+      (if (and (consp arg) (eq (car arg) 'lambda))
+          (list 'function
+                (cons 'lambda
+                      (cons (car (cdr arg))
+                            (nelisp-cl-macros--macrolet-walk-list
+                             (cdr (cdr arg)) env))))
+        form)))
+   ((eq (car form) 'lambda)
+    (cons 'lambda
+          (cons (car (cdr form))
+                (nelisp-cl-macros--macrolet-walk-list (cdr (cdr form)) env))))
+   ((or (eq (car form) 'let) (eq (car form) 'let*))
+    (cons (car form)
+          (cons (nelisp-cl-macros--macrolet-walk-bindings (cadr form) env)
+                (nelisp-cl-macros--macrolet-walk-list (cddr form) env))))
+   ((eq (car form) 'condition-case)
+    (let ((var (cadr form))
+          (protected (car (cddr form)))
+          (handlers (cdr (cddr form))))
+      (cons 'condition-case
+            (cons var
+                  (cons (nelisp-cl-macros--macrolet-walk protected env)
+                        (mapcar (lambda (h)
+                                  (if (consp h)
+                                      (cons (car h)
+                                            (nelisp-cl-macros--macrolet-walk-list
+                                             (cdr h) env))
+                                    h))
+                                handlers))))))
+   ((eq (car form) 'cond)
+    (cons 'cond
+          (mapcar (lambda (clause)
+                    (if (consp clause)
+                        (nelisp-cl-macros--macrolet-walk-list clause env)
+                      clause))
+                  (cdr form))))
+   ((eq (car form) 'pcase)
+    ;; (pcase EXPR (PAT BODY...)...) — EXPR is a form, PAT is literal,
+    ;; each clause BODY is walked.
+    (cons 'pcase
+          (cons (nelisp-cl-macros--macrolet-walk (cadr form) env)
+                (mapcar (lambda (clause)
+                          (if (consp clause)
+                              (cons (car clause)
+                                    (nelisp-cl-macros--macrolet-walk-list
+                                     (cdr clause) env))
+                            clause))
+                        (cddr form)))))
+   ((eq (car form) 'setq)
+    ;; Even-position elements are forms; odd-position are symbol names.
+    (let ((rest (cdr form)) (out nil))
+      (while rest
+        (push (car rest) out)
+        (setq rest (cdr rest))
+        (when rest
+          (push (nelisp-cl-macros--macrolet-walk (car rest) env) out)
+          (setq rest (cdr rest))))
+      (cons 'setq (nreverse out))))
+   (t
+    (let* ((head (car form))
+           (entry (and (symbolp head) (assq head env))))
+      (cond
+       (entry
+        ;; Recur into the (raw) args first so inner cl-macrolet calls
+        ;; expand inside-out, then expand this call.
+        (let ((walked-args (nelisp-cl-macros--macrolet-walk-list
+                            (cdr form) env)))
+          (nelisp-cl-macros--macrolet-walk
+           (nelisp-cl-macros--macrolet-expand-one entry walked-args)
+           env)))
+       ((symbolp head)
+        ;; Ordinary function-like call: leave head, walk args.
+        (cons head
+              (nelisp-cl-macros--macrolet-walk-list (cdr form) env)))
+       (t
+        ;; Head is itself a list (= sub-form, e.g. a binding pair).
+        ;; Recurse into both head and cdr so nested macro calls expand.
+        (cons (nelisp-cl-macros--macrolet-walk head env)
+              (nelisp-cl-macros--macrolet-walk-list (cdr form) env))))))))
+
+(defmacro setf (&rest pairs)
+  "Generalised assignment macro (NeLisp minimal).
+Each pair PLACE VAL assigns VAL to PLACE.  Supported PLACE shapes:
+  - SYMBOL                 → `(setq SYMBOL VAL)'
+  - (ACCESSOR REC)         where ACCESSOR is a registered cl-defstruct
+                            slot accessor → `(nelisp--record-set REC I VAL)'
+  - (car X)  / (cdr X)     → `(setcar X VAL)' / `(setcdr X VAL)'
+  - (aref V I) / (nth I L) → `(aset V I VAL)' / `(setcar (nthcdr I L) VAL)'
+Other shapes signal a host `error' at expand time."
+  (when (null pairs) (signal 'error (list "setf: empty body")))
+  (let ((forms nil))
+    (while pairs
+      (let ((place (car pairs))
+            (val (cadr pairs)))
+        (setq pairs (cdr (cdr pairs)))
+        (push
+         (cond
+          ((symbolp place)
+           (list 'setq place val))
+          ((and (consp place) (eq (car place) 'car))
+           (list 'setcar (cadr place) val))
+          ((and (consp place) (eq (car place) 'cdr))
+           (list 'setcdr (cadr place) val))
+          ((and (consp place) (eq (car place) 'aref))
+           (list 'aset (cadr place) (caddr place) val))
+          ((and (consp place) (eq (car place) 'nth))
+           (list 'setcar (list 'nthcdr (cadr place) (caddr place)) val))
+          ((and (consp place) (symbolp (car place))
+                (assq (car place) nelisp-cl-macros--accessor-info))
+           (let ((idx (cdr (assq (car place)
+                                 nelisp-cl-macros--accessor-info))))
+             (list 'nelisp--record-set (cadr place) idx val)))
+          (t
+           (signal 'error
+                   (list "setf: unsupported place"
+                         (and (consp place) (car place))))))
+         forms)))
+    (if (cdr forms)
+        (cons 'progn (nreverse forms))
+      (car forms))))
+
+(defmacro cl-macrolet (bindings &rest body)
+  "Locally bind macros for the lexical scope of BODY.
+BINDINGS = ((NAME (ARGS...) BODY...) ...).  Each NAME is treated as
+a macro: calls `(NAME a1 a2 ...)' inside BODY are replaced at
+expansion time with the result of evaluating the macro BODY with
+ARGS bound to the raw (unevaluated) call-site forms.
+
+NeLisp minimal implementation: a code walker substitutes calls
+in BODY.  Macros may use backquote; expansion produces code that
+naturally lexically captures whatever the surrounding `let'
+bindings provide.  &rest is honoured."
+  (let ((env (mapcar (lambda (b)
+                       (cons (car b) (cdr b)))
+                     bindings)))
+    (cons 'progn
+          (mapcar (lambda (s)
+                    (nelisp-cl-macros--macrolet-walk s env))
+                  body))))
+
 (provide 'cl-lib)
 (provide 'nelisp-cl-macros)
 

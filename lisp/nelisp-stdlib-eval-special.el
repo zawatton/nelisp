@@ -325,21 +325,28 @@ Bindings:  --nl-dolist-list = LIST cursor."
 ;;;; --- cons-cell mutation macros --------------------------------------
 
 (defmacro push (newelt place)
-  "(setq PLACE (cons NEWELT PLACE))' — symbol-place fast path only.
-Generalised places (= setf-style) are out of scope for Stage 7.3.a."
-  (cons 'setq
-        (cons place
-              (cons (cons 'cons (cons newelt (cons place nil)))
-                    nil))))
+  "(setq PLACE (cons NEWELT PLACE))' for symbol PLACE; otherwise
+delegate to `setf' so cl-defstruct accessor places and `car' / `cdr'
+/ `aref' / `nth' places work via Wave A21-fix's generalised `setf'."
+  (if (symbolp place)
+      (cons 'setq
+            (cons place
+                  (cons (cons 'cons (cons newelt (cons place nil)))
+                        nil)))
+    (list 'setf place (list 'cons newelt place))))
 
 (defmacro pop (place)
-  "(prog1 (car PLACE) (setq PLACE (cdr PLACE)))' — symbol-place only."
-  (cons 'prog1
-        (cons (cons 'car (cons place nil))
-              (cons (cons 'setq
-                          (cons place
-                                (cons (cons 'cdr (cons place nil)) nil)))
-                    nil))))
+  "(prog1 (car PLACE) (setq PLACE (cdr PLACE)))' for symbol PLACE;
+generalised PLACE delegates to `setf'."
+  (if (symbolp place)
+      (cons 'prog1
+            (cons (cons 'car (cons place nil))
+                  (cons (cons 'setq
+                              (cons place
+                                    (cons (cons 'cdr (cons place nil)) nil)))
+                        nil)))
+    (list 'prog1 (list 'car place)
+          (list 'setf place (list 'cdr place)))))
 
 ;;;; --- function / macro definition (Stage 7.3.b) ----------------------
 

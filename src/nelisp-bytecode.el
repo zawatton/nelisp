@@ -50,9 +50,12 @@
 ;; module is gated on `(boundp 'nelisp--globals)' and falls back to
 ;; plain `symbol-value' / `set' / `funcall' when the host bridge is
 ;; absent, so `nelisp-eval' is optional.
+;; Wave A21-fix: standalone NeLisp `require' signals plain `error'
+;; (not `file-error') when the feature isn't provided, so catch the
+;; broader `error' parent type.
 (condition-case _err
     (require 'nelisp-eval)
-  (file-error nil))
+  (error nil))
 
 ;; Forward declaration — Phase 3c owns `nelisp-gc--active-vms' in
 ;; src/nelisp-gc.el.  We re-declare nil-initialised here so `nelisp-bc-run'
@@ -1420,6 +1423,49 @@ MCP Parameters:
 (defconst nelisp-bc--vm-sp          7)
 (defconst nelisp-bc--vm-specpdl     8)
 
+;; Wave A21-fix (2026-05-24): hoist the four inline VM-state macros out
+;; of `cl-macrolet' inside `nelisp-bc--dispatch' into top-level
+;; `defmacro' so standalone NeLisp doesn't pay per-call expansion cost
+;; through a code-walking `cl-macrolet'.  Names are intentionally
+;; module-private (`nelisp-bc--…') so they can't shadow user code.
+;; Expansion uses textual references to `code', `pc', `sp', `specpdl',
+;; `vm' — these are captured by the surrounding `let' in
+;; `nelisp-bc--dispatch' where the macros are invoked.
+
+(defmacro nelisp-bc--read-u16 ()
+  "Read uint16 LE at `pc' from `code'; advance pc by 2; yield the value."
+  '(prog1 (+ (aref code pc)
+             (ash (aref code (1+ pc)) 8))
+     (setq pc (+ pc 2))))
+
+(defmacro nelisp-bc--trim-specpdl (target-tail)
+  "Pop `specpdl' entries until it reaches TARGET-TAIL, restoring bindings."
+  `(while (not (eq specpdl ,target-tail))
+     (let* ((entry (pop specpdl))
+            (sym (car entry))
+            (old (cdr entry)))
+       (cond
+        ((boundp 'nelisp--globals)
+         (if (eq old nelisp--unbound)
+             (remhash sym nelisp--globals)
+           (puthash sym old nelisp--globals)))
+        (t
+         (if (eq old :nelisp-bc--unbound)
+             (makunbound sym)
+           (set sym old)))))))
+
+(defmacro nelisp-bc--commit-vm ()
+  "Sync local `pc' / `sp' / `specpdl' into VM state vector."
+  '(progn (aset vm 6 pc)
+          (aset vm 7 sp)
+          (aset vm 8 specpdl)))
+
+(defmacro nelisp-bc--reload-vm ()
+  "Load `pc' / `sp' / `specpdl' locals from VM state vector."
+  '(progn (setq pc      (aref vm 6))
+          (setq sp      (aref vm 7))
+          (setq specpdl (aref vm 8))))
+
 (defun nelisp-bc--dispatch (vm nested)
   "Opcode dispatch loop for the bytecode VM.
 VM is the state vector described by `nelisp-bc--vm-*' index
@@ -1442,35 +1488,12 @@ recursing and reload from VM afterwards."
         (pc          (aref vm 6))
         (sp          (aref vm 7))
         (specpdl     (aref vm 8)))
-    (cl-macrolet ((read-u16 ()
-                    `(prog1 (+ (aref code pc)
-                               (ash (aref code (1+ pc)) 8))
-                       (setq pc (+ pc 2))))
-                  (trim-specpdl (target-tail)
-                    ;; Wave A21: standalone-safe fallback when
-                    ;; `nelisp--globals' is unbound — defer to
-                    ;; `set' / `makunbound' on the symbol itself.
-                    `(while (not (eq specpdl ,target-tail))
-                       (let* ((entry (pop specpdl))
-                              (sym (car entry))
-                              (old (cdr entry)))
-                         (cond
-                          ((boundp 'nelisp--globals)
-                           (if (eq old nelisp--unbound)
-                               (remhash sym nelisp--globals)
-                             (puthash sym old nelisp--globals)))
-                          (t
-                           (if (eq old :nelisp-bc--unbound)
-                               (makunbound sym)
-                             (set sym old)))))))
-                  (commit-vm ()
-                    '(progn (aset vm 6 pc)
-                            (aset vm 7 sp)
-                            (aset vm 8 specpdl)))
-                  (reload-vm ()
-                    '(progn (setq pc      (aref vm 6))
-                            (setq sp      (aref vm 7))
-                            (setq specpdl (aref vm 8)))))
+    ;; Wave A21-fix: the four `(nelisp-bc--read-u16)' / `(nelisp-bc--trim-specpdl X)' /
+    ;; `(nelisp-bc--commit-vm)' / `(nelisp-bc--reload-vm)' macro calls below expand via the
+    ;; top-level `nelisp-bc--*' macros (= renamed from the former
+    ;; `cl-macrolet' wrapper).  Aliases below let the original short
+    ;; names continue to work without the per-call walker cost of
+    ;; `cl-macrolet' under standalone NeLisp.
       (unwind-protect
           (catch 'nelisp-bc--pop-handler
             (while (< pc len)
@@ -1509,13 +1532,13 @@ recursing and reload from VM afterwards."
               (aset stack sp (aref stack (1- sp)))
               (setq sp (1+ sp)))
              (5
-              (setq pc (read-u16)))
+              (setq pc (nelisp-bc--read-u16)))
              (6
               (when (<= sp 0)
                 (signal 'nelisp-bc-error
                         (list "GOTO-IF-NIL on empty stack" pc)))
               (setq sp (1- sp))
-              (let ((tgt (read-u16))
+              (let ((tgt (nelisp-bc--read-u16))
                     (v (aref stack sp)))
                 (when (null v) (setq pc tgt))))
              (7
@@ -1523,7 +1546,7 @@ recursing and reload from VM afterwards."
                 (signal 'nelisp-bc-error
                         (list "GOTO-IF-NOT-NIL on empty stack" pc)))
               (setq sp (1- sp))
-              (let ((tgt (read-u16))
+              (let ((tgt (nelisp-bc--read-u16))
                     (v (aref stack sp)))
                 (when v (setq pc tgt))))
              (8
@@ -1800,7 +1823,7 @@ recursing and reload from VM afterwards."
              (31
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "PUSH-CATCH on empty stack" pc)))
-              (let* ((target (read-u16))
+              (let* ((target (nelisp-bc--read-u16))
                      (tag (aref stack (1- sp)))
                      (_ (setq sp (1- sp)))
                      (saved-sp sp)
@@ -1814,10 +1837,10 @@ recursing and reload from VM afterwards."
                      ;; state, and its `unwind-protect' commits its
                      ;; final state back so we can `reload-vm' below.
                      (outcome (catch tag
-                                (commit-vm)
+                                (nelisp-bc--commit-vm)
                                 (nelisp-bc--dispatch vm t)
                                 normal-sentinel)))
-                (reload-vm)
+                (nelisp-bc--reload-vm)
                 (cond
                  ((eq outcome normal-sentinel)
                   ;; Body completed normally: POP-HANDLER ran and the
@@ -1827,7 +1850,7 @@ recursing and reload from VM afterwards."
                  (t
                   ;; Throw matched tag: unwind specpdl and stack to the
                   ;; pre-body snapshot, push thrown value, jump.
-                  (trim-specpdl saved-specpdl)
+                  (nelisp-bc--trim-specpdl saved-specpdl)
                   (setq sp saved-sp)
                   (when (>= sp stack-depth)
                     (signal 'nelisp-bc-error
@@ -1836,14 +1859,14 @@ recursing and reload from VM afterwards."
                   (setq sp (1+ sp))
                   (setq pc target)))))
              (34
-              (let* ((cleanup-target (read-u16))
+              (let* ((cleanup-target (nelisp-bc--read-u16))
                      (saved-sp sp)
                      (saved-specpdl specpdl)
                      (body-done nil))
                 (unwind-protect
-                    (progn (commit-vm)
+                    (progn (nelisp-bc--commit-vm)
                            (nelisp-bc--dispatch vm t)
-                           (reload-vm)
+                           (nelisp-bc--reload-vm)
                            (setq body-done t))
                   ;; Always-run cleanup.  On non-local exit, reset the
                   ;; operand stack and specpdl to the pre-body state so
@@ -1852,31 +1875,31 @@ recursing and reload from VM afterwards."
                     ;; Body threw: nested dispatch's unwind-protect
                     ;; already synced its final state to VM, so reload
                     ;; into our locals before trimming.
-                    (reload-vm)
-                    (trim-specpdl saved-specpdl)
+                    (nelisp-bc--reload-vm)
+                    (nelisp-bc--trim-specpdl saved-specpdl)
                     (setq sp saved-sp))
                   (let ((saved-pc pc))
                     (setq pc cleanup-target)
-                    (commit-vm)
+                    (nelisp-bc--commit-vm)
                     (nelisp-bc--dispatch vm t)
-                    (reload-vm)
+                    (nelisp-bc--reload-vm)
                     (when (not body-done)
                       ;; Exception path: propagate by restoring pc
                       ;; (not strictly needed — host will re-raise —
                       ;; but keeps debugger-friendly state).
                       (setq pc saved-pc))))))
              (35
-              (let* ((handler-target (read-u16))
+              (let* ((handler-target (nelisp-bc--read-u16))
                      (saved-sp sp)
                      (saved-specpdl specpdl)
                      (err (condition-case e
-                              (progn (commit-vm)
+                              (progn (nelisp-bc--commit-vm)
                                      (nelisp-bc--dispatch vm t)
                                      nil)
                             (error e))))
-                (reload-vm)
+                (nelisp-bc--reload-vm)
                 (when err
-                  (trim-specpdl saved-specpdl)
+                  (nelisp-bc--trim-specpdl saved-specpdl)
                   (setq sp saved-sp)
                   (when (>= sp stack-depth)
                     (signal 'nelisp-bc-error
@@ -1935,7 +1958,7 @@ recursing and reload from VM afterwards."
         ;; the latest pc/sp/specpdl on every exit, normal or non-local.
         (aset vm 6 pc)
         (aset vm 7 sp)
-        (aset vm 8 specpdl)))))
+        (aset vm 8 specpdl))))
 
 (defun nelisp-bc-run (bcl &optional args)
   "Execute the bytecode closure BCL.
