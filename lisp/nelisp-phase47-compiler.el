@@ -532,6 +532,119 @@ representation swap (plist -> record tag) touches this one site
 instead of all 90 IR constructors."
   (cons :kind (cons kind plist)))
 
+(defsubst nelisp-phase47-compiler--ir-kind (node)
+  "Read the :kind tag of IR NODE.
+A33.2 — a `plist-get' wrap over the still-plist IR representation, so
+byte-compilation inlines this `defsubst' back to the original
+`(plist-get NODE :kind)' and the emitted `.o' bytes are unchanged.
+Centralizing reads here means the A33.4 representation swap (plist ->
+record tag) replaces the body once instead of at all dispatch sites."
+  (plist-get node :kind))
+
+(defsubst nelisp-phase47-compiler--ir-get (node field)
+  "Read FIELD of IR NODE.
+A33.2 — a `plist-get' wrap over the still-plist IR representation, so
+byte-compilation inlines this `defsubst' back to the original
+`(plist-get NODE FIELD)' and the emitted `.o' bytes are unchanged.
+A33.4 swaps the body to `record'-based slot access in one place."
+  (plist-get node field))
+
+(defconst nelisp-phase47-compiler--ir-kind-tags
+  '((alloc-bytes . 0)
+    (arith . 1)
+    (atomic-compare-exchange . 2)
+    (atomic-fetch-add . 3)
+    (bits-to-f64 . 4)
+    (call . 5)
+    (cell-make . 6)
+    (cell-null-p . 7)
+    (cell-set-value . 8)
+    (cell-value . 9)
+    (cmp . 10)
+    (cond . 11)
+    (cons-car . 12)
+    (cons-cdr . 13)
+    (cons-cdr-raw . 14)
+    (cons-make . 15)
+    (cons-make-with-clone . 16)
+    (cons-null-p . 17)
+    (cons-set-car . 18)
+    (cons-set-cdr . 19)
+    (dealloc-bytes . 20)
+    (defun . 21)
+    (exit . 22)
+    (extern-call . 23)
+    (f64-binop . 24)
+    (f64-call . 25)
+    (f64-cmp . 26)
+    (f64-to-i64-trunc . 27)
+    (i64-to-f64 . 28)
+    (if . 29)
+    (imm . 30)
+    (let . 31)
+    (let-rt . 32)
+    (logic . 33)
+    (mut-str-finalize . 34)
+    (mut-str-len . 35)
+    (mut-str-make-empty . 36)
+    (mut-str-push-byte . 37)
+    (mut-str-push-codepoint . 38)
+    (ptr-read-u16 . 39)
+    (ptr-read-u32 . 40)
+    (ptr-read-u64 . 41)
+    (ptr-read-u8 . 42)
+    (ptr-write-u16 . 43)
+    (ptr-write-u32 . 44)
+    (ptr-write-u64 . 45)
+    (ptr-write-u8 . 46)
+    (record-make . 47)
+    (record-slot-count . 48)
+    (record-slot-ref . 49)
+    (record-slot-ref-ptr . 50)
+    (record-slot-set . 51)
+    (record-type-tag . 52)
+    (ref . 53)
+    (seq . 54)
+    (sexp-float-unwrap . 55)
+    (sexp-int-make . 56)
+    (sexp-int-unwrap . 57)
+    (sexp-name-eq . 58)
+    (sexp-payload-ptr . 59)
+    (sexp-payload-ptr-record . 60)
+    (sexp-tag . 61)
+    (sexp-write-float . 62)
+    (sexp-write-nil . 63)
+    (sexp-write-str . 64)
+    (sexp-write-symbol . 65)
+    (sexp-write-t . 66)
+    (shift . 67)
+    (str-byte-at . 68)
+    (str-bytes . 69)
+    (str-bytes-ptr . 70)
+    (str-char-count . 71)
+    (str-codepoint-at . 72)
+    (str-eq . 73)
+    (str-is-alphanumeric-at . 74)
+    (str-len . 75)
+    (symbol-eq . 76)
+    (symbol-name-eq . 77)
+    (syscall-direct . 78)
+    (table-define . 79)
+    (table-lookup . 80)
+    (vector-len . 81)
+    (vector-make . 82)
+    (vector-ref . 83)
+    (vector-ref-ptr . 84)
+    (vector-slot-set . 85)
+    (while . 86)
+    (write . 87))
+  "Maps each IR :kind symbol to a small integer tag.
+A33.2 defines this table only (no behavior change); A33.3 uses it to
+turn the symbol-keyed `pcase'/`cond' emit dispatch into integer
+dispatch.  The 88 entries cover every kind produced by
+`nelisp-phase47-compiler--make-ir'.  Tag values are stable (assigned in
+sorted-symbol order) so later waves can rely on a fixed numbering.")
+
 (defun nelisp-phase47-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
@@ -1923,8 +2036,8 @@ Returns one of:
     (let* ((arg (nth 1 sexp))
            (vnode
             (nelisp-phase47-compiler--parse-value arg env fenv defuns)))
-      (when (eq (plist-get vnode :kind) 'imm)
-        (let ((n (plist-get vnode :value)))
+      (when (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm)
+        (let ((n (nelisp-phase47-compiler--ir-get vnode :value)))
           (unless (and (integerp n) (<= 0 n 255))
             (signal 'nelisp-phase47-compiler-error
                     (list :status-out-of-range n)))))
@@ -2132,9 +2245,9 @@ defun bodies too so functions can call `write'."
     (cl-labels
         ((walk (node)
            (when node
-             (pcase (plist-get node :kind)
+             (pcase (nelisp-phase47-compiler--ir-kind node)
                ('write
-                (let ((s (plist-get node :str)))
+                (let ((s (nelisp-phase47-compiler--ir-get node :str)))
                   (unless (assoc s offsets)
                     (let ((bs (encode-coding-string s 'utf-8 t)))
                       (setq offsets
@@ -2144,41 +2257,41 @@ defun bodies too so functions can call `write'."
                                                       :len (length bs))))))
                       (setq rodata (concat rodata bs))
                       (setq cursor (+ cursor (length bs)))))))
-               ('exit (walk (plist-get node :value)))
+               ('exit (walk (nelisp-phase47-compiler--ir-get node :value)))
                ('seq
-                (mapc #'walk (plist-get node :forms)))
+                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
                ('let
-                (walk (plist-get node :body)))
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
                ('defun
-                (walk (plist-get node :body)))
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
                ('arith
-                (walk (plist-get node :a))
-                (walk (plist-get node :b)))
+                (walk (nelisp-phase47-compiler--ir-get node :a))
+                (walk (nelisp-phase47-compiler--ir-get node :b)))
                ('shift
-                (walk (plist-get node :a))
-                (walk (plist-get node :b)))
+                (walk (nelisp-phase47-compiler--ir-get node :a))
+                (walk (nelisp-phase47-compiler--ir-get node :b)))
                ('call
-                (mapc #'walk (plist-get node :args)))
+                (mapc #'walk (nelisp-phase47-compiler--ir-get node :args)))
                ('cmp
-                (walk (plist-get node :a))
-                (walk (plist-get node :b)))
+                (walk (nelisp-phase47-compiler--ir-get node :a))
+                (walk (nelisp-phase47-compiler--ir-get node :b)))
                ('if
-                (walk (plist-get node :test))
-                (walk (plist-get node :then))
-                (walk (plist-get node :else)))
+                (walk (nelisp-phase47-compiler--ir-get node :test))
+                (walk (nelisp-phase47-compiler--ir-get node :then))
+                (walk (nelisp-phase47-compiler--ir-get node :else)))
                ('while
-                (walk (plist-get node :test))
-                (mapc #'walk (plist-get node :body)))
+                (walk (nelisp-phase47-compiler--ir-get node :test))
+                (mapc #'walk (nelisp-phase47-compiler--ir-get node :body)))
                ('cond
-                (dolist (cl (plist-get node :clauses))
+                (dolist (cl (nelisp-phase47-compiler--ir-get node :clauses))
                   (unless (eq (car cl) 'always)
                     (walk (car cl)))
                   (walk (cdr cl))))
                ('logic
-                (mapc #'walk (plist-get node :forms)))
+                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
                ('let-rt
-                (walk (plist-get node :value-ir))
-                (walk (plist-get node :body)))
+                (walk (nelisp-phase47-compiler--ir-get node :value-ir))
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
                (_ nil)))))
       (walk ir))
     (cons offsets rodata)))
@@ -2216,10 +2329,10 @@ when two `table-define' nodes share a NAME."
                              (logand (ash u -24) #xFF))))
          (walk (node)
            (when node
-             (pcase (plist-get node :kind)
+             (pcase (nelisp-phase47-compiler--ir-kind node)
                ('table-define
-                (let ((name (plist-get node :name))
-                      (elements (plist-get node :elements)))
+                (let ((name (nelisp-phase47-compiler--ir-get node :name))
+                      (elements (nelisp-phase47-compiler--ir-get node :elements)))
                   (when (assoc name offsets)
                     (signal 'nelisp-phase47-compiler-error
                             (list :duplicate-static-imm32-table name)))
@@ -2234,20 +2347,20 @@ when two `table-define' nodes share a NAME."
                     (setq bytes (concat bytes blob))
                     (setq cursor (+ cursor (length blob))))))
                ('seq
-                (mapc #'walk (plist-get node :forms)))
+                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
                ('let
-                (walk (plist-get node :body)))
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
                ('defun
-                (walk (plist-get node :body)))
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
                ('let-rt
-                (walk (plist-get node :value-ir))
-                (walk (plist-get node :body)))
+                (walk (nelisp-phase47-compiler--ir-get node :value-ir))
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
                ;; table-lookup is value-producing; the `:index' child
                ;; is itself an IR node walked for nested defines (=
                ;; defensive, normal source has table-define at top
                ;; level only).
                ('table-lookup
-                (walk (plist-get node :index)))
+                (walk (nelisp-phase47-compiler--ir-get node :index)))
                (_ nil)))))
       (walk ir))
     (cons offsets bytes)))
@@ -2268,13 +2381,13 @@ walk; the emitter substitutes a no-op for the original site."
     (cl-labels
         ((walk (node)
            (when node
-             (pcase (plist-get node :kind)
+             (pcase (nelisp-phase47-compiler--ir-kind node)
                ('defun (push node acc))
-               ('seq (mapc #'walk (plist-get node :forms)))
-               ('let (walk (plist-get node :body)))
+               ('seq (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+               ('let (walk (nelisp-phase47-compiler--ir-get node :body)))
                ('let-rt
-                (walk (plist-get node :value-ir))
-                (walk (plist-get node :body)))
+                (walk (nelisp-phase47-compiler--ir-get node :value-ir))
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
                (_ nil)))))
       (walk ir))
     (nreverse acc)))
@@ -2389,9 +2502,9 @@ This avoids the xmm spill / fill dance the GP path uses
 opcode + would force a 16-byte stack alignment per call.  Doc
 112 (= xmm spill) re-enables nested binops; until then the
 parser must reject anything that would force xmm spill."
-  (let* ((op (plist-get node :op))
-         (a (plist-get node :a))
-         (b (plist-get node :b))
+  (let* ((op (nelisp-phase47-compiler--ir-get node :op))
+         (a (nelisp-phase47-compiler--ir-get node :a))
+         (b (nelisp-phase47-compiler--ir-get node :b))
          (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64))
          (xmm0 (if aarch64-p 'd0 'xmm0))
          (xmm1 (if aarch64-p 'd1 'xmm1)))
@@ -2442,8 +2555,8 @@ Stack alignment: the prologue rounds the f64 frame to 16-byte
 multiples so rsp / sp at the moment of CALL / BL satisfies the
 SysV / AAPCS alignment contract (= rsp % 16 == 0 just before
 the call instruction)."
-  (let ((name (plist-get node :name))
-        (arg (plist-get node :arg))
+  (let ((name (nelisp-phase47-compiler--ir-get node :name))
+        (arg (nelisp-phase47-compiler--ir-get node :arg))
         (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64)))
     (nelisp-phase47-compiler--emit-f64-leaf-into
      arg buf (if aarch64-p 'd0 'xmm0))
@@ -2470,21 +2583,21 @@ MVP flat-only constraint: NODE must be `:kind ref' with `:class
 f64' (= a direct f64 parameter reference).  Nested f64-binops /
 f64-cmps are rejected so the xmm0/xmm1 register schedule stays
 trivial until xmm spill machinery lands."
-  (let ((kind (plist-get node :kind)))
+  (let ((kind (nelisp-phase47-compiler--ir-kind node)))
     (cond
-     ((and (eq kind 'ref) (eq (plist-get node :class) 'f64))
+     ((and (eq kind 'ref) (eq (nelisp-phase47-compiler--ir-get node :class) 'f64))
       (nelisp-phase47-compiler--emit-f64-ref-load
-       buf (plist-get node :slot) xmm-dst))
+       buf (nelisp-phase47-compiler--ir-get node :slot) xmm-dst))
      ((eq kind 'bits-to-f64)
       ;; Evaluate INT-EXPR → rax (= gp-class), then MOVQ xmm-dst, rax.
       (nelisp-phase47-compiler--emit-value
-       (plist-get node :int-expr) buf)
+       (nelisp-phase47-compiler--ir-get node :int-expr) buf)
       (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax))
      ((eq kind 'i64-to-f64)
       ;; Evaluate INT-EXPR → rax (= gp-class signed i64), then
       ;; CVTSI2SD xmm-dst, rax (= f64 representation of the int).
       (nelisp-phase47-compiler--emit-value
-       (plist-get node :int-expr) buf)
+       (nelisp-phase47-compiler--ir-get node :int-expr) buf)
       (nelisp-asm-x86_64-cvtsi2sd-xmm-r64 buf xmm-dst 'rax))
      ((eq kind 'f64-call)
       ;; Existing f64-call ABI lands its result in xmm0.  If XMM-DST is
@@ -2524,9 +2637,9 @@ SETA tests `CF=0 AND ZF=0' → 0; SETAE tests `CF=0' → 0.  Both
 yield 0, matching Rust's `(NaN OP x) = false' rule.  NaN-aware
 EQ-EPS is more involved (needs PF mask AND-ed with SETB) and
 ships in §110.C.2.b."
-  (let* ((op (plist-get node :op))
-         (a (plist-get node :a))
-         (b (plist-get node :b))
+  (let* ((op (nelisp-phase47-compiler--ir-get node :op))
+         (a (nelisp-phase47-compiler--ir-get node :a))
+         (b (nelisp-phase47-compiler--ir-get node :b))
          (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64))
          (fp0 (if aarch64-p 'd0 'xmm0))
          (fp1 (if aarch64-p 'd1 'xmm1)))
@@ -2664,17 +2777,17 @@ Doc 110 §110.E.1 f64 nodes (`f64-binop' + `ref' with :class f64)
 return their result in xmm0 instead of rax — caller must know
 the node's class to consume the result correctly."
   (if (eq nelisp-phase47-compiler--arch 'aarch64)
-      (pcase (plist-get node :kind)
+      (pcase (nelisp-phase47-compiler--ir-kind node)
         ('imm
-         (nelisp-asm-arm64-mov-imm64 buf 'x0 (plist-get node :value)))
+         (nelisp-asm-arm64-mov-imm64 buf 'x0 (nelisp-phase47-compiler--ir-get node :value)))
         ('ref
          ;; GP class → LDUR Xn (existing path); f64 class → LDUR Dn
          ;; into d0 (= default destination for top-level body ref).
-         (if (eq (plist-get node :class) 'f64)
+         (if (eq (nelisp-phase47-compiler--ir-get node :class) 'f64)
              (nelisp-phase47-compiler--emit-f64-ref-load
-              buf (plist-get node :slot) 'd0)
+              buf (nelisp-phase47-compiler--ir-get node :slot) 'd0)
            (nelisp-phase47-compiler--emit-ref-load
-            buf (plist-get node :slot))))
+            buf (nelisp-phase47-compiler--ir-get node :slot))))
         ('arith
          (nelisp-phase47-compiler--emit-arith node buf))
         ('shift
@@ -2715,24 +2828,24 @@ the node's class to consume the result correctly."
              'while 'cond 'logic
              'syscall-direct)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
-          (plist-get node :kind) node))
+          (nelisp-phase47-compiler--ir-kind node) node))
         (kind
          (signal 'nelisp-phase47-compiler-error
                  (list :unknown-value-kind kind))))
-    (pcase (plist-get node :kind)
+    (pcase (nelisp-phase47-compiler--ir-kind node)
       ('imm
        ;; mov rax, imm32                                = 7 bytes
-       (nelisp-asm-x86_64-mov-imm32 buf 'rax (plist-get node :value)))
+       (nelisp-asm-x86_64-mov-imm32 buf 'rax (nelisp-phase47-compiler--ir-get node :value)))
       ('ref
        ;; gp class → `mov rax, [rbp - 8*(slot+1)]'; f64 class →
        ;; `movsd xmm0, [rbp - 8*(slot+1)]'.  Both read the spilled
        ;; param from the frame slot allocated by the prologue;
        ;; `:class' on the ref node dispatches the instruction.
-       (if (eq (plist-get node :class) 'f64)
+       (if (eq (nelisp-phase47-compiler--ir-get node :class) 'f64)
            (nelisp-phase47-compiler--emit-f64-ref-load
-            buf (plist-get node :slot) 'xmm0)
+            buf (nelisp-phase47-compiler--ir-get node :slot) 'xmm0)
          (nelisp-phase47-compiler--emit-ref-load
-          buf (plist-get node :slot))))
+          buf (nelisp-phase47-compiler--ir-get node :slot))))
       ('f64-binop
        (nelisp-phase47-compiler--emit-f64-binop node buf))
       ('f64-cmp
@@ -2898,12 +3011,12 @@ the node's class to consume the result correctly."
       ('let-rt
        ;; Runtime let in value context: evaluate value-ir → rax, spill
        ;; to frame slot, then evaluate body → rax (= function return).
-       (let* ((slot (plist-get node :slot))
-              (value-ir (plist-get node :value-ir))
+       (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
+              (value-ir (nelisp-phase47-compiler--ir-get node :value-ir))
               (disp (- (* 8 (1+ slot)))))
          (nelisp-phase47-compiler--emit-value value-ir buf)
          (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
-         (nelisp-phase47-compiler--emit-value (plist-get node :body) buf)))
+         (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :body) buf)))
       ('syscall-direct
        (nelisp-phase47-compiler--emit-syscall-direct node buf))
       ('table-lookup
@@ -2920,9 +3033,9 @@ r10, then OP rax, r10.  Push/pop are byte-fixed so pass invariance
 holds.  r10 is caller-saved per SysV AND not in the arg-reg list so
   the scratch never aliases a parameter register (= the bug seen in
 chained calls where rcx held both `d' param and a scratch value)."
-  (let ((op (plist-get node :op))
-        (a (plist-get node :a))
-        (b (plist-get node :b)))
+  (let ((op (nelisp-phase47-compiler--ir-get node :op))
+        (a (nelisp-phase47-compiler--ir-get node :a))
+        (b (nelisp-phase47-compiler--ir-get node :b)))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
         (progn
           (nelisp-phase47-compiler--emit-value b buf)
@@ -2977,9 +3090,9 @@ require the count to live in CL (= low 8 bits of RCX).  Sequence:
 RCX is caller-saved per SysV and not in the arg-reg list (= same
 property `--emit-arith' relies on for r10), so it cannot alias a
 live parameter register in the surrounding defun."
-  (let ((op (plist-get node :op))
-        (a (plist-get node :a))
-        (b (plist-get node :b)))
+  (let ((op (nelisp-phase47-compiler--ir-get node :op))
+        (a (nelisp-phase47-compiler--ir-get node :a))
+        (b (nelisp-phase47-compiler--ir-get node :b)))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
         (progn
           (nelisp-phase47-compiler--emit-value b buf)
@@ -3030,10 +3143,10 @@ Byte-length invariance (Doc 92): pass1 and pass2 see identical
 parse-time-fixed `:kind' / `:value' / `:slot' / `:class' fields, so
 the classification is deterministic and emits the same byte count
 across both passes for the same NODE."
-  (let ((kind (plist-get node :kind)))
+  (let ((kind (nelisp-phase47-compiler--ir-kind node)))
     (cond
      ((eq kind 'imm)
-      (let ((v (plist-get node :value)))
+      (let ((v (nelisp-phase47-compiler--ir-get node :value)))
         ;; mov-imm32 accepts signed [-2^31, 2^31-1] or unsigned [0, 2^32-1];
         ;; reject out-of-range integers conservatively (fall back to the
         ;; existing emit-value path which may use a wider form).
@@ -3041,21 +3154,21 @@ across both passes for the same NODE."
              (>= v (- (ash 1 31)))
              (< v (ash 1 32)))))
      ((eq kind 'ref)
-      (and (memq (or (plist-get node :class) 'gp) '(gp nil))
-           (let ((s (plist-get node :slot)))
+      (and (memq (or (nelisp-phase47-compiler--ir-get node :class) 'gp) '(gp nil))
+           (let ((s (nelisp-phase47-compiler--ir-get node :slot)))
              (and (integerp s) (<= 0 s 13))))))))
 
 (defun nelisp-phase47-compiler--emit-trivial-into-reg (node target buf)
   "Emit NODE's value directly into TARGET register (no spill).
 NODE must satisfy `nelisp-phase47-compiler--call-arg-trivial-p'."
-  (let ((kind (plist-get node :kind)))
+  (let ((kind (nelisp-phase47-compiler--ir-kind node)))
     (cond
      ((eq kind 'imm)
       ;; mov TARGET, imm32   = 7 bytes (REX.W + 0xC7 /0 + imm32)
-      (nelisp-asm-x86_64-mov-imm32 buf target (plist-get node :value)))
+      (nelisp-asm-x86_64-mov-imm32 buf target (nelisp-phase47-compiler--ir-get node :value)))
      ((eq kind 'ref)
       ;; mov TARGET, [rbp - 8*(slot+1)]  = 4 bytes (REX.W + 0x8B + ModR/M + disp8)
-      (let ((disp (- (* 8 (1+ (plist-get node :slot))))))
+      (let ((disp (- (* 8 (1+ (nelisp-phase47-compiler--ir-get node :slot))))))
         (nelisp-asm-x86_64-mov-reg-mem-disp8 buf target 'rbp disp)))
      (t
       (signal 'nelisp-phase47-compiler-error
@@ -3086,8 +3199,8 @@ unaffected.  Byte-length invariance holds (Doc 92): for any given
 NODE, pass1 and pass2 traverse the same branch (each arg's kind /
 class / slot / value is parse-time fixed) and emit the same byte
 count."
-  (let* ((name (plist-get node :name))
-         (args (plist-get node :args))
+  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
+         (args (nelisp-phase47-compiler--ir-get node :args))
          (n (length args))
          (cur-arg-regs (nelisp-phase47-compiler--current-arg-regs))
          (regs (cl-subseq cur-arg-regs 0 n))
@@ -3188,11 +3301,11 @@ Byte-length invariance (Doc 92): the suffix-vs-prefix split is
 deterministic from parse-time-fixed fields (`:cls', `:kind',
 `:value', `:slot', `:class') so pass1 and pass2 traverse the
 same branch and emit the same byte count."
-  (let* ((name (plist-get node :name))
-         (args (plist-get node :args))
-         (ret-class (or (plist-get node :ret-class) 'gp))
-         (varargs-p (plist-get node :varargs-p))
-         (f64-count (or (plist-get node :f64-count) 0))
+  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
+         (args (nelisp-phase47-compiler--ir-get node :args))
+         (ret-class (or (nelisp-phase47-compiler--ir-get node :ret-class) 'gp))
+         (varargs-p (nelisp-phase47-compiler--ir-get node :varargs-p))
+         (f64-count (or (nelisp-phase47-compiler--ir-get node :f64-count) 0))
          (n (length args))
          ;; Per-class register pools, sliced to the number of args
          ;; of that class.  Iteration order matches source order:
@@ -3335,13 +3448,13 @@ Byte-count is fixed per pass so the pass-1/pass-2 invariant holds:
 
 x86_64 only — callers should gate with `:requires-arch x86_64' in
 the compile-elisp-objects manifest."
-  (let ((nr (plist-get node :nr))
-        (a0 (plist-get node :a0))
-        (a1 (plist-get node :a1))
-        (a2 (plist-get node :a2))
-        (a3 (plist-get node :a3))
-        (a4 (plist-get node :a4))
-        (a5 (plist-get node :a5)))
+  (let ((nr (nelisp-phase47-compiler--ir-get node :nr))
+        (a0 (nelisp-phase47-compiler--ir-get node :a0))
+        (a1 (nelisp-phase47-compiler--ir-get node :a1))
+        (a2 (nelisp-phase47-compiler--ir-get node :a2))
+        (a3 (nelisp-phase47-compiler--ir-get node :a3))
+        (a4 (nelisp-phase47-compiler--ir-get node :a4))
+        (a5 (nelisp-phase47-compiler--ir-get node :a5)))
     ;; 1. Evaluate and push each arg onto the stack (NR first = deepest).
     (dolist (arg (list nr a0 a1 a2 a3 a4 a5))
       (nelisp-phase47-compiler--emit-value arg buf)
@@ -3365,7 +3478,7 @@ the compile-elisp-objects manifest."
 Result: the tag byte at offset `nelisp-sexp--offset-tag' (= 0)
 zero-extended to a 64-bit value in rax.  See `docs/arch/sexp-abi.md'
 §5.1."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     ;; Compute :ptr into rax, then move into rdi as the base register.
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
@@ -3382,7 +3495,7 @@ semantic differs from this default.
 
 F64-EXPR is emitted via `--emit-f64-leaf-into' which now accepts
 `bits-to-f64' / `f64-call' / `ref :class f64' as valid producers."
-  (let ((f64-expr (plist-get node :f64-expr)))
+  (let ((f64-expr (nelisp-phase47-compiler--ir-get node :f64-expr)))
     (nelisp-phase47-compiler--emit-f64-leaf-into f64-expr buf 'xmm0)
     (nelisp-asm-x86_64-cvttsd2si-r64-xmm buf 'rax 'xmm0)))
 
@@ -3406,7 +3519,7 @@ the bit-cast internally.  No tag check — caller responsibility.
 Mirror of `--emit-sexp-int-unwrap' (= same byte sequence, same
 offset); separated as a distinct op for emit-time class clarity
 and for future f64-class composition with `--emit-f64-leaf-into'."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
@@ -3418,7 +3531,7 @@ Result: the i64 payload of a `Sexp::Int(n)' value, read from offset
 `nelisp-sexp--offset-int-payload' (= 8).  No tag check — caller
 must ensure :ptr points at a `Sexp::Int' variant.  See
 `docs/arch/sexp-abi.md' §5.2."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
@@ -3440,8 +3553,8 @@ The bytes at `[rdi + 1, rdi + 8)' (= padding) and
 left unmodified — `Sexp::Int' does not use them and Rust's drop
 glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
 §5.3."
-  (let ((slot (plist-get node :slot))
-        (val (plist-get node :val)))
+  (let ((slot (nelisp-phase47-compiler--ir-get node :slot))
+        (val (nelisp-phase47-compiler--ir-get node :val)))
     ;; Evaluate :slot then :val and push each result so the standard
     ;; pop-into-arg-reg dance places slot in rdi, val in rsi.  This
     ;; mirrors `--emit-call' / `--emit-extern-call' so future arg
@@ -3466,7 +3579,7 @@ glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
   "Emit a tag==Nil predicate for NODE's `:ptr' Sexp pointer.
 Returns 1 in rax iff the tag byte at `[ptr + 0]' equals
 `nelisp-sexp--tag-nil'; else returns 0."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
@@ -3485,8 +3598,8 @@ FIELD-OFF is 0 for `car' and 32 for `cdr'.  The emitted x86_64 path:
   3. Returns SLOT in rax.
 
 Caller must guarantee PTR points at `Sexp::Cons(_)'."
-  (let ((ptr (plist-get node :ptr))
-        (slot (plist-get node :slot)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value slot buf)
@@ -3514,8 +3627,8 @@ load the `NlConsBox*' payload from `[ptr + 8]'.  If `:from-box' is t,
 
 Used by the §101.B `length' list walk to follow proper-list cons
 chains without materialising intermediate `Sexp' values."
-  (let* ((ptr (plist-get node :ptr))
-         (from-box (plist-get node :from-box))
+  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+         (from-box (nelisp-phase47-compiler--ir-get node :from-box))
          (id (nelisp-phase47-compiler--gensym "cons-cdr-raw"))
          (nil-lbl (intern (format "%s-nil" id)))
          (end-lbl (intern (format "%s-end" id))))
@@ -3543,7 +3656,7 @@ chains without materialising intermediate `Sexp' values."
 Doc 101 §2.3 uses this for list walks: `Cons' returns the
 `NlConsBox*'; `Nil' returns 0.  Other tags also return 0 so the op is
 safe to use as the loop seed in the length walker."
-  (let* ((ptr (plist-get node :ptr))
+  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
          (id (nelisp-phase47-compiler--gensym "sexp-payload-ptr"))
          (zero-lbl (intern (format "%s-zero" id)))
          (end-lbl (intern (format "%s-end" id))))
@@ -3565,7 +3678,7 @@ Doc 49 R6g (Gate-segv fix): identical to `--emit-sexp-payload-ptr' but
 tag-guards on `Sexp::Record' (tag=12) instead of `Sexp::Cons' (tag=7).
 Non-Record inputs return 0 (NULL) - caller must tag-check before
 deref.  Used by `nl_record_type_tag_ptr' to read NlRecord*."
-  (let* ((ptr (plist-get node :ptr))
+  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
          (id (nelisp-phase47-compiler--gensym "sexp-payload-ptr-record"))
          (zero-lbl (intern (format "%s-zero" id)))
          (end-lbl (intern (format "%s-end" id))))
@@ -3628,8 +3741,8 @@ code, so the test there is the regression gate."
 
 (defun nelisp-phase47-compiler--emit-record-type-tag (node buf)
   "Copy a record's inline `type_tag' Sexp into the caller-owned slot."
-  (let ((ptr (plist-get node :ptr))
-        (slot (plist-get node :slot)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value slot buf)
@@ -3648,7 +3761,7 @@ code, so the test there is the regression gate."
 
 (defun nelisp-phase47-compiler--emit-record-slot-count (node buf)
   "Read `record.slots.len' into rax."
-  (nelisp-phase47-compiler--emit-value (plist-get node :ptr) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :ptr) buf)
   (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'rdi 'rdi nelisp-sexp--offset-payload)
@@ -3658,7 +3771,7 @@ code, so the test there is the regression gate."
 (defun nelisp-phase47-compiler--emit-record-slot-ref-ptr (node buf)
   "Leave the raw `*const Sexp' for NODE's record slot in rax."
   (nelisp-phase47-compiler--emit-record-slot-ptr-core
-   (plist-get node :ptr) (plist-get node :idx) buf))
+   (nelisp-phase47-compiler--ir-get node :ptr) (nelisp-phase47-compiler--ir-get node :idx) buf))
 
 (defun nelisp-phase47-compiler--emit-record-slot-ref (node buf)
   "Copy a record slot into the caller-owned destination slot.
@@ -3675,9 +3788,9 @@ which performs a refcount-aware `Sexp::clone' before writing into
 the destination.  The destination is treated as uninitialized
 (`core::ptr::write' without Drop), matching the Phase 47 invariant
 that result slots start as `Sexp::Nil' bit-pattern."
-  (let ((ptr (plist-get node :ptr))
-        (idx (plist-get node :idx))
-        (slot (plist-get node :slot)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     ;; Compute the source `*const Sexp' pointer for record slot N.
     (nelisp-phase47-compiler--emit-record-slot-ptr-core ptr idx buf)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -3734,9 +3847,9 @@ This is a Doc 111 §111.E #7-#12 enabler: those helpers chain
 `record-slot-set' with `(and ... 1)' to express \"overwrite slot
 then return 1 on hit\".  No callers depended on the prior
 undefined-rax behaviour."
-  (let ((ptr (plist-get node :ptr))
-        (idx (plist-get node :idx))
-        (val-ptr (plist-get node :val-ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx))
+        (val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value idx buf)
@@ -3792,7 +3905,7 @@ undefined-rax behaviour."
 
 (defun nelisp-phase47-compiler--emit-vector-len (node buf)
   "Read `vector.value.len' into rax."
-  (nelisp-phase47-compiler--emit-value (plist-get node :ptr) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :ptr) buf)
   (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'rsi 'rdi nelisp-sexp--offset-payload)
@@ -3802,7 +3915,7 @@ undefined-rax behaviour."
 (defun nelisp-phase47-compiler--emit-vector-ref-ptr (node buf)
   "Leave the raw `*const Sexp' for NODE's vector element in rax."
   (nelisp-phase47-compiler--emit-vector-slot-ptr-core
-   (plist-get node :ptr) (plist-get node :idx) buf))
+   (nelisp-phase47-compiler--ir-get node :ptr) (nelisp-phase47-compiler--ir-get node :idx) buf))
 
 (defun nelisp-phase47-compiler--emit-vector-slot-set (node buf)
   "Call the Rust helper that refcount-safely overwrites a vector slot.
@@ -3820,9 +3933,9 @@ matching the convention `--emit-record-slot-set' established for
 §111.B's record overwrite (= `Vec::index_mut' leaves rax in an
 unspecified state across the call boundary; explicit `mov rax, 1'
 yields a stable truthy value)."
-  (let ((ptr (plist-get node :ptr))
-        (idx (plist-get node :idx))
-        (val-ptr (plist-get node :val-ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx))
+        (val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value idx buf)
@@ -3854,9 +3967,9 @@ caller's result slot holding the same `NlStr' pointer at refcount
 The slot copy now delegates to the `nl_sexp_clone_into' Rust helper
 which performs a refcount-aware `Sexp::clone' (= one `fetch_add'
 on box-tagged variants) before writing into the destination."
-  (let ((ptr (plist-get node :ptr))
-        (idx (plist-get node :idx))
-        (slot (plist-get node :slot)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     ;; Compute source `*const Sexp' (vec_ptr + offset + idx*32) -> rax.
     (nelisp-phase47-compiler--emit-vector-slot-ptr-core ptr idx buf)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -3914,8 +4027,8 @@ extern lands on main, replace the inline `movdqu' pair with a
 this op symmetric with `cell-set-value' (= no double-free on
 boxed-tagged values).  Tracking the safety constraint here so the
 diff is obvious at swap time."
-  (let ((ptr (plist-get node :ptr))
-        (slot (plist-get node :slot)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value slot buf)
@@ -3941,8 +4054,8 @@ NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)') and
 drop-then-write on `NlCell.value' (= matches `cons-set-car' /
 `cons-set-cdr' delegation pattern from Doc 101 §101.D).  Returns the
 original H pointer in rax."
-  (let ((ptr (plist-get node :ptr))
-        (val-ptr (plist-get node :val-ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value val-ptr buf)
@@ -3984,8 +4097,8 @@ The exact push/pop balancing follows `cell-make' so SysV AMD64
 alignment holds.  The new vector is pre-filled with `Sexp::Nil'
 elements by `nl_alloc_vector' (= refcount-1 box, ready for
 `vector-slot-set'-based copy-fill)."
-  (let ((cap (plist-get node :cap))
-        (slot (plist-get node :slot)))
+  (let ((cap (nelisp-phase47-compiler--ir-get node :cap))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value cap buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value slot buf)
@@ -4039,9 +4152,9 @@ The push/pop balancing follows `vector-make' / `cons-make' so SysV
 AMD64 alignment holds.  The new record has SLOT-COUNT slots all pre-
 filled with `Sexp::Nil' by `nl_alloc_record', and refcount = 1 ready
 for `record-slot-set'-based init."
-  (let ((tag-ptr (plist-get node :tag-ptr))
-        (slot-count (plist-get node :slot-count))
-        (slot (plist-get node :slot)))
+  (let ((tag-ptr (nelisp-phase47-compiler--ir-get node :tag-ptr))
+        (slot-count (nelisp-phase47-compiler--ir-get node :slot-count))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value tag-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value slot-count buf)
@@ -4094,8 +4207,8 @@ Strategy (= literal mirror of `cons-make' alignment idiom):
 The exact push/pop balancing follows `cons-make' / `cons-set-slot' so
 SysV AMD64 alignment holds whatever the wrapper arity ends up being.
 See `cons-make' comment for the alignment rationale."
-  (let ((val-ptr (plist-get node :val-ptr))
-        (slot (plist-get node :slot)))
+  (let ((val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value val-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value slot buf)
@@ -4144,7 +4257,7 @@ Strategy (= inline tag check, no extern call):
   2. rdi = NlCell* via `mov rdi, [rdi + 8]'.
   3. Load tag byte at `[rdi + 0]' (= NlCell.value tag at offset 0).
   4. Compare to `SEXP_TAG_NIL', setCC AL, movzx to materialise."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     ;; rdi = NlCell* via payload load.
@@ -4161,7 +4274,7 @@ Strategy (= inline tag check, no extern call):
 
 (defun nelisp-phase47-compiler--emit-str-len (node buf)
   "Emit `mov rax, qword ptr [rdi + 24]' after computing NODE's :ptr."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
@@ -4169,7 +4282,7 @@ Strategy (= inline tag check, no extern call):
 
 (defun nelisp-phase47-compiler--emit-str-bytes (node buf)
   "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
@@ -4192,7 +4305,7 @@ Strategy (= 1-arg extern call, mirrors §122.D `mut-str-len' /
   2. Push one alignment pad to keep rsp 16-byte aligned at call site.
   3. Call `nl_str_bytes_ptr' — rax = `*const u8' data pointer.
   4. Pop the alignment pad."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -4204,8 +4317,8 @@ Strategy (= 1-arg extern call, mirrors §122.D `mut-str-len' /
 (defun nelisp-phase47-compiler--emit-str-byte-at (node buf)
   "Emit byte load from a `Sexp::Str' / `Sexp::Symbol' String buffer.
 Result: the selected UTF-8 byte zero-extended into rax."
-  (let ((ptr (plist-get node :ptr))
-        (idx (plist-get node :idx)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value idx buf)
@@ -4260,9 +4373,9 @@ values whose payload layout matches Rust `String' (=`Sexp::Str' or
 
 (defun nelisp-phase47-compiler--emit-str-eq (node buf)
   "Emit `str-eq' using a byte loop over the two String payloads."
-  (let ((a (plist-get node :a))
-        (b (plist-get node :b))
-        (id (plist-get node :id)))
+  (let ((a (nelisp-phase47-compiler--ir-get node :a))
+        (b (nelisp-phase47-compiler--ir-get node :b))
+        (id (nelisp-phase47-compiler--ir-get node :id)))
     (nelisp-phase47-compiler--emit-value a buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value b buf)
@@ -4285,9 +4398,9 @@ Register usage:
 No PLT calls — entirely inline; the literal bytes are encoded as
 `cmp imm32' immediates so each byte costs ~10 bytes of code.  A 4-byte
 literal expands to ~50 bytes of code, a 20-byte literal to ~210 bytes."
-  (let* ((ptr (plist-get node :ptr))
-         (bytes (plist-get node :bytes))
-         (id (plist-get node :id))
+  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
+         (id (nelisp-phase47-compiler--ir-get node :id))
          (len (length bytes))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
@@ -4337,9 +4450,9 @@ Sexp::Str (tag 5) inputs.  The tag check emits:
 
 Register usage matches `symbol-name-eq' exactly; only the tag-check block
 differs (adds one cmp+jnz for the Str arm)."
-  (let* ((ptr (plist-get node :ptr))
-         (bytes (plist-get node :bytes))
-         (id (plist-get node :id))
+  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
+         (id (nelisp-phase47-compiler--ir-get node :id))
          (len (length bytes))
          (bytes-check-lbl (intern (format "%s-bytes" id)))
          (false-lbl (intern (format "%s-false" id)))
@@ -4378,11 +4491,11 @@ differs (adds one cmp+jnz for the Str arm)."
 
 (defun nelisp-phase47-compiler--emit-symbol-eq (node buf)
   "Emit `symbol-eq': tag-check both inputs, then compare name bytes."
-  (let ((a (plist-get node :a))
-        (b (plist-get node :b))
-        (id (plist-get node :id))
-        (tag-false-lbl (intern (format "%s-tag-false" (plist-get node :id))))
-        (end-lbl (intern (format "%s-tag-end" (plist-get node :id)))))
+  (let ((a (nelisp-phase47-compiler--ir-get node :a))
+        (b (nelisp-phase47-compiler--ir-get node :b))
+        (id (nelisp-phase47-compiler--ir-get node :id))
+        (tag-false-lbl (intern (format "%s-tag-false" (nelisp-phase47-compiler--ir-get node :id))))
+        (end-lbl (intern (format "%s-tag-end" (nelisp-phase47-compiler--ir-get node :id)))))
     (nelisp-phase47-compiler--emit-value a buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value b buf)
@@ -4403,7 +4516,7 @@ differs (adds one cmp+jnz for the Str arm)."
 
 (defun nelisp-phase47-compiler--emit-sexp-write-tag (node buf tag)
   "Emit `mov byte ptr [rdi], TAG; mov rax, rdi' for NODE's :slot."
-  (let ((slot (plist-get node :slot)))
+  (let ((slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-mem-imm8 buf 'rdi tag)
@@ -4438,9 +4551,9 @@ populates the full slot inline (= the key divergence from
 `vector-make' / `cell-make' / `record-make' which return a `*mut
 NlXXX' and require the emit code to write tag + payload offset
 separately)."
-  (let ((slot (plist-get node :slot))
-        (bytes-ptr (plist-get node :bytes-ptr))
-        (len (plist-get node :len)))
+  (let ((slot (nelisp-phase47-compiler--ir-get node :slot))
+        (bytes-ptr (nelisp-phase47-compiler--ir-get node :bytes-ptr))
+        (len (nelisp-phase47-compiler--ir-get node :len)))
     (nelisp-phase47-compiler--emit-value bytes-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value len buf)
@@ -4496,8 +4609,8 @@ that defun params be uniform-class.  Test harnesses bit-cast the
 pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
 param alongside VALUE; the bit pattern survives unchanged through
 the xmm0 spill / unspill round trip."
-  (let ((slot (plist-get node :slot))
-        (value (plist-get node :value)))
+  (let ((slot (nelisp-phase47-compiler--ir-get node :slot))
+        (value (nelisp-phase47-compiler--ir-get node :value)))
     ;; Step 1-2: VALUE → xmm0, then xmm0 → rax, push.  The
     ;; `emit-f64-leaf-into' helper enforces the flat-ref shape so
     ;; this op composes only at the same MVP level as `f64-call'.
@@ -4509,8 +4622,8 @@ the xmm0 spill / unspill round trip."
     ;; rax via MOVQ.  Otherwise (= gp-class ref / imm / call), the
     ;; result is already in rax.
     (nelisp-phase47-compiler--emit-value slot buf)
-    (when (and (eq (plist-get slot :kind) 'ref)
-               (eq (plist-get slot :class) 'f64))
+    (when (and (eq (nelisp-phase47-compiler--ir-kind slot) 'ref)
+               (eq (nelisp-phase47-compiler--ir-get slot :class) 'f64))
       (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Step 4: pop in reverse — slot (last pushed) → rdi, then
@@ -4546,8 +4659,8 @@ Strategy (= 2-arg extern call, mirrors `sexp-write-alloc' shape):
   4. Push one alignment pad to keep rsp 16-byte aligned at call site.
   5. Call `nl_alloc_mut_str' — rax = slot pointer.
   6. Pop the alignment pad."
-  (let ((cap (plist-get node :cap))
-        (slot (plist-get node :slot)))
+  (let ((cap (nelisp-phase47-compiler--ir-get node :cap))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value cap buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value slot buf)
@@ -4579,8 +4692,8 @@ Strategy (= 2-arg extern call, no return value):
   4. Push one alignment pad.
   5. Call HELPER-NAME — clobbers rax (= `void' return).
   6. Pop pad, set rax = 1 sentinel."
-  (let ((ptr (plist-get node :ptr))
-        (arg (plist-get node arg-key)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (arg (nelisp-phase47-compiler--ir-get node arg-key)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value arg buf)
@@ -4606,7 +4719,7 @@ Strategy (= 1-arg extern call with i64 return):
   2. Push one alignment pad to keep rsp 16-byte aligned at call site.
   3. Call `nl_mut_str_len' — rax = i64 length.
   4. Pop the alignment pad."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -4630,8 +4743,8 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
   4. Push one alignment pad.
   5. Call `nl_mut_str_finalize' — rax = slot pointer.
   6. Pop the alignment pad."
-  (let ((ptr (plist-get node :ptr))
-        (slot (plist-get node :slot)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value slot buf)
@@ -4649,7 +4762,7 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
 
 (defun nelisp-phase47-compiler--emit-str-char-count (node buf)
   "Emit `str-char-count' — call `nl_str_char_count(str_ptr) -> i64'."
-  (let ((ptr (plist-get node :ptr)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -4660,10 +4773,10 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
 
 (defun nelisp-phase47-compiler--emit-str-codepoint-at (node buf)
   "Emit `str-codepoint-at' — 4-arg call to `nl_str_codepoint_at'."
-  (let ((ptr (plist-get node :ptr))
-        (idx (plist-get node :idx))
-        (cp-slot (plist-get node :cp-slot))
-        (width-slot (plist-get node :width-slot)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx))
+        (cp-slot (nelisp-phase47-compiler--ir-get node :cp-slot))
+        (width-slot (nelisp-phase47-compiler--ir-get node :width-slot)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value idx buf)
@@ -4684,8 +4797,8 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
 
 (defun nelisp-phase47-compiler--emit-str-is-alphanumeric-at (node buf)
   "Emit `str-is-alphanumeric-at' — 2-arg call to `nl_str_is_alphanumeric_at'."
-  (let ((ptr (plist-get node :ptr))
-        (idx (plist-get node :idx)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value idx buf)
@@ -4704,8 +4817,8 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
   "Emit `atomic-fetch-add' — inline `LOCK XADD [RDI], RAX' (no PLT call).
 Doc 131 §131.A: ptr → rdi, delta → rax, then LOCK XADD [rdi], rax.
 On exit rax = old [rdi] (= the pre-add value), [rdi] = old+delta."
-  (let ((ptr (plist-get node :ptr))
-        (delta (plist-get node :delta)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (delta (nelisp-phase47-compiler--ir-get node :delta)))
     ;; Evaluate ptr into rax, save it to rdi via push/pop.
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -4721,9 +4834,9 @@ On exit rax = old [rdi] (= the pre-add value), [rdi] = old+delta."
 Doc 131 §131.A: ptr → rdi, expected → rax, new-val → rdx.
 LOCK CMPXCHG [rdi], rdx: if [rdi]==rax write rdx, set ZF; else clear ZF.
 SETE AL + MOVZX RAX, AL: rax = 1 on success, 0 on failure."
-  (let ((ptr (plist-get node :ptr))
-        (expected (plist-get node :expected))
-        (new-val (plist-get node :new-val)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (expected (nelisp-phase47-compiler--ir-get node :expected))
+        (new-val (nelisp-phase47-compiler--ir-get node :new-val)))
     ;; Evaluate ptr → rax, stash.
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -4749,8 +4862,8 @@ Doc 131 §131.A: HELPER-NAME selects the width-specific load instruction:
   nl_ptr_read_u16 → MOVZX RAX, WORD  PTR [RDI+RSI]
   nl_ptr_read_u32 → MOV  EAX, DWORD PTR [RDI+RSI]  (CPU zero-extends to RAX)
 Result is zero-extended to i64 in rax in all cases."
-  (let ((ptr (plist-get node :ptr))
-        (offset (plist-get node :offset)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (offset (nelisp-phase47-compiler--ir-get node :offset)))
     ;; Evaluate ptr → rax, save; evaluate offset → rax (= rsi after pop).
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -4778,9 +4891,9 @@ Doc 131 §131.A: HELPER-NAME selects the width-specific store instruction:
   nl_ptr_write_u16 → MOV WORD  PTR [RDI+RSI], DX
   nl_ptr_write_u32 → MOV DWORD PTR [RDI+RSI], EDX
 Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-extern contract)."
-  (let ((ptr (plist-get node :ptr))
-        (offset (plist-get node :offset))
-        (val (plist-get node :val)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (offset (nelisp-phase47-compiler--ir-get node :offset))
+        (val (nelisp-phase47-compiler--ir-get node :val)))
     ;; Evaluate ptr, offset, val; assign to rdi, rsi, rdx.
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -4811,8 +4924,8 @@ Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-exte
   "Emit `alloc-bytes' — 2-arg call to `nl_alloc_bytes(size, align) -> *mut u8'.
 Returns the freshly-allocated pointer re-cast to `i64' in rax (= 0
 on layout error or OOM)."
-  (let ((size (plist-get node :size))
-        (align (plist-get node :align)))
+  (let ((size (nelisp-phase47-compiler--ir-get node :size))
+        (align (nelisp-phase47-compiler--ir-get node :align)))
     (nelisp-phase47-compiler--emit-value size buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value align buf)
@@ -4829,9 +4942,9 @@ on layout error or OOM)."
   "Emit `dealloc-bytes' — 3-arg call to `nl_dealloc_bytes(ptr, size, align)'.
 Returns rax = 1 sentinel for `and'-chain composition (= underlying
 extern is `void')."
-  (let ((ptr (plist-get node :ptr))
-        (size (plist-get node :size))
-        (align (plist-get node :align)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (size (nelisp-phase47-compiler--ir-get node :size))
+        (align (nelisp-phase47-compiler--ir-get node :align)))
     (nelisp-phase47-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value size buf)
@@ -4859,19 +4972,19 @@ SYSCALL clobbers rcx and r11; the result is left in rax.
 Stack alignment: 7 pushes (= 56 bytes offset); SYSCALL itself does
 not require 16-byte alignment, so no extra pad is needed."
   ;; Push NR first, then A0..A5 (will be popped in reverse).
-  (nelisp-phase47-compiler--emit-value (plist-get node :nr) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :nr) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (plist-get node :a0) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a0) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (plist-get node :a1) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a1) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (plist-get node :a2) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a2) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (plist-get node :a3) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a3) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (plist-get node :a4) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a4) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (plist-get node :a5) buf)
+  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a5) buf)
   (nelisp-asm-x86_64-push buf 'rax)
   ;; Pop into syscall registers (reverse of push order).
   (nelisp-asm-x86_64-pop buf 'r9)
@@ -4901,9 +5014,9 @@ Strategy:
 MVP ownership constraint: the copied `Sexp' payloads are assumed to
 already be caller-owned / cloned; this op does not yet perform
 refcount-aware nested-box increments."
-  (let ((car-ptr (plist-get node :car-ptr))
-        (cdr-ptr (plist-get node :cdr-ptr))
-        (slot (plist-get node :slot)))
+  (let ((car-ptr (nelisp-phase47-compiler--ir-get node :car-ptr))
+        (cdr-ptr (nelisp-phase47-compiler--ir-get node :cdr-ptr))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     (nelisp-phase47-compiler--emit-value car-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value cdr-ptr buf)
@@ -4966,9 +5079,9 @@ Stack discipline matches `--emit-cons-make':
 No refcount bumps are needed at this layer — `nl_sexp_clone_into'
 performs the variant-aware refcount inc / String deep copy itself,
 and the fresh NlConsBox already starts at refcount = 1."
-  (let ((car-ptr (plist-get node :car-ptr))
-        (cdr-ptr (plist-get node :cdr-ptr))
-        (slot (plist-get node :slot)))
+  (let ((car-ptr (nelisp-phase47-compiler--ir-get node :car-ptr))
+        (cdr-ptr (nelisp-phase47-compiler--ir-get node :cdr-ptr))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
     ;; Step 1: spill the 3 input pointers + 1 alignment scratch.
     (nelisp-phase47-compiler--emit-value car-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -5033,8 +5146,8 @@ NODE carries `:handle' (= `*const Sexp' pointing at a Cons slot) and
 mutation on the boxed field; this op only resolves the `NlConsBox*'
 payload from the handle and forwards the two pointers.  Returns the
 original handle pointer in rax."
-  (let ((handle (plist-get node :handle))
-        (val-ptr (plist-get node :val-ptr)))
+  (let ((handle (nelisp-phase47-compiler--ir-get node :handle))
+        (val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr)))
     (nelisp-phase47-compiler--emit-value handle buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value val-ptr buf)
@@ -5075,9 +5188,9 @@ B), cmp rax, r10 (= computes A - B flag set), then setCC al +
 movzx eax, al to materialise the boolean into rax.  Uses r10 to
   avoid arg-reg aliasing inside chained calls, mirroring the
   Doc 97.b arith convention."
-  (let* ((op (plist-get node :op))
-         (a (plist-get node :a))
-         (b (plist-get node :b))
+  (let* ((op (nelisp-phase47-compiler--ir-get node :op))
+         (a (nelisp-phase47-compiler--ir-get node :a))
+         (b (nelisp-phase47-compiler--ir-get node :b))
          (cc (cdr (or (assq op nelisp-phase47-compiler--cmp-setcc)
                       (signal 'nelisp-phase47-compiler-error
                               (list :unknown-cmp-op op))))))
@@ -5121,26 +5234,26 @@ holds across the two-pass orchestration):
   else-LABEL:
     <emit ELSE>                  -> rax
   end-LABEL:"
-  (let* ((id (plist-get node :id))
+  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
          (else-lbl (intern (format "%s-else" id)))
          (end-lbl (intern (format "%s-end" id))))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
         (progn
-          (nelisp-phase47-compiler--emit-value (plist-get node :test) buf)
+          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
           (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
           (nelisp-asm-arm64-b-cond buf 'eq else-lbl)
-          (nelisp-phase47-compiler--emit-value (plist-get node :then) buf)
+          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :then) buf)
           (nelisp-asm-arm64-b buf end-lbl)
           (nelisp-asm-arm64-define-label buf else-lbl)
-          (nelisp-phase47-compiler--emit-value (plist-get node :else) buf)
+          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :else) buf)
           (nelisp-asm-arm64-define-label buf end-lbl))
-      (nelisp-phase47-compiler--emit-value (plist-get node :test) buf)
+      (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
       (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
       (nelisp-asm-x86_64-jz-rel32 buf else-lbl)
-      (nelisp-phase47-compiler--emit-value (plist-get node :then) buf)
+      (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :then) buf)
       (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
       (nelisp-asm-x86_64-define-label buf else-lbl)
-      (nelisp-phase47-compiler--emit-value (plist-get node :else) buf)
+      (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :else) buf)
       (nelisp-asm-x86_64-define-label buf end-lbl))))
 
 (defun nelisp-phase47-compiler--emit-while (node buf)
@@ -5154,14 +5267,14 @@ Layout:
     jmp  start-LABEL
   end-LABEL:
     mov  rax, 0                  -> return 0 sentinel"
-  (let* ((id (plist-get node :id))
+  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
          (start-lbl (intern (format "%s-start" id)))
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-asm-x86_64-define-label buf start-lbl)
-    (nelisp-phase47-compiler--emit-value (plist-get node :test) buf)
+    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-jz-rel32 buf end-lbl)
-    (dolist (form (plist-get node :body))
+    (dolist (form (nelisp-phase47-compiler--ir-get node :body))
       (nelisp-phase47-compiler--emit-value form buf))
     (nelisp-asm-x86_64-jmp-rel32 buf start-lbl)
     (nelisp-asm-x86_64-define-label buf end-lbl)
@@ -5183,9 +5296,9 @@ trivial clause:
   next-K:
 The final `t' clause (= always) elides the cmp/jz and emits the
 body straight; `end-LABEL' is then defined immediately after."
-  (let* ((id (plist-get node :id))
+  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
          (end-lbl (intern (format "%s-end" id)))
-         (clauses (plist-get node :clauses))
+         (clauses (nelisp-phase47-compiler--ir-get node :clauses))
          (k 0))
     (dolist (cl clauses)
       (setq k (1+ k))
@@ -5219,10 +5332,10 @@ win-end (= rax already holds the winning value).  If every form
 returned 0 the last rax (= 0) stays.
 Final emit:
   end-LABEL:"
-  (let* ((id (plist-get node :id))
-         (op (plist-get node :op))
+  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
+         (op (nelisp-phase47-compiler--ir-get node :op))
          (end-lbl (intern (format "%s-end" id)))
-         (forms (plist-get node :forms)))
+         (forms (nelisp-phase47-compiler--ir-get node :forms)))
     (dolist (f forms)
       (nelisp-phase47-compiler--emit-value f buf)
       ;; Short-circuit test: cmp rax, 0; then jump on the
@@ -5260,8 +5373,8 @@ The CPU zero-extends EAX to RAX on the 32-bit load, so the high
 Pass-1 sees vaddr=0 (= sentinel); pass-2 sees the real .rodata
 absolute address.  Byte width is identical in both passes (= the
 imm64 size is fixed) so the byte invariant holds."
-  (let* ((name (plist-get node :name))
-         (index-ir (plist-get node :index))
+  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
+         (index-ir (nelisp-phase47-compiler--ir-get node :index))
          (vaddr (or (cdr (assoc name
                                 nelisp-phase47-compiler--table-vaddrs))
                     ;; Missing entry only legal during pre-collector
@@ -5301,9 +5414,9 @@ the absolute virtual address of byte 0 of .rodata."
 VALUE-NODE is a value-producing IR node.  If it's an `imm', emit
 the legacy fixed-status path (= 16 bytes).  Otherwise compute the
 value into rax then `mov rdi, rax' + syscall."
-  (pcase (plist-get value-node :kind)
+  (pcase (nelisp-phase47-compiler--ir-kind value-node)
     ('imm
-     (let ((status (plist-get value-node :value)))
+     (let ((status (nelisp-phase47-compiler--ir-get value-node :value)))
        (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
        (nelisp-asm-x86_64-mov-imm32 buf 'rdi status)
        (nelisp-asm-x86_64-syscall buf)))
@@ -5323,30 +5436,30 @@ RODATA-VADDR is the absolute vaddr of byte 0 of .rodata (= 0 during
 pass-1 sizing, real value during pass-2).  `defun' nodes are
 skipped here — they're emitted separately by the orchestrator."
   (when ir
-    (pcase (plist-get ir :kind)
+    (pcase (nelisp-phase47-compiler--ir-kind ir)
       ('write
        (nelisp-phase47-compiler--emit-write
-        buf (plist-get ir :str) str-offsets rodata-vaddr))
+        buf (nelisp-phase47-compiler--ir-get ir :str) str-offsets rodata-vaddr))
       ('exit
        (nelisp-phase47-compiler--emit-exit
-        buf (plist-get ir :value)))
+        buf (nelisp-phase47-compiler--ir-get ir :value)))
       ('seq
-       (dolist (child (plist-get ir :forms))
+       (dolist (child (nelisp-phase47-compiler--ir-get ir :forms))
          (nelisp-phase47-compiler--emit-stmt
           child buf str-offsets rodata-vaddr)))
       ('let
        (nelisp-phase47-compiler--emit-stmt
-        (plist-get ir :body) buf str-offsets rodata-vaddr))
+        (nelisp-phase47-compiler--ir-get ir :body) buf str-offsets rodata-vaddr))
       ('let-rt
        ;; Runtime let: evaluate value-ir → rax, spill to frame slot,
        ;; then walk body as statement.
-       (let* ((slot (plist-get ir :slot))
-              (value-ir (plist-get ir :value-ir))
+       (let* ((slot (nelisp-phase47-compiler--ir-get ir :slot))
+              (value-ir (nelisp-phase47-compiler--ir-get ir :value-ir))
               (disp (- (* 8 (1+ slot)))))
          (nelisp-phase47-compiler--emit-value value-ir buf)
          (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
          (nelisp-phase47-compiler--emit-stmt
-          (plist-get ir :body) buf str-offsets rodata-vaddr)))
+          (nelisp-phase47-compiler--ir-get ir :body) buf str-offsets rodata-vaddr)))
       ('defun
        ;; Skip — handled by `--emit-defun' separately.
        nil)
@@ -5397,11 +5510,11 @@ prologue allocates the full spill area in one `SUB rsp, 8*N'
 rbp; pop rbp; ret' tears the frame down identically to the GP
 path.  Return value lands in xmm0 implicitly (= the SysV f64
 return reg, untouched by epilogue)."
-  (let* ((name (plist-get defun-ir :name))
-         (param-regs (plist-get defun-ir :param-regs))
-         (param-class (or (plist-get defun-ir :param-class) 'gp))
-         (body (plist-get defun-ir :body))
-         (rt-slot-count (or (plist-get defun-ir :rt-slot-count) 0))
+  (let* ((name (nelisp-phase47-compiler--ir-get defun-ir :name))
+         (param-regs (nelisp-phase47-compiler--ir-get defun-ir :param-regs))
+         (param-class (or (nelisp-phase47-compiler--ir-get defun-ir :param-class) 'gp))
+         (body (nelisp-phase47-compiler--ir-get defun-ir :body))
+         (rt-slot-count (or (nelisp-phase47-compiler--ir-get defun-ir :rt-slot-count) 0))
          ;; Track this defun's arity for `--emit-extern-call' (Doc 111
          ;; §111.E #19-#26 stack alignment fix).  Inner emit helpers
          ;; bound under this `let*' see the param count via the dynvar
@@ -5804,11 +5917,11 @@ drift (= a Doc 92 emitter invariant violation)."
     ;; Validate top-level shape: either a single defun, or a seq of
     ;; defun forms (the parser tolerates seq + main body, but for
     ;; object output we reject anything that would emit a `_start'.)
-    (pcase (plist-get ir :kind)
+    (pcase (nelisp-phase47-compiler--ir-kind ir)
       ('defun nil)
       ('seq
-       (dolist (f (plist-get ir :forms))
-         (unless (eq (plist-get f :kind) 'defun)
+       (dolist (f (nelisp-phase47-compiler--ir-get ir :forms))
+         (unless (eq (nelisp-phase47-compiler--ir-kind f) 'defun)
            (signal 'nelisp-phase47-compiler-error
                    (list :object-mode-non-defun-form f)))))
       (other
@@ -5861,7 +5974,7 @@ drift (= a Doc 92 emitter invariant violation)."
              ;; same label-counter value.
              (exported-names
               (mapcar (lambda (d)
-                        (let ((nm (plist-get d :name)))
+                        (let ((nm (nelisp-phase47-compiler--ir-get d :name)))
                           (if (stringp nm) nm (symbol-name nm))))
                       defuns))
              (label-positions
