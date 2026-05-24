@@ -1,0 +1,266 @@
+#+TITLE: Doc 129 — Phase 47 grammar expansion for user/application .el AOT compile (native-comp endgame)
+#+DATE: 2026-05-25
+#+STATUS: DRAFT
+
+* Status
+
+- *State*: DRAFT 2026-05-25 — design only, no implementation queued.
+  Scoping doc for the long-horizon "compile arbitrary user elisp to
+  native code" track.  Authored after a 2026-05-25 session that
+  (a) root-caused + fixed the standalone reader heap-corruption that
+  blocked loading large .elc (Doc 129 §6 prerequisite, now SHIPPED),
+  and (b) audited the grammar gap between the Phase 47 compiler's
+  current surface and what =anvil-server.el=-class application code
+  needs.
+- *Parent / siblings*:
+  - Doc 97 (= Sexp → asm compiler, §97.a/b/c SHIPPED) — the frontend
+    this doc extends.
+  - Doc 99 (= eval-loop wiring / Arch C, DRAFT) — the ABI machinery
+    for the interpreter to *call* compiled code.  Doc 129 is the
+    *language-coverage* axis; Doc 99 is the *call-boundary* axis.
+    Both must land for user-.el AOT to pay off.
+  - Doc 122 (= grammar extensions for substrate elisp化) — adds
+    *low-level primitive* grammar (str/sym alloc, mut-str builder,
+    extended extern-call, atomic/raw-mem).  Doc 129 *consumes* those
+    primitives but targets *application-level* language constructs.
+  - Doc 126 (= image format retirement, SHIPPED) — made eval-from-
+    source the production STDLIB boot path.  Doc 129's payoff is the
+    same shape one layer up: replace *interpret user .el* with
+    *run AOT-compiled user .el*.
+- *Motivation*: the standalone-NeLisp anvil cold-load is ~286s,
+  dominated (≈100%) by the pure-elisp evaluator walking ~13K LOC of
+  user/substrate forms at ~1 MB/s.  The Reader is already Phase 47
+  native (Doc 116, 394x); the *evaluator* of user code is the
+  remaining interpreted hot spot.  Doc 129 is the structural endgame:
+  compile user .el to native so cold-load drops to near-link-time.
+
+* §0 TL;DR
+
+** §0.1 The gap, in one sentence
+
+The Phase 47 compiler (=lisp/nelisp-phase47-compiler.el=, ~5,900 LOC)
+is a frontend for a *restricted Sexp DSL* — values are raw =i64= in
+registers + rbp spill slots, with no heap, no GC integration, no
+tagged-value calculus, no closures, no dynamic dispatch.  It was built
+for *Phase 47 self-application* (= rewriting nelisp's own Rust
+primitive bodies as elisp that emits identical asm), not for compiling
+arbitrary elisp.  Compiling =anvil-server.el=-class code requires
+turning that "i64 calculator" into a full "Lisp value machine".
+
+** §0.2 What the current grammar covers (= SHIPPED, Doc 97.a/b/c)
+
+Statement forms: =write=, =exit=, =seq=, =let= (single binding,
+constant-or-foldable value), =defun=, intra-program =call=,
+=static-imm32-table-define=.
+
+Value forms: integer literal, param/let symbol ref, =+= / =-= / =*=
+(compile-time fold + runtime emit), =/= shifts + bitwise, comparisons
+(=<= =>= =<== =>== ===), =and= / =or= / =if= / =while= / =cond=,
+=extern-call= (6 i64 args + i64 ret), direct =syscall=, f64 arithmetic
+(Doc 118), Sexp-ABI direct field access (Doc 100), hash-table desugar
+(Doc 49 Wave 11).
+
+Architecture: parse (Sexp → IR) → collect strings/tables/defuns →
+two-pass emit (fixed-width instructions → address resolution →
+relocations) → =nelisp-elf-write-binary=.  SysV AMD64 (+ arm64).
+
+** §0.3 What application .el needs that is missing (= the gap audit)
+
+Frequency from a 2026-05-25 grep of the 6 GREEN anvil modules
+(=anvil-server*.el= + =anvil-discovery/sqlite/bench.el=, ~4,400 LOC):
+
+| Construct                         | Uses | Phase 47 today |
+|-----------------------------------+------+----------------|
+| =defun= / =let= / =if= / =cond= / =and= / =or= / =while= | core | ✓ partial      |
+| =let= / =let*= (N bindings, runtime values, lexical scope) | 193  | ✗ (1 const binding only) |
+| =setq= (incl. global)             | 90   | ✗ (no symbol value-cell write) |
+| =format= / =message= / =string-match= | 114  | ✗ (no string library)  |
+| =lambda= + captured-env closure   | 28   | ✗ (no heap env + fn ptr) |
+| =require= / =provide=             | 30   | ✗ (no module load at compile) |
+| =error= / =condition-case= / =catch= / =throw= / =unwind-protect= | 55+ | ✗ (no non-local exit) |
+| =dolist= / =dotimes= / =mapcar= / =apply= / =funcall= | 50+  | ✗ (no higher-order dispatch) |
+| =make-hash-table= + access        | 11   | partial (desugar only) |
+| =defvar= / =defconst= / =defcustom= | 21   | ✗ (no top-level var decl) |
+| =defmacro= + macro use            | few  | ✗ (no compile-time expand) |
+
+* §1 Mechanism groups (= the actual work, grouped by what they share)
+
+Each group is an independent implementation effort; they are ordered
+so earlier groups unblock later ones.
+
+** §1.A Tagged-value calculus (= the foundational shift)
+
+Today an IR value is a raw =i64= in a register.  Real elisp values are
+tagged =Sexp= (Int / Float / Cons / Str / Symbol / Vector / closure).
+Every value-producing op must box/unbox and type-dispatch.
+
+- New IR value representation: a slot holds a =Sexp= (tagged pointer),
+  not a bare integer.  Arithmetic unwraps Int/Float, re-boxes result.
+- Reuses Doc 100 Sexp-ABI access ops (=sexp-tag=, =sexp-int-unwrap=,
+  =sexp-int-make=, =sexp-float-unwrap=) already in the grammar.
+- This is the *largest* single change: it rewrites =--emit-value= /
+  =--emit-arith= to thread tagged values, and adds a runtime
+  type-error path (signal wrong-type-argument).
+
+*Why first*: every other group manipulates tagged values.
+
+** §1.B Heap + GC root integration
+
+=cons=, =make-hash-table=, strings, vectors, and closures all
+allocate.  Phase 47 has no heap today.
+
+- Allocation: call the existing allocator via =extern-call= (Doc 122.A
+  =nl_alloc_str= / =nl_alloc_symbol=, Doc 125 alloc/dealloc grammar).
+  No new allocator — delegate.
+- *GC roots*: the hard part.  The bytecode VM (=nelisp-bc-run=)
+  already registers in-flight stack via =nelisp-gc--active-vms= (Doc
+  3c).  AOT-compiled frames must do the equivalent: spill-slot values
+  that are live across an allocation must be reachable by the
+  collector.  Options: (a) a shadow stack map emitted per call site,
+  (b) conservative scan of the spill region, (c) pin live values into
+  a frame-local GC-rooted vector.  Recommend (c) for correctness-first
+  (matches the VM's active-vm vector), optimise later.
+
+*Why second*: closures / hash / strings in later groups all allocate.
+
+** §1.C General =let= / =let*= + lexical environment
+
+Replace the single-constant-binding =let= with an N-binding lexical
+scope: a chain of frame slots (or a heap lexframe — Doc 115
+=env_lexframe= shims already exist for the substrate).  Distinguish
+lexical from dynamic (=defvar='d special) variables.
+
+** §1.D =setq= / =defvar= / =defconst= / =defcustom= — symbol cells
+
+Writing a global needs symbol value-cell access.  =nl_env_set_value=
+extern already exists (used by =nelisp-cc-sf-setq.el= for the
+substrate setq swap) — reuse it.  =defvar= / =defcustom= become
+=defvar=-then-conditional-set sequences at top level.
+
+** §1.E Closures + =funcall= / =apply= dispatch
+
+=(lambda (x) (+ x cap))= = heap env record (the captured bindings) +
+a code pointer.  =funcall= / =apply= dispatch through the runtime's
+existing callable-resolution (=apply_function= / =nelisp--apply=) via
+=extern-call= — *delegate to the runtime dispatcher rather than
+re-implementing arity/&optional/&rest handling*.  Mirrors the
+bytecode VM's MAKE-CLOSURE / CALL opcodes.
+
+** §1.F Exception machinery
+
+=condition-case= / =catch= / =throw= / =unwind-protect= / =signal=
+need non-local exit.  Two designs:
+- *Handler stack* (recommended): a thread-local stack of (tag,
+  landing-pad, saved-sp) records; =throw= / =signal= walks it, runs
+  =unwind-protect= cleanups, restores sp, jumps to the pad.  Mirrors
+  the bytecode VM's PUSH-CATCH / PUSH-CC / PUSH-UNWIND / POP-HANDLER
+  opcodes (= the VM already implements this shape in elisp).
+- setjmp/longjmp via extern — simpler but fights the spill-slot model.
+
+** §1.G macroexpand frontend (= cheapest group)
+
+=defmacro= / =when= / =unless= / =dolist= / =cl-*= / =pcase= reduce to
+core forms via =macroexpand-all= *at compile time*.  The Wave A21
+bytecode path already does exactly this (=macroexpand-all= before
+=nelisp-bc-compile=).  Reuse: run the host/standalone =macroexpand-all=
+in the Phase 47 frontend before =--parse=.  Near-zero new asm.
+
+** §1.H Builtin library delegation
+
+=format= / =concat= / =substring= / =string-match= / =mapcar= /
+=nth= / =assq= / ... = hundreds of builtins.  Pragmatic route: emit a
+=call= into the runtime's existing implementation via =extern-call=
+(the dispatcher already resolves builtins).  Consequence: compiled
+output links against the nelisp runtime (= "compiled code + runtime"),
+*not* a tiny standalone ELF.  This is acceptable for the
+interpreter-embedded use case (Doc 99 Arch B/C) but is in tension with
+Doc 97's standalone-binary lineage — call out explicitly per output
+target.
+
+* §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
+
+Each grammar group ships as new elisp in =nelisp-phase47-compiler.el=
+(+ siblings) compiling to asm; Rust delta is 0 (the externs they call
+already exist via Doc 122 / Doc 125 / Doc 100).  Where a group needs a
+genuinely new Rust extern, it must be paired with an offsetting
+deletion or deferred until the extern can be elisp-emitted.
+
+| Stage   | Group                          | Depends on | Risk |
+|---------+--------------------------------+------------+------|
+| 129.1   | §1.G macroexpand frontend      | —          | low  |
+| 129.2   | §1.A tagged-value calculus     | 129.1      | high |
+| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  |
+| 129.4   | §1.C general let/let*          | 129.2      | med  |
+| 129.5   | §1.B heap + GC roots           | 129.2      | high |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high |
+| 129.8   | §1.F exception machinery       | 129.5      | high |
+
+Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
+=anvil-server.el= that uses only those (= prove the pipeline end to
+end on real application code).  Production engagement = 129.4–129.8.
+
+* §3 Honest scope assessment
+
+§1.A + §1.B + §1.E + §1.F together constitute a *complete native-code
+language runtime*.  "Compile =anvil-server.el= to native" is, in
+honest terms, "build a native-comp backend for elisp" — the same
+scope as GNU Emacs's libgccjit native-comp, except hand-emitted via
+the Phase 47 asm chain instead of delegating to GCC.  Realistic
+horizon: multi-month to multi-year, paced one group per engagement.
+
+This is *not* a near-term cold-load fix.  It is the structural endgame
+that aligns with Doc 99 Arch C ("every byte of code derives from elisp
+the Phase 47 chain compiled").
+
+* §4 Relationship to the other axes
+
+- *Doc 99 (call boundary)*: gives the interpreter an ABI to call
+  compiled functions.  Doc 129 gives those functions a language.  A
+  single compiled =anvil-server= function needs *both* (Doc 99 ET_REL
+  + ABI, Doc 129 grammar coverage).
+- *Doc 122 (substrate primitives)*: supplies the alloc / mut-str /
+  extended-extern-call primitives that Doc 129 groups call.  Doc 129
+  is "Doc 122 consumed at application level".
+- *Doc 126 (eval-boot)*: precedent — replacing "interpret source" with
+  a faster path.  Doc 129 is the user-code analogue of that move.
+
+* §5 The pragmatic alternative (= why this is endgame, not now)
+
+The Wave A21 bytecode VM (=byte-compile-file= → =.elc= → =nelisp-bc-run=)
+*already* handles closures, exceptions, hash, and higher-order calls —
+because it runs on the interpreter's runtime, not bare registers.  Its
+only blocker for standalone use was a heap-corruption bug in the
+reader (§6), now fixed.  Bytecode gives a 5–10x evaluator speedup with
+*zero* new grammar.  Phase 47 AOT (this doc) gives native speed but
+needs the full §1 stack.
+
+Recommended sequencing: harvest the bytecode-VM win first (cheap,
+grammar-free), pursue Doc 129 as the long-horizon native-comp endgame.
+
+* §6 Prerequisite SHIPPED — reader heap-corruption fix (2026-05-25)
+
+Loading a Wave A21 =.elc= with a large pre-compiled =defun= (e.g.
+=anvil-server--handle-tools-call=, a 1,099-element bytecode CODE
+vector) aborted standalone NeLisp with glibc =corrupted size vs.
+prev_size= / =double free=.
+
+Root cause: =build-tool/src/lib.rs= reader =PARSER_POOL_SIZE = 3 + 4 *
+1024= (depth ≈1023).  The Phase 47 elisp parser
+(=nelisp-cc-reader-parser.el=) recurses depth+1 per list/vector
+*element*, indexing the slot-pool via *unchecked* =vector-ref-ptr=, so
+any list/vector literal with ≳1024 elements overran the pool → heap
+corruption (threshold confirmed: 1000-element OK, 1024 crash).
+
+Fix (1 line, net 0 Rust LOC): size the pool to the input —
+=vec![Sexp::Nil; (3 + 4 * input.len()).max(PARSER_POOL_SIZE)]=.  An
+element count can never exceed the input byte count, so pool overflow
+is structurally impossible.  Verified: 1,099 + 5,000-element vector
+literals and the full =anvil-server.elc= (68 bcl defuns) load cleanly;
+=mini.elc= regression + cargo =--lib= 10/10 green.
+
+Proper follow-up (not blocking): the parser's depth-per-element
+recursion is itself the latent flaw; an *iterative* list/vector parse
+(reusing a fixed slot set, accumulating via a running tail) would
+remove the input-sized-pool memory cost entirely.  Tracked as a Phase
+47 reader-parser cleanup, independent of Doc 129.
