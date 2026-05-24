@@ -43,7 +43,16 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'nelisp-eval)
+;; Wave A21: `nelisp-eval' is only available under host Emacs (the
+;; build path that bootstraps NeLisp).  Standalone NeLisp doesn't
+;; load nelisp-eval — its function namespace is owned by the Rust
+;; evaluator + the elisp stdlib in `lisp/'.  Runtime code in this
+;; module is gated on `(boundp 'nelisp--globals)' and falls back to
+;; plain `symbol-value' / `set' / `funcall' when the host bridge is
+;; absent, so `nelisp-eval' is optional.
+(condition-case _err
+    (require 'nelisp-eval)
+  (file-error nil))
 
 ;; Forward declaration — Phase 3c owns `nelisp-gc--active-vms' in
 ;; src/nelisp-gc.el.  We re-declare nil-initialised here so `nelisp-bc-run'
@@ -454,17 +463,33 @@ Returns a cons (CODE-VECTOR . RESOLVED-LABELS-PLIST)."
        (t
         (signal 'nelisp-bc-unimplemented
                 (list "(function ...) form not handled" arg))))))
+   ((and (consp form) (eq (car form) 'when))
+    ;; (when COND BODY...) → (if COND (progn BODY...) nil)
+    (nelisp-bc--compile-if ctx (cadr form) (cons 'progn (cddr form)) nil))
+   ((and (consp form) (eq (car form) 'unless))
+    ;; (unless COND BODY...) → (if COND nil BODY...)
+    (nelisp-bc--compile-if ctx (cadr form) nil (cddr form)))
+   ((and (consp form) (eq (car form) 'and))
+    (nelisp-bc--compile-and ctx (cdr form)))
+   ((and (consp form) (eq (car form) 'or))
+    (nelisp-bc--compile-or ctx (cdr form)))
+   ((and (consp form) (eq (car form) 'prog1))
+    (nelisp-bc--compile-prog1 ctx (cadr form) (cddr form)))
+   ((and (consp form) (eq (car form) 'prog2))
+    ;; (prog2 X Y BODY...) ≡ (progn X (prog1 Y BODY...))
+    (nelisp-bc--compile-form ctx (cadr form))
+    (nelisp-bc--emit ctx 'DROP)
+    (nelisp-bc--adjust-sp ctx -1)
+    (nelisp-bc--compile-prog1 ctx (nth 2 form) (nthcdr 3 form)))
    ((and (consp form)
          (memq (car form)
-               '(defun defvar defconst defmacro
-                 and or when unless prog1 prog2)))
-    ;; Known special forms slated for later sub-phases (or never:
-    ;; top-level `defun'/`defvar' belong to the interpreter) — surface
-    ;; a clean `nelisp-bc-unimplemented' so callers can skip or fall
-    ;; back to the interpreter instead of getting a cryptic "void
+               '(defun defvar defconst defmacro)))
+    ;; Top-level forms (`defun', `defvar', `defconst', `defmacro') belong
+    ;; to the interpreter — surface a clean `nelisp-bc-unimplemented' so
+    ;; callers can skip or fall back instead of getting a cryptic "void
     ;; function" at runtime.
     (signal 'nelisp-bc-unimplemented
-            (list "special form pending later sub-phase" (car form))))
+            (list "top-level special form" (car form))))
    ((and (consp form) (consp (car form)) (eq (car (car form)) 'lambda))
     ;; ((lambda PARAMS BODY) ARGS...) — inline call to a literal
     ;; lambda.  Compile the lambda then invoke via CALL.
@@ -770,6 +795,79 @@ Each init sees all previously introduced lex/dyn bindings."
         (nelisp-bc--compile-if
          ctx test (cons 'progn body)
          (if (cdr clauses) (list (cons 'cond (cdr clauses))) nil))))))))
+
+(defun nelisp-bc--compile-and (ctx args)
+  "Compile (and ARGS...) with short-circuit evaluation.
+Result = nil if any sub-form is nil, else last sub-form's value."
+  (cond
+   ((null args)
+    ;; (and) → t
+    (let ((idx (nelisp-bc--add-const ctx t)))
+      (nelisp-bc--emit ctx 'CONST idx)
+      (nelisp-bc--adjust-sp ctx 1)))
+   ((null (cdr args))
+    (nelisp-bc--compile-form ctx (car args)))
+   (t
+    (let ((end-label (cl-gensym "bc-and-end-"))
+          (sp-after-first nil))
+      ;; Compile first arg, leave on stack
+      (nelisp-bc--compile-form ctx (car args))
+      (setq sp-after-first (nelisp-bc--ctx-sp ctx))
+      (let ((rest (cdr args)))
+        (while rest
+          ;; DUP the current top, then GOTO-IF-NIL (consumes the dup).
+          ;; If non-nil, drop it and evaluate the next form.
+          (nelisp-bc--emit ctx 'DUP)
+          (nelisp-bc--adjust-sp ctx 1)
+          (nelisp-bc--emit-jump ctx 'GOTO-IF-NIL end-label)
+          (nelisp-bc--adjust-sp ctx -1)
+          ;; Drop the old top — next form's value will replace it.
+          (nelisp-bc--emit ctx 'DROP)
+          (nelisp-bc--adjust-sp ctx -1)
+          (nelisp-bc--compile-form ctx (car rest))
+          (setq rest (cdr rest))))
+      ;; All non-nil — final value sits on stack at sp-after-first.
+      (nelisp-bc--emit-label ctx end-label)
+      ;; Force sp to single result regardless of branch.
+      (setf (nelisp-bc--ctx-sp ctx) sp-after-first)))))
+
+(defun nelisp-bc--compile-or (ctx args)
+  "Compile (or ARGS...) with short-circuit evaluation.
+Result = first non-nil sub-form, or nil if all are nil."
+  (cond
+   ((null args)
+    ;; (or) → nil
+    (let ((idx (nelisp-bc--add-const ctx nil)))
+      (nelisp-bc--emit ctx 'CONST idx)
+      (nelisp-bc--adjust-sp ctx 1)))
+   ((null (cdr args))
+    (nelisp-bc--compile-form ctx (car args)))
+   (t
+    (let ((end-label (cl-gensym "bc-or-end-"))
+          (sp-after-first nil))
+      (nelisp-bc--compile-form ctx (car args))
+      (setq sp-after-first (nelisp-bc--ctx-sp ctx))
+      (let ((rest (cdr args)))
+        (while rest
+          (nelisp-bc--emit ctx 'DUP)
+          (nelisp-bc--adjust-sp ctx 1)
+          (nelisp-bc--emit-jump ctx 'GOTO-IF-NOT-NIL end-label)
+          (nelisp-bc--adjust-sp ctx -1)
+          (nelisp-bc--emit ctx 'DROP)
+          (nelisp-bc--adjust-sp ctx -1)
+          (nelisp-bc--compile-form ctx (car rest))
+          (setq rest (cdr rest))))
+      (nelisp-bc--emit-label ctx end-label)
+      (setf (nelisp-bc--ctx-sp ctx) sp-after-first)))))
+
+(defun nelisp-bc--compile-prog1 (ctx first body)
+  "Compile (prog1 FIRST BODY...) — return FIRST, run BODY for side-effects."
+  (nelisp-bc--compile-form ctx first)
+  (when body
+    (dolist (b body)
+      (nelisp-bc--compile-form ctx b)
+      (nelisp-bc--emit ctx 'DROP)
+      (nelisp-bc--adjust-sp ctx -1))))
 
 (defun nelisp-bc--compile-primitive (ctx op args)
   "Compile a supported primitive call OP with ARGS."
@@ -1349,13 +1447,22 @@ recursing and reload from VM afterwards."
                                (ash (aref code (1+ pc)) 8))
                        (setq pc (+ pc 2))))
                   (trim-specpdl (target-tail)
+                    ;; Wave A21: standalone-safe fallback when
+                    ;; `nelisp--globals' is unbound — defer to
+                    ;; `set' / `makunbound' on the symbol itself.
                     `(while (not (eq specpdl ,target-tail))
                        (let* ((entry (pop specpdl))
                               (sym (car entry))
                               (old (cdr entry)))
-                         (if (eq old nelisp--unbound)
-                             (remhash sym nelisp--globals)
-                           (puthash sym old nelisp--globals)))))
+                         (cond
+                          ((boundp 'nelisp--globals)
+                           (if (eq old nelisp--unbound)
+                               (remhash sym nelisp--globals)
+                             (puthash sym old nelisp--globals)))
+                          (t
+                           (if (eq old :nelisp-bc--unbound)
+                               (makunbound sym)
+                             (set sym old)))))))
                   (commit-vm ()
                     '(progn (aset vm 6 pc)
                             (aset vm 7 sp)
@@ -1467,14 +1574,30 @@ recursing and reload from VM afterwards."
                 (signal 'nelisp-bc-error (list "NOT on empty stack" pc)))
               (aset stack (1- sp) (not (aref stack (1- sp)))))
              (16
+              ;; VARREF — Wave A21: in host Emacs (= `nelisp--globals'
+              ;; bound) preserve the strict semantics — hash miss
+              ;; raises `nelisp-unbound-variable' so existing ERT
+              ;; coverage still discriminates NeLisp's own dynamic
+              ;; namespace from the host's.  In standalone NeLisp
+              ;; (= the hash is absent), fall back to host
+              ;; `symbol-value' so `.elc' files emitted with
+              ;; pass-through `defvar' / `defconst' still resolve.
               (when (>= sp stack-depth)
                 (signal 'nelisp-bc-error (list "stack overflow at VARREF" pc)))
               (let* ((idx (aref code pc))
                      (sym (aref consts idx))
-                     (val (gethash sym nelisp--globals nelisp--unbound)))
+                     (val (cond
+                           ((boundp 'nelisp--globals)
+                            (let ((g (gethash sym nelisp--globals
+                                              nelisp--unbound)))
+                              (if (eq g nelisp--unbound)
+                                  (signal 'nelisp-unbound-variable
+                                          (list sym))
+                                g)))
+                           ((boundp sym) (symbol-value sym))
+                           (t
+                            (signal 'void-variable (list sym))))))
                 (setq pc (1+ pc))
-                (when (eq val nelisp--unbound)
-                  (signal 'nelisp-unbound-variable (list sym)))
                 (aset stack sp val)
                 (setq sp (1+ sp))))
              (17
@@ -1484,18 +1607,34 @@ recursing and reload from VM afterwards."
                      (sym (aref consts idx))
                      (val (aref stack (1- sp))))
                 (setq pc (1+ pc))
-                (puthash sym val nelisp--globals)
+                (cond
+                 ((boundp 'nelisp--globals)
+                  (puthash sym val nelisp--globals))
+                 (t
+                  (set sym val)))
                 (setq sp (1- sp))))
              (18
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "VARBIND on empty stack" pc)))
               (let* ((idx (aref code pc))
                      (sym (aref consts idx))
-                     (val (aref stack (1- sp)))
-                     (old (gethash sym nelisp--globals nelisp--unbound)))
+                     (val (aref stack (1- sp))))
                 (setq pc (1+ pc))
-                (push (cons sym old) specpdl)
-                (puthash sym val nelisp--globals)
+                (cond
+                 ((boundp 'nelisp--globals)
+                  (let ((old (gethash sym nelisp--globals nelisp--unbound)))
+                    (push (cons sym old) specpdl)
+                    (puthash sym val nelisp--globals)))
+                 (t
+                  ;; Standalone fallback: record old binding sentinel
+                  ;; using a private cookie (`:nelisp-bc--unbound') so
+                  ;; UNBIND can distinguish never-bound from previously
+                  ;; bound on rollback.
+                  (let ((old (if (boundp sym)
+                                 (symbol-value sym)
+                               :nelisp-bc--unbound)))
+                    (push (cons sym old) specpdl)
+                    (set sym val))))
                 (setq sp (1- sp))))
              (19
               (let ((n (aref code pc)))
@@ -1507,9 +1646,15 @@ recursing and reload from VM afterwards."
                   (let* ((entry (pop specpdl))
                          (sym (car entry))
                          (old (cdr entry)))
-                    (if (eq old nelisp--unbound)
-                        (remhash sym nelisp--globals)
-                      (puthash sym old nelisp--globals))))))
+                    (cond
+                     ((boundp 'nelisp--globals)
+                      (if (eq old nelisp--unbound)
+                          (remhash sym nelisp--globals)
+                        (puthash sym old nelisp--globals)))
+                     (t
+                      (if (eq old :nelisp-bc--unbound)
+                          (makunbound sym)
+                        (set sym old))))))))
              (20
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "STACK-SET on empty stack" pc)))
@@ -1604,18 +1749,40 @@ recursing and reload from VM afterwards."
                          ;; recursive self-call pattern (fib → fib → …)
                          ;; skips `nelisp--apply' entirely.  gethash here
                          ;; matches `nelisp--apply's symbol arm exactly.
+                         ;; Wave A21: `nelisp--functions' may be unbound
+                         ;; in standalone NeLisp where the Rust evaluator
+                         ;; owns the function namespace — skip the
+                         ;; gethash arm and dispatch through `funcall'.
                          (bcl (cond
                                ((and (consp fn) (eq (car fn) 'nelisp-bcl))
                                 fn)
-                               ((symbolp fn)
+                               ((and (symbolp fn)
+                                     (boundp 'nelisp--functions))
                                 (let ((nfn (gethash fn nelisp--functions
                                                     nelisp--unbound)))
                                   (and (consp nfn)
                                        (eq (car nfn) 'nelisp-bcl)
                                        nfn)))))
-                         (result (if bcl
-                                     (nelisp-bc-run bcl call-args)
-                                   (nelisp--apply fn call-args))))
+                         (result (cond
+                                  (bcl
+                                   (nelisp-bc-run bcl call-args))
+                                  ;; Use `nelisp--apply' only when both
+                                  ;; the function AND its underlying
+                                  ;; `nelisp--functions' table are in
+                                  ;; scope.  Falling through to plain
+                                  ;; `apply' in standalone (where
+                                  ;; `nelisp--apply' may exist as a
+                                  ;; defun residue but `nelisp--
+                                  ;; functions' is absent) avoids
+                                  ;; a void-variable error.
+                                  ((and (fboundp 'nelisp--apply)
+                                        (boundp 'nelisp--functions))
+                                   (nelisp--apply fn call-args))
+                                  (t
+                                   (apply (if (symbolp fn)
+                                              (symbol-function fn)
+                                            fn)
+                                          call-args)))))
                     (aset stack sp result)
                     (setq sp (1+ sp))))))
              (32
@@ -1832,14 +1999,223 @@ MCP Parameters:
         ;; from VM because `nelisp-bc--dispatch' syncs on exit (normal
         ;; fall-out is a no-op when bytecode is well-formed; non-local
         ;; exit unwinds whatever bindings the body accumulated).
+        ;; Wave A21: handle the standalone fallback where specpdl
+        ;; entries carry `:nelisp-bc--unbound' instead of
+        ;; `nelisp--unbound' (= host `nelisp-eval' may be absent).
         (let ((specpdl (aref vm 8)))
           (while specpdl
             (let* ((entry (pop specpdl))
                    (sym (car entry))
                    (old (cdr entry)))
-              (if (eq old nelisp--unbound)
-                  (remhash sym nelisp--globals)
-                (puthash sym old nelisp--globals))))))))))
+              (cond
+               ((boundp 'nelisp--globals)
+                (if (eq old nelisp--unbound)
+                    (remhash sym nelisp--globals)
+                  (puthash sym old nelisp--globals)))
+               (t
+                (if (eq old :nelisp-bc--unbound)
+                    (makunbound sym)
+                  (set sym old))))))))))))
+
+;;; .elc writer / reader / load integration (Wave A21) ---------------
+;;
+;; Wave A21 enables on-disk byte-compiled output for NeLisp's bytecode
+;; VM.  Goals:
+;;
+;;   1. `byte-compile-file' takes a `.el' file and writes a `.elc' that
+;;      pre-compiles each `defun' body into a `nelisp-bcl' object,
+;;      installed via `nelisp-bc--defun-from-elc' at load time.
+;;   2. `.elc' files are plain readable elisp text — the bcl object
+;;      `(nelisp-bcl ENV PARAMS CONSTS CODE STACK-DEPTH SPECIAL-MASK)'
+;;      is a list of readable atoms (symbols / ints / vectors / lists),
+;;      so the existing NeLisp reader handles them unmodified.
+;;   3. `load' tries `FILE.elc' first, falls back to `FILE.el' (or the
+;;      as-given path).  This mirrors Emacs's `load-suffixes' precedence
+;;      and lets NeLisp benefit from pre-compiled bcl without changing
+;;      callers.
+;;
+;; Format (= NeLisp `.elc' v1, NOT Emacs `.elc' binary compatible):
+;;
+;;   ;;; nelisp-bytecode-elc-v1 -*- mode: emacs-lisp; coding: utf-8; -*-
+;;   ;; Compiled from FILE.el at TIMESTAMP.  Do not edit by hand.
+;;   <preamble form>
+;;   ...
+;;   <body forms — defuns become nelisp-bc--defun-from-elc calls,
+;;    everything else passed through verbatim>
+;;
+;; Defuns whose body the compiler cannot handle (e.g., uses `dolist',
+;; `pcase', etc.) fall back to the original `defun' form so the
+;; interpreter installs them — graceful degradation, no failure.
+
+(defun nelisp-bc--defun-from-elc (name bcl)
+  "Install BCL (a `nelisp-bcl' object) as the function binding of NAME.
+Called from `.elc' files to materialise pre-compiled defuns at load
+time.
+
+When `nelisp--functions' is bound (host Emacs build with
+`nelisp-eval' loaded), installs directly into that hash so
+`nelisp--apply' can take the inline `nelisp-bcl' dispatch arm
+(no wrapper lambda — see `nelisp-eval.el' §548).
+
+When `nelisp--functions' isn't bound (standalone NeLisp, where the
+Rust evaluator owns the function namespace), installs a thin
+`fset' wrapper lambda whose body invokes `nelisp-bc-run' on the
+captured BCL.  The wrapper adds one lambda-frame per call so the
+per-call VM benefit shrinks, but it lets `.elc' files work
+without a Rust-side `nelisp-bcl' dispatch arm.
+
+MCP Parameters:
+  NAME — symbol to install
+  BCL  — `nelisp-bcl' object built by `nelisp-bc-compile'"
+  (unless (symbolp name)
+    (signal 'nelisp-bc-error (list "defun-from-elc needs a symbol" name)))
+  (unless (nelisp-bcl-p bcl)
+    (signal 'nelisp-bc-error (list "defun-from-elc needs a bcl" bcl)))
+  ;; Always install an `fset' wrapper so the symbol is callable via
+  ;; plain `(NAME ...)' regardless of which evaluator is current
+  ;; (= host Emacs `funcall' looks at the symbol-function cell;
+  ;; standalone NeLisp owns its own function namespace which also
+  ;; honours `fset').  Additionally, when `nelisp--functions' is
+  ;; bound (= nelisp-eval is loaded in host Emacs), install the raw
+  ;; bcl into that hash so `nelisp--apply' takes the inline VM
+  ;; dispatch arm (skips the wrapper lambda's per-call overhead).
+  (fset name `(lambda (&rest args) (nelisp-bc-run ',bcl args)))
+  (when (boundp 'nelisp--functions)
+    (puthash name bcl nelisp--functions))
+  name)
+
+(defconst nelisp-bc--elc-magic ";;; nelisp-bytecode-elc-v1"
+  "Magic header line marking a NeLisp-compiled `.elc' file.")
+
+(defun nelisp-bc--compile-defun-to-elc-form (form)
+  "Translate a top-level FORM for `.elc' emission.
+Returns the form to write — for compilable `defun's, a call to
+`nelisp-bc--defun-from-elc' that re-installs a pre-compiled bcl
+at load time.  For anything else (or defuns whose body the
+compiler can't handle yet), returns FORM unchanged so the
+interpreter handles it as if loading the `.el' source."
+  (cond
+   ((and (consp form) (eq (car form) 'defun))
+    ;; (defun NAME PARAMS [DOCSTRING] [DECLARE] [INTERACTIVE] BODY...)
+    ;; Strip optional docstring / declare / interactive prefix from
+    ;; BODY so the compiler sees a pure expression sequence.
+    (let* ((name (nth 1 form))
+           (params (nth 2 form))
+           (body (cdddr form)))
+      ;; Skip docstring (a leading string with at least one form after).
+      (when (and (stringp (car body)) (cdr body))
+        (setq body (cdr body)))
+      ;; Skip (declare ...) / (interactive ...) forms.
+      (while (and body
+                  (consp (car body))
+                  (memq (caar body) '(declare interactive)))
+        (setq body (cdr body)))
+      (let ((bcl-or-nil
+             (condition-case _
+                 (let* ((src (cons 'lambda (cons params body)))
+                        ;; Macroexpand under host Emacs so `when',
+                        ;; `unless', `dolist', etc. become forms the
+                        ;; bytecode compiler already understands
+                        ;; (= `if', `let' + `while', etc).  Special
+                        ;; forms (`and', `or', `prog1', `setq', `if',
+                        ;; `let' family) pass through unchanged and
+                        ;; are handled directly by `compile-form'.
+                        (expanded (macroexpand-all src))
+                        (wrapper-bcl (nelisp-bc-compile expanded)))
+                   ;; Evaluate the wrapper to materialise the inner bcl
+                   ;; template (no captures since ENV is nil).
+                   (nelisp-bc-run wrapper-bcl))
+               (nelisp-bc-error nil)
+               (error nil))))
+        (if (and bcl-or-nil (nelisp-bcl-p bcl-or-nil))
+            (list 'nelisp-bc--defun-from-elc
+                  (list 'quote name)
+                  (list 'quote bcl-or-nil))
+          ;; Couldn't compile body — fall back to source form.
+          form))))
+   (t form)))
+
+(defun nelisp-bc--read-all-from-file (file)
+  "Read every top-level form from FILE into a list, in source order.
+Uses `insert-file-contents' so this works under host Emacs.  The
+NeLisp standalone reader path is not exercised here — `byte-compile-
+file' is intended to run on a host that can parse the full elisp
+source (= host Emacs, or eventually a fully-loaded NeLisp)."
+  (let ((forms nil))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (condition-case _
+          (while t
+            (push (read (current-buffer)) forms))
+        (end-of-file nil)))
+    (nreverse forms)))
+
+(defun byte-compile-file (file &optional load)
+  "Compile FILE (an elisp source file) into a NeLisp `.elc'.
+Each top-level `defun' whose body the bytecode compiler can handle
+is replaced with a `nelisp-bc--defun-from-elc' call that installs
+a pre-compiled `nelisp-bcl' at load time.  All other forms are
+passed through verbatim so they run through the interpreter exactly
+as if loading the source.
+
+The output file is `FILE' with its extension replaced by `.elc' (or
+`FILE.elc' if no extension).  If LOAD is non-nil, the resulting
+`.elc' is loaded after writing.
+
+Returns t on success, nil on failure (= the `.elc' was not written).
+
+MCP Parameters:
+  FILE — absolute or relative path to a `.el' source file
+  LOAD — non-nil → load the output `.elc' after writing"
+  (unless (file-exists-p file)
+    (signal 'file-error (list "Cannot open compile target" file)))
+  (let* ((forms (nelisp-bc--read-all-from-file file))
+         (out-path (concat (file-name-sans-extension file) ".elc"))
+         (compiled-count 0)
+         (passthrough-count 0)
+         (out-forms (mapcar (lambda (f)
+                              (let ((out (nelisp-bc--compile-defun-to-elc-form f)))
+                                (cond
+                                 ((and (consp out)
+                                       (eq (car out) 'nelisp-bc--defun-from-elc))
+                                  (cl-incf compiled-count))
+                                 (t
+                                  (cl-incf passthrough-count)))
+                                out))
+                            forms)))
+    (with-temp-file out-path
+      (insert nelisp-bc--elc-magic
+              " -*- mode: emacs-lisp; coding: utf-8; -*-\n")
+      (insert (format ";; Compiled from %s by NeLisp byte-compile-file.\n"
+                      (file-name-nondirectory file)))
+      (insert (format ";; %d defuns pre-compiled, %d forms passed through.\n"
+                      compiled-count passthrough-count))
+      (insert ";; This is a NeLisp `.elc' (= text, NOT Emacs `.elc' binary).\n\n")
+      (let ((print-level nil)
+            (print-length nil)
+            (print-circle nil)
+            (print-quoted t)
+            (print-escape-newlines t)
+            (print-escape-control-characters t))
+        (dolist (out out-forms)
+          (prin1 out (current-buffer))
+          (insert "\n"))))
+    (when load
+      (load out-path nil t))
+    t))
+
+;; `.elc' reader entry — used by `load' to detect a NeLisp-compiled
+;; output file (vs. an Emacs `.elc' binary which we cannot read).
+(defun nelisp-bc--elc-file-p (path)
+  "Non-nil if PATH starts with the NeLisp `.elc' magic header.
+Used by `load' to decide whether to dispatch this file through
+the bytecode path or fall back to source loading."
+  (and (file-readable-p path)
+       (with-temp-buffer
+         (insert-file-contents path nil 0 (length nelisp-bc--elc-magic))
+         (goto-char (point-min))
+         (looking-at (regexp-quote nelisp-bc--elc-magic)))))
 
 (provide 'nelisp-bytecode)
 ;;; nelisp-bytecode.el ends here

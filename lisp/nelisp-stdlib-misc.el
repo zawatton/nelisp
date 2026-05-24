@@ -325,17 +325,31 @@ regular file (per `nelisp--syscall-stat'), or nil if none match."
 
 (defun locate-library (name &optional _nosuffix _path _interactive-call)
   "Search `load-path' for a file named NAME, returning its absolute
-path or nil.  Tries NAME as-given first, then NAME with `.el' appended
-(unless NAME already ends in `.el').  Optional NOSUFFIX / PATH /
-INTERACTIVE-CALL args are accepted for host-Emacs compatibility but
-ignored — NeLisp does not byte-compile so there's no `.elc' fork, and
-the load-path override + interactive message machinery aren't wired."
+path or nil.  Tries NAME as-given first, then NAME with `.elc' appended
+(Wave A21 NeLisp `.elc' is preferred for compiled-defun fast-path),
+then NAME with `.el' appended (unless NAME already ends in `.el' /
+`.elc').  Optional NOSUFFIX / PATH / INTERACTIVE-CALL args are
+accepted for host-Emacs compatibility but ignored — the load-path
+override + interactive message machinery aren't wired."
   (let* ((n (length name))
-         (has-el (and (> n 3)
+         (has-elc (and (> n 4)
+                       (eq (aref name (- n 4)) ?.)
+                       (eq (aref name (- n 3)) ?e)
+                       (eq (aref name (- n 2)) ?l)
+                       (eq (aref name (- n 1)) ?c)))
+         (has-el (and (not has-elc)
+                      (> n 3)
                       (eq (aref name (- n 3)) ?.)
                       (eq (aref name (- n 2)) ?e)
                       (eq (aref name (- n 1)) ?l)))
-         (suffixes (if has-el (list "") (list "" ".el"))))
+         ;; Suffix probe order: `.elc' is tried before `.el' so a
+         ;; freshly-emitted `.elc' wins, matching Emacs's
+         ;; `load-suffixes' precedence.  When NAME explicitly ends
+         ;; in `.elc', only the bare name is probed (caller decided).
+         (suffixes (cond
+                    (has-elc (list ""))
+                    (has-el (list "c" ""))           ; FOO.el → FOO.elc, FOO.el
+                    (t (list ".elc" ".el" "")))))
     (cond
      ;; Absolute path: probe directly, skip load-path walk.
      ((and (> n 0) (eq (aref name 0) ?/))

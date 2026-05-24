@@ -737,9 +737,16 @@ a label.  Returns the resolved int vector."
   ;; Special forms scheduled for later sub-phases surface cleanly.
   ;; `catch' / `throw' / `unwind-protect' / `condition-case' moved
   ;; to the supported set in 3b.4c; `lambda' moved in 3b.5a.
-  (should-error (nelisp-bc-compile '(and 1 2))
+  ;; Wave A21 (2026-05-24): `and' / `or' / `when' / `unless' /
+  ;; `prog1' / `prog2' moved to the supported set so `.elc' writer
+  ;; can pre-compile defun bodies that use them.  Top-level
+  ;; `defun' / `defvar' / `defconst' / `defmacro' remain unsupported
+  ;; because their interpreter-side install effect is the goal.
+  (should-error (nelisp-bc-compile '(defun foo (x) x))
                 :type 'nelisp-bc-unimplemented)
-  (should-error (nelisp-bc-compile '(or 1 2))
+  (should-error (nelisp-bc-compile '(defvar bar 1))
+                :type 'nelisp-bc-unimplemented)
+  (should-error (nelisp-bc-compile '(defmacro baz () nil))
                 :type 'nelisp-bc-unimplemented))
 
 ;;; Phase 3b.4c — catch / throw / unwind-protect / condition-case ---
@@ -1200,9 +1207,12 @@ a label.  Returns the resolved int vector."
                 nil))))
 
 (ert-deftest nelisp-bc-3b5c-try-compile-falls-back-on-unsupported ()
-  ;; Body uses `and' which is in the unimplemented set; expect nil.
+  ;; Body shape the bytecode compiler can't reduce; expect nil.
+  ;; Wave A21: `and' / `or' moved to the supported set, so use a
+  ;; literal non-symbol head instead — `((1 2) 3)' has no callable
+  ;; semantics and trips the generic catch-all in compile-form.
   (let ((nelisp-bc-auto-compile t))
-    (should (eq (nelisp-bc-try-compile-lambda nil '(x) '((and x 1)))
+    (should (eq (nelisp-bc-try-compile-lambda nil '(x) '(((1 2) 3)))
                 nil))))
 
 (ert-deftest nelisp-bc-3b5c-defun-installs-bcl-when-on ()
@@ -1231,11 +1241,14 @@ a label.  Returns the resolved int vector."
       (should (= (nelisp-eval '(nelisp-bc-test--fact 5)) 120)))))
 
 (ert-deftest nelisp-bc-3b5c-mixed-defun-bcl-and-closure ()
-  ;; A defun with a body that doesn't compile (e.g. uses `and') falls
+  ;; A defun with a body the bytecode compiler can't reduce falls
   ;; back to the interpreter closure even with auto-compile on.
+  ;; Wave A21: `and' moved to the supported set, so use a literal
+  ;; non-symbol head — `((1 2) 3)' has no callable semantics and
+  ;; trips the catch-all in `nelisp-bc--compile-form'.
   (let ((nelisp-bc-auto-compile t))
     (nelisp--reset)
-    (nelisp-eval '(defun nelisp-bc-test--mix (x) (and x x)))
+    (nelisp-eval '(defun nelisp-bc-test--mix (x) (or x (progn ((1 2) 3) t))))
     (let ((fn (gethash 'nelisp-bc-test--mix nelisp--functions)))
       (should (nelisp--closure-p fn))
       (should (eq (nelisp-eval '(nelisp-bc-test--mix t)) t)))))
@@ -1257,6 +1270,152 @@ a label.  Returns the resolved int vector."
       (should (nelisp--closure-p counter))
       (should (= (nelisp--apply counter nil) 11))
       (should (= (nelisp--apply counter nil) 12)))))
+
+;;; Wave A21 — short-circuit macros + `.elc' write/load ---------------
+
+(ert-deftest nelisp-bc-a21-and-short-circuit ()
+  ;; `and' / `or' / `when' / `unless' / `prog1' / `prog2' moved from
+  ;; the `unimplemented' set into supported compile paths so `.elc'
+  ;; output can pre-compile defun bodies that use them.
+  (let* ((wrap-and (nelisp-bc-compile '(lambda (a b) (and a b (+ a b)))))
+         (and-fn (nelisp-bc-run wrap-and)))
+    (should (= (nelisp-bc-run and-fn '(2 3)) 5))
+    (should (eq (nelisp-bc-run and-fn '(nil 3)) nil))
+    (should (eq (nelisp-bc-run and-fn '(2 nil)) nil)))
+  (let* ((wrap-or (nelisp-bc-compile '(lambda (a b) (or a b))))
+         (or-fn (nelisp-bc-run wrap-or)))
+    (should (= (nelisp-bc-run or-fn '(7 9)) 7))
+    (should (= (nelisp-bc-run or-fn '(nil 9)) 9))
+    (should (eq (nelisp-bc-run or-fn '(nil nil)) nil))))
+
+(ert-deftest nelisp-bc-a21-when-unless-prog ()
+  (let* ((wrap-when (nelisp-bc-compile '(lambda (x) (when (> x 0) (* x 2)))))
+         (when-fn (nelisp-bc-run wrap-when)))
+    (should (= (nelisp-bc-run when-fn '(5)) 10))
+    (should (eq (nelisp-bc-run when-fn '(-1)) nil)))
+  (let* ((wrap-unless (nelisp-bc-compile '(lambda (x) (unless (> x 0) (* x -2)))))
+         (unless-fn (nelisp-bc-run wrap-unless)))
+    (should (eq (nelisp-bc-run unless-fn '(5)) nil))
+    (should (= (nelisp-bc-run unless-fn '(-3)) 6)))
+  (let* ((wrap-prog1 (nelisp-bc-compile '(lambda (x) (prog1 (+ x 1) (- x 1)))))
+         (prog1-fn (nelisp-bc-run wrap-prog1)))
+    (should (= (nelisp-bc-run prog1-fn '(10)) 11)))
+  (let* ((wrap-prog2 (nelisp-bc-compile '(lambda (x) (prog2 (+ x 1) (+ x 2) (+ x 3)))))
+         (prog2-fn (nelisp-bc-run wrap-prog2)))
+    (should (= (nelisp-bc-run prog2-fn '(10)) 12))))
+
+(ert-deftest nelisp-bc-a21-elc-writer-emits-magic ()
+  (let* ((src (make-temp-file "nelisp-bc-a21-" nil ".el"))
+         (out (concat (file-name-sans-extension src) ".elc")))
+    (unwind-protect
+        (progn
+          (with-temp-file src
+            (insert ";;; src.el\n")
+            (insert "(defun nelisp-bc-a21-test-add (a b) (+ a b))\n")
+            (insert "(provide 'nelisp-bc-a21-src)\n"))
+          (byte-compile-file src)
+          (should (file-exists-p out))
+          (with-temp-buffer
+            (insert-file-contents out)
+            (goto-char (point-min))
+            (should (looking-at (regexp-quote nelisp-bc--elc-magic)))))
+      (when (file-exists-p src) (delete-file src))
+      (when (file-exists-p out) (delete-file out)))))
+
+(ert-deftest nelisp-bc-a21-elc-roundtrip-defun ()
+  ;; Write a defun source, compile to .elc, load .elc, verify the
+  ;; pre-compiled bcl is installed into nelisp--functions and runs.
+  (let* ((src (make-temp-file "nelisp-bc-a21-" nil ".el"))
+         (out (concat (file-name-sans-extension src) ".elc")))
+    (unwind-protect
+        (progn
+          (with-temp-file src
+            (insert "(defun nelisp-bc-a21-roundtrip (n)\n")
+            (insert "  (if (< n 2) 1 (* n (nelisp-bc-a21-roundtrip (1- n)))))\n"))
+          (byte-compile-file src)
+          ;; Load the .elc by hand (host Emacs's `load' rejects our
+          ;; magic header).  In NeLisp the elisp `load' just reads +
+          ;; evals each form, identical to what we do here.
+          (let ((forms nil))
+            (with-temp-buffer
+              (insert-file-contents out)
+              (goto-char (point-min))
+              (condition-case _
+                  (while t (push (read (current-buffer)) forms))
+                (end-of-file nil)))
+            (dolist (f (nreverse forms)) (eval f)))
+          (let ((installed (gethash 'nelisp-bc-a21-roundtrip nelisp--functions)))
+            (should (nelisp-bcl-p installed))
+            (should (= (nelisp--apply 'nelisp-bc-a21-roundtrip '(5)) 120))))
+      (remhash 'nelisp-bc-a21-roundtrip nelisp--functions)
+      (when (file-exists-p src) (delete-file src))
+      (when (file-exists-p out) (delete-file out)))))
+
+(ert-deftest nelisp-bc-a21-elc-passthrough-non-defun ()
+  ;; Non-defun forms (defvar, defconst, require, plain calls) pass
+  ;; through the writer unchanged so the interpreter handles them
+  ;; exactly as if loading the .el source.
+  (let* ((src (make-temp-file "nelisp-bc-a21-" nil ".el"))
+         (out (concat (file-name-sans-extension src) ".elc")))
+    (unwind-protect
+        (progn
+          (with-temp-file src
+            (insert "(defvar nelisp-bc-a21-pass-var 42)\n")
+            (insert "(defun nelisp-bc-a21-pass-fn () nelisp-bc-a21-pass-var)\n"))
+          (byte-compile-file src)
+          (with-temp-buffer
+            (insert-file-contents out)
+            (goto-char (point-min))
+            ;; Skip the magic + header comments, read remaining forms.
+            (let ((forms nil))
+              (condition-case _
+                  (while t (push (read (current-buffer)) forms))
+                (end-of-file nil))
+              (let ((rev (nreverse forms)))
+                ;; First emitted form should be the verbatim defvar.
+                (should (and (consp (car rev))
+                             (eq (car (car rev)) 'defvar)))
+                ;; Second should be the bcl-installer.
+                (should (and (consp (cadr rev))
+                             (eq (car (cadr rev))
+                                 'nelisp-bc--defun-from-elc)))))))
+      (when (file-exists-p src) (delete-file src))
+      (when (file-exists-p out) (delete-file out)))))
+
+(ert-deftest nelisp-bc-a21-elc-fallback-on-unsupported ()
+  ;; Defun whose body the compiler can't reduce passes through as
+  ;; the unmodified `defun' form so the interpreter installs it.
+  (let* ((src (make-temp-file "nelisp-bc-a21-" nil ".el"))
+         (out (concat (file-name-sans-extension src) ".elc")))
+    (unwind-protect
+        (progn
+          (with-temp-file src
+            (insert "(defun nelisp-bc-a21-fallback (x) (((1 2) 3) x))\n"))
+          (byte-compile-file src)
+          (with-temp-buffer
+            (insert-file-contents out)
+            (goto-char (point-min))
+            (let ((forms nil))
+              (condition-case _
+                  (while t (push (read (current-buffer)) forms))
+                (end-of-file nil))
+              (let ((rev (nreverse forms)))
+                ;; Must be the verbatim `defun', NOT bcl-from-elc.
+                (should (and (consp (car rev))
+                             (eq (car (car rev)) 'defun)))))))
+      (when (file-exists-p src) (delete-file src))
+      (when (file-exists-p out) (delete-file out)))))
+
+(ert-deftest nelisp-bc-a21-defun-from-elc-installs ()
+  (let* ((wrap (nelisp-bc-compile '(lambda (n) (+ n 100))))
+         (bcl (nelisp-bc-run wrap)))
+    (unwind-protect
+        (progn
+          (nelisp-bc--defun-from-elc 'nelisp-bc-a21-installed bcl)
+          (should (eq (gethash 'nelisp-bc-a21-installed nelisp--functions)
+                      bcl))
+          (should (= (nelisp--apply 'nelisp-bc-a21-installed '(42)) 142)))
+      (remhash 'nelisp-bc-a21-installed nelisp--functions))))
 
 (provide 'nelisp-bytecode-test)
 ;;; nelisp-bytecode-test.el ends here
