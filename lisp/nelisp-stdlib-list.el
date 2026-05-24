@@ -18,6 +18,71 @@
 (defun nreverse (list)
   (reverse list))
 
+;; Wave A28 (2026-05-24) — `last' / `butlast' polyfill for standalone
+;; NeLisp.  Host Emacs provides both as native primitives (= subr in
+;; src/fns.c) but standalone NeLisp has no `last' builtin, which
+;; causes `(void-function last)' when `nelisp-asm-x86_64-reloc-*-here'
+;; runs during `nelisp-cc-cons-construct' compile (= first manifest
+;; entry whose `--emit-cons-make' triggers a `plt32' reloc fixup that
+;; calls `(car (last relocs))').
+;;
+;; Both gated with `fboundp' per memory note
+;; `feedback_emacs_stub_unconditional_defun_clobber.md' so host Emacs
+;; (= byte-identity reference) keeps its native primitives unchanged.
+;; Standalone NeLisp picks up these defuns because it loads this file
+;; via the `e!' include macro in `build-tool/src/eval/mod.rs'.
+;;
+;; `last' returns the last cons cell of LIST (= (last '(a b c)) => (c)),
+;; with optional N argument returning the last N cells (default 1).
+;; `butlast' returns a fresh list with the last N elements omitted
+;; (default 1).  Both signal `wrong-type-argument' for non-list inputs
+;; to mirror Emacs `subr-arity' contract (= caller of
+;; `reloc-plt32-here' always passes a proper list of reloc plists, so
+;; the error path is never exercised by the compiler in practice).
+
+(unless (fboundp 'last)
+  (defun last (list &optional n)
+    "Return the last link of LIST.  Its `car' is the last element.
+If LIST is nil, return nil.  If N is non-nil, return the Nth-to-last
+link of LIST."
+    (let* ((m (or n 1))
+           (cur list)
+           (lead list))
+      ;; advance lead by m cells (or to end if shorter than m)
+      (let ((i 0))
+        (while (and (consp lead) (< i m))
+          (setq lead (cdr lead))
+          (setq i (1+ i))))
+      (while (consp lead)
+        (setq cur (cdr cur))
+        (setq lead (cdr lead)))
+      cur)))
+
+(unless (fboundp 'butlast)
+  (defun butlast (list &optional n)
+    "Return a copy of LIST with the last N elements removed.
+If N is omitted or nil, the last element is removed.  If N is zero
+or negative, return a full copy of LIST."
+    (let ((m (or n 1)))
+      (if (<= m 0)
+          (copy-sequence list)
+        (let* ((len 0)
+               (cur list))
+          (while (consp cur)
+            (setq len (1+ len))
+            (setq cur (cdr cur)))
+          (let ((keep (- len m)))
+            (if (<= keep 0)
+                nil
+              (let ((acc nil)
+                    (i 0)
+                    (src list))
+                (while (and (< i keep) (consp src))
+                  (setq acc (cons (car src) acc))
+                  (setq src (cdr src))
+                  (setq i (1+ i)))
+                (reverse acc)))))))))
+
 ;; Rust-min batch 6o (2026-05-06): `append' migrated from Rust to
 ;; elisp.  The previous `bi_append' (~61 LOC) implemented the
 ;; multi-arg sequence concatenation contract:
