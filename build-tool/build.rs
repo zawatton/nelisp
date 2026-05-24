@@ -36,7 +36,7 @@ fn main() {
 /// in scripts/compile-elisp-objects.el.  Used only for chunk partitioning;
 /// over-shooting is harmless (= elisp clamps end to manifest length, extra
 /// chunks no-op), under-shooting silently skips entries.
-const N_MANIFEST_ENTRIES: usize = 211;
+const N_MANIFEST_ENTRIES: usize = 212;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");

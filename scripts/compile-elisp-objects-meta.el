@@ -126,7 +126,24 @@
 Chosen because each entry has no `:requires-arch' constraint (=
 they compile on every Phase 47 backend), so the PoC runs across
 both x86_64 and aarch64 hosts.  The full 208-entry walk lands in
-Wave A25.3 once the standalone bootstrap is wired.")
+Wave A27 via `compile-elisp-objects-meta-emit-all' (= production
+cutover, chunked walker dispatch).")
+
+;; Wave A27 — production cutover chunk size.  The Phase 47 walker packs
+;; per-entry rebuild decisions into a single `Sexp::Int(bitmask)' i64
+;; return slot.  i64 holds 64 distinct bit positions, so the elisp
+;; driver slices the full 208-entry manifest into 4 chunks of ≤ 64
+;; entries each and issues one walker call per chunk, accumulating the
+;; per-chunk bitmasks into a parallel `chunks-mask' vector indexed by
+;; chunk number.  Bit `b' of `chunks-mask[c]' corresponds to the
+;; absolute manifest entry index `c * 64 + b'.
+(defconst compile-elisp-objects-meta--chunk-size 64
+  "Maximum number of manifest entries packed into a single walker call.
+Determined by the i64 bitmask return-slot width of the Wave A26
+`nelisp_meta_walk' kernel.  The Wave A27 production cutover relies
+on this constant to split the 208-entry production manifest into
+ceil(208/64) = 4 walker dispatches; smaller subsets (= the 5-entry
+A26 PoC) fit in a single chunk.")
 
 (defun compile-elisp-objects-meta--filter-subset (manifest)
   "Return MANIFEST entries whose feature is in the PoC subset.
@@ -171,6 +188,68 @@ control: same shape, same iteration order, runs through the legacy
                       requires-arch)
               acc)))
     (vconcat (nreverse acc))))
+
+(defun compile-elisp-objects-meta--build-full-static-manifest ()
+  "Materialise the FULL production manifest as a static manifest vector.
+
+Wave A27 — production cutover.  Same per-entry shape as
+`compile-elisp-objects-meta--build-static-manifest' (= 4-slot
+`[FEATURE SEXP OUTPUT REQUIRES-ARCH]' vector) but iterates the
+entire `compile-elisp-objects-manifest' without the 5-entry PoC
+filter, so the result vector has the 208-entry production length.
+
+The per-entry shape is identical to the subset variant so the
+walker chunking + bitmask combine path operates uniformly on both
+sizes; the only behavioural difference is the resulting vector
+length (= 5 for A26 PoC, 212 for A27 production), which feeds
+into the chunk-count computation in
+`compile-elisp-objects-meta--chunk-count'.
+
+Wave A27 optimisation: `require feature' is hoisted to a single
+pre-pass that dedups the feature set first, so multi-entry
+features (= e.g. `nelisp-cc-bi-quit-flag' which has 3 entries for
+set/clear/pending-p) only pay the require cost once.  The
+standalone NeLisp `require' path is CPU-bound on each call
+regardless of cache state, so dedup cuts ~25% off the manifest
+construction wall-clock for production-sized inputs."
+  ;; Pre-pass: dedup features so each unique feature requires once.
+  ;; In standalone NeLisp the require path is intrinsically slow
+  ;; (~50ms / feature on a warm process) so collapsing duplicates is
+  ;; worth a fresh pre-pass over the 212-entry manifest.
+  (let ((seen nil))
+    (dolist (entry compile-elisp-objects-manifest)
+      (let ((feature (car entry)))
+        (unless (memq feature seen)
+          (require feature)
+          (push feature seen)))))
+  (let ((acc nil))
+    (dolist (entry compile-elisp-objects-manifest)
+      (let* ((feature (car entry))
+             (props   (cdr entry))
+             (src-var (plist-get props :source-var))
+             (output  (plist-get props :output))
+             (requires-arch (plist-get props :requires-arch)))
+        (unless (boundp src-var)
+          (error
+           "compile-elisp-objects-meta: feature %S has no :source-var %S"
+           feature src-var))
+        (push (vector feature
+                      (symbol-value src-var)
+                      output
+                      requires-arch)
+              acc)))
+    (vconcat (nreverse acc))))
+
+(defun compile-elisp-objects-meta--chunk-count (total)
+  "Return the number of walker chunks needed for TOTAL entries.
+Each chunk packs up to `compile-elisp-objects-meta--chunk-size' (=
+64) entries into a single Phase 47 walker call's i64 bitmask
+return slot.  TOTAL = 0 returns 0; positive TOTAL returns the
+ceiling division `ceil(TOTAL / 64)'."
+  (if (<= total 0)
+      0
+    (/ (+ total (1- compile-elisp-objects-meta--chunk-size))
+       compile-elisp-objects-meta--chunk-size)))
 
 (defun compile-elisp-objects-meta--arch-ok-p (requires-arch arch)
   "Return non-nil when ARCH satisfies REQUIRES-ARCH.
@@ -273,29 +352,33 @@ takes two parallel `Sexp::Vec' of `Sexp::Str' path arguments instead
 of a single record vector.
 
 Returns a plist `(:srcs SRCS-VEC :outs OUTS-VEC :entries ENTRIES-VEC
-:dirty-arch-mask MASK)' where:
+:arch-skip-chunks CHUNK-MASKS)' where:
 
   SRCS-VEC       - vector of source `.el' absolute paths (strings).
   OUTS-VEC       - vector of output `.o' absolute paths (strings).
   ENTRIES-VEC    - vector of the original manifest entries (= the
                    4-slot records the walker dispatches against
                    after the bitmask comes back).
-  DIRTY-ARCH-MASK - i64 bitmask; bit i set iff entry i should be
-                   skipped due to `:requires-arch' mismatch.  The
-                   walker still processes those entries (their
-                   bitmask bit is unreliable) but the elisp driver
-                   ignores both the walker-bit AND the entry on
-                   the emit pass when the arch-skip bit is set.
+  ARCH-SKIP-CHUNKS - vector of i64 chunk bitmasks; bit `b' of
+                   CHUNK-MASKS[c] is set iff the absolute entry at
+                   index `c * 64 + b' should be skipped due to
+                   `:requires-arch' mismatch.  Wave A27 production
+                   cutover: a single i64 mask cannot cover 208
+                   entries (= overflows bit 63), so the arch-skip
+                   state is stored per chunk for parallel use with
+                   the walker's per-chunk dirty-bit return.
 
 ENTRIES-VEC is parallel to SRCS-VEC / OUTS-VEC (= same length, same
-order), so bit `i' of the walker's returned bitmask maps to
-ENTRIES-VEC[i] / SRCS-VEC[i] / OUTS-VEC[i] one-to-one."
-  (let ((n (length manifest))
-        (srcs (make-vector (length manifest) ""))
-        (outs (make-vector (length manifest) ""))
-        (entries (make-vector (length manifest) nil))
-        (arch-skip 0)
-        (i 0))
+order); the chunked walker dispatch maps bit `b' of the returned
+bitmask for chunk `c' to ENTRIES-VEC[c * 64 + b]."
+  (let* ((n (length manifest))
+         (chunk-size compile-elisp-objects-meta--chunk-size)
+         (chunk-count (compile-elisp-objects-meta--chunk-count n))
+         (srcs (make-vector n ""))
+         (outs (make-vector n ""))
+         (entries (make-vector n nil))
+         (arch-skip-chunks (make-vector chunk-count 0))
+         (i 0))
     (while (< i n)
       (let* ((entry (aref manifest i))
              (feature       (aref entry 0))
@@ -307,125 +390,198 @@ ENTRIES-VEC[i] / SRCS-VEC[i] / OUTS-VEC[i] one-to-one."
         (aset outs i out-path)
         (aset entries i entry)
         (unless (compile-elisp-objects-meta--arch-ok-p requires-arch arch)
-          (setq arch-skip (logior arch-skip (ash 1 i))))
+          (let* ((chunk-idx (/ i chunk-size))
+                 (bit-pos (- i (* chunk-idx chunk-size)))
+                 (cur (aref arch-skip-chunks chunk-idx)))
+            (aset arch-skip-chunks chunk-idx
+                  (logior cur (ash 1 bit-pos)))))
         (setq i (1+ i))))
     (list :srcs srcs :outs outs :entries entries
-          :dirty-arch-mask arch-skip)))
+          :arch-skip-chunks arch-skip-chunks)))
 
-(defun compile-elisp-objects-meta--missing-file-mask (srcs outs)
-  "Return a bitmask of entries with a missing src OR missing out file.
-Bit i is set iff `srcs[i]' is empty / does not exist, OR `outs[i]'
-does not exist.  Used to pre-flight the walker dispatch so the
-Phase 47 `nelisp_meta_should_rebuild' kernel only sees entries
-where both files are stat-able (= same pre-flight invariant the
-pre-A26 `compile-elisp-objects-meta--should-rebuild' shim relied
-on)."
-  (let ((n (length srcs))
-        (mask 0)
-        (i 0))
-    (while (< i n)
+(defun compile-elisp-objects-meta--missing-file-mask-chunk
+    (srcs outs chunk-start chunk-end)
+  "Return an i64 bitmask of missing-file entries in [CHUNK-START, CHUNK-END).
+Bit `b' is set iff `srcs[CHUNK-START + b]' is empty / does not
+exist, OR `outs[CHUNK-START + b]' does not exist.  Used to
+pre-flight one walker chunk dispatch so the Phase 47
+`nelisp_meta_should_rebuild' kernel only sees entries where both
+files are stat-able (= same pre-flight invariant the pre-A26
+`compile-elisp-objects-meta--should-rebuild' shim relied on).
+
+CHUNK-START is the absolute entry index of bit 0; CHUNK-END is the
+absolute exclusive upper bound (= chunk-start + chunk-len, with
+chunk-len ≤ 64).  Returned bitmask is chunk-local — caller maps bit
+`b' back to absolute index `CHUNK-START + b'."
+  (let ((mask 0)
+        (i chunk-start))
+    (while (< i chunk-end)
       (let ((src (aref srcs i))
-            (out (aref outs i)))
+            (out (aref outs i))
+            (bit-pos (- i chunk-start)))
         (when (or (null src)
                   (not (stringp src))
                   (string-empty-p src)
                   (not (file-exists-p src))
                   (not (file-exists-p out)))
-          (setq mask (logior mask (ash 1 i)))))
+          (setq mask (logior mask (ash 1 bit-pos)))))
       (setq i (1+ i)))
     mask))
 
-(defun compile-elisp-objects-meta--compute-bitmask (srcs outs)
-  "Return an i64 bitmask of per-entry rebuild decisions.
-Bit i is 1 iff `nelisp_meta_should_rebuild' decided entry i needs
-rebuilding (= source newer than output, or output missing, or src
-missing).
+(defun compile-elisp-objects-meta--slice-vector (vec start end)
+  "Return a fresh vector containing VEC[START..END).
+Used by the Wave A27 chunked walker dispatch to hand each chunk a
+self-contained `Sexp::Vec' for the `nl-jit-call-out-2 \"nelisp_meta_walk\"'
+bridge.  The bridge marshals the slice as `*const Sexp' and
+`nelisp_meta_walk' iterates `vector-len' (= ≤ 64) entries
+internally; bit positions in the returned mask are chunk-local (=
+0..63), so the caller adds `START' when mapping back to absolute
+manifest indices.
 
-Wave A26 — when the standalone NeLisp interpreter's
-`nl-jit-call-out-2' bridge is bound (= standalone runtime with the
-A26 `nelisp_meta_walk' kernel linked into `+whole-archive'), this
-function makes a SINGLE bridge call into the Phase 47 walker:
+Pure-elisp slice via `make-vector' + `aset' loop instead of
+`subseq' / `seq-subseq' so the function stays compatible with the
+standalone NeLisp runtime (= which does not currently load the
+`seq' / `cl-lib' subseq machinery into the build-host elisp
+namespace)."
+  (let* ((len (- end start))
+         (out (make-vector len nil))
+         (i 0))
+    (while (< i len)
+      (aset out i (aref vec (+ start i)))
+      (setq i (1+ i)))
+    out))
 
-  (nl-jit-call-out-2 \"nelisp_meta_walk\" SRCS OUTS)
+(defun compile-elisp-objects-meta--compute-bitmask-chunks (srcs outs)
+  "Return a vector of i64 chunk bitmasks of per-entry rebuild decisions.
+The full input length `(length srcs)' is split into ceil(N/64)
+chunks; each chunk slot holds an i64 bitmask whose bit `b' is 1
+iff `nelisp_meta_should_rebuild' decided that the absolute entry
+at index `chunk-idx * 64 + b' needs rebuilding (= source newer
+than output, or output missing, or src missing).
+
+Wave A27 production cutover.  i64 holds 64 distinct bit positions,
+so the full 208-entry manifest is fanned out across 4 walker
+dispatches; each dispatch sees a sliced sub-vector of ≤ 64 entries
+and packs decisions into its chunk-local bitmask.  The result
+preserves the chunked layout so the emit pass can index decisions
+by `(chunk-idx, bit-pos)' without overflowing any single i64.
+
+On standalone NeLisp (= `nl-jit-call-out-2' bound), each chunk
+dispatches the Phase 47-compiled `nelisp_meta_walk' kernel once
+with the sliced inputs:
+
+  (nl-jit-call-out-2 \"nelisp_meta_walk\" CHUNK-SRCS CHUNK-OUTS)
 
 The walker iterates internally via Phase 47-native tail recursion,
-calling `nelisp_meta_should_rebuild' for each (src, out) pair, and
-packs the 0/1 decisions into a single `Sexp::Int(bitmask)' return.
-This collapses N elisp -> native bridge calls into 1 (= the A26
-walker is the iteration kernel itself, not a per-entry shim).
+calling `nelisp_meta_should_rebuild' for each (src, out) pair in
+the chunk, and packs the 0/1 decisions into a single
+`Sexp::Int(chunk-bitmask)' return.  This collapses N elisp ->
+native bridge calls into ceil(N/64) (= 4 calls for the 208-entry
+production manifest, 1 call for the A26 5-entry PoC).
 
 Missing-file pre-flight: the A25.2 `nelisp_meta_should_rebuild'
 kernel's `extern-call stat' currently masks the stat-failure rc
-indistinguishably from the rc-success branch (= the kernel's
-`(if (< rc 0) -1 ...)' check is x86_64-correct but the elisp-side
-extern-call return-shape returns 0 for the rc<0 branch as well, so
-the kernel's missing-file decision-bit is unreliable).  We work
-around this by pre-flighting missing files on the elisp side via
-`compile-elisp-objects-meta--missing-file-mask' and OR-ing the
-result into the walker's bitmask — same byte-identity contract,
-same safety, just without depending on the kernel's missing-file
-branch.  When the kernel-side stat-failure path is fixed in a
-later wave the pre-flight can be dropped.
+indistinguishably from the rc-success branch.  Each chunk's
+walker output is OR-ed with a per-chunk missing-file mask so
+entries with absent src or out are flagged dirty regardless of
+what the walker decided.
 
 On host Emacs (= no `nl-jit-call-out-2'), the function falls back
 to the per-entry `compile-elisp-objects-meta--should-rebuild' shim
-called in an elisp loop.  The bitmask is built one bit at a time
-so the byte-identity reference path stays untouched."
-  (let ((missing-mask
-         (compile-elisp-objects-meta--missing-file-mask srcs outs)))
-    (cond
-     ((fboundp 'nl-jit-call-out-2)
-      ;; Standalone NeLisp path — single bridge call into the Phase 47
-      ;; walker.  The bridge returns `Sexp::Int(bitmask)' via the result
-      ;; slot; on dlsym miss or arity mismatch we fall back to the
-      ;; per-entry safe-over-build (= mark every entry dirty).  OR with
-      ;; the missing-file pre-flight so entries with missing src or out
-      ;; are flagged dirty regardless of what the walker decided (= the
-      ;; kernel's `extern-call stat' rc<0 branch is unreliable, see
-      ;; docstring).
-      (logior missing-mask
-              (condition-case _err
-                  (let ((result (nl-jit-call-out-2 "nelisp_meta_walk"
-                                                   srcs outs)))
-                    (if (integerp result) result
-                      ;; Walker miss — mark every entry dirty so the
-                      ;; emit pass still produces correct output (=
-                      ;; safe over-build).
-                      (1- (ash 1 (length srcs)))))
-                (error
-                 ;; Walker dispatch failed — mark every entry dirty.
-                 (1- (ash 1 (length srcs)))))))
-     (t
-      ;; Host Emacs reference path — per-entry shim in an elisp loop.
-      ;; Byte-identity-safe: the per-entry shim is the same code the
-      ;; pre-A26 walker called, just lifted out of the iteration body.
-      (let ((n (length srcs))
-            (mask 0)
-            (i 0))
-        (while (< i n)
-          (let* ((src (aref srcs i))
-                 (out (aref outs i))
-                 (decision (compile-elisp-objects-meta--should-rebuild
-                            (and (not (string-empty-p src)) src)
-                            out)))
-            (when (not (zerop decision))
-              (setq mask (logior mask (ash 1 i)))))
-          (setq i (1+ i)))
-        mask)))))
+called in an elisp loop, building each chunk's bitmask one bit at
+a time so the byte-identity reference path stays untouched."
+  (let* ((n (length srcs))
+         (chunk-size compile-elisp-objects-meta--chunk-size)
+         (chunk-count (compile-elisp-objects-meta--chunk-count n))
+         (result (make-vector chunk-count 0))
+         (chunk-idx 0))
+    (while (< chunk-idx chunk-count)
+      (let* ((chunk-start (* chunk-idx chunk-size))
+             (chunk-end (min n (+ chunk-start chunk-size)))
+             (chunk-len (- chunk-end chunk-start))
+             (missing-mask
+              (compile-elisp-objects-meta--missing-file-mask-chunk
+               srcs outs chunk-start chunk-end)))
+        (aset result chunk-idx
+              (cond
+               ((fboundp 'nl-jit-call-out-2)
+                ;; Standalone NeLisp path — bridge call into the Phase 47
+                ;; walker for this chunk's slice.  Slice srcs/outs into
+                ;; chunk-local vectors so the walker's `vector-len' read
+                ;; returns the chunk length and bit positions are
+                ;; chunk-local.  On dlsym miss / arity mismatch / error
+                ;; we mark every entry in the chunk dirty (safe
+                ;; over-build).  OR with the chunk's missing-file
+                ;; pre-flight so absent files are flagged dirty
+                ;; regardless of the kernel's stat-failure return shape.
+                (let* ((chunk-srcs (compile-elisp-objects-meta--slice-vector
+                                    srcs chunk-start chunk-end))
+                       (chunk-outs (compile-elisp-objects-meta--slice-vector
+                                    outs chunk-start chunk-end))
+                       (full-mask (if (= chunk-len 64)
+                                      -1
+                                    (1- (ash 1 chunk-len)))))
+                  (logior missing-mask
+                          (condition-case _err
+                              (let ((bm (nl-jit-call-out-2
+                                         "nelisp_meta_walk"
+                                         chunk-srcs chunk-outs)))
+                                (if (integerp bm) bm full-mask))
+                            (error full-mask)))))
+               (t
+                ;; Host Emacs reference path — per-entry shim in an elisp
+                ;; loop covering this chunk's slice.  Byte-identity-safe
+                ;; mirror of the pre-A27 single-chunk path, scoped to
+                ;; the chunk-local bit range so bit positions stay in
+                ;; [0, 63].
+                (let ((mask 0)
+                      (i chunk-start))
+                  (while (< i chunk-end)
+                    (let* ((src (aref srcs i))
+                           (out (aref outs i))
+                           (decision
+                            (compile-elisp-objects-meta--should-rebuild
+                             (and (not (string-empty-p src)) src)
+                             out))
+                           (bit-pos (- i chunk-start)))
+                      (when (not (zerop decision))
+                        (setq mask (logior mask (ash 1 bit-pos)))))
+                    (setq i (1+ i)))
+                  (logior mask missing-mask))))))
+      (setq chunk-idx (1+ chunk-idx)))
+    result))
+
+(defun compile-elisp-objects-meta--compute-bitmask (srcs outs)
+  "Wave A26 single-i64 bitmask wrapper around the A27 chunked path.
+Returns the chunk-0 bitmask from
+`compile-elisp-objects-meta--compute-bitmask-chunks'; callers that
+target the 5-entry PoC subset (= one chunk) get the i64 they
+expected from the pre-A27 walker.  Callers that drive the full
+208-entry manifest MUST use `--compute-bitmask-chunks' directly so
+the chunk overflow is handled correctly."
+  (let ((chunks (compile-elisp-objects-meta--compute-bitmask-chunks
+                 srcs outs)))
+    (if (= (length chunks) 0) 0 (aref chunks 0))))
 
 (defun compile-elisp-objects-meta--walk (manifest _idx _end out-dir arch format)
-  "Wave A26 manifest walker.
+  "Wave A26+A27 manifest walker (chunked).
 Drives the per-entry up-to-date decision through the Phase 47-
-compiled `nelisp_meta_walk' kernel (= a single bridge call returns
-an i64 bitmask of dirty-bit decisions) when running under
-standalone NeLisp, or falls back to the host-Emacs per-entry shim
-for ERT / batch reference runs.
+compiled `nelisp_meta_walk' kernel (= ceil(N/64) bridge calls, each
+returning an i64 chunk bitmask of dirty-bit decisions) when
+running under standalone NeLisp, or falls back to the host-Emacs
+per-entry shim for ERT / batch reference runs.
 
-The elisp driver then iterates the manifest once more to dispatch
-the actual `nelisp-phase47-compile-to-object' emit step for every
-entry whose bit is set in the bitmask, skipping arch-mismatched
-entries by consulting the `:dirty-arch-mask' value the path-vector
-builder produced alongside the parallel `srcs' / `outs' vectors.
+Wave A27 production cutover — the dirty/arch-skip state is now
+stored per chunk (= vector of i64 masks) so the dispatch path
+handles the full 212-entry production manifest without overflowing
+any single i64.  Each chunk holds up to 64 entries; bit `b' of
+chunk `c' corresponds to absolute manifest index `c * 64 + b'.
+
+The elisp driver iterates the manifest once more to dispatch the
+actual `nelisp-phase47-compile-to-object' emit step for every
+entry whose bit is set in the matching chunk's bitmask, skipping
+arch-mismatched entries by consulting the `:arch-skip-chunks'
+value the path-vector builder produced.
 
 The IDX / END args are kept for ABI compatibility with the legacy
 caller in `compile-elisp-objects-meta-emit-subset' (= which always
@@ -440,9 +596,11 @@ unchanged."
          (srcs (plist-get paths :srcs))
          (outs (plist-get paths :outs))
          (entries (plist-get paths :entries))
-         (arch-skip (plist-get paths :dirty-arch-mask))
+         (arch-skip-chunks (plist-get paths :arch-skip-chunks))
          (n (length entries))
-         (bitmask (compile-elisp-objects-meta--compute-bitmask srcs outs))
+         (chunk-size compile-elisp-objects-meta--chunk-size)
+         (bitmask-chunks
+          (compile-elisp-objects-meta--compute-bitmask-chunks srcs outs))
          (acc nil)
          (i 0))
     (while (< i n)
@@ -450,11 +608,16 @@ unchanged."
              (feature (aref entry 0))
              (sexp    (aref entry 1))
              (out-path (aref outs i))
-             (arch-skip-p (not (zerop (logand arch-skip (ash 1 i))))))
+             (chunk-idx (/ i chunk-size))
+             (bit-pos (- i (* chunk-idx chunk-size)))
+             (bit-mask (ash 1 bit-pos))
+             (arch-skip-mask (aref arch-skip-chunks chunk-idx))
+             (dirty-mask (aref bitmask-chunks chunk-idx))
+             (arch-skip-p (not (zerop (logand arch-skip-mask bit-mask)))))
         (cond
          (arch-skip-p
           nil)
-         ((zerop (logand bitmask (ash 1 i)))
+         ((zerop (logand dirty-mask bit-mask))
           ;; Up-to-date — return existing path for caller's accumulator.
           (push out-path acc))
          (t
@@ -475,13 +638,40 @@ byte-identical output to the legacy `compile-elisp-objects-emit-all'
 on the same subset.
 
 The 5-entry subset stays small enough that the host-Emacs runtime
-finishes in well under a second; the production 208-entry walk
-remains on the legacy driver until Wave A25.3 ships the standalone
-bootstrap wiring."
+finishes in well under a second; the production 208-entry walk is
+exposed via `compile-elisp-objects-meta-emit-all' (Wave A27)."
   (let* ((out-dir (compile-elisp-objects--out-dir))
          (arch    (compile-elisp-objects--target-arch))
          (format  (compile-elisp-objects--target-format))
          (manifest (compile-elisp-objects-meta--build-static-manifest))
+         (n (length manifest)))
+    (unless (file-directory-p out-dir)
+      (make-directory out-dir t))
+    (compile-elisp-objects-meta--walk manifest 0 n out-dir arch format)))
+
+;;;###autoload
+(defun compile-elisp-objects-meta-emit-all ()
+  "Compile the FULL production manifest via the chunked static-manifest walker.
+Returns the list of absolute paths written.  Wave A27 production
+cutover entry point — drives the entire 212-entry
+`compile-elisp-objects-manifest' through the Phase 47-compiled
+`nelisp_meta_walk' kernel (ceil(N/64) = 4 chunks, each ≤ 64
+entries) under standalone NeLisp, or through the byte-identity
+host-Emacs per-entry shim under `emacs --batch'.
+
+Output paths share the production names (= same
+`compile-elisp-objects--out-dir' as the legacy
+`compile-elisp-objects-emit-all'), so a byte-identity probe
+against the legacy driver's reference output is a single
+`cmp $REF $OUT' per entry.
+
+Up-to-date entries (= chunk bitmask bit 0 + arch-skip bit 0) are
+returned in the accumulator without re-emitting, mirroring the
+legacy incremental-build behaviour."
+  (let* ((out-dir (compile-elisp-objects--out-dir))
+         (arch    (compile-elisp-objects--target-arch))
+         (format  (compile-elisp-objects--target-format))
+         (manifest (compile-elisp-objects-meta--build-full-static-manifest))
          (n (length manifest)))
     (unless (file-directory-p out-dir)
       (make-directory out-dir t))

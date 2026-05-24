@@ -42,10 +42,16 @@
 ;;
 ;; Bitmask encoding.  Bit i of the returned i64 is set iff
 ;; `nelisp_meta_should_rebuild' decided the i-th entry needs rebuilding
-;; (= 1 in its result slot).  PoC subset = 5 entries, so we only need
-;; the low 5 bits.  i64 holds 64 entries; larger manifests would split
-;; into multiple walker dispatches or switch to a vector-based return
-;; (= out of scope for A26).
+;; (= 1 in its result slot).  i64 holds 64 entries; the A26 PoC subset
+;; (= 5 entries) fits in a single walker call, and the Wave A27
+;; production cutover splits larger manifests by chunking on the elisp
+;; driver side — slicing srcs/outs into ≤ 64-entry sub-vectors and
+;; issuing ceil(N/64) walker dispatches, with bit positions kept
+;; chunk-local (= [0, 63]) and chunk indices threaded back to absolute
+;; manifest positions by the caller.  Walker source is unchanged
+;; between A26 and A27 because `vector-len' inside `nelisp_meta_walk_
+;; outer' already auto-adapts to whatever sliced length the bridge
+;; receives.
 ;;
 ;; Input vectors.  Two parallel vectors instead of a single
 ;; pair-vector: `srcs[i]' = `Sexp::Str' of the source path, `outs[i]'
@@ -266,10 +272,13 @@ Composes only existing Phase 47 grammar — no new opcode:
 
 Bitmask semantics: bit i = 1 iff entry i needs rebuilding (= the
 kernel's 0/1 decision shape, lifted into a flat i64).  Supports up
-to 64 entries in a single walker call.  Larger manifests (= the
-production 208-entry walk) would split into multiple walker
-dispatches or switch to a vector-based return, both out of scope
-for A26 (= which targets the existing 5-entry PoC subset).
+to 64 entries per dispatch; Wave A27 production cutover handles
+larger manifests via elisp-side chunking (= ceil(N/64) walker
+calls with sliced sub-vectors; see
+`compile-elisp-objects-meta--compute-bitmask-chunks').  The
+walker source is unchanged from A26 because `vector-len' inside
+`nelisp_meta_walk_outer' adapts to whatever sliced length the
+bridge receives — no recompile needed for production.
 
 Refcount note: `vector-ref-ptr' returns a borrowed `*const Sexp'
 inside the vector's heap storage.  The kernel

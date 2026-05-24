@@ -440,14 +440,27 @@ Returns an integer exit code (0 = success, 1 = error)."
 (pass -L scripts/ before driving the meta path)")))
           (load production-script nil t)
           (load meta-script nil t)
-          (let ((emit-fn (intern "compile-elisp-objects-meta-emit-subset")))
+          ;; Wave A27 — when `NELISP_META_DRIVER_FULL=1' is set in the
+          ;; environment, drive the full 212-entry production manifest
+          ;; via `compile-elisp-objects-meta-emit-all' (chunked walker
+          ;; dispatch).  Default `NELISP_USE_META_DRIVER=1' alone keeps
+          ;; the A26 5-entry PoC subset (= `-emit-subset') for backward
+          ;; compatibility with the spike validation runs.
+          (let* ((full-p (let ((v (getenv "NELISP_META_DRIVER_FULL")))
+                           (and v (stringp v) (> (length v) 0)
+                                (not (equal v "0")))))
+                 (emit-fn-name (if full-p
+                                   "compile-elisp-objects-meta-emit-all"
+                                 "compile-elisp-objects-meta-emit-subset"))
+                 (emit-fn (intern emit-fn-name)))
             (unless (fboundp emit-fn)
               (signal 'error
-                      (list "compile-elisp-objects-meta-emit-subset \
-not bound after meta-script load")))
+                      (list (format "%s not bound after meta-script load"
+                                    emit-fn-name))))
             (let ((paths (funcall emit-fn)))
               (nelisp--write-stdout-bytes
-               (format "[nelisp-meta-driver] wrote %d objects\n"
+               (format "[nelisp-meta-driver%s] wrote %d objects\n"
+                       (if full-p "/full" "")
                        (length paths)))
               0))))
     (error
