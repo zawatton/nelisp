@@ -805,34 +805,119 @@ Supported: `pc32' (= R_X86_64_PC32), `abs64' (= R_X86_64_64),
   "Build a minimal valid ELF64 x86_64 `exit(0)' binary, return unibyte string.
 Layout: Ehdr (64) + Phdr (56) + .text (7) = 127 bytes total.  The
 single PT_LOAD segment maps offset 0 at virtual address #x400000 and
-includes both headers in the loaded image (= Teensy ELF pattern)."
+includes both headers in the loaded image (= Teensy ELF pattern).
+
+Wave A25.5 (2026-05-24): the Ehdr / Phdr writes are inlined as
+literal `(nelisp-elf--cbuf-push CBUF (unibyte-string ...))' forms
+instead of `nelisp-elf-write-ehdr' / `-phdr' defun-calls — saves
+one defun dispatch + 11 plist-get walks per record on standalone
+NeLisp.  Byte sequence is identical to the legacy plist path
+(verified by `cmp -l' against host Emacs output)."
   (let* ((text nelisp-elf--minimal-exit-0-text)
          (text-size (length text))
          (text-off (+ nelisp-elf--ehdr-size nelisp-elf--phdr-size))
          (filesz (+ text-off text-size))
          (vaddr-base nelisp-elf--minimal-vaddr-base)
          (entry (+ vaddr-base text-off))
+         (flags (logior nelisp-elf--pf-r nelisp-elf--pf-x))
          (cbuf (nelisp-elf-make-buffer)))
-    (nelisp-elf-write-ehdr
+    ;; ---- Ehdr (inline, mirrors --build-rel ehdr pattern) ----
+    (nelisp-elf--cbuf-push
      cbuf
-     (list :type      nelisp-elf--et-exec
-           :machine   nelisp-elf--em-x86-64
-           :entry     entry
-           :phoff     nelisp-elf--ehdr-size
-           :shoff     0
-           :phnum     1
-           :shnum     0
-           :shstrndx  0))
-    (nelisp-elf-write-phdr
+     (unibyte-string
+      ;; e_ident[0..15] = magic + class + data + version + osabi + pad[8]
+      #x7F #x45 #x4C #x46
+      nelisp-elf--ei-class-64
+      nelisp-elf--ei-data-lsb
+      nelisp-elf--ev-current
+      nelisp-elf--ei-osabi-sysv
+      0 0 0 0 0 0 0 0
+      ;; e_type u16 (= ET_EXEC)
+      (logand nelisp-elf--et-exec #xff)
+      (logand (ash nelisp-elf--et-exec -8) #xff)
+      ;; e_machine u16 (= EM_X86_64)
+      (logand nelisp-elf--em-x86-64 #xff)
+      (logand (ash nelisp-elf--em-x86-64 -8) #xff)
+      ;; e_version u32 (= EV_CURRENT, baked as 1)
+      (logand nelisp-elf--ev-current #xff) 0 0 0
+      ;; e_entry u64
+      (logand entry #xff)
+      (logand (ash entry -8)  #xff)
+      (logand (ash entry -16) #xff)
+      (logand (ash entry -24) #xff)
+      (logand (ash entry -32) #xff)
+      (logand (ash entry -40) #xff)
+      (logand (ash entry -48) #xff)
+      (logand (ash entry -56) #xff)
+      ;; e_phoff u64 (= ehdr-size = 64)
+      (logand nelisp-elf--ehdr-size #xff) 0 0 0 0 0 0 0
+      ;; e_shoff u64 (= 0)
+      0 0 0 0 0 0 0 0
+      ;; e_flags u32 (= 0)
+      0 0 0 0
+      ;; e_ehsize u16
+      (logand nelisp-elf--ehdr-size #xff)
+      (logand (ash nelisp-elf--ehdr-size -8) #xff)
+      ;; e_phentsize u16 (= sizeof(Phdr))
+      (logand nelisp-elf--phdr-size #xff)
+      (logand (ash nelisp-elf--phdr-size -8) #xff)
+      ;; e_phnum u16 (= 1)
+      1 0
+      ;; e_shentsize u16 (= sizeof(Shdr))
+      (logand nelisp-elf--shdr-size #xff)
+      (logand (ash nelisp-elf--shdr-size -8) #xff)
+      ;; e_shnum u16 (= 0)
+      0 0
+      ;; e_shstrndx u16 (= 0)
+      0 0))
+    ;; ---- Phdr (inline) ----
+    (nelisp-elf--cbuf-push
      cbuf
-     (list :type   nelisp-elf--pt-load
-           :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-x)
-           :offset 0
-           :vaddr  vaddr-base
-           :paddr  vaddr-base
-           :filesz filesz
-           :memsz  filesz
-           :align  #x1000))
+     (unibyte-string
+      ;; p_type u32 (= PT_LOAD)
+      (logand nelisp-elf--pt-load #xff) 0 0 0
+      ;; p_flags u32 (= PF_R | PF_X)
+      (logand flags #xff) 0 0 0
+      ;; p_offset u64 (= 0)
+      0 0 0 0 0 0 0 0
+      ;; p_vaddr u64
+      (logand vaddr-base #xff)
+      (logand (ash vaddr-base -8)  #xff)
+      (logand (ash vaddr-base -16) #xff)
+      (logand (ash vaddr-base -24) #xff)
+      (logand (ash vaddr-base -32) #xff)
+      (logand (ash vaddr-base -40) #xff)
+      (logand (ash vaddr-base -48) #xff)
+      (logand (ash vaddr-base -56) #xff)
+      ;; p_paddr u64 (= vaddr-base)
+      (logand vaddr-base #xff)
+      (logand (ash vaddr-base -8)  #xff)
+      (logand (ash vaddr-base -16) #xff)
+      (logand (ash vaddr-base -24) #xff)
+      (logand (ash vaddr-base -32) #xff)
+      (logand (ash vaddr-base -40) #xff)
+      (logand (ash vaddr-base -48) #xff)
+      (logand (ash vaddr-base -56) #xff)
+      ;; p_filesz u64
+      (logand filesz #xff)
+      (logand (ash filesz -8)  #xff)
+      (logand (ash filesz -16) #xff)
+      (logand (ash filesz -24) #xff)
+      (logand (ash filesz -32) #xff)
+      (logand (ash filesz -40) #xff)
+      (logand (ash filesz -48) #xff)
+      (logand (ash filesz -56) #xff)
+      ;; p_memsz u64 (= filesz)
+      (logand filesz #xff)
+      (logand (ash filesz -8)  #xff)
+      (logand (ash filesz -16) #xff)
+      (logand (ash filesz -24) #xff)
+      (logand (ash filesz -32) #xff)
+      (logand (ash filesz -40) #xff)
+      (logand (ash filesz -48) #xff)
+      (logand (ash filesz -56) #xff)
+      ;; p_align u64 (= #x1000)
+      0 #x10 0 0 0 0 0 0))
     (nelisp-elf--write-bytes cbuf text)
     (nelisp-elf-buffer-bytes cbuf)))
 
@@ -1139,41 +1224,194 @@ Doc 91 §91.c."
          ;; §91.d: chunk-build accumulator — `nelisp-elf-buffer-bytes'
          ;; is called once at the end to fuse all chunks via
          ;; `apply' + `concat' (= O(N), vs gap-buffer O(N) per write).
-         (cbuf (nelisp-elf-make-buffer)))
-    ;; ---- Ehdr ----
-    (nelisp-elf-write-ehdr
+         (cbuf (nelisp-elf-make-buffer))
+         ;; Wave A25.5: pre-compute Phdr flags so each inline path can
+         ;; reuse the value without re-evaluating the `logior'.
+         (rx-flags (logior nelisp-elf--pf-r nelisp-elf--pf-x))
+         (rw-flags (and have-rw (logior nelisp-elf--pf-r nelisp-elf--pf-w))))
+    ;; ---- Ehdr (Wave A25.5 inline, mirrors --build-rel pattern) ----
+    (nelisp-elf--cbuf-push
      cbuf
-     (list :type      nelisp-elf--et-exec
-           :machine   machine-em
-           :entry     entry
-           :phoff     phdr-off
-           :shoff     shoff
-           :phnum     phnum
-           :shnum     shnum
-           :shstrndx  shstrtab-shndx))
+     (unibyte-string
+      ;; e_ident[0..15] = magic + class + data + version + osabi + pad[8]
+      #x7F #x45 #x4C #x46
+      nelisp-elf--ei-class-64
+      nelisp-elf--ei-data-lsb
+      nelisp-elf--ev-current
+      nelisp-elf--ei-osabi-sysv
+      0 0 0 0 0 0 0 0
+      ;; e_type u16 (= ET_EXEC)
+      (logand nelisp-elf--et-exec #xff)
+      (logand (ash nelisp-elf--et-exec -8) #xff)
+      ;; e_machine u16
+      (logand machine-em #xff) (logand (ash machine-em -8) #xff)
+      ;; e_version u32 (= EV_CURRENT, baked as 1)
+      (logand nelisp-elf--ev-current #xff) 0 0 0
+      ;; e_entry u64
+      (logand entry #xff)
+      (logand (ash entry -8)  #xff)
+      (logand (ash entry -16) #xff)
+      (logand (ash entry -24) #xff)
+      (logand (ash entry -32) #xff)
+      (logand (ash entry -40) #xff)
+      (logand (ash entry -48) #xff)
+      (logand (ash entry -56) #xff)
+      ;; e_phoff u64
+      (logand phdr-off #xff)
+      (logand (ash phdr-off -8)  #xff)
+      (logand (ash phdr-off -16) #xff)
+      (logand (ash phdr-off -24) #xff)
+      (logand (ash phdr-off -32) #xff)
+      (logand (ash phdr-off -40) #xff)
+      (logand (ash phdr-off -48) #xff)
+      (logand (ash phdr-off -56) #xff)
+      ;; e_shoff u64
+      (logand shoff #xff)
+      (logand (ash shoff -8)  #xff)
+      (logand (ash shoff -16) #xff)
+      (logand (ash shoff -24) #xff)
+      (logand (ash shoff -32) #xff)
+      (logand (ash shoff -40) #xff)
+      (logand (ash shoff -48) #xff)
+      (logand (ash shoff -56) #xff)
+      ;; e_flags u32 (= 0)
+      0 0 0 0
+      ;; e_ehsize u16
+      (logand nelisp-elf--ehdr-size #xff)
+      (logand (ash nelisp-elf--ehdr-size -8) #xff)
+      ;; e_phentsize u16
+      (logand nelisp-elf--phdr-size #xff)
+      (logand (ash nelisp-elf--phdr-size -8) #xff)
+      ;; e_phnum u16
+      (logand phnum #xff) (logand (ash phnum -8) #xff)
+      ;; e_shentsize u16
+      (logand nelisp-elf--shdr-size #xff)
+      (logand (ash nelisp-elf--shdr-size -8) #xff)
+      ;; e_shnum u16
+      (logand shnum #xff) (logand (ash shnum -8) #xff)
+      ;; e_shstrndx u16
+      (logand shstrtab-shndx #xff)
+      (logand (ash shstrtab-shndx -8) #xff)))
     ;; ---- Phdr[0]: PT_LOAD R+X covering Ehdr + Phdrs + .text + .rodata
-    (nelisp-elf-write-phdr
+    ;; (Wave A25.5 inline) ----
+    (nelisp-elf--cbuf-push
      cbuf
-     (list :type   nelisp-elf--pt-load
-           :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-x)
-           :offset 0
-           :vaddr  vaddr-base
-           :paddr  vaddr-base
-           :filesz rx-segment-filesz
-           :memsz  rx-segment-memsz
-           :align  page-size))
+     (unibyte-string
+      ;; p_type u32 (= PT_LOAD)
+      (logand nelisp-elf--pt-load #xff) 0 0 0
+      ;; p_flags u32 (= rx-flags)
+      (logand rx-flags #xff) 0 0 0
+      ;; p_offset u64 (= 0)
+      0 0 0 0 0 0 0 0
+      ;; p_vaddr u64
+      (logand vaddr-base #xff)
+      (logand (ash vaddr-base -8)  #xff)
+      (logand (ash vaddr-base -16) #xff)
+      (logand (ash vaddr-base -24) #xff)
+      (logand (ash vaddr-base -32) #xff)
+      (logand (ash vaddr-base -40) #xff)
+      (logand (ash vaddr-base -48) #xff)
+      (logand (ash vaddr-base -56) #xff)
+      ;; p_paddr u64 (= vaddr-base)
+      (logand vaddr-base #xff)
+      (logand (ash vaddr-base -8)  #xff)
+      (logand (ash vaddr-base -16) #xff)
+      (logand (ash vaddr-base -24) #xff)
+      (logand (ash vaddr-base -32) #xff)
+      (logand (ash vaddr-base -40) #xff)
+      (logand (ash vaddr-base -48) #xff)
+      (logand (ash vaddr-base -56) #xff)
+      ;; p_filesz u64
+      (logand rx-segment-filesz #xff)
+      (logand (ash rx-segment-filesz -8)  #xff)
+      (logand (ash rx-segment-filesz -16) #xff)
+      (logand (ash rx-segment-filesz -24) #xff)
+      (logand (ash rx-segment-filesz -32) #xff)
+      (logand (ash rx-segment-filesz -40) #xff)
+      (logand (ash rx-segment-filesz -48) #xff)
+      (logand (ash rx-segment-filesz -56) #xff)
+      ;; p_memsz u64
+      (logand rx-segment-memsz #xff)
+      (logand (ash rx-segment-memsz -8)  #xff)
+      (logand (ash rx-segment-memsz -16) #xff)
+      (logand (ash rx-segment-memsz -24) #xff)
+      (logand (ash rx-segment-memsz -32) #xff)
+      (logand (ash rx-segment-memsz -40) #xff)
+      (logand (ash rx-segment-memsz -48) #xff)
+      (logand (ash rx-segment-memsz -56) #xff)
+      ;; p_align u64 (= page-size = #x1000)
+      (logand page-size #xff)
+      (logand (ash page-size -8)  #xff)
+      (logand (ash page-size -16) #xff)
+      (logand (ash page-size -24) #xff)
+      (logand (ash page-size -32) #xff)
+      (logand (ash page-size -40) #xff)
+      (logand (ash page-size -48) #xff)
+      (logand (ash page-size -56) #xff)))
     ;; ---- Phdr[1]: PT_LOAD R+W for .data + .bss (NOBITS) ----
+    ;; (Wave A25.5 inline) ----
     (when have-rw
-      (nelisp-elf-write-phdr
+      (nelisp-elf--cbuf-push
        cbuf
-       (list :type   nelisp-elf--pt-load
-             :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-w)
-             :offset data-off
-             :vaddr  data-vaddr
-             :paddr  data-vaddr
-             :filesz rw-filesz
-             :memsz  rw-memsz
-             :align  page-size)))
+       (unibyte-string
+        ;; p_type u32 (= PT_LOAD)
+        (logand nelisp-elf--pt-load #xff) 0 0 0
+        ;; p_flags u32 (= rw-flags)
+        (logand rw-flags #xff) 0 0 0
+        ;; p_offset u64
+        (logand data-off #xff)
+        (logand (ash data-off -8)  #xff)
+        (logand (ash data-off -16) #xff)
+        (logand (ash data-off -24) #xff)
+        (logand (ash data-off -32) #xff)
+        (logand (ash data-off -40) #xff)
+        (logand (ash data-off -48) #xff)
+        (logand (ash data-off -56) #xff)
+        ;; p_vaddr u64
+        (logand data-vaddr #xff)
+        (logand (ash data-vaddr -8)  #xff)
+        (logand (ash data-vaddr -16) #xff)
+        (logand (ash data-vaddr -24) #xff)
+        (logand (ash data-vaddr -32) #xff)
+        (logand (ash data-vaddr -40) #xff)
+        (logand (ash data-vaddr -48) #xff)
+        (logand (ash data-vaddr -56) #xff)
+        ;; p_paddr u64
+        (logand data-vaddr #xff)
+        (logand (ash data-vaddr -8)  #xff)
+        (logand (ash data-vaddr -16) #xff)
+        (logand (ash data-vaddr -24) #xff)
+        (logand (ash data-vaddr -32) #xff)
+        (logand (ash data-vaddr -40) #xff)
+        (logand (ash data-vaddr -48) #xff)
+        (logand (ash data-vaddr -56) #xff)
+        ;; p_filesz u64
+        (logand rw-filesz #xff)
+        (logand (ash rw-filesz -8)  #xff)
+        (logand (ash rw-filesz -16) #xff)
+        (logand (ash rw-filesz -24) #xff)
+        (logand (ash rw-filesz -32) #xff)
+        (logand (ash rw-filesz -40) #xff)
+        (logand (ash rw-filesz -48) #xff)
+        (logand (ash rw-filesz -56) #xff)
+        ;; p_memsz u64
+        (logand rw-memsz #xff)
+        (logand (ash rw-memsz -8)  #xff)
+        (logand (ash rw-memsz -16) #xff)
+        (logand (ash rw-memsz -24) #xff)
+        (logand (ash rw-memsz -32) #xff)
+        (logand (ash rw-memsz -40) #xff)
+        (logand (ash rw-memsz -48) #xff)
+        (logand (ash rw-memsz -56) #xff)
+        ;; p_align u64 (= page-size)
+        (logand page-size #xff)
+        (logand (ash page-size -8)  #xff)
+        (logand (ash page-size -16) #xff)
+        (logand (ash page-size -24) #xff)
+        (logand (ash page-size -32) #xff)
+        (logand (ash page-size -40) #xff)
+        (logand (ash page-size -48) #xff)
+        (logand (ash page-size -56) #xff))))
     ;; ---- .text ----
     (unless (= (nelisp-elf-buffer-length cbuf) text-off)
       (error "nelisp-elf: .text offset drift (length=%d expected=%d)"
