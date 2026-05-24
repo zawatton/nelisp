@@ -399,35 +399,6 @@ bitmask for chunk `c' to ENTRIES-VEC[c * 64 + b]."
     (list :srcs srcs :outs outs :entries entries
           :arch-skip-chunks arch-skip-chunks)))
 
-(defun compile-elisp-objects-meta--missing-file-mask-chunk
-    (srcs outs chunk-start chunk-end)
-  "Return an i64 bitmask of missing-file entries in [CHUNK-START, CHUNK-END).
-Bit `b' is set iff `srcs[CHUNK-START + b]' is empty / does not
-exist, OR `outs[CHUNK-START + b]' does not exist.  Used to
-pre-flight one walker chunk dispatch so the Phase 47
-`nelisp_meta_should_rebuild' kernel only sees entries where both
-files are stat-able (= same pre-flight invariant the pre-A26
-`compile-elisp-objects-meta--should-rebuild' shim relied on).
-
-CHUNK-START is the absolute entry index of bit 0; CHUNK-END is the
-absolute exclusive upper bound (= chunk-start + chunk-len, with
-chunk-len ≤ 64).  Returned bitmask is chunk-local — caller maps bit
-`b' back to absolute index `CHUNK-START + b'."
-  (let ((mask 0)
-        (i chunk-start))
-    (while (< i chunk-end)
-      (let ((src (aref srcs i))
-            (out (aref outs i))
-            (bit-pos (- i chunk-start)))
-        (when (or (null src)
-                  (not (stringp src))
-                  (string-empty-p src)
-                  (not (file-exists-p src))
-                  (not (file-exists-p out)))
-          (setq mask (logior mask (ash 1 bit-pos)))))
-      (setq i (1+ i)))
-    mask))
-
 (defun compile-elisp-objects-meta--slice-vector (vec start end)
   "Return a fresh vector containing VEC[START..END).
 Used by the Wave A27 chunked walker dispatch to hand each chunk a
@@ -479,12 +450,13 @@ the chunk, and packs the 0/1 decisions into a single
 native bridge calls into ceil(N/64) (= 4 calls for the 208-entry
 production manifest, 1 call for the A26 5-entry PoC).
 
-Missing-file pre-flight: the A25.2 `nelisp_meta_should_rebuild'
-kernel's `extern-call stat' currently masks the stat-failure rc
-indistinguishably from the rc-success branch.  Each chunk's
-walker output is OR-ed with a per-chunk missing-file mask so
-entries with absent src or out are flagged dirty regardless of
-what the walker decided.
+Wave A29 — missing-file pre-flight removed.  The A25.2 kernel's
+`extern-call stat' rc check was repaired in `lisp/nelisp-cc-bi-
+syscall-stat-mtime.el' to use the success sentinel `(= rc 0)' so
+the failure path now reliably writes `Sexp::Int(-1)' regardless of
+the high-32-bit content of the libc `int' return.  With the kernel
+self-sufficient for missing-file detection, the OR-ed pre-flight
+mask the A26 walker dispatch added is no longer needed.
 
 On host Emacs (= no `nl-jit-call-out-2'), the function falls back
 to the per-entry `compile-elisp-objects-meta--should-rebuild' shim
@@ -498,10 +470,7 @@ a time so the byte-identity reference path stays untouched."
     (while (< chunk-idx chunk-count)
       (let* ((chunk-start (* chunk-idx chunk-size))
              (chunk-end (min n (+ chunk-start chunk-size)))
-             (chunk-len (- chunk-end chunk-start))
-             (missing-mask
-              (compile-elisp-objects-meta--missing-file-mask-chunk
-               srcs outs chunk-start chunk-end)))
+             (chunk-len (- chunk-end chunk-start)))
         (aset result chunk-idx
               (cond
                ((fboundp 'nl-jit-call-out-2)
@@ -511,9 +480,10 @@ a time so the byte-identity reference path stays untouched."
                 ;; returns the chunk length and bit positions are
                 ;; chunk-local.  On dlsym miss / arity mismatch / error
                 ;; we mark every entry in the chunk dirty (safe
-                ;; over-build).  OR with the chunk's missing-file
-                ;; pre-flight so absent files are flagged dirty
-                ;; regardless of the kernel's stat-failure return shape.
+                ;; over-build).  Wave A29 — the kernel now handles
+                ;; missing files self-sufficiently via the repaired
+                ;; success-sentinel stat check, so no separate
+                ;; pre-flight OR is needed.
                 (let* ((chunk-srcs (compile-elisp-objects-meta--slice-vector
                                     srcs chunk-start chunk-end))
                        (chunk-outs (compile-elisp-objects-meta--slice-vector
@@ -521,13 +491,12 @@ a time so the byte-identity reference path stays untouched."
                        (full-mask (if (= chunk-len 64)
                                       -1
                                     (1- (ash 1 chunk-len)))))
-                  (logior missing-mask
-                          (condition-case _err
-                              (let ((bm (nl-jit-call-out-2
-                                         "nelisp_meta_walk"
-                                         chunk-srcs chunk-outs)))
-                                (if (integerp bm) bm full-mask))
-                            (error full-mask)))))
+                  (condition-case _err
+                      (let ((bm (nl-jit-call-out-2
+                                 "nelisp_meta_walk"
+                                 chunk-srcs chunk-outs)))
+                        (if (integerp bm) bm full-mask))
+                    (error full-mask))))
                (t
                 ;; Host Emacs reference path — per-entry shim in an elisp
                 ;; loop covering this chunk's slice.  Byte-identity-safe
@@ -547,7 +516,7 @@ a time so the byte-identity reference path stays untouched."
                       (when (not (zerop decision))
                         (setq mask (logior mask (ash 1 bit-pos)))))
                     (setq i (1+ i)))
-                  (logior mask missing-mask))))))
+                  mask)))))
       (setq chunk-idx (1+ chunk-idx)))
     result))
 

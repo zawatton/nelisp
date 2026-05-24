@@ -71,9 +71,21 @@
     (defun nelisp_bi_syscall_stat_mtime_inner (cstr statbuf size-plus-one result-slot _pad)
       (nelisp_bi_syscall_stat_mtime_seq4
        (sexp-int-make result-slot
-                      (if (< (extern-call stat cstr statbuf) 0)
-                          -1
-                        (ptr-read-u64 statbuf 88)))
+                      ;; Wave A29 — success-sentinel check (`= rc 0')
+                      ;; instead of `(< rc 0)'.  libc `stat' returns
+                      ;; `int' (= 32-bit), so the SysV AMD64 return
+                      ;; only populates eax; the high 32 bits of rax
+                      ;; are undefined.  On glibc-x86_64 the failure
+                      ;; path emits `mov eax, -1' which zeroes the
+                      ;; high 32 bits, leaving rax = 0x00000000FFFFFFFF
+                      ;; (= positive 4294967295 under signed `<' — so
+                      ;; the original `(< rc 0)' branch never fired
+                      ;; for stat-failure).  On success the failure
+                      ;; path's `xor eax, eax' zeroes rax cleanly, so
+                      ;; `(= rc 0)' is the reliable disambiguator.
+                      (if (= (extern-call stat cstr statbuf) 0)
+                          (ptr-read-u64 statbuf 88)
+                        -1))
        (dealloc-bytes cstr size-plus-one 1)
        (dealloc-bytes statbuf 144 8)
        0))
@@ -109,9 +121,20 @@ Composes only existing Phase 47 grammar — no new opcode:
 - §122.E `ptr-read-u64' — read mtime.tv_sec at struct stat offset 88.
 - §100 `sexp-int-make' — write Sexp::Int into result slot.
 
-stat(2) error handling: rc < 0 (file not found, EACCES, etc.) writes
-Sexp::Int(-1) into the result slot.  Caller is responsible for
-distinguishing -1 from a (highly unlikely) timestamp = -1 sentinel.
+stat(2) error handling: any non-success rc (= file not found,
+EACCES, etc.) writes Sexp::Int(-1) into the result slot.  Caller is
+responsible for distinguishing -1 from a (highly unlikely) timestamp
+= -1 sentinel.
+
+Wave A29 — success-sentinel disambiguation.  libc `stat' returns
+`int' (= 32-bit), so the SysV AMD64 return only populates eax with
+the high 32 bits of rax left undefined.  On glibc-x86_64 the
+failure path emits `mov eax, -1' which clears high32 and leaves
+rax = `0x00000000FFFFFFFF' (= positive 4294967295 under signed
+i64), so the pre-A29 `(< rc 0)' branch silently fell through to
+read garbage from the uninitialised stat buffer.  The kernel now
+uses `(= rc 0)' (= success sentinel) so the disambiguation does
+not depend on high-bit sign-extension behaviour.
 
 Linux-x86_64 only — `struct stat' layout (= offset 88 for st_mtim.
 tv_sec, sizeof = 144) is glibc-x86_64-specific.  aarch64 + musl

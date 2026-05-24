@@ -35,6 +35,15 @@
 ;; which composes two `nelisp_bi_syscall_stat_mtime' calls and returns
 ;; a 0/1 decision sufficient to drive the rebuild branch.
 ;;
+;; Wave A29 — the stat-mtime helper's success-sentinel disambiguation
+;; (= `(= rc 0)' vs the broken pre-A29 `(< rc 0)') makes the kernel
+;; self-sufficient for missing-file detection: stat failure now
+;; reliably surfaces as `Sexp::Int(-1)' in the mtime slot, and the
+;; `nelisp_meta_decide_rebuild' arm `(if (= src-mtime -1) 1 ...)' /
+;; `(if (= out-mtime -1) 1 ...)' fires as designed.  The elisp-side
+;; pre-flight `compile-elisp-objects-meta--missing-file-mask-chunk'
+;; the A26 walker carried as a work-around has been dropped.
+;;
 ;; Static-link manifest plan (= the structural answer to mismatch #1).
 ;; In Wave A25.3 the manifest will be reified as a vector of Sexp::Str
 ;; pairs `(src-path-str . out-path-str)' bundled into the standalone
