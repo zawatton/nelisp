@@ -5436,10 +5436,16 @@ return reg, untouched by epilogue)."
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x29)
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x30)
           (nelisp-asm-arm64-ret buf))
-      (nelisp-asm-x86_64-define-label buf name)
+      ;; Wave 20: hand-inline the prologue's literal-register emit
+      ;; calls so the standalone NeLisp interpreter does not pay the
+      ;; per-defun-dispatch cost.  Each inline macro expands to the
+      ;; helper's byte-emit body with REX + ModR/M folded to constants
+      ;; (DST + SRC are quoted literals here).  Byte output unchanged
+      ;; — verified by md5sum on spike-noop.o / fact-i64.o.
+      (nelisp-asm-x86_64--define-label-inline buf name)
       ;; Prologue: push rbp; mov rbp, rsp; spill each param reg.
-      (nelisp-asm-x86_64-push buf 'rbp)
-      (nelisp-asm-x86_64-mov-reg-reg buf 'rbp 'rsp)
+      (nelisp-asm-x86_64--push-inline buf 'rbp)
+      (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rbp 'rsp)
       (if (eq nelisp-phase47-compiler--abi 'win64)
           ;; ---- Win64 ABI prologue ----
           ;;
@@ -5480,7 +5486,7 @@ return reg, untouched by epilogue)."
               ;; Allocate the spill frame in one shot (= deterministic
               ;; byte count regardless of arity, matching pass-1 = pass-2).
               (when (> arity 0)
-                (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))
+                (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
               ;; Spill each incoming Win64 arg register to its frame slot
               ;; via `mov [rbp - 8*(i+1)], REG'.  disp8 covers [-128,127]
               ;; so slot offsets up to 15 args are in range.
@@ -5497,7 +5503,7 @@ return reg, untouched by epilogue)."
                 (let ((rt-rounded (if (zerop (logand rt-slot-count 1))
                                       rt-slot-count
                                     (1+ rt-slot-count))))
-                  (nelisp-asm-x86_64-sub-imm32 buf 'rsp (* 8 rt-rounded))))))
+                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 rt-rounded))))))
            ;; f64 class under Win64: XMM0-XMM3 carry the first 4 float args
            ;; (same xmm reg numbers as SysV, just fewer GP-class args allowed
            ;; concurrently).  The MOVSD spill layout is identical to SysV.
@@ -5509,7 +5515,7 @@ return reg, untouched by epilogue)."
                    (frame-bytes (* 8 arity-rounded))
                    (slot-idx -1))
               (when (> arity 0)
-                (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))
+                (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
               (dolist (xreg param-regs)
                 (setq slot-idx (1+ slot-idx))
                 (nelisp-asm-x86_64-movsd-mem-disp8-xmm
@@ -5545,7 +5551,7 @@ return reg, untouched by epilogue)."
           (dolist (preg param-regs)
             (nelisp-asm-x86_64-push buf preg))
           (when (= 1 (logand (length param-regs) 1))
-            (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+            (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8))
           ;; Reserve frame slots for runtime `let-rt' bindings.
           ;; Round up to even so the post-prologue rsp stays 16-byte
           ;; aligned (each slot is 8 bytes; 2 slots = 16 bytes).
@@ -5553,7 +5559,7 @@ return reg, untouched by epilogue)."
             (let ((rt-rounded (if (zerop (logand rt-slot-count 1))
                                   rt-slot-count
                                 (1+ rt-slot-count))))
-              (nelisp-asm-x86_64-sub-imm32 buf 'rsp (* 8 rt-rounded)))))
+              (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 rt-rounded)))))
          ;; f64 class — one bulk `sub rsp, 8*ARITY-ROUNDED', then
          ;; per-param `movsd [rbp - 8*(slot+1)], xmmN'.  ARITY-
          ;; ROUNDED is `arity' rounded up to the next even value
@@ -5573,7 +5579,7 @@ return reg, untouched by epilogue)."
                  (frame-bytes (* 8 arity-rounded))
                  (slot-idx -1))
             (when (> arity 0)
-              (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame-bytes))
+              (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
             (dolist (xreg param-regs)
               (setq slot-idx (1+ slot-idx))
               (nelisp-asm-x86_64-movsd-mem-disp8-xmm
@@ -5585,9 +5591,10 @@ return reg, untouched by epilogue)."
       (nelisp-phase47-compiler--emit-value body buf)
       ;; Epilogue: deallocate param spill via mov rsp, rbp; pop rbp; ret.
       ;; (Identical for SysV and Win64 — frame pointer teardown is ABI-agnostic.)
-      (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'rbp)
-      (nelisp-asm-x86_64-pop buf 'rbp)
-      (nelisp-asm-x86_64-ret buf))))
+      ;; Wave 20: same hand-inline rationale as the prologue above.
+      (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rsp 'rbp)
+      (nelisp-asm-x86_64--pop-inline buf 'rbp)
+      (nelisp-asm-x86_64--ret-inline buf))))
 
 ;; ---- §97.6 orchestrator ----
 

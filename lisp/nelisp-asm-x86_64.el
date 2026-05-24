@@ -417,6 +417,209 @@ layout replaces the plist-get / plist-put roundtrip."
   (aset buf 1 (+ (aref buf 1) (length bs)))
   buf)
 
+;; ---- Wave 20 — hand-inline emit macros for hot prologue/epilogue path ----
+;;
+;; The standalone NeLisp interpreter does not inline `defsubst', so each
+;; per-emit helper (`mov-reg-reg', `push', `pop', `mov-imm32', `ret',
+;; `define-label', `sub-imm32', `mov-mem-reg-disp8') incurs the full
+;; function-dispatch cost (~3s per call on Wave 19 baseline for spike-
+;; noop, ~26s emit total for 8 calls).  Wave 18 trace + Wave 19-verify
+;; pin this to the per-call dispatch + nested `--reg-ext' / `--reg-low3'
+;; / `--rex' / `--modrm' chain that each invokes 4-8 sub-calls.
+;;
+;; These macros hand-expand to the helper body inline.  When the
+;; register argument is a quoted-literal symbol the expansion looks up
+;; the register number at macroexpand time and folds REX / ModR/M into
+;; constant bytes.  Dynamic-register call-sites still work — they fall
+;; back to the runtime helper.
+;;
+;; Byte-output invariant: each macro produces the same byte sequence
+;; as its corresponding `defun' helper.  This is verified by md5sum on
+;; spike-noop.o and fact-i64.o post-Wave-20.
+
+(eval-and-compile
+  (defun nelisp-asm-x86_64--quoted-reg-num (form)
+    "If FORM is `(quote REG)' or a bare symbol REG known in `--reg', return
+REG's encoding number (0-15).  Otherwise return nil (= caller must
+emit a runtime fallback path)."
+    (let ((sym (cond
+                ((and (consp form) (eq (car form) 'quote) (symbolp (cadr form)))
+                 (cadr form))
+                ((symbolp form) form)
+                (t nil))))
+      (when sym
+        (let ((cell (assq sym '((rax . 0) (rcx . 1) (rdx . 2) (rbx . 3)
+                                (rsp . 4) (rbp . 5) (rsi . 6) (rdi . 7)
+                                (r8  . 8) (r9  . 9) (r10 . 10) (r11 . 11)
+                                (r12 . 12) (r13 . 13) (r14 . 14) (r15 . 15)))))
+          (and cell (cdr cell)))))))
+
+(defmacro nelisp-asm-x86_64--mov-reg-reg-inline (buf-form dst-form src-form)
+  "Inline `MOV DST, SRC' (64-bit MR form, opcode 0x89, 3 bytes).
+If DST-FORM / SRC-FORM are quoted literals, the REX + opcode + ModR/M
+bytes are folded to constants at macroexpand time.  Dynamic args
+fall back to `nelisp-asm-x86_64-mov-reg-reg' (= runtime helper).
+Byte output identical to the runtime helper."
+  (let ((dst-num (nelisp-asm-x86_64--quoted-reg-num dst-form))
+        (src-num (nelisp-asm-x86_64--quoted-reg-num src-form)))
+    (if (and dst-num src-num)
+        (let* ((rex-b (if (>= dst-num 8) 1 0))
+               (rex-r (if (>= src-num 8) 1 0))
+               (rex (logior #x48 (ash rex-r 2) rex-b))
+               (modrm (logior #xC0
+                              (ash (logand src-num 7) 3)
+                              (logand dst-num 7)))
+               (buf-sym (make-symbol "buf"))
+               (bs-sym  (make-symbol "bs")))
+          `(let* ((,buf-sym ,buf-form)
+                  (,bs-sym (unibyte-string ,rex #x89 ,modrm)))
+             (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+             (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 3))
+             ,buf-sym))
+      `(nelisp-asm-x86_64-mov-reg-reg ,buf-form ,dst-form ,src-form))))
+
+(defmacro nelisp-asm-x86_64--push-inline (buf-form reg-form)
+  "Inline `PUSH REG' (= [REX.B] + 0x50+rd, 1 or 2 bytes).
+Quoted-literal REG-FORM folds to a constant byte sequence at
+macroexpand time."
+  (let ((reg-num (nelisp-asm-x86_64--quoted-reg-num reg-form)))
+    (if reg-num
+        (let* ((ext (if (>= reg-num 8) 1 0))
+               (low (logand reg-num 7))
+               (buf-sym (make-symbol "buf"))
+               (bs-sym  (make-symbol "bs")))
+          (if (zerop ext)
+              `(let* ((,buf-sym ,buf-form)
+                      (,bs-sym (unibyte-string ,(+ #x50 low))))
+                 (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+                 (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 1))
+                 ,buf-sym)
+            `(let* ((,buf-sym ,buf-form)
+                    (,bs-sym (unibyte-string #x41 ,(+ #x50 low))))
+               (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+               (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 2))
+               ,buf-sym)))
+      `(nelisp-asm-x86_64-push ,buf-form ,reg-form))))
+
+(defmacro nelisp-asm-x86_64--pop-inline (buf-form reg-form)
+  "Inline `POP REG' (= [REX.B] + 0x58+rd, 1 or 2 bytes)."
+  (let ((reg-num (nelisp-asm-x86_64--quoted-reg-num reg-form)))
+    (if reg-num
+        (let* ((ext (if (>= reg-num 8) 1 0))
+               (low (logand reg-num 7))
+               (buf-sym (make-symbol "buf"))
+               (bs-sym  (make-symbol "bs")))
+          (if (zerop ext)
+              `(let* ((,buf-sym ,buf-form)
+                      (,bs-sym (unibyte-string ,(+ #x58 low))))
+                 (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+                 (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 1))
+                 ,buf-sym)
+            `(let* ((,buf-sym ,buf-form)
+                    (,bs-sym (unibyte-string #x41 ,(+ #x58 low))))
+               (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+               (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 2))
+               ,buf-sym)))
+      `(nelisp-asm-x86_64-pop ,buf-form ,reg-form))))
+
+(defmacro nelisp-asm-x86_64--ret-inline (buf-form)
+  "Inline `RET' (= 0xC3, 1 byte)."
+  (let ((buf-sym (make-symbol "buf"))
+        (bs-sym  (make-symbol "bs")))
+    `(let* ((,buf-sym ,buf-form)
+            (,bs-sym (unibyte-string #xC3)))
+       (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+       (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 1))
+       ,buf-sym)))
+
+(defmacro nelisp-asm-x86_64--define-label-inline (buf-form name-form)
+  "Inline `define-label' = current-pos snapshot + push (NAME . POS) onto
+labels alist.  Duplicate-label detection still runs at runtime."
+  (let ((buf-sym (make-symbol "buf"))
+        (name-sym (make-symbol "name")))
+    `(let ((,buf-sym ,buf-form)
+           (,name-sym ,name-form))
+       (when (assq ,name-sym (aref ,buf-sym 2))
+         (signal 'nelisp-asm-x86_64-error
+                 (list :duplicate-label ,name-sym)))
+       (aset ,buf-sym 2
+             (cons (cons ,name-sym (aref ,buf-sym 1)) (aref ,buf-sym 2)))
+       ,buf-sym)))
+
+(defmacro nelisp-asm-x86_64--mov-imm32-inline (buf-form reg-form imm-form)
+  "Inline `MOV REG, IMM32' = REX.W + 0xC7 /0 + imm32 (7 bytes).
+Quoted-literal REG folds REX + ModR/M bytes to constants.  IMM is
+encoded at runtime (caller-provided value)."
+  (let ((reg-num (nelisp-asm-x86_64--quoted-reg-num reg-form)))
+    (if reg-num
+        (let* ((rex-b (if (>= reg-num 8) 1 0))
+               (rex (logior #x48 rex-b))
+               (modrm (logior #xC0 (logand reg-num 7)))
+               (buf-sym (make-symbol "buf"))
+               (imm-sym (make-symbol "imm"))
+               (bs-sym  (make-symbol "bs")))
+          `(let* ((,buf-sym ,buf-form)
+                  (,imm-sym ,imm-form)
+                  (,bs-sym
+                   (concat (unibyte-string ,rex #xC7 ,modrm)
+                           (nelisp-asm-x86_64--imm32-bytes ,imm-sym))))
+             (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+             (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 7))
+             ,buf-sym))
+      `(nelisp-asm-x86_64-mov-imm32 ,buf-form ,reg-form ,imm-form))))
+
+(defmacro nelisp-asm-x86_64--sub-imm32-inline (buf-form reg-form imm-form)
+  "Inline `SUB REG, IMM32' = REX.W + 0x81 /5 + imm32 (7 bytes).
+Quoted-literal REG folds REX + ModR/M bytes to constants."
+  (let ((reg-num (nelisp-asm-x86_64--quoted-reg-num reg-form)))
+    (if reg-num
+        (let* ((rex-b (if (>= reg-num 8) 1 0))
+               (rex (logior #x48 rex-b))
+               (modrm (logior #xC0 (ash 5 3) (logand reg-num 7)))
+               (buf-sym (make-symbol "buf"))
+               (imm-sym (make-symbol "imm"))
+               (bs-sym  (make-symbol "bs")))
+          `(let* ((,buf-sym ,buf-form)
+                  (,imm-sym ,imm-form)
+                  (,bs-sym
+                   (concat (unibyte-string ,rex #x81 ,modrm)
+                           (nelisp-asm-x86_64--imm32-bytes ,imm-sym))))
+             (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+             (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 7))
+             ,buf-sym))
+      `(nelisp-asm-x86_64-sub-imm32 ,buf-form ,reg-form ,imm-form))))
+
+(defmacro nelisp-asm-x86_64--mov-mem-reg-disp8-inline (buf-form base-form disp-form src-form)
+  "Inline `MOV QWORD PTR [BASE + DISP], SRC' = REX.W + 89 ModR/M + disp8.
+Quoted-literal BASE / SRC fold REX + ModR/M to constants.  DISP is
+encoded at runtime.  Refuses `rsp' / `r12' as base at expansion (SIB
+not modelled)."
+  (let ((base-num (nelisp-asm-x86_64--quoted-reg-num base-form))
+        (src-num  (nelisp-asm-x86_64--quoted-reg-num src-form)))
+    (if (and base-num src-num
+             (not (memq base-num '(4 12))))  ; rsp=4 r12=12 need SIB
+        (let* ((rex-b (if (>= base-num 8) 1 0))
+               (rex-r (if (>= src-num  8) 1 0))
+               (rex (logior #x48 (ash rex-r 2) rex-b))
+               (modrm (logior #x40
+                              (ash (logand src-num 7) 3)
+                              (logand base-num 7)))
+               (buf-sym  (make-symbol "buf"))
+               (disp-sym (make-symbol "disp"))
+               (bs-sym   (make-symbol "bs")))
+          `(let* ((,buf-sym ,buf-form)
+                  (,disp-sym ,disp-form))
+             (unless (and (integerp ,disp-sym) (<= -128 ,disp-sym 127))
+               (signal 'nelisp-asm-x86_64-error
+                       (list :disp8-out-of-range ,disp-sym)))
+             (let ((,bs-sym (unibyte-string ,rex #x89 ,modrm
+                                            (logand ,disp-sym #xFF))))
+               (aset ,buf-sym 0 (cons ,bs-sym (aref ,buf-sym 0)))
+               (aset ,buf-sym 1 (+ (aref ,buf-sym 1) 4))
+               ,buf-sym)))
+      `(nelisp-asm-x86_64-mov-mem-reg-disp8
+        ,buf-form ,base-form ,disp-form ,src-form))))
+
 (defun nelisp-asm-x86_64-define-label (buf name)
   "Mark NAME as resolved at BUF's current byte position.
 Signals `nelisp-asm-x86_64-error' on duplicate label — silent
