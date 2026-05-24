@@ -497,17 +497,25 @@ already distinguishes `extern-call' (i64 return) from
                      (expr (cdr cls-expr))
                      (parsed (nelisp-phase47-compiler--parse-value
                               expr env fenv defuns)))
-                (append parsed
-                        (list :cls cls :varargs-p is-varargs)))))
+                ;; A33.4 — PARSED is now the flat key-value vector built by
+                ;; `--make-ir', so extend it with `vconcat' (not `append',
+                ;; which would coerce the vector back to a list and move the
+                ;; kind tag off slot 0).  The result is still a vector with
+                ;; the kind at slot 0 and `:cls' / `:varargs-p' added as two
+                ;; more key-value pairs, readable via `--ir-get'.
+                (vconcat parsed
+                         (vector :cls cls :varargs-p is-varargs)))))
            (parsed-fixed (mapcar (lambda (a) (funcall parse-one a nil))
                                  fixed-args))
            (parsed-var (mapcar (lambda (a) (funcall parse-one a t))
                                varargs))
            (all-args (append parsed-fixed parsed-var))
            (gp-args (cl-remove-if-not
-                     (lambda (n) (eq (plist-get n :cls) 'gp)) all-args))
+                     (lambda (n) (eq (nelisp-phase47-compiler--ir-get n :cls) 'gp))
+                     all-args))
            (f64-args (cl-remove-if-not
-                      (lambda (n) (eq (plist-get n :cls) 'f64)) all-args)))
+                      (lambda (n) (eq (nelisp-phase47-compiler--ir-get n :cls) 'f64))
+                      all-args)))
       (when (> (length gp-args)
                (length nelisp-phase47-compiler--arg-regs))
         (signal 'nelisp-phase47-compiler-error
@@ -524,30 +532,47 @@ already distinguishes `extern-call' (i64 return) from
 
 (defsubst nelisp-phase47-compiler--make-ir (kind &rest plist)
   "Construct an IR node tagged KIND carrying PLIST.
-A33.1 — currently returns a symbol-keyed plist (= the unchanged
-representation `(list :kind KIND . PLIST)'), so the emitted object
-bytes are bit-identical to the pre-A33.1 inline `(list :kind ...)'
-construction sites.  Centralizing construction here means the A33.4
-representation swap (plist -> record tag) touches this one site
-instead of all 90 IR constructors."
-  (cons :kind (cons kind plist)))
+A33.4 — the internal representation is now a flat key-value vector
+`[KIND K1 V1 K2 V2 ...]' (slot 0 = the `:kind' symbol, then the PLIST
+keys/values copied in their construction order) instead of the
+A33.1-A33.3 symbol-keyed list `(:kind KIND . PLIST)'.  The construction
+order of PLIST is consistent per kind across every call site (verified
+in A33.4), so each (kind, field) pair lands at a fixed vector offset —
+which is what the A33.N native-emit path needs: it reads slot 0 with
+`vector-ref' to dispatch and reads each field at its kind-fixed offset
+without a heap-walking `plist-get'.  Because all 90 constructors and all
+247 reads were already funnelled through `--make-ir' / `--ir-kind' /
+`--ir-get' (A33.1-A33.3), swapping list -> vector here is invisible to
+the rest of the compiler and, since the emit path computes identical
+bytes either way, the produced `.o' objects are byte-identical."
+  (apply #'vector kind plist))
 
 (defsubst nelisp-phase47-compiler--ir-kind (node)
   "Read the :kind tag of IR NODE.
-A33.2 — a `plist-get' wrap over the still-plist IR representation, so
-byte-compilation inlines this `defsubst' back to the original
-`(plist-get NODE :kind)' and the emitted `.o' bytes are unchanged.
-Centralizing reads here means the A33.4 representation swap (plist ->
-record tag) replaces the body once instead of at all dispatch sites."
-  (plist-get node :kind))
+A33.4 — NODE is now the flat key-value vector built by `--make-ir', so
+the kind tag lives at slot 0 and this is a single `aref' (the future
+A33.N native dispatch reads the same slot with `vector-ref').  Reads
+were centralized here in A33.2, so the list -> vector swap touches only
+this body; the emitted `.o' bytes are unchanged."
+  (aref node 0))
 
 (defsubst nelisp-phase47-compiler--ir-get (node field)
   "Read FIELD of IR NODE.
-A33.2 — a `plist-get' wrap over the still-plist IR representation, so
-byte-compilation inlines this `defsubst' back to the original
-`(plist-get NODE FIELD)' and the emitted `.o' bytes are unchanged.
-A33.4 swaps the body to `record'-based slot access in one place."
-  (plist-get node field))
+A33.4 — NODE is the flat key-value vector `[KIND K1 V1 K2 V2 ...]', so
+the lookup scans the key slots (1, 3, 5, ...) for FIELD and returns the
+following value slot.  This mirrors the previous `plist-get' linear scan
+(same O(N) over the same key set), so behaviour and the emitted `.o'
+bytes are unchanged; the A33.N native path can instead read each field
+at its kind-fixed offset since per-kind layout is constant."
+  (let ((len (length node))
+        (i 1)
+        (result nil))
+    (while (< i len)
+      (when (eq (aref node i) field)
+        (setq result (aref node (1+ i))
+              i len))
+      (setq i (+ i 2)))
+    result))
 
 (defconst nelisp-phase47-compiler--ir-kind-tags
   '((alloc-bytes . 0)
@@ -3340,9 +3365,11 @@ same branch and emit the same byte count."
          ;; the Nth gp arg → Nth GP reg, the Nth f64 arg → Nth xmm
          ;; reg, both pools indexed independently.
          (gp-args (cl-remove-if-not
-                   (lambda (a) (eq (plist-get a :cls) 'gp)) args))
+                   (lambda (a) (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp))
+                   args))
          (f64-args (cl-remove-if-not
-                    (lambda (a) (eq (plist-get a :cls) 'f64)) args))
+                    (lambda (a) (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64))
+                    args))
          (gp-regs (cl-subseq (nelisp-phase47-compiler--current-arg-regs)
                              0 (length gp-args)))
          (xmm-regs (cl-subseq nelisp-phase47-compiler--xmm-arg-regs
@@ -3353,7 +3380,7 @@ same branch and emit the same byte count."
          (f64-cursor 0)
          (arg-targets
           (mapcar (lambda (a)
-                    (if (eq (plist-get a :cls) 'f64)
+                    (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
                         (let ((r (nth f64-cursor xmm-regs)))
                           (setq f64-cursor (1+ f64-cursor))
                           r)
@@ -3371,7 +3398,7 @@ same branch and emit the same byte count."
                 (done nil))
             (while (and rest (not done))
               (let ((a (car rest)))
-                (if (and (eq (plist-get a :cls) 'gp)
+                (if (and (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
                          (nelisp-phase47-compiler--call-arg-trivial-p a))
                     (progn (setq count (1+ count))
                            (setq rest (cdr rest)))
@@ -3396,7 +3423,7 @@ same branch and emit the same byte count."
     ;; transfer to rax first before the unified push.
     (dolist (a complex-args)
       (nelisp-phase47-compiler--emit-value a buf)
-      (when (eq (plist-get a :cls) 'f64)
+      (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
         ;; xmm0 → rax (64-bit bit pattern, preserves the f64 value).
         (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
       (nelisp-asm-x86_64-push buf 'rax))
