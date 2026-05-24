@@ -754,6 +754,21 @@
      :source-var nelisp-cc-bi-nl-write-file--source
      :output "nelisp_bi_nl_write_file.o"
      :requires-arch x86_64)
+    ;; Wave A25.1-min — Phase 47 self-application foundation (getenv +
+    ;; stat-mtime only).  `locate-file' deferred — its `_branch' helper
+    ;; needs an arity-≤6 split to fit Phase 47 SysV AMD64's 6 GP regs.
+    ;; Both shipped helpers compose only existing Phase 47 grammar; they
+    ;; are consumed by the future A25.2 driver rewrite of
+    ;; `compile-elisp-objects.el' as Phase 47 native main entry.
+    ;; Linux-x86_64 only (same gate as parents).
+    (nelisp-cc-bi-getenv
+     :source-var nelisp-cc-bi-getenv--source
+     :output "nelisp_bi_getenv.o"
+     :requires-arch x86_64)
+    (nelisp-cc-bi-syscall-stat-mtime
+     :source-var nelisp-cc-bi-syscall-stat-mtime--source
+     :output "nelisp_bi_syscall_stat_mtime.o"
+     :requires-arch x86_64)
     ;; Doc 117 §117.D.gaps.3 (cont.) — second file-I/O sweep batch.
     ;; Two additional handlers consumed (after the 3-handler initial
     ;; batch above):

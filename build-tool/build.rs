@@ -180,6 +180,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-env-bind-local.el",
         "nelisp-cc-env-install-empty.el",
         "nelisp-cc-nlstr-utf8-direct.el",
+        // Wave A25.1-min — Phase 47 self-application foundation
+        // (locate-file deferred — needs arity-≤6 _branch helper split)
+        "nelisp-cc-bi-getenv.el",
+        "nelisp-cc-bi-syscall-stat-mtime.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
