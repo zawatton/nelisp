@@ -98,10 +98,21 @@
 ;; The PoC only walks a 5-entry subset (= the first five entries that
 ;; do not require x86_64-specific extern-call grammar) but the
 ;; per-entry tuple shape matches the production driver exactly.
-(load (expand-file-name "compile-elisp-objects.el"
-                        (file-name-directory
-                         (or load-file-name buffer-file-name)))
-      nil t)
+;;
+;; Wave A25.3 — wrap in `featurep' guard so standalone NeLisp callers
+;; (= `nelisp--cli-meta-driver-main') can pre-load `compile-elisp-
+;; objects' before requiring this file.  Without the guard the nested
+;; `(load (expand-file-name ...))' path is sensitive to standalone
+;; NeLisp's `default-directory' / `expand-file-name' interaction
+;; (when the outer load lives in `scripts/' the expansion yields the
+;; doubled path `scripts/scripts/compile-elisp-objects.el', which
+;; `locate-library' can't resolve).  Host Emacs still hits the load
+;; branch since its `compile-elisp-objects' is not pre-required there.
+(unless (featurep 'compile-elisp-objects)
+  (load (expand-file-name "compile-elisp-objects.el"
+                          (file-name-directory
+                           (or load-file-name buffer-file-name)))
+        nil t))
 
 (defconst compile-elisp-objects-meta--subset-features
   '(nelisp-cc-spike-noop

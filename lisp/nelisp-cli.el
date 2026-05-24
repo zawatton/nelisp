@@ -40,6 +40,18 @@
 ;; which the Rust stub seeds with `env!("CARGO_PKG_VERSION")' via
 ;; `Env::set_value' before invoking `nelisp-cli-main'.  If unset (=
 ;; test path, REPL), `nelisp-cli-main' falls back to "unknown".
+;;
+;; Wave A25.3 (Phase 47 meta-driver bootstrap).  When the standalone
+;; NeLisp binary is invoked with `--setenv NELISP_USE_META_DRIVER=1' (or
+;; equivalent OS env when host Emacs is the runtime), the batch dispatch
+;; short-circuits the legacy `compile-elisp-objects-emit-range' elisp
+;; iteration chain and invokes the Phase 47-friendly static-manifest
+;; walker from `scripts/compile-elisp-objects-meta.el' through the new
+;; `nelisp--cli-meta-driver-main' entry point.  Output `.o' files share
+;; the production filenames so a `cmp' against the host-Emacs reference
+;; is the verification gate.  Rust LOC delta = 0 (= all dispatch logic
+;; lives in this elisp file plus a one-line `unless featurep' guard in
+;; the meta-driver script).
 
 ;;; Code:
 
@@ -278,6 +290,171 @@ This split (inline stub first, proper load after -L) means
               (nl-make-directory dir (if parents t nil))
               nil)))))
 
+;; ---------------------------------------------------------------------------
+;; Wave A25.3 — Phase 47 meta-driver bootstrap (env-var dispatch).
+;; ---------------------------------------------------------------------------
+;;
+;; When the standalone NeLisp binary is invoked with `NELISP_USE_META_DRIVER=1'
+;; in its environment, the batch dispatcher short-circuits the legacy elisp
+;; iteration chain (= `compile-elisp-objects-emit-range' walking the manifest
+;; with `dolist' + `plist-get' + `(require feature)') and instead drives the
+;; Phase 47-friendly static-manifest walker from `scripts/compile-elisp-
+;; objects-meta.el'.
+;;
+;; The host-Emacs and standalone NeLisp paths share the same `.o' emit kernel
+;; (`nelisp-phase47-compile-to-object'), so a successful standalone-mode run
+;; produces byte-identical output to the host-Emacs reference.  Wave A25.2's
+;; `nelisp_meta_should_rebuild' kernel is reachable from the meta-driver via
+;; the existing `compile-elisp-objects-meta--should-rebuild' host-shim today;
+;; once Wave A25.4+ surfaces an `extern-call'-driven host wrapper around the
+;; compiled `.o', that shim swaps to a direct extern call without changing
+;; the dispatch shape here.
+;;
+;; Rust LOC delta: 0 (the Rust bootstrap stub in `build-tool/src/bin/nelisp.rs'
+;; is unchanged; the new env-var branch lives entirely in elisp).
+
+(defun nelisp--cli-meta-driver-load-deps ()
+  "Pre-load the Phase 47 meta-driver dependency chain.
+
+Standalone NeLisp's `require' resolves `(require 'nelisp-phase47-compiler)'
+through the elisp `load' shim defined in `lisp/nelisp-stdlib-misc.el'.
+That shim sets `default-directory' to the loaded file's parent dir, so
+nested `(require ...)' calls executed during the load body resolve their
+file probes relative to that dir — fine on host Emacs (which has its own
+absolute load-path walk) but fragile on the standalone elisp shim because
+the inner `locate-library' walks `default-directory' first and only then
+the `load-path' list.  We sidestep that by hoisting the dep chain to
+top-level requires before the meta-driver's own load runs.
+
+Order matches `nelisp-phase47-compiler.el's own require chain (lines 92-96).
+Returns t on full success, signals on the first missing feature.
+
+Also installs a `locate-file' polyfill when the standalone runtime is
+missing one (= used by `compile-elisp-objects--source-file' to map
+manifest feature symbols → `.el' paths via `load-path' walk).  The
+polyfill is added through `defalias' only if `locate-file' is unbound
+— host Emacs callers already have a real one and stay untouched."
+  (require 'cl-lib)
+  (require 'nelisp-asm-arm64)
+  (require 'nelisp-asm-x86_64)
+  (require 'nelisp-elf-write)
+  (require 'nelisp-sexp-layout)
+  (require 'nelisp-phase47-compiler)
+  (require 'nelisp-cc-meta-driver)
+  (unless (fboundp 'locate-file)
+    (defalias 'locate-file
+      (lambda (filename path &optional _suffixes _predicate)
+        ;; Minimal polyfill: walks PATH for FILENAME, returns first
+        ;; absolute match or nil.  Ignores SUFFIXES + PREDICATE (the
+        ;; meta-driver only calls `(locate-file BASENAME load-path)'
+        ;; with the suffix already baked into BASENAME).
+        (let ((cur path)
+              (hit nil))
+          (while (and cur (null hit))
+            (let* ((root (car cur))
+                   (candidate (and (stringp root) (> (length root) 0)
+                                   (concat (if (eq (aref root (1- (length root))) ?/)
+                                               root
+                                             (concat root "/"))
+                                           filename))))
+              (when (and candidate (file-exists-p candidate))
+                (setq hit candidate)))
+            (setq cur (cdr cur)))
+          hit))))
+  t)
+
+(defun nelisp--cli-meta-driver-locate-script (basename)
+  "Resolve BASENAME (= a `<file>.el' path component) on `load-path'.
+Returns an absolute path, or nil if not found.  The standalone NeLisp
+`locate-library' walks `default-directory' first, then `load-path' — so
+as long as the caller passed `-L scripts/' / `-L /abs/scripts/' before
+this runs the lookup succeeds.  Returns nil rather than signaling so the
+caller can format a useful error with all probed candidates.
+
+The path is canonicalised to an absolute form via the
+`nelisp--syscall-canonicalize' primitive when available, falling back
+to `expand-file-name'.  This matters because the standalone elisp
+`load' shim re-routes its argument through `locate-library', which
+prepends each `load-path' entry (including `default-directory') to
+the input — so passing back a relative path like
+\"scripts/compile-elisp-objects.el\" causes a doubled-prefix probe
+\"lisp/scripts/compile-elisp-objects.el\" that never matches the
+on-disk file."
+  (let ((hit (locate-library basename)))
+    (cond
+     ((null hit) nil)
+     ;; Already absolute — pass through.
+     ((and (stringp hit) (> (length hit) 0) (eq (aref hit 0) ?/))
+      hit)
+     ;; Prefer the canonicalize syscall (= absolute, symlink-resolved).
+     ((fboundp 'nelisp--syscall-canonicalize)
+      (or (nelisp--syscall-canonicalize hit) hit))
+     ;; Final fallback — leaves a relative path on hosts without the
+     ;; canonicalize primitive; `load' may fail but the caller will
+     ;; surface a clear error.
+     (t (expand-file-name hit)))))
+
+(defun nelisp--cli-meta-driver-main ()
+  "Wave A25.3 — Phase 47 meta-driver bootstrap entry point.
+
+Drives the standalone-NeLisp branch that bypasses the legacy elisp
+manifest walker in `compile-elisp-objects-emit-all' / `-emit-range' and
+instead invokes the Phase 47-friendly static-manifest walker from
+`scripts/compile-elisp-objects-meta.el'.
+
+Steps:
+  1. Pre-load the phase47-compiler dep chain via
+     `nelisp--cli-meta-driver-load-deps' (= works around standalone
+     NeLisp's nested-require / default-directory interaction).
+  2. Locate `compile-elisp-objects.el' on `load-path' (= the caller must
+     have passed `-L scripts/' before driving here) and `load' it.  This
+     pre-populates the manifest defconst + the `--out-dir' / `--target-
+     arch' / `--target-format' helpers, and provides `compile-elisp-
+     objects' so the meta-driver's own load body short-circuits.
+  3. Locate and load `compile-elisp-objects-meta.el', which builds the
+     static manifest vector + the per-entry walker around the A25.2
+     `nelisp-cc-meta-driver' kernel source.
+  4. Invoke `compile-elisp-objects-meta-emit-subset' which compiles the
+     5-entry PoC subset (= spike-noop, fact-i64, truncate-int,
+     length-cons, cons-construct) into the same `target/elisp-objects/'
+     directory as the legacy driver.  Output paths share the production
+     names so a byte-identity probe against the host-Emacs reference is
+     just `cmp $REF $OUT'.
+
+Returns an integer exit code (0 = success, 1 = error)."
+  (condition-case err
+      (progn
+        (nelisp--cli-meta-driver-load-deps)
+        (let* ((production-script
+                (nelisp--cli-meta-driver-locate-script "compile-elisp-objects.el"))
+               (meta-script
+                (nelisp--cli-meta-driver-locate-script
+                 "compile-elisp-objects-meta.el")))
+          (unless production-script
+            (signal 'error
+                    (list "compile-elisp-objects.el not on load-path \
+(pass -L scripts/ before driving the meta path)")))
+          (unless meta-script
+            (signal 'error
+                    (list "compile-elisp-objects-meta.el not on load-path \
+(pass -L scripts/ before driving the meta path)")))
+          (load production-script nil t)
+          (load meta-script nil t)
+          (let ((emit-fn (intern "compile-elisp-objects-meta-emit-subset")))
+            (unless (fboundp emit-fn)
+              (signal 'error
+                      (list "compile-elisp-objects-meta-emit-subset \
+not bound after meta-script load")))
+            (let ((paths (funcall emit-fn)))
+              (nelisp--write-stdout-bytes
+               (format "[nelisp-meta-driver] wrote %d objects\n"
+                       (length paths)))
+              0))))
+    (error
+     (nelisp--cli-print-error
+      (format "meta-driver error: %s" (error-message-string err)))
+     1)))
+
 (defun nelisp--cli-batch-dispatch (args)
   "Process the batch-mode ARGS list (argv without binary name + --batch).
 
@@ -291,11 +468,61 @@ ARGS is a list of strings.  We walk it left-to-right:
   --eval EXPR                evaluate EXPR
   --setenv VAR=VAL           shorthand: (setenv VAR VAL)
 
+Wave A25.3 — when `NELISP_USE_META_DRIVER=1' is set in the environment,
+the dispatcher walks ARGS as usual up through `-L' / `--setenv' setup,
+then short-circuits the remaining `-l' / `-f' chain by invoking
+`nelisp--cli-meta-driver-main' which drives the Phase 47-friendly
+static-manifest walker directly.  This bypasses the legacy elisp
+iteration chain (= `dolist' + `plist-get' + `(require feature)') while
+keeping the per-entry `.o' emit byte-identical to the host-Emacs
+reference path.
+
 Returns an integer exit code (0 = success, 1 = error, 2 = bad args)."
   ;; Bare minimum bootstrap so -L and --setenv work before any file is loaded.
   (nelisp--cli-batch-ensure-host)
-  (let ((exit-code 0)
-        (cur args))
+  ;; Wave A25.3 — `NELISP_USE_META_DRIVER=1' short-circuits the elisp
+  ;; interpreter dispatch chain.  We still walk ARGS to honor `-L', `-Q',
+  ;; `--setenv', and `--eval' (= setup-only flags that prepare the
+  ;; load-path + env state for the meta-driver), but skip `-l' / `-f'
+  ;; because those drive the legacy `compile-elisp-objects-emit-range'
+  ;; iteration which the meta-driver replaces.
+  ;;
+  ;; The detection scans ARGS for a `--setenv NELISP_USE_META_DRIVER=...'
+  ;; pair before the main walk so the `-l' / `-f' skip decision is in
+  ;; force from the first argv entry — `getenv' alone would be too late
+  ;; because the elisp shim's `process-environment' is empty until a
+  ;; `--setenv' pair runs through the dispatcher.  An OS-side env-var
+  ;; check via Rust would also work but adds Rust LOC (= violates the
+  ;; A25.3 hard rule of LOC delta = 0).
+  (let* ((meta-driver-p
+          (or (let ((v (getenv "NELISP_USE_META_DRIVER")))
+                (and v (stringp v) (> (length v) 0) (not (equal v "0"))))
+              ;; Pre-scan ARGS for `--setenv NELISP_USE_META_DRIVER=...'
+              ;; so the flag is honored even though the actual setenv
+              ;; pair hasn't been processed yet.  The literal prefix
+              ;; `NELISP_USE_META_DRIVER=' is 23 chars long; a `0' or
+              ;; empty value is treated as a disable flag (matches the
+              ;; getenv branch above).
+              (let ((scan args)
+                    (hit nil))
+                (while (and scan (not hit))
+                  (let ((flag (car scan)))
+                    (when (and (equal flag "--setenv")
+                               (cdr scan)
+                               (stringp (cadr scan))
+                               (let ((pair (cadr scan)))
+                                 (and (>= (length pair) 23)
+                                      (equal (substring pair 0 23)
+                                             "NELISP_USE_META_DRIVER=")))
+                               (let* ((pair (cadr scan))
+                                      (val (substring pair 23)))
+                                 (and (> (length val) 0)
+                                      (not (equal val "0")))))
+                      (setq hit t)))
+                  (setq scan (cdr scan)))
+                hit)))
+         (exit-code 0)
+         (cur args))
     (while (and cur (= exit-code 0))
       (let ((flag (car cur)))
         (setq cur (cdr cur))
@@ -318,18 +545,32 @@ Returns an integer exit code (0 = success, 1 = error, 2 = bad args)."
          ((or (equal flag "-l") (equal flag "--load"))
           (let ((file (car cur)))
             (setq cur (cdr cur))
-            (if file
-                (setq exit-code (nelisp--cli-batch-load-file file))
+            (cond
+             ((null file)
               (nelisp--cli-print-error "-l requires a file argument")
-              (setq exit-code 2))))
+              (setq exit-code 2))
+             (meta-driver-p
+              ;; Wave A25.3 — skip the load so the legacy dispatch chain
+              ;; doesn't fight the meta-driver's pre-resolved deps.
+              nil)
+             (t
+              (setq exit-code (nelisp--cli-batch-load-file file))))))
          ;; -f FUNC / --funcall FUNC
          ((or (equal flag "-f") (equal flag "--funcall"))
           (let ((func (car cur)))
             (setq cur (cdr cur))
-            (if func
-                (setq exit-code (nelisp--cli-batch-funcall func))
+            (cond
+             ((null func)
               (nelisp--cli-print-error "-f requires a function name argument")
-              (setq exit-code 2))))
+              (setq exit-code 2))
+             (meta-driver-p
+              ;; Wave A25.3 — skip the funcall; the meta-driver runs at
+              ;; loop exit and supersedes whatever entry point the caller
+              ;; would have driven (typically `compile-elisp-objects-emit-
+              ;; range').
+              nil)
+             (t
+              (setq exit-code (nelisp--cli-batch-funcall func))))))
          ;; --eval EXPR
          ((equal flag "--eval")
           (let ((expr (car cur)))
@@ -363,6 +604,13 @@ Returns an integer exit code (0 = success, 1 = error, 2 = bad args)."
           (nelisp--cli-print-error
            (format "unrecognized batch flag: %s" flag))
           (setq exit-code 2)))))
+    ;; Wave A25.3 — after argv setup (= -L / --setenv etc.) completes
+    ;; cleanly, if `NELISP_USE_META_DRIVER' is set drive the Phase 47
+    ;; meta-driver directly.  This replaces whatever `-l' / `-f' chain
+    ;; the caller passed (we already skipped them above) — the meta-
+    ;; driver's iteration kernel is the unit of work for this batch run.
+    (when (and meta-driver-p (= exit-code 0))
+      (setq exit-code (nelisp--cli-meta-driver-main)))
     exit-code))
 
 (defun nelisp-cli-main (argv)
