@@ -645,6 +645,15 @@ dispatch.  The 88 entries cover every kind produced by
 `nelisp-phase47-compiler--make-ir'.  Tag values are stable (assigned in
 sorted-symbol order) so later waves can rely on a fixed numbering.")
 
+(defsubst nelisp-phase47-compiler--ir-kind-tag (node)
+  "Return the small-integer tag for IR NODE's `:kind' (A33.2 table).
+A33.3 — looks the `:kind' symbol up in `--ir-kind-tags' so the emit
+dispatch sites can compare integers (`(= tag N)') instead of symbols.
+This is a behaviour-preserving change: every dispatched kind maps to a
+distinct stable tag, so the emitted `.o' bytes are unchanged."
+  (cdr (assq (nelisp-phase47-compiler--ir-kind node)
+             nelisp-phase47-compiler--ir-kind-tags)))
+
 (defun nelisp-phase47-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
@@ -2245,8 +2254,12 @@ defun bodies too so functions can call `write'."
     (cl-labels
         ((walk (node)
            (when node
-             (pcase (nelisp-phase47-compiler--ir-kind node)
-               ('write
+             ;; A33.3 — integer-tag dispatch (= `pcase' arms turned into a
+             ;; `cond' over `--ir-kind-tag'); behaviour-preserving so the
+             ;; emitted `.o' bytes are unchanged.
+             (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+              (cond
+               ((= tag 87)            ; write
                 (let ((s (nelisp-phase47-compiler--ir-get node :str)))
                   (unless (assoc s offsets)
                     (let ((bs (encode-coding-string s 'utf-8 t)))
@@ -2257,42 +2270,43 @@ defun bodies too so functions can call `write'."
                                                       :len (length bs))))))
                       (setq rodata (concat rodata bs))
                       (setq cursor (+ cursor (length bs)))))))
-               ('exit (walk (nelisp-phase47-compiler--ir-get node :value)))
-               ('seq
+               ((= tag 22)            ; exit
+                (walk (nelisp-phase47-compiler--ir-get node :value)))
+               ((= tag 54)            ; seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
-               ('let
+               ((= tag 31)            ; let
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
-               ('defun
+               ((= tag 21)            ; defun
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
-               ('arith
+               ((= tag 1)             ; arith
                 (walk (nelisp-phase47-compiler--ir-get node :a))
                 (walk (nelisp-phase47-compiler--ir-get node :b)))
-               ('shift
+               ((= tag 67)            ; shift
                 (walk (nelisp-phase47-compiler--ir-get node :a))
                 (walk (nelisp-phase47-compiler--ir-get node :b)))
-               ('call
+               ((= tag 5)             ; call
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :args)))
-               ('cmp
+               ((= tag 10)            ; cmp
                 (walk (nelisp-phase47-compiler--ir-get node :a))
                 (walk (nelisp-phase47-compiler--ir-get node :b)))
-               ('if
+               ((= tag 29)            ; if
                 (walk (nelisp-phase47-compiler--ir-get node :test))
                 (walk (nelisp-phase47-compiler--ir-get node :then))
                 (walk (nelisp-phase47-compiler--ir-get node :else)))
-               ('while
+               ((= tag 86)            ; while
                 (walk (nelisp-phase47-compiler--ir-get node :test))
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :body)))
-               ('cond
+               ((= tag 11)            ; cond
                 (dolist (cl (nelisp-phase47-compiler--ir-get node :clauses))
                   (unless (eq (car cl) 'always)
                     (walk (car cl)))
                   (walk (cdr cl))))
-               ('logic
+               ((= tag 33)            ; logic
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
-               ('let-rt
+               ((= tag 32)            ; let-rt
                 (walk (nelisp-phase47-compiler--ir-get node :value-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
-               (_ nil)))))
+               (t nil))))))
       (walk ir))
     (cons offsets rodata)))
 
@@ -2329,8 +2343,11 @@ when two `table-define' nodes share a NAME."
                              (logand (ash u -24) #xFF))))
          (walk (node)
            (when node
-             (pcase (nelisp-phase47-compiler--ir-kind node)
-               ('table-define
+             ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
+             ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+             (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+              (cond
+               ((= tag 79)            ; table-define
                 (let ((name (nelisp-phase47-compiler--ir-get node :name))
                       (elements (nelisp-phase47-compiler--ir-get node :elements)))
                   (when (assoc name offsets)
@@ -2346,22 +2363,22 @@ when two `table-define' nodes share a NAME."
                                                     :len (length blob))))))
                     (setq bytes (concat bytes blob))
                     (setq cursor (+ cursor (length blob))))))
-               ('seq
+               ((= tag 54)            ; seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
-               ('let
+               ((= tag 31)            ; let
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
-               ('defun
+               ((= tag 21)            ; defun
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
-               ('let-rt
+               ((= tag 32)            ; let-rt
                 (walk (nelisp-phase47-compiler--ir-get node :value-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
                ;; table-lookup is value-producing; the `:index' child
                ;; is itself an IR node walked for nested defines (=
                ;; defensive, normal source has table-define at top
                ;; level only).
-               ('table-lookup
+               ((= tag 80)            ; table-lookup
                 (walk (nelisp-phase47-compiler--ir-get node :index)))
-               (_ nil)))))
+               (t nil))))))
       (walk ir))
     (cons offsets bytes)))
 
@@ -2381,14 +2398,17 @@ walk; the emitter substitutes a no-op for the original site."
     (cl-labels
         ((walk (node)
            (when node
-             (pcase (nelisp-phase47-compiler--ir-kind node)
-               ('defun (push node acc))
-               ('seq (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
-               ('let (walk (nelisp-phase47-compiler--ir-get node :body)))
-               ('let-rt
+             ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
+             ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+             (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+              (cond
+               ((= tag 21) (push node acc)) ; defun
+               ((= tag 54) (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms))) ; seq
+               ((= tag 31) (walk (nelisp-phase47-compiler--ir-get node :body))) ; let
+               ((= tag 32)            ; let-rt
                 (walk (nelisp-phase47-compiler--ir-get node :value-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
-               (_ nil)))))
+               (t nil))))))
       (walk ir))
     (nreverse acc)))
 
@@ -2777,10 +2797,13 @@ Doc 110 §110.E.1 f64 nodes (`f64-binop' + `ref' with :class f64)
 return their result in xmm0 instead of rax — caller must know
 the node's class to consume the result correctly."
   (if (eq nelisp-phase47-compiler--arch 'aarch64)
-      (pcase (nelisp-phase47-compiler--ir-kind node)
-        ('imm
+      ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
+      ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+      (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+       (cond
+        ((= tag 30)             ; imm
          (nelisp-asm-arm64-mov-imm64 buf 'x0 (nelisp-phase47-compiler--ir-get node :value)))
-        ('ref
+        ((= tag 53)             ; ref
          ;; GP class → LDUR Xn (existing path); f64 class → LDUR Dn
          ;; into d0 (= default destination for top-level body ref).
          (if (eq (nelisp-phase47-compiler--ir-get node :class) 'f64)
@@ -2788,55 +2811,59 @@ the node's class to consume the result correctly."
               buf (nelisp-phase47-compiler--ir-get node :slot) 'd0)
            (nelisp-phase47-compiler--emit-ref-load
             buf (nelisp-phase47-compiler--ir-get node :slot))))
-        ('arith
+        ((= tag 1)              ; arith
          (nelisp-phase47-compiler--emit-arith node buf))
-        ('shift
+        ((= tag 67)             ; shift
          (nelisp-phase47-compiler--emit-shift node buf))
-        ('cmp
+        ((= tag 10)             ; cmp
          (nelisp-phase47-compiler--emit-cmp node buf))
-        ('if
+        ((= tag 29)             ; if
          (nelisp-phase47-compiler--emit-if node buf))
-        ('f64-binop
+        ((= tag 24)             ; f64-binop
          (nelisp-phase47-compiler--emit-f64-binop node buf))
-        ('f64-cmp
+        ((= tag 26)             ; f64-cmp
          (nelisp-phase47-compiler--emit-f64-cmp node buf))
-        ('f64-call
+        ((= tag 25)             ; f64-call
          (nelisp-phase47-compiler--emit-f64-call node buf))
-        ((or 'call 'extern-call 'sexp-tag 'sexp-int-unwrap 'sexp-int-make 'sexp-float-unwrap 'f64-to-i64-trunc
-             'cons-null-p 'cons-car 'cons-cdr 'cons-cdr-raw
-             'sexp-payload-ptr 'sexp-payload-ptr-record
-             'record-type-tag 'record-slot-count 'record-slot-ref
-             'record-slot-ref-ptr 'record-slot-set
-             'vector-len 'vector-ref 'vector-ref-ptr 'vector-slot-set
-             'vector-make
-             'record-make
-             'cell-value 'cell-set-value 'cell-make 'cell-null-p
-             'str-len 'str-bytes 'str-bytes-ptr 'str-byte-at 'str-eq 'symbol-eq
-             'symbol-name-eq 'sexp-name-eq
-             'sexp-write-nil 'sexp-write-t
-             'sexp-write-str 'sexp-write-symbol 'sexp-write-float
-             'mut-str-make-empty 'mut-str-push-byte 'mut-str-push-codepoint
-             'mut-str-len 'mut-str-finalize
-             'str-char-count 'str-codepoint-at 'str-is-alphanumeric-at
-             'atomic-fetch-add 'atomic-compare-exchange
-             'ptr-read-u64 'ptr-write-u64
-             'ptr-read-u8 'ptr-write-u8
-             'ptr-read-u16 'ptr-write-u16
-             'ptr-read-u32 'ptr-write-u32
-             'alloc-bytes 'dealloc-bytes 'syscall-direct
-             'cons-make 'cons-make-with-clone 'cons-set-car 'cons-set-cdr
-             'while 'cond 'logic
-             'syscall-direct)
+        ((memq tag '(5 23 61 57 56 55 27 ; call extern-call sexp-tag sexp-int-unwrap sexp-int-make sexp-float-unwrap f64-to-i64-trunc
+                     17 12 13 14         ; cons-null-p cons-car cons-cdr cons-cdr-raw
+                     59 60               ; sexp-payload-ptr sexp-payload-ptr-record
+                     52 48 49            ; record-type-tag record-slot-count record-slot-ref
+                     50 51               ; record-slot-ref-ptr record-slot-set
+                     81 83 84 85         ; vector-len vector-ref vector-ref-ptr vector-slot-set
+                     82                  ; vector-make
+                     47                  ; record-make
+                     9 8 6 7             ; cell-value cell-set-value cell-make cell-null-p
+                     75 69 70 68 73 76   ; str-len str-bytes str-bytes-ptr str-byte-at str-eq symbol-eq
+                     77 58               ; symbol-name-eq sexp-name-eq
+                     63 66               ; sexp-write-nil sexp-write-t
+                     64 65 62            ; sexp-write-str sexp-write-symbol sexp-write-float
+                     36 37 38            ; mut-str-make-empty mut-str-push-byte mut-str-push-codepoint
+                     35 34               ; mut-str-len mut-str-finalize
+                     71 72 74            ; str-char-count str-codepoint-at str-is-alphanumeric-at
+                     3 2                 ; atomic-fetch-add atomic-compare-exchange
+                     41 45               ; ptr-read-u64 ptr-write-u64
+                     42 46               ; ptr-read-u8 ptr-write-u8
+                     39 43               ; ptr-read-u16 ptr-write-u16
+                     40 44               ; ptr-read-u32 ptr-write-u32
+                     0 20 78             ; alloc-bytes dealloc-bytes syscall-direct
+                     15 16 18 19         ; cons-make cons-make-with-clone cons-set-car cons-set-cdr
+                     86 11 33            ; while cond logic
+                     78))               ; syscall-direct
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (nelisp-phase47-compiler--ir-kind node) node))
-        (kind
-         (signal 'nelisp-phase47-compiler-error
-                 (list :unknown-value-kind kind))))
-    (pcase (nelisp-phase47-compiler--ir-kind node)
-      ('imm
+        (t
+         (let ((kind (nelisp-phase47-compiler--ir-kind node)))
+           (signal 'nelisp-phase47-compiler-error
+                   (list :unknown-value-kind kind))))))
+    ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
+    ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+    (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+     (cond
+      ((= tag 30)               ; imm
        ;; mov rax, imm32                                = 7 bytes
        (nelisp-asm-x86_64-mov-imm32 buf 'rax (nelisp-phase47-compiler--ir-get node :value)))
-      ('ref
+      ((= tag 53)               ; ref
        ;; gp class → `mov rax, [rbp - 8*(slot+1)]'; f64 class →
        ;; `movsd xmm0, [rbp - 8*(slot+1)]'.  Both read the spilled
        ;; param from the frame slot allocated by the prologue;
@@ -2846,169 +2873,169 @@ the node's class to consume the result correctly."
             buf (nelisp-phase47-compiler--ir-get node :slot) 'xmm0)
          (nelisp-phase47-compiler--emit-ref-load
           buf (nelisp-phase47-compiler--ir-get node :slot))))
-      ('f64-binop
+      ((= tag 24)               ; f64-binop
        (nelisp-phase47-compiler--emit-f64-binop node buf))
-      ('f64-cmp
+      ((= tag 26)               ; f64-cmp
        (nelisp-phase47-compiler--emit-f64-cmp node buf))
-      ('f64-call
+      ((= tag 25)               ; f64-call
        (nelisp-phase47-compiler--emit-f64-call node buf))
-      ('arith
+      ((= tag 1)                ; arith
        (nelisp-phase47-compiler--emit-arith node buf))
-      ('shift
+      ((= tag 67)               ; shift
        (nelisp-phase47-compiler--emit-shift node buf))
-      ('call
+      ((= tag 5)                ; call
        (nelisp-phase47-compiler--emit-call node buf))
-      ('extern-call
+      ((= tag 23)               ; extern-call
        (nelisp-phase47-compiler--emit-extern-call node buf))
-      ('sexp-tag
+      ((= tag 61)               ; sexp-tag
        (nelisp-phase47-compiler--emit-sexp-tag node buf))
-      ('sexp-int-unwrap
+      ((= tag 57)               ; sexp-int-unwrap
        (nelisp-phase47-compiler--emit-sexp-int-unwrap node buf))
-      ('sexp-float-unwrap
+      ((= tag 55)               ; sexp-float-unwrap
        (nelisp-phase47-compiler--emit-sexp-float-unwrap node buf))
-      ('f64-to-i64-trunc
+      ((= tag 27)               ; f64-to-i64-trunc
        (nelisp-phase47-compiler--emit-f64-to-i64-trunc node buf))
-      ('sexp-int-make
+      ((= tag 56)               ; sexp-int-make
        (nelisp-phase47-compiler--emit-sexp-int-make node buf))
-      ('cons-null-p
+      ((= tag 17)               ; cons-null-p
        (nelisp-phase47-compiler--emit-cons-null-p node buf))
-      ('cons-car
+      ((= tag 12)               ; cons-car
        (nelisp-phase47-compiler--emit-cons-slot-copy
         node buf nelisp-nlconsbox--offset-car))
-      ('cons-cdr
+      ((= tag 13)               ; cons-cdr
        (nelisp-phase47-compiler--emit-cons-slot-copy
         node buf nelisp-nlconsbox--offset-cdr))
-      ('cons-cdr-raw
+      ((= tag 14)               ; cons-cdr-raw
        (nelisp-phase47-compiler--emit-cons-cdr-raw node buf))
-      ('sexp-payload-ptr
+      ((= tag 59)               ; sexp-payload-ptr
        (nelisp-phase47-compiler--emit-sexp-payload-ptr node buf))
-      ('sexp-payload-ptr-record
+      ((= tag 60)               ; sexp-payload-ptr-record
        (nelisp-phase47-compiler--emit-sexp-payload-ptr-record node buf))
-      ('record-type-tag
+      ((= tag 52)               ; record-type-tag
        (nelisp-phase47-compiler--emit-record-type-tag node buf))
-      ('record-slot-count
+      ((= tag 48)               ; record-slot-count
        (nelisp-phase47-compiler--emit-record-slot-count node buf))
-      ('record-slot-ref
+      ((= tag 49)               ; record-slot-ref
        (nelisp-phase47-compiler--emit-record-slot-ref node buf))
-      ('record-slot-ref-ptr
+      ((= tag 50)               ; record-slot-ref-ptr
        (nelisp-phase47-compiler--emit-record-slot-ref-ptr node buf))
-      ('record-slot-set
+      ((= tag 51)               ; record-slot-set
        (nelisp-phase47-compiler--emit-record-slot-set node buf))
-      ('vector-len
+      ((= tag 81)               ; vector-len
        (nelisp-phase47-compiler--emit-vector-len node buf))
-      ('vector-ref
+      ((= tag 83)               ; vector-ref
        (nelisp-phase47-compiler--emit-vector-ref node buf))
-      ('vector-ref-ptr
+      ((= tag 84)               ; vector-ref-ptr
        (nelisp-phase47-compiler--emit-vector-ref-ptr node buf))
-      ('vector-slot-set
+      ((= tag 85)               ; vector-slot-set
        (nelisp-phase47-compiler--emit-vector-slot-set node buf))
-      ('vector-make
+      ((= tag 82)               ; vector-make
        (nelisp-phase47-compiler--emit-vector-make node buf))
-      ('record-make
+      ((= tag 47)               ; record-make
        (nelisp-phase47-compiler--emit-record-make node buf))
-      ('cell-value
+      ((= tag 9)                ; cell-value
        (nelisp-phase47-compiler--emit-cell-value node buf))
-      ('cell-set-value
+      ((= tag 8)                ; cell-set-value
        (nelisp-phase47-compiler--emit-cell-set-value node buf))
-      ('cell-make
+      ((= tag 6)                ; cell-make
        (nelisp-phase47-compiler--emit-cell-make node buf))
-      ('cell-null-p
+      ((= tag 7)                ; cell-null-p
        (nelisp-phase47-compiler--emit-cell-null-p node buf))
-      ('str-len
+      ((= tag 75)               ; str-len
        (nelisp-phase47-compiler--emit-str-len node buf))
-      ('str-bytes
+      ((= tag 69)               ; str-bytes
        (nelisp-phase47-compiler--emit-str-bytes node buf))
-      ('str-bytes-ptr
+      ((= tag 70)               ; str-bytes-ptr
        (nelisp-phase47-compiler--emit-str-bytes-ptr node buf))
-      ('str-byte-at
+      ((= tag 68)               ; str-byte-at
        (nelisp-phase47-compiler--emit-str-byte-at node buf))
-      ('str-eq
+      ((= tag 73)               ; str-eq
        (nelisp-phase47-compiler--emit-str-eq node buf))
-      ('symbol-eq
+      ((= tag 76)               ; symbol-eq
        (nelisp-phase47-compiler--emit-symbol-eq node buf))
-      ('symbol-name-eq
+      ((= tag 77)               ; symbol-name-eq
        (nelisp-phase47-compiler--emit-symbol-name-eq node buf))
-      ('sexp-name-eq
+      ((= tag 58)               ; sexp-name-eq
        (nelisp-phase47-compiler--emit-sexp-name-eq node buf))
-      ('sexp-write-nil
+      ((= tag 63)               ; sexp-write-nil
        (nelisp-phase47-compiler--emit-sexp-write-tag
         node buf nelisp-sexp--tag-nil))
-      ('sexp-write-t
+      ((= tag 66)               ; sexp-write-t
        (nelisp-phase47-compiler--emit-sexp-write-tag
         node buf nelisp-sexp--tag-t))
-      ('sexp-write-str
+      ((= tag 64)               ; sexp-write-str
        (nelisp-phase47-compiler--emit-sexp-write-alloc
         node buf "nl_alloc_str"))
-      ('sexp-write-symbol
+      ((= tag 65)               ; sexp-write-symbol
        (nelisp-phase47-compiler--emit-sexp-write-alloc
         node buf "nl_alloc_symbol"))
-      ('sexp-write-float
+      ((= tag 62)               ; sexp-write-float
        (nelisp-phase47-compiler--emit-sexp-write-float node buf))
-      ('mut-str-make-empty
+      ((= tag 36)               ; mut-str-make-empty
        (nelisp-phase47-compiler--emit-mut-str-make-empty node buf))
-      ('mut-str-push-byte
+      ((= tag 37)               ; mut-str-push-byte
        (nelisp-phase47-compiler--emit-mut-str-push-2arg
         node buf "nl_mut_str_push_byte" :byte))
-      ('mut-str-push-codepoint
+      ((= tag 38)               ; mut-str-push-codepoint
        (nelisp-phase47-compiler--emit-mut-str-push-2arg
         node buf "nl_mut_str_push_codepoint" :cp))
-      ('mut-str-len
+      ((= tag 35)               ; mut-str-len
        (nelisp-phase47-compiler--emit-mut-str-len node buf))
-      ('mut-str-finalize
+      ((= tag 34)               ; mut-str-finalize
        (nelisp-phase47-compiler--emit-mut-str-finalize node buf))
-      ('str-char-count
+      ((= tag 71)               ; str-char-count
        (nelisp-phase47-compiler--emit-str-char-count node buf))
-      ('str-codepoint-at
+      ((= tag 72)               ; str-codepoint-at
        (nelisp-phase47-compiler--emit-str-codepoint-at node buf))
-      ('str-is-alphanumeric-at
+      ((= tag 74)               ; str-is-alphanumeric-at
        (nelisp-phase47-compiler--emit-str-is-alphanumeric-at node buf))
-      ('atomic-fetch-add
+      ((= tag 3)                ; atomic-fetch-add
        (nelisp-phase47-compiler--emit-atomic-fetch-add node buf))
-      ('atomic-compare-exchange
+      ((= tag 2)                ; atomic-compare-exchange
        (nelisp-phase47-compiler--emit-atomic-compare-exchange node buf))
-      ('ptr-read-u64
+      ((= tag 41)               ; ptr-read-u64
        (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u64"))
-      ('ptr-write-u64
+      ((= tag 45)               ; ptr-write-u64
        (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u64"))
-      ('ptr-read-u8
+      ((= tag 42)               ; ptr-read-u8
        (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u8"))
-      ('ptr-write-u8
+      ((= tag 46)               ; ptr-write-u8
        (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u8"))
-      ('ptr-read-u16
+      ((= tag 39)               ; ptr-read-u16
        (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u16"))
-      ('ptr-write-u16
+      ((= tag 43)               ; ptr-write-u16
        (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u16"))
-      ('ptr-read-u32
+      ((= tag 40)               ; ptr-read-u32
        (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u32"))
-      ('ptr-write-u32
+      ((= tag 44)               ; ptr-write-u32
        (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u32"))
-      ('alloc-bytes
+      ((= tag 0)                ; alloc-bytes
        (nelisp-phase47-compiler--emit-alloc-bytes node buf))
-      ('dealloc-bytes
+      ((= tag 20)               ; dealloc-bytes
        (nelisp-phase47-compiler--emit-dealloc-bytes node buf))
-      ('syscall-direct
+      ((= tag 78)               ; syscall-direct
        (nelisp-phase47-compiler--emit-syscall-direct node buf))
-      ('cons-make
+      ((= tag 15)               ; cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
-      ('cons-make-with-clone
+      ((= tag 16)               ; cons-make-with-clone
        (nelisp-phase47-compiler--emit-cons-make-with-clone node buf))
-      ('cons-set-car
+      ((= tag 18)               ; cons-set-car
        (nelisp-phase47-compiler--emit-cons-set-slot
         node buf 'nl_consbox_set_car))
-      ('cons-set-cdr
+      ((= tag 19)               ; cons-set-cdr
        (nelisp-phase47-compiler--emit-cons-set-slot
         node buf 'nl_consbox_set_cdr))
-      ('cmp
+      ((= tag 10)               ; cmp
        (nelisp-phase47-compiler--emit-cmp node buf))
-      ('if
+      ((= tag 29)               ; if
        (nelisp-phase47-compiler--emit-if node buf))
-      ('while
+      ((= tag 86)               ; while
        (nelisp-phase47-compiler--emit-while node buf))
-      ('cond
+      ((= tag 11)               ; cond
        (nelisp-phase47-compiler--emit-cond node buf))
-      ('logic
+      ((= tag 33)               ; logic
        (nelisp-phase47-compiler--emit-logic node buf))
-      ('let-rt
+      ((= tag 32)               ; let-rt
        ;; Runtime let in value context: evaluate value-ir → rax, spill
        ;; to frame slot, then evaluate body → rax (= function return).
        (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
@@ -3017,14 +3044,15 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-value value-ir buf)
          (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :body) buf)))
-      ('syscall-direct
-       (nelisp-phase47-compiler--emit-syscall-direct node buf))
-      ('table-lookup
+      ;; (tag 78 syscall-direct already handled above; duplicate `pcase'
+      ;; arm was dead, dropped under `cond' first-match semantics)
+      ((= tag 80)               ; table-lookup
        ;; Doc 49 Wave 11.1: static-imm32-table-lookup → u32 in rax.
        (nelisp-phase47-compiler--emit-table-lookup node buf))
-      (kind
-       (signal 'nelisp-phase47-compiler-error
-               (list :unknown-value-kind kind))))))
+      (t
+       (let ((kind (nelisp-phase47-compiler--ir-kind node)))
+         (signal 'nelisp-phase47-compiler-error
+                 (list :unknown-value-kind kind))))))))
 
 (defun nelisp-phase47-compiler--emit-arith (node buf)
   "Emit a runtime arithmetic op, result in rax.
@@ -5414,20 +5442,23 @@ the absolute virtual address of byte 0 of .rodata."
 VALUE-NODE is a value-producing IR node.  If it's an `imm', emit
 the legacy fixed-status path (= 16 bytes).  Otherwise compute the
 value into rax then `mov rdi, rax' + syscall."
-  (pcase (nelisp-phase47-compiler--ir-kind value-node)
-    ('imm
+  ;; A33.3 — integer-tag dispatch (`pcase' arm → `cond' over
+  ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+  (let ((tag (nelisp-phase47-compiler--ir-kind-tag value-node)))
+   (cond
+    ((= tag 30)                 ; imm
      (let ((status (nelisp-phase47-compiler--ir-get value-node :value)))
        (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
        (nelisp-asm-x86_64-mov-imm32 buf 'rdi status)
        (nelisp-asm-x86_64-syscall buf)))
-    (_
+    (t
      ;; Compute value into rax (= might call functions).
      (nelisp-phase47-compiler--emit-value value-node buf)
      ;; mov rdi, rax (= exit status from computed value).
      (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
      ;; mov rax, 60 (SYS_exit).
      (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
-     (nelisp-asm-x86_64-syscall buf))))
+     (nelisp-asm-x86_64-syscall buf)))))
 
 (defun nelisp-phase47-compiler--emit-stmt (ir buf str-offsets rodata-vaddr)
   "Walk statement IR appending instructions to BUF.
@@ -5436,21 +5467,24 @@ RODATA-VADDR is the absolute vaddr of byte 0 of .rodata (= 0 during
 pass-1 sizing, real value during pass-2).  `defun' nodes are
 skipped here — they're emitted separately by the orchestrator."
   (when ir
-    (pcase (nelisp-phase47-compiler--ir-kind ir)
-      ('write
+    ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
+    ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+    (let ((tag (nelisp-phase47-compiler--ir-kind-tag ir)))
+     (cond
+      ((= tag 87)               ; write
        (nelisp-phase47-compiler--emit-write
         buf (nelisp-phase47-compiler--ir-get ir :str) str-offsets rodata-vaddr))
-      ('exit
+      ((= tag 22)               ; exit
        (nelisp-phase47-compiler--emit-exit
         buf (nelisp-phase47-compiler--ir-get ir :value)))
-      ('seq
+      ((= tag 54)               ; seq
        (dolist (child (nelisp-phase47-compiler--ir-get ir :forms))
          (nelisp-phase47-compiler--emit-stmt
           child buf str-offsets rodata-vaddr)))
-      ('let
+      ((= tag 31)               ; let
        (nelisp-phase47-compiler--emit-stmt
         (nelisp-phase47-compiler--ir-get ir :body) buf str-offsets rodata-vaddr))
-      ('let-rt
+      ((= tag 32)               ; let-rt
        ;; Runtime let: evaluate value-ir → rax, spill to frame slot,
        ;; then walk body as statement.
        (let* ((slot (nelisp-phase47-compiler--ir-get ir :slot))
@@ -5460,29 +5494,30 @@ skipped here — they're emitted separately by the orchestrator."
          (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
          (nelisp-phase47-compiler--emit-stmt
           (nelisp-phase47-compiler--ir-get ir :body) buf str-offsets rodata-vaddr)))
-      ('defun
+      ((= tag 21)               ; defun
        ;; Skip — handled by `--emit-defun' separately.
        nil)
-      ('table-define
+      ((= tag 79)               ; table-define
        ;; Doc 49 Wave 11.1: skip — placed in `.rodata' by the
        ;; collector pass, no .text bytes.
        nil)
-      ('table-lookup
+      ((= tag 80)               ; table-lookup
        ;; Statement-context lookup discards rax (= side-effect free,
        ;; but we still emit so any address-of-table refs land).
        (nelisp-phase47-compiler--emit-table-lookup ir buf))
-      ('call
+      ((= tag 5)                ; call
        ;; Statement-context call discards rax.
        (nelisp-phase47-compiler--emit-call ir buf))
-      ((or 'if 'while 'cond 'logic 'cmp 'arith 'shift)
+      ((memq tag '(29 86 11 33 10 1 67)) ; if while cond logic cmp arith shift
        ;; §97.c: value-producing control-flow / comparison form
        ;; reached statement position (= `seq' child, top-level).
        ;; Emit the value compute; rax is discarded by the
        ;; surrounding context.
        (nelisp-phase47-compiler--emit-value ir buf))
-      (kind
-       (signal 'nelisp-phase47-compiler-error
-               (list :unknown-ir-kind kind))))))
+      (t
+       (let ((kind (nelisp-phase47-compiler--ir-kind ir)))
+         (signal 'nelisp-phase47-compiler-error
+                 (list :unknown-ir-kind kind))))))))
 
 (defun nelisp-phase47-compiler--emit-defun (defun-ir buf)
   "Emit a single function definition into BUF.
@@ -5917,16 +5952,20 @@ drift (= a Doc 92 emitter invariant violation)."
     ;; Validate top-level shape: either a single defun, or a seq of
     ;; defun forms (the parser tolerates seq + main body, but for
     ;; object output we reject anything that would emit a `_start'.)
-    (pcase (nelisp-phase47-compiler--ir-kind ir)
-      ('defun nil)
-      ('seq
+    ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
+    ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+    (let ((tag (nelisp-phase47-compiler--ir-kind-tag ir)))
+     (cond
+      ((= tag 21) nil)          ; defun
+      ((= tag 54)               ; seq
        (dolist (f (nelisp-phase47-compiler--ir-get ir :forms))
          (unless (eq (nelisp-phase47-compiler--ir-kind f) 'defun)
            (signal 'nelisp-phase47-compiler-error
                    (list :object-mode-non-defun-form f)))))
-      (other
-       (signal 'nelisp-phase47-compiler-error
-               (list :object-mode-bad-top-form other))))
+      (t
+       (let ((other (nelisp-phase47-compiler--ir-kind ir)))
+         (signal 'nelisp-phase47-compiler-error
+                 (list :object-mode-bad-top-form other))))))
     ;; Emit pass: only the defuns, no main `_start' body.  We reuse
     ;; the existing emit-defun helper and call `resolve-fixups' so
     ;; intra-`.text' cross-defun calls bake their rel32 in place
