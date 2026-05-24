@@ -769,6 +769,17 @@
      :source-var nelisp-cc-bi-syscall-stat-mtime--source
      :output "nelisp_bi_syscall_stat_mtime.o"
      :requires-arch x86_64)
+    ;; Wave A25.2 — Phase 47 self-application driver kernel (PoC).
+    ;; `nelisp_meta_should_rebuild' composes two `nelisp_bi_syscall_stat_mtime'
+    ;; calls + a pure-arithmetic decision (= src missing / out missing /
+    ;; out_mtime < src_mtime).  Foundation for the future A25.3 standalone
+    ;; bootstrap of the meta-driver iteration loop.  Composes only existing
+    ;; Phase 47 grammar — no new opcode.  Linux-x86_64 only (= same gate as
+    ;; the A25.1-min parents).
+    (nelisp-cc-meta-driver
+     :source-var nelisp-cc-meta-driver--source
+     :output "nelisp_meta_should_rebuild.o"
+     :requires-arch x86_64)
     ;; Doc 117 §117.D.gaps.3 (cont.) — second file-I/O sweep batch.
     ;; Two additional handlers consumed (after the 3-handler initial
     ;; batch above):

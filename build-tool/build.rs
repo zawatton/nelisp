@@ -36,7 +36,7 @@ fn main() {
 /// in scripts/compile-elisp-objects.el.  Used only for chunk partitioning;
 /// over-shooting is harmless (= elisp clamps end to manifest length, extra
 /// chunks no-op), under-shooting silently skips entries.
-const N_MANIFEST_ENTRIES: usize = 208;
+const N_MANIFEST_ENTRIES: usize = 211;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -184,6 +184,11 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // (locate-file deferred — needs arity-≤6 _branch helper split)
         "nelisp-cc-bi-getenv.el",
         "nelisp-cc-bi-syscall-stat-mtime.el",
+        // Wave A25.2 — Phase 47 meta-driver kernel (PoC).
+        // `nelisp_meta_should_rebuild' composes the A25.1-min stat-mtime
+        // helper twice + a pure-arithmetic 0/1 decision.  Foundation for
+        // the future A25.3 standalone bootstrap of the iteration loop.
+        "nelisp-cc-meta-driver.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
