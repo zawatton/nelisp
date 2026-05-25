@@ -379,10 +379,10 @@ Caller is responsible for `delete-file' on cleanup."
     (should (null (nelisp-phase47-compiler--ir-get ir :gc-root-slots)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-defun-too-many-params ()
-  "Defun with > 6 params signals (= 7+ args deferred to Doc 97.c)."
+  "Defun still rejects params beyond the current disp8 local-slot cap."
   (should-error
    (nelisp-phase47-compiler--parse
-    '(defun seven-arg (a b c d e f g) a))
+    '(defun fifteen-arg (a b c d e f g h i j k l m n o) a))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-compiler/parse-call-arity-mismatch ()
@@ -1276,6 +1276,126 @@ correctly."
                  (call-process bin-path nil nil nil)))
             (should (= exit-status 99))))
       (ignore-errors (delete-file probe-path))
+      (ignore-errors (delete-file host-path))
+      (ignore-errors (delete-file bin-path)))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-extern-call-7gp-smoke ()
+  "Doc 129.7E: SysV extern-call passes the seventh GP arg on the stack."
+  (skip-unless (and (executable-find "ld")
+                    (eq system-type 'gnu/linux)))
+  (let* ((probe-path (make-temp-file "nelisp-doc129-probe7-" nil ".o"))
+         (host-path (make-temp-file "nelisp-doc129-host7-" nil ".o"))
+         (bin-path (make-temp-file "nelisp-doc129-bin7-" nil ""))
+         (sum7-text
+          (concat
+           ;; ext_sum7:
+           ;;   rax = rdi+rsi+rdx+rcx+r8+r9+[rsp+8]; ret
+           (unibyte-string #x48 #x89 #xF8)
+           (unibyte-string #x48 #x01 #xF0)
+           (unibyte-string #x48 #x01 #xD0)
+           (unibyte-string #x48 #x01 #xC8)
+           (unibyte-string #x4C #x01 #xC0)
+           (unibyte-string #x4C #x01 #xC8)
+           (unibyte-string #x48 #x03 #x44 #x24 #x08)
+           (unibyte-string #xC3)))
+         (start-text
+          (concat
+           (unibyte-string #xE8 0 0 0 0)
+           (unibyte-string #x48 #x89 #xC7)
+           (unibyte-string #xB8 #x3C 0 0 0)
+           (unibyte-string #x0F #x05)))
+         (host-text (concat sum7-text start-text))
+         (start-off (length sum7-text)))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () (extern-call ext_sum7 1 2 3 4 5 6 21))
+           probe-path)
+          (nelisp-elf-write-binary
+           host-path
+           (list :e-type 'rel
+                 :text host-text
+                 :symbols (list
+                           (list :name "ext_sum7" :value 0
+                                 :size (length sum7-text)
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "_start" :value start-off
+                                 :size (length start-text)
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "probe" :section 'undef
+                                 :bind 'global :type 'notype))
+                 :relocs (list
+                          (list :section 'text :offset (1+ start-off)
+                                :symbol "probe" :type 'plt32 :addend -4))))
+          (should (zerop (call-process "ld" nil nil nil
+                                       "-o" bin-path host-path probe-path)))
+          (set-file-modes bin-path #o755)
+          (let ((exit-status (call-process bin-path nil nil nil)))
+            (should (= exit-status 42))))
+      (ignore-errors (delete-file probe-path))
+      (ignore-errors (delete-file host-path))
+      (ignore-errors (delete-file bin-path)))))
+
+(ert-deftest nelisp-phase47-compiler/extern-call-7gp-rejects-nontrivial-stack-arg ()
+  "Doc 129.7E: stack GP args stay trivial until call-spill slots land."
+  (let ((path (make-temp-file "nelisp-doc129-stack-nontrivial-" nil ".o")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object
+          '(defun probe (x) (extern-call ext_sum7 1 2 3 4 5 6 (+ x 1)))
+          path)
+         :type 'nelisp-phase47-compiler-error)
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-defun-7gp-param-smoke ()
+  "Doc 129.7E: SysV defuns can receive the seventh GP param from the stack."
+  (skip-unless (and (executable-find "ld")
+                    (eq system-type 'gnu/linux)))
+  (let* ((sum-path (make-temp-file "nelisp-doc129-sum7-" nil ".o"))
+         (host-path (make-temp-file "nelisp-doc129-sum7-host-" nil ".o"))
+         (bin-path (make-temp-file "nelisp-doc129-sum7-bin-" nil ""))
+         (prefix
+          (concat
+           (unibyte-string #xBF 1 0 0 0)       ; mov edi, 1
+           (unibyte-string #xBE 2 0 0 0)       ; mov esi, 2
+           (unibyte-string #xBA 3 0 0 0)       ; mov edx, 3
+           (unibyte-string #xB9 4 0 0 0)       ; mov ecx, 4
+           (unibyte-string #x41 #xB8 5 0 0 0) ; mov r8d, 5
+           (unibyte-string #x41 #xB9 6 0 0 0) ; mov r9d, 6
+           (unibyte-string #x6A 21)))          ; push 21
+         (call-site (length prefix))
+         (suffix
+          (concat
+           (unibyte-string #xE8 0 0 0 0)
+           (unibyte-string #x48 #x89 #xC7)
+           (unibyte-string #xB8 #x3C 0 0 0)
+           (unibyte-string #x0F #x05)))
+         (host-text (concat prefix suffix)))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun sum7 (a b c d e f g)
+              (+ (+ (+ (+ (+ (+ a b) c) d) e) f) g))
+           sum-path)
+          (nelisp-elf-write-binary
+           host-path
+           (list :e-type 'rel
+                 :text host-text
+                 :symbols (list
+                           (list :name "_start" :value 0
+                                 :size (length host-text)
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "sum7" :section 'undef
+                                 :bind 'global :type 'notype))
+                 :relocs (list
+                          (list :section 'text :offset (1+ call-site)
+                                :symbol "sum7" :type 'plt32 :addend -4))))
+          (should (zerop (call-process "ld" nil nil nil
+                                       "-o" bin-path host-path sum-path)))
+          (set-file-modes bin-path #o755)
+          (let ((exit-status (call-process bin-path nil nil nil)))
+            (should (= exit-status 42))))
+      (ignore-errors (delete-file sum-path))
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 

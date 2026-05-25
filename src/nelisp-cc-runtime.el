@@ -1695,6 +1695,56 @@ DISPATCHER, when non-nil, is called as
     (aset out 0 result)
     out))
 
+(defun nelisp-cc-runtime--aot-default-funcall-dispatch3 (fn arg0 arg1 arg2)
+  "Dispatch three-argument FN to ARG0, ARG1, and ARG2."
+  (cond
+   ((fboundp 'nelisp--apply)
+    (funcall (symbol-function 'nelisp--apply) fn (list arg0 arg1 arg2)))
+   ((symbolp fn)
+    (if (fboundp fn)
+        (funcall (symbol-function fn) arg0 arg1 arg2)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-funcall-function-not-found fn))))
+   ((functionp fn)
+    (funcall fn arg0 arg1 arg2))
+   (t
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-not-function fn)))))
+
+(defun nelisp-cc-runtime-aot-funcall3
+    (mirror frames fn arg0 arg1 arg2 out &optional dispatcher)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_funcall3' ABI.
+MIRROR, FRAMES, FN, ARG0, ARG1, ARG2, and OUT mirror the native ABI:
+
+  nelisp_aot_funcall3(mirror, frames, fn, arg0, arg1, arg2, out)
+
+This fixed-arity bridge uses the first SysV stack GP argument in native
+object output.  OUT is an Emacs-side caller-owned vector with at least
+one slot; the dispatch result is written to `(aref OUT 0)' and OUT is
+returned.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER FN ARG0 ARG1 ARG2 CONTEXT)'."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :fn fn
+                        :arg0 arg0
+                        :arg1 arg1
+                        :arg2 arg2
+                        :out out))
+         (result (if dispatcher
+                     (funcall dispatcher fn arg0 arg1 arg2 context)
+                   (nelisp-cc-runtime--aot-default-funcall-dispatch3
+                    fn arg0 arg1 arg2))))
+    (aset out 0 result)
+    out))
+
 (defun nelisp-cc-runtime--aot-default-apply-dispatch (fn args-list)
   "Dispatch FN to ARGS-LIST using NeLisp-aware apply when available."
   (unless (listp args-list)

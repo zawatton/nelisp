@@ -1215,19 +1215,25 @@
     (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall2))))
 
-(ert-deftest nelisp-phase47-doc129/funcall3-delegation-still-pending ()
-  "Doc 129.7B: funcall delegation is fixed-arity 1/2 for now."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun call_fn3
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (fn :type sexp)
-          (arg0 :type sexp)
-          (arg1 :type sexp))
-       (funcall fn arg0 arg1 arg0)))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/parse-funcall3-delegation ()
+  "Doc 129.7E: `(funcall FN ARG0 ARG1 ARG2)' lowers to funcall3."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_fn3
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (fn :type sexp)
+                    (arg0 :type sexp)
+                    (arg1 :type sexp)
+                    (arg2 :type sexp))
+                 (funcall fn arg0 arg1 arg2))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (call-node (car forms)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_funcall3))))
 
 (ert-deftest nelisp-phase47-doc129/object-funcall2-delegation ()
   "Doc 129.7B: object output exposes the funcall2 dispatcher reloc."
@@ -1250,6 +1256,30 @@
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_fn2" out))
             (should (string-match-p "nelisp_aot_funcall2" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-funcall3-delegation ()
+  "Doc 129.7E: object output exposes the funcall3 dispatcher reloc."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-funcall3-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_fn3
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (fn :type sexp)
+                 (arg0 :type sexp)
+                 (arg1 :type sexp)
+                 (arg2 :type sexp))
+              (funcall fn arg0 arg1 arg2))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_fn3" out))
+            (should (string-match-p "nelisp_aot_funcall3" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-apply-delegation ()

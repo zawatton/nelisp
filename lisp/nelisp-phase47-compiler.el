@@ -122,8 +122,9 @@ Equals Ehdr(64) + Phdr(56) = 120 = 0x78.")
 (defconst nelisp-phase47-compiler--arg-regs
   '(rdi rsi rdx rcx r8 r9)
   "SysV AMD64 integer argument registers (= positional, 1..6).
-Doc 97.b supports up to 6 args; stack spill for 7+ args is
-deferred to Doc 97.c.")
+Doc 97.b started with up to 6 args; Doc 129.7E opens the first
+SysV stack-argument path for GP extern calls and boxed-boundary
+defuns that receive 7+ GP params.")
 
 (defconst nelisp-phase47-compiler--xmm-arg-regs
   '(xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)
@@ -445,10 +446,11 @@ Returns a plist `(:args (PARSED-NODE ...) :varargs-p BOOL
 :f64-count N)' where each PARSED-NODE is the same value IR plus
 a `:cls' (= `gp' or `f64') tag and a `:varargs-p' flag for emit
 to inspect when fixing register placement + the SysV AMD64 AL
-register before the call instruction.  Args are validated against
-the GP / xmm register budget (= 6 / 8 respectively); over-budget
-forms raise `:extern-call-too-many-gp-args' or
-`:extern-call-too-many-f64-args'.
+register before the call instruction.  f64 args are validated
+against the xmm register budget (= 8).  GP args may exceed the
+six-register budget on x86_64 SysV, where the emitter can place
+trivial seventh-and-later args on the call stack; other ABIs still
+raise `:extern-call-too-many-gp-args'.
 
 Per-class budget is total across the fixed + varargs sets — SysV
 AMD64 still passes variadic args through the same register pool
@@ -517,8 +519,10 @@ already distinguishes `extern-call' (i64 return) from
            (f64-args (cl-remove-if-not
                       (lambda (n) (eq (nelisp-phase47-compiler--ir-get n :cls) 'f64))
                       all-args)))
-      (when (> (length gp-args)
-               (length nelisp-phase47-compiler--arg-regs))
+      (when (and (> (length gp-args)
+                    (length (nelisp-phase47-compiler--current-arg-regs)))
+                 (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
+                           (eq nelisp-phase47-compiler--abi 'sysv))))
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-too-many-gp-args name
                       (length gp-args))))
@@ -1859,6 +1863,41 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-funcall3
+    (sexp env fenv defuns)
+  "Lower `(funcall FN ARG0 ARG1 ARG2)' through the Doc 129.7 dispatcher."
+  (unless (= (length sexp) 5)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-funcall3-arity sexp)))
+  (let* ((missing nil)
+         (_ (dolist (sym '(out mirror frames))
+              (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+                (push sym missing))))
+         (_ (when missing
+              (signal 'nelisp-phase47-compiler-error
+                      (list :aot-funcall3-boundary-missing
+                            (nreverse missing)
+                            :form sexp))))
+         (out 'out)
+         (mirror 'mirror)
+         (frames 'frames)
+         (fn-lowering
+          (nelisp-phase47-compiler--aot-function-designator-lowering
+           (nth 1 sexp) fenv sexp))
+         (fn (or (plist-get fn-lowering :fn-expr)
+                 (nth 1 sexp)))
+         (prefix (plist-get fn-lowering :prefix))
+         (arg0 (nth 2 sexp))
+         (arg1 (nth 3 sexp))
+         (arg2 (nth 4 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       ,@prefix
+       (extern-call nelisp_aot_funcall3
+                    ,mirror ,frames ,fn ,arg0 ,arg1 ,arg2 ,out)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--parse-aot-apply
     (sexp env fenv defuns)
   "Lower `(apply FN ARGS-LIST)' through the Doc 129.7 apply dispatcher."
@@ -2402,6 +2441,8 @@ functions `((NAME . ARITY) ...)'."
       (3 (nelisp-phase47-compiler--parse-aot-funcall1
           sexp env fenv defuns))
       (4 (nelisp-phase47-compiler--parse-aot-funcall2
+          sexp env fenv defuns))
+      (5 (nelisp-phase47-compiler--parse-aot-funcall3
           sexp env fenv defuns))
       (_ (signal 'nelisp-phase47-compiler-error
                  (list :aot-funcall-arity sexp)))))
@@ -3817,16 +3858,34 @@ Returns one of:
           (signal 'nelisp-phase47-compiler-error
                   (list :defun-mixed-param-classes name classes))))
       (let* ((max-arity
-              (length (if (eq uniform-class 'f64)
-                          nelisp-phase47-compiler--xmm-arg-regs
-                        nelisp-phase47-compiler--arg-regs))))
+              (cond
+               ((eq uniform-class 'f64)
+                (length nelisp-phase47-compiler--xmm-arg-regs))
+               ((and (eq uniform-class 'gp)
+                     (eq nelisp-phase47-compiler--arch 'x86_64)
+                     (eq nelisp-phase47-compiler--abi 'sysv))
+                ;; GP ref loads use an rbp+disp8 local slot.  Slot 13
+                ;; is the current compiler-wide upper bound.
+                14)
+               (t
+                (length (nelisp-phase47-compiler--current-arg-regs))))))
         (when (> arity max-arity)
           (signal 'nelisp-phase47-compiler-error
                   (list :defun-too-many-params name arity uniform-class))))
       (let* ((reg-pool (if (eq uniform-class 'f64)
                            nelisp-phase47-compiler--xmm-arg-regs
-                         nelisp-phase47-compiler--arg-regs))
-             (param-regs (cl-subseq reg-pool 0 arity))
+                         (nelisp-phase47-compiler--current-arg-regs)))
+             (reg-budget (length reg-pool))
+             (param-regs
+              (if (and (eq uniform-class 'gp)
+                       (eq nelisp-phase47-compiler--arch 'x86_64)
+                       (eq nelisp-phase47-compiler--abi 'sysv)
+                       (> arity reg-budget))
+                  (cl-loop for i below arity
+                           collect (if (< i reg-budget)
+                                       (nth i reg-pool)
+                                     (list :stack (- i reg-budget))))
+                (cl-subseq reg-pool 0 arity)))
              ;; FENV: each param maps to plist
              ;;   `(:reg R :slot S :class CLASS)'
              ;; where SLOT is the param's 0-based index, used by
@@ -5009,11 +5068,15 @@ Arg placement strategy (W7.6b trivial-suffix opt):
      (= ref).  No stack spill — trivial emits don't touch other
      regs, and trivial suffix targets are all distinct gp-regs
      that the prefix pops did not write.
-  5. For variadic calls, materialise `:f64-count' in AL via
+  5. SysV GP stack args, when present, are pushed right-to-left after
+     register args have been materialized.  This MVP only accepts
+     trivial stack args so it does not reorder side-effecting
+     evaluation.
+  6. For variadic calls, materialise `:f64-count' in AL via
      `mov eax, imm32' (= zero-extended, satisfies SysV ABI §3.5.7
      contract that AL contains the upper bound on f64 args).  This
-     runs after both the pops and the trivial emits so rax is free
-     to clobber by then.
+     runs after register and stack placement so rax is free to
+     clobber by then.
 
 Unlike `--emit-call' the target name is NOT validated against the
 compile-time defuns alist; the parser already accepted SYM as a
@@ -5029,7 +5092,6 @@ same branch and emit the same byte count."
          (ret-class (or (nelisp-phase47-compiler--ir-get node :ret-class) 'gp))
          (varargs-p (nelisp-phase47-compiler--ir-get node :varargs-p))
          (f64-count (or (nelisp-phase47-compiler--ir-get node :f64-count) 0))
-         (n (length args))
          ;; Per-class register pools, sliced to the number of args
          ;; of that class.  Iteration order matches source order:
          ;; the Nth gp arg → Nth GP reg, the Nth f64 arg → Nth xmm
@@ -5040,12 +5102,16 @@ same branch and emit the same byte count."
          (f64-args (cl-remove-if-not
                     (lambda (a) (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64))
                     args))
+         (gp-reg-budget (length (nelisp-phase47-compiler--current-arg-regs)))
          (gp-regs (cl-subseq (nelisp-phase47-compiler--current-arg-regs)
-                             0 (length gp-args)))
+                             0 (min (length gp-args) gp-reg-budget)))
          (xmm-regs (cl-subseq nelisp-phase47-compiler--xmm-arg-regs
                               0 (length f64-args)))
          ;; Map each arg back to its target register so the reverse-
-         ;; pop loop knows where to deposit the popped value.
+         ;; pop loop knows where to deposit the popped value.  GP args
+         ;; beyond the register budget become `(:stack N)' SysV stack
+         ;; targets; those are emitted separately after register args
+         ;; are in place.
          (gp-cursor 0)
          (f64-cursor 0)
          (arg-targets
@@ -5054,17 +5120,34 @@ same branch and emit the same byte count."
                         (let ((r (nth f64-cursor xmm-regs)))
                           (setq f64-cursor (1+ f64-cursor))
                           r)
-                      (let ((r (nth gp-cursor gp-regs)))
+                      (let ((r (if (< gp-cursor gp-reg-budget)
+                                   (nth gp-cursor gp-regs)
+                                 (list :stack (- gp-cursor gp-reg-budget)))))
                         (setq gp-cursor (1+ gp-cursor))
                         r)))
                   args))
+         (register-args
+          (cl-loop for a in args
+                   for target in arg-targets
+                   unless (and (consp target) (eq (car target) :stack))
+                   collect a))
+         (register-targets
+          (cl-loop for target in arg-targets
+                   unless (and (consp target) (eq (car target) :stack))
+                   collect target))
+         (stack-args
+          (cl-loop for a in args
+                   for target in arg-targets
+                   when (and (consp target) (eq (car target) :stack))
+                   collect a))
          ;; W7.6b: split args into [complex-prefix | trivial-suffix].
          ;; Suffix eligibility is :cls gp AND --call-arg-trivial-p;
          ;; an f64 arg or a non-trivial gp arg stops the walk.  Walk
-         ;; the reverse of args to count trailing trivial gp args.
+         ;; the reverse of register-bound args to count trailing
+         ;; trivial gp args.  Stack-bound args are handled below.
          (trivial-suffix-len
           (let ((count 0)
-                (rest (reverse args))
+                (rest (reverse register-args))
                 (done nil))
             (while (and rest (not done))
               (let ((a (car rest)))
@@ -5074,11 +5157,11 @@ same branch and emit the same byte count."
                            (setq rest (cdr rest)))
                   (setq done t))))
             count))
-         (complex-count (- n trivial-suffix-len))
-         (complex-args (cl-subseq args 0 complex-count))
-         (trivial-args (cl-subseq args complex-count))
-         (complex-targets (cl-subseq arg-targets 0 complex-count))
-         (trivial-targets (cl-subseq arg-targets complex-count))
+         (complex-count (- (length register-args) trivial-suffix-len))
+         (complex-args (cl-subseq register-args 0 complex-count))
+         (trivial-args (cl-subseq register-args complex-count))
+         (complex-targets (cl-subseq register-targets 0 complex-count))
+         (trivial-targets (cl-subseq register-targets complex-count))
          ;; Stack alignment correction (Doc 111 §111.E fix).
          ;; Post-prologue body-entry rsp:
          ;;   - even arity (= 0, 2, 4, 6): rsp ≡ 0 mod 16 (good for call)
@@ -5087,7 +5170,19 @@ same branch and emit the same byte count."
          ;; rsp is already aligned post-spill (= see `--emit-defun');
          ;; only gp-class defuns need the runtime correction below.
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (= (logand arity 1) 1)))
+         (needs-align (= (logand (+ arity (length stack-args)) 1) 1)))
+    (when (and stack-args
+               (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
+                         (eq nelisp-phase47-compiler--abi 'sysv))))
+      (signal 'nelisp-phase47-compiler-error
+              (list :extern-call-stack-gp-args-unsupported name
+                    nelisp-phase47-compiler--arch
+                    nelisp-phase47-compiler--abi)))
+    (dolist (a stack-args)
+      (unless (and (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
+                   (nelisp-phase47-compiler--call-arg-trivial-p a))
+        (signal 'nelisp-phase47-compiler-error
+                (list :extern-call-stack-arg-not-trivial name))))
     ;; (1) Complex prefix: push each evaluated arg.  f64 args land
     ;; in xmm0 (per `--emit-value' contract for f64 nodes) so we
     ;; transfer to rax first before the unified push.
@@ -5113,20 +5208,26 @@ same branch and emit the same byte count."
     (cl-mapc (lambda (a r)
                (nelisp-phase47-compiler--emit-trivial-into-reg a r buf))
              trivial-args trivial-targets)
+    ;; Insert the 8-byte alignment correction before stack args are
+    ;; pushed.  That keeps the first stack arg at the ABI-visible top
+    ;; of the outgoing argument area while any pad lives below it.
+    (when needs-align
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+    ;; SysV outgoing stack args are pushed right-to-left so the first
+    ;; stack arg ends up closest to the return address in the callee.
+    ;; MVP scope only permits trivial stack args; general stack-arg
+    ;; evaluation needs a dedicated call-spill area.
+    (dolist (a (reverse stack-args))
+      (nelisp-phase47-compiler--emit-trivial-into-reg a 'rax buf)
+      (nelisp-asm-x86_64-push buf 'rax))
     ;; Materialise AL = f64-count for variadic calls (SysV ABI §3.5.7).
     ;; `mov eax, imm32' is a 5-byte sequence (= REX-less; the imm32
     ;; zero-extends into RAX, clearing the upper 32 bits which is
     ;; exactly what AL = N requires).  Note: this clobbers rax, so
     ;; it MUST happen AFTER any rax-bound arg was popped into its
-    ;; GP target.  Currently `eax' isn't in the arg-regs pool so the
-    ;; ordering is naturally safe.
+    ;; GP target and after stack args have been copied out through rax.
     (when varargs-p
       (nelisp-asm-x86_64-mov-imm32 buf 'rax f64-count))
-    ;; Insert the 8-byte alignment correction for odd-arity GP-class
-    ;; defuns.  rax holds either the AL count (varargs) or stale
-    ;; data — `sub rsp, 8' doesn't touch any GPR so both survive.
-    (when needs-align
-      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
     ;; Win64: allocate 32-byte shadow space before CALL.
     ;; SysV: shadow = 0, this is a no-op.
     (let ((shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0)))
@@ -5141,6 +5242,9 @@ same branch and emit the same byte count."
       ;; Reclaim shadow space.
       (when (> shadow 0)
         (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow)))
+    ;; Reclaim outgoing SysV stack arguments, preserving rax/xmm0.
+    (when stack-args
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (length stack-args))))
     ;; Undo the alignment correction.  rax (= i64 return) or xmm0
     ;; (= f64 return) is preserved because `add rsp, 8' doesn't
     ;; touch any GPR / xmm.
@@ -7425,8 +7529,11 @@ return reg, untouched by epilogue)."
                     (list :unknown-defun-param-class param-class))))
         ;; ---- SysV ABI prologue (unchanged) ----
         (cond
-         ;; GP class — per-param `push reg' followed by a one-shot
-         ;; `sub rsp, 8' alignment pad when the parameter count is odd.
+         ;; GP class — for the original six-register surface, keep the
+         ;; compact per-param `push reg' prologue.  For Doc 129.7E's
+         ;; SysV 7+ param surface, allocate the spill frame explicitly
+         ;; and copy register / stack incoming args into the same
+         ;; rbp-negative slots that `--emit-ref-load' already reads.
          ;;
          ;; SysV AMD64 requires rsp to be 16-byte aligned at the call
          ;; site.  The function entry has rsp ≡ 8 (mod 16) because the
@@ -7448,10 +7555,30 @@ return reg, untouched by epilogue)."
          ;; 2415 above): an explicit `sub rsp, 8' fixed-width instr
          ;; that the epilogue's `mov rsp, rbp' tears down for free.
          ((eq param-class 'gp)
-          (dolist (preg param-regs)
-            (nelisp-asm-x86_64-push buf preg))
-          (when (= 1 (logand (length param-regs) 1))
-            (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8))
+          (if (cl-some #'consp param-regs)
+              (let* ((arity (length param-regs))
+                     (rounded (if (zerop (logand arity 1))
+                                  arity
+                                (1+ arity)))
+                     (frame-bytes (* 8 rounded))
+                     (i -1))
+                (when (> arity 0)
+                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
+                (dolist (preg param-regs)
+                  (setq i (1+ i))
+                  (let ((dst-disp (- (* 8 (1+ i)))))
+                    (if (consp preg)
+                        (let ((src-disp (+ 16 (* 8 (cadr preg)))))
+                          (nelisp-asm-x86_64-mov-reg-mem-disp8
+                           buf 'rax 'rbp src-disp)
+                          (nelisp-asm-x86_64-mov-mem-reg-disp8
+                           buf 'rbp dst-disp 'rax))
+                      (nelisp-asm-x86_64-mov-mem-reg-disp8
+                       buf 'rbp dst-disp preg)))))
+            (dolist (preg param-regs)
+              (nelisp-asm-x86_64-push buf preg))
+            (when (= 1 (logand (length param-regs) 1))
+              (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)))
           ;; Reserve frame slots for runtime `let-rt' bindings.
           ;; Round up to even so the post-prologue rsp stays 16-byte
           ;; aligned (each slot is 8 bytes; 2 slots = 16 bytes).

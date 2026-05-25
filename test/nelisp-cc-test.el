@@ -1346,6 +1346,49 @@ exit points were emitted; call-points were missing."
     'mirror 'frames 'nelisp-doc129-missing-fn 1 2 (vector nil))
    :type 'nelisp-cc-runtime-error))
 
+(ert-deftest nelisp-cc-runtime-aot-funcall3-host-dispatch ()
+  "Doc 129.7E — funcall3 writes the three-arg dispatch result to OUT."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-funcall3
+               'mirror 'frames '+ 10 11 21 out)))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (nelisp-cc-runtime-aot-funcall3
+     'mirror 'frames (lambda (a b c) (concat a b c)) "doc" "129" "E" out)
+    (should (equal (aref out 0) "doc129E"))))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall3-custom-dispatch ()
+  "Doc 129.7E — callers can inject the native/Doc99 funcall3 body."
+  (let* ((out (vector nil))
+         (events nil)
+         (ret (nelisp-cc-runtime-aot-funcall3
+               'mirror 'frames 'doc129-fn 10 11 21 out
+               (lambda (fn arg0 arg1 arg2 context)
+                 (push (list fn arg0 arg1 arg2
+                             (plist-get context :frames)
+                             (plist-get context :out))
+                       events)
+                 (+ arg0 arg1 arg2)))))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (should (equal events
+                   `((doc129-fn 10 11 21 frames ,out))))))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall3-validates-boundary ()
+  "Doc 129.7E — funcall3 rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-funcall3
+    'mirror 'frames '+ 1 2 3 nil)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcall3
+    'mirror 'frames '+ 1 2 3 (vector nil) :not-a-function)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcall3
+    'mirror 'frames 'nelisp-doc129-missing-fn 1 2 3 (vector nil))
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-apply-host-dispatch ()
   "Doc 129.7C — apply bridge writes the dispatch result to OUT."
   (let* ((out (vector nil))
