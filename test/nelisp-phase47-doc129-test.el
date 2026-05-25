@@ -2092,6 +2092,9 @@ materialized closure temporary."
                   (cl-set-difference (cl-set-difference a b))
                   (cl-set-exclusive-or (cl-set-exclusive-or a b))
                   (cl-subsetp (cl-subsetp a b))
+                  (cl-member (cl-member a b))
+                  (cl-assoc (cl-assoc a b))
+                  (cl-rassoc (cl-rassoc a b))
                   (cl-position (cl-position a b))
                   (cl-find (cl-find a b))
                   (cl-count (cl-count a b))
@@ -2419,6 +2422,12 @@ materialized closure temporary."
                   ((cl-position item xs :key #'car)
                    keyword-slot 8 9 ":key" "car")
                   ((cl-adjoin item xs :test #'eq)
+                   keyword-slot 8 9 ":test" "eq")
+                  ((cl-member item xs :test #'eq)
+                   keyword-slot 8 9 ":test" "eq")
+                  ((cl-assoc item xs :key #'car)
+                   keyword-slot 8 9 ":key" "car")
+                  ((cl-rassoc item xs :test #'eq)
                    keyword-slot 8 9 ":test" "eq")))
     (pcase-let ((`(,form ,keyword-slot ,keyword-arg-index
                          ,fn-arg-index ,keyword-name ,fn-name)
@@ -3563,6 +3572,32 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_cl_adjoin" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-member-keyword-designator ()
+  "Doc 129.6AK: object output exposes cl-lib member/assoc callbacks."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cl-lib-member-keyword-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_cl_member
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (keyword_slot :type sexp)
+                 (item :type sexp)
+                 (xs :type sexp))
+              (cl-member item xs :test #'foo))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_cl_member" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))

@@ -2517,6 +2517,7 @@ the whole program."
                        cl-nsubstitute-if-not cl-map cl-sort cl-stable-sort
                        cl-merge cl-union cl-intersection
                        cl-set-difference cl-set-exclusive-or cl-subsetp
+                       cl-member cl-assoc cl-rassoc
                        cl-position cl-find cl-count cl-mismatch cl-search
                        cl-remove cl-delete cl-substitute cl-nsubstitute
                        cl-adjoin sort))
@@ -2691,7 +2692,8 @@ defun is visible in the current compile unit.")
     cl-endp cl-list-length cl-subseq cl-concatenate
     cl-revappend cl-nreconc cl-tailp cl-ldiff
     cl-union cl-intersection cl-set-difference cl-set-exclusive-or
-    cl-subsetp cl-position cl-find cl-count cl-mismatch cl-search
+    cl-subsetp cl-member cl-assoc cl-rassoc
+    cl-position cl-find cl-count cl-mismatch cl-search
     cl-remove cl-delete cl-substitute cl-nsubstitute
     cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
     cl-some cl-every cl-notany cl-notevery
