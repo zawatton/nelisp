@@ -5215,6 +5215,39 @@ materialized closure temporary."
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
+(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-inside-if-condition ()
+  "Doc 129.7AR: `if' branches see captured mutation from condition."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (cap :type sexp)
+                    (x :type sexp))
+                 (if (funcall (lambda (v) (setq cap v)) x)
+                     cap
+                   cap))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (then-ref (nelisp-phase47-compiler--ir-get body :then))
+         (else-ref (nelisp-phase47-compiler--ir-get body :else))
+         (then-call (nth 1 (nelisp-phase47-compiler--ir-get
+                            then-ref :forms)))
+         (else-call (nth 1 (nelisp-phase47-compiler--ir-get
+                            else-ref :forms)))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (eq (nelisp-phase47-compiler--ir-kind then-ref)
+                'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind else-ref)
+                'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get then-call :name)
+                'nelisp_aot_frame_slot_ref))
+    (should (eq (nelisp-phase47-compiler--ir-get else-call :name)
+                'nelisp_aot_frame_slot_ref))
+    (should (member 'nelisp_aot_capture_cell externs))
+    (should (member 'nelisp_aot_frame_slot_ref externs))))
+
 (ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-let ()
   "Doc 129.7AO: captured mutation inside `let' selects later frame-slot reads."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -5647,6 +5680,32 @@ materialized closure temporary."
               (and
                (funcall (lambda (v) (setq cap v)) x)
                cap))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_capture_cell" out))
+            (should (string-match-p "nelisp_aot_frame_slot_ref" out))
+            (should (string-match-p "nelisp_aot_funcall1" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-inside-if-condition ()
+  "Doc 129.7AR: object output selects frame-slot ABI inside `if' branches."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-lambda-setq-if-condition-read-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp)
+                 (x :type sexp))
+              (if (funcall (lambda (v) (setq cap v)) x)
+                  cap
+                cap))
            path)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output

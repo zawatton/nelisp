@@ -2597,10 +2597,20 @@ the whole program."
     (unless (<= 3 (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
               (list :if-arity sexp)))
-    `(if ,(nelisp-phase47-compiler--preprocess-source (nth 1 sexp))
-         ,(nelisp-phase47-compiler--preprocess-source (nth 2 sexp))
-       ,(nelisp-phase47-compiler--preprocess-source
-         (if (= (length sexp) 4) (nth 3 sexp) 0))))
+    (let* ((condition (nth 1 sexp))
+           (condition-vars
+            (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+             condition))
+           (then-form
+            (nelisp-phase47-compiler--preprocess-source (nth 2 sexp)))
+           (else-form
+            (nelisp-phase47-compiler--preprocess-source
+             (if (= (length sexp) 4) (nth 3 sexp) 0))))
+      `(if ,(nelisp-phase47-compiler--preprocess-source condition)
+           ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
+             then-form condition-vars)
+         ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
+           else-form condition-vars))))
    ((eq (car sexp) 'while)
     (cons 'while (mapcar #'nelisp-phase47-compiler--preprocess-source
                          (cdr sexp))))
