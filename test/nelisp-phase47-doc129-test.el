@@ -6995,6 +6995,52 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-dynamic-signal-multi-clause ()
+  "Doc 129.8AT: dynamic condition descriptors support multiple clauses."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_signal_dynamic_multi
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (signal tag value)
+                   ((error quit) err)
+                   (file-error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'aot-landing-label)))
+         (condition-landing-writes
+          (cl-count-if
+           (lambda (bytes)
+             (string-prefix-p
+              "aot-condition-landing-"
+              (apply #'string bytes)))
+           (mapcar (lambda (node)
+                     (nelisp-phase47-compiler--ir-get node :bytes))
+                   (nelisp-phase47-doc129-test--ir-nodes
+                    ir 'sexp-write-symbol-lit)))))
+    (should (= (cl-count 'nelisp_aot_push_condition externs) 3))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should (= (cl-count 'nelisp_aot_landing_error externs) 2))
+    (should-not (member 'nelisp_aot_pop_handler externs))
+    (should-not (nelisp-phase47-doc129-test--ir-nodes
+                 ir 'aot-machine-landing-jump))
+    (should (= (cl-count-if
+                (lambda (name)
+                  (string-prefix-p "aot-condition-landing-" name))
+                landing-names)
+               2))
+    (should (= condition-landing-writes 3))))
+
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-dynamic-signal ()
   "Doc 129.8AS: dynamic condition cleanup resumes via descriptor route."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -7038,6 +7084,63 @@ materialized closure temporary."
                   (string-prefix-p "aot-condition-landing-" name))
                 landing-names)
                1))))
+
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-dynamic-signal-multi-clause ()
+  "Doc 129.8AT: dynamic condition cleanup supports multiple clauses."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_unwind_dynamic_signal_multi
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (unwind-protect
+                         (signal tag value)
+                       (identity value))
+                   ((error quit) err)
+                   (file-error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'aot-landing-label)))
+         (condition-landing-writes
+          (cl-count-if
+           (lambda (bytes)
+             (string-prefix-p
+              "aot-condition-landing-"
+              (apply #'string bytes)))
+           (mapcar (lambda (node)
+                     (nelisp-phase47-compiler--ir-get node :bytes))
+                   (nelisp-phase47-doc129-test--ir-nodes
+                    ir 'sexp-write-symbol-lit)))))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
+    (should (= (cl-count 'nelisp_aot_push_condition externs) 3))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should (= (cl-count 'nelisp_aot_landing_error externs) 2))
+    (should-not (member 'nelisp_aot_pop_handler externs))
+    (should-not machine-jumps)
+    (should (= (cl-count-if
+                (lambda (name)
+                  (string-prefix-p "aot-unwind-cleanup-" name))
+                landing-names)
+               1))
+    (should (= (cl-count-if
+                (lambda (name)
+                  (string-prefix-p "aot-condition-landing-" name))
+                landing-names)
+               2))
+    (should (= condition-landing-writes 3))))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-direct-signal ()
   "Doc 129.8AE: condition-targeted cleanup jumps to static landing."
@@ -7615,6 +7718,36 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/object-condition-case-dynamic-signal-multi-clause ()
+  "Doc 129.8AT: dynamic condition descriptors compile with multiple clauses."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-dynamic-signal-multi-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_signal_dynamic_multi
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  (signal tag value)
+                ((error quit) err)
+                (file-error err)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_signal_dynamic_multi" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))
+            (should (string-match-p "nelisp_aot_landing_error" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-dynamic-signal ()
   "Doc 129.8AS: dynamic condition cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
@@ -7640,6 +7773,39 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "cc_unwind_dynamic_signal" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))
+            (should (string-match-p "nelisp_aot_landing_error" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-dynamic-signal-multi-clause ()
+  "Doc 129.8AT: dynamic condition cleanup compiles with multiple clauses."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-unwind-dynamic-signal-multi-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_unwind_dynamic_signal_multi
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  (unwind-protect
+                      (signal tag value)
+                    (identity value))
+                ((error quit) err)
+                (file-error err)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_unwind_dynamic_signal_multi" out))
             (should (string-match-p "nelisp_aot_push_condition" out))
             (should (string-match-p "nelisp_aot_push_unwind" out))
             (should (string-match-p "nelisp_aot_signal" out))

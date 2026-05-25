@@ -4339,19 +4339,18 @@ source form."
 (defun nelisp-phase47-compiler--aot-condition-case-direct-dynamic-unwind-form
     (body clauses)
   "Return BODY's direct dynamic condition unwind descriptor, or nil."
-  (when (and (= (length clauses) 1)
-             (consp body)
+  (when (and (consp body)
              (eq (car body) 'unwind-protect)
              (>= (length body) 2))
-    (let ((protected-body (nth 1 body))
-          (handler (car clauses)))
+    (let ((protected-body (nth 1 body)))
       (when (and (nelisp-phase47-compiler--aot-direct-condition-form
                   protected-body)
                  (not (nelisp-phase47-compiler--aot-direct-condition-tag
                        protected-body)))
-        (nelisp-phase47-compiler--aot-condition-case-clause-selectors
-         handler)
-        (list :handler handler :form body)))))
+        (dolist (handler clauses)
+          (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+           handler))
+        (list :handlers clauses :form body)))))
 
 (defun nelisp-phase47-compiler--aot-condition-case-conditional-unwind-form
     (body clauses)
@@ -4848,13 +4847,38 @@ source form."
 
 (defun nelisp-phase47-compiler--aot-condition-case-direct-dynamic-handler
     (body clauses)
-  "Return a single-clause dynamic condition descriptor for BODY."
-  (when (and (= (length clauses) 1)
-             (nelisp-phase47-compiler--aot-direct-condition-form body))
-    (let ((handler (car clauses)))
+  "Return a dynamic condition descriptor for BODY."
+  (when (nelisp-phase47-compiler--aot-direct-condition-form body)
+    (dolist (handler clauses)
       (nelisp-phase47-compiler--aot-condition-case-clause-selectors
-       handler)
-      (list :handler handler :form body))))
+       handler))
+    (list :handlers clauses :form body)))
+
+(defun nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+    (handlers var)
+  "Return dynamic condition landing entries for HANDLERS and VAR."
+  (mapcar
+   (lambda (handler)
+     (let* ((selectors
+             (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+              handler))
+            (handler-body
+             (nelisp-phase47-compiler--body->form
+              (cdr handler)))
+            (landing-label
+             (nelisp-phase47-compiler--gensym
+              "aot-condition-landing"))
+            (handled-form
+             (if var
+                 `(let (((,var :type sexp) (aot-landing-error out)))
+                    ,handler-body)
+               `(seq
+                 (aot-landing-error out)
+                 ,handler-body))))
+       (list :selectors selectors
+             :landing-label landing-label
+             :handled-form handled-form)))
+   handlers))
 
 (defun nelisp-phase47-compiler--parse-aot-special-let-normal-exit
     (var val-sexp body-sexp env fenv defuns source-form)
@@ -5368,36 +5392,33 @@ Doc 129.8 work."
                body landing-label handled-form))
            env fenv defuns)))
        (direct-dynamic-handler
-        (let* ((handler (plist-get direct-dynamic-handler :handler))
+        (let* ((handlers (plist-get direct-dynamic-handler :handlers))
                (condition-form (plist-get direct-dynamic-handler :form))
-               (selectors
-                (nelisp-phase47-compiler--aot-condition-case-clause-selectors
-                 handler))
-               (handler-body
-                (nelisp-phase47-compiler--body->form
-                 (cdr handler)))
-               (landing-label
-                (nelisp-phase47-compiler--gensym
-                 "aot-condition-landing"))
-               (handled-form
-                (if var
-                    `(let (((,var :type sexp) (aot-landing-error out)))
-                       ,handler-body)
-                  `(seq
-                    (aot-landing-error out)
-                    ,handler-body))))
+               (entries
+                (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+                 handlers var))
+               (landing-forms
+                (mapcar
+                 (lambda (entry)
+                   `(aot-landing-label
+                     ,(plist-get entry :landing-label)
+                     ,(plist-get entry :handled-form)))
+                 entries)))
           (nelisp-phase47-compiler--parse-value
            `(seq
-             ,@(mapcar
-                (lambda (selector)
-                  `(aot-push-condition
-                    ',selector
-                    ',landing-label
-                    (aot-current-sp)))
-                selectors)
+             ,@(mapcan
+                (lambda (entry)
+                  (mapcar
+                   (lambda (selector)
+                     `(aot-push-condition
+                       ',selector
+                       ',(plist-get entry :landing-label)
+                       (aot-current-sp)))
+                   (plist-get entry :selectors)))
+                entries)
              ,condition-form
              (aot-landing-jump out)
-             (aot-landing-label ,landing-label ,handled-form))
+             ,@landing-forms)
            env fenv defuns)))
        (direct-unwind-handler
         (let* ((tag (plist-get direct-unwind-handler :tag))
@@ -5425,37 +5446,34 @@ Doc 129.8 work."
                unwind-form landing-label handled-form))
            env fenv defuns)))
        (direct-dynamic-unwind-handler
-        (let* ((handler (plist-get direct-dynamic-unwind-handler :handler))
+        (let* ((handlers (plist-get direct-dynamic-unwind-handler :handlers))
                (unwind-form
                 (plist-get direct-dynamic-unwind-handler :form))
-               (selectors
-                (nelisp-phase47-compiler--aot-condition-case-clause-selectors
-                 handler))
-               (handler-body
-                (nelisp-phase47-compiler--body->form
-                 (cdr handler)))
-               (landing-label
-                (nelisp-phase47-compiler--gensym
-                 "aot-condition-landing"))
-               (handled-form
-                (if var
-                    `(let (((,var :type sexp) (aot-landing-error out)))
-                       ,handler-body)
-                  `(seq
-                    (aot-landing-error out)
-                    ,handler-body))))
+               (entries
+                (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+                 handlers var))
+               (landing-forms
+                (mapcar
+                 (lambda (entry)
+                   `(aot-landing-label
+                     ,(plist-get entry :landing-label)
+                     ,(plist-get entry :handled-form)))
+                 entries)))
           (nelisp-phase47-compiler--parse-value
            `(seq
-             ,@(mapcar
-                (lambda (selector)
-                  `(aot-push-condition
-                    ',selector
-                    ',landing-label
-                    (aot-current-sp)))
-                selectors)
+             ,@(mapcan
+                (lambda (entry)
+                  (mapcar
+                   (lambda (selector)
+                     `(aot-push-condition
+                       ',selector
+                       ',(plist-get entry :landing-label)
+                       (aot-current-sp)))
+                   (plist-get entry :selectors)))
+                entries)
              ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
                unwind-form nil nil nil nil
-               (list `(aot-landing-label ,landing-label ,handled-form))))
+               landing-forms))
            env fenv defuns)))
        (conditional-unwind-handler
         (let* ((tag (plist-get conditional-unwind-handler :tag))
