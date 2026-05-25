@@ -2485,8 +2485,9 @@ the whole program."
                        seq-mapcat seq-keep seq-mapn seq-map-indexed
                        seq-sort seq-uniq seq-position seq-contains-p
                        seq-set-equal-p seq-difference seq-intersection
-                       seq-union seq-take-while seq-drop-while
-                       seq-do-indexed seq-group-by seq-sort-by
+                       seq-union seq-positions seq-contains
+                       seq-take-while seq-drop-while seq-do-indexed
+                       seq-group-by seq-sort-by
                        cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl
                        cl-mapcon cl-some cl-every cl-notany cl-notevery
                        cl-count-if cl-count-if-not cl-find-if
@@ -2731,6 +2732,8 @@ defun is visible in the current compile unit.")
     (seq-difference . 2)
     (seq-intersection . 2)
     (seq-union . 2)
+    (seq-positions . 2)
+    (seq-contains . 2)
     (seq-take-while . 0)
     (seq-drop-while . 0)
     (seq-do-indexed . 0)
