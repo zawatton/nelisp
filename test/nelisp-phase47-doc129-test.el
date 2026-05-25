@@ -5120,6 +5120,32 @@ materialized closure temporary."
                 'landing))
     (should (member 'nelisp_aot_landing_jump externs))))
 
+(ert-deftest nelisp-phase47-doc129/parse-aot-machine-landing-jump ()
+  "Doc 129.8T: machine landing jump names a label and saved SP value."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun machine_landing
+                   ((saved_sp :type gp)
+                    (value :type gp))
+                 (seq
+                  (aot-machine-landing-jump saved_sp doc129_landing_pad)
+                  (aot-landing-label doc129_landing_pad value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (jump (nth 0 forms))
+         (label (nth 1 forms)))
+    (should (eq (nelisp-phase47-compiler--ir-kind jump)
+                'aot-machine-landing-jump))
+    (should (eq (nelisp-phase47-compiler--ir-get jump :target)
+                'doc129_landing_pad))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nelisp-phase47-compiler--ir-get jump :saved-sp)
+                 :var)
+                'saved_sp))
+    (should (eq (nelisp-phase47-compiler--ir-kind label)
+                'aot-landing-label))
+    (should (eq (nelisp-phase47-compiler--ir-get label :label)
+                'doc129_landing_pad))))
+
 (ert-deftest nelisp-phase47-doc129/parse-catch-conditional-throw ()
   "Doc 129.8N: conditional direct catch throw lowers both branches."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -5243,6 +5269,34 @@ materialized closure temporary."
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "landing_jump" out))
             (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-aot-machine-landing-jump ()
+  "Doc 129.8T: object output emits stack restore and label jump bytes."
+  (skip-unless (executable-find "readelf"))
+  (skip-unless (executable-find "objdump"))
+  (let ((path (make-temp-file "nelisp-doc129-machine-landing-jump-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun machine_landing
+                ((saved_sp :type gp)
+                 (value :type gp))
+              (seq
+               (aot-machine-landing-jump saved_sp doc129_landing_pad)
+               (aot-landing-label doc129_landing_pad value)))
+           path)
+          (let ((symbols (with-output-to-string
+                           (with-current-buffer standard-output
+                             (call-process "readelf" nil t nil
+                                           "--wide" "-s" path))))
+                (disasm (with-output-to-string
+                          (with-current-buffer standard-output
+                            (call-process "objdump" nil t nil "-d" path)))))
+            (should (string-match-p "machine_landing" symbols))
+            (should (string-match-p "49 89 c2" disasm))
+            (should (string-match-p "4c 89 d4" disasm))
+            (should (string-match-p "\\be9\\b" disasm))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-catch-conditional-throw ()

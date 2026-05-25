@@ -616,6 +616,8 @@ at its kind-fixed offset since per-kind layout is constant."
     (let . 31)
     (let-rt . 32)
     (let-rt-n . 89)
+    (aot-landing-label . 93)
+    (aot-machine-landing-jump . 94)
     (logic . 33)
     (mut-str-finalize . 34)
     (mut-str-len . 35)
@@ -3412,6 +3414,38 @@ Dynamic tag values are forwarded as ordinary value expressions."
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-landing-label
+    (sexp env fenv defuns)
+  "Parse an internal native landing-pad label form."
+  (unless (= (length sexp) 3)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-landing-label-arity sexp)))
+  (let ((label (nth 1 sexp)))
+    (unless (symbolp label)
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-landing-label-not-symbol label)))
+    (nelisp-phase47-compiler--make-ir
+     'aot-landing-label
+     :label label
+     :body (nelisp-phase47-compiler--parse-value
+            (nth 2 sexp) env fenv defuns))))
+
+(defun nelisp-phase47-compiler--parse-aot-machine-landing-jump
+    (sexp env fenv defuns)
+  "Parse an internal stack-restoring native landing-pad jump."
+  (unless (= (length sexp) 3)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-machine-landing-jump-arity sexp)))
+  (let ((target (nth 2 sexp)))
+    (unless (symbolp target)
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-machine-landing-jump-target-not-symbol target)))
+    (nelisp-phase47-compiler--make-ir
+     'aot-machine-landing-jump
+     :saved-sp (nelisp-phase47-compiler--parse-value
+                (nth 1 sexp) env fenv defuns)
+     :target target)))
+
 (defun nelisp-phase47-compiler--parse-aot-errorn
     (sexp env fenv defuns)
   "Lower formatted `(error ARG...)' through the Doc 129.8 errorn bridge."
@@ -4416,6 +4450,8 @@ Returns an IR node of one of these kinds:
   (:kind while :test IR :body IR :id N)         [§97.c]
   (:kind cond  :clauses ((PRED . BODY) ...) :id N) [§97.c]
   (:kind logic :op OP :forms (IR ...) :id N)    [§97.c and/or]
+  (:kind aot-landing-label :label L :body IR)
+  (:kind aot-machine-landing-jump :saved-sp IR :target L)
 ENV is the let-alist (constant bindings), FENV is the function-
 parameter alist `((SYM . REG) ...)' for the enclosing function (=
 nil at top level), DEFUNS is the alist of already-defined
@@ -4639,6 +4675,15 @@ functions `((NAME . ARITY) ...)'."
    ;; branch-to-landing-pad state from a landing descriptor.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-jump))
     (nelisp-phase47-compiler--parse-aot-landing-jump
+     sexp env fenv defuns))
+   ;; Doc 129.8T: backend-native landing labels and stack-restoring
+   ;; machine jumps.  These are internal forms used by source exception
+   ;; lowering once landing descriptors carry concrete labels.
+   ((and (consp sexp) (eq (car sexp) 'aot-landing-label))
+    (nelisp-phase47-compiler--parse-aot-landing-label
+     sexp env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'aot-machine-landing-jump))
+    (nelisp-phase47-compiler--parse-aot-machine-landing-jump
      sexp env fenv defuns))
    ;; Doc 129.6D — first direct user-call lowering for one-argument
    ;; builtins.  The surrounding defun must expose the boxed-boundary
@@ -6259,7 +6304,9 @@ Returns one of:
    ;; side-effects).  `if'/`cond'/`and'/`or' compute a value that
    ;; the surrounding statement context drops on the floor.
    ((and (consp sexp)
-         (memq (car sexp) '(if while cond and or)))
+         (memq (car sexp)
+               '(if while cond and or
+                    aot-landing-label aot-machine-landing-jump)))
     (nelisp-phase47-compiler--parse-value sexp env fenv defuns))
    ;; Doc 49 Wave 11.2 hash-table primitives in statement position.
    ;; Each desugars to a value-producing form whose result the stmt
@@ -6350,6 +6397,10 @@ defun bodies too so functions can call `write'."
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
                ((= tag 88)            ; value-seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+               ((= tag 93)            ; aot-landing-label
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
+               ((= tag 94)            ; aot-machine-landing-jump
+                (walk (nelisp-phase47-compiler--ir-get node :saved-sp)))
                ((= tag 92)            ; aot-root-scope
                 (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :push-ir))
@@ -6434,6 +6485,10 @@ when two `table-define' nodes share a NAME."
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
                ((= tag 88)            ; value-seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+               ((= tag 93)            ; aot-landing-label
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
+               ((= tag 94)            ; aot-machine-landing-jump
+                (walk (nelisp-phase47-compiler--ir-get node :saved-sp)))
                ((= tag 92)            ; aot-root-scope
                 (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :push-ir))
@@ -6484,6 +6539,10 @@ walk; the emitter substitutes a no-op for the original site."
                 (walk (nelisp-phase47-compiler--ir-get node :push-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :body))
                 (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
+               ((= tag 93)            ; aot-landing-label
+                (walk (nelisp-phase47-compiler--ir-get node :body)))
+               ((= tag 94)            ; aot-machine-landing-jump
+                (walk (nelisp-phase47-compiler--ir-get node :saved-sp)))
                (t nil))))))
       (walk ir))
     (nreverse acc)))
@@ -7005,6 +7064,10 @@ the node's class to consume the result correctly."
         ((= tag 88)             ; value-seq
          (dolist (child (nelisp-phase47-compiler--ir-get node :forms))
            (nelisp-phase47-compiler--emit-value child buf)))
+        ((= tag 93)             ; aot-landing-label
+         (nelisp-phase47-compiler--emit-aot-landing-label node buf))
+        ((= tag 94)             ; aot-machine-landing-jump
+         (nelisp-phase47-compiler--emit-aot-machine-landing-jump node buf))
         ((= tag 24)             ; f64-binop
          (nelisp-phase47-compiler--emit-f64-binop node buf))
         ((= tag 26)             ; f64-cmp
@@ -7036,6 +7099,7 @@ the node's class to consume the result correctly."
                      15 16 18 19         ; cons-make cons-make-with-clone cons-set-car cons-set-cdr
                      86 11 33            ; while cond logic
                      89                  ; let-rt-n
+                     94                  ; aot-machine-landing-jump
                      92                  ; aot-root-scope
                      78))               ; syscall-direct
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -7224,6 +7288,10 @@ the node's class to consume the result correctly."
       ((= tag 88)               ; value-seq
        (dolist (child (nelisp-phase47-compiler--ir-get node :forms))
          (nelisp-phase47-compiler--emit-value child buf)))
+      ((= tag 93)               ; aot-landing-label
+       (nelisp-phase47-compiler--emit-aot-landing-label node buf))
+      ((= tag 94)               ; aot-machine-landing-jump
+       (nelisp-phase47-compiler--emit-aot-machine-landing-jump node buf))
       ((= tag 86)               ; while
        (nelisp-phase47-compiler--emit-while node buf))
       ((= tag 11)               ; cond
@@ -9747,6 +9815,30 @@ Final emit:
     ;; for `or' = 0 last).  No additional emit needed.
     (nelisp-asm-x86_64-define-label buf end-lbl)))
 
+(defun nelisp-phase47-compiler--emit-aot-landing-label (node buf)
+  "Define NODE's landing label and emit its value body."
+  (let ((label (nelisp-phase47-compiler--ir-get node :label))
+        (body (nelisp-phase47-compiler--ir-get node :body)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (nelisp-asm-arm64-define-label buf label)
+      (nelisp-asm-x86_64-define-label buf label))
+    (nelisp-phase47-compiler--emit-value body buf)))
+
+(defun nelisp-phase47-compiler--emit-aot-machine-landing-jump (node buf)
+  "Emit a native stack-pointer restore and branch to NODE's target."
+  (unless (eq nelisp-phase47-compiler--arch 'x86_64)
+    (nelisp-phase47-compiler--emit-aarch64-unsupported
+     'aot-machine-landing-jump node))
+  (let ((saved-sp (nelisp-phase47-compiler--ir-get node :saved-sp))
+        (target (nelisp-phase47-compiler--ir-get node :target)))
+    (nelisp-phase47-compiler--emit-value saved-sp buf)
+    ;; rax holds the saved stack pointer.  Keep the actual `rsp'
+    ;; rewrite as the last register move before the jump so ordinary
+    ;; value evaluation still runs on the current frame.
+    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'r10)
+    (nelisp-asm-x86_64-jmp-rel32 buf target)))
+
 ;; ---- §97.5 emit walker — statements ----
 
 (defun nelisp-phase47-compiler--emit-table-lookup (node buf)
@@ -9875,7 +9967,7 @@ skipped here — they're emitted separately by the orchestrator."
       ((= tag 5)                ; call
        ;; Statement-context call discards rax.
        (nelisp-phase47-compiler--emit-call ir buf))
-      ((memq tag '(29 86 11 33 88 10 1 67 90 91)) ; if while cond logic value-seq cmp arith shift sexp-write-symbol-lit sexp-write-str-lit
+      ((memq tag '(29 86 11 33 88 10 1 67 90 91 93 94)) ; if while cond logic value-seq cmp arith shift sexp-write-symbol-lit sexp-write-str-lit aot-landing-label aot-machine-landing-jump
        ;; §97.c: value-producing control-flow / comparison form
        ;; reached statement position (= `seq' child, top-level).
        ;; Emit the value compute; rax is discarded by the
