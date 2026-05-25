@@ -1811,27 +1811,40 @@ materialized closure temporary."
                2))))
 
 (ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-expanded-table ()
-  "Doc 129.6G: calln lowering covers common fixed-arity builtins."
-  (dolist (builtin '(cons eq equal nth assq string=))
-    (let* ((ir (nelisp-phase47-compiler--parse
-                `(defun call_builtin
-                     ((out :type sexp)
-                      (mirror :type sexp)
-                      (frames :type sexp)
-                      (scratch :type sexp)
-                      (name_slot :type sexp)
-                      (a :type sexp)
-                      (b :type sexp))
-                   (,builtin a b))))
-           (body (nelisp-phase47-compiler--ir-get ir :body))
-           (forms (nelisp-phase47-compiler--ir-get body :forms))
-           (symbol-node (nth 0 forms))
-           (call-node (nth 1 forms)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-      (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
-                     (string-to-list (symbol-name builtin))))
-      (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
-                  'nelisp_aot_builtin_calln)))))
+  "Doc 129.6G/U: calln lowering covers common fixed-arity builtins."
+  (dolist (case '((cons (cons a b))
+                  (eq (eq a b))
+                  (equal (equal a b))
+                  (nth (nth a b))
+                  (assq (assq a b))
+                  (string= (string= a b))
+                  (plist-get (plist-get a b))
+                  (plist-member (plist-member a b))
+                  (gethash (gethash a b))
+                  (remhash (remhash a b))
+                  (plist-put (plist-put a b c))
+                  (puthash (puthash a b c))))
+    (pcase-let ((`(,builtin ,form) case))
+      (let* ((ir (nelisp-phase47-compiler--parse
+                  `(defun call_builtin
+                       ((out :type sexp)
+                        (mirror :type sexp)
+                        (frames :type sexp)
+                        (scratch :type sexp)
+                        (name_slot :type sexp)
+                        (a :type sexp)
+                        (b :type sexp)
+                        (c :type sexp))
+                     ,form)))
+             (body (nelisp-phase47-compiler--ir-get ir :body))
+             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (symbol-node (nth 0 forms))
+             (call-node (nth 1 forms)))
+        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+                       (string-to-list (symbol-name builtin))))
+        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                    'nelisp_aot_builtin_calln))))))
 
 (ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-string-table ()
   "Doc 129.6H: calln lowering covers string and format builtins."
@@ -2936,8 +2949,10 @@ materialized closure temporary."
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-direct-builtin1-table ()
-  "Doc 129.6E: direct builtin1 lowering covers the shipped unary table."
-  (dolist (builtin '(identity length car cdr symbolp stringp number-to-string))
+  "Doc 129.6E/U: direct builtin1 lowering covers the shipped unary table."
+  (dolist (builtin '(identity length car cdr symbolp stringp
+                              hash-table-p hash-table-count
+                              number-to-string))
     (let* ((ir (nelisp-phase47-compiler--parse
                 `(defun call_builtin
                      ((out :type sexp)

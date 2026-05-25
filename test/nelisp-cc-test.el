@@ -1478,7 +1478,7 @@ exit points were emitted; call-points were missing."
     (should (equal (aref out 0) "doc129"))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-call1-host-unary-table ()
-  "Doc 129.6E — host dispatch covers representative unary builtins."
+  "Doc 129.6E/U — host dispatch covers representative unary builtins."
   (let ((out (vector nil)))
     (nelisp-cc-runtime-aot-builtin-call1
      'mirror 'frames 'length '(a b c) out 'scratch)
@@ -1488,7 +1488,15 @@ exit points were emitted; call-points were missing."
     (should (eq (aref out 0) 'head))
     (nelisp-cc-runtime-aot-builtin-call1
      'mirror 'frames 'number-to-string 129 out 'scratch)
-    (should (equal (aref out 0) "129"))))
+    (should (equal (aref out 0) "129"))
+    (let ((table (make-hash-table :test 'eq)))
+      (nelisp-cc-runtime-aot-builtin-call1
+       'mirror 'frames 'hash-table-p table out 'scratch)
+      (should (eq (aref out 0) t))
+      (puthash 'k 1 table)
+      (nelisp-cc-runtime-aot-builtin-call1
+       'mirror 'frames 'hash-table-count table out 'scratch)
+      (should (= (aref out 0) 1)))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-call1-custom-dispatch ()
   "Doc 129.6C — callers can inject the native/Doc99 dispatcher body."
@@ -1536,7 +1544,7 @@ exit points were emitted; call-points were missing."
     (should (equal (aref out 0) "doc129F"))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-host-expanded-table ()
-  "Doc 129.6G — builtin calln covers common fixed-arity builtins."
+  "Doc 129.6G/U — builtin calln covers common fixed-arity builtins."
   (let ((out (vector nil)))
     (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'cons 2 out 'scratch 'a 'b)
@@ -1549,7 +1557,24 @@ exit points were emitted; call-points were missing."
     (should (eq (aref out 0) 'one))
     (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'assq 2 out 'scratch 'k '((a . 1) (k . 2)))
-    (should (equal (aref out 0) '(k . 2)))))
+    (should (equal (aref out 0) '(k . 2)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'plist-get 2 out 'scratch '(:a 1 :b 2) :b)
+    (should (= (aref out 0) 2))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'plist-put 3 out 'scratch '(:b 1) :b 2)
+    (should (equal (aref out 0) '(:b 2)))
+    (let ((table (make-hash-table :test 'eq)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'puthash 3 out 'scratch 'k 7 table)
+      (should (= (aref out 0) 7))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'gethash 2 out 'scratch 'k table)
+      (should (= (aref out 0) 7))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'remhash 2 out 'scratch 'k table)
+      (should (null (aref out 0)))
+      (should-not (gethash 'k table)))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-host-string-table ()
   "Doc 129.6H — builtin calln covers common string/format builtins."

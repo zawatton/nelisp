@@ -2253,6 +2253,7 @@ the whole program."
     float stringp vectorp
     car cdr car-safe cdr-safe
     length reverse nreverse copy-sequence
+    hash-table-p hash-table-count
     1+ 1- abs
     symbol-name prin1-to-string number-to-string string-to-number
     upcase downcase)
@@ -2270,6 +2271,8 @@ defun is visible in the current compile unit.")
     string-match string-match-p
     substring string-prefix-p string-suffix-p
     replace-regexp-in-string
+    plist-get plist-put plist-member
+    gethash puthash remhash
     mapcar mapc mapconcat mapcan maphash
     seq-map seq-do seq-filter seq-remove seq-find
     seq-some seq-every-p seq-count seq-reduce seq-mapcat
