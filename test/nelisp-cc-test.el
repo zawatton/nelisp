@@ -1709,6 +1709,10 @@ exit points were emitted; call-points were missing."
      #'length '("a" "bb" "c"))
     (should (equal (aref out 0) '((2 "bb") (1 "a" "c"))))
     (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-sort-by 3 out 'scratch
+     #'length #'< '("aaa" "b" "cc"))
+    (should (equal (aref out 0) '("b" "cc" "aaa")))
+    (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'cl-map 3 out 'scratch 'list #'1+ '(1 2))
     (should (equal (aref out 0) '(2 3)))
     (nelisp-cc-runtime-aot-builtin-calln
