@@ -16,6 +16,7 @@
   runtime module-init plan execution hook, Stage 129.3J runtime
   custom metadata table, Stage 129.3K AOT init helper resolution /
   call callback, Stage 129.3L default init boundary context,
+  Stage 129.3M init helper ABI argv materialization,
   Stage 129.4 multi-binding runtime =let= MVP,
   Stage 129.5A static GC root-map MVP, Stage 129.5B AOT root-set
   registration substrate, Stage 129.5C call-boundary root-vector
@@ -183,6 +184,12 @@
   to run a plan with those slots allocated by the runtime.  Real
   native ABI invocation and real environment handles remain Doc 99
   loader work.
+- *129.3M MVP*: =nelisp-cc-runtime-aot-init-helper-argv= now
+  materializes the fixed native helper call argument order
+  =(OUT MIRROR FRAMES SCRATCH NAME-SLOT)= from the validated init
+  context.  =nelisp-cc-runtime-call-aot-init-helper= attaches that
+  argv as =:abi-argv= before invoking a native-call callback, removing
+  one more Doc 99 loader-side convention from ad hoc callback code.
 - *129.4 MVP*: multi-binding =let= now supports runtime initializer
   values inside =defun= bodies via =let-rt-n=.  Initializers parse in
   the original environment (=parallel =let= semantics), then the body
@@ -1271,6 +1278,7 @@ wraps the existing Doc 81 =nelisp-cc-runtime-resolve-symbol= contract:
 (:helper nelisp_aot_var_0_x
  :status :resolved        ;; or :host-stub / :not-found
  :addr #x...
+ :abi-argv (OUT MIRROR FRAMES SCRATCH NAME-SLOT)
  :descriptor ...)
 #+end_src
 
@@ -1279,6 +1287,14 @@ If Doc 99 supplies a native-call callback, runtime invokes it as
 the default resolver still returns =:host-stub= so ERT can inspect the
 contract without dereferencing a native address.  =:not-found= raises
 before any native-call callback is invoked.
+
+=nelisp-cc-runtime-aot-init-helper-argv= is the single runtime-side
+source of truth for the generated helper ABI.  Its order matches the
+Stage 129.3E/F helper parameters:
+
+#+begin_src elisp
+(OUT MIRROR FRAMES SCRATCH NAME-SLOT)
+#+end_src
 
 =nelisp-cc-runtime-make-aot-init-context= fills the standard
 helper-call boundary context:
@@ -1300,10 +1316,10 @@ native helper invocation.
 This still is not full top-level execution inside Phase 47 itself.
 The compiled object exposes the initializer entry points and the
 runtime now has a validated scheduling/execution hook, metadata store,
-helper resolution/call contract, and default allocation for the
-standard out/scratch/name slots; actual object loading, real native
-ABI invocation, and real environment passing remain Doc 99
-call-boundary responsibilities.
+helper resolution/call contract, default allocation for the standard
+out/scratch/name slots, and a canonical native helper argv; actual
+object loading, real native call entry, and real environment handles
+remain Doc 99 call-boundary responsibilities.
 Initializer values are currently limited to the same boxed Int
 expression subset accepted by =defun-sexp-int-*= helpers.
 
@@ -2691,7 +2707,7 @@ deletion or deferred until the extern can be elisp-emitted.
 |---------+--------------------------------+------------+------+-------------------------|
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
-| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context SHIPPED 2026-05-25; real native ABI invocation / real environment passing pending |
+| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization SHIPPED 2026-05-25; real native call entry / real environment handles pending |
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering SHIPPED 2026-05-25; non-local cleanup pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |

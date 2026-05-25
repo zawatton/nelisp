@@ -2302,6 +2302,20 @@ exit points were emitted; call-points were missing."
     (should-not (eq out name-slot))
     (should-not (eq scratch name-slot))))
 
+(ert-deftest nelisp-cc-runtime-aot-init-helper-argv ()
+  "Doc 129.3M — init helper native calls use a fixed ABI argument order."
+  (let ((context (list :out 'out
+                       :mirror 'mirror
+                       :frames 'frames
+                       :scratch 'scratch
+                       :name-slot 'name-slot)))
+    (should (equal (nelisp-cc-runtime-aot-init-helper-argv context)
+                   '(out mirror frames scratch name-slot)))
+    (should-error
+     (nelisp-cc-runtime-aot-init-helper-argv
+      (list :out 'out :mirror 'mirror :frames 'frames :scratch 'scratch))
+     :type 'nelisp-cc-runtime-error)))
+
 (ert-deftest nelisp-cc-runtime-run-aot-module-init-plan-default-context ()
   "Doc 129.3L — module-init execution can allocate default context slots."
   (let* ((plan
@@ -2430,7 +2444,9 @@ exit points were emitted; call-points were missing."
              'nelisp_aot_var_0_x context descriptor))))
     (should (eq (plist-get resolution :status) :host-stub))
     (should (= (plist-get resolution :addr)
-               nelisp-cc-runtime--resolve-symbol-stub-addr))))
+               nelisp-cc-runtime--resolve-symbol-stub-addr))
+    (should (equal (plist-get resolution :abi-argv)
+                   '(out mirror frames scratch name-slot)))))
 
 (ert-deftest nelisp-cc-runtime-aot-init-helper-caller-native-call ()
   "Doc 129.3K — standard call-helper resolves then invokes native callback."
@@ -2455,6 +2471,7 @@ exit points were emitted; call-points were missing."
            (lambda (resolution ctx descriptor)
              (push (list (plist-get resolution :helper)
                          (plist-get resolution :addr)
+                         (plist-get resolution :abi-argv)
                          (plist-get ctx :name-slot)
                          (plist-get descriptor :kind))
                    seen)
@@ -2468,8 +2485,12 @@ exit points were emitted; call-points were missing."
           (nelisp-cc-runtime-run-aot-module-init-plan
            plan context caller)))
     (should (equal (nreverse seen)
-                   '((nelisp_aot_var_0_x #x401000 name-slot defvar)
-                     (nelisp_aot_const_1_y #x402000 name-slot defconst))))
+                   '((nelisp_aot_var_0_x #x401000
+                      (out mirror frames scratch name-slot)
+                      name-slot defvar)
+                     (nelisp_aot_const_1_y #x402000
+                      (out mirror frames scratch name-slot)
+                      name-slot defconst))))
     (should (equal (plist-get result :init-results)
                    '((nelisp_aot_var_0_x . (:called #x401000))
                      (nelisp_aot_const_1_y . (:called #x402000)))))))

@@ -2872,7 +2872,9 @@ CONTEXT is the same boundary context accepted by
 `nelisp-cc-runtime-run-aot-module-init-plan'.  DESCRIPTOR must be the
 matching init-helper descriptor.  NATIVE-CALL, when non-nil, is called
 as `(NATIVE-CALL RESOLUTION CONTEXT DESCRIPTOR)' after successful
-resolution.  RESOLVER defaults to `nelisp-cc-runtime-resolve-symbol'."
+resolution.  RESOLUTION carries `:abi-argv', the standard helper call
+argument list `(OUT MIRROR FRAMES SCRATCH NAME-SLOT)'.  RESOLVER
+defaults to `nelisp-cc-runtime-resolve-symbol'."
   (unless (symbolp helper)
     (signal 'nelisp-cc-runtime-error
             (list :aot-helper-not-symbol helper)))
@@ -2887,7 +2889,11 @@ resolution.  RESOLVER defaults to `nelisp-cc-runtime-resolve-symbol'."
     (signal 'nelisp-cc-runtime-error
             (list :aot-native-call-not-function native-call)))
   (let ((resolution
-         (nelisp-cc-runtime-resolve-aot-init-helper descriptor resolver)))
+         (plist-put
+          (copy-sequence
+           (nelisp-cc-runtime-resolve-aot-init-helper descriptor resolver))
+          :abi-argv
+          (nelisp-cc-runtime-aot-init-helper-argv context))))
     (when (eq (plist-get resolution :status) :not-found)
       (signal 'nelisp-cc-runtime-error
               (list :aot-init-helper-symbol-not-found helper)))
@@ -2935,6 +2941,20 @@ allocating the standard boxed-boundary slots."
     (signal 'nelisp-cc-runtime-error
             (list :bad-aot-init-context context)))
   context)
+
+(defun nelisp-cc-runtime-aot-init-helper-argv (context)
+  "Return the standard native argument list for an AOT init CONTEXT.
+Generated Doc 129.3 init helpers have the fixed boxed-boundary
+signature `(OUT MIRROR FRAMES SCRATCH NAME-SLOT)'.  This helper is the
+runtime-side single source of truth for the argument order used by
+`nelisp-cc-runtime-call-aot-init-helper' before a real native-call
+callback is invoked."
+  (nelisp-cc-runtime--validate-aot-init-context context)
+  (list (plist-get context :out)
+        (plist-get context :mirror)
+        (plist-get context :frames)
+        (plist-get context :scratch)
+        (plist-get context :name-slot)))
 
 (defun nelisp-cc-runtime-run-aot-module-init-plan-with-default-context
     (plan call-helper &optional register-custom mirror frames out scratch name-slot)
