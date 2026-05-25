@@ -3923,6 +3923,56 @@ ordinary fallthrough code after a simulated non-local exit."
    (t (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
                (cdr sexp)))))
 
+(defun nelisp-phase47-compiler--aot-branch-dup-safe-form-p (sexp)
+  "Return non-nil when SEXP can be duplicated in branch normalization."
+  (or (atom sexp)
+      (and (consp sexp)
+           (memq (car sexp) '(quote function)))))
+
+(defun nelisp-phase47-compiler--aot-cond-branch-form (clauses)
+  "Return CLAUSES normalized to an if tree, or nil when unsupported."
+  (when clauses
+    (let ((clause (car clauses)))
+      (when (and (consp clause) (= (length clause) 2))
+        (let ((pred (car clause))
+              (body (cadr clause)))
+          (if (eq pred t)
+              body
+            (let ((rest (nelisp-phase47-compiler--aot-cond-branch-form
+                         (cdr clauses))))
+              (when rest
+                `(if ,pred ,body ,rest)))))))))
+
+(defun nelisp-phase47-compiler--aot-logic-branch-form (op args)
+  "Return OP ARGS normalized to an if tree, or nil when unsupported."
+  (cond
+   ((null args) nil)
+   ((null (cdr args)) (car args))
+   ((not (nelisp-phase47-compiler--aot-branch-dup-safe-form-p
+          (car args)))
+    nil)
+   ((eq op 'and)
+    (let ((rest (nelisp-phase47-compiler--aot-logic-branch-form
+                 op (cdr args))))
+      (when rest
+        `(if ,(car args) ,rest ,(car args)))))
+   ((eq op 'or)
+    (let ((rest (nelisp-phase47-compiler--aot-logic-branch-form
+                 op (cdr args))))
+      (when rest
+        `(if ,(car args) ,(car args) ,rest))))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--aot-branch-tree-form (sexp)
+  "Return SEXP normalized to the if-tree shape used by exception lowering."
+  (cond
+   ((and (consp sexp) (eq (car sexp) 'cond))
+    (nelisp-phase47-compiler--aot-cond-branch-form (cdr sexp)))
+   ((and (consp sexp) (memq (car sexp) '(and or)))
+    (nelisp-phase47-compiler--aot-logic-branch-form
+     (car sexp) (cdr sexp)))
+   (t sexp)))
+
 (defun nelisp-phase47-compiler--aot-catch-direct-throw-form (tag body-forms)
   "Return BODY-FORMS' direct throw form when it targets TAG, or nil."
   (when (and (= (length body-forms) 1)
@@ -3954,50 +4004,54 @@ ordinary fallthrough code after a simulated non-local exit."
 The accepted shape is a single `(if TEST THEN ELSE)' tree whose throwing
 leaves are direct `(throw TAG VALUE)' forms and whose non-throwing leaves
 contain no unresolved non-local source form."
-  (when (and (= (length body-forms) 1)
-             (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
-              tag (car body-forms)))
-    (car body-forms)))
+  (when (= (length body-forms) 1)
+    (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form
+                 (car body-forms))))
+      (when (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+             tag tree)
+        tree))))
 
 (defun nelisp-phase47-compiler--aot-catch-throw-tree-form-p (tag sexp)
   "Return non-nil when SEXP is a safe conditional catch/throw tree."
-  (cond
-   ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
-    t)
-   ((and (consp sexp)
-         (eq (car sexp) 'if)
-         (= (length sexp) 4)
-         (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-               (nth 1 sexp))))
-    (let ((then (nth 2 sexp))
-          (else (nth 3 sexp)))
-      (and (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
-                tag then)
-               (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
-                tag else))
-           (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
-                tag then)
-               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                     then)))
-           (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
-                tag else)
-               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                     else))))))
-   (t nil)))
+  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+    (cond
+     ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
+      t)
+     ((and (consp sexp)
+           (eq (car sexp) 'if)
+           (= (length sexp) 4)
+           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (nth 1 sexp))))
+      (let ((then (nth 2 sexp))
+            (else (nth 3 sexp)))
+        (and (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                  tag then)
+                 (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                  tag else))
+             (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                  tag then)
+                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                       then)))
+             (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                  tag else)
+                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                       else))))))
+     (t nil))))
 
 (defun nelisp-phase47-compiler--aot-catch-throw-leaf-count (tag sexp)
   "Return the number of direct THROW leaves in catch tree SEXP."
-  (cond
-   ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
-    1)
-   ((and (consp sexp)
-         (eq (car sexp) 'if)
-         (= (length sexp) 4))
-    (+ (nelisp-phase47-compiler--aot-catch-throw-leaf-count
-        tag (nth 2 sexp))
-       (nelisp-phase47-compiler--aot-catch-throw-leaf-count
-        tag (nth 3 sexp))))
-   (t 0)))
+  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+    (cond
+     ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
+      1)
+     ((and (consp sexp)
+           (eq (car sexp) 'if)
+           (= (length sexp) 4))
+      (+ (nelisp-phase47-compiler--aot-catch-throw-leaf-count
+          tag (nth 2 sexp))
+         (nelisp-phase47-compiler--aot-catch-throw-leaf-count
+          tag (nth 3 sexp))))
+     (t 0))))
 
 (defun nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p (tag sexp)
   "Return non-nil when every leaf in SEXP throws to TAG."
@@ -4123,55 +4177,58 @@ The accepted shape is an `(if TEST THEN ELSE)' tree where signal/error
 leaves use a single direct condition tag, can be statically matched to
 one HANDLER clause, and normal leaves contain no unresolved non-local
 source form."
-  (when (and (consp body)
-             (eq (car body) 'if)
-             (= (length body) 4))
-    (let ((tag (nelisp-phase47-compiler--aot-condition-tree-tag body)))
+  (let ((body (nelisp-phase47-compiler--aot-branch-tree-form body)))
+    (when (and (consp body)
+               (eq (car body) 'if)
+               (= (length body) 4))
+      (let ((tag (nelisp-phase47-compiler--aot-condition-tree-tag body)))
       (when tag
         (let ((handler
                (nelisp-phase47-compiler--aot-condition-case-direct-handler
                 tag clauses)))
           (when handler
-            (list :tag tag :handler handler :form body)))))))
+            (list :tag tag :handler handler :form body))))))))
 
 (defun nelisp-phase47-compiler--aot-condition-tree-tag (sexp)
   "Return the unique direct signal/error tag in SEXP's safe if tree."
-  (cond
-   ((nelisp-phase47-compiler--aot-direct-condition-tag sexp))
-   ((and (consp sexp)
-         (eq (car sexp) 'if)
-         (= (length sexp) 4)
-         (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-               (nth 1 sexp))))
-    (let* ((then (nth 2 sexp))
-           (else (nth 3 sexp))
-           (then-tag
-            (nelisp-phase47-compiler--aot-condition-tree-tag then))
-           (else-tag
-            (nelisp-phase47-compiler--aot-condition-tree-tag else)))
-      (when (and (or then-tag else-tag)
-                 (or (not then-tag) (not else-tag) (eq then-tag else-tag))
-                 (or then-tag
-                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                           then)))
-                 (or else-tag
-                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                           else))))
-        (or then-tag else-tag))))
-   (t nil)))
+  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+    (cond
+     ((nelisp-phase47-compiler--aot-direct-condition-tag sexp))
+     ((and (consp sexp)
+           (eq (car sexp) 'if)
+           (= (length sexp) 4)
+           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (nth 1 sexp))))
+      (let* ((then (nth 2 sexp))
+             (else (nth 3 sexp))
+             (then-tag
+              (nelisp-phase47-compiler--aot-condition-tree-tag then))
+             (else-tag
+              (nelisp-phase47-compiler--aot-condition-tree-tag else)))
+        (when (and (or then-tag else-tag)
+                   (or (not then-tag) (not else-tag) (eq then-tag else-tag))
+                   (or then-tag
+                       (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                             then)))
+                   (or else-tag
+                       (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                             else))))
+          (or then-tag else-tag))))
+     (t nil))))
 
 (defun nelisp-phase47-compiler--aot-condition-tree-leaf-count (sexp)
   "Return the number of direct signal/error leaves in condition tree SEXP."
-  (cond
-   ((nelisp-phase47-compiler--aot-direct-condition-tag sexp) 1)
-   ((and (consp sexp)
-         (eq (car sexp) 'if)
-         (= (length sexp) 4))
-    (+ (nelisp-phase47-compiler--aot-condition-tree-leaf-count
-        (nth 2 sexp))
-       (nelisp-phase47-compiler--aot-condition-tree-leaf-count
-        (nth 3 sexp))))
-   (t 0)))
+  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+    (cond
+     ((nelisp-phase47-compiler--aot-direct-condition-tag sexp) 1)
+     ((and (consp sexp)
+           (eq (car sexp) 'if)
+           (= (length sexp) 4))
+      (+ (nelisp-phase47-compiler--aot-condition-tree-leaf-count
+          (nth 2 sexp))
+         (nelisp-phase47-compiler--aot-condition-tree-leaf-count
+          (nth 3 sexp))))
+     (t 0))))
 
 (defun nelisp-phase47-compiler--aot-static-landing-form
     (nonlocal-form landing-label landing-body)

@@ -6589,6 +6589,52 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
+(ert-deftest nelisp-phase47-doc129/parse-catch-cond-throw ()
+  "Doc 129.8AO: cond catch throw trees reuse the static landing route."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_cond_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (cond
+                    (value (throw 'done value))
+                    (t value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (member 'nelisp_aot_throw externs))
+    (should (member 'nelisp_aot_landing_value externs))
+    (should (member 'nelisp_aot_pop_handler externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               1))
+    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+     ir 'nelisp_aot_push_catch "aot-catch-landing-")))
+
+(ert-deftest nelisp-phase47-doc129/parse-catch-and-throw ()
+  "Doc 129.8AO: simple and catch throw trees lower through if routing."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_and_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (and value (throw 'done value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (member 'nelisp_aot_throw externs))
+    (should (member 'nelisp_aot_landing_value externs))
+    (should (member 'nelisp_aot_pop_handler externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               1))))
+
 (ert-deftest nelisp-phase47-doc129/parse-catch-nested-throw ()
   "Doc 129.8R: nested catch throw trees dispatch every throwing leaf."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -6796,6 +6842,35 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "catch_if_throw" out))
+            (should (string-match-p "nelisp_aot_push_catch" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_value" out))
+            (should (string-match-p "nelisp_aot_pop_handler" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-catch-cond-throw ()
+  "Doc 129.8AO: source cond catch throw compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-catch-cond-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun catch_cond_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (catch 'done
+                (cond
+                 (value (throw 'done value))
+                 (t value))))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "catch_cond_throw" out))
             (should (string-match-p "nelisp_aot_push_catch" out))
             (should (string-match-p "nelisp_aot_throw" out))
             (should (string-match-p "nelisp_aot_landing_value" out))
@@ -7272,6 +7347,54 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-cond-signal ()
+  "Doc 129.8AO: cond condition-case signal trees reuse static routing."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_cond_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (cond
+                      (value (signal 'error value))
+                      (t value))
+                   (error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_condition externs))
+    (should (member 'nelisp_aot_signal externs))
+    (should (member 'nelisp_aot_landing_error externs))
+    (should (member 'nelisp_aot_pop_handler externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               1))
+    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+     ir 'nelisp_aot_push_condition "aot-condition-landing-")))
+
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-or-signal ()
+  "Doc 129.8AO: simple or condition-case signal trees lower through if routing."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_or_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (or value (signal 'error value))
+                   (error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_condition externs))
+    (should (member 'nelisp_aot_signal externs))
+    (should (member 'nelisp_aot_landing_error externs))
+    (should (member 'nelisp_aot_pop_handler externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               1))))
+
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-nested-signal ()
   "Doc 129.8R: nested condition-case signal trees dispatch throwing leaves."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -7646,6 +7769,36 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "cc_signal" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nelisp_aot_landing_error" out))
+            (should (string-match-p "nelisp_aot_pop_handler" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-condition-case-cond-signal ()
+  "Doc 129.8AO: source cond condition-case signal compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-cond-signal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_cond_signal
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  (cond
+                   (value (signal 'error value))
+                   (t value))
+                (error err)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_cond_signal" out))
             (should (string-match-p "nelisp_aot_push_condition" out))
             (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nelisp_aot_landing_error" out))
