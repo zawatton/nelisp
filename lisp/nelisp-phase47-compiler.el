@@ -646,6 +646,7 @@ at its kind-fixed offset since per-kind layout is constant."
     (sexp-write-float . 62)
     (sexp-write-nil . 63)
     (sexp-write-str . 64)
+    (sexp-write-str-lit . 91)
     (sexp-write-symbol . 65)
     (sexp-write-symbol-lit . 90)
     (sexp-write-t . 66)
@@ -674,7 +675,7 @@ at its kind-fixed offset since per-kind layout is constant."
   "Maps each IR :kind symbol to a small integer tag.
 A33.2 defines this table only (no behavior change); A33.3 uses it to
 turn the symbol-keyed `pcase'/`cond' emit dispatch into integer
-dispatch.  The 88 entries cover every kind produced by
+dispatch.  The entries cover every kind produced by
 `nelisp-phase47-compiler--make-ir'.  Tag values are stable; later
 extensions append new tags instead of renumbering existing values.")
 
@@ -720,6 +721,7 @@ distinct stable tag, so the emitted `.o' bytes are unchanged."
     mut-str-make-empty
     record-make
     sexp-write-str
+    sexp-write-str-lit
     sexp-write-symbol-lit
     sexp-write-symbol
     vector-make)
@@ -2048,17 +2050,49 @@ Dynamic tag values are forwarded as ordinary value expressions."
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-errorn
+    (sexp env fenv defuns)
+  "Lower formatted `(error ARG...)' through the Doc 129.8 errorn bridge."
+  (when (< (length sexp) 3)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-errorn-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (raw-args (nthcdr 1 sexp))
+         (first (car raw-args))
+         (args (if (stringp first)
+                   (cons scratch (cdr raw-args))
+                 raw-args))
+         (prefix (when (stringp first)
+                   `((sexp-write-str-lit ,scratch ,first))))
+         (argc (length args)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       ,@prefix
+       (extern-call nelisp_aot_errorn
+                    ,mirror ,frames ,argc ,out ,scratch ,@args)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--parse-aot-error
     (sexp env fenv defuns)
-  "Lower `(error DATA)' through the Doc 129.8 signal bridge.
-This MVP accepts one already-boxed DATA value.  Formatted error strings
-and varargs require later calln/rest-list construction."
-  (unless (= (length sexp) 2)
+  "Lower source `error' through the Doc 129.8 signal/error bridges."
+  (cond
+   ((= (length sexp) 2)
+    (nelisp-phase47-compiler--parse-aot-signal
+     `(signal 'error ,(nth 1 sexp))
+     env fenv defuns))
+   ((> (length sexp) 2)
+    (nelisp-phase47-compiler--parse-aot-errorn
+     sexp env fenv defuns))
+   (t
     (signal 'nelisp-phase47-compiler-error
-            (list :aot-error-arity sexp)))
-  (nelisp-phase47-compiler--parse-aot-signal
-   `(signal 'error ,(nth 1 sexp))
-   env fenv defuns))
+            (list :aot-error-arity sexp)))))
 
 (defun nelisp-phase47-compiler--parse-aot-push-handler
     (sexp env fenv defuns)
@@ -2499,8 +2533,9 @@ functions `((NAME . ARITY) ...)'."
          (not (assq 'signal defuns)))
     (nelisp-phase47-compiler--parse-aot-signal
      sexp env fenv defuns))
-   ;; Doc 129.8H — user-facing `error' is a specialised signal with the
-   ;; standard `error' condition tag.  Varargs formatting stays pending.
+   ;; Doc 129.8H/I — user-facing `error' is a specialised signal with
+   ;; the standard `error' condition tag.  Multi-argument formatted
+   ;; errors lower through the errorn bridge.
    ((and (consp sexp)
          (eq (car sexp) 'error)
          (not (assq 'error defuns)))
@@ -3122,6 +3157,22 @@ functions `((NAME . ARITY) ...)'."
         (signal 'nelisp-phase47-compiler-error
                 (list :sexp-write-symbol-lit-literal lit)))
       (nelisp-phase47-compiler--make-ir 'sexp-write-symbol-lit
+            :slot (nelisp-phase47-compiler--parse-value
+                   (nth 1 sexp) env fenv defuns)
+            :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
+   ;; Doc 129.8I — `(sexp-write-str-lit SLOT LITERAL)' is the string
+   ;; sibling used by formatted error lowering.  Like symbol literals,
+   ;; it avoids `.rodata' by passing a temporary stack byte buffer to
+   ;; the allocator.
+   ((and (consp sexp) (eq (car sexp) 'sexp-write-str-lit))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :sexp-write-str-lit-arity sexp)))
+    (let ((lit (nth 2 sexp)))
+      (unless (stringp lit)
+        (signal 'nelisp-phase47-compiler-error
+                (list :sexp-write-str-lit-literal lit)))
+      (nelisp-phase47-compiler--make-ir 'sexp-write-str-lit
             :slot (nelisp-phase47-compiler--parse-value
                    (nth 1 sexp) env fenv defuns)
             :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
@@ -4611,7 +4662,7 @@ the node's class to consume the result correctly."
                      75 69 70 68 73 76   ; str-len str-bytes str-bytes-ptr str-byte-at str-eq symbol-eq
                      77 58               ; symbol-name-eq sexp-name-eq
                      63 66               ; sexp-write-nil sexp-write-t
-                     64 65 90 62         ; sexp-write-str sexp-write-symbol sexp-write-symbol-lit sexp-write-float
+                     64 65 90 91 62      ; sexp-write-str sexp-write-symbol sexp-write-symbol-lit sexp-write-str-lit sexp-write-float
                      36 37 38            ; mut-str-make-empty mut-str-push-byte mut-str-push-codepoint
                      35 34               ; mut-str-len mut-str-finalize
                      71 72 74            ; str-char-count str-codepoint-at str-is-alphanumeric-at
@@ -4746,6 +4797,8 @@ the node's class to consume the result correctly."
         node buf "nl_alloc_symbol"))
       ((= tag 90)               ; sexp-write-symbol-lit
        (nelisp-phase47-compiler--emit-sexp-write-symbol-lit node buf))
+      ((= tag 91)               ; sexp-write-str-lit
+       (nelisp-phase47-compiler--emit-sexp-write-str-lit node buf))
       ((= tag 62)               ; sexp-write-float
        (nelisp-phase47-compiler--emit-sexp-write-float node buf))
       ((= tag 36)               ; mut-str-make-empty
@@ -6517,9 +6570,10 @@ separately)."
         (push value chunks)))
     (nreverse chunks)))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-symbol-lit (node buf)
-  "Emit `sexp-write-symbol-lit' using a temporary stack byte buffer.
-This avoids `.rodata' so the form remains valid in ET_REL object mode."
+(defun nelisp-phase47-compiler--emit-sexp-write-lit (node buf helper-name)
+  "Emit a literal string/symbol allocation through HELPER-NAME.
+This uses a temporary stack byte buffer and avoids `.rodata' so the
+form remains valid in ET_REL object mode."
   (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
          (bytes (nelisp-phase47-compiler--ir-get node :bytes))
          (chunks (nelisp-phase47-compiler--bytes->u64-chunks bytes))
@@ -6538,9 +6592,19 @@ This avoids `.rodata' so the form remains valid in ET_REL object mode."
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'r10)
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_alloc_symbol" -4 'text)
+     buf helper-name -4 'text)
     (when (> stack-slots 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-slots)))))
+
+(defun nelisp-phase47-compiler--emit-sexp-write-symbol-lit (node buf)
+  "Emit `sexp-write-symbol-lit' using a temporary stack byte buffer."
+  (nelisp-phase47-compiler--emit-sexp-write-lit
+   node buf "nl_alloc_symbol"))
+
+(defun nelisp-phase47-compiler--emit-sexp-write-str-lit (node buf)
+  "Emit `sexp-write-str-lit' using a temporary stack byte buffer."
+  (nelisp-phase47-compiler--emit-sexp-write-lit
+   node buf "nl_alloc_str"))
 
 (defun nelisp-phase47-compiler--emit-sexp-write-float (node buf)
   "Emit `sexp-write-float' — call `nl_sexp_write_float(slot, val: f64)'.
@@ -7447,7 +7511,7 @@ skipped here — they're emitted separately by the orchestrator."
       ((= tag 5)                ; call
        ;; Statement-context call discards rax.
        (nelisp-phase47-compiler--emit-call ir buf))
-      ((memq tag '(29 86 11 33 88 10 1 67 90)) ; if while cond logic value-seq cmp arith shift sexp-write-symbol-lit
+      ((memq tag '(29 86 11 33 88 10 1 67 90 91)) ; if while cond logic value-seq cmp arith shift sexp-write-symbol-lit sexp-write-str-lit
        ;; §97.c: value-producing control-flow / comparison form
        ;; reached statement position (= `seq' child, top-level).
        ;; Emit the value compute; rax is discarded by the

@@ -1620,19 +1620,31 @@
     (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                 'nelisp_aot_signal))))
 
-(ert-deftest nelisp-phase47-doc129/error-varargs-still-pending ()
-  "Doc 129.8H: formatted error varargs wait for calln/rest-list work."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun error_fmt
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (value :type sexp))
-       (error value value)))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/parse-error-varargs-bridge ()
+  "Doc 129.8I: formatted `(error FMT ARG...)' lowers to errorn."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun error_fmt
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (error "%s" value))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (write-node (nth 0 forms))
+         (call-node (nth 1 forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+                'sexp-write-str-lit))
+    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+                   (string-to-list "%s")))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_errorn))
+    (should (equal (mapcar #'nelisp-phase47-compiler--ir-kind call-args)
+                   '(ref ref imm ref ref ref ref)))))
 
 (ert-deftest nelisp-phase47-doc129/object-error-bridge ()
   "Doc 129.8H: object output exposes error-as-signal bridge reloc."
@@ -1656,6 +1668,30 @@
             (should (string-match-p "error_value" out))
             (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-error-varargs-bridge ()
+  "Doc 129.8I: object output exposes formatted errorn bridge reloc."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-errorn-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun error_fmt
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (error "%s" value))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "error_fmt" out))
+            (should (string-match-p "nelisp_aot_errorn" out))
+            (should (string-match-p "nl_alloc_str" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-push-catch-handler ()

@@ -1605,6 +1605,37 @@ exit points were emitted; call-points were missing."
                          '(arith-error "bad")))))
     (nelisp-cc-runtime-aot-reset-handler-stack)))
 
+(ert-deftest nelisp-cc-runtime-aot-errorn-boundary ()
+  "Doc 129.8I — errorn formats args and signals `error'."
+  (unwind-protect
+      (let ((out (vector nil)))
+        (nelisp-cc-runtime-aot-reset-handler-stack)
+        (nelisp-cc-runtime-aot-push-condition 'error 'cc-pad 72)
+        (should (eq (nelisp-cc-runtime-aot-errorn-boundary
+                     'mirror 'frames 3 out 'scratch "%s=%s" "k" "v")
+                    out))
+        (let ((landing (aref out 0)))
+          (should (eq (plist-get landing :kind) 'condition))
+          (should (eq (plist-get landing :landing-pad) 'cc-pad))
+          (should (equal (plist-get landing :error)
+                         '(error "k=v")))))
+    (nelisp-cc-runtime-aot-reset-handler-stack)))
+
+(ert-deftest nelisp-cc-runtime-aot-errorn-validates-boundary ()
+  "Doc 129.8I — errorn rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-errorn-boundary
+    'mirror 'frames 1 nil 'scratch "x")
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-errorn-boundary
+    'mirror 'frames -1 (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-errorn-boundary
+    'mirror 'frames 2 (vector nil) 'scratch "x")
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-exception-boundary-custom-dispatch ()
   "Doc 129.8B — callers can inject native throw/signal bridge bodies."
   (let ((throw-out (vector nil))

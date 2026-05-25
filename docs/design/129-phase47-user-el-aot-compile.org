@@ -39,7 +39,8 @@
   source-level =catch= normal-exit lowering, and Stage 129.8F
   source-level =condition-case= normal-exit lowering, and Stage
   129.8G source-level =unwind-protect= normal-exit lowering, and
-  Stage 129.8H single-argument =error= lowering have implementations in
+  Stage 129.8H single-argument =error= lowering, and Stage 129.8I
+  formatted =error= varargs bridge have implementations in
   =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
   =nelisp-cc-runtime.el=.
   Supported in this first cut: host macro expansion in value/call
@@ -305,8 +306,15 @@
 - *129.8H MVP*: source-level =(error DATA)= now lowers as the
   specialized condition signal =(signal 'error DATA)= through
   =nelisp_aot_signal=.  DATA is already a boxed value supplied by the
-  caller/compiler.  Formatted error varargs remain pending on calln /
-  rest-list construction.
+  caller/compiler.
+- *129.8I MVP*: formatted =(error ARG...)= now lowers through
+  =nelisp_aot_errorn= for two-or-more source arguments.  The ABI is
+  =MIRROR/FRAMES/ARGC/OUT/SCRATCH/ARG...=; the runtime validates
+  =ARGC=, builds the standard =error= signal data list (including
+  =(format FMT ARG...)= when the first argument is a string), delegates
+  to the signal boundary, writes =OUT=, and returns =OUT=.  Literal
+  format strings such as =(error "%s" value)= materialize through
+  =sexp-write-str-lit= into the caller-owned =scratch= slot.
 - *Previous state*: DRAFT 2026-05-25 — design only.
   Scoping doc for the long-horizon "compile arbitrary user elisp to
   native code" track.  Authored after a 2026-05-25 session that
@@ -1351,9 +1359,42 @@ This lowers through the existing signal bridge:
  out)
 #+end_src
 
-The argument is treated as already-boxed signal data.  The usual
-formatted =error= shape, e.g. =(error "%s" value)=, still needs calln
-and rest/list construction before it can be represented faithfully.
+The argument is treated as already-boxed signal data.
+
+*** §1.F.9 Shipped MVP: formatted =error= varargs bridge
+
+Stage 129.8I adds the formatted sibling for two-or-more argument
+=error= calls:
+
+#+begin_src elisp
+(defun error-fmt
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (value :type sexp))
+  (error "%s" value))
+#+end_src
+
+This lowers to a stack-argument bridge:
+
+#+begin_src elisp
+(seq
+ (sexp-write-str-lit scratch "%s")
+ (extern-call nelisp_aot_errorn
+              mirror frames 2 out scratch scratch value)
+ out)
+#+end_src
+
+The runtime bridge:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-errorn-boundary
+ mirror frames argc out scratch arg...)
+#+end_src
+
+validates =ARGC=, builds the same signal data shape as the elisp
+stdlib =error= implementation, and delegates to =nelisp_aot_signal=.
+Literal format strings are materialized into the caller-owned
+=scratch= slot; dynamic format strings can be passed as ordinary boxed
+arguments.
 
 ** §1.G macroexpand frontend (= cheapest group)
 
@@ -1540,7 +1581,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge SHIPPED 2026-05-25; closure allocation/capture, source rest params, and apply splicing pending |
-| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit, formatted error varargs, and native landing-pad jumps pending |
+| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
 =anvil-server.el= that uses only those (= prove the pipeline end to

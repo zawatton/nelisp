@@ -2182,6 +2182,40 @@ returns OUT.  DISPATCHER, when non-nil, is called as
     (aset out 0 landing)
     out))
 
+(defun nelisp-cc-runtime--aot-error-data (args)
+  "Return the signal data list for Doc 129 formatted error ARGS."
+  (list
+   (cond
+    ((null args) "")
+    ((stringp (car args)) (apply #'format args))
+    (t (prin1-to-string (car args))))))
+
+(defun nelisp-cc-runtime-aot-errorn-boundary
+    (mirror frames argc out scratch &rest args)
+  "Runtime bridge for the Doc 129.8 `nelisp_aot_errorn' ABI.
+MIRROR, FRAMES, ARGC, OUT, SCRATCH, and ARGS mirror the native ABI:
+
+  nelisp_aot_errorn(mirror, frames, argc, out, scratch, arg...)
+
+ARGC is the number of following boxed Sexp args.  The bridge builds the
+standard `error' signal data list, delegates to the signal boundary, and
+returns OUT."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-errorn-out-not-vector out)))
+  (unless (and (integerp argc) (<= 0 argc))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-errorn-argc-not-nonnegative argc)))
+  (unless (= argc (length args))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-errorn-argc-mismatch
+                  :argc argc
+                  :got (length args))))
+  (nelisp-cc-runtime-aot-signal-boundary
+   mirror frames 'error
+   (nelisp-cc-runtime--aot-error-data args)
+   out scratch))
+
 (defun nelisp-cc-runtime--validate-aot-init-helper-descriptor (descriptor)
   "Validate one Doc 129 AOT init helper DESCRIPTOR."
   (unless (and (listp descriptor)
