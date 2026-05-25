@@ -4118,6 +4118,22 @@ source form."
               tag (nth 1 (car body-forms))))
     (car body-forms)))
 
+(defun nelisp-phase47-compiler--aot-condition-case-direct-unwind-form
+    (body clauses)
+  "Return BODY's direct condition-signalling unwind descriptor, or nil."
+  (when (and (consp body)
+             (eq (car body) 'unwind-protect)
+             (>= (length body) 2))
+    (let* ((protected-body (nth 1 body))
+           (tag (nelisp-phase47-compiler--aot-direct-condition-tag
+                 protected-body))
+           (handler
+            (and tag
+                 (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                  tag clauses))))
+      (when handler
+        (list :tag tag :handler handler :form body)))))
+
 (defun nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
     (tag branch cleanups landing-label value-slot)
   "Return BRANCH with unwind cleanup jumping to LANDING-LABEL."
@@ -4209,6 +4225,26 @@ source form."
     `(seq
       ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
         tag body-form cleanups landing-label value-slot)
+      (aot-landing-label ,landing-label ,landing-body))))
+
+(defun nelisp-phase47-compiler--aot-unwind-condition-cleanup-form
+    (unwind-form landing-label landing-body)
+  "Return direct condition UNWIND-FORM cleanup for static LANDING-LABEL."
+  (let ((body-form (nth 1 unwind-form))
+        (cleanups (nthcdr 2 unwind-form))
+        (cleanup-label
+         (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+    (when (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                   cleanups)
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
+    `(seq
+      (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+      ,body-form
+      (aot-landing-label ,cleanup-label
+        (seq
+         ,@cleanups
+         (aot-machine-landing-jump (aot-current-sp) ,landing-label)))
       (aot-landing-label ,landing-label ,landing-body))))
 
 (defun nelisp-phase47-compiler--aot-catch-landing-branch-form
@@ -4706,8 +4742,9 @@ handler-body dispatch still waits for native landing pads."
   "Lower source `(condition-case VAR BODY HANDLER...)'.
 The MVP installs a condition handler, evaluates BODY, saves BODY's
 result, pops the handler, then returns the saved value.  Direct and
-single-leaf signalled paths can now attach landing labels; multi-leaf
-and cleanup landing selection remains later Doc 129.8 work."
+single-leaf signalled paths can now attach landing labels, and direct
+unwind cleanup can branch to a static condition landing.  Broader
+multi-leaf cleanup landing selection remains later Doc 129.8 work."
   (unless (>= (length sexp) 4)
     (signal 'nelisp-phase47-compiler-error
             (list :aot-condition-case-arity sexp)))
@@ -4726,9 +4763,15 @@ and cleanup landing selection remains later Doc 129.8 work."
            (conditional-handler
             (and (not direct-handler)
                  (nelisp-phase47-compiler--aot-conditional-condition-case-form
+                  body clauses)))
+           (direct-unwind-handler
+            (and (not direct-handler)
+                 (not conditional-handler)
+                 (nelisp-phase47-compiler--aot-condition-case-direct-unwind-form
                   body clauses))))
       (when (and (not direct-handler)
                  (not conditional-handler)
+                 (not direct-unwind-handler)
                  (nelisp-phase47-compiler--aot-nonlocal-source-form-p body))
         (signal 'nelisp-phase47-compiler-error
                 (list :aot-condition-case-nonlocal-body sexp)))
@@ -4757,6 +4800,31 @@ and cleanup landing selection remains later Doc 129.8 work."
                                  (aot-current-sp))
              ,(nelisp-phase47-compiler--aot-static-landing-form
                body landing-label handled-form))
+           env fenv defuns)))
+       (direct-unwind-handler
+        (let* ((tag (plist-get direct-unwind-handler :tag))
+               (handler (plist-get direct-unwind-handler :handler))
+               (unwind-form (plist-get direct-unwind-handler :form))
+               (handler-body
+                (nelisp-phase47-compiler--body->form
+                 (cdr handler)))
+               (landing-label
+                (nelisp-phase47-compiler--gensym
+                 "aot-condition-landing"))
+               (handled-form
+                (if var
+                    `(let (((,var :type sexp) (aot-landing-error out)))
+                       ,handler-body)
+                  `(seq
+                    (aot-landing-error out)
+                    ,handler-body))))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             (aot-push-condition ',tag
+                                 ',landing-label
+                                 (aot-current-sp))
+             ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-form
+               unwind-form landing-label handled-form))
            env fenv defuns)))
        (conditional-handler
         (let* ((tag (plist-get conditional-handler :tag))
