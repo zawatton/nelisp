@@ -1851,7 +1851,11 @@ These names are direct-call candidates only when no same-named Phase 47
 defun is visible in the current compile unit.")
 
 (defconst nelisp-phase47-compiler--aot-builtinn-delegation-symbols
-  '(list vector concat append)
+  '(list vector concat append
+    cons eq eql equal
+    memq member assq assv assoc
+    nth elt
+    string= string< string-lessp)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
 These names are direct-call candidates only when no same-named Phase 47
 defun is visible in the current compile unit.")

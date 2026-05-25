@@ -1246,6 +1246,29 @@
                                                 :value)
                2))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-expanded-table ()
+  "Doc 129.6G: calln lowering covers common fixed-arity builtins."
+  (dolist (builtin '(cons eq equal nth assq string=))
+    (let* ((ir (nelisp-phase47-compiler--parse
+                `(defun call_builtin
+                     ((out :type sexp)
+                      (mirror :type sexp)
+                      (frames :type sexp)
+                      (scratch :type sexp)
+                      (name_slot :type sexp)
+                      (a :type sexp)
+                      (b :type sexp))
+                   (,builtin a b))))
+           (body (nelisp-phase47-compiler--ir-get ir :body))
+           (forms (nelisp-phase47-compiler--ir-get body :forms))
+           (symbol-node (nth 0 forms))
+           (call-node (nth 1 forms)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+      (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+                     (string-to-list (symbol-name builtin))))
+      (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                  'nelisp_aot_builtin_calln)))))
+
 (ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
   "Doc 129.6F: vararg builtin lowering requires explicit boundary params."
   (should-error
