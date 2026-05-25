@@ -4015,6 +4015,13 @@ contain no unresolved non-local source form."
              (nelisp-phase47-compiler--aot-quoted-symbol (nth 1 sexp)))
     sexp))
 
+(defun nelisp-phase47-compiler--aot-direct-throw-form (sexp)
+  "Return SEXP when it is a direct throw form."
+  (when (and (consp sexp)
+             (eq (car sexp) 'throw)
+             (= (length sexp) 3))
+    sexp))
+
 (defun nelisp-phase47-compiler--aot-conditional-quoted-throw-form (sexp)
   "Return a conditional direct quoted throw tree, or nil."
   (when (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p sexp)
@@ -4183,9 +4190,43 @@ source form."
              (consp (car body-forms))
              (eq (caar body-forms) 'unwind-protect)
              (>= (length (car body-forms)) 2)
-             (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
-              tag (nth 1 (car body-forms))))
+             (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                  tag (nth 1 (car body-forms)))
+                 (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                  tag (nth 1 (car body-forms)))))
     (car body-forms)))
+
+(defun nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+    (tag sexp)
+  "Return non-nil when SEXP is a safe catch cleanup throw tree."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-throw-form sexp) t)
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4)
+         (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nth 1 sexp))))
+    (let ((then (nth 2 sexp))
+          (else (nth 3 sexp)))
+      (and (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                tag then)
+               (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                tag then)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     then)))
+           (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                tag else)
+               (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                tag else)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     else)))
+           (or (nelisp-phase47-compiler--aot-direct-throw-form then)
+               (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                tag then)
+               (nelisp-phase47-compiler--aot-direct-throw-form else)
+               (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                tag else)))))
+   (t nil)))
 
 (defun nelisp-phase47-compiler--aot-condition-case-direct-unwind-form
     (body clauses)
@@ -4253,7 +4294,21 @@ source form."
    ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag branch)
     (nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
      tag branch cleanups landing-label value-slot))
-   ((nelisp-phase47-compiler--aot-catch-throw-tree-form-p tag branch)
+   ((nelisp-phase47-compiler--aot-direct-throw-form branch)
+    (let ((cleanup-label
+           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+      `(seq
+        (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        (let (((,value-slot :type sexp) ,(nth 2 branch)))
+          (seq
+           (throw ,(nth 1 branch) ,value-slot)
+           (aot-landing-label ,cleanup-label
+             (seq
+              ,@cleanups
+              (aot-landing-jump out))))))))
+   ((or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p tag branch)
+        (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+         tag branch))
     `(if ,(nth 1 branch)
          ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
            tag (nth 2 branch) cleanups landing-label value-slot)
