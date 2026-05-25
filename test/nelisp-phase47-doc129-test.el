@@ -8,6 +8,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'nelisp-elf-write)
+(require 'nelisp-cc-runtime)
 (require 'nelisp-phase47-compiler)
 
 (defun nelisp-phase47-doc129-test--linux-p ()
@@ -2084,6 +2085,24 @@ materialized closure temporary."
     (should (equal (plist-get descriptor :arglist) '(x)))
     (should (equal (plist-get descriptor :body) '((+ x cap))))
     (should (equal (plist-get descriptor :captures) '(cap)))))
+
+(ert-deftest nelisp-phase47-doc129/map-lambda-closure-module-plan ()
+  "Doc 129.7V: captured callback descriptors enter module init plans."
+  (let* ((descriptors
+          (nelisp-phase47-compiler--closure-descriptors
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (cap :type sexp)
+                 (xs :type sexp))
+              (mapcar (lambda (x) (+ x cap)) xs))))
+         (plan (nelisp-cc-runtime-aot-module-init-plan
+                nil nil nil descriptors)))
+    (should (equal (plist-get plan :closure-descriptors)
+                   descriptors))))
 
 (ert-deftest nelisp-phase47-doc129/sort-lambda-closure-capture ()
   "Doc 129.7U: `sort' predicates with captures materialize closures."

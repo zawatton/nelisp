@@ -2271,16 +2271,24 @@ exit points were emitted; call-points were missing."
              :slots (0)
              :param-count 1
              :rt-slot-count 0)))
+         (closure-descriptors
+          '((:name nelisp_aot_closure_0
+             :arglist (x)
+             :body ((+ x cap))
+             :captures (cap))))
          (plan
           (nelisp-cc-runtime-aot-module-init-plan
-           init-helpers custom-metadata root-descriptors)))
+           init-helpers custom-metadata root-descriptors
+           closure-descriptors)))
     (should (equal (plist-get plan :helper-order)
                    '(nelisp_aot_var_0_x nelisp_aot_custom_1_z)))
     (should (equal (plist-get plan :init-helpers) init-helpers))
     (should (equal (plist-get plan :custom-by-helper)
                    `((nelisp_aot_custom_1_z . ,(car custom-metadata)))))
     (should (equal (plist-get plan :root-descriptors)
-                   root-descriptors))))
+                   root-descriptors))
+    (should (equal (plist-get plan :closure-descriptors)
+                   closure-descriptors))))
 
 (ert-deftest nelisp-cc-runtime-aot-module-init-plan-rejects-orphan-custom ()
   "Doc 129.3H — custom metadata must point at an emitted init helper."
@@ -2294,7 +2302,18 @@ exit points were emitted; call-points were missing."
        :helper nelisp_aot_custom_1_z
        :standard 9
        :docstring "doc"
-       :options nil)))
+	      :options nil)))
+   :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-aot-module-init-plan-rejects-bad-closure ()
+  "Doc 129.7V — closure descriptors are validated in module plans."
+  (should-error
+   (nelisp-cc-runtime-aot-module-init-plan
+    nil nil nil
+    '((:name "not-a-symbol"
+       :arglist (x)
+       :body ((+ x cap))
+       :captures (cap))))
    :type 'nelisp-cc-runtime-error))
 
 (ert-deftest nelisp-cc-runtime-run-aot-module-init-plan ()
@@ -2470,10 +2489,40 @@ exit points were emitted; call-points were missing."
                            expected))
             (should (equal (nelisp-cc-runtime-aot-custom-table-snapshot)
                            (list expected)))
-            (should-not (plist-member
+	    (should-not (plist-member
                          (nelisp-cc-runtime-aot-custom-metadata 'z)
                          :out))))
       (nelisp-cc-runtime-clear-aot-custom-table))))
+
+(ert-deftest nelisp-cc-runtime-aot-closure-default-registration ()
+  "Doc 129.7V — module init registers AOT closure descriptors by default."
+  (let* ((closure-descriptor
+          '(:name nelisp_aot_closure_0
+            :arglist (x)
+            :body ((+ x cap))
+            :captures (cap)))
+         (plan (nelisp-cc-runtime-aot-module-init-plan
+                nil nil nil (list closure-descriptor)))
+         (context (list :out 'out-slot
+                        :mirror 'mirror
+                        :frames 'frames
+                        :scratch 'scratch
+                        :name-slot 'name-slot)))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-clear-aot-closure-descriptors)
+          (let ((result
+                 (nelisp-cc-runtime-run-aot-module-init-plan
+                  plan context
+                  (lambda (_helper _ctx _descriptor) :ok))))
+            (should (equal (plist-get result :closure-results)
+                           `((nelisp_aot_closure_0
+                              . ,closure-descriptor))))
+            (should (equal
+                     (nelisp-cc-runtime-aot-closure-descriptor
+                      'nelisp_aot_closure_0)
+                     closure-descriptor))))
+      (nelisp-cc-runtime-clear-aot-closure-descriptors))))
 
 (ert-deftest nelisp-cc-runtime-register-aot-custom-metadata-rejects-mismatch ()
   "Doc 129.3J — custom metadata must match the helper descriptor."

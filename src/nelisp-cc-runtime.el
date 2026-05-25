@@ -2576,10 +2576,8 @@ returns OUT."
   "Register one Doc 129.7 AOT heap-closure DESCRIPTOR.
 DESCRIPTOR is a plist with `:name', `:arglist', `:body', and
 `:captures'."
+  (nelisp-cc-runtime--validate-aot-closure-descriptor descriptor)
   (let ((name (plist-get descriptor :name)))
-    (unless (symbolp name)
-      (signal 'nelisp-cc-runtime-error
-              (list :aot-closure-descriptor-name-not-symbol descriptor)))
     (puthash name (copy-sequence descriptor)
              nelisp-cc-runtime--aot-closure-descriptors)
     descriptor))
@@ -2844,20 +2842,36 @@ defined.  Returns t on success."
               (list :bad-aot-root-slot slot :descriptor descriptor))))
   descriptor)
 
+(defun nelisp-cc-runtime--validate-aot-closure-descriptor (descriptor)
+  "Validate one Doc 129.7 AOT heap-closure DESCRIPTOR."
+  (unless (and (listp descriptor)
+               (symbolp (plist-get descriptor :name))
+               (listp (plist-get descriptor :arglist))
+               (listp (plist-get descriptor :body))
+               (listp (plist-get descriptor :captures))
+               (cl-every #'symbolp (plist-get descriptor :arglist))
+               (cl-every #'symbolp (plist-get descriptor :captures)))
+    (signal 'nelisp-cc-runtime-error
+            (list :bad-aot-closure-descriptor descriptor)))
+  descriptor)
+
 (defun nelisp-cc-runtime-aot-module-init-plan
-    (init-helpers &optional custom-metadata root-descriptors)
+    (init-helpers &optional custom-metadata root-descriptors closure-descriptors)
   "Build the Doc 99 module-init plan for a Phase 47 AOT module.
 INIT-HELPERS is the ordered list from
 `nelisp-phase47-compiler--init-helper-descriptors'.  CUSTOM-METADATA
 is the list from `nelisp-phase47-compiler--custom-metadata-descriptors'.
 ROOT-DESCRIPTORS is the list from
-`nelisp-phase47-compiler--gc-root-descriptors'.
+`nelisp-phase47-compiler--gc-root-descriptors'.  CLOSURE-DESCRIPTORS
+is the list from `nelisp-phase47-compiler--closure-descriptors'.
 
 The returned plist is pure metadata; it does not call native code.
 Doc 99's loader/dispatcher consumes `:helper-order' to run generated
 init helpers, `:custom-by-helper' to attach customization metadata to
 matching helpers, and `:root-descriptors' for call-boundary root
-registration."
+registration.  `:closure-descriptors' is registered by
+`nelisp-cc-runtime-run-aot-module-init-plan' before AOT closure
+materialization."
   (unless (listp init-helpers)
     (signal 'nelisp-cc-runtime-error
             (list :aot-init-helpers-not-list init-helpers)))
@@ -2867,6 +2881,9 @@ registration."
   (unless (listp root-descriptors)
     (signal 'nelisp-cc-runtime-error
             (list :aot-root-descriptors-not-list root-descriptors)))
+  (unless (listp closure-descriptors)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-closure-descriptors-not-list closure-descriptors)))
   (let* ((validated-init
           (mapcar #'nelisp-cc-runtime--validate-aot-init-helper-descriptor
                   init-helpers))
@@ -2879,14 +2896,18 @@ registration."
                   custom-metadata))
          (validated-roots
           (mapcar #'nelisp-cc-runtime--validate-aot-root-descriptor
-                  root-descriptors)))
+                  root-descriptors))
+         (validated-closures
+          (mapcar #'nelisp-cc-runtime--validate-aot-closure-descriptor
+                  closure-descriptors)))
     (list :init-helpers validated-init
           :helper-order helpers
           :custom-metadata validated-custom
           :custom-by-helper
           (mapcar (lambda (d) (cons (plist-get d :helper) d))
                   validated-custom)
-          :root-descriptors validated-roots)))
+          :root-descriptors validated-roots
+          :closure-descriptors validated-closures)))
 
 (defun nelisp-cc-runtime-clear-aot-custom-table ()
   "Clear the runtime AOT custom metadata table."
@@ -3080,7 +3101,7 @@ SCRATCH, and NAME-SLOT are forwarded to
    register-custom))
 
 (defun nelisp-cc-runtime-run-aot-module-init-plan
-    (plan context call-helper &optional register-custom)
+    (plan context call-helper &optional register-custom register-closure)
   "Run a Doc 129 AOT module-init PLAN through callback hooks.
 PLAN is the plist returned by `nelisp-cc-runtime-aot-module-init-plan'.
 CONTEXT must carry `:out', `:mirror', `:frames', `:scratch', and
@@ -3096,10 +3117,16 @@ called after a matching `defcustom' helper succeeds:
 
 When REGISTER-CUSTOM is nil, custom metadata is stored via
 `nelisp-cc-runtime-register-aot-custom-metadata'.
+REGISTER-CLOSURE, when non-nil, is called as
+
+  (REGISTER-CLOSURE CLOSURE-DESCRIPTOR CONTEXT)
+
+for each `:closure-descriptors' entry.  When nil, closure descriptors
+are stored via `nelisp-cc-runtime-register-aot-closure-descriptor'.
 
 The function returns a plist with ordered `:init-results' and
-`:custom-results'.  It does not resolve or call native code itself;
-that remains the Doc 99 loader's responsibility."
+`:custom-results' plus `:closure-results'.  It does not resolve or call
+native code itself; that remains the Doc 99 loader's responsibility."
   (unless (listp plan)
     (signal 'nelisp-cc-runtime-error
             (list :aot-module-init-plan-not-plist plan)))
@@ -3110,17 +3137,31 @@ that remains the Doc 99 loader's responsibility."
   (when (and register-custom (not (functionp register-custom)))
     (signal 'nelisp-cc-runtime-error
             (list :aot-register-custom-not-function register-custom)))
+  (when (and register-closure (not (functionp register-closure)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-register-closure-not-function register-closure)))
   (let* ((normalized-plan
           (nelisp-cc-runtime-aot-module-init-plan
            (plist-get plan :init-helpers)
            (plist-get plan :custom-metadata)
-          (plist-get plan :root-descriptors)))
+           (plist-get plan :root-descriptors)
+           (plist-get plan :closure-descriptors)))
          (custom-by-helper (plist-get normalized-plan :custom-by-helper))
          (register-custom-fn
           (or register-custom
               #'nelisp-cc-runtime-register-aot-custom-metadata))
+         (register-closure-fn
+          (or register-closure
+              (lambda (descriptor _context)
+                (nelisp-cc-runtime-register-aot-closure-descriptor
+                 descriptor))))
          (init-results nil)
-         (custom-results nil))
+         (custom-results nil)
+         (closure-results nil))
+    (dolist (descriptor (plist-get normalized-plan :closure-descriptors))
+      (push (cons (plist-get descriptor :name)
+                  (funcall register-closure-fn descriptor context))
+            closure-results))
     (dolist (descriptor (plist-get normalized-plan :init-helpers))
       (let* ((helper (plist-get descriptor :helper))
              (result (funcall call-helper helper context descriptor))
@@ -3132,7 +3173,8 @@ that remains the Doc 99 loader's responsibility."
                 custom-results))))
     (list :plan normalized-plan
           :init-results (nreverse init-results)
-          :custom-results (nreverse custom-results))))
+          :custom-results (nreverse custom-results)
+          :closure-results (nreverse closure-results))))
 
 (cl-defun nelisp-cc-runtime-compile-and-allocate
     (lambda-form &optional backend exec-args &key (entry-abi :host-int))
