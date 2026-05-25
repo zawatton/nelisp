@@ -2009,7 +2009,7 @@ exit points were emitted; call-points were missing."
   (should-error
    (nelisp-cc-runtime-aot-funcall1
     'mirror 'frames 'nelisp-doc129-missing-fn 1 (vector nil) 'scratch)
-   :type 'nelisp-cc-runtime-error))
+   :type 'nelisp-void-function))
 
 (ert-deftest nelisp-cc-runtime-aot-funcall2-host-dispatch ()
   "Doc 129.7B — funcall2 writes the two-arg dispatch result to OUT."
@@ -2052,7 +2052,7 @@ exit points were emitted; call-points were missing."
   (should-error
    (nelisp-cc-runtime-aot-funcall2
     'mirror 'frames 'nelisp-doc129-missing-fn 1 2 (vector nil))
-   :type 'nelisp-cc-runtime-error))
+   :type 'nelisp-void-function))
 
 (ert-deftest nelisp-cc-runtime-aot-funcall3-host-dispatch ()
   "Doc 129.7E — funcall3 writes the three-arg dispatch result to OUT."
@@ -2095,7 +2095,7 @@ exit points were emitted; call-points were missing."
   (should-error
    (nelisp-cc-runtime-aot-funcall3
     'mirror 'frames 'nelisp-doc129-missing-fn 1 2 3 (vector nil))
-   :type 'nelisp-cc-runtime-error))
+   :type 'nelisp-void-function))
 
 (ert-deftest nelisp-cc-runtime-aot-funcalln-host-dispatch ()
   "Doc 129.7H — funcalln builds an args list and dispatches."
@@ -2135,7 +2135,7 @@ exit points were emitted; call-points were missing."
   (should-error
    (nelisp-cc-runtime-aot-funcalln
     'mirror 'frames 'nelisp-doc129-missing-fn 1 (vector nil) 'scratch 1)
-   :type 'nelisp-cc-runtime-error))
+   :type 'nelisp-void-function))
 
 (ert-deftest nelisp-cc-runtime-aot-funcall-closure-dispatch ()
   "Doc 129.7T — funcall dispatches canonical heap closures."
@@ -2379,7 +2379,7 @@ exit points were emitted; call-points were missing."
   (should-error
    (nelisp-cc-runtime-aot-apply
     'mirror 'frames 'nelisp-doc129-missing-fn '(1 2) (vector nil) 'scratch)
-   :type 'nelisp-cc-runtime-error))
+   :type 'nelisp-void-function))
 
 (ert-deftest nelisp-cc-runtime-aot-applyn-host-dispatch ()
   "Doc 129.7I — applyn splices fixed args before the list tail."

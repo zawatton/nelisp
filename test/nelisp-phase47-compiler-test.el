@@ -735,10 +735,11 @@ Caller is responsible for `delete-file' on cleanup."
     (should (eq (car (cadr clauses)) 'always))))
 
 (ert-deftest nelisp-phase47-compiler/parse-cond-empty-errors ()
-  "`(cond)' with no clauses signals."
-  (should-error
-   (nelisp-phase47-compiler--parse '(exit (cond)))
-   :type 'nelisp-phase47-compiler-error))
+  "`(cond)' with no clauses folds to nil/0."
+  (let* ((ir (nelisp-phase47-compiler--parse '(exit (cond))))
+         (vnode (nelisp-phase47-compiler--ir-get ir :value)))
+    (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm))
+    (should (= (nelisp-phase47-compiler--ir-get vnode :value) 0))))
 
 (ert-deftest nelisp-phase47-compiler/parse-logic-and-or ()
   "`(and 1 2)' and `(or 0 5)' both parse to `:kind logic' nodes."
@@ -755,13 +756,15 @@ Caller is responsible for `delete-file' on cleanup."
                 'or))))
 
 (ert-deftest nelisp-phase47-compiler/parse-logic-empty-errors ()
-  "`(and)' / `(or)' with no operands signal."
-  (should-error
-   (nelisp-phase47-compiler--parse '(exit (and)))
-   :type 'nelisp-phase47-compiler-error)
-  (should-error
-   (nelisp-phase47-compiler--parse '(exit (or)))
-   :type 'nelisp-phase47-compiler-error))
+  "`(and)' / `(or)' with no operands fold to their Elisp identities."
+  (let* ((and-ir (nelisp-phase47-compiler--parse '(exit (and))))
+         (or-ir (nelisp-phase47-compiler--parse '(exit (or))))
+         (and-v (nelisp-phase47-compiler--ir-get and-ir :value))
+         (or-v (nelisp-phase47-compiler--ir-get or-ir :value)))
+    (should (eq (nelisp-phase47-compiler--ir-kind and-v) 'imm))
+    (should (= (nelisp-phase47-compiler--ir-get and-v :value) 1))
+    (should (eq (nelisp-phase47-compiler--ir-kind or-v) 'imm))
+    (should (= (nelisp-phase47-compiler--ir-get or-v :value) 0))))
 
 (ert-deftest nelisp-phase47-compiler/parse-control-flow-stable-ids ()
   "Two compiles in a row reset the label counter (= deterministic)."
@@ -1127,13 +1130,16 @@ Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-compiler/object-mode-rejects-mixed-seq ()
-  "`(seq (defun foo () 42) (exit 0))' is rejected — seq must be all defuns."
+  "`seq' object mode accepts mixed top-level forms after Doc 129 coverage."
   (let ((path (make-temp-file "nelisp-doc99-obj-rej-mix-" nil ".o")))
     (unwind-protect
-        (should-error
-         (nelisp-phase47-compile-to-object
-          '(seq (defun foo () 42) (exit 0)) path)
-         :type 'nelisp-phase47-compiler-error)
+        (progn
+          (should (equal
+                   (nelisp-phase47-compile-to-object
+                    '(seq (defun foo () 42) (exit 0)) path)
+                   path))
+          (should (file-exists-p path))
+          (should (> (file-attribute-size (file-attributes path)) 0)))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-compiler/object-mode-aarch64-add2 ()

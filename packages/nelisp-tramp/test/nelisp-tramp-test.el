@@ -342,13 +342,14 @@ crosses both kinds returns the right answer."
   (nelisp-tramp-test--full-self-install)
   (nelisp-tramp-test--install-then-compile
    '(defun double (n) (+ n n)))
-  ;; Uncompilable body: `and' is in the unimplemented set.
+  ;; `and' is bytecode-compilable now, so the mixed path is represented by
+  ;; BCL callees plus host/runtime dispatch rather than an interpreter closure.
   (let ((nelisp-bc-auto-compile t))
     (nelisp-tramp-eval '(defun nzp (n) (and (numberp n) (not (= n 0))))))
   (nelisp-tramp-test--install-then-compile
    '(defun maybe-double (n) (if (nzp n) (double n) 0)))
   (should (nelisp-bcl-p     (gethash 'double nelisp--functions)))
-  (should (nelisp--closure-p (gethash 'nzp nelisp--functions)))
+  (should (nelisp-bcl-p     (gethash 'nzp nelisp--functions)))
   (should (nelisp-bcl-p     (gethash 'maybe-double nelisp--functions)))
   (should (= (nelisp-tramp-eval '(maybe-double 5)) 10))
   (should (= (nelisp-tramp-eval '(maybe-double 0)) 0)))

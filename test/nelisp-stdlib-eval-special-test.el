@@ -148,7 +148,7 @@
 (ert-deftest nelisp-eval-special/defconst-shape ()
   (nelisp-stdlib-eval-special-test--skip-unless-built)
   (should (string= (nelisp-stdlib-eval-special-test--expand "(defconst foo 5)")
-                   "(progn (set 'foo 5) 'foo)")))
+                   "(progn (set 'foo 5) (nelisp--env-globals-set-constant 'foo t) 'foo)")))
 
 (ert-deftest nelisp-eval-special/defcustom-aliases-defvar ()
   (nelisp-stdlib-eval-special-test--skip-unless-built)

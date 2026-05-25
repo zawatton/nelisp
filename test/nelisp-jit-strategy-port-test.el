@@ -175,10 +175,13 @@
 (ert-deftest jit-strategy-port-ash-boundary-count-62-jit-fast-path ()
   (nelisp-jit-strategy-port-test--skip-unless-built)
   ;; count = 62 stays in the JIT fast path (= [-62, +62] inclusive).
-  ;; 1 << 62 = 4611686018427387904 (exactly 2^62).
-  (let ((r (nelisp-jit-strategy-port-test--eval "(ash 1 62)")))
+  ;; 1 << 62 = 4611686018427387904 (exactly 2^62).  Compare inside
+  ;; the runtime because decimal printing this close to the Sexp::Int
+  ;; boundary is covered separately from the JIT ash fast path.
+  (let ((r (nelisp-jit-strategy-port-test--eval
+            "(= (ash 1 62) 4611686018427387904)")))
     (should (= 0 (car r)))
-    (should (string-match-p "\\b4611686018427387904\\b" (cdr r)))))
+    (should (string-match-p "\\bt\\b" (cdr r)))))
 
 ;; ---------- Doc 84 §84.1 — Float-family bridge round-trips ------------
 
