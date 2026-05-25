@@ -1433,7 +1433,8 @@ macros do not leak into the host Emacs session."
                   (list :lambda-lift-param-shape params))))))
     (nreverse vars)))
 
-(defun nelisp-phase47-compiler--lambda-free-vars (form bound)
+(defun nelisp-phase47-compiler--lambda-free-vars
+    (form bound &optional allow-captured-setq)
   "Return source symbols used free in FORM relative to BOUND."
   (let (free)
     (cl-labels
@@ -1484,7 +1485,8 @@ macros do not leak into the host Emacs session."
              (let ((pairs (cdr node)))
                (while pairs
                  (when (and (symbolp (car pairs))
-                            (not (memq (car pairs) bound*)))
+                            (not (memq (car pairs) bound*))
+                            (not allow-captured-setq))
                    (signal 'nelisp-phase47-compiler-error
                            (list :lambda-lift-captured-setq-pending
                                  (car pairs))))
@@ -1503,13 +1505,25 @@ macros do not leak into the host Emacs session."
       (walk form bound))
     (nreverse free)))
 
-(defun nelisp-phase47-compiler--lambda-captures (lambda-form)
+(defun nelisp-phase47-compiler--lambda-captures
+    (lambda-form &optional allow-captured-setq)
   "Return lexical capture candidates for literal LAMBDA-FORM."
   (let* ((params (nth 1 lambda-form))
          (bound (nelisp-phase47-compiler--lambda-param-vars params))
          (body (cddr lambda-form)))
     (nelisp-phase47-compiler--lambda-free-vars
-     (cons 'progn body) bound)))
+     (cons 'progn body) bound allow-captured-setq)))
+
+(defun nelisp-phase47-compiler--lambda-captured-setq-p (lambda-form)
+  "Return non-nil when LAMBDA-FORM mutates a captured variable."
+  (condition-case err
+      (progn
+        (nelisp-phase47-compiler--lambda-captures lambda-form)
+        nil)
+    (nelisp-phase47-compiler-error
+     (if (eq (car-safe (cdr err)) :lambda-lift-captured-setq-pending)
+         t
+       (signal (car err) (cdr err))))))
 
 (defun nelisp-phase47-compiler--lambda-lift-call (lambda-form arg-forms)
   "Return a direct call to a synthetic defun for LAMBDA-FORM and ARG-FORMS."
@@ -1562,7 +1576,8 @@ macros do not leak into the host Emacs session."
             (list :lambda-lift-param-shape lambda-form)))
   (let* ((closure-name (nelisp-phase47-compiler--closure-lift-name))
          (params (nth 1 lambda-form))
-         (captures (nelisp-phase47-compiler--lambda-captures lambda-form)))
+         (captures (nelisp-phase47-compiler--lambda-captures
+                    lambda-form t)))
     (push (list :name closure-name
                 :arglist params
                 :body (cddr lambda-form)
@@ -1573,17 +1588,21 @@ macros do not leak into the host Emacs session."
 (defun nelisp-phase47-compiler--preprocess-funcall-lambda (sexp)
   "Lambda-lift a literal lambda designator in `(funcall ...)'.
 Captured lexical values are threaded into the synthetic direct call as
-leading arguments.  Higher-order designator callbacks still reject
-captures because the builtin callback ABI cannot pass those leading
-arguments without heap closure allocation."
+leading arguments.  Captured mutation uses the heap-closure dispatcher
+path instead of by-value lambda lifting."
   (let ((lambda-form (nelisp-phase47-compiler--lambda-literal-form
                       (nth 1 sexp))))
     (if (not lambda-form)
         (cons 'funcall
               (mapcar #'nelisp-phase47-compiler--preprocess-source
                       (cdr sexp)))
-      (nelisp-phase47-compiler--lambda-lift-call
-       lambda-form (nthcdr 2 sexp)))))
+      (if (nelisp-phase47-compiler--lambda-captured-setq-p lambda-form)
+          `(funcall
+            ,(nelisp-phase47-compiler--lambda-closure-value lambda-form)
+            ,@(mapcar #'nelisp-phase47-compiler--preprocess-source
+                      (nthcdr 2 sexp)))
+        (nelisp-phase47-compiler--lambda-lift-call
+         lambda-form (nthcdr 2 sexp))))))
 
 (defun nelisp-phase47-compiler--preprocess-builtinn-lambda (sexp)
   "Lambda-lift a literal function-designator argument in builtin SEXP."
@@ -2267,16 +2286,40 @@ path and must already be materialized as boxed Sexp values."
     (fn-form fenv sexp)
   "Return plist describing lowered FN-FORM, or nil for dynamic values.
 For quoted/function symbol designators, materialize a `Sexp::Symbol' in
-the caller-owned name slot before dispatching through the AOT bridge."
-  (let ((sym (nelisp-phase47-compiler--aot-function-designator-symbol
-              fn-form)))
-    (when sym
-      (let ((name-slot
-             (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)))
-        (list :fn-expr name-slot
-              :prefix `((sexp-write-symbol-lit
-                         ,name-slot
-                         ,(symbol-name sym))))))))
+the caller-owned name slot before dispatching through the AOT bridge.
+For internal `aot-closure-lambda' designators, materialize a canonical
+heap closure into `out' before dispatch."
+  (cond
+   ((nelisp-phase47-compiler--aot-function-designator-symbol fn-form)
+    (let* ((sym (nelisp-phase47-compiler--aot-function-designator-symbol
+                 fn-form))
+           (name-slot
+            (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)))
+      (list :fn-expr name-slot
+            :prefix `((sexp-write-symbol-lit
+                       ,name-slot
+                       ,(symbol-name sym))))))
+   ((and (consp fn-form)
+         (eq (car fn-form) 'aot-closure-lambda)
+         (symbolp (cadr fn-form)))
+    (let* ((boundary
+            (nelisp-phase47-compiler--aot-closure-boundary-symbols
+             fenv sexp))
+           (out (plist-get boundary :out))
+           (mirror (plist-get boundary :mirror))
+           (frames (plist-get boundary :frames))
+           (scratch (plist-get boundary :scratch))
+           (descriptor (cadr fn-form))
+           (captures (cddr fn-form)))
+      (list :fn-expr out
+            :prefix `((sexp-write-symbol-lit
+                       ,scratch
+                       ,(symbol-name descriptor))
+                      (extern-call nelisp_aot_make_closure
+                                   ,mirror ,frames ,scratch
+                                   ,(length captures)
+                                   ,out ,scratch
+                                   ,@captures)))))))
 
 (defun nelisp-phase47-compiler--aot-builtin1-boundary-symbols (fenv sexp)
   "Return boundary symbols for direct builtin1 lowering in FENV.

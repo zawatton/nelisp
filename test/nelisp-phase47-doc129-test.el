@@ -3113,8 +3113,56 @@ materialized closure temporary."
                            (nelisp-phase47-compiler--ir-get call-node :args))
                    '(cap x)))))
 
-(ert-deftest nelisp-phase47-doc129/lambda-lift-captured-setq-still-pending ()
-  "Doc 129.7R: captured mutation still waits for heap closure cells."
+(ert-deftest nelisp-phase47-doc129/parse-funcall-lambda-captured-setq-closure ()
+  "Doc 129.7Y: captured mutation funcalls materialize heap closures."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (cap :type sexp)
+                    (x :type sexp))
+                 (funcall (lambda (y) (setq cap y)) x))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (make-closure (nth 1 forms))
+         (call-node (nth 2 forms))
+         (make-args (nelisp-phase47-compiler--ir-get make-closure :args))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get make-closure :name)
+                'nelisp_aot_make_closure))
+    (should (= (nelisp-phase47-compiler--ir-get (nth 3 make-args) :value)
+               1))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 make-args) :var)
+                'cap))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_funcall1))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 call-args) :var)
+                'out))))
+
+(ert-deftest nelisp-phase47-doc129/funcall-lambda-captured-setq-descriptor ()
+  "Doc 129.7Y: captured mutation closures expose descriptors."
+  (let* ((descriptors
+          (nelisp-phase47-compiler--closure-descriptors
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp)
+                 (x :type sexp))
+              (funcall (lambda (y) (setq cap y)) x))))
+         (descriptor (car descriptors)))
+    (should (= (length descriptors) 1))
+    (should (eq (plist-get descriptor :name) 'nelisp_aot_closure_0))
+    (should (equal (plist-get descriptor :arglist) '(y)))
+    (should (equal (plist-get descriptor :body) '((setq cap y))))
+    (should (equal (plist-get descriptor :captures) '(cap)))))
+
+(ert-deftest nelisp-phase47-doc129/funcall-lambda-captured-setq-requires-boundary ()
+  "Doc 129.7Y: captured mutation closure lowering needs boundary slots."
   (should-error
    (nelisp-phase47-compiler--parse
     '(defun caller (cap x)
@@ -3187,6 +3235,31 @@ materialized closure temporary."
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "caller" out))
             (should (string-match-p "nelisp_aot_lambda_0" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-funcall-lambda-captured-setq ()
+  "Doc 129.7Y: object output exposes captured mutation closure dispatch."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-lambda-setq-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp)
+                 (x :type sexp))
+              (funcall (lambda (y) (setq cap y)) x))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "caller" out))
+            (should (string-match-p "nelisp_aot_make_closure" out))
+            (should (string-match-p "nelisp_aot_funcall1" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-direct-lambda-lift ()
