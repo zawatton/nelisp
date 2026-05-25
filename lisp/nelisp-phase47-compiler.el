@@ -4960,6 +4960,60 @@ source form."
              :handled-form handled-form)))
    handlers))
 
+(defun nelisp-phase47-compiler--aot-direct-signal-form (sexp)
+  "Return SEXP when it is a direct signal form."
+  (when (and (consp sexp)
+             (eq (car sexp) 'signal)
+             (= (length sexp) 3))
+    sexp))
+
+(defun nelisp-phase47-compiler--aot-special-let-direct-nonlocal-form
+    (sexp)
+  "Return SEXP when a special let can cleanup-route it directly."
+  (or (nelisp-phase47-compiler--aot-direct-throw-form sexp)
+      (nelisp-phase47-compiler--aot-direct-signal-form sexp)))
+
+(defun nelisp-phase47-compiler--aot-special-let-direct-nonlocal-cleanup-form
+    (nonlocal-form pop-forms &optional lexical-bindings)
+  "Return NONLOCAL-FORM with POP-FORMS run after argument capture."
+  (let ((tag-slot (nelisp-phase47-compiler--gensym
+                   "aot-special-nonlocal-tag"))
+        (value-slot (nelisp-phase47-compiler--gensym
+                     "aot-special-nonlocal-value")))
+    (let ((form
+           (pcase (car nonlocal-form)
+             ('throw
+              (if (nelisp-phase47-compiler--aot-quoted-symbol
+                   (nth 1 nonlocal-form))
+                  `(let (((,value-slot :type sexp) ,(nth 2 nonlocal-form)))
+                     (seq
+                      ,@pop-forms
+                      (throw ,(nth 1 nonlocal-form) ,value-slot)))
+                `(let (((,tag-slot :type sexp) ,(nth 1 nonlocal-form))
+                       ((,value-slot :type sexp) ,(nth 2 nonlocal-form)))
+                   (seq
+                    ,@pop-forms
+                    (throw ,tag-slot ,value-slot)))))
+             ('signal
+              (if (nelisp-phase47-compiler--aot-quoted-symbol
+                   (nth 1 nonlocal-form))
+                  `(let (((,value-slot :type sexp) ,(nth 2 nonlocal-form)))
+                     (seq
+                      ,@pop-forms
+                      (signal ,(nth 1 nonlocal-form) ,value-slot)))
+                `(let (((,tag-slot :type sexp) ,(nth 1 nonlocal-form))
+                       ((,value-slot :type sexp) ,(nth 2 nonlocal-form)))
+                   (seq
+                    ,@pop-forms
+                    (signal ,tag-slot ,value-slot)))))
+             (_
+              (signal 'nelisp-phase47-compiler-error
+                      (list :aot-special-let-nonlocal-shape
+                            nonlocal-form))))))
+      (if lexical-bindings
+          `(let ,lexical-bindings ,form)
+        form))))
+
 (defun nelisp-phase47-compiler--parse-aot-special-let-normal-exit
     (var val-sexp body-sexp env fenv defuns source-form)
   "Lower one source-level special `let' binding for the normal exit path.
@@ -4967,13 +5021,13 @@ VAR is a top-level special variable.  VAL-SEXP is evaluated before the
 push bridge, BODY-SEXP runs while the value cell is rebound, then the
 saved BODY value is returned after the pop bridge.  Non-local exits
 through BODY remain pending on the 129.8 landing-pad path."
-  (let ((direct-throw
-         (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+  (let ((direct-nonlocal
+         (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-form
           body-sexp))
         (conditional-throw
          (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
-    (when (and (not direct-throw)
+    (when (and (not direct-nonlocal)
                (not conditional-throw)
                (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                 body-sexp))
@@ -4986,13 +5040,12 @@ through BODY remain pending on the 129.8 landing-pad path."
                        "aot-special-value")))
       (nelisp-phase47-compiler--parse-value
        (cond
-        (direct-throw
+        (direct-nonlocal
          `(seq
            (aot-push-special ',var ,val-sexp)
-           (let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
-             (seq
-              (aot-pop-special 0)
-              (throw ,(nth 1 direct-throw) ,value-slot)))))
+           ,(nelisp-phase47-compiler--aot-special-let-direct-nonlocal-cleanup-form
+             direct-nonlocal
+             '((aot-pop-special 0)))))
         (conditional-throw
          (cl-labels
              ((branch-form
@@ -5038,7 +5091,7 @@ fresh Sexp temp slot before any special value cell is rebound.  This
 preserves ordinary parallel `let' initializer semantics for the
 all-special subset."
   (let ((direct-throw
-         (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+         (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-form
           body-sexp))
         (conditional-throw
          (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
@@ -5071,10 +5124,8 @@ all-special subset."
            ,@(nreverse push-forms)
            ,(cond
              (direct-throw
-              `(let (((,body-slot :type sexp) ,(nth 2 direct-throw)))
-                 (seq
-                  ,@pop-forms
-                  (throw ,(nth 1 direct-throw) ,body-slot))))
+              (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-cleanup-form
+               direct-throw pop-forms))
              (conditional-throw
               (cl-labels
                   ((branch-form
@@ -5118,7 +5169,7 @@ alias becomes visible.  BODY then runs with all special and lexical
 bindings in scope, and special bindings are popped before returning the
 saved BODY value."
   (let ((direct-throw
-         (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+         (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-form
           body-sexp))
         (conditional-throw
          (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
@@ -5156,20 +5207,17 @@ saved BODY value."
                 (push '(aot-pop-special 0) pop-forms))
             (push `(,var-form ,temp) lexical-bindings))))
       (let* ((lexical-bindings* (nreverse lexical-bindings))
-             (body-value (if direct-throw (nth 2 direct-throw) body-sexp))
              (scoped-body (if lexical-bindings*
-                              `(let ,lexical-bindings* ,body-value)
-                            body-value)))
+                              `(let ,lexical-bindings* ,body-sexp)
+                            body-sexp)))
         (nelisp-phase47-compiler--parse-value
          `(let ,(nreverse temp-bindings)
             (seq
              ,@(nreverse push-forms)
              ,(cond
                (direct-throw
-                `(let (((,body-slot :type sexp) ,scoped-body))
-                   (seq
-                    ,@pop-forms
-                    (throw ,(nth 1 direct-throw) ,body-slot))))
+                (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-cleanup-form
+                 direct-throw pop-forms lexical-bindings*))
                (conditional-throw
                 (cl-labels
                     ((branch-form

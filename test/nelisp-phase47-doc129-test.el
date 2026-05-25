@@ -1218,6 +1218,46 @@ materialized closure temporary."
     (should (member 'nelisp_aot_pop_special externs))
     (should (member 'nelisp_aot_throw externs))))
 
+(ert-deftest nelisp-phase47-doc129/parse-source-special-let-dynamic-throw ()
+  "Doc 129.8AV: special `let' dynamic throw captures args before pop."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_special
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (tag :type sexp)
+                     (value :type sexp))
+                  (let ((dyn value))
+                    (throw tag value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_special externs))
+    (should (member 'nelisp_aot_pop_special externs))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/parse-source-special-let-dynamic-signal ()
+  "Doc 129.8AV: special `let' dynamic signal pops before signalling."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_special
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (tag :type sexp)
+                     (value :type sexp))
+                  (let ((dyn value))
+                    (signal tag value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_special externs))
+    (should (member 'nelisp_aot_pop_special externs))
+    (should (member 'nelisp_aot_signal externs))))
+
 (ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-direct-throw ()
   "Doc 129.4G: multi-special `let' direct throw pops all bindings."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -1240,6 +1280,29 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_pop_special externs) 2))
     (should (member 'nelisp_aot_throw externs))))
 
+(ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-dynamic-signal ()
+  "Doc 129.8AV: multi-special `let' dynamic signal pops all bindings."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn-a)
+                (defvar dyn-b)
+                (defun bind_special
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (tag :type sexp)
+                     (value-a :type sexp)
+                     (value-b :type sexp))
+                  (let ((dyn-a value-a)
+                        (dyn-b value-b))
+                    (signal tag value-b))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_special externs) 2))
+    (should (= (cl-count 'nelisp_aot_pop_special externs) 2))
+    (should (member 'nelisp_aot_signal externs))))
+
 (ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-direct-throw ()
   "Doc 129.4G: mixed special/lexical `let' direct throw preserves lexical value."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -1256,6 +1319,28 @@ materialized closure temporary."
                   (let (((a :type sexp) value-a)
                         (dyn value-b))
                     (throw 'tag a))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_special externs) 1))
+    (should (= (cl-count 'nelisp_aot_pop_special externs) 1))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-dynamic-throw ()
+  "Doc 129.8AV: mixed special `let' dynamic throw preserves lexical scope."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_mixed
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (tag :type sexp)
+                     (value-a :type sexp)
+                     (value-b :type sexp))
+                  (let (((a :type sexp) value-a)
+                        (dyn value-b))
+                    (throw tag a))))))
          (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_special externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 1))
@@ -1522,6 +1607,34 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_push_special" out))
             (should (string-match-p "nelisp_aot_pop_special" out))
             (should (string-match-p "nelisp_aot_throw" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-source-special-let-dynamic-signal ()
+  "Doc 129.8AV: object output exposes special cleanup before signal."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-special-let-signal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defvar dyn)
+             (defun bind_special
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name-slot :type sexp)
+                  (tag :type sexp)
+                  (value :type sexp))
+               (let ((dyn value))
+                 (signal tag value))))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_push_special" out))
+            (should (string-match-p "nelisp_aot_pop_special" out))
+            (should (string-match-p "nelisp_aot_signal" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-source-special-let-conditional-throw ()
