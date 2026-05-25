@@ -1483,7 +1483,15 @@ exit points were emitted; call-points were missing."
     (should (equal seen '(b a)))
     (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'mapconcat 3 out 'scratch #'identity '("a" "b") ",")
-    (should (equal (aref out 0) "a,b"))))
+    (should (equal (aref out 0) "a,b"))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'mapcan 2 out 'scratch
+     (lambda (x) (list x x))
+     '(a b))
+    (should (equal (aref out 0) '(a a b b)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'sort 2 out 'scratch '(3 1 2) #'<)
+    (should (equal (aref out 0) '(1 2 3)))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-validates-boundary ()
   "Doc 129.6F — builtin calln rejects malformed ABI arguments."

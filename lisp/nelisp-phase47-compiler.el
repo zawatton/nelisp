@@ -1947,7 +1947,7 @@ defun is visible in the current compile unit.")
     string-match string-match-p
     substring string-prefix-p string-suffix-p
     replace-regexp-in-string
-    mapcar mapc mapconcat
+    mapcar mapc mapconcat mapcan
     sort)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
 These names are direct-call candidates only when no same-named Phase 47
@@ -1957,6 +1957,7 @@ defun is visible in the current compile unit.")
   '((mapcar . 0)
     (mapc . 0)
     (mapconcat . 0)
+    (mapcan . 0)
     (sort . 1))
   "Function-designator argument positions for calln builtin lowering.
 The index is zero-based within the source call's ordinary argument

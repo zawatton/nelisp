@@ -1591,6 +1591,7 @@
   (dolist (case '((mapcar 2 (mapcar fn xs))
                   (mapc 2 (mapc fn xs))
                   (mapconcat 3 (mapconcat fn xs sep))
+                  (mapcan 2 (mapcan fn xs))
                   (sort 2 (sort xs fn))))
     (pcase-let ((`(,builtin ,argc ,form) case))
       (let* ((ir (nelisp-phase47-compiler--parse
@@ -1622,7 +1623,8 @@
   "Doc 129.6J: map builtins materialize quoted/function designators."
   (dolist (form '((mapcar #'foo xs)
                   (mapc 'foo xs)
-                  (mapconcat #'foo xs sep)))
+                  (mapconcat #'foo xs sep)
+                  (mapcan #'foo xs)))
     (let* ((ir (nelisp-phase47-compiler--parse
                 `(defun call_builtin
                      ((out :type sexp)
@@ -1799,6 +1801,30 @@
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_mapcar" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-mapcan-designator ()
+  "Doc 129.6L: object output exposes mapcan designator materialization."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-mapcan-designator-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_mapcan
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (xs :type sexp))
+              (mapcan #'foo xs))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_mapcan" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
