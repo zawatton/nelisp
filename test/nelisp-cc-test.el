@@ -1489,6 +1489,15 @@ exit points were emitted; call-points were missing."
      (lambda (x) (list x x))
      '(a b))
     (should (equal (aref out 0) '(a a b b)))
+    (let ((table (make-hash-table :test 'eq))
+          (seen nil))
+      (puthash 'k 9 table)
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'maphash 2 out 'scratch
+       (lambda (k v) (push (cons k v) seen))
+       table)
+      (should (null (aref out 0)))
+      (should (equal seen '((k . 9)))))
     (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'sort 2 out 'scratch '(3 1 2) #'<)
     (should (equal (aref out 0) '(1 2 3)))))

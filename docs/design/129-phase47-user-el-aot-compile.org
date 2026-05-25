@@ -34,6 +34,7 @@
   Stage 129.6J map builtin function-designator materialization,
   Stage 129.6K sort predicate function-designator materialization,
   Stage 129.6L mapcan function-designator materialization,
+  Stage 129.6M maphash function-designator materialization,
   Stage 129.7A one-argument =funcall= dispatcher bridge,
   Stage 129.7B two-argument =funcall=
   dispatcher bridge, Stage 129.7C =apply= dispatcher bridge, Stage
@@ -47,6 +48,7 @@
   =funcall= lifting, Stage 129.7L direct literal lambda lifting,
   Stage 129.7M map-family literal lambda lifting,
   Stage 129.7N indexed higher-order builtin lambda lifting,
+  Stage 129.7O maphash literal lambda lifting,
   Stage 129.8A runtime handler-stack substrate, Stage
   129.8B =throw= / =signal=
   bridge lowering, Stage 129.8C handler-push bridge lowering,
@@ -308,6 +310,10 @@
   table, with the same first-argument quoted/function symbol
   materialization as =mapcar= / =mapc= / =mapconcat=.  Capturing
   lambdas remain 129.7 heap-closure work.
+- *129.6M MVP*: =maphash= now joins the higher-order direct calln
+  table, again using first-argument quoted/function symbol
+  materialization.  Runtime dispatch flows through the same
+  =nelisp_aot_builtin_calln= bridge and host/NeLisp function lookup.
 - *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
   =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
@@ -394,6 +400,10 @@
   the path to =mapcan= first-argument callbacks and =sort= predicate
   callbacks.  Captured lexical variables still wait for heap closure
   allocation/capture.
+- *129.7O MVP*: =maphash= callbacks now participate in the same
+  non-capturing literal lambda lift, so =(maphash (lambda (k v) ...)
+  table)= becomes a synthetic top-level defun plus quoted/function
+  designator materialization.  Captures remain heap-closure work.
 - *129.8A MVP*: =nelisp-cc-runtime.el= now owns an AOT handler-stack
   simulator for =catch= / =condition-case= / =unwind-protect=.  The
   runtime can push/pop catch, condition, and unwind handlers; =throw=
@@ -1610,6 +1620,32 @@ literal lambdas; bodies that refer to outer lexical bindings continue
 to fail under the existing free-symbol checks until heap closures are
 implemented.
 
+*** §1.E.3.7 Shipped MVP: maphash literal lambda lifting
+
+Stage 129.7O extends the same non-capturing literal lambda lift to the
+=maphash= callback position added in 129.6M:
+
+#+begin_src elisp
+(defun maphash-caller
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (table :type sexp))
+  (maphash (lambda (k v) k) table))
+#+end_src
+
+The frontend rewrites it to a synthetic sibling defun plus a
+quoted/function designator:
+
+#+begin_src elisp
+(seq
+ (defun nelisp_aot_lambda_0 (k v) k)
+ (defun maphash-caller (...)
+   (maphash #'nelisp_aot_lambda_0 table)))
+#+end_src
+
+As with 129.7M/N, this deliberately covers non-capturing callbacks
+only.  Captured lexical variables remain blocked on heap closure
+allocation/capture.
+
 *** §1.E.4 Shipped MVP: quoted function designators
 
 Stage 129.7D lets the compiler handle symbol function designators
@@ -2355,6 +2391,33 @@ Runtime dispatch uses the same =nelisp_aot_builtin_calln= bridge as
 the rest of 129.6.  This widens higher-order builtin coverage without
 claiming heap closure capture.
 
+*** §1.H.12 Shipped MVP: maphash function-designator materialization
+
+Stage 129.6M adds the hash-table iterator to the same higher-order
+calln path:
+
+#+begin_src elisp
+(maphash fn table)
+(maphash #'foo table)
+#+end_src
+
+As with the map-family builtins, the first source argument is the
+function designator.  Quoted/function symbols are materialized through
+the caller-owned =scratch= slot before the shared calln dispatcher:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name-slot "maphash")
+ (sexp-write-symbol-lit scratch "foo")
+ (extern-call nelisp_aot_builtin_calln
+              mirror frames name-slot 2 out scratch scratch table)
+ out)
+#+end_src
+
+The runtime bridge dispatches to host/NeLisp =maphash= through the
+same =nelisp_aot_builtin_calln= ABI.  This is still callback
+materialization, not heap closure capture.
+
 * §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
 
 Each grammar group ships as new elisp in =nelisp-phase47-compiler.el=
@@ -2371,8 +2434,8 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering SHIPPED 2026-05-25; non-local cleanup pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
-| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization SHIPPED 2026-05-25; exported C ABI and broader higher-order builtin coverage pending |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting SHIPPED 2026-05-25; heap closure allocation/capture pending |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization SHIPPED 2026-05-25; exported C ABI and broader higher-order builtin coverage pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting SHIPPED 2026-05-25; heap closure allocation/capture pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
