@@ -1814,7 +1814,11 @@ the whole program."
    ((eq (car sexp) 'function) sexp)
    ((eq (car sexp) 'funcall)
     (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
-   ((memq (car sexp) '(mapcar mapc mapconcat mapcan maphash sort))
+   ((memq (car sexp) '(mapcar mapc mapconcat mapcan maphash
+                       seq-map seq-do seq-filter seq-remove seq-find
+                       seq-some seq-every-p seq-count seq-reduce
+                       seq-mapcat
+                       sort))
     (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
    ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
     (nelisp-phase47-compiler--lambda-lift-call
@@ -1959,6 +1963,8 @@ defun is visible in the current compile unit.")
     substring string-prefix-p string-suffix-p
     replace-regexp-in-string
     mapcar mapc mapconcat mapcan maphash
+    seq-map seq-do seq-filter seq-remove seq-find
+    seq-some seq-every-p seq-count seq-reduce seq-mapcat
     sort)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
 These names are direct-call candidates only when no same-named Phase 47
@@ -1970,6 +1976,16 @@ defun is visible in the current compile unit.")
     (mapconcat . 0)
     (mapcan . 0)
     (maphash . 0)
+    (seq-map . 0)
+    (seq-do . 0)
+    (seq-filter . 0)
+    (seq-remove . 0)
+    (seq-find . 0)
+    (seq-some . 0)
+    (seq-every-p . 0)
+    (seq-count . 0)
+    (seq-reduce . 0)
+    (seq-mapcat . 0)
     (sort . 1))
   "Function-designator argument positions for calln builtin lowering.
 The index is zero-based within the source call's ordinary argument

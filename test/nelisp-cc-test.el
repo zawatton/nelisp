@@ -34,6 +34,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'seq)
 (require 'nelisp-cc)
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
@@ -1498,6 +1499,20 @@ exit points were emitted; call-points were missing."
        table)
       (should (null (aref out 0)))
       (should (equal seen '((k . 9)))))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-filter 2 out 'scratch #'numberp '(a 1 b 2))
+    (should (equal (aref out 0) '(1 2)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-reduce 3 out 'scratch
+     (lambda (acc x) (+ acc x)) '(1 2 3) 10)
+    (should (= (aref out 0) 16))
+    (let ((seen nil))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-do 2 out 'scratch
+       (lambda (x) (push x seen))
+       '(a b))
+      (should (equal (aref out 0) '(a b)))
+      (should (equal seen '(b a))))
     (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'sort 2 out 'scratch '(3 1 2) #'<)
     (should (equal (aref out 0) '(1 2 3)))))

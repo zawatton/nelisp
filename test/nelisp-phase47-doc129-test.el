@@ -6,6 +6,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'seq)
 (require 'nelisp-elf-write)
 (require 'nelisp-phase47-compiler)
 
@@ -1593,6 +1594,16 @@
                   (mapconcat 3 (mapconcat fn xs sep))
                   (mapcan 2 (mapcan fn xs))
                   (maphash 2 (maphash fn xs))
+                  (seq-map 2 (seq-map fn xs))
+                  (seq-do 2 (seq-do fn xs))
+                  (seq-filter 2 (seq-filter fn xs))
+                  (seq-remove 2 (seq-remove fn xs))
+                  (seq-find 2 (seq-find fn xs))
+                  (seq-some 2 (seq-some fn xs))
+                  (seq-every-p 2 (seq-every-p fn xs))
+                  (seq-count 2 (seq-count fn xs))
+                  (seq-reduce 3 (seq-reduce fn xs seed))
+                  (seq-mapcat 2 (seq-mapcat fn xs))
                   (sort 2 (sort xs fn))))
     (pcase-let ((`(,builtin ,argc ,form) case))
       (let* ((ir (nelisp-phase47-compiler--parse
@@ -1604,6 +1615,7 @@
                         (name_slot :type sexp)
                         (fn :type sexp)
                         (xs :type sexp)
+                        (seed :type sexp)
                         (sep :type sexp))
                      ,form)))
              (body (nelisp-phase47-compiler--ir-get ir :body))
@@ -1626,7 +1638,17 @@
                   (mapc 'foo xs)
                   (mapconcat #'foo xs sep)
                   (mapcan #'foo xs)
-                  (maphash #'foo xs)))
+                  (maphash #'foo xs)
+                  (seq-map #'foo xs)
+                  (seq-do #'foo xs)
+                  (seq-filter #'foo xs)
+                  (seq-remove #'foo xs)
+                  (seq-find #'foo xs)
+                  (seq-some #'foo xs)
+                  (seq-every-p #'foo xs)
+                  (seq-count #'foo xs)
+                  (seq-reduce #'foo xs seed)
+                  (seq-mapcat #'foo xs)))
     (let* ((ir (nelisp-phase47-compiler--parse
                 `(defun call_builtin
                      ((out :type sexp)
@@ -1635,6 +1657,7 @@
                       (scratch :type sexp)
                       (name_slot :type sexp)
                       (xs :type sexp)
+                      (seed :type sexp)
                       (sep :type sexp))
                    ,form)))
            (body (nelisp-phase47-compiler--ir-get ir :body))
@@ -1788,6 +1811,39 @@
     (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
+(ert-deftest nelisp-phase47-doc129/parse-seq-lambda-lift ()
+  "Doc 129.7P: seq.el literal lambdas lift to synthetic defuns."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (xs :type sexp)
+                    (seed :type sexp))
+                 (seq-reduce (lambda (acc x) (+ acc x)) xs seed))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (fn-symbol (nth 1 body-forms))
+         (call-node (nth 2 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+                'scratch))))
+
 (ert-deftest nelisp-phase47-doc129/parse-sort-lambda-lift ()
   "Doc 129.7N: `sort' predicate lambdas lift to synthetic defuns."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -1863,6 +1919,21 @@
           (cap :type sexp)
           (table :type sexp))
        (maphash (lambda (k v) (+ cap k)) table)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/seq-lambda-lift-capture-still-pending ()
+  "Doc 129.7P: seq.el lambda lifting still rejects captured variables."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun caller
+         ((out :type sexp)
+          (mirror :type sexp)
+          (frames :type sexp)
+          (scratch :type sexp)
+          (name_slot :type sexp)
+          (cap :type sexp)
+          (xs :type sexp))
+       (seq-filter (lambda (x) (eq x cap)) xs)))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
@@ -1981,6 +2052,30 @@
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-seq-designator ()
+  "Doc 129.6N: object output exposes seq.el designator materialization."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-seq-designator-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_seq
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (xs :type sexp))
+              (seq-filter #'foo xs))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_seq" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/object-direct-builtinn-sort-designator ()
   "Doc 129.6K: object output exposes sort predicate materialization."
   (skip-unless (executable-find "readelf"))
@@ -2068,6 +2163,30 @@
                  (name_slot :type sexp)
                  (table :type sexp))
               (maphash (lambda (k v) k) table))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "caller" out))
+            (should (string-match-p "nelisp_aot_lambda_0" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-seq-lambda-lift ()
+  "Doc 129.7P: object output exposes seq.el lambda-lift defuns."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-seq-lambda-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (xs :type sexp))
+              (seq-filter (lambda (x) x) xs))
            path)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output
