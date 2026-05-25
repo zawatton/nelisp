@@ -2295,6 +2295,62 @@ exit points were emitted; call-points were missing."
    (nelisp-cc-runtime-aot-c-abi-descriptor "nelisp_aot_throw")
    :type 'nelisp-cc-runtime-error))
 
+(ert-deftest nelisp-cc-runtime-resolve-aot-c-abi-descriptor ()
+  "Doc 129.6S — one AOT C ABI descriptor resolves through the runtime hook."
+  (let* ((descriptor
+          (nelisp-cc-runtime-aot-c-abi-descriptor
+           'nelisp_aot_builtin_calln))
+         (resolution
+          (nelisp-cc-runtime-resolve-aot-c-abi-descriptor
+           descriptor
+           (lambda (symbol)
+             (should (eq symbol 'nelisp_aot_builtin_calln))
+             (cons :resolved #x510000)))))
+    (should (eq (plist-get resolution :symbol)
+                'nelisp_aot_builtin_calln))
+    (should (eq (plist-get resolution :function)
+                'nelisp-cc-runtime-aot-builtin-calln))
+    (should (eq (plist-get resolution :status) :resolved))
+    (should (= (plist-get resolution :addr) #x510000))
+    (should (= (plist-get resolution :fixed-argc) 6))
+    (should (plist-get resolution :rest))
+    (should (equal (plist-get resolution :args)
+                   '(mirror frames name argc out scratch args...)))
+    (should (equal (plist-get resolution :descriptor)
+                   descriptor))))
+
+(ert-deftest nelisp-cc-runtime-resolve-aot-c-abi-table-host-stub ()
+  "Doc 129.6S — host Emacs resolves the exported AOT ABI as stubs."
+  (let* ((nelisp-cc-runtime-resolve-symbol-function nil)
+         (resolutions
+          (nelisp-cc-runtime-resolve-aot-c-abi-table))
+         (symbols (mapcar (lambda (entry) (plist-get entry :symbol))
+                          resolutions)))
+    (should (memq 'nelisp_aot_throw symbols))
+    (should (memq 'nelisp_aot_builtin_calln symbols))
+    (should (cl-every
+             (lambda (entry)
+               (and (eq (plist-get entry :status) :host-stub)
+                    (eq (plist-get entry :addr)
+                        nelisp-cc-runtime--resolve-symbol-stub-addr)
+                    (plist-get entry :descriptor)))
+             resolutions))))
+
+(ert-deftest nelisp-cc-runtime-resolve-aot-c-abi-table-rejects-bad-resolution ()
+  "Doc 129.6S — malformed resolver returns are rejected before use."
+  (should-error
+   (nelisp-cc-runtime-resolve-aot-c-abi-table
+    (lambda (_symbol) :bad))
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-resolve-aot-c-abi-table
+    (lambda (_symbol) (cons :resolved 0)))
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-resolve-aot-c-abi-table
+    (lambda (_symbol) (cons :not-found #x1000)))
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-module-init-plan ()
   "Doc 129.3H — runtime normalizes compiler metadata for Doc 99."
   (let* ((init-helpers

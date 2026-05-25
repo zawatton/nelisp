@@ -2824,6 +2824,25 @@ hook.")
     (when descriptor
       (copy-sequence descriptor))))
 
+(defun nelisp-cc-runtime--validate-aot-c-abi-descriptor (descriptor)
+  "Validate one Doc 129 AOT C ABI DESCRIPTOR."
+  (let ((symbol (plist-get descriptor :symbol))
+        (fn (plist-get descriptor :function))
+        (fixed (plist-get descriptor :fixed-argc)))
+    (unless (and (listp descriptor)
+                 (symbolp symbol)
+                 (symbolp fn)
+                 (integerp fixed)
+                 (<= 0 fixed)
+                 (plist-member descriptor :rest)
+                 (listp (plist-get descriptor :args)))
+      (signal 'nelisp-cc-runtime-error
+              (list :bad-aot-c-abi-descriptor descriptor)))
+    (unless (fboundp fn)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-c-abi-function-unbound fn)))
+    descriptor))
+
 (defun nelisp-cc-runtime-validate-aot-c-abi-descriptors ()
   "Validate the Doc 129 AOT C ABI descriptor table.
 Signals `nelisp-cc-runtime-error' on duplicate native symbols, malformed
@@ -2831,25 +2850,67 @@ arity metadata, or an Emacs bridge function that is not currently
 defined.  Returns t on success."
   (let ((seen nil))
     (dolist (descriptor nelisp-cc-runtime--aot-c-abi-descriptors)
-      (let ((symbol (plist-get descriptor :symbol))
-            (fn (plist-get descriptor :function))
-            (fixed (plist-get descriptor :fixed-argc)))
-        (unless (and (symbolp symbol)
-                     (symbolp fn)
-                     (integerp fixed)
-                     (<= 0 fixed)
-                     (plist-member descriptor :rest)
-                     (listp (plist-get descriptor :args)))
-          (signal 'nelisp-cc-runtime-error
-                  (list :bad-aot-c-abi-descriptor descriptor)))
+      (let ((symbol (plist-get descriptor :symbol)))
+        (nelisp-cc-runtime--validate-aot-c-abi-descriptor descriptor)
         (when (memq symbol seen)
           (signal 'nelisp-cc-runtime-error
                   (list :duplicate-aot-c-abi-symbol symbol)))
-        (unless (fboundp fn)
-          (signal 'nelisp-cc-runtime-error
-                  (list :aot-c-abi-function-unbound fn)))
         (push symbol seen)))
     t))
+
+(defun nelisp-cc-runtime-resolve-aot-c-abi-descriptor
+    (descriptor &optional resolver)
+  "Resolve one Doc 129 AOT C ABI DESCRIPTOR.
+RESOLVER defaults to `nelisp-cc-runtime-resolve-symbol'.  The returned
+plist keeps the descriptor metadata together with `:status' and `:addr',
+so host-stub and standalone dlsym-backed runtimes expose the same ABI
+shape to callers."
+  (nelisp-cc-runtime--validate-aot-c-abi-descriptor descriptor)
+  (when (and resolver (not (functionp resolver)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-c-abi-resolver-not-function resolver)))
+  (let* ((symbol (plist-get descriptor :symbol))
+         (status-addr (funcall (or resolver
+                                   #'nelisp-cc-runtime-resolve-symbol)
+                               symbol))
+         (status (car-safe status-addr))
+         (addr (cdr-safe status-addr)))
+    (unless (consp status-addr)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-c-abi-resolution-bad-result
+                    symbol status-addr)))
+    (unless (memq status '(:resolved :host-stub :not-found))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-c-abi-resolution-bad-status
+                    symbol status-addr)))
+    (when (and (memq status '(:resolved :host-stub))
+               (not (and (integerp addr) (> addr 0))))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-c-abi-resolution-bad-address
+                    symbol status-addr)))
+    (when (and (eq status :not-found) addr)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-c-abi-resolution-not-found-has-address
+                    symbol status-addr)))
+    (list :symbol symbol
+          :function (plist-get descriptor :function)
+          :status status
+          :addr addr
+          :fixed-argc (plist-get descriptor :fixed-argc)
+          :rest (plist-get descriptor :rest)
+          :args (copy-sequence (plist-get descriptor :args))
+          :descriptor (copy-sequence descriptor))))
+
+(defun nelisp-cc-runtime-resolve-aot-c-abi-table (&optional resolver)
+  "Return the Doc 129 AOT C ABI descriptor table with resolved addresses.
+Each entry is produced by
+`nelisp-cc-runtime-resolve-aot-c-abi-descriptor'.  RESOLVER defaults to
+`nelisp-cc-runtime-resolve-symbol', preserving the descriptor order."
+  (nelisp-cc-runtime-validate-aot-c-abi-descriptors)
+  (mapcar (lambda (descriptor)
+            (nelisp-cc-runtime-resolve-aot-c-abi-descriptor
+             descriptor resolver))
+          nelisp-cc-runtime--aot-c-abi-descriptors))
 
 (defun nelisp-cc-runtime--validate-aot-init-helper-descriptor (descriptor)
   "Validate one Doc 129 AOT init helper DESCRIPTOR."
