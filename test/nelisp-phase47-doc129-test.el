@@ -22,6 +22,16 @@
   "Exec PATH and return its process exit code."
   (call-process path nil nil nil))
 
+(defun nelisp-phase47-doc129-test--extern-call-names (ir)
+  "Return extern-call names found while walking IR."
+  (let (names)
+    (nelisp-phase47-compiler--walk-ir
+     ir
+     (lambda (node)
+       (when (eq (nelisp-phase47-compiler--ir-kind node) 'extern-call)
+         (push (nelisp-phase47-compiler--ir-get node :name) names))))
+    (nreverse names)))
+
 (ert-deftest nelisp-phase47-doc129/value-seq-from-when-progn ()
   "Doc 129.1: multi-form macro body becomes a value-seq branch."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -1475,6 +1485,67 @@
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-error-bridge ()
+  "Doc 129.8H: `(error DATA)' lowers as `(signal 'error DATA)'."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun error_value
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (error value))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (write-node (nth 0 forms))
+         (call-node (nth 1 forms)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+                'sexp-write-symbol-lit))
+    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+                   (string-to-list "error")))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_signal))))
+
+(ert-deftest nelisp-phase47-doc129/error-varargs-still-pending ()
+  "Doc 129.8H: formatted error varargs wait for calln/rest-list work."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun error_fmt
+         ((out :type sexp)
+          (mirror :type sexp)
+          (frames :type sexp)
+          (scratch :type sexp)
+          (name_slot :type sexp)
+          (value :type sexp))
+       (error value value)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/object-error-bridge ()
+  "Doc 129.8H: object output exposes error-as-signal bridge reloc."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-error-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun error_value
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (error value))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "error_value" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/parse-push-catch-handler ()
   "Doc 129.8C: explicit catch handler push lowers to runtime bridge."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -1622,6 +1693,222 @@
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "nelisp_aot_pop_handler" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/parse-catch-normal-exit ()
+  "Doc 129.8E: source `catch' normal exit lowers to push/body/pop."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_value
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done value))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (push-node (nth 0 forms))
+         (save-node (nth 1 forms))
+         (save-body (nelisp-phase47-compiler--ir-get save-node :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind push-node) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind save-node) 'let-rt))
+    (should (eq (nelisp-phase47-compiler--ir-kind save-body) 'value-seq))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (member 'nelisp_aot_pop_handler externs))))
+
+(ert-deftest nelisp-phase47-doc129/catch-nonlocal-body-still-pending ()
+  "Doc 129.8E: catch bodies with explicit throw wait for landing pads."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun catch_throw
+         ((out :type sexp)
+          (mirror :type sexp)
+          (frames :type sexp)
+          (scratch :type sexp)
+          (name_slot :type sexp)
+          (value :type sexp))
+       (catch 'done
+         (throw 'done value))))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/object-catch-normal-exit ()
+  "Doc 129.8E: source `catch' exposes push/pop bridge relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-catch-normal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun catch_value
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (catch 'done value))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "catch_value" out))
+            (should (string-match-p "nelisp_aot_push_catch" out))
+            (should (string-match-p "nelisp_aot_pop_handler" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-normal-exit ()
+  "Doc 129.8F: source condition-case normal exit lowers to push/body/pop."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_value
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     value
+                   (error out)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (push-node (nth 0 forms))
+         (save-node (nth 1 forms))
+         (save-body (nelisp-phase47-compiler--ir-get save-node :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind push-node) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind save-node) 'let-rt))
+    (should (eq (nelisp-phase47-compiler--ir-kind save-body) 'value-seq))
+    (should (member 'nelisp_aot_push_condition externs))
+    (should (member 'nelisp_aot_pop_handler externs))))
+
+(ert-deftest nelisp-phase47-doc129/condition-case-nonlocal-body-still-pending ()
+  "Doc 129.8F: condition-case bodies with signal wait for landing pads."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun cc_signal
+         ((out :type sexp)
+          (mirror :type sexp)
+          (frames :type sexp)
+          (scratch :type sexp)
+          (name_slot :type sexp)
+          (value :type sexp))
+       (condition-case err
+           (signal 'error value)
+         (error out))))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/condition-case-list-spec-still-pending ()
+  "Doc 129.8F: list condition specs wait for handler selector materialization."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun cc_list_spec
+         ((out :type sexp)
+          (mirror :type sexp)
+          (frames :type sexp)
+          (scratch :type sexp)
+          (name_slot :type sexp)
+          (value :type sexp))
+       (condition-case err
+           value
+         ((error quit) out))))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/object-condition-case-normal-exit ()
+  "Doc 129.8F: source condition-case exposes condition push/pop relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-normal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_value
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  value
+                (error out)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_value" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_pop_handler" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-normal-exit ()
+  "Doc 129.8G: source unwind-protect saves BODY, runs cleanup, returns BODY."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_value
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     value
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (save-body (nelisp-phase47-compiler--ir-get body :body))
+         (forms (nelisp-phase47-compiler--ir-get save-body :forms))
+         (cleanup-node (nth 0 forms))
+         (return-node (nth 1 forms))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
+    (should (eq (nelisp-phase47-compiler--ir-kind save-body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind cleanup-node) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind return-node) 'ref))
+    (should (member 'nelisp_aot_builtin_call1 externs))))
+
+(ert-deftest nelisp-phase47-doc129/unwind-protect-nonlocal-still-pending ()
+  "Doc 129.8G: non-local forms crossing unwind-protect wait for landing pads."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun unwind_throw
+         ((out :type sexp)
+          (mirror :type sexp)
+          (frames :type sexp)
+          (scratch :type sexp)
+          (name_slot :type sexp)
+          (value :type sexp))
+       (unwind-protect
+           (throw 'done value)
+         (identity value))))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-normal-exit ()
+  "Doc 129.8G: source unwind-protect normal path compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-normal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_value
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  value
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_value" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 

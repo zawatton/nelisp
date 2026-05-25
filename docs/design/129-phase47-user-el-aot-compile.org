@@ -29,8 +29,12 @@
   dispatcher bridge, Stage 129.7C =apply= dispatcher bridge, Stage
   129.7D quoted function-designator materialization, Stage 129.8A
   runtime handler-stack substrate, Stage 129.8B =throw= / =signal=
-  bridge lowering, Stage 129.8C handler-push bridge lowering, and
-  Stage 129.8D handler-pop bridge lowering have implementations in
+  bridge lowering, Stage 129.8C handler-push bridge lowering,
+  Stage 129.8D handler-pop bridge lowering, and Stage 129.8E
+  source-level =catch= normal-exit lowering, and Stage 129.8F
+  source-level =condition-case= normal-exit lowering, and Stage
+  129.8G source-level =unwind-protect= normal-exit lowering, and
+  Stage 129.8H single-argument =error= lowering have implementations in
   =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
   =nelisp-cc-runtime.el=.
   Supported in this first cut: host macro expansion in value/call
@@ -247,8 +251,32 @@
   =aot-pop-handler=.  It lowers through =nelisp_aot_pop_handler= with
   =MIRROR/FRAMES/EXPECTED-KIND/OUT/SCRATCH=, writes the popped handler
   descriptor into =OUT= on the elisp bridge, and validates the expected
-  handler kind when supplied.  Source-level forms still need to
-  synthesize balanced push/pop control flow.
+  handler kind when supplied.  129.8E starts using this for
+  source-level =catch= normal exits; non-local exits and other handler
+  forms still need native landing-pad control flow.
+- *129.8E MVP*: source-level =(catch TAG BODY...)= now synthesizes
+  the first balanced handler path for bodies that return normally.  It
+  lowers to =aot-push-catch=, saves BODY's result in a runtime Sexp
+  frame slot, emits =aot-pop-handler 'catch=, then returns the saved
+  result.  Bodies containing explicit =throw=, =signal=,
+  =condition-case=, or =unwind-protect= are rejected until native
+  landing-pad jumps are available.
+- *129.8F MVP*: source-level =(condition-case VAR BODY (CONDITION
+  HANDLER...))= now has the same normal-exit path for a single symbol
+  condition selector.  BODY is saved through a runtime Sexp frame slot,
+  =aot-pop-handler 'condition= removes the handler on normal exit, and
+  the saved BODY result is returned.  Signalled handler dispatch, list
+  condition specs, and native landing-pad jumps remain pending.
+- *129.8G MVP*: source-level =(unwind-protect BODY CLEANUP...)= now
+  supports the normal-exit path.  BODY's result is saved in a runtime
+  Sexp frame slot, cleanup forms run in order, and the saved BODY value
+  is returned.  Non-local exits crossing the protected body still need
+  cleanup landing-pad emission and stack restoration.
+- *129.8H MVP*: source-level =(error DATA)= now lowers as the
+  specialized condition signal =(signal 'error DATA)= through
+  =nelisp_aot_signal=.  DATA is already a boxed value supplied by the
+  caller/compiler.  Formatted error varargs remain pending on calln /
+  rest-list construction.
 - *Previous state*: DRAFT 2026-05-25 — design only.
   Scoping doc for the long-horizon "compile arbitrary user elisp to
   native code" track.  Authored after a 2026-05-25 session that
@@ -1097,9 +1125,125 @@ Runtime bridge shape:
 
 The bridge pops the innermost handler, optionally validates its kind,
 writes the descriptor into =OUT=, and returns =OUT=.  This makes
-balanced push/pop expressible in object output, but does not yet
-synthesize it from source-level =catch= / =condition-case= /
-=unwind-protect=.
+balanced push/pop expressible in object output; 129.8E below uses it
+for the first source-level =catch= normal-exit path.
+
+*** §1.F.5 Shipped MVP: source =catch= normal-exit lowering
+
+Stage 129.8E starts synthesizing source-level handler control flow.
+For a boxed-boundary function:
+
+#+begin_src elisp
+(defun catch-value
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (value :type sexp))
+  (catch 'done value))
+#+end_src
+
+the compiler lowers the normal path as if it had written:
+
+#+begin_src elisp
+(seq
+ (aot-push-catch 'done 0 0)
+ (let (((aot-catch-value-N :type sexp) value))
+   (seq
+    (aot-pop-handler 'catch)
+    aot-catch-value-N)))
+#+end_src
+
+The temporary is a runtime Sexp local so the BODY result survives the
+pop bridge call.  The placeholder =0= landing pad / saved stack pointer
+keeps this stage honest: it proves balanced source-form lowering and
+object relocations, but it is not the final non-local exit path.
+
+Consequently the compiler rejects =catch= bodies that explicitly
+contain =throw=, =signal=, =condition-case=, or =unwind-protect=.  Those
+forms still require native landing-pad labels, stack-pointer restore,
+and branch-to-pad emission.  =condition-case= and =unwind-protect=
+source lowering remain later 129.8 work.
+
+*** §1.F.6 Shipped MVP: source =condition-case= normal-exit lowering
+
+Stage 129.8F applies the same balanced source-form lowering to the
+normal path of =condition-case=:
+
+#+begin_src elisp
+(defun cc-value
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (value :type sexp))
+  (condition-case err
+      value
+    (error out)))
+#+end_src
+
+lowers as if it had written:
+
+#+begin_src elisp
+(seq
+ (aot-push-condition 'error 0 0)
+ (let (((aot-condition-value-N :type sexp) value))
+   (seq
+    (aot-pop-handler 'condition)
+    aot-condition-value-N)))
+#+end_src
+
+The handler body is intentionally not compiled as a landing pad yet.
+This stage accepts only the common single-symbol handler selector
+shape, e.g. =(error ...)=.  List selectors such as =((error quit)
+...)=, signalled handler dispatch, binding =VAR= to the error data, and
+native jump-to-handler emission remain later 129.8 work.
+
+*** §1.F.7 Shipped MVP: source =unwind-protect= normal-exit lowering
+
+Stage 129.8G covers the normal path of =unwind-protect=:
+
+#+begin_src elisp
+(defun unwind-value
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (value :type sexp))
+  (unwind-protect
+      value
+    (identity value)))
+#+end_src
+
+lowers as if it had written:
+
+#+begin_src elisp
+(let (((aot-unwind-value-N :type sexp) value))
+  (seq
+   (identity value)
+   aot-unwind-value-N))
+#+end_src
+
+This is normal-exit semantics only: cleanup forms run and the protected
+BODY value remains the result.  Non-local exits crossing the protected
+body still require real cleanup landing pads, native stack-pointer
+restore, and branch-to-cleanup / branch-back emission.
+
+*** §1.F.8 Shipped MVP: source =error= bridge lowering
+
+Stage 129.8H adds the common single-argument =error= surface:
+
+#+begin_src elisp
+(defun error-value
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (value :type sexp))
+  (error value))
+#+end_src
+
+This lowers through the existing signal bridge:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name_slot "error")
+ (extern-call nelisp_aot_signal
+              mirror frames name_slot value out scratch)
+ out)
+#+end_src
+
+The argument is treated as already-boxed signal data.  The usual
+formatted =error= shape, e.g. =(error "%s" value)=, still needs calln
+and rest/list construction before it can be represented faithfully.
 
 ** §1.G macroexpand frontend (= cheapest group)
 
@@ -1286,7 +1430,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators SHIPPED 2026-05-25; closure allocation/capture and calln/rest-list construction pending |
-| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering SHIPPED 2026-05-25; catch/condition-case/unwind-protect lowering and native landing-pad jumps pending |
+| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit, formatted error varargs, and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
 =anvil-server.el= that uses only those (= prove the pipeline end to

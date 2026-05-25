@@ -1980,6 +1980,18 @@ Dynamic tag values are forwarded as ordinary value expressions."
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-error
+    (sexp env fenv defuns)
+  "Lower `(error DATA)' through the Doc 129.8 signal bridge.
+This MVP accepts one already-boxed DATA value.  Formatted error strings
+and varargs require later calln/rest-list construction."
+  (unless (= (length sexp) 2)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-error-arity sexp)))
+  (nelisp-phase47-compiler--parse-aot-signal
+   `(signal 'error ,(nth 1 sexp))
+   env fenv defuns))
+
 (defun nelisp-phase47-compiler--parse-aot-push-handler
     (sexp env fenv defuns)
   "Lower Doc 129.8 explicit AOT handler push forms.
@@ -2044,6 +2056,126 @@ Accepted forms:
                     ,mirror ,frames ,kind ,out ,scratch)
        ,out)
      env fenv defuns)))
+
+(defun nelisp-phase47-compiler--aot-nonlocal-source-form-p (sexp)
+  "Return non-nil when SEXP contains a not-yet-safe non-local form.
+Doc 129.8E only synthesizes balanced handler push/pop for bodies that
+return normally.  Until native landing-pad jumps exist, compiling a body
+that explicitly contains `throw', `signal', `error', `condition-case',
+or `unwind-protect' would leave ordinary fallthrough code after a
+simulated non-local exit."
+  (cond
+   ((atom sexp) nil)
+   ((memq (car sexp) '(quote function)) nil)
+   ((memq (car sexp) '(throw signal error condition-case unwind-protect)) t)
+   (t (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (cdr sexp)))))
+
+(defun nelisp-phase47-compiler--parse-aot-catch-normal-exit
+    (sexp env fenv defuns)
+  "Lower a source-level `(catch TAG BODY...)' normal-exit path.
+The lowering installs a catch handler, evaluates BODY, saves the BODY
+value in a frame slot, pops the handler, then returns the saved value.
+Bodies containing explicit non-local exit forms are rejected until the
+native landing-pad jump path is available."
+  (unless (>= (length sexp) 3)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-catch-arity sexp)))
+  (let ((body-forms (cddr sexp)))
+    (when (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                   body-forms)
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-catch-nonlocal-body sexp)))
+    ;; Force the boundary diagnostics to point at the source `catch'
+    ;; instead of the generated `aot-*' forms.
+    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
+    (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
+    (let ((value-slot (nelisp-phase47-compiler--gensym
+                       "aot-catch-value"))
+          (tag (nth 1 sexp))
+          (body (nelisp-phase47-compiler--body->form body-forms)))
+      (nelisp-phase47-compiler--parse-value
+       `(seq
+         (aot-push-catch ,tag 0 0)
+         (let (((,value-slot :type sexp) ,body))
+           (seq
+            (aot-pop-handler 'catch)
+            ,value-slot)))
+       env fenv defuns))))
+
+(defun nelisp-phase47-compiler--aot-condition-case-selector (sexp)
+  "Return the single condition symbol handled by source condition-case SEXP.
+Doc 129.8F deliberately accepts only the common `(condition BODY...)'
+handler shape with a symbol condition.  List condition specs and real
+handler landing pads remain later exception work."
+  (let ((clauses (nthcdr 3 sexp)))
+    (unless clauses
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-condition-case-no-handlers sexp)))
+    (let ((selector (caar clauses)))
+      (unless (symbolp selector)
+        (signal 'nelisp-phase47-compiler-error
+                (list :aot-condition-case-handler-shape (car clauses))))
+      selector)))
+
+(defun nelisp-phase47-compiler--parse-aot-condition-case-normal-exit
+    (sexp env fenv defuns)
+  "Lower source `(condition-case VAR BODY HANDLER...)' normal exit.
+The MVP installs a condition handler, evaluates BODY, saves BODY's
+result, pops the handler, then returns the saved value.  Actual handler
+landing-pad jumps for signalled conditions remain later Doc 129.8 work."
+  (unless (>= (length sexp) 4)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-condition-case-arity sexp)))
+  (let ((var (nth 1 sexp))
+        (body (nth 2 sexp)))
+    (unless (or (null var) (symbolp var))
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-condition-case-var-shape var)))
+    (when (nelisp-phase47-compiler--aot-nonlocal-source-form-p body)
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-condition-case-nonlocal-body sexp)))
+    ;; Force diagnostics to point at the source form.
+    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
+    (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
+    (let ((value-slot (nelisp-phase47-compiler--gensym
+                       "aot-condition-value"))
+          (selector
+           (nelisp-phase47-compiler--aot-condition-case-selector sexp)))
+      (nelisp-phase47-compiler--parse-value
+       `(seq
+         (aot-push-condition ',selector 0 0)
+         (let (((,value-slot :type sexp) ,body))
+           (seq
+            (aot-pop-handler 'condition)
+            ,value-slot)))
+       env fenv defuns))))
+
+(defun nelisp-phase47-compiler--parse-aot-unwind-protect-normal-exit
+    (sexp env fenv defuns)
+  "Lower source `(unwind-protect BODY CLEANUP...)' normal exit.
+The MVP evaluates BODY, saves its result in a runtime Sexp slot, runs
+CLEANUP forms, then returns the saved BODY result.  Non-local exits
+crossing the protected body still require native landing-pad support."
+  (unless (>= (length sexp) 2)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-unwind-protect-arity sexp)))
+  (let ((body (nth 1 sexp))
+        (cleanups (nthcdr 2 sexp)))
+    (when (or (nelisp-phase47-compiler--aot-nonlocal-source-form-p body)
+              (cl-some
+               #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               cleanups))
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-unwind-protect-nonlocal-form sexp)))
+    (let ((value-slot (nelisp-phase47-compiler--gensym
+                       "aot-unwind-value")))
+      (nelisp-phase47-compiler--parse-value
+       `(let (((,value-slot :type sexp) ,body))
+          (seq
+           ,@cleanups
+           ,value-slot))
+       env fenv defuns))))
 
 (defun nelisp-phase47-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
@@ -2293,6 +2425,36 @@ functions `((NAME . ARITY) ...)'."
          (eq (car sexp) 'signal)
          (not (assq 'signal defuns)))
     (nelisp-phase47-compiler--parse-aot-signal
+     sexp env fenv defuns))
+   ;; Doc 129.8H — user-facing `error' is a specialised signal with the
+   ;; standard `error' condition tag.  Varargs formatting stays pending.
+   ((and (consp sexp)
+         (eq (car sexp) 'error)
+         (not (assq 'error defuns)))
+    (nelisp-phase47-compiler--parse-aot-error
+     sexp env fenv defuns))
+   ;; Doc 129.8E — first source-level handler synthesis.  This covers
+   ;; normal-exit `catch' bodies only: the compiler emits balanced
+   ;; push/body/pop control flow and rejects explicit non-local forms
+   ;; until native landing-pad jumps are available.
+   ((and (consp sexp)
+         (eq (car sexp) 'catch)
+         (not (assq 'catch defuns)))
+    (nelisp-phase47-compiler--parse-aot-catch-normal-exit
+     sexp env fenv defuns))
+   ;; Doc 129.8F — source-level condition-case normal path.  Real
+   ;; handler landing pads for signalled conditions remain pending.
+   ((and (consp sexp)
+         (eq (car sexp) 'condition-case)
+         (not (assq 'condition-case defuns)))
+    (nelisp-phase47-compiler--parse-aot-condition-case-normal-exit
+     sexp env fenv defuns))
+   ;; Doc 129.8G — source-level unwind-protect normal path.  Cleanup
+   ;; forms run after BODY and the saved BODY value remains the result.
+   ((and (consp sexp)
+         (eq (car sexp) 'unwind-protect)
+         (not (assq 'unwind-protect defuns)))
+    (nelisp-phase47-compiler--parse-aot-unwind-protect-normal-exit
      sexp env fenv defuns))
    ;; Doc 129.8C — explicit bridge forms for installing handler-stack
    ;; records.  These are internal AOT forms used to make the native
