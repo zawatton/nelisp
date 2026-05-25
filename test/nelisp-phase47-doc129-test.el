@@ -937,6 +937,43 @@ materialized closure temporary."
     (should (equal (nelisp-phase47-compiler--ir-get defcustom-ir :params)
                    '(out mirror frames scratch name_slot)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-top-level-var-literal-init-helpers ()
+  "Doc 129.3R: top-level var helpers materialize common Sexp literals."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar buffer-name "*scratch*" "doc")
+                (defconst major-mode 'fundamental-mode "doc")
+                (defcustom optional nil "doc" :type 'boolean))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (defvar-body (nelisp-phase47-compiler--ir-get (nth 0 forms) :body))
+         (defconst-body (nelisp-phase47-compiler--ir-get (nth 1 forms) :body))
+         (defcustom-body (nelisp-phase47-compiler--ir-get (nth 2 forms) :body))
+         (defvar-else
+          (nelisp-phase47-compiler--ir-get
+           (nelisp-phase47-compiler--ir-get
+            (nth 1 (nelisp-phase47-compiler--ir-get defvar-body :forms))
+            :else)
+           :forms))
+         (defconst-forms
+          (nelisp-phase47-compiler--ir-get defconst-body :forms))
+         (defcustom-else
+          (nelisp-phase47-compiler--ir-get
+           (nelisp-phase47-compiler--ir-get
+            (nth 1 (nelisp-phase47-compiler--ir-get defcustom-body :forms))
+            :else)
+           :forms)))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 defvar-else))
+                'sexp-write-str-lit))
+    (should (equal (nelisp-phase47-compiler--ir-get (nth 0 defvar-else) :bytes)
+                   (string-to-list "*scratch*")))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 3 defconst-forms))
+                'sexp-write-symbol-lit))
+    (should (equal (nelisp-phase47-compiler--ir-get
+                    (nth 3 defconst-forms) :bytes)
+                   (string-to-list "fundamental-mode")))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 defcustom-else))
+                'sexp-write-nil))))
+
 (ert-deftest nelisp-phase47-doc129/top-level-defcustom-requires-docstring ()
   "Doc 129.3F: top-level defcustom validates its docstring."
   (should-error
@@ -1998,6 +2035,20 @@ materialized closure temporary."
          (forms (nelisp-phase47-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
     (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'exit))))
+
+(ert-deftest nelisp-phase47-doc129/top-level-define-error-stripped ()
+  "Doc 129.6A: top-level `define-error' is a compile-time module form."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (define-error 'nelisp-doc129-smoke-error
+                  "Doc129 smoke error" 'error)
+                (exit 4))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (= (length forms) 1))
+    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'exit))
+    (should (get 'nelisp-doc129-smoke-error 'error-conditions))
+    (should (equal (get 'nelisp-doc129-smoke-error 'error-message)
+                   "Doc129 smoke error"))))
 
 (ert-deftest nelisp-phase47-doc129/top-level-require-noerror-missing ()
   "Doc 129.6A: `(require FEATURE nil t)' can be stripped when absent."

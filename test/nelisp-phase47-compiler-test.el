@@ -349,6 +349,19 @@ Caller is responsible for `delete-file' on cleanup."
       (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
       (should (= (nelisp-phase47-compiler--ir-get body :value) 7)))))
 
+(ert-deftest nelisp-phase47-compiler/parse-defun-docstring-metadata ()
+  "Parse defun docstrings and metadata as non-runtime forms."
+  (let ((ir (nelisp-phase47-compiler--parse
+             '(defun seven ()
+                "Return seven."
+                (declare (pure t))
+                (interactive)
+                7))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
+    (let ((body (nelisp-phase47-compiler--ir-get ir :body)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
+      (should (= (nelisp-phase47-compiler--ir-get body :value) 7)))))
+
 (ert-deftest nelisp-phase47-compiler/parse-defun-param-ref ()
   "Parse `(defun id (x) x)' — body becomes a `:kind ref' node."
   (let ((ir (nelisp-phase47-compiler--parse '(defun id (x) x))))
@@ -1954,6 +1967,15 @@ with a slot index beyond the param count."
          (body (nelisp-phase47-compiler--ir-get ir :body)))
     ;; Compile-time fold: body is `arith', no `let-rt'.
     (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
+    (should (= (nelisp-phase47-compiler--ir-get ir :rt-slot-count) 0))))
+
+(ert-deftest nelisp-phase47-compiler/parse-let-bare-symbol-binding ()
+  "Parse Emacs Lisp `(let (x) ...)' as a nil/zero initialized binding."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun f () (let (x) x))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
+    (should (= (nelisp-phase47-compiler--ir-get body :value) 0))
     (should (= (nelisp-phase47-compiler--ir-get ir :rt-slot-count) 0))))
 
 (ert-deftest nelisp-phase47-compiler/parse-doc129-multi-let-rt ()

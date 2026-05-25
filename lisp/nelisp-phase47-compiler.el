@@ -970,13 +970,15 @@ vector in an aligned stack temporary."
 
 (defun nelisp-phase47-compiler--validate-let-binding (binding)
   "Return `(VAR VALUE ROOT-P)' for one Phase 47 `let' BINDING."
-  (unless (and (consp binding)
-               (consp (cdr binding))
-               (null (cddr binding)))
-    (signal 'nelisp-phase47-compiler-error
-            (list :let-binding-shape binding)))
-  (let ((parsed-var (nelisp-phase47-compiler--parse-let-var (car binding))))
-    (list (car parsed-var) (cadr binding) (cadr parsed-var))))
+  (if (symbolp binding)
+      (list binding 0 nil)
+    (unless (and (consp binding)
+                 (consp (cdr binding))
+                 (null (cddr binding)))
+      (signal 'nelisp-phase47-compiler-error
+              (list :let-binding-shape binding)))
+    (let ((parsed-var (nelisp-phase47-compiler--parse-let-var (car binding))))
+      (list (car parsed-var) (cadr binding) (cadr parsed-var)))))
 
 (defun nelisp-phase47-compiler--check-let-vars-unique (bindings)
   "Signal when BINDINGS contains duplicate variables."
@@ -1080,7 +1082,7 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
 (defun nelisp-phase47-compiler--top-level-module-form-p (form)
   "Return non-nil when FORM is a compile-time top-level module form."
   (and (consp form)
-       (memq (car form) '(require provide))))
+       (memq (car form) '(require provide define-error))))
 
 (defun nelisp-phase47-compiler--top-level-var-form-p (form)
   "Return non-nil when FORM is a top-level variable declaration form."
@@ -1142,6 +1144,67 @@ generated AOT init helper."
           :standard (nth 2 form)
           :docstring (nth 3 form)
           :options options)))
+
+(defun nelisp-phase47-compiler--top-level-sexp-init-write-form (slot form)
+  "Return an init-helper write form that materializes FORM into SLOT.
+Returns nil when FORM is outside the literal Sexp MVP and should keep
+using the boxed integer init helper path."
+  (let ((literal (if (and (consp form)
+                          (eq (car form) 'quote)
+                          (= (length form) 2))
+                     (nth 1 form)
+                   form)))
+    (cond
+     ((integerp form)
+      `(sexp-int-make ,slot ,form))
+     ((stringp literal)
+      `(sexp-write-str-lit ,slot ,literal))
+     ((null literal)
+      `(sexp-write-nil ,slot))
+     ((eq literal t)
+      `(sexp-write-t ,slot))
+     ((and (symbolp literal)
+           (not (eq literal nil))
+           (not (eq literal t))
+           (and (consp form) (eq (car form) 'quote)))
+      `(sexp-write-symbol-lit ,slot ,(symbol-name literal)))
+     (t nil))))
+
+(defun nelisp-phase47-compiler--top-level-var-direct-defun
+    (kind helper name init-form)
+  "Return a direct Sexp literal init-helper defun for KIND/NAME.
+INIT-FORM must be supported by
+`nelisp-phase47-compiler--top-level-sexp-init-write-form'."
+  (let* ((params '(out mirror frames scratch name_slot))
+         (symbol-name (symbol-name name))
+         (write-form
+          (nelisp-phase47-compiler--top-level-sexp-init-write-form
+           'out init-form)))
+    (when write-form
+      `(defun ,helper
+         ,(mapcar (lambda (p) (list p :type 'sexp)) params)
+         (seq
+          (sexp-write-symbol-lit name_slot ,symbol-name)
+          ,@(if (eq kind 'defvar)
+                `((if (= (extern-call nelisp_mirror_is_bound
+                                       mirror name_slot out)
+                        1)
+                      name_slot
+                    (seq
+                     ,write-form
+                     (extern-call nelisp_env_set_value
+                                  mirror frames name_slot out scratch 0)
+                     name_slot)))
+              `((sexp-write-nil out)
+                (extern-call nelisp_mirror_set_constant
+                             mirror name_slot out)
+                ,write-form
+                (extern-call nelisp_env_set_value
+                             mirror frames name_slot out scratch 0)
+                (sexp-write-t out)
+                (extern-call nelisp_mirror_set_constant
+                             mirror name_slot out)
+                name_slot)))))))
 
 (defun nelisp-phase47-compiler--top-level-var-init-descriptor (form index)
   "Return the AOT init descriptor for top-level variable FORM.
@@ -1208,11 +1271,15 @@ Returns nil for declaration-only `defvar' forms with no initializer."
            (signal 'nelisp-phase47-compiler-error
                    (list :defvar-docstring-not-string form))))
        (when (>= (length form) 3)
-         `(defun-sexp-int-defvar-symbol
-              ,(nelisp-phase47-compiler--top-level-var-helper-name kind name index)
-              ,name
-              (out mirror frames scratch name_slot)
-            ,(nth 2 form))))
+         (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
+                        kind name index)))
+           (or (nelisp-phase47-compiler--top-level-var-direct-defun
+                kind helper name (nth 2 form))
+               `(defun-sexp-int-defvar-symbol
+                    ,helper
+                    ,name
+                    (out mirror frames scratch name_slot)
+                  ,(nth 2 form))))))
       ('defconst
        (unless (<= 3 (length form) 4)
          (signal 'nelisp-phase47-compiler-error
@@ -1221,18 +1288,26 @@ Returns nil for declaration-only `defvar' forms with no initializer."
          (unless (stringp (nth 3 form))
            (signal 'nelisp-phase47-compiler-error
                    (list :defconst-docstring-not-string form))))
-       `(defun-sexp-int-defconst-symbol
-            ,(nelisp-phase47-compiler--top-level-var-helper-name kind name index)
-            ,name
-            (out mirror frames scratch name_slot)
-          ,(nth 2 form)))
+       (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
+                      kind name index)))
+         (or (nelisp-phase47-compiler--top-level-var-direct-defun
+              kind helper name (nth 2 form))
+             `(defun-sexp-int-defconst-symbol
+                  ,helper
+                  ,name
+                  (out mirror frames scratch name_slot)
+                ,(nth 2 form)))))
       ('defcustom
        (nelisp-phase47-compiler--defcustom-metadata-descriptor form index)
-       `(defun-sexp-int-defvar-symbol
-            ,(nelisp-phase47-compiler--top-level-var-helper-name kind name index)
-            ,name
-            (out mirror frames scratch name_slot)
-          ,(nth 2 form)))
+       (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
+                      kind name index)))
+         (or (nelisp-phase47-compiler--top-level-var-direct-defun
+              'defvar helper name (nth 2 form))
+             `(defun-sexp-int-defvar-symbol
+                  ,helper
+                  ,name
+                  (out mirror frames scratch name_slot)
+                ,(nth 2 form)))))
       (_
        (signal 'nelisp-phase47-compiler-error
                (list :unknown-top-level-var-form form))))))
@@ -1248,8 +1323,9 @@ Returns nil for declaration-only `defvar' forms with no initializer."
 (defun nelisp-phase47-compiler--eval-top-level-module-form (form)
   "Evaluate one compile-time top-level module FORM.
 `require' is run during compilation so macros and helper definitions
-needed by later forms can be loaded.  `provide' is only stripped: the
-compiled object does not yet carry module registration side effects."
+needed by later forms can be loaded.  `provide' and `define-error' are
+stripped after validation: the compiled object does not yet carry module
+registration or error metadata side effects."
   (pcase (car form)
     ('require
      (unless (<= 2 (length form) 4)
@@ -1275,6 +1351,26 @@ compiled object does not yet carry module registration side effects."
        (unless (symbolp feature)
          (signal 'nelisp-phase47-compiler-error
                  (list :provide-feature-not-symbol feature)))))
+    ('define-error
+     (unless (<= 3 (length form) 4)
+       (signal 'nelisp-phase47-compiler-error
+               (list :define-error-arity form)))
+     (let ((name (nelisp-phase47-compiler--literal-arg (nth 1 form)))
+           (message (nelisp-phase47-compiler--literal-arg (nth 2 form)))
+           (parent (when (= (length form) 4)
+                     (nelisp-phase47-compiler--literal-arg (nth 3 form)))))
+       (unless (symbolp name)
+         (signal 'nelisp-phase47-compiler-error
+                 (list :define-error-name-not-symbol form)))
+       (unless (stringp message)
+         (signal 'nelisp-phase47-compiler-error
+                 (list :define-error-message-not-string form)))
+       (unless (or (null parent) (symbolp parent))
+         (signal 'nelisp-phase47-compiler-error
+                 (list :define-error-parent-not-symbol form)))
+       (if (= (length form) 4)
+           (define-error name message parent)
+         (define-error name message))))
     (_
      (signal 'nelisp-phase47-compiler-error
              (list :unknown-module-form form)))))
@@ -2223,19 +2319,36 @@ intersection of exhaustive branches."
    (t
     (nelisp-phase47-compiler--preprocess-source (cons 'progn body)))))
 
+(defun nelisp-phase47-compiler--defun-runtime-body-forms (body)
+  "Return BODY with Emacs Lisp defun metadata forms removed.
+
+A leading string is a docstring, and leading `declare' / `interactive'
+forms after that are function metadata rather than runtime body forms."
+  (let ((forms body))
+    (when (and forms (stringp (car forms)))
+      (setq forms (cdr forms)))
+    (while (and forms
+                (consp (car forms))
+                (memq (caar forms) '(declare interactive)))
+      (setq forms (cdr forms)))
+    forms))
+
 (defun nelisp-phase47-compiler--preprocess-let*-bindings (bindings body)
   "Desugar `let*' BINDINGS and BODY into nested Phase 47 `let' forms."
   (if (null bindings)
       (nelisp-phase47-compiler--body->form body)
     (let ((binding (car bindings)))
-      (unless (and (consp binding)
-                   (consp (cdr binding))
-                   (null (cddr binding)))
+      (unless (or (symbolp binding)
+                  (and (consp binding)
+                       (consp (cdr binding))
+                       (null (cddr binding))))
         (signal 'nelisp-phase47-compiler-error
                 (list :let-binding-shape binding)))
-      `(let (,(list (car binding)
-                    (nelisp-phase47-compiler--preprocess-source
-                     (cadr binding))))
+      `(let (,(if (symbolp binding)
+                  (list binding 0)
+                (list (car binding)
+                      (nelisp-phase47-compiler--preprocess-source
+                       (cadr binding)))))
          ,(nelisp-phase47-compiler--preprocess-let*-bindings
            (cdr bindings) body)))))
 
@@ -2678,7 +2791,9 @@ the whole program."
               (list :defun-arity sexp)))
     `(defun ,(nth 1 sexp)
        ,(nth 2 sexp)
-       ,(nelisp-phase47-compiler--body->form (nthcdr 3 sexp))))
+       ,(nelisp-phase47-compiler--body->form
+         (nelisp-phase47-compiler--defun-runtime-body-forms
+          (nthcdr 3 sexp)))))
    ((eq (car sexp) 'defmacro)
     ;; Top-level defmacros are stripped before this point.  Nested
     ;; defmacro has no Phase 47 runtime meaning.
@@ -2690,14 +2805,17 @@ the whole program."
               (list :let-arity sexp)))
     `(let ,(mapcar
             (lambda (binding)
-              (unless (and (consp binding)
-                           (consp (cdr binding))
-                           (null (cddr binding)))
+              (unless (or (symbolp binding)
+                          (and (consp binding)
+                               (consp (cdr binding))
+                               (null (cddr binding))))
                 (signal 'nelisp-phase47-compiler-error
                         (list :let-binding-shape binding)))
-              (list (car binding)
-                    (nelisp-phase47-compiler--preprocess-source
-                     (cadr binding))))
+              (if (symbolp binding)
+                  (list binding 0)
+                (list (car binding)
+                      (nelisp-phase47-compiler--preprocess-source
+                       (cadr binding)))))
             (nth 1 sexp))
        ,(nelisp-phase47-compiler--body->form (nthcdr 2 sexp))))
    ((eq (car sexp) 'let*)
