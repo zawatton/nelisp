@@ -1207,6 +1207,32 @@ exit points were emitted; call-points were missing."
     (should (eq result 'ok))
     (should (null nelisp-gc--active-aot-frames))))
 
+(ert-deftest nelisp-cc-runtime-aot-materialize-roots-boundary ()
+  "Doc 129.5G — native root materialization bridge builds root vectors."
+  (let* ((root-a (cons 'aot 'a))
+         (root-b (vector 'aot 'b))
+         (out (vector nil))
+         (roots (nelisp-cc-runtime-aot-materialize-roots-boundary
+                 'mirror 'frames 2 out 'scratch root-a root-b)))
+    (should (equal roots (vector root-a root-b)))
+    (should (eq roots (aref out 0)))))
+
+(ert-deftest nelisp-cc-runtime-aot-materialize-roots-validates-boundary ()
+  "Doc 129.5G — root materialization rejects malformed ABI values."
+  (let ((out (vector nil)))
+    (should-error
+     (nelisp-cc-runtime-aot-materialize-roots-boundary
+      'mirror 'frames -1 out 'scratch)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-materialize-roots-boundary
+      'mirror 'frames 2 out 'scratch 'only-one)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-materialize-roots-boundary
+      'mirror 'frames 0 nil 'scratch)
+     :type 'nelisp-cc-runtime-error)))
+
 (ert-deftest nelisp-cc-runtime-aot-root-push-pop-boundary ()
   "Doc 129.5E — explicit native root push/pop bridges update root-set."
   (let* ((root (cons 'aot 'native))

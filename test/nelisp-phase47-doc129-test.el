@@ -1051,6 +1051,9 @@
     (should (eq (nelisp-phase47-compiler--ir-kind body) 'aot-root-scope))
     (should (equal (nelisp-phase47-compiler--ir-get body :root-slots)
                    '(0)))
+    (should (equal (nelisp-phase47-compiler--ir-get body :root-symbols)
+                   '(out)))
+    (should (member 'nelisp_aot_materialize_roots externs))
     (should (member 'nelisp_aot_push_roots externs))
     (should (member 'nelisp_aot_pop_roots externs))))
 
@@ -1085,6 +1088,7 @@
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "nelisp_aot_push_roots" out))
+            (should (string-match-p "nelisp_aot_materialize_roots" out))
             (should (string-match-p "nelisp_aot_pop_roots" out))))
       (ignore-errors (delete-file path)))))
 

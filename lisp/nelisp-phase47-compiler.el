@@ -788,8 +788,8 @@ root vector while the compiled function is active."
 
 The automatic root-frame MVP is intentionally opt-in: a defun must
 already expose the Doc 99 / 129.5 boundary locals `out', `mirror',
-`frames', `scratch', and `roots'.  `roots' is the prebuilt AOT root
-vector; later 129.5 work will materialize it from `:gc-root-slots'."
+`frames', `scratch', and `roots'.  `roots' is the frame slot that
+will hold the materialized AOT root vector."
   (let ((slots nil)
         (ok t))
     (dolist (sym '(out mirror frames scratch roots))
@@ -802,17 +802,44 @@ vector; later 129.5 work will materialize it from `:gc-root-slots'."
     (when ok
       (nreverse slots))))
 
+(defun nelisp-phase47-compiler--symbols-for-root-slots (fenv root-slots)
+  "Return FENV symbols corresponding to ROOT-SLOTS."
+  (mapcar
+   (lambda (slot)
+     (let ((entry
+            (cl-find-if
+             (lambda (pair)
+               (= (or (plist-get (cdr pair) :slot) -1) slot))
+             fenv)))
+       (unless entry
+         (signal 'nelisp-phase47-compiler-error
+                 (list :aot-root-slot-symbol-missing
+                       slot :root-slots root-slots)))
+       (car entry)))
+   root-slots))
+
 (defun nelisp-phase47-compiler--maybe-wrap-aot-root-scope
     (body-ir gc-root-slots env fenv defuns)
   "Wrap BODY-IR in automatic Doc 129.5F root push/pop when possible."
-  (let ((boundary-slots
-         (and gc-root-slots
-              (nelisp-phase47-compiler--auto-aot-root-boundary-slots fenv))))
+  (let* ((boundary-slots
+          (and gc-root-slots
+               (nelisp-phase47-compiler--auto-aot-root-boundary-slots fenv)))
+         (root-symbols
+          (and boundary-slots
+               (nelisp-phase47-compiler--symbols-for-root-slots
+                fenv gc-root-slots))))
     (if boundary-slots
         (nelisp-phase47-compiler--make-ir
               'aot-root-scope
               :root-slots gc-root-slots
+              :root-symbols root-symbols
               :boundary-slots boundary-slots
+              :materialize-ir
+              (nelisp-phase47-compiler--parse-value
+               `(extern-call nelisp_aot_materialize_roots
+                             mirror frames ,(length root-symbols)
+                             out scratch ,@root-symbols)
+               env fenv defuns)
               :push-ir
               (nelisp-phase47-compiler--parse-value
                '(extern-call nelisp_aot_push_roots
@@ -4482,6 +4509,7 @@ defun bodies too so functions can call `write'."
                ((= tag 88)            ; value-seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
                ((= tag 92)            ; aot-root-scope
+                (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :push-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :body))
                 (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
@@ -4565,6 +4593,7 @@ when two `table-define' nodes share a NAME."
                ((= tag 88)            ; value-seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
                ((= tag 92)            ; aot-root-scope
+                (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :push-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :body))
                 (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
@@ -4609,6 +4638,7 @@ walk; the emitter substitutes a no-op for the original site."
                   (walk (nth 2 binding)))
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
                ((= tag 92)            ; aot-root-scope
+                (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :push-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :body))
                 (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
@@ -5036,6 +5066,16 @@ mask is needed):
 
 (defun nelisp-phase47-compiler--emit-aot-root-scope (node buf)
   "Emit automatic Doc 129.5 root push/pop around NODE's body."
+  (let* ((materialize-ir
+          (nelisp-phase47-compiler--ir-get node :materialize-ir))
+         (slots (nelisp-phase47-compiler--ir-get node :boundary-slots))
+         (roots-slot (cdr (assq 'roots slots))))
+    (unless roots-slot
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-root-scope-missing-slot 'roots slots)))
+    (nelisp-phase47-compiler--emit-value materialize-ir buf)
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rbp (- (* 8 (1+ roots-slot))) 'rax))
   (nelisp-phase47-compiler--emit-aot-root-bridge-call
    node 'nelisp_aot_push_roots buf)
   (nelisp-phase47-compiler--emit-value

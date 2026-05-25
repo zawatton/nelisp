@@ -1537,6 +1537,32 @@ hooks, but the dynamic extent and root-set contract are fixed here."
   (nelisp-gc--with-active-aot-frame roots
     (funcall thunk)))
 
+(defun nelisp-cc-runtime-aot-materialize-roots-boundary
+    (mirror frames count out scratch &rest roots)
+  "Runtime bridge for Doc 129.5 root-vector materialisation.
+MIRROR, FRAMES, COUNT, OUT, SCRATCH, and ROOTS mirror the native ABI:
+
+  nelisp_aot_materialize_roots(mirror, frames, count, out, scratch,
+                              root0, root1, ...)
+
+COUNT must match the number of ROOTS.  The bridge returns a fresh
+vector containing ROOTS, writes it to OUT[0], and leaves push/pop stack
+registration to `nelisp-cc-runtime-aot-push-roots-boundary'."
+  (unless (and (integerp count) (<= 0 count))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-materialize-roots-bad-count count)))
+  (unless (= count (length roots))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-materialize-roots-count-mismatch
+                  :count count :roots (length roots))))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-materialize-roots-out-not-vector out)))
+  (ignore mirror frames scratch)
+  (let ((root-vector (vconcat roots)))
+    (aset out 0 root-vector)
+    root-vector))
+
 (defun nelisp-cc-runtime-aot-root-stack-snapshot ()
   "Return a shallow snapshot of the active Doc 129.5 AOT root stack."
   (copy-sequence nelisp-gc--active-aot-frames))
