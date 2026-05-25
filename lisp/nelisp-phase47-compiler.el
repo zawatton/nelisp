@@ -1358,6 +1358,103 @@ macros do not leak into the host Emacs session."
     (push name nelisp-phase47-compiler--lambda-lift-names)
     name))
 
+(defun nelisp-phase47-compiler--lambda-param-vars (params)
+  "Return bindable lambda parameter symbols from PARAMS."
+  (let (vars)
+    (while params
+      (let ((p (pop params)))
+        (cond
+         ((eq p '&rest)
+          (when (symbolp (car params))
+            (push (pop params) vars))
+          (setq params nil))
+         ((memq p '(&optional))
+          nil)
+         ((symbolp p)
+          (push p vars))
+         (t
+          (signal 'nelisp-phase47-compiler-error
+                  (list :lambda-lift-param-shape params))))))
+    (nreverse vars)))
+
+(defun nelisp-phase47-compiler--lambda-free-vars (form bound)
+  "Return source symbols used free in FORM relative to BOUND."
+  (let (free)
+    (cl-labels
+        ((add (sym bound*)
+           (when (and (symbolp sym)
+                      (not (memq sym bound*))
+                      (not (memq sym '(nil t)))
+                      (not (keywordp sym))
+                      (not (memq sym free)))
+             (push sym free)))
+         (walk-body (body bound*)
+           (dolist (child body)
+             (walk child bound*)))
+         (walk (node bound*)
+           (cond
+            ((null node) nil)
+            ((symbolp node) (add node bound*))
+            ((atom node) nil)
+            ((eq (car node) 'quote) nil)
+            ((and (eq (car node) 'function)
+                  (not (nelisp-phase47-compiler--lambda-literal-form
+                        (cadr node))))
+             nil)
+            ((nelisp-phase47-compiler--lambda-literal-form node)
+             (let* ((params (nth 1 node))
+                    (inner-bound
+                     (append (nelisp-phase47-compiler--lambda-param-vars
+                              params)
+                             bound*)))
+               (walk-body (cddr node) inner-bound)))
+            ((eq (car node) 'let)
+             (let ((new-bound bound*))
+               (dolist (binding (nth 1 node))
+                 (when (and (consp binding) (consp (cdr binding)))
+                   (walk (cadr binding) bound*))
+                 (when (symbolp (car-safe binding))
+                   (push (car binding) new-bound)))
+               (walk-body (nthcdr 2 node) new-bound)))
+            ((eq (car node) 'let*)
+             (let ((new-bound bound*))
+               (dolist (binding (nth 1 node))
+                 (when (and (consp binding) (consp (cdr binding)))
+                   (walk (cadr binding) new-bound))
+                 (when (symbolp (car-safe binding))
+                   (push (car binding) new-bound)))
+               (walk-body (nthcdr 2 node) new-bound)))
+            ((eq (car node) 'setq)
+             (let ((pairs (cdr node)))
+               (while pairs
+                 (when (and (symbolp (car pairs))
+                            (not (memq (car pairs) bound*)))
+                   (signal 'nelisp-phase47-compiler-error
+                           (list :lambda-lift-captured-setq-pending
+                                 (car pairs))))
+                 (add (car pairs) bound*)
+                 (when (cdr pairs)
+                   (walk (cadr pairs) bound*))
+                 (setq pairs (cddr pairs)))))
+            ((memq (car node) '(defun defmacro))
+             nil)
+            ((symbolp (car node))
+             (dolist (arg (cdr node))
+               (walk arg bound*)))
+            (t
+             (dolist (child node)
+               (walk child bound*))))))
+      (walk form bound))
+    (nreverse free)))
+
+(defun nelisp-phase47-compiler--lambda-captures (lambda-form)
+  "Return lexical capture candidates for literal LAMBDA-FORM."
+  (let* ((params (nth 1 lambda-form))
+         (bound (nelisp-phase47-compiler--lambda-param-vars params))
+         (body (cddr lambda-form)))
+    (nelisp-phase47-compiler--lambda-free-vars
+     (cons 'progn body) bound)))
+
 (defun nelisp-phase47-compiler--lambda-lift-call (lambda-form arg-forms)
   "Return a direct call to a synthetic defun for LAMBDA-FORM and ARG-FORMS."
   (unless (and (>= (length lambda-form) 3)
@@ -1367,11 +1464,12 @@ macros do not leak into the host Emacs session."
             (list :lambda-lift-param-shape lambda-form)))
   (let* ((name (nelisp-phase47-compiler--lambda-lift-name))
          (params (nth 1 lambda-form))
+         (captures (nelisp-phase47-compiler--lambda-captures lambda-form))
          (body (nelisp-phase47-compiler--body->form
                 (cddr lambda-form)))
          (args (mapcar #'nelisp-phase47-compiler--preprocess-source
-                       arg-forms)))
-    (push `(defun ,name ,params ,body)
+                       (append captures arg-forms))))
+    (push `(defun ,name ,(append captures params) ,body)
           nelisp-phase47-compiler--lambda-lift-hoists)
     (cons name args)))
 
@@ -1384,17 +1482,23 @@ macros do not leak into the host Emacs session."
             (list :lambda-lift-param-shape lambda-form)))
   (let* ((name (nelisp-phase47-compiler--lambda-lift-name))
          (params (nth 1 lambda-form))
+         (captures (nelisp-phase47-compiler--lambda-captures lambda-form))
          (body (nelisp-phase47-compiler--body->form
                 (cddr lambda-form))))
+    (when captures
+      (signal 'nelisp-phase47-compiler-error
+              (list :lambda-lift-designator-captures-pending
+                    lambda-form captures)))
     (push `(defun ,name ,params ,body)
           nelisp-phase47-compiler--lambda-lift-hoists)
     `(function ,name)))
 
 (defun nelisp-phase47-compiler--preprocess-funcall-lambda (sexp)
   "Lambda-lift a literal lambda designator in `(funcall ...)'.
-Only non-capturing lambdas are supported: lifted bodies are compiled as
-ordinary top-level defuns, so any free outer variable remains a normal
-Phase 47 free-symbol error."
+Captured lexical values are threaded into the synthetic direct call as
+leading arguments.  Higher-order designator callbacks still reject
+captures because the builtin callback ABI cannot pass those leading
+arguments without heap closure allocation."
   (let ((lambda-form (nelisp-phase47-compiler--lambda-literal-form
                       (nth 1 sexp))))
     (if (not lambda-form)

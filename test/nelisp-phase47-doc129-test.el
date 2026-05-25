@@ -2786,13 +2786,32 @@
     (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                 (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
 
-(ert-deftest nelisp-phase47-doc129/lambda-lift-capture-still-pending ()
-  "Doc 129.7K: captured lexical variables still wait for closures."
+(ert-deftest nelisp-phase47-doc129/parse-funcall-lambda-lift-capture ()
+  "Doc 129.7R: direct funcall lambda captures thread as leading args."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller (cap x)
+                 (funcall (lambda (y) (+ y cap)) x))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (call-node (nelisp-phase47-compiler--ir-get caller-ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (equal (nelisp-phase47-compiler--ir-get lambda-ir :params)
+                   '(cap y)))
+    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'call))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                (nelisp-phase47-compiler--ir-get lambda-ir :name)))
+    (should (equal (mapcar (lambda (arg)
+                             (nelisp-phase47-compiler--ir-get arg :var))
+                           (nelisp-phase47-compiler--ir-get call-node :args))
+                   '(cap x)))))
+
+(ert-deftest nelisp-phase47-doc129/lambda-lift-captured-setq-still-pending ()
+  "Doc 129.7R: captured mutation still waits for heap closure cells."
   (should-error
    (nelisp-phase47-compiler--parse
-    '(defun caller (x)
-       (let ((cap 1))
-         (funcall (lambda (y) (+ y cap)) x))))
+    '(defun caller (cap x)
+       (funcall (lambda (y) (setq cap y)) x)))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-doc129/e2e-funcall-lambda-lift ()
@@ -2807,6 +2826,23 @@
              (defun caller (x)
                (funcall (lambda (y) (+ y 1)) x))
              (exit (caller 41)))
+           path)
+          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/e2e-funcall-lambda-lift-capture ()
+  "Doc 129.7R: execute direct funcall lambda capture threading."
+  (unless (nelisp-phase47-doc129-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (let ((path (nelisp-phase47-doc129-test--tmp-binary
+               "lambda-lift-capture")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-sexp
+           '(seq
+             (defun caller (cap x)
+               (funcall (lambda (y) (+ y cap)) x))
+             (exit (caller 8 34)))
            path)
           (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
       (ignore-errors (delete-file path)))))
@@ -2841,6 +2877,24 @@
     (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                 (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-lambda-lift-capture ()
+  "Doc 129.7R: direct literal lambda captures thread as leading args."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller (cap x)
+                 ((lambda (y) (* y cap)) x))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (call-node (nelisp-phase47-compiler--ir-get caller-ir :body)))
+    (should (equal (nelisp-phase47-compiler--ir-get lambda-ir :params)
+                   '(cap y)))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                (nelisp-phase47-compiler--ir-get lambda-ir :name)))
+    (should (equal (mapcar (lambda (arg)
+                             (nelisp-phase47-compiler--ir-get arg :var))
+                           (nelisp-phase47-compiler--ir-get call-node :args))
+                   '(cap x)))))
+
 (ert-deftest nelisp-phase47-doc129/e2e-direct-lambda-lift ()
   "Doc 129.7L: execute a direct non-capturing lambda application."
   (unless (nelisp-phase47-doc129-test--linux-p)
@@ -2853,6 +2907,23 @@
              (defun caller (x)
                ((lambda (y) (* y 2)) x))
              (exit (caller 21)))
+           path)
+          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/e2e-direct-lambda-lift-capture ()
+  "Doc 129.7R: execute direct literal lambda capture threading."
+  (unless (nelisp-phase47-doc129-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (let ((path (nelisp-phase47-doc129-test--tmp-binary
+               "direct-lambda-lift-capture")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-sexp
+           '(seq
+             (defun caller (cap x)
+               ((lambda (y) (* y cap)) x))
+             (exit (caller 2 21)))
            path)
           (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
       (ignore-errors (delete-file path)))))
