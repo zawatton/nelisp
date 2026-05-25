@@ -894,6 +894,51 @@ materialized closure temporary."
                :helper nelisp_aot_custom_3_z
                :index 3))))))
 
+(ert-deftest nelisp-phase47-doc129/module-init-plan-combines-descriptors ()
+  "Doc 129.7W: compiler exposes a normalized module-init plan."
+  (let* ((plan
+          (nelisp-phase47-compiler--module-init-plan
+           '(seq
+             (defvar x 42 "doc")
+             (defcustom z 9 "doc" :type 'integer)
+             (defun make_str ((slot :type sexp) bytes len)
+               (sexp-write-str slot bytes len))
+             (defun caller
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name_slot :type sexp)
+                  (cap :type sexp)
+                  (xs :type sexp))
+               (mapcar (lambda (item) (+ item cap)) xs)))))
+         (closure (car (plist-get plan :closure-descriptors)))
+         (root-descriptors (plist-get plan :root-descriptors)))
+    (should (equal (plist-get plan :helper-order)
+                   '(nelisp_aot_var_0_x nelisp_aot_custom_1_z)))
+    (should (equal (plist-get plan :custom-by-helper)
+                   '((nelisp_aot_custom_1_z
+                      :name z
+                      :helper nelisp_aot_custom_1_z
+                      :standard 9
+                      :docstring "doc"
+                      :options (:type (quote integer))))))
+    (should (cl-find-if
+             (lambda (descriptor)
+               (equal descriptor
+                      '(:name make_str
+                        :slots (0)
+                        :param-count 3
+                        :rt-slot-count 0)))
+             root-descriptors))
+    (should (cl-find-if
+             (lambda (descriptor)
+               (eq (plist-get descriptor :name) 'caller))
+             root-descriptors))
+    (should (eq (plist-get closure :name) 'nelisp_aot_closure_0))
+    (should (equal (plist-get closure :arglist) '(item)))
+    (should (equal (plist-get closure :captures) '(cap)))))
+
 (ert-deftest nelisp-phase47-doc129/top-level-defcustom-rejects-bad-options ()
   "Doc 129.3G: defcustom metadata options are keyword/value pairs."
   (should-error

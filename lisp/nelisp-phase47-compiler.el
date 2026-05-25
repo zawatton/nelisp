@@ -93,6 +93,7 @@
 (require 'macroexp)
 (require 'nelisp-asm-arm64)
 (require 'nelisp-asm-x86_64)
+(require 'nelisp-cc-runtime)
 (require 'nelisp-elf-write)
 (require 'nelisp-sexp-layout)
 
@@ -1304,6 +1305,19 @@ value expression, docstring, and customization keyword plist."
              (nelisp-phase47-compiler--special-vars special-vars))
          (nelisp-phase47-compiler--preprocess-source source)
          (nreverse nelisp-phase47-compiler--closure-lift-descriptors))))))
+
+(defun nelisp-phase47-compiler--module-init-plan (sexp)
+  "Return the normalized Doc 129/Doc 99 module-init plan for SEXP.
+This is the compiler-side handoff that combines top-level variable init
+helpers, defcustom metadata, GC root descriptors, and AOT closure
+descriptors into the runtime plan consumed by
+`nelisp-cc-runtime-run-aot-module-init-plan'."
+  (let ((ir (nelisp-phase47-compiler--parse sexp nil)))
+    (nelisp-cc-runtime-aot-module-init-plan
+     (nelisp-phase47-compiler--init-helper-descriptors sexp)
+     (nelisp-phase47-compiler--custom-metadata-descriptors sexp)
+     (nelisp-phase47-compiler--gc-root-descriptors ir)
+     (nelisp-phase47-compiler--closure-descriptors sexp))))
 
 (defun nelisp-phase47-compiler--with-defmacros (defs thunk)
   "Temporarily install DEFS while calling THUNK.
