@@ -2515,8 +2515,10 @@ the whole program."
                        cl-rassoc-if cl-rassoc-if-not cl-substitute-if
                        cl-substitute-if-not cl-nsubstitute-if
                        cl-nsubstitute-if-not cl-map cl-sort cl-stable-sort
-                       cl-merge cl-union cl-intersection
+                       cl-merge cl-union cl-intersection cl-nunion
+                       cl-nintersection
                        cl-set-difference cl-set-exclusive-or cl-subsetp
+                       cl-nset-difference cl-nset-exclusive-or
                        cl-member cl-assoc cl-rassoc
                        cl-tree-equal
                        cl-position cl-find cl-count cl-mismatch cl-search
@@ -2693,7 +2695,9 @@ defun is visible in the current compile unit.")
     cl-rest cl-copy-list cl-list* cl-acons cl-pairlis cl-adjoin
     cl-endp cl-list-length cl-subseq cl-concatenate
     cl-revappend cl-nreconc cl-tailp cl-ldiff
-    cl-union cl-intersection cl-set-difference cl-set-exclusive-or
+    cl-union cl-intersection cl-nunion cl-nintersection
+    cl-set-difference cl-set-exclusive-or
+    cl-nset-difference cl-nset-exclusive-or
     cl-subsetp cl-member cl-assoc cl-rassoc
     cl-tree-equal
     cl-position cl-find cl-count cl-mismatch cl-search

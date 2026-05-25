@@ -2089,8 +2089,12 @@ materialized closure temporary."
                   (cl-ldiff (cl-ldiff a b))
                   (cl-union (cl-union a b))
                   (cl-intersection (cl-intersection a b))
+                  (cl-nunion (cl-nunion a b))
+                  (cl-nintersection (cl-nintersection a b))
                   (cl-set-difference (cl-set-difference a b))
                   (cl-set-exclusive-or (cl-set-exclusive-or a b))
+                  (cl-nset-difference (cl-nset-difference a b))
+                  (cl-nset-exclusive-or (cl-nset-exclusive-or a b))
                   (cl-subsetp (cl-subsetp a b))
                   (cl-member (cl-member a b))
                   (cl-assoc (cl-assoc a b))
@@ -2437,7 +2441,15 @@ materialized closure temporary."
                   ((cl-remove-duplicates xs :test #'eq)
                    keyword-slot 7 8 ":test" "eq")
                   ((cl-delete-duplicates xs :key #'car)
-                   keyword-slot 7 8 ":key" "car")))
+                   keyword-slot 7 8 ":key" "car")
+                  ((cl-nunion xs ys :test #'eq)
+                   keyword-slot 8 9 ":test" "eq")
+                  ((cl-nintersection xs ys :key #'car)
+                   keyword-slot 8 9 ":key" "car")
+                  ((cl-nset-difference xs ys :test #'eq)
+                   keyword-slot 8 9 ":test" "eq")
+                  ((cl-nset-exclusive-or xs ys :key #'car)
+                   keyword-slot 8 9 ":key" "car")))
     (pcase-let ((`(,form ,keyword-slot ,keyword-arg-index
                          ,fn-arg-index ,keyword-name ,fn-name)
                  case))
@@ -2450,7 +2462,8 @@ materialized closure temporary."
                         (name_slot :type sexp)
                         (,keyword-slot :type sexp)
                         (item :type sexp)
-                        (xs :type sexp))
+                        (xs :type sexp)
+                        (ys :type sexp))
                      ,form)))
              (body (nelisp-phase47-compiler--ir-get ir :body))
              (forms (nelisp-phase47-compiler--ir-get body :forms))
@@ -3063,6 +3076,47 @@ materialized closure temporary."
                 'keyword_slot))
     (should (eq (nelisp-phase47-compiler--ir-get
                  (nth 8 call-args)
+                 :var)
+                'scratch))))
+
+(ert-deftest nelisp-phase47-doc129/parse-cl-lib-destructive-set-keyword-lambda-lift ()
+  "Doc 129.6AN: cl-lib destructive set keyword lambdas lift to defuns."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (keyword_slot :type sexp)
+                    (xs :type sexp)
+                    (ys :type sexp))
+                 (cl-nunion xs ys :test (lambda (a b) a)))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (test-lambda (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (kw-symbol (nth 1 body-forms))
+         (test-symbol (nth 2 body-forms))
+         (call-node (nth 3 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get kw-symbol :bytes)
+                   (string-to-list ":test")))
+    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 8 call-args)
+                 :var)
+                'keyword_slot))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 9 call-args)
                  :var)
                 'scratch))))
 
@@ -3739,6 +3793,32 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_cl_remove_duplicates" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-destructive-set-keyword-designator ()
+  "Doc 129.6AN: object output exposes destructive set callbacks."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cl-lib-destructive-set-keyword-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_cl_nunion
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (keyword_slot :type sexp)
+                 (xs :type sexp)
+                 (ys :type sexp))
+              (cl-nunion xs ys :test #'foo))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_cl_nunion" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
