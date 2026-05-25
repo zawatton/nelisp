@@ -3450,6 +3450,51 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-get (nth 3 args) :var)
                 'cap))))
 
+(ert-deftest nelisp-phase47-doc129/parse-aot-frame-slot-ref-set ()
+  "Doc 129.7AG: frame-slot forms lower to the runtime ABI bridges."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (cap :type sexp))
+                 (seq
+                  (aot-frame-slot-set 'cap cap)
+                  (aot-frame-slot-ref 'cap)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (set-seq (nth 0 forms))
+         (ref-seq (nth 1 forms))
+         (set-call (nth 1 (nelisp-phase47-compiler--ir-get
+                           set-seq :forms)))
+         (ref-call (nth 1 (nelisp-phase47-compiler--ir-get
+                           ref-seq :forms)))
+         (set-args (nelisp-phase47-compiler--ir-get set-call :args))
+         (ref-args (nelisp-phase47-compiler--ir-get ref-call :args))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind set-seq) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get set-call :name)
+                'nelisp_aot_frame_slot_set))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 set-args) :var)
+                'scratch))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 3 set-args) :var)
+                'cap))
+    (should (eq (nelisp-phase47-compiler--ir-get ref-call :name)
+                'nelisp_aot_frame_slot_ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 ref-args) :var)
+                'scratch))
+    (should (member 'nelisp_aot_frame_slot_set externs))
+    (should (member 'nelisp_aot_frame_slot_ref externs))))
+
+(ert-deftest nelisp-phase47-doc129/aot-frame-slot-requires-boundary ()
+  "Doc 129.7AG: frame-slot forms require boxed boundary slots."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun caller (cap)
+       (aot-frame-slot-set 'cap cap)))
+   :type 'nelisp-phase47-compiler-error))
+
 (ert-deftest nelisp-phase47-doc129/e2e-funcall-lambda-lift ()
   "Doc 129.7K: execute a non-capturing lambda-lifted funcall."
   (unless (nelisp-phase47-doc129-test--linux-p)
@@ -3563,6 +3608,31 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "nelisp_aot_capture_cell" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-aot-frame-slot-ref-set ()
+  "Doc 129.7AG: object output exposes frame-slot ABI relocations."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-frame-slot-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp))
+              (seq
+               (aot-frame-slot-set 'cap cap)
+               (aot-frame-slot-ref 'cap)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_frame_slot_set" out))
+            (should (string-match-p "nelisp_aot_frame_slot_ref" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 

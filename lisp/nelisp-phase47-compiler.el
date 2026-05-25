@@ -2614,6 +2614,79 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--aot-frame-slot-lowering
+    (slot-form fenv sexp)
+  "Return plist for lowering SLOT-FORM as a Doc 129 hash-FRAMES key."
+  (let ((sym (nelisp-phase47-compiler--aot-quoted-symbol slot-form)))
+    (if sym
+        (let ((scratch
+               (or (and (nelisp-phase47-compiler--fenv-has-symbol-p
+                         fenv 'scratch)
+                        'scratch)
+                   (signal 'nelisp-phase47-compiler-error
+                           (list :aot-frame-slot-boundary-missing
+                                 '(scratch)
+                                 :form sexp)))))
+          (list :slot-expr scratch
+                :prefix `((sexp-write-symbol-lit
+                           ,scratch
+                           ,(symbol-name sym)))))
+      (list :slot-expr slot-form
+            :prefix nil))))
+
+(defun nelisp-phase47-compiler--parse-aot-frame-slot-ref
+    (sexp env fenv defuns)
+  "Lower internal `(aot-frame-slot-ref SLOT)' through the AOT bridge."
+  (unless (= (length sexp) 2)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-frame-slot-ref-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-closure-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (slot-lowering
+          (nelisp-phase47-compiler--aot-frame-slot-lowering
+           (nth 1 sexp) fenv sexp))
+         (slot (plist-get slot-lowering :slot-expr))
+         (prefix (plist-get slot-lowering :prefix)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       ,@prefix
+       (extern-call nelisp_aot_frame_slot_ref
+                    ,mirror ,frames ,slot ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
+(defun nelisp-phase47-compiler--parse-aot-frame-slot-set
+    (sexp env fenv defuns)
+  "Lower internal `(aot-frame-slot-set SLOT VALUE)' through the AOT bridge."
+  (unless (= (length sexp) 3)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-frame-slot-set-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-closure-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (slot-lowering
+          (nelisp-phase47-compiler--aot-frame-slot-lowering
+           (nth 1 sexp) fenv sexp))
+         (slot (plist-get slot-lowering :slot-expr))
+         (prefix (plist-get slot-lowering :prefix))
+         (value (nth 2 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       ,@prefix
+       (extern-call nelisp_aot_frame_slot_set
+                    ,mirror ,frames ,slot ,value ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--parse-aot-funcall1
     (sexp env fenv defuns)
   "Lower `(funcall FN ARG)' through the Doc 129.7 one-arg dispatcher."
@@ -4115,6 +4188,14 @@ functions `((NAME . ARITY) ...)'."
    ;; into a heap closure descriptor.
    ((and (consp sexp) (eq (car sexp) 'aot-capture-cell))
     (nelisp-phase47-compiler--parse-aot-capture-cell
+     sexp env fenv defuns))
+   ;; Doc 129.7AG: explicit compiler-side access to the hash-FRAMES
+   ;; slot ABI used by native object frame writers.
+   ((and (consp sexp) (eq (car sexp) 'aot-frame-slot-ref))
+    (nelisp-phase47-compiler--parse-aot-frame-slot-ref
+     sexp env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'aot-frame-slot-set))
+    (nelisp-phase47-compiler--parse-aot-frame-slot-set
      sexp env fenv defuns))
    ;; Doc 129.8L: internal bridge for source `catch' landing values.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-value))
