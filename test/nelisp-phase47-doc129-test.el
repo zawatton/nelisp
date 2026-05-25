@@ -1722,6 +1722,70 @@
     (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
+(ert-deftest nelisp-phase47-doc129/parse-mapcan-lambda-lift ()
+  "Doc 129.7N: `mapcan' literal lambdas lift to synthetic defuns."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (xs :type sexp))
+                 (mapcan (lambda (x) x) xs))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (fn-symbol (nth 1 body-forms))
+         (call-node (nth 2 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+                'scratch))))
+
+(ert-deftest nelisp-phase47-doc129/parse-sort-lambda-lift ()
+  "Doc 129.7N: `sort' predicate lambdas lift to synthetic defuns."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (xs :type sexp))
+                 (sort xs (lambda (a b) (< a b))))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (fn-symbol (nth 1 body-forms))
+         (call-node (nth 2 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 call-args))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
+                'scratch))))
+
 (ert-deftest nelisp-phase47-doc129/map-lambda-lift-capture-still-pending ()
   "Doc 129.7M: map lambda lifting still rejects captured variables."
   (should-error
@@ -1735,6 +1799,21 @@
           (cap :type sexp)
           (xs :type sexp))
        (mapcar (lambda (x) (+ x cap)) xs)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/sort-lambda-lift-capture-still-pending ()
+  "Doc 129.7N: `sort' lambda lifting still rejects captured variables."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun caller
+         ((out :type sexp)
+          (mirror :type sexp)
+          (frames :type sexp)
+          (scratch :type sexp)
+          (name_slot :type sexp)
+          (cap :type sexp)
+          (xs :type sexp))
+       (sort xs (lambda (a b) (< (+ a cap) b)))))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
@@ -1868,6 +1947,54 @@
                  (name_slot :type sexp)
                  (xs :type sexp))
               (mapcar (lambda (x) (+ x 1)) xs))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "caller" out))
+            (should (string-match-p "nelisp_aot_lambda_0" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-mapcan-lambda-lift ()
+  "Doc 129.7N: object output exposes mapcan lambda-lift defuns."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-mapcan-lambda-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (xs :type sexp))
+              (mapcan (lambda (x) x) xs))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "caller" out))
+            (should (string-match-p "nelisp_aot_lambda_0" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-sort-lambda-lift ()
+  "Doc 129.7N: object output exposes sort predicate lambda-lift defuns."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-sort-lambda-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (xs :type sexp))
+              (sort xs (lambda (a b) (< a b))))
            path)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output

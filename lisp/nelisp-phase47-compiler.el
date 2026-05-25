@@ -1404,19 +1404,30 @@ Phase 47 free-symbol error."
       (nelisp-phase47-compiler--lambda-lift-call
        lambda-form (nthcdr 2 sexp)))))
 
-(defun nelisp-phase47-compiler--preprocess-map-lambda (sexp)
-  "Lambda-lift a literal function argument in map-family SEXP."
-  (let ((lambda-form (nelisp-phase47-compiler--lambda-literal-form
-                      (nth 1 sexp))))
+(defun nelisp-phase47-compiler--preprocess-builtinn-lambda (sexp)
+  "Lambda-lift a literal function-designator argument in builtin SEXP."
+  (let* ((builtin (car sexp))
+         (args (cdr sexp))
+         (designator-index
+          (cdr (assq builtin
+                     nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes)))
+         (lambda-form
+          (and designator-index
+               (< designator-index (length args))
+               (nelisp-phase47-compiler--lambda-literal-form
+                (nth designator-index args)))))
     (if (not lambda-form)
-        (cons (car sexp)
+        (cons builtin
               (mapcar #'nelisp-phase47-compiler--preprocess-source
-                      (cdr sexp)))
-      (cons (car sexp)
-            (cons (nelisp-phase47-compiler--lambda-lift-designator
-                   lambda-form)
-                  (mapcar #'nelisp-phase47-compiler--preprocess-source
-                          (nthcdr 2 sexp)))))))
+                      args))
+      (cons builtin
+            (cl-loop for arg in args
+                     for idx from 0
+                     collect
+                     (if (= idx designator-index)
+                         (nelisp-phase47-compiler--lambda-lift-designator
+                          lambda-form)
+                       (nelisp-phase47-compiler--preprocess-source arg)))))))
 
 (defun nelisp-phase47-compiler--body->form (body)
   "Normalize BODY forms into one Phase 47 form."
@@ -1803,8 +1814,8 @@ the whole program."
    ((eq (car sexp) 'function) sexp)
    ((eq (car sexp) 'funcall)
     (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
-   ((memq (car sexp) '(mapcar mapc mapconcat))
-    (nelisp-phase47-compiler--preprocess-map-lambda sexp))
+   ((memq (car sexp) '(mapcar mapc mapconcat mapcan sort))
+    (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
    ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
     (nelisp-phase47-compiler--lambda-lift-call
      (nelisp-phase47-compiler--lambda-literal-form (car sexp))
