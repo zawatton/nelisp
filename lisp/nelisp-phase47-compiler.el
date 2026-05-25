@@ -4173,6 +4173,23 @@ contain no unresolved non-local source form."
                        else))))))
      (t nil))))
 
+(defun nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+    (sexp)
+  "Return non-nil when every leaf in cleanup tree SEXP exits non-locally."
+  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+    (cond
+     ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form sexp) t)
+     ((and (consp sexp)
+           (eq (car sexp) 'if)
+           (= (length sexp) 4)
+           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (nth 1 sexp))))
+      (and (nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+            (nth 2 sexp))
+           (nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+            (nth 3 sexp))))
+     (t nil))))
+
 (defun nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
     (cleanups)
   "Return non-nil when CLEANUPS can be routed by cleanup-body lowering."
@@ -4187,8 +4204,10 @@ contain no unresolved non-local source form."
            ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
              form)
             (unless
-                (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
-                 (cdr forms))
+                (or (nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+                     form)
+                    (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+                     (cdr forms)))
               (throw 'unsafe nil))
             (setq forms nil))
            ((nelisp-phase47-compiler--aot-nonlocal-source-form-p form)
