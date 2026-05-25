@@ -2409,6 +2409,30 @@ materialized closure temporary."
        (symbol-name arg)))
    :type 'nelisp-phase47-compiler-error))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-tag-predicate-without-boundary ()
+  "Doc 129.6AT: simple predicates lower via Sexp tags without boundary slots."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun not_consp ((arg :type sexp))
+                 (not (consp arg)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'cmp))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (nelisp-phase47-compiler--ir-get body :a))
+                'cmp))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (nelisp-phase47-compiler--ir-get
+                 (nelisp-phase47-compiler--ir-get body :a)
+                 :a))
+                'sexp-tag))))
+
+(ert-deftest nelisp-phase47-doc129/parse-raw-t-literal-value ()
+  "Doc 129.2C: raw value context treats source `t' as integer true."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun always () t)))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
+    (should (= (nelisp-phase47-compiler--ir-get body :value) 1))))
+
 (ert-deftest nelisp-phase47-doc129/object-direct-builtin1-user-call ()
   "Doc 129.6D: object output for direct builtin calls exposes dispatcher relocs."
   (skip-unless (executable-find "readelf"))
@@ -11314,6 +11338,25 @@ materialized closure temporary."
              (exit 17))
            path)
           (should (= (nelisp-phase47-doc129-test--run-binary path) 17)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/e2e-local-setq-runtime-let ()
+  "Doc 129.4E: local `setq' updates a runtime let frame slot."
+  (unless (nelisp-phase47-doc129-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (let ((path (nelisp-phase47-doc129-test--tmp-binary "local-setq")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-sexp
+           '(seq
+             (defun bump (x)
+               (let ((i 0))
+                 (seq
+                  (setq i (+ i x))
+                  i)))
+             (exit (bump 7)))
+           path)
+          (should (= (nelisp-phase47-doc129-test--run-binary path) 7)))
       (ignore-errors (delete-file path)))))
 
 (provide 'nelisp-phase47-doc129-test)

@@ -402,6 +402,7 @@ folding).  Falls through cheaply (= no recursion into call args)
 because §97.b only folds the same shapes v1 did."
   (cond
    ((integerp sexp) t)
+   ((eq sexp t) t)
    ((symbolp sexp)
     (and (not (assq sexp fenv))
          (assq sexp env)))
@@ -417,6 +418,7 @@ Caller has already verified foldability via
 `nelisp-phase47-compiler--int-foldable-p'."
   (cond
    ((integerp sexp) sexp)
+   ((eq sexp t) 1)
    ((symbolp sexp) (cdr (assq sexp env)))
    ((consp sexp)
     (let ((op (car sexp))
@@ -620,6 +622,7 @@ at its kind-fixed offset since per-kind layout is constant."
     (aot-landing-label . 93)
     (aot-machine-landing-jump . 94)
     (aot-current-sp . 95)
+    (setq-local . 96)
     (logic . 33)
     (mut-str-finalize . 34)
     (mut-str-len . 35)
@@ -2282,6 +2285,53 @@ path instead of by-value lambda lifting."
         (push (car binding) vars))))
     (nreverse vars)))
 
+(defun nelisp-phase47-compiler--form-setqs-var-p (form var)
+  "Return non-nil when FORM directly contains `(setq VAR ...)'."
+  (let ((found nil))
+    (cl-labels
+        ((walk-body (forms)
+           (dolist (child forms)
+             (walk child)))
+         (walk (node)
+           (cond
+            ((or found (atom node)) nil)
+            ((memq (car node) '(quote function)) nil)
+            ((eq (car node) 'setq)
+             (let ((pairs (cdr node)))
+               (while pairs
+                 (when (eq (car pairs) var)
+                   (setq found t))
+                 (when (cdr pairs)
+                   (walk (cadr pairs)))
+                 (setq pairs (cddr pairs)))))
+            ((eq (car node) 'let)
+             (let ((bindings (nth 1 node)))
+               (dolist (binding bindings)
+                 (when (and (consp binding) (consp (cdr binding)))
+                   (walk (cadr binding))))
+               (unless (memq var (nelisp-phase47-compiler--let-binding-vars
+                                  bindings))
+                 (walk-body (nthcdr 2 node)))))
+            ((eq (car node) 'let*)
+             (let ((bindings (nth 1 node))
+                   (shadowed nil))
+               (dolist (binding bindings)
+                 (when (and (consp binding) (consp (cdr binding)))
+                   (unless shadowed
+                     (walk (cadr binding))))
+                 (when (eq (if (symbolp binding) binding (car-safe binding))
+                           var)
+                   (setq shadowed t)))
+               (unless shadowed
+                 (walk-body (nthcdr 2 node)))))
+            ((memq (car node) '(defun defmacro lambda))
+             nil)
+            (t
+             (dolist (child node)
+               (walk child))))))
+      (walk form))
+    found))
+
 (defun nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars (forms)
   "Return captured vars definitely updated after sequential FORMS."
   (let (guaranteed)
@@ -3203,6 +3253,68 @@ the whole program."
   "One-argument builtins that may lower through Doc 129.6 delegation.
 These names are direct-call candidates only when no same-named Phase 47
 defun is visible in the current compile unit.")
+
+(defconst nelisp-phase47-compiler--aot-direct-tag-predicate-symbols
+  '(not null atom consp listp symbolp numberp integerp float stringp vectorp)
+  "One-argument predicates that can lower without the AOT builtin boundary.
+These produce raw i64 booleans through `sexp-tag' comparisons and are
+used only when the current defun does not expose the dispatcher
+boundary slots.")
+
+(defun nelisp-phase47-compiler--aot-builtin-boundary-available-p (fenv)
+  "Return non-nil when FENV has the standard AOT builtin boundary slots."
+  (and (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'out)
+       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'mirror)
+       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'frames)
+       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'scratch)
+       (or (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'name-slot)
+           (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'name_slot))))
+
+(defun nelisp-phase47-compiler--aot-direct-raw-bool-form-p (form)
+  "Return non-nil when FORM is known to produce a raw i64 boolean."
+  (or (and (consp form) (memq (car form) '(< > <= >= =)))
+      (and (consp form)
+           (memq (car form)
+                 nelisp-phase47-compiler--aot-direct-tag-predicate-symbols))))
+
+(defun nelisp-phase47-compiler--aot-direct-tag-predicate-form (sexp)
+  "Return a boundary-free lowering for simple one-argument predicate SEXP."
+  (when (and (consp sexp)
+             (= (length sexp) 2)
+             (memq (car sexp)
+                   nelisp-phase47-compiler--aot-direct-tag-predicate-symbols))
+    (let ((op (car sexp))
+          (arg (cadr sexp)))
+      (pcase op
+        ('not
+         (if (nelisp-phase47-compiler--aot-direct-raw-bool-form-p arg)
+             `(= ,arg 0)
+           `(= (sexp-tag ,arg) ,nelisp-sexp--tag-nil)))
+        ('null
+         `(= (sexp-tag ,arg) ,nelisp-sexp--tag-nil))
+        ('consp
+         `(= (sexp-tag ,arg) ,nelisp-sexp--tag-cons))
+        ('atom
+         `(not (consp ,arg)))
+        ('listp
+         `(or (= (sexp-tag ,arg) ,nelisp-sexp--tag-nil)
+              (= (sexp-tag ,arg) ,nelisp-sexp--tag-cons)))
+        ('symbolp
+         `(or (= (sexp-tag ,arg) ,nelisp-sexp--tag-nil)
+              (= (sexp-tag ,arg) ,nelisp-sexp--tag-symbol)))
+        ('integerp
+         `(= (sexp-tag ,arg) ,nelisp-sexp--tag-int))
+        ('float
+         `(= (sexp-tag ,arg) ,nelisp-sexp--tag-float))
+        ('numberp
+         `(or (= (sexp-tag ,arg) ,nelisp-sexp--tag-int)
+              (= (sexp-tag ,arg) ,nelisp-sexp--tag-float)))
+        ('stringp
+         `(or (= (sexp-tag ,arg) ,nelisp-sexp--tag-str)
+              (= (sexp-tag ,arg) ,nelisp-sexp--tag-mut-str)))
+        ('vectorp
+         `(= (sexp-tag ,arg) ,nelisp-sexp--tag-vector))
+        (_ nil)))))
 
 (defconst nelisp-phase47-compiler--aot-builtinn-delegation-symbols
   '(list vector concat append
@@ -6920,6 +7032,44 @@ functions `((NAME . ARITY) ...)'."
               :slot (plist-get info :slot)
               :class (or (plist-get info :class) 'gp)
               :root-p (plist-get info :root-p)))))
+   ;; Doc 129.4E: local runtime `setq' in value context.  This covers
+   ;; loop counters and accumulators stored in defun frame slots; global
+   ;; and special-variable mutation still require the full value-cell
+   ;; bridge and intentionally fall through to the existing error path.
+   ((and (consp sexp) (eq (car sexp) 'setq)
+         (let ((pairs (cdr sexp))
+               (ok (consp (cdr sexp))))
+           (while (and ok pairs)
+             (setq ok (and (consp (cdr pairs))
+                           (symbolp (car pairs))
+                           (let ((pcell (assq (car pairs) fenv)))
+                             (and pcell
+                                  (eq (or (plist-get (cdr pcell) :class)
+                                          'gp)
+                                      'gp)
+                                  (integerp (plist-get (cdr pcell)
+                                                       :slot))))))
+             (setq pairs (cddr pairs)))
+           ok))
+    (let ((pairs (cdr sexp))
+          (forms nil))
+      (while pairs
+        (let* ((var (car pairs))
+               (pcell (assq var fenv))
+               (slot (plist-get (cdr pcell) :slot))
+               (value-ir (nelisp-phase47-compiler--parse-value
+                          (cadr pairs) env fenv defuns)))
+          (push (nelisp-phase47-compiler--make-ir 'setq-local
+                       :var var
+                       :slot slot
+                       :value-ir value-ir)
+                forms))
+        (setq pairs (cddr pairs)))
+      (let ((ordered (nreverse forms)))
+        (if (= (length ordered) 1)
+            (car ordered)
+          (nelisp-phase47-compiler--make-ir 'value-seq
+                :forms ordered)))))
    ;; Arithmetic with at least one non-constant operand.  Doc 100
    ;; §100.D extends the op set with 3 bitwise binops (logior /
    ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
@@ -7126,6 +7276,22 @@ functions `((NAME . ARITY) ...)'."
      sexp env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'aot-current-sp))
     (nelisp-phase47-compiler--parse-aot-current-sp sexp))
+   ;; Doc 129.6AT — boundary-free tag predicate lowering.  Ordinary
+   ;; helper functions in user .el often call `(consp x)' / `(not ...)'
+   ;; before they have the AOT dispatcher boundary parameters.  These
+   ;; simple predicates can lower directly to `sexp-tag' comparisons.
+   ((and (consp sexp)
+         (memq (car sexp)
+               nelisp-phase47-compiler--aot-direct-tag-predicate-symbols)
+         (not (assq (car sexp) defuns))
+         (not (nelisp-phase47-compiler--aot-builtin-boundary-available-p
+               fenv)))
+    (let ((lowered
+           (nelisp-phase47-compiler--aot-direct-tag-predicate-form sexp)))
+      (unless lowered
+        (signal 'nelisp-phase47-compiler-error
+                (list :aot-direct-predicate-shape sexp)))
+      (nelisp-phase47-compiler--parse-value lowered env fenv defuns)))
    ;; Doc 129.6D — first direct user-call lowering for one-argument
    ;; builtins.  The surrounding defun must expose the boxed-boundary
    ;; slots used by the 129.6B helper, so ordinary `(symbol-name arg)'
@@ -8438,7 +8604,9 @@ functions `((NAME . ARITY) ...)'."
               (nelisp-phase47-compiler--parse-aot-special-let-normal-exit
                var val-sexp body-sexp env fenv defuns sexp)
             (nelisp-phase47-compiler--check-let-var-lexical var)
-            (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+            (if (and (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+                     (not (nelisp-phase47-compiler--form-setqs-var-p
+                           body-sexp var)))
               ;; Compile-time path: fold and extend ENV as before.
               (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
                      (new-env (cons (cons var val) env)))
@@ -8591,7 +8759,9 @@ Returns one of:
               (nelisp-phase47-compiler--parse-aot-special-let-normal-exit
                var val-sexp body env fenv defuns sexp)
             (nelisp-phase47-compiler--check-let-var-lexical var)
-            (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+            (if (and (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+                     (not (nelisp-phase47-compiler--form-setqs-var-p
+                           body var)))
               (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
                      (new-env (cons (cons var val) env))
                      (body-ir (nelisp-phase47-compiler--parse-stmt
@@ -8839,6 +9009,8 @@ defun bodies too so functions can call `write'."
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
                ((= tag 88)            ; value-seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+               ((= tag 96)            ; setq-local
+                (walk (nelisp-phase47-compiler--ir-get node :value-ir)))
                ((= tag 93)            ; aot-landing-label
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
                ((= tag 94)            ; aot-machine-landing-jump
@@ -8927,6 +9099,8 @@ when two `table-define' nodes share a NAME."
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
                ((= tag 88)            ; value-seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+               ((= tag 96)            ; setq-local
+                (walk (nelisp-phase47-compiler--ir-get node :value-ir)))
                ((= tag 93)            ; aot-landing-label
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
                ((= tag 94)            ; aot-machine-landing-jump
@@ -8976,6 +9150,10 @@ walk; the emitter substitutes a no-op for the original site."
                 (dolist (binding (nelisp-phase47-compiler--ir-get node :bindings))
                   (walk (nth 2 binding)))
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
+               ((= tag 88)            ; value-seq
+                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+               ((= tag 96)            ; setq-local
+                (walk (nelisp-phase47-compiler--ir-get node :value-ir)))
                ((= tag 92)            ; aot-root-scope
                 (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :push-ir))
@@ -9561,6 +9739,9 @@ the node's class to consume the result correctly."
         ((= tag 88)             ; value-seq
          (dolist (child (nelisp-phase47-compiler--ir-get node :forms))
            (nelisp-phase47-compiler--emit-value child buf)))
+        ((= tag 96)             ; setq-local
+         (nelisp-phase47-compiler--emit-aarch64-unsupported
+          'setq-local node))
         ((= tag 93)             ; aot-landing-label
          (nelisp-phase47-compiler--emit-aot-landing-label node buf))
         ((= tag 94)             ; aot-machine-landing-jump
@@ -9805,6 +9986,14 @@ the node's class to consume the result correctly."
       ((= tag 88)               ; value-seq
        (dolist (child (nelisp-phase47-compiler--ir-get node :forms))
          (nelisp-phase47-compiler--emit-value child buf)))
+      ((= tag 96)               ; setq-local
+       ;; Evaluate RHS into rax, spill it back into the local frame slot,
+       ;; and leave rax live so `(setq x v)' is itself value-producing.
+       (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
+              (disp (- (* 8 (1+ slot)))))
+         (nelisp-phase47-compiler--emit-value
+          (nelisp-phase47-compiler--ir-get node :value-ir) buf)
+         (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)))
       ((= tag 93)               ; aot-landing-label
        (nelisp-phase47-compiler--emit-aot-landing-label node buf))
       ((= tag 94)               ; aot-machine-landing-jump
@@ -12498,7 +12687,7 @@ skipped here — they're emitted separately by the orchestrator."
       ((= tag 5)                ; call
        ;; Statement-context call discards rax.
        (nelisp-phase47-compiler--emit-call ir buf))
-      ((memq tag '(29 86 11 33 88 10 1 67 90 91 93 94 95)) ; if while cond logic value-seq cmp arith shift sexp-write-symbol-lit sexp-write-str-lit aot-landing-label aot-machine-landing-jump aot-current-sp
+      ((memq tag '(29 86 11 33 88 96 10 1 67 90 91 93 94 95)) ; if while cond logic value-seq setq-local cmp arith shift sexp-write-symbol-lit sexp-write-str-lit aot-landing-label aot-machine-landing-jump aot-current-sp
        ;; §97.c: value-producing control-flow / comparison form
        ;; reached statement position (= `seq' child, top-level).
        ;; Emit the value compute; rax is discarded by the

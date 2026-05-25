@@ -130,7 +130,7 @@ Caller is responsible for `delete-file' on cleanup."
 (ert-deftest nelisp-phase47-compiler/parse-unknown-form-errors ()
   "An unrecognised form head signals an error."
   (should-error
-   (nelisp-phase47-compiler--parse '(if t 1 2))
+   (nelisp-phase47-compiler--parse '(exit (unknown-form 1)))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-compiler/parse-status-out-of-range ()
