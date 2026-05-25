@@ -3973,6 +3973,38 @@ ordinary fallthrough code after a simulated non-local exit."
      (car sexp) (cdr sexp)))
    (t sexp)))
 
+(defun nelisp-phase47-compiler--aot-protected-body-forms (sexp)
+  "Return source-level protected body SEXP as flattened `progn' / `seq' forms."
+  (if (and (consp sexp)
+           (memq (car sexp) '(progn seq)))
+      (apply #'append
+             (mapcar
+              #'nelisp-phase47-compiler--aot-protected-body-forms
+              (cdr sexp)))
+    (list sexp)))
+
+(defun nelisp-phase47-compiler--aot-protected-body-split (sexp)
+  "Return safe `progn' / `seq' split metadata for protected body SEXP.
+The returned plist has `:prefix' and `:tail'.  Prefix forms must not
+contain source non-local forms because cleanup routing is selected from
+the tail."
+  (let ((forms
+         (nelisp-phase47-compiler--aot-protected-body-forms sexp)))
+    (when forms
+      (let ((prefix (butlast forms))
+            (tail (car (last forms))))
+        (when (not (cl-some
+                    #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                    prefix))
+          (list :prefix prefix :tail tail))))))
+
+(defun nelisp-phase47-compiler--aot-protected-body-with-prefix
+    (prefix tail)
+  "Return TAIL preceded by protected-body PREFIX forms."
+  (if prefix
+      `(seq ,@prefix ,tail)
+    tail))
+
 (defun nelisp-phase47-compiler--aot-catch-direct-throw-form (tag body-forms)
   "Return BODY-FORMS' direct throw form when it targets TAG, or nil."
   (when (and (= (length body-forms) 1)
@@ -4363,10 +4395,14 @@ source form."
   (when (and (= (length body-forms) 1)
              (consp (car body-forms))
              (eq (caar body-forms) 'unwind-protect)
-             (>= (length (car body-forms)) 2)
-             (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
-              tag (nth 1 (car body-forms))))
-    (car body-forms)))
+             (>= (length (car body-forms)) 2))
+    (let ((split
+           (nelisp-phase47-compiler--aot-protected-body-split
+            (nth 1 (car body-forms)))))
+      (when (and split
+                 (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+                  tag (plist-get split :tail)))
+        (car body-forms)))))
 
 (defun nelisp-phase47-compiler--aot-catch-conditional-unwind-throw-form
     (tag body-forms)
@@ -4376,11 +4412,14 @@ source form."
              (eq (caar body-forms) 'unwind-protect)
              (>= (length (car body-forms)) 2))
     (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form
-                 (nth 1 (car body-forms)))))
-      (when (nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p
-             tag tree)
-        (cons 'unwind-protect
-              (cons tree (nthcdr 2 (car body-forms))))))))
+                 (plist-get
+                  (nelisp-phase47-compiler--aot-protected-body-split
+                   (nth 1 (car body-forms)))
+                  :tail))))
+      (when (and tree
+                 (nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p
+                  tag tree))
+        (car body-forms)))))
 
 (defun nelisp-phase47-compiler--aot-catch-conditional-unwind-form
     (tag body-forms)
@@ -4390,13 +4429,16 @@ source form."
              (eq (caar body-forms) 'unwind-protect)
              (>= (length (car body-forms)) 2))
     (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form
-                 (nth 1 (car body-forms)))))
-      (when (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
-                 tag tree)
-                (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
-                 tag tree))
-        (cons 'unwind-protect
-              (cons tree (nthcdr 2 (car body-forms))))))))
+                 (plist-get
+                  (nelisp-phase47-compiler--aot-protected-body-split
+                   (nth 1 (car body-forms)))
+                  :tail))))
+      (when (and tree
+                 (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                      tag tree)
+                     (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                      tag tree)))
+        (car body-forms)))))
 
 (defun nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
     (tag sexp)
@@ -4443,8 +4485,11 @@ source form."
              (eq (car body) 'unwind-protect)
              (>= (length body) 2))
     (let* ((protected-body (nth 1 body))
+           (split
+            (nelisp-phase47-compiler--aot-protected-body-split
+             protected-body))
            (tag (nelisp-phase47-compiler--aot-direct-condition-tag
-                 protected-body))
+                 (plist-get split :tail)))
            (handler
             (and tag
                  (nelisp-phase47-compiler--aot-condition-case-direct-handler
@@ -4458,11 +4503,16 @@ source form."
   (when (and (consp body)
              (eq (car body) 'unwind-protect)
              (>= (length body) 2))
-    (let ((protected-body (nth 1 body)))
-      (when (and (nelisp-phase47-compiler--aot-direct-condition-form
-                  protected-body)
+    (let* ((protected-body (nth 1 body))
+           (split
+            (nelisp-phase47-compiler--aot-protected-body-split
+             protected-body))
+           (tail (plist-get split :tail)))
+      (when (and tail
+                 (nelisp-phase47-compiler--aot-direct-condition-form
+                  tail)
                  (not (nelisp-phase47-compiler--aot-direct-condition-tag
-                       protected-body)))
+                       tail)))
         (dolist (handler clauses)
           (nelisp-phase47-compiler--aot-condition-case-clause-selectors
            handler))
@@ -4516,15 +4566,16 @@ source form."
              (>= (length body) 2))
     (let ((protected-body
            (nelisp-phase47-compiler--aot-branch-tree-form
-            (nth 1 body))))
+            (plist-get
+             (nelisp-phase47-compiler--aot-protected-body-split
+              (nth 1 body))
+             :tail))))
       (when (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
              protected-body)
         (dolist (handler clauses)
           (nelisp-phase47-compiler--aot-condition-case-clause-selectors
            handler))
-        (list :handlers clauses
-              :form (cons 'unwind-protect
-                          (cons protected-body (nthcdr 2 body))))))))
+        (list :handlers clauses :form body)))))
 
 (defun nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
     (sexp)
@@ -4554,7 +4605,10 @@ source form."
              (>= (length body) 2))
     (let* ((protected-body
             (nelisp-phase47-compiler--aot-branch-tree-form
-             (nth 1 body)))
+             (plist-get
+              (nelisp-phase47-compiler--aot-protected-body-split
+               (nth 1 body))
+              :tail)))
            (tag (nelisp-phase47-compiler--aot-condition-tree-tag
                  protected-body))
            (handler
@@ -4564,8 +4618,7 @@ source form."
       (when handler
         (list :tag tag
               :handler handler
-              :form (cons 'unwind-protect
-                          (cons protected-body (nthcdr 2 body))))))))
+              :form body)))))
 
 (defun nelisp-phase47-compiler--aot-condition-case-mixed-unwind-form
     (body clauses)
@@ -4575,7 +4628,10 @@ source form."
              (>= (length body) 2))
     (let* ((protected-body
             (nelisp-phase47-compiler--aot-branch-tree-form
-             (nth 1 body)))
+             (plist-get
+              (nelisp-phase47-compiler--aot-protected-body-split
+               (nth 1 body))
+              :tail)))
            (tags
             (nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
              protected-body clauses)))
@@ -4593,9 +4649,8 @@ source form."
                  (cons tag
                        (nelisp-phase47-compiler--aot-condition-case-direct-handler
                         tag clauses)))
-               tags)
-              :form (cons 'unwind-protect
-                          (cons protected-body (nthcdr 2 body))))))))
+              tags)
+              :form body)))))
 
 (defun nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
     (sexp clauses)
@@ -4684,13 +4739,19 @@ source form."
 (defun nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
     (tag branch cleanups landing-label value-slot)
   "Return BRANCH with unwind cleanup jumping to LANDING-LABEL."
-  (let ((branch (nelisp-phase47-compiler--aot-branch-tree-form branch)))
+  (let* ((split
+          (nelisp-phase47-compiler--aot-protected-body-split branch))
+         (prefix (plist-get split :prefix))
+         (branch
+          (nelisp-phase47-compiler--aot-branch-tree-form
+           (plist-get split :tail))))
     (cond
      ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag branch)
     (let ((cleanup-label
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        ,@prefix
         (let (((,value-slot :type sexp) ,(nth 2 branch)))
           (seq
            (throw ,(nth 1 branch) ,value-slot)
@@ -4700,11 +4761,13 @@ source form."
                `(aot-machine-landing-jump
                  (aot-current-sp) ,landing-label))))))))
      ((nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p tag branch)
-      `(if ,(nth 1 branch)
-           ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
-             tag (nth 2 branch) cleanups landing-label value-slot)
-         ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
-           tag (nth 3 branch) cleanups landing-label value-slot)))
+      (nelisp-phase47-compiler--aot-protected-body-with-prefix
+       prefix
+       `(if ,(nth 1 branch)
+            ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
+              tag (nth 2 branch) cleanups landing-label value-slot)
+          ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
+            tag (nth 3 branch) cleanups landing-label value-slot))))
      (t
       (signal 'nelisp-phase47-compiler-error
               (list :aot-catch-unwind-conditional-shape branch))))))
@@ -4712,16 +4775,24 @@ source form."
 (defun nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
     (tag branch cleanups landing-label value-slot)
   "Return BRANCH for mixed catch-targeted unwind cleanup lowering."
-  (let ((branch (nelisp-phase47-compiler--aot-branch-tree-form branch)))
+  (let* ((split
+          (nelisp-phase47-compiler--aot-protected-body-split branch))
+         (prefix (plist-get split :prefix))
+         (branch
+          (nelisp-phase47-compiler--aot-branch-tree-form
+           (plist-get split :tail))))
     (cond
      ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag branch)
     (nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
-     tag branch cleanups landing-label value-slot))
+     tag (nelisp-phase47-compiler--aot-protected-body-with-prefix
+          prefix branch)
+     cleanups landing-label value-slot))
      ((nelisp-phase47-compiler--aot-direct-throw-form branch)
     (let ((cleanup-label
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        ,@prefix
         (let (((,value-slot :type sexp) ,(nth 2 branch)))
           (seq
            (throw ,(nth 1 branch) ,value-slot)
@@ -4734,6 +4805,7 @@ source form."
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        ,@prefix
         ,branch
         (aot-landing-label ,cleanup-label
           ,(nelisp-phase47-compiler--aot-cleanup-body-form
@@ -4742,13 +4814,17 @@ source form."
      ((or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p tag branch)
           (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
            tag branch))
-      `(if ,(nth 1 branch)
-           ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
-             tag (nth 2 branch) cleanups landing-label value-slot)
-         ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
-           tag (nth 3 branch) cleanups landing-label value-slot)))
+      (nelisp-phase47-compiler--aot-protected-body-with-prefix
+       prefix
+       `(if ,(nth 1 branch)
+            ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+              tag (nth 2 branch) cleanups landing-label value-slot)
+          ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+            tag (nth 3 branch) cleanups landing-label value-slot))))
      (t
-      `(let (((,value-slot :type sexp) ,branch))
+      `(let (((,value-slot :type sexp)
+              ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+                prefix branch)))
          ,(nelisp-phase47-compiler--aot-cleanup-body-form
            cleanups
            `(seq
@@ -4825,7 +4901,12 @@ source form."
 (defun nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
     (branch cleanups landing-label value-slot &optional selected-tag clauses)
   "Return BRANCH for mixed condition-targeted unwind cleanup lowering."
-  (let ((branch (nelisp-phase47-compiler--aot-branch-tree-form branch)))
+  (let* ((split
+          (nelisp-phase47-compiler--aot-protected-body-split branch))
+         (prefix (plist-get split :prefix))
+         (branch
+          (nelisp-phase47-compiler--aot-branch-tree-form
+           (plist-get split :tail))))
     (cond
      ((nelisp-phase47-compiler--aot-direct-condition-form branch)
     (let ((cleanup-label
@@ -4838,6 +4919,7 @@ source form."
         (if target-label
             `(seq
               (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+              ,@prefix
               ,branch
               (aot-landing-label ,cleanup-label
                 ,(nelisp-phase47-compiler--aot-cleanup-body-form
@@ -4846,6 +4928,7 @@ source form."
                     (aot-current-sp) ,target-label))))
           `(seq
             (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+            ,@prefix
             ,branch
             (aot-landing-label ,cleanup-label
               ,(nelisp-phase47-compiler--aot-cleanup-body-form
@@ -4858,15 +4941,19 @@ source form."
                clauses
                (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
                 branch selected-tag clauses)))
-      `(if ,(nth 1 branch)
-           ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
-             (nth 2 branch) cleanups landing-label value-slot
-             selected-tag clauses)
-         ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
-           (nth 3 branch) cleanups landing-label value-slot
-           selected-tag clauses)))
+      (nelisp-phase47-compiler--aot-protected-body-with-prefix
+       prefix
+       `(if ,(nth 1 branch)
+            ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
+              (nth 2 branch) cleanups landing-label value-slot
+              selected-tag clauses)
+          ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
+            (nth 3 branch) cleanups landing-label value-slot
+            selected-tag clauses))))
      (t
-      `(let (((,value-slot :type sexp) ,branch))
+      `(let (((,value-slot :type sexp)
+              ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+                prefix branch)))
          ,(nelisp-phase47-compiler--aot-cleanup-body-form
            cleanups
            `(seq
@@ -4894,13 +4981,19 @@ source form."
 (defun nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
     (branch cleanups value-slot)
   "Return BRANCH with standalone unwind cleanup descriptor routing."
-  (let ((branch (nelisp-phase47-compiler--aot-branch-tree-form branch)))
+  (let* ((split
+          (nelisp-phase47-compiler--aot-protected-body-split branch))
+         (prefix (plist-get split :prefix))
+         (branch
+          (nelisp-phase47-compiler--aot-branch-tree-form
+           (plist-get split :tail))))
     (cond
      ((nelisp-phase47-compiler--aot-direct-throw-form branch)
     (let ((cleanup-label
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        ,@prefix
         (let (((,value-slot :type sexp) ,(nth 2 branch)))
           (seq
            (throw ,(nth 1 branch) ,value-slot)
@@ -4913,19 +5006,24 @@ source form."
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        ,@prefix
         ,branch
         (aot-landing-label ,cleanup-label
           ,(nelisp-phase47-compiler--aot-cleanup-body-form
             cleanups
             '(aot-landing-jump out))))))
      ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p branch)
-      `(if ,(nth 1 branch)
-           ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
-             (nth 2 branch) cleanups value-slot)
-         ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
-           (nth 3 branch) cleanups value-slot)))
+      (nelisp-phase47-compiler--aot-protected-body-with-prefix
+       prefix
+       `(if ,(nth 1 branch)
+            ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+              (nth 2 branch) cleanups value-slot)
+          ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+            (nth 3 branch) cleanups value-slot))))
      (t
-      `(let (((,value-slot :type sexp) ,branch))
+      `(let (((,value-slot :type sexp)
+              ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+                prefix branch)))
          ,(nelisp-phase47-compiler--aot-cleanup-body-form
            cleanups
            value-slot))))))
@@ -5956,13 +6054,17 @@ crossing the protected body still require cleanup landing-pad lowering."
     (signal 'nelisp-phase47-compiler-error
             (list :aot-unwind-protect-arity sexp)))
   (let* ((body (nth 1 sexp))
+         (body-split
+          (nelisp-phase47-compiler--aot-protected-body-split body))
+         (body-prefix (plist-get body-split :prefix))
+         (body-tail (plist-get body-split :tail))
          (body-tree
-          (nelisp-phase47-compiler--aot-branch-tree-form body))
+          (nelisp-phase47-compiler--aot-branch-tree-form body-tail))
          (cleanups (nthcdr 2 sexp)))
     (let ((direct-throw
-           (nelisp-phase47-compiler--aot-direct-quoted-throw-form body))
+           (nelisp-phase47-compiler--aot-direct-quoted-throw-form body-tail))
           (direct-condition
-           (nelisp-phase47-compiler--aot-direct-condition-tag body))
+           (nelisp-phase47-compiler--aot-direct-condition-tag body-tail))
           (conditional-throw
            (and (consp body-tree)
                 (eq (car body-tree) 'if)
@@ -5987,8 +6089,9 @@ crossing the protected body still require cleanup landing-pad lowering."
                      (not conditional-throw)
                      (not conditional-condition)
                      (not standalone-cleanup-tree)
-                     (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                      body))
+                     (or (not body-split)
+                         (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                          body-tail)))
                 (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
                       cleanups)))
         (signal 'nelisp-phase47-compiler-error
@@ -6001,8 +6104,9 @@ crossing the protected body still require cleanup landing-pad lowering."
            (let ((cleanup-label
                   (nelisp-phase47-compiler--gensym
                    "aot-unwind-cleanup")))
-             `(seq
+              `(seq
                (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+               ,@body-prefix
                (let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
                  (seq
                   (throw ,(nth 1 direct-throw) ,value-slot)
@@ -6016,7 +6120,8 @@ crossing the protected body still require cleanup landing-pad lowering."
                    "aot-unwind-cleanup")))
              `(seq
                (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-               ,body
+               ,@body-prefix
+               ,body-tail
                (aot-landing-label ,cleanup-label
                  ,(nelisp-phase47-compiler--aot-cleanup-body-form
                    cleanups
@@ -6055,9 +6160,11 @@ crossing the protected body still require cleanup landing-pad lowering."
                         ,(nelisp-phase47-compiler--aot-cleanup-body-form
                           cleanups
                           value-slot)))))))
-             `(if ,(nth 1 conditional-throw)
-                  ,(branch-form (nth 2 conditional-throw))
-                ,(branch-form (nth 3 conditional-throw)))))
+             (nelisp-phase47-compiler--aot-protected-body-with-prefix
+              body-prefix
+              `(if ,(nth 1 conditional-throw)
+                   ,(branch-form (nth 2 conditional-throw))
+                 ,(branch-form (nth 3 conditional-throw))))))
           (conditional-condition
            (cl-labels
                ((branch-form
@@ -6084,12 +6191,16 @@ crossing the protected body still require cleanup landing-pad lowering."
                       ,(nelisp-phase47-compiler--aot-cleanup-body-form
                         cleanups
                         value-slot))))))
-             `(if ,(nth 1 conditional-condition)
-                  ,(branch-form (nth 2 conditional-condition))
-                ,(branch-form (nth 3 conditional-condition)))))
+             (nelisp-phase47-compiler--aot-protected-body-with-prefix
+              body-prefix
+              `(if ,(nth 1 conditional-condition)
+                   ,(branch-form (nth 2 conditional-condition))
+                 ,(branch-form (nth 3 conditional-condition))))))
           (standalone-cleanup-tree
            (nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
-            standalone-cleanup-tree cleanups value-slot))
+            (nelisp-phase47-compiler--aot-protected-body-with-prefix
+             body-prefix standalone-cleanup-tree)
+            cleanups value-slot))
           (cleanup-nonlocal
            `(let (((,value-slot :type sexp) ,body))
               ,(nelisp-phase47-compiler--aot-cleanup-body-form
