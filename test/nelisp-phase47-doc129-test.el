@@ -8198,6 +8198,139 @@ materialized closure temporary."
                 landing-names)
                2))))
 
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-cond-throw ()
+  "Doc 129.8AP: standalone cleanup accepts cond throw trees."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_cond_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (cond
+                      (value (throw 'done value))
+                      (t value))
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_throw externs) 1))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should-not (nelisp-phase47-doc129-test--ir-nodes
+                 ir 'aot-machine-landing-jump))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
+
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-or-signal ()
+  "Doc 129.8AP: standalone cleanup accepts simple or signal trees."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_or_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (or value (signal 'error value))
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should-not (nelisp-phase47-doc129-test--ir-nodes
+                 ir 'aot-machine-landing-jump))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
+
+(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-cond-mixed ()
+  "Doc 129.8AP: catch cleanup cond trees keep static and dynamic routes."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_cond_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (unwind-protect
+                       (cond
+                        (value (throw 'done value))
+                        (t (throw tag value)))
+                     (identity value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'aot-landing-label))))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
+    (should (= (cl-count 'nelisp_aot_throw externs) 2))
+    (should (member 'nelisp_aot_landing_value externs))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should (= (length machine-jumps) 1))
+    (should (= (cl-count-if
+                (lambda (name)
+                  (string-prefix-p "aot-unwind-cleanup-" name))
+                landing-names)
+               2))))
+
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-cond-signal ()
+  "Doc 129.8AP: condition cleanup cond trees keep static condition routes."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_unwind_cond_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (unwind-protect
+                         (cond
+                          (value (signal 'error value))
+                          (t value))
+                       (identity value))
+                   (error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'aot-landing-label))))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
+    (should (member 'nelisp_aot_push_condition externs))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should (member 'nelisp_aot_landing_error externs))
+    (should (member 'nelisp_aot_pop_handler externs))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (should (= (length machine-jumps) 1))
+    (should (= (cl-count-if
+                (lambda (name)
+                  (string-prefix-p "aot-unwind-cleanup-" name))
+                landing-names)
+               1))))
+
 (ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-throw ()
   "Doc 129.8P: source unwind-protect conditional throw cleans up both branches."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -8657,6 +8790,101 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_throw" out))
             (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-cond-throw ()
+  "Doc 129.8AP: standalone cond throw cleanup compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-cond-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_cond_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (cond
+                   (value (throw 'done value))
+                   (t value))
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_cond_throw" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-cond-mixed ()
+  "Doc 129.8AP: catch cleanup cond mixed routes compile to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-catch-unwind-cond-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_cond_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (catch 'done
+                (unwind-protect
+                    (cond
+                     (value (throw 'done value))
+                     (t (throw tag value)))
+                  (identity value))))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_cond_throw" out))
+            (should (string-match-p "nelisp_aot_push_catch" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-cond-signal ()
+  "Doc 129.8AP: condition cleanup cond signal compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-unwind-cond-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_unwind_cond_signal
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  (unwind-protect
+                      (cond
+                       (value (signal 'error value))
+                       (t value))
+                    (identity value))
+                (error err)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_unwind_cond_signal" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nelisp_aot_landing_error" out))
+            (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/e2e-top-level-require-provide ()
