@@ -7511,6 +7511,64 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-mixed-nonlocal ()
+  "Doc 129.8AI: standalone unwind cleanup can mix throw and signal leaves."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_mixed
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (if value
+                         (throw 'done value)
+                       (signal 'error value))
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 2))
+    (should (= (cl-count 'nelisp_aot_throw externs) 1))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should-not (nelisp-phase47-doc129-test--ir-nodes
+                 ir 'aot-machine-landing-jump))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 2)))
+
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-mixed-nonlocal-normal ()
+  "Doc 129.8AI: mixed standalone cleanup preserves ordinary leaves."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_mixed
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (if value
+                         (throw 'done value)
+                       (if value
+                           (signal 'error value)
+                         value))
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 2))
+    (should (= (cl-count 'nelisp_aot_throw externs) 1))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should-not (nelisp-phase47-doc129-test--ir-nodes
+                 ir 'aot-machine-landing-jump))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 2)))
+
 (ert-deftest nelisp-phase47-doc129/parse-unwind-protect-nested-throw ()
   "Doc 129.8R: nested unwind-protect throw trees clean up every leaf."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -7796,6 +7854,37 @@ materialized closure temporary."
             (should (string-match-p "unwind_signal" out))
             (should (string-match-p "nelisp_aot_builtin_call1" out))
             (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-mixed-nonlocal ()
+  "Doc 129.8AI: standalone mixed throw/signal cleanup compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-mixed-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_mixed
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (if value
+                      (throw 'done value)
+                    (signal 'error value))
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_mixed" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_throw" out))
             (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))

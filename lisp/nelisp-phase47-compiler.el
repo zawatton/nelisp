@@ -4057,6 +4057,38 @@ contain no unresolved non-local source form."
          'error))
       (_ nil))))
 
+(defun nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form (sexp)
+  "Return SEXP when it is a standalone cleanup-routed non-local form."
+  (or (nelisp-phase47-compiler--aot-direct-quoted-throw-form sexp)
+      (and (nelisp-phase47-compiler--aot-direct-condition-tag sexp)
+           sexp)))
+
+(defun nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+    (sexp)
+  "Return non-nil for safe standalone unwind cleanup branch trees."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form sexp) t)
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4)
+         (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nth 1 sexp))))
+    (let ((then (nth 2 sexp))
+          (else (nth 3 sexp)))
+      (and (or (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+                then)
+               (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+                else))
+           (or (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+                then)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     then)))
+           (or (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+                else)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     else))))))
+   (t nil)))
+
 (defun nelisp-phase47-compiler--aot-conditional-condition-case-form
     (body clauses)
   "Return a conditional condition-case signal descriptor.
@@ -4343,6 +4375,44 @@ source form."
       ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
         body-form cleanups landing-label value-slot)
       (aot-landing-label ,landing-label ,landing-body))))
+
+(defun nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+    (branch cleanups value-slot)
+  "Return BRANCH with standalone unwind cleanup descriptor routing."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-quoted-throw-form branch)
+    (let ((cleanup-label
+           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+      `(seq
+        (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        (let (((,value-slot :type sexp) ,(nth 2 branch)))
+          (seq
+           (throw ,(nth 1 branch) ,value-slot)
+           (aot-landing-label ,cleanup-label
+             (seq
+              ,@cleanups
+              (aot-landing-jump out))))))))
+   ((nelisp-phase47-compiler--aot-direct-condition-tag branch)
+    (let ((cleanup-label
+           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+      `(seq
+        (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        ,branch
+        (aot-landing-label ,cleanup-label
+          (seq
+           ,@cleanups
+           (aot-landing-jump out))))))
+   ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p branch)
+    `(if ,(nth 1 branch)
+         ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+           (nth 2 branch) cleanups value-slot)
+       ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+         (nth 3 branch) cleanups value-slot)))
+   (t
+    `(let (((,value-slot :type sexp) ,branch))
+       (seq
+        ,@cleanups
+        ,value-slot)))))
 
 (defun nelisp-phase47-compiler--aot-catch-landing-branch-form
     (tag branch landing-label value-slot leaf-count)
@@ -5038,11 +5108,16 @@ crossing the protected body still require cleanup landing-pad lowering."
                 (eq (car body) 'if)
                 (= (length body) 4)
                 (nelisp-phase47-compiler--aot-condition-tree-tag body)
+                body))
+          (standalone-cleanup-tree
+           (and (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+                 body)
                 body)))
       (when (or (and (not direct-throw)
                      (not direct-condition)
                      (not conditional-throw)
                      (not conditional-condition)
+                     (not standalone-cleanup-tree)
                      (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                       body))
                 (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
@@ -5143,6 +5218,9 @@ crossing the protected body still require cleanup landing-pad lowering."
              `(if ,(nth 1 conditional-condition)
                   ,(branch-form (nth 2 conditional-condition))
                 ,(branch-form (nth 3 conditional-condition)))))
+          (standalone-cleanup-tree
+           (nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+            standalone-cleanup-tree cleanups value-slot))
           (t
            `(let (((,value-slot :type sexp) ,body))
               (seq
