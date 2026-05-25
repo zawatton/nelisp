@@ -3298,6 +3298,20 @@ Dynamic tag values are forwarded as ordinary value expressions."
       (list :tag-expr tag-form
             :prefix nil))))
 
+(defun nelisp-phase47-compiler--aot-landing-pad-lowering
+    (landing-form scratch)
+  "Return plist for lowering LANDING-FORM as handler landing metadata.
+Quoted symbol labels are materialized into SCRATCH; dynamic landing-pad
+values are forwarded as ordinary value expressions."
+  (let ((sym (nelisp-phase47-compiler--aot-quoted-symbol landing-form)))
+    (if sym
+        (list :landing-expr scratch
+              :prefix `((sexp-write-symbol-lit
+                         ,scratch
+                         ,(symbol-name sym))))
+      (list :landing-expr landing-form
+            :prefix nil))))
+
 (defun nelisp-phase47-compiler--parse-aot-throw
     (sexp env fenv defuns)
   "Lower `(throw TAG VALUE)' through the Doc 129.8 throw bridge."
@@ -3527,8 +3541,12 @@ Accepted forms:
                (nth 1 sexp) fenv sexp)
             (list :tag-expr (nth 1 sexp) :prefix nil)))
          (selector (plist-get selector-lowering :tag-expr))
-         (prefix (plist-get selector-lowering :prefix))
-         (landing-pad (nth 2 sexp))
+         (landing-pad-lowering
+          (nelisp-phase47-compiler--aot-landing-pad-lowering
+           (nth 2 sexp) scratch))
+         (prefix `(,@(plist-get selector-lowering :prefix)
+                   ,@(plist-get landing-pad-lowering :prefix)))
+         (landing-pad (plist-get landing-pad-lowering :landing-expr))
          (saved-sp (nth 3 sexp)))
     (nelisp-phase47-compiler--parse-value
      `(seq
@@ -3670,10 +3688,10 @@ Accepted forms:
 (defun nelisp-phase47-compiler--aot-nonlocal-source-form-p (sexp)
   "Return non-nil when SEXP contains a not-yet-safe non-local form.
 Doc 129.8E only synthesizes balanced handler push/pop for bodies that
-return normally.  Until native landing-pad jumps exist, compiling a body
-that explicitly contains `throw', `signal', `error', `condition-case',
-or `unwind-protect' would leave ordinary fallthrough code after a
-simulated non-local exit."
+return normally.  Until source lowering can place unique branch-safe
+landing labels, compiling a body that explicitly contains `throw',
+`signal', `error', `condition-case', or `unwind-protect' would leave
+ordinary fallthrough code after a simulated non-local exit."
   (cond
    ((atom sexp) nil)
    ((memq (car sexp) '(quote function)) nil)
@@ -4134,12 +4152,15 @@ saved BODY value."
     (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
     (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
       (if direct-throw
-          (nelisp-phase47-compiler--parse-value
-           `(seq
-             (aot-push-catch ,tag 0 0)
-             ,direct-throw
-             (aot-landing-value out))
-           env fenv defuns)
+          (let ((landing-label
+                 (nelisp-phase47-compiler--gensym "aot-catch-landing")))
+            (nelisp-phase47-compiler--parse-value
+             `(seq
+               (aot-push-catch ,tag ',landing-label (aot-current-sp))
+               ,direct-throw
+               (aot-landing-label ,landing-label
+                 (aot-landing-value out)))
+             env fenv defuns))
         (if conditional-throw
             (let* ((value-slot (nelisp-phase47-compiler--gensym
                                 "aot-catch-value"))
@@ -4248,6 +4269,9 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
         (let* ((handler-body
                 (nelisp-phase47-compiler--body->form
                  (cdr direct-handler)))
+               (landing-label
+                (nelisp-phase47-compiler--gensym
+                 "aot-condition-landing"))
                (handled-form
                 (if var
                     `(let (((,var :type sexp) (aot-landing-error out)))
@@ -4257,9 +4281,12 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
                     ,handler-body))))
           (nelisp-phase47-compiler--parse-value
            `(seq
-             (aot-push-condition ',direct-tag 0 0)
+             (aot-push-condition ',direct-tag
+                                 ',landing-label
+                                 (aot-current-sp))
              ,body
-             ,handled-form)
+             (aot-landing-label ,landing-label
+               ,handled-form))
            env fenv defuns)))
        (conditional-handler
         (let* ((tag (plist-get conditional-handler :tag))
@@ -4325,7 +4352,7 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
   "Lower source `(unwind-protect BODY CLEANUP...)'.
 The MVP evaluates BODY, saves its result in a runtime Sexp slot, runs
 CLEANUP forms, then returns the saved BODY result.  Non-local exits
-crossing the protected body still require native landing-pad support."
+crossing the protected body still require cleanup landing-pad lowering."
   (unless (>= (length sexp) 2)
     (signal 'nelisp-phase47-compiler-error
             (list :aot-unwind-protect-arity sexp)))

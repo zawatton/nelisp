@@ -35,6 +35,16 @@
          (push (nelisp-phase47-compiler--ir-get node :name) names))))
     (nreverse names)))
 
+(defun nelisp-phase47-doc129-test--ir-nodes (ir kind)
+  "Return IR nodes of KIND found while walking IR."
+  (let (nodes)
+    (nelisp-phase47-compiler--walk-ir
+     ir
+     (lambda (node)
+       (when (eq (nelisp-phase47-compiler--ir-kind node) kind)
+         (push node nodes))))
+    (nreverse nodes)))
+
 (defun nelisp-phase47-doc129-test--capturing-callback-closure-ir
     (form callback-arg-index)
   "Assert FORM lowers a captured callback through make-closure.
@@ -4928,6 +4938,36 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                 'nelisp_aot_push_catch))))
 
+(ert-deftest nelisp-phase47-doc129/parse-push-catch-handler-landing-label ()
+  "Doc 129.8V: quoted handler landing labels materialize as metadata."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun push_catch_label
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp))
+                 (aot-push-catch 'done
+                                 'doc129_catch_landing
+                                 (aot-current-sp)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (tag-write (nth 0 forms))
+         (landing-write (nth 1 forms))
+         (call-node (nth 2 forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (landing-arg (nth 3 call-args))
+         (saved-sp-arg (nth 4 call-args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (equal (nelisp-phase47-compiler--ir-get tag-write :bytes)
+                   (string-to-list "done")))
+    (should (equal (nelisp-phase47-compiler--ir-get landing-write :bytes)
+                   (string-to-list "doc129_catch_landing")))
+    (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+                'scratch))
+    (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+                'aot-current-sp))))
+
 (ert-deftest nelisp-phase47-doc129/parse-push-unwind-handler ()
   "Doc 129.8C: explicit unwind handler push accepts dynamic cleanup."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -5081,7 +5121,7 @@ materialized closure temporary."
     (should (member 'nelisp_aot_pop_handler externs))))
 
 (ert-deftest nelisp-phase47-doc129/parse-catch-direct-throw ()
-  "Doc 129.8L: source `catch' direct throw extracts landing value."
+  "Doc 129.8L/V: direct catch throw extracts from a labelled landing."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun catch_throw
                    ((out :type sexp)
@@ -5092,11 +5132,37 @@ materialized closure temporary."
                     (value :type sexp))
                  (catch 'done
                    (throw 'done value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (push-call
+          (car (seq-filter
+                (lambda (node)
+                  (eq (nelisp-phase47-compiler--ir-get node :name)
+                      'nelisp_aot_push_catch))
+                (nelisp-phase47-doc129-test--ir-nodes ir 'extern-call))))
+         (push-args (nelisp-phase47-compiler--ir-get push-call :args))
+         (landing-arg (nth 3 push-args))
+         (saved-sp-arg (nth 4 push-args))
+         (landing-label
+          (car (nelisp-phase47-doc129-test--ir-nodes
+                ir 'aot-landing-label)))
+         (landing-name
+          (symbol-name
+           (nelisp-phase47-compiler--ir-get landing-label :label)))
+         (symbol-writes
+          (mapcar (lambda (node)
+                    (nelisp-phase47-compiler--ir-get node :bytes))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'sexp-write-symbol-lit))))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
-    (should-not (member 'nelisp_aot_pop_handler externs))))
+    (should-not (member 'nelisp_aot_pop_handler externs))
+    (should (string-prefix-p "aot-catch-landing-" landing-name))
+    (should (member (string-to-list landing-name) symbol-writes))
+    (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+                'scratch))
+    (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+                'aot-current-sp))))
 
 (ert-deftest nelisp-phase47-doc129/parse-aot-landing-jump ()
   "Doc 129.8S: landing-jump form lowers to the native jump ABI."
@@ -5369,7 +5435,7 @@ materialized closure temporary."
     (should (member 'nelisp_aot_pop_handler externs))))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-direct-signal ()
-  "Doc 129.8M: direct condition-case signal dispatches to handler body."
+  "Doc 129.8M/V: direct condition-case signal uses a labelled landing."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun cc_signal
                    ((out :type sexp)
@@ -5383,14 +5449,40 @@ materialized closure temporary."
                    (error err)))))
          (body (nelisp-phase47-compiler--ir-get ir :body))
          (forms (nelisp-phase47-compiler--ir-get body :forms))
-         (handler-let (nth 2 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (landing-label (nth 2 forms))
+         (handler-let (nelisp-phase47-compiler--ir-get landing-label :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (push-call
+          (car (seq-filter
+                (lambda (node)
+                  (eq (nelisp-phase47-compiler--ir-get node :name)
+                      'nelisp_aot_push_condition))
+                (nelisp-phase47-doc129-test--ir-nodes ir 'extern-call))))
+         (push-args (nelisp-phase47-compiler--ir-get push-call :args))
+         (landing-arg (nth 3 push-args))
+         (saved-sp-arg (nth 4 push-args))
+         (landing-name
+          (symbol-name
+           (nelisp-phase47-compiler--ir-get landing-label :label)))
+         (symbol-writes
+          (mapcar (lambda (node)
+                    (nelisp-phase47-compiler--ir-get node :bytes))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'sexp-write-symbol-lit))))
     (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind landing-label)
+                'aot-landing-label))
     (should (eq (nelisp-phase47-compiler--ir-kind handler-let) 'let-rt))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
-    (should-not (member 'nelisp_aot_pop_handler externs))))
+    (should-not (member 'nelisp_aot_pop_handler externs))
+    (should (string-prefix-p "aot-condition-landing-" landing-name))
+    (should (member (string-to-list landing-name) symbol-writes))
+    (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+                'scratch))
+    (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+                'aot-current-sp))))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-conditional-signal ()
   "Doc 129.8Q: conditional condition-case signal dispatches one branch."
