@@ -3072,6 +3072,14 @@ contains no unresolved non-local source form."
                            else))))
         form))))
 
+(defun nelisp-phase47-compiler--aot-direct-quoted-throw-form (sexp)
+  "Return SEXP when it is a direct throw to a quoted symbol tag."
+  (when (and (consp sexp)
+             (eq (car sexp) 'throw)
+             (= (length sexp) 3)
+             (nelisp-phase47-compiler--aot-quoted-symbol (nth 1 sexp)))
+    sexp))
+
 (defun nelisp-phase47-compiler--aot-direct-condition-tag (body)
   "Return BODY's static condition tag, or nil when it is not direct."
   (when (consp body)
@@ -3122,22 +3130,34 @@ VAR is a top-level special variable.  VAL-SEXP is evaluated before the
 push bridge, BODY-SEXP runs while the value cell is rebound, then the
 saved BODY value is returned after the pop bridge.  Non-local exits
 through BODY remain pending on the 129.8 landing-pad path."
-  (when (nelisp-phase47-compiler--aot-nonlocal-source-form-p body-sexp)
-    (signal 'nelisp-phase47-compiler-error
-            (list :aot-special-let-nonlocal-body source-form)))
-  ;; Force boundary diagnostics to point at the source `let'.
-  (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
-  (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
-  (let ((value-slot (nelisp-phase47-compiler--gensym
-                     "aot-special-value")))
-    (nelisp-phase47-compiler--parse-value
-     `(seq
-       (aot-push-special ',var ,val-sexp)
-       (let (((,value-slot :type sexp) ,body-sexp))
-         (seq
-          (aot-pop-special 0)
-          ,value-slot)))
-     env fenv defuns)))
+  (let ((direct-throw
+         (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+          body-sexp)))
+    (when (and (not direct-throw)
+               (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                body-sexp))
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-special-let-nonlocal-body source-form)))
+    ;; Force boundary diagnostics to point at the source `let'.
+    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
+    (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
+    (let ((value-slot (nelisp-phase47-compiler--gensym
+                       "aot-special-value")))
+      (nelisp-phase47-compiler--parse-value
+       (if direct-throw
+           `(seq
+             (aot-push-special ',var ,val-sexp)
+             (let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
+               (seq
+                (aot-pop-special 0)
+                (throw ,(nth 1 direct-throw) ,value-slot))))
+         `(seq
+           (aot-push-special ',var ,val-sexp)
+           (let (((,value-slot :type sexp) ,body-sexp))
+             (seq
+              (aot-pop-special 0)
+              ,value-slot))))
+       env fenv defuns))))
 
 (defun nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
     (bindings body-sexp env fenv defuns source-form)
@@ -3146,34 +3166,42 @@ Every initializer is evaluated against the original ENV/FENV into a
 fresh Sexp temp slot before any special value cell is rebound.  This
 preserves ordinary parallel `let' initializer semantics for the
 all-special subset."
-  (when (nelisp-phase47-compiler--aot-nonlocal-source-form-p body-sexp)
-    (signal 'nelisp-phase47-compiler-error
-            (list :aot-special-let-n-nonlocal-body source-form)))
-  (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
-  (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
-  (let ((temp-bindings nil)
-        (push-forms nil)
-        (pop-forms nil)
-        (body-slot (nelisp-phase47-compiler--gensym
-                    "aot-special-value")))
-    (dolist (binding bindings)
-      (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
-             (var (nth 0 pair))
-             (val-sexp (nth 1 pair))
-             (temp (nelisp-phase47-compiler--gensym
-                    "aot-special-init")))
-        (push `((,temp :type sexp) ,val-sexp) temp-bindings)
-        (push `(aot-push-special ',var ,temp) push-forms)
-        (push '(aot-pop-special 0) pop-forms)))
-    (nelisp-phase47-compiler--parse-value
-     `(let ,(nreverse temp-bindings)
-        (seq
-         ,@(nreverse push-forms)
-         (let (((,body-slot :type sexp) ,body-sexp))
-           (seq
-            ,@pop-forms
-            ,body-slot))))
-     env fenv defuns)))
+  (let ((direct-throw
+         (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+          body-sexp)))
+    (when (and (not direct-throw)
+               (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                body-sexp))
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-special-let-n-nonlocal-body source-form)))
+    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
+    (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
+    (let ((temp-bindings nil)
+          (push-forms nil)
+          (pop-forms nil)
+          (body-slot (nelisp-phase47-compiler--gensym
+                      "aot-special-value")))
+      (dolist (binding bindings)
+        (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+               (var (nth 0 pair))
+               (val-sexp (nth 1 pair))
+               (temp (nelisp-phase47-compiler--gensym
+                      "aot-special-init")))
+          (push `((,temp :type sexp) ,val-sexp) temp-bindings)
+          (push `(aot-push-special ',var ,temp) push-forms)
+          (push '(aot-pop-special 0) pop-forms)))
+      (nelisp-phase47-compiler--parse-value
+       `(let ,(nreverse temp-bindings)
+          (seq
+           ,@(nreverse push-forms)
+           (let (((,body-slot :type sexp)
+                  ,(if direct-throw (nth 2 direct-throw) body-sexp)))
+             (seq
+              ,@pop-forms
+              ,(if direct-throw
+                   `(throw ,(nth 1 direct-throw) ,body-slot)
+                 body-slot)))))
+       env fenv defuns))))
 
 (defun nelisp-phase47-compiler--parse-aot-special-let-mixed-normal-exit
     (bindings body-sexp env fenv defuns source-form)
@@ -3183,47 +3211,55 @@ fresh temp slot before any special value cell is rebound or lexical
 alias becomes visible.  BODY then runs with all special and lexical
 bindings in scope, and special bindings are popped before returning the
 saved BODY value."
-  (when (nelisp-phase47-compiler--aot-nonlocal-source-form-p body-sexp)
-    (signal 'nelisp-phase47-compiler-error
-            (list :aot-special-let-mixed-nonlocal-body source-form)))
-  (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
-  (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
-  (let ((temp-bindings nil)
-        (lexical-bindings nil)
-        (push-forms nil)
-        (pop-forms nil)
-        (body-slot (nelisp-phase47-compiler--gensym
-                    "aot-special-value")))
-    (dolist (binding bindings)
-      (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
-             (var-form (car binding))
-             (var (nth 0 pair))
-             (val-sexp (nth 1 pair))
-             (root-p (nth 2 pair))
-             (special-p (nelisp-phase47-compiler--special-var-p var))
-             (temp (nelisp-phase47-compiler--gensym
-                    "aot-let-init"))
-             (temp-form (if (or special-p root-p)
-                            `(,temp :type sexp)
-                          temp)))
-        (push `(,temp-form ,val-sexp) temp-bindings)
-        (if special-p
-            (progn
-              (push `(aot-push-special ',var ,temp) push-forms)
-              (push '(aot-pop-special 0) pop-forms))
-          (push `(,var-form ,temp) lexical-bindings))))
-    (let ((scoped-body (if lexical-bindings
-                           `(let ,(nreverse lexical-bindings) ,body-sexp)
-                         body-sexp)))
-      (nelisp-phase47-compiler--parse-value
-       `(let ,(nreverse temp-bindings)
-          (seq
-           ,@(nreverse push-forms)
-           (let (((,body-slot :type sexp) ,scoped-body))
-             (seq
-              ,@pop-forms
-              ,body-slot))))
-       env fenv defuns))))
+  (let ((direct-throw
+         (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+          body-sexp)))
+    (when (and (not direct-throw)
+               (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                body-sexp))
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-special-let-mixed-nonlocal-body source-form)))
+    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
+    (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
+    (let ((temp-bindings nil)
+          (lexical-bindings nil)
+          (push-forms nil)
+          (pop-forms nil)
+          (body-slot (nelisp-phase47-compiler--gensym
+                      "aot-special-value")))
+      (dolist (binding bindings)
+        (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+               (var-form (car binding))
+               (var (nth 0 pair))
+               (val-sexp (nth 1 pair))
+               (root-p (nth 2 pair))
+               (special-p (nelisp-phase47-compiler--special-var-p var))
+               (temp (nelisp-phase47-compiler--gensym
+                      "aot-let-init"))
+               (temp-form (if (or special-p root-p)
+                              `(,temp :type sexp)
+                            temp)))
+          (push `(,temp-form ,val-sexp) temp-bindings)
+          (if special-p
+              (progn
+                (push `(aot-push-special ',var ,temp) push-forms)
+                (push '(aot-pop-special 0) pop-forms))
+            (push `(,var-form ,temp) lexical-bindings))))
+      (let* ((body-value (if direct-throw (nth 2 direct-throw) body-sexp))
+             (scoped-body (if lexical-bindings
+                              `(let ,(nreverse lexical-bindings) ,body-value)
+                            body-value)))
+        (nelisp-phase47-compiler--parse-value
+         `(let ,(nreverse temp-bindings)
+            (seq
+             ,@(nreverse push-forms)
+             (let (((,body-slot :type sexp) ,scoped-body))
+               (seq
+                ,@pop-forms
+                ,(if direct-throw
+                     `(throw ,(nth 1 direct-throw) ,body-slot)
+                   body-slot)))))
+         env fenv defuns)))))
 
 (defun nelisp-phase47-compiler--parse-aot-catch-normal-exit
     (sexp env fenv defuns)

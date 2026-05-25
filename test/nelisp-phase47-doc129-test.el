@@ -1084,8 +1084,70 @@ materialized closure temporary."
     (should (member 'nelisp_aot_push_special externs))
     (should (member 'nelisp_aot_pop_special externs))))
 
-(ert-deftest nelisp-phase47-doc129/source-special-let-nonlocal-still-pending ()
-  "Doc 129.4D: special `let' bodies with non-local exits need landing pads."
+(ert-deftest nelisp-phase47-doc129/parse-source-special-let-direct-throw ()
+  "Doc 129.4G: special `let' direct throw pops before non-local exit."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_special
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (value :type sexp))
+                  (let ((dyn value))
+                    (throw 'tag value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_special externs))
+    (should (member 'nelisp_aot_pop_special externs))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-direct-throw ()
+  "Doc 129.4G: multi-special `let' direct throw pops all bindings."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn-a)
+                (defvar dyn-b)
+                (defun bind_special
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (value-a :type sexp)
+                     (value-b :type sexp))
+                  (let ((dyn-a value-a)
+                        (dyn-b value-b))
+                    (throw 'tag value-b))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_special externs) 2))
+    (should (= (cl-count 'nelisp_aot_pop_special externs) 2))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-direct-throw ()
+  "Doc 129.4G: mixed special/lexical `let' direct throw preserves lexical value."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_mixed
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (value-a :type sexp)
+                     (value-b :type sexp))
+                  (let (((a :type sexp) value-a)
+                        (dyn value-b))
+                    (throw 'tag a))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_special externs) 1))
+    (should (= (cl-count 'nelisp_aot_pop_special externs) 1))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/source-special-let-nested-nonlocal-still-pending ()
+  "Doc 129.4G: nested special `let' non-local exits still need landing pads."
   (should-error
    (nelisp-phase47-compiler--parse
     '(seq
@@ -1098,46 +1160,9 @@ materialized closure temporary."
            (name-slot :type sexp)
            (value :type sexp))
         (let ((dyn value))
-          (throw 'tag value)))))
-   :type 'nelisp-phase47-compiler-error))
-
-(ert-deftest nelisp-phase47-doc129/source-special-multi-let-nonlocal-still-pending ()
-  "Doc 129.4E: multi-special `let' bodies with non-local exits need landing pads."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(seq
-      (defvar dyn-a)
-      (defvar dyn-b)
-      (defun bind_special
-          ((out :type sexp)
-           (mirror :type sexp)
-           (frames :type sexp)
-           (scratch :type sexp)
-           (name-slot :type sexp)
-           (value-a :type sexp)
-           (value-b :type sexp))
-        (let ((dyn-a value-a)
-              (dyn-b value-b))
-          (throw 'tag value-b)))))
-   :type 'nelisp-phase47-compiler-error))
-
-(ert-deftest nelisp-phase47-doc129/source-special-mixed-let-nonlocal-still-pending ()
-  "Doc 129.4F: mixed special `let' bodies with non-local exits need landing pads."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(seq
-      (defvar dyn)
-      (defun bind_mixed
-          ((out :type sexp)
-           (mirror :type sexp)
-           (frames :type sexp)
-           (scratch :type sexp)
-           (name-slot :type sexp)
-           (value-a :type sexp)
-           (value-b :type sexp))
-        (let (((a :type sexp) value-a)
-              (dyn value-b))
-          (throw 'tag a)))))
+          (if value
+              (throw 'tag value)
+            value)))))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-doc129/parse-aot-special-push-pop ()
@@ -1283,6 +1308,33 @@ materialized closure temporary."
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "nelisp_aot_push_special" out))
             (should (string-match-p "nelisp_aot_pop_special" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-source-special-let-direct-throw ()
+  "Doc 129.4G: object output exposes special cleanup before throw."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-special-let-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defvar dyn)
+             (defun bind_special
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name-slot :type sexp)
+                  (value :type sexp))
+               (let ((dyn value))
+                 (throw 'tag value))))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_push_special" out))
+            (should (string-match-p "nelisp_aot_pop_special" out))
+            (should (string-match-p "nelisp_aot_throw" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-static-gc-root-map ()
