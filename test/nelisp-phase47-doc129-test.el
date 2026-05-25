@@ -1214,26 +1214,28 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_pop_special externs) 2))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/source-special-let-deeper-nonlocal-still-pending ()
-  "Doc 129.4H: deeper special `let' non-local exits still need landing pads."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(seq
-      (defvar dyn)
-      (defun bind_special
-          ((out :type sexp)
-           (mirror :type sexp)
-           (frames :type sexp)
-           (scratch :type sexp)
-           (name-slot :type sexp)
-           (value :type sexp))
-        (let ((dyn value))
-          (if value
-              (if value
-                  (throw 'tag value)
-                value)
-            value)))))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/parse-source-special-let-nested-throw ()
+  "Doc 129.4I: nested special `let' throw trees clean up every leaf."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_special
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (value :type sexp))
+                  (let ((dyn value))
+                    (if value
+                        (if value
+                            (throw 'tag value)
+                          value)
+                      value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_special externs) 1))
+    (should (= (cl-count 'nelisp_aot_pop_special externs) 3))
+    (should (member 'nelisp_aot_throw externs))))
 
 (ert-deftest nelisp-phase47-doc129/parse-aot-special-push-pop ()
   "Doc 129.4C: explicit special binding push/pop forms lower to bridges."
@@ -4023,24 +4025,32 @@ materialized closure temporary."
     (should (member 'nelisp_aot_landing_value externs))
     (should (member 'nelisp_aot_pop_handler externs))))
 
-(ert-deftest nelisp-phase47-doc129/catch-nested-nonlocal-still-pending ()
-  "Doc 129.8N: deeper nested catch non-local bodies still wait for landing jumps."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun catch_nested
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (value :type sexp))
-       (catch 'done
-         (if value
-             (if value
-                 (throw 'done value)
-               value)
-           value))))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/parse-catch-nested-throw ()
+  "Doc 129.8R: nested catch throw trees dispatch every throwing leaf."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_nested
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (if value
+                       (if value
+                           (throw 'done value)
+                         value)
+                     value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (if-node (nth 1 forms))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind if-node) 'if))
+    (should (= (cl-count 'nelisp_aot_push_catch externs) 1))
+    (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))
+    (should (member 'nelisp_aot_throw externs))
+    (should (member 'nelisp_aot_landing_value externs))))
 
 (ert-deftest nelisp-phase47-doc129/object-catch-normal-exit ()
   "Doc 129.8E: source `catch' exposes push/pop bridge relocs."
@@ -4198,25 +4208,33 @@ materialized closure temporary."
     (should (member 'nelisp_aot_landing_error externs))
     (should (member 'nelisp_aot_pop_handler externs))))
 
-(ert-deftest nelisp-phase47-doc129/condition-case-nested-nonlocal-still-pending ()
-  "Doc 129.8Q: deeper condition-case non-local exits wait for landing jumps."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun cc_signal
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (value :type sexp))
-       (condition-case err
-           (if value
-               (if value
-                   (signal 'error value)
-                 value)
-             value)
-         (error out))))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-nested-signal ()
+  "Doc 129.8R: nested condition-case signal trees dispatch throwing leaves."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (if value
+                         (if value
+                             (signal 'error value)
+                           value)
+                       value)
+                   (error out)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (branch (nth 1 forms))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind branch) 'if))
+    (should (= (cl-count 'nelisp_aot_push_condition externs) 1))
+    (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))
+    (should (member 'nelisp_aot_signal externs))
+    (should (member 'nelisp_aot_landing_error externs))))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-list-spec-normal-exit ()
   "Doc 129.8J: list condition specs push one handler per selector."
@@ -4459,25 +4477,28 @@ materialized closure temporary."
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/unwind-protect-deeper-nonlocal-still-pending ()
-  "Doc 129.8P: deeper non-local unwind-protect bodies still wait for landing pads."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun unwind_throw
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (value :type sexp))
-       (unwind-protect
-           (if value
-               (if value
-                   (throw 'done value)
-                 value)
-             value)
-         (identity value))))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-nested-throw ()
+  "Doc 129.8R: nested unwind-protect throw trees clean up every leaf."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (if value
+                         (if value
+                             (throw 'done value)
+                           value)
+                       value)
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
+    (should (member 'nelisp_aot_throw externs))))
 
 (ert-deftest nelisp-phase47-doc129/object-unwind-protect-normal-exit ()
   "Doc 129.8G: source unwind-protect normal path compiles to object."

@@ -3046,31 +3046,40 @@ simulated non-local exit."
 
 (defun nelisp-phase47-compiler--aot-catch-conditional-throw-form
     (tag body-forms)
-  "Return a conditional direct throw body shape for TAG, or nil.
-The accepted shape is a single `(if TEST THEN ELSE)' whose throwing
-branch is a direct `(throw TAG VALUE)' and whose non-throwing branch
-contains no unresolved non-local source form."
+  "Return a conditional direct throw body tree for TAG, or nil.
+The accepted shape is a single `(if TEST THEN ELSE)' tree whose throwing
+leaves are direct `(throw TAG VALUE)' forms and whose non-throwing leaves
+contain no unresolved non-local source form."
   (when (and (= (length body-forms) 1)
-             (consp (car body-forms))
-             (eq (caar body-forms) 'if)
-             (= (length (car body-forms)) 4))
-    (let* ((form (car body-forms))
-           (then (nth 2 form))
-           (else (nth 3 form))
-           (then-throw
-            (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
-             tag then))
-           (else-throw
-            (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
-             tag else)))
-      (when (and (or then-throw else-throw)
-                 (or then-throw
-                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                           then)))
-                 (or else-throw
-                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                           else))))
-        form))))
+             (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+              tag (car body-forms)))
+    (car body-forms)))
+
+(defun nelisp-phase47-compiler--aot-catch-throw-tree-form-p (tag sexp)
+  "Return non-nil when SEXP is a safe conditional catch/throw tree."
+  (cond
+   ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
+    t)
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4)
+         (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nth 1 sexp))))
+    (let ((then (nth 2 sexp))
+          (else (nth 3 sexp)))
+      (and (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                tag then)
+               (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                tag else))
+           (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                tag then)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     then)))
+           (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                tag else)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     else))))))
+   (t nil)))
 
 (defun nelisp-phase47-compiler--aot-direct-quoted-throw-form (sexp)
   "Return SEXP when it is a direct throw to a quoted symbol tag."
@@ -3081,24 +3090,34 @@ contains no unresolved non-local source form."
     sexp))
 
 (defun nelisp-phase47-compiler--aot-conditional-quoted-throw-form (sexp)
-  "Return a one-level conditional direct quoted throw form, or nil."
-  (when (and (consp sexp)
-             (eq (car sexp) 'if)
-             (= (length sexp) 4))
-    (let* ((then (nth 2 sexp))
-           (else (nth 3 sexp))
-           (then-throw
-            (nelisp-phase47-compiler--aot-direct-quoted-throw-form then))
-           (else-throw
-            (nelisp-phase47-compiler--aot-direct-quoted-throw-form else)))
-      (when (and (or then-throw else-throw)
-                 (or then-throw
-                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                           then)))
-                 (or else-throw
-                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                           else))))
-        sexp))))
+  "Return a conditional direct quoted throw tree, or nil."
+  (when (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p sexp)
+    sexp))
+
+(defun nelisp-phase47-compiler--aot-quoted-throw-tree-form-p (sexp)
+  "Return non-nil when SEXP is a safe conditional quoted-throw tree."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-quoted-throw-form sexp) t)
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4)
+         (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nth 1 sexp))))
+    (let ((then (nth 2 sexp))
+          (else (nth 3 sexp)))
+      (and (or (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                then)
+               (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                else))
+           (or (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                then)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     then)))
+           (or (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                else)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     else))))))
+   (t nil)))
 
 (defun nelisp-phase47-compiler--aot-direct-condition-tag (body)
   "Return BODY's static condition tag, or nil when it is not direct."
@@ -3114,37 +3133,47 @@ contains no unresolved non-local source form."
 
 (defun nelisp-phase47-compiler--aot-conditional-condition-case-form
     (body clauses)
-  "Return a one-level conditional condition-case signal descriptor.
-The accepted shape is `(if TEST THEN ELSE)' where exactly one direct
-signal/error branch, or two branches with the same direct condition tag,
-can be statically matched to one HANDLER clause.  TEST and any normal
-branch must contain no unresolved non-local source form."
+  "Return a conditional condition-case signal descriptor.
+The accepted shape is an `(if TEST THEN ELSE)' tree where signal/error
+leaves use a single direct condition tag, can be statically matched to
+one HANDLER clause, and normal leaves contain no unresolved non-local
+source form."
   (when (and (consp body)
              (eq (car body) 'if)
-             (= (length body) 4)
-             (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                   (nth 1 body))))
-    (let* ((then (nth 2 body))
-           (else (nth 3 body))
+             (= (length body) 4))
+    (let ((tag (nelisp-phase47-compiler--aot-condition-tree-tag body)))
+      (when tag
+        (let ((handler
+               (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                tag clauses)))
+          (when handler
+            (list :tag tag :handler handler :form body)))))))
+
+(defun nelisp-phase47-compiler--aot-condition-tree-tag (sexp)
+  "Return the unique direct signal/error tag in SEXP's safe if tree."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-condition-tag sexp))
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4)
+         (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nth 1 sexp))))
+    (let* ((then (nth 2 sexp))
+           (else (nth 3 sexp))
            (then-tag
-            (nelisp-phase47-compiler--aot-direct-condition-tag then))
+            (nelisp-phase47-compiler--aot-condition-tree-tag then))
            (else-tag
-            (nelisp-phase47-compiler--aot-direct-condition-tag else))
-           (tag (or then-tag else-tag)))
-      (when (and tag
-                 (or (not then-tag) (eq then-tag tag))
-                 (or (not else-tag) (eq else-tag tag))
+            (nelisp-phase47-compiler--aot-condition-tree-tag else)))
+      (when (and (or then-tag else-tag)
+                 (or (not then-tag) (not else-tag) (eq then-tag else-tag))
                  (or then-tag
                      (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                            then)))
                  (or else-tag
                      (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                            else))))
-        (let ((handler
-               (nelisp-phase47-compiler--aot-condition-case-direct-handler
-                tag clauses)))
-          (when handler
-            (list :tag tag :handler handler :form body)))))))
+        (or then-tag else-tag))))
+   (t nil)))
 
 (defun nelisp-phase47-compiler--aot-condition-selector-match-p
     (selector tag)
@@ -3211,23 +3240,33 @@ through BODY remain pending on the 129.8 landing-pad path."
               (aot-pop-special 0)
               (throw ,(nth 1 direct-throw) ,value-slot)))))
         (conditional-throw
-         (let ((branch-form
-                (lambda (branch)
-                  (let ((branch-throw
-                         (nelisp-phase47-compiler--aot-direct-quoted-throw-form
-                          branch)))
-                    `(let (((,value-slot :type sexp)
-                            ,(if branch-throw (nth 2 branch-throw) branch)))
-                       (seq
-                        (aot-pop-special 0)
-                        ,(if branch-throw
-                             `(throw ,(nth 1 branch-throw) ,value-slot)
-                           value-slot)))))))
+         (cl-labels
+             ((branch-form
+               (branch)
+               (let ((branch-throw
+                      (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                       branch)))
+                 (cond
+                  (branch-throw
+                   `(let (((,value-slot :type sexp) ,(nth 2 branch-throw)))
+                      (seq
+                       (aot-pop-special 0)
+                       (throw ,(nth 1 branch-throw) ,value-slot))))
+                  ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                    branch)
+                   `(if ,(nth 1 branch)
+                        ,(branch-form (nth 2 branch))
+                      ,(branch-form (nth 3 branch))))
+                  (t
+                   `(let (((,value-slot :type sexp) ,branch))
+                      (seq
+                       (aot-pop-special 0)
+                       ,value-slot)))))))
            `(seq
              (aot-push-special ',var ,val-sexp)
              (if ,(nth 1 conditional-throw)
-                 ,(funcall branch-form (nth 2 conditional-throw))
-               ,(funcall branch-form (nth 3 conditional-throw))))))
+                 ,(branch-form (nth 2 conditional-throw))
+               ,(branch-form (nth 3 conditional-throw))))))
         (t
          `(seq
            (aot-push-special ',var ,val-sexp)
@@ -3283,23 +3322,32 @@ all-special subset."
                   ,@pop-forms
                   (throw ,(nth 1 direct-throw) ,body-slot))))
              (conditional-throw
-              (let ((branch-form
-                     (lambda (branch)
-                       (let ((branch-throw
-                              (nelisp-phase47-compiler--aot-direct-quoted-throw-form
-                               branch)))
-                         `(let (((,body-slot :type sexp)
-                                 ,(if branch-throw
-                                      (nth 2 branch-throw)
-                                    branch)))
-                            (seq
-                             ,@pop-forms
-                             ,(if branch-throw
-                                  `(throw ,(nth 1 branch-throw) ,body-slot)
-                                body-slot)))))))
+              (cl-labels
+                  ((branch-form
+                    (branch)
+                    (let ((branch-throw
+                           (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                            branch)))
+                      (cond
+                       (branch-throw
+                        `(let (((,body-slot :type sexp)
+                                ,(nth 2 branch-throw)))
+                           (seq
+                            ,@pop-forms
+                            (throw ,(nth 1 branch-throw) ,body-slot))))
+                       ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                         branch)
+                        `(if ,(nth 1 branch)
+                             ,(branch-form (nth 2 branch))
+                           ,(branch-form (nth 3 branch))))
+                       (t
+                        `(let (((,body-slot :type sexp) ,branch))
+                           (seq
+                            ,@pop-forms
+                            ,body-slot)))))))
                 `(if ,(nth 1 conditional-throw)
-                     ,(funcall branch-form (nth 2 conditional-throw))
-                   ,(funcall branch-form (nth 3 conditional-throw)))))
+                     ,(branch-form (nth 2 conditional-throw))
+                   ,(branch-form (nth 3 conditional-throw)))))
              (t
               `(let (((,body-slot :type sexp) ,body-sexp))
                  (seq
@@ -3369,26 +3417,33 @@ saved BODY value."
                     ,@pop-forms
                     (throw ,(nth 1 direct-throw) ,body-slot))))
                (conditional-throw
-                (let ((branch-form
-                       (lambda (branch)
-                         (let* ((branch-throw
-                                 (nelisp-phase47-compiler--aot-direct-quoted-throw-form
-                                  branch))
-                                (branch-value
-                                 (if branch-throw
-                                     (nth 2 branch-throw)
-                                   branch)))
-                           `(let (((,body-slot :type sexp) ,branch-value))
-                              (seq
-                               ,@pop-forms
-                               ,(if branch-throw
-                                    `(throw ,(nth 1 branch-throw)
-                                            ,body-slot)
-                                  body-slot)))))))
+                (cl-labels
+                    ((branch-form
+                      (branch)
+                      (let ((branch-throw
+                             (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                              branch)))
+                        (cond
+                         (branch-throw
+                          `(let (((,body-slot :type sexp)
+                                  ,(nth 2 branch-throw)))
+                             (seq
+                              ,@pop-forms
+                              (throw ,(nth 1 branch-throw) ,body-slot))))
+                         ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                           branch)
+                          `(if ,(nth 1 branch)
+                               ,(branch-form (nth 2 branch))
+                             ,(branch-form (nth 3 branch))))
+                         (t
+                          `(let (((,body-slot :type sexp) ,branch))
+                             (seq
+                              ,@pop-forms
+                              ,body-slot)))))))
                   (let ((conditional-body
                          `(if ,(nth 1 conditional-throw)
-                              ,(funcall branch-form (nth 2 conditional-throw))
-                            ,(funcall branch-form (nth 3 conditional-throw)))))
+                              ,(branch-form (nth 2 conditional-throw))
+                            ,(branch-form (nth 3 conditional-throw)))))
                     (if lexical-bindings*
                         `(let ,lexical-bindings* ,conditional-body)
                       conditional-body))))
@@ -3424,37 +3479,43 @@ saved BODY value."
     ;; instead of the generated `aot-*' forms.
     (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
     (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
-    (if direct-throw
-        (nelisp-phase47-compiler--parse-value
-         `(seq
-           (aot-push-catch ,tag 0 0)
-           ,direct-throw
-           (aot-landing-value out))
-         env fenv defuns)
-      (if conditional-throw
-          (let* ((value-slot (nelisp-phase47-compiler--gensym
-                              "aot-catch-value"))
-                 (test (nth 1 conditional-throw))
-                 (then (nth 2 conditional-throw))
-                 (else (nth 3 conditional-throw))
-                 (branch-form
-                  (lambda (branch)
-                    (if (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
-                         tag branch)
-                        `(seq
-                          ,branch
-                          (aot-landing-value out))
-                      `(let (((,value-slot :type sexp) ,branch))
-                         (seq
-                          (aot-pop-handler 'catch)
-                          ,value-slot))))))
-            (nelisp-phase47-compiler--parse-value
-             `(seq
-               (aot-push-catch ,tag 0 0)
-               (if ,test
-                   ,(funcall branch-form then)
-                 ,(funcall branch-form else)))
-             env fenv defuns))
+      (if direct-throw
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             (aot-push-catch ,tag 0 0)
+             ,direct-throw
+             (aot-landing-value out))
+           env fenv defuns)
+        (if conditional-throw
+            (let* ((value-slot (nelisp-phase47-compiler--gensym
+                                "aot-catch-value"))
+                   (test (nth 1 conditional-throw)))
+              (nelisp-phase47-compiler--parse-value
+               (cl-labels
+                   ((branch-form
+                     (branch)
+                     (cond
+                      ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+                        tag branch)
+                       `(seq
+                         ,branch
+                         (aot-landing-value out)))
+                      ((nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                        tag branch)
+                       `(if ,(nth 1 branch)
+                            ,(branch-form (nth 2 branch))
+                          ,(branch-form (nth 3 branch))))
+                      (t
+                       `(let (((,value-slot :type sexp) ,branch))
+                          (seq
+                           (aot-pop-handler 'catch)
+                           ,value-slot))))))
+                 `(seq
+                   (aot-push-catch ,tag 0 0)
+                   (if ,test
+                       ,(branch-form (nth 2 conditional-throw))
+                     ,(branch-form (nth 3 conditional-throw)))))
+               env fenv defuns))
         (let ((value-slot (nelisp-phase47-compiler--gensym
                            "aot-catch-value"))
               (body (nelisp-phase47-compiler--body->form body-forms)))
@@ -3561,25 +3622,32 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
                   `(seq
                     (aot-landing-error out)
                     ,handler-body)))
-               (value-slot (nelisp-phase47-compiler--gensym
-                            "aot-condition-value"))
-               (branch-form
-                (lambda (branch)
-                  (if (nelisp-phase47-compiler--aot-direct-condition-tag
-                       branch)
-                      `(seq
-                        ,branch
-                        ,handled-form)
-                    `(let (((,value-slot :type sexp) ,branch))
-                       (seq
-                        (aot-pop-handler 'condition)
-                        ,value-slot))))))
+	               (value-slot (nelisp-phase47-compiler--gensym
+	                            "aot-condition-value")))
           (nelisp-phase47-compiler--parse-value
-           `(seq
-             (aot-push-condition ',tag 0 0)
-             (if ,(nth 1 conditional-form)
-                 ,(funcall branch-form (nth 2 conditional-form))
-               ,(funcall branch-form (nth 3 conditional-form))))
+           (cl-labels
+               ((branch-form
+                 (branch)
+                 (cond
+                  ((nelisp-phase47-compiler--aot-direct-condition-tag
+                    branch)
+                   `(seq
+                     ,branch
+                     ,handled-form))
+                  ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
+                   `(if ,(nth 1 branch)
+                        ,(branch-form (nth 2 branch))
+                      ,(branch-form (nth 3 branch))))
+                  (t
+                   `(let (((,value-slot :type sexp) ,branch))
+                      (seq
+                       (aot-pop-handler 'condition)
+                       ,value-slot))))))
+             `(seq
+               (aot-push-condition ',tag 0 0)
+               (if ,(nth 1 conditional-form)
+                   ,(branch-form (nth 2 conditional-form))
+                 ,(branch-form (nth 3 conditional-form)))))
            env fenv defuns)))
        (t
         (let ((value-slot (nelisp-phase47-compiler--gensym
@@ -3632,23 +3700,32 @@ crossing the protected body still require native landing-pad support."
                ,@cleanups
                (throw ,(nth 1 direct-throw) ,value-slot))))
           (conditional-throw
-           (let ((branch-form
-                  (lambda (branch)
-                    (let ((branch-throw
-                           (nelisp-phase47-compiler--aot-direct-quoted-throw-form
-                            branch)))
-                      `(let (((,value-slot :type sexp)
-                              ,(if branch-throw
-                                   (nth 2 branch-throw)
-                                 branch)))
-                         (seq
-                          ,@cleanups
-                          ,(if branch-throw
-                               `(throw ,(nth 1 branch-throw) ,value-slot)
-                             value-slot)))))))
+           (cl-labels
+               ((branch-form
+                 (branch)
+                 (let ((branch-throw
+                        (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                         branch)))
+                   (cond
+                    (branch-throw
+                     `(let (((,value-slot :type sexp)
+                             ,(nth 2 branch-throw)))
+                        (seq
+                         ,@cleanups
+                         (throw ,(nth 1 branch-throw) ,value-slot))))
+                    ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                      branch)
+                     `(if ,(nth 1 branch)
+                          ,(branch-form (nth 2 branch))
+                        ,(branch-form (nth 3 branch))))
+                    (t
+                     `(let (((,value-slot :type sexp) ,branch))
+                        (seq
+                         ,@cleanups
+                         ,value-slot)))))))
              `(if ,(nth 1 conditional-throw)
-                  ,(funcall branch-form (nth 2 conditional-throw))
-                ,(funcall branch-form (nth 3 conditional-throw)))))
+                  ,(branch-form (nth 2 conditional-throw))
+                ,(branch-form (nth 3 conditional-throw)))))
           (t
            `(let (((,value-slot :type sexp) ,body))
               (seq
