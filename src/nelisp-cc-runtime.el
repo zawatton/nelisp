@@ -1557,6 +1557,74 @@ frame vector."
           value)))
     root-slots)))
 
+(defun nelisp-cc-runtime--aot-frame-slot-key-p (slot)
+  "Return non-nil when SLOT is a Doc 129 hash-FRAMES key."
+  (or (integerp slot) (symbolp slot)))
+
+(defun nelisp-cc-runtime-aot-frame-slot-ref (frames slot)
+  "Return SLOT's value from hash-table FRAMES.
+SLOT may be an integer compiler frame slot or a symbolic runtime slot.
+Missing slots signal `nelisp-cc-runtime-error' instead of returning nil
+so native callers can distinguish nil values from absent frame state."
+  (unless (hash-table-p frames)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-slot-frames-not-hash-table frames)))
+  (unless (nelisp-cc-runtime--aot-frame-slot-key-p slot)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-slot-key-invalid slot)))
+  (let ((missing (list :missing slot)))
+    (let ((value (gethash slot frames missing)))
+      (when (eq value missing)
+        (signal 'nelisp-cc-runtime-error
+                (list :aot-frame-slot-missing slot)))
+      value)))
+
+(defun nelisp-cc-runtime-aot-frame-slot-set (frames slot value)
+  "Store VALUE in hash-table FRAMES at SLOT and return VALUE.
+This is the host/runtime primitive shared by Doc 129 capture-cell
+write-through and standalone native frame-slot updates."
+  (unless (hash-table-p frames)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-slot-frames-not-hash-table frames)))
+  (unless (nelisp-cc-runtime--aot-frame-slot-key-p slot)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-slot-key-invalid slot)))
+  (puthash slot value frames)
+  value)
+
+(defun nelisp-cc-runtime-aot-frame-slot-ref-boundary
+    (mirror frames slot out scratch)
+  "Runtime bridge for Doc 129 hash-FRAMES slot reads.
+MIRROR, FRAMES, SLOT, OUT, and SCRATCH mirror:
+
+  nelisp_aot_frame_slot_ref(mirror, frames, slot, out, scratch)
+
+The bridge writes FRAMES[SLOT] to OUT[0] and returns OUT."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-slot-ref-out-not-vector out)))
+  (ignore mirror scratch)
+  (aset out 0
+        (nelisp-cc-runtime-aot-frame-slot-ref frames slot))
+  out)
+
+(defun nelisp-cc-runtime-aot-frame-slot-set-boundary
+    (mirror frames slot value out scratch)
+  "Runtime bridge for Doc 129 hash-FRAMES slot writes.
+MIRROR, FRAMES, SLOT, VALUE, OUT, and SCRATCH mirror:
+
+  nelisp_aot_frame_slot_set(mirror, frames, slot, value, out, scratch)
+
+The bridge stores VALUE in FRAMES[SLOT], writes VALUE to OUT[0], and
+returns OUT."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-slot-set-out-not-vector out)))
+  (ignore mirror scratch)
+  (aset out 0
+        (nelisp-cc-runtime-aot-frame-slot-set frames slot value))
+  out)
+
 (defun nelisp-cc-runtime-call-with-aot-roots (roots thunk)
   "Call THUNK while ROOTS is registered as an active AOT GC frame.
 This is the Emacs-side call-boundary hook for Doc 129.5C.  Native
@@ -1985,8 +2053,7 @@ as `(WRITER NAME NEW-VALUE)' after closure `setq' updates the cell."
   "Return a capture-cell writer that stores NAME in FRAMES, or nil."
   (when (hash-table-p frames)
     (lambda (_name value)
-      (puthash name value frames)
-      value)))
+      (nelisp-cc-runtime-aot-frame-slot-set frames name value))))
 
 (defun nelisp-cc-runtime-aot-capture-cell-boundary
     (mirror frames name value out scratch &optional writer)
@@ -2888,6 +2955,14 @@ writes it to OUT[0], and returns OUT."
      :function nelisp-cc-runtime-aot-materialize-frame-roots-boundary
      :fixed-argc 5 :rest t
      :args (mirror frames count out scratch root-slots...))
+    (:symbol nelisp_aot_frame_slot_ref
+     :function nelisp-cc-runtime-aot-frame-slot-ref-boundary
+     :fixed-argc 5 :rest nil
+     :args (mirror frames slot out scratch))
+    (:symbol nelisp_aot_frame_slot_set
+     :function nelisp-cc-runtime-aot-frame-slot-set-boundary
+     :fixed-argc 6 :rest nil
+     :args (mirror frames slot value out scratch))
     (:symbol nelisp_aot_push_roots
      :function nelisp-cc-runtime-aot-push-roots-boundary
      :fixed-argc 5 :rest nil

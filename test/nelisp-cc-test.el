@@ -1286,6 +1286,52 @@ exit points were emitted; call-points were missing."
       'mirror frames 0 nil 'scratch)
      :type 'nelisp-cc-runtime-error)))
 
+(ert-deftest nelisp-cc-runtime-aot-frame-slot-ref-set ()
+  "Doc 129.7AF — hash-FRAMES slot helpers read and write values."
+  (let ((frames (make-hash-table :test 'eq))
+        (root (vector 'doc129 'slot)))
+    (should (eq (nelisp-cc-runtime-aot-frame-slot-set
+                 frames 'cap 11)
+                11))
+    (should (= (nelisp-cc-runtime-aot-frame-slot-ref frames 'cap) 11))
+    (should (eq (nelisp-cc-runtime-aot-frame-slot-set
+                 frames 0 root)
+                root))
+    (should (eq (nelisp-cc-runtime-aot-frame-slot-ref frames 0)
+                root))
+    (should-error
+     (nelisp-cc-runtime-aot-frame-slot-ref frames 'missing)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-frame-slot-set 'not-frames 'cap 12)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-frame-slot-ref frames "cap")
+     :type 'nelisp-cc-runtime-error)))
+
+(ert-deftest nelisp-cc-runtime-aot-frame-slot-boundaries ()
+  "Doc 129.7AF — native frame-slot ABI bridges update OUT."
+  (let ((frames (make-hash-table :test 'eq))
+        (out (vector nil)))
+    (should (eq (nelisp-cc-runtime-aot-frame-slot-set-boundary
+                 'mirror frames 'cap 21 out 'scratch)
+                out))
+    (should (= (gethash 'cap frames) 21))
+    (should (= (aref out 0) 21))
+    (aset out 0 nil)
+    (should (eq (nelisp-cc-runtime-aot-frame-slot-ref-boundary
+                 'mirror frames 'cap out 'scratch)
+                out))
+    (should (= (aref out 0) 21))
+    (should-error
+     (nelisp-cc-runtime-aot-frame-slot-ref-boundary
+      'mirror frames 'missing out 'scratch)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-frame-slot-set-boundary
+      'mirror frames 'cap 22 nil 'scratch)
+     :type 'nelisp-cc-runtime-error)))
+
 (ert-deftest nelisp-cc-runtime-aot-root-push-pop-boundary ()
   "Doc 129.5E — explicit native root push/pop bridges update root-set."
   (let* ((root (cons 'aot 'native))
@@ -2440,6 +2486,9 @@ exit points were emitted; call-points were missing."
          (make-closure
           (nelisp-cc-runtime-aot-c-abi-descriptor
            'nelisp_aot_make_closure))
+         (frame-slot-set
+          (nelisp-cc-runtime-aot-c-abi-descriptor
+           'nelisp_aot_frame_slot_set))
          (throw
           (nelisp-cc-runtime-aot-c-abi-descriptor
            'nelisp_aot_throw)))
@@ -2456,6 +2505,10 @@ exit points were emitted; call-points were missing."
     (should (eq (plist-get make-closure :function)
                 'nelisp-cc-runtime-aot-make-closure))
     (should (plist-get make-closure :rest))
+    (should (eq (plist-get frame-slot-set :function)
+                'nelisp-cc-runtime-aot-frame-slot-set-boundary))
+    (should (equal (plist-get frame-slot-set :args)
+                   '(mirror frames slot value out scratch)))
     (should (equal (plist-get throw :args)
                    '(mirror frames tag value out scratch)))
     (should-not
