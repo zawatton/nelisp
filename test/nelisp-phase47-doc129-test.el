@@ -2149,6 +2149,66 @@ materialized closure temporary."
     (should (equal (plist-get plan :closure-descriptors)
                    descriptors))))
 
+(ert-deftest nelisp-phase47-doc129/function-lambda-closure-value ()
+  "Doc 129.7X: escaping literal lambda values materialize heap closures."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun make_closure
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (cap :type sexp))
+                 (function (lambda (x) (+ x cap))))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (make-closure (nth 1 forms))
+         (make-args (nelisp-phase47-compiler--ir-get make-closure :args))
+         (result (nth 2 forms)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get make-closure :name)
+                'nelisp_aot_make_closure))
+    (should (= (nelisp-phase47-compiler--ir-get (nth 3 make-args) :value)
+               1))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 make-args) :var)
+                'cap))
+    (should (eq (nelisp-phase47-compiler--ir-kind result) 'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get result :var) 'out))))
+
+(ert-deftest nelisp-phase47-doc129/raw-lambda-closure-value ()
+  "Doc 129.7X: raw escaping lambda values materialize heap closures."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun make_closure
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (cap :type sexp))
+                 (lambda (x) (+ x cap)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (make-closure (nth 1 forms)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get make-closure :name)
+                'nelisp_aot_make_closure))))
+
+(ert-deftest nelisp-phase47-doc129/function-lambda-closure-descriptor ()
+  "Doc 129.7X: escaping lambda values expose closure descriptors."
+  (let* ((descriptors
+          (nelisp-phase47-compiler--closure-descriptors
+           '(defun make_closure
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp))
+              (function (lambda (x) (+ x cap))))))
+         (descriptor (car descriptors)))
+    (should (= (length descriptors) 1))
+    (should (eq (plist-get descriptor :name) 'nelisp_aot_closure_0))
+    (should (equal (plist-get descriptor :arglist) '(x)))
+    (should (equal (plist-get descriptor :body) '((+ x cap))))
+    (should (equal (plist-get descriptor :captures) '(cap)))))
+
 (ert-deftest nelisp-phase47-doc129/sort-lambda-closure-capture ()
   "Doc 129.7U: `sort' predicates with captures materialize closures."
   (nelisp-phase47-doc129-test--capturing-callback-closure-ir
@@ -2433,6 +2493,29 @@ materialized closure temporary."
             (should (string-match-p "call_mapcar" out))
             (should (string-match-p "nelisp_aot_make_closure" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-function-lambda-closure-value ()
+  "Doc 129.7X: object output exposes escaping lambda closure bridge."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-value-closure-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun make_closure
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp))
+              (function (lambda (x) (+ x cap))))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "make_closure" out))
+            (should (string-match-p "nelisp_aot_make_closure" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 

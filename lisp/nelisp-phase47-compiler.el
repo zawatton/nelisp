@@ -1553,6 +1553,23 @@ macros do not leak into the host Emacs session."
             nelisp-phase47-compiler--lambda-lift-hoists)
       `(function ,name))))
 
+(defun nelisp-phase47-compiler--lambda-closure-value (lambda-form)
+  "Return an escaping heap-closure value form for literal LAMBDA-FORM."
+  (unless (and (>= (length lambda-form) 3)
+               (listp (nth 1 lambda-form))
+               (cl-every #'symbolp (nth 1 lambda-form)))
+    (signal 'nelisp-phase47-compiler-error
+            (list :lambda-lift-param-shape lambda-form)))
+  (let* ((closure-name (nelisp-phase47-compiler--closure-lift-name))
+         (params (nth 1 lambda-form))
+         (captures (nelisp-phase47-compiler--lambda-captures lambda-form)))
+    (push (list :name closure-name
+                :arglist params
+                :body (cddr lambda-form)
+                :captures captures)
+          nelisp-phase47-compiler--closure-lift-descriptors)
+    `(aot-closure-lambda ,closure-name ,@captures)))
+
 (defun nelisp-phase47-compiler--preprocess-funcall-lambda (sexp)
   "Lambda-lift a literal lambda designator in `(funcall ...)'.
 Captured lexical values are threaded into the synthetic direct call as
@@ -1975,6 +1992,9 @@ the whole program."
    ((null sexp) 0)
    ((atom sexp) sexp)
    ((eq (car sexp) 'quote) sexp)
+   ((nelisp-phase47-compiler--lambda-literal-form sexp)
+    (nelisp-phase47-compiler--lambda-closure-value
+     (nelisp-phase47-compiler--lambda-literal-form sexp)))
    ((eq (car sexp) 'function) sexp)
    ((eq (car sexp) 'funcall)
     (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
@@ -2397,6 +2417,49 @@ caller-owned boundary params in the current defun:
           :mirror 'mirror
           :frames 'frames
           :scratch 'scratch)))
+
+(defun nelisp-phase47-compiler--aot-closure-boundary-symbols (fenv sexp)
+  "Return boundary symbols for escaping heap-closure lowering in FENV."
+  (let ((missing nil))
+    (dolist (sym '(out mirror frames scratch))
+      (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+        (push sym missing)))
+    (when missing
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-closure-boundary-missing
+                    (nreverse missing)
+                    :form sexp)))
+    (list :out 'out
+          :mirror 'mirror
+          :frames 'frames
+          :scratch 'scratch)))
+
+(defun nelisp-phase47-compiler--parse-aot-closure-lambda
+    (sexp env fenv defuns)
+  "Lower internal escaping heap-closure value SEXP."
+  (unless (and (>= (length sexp) 2)
+               (symbolp (nth 1 sexp)))
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-closure-lambda-shape sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-closure-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (descriptor (nth 1 sexp))
+         (captures (nthcdr 2 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       (sexp-write-symbol-lit ,scratch ,(symbol-name descriptor))
+       (extern-call nelisp_aot_make_closure
+                    ,mirror ,frames ,scratch
+                    ,(length captures)
+                    ,out ,scratch
+                    ,@captures)
+       ,out)
+     env fenv defuns)))
 
 (defun nelisp-phase47-compiler--parse-aot-funcall1
     (sexp env fenv defuns)
@@ -3374,6 +3437,11 @@ functions `((NAME . ARITY) ...)'."
                              (nelisp-phase47-compiler--parse-value
                               e env fenv defuns))
                            children))))
+   ;; Doc 129.7X: escaping literal lambda values materialize as
+   ;; canonical runtime heap closures, not synthetic defun symbols.
+   ((and (consp sexp) (eq (car sexp) 'aot-closure-lambda))
+    (nelisp-phase47-compiler--parse-aot-closure-lambda
+     sexp env fenv defuns))
    ;; Doc 129.6D — first direct user-call lowering for one-argument
    ;; builtins.  The surrounding defun must expose the boxed-boundary
    ;; slots used by the 129.6B helper, so ordinary `(symbol-name arg)'
