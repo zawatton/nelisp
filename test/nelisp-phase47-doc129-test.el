@@ -1606,6 +1606,37 @@ materialized closure temporary."
                 'frames))
     (should (member 'nelisp_aot_materialize_frame_roots externs))))
 
+(ert-deftest nelisp-phase47-doc129/select-auto-frame-roots-from-metadata ()
+  "Doc 129.5K: object loader metadata selects auto frame roots."
+  (let* ((source
+          '(seq
+            (defun make-str
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 bytes
+                 len)
+              (sexp-write-str out bytes len))
+            (defun plain ((slot :type sexp) bytes len)
+              (sexp-write-str slot bytes len))))
+         (selected
+          (nelisp-phase47-compiler--select-auto-frame-roots source)))
+    (should
+     (equal selected
+            '(seq
+              (defun make-str
+                  ((out :type sexp)
+                   (mirror :type sexp)
+                   (frames :type sexp)
+                   (scratch :type sexp)
+                   bytes
+                   len
+                   auto_frame_roots)
+                (sexp-write-str out bytes len))
+              (defun plain ((slot :type sexp) bytes len)
+                (sexp-write-str slot bytes len)))))))
+
 (ert-deftest nelisp-phase47-doc129/parse-auto-aot-root-scope-stack-roots ()
   "Doc 129.5I: root scope can use hash-FRAMES roots without a roots slot."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -1671,6 +1702,31 @@ materialized closure temporary."
                  len)
               (sexp-write-str out bytes len))
            path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_materialize_frame_roots" out))
+            (should (string-match-p "nelisp_aot_push_roots" out))
+            (should (string-match-p "nelisp_aot_pop_roots" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-auto-aot-root-scope-loader-selected ()
+  "Doc 129.5K: compile-to-object can select frame roots from metadata."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-auto-frame-roots-loader-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun make-str
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 bytes
+                 len)
+              (sexp-write-str out bytes len))
+           path
+           :auto-frame-roots t)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))

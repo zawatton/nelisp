@@ -784,6 +784,78 @@ root vector while the compiled function is active."
            (push descriptor descriptors)))))
     (nreverse descriptors)))
 
+(defun nelisp-phase47-compiler--defun-param-symbol (param)
+  "Return the symbol named by defun PARAM, or nil for unsupported shapes."
+  (cond
+   ((symbolp param) param)
+   ((and (consp param) (symbolp (car param))) (car param))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--defun-param-symbols (param-forms sexp)
+  "Return normalized defun PARAM-FORMS as symbols for SEXP."
+  (mapcar #'nelisp-phase47-compiler--defun-param-symbol
+          (plist-get
+           (nelisp-phase47-compiler--normalize-defun-params param-forms sexp)
+           :params)))
+
+(defun nelisp-phase47-compiler--insert-param-before-rest
+    (param-forms param)
+  "Insert PARAM into PARAM-FORMS before `&rest' when present."
+  (let ((before nil)
+        (tail param-forms)
+        (done nil))
+    (while (and tail (not done))
+      (if (eq (car tail) '&rest)
+          (setq done t)
+        (push (car tail) before)
+        (setq tail (cdr tail))))
+    (append (nreverse before) (list param) tail)))
+
+(defun nelisp-phase47-compiler--auto-frame-root-defun-p
+    (form root-names)
+  "Return non-nil when FORM should receive `auto_frame_roots'."
+  (when (and (consp form) (eq (car form) 'defun))
+    (let* ((name (nth 1 form))
+           (param-forms (nth 2 form))
+           (symbols
+            (nelisp-phase47-compiler--defun-param-symbols
+             param-forms form)))
+      (and (memq name root-names)
+           (cl-every (lambda (sym) (memq sym symbols))
+                     '(out mirror frames scratch))
+           (not (memq 'roots symbols))
+           (not (memq 'frame_roots symbols))
+           (not (memq 'auto_frame_roots symbols))))))
+
+(defun nelisp-phase47-compiler--select-auto-frame-roots (sexp)
+  "Return SEXP with loader-selected `auto_frame_roots' markers inserted.
+
+Only defuns with non-empty Doc 129.5 root descriptors and the standard
+AOT handle params `out', `mirror', `frames', and `scratch' are marked.
+Boundary defuns with `roots' and explicit `frame_roots' / existing
+`auto_frame_roots' forms are left unchanged."
+  (let* ((ir (nelisp-phase47-compiler--parse sexp nil))
+         (root-names
+          (mapcar (lambda (descriptor)
+                    (plist-get descriptor :name))
+                  (nelisp-phase47-compiler--gc-root-descriptors ir))))
+    (cl-labels
+        ((maybe-mark-defun
+          (form)
+          (if (nelisp-phase47-compiler--auto-frame-root-defun-p
+               form root-names)
+              (let ((params
+                     (nelisp-phase47-compiler--insert-param-before-rest
+                      (nth 2 form) 'auto_frame_roots)))
+                `(defun ,(nth 1 form) ,params ,@(nthcdr 3 form)))
+            form)))
+      (cond
+       ((and (consp sexp) (eq (car sexp) 'defun))
+        (maybe-mark-defun sexp))
+       ((and (consp sexp) (eq (car sexp) 'seq))
+        (cons 'seq (mapcar #'maybe-mark-defun (cdr sexp))))
+       (t sexp)))))
+
 (defun nelisp-phase47-compiler--auto-aot-root-boundary-slots
     (fenv &optional require-roots)
   "Return Doc 129.5F/I boundary slots from FENV, or nil.
@@ -9997,7 +10069,7 @@ drift (= a Doc 92 emitter invariant violation)."
 
 ;;;###autoload
 (cl-defun nelisp-phase47-compile-to-object
-    (sexp file-path &key (arch 'x86_64) (format 'elf))
+    (sexp file-path &key (arch 'x86_64) (format 'elf) auto-frame-roots)
   "Compile SEXP (= one or more defuns) to an ET_REL .o at FILE-PATH.
 
 SEXP must be either a single `(defun NAME (PARAMS...) BODY)' form or
@@ -10014,6 +10086,10 @@ Spike scope: defun bodies must not reference strings.  Signals
 the IR contains a `write' node, because rodata vaddr baking does
 not survive linker relocation in v1.
 
+When AUTO-FRAME-ROOTS is non-nil, object emission uses module root
+metadata to insert loader-selected `auto_frame_roots' markers into
+eligible non-boundary defuns before parsing.
+
 Returns FILE-PATH on success.  Signals on parse error, free symbol
 reference, out-of-range integer, or any pass-1/pass-2 byte-length
 drift (= a Doc 92 emitter invariant violation)."
@@ -10022,7 +10098,11 @@ drift (= a Doc 92 emitter invariant violation)."
             (list :unsupported-arch arch)))
   (let* ((nelisp-phase47-compiler--label-counter 0)
          (nelisp-phase47-compiler--arch arch)
-         (ir (nelisp-phase47-compiler--parse sexp nil))
+         (source (if auto-frame-roots
+                     (nelisp-phase47-compiler--select-auto-frame-roots
+                      sexp)
+                   sexp))
+         (ir (nelisp-phase47-compiler--parse source nil))
          (collected (nelisp-phase47-compiler--collect-strings ir))
          (rodata-bytes (cdr collected))
          (defuns (nelisp-phase47-compiler--collect-defuns ir)))
@@ -10032,7 +10112,7 @@ drift (= a Doc 92 emitter invariant violation)."
                     :rodata-bytes (length rodata-bytes))))
     (unless defuns
       (signal 'nelisp-phase47-compiler-error
-              (list :object-mode-needs-defuns sexp)))
+              (list :object-mode-needs-defuns source)))
     ;; Validate top-level shape: either a single defun, or a seq of
     ;; defun forms (the parser tolerates seq + main body, but for
     ;; object output we reject anything that would emit a `_start'.)
