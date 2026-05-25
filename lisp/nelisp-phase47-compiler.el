@@ -1193,6 +1193,45 @@ generated AOT init helper."
   "Return a pointer form for scratch vector slot INDEX."
   `(vector-ref-ptr ,scratch ,index))
 
+(defun nelisp-phase47-compiler--next-power-of-two (n)
+  "Return the smallest power of two that is >= N."
+  (let ((cap 1))
+    (while (< cap n)
+      (setq cap (ash cap 1)))
+    cap))
+
+(defun nelisp-phase47-compiler--top-level-make-hash-table-capacity (form)
+  "Return a bucket capacity for top-level `(make-hash-table ...)' FORM.
+The current Phase 47 hash-table primitive stores only the empty bucket
+array.  Emacs keyword options are accepted syntactically so common
+source initializers can AOT-compile; `:size' is used when it is a
+positive integer, and the remaining options are runtime metadata the
+MVP table does not yet store."
+  (when (and (consp form) (eq (car form) 'make-hash-table))
+    (let ((args (cdr form))
+          (size 16)
+          (ok t))
+      (while (and ok args)
+        (if (and (keywordp (car args)) (consp (cdr args)))
+            (progn
+              (when (eq (car args) :size)
+                (when (integerp (cadr args))
+                  (setq size (max 1 (cadr args)))))
+              (setq args (cddr args)))
+          (setq ok nil)))
+      (when ok
+        (max 16 (nelisp-phase47-compiler--next-power-of-two size))))))
+
+(defun nelisp-phase47-compiler--top-level-make-hash-table-write-forms
+    (slot form scratch)
+  "Return init-helper forms that materialize FORM as an empty hash table."
+  (let ((capacity
+         (nelisp-phase47-compiler--top-level-make-hash-table-capacity form)))
+    (when capacity
+      (let ((tag-slot (nelisp-phase47-compiler--scratch-slot scratch 0)))
+        `((sexp-write-symbol-lit ,tag-slot "hash-table")
+          (hash-table-make ,tag-slot ,capacity ,slot))))))
+
 (defun nelisp-phase47-compiler--top-level-literal-write-forms
     (slot literal scratch depth)
   "Return forms that materialize LITERAL into SLOT.
@@ -1261,10 +1300,12 @@ the literal shape is outside the current module-init materializer."
   "Return init-helper forms that materialize FORM into SLOT.
 Returns nil when FORM is outside the literal Sexp MVP and should keep
 using the boxed integer init helper path."
-  (let ((literal (nelisp-phase47-compiler--top-level-literal-value form)))
-    (when literal
-      (nelisp-phase47-compiler--top-level-literal-write-forms
-       slot (cdr literal) scratch 0))))
+  (or (nelisp-phase47-compiler--top-level-make-hash-table-write-forms
+       slot form scratch)
+      (let ((literal (nelisp-phase47-compiler--top-level-literal-value form)))
+        (when literal
+          (nelisp-phase47-compiler--top-level-literal-write-forms
+           slot (cdr literal) scratch 0)))))
 
 (defun nelisp-phase47-compiler--top-level-var-direct-defun
     (kind helper name init-form)
@@ -1984,16 +2025,22 @@ macros do not leak into the host Emacs session."
                (dolist (binding (nth 1 node))
                  (when (and (consp binding) (consp (cdr binding)))
                    (walk (cadr binding) bound*))
-                 (when (symbolp (car-safe binding))
-                   (push (car binding) new-bound)))
+                 (cond
+                  ((symbolp binding)
+                   (push binding new-bound))
+                  ((symbolp (car-safe binding))
+                   (push (car binding) new-bound))))
                (walk-body (nthcdr 2 node) new-bound)))
             ((eq (car node) 'let*)
              (let ((new-bound bound*))
                (dolist (binding (nth 1 node))
                  (when (and (consp binding) (consp (cdr binding)))
                    (walk (cadr binding) new-bound))
-                 (when (symbolp (car-safe binding))
-                   (push (car binding) new-bound)))
+                 (cond
+                  ((symbolp binding)
+                   (push binding new-bound))
+                  ((symbolp (car-safe binding))
+                   (push (car binding) new-bound))))
                (walk-body (nthcdr 2 node) new-bound)))
             ((eq (car node) 'setq)
              (let ((pairs (cdr node)))
@@ -2228,8 +2275,11 @@ path instead of by-value lambda lifting."
   "Return symbol names bound by LET BINDINGS."
   (let (vars)
     (dolist (binding bindings)
-      (when (symbolp (car-safe binding))
-        (push (car binding) vars)))
+      (cond
+       ((symbolp binding)
+        (push binding vars))
+       ((symbolp (car-safe binding))
+        (push (car binding) vars))))
     (nreverse vars)))
 
 (defun nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars (forms)
@@ -2288,8 +2338,11 @@ after the form exits."
                     (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
                      (cadr binding))
                     bound))))
-          (when (symbolp (car-safe binding))
-            (push (car binding) bound)))
+          (cond
+           ((symbolp binding)
+            (push binding bound))
+           ((symbolp (car-safe binding))
+            (push (car binding) bound))))
       (dolist (binding bindings)
         (when (and (consp binding) (consp (cdr binding)))
           (setq init-vars
@@ -2396,7 +2449,12 @@ intersection of exhaustive branches."
           (setq body-vars
                 (nelisp-phase47-compiler--symbol-list-difference
                  body-vars
-                 (list (car binding))))))
+                 (list (car binding)))))
+        (when (symbolp binding)
+          (setq body-vars
+                (nelisp-phase47-compiler--symbol-list-difference
+                 body-vars
+                 (list binding)))))
       `(let* ,(nreverse out-bindings)
          ,@(mapcar
             (lambda (child)
@@ -2420,7 +2478,11 @@ intersection of exhaustive branches."
           (setq processed
                 (nelisp-phase47-compiler--rewrite-frame-slot-refs
                  processed mutated)))
-        (push processed out)
+        (if (eq processed 'nelisp-phase47--top-level-noop)
+            nil
+          (if (and (consp processed) (eq (car processed) 'seq))
+            (setq out (append (reverse (cdr processed)) out))
+            (push processed out)))
         (dolist (var (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
                       form))
           (unless (memq var mutated)
@@ -2893,6 +2955,8 @@ the whole program."
    ((null sexp) 0)
    ((atom sexp) sexp)
    ((eq (car sexp) 'quote) sexp)
+   ((and (eq (car sexp) 'defvar) (= (length sexp) 2))
+    'nelisp-phase47--top-level-noop)
    ((nelisp-phase47-compiler--lambda-literal-form sexp)
     (nelisp-phase47-compiler--lambda-closure-value
      (nelisp-phase47-compiler--lambda-literal-form sexp)))
@@ -2945,7 +3009,8 @@ the whole program."
     (let ((body (nelisp-phase47-compiler--preprocess-seq-forms
                  (cdr sexp))))
       (cond
-       ((null body) 0)
+       ((null body)
+        (if (cdr sexp) 'nelisp-phase47--top-level-noop 0))
        ((null (cdr body)) (car body))
        (t (cons 'seq body)))))
    ((eq (car sexp) 'seq)
@@ -3042,6 +3107,49 @@ the whole program."
               (mapcar #'nelisp-phase47-compiler--preprocess-source
                       (cdr sexp))))))))
 
+(defun nelisp-phase47-compiler--top-level-noop-form-p (form)
+  "Return non-nil for top-level forms with no runtime effect."
+  (or (eq form 'nelisp-phase47--top-level-noop)
+      (and (consp form) (eq (car form) 'seq) (null (cdr form)))
+      (and (consp form) (eq (car form) 'quote))
+      (and (consp form)
+           (memq (car form)
+                 '(defalias function-put custom-declare-group
+                            custom-declare-face)))
+      (symbolp form)
+      (integerp form)
+      (stringp form)
+      (null form)
+      (eq form t)))
+
+(defun nelisp-phase47-compiler--prune-top-level-noops (source)
+  "Remove macroexpanded top-level no-op forms from SOURCE."
+  (cond
+   ((and (consp source) (eq (car source) 'seq))
+    (let (forms)
+      (dolist (child (cdr source))
+        (let ((pruned (nelisp-phase47-compiler--prune-top-level-noops
+                       child)))
+          (cond
+           ((nelisp-phase47-compiler--top-level-noop-form-p pruned)
+            nil)
+           ((and (consp pruned) (eq (car pruned) 'seq))
+            (setq forms (append (reverse (cdr pruned)) forms)))
+           (t
+            (push pruned forms)))))
+      (cons 'seq (nreverse forms))))
+   ((and (consp source) (eq (car source) 'prog1))
+    (let ((children
+           (mapcar #'nelisp-phase47-compiler--prune-top-level-noops
+                   (cdr source))))
+      (if (cl-every #'nelisp-phase47-compiler--top-level-noop-form-p
+                    children)
+          '(seq)
+        (cons 'prog1 children))))
+   ((nelisp-phase47-compiler--top-level-noop-form-p source)
+    '(seq))
+   (t source)))
+
 (defun nelisp-phase47-compiler--prepare-source (sexp)
   "Apply Doc 129.1 compile-time macro handling to SEXP."
   (let* ((extracted (nelisp-phase47-compiler--extract-defmacros sexp))
@@ -3065,12 +3173,13 @@ the whole program."
                (nelisp-phase47-compiler--preprocess-source source))
               (hoists (nreverse
                        nelisp-phase47-compiler--lambda-lift-hoists)))
-         (cond
-          ((null hoists) processed)
-          ((and (consp processed) (eq (car processed) 'seq))
-           (cons 'seq (append hoists (cdr processed))))
-          (t
-           (cons 'seq (append hoists (list processed))))))))))
+         (nelisp-phase47-compiler--prune-top-level-noops
+          (cond
+           ((null hoists) processed)
+           ((and (consp processed) (eq (car processed) 'seq))
+            (cons 'seq (append hoists (cdr processed))))
+           (t
+            (cons 'seq (append hoists (list processed)))))))))))
 
 (defconst nelisp-phase47-compiler--aot-builtin1-delegation-symbols
   '(identity ignore

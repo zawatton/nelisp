@@ -1031,6 +1031,46 @@ materialized closure temporary."
                    'cons-make-with-clone))
              defcustom-else))))
 
+(ert-deftest nelisp-phase47-doc129/parse-top-level-var-hash-table-init-helpers ()
+  "Doc 129.3U: top-level var helpers materialize empty hash tables."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar table-a (make-hash-table :test 'eq) "doc")
+                (defconst table-b
+                  (make-hash-table :test #'eql :weakness nil :size 17)
+                  "doc"))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (defvar-body (nelisp-phase47-compiler--ir-get (nth 0 forms) :body))
+         (defconst-body (nelisp-phase47-compiler--ir-get (nth 1 forms) :body))
+         (defvar-else
+          (nelisp-phase47-compiler--ir-get
+           (nelisp-phase47-compiler--ir-get
+            (nth 1 (nelisp-phase47-compiler--ir-get defvar-body :forms))
+            :else)
+           :forms))
+         (defconst-forms
+          (nelisp-phase47-compiler--ir-get defconst-body :forms))
+         (defvar-record
+          (cl-find-if
+           (lambda (node)
+             (eq (nelisp-phase47-compiler--ir-kind node) 'record-make))
+           defvar-else))
+         (defconst-record
+          (cl-find-if
+           (lambda (node)
+             (eq (nelisp-phase47-compiler--ir-kind node) 'record-make))
+           defconst-forms)))
+    (should defvar-record)
+    (should (= (nelisp-phase47-compiler--ir-get
+                (nelisp-phase47-compiler--ir-get defvar-record :slot-count)
+                :value)
+               16))
+    (should defconst-record)
+    (should (= (nelisp-phase47-compiler--ir-get
+                (nelisp-phase47-compiler--ir-get defconst-record :slot-count)
+                :value)
+               32))))
+
 (ert-deftest nelisp-phase47-doc129/top-level-defcustom-requires-docstring ()
   "Doc 129.3F: top-level defcustom validates its docstring."
   (should-error
@@ -1230,6 +1270,46 @@ materialized closure temporary."
            path)
           (should (= (nelisp-phase47-doc129-test--run-binary path) 22)))
       (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/captured-mutation-bare-symbol-let-bindings ()
+  "Doc 129.4J: captured-mutation analysis accepts bare-symbol let bindings."
+  (should (equal (nelisp-phase47-compiler--let-binding-vars
+                  '(before (point (nelisp-ec-buffer-point buffer)) after))
+                 '(before point after)))
+  (should
+   (null
+    (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+     '(let ((point (nelisp-ec-buffer-point buffer)) before after)
+        (seq before after)))))
+  (should (equal (nelisp-phase47-compiler--lambda-free-vars
+                  '(let (out)
+                     (when params
+                       (setq out params))
+                     out)
+                  '(params)
+                  t)
+                 nil)))
+
+(ert-deftest nelisp-phase47-doc129/preprocess-macroexpanded-defvar-declaration ()
+  "Doc 129.4J: macroexpanded declaration-only defvars are top-level no-ops."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (progn (defvar cl-struct-demo-tags))
+                'emacs-frame-p
+                (prog1
+                    (defalias 'emacs-frame-id
+                      (aot-closure-lambda nelisp_aot_closure_0
+                        emacs-frame-id))
+                  (function-put 'emacs-frame-id 'side-effect-free 't))
+                (custom-declare-face 'org-todo-keyword-todo
+                  '((t :weight bold))
+                  "Face used for active Org TODO keywords."
+                  :group 'org)
+                :autoload-end
+                (defun f () 0))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (= (length forms) 1))
+    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name) 'f))))
 
 (ert-deftest nelisp-phase47-doc129/top-level-special-var-descriptors ()
   "Doc 129.4B: top-level vars are tracked as special declarations."
