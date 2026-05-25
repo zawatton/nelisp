@@ -1743,7 +1743,9 @@ DISPATCHER, when non-nil, is called as
     (unless record
       (signal 'nelisp-cc-runtime-error
               (list :aot-pop-special-empty)))
-    (when (and expected-record (not (eq record expected-record)))
+    (when (and expected-record
+               (not (equal expected-record 0))
+               (not (eq record expected-record)))
       (signal 'nelisp-cc-runtime-error
               (list :aot-pop-special-record-mismatch
                     :expected expected-record :actual record)))

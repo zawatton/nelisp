@@ -1321,6 +1321,23 @@ exit points were emitted; call-points were missing."
       (when (boundp sym)
         (makunbound sym)))))
 
+(ert-deftest nelisp-cc-runtime-aot-special-pop-zero-skips-expected-check ()
+  "Doc 129.4D — source lowering can pop the innermost special binding."
+  (let ((sym (make-symbol "doc129-special-zero"))
+        (out (vector nil)))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-aot-reset-special-stack)
+          (nelisp-cc-runtime-aot-push-special-boundary
+           'mirror 'frames sym 7 out 'scratch)
+          (should (= (symbol-value sym) 7))
+          (nelisp-cc-runtime-aot-pop-special-boundary
+           'mirror 'frames 0 out 'scratch)
+          (should (not (boundp sym))))
+      (nelisp-cc-runtime-aot-reset-special-stack)
+      (when (boundp sym)
+        (makunbound sym)))))
+
 (ert-deftest nelisp-cc-runtime-aot-special-push-pop-validates-boundary ()
   "Doc 129.4C — special binding bridges reject malformed ABI values."
   (let ((sym (make-symbol "doc129-special-bad"))

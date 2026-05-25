@@ -58,11 +58,12 @@
   =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
   =nelisp-cc-runtime.el=.
   Stage 129.4B additionally tracks top-level =defvar= / =defconst= /
-  =defcustom= names as special declarations and rejects =let= binding
-  of those names until dynamic special binding is implemented.
+  =defcustom= names as special declarations so =let= lowering can
+  distinguish dynamic bindings from lexical/runtime frame slots.
   Stage 129.4C adds explicit AOT special binding push/pop runtime
   bridges and compiler-visible relocs for the later source =let=
-  lowering.
+  lowering.  Stage 129.4D lowers single-binding source special =let=
+  normal exits through that bridge substrate.
   Supported in this first cut: host macro expansion in value/call
   positions without rewriting Phase 47 structural forms, top-level
   =defmacro= inside =seq= as compile-time-only definitions,
@@ -172,9 +173,10 @@
   rejects =let= binding those names instead of silently compiling them
   as lexical slots.  129.4C adds explicit
   =nelisp_aot_push_special= / =nelisp_aot_pop_special= bridge
-  substrates for value-cell save/restore.  Source =let= lowering to
-  those bridges, heap lexframes, and general tagged local values remain
-  pending.
+  substrates for value-cell save/restore.  129.4D uses those bridges
+  for single-binding source special =let= on the normal exit path.
+  Multi-binding special =let=, non-local-exit cleanup, heap lexframes,
+  and general tagged local values remain pending.
 - *129.5A MVP*: =defun= params may be annotated as =(NAME :type sexp)=.
   These still use GP ABI registers, but the parser marks their =ref=
   nodes as GC-root candidates.  Any defun body containing a known
@@ -809,9 +811,43 @@ accepts explicit internal forms:
 
 Those forms lower to relocations against =nelisp_aot_push_special= and
 =nelisp_aot_pop_special=, materializing quoted symbol names through
-=name-slot=.  Source-level special =let= still remains pending; this
-stage only fixes the ABI and normal-exit restore substrate it will
-call.
+=name-slot=.  This stage only fixes the ABI and restore substrate;
+source-level normal-exit lowering starts in 129.4D below.
+
+*** §1.C.4 Shipped MVP: source special =let= normal exit
+
+Stage 129.4D connects single-binding source =let= forms whose variable
+is a tracked top-level special declaration:
+
+#+begin_src elisp
+(seq
+ (defvar dyn)
+ (defun f (out mirror frames scratch name-slot value)
+   (let ((dyn value))
+     value)))
+#+end_src
+
+The frontend lowers the body to the existing normal-exit bridge shape:
+
+#+begin_src elisp
+(seq
+ (aot-push-special 'dyn value)
+ (let (((aot-special-value-N :type sexp) BODY))
+   (seq
+    (aot-pop-special 0)
+    aot-special-value-N)))
+#+end_src
+
+The =0= pop handle means "pop the innermost special binding" and is
+used because the source-lowered normal path only needs stack discipline,
+not an externally held handle.  The runtime still supports explicit
+handle validation for lower-level =aot-pop-special= forms.
+
+This is still normal-exit only.  Bodies containing =throw=, =signal=,
+=error=, =condition-case=, or =unwind-protect= are rejected until the
+129.8 landing-pad path can guarantee cleanup.  Multi-binding special
+=let= remains pending so parallel initializer ordering can be specified
+without accidentally serializing dynamic bindings.
 
 ** §1.D =setq= / =defvar= / =defconst= / =defcustom= — symbol cells
 
@@ -2142,7 +2178,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
 | 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context SHIPPED 2026-05-25; real native ABI invocation / real environment passing pending |
-| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate SHIPPED 2026-05-25; source special let lowering pending |
+| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D source special let normal-exit lowering SHIPPED 2026-05-25; multi-binding special let and non-local cleanup pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization SHIPPED 2026-05-25; exported C ABI and broader quoted-designator builtin coverage pending |

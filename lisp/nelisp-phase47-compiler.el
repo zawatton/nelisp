@@ -894,6 +894,10 @@ will hold the materialized AOT root vector."
     (signal 'nelisp-phase47-compiler-error
             (list :let-special-binding-pending var))))
 
+(defun nelisp-phase47-compiler--special-var-p (var)
+  "Return non-nil when VAR has top-level special binding semantics."
+  (memq var nelisp-phase47-compiler--special-vars))
+
 (defun nelisp-phase47-compiler--check-let-vars-lexical (bindings)
   "Signal when BINDINGS contain a known special variable."
   (dolist (binding bindings)
@@ -2573,6 +2577,30 @@ simulated non-local exit."
    ((memq (car sexp) '(throw signal error condition-case unwind-protect)) t)
    (t (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
                (cdr sexp)))))
+
+(defun nelisp-phase47-compiler--parse-aot-special-let-normal-exit
+    (var val-sexp body-sexp env fenv defuns source-form)
+  "Lower one source-level special `let' binding for the normal exit path.
+VAR is a top-level special variable.  VAL-SEXP is evaluated before the
+push bridge, BODY-SEXP runs while the value cell is rebound, then the
+saved BODY value is returned after the pop bridge.  Non-local exits
+through BODY remain pending on the 129.8 landing-pad path."
+  (when (nelisp-phase47-compiler--aot-nonlocal-source-form-p body-sexp)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-special-let-nonlocal-body source-form)))
+  ;; Force boundary diagnostics to point at the source `let'.
+  (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
+  (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
+  (let ((value-slot (nelisp-phase47-compiler--gensym
+                     "aot-special-value")))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       (aot-push-special ',var ,val-sexp)
+       (let (((,value-slot :type sexp) ,body-sexp))
+         (seq
+          (aot-pop-special 0)
+          ,value-slot)))
+     env fenv defuns)))
 
 (defun nelisp-phase47-compiler--parse-aot-catch-normal-exit
     (sexp env fenv defuns)
@@ -4267,8 +4295,11 @@ functions `((NAME . ARITY) ...)'."
                (var (nth 0 pair))
                (val-sexp (nth 1 pair))
                (root-p (nth 2 pair)))
-          (nelisp-phase47-compiler--check-let-var-lexical var)
-          (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+          (if (nelisp-phase47-compiler--special-var-p var)
+              (nelisp-phase47-compiler--parse-aot-special-let-normal-exit
+               var val-sexp body-sexp env fenv defuns sexp)
+            (nelisp-phase47-compiler--check-let-var-lexical var)
+            (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
               ;; Compile-time path: fold and extend ENV as before.
               (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
                      (new-env (cons (cons var val) env)))
@@ -4294,7 +4325,7 @@ functions `((NAME . ARITY) ...)'."
                     :var var
                     :slot slot
                     :value-ir val-ir
-                    :body body-ir)))))))
+                    :body body-ir))))))))
    (t
     (signal 'nelisp-phase47-compiler-error
             (list :not-value-expr sexp)))))
@@ -4417,8 +4448,11 @@ Returns one of:
                (var (nth 0 pair))
                (val-sexp (nth 1 pair))
                (root-p (nth 2 pair)))
-          (nelisp-phase47-compiler--check-let-var-lexical var)
-          (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+          (if (nelisp-phase47-compiler--special-var-p var)
+              (nelisp-phase47-compiler--parse-aot-special-let-normal-exit
+               var val-sexp body env fenv defuns sexp)
+            (nelisp-phase47-compiler--check-let-var-lexical var)
+            (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
               (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
                      (new-env (cons (cons var val) env))
                      (body-ir (nelisp-phase47-compiler--parse-stmt
@@ -4443,7 +4477,7 @@ Returns one of:
                     :var var
                     :slot slot
                     :value-ir val-ir
-                    :body body-ir)))))))
+                    :body body-ir))))))))
    ;; (defun NAME (PARAMS...) BODY)
    ;;
    ;; Doc 110 §110.E.1: PARAMS accept either bare symbols (= GP /
