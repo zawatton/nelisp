@@ -1530,6 +1530,33 @@ GC root descriptor.  The returned vector is suitable for
       (aref frame-values slot))
     root-slots)))
 
+(defun nelisp-cc-runtime-aot-root-vector-from-frame-slots
+    (frames root-slots)
+  "Build an AOT root vector from hash-table FRAMES at ROOT-SLOTS.
+ROOT-SLOTS may contain integer frame slots or symbol keys.  This is the
+runtime-side substrate for non-boundary native frames that expose their
+live values through the shared FRAMES handle instead of a caller-owned
+frame vector."
+  (unless (hash-table-p frames)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-roots-frames-not-hash-table frames)))
+  (unless (listp root-slots)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-root-slots-not-list root-slots)))
+  (vconcat
+   (mapcar
+    (lambda (slot)
+      (unless (or (integerp slot) (symbolp slot))
+        (signal 'nelisp-cc-runtime-error
+                (list :aot-frame-root-slot-not-key slot)))
+      (let ((missing (list :missing slot)))
+        (let ((value (gethash slot frames missing)))
+          (when (eq value missing)
+            (signal 'nelisp-cc-runtime-error
+                    (list :aot-frame-root-slot-missing slot)))
+          value)))
+    root-slots)))
+
 (defun nelisp-cc-runtime-call-with-aot-roots (roots thunk)
   "Call THUNK while ROOTS is registered as an active AOT GC frame.
 This is the Emacs-side call-boundary hook for Doc 129.5C.  Native
@@ -1567,6 +1594,34 @@ registration to `nelisp-cc-runtime-aot-push-roots-boundary'."
             (list :aot-materialize-roots-out-not-vector out)))
   (ignore mirror frames scratch)
   (let ((root-vector (vconcat roots)))
+    (aset out 0 root-vector)
+    root-vector))
+
+(defun nelisp-cc-runtime-aot-materialize-frame-roots-boundary
+    (mirror frames count out scratch &rest root-slots)
+  "Runtime bridge for Doc 129.5 hash-FRAMES root materialisation.
+MIRROR, FRAMES, COUNT, OUT, SCRATCH, and ROOT-SLOTS mirror:
+
+  nelisp_aot_materialize_frame_roots(mirror, frames, count,
+                                    out, scratch, root_slot...)
+
+COUNT must match the number of ROOT-SLOTS.  The bridge reads each root
+slot from hash-table FRAMES, writes the fresh root vector to OUT[0],
+and returns that vector."
+  (unless (and (integerp count) (<= 0 count))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-materialize-frame-roots-bad-count count)))
+  (unless (= count (length root-slots))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-materialize-frame-roots-count-mismatch
+                  :count count :root-slots (length root-slots))))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-materialize-frame-roots-out-not-vector out)))
+  (ignore mirror scratch)
+  (let ((root-vector
+         (nelisp-cc-runtime-aot-root-vector-from-frame-slots
+          frames root-slots)))
     (aset out 0 root-vector)
     root-vector))
 
@@ -2829,6 +2884,10 @@ writes it to OUT[0], and returns OUT."
      :function nelisp-cc-runtime-aot-materialize-roots-boundary
      :fixed-argc 5 :rest t
      :args (mirror frames count out scratch roots...))
+    (:symbol nelisp_aot_materialize_frame_roots
+     :function nelisp-cc-runtime-aot-materialize-frame-roots-boundary
+     :fixed-argc 5 :rest t
+     :args (mirror frames count out scratch root-slots...))
     (:symbol nelisp_aot_push_roots
      :function nelisp-cc-runtime-aot-push-roots-boundary
      :fixed-argc 5 :rest nil

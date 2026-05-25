@@ -1188,6 +1188,21 @@ exit points were emitted; call-points were missing."
                  frame '(0 2))))
     (should (equal roots (vector root-a root-b)))))
 
+(ert-deftest nelisp-cc-runtime-aot-root-vector-from-frame-slots ()
+  "Doc 129.5H — materialize roots from hash-table FRAMES slots."
+  (let ((root-a (cons 'aot 'frame-a))
+        (root-b (vector 'aot 'frame-b))
+        (frames (make-hash-table :test 'eq)))
+    (puthash 0 root-a frames)
+    (puthash 'cap root-b frames)
+    (should (equal (nelisp-cc-runtime-aot-root-vector-from-frame-slots
+                    frames '(0 cap))
+                   (vector root-a root-b)))
+    (should-error
+     (nelisp-cc-runtime-aot-root-vector-from-frame-slots
+      frames '(missing))
+     :type 'nelisp-cc-runtime-error)))
+
 (ert-deftest nelisp-cc-runtime-call-with-aot-roots-registers-frame ()
   "Doc 129.5C — the runtime call-boundary wrapper exposes AOT roots."
   (let* ((root (cons 'aot 'live))
@@ -1219,6 +1234,20 @@ exit points were emitted; call-points were missing."
     (should (equal roots (vector root-a root-b)))
     (should (eq roots (aref out 0)))))
 
+(ert-deftest nelisp-cc-runtime-aot-materialize-frame-roots-boundary ()
+  "Doc 129.5H — native frame-root bridge builds roots from FRAMES."
+  (let ((root-a (cons 'aot 'frame-a))
+        (root-b (vector 'aot 'frame-b))
+        (frames (make-hash-table :test 'eq))
+        (out (vector nil)))
+    (puthash 0 root-a frames)
+    (puthash 'cap root-b frames)
+    (let ((roots
+           (nelisp-cc-runtime-aot-materialize-frame-roots-boundary
+            'mirror frames 2 out 'scratch 0 'cap)))
+      (should (equal roots (vector root-a root-b)))
+      (should (eq roots (aref out 0))))))
+
 (ert-deftest nelisp-cc-runtime-aot-materialize-roots-validates-boundary ()
   "Doc 129.5G — root materialization rejects malformed ABI values."
   (let ((out (vector nil)))
@@ -1233,6 +1262,28 @@ exit points were emitted; call-points were missing."
     (should-error
      (nelisp-cc-runtime-aot-materialize-roots-boundary
       'mirror 'frames 0 nil 'scratch)
+     :type 'nelisp-cc-runtime-error)))
+
+(ert-deftest nelisp-cc-runtime-aot-materialize-frame-roots-validates-boundary ()
+  "Doc 129.5H — frame-root materialization rejects malformed ABI values."
+  (let ((frames (make-hash-table :test 'eq))
+        (out (vector nil)))
+    (puthash 0 'root frames)
+    (should-error
+     (nelisp-cc-runtime-aot-materialize-frame-roots-boundary
+      'mirror frames -1 out 'scratch)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-materialize-frame-roots-boundary
+      'mirror frames 2 out 'scratch 0)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-materialize-frame-roots-boundary
+      'mirror 'not-frames 1 out 'scratch 0)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-materialize-frame-roots-boundary
+      'mirror frames 0 nil 'scratch)
      :type 'nelisp-cc-runtime-error)))
 
 (ert-deftest nelisp-cc-runtime-aot-root-push-pop-boundary ()
