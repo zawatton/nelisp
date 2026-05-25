@@ -2273,6 +2273,10 @@ materialized closure temporary."
                   (cl-nsubstitute-if 3 (cl-nsubstitute-if seed fn xs))
                   (cl-nsubstitute-if-not 3
                                          (cl-nsubstitute-if-not seed fn xs))
+                  (cl-subst-if 3 (cl-subst-if seed fn xs))
+                  (cl-subst-if-not 3 (cl-subst-if-not seed fn xs))
+                  (cl-nsubst-if 3 (cl-nsubst-if seed fn xs))
+                  (cl-nsubst-if-not 3 (cl-nsubst-if-not seed fn xs))
                   (cl-map 3 (cl-map type fn xs))
                   (cl-sort 2 (cl-sort xs fn))
                   (cl-stable-sort 2 (cl-stable-sort xs fn))
@@ -2412,6 +2416,10 @@ materialized closure temporary."
                   ((cl-sort xs #'foo) 7 "cl-sort")
                   ((cl-stable-sort xs #'foo) 7 "cl-stable-sort")
                   ((cl-merge type xs ys #'foo) 9 "cl-merge")
+                  ((cl-subst-if seed #'foo xs) 7 "cl-subst-if")
+                  ((cl-subst-if-not seed #'foo xs) 7 "cl-subst-if-not")
+                  ((cl-nsubst-if seed #'foo xs) 7 "cl-nsubst-if")
+                  ((cl-nsubst-if-not seed #'foo xs) 7 "cl-nsubst-if-not")
                   ((map-merge-with type #'foo xs ys) 7 "map-merge-with")))
     (pcase-let ((`(,form ,arg-index ,builtin-name) case))
       (let* ((ir (nelisp-phase47-compiler--parse
@@ -2476,6 +2484,10 @@ materialized closure temporary."
                   ((cl-subst item xs ys :test #'eq)
                    keyword-slot 9 10 ":test" "eq")
                   ((cl-nsubst item xs ys :key #'car)
+                   keyword-slot 9 10 ":key" "car")
+                  ((cl-subst-if item xs ys :key #'car)
+                   keyword-slot 9 10 ":key" "car")
+                  ((cl-nsubst-if item xs ys :key #'car)
                    keyword-slot 9 10 ":key" "car")
                   ((cl-sublis xs ys :test #'eq)
                    keyword-slot 8 9 ":test" "eq")
@@ -3332,6 +3344,38 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
                 'scratch))))
 
+(ert-deftest nelisp-phase47-doc129/parse-cl-lib-tree-predicate-lambda-lift ()
+  "Doc 129.6AS: cl-subst-if predicate position lambda-lifts."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (new :type sexp)
+                    (tree :type sexp))
+                 (cl-subst-if new (lambda (x) x) tree))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (call-node (nth 2 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+                'new))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 call-args))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
+                'scratch))))
+
 (ert-deftest nelisp-phase47-doc129/parse-extended-higher-order-lambda-lift ()
   "Doc 129.7Z: extended higher-order literal lambdas lift to defuns."
   (dolist (case '(((seq-each (lambda (x) x) xs) 6)
@@ -3345,6 +3389,7 @@ materialized closure temporary."
                   ((map-merge-with type (lambda (a b) a) xs ys) 7)
                   ((map-some (lambda (k v) k) xs) 6)
                   ((map-values-apply (lambda (v) v) xs) 6)
+                  ((cl-subst-if seed (lambda (x) x) xs) 7)
                   ((cl-map type (lambda (x) x) xs) 7)
                   ((cl-merge type xs ys (lambda (a b) a)) 9)))
     (pcase-let ((`(,form ,arg-index) case))
@@ -3940,28 +3985,26 @@ materialized closure temporary."
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-tree-substitution-keyword-designator ()
-  "Doc 129.6AO: object output exposes tree substitution callbacks."
+  "Doc 129.6AO/AS: object output exposes tree substitution callbacks."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-tree-substitution-keyword-" nil ".o")))
     (unwind-protect
         (progn
           (nelisp-phase47-compile-to-object
-           '(defun call_cl_subst
+           '(defun call_cl_subst_if
                 ((out :type sexp)
                  (mirror :type sexp)
                  (frames :type sexp)
                  (scratch :type sexp)
                  (name_slot :type sexp)
-                 (keyword_slot :type sexp)
                  (new :type sexp)
-                 (old :type sexp)
                  (tree :type sexp))
-              (cl-subst new old tree :test #'foo))
+              (cl-subst-if new #'foo tree))
            path)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
-            (should (string-match-p "call_cl_subst" out))
+            (should (string-match-p "call_cl_subst_if" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))

@@ -2524,6 +2524,8 @@ the whole program."
                        cl-position cl-find cl-count cl-mismatch cl-search
                        cl-remove cl-delete cl-substitute cl-nsubstitute
                        cl-subst cl-nsubst cl-sublis cl-nsublis
+                       cl-subst-if cl-subst-if-not
+                       cl-nsubst-if cl-nsubst-if-not
                        cl-remove-duplicates cl-delete-duplicates
                        cl-fill cl-replace
                        cl-adjoin sort))
@@ -2713,6 +2715,7 @@ defun is visible in the current compile unit.")
     cl-position cl-find cl-count cl-mismatch cl-search
     cl-remove cl-delete cl-substitute cl-nsubstitute
     cl-subst cl-nsubst cl-sublis cl-nsublis
+    cl-subst-if cl-subst-if-not cl-nsubst-if cl-nsubst-if-not
     cl-remove-duplicates cl-delete-duplicates
     cl-fill cl-replace
     cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
@@ -2809,6 +2812,10 @@ defun is visible in the current compile unit.")
     (cl-substitute-if-not . 1)
     (cl-nsubstitute-if . 1)
     (cl-nsubstitute-if-not . 1)
+    (cl-subst-if . 1)
+    (cl-subst-if-not . 1)
+    (cl-nsubst-if . 1)
+    (cl-nsubst-if-not . 1)
     (cl-map . 1)
     (cl-sort . 1)
     (cl-stable-sort . 1)
