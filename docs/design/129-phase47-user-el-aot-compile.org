@@ -43,6 +43,7 @@
   Stage 129.7I =apply= splicing bridge, Stage 129.7J source =&rest=
   parameter binding, Stage 129.7K non-capturing literal lambda
   =funcall= lifting, Stage 129.7L direct literal lambda lifting,
+  Stage 129.7M map-family literal lambda lifting,
   Stage 129.8A runtime handler-stack substrate, Stage
   129.8B =throw= / =signal=
   bridge lowering, Stage 129.8C handler-push bridge lowering,
@@ -351,6 +352,11 @@
   path as 129.7K, so non-capturing immediate lambdas execute through
   ordinary native direct calls.  Captures remain pending on heap
   closures.
+- *129.7M MVP*: non-capturing literal lambdas in the function
+  argument position of =mapcar= / =mapc= / =mapconcat= now lift to a
+  synthetic top-level defun, then flow through the 129.6J map
+  function-designator path.  Captured lexical variables still signal
+  as free symbols; heap closure allocation/capture remains pending.
 - *129.8A MVP*: =nelisp-cc-runtime.el= now owns an AOT handler-stack
   simulator for =catch= / =condition-case= / =unwind-protect=.  The
   runtime can push/pop catch, condition, and unwind handlers; =throw=
@@ -1355,6 +1361,34 @@ keeps immediate non-capturing lambda use on the native call path.  It
 does not create heap closure values, and captured environments still
 wait for the remaining closure allocation/capture work.
 
+*** §1.E.3.5 Shipped MVP: map-family literal lambda lifting
+
+Stage 129.7M applies the same non-capturing lambda lift to the first
+argument of the map-family builtins added in 129.6I/J:
+
+#+begin_src elisp
+(defun caller
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (xs :type sexp))
+  (mapcar (lambda (x) (+ x 1)) xs))
+#+end_src
+
+becomes a synthetic top-level defun plus a map call using the
+function-designator materialization path:
+
+#+begin_src elisp
+(seq
+ (defun nelisp_aot_lambda_0 (x) (+ x 1))
+ (defun caller (...)
+   (mapcar #'nelisp_aot_lambda_0 xs)))
+#+end_src
+
+The later 129.6J lowering writes =mapcar= into =name-slot= and the
+synthetic function symbol into =scratch= before the
+=nelisp_aot_builtin_calln= bridge.  This still does not allocate heap
+closures; lambda bodies that refer to captured outer bindings are
+rejected by the ordinary free-symbol checks.
+
 *** §1.E.4 Shipped MVP: quoted function designators
 
 Stage 129.7D lets the compiler handle symbol function designators
@@ -2062,7 +2096,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization SHIPPED 2026-05-25; exported C ABI and broader quoted-designator builtin coverage pending |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting SHIPPED 2026-05-25; heap closure allocation/capture pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting SHIPPED 2026-05-25; heap closure allocation/capture pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
