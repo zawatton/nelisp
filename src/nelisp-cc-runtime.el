@@ -3531,31 +3531,38 @@ NATIVE-CALL and RESOLVER are forwarded to
      helper context descriptor native-call resolver)))
 
 (defun nelisp-cc-runtime-make-aot-environment-handles
-    (&optional mirror frames)
-  "Return Doc 129 AOT environment handles for MIRROR and FRAMES.
+    (&optional mirror frames env)
+  "Return Doc 129 AOT environment handles for MIRROR, FRAMES, and ENV.
 Callers may pass existing opaque handles.  When omitted, the runtime
 allocates hash-table handles that the host-side AOT bridges can share
 for frame slots, capture-cell writers, closure roots, and later loader
 metadata."
-  (list :mirror (or mirror (make-hash-table :test 'eq))
-        :frames (or frames (make-hash-table :test 'eq))))
+  (let ((handles (list :mirror (or mirror (make-hash-table :test 'eq))
+                       :frames (or frames (make-hash-table :test 'eq)))))
+    (if env
+        (plist-put handles :env env)
+      handles)))
 
 (defun nelisp-cc-runtime-make-aot-init-context
-    (&optional mirror frames out scratch name-slot)
+    (&optional mirror frames out scratch name-slot env)
   "Return a default Doc 129.3 AOT init boundary context.
 MIRROR and FRAMES are the environment handles forwarded to generated
-init helpers.  When omitted, they default to host hash-table handles.
-OUT, SCRATCH, and NAME-SLOT default to fresh one-slot vectors so callers
-can run module initialization without separately allocating the standard
-boxed-boundary slots."
+init helpers.  ENV is an optional loader/runtime pointer retained in
+the context for native callers.  When MIRROR or FRAMES are omitted,
+they default to host hash-table handles.  OUT, SCRATCH, and NAME-SLOT
+default to fresh one-slot vectors so callers can run module
+initialization without separately allocating the standard boxed-boundary
+slots."
   (let* ((handles
           (nelisp-cc-runtime-make-aot-environment-handles
-           mirror frames))
+           mirror frames env))
          (context (list :out (or out (vector nil))
                         :mirror (plist-get handles :mirror)
                         :frames (plist-get handles :frames)
                         :scratch (or scratch (vector nil))
                         :name-slot (or name-slot (vector nil)))))
+    (when (plist-member handles :env)
+      (setq context (plist-put context :env (plist-get handles :env))))
     (nelisp-cc-runtime--validate-aot-init-context context)))
 
 (defun nelisp-cc-runtime--validate-aot-init-context (context)
@@ -3585,27 +3592,27 @@ callback is invoked."
         (plist-get context :name-slot)))
 
 (defun nelisp-cc-runtime-run-aot-module-init-plan-with-default-context
-    (plan call-helper &optional register-custom mirror frames out scratch name-slot)
+    (plan call-helper &optional register-custom mirror frames out scratch name-slot env)
   "Run PLAN with a freshly allocated Doc 129.3 init context.
 CALL-HELPER and REGISTER-CUSTOM have the same meaning as in
 `nelisp-cc-runtime-run-aot-module-init-plan'.  MIRROR, FRAMES, OUT,
-SCRATCH, and NAME-SLOT are forwarded to
+SCRATCH, NAME-SLOT, and ENV are forwarded to
 `nelisp-cc-runtime-make-aot-init-context'."
   (nelisp-cc-runtime-run-aot-module-init-plan
    plan
    (nelisp-cc-runtime-make-aot-init-context
-    mirror frames out scratch name-slot)
+    mirror frames out scratch name-slot env)
    call-helper
    register-custom))
 
 (cl-defun nelisp-cc-runtime-run-aot-standalone-loader
-    (plan &key resolver native-call mirror frames out scratch name-slot
+    (plan &key resolver native-call mirror frames env out scratch name-slot
           allow-host-stub register-custom register-closure)
   "Run the Doc 129 standalone-loader handoff for one AOT module.
 This integrates the previously separate loader responsibilities:
 
   1. resolve and install the Doc 129 AOT C ABI export table;
-  2. allocate or reuse the module's MIRROR/FRAMES environment handles;
+  2. allocate or reuse the module's ENV/MIRROR/FRAMES environment handles;
   3. execute PLAN's init helpers through the standard native-call ABI.
 
 RESOLVER is forwarded to both AOT C ABI export installation and init
@@ -3629,7 +3636,7 @@ exports and helper resolutions."
            resolver allow-host-stub))
          (context
           (nelisp-cc-runtime-make-aot-init-context
-           mirror frames out scratch name-slot))
+           mirror frames out scratch name-slot env))
          (call-helper
           (nelisp-cc-runtime-aot-init-helper-caller
            (when native-call
@@ -3647,6 +3654,7 @@ exports and helper resolutions."
            plan context call-helper register-custom register-closure)))
     (list :abi-exports exports
           :context context
+          :env (plist-get context :env)
           :mirror (plist-get context :mirror)
           :frames (plist-get context :frames)
           :module-init module-init)))

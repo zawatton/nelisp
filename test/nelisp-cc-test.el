@@ -2899,6 +2899,17 @@ exit points were emitted; call-points were missing."
     (should (eq (nth 1 argv) mirror))
     (should (eq (nth 2 argv) frames))))
 
+(ert-deftest nelisp-cc-runtime-make-aot-init-context-env-handoff ()
+  "Doc 129.3O — init contexts retain the standalone Env pointer."
+  (let* ((env (list :native-env #x5150))
+         (context (nelisp-cc-runtime-make-aot-init-context
+                   'mirror 'frames 'out 'scratch 'name-slot env))
+         (argv (nelisp-cc-runtime-aot-init-helper-argv context)))
+    (should (eq (plist-get context :env) env))
+    (should (eq (plist-get context :mirror) 'mirror))
+    (should (eq (plist-get context :frames) 'frames))
+    (should (equal argv '(out mirror frames scratch name-slot)))))
+
 (ert-deftest nelisp-cc-runtime-aot-init-helper-argv ()
   "Doc 129.3M — init helper native calls use a fixed ABI argument order."
   (let ((context (list :out 'out
@@ -3145,6 +3156,7 @@ exit points were emitted; call-points were missing."
            init-helpers custom-metadata nil (list closure-descriptor)))
          (mirror (make-hash-table :test 'eq))
          (frames (make-hash-table :test 'eq))
+         (env (list :native-env #x5150))
          (next-addr 0)
          (calls nil)
          (resolver
@@ -3156,6 +3168,7 @@ exit points were emitted; call-points were missing."
             (push (list :helper (plist-get resolution :helper)
                         :status (plist-get resolution :status)
                         :argv (plist-get resolution :abi-argv)
+                        :env (plist-get context :env)
                         :mirror (plist-get context :mirror)
                         :frames (plist-get context :frames)
                         :kind (plist-get descriptor :kind))
@@ -3172,7 +3185,8 @@ exit points were emitted; call-points were missing."
                    :resolver resolver
                    :native-call native-call
                    :mirror mirror
-                   :frames frames))
+                   :frames frames
+                   :env env))
                  (exports (plist-get result :abi-exports))
                  (context (plist-get result :context))
                  (module-init (plist-get result :module-init))
@@ -3184,11 +3198,14 @@ exit points were emitted; call-points were missing."
                                   exports)))
             (should (eq (plist-get result :mirror) mirror))
             (should (eq (plist-get result :frames) frames))
+            (should (eq (plist-get result :env) env))
+            (should (eq (plist-get context :env) env))
             (should (eq (plist-get context :mirror) mirror))
             (should (eq (plist-get context :frames) frames))
             (should (eq (plist-get call :helper)
                         'nelisp_aot_custom_0_z))
             (should (eq (plist-get call :status) :resolved))
+            (should (eq (plist-get call :env) env))
             (should (eq (plist-get call :kind) 'defcustom))
             (should (eq (nth 1 argv) mirror))
             (should (eq (nth 2 argv) frames))

@@ -17,7 +17,8 @@
   custom metadata table, Stage 129.3K AOT init helper resolution /
   call callback, Stage 129.3L default init boundary context,
   Stage 129.3M init helper ABI argv materialization, Stage 129.3N
-  default AOT environment handles,
+  default AOT environment handles, Stage 129.3O standalone Env pointer
+  context handoff,
   Stage 129.4 multi-binding runtime =let= MVP,
   Stage 129.5A static GC root-map MVP, Stage 129.5B AOT root-set
   registration substrate, Stage 129.5C call-boundary root-vector
@@ -229,8 +230,12 @@
   creates concrete hash-table =MIRROR= and =FRAMES= handles when the
   caller does not supply environment handles.  These handles are shared
   by the existing boxed-boundary bridges and give capture-cell writers,
-  closure root pinning, and later loader metadata a concrete runtime
-  target before standalone Env pointer handoff lands.
+  closure root pinning, and loader metadata a concrete runtime target;
+  129.3O adds the optional native =ENV= side channel on top of them.
+- *129.3O MVP*: the same init context and standalone loader now accept
+  an optional opaque =ENV= handle.  Runtime keeps it in =:env= for
+  Doc 99/native-call code while leaving the generated init-helper ABI
+  argv fixed at =(OUT MIRROR FRAMES SCRATCH NAME-SLOT)=.
 - *129.7V MVP*: =nelisp-cc-runtime-aot-module-init-plan= now accepts
   AOT closure descriptors from
   =nelisp-phase47-compiler--closure-descriptors=.  Plan execution
@@ -1649,7 +1654,8 @@ helper-call boundary context:
 
 #+begin_src elisp
 (:out OUT :mirror MIRROR :frames FRAMES
- :scratch SCRATCH :name-slot NAME-SLOT)
+ :scratch SCRATCH :name-slot NAME-SLOT
+ :env ENV) ;; optional native loader/runtime handle
 #+end_src
 
 When the caller does not supply =MIRROR= or =FRAMES=, the runtime now
@@ -1660,16 +1666,20 @@ allocates fresh one-slot vectors for those values.  The convenience wrapper
 uses the same allocation helper before delegating to the ordinary
 module-init plan runner.  This gives Doc 99 a reusable boundary
 context constructor while preserving the explicit callback point for
-native helper invocation.
+native helper invocation.  The optional =:env= entry is deliberately
+not part of =nelisp-cc-runtime-aot-init-helper-argv=; it is a
+loader/native-call side channel for carrying the runtime =Env= pointer
+that backs or owns the =MIRROR= / =FRAMES= handles.
 
 This still is not full top-level execution inside Phase 47 itself.
 The compiled object exposes the initializer entry points and the
 runtime now has a validated scheduling/execution hook, metadata store,
 helper resolution/call contract, default allocation for the standard
 mirror/frames/out/scratch/name slots, a canonical native helper argv,
-and default AOT closure descriptor registration; actual object loading,
-real native call entry, standalone Env pointer handoff, and native
-embedding of the plan remain Doc 99 call-boundary responsibilities.
+default AOT closure descriptor registration, and a context field for
+standalone Env pointer handoff; actual object loading, real native call
+entry, and native embedding of the plan remain Doc 99 call-boundary
+responsibilities.
 Initializer values are currently limited to the same boxed Int
 expression subset accepted by =defun-sexp-int-*= helpers.
 
@@ -3432,7 +3442,7 @@ deletion or deferred until the extern can be elisp-emitted.
 |---------+--------------------------------+------------+------+-------------------------|
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
-| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization + 129.3N default AOT environment handles SHIPPED 2026-05-25; real native call entry and standalone Env pointer handoff pending |
+| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization + 129.3N default AOT environment handles + 129.3O standalone Env pointer context handoff SHIPPED 2026-05-25; real native call entry pending |
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering + 129.4G direct special-let throw cleanup + 129.4H conditional special-let throw cleanup + 129.4I nested conditional special-let throw cleanup SHIPPED 2026-05-25; heap lexframes and general tagged local values pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope SHIPPED 2026-05-25; loader-selected fully automatic non-boundary defun prologue/epilogue pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
