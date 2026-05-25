@@ -4088,6 +4088,17 @@ source form."
               tag (nth 1 (car body-forms))))
     (car body-forms)))
 
+(defun nelisp-phase47-compiler--aot-catch-conditional-unwind-form
+    (tag body-forms)
+  "Return a single unwind-protect form whose BODY has safe throws to TAG."
+  (when (and (= (length body-forms) 1)
+             (consp (car body-forms))
+             (eq (caar body-forms) 'unwind-protect)
+             (>= (length (car body-forms)) 2)
+             (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+              tag (nth 1 (car body-forms))))
+    (car body-forms)))
+
 (defun nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
     (tag branch cleanups landing-label value-slot)
   "Return BRANCH with unwind cleanup jumping to LANDING-LABEL."
@@ -4114,6 +4125,26 @@ source form."
    (t
     (signal 'nelisp-phase47-compiler-error
             (list :aot-catch-unwind-conditional-shape branch)))))
+
+(defun nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+    (tag branch cleanups landing-label value-slot)
+  "Return BRANCH for mixed catch-targeted unwind cleanup lowering."
+  (cond
+   ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag branch)
+    (nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
+     tag branch cleanups landing-label value-slot))
+   ((nelisp-phase47-compiler--aot-catch-throw-tree-form-p tag branch)
+    `(if ,(nth 1 branch)
+         ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+           tag (nth 2 branch) cleanups landing-label value-slot)
+       ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+         tag (nth 3 branch) cleanups landing-label value-slot)))
+   (t
+    `(let (((,value-slot :type sexp) ,branch))
+       (seq
+        ,@cleanups
+        (aot-pop-handler 'catch)
+        ,value-slot)))))
 
 (defun nelisp-phase47-compiler--aot-unwind-static-cleanup-form
     (unwind-form landing-label landing-body tag)
@@ -4144,6 +4175,22 @@ source form."
         ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
           tag body-form cleanups landing-label value-slot)
         (aot-landing-label ,landing-label ,landing-body)))))
+
+(defun nelisp-phase47-compiler--aot-unwind-catch-cleanup-form
+    (unwind-form landing-label landing-body tag)
+  "Return mixed UNWIND-FORM cleanup for a statically-known catch target."
+  (let ((body-form (nth 1 unwind-form))
+        (cleanups (nthcdr 2 unwind-form))
+        (value-slot
+         (nelisp-phase47-compiler--gensym "aot-unwind-value")))
+    (when (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                   cleanups)
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
+    `(seq
+      ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+        tag body-form cleanups landing-label value-slot)
+      (aot-landing-label ,landing-label ,landing-body))))
 
 (defun nelisp-phase47-compiler--aot-catch-landing-branch-form
     (tag branch landing-label value-slot leaf-count)
@@ -4518,11 +4565,19 @@ saved BODY value."
                (not conditional-throw)
                (not direct-unwind-throw)
                (nelisp-phase47-compiler--aot-catch-conditional-unwind-throw-form
+                tag body-forms)))
+         (conditional-unwind
+          (and (not direct-throw)
+               (not conditional-throw)
+               (not direct-unwind-throw)
+               (not conditional-unwind-throw)
+               (nelisp-phase47-compiler--aot-catch-conditional-unwind-form
                 tag body-forms))))
     (when (and (not direct-throw)
                (not conditional-throw)
                (not direct-unwind-throw)
                (not conditional-unwind-throw)
+               (not conditional-unwind)
                (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
                         body-forms))
       (signal 'nelisp-phase47-compiler-error
@@ -4540,17 +4595,23 @@ saved BODY value."
                ,(nelisp-phase47-compiler--aot-static-landing-form
                  direct-throw landing-label '(aot-landing-value out)))
              env fenv defuns))
-        (if (or direct-unwind-throw conditional-unwind-throw)
+        (if (or direct-unwind-throw conditional-unwind-throw conditional-unwind)
             (let ((landing-label
                    (nelisp-phase47-compiler--gensym "aot-catch-landing")))
               (nelisp-phase47-compiler--parse-value
                `(seq
                  (aot-push-catch ,tag ',landing-label (aot-current-sp))
-                 ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-form
-                   (or direct-unwind-throw conditional-unwind-throw)
-                   landing-label
-                   '(aot-landing-value out)
-                   tag))
+                 ,(if conditional-unwind
+                      (nelisp-phase47-compiler--aot-unwind-catch-cleanup-form
+                       conditional-unwind
+                       landing-label
+                       '(aot-landing-value out)
+                       tag)
+                    (nelisp-phase47-compiler--aot-unwind-static-cleanup-form
+                     (or direct-unwind-throw conditional-unwind-throw)
+                     landing-label
+                     '(aot-landing-value out)
+                     tag)))
                env fenv defuns))
         (if conditional-throw
             (let* ((value-slot (nelisp-phase47-compiler--gensym
