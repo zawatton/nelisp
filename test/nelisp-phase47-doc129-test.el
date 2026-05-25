@@ -3255,6 +3255,58 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_custom_0_z" contents))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/object-module-init-plan-loader-consumes ()
+  "Doc 129.7AJ: standalone loader consumes embedded object metadata."
+  (let ((path (make-temp-file "nelisp-doc129-module-init-loader-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defcustom z 9 "doc" :type 'integer)
+             (defun call_mapcar
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name_slot :type sexp)
+                  (cap :type sexp)
+                  (xs :type sexp))
+               (mapcar (lambda (x) (+ x cap)) xs)))
+           path)
+          (let* ((payload
+                  (nelisp-elf-read-symbol-bytes
+                   path "nelisp_aot_module_init_plan"))
+                 (plan
+                  (nelisp-cc-runtime-read-aot-object-module-init-plan path))
+                 (closure (car (plist-get plan :closure-descriptors))))
+            (should (= (aref payload (1- (length payload))) 0))
+            (should (equal (plist-get plan :helper-order)
+                           '(nelisp_aot_custom_0_z)))
+            (should (eq (plist-get closure :name) 'nelisp_aot_closure_0))
+            (unwind-protect
+                (let ((result
+                       (nelisp-cc-runtime-run-aot-standalone-loader-from-object
+                        path
+                        :allow-host-stub t
+                        :resolver (lambda (_symbol)
+                                    (cons :host-stub #x810000)))))
+                  (should (plist-get result :module-init))
+                  (should (equal
+                           (plist-get
+                            (nelisp-cc-runtime-aot-custom-metadata 'z)
+                            :helper)
+                           'nelisp_aot_custom_0_z))
+                  (should (equal
+                           (plist-get
+                            (nelisp-cc-runtime-aot-closure-descriptor
+                             'nelisp_aot_closure_0)
+                            :captures)
+                           '(cap))))
+              (nelisp-cc-runtime-clear-aot-c-abi-exports)
+              (nelisp-cc-runtime-clear-aot-custom-table)
+              (nelisp-cc-runtime-clear-aot-closure-descriptors))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/object-function-lambda-closure-value ()
   "Doc 129.7X: object output exposes escaping lambda closure bridge."
   (skip-unless (executable-find "readelf"))

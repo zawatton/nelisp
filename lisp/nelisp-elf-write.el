@@ -2252,6 +2252,176 @@ The file is written with mode #o755 (= +x bit set)."
       (setq i (1+ i)))
     acc))
 
+(defun nelisp-elf-read-file-bytes (file-path)
+  "Return FILE-PATH contents as a unibyte string."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file-path)
+    (buffer-string)))
+
+(defun nelisp-elf--check-range (bytes offset size context)
+  "Signal if BYTES cannot cover OFFSET plus SIZE for CONTEXT."
+  (unless (and (integerp offset)
+               (integerp size)
+               (<= 0 offset)
+               (<= 0 size)
+               (<= (+ offset size) (length bytes)))
+    (error "nelisp-elf: out-of-range %S offset=%S size=%S len=%S"
+           context offset size (length bytes))))
+
+(defun nelisp-elf--cstring-at (bytes offset limit)
+  "Return NUL-terminated string from BYTES at OFFSET before LIMIT."
+  (nelisp-elf--check-range bytes offset 0 :cstring)
+  (let ((end offset))
+    (while (and (< end limit)
+                (/= (aref bytes end) 0))
+      (setq end (1+ end)))
+    (unless (< end limit)
+      (error "nelisp-elf: unterminated string at %S before %S" offset limit))
+    (decode-coding-string (substring bytes offset end) 'utf-8 t)))
+
+(defun nelisp-elf--section-headers (bytes)
+  "Return ELF64 section headers from BYTES as parsed plists.
+Section names are attached from `.shstrtab' when present."
+  (nelisp-elf--check-range bytes 0 nelisp-elf--ehdr-size :ehdr)
+  (unless (and (= (aref bytes 0) #x7f)
+               (= (aref bytes 1) ?E)
+               (= (aref bytes 2) ?L)
+               (= (aref bytes 3) ?F)
+               (= (aref bytes 4) nelisp-elf--ei-class-64)
+               (= (aref bytes 5) nelisp-elf--ei-data-lsb))
+    (error "nelisp-elf: not an ELF64 little-endian object"))
+  (let* ((shoff (nelisp-elf--read-le64 bytes 40))
+         (shentsize (nelisp-elf--read-le16 bytes 58))
+         (shnum (nelisp-elf--read-le16 bytes 60))
+         (shstrndx (nelisp-elf--read-le16 bytes 62))
+         (headers nil))
+    (unless (= shentsize nelisp-elf--shdr-size)
+      (error "nelisp-elf: unsupported section header size %S" shentsize))
+    (dotimes (i shnum)
+      (let ((off (+ shoff (* i shentsize))))
+        (nelisp-elf--check-range bytes off shentsize :shdr)
+        (push (list :index i
+                    :name-offset (nelisp-elf--read-le32 bytes off)
+                    :type (nelisp-elf--read-le32 bytes (+ off 4))
+                    :flags (nelisp-elf--read-le64 bytes (+ off 8))
+                    :addr (nelisp-elf--read-le64 bytes (+ off 16))
+                    :offset (nelisp-elf--read-le64 bytes (+ off 24))
+                    :size (nelisp-elf--read-le64 bytes (+ off 32))
+                    :link (nelisp-elf--read-le32 bytes (+ off 40))
+                    :info (nelisp-elf--read-le32 bytes (+ off 44))
+                    :addralign (nelisp-elf--read-le64 bytes (+ off 48))
+                    :entsize (nelisp-elf--read-le64 bytes (+ off 56)))
+              headers)))
+    (setq headers (nreverse headers))
+    (when (< shstrndx (length headers))
+      (let* ((shstr (nth shstrndx headers))
+             (base (plist-get shstr :offset))
+             (size (plist-get shstr :size))
+             (limit (+ base size)))
+        (nelisp-elf--check-range bytes base size :shstrtab)
+        (setq headers
+              (mapcar
+               (lambda (header)
+                 (plist-put
+                  header :name
+                  (nelisp-elf--cstring-at
+                   bytes (+ base (plist-get header :name-offset)) limit)))
+               headers))))
+    headers))
+
+(defun nelisp-elf--section-by-index (headers index)
+  "Return section header INDEX from HEADERS."
+  (let ((found nil))
+    (dolist (header headers)
+      (when (= (plist-get header :index) index)
+        (setq found header)))
+    found))
+
+(defun nelisp-elf--section-by-name (headers name)
+  "Return section header named NAME from HEADERS."
+  (let ((found nil))
+    (dolist (header headers)
+      (when (equal (plist-get header :name) name)
+        (setq found header)))
+    found))
+
+(defun nelisp-elf-read-symbol (file-path symbol-name)
+  "Return ELF64 symbol SYMBOL-NAME from FILE-PATH as a plist.
+Section-relative ET_REL symbols include `:section-offset' and
+`:section-size' from the owning section."
+  (let* ((bytes (nelisp-elf-read-file-bytes file-path))
+         (headers (nelisp-elf--section-headers bytes))
+         (symtab (or (nelisp-elf--section-by-name headers ".symtab")
+                     (let ((found nil))
+                       (dolist (header headers)
+                         (when (= (plist-get header :type)
+                                  nelisp-elf--sht-symtab)
+                           (setq found header)))
+                       found))))
+    (unless symtab
+      (error "nelisp-elf: no .symtab in %S" file-path))
+    (let* ((strtab (nelisp-elf--section-by-index
+                    headers (plist-get symtab :link)))
+           (sym-off (plist-get symtab :offset))
+           (sym-size (plist-get symtab :size))
+           (sym-entsize (plist-get symtab :entsize))
+           (str-off (and strtab (plist-get strtab :offset)))
+           (str-size (and strtab (plist-get strtab :size)))
+           (str-limit (and str-off str-size (+ str-off str-size)))
+           (target (if (symbolp symbol-name)
+                       (symbol-name symbol-name)
+                     symbol-name))
+           (found nil))
+      (unless (and strtab (= (plist-get strtab :type)
+                             nelisp-elf--sht-strtab))
+        (error "nelisp-elf: .symtab has no linked string table"))
+      (unless (= sym-entsize nelisp-elf--sym-size)
+        (error "nelisp-elf: unsupported symbol size %S" sym-entsize))
+      (nelisp-elf--check-range bytes sym-off sym-size :symtab)
+      (nelisp-elf--check-range bytes str-off str-size :strtab)
+      (dotimes (i (/ sym-size sym-entsize))
+        (let* ((off (+ sym-off (* i sym-entsize)))
+               (name-off (nelisp-elf--read-le32 bytes off))
+               (info (aref bytes (+ off 4)))
+               (shndx (nelisp-elf--read-le16 bytes (+ off 6)))
+               (value (nelisp-elf--read-le64 bytes (+ off 8)))
+               (size (nelisp-elf--read-le64 bytes (+ off 16)))
+               (name (nelisp-elf--cstring-at
+                      bytes (+ str-off name-off) str-limit)))
+          (when (equal name target)
+            (let ((section (nelisp-elf--section-by-index headers shndx)))
+              (setq found
+                    (list :name name
+                          :bind (ash info -4)
+                          :type (logand info #xf)
+                          :section-index shndx
+                          :value value
+                          :size size
+                          :section-name (plist-get section :name)
+                          :section-offset (plist-get section :offset)
+                          :section-size (plist-get section :size)))))))
+      (unless found
+        (error "nelisp-elf: symbol %S not found in %S" target file-path))
+      found)))
+
+(defun nelisp-elf-read-symbol-bytes (file-path symbol-name)
+  "Return bytes covered by SYMBOL-NAME in FILE-PATH.
+For ET_REL objects this uses the symbol's section-relative `st_value'
+plus the owning section's file offset."
+  (let* ((symbol (nelisp-elf-read-symbol file-path symbol-name))
+         (bytes (nelisp-elf-read-file-bytes file-path))
+         (section-offset (plist-get symbol :section-offset))
+         (section-size (plist-get symbol :section-size))
+         (value (plist-get symbol :value))
+         (size (plist-get symbol :size))
+         (payload-offset (+ section-offset value)))
+    (nelisp-elf--check-range bytes payload-offset size :symbol-payload)
+    (when (> (+ value size) section-size)
+      (error "nelisp-elf: symbol %S extends past section %S"
+             symbol-name (plist-get symbol :section-name)))
+    (substring bytes payload-offset (+ payload-offset size))))
+
 ;; ---- §91.d benchmark helper (= chunk-build perf gate) ----
 
 (defun nelisp-elf-benchmark-write-binary (file-path size-kb)

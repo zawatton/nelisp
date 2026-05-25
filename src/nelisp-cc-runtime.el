@@ -3685,6 +3685,73 @@ exports and helper resolutions."
           :frames (plist-get context :frames)
           :module-init module-init)))
 
+(defconst nelisp-cc-runtime-aot-object-module-init-symbol
+  "nelisp_aot_module_init_plan"
+  "ELF object symbol carrying embedded Doc 129 module-init metadata.")
+
+(defun nelisp-cc-runtime--decode-aot-object-module-init-bytes (bytes)
+  "Decode and validate embedded Doc 129 module-init BYTES."
+  (unless (stringp bytes)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-object-module-init-bytes-not-string bytes)))
+  (let* ((payload-end (if (and (> (length bytes) 0)
+                               (= (aref bytes (1- (length bytes))) 0))
+                          (1- (length bytes))
+                        (length bytes)))
+         (text (decode-coding-string
+                (substring bytes 0 payload-end) 'utf-8 t))
+         (read-result (read-from-string text))
+         (plan (car read-result))
+         (pos (cdr read-result)))
+    (while (and (< pos (length text))
+                (memq (aref text pos) '(?\s ?\t ?\n ?\r)))
+      (setq pos (1+ pos)))
+    (unless (= pos (length text))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-object-module-init-trailing-data text)))
+    (nelisp-cc-runtime-aot-module-init-plan
+     (plist-get plan :init-helpers)
+     (plist-get plan :custom-metadata)
+     (plist-get plan :root-descriptors)
+     (plist-get plan :closure-descriptors))))
+
+(defun nelisp-cc-runtime-read-aot-object-module-init-plan
+    (object-path &optional symbol-name)
+  "Read Doc 129 module-init metadata embedded in OBJECT-PATH.
+SYMBOL-NAME defaults to
+`nelisp-cc-runtime-aot-object-module-init-symbol'.  The returned plan is
+validated and normalized through `nelisp-cc-runtime-aot-module-init-plan'."
+  (require 'nelisp-elf-write)
+  (declare-function nelisp-elf-read-symbol-bytes
+                    "nelisp-elf-write" (file-path symbol-name))
+  (nelisp-cc-runtime--decode-aot-object-module-init-bytes
+   (nelisp-elf-read-symbol-bytes
+    object-path
+    (or symbol-name nelisp-cc-runtime-aot-object-module-init-symbol))))
+
+(cl-defun nelisp-cc-runtime-run-aot-standalone-loader-from-object
+    (object-path &key resolver native-call mirror frames env out scratch name-slot
+                 allow-host-stub register-custom register-closure symbol-name)
+  "Run the Doc 129 standalone-loader handoff using OBJECT-PATH metadata.
+The module-init plan is read from OBJECT-PATH's embedded
+`nelisp_aot_module_init_plan' symbol, then forwarded to
+`nelisp-cc-runtime-run-aot-standalone-loader'.  SYMBOL-NAME may override
+the metadata symbol for tests and future object formats."
+  (nelisp-cc-runtime-run-aot-standalone-loader
+   (nelisp-cc-runtime-read-aot-object-module-init-plan
+    object-path symbol-name)
+   :resolver resolver
+   :native-call native-call
+   :mirror mirror
+   :frames frames
+   :env env
+   :out out
+   :scratch scratch
+   :name-slot name-slot
+   :allow-host-stub allow-host-stub
+   :register-custom register-custom
+   :register-closure register-closure))
+
 (defun nelisp-cc-runtime-run-aot-module-init-plan
     (plan context call-helper &optional register-custom register-closure)
   "Run a Doc 129 AOT module-init PLAN through callback hooks.
