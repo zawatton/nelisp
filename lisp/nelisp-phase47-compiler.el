@@ -2523,6 +2523,7 @@ the whole program."
                        cl-tree-equal
                        cl-position cl-find cl-count cl-mismatch cl-search
                        cl-remove cl-delete cl-substitute cl-nsubstitute
+                       cl-subst cl-nsubst cl-sublis cl-nsublis
                        cl-remove-duplicates cl-delete-duplicates
                        cl-adjoin sort))
     (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
@@ -2702,6 +2703,7 @@ defun is visible in the current compile unit.")
     cl-tree-equal
     cl-position cl-find cl-count cl-mismatch cl-search
     cl-remove cl-delete cl-substitute cl-nsubstitute
+    cl-subst cl-nsubst cl-sublis cl-nsublis
     cl-remove-duplicates cl-delete-duplicates
     cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
     cl-some cl-every cl-notany cl-notevery
