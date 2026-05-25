@@ -2517,6 +2517,34 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-capture-cell
+    (sexp env fenv defuns)
+  "Lower internal `(aot-capture-cell NAME VALUE)' through the AOT bridge."
+  (unless (= (length sexp) 3)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-capture-cell-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-closure-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (name-symbol
+          (nelisp-phase47-compiler--aot-quoted-symbol (nth 1 sexp)))
+         (name (if name-symbol scratch (nth 1 sexp)))
+         (prefix (and name-symbol
+                      `((sexp-write-symbol-lit
+                         ,scratch ,(symbol-name name-symbol)))))
+         (value (nth 2 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       ,@prefix
+       (extern-call nelisp_aot_capture_cell
+                    ,mirror ,frames ,name ,value ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--parse-aot-funcall1
     (sexp env fenv defuns)
   "Lower `(funcall FN ARG)' through the Doc 129.7 one-arg dispatcher."
@@ -4013,6 +4041,11 @@ functions `((NAME . ARITY) ...)'."
    ;; canonical runtime heap closures, not synthetic defun symbols.
    ((and (consp sexp) (eq (car sexp) 'aot-closure-lambda))
     (nelisp-phase47-compiler--parse-aot-closure-lambda
+     sexp env fenv defuns))
+   ;; Doc 129.7AB: materialize a runtime capture cell before passing it
+   ;; into a heap closure descriptor.
+   ((and (consp sexp) (eq (car sexp) 'aot-capture-cell))
+    (nelisp-phase47-compiler--parse-aot-capture-cell
      sexp env fenv defuns))
    ;; Doc 129.8L: internal bridge for source `catch' landing values.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-value))

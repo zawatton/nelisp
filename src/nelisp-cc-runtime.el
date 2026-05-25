@@ -1926,6 +1926,27 @@ as `(WRITER NAME NEW-VALUE)' after closure `setq' updates the cell."
       (funcall writer (aref cell 1) value)))
   value)
 
+(defun nelisp-cc-runtime-aot-capture-cell-boundary
+    (mirror frames name value out scratch &optional writer)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_capture_cell' ABI.
+MIRROR, FRAMES, NAME, VALUE, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_capture_cell(mirror, frames, name, value, out, scratch)
+
+The bridge builds a Doc 129 AOT capture cell for NAME and VALUE, writes
+it to OUT[0], and returns OUT.  WRITER is an optional host-side callback
+used by tests and later standalone/native-frame integration."
+  (unless (symbolp name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-capture-cell-name-not-symbol name)))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-capture-cell-out-not-vector out)))
+  (ignore mirror frames scratch)
+  (aset out 0
+        (nelisp-cc-runtime-aot-capture-cell name value writer))
+  out)
+
 (defun nelisp-cc-runtime--aot-default-funcall-dispatch1 (fn arg)
   "Dispatch one-argument FN to ARG using NeLisp-aware apply when available."
   (cond
@@ -2807,6 +2828,10 @@ writes it to OUT[0], and returns OUT."
      :function nelisp-cc-runtime-aot-make-closure
      :fixed-argc 6 :rest t
      :args (mirror frames descriptor argc out scratch captures...))
+    (:symbol nelisp_aot_capture_cell
+     :function nelisp-cc-runtime-aot-capture-cell-boundary
+     :fixed-argc 6 :rest nil
+     :args (mirror frames name value out scratch))
     (:symbol nelisp_aot_push_catch
      :function nelisp-cc-runtime-aot-push-catch-boundary
      :fixed-argc 6 :rest nil

@@ -3417,6 +3417,28 @@ materialized closure temporary."
        (funcall (lambda (y) (setq cap y)) x)))
    :type 'nelisp-phase47-compiler-error))
 
+(ert-deftest nelisp-phase47-doc129/parse-aot-capture-cell ()
+  "Doc 129.7AB: capture-cell materialization lowers to the runtime bridge."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (cap :type sexp))
+                 (aot-capture-cell 'cap cap))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (call-node (nth 1 forms))
+         (args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_capture_cell))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 args) :var)
+                'scratch))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 3 args) :var)
+                'cap))))
+
 (ert-deftest nelisp-phase47-doc129/e2e-funcall-lambda-lift ()
   "Doc 129.7K: execute a non-capturing lambda-lifted funcall."
   (unless (nelisp-phase47-doc129-test--linux-p)
@@ -3507,6 +3529,28 @@ materialized closure temporary."
             (should (string-match-p "caller" out))
             (should (string-match-p "nelisp_aot_make_closure" out))
             (should (string-match-p "nelisp_aot_funcall1" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-aot-capture-cell ()
+  "Doc 129.7AB: object output exposes capture-cell bridge relocation."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-capture-cell-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp))
+              (aot-capture-cell 'cap cap))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_capture_cell" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 

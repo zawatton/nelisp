@@ -1834,6 +1834,22 @@ exit points were emitted; call-points were missing."
         (should (equal writes '(42))))
     (nelisp-cc-runtime-clear-aot-closure-descriptors)))
 
+(ert-deftest nelisp-cc-runtime-aot-capture-cell-boundary ()
+  "Doc 129.7AB — capture-cell bridge writes a cell to OUT."
+  (let* ((out (vector nil))
+         (written nil)
+         (writer (lambda (name value)
+                   (setq written (list name value)))))
+    (should (eq (nelisp-cc-runtime-aot-capture-cell-boundary
+                 'mirror 'frames 'cap 11 out 'scratch writer)
+                out))
+    (let ((cell (aref out 0)))
+      (should (nelisp-cc-runtime-aot-capture-cell-p cell))
+      (should (= (nelisp-cc-runtime-aot-capture-cell-value cell) 11))
+      (nelisp-cc-runtime-aot-capture-cell-set cell 19)
+      (should (= (nelisp-cc-runtime-aot-capture-cell-value cell) 19))
+      (should (equal written '(cap 19))))))
+
 (ert-deftest nelisp-cc-runtime-aot-make-closure ()
   "Doc 129.7U — make-closure bridge materializes captured closures."
   (unwind-protect
