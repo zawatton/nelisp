@@ -18,7 +18,7 @@
   call callback, Stage 129.3L default init boundary context,
   Stage 129.3M init helper ABI argv materialization, Stage 129.3N
   default AOT environment handles, Stage 129.3O standalone Env pointer
-  context handoff,
+  context handoff, Stage 129.3P native-call entry adapter,
   Stage 129.4 multi-binding runtime =let= MVP,
   Stage 129.5A static GC root-map MVP, Stage 129.5B AOT root-set
   registration substrate, Stage 129.5C call-boundary root-vector
@@ -236,6 +236,11 @@
   an optional opaque =ENV= handle.  Runtime keeps it in =:env= for
   Doc 99/native-call code while leaving the generated init-helper ABI
   argv fixed at =(OUT MIRROR FRAMES SCRATCH NAME-SLOT)=.
+- *129.3P MVP*: =nelisp-cc-runtime-aot-native-call-entry= now provides
+  the standard adapter from a resolved helper =:addr= plus
+  =:abi-argv= into a native-call thunk.  It rejects host-stub and
+  not-found resolutions, validates the init context/descriptor, and
+  calls the thunk as =(ENTRY ADDR ARGV CONTEXT DESCRIPTOR RESOLUTION)=.
 - *129.7V MVP*: =nelisp-cc-runtime-aot-module-init-plan= now accepts
   AOT closure descriptors from
   =nelisp-phase47-compiler--closure-descriptors=.  Plan execution
@@ -1649,6 +1654,29 @@ Stage 129.3E/F helper parameters:
 (OUT MIRROR FRAMES SCRATCH NAME-SLOT)
 #+end_src
 
+=nelisp-cc-runtime-aot-native-call-entry= is the standard adapter for
+Doc 99's real native-call thunk.  It receives the resolution already
+decorated by =nelisp-cc-runtime-call-aot-init-helper=, requires
+=:status :resolved=, and forwards only the native address and fixed ABI
+argv as the call-critical pair:
+
+#+begin_src elisp
+(funcall (nelisp-cc-runtime-aot-native-call-entry native-thunk)
+         '(:helper nelisp_aot_var_0_x
+           :status :resolved
+           :addr #x401000
+           :abi-argv (OUT MIRROR FRAMES SCRATCH NAME-SLOT)
+           :descriptor ...)
+         context
+         descriptor)
+;; native-thunk sees:
+;;   (ADDR ARGV CONTEXT DESCRIPTOR RESOLUTION)
+#+end_src
+
+Host-stub and =:not-found= resolutions are rejected before the thunk is
+called, so standalone/native paths can share one checked entry point
+instead of revalidating the resolver result at every call site.
+
 =nelisp-cc-runtime-make-aot-init-context= fills the standard
 helper-call boundary context:
 
@@ -1677,9 +1705,11 @@ runtime now has a validated scheduling/execution hook, metadata store,
 helper resolution/call contract, default allocation for the standard
 mirror/frames/out/scratch/name slots, a canonical native helper argv,
 default AOT closure descriptor registration, and a context field for
-standalone Env pointer handoff; actual object loading, real native call
-entry, and native embedding of the plan remain Doc 99 call-boundary
-responsibilities.
+standalone Env pointer handoff.  It also has the checked native-call
+entry adapter that hands a resolved address and ABI argv to the
+platform thunk; actual object loading, executable FFI invocation from
+that thunk, and native embedding of the plan remain Doc 99
+call-boundary responsibilities.
 Initializer values are currently limited to the same boxed Int
 expression subset accepted by =defun-sexp-int-*= helpers.
 
@@ -3442,7 +3472,7 @@ deletion or deferred until the extern can be elisp-emitted.
 |---------+--------------------------------+------------+------+-------------------------|
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
-| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization + 129.3N default AOT environment handles + 129.3O standalone Env pointer context handoff SHIPPED 2026-05-25; real native call entry pending |
+| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization + 129.3N default AOT environment handles + 129.3O standalone Env pointer context handoff + 129.3P native-call entry adapter SHIPPED 2026-05-25; external executable native thunk pending |
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering + 129.4G direct special-let throw cleanup + 129.4H conditional special-let throw cleanup + 129.4I nested conditional special-let throw cleanup SHIPPED 2026-05-25; heap lexframes and general tagged local values pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope SHIPPED 2026-05-25; loader-selected fully automatic non-boundary defun prologue/epilogue pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |

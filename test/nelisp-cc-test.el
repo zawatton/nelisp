@@ -3133,6 +3133,65 @@ exit points were emitted; call-points were missing."
                    '((nelisp_aot_var_0_x . (:called #x401000))
                      (nelisp_aot_const_1_y . (:called #x402000)))))))
 
+(ert-deftest nelisp-cc-runtime-aot-native-call-entry ()
+  "Doc 129.3P — native-call entry adapter receives address and ABI argv."
+  (let* ((descriptor '(:kind defvar
+                       :name x
+                       :helper nelisp_aot_var_0_x
+                       :index 0))
+         (context (list :out 'out
+                        :mirror 'mirror
+                        :frames 'frames
+                        :scratch 'scratch
+                        :name-slot 'name-slot
+                        :env 'env))
+         (seen nil)
+         (native-call
+          (nelisp-cc-runtime-aot-native-call-entry
+           (lambda (addr argv ctx init resolution)
+             (setq seen (list addr argv
+                              (plist-get ctx :env)
+                              (plist-get init :helper)
+                              (plist-get resolution :helper)))
+             :native-ok)))
+         (result
+          (nelisp-cc-runtime-call-aot-init-helper
+           'nelisp_aot_var_0_x
+           context
+           descriptor
+           native-call
+           (lambda (_symbol) (cons :resolved #x401000)))))
+    (should (eq result :native-ok))
+    (should (equal seen
+                   '(#x401000
+                     (out mirror frames scratch name-slot)
+                     env
+                     nelisp_aot_var_0_x
+                     nelisp_aot_var_0_x)))))
+
+(ert-deftest nelisp-cc-runtime-aot-native-call-entry-rejects-host-stub ()
+  "Doc 129.3P — native-call entry requires resolved helper symbols."
+  (let* ((descriptor '(:kind defvar
+                       :name x
+                       :helper nelisp_aot_var_0_x
+                       :index 0))
+         (context (list :out 'out
+                        :mirror 'mirror
+                        :frames 'frames
+                        :scratch 'scratch
+                        :name-slot 'name-slot))
+         (native-call
+          (nelisp-cc-runtime-aot-native-call-entry
+           (lambda (_addr _argv _ctx _init _resolution) :unreached))))
+    (should-error
+     (nelisp-cc-runtime-call-aot-init-helper
+      'nelisp_aot_var_0_x
+      context
+      descriptor
+      native-call
+      (lambda (_symbol) (cons :host-stub #x401000)))
+     :type 'nelisp-cc-runtime-error)))
+
 (ert-deftest nelisp-cc-runtime-aot-standalone-loader ()
   "Doc 129.6V — standalone loader installs exports and runs module init."
   (let* ((init-helpers

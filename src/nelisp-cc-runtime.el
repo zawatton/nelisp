@@ -3515,6 +3515,32 @@ defaults to `nelisp-cc-runtime-resolve-symbol'."
         (funcall native-call resolution context descriptor)
       resolution)))
 
+(defun nelisp-cc-runtime-aot-native-call-entry (entry)
+  "Return a standard Doc 129.3 native-call adapter for ENTRY.
+ENTRY is called as `(ENTRY ADDR ARGV CONTEXT DESCRIPTOR RESOLUTION)'.
+The adapter validates that RESOLUTION is a real `:resolved' native
+symbol resolution and that `:abi-argv' has already been attached by
+`nelisp-cc-runtime-call-aot-init-helper'."
+  (unless (functionp entry)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-native-entry-not-function entry)))
+  (lambda (resolution context descriptor)
+    (nelisp-cc-runtime--validate-aot-init-context context)
+    (nelisp-cc-runtime--validate-aot-init-helper-descriptor descriptor)
+    (unless (and (listp resolution)
+                 (eq (plist-get resolution :status) :resolved)
+                 (integerp (plist-get resolution :addr))
+                 (> (plist-get resolution :addr) 0)
+                 (listp (plist-get resolution :abi-argv)))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-native-entry-bad-resolution resolution)))
+    (funcall entry
+             (plist-get resolution :addr)
+             (plist-get resolution :abi-argv)
+             context
+             descriptor
+             resolution)))
+
 (defun nelisp-cc-runtime-aot-init-helper-caller
     (&optional native-call resolver)
   "Return a `run-aot-module-init-plan' CALL-HELPER callback.
