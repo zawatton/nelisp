@@ -5526,6 +5526,9 @@ materialized closure temporary."
          (landing-label
           (car (nelisp-phase47-doc129-test--ir-nodes
                 ir 'aot-landing-label)))
+         (machine-jump
+          (car (nelisp-phase47-doc129-test--ir-nodes
+                ir 'aot-machine-landing-jump)))
          (landing-name
           (symbol-name
            (nelisp-phase47-compiler--ir-get landing-label :label)))
@@ -5539,6 +5542,11 @@ materialized closure temporary."
     (should (member 'nelisp_aot_landing_value externs))
     (should-not (member 'nelisp_aot_pop_handler externs))
     (should (string-prefix-p "aot-catch-landing-" landing-name))
+    (should (eq (nelisp-phase47-compiler--ir-get machine-jump :target)
+                (nelisp-phase47-compiler--ir-get landing-label :label)))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (nelisp-phase47-compiler--ir-get machine-jump :saved-sp))
+                'aot-current-sp))
     (should (member (string-to-list landing-name) symbol-writes))
     (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
                 'scratch))
@@ -5631,6 +5639,9 @@ materialized closure temporary."
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
     (should (member 'nelisp_aot_pop_handler externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               1))
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
@@ -5660,6 +5671,9 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               1))
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
@@ -5680,6 +5694,9 @@ materialized closure temporary."
          (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should-not (member 'nelisp_aot_pop_handler externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               2))
     (nelisp-phase47-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_catch "aot-catch-landing-" 2)))
 
@@ -5854,7 +5871,12 @@ materialized closure temporary."
                    (error err)))))
          (body (nelisp-phase47-compiler--ir-get ir :body))
          (forms (nelisp-phase47-compiler--ir-get body :forms))
-         (landing-label (nth 2 forms))
+         (landing-label
+          (car (nelisp-phase47-doc129-test--ir-nodes
+                ir 'aot-landing-label)))
+         (machine-jump
+          (car (nelisp-phase47-doc129-test--ir-nodes
+                ir 'aot-machine-landing-jump)))
          (handler-let (nelisp-phase47-compiler--ir-get landing-label :body))
          (externs (nelisp-phase47-doc129-test--extern-call-names ir))
          (push-call
@@ -5882,6 +5904,11 @@ materialized closure temporary."
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
     (should-not (member 'nelisp_aot_pop_handler externs))
+    (should (eq (nelisp-phase47-compiler--ir-get machine-jump :target)
+                (nelisp-phase47-compiler--ir-get landing-label :label)))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (nelisp-phase47-compiler--ir-get machine-jump :saved-sp))
+                'aot-current-sp))
     (should (string-prefix-p "aot-condition-landing-" landing-name))
     (should (member (string-to-list landing-name) symbol-writes))
     (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
@@ -5914,6 +5941,9 @@ materialized closure temporary."
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
     (should (member 'nelisp_aot_pop_handler externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               1))
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
@@ -5944,6 +5974,9 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               1))
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
@@ -5966,6 +5999,9 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
     (should-not (member 'nelisp_aot_pop_handler externs))
     (should (member 'nelisp_aot_landing_error externs))
+    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+                        ir 'aot-machine-landing-jump))
+               2))
     (nelisp-phase47-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_condition "aot-condition-landing-" 2)))
 

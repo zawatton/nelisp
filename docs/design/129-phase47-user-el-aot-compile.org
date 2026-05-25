@@ -124,7 +124,8 @@
   129.8W single-leaf conditional descriptor labels, Stage 129.8X
   multi-leaf conditional descriptor labels, Stage 129.8Y
   =unwind-protect= cleanup entry labels, and Stage 129.8Z
-  =unwind-protect= descriptor handoff / branch-back have
+  =unwind-protect= descriptor handoff / branch-back, and Stage 129.8AA
+  static handler landing machine jumps have
   implementations in =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
   =nelisp-cc-runtime.el=.
   Stage 129.4B additionally tracks top-level =defvar= / =defconst= /
@@ -972,6 +973,12 @@
   Object output exposes both =nelisp_aot_push_unwind= and
   =nelisp_aot_landing_jump= for direct and conditional protected throw
   leaves.
+- *129.8AA MVP*: source =catch= / =condition-case= non-local leaves
+  that already have a concrete compiler landing label now also emit
+  =aot-machine-landing-jump= with =(aot-current-sp)= before that label.
+  Direct, single-leaf, nested, and multi-leaf catch/condition trees keep
+  their existing descriptor metadata while adding a same-function native
+  branch target for the static landing case.
 - *Previous state*: DRAFT 2026-05-25 — design only.
   Scoping doc for the long-horizon "compile arbitrary user elisp to
   native code" track.  Authored after a 2026-05-25 session that
@@ -3248,6 +3255,25 @@ the original catch/condition target carried by =out=, while later native
 selection can replace the simulator bridge with a concrete
 =aot-machine-landing-jump= when the target label is statically known.
 
+Stage 129.8AA performs that static selection for source =catch= and
+=condition-case= throw/signal leaves whose handler landing label is
+known at compile time:
+
+#+begin_src elisp
+(seq
+ (aot-push-catch 'done 'catch-pad (aot-current-sp))
+ (seq
+  (throw 'done value)
+  (aot-machine-landing-jump (aot-current-sp) catch-pad)
+  (aot-landing-label catch-pad
+    (aot-landing-value out))))
+#+end_src
+
+The same insertion is used for direct, single-leaf, nested, and
+multi-leaf condition trees.  Dynamic descriptor-only cleanup handoff
+continues to use =aot-landing-jump= until the original target label can
+be proven statically.
+
 *** §1.F.8 Shipped MVP: source =error= bridge lowering
 
 Stage 129.8H adds the common single-argument =error= surface:
@@ -4132,7 +4158,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln builtin table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage + 129.6S AOT C ABI resolver handoff + 129.6T AOT C ABI export registry + 129.6U metadata container builtin coverage + 129.6V standalone loader handoff + 129.6W seq predicate/set higher-order coverage + 129.6X seq prefix/group higher-order coverage + 129.6Y seq-sort-by transform coverage + 129.6Z map.el higher-order coverage + 129.6AA map.el predicate/apply coverage + 129.6AB map.el container coverage + 129.6AC seq.el container coverage + 129.6AD cl-lib list helper coverage + 129.6AE cl-lib set/search coverage + 129.6AF cl-lib keyword callback option coverage + 129.6AG multiple static callback slots SHIPPED 2026-05-25; remaining higher-order builtin coverage pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting + 129.7AA runtime captured-cell write-through substrate + 129.7AB capture-cell materialization bridge + 129.7AC automatic captured-mutation capture-cell wrapping + 129.7AD runtime frame-writer attachment + 129.7AE closure root-vector pinning + 129.7AF hash-FRAMES frame-slot ref/set bridges + 129.7AG compiler frame-slot ABI forms + 129.7AH captured-mutation frame-slot read selection + 129.7AI ELF object module-init metadata embedding + 129.7AJ ELF object metadata loader consumption + 129.7AK both-branch captured-mutation frame-slot selection + 129.7AL exhaustive cond captured-mutation frame-slot selection + 129.7AM leading short-circuit captured-mutation frame-slot selection + 129.7AN multi-callback literal lambda lifting + 129.7AO lexical let frame-slot selection SHIPPED 2026-05-25; broader automatic native object frame-slot ABI selection pending |
-| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits + 129.8L direct catch/throw landing-value extraction + 129.8M direct condition-case signal/error landing-error dispatch + 129.8N conditional catch/throw branch dispatch + 129.8O direct unwind-protect throw cleanup + 129.8P conditional unwind-protect throw cleanup + 129.8Q conditional condition-case signal dispatch + 129.8R nested conditional non-local branch trees + 129.8S landing-jump ABI planning + 129.8T backend stack-restore landing jump primitive + 129.8U current-SP capture + 129.8V direct handler descriptor-to-label source lowering + 129.8W single-leaf conditional descriptor labels + 129.8X multi-leaf conditional descriptor labels + 129.8Y unwind cleanup entry labels + 129.8Z unwind descriptor handoff / branch-back SHIPPED 2026-05-25; native descriptor-to-machine-jump selection pending |
+| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits + 129.8L direct catch/throw landing-value extraction + 129.8M direct condition-case signal/error landing-error dispatch + 129.8N conditional catch/throw branch dispatch + 129.8O direct unwind-protect throw cleanup + 129.8P conditional unwind-protect throw cleanup + 129.8Q conditional condition-case signal dispatch + 129.8R nested conditional non-local branch trees + 129.8S landing-jump ABI planning + 129.8T backend stack-restore landing jump primitive + 129.8U current-SP capture + 129.8V direct handler descriptor-to-label source lowering + 129.8W single-leaf conditional descriptor labels + 129.8X multi-leaf conditional descriptor labels + 129.8Y unwind cleanup entry labels + 129.8Z unwind descriptor handoff / branch-back + 129.8AA static handler landing machine jumps SHIPPED 2026-05-25; dynamic cleanup descriptor-to-machine-jump selection pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
 =anvil-server.el= that uses only those (= prove the pipeline end to

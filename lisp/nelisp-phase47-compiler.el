@@ -4034,6 +4034,83 @@ source form."
         (nth 3 sexp))))
    (t 0)))
 
+(defun nelisp-phase47-compiler--aot-static-landing-form
+    (nonlocal-form landing-label landing-body)
+  "Return NONLOCAL-FORM followed by a static native jump to LANDING-LABEL."
+  `(seq
+    ,nonlocal-form
+    (aot-machine-landing-jump (aot-current-sp) ,landing-label)
+    (aot-landing-label ,landing-label ,landing-body)))
+
+(defun nelisp-phase47-compiler--aot-catch-landing-branch-form
+    (tag branch landing-label value-slot leaf-count)
+  "Return a source form for one conditional catch BRANCH."
+  (cond
+   ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+     tag branch)
+    (if landing-label
+        (nelisp-phase47-compiler--aot-static-landing-form
+         branch landing-label '(aot-landing-value out))
+      (let ((branch-label
+             (nelisp-phase47-compiler--gensym
+              "aot-catch-landing")))
+        `(seq
+          (aot-push-catch
+           ,tag
+           ',branch-label
+           (aot-current-sp))
+          ,(nelisp-phase47-compiler--aot-static-landing-form
+            branch branch-label
+            '(aot-landing-value out))))))
+   ((nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+     tag branch)
+    `(if ,(nth 1 branch)
+         ,(nelisp-phase47-compiler--aot-catch-landing-branch-form
+           tag (nth 2 branch) landing-label value-slot leaf-count)
+       ,(nelisp-phase47-compiler--aot-catch-landing-branch-form
+         tag (nth 3 branch) landing-label value-slot leaf-count)))
+   ((> leaf-count 1)
+    branch)
+   (t
+    `(let (((,value-slot :type sexp) ,branch))
+       (seq
+        (aot-pop-handler 'catch)
+        ,value-slot)))))
+
+(defun nelisp-phase47-compiler--aot-condition-landing-branch-form
+    (tag branch landing-label handled-form value-slot leaf-count)
+  "Return a source form for one conditional condition-case BRANCH."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-condition-tag branch)
+    (if landing-label
+        (nelisp-phase47-compiler--aot-static-landing-form
+         branch landing-label handled-form)
+      (let ((branch-label
+             (nelisp-phase47-compiler--gensym
+              "aot-condition-landing")))
+        `(seq
+          (aot-push-condition
+           ',tag
+           ',branch-label
+           (aot-current-sp))
+          ,(nelisp-phase47-compiler--aot-static-landing-form
+            branch branch-label handled-form)))))
+   ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
+    `(if ,(nth 1 branch)
+         ,(nelisp-phase47-compiler--aot-condition-landing-branch-form
+           tag (nth 2 branch) landing-label handled-form
+           value-slot leaf-count)
+       ,(nelisp-phase47-compiler--aot-condition-landing-branch-form
+         tag (nth 3 branch) landing-label handled-form
+         value-slot leaf-count)))
+   ((> leaf-count 1)
+    branch)
+   (t
+    `(let (((,value-slot :type sexp) ,branch))
+       (seq
+        (aot-pop-handler 'condition)
+        ,value-slot)))))
+
 (defun nelisp-phase47-compiler--aot-condition-selector-match-p
     (selector tag)
   "Return non-nil when source condition-case SELECTOR catches TAG."
@@ -4344,9 +4421,8 @@ saved BODY value."
             (nelisp-phase47-compiler--parse-value
              `(seq
                (aot-push-catch ,tag ',landing-label (aot-current-sp))
-               ,direct-throw
-               (aot-landing-label ,landing-label
-                 (aot-landing-value out)))
+               ,(nelisp-phase47-compiler--aot-static-landing-form
+                 direct-throw landing-label '(aot-landing-value out)))
              env fenv defuns))
         (if conditional-throw
             (let* ((value-slot (nelisp-phase47-compiler--gensym
@@ -4360,52 +4436,22 @@ saved BODY value."
                       (nelisp-phase47-compiler--gensym
                        "aot-catch-landing"))))
               (nelisp-phase47-compiler--parse-value
-               (cl-labels
-                   ((branch-form
-                     (branch)
-                     (cond
-                      ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
-                        tag branch)
-                       (if landing-label
-                           `(seq
-                             ,branch
-                             (aot-landing-label ,landing-label
-                               (aot-landing-value out)))
-                         (let ((branch-label
-                                (nelisp-phase47-compiler--gensym
-                                 "aot-catch-landing")))
-                           `(seq
-                             (aot-push-catch
-                              ,tag
-                              ',branch-label
-                              (aot-current-sp))
-                             ,branch
-                             (aot-landing-label ,branch-label
-                               (aot-landing-value out))))))
-                      ((nelisp-phase47-compiler--aot-catch-throw-tree-form-p
-                        tag branch)
-                       `(if ,(nth 1 branch)
-                            ,(branch-form (nth 2 branch))
-                          ,(branch-form (nth 3 branch))))
-                      ((> leaf-count 1)
-                       branch)
-                      (t
-                       `(let (((,value-slot :type sexp) ,branch))
-                          (seq
-                           (aot-pop-handler 'catch)
-                           ,value-slot))))))
-                 (let ((body-form
-                        `(if ,test
-                             ,(branch-form (nth 2 conditional-throw))
-                           ,(branch-form (nth 3 conditional-throw)))))
-                   (if landing-label
-                       `(seq
-                         (aot-push-catch
-                          ,tag
-                          ',landing-label
-                          (aot-current-sp))
-                         ,body-form)
-                     body-form)))
+               (let ((body-form
+                      `(if ,test
+                           ,(nelisp-phase47-compiler--aot-catch-landing-branch-form
+                             tag (nth 2 conditional-throw)
+                             landing-label value-slot leaf-count)
+                         ,(nelisp-phase47-compiler--aot-catch-landing-branch-form
+                           tag (nth 3 conditional-throw)
+                           landing-label value-slot leaf-count))))
+                 (if landing-label
+                     `(seq
+                       (aot-push-catch
+                        ,tag
+                        ',landing-label
+                        (aot-current-sp))
+                       ,body-form)
+                   body-form))
                env fenv defuns))
         (let ((value-slot (nelisp-phase47-compiler--gensym
                            "aot-catch-value"))
@@ -4501,9 +4547,8 @@ and cleanup landing selection remains later Doc 129.8 work."
              (aot-push-condition ',direct-tag
                                  ',landing-label
                                  (aot-current-sp))
-             ,body
-             (aot-landing-label ,landing-label
-               ,handled-form))
+             ,(nelisp-phase47-compiler--aot-static-landing-form
+               body landing-label handled-form))
            env fenv defuns)))
        (conditional-handler
         (let* ((tag (plist-get conditional-handler :tag))
@@ -4530,51 +4575,22 @@ and cleanup landing selection remains later Doc 129.8 work."
                   (nelisp-phase47-compiler--gensym
                    "aot-condition-landing"))))
           (nelisp-phase47-compiler--parse-value
-           (cl-labels
-               ((branch-form
-                 (branch)
-                 (cond
-                  ((nelisp-phase47-compiler--aot-direct-condition-tag
-                    branch)
-                   (if landing-label
-                       `(seq
-                         ,branch
-                         (aot-landing-label ,landing-label
-                           ,handled-form))
-                     (let ((branch-label
-                            (nelisp-phase47-compiler--gensym
-                             "aot-condition-landing")))
-                       `(seq
-                         (aot-push-condition
-                          ',tag
-                          ',branch-label
-                          (aot-current-sp))
-                         ,branch
-                         (aot-landing-label ,branch-label
-                           ,handled-form)))))
-                  ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
-                   `(if ,(nth 1 branch)
-                        ,(branch-form (nth 2 branch))
-                      ,(branch-form (nth 3 branch))))
-                  ((> leaf-count 1)
-                   branch)
-                  (t
-                   `(let (((,value-slot :type sexp) ,branch))
-                      (seq
-                       (aot-pop-handler 'condition)
-                       ,value-slot))))))
-             (let ((body-form
-                    `(if ,(nth 1 conditional-form)
-                         ,(branch-form (nth 2 conditional-form))
-                       ,(branch-form (nth 3 conditional-form)))))
-               (if landing-label
-                   `(seq
-                     (aot-push-condition
-                      ',tag
-                      ',landing-label
-                      (aot-current-sp))
-                     ,body-form)
-                 body-form)))
+           (let ((body-form
+                  `(if ,(nth 1 conditional-form)
+                       ,(nelisp-phase47-compiler--aot-condition-landing-branch-form
+                         tag (nth 2 conditional-form) landing-label
+                         handled-form value-slot leaf-count)
+                     ,(nelisp-phase47-compiler--aot-condition-landing-branch-form
+                       tag (nth 3 conditional-form) landing-label
+                       handled-form value-slot leaf-count))))
+             (if landing-label
+                 `(seq
+                   (aot-push-condition
+                    ',tag
+                    ',landing-label
+                    (aot-current-sp))
+                   ,body-form)
+               body-form))
            env fenv defuns)))
        (t
         (let ((value-slot (nelisp-phase47-compiler--gensym
