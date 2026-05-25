@@ -1183,6 +1183,82 @@ macros do not leak into the host Emacs session."
               (fset name old-fn)
             (fmakunbound name)))))))
 
+(defvar nelisp-phase47-compiler--lambda-lift-counter 0
+  "Counter for Doc 129.7K synthetic non-capturing lambda defuns.")
+
+(defvar nelisp-phase47-compiler--lambda-lift-hoists nil
+  "Dynamically collected Doc 129.7K synthetic defun forms.")
+
+(defvar nelisp-phase47-compiler--lambda-lift-names nil
+  "Top-level and synthetic names reserved during Doc 129.7K lambda lifting.")
+
+(defun nelisp-phase47-compiler--top-level-defun-names (sexp)
+  "Return top-level defun names in SEXP."
+  (let (names)
+    (cond
+     ((and (consp sexp) (eq (car sexp) 'defun) (symbolp (nth 1 sexp)))
+      (push (nth 1 sexp) names))
+     ((and (consp sexp) (eq (car sexp) 'seq))
+      (dolist (child (cdr sexp))
+        (when (and (consp child)
+                   (eq (car child) 'defun)
+                   (symbolp (nth 1 child)))
+          (push (nth 1 child) names)))))
+    names))
+
+(defun nelisp-phase47-compiler--lambda-literal-form (form)
+  "Return FORM's literal lambda form, or nil."
+  (cond
+   ((and (consp form) (eq (car form) 'lambda))
+    form)
+   ((and (consp form)
+         (eq (car form) 'function)
+         (= (length form) 2)
+         (consp (cadr form))
+         (eq (caadr form) 'lambda))
+    (cadr form))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--lambda-lift-name ()
+  "Return a fresh Doc 129.7K synthetic defun name."
+  (let (name)
+    (while
+        (progn
+          (setq name
+                (intern (format "nelisp_aot_lambda_%d"
+                                nelisp-phase47-compiler--lambda-lift-counter)))
+          (setq nelisp-phase47-compiler--lambda-lift-counter
+                (1+ nelisp-phase47-compiler--lambda-lift-counter))
+          (memq name nelisp-phase47-compiler--lambda-lift-names)))
+    (push name nelisp-phase47-compiler--lambda-lift-names)
+    name))
+
+(defun nelisp-phase47-compiler--preprocess-funcall-lambda (sexp)
+  "Lambda-lift a literal lambda designator in `(funcall ...)'.
+Only non-capturing lambdas are supported: lifted bodies are compiled as
+ordinary top-level defuns, so any free outer variable remains a normal
+Phase 47 free-symbol error."
+  (let ((lambda-form (nelisp-phase47-compiler--lambda-literal-form
+                      (nth 1 sexp))))
+    (if (not lambda-form)
+        (cons 'funcall
+              (mapcar #'nelisp-phase47-compiler--preprocess-source
+                      (cdr sexp)))
+      (unless (and (>= (length lambda-form) 3)
+                   (listp (nth 1 lambda-form))
+                   (cl-every #'symbolp (nth 1 lambda-form)))
+        (signal 'nelisp-phase47-compiler-error
+                (list :lambda-lift-param-shape lambda-form)))
+      (let* ((name (nelisp-phase47-compiler--lambda-lift-name))
+             (params (nth 1 lambda-form))
+             (body (nelisp-phase47-compiler--body->form
+                    (cddr lambda-form)))
+             (args (mapcar #'nelisp-phase47-compiler--preprocess-source
+                           (nthcdr 2 sexp))))
+        (push `(defun ,name ,params ,body)
+              nelisp-phase47-compiler--lambda-lift-hoists)
+        (cons name args)))))
+
 (defun nelisp-phase47-compiler--body->form (body)
   "Normalize BODY forms into one Phase 47 form."
   (cond
@@ -1566,6 +1642,8 @@ the whole program."
    ((atom sexp) sexp)
    ((eq (car sexp) 'quote) sexp)
    ((eq (car sexp) 'function) sexp)
+   ((eq (car sexp) 'funcall)
+    (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
    ((eq (car sexp) 'progn)
     (let ((body (mapcar #'nelisp-phase47-compiler--preprocess-source
                         (cdr sexp))))
@@ -1664,7 +1742,20 @@ the whole program."
     (nelisp-phase47-compiler--with-defmacros
      defs
      (lambda ()
-       (nelisp-phase47-compiler--preprocess-source source)))))
+       (let* ((nelisp-phase47-compiler--lambda-lift-counter 0)
+              (nelisp-phase47-compiler--lambda-lift-hoists nil)
+              (nelisp-phase47-compiler--lambda-lift-names
+               (nelisp-phase47-compiler--top-level-defun-names source))
+              (processed
+               (nelisp-phase47-compiler--preprocess-source source))
+              (hoists (nreverse
+                       nelisp-phase47-compiler--lambda-lift-hoists)))
+         (cond
+          ((null hoists) processed)
+          ((and (consp processed) (eq (car processed) 'seq))
+           (cons 'seq (append hoists (cdr processed))))
+          (t
+           (cons 'seq (append hoists (list processed))))))))))
 
 (defconst nelisp-phase47-compiler--aot-builtin1-delegation-symbols
   '(identity ignore
