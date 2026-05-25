@@ -3354,18 +3354,32 @@ NATIVE-CALL and RESOLVER are forwarded to
     (nelisp-cc-runtime-call-aot-init-helper
      helper context descriptor native-call resolver)))
 
+(defun nelisp-cc-runtime-make-aot-environment-handles
+    (&optional mirror frames)
+  "Return Doc 129 AOT environment handles for MIRROR and FRAMES.
+Callers may pass existing opaque handles.  When omitted, the runtime
+allocates hash-table handles that the host-side AOT bridges can share
+for frame slots, capture-cell writers, closure roots, and later loader
+metadata."
+  (list :mirror (or mirror (make-hash-table :test 'eq))
+        :frames (or frames (make-hash-table :test 'eq))))
+
 (defun nelisp-cc-runtime-make-aot-init-context
     (&optional mirror frames out scratch name-slot)
   "Return a default Doc 129.3 AOT init boundary context.
 MIRROR and FRAMES are the environment handles forwarded to generated
-init helpers.  OUT, SCRATCH, and NAME-SLOT default to fresh one-slot
-vectors so callers can run module initialization without separately
-allocating the standard boxed-boundary slots."
-  (let ((context (list :out (or out (vector nil))
-                       :mirror mirror
-                       :frames frames
-                       :scratch (or scratch (vector nil))
-                       :name-slot (or name-slot (vector nil)))))
+init helpers.  When omitted, they default to host hash-table handles.
+OUT, SCRATCH, and NAME-SLOT default to fresh one-slot vectors so callers
+can run module initialization without separately allocating the standard
+boxed-boundary slots."
+  (let* ((handles
+          (nelisp-cc-runtime-make-aot-environment-handles
+           mirror frames))
+         (context (list :out (or out (vector nil))
+                        :mirror (plist-get handles :mirror)
+                        :frames (plist-get handles :frames)
+                        :scratch (or scratch (vector nil))
+                        :name-slot (or name-slot (vector nil)))))
     (nelisp-cc-runtime--validate-aot-init-context context)))
 
 (defun nelisp-cc-runtime--validate-aot-init-context (context)

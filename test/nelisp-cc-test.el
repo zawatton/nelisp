@@ -2670,6 +2670,22 @@ exit points were emitted; call-points were missing."
     (should-not (eq out name-slot))
     (should-not (eq scratch name-slot))))
 
+(ert-deftest nelisp-cc-runtime-make-aot-init-context-default-handles ()
+  "Doc 129.3N — default init contexts carry concrete environment handles."
+  (let* ((context (nelisp-cc-runtime-make-aot-init-context))
+         (mirror (plist-get context :mirror))
+         (frames (plist-get context :frames))
+         (argv (nelisp-cc-runtime-aot-init-helper-argv context)))
+    (should (hash-table-p mirror))
+    (should (hash-table-p frames))
+    (should-not (eq mirror frames))
+    (puthash 'slot 42 frames)
+    (puthash 'symbol 'value mirror)
+    (should (= (gethash 'slot frames) 42))
+    (should (eq (gethash 'symbol mirror) 'value))
+    (should (eq (nth 1 argv) mirror))
+    (should (eq (nth 2 argv) frames))))
+
 (ert-deftest nelisp-cc-runtime-aot-init-helper-argv ()
   "Doc 129.3M — init helper native calls use a fixed ABI argument order."
   (let ((context (list :out 'out
