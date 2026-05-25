@@ -2807,6 +2807,115 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
                 'pred))))
 
+(ert-deftest nelisp-phase47-doc129/parse-seq-sort-by-dual-lambda-lift ()
+  "Doc 129.7AN: `seq-sort-by' lifts both static callback lambdas."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (callback_slot_0 :type sexp)
+                    (callback_slot_1 :type sexp)
+                    (xs :type sexp))
+                 (seq-sort-by (lambda (x) x)
+                              (lambda (a b) a)
+                              xs))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (key-lambda (nth 0 forms))
+         (pred-lambda (nth 1 forms))
+         (caller-ir (nth 2 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (key-symbol (nth 1 body-forms))
+         (pred-symbol (nth 2 body-forms))
+         (call-node (nth 3 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind key-lambda) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-kind pred-lambda) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get key-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get key-lambda :name)))))
+    (should (equal (nelisp-phase47-compiler--ir-get pred-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get pred-lambda :name)))))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 6 call-args)
+                 :var)
+                'callback_slot_0))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 7 call-args)
+                 :var)
+                'callback_slot_1))))
+
+(ert-deftest nelisp-phase47-doc129/parse-cl-lib-keyword-dual-lambda-lift ()
+  "Doc 129.7AN: cl-lib keyword callback lambdas lift together."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (keyword_slot_0 :type sexp)
+                    (keyword_slot_1 :type sexp)
+                    (callback_slot_0 :type sexp)
+                    (callback_slot_1 :type sexp)
+                    (item :type sexp)
+                    (xs :type sexp))
+                 (cl-find item xs
+                          :test (lambda (a b) a)
+                          :key (lambda (x) x)))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (test-lambda (nth 0 forms))
+         (key-lambda (nth 1 forms))
+         (caller-ir (nth 2 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (kw0-symbol (nth 1 body-forms))
+         (kw1-symbol (nth 2 body-forms))
+         (test-symbol (nth 3 body-forms))
+         (key-symbol (nth 4 body-forms))
+         (call-node (nth 5 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-kind key-lambda) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get kw0-symbol :bytes)
+                   (string-to-list ":test")))
+    (should (equal (nelisp-phase47-compiler--ir-get kw1-symbol :bytes)
+                   (string-to-list ":key")))
+    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
+    (should (equal (nelisp-phase47-compiler--ir-get key-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get key-lambda :name)))))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 8 call-args)
+                 :var)
+                'keyword_slot_0))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 9 call-args)
+                 :var)
+                'callback_slot_0))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 10 call-args)
+                 :var)
+                'keyword_slot_1))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 11 call-args)
+                 :var)
+                'callback_slot_1))))
+
 (ert-deftest nelisp-phase47-doc129/parse-cl-lib-lambda-lift ()
   "Doc 129.7Q: cl-lib literal lambdas lift to synthetic defuns."
   (let* ((ir (nelisp-phase47-compiler--parse

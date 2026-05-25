@@ -1944,15 +1944,38 @@ intersection of exhaustive branches."
   "Lambda-lift a literal function-designator argument in builtin SEXP."
   (let* ((builtin (car sexp))
          (args (cdr sexp))
+         (argc (length args))
          (designator-index
           (cdr (assq builtin
                      nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes)))
-         (lambda-form
-          (and designator-index
-               (< designator-index (length args))
-               (nelisp-phase47-compiler--lambda-literal-form
-                (nth designator-index args)))))
-    (if (not lambda-form)
+         (extra-designator-indexes
+          (cdr (assq builtin
+                     nelisp-phase47-compiler--aot-builtinn-extra-designator-arg-indexes)))
+         (keyword-designator-positions
+          (cl-loop for idx from 1 below argc
+                   for previous = (nth (1- idx) args)
+                   for arg = (nth idx args)
+                   when (and (keywordp previous)
+                             (nelisp-phase47-compiler--lambda-literal-form
+                              arg))
+                   collect idx))
+         (candidate-indexes
+          (cl-remove-duplicates
+           (delq nil
+                 (append (when designator-index
+                           (list designator-index))
+                         extra-designator-indexes
+                         keyword-designator-positions))
+           :test #'=))
+         (lambda-alist
+          (cl-loop for idx in candidate-indexes
+                   when (< idx argc)
+                   for lambda-form =
+                   (nelisp-phase47-compiler--lambda-literal-form
+                    (nth idx args))
+                   when lambda-form
+                   collect (cons idx lambda-form))))
+    (if (not lambda-alist)
         (cons builtin
               (mapcar #'nelisp-phase47-compiler--preprocess-source
                       args))
@@ -1960,10 +1983,12 @@ intersection of exhaustive branches."
             (cl-loop for arg in args
                      for idx from 0
                      collect
-                     (if (= idx designator-index)
-                         (nelisp-phase47-compiler--lambda-lift-designator
-                          lambda-form)
-                       (nelisp-phase47-compiler--preprocess-source arg)))))))
+                     (let ((entry (assq idx lambda-alist)))
+                       (if entry
+                           (nelisp-phase47-compiler--lambda-lift-designator
+                            (cdr entry))
+                         (nelisp-phase47-compiler--preprocess-source
+                          arg))))))))
 
 (defun nelisp-phase47-compiler--body->form (body)
   "Normalize BODY forms into one Phase 47 form."
@@ -2374,7 +2399,10 @@ the whole program."
                        cl-rassoc-if cl-rassoc-if-not cl-substitute-if
                        cl-substitute-if-not cl-nsubstitute-if
                        cl-nsubstitute-if-not cl-map cl-sort cl-stable-sort
-                       cl-merge
+                       cl-merge cl-union cl-intersection
+                       cl-set-difference cl-set-exclusive-or cl-subsetp
+                       cl-position cl-find cl-count cl-mismatch cl-search
+                       cl-remove cl-delete cl-substitute cl-nsubstitute
                        sort))
     (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
    ((nelisp-phase47-compiler--lambda-literal-form (car sexp))

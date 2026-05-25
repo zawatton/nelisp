@@ -98,7 +98,8 @@
   Stage 129.7AK both-branch captured-mutation frame-slot selection,
   Stage 129.7AL exhaustive =cond= captured-mutation frame-slot
   selection, Stage 129.7AM leading short-circuit captured-mutation
-  frame-slot selection,
+  frame-slot selection, Stage 129.7AN multi-callback literal lambda
+  lifting,
   Stage 129.8A runtime handler-stack substrate, Stage
   129.8B =throw= / =signal=
   bridge lowering, Stage 129.8C handler-push bridge lowering,
@@ -520,9 +521,9 @@
   first-argument callback path.
 - *129.6Y MVP*: =seq-sort-by= now lowers through the direct calln
   table.  Its transform callback participates in the same callback
-  index-0 designator/lambda-lift path as 129.6N/X; the comparison
-  predicate remains an ordinary dynamic function value until Doc 129
-  grows a second scratch slot for multi-designator builtin calls.
+  index-0 designator/lambda-lift path as 129.6N/X.  129.6AG/129.7AN
+  add the later multi-callback slot path for static comparison
+  predicates.
 - *129.6Z MVP*: the direct calln table now covers common map.el
   higher-order helpers: =map-apply=, =map-do=, =map-filter=, and
   =map-merge-with=.  The first three use callback index 0, while
@@ -578,6 +579,13 @@
   This covers forms such as =(cl-find ITEM XS :test #'eq :key #'car)=
   and =(seq-sort-by #'car #'string< XS)=.  Multiple captured closures
   still wait for a separate closure-result slot contract.
+- *129.7AN MVP*: literal-lambda preprocessing now follows the same
+  multi-callback slot contract for non-capturing callbacks.  Forms such
+  as =(seq-sort-by (lambda (x) x) (lambda (a b) a) XS)= and
+  =(cl-find ITEM XS :test (lambda (a b) a) :key (lambda (x) x))=
+  lift both callbacks to synthetic defuns, materialize their names into
+  =callback_slot_0= / =callback_slot_1=, and then call the shared
+  =nelisp_aot_builtin_calln= dispatcher.
 - *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
   =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
@@ -2379,6 +2387,26 @@ position is fixed by argument order: =cl-map= uses the second source
 argument, =cl-sort= and =cl-stable-sort= use the second source argument,
 and =cl-merge= uses the fourth source argument.
 
+Stage 129.7AN extends literal-lambda lifting to the 129.6AG
+multi-callback slot contract.  The frontend now lifts every literal
+lambda in the statically known callback positions, including the second
+=seq-sort-by= predicate callback and keyword callback arguments such as
+=:test= / =:key=:
+
+#+begin_src elisp
+(seq-sort-by (lambda (x) x)
+             (lambda (a b) a)
+             xs)
+(cl-find item xs
+         :test (lambda (a b) a)
+         :key (lambda (x) x))
+#+end_src
+
+Non-capturing lambdas become synthetic defuns whose names are written
+to =callback_slot_0= / =callback_slot_1= before entering
+=nelisp_aot_builtin_calln=.  Multiple captured callback closures remain
+conservative until the compiler has distinct closure-result slots.
+
 Stage 129.7R starts the capture side for direct calls, without
 claiming heap closure support.  When a literal lambda is applied
 directly, the frontend computes free source variables and threads them
@@ -4058,7 +4086,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope + 129.5J loader-selected hash-FRAMES root-scope marker + 129.5K object loader root metadata selection SHIPPED 2026-05-25; deeper whole-module native-frame liveness remains future work |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln builtin table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage + 129.6S AOT C ABI resolver handoff + 129.6T AOT C ABI export registry + 129.6U metadata container builtin coverage + 129.6V standalone loader handoff + 129.6W seq predicate/set higher-order coverage + 129.6X seq prefix/group higher-order coverage + 129.6Y seq-sort-by transform coverage + 129.6Z map.el higher-order coverage + 129.6AA map.el predicate/apply coverage + 129.6AB map.el container coverage + 129.6AC seq.el container coverage + 129.6AD cl-lib list helper coverage + 129.6AE cl-lib set/search coverage + 129.6AF cl-lib keyword callback option coverage + 129.6AG multiple static callback slots SHIPPED 2026-05-25; remaining higher-order builtin coverage pending |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting + 129.7AA runtime captured-cell write-through substrate + 129.7AB capture-cell materialization bridge + 129.7AC automatic captured-mutation capture-cell wrapping + 129.7AD runtime frame-writer attachment + 129.7AE closure root-vector pinning + 129.7AF hash-FRAMES frame-slot ref/set bridges + 129.7AG compiler frame-slot ABI forms + 129.7AH captured-mutation frame-slot read selection + 129.7AI ELF object module-init metadata embedding + 129.7AJ ELF object metadata loader consumption + 129.7AK both-branch captured-mutation frame-slot selection + 129.7AL exhaustive cond captured-mutation frame-slot selection + 129.7AM leading short-circuit captured-mutation frame-slot selection SHIPPED 2026-05-25; broader automatic native object frame-slot ABI selection pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting + 129.7AA runtime captured-cell write-through substrate + 129.7AB capture-cell materialization bridge + 129.7AC automatic captured-mutation capture-cell wrapping + 129.7AD runtime frame-writer attachment + 129.7AE closure root-vector pinning + 129.7AF hash-FRAMES frame-slot ref/set bridges + 129.7AG compiler frame-slot ABI forms + 129.7AH captured-mutation frame-slot read selection + 129.7AI ELF object module-init metadata embedding + 129.7AJ ELF object metadata loader consumption + 129.7AK both-branch captured-mutation frame-slot selection + 129.7AL exhaustive cond captured-mutation frame-slot selection + 129.7AM leading short-circuit captured-mutation frame-slot selection + 129.7AN multi-callback literal lambda lifting SHIPPED 2026-05-25; broader automatic native object frame-slot ABI selection pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits + 129.8L direct catch/throw landing-value extraction + 129.8M direct condition-case signal/error landing-error dispatch + 129.8N conditional catch/throw branch dispatch + 129.8O direct unwind-protect throw cleanup + 129.8P conditional unwind-protect throw cleanup + 129.8Q conditional condition-case signal dispatch + 129.8R nested conditional non-local branch trees + 129.8S landing-jump ABI planning + 129.8T backend stack-restore landing jump primitive + 129.8U current-SP capture + 129.8V direct handler descriptor-to-label source lowering + 129.8W single-leaf conditional descriptor labels + 129.8X multi-leaf conditional descriptor labels + 129.8Y unwind cleanup entry labels SHIPPED 2026-05-25; unwind descriptor handoff / branch-back pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
