@@ -3556,6 +3556,59 @@ SCRATCH, and NAME-SLOT are forwarded to
    call-helper
    register-custom))
 
+(cl-defun nelisp-cc-runtime-run-aot-standalone-loader
+    (plan &key resolver native-call mirror frames out scratch name-slot
+          allow-host-stub register-custom register-closure)
+  "Run the Doc 129 standalone-loader handoff for one AOT module.
+This integrates the previously separate loader responsibilities:
+
+  1. resolve and install the Doc 129 AOT C ABI export table;
+  2. allocate or reuse the module's MIRROR/FRAMES environment handles;
+  3. execute PLAN's init helpers through the standard native-call ABI.
+
+RESOLVER is forwarded to both AOT C ABI export installation and init
+helper resolution.  NATIVE-CALL is called as
+
+  (NATIVE-CALL RESOLUTION CONTEXT INIT-DESCRIPTOR)
+
+for each init helper after resolution.  Standalone/native callers must
+provide NATIVE-CALL and receive only `:resolved' helper entries.  Tests
+and host inspection may pass ALLOW-HOST-STUB, which permits host-stub
+exports and helper resolutions."
+  (when (and native-call (not (functionp native-call)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-standalone-native-call-not-function native-call)))
+  (when (and (not allow-host-stub)
+             (not native-call))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-standalone-native-call-required)))
+  (let* ((exports
+          (nelisp-cc-runtime-install-aot-c-abi-exports
+           resolver allow-host-stub))
+         (context
+          (nelisp-cc-runtime-make-aot-init-context
+           mirror frames out scratch name-slot))
+         (call-helper
+          (nelisp-cc-runtime-aot-init-helper-caller
+           (when native-call
+             (lambda (resolution ctx descriptor)
+               (when (and (not allow-host-stub)
+                          (not (eq (plist-get resolution :status)
+                                   :resolved)))
+                 (signal 'nelisp-cc-runtime-error
+                         (list :aot-standalone-helper-not-native
+                               (plist-get resolution :helper))))
+               (funcall native-call resolution ctx descriptor)))
+           resolver))
+         (module-init
+          (nelisp-cc-runtime-run-aot-module-init-plan
+           plan context call-helper register-custom register-closure)))
+    (list :abi-exports exports
+          :context context
+          :mirror (plist-get context :mirror)
+          :frames (plist-get context :frames)
+          :module-init module-init)))
+
 (defun nelisp-cc-runtime-run-aot-module-init-plan
     (plan context call-helper &optional register-custom register-closure)
   "Run a Doc 129 AOT module-init PLAN through callback hooks.

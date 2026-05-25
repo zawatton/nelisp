@@ -46,7 +46,7 @@
   AOT C ABI descriptor table, Stage 129.6R extended seq.el/cl-lib
   higher-order coverage, Stage 129.6S AOT C ABI resolver handoff,
   Stage 129.6T AOT C ABI export registry, Stage 129.6U metadata
-  container builtin coverage,
+  container builtin coverage, Stage 129.6V standalone loader handoff,
   Stage 129.7A one-argument =funcall= dispatcher bridge,
   Stage 129.7B two-argument =funcall=
   dispatcher bridge, Stage 129.7C =apply= dispatcher bridge, Stage
@@ -444,6 +444,14 @@
   existing =nelisp_aot_builtin_call1= / =nelisp_aot_builtin_calln=
   bridges, widening standalone module-plan and environment-handle code
   that can stay on the direct builtin delegation path.
+- *129.6V MVP*: =nelisp-cc-runtime-run-aot-standalone-loader= now
+  connects the 129.6Q/S/T ABI export path to the 129.3 module-init
+  runner.  One runtime entry installs resolved =nelisp_aot_*= exports,
+  allocates or reuses the shared =MIRROR= / =FRAMES= environment
+  handles, and runs init helpers through the fixed native-call argv
+  handoff.  Host-stub mode remains explicit inspection-only; normal
+  standalone mode requires a real native-call hook and =:resolved=
+  helper entries.
 - *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
   =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
@@ -3251,6 +3259,25 @@ entries.  Passing =ALLOW-HOST-STUB= is reserved for host-side
 inspection tests; standalone loader integration should pass a resolver
 that returns real =:resolved= addresses.
 
+Stage 129.6V joins the export registry and module-init paths into the
+standalone loader handoff:
+
+#+begin_src elisp
+(nelisp-cc-runtime-run-aot-standalone-loader
+ plan
+ :resolver dlsym-resolver
+ :native-call call-native-init-helper)
+;; => (:abi-exports ...
+;;     :context (:out ... :mirror MIRROR :frames FRAMES ...)
+;;     :module-init ...)
+#+end_src
+
+This is the runtime-side contract Doc 99 needs when loading a native
+object: the same resolver feeds =nelisp_aot_*= bridge exports and
+generated init-helper symbols, the same =MIRROR= / =FRAMES= handles are
+visible to init helpers and later closure/frame-slot bridges, and host
+stub execution is opt-in only for simulator inspection.
+
 Stage 129.6R extends the higher-order builtin coverage beyond 129.6N/P:
 
 #+begin_src elisp
@@ -3283,7 +3310,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering + 129.4G direct special-let throw cleanup + 129.4H conditional special-let throw cleanup + 129.4I nested conditional special-let throw cleanup SHIPPED 2026-05-25; heap lexframes and general tagged local values pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope SHIPPED 2026-05-25; loader-selected fully automatic non-boundary defun prologue/epilogue pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
-| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln builtin table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage + 129.6S AOT C ABI resolver handoff + 129.6T AOT C ABI export registry + 129.6U metadata container builtin coverage SHIPPED 2026-05-25; standalone loader integration and remaining higher-order builtin coverage pending |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln builtin table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage + 129.6S AOT C ABI resolver handoff + 129.6T AOT C ABI export registry + 129.6U metadata container builtin coverage + 129.6V standalone loader handoff SHIPPED 2026-05-25; remaining higher-order builtin coverage pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting + 129.7AA runtime captured-cell write-through substrate + 129.7AB capture-cell materialization bridge + 129.7AC automatic captured-mutation capture-cell wrapping + 129.7AD runtime frame-writer attachment + 129.7AE closure root-vector pinning + 129.7AF hash-FRAMES frame-slot ref/set bridges + 129.7AG compiler frame-slot ABI forms SHIPPED 2026-05-25; native object embedding and automatic native object frame-slot ABI selection pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits + 129.8L direct catch/throw landing-value extraction + 129.8M direct condition-case signal/error landing-error dispatch + 129.8N conditional catch/throw branch dispatch + 129.8O direct unwind-protect throw cleanup + 129.8P conditional unwind-protect throw cleanup + 129.8Q conditional condition-case signal dispatch + 129.8R nested conditional non-local branch trees SHIPPED 2026-05-25; native landing-pad jumps pending |
 

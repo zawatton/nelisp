@@ -3038,6 +3038,103 @@ exit points were emitted; call-points were missing."
                    '((nelisp_aot_var_0_x . (:called #x401000))
                      (nelisp_aot_const_1_y . (:called #x402000)))))))
 
+(ert-deftest nelisp-cc-runtime-aot-standalone-loader ()
+  "Doc 129.6V — standalone loader installs exports and runs module init."
+  (let* ((init-helpers
+          '((:kind defcustom
+             :name z
+             :helper nelisp_aot_custom_0_z
+             :index 0)))
+         (custom-metadata
+          '((:name z
+             :helper nelisp_aot_custom_0_z
+             :standard 9
+             :docstring "doc"
+             :options (:type (quote integer)))))
+         (closure-descriptor
+          '(:name nelisp_aot_closure_0
+            :arglist (x)
+            :body ((+ x cap))
+            :captures (cap)))
+         (plan
+          (nelisp-cc-runtime-aot-module-init-plan
+           init-helpers custom-metadata nil (list closure-descriptor)))
+         (mirror (make-hash-table :test 'eq))
+         (frames (make-hash-table :test 'eq))
+         (next-addr 0)
+         (calls nil)
+         (resolver
+          (lambda (_symbol)
+            (prog1 (cons :resolved (+ #x810000 (* next-addr 16)))
+              (setq next-addr (1+ next-addr)))))
+         (native-call
+          (lambda (resolution context descriptor)
+            (push (list :helper (plist-get resolution :helper)
+                        :status (plist-get resolution :status)
+                        :argv (plist-get resolution :abi-argv)
+                        :mirror (plist-get context :mirror)
+                        :frames (plist-get context :frames)
+                        :kind (plist-get descriptor :kind))
+                  calls)
+            (list :called (plist-get resolution :addr)))))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-clear-aot-c-abi-exports)
+          (nelisp-cc-runtime-clear-aot-custom-table)
+          (nelisp-cc-runtime-clear-aot-closure-descriptors)
+          (let* ((result
+                  (nelisp-cc-runtime-run-aot-standalone-loader
+                   plan
+                   :resolver resolver
+                   :native-call native-call
+                   :mirror mirror
+                   :frames frames))
+                 (exports (plist-get result :abi-exports))
+                 (context (plist-get result :context))
+                 (module-init (plist-get result :module-init))
+                 (call (car (nreverse calls)))
+                 (argv (plist-get call :argv)))
+            (should (memq 'nelisp_aot_builtin_calln
+                          (mapcar (lambda (entry)
+                                    (plist-get entry :symbol))
+                                  exports)))
+            (should (eq (plist-get result :mirror) mirror))
+            (should (eq (plist-get result :frames) frames))
+            (should (eq (plist-get context :mirror) mirror))
+            (should (eq (plist-get context :frames) frames))
+            (should (eq (plist-get call :helper)
+                        'nelisp_aot_custom_0_z))
+            (should (eq (plist-get call :status) :resolved))
+            (should (eq (plist-get call :kind) 'defcustom))
+            (should (eq (nth 1 argv) mirror))
+            (should (eq (nth 2 argv) frames))
+            (should (equal (mapcar #'car
+                                   (plist-get module-init :init-results))
+                           '(nelisp_aot_custom_0_z)))
+            (should (nelisp-cc-runtime-aot-c-abi-export
+                     'nelisp_aot_throw))
+            (should (equal
+                     (plist-get
+                      (nelisp-cc-runtime-aot-custom-metadata 'z)
+                      :helper)
+                     'nelisp_aot_custom_0_z))
+            (should (equal
+                     (nelisp-cc-runtime-aot-closure-descriptor
+                      'nelisp_aot_closure_0)
+                     closure-descriptor))))
+      (nelisp-cc-runtime-clear-aot-c-abi-exports)
+      (nelisp-cc-runtime-clear-aot-custom-table)
+      (nelisp-cc-runtime-clear-aot-closure-descriptors))))
+
+(ert-deftest nelisp-cc-runtime-aot-standalone-loader-requires-native-call ()
+  "Doc 129.6V — standalone loader mode requires a real native call hook."
+  (let ((plan (nelisp-cc-runtime-aot-module-init-plan nil nil nil)))
+    (should-error
+     (nelisp-cc-runtime-run-aot-standalone-loader
+      plan
+      :resolver (lambda (_symbol) (cons :resolved #x810000)))
+     :type 'nelisp-cc-runtime-error)))
+
 (ert-deftest nelisp-cc-runtime-aot-init-helper-caller-rejects-not-found ()
   "Doc 129.3K — missing native helper symbols fail before native call."
   (let ((descriptor '(:kind defvar
