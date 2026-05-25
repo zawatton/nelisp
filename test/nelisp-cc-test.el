@@ -1667,6 +1667,30 @@ exit points were emitted; call-points were missing."
      'mirror 'frames 'seq-uniq 2 out 'scratch '(a a b) #'eq)
     (should (equal (aref out 0) '(a b)))
     (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-position 3 out 'scratch
+     '(a b c) 'b #'eq)
+    (should (= (aref out 0) 1))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-contains-p 3 out 'scratch
+     '(a b c) 'c #'eq)
+    (should (eq (aref out 0) t))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-set-equal-p 3 out 'scratch
+     '(a b) '(b a) #'eq)
+    (should (eq (aref out 0) t))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-difference 3 out 'scratch
+     '(a b c) '(b) #'eq)
+    (should (equal (aref out 0) '(a c)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-intersection 3 out 'scratch
+     '(a b c) '(b d) #'eq)
+    (should (equal (aref out 0) '(b)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-union 3 out 'scratch
+     '(a b) '(b c) #'eq)
+    (should (equal (aref out 0) '(a b c)))
+    (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'cl-map 3 out 'scratch 'list #'1+ '(1 2))
     (should (equal (aref out 0) '(2 3)))
     (nelisp-cc-runtime-aot-builtin-calln
