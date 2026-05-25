@@ -1947,6 +1947,14 @@ used by tests and later standalone/native-frame integration."
         (nelisp-cc-runtime-aot-capture-cell name value writer))
   out)
 
+(defun nelisp-cc-runtime--aot-normalize-closure-capture (capture)
+  "Return CAPTURE, unwrapping an OUT vector that holds an AOT capture cell."
+  (if (and (vectorp capture)
+           (> (length capture) 0)
+           (nelisp-cc-runtime-aot-capture-cell-p (aref capture 0)))
+      (aref capture 0)
+    capture))
+
 (defun nelisp-cc-runtime--aot-default-funcall-dispatch1 (fn arg)
   "Dispatch one-argument FN to ARG using NeLisp-aware apply when available."
   (cond
@@ -2759,7 +2767,12 @@ writes it to OUT[0], and returns OUT."
                       :expected (length capture-names)
                       :got argc)))
       (let ((closure (nelisp-closure-make
-                      (cl-mapcar #'cons capture-names captures)
+                      (cl-mapcar
+                       #'cons
+                       capture-names
+                       (mapcar
+                        #'nelisp-cc-runtime--aot-normalize-closure-capture
+                        captures))
                       arglist
                       body)))
         (aset out 0 closure)

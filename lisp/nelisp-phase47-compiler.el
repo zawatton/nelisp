@@ -1525,6 +1525,65 @@ macros do not leak into the host Emacs session."
          t
        (signal (car err) (cdr err))))))
 
+(defun nelisp-phase47-compiler--lambda-captured-setq-vars (lambda-form)
+  "Return captured variable names mutated by LAMBDA-FORM."
+  (let ((mutated nil))
+    (cl-labels
+        ((add (sym bound*)
+           (when (and (symbolp sym)
+                      (not (memq sym bound*))
+                      (not (memq sym mutated)))
+             (push sym mutated)))
+         (walk-body (body bound*)
+           (dolist (child body)
+             (walk child bound*)))
+         (walk (node bound*)
+           (cond
+            ((atom node) nil)
+            ((eq (car node) 'quote) nil)
+            ((and (eq (car node) 'function)
+                  (not (nelisp-phase47-compiler--lambda-literal-form
+                        (cadr node))))
+             nil)
+            ((nelisp-phase47-compiler--lambda-literal-form node)
+             (let ((inner-bound
+                    (append (nelisp-phase47-compiler--lambda-param-vars
+                             (nth 1 node))
+                            bound*)))
+               (walk-body (cddr node) inner-bound)))
+            ((eq (car node) 'let)
+             (let ((new-bound bound*))
+               (dolist (binding (nth 1 node))
+                 (when (and (consp binding) (consp (cdr binding)))
+                   (walk (cadr binding) bound*))
+                 (when (symbolp (car-safe binding))
+                   (push (car binding) new-bound)))
+               (walk-body (nthcdr 2 node) new-bound)))
+            ((eq (car node) 'let*)
+             (let ((new-bound bound*))
+               (dolist (binding (nth 1 node))
+                 (when (and (consp binding) (consp (cdr binding)))
+                   (walk (cadr binding) new-bound))
+                 (when (symbolp (car-safe binding))
+                   (push (car binding) new-bound)))
+               (walk-body (nthcdr 2 node) new-bound)))
+            ((eq (car node) 'setq)
+             (let ((pairs (cdr node)))
+               (while pairs
+                 (add (car pairs) bound*)
+                 (when (cdr pairs)
+                   (walk (cadr pairs) bound*))
+                 (setq pairs (cddr pairs)))))
+            ((memq (car node) '(defun defmacro))
+             nil)
+            (t
+             (dolist (child node)
+               (walk child bound*))))))
+      (walk (cons 'progn (cddr lambda-form))
+            (nelisp-phase47-compiler--lambda-param-vars
+             (nth 1 lambda-form))))
+    (nreverse mutated)))
+
 (defun nelisp-phase47-compiler--lambda-lift-call (lambda-form arg-forms)
   "Return a direct call to a synthetic defun for LAMBDA-FORM and ARG-FORMS."
   (unless (and (>= (length lambda-form) 3)
@@ -1567,7 +1626,8 @@ macros do not leak into the host Emacs session."
             nelisp-phase47-compiler--lambda-lift-hoists)
       `(function ,name))))
 
-(defun nelisp-phase47-compiler--lambda-closure-value (lambda-form)
+(defun nelisp-phase47-compiler--lambda-closure-value
+    (lambda-form &optional capture-cell-vars)
   "Return an escaping heap-closure value form for literal LAMBDA-FORM."
   (unless (and (>= (length lambda-form) 3)
                (listp (nth 1 lambda-form))
@@ -1583,7 +1643,13 @@ macros do not leak into the host Emacs session."
                 :body (cddr lambda-form)
                 :captures captures)
           nelisp-phase47-compiler--closure-lift-descriptors)
-    `(aot-closure-lambda ,closure-name ,@captures)))
+    `(aot-closure-lambda
+      ,closure-name
+      ,@(mapcar (lambda (capture)
+                  (if (memq capture capture-cell-vars)
+                      `(aot-capture-cell ',capture ,capture)
+                    capture))
+                captures))))
 
 (defun nelisp-phase47-compiler--preprocess-funcall-lambda (sexp)
   "Lambda-lift a literal lambda designator in `(funcall ...)'.
@@ -1598,7 +1664,10 @@ path instead of by-value lambda lifting."
                       (cdr sexp)))
       (if (nelisp-phase47-compiler--lambda-captured-setq-p lambda-form)
           `(funcall
-            ,(nelisp-phase47-compiler--lambda-closure-value lambda-form)
+            ,(nelisp-phase47-compiler--lambda-closure-value
+              lambda-form
+              (nelisp-phase47-compiler--lambda-captured-setq-vars
+               lambda-form))
             ,@(mapcar #'nelisp-phase47-compiler--preprocess-source
                       (nthcdr 2 sexp)))
         (nelisp-phase47-compiler--lambda-lift-call

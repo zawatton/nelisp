@@ -1850,6 +1850,30 @@ exit points were emitted; call-points were missing."
       (should (= (nelisp-cc-runtime-aot-capture-cell-value cell) 19))
       (should (equal written '(cap 19))))))
 
+(ert-deftest nelisp-cc-runtime-aot-make-closure-normalizes-capture-cell-out ()
+  "Doc 129.7AC — make-closure unwraps capture-cell OUT vectors."
+  (unwind-protect
+      (let* ((cell-out (vector nil))
+             (closure-out (vector nil))
+             (frame-slot (vector 3))
+             (descriptor '(:name nelisp-doc129-wrapped-setq
+                           :arglist (y)
+                           :body ((setq cap y) cap)
+                           :captures (cap))))
+        (nelisp-cc-runtime-clear-aot-closure-descriptors)
+        (nelisp-cc-runtime-register-aot-closure-descriptor descriptor)
+        (nelisp-cc-runtime-aot-capture-cell-boundary
+         'mirror 'frames 'cap 3 cell-out 'scratch
+         (lambda (_name value) (aset frame-slot 0 value)))
+        (nelisp-cc-runtime-aot-make-closure
+         'mirror 'frames 'nelisp-doc129-wrapped-setq
+         1 closure-out 'scratch cell-out)
+        (should (nelisp-closure-p (aref closure-out 0)))
+        (should (= (nelisp-closure-apply (aref closure-out 0) '(41))
+                   41))
+        (should (= (aref frame-slot 0) 41)))
+    (nelisp-cc-runtime-clear-aot-closure-descriptors)))
+
 (ert-deftest nelisp-cc-runtime-aot-make-closure ()
   "Doc 129.7U — make-closure bridge materializes captured closures."
   (unwind-protect
