@@ -5028,10 +5028,13 @@ crossing the protected body still require cleanup landing-pad lowering."
         (cleanups (nthcdr 2 sexp)))
     (let ((direct-throw
            (nelisp-phase47-compiler--aot-direct-quoted-throw-form body))
+          (direct-condition
+           (nelisp-phase47-compiler--aot-direct-condition-tag body))
           (conditional-throw
            (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
             body)))
       (when (or (and (not direct-throw)
+                     (not direct-condition)
                      (not conditional-throw)
                      (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                       body))
@@ -5056,6 +5059,17 @@ crossing the protected body still require cleanup landing-pad lowering."
                     (seq
                      ,@cleanups
                      (aot-landing-jump out))))))))
+          (direct-condition
+           (let ((cleanup-label
+                  (nelisp-phase47-compiler--gensym
+                   "aot-unwind-cleanup")))
+             `(seq
+               (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+               ,body
+               (aot-landing-label ,cleanup-label
+                 (seq
+                  ,@cleanups
+                  (aot-landing-jump out))))))
           (conditional-throw
            (cl-labels
                ((branch-form
