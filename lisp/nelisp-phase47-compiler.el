@@ -1898,6 +1898,35 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-funcalln
+    (sexp env fenv defuns)
+  "Lower `(funcall FN ARG...)' through the Doc 129.7 calln dispatcher."
+  (when (< (length sexp) 6)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-funcalln-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-funcall1-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (fn-lowering
+          (nelisp-phase47-compiler--aot-function-designator-lowering
+           (nth 1 sexp) fenv sexp))
+         (fn (or (plist-get fn-lowering :fn-expr)
+                 (nth 1 sexp)))
+         (prefix (plist-get fn-lowering :prefix))
+         (args (nthcdr 2 sexp))
+         (argc (length args)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       ,@prefix
+       (extern-call nelisp_aot_funcalln
+                    ,mirror ,frames ,fn ,argc ,out ,scratch ,@args)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--parse-aot-apply
     (sexp env fenv defuns)
   "Lower `(apply FN ARGS-LIST)' through the Doc 129.7 apply dispatcher."
@@ -2444,8 +2473,11 @@ functions `((NAME . ARITY) ...)'."
           sexp env fenv defuns))
       (5 (nelisp-phase47-compiler--parse-aot-funcall3
           sexp env fenv defuns))
-      (_ (signal 'nelisp-phase47-compiler-error
-                 (list :aot-funcall-arity sexp)))))
+      (_ (if (> (length sexp) 5)
+             (nelisp-phase47-compiler--parse-aot-funcalln
+              sexp env fenv defuns)
+           (signal 'nelisp-phase47-compiler-error
+                   (list :aot-funcall-arity sexp))))))
    ;; Doc 129.7C — `apply' delegates a function designator/value plus an
    ;; already-materialized argument list to the runtime dispatcher.
    ((and (consp sexp)

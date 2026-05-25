@@ -1389,6 +1389,46 @@ exit points were emitted; call-points were missing."
     'mirror 'frames 'nelisp-doc129-missing-fn 1 2 3 (vector nil))
    :type 'nelisp-cc-runtime-error))
 
+(ert-deftest nelisp-cc-runtime-aot-funcalln-host-dispatch ()
+  "Doc 129.7H — funcalln builds an args list and dispatches."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-funcalln
+               'mirror 'frames '+ 4 out 'scratch 10 11 12 9)))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (nelisp-cc-runtime-aot-funcalln
+     'mirror 'frames (lambda (&rest xs) (mapconcat #'identity xs ":"))
+     4 out 'scratch "doc" "129" "call" "n")
+    (should (equal (aref out 0) "doc:129:call:n"))))
+
+(ert-deftest nelisp-cc-runtime-aot-funcalln-preserves-function-args ()
+  "Doc 129.7H — function values in ARGS are ordinary user arguments."
+  (let ((out (vector nil)))
+    (nelisp-cc-runtime-aot-funcalln
+     'mirror 'frames
+     (lambda (&rest xs) (mapcar #'functionp xs))
+     2 out 'scratch #'identity (lambda (x) x))
+    (should (equal (aref out 0) '(t t)))))
+
+(ert-deftest nelisp-cc-runtime-aot-funcalln-validates-boundary ()
+  "Doc 129.7H — funcalln rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-funcalln
+    'mirror 'frames '+ 4 nil 'scratch 1 2 3 4)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcalln
+    'mirror 'frames '+ -1 (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcalln
+    'mirror 'frames '+ 3 (vector nil) 'scratch 1 2)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcalln
+    'mirror 'frames 'nelisp-doc129-missing-fn 1 (vector nil) 'scratch 1)
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-apply-host-dispatch ()
   "Doc 129.7C — apply bridge writes the dispatch result to OUT."
   (let* ((out (vector nil))

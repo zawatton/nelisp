@@ -31,7 +31,8 @@
   SysV first stack-GP argument support plus three-argument =funcall=
   dispatcher bridge, Stage 129.7F first non-trivial outgoing stack-GP
   evaluation, Stage 129.7G general outgoing stack-GP call-spill
-  assembly, Stage 129.8A runtime handler-stack substrate, Stage
+  assembly, Stage 129.7H direct =funcall= calln/rest-list bridge,
+  Stage 129.8A runtime handler-stack substrate, Stage
   129.8B =throw= / =signal=
   bridge lowering, Stage 129.8C handler-push bridge lowering,
   Stage 129.8D handler-pop bridge lowering, and Stage 129.8E
@@ -208,7 +209,8 @@
   =MIRROR/FRAMES/FN/ARG0/ARG1/OUT=, deliberately omitting =SCRATCH= so
   the call remains inside the current six-GP-register Phase 47 extern
   budget.  Three-or-more argument =funcall= is started by 129.7E;
-  general argument-vector/list calln lowering remains pending.
+  general calln/rest-list lowering is completed for direct =funcall= by
+  129.7H.
 - *129.7C MVP*: direct =(apply FN ARGS-LIST)= now lowers through
   =nelisp_aot_apply= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =ARGS-LIST= is already a boxed Sexp
@@ -224,13 +226,13 @@
   before delegating to =nelisp_aot_funcall1=, =nelisp_aot_funcall2=,
   or =nelisp_aot_apply=.  Dynamic function values still use the
   existing =FN= parameter path.  Lambda/closure literals and
-  three-or-more argument calln remain pending.
+  direct four-or-more-argument calln is handled by 129.7H.
 - *129.7E MVP*: x86_64 SysV extern-call and boxed defun prologues now
   cover the first GP stack argument.  Direct =(funcall FN ARG0 ARG1
   ARG2)= lowers through =nelisp_aot_funcall3= with ABI
   =MIRROR/FRAMES/FN/ARG0/ARG1/ARG2/OUT=.  This is the first real
-  stack-argument step for calln; arbitrary rest-list construction and
-  closure allocation/capture remain pending.
+  stack-argument step for calln; 129.7H uses the same substrate for
+  direct =funcall= rest-list construction.
 - *129.7F MVP*: the first outgoing stack-GP argument may now be a
   non-trivial value expression when it is the final source argument.
   The emitter evaluates all args left-to-right into temporary stack
@@ -242,7 +244,13 @@
   XMM register args are reloaded from that save area, then stack args
   are pushed right-to-left into the outgoing call frame.  This covers
   multiple computed stack args without changing source evaluation order.
-  Rest-list construction and closure allocation/capture remain pending.
+- *129.7H MVP*: direct four-or-more-argument =(funcall FN ARG...)= now
+  lowers through =nelisp_aot_funcalln=.  The ABI is
+  =MIRROR/FRAMES/FN/ARGC/OUT/SCRATCH/ARG...=; the runtime bridge
+  validates =ARGC=, constructs the rest-list from the trailing args,
+  dispatches through the same apply fallback, writes =OUT=, and returns
+  =OUT=.  Source-level rest parameter binding / apply splicing and
+  closure allocation/capture remain pending.
 - *129.8A MVP*: =nelisp-cc-runtime.el= now owns an AOT handler-stack
   simulator for =catch= / =condition-case= / =unwind-protect=.  The
   runtime can push/pop catch, condition, and unwind handlers; =throw=
@@ -954,8 +962,46 @@ The compiler work underneath this bridge is intentionally reusable:
   by the existing ref loader.  The current slot range remains bounded by
   the compiler's disp8 local-frame model.
 
-Remaining 129.7 work: true calln/rest-list construction and
-closure/lambda allocation/capture.
+*** §1.E.2.2 Shipped MVP: direct =funcall= calln/rest-list bridge
+
+Stage 129.7H uses the 129.7G stack-argument machinery for ordinary
+four-or-more-argument =funcall= calls:
+
+#+begin_src elisp
+(defun call-fn4
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (fn :type sexp)
+     (arg0 :type sexp) (arg1 :type sexp)
+     (arg2 :type sexp) (arg3 :type sexp))
+  (funcall fn arg0 arg1 arg2 arg3))
+#+end_src
+
+The parser lowers the body to:
+
+#+begin_src elisp
+(seq
+ (extern-call nelisp_aot_funcalln
+              mirror frames fn 4 out scratch arg0 arg1 arg2 arg3)
+ out)
+#+end_src
+
+The runtime-side bridge is:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-funcalln mirror frames fn argc out scratch arg...)
+#+end_src
+
+This bridge is the first Doc129 rest-list construction path for direct
+source call sites: it validates =ARGC= against the trailing native
+arguments, uses those trailing values as the rest-list supplied to the
+dispatcher, and then shares the same =nelisp--apply= / host =apply=
+fallback as =nelisp_aot_apply=.  It deliberately keeps every trailing
+native value as a user argument; there is no optional dispatcher slot in
+this ABI.
+
+Remaining 129.7 work: source-level rest parameter binding, =apply=
+splicing from ordinary source argument lists, and closure/lambda
+allocation/capture.
 
 *** §1.E.3 Shipped MVP: =apply= dispatcher bridge
 
@@ -1493,7 +1539,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots SHIPPED 2026-05-25; native push/pop pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly SHIPPED 2026-05-25; closure allocation/capture and calln/rest-list construction pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge SHIPPED 2026-05-25; closure allocation/capture, source rest params, and apply splicing pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit, formatted error varargs, and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from

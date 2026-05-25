@@ -1235,6 +1235,30 @@
     (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall3))))
 
+(ert-deftest nelisp-phase47-doc129/parse-funcall4-calln-delegation ()
+  "Doc 129.7H: `(funcall FN ARG0 ARG1 ARG2 ARG3)' lowers to calln."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_fn4
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (fn :type sexp)
+                    (arg0 :type sexp)
+                    (arg1 :type sexp)
+                    (arg2 :type sexp)
+                    (arg3 :type sexp))
+                 (funcall fn arg0 arg1 arg2 arg3))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (call-node (car forms)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_funcalln))
+    (should (= (length (nelisp-phase47-compiler--ir-get call-node :args))
+               10))))
+
 (ert-deftest nelisp-phase47-doc129/object-funcall2-delegation ()
   "Doc 129.7B: object output exposes the funcall2 dispatcher reloc."
   (skip-unless (executable-find "readelf"))
@@ -1280,6 +1304,32 @@
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_fn3" out))
             (should (string-match-p "nelisp_aot_funcall3" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-funcall4-calln-delegation ()
+  "Doc 129.7H: object output exposes the funcalln dispatcher reloc."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-funcall4-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_fn4
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (fn :type sexp)
+                 (arg0 :type sexp)
+                 (arg1 :type sexp)
+                 (arg2 :type sexp)
+                 (arg3 :type sexp))
+              (funcall fn arg0 arg1 arg2 arg3))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_fn4" out))
+            (should (string-match-p "nelisp_aot_funcalln" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-apply-delegation ()
@@ -1380,6 +1430,38 @@
                    (string-to-list "concat")))
     (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall2))))
+
+(ert-deftest nelisp-phase47-doc129/parse-quoted-funcall4-calln-designator ()
+  "Doc 129.7H: quoted function symbols also materialize for calln."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_quoted4
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (arg0 :type sexp)
+                    (arg1 :type sexp)
+                    (arg2 :type sexp)
+                    (arg3 :type sexp))
+                 (funcall '+ arg0 arg1 arg2 arg3))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (write-node (nth 0 forms))
+         (call-node (nth 1 forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (fn-arg (nth 2 call-args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+                'sexp-write-symbol-lit))
+    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+                   (string-to-list "+")))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_funcalln))
+    (should (equal (mapcar #'nelisp-phase47-compiler--ir-kind call-args)
+                   '(ref ref ref imm ref ref ref ref ref ref)))
+    (should (eq (nelisp-phase47-compiler--ir-get fn-arg :var)
+                'name_slot))))
 
 (ert-deftest nelisp-phase47-doc129/quoted-apply-designator-requires-name-slot ()
   "Doc 129.7D: quoted apply designators require caller-owned NAME-SLOT."

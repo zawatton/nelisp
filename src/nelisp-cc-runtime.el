@@ -1745,6 +1745,37 @@ DISPATCHER, when non-nil, is called as
     (aset out 0 result)
     out))
 
+(defun nelisp-cc-runtime-aot-funcalln
+    (mirror frames fn argc out scratch &rest args)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_funcalln' ABI.
+MIRROR, FRAMES, FN, ARGC, OUT, SCRATCH, and ARGS mirror the native ABI:
+
+  nelisp_aot_funcalln(mirror, frames, fn, argc, out, scratch, arg...)
+
+ARGC is the number of following boxed Sexp args.  The bridge constructs
+the rest-list visible to the dispatcher from ARGS, writes the dispatch
+result to `(aref OUT 0)', and returns OUT.
+
+This bridge deliberately has no optional dispatcher argument because
+every trailing value after SCRATCH is a user argument in the native ABI."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-out-not-vector out)))
+  (unless (and (integerp argc) (<= 0 argc))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcalln-argc-not-nonnegative argc)))
+  (unless (= argc (length args))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcalln-argc-mismatch
+                  :argc argc
+                  :got (length args))))
+  (ignore mirror frames scratch)
+  (let* ((args-list args)
+         (result (nelisp-cc-runtime--aot-default-apply-dispatch
+                  fn args-list)))
+    (aset out 0 result)
+    out))
+
 (defun nelisp-cc-runtime--aot-default-apply-dispatch (fn args-list)
   "Dispatch FN to ARGS-LIST using NeLisp-aware apply when available."
   (unless (listp args-list)
