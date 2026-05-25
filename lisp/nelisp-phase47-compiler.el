@@ -4336,6 +4336,23 @@ source form."
       (when handler
         (list :tag tag :handler handler :form body)))))
 
+(defun nelisp-phase47-compiler--aot-condition-case-direct-dynamic-unwind-form
+    (body clauses)
+  "Return BODY's direct dynamic condition unwind descriptor, or nil."
+  (when (and (= (length clauses) 1)
+             (consp body)
+             (eq (car body) 'unwind-protect)
+             (>= (length body) 2))
+    (let ((protected-body (nth 1 body))
+          (handler (car clauses)))
+      (when (and (nelisp-phase47-compiler--aot-direct-condition-form
+                  protected-body)
+                 (not (nelisp-phase47-compiler--aot-direct-condition-tag
+                       protected-body)))
+        (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+         handler)
+        (list :handler handler :form body)))))
+
 (defun nelisp-phase47-compiler--aot-condition-case-conditional-unwind-form
     (body clauses)
   "Return BODY's conditional condition-signalling unwind descriptor."
@@ -5290,11 +5307,19 @@ Doc 129.8 work."
                  (not direct-dynamic-handler)
                  (nelisp-phase47-compiler--aot-condition-case-direct-unwind-form
                   body clauses)))
+           (direct-dynamic-unwind-handler
+            (and (not direct-handler)
+                 (not conditional-handler)
+                 (not direct-dynamic-handler)
+                 (not direct-unwind-handler)
+                 (nelisp-phase47-compiler--aot-condition-case-direct-dynamic-unwind-form
+                  body clauses)))
            (conditional-unwind-handler
             (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
                  (not direct-unwind-handler)
+                 (not direct-dynamic-unwind-handler)
                  (nelisp-phase47-compiler--aot-condition-case-conditional-unwind-form
                   body clauses)))
            (mixed-unwind-handler
@@ -5302,6 +5327,7 @@ Doc 129.8 work."
                  (not conditional-handler)
                  (not direct-dynamic-handler)
                  (not direct-unwind-handler)
+                 (not direct-dynamic-unwind-handler)
                  (not conditional-unwind-handler)
                  (nelisp-phase47-compiler--aot-condition-case-mixed-unwind-form
                   body clauses))))
@@ -5309,6 +5335,7 @@ Doc 129.8 work."
                  (not conditional-handler)
                  (not direct-dynamic-handler)
                  (not direct-unwind-handler)
+                 (not direct-dynamic-unwind-handler)
                  (not conditional-unwind-handler)
                  (not mixed-unwind-handler)
                  (nelisp-phase47-compiler--aot-nonlocal-source-form-p body))
@@ -5396,6 +5423,39 @@ Doc 129.8 work."
                                  (aot-current-sp))
              ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-form
                unwind-form landing-label handled-form))
+           env fenv defuns)))
+       (direct-dynamic-unwind-handler
+        (let* ((handler (plist-get direct-dynamic-unwind-handler :handler))
+               (unwind-form
+                (plist-get direct-dynamic-unwind-handler :form))
+               (selectors
+                (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+                 handler))
+               (handler-body
+                (nelisp-phase47-compiler--body->form
+                 (cdr handler)))
+               (landing-label
+                (nelisp-phase47-compiler--gensym
+                 "aot-condition-landing"))
+               (handled-form
+                (if var
+                    `(let (((,var :type sexp) (aot-landing-error out)))
+                       ,handler-body)
+                  `(seq
+                    (aot-landing-error out)
+                    ,handler-body))))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             ,@(mapcar
+                (lambda (selector)
+                  `(aot-push-condition
+                    ',selector
+                    ',landing-label
+                    (aot-current-sp)))
+                selectors)
+             ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
+               unwind-form nil nil nil nil
+               (list `(aot-landing-label ,landing-label ,handled-form))))
            env fenv defuns)))
        (conditional-unwind-handler
         (let* ((tag (plist-get conditional-unwind-handler :tag))

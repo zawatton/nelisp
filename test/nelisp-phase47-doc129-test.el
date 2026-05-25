@@ -6995,6 +6995,50 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-dynamic-signal ()
+  "Doc 129.8AS: dynamic condition cleanup resumes via descriptor route."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_unwind_dynamic_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (unwind-protect
+                         (signal tag value)
+                       (identity value))
+                   (error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'aot-landing-label))))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
+    (should (= (cl-count 'nelisp_aot_push_condition externs) 1))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should (member 'nelisp_aot_landing_error externs))
+    (should-not machine-jumps)
+    (should (= (cl-count-if
+                (lambda (name)
+                  (string-prefix-p "aot-unwind-cleanup-" name))
+                landing-names)
+               1))
+    (should (= (cl-count-if
+                (lambda (name)
+                  (string-prefix-p "aot-condition-landing-" name))
+                landing-names)
+               1))))
+
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-direct-signal ()
   "Doc 129.8AE: condition-targeted cleanup jumps to static landing."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -7566,6 +7610,38 @@ materialized closure temporary."
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "cc_signal" out))
             (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))
+            (should (string-match-p "nelisp_aot_landing_error" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-dynamic-signal ()
+  "Doc 129.8AS: dynamic condition cleanup compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-unwind-dynamic-signal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_unwind_dynamic_signal
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  (unwind-protect
+                      (signal tag value)
+                    (identity value))
+                (error err)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_unwind_dynamic_signal" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
             (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nelisp_aot_landing_jump" out))
             (should (string-match-p "nelisp_aot_landing_error" out))))
