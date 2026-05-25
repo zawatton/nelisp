@@ -4260,8 +4260,29 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-kind return-node) 'ref))
     (should (member 'nelisp_aot_builtin_call1 externs))))
 
-(ert-deftest nelisp-phase47-doc129/unwind-protect-nonlocal-still-pending ()
-  "Doc 129.8G: non-local forms crossing unwind-protect wait for landing pads."
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-direct-throw ()
+  "Doc 129.8O: source unwind-protect runs cleanup before direct throw."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (throw 'done value)
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (save-body (nelisp-phase47-compiler--ir-get body :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
+    (should (eq (nelisp-phase47-compiler--ir-kind save-body) 'value-seq))
+    (should (member 'nelisp_aot_builtin_call1 externs))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/unwind-protect-nested-nonlocal-still-pending ()
+  "Doc 129.8O: nested non-local unwind-protect bodies still wait for landing pads."
   (should-error
    (nelisp-phase47-compiler--parse
     '(defun unwind_throw
@@ -4272,7 +4293,9 @@ materialized closure temporary."
           (name_slot :type sexp)
           (value :type sexp))
        (unwind-protect
-           (throw 'done value)
+           (if value
+               (throw 'done value)
+             value)
          (identity value))))
    :type 'nelisp-phase47-compiler-error))
 
@@ -4300,6 +4323,32 @@ materialized closure temporary."
             (should (string-match-p "unwind_value" out))
             (should (string-match-p "nelisp_aot_builtin_call1" out))
             (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-direct-throw ()
+  "Doc 129.8O: source unwind-protect direct throw compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (throw 'done value)
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_throw" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_throw" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/e2e-top-level-require-provide ()

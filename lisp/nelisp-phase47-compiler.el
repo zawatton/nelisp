@@ -3420,7 +3420,7 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
 
 (defun nelisp-phase47-compiler--parse-aot-unwind-protect-normal-exit
     (sexp env fenv defuns)
-  "Lower source `(unwind-protect BODY CLEANUP...)' normal exit.
+  "Lower source `(unwind-protect BODY CLEANUP...)'.
 The MVP evaluates BODY, saves its result in a runtime Sexp slot, runs
 CLEANUP forms, then returns the saved BODY result.  Non-local exits
 crossing the protected body still require native landing-pad support."
@@ -3429,20 +3429,26 @@ crossing the protected body still require native landing-pad support."
             (list :aot-unwind-protect-arity sexp)))
   (let ((body (nth 1 sexp))
         (cleanups (nthcdr 2 sexp)))
-    (when (or (nelisp-phase47-compiler--aot-nonlocal-source-form-p body)
-              (cl-some
-               #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
-               cleanups))
-      (signal 'nelisp-phase47-compiler-error
-              (list :aot-unwind-protect-nonlocal-form sexp)))
-    (let ((value-slot (nelisp-phase47-compiler--gensym
-                       "aot-unwind-value")))
-      (nelisp-phase47-compiler--parse-value
-       `(let (((,value-slot :type sexp) ,body))
-          (seq
-           ,@cleanups
-           ,value-slot))
-       env fenv defuns))))
+    (let ((direct-throw
+           (nelisp-phase47-compiler--aot-direct-quoted-throw-form body)))
+      (when (or (and (not direct-throw)
+                     (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                      body))
+                (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                         cleanups))
+        (signal 'nelisp-phase47-compiler-error
+                (list :aot-unwind-protect-nonlocal-form sexp)))
+      (let ((value-slot (nelisp-phase47-compiler--gensym
+                         "aot-unwind-value")))
+        (nelisp-phase47-compiler--parse-value
+         `(let (((,value-slot :type sexp)
+                 ,(if direct-throw (nth 2 direct-throw) body)))
+            (seq
+             ,@cleanups
+             ,(if direct-throw
+                  `(throw ,(nth 1 direct-throw) ,value-slot)
+                value-slot)))
+         env fenv defuns)))))
 
 (defun nelisp-phase47-compiler--normalize-defun-params (param-forms sexp)
   "Normalize PARAM-FORMS, accepting a single `&rest' marker.
