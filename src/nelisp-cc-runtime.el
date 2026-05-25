@@ -3541,6 +3541,83 @@ symbol resolution and that `:abi-argv' has already been attached by
              descriptor
              resolution)))
 
+(defun nelisp-cc-runtime-aot-executable-native-argv
+    (addr argv _context descriptor _resolution)
+  "Return default argv strings for an external AOT native helper.
+The external process receives ADDR, helper symbol, descriptor kind,
+ABI argc, and a printable string for each ABI argument."
+  (append
+   (list (number-to-string addr)
+         (symbol-name (plist-get descriptor :helper))
+         (symbol-name (plist-get descriptor :kind))
+         (number-to-string (length argv)))
+   (mapcar #'prin1-to-string argv)))
+
+(defun nelisp-cc-runtime--aot-executable-native-program (program)
+  "Return executable PROGRAM path or signal a runtime error."
+  (unless (stringp program)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-executable-native-program-not-string program)))
+  (or (and (file-executable-p program) program)
+      (executable-find program)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-executable-native-program-not-found program))))
+
+(cl-defun nelisp-cc-runtime-aot-executable-native-thunk
+    (program &key argv-builder allow-nonzero)
+  "Return an ENTRY thunk that invokes external executable PROGRAM.
+The returned function has the ENTRY shape accepted by
+`nelisp-cc-runtime-aot-native-call-entry':
+
+  (ENTRY ADDR ARGV CONTEXT DESCRIPTOR RESOLUTION)
+
+ARGV-BUILDER, when non-nil, must be a function with the same arguments
+and return a list of process argument strings.  By default, the process
+receives the resolved address, helper symbol, descriptor kind, ABI
+argument count, and printable ABI arguments.  Non-zero process exits
+signal `nelisp-cc-runtime-error' unless ALLOW-NONZERO is non-nil."
+  (let ((resolved-program
+         (nelisp-cc-runtime--aot-executable-native-program program))
+        (builder
+         (or argv-builder
+             #'nelisp-cc-runtime-aot-executable-native-argv)))
+    (unless (functionp builder)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-executable-native-argv-builder-not-function
+                    builder)))
+    (lambda (addr argv context descriptor resolution)
+      (let ((process-argv
+             (funcall builder addr argv context descriptor resolution)))
+        (unless (and (listp process-argv)
+                     (cl-every #'stringp process-argv))
+          (signal 'nelisp-cc-runtime-error
+                  (list :aot-executable-native-argv-not-strings
+                        process-argv)))
+        (with-temp-buffer
+          (let ((exit-code
+                 (apply #'call-process
+                        resolved-program nil t nil process-argv))
+                (stdout (buffer-string)))
+            (unless (integerp exit-code)
+              (signal 'nelisp-cc-runtime-error
+                      (list :aot-executable-native-call-failed
+                            :program resolved-program
+                            :argv process-argv
+                            :status exit-code
+                            :stdout stdout)))
+            (when (and (not allow-nonzero)
+                       (not (= exit-code 0)))
+              (signal 'nelisp-cc-runtime-error
+                      (list :aot-executable-native-call-failed
+                            :program resolved-program
+                            :argv process-argv
+                            :exit-code exit-code
+                            :stdout stdout)))
+            (list :program resolved-program
+                  :argv process-argv
+                  :exit-code exit-code
+                  :stdout stdout)))))))
+
 (defun nelisp-cc-runtime-aot-init-helper-caller
     (&optional native-call resolver)
   "Return a `run-aot-module-init-plan' CALL-HELPER callback.

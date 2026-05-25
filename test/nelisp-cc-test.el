@@ -3416,6 +3416,43 @@ exit points were emitted; call-points were missing."
       (lambda (_symbol) (cons :host-stub #x401000)))
      :type 'nelisp-cc-runtime-error)))
 
+(ert-deftest nelisp-cc-runtime-aot-executable-native-thunk ()
+  "Doc 129.3Q — native-call entry can invoke an external executable thunk."
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let ((script (make-temp-file "nelisp-aot-native-thunk-" nil ".sh")))
+    (unwind-protect
+        (progn
+          (write-region
+           "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$2\" \"$3\" \"$4\"\n"
+           nil script nil 'silent)
+          (set-file-modes script #o755)
+          (let* ((descriptor '(:kind defvar
+                               :name x
+                               :helper nelisp_aot_var_0_x
+                               :index 0))
+                 (context (list :out 'out
+                                :mirror 'mirror
+                                :frames 'frames
+                                :scratch 'scratch
+                                :name-slot 'name-slot))
+                 (native-call
+                  (nelisp-cc-runtime-aot-native-call-entry
+                   (nelisp-cc-runtime-aot-executable-native-thunk
+                    script)))
+                 (result
+                  (nelisp-cc-runtime-call-aot-init-helper
+                   'nelisp_aot_var_0_x
+                   context
+                   descriptor
+                   native-call
+                   (lambda (_symbol) (cons :resolved #x401000)))))
+            (should (= (plist-get result :exit-code) 0))
+            (should (equal (plist-get result :stdout)
+                           "nelisp_aot_var_0_x|defvar|5\n"))
+            (should (equal (nth 1 (plist-get result :argv))
+                           "nelisp_aot_var_0_x"))))
+      (ignore-errors (delete-file script)))))
+
 (ert-deftest nelisp-cc-runtime-aot-standalone-loader ()
   "Doc 129.6V — standalone loader installs exports and runs module init."
   (let* ((init-helpers

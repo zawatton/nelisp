@@ -3590,6 +3590,50 @@ materialized closure temporary."
               (nelisp-cc-runtime-clear-aot-closure-descriptors))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/object-module-init-loader-native-thunk ()
+  "Doc 129.3Q: object loader can run an external native-call thunk."
+  (skip-unless (file-executable-p "/bin/sh"))
+  (let ((path (make-temp-file "nelisp-doc129-module-init-thunk-" nil ".o"))
+        (script (make-temp-file "nelisp-doc129-native-thunk-" nil ".sh")))
+    (unwind-protect
+        (progn
+          (write-region
+           "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$2\" \"$3\" \"$4\"\n"
+           nil script nil 'silent)
+          (set-file-modes script #o755)
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defvar z 9)
+             (defconst k 11))
+           path)
+          (unwind-protect
+              (let* ((native-call
+                      (nelisp-cc-runtime-aot-native-call-entry
+                       (nelisp-cc-runtime-aot-executable-native-thunk
+                        script)))
+                     (result
+                      (nelisp-cc-runtime-run-aot-standalone-loader-from-object
+                       path
+                       :resolver
+                       (lambda (_symbol) (cons :resolved #x810000))
+                       :native-call native-call))
+                     (module-init (plist-get result :module-init))
+                     (init-results (plist-get module-init :init-results)))
+                (should (equal (mapcar #'car init-results)
+                               '(nelisp_aot_var_0_z
+                                 nelisp_aot_const_1_k)))
+                (should (equal
+                         (plist-get (cdr (nth 0 init-results)) :stdout)
+                         "nelisp_aot_var_0_z|defvar|5\n"))
+                (should (equal
+                         (plist-get (cdr (nth 1 init-results)) :stdout)
+                         "nelisp_aot_const_1_k|defconst|5\n")))
+            (nelisp-cc-runtime-clear-aot-c-abi-exports)
+            (nelisp-cc-runtime-clear-aot-custom-table)
+            (nelisp-cc-runtime-clear-aot-closure-descriptors)))
+      (ignore-errors (delete-file path))
+      (ignore-errors (delete-file script)))))
+
 (ert-deftest nelisp-phase47-doc129/object-function-lambda-closure-value ()
   "Doc 129.7X: object output exposes escaping lambda closure bridge."
   (skip-unless (executable-find "readelf"))
