@@ -833,7 +833,8 @@ vector in an aligned stack temporary."
          (frame-boundary-slots
           (and gc-root-slots
                (or slot-boundary-slots
-                   (and (assq 'frame_roots fenv)
+                   (and (or (assq 'frame_roots fenv)
+                            (assq 'auto_frame_roots fenv))
                         (nelisp-phase47-compiler--auto-aot-root-boundary-slots
                          fenv nil)))))
          (boundary-slots frame-boundary-slots)

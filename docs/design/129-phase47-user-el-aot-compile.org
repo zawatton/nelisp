@@ -27,7 +27,8 @@
   automatic root-scope insertion for Doc 99 boundary defuns, Stage
   129.5G root-vector materialisation bridge, Stage 129.5H hash-FRAMES
   root-vector materialisation bridge, Stage 129.5I stack-held
-  hash-FRAMES auto-root scope,
+  hash-FRAMES auto-root scope, Stage 129.5J automatic hash-FRAMES
+  root-scope selection marker,
   129.6A top-level =require= / =provide= frontend handling, Stage
   129.6B one-argument Sexp builtin delegation helper, Stage
   129.6C runtime builtin-call1 bridge, Stage 129.6D constrained
@@ -327,6 +328,18 @@
   same root-vector shape as 129.5G.  It gives non-boundary native
   frames a runtime contract for root materialisation before the backend
   can fully synthesize per-frame prologue/epilogue code.
+- *129.5I MVP*: Phase 47 can now keep hash-FRAMES root vectors in a
+  stack temporary across an allocating body.  A defun with the usual
+  AOT handles and an explicit =frame_roots= marker emits
+  =nelisp_aot_materialize_frame_roots= plus balanced
+  =nelisp_aot_push_roots= / =nelisp_aot_pop_roots= without requiring a
+  caller-owned =roots= slot.
+- *129.5J MVP*: Phase 47 now accepts an =auto_frame_roots= marker for
+  loader-selected stack-held hash-FRAMES root scopes.  When an
+  allocating defun has =:gc-root-slots=, the usual AOT handles =out=,
+  =mirror=, =frames=, and =scratch=, and that marker, the compiler emits
+  the same non-boundary root prologue/epilogue shape as the explicit
+  =frame_roots= path.
 - *129.6A MVP*: top-level =require= and =provide= forms are now
   compile-time-only frontend forms.  =require= runs during compilation
   using literal arguments so needed macro/helper libraries can be
@@ -1148,9 +1161,32 @@ previous requirement that the source signature carry a mutable =roots=
 slot while preserving the older boundary-defun path for callers that do
 provide one.
 
-This is still an opt-in bridge rather than full whole-program automatic
-non-boundary rooting: native object emission must still decide when to
-add the =frame_roots= marker from loader/module metadata.
+This remains a source-visible opt-in marker.  Stage 129.5J adds a
+separate marker for loader-selected non-boundary rooting so generated
+native objects can request the same ABI without reusing the
+hand-written =frame_roots= spelling.
+
+*** §1.B.10 Shipped MVP: loader-selected hash-FRAMES root-scope marker
+
+Stage 129.5J gives the loader/native-object handoff its own selection
+marker for the stack-held hash-FRAMES root scope:
+
+#+begin_src elisp
+(defun make-str
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) auto_frame_roots bytes len)
+  (sexp-write-str out bytes len))
+#+end_src
+
+If the body allocates and the static root map is non-empty, the parser
+now wraps the body in =aot-root-scope= with =:root-storage stack= and
+=:materialize-kind frames= when =auto_frame_roots= is present.  Object
+output therefore emits
+=nelisp_aot_materialize_frame_roots= and balanced root push/pop relocs
+for non-boundary defuns that already carry =out=, =mirror=, =frames=,
+and =scratch= handles.  Defuns without =frame_roots= or
+=auto_frame_roots= are still left unwrapped so ordinary AOT boundary
+helpers do not accidentally grow a root-stack runtime dependency.
 
 ** §1.C General =let= / =let*= + lexical environment
 
@@ -3474,7 +3510,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
 | 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization + 129.3N default AOT environment handles + 129.3O standalone Env pointer context handoff + 129.3P native-call entry adapter SHIPPED 2026-05-25; external executable native thunk pending |
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering + 129.4G direct special-let throw cleanup + 129.4H conditional special-let throw cleanup + 129.4I nested conditional special-let throw cleanup SHIPPED 2026-05-25; heap lexframes and general tagged local values pending |
-| 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope SHIPPED 2026-05-25; loader-selected fully automatic non-boundary defun prologue/epilogue pending |
+| 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope + 129.5J loader-selected hash-FRAMES root-scope marker SHIPPED 2026-05-25; loader/module-wide non-boundary root metadata selection pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln builtin table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage + 129.6S AOT C ABI resolver handoff + 129.6T AOT C ABI export registry + 129.6U metadata container builtin coverage + 129.6V standalone loader handoff + 129.6W seq predicate/set higher-order coverage + 129.6X seq prefix/group higher-order coverage + 129.6Y seq-sort-by transform coverage SHIPPED 2026-05-25; remaining higher-order builtin coverage pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting + 129.7AA runtime captured-cell write-through substrate + 129.7AB capture-cell materialization bridge + 129.7AC automatic captured-mutation capture-cell wrapping + 129.7AD runtime frame-writer attachment + 129.7AE closure root-vector pinning + 129.7AF hash-FRAMES frame-slot ref/set bridges + 129.7AG compiler frame-slot ABI forms + 129.7AH captured-mutation frame-slot read selection SHIPPED 2026-05-25; native object embedding and broader automatic native object frame-slot ABI selection pending |

@@ -1574,7 +1574,7 @@ materialized closure temporary."
     (should (member 'nelisp_aot_pop_roots externs))))
 
 (ert-deftest nelisp-phase47-doc129/parse-auto-aot-root-scope-requires-roots ()
-  "Doc 129.5F: automatic root scope is skipped without root-vector input."
+  "Doc 129.5F: automatic root scope is skipped without AOT handles."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun make-str ((slot :type sexp) bytes len)
                  (sexp-write-str slot bytes len))))
@@ -1582,6 +1582,29 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-write-str))
     (should (equal (nelisp-phase47-compiler--ir-get ir :gc-root-slots)
                    '(0)))))
+
+(ert-deftest nelisp-phase47-doc129/parse-auto-aot-root-scope-frame-roots-auto ()
+  "Doc 129.5J: loader-selected hash-FRAMES root scope uses stack roots."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun make-str
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    auto_frame_roots
+                    bytes
+                    len)
+                 (sexp-write-str out bytes len))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'aot-root-scope))
+    (should (equal (nelisp-phase47-compiler--ir-get body :root-slots)
+                   '(0)))
+    (should (eq (nelisp-phase47-compiler--ir-get body :root-storage)
+                'stack))
+    (should (eq (nelisp-phase47-compiler--ir-get body :materialize-kind)
+                'frames))
+    (should (member 'nelisp_aot_materialize_frame_roots externs))))
 
 (ert-deftest nelisp-phase47-doc129/parse-auto-aot-root-scope-stack-roots ()
   "Doc 129.5I: root scope can use hash-FRAMES roots without a roots slot."
@@ -1628,6 +1651,31 @@ materialized closure temporary."
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "nelisp_aot_push_roots" out))
             (should (string-match-p "nelisp_aot_materialize_roots" out))
+            (should (string-match-p "nelisp_aot_pop_roots" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-auto-aot-root-scope-frame-roots-auto ()
+  "Doc 129.5J: object output supports loader-selected frame roots."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-auto-frame-roots-selected-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun make-str
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 auto_frame_roots
+                 bytes
+                 len)
+              (sexp-write-str out bytes len))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_materialize_frame_roots" out))
+            (should (string-match-p "nelisp_aot_push_roots" out))
             (should (string-match-p "nelisp_aot_pop_roots" out))))
       (ignore-errors (delete-file path)))))
 
