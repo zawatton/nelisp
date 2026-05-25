@@ -171,6 +171,21 @@ sizing every VADDR is 0 (= placeholder); during pass-2 the values
 are the real `.rodata' vaddrs.  Nil outside compile passes (=
 default top-level binding).  See Doc 49 Wave 11.1.")
 
+(defvar nelisp-phase47-compiler--allow-external-user-calls nil
+  "Non-nil lets object-mode parsing lower unknown calls to extern relocs.
+Doc 129 uses this only while producing ET_REL objects for user `.el'
+modules.  Static executable output keeps the stricter historical rule:
+ordinary calls must target a same-unit Phase 47 defun unless they use
+the explicit `extern-call' surface.")
+
+(defconst nelisp-phase47-compiler--external-user-call-reserved-ops
+  '(quote function lambda progn seq
+    if while cond and or let let*
+    catch condition-case unwind-protect
+    throw signal error setq setq-default
+    defun write static-imm32-table-define exit)
+  "Form heads that must not be treated as object-mode external calls.")
+
 ;; ---- Doc 49 Wave 11.2 hash-table primitive desugar ----
 ;;
 ;; Wave 11.2 introduces four runtime hash-table primitives — `hash-
@@ -805,6 +820,30 @@ root vector while the compiled function is active."
            (nelisp-phase47-compiler--normalize-defun-params param-forms sexp)
            :params)))
 
+(defconst nelisp-phase47-compiler--object-hidden-boundary-symbols
+  '(out mirror frames scratch name_slot
+    callback-slot-0 callback-slot-1 callback-slot-2 callback-slot-3
+    callback-slot-4 callback-slot-5 callback-slot-6 callback-slot-7
+    callback-slot-8 callback-slot-9 callback-slot-10 callback-slot-11)
+  "Object-mode synthetic boxed-boundary slots for ordinary user defuns.")
+
+(defun nelisp-phase47-compiler--object-hidden-boundary-fenv
+    (fenv start-slot)
+  "Return FENV extended with object-mode hidden boundary slots.
+START-SLOT is the first reserved frame slot after source parameters."
+  (if (or (not nelisp-phase47-compiler--allow-external-user-calls)
+          (nelisp-phase47-compiler--aot-funcall-boundary-available-p fenv))
+      (list :fenv fenv :count 0)
+    (let ((slot start-slot)
+          (extra nil))
+      (dolist (sym nelisp-phase47-compiler--object-hidden-boundary-symbols)
+        (unless (assq sym fenv)
+          (push (cons sym (list :slot slot :class 'gp :root-p t)) extra)
+          (setq slot (1+ slot))))
+      (let ((count (length extra)))
+        (list :fenv (append (nreverse extra) fenv)
+              :count count)))))
+
 (defun nelisp-phase47-compiler--insert-param-before-rest
     (param-forms param)
   "Insert PARAM into PARAM-FORMS before `&rest' when present."
@@ -975,13 +1014,20 @@ vector in an aligned stack temporary."
   "Return `(VAR VALUE ROOT-P)' for one Phase 47 `let' BINDING."
   (if (symbolp binding)
       (list binding 0 nil)
-    (unless (and (consp binding)
-                 (consp (cdr binding))
-                 (null (cddr binding)))
+    (cond
+     ((and (consp binding)
+           (null (cdr binding))
+           (symbolp (car binding)))
+      (list (car binding) 0 nil))
+     ((and (consp binding)
+           (consp (cdr binding))
+           (null (cddr binding)))
+      (let ((parsed-var
+             (nelisp-phase47-compiler--parse-let-var (car binding))))
+        (list (car parsed-var) (cadr binding) (cadr parsed-var))))
+     (t
       (signal 'nelisp-phase47-compiler-error
-              (list :let-binding-shape binding)))
-    (let ((parsed-var (nelisp-phase47-compiler--parse-let-var (car binding))))
-      (list (car parsed-var) (cadr binding) (cadr parsed-var)))))
+              (list :let-binding-shape binding))))))
 
 (defun nelisp-phase47-compiler--check-let-vars-unique (bindings)
   "Signal when BINDINGS contains duplicate variables."
@@ -1022,49 +1068,48 @@ parallel `let' semantics.  Compile-time-foldable bindings extend ENV
 only for BODY.  Runtime bindings allocate frame slots together and
 extend FENV only for BODY.  PARSE-BODY-FN is either
 `nelisp-phase47-compiler--parse-value' or `--parse-stmt'."
-  (unless (consp bindings)
-    (signal 'nelisp-phase47-compiler-error
-            (list :let-empty-bindings bindings)))
-  (nelisp-phase47-compiler--check-let-vars-unique bindings)
-  (let* ((special-flags
-          (mapcar #'nelisp-phase47-compiler--let-binding-special-p bindings))
-         (special-count (cl-count t special-flags)))
-    (cond
-     ((= special-count (length bindings))
-      (nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
-       bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
-     ((> special-count 0)
-      (nelisp-phase47-compiler--parse-aot-special-let-mixed-normal-exit
-       bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
-     (t
-      (let ((new-env env)
-            (new-fenv fenv)
-            (rt-bindings nil))
-        (dolist (binding bindings)
-          (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
-                 (var (nth 0 pair))
-                 (val-sexp (nth 1 pair))
-                 (root-p (nth 2 pair)))
-            (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
-                (let ((val (nelisp-phase47-compiler--fold-int val-sexp env)))
-                  (push (cons var val) new-env))
-              (unless nelisp-phase47-compiler--next-rt-let-slot
-                (signal 'nelisp-phase47-compiler-error
-                        (list :let-rt-requires-defun-context var)))
-              (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
-                     (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
-                                (1+ slot)))
-                     (val-ir (nelisp-phase47-compiler--parse-value
-                              val-sexp env fenv defuns)))
-                (push (list var slot val-ir root-p) rt-bindings)
-                (push (cons var (list :slot slot :class 'gp :root-p root-p))
-                      new-fenv)))))
-        (let ((body-ir (funcall parse-body-fn body-sexp new-env new-fenv defuns)))
-          (if rt-bindings
-              (nelisp-phase47-compiler--make-ir 'let-rt-n
-                    :bindings (nreverse rt-bindings)
-                    :body body-ir)
-            body-ir)))))))
+  (if (not (consp bindings))
+      (funcall parse-body-fn body-sexp env fenv defuns)
+    (nelisp-phase47-compiler--check-let-vars-unique bindings)
+    (let* ((special-flags
+            (mapcar #'nelisp-phase47-compiler--let-binding-special-p bindings))
+           (special-count (cl-count t special-flags)))
+      (cond
+       ((= special-count (length bindings))
+        (nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
+         bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
+       ((> special-count 0)
+        (nelisp-phase47-compiler--parse-aot-special-let-mixed-normal-exit
+         bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
+       (t
+        (let ((new-env env)
+              (new-fenv fenv)
+              (rt-bindings nil))
+          (dolist (binding bindings)
+            (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+                   (var (nth 0 pair))
+                   (val-sexp (nth 1 pair))
+                   (root-p (nth 2 pair)))
+              (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+                  (let ((val (nelisp-phase47-compiler--fold-int val-sexp env)))
+                    (push (cons var val) new-env))
+                (unless nelisp-phase47-compiler--next-rt-let-slot
+                  (signal 'nelisp-phase47-compiler-error
+                          (list :let-rt-requires-defun-context var)))
+                (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
+                       (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
+                                  (1+ slot)))
+                       (val-ir (nelisp-phase47-compiler--parse-value
+                                val-sexp env fenv defuns)))
+                  (push (list var slot val-ir root-p) rt-bindings)
+                  (push (cons var (list :slot slot :class 'gp :root-p root-p))
+                        new-fenv)))))
+          (let ((body-ir (funcall parse-body-fn body-sexp new-env new-fenv defuns)))
+            (if rt-bindings
+                (nelisp-phase47-compiler--make-ir 'let-rt-n
+                      :bindings (nreverse rt-bindings)
+                      :body body-ir)
+              body-ir))))))))
 
 ;; ---- Doc 129.1 frontend macro expansion ----
 ;;
@@ -1098,7 +1143,46 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
 (defun nelisp-phase47-compiler--top-level-var-form-p (form)
   "Return non-nil when FORM is a top-level variable declaration form."
   (and (consp form)
-       (memq (car form) '(defvar defconst defcustom))))
+       (memq (car form) '(defvar defvar-local defconst defcustom))))
+
+(defconst nelisp-phase47-compiler--large-top-level-literal-threshold 2048
+  "Maximum top-level aggregate literal expanded into object init helpers.")
+
+(defun nelisp-phase47-compiler--aggregate-literal-over-threshold-p
+    (value threshold)
+  "Return non-nil when aggregate VALUE has more than THRESHOLD entries."
+  (cond
+   ((vectorp value)
+    (> (length value) threshold))
+   ((consp value)
+    (let ((count 0)
+          (tail value))
+      (while (and (consp tail) (<= count threshold))
+        (setq count (1+ count))
+        (setq tail (cdr tail)))
+      (> count threshold)))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--large-top-level-literal-var-form-p (form)
+  "Return non-nil when FORM's initializer is too large to inline in AOT.
+Generated mapping tables contain tens of thousands of quoted cons cells;
+expanding them into helper IR is currently slower than the Doc 129 object
+pipeline can tolerate.  They are left for the runtime/table-data loading
+path instead of blocking compilation of the module's functions."
+  (and nelisp-phase47-compiler--allow-external-user-calls
+       (nelisp-phase47-compiler--top-level-var-form-p form)
+       (>= (length form) 3)
+       (let* ((init (nth 2 form))
+              (literal (cond
+                        ((and (consp init)
+                              (eq (car init) 'quote)
+                              (= (length init) 2))
+                         (nth 1 init))
+                        ((vectorp init) init)
+                        (t nil))))
+         (nelisp-phase47-compiler--aggregate-literal-over-threshold-p
+          literal
+          nelisp-phase47-compiler--large-top-level-literal-threshold))))
 
 (defun nelisp-phase47-compiler--top-level-setq-form-p (form)
   "Return non-nil when FORM is a top-level assignment form."
@@ -1187,10 +1271,114 @@ generated AOT init helper."
   (cond
    ((and (consp form) (eq (car form) 'quote) (= (length form) 2))
     (cons 'literal (nth 1 form)))
+   ((and (consp form) (eq (car form) 'function) (= (length form) 2)
+         (symbolp (nth 1 form)))
+    (cons 'literal (nth 1 form)))
+   ((keywordp form)
+    (cons 'literal form))
+   ((and (consp form) (eq (car form) 'vector))
+    (let ((values nil)
+          (ok t))
+      (dolist (arg (cdr form))
+        (let ((literal
+               (nelisp-phase47-compiler--top-level-literal-value arg)))
+          (if literal
+              (push (cdr literal) values)
+            (setq ok nil))))
+      (when ok
+        (cons 'literal (vconcat (nreverse values))))))
+   ((and (consp form) (eq (car form) 'list))
+    (let ((values nil)
+          (ok t))
+      (dolist (arg (cdr form))
+        (let ((literal
+               (nelisp-phase47-compiler--top-level-literal-value arg)))
+          (if literal
+              (push (cdr literal) values)
+            (setq ok nil))))
+      (when ok
+        (cons 'literal (nreverse values)))))
+   ((and (consp form) (eq (car form) 'cons) (= (length form) 3))
+    (let ((car-lit (nelisp-phase47-compiler--top-level-literal-value
+                    (nth 1 form)))
+          (cdr-lit (nelisp-phase47-compiler--top-level-literal-value
+                    (nth 2 form))))
+      (when (and car-lit cdr-lit)
+        (cons 'literal (cons (cdr car-lit) (cdr cdr-lit))))))
+   ((and (consp form) (eq (car form) 'concat))
+    (let ((parts nil)
+          (ok t))
+      (dolist (arg (cdr form))
+        (let ((literal
+               (nelisp-phase47-compiler--top-level-literal-value arg)))
+          (if (and literal (stringp (cdr literal)))
+              (push (cdr literal) parts)
+            (setq ok nil))))
+      (when ok
+        (cons 'literal (apply #'concat (nreverse parts))))))
    ((or (integerp form) (stringp form) (null form) (eq form t)
         (vectorp form))
     (cons 'literal form))
    (t nil)))
+
+(defun nelisp-phase47-compiler--runtime-sexp-literal-value (form)
+  "Return `(literal . VALUE)' when FORM should materialize as runtime Sexp.
+Raw integer and boolean immediates keep their historical i64 lowering;
+quoted values, strings, keywords, vectors, and literal constructors are
+boxed into caller-owned Sexp slots when a boxed AOT boundary exists."
+  (cond
+   ((or (integerp form) (eq form t) (null form))
+    nil)
+   (t
+    (nelisp-phase47-compiler--top-level-literal-value form))))
+
+(defun nelisp-phase47-compiler--runtime-sexp-literal-form (form fenv)
+  "Return a value form that materializes runtime Sexp literal FORM."
+  (let ((literal (nelisp-phase47-compiler--runtime-sexp-literal-value
+                  form)))
+    (when literal
+      (let ((out (and (nelisp-phase47-compiler--fenv-has-symbol-p
+                       fenv 'out)
+                      'out))
+            (scratch (and (nelisp-phase47-compiler--fenv-has-symbol-p
+                           fenv 'scratch)
+                          'scratch)))
+        (unless (and out scratch)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :aot-literal-boundary-missing
+                        '(out scratch)
+                        :form form)))
+        (let ((write-forms
+               (nelisp-phase47-compiler--top-level-literal-write-forms
+                out (cdr literal) scratch 0)))
+          (when write-forms
+            `(seq ,@write-forms ,out)))))))
+
+(defun nelisp-phase47-compiler--runtime-boxed-sexp-form (form fenv)
+  "Return FORM rewritten to produce a boxed Sexp pointer when needed.
+This is used for value-cell writes where raw integer/t/nil immediates
+must be materialized into a Sexp slot before calling the env bridge."
+  (let ((literal (nelisp-phase47-compiler--top-level-literal-value form)))
+    (if (not literal)
+        form
+      (let ((out (and (nelisp-phase47-compiler--fenv-has-symbol-p
+                       fenv 'out)
+                      'out))
+            (scratch (and (nelisp-phase47-compiler--fenv-has-symbol-p
+                           fenv 'scratch)
+                          'scratch)))
+        (unless (and out scratch)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :aot-literal-boundary-missing
+                        '(out scratch)
+                        :form form)))
+        (let ((write-forms
+               (nelisp-phase47-compiler--top-level-literal-write-forms
+                out (cdr literal) scratch 0)))
+          (unless write-forms
+            (signal 'nelisp-phase47-compiler-error
+                    (list :aot-literal-unsupported form)))
+          `(seq ,@write-forms ,out))))))
 
 (defun nelisp-phase47-compiler--scratch-slot (scratch index)
   "Return a pointer form for scratch vector slot INDEX."
@@ -1353,6 +1541,76 @@ INIT-FORM must be supported by
                              mirror name_slot out)
                 name_slot))))))))
 
+(defun nelisp-phase47-compiler--form-uses-aot-builtin-delegation-p (form)
+  "Return non-nil when FORM may clobber the init helper name slot.
+The direct dynamic top-level helper keeps the variable symbol in
+NAME-SLOT while evaluating INIT-FORM.  AOT builtin delegation reuses
+NAME-SLOT for the callee builtin symbol, so those forms stay on the
+older specialised paths until the helper has a second stable symbol
+slot."
+  (let ((found nil))
+    (cl-labels
+        ((walk (node)
+           (cond
+            ((or found (atom node)) nil)
+            ((memq (car node) '(quote function)) nil)
+            ((or (memq (car node)
+                       nelisp-phase47-compiler--aot-builtin1-delegation-symbols)
+                 (memq (car node)
+                       nelisp-phase47-compiler--aot-builtinn-delegation-symbols))
+             (setq found t))
+            (t
+             (dolist (child node)
+               (walk child))))))
+      (walk form))
+    found))
+
+(defun nelisp-phase47-compiler--top-level-var-dynamic-defun
+    (kind helper name init-form)
+  "Return an object-mode dynamic Sexp init-helper defun for KIND/NAME."
+  (when nelisp-phase47-compiler--allow-external-user-calls
+    (let* ((params '(out mirror frames scratch name_slot))
+           (symbol-name (symbol-name name))
+           (init-slot (nelisp-phase47-compiler--gensym "top-var-init"))
+           (annotated-params
+            (mapcar (lambda (p) (list p :type 'sexp)) params)))
+      `(defun ,helper ,annotated-params
+         (seq
+          (sexp-write-symbol-lit name_slot ,symbol-name)
+          ,@(cond
+             ((eq kind 'defvar)
+              `((if (= (extern-call nelisp_mirror_is_bound
+                                     mirror name_slot out)
+                      1)
+                    name_slot
+                  (let (((,init-slot :type sexp) ,init-form))
+                    (seq
+                     (sexp-write-symbol-lit name_slot ,symbol-name)
+                     (extern-call nelisp_env_set_value
+                                  mirror frames name_slot ,init-slot scratch 0)
+                     name_slot)))))
+             ((memq kind '(setq setq-default))
+              `((let (((,init-slot :type sexp) ,init-form))
+                  (seq
+                   (sexp-write-symbol-lit name_slot ,symbol-name)
+                   (extern-call nelisp_env_set_value
+                                mirror frames name_slot ,init-slot scratch 0)
+                   name_slot))))
+             (t
+              `((sexp-write-nil out)
+                (extern-call nelisp_mirror_set_constant
+                             mirror name_slot out)
+                (let (((,init-slot :type sexp) ,init-form))
+                  (seq
+                   (sexp-write-symbol-lit name_slot ,symbol-name)
+                   (extern-call nelisp_env_set_value
+                                mirror frames name_slot ,init-slot scratch 0)
+                   (sexp-write-symbol-lit name_slot ,symbol-name)
+                   (sexp-write-t out)
+                   (extern-call nelisp_mirror_set_constant
+                                mirror name_slot out)
+                   name_slot))))))))))
+
 (defun nelisp-phase47-compiler--top-level-var-init-descriptor (form index)
   "Return the AOT init descriptor for top-level variable FORM.
 Returns nil for declaration-only `defvar' forms with no initializer."
@@ -1362,7 +1620,7 @@ Returns nil for declaration-only `defvar' forms with no initializer."
       (signal 'nelisp-phase47-compiler-error
               (list :top-level-var-name-not-symbol form)))
     (pcase kind
-      ('defvar
+      ((or 'defvar 'defvar-local)
        (unless (<= 2 (length form) 4)
          (signal 'nelisp-phase47-compiler-error
                  (list :defvar-arity form)))
@@ -1374,7 +1632,7 @@ Returns nil for declaration-only `defvar' forms with no initializer."
          (list :kind 'defvar
                :name name
                :helper (nelisp-phase47-compiler--top-level-var-helper-name
-                        kind name index)
+                        'defvar name index)
                :index index)))
       ('defconst
        (unless (<= 3 (length form) 4)
@@ -1418,7 +1676,7 @@ Returns nil for declaration-only `defvar' forms with no initializer."
       (signal 'nelisp-phase47-compiler-error
               (list :top-level-var-name-not-symbol form)))
     (pcase kind
-      ('defvar
+      ((or 'defvar 'defvar-local)
        (unless (<= 2 (length form) 4)
          (signal 'nelisp-phase47-compiler-error
                  (list :defvar-arity form)))
@@ -1428,9 +1686,11 @@ Returns nil for declaration-only `defvar' forms with no initializer."
                    (list :defvar-docstring-not-string form))))
        (when (>= (length form) 3)
          (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
-                        kind name index)))
+                        'defvar name index)))
            (or (nelisp-phase47-compiler--top-level-var-direct-defun
-                kind helper name (nth 2 form))
+                'defvar helper name (nth 2 form))
+               (nelisp-phase47-compiler--top-level-var-dynamic-defun
+                'defvar helper name (nth 2 form))
                `(defun-sexp-int-defvar-symbol
                     ,helper
                     ,name
@@ -1448,6 +1708,8 @@ Returns nil for declaration-only `defvar' forms with no initializer."
                       kind name index)))
          (or (nelisp-phase47-compiler--top-level-var-direct-defun
               kind helper name (nth 2 form))
+             (nelisp-phase47-compiler--top-level-var-dynamic-defun
+              kind helper name (nth 2 form))
              `(defun-sexp-int-defconst-symbol
                   ,helper
                   ,name
@@ -1458,6 +1720,8 @@ Returns nil for declaration-only `defvar' forms with no initializer."
        (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
                       kind name index)))
          (or (nelisp-phase47-compiler--top-level-var-direct-defun
+              'defvar helper name (nth 2 form))
+             (nelisp-phase47-compiler--top-level-var-dynamic-defun
               'defvar helper name (nth 2 form))
              `(defun-sexp-int-defvar-symbol
                   ,helper
@@ -1471,6 +1735,8 @@ Returns nil for declaration-only `defvar' forms with no initializer."
        (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
                       kind name index)))
          (or (nelisp-phase47-compiler--top-level-var-direct-defun
+              kind helper name (nth 2 form))
+             (nelisp-phase47-compiler--top-level-var-dynamic-defun
               kind helper name (nth 2 form))
              `(defun-sexp-int-setq-symbol
                   ,helper
@@ -1691,22 +1957,31 @@ the same generated helper names."
           :init-helpers nil
           :custom-metadata nil
           :special-vars nil))
-   ((nelisp-phase47-compiler--top-level-var-form-p sexp)
-    (let ((descriptor
-           (nelisp-phase47-compiler--top-level-var-init-descriptor sexp 0))
-          (lowered (nelisp-phase47-compiler--lower-top-level-var-form sexp 0))
-          (custom-metadata
-           (when (eq (car sexp) 'defcustom)
-             (list (nelisp-phase47-compiler--defcustom-metadata-descriptor
-                    sexp 0)))))
-      (list :source (or lowered '(seq))
-            :defmacros nil
-            :module-forms nil
-            :init-helpers (when descriptor (list descriptor))
-            :custom-metadata custom-metadata
-            :special-vars
-            (list (nelisp-phase47-compiler--top-level-special-var-name
-                   sexp)))))
+	   ((nelisp-phase47-compiler--top-level-var-form-p sexp)
+	    (if (nelisp-phase47-compiler--large-top-level-literal-var-form-p sexp)
+	        (list :source '(seq)
+	              :defmacros nil
+	              :module-forms nil
+	              :init-helpers nil
+	              :custom-metadata nil
+	              :special-vars
+	              (list (nelisp-phase47-compiler--top-level-special-var-name
+	                     sexp)))
+	      (let ((descriptor
+	             (nelisp-phase47-compiler--top-level-var-init-descriptor sexp 0))
+	            (lowered (nelisp-phase47-compiler--lower-top-level-var-form sexp 0))
+	            (custom-metadata
+	             (when (eq (car sexp) 'defcustom)
+	               (list (nelisp-phase47-compiler--defcustom-metadata-descriptor
+	                      sexp 0)))))
+	        (list :source (or lowered '(seq))
+	              :defmacros nil
+	              :module-forms nil
+	              :init-helpers (when descriptor (list descriptor))
+	              :custom-metadata custom-metadata
+	              :special-vars
+	              (list (nelisp-phase47-compiler--top-level-special-var-name
+	                     sexp))))))
    ((nelisp-phase47-compiler--top-level-setq-form-p sexp)
     (let ((kept nil)
           (init-helpers nil)
@@ -1749,25 +2024,28 @@ the same generated helper names."
                   (push child defs))
                  ((nelisp-phase47-compiler--top-level-module-form-p child)
                   (push child module-forms))
-                 ((nelisp-phase47-compiler--top-level-var-form-p child)
-                  (push (nelisp-phase47-compiler--top-level-special-var-name child)
-                        special-vars)
-                  (let ((lowered
-                         (nelisp-phase47-compiler--lower-top-level-var-form
-                          child var-index))
-                        (descriptor
-                         (nelisp-phase47-compiler--top-level-var-init-descriptor
-                          child var-index)))
-                    (when descriptor
-                      (push descriptor init-helpers))
-                    (when (eq (car child) 'defcustom)
-                      (push
-                       (nelisp-phase47-compiler--defcustom-metadata-descriptor
-                        child var-index)
-                       custom-metadata))
-                    (setq var-index (1+ var-index))
-                    (when lowered
-                      (push lowered kept))))
+	                 ((nelisp-phase47-compiler--top-level-var-form-p child)
+	                  (push (nelisp-phase47-compiler--top-level-special-var-name child)
+	                        special-vars)
+	                  (if (nelisp-phase47-compiler--large-top-level-literal-var-form-p
+	                       child)
+	                      (setq var-index (1+ var-index))
+	                    (let ((lowered
+	                           (nelisp-phase47-compiler--lower-top-level-var-form
+	                            child var-index))
+	                          (descriptor
+	                           (nelisp-phase47-compiler--top-level-var-init-descriptor
+	                            child var-index)))
+	                      (when descriptor
+	                        (push descriptor init-helpers))
+	                      (when (eq (car child) 'defcustom)
+	                        (push
+	                         (nelisp-phase47-compiler--defcustom-metadata-descriptor
+	                          child var-index)
+	                         custom-metadata))
+	                      (setq var-index (1+ var-index))
+	                      (when lowered
+	                        (push lowered kept)))))
                  ((nelisp-phase47-compiler--top-level-setq-form-p child)
                   (dolist (pair
                            (nelisp-phase47-compiler--top-level-setq-pairs
@@ -1783,6 +2061,11 @@ the same generated helper names."
                       (setq var-index (1+ var-index))
                       (when lowered
                         (push lowered kept)))))
+                 ((and nelisp-phase47-compiler--allow-external-user-calls
+                       (consp child)
+                       (symbolp (car child))
+                       (not (memq (car child) '(defun prog1))))
+                  nil)
                  (t
                   (push child kept)))))))
         (dolist (child (cdr sexp))
@@ -2634,19 +2917,24 @@ forms after that are function metadata rather than runtime body forms."
   (if (null bindings)
       (nelisp-phase47-compiler--body->form body)
     (let ((binding (car bindings)))
-      (unless (or (symbolp binding)
-                  (and (consp binding)
-                       (consp (cdr binding))
-                       (null (cddr binding))))
-        (signal 'nelisp-phase47-compiler-error
-                (list :let-binding-shape binding)))
-      `(let (,(if (symbolp binding)
-                  (list binding 0)
-                (list (car binding)
-                      (nelisp-phase47-compiler--preprocess-source
-                       (cadr binding)))))
-         ,(nelisp-phase47-compiler--preprocess-let*-bindings
-           (cdr bindings) body)))))
+	      (unless (or (symbolp binding)
+	                  (and (consp binding)
+	                       (null (cdr binding))
+	                       (symbolp (car binding)))
+	                  (and (consp binding)
+	                       (consp (cdr binding))
+	                       (null (cddr binding))))
+	        (signal 'nelisp-phase47-compiler-error
+	                (list :let-binding-shape binding)))
+	      `(let (,(if (symbolp binding)
+	                  (list binding 0)
+	                (if (null (cdr binding))
+	                    (list (car binding) 0)
+	                  (list (car binding)
+	                        (nelisp-phase47-compiler--preprocess-source
+	                         (cadr binding))))))
+	         ,(nelisp-phase47-compiler--preprocess-let*-bindings
+	           (cdr bindings) body)))))
 
 (defun nelisp-phase47-compiler--preprocess-cond-clause (clause)
   "Normalize one `cond' CLAUSE for the Phase 47 parser."
@@ -2659,6 +2947,76 @@ forms after that are function metadata rather than runtime body forms."
               t
             (nelisp-phase47-compiler--preprocess-source pred))
           (nelisp-phase47-compiler--body->form body))))
+
+(defun nelisp-phase47-compiler--preprocess-cond-clauses (clauses)
+  "Normalize COND CLAUSES, pruning statically false compatibility guards."
+  (let ((out nil)
+        (done nil))
+    (while (and clauses (not done))
+      (let* ((clause (car clauses))
+             (pred (car clause))
+             (static
+              (and (not (eq pred t))
+                   (nelisp-phase47-compiler--top-level-static-condition
+                    pred))))
+        (cond
+         ((and static (not (cdr static)))
+          nil)
+         ((and static (cdr static))
+          (push (cons t (cdr clause)) out)
+          (setq done t))
+         (t
+          (push clause out)
+          (when (eq pred t)
+            (setq done t)))))
+      (setq clauses (cdr clauses)))
+    (nreverse out)))
+
+(defun nelisp-phase47-compiler--preprocess-static-and (forms)
+  "Return source for AND FORMS after pruning static compatibility guards."
+  (let ((out nil)
+        (done nil))
+    (while (and forms (not done))
+      (let ((static
+             (nelisp-phase47-compiler--top-level-static-condition
+              (car forms))))
+        (cond
+         ((and static (not (cdr static)))
+          (setq out (list 0)
+                done t))
+         ((and static (cdr static))
+          nil)
+         (t
+          (push (car forms) out))))
+      (setq forms (cdr forms)))
+    (let ((kept (nreverse out)))
+      (cond
+       ((null kept) 1)
+       ((null (cdr kept)) (car kept))
+       (t (cons 'and kept))))))
+
+(defun nelisp-phase47-compiler--preprocess-static-or (forms)
+  "Return source for OR FORMS after pruning static compatibility guards."
+  (let ((out nil)
+        (done nil))
+    (while (and forms (not done))
+      (let ((static
+             (nelisp-phase47-compiler--top-level-static-condition
+              (car forms))))
+        (cond
+         ((and static (cdr static))
+          (setq out (list 1)
+                done t))
+         ((and static (not (cdr static)))
+          nil)
+         (t
+          (push (car forms) out))))
+      (setq forms (cdr forms)))
+    (let ((kept (nreverse out)))
+      (cond
+       ((null kept) 0)
+       ((null (cdr kept)) (car kept))
+       (t (cons 'or kept))))))
 
 (defun nelisp-phase47-compiler--preprocess-sexp-int-expr (expr sexp-vars)
   "Lower monomorphic Sexp::Int EXPR using SEXP-VARS as boxed inputs.
@@ -3103,18 +3461,23 @@ the whole program."
       (signal 'nelisp-phase47-compiler-error
               (list :let-arity sexp)))
     `(let ,(mapcar
-            (lambda (binding)
-              (unless (or (symbolp binding)
-                          (and (consp binding)
-                               (consp (cdr binding))
-                               (null (cddr binding))))
-                (signal 'nelisp-phase47-compiler-error
-                        (list :let-binding-shape binding)))
-              (if (symbolp binding)
-                  (list binding 0)
-                (list (car binding)
-                      (nelisp-phase47-compiler--preprocess-source
-                       (cadr binding)))))
+	            (lambda (binding)
+	              (unless (or (symbolp binding)
+	                          (and (consp binding)
+	                               (null (cdr binding))
+	                               (symbolp (car binding)))
+	                          (and (consp binding)
+	                               (consp (cdr binding))
+	                               (null (cddr binding))))
+	                (signal 'nelisp-phase47-compiler-error
+	                        (list :let-binding-shape binding)))
+	              (if (symbolp binding)
+	                  (list binding 0)
+	                (if (null (cdr binding))
+	                    (list (car binding) 0)
+	                  (list (car binding)
+	                        (nelisp-phase47-compiler--preprocess-source
+	                         (cadr binding))))))
             (nth 1 sexp))
        ,(nelisp-phase47-compiler--body->form (nthcdr 2 sexp))))
    ((eq (car sexp) 'let*)
@@ -3125,28 +3488,53 @@ the whole program."
       (signal 'nelisp-phase47-compiler-error
               (list :if-arity sexp)))
     (let* ((condition (nth 1 sexp))
-           (condition-vars
-            (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
-             condition))
-           (then-form
-            (nelisp-phase47-compiler--preprocess-source (nth 2 sexp)))
-           (else-form
-            (nelisp-phase47-compiler--body->form (nthcdr 3 sexp))))
-      `(if ,(nelisp-phase47-compiler--preprocess-source condition)
-           ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
-             then-form condition-vars)
-         ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
-           else-form condition-vars))))
+           (static
+            (nelisp-phase47-compiler--top-level-static-condition
+             condition)))
+      (if static
+          (if (cdr static)
+              (nelisp-phase47-compiler--preprocess-source (nth 2 sexp))
+            (nelisp-phase47-compiler--body->form (nthcdr 3 sexp)))
+        (let* ((condition-vars
+                (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                 condition))
+               (then-form
+                (nelisp-phase47-compiler--preprocess-source (nth 2 sexp)))
+               (else-form
+                (nelisp-phase47-compiler--body->form (nthcdr 3 sexp))))
+          `(if ,(nelisp-phase47-compiler--preprocess-source condition)
+               ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
+                 then-form condition-vars)
+             ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
+               else-form condition-vars))))))
    ((eq (car sexp) 'while)
     (cons 'while (mapcar #'nelisp-phase47-compiler--preprocess-source
                          (cdr sexp))))
    ((eq (car sexp) 'cond)
-    (cons 'cond (mapcar #'nelisp-phase47-compiler--preprocess-cond-clause
-                        (cdr sexp))))
-   ((memq (car sexp) '(and or))
-    (cons (car sexp)
-          (nelisp-phase47-compiler--preprocess-short-circuit-forms
-           (cdr sexp))))
+    (let ((clauses
+           (nelisp-phase47-compiler--preprocess-cond-clauses
+            (cdr sexp))))
+      (if clauses
+          (cons 'cond
+                (mapcar #'nelisp-phase47-compiler--preprocess-cond-clause
+                        clauses))
+        0)))
+   ((eq (car sexp) 'and)
+    (let ((pruned
+           (nelisp-phase47-compiler--preprocess-static-and (cdr sexp))))
+      (if (and (consp pruned) (eq (car pruned) 'and))
+          (cons 'and
+                (nelisp-phase47-compiler--preprocess-short-circuit-forms
+                 (cdr pruned)))
+        (nelisp-phase47-compiler--preprocess-source pruned))))
+   ((eq (car sexp) 'or)
+    (let ((pruned
+           (nelisp-phase47-compiler--preprocess-static-or (cdr sexp))))
+      (if (and (consp pruned) (eq (car pruned) 'or))
+          (cons 'or
+                (nelisp-phase47-compiler--preprocess-short-circuit-forms
+                 (cdr pruned)))
+        (nelisp-phase47-compiler--preprocess-source pruned))))
    ((memq (car sexp) '(write static-imm32-table-define))
     sexp)
    (t
@@ -3192,10 +3580,16 @@ the whole program."
     (let ((children
            (mapcar #'nelisp-phase47-compiler--prune-top-level-noops
                    (cdr source))))
-      (if (cl-every #'nelisp-phase47-compiler--top-level-noop-form-p
-                    children)
-          '(seq)
-        (cons 'prog1 children))))
+      (cond
+       ((cl-every #'nelisp-phase47-compiler--top-level-noop-form-p
+                  children)
+        '(seq))
+       ((and children
+             (cl-every #'nelisp-phase47-compiler--top-level-noop-form-p
+                       (cdr children)))
+        (car children))
+       (t
+        (cons 'prog1 children)))))
    ((nelisp-phase47-compiler--top-level-noop-form-p source)
     '(seq))
    (t source)))
@@ -3269,6 +3663,13 @@ boundary slots.")
        (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'scratch)
        (or (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'name-slot)
            (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'name_slot))))
+
+(defun nelisp-phase47-compiler--aot-funcall-boundary-available-p (fenv)
+  "Return non-nil when FENV has the standard AOT funcall/apply slots."
+  (and (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'out)
+       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'mirror)
+       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'frames)
+       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'scratch)))
 
 (defun nelisp-phase47-compiler--aot-direct-raw-bool-form-p (form)
   "Return non-nil when FORM is known to produce a raw i64 boolean."
@@ -3515,10 +3916,14 @@ storage through the call boundary."
                        fenv sym))
                     candidates)))
         (unless slot
-          (signal 'nelisp-phase47-compiler-error
-                  (list :aot-keyword-slot-boundary-missing
-                        candidates
-                        :form sexp)))
+          (if (and nelisp-phase47-compiler--allow-external-user-calls
+                   (nelisp-phase47-compiler--fenv-has-symbol-p
+                    fenv 'scratch))
+              (setq slot 'scratch)
+            (signal 'nelisp-phase47-compiler-error
+                    (list :aot-keyword-slot-boundary-missing
+                          candidates
+                          :form sexp))))
         (push slot slots)))
     (nreverse slots)))
 
@@ -3710,13 +4115,11 @@ caller-owned boundary params in the current defun:
                    collect (list :idx idx
                                  :symbol sym
                                  :closure closure)))
-         (_ (when (and (> (length designator-entries) 1)
-                       (cl-some (lambda (entry)
-                                  (plist-get entry :closure))
-                                designator-entries))
-              (signal 'nelisp-phase47-compiler-error
-                      (list :aot-multiple-function-designator-slots-needed
-                            sexp))))
+         (multi-designator-closure-p
+          (and (> (length designator-entries) 1)
+               (cl-some (lambda (entry)
+                          (plist-get entry :closure))
+                        designator-entries)))
          (callback-slots
           (and designator-entries
                (nelisp-phase47-compiler--aot-callback-slot-symbols
@@ -3725,7 +4128,8 @@ caller-owned boundary params in the current defun:
           (cl-mapcar
            (lambda (entry slot)
              (cons (plist-get entry :idx)
-                   (if (plist-get entry :closure)
+                   (if (and (plist-get entry :closure)
+                            (not multi-designator-closure-p))
                        out
                      slot)))
            designator-entries
@@ -3771,7 +4175,8 @@ caller-owned boundary params in the current defun:
                       ,slot
                       ,(symbol-name sym))))
                   (closure
-                   (let ((descriptor (cadr closure))
+                   (let ((closure-slot (if multi-designator-closure-p slot out))
+                         (descriptor (cadr closure))
                          (captures (cddr closure)))
                      `((sexp-write-symbol-lit
                         ,scratch
@@ -3779,7 +4184,7 @@ caller-owned boundary params in the current defun:
                        (extern-call nelisp_aot_make_closure
                                     ,mirror ,frames ,scratch
                                     ,(length captures)
-                                    ,out ,scratch
+                                    ,closure-slot ,scratch
                                     ,@captures))))
                   (t nil))))
              designator-entries
@@ -5959,7 +6364,8 @@ through BODY remain pending on the 129.8 landing-pad path."
         (conditional-throw
          (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
-    (when (and (not direct-nonlocal)
+    (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+               (not direct-nonlocal)
                (not conditional-throw)
                (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                 body-sexp))
@@ -6028,7 +6434,8 @@ all-special subset."
         (conditional-throw
          (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
-    (when (and (not direct-throw)
+    (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+               (not direct-throw)
                (not conditional-throw)
                (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                 body-sexp))
@@ -6106,7 +6513,8 @@ saved BODY value."
         (conditional-throw
          (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
-    (when (and (not direct-throw)
+    (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+               (not direct-throw)
                (not conditional-throw)
                (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                 body-sexp))
@@ -6229,7 +6637,8 @@ saved BODY value."
                (not conditional-unwind-throw)
                (nelisp-phase47-compiler--aot-catch-conditional-unwind-form
                 tag body-forms))))
-    (when (and (not direct-throw)
+    (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+               (not direct-throw)
                (not conditional-throw)
                (not direct-dynamic-throw)
                (not direct-unwind-throw)
@@ -6364,12 +6773,14 @@ Doc 129.8 work."
   (unless (>= (length sexp) 4)
     (signal 'nelisp-phase47-compiler-error
             (list :aot-condition-case-arity sexp)))
-  (let ((var (nth 1 sexp))
-        (body (nth 2 sexp))
-        (clauses (nthcdr 3 sexp)))
-    (unless (or (null var) (symbolp var))
-      (signal 'nelisp-phase47-compiler-error
-              (list :aot-condition-case-var-shape var)))
+	  (let ((var (nth 1 sexp))
+	        (body (nth 2 sexp))
+	        (clauses (nthcdr 3 sexp)))
+	    (when (eq var 0)
+	      (setq var nil))
+	    (unless (or (null var) (symbolp var))
+	      (signal 'nelisp-phase47-compiler-error
+	              (list :aot-condition-case-var-shape var)))
     (let* ((direct-tag
             (nelisp-phase47-compiler--aot-direct-condition-tag body))
            (direct-handler
@@ -6436,7 +6847,8 @@ Doc 129.8 work."
                  (not conditional-unwind-handler)
                  (nelisp-phase47-compiler--aot-condition-case-mixed-unwind-form
                   body clauses))))
-      (when (and (not direct-handler)
+      (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+                 (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
                  (not dynamic-tree-handler)
@@ -6798,16 +7210,17 @@ crossing the protected body still require cleanup landing-pad lowering."
           (cleanup-nonlocal
            (nelisp-phase47-compiler--aot-cleanup-sequence-nonlocal-p
             cleanups)))
-      (when (or (and (not direct-throw)
-                     (not direct-condition)
-                     (not conditional-throw)
-                     (not conditional-condition)
-                     (not standalone-cleanup-tree)
-                     (or (not body-split)
-                         (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                          body-tail)))
-                (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
-                      cleanups)))
+      (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+                 (or (and (not direct-throw)
+                          (not direct-condition)
+                          (not conditional-throw)
+                          (not conditional-condition)
+                          (not standalone-cleanup-tree)
+                          (or (not body-split)
+                              (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                               body-tail)))
+                     (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+                           cleanups))))
         (signal 'nelisp-phase47-compiler-error
                 (list :aot-unwind-protect-nonlocal-form sexp)))
       (let ((value-slot (nelisp-phase47-compiler--gensym
@@ -6930,34 +7343,53 @@ crossing the protected body still require cleanup landing-pad lowering."
          env fenv defuns)))))
 
 (defun nelisp-phase47-compiler--normalize-defun-params (param-forms sexp)
-  "Normalize PARAM-FORMS, accepting a single `&rest' marker.
+  "Normalize PARAM-FORMS, accepting `&optional' and a single `&rest' marker.
 The returned plist contains `:params' with the marker removed,
-`:fixed-count', and `:rest-p'.  The current native ABI still receives
-the rest list as one ordinary final argument; call-site rest-list
-construction is handled separately for direct calls."
+`:required-count', `:optional-count', `:fixed-count', and `:rest-p'.
+The current native ABI still receives the rest list as one ordinary
+final argument; call-site rest-list construction is handled separately
+for direct calls."
   (unless (listp param-forms)
     (signal 'nelisp-phase47-compiler-error
             (list :defun-params-not-list param-forms)))
-  (let ((before nil)
-        (rest-tail param-forms)
+  (let ((required nil)
+        (optional nil)
+        (tail param-forms)
+        (optional-p nil)
         (rest-p nil)
         (rest-form nil))
-    (while (and rest-tail (not (eq (car rest-tail) '&rest)))
-      (push (car rest-tail) before)
-      (setq rest-tail (cdr rest-tail)))
-    (if rest-tail
+    (while (and tail (not (eq (car tail) '&rest)))
+      (let ((param (car tail)))
+        (cond
+         ((eq param '&optional)
+          (when optional-p
+            (signal 'nelisp-phase47-compiler-error
+                    (list :defun-optional-param-shape sexp)))
+          (setq optional-p t))
+         ((eq param '&rest)
+          nil)
+         (optional-p
+          (push param optional))
+         (t
+          (push param required))))
+      (setq tail (cdr tail)))
+    (if tail
         (progn
           (setq rest-p t)
-          (unless (and (= (length rest-tail) 2)
-                       (not (eq (cadr rest-tail) '&rest)))
+          (unless (and (= (length tail) 2)
+                       (not (memq (cadr tail) '(&optional &rest))))
             (signal 'nelisp-phase47-compiler-error
                     (list :defun-rest-param-shape sexp)))
-          (setq rest-form (cadr rest-tail)))
+          (setq rest-form (cadr tail)))
       (setq rest-p nil))
-    (let ((fixed (nreverse before)))
+    (let* ((req (nreverse required))
+           (opt (nreverse optional))
+           (fixed (append req opt)))
       (list :params (if rest-p
                         (append fixed (list rest-form))
                       fixed)
+            :required-count (length req)
+            :optional-count (length opt)
             :fixed-count (length fixed)
             :rest-p rest-p))))
 
@@ -6969,8 +7401,16 @@ construction is handled separately for direct calls."
     (if (plist-get norm :rest-p)
         (list :arity (length params)
               :fixed-count (plist-get norm :fixed-count)
+              :min-count (plist-get norm :required-count)
+              :optional-count (plist-get norm :optional-count)
               :rest-p t)
-      (length params))))
+      (if (> (plist-get norm :optional-count) 0)
+          (list :arity (length params)
+                :fixed-count (length params)
+                :min-count (plist-get norm :required-count)
+                :optional-count (plist-get norm :optional-count)
+                :rest-p nil)
+        (length params)))))
 
 (defun nelisp-phase47-compiler--defun-signature-arity (signature)
   "Return the ABI arity for SIGNATURE."
@@ -6987,6 +7427,14 @@ construction is handled separately for direct calls."
   (if (integerp signature)
       signature
     (plist-get signature :fixed-count)))
+
+(defun nelisp-phase47-compiler--defun-signature-min-count (signature)
+  "Return the minimum source argument count for SIGNATURE."
+  (if (integerp signature)
+      signature
+    (or (plist-get signature :min-count)
+        (plist-get signature :fixed-count)
+        (plist-get signature :arity))))
 
 (defun nelisp-phase47-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
@@ -7008,30 +7456,65 @@ parameter alist `((SYM . REG) ...)' for the enclosing function (=
 nil at top level), DEFUNS is the alist of already-defined
 functions `((NAME . ARITY) ...)'."
   (cond
-   ;; Compile-time foldable -> immediate.
-   ((nelisp-phase47-compiler--int-foldable-p sexp env fenv)
-    (nelisp-phase47-compiler--make-ir 'imm
-          :value (nelisp-phase47-compiler--fold-int sexp env)))
+	   ;; Compile-time foldable -> immediate.
+	   ((nelisp-phase47-compiler--int-foldable-p sexp env fenv)
+	    (nelisp-phase47-compiler--make-ir 'imm
+	          :value (nelisp-phase47-compiler--fold-int sexp env)))
+	   ;; Object compatibility: common timeout math uses float literals
+	   ;; such as 1000.0 and 0.005.  Keep these in the integer IR surface
+	   ;; until full boxed float literals are wired.
+	   ((and nelisp-phase47-compiler--allow-external-user-calls
+	         (floatp sexp))
+	    (nelisp-phase47-compiler--make-ir 'imm
+	          :value (truncate sexp)))
+	   ;; Doc 129.7AU: boxed AOT helpers may need literal Sexp values in
+   ;; ordinary value position, e.g. `(kbd "RET")' or quoted symbols
+   ;; passed through dynamic top-level initializers.
+   ((nelisp-phase47-compiler--runtime-sexp-literal-value sexp)
+    (let ((lowered
+           (nelisp-phase47-compiler--runtime-sexp-literal-form sexp fenv)))
+      (unless lowered
+        (signal 'nelisp-phase47-compiler-error
+                (list :aot-literal-unsupported sexp)))
+      (nelisp-phase47-compiler--parse-value lowered env fenv defuns)))
    ;; Parameter reference.
    ((symbolp sexp)
     (let ((pcell (assq sexp fenv)))
-      (unless pcell
-        (signal 'nelisp-phase47-compiler-error
-                (list :free-symbol sexp
-                      :env-keys (mapcar #'car env)
-                      :params (mapcar #'car fenv))))
-      ;; FENV cell is `(sym . (:reg R :slot S :class CLASS))' so the
-      ;; ref node carries the incoming arg-reg (= used at call sites
-      ;; for documentation), the rbp-relative spill slot (= used
-      ;; by `--emit-value' / `--emit-f64-ref-load' to read the
-      ;; stable copy) and the reg class (= gp or f64, picks the
-      ;; load instruction MOV vs MOVSD).
-      (let ((info (cdr pcell)))
-        (nelisp-phase47-compiler--make-ir 'ref :var sexp
-              :reg (plist-get info :reg)
-              :slot (plist-get info :slot)
-              :class (or (plist-get info :class) 'gp)
-              :root-p (plist-get info :root-p)))))
+      (if pcell
+          ;; FENV cell is `(sym . (:reg R :slot S :class CLASS))' so the
+          ;; ref node carries the incoming arg-reg (= used at call sites
+          ;; for documentation), the rbp-relative spill slot (= used
+          ;; by `--emit-value' / `--emit-f64-ref-load' to read the
+          ;; stable copy) and the reg class (= gp or f64, picks the
+          ;; load instruction MOV vs MOVSD).
+          (let ((info (cdr pcell)))
+            (nelisp-phase47-compiler--make-ir 'ref :var sexp
+                  :reg (plist-get info :reg)
+                  :slot (plist-get info :slot)
+                  :class (or (plist-get info :class) 'gp)
+                  :root-p (plist-get info :root-p)))
+        (if (and nelisp-phase47-compiler--allow-external-user-calls
+                 (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'out)
+                 (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'mirror)
+                 (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'frames)
+                 (or (nelisp-phase47-compiler--fenv-has-symbol-p
+                      fenv 'name-slot)
+                     (nelisp-phase47-compiler--fenv-has-symbol-p
+                      fenv 'name_slot)))
+            (let ((name-slot
+                   (nelisp-phase47-compiler--aot-name-slot-symbol
+                    fenv sexp)))
+              (nelisp-phase47-compiler--parse-value
+               `(seq
+                 (sexp-write-symbol-lit ,name-slot ,(symbol-name sexp))
+                 (extern-call nelisp_env_lookup_value
+                              mirror frames ,name-slot out)
+                 out)
+               env fenv defuns))
+          (signal 'nelisp-phase47-compiler-error
+                  (list :free-symbol sexp
+                        :env-keys (mapcar #'car env)
+                        :params (mapcar #'car fenv)))))))
    ;; Doc 129.4E: local runtime `setq' in value context.  This covers
    ;; loop counters and accumulators stored in defun frame slots; global
    ;; and special-variable mutation still require the full value-cell
@@ -7070,6 +7553,65 @@ functions `((NAME . ARITY) ...)'."
             (car ordered)
           (nelisp-phase47-compiler--make-ir 'value-seq
                 :forms ordered)))))
+   ;; Doc 129.7AX: object-mode global/special `setq' in value context.
+   ;; Local frame-slot updates are handled above.  Remaining symbol
+   ;; writes go through the env value-cell bridge and return the last
+   ;; assigned boxed value, matching Elisp `setq' result shape.
+   ((and (consp sexp) (memq (car sexp) '(setq setq-default))
+         nelisp-phase47-compiler--allow-external-user-calls
+         (nelisp-phase47-compiler--aot-builtin-boundary-available-p fenv)
+         (let ((pairs (cdr sexp))
+               (ok (consp (cdr sexp))))
+           (while (and ok pairs)
+             (setq ok (and (consp (cdr pairs))
+                           (symbolp (car pairs))))
+             (setq pairs (cddr pairs)))
+           ok))
+    (let ((pairs (cdr sexp))
+          (name-slot (nelisp-phase47-compiler--aot-name-slot-symbol
+                      fenv sexp))
+          (forms nil))
+      (while pairs
+        (let* ((var (car pairs))
+               (rhs (cadr pairs))
+               (value-slot
+                (nelisp-phase47-compiler--gensym "aot-setq-value")))
+          (push
+           `(let (((,value-slot :type sexp)
+                   ,(nelisp-phase47-compiler--runtime-boxed-sexp-form
+                     rhs fenv)))
+              (seq
+               (sexp-write-symbol-lit ,name-slot ,(symbol-name var))
+               (extern-call nelisp_env_set_value
+                            mirror frames ,name-slot ,value-slot scratch 0)
+               ,value-slot))
+           forms))
+        (setq pairs (cddr pairs)))
+      (nelisp-phase47-compiler--parse-value
+       (cons 'seq (nreverse forms))
+       env fenv defuns)))
+   ;; Common vararg arithmetic forms from user elisp.  The backend IR is
+   ;; binary, so normalize n-ary source calls into a left-associated tree.
+   ((and (consp sexp) (memq (car sexp) '(+ - * logior logand logxor))
+         (not (= (length sexp) 3)))
+    (let ((op (car sexp))
+          (args (cdr sexp)))
+      (cond
+       ((null args)
+        (nelisp-phase47-compiler--parse-value
+         (if (eq op '*) 1 0)
+         env fenv defuns))
+       ((null (cdr args))
+        (nelisp-phase47-compiler--parse-value
+         (pcase op
+           ('- `(- 0 ,(car args)))
+           (_ (car args)))
+         env fenv defuns))
+       (t
+        (let ((tree (list op (car args) (cadr args))))
+          (dolist (arg (cddr args))
+            (setq tree (list op tree arg)))
+          (nelisp-phase47-compiler--parse-value tree env fenv defuns))))))
    ;; Arithmetic with at least one non-constant operand.  Doc 100
    ;; §100.D extends the op set with 3 bitwise binops (logior /
    ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
@@ -7137,11 +7679,23 @@ functions `((NAME . ARITY) ...)'."
               (nth 1 sexp) env fenv defuns)
           :b (nelisp-phase47-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
-   ;; Comparison op (= < > <= >= =).
-   ((and (consp sexp) (memq (car sexp) nelisp-phase47-compiler--cmp-ops))
-    (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
-              (list :cmp-arity (car sexp) sexp)))
+	   ;; Comparison op (= < > <= >= =).
+	   ((and (consp sexp)
+	         (memq (car sexp) nelisp-phase47-compiler--cmp-ops)
+	         (> (length sexp) 3))
+	    (let* ((op (car sexp))
+	           (args (cdr sexp))
+	           (pairs nil))
+	      (while (cdr args)
+	        (push (list op (car args) (cadr args)) pairs)
+	        (setq args (cdr args)))
+	      (nelisp-phase47-compiler--parse-value
+	       (cons 'and (nreverse pairs))
+	       env fenv defuns)))
+	   ((and (consp sexp) (memq (car sexp) nelisp-phase47-compiler--cmp-ops))
+	    (unless (= (length sexp) 3)
+	      (signal 'nelisp-phase47-compiler-error
+	              (list :cmp-arity (car sexp) sexp)))
     (nelisp-phase47-compiler--make-ir 'cmp
           :op (car sexp)
           :a (nelisp-phase47-compiler--parse-value
@@ -7163,7 +7717,7 @@ functions `((NAME . ARITY) ...)'."
                  (nth 3 sexp) env fenv defuns)))
    ;; (while TEST BODY...) — returns 0 after loop exit.
    ((and (consp sexp) (eq (car sexp) 'while))
-    (unless (>= (length sexp) 3)
+    (unless (>= (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
               (list :while-arity sexp)))
     (let ((test (nelisp-phase47-compiler--parse-value
@@ -7180,6 +7734,13 @@ functions `((NAME . ARITY) ...)'."
             :id (nelisp-phase47-compiler--gensym "while")
             :test test
             :body body-forms)))
+   ;; `(ignore ...)' is vararg and only evaluates its arguments for
+   ;; side-effects before returning nil.
+   ((and (consp sexp) (eq (car sexp) 'ignore)
+         (not (assq 'ignore defuns)))
+    (nelisp-phase47-compiler--parse-value
+     (cons 'seq (append (cdr sexp) (list 0)))
+     env fenv defuns))
    ;; (cond (PRED1 BODY1) ... (t BODY-N)).
    ((and (consp sexp) (eq (car sexp) 'cond))
     (let ((raw-clauses (cdr sexp)))
@@ -7300,7 +7861,12 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (memq (car sexp)
                nelisp-phase47-compiler--aot-builtin1-delegation-symbols)
-         (not (assq (car sexp) defuns)))
+         (not (assq (car sexp) defuns))
+         (or (= (length sexp) 2)
+             (not nelisp-phase47-compiler--allow-external-user-calls))
+         (or (not nelisp-phase47-compiler--allow-external-user-calls)
+             (nelisp-phase47-compiler--aot-builtin-boundary-available-p
+              fenv)))
     (nelisp-phase47-compiler--parse-aot-builtin1-call
      sexp env fenv defuns))
    ;; Doc 129.6F — direct vararg builtin calls lower to the calln
@@ -7310,7 +7876,10 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (memq (car sexp)
                nelisp-phase47-compiler--aot-builtinn-delegation-symbols)
-         (not (assq (car sexp) defuns)))
+         (not (assq (car sexp) defuns))
+         (or (not nelisp-phase47-compiler--allow-external-user-calls)
+             (nelisp-phase47-compiler--aot-builtin-boundary-available-p
+              fenv)))
     (nelisp-phase47-compiler--parse-aot-builtinn-call
      sexp env fenv defuns))
    ;; Doc 129.7A — first higher-order dispatch surface.  This does not
@@ -7318,7 +7887,12 @@ functions `((NAME . ARITY) ...)'."
    ;; designator/value plus one boxed Sexp argument to the runtime.
    ((and (consp sexp)
          (eq (car sexp) 'funcall)
-         (not (assq 'funcall defuns)))
+         (not (assq 'funcall defuns))
+         (or (>= (length sexp) 3)
+             (not nelisp-phase47-compiler--allow-external-user-calls))
+         (or (not nelisp-phase47-compiler--allow-external-user-calls)
+             (nelisp-phase47-compiler--aot-funcall-boundary-available-p
+              fenv)))
     (pcase (length sexp)
       (3 (nelisp-phase47-compiler--parse-aot-funcall1
           sexp env fenv defuns))
@@ -7335,7 +7909,10 @@ functions `((NAME . ARITY) ...)'."
    ;; already-materialized argument list to the runtime dispatcher.
    ((and (consp sexp)
          (eq (car sexp) 'apply)
-         (not (assq 'apply defuns)))
+         (not (assq 'apply defuns))
+         (or (not nelisp-phase47-compiler--allow-external-user-calls)
+             (nelisp-phase47-compiler--aot-funcall-boundary-available-p
+              fenv)))
     (nelisp-phase47-compiler--parse-aot-apply
      sexp env fenv defuns))
    ;; Doc 129.8B — first compiler surface for non-local exit forms.
@@ -8531,18 +9108,25 @@ functions `((NAME . ARITY) ...)'."
            (arity (nelisp-phase47-compiler--defun-signature-arity
                    signature))
            (args (cdr sexp)))
-      (when (> arity (length nelisp-phase47-compiler--arg-regs))
-        (signal 'nelisp-phase47-compiler-error
-                (list :too-many-args name arity)))
+	      (when (> arity
+	               (if (and (eq nelisp-phase47-compiler--arch 'x86_64)
+	                        (eq nelisp-phase47-compiler--abi 'sysv))
+	                   14
+	                 (length (nelisp-phase47-compiler--current-arg-regs))))
+	        (signal 'nelisp-phase47-compiler-error
+	                (list :too-many-args name arity)))
       (if (nelisp-phase47-compiler--defun-signature-rest-p signature)
           (let* ((fixed-count
                   (nelisp-phase47-compiler--defun-signature-fixed-count
                    signature))
+                 (min-count
+                  (nelisp-phase47-compiler--defun-signature-min-count
+                   signature))
                  (given (length args)))
-            (when (< given fixed-count)
+            (when (< given min-count)
               (signal 'nelisp-phase47-compiler-error
                       (list :call-arity-mismatch name
-                            :expected-at-least fixed-count
+                            :expected-at-least min-count
                             :got given)))
             (let* ((boundary
                     (nelisp-phase47-compiler--aot-funcall1-boundary-symbols
@@ -8551,7 +9135,10 @@ functions `((NAME . ARITY) ...)'."
                    (mirror (plist-get boundary :mirror))
                    (frames (plist-get boundary :frames))
                    (scratch (plist-get boundary :scratch))
-                   (fixed-args (cl-subseq args 0 fixed-count))
+                   (given-fixed (min given fixed-count))
+                   (fixed-args
+                    (append (cl-subseq args 0 given-fixed)
+                            (make-list (- fixed-count given-fixed) 0)))
                    (rest-args (nthcdr fixed-count args))
                    (list-node
                     (nelisp-phase47-compiler--parse-value
@@ -8569,16 +9156,42 @@ functions `((NAME . ARITY) ...)'."
                                  (append fixed-args (list scratch))))))
               (nelisp-phase47-compiler--make-ir 'value-seq
                     :forms (list list-node call-node))))
-        (unless (= (length args) arity)
+        (let ((min-count
+               (nelisp-phase47-compiler--defun-signature-min-count
+                signature)))
+          (unless (and (<= min-count (length args))
+                       (<= (length args) arity))
           (signal 'nelisp-phase47-compiler-error
                   (list :call-arity-mismatch name
-                        :expected arity :got (length args))))
+                          :expected arity :got (length args)))))
         (nelisp-phase47-compiler--make-ir 'call
               :name name
               :args (mapcar (lambda (a)
                               (nelisp-phase47-compiler--parse-value
                                a env fenv defuns))
-                            args)))))
+                            (append args
+                                    (make-list (- arity (length args))
+                                               0)))))))
+   ;; Doc 129.7AS: object-mode user modules may call functions defined
+   ;; in other `.el' objects.  Same-unit calls still take the `call' IR
+   ;; path above; this fallback emits a PLT relocation so the final
+   ;; module link can resolve the cross-object function symbol.
+   ((and nelisp-phase47-compiler--allow-external-user-calls
+         (consp sexp)
+         (symbolp (car sexp))
+         (not (keywordp (car sexp)))
+         (not (memq (car sexp)
+                    nelisp-phase47-compiler--external-user-call-reserved-ops)))
+    (let* ((name (car sexp))
+           (raw-args (cdr sexp))
+           (parsed (nelisp-phase47-compiler--parse-extern-call-args
+                    'extern-call name raw-args env fenv defuns)))
+      (nelisp-phase47-compiler--make-ir 'extern-call
+            :name name
+            :ret-class 'gp
+            :args (plist-get parsed :args)
+            :varargs-p (plist-get parsed :varargs-p)
+            :f64-count (plist-get parsed :f64-count))))
    ;; (let ((VAR VAL)) BODY) — value context (= inside defun body).
    ;; Compile-time-foldable values fold into ENV (= compile-time fold
    ;; path, same as `--parse-stmt'); non-foldable values allocate a
@@ -8880,22 +9493,27 @@ Returns one of:
                                  :class uniform-class
                                  :root-p (nth idx root-flags))))
                  params param-regs)))
+             (hidden-boundary
+              (nelisp-phase47-compiler--object-hidden-boundary-fenv
+               new-fenv arity))
+             (parse-fenv (plist-get hidden-boundary :fenv))
+             (hidden-boundary-count (plist-get hidden-boundary :count))
              ;; Body is a value-producing expression (= implicit return).
              ;; Bind `--next-rt-let-slot' starting at arity so runtime
              ;; `let-rt' bindings occupy slots arity, arity+1, ...
              ;; The slot counter is a mutable cons cell; the final value
              ;; gives us `rt-slot-count = (car cell) - arity'.
-             (rt-slot-cell (list arity))
+             (rt-slot-cell (list (+ arity hidden-boundary-count)))
              (body-ir (let ((nelisp-phase47-compiler--next-rt-let-slot
                              rt-slot-cell))
                         (nelisp-phase47-compiler--parse-value
-                         body env new-fenv defuns)))
+                         body env parse-fenv defuns)))
              (rt-slot-count (- (car rt-slot-cell) arity))
              (gc-root-slots
               (nelisp-phase47-compiler--gc-root-slots-for-defun body-ir))
              (root-managed-body-ir
               (nelisp-phase47-compiler--maybe-wrap-aot-root-scope
-               body-ir gc-root-slots env new-fenv defuns)))
+               body-ir gc-root-slots env parse-fenv defuns)))
         (nelisp-phase47-compiler--make-ir 'defun
               :name name
               :params params
@@ -9235,26 +9853,21 @@ IMM9 is a signed unscaled byte offset in the range -256..255."
                  t-reg))))
 
 (defun nelisp-phase47-compiler--emit-ref-load (buf slot)
-  "Emit `mov rax, [rbp - 8*(SLOT+1)]' (= 4 bytes, fixed).
+  "Emit `mov rax, [rbp - 8*(SLOT+1)]'.
 Used by `:kind ref' (GP class) to load a spilled parameter off
-the local frame.  Encoding: REX.W (= 0x48), MOV r64, r/m64 opcode
-(= 0x8B), ModR/M = mod=01 reg=000 (rax) rm=101 (rbp) = 0x45, then
-disp8 = (- 8*(SLOT+1)) as a signed byte.  SLOT ranges over 0..5
-so the displacement is always in disp8 range; signals if SLOT is
-out of range for the current Doc 97 arity cap."
-  ;; Slot 0..5 = GP params (SysV AMD64 arity cap).  Slots 6+ are
-  ;; runtime `let-rt' bindings allocated beyond the param spill area.
-  ;; Upper bound 13 keeps the disp8 in [-128,0] range (= 8*(13+1)=112).
-  (unless (and (integerp slot) (<= 0 slot 13))
+the local frame.  x86_64 uses disp8 for compact slots and disp32 for
+larger Doc 129 object-mode scratch/let frames."
+  (unless (and (integerp slot) (<= 0 slot))
     (signal 'nelisp-phase47-compiler-error
             (list :ref-slot-out-of-range slot)))
   (if (eq nelisp-phase47-compiler--arch 'aarch64)
       (let ((disp (- (* 16 (1+ slot)))))
+        (unless (<= -256 disp 255)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :ref-slot-out-of-range slot)))
         (nelisp-phase47-compiler--arm64-emit-ldur buf 'x0 'x29 disp))
-    (let* ((disp (- (* 8 (1+ slot))))
-           (disp8 (logand disp #xFF)))
-      (nelisp-asm-x86_64-emit-bytes
-       buf (unibyte-string #x48 #x8B #x45 disp8)))))
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rbp (- (* 8 (1+ slot))))))
 
 (defun nelisp-phase47-compiler--emit-f64-ref-load (buf slot fp-dst)
   "Emit code that loads a spilled f64 parameter into FP-DST.
@@ -10215,7 +10828,46 @@ count."
          (args (nelisp-phase47-compiler--ir-get node :args))
          (n (length args))
          (cur-arg-regs (nelisp-phase47-compiler--current-arg-regs))
-         (regs (cl-subseq cur-arg-regs 0 n))
+         (reg-budget (length cur-arg-regs)))
+    (if (> n reg-budget)
+        (progn
+          (unless (and (eq nelisp-phase47-compiler--arch 'x86_64)
+                       (eq nelisp-phase47-compiler--abi 'sysv))
+            (signal 'nelisp-phase47-compiler-error
+                    (list :call-stack-args-unsupported name n)))
+          (let* ((stack-count (- n reg-budget))
+                 (arity (or nelisp-phase47-compiler--current-defun-arity 0))
+                 (needs-align (= (logand (+ arity n stack-count) 1) 1)))
+            ;; Save every arg left-to-right so complex args cannot clobber
+            ;; earlier register-bound values while later args are evaluated.
+            (dolist (a args)
+              (nelisp-phase47-compiler--emit-value a buf)
+              (nelisp-asm-x86_64-push buf 'rax))
+            ;; Load register arguments from the temporary save area.
+            (cl-loop for idx below reg-budget
+                     for target in cur-arg-regs
+                     do (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                         buf target (* 8 (- (1- n) idx))))
+            (when needs-align
+              (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+            ;; Push outgoing stack args right-to-left.  The first stack
+            ;; arg ends up closest to the return address in the callee.
+            (let ((pushed-stack 0))
+              (cl-loop for idx downfrom (1- n) to reg-budget
+                       do (let ((disp (+ (* 8 (- (1- n) idx))
+                                         (if needs-align 8 0)
+                                         (* 8 pushed-stack))))
+                            (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                             buf 'r10 disp)
+                            (nelisp-asm-x86_64-push buf 'r10)
+                            (setq pushed-stack (1+ pushed-stack)))))
+            (nelisp-asm-x86_64-call-rel32 buf name)
+            (when (> stack-count 0)
+              (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-count)))
+            (when needs-align
+              (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))
+            (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 n))))
+      (let* ((regs (cl-subseq cur-arg-regs 0 n))
          ;; Stack alignment correction (Doc 111 §111.E fix).
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
          (needs-align (= (logand arity 1) 1))
@@ -10263,8 +10915,8 @@ count."
     ;; Reclaim shadow space.
     (when (> shadow 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow))
-    (when needs-align
-      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))
+	    (when needs-align
+	      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))))
 
 (defun nelisp-phase47-compiler--emit-extern-call (node buf)
   "Emit a SysV AMD64 call to an extern symbol NODE.
@@ -13144,6 +13796,7 @@ drift (= a Doc 92 emitter invariant violation)."
             (list :unsupported-arch arch)))
   (let* ((nelisp-phase47-compiler--label-counter 0)
          (nelisp-phase47-compiler--arch arch)
+         (nelisp-phase47-compiler--allow-external-user-calls t)
          (source (if auto-frame-roots
                      (nelisp-phase47-compiler--select-auto-frame-roots
                       sexp)

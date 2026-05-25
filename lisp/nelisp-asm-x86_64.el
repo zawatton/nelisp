@@ -917,26 +917,33 @@ not be `rsp' / `r12' (= SIB-required, not modelled here)."
      buf (unibyte-string rex #x0F #xB6 modrm))))
 
 (defun nelisp-asm-x86_64-mov-reg-mem-disp8 (buf dst base disp)
-  "Emit `MOV DST, QWORD PTR [BASE + DISP]' = REX.W + 8B ModR/M + disp8 (4 bytes).
-DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
-`rsp' / `r12' (= SIB-required, not modelled here)."
+  "Emit `MOV DST, QWORD PTR [BASE + DISP]'.
+Uses the compact disp8 encoding when DISP fits [-128, 127], otherwise
+uses the disp32 form.  Base must not be `rsp' / `r12' (= SIB-required,
+not modelled here)."
   (when (memq base '(rsp r12))
     (signal 'nelisp-asm-x86_64-error
             (list :mov-rsp-r12-base-needs-sib base)))
-  (unless (and (integerp disp) (<= -128 disp 127))
+  (unless (and (integerp disp)
+               (<= (- (ash 1 31)) disp (1- (ash 1 31))))
     (signal 'nelisp-asm-x86_64-error
-            (list :disp8-out-of-range disp)))
+            (list :disp32-out-of-range disp)))
   (let* ((rex (nelisp-asm-x86_64--rex
                1
                (nelisp-asm-x86_64--reg-ext dst)
                0
                (nelisp-asm-x86_64--reg-ext base)))
-         (modrm (nelisp-asm-x86_64--modrm
-                 1
-                 (nelisp-asm-x86_64--reg-low3 dst)
-                 (nelisp-asm-x86_64--reg-low3 base))))
-    (nelisp-asm-x86_64--append-bytes
-     buf (unibyte-string rex #x8B modrm (logand disp #xFF)))))
+         (reg (nelisp-asm-x86_64--reg-low3 dst))
+         (rm (nelisp-asm-x86_64--reg-low3 base)))
+    (if (<= -128 disp 127)
+        (nelisp-asm-x86_64--append-bytes
+         buf (unibyte-string rex #x8B
+                             (nelisp-asm-x86_64--modrm 1 reg rm)
+                             (logand disp #xFF)))
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string rex #x8B
+                                   (nelisp-asm-x86_64--modrm 2 reg rm))
+                   (nelisp-asm-x86_64--imm32-bytes disp))))))
 
 (defun nelisp-asm-x86_64-mov-reg-mem-rsp-disp (buf dst disp)
   "Emit `MOV DST, QWORD PTR [RSP + DISP]' using SIB addressing.
@@ -994,26 +1001,33 @@ IMM is the unsigned byte value [0, 255] (= one of the
                  (unibyte-string #xC6 modrm (logand imm #xFF))))))
 
 (defun nelisp-asm-x86_64-mov-mem-reg-disp8 (buf base disp src)
-  "Emit `MOV QWORD PTR [BASE + DISP], SRC' = REX.W + 89 ModR/M + disp8 (4 bytes).
-DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
-`rsp' / `r12' (= SIB-required, not modelled here)."
+  "Emit `MOV QWORD PTR [BASE + DISP], SRC'.
+Uses the compact disp8 encoding when DISP fits [-128, 127], otherwise
+uses the disp32 form.  Base must not be `rsp' / `r12' (= SIB-required,
+not modelled here)."
   (when (memq base '(rsp r12))
     (signal 'nelisp-asm-x86_64-error
             (list :mov-rsp-r12-base-needs-sib base)))
-  (unless (and (integerp disp) (<= -128 disp 127))
+  (unless (and (integerp disp)
+               (<= (- (ash 1 31)) disp (1- (ash 1 31))))
     (signal 'nelisp-asm-x86_64-error
-            (list :disp8-out-of-range disp)))
+            (list :disp32-out-of-range disp)))
   (let* ((rex (nelisp-asm-x86_64--rex
                1
                (nelisp-asm-x86_64--reg-ext src)
                0
                (nelisp-asm-x86_64--reg-ext base)))
-         (modrm (nelisp-asm-x86_64--modrm
-                 1
-                 (nelisp-asm-x86_64--reg-low3 src)
-                 (nelisp-asm-x86_64--reg-low3 base))))
-    (nelisp-asm-x86_64--append-bytes
-     buf (unibyte-string rex #x89 modrm (logand disp #xFF)))))
+         (reg (nelisp-asm-x86_64--reg-low3 src))
+         (rm (nelisp-asm-x86_64--reg-low3 base)))
+    (if (<= -128 disp 127)
+        (nelisp-asm-x86_64--append-bytes
+         buf (unibyte-string rex #x89
+                             (nelisp-asm-x86_64--modrm 1 reg rm)
+                             (logand disp #xFF)))
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string rex #x89
+                                   (nelisp-asm-x86_64--modrm 2 reg rm))
+                   (nelisp-asm-x86_64--imm32-bytes disp))))))
 
 ;; ---- Doc 110 §110.A f64 register-class MOVSD helpers ----
 ;;

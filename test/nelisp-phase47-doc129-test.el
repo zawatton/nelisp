@@ -1031,6 +1031,56 @@ materialized closure temporary."
                    'cons-make-with-clone))
              defcustom-else))))
 
+(ert-deftest nelisp-phase47-doc129/parse-top-level-var-literal-constructors ()
+  "Doc 129.3V: literal constructors lower through direct Sexp helpers."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar keys (vector) "doc")
+                (defconst modes (list 'emacs-lisp-mode 'lisp-mode) "doc")
+                (defcustom pair (cons 'major-mode "Elisp")
+                  "doc" :type 'sexp)
+                (defconst prompt (concat "M-" "x") "doc"))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (keys-body (nelisp-phase47-compiler--ir-get (nth 0 forms) :body))
+         (modes-body (nelisp-phase47-compiler--ir-get (nth 1 forms) :body))
+         (pair-body (nelisp-phase47-compiler--ir-get (nth 2 forms) :body))
+         (prompt-body (nelisp-phase47-compiler--ir-get (nth 3 forms) :body))
+         (keys-else
+          (nelisp-phase47-compiler--ir-get
+           (nelisp-phase47-compiler--ir-get
+            (nth 1 (nelisp-phase47-compiler--ir-get keys-body :forms))
+            :else)
+           :forms))
+         (modes-forms (nelisp-phase47-compiler--ir-get modes-body :forms))
+         (pair-else
+          (nelisp-phase47-compiler--ir-get
+           (nelisp-phase47-compiler--ir-get
+            (nth 1 (nelisp-phase47-compiler--ir-get pair-body :forms))
+            :else)
+           :forms))
+         (prompt-forms (nelisp-phase47-compiler--ir-get prompt-body :forms)))
+    (should (cl-find-if
+             (lambda (node)
+               (eq (nelisp-phase47-compiler--ir-kind node) 'vector-make))
+             keys-else))
+    (should (cl-find-if
+             (lambda (node)
+               (eq (nelisp-phase47-compiler--ir-kind node)
+                   'cons-make-with-clone))
+             modes-forms))
+    (should (cl-find-if
+             (lambda (node)
+               (eq (nelisp-phase47-compiler--ir-kind node)
+                   'cons-make-with-clone))
+             pair-else))
+    (should (cl-find-if
+             (lambda (node)
+               (and (eq (nelisp-phase47-compiler--ir-kind node)
+                        'sexp-write-str-lit)
+                    (equal (nelisp-phase47-compiler--ir-get node :bytes)
+                           (string-to-list "M-x"))))
+             prompt-forms))))
+
 (ert-deftest nelisp-phase47-doc129/parse-top-level-var-hash-table-init-helpers ()
   "Doc 129.3U: top-level var helpers materialize empty hash tables."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -2284,6 +2334,356 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
     (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
                 'selected))))
+
+(ert-deftest nelisp-phase47-doc129/function-static-fboundp-if-prunes-branch ()
+  "Doc 129.1E: function-local static `fboundp' guards select one branch."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun guarded ()
+                 (if (fboundp 'nelisp-phase47-doc129-missing-function)
+                     (unknown-form 1)
+                   17))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
+    (should (= (nelisp-phase47-compiler--ir-get body :value) 17))))
+
+(ert-deftest nelisp-phase47-doc129/function-static-fboundp-and-prunes-tail ()
+  "Doc 129.1E: statically false `and' guards drop unsupported tail forms."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun guarded ()
+                 (and (fboundp 'nelisp-phase47-doc129-missing-function)
+                      (unknown-form 1)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
+    (should (= (nelisp-phase47-compiler--ir-get body :value) 0))))
+
+(ert-deftest nelisp-phase47-doc129/function-static-fboundp-cond-prunes-clause ()
+  "Doc 129.1E: `cond' skips statically false compatibility clauses."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun guarded ()
+                 (cond
+                  ((fboundp 'nelisp-phase47-doc129-missing-function)
+                   (unknown-form 1))
+                  (t 23)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (clauses (nelisp-phase47-compiler--ir-get body :clauses)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'cond))
+    (should (= (length clauses) 1))
+    (should (eq (caar clauses) 'always))))
+
+(ert-deftest nelisp-phase47-doc129/object-external-user-call-reloc ()
+  "Doc 129.7AS: object mode lowers unknown user calls to PLT relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-external-user-call-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller ((arg :type sexp))
+              (external-user-function arg))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-r" path)))))
+            (should (string-match-p "external-user-function" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unboundary-builtin-call-reloc ()
+  "Doc 129.7AW: ordinary object defuns get synthetic builtin boundaries."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unboundary-builtin-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller (arg)
+              (car arg))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-r" path)))))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unboundary-funcall-reloc ()
+  "Doc 129.7AW: ordinary object defuns get synthetic funcall boundaries."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unboundary-funcall-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller (fn arg)
+              (funcall fn arg))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-r" path)))))
+            (should (string-match-p "nelisp_aot_funcall1" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-top-level-dynamic-var-init-reloc ()
+  "Doc 129.7AT: dynamic top-level Sexp initializers may use external calls."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-dynamic-var-init-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defvar doc129-dynamic-var
+              (let ((value (external-make-value 7)))
+                (external-touch-value value)
+                value))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-r" path)))))
+            (should (string-match-p "external-make-value" out))
+            (should (string-match-p "external-touch-value" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-top-level-dynamic-builtin-init-reloc ()
+  "Doc 129.7AT: dynamic initializers preserve var symbols across builtin calls."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-dynamic-builtin-init-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defvar doc129-dynamic-builtin-var
+              (list (external-make-value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-r" path)))))
+            (should (string-match-p "external-make-value" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-runtime-sexp-literal-values ()
+  "Doc 129.7AU: boxed AOT boundaries materialize literal Sexp values."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-runtime-literal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller ((out :type sexp)
+                           (mirror :type sexp)
+                           (frames :type sexp)
+                           (scratch :type sexp)
+                           (name_slot :type sexp))
+              (seq
+               "RET"
+               'eval-buffer
+               #'identity
+               :json-false))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "caller" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-boundary-global-value-lookup ()
+  "Doc 129.7AV: boxed object functions lower free symbols to value lookup."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-global-value-lookup-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller ((out :type sexp)
+                           (mirror :type sexp)
+                           (frames :type sexp)
+                           (scratch :type sexp)
+                           (name_slot :type sexp))
+              user-emacs-directory)
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-r" path)))))
+            (should (string-match-p "nelisp_env_lookup_value" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-global-setq-value-cell ()
+  "Doc 129.7AX: object functions lower global setq through env_set_value."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-global-setq-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller ()
+              (setq doc129-global-counter 0
+                    doc129-global-name "ready"))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-r" path)))))
+            (should (string-match-p "nelisp_env_set_value" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-hidden-boundary-keyword-fallback ()
+  "Doc 129.7AY: object hidden boundaries accept keyword literal fallback."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-keyword-fallback-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller (entry)
+              (plist-get entry :name))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-r" path)))))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-optional-arity-padding ()
+  "Doc 129.7AZ: object calls accept omitted optional parameters."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-optional-arity-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defun callee (required &optional maybe)
+               required)
+             (defun caller (x)
+               (callee x)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "callee" out))
+            (should (string-match-p "caller" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-common-vararg-source-forms ()
+  "Doc 129.7BA: object parsing accepts common vararg source forms."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-vararg-source-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller (a b c prompt seconds)
+              (seq
+               (+ a b c)
+               (- (or a 1))
+               (while a)
+               (ignore prompt seconds)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "caller" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-top-level-compat-forms ()
+  "Doc 129.7BB: object frontend accepts common top-level compatibility forms."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-top-compat-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defvar-local doc129-local-state 'ready "doc")
+             (prog1
+                 (defun doc129-prog1-defun (x) x)
+               (seq))
+             (add-hook 'doc129-hook #'doc129-prog1-defun))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "doc129-prog1-defun" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-empty-let ()
+  "Doc 129.7BC: empty let bindings parse as their body."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-empty-let-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller (x)
+              (let nil x))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+	            (should (string-match-p "caller" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-source-compat-value-forms ()
+  "Doc 129.7BD: object frontend accepts common macroexpanded value shapes."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-value-compat-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defun let_singleton (x)
+               (let ((--cl-var--)) x))
+             (defun cmp_chain (a b c)
+               (= a b c))
+             (defun condition_nil_var (x)
+               (condition-case 0 x
+                 (error 7)))
+             (defun whole_float_literal (x)
+               (/ x 1000.0)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "let_singleton" out))
+            (should (string-match-p "cmp_chain" out))
+            (should (string-match-p "condition_nil_var" out))
+            (should (string-match-p "whole_float_literal" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-dynamic-nonlocal-source-forms ()
+  "Doc 129.8BJ: object output allows dynamic nonlocal forms through bridges."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-dynamic-nonlocal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defun catch_loop (x)
+               (catch 'done
+                 (while x
+                   (throw 'done x))
+                 0))
+             (defun condition_unwind (x)
+               (condition-case 0
+                   (unwind-protect x
+                     (setq x 0))
+                 (error 7)))
+             (defvar doc129-special-table nil)
+             (defun special_nonlocal (table prompt initial-input hist default-str)
+               (let ((doc129-special-table table))
+                 (emacs-minibuffer-read-from-minibuffer
+                  prompt initial-input 0 0 hist default-str))))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "catch_loop" out))
+            (should (string-match-p "condition_unwind" out))
+            (should (string-match-p "special_nonlocal" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-large-generated-defconst ()
+  "Doc 129.7BE: generated giant table defconsts do not block object AOT."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-large-defconst-" nil ".o"))
+        (table (mapcar (lambda (n) (cons n (+ n 1)))
+                       (number-sequence 0 2100))))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           `(seq
+             (defconst doc129-large-table ',table)
+             (defun after_large_table (x) x))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "after_large_table" out))))
+      (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-top-level-unless-fboundp-polyfill-strip ()
   "Doc 129.1B: object output accepts host-compat polyfill guards."
