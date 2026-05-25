@@ -1823,25 +1823,57 @@ path instead of by-value lambda lifting."
         (push sym out)))
     (nreverse out)))
 
+(defun nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars (forms)
+  "Return captured vars definitely updated after sequential FORMS."
+  (let (guaranteed)
+    (dolist (child forms)
+      (setq guaranteed
+            (nelisp-phase47-compiler--symbol-list-union
+             guaranteed
+             (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+              child))))
+    guaranteed))
+
+(defun nelisp-phase47-compiler--captured-mutation-cond-guaranteed-vars
+    (clauses)
+  "Return captured vars definitely updated after `cond' CLAUSES.
+This requires an unconditional `t' clause; without it, the `cond' can
+fall through without executing a mutating branch."
+  (let ((first t)
+        (covered nil)
+        (guaranteed nil))
+    (while (and clauses (not covered))
+      (let ((clause (car clauses)))
+        (when (consp clause)
+          (let* ((pred (car clause))
+                 (body (cdr clause))
+                 (body-vars
+                  (nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars
+                   body)))
+            (setq guaranteed
+                  (if first
+                      body-vars
+                    (nelisp-phase47-compiler--symbol-list-intersection
+                     guaranteed body-vars)))
+            (setq first nil)
+            (when (eq pred t)
+              (setq covered t)))))
+      (setq clauses (cdr clauses)))
+    (and covered guaranteed)))
+
 (defun nelisp-phase47-compiler--captured-mutation-guaranteed-vars (form)
   "Return captured vars definitely updated after FORM's normal exit.
 This is intentionally conservative: a direct captured-mutation funcall
 guarantees its mutated slots, sequential forms guarantee the union of
-their guaranteed updates, and `if' guarantees only the intersection of
-the then/else branches."
+their guaranteed updates, and conditional forms guarantee only the
+intersection of exhaustive branches."
   (cond
    ((atom form) nil)
    ((eq (car form) 'funcall)
     (nelisp-phase47-compiler--captured-mutation-funcall-vars form))
    ((memq (car form) '(progn seq))
-    (let (guaranteed)
-      (dolist (child (cdr form))
-        (setq guaranteed
-              (nelisp-phase47-compiler--symbol-list-union
-               guaranteed
-               (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
-                child))))
-      guaranteed))
+    (nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars
+     (cdr form)))
    ((eq (car form) 'if)
     (let ((then-vars
            (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
@@ -1852,6 +1884,9 @@ the then/else branches."
                  (nth 3 form)))))
       (nelisp-phase47-compiler--symbol-list-intersection
        then-vars else-vars)))
+   ((eq (car form) 'cond)
+    (nelisp-phase47-compiler--captured-mutation-cond-guaranteed-vars
+     (cdr form)))
    (t nil)))
 
 (defun nelisp-phase47-compiler--rewrite-frame-slot-refs (form vars)
