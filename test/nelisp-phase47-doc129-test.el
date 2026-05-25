@@ -8118,6 +8118,46 @@ materialized closure temporary."
                 landing-names)
                2))))
 
+(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-mixed-static-throw-dynamic-signal ()
+  "Doc 129.8AR: catch cleanup can mix static throw and signal leaves."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_throw_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (unwind-protect
+                       (if value
+                           (throw 'done value)
+                         (signal 'error value))
+                     (identity value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'aot-landing-label))))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
+    (should (= (cl-count 'nelisp_aot_throw externs) 1))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should (member 'nelisp_aot_landing_value externs))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should (= (length machine-jumps) 1))
+    (should (= (cl-count-if
+                (lambda (name)
+                  (string-prefix-p "aot-unwind-cleanup-" name))
+                landing-names)
+               2))))
+
 (ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-mixed-static-other-throw ()
   "Doc 129.8AJ: catch cleanup routes nonmatching quoted throws dynamically."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -8750,6 +8790,38 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_push_catch" out))
             (should (string-match-p "nelisp_aot_push_unwind" out))
             (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-mixed-static-throw-dynamic-signal ()
+  "Doc 129.8AR: mixed static throw/signal catch cleanup compiles."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-catch-unwind-if-signal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_throw_signal
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (catch 'done
+                (unwind-protect
+                    (if value
+                        (throw 'done value)
+                      (signal 'error value))
+                  (identity value))))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_throw_signal" out))
+            (should (string-match-p "nelisp_aot_push_catch" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 

@@ -4288,6 +4288,7 @@ source form."
   (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
     (cond
      ((nelisp-phase47-compiler--aot-direct-throw-form sexp) t)
+     ((nelisp-phase47-compiler--aot-direct-condition-form sexp) t)
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
@@ -4299,20 +4300,24 @@ source form."
                   tag then)
                  (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
                   tag then)
+                 (nelisp-phase47-compiler--aot-direct-condition-form then)
                  (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                        then)))
              (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
                   tag else)
                  (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
                   tag else)
+                 (nelisp-phase47-compiler--aot-direct-condition-form else)
                  (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                        else)))
              (or (nelisp-phase47-compiler--aot-direct-throw-form then)
                  (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
                   tag then)
+                 (nelisp-phase47-compiler--aot-direct-condition-form then)
                  (nelisp-phase47-compiler--aot-direct-throw-form else)
                  (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
-                  tag else)))))
+                  tag else)
+                 (nelisp-phase47-compiler--aot-direct-condition-form else)))))
      (t nil))))
 
 (defun nelisp-phase47-compiler--aot-condition-case-direct-unwind-form
@@ -4514,6 +4519,16 @@ source form."
              (seq
               ,@cleanups
               (aot-landing-jump out))))))))
+     ((nelisp-phase47-compiler--aot-direct-condition-form branch)
+    (let ((cleanup-label
+           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+      `(seq
+        (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+        ,branch
+        (aot-landing-label ,cleanup-label
+          (seq
+           ,@cleanups
+           (aot-landing-jump out))))))
      ((or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p tag branch)
           (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
            tag branch))
