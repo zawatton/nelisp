@@ -1068,7 +1068,7 @@ Frequency from a 2026-05-25 grep of the 6 GREEN anvil modules
 | =error= / =condition-case= / =catch= / =throw= / =unwind-protect= | 55+ | ✗ (no non-local exit) |
 | =dolist= / =dotimes= / =mapcar= / =apply= / =funcall= | 50+  | partial (funcall/apply + dynamic mapcar delegation) |
 | =make-hash-table= + access        | 11   | partial (desugar only) |
-| =defvar= / =defconst= / =defcustom= | 21   | partial (AOT init helpers + runtime custom metadata/context table; native helper call pending) |
+| =defvar= / =defconst= / =defcustom= | 21   | partial (AOT init helpers + runtime custom metadata/context table + executable native thunk) |
 | =defmacro= + macro use            | few  | partial (frontend macro expansion MVP) |
 
 * §1 Mechanism groups (= the actual work, grouped by what they share)
