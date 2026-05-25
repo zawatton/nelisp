@@ -42,7 +42,8 @@
   129.8G source-level =unwind-protect= normal-exit lowering, and
   Stage 129.8H single-argument =error= lowering, and Stage 129.8I
   formatted =error= varargs bridge, and Stage 129.8J
-  =condition-case= list condition specs have implementations in
+  =condition-case= list condition specs, and Stage 129.8K
+  =condition-case= multi-clause normal exits have implementations in
   =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
   =nelisp-cc-runtime.el=.
   Supported in this first cut: host macro expansion in value/call
@@ -331,6 +332,11 @@
   =aot-pop-handler 'condition= forms on the normal path.  Handler-body
   dispatch for signalled conditions remains pending on native landing
   pads.
+- *129.8K MVP*: the same normal-exit lowering now walks every handler
+  clause in a source =condition-case= form instead of only the first
+  clause.  Each symbol selector, including symbols inside list
+  selectors, gets a balanced push/pop pair.  Handler-body selection for
+  actual signalled exits remains pending.
 - *Previous state*: DRAFT 2026-05-25 — design only.
   Scoping doc for the long-horizon "compile arbitrary user elisp to
   native code" track.  Authored after a 2026-05-25 session that
@@ -1377,6 +1383,19 @@ returns:
 Signalled handler dispatch, binding =VAR= to the error data, and native
 jump-to-handler emission remain later 129.8 work.
 
+Stage 129.8K also walks every handler clause on this normal path:
+
+#+begin_src elisp
+(condition-case err
+    value
+  (error out)
+  (quit out))
+#+end_src
+
+lowers to two condition pushes before BODY and two matching pops after
+BODY.  The handler bodies remain metadata for the future landing-pad
+path; they are not executed unless a non-local signal path is compiled.
+
 *** §1.F.7 Shipped MVP: source =unwind-protect= normal-exit lowering
 
 Stage 129.8G covers the normal path of =unwind-protect=:
@@ -1647,7 +1666,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge SHIPPED 2026-05-25; closure allocation/capture and source rest params pending |
-| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
+| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
 =anvil-server.el= that uses only those (= prove the pipeline end to

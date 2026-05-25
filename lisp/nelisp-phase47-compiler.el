@@ -2216,22 +2216,29 @@ native landing-pad jump path is available."
   "Return condition symbols handled by source condition-case SEXP.
 Doc 129.8F started with the common `(condition BODY...)' handler shape;
 Doc 129.8J also accepts `(CONDITION...)' list specs by installing one
-condition handler per symbol with the same landing metadata."
+condition handler per symbol with the same landing metadata.  Doc
+129.8K walks every handler clause on the normal-exit path; actual
+handler-body dispatch still waits for native landing pads."
   (let ((clauses (nthcdr 3 sexp)))
     (unless clauses
       (signal 'nelisp-phase47-compiler-error
               (list :aot-condition-case-no-handlers sexp)))
-    (let ((selector (caar clauses)))
-      (cond
-       ((symbolp selector)
-        (list selector))
-       ((and (consp selector)
-             (cl-every #'symbolp selector))
-        selector)
-       (t
-        (signal 'nelisp-phase47-compiler-error
-                (list :aot-condition-case-handler-shape
-                      (car clauses))))))))
+    (apply
+     #'append
+     (mapcar
+      (lambda (clause)
+        (let ((selector (car clause)))
+          (cond
+           ((symbolp selector)
+            (list selector))
+           ((and (consp selector)
+                 (cl-every #'symbolp selector))
+            selector)
+           (t
+            (signal 'nelisp-phase47-compiler-error
+                    (list :aot-condition-case-handler-shape
+                          clause))))))
+      clauses))))
 
 (defun nelisp-phase47-compiler--parse-aot-condition-case-normal-exit
     (sexp env fenv defuns)
