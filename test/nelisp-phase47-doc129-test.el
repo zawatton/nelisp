@@ -7447,6 +7447,45 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-let-cleanup-signal-route ()
+  "Doc 129.8BH: condition cleanup-local lexical let exposes tail signals."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_unwind_cleanup_let_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (unwind-protect
+                         (signal 'error value)
+                       (let (((x :type sexp) (identity value)))
+                         (signal tag x)))
+                   (error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'aot-landing-label))))
+    (should (member 'nelisp_aot_push_condition externs))
+    (should (member 'nelisp_aot_push_unwind externs))
+    (should (= (cl-count 'nelisp_aot_signal externs) 2))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
+    (should (member 'nelisp_aot_landing_error externs))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (should (= (length machine-jumps) 0))
+    (should (cl-some
+             (lambda (name)
+               (string-prefix-p "aot-unwind-cleanup-" name))
+             landing-names))))
+
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-conditional-mixed ()
   "Doc 129.8AF: mixed condition cleanup pops normal or jumps to landing."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -8890,6 +8929,30 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-let-cleanup-throw-route ()
+  "Doc 129.8BH: cleanup-local lexical let wrappers expose tail non-local exits."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_cleanup_let_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (throw tag value)
+                   (let (((x :type sexp) (identity value)))
+                     (throw 'other x))
+                   (identity value)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_throw externs) 2))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
+
 (ert-deftest nelisp-phase47-doc129/parse-unwind-protect-progn-body-throw-route ()
   "Doc 129.8BF: protected-body progn wrappers expose tail non-local exits."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -9006,6 +9069,43 @@ materialized closure temporary."
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
+    (should (member 'nelisp_aot_landing_value externs))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (should (= (length machine-jumps) 0))
+    (should (cl-some
+             (lambda (name)
+               (string-prefix-p "aot-unwind-cleanup-" name))
+             landing-names))))
+
+(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-let-cleanup-throw-route ()
+  "Doc 129.8BH: catch cleanup-local lexical let exposes tail throws."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_unwind_cleanup_let_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (unwind-protect
+                       (throw 'done value)
+                     (let (((x :type sexp) (identity value)))
+                       (throw 'other x)))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'aot-landing-label))))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (member 'nelisp_aot_push_unwind externs))
+    (should (= (cl-count 'nelisp_aot_throw externs) 2))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
     (should (member 'nelisp_aot_landing_value externs))
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 0))
@@ -10217,6 +10317,37 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "unwind_cleanup_progn_throw" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should-not (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-let-cleanup-throw-route ()
+  "Doc 129.8BH: cleanup lexical let non-local route compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-cleanup-let-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_cleanup_let_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (throw tag value)
+                (let (((x :type sexp) (identity value)))
+                  (throw 'other x))
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_cleanup_let_throw" out))
             (should (string-match-p "nelisp_aot_builtin_call1" out))
             (should (string-match-p "nelisp_aot_push_unwind" out))
             (should (string-match-p "nelisp_aot_throw" out))

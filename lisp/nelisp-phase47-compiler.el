@@ -4225,12 +4225,27 @@ contain no unresolved non-local source form."
   (or (nelisp-phase47-compiler--aot-direct-throw-form sexp)
       (nelisp-phase47-compiler--aot-direct-condition-form sexp)))
 
+(defun nelisp-phase47-compiler--aot-cleanup-wrapper-split (sexp)
+  "Return cleanup-local wrapper split metadata for SEXP, or nil.
+The split is only returned when SEXP actually contributes a local prefix
+or lexical wrapper around the selected cleanup tail."
+  (let ((split (nelisp-phase47-compiler--aot-protected-body-split sexp)))
+    (when (and split
+               (or (plist-get split :prefix)
+                   (plist-get split :wrappers)))
+      split)))
+
 (defun nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
     (sexp)
   "Return non-nil for safe standalone unwind cleanup branch trees."
   (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
     (cond
      ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form sexp) t)
+     ((let ((split
+             (nelisp-phase47-compiler--aot-cleanup-wrapper-split sexp)))
+        (and split
+             (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+              (plist-get split :tail)))))
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
@@ -4258,6 +4273,11 @@ contain no unresolved non-local source form."
   (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
     (cond
      ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form sexp) t)
+     ((let ((split
+             (nelisp-phase47-compiler--aot-cleanup-wrapper-split sexp)))
+        (and split
+             (nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+              (plist-get split :tail)))))
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
@@ -4330,6 +4350,13 @@ contain no unresolved non-local source form."
     (cond
      ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form tree)
       tree)
+     ((let ((split
+             (nelisp-phase47-compiler--aot-cleanup-wrapper-split tree)))
+        (and split
+             (nelisp-phase47-compiler--aot-protected-body-with-prefix
+              split
+              (nelisp-phase47-compiler--aot-cleanup-tree-body-form
+               (plist-get split :tail) continuation-form)))))
      ((and (consp tree)
            (eq (car tree) 'if)
            (= (length tree) 4))
