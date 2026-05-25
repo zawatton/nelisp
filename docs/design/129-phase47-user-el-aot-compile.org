@@ -24,7 +24,8 @@
   context handoff, Stage 129.3P native-call entry adapter, Stage
   129.3Q external executable native-call thunk, Stage 129.3R
   common Sexp literal top-level var init, Stage 129.3S top-level
-  =setq= init helpers,
+  =setq= init helpers, Stage 129.3T quoted list/vector init
+  materialization,
   Stage 129.4 multi-binding runtime =let= MVP, Stage 129.4J
   bare-symbol =let= bindings,
   Stage 129.5A static GC root-map MVP, Stage 129.5B AOT root-set
@@ -355,6 +356,11 @@
   one module-init helper per =NAME VALUE= pair.  Supported literal
   values reuse the 129.3R direct Sexp materialization path; other
   values fall back to the existing boxed integer setq helper surface.
+- *129.3T MVP*: the direct top-level init materializer now supports
+  quoted proper/dotted lists and vector literals.  It uses the existing
+  Phase 47 =cons-make-with-clone=, =vector-make=, =vector-slot-set=,
+  and =vector-ref-ptr= primitives with the standard init =scratch=
+  vector as temporary storage, so no new runtime ABI is introduced.
 - *129.7V MVP*: =nelisp-cc-runtime-aot-module-init-plan= now accepts
   AOT closure descriptors from
   =nelisp-phase47-compiler--closure-descriptors=.  Plan execution
@@ -5411,7 +5417,7 @@ deletion or deferred until the extern can be elisp-emitted.
 |---------+--------------------------------+------------+------+-------------------------|
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP + 129.1B top-level compile-time guards + 129.1C source if ELSE... normalization SHIPPED 2026-05-26 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP + 129.2B raw integer mod arithmetic SHIPPED 2026-05-26 |
-| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization + 129.3N default AOT environment handles + 129.3O standalone Env pointer context handoff + 129.3P native-call entry adapter + 129.3Q external executable native-call thunk + 129.3R common Sexp literal top-level var init + 129.3S top-level setq init helpers SHIPPED 2026-05-26 |
+| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization + 129.3N default AOT environment handles + 129.3O standalone Env pointer context handoff + 129.3P native-call entry adapter + 129.3Q external executable native-call thunk + 129.3R common Sexp literal top-level var init + 129.3S top-level setq init helpers + 129.3T quoted list/vector init materialization SHIPPED 2026-05-26 |
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering + 129.4G direct special-let throw cleanup + 129.4H conditional special-let throw cleanup + 129.4I nested conditional special-let throw cleanup + 129.4J bare-symbol let bindings SHIPPED 2026-05-26; heap lexframes and general tagged local values pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope + 129.5J loader-selected hash-FRAMES root-scope marker + 129.5K object loader root metadata selection SHIPPED 2026-05-25; deeper whole-module native-frame liveness remains future work |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP + define-error/defalias frontend handling SHIPPED 2026-05-26 |

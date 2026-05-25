@@ -990,6 +990,47 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 defcustom-else))
                 'sexp-write-nil))))
 
+(ert-deftest nelisp-phase47-doc129/parse-top-level-var-aggregate-init-helpers ()
+  "Doc 129.3T: top-level var helpers materialize list/vector literals."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar modes '(emacs-lisp-mode org-mode) "doc")
+                (defconst empty [] "doc")
+                (defcustom alist '(("\\.el\\'" . emacs-lisp-mode))
+                  "doc" :type 'sexp))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (defvar-body (nelisp-phase47-compiler--ir-get (nth 0 forms) :body))
+         (defconst-body (nelisp-phase47-compiler--ir-get (nth 1 forms) :body))
+         (defcustom-body (nelisp-phase47-compiler--ir-get (nth 2 forms) :body))
+         (defvar-else
+          (nelisp-phase47-compiler--ir-get
+           (nelisp-phase47-compiler--ir-get
+            (nth 1 (nelisp-phase47-compiler--ir-get defvar-body :forms))
+            :else)
+           :forms))
+         (defconst-forms
+          (nelisp-phase47-compiler--ir-get defconst-body :forms))
+         (defcustom-else
+          (nelisp-phase47-compiler--ir-get
+           (nelisp-phase47-compiler--ir-get
+            (nth 1 (nelisp-phase47-compiler--ir-get defcustom-body :forms))
+            :else)
+           :forms)))
+    (should (cl-find-if
+             (lambda (node)
+               (eq (nelisp-phase47-compiler--ir-kind node)
+                   'cons-make-with-clone))
+             defvar-else))
+    (should (cl-find-if
+             (lambda (node)
+               (eq (nelisp-phase47-compiler--ir-kind node) 'vector-make))
+             defconst-forms))
+    (should (cl-find-if
+             (lambda (node)
+               (eq (nelisp-phase47-compiler--ir-kind node)
+                   'cons-make-with-clone))
+             defcustom-else))))
+
 (ert-deftest nelisp-phase47-doc129/top-level-defcustom-requires-docstring ()
   "Doc 129.3F: top-level defcustom validates its docstring."
   (should-error

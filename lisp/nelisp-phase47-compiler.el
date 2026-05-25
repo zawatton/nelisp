@@ -1179,30 +1179,92 @@ generated AOT init helper."
           :docstring (nth 3 form)
           :options options)))
 
-(defun nelisp-phase47-compiler--top-level-sexp-init-write-form (slot form)
-  "Return an init-helper write form that materializes FORM into SLOT.
+(defun nelisp-phase47-compiler--top-level-literal-value (form)
+  "Return `(literal . VALUE)' when FORM is a supported literal init."
+  (cond
+   ((and (consp form) (eq (car form) 'quote) (= (length form) 2))
+    (cons 'literal (nth 1 form)))
+   ((or (integerp form) (stringp form) (null form) (eq form t)
+        (vectorp form))
+    (cons 'literal form))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--scratch-slot (scratch index)
+  "Return a pointer form for scratch vector slot INDEX."
+  `(vector-ref-ptr ,scratch ,index))
+
+(defun nelisp-phase47-compiler--top-level-literal-write-forms
+    (slot literal scratch depth)
+  "Return forms that materialize LITERAL into SLOT.
+SCRATCH is the standard AOT init scratch vector; DEPTH selects a
+temporary scratch slot for nested aggregate construction.  Nil means
+the literal shape is outside the current module-init materializer."
+  (when (>= depth 10)
+    (cl-return-from nelisp-phase47-compiler--top-level-literal-write-forms
+      nil))
+  (cond
+   ((integerp literal)
+    `((sexp-int-make ,slot ,literal)))
+   ((stringp literal)
+    `((sexp-write-str-lit ,slot ,literal)))
+   ((null literal)
+    `((sexp-write-nil ,slot)))
+   ((eq literal t)
+    `((sexp-write-t ,slot)))
+   ((symbolp literal)
+    `((sexp-write-symbol-lit ,slot ,(symbol-name literal))))
+   ((consp literal)
+    (let ((items nil)
+          (tail literal))
+      (while (consp tail)
+        (push (car tail) items)
+        (setq tail (cdr tail)))
+      (let ((forms
+             (nelisp-phase47-compiler--top-level-literal-write-forms
+              slot tail scratch depth))
+            (temp (nelisp-phase47-compiler--scratch-slot scratch depth)))
+        (when forms
+          (dolist (item items)
+            (let ((item-forms
+                   (nelisp-phase47-compiler--top-level-literal-write-forms
+                    temp item scratch (1+ depth))))
+              (unless item-forms
+                (setq forms nil))
+              (when forms
+                (setq forms
+                      (append forms
+                              item-forms
+                              `((cons-make-with-clone ,temp ,slot
+                                                      ,slot)))))))
+          forms))))
+   ((vectorp literal)
+    (let ((forms `((vector-make ,(length literal) ,slot)))
+          (temp (nelisp-phase47-compiler--scratch-slot scratch depth))
+          (idx 0)
+          (ok t))
+      (while (and ok (< idx (length literal)))
+        (let ((item-forms
+               (nelisp-phase47-compiler--top-level-literal-write-forms
+                temp (aref literal idx) scratch (1+ depth))))
+          (if item-forms
+              (setq forms
+                    (append forms
+                            item-forms
+                            `((vector-slot-set ,slot ,idx ,temp))))
+            (setq ok nil)))
+        (setq idx (1+ idx)))
+      (when ok forms)))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--top-level-sexp-init-write-forms
+    (slot form scratch)
+  "Return init-helper forms that materialize FORM into SLOT.
 Returns nil when FORM is outside the literal Sexp MVP and should keep
 using the boxed integer init helper path."
-  (let ((literal (if (and (consp form)
-                          (eq (car form) 'quote)
-                          (= (length form) 2))
-                     (nth 1 form)
-                   form)))
-    (cond
-     ((integerp form)
-      `(sexp-int-make ,slot ,form))
-     ((stringp literal)
-      `(sexp-write-str-lit ,slot ,literal))
-     ((null literal)
-      `(sexp-write-nil ,slot))
-     ((eq literal t)
-      `(sexp-write-t ,slot))
-     ((and (symbolp literal)
-           (not (eq literal nil))
-           (not (eq literal t))
-           (and (consp form) (eq (car form) 'quote)))
-      `(sexp-write-symbol-lit ,slot ,(symbol-name literal)))
-     (t nil))))
+  (let ((literal (nelisp-phase47-compiler--top-level-literal-value form)))
+    (when literal
+      (nelisp-phase47-compiler--top-level-literal-write-forms
+       slot (cdr literal) scratch 0))))
 
 (defun nelisp-phase47-compiler--top-level-var-direct-defun
     (kind helper name init-form)
@@ -1211,10 +1273,10 @@ INIT-FORM must be supported by
 `nelisp-phase47-compiler--top-level-sexp-init-write-form'."
   (let* ((params '(out mirror frames scratch name_slot))
          (symbol-name (symbol-name name))
-         (write-form
-          (nelisp-phase47-compiler--top-level-sexp-init-write-form
-           'out init-form)))
-    (when write-form
+         (write-forms
+          (nelisp-phase47-compiler--top-level-sexp-init-write-forms
+           'out init-form 'scratch)))
+    (when write-forms
       `(defun ,helper
          ,(mapcar (lambda (p) (list p :type 'sexp)) params)
          (seq
@@ -1226,12 +1288,12 @@ INIT-FORM must be supported by
                         1)
                       name_slot
                     (seq
-                     ,write-form
+                     ,@write-forms
                      (extern-call nelisp_env_set_value
                                   mirror frames name_slot out scratch 0)
                      name_slot))))
              ((memq kind '(setq setq-default))
-              `(,write-form
+              `(,@write-forms
                 (extern-call nelisp_env_set_value
                              mirror frames name_slot out scratch 0)
                 name_slot))
@@ -1239,7 +1301,7 @@ INIT-FORM must be supported by
               `((sexp-write-nil out)
                 (extern-call nelisp_mirror_set_constant
                              mirror name_slot out)
-                ,write-form
+                ,@write-forms
                 (extern-call nelisp_env_set_value
                              mirror frames name_slot out scratch 0)
                 (sexp-write-t out)
