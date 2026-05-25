@@ -1306,6 +1306,37 @@
                                                     :value)
                    argc))))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-higher-order-table ()
+  "Doc 129.6I: calln lowering covers dynamic higher-order builtins."
+  (dolist (case '((mapcar 2 (mapcar fn xs))
+                  (mapc 2 (mapc fn xs))
+                  (mapconcat 3 (mapconcat fn xs sep))))
+    (pcase-let ((`(,builtin ,argc ,form) case))
+      (let* ((ir (nelisp-phase47-compiler--parse
+                  `(defun call_builtin
+                       ((out :type sexp)
+                        (mirror :type sexp)
+                        (frames :type sexp)
+                        (scratch :type sexp)
+                        (name_slot :type sexp)
+                        (fn :type sexp)
+                        (xs :type sexp)
+                        (sep :type sexp))
+                     ,form)))
+             (body (nelisp-phase47-compiler--ir-get ir :body))
+             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (symbol-node (nth 0 forms))
+             (call-node (nth 1 forms))
+             (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+                       (string-to-list (symbol-name builtin))))
+        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                    'nelisp_aot_builtin_calln))
+        (should (= (nelisp-phase47-compiler--ir-get (nth 3 call-args)
+                                                    :value)
+                   argc))))))
+
 (ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
   "Doc 129.6F: vararg builtin lowering requires explicit boundary params."
   (should-error

@@ -1377,6 +1377,22 @@ exit points were emitted; call-points were missing."
      "129" "130" "Doc129")
     (should (equal (aref out 0) "Doc130"))))
 
+(ert-deftest nelisp-cc-runtime-aot-builtin-calln-host-higher-order-table ()
+  "Doc 129.6I — builtin calln covers dynamic higher-order builtins."
+  (let ((out (vector nil))
+        (seen nil))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'mapcar 2 out 'scratch #'1+ '(1 2 3))
+    (should (equal (aref out 0) '(2 3 4)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'mapc 2 out 'scratch
+     (lambda (x) (push x seen))
+     '(a b))
+    (should (equal seen '(b a)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'mapconcat 3 out 'scratch #'identity '("a" "b") ",")
+    (should (equal (aref out 0) "a,b"))))
+
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-validates-boundary ()
   "Doc 129.6F — builtin calln rejects malformed ABI arguments."
   (should-error
