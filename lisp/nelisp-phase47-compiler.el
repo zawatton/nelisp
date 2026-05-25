@@ -4608,10 +4608,10 @@ source form."
           (seq
            (throw ,(nth 1 branch) ,value-slot)
            (aot-landing-label ,cleanup-label
-             (seq
-              ,@cleanups
-              (aot-machine-landing-jump
-               (aot-current-sp) ,landing-label))))))))
+             ,(nelisp-phase47-compiler--aot-cleanup-body-form
+               cleanups
+               `(aot-machine-landing-jump
+                 (aot-current-sp) ,landing-label))))))))
      ((nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p tag branch)
       `(if ,(nth 1 branch)
            ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
@@ -4639,9 +4639,9 @@ source form."
           (seq
            (throw ,(nth 1 branch) ,value-slot)
            (aot-landing-label ,cleanup-label
-             (seq
-              ,@cleanups
-              (aot-landing-jump out))))))))
+             ,(nelisp-phase47-compiler--aot-cleanup-body-form
+               cleanups
+               '(aot-landing-jump out))))))))
      ((nelisp-phase47-compiler--aot-direct-condition-form branch)
     (let ((cleanup-label
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
@@ -4649,9 +4649,9 @@ source form."
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
         ,branch
         (aot-landing-label ,cleanup-label
-          (seq
-           ,@cleanups
-           (aot-landing-jump out))))))
+          ,(nelisp-phase47-compiler--aot-cleanup-body-form
+            cleanups
+            '(aot-landing-jump out))))))
      ((or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p tag branch)
           (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
            tag branch))
@@ -4662,10 +4662,11 @@ source form."
            tag (nth 3 branch) cleanups landing-label value-slot)))
      (t
       `(let (((,value-slot :type sexp) ,branch))
-         (seq
-          ,@cleanups
-          (aot-pop-handler 'catch)
-          ,value-slot))))))
+         ,(nelisp-phase47-compiler--aot-cleanup-body-form
+           cleanups
+           `(seq
+             (aot-pop-handler 'catch)
+             ,value-slot)))))))
 
 (defun nelisp-phase47-compiler--aot-unwind-static-cleanup-form
     (unwind-form landing-label landing-body tag)
@@ -4676,8 +4677,11 @@ source form."
          (nelisp-phase47-compiler--gensym "aot-unwind-value"))
         (cleanup-label
          (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
-    (when (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                   cleanups)
+    (when (and (not (nelisp-phase47-compiler--aot-final-cleanup-nonlocal-form
+                     cleanups))
+               (cl-some
+                #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                cleanups))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
     (if (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
@@ -4688,9 +4692,10 @@ source form."
             (seq
              (throw ,(nth 1 body-form) ,value-slot)
              (aot-landing-label ,cleanup-label
-               (seq
-                ,@cleanups
-                (aot-machine-landing-jump (aot-current-sp) ,landing-label)))
+               ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                 cleanups
+                 `(aot-machine-landing-jump
+                   (aot-current-sp) ,landing-label)))
              (aot-landing-label ,landing-label ,landing-body))))
       `(seq
         ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
@@ -4704,8 +4709,11 @@ source form."
         (cleanups (nthcdr 2 unwind-form))
         (value-slot
          (nelisp-phase47-compiler--gensym "aot-unwind-value")))
-    (when (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                   cleanups)
+    (when (and (not (nelisp-phase47-compiler--aot-final-cleanup-nonlocal-form
+                     cleanups))
+               (cl-some
+                #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                cleanups))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
     `(seq
@@ -4720,17 +4728,20 @@ source form."
         (cleanups (nthcdr 2 unwind-form))
         (cleanup-label
          (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
-    (when (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                   cleanups)
+    (when (and (not (nelisp-phase47-compiler--aot-final-cleanup-nonlocal-form
+                     cleanups))
+               (cl-some
+                #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                cleanups))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
     `(seq
       (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
       ,body-form
       (aot-landing-label ,cleanup-label
-        (seq
-         ,@cleanups
-         (aot-machine-landing-jump (aot-current-sp) ,landing-label)))
+        ,(nelisp-phase47-compiler--aot-cleanup-body-form
+          cleanups
+          `(aot-machine-landing-jump (aot-current-sp) ,landing-label)))
       (aot-landing-label ,landing-label ,landing-body))))
 
 (defun nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
@@ -4747,21 +4758,21 @@ source form."
              (nelisp-phase47-compiler--aot-condition-cleanup-landing-label
               branch-tag landing-label selected-tag)))
         (if target-label
+            `(seq
+              (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+              ,branch
+              (aot-landing-label ,cleanup-label
+                ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                  cleanups
+                  `(aot-machine-landing-jump
+                    (aot-current-sp) ,target-label))))
           `(seq
             (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
             ,branch
             (aot-landing-label ,cleanup-label
-              (seq
-               ,@cleanups
-               (aot-machine-landing-jump
-                (aot-current-sp) ,target-label))))
-        `(seq
-          (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-          ,branch
-          (aot-landing-label ,cleanup-label
-            (seq
-             ,@cleanups
-             (aot-landing-jump out))))))))
+              ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                cleanups
+                '(aot-landing-jump out))))))))
      ((or (nelisp-phase47-compiler--aot-condition-tree-tag branch)
           (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
            branch)
@@ -4778,10 +4789,11 @@ source form."
            selected-tag clauses)))
      (t
       `(let (((,value-slot :type sexp) ,branch))
-         (seq
-          ,@cleanups
-          (aot-pop-handler 'condition)
-          ,value-slot))))))
+         ,(nelisp-phase47-compiler--aot-cleanup-body-form
+           cleanups
+           `(seq
+             (aot-pop-handler 'condition)
+             ,value-slot)))))))
 
 (defun nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
     (unwind-form landing-label landing-body &optional selected-tag clauses
@@ -4791,8 +4803,11 @@ source form."
         (cleanups (nthcdr 2 unwind-form))
         (value-slot
          (nelisp-phase47-compiler--gensym "aot-unwind-value")))
-    (when (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                   cleanups)
+    (when (and (not (nelisp-phase47-compiler--aot-final-cleanup-nonlocal-form
+                     cleanups))
+               (cl-some
+                #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                cleanups))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
     `(seq
