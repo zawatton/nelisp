@@ -1695,6 +1695,64 @@ path instead of by-value lambda lifting."
         (nelisp-phase47-compiler--lambda-lift-call
          lambda-form (nthcdr 2 sexp))))))
 
+(defun nelisp-phase47-compiler--captured-mutation-funcall-vars (sexp)
+  "Return captured variables mutated by a literal-lambda FUNCALL SEXP."
+  (let ((lambda-form
+         (and (consp sexp)
+              (eq (car sexp) 'funcall)
+              (nelisp-phase47-compiler--lambda-literal-form
+               (nth 1 sexp)))))
+    (when (and lambda-form
+               (nelisp-phase47-compiler--lambda-captured-setq-p
+                lambda-form))
+      (nelisp-phase47-compiler--lambda-captured-setq-vars
+       lambda-form))))
+
+(defun nelisp-phase47-compiler--rewrite-frame-slot-refs (form vars)
+  "Rewrite free references to VARS in FORM through `aot-frame-slot-ref'."
+  (cond
+   ((and (symbolp form) (memq form vars))
+    `(aot-frame-slot-ref ',form))
+   ((atom form) form)
+   ((memq (car form) '(quote function))
+    form)
+   ((eq (car form) 'setq)
+    (let ((pairs (cdr form))
+          out)
+      (while pairs
+        (let ((var (car pairs))
+              (value (cadr pairs)))
+          (push var out)
+          (when (cdr pairs)
+            (push (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                   value vars)
+                  out))
+          (setq pairs (cddr pairs))))
+      (cons 'setq (nreverse out))))
+   (t
+    (cons (car form)
+          (mapcar (lambda (child)
+                    (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                     child vars))
+                  (cdr form))))))
+
+(defun nelisp-phase47-compiler--preprocess-seq-forms (forms)
+  "Preprocess FORMS while tracking captured-mutation frame-slot reads."
+  (let ((mutated nil)
+        (out nil))
+    (dolist (form forms)
+      (let ((processed (nelisp-phase47-compiler--preprocess-source form)))
+        (when mutated
+          (setq processed
+                (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                 processed mutated)))
+        (push processed out)
+        (dolist (var (nelisp-phase47-compiler--captured-mutation-funcall-vars
+                      form))
+          (unless (memq var mutated)
+            (push var mutated)))))
+    (nreverse out)))
+
 (defun nelisp-phase47-compiler--preprocess-builtinn-lambda (sexp)
   "Lambda-lift a literal function-designator argument in builtin SEXP."
   (let* ((builtin (car sexp))
@@ -2131,15 +2189,15 @@ the whole program."
      (nelisp-phase47-compiler--lambda-literal-form (car sexp))
      (cdr sexp)))
    ((eq (car sexp) 'progn)
-    (let ((body (mapcar #'nelisp-phase47-compiler--preprocess-source
-                        (cdr sexp))))
+    (let ((body (nelisp-phase47-compiler--preprocess-seq-forms
+                 (cdr sexp))))
       (cond
        ((null body) 0)
        ((null (cdr body)) (car body))
        (t (cons 'seq body)))))
    ((eq (car sexp) 'seq)
-    (cons 'seq (mapcar #'nelisp-phase47-compiler--preprocess-source
-                       (cdr sexp))))
+    (cons 'seq (nelisp-phase47-compiler--preprocess-seq-forms
+                (cdr sexp))))
    ((eq (car sexp) 'defun-sexp-int)
     (nelisp-phase47-compiler--preprocess-source
      (nelisp-phase47-compiler--preprocess-defun-sexp-int sexp)))
