@@ -2472,6 +2472,50 @@ exit points were emitted; call-points were missing."
     (lambda (_symbol) (cons :not-found #x1000)))
    :type 'nelisp-cc-runtime-error))
 
+(ert-deftest nelisp-cc-runtime-install-aot-c-abi-exports ()
+  "Doc 129.6T — resolved AOT C ABI entries install as native exports."
+  (unwind-protect
+      (let* ((index 0)
+             (exports
+              (nelisp-cc-runtime-install-aot-c-abi-exports
+               (lambda (_symbol)
+                 (prog1 (cons :resolved (+ #x710000 (* index 16)))
+                   (setq index (1+ index))))))
+             (symbols (mapcar (lambda (entry) (plist-get entry :symbol))
+                              exports))
+             (throw
+              (nelisp-cc-runtime-aot-c-abi-export 'nelisp_aot_throw)))
+        (should (memq 'nelisp_aot_builtin_calln symbols))
+        (should (memq 'nelisp_aot_throw symbols))
+        (should (eq (plist-get throw :status) :resolved))
+        (should (integerp (plist-get throw :addr)))
+        (should (eq (plist-get throw :function)
+                    'nelisp-cc-runtime-aot-throw-boundary))
+        (should (equal exports
+                       (nelisp-cc-runtime-aot-c-abi-export-table-snapshot))))
+    (nelisp-cc-runtime-clear-aot-c-abi-exports)))
+
+(ert-deftest nelisp-cc-runtime-install-aot-c-abi-exports-rejects-non-native ()
+  "Doc 129.6T — native export install rejects missing or host-stub entries."
+  (unwind-protect
+      (progn
+        (should-error
+         (nelisp-cc-runtime-install-aot-c-abi-exports
+          (lambda (_symbol) (cons :not-found nil)))
+         :type 'nelisp-cc-runtime-error)
+        (should-error
+         (let ((nelisp-cc-runtime-resolve-symbol-function nil))
+           (nelisp-cc-runtime-install-aot-c-abi-exports))
+         :type 'nelisp-cc-runtime-error)
+        (let ((exports
+               (let ((nelisp-cc-runtime-resolve-symbol-function nil))
+                 (nelisp-cc-runtime-install-aot-c-abi-exports nil t))))
+          (should (cl-every
+                   (lambda (entry)
+                     (eq (plist-get entry :status) :host-stub))
+                   exports))))
+    (nelisp-cc-runtime-clear-aot-c-abi-exports)))
+
 (ert-deftest nelisp-cc-runtime-aot-module-init-plan ()
   "Doc 129.3H — runtime normalizes compiler metadata for Doc 99."
   (let* ((init-helpers

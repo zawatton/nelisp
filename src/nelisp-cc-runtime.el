@@ -2932,6 +2932,10 @@ table is metadata only: real address resolution still goes through
 `nelisp-cc-runtime-resolve-symbol' and the standalone runtime's dlsym
 hook.")
 
+(defvar nelisp-cc-runtime--aot-c-abi-exports
+  (make-hash-table :test 'eq)
+  "Installed Doc 129 AOT C ABI exports keyed by native symbol.")
+
 (defun nelisp-cc-runtime-aot-c-abi-descriptors ()
   "Return a copy of the Doc 129 AOT C ABI descriptor table."
   (mapcar #'copy-sequence nelisp-cc-runtime--aot-c-abi-descriptors))
@@ -3035,6 +3039,68 @@ Each entry is produced by
             (nelisp-cc-runtime-resolve-aot-c-abi-descriptor
              descriptor resolver))
           nelisp-cc-runtime--aot-c-abi-descriptors))
+
+(defun nelisp-cc-runtime-clear-aot-c-abi-exports ()
+  "Clear installed Doc 129 AOT C ABI exports."
+  (clrhash nelisp-cc-runtime--aot-c-abi-exports)
+  nil)
+
+(defun nelisp-cc-runtime-aot-c-abi-export (symbol-name)
+  "Return the installed Doc 129 AOT C ABI export for SYMBOL-NAME, or nil."
+  (unless (symbolp symbol-name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-c-abi-export-symbol-not-symbol symbol-name)))
+  (let ((entry (gethash symbol-name nelisp-cc-runtime--aot-c-abi-exports)))
+    (when entry
+      (copy-sequence entry))))
+
+(defun nelisp-cc-runtime-aot-c-abi-export-table-snapshot ()
+  "Return installed Doc 129 AOT C ABI exports in descriptor order."
+  (let (out)
+    (dolist (descriptor nelisp-cc-runtime--aot-c-abi-descriptors)
+      (let* ((symbol (plist-get descriptor :symbol))
+             (entry (gethash symbol
+                             nelisp-cc-runtime--aot-c-abi-exports)))
+        (when entry
+          (push (copy-sequence entry) out))))
+    (nreverse out)))
+
+(defun nelisp-cc-runtime--validate-aot-c-abi-export-resolution
+    (resolution allow-host-stub)
+  "Validate RESOLUTION for installation into the AOT C ABI export table."
+  (let ((symbol (plist-get resolution :symbol))
+        (status (plist-get resolution :status))
+        (addr (plist-get resolution :addr)))
+    (unless (and (listp resolution)
+                 (symbolp symbol)
+                 (memq status '(:resolved :host-stub))
+                 (integerp addr)
+                 (> addr 0)
+                 (plist-get resolution :descriptor))
+      (signal 'nelisp-cc-runtime-error
+              (list :bad-aot-c-abi-export-resolution resolution)))
+    (when (and (eq status :host-stub) (not allow-host-stub))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-c-abi-export-host-stub-not-native symbol)))
+    resolution))
+
+(defun nelisp-cc-runtime-install-aot-c-abi-exports
+    (&optional resolver allow-host-stub)
+  "Resolve and install Doc 129 AOT C ABI exports.
+RESOLVER is forwarded to `nelisp-cc-runtime-resolve-aot-c-abi-table'.
+Every resolved entry must have status `:resolved'.  When
+ALLOW-HOST-STUB is non-nil, host-stub addresses are accepted for
+simulator inspection; standalone/native loader callers leave it nil."
+  (let ((resolutions
+         (nelisp-cc-runtime-resolve-aot-c-abi-table resolver)))
+    (nelisp-cc-runtime-clear-aot-c-abi-exports)
+    (dolist (resolution resolutions)
+      (nelisp-cc-runtime--validate-aot-c-abi-export-resolution
+       resolution allow-host-stub)
+      (puthash (plist-get resolution :symbol)
+               (copy-sequence resolution)
+               nelisp-cc-runtime--aot-c-abi-exports))
+    (nelisp-cc-runtime-aot-c-abi-export-table-snapshot)))
 
 (defun nelisp-cc-runtime--validate-aot-init-helper-descriptor (descriptor)
   "Validate one Doc 129 AOT init helper DESCRIPTOR."
