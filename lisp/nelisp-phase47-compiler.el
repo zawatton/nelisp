@@ -5069,10 +5069,10 @@ Arg placement strategy (W7.6b trivial-suffix opt):
      regs, and trivial suffix targets are all distinct gp-regs
      that the prefix pops did not write.
   5. SysV GP stack args, when present, are pushed right-to-left after
-     register args have been materialized.  129.7F also accepts one
-     final non-trivial stack-GP arg by evaluating all args left-to-right
-     into temporary stack saves, parking the final stack arg in r10,
-     restoring register args, then pushing the outgoing stack arg.
+     register args have been materialized.  When any stack-GP arg is
+     non-trivial, 129.7G evaluates all args left-to-right into a
+     temporary call-spill area, reloads register args from that area,
+     then pushes outgoing stack args from it.
   6. For variadic calls, materialise `:f64-count' in AL via
      `mov eax, imm32' (= zero-extended, satisfies SysV ABI §3.5.7
      contract that AL contains the upper bound on f64 args).  This
@@ -5093,6 +5093,7 @@ same branch and emit the same byte count."
          (ret-class (or (nelisp-phase47-compiler--ir-get node :ret-class) 'gp))
          (varargs-p (nelisp-phase47-compiler--ir-get node :varargs-p))
          (f64-count (or (nelisp-phase47-compiler--ir-get node :f64-count) 0))
+         (arg-count (length args))
          ;; Per-class register pools, sliced to the number of args
          ;; of that class.  Iteration order matches source order:
          ;; the Nth gp arg → Nth GP reg, the Nth f64 arg → Nth xmm
@@ -5141,6 +5142,12 @@ same branch and emit the same byte count."
                    for target in arg-targets
                    when (and (consp target) (eq (car target) :stack))
                    collect a))
+         (stack-indexed
+          (cl-loop for a in args
+                   for target in arg-targets
+                   for idx from 0
+                   when (and (consp target) (eq (car target) :stack))
+                   collect (list idx a target)))
          ;; W7.6b: split args into [complex-prefix | trivial-suffix].
          ;; Suffix eligibility is :cls gp AND --call-arg-trivial-p;
          ;; an f64 arg or a non-trivial gp arg stops the walk.  Walk
@@ -5172,11 +5179,15 @@ same branch and emit the same byte count."
          ;; only gp-class defuns need the runtime correction below.
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
          (needs-align (= (logand (+ arity (length stack-args)) 1) 1))
-         (single-final-nontrivial-stack-p
-          (and (= (length stack-args) 1)
-               (not (nelisp-phase47-compiler--call-arg-trivial-p
-                     (car stack-args)))
-               (eq (car stack-args) (car (last args))))))
+         (general-stack-spill-p
+          (cl-some
+           (lambda (a)
+             (not (nelisp-phase47-compiler--call-arg-trivial-p a)))
+           stack-args))
+         (spill-needs-align
+          (= (logand (+ arity (length stack-args) arg-count) 1) 1))
+         (call-temp-save-count 0)
+         (call-needs-align needs-align))
     (when (and stack-args
                (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
                          (eq nelisp-phase47-compiler--abi 'sysv))))
@@ -5188,27 +5199,47 @@ same branch and emit the same byte count."
       (unless (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-stack-arg-not-trivial name))))
-    (if single-final-nontrivial-stack-p
+    (if general-stack-spill-p
         (progn
-          ;; Evaluate every arg left-to-right into a temporary stack
-          ;; save, then recover the final stack arg into r10 before
-          ;; restoring register args.  This preserves source evaluation
-          ;; order while avoiding clobbering already-materialized arg regs.
+          (setq call-temp-save-count arg-count
+                call-needs-align spill-needs-align)
+          ;; Evaluate every arg left-to-right into temporary stack saves.
+          ;; The saves remain above the outgoing call frame until after
+          ;; CALL returns; only the actual outgoing stack args are pushed
+          ;; below them.
           (dolist (a args)
             (nelisp-phase47-compiler--emit-value a buf)
             (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
               (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
             (nelisp-asm-x86_64-push buf 'rax))
-          (nelisp-asm-x86_64-pop buf 'r10)
-          (dolist (target (reverse register-targets))
-            (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
-                (progn
-                  (nelisp-asm-x86_64-pop buf 'rax)
-                  (nelisp-asm-x86_64-movq-xmm-r64 buf target 'rax))
-              (nelisp-asm-x86_64-pop buf target)))
-          (when needs-align
+          (cl-loop for a in args
+                   for target in arg-targets
+                   for idx from 0
+                   unless (and (consp target) (eq (car target) :stack))
+                   do
+                   (let ((disp (* 8 (- (1- arg-count) idx))))
+                     (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
+                         (progn
+                           (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                            buf 'rax disp)
+                           (nelisp-asm-x86_64-movq-xmm-r64
+                            buf target 'rax))
+                       (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                        buf target disp))))
+          (when call-needs-align
             (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
-          (nelisp-asm-x86_64-push buf 'r10))
+          (let ((pushed-stack 0))
+            (dolist (entry (reverse stack-indexed))
+              (let* ((idx (nth 0 entry))
+                     (source-disp (* 8 (- (1- arg-count) idx)))
+                     (align-disp (if call-needs-align 8 0))
+                     (disp (+ source-disp
+                              align-disp
+                              (* 8 pushed-stack))))
+                (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                 buf 'r10 disp)
+                (nelisp-asm-x86_64-push buf 'r10)
+                (setq pushed-stack (1+ pushed-stack))))))
       (dolist (a stack-args)
         (unless (nelisp-phase47-compiler--call-arg-trivial-p a)
           (signal 'nelisp-phase47-compiler-error
@@ -5241,7 +5272,7 @@ same branch and emit the same byte count."
       ;; Insert the 8-byte alignment correction before stack args are
       ;; pushed.  That keeps the first stack arg at the ABI-visible top
       ;; of the outgoing argument area while any pad lives below it.
-      (when needs-align
+      (when call-needs-align
         (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
       ;; SysV outgoing stack args are pushed right-to-left so the first
       ;; stack arg ends up closest to the return address in the callee.
@@ -5276,8 +5307,10 @@ same branch and emit the same byte count."
     ;; Undo the alignment correction.  rax (= i64 return) or xmm0
     ;; (= f64 return) is preserved because `add rsp, 8' doesn't
     ;; touch any GPR / xmm.
-    (when needs-align
+    (when call-needs-align
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))
+    (when (> call-temp-save-count 0)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 call-temp-save-count)))
     ;; Caller convention: extern-call result is i64 in rax (default)
     ;; or f64 in xmm0 (when :ret-class = f64).  Both ABIs agree on the
     ;; return register convention for scalar values.

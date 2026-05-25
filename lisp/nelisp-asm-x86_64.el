@@ -938,6 +938,40 @@ DISP must fit in a signed 8-bit value [-128, 127].  Base must not be
     (nelisp-asm-x86_64--append-bytes
      buf (unibyte-string rex #x8B modrm (logand disp #xFF)))))
 
+(defun nelisp-asm-x86_64-mov-reg-mem-rsp-disp (buf dst disp)
+  "Emit `MOV DST, QWORD PTR [RSP + DISP]' using SIB addressing.
+DISP=0 uses no displacement, signed disp8 uses the compact form, and
+larger signed/unsigned i32 displacements use disp32.  This is the
+minimal RSP-base load needed by Doc 129 call-spill assembly."
+  (unless (and (integerp disp) (<= 0 disp (1- (ash 1 32))))
+    (signal 'nelisp-asm-x86_64-error
+            (list :rsp-disp-out-of-range disp)))
+  (let* ((rex (nelisp-asm-x86_64--rex
+               1
+               (nelisp-asm-x86_64--reg-ext dst)
+               0
+               0))
+         (reg (nelisp-asm-x86_64--reg-low3 dst))
+         (sib #x24))
+    (cond
+     ((zerop disp)
+      (nelisp-asm-x86_64--append-bytes
+       buf (unibyte-string rex #x8B
+                           (nelisp-asm-x86_64--modrm 0 reg 4)
+                           sib)))
+     ((<= -128 disp 127)
+      (nelisp-asm-x86_64--append-bytes
+       buf (unibyte-string rex #x8B
+                           (nelisp-asm-x86_64--modrm 1 reg 4)
+                           sib
+                           (logand disp #xFF))))
+     (t
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string rex #x8B
+                                   (nelisp-asm-x86_64--modrm 2 reg 4)
+                                   sib)
+                   (nelisp-asm-x86_64--imm32-bytes disp)))))))
+
 (defun nelisp-asm-x86_64-mov-mem-imm8 (buf base imm)
   "Emit `MOV BYTE PTR [BASE], IMM8' = [REX.B] + C6 /0 ModR/M + imm8.
 2 bytes (no REX) for base in rax-rdi, 3 bytes with REX.B for r8-r15.
