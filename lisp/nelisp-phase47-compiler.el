@@ -1947,10 +1947,20 @@ defun is visible in the current compile unit.")
     string-match string-match-p
     substring string-prefix-p string-suffix-p
     replace-regexp-in-string
-    mapcar mapc mapconcat)
+    mapcar mapc mapconcat
+    sort)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
 These names are direct-call candidates only when no same-named Phase 47
 defun is visible in the current compile unit.")
+
+(defconst nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes
+  '((mapcar . 0)
+    (mapc . 0)
+    (mapconcat . 0)
+    (sort . 1))
+  "Function-designator argument positions for calln builtin lowering.
+The index is zero-based within the source call's ordinary argument
+list, excluding the builtin name itself.")
 
 (defun nelisp-phase47-compiler--fenv-has-symbol-p (fenv sym)
   "Return non-nil when FENV binds SYM."
@@ -2074,14 +2084,23 @@ caller-owned boundary params in the current defun:
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (name-slot (plist-get boundary :name-slot))
+         (designator-index
+          (cdr (assq builtin
+                     nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes)))
+         (designator-form
+          (and designator-index
+               (< designator-index argc)
+               (nth designator-index args)))
          (fn-designator
-          (and (memq builtin '(mapcar mapc mapconcat))
-               args
+          (and designator-form
                (nelisp-phase47-compiler--aot-function-designator-symbol
-                (car args))))
-         (lowered-args (if fn-designator
-                           (cons scratch (cdr args))
-                         args))
+                designator-form)))
+         (lowered-args
+          (if fn-designator
+              (cl-loop for arg in args
+                       for idx from 0
+                       collect (if (= idx designator-index) scratch arg))
+            args))
          (arg-prefix (when fn-designator
                        `((sexp-write-symbol-lit
                           ,scratch
