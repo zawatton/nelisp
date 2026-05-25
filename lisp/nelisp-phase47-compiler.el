@@ -1931,8 +1931,8 @@ caller-owned boundary params in the current defun:
 
 (defun nelisp-phase47-compiler--parse-aot-apply
     (sexp env fenv defuns)
-  "Lower `(apply FN ARGS-LIST)' through the Doc 129.7 apply dispatcher."
-  (unless (= (length sexp) 3)
+  "Lower `apply' through the Doc 129.7 apply dispatchers."
+  (when (< (length sexp) 3)
     (signal 'nelisp-phase47-compiler-error
             (list :aot-apply-arity sexp)))
   (let* ((boundary
@@ -1948,13 +1948,20 @@ caller-owned boundary params in the current defun:
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
-         (args-list (nth 2 sexp)))
+         (apply-args (nthcdr 2 sexp))
+         (argc (length apply-args)))
     (nelisp-phase47-compiler--parse-value
-     `(seq
-       ,@prefix
-       (extern-call nelisp_aot_apply
-                    ,mirror ,frames ,fn ,args-list ,out ,scratch)
-       ,out)
+     (if (= argc 1)
+         `(seq
+           ,@prefix
+           (extern-call nelisp_aot_apply
+                        ,mirror ,frames ,fn ,(car apply-args) ,out ,scratch)
+           ,out)
+       `(seq
+         ,@prefix
+         (extern-call nelisp_aot_applyn
+                      ,mirror ,frames ,fn ,argc ,out ,scratch ,@apply-args)
+         ,out))
      env fenv defuns)))
 
 (defun nelisp-phase47-compiler--aot-exception-boundary-symbols (fenv sexp)

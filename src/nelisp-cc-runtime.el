@@ -1827,6 +1827,38 @@ DISPATCHER, when non-nil, is called as
     (aset out 0 result)
     out))
 
+(defun nelisp-cc-runtime-aot-applyn
+    (mirror frames fn argc out scratch &rest args)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_applyn' ABI.
+MIRROR, FRAMES, FN, ARGC, OUT, SCRATCH, and ARGS mirror the native ABI:
+
+  nelisp_aot_applyn(mirror, frames, fn, argc, out, scratch, arg...)
+
+ARGC is the number of following apply arguments.  The final apply
+argument must be the list tail; any preceding ARGS are spliced in front
+of that list before dispatch."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-applyn-out-not-vector out)))
+  (unless (and (integerp argc) (< 0 argc))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-applyn-argc-not-positive argc)))
+  (unless (= argc (length args))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-applyn-argc-mismatch
+                  :argc argc
+                  :got (length args))))
+  (let* ((tail (car (last args)))
+         (fixed (butlast args)))
+    (unless (listp tail)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-applyn-tail-not-list tail)))
+    (ignore mirror frames scratch)
+    (let ((result (nelisp-cc-runtime--aot-default-apply-dispatch
+                   fn (append fixed tail))))
+      (aset out 0 result)
+      out)))
+
 ;;; Doc 129.8A — AOT exception handler-stack substrate ---------------
 
 (defun nelisp-cc-runtime-aot-handler-stack-snapshot ()

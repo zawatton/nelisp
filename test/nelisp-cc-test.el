@@ -1477,6 +1477,37 @@ exit points were emitted; call-points were missing."
     'mirror 'frames 'nelisp-doc129-missing-fn '(1 2) (vector nil) 'scratch)
    :type 'nelisp-cc-runtime-error))
 
+(ert-deftest nelisp-cc-runtime-aot-applyn-host-dispatch ()
+  "Doc 129.7I — applyn splices fixed args before the list tail."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-applyn
+               'mirror 'frames '+ 3 out 'scratch 10 12 '(20))))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (nelisp-cc-runtime-aot-applyn
+     'mirror 'frames (lambda (&rest xs) (mapconcat #'identity xs ":"))
+     3 out 'scratch "doc" "129" '("applyn"))
+    (should (equal (aref out 0) "doc:129:applyn"))))
+
+(ert-deftest nelisp-cc-runtime-aot-applyn-validates-boundary ()
+  "Doc 129.7I — applyn rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-applyn
+    'mirror 'frames '+ 1 nil 'scratch '(1 2))
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-applyn
+    'mirror 'frames '+ 0 (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-applyn
+    'mirror 'frames '+ 2 (vector nil) 'scratch 1)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-applyn
+    'mirror 'frames '+ 2 (vector nil) 'scratch 1 2)
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-handler-stack-push-pop ()
   "Doc 129.8A — handler stack push/pop is explicit and typed."
   (unwind-protect

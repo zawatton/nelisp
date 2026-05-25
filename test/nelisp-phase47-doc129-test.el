@@ -1351,6 +1351,30 @@
     (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                 'nelisp_aot_apply))))
 
+(ert-deftest nelisp-phase47-doc129/parse-apply-splicing-delegation ()
+  "Doc 129.7I: `(apply FN ARG... ARGS-LIST)' lowers to applyn."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_applyn
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (fn :type sexp)
+                    (arg0 :type sexp)
+                    (arg1 :type sexp)
+                    (args :type sexp))
+                 (apply fn arg0 arg1 args))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (call-node (car forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_applyn))
+    (should (equal (mapcar #'nelisp-phase47-compiler--ir-kind call-args)
+                   '(ref ref ref imm ref ref ref ref ref)))))
+
 (ert-deftest nelisp-phase47-doc129/apply-delegation-requires-boundary ()
   "Doc 129.7C: apply delegation requires explicit boundary params."
   (should-error
@@ -1380,6 +1404,31 @@
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_apply" out))
             (should (string-match-p "nelisp_aot_apply" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-apply-splicing-delegation ()
+  "Doc 129.7I: object output exposes the applyn dispatcher reloc."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-applyn-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_applyn
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (fn :type sexp)
+                 (arg0 :type sexp)
+                 (arg1 :type sexp)
+                 (args :type sexp))
+              (apply fn arg0 arg1 args))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_applyn" out))
+            (should (string-match-p "nelisp_aot_applyn" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-quoted-funcall-designator ()
