@@ -4815,9 +4815,9 @@ source form."
           (seq
            (throw ,(nth 1 branch) ,value-slot)
            (aot-landing-label ,cleanup-label
-             (seq
-              ,@cleanups
-              (aot-landing-jump out))))))))
+             ,(nelisp-phase47-compiler--aot-cleanup-body-form
+               cleanups
+               '(aot-landing-jump out))))))))
      ((nelisp-phase47-compiler--aot-direct-condition-form branch)
     (let ((cleanup-label
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
@@ -4825,9 +4825,9 @@ source form."
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
         ,branch
         (aot-landing-label ,cleanup-label
-          (seq
-           ,@cleanups
-           (aot-landing-jump out))))))
+          ,(nelisp-phase47-compiler--aot-cleanup-body-form
+            cleanups
+            '(aot-landing-jump out))))))
      ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p branch)
       `(if ,(nth 1 branch)
            ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
@@ -4836,9 +4836,9 @@ source form."
            (nth 3 branch) cleanups value-slot)))
      (t
       `(let (((,value-slot :type sexp) ,branch))
-         (seq
-          ,@cleanups
-          ,value-slot))))))
+         ,(nelisp-phase47-compiler--aot-cleanup-body-form
+           cleanups
+           value-slot))))))
 
 (defun nelisp-phase47-compiler--aot-catch-landing-branch-form
     (tag branch landing-label value-slot leaf-count)
@@ -5902,13 +5902,7 @@ crossing the protected body still require cleanup landing-pad lowering."
                 (and (not final-cleanup-nonlocal)
                      (cl-some
                       #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                      cleanups))
-                (and final-cleanup-nonlocal
-                     (or conditional-throw
-                         conditional-condition
-                         (and standalone-cleanup-tree
-                              (not direct-throw)
-                              (not direct-condition)))))
+                      cleanups)))
         (signal 'nelisp-phase47-compiler-error
                 (list :aot-unwind-protect-nonlocal-form sexp)))
       (let ((value-slot (nelisp-phase47-compiler--gensym
@@ -5960,9 +5954,9 @@ crossing the protected body still require cleanup landing-pad lowering."
                             (throw ,(nth 1 branch-throw)
                                    ,value-slot)
                             (aot-landing-label ,cleanup-label
-                              (seq
-                               ,@cleanups
-                               (aot-landing-jump out))))))))
+                              ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                                cleanups
+                                '(aot-landing-jump out))))))))
                     ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
                       branch)
                      `(if ,(nth 1 branch)
@@ -5970,9 +5964,9 @@ crossing the protected body still require cleanup landing-pad lowering."
                         ,(branch-form (nth 3 branch))))
                     (t
                      `(let (((,value-slot :type sexp) ,branch))
-                        (seq
-                         ,@cleanups
-                         ,value-slot)))))))
+                        ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                          cleanups
+                          value-slot)))))))
              `(if ,(nth 1 conditional-throw)
                   ,(branch-form (nth 2 conditional-throw))
                 ,(branch-form (nth 3 conditional-throw)))))
@@ -5990,18 +5984,18 @@ crossing the protected body still require cleanup landing-pad lowering."
                         0 ',cleanup-label (aot-current-sp))
                        ,branch
                        (aot-landing-label ,cleanup-label
-                         (seq
-                          ,@cleanups
-                          (aot-landing-jump out))))))
+                         ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                           cleanups
+                           '(aot-landing-jump out))))))
                   ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
                    `(if ,(nth 1 branch)
                         ,(branch-form (nth 2 branch))
                       ,(branch-form (nth 3 branch))))
                   (t
                    `(let (((,value-slot :type sexp) ,branch))
-                      (seq
-                       ,@cleanups
-                       ,value-slot))))))
+                      ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                        cleanups
+                        value-slot))))))
              `(if ,(nth 1 conditional-condition)
                   ,(branch-form (nth 2 conditional-condition))
                 ,(branch-form (nth 3 conditional-condition)))))

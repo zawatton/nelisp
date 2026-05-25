@@ -8558,8 +8558,60 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-cleanup-conditional-nonlocal-body-still-rejected ()
-  "Doc 129.8AX: cleanup non-local override is not yet for branch trees."
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-throw-cleanup-throw ()
+  "Doc 129.8AY: cleanup throw overrides branch-tree protected exits."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_cleanup_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (if value
+                         (throw 'done value)
+                       value)
+                   (throw 'other value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (member 'nelisp_aot_push_unwind externs))
+    (should (= (cl-count 'nelisp_aot_throw externs) 3))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
+
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-mixed-cleanup-signal ()
+  "Doc 129.8AY: cleanup signal overrides mixed branch-tree exits."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_cleanup_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (if value
+                         (throw tag value)
+                       (signal 'error value))
+                   (identity value)
+                   (signal tag value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
+    (should (= (cl-count 'nelisp_aot_signal externs) 3))
+    (should (= (cl-count 'nelisp_aot_throw externs) 1))
+    (should (member 'nelisp_aot_builtin_call1 externs))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 2)))
+
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-cleanup-prefix-nonlocal-still-rejected ()
+  "Doc 129.8AY: non-final cleanup non-local forms remain rejected."
   (should-error
    (nelisp-phase47-compiler--parse
     '(defun unwind_cleanup_throw
@@ -8573,7 +8625,8 @@ materialized closure temporary."
            (if value
                (throw 'done value)
              value)
-         (throw 'other value))))
+         (throw 'other value)
+         (identity value))))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-direct-throw ()
@@ -9348,6 +9401,35 @@ materialized closure temporary."
                  (value :type sexp))
               (unwind-protect
                   (throw 'done value)
+                (throw 'other value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_cleanup_throw" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should-not (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-conditional-cleanup-throw ()
+  "Doc 129.8AY: cleanup throw overrides branch-tree protected exits in object output."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-branch-cleanup-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_cleanup_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (if value
+                      (throw 'done value)
+                    value)
                 (throw 'other value)))
            path)
           (let ((out (with-output-to-string
