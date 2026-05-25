@@ -63,7 +63,9 @@
   Stage 129.4C adds explicit AOT special binding push/pop runtime
   bridges and compiler-visible relocs for the later source =let=
   lowering.  Stage 129.4D lowers single-binding source special =let=
-  normal exits through that bridge substrate.
+  normal exits through that bridge substrate.  Stage 129.4E extends
+  that normal-exit path to all-special multi-binding =let= forms while
+  preserving parallel initializer evaluation.
   Supported in this first cut: host macro expansion in value/call
   positions without rewriting Phase 47 structural forms, top-level
   =defmacro= inside =seq= as compile-time-only definitions,
@@ -175,8 +177,9 @@
   =nelisp_aot_push_special= / =nelisp_aot_pop_special= bridge
   substrates for value-cell save/restore.  129.4D uses those bridges
   for single-binding source special =let= on the normal exit path.
-  Multi-binding special =let=, non-local-exit cleanup, heap lexframes,
-  and general tagged local values remain pending.
+  129.4E adds the all-special multi-binding normal-exit path.  Mixed
+  lexical/special multi-binding =let=, non-local-exit cleanup, heap
+  lexframes, and general tagged local values remain pending.
 - *129.5A MVP*: =defun= params may be annotated as =(NAME :type sexp)=.
   These still use GP ABI registers, but the parser marks their =ref=
   nodes as GC-root candidates.  Any defun body containing a known
@@ -846,8 +849,46 @@ handle validation for lower-level =aot-pop-special= forms.
 This is still normal-exit only.  Bodies containing =throw=, =signal=,
 =error=, =condition-case=, or =unwind-protect= are rejected until the
 129.8 landing-pad path can guarantee cleanup.  Multi-binding special
-=let= remains pending so parallel initializer ordering can be specified
-without accidentally serializing dynamic bindings.
+=let= starts in 129.4E below.
+
+*** §1.C.5 Shipped MVP: all-special multi-binding =let= normal exit
+
+Stage 129.4E extends the source special =let= lowering to forms whose
+bindings are all tracked special declarations:
+
+#+begin_src elisp
+(seq
+ (defvar dyn-a)
+ (defvar dyn-b)
+ (defun f (out mirror frames scratch name-slot value-a value-b)
+   (let ((dyn-a value-a)
+         (dyn-b value-b))
+     value-b)))
+#+end_src
+
+To preserve ordinary parallel =let= initializer semantics, the
+frontend first evaluates every initializer against the original
+=ENV/FENV= into fresh Sexp temp slots, then pushes the special
+bindings in source order, saves the BODY result, and pops the
+innermost bindings:
+
+#+begin_src elisp
+(let (((aot-special-init-0 :type sexp) value-a)
+      ((aot-special-init-1 :type sexp) value-b))
+  (seq
+   (aot-push-special 'dyn-a aot-special-init-0)
+   (aot-push-special 'dyn-b aot-special-init-1)
+   (let (((aot-special-value-N :type sexp) BODY))
+     (seq
+      (aot-pop-special 0)
+      (aot-pop-special 0)
+      aot-special-value-N))))
+#+end_src
+
+Mixed lexical/special multi-binding =let= is still rejected with
+=:let-special-mixed-binding-pending=.  The remaining work there is to
+define the exact sequencing between lexical runtime slots and dynamic
+value-cell rebinding without serializing initializers incorrectly.
 
 ** §1.D =setq= / =defvar= / =defconst= / =defcustom= — symbol cells
 
@@ -2178,7 +2219,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
 | 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context SHIPPED 2026-05-25; real native ABI invocation / real environment passing pending |
-| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D source special let normal-exit lowering SHIPPED 2026-05-25; multi-binding special let and non-local cleanup pending |
+| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering SHIPPED 2026-05-25; mixed special/lexical multi-let and non-local cleanup pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization SHIPPED 2026-05-25; exported C ABI and broader quoted-designator builtin coverage pending |

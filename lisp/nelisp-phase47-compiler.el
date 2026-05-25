@@ -904,6 +904,11 @@ will hold the materialized AOT root vector."
     (let ((var (car (nelisp-phase47-compiler--validate-let-binding binding))))
       (nelisp-phase47-compiler--check-let-var-lexical var))))
 
+(defun nelisp-phase47-compiler--let-binding-special-p (binding)
+  "Return non-nil when BINDING targets a known special variable."
+  (let ((var (car (nelisp-phase47-compiler--validate-let-binding binding))))
+    (and (nelisp-phase47-compiler--special-var-p var) t)))
+
 (defun nelisp-phase47-compiler--parse-multi-let
     (bindings body-sexp env fenv defuns parse-body-fn)
   "Parse a multi-binding `let' in value or statement context.
@@ -916,35 +921,46 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
     (signal 'nelisp-phase47-compiler-error
             (list :let-empty-bindings bindings)))
   (nelisp-phase47-compiler--check-let-vars-unique bindings)
-  (nelisp-phase47-compiler--check-let-vars-lexical bindings)
-  (let ((new-env env)
-        (new-fenv fenv)
-        (rt-bindings nil))
-    (dolist (binding bindings)
-      (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
-             (var (nth 0 pair))
-             (val-sexp (nth 1 pair))
-             (root-p (nth 2 pair)))
-        (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
-            (let ((val (nelisp-phase47-compiler--fold-int val-sexp env)))
-              (push (cons var val) new-env))
-          (unless nelisp-phase47-compiler--next-rt-let-slot
-            (signal 'nelisp-phase47-compiler-error
-                    (list :let-rt-requires-defun-context var)))
-          (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
-                 (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
-                            (1+ slot)))
-                 (val-ir (nelisp-phase47-compiler--parse-value
-                          val-sexp env fenv defuns)))
-            (push (list var slot val-ir root-p) rt-bindings)
-            (push (cons var (list :slot slot :class 'gp :root-p root-p))
-                  new-fenv)))))
-    (let ((body-ir (funcall parse-body-fn body-sexp new-env new-fenv defuns)))
-      (if rt-bindings
-          (nelisp-phase47-compiler--make-ir 'let-rt-n
-                :bindings (nreverse rt-bindings)
-                :body body-ir)
-        body-ir))))
+  (let* ((special-flags
+          (mapcar #'nelisp-phase47-compiler--let-binding-special-p bindings))
+         (special-count (cl-count t special-flags)))
+    (cond
+     ((= special-count (length bindings))
+      (nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
+       bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
+     ((> special-count 0)
+      (signal 'nelisp-phase47-compiler-error
+              (list :let-special-mixed-binding-pending
+                    (list 'let bindings body-sexp))))
+     (t
+      (let ((new-env env)
+            (new-fenv fenv)
+            (rt-bindings nil))
+        (dolist (binding bindings)
+          (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+                 (var (nth 0 pair))
+                 (val-sexp (nth 1 pair))
+                 (root-p (nth 2 pair)))
+            (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
+                (let ((val (nelisp-phase47-compiler--fold-int val-sexp env)))
+                  (push (cons var val) new-env))
+              (unless nelisp-phase47-compiler--next-rt-let-slot
+                (signal 'nelisp-phase47-compiler-error
+                        (list :let-rt-requires-defun-context var)))
+              (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
+                     (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
+                                (1+ slot)))
+                     (val-ir (nelisp-phase47-compiler--parse-value
+                              val-sexp env fenv defuns)))
+                (push (list var slot val-ir root-p) rt-bindings)
+                (push (cons var (list :slot slot :class 'gp :root-p root-p))
+                      new-fenv)))))
+        (let ((body-ir (funcall parse-body-fn body-sexp new-env new-fenv defuns)))
+          (if rt-bindings
+              (nelisp-phase47-compiler--make-ir 'let-rt-n
+                    :bindings (nreverse rt-bindings)
+                    :body body-ir)
+            body-ir)))))))
 
 ;; ---- Doc 129.1 frontend macro expansion ----
 ;;
@@ -2600,6 +2616,42 @@ through BODY remain pending on the 129.8 landing-pad path."
          (seq
           (aot-pop-special 0)
           ,value-slot)))
+     env fenv defuns)))
+
+(defun nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
+    (bindings body-sexp env fenv defuns source-form)
+  "Lower an all-special multi-binding source `let' normal exit path.
+Every initializer is evaluated against the original ENV/FENV into a
+fresh Sexp temp slot before any special value cell is rebound.  This
+preserves ordinary parallel `let' initializer semantics for the
+all-special subset."
+  (when (nelisp-phase47-compiler--aot-nonlocal-source-form-p body-sexp)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-special-let-n-nonlocal-body source-form)))
+  (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
+  (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
+  (let ((temp-bindings nil)
+        (push-forms nil)
+        (pop-forms nil)
+        (body-slot (nelisp-phase47-compiler--gensym
+                    "aot-special-value")))
+    (dolist (binding bindings)
+      (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+             (var (nth 0 pair))
+             (val-sexp (nth 1 pair))
+             (temp (nelisp-phase47-compiler--gensym
+                    "aot-special-init")))
+        (push `((,temp :type sexp) ,val-sexp) temp-bindings)
+        (push `(aot-push-special ',var ,temp) push-forms)
+        (push '(aot-pop-special 0) pop-forms)))
+    (nelisp-phase47-compiler--parse-value
+     `(let ,(nreverse temp-bindings)
+        (seq
+         ,@(nreverse push-forms)
+         (let (((,body-slot :type sexp) ,body-sexp))
+           (seq
+            ,@pop-forms
+            ,body-slot))))
      env fenv defuns)))
 
 (defun nelisp-phase47-compiler--parse-aot-catch-normal-exit
