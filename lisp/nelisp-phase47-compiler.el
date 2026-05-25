@@ -2422,6 +2422,10 @@ defun is visible in the current compile unit.")
     seq-difference seq-intersection seq-union
     seq-take-while seq-drop-while seq-do-indexed seq-group-by
     seq-sort-by
+    seq-first seq-rest seq-elt seq-length seq-empty-p seq-min seq-max
+    seq-copy seq-reverse seq-take seq-drop seq-subseq seq-partition
+    seq-split seq-remove-at-position seq-positions seq-contains
+    seq-into seq-concatenate seq-random-elt
     cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
     cl-some cl-every cl-notany cl-notevery
     cl-count-if cl-count-if-not cl-find-if cl-find-if-not

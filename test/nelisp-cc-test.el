@@ -1785,7 +1785,68 @@ exit points were emitted; call-points were missing."
         (nelisp-cc-runtime-aot-builtin-calln
          'mirror 'frames 'map-put! 3 out 'scratch mutable 'a 9)
         (should (= (aref out 0) 9))
-        (should (equal mutable '((a . 9) (bb . 2))))))))
+        (should (equal mutable '((a . 9) (bb . 2))))))
+    (let ((seq-data '(3 1 2 1)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-first 1 out 'scratch seq-data)
+      (should (= (aref out 0) 3))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-rest 1 out 'scratch seq-data)
+      (should (equal (aref out 0) '(1 2 1)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-elt 2 out 'scratch seq-data 2)
+      (should (= (aref out 0) 2))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-length 1 out 'scratch seq-data)
+      (should (= (aref out 0) 4))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-empty-p 1 out 'scratch nil)
+      (should (eq (aref out 0) t))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-min 1 out 'scratch seq-data)
+      (should (= (aref out 0) 1))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-max 1 out 'scratch seq-data)
+      (should (= (aref out 0) 3))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-copy 1 out 'scratch seq-data)
+      (should (equal (aref out 0) seq-data))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-reverse 1 out 'scratch seq-data)
+      (should (equal (aref out 0) '(1 2 1 3)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-take 2 out 'scratch seq-data 2)
+      (should (equal (aref out 0) '(3 1)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-drop 2 out 'scratch seq-data 2)
+      (should (equal (aref out 0) '(2 1)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-subseq 3 out 'scratch seq-data 1 3)
+      (should (equal (aref out 0) '(1 2)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-partition 2 out 'scratch seq-data 2)
+      (should (equal (aref out 0) '((3 1) (2 1))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-split 2 out 'scratch seq-data 3)
+      (should (equal (aref out 0) '((3 1 2) (1))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-remove-at-position 2 out 'scratch seq-data 1)
+      (should (equal (aref out 0) '(3 2 1)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-positions 3 out 'scratch seq-data 1 #'=)
+      (should (equal (aref out 0) '(1 3)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-contains 3 out 'scratch seq-data 2 #'=)
+      (should (= (aref out 0) 2))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-into 2 out 'scratch seq-data 'vector)
+      (should (equal (aref out 0) [3 1 2 1]))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-concatenate 3 out 'scratch 'list '(a) '(b c))
+      (should (equal (aref out 0) '(a b c)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-random-elt 1 out 'scratch seq-data)
+      (should (memq (aref out 0) seq-data)))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-validates-boundary ()
   "Doc 129.6F — builtin calln rejects malformed ABI arguments."
