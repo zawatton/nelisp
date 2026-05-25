@@ -2512,6 +2512,54 @@ Accepted forms:
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-push-special
+    (sexp env fenv defuns)
+  "Lower `(aot-push-special NAME VALUE)' through the Doc 129.4 bridge."
+  (unless (= (length sexp) 3)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-push-special-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (name-lowering
+          (nelisp-phase47-compiler--aot-tag-lowering
+           (nth 1 sexp) fenv sexp))
+         (name (plist-get name-lowering :tag-expr))
+         (prefix (plist-get name-lowering :prefix))
+         (value (nth 2 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       ,@prefix
+       (extern-call nelisp_aot_push_special
+                    ,mirror ,frames ,name ,value ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
+(defun nelisp-phase47-compiler--parse-aot-pop-special
+    (sexp env fenv defuns)
+  "Lower `(aot-pop-special HANDLE)' through the Doc 129.4 bridge."
+  (unless (= (length sexp) 2)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-pop-special-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (handle (nth 1 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       (extern-call nelisp_aot_pop_special
+                    ,mirror ,frames ,handle ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--aot-nonlocal-source-form-p (sexp)
   "Return non-nil when SEXP contains a not-yet-safe non-local form.
 Doc 129.8E only synthesizes balanced handler push/pop for bodies that
@@ -3025,6 +3073,17 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (eq (car sexp) 'aot-pop-roots))
     (nelisp-phase47-compiler--parse-aot-pop-roots
+     sexp env fenv defuns))
+   ;; Doc 129.4C — explicit special binding push/pop bridge forms.
+   ;; Source `let' lowering still waits for full dynamic binding, but
+   ;; the native ABI and object relocs are visible through these forms.
+   ((and (consp sexp)
+         (eq (car sexp) 'aot-push-special))
+    (nelisp-phase47-compiler--parse-aot-push-special
+     sexp env fenv defuns))
+   ((and (consp sexp)
+         (eq (car sexp) 'aot-pop-special))
+    (nelisp-phase47-compiler--parse-aot-pop-special
      sexp env fenv defuns))
    ;; Doc 100 v2 §100.B Sexp ABI direct-access ops.  Each maps to a
    ;; fixed instruction template against `[base]' / `[base + 8]', with

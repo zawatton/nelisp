@@ -158,6 +158,11 @@ uses this as a deterministic simulator for the native handler-stack ABI;
 native code will use the same logical record shape but jump to landing
 pads instead of returning descriptors.")
 
+(defvar nelisp-cc-runtime--aot-special-stack nil
+  "Innermost-first special binding stack for Doc 129.4 AOT `let'.
+Each entry records the symbol name, whether it was previously bound,
+and the old value needed to restore the value cell on normal exit.")
+
 ;;; Errors ----------------------------------------------------------
 
 (define-error 'nelisp-cc-runtime-error
@@ -1647,6 +1652,111 @@ DISPATCHER, when non-nil, is called as
               (list :aot-pop-roots-mismatch
                     :expected expected-roots :actual popped)))
     (aset out 0 popped)
+    out))
+
+;;; Doc 129.4C — AOT special binding substrate ----------------------
+
+(defun nelisp-cc-runtime-aot-special-stack-snapshot ()
+  "Return a shallow snapshot of the current Doc 129.4 special stack."
+  (copy-sequence nelisp-cc-runtime--aot-special-stack))
+
+(defun nelisp-cc-runtime-aot-reset-special-stack ()
+  "Clear the Doc 129.4 special stack and return nil."
+  (setq nelisp-cc-runtime--aot-special-stack nil))
+
+(defun nelisp-cc-runtime-aot-push-special-boundary
+    (mirror frames name value out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.4 `nelisp_aot_push_special' ABI.
+MIRROR, FRAMES, NAME, VALUE, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_push_special(mirror, frames, name, value, out, scratch)
+
+The default simulator dynamically binds NAME's host value cell to
+VALUE, pushes a restore record, writes that record to OUT[0], and
+returns OUT.  Native code will use the same logical record shape but
+restore through the runtime environment value cell.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER NAME VALUE CONTEXT)'."
+  (unless (symbolp name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-special-name-not-symbol name)))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-special-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-special-dispatcher-not-function dispatcher)))
+  (let* ((had-binding (boundp name))
+         (old-value (when had-binding (symbol-value name)))
+         (context (list :mirror mirror
+                        :frames frames
+                        :name name
+                        :value value
+                        :out out
+                        :scratch scratch))
+         (record (if dispatcher
+                     (funcall dispatcher name value context)
+                   (list :kind 'special
+                         :name name
+                         :had-binding had-binding
+                         :old-value old-value
+                         :new-value value
+                         :context context))))
+    (unless (and (listp record)
+                 (eq (plist-get record :kind) 'special)
+                 (eq (plist-get record :name) name))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-push-special-bad-record record)))
+    (set name value)
+    (push record nelisp-cc-runtime--aot-special-stack)
+    (aset out 0 record)
+    out))
+
+(defun nelisp-cc-runtime-aot-pop-special-boundary
+    (mirror frames expected-record out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.4 `nelisp_aot_pop_special' ABI.
+MIRROR, FRAMES, EXPECTED-RECORD, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_pop_special(mirror, frames, expected_record, out, scratch)
+
+The bridge pops the innermost special binding record, verifies it
+against EXPECTED-RECORD when non-nil, restores the previous host value
+cell state, writes the popped record to OUT[0], and returns OUT.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER EXPECTED-RECORD CONTEXT)'."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-pop-special-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-pop-special-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :expected-record expected-record
+                        :out out
+                        :scratch scratch))
+         (record (if dispatcher
+                     (funcall dispatcher expected-record context)
+                   (car nelisp-cc-runtime--aot-special-stack))))
+    (unless record
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-pop-special-empty)))
+    (when (and expected-record (not (eq record expected-record)))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-pop-special-record-mismatch
+                    :expected expected-record :actual record)))
+    (unless dispatcher
+      (pop nelisp-cc-runtime--aot-special-stack))
+    (let ((name (plist-get record :name)))
+      (unless (symbolp name)
+        (signal 'nelisp-cc-runtime-error
+                (list :aot-pop-special-name-not-symbol name)))
+      (if (plist-get record :had-binding)
+          (set name (plist-get record :old-value))
+        (makunbound name)))
+    (aset out 0 record)
     out))
 
 (defun nelisp-cc-runtime--aot-default-builtin-dispatch1 (builtin arg)

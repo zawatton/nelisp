@@ -953,6 +953,68 @@
           a))))
    :type 'nelisp-phase47-compiler-error))
 
+(ert-deftest nelisp-phase47-doc129/parse-aot-special-push-pop ()
+  "Doc 129.4C: explicit special binding push/pop forms lower to bridges."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun bind_special
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name-slot :type sexp)
+                    (value :type sexp)
+                    (handle :type sexp))
+                 (seq
+                  (aot-push-special 'dyn value)
+                  (aot-pop-special handle)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_special externs))
+    (should (member 'nelisp_aot_pop_special externs))))
+
+(ert-deftest nelisp-phase47-doc129/aot-special-push-requires-boundary ()
+  "Doc 129.4C: special binding push lowering requires boxed boundary params."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun bind_special ((value :type sexp))
+       (aot-push-special 'dyn value)))
+   :type 'nelisp-phase47-compiler-error)
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun bind_special
+         ((out :type sexp)
+          (mirror :type sexp)
+          (frames :type sexp)
+          (scratch :type sexp)
+          (value :type sexp))
+       (aot-push-special 'dyn value)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/object-aot-special-push-pop ()
+  "Doc 129.4C: object output exposes special binding bridge relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-special-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun bind_special
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name-slot :type sexp)
+                 (value :type sexp)
+                 (handle :type sexp))
+              (seq
+               (aot-push-special 'dyn value)
+               (aot-pop-special handle)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_push_special" out))
+            (should (string-match-p "nelisp_aot_pop_special" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/parse-static-gc-root-map ()
   "Doc 129.5A: allocating defuns expose annotated Sexp root slots."
   (let ((ir (nelisp-phase47-compiler--parse

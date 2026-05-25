@@ -60,6 +60,9 @@
   Stage 129.4B additionally tracks top-level =defvar= / =defconst= /
   =defcustom= names as special declarations and rejects =let= binding
   of those names until dynamic special binding is implemented.
+  Stage 129.4C adds explicit AOT special binding push/pop runtime
+  bridges and compiler-visible relocs for the later source =let=
+  lowering.
   Supported in this first cut: host macro expansion in value/call
   positions without rewriting Phase 47 structural forms, top-level
   =defmacro= inside =seq= as compile-time-only definitions,
@@ -165,8 +168,13 @@
   values inside =defun= bodies via =let-rt-n=.  Initializers parse in
   the original environment (=parallel =let= semantics), then the body
   sees all runtime frame slots.  =let*= remains a frontend desugaring
-  to nested =let=.  Lexical-vs-special variable distinction, heap
-  lexframes, and general tagged local values remain pending.
+  to nested =let=.  129.4B tracks top-level special declarations and
+  rejects =let= binding those names instead of silently compiling them
+  as lexical slots.  129.4C adds explicit
+  =nelisp_aot_push_special= / =nelisp_aot_pop_special= bridge
+  substrates for value-cell save/restore.  Source =let= lowering to
+  those bridges, heap lexframes, and general tagged local values remain
+  pending.
 - *129.5A MVP*: =defun= params may be annotated as =(NAME :type sexp)=.
   These still use GP ABI registers, but the parser marks their =ref=
   nodes as GC-root candidates.  Any defun body containing a known
@@ -778,6 +786,32 @@ lexical compile-time binding or runtime frame slot.
 This is intentionally a guard, not full dynamic binding.  Real special
 =let= still needs value-cell save/restore, unwind cleanup, and
 integration with the 129.8 non-local-exit path.
+
+*** §1.C.3 Shipped MVP: special binding bridge substrate
+
+Stage 129.4C adds the runtime-side bridge shape for dynamic special
+binding:
+
+#+begin_src elisp
+(nelisp_aot_push_special mirror frames name value out scratch)
+(nelisp_aot_pop_special  mirror frames handle out scratch)
+#+end_src
+
+The Emacs-side runtime simulator saves the previous value-cell state,
+binds the symbol to the new value, returns a restore handle in =OUT=,
+and restores the prior bound/unbound state on pop.  Phase 47 also
+accepts explicit internal forms:
+
+#+begin_src elisp
+(aot-push-special 'dyn value)
+(aot-pop-special handle)
+#+end_src
+
+Those forms lower to relocations against =nelisp_aot_push_special= and
+=nelisp_aot_pop_special=, materializing quoted symbol names through
+=name-slot=.  Source-level special =let= still remains pending; this
+stage only fixes the ABI and normal-exit restore substrate it will
+call.
 
 ** §1.D =setq= / =defvar= / =defconst= / =defcustom= — symbol cells
 
@@ -2108,7 +2142,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
 | 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context SHIPPED 2026-05-25; real native ABI invocation / real environment passing pending |
-| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard SHIPPED 2026-05-25; dynamic special binding pending |
+| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate SHIPPED 2026-05-25; source special let lowering pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization SHIPPED 2026-05-25; exported C ABI and broader quoted-designator builtin coverage pending |

@@ -1278,6 +1278,81 @@ exit points were emitted; call-points were missing."
       'mirror 'frames (vector 'other) out 'scratch)
      :type 'nelisp-cc-runtime-error)))
 
+(ert-deftest nelisp-cc-runtime-aot-special-push-pop-boundary ()
+  "Doc 129.4C — special binding bridges save and restore value cells."
+  (let ((sym (make-symbol "doc129-special"))
+        (out (vector nil)))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-aot-reset-special-stack)
+          (should (not (boundp sym)))
+          (should (eq (nelisp-cc-runtime-aot-push-special-boundary
+                       'mirror 'frames sym 42 out 'scratch)
+                      out))
+          (let ((record (aref out 0)))
+            (should (= (symbol-value sym) 42))
+            (should (eq (car (nelisp-cc-runtime-aot-special-stack-snapshot))
+                        record))
+            (should (eq (nelisp-cc-runtime-aot-pop-special-boundary
+                         'mirror 'frames record out 'scratch)
+                        out))
+            (should (eq (aref out 0) record))
+            (should (not (boundp sym)))))
+      (nelisp-cc-runtime-aot-reset-special-stack)
+      (when (boundp sym)
+        (makunbound sym)))))
+
+(ert-deftest nelisp-cc-runtime-aot-special-push-pop-restores-old-value ()
+  "Doc 129.4C — special binding pop restores pre-existing values."
+  (let ((sym (make-symbol "doc129-special-bound"))
+        (out (vector nil)))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-aot-reset-special-stack)
+          (set sym 'old)
+          (nelisp-cc-runtime-aot-push-special-boundary
+           'mirror 'frames sym 'new out 'scratch)
+          (let ((record (aref out 0)))
+            (should (eq (symbol-value sym) 'new))
+            (nelisp-cc-runtime-aot-pop-special-boundary
+             'mirror 'frames record out 'scratch)
+            (should (eq (symbol-value sym) 'old))))
+      (nelisp-cc-runtime-aot-reset-special-stack)
+      (when (boundp sym)
+        (makunbound sym)))))
+
+(ert-deftest nelisp-cc-runtime-aot-special-push-pop-validates-boundary ()
+  "Doc 129.4C — special binding bridges reject malformed ABI values."
+  (let ((sym (make-symbol "doc129-special-bad"))
+        (out (vector nil)))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-aot-reset-special-stack)
+          (should-error
+           (nelisp-cc-runtime-aot-push-special-boundary
+            'mirror 'frames "not-symbol" 1 out 'scratch)
+           :type 'nelisp-cc-runtime-error)
+          (should-error
+           (nelisp-cc-runtime-aot-push-special-boundary
+            'mirror 'frames sym 1 nil 'scratch)
+           :type 'nelisp-cc-runtime-error)
+          (should-error
+           (nelisp-cc-runtime-aot-pop-special-boundary
+            'mirror 'frames nil out 'scratch)
+           :type 'nelisp-cc-runtime-error)
+          (nelisp-cc-runtime-aot-push-special-boundary
+           'mirror 'frames sym 1 out 'scratch)
+          (should-error
+           (nelisp-cc-runtime-aot-pop-special-boundary
+            'mirror 'frames (list :kind 'special :name sym) out 'scratch)
+           :type 'nelisp-cc-runtime-error)
+          (should (= (length (nelisp-cc-runtime-aot-special-stack-snapshot))
+                     1))
+          (should (= (symbol-value sym) 1)))
+      (nelisp-cc-runtime-aot-reset-special-stack)
+      (when (boundp sym)
+        (makunbound sym)))))
+
 (ert-deftest nelisp-cc-runtime-aot-builtin-call1-host-dispatch ()
   "Doc 129.6C — builtin call1 writes the dispatcher result to OUT."
   (let* ((out (vector nil))
