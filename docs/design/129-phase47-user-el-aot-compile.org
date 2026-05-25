@@ -58,6 +58,7 @@
   Stage 129.6AC seq.el container builtin coverage,
   Stage 129.6AD cl-lib list helper builtin coverage,
   Stage 129.6AE cl-lib set/search builtin coverage,
+  Stage 129.6AF cl-lib keyword callback option coverage,
   Stage 129.7A one-argument =funcall= dispatcher
   bridge,
   Stage 129.7B two-argument =funcall=
@@ -551,6 +552,13 @@
   =cl-search=, =cl-remove=, =cl-delete=, =cl-substitute=, and
   =cl-nsubstitute=.  Keyword callback designators remain dynamic; this
   stage does not materialize multiple keyword callbacks.
+- *129.6AF MVP*: direct calln lowering now materializes source-level
+  keyword literals in builtin argument lists.  A single keyword uses
+  =keyword-slot= / =keyword_slot=; multiple keyword literals use indexed
+  =keyword-slot-N= / =keyword_slot_N= slots.  This enables common
+  cl-lib option forms such as =(cl-find ITEM XS :test #'eq)= and
+  =(cl-position ITEM XS :key #'car)= while preserving the existing
+  =scratch= slot for the callback designator.
 - *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
   =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
@@ -3713,10 +3721,42 @@ subset:
 
 The runtime =nelisp_aot_builtin_calln= fallback now passes host
 =fboundp= builtins as symbols, matching =nelisp--apply='s symbol arm and
-Emacs =apply='s autoload behavior.  Keyword-heavy options such as
-=:test= and =:key= are still accepted only as ordinary dynamic
-arguments; this stage deliberately avoids compiling multiple callback
-designators from one builtin form.
+Emacs =apply='s autoload behavior.  129.6AE still accepts
+keyword-heavy options only when the keyword symbols are already supplied
+as dynamic arguments; 129.6AF below adds source-level literal keyword
+materialization.
+
+Stage 129.6AF adds source-level keyword literal materialization for the
+same direct calln path:
+
+#+begin_src elisp
+(cl-find item xs :test #'eq)
+(cl-position item xs :key #'car)
+(cl-find item xs :test test-fn :key key-fn)
+#+end_src
+
+Literal keywords are self-evaluating at the source level, but the AOT
+bridge still needs a stable boxed =Sexp::Symbol= argument.  The compiler
+therefore writes keyword literals into caller-owned keyword slots before
+calling =nelisp_aot_builtin_calln=:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name-slot "cl-find")
+ (sexp-write-symbol-lit keyword-slot ":test")
+ (sexp-write-symbol-lit scratch "eq")
+ (extern-call nelisp_aot_builtin_calln
+              mirror frames name-slot 4 out scratch
+              item xs keyword-slot scratch)
+ out)
+#+end_src
+
+For one keyword, either =keyword-slot= or =keyword_slot= is accepted.
+For multiple literal keywords, the current boundary contract requires
+indexed slots such as =keyword_slot_0= and =keyword_slot_1=.  This stage
+still materializes at most one quoted/function callback designator per
+builtin call because =scratch= remains the only callback materialization
+slot.
 
 * §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
 
@@ -3734,7 +3774,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering + 129.4G direct special-let throw cleanup + 129.4H conditional special-let throw cleanup + 129.4I nested conditional special-let throw cleanup SHIPPED 2026-05-25; heap lexframes and general tagged local values pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope + 129.5J loader-selected hash-FRAMES root-scope marker + 129.5K object loader root metadata selection SHIPPED 2026-05-25; deeper whole-module native-frame liveness remains future work |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
-| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln builtin table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage + 129.6S AOT C ABI resolver handoff + 129.6T AOT C ABI export registry + 129.6U metadata container builtin coverage + 129.6V standalone loader handoff + 129.6W seq predicate/set higher-order coverage + 129.6X seq prefix/group higher-order coverage + 129.6Y seq-sort-by transform coverage + 129.6Z map.el higher-order coverage + 129.6AA map.el predicate/apply coverage + 129.6AB map.el container coverage + 129.6AC seq.el container coverage + 129.6AD cl-lib list helper coverage + 129.6AE cl-lib set/search coverage SHIPPED 2026-05-25; remaining higher-order builtin coverage pending |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln builtin table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage + 129.6S AOT C ABI resolver handoff + 129.6T AOT C ABI export registry + 129.6U metadata container builtin coverage + 129.6V standalone loader handoff + 129.6W seq predicate/set higher-order coverage + 129.6X seq prefix/group higher-order coverage + 129.6Y seq-sort-by transform coverage + 129.6Z map.el higher-order coverage + 129.6AA map.el predicate/apply coverage + 129.6AB map.el container coverage + 129.6AC seq.el container coverage + 129.6AD cl-lib list helper coverage + 129.6AE cl-lib set/search coverage + 129.6AF cl-lib keyword callback option coverage SHIPPED 2026-05-25; remaining higher-order builtin coverage pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting + 129.7AA runtime captured-cell write-through substrate + 129.7AB capture-cell materialization bridge + 129.7AC automatic captured-mutation capture-cell wrapping + 129.7AD runtime frame-writer attachment + 129.7AE closure root-vector pinning + 129.7AF hash-FRAMES frame-slot ref/set bridges + 129.7AG compiler frame-slot ABI forms + 129.7AH captured-mutation frame-slot read selection SHIPPED 2026-05-25; native object embedding and broader automatic native object frame-slot ABI selection pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits + 129.8L direct catch/throw landing-value extraction + 129.8M direct condition-case signal/error landing-error dispatch + 129.8N conditional catch/throw branch dispatch + 129.8O direct unwind-protect throw cleanup + 129.8P conditional unwind-protect throw cleanup + 129.8Q conditional condition-case signal dispatch + 129.8R nested conditional non-local branch trees + 129.8S landing-jump ABI planning SHIPPED 2026-05-25; backend stack restore and machine landing-pad jumps pending |
 

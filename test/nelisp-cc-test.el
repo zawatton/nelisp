@@ -1799,6 +1799,13 @@ exit points were emitted; call-points were missing."
          'mirror 'frames 'cl-find 2 out 'scratch 'b '(a b c))
         (should (eq (aref out 0) 'b))
         (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-find 4 out 'scratch 'b '(a b c) :test #'eq)
+        (should (eq (aref out 0) 'b))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-position 4 out 'scratch
+         'b '((a . 1) (b . 2)) :key #'car)
+        (should (= (aref out 0) 1))
+        (nelisp-cc-runtime-aot-builtin-calln
          'mirror 'frames 'cl-count 2 out 'scratch 'a '(a b a))
         (should (= (aref out 0) 2))
         (nelisp-cc-runtime-aot-builtin-calln

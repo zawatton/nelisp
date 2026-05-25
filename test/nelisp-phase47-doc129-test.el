@@ -2289,6 +2289,91 @@ materialized closure temporary."
                                                      :var)
                     'scratch))))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-keyword-designator ()
+  "Doc 129.6AF: keyword callback options materialize literal symbols."
+  (dolist (case '(((cl-find item xs :test #'eq)
+                   keyword_slot 8 9 ":test" "eq")
+                  ((cl-position item xs :key #'car)
+                   keyword-slot 8 9 ":key" "car")))
+    (pcase-let ((`(,form ,keyword-slot ,keyword-arg-index
+                         ,fn-arg-index ,keyword-name ,fn-name)
+                 case))
+      (let* ((ir (nelisp-phase47-compiler--parse
+                  `(defun call_builtin
+                       ((out :type sexp)
+                        (mirror :type sexp)
+                        (frames :type sexp)
+                        (scratch :type sexp)
+                        (name_slot :type sexp)
+                        (,keyword-slot :type sexp)
+                        (item :type sexp)
+                        (xs :type sexp))
+                     ,form)))
+             (body (nelisp-phase47-compiler--ir-get ir :body))
+             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (keyword-symbol (nth 1 forms))
+             (fn-symbol (nth 2 forms))
+             (call-node (nth 3 forms))
+             (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-phase47-compiler--ir-get keyword-symbol :bytes)
+                       (string-to-list keyword-name)))
+        (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+                       (string-to-list fn-name)))
+        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                    'nelisp_aot_builtin_calln))
+        (should (eq (nelisp-phase47-compiler--ir-get
+                     (nth keyword-arg-index call-args)
+                     :var)
+                    keyword-slot))
+        (should (eq (nelisp-phase47-compiler--ir-get
+                     (nth fn-arg-index call-args)
+                     :var)
+                    'scratch))))))
+
+(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-multiple-keywords ()
+  "Doc 129.6AF: multiple literal keywords use indexed keyword slots."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_builtin
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (keyword_slot_0 :type sexp)
+                    (keyword_slot_1 :type sexp)
+                    (item :type sexp)
+                    (xs :type sexp)
+                    (test :type sexp)
+                    (key :type sexp))
+                 (cl-find item xs :test test :key key))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (kw0-symbol (nth 1 forms))
+         (kw1-symbol (nth 2 forms))
+         (call-node (nth 3 forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (equal (nelisp-phase47-compiler--ir-get kw0-symbol :bytes)
+                   (string-to-list ":test")))
+    (should (equal (nelisp-phase47-compiler--ir-get kw1-symbol :bytes)
+                   (string-to-list ":key")))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 8 call-args)
+                 :var)
+                'keyword_slot_0))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 10 call-args)
+                 :var)
+                'keyword_slot_1))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 9 call-args)
+                 :var)
+                'test))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 11 call-args)
+                 :var)
+                'key))))
+
 (ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-sort-designator ()
   "Doc 129.6K: `sort' materializes quoted/function predicate designators."
   (dolist (form '((sort xs #'string<)
