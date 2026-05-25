@@ -1750,6 +1750,75 @@ exit points were emitted; call-points were missing."
       (nelisp-cc-runtime-aot-builtin-calln
        'mirror 'frames 'cl-adjoin 2 out 'scratch 'a '(b c))
       (should (equal (aref out 0) '(a b c))))
+    (let ((left '(a b))
+          (right '(b c)))
+      (cl-labels ((symbol-list< (x y)
+                    (string< (symbol-name x) (symbol-name y))))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-list-length 1 out 'scratch left)
+        (should (= (aref out 0) 2))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-subseq 3 out 'scratch '(a b c) 1 2)
+        (should (equal (aref out 0) '(b)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-concatenate 3 out 'scratch 'list '(a) '(b))
+        (should (equal (aref out 0) '(a b)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-revappend 2 out 'scratch left '(c))
+        (should (equal (aref out 0) '(b a c)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-nreconc 2 out 'scratch (copy-sequence left) '(c))
+        (should (equal (aref out 0) '(b a c)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-tailp 2 out 'scratch '(b c) '(a b c))
+        (should-not (aref out 0))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-ldiff 2 out 'scratch '(a b c) '(c))
+        (should (equal (aref out 0) '(a b c)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-union 2 out 'scratch left right)
+        (should (equal (sort (copy-sequence (aref out 0)) #'symbol-list<)
+                       '(a b c)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-intersection 2 out 'scratch left right)
+        (should (equal (aref out 0) '(b)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-set-difference 2 out 'scratch left right)
+        (should (equal (aref out 0) '(a)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-set-exclusive-or 2 out 'scratch left right)
+        (should (equal (sort (copy-sequence (aref out 0)) #'symbol-list<)
+                       '(a c)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-subsetp 2 out 'scratch '(a) left)
+        (should (eq (aref out 0) t))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-position 2 out 'scratch 'b '(a b c))
+        (should (= (aref out 0) 1))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-find 2 out 'scratch 'b '(a b c))
+        (should (eq (aref out 0) 'b))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-count 2 out 'scratch 'a '(a b a))
+        (should (= (aref out 0) 2))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-mismatch 2 out 'scratch '(a x) '(a b))
+        (should (= (aref out 0) 1))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-search 2 out 'scratch '(b c) '(a b c d))
+        (should (= (aref out 0) 1))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-remove 2 out 'scratch 'a '(a b a))
+        (should (equal (aref out 0) '(b)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-delete 2 out 'scratch 'a (list 'a 'b 'a))
+        (should (equal (aref out 0) '(b)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-substitute 3 out 'scratch 'x 'a '(a b a))
+        (should (equal (aref out 0) '(x b x)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'cl-nsubstitute 3 out 'scratch 'x 'a (list 'a 'b 'a))
+        (should (equal (aref out 0) '(x b x)))))
     (let ((map-data '((a . 1) (bb . 2))))
       (nelisp-cc-runtime-aot-builtin-calln
        'mirror 'frames 'map-some 2 out 'scratch

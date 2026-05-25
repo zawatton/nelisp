@@ -1899,7 +1899,7 @@ DISPATCHER, when non-nil, is called as
                 found t))))
     (unless found
       (if (fboundp builtin)
-          (setq fn (symbol-function builtin)
+          (setq fn builtin
                 found t)
         (signal 'nelisp-cc-runtime-error
                 (list :aot-builtin-not-found builtin))))
@@ -1957,7 +1957,7 @@ values.  When DISPATCHER is nil, host/NeLisp function lookup is used."
                 found t))))
     (unless found
       (if (fboundp builtin)
-          (setq fn (symbol-function builtin)
+          (setq fn builtin
                 found t)
         (signal 'nelisp-cc-runtime-error
                 (list :aot-builtin-not-found builtin))))

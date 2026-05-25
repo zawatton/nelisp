@@ -2429,6 +2429,11 @@ defun is visible in the current compile unit.")
     cl-first cl-second cl-third cl-fourth cl-fifth
     cl-sixth cl-seventh cl-eighth cl-ninth cl-tenth
     cl-rest cl-copy-list cl-list* cl-acons cl-pairlis cl-adjoin
+    cl-endp cl-list-length cl-subseq cl-concatenate
+    cl-revappend cl-nreconc cl-tailp cl-ldiff
+    cl-union cl-intersection cl-set-difference cl-set-exclusive-or
+    cl-subsetp cl-position cl-find cl-count cl-mismatch cl-search
+    cl-remove cl-delete cl-substitute cl-nsubstitute
     cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
     cl-some cl-every cl-notany cl-notevery
     cl-count-if cl-count-if-not cl-find-if cl-find-if-not
