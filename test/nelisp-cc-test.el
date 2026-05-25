@@ -1691,6 +1691,24 @@ exit points were emitted; call-points were missing."
      '(a b) '(b c) #'eq)
     (should (equal (aref out 0) '(a b c)))
     (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-take-while 2 out 'scratch
+     #'numberp '(1 2 a 3))
+    (should (equal (aref out 0) '(1 2)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-drop-while 2 out 'scratch
+     #'numberp '(1 2 a 3))
+    (should (equal (aref out 0) '(a 3)))
+    (let (seen)
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'seq-do-indexed 2 out 'scratch
+       (lambda (x i) (push (list i x) seen)) '(a b))
+      (should (null (aref out 0)))
+      (should (equal (nreverse seen) '((0 a) (1 b)))))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-group-by 2 out 'scratch
+     #'length '("a" "bb" "c"))
+    (should (equal (aref out 0) '((2 "bb") (1 "a" "c"))))
+    (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'cl-map 3 out 'scratch 'list #'1+ '(1 2))
     (should (equal (aref out 0) '(2 3)))
     (nelisp-cc-runtime-aot-builtin-calln
