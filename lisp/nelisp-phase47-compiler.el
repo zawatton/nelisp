@@ -4173,6 +4173,20 @@ contain no unresolved non-local source form."
                        else))))))
      (t nil))))
 
+(defun nelisp-phase47-compiler--aot-final-cleanup-nonlocal-form
+    (cleanups)
+  "Return final non-local cleanup form in CLEANUPS when safe.
+Earlier cleanup forms must be ordinary local value forms."
+  (let ((final (car (last cleanups)))
+        (prefix (butlast cleanups)))
+    (when (and final
+               (nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
+                final)
+               (not (cl-some
+                     #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     prefix)))
+      final)))
+
 (defun nelisp-phase47-compiler--aot-conditional-condition-case-form
     (body clauses)
   "Return a conditional condition-case signal descriptor.
@@ -5854,10 +5868,13 @@ crossing the protected body still require cleanup landing-pad lowering."
                 (nelisp-phase47-compiler--aot-condition-tree-tag
                  body-tree)
                 body-tree))
-          (standalone-cleanup-tree
+         (standalone-cleanup-tree
            (and (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
                  body-tree)
-                body-tree)))
+                body-tree))
+          (final-cleanup-nonlocal
+           (nelisp-phase47-compiler--aot-final-cleanup-nonlocal-form
+            cleanups)))
       (when (or (and (not direct-throw)
                      (not direct-condition)
                      (not conditional-throw)
@@ -5865,14 +5882,29 @@ crossing the protected body still require cleanup landing-pad lowering."
                      (not standalone-cleanup-tree)
                      (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                       body))
-                (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                         cleanups))
+                (and (not final-cleanup-nonlocal)
+                     (cl-some
+                      #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                      cleanups))
+                (and final-cleanup-nonlocal
+                     (or direct-throw
+                         direct-condition
+                         conditional-throw
+                         conditional-condition
+                         standalone-cleanup-tree
+                         (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                          body))))
         (signal 'nelisp-phase47-compiler-error
                 (list :aot-unwind-protect-nonlocal-form sexp)))
       (let ((value-slot (nelisp-phase47-compiler--gensym
                          "aot-unwind-value")))
         (nelisp-phase47-compiler--parse-value
          (cond
+          (final-cleanup-nonlocal
+           `(let (((,value-slot :type sexp) ,body))
+              (seq
+               ,@(butlast cleanups)
+               ,final-cleanup-nonlocal)))
           (direct-throw
            (let ((cleanup-label
                   (nelisp-phase47-compiler--gensym
