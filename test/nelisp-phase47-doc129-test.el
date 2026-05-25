@@ -2167,6 +2167,8 @@ materialized closure temporary."
                   (mapconcat 3 (mapconcat fn xs sep))
                   (mapcan 2 (mapcan fn xs))
                   (maphash 2 (maphash fn xs))
+                  (map-char-table 2 (map-char-table fn xs))
+                  (map-keymap 2 (map-keymap fn xs))
                   (map-pairs 1 (map-pairs xs))
                   (map-keys 1 (map-keys xs))
                   (map-values 1 (map-values xs))
@@ -2181,6 +2183,7 @@ materialized closure temporary."
                   (map-put! 3 (map-put! xs seed pred))
                   (seq-map 2 (seq-map fn xs))
                   (seq-do 2 (seq-do fn xs))
+                  (seq-each 2 (seq-each fn xs))
                   (seq-filter 2 (seq-filter fn xs))
                   (seq-remove 2 (seq-remove fn xs))
                   (seq-find 2 (seq-find fn xs))
@@ -2279,6 +2282,8 @@ materialized closure temporary."
                   (mapconcat #'foo xs sep)
                   (mapcan #'foo xs)
                   (maphash #'foo xs)
+                  (map-char-table #'foo xs)
+                  (map-keymap #'foo xs)
                   (map-apply #'foo xs)
                   (map-do #'foo xs)
                   (map-filter #'foo xs)
@@ -2289,6 +2294,7 @@ materialized closure temporary."
                   (map-values-apply #'foo xs)
                   (seq-map #'foo xs)
                   (seq-do #'foo xs)
+                  (seq-each #'foo xs)
                   (seq-filter #'foo xs)
                   (seq-remove #'foo xs)
                   (seq-find #'foo xs)
@@ -3014,8 +3020,11 @@ materialized closure temporary."
 
 (ert-deftest nelisp-phase47-doc129/parse-extended-higher-order-lambda-lift ()
   "Doc 129.7Z: extended higher-order literal lambdas lift to defuns."
-  (dolist (case '(((seq-map-indexed (lambda (x i) x) xs) 6)
+  (dolist (case '(((seq-each (lambda (x) x) xs) 6)
+                  ((seq-map-indexed (lambda (x i) x) xs) 6)
                   ((seq-uniq xs (lambda (a b) a)) 7)
+                  ((map-char-table (lambda (k v) k) xs) 6)
+                  ((map-keymap (lambda (k v) k) xs) 6)
                   ((map-filter (lambda (k v) k) xs) 6)
                   ((map-merge-with type (lambda (a b) a) xs ys) 7)
                   ((map-some (lambda (k v) k) xs) 6)
@@ -3377,6 +3386,40 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_seq" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-extra-callback-designators ()
+  "Doc 129.6AH: object output exposes remaining callback designators."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-extra-callback-designators-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defun call_seq_each
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name_slot :type sexp)
+                  (xs :type sexp))
+               (seq-each #'foo xs))
+             (defun call_map_keymap
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name_slot :type sexp)
+                  (keymap :type sexp))
+               (map-keymap #'foo keymap)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_seq_each" out))
+            (should (string-match-p "call_map_keymap" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))

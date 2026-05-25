@@ -2476,10 +2476,11 @@ the whole program."
    ((eq (car sexp) 'funcall)
     (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
    ((memq (car sexp) '(mapcar mapc mapconcat mapcan maphash
+                       map-char-table map-keymap
                        map-apply map-do map-filter map-merge-with
                        map-some map-every-p map-remove
                        map-keys-apply map-values-apply
-                       seq-map seq-do seq-filter seq-remove seq-find
+                       seq-map seq-do seq-each seq-filter seq-remove seq-find
                        seq-some seq-every-p seq-count seq-reduce
                        seq-mapcat seq-keep seq-mapn seq-map-indexed
                        seq-sort seq-uniq seq-position seq-contains-p
@@ -2650,11 +2651,12 @@ defun is visible in the current compile unit.")
     plist-get plist-put plist-member
     gethash puthash remhash
     mapcar mapc mapconcat mapcan maphash
+    map-char-table map-keymap
     map-apply map-do map-filter map-merge-with
     map-some map-every-p map-remove map-keys-apply map-values-apply
     map-pairs map-keys map-values map-length map-elt map-contains-key
     map-copy map-into map-merge map-insert map-delete map-put!
-    seq-map seq-do seq-filter seq-remove seq-find
+    seq-map seq-do seq-each seq-filter seq-remove seq-find
     seq-some seq-every-p seq-count seq-reduce seq-mapcat
     seq-keep seq-mapn seq-map-indexed seq-sort seq-uniq
     seq-position seq-contains-p seq-set-equal-p
@@ -2696,6 +2698,8 @@ defun is visible in the current compile unit.")
     (mapconcat . 0)
     (mapcan . 0)
     (maphash . 0)
+    (map-char-table . 0)
+    (map-keymap . 0)
     (map-apply . 0)
     (map-do . 0)
     (map-filter . 0)
@@ -2707,6 +2711,7 @@ defun is visible in the current compile unit.")
     (map-values-apply . 0)
     (seq-map . 0)
     (seq-do . 0)
+    (seq-each . 0)
     (seq-filter . 0)
     (seq-remove . 0)
     (seq-find . 0)
