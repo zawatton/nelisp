@@ -3282,7 +3282,7 @@ simulator inspection; standalone/native loader callers leave it nil."
   "Validate one Doc 129 AOT init helper DESCRIPTOR."
   (unless (and (listp descriptor)
                (memq (plist-get descriptor :kind)
-                     '(defvar defconst defcustom))
+                     '(defvar defconst defcustom setq setq-default))
                (symbolp (plist-get descriptor :name))
                (symbolp (plist-get descriptor :helper))
                (integerp (plist-get descriptor :index))

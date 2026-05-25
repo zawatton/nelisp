@@ -1071,6 +1071,14 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
 ;; expand user macros in value positions, then normalize the small host
 ;; core forms (`progn', 3-arg `if', `nil') that common macros produce.
 
+(defun nelisp-phase47-compiler--function-designator-literal (form)
+  "Return FORM's literal function designator for top-level validation."
+  (if (and (consp form)
+           (eq (car form) 'function)
+           (= (length form) 2))
+      (cadr form)
+    (nelisp-phase47-compiler--literal-arg form)))
+
 (defun nelisp-phase47-compiler--top-level-defmacro-p (form)
   "Return non-nil when FORM is a top-level `defmacro' form."
   (and (consp form)
@@ -1082,12 +1090,36 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
 (defun nelisp-phase47-compiler--top-level-module-form-p (form)
   "Return non-nil when FORM is a compile-time top-level module form."
   (and (consp form)
-       (memq (car form) '(require provide define-error))))
+       (memq (car form) '(require provide define-error defalias))))
 
 (defun nelisp-phase47-compiler--top-level-var-form-p (form)
   "Return non-nil when FORM is a top-level variable declaration form."
   (and (consp form)
        (memq (car form) '(defvar defconst defcustom))))
+
+(defun nelisp-phase47-compiler--top-level-setq-form-p (form)
+  "Return non-nil when FORM is a top-level assignment form."
+  (and (consp form)
+       (memq (car form) '(setq setq-default))))
+
+(defun nelisp-phase47-compiler--top-level-setq-pairs (form)
+  "Return validated `(NAME VALUE)' pairs for top-level setq FORM."
+  (unless (and (nelisp-phase47-compiler--top-level-setq-form-p form)
+               (>= (length form) 3)
+               (zerop (% (length (cdr form)) 2)))
+    (signal 'nelisp-phase47-compiler-error
+            (list :top-level-setq-arity form)))
+  (let ((args (cdr form))
+        (pairs nil))
+    (while args
+      (let ((name (car args))
+            (value (cadr args)))
+        (unless (symbolp name)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :top-level-setq-name-not-symbol form)))
+        (push (list name value) pairs)
+        (setq args (cddr args))))
+    (nreverse pairs)))
 
 (defun nelisp-phase47-compiler--top-level-special-var-name (form)
   "Return FORM's top-level special variable name."
@@ -1107,7 +1139,9 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
 (defun nelisp-phase47-compiler--top-level-var-helper-name (kind symbol index)
   "Return the generated AOT init helper name for KIND/SYMBOL at INDEX."
   (intern (format "nelisp_aot_%s_%d_%s"
-                  (substring (symbol-name kind) 3)
+                  (if (memq kind '(defvar defconst defcustom))
+                      (substring (symbol-name kind) 3)
+                    (symbol-name kind))
                   index
                   (nelisp-phase47-compiler--link-name-fragment symbol))))
 
@@ -1185,7 +1219,8 @@ INIT-FORM must be supported by
          ,(mapcar (lambda (p) (list p :type 'sexp)) params)
          (seq
           (sexp-write-symbol-lit name_slot ,symbol-name)
-          ,@(if (eq kind 'defvar)
+          ,@(cond
+             ((eq kind 'defvar)
                 `((if (= (extern-call nelisp_mirror_is_bound
                                        mirror name_slot out)
                         1)
@@ -1194,7 +1229,13 @@ INIT-FORM must be supported by
                      ,write-form
                      (extern-call nelisp_env_set_value
                                   mirror frames name_slot out scratch 0)
-                     name_slot)))
+                     name_slot))))
+             ((memq kind '(setq setq-default))
+              `(,write-form
+                (extern-call nelisp_env_set_value
+                             mirror frames name_slot out scratch 0)
+                name_slot))
+             (t
               `((sexp-write-nil out)
                 (extern-call nelisp_mirror_set_constant
                              mirror name_slot out)
@@ -1204,7 +1245,7 @@ INIT-FORM must be supported by
                 (sexp-write-t out)
                 (extern-call nelisp_mirror_set_constant
                              mirror name_slot out)
-                name_slot)))))))
+                name_slot))))))))
 
 (defun nelisp-phase47-compiler--top-level-var-init-descriptor (form index)
   "Return the AOT init descriptor for top-level variable FORM.
@@ -1245,6 +1286,15 @@ Returns nil for declaration-only `defvar' forms with no initializer."
       ('defcustom
        (nelisp-phase47-compiler--defcustom-metadata-descriptor form index)
        (list :kind 'defcustom
+             :name name
+             :helper (nelisp-phase47-compiler--top-level-var-helper-name
+                      kind name index)
+             :index index))
+      ((or 'setq 'setq-default)
+       (unless (= (length form) 3)
+         (signal 'nelisp-phase47-compiler-error
+                 (list :top-level-setq-pair-shape form)))
+       (list :kind kind
              :name name
              :helper (nelisp-phase47-compiler--top-level-var-helper-name
                       kind name index)
@@ -1308,6 +1358,19 @@ Returns nil for declaration-only `defvar' forms with no initializer."
                   ,name
                   (out mirror frames scratch name_slot)
                 ,(nth 2 form)))))
+      ((or 'setq 'setq-default)
+       (unless (= (length form) 3)
+         (signal 'nelisp-phase47-compiler-error
+                 (list :top-level-setq-pair-shape form)))
+       (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
+                      kind name index)))
+         (or (nelisp-phase47-compiler--top-level-var-direct-defun
+              kind helper name (nth 2 form))
+             `(defun-sexp-int-setq-symbol
+                  ,helper
+                  ,name
+                  (out mirror frames scratch name_slot dummy)
+                ,(nth 2 form)))))
       (_
        (signal 'nelisp-phase47-compiler-error
                (list :unknown-top-level-var-form form))))))
@@ -1323,9 +1386,10 @@ Returns nil for declaration-only `defvar' forms with no initializer."
 (defun nelisp-phase47-compiler--eval-top-level-module-form (form)
   "Evaluate one compile-time top-level module FORM.
 `require' is run during compilation so macros and helper definitions
-needed by later forms can be loaded.  `provide' and `define-error' are
-stripped after validation: the compiled object does not yet carry module
-registration or error metadata side effects."
+needed by later forms can be loaded.  `provide', `define-error', and
+`defalias' are stripped after validation: the compiled object does not
+yet carry module registration, error metadata, or function-cell alias
+side effects."
   (pcase (car form)
     ('require
      (unless (<= 2 (length form) 4)
@@ -1371,6 +1435,25 @@ registration or error metadata side effects."
        (if (= (length form) 4)
            (define-error name message parent)
          (define-error name message))))
+    ('defalias
+     (unless (<= 3 (length form) 4)
+       (signal 'nelisp-phase47-compiler-error
+               (list :defalias-arity form)))
+     (let ((name (nelisp-phase47-compiler--literal-arg (nth 1 form)))
+           (target
+            (nelisp-phase47-compiler--function-designator-literal
+             (nth 2 form))))
+       (unless (symbolp name)
+         (signal 'nelisp-phase47-compiler-error
+                 (list :defalias-name-not-symbol form)))
+       (unless (or (symbolp target)
+                   (and (consp target) (eq (car target) 'lambda)))
+         (signal 'nelisp-phase47-compiler-error
+                 (list :defalias-target-unsupported form)))
+       (when (= (length form) 4)
+         (unless (stringp (nth 3 form))
+           (signal 'nelisp-phase47-compiler-error
+                   (list :defalias-docstring-not-string form))))))
     (_
      (signal 'nelisp-phase47-compiler-error
              (list :unknown-module-form form)))))
@@ -1463,16 +1546,19 @@ The caller splices FORMS into the surrounding top-level sequence."
                        nil
                      (nthcdr 2 form)))))))
       ('if
-       (when (and (>= (length form) 3) (<= (length form) 4))
+       (when (>= (length form) 3)
          (let ((value
                 (nelisp-phase47-compiler--top-level-static-condition
                  (nth 1 form))))
            (when value
              (cons 'known
-                   (nelisp-phase47-compiler--top-level-branch-forms
-                    (if (cdr value)
-                        (nth 2 form)
-                      (nth 3 form)))))))))))
+                   (if (cdr value)
+                       (nelisp-phase47-compiler--top-level-branch-forms
+                        (nth 2 form))
+                     (apply #'append
+                            (mapcar
+                             #'nelisp-phase47-compiler--top-level-branch-forms
+                             (nthcdr 3 form))))))))))))
 
 (defun nelisp-phase47-compiler--extract-defmacros (sexp)
   "Return plist for compile-time top-level forms in SEXP.
@@ -1515,6 +1601,27 @@ the same generated helper names."
             :special-vars
             (list (nelisp-phase47-compiler--top-level-special-var-name
                    sexp)))))
+   ((nelisp-phase47-compiler--top-level-setq-form-p sexp)
+    (let ((kept nil)
+          (init-helpers nil)
+          (setq-index 0))
+      (dolist (pair (nelisp-phase47-compiler--top-level-setq-pairs sexp))
+        (let* ((form (list (car sexp) (car pair) (cadr pair)))
+               (lowered
+                (nelisp-phase47-compiler--lower-top-level-var-form
+                 form setq-index))
+               (descriptor
+                (nelisp-phase47-compiler--top-level-var-init-descriptor
+                 form setq-index)))
+          (push descriptor init-helpers)
+          (push lowered kept)
+          (setq setq-index (1+ setq-index))))
+      (list :source (cons 'seq (nreverse kept))
+            :defmacros nil
+            :module-forms nil
+            :init-helpers (nreverse init-helpers)
+            :custom-metadata nil
+            :special-vars nil)))
    ((and (consp sexp) (eq (car sexp) 'seq))
     (let ((kept nil)
           (defs nil)
@@ -1555,6 +1662,21 @@ the same generated helper names."
                     (setq var-index (1+ var-index))
                     (when lowered
                       (push lowered kept))))
+                 ((nelisp-phase47-compiler--top-level-setq-form-p child)
+                  (dolist (pair
+                           (nelisp-phase47-compiler--top-level-setq-pairs
+                            child))
+                    (let* ((form (list (car child) (car pair) (cadr pair)))
+                           (lowered
+                            (nelisp-phase47-compiler--lower-top-level-var-form
+                             form var-index))
+                           (descriptor
+                            (nelisp-phase47-compiler--top-level-var-init-descriptor
+                             form var-index)))
+                      (push descriptor init-helpers)
+                      (setq var-index (1+ var-index))
+                      (when lowered
+                        (push lowered kept)))))
                  (t
                   (push child kept)))))))
         (dolist (child (cdr sexp))
@@ -2822,7 +2944,7 @@ the whole program."
     (nelisp-phase47-compiler--preprocess-let*-bindings
      (nth 1 sexp) (nthcdr 2 sexp)))
    ((eq (car sexp) 'if)
-    (unless (<= 3 (length sexp) 4)
+    (unless (>= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :if-arity sexp)))
     (let* ((condition (nth 1 sexp))
@@ -2832,8 +2954,7 @@ the whole program."
            (then-form
             (nelisp-phase47-compiler--preprocess-source (nth 2 sexp)))
            (else-form
-            (nelisp-phase47-compiler--preprocess-source
-             (if (= (length sexp) 4) (nth 3 sexp) 0))))
+            (nelisp-phase47-compiler--body->form (nthcdr 3 sexp))))
       `(if ,(nelisp-phase47-compiler--preprocess-source condition)
            ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
              then-form condition-vars)

@@ -174,6 +174,22 @@ materialized closure temporary."
     (should (= (length (nelisp-phase47-compiler--ir-get then-branch :forms))
                2))))
 
+(ert-deftest nelisp-phase47-doc129/value-seq-from-if-multi-else ()
+  "Doc 129.1C: source `if' ELSE... becomes a value-seq branch."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun f (x)
+                 (if (> x 0)
+                     (+ x 1)
+                   (+ x 2)
+                   (+ x 3)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (else-branch (nelisp-phase47-compiler--ir-get body :else)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (eq (nelisp-phase47-compiler--ir-kind else-branch)
+                'value-seq))
+    (should (= (length (nelisp-phase47-compiler--ir-get else-branch :forms))
+               2))))
+
 (ert-deftest nelisp-phase47-doc129/e2e-value-seq-from-when-progn ()
   "Doc 129.1: value-seq returns the final child value."
   (unless (nelisp-phase47-doc129-test--linux-p)
@@ -1019,6 +1035,23 @@ materialized closure temporary."
                :name z
                :helper nelisp_aot_custom_3_z
                :index 3))))))
+
+(ert-deftest nelisp-phase47-doc129/top-level-setq-init-descriptors ()
+  "Doc 129.3S: top-level `setq' pairs expose init helpers."
+  (let ((descriptors
+         (nelisp-phase47-compiler--init-helper-descriptors
+          '(seq
+            (setq a 0 b "")))))
+    (should
+     (equal descriptors
+            '((:kind setq
+               :name a
+               :helper nelisp_aot_setq_0_a
+               :index 0)
+              (:kind setq
+               :name b
+               :helper nelisp_aot_setq_1_b
+               :index 1))))))
 
 (ert-deftest nelisp-phase47-doc129/module-init-plan-combines-descriptors ()
   "Doc 129.7W: compiler exposes a normalized module-init plan."
@@ -2050,6 +2083,16 @@ materialized closure temporary."
     (should (equal (get 'nelisp-doc129-smoke-error 'error-message)
                    "Doc129 smoke error"))))
 
+(ert-deftest nelisp-phase47-doc129/top-level-defalias-stripped ()
+  "Doc 129.6A: top-level `defalias' is a compile-time module form."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defalias 'nelisp-doc129-alias #'identity)
+                (exit 6))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (= (length forms) 1))
+    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'exit))))
+
 (ert-deftest nelisp-phase47-doc129/top-level-require-noerror-missing ()
   "Doc 129.6A: `(require FEATURE nil t)' can be stripped when absent."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -2101,6 +2144,20 @@ materialized closure temporary."
                     (defun skipped (x) (+ x 9))
                   (progn
                     (defun selected (x) (+ x 2)))))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (= (length forms) 1))
+    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
+                'selected))))
+
+(ert-deftest nelisp-phase47-doc129/top-level-if-multi-else-spliced ()
+  "Doc 129.1C: static top-level `if' guard accepts ELSE... forms."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (if (featurep 'nelisp-phase47-doc129-missing-feature)
+                    (defun skipped (x) (+ x 9))
+                  (defalias 'nelisp-doc129-alias #'identity)
+                  (defun selected (x) (+ x 3))))))
          (forms (nelisp-phase47-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
     (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
