@@ -4531,6 +4531,60 @@ materialized closure temporary."
     (should (member 'nelisp_aot_capture_cell externs))
     (should-not (member 'nelisp_aot_frame_slot_ref externs))))
 
+(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-or-leading ()
+  "Doc 129.7AP: leading `or' mutation selects frame-slot reads."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (cap :type sexp)
+                    (flag :type sexp)
+                    (x :type sexp))
+                 (seq
+                  (or
+                   (funcall (lambda (v) (setq cap v)) x)
+                   flag)
+                  cap))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (slot-ref (nth 1 forms))
+         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+                            slot-ref :forms)))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+                'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+                'nelisp_aot_frame_slot_ref))
+    (should (member 'nelisp_aot_capture_cell externs))
+    (should (member 'nelisp_aot_frame_slot_ref externs))))
+
+(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-or-trailing ()
+  "Doc 129.7AP: trailing `or' mutation keeps ordinary reads."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (cap :type sexp)
+                    (flag :type sexp)
+                    (x :type sexp))
+                 (seq
+                  (or
+                   flag
+                   (funcall (lambda (v) (setq cap v)) x))
+                  cap))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (read-node (nth 1 forms))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind read-node) 'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get read-node :var) 'cap))
+    (should (member 'nelisp_aot_capture_cell externs))
+    (should-not (member 'nelisp_aot_frame_slot_ref externs))))
+
 (ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-let ()
   "Doc 129.7AO: captured mutation inside `let' selects later frame-slot reads."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -4917,6 +4971,35 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-or-leading ()
+  "Doc 129.7AP: object output selects frame-slot ABI after leading or."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-lambda-setq-or-read-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp)
+                 (flag :type sexp)
+                 (x :type sexp))
+              (seq
+               (or
+                (funcall (lambda (v) (setq cap v)) x)
+                flag)
+               cap))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_capture_cell" out))
+            (should (string-match-p "nelisp_aot_frame_slot_ref" out))
+            (should (string-match-p "nelisp_aot_funcall1" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-let ()
   "Doc 129.7AO: object output selects frame-slot ABI after lexical let."
   (skip-unless (executable-find "readelf"))
@@ -4934,6 +5017,34 @@ materialized closure temporary."
               (seq
                (let ((tmp x))
                  (funcall (lambda (v) (setq cap v)) tmp))
+               cap))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_capture_cell" out))
+            (should (string-match-p "nelisp_aot_frame_slot_ref" out))
+            (should (string-match-p "nelisp_aot_funcall1" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-let-star ()
+  "Doc 129.7AP: object output selects frame-slot ABI after lexical let*."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-lambda-setq-let-star-read-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (cap :type sexp)
+                 (x :type sexp))
+              (seq
+               (let* ((tmp x)
+                      (tmp2 tmp))
+                 (funcall (lambda (v) (setq cap v)) tmp2))
                cap))
            path)
           (let ((out (with-output-to-string
