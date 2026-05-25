@@ -784,16 +784,20 @@ root vector while the compiled function is active."
            (push descriptor descriptors)))))
     (nreverse descriptors)))
 
-(defun nelisp-phase47-compiler--auto-aot-root-boundary-slots (fenv)
-  "Return Doc 129.5F boundary slots from FENV, or nil.
+(defun nelisp-phase47-compiler--auto-aot-root-boundary-slots
+    (fenv &optional require-roots)
+  "Return Doc 129.5F/I boundary slots from FENV, or nil.
 
-The automatic root-frame MVP is intentionally opt-in: a defun must
-already expose the Doc 99 / 129.5 boundary locals `out', `mirror',
-`frames', `scratch', and `roots'.  `roots' is the frame slot that
-will hold the materialized AOT root vector."
+When REQUIRE-ROOTS is non-nil, the defun must expose the Doc 99 /
+129.5 boundary locals `out', `mirror', `frames', `scratch', and
+`roots'.  Without REQUIRE-ROOTS, `out', `mirror', `frames', and
+`scratch' are enough; emission can hold the materialized AOT root
+vector in an aligned stack temporary."
   (let ((slots nil)
         (ok t))
-    (dolist (sym '(out mirror frames scratch roots))
+    (dolist (sym (if require-roots
+                     '(out mirror frames scratch roots)
+                   '(out mirror frames scratch)))
       (let ((info (cdr (assq sym fenv))))
         (if (and info
                  (eq (or (plist-get info :class) 'gp) 'gp)
@@ -821,37 +825,55 @@ will hold the materialized AOT root vector."
 
 (defun nelisp-phase47-compiler--maybe-wrap-aot-root-scope
     (body-ir gc-root-slots env fenv defuns)
-  "Wrap BODY-IR in automatic Doc 129.5F root push/pop when possible."
-  (let* ((boundary-slots
+  "Wrap BODY-IR in automatic Doc 129.5 root push/pop when possible."
+  (let* ((slot-boundary-slots
           (and gc-root-slots
-               (nelisp-phase47-compiler--auto-aot-root-boundary-slots fenv)))
+               (nelisp-phase47-compiler--auto-aot-root-boundary-slots
+                fenv t)))
+         (frame-boundary-slots
+          (and gc-root-slots
+               (or slot-boundary-slots
+                   (and (assq 'frame_roots fenv)
+                        (nelisp-phase47-compiler--auto-aot-root-boundary-slots
+                         fenv nil)))))
+         (boundary-slots frame-boundary-slots)
          (root-symbols
-          (and boundary-slots
+          (and slot-boundary-slots
                (nelisp-phase47-compiler--symbols-for-root-slots
                 fenv gc-root-slots))))
     (if boundary-slots
-        (nelisp-phase47-compiler--make-ir
-              'aot-root-scope
-              :root-slots gc-root-slots
-              :root-symbols root-symbols
-              :boundary-slots boundary-slots
-              :materialize-ir
-              (nelisp-phase47-compiler--parse-value
-               `(extern-call nelisp_aot_materialize_roots
-                             mirror frames ,(length root-symbols)
-                             out scratch ,@root-symbols)
-               env fenv defuns)
-              :push-ir
-              (nelisp-phase47-compiler--parse-value
-               '(extern-call nelisp_aot_push_roots
-                             mirror frames roots out scratch)
-               env fenv defuns)
-              :body body-ir
-              :pop-ir
-              (nelisp-phase47-compiler--parse-value
-               '(extern-call nelisp_aot_pop_roots
-                             mirror frames roots out scratch)
-               env fenv defuns))
+        (let* ((slot-storage-p (and slot-boundary-slots t))
+               (materialize-form
+                (if slot-storage-p
+                    `(extern-call nelisp_aot_materialize_roots
+                                  mirror frames ,(length root-symbols)
+                                  out scratch ,@root-symbols)
+                  `(extern-call nelisp_aot_materialize_frame_roots
+                                mirror frames ,(length gc-root-slots)
+                                out scratch ,@gc-root-slots))))
+          (nelisp-phase47-compiler--make-ir
+                'aot-root-scope
+                :root-slots gc-root-slots
+                :root-symbols root-symbols
+                :boundary-slots boundary-slots
+                :root-storage (if slot-storage-p 'slot 'stack)
+                :materialize-kind (if slot-storage-p 'values 'frames)
+                :materialize-ir
+                (nelisp-phase47-compiler--parse-value
+                 materialize-form env fenv defuns)
+                :push-ir
+                (and slot-storage-p
+                     (nelisp-phase47-compiler--parse-value
+                      '(extern-call nelisp_aot_push_roots
+                                    mirror frames roots out scratch)
+                      env fenv defuns))
+                :body body-ir
+                :pop-ir
+                (and slot-storage-p
+                     (nelisp-phase47-compiler--parse-value
+                      '(extern-call nelisp_aot_pop_roots
+                                    mirror frames roots out scratch)
+                      env fenv defuns))))
       body-ir)))
 
 (defun nelisp-phase47-compiler--parse-let-var (var-form)
@@ -6443,8 +6465,11 @@ mask is needed):
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf reg 'rbp (- (* 8 (1+ slot)))))
 
-(defun nelisp-phase47-compiler--emit-aot-root-bridge-call (node name buf)
-  "Emit a direct SysV call to Doc 129.5 root bridge NAME for NODE."
+(defun nelisp-phase47-compiler--emit-aot-root-bridge-call
+    (node name buf &optional roots-rsp-disp)
+  "Emit a direct SysV call to Doc 129.5 root bridge NAME for NODE.
+When ROOTS-RSP-DISP is non-nil, load the roots argument from
+`[rsp + ROOTS-RSP-DISP]' instead of NODE's `roots' boundary slot."
   (unless (and (eq nelisp-phase47-compiler--arch 'x86_64)
                (eq nelisp-phase47-compiler--abi 'sysv))
     (signal 'nelisp-phase47-compiler-error
@@ -6462,8 +6487,11 @@ mask is needed):
      buf (funcall slot-of 'mirror) 'rdi)
     (nelisp-phase47-compiler--emit-frame-slot-into-reg
      buf (funcall slot-of 'frames) 'rsi)
-    (nelisp-phase47-compiler--emit-frame-slot-into-reg
-     buf (funcall slot-of 'roots) 'rdx)
+    (if roots-rsp-disp
+        (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+         buf 'rdx roots-rsp-disp)
+      (nelisp-phase47-compiler--emit-frame-slot-into-reg
+       buf (funcall slot-of 'roots) 'rdx))
     (nelisp-phase47-compiler--emit-frame-slot-into-reg
      buf (funcall slot-of 'out) 'rcx)
     (nelisp-phase47-compiler--emit-frame-slot-into-reg
@@ -6477,28 +6505,58 @@ mask is needed):
   (let* ((materialize-ir
           (nelisp-phase47-compiler--ir-get node :materialize-ir))
          (slots (nelisp-phase47-compiler--ir-get node :boundary-slots))
+         (root-storage
+          (or (nelisp-phase47-compiler--ir-get node :root-storage)
+              'slot))
          (roots-slot (cdr (assq 'roots slots))))
-    (unless roots-slot
-      (signal 'nelisp-phase47-compiler-error
-              (list :aot-root-scope-missing-slot 'roots slots)))
     (nelisp-phase47-compiler--emit-value materialize-ir buf)
-    (nelisp-asm-x86_64-mov-mem-reg-disp8
-     buf 'rbp (- (* 8 (1+ roots-slot))) 'rax))
-  (nelisp-phase47-compiler--emit-aot-root-bridge-call
-   node 'nelisp_aot_push_roots buf)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :body)
-   buf)
-  ;; Preserve the body's GP return value across the pop bridge.  The
-  ;; body-entry stack is 16-byte aligned; `push rax' misaligns it, so
-  ;; insert one fixed 8-byte pad before the bridge call and remove it
-  ;; before restoring rax.
-  (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
-  (nelisp-phase47-compiler--emit-aot-root-bridge-call
-   node 'nelisp_aot_pop_roots buf)
-  (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
-  (nelisp-asm-x86_64-pop buf 'rax))
+    (pcase root-storage
+      ('slot
+       (unless roots-slot
+         (signal 'nelisp-phase47-compiler-error
+                 (list :aot-root-scope-missing-slot 'roots slots)))
+       (nelisp-asm-x86_64-mov-mem-reg-disp8
+        buf 'rbp (- (* 8 (1+ roots-slot))) 'rax)
+       (nelisp-phase47-compiler--emit-aot-root-bridge-call
+        node 'nelisp_aot_push_roots buf)
+       (nelisp-phase47-compiler--emit-value
+        (nelisp-phase47-compiler--ir-get node :body)
+        buf)
+       ;; Preserve the body's GP return value across the pop bridge.
+       ;; The body-entry stack is 16-byte aligned; `push rax' misaligns
+       ;; it, so insert one fixed 8-byte pad before the bridge call and
+       ;; remove it before restoring rax.
+       (nelisp-asm-x86_64-push buf 'rax)
+       (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
+       (nelisp-phase47-compiler--emit-aot-root-bridge-call
+        node 'nelisp_aot_pop_roots buf)
+       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
+       (nelisp-asm-x86_64-pop buf 'rax))
+      ('stack
+       ;; Keep the materialized roots in an aligned stack temporary for
+       ;; the whole body.  Two pushes preserve the body-entry call
+       ;; alignment; the first copy at [rsp+8] is the roots vector.
+       (nelisp-asm-x86_64-push buf 'rax)
+       (nelisp-asm-x86_64-push buf 'rax)
+       (nelisp-phase47-compiler--emit-aot-root-bridge-call
+        node 'nelisp_aot_push_roots buf 8)
+       (nelisp-phase47-compiler--emit-value
+        (nelisp-phase47-compiler--ir-get node :body)
+        buf)
+       ;; Layout before the pop bridge after `push rax; sub rsp, 8':
+       ;; [rsp+8] = saved result, [rsp+16] = alignment copy,
+       ;; [rsp+24] = roots vector.
+       (nelisp-asm-x86_64-push buf 'rax)
+       (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
+       (nelisp-phase47-compiler--emit-aot-root-bridge-call
+        node 'nelisp_aot_pop_roots buf 24)
+       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
+       (nelisp-asm-x86_64-pop buf 'rax)
+       (nelisp-asm-x86_64-add-imm32 buf 'rsp 16))
+      (_
+       (signal 'nelisp-phase47-compiler-error
+               (list :aot-root-scope-unknown-storage
+                     root-storage))))))
 
 (defun nelisp-phase47-compiler--emit-value (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
