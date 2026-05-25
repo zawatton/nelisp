@@ -888,6 +888,18 @@ will hold the materialized AOT root vector."
                   (list :let-duplicate-var var)))
         (push var seen)))))
 
+(defun nelisp-phase47-compiler--check-let-var-lexical (var)
+  "Signal when VAR is known to require special binding semantics."
+  (when (memq var nelisp-phase47-compiler--special-vars)
+    (signal 'nelisp-phase47-compiler-error
+            (list :let-special-binding-pending var))))
+
+(defun nelisp-phase47-compiler--check-let-vars-lexical (bindings)
+  "Signal when BINDINGS contain a known special variable."
+  (dolist (binding bindings)
+    (let ((var (car (nelisp-phase47-compiler--validate-let-binding binding))))
+      (nelisp-phase47-compiler--check-let-var-lexical var))))
+
 (defun nelisp-phase47-compiler--parse-multi-let
     (bindings body-sexp env fenv defuns parse-body-fn)
   "Parse a multi-binding `let' in value or statement context.
@@ -900,6 +912,7 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
     (signal 'nelisp-phase47-compiler-error
             (list :let-empty-bindings bindings)))
   (nelisp-phase47-compiler--check-let-vars-unique bindings)
+  (nelisp-phase47-compiler--check-let-vars-lexical bindings)
   (let ((new-env env)
         (new-fenv fenv)
         (rt-bindings nil))
@@ -954,6 +967,15 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
   "Return non-nil when FORM is a top-level variable declaration form."
   (and (consp form)
        (memq (car form) '(defvar defconst defcustom))))
+
+(defun nelisp-phase47-compiler--top-level-special-var-name (form)
+  "Return FORM's top-level special variable name."
+  (when (nelisp-phase47-compiler--top-level-var-form-p form)
+    (let ((name (nth 1 form)))
+      (unless (symbolp name)
+        (signal 'nelisp-phase47-compiler-error
+                (list :top-level-var-name-not-symbol form)))
+      name)))
 
 (defun nelisp-phase47-compiler--link-name-fragment (symbol)
   "Return a deterministic linker-friendly fragment for SYMBOL."
@@ -1154,13 +1176,15 @@ the same generated helper names."
           :defmacros (list sexp)
           :module-forms nil
           :init-helpers nil
-          :custom-metadata nil))
+          :custom-metadata nil
+          :special-vars nil))
    ((nelisp-phase47-compiler--top-level-module-form-p sexp)
     (list :source '(seq)
           :defmacros nil
           :module-forms (list sexp)
           :init-helpers nil
-          :custom-metadata nil))
+          :custom-metadata nil
+          :special-vars nil))
    ((nelisp-phase47-compiler--top-level-var-form-p sexp)
     (let ((descriptor
            (nelisp-phase47-compiler--top-level-var-init-descriptor sexp 0))
@@ -1173,13 +1197,17 @@ the same generated helper names."
             :defmacros nil
             :module-forms nil
             :init-helpers (when descriptor (list descriptor))
-            :custom-metadata custom-metadata)))
+            :custom-metadata custom-metadata
+            :special-vars
+            (list (nelisp-phase47-compiler--top-level-special-var-name
+                   sexp)))))
    ((and (consp sexp) (eq (car sexp) 'seq))
     (let ((kept nil)
           (defs nil)
           (module-forms nil)
           (init-helpers nil)
           (custom-metadata nil)
+          (special-vars nil)
           (var-index 0))
       (dolist (child (cdr sexp))
         (cond
@@ -1188,6 +1216,8 @@ the same generated helper names."
          ((nelisp-phase47-compiler--top-level-module-form-p child)
           (push child module-forms))
          ((nelisp-phase47-compiler--top-level-var-form-p child)
+          (push (nelisp-phase47-compiler--top-level-special-var-name child)
+                special-vars)
           (let ((lowered
                  (nelisp-phase47-compiler--lower-top-level-var-form
                   child var-index))
@@ -1209,13 +1239,15 @@ the same generated helper names."
             :defmacros (nreverse defs)
             :module-forms (nreverse module-forms)
             :init-helpers (nreverse init-helpers)
-            :custom-metadata (nreverse custom-metadata))))
+            :custom-metadata (nreverse custom-metadata)
+            :special-vars (nreverse special-vars))))
    (t
     (list :source sexp
           :defmacros nil
           :module-forms nil
           :init-helpers nil
-          :custom-metadata nil))))
+          :custom-metadata nil
+          :special-vars nil))))
 
 (defun nelisp-phase47-compiler--init-helper-descriptors (sexp)
   "Return top-level variable AOT init helper descriptors in SEXP.
@@ -1262,6 +1294,9 @@ macros do not leak into the host Emacs session."
 
 (defvar nelisp-phase47-compiler--lambda-lift-names nil
   "Top-level and synthetic names reserved during Doc 129.7K lambda lifting.")
+
+(defvar nelisp-phase47-compiler--special-vars nil
+  "Top-level special variables declared in the current Doc 129 compile unit.")
 
 (defun nelisp-phase47-compiler--top-level-defun-names (sexp)
   "Return top-level defun names in SEXP."
@@ -1847,7 +1882,8 @@ the whole program."
   (let* ((extracted (nelisp-phase47-compiler--extract-defmacros sexp))
          (source (plist-get extracted :source))
          (defs (plist-get extracted :defmacros))
-         (module-forms (plist-get extracted :module-forms)))
+         (module-forms (plist-get extracted :module-forms))
+         (special-vars (plist-get extracted :special-vars)))
     (dolist (form module-forms)
       (nelisp-phase47-compiler--eval-top-level-module-form form))
     (nelisp-phase47-compiler--with-defmacros
@@ -1857,6 +1893,7 @@ the whole program."
               (nelisp-phase47-compiler--lambda-lift-hoists nil)
               (nelisp-phase47-compiler--lambda-lift-names
                (nelisp-phase47-compiler--top-level-defun-names source))
+              (nelisp-phase47-compiler--special-vars special-vars)
               (processed
                (nelisp-phase47-compiler--preprocess-source source))
               (hoists (nreverse
@@ -4171,6 +4208,7 @@ functions `((NAME . ARITY) ...)'."
                (var (nth 0 pair))
                (val-sexp (nth 1 pair))
                (root-p (nth 2 pair)))
+          (nelisp-phase47-compiler--check-let-var-lexical var)
           (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
               ;; Compile-time path: fold and extend ENV as before.
               (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
@@ -4320,6 +4358,7 @@ Returns one of:
                (var (nth 0 pair))
                (val-sexp (nth 1 pair))
                (root-p (nth 2 pair)))
+          (nelisp-phase47-compiler--check-let-var-lexical var)
           (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
               (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
                      (new-env (cons (cons var val) env))
@@ -4491,9 +4530,12 @@ Returns one of:
 (defun nelisp-phase47-compiler--parse (sexp &optional env)
   "Public parser entry: parse SEXP into a top-level IR node.
 ENV is the optional let-environment for testing helpers."
-  (nelisp-phase47-compiler--parse-stmt
-   (nelisp-phase47-compiler--prepare-source sexp)
-   env nil nil))
+  (let ((nelisp-phase47-compiler--special-vars
+         (plist-get (nelisp-phase47-compiler--extract-defmacros sexp)
+                    :special-vars)))
+    (nelisp-phase47-compiler--parse-stmt
+     (nelisp-phase47-compiler--prepare-source sexp)
+     env nil nil)))
 
 ;; ---- §97.2 string collector ----
 ;;

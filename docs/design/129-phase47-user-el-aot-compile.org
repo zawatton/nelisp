@@ -57,6 +57,9 @@
   =condition-case= multi-clause normal exits have implementations in
   =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
   =nelisp-cc-runtime.el=.
+  Stage 129.4B additionally tracks top-level =defvar= / =defconst= /
+  =defcustom= names as special declarations and rejects =let= binding
+  of those names until dynamic special binding is implemented.
   Supported in this first cut: host macro expansion in value/call
   positions without rewriting Phase 47 structural forms, top-level
   =defmacro= inside =seq= as compile-time-only definitions,
@@ -761,7 +764,20 @@ existing =ref= load path.
 Compile-time-foldable bindings still fold into =ENV=.  Mixed
 compile-time/runtime multi-binding forms are allowed, but this is
 still an MVP: duplicate variables are rejected, special-variable
-binding is not modeled, and no heap lexframe / GC-root map exists yet.
+dynamic binding is not modeled, and no heap lexframe / GC-root map
+exists yet.
+
+*** §1.C.2 Shipped MVP: special declaration guard
+
+Stage 129.4B records top-level =defvar= / =defconst= / =defcustom=
+names while extracting compile-time-only declarations.  During the
+same compile unit, binding one of those names with =let= now signals
+=:let-special-binding-pending= instead of silently lowering it to a
+lexical compile-time binding or runtime frame slot.
+
+This is intentionally a guard, not full dynamic binding.  Real special
+=let= still needs value-cell save/restore, unwind cleanup, and
+integration with the 129.8 non-local-exit path.
 
 ** §1.D =setq= / =defvar= / =defconst= / =defcustom= — symbol cells
 
@@ -2092,7 +2108,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
 | 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context SHIPPED 2026-05-25; real native ABI invocation / real environment passing pending |
-| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP SHIPPED 2026-05-25; lexical/special split pending |
+| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard SHIPPED 2026-05-25; dynamic special binding pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization SHIPPED 2026-05-25; exported C ABI and broader quoted-designator builtin coverage pending |

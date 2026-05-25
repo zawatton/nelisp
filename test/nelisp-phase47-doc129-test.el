@@ -922,6 +922,37 @@
           (should (= (nelisp-phase47-doc129-test--run-binary path) 22)))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/top-level-special-var-descriptors ()
+  "Doc 129.4B: top-level vars are tracked as special declarations."
+  (let ((extracted
+         (nelisp-phase47-compiler--extract-defmacros
+          '(seq
+            (defvar dyn)
+            (defconst c 1 "doc")
+            (defcustom opt 2 "doc")))))
+    (should (equal (plist-get extracted :special-vars)
+                   '(dyn c opt)))))
+
+(ert-deftest nelisp-phase47-doc129/let-special-binding-still-pending ()
+  "Doc 129.4B: special `let' binding is rejected until dynamic binding exists."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(seq
+      (defvar dyn)
+      (defun f (x)
+        (let ((dyn x))
+          dyn))))
+   :type 'nelisp-phase47-compiler-error)
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(seq
+      (defvar dyn)
+      (defun f (x y)
+        (let ((a x)
+              (dyn y))
+          a))))
+   :type 'nelisp-phase47-compiler-error))
+
 (ert-deftest nelisp-phase47-doc129/parse-static-gc-root-map ()
   "Doc 129.5A: allocating defuns expose annotated Sexp root slots."
   (let ((ir (nelisp-phase47-compiler--parse
