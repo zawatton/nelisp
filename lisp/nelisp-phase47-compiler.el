@@ -1887,6 +1887,9 @@ intersection of exhaustive branches."
    ((eq (car form) 'cond)
     (nelisp-phase47-compiler--captured-mutation-cond-guaranteed-vars
      (cdr form)))
+   ((memq (car form) '(and or))
+    (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+     (cadr form)))
    (t nil)))
 
 (defun nelisp-phase47-compiler--rewrite-frame-slot-refs (form vars)
