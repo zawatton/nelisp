@@ -37,6 +37,11 @@ Phase 47 compiled functions can expose their live Sexp spill slots as
 a vector and push it here while the native frame is active.  Each
 entry is treated as one `aot-frame' root by `nelisp-gc-root-set'.")
 
+(defvar nelisp-gc--aot-pinned-root-vectors nil
+  "Module-lifetime AOT root vectors pinned outside active native frames.
+Phase 47 loader/runtime bridges use this for heap objects that are
+owned by native module metadata rather than one dynamic stack frame.")
+
 (defun nelisp-gc--globals-root ()
   "Return the four NeLisp-level global hash tables as a single plist root.
 Each element of the returned list is `(:kind K :value HT)' so downstream
@@ -63,6 +68,11 @@ frame-local root vector."
   (mapcar (lambda (frame) (list :kind 'aot-frame :value frame))
           nelisp-gc--active-aot-frames))
 
+(defun nelisp-gc--aot-pinned-roots-root ()
+  "Return each pinned module-lifetime AOT root vector."
+  (mapcar (lambda (roots) (list :kind 'aot-pinned-root :value roots))
+          nelisp-gc--aot-pinned-root-vectors))
+
 (defun nelisp-gc-root-set ()
   "Return the current NeLisp root set as a list of `(:kind K :value V)' plists.
 The set is recomputed on every call — call sites that scan repeatedly
@@ -75,6 +85,7 @@ Root categories (Phase 3c.1):
   `nelisp--specials'    — dynamic-scope marker table
   `vm-stack'            — each active bytecode-VM state vector
   `aot-frame'           — each active Phase 47 frame-local root vector
+  `aot-pinned-root'     — each module-lifetime Phase 47 root vector
 
 specpdl is deliberately NOT a top-level root — it lives inside each
 VM state vector (slot 8) and is already reached via `vm-stack'.  JIT
@@ -83,7 +94,8 @@ here would duplicate work the host GC already handles (design doc
 §2.2 decision A)."
   (append (nelisp-gc--globals-root)
           (nelisp-gc--vm-stacks-root)
-          (nelisp-gc--aot-frames-root)))
+          (nelisp-gc--aot-frames-root)
+          (nelisp-gc--aot-pinned-roots-root)))
 
 (defmacro nelisp-gc--with-active-vm (vm &rest body)
   "Execute BODY with VM pushed onto `nelisp-gc--active-vms'.
@@ -123,6 +135,23 @@ that exact vector."
                (not (eq roots expected-roots)))
       (error "AOT root stack mismatch"))
     roots))
+
+(defun nelisp-gc--pin-aot-root-vector (roots)
+  "Pin ROOTS as a module-lifetime AOT root vector and return ROOTS."
+  (unless (vectorp roots)
+    (error "AOT pinned root must be a vector"))
+  (unless (memq roots nelisp-gc--aot-pinned-root-vectors)
+    (push roots nelisp-gc--aot-pinned-root-vectors))
+  roots)
+
+(defun nelisp-gc--aot-pinned-root-vectors-snapshot ()
+  "Return a shallow snapshot of pinned module-lifetime AOT root vectors."
+  (copy-sequence nelisp-gc--aot-pinned-root-vectors))
+
+(defun nelisp-gc--clear-aot-pinned-root-vectors ()
+  "Clear all pinned module-lifetime AOT root vectors."
+  (setq nelisp-gc--aot-pinned-root-vectors nil)
+  nil)
 
 ;;; Mark pass (Phase 3c.2) --------------------------------------------
 

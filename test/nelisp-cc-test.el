@@ -1906,6 +1906,41 @@ exit points were emitted; call-points were missing."
         (should (= (nelisp-closure-apply (aref out 0) '(2)) 42)))
     (nelisp-cc-runtime-clear-aot-closure-descriptors)))
 
+(ert-deftest nelisp-cc-runtime-aot-make-closure-pins-frame-root ()
+  "Doc 129.7AE — make-closure pins closure records via hash FRAMES."
+  (unwind-protect
+      (let* ((out (vector nil))
+             (frames (make-hash-table :test 'eq))
+             (descriptor '(:name nelisp-doc129-pinned-closure
+                           :arglist (x)
+                           :body ((+ x cap))
+                           :captures (cap))))
+        (nelisp-cc-runtime-clear-aot-closure-descriptors)
+        (nelisp-cc-runtime-clear-aot-pinned-closure-roots)
+        (nelisp-cc-runtime-register-aot-closure-descriptor descriptor)
+        (nelisp-cc-runtime-aot-make-closure
+         'mirror frames 'nelisp-doc129-pinned-closure
+         1 out 'scratch 5)
+        (let* ((closure (aref out 0))
+               (frame-roots
+                (nelisp-cc-runtime-aot-closure-root-vectors frames))
+               (root-vector (car frame-roots))
+               (gc-root
+                (cl-find-if
+                 (lambda (root)
+                   (and (eq (plist-get root :kind) 'aot-pinned-root)
+                        (eq (plist-get root :value) root-vector)))
+                 (nelisp-gc-root-set)))
+               (reachable (nelisp-gc-reachable-set)))
+          (should (nelisp-closure-p closure))
+          (should (= (length frame-roots) 1))
+          (should (eq (aref root-vector 0) closure))
+          (should gc-root)
+          (should (gethash root-vector reachable))
+          (should (gethash closure reachable))))
+    (nelisp-cc-runtime-clear-aot-pinned-closure-roots)
+    (nelisp-cc-runtime-clear-aot-closure-descriptors)))
+
 (ert-deftest nelisp-cc-runtime-aot-apply-host-dispatch ()
   "Doc 129.7C — apply bridge writes the dispatch result to OUT."
   (let* ((out (vector nil))

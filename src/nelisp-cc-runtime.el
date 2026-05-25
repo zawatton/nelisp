@@ -2707,6 +2707,10 @@ returns OUT."
   (make-hash-table :test 'eq)
   "Registered Doc 129.7 AOT heap-closure descriptors.")
 
+(defconst nelisp-cc-runtime--aot-closure-root-vectors-key
+  :nelisp-aot-closure-root-vectors
+  "Hash-table FRAMES key for Doc 129 AOT closure root vectors.")
+
 (defun nelisp-cc-runtime-register-aot-closure-descriptor (descriptor)
   "Register one Doc 129.7 AOT heap-closure DESCRIPTOR.
 DESCRIPTOR is a plist with `:name', `:arglist', `:body', and
@@ -2731,6 +2735,30 @@ DESCRIPTOR is a plist with `:name', `:arglist', `:body', and
          (gethash name nelisp-cc-runtime--aot-closure-descriptors)))
     (when descriptor
       (copy-sequence descriptor))))
+
+(defun nelisp-cc-runtime-aot-closure-root-vectors (frames)
+  "Return closure root vectors recorded in hash-table FRAMES."
+  (unless (hash-table-p frames)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-closure-frames-not-hash-table frames)))
+  (copy-sequence
+   (gethash nelisp-cc-runtime--aot-closure-root-vectors-key frames)))
+
+(defun nelisp-cc-runtime-clear-aot-pinned-closure-roots ()
+  "Clear module-lifetime AOT closure root vectors from the GC root set."
+  (nelisp-gc--clear-aot-pinned-root-vectors))
+
+(defun nelisp-cc-runtime--aot-pin-closure-root (frames closure)
+  "Pin CLOSURE through FRAMES when FRAMES is a hash-table frame handle."
+  (when (hash-table-p frames)
+    (let ((roots (vector closure)))
+      (puthash nelisp-cc-runtime--aot-closure-root-vectors-key
+               (cons roots
+                     (gethash
+                      nelisp-cc-runtime--aot-closure-root-vectors-key
+                      frames))
+               frames)
+      (nelisp-gc--pin-aot-root-vector roots))))
 
 (defun nelisp-cc-runtime--aot-closure-descriptor-name (descriptor)
   "Return the symbol NAME represented by DESCRIPTOR."
@@ -2763,7 +2791,7 @@ writes it to OUT[0], and returns OUT."
   (unless (and (vectorp out) (> (length out) 0))
     (signal 'nelisp-cc-runtime-error
             (list :aot-closure-out-not-vector out)))
-  (ignore mirror frames scratch)
+  (ignore mirror scratch)
   (let* ((name (nelisp-cc-runtime--aot-closure-descriptor-name
                 descriptor))
          (registered
@@ -2790,6 +2818,7 @@ writes it to OUT[0], and returns OUT."
                         captures))
                       arglist
                       body)))
+        (nelisp-cc-runtime--aot-pin-closure-root frames closure)
         (aset out 0 closure)
         out))))
 
