@@ -2502,7 +2502,7 @@ the whole program."
                        cl-set-difference cl-set-exclusive-or cl-subsetp
                        cl-position cl-find cl-count cl-mismatch cl-search
                        cl-remove cl-delete cl-substitute cl-nsubstitute
-                       sort))
+                       cl-adjoin sort))
     (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
    ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
     (nelisp-phase47-compiler--lambda-lift-call
