@@ -1679,6 +1679,12 @@ the whole program."
 These names are direct-call candidates only when no same-named Phase 47
 defun is visible in the current compile unit.")
 
+(defconst nelisp-phase47-compiler--aot-builtinn-delegation-symbols
+  '(list vector concat append)
+  "Vararg builtins that may lower through Doc 129.6 calln delegation.
+These names are direct-call candidates only when no same-named Phase 47
+defun is visible in the current compile unit.")
+
 (defun nelisp-phase47-compiler--fenv-has-symbol-p (fenv sym)
   "Return non-nil when FENV binds SYM."
   (and (symbolp sym) (assq sym fenv)))
@@ -1786,6 +1792,28 @@ caller-owned boundary params in the current defun:
                       ,mirror ,frames ,name-slot ,arg ,out ,scratch)
          ,out)
        env fenv defuns))))
+
+(defun nelisp-phase47-compiler--parse-aot-builtinn-call
+    (sexp env fenv defuns)
+  "Lower a direct vararg builtin call SEXP through the AOT dispatcher."
+  (let* ((builtin (car sexp))
+         (args (cdr sexp))
+         (argc (length args))
+         (boundary
+          (nelisp-phase47-compiler--aot-builtin1-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (name-slot (plist-get boundary :name-slot)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       (sexp-write-symbol-lit ,name-slot ,(symbol-name builtin))
+       (extern-call nelisp_aot_builtin_calln
+                    ,mirror ,frames ,name-slot ,argc ,out ,scratch ,@args)
+       ,out)
+     env fenv defuns)))
 
 (defun nelisp-phase47-compiler--aot-funcall1-boundary-symbols (fenv sexp)
   "Return boundary symbols for direct `(funcall FN ARG)' lowering in FENV."
@@ -2631,6 +2659,16 @@ functions `((NAME . ARITY) ...)'."
                nelisp-phase47-compiler--aot-builtin1-delegation-symbols)
          (not (assq (car sexp) defuns)))
     (nelisp-phase47-compiler--parse-aot-builtin1-call
+     sexp env fenv defuns))
+   ;; Doc 129.6F — direct vararg builtin calls lower to the calln
+   ;; dispatcher.  This uses the same boundary/name-slot convention as
+   ;; builtin1 and relies on Doc 129.7G stack-GP spill support once the
+   ;; fixed ABI prefix plus user args exceeds six GP arguments.
+   ((and (consp sexp)
+         (memq (car sexp)
+               nelisp-phase47-compiler--aot-builtinn-delegation-symbols)
+         (not (assq (car sexp) defuns)))
+    (nelisp-phase47-compiler--parse-aot-builtinn-call
      sexp env fenv defuns))
    ;; Doc 129.7A — first higher-order dispatch surface.  This does not
    ;; build closures yet; it delegates an already-materialized function

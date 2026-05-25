@@ -1305,6 +1305,38 @@ exit points were emitted; call-points were missing."
     'mirror 'frames 'symbol-name 'x (vector nil) 'scratch :not-a-function)
    :type 'nelisp-cc-runtime-error))
 
+(ert-deftest nelisp-cc-runtime-aot-builtin-calln-host-dispatch ()
+  "Doc 129.6F — builtin calln dispatches variable argument lists."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-builtin-calln
+               'mirror 'frames 'list 3 out 'scratch
+               'doc 129 'calln)))
+    (should (eq ret out))
+    (should (equal (aref out 0) '(doc 129 calln))))
+  (let ((out (vector nil)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'concat 3 out 'scratch "doc" "129" "F")
+    (should (equal (aref out 0) "doc129F"))))
+
+(ert-deftest nelisp-cc-runtime-aot-builtin-calln-validates-boundary ()
+  "Doc 129.6F — builtin calln rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-builtin-calln
+    'mirror 'frames "list" 0 (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-builtin-calln
+    'mirror 'frames 'list -1 (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-builtin-calln
+    'mirror 'frames 'list 2 (vector nil) 'scratch 'only-one)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-builtin-calln
+    'mirror 'frames 'list 0 nil 'scratch)
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-funcall1-host-dispatch ()
   "Doc 129.7A — funcall1 writes the dispatch result to OUT."
   (let* ((out (vector nil))

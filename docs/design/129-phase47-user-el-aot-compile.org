@@ -25,8 +25,9 @@
   129.6B one-argument Sexp builtin delegation helper, Stage
   129.6C runtime builtin-call1 bridge, Stage 129.6D constrained
   direct one-argument builtin call lowering, Stage 129.6E unary
-  builtin table expansion, Stage 129.7A one-argument =funcall=
-  dispatcher bridge, Stage 129.7B two-argument =funcall=
+  builtin table expansion, Stage 129.6F builtin calln/varargs
+  bridge, Stage 129.7A one-argument =funcall= dispatcher bridge,
+  Stage 129.7B two-argument =funcall=
   dispatcher bridge, Stage 129.7C =apply= dispatcher bridge, Stage
   129.7D quoted function-designator materialization, Stage 129.7E
   SysV first stack-GP argument support plus three-argument =funcall=
@@ -211,6 +212,12 @@
   numeric/string converters, and simple string case functions lower
   through =nelisp_aot_builtin_call1=.  A same-named Phase 47 =defun= in
   the compile unit still wins over builtin delegation.
+- *129.6F MVP*: =nelisp-cc-runtime= now exposes the vararg builtin
+  bridge =nelisp_aot_builtin_calln=, and Phase 47 lowers direct calls
+  to a small vararg builtin table (=list= / =vector= / =concat= /
+  =append=) through that ABI.  This uses the existing outgoing stack-GP
+  machinery when the fixed boundary prefix plus user arguments exceeds
+  six GP arguments.  Exported C ABI wiring remains pending.
 - *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
   =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
@@ -1726,11 +1733,56 @@ first: if the compile unit defines a same-named Phase 47 function,
 ordinary direct-call lowering to that function wins and builtin
 delegation is not used.
 
-This still stops at unary calls.  Multi-argument and rest-argument
-builtins need a different ABI shape, likely an argument-vector or
-list-backed =nelisp_aot_builtin_calln= helper rather than more fixed
-GP arguments, because the current explicit boundary already consumes
-the six-register call budget.
+Stage 129.6F adds the matching vararg bridge for a small multi-arg
+table; the remaining 129.6 work is widening builtin coverage and
+wiring exported native C ABI bodies.
+
+*** §1.H.5 Shipped MVP: builtin calln / varargs bridge
+
+Stage 129.6F adds the runtime vararg builtin bridge:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-builtin-calln
+ mirror frames 'list 2 out scratch a b)
+#+end_src
+
+The native ABI shape is:
+
+#+begin_src c
+nelisp_aot_builtin_calln(mirror, frames, name, argc, out, scratch, arg...)
+#+end_src
+
+=ARGC= must match the trailing argument count.  Host-side runtime
+dispatch resolves =NAME= through the NeLisp function table or host
+=fboundp=, applies the function to the boxed argument list, writes the
+result to =OUT[0]=, and returns =OUT=.
+
+The compiler lowers direct calls for this initial table:
+
+#+begin_src elisp
+list vector concat append
+#+end_src
+
+For example:
+
+#+begin_src elisp
+(list a b)
+#+end_src
+
+lowers to:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name-slot "list")
+ (extern-call nelisp_aot_builtin_calln
+              mirror frames name-slot 2 out scratch a b)
+ out)
+#+end_src
+
+The fixed boundary prefix already consumes six GP arguments, so any
+user argument to =nelisp_aot_builtin_calln= exercises the outgoing
+stack-GP spill path shipped under 129.7G.  Same-unit Phase 47 defuns
+still shadow builtin delegation.
 
 * §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
 
@@ -1748,7 +1800,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP SHIPPED 2026-05-25; lexical/special split pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges SHIPPED 2026-05-25; automatic prologue/epilogue insertion pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
-| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge SHIPPED 2026-05-25; exported C ABI and wider builtin coverage pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding SHIPPED 2026-05-25; closure allocation/capture pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 

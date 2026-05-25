@@ -1681,6 +1681,60 @@ values.  When DISPATCHER is nil, host/NeLisp function lookup is used."
     (aset out 0 result)
     out))
 
+(defun nelisp-cc-runtime--aot-default-builtin-dispatchn (builtin args)
+  "Dispatch BUILTIN to ARGS through the host/NeLisp function table."
+  (let ((fn nil)
+        (found nil))
+    (when (and (boundp 'nelisp--functions)
+               (hash-table-p (symbol-value 'nelisp--functions)))
+      (let ((candidate (gethash builtin (symbol-value 'nelisp--functions)
+                                :nelisp-cc-runtime--missing)))
+        (unless (eq candidate :nelisp-cc-runtime--missing)
+          (setq fn candidate
+                found t))))
+    (unless found
+      (if (fboundp builtin)
+          (setq fn (symbol-function builtin)
+                found t)
+        (signal 'nelisp-cc-runtime-error
+                (list :aot-builtin-not-found builtin))))
+    (if (fboundp 'nelisp--apply)
+        (funcall (symbol-function 'nelisp--apply) fn args)
+      (apply fn args))))
+
+(defun nelisp-cc-runtime-aot-builtin-calln
+    (mirror frames name argc out scratch &rest args)
+  "Runtime bridge for the Doc 129.6 `nelisp_aot_builtin_calln' ABI.
+MIRROR, FRAMES, NAME, ARGC, OUT, SCRATCH, and ARGS mirror the native ABI:
+
+  nelisp_aot_builtin_calln(mirror, frames, name, argc, out, scratch, arg...)
+
+NAME must be the builtin symbol materialized by compiled code.  ARGC
+must match the number of trailing ARGS.  OUT is an Emacs-side
+caller-owned vector with at least one slot; the dispatch result is
+written to OUT[0] and OUT is returned.
+
+This bridge deliberately has no optional dispatcher argument because
+every trailing value after SCRATCH is a user argument in the native ABI."
+  (unless (symbolp name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-builtin-name-not-symbol name)))
+  (unless (and (integerp argc) (<= 0 argc))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-builtin-calln-bad-argc argc)))
+  (unless (= argc (length args))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-builtin-calln-argc-mismatch
+                  :argc argc :actual (length args))))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-builtin-out-not-vector out)))
+  (ignore mirror frames scratch)
+  (let ((result (nelisp-cc-runtime--aot-default-builtin-dispatchn
+                 name args)))
+    (aset out 0 result)
+    out))
+
 (defun nelisp-cc-runtime--aot-default-funcall-dispatch1 (fn arg)
   "Dispatch one-argument FN to ARG using NeLisp-aware apply when available."
   (cond

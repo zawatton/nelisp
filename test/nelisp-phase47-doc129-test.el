@@ -1160,6 +1160,78 @@
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-user-call ()
+  "Doc 129.6F: direct vararg builtin calls lower to calln."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_list
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (a :type sexp)
+                    (b :type sexp))
+                 (list a b))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (symbol-node (nth 0 forms))
+         (call-node (nth 1 forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind symbol-node)
+                'sexp-write-symbol-lit))
+    (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+                   (string-to-list "list")))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (= (nelisp-phase47-compiler--ir-get (nth 3 call-args)
+                                                :value)
+               2))))
+
+(ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
+  "Doc 129.6F: vararg builtin lowering requires explicit boundary params."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun call_list ((a :type sexp) (b :type sexp))
+       (list a b)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/direct-builtinn-defun-shadow-wins ()
+  "Doc 129.6F: same-unit defuns shadow vararg builtin delegation."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defun list (a b) (+ a b))
+                (defun caller (a b) (list a b)))))
+         (caller (nth 1 (nelisp-phase47-compiler--ir-get ir :forms)))
+         (body (nelisp-phase47-compiler--ir-get caller :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'call))
+    (should (eq (nelisp-phase47-compiler--ir-get body :name) 'list))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-user-call ()
+  "Doc 129.6F: object output exposes builtin calln dispatcher relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-direct-builtinn-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_list
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (a :type sexp)
+                 (b :type sexp))
+              (list a b))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_list" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/parse-direct-builtin1-table ()
   "Doc 129.6E: direct builtin1 lowering covers the shipped unary table."
   (dolist (builtin '(identity length car cdr symbolp stringp number-to-string))
