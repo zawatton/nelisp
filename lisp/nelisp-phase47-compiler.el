@@ -2020,7 +2020,8 @@ the whole program."
    ((memq (car sexp) '(mapcar mapc mapconcat mapcan maphash
                        seq-map seq-do seq-filter seq-remove seq-find
                        seq-some seq-every-p seq-count seq-reduce
-                       seq-mapcat
+                       seq-mapcat seq-keep seq-mapn seq-map-indexed
+                       seq-sort seq-uniq
                        cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl
                        cl-mapcon cl-some cl-every cl-notany cl-notevery
                        cl-count-if cl-count-if-not cl-find-if
@@ -2030,7 +2031,8 @@ the whole program."
                        cl-member-if-not cl-assoc-if cl-assoc-if-not
                        cl-rassoc-if cl-rassoc-if-not cl-substitute-if
                        cl-substitute-if-not cl-nsubstitute-if
-                       cl-nsubstitute-if-not
+                       cl-nsubstitute-if-not cl-map cl-sort cl-stable-sort
+                       cl-merge
                        sort))
     (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
    ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
@@ -2180,6 +2182,7 @@ defun is visible in the current compile unit.")
     mapcar mapc mapconcat mapcan maphash
     seq-map seq-do seq-filter seq-remove seq-find
     seq-some seq-every-p seq-count seq-reduce seq-mapcat
+    seq-keep seq-mapn seq-map-indexed seq-sort seq-uniq
     cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
     cl-some cl-every cl-notany cl-notevery
     cl-count-if cl-count-if-not cl-find-if cl-find-if-not
@@ -2191,6 +2194,7 @@ defun is visible in the current compile unit.")
     cl-rassoc-if cl-rassoc-if-not
     cl-substitute-if cl-substitute-if-not
     cl-nsubstitute-if cl-nsubstitute-if-not
+    cl-map cl-sort cl-stable-sort cl-merge
     sort)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
 These names are direct-call candidates only when no same-named Phase 47
@@ -2212,6 +2216,11 @@ defun is visible in the current compile unit.")
     (seq-count . 0)
     (seq-reduce . 0)
     (seq-mapcat . 0)
+    (seq-keep . 0)
+    (seq-mapn . 0)
+    (seq-map-indexed . 0)
+    (seq-sort . 0)
+    (seq-uniq . 1)
     (cl-mapcar . 0)
     (cl-mapc . 0)
     (cl-mapcan . 0)
@@ -2243,6 +2252,10 @@ defun is visible in the current compile unit.")
     (cl-substitute-if-not . 1)
     (cl-nsubstitute-if . 1)
     (cl-nsubstitute-if-not . 1)
+    (cl-map . 1)
+    (cl-sort . 1)
+    (cl-stable-sort . 1)
+    (cl-merge . 3)
     (sort . 1))
   "Function-designator argument positions for calln builtin lowering.
 The index is zero-based within the source call's ordinary argument

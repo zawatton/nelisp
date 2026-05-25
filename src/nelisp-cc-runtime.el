@@ -82,6 +82,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'pcase)
 (require 'nelisp-cc)
 (require 'nelisp-cc-x86_64)

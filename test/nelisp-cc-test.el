@@ -1527,7 +1527,35 @@ exit points were emitted; call-points were missing."
     (should (= (aref out 0) 6))
     (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'sort 2 out 'scratch '(3 1 2) #'<)
-    (should (equal (aref out 0) '(1 2 3)))))
+    (should (equal (aref out 0) '(1 2 3)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-keep 2 out 'scratch #'numberp '(a 1 nil 2))
+    (should (equal (aref out 0) '(t t)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-map-indexed 2 out 'scratch
+     (lambda (x i) (list i x)) '(a b))
+    (should (equal (aref out 0) '((0 a) (1 b))))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-mapn 3 out 'scratch #'+ '(1 2) '(10 20))
+    (should (equal (aref out 0) '(11 22)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-sort 2 out 'scratch #'< '(3 1 2))
+    (should (equal (aref out 0) '(1 2 3)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'seq-uniq 2 out 'scratch '(a a b) #'eq)
+    (should (equal (aref out 0) '(a b)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'cl-map 3 out 'scratch 'list #'1+ '(1 2))
+    (should (equal (aref out 0) '(2 3)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'cl-sort 2 out 'scratch '(3 1 2) #'<)
+    (should (equal (aref out 0) '(1 2 3)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'cl-stable-sort 2 out 'scratch '(3 1 2) #'<)
+    (should (equal (aref out 0) '(1 2 3)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'cl-merge 4 out 'scratch 'list '(1 3) '(2 4) #'<)
+    (should (equal (aref out 0) '(1 2 3 4)))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-validates-boundary ()
   "Doc 129.6F — builtin calln rejects malformed ABI arguments."

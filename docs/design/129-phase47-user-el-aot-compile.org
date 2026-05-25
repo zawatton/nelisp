@@ -40,7 +40,8 @@
   materialization, Stage 129.6O cl-lib higher-order
   function-designator materialization, Stage 129.6P cl-lib predicate
   family function-designator materialization, Stage 129.6Q runtime
-  AOT C ABI descriptor table,
+  AOT C ABI descriptor table, Stage 129.6R extended seq.el/cl-lib
+  higher-order coverage,
   Stage 129.7A one-argument =funcall= dispatcher bridge,
   Stage 129.7B two-argument =funcall=
   dispatcher bridge, Stage 129.7C =apply= dispatcher bridge, Stage
@@ -64,7 +65,8 @@
   Stage 129.7V module-init closure descriptor registration,
   Stage 129.7W compiler module-init plan handoff,
   Stage 129.7X escaping literal closure value materialization,
-  Stage 129.7Y direct captured-mutation closure dispatch,
+  Stage 129.7Y direct captured-mutation closure dispatch, Stage
+  129.7Z extended higher-order literal lambda lifting,
   Stage 129.8A runtime handler-stack substrate, Stage
   129.8B =throw= / =signal=
   bridge lowering, Stage 129.8C handler-push bridge lowering,
@@ -393,6 +395,12 @@
   fixed/rest arity metadata, and argument names.  This validates the
   compiler/runtime symbol contract before the standalone runtime wires
   the real dlsym/exported-address path.
+- *129.6R MVP*: the higher-order calln table now covers additional
+  positional callback builtins: =seq-keep=, =seq-mapn=,
+  =seq-map-indexed=, =seq-sort=, =seq-uniq=, =cl-map=, =cl-sort=,
+  =cl-stable-sort=, and =cl-merge=.  Their quoted/function symbol
+  designators use the same scratch-slot materialization path, with
+  non-first callback positions recorded in the designator-index table.
 - *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
   =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
@@ -499,6 +507,10 @@
   predicate families now lift to synthetic defuns through the same
   indexed callback path, including the second-argument predicate slot
   used by =cl-substitute-if= and =cl-nsubstitute-if=.
+- *129.7Z MVP*: non-capturing literal lambdas in the 129.6R extended
+  higher-order family now lift through the same indexed callback path,
+  including non-first callback positions such as =seq-uniq=, =cl-map=,
+  and =cl-merge=.
 - *129.7T MVP*: the AOT =funcall= / =apply= dispatcher now recognizes
   canonical =nelisp-closure= records before falling back to
   =nelisp--apply= or host functions.  This routes simulator calls
@@ -1901,6 +1913,12 @@ The covered family is =seq-map=, =seq-do=, =seq-filter=, =seq-remove=,
 =seq-mapcat=.  This remains the non-capturing lambda MVP; captured
 callbacks use the 129.7U closure bridge.
 
+Stage 129.7Z extends the same literal-lambda path to the additional
+seq.el builtins added by 129.6R: =seq-keep=, =seq-mapn=,
+=seq-map-indexed=, =seq-sort=, and =seq-uniq=.  =seq-uniq= uses the
+second source argument when a test function is supplied; the others use
+the first argument.
+
 *** §1.E.3.9 Shipped MVP: cl-lib higher-order literal lambda lifting
 
 Stage 129.7Q applies the same non-capturing callback lift to cl-lib's
@@ -1930,6 +1948,11 @@ The covered family is =cl-mapcar=, =cl-mapc=, =cl-mapcan=,
 =cl-position-if=, =cl-position-if-not=, and =cl-reduce=.  Capturing
 callbacks now enter the 129.7U closure bridge instead of failing at
 free-symbol analysis.
+
+Stage 129.7Z also applies to the 129.6R cl-lib additions whose callback
+position is fixed by argument order: =cl-map= uses the second source
+argument, =cl-sort= and =cl-stable-sort= use the second source argument,
+and =cl-merge= uses the fourth source argument.
 
 Stage 129.7R starts the capture side for direct calls, without
 claiming heap closure support.  When a literal lambda is applied
@@ -3022,6 +3045,22 @@ export.  Real standalone address resolution remains owned by
 the compiler/runtime bridge surface auditable before that native export
 path is complete.
 
+Stage 129.6R extends the higher-order builtin coverage beyond 129.6N/P:
+
+#+begin_src elisp
+(seq-map-indexed #'fn xs)
+(seq-uniq xs #'test)
+(cl-map type #'fn xs)
+(cl-merge type xs ys #'pred)
+#+end_src
+
+The covered additions are =seq-keep=, =seq-mapn=, =seq-map-indexed=,
+=seq-sort=, =seq-uniq=, =cl-map=, =cl-sort=, =cl-stable-sort=, and
+=cl-merge=.  Runtime dispatch still flows through
+=nelisp_aot_builtin_calln=; the compiler only records the fixed callback
+argument indexes needed for quoted/function designator materialization
+and non-capturing lambda lifting.
+
 * §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
 
 Each grammar group ships as new elisp in =nelisp-phase47-compiler.el=
@@ -3038,8 +3077,8 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering + 129.4G direct special-let throw cleanup + 129.4H conditional special-let throw cleanup + 129.4I nested conditional special-let throw cleanup SHIPPED 2026-05-25; heap lexframes and general tagged local values pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
-| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table SHIPPED 2026-05-25; real exported native addresses and remaining higher-order builtin coverage pending |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch SHIPPED 2026-05-25; native object embedding/root-vector pinning and native frame write-through for captured setq cells pending |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage SHIPPED 2026-05-25; real exported native addresses and remaining higher-order builtin coverage pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting SHIPPED 2026-05-25; native object embedding/root-vector pinning and native frame write-through for captured setq cells pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits + 129.8L direct catch/throw landing-value extraction + 129.8M direct condition-case signal/error landing-error dispatch + 129.8N conditional catch/throw branch dispatch + 129.8O direct unwind-protect throw cleanup + 129.8P conditional unwind-protect throw cleanup + 129.8Q conditional condition-case signal dispatch + 129.8R nested conditional non-local branch trees SHIPPED 2026-05-25; native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
