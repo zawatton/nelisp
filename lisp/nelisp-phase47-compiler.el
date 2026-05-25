@@ -2037,6 +2037,23 @@ intersection of exhaustive branches."
             (push var mutated)))))
     (nreverse out)))
 
+(defun nelisp-phase47-compiler--preprocess-short-circuit-forms (forms)
+  "Preprocess short-circuit FORMS with left-to-right frame-slot tracking."
+  (let ((mutated nil)
+        (out nil))
+    (dolist (form forms)
+      (let ((processed (nelisp-phase47-compiler--preprocess-source form)))
+        (when mutated
+          (setq processed
+                (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                 processed mutated)))
+        (push processed out)
+        (dolist (var (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                      form))
+          (unless (memq var mutated)
+            (push var mutated)))))
+    (nreverse out)))
+
 (defun nelisp-phase47-compiler--preprocess-builtinn-lambda (sexp)
   "Lambda-lift a literal function-designator argument in builtin SEXP."
   (let* ((builtin (car sexp))
@@ -2583,8 +2600,8 @@ the whole program."
                         (cdr sexp))))
    ((memq (car sexp) '(and or))
     (cons (car sexp)
-          (mapcar #'nelisp-phase47-compiler--preprocess-source
-                  (cdr sexp))))
+          (nelisp-phase47-compiler--preprocess-short-circuit-forms
+           (cdr sexp))))
    ((memq (car sexp) '(write static-imm32-table-define))
     sexp)
    (t
