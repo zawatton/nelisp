@@ -2114,7 +2114,9 @@ materialized closure temporary."
                   (cl-sublis (cl-sublis a b))
                   (cl-nsublis (cl-nsublis a b))
                   (cl-remove-duplicates (cl-remove-duplicates a))
-                  (cl-delete-duplicates (cl-delete-duplicates a))))
+                  (cl-delete-duplicates (cl-delete-duplicates a))
+                  (cl-fill (cl-fill a b))
+                  (cl-replace (cl-replace a b))))
     (pcase-let ((`(,builtin ,form) case))
       (let* ((ir (nelisp-phase47-compiler--parse
                   `(defun call_builtin
@@ -2541,6 +2543,49 @@ materialized closure temporary."
                  (nth 11 call-args)
                  :var)
                 'key))))
+
+(ert-deftest nelisp-phase47-doc129/parse-cl-lib-sequence-helper-keywords ()
+  "Doc 129.6AP: cl-lib sequence helpers materialize literal keywords."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_builtin
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (keyword_slot_0 :type sexp)
+                    (keyword_slot_1 :type sexp)
+                    (xs :type sexp)
+                    (item :type sexp)
+                    (start :type sexp)
+                    (end :type sexp))
+                 (cl-fill xs item :start start :end end))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (kw0-symbol (nth 1 forms))
+         (kw1-symbol (nth 2 forms))
+         (call-node (nth 3 forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (equal (nelisp-phase47-compiler--ir-get kw0-symbol :bytes)
+                   (string-to-list ":start")))
+    (should (equal (nelisp-phase47-compiler--ir-get kw1-symbol :bytes)
+                   (string-to-list ":end")))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 8 call-args)
+                 :var)
+                'keyword_slot_0))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 10 call-args)
+                 :var)
+                'keyword_slot_1))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 9 call-args)
+                 :var)
+                'start))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 11 call-args)
+                 :var)
+                'end))))
 
 (ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-multiple-keyword-designators ()
   "Doc 129.6AG: multiple keyword callback designators use callback slots."
@@ -3900,6 +3945,35 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_cl_subst" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-sequence-helper-keywords ()
+  "Doc 129.6AP: object output exposes cl-lib sequence helper keywords."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cl-lib-sequence-helper-keywords-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_cl_fill
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (keyword_slot_0 :type sexp)
+                 (keyword_slot_1 :type sexp)
+                 (xs :type sexp)
+                 (item :type sexp)
+                 (start :type sexp)
+                 (end :type sexp))
+              (cl-fill xs item :start start :end end))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_cl_fill" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))

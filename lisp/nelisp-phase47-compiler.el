@@ -2525,6 +2525,7 @@ the whole program."
                        cl-remove cl-delete cl-substitute cl-nsubstitute
                        cl-subst cl-nsubst cl-sublis cl-nsublis
                        cl-remove-duplicates cl-delete-duplicates
+                       cl-fill cl-replace
                        cl-adjoin sort))
     (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
    ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
@@ -2705,6 +2706,7 @@ defun is visible in the current compile unit.")
     cl-remove cl-delete cl-substitute cl-nsubstitute
     cl-subst cl-nsubst cl-sublis cl-nsublis
     cl-remove-duplicates cl-delete-duplicates
+    cl-fill cl-replace
     cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
     cl-some cl-every cl-notany cl-notevery
     cl-count-if cl-count-if-not cl-find-if cl-find-if-not
