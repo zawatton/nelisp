@@ -1360,6 +1360,23 @@ exit points were emitted; call-points were missing."
      'mirror 'frames 'assq 2 out 'scratch 'k '((a . 1) (k . 2)))
     (should (equal (aref out 0) '(k . 2)))))
 
+(ert-deftest nelisp-cc-runtime-aot-builtin-calln-host-string-table ()
+  "Doc 129.6H — builtin calln covers common string/format builtins."
+  (let ((out (vector nil)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'format 2 out 'scratch "doc%s" 129)
+    (should (equal (aref out 0) "doc129"))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'string-match 2 out 'scratch "29" "Doc129")
+    (should (= (aref out 0) 4))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'substring 3 out 'scratch "Doc129" 3 6)
+    (should (equal (aref out 0) "129"))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'replace-regexp-in-string 3 out 'scratch
+     "129" "130" "Doc129")
+    (should (equal (aref out 0) "Doc130"))))
+
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-validates-boundary ()
   "Doc 129.6F — builtin calln rejects malformed ABI arguments."
   (should-error

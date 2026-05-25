@@ -1269,6 +1269,43 @@
       (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
                   'nelisp_aot_builtin_calln)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-string-table ()
+  "Doc 129.6H: calln lowering covers string and format builtins."
+  (dolist (case '((format 2 (format a b))
+                  (message 1 (message a))
+                  (string-match 2 (string-match a b))
+                  (string-match-p 2 (string-match-p a b))
+                  (substring 3 (substring a b c))
+                  (string-prefix-p 2 (string-prefix-p a b))
+                  (string-suffix-p 2 (string-suffix-p a b))
+                  (replace-regexp-in-string 3
+                                            (replace-regexp-in-string a b c))))
+    (pcase-let ((`(,builtin ,argc ,form) case))
+      (let* ((ir (nelisp-phase47-compiler--parse
+                  `(defun call_builtin
+                       ((out :type sexp)
+                        (mirror :type sexp)
+                        (frames :type sexp)
+                        (scratch :type sexp)
+                        (name_slot :type sexp)
+                        (a :type sexp)
+                        (b :type sexp)
+                        (c :type sexp))
+                     ,form)))
+             (body (nelisp-phase47-compiler--ir-get ir :body))
+             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (symbol-node (nth 0 forms))
+             (call-node (nth 1 forms))
+             (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+                       (string-to-list (symbol-name builtin))))
+        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                    'nelisp_aot_builtin_calln))
+        (should (= (nelisp-phase47-compiler--ir-get (nth 3 call-args)
+                                                    :value)
+                   argc))))))
+
 (ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
   "Doc 129.6F: vararg builtin lowering requires explicit boundary params."
   (should-error

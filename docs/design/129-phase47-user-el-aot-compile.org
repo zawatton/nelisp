@@ -29,6 +29,7 @@
   direct one-argument builtin call lowering, Stage 129.6E unary
   builtin table expansion, Stage 129.6F builtin calln/varargs
   bridge, Stage 129.6G fixed-arity calln builtin table expansion,
+  Stage 129.6H string/format calln builtin table expansion,
   Stage 129.7A one-argument =funcall= dispatcher bridge,
   Stage 129.7B two-argument =funcall=
   dispatcher bridge, Stage 129.7C =apply= dispatcher bridge, Stage
@@ -251,6 +252,13 @@
   =string<=, and =string-lessp=.  They lower through the same
   =nelisp_aot_builtin_calln= bridge, so the compiler no longer needs
   bespoke lowering for ordinary boxed Sexp calls in this group.
+- *129.6H MVP*: the calln table also covers common string and message
+  builtins that appear in application code: =format=, =message=,
+  =string-match=, =string-match-p=, =substring=,
+  =string-prefix-p=, =string-suffix-p=, and
+  =replace-regexp-in-string=.  They still use the host/NeLisp
+  dispatcher behind =nelisp_aot_builtin_calln=; exported C ABI wiring
+  remains pending.
 - *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
   =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
@@ -473,7 +481,7 @@ Frequency from a 2026-05-25 grep of the 6 GREEN anvil modules
 | =defun= / =let= / =if= / =cond= / =and= / =or= / =while= | core | ✓ partial      |
 | =let= / =let*= (N bindings, runtime values, lexical scope) | 193  | partial (=let-rt-n= runtime MVP) |
 | =setq= (incl. global)             | 90   | partial (boxed helper + symbol literal helper) |
-| =format= / =message= / =string-match= | 114  | ✗ (no string library)  |
+| =format= / =message= / =string-match= | 114  | partial (calln builtin delegation table) |
 | =lambda= + captured-env closure   | 28   | ✗ (no heap env + fn ptr) |
 | =require= / =provide=             | 30   | partial (top-level compile-time forms) |
 | =error= / =condition-case= / =catch= / =throw= / =unwind-protect= | 55+ | ✗ (no non-local exit) |
@@ -1950,6 +1958,24 @@ the source arity.  The runtime side already dispatches by resolving the
 symbol and applying the host/NeLisp function, so no new bridge shape is
 needed.  Same-unit Phase 47 defuns still shadow the builtin table.
 
+*** §1.H.7 Shipped MVP: string/format calln builtin table expansion
+
+Stage 129.6H extends the same direct calln table to common application
+string and message helpers:
+
+#+begin_src elisp
+format message
+string-match string-match-p
+substring string-prefix-p string-suffix-p
+replace-regexp-in-string
+#+end_src
+
+This moves the high-frequency =format= / =message= / =string-match=
+gap from "no lowering" to the existing boxed-boundary dispatcher path.
+The host-side bridge can already call these functions by symbol and
+store the result in =OUT[0]=.  Native exported C ABI bodies for the
+dispatcher are still later 129.6 / Doc 99 integration work.
+
 * §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
 
 Each grammar group ships as new elisp in =nelisp-phase47-compiler.el=
@@ -1966,7 +1992,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP SHIPPED 2026-05-25; lexical/special split pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
-| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion SHIPPED 2026-05-25; exported C ABI and broader higher-order builtin coverage pending |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion SHIPPED 2026-05-25; exported C ABI and broader higher-order builtin coverage pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting SHIPPED 2026-05-25; heap closure allocation/capture pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 

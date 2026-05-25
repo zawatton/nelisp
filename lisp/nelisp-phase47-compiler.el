@@ -1855,7 +1855,11 @@ defun is visible in the current compile unit.")
     cons eq eql equal
     memq member assq assv assoc
     nth elt
-    string= string< string-lessp)
+    string= string< string-lessp
+    format message
+    string-match string-match-p
+    substring string-prefix-p string-suffix-p
+    replace-regexp-in-string)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
 These names are direct-call candidates only when no same-named Phase 47
 defun is visible in the current compile unit.")
