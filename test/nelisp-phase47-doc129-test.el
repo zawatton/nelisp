@@ -1707,6 +1707,52 @@
             (should (string-match-p "nelisp_aot_lambda_0" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-lambda-lift ()
+  "Doc 129.7L: direct literal lambda application also lambda-lifts."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller (x)
+                 ((lambda (y) (+ y 1)) x))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (call-node (nelisp-phase47-compiler--ir-get caller-ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'call))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
+
+(ert-deftest nelisp-phase47-doc129/e2e-direct-lambda-lift ()
+  "Doc 129.7L: execute a direct non-capturing lambda application."
+  (unless (nelisp-phase47-doc129-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (let ((path (nelisp-phase47-doc129-test--tmp-binary "direct-lambda-lift")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-sexp
+           '(seq
+             (defun caller (x)
+               ((lambda (y) (* y 2)) x))
+             (exit (caller 21)))
+           path)
+          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-lambda-lift ()
+  "Doc 129.7L: object output exposes direct lambda-lift defuns."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-direct-lambda-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun caller (x)
+              ((lambda (y) (+ y 1)) x))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "caller" out))
+            (should (string-match-p "nelisp_aot_lambda_0" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/parse-quoted-funcall-designator ()
   "Doc 129.7D: quoted function symbols materialize through NAME-SLOT."
   (let* ((ir (nelisp-phase47-compiler--parse

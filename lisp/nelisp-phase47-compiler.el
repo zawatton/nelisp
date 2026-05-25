@@ -1233,6 +1233,23 @@ macros do not leak into the host Emacs session."
     (push name nelisp-phase47-compiler--lambda-lift-names)
     name))
 
+(defun nelisp-phase47-compiler--lambda-lift-call (lambda-form arg-forms)
+  "Return a direct call to a synthetic defun for LAMBDA-FORM and ARG-FORMS."
+  (unless (and (>= (length lambda-form) 3)
+               (listp (nth 1 lambda-form))
+               (cl-every #'symbolp (nth 1 lambda-form)))
+    (signal 'nelisp-phase47-compiler-error
+            (list :lambda-lift-param-shape lambda-form)))
+  (let* ((name (nelisp-phase47-compiler--lambda-lift-name))
+         (params (nth 1 lambda-form))
+         (body (nelisp-phase47-compiler--body->form
+                (cddr lambda-form)))
+         (args (mapcar #'nelisp-phase47-compiler--preprocess-source
+                       arg-forms)))
+    (push `(defun ,name ,params ,body)
+          nelisp-phase47-compiler--lambda-lift-hoists)
+    (cons name args)))
+
 (defun nelisp-phase47-compiler--preprocess-funcall-lambda (sexp)
   "Lambda-lift a literal lambda designator in `(funcall ...)'.
 Only non-capturing lambdas are supported: lifted bodies are compiled as
@@ -1244,20 +1261,8 @@ Phase 47 free-symbol error."
         (cons 'funcall
               (mapcar #'nelisp-phase47-compiler--preprocess-source
                       (cdr sexp)))
-      (unless (and (>= (length lambda-form) 3)
-                   (listp (nth 1 lambda-form))
-                   (cl-every #'symbolp (nth 1 lambda-form)))
-        (signal 'nelisp-phase47-compiler-error
-                (list :lambda-lift-param-shape lambda-form)))
-      (let* ((name (nelisp-phase47-compiler--lambda-lift-name))
-             (params (nth 1 lambda-form))
-             (body (nelisp-phase47-compiler--body->form
-                    (cddr lambda-form)))
-             (args (mapcar #'nelisp-phase47-compiler--preprocess-source
-                           (nthcdr 2 sexp))))
-        (push `(defun ,name ,params ,body)
-              nelisp-phase47-compiler--lambda-lift-hoists)
-        (cons name args)))))
+      (nelisp-phase47-compiler--lambda-lift-call
+       lambda-form (nthcdr 2 sexp)))))
 
 (defun nelisp-phase47-compiler--body->form (body)
   "Normalize BODY forms into one Phase 47 form."
@@ -1644,6 +1649,10 @@ the whole program."
    ((eq (car sexp) 'function) sexp)
    ((eq (car sexp) 'funcall)
     (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
+   ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
+    (nelisp-phase47-compiler--lambda-lift-call
+     (nelisp-phase47-compiler--lambda-literal-form (car sexp))
+     (cdr sexp)))
    ((eq (car sexp) 'progn)
     (let ((body (mapcar #'nelisp-phase47-compiler--preprocess-source
                         (cdr sexp))))
