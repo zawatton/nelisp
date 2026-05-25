@@ -110,6 +110,20 @@
         (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
                     'aot-current-sp))))))
 
+(defun nelisp-phase47-doc129-test--assert-landing-label-count
+    (ir label-prefix count)
+  "Assert IR contains COUNT landing labels named LABEL-PREFIX."
+  (let* ((landing-labels
+          (nelisp-phase47-doc129-test--ir-nodes ir 'aot-landing-label))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  landing-labels)))
+    (should (= (length landing-labels) count))
+    (dolist (name landing-names)
+      (should (string-prefix-p label-prefix name)))))
+
 (defun nelisp-phase47-doc129-test--capturing-callback-closure-ir
     (form callback-arg-index)
   "Assert FORM lowers a captured callback through make-closure.
@@ -5866,12 +5880,17 @@ materialized closure temporary."
                      (throw 'done value)
                    (identity value)))))
          (body (nelisp-phase47-compiler--ir-get ir :body))
-         (save-body (nelisp-phase47-compiler--ir-get body :body))
+         (cleanup-label (nelisp-phase47-compiler--ir-get body :body))
+         (save-body (nelisp-phase47-compiler--ir-get cleanup-label :body))
          (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
     (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
+    (should (eq (nelisp-phase47-compiler--ir-kind cleanup-label)
+                'aot-landing-label))
     (should (eq (nelisp-phase47-compiler--ir-kind save-body) 'value-seq))
     (should (member 'nelisp_aot_builtin_call1 externs))
-    (should (member 'nelisp_aot_throw externs))))
+    (should (member 'nelisp_aot_throw externs))
+    (nelisp-phase47-doc129-test--assert-landing-label-count
+     ir "aot-unwind-cleanup-" 1)))
 
 (ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-throw ()
   "Doc 129.8P: source unwind-protect conditional throw cleans up both branches."
@@ -5892,7 +5911,9 @@ materialized closure temporary."
          (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
     (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
     (should (member 'nelisp_aot_builtin_call1 externs))
-    (should (member 'nelisp_aot_throw externs))))
+    (should (member 'nelisp_aot_throw externs))
+    (nelisp-phase47-doc129-test--assert-landing-label-count
+     ir "aot-unwind-cleanup-" 1)))
 
 (ert-deftest nelisp-phase47-doc129/parse-unwind-protect-nested-throw ()
   "Doc 129.8R: nested unwind-protect throw trees clean up every leaf."
@@ -5915,7 +5936,32 @@ materialized closure temporary."
          (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
     (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
-    (should (member 'nelisp_aot_throw externs))))
+    (should (member 'nelisp_aot_throw externs))
+    (nelisp-phase47-doc129-test--assert-landing-label-count
+     ir "aot-unwind-cleanup-" 1)))
+
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-multi-leaf-cleanup-labels ()
+  "Doc 129.8Y: multi-leaf unwind-protect trees label every cleanup leaf."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_two_throws
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (if value
+                         (throw 'done value)
+                       (throw 'done value))
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
+    (should (= (cl-count 'nelisp_aot_throw externs) 2))
+    (nelisp-phase47-doc129-test--assert-landing-label-count
+     ir "aot-unwind-cleanup-" 2)))
 
 (ert-deftest nelisp-phase47-doc129/object-unwind-protect-normal-exit ()
   "Doc 129.8G: source unwind-protect normal path compiles to object."
