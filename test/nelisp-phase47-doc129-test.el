@@ -2001,6 +2001,30 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/object-direct-builtin1-cl-lib-accessor ()
+  "Doc 129.6AQ: object output exposes cl-lib accessor aliases."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cl-lib-accessor-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_cl_caddr
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (arg :type sexp))
+              (cl-caddr arg))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_cl_caddr" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-user-call ()
   "Doc 129.6F: direct vararg builtin calls lower to calln."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -2066,13 +2090,6 @@ materialized closure temporary."
                   (cl-first (cl-first a))
                   (cl-second (cl-second a))
                   (cl-third (cl-third a))
-                  (cl-fourth (cl-fourth a))
-                  (cl-fifth (cl-fifth a))
-                  (cl-sixth (cl-sixth a))
-                  (cl-seventh (cl-seventh a))
-                  (cl-eighth (cl-eighth a))
-                  (cl-ninth (cl-ninth a))
-                  (cl-tenth (cl-tenth a))
                   (cl-rest (cl-rest a))
                   (cl-copy-list (cl-copy-list a))
                   (cl-list* (cl-list* a b c))
@@ -4329,7 +4346,11 @@ materialized closure temporary."
   "Doc 129.6E/U: direct builtin1 lowering covers the shipped unary table."
   (dolist (builtin '(identity length car cdr symbolp stringp
                               hash-table-p hash-table-count
-                              number-to-string))
+                              number-to-string
+                              cl-caaar cl-caadr cl-cadar cl-caddr
+                              cl-cdaar cl-cdadr cl-cddar cl-cdddr
+                              cl-fourth cl-fifth cl-sixth cl-seventh
+                              cl-eighth cl-ninth cl-tenth))
     (let* ((ir (nelisp-phase47-compiler--parse
                 `(defun call_builtin
                      ((out :type sexp)

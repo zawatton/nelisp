@@ -2654,6 +2654,9 @@ the whole program."
     not null atom consp listp symbolp keywordp numberp integerp
     float stringp vectorp
     car cdr car-safe cdr-safe
+    cl-caaar cl-caadr cl-cadar cl-caddr
+    cl-cdaar cl-cdadr cl-cddar cl-cdddr
+    cl-fourth cl-fifth cl-sixth cl-seventh cl-eighth cl-ninth cl-tenth
     length reverse nreverse copy-sequence
     hash-table-p hash-table-count
     1+ 1- abs
@@ -2692,8 +2695,7 @@ defun is visible in the current compile unit.")
     seq-copy seq-reverse seq-take seq-drop seq-subseq seq-partition
     seq-split seq-remove-at-position seq-positions seq-contains
     seq-into seq-concatenate seq-random-elt
-    cl-first cl-second cl-third cl-fourth cl-fifth
-    cl-sixth cl-seventh cl-eighth cl-ninth cl-tenth
+    cl-first cl-second cl-third
     cl-rest cl-copy-list cl-list* cl-acons cl-pairlis cl-adjoin
     cl-endp cl-list-length cl-subseq cl-concatenate
     cl-revappend cl-nreconc cl-tailp cl-ldiff
