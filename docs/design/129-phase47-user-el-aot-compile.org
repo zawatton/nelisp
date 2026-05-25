@@ -5,7 +5,9 @@
 * Status
 
 - *State*: ACTIVE 2026-05-25 — Stage 129.1 frontend macro expansion,
-  Stage 129.2 boxed-boundary Int MVP, Stage 129.3A boxed Int
+  Stage 129.1B top-level compile-time guard flattening,
+  Stage 129.2 boxed-boundary Int MVP, Stage 129.2B raw integer
+  =mod= arithmetic MVP, Stage 129.3A boxed Int
   =setq= delegation, Stage 129.3B symbol-literal =setq= helper,
   Stage 129.3C symbol-literal =defvar= helper, Stage 129.3D
   symbol-literal =defconst= helper, Stage 129.3E top-level
@@ -200,6 +202,15 @@
   multi-form =progn= via a new =value-seq= IR.  =value-seq= supports
   value-producing children; statement-only =write= remains top-level
   / statement-context because value emission has no rodata context.
+- *129.1B MVP*: top-level =when= / =unless= / =if= guards with
+  compile-time-known =fboundp= / =boundp= / =featurep= conditions are
+  flattened before object parsing.  This strips host-compat polyfill
+  wrappers such as =(unless (fboundp 'min) ...)= when the target
+  binding is already available, or splices the selected body when the
+  guard is true.  Unknown guard conditions remain in source and fail
+  through the existing parser path.  If all top-level forms are stripped
+  this way, object output now writes a valid empty relocatable object
+  instead of treating the compile unit as an error.
 - *129.2 MVP*: =defun-sexp-int= lowers a monomorphic
   =(defun-sexp-int NAME (OUT ARG...) BODY)= surface into ordinary
   Phase 47 DSL: =ARG= values are assumed =Sexp::Int= pointers and
@@ -207,6 +218,13 @@
   caller-owned =OUT= via =sexp-int-make=.  This is intentionally a
   boxed-boundary step, not the full compiler-wide "every IR value is
   Sexp" rewrite.
+- *129.2B MVP*: raw integer =mod= now parses as the existing binary
+  arithmetic IR and emits native remainder code on x86_64 and AArch64.
+  This unblocks common numeric compatibility helpers such as
+  =(oddp n)= / =(evenp n)= after top-level =fboundp= guards select
+  their polyfill definitions.  The first native sequence uses machine
+  signed remainder semantics; full Emacs =mod= floor semantics for
+  mixed-sign operands remains a later widening.
 - *129.3A MVP*: =defun-sexp-int-setq= extends the boxed Int boundary
   with explicit environment pointers:
   =(defun-sexp-int-setq NAME (OUT MIRROR FRAMES SCRATCH SYM ARG...) BODY)=
@@ -4423,6 +4441,34 @@ first explicit dispatcher helper, but ordinary runtime call lowering
 for =format=, =mapcar=, =funcall=, and other real calls remains later
 129.6 work.
 
+*** §1.G.2 Shipped MVP: top-level compile-time guards
+
+Stage 129.1B extends the same frontend-only discipline to host-compat
+top-level guards:
+
+#+begin_src elisp
+(seq
+  (unless (fboundp 'min)
+    (defun min (&rest numbers) ...))
+  (defun caller (x) ...))
+#+end_src
+
+The compiler recognizes =when=, =unless=, and 3/4-argument =if= only
+when their condition can be decided without evaluating arbitrary user
+code.  The accepted condition subset is =fboundp=, =boundp=,
+=featurep=, plus =not= / =and= / =or= over those predicates and literal
+=t= / =nil=.  A selected =progn= / =seq= branch is spliced into the
+surrounding top-level sequence; an unselected branch is removed before
+=defmacro=, module-form, and top-level variable extraction.
+
+This is intentionally not general top-level execution.  Guards whose
+condition is not statically known remain as ordinary source forms and
+therefore continue to hit the normal unsupported-form diagnostics.
+Compile units that become empty after guard/module stripping still
+produce a valid empty ET_REL object, which lets host-provided polyfill
+files participate in whole-repository native builds without special
+driver-side filtering.
+
 ** §1.H Builtin library delegation
 
 =format= / =concat= / =substring= / =string-match= / =mapcar= /
@@ -5338,8 +5384,8 @@ deletion or deferred until the extern can be elisp-emitted.
 
 | Stage   | Group                          | Depends on | Risk | Status                  |
 |---------+--------------------------------+------------+------+-------------------------|
-| 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
-| 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
+| 129.1   | §1.G macroexpand frontend      | —          | low  | MVP + 129.1B top-level compile-time guards SHIPPED 2026-05-26 |
+| 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP + 129.2B raw integer mod arithmetic SHIPPED 2026-05-26 |
 | 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context + 129.3M init helper ABI argv materialization + 129.3N default AOT environment handles + 129.3O standalone Env pointer context handoff + 129.3P native-call entry adapter + 129.3Q external executable native-call thunk SHIPPED 2026-05-25 |
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering + 129.4G direct special-let throw cleanup + 129.4H conditional special-let throw cleanup + 129.4I nested conditional special-let throw cleanup SHIPPED 2026-05-25; heap lexframes and general tagged local values pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge + 129.5H hash-FRAMES root-vector materialisation bridge + 129.5I stack-held hash-FRAMES auto-root scope + 129.5J loader-selected hash-FRAMES root-scope marker + 129.5K object loader root metadata selection SHIPPED 2026-05-25; deeper whole-module native-frame liveness remains future work |

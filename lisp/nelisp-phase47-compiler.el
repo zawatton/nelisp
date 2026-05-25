@@ -405,7 +405,7 @@ because §97.b only folds the same shapes v1 did."
    ((symbolp sexp)
     (and (not (assq sexp fenv))
          (assq sexp env)))
-   ((and (consp sexp) (memq (car sexp) '(+ - *))
+   ((and (consp sexp) (memq (car sexp) '(+ - * mod))
          (= (length sexp) 3))
     (and (nelisp-phase47-compiler--int-foldable-p (nth 1 sexp) env fenv)
          (nelisp-phase47-compiler--int-foldable-p (nth 2 sexp) env fenv)))
@@ -425,7 +425,8 @@ Caller has already verified foldability via
       (cond
        ((eq op '+) (+ a b))
        ((eq op '-) (- a b))
-       ((eq op '*) (* a b)))))))
+       ((eq op '*) (* a b))
+       ((eq op 'mod) (mod a b)))))))
 
 (defconst nelisp-phase47-compiler--cmp-ops
   '(< > <= >= =)
@@ -1278,6 +1279,105 @@ compiled object does not yet carry module registration side effects."
      (signal 'nelisp-phase47-compiler-error
              (list :unknown-module-form form)))))
 
+(defun nelisp-phase47-compiler--top-level-static-condition (form)
+  "Return `(known . BOOL)' when top-level guard FORM is compile-time known.
+This intentionally recognizes only side-effect-free host predicates used
+by compatibility guards.  Unknown conditions return nil and are left in
+the source so the normal parser reports the existing unsupported form."
+  (cond
+   ((eq form t) (cons 'known t))
+   ((null form) (cons 'known nil))
+   ((and (consp form) (eq (car form) 'not) (= (length form) 2))
+    (let ((value
+           (nelisp-phase47-compiler--top-level-static-condition
+            (nth 1 form))))
+      (when value
+        (cons 'known (not (cdr value))))))
+   ((and (consp form) (eq (car form) 'and))
+    (let ((args (cdr form))
+          (known t)
+          (result t))
+      (while (and args known result)
+        (let ((value
+               (nelisp-phase47-compiler--top-level-static-condition
+                (car args))))
+          (if value
+              (setq result (cdr value))
+            (setq known nil)))
+        (setq args (cdr args)))
+      (when known
+        (cons 'known result))))
+   ((and (consp form) (eq (car form) 'or))
+    (let ((args (cdr form))
+          (known t)
+          (result nil))
+      (while (and args known (not result))
+        (let ((value
+               (nelisp-phase47-compiler--top-level-static-condition
+                (car args))))
+          (if value
+              (setq result (cdr value))
+            (setq known nil)))
+        (setq args (cdr args)))
+      (when known
+        (cons 'known result))))
+   ((and (consp form)
+         (= (length form) 2)
+         (memq (car form) '(fboundp boundp featurep)))
+    (let ((name (nelisp-phase47-compiler--literal-arg (nth 1 form))))
+      (when (symbolp name)
+        (cons 'known
+              (pcase (car form)
+                ('fboundp (fboundp name))
+                ('boundp (boundp name))
+                ('featurep (featurep name)))))))))
+
+(defun nelisp-phase47-compiler--top-level-branch-forms (form)
+  "Return top-level forms represented by selected guard branch FORM."
+  (cond
+   ((null form) nil)
+   ((and (consp form) (memq (car form) '(progn seq)))
+    (cdr form))
+   (t
+    (list form))))
+
+(defun nelisp-phase47-compiler--top-level-guard-forms (form)
+  "Return `(known . FORMS)' for a statically selected top-level guard.
+The caller splices FORMS into the surrounding top-level sequence."
+  (when (consp form)
+    (pcase (car form)
+      ('when
+       (when (>= (length form) 2)
+         (let ((value
+                (nelisp-phase47-compiler--top-level-static-condition
+                 (nth 1 form))))
+           (when value
+             (cons 'known
+                   (if (cdr value)
+                       (nthcdr 2 form)
+                     nil))))))
+      ('unless
+       (when (>= (length form) 2)
+         (let ((value
+                (nelisp-phase47-compiler--top-level-static-condition
+                 (nth 1 form))))
+           (when value
+             (cons 'known
+                   (if (cdr value)
+                       nil
+                     (nthcdr 2 form)))))))
+      ('if
+       (when (and (>= (length form) 3) (<= (length form) 4))
+         (let ((value
+                (nelisp-phase47-compiler--top-level-static-condition
+                 (nth 1 form))))
+           (when value
+             (cons 'known
+                   (nelisp-phase47-compiler--top-level-branch-forms
+                    (if (cdr value)
+                        (nth 2 form)
+                      (nth 3 form)))))))))))
+
 (defun nelisp-phase47-compiler--extract-defmacros (sexp)
   "Return plist for compile-time top-level forms in SEXP.
 Only a top-level `defmacro', or `defmacro' children directly inside
@@ -1327,32 +1427,42 @@ the same generated helper names."
           (custom-metadata nil)
           (special-vars nil)
           (var-index 0))
-      (dolist (child (cdr sexp))
-        (cond
-         ((nelisp-phase47-compiler--top-level-defmacro-p child)
-          (push child defs))
-         ((nelisp-phase47-compiler--top-level-module-form-p child)
-          (push child module-forms))
-         ((nelisp-phase47-compiler--top-level-var-form-p child)
-          (push (nelisp-phase47-compiler--top-level-special-var-name child)
-                special-vars)
-          (let ((lowered
-                 (nelisp-phase47-compiler--lower-top-level-var-form
-                  child var-index))
-                (descriptor
-                 (nelisp-phase47-compiler--top-level-var-init-descriptor
-                  child var-index)))
-            (when descriptor
-              (push descriptor init-helpers))
-            (when (eq (car child) 'defcustom)
-              (push (nelisp-phase47-compiler--defcustom-metadata-descriptor
-                     child var-index)
-                    custom-metadata))
-            (setq var-index (1+ var-index))
-            (when lowered
-              (push lowered kept))))
-         (t
-          (push child kept))))
+      (cl-labels
+          ((process-child
+            (child)
+            (let ((guard
+                   (nelisp-phase47-compiler--top-level-guard-forms child)))
+              (if guard
+                  (dolist (selected (cdr guard))
+                    (process-child selected))
+                (cond
+                 ((nelisp-phase47-compiler--top-level-defmacro-p child)
+                  (push child defs))
+                 ((nelisp-phase47-compiler--top-level-module-form-p child)
+                  (push child module-forms))
+                 ((nelisp-phase47-compiler--top-level-var-form-p child)
+                  (push (nelisp-phase47-compiler--top-level-special-var-name child)
+                        special-vars)
+                  (let ((lowered
+                         (nelisp-phase47-compiler--lower-top-level-var-form
+                          child var-index))
+                        (descriptor
+                         (nelisp-phase47-compiler--top-level-var-init-descriptor
+                          child var-index)))
+                    (when descriptor
+                      (push descriptor init-helpers))
+                    (when (eq (car child) 'defcustom)
+                      (push
+                       (nelisp-phase47-compiler--defcustom-metadata-descriptor
+                        child var-index)
+                       custom-metadata))
+                    (setq var-index (1+ var-index))
+                    (when lowered
+                      (push lowered kept))))
+                 (t
+                  (push child kept)))))))
+        (dolist (child (cdr sexp))
+          (process-child child)))
       (list :source (cons 'seq (nreverse kept))
             :defmacros (nreverse defs)
             :module-forms (nreverse module-forms)
@@ -6404,7 +6514,7 @@ functions `((NAME . ARITY) ...)'."
    ;; §100.D extends the op set with 3 bitwise binops (logior /
    ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
    ;; the same MR-form emit shape so no new IR kind is needed.
-   ((and (consp sexp) (memq (car sexp) '(+ - * logior logand logxor)))
+   ((and (consp sexp) (memq (car sexp) '(+ - * mod logior logand logxor)))
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :arith-arity (car sexp) sexp)))
@@ -8499,6 +8609,17 @@ Uses `emit-bytes' for the 0F-prefix opcode form."
     (nelisp-asm-x86_64-emit-bytes
      buf (unibyte-string rex #x0F #xAF modrm))))
 
+(defun nelisp-phase47-compiler--emit-x86_64-mod-r10 (buf)
+  "Emit signed integer remainder for RAX mod R10, leaving result in RAX."
+  ;; MVP uses x86 IDIV's truncating remainder.  This is sufficient for
+  ;; the positive divisors used by the nelisp-emacs numeric bootstrap
+  ;; guards; full Emacs `mod' floor semantics for mixed signs can widen
+  ;; this sequence later without changing the IR surface.
+  (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #x48 #x99          ; cqo
+                       #x49 #xF7 #xFA))  ; idiv r10
+  (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdx))
+
 (defun nelisp-phase47-compiler--emit-aarch64-unsupported (kind &optional detail)
   "Signal that KIND is not yet emitted on aarch64 in Phase 47.
 DETAIL carries the offending IR node or operator when useful."
@@ -9333,6 +9454,9 @@ chained calls where rcx held both `d' param and a scratch value)."
            ((eq op '+) (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x9))
            ((eq op '-) (nelisp-asm-arm64-sub-reg-reg buf 'x0 'x0 'x9))
            ((eq op '*) (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9))
+           ((eq op 'mod)
+            (nelisp-asm-arm64-sdiv-reg-reg buf 'x10 'x0 'x9)
+            (nelisp-asm-arm64-msub-reg-reg buf 'x0 'x10 'x9 'x0))
            ((eq op 'logior) (nelisp-asm-arm64-orr-reg-reg buf 'x0 'x0 'x9))
            ((eq op 'logand) (nelisp-asm-arm64-and-reg-reg buf 'x0 'x0 'x9))
            ((eq op 'logxor) (nelisp-asm-arm64-eor-reg-reg buf 'x0 'x0 'x9))
@@ -9352,6 +9476,8 @@ chained calls where rcx held both `d' param and a scratch value)."
        ((eq op '-) (nelisp-asm-x86_64-sub-reg-reg buf 'rax 'r10))
        ((eq op '*)
         (nelisp-phase47-compiler--imul-reg-reg buf 'rax 'r10))
+       ((eq op 'mod)
+        (nelisp-phase47-compiler--emit-x86_64-mod-r10 buf))
        ;; Doc 100 §100.D bitwise binops.  Same MR-form shape as ADD/SUB,
        ;; just a different opcode byte.
        ((eq op 'logior) (nelisp-asm-x86_64-or-reg-reg buf 'rax 'r10))
@@ -12423,13 +12549,47 @@ drift (= a Doc 92 emitter invariant violation)."
                      (nelisp-phase47-compiler--select-auto-frame-roots
                       sexp)
                    sexp))
-         (ir (nelisp-phase47-compiler--parse source nil))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
+         (extracted
+          (nelisp-phase47-compiler--extract-defmacros source))
+         (empty-source-p
+          (equal (plist-get extracted :source)
+                 '(seq)))
+         (ir (unless empty-source-p
+               (nelisp-phase47-compiler--parse source nil)))
+         (collected (and ir (nelisp-phase47-compiler--collect-strings ir)))
          (rodata-bytes (cdr collected))
          (object-metadata
-          (and (eq format 'elf)
+          (and (not empty-source-p)
+               (eq format 'elf)
                (nelisp-phase47-compiler--object-module-init-metadata source)))
-         (defuns (nelisp-phase47-compiler--collect-defuns ir)))
+         (defuns (and ir (nelisp-phase47-compiler--collect-defuns ir))))
+    (when empty-source-p
+      (dolist (form (plist-get extracted :module-forms))
+        (nelisp-phase47-compiler--eval-top-level-module-form form))
+      (pcase format
+        ('elf
+         (nelisp-elf-write-binary
+          file-path
+          (list :e-type 'rel :text (unibyte-string) :rodata (unibyte-string)
+                :symbols nil :relocs nil :machine arch)))
+        ('mach-o
+         (require 'nelisp-mach-o-write)
+         (nelisp-mach-o-write-binary
+          file-path
+          (list :text (unibyte-string) :symbols nil :machine arch)))
+        ('coff
+         (unless (eq arch 'x86_64)
+           (signal 'nelisp-phase47-compiler-error
+                   (list :coff-only-supports-x86_64 arch)))
+         (require 'nelisp-pe-write)
+         (nelisp-pe-write-binary
+          file-path
+          (list :text (unibyte-string) :symbols nil :relocs nil
+                :machine arch)))
+        (_
+         (signal 'nelisp-phase47-compiler-error
+                 (list :unknown-output-format format))))
+      (cl-return-from nelisp-phase47-compile-to-object file-path))
     (unless (zerop (length rodata-bytes))
       (signal 'nelisp-phase47-compiler-error
               (list :object-mode-no-strings

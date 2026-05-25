@@ -2017,6 +2017,96 @@ materialized closure temporary."
       (require 'nelisp-phase47-doc129-missing-feature)
       (exit 3)))))
 
+(ert-deftest nelisp-phase47-doc129/top-level-unless-fboundp-stripped ()
+  "Doc 129.1B: top-level `unless (fboundp ...)' guards are stripped."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (unless (fboundp 'identity)
+                  (defun skipped (x) (+ x 9)))
+                (defun kept (x) (+ x 1)))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (= (length forms) 1))
+    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
+                'kept))))
+
+(ert-deftest nelisp-phase47-doc129/top-level-when-fboundp-spliced ()
+  "Doc 129.1B: true top-level `when (fboundp ...)' guards splice body."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (when (fboundp 'identity)
+                  (defun guarded (x) (+ x 1))))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (= (length forms) 1))
+    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
+                'guarded))))
+
+(ert-deftest nelisp-phase47-doc129/top-level-if-featurep-spliced ()
+  "Doc 129.1B: static top-level `if' guards select one branch."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (if (featurep 'nelisp-phase47-doc129-missing-feature)
+                    (defun skipped (x) (+ x 9))
+                  (progn
+                    (defun selected (x) (+ x 2)))))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (= (length forms) 1))
+    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
+                'selected))))
+
+(ert-deftest nelisp-phase47-doc129/object-top-level-unless-fboundp-polyfill-strip ()
+  "Doc 129.1B: object output accepts host-compat polyfill guards."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-top-guard-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (unless (fboundp 'identity)
+               (defun identity (x) x))
+             (defun top_guard_kept (x) (+ x 1)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "top_guard_kept" out))
+            (should-not (string-match-p "\\bidentity\\b" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-empty-after-top-level-guard-strip ()
+  "Doc 129.1B: fully stripped guarded files still produce an empty object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-empty-top-guard-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (unless (fboundp 'identity)
+               (defun identity (x) x))
+             (provide 'nelisp-phase47-doc129-empty-guard))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-S" path)))))
+            (should (file-exists-p path))
+            (should (string-match-p "\\.text" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-empty-source-still-evaluates-require ()
+  "Doc 129.1B: empty object fast path still validates module forms."
+  (let ((path (make-temp-file "nelisp-doc129-empty-require-" nil ".o")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object
+          '(seq
+            (require 'nelisp-phase47-doc129-missing-feature)
+            (unless (fboundp 'identity)
+              (defun identity (x) x)))
+          path))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/parse-builtin1-delegation-helper ()
   "Doc 129.6B: builtin1 helpers delegate through the runtime dispatcher."
   (let* ((ir (nelisp-phase47-compiler--parse

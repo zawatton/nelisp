@@ -576,6 +576,23 @@ Base 0x9B007C00 | (Xm << 16) | (Xn << 5) | Xd (Ra field fixed = 31)."
     (nelisp-asm-arm64--emit-word
      buf (logior #x9B007C00 (ash m 16) (ash n 5) d))))
 
+(defun nelisp-asm-arm64-sdiv-reg-reg (buf dst lhs rhs)
+  "Emit `SDIV Xd, Xn, Xm' (64-bit signed integer divide)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9AC00C00 (ash m 16) (ash n 5) d))))
+
+(defun nelisp-asm-arm64-msub-reg-reg (buf dst lhs rhs acc)
+  "Emit `MSUB Xd, Xn, Xm, Xa' (= Xd := Xa - Xn * Xm)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num lhs) #x1F))
+         (m (logand (nelisp-asm-arm64--reg-num rhs) #x1F))
+         (a (logand (nelisp-asm-arm64--reg-num acc) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9B008000 (ash m 16) (ash a 10) (ash n 5) d))))
+
 (defun nelisp-asm-arm64-and-reg-reg (buf dst lhs rhs)
   "Emit `AND Xd, Xn, Xm' (shifted-register).
 Base 0x8A000000 | (Xm << 16) | (Xn << 5) | Xd."
@@ -835,4 +852,3 @@ f64 param from `[x29 - 8*(slot+1)]'."
          (imm9-u (logand imm9 #x1FF)))
     (nelisp-asm-arm64--emit-word
      buf (logior #xFC400000 (ash imm9-u 12) (ash n-reg 5) t-reg))))
-

@@ -406,6 +406,14 @@ Caller is responsible for `delete-file' on cleanup."
                  (nelisp-phase47-compiler--ir-get body :b))
                 'ref))))
 
+(ert-deftest nelisp-phase47-compiler/parse-runtime-mod ()
+  "Parse `(mod a b)' inside a defun yields a `:kind arith' node."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun rem2 (a b) (mod a b))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
+    (should (eq (nelisp-phase47-compiler--ir-get body :op) 'mod))))
+
 (ert-deftest nelisp-phase47-compiler/parse-call-in-exit ()
   "Parse `(exit (id 7))' yields an exit IR wrapping a call value."
   (let ((ir (nelisp-phase47-compiler--parse
@@ -544,6 +552,18 @@ Caller is responsible for `delete-file' on cleanup."
      path)
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 17)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-defun-mod-runtime ()
+  "Compile runtime `(mod n 4)' and observe the remainder."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "mod-runtime"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun rem4 (n) (mod n 4))
+           (exit (rem4 11)))
+     path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 3)))))
 
 (ert-deftest nelisp-phase47-compiler/e2e-defun-call-chain ()
   "Three-deep call chain: a→b→c, each adds 1, returns 13 from 10."
