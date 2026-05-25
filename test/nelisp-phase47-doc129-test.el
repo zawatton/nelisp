@@ -2489,6 +2489,91 @@ materialized closure temporary."
                  :var)
                 'key))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-multiple-keyword-designators ()
+  "Doc 129.6AG: multiple keyword callback designators use callback slots."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_builtin
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (keyword_slot_0 :type sexp)
+                    (keyword_slot_1 :type sexp)
+                    (callback_slot_0 :type sexp)
+                    (callback_slot_1 :type sexp)
+                    (item :type sexp)
+                    (xs :type sexp))
+                 (cl-find item xs :test #'eq :key #'car))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (kw0-symbol (nth 1 forms))
+         (kw1-symbol (nth 2 forms))
+         (test-symbol (nth 3 forms))
+         (key-symbol (nth 4 forms))
+         (call-node (nth 5 forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (equal (nelisp-phase47-compiler--ir-get kw0-symbol :bytes)
+                   (string-to-list ":test")))
+    (should (equal (nelisp-phase47-compiler--ir-get kw1-symbol :bytes)
+                   (string-to-list ":key")))
+    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+                   (string-to-list "eq")))
+    (should (equal (nelisp-phase47-compiler--ir-get key-symbol :bytes)
+                   (string-to-list "car")))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 8 call-args)
+                 :var)
+                'keyword_slot_0))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 9 call-args)
+                 :var)
+                'callback_slot_0))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 10 call-args)
+                 :var)
+                'keyword_slot_1))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 11 call-args)
+                 :var)
+                'callback_slot_1))))
+
+(ert-deftest nelisp-phase47-doc129/parse-seq-sort-by-dual-designators ()
+  "Doc 129.6AG: `seq-sort-by' can materialize both callback designators."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun call_builtin
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (callback_slot_0 :type sexp)
+                    (callback_slot_1 :type sexp)
+                    (xs :type sexp))
+                 (seq-sort-by #'car #'string< xs))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (key-symbol (nth 1 forms))
+         (pred-symbol (nth 2 forms))
+         (call-node (nth 3 forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (equal (nelisp-phase47-compiler--ir-get key-symbol :bytes)
+                   (string-to-list "car")))
+    (should (equal (nelisp-phase47-compiler--ir-get pred-symbol :bytes)
+                   (string-to-list "string<")))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 6 call-args)
+                 :var)
+                'callback_slot_0))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 7 call-args)
+                 :var)
+                'callback_slot_1))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 8 call-args)
+                 :var)
+                'xs))))
+
 (ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-sort-designator ()
   "Doc 129.6K: `sort' materializes quoted/function predicate designators."
   (dolist (form '((sort xs #'string<)

@@ -2646,6 +2646,12 @@ defun is visible in the current compile unit.")
 The index is zero-based within the source call's ordinary argument
 list, excluding the builtin name itself.")
 
+(defconst nelisp-phase47-compiler--aot-builtinn-extra-designator-arg-indexes
+  '((seq-sort-by . (1)))
+  "Additional function-designator argument positions for calln lowering.
+These extend `nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes'
+for builtins that can consume more than one static callback.")
+
 (defun nelisp-phase47-compiler--fenv-has-symbol-p (fenv sym)
   "Return non-nil when FENV binds SYM."
   (and (symbolp sym) (assq sym fenv)))
@@ -2694,6 +2700,32 @@ storage through the call boundary."
                         :form sexp)))
         (push slot slots)))
     (nreverse slots)))
+
+(defun nelisp-phase47-compiler--aot-callback-slot-symbols (fenv count sexp)
+  "Return COUNT caller-owned callback materialization slots from FENV.
+Single callback materialization keeps using `scratch'.  Multiple static
+callbacks require indexed `callback-slot-N' / `callback_slot_N' slots so
+each materialized function designator remains stable through the shared
+calln dispatch."
+  (if (= count 1)
+      (list 'scratch)
+    (let ((slots nil))
+      (dotimes (idx count)
+        (let* ((candidates
+                (list (intern (format "callback-slot-%d" idx))
+                      (intern (format "callback_slot_%d" idx))))
+               (slot (cl-find-if
+                      (lambda (sym)
+                        (nelisp-phase47-compiler--fenv-has-symbol-p
+                         fenv sym))
+                      candidates)))
+          (unless slot
+            (signal 'nelisp-phase47-compiler-error
+                    (list :aot-callback-slot-boundary-missing
+                          candidates
+                          :form sexp)))
+          (push slot slots)))
+      (nreverse slots))))
 
 (defun nelisp-phase47-compiler--aot-function-designator-symbol (form)
   "Return FORM's quoted/function symbol designator, or nil.
@@ -2821,19 +2853,9 @@ caller-owned boundary params in the current defun:
          (designator-index
           (cdr (assq builtin
                      nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes)))
-         (designator-form
-          (and designator-index
-               (< designator-index argc)
-               (nth designator-index args)))
-         (fn-designator
-          (and designator-form
-               (nelisp-phase47-compiler--aot-function-designator-symbol
-                designator-form)))
-         (closure-designator
-          (and (consp designator-form)
-               (eq (car designator-form) 'aot-closure-lambda)
-               (symbolp (cadr designator-form))
-               designator-form))
+         (extra-designator-indexes
+          (cdr (assq builtin
+                     nelisp-phase47-compiler--aot-builtinn-extra-designator-arg-indexes)))
          (keyword-designator-positions
           (cl-loop for idx from 1 below argc
                    for previous = (nth (1- idx) args)
@@ -2845,25 +2867,48 @@ caller-owned boundary params in the current defun:
                                       (eq (car arg) 'aot-closure-lambda)
                                       (symbolp (cadr arg)))))
                    collect idx))
-         (_ (when (> (+ (if (or fn-designator closure-designator) 1 0)
-                       (length keyword-designator-positions))
-                    1)
+         (designator-candidate-indexes
+          (cl-remove-duplicates
+           (delq nil
+                 (append (when designator-index
+                           (list designator-index))
+                         extra-designator-indexes
+                         keyword-designator-positions))
+           :test #'=))
+         (designator-entries
+          (cl-loop for idx in designator-candidate-indexes
+                   when (< idx argc)
+                   for form = (nth idx args)
+                   for sym = (nelisp-phase47-compiler--aot-function-designator-symbol
+                              form)
+                   for closure = (and (consp form)
+                                      (eq (car form) 'aot-closure-lambda)
+                                      (symbolp (cadr form))
+                                      form)
+                   when (or sym closure)
+                   collect (list :idx idx
+                                 :symbol sym
+                                 :closure closure)))
+         (_ (when (and (> (length designator-entries) 1)
+                       (cl-some (lambda (entry)
+                                  (plist-get entry :closure))
+                                designator-entries))
               (signal 'nelisp-phase47-compiler-error
                       (list :aot-multiple-function-designator-slots-needed
                             sexp))))
-         (keyword-designator-index (car keyword-designator-positions))
-         (keyword-designator-form
-          (and keyword-designator-index
-               (nth keyword-designator-index args)))
-         (keyword-fn-designator
-          (and keyword-designator-form
-               (nelisp-phase47-compiler--aot-function-designator-symbol
-                keyword-designator-form)))
-         (keyword-closure-designator
-          (and (consp keyword-designator-form)
-               (eq (car keyword-designator-form) 'aot-closure-lambda)
-               (symbolp (cadr keyword-designator-form))
-               keyword-designator-form))
+         (callback-slots
+          (and designator-entries
+               (nelisp-phase47-compiler--aot-callback-slot-symbols
+                fenv (length designator-entries) sexp)))
+         (designator-slot-alist
+          (cl-mapcar
+           (lambda (entry slot)
+             (cons (plist-get entry :idx)
+                   (if (plist-get entry :closure)
+                       out
+                     slot)))
+           designator-entries
+           callback-slots))
          (keyword-positions
           (cl-loop for arg in args
                    for idx from 0
@@ -2876,18 +2921,14 @@ caller-owned boundary params in the current defun:
          (keyword-slot-alist
           (cl-mapcar #'cons keyword-positions keyword-slots))
          (lowered-args
-          (if (or fn-designator closure-designator keyword-positions)
+          (if (or designator-entries keyword-positions)
               (cl-loop for arg in args
                        for idx from 0
                        collect (cond
                                 ((assq idx keyword-slot-alist)
                                  (cdr (assq idx keyword-slot-alist)))
-                                ((and keyword-designator-index
-                                      (= idx keyword-designator-index))
-                                 (if keyword-closure-designator out scratch))
-                                ((and designator-index
-                                      (= idx designator-index))
-                                 (if closure-designator out scratch))
+                                ((assq idx designator-slot-alist)
+                                 (cdr (assq idx designator-slot-alist)))
                                 (t arg)))
             args))
          (arg-prefix
@@ -2897,37 +2938,31 @@ caller-owned boundary params in the current defun:
                     collect `(sexp-write-symbol-lit
                               ,slot
                               ,(symbol-name (nth idx args))))
-           (cond
-            (fn-designator
-             `((sexp-write-symbol-lit
-                ,scratch
-                ,(symbol-name fn-designator))))
-            (keyword-fn-designator
-             `((sexp-write-symbol-lit
-                ,scratch
-                ,(symbol-name keyword-fn-designator))))
-            (closure-designator
-             (let ((descriptor (cadr closure-designator))
-                   (captures (cddr closure-designator)))
-               `((sexp-write-symbol-lit
-                  ,scratch
-                  ,(symbol-name descriptor))
-                 (extern-call nelisp_aot_make_closure
-                              ,mirror ,frames ,scratch
-                              ,(length captures)
-                              ,out ,scratch
-                              ,@captures))))
-            (keyword-closure-designator
-             (let ((descriptor (cadr keyword-closure-designator))
-                   (captures (cddr keyword-closure-designator)))
-               `((sexp-write-symbol-lit
-                  ,scratch
-                  ,(symbol-name descriptor))
-                 (extern-call nelisp_aot_make_closure
-                              ,mirror ,frames ,scratch
-                              ,(length captures)
-                              ,out ,scratch
-                              ,@captures))))))))
+           (apply
+            #'append
+            (cl-mapcar
+             (lambda (entry slot)
+               (let ((sym (plist-get entry :symbol))
+                     (closure (plist-get entry :closure)))
+                 (cond
+                  (sym
+                   `((sexp-write-symbol-lit
+                      ,slot
+                      ,(symbol-name sym))))
+                  (closure
+                   (let ((descriptor (cadr closure))
+                         (captures (cddr closure)))
+                     `((sexp-write-symbol-lit
+                        ,scratch
+                        ,(symbol-name descriptor))
+                       (extern-call nelisp_aot_make_closure
+                                    ,mirror ,frames ,scratch
+                                    ,(length captures)
+                                    ,out ,scratch
+                                    ,@captures))))
+                  (t nil))))
+             designator-entries
+             callback-slots)))))
     (nelisp-phase47-compiler--parse-value
      `(seq
        (sexp-write-symbol-lit ,name-slot ,(symbol-name builtin))
