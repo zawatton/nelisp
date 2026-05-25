@@ -34,6 +34,42 @@
          (push (nelisp-phase47-compiler--ir-get node :name) names))))
     (nreverse names)))
 
+(defun nelisp-phase47-doc129-test--capturing-callback-closure-ir
+    (form callback-arg-index)
+  "Assert FORM lowers a captured callback through make-closure.
+CALLBACK-ARG-INDEX is the calln argument index that should receive the
+materialized closure temporary."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              `(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (cap :type sexp)
+                    (xs :type sexp)
+                    (table :type sexp))
+                 ,form)))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (make-closure (nth 2 forms))
+         (call-node (nth 3 forms))
+         (make-args (nelisp-phase47-compiler--ir-get make-closure :args))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get make-closure :name)
+                'nelisp_aot_make_closure))
+    (should (= (nelisp-phase47-compiler--ir-get (nth 3 make-args) :value)
+               1))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 make-args) :var)
+                'cap))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth callback-arg-index call-args) :var)
+                'out))
+    ir))
+
 (ert-deftest nelisp-phase47-doc129/value-seq-from-when-progn ()
   "Doc 129.1: multi-form macro body becomes a value-seq branch."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -2023,80 +2059,55 @@
     (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/map-lambda-lift-capture-still-pending ()
-  "Doc 129.7M: map lambda lifting still rejects captured variables."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun caller
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (cap :type sexp)
-          (xs :type sexp))
-       (mapcar (lambda (x) (+ x cap)) xs)))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/map-lambda-closure-capture ()
+  "Doc 129.7U: map callbacks with captures materialize heap closures."
+  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+   '(mapcar (lambda (x) (+ x cap)) xs)
+   6))
 
-(ert-deftest nelisp-phase47-doc129/sort-lambda-lift-capture-still-pending ()
-  "Doc 129.7N: `sort' lambda lifting still rejects captured variables."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun caller
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (cap :type sexp)
-          (xs :type sexp))
-       (sort xs (lambda (a b) (< (+ a cap) b)))))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/map-lambda-closure-descriptor ()
+  "Doc 129.7U: captured callbacks expose closure descriptors."
+  (let* ((descriptors
+          (nelisp-phase47-compiler--closure-descriptors
+           '(defun caller
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (cap :type sexp)
+                 (xs :type sexp))
+              (mapcar (lambda (x) (+ x cap)) xs))))
+         (descriptor (car descriptors)))
+    (should (= (length descriptors) 1))
+    (should (eq (plist-get descriptor :name) 'nelisp_aot_closure_0))
+    (should (equal (plist-get descriptor :arglist) '(x)))
+    (should (equal (plist-get descriptor :body) '((+ x cap))))
+    (should (equal (plist-get descriptor :captures) '(cap)))))
 
-(ert-deftest nelisp-phase47-doc129/maphash-lambda-lift-capture-still-pending ()
-  "Doc 129.7O: `maphash' lambda lifting still rejects captured variables."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun caller
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (cap :type sexp)
-          (table :type sexp))
-       (maphash (lambda (k v) (+ cap k)) table)))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/sort-lambda-closure-capture ()
+  "Doc 129.7U: `sort' predicates with captures materialize closures."
+  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+   '(sort xs (lambda (a b) (< (+ a cap) b)))
+   7))
 
-(ert-deftest nelisp-phase47-doc129/seq-lambda-lift-capture-still-pending ()
-  "Doc 129.7P: seq.el lambda lifting still rejects captured variables."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun caller
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (cap :type sexp)
-          (xs :type sexp))
-       (seq-filter (lambda (x) (eq x cap)) xs)))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/maphash-lambda-closure-capture ()
+  "Doc 129.7U: `maphash' callbacks with captures materialize closures."
+  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+   '(maphash (lambda (k v) (+ cap k)) table)
+   6))
 
-(ert-deftest nelisp-phase47-doc129/cl-lib-lambda-lift-capture-still-pending ()
-  "Doc 129.7Q: cl-lib lambda lifting still rejects captured variables."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun caller
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (cap :type sexp)
-          (xs :type sexp))
-       (cl-find-if (lambda (x) (eq x cap)) xs)))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/seq-lambda-closure-capture ()
+  "Doc 129.7U: seq.el callbacks with captures materialize closures."
+  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+   '(seq-filter (lambda (x) (eq x cap)) xs)
+   6))
+
+(ert-deftest nelisp-phase47-doc129/cl-lib-lambda-closure-capture ()
+  "Doc 129.7U: cl-lib callbacks with captures materialize closures."
+  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+   '(cl-find-if (lambda (x) (eq x cap)) xs)
+   6))
 
 (ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
   "Doc 129.6F: vararg builtin lowering requires explicit boundary params."
@@ -2333,6 +2344,32 @@
             (should (string-match-p "caller" out))
             (should (string-match-p "nelisp_aot_lambda_0" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-map-lambda-closure-capture ()
+  "Doc 129.7U: object output exposes captured callback closure bridge."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-map-closure-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_mapcar
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (cap :type sexp)
+                 (xs :type sexp))
+              (mapcar (lambda (x) (+ x cap)) xs))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_mapcar" out))
+            (should (string-match-p "nelisp_aot_make_closure" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-mapcan-lambda-lift ()

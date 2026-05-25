@@ -1774,6 +1774,24 @@ exit points were emitted; call-points were missing."
      'mirror 'frames reader 0 out 'scratch)
     (should (= (aref out 0) 5))))
 
+(ert-deftest nelisp-cc-runtime-aot-make-closure ()
+  "Doc 129.7U — make-closure bridge materializes captured closures."
+  (unwind-protect
+      (let* ((out (vector nil))
+             (descriptor '(:name nelisp-doc129-closure
+                           :arglist (x)
+                           :body ((+ x cap))
+                           :captures (cap))))
+        (nelisp-cc-runtime-clear-aot-closure-descriptors)
+        (nelisp-cc-runtime-register-aot-closure-descriptor descriptor)
+        (should (eq (nelisp-cc-runtime-aot-make-closure
+                     'mirror 'frames 'nelisp-doc129-closure
+                     1 out 'scratch 40)
+                    out))
+        (should (nelisp-closure-p (aref out 0)))
+        (should (= (nelisp-closure-apply (aref out 0) '(2)) 42)))
+    (nelisp-cc-runtime-clear-aot-closure-descriptors)))
+
 (ert-deftest nelisp-cc-runtime-aot-apply-host-dispatch ()
   "Doc 129.7C — apply bridge writes the dispatch result to OUT."
   (let* ((out (vector nil))
@@ -2201,6 +2219,9 @@ exit points were emitted; call-points were missing."
          (funcall3
           (nelisp-cc-runtime-aot-c-abi-descriptor
            'nelisp_aot_funcall3))
+         (make-closure
+          (nelisp-cc-runtime-aot-c-abi-descriptor
+           'nelisp_aot_make_closure))
          (throw
           (nelisp-cc-runtime-aot-c-abi-descriptor
            'nelisp_aot_throw)))
@@ -2214,6 +2235,9 @@ exit points were emitted; call-points were missing."
                 'nelisp-cc-runtime-aot-funcall3))
     (should (= (plist-get funcall3 :fixed-argc) 7))
     (should-not (plist-get funcall3 :rest))
+    (should (eq (plist-get make-closure :function)
+                'nelisp-cc-runtime-aot-make-closure))
+    (should (plist-get make-closure :rest))
     (should (equal (plist-get throw :args)
                    '(mirror frames tag value out scratch)))
     (should-not

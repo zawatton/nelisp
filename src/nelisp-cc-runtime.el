@@ -2568,6 +2568,93 @@ returns OUT."
    (nelisp-cc-runtime--aot-error-data args)
    out scratch))
 
+(defvar nelisp-cc-runtime--aot-closure-descriptors
+  (make-hash-table :test 'eq)
+  "Registered Doc 129.7 AOT heap-closure descriptors.")
+
+(defun nelisp-cc-runtime-register-aot-closure-descriptor (descriptor)
+  "Register one Doc 129.7 AOT heap-closure DESCRIPTOR.
+DESCRIPTOR is a plist with `:name', `:arglist', `:body', and
+`:captures'."
+  (let ((name (plist-get descriptor :name)))
+    (unless (symbolp name)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-closure-descriptor-name-not-symbol descriptor)))
+    (puthash name (copy-sequence descriptor)
+             nelisp-cc-runtime--aot-closure-descriptors)
+    descriptor))
+
+(defun nelisp-cc-runtime-clear-aot-closure-descriptors ()
+  "Clear registered Doc 129.7 AOT heap-closure descriptors."
+  (clrhash nelisp-cc-runtime--aot-closure-descriptors)
+  nil)
+
+(defun nelisp-cc-runtime-aot-closure-descriptor (name)
+  "Return registered Doc 129.7 closure descriptor NAME, or nil."
+  (unless (symbolp name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-closure-descriptor-name-not-symbol name)))
+  (let ((descriptor
+         (gethash name nelisp-cc-runtime--aot-closure-descriptors)))
+    (when descriptor
+      (copy-sequence descriptor))))
+
+(defun nelisp-cc-runtime--aot-closure-descriptor-name (descriptor)
+  "Return the symbol NAME represented by DESCRIPTOR."
+  (cond
+   ((symbolp descriptor) descriptor)
+   ((and (consp descriptor) (plist-get descriptor :name))
+    (plist-get descriptor :name))
+   (t
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-closure-bad-descriptor descriptor)))))
+
+(defun nelisp-cc-runtime-aot-make-closure
+    (mirror frames descriptor argc out scratch &rest captures)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_make_closure' ABI.
+MIRROR, FRAMES, DESCRIPTOR, ARGC, OUT, SCRATCH, and CAPTURES mirror:
+
+  nelisp_aot_make_closure(mirror, frames, descriptor, argc,
+                          out, scratch, capture...)
+
+DESCRIPTOR names a registered closure descriptor.  The bridge pairs its
+`:captures' symbols with CAPTURES, builds a canonical `nelisp-closure',
+writes it to OUT[0], and returns OUT."
+  (unless (and (integerp argc) (<= 0 argc))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-closure-bad-argc argc)))
+  (unless (= argc (length captures))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-closure-argc-mismatch
+                  :argc argc :got (length captures))))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-closure-out-not-vector out)))
+  (ignore mirror frames scratch)
+  (let* ((name (nelisp-cc-runtime--aot-closure-descriptor-name
+                descriptor))
+         (registered
+          (or (and (consp descriptor) descriptor)
+              (gethash name nelisp-cc-runtime--aot-closure-descriptors))))
+    (unless registered
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-closure-descriptor-not-found name)))
+    (let* ((capture-names (plist-get registered :captures))
+           (arglist (plist-get registered :arglist))
+           (body (plist-get registered :body)))
+      (unless (= (length capture-names) argc)
+        (signal 'nelisp-cc-runtime-error
+                (list :aot-closure-descriptor-capture-mismatch
+                      :descriptor name
+                      :expected (length capture-names)
+                      :got argc)))
+      (let ((closure (nelisp-closure-make
+                      (cl-mapcar #'cons capture-names captures)
+                      arglist
+                      body)))
+        (aset out 0 closure)
+        out))))
+
 ;;; Doc 129.6Q — exported AOT C ABI descriptor table -----------------
 
 (defconst nelisp-cc-runtime--aot-c-abi-descriptors
@@ -2627,6 +2714,10 @@ returns OUT."
      :function nelisp-cc-runtime-aot-listn
      :fixed-argc 5 :rest t
      :args (mirror frames argc out scratch args...))
+    (:symbol nelisp_aot_make_closure
+     :function nelisp-cc-runtime-aot-make-closure
+     :fixed-argc 6 :rest t
+     :args (mirror frames descriptor argc out scratch captures...))
     (:symbol nelisp_aot_push_catch
      :function nelisp-cc-runtime-aot-push-catch-boundary
      :fixed-argc 6 :rest nil

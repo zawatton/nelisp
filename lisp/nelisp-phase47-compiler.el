@@ -1283,6 +1283,28 @@ value expression, docstring, and customization keyword plist."
   (plist-get (nelisp-phase47-compiler--extract-defmacros sexp)
              :custom-metadata))
 
+(defun nelisp-phase47-compiler--closure-descriptors (sexp)
+  "Return Doc 129.7U heap-closure descriptors found in SEXP."
+  (let* ((extracted (nelisp-phase47-compiler--extract-defmacros sexp))
+         (source (plist-get extracted :source))
+         (defs (plist-get extracted :defmacros))
+         (module-forms (plist-get extracted :module-forms))
+         (special-vars (plist-get extracted :special-vars)))
+    (dolist (form module-forms)
+      (nelisp-phase47-compiler--eval-top-level-module-form form))
+    (nelisp-phase47-compiler--with-defmacros
+     defs
+     (lambda ()
+       (let ((nelisp-phase47-compiler--lambda-lift-counter 0)
+             (nelisp-phase47-compiler--closure-lift-counter 0)
+             (nelisp-phase47-compiler--lambda-lift-hoists nil)
+             (nelisp-phase47-compiler--closure-lift-descriptors nil)
+             (nelisp-phase47-compiler--lambda-lift-names
+              (nelisp-phase47-compiler--top-level-defun-names source))
+             (nelisp-phase47-compiler--special-vars special-vars))
+         (nelisp-phase47-compiler--preprocess-source source)
+         (nreverse nelisp-phase47-compiler--closure-lift-descriptors))))))
+
 (defun nelisp-phase47-compiler--with-defmacros (defs thunk)
   "Temporarily install DEFS while calling THUNK.
 Existing function cells are restored afterwards so compile-time user
@@ -1313,6 +1335,12 @@ macros do not leak into the host Emacs session."
 
 (defvar nelisp-phase47-compiler--lambda-lift-names nil
   "Top-level and synthetic names reserved during Doc 129.7K lambda lifting.")
+
+(defvar nelisp-phase47-compiler--closure-lift-counter 0
+  "Counter for Doc 129.7U synthetic heap-closure descriptors.")
+
+(defvar nelisp-phase47-compiler--closure-lift-descriptors nil
+  "Dynamically collected Doc 129.7U heap-closure descriptors.")
 
 (defvar nelisp-phase47-compiler--special-vars nil
   "Top-level special variables declared in the current Doc 129 compile unit.")
@@ -1354,6 +1382,20 @@ macros do not leak into the host Emacs session."
                                 nelisp-phase47-compiler--lambda-lift-counter)))
           (setq nelisp-phase47-compiler--lambda-lift-counter
                 (1+ nelisp-phase47-compiler--lambda-lift-counter))
+          (memq name nelisp-phase47-compiler--lambda-lift-names)))
+    (push name nelisp-phase47-compiler--lambda-lift-names)
+    name))
+
+(defun nelisp-phase47-compiler--closure-lift-name ()
+  "Return a fresh Doc 129.7U synthetic heap-closure descriptor name."
+  (let (name)
+    (while
+        (progn
+          (setq name
+                (intern (format "nelisp_aot_closure_%d"
+                                nelisp-phase47-compiler--closure-lift-counter)))
+          (setq nelisp-phase47-compiler--closure-lift-counter
+                (1+ nelisp-phase47-compiler--closure-lift-counter))
           (memq name nelisp-phase47-compiler--lambda-lift-names)))
     (push name nelisp-phase47-compiler--lambda-lift-names)
     name))
@@ -1485,13 +1527,17 @@ macros do not leak into the host Emacs session."
          (captures (nelisp-phase47-compiler--lambda-captures lambda-form))
          (body (nelisp-phase47-compiler--body->form
                 (cddr lambda-form))))
-    (when captures
-      (signal 'nelisp-phase47-compiler-error
-              (list :lambda-lift-designator-captures-pending
-                    lambda-form captures)))
-    (push `(defun ,name ,params ,body)
-          nelisp-phase47-compiler--lambda-lift-hoists)
-    `(function ,name)))
+    (if captures
+      (let ((closure-name (nelisp-phase47-compiler--closure-lift-name)))
+        (push (list :name closure-name
+                    :arglist params
+                    :body (cddr lambda-form)
+                    :captures captures)
+              nelisp-phase47-compiler--closure-lift-descriptors)
+        `(aot-closure-lambda ,closure-name ,@captures))
+      (push `(defun ,name ,params ,body)
+            nelisp-phase47-compiler--lambda-lift-hoists)
+      `(function ,name))))
 
 (defun nelisp-phase47-compiler--preprocess-funcall-lambda (sexp)
   "Lambda-lift a literal lambda designator in `(funcall ...)'.
@@ -2038,7 +2084,9 @@ the whole program."
      defs
      (lambda ()
        (let* ((nelisp-phase47-compiler--lambda-lift-counter 0)
+              (nelisp-phase47-compiler--closure-lift-counter 0)
               (nelisp-phase47-compiler--lambda-lift-hoists nil)
+              (nelisp-phase47-compiler--closure-lift-descriptors nil)
               (nelisp-phase47-compiler--lambda-lift-names
                (nelisp-phase47-compiler--top-level-defun-names source))
               (nelisp-phase47-compiler--special-vars special-vars)
@@ -2280,16 +2328,36 @@ caller-owned boundary params in the current defun:
           (and designator-form
                (nelisp-phase47-compiler--aot-function-designator-symbol
                 designator-form)))
+         (closure-designator
+          (and (consp designator-form)
+               (eq (car designator-form) 'aot-closure-lambda)
+               (symbolp (cadr designator-form))
+               designator-form))
          (lowered-args
-          (if fn-designator
+          (if (or fn-designator closure-designator)
               (cl-loop for arg in args
                        for idx from 0
-                       collect (if (= idx designator-index) scratch arg))
+                       collect (if (= idx designator-index)
+                                   (if closure-designator out scratch)
+                                 arg))
             args))
-         (arg-prefix (when fn-designator
-                       `((sexp-write-symbol-lit
-                          ,scratch
-                          ,(symbol-name fn-designator))))))
+         (arg-prefix
+          (cond
+           (fn-designator
+            `((sexp-write-symbol-lit
+               ,scratch
+               ,(symbol-name fn-designator))))
+           (closure-designator
+            (let ((descriptor (cadr closure-designator))
+                  (captures (cddr closure-designator)))
+              `((sexp-write-symbol-lit
+                 ,scratch
+                 ,(symbol-name descriptor))
+                (extern-call nelisp_aot_make_closure
+                             ,mirror ,frames ,scratch
+                             ,(length captures)
+                             ,out ,scratch
+                             ,@captures)))))))
     (nelisp-phase47-compiler--parse-value
      `(seq
        (sexp-write-symbol-lit ,name-slot ,(symbol-name builtin))
