@@ -1826,6 +1826,22 @@ path instead of by-value lambda lifting."
         (push sym out)))
     (nreverse out)))
 
+(defun nelisp-phase47-compiler--symbol-list-difference (left right)
+  "Return symbols from LEFT that are not present in RIGHT."
+  (let (out)
+    (dolist (sym left)
+      (unless (memq sym right)
+        (push sym out)))
+    (nreverse out)))
+
+(defun nelisp-phase47-compiler--let-binding-vars (bindings)
+  "Return symbol names bound by LET BINDINGS."
+  (let (vars)
+    (dolist (binding bindings)
+      (when (symbolp (car-safe binding))
+        (push (car binding) vars)))
+    (nreverse vars)))
+
 (defun nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars (forms)
   "Return captured vars definitely updated after sequential FORMS."
   (let (guaranteed)
@@ -1864,6 +1880,41 @@ fall through without executing a mutating branch."
       (setq clauses (cdr clauses)))
     (and covered guaranteed)))
 
+(defun nelisp-phase47-compiler--captured-mutation-let-guaranteed-vars
+    (bindings body sequential)
+  "Return definitely updated captured vars after a `let' or `let*' form.
+Initializer expressions are evaluated outside the binding they create.
+Body guarantees for variables shadowed by the bindings are not visible
+after the form exits."
+  (let ((init-vars nil)
+        (bound nil))
+    (if sequential
+        (dolist (binding bindings)
+          (when (and (consp binding) (consp (cdr binding)))
+            (setq init-vars
+                  (nelisp-phase47-compiler--symbol-list-union
+                   init-vars
+                   (nelisp-phase47-compiler--symbol-list-difference
+                    (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                     (cadr binding))
+                    bound))))
+          (when (symbolp (car-safe binding))
+            (push (car binding) bound)))
+      (dolist (binding bindings)
+        (when (and (consp binding) (consp (cdr binding)))
+          (setq init-vars
+                (nelisp-phase47-compiler--symbol-list-union
+                 init-vars
+                 (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                  (cadr binding))))))
+      (setq bound
+            (nelisp-phase47-compiler--let-binding-vars bindings)))
+    (nelisp-phase47-compiler--symbol-list-union
+     init-vars
+     (nelisp-phase47-compiler--symbol-list-difference
+      (nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars body)
+      bound))))
+
 (defun nelisp-phase47-compiler--captured-mutation-guaranteed-vars (form)
   "Return captured vars definitely updated after FORM's normal exit.
 This is intentionally conservative: a direct captured-mutation funcall
@@ -1877,6 +1928,12 @@ intersection of exhaustive branches."
    ((memq (car form) '(progn seq))
     (nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars
      (cdr form)))
+   ((eq (car form) 'let)
+    (nelisp-phase47-compiler--captured-mutation-let-guaranteed-vars
+     (nth 1 form) (nthcdr 2 form) nil))
+   ((eq (car form) 'let*)
+    (nelisp-phase47-compiler--captured-mutation-let-guaranteed-vars
+     (nth 1 form) (nthcdr 2 form) t))
    ((eq (car form) 'if)
     (let ((then-vars
            (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
@@ -1916,6 +1973,46 @@ intersection of exhaustive branches."
                   out))
           (setq pairs (cddr pairs))))
       (cons 'setq (nreverse out))))
+   ((eq (car form) 'let)
+    (let* ((bindings (nth 1 form))
+           (bound (nelisp-phase47-compiler--let-binding-vars bindings))
+           (body-vars
+            (nelisp-phase47-compiler--symbol-list-difference vars bound)))
+      `(let ,(mapcar
+              (lambda (binding)
+                (if (and (consp binding) (consp (cdr binding)))
+                    (list (car binding)
+                          (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                           (cadr binding) vars))
+                  binding))
+              bindings)
+         ,@(mapcar
+            (lambda (child)
+              (nelisp-phase47-compiler--rewrite-frame-slot-refs
+               child body-vars))
+            (nthcdr 2 form)))))
+   ((eq (car form) 'let*)
+    (let ((bindings (nth 1 form))
+          (body-vars vars)
+          (out-bindings nil))
+      (dolist (binding bindings)
+        (push (if (and (consp binding) (consp (cdr binding)))
+                  (list (car binding)
+                        (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                         (cadr binding) body-vars))
+                binding)
+              out-bindings)
+        (when (symbolp (car-safe binding))
+          (setq body-vars
+                (nelisp-phase47-compiler--symbol-list-difference
+                 body-vars
+                 (list (car binding))))))
+      `(let* ,(nreverse out-bindings)
+         ,@(mapcar
+            (lambda (child)
+              (nelisp-phase47-compiler--rewrite-frame-slot-refs
+               child body-vars))
+            (nthcdr 2 form)))))
    (t
     (cons (car form)
           (mapcar (lambda (child)
