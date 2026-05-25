@@ -4173,47 +4173,83 @@ contain no unresolved non-local source form."
                        else))))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-cleanup-nonlocal-split
+(defun nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
     (cleanups)
-  "Return `(PREFIX NONLOCAL)' for the first safe cleanup non-local.
-PREFIX contains ordinary local cleanup forms before NONLOCAL.  Cleanup
-forms after NONLOCAL are unreachable and intentionally omitted."
-  (let ((prefix nil)
-        (forms cleanups)
-        (result nil))
-    (while (and forms (not result))
-      (let ((form (car forms)))
-        (cond
-         ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
-           form)
-          (setq result (list (nreverse prefix) form)))
-         ((nelisp-phase47-compiler--aot-nonlocal-source-form-p form)
-          (setq forms nil))
-         (t
-          (push form prefix)
-          (setq forms (cdr forms))))))
-    result))
+  "Return non-nil when CLEANUPS can be routed by cleanup-body lowering."
+  (catch 'unsafe
+    (let ((forms cleanups))
+      (while forms
+        (let ((form (car forms)))
+          (cond
+           ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
+             form)
+            (setq forms nil))
+           ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+             form)
+            (unless
+                (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+                 (cdr forms))
+              (throw 'unsafe nil))
+            (setq forms nil))
+           ((nelisp-phase47-compiler--aot-nonlocal-source-form-p form)
+            (throw 'unsafe nil))
+           (t
+            (setq forms (cdr forms))))))
+      t)))
 
-(defun nelisp-phase47-compiler--aot-cleanup-nonlocal-form
+(defun nelisp-phase47-compiler--aot-cleanup-sequence-nonlocal-p
     (cleanups)
-  "Return first safe cleanup non-local form in CLEANUPS."
-  (cadr (nelisp-phase47-compiler--aot-cleanup-nonlocal-split
-         cleanups)))
+  "Return non-nil when CLEANUPS may exit non-locally through safe lowering."
+  (catch 'found
+    (dolist (form cleanups nil)
+      (when (or (nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
+                 form)
+                (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+                 form))
+        (throw 'found t)))))
+
+(defun nelisp-phase47-compiler--aot-cleanup-tree-body-form
+    (cleanup-form continuation-form)
+  "Return CLEANUP-FORM with local leaves falling through to CONTINUATION-FORM."
+  (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form cleanup-form)))
+    (cond
+     ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form tree)
+      tree)
+     ((and (consp tree)
+           (eq (car tree) 'if)
+           (= (length tree) 4))
+      `(if ,(nth 1 tree)
+           ,(nelisp-phase47-compiler--aot-cleanup-tree-body-form
+             (nth 2 tree) continuation-form)
+         ,(nelisp-phase47-compiler--aot-cleanup-tree-body-form
+           (nth 3 tree) continuation-form)))
+     (t
+      `(seq
+        ,tree
+        ,continuation-form)))))
 
 (defun nelisp-phase47-compiler--aot-cleanup-body-form
     (cleanups resume-form)
   "Return cleanup sequence for CLEANUPS, falling through to RESUME-FORM.
 When a cleanup exits non-locally, it replaces RESUME-FORM."
-  (let ((split
-         (nelisp-phase47-compiler--aot-cleanup-nonlocal-split
-          cleanups)))
-    (if split
-        `(seq
-          ,@(car split)
-          ,(cadr split))
-      `(seq
-        ,@cleanups
-        ,resume-form))))
+  (if cleanups
+      (let ((form (car cleanups)))
+        (cond
+         ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
+           form)
+          form)
+         ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+           form)
+          (nelisp-phase47-compiler--aot-cleanup-tree-body-form
+           form
+           (nelisp-phase47-compiler--aot-cleanup-body-form
+            (cdr cleanups) resume-form)))
+         (t
+          `(seq
+            ,form
+            ,(nelisp-phase47-compiler--aot-cleanup-body-form
+              (cdr cleanups) resume-form)))))
+    resume-form))
 
 (defun nelisp-phase47-compiler--aot-conditional-condition-case-form
     (body clauses)
@@ -4690,10 +4726,7 @@ source form."
          (nelisp-phase47-compiler--gensym "aot-unwind-value"))
         (cleanup-label
          (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
-    (when (and (not (nelisp-phase47-compiler--aot-cleanup-nonlocal-form
-                     cleanups))
-               (cl-some
-                #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+    (when (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
                 cleanups))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
@@ -4722,10 +4755,7 @@ source form."
         (cleanups (nthcdr 2 unwind-form))
         (value-slot
          (nelisp-phase47-compiler--gensym "aot-unwind-value")))
-    (when (and (not (nelisp-phase47-compiler--aot-cleanup-nonlocal-form
-                     cleanups))
-               (cl-some
-                #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+    (when (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
                 cleanups))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
@@ -4741,10 +4771,7 @@ source form."
         (cleanups (nthcdr 2 unwind-form))
         (cleanup-label
          (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
-    (when (and (not (nelisp-phase47-compiler--aot-cleanup-nonlocal-form
-                     cleanups))
-               (cl-some
-                #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+    (when (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
                 cleanups))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
@@ -4816,10 +4843,7 @@ source form."
         (cleanups (nthcdr 2 unwind-form))
         (value-slot
          (nelisp-phase47-compiler--gensym "aot-unwind-value")))
-    (when (and (not (nelisp-phase47-compiler--aot-cleanup-nonlocal-form
-                     cleanups))
-               (cl-some
-                #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+    (when (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
                 cleanups))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
@@ -5918,7 +5942,7 @@ crossing the protected body still require cleanup landing-pad lowering."
                  body-tree)
                 body-tree))
           (cleanup-nonlocal
-           (nelisp-phase47-compiler--aot-cleanup-nonlocal-form
+           (nelisp-phase47-compiler--aot-cleanup-sequence-nonlocal-p
             cleanups)))
       (when (or (and (not direct-throw)
                      (not direct-condition)
@@ -5927,9 +5951,7 @@ crossing the protected body still require cleanup landing-pad lowering."
                      (not standalone-cleanup-tree)
                      (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                       body))
-                (and (not cleanup-nonlocal)
-                     (cl-some
-                      #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
                       cleanups)))
         (signal 'nelisp-phase47-compiler-error
                 (list :aot-unwind-protect-nonlocal-form sexp)))
