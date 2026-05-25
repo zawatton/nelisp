@@ -8250,6 +8250,58 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-dynamic-throw ()
+  "Doc 129.8AQ: standalone cleanup accepts dynamic throw tags."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_dynamic_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (throw tag value)
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (member 'nelisp_aot_builtin_call1 externs))
+    (should (member 'nelisp_aot_push_unwind externs))
+    (should (member 'nelisp_aot_throw externs))
+    (should (member 'nelisp_aot_landing_jump externs))
+    (should-not (nelisp-phase47-doc129-test--ir-nodes
+                 ir 'aot-machine-landing-jump))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
+
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-dynamic-signal ()
+  "Doc 129.8AQ: standalone cleanup accepts dynamic signal tags."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_dynamic_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (signal tag value)
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (member 'nelisp_aot_builtin_call1 externs))
+    (should (member 'nelisp_aot_push_unwind externs))
+    (should (member 'nelisp_aot_signal externs))
+    (should (member 'nelisp_aot_landing_jump externs))
+    (should-not (nelisp-phase47-doc129-test--ir-nodes
+                 ir 'aot-machine-landing-jump))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
+
 (ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-cond-mixed ()
   "Doc 129.8AP: catch cleanup cond trees keep static and dynamic routes."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -8819,6 +8871,64 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_call1" out))
             (should (string-match-p "nelisp_aot_push_unwind" out))
             (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-dynamic-throw ()
+  "Doc 129.8AQ: standalone dynamic throw cleanup compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-dynamic-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_dynamic_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (throw tag value)
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_dynamic_throw" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-dynamic-signal ()
+  "Doc 129.8AQ: standalone dynamic signal cleanup compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-dynamic-signal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_dynamic_signal
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (signal tag value)
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_dynamic_signal" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 

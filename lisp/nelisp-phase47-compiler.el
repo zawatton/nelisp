@@ -4143,9 +4143,8 @@ contain no unresolved non-local source form."
 
 (defun nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form (sexp)
   "Return SEXP when it is a standalone cleanup-routed non-local form."
-  (or (nelisp-phase47-compiler--aot-direct-quoted-throw-form sexp)
-      (and (nelisp-phase47-compiler--aot-direct-condition-tag sexp)
-           sexp)))
+  (or (nelisp-phase47-compiler--aot-direct-throw-form sexp)
+      (nelisp-phase47-compiler--aot-direct-condition-form sexp)))
 
 (defun nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
     (sexp)
@@ -4667,7 +4666,7 @@ source form."
   "Return BRANCH with standalone unwind cleanup descriptor routing."
   (let ((branch (nelisp-phase47-compiler--aot-branch-tree-form branch)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-quoted-throw-form branch)
+     ((nelisp-phase47-compiler--aot-direct-throw-form branch)
     (let ((cleanup-label
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
       `(seq
@@ -4679,7 +4678,7 @@ source form."
              (seq
               ,@cleanups
               (aot-landing-jump out))))))))
-     ((nelisp-phase47-compiler--aot-direct-condition-tag branch)
+     ((nelisp-phase47-compiler--aot-direct-condition-form branch)
     (let ((cleanup-label
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
       `(seq
