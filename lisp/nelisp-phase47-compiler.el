@@ -4625,11 +4625,15 @@ crossing the protected body still require cleanup landing-pad lowering."
            (let ((cleanup-label
                   (nelisp-phase47-compiler--gensym
                    "aot-unwind-cleanup")))
-           `(let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
-              (aot-landing-label ,cleanup-label
-                (seq
-                 ,@cleanups
-                 (throw ,(nth 1 direct-throw) ,value-slot))))))
+             `(seq
+               (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+               (let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
+                 (seq
+                  (throw ,(nth 1 direct-throw) ,value-slot)
+                  (aot-landing-label ,cleanup-label
+                    (seq
+                     ,@cleanups
+                     (aot-landing-jump out))))))))
           (conditional-throw
            (cl-labels
                ((branch-form
@@ -4642,13 +4646,18 @@ crossing the protected body still require cleanup landing-pad lowering."
                      (let ((cleanup-label
                             (nelisp-phase47-compiler--gensym
                              "aot-unwind-cleanup")))
-                       `(let (((,value-slot :type sexp)
-                               ,(nth 2 branch-throw)))
-                          (aot-landing-label ,cleanup-label
-                            (seq
-                             ,@cleanups
-                             (throw ,(nth 1 branch-throw)
-                                    ,value-slot))))))
+                       `(seq
+                         (aot-push-unwind
+                          0 ',cleanup-label (aot-current-sp))
+                         (let (((,value-slot :type sexp)
+                                ,(nth 2 branch-throw)))
+                           (seq
+                            (throw ,(nth 1 branch-throw)
+                                   ,value-slot)
+                            (aot-landing-label ,cleanup-label
+                              (seq
+                               ,@cleanups
+                               (aot-landing-jump out))))))))
                     ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
                       branch)
                      `(if ,(nth 1 branch)
