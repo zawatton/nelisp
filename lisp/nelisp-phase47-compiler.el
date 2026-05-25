@@ -1986,12 +1986,26 @@ caller-owned boundary params in the current defun:
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
-         (name-slot (plist-get boundary :name-slot)))
+         (name-slot (plist-get boundary :name-slot))
+         (fn-designator
+          (and (memq builtin '(mapcar mapc mapconcat))
+               args
+               (nelisp-phase47-compiler--aot-function-designator-symbol
+                (car args))))
+         (lowered-args (if fn-designator
+                           (cons scratch (cdr args))
+                         args))
+         (arg-prefix (when fn-designator
+                       `((sexp-write-symbol-lit
+                          ,scratch
+                          ,(symbol-name fn-designator))))))
     (nelisp-phase47-compiler--parse-value
      `(seq
        (sexp-write-symbol-lit ,name-slot ,(symbol-name builtin))
+       ,@arg-prefix
        (extern-call nelisp_aot_builtin_calln
-                    ,mirror ,frames ,name-slot ,argc ,out ,scratch ,@args)
+                    ,mirror ,frames ,name-slot ,argc ,out ,scratch
+                    ,@lowered-args)
        ,out)
      env fenv defuns)))
 

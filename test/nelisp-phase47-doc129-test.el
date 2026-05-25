@@ -1337,6 +1337,41 @@
                                                     :value)
                    argc))))))
 
+(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-map-designator ()
+  "Doc 129.6J: map builtins materialize quoted/function designators."
+  (dolist (form '((mapcar #'foo xs)
+                  (mapc 'foo xs)
+                  (mapconcat #'foo xs sep)))
+    (let* ((ir (nelisp-phase47-compiler--parse
+                `(defun call_builtin
+                     ((out :type sexp)
+                      (mirror :type sexp)
+                      (frames :type sexp)
+                      (scratch :type sexp)
+                      (name_slot :type sexp)
+                      (xs :type sexp)
+                      (sep :type sexp))
+                   ,form)))
+           (body (nelisp-phase47-compiler--ir-get ir :body))
+           (forms (nelisp-phase47-compiler--ir-get body :forms))
+           (builtin-symbol (nth 0 forms))
+           (fn-symbol (nth 1 forms))
+           (call-node (nth 2 forms))
+           (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+      (should (eq (nelisp-phase47-compiler--ir-kind builtin-symbol)
+                  'sexp-write-symbol-lit))
+      (should (eq (nelisp-phase47-compiler--ir-kind fn-symbol)
+                  'sexp-write-symbol-lit))
+      (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+                     (string-to-list "foo")))
+      (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                  'nelisp_aot_builtin_calln))
+      (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+                  'ref))
+      (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+                  'scratch)))))
+
 (ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
   "Doc 129.6F: vararg builtin lowering requires explicit boundary params."
   (should-error
@@ -1377,6 +1412,30 @@
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_list" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-map-designator ()
+  "Doc 129.6J: object output exposes map designator materialization."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-map-designator-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_mapcar
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (xs :type sexp))
+              (mapcar #'foo xs))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_mapcar" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
