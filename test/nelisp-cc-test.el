@@ -1508,6 +1508,32 @@ exit points were emitted; call-points were missing."
     'mirror 'frames '+ 2 (vector nil) 'scratch 1 2)
    :type 'nelisp-cc-runtime-error))
 
+(ert-deftest nelisp-cc-runtime-aot-listn-builds-rest-list ()
+  "Doc 129.7J — listn builds the source rest-parameter list."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-listn
+               'mirror 'frames 3 out 'scratch 'a 'b 'c)))
+    (should (eq ret out))
+    (should (equal (aref out 0) '(a b c))))
+  (let ((out (vector :sentinel)))
+    (nelisp-cc-runtime-aot-listn 'mirror 'frames 0 out 'scratch)
+    (should (null (aref out 0)))))
+
+(ert-deftest nelisp-cc-runtime-aot-listn-validates-boundary ()
+  "Doc 129.7J — listn rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-listn
+    'mirror 'frames 1 nil 'scratch 'x)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-listn
+    'mirror 'frames -1 (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-listn
+    'mirror 'frames 2 (vector nil) 'scratch 'x)
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-handler-stack-push-pop ()
   "Doc 129.8A — handler stack push/pop is explicit and typed."
   (unwind-protect

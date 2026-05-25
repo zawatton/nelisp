@@ -32,7 +32,8 @@
   dispatcher bridge, Stage 129.7F first non-trivial outgoing stack-GP
   evaluation, Stage 129.7G general outgoing stack-GP call-spill
   assembly, Stage 129.7H direct =funcall= calln/rest-list bridge,
-  Stage 129.7I =apply= splicing bridge,
+  Stage 129.7I =apply= splicing bridge, Stage 129.7J source =&rest=
+  parameter binding,
   Stage 129.8A runtime handler-stack substrate, Stage
   129.8B =throw= / =signal=
   bridge lowering, Stage 129.8C handler-push bridge lowering,
@@ -253,14 +254,20 @@
   =MIRROR/FRAMES/FN/ARGC/OUT/SCRATCH/ARG...=; the runtime bridge
   validates =ARGC=, constructs the rest-list from the trailing args,
   dispatches through the same apply fallback, writes =OUT=, and returns
-  =OUT=.  Source-level rest parameter binding and closure
-  allocation/capture remain pending.
+  =OUT=.  Closure allocation/capture remains pending.
 - *129.7I MVP*: source-level =(apply FN ARG... ARGS-LIST)= now lowers
   through =nelisp_aot_applyn=.  The ABI is
   =MIRROR/FRAMES/FN/ARGC/OUT/SCRATCH/ARG...=; the runtime validates
   the final argument as the list tail, appends preceding ordinary args
   in front of it, dispatches through the same apply fallback, writes
   =OUT=, and returns =OUT=.
+- *129.7J MVP*: source-level =&rest= parameters in Phase 47 =defun=
+  forms now lower as one final boxed ABI parameter.  Direct calls to
+  such defuns collect the surplus source arguments through
+  =nelisp_aot_listn=, write that constructed list into the caller's
+  =scratch= slot, and pass =scratch= as the callee rest parameter.
+  This covers boxed-boundary callers exposing =out/mirror/frames/scratch=;
+  closure allocation/capture remains pending.
 - *129.8A MVP*: =nelisp-cc-runtime.el= now owns an AOT handler-stack
   simulator for =catch= / =condition-case= / =unwind-protect=.  The
   runtime can push/pop catch, condition, and unwind handlers; =throw=
@@ -1029,8 +1036,7 @@ fallback as =nelisp_aot_apply=.  It deliberately keeps every trailing
 native value as a user argument; there is no optional dispatcher slot in
 this ABI.
 
-Remaining 129.7 work: source-level rest parameter binding and
-closure/lambda allocation/capture.
+Remaining 129.7 work: closure/lambda allocation/capture.
 
 *** §1.E.3 Shipped MVP: =apply= dispatcher bridge
 
@@ -1093,6 +1099,47 @@ The runtime-side bridge is:
 The final native argument is validated as the list tail.  Any preceding
 native arguments are appended in front of that tail, then dispatched
 through the same apply fallback as =nelisp_aot_apply=.
+
+*** §1.E.3.2 Shipped MVP: source =&rest= parameter binding
+
+Stage 129.7J adds source =&rest= syntax to Phase 47 =defun= forms:
+
+#+begin_src elisp
+(defun collect
+    ((out :type sexp) &rest (args :type sexp))
+  args)
+#+end_src
+
+The native ABI still receives =args= as one ordinary final boxed
+parameter.  Direct source calls construct that list in the caller before
+entering the callee:
+
+#+begin_src elisp
+(defun call-collect
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (a :type sexp) (b :type sexp))
+  (collect out a b))
+#+end_src
+
+lowers as if it had written:
+
+#+begin_src elisp
+(seq
+ (extern-call nelisp_aot_listn
+              mirror frames 2 scratch out a b)
+ (collect out scratch))
+#+end_src
+
+The runtime-side bridge is:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-listn mirror frames argc out scratch arg...)
+#+end_src
+
+This is deliberately a boxed-boundary MVP: the caller must expose
+=out/mirror/frames/scratch= so the compiler has a destination slot for
+the constructed rest list.  General closure/lambda allocation and
+captured environments remain later 129.7 work.
 
 *** §1.E.4 Shipped MVP: quoted function designators
 
@@ -1665,7 +1712,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots SHIPPED 2026-05-25; native push/pop pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge SHIPPED 2026-05-25; closure allocation/capture and source rest params pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding SHIPPED 2026-05-25; closure allocation/capture pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from

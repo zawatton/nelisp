@@ -1432,6 +1432,79 @@
             (should (string-match-p "nelisp_aot_applyn" out))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-rest-param-call-listn ()
+  "Doc 129.7J: source &rest defuns receive a constructed rest list."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defun collect
+                    ((out :type sexp)
+                     &rest
+                     (args :type sexp))
+                  args)
+                (defun call_collect
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (a :type sexp)
+                     (b :type sexp))
+                  (collect out a b)))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (collect-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (caller-body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (nelisp-phase47-compiler--ir-get collect-ir :rest-p))
+    (should (= (nelisp-phase47-compiler--ir-get collect-ir
+                                                :fixed-param-count)
+               1))
+    (should (equal (nelisp-phase47-compiler--ir-get collect-ir :params)
+                   '(out args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind caller-body)
+                'value-seq))
+    (should (member 'nelisp_aot_listn externs))))
+
+(ert-deftest nelisp-phase47-doc129/rest-param-call-requires-boundary ()
+  "Doc 129.7J: rest call lowering needs caller listn boundary params."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(seq
+      (defun collect ((out :type sexp) &rest (args :type sexp))
+        args)
+      (defun call_collect ((out :type sexp) (a :type sexp))
+        (collect out a))))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/object-rest-param-call-listn ()
+  "Doc 129.7J: object output exposes rest-param list construction."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-rest-param-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defun collect
+                 ((out :type sexp)
+                  &rest
+                  (args :type sexp))
+               args)
+             (defun call_collect
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (a :type sexp)
+                  (b :type sexp))
+               (collect out a b)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "collect" out))
+            (should (string-match-p "call_collect" out))
+            (should (string-match-p "nelisp_aot_listn" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/parse-quoted-funcall-designator ()
   "Doc 129.7D: quoted function symbols materialize through NAME-SLOT."
   (let* ((ir (nelisp-phase47-compiler--parse

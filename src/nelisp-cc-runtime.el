@@ -1859,6 +1859,30 @@ of that list before dispatch."
       (aset out 0 result)
       out)))
 
+(defun nelisp-cc-runtime-aot-listn
+    (mirror frames argc out scratch &rest args)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_listn' ABI.
+MIRROR, FRAMES, ARGC, OUT, SCRATCH, and ARGS mirror the native ABI:
+
+  nelisp_aot_listn(mirror, frames, argc, out, scratch, arg...)
+
+ARGC is the number of following boxed Sexp args.  The bridge writes the
+newly constructed rest list to `(aref OUT 0)' and returns OUT."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-listn-out-not-vector out)))
+  (unless (and (integerp argc) (<= 0 argc))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-listn-argc-not-nonnegative argc)))
+  (unless (= argc (length args))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-listn-argc-mismatch
+                  :argc argc
+                  :got (length args))))
+  (ignore mirror frames scratch)
+  (aset out 0 args)
+  out)
+
 ;;; Doc 129.8A — AOT exception handler-stack substrate ---------------
 
 (defun nelisp-cc-runtime-aot-handler-stack-snapshot ()

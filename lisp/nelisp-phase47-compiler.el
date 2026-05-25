@@ -2302,6 +2302,65 @@ crossing the protected body still require native landing-pad support."
            ,value-slot))
        env fenv defuns))))
 
+(defun nelisp-phase47-compiler--normalize-defun-params (param-forms sexp)
+  "Normalize PARAM-FORMS, accepting a single `&rest' marker.
+The returned plist contains `:params' with the marker removed,
+`:fixed-count', and `:rest-p'.  The current native ABI still receives
+the rest list as one ordinary final argument; call-site rest-list
+construction is handled separately for direct calls."
+  (unless (listp param-forms)
+    (signal 'nelisp-phase47-compiler-error
+            (list :defun-params-not-list param-forms)))
+  (let ((before nil)
+        (rest-tail param-forms)
+        (rest-p nil)
+        (rest-form nil))
+    (while (and rest-tail (not (eq (car rest-tail) '&rest)))
+      (push (car rest-tail) before)
+      (setq rest-tail (cdr rest-tail)))
+    (if rest-tail
+        (progn
+          (setq rest-p t)
+          (unless (and (= (length rest-tail) 2)
+                       (not (eq (cadr rest-tail) '&rest)))
+            (signal 'nelisp-phase47-compiler-error
+                    (list :defun-rest-param-shape sexp)))
+          (setq rest-form (cadr rest-tail)))
+      (setq rest-p nil))
+    (let ((fixed (nreverse before)))
+      (list :params (if rest-p
+                        (append fixed (list rest-form))
+                      fixed)
+            :fixed-count (length fixed)
+            :rest-p rest-p))))
+
+(defun nelisp-phase47-compiler--defun-signature (param-forms sexp)
+  "Return call-site signature metadata for DEFUN PARAM-FORMS."
+  (let* ((norm (nelisp-phase47-compiler--normalize-defun-params
+                param-forms sexp))
+         (params (plist-get norm :params)))
+    (if (plist-get norm :rest-p)
+        (list :arity (length params)
+              :fixed-count (plist-get norm :fixed-count)
+              :rest-p t)
+      (length params))))
+
+(defun nelisp-phase47-compiler--defun-signature-arity (signature)
+  "Return the ABI arity for SIGNATURE."
+  (if (integerp signature)
+      signature
+    (plist-get signature :arity)))
+
+(defun nelisp-phase47-compiler--defun-signature-rest-p (signature)
+  "Return non-nil when SIGNATURE describes a rest-param defun."
+  (and (consp signature) (plist-get signature :rest-p)))
+
+(defun nelisp-phase47-compiler--defun-signature-fixed-count (signature)
+  "Return the source fixed argument count for SIGNATURE."
+  (if (integerp signature)
+      signature
+    (plist-get signature :fixed-count)))
+
 (defun nelisp-phase47-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
@@ -3709,21 +3768,58 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
     (let* ((name (car sexp))
-           (arity (cdr (assq name defuns)))
+           (signature (cdr (assq name defuns)))
+           (arity (nelisp-phase47-compiler--defun-signature-arity
+                   signature))
            (args (cdr sexp)))
-      (unless (= (length args) arity)
-        (signal 'nelisp-phase47-compiler-error
-                (list :call-arity-mismatch name
-                      :expected arity :got (length args))))
       (when (> arity (length nelisp-phase47-compiler--arg-regs))
         (signal 'nelisp-phase47-compiler-error
                 (list :too-many-args name arity)))
-      (nelisp-phase47-compiler--make-ir 'call
-            :name name
-            :args (mapcar (lambda (a)
-                            (nelisp-phase47-compiler--parse-value
-                             a env fenv defuns))
-                          args))))
+      (if (nelisp-phase47-compiler--defun-signature-rest-p signature)
+          (let* ((fixed-count
+                  (nelisp-phase47-compiler--defun-signature-fixed-count
+                   signature))
+                 (given (length args)))
+            (when (< given fixed-count)
+              (signal 'nelisp-phase47-compiler-error
+                      (list :call-arity-mismatch name
+                            :expected-at-least fixed-count
+                            :got given)))
+            (let* ((boundary
+                    (nelisp-phase47-compiler--aot-funcall1-boundary-symbols
+                     fenv sexp))
+                   (out (plist-get boundary :out))
+                   (mirror (plist-get boundary :mirror))
+                   (frames (plist-get boundary :frames))
+                   (scratch (plist-get boundary :scratch))
+                   (fixed-args (cl-subseq args 0 fixed-count))
+                   (rest-args (nthcdr fixed-count args))
+                   (list-node
+                    (nelisp-phase47-compiler--parse-value
+                     `(extern-call nelisp_aot_listn
+                                   ,mirror ,frames ,(length rest-args)
+                                   ,scratch ,out ,@rest-args)
+                     env fenv defuns))
+                   (call-node
+                    (nelisp-phase47-compiler--make-ir 'call
+                          :name name
+                          :args (mapcar
+                                 (lambda (a)
+                                   (nelisp-phase47-compiler--parse-value
+                                    a env fenv defuns))
+                                 (append fixed-args (list scratch))))))
+              (nelisp-phase47-compiler--make-ir 'value-seq
+                    :forms (list list-node call-node))))
+        (unless (= (length args) arity)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :call-arity-mismatch name
+                        :expected arity :got (length args))))
+        (nelisp-phase47-compiler--make-ir 'call
+              :name name
+              :args (mapcar (lambda (a)
+                              (nelisp-phase47-compiler--parse-value
+                               a env fenv defuns))
+                            args)))))
    ;; (let ((VAR VAL)) BODY) — value context (= inside defun body).
    ;; Compile-time-foldable values fold into ENV (= compile-time fold
    ;; path, same as `--parse-stmt'); non-foldable values allocate a
@@ -3869,7 +3965,10 @@ Returns one of:
                 (signal 'nelisp-phase47-compiler-error
                         (list :duplicate-defun nm)))
               (setq cur-defuns
-                    (cons (cons nm (length ps)) cur-defuns)))))
+                    (cons (cons nm
+                                (nelisp-phase47-compiler--defun-signature
+                                 ps c))
+                          cur-defuns)))))
         (dolist (c children)
           (push (nelisp-phase47-compiler--parse-stmt
                  c env fenv cur-defuns)
@@ -3930,7 +4029,9 @@ Returns one of:
       (signal 'nelisp-phase47-compiler-error
               (list :defun-arity sexp)))
     (let* ((name (nth 1 sexp))
-           (param-forms (nth 2 sexp))
+           (param-info (nelisp-phase47-compiler--normalize-defun-params
+                        (nth 2 sexp) sexp))
+           (param-forms (plist-get param-info :params))
            (body (nth 3 sexp))
            (arity (length param-forms))
            ;; Extract (sym class root-p) triples.  Class is `gp' for
@@ -4024,6 +4125,8 @@ Returns one of:
               :params params
               :param-regs param-regs
               :param-class uniform-class
+              :rest-p (plist-get param-info :rest-p)
+              :fixed-param-count (plist-get param-info :fixed-count)
               :rt-slot-count rt-slot-count
               :gc-root-slots (nelisp-phase47-compiler--gc-root-slots-for-defun
                               body-ir)
