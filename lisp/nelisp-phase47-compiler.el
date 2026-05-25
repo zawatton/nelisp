@@ -618,6 +618,7 @@ at its kind-fixed offset since per-kind layout is constant."
     (let-rt-n . 89)
     (aot-landing-label . 93)
     (aot-machine-landing-jump . 94)
+    (aot-current-sp . 95)
     (logic . 33)
     (mut-str-finalize . 34)
     (mut-str-len . 35)
@@ -3446,6 +3447,13 @@ Dynamic tag values are forwarded as ordinary value expressions."
                 (nth 1 sexp) env fenv defuns)
      :target target)))
 
+(defun nelisp-phase47-compiler--parse-aot-current-sp (sexp)
+  "Parse an internal current-stack-pointer value form."
+  (unless (= (length sexp) 1)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-current-sp-arity sexp)))
+  (nelisp-phase47-compiler--make-ir 'aot-current-sp))
+
 (defun nelisp-phase47-compiler--parse-aot-errorn
     (sexp env fenv defuns)
   "Lower formatted `(error ARG...)' through the Doc 129.8 errorn bridge."
@@ -4452,6 +4460,7 @@ Returns an IR node of one of these kinds:
   (:kind logic :op OP :forms (IR ...) :id N)    [§97.c and/or]
   (:kind aot-landing-label :label L :body IR)
   (:kind aot-machine-landing-jump :saved-sp IR :target L)
+  (:kind aot-current-sp)
 ENV is the let-alist (constant bindings), FENV is the function-
 parameter alist `((SYM . REG) ...)' for the enclosing function (=
 nil at top level), DEFUNS is the alist of already-defined
@@ -4685,6 +4694,8 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp) (eq (car sexp) 'aot-machine-landing-jump))
     (nelisp-phase47-compiler--parse-aot-machine-landing-jump
      sexp env fenv defuns))
+   ((and (consp sexp) (eq (car sexp) 'aot-current-sp))
+    (nelisp-phase47-compiler--parse-aot-current-sp sexp))
    ;; Doc 129.6D — first direct user-call lowering for one-argument
    ;; builtins.  The surrounding defun must expose the boxed-boundary
    ;; slots used by the 129.6B helper, so ordinary `(symbol-name arg)'
@@ -6306,7 +6317,8 @@ Returns one of:
    ((and (consp sexp)
          (memq (car sexp)
                '(if while cond and or
-                    aot-landing-label aot-machine-landing-jump)))
+                    aot-landing-label aot-machine-landing-jump
+                    aot-current-sp)))
     (nelisp-phase47-compiler--parse-value sexp env fenv defuns))
    ;; Doc 49 Wave 11.2 hash-table primitives in statement position.
    ;; Each desugars to a value-producing form whose result the stmt
@@ -7068,6 +7080,8 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-aot-landing-label node buf))
         ((= tag 94)             ; aot-machine-landing-jump
          (nelisp-phase47-compiler--emit-aot-machine-landing-jump node buf))
+        ((= tag 95)             ; aot-current-sp
+         (nelisp-phase47-compiler--emit-aot-current-sp node buf))
         ((= tag 24)             ; f64-binop
          (nelisp-phase47-compiler--emit-f64-binop node buf))
         ((= tag 26)             ; f64-cmp
@@ -7099,7 +7113,7 @@ the node's class to consume the result correctly."
                      15 16 18 19         ; cons-make cons-make-with-clone cons-set-car cons-set-cdr
                      86 11 33            ; while cond logic
                      89                  ; let-rt-n
-                     94                  ; aot-machine-landing-jump
+                     94 95               ; aot-machine-landing-jump aot-current-sp
                      92                  ; aot-root-scope
                      78))               ; syscall-direct
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -7292,6 +7306,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-aot-landing-label node buf))
       ((= tag 94)               ; aot-machine-landing-jump
        (nelisp-phase47-compiler--emit-aot-machine-landing-jump node buf))
+      ((= tag 95)               ; aot-current-sp
+       (nelisp-phase47-compiler--emit-aot-current-sp node buf))
       ((= tag 86)               ; while
        (nelisp-phase47-compiler--emit-while node buf))
       ((= tag 11)               ; cond
@@ -9839,6 +9855,13 @@ Final emit:
     (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'r10)
     (nelisp-asm-x86_64-jmp-rel32 buf target)))
 
+(defun nelisp-phase47-compiler--emit-aot-current-sp (_node buf)
+  "Emit the current native stack pointer as a value in rax."
+  (unless (eq nelisp-phase47-compiler--arch 'x86_64)
+    (nelisp-phase47-compiler--emit-aarch64-unsupported
+     'aot-current-sp _node))
+  (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsp))
+
 ;; ---- §97.5 emit walker — statements ----
 
 (defun nelisp-phase47-compiler--emit-table-lookup (node buf)
@@ -9967,7 +9990,7 @@ skipped here — they're emitted separately by the orchestrator."
       ((= tag 5)                ; call
        ;; Statement-context call discards rax.
        (nelisp-phase47-compiler--emit-call ir buf))
-      ((memq tag '(29 86 11 33 88 10 1 67 90 91 93 94)) ; if while cond logic value-seq cmp arith shift sexp-write-symbol-lit sexp-write-str-lit aot-landing-label aot-machine-landing-jump
+      ((memq tag '(29 86 11 33 88 10 1 67 90 91 93 94 95)) ; if while cond logic value-seq cmp arith shift sexp-write-symbol-lit sexp-write-str-lit aot-landing-label aot-machine-landing-jump aot-current-sp
        ;; §97.c: value-producing control-flow / comparison form
        ;; reached statement position (= `seq' child, top-level).
        ;; Emit the value compute; rax is discarded by the

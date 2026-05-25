@@ -5146,6 +5146,20 @@ materialized closure temporary."
     (should (eq (nelisp-phase47-compiler--ir-get label :label)
                 'doc129_landing_pad))))
 
+(ert-deftest nelisp-phase47-doc129/parse-aot-current-sp ()
+  "Doc 129.8U: current stack pointer is a value form."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun current_sp
+                   ((value :type gp))
+                 (seq
+                  (aot-current-sp)
+                  value))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (current-sp (car forms)))
+    (should (eq (nelisp-phase47-compiler--ir-kind current-sp)
+                'aot-current-sp))))
+
 (ert-deftest nelisp-phase47-doc129/parse-catch-conditional-throw ()
   "Doc 129.8N: conditional direct catch throw lowers both branches."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -5280,10 +5294,9 @@ materialized closure temporary."
         (progn
           (nelisp-phase47-compile-to-object
            '(defun machine_landing
-                ((saved_sp :type gp)
-                 (value :type gp))
+                ((value :type gp))
               (seq
-               (aot-machine-landing-jump saved_sp doc129_landing_pad)
+               (aot-machine-landing-jump (aot-current-sp) doc129_landing_pad)
                (aot-landing-label doc129_landing_pad value)))
            path)
           (let ((symbols (with-output-to-string
@@ -5294,6 +5307,7 @@ materialized closure temporary."
                           (with-current-buffer standard-output
                             (call-process "objdump" nil t nil "-d" path)))))
             (should (string-match-p "machine_landing" symbols))
+            (should (string-match-p "48 89 e0" disasm))
             (should (string-match-p "49 89 c2" disasm))
             (should (string-match-p "4c 89 d4" disasm))
             (should (string-match-p "\\be9\\b" disasm))))
