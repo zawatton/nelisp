@@ -5032,10 +5032,17 @@ crossing the protected body still require cleanup landing-pad lowering."
            (nelisp-phase47-compiler--aot-direct-condition-tag body))
           (conditional-throw
            (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
-            body)))
+            body))
+          (conditional-condition
+           (and (consp body)
+                (eq (car body) 'if)
+                (= (length body) 4)
+                (nelisp-phase47-compiler--aot-condition-tree-tag body)
+                body)))
       (when (or (and (not direct-throw)
                      (not direct-condition)
                      (not conditional-throw)
+                     (not conditional-condition)
                      (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                       body))
                 (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
@@ -5107,6 +5114,35 @@ crossing the protected body still require cleanup landing-pad lowering."
              `(if ,(nth 1 conditional-throw)
                   ,(branch-form (nth 2 conditional-throw))
                 ,(branch-form (nth 3 conditional-throw)))))
+          (conditional-condition
+           (cl-labels
+               ((branch-form
+                 (branch)
+                 (cond
+                  ((nelisp-phase47-compiler--aot-direct-condition-tag branch)
+                   (let ((cleanup-label
+                          (nelisp-phase47-compiler--gensym
+                           "aot-unwind-cleanup")))
+                     `(seq
+                       (aot-push-unwind
+                        0 ',cleanup-label (aot-current-sp))
+                       ,branch
+                       (aot-landing-label ,cleanup-label
+                         (seq
+                          ,@cleanups
+                          (aot-landing-jump out))))))
+                  ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
+                   `(if ,(nth 1 branch)
+                        ,(branch-form (nth 2 branch))
+                      ,(branch-form (nth 3 branch))))
+                  (t
+                   `(let (((,value-slot :type sexp) ,branch))
+                      (seq
+                       ,@cleanups
+                       ,value-slot))))))
+             `(if ,(nth 1 conditional-condition)
+                  ,(branch-form (nth 2 conditional-condition))
+                ,(branch-form (nth 3 conditional-condition)))))
           (t
            `(let (((,value-slot :type sexp) ,body))
               (seq

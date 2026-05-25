@@ -7486,6 +7486,31 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-signal ()
+  "Doc 129.8AH: standalone conditional signal cleans up both branches."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (if value
+                         (signal 'error value)
+                       value)
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (member 'nelisp_aot_builtin_call1 externs))
+    (should (member 'nelisp_aot_push_unwind externs))
+    (should (member 'nelisp_aot_signal externs))
+    (should (member 'nelisp_aot_landing_jump externs))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
+
 (ert-deftest nelisp-phase47-doc129/parse-unwind-protect-nested-throw ()
   "Doc 129.8R: nested unwind-protect throw trees clean up every leaf."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -7742,6 +7767,36 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_call1" out))
             (should (string-match-p "nelisp_aot_push_unwind" out))
             (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-conditional-signal ()
+  "Doc 129.8AH: standalone conditional signal compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-if-signal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_signal
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (if value
+                      (signal 'error value)
+                    value)
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_signal" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
