@@ -3066,6 +3066,27 @@ Dynamic tag values are forwarded as ordinary value expressions."
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-landing-jump
+    (sexp env fenv defuns)
+  "Lower internal native landing-pad jump planning."
+  (unless (= (length sexp) 2)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-landing-jump-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (landing (nth 1 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       (extern-call nelisp_aot_landing_jump
+                    ,mirror ,frames ,landing ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--parse-aot-errorn
     (sexp env fenv defuns)
   "Lower formatted `(error ARG...)' through the Doc 129.8 errorn bridge."
@@ -4288,6 +4309,11 @@ functions `((NAME . ARITY) ...)'."
    ;; condition data.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-error))
     (nelisp-phase47-compiler--parse-aot-landing-error
+     sexp env fenv defuns))
+   ;; Doc 129.8S: internal bridge for preparing native stack restore and
+   ;; branch-to-landing-pad state from a landing descriptor.
+   ((and (consp sexp) (eq (car sexp) 'aot-landing-jump))
+    (nelisp-phase47-compiler--parse-aot-landing-jump
      sexp env fenv defuns))
    ;; Doc 129.6D — first direct user-call lowering for one-argument
    ;; builtins.  The surrounding defun must expose the boxed-boundary

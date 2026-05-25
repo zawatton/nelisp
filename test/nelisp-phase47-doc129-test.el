@@ -4339,6 +4339,28 @@ materialized closure temporary."
     (should (member 'nelisp_aot_landing_value externs))
     (should-not (member 'nelisp_aot_pop_handler externs))))
 
+(ert-deftest nelisp-phase47-doc129/parse-aot-landing-jump ()
+  "Doc 129.8S: landing-jump form lowers to the native jump ABI."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun landing_jump
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (landing :type sexp))
+                 (aot-landing-jump landing))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (call-node (nth 0 forms))
+         (args (nelisp-phase47-compiler--ir-get call-node :args))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_landing_jump))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 args) :var)
+                'landing))
+    (should (member 'nelisp_aot_landing_jump externs))))
+
 (ert-deftest nelisp-phase47-doc129/parse-catch-conditional-throw ()
   "Doc 129.8N: conditional direct catch throw lowers both branches."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -4440,6 +4462,28 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_push_catch" out))
             (should (string-match-p "nelisp_aot_throw" out))
             (should (string-match-p "nelisp_aot_landing_value" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-aot-landing-jump ()
+  "Doc 129.8S: object output exposes landing-jump relocation."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-landing-jump-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun landing_jump
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (landing :type sexp))
+              (aot-landing-jump landing))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "landing_jump" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-catch-conditional-throw ()

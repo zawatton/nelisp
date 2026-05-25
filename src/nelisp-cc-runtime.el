@@ -2791,6 +2791,44 @@ payload into OUT[0] and returns OUT."
     (aset out 0 (plist-get descriptor :error))
     out))
 
+(defun nelisp-cc-runtime-aot-landing-jump-plan (landing)
+  "Return the native landing-jump plan represented by LANDING.
+LANDING is either a landing descriptor plist or an OUT vector whose
+first slot contains one.  The returned plist is the simulator analogue
+of the native action: restore `:saved-sp' and branch to
+`:landing-pad' while preserving the full descriptor for diagnostics."
+  (let ((descriptor (if (and (vectorp landing) (> (length landing) 0))
+                        (aref landing 0)
+                      landing)))
+    (unless (and (consp descriptor)
+                 (plist-member descriptor :landing-pad)
+                 (plist-member descriptor :saved-sp))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-landing-jump-target-missing descriptor)))
+    (list :kind 'landing-jump
+          :landing-pad (plist-get descriptor :landing-pad)
+          :saved-sp (plist-get descriptor :saved-sp)
+          :reason (plist-get descriptor :reason)
+          :handler-kind (plist-get descriptor :kind)
+          :landing descriptor)))
+
+(defun nelisp-cc-runtime-aot-landing-jump-boundary
+    (mirror frames landing out scratch)
+  "Runtime bridge for planning a native landing-pad jump.
+MIRROR, FRAMES, LANDING, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_landing_jump(mirror, frames, landing, out, scratch)
+
+The elisp bridge writes a jump plan into OUT.  Native lowering will use
+the same logical fields to restore the saved stack pointer and branch to
+the landing pad."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-landing-jump-out-not-vector out)))
+  (ignore mirror frames scratch)
+  (aset out 0 (nelisp-cc-runtime-aot-landing-jump-plan landing))
+  out)
+
 (defun nelisp-cc-runtime--aot-error-data (args)
   "Return the signal data list for Doc 129 formatted error ARGS."
   (list
@@ -3053,6 +3091,10 @@ writes it to OUT[0], and returns OUT."
      :args (mirror frames landing out scratch))
     (:symbol nelisp_aot_landing_error
      :function nelisp-cc-runtime-aot-landing-error-boundary
+     :fixed-argc 5 :rest nil
+     :args (mirror frames landing out scratch))
+    (:symbol nelisp_aot_landing_jump
+     :function nelisp-cc-runtime-aot-landing-jump-boundary
      :fixed-argc 5 :rest nil
      :args (mirror frames landing out scratch))
     (:symbol nelisp_aot_errorn

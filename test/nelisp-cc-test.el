@@ -2298,6 +2298,37 @@ exit points were emitted; call-points were missing."
                 out))
     (should (equal (aref out 0) '(error "bad")))))
 
+(ert-deftest nelisp-cc-runtime-aot-landing-jump-boundary ()
+  "Doc 129.8S — landing-jump bridge exposes native jump state."
+  (let* ((out (vector nil))
+         (descriptor '(:kind catch
+                       :landing-pad catch-pad
+                       :saved-sp 88
+                       :reason throw
+                       :value 42))
+         (landing (vector descriptor)))
+    (should (eq (nelisp-cc-runtime-aot-landing-jump-boundary
+                 'mirror 'frames landing out 'scratch)
+                out))
+    (let ((plan (aref out 0)))
+      (should (eq (plist-get plan :kind) 'landing-jump))
+      (should (eq (plist-get plan :landing-pad) 'catch-pad))
+      (should (= (plist-get plan :saved-sp) 88))
+      (should (eq (plist-get plan :reason) 'throw))
+      (should (eq (plist-get plan :handler-kind) 'catch))
+      (should (eq (plist-get plan :landing) descriptor)))))
+
+(ert-deftest nelisp-cc-runtime-aot-landing-jump-validates-boundary ()
+  "Doc 129.8S — landing-jump bridge rejects malformed descriptors."
+  (should-error
+   (nelisp-cc-runtime-aot-landing-jump-boundary
+    'mirror 'frames '(:kind catch :landing-pad pad) (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-landing-jump-boundary
+    'mirror 'frames '(:kind catch :saved-sp 8) nil 'scratch)
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-signal-boundary ()
   "Doc 129.8B — signal boundary bridge writes landing descriptor to OUT."
   (unwind-protect
@@ -2514,6 +2545,9 @@ exit points were emitted; call-points were missing."
          (frame-slot-set
           (nelisp-cc-runtime-aot-c-abi-descriptor
            'nelisp_aot_frame_slot_set))
+         (landing-jump
+          (nelisp-cc-runtime-aot-c-abi-descriptor
+           'nelisp_aot_landing_jump))
          (throw
           (nelisp-cc-runtime-aot-c-abi-descriptor
            'nelisp_aot_throw)))
@@ -2534,6 +2568,10 @@ exit points were emitted; call-points were missing."
                 'nelisp-cc-runtime-aot-frame-slot-set-boundary))
     (should (equal (plist-get frame-slot-set :args)
                    '(mirror frames slot value out scratch)))
+    (should (eq (plist-get landing-jump :function)
+                'nelisp-cc-runtime-aot-landing-jump-boundary))
+    (should (equal (plist-get landing-jump :args)
+                   '(mirror frames landing out scratch)))
     (should (equal (plist-get throw :args)
                    '(mirror frames tag value out scratch)))
     (should-not
