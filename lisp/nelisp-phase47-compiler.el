@@ -4064,6 +4064,18 @@ contain no unresolved non-local source form."
          'error))
       (_ nil))))
 
+(defun nelisp-phase47-compiler--aot-direct-condition-form (body)
+  "Return BODY when it is a direct signal/error form."
+  (when (consp body)
+    (pcase (car body)
+      ('signal
+       (when (= (length body) 3)
+         body))
+      ('error
+       (when (>= (length body) 2)
+         body))
+      (_ nil))))
+
 (defun nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form (sexp)
   "Return SEXP when it is a standalone cleanup-routed non-local form."
   (or (nelisp-phase47-compiler--aot-direct-quoted-throw-form sexp)
@@ -4260,6 +4272,79 @@ source form."
       (when handler
         (list :tag tag :handler handler :form body)))))
 
+(defun nelisp-phase47-compiler--aot-condition-case-mixed-unwind-form
+    (body clauses)
+  "Return BODY's mixed handled/unhandled condition unwind descriptor."
+  (when (and (consp body)
+             (eq (car body) 'unwind-protect)
+             (>= (length body) 2))
+    (let* ((protected-body (nth 1 body))
+           (tags
+            (nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
+             protected-body clauses)))
+      (when (= (length tags) 1)
+        (let* ((tag (car tags))
+               (handler
+                (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                 tag clauses)))
+          (when (and handler
+                     (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+                      protected-body tag clauses))
+            (list :tag tag :handler handler :form body)))))))
+
+(defun nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
+    (sexp clauses)
+  "Return unique static condition tags in SEXP that CLAUSES handle."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-condition-form sexp)
+    (let ((tag (nelisp-phase47-compiler--aot-direct-condition-tag sexp)))
+      (if (and tag
+               (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                tag clauses))
+          (list tag)
+        nil)))
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4))
+    (delete-dups
+     (append
+      (nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
+       (nth 2 sexp) clauses)
+      (nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
+       (nth 3 sexp) clauses))))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+    (sexp selected-tag clauses)
+  "Return non-nil when SEXP is safe for mixed condition cleanup lowering."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-condition-form sexp)
+    (let ((tag (nelisp-phase47-compiler--aot-direct-condition-tag sexp)))
+      (or (null tag)
+          (eq tag selected-tag)
+          (not (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                tag clauses)))))
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4)
+         (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nth 1 sexp))))
+    (let ((then (nth 2 sexp))
+          (else (nth 3 sexp)))
+      (and (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+                then selected-tag clauses)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     then)))
+           (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+                else selected-tag clauses)
+               (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                     else)))
+           (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+                then selected-tag clauses)
+               (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+                else selected-tag clauses)))))
+   (t nil)))
+
 (defun nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
     (tag branch cleanups landing-label value-slot)
   "Return BRANCH with unwind cleanup jumping to LANDING-LABEL."
@@ -4388,26 +4473,42 @@ source form."
       (aot-landing-label ,landing-label ,landing-body))))
 
 (defun nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
-    (branch cleanups landing-label value-slot)
+    (branch cleanups landing-label value-slot &optional selected-tag clauses)
   "Return BRANCH for mixed condition-targeted unwind cleanup lowering."
   (cond
-   ((nelisp-phase47-compiler--aot-direct-condition-tag branch)
+   ((nelisp-phase47-compiler--aot-direct-condition-form branch)
     (let ((cleanup-label
-           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
-      `(seq
-        (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-        ,branch
-        (aot-landing-label ,cleanup-label
-          (seq
-           ,@cleanups
-           (aot-machine-landing-jump
-            (aot-current-sp) ,landing-label))))))
-   ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
+           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup"))
+          (branch-tag
+           (nelisp-phase47-compiler--aot-direct-condition-tag branch)))
+      (if (or (null selected-tag) (eq branch-tag selected-tag))
+          `(seq
+            (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+            ,branch
+            (aot-landing-label ,cleanup-label
+              (seq
+               ,@cleanups
+               (aot-machine-landing-jump
+                (aot-current-sp) ,landing-label))))
+        `(seq
+          (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
+          ,branch
+          (aot-landing-label ,cleanup-label
+            (seq
+             ,@cleanups
+             (aot-landing-jump out)))))))
+   ((or (nelisp-phase47-compiler--aot-condition-tree-tag branch)
+        (and selected-tag
+             clauses
+             (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+              branch selected-tag clauses)))
     `(if ,(nth 1 branch)
          ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
-           (nth 2 branch) cleanups landing-label value-slot)
+           (nth 2 branch) cleanups landing-label value-slot
+           selected-tag clauses)
        ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
-         (nth 3 branch) cleanups landing-label value-slot)))
+         (nth 3 branch) cleanups landing-label value-slot
+         selected-tag clauses)))
    (t
     `(let (((,value-slot :type sexp) ,branch))
        (seq
@@ -4416,7 +4517,7 @@ source form."
         ,value-slot)))))
 
 (defun nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
-    (unwind-form landing-label landing-body)
+    (unwind-form landing-label landing-body &optional selected-tag clauses)
   "Return conditional condition cleanup for static LANDING-LABEL."
   (let ((body-form (nth 1 unwind-form))
         (cleanups (nthcdr 2 unwind-form))
@@ -4428,7 +4529,7 @@ source form."
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
     `(seq
       ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
-        body-form cleanups landing-label value-slot)
+        body-form cleanups landing-label value-slot selected-tag clauses)
       (aot-landing-label ,landing-label ,landing-body))))
 
 (defun nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
@@ -4997,11 +5098,19 @@ Doc 129.8 work."
                  (not conditional-handler)
                  (not direct-unwind-handler)
                  (nelisp-phase47-compiler--aot-condition-case-conditional-unwind-form
+                  body clauses)))
+           (mixed-unwind-handler
+            (and (not direct-handler)
+                 (not conditional-handler)
+                 (not direct-unwind-handler)
+                 (not conditional-unwind-handler)
+                 (nelisp-phase47-compiler--aot-condition-case-mixed-unwind-form
                   body clauses))))
       (when (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-unwind-handler)
                  (not conditional-unwind-handler)
+                 (not mixed-unwind-handler)
                  (nelisp-phase47-compiler--aot-nonlocal-source-form-p body))
         (signal 'nelisp-phase47-compiler-error
                 (list :aot-condition-case-nonlocal-body sexp)))
@@ -5080,6 +5189,31 @@ Doc 129.8 work."
                                  (aot-current-sp))
              ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
                unwind-form landing-label handled-form))
+           env fenv defuns)))
+       (mixed-unwind-handler
+        (let* ((tag (plist-get mixed-unwind-handler :tag))
+               (handler (plist-get mixed-unwind-handler :handler))
+               (unwind-form (plist-get mixed-unwind-handler :form))
+               (handler-body
+                (nelisp-phase47-compiler--body->form
+                 (cdr handler)))
+               (landing-label
+                (nelisp-phase47-compiler--gensym
+                 "aot-condition-landing"))
+               (handled-form
+                (if var
+                    `(let (((,var :type sexp) (aot-landing-error out)))
+                       ,handler-body)
+                  `(seq
+                    (aot-landing-error out)
+                    ,handler-body))))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             (aot-push-condition ',tag
+                                 ',landing-label
+                                 (aot-current-sp))
+             ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
+               unwind-form landing-label handled-form tag clauses))
            env fenv defuns)))
        (conditional-handler
         (let* ((tag (plist-get conditional-handler :tag))
