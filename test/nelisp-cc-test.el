@@ -34,6 +34,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'map)
 (require 'seq)
 (require 'nelisp-cc)
 (require 'nelisp-cc-x86_64)
@@ -1723,7 +1724,28 @@ exit points were emitted; call-points were missing."
     (should (equal (aref out 0) '(1 2 3)))
     (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'cl-merge 4 out 'scratch 'list '(1 3) '(2 4) #'<)
-    (should (equal (aref out 0) '(1 2 3 4)))))
+    (should (equal (aref out 0) '(1 2 3 4)))
+    (let ((map-data '((a . 1) (bb . 2))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-some 2 out 'scratch
+       (lambda (k v) (and (= v 2) k)) map-data)
+      (should (eq (aref out 0) 'bb))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-every-p 2 out 'scratch
+       (lambda (_k v) (numberp v)) map-data)
+      (should (eq (aref out 0) t))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-remove 2 out 'scratch
+       (lambda (_k v) (= v 1)) map-data)
+      (should (equal (aref out 0) '((bb . 2))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-keys-apply 2 out 'scratch
+       #'symbol-name map-data)
+      (should (equal (aref out 0) '("a" "bb")))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-values-apply 2 out 'scratch
+       #'1+ map-data)
+      (should (equal (aref out 0) '(2 3))))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-validates-boundary ()
   "Doc 129.6F — builtin calln rejects malformed ABI arguments."

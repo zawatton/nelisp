@@ -2241,6 +2241,8 @@ the whole program."
     (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
    ((memq (car sexp) '(mapcar mapc mapconcat mapcan maphash
                        map-apply map-do map-filter map-merge-with
+                       map-some map-every-p map-remove
+                       map-keys-apply map-values-apply
                        seq-map seq-do seq-filter seq-remove seq-find
                        seq-some seq-every-p seq-count seq-reduce
                        seq-mapcat seq-keep seq-mapn seq-map-indexed
@@ -2410,6 +2412,7 @@ defun is visible in the current compile unit.")
     gethash puthash remhash
     mapcar mapc mapconcat mapcan maphash
     map-apply map-do map-filter map-merge-with
+    map-some map-every-p map-remove map-keys-apply map-values-apply
     seq-map seq-do seq-filter seq-remove seq-find
     seq-some seq-every-p seq-count seq-reduce seq-mapcat
     seq-keep seq-mapn seq-map-indexed seq-sort seq-uniq
@@ -2444,6 +2447,11 @@ defun is visible in the current compile unit.")
     (map-do . 0)
     (map-filter . 0)
     (map-merge-with . 1)
+    (map-some . 0)
+    (map-every-p . 0)
+    (map-remove . 0)
+    (map-keys-apply . 0)
+    (map-values-apply . 0)
     (seq-map . 0)
     (seq-do . 0)
     (seq-filter . 0)
