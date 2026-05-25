@@ -7076,6 +7076,80 @@ materialized closure temporary."
                 landing-names)
                2))))
 
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-multi-handled-dynamic ()
+  "Doc 129.8AM: multi-handler condition cleanup keeps dynamic leaves dynamic."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_unwind_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (unwind-protect
+                         (if value
+                             (if value
+                                 (signal 'error value)
+                               (signal 'quit value))
+                           (signal tag value))
+                       (identity value))
+                   (error err)
+                   (quit err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump))
+         (target-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :target)))
+                  machine-jumps)))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
+    (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 3))
+    (should (= (cl-count 'nelisp_aot_signal externs) 3))
+    (should (= (cl-count 'nelisp_aot_landing_error externs) 2))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should (= (length machine-jumps) 2))
+    (should (= (length (delete-dups (copy-sequence target-names))) 2))))
+
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-multi-handled-other-normal ()
+  "Doc 129.8AM: multi-handler condition cleanup preserves other and normal leaves."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_unwind_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (unwind-protect
+                         (if value
+                             (if value
+                                 (signal 'file-error value)
+                               (signal 'quit value))
+                           (if value
+                               (signal 'error value)
+                             value))
+                       (identity value))
+                   (file-error err)
+                   (quit err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump)))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 4))
+    (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 3))
+    (should (= (cl-count 'nelisp_aot_signal externs) 3))
+    (should (= (cl-count 'nelisp_aot_landing_error externs) 2))
+    (should (member 'nelisp_aot_pop_handler externs))
+    (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
+    (should (= (length machine-jumps) 2))))
+
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-conditional-signal ()
   "Doc 129.8Q: conditional condition-case signal dispatches one branch."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -7388,6 +7462,44 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_signal" out))
             (should (string-match-p "nelisp_aot_landing_error" out))
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-multi-handled-dynamic ()
+  "Doc 129.8AM: multi-handler condition cleanup with dynamic leaf compiles."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-unwind-if-multi-dyn-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_unwind_signal
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  (unwind-protect
+                      (if value
+                          (if value
+                              (signal 'error value)
+                            (signal 'quit value))
+                        (signal tag value))
+                    (identity value))
+                (error err)
+                (quit err)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_unwind_signal" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nelisp_aot_landing_error" out))
+            (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-condition-case-conditional-signal ()
