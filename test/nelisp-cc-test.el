@@ -2131,6 +2131,42 @@ exit points were emitted; call-points were missing."
          :type 'nelisp-cc-runtime-error))
     (nelisp-cc-runtime-aot-reset-handler-stack)))
 
+(ert-deftest nelisp-cc-runtime-aot-c-abi-descriptor-table ()
+  "Doc 129.6Q — exported AOT C ABI symbols map to runtime bridges."
+  (let* ((descriptors
+          (nelisp-cc-runtime-aot-c-abi-descriptors))
+         (symbols (mapcar (lambda (d) (plist-get d :symbol))
+                          descriptors))
+         (builtin-calln
+          (nelisp-cc-runtime-aot-c-abi-descriptor
+           'nelisp_aot_builtin_calln))
+         (funcall3
+          (nelisp-cc-runtime-aot-c-abi-descriptor
+           'nelisp_aot_funcall3))
+         (throw
+          (nelisp-cc-runtime-aot-c-abi-descriptor
+           'nelisp_aot_throw)))
+    (should (nelisp-cc-runtime-validate-aot-c-abi-descriptors))
+    (should (equal symbols (delete-dups (copy-sequence symbols))))
+    (should (eq (plist-get builtin-calln :function)
+                'nelisp-cc-runtime-aot-builtin-calln))
+    (should (= (plist-get builtin-calln :fixed-argc) 6))
+    (should (plist-get builtin-calln :rest))
+    (should (eq (plist-get funcall3 :function)
+                'nelisp-cc-runtime-aot-funcall3))
+    (should (= (plist-get funcall3 :fixed-argc) 7))
+    (should-not (plist-get funcall3 :rest))
+    (should (equal (plist-get throw :args)
+                   '(mirror frames tag value out scratch)))
+    (should-not
+     (nelisp-cc-runtime-aot-c-abi-descriptor 'nelisp_aot_missing))))
+
+(ert-deftest nelisp-cc-runtime-aot-c-abi-descriptor-rejects-bad-symbol ()
+  "Doc 129.6Q — ABI descriptor lookup requires a native symbol."
+  (should-error
+   (nelisp-cc-runtime-aot-c-abi-descriptor "nelisp_aot_throw")
+   :type 'nelisp-cc-runtime-error))
+
 (ert-deftest nelisp-cc-runtime-aot-module-init-plan ()
   "Doc 129.3H — runtime normalizes compiler metadata for Doc 99."
   (let* ((init-helpers

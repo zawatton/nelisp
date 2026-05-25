@@ -2550,6 +2550,143 @@ returns OUT."
    (nelisp-cc-runtime--aot-error-data args)
    out scratch))
 
+;;; Doc 129.6Q — exported AOT C ABI descriptor table -----------------
+
+(defconst nelisp-cc-runtime--aot-c-abi-descriptors
+  '((:symbol nelisp_aot_materialize_roots
+     :function nelisp-cc-runtime-aot-materialize-roots-boundary
+     :fixed-argc 5 :rest t
+     :args (mirror frames count out scratch roots...))
+    (:symbol nelisp_aot_push_roots
+     :function nelisp-cc-runtime-aot-push-roots-boundary
+     :fixed-argc 5 :rest nil
+     :args (mirror frames roots out scratch))
+    (:symbol nelisp_aot_pop_roots
+     :function nelisp-cc-runtime-aot-pop-roots-boundary
+     :fixed-argc 5 :rest nil
+     :args (mirror frames expected-roots out scratch))
+    (:symbol nelisp_aot_push_special
+     :function nelisp-cc-runtime-aot-push-special-boundary
+     :fixed-argc 6 :rest nil
+     :args (mirror frames name value out scratch))
+    (:symbol nelisp_aot_pop_special
+     :function nelisp-cc-runtime-aot-pop-special-boundary
+     :fixed-argc 5 :rest nil
+     :args (mirror frames expected-record out scratch))
+    (:symbol nelisp_aot_builtin_call1
+     :function nelisp-cc-runtime-aot-builtin-call1
+     :fixed-argc 6 :rest nil
+     :args (mirror frames name arg out scratch))
+    (:symbol nelisp_aot_builtin_calln
+     :function nelisp-cc-runtime-aot-builtin-calln
+     :fixed-argc 6 :rest t
+     :args (mirror frames name argc out scratch args...))
+    (:symbol nelisp_aot_funcall1
+     :function nelisp-cc-runtime-aot-funcall1
+     :fixed-argc 6 :rest nil
+     :args (mirror frames fn arg out scratch))
+    (:symbol nelisp_aot_funcall2
+     :function nelisp-cc-runtime-aot-funcall2
+     :fixed-argc 6 :rest nil
+     :args (mirror frames fn arg0 arg1 out))
+    (:symbol nelisp_aot_funcall3
+     :function nelisp-cc-runtime-aot-funcall3
+     :fixed-argc 7 :rest nil
+     :args (mirror frames fn arg0 arg1 arg2 out))
+    (:symbol nelisp_aot_funcalln
+     :function nelisp-cc-runtime-aot-funcalln
+     :fixed-argc 6 :rest t
+     :args (mirror frames fn argc out scratch args...))
+    (:symbol nelisp_aot_apply
+     :function nelisp-cc-runtime-aot-apply
+     :fixed-argc 6 :rest nil
+     :args (mirror frames fn args-list out scratch))
+    (:symbol nelisp_aot_applyn
+     :function nelisp-cc-runtime-aot-applyn
+     :fixed-argc 6 :rest t
+     :args (mirror frames fn argc out scratch args...))
+    (:symbol nelisp_aot_listn
+     :function nelisp-cc-runtime-aot-listn
+     :fixed-argc 5 :rest t
+     :args (mirror frames argc out scratch args...))
+    (:symbol nelisp_aot_push_catch
+     :function nelisp-cc-runtime-aot-push-catch-boundary
+     :fixed-argc 6 :rest nil
+     :args (mirror frames tag landing-pad saved-sp scratch))
+    (:symbol nelisp_aot_push_condition
+     :function nelisp-cc-runtime-aot-push-condition-boundary
+     :fixed-argc 6 :rest nil
+     :args (mirror frames conditions landing-pad saved-sp scratch))
+    (:symbol nelisp_aot_push_unwind
+     :function nelisp-cc-runtime-aot-push-unwind-boundary
+     :fixed-argc 6 :rest nil
+     :args (mirror frames cleanup landing-pad saved-sp scratch))
+    (:symbol nelisp_aot_pop_handler
+     :function nelisp-cc-runtime-aot-pop-handler-boundary
+     :fixed-argc 5 :rest nil
+     :args (mirror frames expected-kind out scratch))
+    (:symbol nelisp_aot_throw
+     :function nelisp-cc-runtime-aot-throw-boundary
+     :fixed-argc 6 :rest nil
+     :args (mirror frames tag value out scratch))
+    (:symbol nelisp_aot_signal
+     :function nelisp-cc-runtime-aot-signal-boundary
+     :fixed-argc 6 :rest nil
+     :args (mirror frames tag data out scratch))
+    (:symbol nelisp_aot_errorn
+     :function nelisp-cc-runtime-aot-errorn-boundary
+     :fixed-argc 5 :rest t
+     :args (mirror frames argc out scratch args...)))
+  "Doc 129 AOT extern C ABI descriptors known to the elisp runtime.
+Each descriptor maps the symbol emitted by Phase 47 object output to
+the Emacs-side bridge function that simulates the same boundary.  The
+table is metadata only: real address resolution still goes through
+`nelisp-cc-runtime-resolve-symbol' and the standalone runtime's dlsym
+hook.")
+
+(defun nelisp-cc-runtime-aot-c-abi-descriptors ()
+  "Return a copy of the Doc 129 AOT C ABI descriptor table."
+  (mapcar #'copy-sequence nelisp-cc-runtime--aot-c-abi-descriptors))
+
+(defun nelisp-cc-runtime-aot-c-abi-descriptor (symbol-name)
+  "Return the Doc 129 AOT C ABI descriptor for SYMBOL-NAME, or nil."
+  (unless (symbolp symbol-name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-c-abi-symbol-not-symbol symbol-name)))
+  (let ((descriptor
+         (cl-find-if (lambda (entry)
+                       (eq (plist-get entry :symbol) symbol-name))
+                     nelisp-cc-runtime--aot-c-abi-descriptors)))
+    (when descriptor
+      (copy-sequence descriptor))))
+
+(defun nelisp-cc-runtime-validate-aot-c-abi-descriptors ()
+  "Validate the Doc 129 AOT C ABI descriptor table.
+Signals `nelisp-cc-runtime-error' on duplicate native symbols, malformed
+arity metadata, or an Emacs bridge function that is not currently
+defined.  Returns t on success."
+  (let ((seen nil))
+    (dolist (descriptor nelisp-cc-runtime--aot-c-abi-descriptors)
+      (let ((symbol (plist-get descriptor :symbol))
+            (fn (plist-get descriptor :function))
+            (fixed (plist-get descriptor :fixed-argc)))
+        (unless (and (symbolp symbol)
+                     (symbolp fn)
+                     (integerp fixed)
+                     (<= 0 fixed)
+                     (plist-member descriptor :rest)
+                     (listp (plist-get descriptor :args)))
+          (signal 'nelisp-cc-runtime-error
+                  (list :bad-aot-c-abi-descriptor descriptor)))
+        (when (memq symbol seen)
+          (signal 'nelisp-cc-runtime-error
+                  (list :duplicate-aot-c-abi-symbol symbol)))
+        (unless (fboundp fn)
+          (signal 'nelisp-cc-runtime-error
+                  (list :aot-c-abi-function-unbound fn)))
+        (push symbol seen)))
+    t))
+
 (defun nelisp-cc-runtime--validate-aot-init-helper-descriptor (descriptor)
   "Validate one Doc 129 AOT init helper DESCRIPTOR."
   (unless (and (listp descriptor)
