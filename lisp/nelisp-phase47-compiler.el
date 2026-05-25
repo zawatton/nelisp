@@ -4352,6 +4352,84 @@ source form."
            handler))
         (list :handlers clauses :form body)))))
 
+(defun nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+    (sexp)
+  "Return non-nil when SEXP is a safe dynamic condition if tree."
+  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+    (cond
+     ((and (nelisp-phase47-compiler--aot-direct-condition-form sexp)
+           (not (nelisp-phase47-compiler--aot-direct-condition-tag sexp)))
+      t)
+     ((and (consp sexp)
+           (eq (car sexp) 'if)
+           (= (length sexp) 4)
+           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (nth 1 sexp))))
+      (let ((then (nth 2 sexp))
+            (else (nth 3 sexp)))
+        (and (or (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+                  then)
+                 (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+                  else))
+             (or (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+                  then)
+                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                       then)))
+             (or (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+                  else)
+                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                       else))))))
+     (t nil))))
+
+(defun nelisp-phase47-compiler--aot-condition-case-dynamic-tree-form
+    (body clauses)
+  "Return BODY's dynamic condition tree descriptor, or nil."
+  (let ((body (nelisp-phase47-compiler--aot-branch-tree-form body)))
+    (when (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+           body)
+      (dolist (handler clauses)
+        (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+         handler))
+      (list :handlers clauses :form body))))
+
+(defun nelisp-phase47-compiler--aot-condition-case-dynamic-tree-unwind-form
+    (body clauses)
+  "Return BODY's dynamic condition unwind tree descriptor, or nil."
+  (when (and (consp body)
+             (eq (car body) 'unwind-protect)
+             (>= (length body) 2))
+    (let ((protected-body
+           (nelisp-phase47-compiler--aot-branch-tree-form
+            (nth 1 body))))
+      (when (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+             protected-body)
+        (dolist (handler clauses)
+          (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+           handler))
+        (list :handlers clauses
+              :form (cons 'unwind-protect
+                          (cons protected-body (nthcdr 2 body))))))))
+
+(defun nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
+    (sexp)
+  "Return SEXP with direct dynamic condition leaves landing through OUT."
+  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+    (cond
+     ((and (nelisp-phase47-compiler--aot-direct-condition-form sexp)
+           (not (nelisp-phase47-compiler--aot-direct-condition-tag sexp)))
+      `(seq
+        ,sexp
+        (aot-landing-jump out)))
+     ((and (consp sexp)
+           (eq (car sexp) 'if)
+           (= (length sexp) 4))
+      `(if ,(nth 1 sexp)
+           ,(nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
+             (nth 2 sexp))
+         ,(nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
+           (nth 3 sexp))))
+     (t sexp))))
+
 (defun nelisp-phase47-compiler--aot-condition-case-conditional-unwind-form
     (body clauses)
   "Return BODY's conditional condition-signalling unwind descriptor."
@@ -4656,6 +4734,8 @@ source form."
              ,@cleanups
              (aot-landing-jump out))))))))
      ((or (nelisp-phase47-compiler--aot-condition-tree-tag branch)
+          (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+           branch)
           (and selected-tag
                clauses
                (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
@@ -5325,41 +5405,64 @@ Doc 129.8 work."
                  (not conditional-handler)
                  (nelisp-phase47-compiler--aot-condition-case-direct-dynamic-handler
                   body clauses)))
+           (dynamic-tree-handler
+            (and (not direct-handler)
+                 (not conditional-handler)
+                 (not direct-dynamic-handler)
+                 (nelisp-phase47-compiler--aot-condition-case-dynamic-tree-form
+                  body clauses)))
            (direct-unwind-handler
             (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
+                 (not dynamic-tree-handler)
                  (nelisp-phase47-compiler--aot-condition-case-direct-unwind-form
                   body clauses)))
            (direct-dynamic-unwind-handler
             (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
+                 (not dynamic-tree-handler)
                  (not direct-unwind-handler)
                  (nelisp-phase47-compiler--aot-condition-case-direct-dynamic-unwind-form
+                  body clauses)))
+           (dynamic-tree-unwind-handler
+            (and (not direct-handler)
+                 (not conditional-handler)
+                 (not direct-dynamic-handler)
+                 (not dynamic-tree-handler)
+                 (not direct-unwind-handler)
+                 (not direct-dynamic-unwind-handler)
+                 (nelisp-phase47-compiler--aot-condition-case-dynamic-tree-unwind-form
                   body clauses)))
            (conditional-unwind-handler
             (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
+                 (not dynamic-tree-handler)
                  (not direct-unwind-handler)
                  (not direct-dynamic-unwind-handler)
+                 (not dynamic-tree-unwind-handler)
                  (nelisp-phase47-compiler--aot-condition-case-conditional-unwind-form
                   body clauses)))
            (mixed-unwind-handler
             (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
+                 (not dynamic-tree-handler)
                  (not direct-unwind-handler)
                  (not direct-dynamic-unwind-handler)
+                 (not dynamic-tree-unwind-handler)
                  (not conditional-unwind-handler)
                  (nelisp-phase47-compiler--aot-condition-case-mixed-unwind-form
                   body clauses))))
       (when (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
+                 (not dynamic-tree-handler)
                  (not direct-unwind-handler)
                  (not direct-dynamic-unwind-handler)
+                 (not dynamic-tree-unwind-handler)
                  (not conditional-unwind-handler)
                  (not mixed-unwind-handler)
                  (nelisp-phase47-compiler--aot-nonlocal-source-form-p body))
@@ -5420,6 +5523,42 @@ Doc 129.8 work."
              (aot-landing-jump out)
              ,@landing-forms)
            env fenv defuns)))
+       (dynamic-tree-handler
+        (let* ((handlers (plist-get dynamic-tree-handler :handlers))
+               (condition-form (plist-get dynamic-tree-handler :form))
+               (entries
+                (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+                 handlers var))
+               (landing-forms
+                (mapcar
+                 (lambda (entry)
+                   `(aot-landing-label
+                     ,(plist-get entry :landing-label)
+                     ,(plist-get entry :handled-form)))
+                 entries))
+               (value-slot
+                (nelisp-phase47-compiler--gensym
+                 "aot-condition-value")))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             ,@(mapcan
+                (lambda (entry)
+                  (mapcar
+                   (lambda (selector)
+                     `(aot-push-condition
+                       ',selector
+                       ',(plist-get entry :landing-label)
+                       (aot-current-sp)))
+                   (plist-get entry :selectors)))
+                entries)
+             (let (((,value-slot :type sexp)
+                    ,(nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
+                      condition-form)))
+               (seq
+                (aot-pop-handler 'condition)
+                ,value-slot))
+             ,@landing-forms)
+           env fenv defuns)))
        (direct-unwind-handler
         (let* ((tag (plist-get direct-unwind-handler :tag))
                (handler (plist-get direct-unwind-handler :handler))
@@ -5449,6 +5588,36 @@ Doc 129.8 work."
         (let* ((handlers (plist-get direct-dynamic-unwind-handler :handlers))
                (unwind-form
                 (plist-get direct-dynamic-unwind-handler :form))
+               (entries
+                (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+                 handlers var))
+               (landing-forms
+                (mapcar
+                 (lambda (entry)
+                   `(aot-landing-label
+                     ,(plist-get entry :landing-label)
+                     ,(plist-get entry :handled-form)))
+                 entries)))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             ,@(mapcan
+                (lambda (entry)
+                  (mapcar
+                   (lambda (selector)
+                     `(aot-push-condition
+                       ',selector
+                       ',(plist-get entry :landing-label)
+                       (aot-current-sp)))
+                   (plist-get entry :selectors)))
+                entries)
+             ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
+               unwind-form nil nil nil nil
+               landing-forms))
+           env fenv defuns)))
+       (dynamic-tree-unwind-handler
+        (let* ((handlers (plist-get dynamic-tree-unwind-handler :handlers))
+               (unwind-form
+                (plist-get dynamic-tree-unwind-handler :form))
                (entries
                 (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
                  handlers var))
