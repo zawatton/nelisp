@@ -582,6 +582,7 @@ at its kind-fixed offset since per-kind layout is constant."
 (defconst nelisp-phase47-compiler--ir-kind-tags
   '((alloc-bytes . 0)
     (arith . 1)
+    (aot-root-scope . 92)
     (atomic-compare-exchange . 2)
     (atomic-fetch-add . 3)
     (bits-to-f64 . 4)
@@ -781,6 +782,49 @@ root vector while the compiled function is active."
          (when descriptor
            (push descriptor descriptors)))))
     (nreverse descriptors)))
+
+(defun nelisp-phase47-compiler--auto-aot-root-boundary-slots (fenv)
+  "Return Doc 129.5F boundary slots from FENV, or nil.
+
+The automatic root-frame MVP is intentionally opt-in: a defun must
+already expose the Doc 99 / 129.5 boundary locals `out', `mirror',
+`frames', `scratch', and `roots'.  `roots' is the prebuilt AOT root
+vector; later 129.5 work will materialize it from `:gc-root-slots'."
+  (let ((slots nil)
+        (ok t))
+    (dolist (sym '(out mirror frames scratch roots))
+      (let ((info (cdr (assq sym fenv))))
+        (if (and info
+                 (eq (or (plist-get info :class) 'gp) 'gp)
+                 (integerp (plist-get info :slot)))
+            (push (cons sym (plist-get info :slot)) slots)
+          (setq ok nil))))
+    (when ok
+      (nreverse slots))))
+
+(defun nelisp-phase47-compiler--maybe-wrap-aot-root-scope
+    (body-ir gc-root-slots env fenv defuns)
+  "Wrap BODY-IR in automatic Doc 129.5F root push/pop when possible."
+  (let ((boundary-slots
+         (and gc-root-slots
+              (nelisp-phase47-compiler--auto-aot-root-boundary-slots fenv))))
+    (if boundary-slots
+        (nelisp-phase47-compiler--make-ir
+              'aot-root-scope
+              :root-slots gc-root-slots
+              :boundary-slots boundary-slots
+              :push-ir
+              (nelisp-phase47-compiler--parse-value
+               '(extern-call nelisp_aot_push_roots
+                             mirror frames roots out scratch)
+               env fenv defuns)
+              :body body-ir
+              :pop-ir
+              (nelisp-phase47-compiler--parse-value
+               '(extern-call nelisp_aot_pop_roots
+                             mirror frames roots out scratch)
+               env fenv defuns))
+      body-ir)))
 
 (defun nelisp-phase47-compiler--parse-let-var (var-form)
   "Return `(VAR ROOT-P)' for a Phase 47 `let' VAR-FORM."
@@ -4324,7 +4368,12 @@ Returns one of:
                              rt-slot-cell))
                         (nelisp-phase47-compiler--parse-value
                          body env new-fenv defuns)))
-             (rt-slot-count (- (car rt-slot-cell) arity)))
+             (rt-slot-count (- (car rt-slot-cell) arity))
+             (gc-root-slots
+              (nelisp-phase47-compiler--gc-root-slots-for-defun body-ir))
+             (root-managed-body-ir
+              (nelisp-phase47-compiler--maybe-wrap-aot-root-scope
+               body-ir gc-root-slots env new-fenv defuns)))
         (nelisp-phase47-compiler--make-ir 'defun
               :name name
               :params params
@@ -4333,9 +4382,8 @@ Returns one of:
               :rest-p (plist-get param-info :rest-p)
               :fixed-param-count (plist-get param-info :fixed-count)
               :rt-slot-count rt-slot-count
-              :gc-root-slots (nelisp-phase47-compiler--gc-root-slots-for-defun
-                              body-ir)
-              :body body-ir))))
+              :gc-root-slots gc-root-slots
+              :body root-managed-body-ir))))
    ;; Bare call in statement position (= side-effect; value discarded).
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
@@ -4433,6 +4481,10 @@ defun bodies too so functions can call `write'."
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
                ((= tag 88)            ; value-seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+               ((= tag 92)            ; aot-root-scope
+                (walk (nelisp-phase47-compiler--ir-get node :push-ir))
+                (walk (nelisp-phase47-compiler--ir-get node :body))
+                (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
                ((= tag 32)            ; let-rt
                 (walk (nelisp-phase47-compiler--ir-get node :value-ir))
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
@@ -4512,6 +4564,10 @@ when two `table-define' nodes share a NAME."
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
                ((= tag 88)            ; value-seq
                 (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+               ((= tag 92)            ; aot-root-scope
+                (walk (nelisp-phase47-compiler--ir-get node :push-ir))
+                (walk (nelisp-phase47-compiler--ir-get node :body))
+                (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
                ;; table-lookup is value-producing; the `:index' child
                ;; is itself an IR node walked for nested defines (=
                ;; defensive, normal source has table-define at top
@@ -4552,6 +4608,10 @@ walk; the emitter substitutes a no-op for the original site."
                 (dolist (binding (nelisp-phase47-compiler--ir-get node :bindings))
                   (walk (nth 2 binding)))
                 (walk (nelisp-phase47-compiler--ir-get node :body)))
+               ((= tag 92)            ; aot-root-scope
+                (walk (nelisp-phase47-compiler--ir-get node :push-ir))
+                (walk (nelisp-phase47-compiler--ir-get node :body))
+                (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
                (t nil))))))
       (walk ir))
     (nreverse acc)))
@@ -4940,6 +5000,58 @@ mask is needed):
       (nelisp-phase47-compiler--emit-value value-ir buf)
       (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax))))
 
+(defun nelisp-phase47-compiler--emit-frame-slot-into-reg (buf slot reg)
+  "Emit a GP load from frame SLOT into REG."
+  (nelisp-asm-x86_64-mov-reg-mem-disp8
+   buf reg 'rbp (- (* 8 (1+ slot)))))
+
+(defun nelisp-phase47-compiler--emit-aot-root-bridge-call (node name buf)
+  "Emit a direct SysV call to Doc 129.5 root bridge NAME for NODE."
+  (unless (and (eq nelisp-phase47-compiler--arch 'x86_64)
+               (eq nelisp-phase47-compiler--abi 'sysv))
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-root-scope-unsupported-target
+                  nelisp-phase47-compiler--arch
+                  nelisp-phase47-compiler--abi)))
+  (let* ((slots (nelisp-phase47-compiler--ir-get node :boundary-slots))
+         (slot-of (lambda (sym)
+                    (or (cdr (assq sym slots))
+                        (signal 'nelisp-phase47-compiler-error
+                                (list :aot-root-scope-missing-slot
+                                      sym slots))))))
+    ;; nelisp_aot_{push,pop}_roots(mirror, frames, roots, out, scratch)
+    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+     buf (funcall slot-of 'mirror) 'rdi)
+    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+     buf (funcall slot-of 'frames) 'rsi)
+    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+     buf (funcall slot-of 'roots) 'rdx)
+    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+     buf (funcall slot-of 'out) 'rcx)
+    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+     buf (funcall slot-of 'scratch) 'r8)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf (symbol-name name) -4 'text)))
+
+(defun nelisp-phase47-compiler--emit-aot-root-scope (node buf)
+  "Emit automatic Doc 129.5 root push/pop around NODE's body."
+  (nelisp-phase47-compiler--emit-aot-root-bridge-call
+   node 'nelisp_aot_push_roots buf)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :body)
+   buf)
+  ;; Preserve the body's GP return value across the pop bridge.  The
+  ;; body-entry stack is 16-byte aligned; `push rax' misaligns it, so
+  ;; insert one fixed 8-byte pad before the bridge call and remove it
+  ;; before restoring rax.
+  (nelisp-asm-x86_64-push buf 'rax)
+  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
+  (nelisp-phase47-compiler--emit-aot-root-bridge-call
+   node 'nelisp_aot_pop_roots buf)
+  (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
+  (nelisp-asm-x86_64-pop buf 'rax))
+
 (defun nelisp-phase47-compiler--emit-value (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
 NODE is one of `imm' / `ref' / `arith' / `call' / `cmp' / `if' /
@@ -5006,6 +5118,7 @@ the node's class to consume the result correctly."
                      15 16 18 19         ; cons-make cons-make-with-clone cons-set-car cons-set-cdr
                      86 11 33            ; while cond logic
                      89                  ; let-rt-n
+                     92                  ; aot-root-scope
                      78))               ; syscall-direct
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (nelisp-phase47-compiler--ir-kind node) node))
@@ -5214,6 +5327,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-let-rt-n-bindings node buf)
        (nelisp-phase47-compiler--emit-value
         (nelisp-phase47-compiler--ir-get node :body) buf))
+      ((= tag 92)               ; aot-root-scope
+       (nelisp-phase47-compiler--emit-aot-root-scope node buf))
       ;; (tag 78 syscall-direct already handled above; duplicate `pcase'
       ;; arm was dead, dropped under `cond' first-match semantics)
       ((= tag 80)               ; table-lookup
