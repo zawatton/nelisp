@@ -4190,11 +4190,26 @@ contain no unresolved non-local source form."
             (nth 3 sexp))))
      (t nil))))
 
+(defun nelisp-phase47-compiler--aot-cleanup-sequence-flatten
+    (cleanups)
+  "Return CLEANUPS with cleanup-local `progn' / `seq' wrappers flattened."
+  (apply #'append
+         (mapcar
+          (lambda (form)
+            (if (and (consp form)
+                     (memq (car form) '(progn seq)))
+                (nelisp-phase47-compiler--aot-cleanup-sequence-flatten
+                 (cdr form))
+              (list form)))
+          cleanups)))
+
 (defun nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
     (cleanups)
   "Return non-nil when CLEANUPS can be routed by cleanup-body lowering."
   (catch 'unsafe
-    (let ((forms cleanups))
+    (let ((forms
+           (nelisp-phase47-compiler--aot-cleanup-sequence-flatten
+            cleanups)))
       (while forms
         (let ((form (car forms)))
           (cond
@@ -4220,7 +4235,9 @@ contain no unresolved non-local source form."
     (cleanups)
   "Return non-nil when CLEANUPS may exit non-locally through safe lowering."
   (catch 'found
-    (dolist (form cleanups nil)
+    (dolist (form (nelisp-phase47-compiler--aot-cleanup-sequence-flatten
+                   cleanups)
+                  nil)
       (when (or (nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
                  form)
                 (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
@@ -4251,24 +4268,26 @@ contain no unresolved non-local source form."
     (cleanups resume-form)
   "Return cleanup sequence for CLEANUPS, falling through to RESUME-FORM.
 When a cleanup exits non-locally, it replaces RESUME-FORM."
-  (if cleanups
-      (let ((form (car cleanups)))
-        (cond
-         ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
-           form)
-          form)
-         ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
-           form)
-          (nelisp-phase47-compiler--aot-cleanup-tree-body-form
-           form
-           (nelisp-phase47-compiler--aot-cleanup-body-form
-            (cdr cleanups) resume-form)))
-         (t
-          `(seq
-            ,form
-            ,(nelisp-phase47-compiler--aot-cleanup-body-form
-              (cdr cleanups) resume-form)))))
-    resume-form))
+  (let ((cleanups
+         (nelisp-phase47-compiler--aot-cleanup-sequence-flatten cleanups)))
+    (if cleanups
+        (let ((form (car cleanups)))
+          (cond
+           ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
+             form)
+            form)
+           ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+             form)
+            (nelisp-phase47-compiler--aot-cleanup-tree-body-form
+             form
+             (nelisp-phase47-compiler--aot-cleanup-body-form
+              (cdr cleanups) resume-form)))
+           (t
+            `(seq
+              ,form
+              ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                (cdr cleanups) resume-form)))))
+      resume-form)))
 
 (defun nelisp-phase47-compiler--aot-conditional-condition-case-form
     (body clauses)

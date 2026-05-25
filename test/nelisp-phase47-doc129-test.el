@@ -8865,6 +8865,31 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-progn-cleanup-throw-route ()
+  "Doc 129.8BE: cleanup-local progn wrappers expose non-local exits."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_cleanup_progn_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (throw tag value)
+                   (progn
+                     (identity value)
+                     (throw 'other value))
+                   (identity value)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_throw externs) 2))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
+
 (ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-direct-throw ()
   "Doc 129.8AB: catch-targeted unwind cleanup jumps to static landing."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -9108,6 +9133,38 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should-not machine-jumps)))
 
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-progn-cleanup-throw-route ()
+  "Doc 129.8BE: condition cleanup progn wrappers expose non-local exits."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_unwind_cleanup_progn_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (unwind-protect
+                         (signal tag value)
+                       (progn
+                         (identity value)
+                         (throw 'other value))
+                       (identity value))
+                   (error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump)))
+    (should (member 'nelisp_aot_push_condition externs))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_signal externs) 1))
+    (should (= (cl-count 'nelisp_aot_throw externs) 1))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
+    (should (member 'nelisp_aot_landing_error externs))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (should-not machine-jumps)))
+
 (ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-prefix-cleanup-signal ()
   "Doc 129.8BB: catch cleanup stops at the first cleanup non-local."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -9198,6 +9255,36 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_signal externs) 1))
     (should (member 'nelisp_aot_landing_value externs))
     (should-not (member 'nelisp_aot_builtin_call1 externs))
+    (should-not (member 'nelisp_aot_landing_jump externs))
+    (should-not machine-jumps)))
+
+(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-seq-cleanup-throw-route ()
+  "Doc 129.8BE: catch cleanup seq wrappers expose non-local exits."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_unwind_cleanup_seq_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (tag :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (unwind-protect
+                       (throw tag value)
+                     (seq
+                      (identity value)
+                      (throw 'other value))
+                     (identity value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (machine-jumps
+          (nelisp-phase47-doc129-test--ir-nodes
+           ir 'aot-machine-landing-jump)))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
+    (should (= (cl-count 'nelisp_aot_throw externs) 2))
+    (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
+    (should (member 'nelisp_aot_landing_value externs))
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should-not machine-jumps)))
 
@@ -9942,6 +10029,38 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_throw" out))
             (should (string-match-p "nelisp_aot_signal" out))
             (should-not (string-match-p "nelisp_aot_builtin_call1" out))
+            (should-not (string-match-p "nelisp_aot_landing_jump" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-progn-cleanup-throw-route ()
+  "Doc 129.8BE: cleanup progn non-local route compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-cleanup-progn-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_cleanup_progn_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (tag :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (throw tag value)
+                (progn
+                  (identity value)
+                  (throw 'other value))
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_cleanup_progn_throw" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_push_unwind" out))
+            (should (string-match-p "nelisp_aot_throw" out))
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
