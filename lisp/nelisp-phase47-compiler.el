@@ -4282,15 +4282,22 @@ source form."
            (tags
             (nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
              protected-body clauses)))
-      (when (= (length tags) 1)
-        (let* ((tag (car tags))
-               (handler
-                (nelisp-phase47-compiler--aot-condition-case-direct-handler
-                 tag clauses)))
-          (when (and handler
-                     (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
-                      protected-body tag clauses))
-            (list :tag tag :handler handler :form body)))))))
+      (when (and tags
+                 (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+                  protected-body tags clauses))
+        (list :tag (car tags)
+              :handler
+              (nelisp-phase47-compiler--aot-condition-case-direct-handler
+               (car tags) clauses)
+              :tags tags
+              :handlers
+              (mapcar
+               (lambda (tag)
+                 (cons tag
+                       (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                        tag clauses)))
+               tags)
+              :form body)))))
 
 (defun nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
     (sexp clauses)
@@ -4315,13 +4322,16 @@ source form."
    (t nil)))
 
 (defun nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
-    (sexp selected-tag clauses)
+    (sexp selected-tags clauses)
   "Return non-nil when SEXP is safe for mixed condition cleanup lowering."
   (cond
    ((nelisp-phase47-compiler--aot-direct-condition-form sexp)
-    (let ((tag (nelisp-phase47-compiler--aot-direct-condition-tag sexp)))
+    (let ((tag (nelisp-phase47-compiler--aot-direct-condition-tag sexp))
+          (selected
+           (nelisp-phase47-compiler--aot-condition-cleanup-selected-tags
+            selected-tags)))
       (or (null tag)
-          (eq tag selected-tag)
+          (memq tag selected)
           (not (nelisp-phase47-compiler--aot-condition-case-direct-handler
                 tag clauses)))))
    ((and (consp sexp)
@@ -4332,17 +4342,43 @@ source form."
     (let ((then (nth 2 sexp))
           (else (nth 3 sexp)))
       (and (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
-                then selected-tag clauses)
+                then selected-tags clauses)
                (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                      then)))
            (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
-                else selected-tag clauses)
+                else selected-tags clauses)
                (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                      else)))
            (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
-                then selected-tag clauses)
+                then selected-tags clauses)
                (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
-                else selected-tag clauses)))))
+                else selected-tags clauses)))))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--aot-condition-cleanup-selected-tags
+    (selection)
+  "Return condition tags selected by cleanup landing SELECTION."
+  (cond
+   ((null selection) nil)
+   ((symbolp selection) (list selection))
+   ((and (consp selection)
+         (consp (car selection)))
+    (mapcar #'car selection))
+   ((listp selection) selection)
+   (t nil)))
+
+(defun nelisp-phase47-compiler--aot-condition-cleanup-landing-label
+    (tag default-label selection)
+  "Return cleanup landing label for condition TAG under SELECTION."
+  (cond
+   ((null selection) default-label)
+   ((symbolp selection)
+    (and (eq tag selection) default-label))
+   ((and (consp selection)
+         (consp (car selection)))
+    (cdr (assq tag selection)))
+   ((listp selection)
+    (and (memq tag selection) default-label))
    (t nil)))
 
 (defun nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
@@ -4481,7 +4517,10 @@ source form."
            (nelisp-phase47-compiler--gensym "aot-unwind-cleanup"))
           (branch-tag
            (nelisp-phase47-compiler--aot-direct-condition-tag branch)))
-      (if (or (null selected-tag) (eq branch-tag selected-tag))
+      (let ((target-label
+             (nelisp-phase47-compiler--aot-condition-cleanup-landing-label
+              branch-tag landing-label selected-tag)))
+        (if target-label
           `(seq
             (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
             ,branch
@@ -4489,14 +4528,14 @@ source form."
               (seq
                ,@cleanups
                (aot-machine-landing-jump
-                (aot-current-sp) ,landing-label))))
+                (aot-current-sp) ,target-label))))
         `(seq
           (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
           ,branch
           (aot-landing-label ,cleanup-label
             (seq
              ,@cleanups
-             (aot-landing-jump out)))))))
+             (aot-landing-jump out))))))))
    ((or (nelisp-phase47-compiler--aot-condition-tree-tag branch)
         (and selected-tag
              clauses
@@ -4517,7 +4556,8 @@ source form."
         ,value-slot)))))
 
 (defun nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
-    (unwind-form landing-label landing-body &optional selected-tag clauses)
+    (unwind-form landing-label landing-body &optional selected-tag clauses
+                 landing-forms)
   "Return conditional condition cleanup for static LANDING-LABEL."
   (let ((body-form (nth 1 unwind-form))
         (cleanups (nthcdr 2 unwind-form))
@@ -4530,7 +4570,8 @@ source form."
     `(seq
       ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
         body-form cleanups landing-label value-slot selected-tag clauses)
-      (aot-landing-label ,landing-label ,landing-body))))
+      ,@(or landing-forms
+            (list `(aot-landing-label ,landing-label ,landing-body))))))
 
 (defun nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
     (branch cleanups value-slot)
@@ -5191,29 +5232,55 @@ Doc 129.8 work."
                unwind-form landing-label handled-form))
            env fenv defuns)))
        (mixed-unwind-handler
-        (let* ((tag (plist-get mixed-unwind-handler :tag))
-               (handler (plist-get mixed-unwind-handler :handler))
+        (let* ((handlers (plist-get mixed-unwind-handler :handlers))
                (unwind-form (plist-get mixed-unwind-handler :form))
-               (handler-body
-                (nelisp-phase47-compiler--body->form
-                 (cdr handler)))
-               (landing-label
-                (nelisp-phase47-compiler--gensym
-                 "aot-condition-landing"))
-               (handled-form
-                (if var
-                    `(let (((,var :type sexp) (aot-landing-error out)))
-                       ,handler-body)
-                  `(seq
-                    (aot-landing-error out)
-                    ,handler-body))))
+               (entries
+                (mapcar
+                 (lambda (entry)
+                   (let* ((tag (car entry))
+                          (handler (cdr entry))
+                          (handler-body
+                           (nelisp-phase47-compiler--body->form
+                            (cdr handler)))
+                          (landing-label
+                           (nelisp-phase47-compiler--gensym
+                            "aot-condition-landing"))
+                          (handled-form
+                           (if var
+                               `(let (((,var :type sexp)
+                                       (aot-landing-error out)))
+                                  ,handler-body)
+                             `(seq
+                               (aot-landing-error out)
+                               ,handler-body))))
+                     (list :tag tag
+                           :landing-label landing-label
+                           :handled-form handled-form)))
+                 handlers))
+               (landing-map
+                (mapcar
+                 (lambda (entry)
+                   (cons (plist-get entry :tag)
+                         (plist-get entry :landing-label)))
+                 entries))
+               (landing-forms
+                (mapcar
+                 (lambda (entry)
+                   `(aot-landing-label
+                     ,(plist-get entry :landing-label)
+                     ,(plist-get entry :handled-form)))
+                 entries)))
           (nelisp-phase47-compiler--parse-value
            `(seq
-             (aot-push-condition ',tag
-                                 ',landing-label
-                                 (aot-current-sp))
+             ,@(mapcar
+                (lambda (entry)
+                  `(aot-push-condition
+                    ',(plist-get entry :tag)
+                    ',(plist-get entry :landing-label)
+                    (aot-current-sp)))
+                entries)
              ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
-               unwind-form landing-label handled-form tag clauses))
+               unwind-form nil nil landing-map clauses landing-forms))
            env fenv defuns)))
        (conditional-handler
         (let* ((tag (plist-get conditional-handler :tag))
