@@ -2413,6 +2413,8 @@ defun is visible in the current compile unit.")
     mapcar mapc mapconcat mapcan maphash
     map-apply map-do map-filter map-merge-with
     map-some map-every-p map-remove map-keys-apply map-values-apply
+    map-pairs map-keys map-values map-length map-elt map-contains-key
+    map-copy map-into map-merge map-insert map-delete map-put!
     seq-map seq-do seq-filter seq-remove seq-find
     seq-some seq-every-p seq-count seq-reduce seq-mapcat
     seq-keep seq-mapn seq-map-indexed seq-sort seq-uniq

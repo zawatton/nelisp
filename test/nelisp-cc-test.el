@@ -1745,7 +1745,47 @@ exit points were emitted; call-points were missing."
       (nelisp-cc-runtime-aot-builtin-calln
        'mirror 'frames 'map-values-apply 2 out 'scratch
        #'1+ map-data)
-      (should (equal (aref out 0) '(2 3))))))
+      (should (equal (aref out 0) '(2 3)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-pairs 1 out 'scratch map-data)
+      (should (equal (aref out 0) '((a . 1) (bb . 2))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-keys 1 out 'scratch map-data)
+      (should (equal (aref out 0) '(a bb)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-values 1 out 'scratch map-data)
+      (should (equal (aref out 0) '(1 2)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-length 1 out 'scratch map-data)
+      (should (= (aref out 0) 2))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-elt 2 out 'scratch map-data 'bb)
+      (should (= (aref out 0) 2))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-contains-key 2 out 'scratch map-data 'a)
+      (should (eq (aref out 0) t))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-copy 1 out 'scratch map-data)
+      (should (equal (aref out 0) map-data))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-into 2 out 'scratch map-data 'list)
+      (should (equal (aref out 0) map-data))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-merge 3 out 'scratch
+       'list map-data '((c . 3)))
+      (should (equal (aref out 0) '((a . 1) (bb . 2) (c . 3))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-insert 3 out 'scratch map-data 'c 3)
+      (should (equal (aref out 0) '((c . 3) (a . 1) (bb . 2))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'map-delete 2 out 'scratch
+       (copy-sequence map-data) 'a)
+      (should (equal (aref out 0) '((bb . 2))))
+      (let ((mutable (copy-sequence map-data)))
+        (nelisp-cc-runtime-aot-builtin-calln
+         'mirror 'frames 'map-put! 3 out 'scratch mutable 'a 9)
+        (should (= (aref out 0) 9))
+        (should (equal mutable '((a . 9) (bb . 2))))))))
 
 (ert-deftest nelisp-cc-runtime-aot-builtin-calln-validates-boundary ()
   "Doc 129.6F — builtin calln rejects malformed ABI arguments."
