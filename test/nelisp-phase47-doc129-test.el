@@ -939,6 +939,32 @@ materialized closure temporary."
     (should (equal (plist-get closure :arglist) '(item)))
     (should (equal (plist-get closure :captures) '(cap)))))
 
+(ert-deftest nelisp-phase47-doc129/object-module-init-metadata ()
+  "Doc 129.7AI: object metadata serializes the module-init plan."
+  (let* ((metadata
+          (nelisp-phase47-compiler--object-module-init-metadata
+           '(seq
+             (defcustom z 9 "doc" :type 'integer)
+             (defun caller
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name_slot :type sexp)
+                  (cap :type sexp)
+                  (xs :type sexp))
+               (mapcar (lambda (item) (+ item cap)) xs)))))
+         (bytes (plist-get metadata :bytes))
+         (text (decode-coding-string
+                (substring bytes 0 (1- (length bytes)))
+                'utf-8)))
+    (should (equal (plist-get metadata :symbol)
+                   "nelisp_aot_module_init_plan"))
+    (should (= (aref bytes (1- (length bytes))) 0))
+    (should (string-match-p ":helper-order" text))
+    (should (string-match-p "nelisp_aot_custom_0_z" text))
+    (should (string-match-p ":closure-descriptors" text))))
+
 (ert-deftest nelisp-phase47-doc129/top-level-defcustom-rejects-bad-options ()
   "Doc 129.3G: defcustom metadata options are keyword/value pairs."
   (should-error
@@ -3193,6 +3219,40 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_make_closure" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-module-init-plan-embedded ()
+  "Doc 129.7AI: object output embeds module-init metadata in rodata."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-module-init-plan-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defcustom z 9 "doc" :type 'integer)
+             (defun call_mapcar
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name_slot :type sexp)
+                  (cap :type sexp)
+                  (xs :type sexp))
+               (mapcar (lambda (x) (+ x cap)) xs)))
+           path)
+          (let ((symbols (with-output-to-string
+                           (with-current-buffer standard-output
+                             (call-process "readelf" nil t nil
+                                           "--wide" "-s" path))))
+                (contents (with-temp-buffer
+                            (set-buffer-multibyte nil)
+                            (insert-file-contents-literally path)
+                            (buffer-string))))
+            (should (string-match-p "nelisp_aot_module_init_plan" symbols))
+            (should (string-match-p "OBJECT" symbols))
+            (should (string-match-p "LOCAL" symbols))
+            (should (string-match-p ":closure-descriptors" contents))
+            (should (string-match-p "nelisp_aot_custom_0_z" contents))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-function-lambda-closure-value ()

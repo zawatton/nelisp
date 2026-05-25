@@ -1414,6 +1414,32 @@ descriptors into the runtime plan consumed by
      (nelisp-phase47-compiler--gc-root-descriptors ir)
      (nelisp-phase47-compiler--closure-descriptors sexp))))
 
+(defconst nelisp-phase47-compiler--object-module-init-symbol
+  "nelisp_aot_module_init_plan"
+  "Local object symbol for embedded Doc 129 module-init metadata.")
+
+(defun nelisp-phase47-compiler--module-init-plan-empty-p (plan)
+  "Return non-nil when PLAN has no object-load metadata to embed."
+  (and (null (plist-get plan :helper-order))
+       (null (plist-get plan :custom-by-helper))
+       (null (plist-get plan :root-descriptors))
+       (null (plist-get plan :closure-descriptors))))
+
+(defun nelisp-phase47-compiler--object-module-init-metadata (sexp)
+  "Return object metadata plist for SEXP's Doc 129 module-init plan.
+The result is nil when SEXP has no helper/custom/root/closure metadata.
+When non-nil, it is a plist with a UTF-8/NUL-terminated printable plan
+payload suitable for ET_REL `.rodata' embedding."
+  (let ((plan (nelisp-phase47-compiler--module-init-plan sexp)))
+    (unless (nelisp-phase47-compiler--module-init-plan-empty-p plan)
+      (let* ((text (prin1-to-string plan))
+             (bytes (concat (encode-coding-string text 'utf-8 t)
+                            (unibyte-string 0))))
+        (list :symbol nelisp-phase47-compiler--object-module-init-symbol
+              :plan plan
+              :bytes bytes
+              :size (length bytes))))))
+
 (defun nelisp-phase47-compiler--with-defmacros (defs thunk)
   "Temporarily install DEFS while calling THUNK.
 Existing function cells are restored afterwards so compile-time user
@@ -10228,6 +10254,9 @@ drift (= a Doc 92 emitter invariant violation)."
          (ir (nelisp-phase47-compiler--parse source nil))
          (collected (nelisp-phase47-compiler--collect-strings ir))
          (rodata-bytes (cdr collected))
+         (object-metadata
+          (and (eq format 'elf)
+               (nelisp-phase47-compiler--object-module-init-metadata source)))
          (defuns (nelisp-phase47-compiler--collect-defuns ir)))
     (unless (zerop (length rodata-bytes))
       (signal 'nelisp-phase47-compiler-error
@@ -10345,13 +10374,25 @@ drift (= a Doc 92 emitter invariant violation)."
                               :bind 'global
                               :type 'notype))
                       extern-names))
-             (all-symbols (append symbols extern-symbol-plists)))
+             (metadata-symbols
+              (when object-metadata
+                (list
+                 (list :name (plist-get object-metadata :symbol)
+                       :value 0
+                       :size (plist-get object-metadata :size)
+                       :section 'rodata
+                       :bind 'local
+                       :type 'object))))
+             (all-symbols (append metadata-symbols
+                                  symbols
+                                  extern-symbol-plists)))
         (pcase format
           ('elf
            (nelisp-elf-write-binary
             file-path
             (list :e-type 'rel
                   :text text-bytes
+                  :rodata (plist-get object-metadata :bytes)
                   :symbols all-symbols
                   :relocs relocs
                   :machine arch)))
