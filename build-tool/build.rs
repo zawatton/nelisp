@@ -42,7 +42,12 @@ fn main() {
 /// loop Phase 47-ification.  The pre-A30 count had already been
 /// incremented to 213 in an earlier wave; A30 adds one more for the new
 /// Phase 47 dispatch loop kernel source.
-const N_MANIFEST_ENTRIES: usize = 214;
+///
+/// Wave A33.N — bumped to 215 for the new `nelisp_emit_value.o' entry
+/// holding the emit-value leaf-arm kernels (`nelisp_emit_value_imm' +
+/// `nelisp_emit_value_ref_gp').  Pure data add; over-shooting the chunk
+/// count is harmless (elisp clamps the range).
+const N_MANIFEST_ENTRIES: usize = 215;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -212,6 +217,18 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // only existing Phase 47 grammar (no new opcode, no new Rust
         // extern); pure data add to the manifest_sources list.
         "nelisp-cc-bi-meta-dispatch-loop.el",
+        // Wave A33.N — emit-value leaf-arm Phase 47 kernels (回避策 A).
+        // `nelisp_emit_value_imm' + `nelisp_emit_value_ref_gp' Phase 47-
+        // compile the two leaf hot arms of `--emit-value' (= the `imm'
+        // `mov rax, imm32' arm and the GP-class `ref' `mov rax,
+        // [rbp - 8*(slot+1)]' arm) so the standalone self-host emits
+        // those byte sequences natively.  Reads the IR node's integer
+        // field at its A33.4 fixed offset via `vector-ref-ptr' +
+        // `sexp-int-unwrap', writes the fixed-layout bytes into a caller-
+        // preallocated out-vec via `vector-slot-set'.  Composes only
+        // existing Phase 47 grammar (no new opcode, no new Rust extern);
+        // pure data add to the manifest_sources list.  Linux-x86_64 only.
+        "nelisp-cc-bi-emit-value.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
@@ -272,17 +289,26 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let n_threads = std::env::var("NELISP_BUILD_THREADS").ok()
         .and_then(|s| s.parse::<usize>().ok()).filter(|n| *n >= 1).unwrap_or(4).min(total);
     let chunk = (total + n_threads - 1) / n_threads;
-    let shared = std::sync::Arc::new((interpreter.clone(), script.clone(), repo_root.join("lisp"),
-        elisp_obj_dir_str.clone(), target_arch.to_string(), target_os.to_string()));
+    let shared = std::sync::Arc::new((
+        interpreter.clone(),
+        script.clone(),
+        repo_root.join("src"),
+        repo_root.join("lisp"),
+        elisp_obj_dir_str.clone(),
+        target_arch.to_string(),
+        target_os.to_string(),
+    ));
     let mut handles = Vec::with_capacity(n_threads);
     for i in 0..n_threads {
         let (start_i, end_i) = (i * chunk, ((i + 1) * chunk).min(total));
         if start_i >= end_i { break; }
         let sh = shared.clone();
         handles.push(std::thread::spawn(move || {
-            let (interp, scr, lisp_dir, obj_dir, arch, os_) = (&sh.0, &sh.1, &sh.2, &sh.3, &sh.4, &sh.5);
+            let (interp, scr, src_dir, lisp_dir, obj_dir, arch, os_) =
+                (&sh.0, &sh.1, &sh.2, &sh.3, &sh.4, &sh.5, &sh.6);
             let st = std::process::Command::new(interp)
-                .arg("--batch").arg("-Q").arg("-L").arg(lisp_dir)
+                .arg("--batch").arg("-Q")
+                .arg("-L").arg(src_dir).arg("-L").arg(lisp_dir)
                 .arg("--eval").arg(format!("(setenv \"NELISP_ELISP_OBJECTS_DIR\" \"{}\")", obj_dir))
                 .arg("--eval").arg(format!("(setenv \"NELISP_PHASE47_TARGET_ARCH\" \"{}\")", arch))
                 .arg("--eval").arg(format!("(setenv \"NELISP_PHASE47_TARGET_OS\" \"{}\")", os_))

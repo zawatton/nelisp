@@ -7719,6 +7719,50 @@ When ROOTS-RSP-DISP is non-nil, load the roots argument from
                (list :aot-root-scope-unknown-storage
                      root-storage))))))
 
+;; ---- Wave A33.N — emit-value leaf-arm native dispatch (回避策 A) ----
+;;
+;; On standalone NeLisp (= `nl-jit-call-out-2' bound) the two leaf hot
+;; arms of `--emit-value' (= `imm' and GP-class `ref') dispatch into the
+;; Phase 47-compiled `nelisp_emit_value_imm' / `nelisp_emit_value_ref_gp'
+;; kernels (`lisp/nelisp-cc-bi-emit-value.el').  Each kernel reads the IR
+;; node's integer field at its A33.4 fixed vector offset, writes the
+;; fixed-layout opcode + imm/disp bytes into a caller-preallocated out-
+;; vec, and returns the byte count via the result slot.  This wrapper
+;; then splices `out-vec[0..count)' into BUF with the same `emit-bytes'
+;; path the legacy arm uses — so the chunk-list buffer append stays in
+;; elisp and only the per-node byte computation crosses the bridge.
+;;
+;; On host Emacs (= no `nl-jit-call-out-2') the legacy arm runs verbatim,
+;; so the `emacs --batch' reference build is byte-identity-unchanged.
+;; A `condition-case' guards the bridge: on dlsym miss / arity mismatch
+;; the wrapper falls back to the legacy arm rather than mis-emitting.
+
+(defun nelisp-phase47-compiler--emit-value-native-bytes (kernel node n-slots)
+  "Dispatch the Phase 47 leaf-arm KERNEL for IR NODE; return the bytes.
+KERNEL is the extern symbol name string (= `\"nelisp_emit_value_imm\"'
+or `\"nelisp_emit_value_ref_gp\"').  Allocates an N-SLOTS output vector
+(= the kernel's fixed emit length), calls the bridge with NODE + the
+out-vec, reads the byte count the kernel wrote into its result slot,
+and returns the emitted bytes as a unibyte-string.  Returns nil when
+`nl-jit-call-out-2' is unbound (= host Emacs) or the bridge signals, so
+the caller falls back to the legacy elisp arm.
+
+A33.N — only invoked on standalone NeLisp; the host-Emacs reference
+build never reaches here, keeping the produced `.o' bytes unchanged."
+  (when (fboundp 'nl-jit-call-out-2)
+    (condition-case _err
+        (let* ((out-vec (make-vector n-slots 0))
+               (count (funcall (intern "nl-jit-call-out-2")
+                               kernel node out-vec)))
+          (when (and (integerp count) (> count 0) (<= count n-slots))
+            (let ((bytes (make-vector count 0))
+                  (i 0))
+              (while (< i count)
+                (aset bytes i (logand (aref out-vec i) #xFF))
+                (setq i (1+ i)))
+              (apply #'unibyte-string (append bytes nil)))))
+      (error nil))))
+
 (defun nelisp-phase47-compiler--emit-value (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
 NODE is one of `imm' / `ref' / `arith' / `call' / `cmp' / `if' /
@@ -7806,7 +7850,14 @@ the node's class to consume the result correctly."
      (cond
       ((= tag 30)               ; imm
        ;; mov rax, imm32                                = 7 bytes
-       (nelisp-asm-x86_64-mov-imm32 buf 'rax (nelisp-phase47-compiler--ir-get node :value)))
+       ;; A33.N — on standalone NeLisp emit the 7 bytes via the Phase 47
+       ;; `nelisp_emit_value_imm' kernel; fall back to the legacy
+       ;; `mov-imm32' on host Emacs / bridge miss (byte-identical).
+       (let ((native (nelisp-phase47-compiler--emit-value-native-bytes
+                      "nelisp_emit_value_imm" node 7)))
+         (if native
+             (nelisp-asm-x86_64-emit-bytes buf native)
+           (nelisp-asm-x86_64-mov-imm32 buf 'rax (nelisp-phase47-compiler--ir-get node :value)))))
       ((= tag 53)               ; ref
        ;; gp class → `mov rax, [rbp - 8*(slot+1)]'; f64 class →
        ;; `movsd xmm0, [rbp - 8*(slot+1)]'.  Both read the spilled
@@ -7815,8 +7866,19 @@ the node's class to consume the result correctly."
        (if (eq (nelisp-phase47-compiler--ir-get node :class) 'f64)
            (nelisp-phase47-compiler--emit-f64-ref-load
             buf (nelisp-phase47-compiler--ir-get node :slot) 'xmm0)
-         (nelisp-phase47-compiler--emit-ref-load
-          buf (nelisp-phase47-compiler--ir-get node :slot))))
+         ;; A33.N — on standalone NeLisp emit the GP-class 4 bytes via the
+         ;; Phase 47 `nelisp_emit_value_ref_gp' kernel; fall back to the
+         ;; legacy `--emit-ref-load' on host Emacs / bridge miss.  The
+         ;; legacy path also range-checks slot (0..13) and signals on
+         ;; overflow; that guard runs before native dispatch is reached
+         ;; in practice since the parser never produces an out-of-range
+         ;; slot, so the byte sequences are identical when both fire.
+         (let ((native (nelisp-phase47-compiler--emit-value-native-bytes
+                        "nelisp_emit_value_ref_gp" node 4)))
+           (if native
+               (nelisp-asm-x86_64-emit-bytes buf native)
+             (nelisp-phase47-compiler--emit-ref-load
+              buf (nelisp-phase47-compiler--ir-get node :slot))))))
       ((= tag 24)               ; f64-binop
        (nelisp-phase47-compiler--emit-f64-binop node buf))
       ((= tag 26)               ; f64-cmp

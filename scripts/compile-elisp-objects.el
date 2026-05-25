@@ -1419,6 +1419,24 @@
     (nelisp-cc-bi-tty-raw
      :source-var nelisp-cc-bi-tty-raw--source
      :output "nelisp_tty_raw.o"
+     :requires-arch x86_64)
+    ;; Wave A33.N — emit-value leaf-arm Phase 47 kernels (回避策 A).
+    ;; `nelisp_emit_value_imm' + `nelisp_emit_value_ref_gp' Phase 47-
+    ;; compile the two *leaf* hot arms of `--emit-value' (= the A33.3
+    ;; integer-tag dispatch over A33.4 flat IR vectors) so the standalone
+    ;; self-host emits the `imm' (= `mov rax, imm32') and GP-class `ref'
+    ;; (= `mov rax, [rbp - 8*(slot+1)]') byte sequences natively.  Each
+    ;; kernel reads the IR node's integer field at its A33.4 fixed offset
+    ;; via `vector-ref-ptr' + `sexp-int-unwrap', writes the fixed-layout
+    ;; opcode + imm/disp bytes into a caller-preallocated out-vec via
+    ;; `vector-slot-set', and writes the byte count into the caller-owned
+    ;; result slot.  Composes only existing Phase 47 grammar (= §111.C
+    ;; vector ops + §100 sexp-int + §100.D logand/sar/arith + §125.A
+    ;; alloc-bytes) — no new opcode, no Rust extern added.  Linux-x86_64
+    ;; only (= same gate as the A26 / A30 parents).
+    (nelisp-cc-bi-emit-value
+     :source-var nelisp-cc-bi-emit-value--source
+     :output "nelisp_emit_value.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
