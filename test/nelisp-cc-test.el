@@ -1850,12 +1850,26 @@ exit points were emitted; call-points were missing."
       (should (= (nelisp-cc-runtime-aot-capture-cell-value cell) 19))
       (should (equal written '(cap 19))))))
 
+(ert-deftest nelisp-cc-runtime-aot-capture-cell-boundary-frame-writer ()
+  "Doc 129.7AD — capture-cell bridge derives a writer from FRAMES."
+  (let ((frames (make-hash-table :test 'eq))
+        (out (vector nil)))
+    (should (eq (nelisp-cc-runtime-aot-capture-cell-boundary
+                 'mirror frames 'cap 13 out 'scratch)
+                out))
+    (should (= (gethash 'cap frames) 13))
+    (let ((cell (aref out 0)))
+      (should (nelisp-cc-runtime-aot-capture-cell-p cell))
+      (nelisp-cc-runtime-aot-capture-cell-set cell 34)
+      (should (= (nelisp-cc-runtime-aot-capture-cell-value cell) 34))
+      (should (= (gethash 'cap frames) 34)))))
+
 (ert-deftest nelisp-cc-runtime-aot-make-closure-normalizes-capture-cell-out ()
   "Doc 129.7AC — make-closure unwraps capture-cell OUT vectors."
   (unwind-protect
       (let* ((cell-out (vector nil))
              (closure-out (vector nil))
-             (frame-slot (vector 3))
+             (frames (make-hash-table :test 'eq))
              (descriptor '(:name nelisp-doc129-wrapped-setq
                            :arglist (y)
                            :body ((setq cap y) cap)
@@ -1863,15 +1877,15 @@ exit points were emitted; call-points were missing."
         (nelisp-cc-runtime-clear-aot-closure-descriptors)
         (nelisp-cc-runtime-register-aot-closure-descriptor descriptor)
         (nelisp-cc-runtime-aot-capture-cell-boundary
-         'mirror 'frames 'cap 3 cell-out 'scratch
-         (lambda (_name value) (aset frame-slot 0 value)))
+         'mirror frames 'cap 3 cell-out 'scratch)
+        (should (= (gethash 'cap frames) 3))
         (nelisp-cc-runtime-aot-make-closure
          'mirror 'frames 'nelisp-doc129-wrapped-setq
          1 closure-out 'scratch cell-out)
         (should (nelisp-closure-p (aref closure-out 0)))
         (should (= (nelisp-closure-apply (aref closure-out 0) '(41))
                    41))
-        (should (= (aref frame-slot 0) 41)))
+        (should (= (gethash 'cap frames) 41)))
     (nelisp-cc-runtime-clear-aot-closure-descriptors)))
 
 (ert-deftest nelisp-cc-runtime-aot-make-closure ()

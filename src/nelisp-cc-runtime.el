@@ -1926,6 +1926,13 @@ as `(WRITER NAME NEW-VALUE)' after closure `setq' updates the cell."
       (funcall writer (aref cell 1) value)))
   value)
 
+(defun nelisp-cc-runtime--aot-capture-cell-frame-writer (frames name)
+  "Return a capture-cell writer that stores NAME in FRAMES, or nil."
+  (when (hash-table-p frames)
+    (lambda (_name value)
+      (puthash name value frames)
+      value)))
+
 (defun nelisp-cc-runtime-aot-capture-cell-boundary
     (mirror frames name value out scratch &optional writer)
   "Runtime bridge for the Doc 129.7 `nelisp_aot_capture_cell' ABI.
@@ -1934,17 +1941,25 @@ MIRROR, FRAMES, NAME, VALUE, OUT, and SCRATCH mirror the native ABI:
   nelisp_aot_capture_cell(mirror, frames, name, value, out, scratch)
 
 The bridge builds a Doc 129 AOT capture cell for NAME and VALUE, writes
-it to OUT[0], and returns OUT.  WRITER is an optional host-side callback
-used by tests and later standalone/native-frame integration."
+it to OUT[0], and returns OUT.  When FRAMES is a hash table, the bridge
+also initializes FRAMES[NAME] and uses it as the default write-through
+target.  WRITER is an optional host-side callback that overrides the
+default frame writer."
   (unless (symbolp name)
     (signal 'nelisp-cc-runtime-error
             (list :aot-capture-cell-name-not-symbol name)))
   (unless (and (vectorp out) (> (length out) 0))
     (signal 'nelisp-cc-runtime-error
             (list :aot-capture-cell-out-not-vector out)))
-  (ignore mirror frames scratch)
+  (ignore mirror scratch)
+  (when (hash-table-p frames)
+    (puthash name value frames))
   (aset out 0
-        (nelisp-cc-runtime-aot-capture-cell name value writer))
+        (nelisp-cc-runtime-aot-capture-cell
+         name value
+         (or writer
+             (nelisp-cc-runtime--aot-capture-cell-frame-writer
+              frames name))))
   out)
 
 (defun nelisp-cc-runtime--aot-normalize-closure-capture (capture)
