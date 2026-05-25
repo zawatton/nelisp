@@ -2426,6 +2426,9 @@ defun is visible in the current compile unit.")
     seq-copy seq-reverse seq-take seq-drop seq-subseq seq-partition
     seq-split seq-remove-at-position seq-positions seq-contains
     seq-into seq-concatenate seq-random-elt
+    cl-first cl-second cl-third cl-fourth cl-fifth
+    cl-sixth cl-seventh cl-eighth cl-ninth cl-tenth
+    cl-rest cl-copy-list cl-list* cl-acons cl-pairlis cl-adjoin
     cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
     cl-some cl-every cl-notany cl-notevery
     cl-count-if cl-count-if-not cl-find-if cl-find-if-not

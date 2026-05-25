@@ -1725,6 +1725,31 @@ exit points were emitted; call-points were missing."
     (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'cl-merge 4 out 'scratch 'list '(1 3) '(2 4) #'<)
     (should (equal (aref out 0) '(1 2 3 4)))
+    (let ((ten '(a b c d e f g h i j)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'cl-first 1 out 'scratch ten)
+      (should (eq (aref out 0) 'a))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'cl-tenth 1 out 'scratch ten)
+      (should (eq (aref out 0) 'j))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'cl-rest 1 out 'scratch ten)
+      (should (equal (aref out 0) '(b c d e f g h i j)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'cl-copy-list 1 out 'scratch ten)
+      (should (equal (aref out 0) ten))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'cl-list* 3 out 'scratch 'a 'b '(c))
+      (should (equal (aref out 0) '(a b c)))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'cl-acons 3 out 'scratch 'a 1 '((b . 2)))
+      (should (equal (aref out 0) '((a . 1) (b . 2))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'cl-pairlis 2 out 'scratch '(a b) '(1 2))
+      (should (equal (aref out 0) '((a . 1) (b . 2))))
+      (nelisp-cc-runtime-aot-builtin-calln
+       'mirror 'frames 'cl-adjoin 2 out 'scratch 'a '(b c))
+      (should (equal (aref out 0) '(a b c))))
     (let ((map-data '((a . 1) (bb . 2))))
       (nelisp-cc-runtime-aot-builtin-calln
        'mirror 'frames 'map-some 2 out 'scratch
