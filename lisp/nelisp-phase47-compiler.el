@@ -4187,6 +4187,21 @@ Earlier cleanup forms must be ordinary local value forms."
                      prefix)))
       final)))
 
+(defun nelisp-phase47-compiler--aot-cleanup-body-form
+    (cleanups resume-form)
+  "Return cleanup sequence for CLEANUPS, falling through to RESUME-FORM.
+When the final cleanup exits non-locally, it replaces RESUME-FORM."
+  (let ((final
+         (nelisp-phase47-compiler--aot-final-cleanup-nonlocal-form
+          cleanups)))
+    (if final
+        `(seq
+          ,@(butlast cleanups)
+          ,final)
+      `(seq
+        ,@cleanups
+        ,resume-form))))
+
 (defun nelisp-phase47-compiler--aot-conditional-condition-case-form
     (body clauses)
   "Return a conditional condition-case signal descriptor.
@@ -5859,8 +5874,10 @@ crossing the protected body still require cleanup landing-pad lowering."
           (direct-condition
            (nelisp-phase47-compiler--aot-direct-condition-tag body))
           (conditional-throw
-           (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
-            body))
+           (and (consp body-tree)
+                (eq (car body-tree) 'if)
+                (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
+                 body-tree)))
           (conditional-condition
            (and (consp body-tree)
                 (eq (car body-tree) 'if)
@@ -5887,24 +5904,17 @@ crossing the protected body still require cleanup landing-pad lowering."
                       #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
                       cleanups))
                 (and final-cleanup-nonlocal
-                     (or direct-throw
-                         direct-condition
-                         conditional-throw
+                     (or conditional-throw
                          conditional-condition
-                         standalone-cleanup-tree
-                         (nelisp-phase47-compiler--aot-nonlocal-source-form-p
-                          body))))
+                         (and standalone-cleanup-tree
+                              (not direct-throw)
+                              (not direct-condition)))))
         (signal 'nelisp-phase47-compiler-error
                 (list :aot-unwind-protect-nonlocal-form sexp)))
       (let ((value-slot (nelisp-phase47-compiler--gensym
                          "aot-unwind-value")))
         (nelisp-phase47-compiler--parse-value
          (cond
-          (final-cleanup-nonlocal
-           `(let (((,value-slot :type sexp) ,body))
-              (seq
-               ,@(butlast cleanups)
-               ,final-cleanup-nonlocal)))
           (direct-throw
            (let ((cleanup-label
                   (nelisp-phase47-compiler--gensym
@@ -5915,9 +5925,9 @@ crossing the protected body still require cleanup landing-pad lowering."
                  (seq
                   (throw ,(nth 1 direct-throw) ,value-slot)
                   (aot-landing-label ,cleanup-label
-                    (seq
-                     ,@cleanups
-                     (aot-landing-jump out))))))))
+                    ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                      cleanups
+                      '(aot-landing-jump out))))))))
           (direct-condition
            (let ((cleanup-label
                   (nelisp-phase47-compiler--gensym
@@ -5926,9 +5936,9 @@ crossing the protected body still require cleanup landing-pad lowering."
                (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
                ,body
                (aot-landing-label ,cleanup-label
-                 (seq
-                  ,@cleanups
-                  (aot-landing-jump out))))))
+                 ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                   cleanups
+                   '(aot-landing-jump out))))))
           (conditional-throw
            (cl-labels
                ((branch-form
@@ -5998,6 +6008,11 @@ crossing the protected body still require cleanup landing-pad lowering."
           (standalone-cleanup-tree
            (nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
             standalone-cleanup-tree cleanups value-slot))
+          (final-cleanup-nonlocal
+           `(let (((,value-slot :type sexp) ,body))
+              (seq
+               ,@(butlast cleanups)
+               ,final-cleanup-nonlocal)))
           (t
            `(let (((,value-slot :type sexp) ,body))
               (seq
