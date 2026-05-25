@@ -45,6 +45,36 @@
          (push node nodes))))
     (nreverse nodes)))
 
+(defun nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (ir extern-name label-prefix)
+  "Assert IR pushes EXTERN-NAME with one landing label named LABEL-PREFIX."
+  (let* ((push-call
+          (car (seq-filter
+                (lambda (node)
+                  (eq (nelisp-phase47-compiler--ir-get node :name)
+                      extern-name))
+                (nelisp-phase47-doc129-test--ir-nodes ir 'extern-call))))
+         (push-args (nelisp-phase47-compiler--ir-get push-call :args))
+         (landing-arg (nth 3 push-args))
+         (saved-sp-arg (nth 4 push-args))
+         (landing-labels
+          (nelisp-phase47-doc129-test--ir-nodes ir 'aot-landing-label))
+         (landing-name
+          (symbol-name
+           (nelisp-phase47-compiler--ir-get (car landing-labels) :label)))
+         (symbol-writes
+          (mapcar (lambda (node)
+                    (nelisp-phase47-compiler--ir-get node :bytes))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'sexp-write-symbol-lit))))
+    (should (= (length landing-labels) 1))
+    (should (string-prefix-p label-prefix landing-name))
+    (should (member (string-to-list landing-name) symbol-writes))
+    (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+                'scratch))
+    (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+                'aot-current-sp))))
+
 (defun nelisp-phase47-doc129-test--capturing-callback-closure-ir
     (form callback-arg-index)
   "Assert FORM lowers a captured callback through make-closure.
@@ -5249,7 +5279,9 @@ materialized closure temporary."
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
-    (should (member 'nelisp_aot_pop_handler externs))))
+    (should (member 'nelisp_aot_pop_handler externs))
+    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+     ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
 (ert-deftest nelisp-phase47-doc129/parse-catch-nested-throw ()
   "Doc 129.8R: nested catch throw trees dispatch every throwing leaf."
@@ -5276,7 +5308,9 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_push_catch externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))
     (should (member 'nelisp_aot_throw externs))
-    (should (member 'nelisp_aot_landing_value externs))))
+    (should (member 'nelisp_aot_landing_value externs))
+    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+     ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
 (ert-deftest nelisp-phase47-doc129/object-catch-normal-exit ()
   "Doc 129.8E: source `catch' exposes push/pop bridge relocs."
@@ -5508,7 +5542,9 @@ materialized closure temporary."
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
-    (should (member 'nelisp_aot_pop_handler externs))))
+    (should (member 'nelisp_aot_pop_handler externs))
+    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+     ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-nested-signal ()
   "Doc 129.8R: nested condition-case signal trees dispatch throwing leaves."
@@ -5536,7 +5572,9 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_push_condition externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))
     (should (member 'nelisp_aot_signal externs))
-    (should (member 'nelisp_aot_landing_error externs))))
+    (should (member 'nelisp_aot_landing_error externs))
+    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+     ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-list-spec-normal-exit ()
   "Doc 129.8J: list condition specs push one handler per selector."

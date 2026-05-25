@@ -3753,6 +3753,20 @@ contain no unresolved non-local source form."
                      else))))))
    (t nil)))
 
+(defun nelisp-phase47-compiler--aot-catch-throw-leaf-count (tag sexp)
+  "Return the number of direct THROW leaves in catch tree SEXP."
+  (cond
+   ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
+    1)
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4))
+    (+ (nelisp-phase47-compiler--aot-catch-throw-leaf-count
+        tag (nth 2 sexp))
+       (nelisp-phase47-compiler--aot-catch-throw-leaf-count
+        tag (nth 3 sexp))))
+   (t 0)))
+
 (defun nelisp-phase47-compiler--aot-direct-quoted-throw-form (sexp)
   "Return SEXP when it is a direct throw to a quoted symbol tag."
   (when (and (consp sexp)
@@ -3846,6 +3860,19 @@ source form."
                            else))))
         (or then-tag else-tag))))
    (t nil)))
+
+(defun nelisp-phase47-compiler--aot-condition-tree-leaf-count (sexp)
+  "Return the number of direct signal/error leaves in condition tree SEXP."
+  (cond
+   ((nelisp-phase47-compiler--aot-direct-condition-tag sexp) 1)
+   ((and (consp sexp)
+         (eq (car sexp) 'if)
+         (= (length sexp) 4))
+    (+ (nelisp-phase47-compiler--aot-condition-tree-leaf-count
+        (nth 2 sexp))
+       (nelisp-phase47-compiler--aot-condition-tree-leaf-count
+        (nth 3 sexp))))
+   (t 0)))
 
 (defun nelisp-phase47-compiler--aot-condition-selector-match-p
     (selector tag)
@@ -4164,7 +4191,13 @@ saved BODY value."
         (if conditional-throw
             (let* ((value-slot (nelisp-phase47-compiler--gensym
                                 "aot-catch-value"))
-                   (test (nth 1 conditional-throw)))
+                   (test (nth 1 conditional-throw))
+                   (landing-label
+                    (when (= (nelisp-phase47-compiler--aot-catch-throw-leaf-count
+                              tag conditional-throw)
+                             1)
+                      (nelisp-phase47-compiler--gensym
+                       "aot-catch-landing"))))
               (nelisp-phase47-compiler--parse-value
                (cl-labels
                    ((branch-form
@@ -4172,9 +4205,14 @@ saved BODY value."
                      (cond
                       ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
                         tag branch)
-                       `(seq
-                         ,branch
-                         (aot-landing-value out)))
+                       (if landing-label
+                           `(seq
+                             ,branch
+                             (aot-landing-label ,landing-label
+                               (aot-landing-value out)))
+                         `(seq
+                           ,branch
+                           (aot-landing-value out))))
                       ((nelisp-phase47-compiler--aot-catch-throw-tree-form-p
                         tag branch)
                        `(if ,(nth 1 branch)
@@ -4186,7 +4224,10 @@ saved BODY value."
                            (aot-pop-handler 'catch)
                            ,value-slot))))))
                  `(seq
-                   (aot-push-catch ,tag 0 0)
+                   (aot-push-catch
+                    ,tag
+                    ,(if landing-label `',landing-label 0)
+                    ,(if landing-label '(aot-current-sp) 0))
                    (if ,test
                        ,(branch-form (nth 2 conditional-throw))
                      ,(branch-form (nth 3 conditional-throw)))))
@@ -4235,8 +4276,9 @@ handler-body dispatch still waits for native landing pads."
     (sexp env fenv defuns)
   "Lower source `(condition-case VAR BODY HANDLER...)'.
 The MVP installs a condition handler, evaluates BODY, saves BODY's
-result, pops the handler, then returns the saved value.  Actual handler
-landing-pad jumps for signalled conditions remain later Doc 129.8 work."
+result, pops the handler, then returns the saved value.  Direct and
+single-leaf signalled paths can now attach landing labels; multi-leaf
+and cleanup landing selection remains later Doc 129.8 work."
   (unless (>= (length sexp) 4)
     (signal 'nelisp-phase47-compiler-error
             (list :aot-condition-case-arity sexp)))
@@ -4303,8 +4345,14 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
                   `(seq
                     (aot-landing-error out)
                     ,handler-body)))
-	               (value-slot (nelisp-phase47-compiler--gensym
-	                            "aot-condition-value")))
+               (value-slot (nelisp-phase47-compiler--gensym
+                            "aot-condition-value"))
+               (landing-label
+                (when (= (nelisp-phase47-compiler--aot-condition-tree-leaf-count
+                          conditional-form)
+                         1)
+                  (nelisp-phase47-compiler--gensym
+                   "aot-condition-landing"))))
           (nelisp-phase47-compiler--parse-value
            (cl-labels
                ((branch-form
@@ -4312,9 +4360,14 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
                  (cond
                   ((nelisp-phase47-compiler--aot-direct-condition-tag
                     branch)
-                   `(seq
-                     ,branch
-                     ,handled-form))
+                   (if landing-label
+                       `(seq
+                         ,branch
+                         (aot-landing-label ,landing-label
+                           ,handled-form))
+                     `(seq
+                       ,branch
+                       ,handled-form)))
                   ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
                    `(if ,(nth 1 branch)
                         ,(branch-form (nth 2 branch))
@@ -4325,7 +4378,10 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
                        (aot-pop-handler 'condition)
                        ,value-slot))))))
              `(seq
-               (aot-push-condition ',tag 0 0)
+               (aot-push-condition
+                ',tag
+                ,(if landing-label `',landing-label 0)
+                ,(if landing-label '(aot-current-sp) 0))
                (if ,(nth 1 conditional-form)
                    ,(branch-form (nth 2 conditional-form))
                  ,(branch-form (nth 3 conditional-form)))))
@@ -4794,7 +4850,7 @@ functions `((NAME . ARITY) ...)'."
    ;; Doc 129.8E — first source-level handler synthesis.  This covers
    ;; normal-exit `catch' bodies only: the compiler emits balanced
    ;; push/body/pop control flow and rejects explicit non-local forms
-   ;; until native landing-pad jumps are available.
+   ;; until source lowering can place branch-safe landing labels.
    ((and (consp sexp)
          (eq (car sexp) 'catch)
          (not (assq 'catch defuns)))
