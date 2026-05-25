@@ -2779,6 +2779,27 @@ Dynamic tag values are forwarded as ordinary value expressions."
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--parse-aot-landing-error
+    (sexp env fenv defuns)
+  "Lower internal condition landing error extraction."
+  (unless (= (length sexp) 2)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-landing-error-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+           fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (landing (nth 1 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       (extern-call nelisp_aot_landing_error
+                    ,mirror ,frames ,landing ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--parse-aot-errorn
     (sexp env fenv defuns)
   "Lower formatted `(error ARG...)' through the Doc 129.8 errorn bridge."
@@ -3015,6 +3036,49 @@ simulated non-local exit."
              (equal (nth 1 (car body-forms)) tag))
     (car body-forms)))
 
+(defun nelisp-phase47-compiler--aot-direct-condition-tag (body)
+  "Return BODY's static condition tag, or nil when it is not direct."
+  (when (consp body)
+    (pcase (car body)
+      ('signal
+       (when (= (length body) 3)
+         (nelisp-phase47-compiler--aot-quoted-symbol (nth 1 body))))
+      ('error
+       (when (>= (length body) 2)
+         'error))
+      (_ nil))))
+
+(defun nelisp-phase47-compiler--aot-condition-selector-match-p
+    (selector tag)
+  "Return non-nil when source condition-case SELECTOR catches TAG."
+  (cond
+   ((eq selector t) t)
+   ((symbolp selector)
+    (if (fboundp 'condition-of-p)
+        (funcall (symbol-function 'condition-of-p) selector tag)
+      (or (eq selector tag)
+          (and (eq selector 'error) (not (eq tag 'quit))))))
+   ((and (consp selector)
+         (cl-every #'symbolp selector))
+    (cl-some (lambda (symbol)
+               (nelisp-phase47-compiler--aot-condition-selector-match-p
+                symbol tag))
+             selector))
+   (t nil)))
+
+(defun nelisp-phase47-compiler--aot-condition-case-direct-handler
+    (tag clauses)
+  "Return the first condition-case clause that catches TAG, or nil."
+  (catch 'matched
+    (dolist (clause clauses)
+      (unless (consp clause)
+        (signal 'nelisp-phase47-compiler-error
+                (list :aot-condition-case-handler-shape clause)))
+      (when (nelisp-phase47-compiler--aot-condition-selector-match-p
+             (car clause) tag)
+        (throw 'matched clause)))
+    nil))
+
 (defun nelisp-phase47-compiler--parse-aot-special-let-normal-exit
     (var val-sexp body-sexp env fenv defuns source-form)
   "Lower one source-level special `let' binding for the normal exit path.
@@ -3194,7 +3258,7 @@ handler-body dispatch still waits for native landing pads."
 
 (defun nelisp-phase47-compiler--parse-aot-condition-case-normal-exit
     (sexp env fenv defuns)
-  "Lower source `(condition-case VAR BODY HANDLER...)' normal exit.
+  "Lower source `(condition-case VAR BODY HANDLER...)'.
 The MVP installs a condition handler, evaluates BODY, saves BODY's
 result, pops the handler, then returns the saved value.  Actual handler
 landing-pad jumps for signalled conditions remain later Doc 129.8 work."
@@ -3202,31 +3266,56 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
     (signal 'nelisp-phase47-compiler-error
             (list :aot-condition-case-arity sexp)))
   (let ((var (nth 1 sexp))
-        (body (nth 2 sexp)))
+        (body (nth 2 sexp))
+        (clauses (nthcdr 3 sexp)))
     (unless (or (null var) (symbolp var))
       (signal 'nelisp-phase47-compiler-error
               (list :aot-condition-case-var-shape var)))
-    (when (nelisp-phase47-compiler--aot-nonlocal-source-form-p body)
-      (signal 'nelisp-phase47-compiler-error
-              (list :aot-condition-case-nonlocal-body sexp)))
-    ;; Force diagnostics to point at the source form.
-    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
-    (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
-    (let ((value-slot (nelisp-phase47-compiler--gensym
-                       "aot-condition-value"))
-          (selectors
-           (nelisp-phase47-compiler--aot-condition-case-selectors sexp)))
-      (nelisp-phase47-compiler--parse-value
-       `(seq
-         ,@(mapcar (lambda (selector)
-                     `(aot-push-condition ',selector 0 0))
-                   selectors)
-         (let (((,value-slot :type sexp) ,body))
-           (seq
-            ,@(make-list (length selectors)
-                         `(aot-pop-handler 'condition))
-            ,value-slot)))
-       env fenv defuns))))
+    (let* ((direct-tag
+            (nelisp-phase47-compiler--aot-direct-condition-tag body))
+           (direct-handler
+            (and direct-tag
+                 (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                  direct-tag clauses))))
+      (when (and (not direct-handler)
+                 (nelisp-phase47-compiler--aot-nonlocal-source-form-p body))
+        (signal 'nelisp-phase47-compiler-error
+                (list :aot-condition-case-nonlocal-body sexp)))
+      ;; Force diagnostics to point at the source form.
+      (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
+      (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
+      (if direct-handler
+          (let* ((handler-body
+                  (nelisp-phase47-compiler--body->form
+                   (cdr direct-handler)))
+                 (handled-form
+                  (if var
+                      `(let (((,var :type sexp) (aot-landing-error out)))
+                         ,handler-body)
+                    `(seq
+                      (aot-landing-error out)
+                      ,handler-body))))
+            (nelisp-phase47-compiler--parse-value
+             `(seq
+               (aot-push-condition ',direct-tag 0 0)
+               ,body
+               ,handled-form)
+             env fenv defuns))
+        (let ((value-slot (nelisp-phase47-compiler--gensym
+                           "aot-condition-value"))
+              (selectors
+               (nelisp-phase47-compiler--aot-condition-case-selectors sexp)))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             ,@(mapcar (lambda (selector)
+                         `(aot-push-condition ',selector 0 0))
+                       selectors)
+             (let (((,value-slot :type sexp) ,body))
+               (seq
+                ,@(make-list (length selectors)
+                             `(aot-pop-handler 'condition))
+                ,value-slot)))
+           env fenv defuns))))))
 
 (defun nelisp-phase47-compiler--parse-aot-unwind-protect-normal-exit
     (sexp env fenv defuns)
@@ -3525,6 +3614,11 @@ functions `((NAME . ARITY) ...)'."
    ;; Doc 129.8L: internal bridge for source `catch' landing values.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-value))
     (nelisp-phase47-compiler--parse-aot-landing-value
+     sexp env fenv defuns))
+   ;; Doc 129.8M: internal bridge for source `condition-case' landing
+   ;; condition data.
+   ((and (consp sexp) (eq (car sexp) 'aot-landing-error))
+    (nelisp-phase47-compiler--parse-aot-landing-error
      sexp env fenv defuns))
    ;; Doc 129.6D — first direct user-call lowering for one-argument
    ;; builtins.  The surrounding defun must expose the boxed-boundary

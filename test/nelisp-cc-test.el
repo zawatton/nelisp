@@ -2018,6 +2018,15 @@ exit points were emitted; call-points were missing."
                 out))
     (should (= (aref out 0) 42))))
 
+(ert-deftest nelisp-cc-runtime-aot-landing-error-boundary ()
+  "Doc 129.8M — landing-error bridge extracts condition data."
+  (let ((out (vector nil))
+        (landing (vector '(:kind condition :error (error "bad")))))
+    (should (eq (nelisp-cc-runtime-aot-landing-error-boundary
+                 'mirror 'frames landing out 'scratch)
+                out))
+    (should (equal (aref out 0) '(error "bad")))))
+
 (ert-deftest nelisp-cc-runtime-aot-signal-boundary ()
   "Doc 129.8B — signal boundary bridge writes landing descriptor to OUT."
   (unwind-protect

@@ -3941,8 +3941,32 @@ materialized closure temporary."
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_pop_handler externs))))
 
-(ert-deftest nelisp-phase47-doc129/condition-case-nonlocal-body-still-pending ()
-  "Doc 129.8F: condition-case bodies with signal wait for landing pads."
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-direct-signal ()
+  "Doc 129.8M: direct condition-case signal dispatches to handler body."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_signal
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (signal 'error value)
+                   (error err)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (handler-let (nth 2 forms))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind handler-let) 'let-rt))
+    (should (member 'nelisp_aot_push_condition externs))
+    (should (member 'nelisp_aot_signal externs))
+    (should (member 'nelisp_aot_landing_error externs))
+    (should-not (member 'nelisp_aot_pop_handler externs))))
+
+(ert-deftest nelisp-phase47-doc129/condition-case-nested-nonlocal-still-pending ()
+  "Doc 129.8M: nested condition-case non-local exits wait for landing jumps."
   (should-error
    (nelisp-phase47-compiler--parse
     '(defun cc_signal
@@ -3953,7 +3977,9 @@ materialized closure temporary."
           (name_slot :type sexp)
           (value :type sexp))
        (condition-case err
-           (signal 'error value)
+           (if value
+               (signal 'error value)
+             value)
          (error out))))
    :type 'nelisp-phase47-compiler-error))
 
@@ -4017,6 +4043,33 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_push_condition" out))
             (should (string-match-p "nelisp_aot_pop_handler" out))
             (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-condition-case-direct-signal ()
+  "Doc 129.8M: direct condition-case signal exposes landing-error reloc."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-signal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_signal
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  (signal 'error value)
+                (error err)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_signal" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_signal" out))
+            (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/object-condition-case-list-spec-normal-exit ()
