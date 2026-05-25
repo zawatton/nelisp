@@ -1562,12 +1562,12 @@ becomes:
    (nelisp_aot_lambda_0 x)))
 #+end_src
 
-The same lift applies to =(function (lambda ...))= forms.  Because the
-lifted body compiles as an ordinary top-level Phase 47 defun, captured
-outer variables are still rejected by the existing free-symbol checks.
-That keeps this stage honest: it covers non-capturing lambda literals
-and direct native calls, while heap closure objects and captured
-environments remain later 129.7 work.
+The same lift applies to =(function (lambda ...))= forms.  Stage
+129.7R extends this direct-call path to read-only captures by threading
+free variables as leading synthetic defun arguments.  This keeps
+literal lambda calls on the native direct-call path while still leaving
+escaping closure objects and captured mutation for later heap-closure
+work.
 
 *** §1.E.3.4 Shipped MVP: direct literal lambda lifting
 
@@ -1578,10 +1578,11 @@ Stage 129.7L applies the same lift to direct lambda application:
   ((lambda (y) (* y 2)) x))
 #+end_src
 
-becomes a synthetic sibling defun plus an ordinary direct call.  This
-keeps immediate non-capturing lambda use on the native call path.  It
-does not create heap closure values, and captured environments still
-wait for the remaining closure allocation/capture work.
+becomes a synthetic sibling defun plus an ordinary direct call.  Stage
+129.7R also covers read-only captures for this direct application
+shape, including runtime =let= slots.  It does not create heap closure
+values, so escaping closure values and captured mutation still wait for
+the remaining closure allocation/capture work.
 
 *** §1.E.3.5 Shipped MVP: map-family literal lambda lifting
 
@@ -1752,6 +1753,17 @@ becomes:
  (defun caller (cap x)
    (nelisp_aot_lambda_0 cap x)))
 #+end_src
+
+Runtime lexical slots follow the same rule:
+
+#+begin_src elisp
+(defun caller (x)
+  (let ((cap x))
+    (funcall (lambda (y) (+ y cap)) x)))
+#+end_src
+
+lowers to a =let-rt= slot for =cap= and then calls the synthetic defun
+with =cap= as the first argument.
 
 The same rewrite applies to direct =((lambda ...) ARG...)=
 application.  Higher-order callback captures still reject: =mapcar=,

@@ -2806,6 +2806,27 @@
                            (nelisp-phase47-compiler--ir-get call-node :args))
                    '(cap x)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-funcall-lambda-lift-let-capture ()
+  "Doc 129.7R: direct funcall lambda captures runtime let slots."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller (x)
+                 (let ((cap x))
+                   (funcall (lambda (y) (+ y cap)) x)))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (let-node (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (call-node (nelisp-phase47-compiler--ir-get let-node :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind let-node) 'let-rt))
+    (should (equal (nelisp-phase47-compiler--ir-get lambda-ir :params)
+                   '(cap y)))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                (nelisp-phase47-compiler--ir-get lambda-ir :name)))
+    (should (equal (mapcar (lambda (arg)
+                             (nelisp-phase47-compiler--ir-get arg :var))
+                           (nelisp-phase47-compiler--ir-get call-node :args))
+                   '(cap x)))))
+
 (ert-deftest nelisp-phase47-doc129/lambda-lift-captured-setq-still-pending ()
   "Doc 129.7R: captured mutation still waits for heap closure cells."
   (should-error
@@ -2843,6 +2864,24 @@
              (defun caller (cap x)
                (funcall (lambda (y) (+ y cap)) x))
              (exit (caller 8 34)))
+           path)
+          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/e2e-funcall-lambda-lift-let-capture ()
+  "Doc 129.7R: execute runtime let capture threading."
+  (unless (nelisp-phase47-doc129-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (let ((path (nelisp-phase47-doc129-test--tmp-binary
+               "lambda-lift-let-capture")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-sexp
+           '(seq
+             (defun caller (x)
+               (let ((cap x))
+                 (funcall (lambda (y) (+ y cap)) x)))
+             (exit (caller 21)))
            path)
           (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
       (ignore-errors (delete-file path)))))
