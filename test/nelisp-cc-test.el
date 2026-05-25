@@ -2009,6 +2009,15 @@ exit points were emitted; call-points were missing."
           (should (= (plist-get landing :value) 42))))
     (nelisp-cc-runtime-aot-reset-handler-stack)))
 
+(ert-deftest nelisp-cc-runtime-aot-landing-value-boundary ()
+  "Doc 129.8L — landing-value bridge extracts catch payloads."
+  (let ((out (vector nil))
+        (landing (vector '(:kind catch :value 42))))
+    (should (eq (nelisp-cc-runtime-aot-landing-value-boundary
+                 'mirror 'frames landing out 'scratch)
+                out))
+    (should (= (aref out 0) 42))))
+
 (ert-deftest nelisp-cc-runtime-aot-signal-boundary ()
   "Doc 129.8B — signal boundary bridge writes landing descriptor to OUT."
   (unwind-protect

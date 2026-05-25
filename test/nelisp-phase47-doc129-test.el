@@ -3829,11 +3829,29 @@ materialized closure temporary."
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_pop_handler externs))))
 
-(ert-deftest nelisp-phase47-doc129/catch-nonlocal-body-still-pending ()
-  "Doc 129.8E: catch bodies with explicit throw wait for landing pads."
+(ert-deftest nelisp-phase47-doc129/parse-catch-direct-throw ()
+  "Doc 129.8L: source `catch' direct throw extracts landing value."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (throw 'done value)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (member 'nelisp_aot_throw externs))
+    (should (member 'nelisp_aot_landing_value externs))
+    (should-not (member 'nelisp_aot_pop_handler externs))))
+
+(ert-deftest nelisp-phase47-doc129/catch-nested-nonlocal-still-pending ()
+  "Doc 129.8L: nested non-local catch bodies still wait for landing jumps."
   (should-error
    (nelisp-phase47-compiler--parse
-    '(defun catch_throw
+    '(defun catch_nested
          ((out :type sexp)
           (mirror :type sexp)
           (frames :type sexp)
@@ -3841,7 +3859,9 @@ materialized closure temporary."
           (name_slot :type sexp)
           (value :type sexp))
        (catch 'done
-         (throw 'done value))))
+         (if value
+             (throw 'done value)
+           value))))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-doc129/object-catch-normal-exit ()
@@ -3867,6 +3887,32 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_push_catch" out))
             (should (string-match-p "nelisp_aot_pop_handler" out))
             (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-catch-direct-throw ()
+  "Doc 129.8L: source `catch' direct throw exposes landing-value reloc."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-catch-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun catch_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (catch 'done
+                (throw 'done value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "catch_throw" out))
+            (should (string-match-p "nelisp_aot_push_catch" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_value" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-normal-exit ()

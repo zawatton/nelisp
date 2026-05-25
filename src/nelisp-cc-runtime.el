@@ -2534,6 +2534,30 @@ returns OUT.  DISPATCHER, when non-nil, is called as
     (aset out 0 landing)
     out))
 
+(defun nelisp-cc-runtime-aot-landing-value-boundary
+    (mirror frames landing out scratch)
+  "Runtime bridge for extracting a catch value from a landing descriptor.
+MIRROR, FRAMES, LANDING, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_landing_value(mirror, frames, landing, out, scratch)
+
+LANDING is either a landing descriptor plist or an OUT vector whose
+first slot contains one.  The bridge writes the descriptor's `:value'
+payload into OUT[0] and returns OUT."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-landing-value-out-not-vector out)))
+  (ignore mirror frames scratch)
+  (let ((descriptor (if (and (vectorp landing) (> (length landing) 0))
+                        (aref landing 0)
+                      landing)))
+    (unless (and (consp descriptor)
+                 (plist-member descriptor :value))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-landing-value-missing descriptor)))
+    (aset out 0 (plist-get descriptor :value))
+    out))
+
 (defun nelisp-cc-runtime--aot-error-data (args)
   "Return the signal data list for Doc 129 formatted error ARGS."
   (list
@@ -2740,6 +2764,10 @@ writes it to OUT[0], and returns OUT."
      :function nelisp-cc-runtime-aot-signal-boundary
      :fixed-argc 6 :rest nil
      :args (mirror frames tag data out scratch))
+    (:symbol nelisp_aot_landing_value
+     :function nelisp-cc-runtime-aot-landing-value-boundary
+     :fixed-argc 5 :rest nil
+     :args (mirror frames landing out scratch))
     (:symbol nelisp_aot_errorn
      :function nelisp-cc-runtime-aot-errorn-boundary
      :fixed-argc 5 :rest t
