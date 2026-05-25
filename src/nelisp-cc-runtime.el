@@ -87,6 +87,7 @@
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
 (require 'nelisp-cc-pipeline)
+(require 'nelisp-closure)
 (require 'nelisp-gc)
 
 ;; Phase 7.1.6.a — Rust-side primitive available only when running under
@@ -1873,9 +1874,20 @@ every trailing value after SCRATCH is a user argument in the native ABI."
     (aset out 0 result)
     out))
 
+(defun nelisp-cc-runtime--aot-closure-p (fn)
+  "Return non-nil when FN is a canonical NeLisp closure record."
+  (and (fboundp 'nelisp-closure-p)
+       (funcall (symbol-function 'nelisp-closure-p) fn)))
+
+(defun nelisp-cc-runtime--aot-closure-apply (fn args)
+  "Apply canonical NeLisp closure FN to ARGS."
+  (funcall (symbol-function 'nelisp-closure-apply) fn args))
+
 (defun nelisp-cc-runtime--aot-default-funcall-dispatch1 (fn arg)
   "Dispatch one-argument FN to ARG using NeLisp-aware apply when available."
   (cond
+   ((nelisp-cc-runtime--aot-closure-p fn)
+    (nelisp-cc-runtime--aot-closure-apply fn (list arg)))
    ((fboundp 'nelisp--apply)
     (funcall (symbol-function 'nelisp--apply) fn (list arg)))
    ((symbolp fn)
@@ -1927,6 +1939,8 @@ with host `funcall' as the fallback."
 (defun nelisp-cc-runtime--aot-default-funcall-dispatch2 (fn arg0 arg1)
   "Dispatch two-argument FN to ARG0 and ARG1."
   (cond
+   ((nelisp-cc-runtime--aot-closure-p fn)
+    (nelisp-cc-runtime--aot-closure-apply fn (list arg0 arg1)))
    ((fboundp 'nelisp--apply)
     (funcall (symbol-function 'nelisp--apply) fn (list arg0 arg1)))
    ((symbolp fn)
@@ -1976,6 +1990,8 @@ DISPATCHER, when non-nil, is called as
 (defun nelisp-cc-runtime--aot-default-funcall-dispatch3 (fn arg0 arg1 arg2)
   "Dispatch three-argument FN to ARG0, ARG1, and ARG2."
   (cond
+   ((nelisp-cc-runtime--aot-closure-p fn)
+    (nelisp-cc-runtime--aot-closure-apply fn (list arg0 arg1 arg2)))
    ((fboundp 'nelisp--apply)
     (funcall (symbol-function 'nelisp--apply) fn (list arg0 arg1 arg2)))
    ((symbolp fn)
@@ -2060,6 +2076,8 @@ every trailing value after SCRATCH is a user argument in the native ABI."
     (signal 'nelisp-cc-runtime-error
             (list :aot-apply-args-not-list args-list)))
   (cond
+   ((nelisp-cc-runtime--aot-closure-p fn)
+    (nelisp-cc-runtime--aot-closure-apply fn args-list))
    ((fboundp 'nelisp--apply)
     (funcall (symbol-function 'nelisp--apply) fn args-list))
    ((symbolp fn)

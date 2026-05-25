@@ -39,6 +39,7 @@
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
 (require 'nelisp-cc-runtime)
+(require 'nelisp-closure)
 (require 'nelisp-gc)
 
 ;;; (1) entry block ---------------------------------------------------
@@ -1715,6 +1716,63 @@ exit points were emitted; call-points were missing."
    (nelisp-cc-runtime-aot-funcalln
     'mirror 'frames 'nelisp-doc129-missing-fn 1 (vector nil) 'scratch 1)
    :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall-closure-dispatch ()
+  "Doc 129.7T — funcall dispatches canonical heap closures."
+  (let* ((out (vector nil))
+         (add-cap (nelisp-closure-make '((cap . 7)) '(x) '((+ x cap)))))
+    (should (eq (nelisp-cc-runtime-aot-funcall1
+                 'mirror 'frames add-cap 5 out 'scratch)
+                out))
+    (should (= (aref out 0) 12))
+    (nelisp-cc-runtime-aot-funcall2
+     'mirror 'frames
+     (nelisp-closure-make nil '(a b) '((+ a b)))
+     19 23 out)
+    (should (= (aref out 0) 42))
+    (nelisp-cc-runtime-aot-funcall3
+     'mirror 'frames
+     (nelisp-closure-make '((base . 6)) '(a b c) '((+ base a b c)))
+     10 11 15 out)
+    (should (= (aref out 0) 42))))
+
+(ert-deftest nelisp-cc-runtime-aot-apply-closure-dispatch ()
+  "Doc 129.7T — apply/funcalln dispatch canonical heap closures."
+  (let* ((out (vector nil))
+         (closure (nelisp-closure-make
+                   '((cap . 40))
+                   '(x y)
+                   '((+ cap x y)))))
+    (should (eq (nelisp-cc-runtime-aot-apply
+                 'mirror 'frames closure '(1 1) out 'scratch)
+                out))
+    (should (= (aref out 0) 42))
+    (nelisp-cc-runtime-aot-funcalln
+     'mirror 'frames closure 2 out 'scratch 1 1)
+    (should (= (aref out 0) 42))
+    (nelisp-cc-runtime-aot-applyn
+     'mirror 'frames closure 2 out 'scratch 1 '(1))
+    (should (= (aref out 0) 42))))
+
+(ert-deftest nelisp-cc-runtime-aot-closure-captured-mutation ()
+  "Doc 129.7T — captured mutation survives through AOT dispatch."
+  (let* ((out (vector nil))
+         (shared (list (cons 'counter 0)))
+         (writer (nelisp-closure-make
+                  shared
+                  '(n)
+                  '((setq counter (+ counter n))
+                    counter)))
+         (reader (nelisp-closure-make shared '() '(counter))))
+    (nelisp-cc-runtime-aot-funcall1
+     'mirror 'frames writer 1 out 'scratch)
+    (should (= (aref out 0) 1))
+    (nelisp-cc-runtime-aot-funcall1
+     'mirror 'frames writer 4 out 'scratch)
+    (should (= (aref out 0) 5))
+    (nelisp-cc-runtime-aot-funcalln
+     'mirror 'frames reader 0 out 'scratch)
+    (should (= (aref out 0) 5))))
 
 (ert-deftest nelisp-cc-runtime-aot-apply-host-dispatch ()
   "Doc 129.7C — apply bridge writes the dispatch result to OUT."
