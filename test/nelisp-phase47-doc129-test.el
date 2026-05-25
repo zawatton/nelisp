@@ -1146,8 +1146,76 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_pop_special externs) 1))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/source-special-let-nested-nonlocal-still-pending ()
-  "Doc 129.4G: nested special `let' non-local exits still need landing pads."
+(ert-deftest nelisp-phase47-doc129/parse-source-special-let-conditional-throw ()
+  "Doc 129.4H: special `let' conditional throw cleans up both branches."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_special
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (value :type sexp))
+                  (let ((dyn value))
+                    (if value
+                        (throw 'tag value)
+                      value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_special externs))
+    (should (member 'nelisp_aot_pop_special externs))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-conditional-throw ()
+  "Doc 129.4H: multi-special `let' conditional throw pops every binding."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn-a)
+                (defvar dyn-b)
+                (defun bind_special
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (value-a :type sexp)
+                     (value-b :type sexp))
+                  (let ((dyn-a value-a)
+                        (dyn-b value-b))
+                    (if value-a
+                        (throw 'tag value-b)
+                      value-a))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_special externs) 2))
+    (should (= (cl-count 'nelisp_aot_pop_special externs) 4))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-conditional-throw ()
+  "Doc 129.4H: mixed special `let' conditional throw keeps lexical aliases."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_mixed
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (value-a :type sexp)
+                     (value-b :type sexp))
+                  (let (((a :type sexp) value-a)
+                        (dyn value-b))
+                    (if a
+                        (throw 'tag a)
+                      value-b))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_special externs) 1))
+    (should (= (cl-count 'nelisp_aot_pop_special externs) 2))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/source-special-let-deeper-nonlocal-still-pending ()
+  "Doc 129.4H: deeper special `let' non-local exits still need landing pads."
   (should-error
    (nelisp-phase47-compiler--parse
     '(seq
@@ -1161,7 +1229,9 @@ materialized closure temporary."
            (value :type sexp))
         (let ((dyn value))
           (if value
-              (throw 'tag value)
+              (if value
+                  (throw 'tag value)
+                value)
             value)))))
    :type 'nelisp-phase47-compiler-error))
 
@@ -1328,6 +1398,35 @@ materialized closure temporary."
                   (value :type sexp))
                (let ((dyn value))
                  (throw 'tag value))))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_push_special" out))
+            (should (string-match-p "nelisp_aot_pop_special" out))
+            (should (string-match-p "nelisp_aot_throw" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-source-special-let-conditional-throw ()
+  "Doc 129.4H: object output exposes branch special cleanup before throw."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-special-let-if-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defvar dyn)
+             (defun bind_special
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name-slot :type sexp)
+                  (value :type sexp))
+               (let ((dyn value))
+                 (if value
+                     (throw 'tag value)
+                   value))))
            path)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output
@@ -4281,8 +4380,29 @@ materialized closure temporary."
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/unwind-protect-nested-nonlocal-still-pending ()
-  "Doc 129.8O: nested non-local unwind-protect bodies still wait for landing pads."
+(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-throw ()
+  "Doc 129.8P: source unwind-protect conditional throw cleans up both branches."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun unwind_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (unwind-protect
+                     (if value
+                         (throw 'done value)
+                       value)
+                   (identity value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+    (should (member 'nelisp_aot_builtin_call1 externs))
+    (should (member 'nelisp_aot_throw externs))))
+
+(ert-deftest nelisp-phase47-doc129/unwind-protect-deeper-nonlocal-still-pending ()
+  "Doc 129.8P: deeper non-local unwind-protect bodies still wait for landing pads."
   (should-error
    (nelisp-phase47-compiler--parse
     '(defun unwind_throw
@@ -4294,7 +4414,9 @@ materialized closure temporary."
           (value :type sexp))
        (unwind-protect
            (if value
-               (throw 'done value)
+               (if value
+                   (throw 'done value)
+                 value)
              value)
          (identity value))))
    :type 'nelisp-phase47-compiler-error))
@@ -4341,6 +4463,34 @@ materialized closure temporary."
                  (value :type sexp))
               (unwind-protect
                   (throw 'done value)
+                (identity value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "unwind_throw" out))
+            (should (string-match-p "nelisp_aot_builtin_call1" out))
+            (should (string-match-p "nelisp_aot_throw" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-unwind-protect-conditional-throw ()
+  "Doc 129.8P: source unwind-protect conditional throw compiles to object."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-unwind-if-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun unwind_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (unwind-protect
+                  (if value
+                      (throw 'done value)
+                    value)
                 (identity value)))
            path)
           (let ((out (with-output-to-string

@@ -3080,6 +3080,26 @@ contains no unresolved non-local source form."
              (nelisp-phase47-compiler--aot-quoted-symbol (nth 1 sexp)))
     sexp))
 
+(defun nelisp-phase47-compiler--aot-conditional-quoted-throw-form (sexp)
+  "Return a one-level conditional direct quoted throw form, or nil."
+  (when (and (consp sexp)
+             (eq (car sexp) 'if)
+             (= (length sexp) 4))
+    (let* ((then (nth 2 sexp))
+           (else (nth 3 sexp))
+           (then-throw
+            (nelisp-phase47-compiler--aot-direct-quoted-throw-form then))
+           (else-throw
+            (nelisp-phase47-compiler--aot-direct-quoted-throw-form else)))
+      (when (and (or then-throw else-throw)
+                 (or then-throw
+                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                           then)))
+                 (or else-throw
+                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                           else))))
+        sexp))))
+
 (defun nelisp-phase47-compiler--aot-direct-condition-tag (body)
   "Return BODY's static condition tag, or nil when it is not direct."
   (when (consp body)
@@ -3132,8 +3152,12 @@ saved BODY value is returned after the pop bridge.  Non-local exits
 through BODY remain pending on the 129.8 landing-pad path."
   (let ((direct-throw
          (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+          body-sexp))
+        (conditional-throw
+         (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
     (when (and (not direct-throw)
+               (not conditional-throw)
                (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                 body-sexp))
       (signal 'nelisp-phase47-compiler-error
@@ -3144,19 +3168,39 @@ through BODY remain pending on the 129.8 landing-pad path."
     (let ((value-slot (nelisp-phase47-compiler--gensym
                        "aot-special-value")))
       (nelisp-phase47-compiler--parse-value
-       (if direct-throw
+       (cond
+        (direct-throw
+         `(seq
+           (aot-push-special ',var ,val-sexp)
+           (let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
+             (seq
+              (aot-pop-special 0)
+              (throw ,(nth 1 direct-throw) ,value-slot)))))
+        (conditional-throw
+         (let ((branch-form
+                (lambda (branch)
+                  (let ((branch-throw
+                         (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                          branch)))
+                    `(let (((,value-slot :type sexp)
+                            ,(if branch-throw (nth 2 branch-throw) branch)))
+                       (seq
+                        (aot-pop-special 0)
+                        ,(if branch-throw
+                             `(throw ,(nth 1 branch-throw) ,value-slot)
+                           value-slot)))))))
            `(seq
              (aot-push-special ',var ,val-sexp)
-             (let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
-               (seq
-                (aot-pop-special 0)
-                (throw ,(nth 1 direct-throw) ,value-slot))))
+             (if ,(nth 1 conditional-throw)
+                 ,(funcall branch-form (nth 2 conditional-throw))
+               ,(funcall branch-form (nth 3 conditional-throw))))))
+        (t
          `(seq
            (aot-push-special ',var ,val-sexp)
            (let (((,value-slot :type sexp) ,body-sexp))
              (seq
               (aot-pop-special 0)
-              ,value-slot))))
+              ,value-slot)))))
        env fenv defuns))))
 
 (defun nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
@@ -3168,8 +3212,12 @@ preserves ordinary parallel `let' initializer semantics for the
 all-special subset."
   (let ((direct-throw
          (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+          body-sexp))
+        (conditional-throw
+         (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
     (when (and (not direct-throw)
+               (not conditional-throw)
                (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                 body-sexp))
       (signal 'nelisp-phase47-compiler-error
@@ -3194,13 +3242,35 @@ all-special subset."
        `(let ,(nreverse temp-bindings)
           (seq
            ,@(nreverse push-forms)
-           (let (((,body-slot :type sexp)
-                  ,(if direct-throw (nth 2 direct-throw) body-sexp)))
-             (seq
-              ,@pop-forms
-              ,(if direct-throw
-                   `(throw ,(nth 1 direct-throw) ,body-slot)
-                 body-slot)))))
+           ,(cond
+             (direct-throw
+              `(let (((,body-slot :type sexp) ,(nth 2 direct-throw)))
+                 (seq
+                  ,@pop-forms
+                  (throw ,(nth 1 direct-throw) ,body-slot))))
+             (conditional-throw
+              (let ((branch-form
+                     (lambda (branch)
+                       (let ((branch-throw
+                              (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                               branch)))
+                         `(let (((,body-slot :type sexp)
+                                 ,(if branch-throw
+                                      (nth 2 branch-throw)
+                                    branch)))
+                            (seq
+                             ,@pop-forms
+                             ,(if branch-throw
+                                  `(throw ,(nth 1 branch-throw) ,body-slot)
+                                body-slot)))))))
+                `(if ,(nth 1 conditional-throw)
+                     ,(funcall branch-form (nth 2 conditional-throw))
+                   ,(funcall branch-form (nth 3 conditional-throw)))))
+             (t
+              `(let (((,body-slot :type sexp) ,body-sexp))
+                 (seq
+                  ,@pop-forms
+                  ,body-slot))))))
        env fenv defuns))))
 
 (defun nelisp-phase47-compiler--parse-aot-special-let-mixed-normal-exit
@@ -3213,8 +3283,12 @@ bindings in scope, and special bindings are popped before returning the
 saved BODY value."
   (let ((direct-throw
          (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+          body-sexp))
+        (conditional-throw
+         (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
     (when (and (not direct-throw)
+               (not conditional-throw)
                (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                 body-sexp))
       (signal 'nelisp-phase47-compiler-error
@@ -3245,20 +3319,50 @@ saved BODY value."
                 (push `(aot-push-special ',var ,temp) push-forms)
                 (push '(aot-pop-special 0) pop-forms))
             (push `(,var-form ,temp) lexical-bindings))))
-      (let* ((body-value (if direct-throw (nth 2 direct-throw) body-sexp))
-             (scoped-body (if lexical-bindings
-                              `(let ,(nreverse lexical-bindings) ,body-value)
+      (let* ((lexical-bindings* (nreverse lexical-bindings))
+             (body-value (if direct-throw (nth 2 direct-throw) body-sexp))
+             (scoped-body (if lexical-bindings*
+                              `(let ,lexical-bindings* ,body-value)
                             body-value)))
         (nelisp-phase47-compiler--parse-value
          `(let ,(nreverse temp-bindings)
             (seq
              ,@(nreverse push-forms)
-             (let (((,body-slot :type sexp) ,scoped-body))
-               (seq
-                ,@pop-forms
-                ,(if direct-throw
-                     `(throw ,(nth 1 direct-throw) ,body-slot)
-                   body-slot)))))
+             ,(cond
+               (direct-throw
+                `(let (((,body-slot :type sexp) ,scoped-body))
+                   (seq
+                    ,@pop-forms
+                    (throw ,(nth 1 direct-throw) ,body-slot))))
+               (conditional-throw
+                (let ((branch-form
+                       (lambda (branch)
+                         (let* ((branch-throw
+                                 (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                                  branch))
+                                (branch-value
+                                 (if branch-throw
+                                     (nth 2 branch-throw)
+                                   branch)))
+                           `(let (((,body-slot :type sexp) ,branch-value))
+                              (seq
+                               ,@pop-forms
+                               ,(if branch-throw
+                                    `(throw ,(nth 1 branch-throw)
+                                            ,body-slot)
+                                  body-slot)))))))
+                  (let ((conditional-body
+                         `(if ,(nth 1 conditional-throw)
+                              ,(funcall branch-form (nth 2 conditional-throw))
+                            ,(funcall branch-form (nth 3 conditional-throw)))))
+                    (if lexical-bindings*
+                        `(let ,lexical-bindings* ,conditional-body)
+                      conditional-body))))
+               (t
+                `(let (((,body-slot :type sexp) ,scoped-body))
+                   (seq
+                    ,@pop-forms
+                    ,body-slot))))))
          env fenv defuns)))))
 
 (defun nelisp-phase47-compiler--parse-aot-catch-normal-exit
@@ -3430,8 +3534,12 @@ crossing the protected body still require native landing-pad support."
   (let ((body (nth 1 sexp))
         (cleanups (nthcdr 2 sexp)))
     (let ((direct-throw
-           (nelisp-phase47-compiler--aot-direct-quoted-throw-form body)))
+           (nelisp-phase47-compiler--aot-direct-quoted-throw-form body))
+          (conditional-throw
+           (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
+            body)))
       (when (or (and (not direct-throw)
+                     (not conditional-throw)
                      (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                       body))
                 (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
@@ -3441,13 +3549,35 @@ crossing the protected body still require native landing-pad support."
       (let ((value-slot (nelisp-phase47-compiler--gensym
                          "aot-unwind-value")))
         (nelisp-phase47-compiler--parse-value
-         `(let (((,value-slot :type sexp)
-                 ,(if direct-throw (nth 2 direct-throw) body)))
-            (seq
-             ,@cleanups
-             ,(if direct-throw
-                  `(throw ,(nth 1 direct-throw) ,value-slot)
-                value-slot)))
+         (cond
+          (direct-throw
+           `(let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
+              (seq
+               ,@cleanups
+               (throw ,(nth 1 direct-throw) ,value-slot))))
+          (conditional-throw
+           (let ((branch-form
+                  (lambda (branch)
+                    (let ((branch-throw
+                           (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                            branch)))
+                      `(let (((,value-slot :type sexp)
+                              ,(if branch-throw
+                                   (nth 2 branch-throw)
+                                 branch)))
+                         (seq
+                          ,@cleanups
+                          ,(if branch-throw
+                               `(throw ,(nth 1 branch-throw) ,value-slot)
+                             value-slot)))))))
+             `(if ,(nth 1 conditional-throw)
+                  ,(funcall branch-form (nth 2 conditional-throw))
+                ,(funcall branch-form (nth 3 conditional-throw)))))
+          (t
+           `(let (((,value-slot :type sexp) ,body))
+              (seq
+               ,@cleanups
+               ,value-slot))))
          env fenv defuns)))))
 
 (defun nelisp-phase47-compiler--normalize-defun-params (param-forms sexp)
