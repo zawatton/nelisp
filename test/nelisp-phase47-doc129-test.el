@@ -933,17 +933,28 @@
     (should (equal (plist-get extracted :special-vars)
                    '(dyn c opt)))))
 
-(ert-deftest nelisp-phase47-doc129/multi-let-special-binding-still-pending ()
-  "Doc 129.4E: mixed lexical/special `let' still waits for sequencing."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(seq
-      (defvar dyn)
-      (defun f (x y)
-        (let ((a x)
-              (dyn y))
-          a))))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-normal-exit ()
+  "Doc 129.4F: mixed lexical/special `let' lowers to temp/push/body/pop."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defvar dyn)
+                (defun bind_mixed
+                    ((out :type sexp)
+                     (mirror :type sexp)
+                     (frames :type sexp)
+                     (scratch :type sexp)
+                     (name-slot :type sexp)
+                     (value-a :type sexp)
+                     (value-b :type sexp))
+                  (let (((a :type sexp) value-a)
+                        (dyn value-b))
+                    a)))))
+         (defun-ir (car (nelisp-phase47-compiler--ir-get ir :forms)))
+         (body (nelisp-phase47-compiler--ir-get defun-ir :body))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt-n))
+    (should (= (cl-count 'nelisp_aot_push_special externs) 1))
+    (should (= (cl-count 'nelisp_aot_pop_special externs) 1))))
 
 (ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-normal-exit ()
   "Doc 129.4E: all-special multi-binding `let' lowers to push/body/pop."
@@ -1025,6 +1036,25 @@
         (let ((dyn-a value-a)
               (dyn-b value-b))
           (throw 'tag value-b)))))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/source-special-mixed-let-nonlocal-still-pending ()
+  "Doc 129.4F: mixed special `let' bodies with non-local exits need landing pads."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(seq
+      (defvar dyn)
+      (defun bind_mixed
+          ((out :type sexp)
+           (mirror :type sexp)
+           (frames :type sexp)
+           (scratch :type sexp)
+           (name-slot :type sexp)
+           (value-a :type sexp)
+           (value-b :type sexp))
+        (let (((a :type sexp) value-a)
+              (dyn value-b))
+          (throw 'tag a)))))
    :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-doc129/parse-aot-special-push-pop ()
@@ -1136,6 +1166,34 @@
                (let ((dyn-a value-a)
                      (dyn-b value-b))
                  value-b)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_push_special" out))
+            (should (string-match-p "nelisp_aot_pop_special" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-source-special-mixed-let-normal-exit ()
+  "Doc 129.4F: object output exposes mixed special let bridge relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-special-mixed-let-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defvar dyn)
+             (defun bind_mixed
+                 ((out :type sexp)
+                  (mirror :type sexp)
+                  (frames :type sexp)
+                  (scratch :type sexp)
+                  (name-slot :type sexp)
+                  (value-a :type sexp)
+                  (value-b :type sexp))
+               (let (((a :type sexp) value-a)
+                     (dyn value-b))
+                 a)))
            path)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output

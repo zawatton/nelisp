@@ -929,9 +929,8 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
       (nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
        bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
      ((> special-count 0)
-      (signal 'nelisp-phase47-compiler-error
-              (list :let-special-mixed-binding-pending
-                    (list 'let bindings body-sexp))))
+      (nelisp-phase47-compiler--parse-aot-special-let-mixed-normal-exit
+       bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
      (t
       (let ((new-env env)
             (new-fenv fenv)
@@ -2653,6 +2652,56 @@ all-special subset."
             ,@pop-forms
             ,body-slot))))
      env fenv defuns)))
+
+(defun nelisp-phase47-compiler--parse-aot-special-let-mixed-normal-exit
+    (bindings body-sexp env fenv defuns source-form)
+  "Lower a mixed lexical/special source `let' normal exit path.
+Every initializer is evaluated against the original ENV/FENV into a
+fresh temp slot before any special value cell is rebound or lexical
+alias becomes visible.  BODY then runs with all special and lexical
+bindings in scope, and special bindings are popped before returning the
+saved BODY value."
+  (when (nelisp-phase47-compiler--aot-nonlocal-source-form-p body-sexp)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-special-let-mixed-nonlocal-body source-form)))
+  (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
+  (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
+  (let ((temp-bindings nil)
+        (lexical-bindings nil)
+        (push-forms nil)
+        (pop-forms nil)
+        (body-slot (nelisp-phase47-compiler--gensym
+                    "aot-special-value")))
+    (dolist (binding bindings)
+      (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+             (var-form (car binding))
+             (var (nth 0 pair))
+             (val-sexp (nth 1 pair))
+             (root-p (nth 2 pair))
+             (special-p (nelisp-phase47-compiler--special-var-p var))
+             (temp (nelisp-phase47-compiler--gensym
+                    "aot-let-init"))
+             (temp-form (if (or special-p root-p)
+                            `(,temp :type sexp)
+                          temp)))
+        (push `(,temp-form ,val-sexp) temp-bindings)
+        (if special-p
+            (progn
+              (push `(aot-push-special ',var ,temp) push-forms)
+              (push '(aot-pop-special 0) pop-forms))
+          (push `(,var-form ,temp) lexical-bindings))))
+    (let ((scoped-body (if lexical-bindings
+                           `(let ,(nreverse lexical-bindings) ,body-sexp)
+                         body-sexp)))
+      (nelisp-phase47-compiler--parse-value
+       `(let ,(nreverse temp-bindings)
+          (seq
+           ,@(nreverse push-forms)
+           (let (((,body-slot :type sexp) ,scoped-body))
+             (seq
+              ,@pop-forms
+              ,body-slot))))
+       env fenv defuns))))
 
 (defun nelisp-phase47-compiler--parse-aot-catch-normal-exit
     (sexp env fenv defuns)
