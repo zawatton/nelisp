@@ -2656,7 +2656,13 @@ the whole program."
     car cdr car-safe cdr-safe
     cl-caaar cl-caadr cl-cadar cl-caddr
     cl-cdaar cl-cdadr cl-cddar cl-cdddr
+    cl-caaaar cl-caaadr cl-caadar cl-caaddr
+    cl-cadaar cl-cadadr cl-caddar cl-cadddr
+    cl-cdaaar cl-cdaadr cl-cdadar cl-cdaddr
+    cl-cddaar cl-cddadr cl-cdddar cl-cddddr
     cl-fourth cl-fifth cl-sixth cl-seventh cl-eighth cl-ninth cl-tenth
+    cl-copy-seq cl-evenp cl-oddp cl-plusp cl-minusp
+    cl-functionp cl-floatp-safe cl-type-of
     length reverse nreverse copy-sequence
     hash-table-p hash-table-count
     1+ 1- abs

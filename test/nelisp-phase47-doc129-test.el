@@ -2008,19 +2008,19 @@ materialized closure temporary."
     (unwind-protect
         (progn
           (nelisp-phase47-compile-to-object
-           '(defun call_cl_caddr
+           '(defun call_cl_cadddr
                 ((out :type sexp)
                  (mirror :type sexp)
                  (frames :type sexp)
                  (scratch :type sexp)
                  (name_slot :type sexp)
                  (arg :type sexp))
-              (cl-caddr arg))
+              (cl-cadddr arg))
            path)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
-            (should (string-match-p "call_cl_caddr" out))
+            (should (string-match-p "call_cl_cadddr" out))
             (should (string-match-p "nelisp_aot_builtin_call1" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
@@ -4349,8 +4349,15 @@ materialized closure temporary."
                               number-to-string
                               cl-caaar cl-caadr cl-cadar cl-caddr
                               cl-cdaar cl-cdadr cl-cddar cl-cdddr
+                              cl-caaaar cl-caaadr cl-caadar cl-caaddr
+                              cl-cadaar cl-cadadr cl-caddar cl-cadddr
+                              cl-cdaaar cl-cdaadr cl-cdadar cl-cdaddr
+                              cl-cddaar cl-cddadr cl-cdddar cl-cddddr
                               cl-fourth cl-fifth cl-sixth cl-seventh
-                              cl-eighth cl-ninth cl-tenth))
+                              cl-eighth cl-ninth cl-tenth
+                              cl-copy-seq cl-evenp cl-oddp
+                              cl-plusp cl-minusp cl-functionp
+                              cl-floatp-safe cl-type-of))
     (let* ((ir (nelisp-phase47-compiler--parse
                 `(defun call_builtin
                      ((out :type sexp)
