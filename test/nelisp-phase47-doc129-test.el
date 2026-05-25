@@ -2094,6 +2094,9 @@ materialized closure temporary."
                   (mapconcat #'foo xs sep)
                   (mapcan #'foo xs)
                   (maphash #'foo xs)
+                  (map-apply #'foo xs)
+                  (map-do #'foo xs)
+                  (map-filter #'foo xs)
                   (seq-map #'foo xs)
                   (seq-do #'foo xs)
                   (seq-filter #'foo xs)
@@ -2177,7 +2180,8 @@ materialized closure temporary."
                   ((cl-map type #'foo xs) 7 "cl-map")
                   ((cl-sort xs #'foo) 7 "cl-sort")
                   ((cl-stable-sort xs #'foo) 7 "cl-stable-sort")
-                  ((cl-merge type xs ys #'foo) 9 "cl-merge")))
+                  ((cl-merge type xs ys #'foo) 9 "cl-merge")
+                  ((map-merge-with type #'foo xs ys) 7 "map-merge-with")))
     (pcase-let ((`(,form ,arg-index ,builtin-name) case))
       (let* ((ir (nelisp-phase47-compiler--parse
                   `(defun call_builtin
@@ -2543,6 +2547,8 @@ materialized closure temporary."
   "Doc 129.7Z: extended higher-order literal lambdas lift to defuns."
   (dolist (case '(((seq-map-indexed (lambda (x i) x) xs) 6)
                   ((seq-uniq xs (lambda (a b) a)) 7)
+                  ((map-filter (lambda (k v) k) xs) 6)
+                  ((map-merge-with type (lambda (a b) a) xs ys) 7)
                   ((cl-map type (lambda (x) x) xs) 7)
                   ((cl-merge type xs ys (lambda (a b) a)) 9)))
     (pcase-let ((`(,form ,arg-index) case))
@@ -2852,6 +2858,30 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_maphash" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-map-el-designator ()
+  "Doc 129.6Z: object output exposes map.el designator materialization."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-map-el-designator-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_map_filter
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (xs :type sexp))
+              (map-filter #'foo xs))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_map_filter" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))

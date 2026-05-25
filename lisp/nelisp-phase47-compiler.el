@@ -2240,6 +2240,7 @@ the whole program."
    ((eq (car sexp) 'funcall)
     (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
    ((memq (car sexp) '(mapcar mapc mapconcat mapcan maphash
+                       map-apply map-do map-filter map-merge-with
                        seq-map seq-do seq-filter seq-remove seq-find
                        seq-some seq-every-p seq-count seq-reduce
                        seq-mapcat seq-keep seq-mapn seq-map-indexed
@@ -2408,6 +2409,7 @@ defun is visible in the current compile unit.")
     plist-get plist-put plist-member
     gethash puthash remhash
     mapcar mapc mapconcat mapcan maphash
+    map-apply map-do map-filter map-merge-with
     seq-map seq-do seq-filter seq-remove seq-find
     seq-some seq-every-p seq-count seq-reduce seq-mapcat
     seq-keep seq-mapn seq-map-indexed seq-sort seq-uniq
@@ -2438,6 +2440,10 @@ defun is visible in the current compile unit.")
     (mapconcat . 0)
     (mapcan . 0)
     (maphash . 0)
+    (map-apply . 0)
+    (map-do . 0)
+    (map-filter . 0)
+    (map-merge-with . 1)
     (seq-map . 0)
     (seq-do . 0)
     (seq-filter . 0)
