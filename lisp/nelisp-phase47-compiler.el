@@ -4011,7 +4011,7 @@ because cleanup routing is selected from the tail."
          (= (length sexp) 3))
     (let ((bindings (nth 1 sexp))
           (body (nth 2 sexp)))
-      (when (and (consp bindings)
+      (when (and (listp bindings)
                  (not (cl-some
                        (lambda (binding)
                          (let ((pair
@@ -4022,16 +4022,19 @@ because cleanup routing is selected from the tail."
                                (nelisp-phase47-compiler--aot-nonlocal-source-form-p
                                 (nth 1 pair)))))
                        bindings)))
-        (nelisp-phase47-compiler--check-let-vars-unique bindings)
         (let ((body-split
                (nelisp-phase47-compiler--aot-protected-body-split body)))
           (when body-split
-            (plist-put
-             body-split
-             :wrappers
-             (cons (list :let bindings (plist-get body-split :prefix))
-                   (plist-get body-split :wrappers)))
-            (plist-put body-split :prefix nil))))))
+            (if bindings
+                (progn
+                  (nelisp-phase47-compiler--check-let-vars-unique bindings)
+                  (plist-put
+                   body-split
+                   :wrappers
+                   (cons (list :let bindings (plist-get body-split :prefix))
+                         (plist-get body-split :wrappers)))
+                  (plist-put body-split :prefix nil))
+              body-split))))))
    (t
     (list :prefix nil :tail sexp :wrappers nil))))
 
@@ -4232,7 +4235,10 @@ or lexical wrapper around the selected cleanup tail."
   (let ((split (nelisp-phase47-compiler--aot-protected-body-split sexp)))
     (when (and split
                (or (plist-get split :prefix)
-                   (plist-get split :wrappers)))
+                   (plist-get split :wrappers)
+                   (and (consp sexp)
+                        (eq (car sexp) 'let)
+                        (null (nth 1 sexp)))))
       split)))
 
 (defun nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
