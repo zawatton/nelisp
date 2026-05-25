@@ -3112,6 +3112,40 @@ contains no unresolved non-local source form."
          'error))
       (_ nil))))
 
+(defun nelisp-phase47-compiler--aot-conditional-condition-case-form
+    (body clauses)
+  "Return a one-level conditional condition-case signal descriptor.
+The accepted shape is `(if TEST THEN ELSE)' where exactly one direct
+signal/error branch, or two branches with the same direct condition tag,
+can be statically matched to one HANDLER clause.  TEST and any normal
+branch must contain no unresolved non-local source form."
+  (when (and (consp body)
+             (eq (car body) 'if)
+             (= (length body) 4)
+             (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                   (nth 1 body))))
+    (let* ((then (nth 2 body))
+           (else (nth 3 body))
+           (then-tag
+            (nelisp-phase47-compiler--aot-direct-condition-tag then))
+           (else-tag
+            (nelisp-phase47-compiler--aot-direct-condition-tag else))
+           (tag (or then-tag else-tag)))
+      (when (and tag
+                 (or (not then-tag) (eq then-tag tag))
+                 (or (not else-tag) (eq else-tag tag))
+                 (or then-tag
+                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                           then)))
+                 (or else-tag
+                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                           else))))
+        (let ((handler
+               (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                tag clauses)))
+          (when handler
+            (list :tag tag :handler handler :form body)))))))
+
 (defun nelisp-phase47-compiler--aot-condition-selector-match-p
     (selector tag)
   "Return non-nil when source condition-case SELECTOR catches TAG."
@@ -3481,31 +3515,73 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
            (direct-handler
             (and direct-tag
                  (nelisp-phase47-compiler--aot-condition-case-direct-handler
-                  direct-tag clauses))))
+                  direct-tag clauses)))
+           (conditional-handler
+            (and (not direct-handler)
+                 (nelisp-phase47-compiler--aot-conditional-condition-case-form
+                  body clauses))))
       (when (and (not direct-handler)
+                 (not conditional-handler)
                  (nelisp-phase47-compiler--aot-nonlocal-source-form-p body))
         (signal 'nelisp-phase47-compiler-error
                 (list :aot-condition-case-nonlocal-body sexp)))
       ;; Force diagnostics to point at the source form.
       (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
       (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
-      (if direct-handler
-          (let* ((handler-body
-                  (nelisp-phase47-compiler--body->form
-                   (cdr direct-handler)))
-                 (handled-form
-                  (if var
-                      `(let (((,var :type sexp) (aot-landing-error out)))
-                         ,handler-body)
-                    `(seq
-                      (aot-landing-error out)
-                      ,handler-body))))
-            (nelisp-phase47-compiler--parse-value
-             `(seq
-               (aot-push-condition ',direct-tag 0 0)
-               ,body
-               ,handled-form)
-             env fenv defuns))
+      (cond
+       (direct-handler
+        (let* ((handler-body
+                (nelisp-phase47-compiler--body->form
+                 (cdr direct-handler)))
+               (handled-form
+                (if var
+                    `(let (((,var :type sexp) (aot-landing-error out)))
+                       ,handler-body)
+                  `(seq
+                    (aot-landing-error out)
+                    ,handler-body))))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             (aot-push-condition ',direct-tag 0 0)
+             ,body
+             ,handled-form)
+           env fenv defuns)))
+       (conditional-handler
+        (let* ((tag (plist-get conditional-handler :tag))
+               (handler (plist-get conditional-handler :handler))
+               (conditional-form (plist-get conditional-handler :form))
+               (handler-body
+                (nelisp-phase47-compiler--body->form
+                 (cdr handler)))
+               (handled-form
+                (if var
+                    `(let (((,var :type sexp)
+                            (aot-landing-error out)))
+                       ,handler-body)
+                  `(seq
+                    (aot-landing-error out)
+                    ,handler-body)))
+               (value-slot (nelisp-phase47-compiler--gensym
+                            "aot-condition-value"))
+               (branch-form
+                (lambda (branch)
+                  (if (nelisp-phase47-compiler--aot-direct-condition-tag
+                       branch)
+                      `(seq
+                        ,branch
+                        ,handled-form)
+                    `(let (((,value-slot :type sexp) ,branch))
+                       (seq
+                        (aot-pop-handler 'condition)
+                        ,value-slot))))))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             (aot-push-condition ',tag 0 0)
+             (if ,(nth 1 conditional-form)
+                 ,(funcall branch-form (nth 2 conditional-form))
+               ,(funcall branch-form (nth 3 conditional-form))))
+           env fenv defuns)))
+       (t
         (let ((value-slot (nelisp-phase47-compiler--gensym
                            "aot-condition-value"))
               (selectors
@@ -3520,7 +3596,7 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
                 ,@(make-list (length selectors)
                              `(aot-pop-handler 'condition))
                 ,value-slot)))
-           env fenv defuns))))))
+           env fenv defuns)))))))
 
 (defun nelisp-phase47-compiler--parse-aot-unwind-protect-normal-exit
     (sexp env fenv defuns)
