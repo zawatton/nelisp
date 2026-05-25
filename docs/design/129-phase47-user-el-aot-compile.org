@@ -36,7 +36,8 @@
   Stage 129.6L mapcan function-designator materialization,
   Stage 129.6M maphash function-designator materialization,
   Stage 129.6N seq.el higher-order function-designator
-  materialization,
+  materialization, Stage 129.6O cl-lib higher-order
+  function-designator materialization,
   Stage 129.7A one-argument =funcall= dispatcher bridge,
   Stage 129.7B two-argument =funcall=
   dispatcher bridge, Stage 129.7C =apply= dispatcher bridge, Stage
@@ -52,6 +53,7 @@
   Stage 129.7N indexed higher-order builtin lambda lifting,
   Stage 129.7O maphash literal lambda lifting,
   Stage 129.7P seq.el higher-order literal lambda lifting,
+  Stage 129.7Q cl-lib higher-order literal lambda lifting,
   Stage 129.8A runtime handler-stack substrate, Stage
   129.8B =throw= / =signal=
   bridge lowering, Stage 129.8C handler-push bridge lowering,
@@ -322,6 +324,12 @@
   =seq-find=, =seq-some=, =seq-every-p=, =seq-count=, =seq-reduce=,
   and =seq-mapcat=.  Their first argument is materialized through the
   scratch-slot function-designator path.
+- *129.6O MVP*: the cl-lib higher-order family now also uses the
+  direct calln path: =cl-mapcar=, =cl-mapc=, =cl-mapcan=, =cl-maplist=,
+  =cl-mapl=, =cl-mapcon=, =cl-some=, =cl-every=, =cl-notany=,
+  =cl-notevery=, =cl-count-if=, =cl-count-if-not=, =cl-find-if=,
+  =cl-find-if-not=, =cl-remove-if=, =cl-remove-if-not=,
+  =cl-position-if=, =cl-position-if-not=, and =cl-reduce=.
 - *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
   =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
   =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
@@ -416,6 +424,9 @@
   non-capturing literal callbacks through the same indexed lambda-lift
   path.  Captured lexical variables still wait for heap closure
   allocation/capture.
+- *129.7Q MVP*: cl-lib higher-order callbacks participate in the same
+  non-capturing literal lambda lift.  As with the map/seq families,
+  captured lexical variables remain pending on heap closures.
 - *129.8A MVP*: =nelisp-cc-runtime.el= now owns an AOT handler-stack
   simulator for =catch= / =condition-case= / =unwind-protect=.  The
   runtime can push/pop catch, condition, and unwind handlers; =throw=
@@ -1685,6 +1696,36 @@ The covered family is =seq-map=, =seq-do=, =seq-filter=, =seq-remove=,
 =seq-mapcat=.  This remains a non-capturing lambda MVP; heap closure
 allocation/capture is still the remaining 129.7 closure work.
 
+*** §1.E.3.9 Shipped MVP: cl-lib higher-order literal lambda lifting
+
+Stage 129.7Q applies the same non-capturing callback lift to cl-lib's
+common higher-order functions:
+
+#+begin_src elisp
+(defun cl-caller
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (xs :type sexp))
+  (cl-find-if (lambda (x) x) xs))
+#+end_src
+
+The callback becomes a synthetic top-level defun, then the call flows
+through the 129.6O function-designator materialization path:
+
+#+begin_src elisp
+(seq
+ (defun nelisp_aot_lambda_0 (x) x)
+ (defun cl-caller (...)
+   (cl-find-if #'nelisp_aot_lambda_0 xs)))
+#+end_src
+
+The covered family is =cl-mapcar=, =cl-mapc=, =cl-mapcan=,
+=cl-maplist=, =cl-mapl=, =cl-mapcon=, =cl-some=, =cl-every=,
+=cl-notany=, =cl-notevery=, =cl-count-if=, =cl-count-if-not=,
+=cl-find-if=, =cl-find-if-not=, =cl-remove-if=, =cl-remove-if-not=,
+=cl-position-if=, =cl-position-if-not=, and =cl-reduce=.  Capturing
+callbacks still require the remaining heap closure allocation/capture
+work.
+
 *** §1.E.4 Shipped MVP: quoted function designators
 
 Stage 129.7D lets the compiler handle symbol function designators
@@ -2487,6 +2528,37 @@ The covered family is =seq-map=, =seq-do=, =seq-filter=, =seq-remove=,
 lookup through =nelisp_aot_builtin_calln=.  This widens 129.6 coverage
 without claiming heap closure capture.
 
+*** §1.H.14 Shipped MVP: cl-lib higher-order function-designator materialization
+
+Stage 129.6O extends the same first-argument function-designator
+materialization to cl-lib's higher-order sequence/list family:
+
+#+begin_src elisp
+(cl-mapcar fn xs)
+(cl-find-if #'pred xs)
+(cl-reduce #'combine xs)
+#+end_src
+
+Quoted/function symbols are materialized through =scratch= and then
+passed as ordinary calln arguments:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name-slot "cl-find-if")
+ (sexp-write-symbol-lit scratch "pred")
+ (extern-call nelisp_aot_builtin_calln
+              mirror frames name-slot 2 out scratch scratch xs)
+ out)
+#+end_src
+
+The covered family is =cl-mapcar=, =cl-mapc=, =cl-mapcan=,
+=cl-maplist=, =cl-mapl=, =cl-mapcon=, =cl-some=, =cl-every=,
+=cl-notany=, =cl-notevery=, =cl-count-if=, =cl-count-if-not=,
+=cl-find-if=, =cl-find-if-not=, =cl-remove-if=, =cl-remove-if-not=,
+=cl-position-if=, =cl-position-if-not=, and =cl-reduce=.  It reuses
+the shared =nelisp_aot_builtin_calln= dispatcher and still leaves
+capturing callbacks to 129.7 heap closures.
+
 * §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
 
 Each grammar group ships as new elisp in =nelisp-phase47-compiler.el=
@@ -2503,8 +2575,8 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP + 129.4B special declaration guard + 129.4C special binding bridge substrate + 129.4D single-special let normal-exit lowering + 129.4E all-special multi-let normal-exit lowering + 129.4F mixed special/lexical multi-let normal-exit lowering SHIPPED 2026-05-25; non-local cleanup pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
-| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization SHIPPED 2026-05-25; exported C ABI and broader higher-order builtin coverage pending |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting SHIPPED 2026-05-25; heap closure allocation/capture pending |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization SHIPPED 2026-05-25; exported C ABI and remaining higher-order builtin coverage pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting SHIPPED 2026-05-25; heap closure allocation/capture pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from

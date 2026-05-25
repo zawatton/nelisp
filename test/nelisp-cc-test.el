@@ -1514,6 +1514,17 @@ exit points were emitted; call-points were missing."
       (should (equal (aref out 0) '(a b)))
       (should (equal seen '(b a))))
     (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'cl-find-if 2 out 'scratch #'numberp '(a 1 b 2))
+    (should (= (aref out 0) 1))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'cl-remove-if 2 out 'scratch #'symbolp '(a 1 b 2))
+    (should (equal (aref out 0) '(1 2)))
+    (nelisp-cc-runtime-aot-builtin-calln
+     'mirror 'frames 'cl-reduce 2 out 'scratch
+     (lambda (acc x) (+ acc x))
+     '(1 2 3))
+    (should (= (aref out 0) 6))
+    (nelisp-cc-runtime-aot-builtin-calln
      'mirror 'frames 'sort 2 out 'scratch '(3 1 2) #'<)
     (should (equal (aref out 0) '(1 2 3)))))
 

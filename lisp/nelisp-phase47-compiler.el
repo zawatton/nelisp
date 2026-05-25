@@ -1818,6 +1818,11 @@ the whole program."
                        seq-map seq-do seq-filter seq-remove seq-find
                        seq-some seq-every-p seq-count seq-reduce
                        seq-mapcat
+                       cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl
+                       cl-mapcon cl-some cl-every cl-notany cl-notevery
+                       cl-count-if cl-count-if-not cl-find-if
+                       cl-find-if-not cl-remove-if cl-remove-if-not
+                       cl-position-if cl-position-if-not cl-reduce
                        sort))
     (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
    ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
@@ -1965,6 +1970,11 @@ defun is visible in the current compile unit.")
     mapcar mapc mapconcat mapcan maphash
     seq-map seq-do seq-filter seq-remove seq-find
     seq-some seq-every-p seq-count seq-reduce seq-mapcat
+    cl-mapcar cl-mapc cl-mapcan cl-maplist cl-mapl cl-mapcon
+    cl-some cl-every cl-notany cl-notevery
+    cl-count-if cl-count-if-not cl-find-if cl-find-if-not
+    cl-remove-if cl-remove-if-not cl-position-if cl-position-if-not
+    cl-reduce
     sort)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
 These names are direct-call candidates only when no same-named Phase 47
@@ -1986,6 +1996,25 @@ defun is visible in the current compile unit.")
     (seq-count . 0)
     (seq-reduce . 0)
     (seq-mapcat . 0)
+    (cl-mapcar . 0)
+    (cl-mapc . 0)
+    (cl-mapcan . 0)
+    (cl-maplist . 0)
+    (cl-mapl . 0)
+    (cl-mapcon . 0)
+    (cl-some . 0)
+    (cl-every . 0)
+    (cl-notany . 0)
+    (cl-notevery . 0)
+    (cl-count-if . 0)
+    (cl-count-if-not . 0)
+    (cl-find-if . 0)
+    (cl-find-if-not . 0)
+    (cl-remove-if . 0)
+    (cl-remove-if-not . 0)
+    (cl-position-if . 0)
+    (cl-position-if-not . 0)
+    (cl-reduce . 0)
     (sort . 1))
   "Function-designator argument positions for calln builtin lowering.
 The index is zero-based within the source call's ordinary argument
