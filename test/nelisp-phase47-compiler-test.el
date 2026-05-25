@@ -1336,13 +1336,78 @@ correctly."
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-compiler/extern-call-7gp-rejects-nontrivial-stack-arg ()
-  "Doc 129.7E: stack GP args stay trivial until call-spill slots land."
-  (let ((path (make-temp-file "nelisp-doc129-stack-nontrivial-" nil ".o")))
+(ert-deftest nelisp-phase47-compiler/object-mode-extern-call-7gp-nontrivial-stack-smoke ()
+  "Doc 129.7F: the first stack GP arg may be a computed value."
+  (skip-unless (and (executable-find "ld")
+                    (eq system-type 'gnu/linux)))
+  (let* ((probe-path (make-temp-file "nelisp-doc129-probe7c-" nil ".o"))
+         (host-path (make-temp-file "nelisp-doc129-host7c-" nil ".o"))
+         (bin-path (make-temp-file "nelisp-doc129-bin7c-" nil ""))
+         (sum7-text
+          (concat
+           ;; ext_sum7:
+           ;;   rax = rdi+rsi+rdx+rcx+r8+r9+[rsp+8]; ret
+           (unibyte-string #x48 #x89 #xF8)
+           (unibyte-string #x48 #x01 #xF0)
+           (unibyte-string #x48 #x01 #xD0)
+           (unibyte-string #x48 #x01 #xC8)
+           (unibyte-string #x4C #x01 #xC0)
+           (unibyte-string #x4C #x01 #xC8)
+           (unibyte-string #x48 #x03 #x44 #x24 #x08)
+           (unibyte-string #xC3)))
+         (ext21-off (length sum7-text))
+         (ext21-text
+          (concat
+           (unibyte-string #xB8 21 0 0 0)
+           (unibyte-string #xC3)))
+         (start-off (+ (length sum7-text) (length ext21-text)))
+         (start-text
+          (concat
+           (unibyte-string #xE8 0 0 0 0)
+           (unibyte-string #x48 #x89 #xC7)
+           (unibyte-string #xB8 #x3C 0 0 0)
+           (unibyte-string #x0F #x05)))
+         (host-text (concat sum7-text ext21-text start-text)))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () (extern-call ext_sum7 1 2 3 4 5 6 (extern-call ext_21)))
+           probe-path)
+          (nelisp-elf-write-binary
+           host-path
+           (list :e-type 'rel
+                 :text host-text
+                 :symbols (list
+                           (list :name "ext_sum7" :value 0
+                                 :size (length sum7-text)
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "ext_21" :value ext21-off
+                                 :size (length ext21-text)
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "_start" :value start-off
+                                 :size (length start-text)
+                                 :section 'text :bind 'global :type 'func)
+                           (list :name "probe" :section 'undef
+                                 :bind 'global :type 'notype))
+                 :relocs (list
+                          (list :section 'text :offset (1+ start-off)
+                                :symbol "probe" :type 'plt32 :addend -4))))
+          (should (zerop (call-process "ld" nil nil nil
+                                       "-o" bin-path host-path probe-path)))
+          (set-file-modes bin-path #o755)
+          (let ((exit-status (call-process bin-path nil nil nil)))
+            (should (= exit-status 42))))
+      (ignore-errors (delete-file probe-path))
+      (ignore-errors (delete-file host-path))
+      (ignore-errors (delete-file bin-path)))))
+
+(ert-deftest nelisp-phase47-compiler/extern-call-8gp-rejects-nontrivial-stack-arg ()
+  "Doc 129.7F: multiple stack GP args still require a call-spill area."
+  (let ((path (make-temp-file "nelisp-doc129-stack8-nontrivial-" nil ".o")))
     (unwind-protect
         (should-error
          (nelisp-phase47-compile-to-object
-          '(defun probe (x) (extern-call ext_sum7 1 2 3 4 5 6 (+ x 1)))
+          '(defun probe () (extern-call ext_sum8 1 2 3 4 5 6 7 (extern-call ext_21)))
           path)
          :type 'nelisp-phase47-compiler-error)
       (ignore-errors (delete-file path)))))

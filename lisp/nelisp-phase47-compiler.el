@@ -5069,9 +5069,10 @@ Arg placement strategy (W7.6b trivial-suffix opt):
      regs, and trivial suffix targets are all distinct gp-regs
      that the prefix pops did not write.
   5. SysV GP stack args, when present, are pushed right-to-left after
-     register args have been materialized.  This MVP only accepts
-     trivial stack args so it does not reorder side-effecting
-     evaluation.
+     register args have been materialized.  129.7F also accepts one
+     final non-trivial stack-GP arg by evaluating all args left-to-right
+     into temporary stack saves, parking the final stack arg in r10,
+     restoring register args, then pushing the outgoing stack arg.
   6. For variadic calls, materialise `:f64-count' in AL via
      `mov eax, imm32' (= zero-extended, satisfies SysV ABI §3.5.7
      contract that AL contains the upper bound on f64 args).  This
@@ -5170,7 +5171,12 @@ same branch and emit the same byte count."
          ;; rsp is already aligned post-spill (= see `--emit-defun');
          ;; only gp-class defuns need the runtime correction below.
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (= (logand (+ arity (length stack-args)) 1) 1)))
+         (needs-align (= (logand (+ arity (length stack-args)) 1) 1))
+         (single-final-nontrivial-stack-p
+          (and (= (length stack-args) 1)
+               (not (nelisp-phase47-compiler--call-arg-trivial-p
+                     (car stack-args)))
+               (eq (car stack-args) (car (last args))))))
     (when (and stack-args
                (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
                          (eq nelisp-phase47-compiler--abi 'sysv))))
@@ -5179,53 +5185,75 @@ same branch and emit the same byte count."
                     nelisp-phase47-compiler--arch
                     nelisp-phase47-compiler--abi)))
     (dolist (a stack-args)
-      (unless (and (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
-                   (nelisp-phase47-compiler--call-arg-trivial-p a))
+      (unless (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-stack-arg-not-trivial name))))
-    ;; (1) Complex prefix: push each evaluated arg.  f64 args land
-    ;; in xmm0 (per `--emit-value' contract for f64 nodes) so we
-    ;; transfer to rax first before the unified push.
-    (dolist (a complex-args)
-      (nelisp-phase47-compiler--emit-value a buf)
-      (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
-        ;; xmm0 → rax (64-bit bit pattern, preserves the f64 value).
-        (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
-      (nelisp-asm-x86_64-push buf 'rax))
-    ;; (2) Pop in reverse (= last pushed → first popped) and dispatch.
-    (dolist (target (reverse complex-targets))
-      (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
-          ;; f64 target — pop into rax then MOVQ → xmm.
-          (progn
-            (nelisp-asm-x86_64-pop buf 'rax)
-            (nelisp-asm-x86_64-movq-xmm-r64 buf target 'rax))
-        ;; GP target — pop directly.
-        (nelisp-asm-x86_64-pop buf target)))
-    ;; (3) Trivial suffix: emit each directly into its target gp-reg.
-    ;; Order is free since trivial emits never clobber other arg regs;
-    ;; we walk source order for deterministic byte layout.  All targets
-    ;; here are gp-regs (suffix gating restricts to :cls gp).
-    (cl-mapc (lambda (a r)
-               (nelisp-phase47-compiler--emit-trivial-into-reg a r buf))
-             trivial-args trivial-targets)
-    ;; Insert the 8-byte alignment correction before stack args are
-    ;; pushed.  That keeps the first stack arg at the ABI-visible top
-    ;; of the outgoing argument area while any pad lives below it.
-    (when needs-align
-      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
-    ;; SysV outgoing stack args are pushed right-to-left so the first
-    ;; stack arg ends up closest to the return address in the callee.
-    ;; MVP scope only permits trivial stack args; general stack-arg
-    ;; evaluation needs a dedicated call-spill area.
-    (dolist (a (reverse stack-args))
-      (nelisp-phase47-compiler--emit-trivial-into-reg a 'rax buf)
-      (nelisp-asm-x86_64-push buf 'rax))
+    (if single-final-nontrivial-stack-p
+        (progn
+          ;; Evaluate every arg left-to-right into a temporary stack
+          ;; save, then recover the final stack arg into r10 before
+          ;; restoring register args.  This preserves source evaluation
+          ;; order while avoiding clobbering already-materialized arg regs.
+          (dolist (a args)
+            (nelisp-phase47-compiler--emit-value a buf)
+            (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+              (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
+            (nelisp-asm-x86_64-push buf 'rax))
+          (nelisp-asm-x86_64-pop buf 'r10)
+          (dolist (target (reverse register-targets))
+            (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
+                (progn
+                  (nelisp-asm-x86_64-pop buf 'rax)
+                  (nelisp-asm-x86_64-movq-xmm-r64 buf target 'rax))
+              (nelisp-asm-x86_64-pop buf target)))
+          (when needs-align
+            (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+          (nelisp-asm-x86_64-push buf 'r10))
+      (dolist (a stack-args)
+        (unless (nelisp-phase47-compiler--call-arg-trivial-p a)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :extern-call-stack-arg-not-trivial name))))
+      ;; (1) Complex prefix: push each evaluated arg.  f64 args land
+      ;; in xmm0 (per `--emit-value' contract for f64 nodes) so we
+      ;; transfer to rax first before the unified push.
+      (dolist (a complex-args)
+        (nelisp-phase47-compiler--emit-value a buf)
+        (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+          ;; xmm0 → rax (64-bit bit pattern, preserves the f64 value).
+          (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
+        (nelisp-asm-x86_64-push buf 'rax))
+      ;; (2) Pop in reverse (= last pushed → first popped) and dispatch.
+      (dolist (target (reverse complex-targets))
+        (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
+            ;; f64 target — pop into rax then MOVQ → xmm.
+            (progn
+              (nelisp-asm-x86_64-pop buf 'rax)
+              (nelisp-asm-x86_64-movq-xmm-r64 buf target 'rax))
+          ;; GP target — pop directly.
+          (nelisp-asm-x86_64-pop buf target)))
+      ;; (3) Trivial suffix: emit each directly into its target gp-reg.
+      ;; Order is free since trivial emits never clobber other arg regs;
+      ;; we walk source order for deterministic byte layout.  All targets
+      ;; here are gp-regs (suffix gating restricts to :cls gp).
+      (cl-mapc (lambda (a r)
+                 (nelisp-phase47-compiler--emit-trivial-into-reg a r buf))
+               trivial-args trivial-targets)
+      ;; Insert the 8-byte alignment correction before stack args are
+      ;; pushed.  That keeps the first stack arg at the ABI-visible top
+      ;; of the outgoing argument area while any pad lives below it.
+      (when needs-align
+        (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+      ;; SysV outgoing stack args are pushed right-to-left so the first
+      ;; stack arg ends up closest to the return address in the callee.
+      (dolist (a (reverse stack-args))
+        (nelisp-phase47-compiler--emit-trivial-into-reg a 'rax buf)
+        (nelisp-asm-x86_64-push buf 'rax)))
     ;; Materialise AL = f64-count for variadic calls (SysV ABI §3.5.7).
     ;; `mov eax, imm32' is a 5-byte sequence (= REX-less; the imm32
     ;; zero-extends into RAX, clearing the upper 32 bits which is
     ;; exactly what AL = N requires).  Note: this clobbers rax, so
     ;; it MUST happen AFTER any rax-bound arg was popped into its
-    ;; GP target and after stack args have been copied out through rax.
+    ;; GP target and after stack args have been copied out.
     (when varargs-p
       (nelisp-asm-x86_64-mov-imm32 buf 'rax f64-count))
     ;; Win64: allocate 32-byte shadow space before CALL.
