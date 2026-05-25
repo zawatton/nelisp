@@ -1807,6 +1807,53 @@ path instead of by-value lambda lifting."
       (nelisp-phase47-compiler--lambda-captured-setq-vars
        lambda-form))))
 
+(defun nelisp-phase47-compiler--symbol-list-union (left right)
+  "Return order-preserving union of symbol lists LEFT and RIGHT."
+  (let ((out (copy-sequence left)))
+    (dolist (sym right)
+      (unless (memq sym out)
+        (setq out (append out (list sym)))))
+    out))
+
+(defun nelisp-phase47-compiler--symbol-list-intersection (left right)
+  "Return symbols present in both LEFT and RIGHT, preserving LEFT order."
+  (let (out)
+    (dolist (sym left)
+      (when (memq sym right)
+        (push sym out)))
+    (nreverse out)))
+
+(defun nelisp-phase47-compiler--captured-mutation-guaranteed-vars (form)
+  "Return captured vars definitely updated after FORM's normal exit.
+This is intentionally conservative: a direct captured-mutation funcall
+guarantees its mutated slots, sequential forms guarantee the union of
+their guaranteed updates, and `if' guarantees only the intersection of
+the then/else branches."
+  (cond
+   ((atom form) nil)
+   ((eq (car form) 'funcall)
+    (nelisp-phase47-compiler--captured-mutation-funcall-vars form))
+   ((memq (car form) '(progn seq))
+    (let (guaranteed)
+      (dolist (child (cdr form))
+        (setq guaranteed
+              (nelisp-phase47-compiler--symbol-list-union
+               guaranteed
+               (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                child))))
+      guaranteed))
+   ((eq (car form) 'if)
+    (let ((then-vars
+           (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+            (nth 2 form)))
+          (else-vars
+           (and (= (length form) 4)
+                (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                 (nth 3 form)))))
+      (nelisp-phase47-compiler--symbol-list-intersection
+       then-vars else-vars)))
+   (t nil)))
+
 (defun nelisp-phase47-compiler--rewrite-frame-slot-refs (form vars)
   "Rewrite free references to VARS in FORM through `aot-frame-slot-ref'."
   (cond
@@ -1846,7 +1893,7 @@ path instead of by-value lambda lifting."
                 (nelisp-phase47-compiler--rewrite-frame-slot-refs
                  processed mutated)))
         (push processed out)
-        (dolist (var (nelisp-phase47-compiler--captured-mutation-funcall-vars
+        (dolist (var (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
                       form))
           (unless (memq var mutated)
             (push var mutated)))))
