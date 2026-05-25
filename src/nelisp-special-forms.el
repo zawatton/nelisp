@@ -128,6 +128,32 @@ unless it has been touched via `setq-default'.")
   (make-symbol "nelisp-sf-unbound")
   "Sentinel returned from hash-table lookups when a key is missing.")
 
+(defconst nelisp-special-forms--aot-capture-cell-tag
+  'nelisp-aot-capture-cell
+  "Vector tag for Doc 129 AOT closure capture cells.")
+
+(defun nelisp-special-forms--aot-capture-cell-p (value)
+  "Return non-nil when VALUE is a Doc 129 AOT capture cell."
+  (and (vectorp value)
+       (<= 4 (length value))
+       (eq (aref value 0)
+           nelisp-special-forms--aot-capture-cell-tag)))
+
+(defun nelisp-special-forms--aot-capture-cell-value (cell)
+  "Return the current value stored in AOT capture CELL."
+  (aref cell 2))
+
+(defun nelisp-special-forms--aot-capture-cell-set (cell value)
+  "Store VALUE in AOT capture CELL and run its optional writer."
+  (aset cell 2 value)
+  (let ((writer (aref cell 3)))
+    (when writer
+      (unless (functionp writer)
+        (signal 'nelisp-special-forms-error
+                (list "AOT capture writer is not callable" writer)))
+      (funcall writer (aref cell 1) value)))
+  value)
+
 ;;; Closure representation --------------------------------------------
 
 (defsubst nelisp-special-forms--closure-p (x)
@@ -156,7 +182,10 @@ nothing binds SYM."
    (t
     (let ((cell (assq sym env)))
       (if cell
-          (cdr cell)
+          (let ((value (cdr cell)))
+            (if (nelisp-special-forms--aot-capture-cell-p value)
+                (nelisp-special-forms--aot-capture-cell-value value)
+              value))
         (let ((bl (gethash sym nelisp-special-forms--buffer-locals
                            nelisp-special-forms--unbound)))
           (if (not (eq bl nelisp-special-forms--unbound))
@@ -365,7 +394,10 @@ global table."
         (let ((val (nelisp-special-forms-eval form env)))
           (let ((cell (assq sym env)))
             (if cell
-                (setcdr cell val)
+                (let ((target (cdr cell)))
+                  (if (nelisp-special-forms--aot-capture-cell-p target)
+                      (nelisp-special-forms--aot-capture-cell-set target val)
+                    (setcdr cell val)))
               (puthash sym val nelisp-special-forms--globals)))
           (setq last val))
         (setq args (cddr args))))

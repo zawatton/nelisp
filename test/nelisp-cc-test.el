@@ -1802,6 +1802,38 @@ exit points were emitted; call-points were missing."
      'mirror 'frames reader 0 out 'scratch)
     (should (= (aref out 0) 5))))
 
+(ert-deftest nelisp-cc-runtime-aot-closure-capture-cell-write-through ()
+  "Doc 129.7AA — AOT capture cells write captured setq back outward."
+  (unwind-protect
+      (let* ((out (vector nil))
+             (frame-slot (vector 10))
+             (writes nil)
+             (cell
+              (nelisp-cc-runtime-aot-capture-cell
+               'cap
+               (aref frame-slot 0)
+               (lambda (name value)
+                 (should (eq name 'cap))
+                 (aset frame-slot 0 value)
+                 (push value writes))))
+             (descriptor '(:name nelisp-doc129-setq-closure
+                           :arglist (y)
+                           :body ((setq cap y) cap)
+                           :captures (cap))))
+        (nelisp-cc-runtime-clear-aot-closure-descriptors)
+        (nelisp-cc-runtime-register-aot-closure-descriptor descriptor)
+        (nelisp-cc-runtime-aot-make-closure
+         'mirror 'frames 'nelisp-doc129-setq-closure
+         1 out 'scratch cell)
+        (should (nelisp-closure-p (aref out 0)))
+        (nelisp-cc-runtime-aot-funcall1
+         'mirror 'frames (aref out 0) 42 out 'scratch)
+        (should (= (aref out 0) 42))
+        (should (= (nelisp-cc-runtime-aot-capture-cell-value cell) 42))
+        (should (= (aref frame-slot 0) 42))
+        (should (equal writes '(42))))
+    (nelisp-cc-runtime-clear-aot-closure-descriptors)))
+
 (ert-deftest nelisp-cc-runtime-aot-make-closure ()
   "Doc 129.7U — make-closure bridge materializes captured closures."
   (unwind-protect

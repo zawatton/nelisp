@@ -1884,6 +1884,48 @@ every trailing value after SCRATCH is a user argument in the native ABI."
   "Apply canonical NeLisp closure FN to ARGS."
   (funcall (symbol-function 'nelisp-closure-apply) fn args))
 
+(defconst nelisp-cc-runtime--aot-capture-cell-tag
+  'nelisp-aot-capture-cell
+  "Vector tag shared with `nelisp-special-forms' for AOT capture cells.")
+
+(defun nelisp-cc-runtime-aot-capture-cell-p (value)
+  "Return non-nil when VALUE is a Doc 129 AOT capture cell."
+  (and (vectorp value)
+       (<= 4 (length value))
+       (eq (aref value 0)
+           nelisp-cc-runtime--aot-capture-cell-tag)))
+
+(defun nelisp-cc-runtime-aot-capture-cell
+    (name value &optional writer)
+  "Build a Doc 129 AOT capture cell for NAME.
+VALUE is the current captured value.  WRITER, when non-nil, is called
+as `(WRITER NAME NEW-VALUE)' after closure `setq' updates the cell."
+  (unless (symbolp name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-capture-cell-name-not-symbol name)))
+  (when (and writer (not (functionp writer)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-capture-cell-writer-not-function writer)))
+  (vector nelisp-cc-runtime--aot-capture-cell-tag name value writer))
+
+(defun nelisp-cc-runtime-aot-capture-cell-value (cell)
+  "Return the current value stored in AOT capture CELL."
+  (unless (nelisp-cc-runtime-aot-capture-cell-p cell)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-capture-cell-bad-cell cell)))
+  (aref cell 2))
+
+(defun nelisp-cc-runtime-aot-capture-cell-set (cell value)
+  "Store VALUE in AOT capture CELL and run its writer."
+  (unless (nelisp-cc-runtime-aot-capture-cell-p cell)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-capture-cell-bad-cell cell)))
+  (aset cell 2 value)
+  (let ((writer (aref cell 3)))
+    (when writer
+      (funcall writer (aref cell 1) value)))
+  value)
+
 (defun nelisp-cc-runtime--aot-default-funcall-dispatch1 (fn arg)
   "Dispatch one-argument FN to ARG using NeLisp-aware apply when available."
   (cond

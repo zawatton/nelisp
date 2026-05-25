@@ -66,7 +66,8 @@
   Stage 129.7W compiler module-init plan handoff,
   Stage 129.7X escaping literal closure value materialization,
   Stage 129.7Y direct captured-mutation closure dispatch, Stage
-  129.7Z extended higher-order literal lambda lifting,
+  129.7Z extended higher-order literal lambda lifting, Stage 129.7AA
+  runtime captured-cell write-through substrate,
   Stage 129.8A runtime handler-stack substrate, Stage
   129.8B =throw= / =signal=
   bridge lowering, Stage 129.8C handler-push bridge lowering,
@@ -459,7 +460,7 @@
   validates =ARGC=, constructs the rest-list from the trailing args,
   dispatches through the same apply fallback, writes =OUT=, and returns
   =OUT=.  Closure allocation/capture is covered by 129.7T/U/X/Y, with
-  native frame write-through for captured =setq= cells still pending.
+  compiler native-frame capture-cell materialization still pending.
 - *129.7I MVP*: source-level =(apply FN ARG... ARGS-LIST)= now lowers
   through =nelisp_aot_applyn=.  The ABI is
   =MIRROR/FRAMES/FN/ARGC/OUT/SCRATCH/ARG...=; the runtime validates
@@ -517,6 +518,12 @@
   higher-order family now lift through the same indexed callback path,
   including non-first callback positions such as =seq-uniq=, =cl-map=,
   and =cl-merge=.
+- *129.7AA MVP*: Doc 129 AOT capture cells now have a runtime
+  substrate.  A =nelisp-closure= environment entry can hold a
+  capture-cell vector; symbol lookup reads the current cell value and
+  lexical =setq= writes through the cell's optional writer.  This gives
+  the native-frame write-through path a concrete runtime target without
+  changing ordinary closure environments.
 - *129.7T MVP*: the AOT =funcall= / =apply= dispatcher now recognizes
   canonical =nelisp-closure= records before falling back to
   =nelisp--apply= or host functions.  This routes simulator calls
@@ -531,8 +538,8 @@
   =nelisp_aot_builtin_calln= dispatch.  The runtime side can register a
   descriptor and materialize a canonical =nelisp-closure= with captured
   values, while object output exposes the new bridge relocation.  Full
-  native plan embedding/rooting and native frame write-through for
-  captured =setq= cells remain pending.
+  native plan embedding/rooting and compiler native-frame capture-cell
+  materialization remain pending.
 - *129.7V MVP*: closure descriptors now participate in the runtime
   module-init plan.  =nelisp-cc-runtime-run-aot-module-init-plan=
   registers them by default, so =nelisp_aot_make_closure= can resolve
@@ -548,13 +555,14 @@
   =nelisp_aot_make_closure= bridge used by captured callbacks.  This
   covers =(function (lambda ...))= and raw literal lambda values as
   boxed closure objects in =OUT=; native plan embedding/rooting and
-  native frame write-through for captured =setq= cells remain pending.
+  compiler native-frame capture-cell materialization remain pending.
 - *129.7Y MVP*: direct =funcall= of literal lambdas that mutate
   captured variables now avoids by-value lambda lifting and instead
   materializes a canonical heap closure before dispatching through
   =nelisp_aot_funcall1=.  The closure body can use the runtime
-  closure's shared env cells for captured mutation.  Write-through from
-  those cells back into surrounding native frame slots remains pending.
+  closure's shared env cells for captured mutation; 129.7AA adds the
+  runtime capture-cell shape that can write those updates outward.
+  Compiler-side native frame cell materialization remains pending.
 - *129.8A MVP*: =nelisp-cc-runtime.el= now owns an AOT handler-stack
   simulator for =catch= / =condition-case= / =unwind-protect=.  The
   runtime can push/pop catch, condition, and unwind handlers; =throw=
@@ -1653,7 +1661,7 @@ native value as a user argument; there is no optional dispatcher slot in
 this ABI.
 
 Remaining 129.7 work: native object embedding/root-vector pinning and
-native frame write-through for captured =setq= cells.
+compiler native-frame capture-cell materialization.
 
 *** §1.E.3 Shipped MVP: =apply= dispatcher bridge
 
@@ -1994,10 +2002,10 @@ The same rewrite applies to direct =((lambda ...) ARG...)=
 application.  This by-value threading is deliberately limited to direct
 calls.  Higher-order callback positions such as =mapcar=,
 =seq-filter=, and =cl-find-if= now use the 129.7U heap-closure path
-below, because those callback ABIs receive only the callback's ordinary
-arguments.  Captured =setq= remains pending because write-through
-semantics require shared closure cells, not by-value parameter
-threading.
+  below, because those callback ABIs receive only the callback's ordinary
+arguments.  Captured =setq= uses the heap-closure path, with 129.7AA
+providing runtime write-through cells for later native-frame
+materialization.
 
 Stage 129.7T connects that remaining heap-closure substrate to the AOT
 runtime dispatcher without yet claiming compiler-side allocation.  When
@@ -2058,7 +2066,7 @@ now records the same closure descriptor shape and lowers to:
 The resulting value is the canonical runtime closure object in =out=,
 so callers can store or pass it through the existing 129.7T dispatcher
 bridges.  Remaining closure work is native plan embedding/root-vector
-pinning and native frame write-through for captured =setq= cells.
+pinning and compiler native-frame capture-cell materialization.
 
 Stage 129.7Y extends direct literal-lambda =funcall= preprocessing for
 captured mutation.  A form such as:
@@ -2079,6 +2087,22 @@ runtime closure machinery own the captured mutation cell.  The remaining
 native work is propagating that closure cell back into surrounding
 compiled frame slots when later source code observes the mutated
 captured variable.
+
+Stage 129.7AA adds the runtime cell shape needed by that propagation:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-capture-cell
+ 'cap initial-value
+ (lambda (name new-value)
+   ...write NAME's native frame slot...))
+#+end_src
+
+When such a cell appears as the value in a =nelisp-closure= environment,
+=nelisp-special-forms-eval= reads the cell's current value for ordinary
+symbol references and writes through the cell for lexical =setq=.  The
+current compiler still passes ordinary captured values unless a later
+native-frame lowering supplies a capture cell, so this is the
+write-through substrate rather than the final native slot materializer.
 
 *** §1.E.4 Shipped MVP: quoted function designators
 
@@ -3101,7 +3125,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table + 129.6F builtin calln/varargs bridge + 129.6G fixed-arity calln table expansion + 129.6H string/format calln table expansion + 129.6I dynamic higher-order calln table expansion + 129.6J map builtin function-designator materialization + 129.6K sort predicate function-designator materialization + 129.6L mapcan function-designator materialization + 129.6M maphash function-designator materialization + 129.6N seq.el higher-order function-designator materialization + 129.6O cl-lib higher-order function-designator materialization + 129.6P cl-lib predicate family function-designator materialization + 129.6Q runtime AOT C ABI descriptor table + 129.6R extended seq.el/cl-lib higher-order coverage + 129.6S AOT C ABI resolver handoff SHIPPED 2026-05-25; standalone native export wiring and remaining higher-order builtin coverage pending |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting SHIPPED 2026-05-25; native object embedding/root-vector pinning and native frame write-through for captured setq cells pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding + 129.7K/L non-capturing literal lambda lifting + 129.7M map-family literal lambda lifting + 129.7N indexed higher-order builtin lambda lifting + 129.7O maphash literal lambda lifting + 129.7P seq.el higher-order literal lambda lifting + 129.7Q cl-lib higher-order literal lambda lifting + 129.7R direct literal lambda capture threading + 129.7S cl-lib predicate literal lambda lifting + 129.7T AOT dispatcher heap-closure bridge + 129.7U captured higher-order callback closure bridge + 129.7V module-init closure descriptor registration + 129.7W compiler module-init plan handoff + 129.7X escaping literal closure value materialization + 129.7Y direct captured-mutation closure dispatch + 129.7Z extended higher-order literal lambda lifting + 129.7AA runtime captured-cell write-through substrate SHIPPED 2026-05-25; native object embedding/root-vector pinning and compiler native-frame capture-cell materialization pending |
 | 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs + 129.8K condition-case multi-clause normal exits + 129.8L direct catch/throw landing-value extraction + 129.8M direct condition-case signal/error landing-error dispatch + 129.8N conditional catch/throw branch dispatch + 129.8O direct unwind-protect throw cleanup + 129.8P conditional unwind-protect throw cleanup + 129.8Q conditional condition-case signal dispatch + 129.8R nested conditional non-local branch trees SHIPPED 2026-05-25; native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
