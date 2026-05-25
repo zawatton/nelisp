@@ -2104,7 +2104,9 @@ materialized closure temporary."
                   (cl-remove (cl-remove a b))
                   (cl-delete (cl-delete a b))
                   (cl-substitute (cl-substitute a b c))
-                  (cl-nsubstitute (cl-nsubstitute a b c))))
+                  (cl-nsubstitute (cl-nsubstitute a b c))
+                  (cl-remove-duplicates (cl-remove-duplicates a))
+                  (cl-delete-duplicates (cl-delete-duplicates a))))
     (pcase-let ((`(,builtin ,form) case))
       (let* ((ir (nelisp-phase47-compiler--parse
                   `(defun call_builtin
@@ -2431,7 +2433,11 @@ materialized closure temporary."
                   ((cl-rassoc item xs :test #'eq)
                    keyword-slot 8 9 ":test" "eq")
                   ((cl-tree-equal item xs :test #'eq)
-                   keyword-slot 8 9 ":test" "eq")))
+                   keyword-slot 8 9 ":test" "eq")
+                  ((cl-remove-duplicates xs :test #'eq)
+                   keyword-slot 7 8 ":test" "eq")
+                  ((cl-delete-duplicates xs :key #'car)
+                   keyword-slot 7 8 ":key" "car")))
     (pcase-let ((`(,form ,keyword-slot ,keyword-arg-index
                          ,fn-arg-index ,keyword-name ,fn-name)
                  case))
@@ -3017,6 +3023,46 @@ materialized closure temporary."
                 'keyword_slot))
     (should (eq (nelisp-phase47-compiler--ir-get
                  (nth 9 call-args)
+                 :var)
+                'scratch))))
+
+(ert-deftest nelisp-phase47-doc129/parse-cl-lib-duplicates-keyword-lambda-lift ()
+  "Doc 129.6AM: cl-lib duplicate helpers keyword lambdas lift to defuns."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (keyword_slot :type sexp)
+                    (xs :type sexp))
+                 (cl-remove-duplicates xs :test (lambda (a b) a)))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (test-lambda (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (kw-symbol (nth 1 body-forms))
+         (test-symbol (nth 2 body-forms))
+         (call-node (nth 3 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get kw-symbol :bytes)
+                   (string-to-list ":test")))
+    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 7 call-args)
+                 :var)
+                'keyword_slot))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nth 8 call-args)
                  :var)
                 'scratch))))
 
@@ -3668,6 +3714,31 @@ materialized closure temporary."
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_cl_tree_equal" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-duplicates-keyword-designator ()
+  "Doc 129.6AM: object output exposes duplicate-removal callbacks."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cl-lib-duplicates-keyword-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_cl_remove_duplicates
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (keyword_slot :type sexp)
+                 (xs :type sexp))
+              (cl-remove-duplicates xs :test #'foo))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_cl_remove_duplicates" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
