@@ -75,6 +75,41 @@
     (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
                 'aot-current-sp))))
 
+(defun nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (ir extern-name label-prefix count)
+  "Assert IR pushes EXTERN-NAME with COUNT landing labels named LABEL-PREFIX."
+  (let* ((push-calls
+          (seq-filter
+           (lambda (node)
+             (eq (nelisp-phase47-compiler--ir-get node :name)
+                 extern-name))
+           (nelisp-phase47-doc129-test--ir-nodes ir 'extern-call)))
+         (landing-labels
+          (nelisp-phase47-doc129-test--ir-nodes ir 'aot-landing-label))
+         (landing-names
+          (mapcar (lambda (node)
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get node :label)))
+                  landing-labels))
+         (symbol-writes
+          (mapcar (lambda (node)
+                    (nelisp-phase47-compiler--ir-get node :bytes))
+                  (nelisp-phase47-doc129-test--ir-nodes
+                   ir 'sexp-write-symbol-lit))))
+    (should (= (length push-calls) count))
+    (should (= (length landing-labels) count))
+    (dolist (name landing-names)
+      (should (string-prefix-p label-prefix name))
+      (should (member (string-to-list name) symbol-writes)))
+    (dolist (call push-calls)
+      (let* ((args (nelisp-phase47-compiler--ir-get call :args))
+             (landing-arg (nth 3 args))
+             (saved-sp-arg (nth 4 args)))
+        (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+                    'scratch))
+        (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+                    'aot-current-sp))))))
+
 (defun nelisp-phase47-doc129-test--capturing-callback-closure-ir
     (form callback-arg-index)
   "Assert FORM lowers a captured callback through make-closure.
@@ -5312,6 +5347,26 @@ materialized closure temporary."
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
+(ert-deftest nelisp-phase47-doc129/parse-catch-multi-leaf-throw-labels ()
+  "Doc 129.8X: multi-leaf catch trees assign one landing per throw leaf."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_two_throws
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (if value
+                       (throw 'done value)
+                     (throw 'done value))))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_throw externs) 2))
+    (should-not (member 'nelisp_aot_pop_handler externs))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_catch "aot-catch-landing-" 2)))
+
 (ert-deftest nelisp-phase47-doc129/object-catch-normal-exit ()
   "Doc 129.8E: source `catch' exposes push/pop bridge relocs."
   (skip-unless (executable-find "readelf"))
@@ -5575,6 +5630,28 @@ materialized closure temporary."
     (should (member 'nelisp_aot_landing_error externs))
     (nelisp-phase47-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
+
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-multi-leaf-labels ()
+  "Doc 129.8X: multi-leaf condition trees assign one landing per signal leaf."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_two_signals
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     (if value
+                         (signal 'error value)
+                       (error value))
+                   (error err)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
+    (should-not (member 'nelisp_aot_pop_handler externs))
+    (should (member 'nelisp_aot_landing_error externs))
+    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+     ir 'nelisp_aot_push_condition "aot-condition-landing-" 2)))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-list-spec-normal-exit ()
   "Doc 129.8J: list condition specs push one handler per selector."
