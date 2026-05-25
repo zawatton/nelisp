@@ -1,10 +1,255 @@
 #+TITLE: Doc 129 — Phase 47 grammar expansion for user/application .el AOT compile (native-comp endgame)
 #+DATE: 2026-05-25
-#+STATUS: DRAFT
+#+STATUS: ACTIVE
 
 * Status
 
-- *State*: DRAFT 2026-05-25 — design only, no implementation queued.
+- *State*: ACTIVE 2026-05-25 — Stage 129.1 frontend macro expansion,
+  Stage 129.2 boxed-boundary Int MVP, Stage 129.3A boxed Int
+  =setq= delegation, Stage 129.3B symbol-literal =setq= helper,
+  Stage 129.3C symbol-literal =defvar= helper, Stage 129.3D
+  symbol-literal =defconst= helper, Stage 129.3E top-level
+  =defvar= / =defconst= AOT init-helper lowering, Stage 129.3F
+  top-level =defcustom= init-helper lowering, Stage 129.3G
+  =defcustom= metadata descriptors, Stage 129.3H init-helper
+  scheduling descriptors and runtime module-init plan, Stage 129.3I
+  runtime module-init plan execution hook, Stage 129.3J runtime
+  custom metadata table, Stage 129.3K AOT init helper resolution /
+  call callback,
+  Stage 129.4 multi-binding runtime =let= MVP,
+  Stage 129.5A static GC root-map MVP, Stage 129.5B AOT root-set
+  registration substrate, Stage 129.5C call-boundary root-vector
+  bridge, Stage 129.5D runtime =let= Sexp root annotations, Stage
+  129.6A top-level =require= / =provide= frontend handling, Stage
+  129.6B one-argument Sexp builtin delegation helper, Stage
+  129.6C runtime builtin-call1 bridge, Stage 129.6D constrained
+  direct one-argument builtin call lowering, Stage 129.6E unary
+  builtin table expansion, Stage 129.7A one-argument =funcall=
+  dispatcher bridge, Stage 129.7B two-argument =funcall=
+  dispatcher bridge, Stage 129.7C =apply= dispatcher bridge, Stage
+  129.7D quoted function-designator materialization, Stage 129.8A
+  runtime handler-stack substrate, Stage 129.8B =throw= / =signal=
+  bridge lowering, Stage 129.8C handler-push bridge lowering, and
+  Stage 129.8D handler-pop bridge lowering have implementations in
+  =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
+  =nelisp-cc-runtime.el=.
+  Supported in this first cut: host macro expansion in value/call
+  positions without rewriting Phase 47 structural forms, top-level
+  =defmacro= inside =seq= as compile-time-only definitions,
+  =let*= → nested =let=, normalization for macro output
+  (=progn= singletons, 3-arg =if=, =nil= → 0), and value-context
+  multi-form =progn= via a new =value-seq= IR.  =value-seq= supports
+  value-producing children; statement-only =write= remains top-level
+  / statement-context because value emission has no rodata context.
+- *129.2 MVP*: =defun-sexp-int= lowers a monomorphic
+  =(defun-sexp-int NAME (OUT ARG...) BODY)= surface into ordinary
+  Phase 47 DSL: =ARG= values are assumed =Sexp::Int= pointers and
+  are read via =sexp-int-unwrap=; the raw integer result is written to
+  caller-owned =OUT= via =sexp-int-make=.  This is intentionally a
+  boxed-boundary step, not the full compiler-wide "every IR value is
+  Sexp" rewrite.
+- *129.3A MVP*: =defun-sexp-int-setq= extends the boxed Int boundary
+  with explicit environment pointers:
+  =(defun-sexp-int-setq NAME (OUT MIRROR FRAMES SCRATCH SYM ARG...) BODY)=
+  boxes BODY into =OUT=, calls =nelisp_env_set_value= with
+  =MIRROR/FRAMES/SYM/OUT/SCRATCH=, then returns =OUT=.  This proves
+  the AOT path can delegate a symbol-cell write without adding Rust
+  LOC.  It is not yet general =setq= syntax, =defvar= conditional set
+  semantics, or tagged-value locals; 129.3B adds the literal-symbol
+  variant below.
+- *129.3B MVP*: =defun-sexp-int-setq-symbol= covers the next
+  symbol-cell step: the caller supplies a writable =SYM-SLOT=, while
+  the compiled function materializes a compile-time symbol literal via
+  =sexp-write-symbol-lit= before calling =nelisp_env_set_value=.  The
+  literal bytes are pushed as a temporary stack buffer rather than
+  stored in =.rodata=, so the helper remains valid in ET_REL object
+  mode.  This is still not full user =setq= syntax or top-level
+  =defvar= / =defconst= semantics.
+- *129.3C MVP*: =defun-sexp-int-defvar-symbol= adds a boxed-boundary
+  conditional symbol-cell write for a compile-time variable name.  It
+  materializes the symbol, asks =nelisp_mirror_is_bound= whether the
+  value cell is already bound, and only on the unbound branch boxes
+  BODY into =OUT= and delegates to =nelisp_env_set_value=.  To stay
+  inside the current six-GP-argument Phase 47 ABI, =OUT= must initially
+  contain the runtime unbound marker and is reused as the
+  =nelisp_mirror_is_bound= marker argument before the unbound branch
+  overwrites it with the boxed initial value.  This proves
+  =defvar=-style conditional set, but it is still an explicit helper,
+  not direct top-level execution.
+- *129.3D MVP*: =defun-sexp-int-defconst-symbol= adds the matching
+  boxed-boundary constant initializer.  It materializes the symbol,
+  clears any existing constant flag via =nelisp_mirror_set_constant=
+  with =Nil= in =OUT=, boxes BODY and delegates the value write through
+  =nelisp_env_set_value=, then writes =T= into =OUT= and marks the
+  symbol constant.  This proves the constant-flag substrate for
+  compile-time-known names, but it is still an explicit helper rather
+  than direct top-level execution.
+- *129.3E MVP*: top-level =defvar= and =defconst= forms with
+  integer-compatible initializers now lower to generated
+  =nelisp_aot_var_N_NAME= / =nelisp_aot_const_N_NAME= init helper
+  defuns.  Object output therefore accepts ordinary top-level
+  declarations and exposes C-callable initializer symbols; the Doc 99
+  runtime/call-boundary layer still decides when to call them and
+  supplies =OUT/MIRROR/FRAMES/SCRATCH/NAME-SLOT=.
+- *129.3F MVP*: top-level =defcustom= with an integer-compatible
+  standard value now lowers to a generated
+  =nelisp_aot_custom_N_NAME= init helper using the same conditional
+  =defvar= write semantics.
+- *129.3G MVP*: top-level =defcustom= now also exposes compiler-side
+  metadata descriptors keyed to the same generated init helper name.
+  The docstring is validated, customization options must be
+  keyword/value pairs, and the descriptor carries
+  =:name/:helper/:standard/:docstring/:options= for the Doc 99
+  runtime scheduler.
+- *129.3H MVP*: top-level =defvar= / =defconst= / =defcustom= now
+  expose ordered init-helper descriptors, and =nelisp-cc-runtime=
+  normalizes those descriptors with custom metadata and root
+  descriptors into a pure module-init plan.  This fixes the Doc 99
+  scheduling contract before the native loader grows actual helper
+  invocation.
+- *129.3I MVP*: =nelisp-cc-runtime-run-aot-module-init-plan= now
+  executes the module-init plan in helper order through Doc99-supplied
+  callbacks.  The runtime validates that the boundary context carries
+  =:out/:mirror/:frames/:scratch/:name-slot= and invokes optional
+  custom registration callbacks after the matching =defcustom= helper
+  succeeds.  Native symbol resolution and FFI calls remain Doc 99
+  loader responsibilities.
+- *129.3J MVP*: =nelisp-cc-runtime= now owns a runtime AOT custom
+  metadata table.  =nelisp-cc-runtime-run-aot-module-init-plan=
+  registers =defcustom= metadata there by default after the matching
+  helper succeeds, while still allowing Doc 99 callers to override the
+  registration callback.  The stored entries are metadata-only and do
+  not retain transient native call-boundary context.
+- *129.3K MVP*: =nelisp-cc-runtime= now provides the standard AOT init
+  helper resolution/call callback.  Helpers resolve through the
+  existing Doc 81 =nelisp-cc-runtime-resolve-symbol= contract
+  (= :resolved / :host-stub / :not-found=), and Doc 99 can inject the
+  native call function that consumes the resolved address plus the
+  validated boundary context.
+- *129.4 MVP*: multi-binding =let= now supports runtime initializer
+  values inside =defun= bodies via =let-rt-n=.  Initializers parse in
+  the original environment (=parallel =let= semantics), then the body
+  sees all runtime frame slots.  =let*= remains a frontend desugaring
+  to nested =let=.  Lexical-vs-special variable distinction, heap
+  lexframes, and general tagged local values remain pending.
+- *129.5A MVP*: =defun= params may be annotated as =(NAME :type sexp)=.
+  These still use GP ABI registers, but the parser marks their =ref=
+  nodes as GC-root candidates.  Any defun body containing a known
+  allocator now carries =:gc-root-slots= with the referenced annotated
+  Sexp slots.  This is only a static root map; runtime frame
+  registration / root-vector pinning remains pending.
+- *129.5B MVP*: =nelisp-gc-root-set= now has an =aot-frame= root
+  category and =nelisp-gc--with-active-aot-frame= can dynamically
+  register a frame-local root vector.  This proves the runtime root
+  enumeration substrate for Phase 47 frames.  The compiled prologue /
+  epilogue still does not emit the push/pop sequence automatically.
+- *129.5C MVP*: Phase 47 can now expose =:gc-root-slots= as
+  call-boundary descriptors, and =nelisp-cc-runtime= can materialize
+  a root vector from those slots and run a thunk with that vector
+  registered as an active AOT frame.  This fixes the metadata/runtime
+  handoff shape for Doc 99 integration; native prologue/epilogue
+  emission is still pending.
+- *129.5D MVP*: runtime =let= bindings may now annotate the local as
+  =((NAME :type sexp) VALUE)=.  Runtime slots created from those
+  bindings propagate =:root-p= through =FENV=, so allocating defuns can
+  include annotated local slots in =:gc-root-slots= and the 129.5C
+  descriptor path.  This is conservative static metadata, not a full
+  liveness map.
+- *129.6A MVP*: top-level =require= and =provide= forms are now
+  compile-time-only frontend forms.  =require= runs during compilation
+  using literal arguments so needed macro/helper libraries can be
+  loaded before parsing; =provide= is stripped without runtime module
+  registration.
+- *129.6B MVP*: =defun-sexp-builtin1-symbol= lowers an explicit
+  one-argument boxed Sexp builtin delegation helper.  The helper
+  materializes a compile-time builtin symbol into caller-owned storage,
+  calls the Doc 129.6 dispatcher ABI =nelisp_aot_builtin_call1=, and
+  returns the caller-owned =OUT= slot.  This proves the frontend/object
+  relocation surface for builtin delegation, but ordinary user syntax
+  such as =(symbol-name x)=, varargs, =format= / =mapcar= / =funcall=,
+  and the runtime C/Rust dispatcher implementation remain follow-up
+  work.
+- *129.6C MVP*: =nelisp-cc-runtime-aot-builtin-call1= fixes the
+  runtime-side bridge contract for the same six boundary values as the
+  native ABI: =MIRROR/FRAMES/NAME/ARG/OUT/SCRATCH=.  On the Emacs side
+  =OUT= is represented as a caller-owned one-slot vector; the bridge
+  dispatches the one-argument builtin, writes the result into =OUT=,
+  and returns =OUT=.  This lets Doc 99 tests and host integration use
+  the same boxed-boundary convention before the exported
+  =nelisp_aot_builtin_call1= C ABI body exists.
+- *129.6D MVP*: direct =(symbol-name ARG)= calls now lower through the
+  same dispatcher sequence when they appear inside a boxed-boundary
+  defun that explicitly exposes =out/mirror/frames/scratch/name-slot=
+  (or =name_slot=).  This is the first ordinary user-call shape for
+  builtin delegation, still limited to one known builtin, one argument,
+  and explicit boundary parameters.
+- *129.6E MVP*: the direct one-argument lowering now uses a small
+  builtin table instead of hard-coding only =symbol-name=.  Representative
+  unary calls such as =identity=, =length=, =car=, =cdr=, type predicates,
+  numeric/string converters, and simple string case functions lower
+  through =nelisp_aot_builtin_call1=.  A same-named Phase 47 =defun= in
+  the compile unit still wins over builtin delegation.
+- *129.7A MVP*: direct =(funcall FN ARG)= now lowers through
+  =nelisp_aot_funcall1= inside boxed-boundary defuns that expose
+  =out/mirror/frames/scratch=.  =nelisp-cc-runtime-aot-funcall1=
+  fixes the matching runtime bridge contract and writes the dispatch
+  result into caller-owned =OUT=.  Closure allocation/capture,
+  multi-argument =funcall=, and =apply= remain pending.
+- *129.7B MVP*: direct =(funcall FN ARG0 ARG1)= now lowers through
+  =nelisp_aot_funcall2=.  The fixed-arity ABI is
+  =MIRROR/FRAMES/FN/ARG0/ARG1/OUT=, deliberately omitting =SCRATCH= so
+  the call remains inside the current six-GP-register Phase 47 extern
+  budget.  Three-or-more argument =funcall=, =apply=, and general
+  argument-vector/list calln lowering remain pending.
+- *129.7C MVP*: direct =(apply FN ARGS-LIST)= now lowers through
+  =nelisp_aot_apply= inside boxed-boundary defuns that expose
+  =out/mirror/frames/scratch=.  =ARGS-LIST= is already a boxed Sexp
+  list supplied by the caller/compiler; the runtime bridge dispatches
+  through =nelisp--apply= when available, falls back to host =apply=,
+  writes the result into =OUT=, and returns =OUT=.  Constructing the
+  argument list from rest syntax and compiling closure literals remain
+  pending.
+- *129.7D MVP*: quoted/function symbol designators now work for the
+  shipped higher-order paths: =(funcall 'foo arg)=, =(funcall #'foo
+  arg0 arg1)=, and =(apply 'foo args)= materialize =foo= into the
+  caller-owned =name-slot= / =name_slot= via =sexp-write-symbol-lit=
+  before delegating to =nelisp_aot_funcall1=, =nelisp_aot_funcall2=,
+  or =nelisp_aot_apply=.  Dynamic function values still use the
+  existing =FN= parameter path.  Lambda/closure literals and
+  three-or-more argument calln remain pending.
+- *129.8A MVP*: =nelisp-cc-runtime.el= now owns an AOT handler-stack
+  simulator for =catch= / =condition-case= / =unwind-protect=.  The
+  runtime can push/pop catch, condition, and unwind handlers; =throw=
+  and =signal= walk the innermost-first stack, run crossed cleanup
+  functions, pop through the matching handler, and return a landing
+  descriptor carrying =landing-pad= / =saved-sp= / value or error data.
+  Native code generation for handler records, real stack-pointer
+  restore, and landing-pad jumps remain pending.
+- *129.8B MVP*: boxed-boundary defuns can now lower =(throw TAG
+  VALUE)= and =(signal TAG DATA)= through =nelisp_aot_throw= /
+  =nelisp_aot_signal=.  Dynamic =TAG= values are passed through as
+  supplied boxed values; quoted symbol tags such as ='done= are
+  materialized into caller-owned =name-slot= / =name_slot= with
+  =sexp-write-symbol-lit=.  =nelisp-cc-runtime= provides matching
+  six-argument boundary bridges that write the 129.8A landing
+  descriptor to =OUT=.  Native stack restoration and landing-pad jumps
+  remain pending.
+- *129.8C MVP*: the handler-registration side of the same machinery is
+  now visible to object output.  Internal AOT forms
+  =aot-push-catch=, =aot-push-condition=, and =aot-push-unwind= lower
+  to =nelisp_aot_push_catch= / =nelisp_aot_push_condition= /
+  =nelisp_aot_push_unwind= with the fixed six-GP boundary
+  =MIRROR/FRAMES/SELECTOR/LANDING-PAD/SAVED-SP/SCRATCH=.  Runtime
+  bridges install the corresponding 129.8A handler records.  Full
+  source-level =(catch ...)= / =(condition-case ...)= /
+  =(unwind-protect ...)= lowering remains pending.
+- *129.8D MVP*: the normal-exit cleanup side is now visible as
+  =aot-pop-handler=.  It lowers through =nelisp_aot_pop_handler= with
+  =MIRROR/FRAMES/EXPECTED-KIND/OUT/SCRATCH=, writes the popped handler
+  descriptor into =OUT= on the elisp bridge, and validates the expected
+  handler kind when supplied.  Source-level forms still need to
+  synthesize balanced push/pop control flow.
+- *Previous state*: DRAFT 2026-05-25 — design only.
   Scoping doc for the long-horizon "compile arbitrary user elisp to
   native code" track.  Authored after a 2026-05-25 session that
   (a) root-caused + fixed the standalone reader heap-corruption that
@@ -72,16 +317,16 @@ Frequency from a 2026-05-25 grep of the 6 GREEN anvil modules
 | Construct                         | Uses | Phase 47 today |
 |-----------------------------------+------+----------------|
 | =defun= / =let= / =if= / =cond= / =and= / =or= / =while= | core | ✓ partial      |
-| =let= / =let*= (N bindings, runtime values, lexical scope) | 193  | ✗ (1 const binding only) |
-| =setq= (incl. global)             | 90   | ✗ (no symbol value-cell write) |
+| =let= / =let*= (N bindings, runtime values, lexical scope) | 193  | partial (=let-rt-n= runtime MVP) |
+| =setq= (incl. global)             | 90   | partial (boxed helper + symbol literal helper) |
 | =format= / =message= / =string-match= | 114  | ✗ (no string library)  |
 | =lambda= + captured-env closure   | 28   | ✗ (no heap env + fn ptr) |
-| =require= / =provide=             | 30   | ✗ (no module load at compile) |
+| =require= / =provide=             | 30   | partial (top-level compile-time forms) |
 | =error= / =condition-case= / =catch= / =throw= / =unwind-protect= | 55+ | ✗ (no non-local exit) |
 | =dolist= / =dotimes= / =mapcar= / =apply= / =funcall= | 50+  | ✗ (no higher-order dispatch) |
 | =make-hash-table= + access        | 11   | partial (desugar only) |
-| =defvar= / =defconst= / =defcustom= | 21   | ✗ (no top-level var decl) |
-| =defmacro= + macro use            | few  | ✗ (no compile-time expand) |
+| =defvar= / =defconst= / =defcustom= | 21   | partial (AOT init helpers + runtime custom metadata table; native helper call pending) |
+| =defmacro= + macro use            | few  | partial (frontend macro expansion MVP) |
 
 * §1 Mechanism groups (= the actual work, grouped by what they share)
 
@@ -104,6 +349,31 @@ Every value-producing op must box/unbox and type-dispatch.
 
 *Why first*: every other group manipulates tagged values.
 
+*** §1.A.1 Shipped MVP: boxed-boundary Int functions
+
+The first 129.2 implementation deliberately avoids rewriting the
+entire Phase 47 raw-i64 IR.  Instead, =defun-sexp-int= defines a
+boxed-boundary function:
+
+#+begin_src elisp
+(defun-sexp-int add (out a b) (+ a b))
+#+end_src
+
+This lowers to:
+
+#+begin_src elisp
+(defun add (out a b)
+  (sexp-int-make out
+    (+ (sexp-int-unwrap a)
+       (sexp-int-unwrap b))))
+#+end_src
+
+The result is ABI-useful for runtime/object integration: callers pass
+a mutable =Sexp= output slot plus =Sexp::Int= input pointers, and the
+compiled code writes the boxed result.  It does not yet provide
+general tagged locals, GC roots, type errors, boxed truth values, or
+arbitrary user-elisp value semantics.
+
 ** §1.B Heap + GC root integration
 
 =cons=, =make-hash-table=, strings, vectors, and closures all
@@ -123,6 +393,99 @@ allocate.  Phase 47 has no heap today.
 
 *Why second*: closures / hash / strings in later groups all allocate.
 
+*** §1.B.1 Shipped MVP: static root map for annotated Sexp params
+
+Stage 129.5A adds the compiler-side metadata needed before runtime
+root registration can be correct:
+
+#+begin_src elisp
+(defun make-str ((slot :type sexp) bytes len)
+  (sexp-write-str slot bytes len))
+#+end_src
+
+The parameter still uses the GP ABI path, but the =ref= node carries
+=:root-p t=.  If the defun body contains a known allocator
+(=sexp-write-str=, =sexp-write-symbol=, =cons-make=,
+=cons-make-with-clone=, =vector-make=, =record-make=, =cell-make=,
+=mut-str-make-empty=, or =alloc-bytes=), the defun IR receives
+=:gc-root-slots= with the referenced annotated Sexp slots.
+
+This deliberately stops short of claiming full GC integration: the
+compiled prologue does not yet register a root vector, no allocation
+site consults a stack map, and runtime =let= locals cannot yet be
+typed as Sexp roots.  It is the static map that later 129.5 work will
+consume for frame-local GC-rooted vectors.
+
+*** §1.B.2 Shipped MVP: AOT frame roots in the runtime root set
+
+Stage 129.5B adds the runtime-side root category:
+
+#+begin_src elisp
+(nelisp-gc--with-active-aot-frame root-vector
+  ...)
+#+end_src
+
+While the dynamic extent is active, =nelisp-gc-root-set= includes a
+=(:kind aot-frame :value ROOT-VECTOR)= entry.  The existing
+=nelisp-gc-reachable-set= walker already traverses vectors, so each
+slot in =ROOT-VECTOR= becomes reachable through the same mark path as
+bytecode VM stack roots.
+
+This is still not full native-frame GC integration.  The missing
+bridge is to have Phase 47 / Doc 99 call-boundary code materialize a
+root vector from =:gc-root-slots= and push/pop it around compiled
+function execution, or emit equivalent extern-call hooks from the
+compiled prologue and epilogue.
+
+*** §1.B.3 Shipped MVP: call-boundary root-vector bridge
+
+Stage 129.5C connects the 129.5A static map to the 129.5B runtime
+substrate without yet pretending the backend emits native push/pop
+code.
+
+Compiler side:
+
+#+begin_src elisp
+(nelisp-phase47-compiler--gc-root-descriptor-for-defun defun-ir)
+;; => (:name make-str :slots (0) :param-count 3 :rt-slot-count 0)
+#+end_src
+
+Runtime side:
+
+#+begin_src elisp
+(let ((roots (nelisp-cc-runtime-aot-root-vector-from-slots frame '(0))))
+  (nelisp-cc-runtime-call-with-aot-roots roots
+    (lambda () ...)))
+#+end_src
+
+Inside the dynamic extent, =nelisp-gc-root-set= exposes =roots= as an
+=aot-frame= root and the normal reachable-set walker traverses it.
+This is the Doc 99 handoff contract for the interpreter/compiled-code
+boundary.  The remaining 129.5 work is backend lowering: either emit
+equivalent extern-call hooks in compiled prologue/epilogue, or have
+the final Doc 99 dispatcher build/register the frame before jumping
+into the compiled symbol.
+
+*** §1.B.4 Shipped MVP: runtime let locals as Sexp roots
+
+Stage 129.5D extends the static root map beyond params:
+
+#+begin_src elisp
+(defun make-str (raw)
+  (let (((slot :type sexp) (id raw)))
+    (sexp-write-str slot raw raw)))
+#+end_src
+
+The annotated runtime =let= local still lowers through the existing
+=let-rt= / =let-rt-n= spill-slot path, but its =FENV= entry carries
+=:root-p t=.  When the body contains an allocation and references that
+local, the defun's =:gc-root-slots= includes the runtime slot (for the
+example above, slot 1: param slot 0 plus one runtime local).
+
+This keeps the 129.5C descriptor format unchanged.  It makes the
+descriptor more useful by allowing frame-local Sexp temporaries, not
+just annotated incoming params, to be copied into the AOT root vector.
+
 ** §1.C General =let= / =let*= + lexical environment
 
 Replace the single-constant-binding =let= with an N-binding lexical
@@ -130,12 +493,301 @@ scope: a chain of frame slots (or a heap lexframe — Doc 115
 =env_lexframe= shims already exist for the substrate).  Distinguish
 lexical from dynamic (=defvar='d special) variables.
 
+*** §1.C.1 Shipped MVP: multi-binding runtime let
+
+Stage 129.4 adds a narrow but useful =let-rt-n= IR for multi-binding
+=let= in =defun= bodies.  Runtime initializers are parsed against the
+original =ENV/FENV=, so later bindings do not see earlier bindings
+(parallel =let=, not =let*=).  Each non-foldable initializer gets a
+frame slot and the body parses with all slots visible through the
+existing =ref= load path.
+
+Compile-time-foldable bindings still fold into =ENV=.  Mixed
+compile-time/runtime multi-binding forms are allowed, but this is
+still an MVP: duplicate variables are rejected, special-variable
+binding is not modeled, and no heap lexframe / GC-root map exists yet.
+
 ** §1.D =setq= / =defvar= / =defconst= / =defcustom= — symbol cells
 
 Writing a global needs symbol value-cell access.  =nl_env_set_value=
 extern already exists (used by =nelisp-cc-sf-setq.el= for the
 substrate setq swap) — reuse it.  =defvar= / =defcustom= become
 =defvar=-then-conditional-set sequences at top level.
+
+*** §1.D.1 Shipped MVP: boxed Int setq delegation
+
+Stage 129.3A adds an explicit ABI surface rather than full user
+=setq= syntax:
+
+#+begin_src elisp
+(defun-sexp-int-setq set-x (out mirror frames scratch name a)
+  (+ a 16))
+#+end_src
+
+This lowers to:
+
+#+begin_src elisp
+(defun set-x (out mirror frames scratch name a)
+  (seq
+   (sexp-int-make out (+ (sexp-int-unwrap a) 16))
+   (extern-call nelisp_env_set_value
+                mirror frames name out scratch 0)
+   out))
+#+end_src
+
+The caller still supplies =name= as a =Sexp::Symbol= pointer and a
+prebuilt env scratch vector.  That keeps the commit inside existing
+grammar/extern coverage and avoids pretending full user =setq= is
+available before symbol literal materialisation, =defvar= boundp
+checks, and general tagged values land.
+
+*** §1.D.2 Shipped MVP: symbol literal materialisation for boxed setq
+
+Stage 129.3B adds a narrow variant for compile-time-known variable
+names:
+
+#+begin_src elisp
+(defun-sexp-int-setq-symbol set-x x
+    (out mirror frames scratch name-slot a)
+  (+ a 16))
+#+end_src
+
+This lowers to:
+
+#+begin_src elisp
+(defun set-x (out mirror frames scratch name-slot a)
+  (seq
+   (sexp-write-symbol-lit name-slot "x")
+   (sexp-int-make out (+ (sexp-int-unwrap a) 16))
+   (extern-call nelisp_env_set_value
+                mirror frames name-slot out scratch 0)
+   out))
+#+end_src
+
+=sexp-write-symbol-lit= calls the existing =nl_alloc_symbol= helper,
+but its UTF-8 bytes are materialized on the stack for the duration of
+the call.  That avoids adding =.rodata= to object-mode output, which
+is still forbidden by the Doc 99 ET_REL spike path.
+
+This removes the need for the caller to prebuild the symbol object,
+but it remains a boxed-boundary helper: the caller still provides
+=OUT=, environment pointers, scratch storage, and a writable
+=NAME-SLOT=.
+
+*** §1.D.3 Shipped MVP: symbol literal defvar conditional set
+
+Stage 129.3C adds a sibling helper for =defvar=-style conditional
+initialization:
+
+#+begin_src elisp
+(defun-sexp-int-defvar-symbol ensure-x x
+    (out mirror frames scratch name-slot a)
+  (+ a 16))
+#+end_src
+
+This lowers to:
+
+#+begin_src elisp
+(defun ensure-x (out mirror frames scratch name-slot a)
+  (seq
+   (sexp-write-symbol-lit name-slot "x")
+   (if (= (extern-call nelisp_mirror_is_bound
+                       mirror name-slot out)
+          1)
+       name-slot
+     (seq
+      (sexp-int-make out (+ (sexp-int-unwrap a) 16))
+      (extern-call nelisp_env_set_value
+                   mirror frames name-slot out scratch 0)
+      name-slot))))
+#+end_src
+
+The return value is the materialized symbol slot in both branches,
+matching the useful =defvar= result shape for this boxed-boundary
+helper.  The =OUT= slot is dual-use: before the bound check, the
+caller must initialize it with the runtime unbound-marker Sexp; on the
+unbound branch, compiled code overwrites it with the boxed initial
+value and delegates the actual value-cell write to the existing env
+setter.
+
+This proves the conditional-write substrate without changing the
+top-level program ABI.  General user-facing =defvar= forms still need
+the Doc 99/runtime entry bridge that supplies env pointers and the
+unbound marker automatically.
+
+*** §1.D.4 Shipped MVP: symbol literal defconst value + constant flag
+
+Stage 129.3D adds the =defconst= sibling:
+
+#+begin_src elisp
+(defun-sexp-int-defconst-symbol const-x x
+    (out mirror frames scratch name-slot a)
+  (+ a 16))
+#+end_src
+
+This lowers to:
+
+#+begin_src elisp
+(defun const-x (out mirror frames scratch name-slot a)
+  (seq
+   (sexp-write-symbol-lit name-slot "x")
+   (sexp-write-nil out)
+   (extern-call nelisp_mirror_set_constant
+                mirror name-slot out)
+   (sexp-int-make out (+ (sexp-int-unwrap a) 16))
+   (extern-call nelisp_env_set_value
+                mirror frames name-slot out scratch 0)
+   (sexp-write-t out)
+   (extern-call nelisp_mirror_set_constant
+                mirror name-slot out)
+   name-slot))
+#+end_src
+
+The first =nelisp_mirror_set_constant= clears an existing constant flag
+so the existing =nelisp_env_set_value= constant guard does not reject a
+reinitializing =defconst=.  After the value write, the final call marks
+the symbol constant again.  =OUT= is reused as the Nil/T flag slot and
+as the boxed BODY value slot; =NAME-SLOT= remains the function result.
+
+As with 129.3C, this is still an explicit boxed-boundary helper.
+Direct top-level execution needs the Doc 99/runtime entry ABI to
+supply env pointers, scratch storage, and result/name slots.
+
+*** §1.D.5 Shipped MVP: top-level defvar/defconst/defcustom AOT init helpers
+
+Stage 129.3E connects ordinary =defvar= / =defconst= top-level syntax
+to the helper substrate for object output, Stage 129.3F extends the
+same path to =defcustom= initial values, Stage 129.3G exposes the
+matching =defcustom= metadata as compiler-side descriptors, and Stage
+129.3H adds the runtime scheduling plan shape:
+
+#+begin_src elisp
+(seq
+  (defvar x 42 "doc")
+  (defconst y 7 "doc")
+  (defcustom z 9 "doc" :type 'integer))
+#+end_src
+
+The frontend lowers that to generated helper defuns:
+
+#+begin_src elisp
+(seq
+  (defun-sexp-int-defvar-symbol nelisp_aot_var_0_x x
+      (out mirror frames scratch name-slot)
+    42)
+  (defun-sexp-int-defconst-symbol nelisp_aot_const_1_y y
+      (out mirror frames scratch name-slot)
+    7)
+  (defun-sexp-int-defvar-symbol nelisp_aot_custom_2_z z
+      (out mirror frames scratch name-slot)
+    9))
+#+end_src
+
+Those helpers then lower through 129.3C / 129.3D.  The generated
+symbols are deterministic and linker-friendly, so =compile-to-object=
+emits normal GLOBAL FUNC symbols that the Doc 99 runtime layer can
+call during module initialization.  Declaration-only =(defvar x)= is
+stripped when other top-level forms remain; no special-variable
+metadata is emitted yet.
+
+For =defcustom=, the compiler also exposes a side descriptor:
+
+#+begin_src elisp
+(:name z
+ :helper nelisp_aot_custom_2_z
+ :standard 9
+ :docstring "doc"
+ :options (:type (quote integer)))
+#+end_src
+
+This validates the docstring and requires customization options to be
+keyword/value pairs.  The descriptor is the handoff shape for Doc 99
+module scheduling; runtime customization-table registration is still
+pending.
+
+For all top-level variable initializers, the compiler exposes ordered
+init-helper descriptors:
+
+#+begin_src elisp
+((:kind defvar
+  :name x
+  :helper nelisp_aot_var_0_x
+  :index 0)
+ (:kind defconst
+  :name y
+  :helper nelisp_aot_const_1_y
+  :index 1)
+ (:kind defcustom
+  :name z
+  :helper nelisp_aot_custom_2_z
+  :index 2))
+#+end_src
+
+=nelisp-cc-runtime-aot-module-init-plan= then normalizes the ordered
+init descriptors, =defcustom= metadata descriptors, and 129.5C root
+descriptors into one pure Doc 99 module plan:
+
+#+begin_src elisp
+(:helper-order (nelisp_aot_var_0_x
+                nelisp_aot_const_1_y
+                nelisp_aot_custom_2_z)
+ :custom-by-helper ((nelisp_aot_custom_2_z . ...))
+ :root-descriptors (...))
+#+end_src
+
+=nelisp-cc-runtime-run-aot-module-init-plan= executes that plan in
+order once Doc 99 supplies the native helper caller and boundary
+context:
+
+#+begin_src elisp
+(nelisp-cc-runtime-run-aot-module-init-plan
+ plan
+ '(:out OUT :mirror MIRROR :frames FRAMES
+   :scratch SCRATCH :name-slot NAME-SLOT)
+ call-helper-fn
+ register-custom-fn)
+#+end_src
+
+The runtime side validates the context keys and fires
+=register-custom-fn= only after the matching =defcustom= helper has
+run.  =call-helper-fn= is still the Doc 99 loader boundary: it resolves
+the symbol, performs the native call, and owns any platform-specific
+FFI details.
+
+When =register-custom-fn= is nil, runtime registration defaults to
+=nelisp-cc-runtime-register-aot-custom-metadata=.  Metadata is stored
+by variable name in =nelisp-cc-runtime--aot-custom-table= and can be
+queried through =nelisp-cc-runtime-aot-custom-metadata= or snapshotted
+with =nelisp-cc-runtime-aot-custom-table-snapshot=.  The table stores
+only descriptor data plus the init helper kind/index, not the
+transient =OUT/MIRROR/FRAMES/SCRATCH/NAME-SLOT= pointers.
+
+=nelisp-cc-runtime-aot-init-helper-caller= is the standard
+=call-helper-fn= implementation for Doc 99.  It resolves helper
+symbols through =nelisp-cc-runtime-resolve-aot-init-helper=, which
+wraps the existing Doc 81 =nelisp-cc-runtime-resolve-symbol= contract:
+
+#+begin_src elisp
+(:helper nelisp_aot_var_0_x
+ :status :resolved        ;; or :host-stub / :not-found
+ :addr #x...
+ :descriptor ...)
+#+end_src
+
+If Doc 99 supplies a native-call callback, runtime invokes it as
+=(NATIVE-CALL RESOLUTION CONTEXT INIT-DESCRIPTOR)=.  On host Emacs,
+the default resolver still returns =:host-stub= so ERT can inspect the
+contract without dereferencing a native address.  =:not-found= raises
+before any native-call callback is invoked.
+
+This still is not full top-level execution inside Phase 47 itself.
+The compiled object exposes the initializer entry points and the
+runtime now has a validated scheduling/execution hook, metadata store,
+and helper resolution/call contract; actual object loading, real
+native ABI invocation, scratch/name/out allocation, and real
+environment passing remain Doc 99 call-boundary responsibilities.
+Initializer values are currently limited to the same boxed Int
+expression subset accepted by =defun-sexp-int-*= helpers.
 
 ** §1.E Closures + =funcall= / =apply= dispatch
 
@@ -145,6 +797,133 @@ existing callable-resolution (=apply_function= / =nelisp--apply=) via
 =extern-call= — *delegate to the runtime dispatcher rather than
 re-implementing arity/&optional/&rest handling*.  Mirrors the
 bytecode VM's MAKE-CLOSURE / CALL opcodes.
+
+*** §1.E.1 Shipped MVP: one-argument =funcall= dispatcher bridge
+
+Stage 129.7A adds the first higher-order call surface without yet
+allocating closures.  A boxed-boundary defun may write:
+
+#+begin_src elisp
+(defun call-fn
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (fn :type sexp) (arg :type sexp))
+  (funcall fn arg))
+#+end_src
+
+The parser lowers the body to:
+
+#+begin_src elisp
+(seq
+ (extern-call nelisp_aot_funcall1
+              mirror frames fn arg out scratch)
+ out)
+#+end_src
+
+The runtime-side bridge has the same ABI order:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-funcall1 mirror frames fn arg out scratch)
+#+end_src
+
+It dispatches through =nelisp--apply= when available, falls back to
+host =funcall= for host symbols/functions, writes the result to =OUT=,
+and returns =OUT=.  This fixes the call-boundary contract for an
+already-materialized function designator/value.  It does not yet build
+heap closures from =lambda= forms, capture lexical environments, support
+multi-argument =funcall=, or implement =apply=.
+
+*** §1.E.2 Shipped MVP: two-argument =funcall= dispatcher bridge
+
+Stage 129.7B adds the fixed two-argument sibling:
+
+#+begin_src elisp
+(defun call-fn2
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (fn :type sexp) (arg0 :type sexp) (arg1 :type sexp))
+  (funcall fn arg0 arg1))
+#+end_src
+
+The parser lowers the body to:
+
+#+begin_src elisp
+(seq
+ (extern-call nelisp_aot_funcall2
+              mirror frames fn arg0 arg1 out)
+ out)
+#+end_src
+
+The runtime-side bridge is:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-funcall2 mirror frames fn arg0 arg1 out)
+#+end_src
+
+Unlike =funcall1=, the fixed two-argument ABI does not carry =SCRATCH=:
+=MIRROR/FRAMES/FN/ARG0/ARG1/OUT= already consumes the six GP arguments
+available to the current Phase 47 extern-call emitter.  That makes
+=funcall2= useful for common binary call sites while keeping the ABI
+honest.  Three-or-more arguments need a calln design, probably via an
+argument vector/list object rather than additional fixed registers.
+
+*** §1.E.3 Shipped MVP: =apply= dispatcher bridge
+
+Stage 129.7C adds the list-backed higher-order path:
+
+#+begin_src elisp
+(defun call-apply
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (fn :type sexp) (args :type sexp))
+  (apply fn args))
+#+end_src
+
+The parser lowers the body to:
+
+#+begin_src elisp
+(seq
+ (extern-call nelisp_aot_apply
+              mirror frames fn args out scratch)
+ out)
+#+end_src
+
+The runtime-side bridge is:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-apply mirror frames fn args-list out scratch)
+#+end_src
+
+=ARGS-LIST= is assumed to already be a proper boxed Sexp list supplied
+at the boundary; this stage does not yet compile rest-list construction
+or splice ordinary source arguments into a list.  The bridge dispatches
+via =nelisp--apply= when present and host =apply= otherwise, writes the
+result to =OUT=, and returns =OUT=.
+
+*** §1.E.4 Shipped MVP: quoted function designators
+
+Stage 129.7D lets the compiler handle symbol function designators
+without requiring the caller to pass a pre-materialized =FN= slot:
+
+#+begin_src elisp
+(defun call-quoted
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (arg :type sexp))
+  (funcall 'identity arg))
+#+end_src
+
+The parser lowers this to the same dispatcher path with one extra
+materialization step:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name_slot "identity")
+ (extern-call nelisp_aot_funcall1
+              mirror frames name_slot arg out scratch)
+ out)
+#+end_src
+
+The same =name-slot= / =name_slot= convention is used for
+=(funcall #'foo arg0 arg1)= and =(apply 'foo args)=.  This stage does
+not allocate closure objects and does not compile =(function (lambda
+...))=; those remain part of the closure allocation/capture work.
 
 ** §1.F Exception machinery
 
@@ -157,13 +936,209 @@ need non-local exit.  Two designs:
   opcodes (= the VM already implements this shape in elisp).
 - setjmp/longjmp via extern — simpler but fights the spill-slot model.
 
+*** §1.F.1 Shipped MVP: runtime handler-stack substrate
+
+Stage 129.8A fixes the runtime-side contract before the compiler emits
+handler records:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-push-catch TAG LANDING-PAD SAVED-SP)
+(nelisp-cc-runtime-aot-push-condition CONDITIONS LANDING-PAD SAVED-SP)
+(nelisp-cc-runtime-aot-push-unwind CLEANUP LANDING-PAD SAVED-SP)
+(nelisp-cc-runtime-aot-throw TAG VALUE)
+(nelisp-cc-runtime-aot-signal ERROR-TAG DATA)
+#+end_src
+
+The elisp bridge is intentionally a simulator: =throw= / =signal= return
+a landing descriptor instead of jumping:
+
+#+begin_src elisp
+(:kind catch
+ :landing-pad PAD
+ :saved-sp SAVED-SP
+ :reason throw
+ :tag TAG
+ :value VALUE
+ :cleanups (...))
+#+end_src
+
+For =condition= handlers the descriptor carries =:error (TAG . DATA)=.
+Crossed =unwind= handlers run from inner to outer and their return values
+are recorded in =:cleanups=.  Unmatched =throw= / =signal= still run
+crossed cleanups, unwind the stack, and signal
+=nelisp-cc-runtime-error=.
+
+Compiler lowering for =(catch ...)= / =(condition-case ...)= /
+=(unwind-protect ...)=, native stack-pointer restoration, and actual
+landing-pad jumps remain later 129.8 work.
+
+*** §1.F.2 Shipped MVP: =throw= / =signal= bridge lowering
+
+Stage 129.8B connects the first user-visible exception forms to the
+129.8A runtime stack:
+
+#+begin_src elisp
+(defun throw-tag
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name_slot :type sexp) (value :type sexp))
+  (throw 'done value))
+#+end_src
+
+The parser lowers this to:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name_slot "done")
+ (extern-call nelisp_aot_throw
+              mirror frames name_slot value out scratch)
+ out)
+#+end_src
+
+Dynamic tags avoid the materialization step:
+
+#+begin_src elisp
+(defun signal-tag
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (tag :type sexp) (data :type sexp))
+  (signal tag data))
+#+end_src
+
+lowers to:
+
+#+begin_src elisp
+(seq
+ (extern-call nelisp_aot_signal
+              mirror frames tag data out scratch)
+ out)
+#+end_src
+
+Runtime bridge shape:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-throw-boundary
+ mirror frames tag value out scratch)
+(nelisp-cc-runtime-aot-signal-boundary
+ mirror frames tag data out scratch)
+#+end_src
+
+On the elisp side both bridge functions write the simulator landing
+descriptor into =OUT= and return =OUT=.  The native ABI names are
+=nelisp_aot_throw= / =nelisp_aot_signal=; final codegen must still use
+the descriptor to restore the saved stack pointer and jump to the
+landing pad rather than merely returning it.
+
+*** §1.F.3 Shipped MVP: handler-push bridge lowering
+
+Stage 129.8C adds the registration side of the handler-stack ABI.  The
+compiler accepts internal AOT forms:
+
+#+begin_src elisp
+(aot-push-catch TAG LANDING-PAD SAVED-SP)
+(aot-push-condition CONDITIONS LANDING-PAD SAVED-SP)
+(aot-push-unwind CLEANUP LANDING-PAD SAVED-SP)
+#+end_src
+
+For a quoted catch tag:
+
+#+begin_src elisp
+(aot-push-catch 'done 4096 64)
+#+end_src
+
+the lowering is:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name_slot "done")
+ (extern-call nelisp_aot_push_catch
+              mirror frames name_slot 4096 64 scratch))
+#+end_src
+
+Dynamic =CONDITIONS= / =CLEANUP= values are forwarded directly.  The
+runtime boundary bridges are:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-push-catch-boundary
+ mirror frames tag landing-pad saved-sp scratch)
+(nelisp-cc-runtime-aot-push-condition-boundary
+ mirror frames conditions landing-pad saved-sp scratch)
+(nelisp-cc-runtime-aot-push-unwind-boundary
+ mirror frames cleanup landing-pad saved-sp scratch)
+#+end_src
+
+These functions install 129.8A handler records and return the handler
+descriptor.  Source-level =catch= / =condition-case= / =unwind-protect=
+lowering must still synthesize real landing pads, saved stack-pointer
+values, cleanup entry points, and balanced pop paths.
+
+*** §1.F.4 Shipped MVP: handler-pop bridge lowering
+
+Stage 129.8D adds the normal-exit counterpart:
+
+#+begin_src elisp
+(aot-pop-handler 'catch)
+#+end_src
+
+lowers to:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name_slot "catch")
+ (extern-call nelisp_aot_pop_handler
+              mirror frames name_slot out scratch)
+ out)
+#+end_src
+
+Runtime bridge shape:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-pop-handler-boundary
+ mirror frames expected-kind out scratch)
+#+end_src
+
+The bridge pops the innermost handler, optionally validates its kind,
+writes the descriptor into =OUT=, and returns =OUT=.  This makes
+balanced push/pop expressible in object output, but does not yet
+synthesize it from source-level =catch= / =condition-case= /
+=unwind-protect=.
+
 ** §1.G macroexpand frontend (= cheapest group)
 
 =defmacro= / =when= / =unless= / =dolist= / =cl-*= / =pcase= reduce to
-core forms via =macroexpand-all= *at compile time*.  The Wave A21
-bytecode path already does exactly this (=macroexpand-all= before
-=nelisp-bc-compile=).  Reuse: run the host/standalone =macroexpand-all=
-in the Phase 47 frontend before =--parse=.  Near-zero new asm.
+core forms via compile-time macro expansion.  The Wave A21 bytecode
+path already does broad =macroexpand-all= before =nelisp-bc-compile=.
+For Phase 47, the shipped MVP is deliberately narrower: selectively
+macroexpand value/call positions while preserving DSL structural forms
+such as =defun=, because host =macroexpand-all= rewrites them to
+=defalias= forms outside the Phase 47 grammar.  Multi-form macro
+bodies lower through =value-seq= so the final child value is preserved
+in value context.  Near-zero new asm.
+
+*** §1.G.1 Shipped MVP: top-level module forms
+
+Stage 129.6A extends the frontend with top-level =require= /
+=provide= handling:
+
+#+begin_src elisp
+(seq
+  (require 'cl-lib)
+  (defmacro ...)
+  (provide 'my-feature)
+  ...)
+#+end_src
+
+=require= is evaluated during compilation, before top-level
+=defmacro= bodies are installed, and then stripped from the Phase 47
+IR.  Only literal arguments are accepted: =FEATURE= must resolve to a
+symbol, =FILENAME= to nil or a string, and =NOERROR= follows host
+=require= semantics.  =provide= is also stripped after validating its
+feature symbol, but it does not yet emit runtime module registration.
+
+This is deliberately a frontend/module-load MVP, not general builtin
+delegation.  It lets application files with ordinary top-level module
+boilerplate pass through the AOT parser.  Stage 129.6B below adds the
+first explicit dispatcher helper, but ordinary runtime call lowering
+for =format=, =mapcar=, =funcall=, and other real calls remains later
+129.6 work.
 
 ** §1.H Builtin library delegation
 
@@ -177,6 +1152,122 @@ interpreter-embedded use case (Doc 99 Arch B/C) but is in tension with
 Doc 97's standalone-binary lineage — call out explicitly per output
 target.
 
+*** §1.H.1 Shipped MVP: one-argument Sexp builtin delegation helper
+
+Stage 129.6B adds an explicit boxed-boundary helper form:
+
+#+begin_src elisp
+(defun-sexp-builtin1-symbol call-symbol-name symbol-name
+    (out mirror frames scratch name-slot arg))
+#+end_src
+
+It lowers to ordinary Phase 47 DSL:
+
+#+begin_src elisp
+(defun call-symbol-name
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name-slot :type sexp) (arg :type sexp))
+  (seq
+   (sexp-write-symbol-lit name-slot "symbol-name")
+   (extern-call nelisp_aot_builtin_call1
+                mirror frames name-slot arg out scratch)
+   out))
+#+end_src
+
+The caller supplies =OUT/MIRROR/FRAMES/SCRATCH/NAME-SLOT= plus the
+boxed Sexp =ARG=.  The dispatcher ABI writes the builtin result into
+=OUT= and returns =OUT=, matching the boxed-boundary convention used by
+the 129.2/129.3 helpers.  Object output exposes the compiled helper
+symbol and unresolved relocations for =nelisp_aot_builtin_call1= and
+=nl_alloc_symbol=.
+
+This is intentionally not ordinary user syntax yet: =(symbol-name x)=
+does not lower automatically, no varargs ABI exists, and heavier calls
+such as =format=, =mapcar=, =apply=, and =funcall= are still pending.
+The runtime C/Rust dispatcher body behind =nelisp_aot_builtin_call1=
+also remains Doc 99 / later-129.6 integration work.
+
+*** §1.H.2 Shipped MVP: runtime builtin-call1 bridge contract
+
+Stage 129.6C adds the runtime-side analogue of the native dispatcher
+ABI:
+
+#+begin_src elisp
+(nelisp-cc-runtime-aot-builtin-call1
+ mirror frames 'symbol-name arg out scratch)
+#+end_src
+
+The argument order mirrors the native call emitted by 129.6B:
+
+#+begin_src c
+nelisp_aot_builtin_call1(mirror, frames, name, arg, out, scratch)
+#+end_src
+
+In host-side tests =OUT= is a caller-owned vector with at least one
+slot.  The bridge resolves and dispatches the one-argument builtin
+(or uses an injected dispatcher callback), writes the result to
+=(aref OUT 0)=, and returns =OUT=.  This pins the Doc 99 calling
+contract without pretending the final exported C ABI is already wired:
+native code still needs a real =nelisp_aot_builtin_call1= symbol that
+can recover/use the runtime =Env= behind =MIRROR/FRAMES=.
+
+*** §1.H.3 Shipped MVP: constrained direct =symbol-name= call lowering
+
+Stage 129.6D removes the custom surface form for the first user-call
+case.  A normal defun with explicit boxed-boundary parameters may now
+write:
+
+#+begin_src elisp
+(defun call-symbol-name
+    ((out :type sexp) (mirror :type sexp) (frames :type sexp)
+     (scratch :type sexp) (name-slot :type sexp) (arg :type sexp))
+  (symbol-name arg))
+#+end_src
+
+The parser lowers =(symbol-name arg)= to the same sequence used by
+129.6B:
+
+#+begin_src elisp
+(seq
+ (sexp-write-symbol-lit name-slot "symbol-name")
+ (extern-call nelisp_aot_builtin_call1
+              mirror frames name-slot arg out scratch)
+ out)
+#+end_src
+
+This is intentionally constrained.  The surrounding defun must expose
+the boundary symbols by name, the only shipped direct builtin is
+=symbol-name=, and the call remains one-argument only.  It proves the
+shape needed for ordinary user-call lowering without yet claiming
+general =format= / =mapcar= / =funcall= coverage.
+
+*** §1.H.4 Shipped MVP: unary builtin delegation table
+
+Stage 129.6E widens the 129.6D direct-call path from a single builtin
+to an explicit one-argument table:
+
+#+begin_src elisp
+identity ignore not null atom consp listp symbolp keywordp
+numberp integerp float stringp vectorp
+car cdr car-safe cdr-safe
+length reverse nreverse copy-sequence
+1+ 1- abs
+symbol-name prin1-to-string number-to-string string-to-number
+upcase downcase
+#+end_src
+
+Each table entry lowers to the same =nelisp_aot_builtin_call1=
+sequence as =symbol-name=.  The parser checks the current defun table
+first: if the compile unit defines a same-named Phase 47 function,
+ordinary direct-call lowering to that function wins and builtin
+delegation is not used.
+
+This still stops at unary calls.  Multi-argument and rest-argument
+builtins need a different ABI shape, likely an argument-vector or
+list-backed =nelisp_aot_builtin_calln= helper rather than more fixed
+GP arguments, because the current explicit boundary already consumes
+the six-register call budget.
+
 * §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
 
 Each grammar group ships as new elisp in =nelisp-phase47-compiler.el=
@@ -185,16 +1276,17 @@ already exist via Doc 122 / Doc 125 / Doc 100).  Where a group needs a
 genuinely new Rust extern, it must be paired with an offsetting
 deletion or deferred until the extern can be elisp-emitted.
 
-| Stage   | Group                          | Depends on | Risk |
-|---------+--------------------------------+------------+------|
-| 129.1   | §1.G macroexpand frontend      | —          | low  |
-| 129.2   | §1.A tagged-value calculus     | 129.1      | high |
-| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  |
-| 129.4   | §1.C general let/let*          | 129.2      | med  |
-| 129.5   | §1.B heap + GC roots           | 129.2      | high |
-| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  |
-| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high |
-| 129.8   | §1.F exception machinery       | 129.5      | high |
+| Stage   | Group                          | Depends on | Risk | Status                  |
+|---------+--------------------------------+------------+------+-------------------------|
+| 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
+| 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
+| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback SHIPPED 2026-05-25; real native ABI invocation pending |
+| 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP SHIPPED 2026-05-25; lexical/special split pending |
+| 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots SHIPPED 2026-05-25; native push/pop pending |
+| 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
+| 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
+| 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators SHIPPED 2026-05-25; closure allocation/capture and calln/rest-list construction pending |
+| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering SHIPPED 2026-05-25; catch/condition-case/unwind-protect lowering and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
 =anvil-server.el= that uses only those (= prove the pipeline end to

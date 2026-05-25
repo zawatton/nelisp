@@ -87,6 +87,7 @@
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
 (require 'nelisp-cc-pipeline)
+(require 'nelisp-gc)
 
 ;; Phase 7.1.6.a — Rust-side primitive available only when running under
 ;; standalone NeLisp (= `nelisp' binary).  All callers gate via
@@ -141,6 +142,21 @@ Decodes to 4 bytes 0x1F 0x20 0x03 0xD5 in little-endian memory order.")
   "arm64 B (unconditional) opcode pattern (after `--arm64-bl-mask').
 Tail-call lowering rewrites BL → B by clearing bit 31 (the only bit
 that differs between the two encodings).")
+
+(defvar nelisp-cc-runtime--aot-custom-table (make-hash-table :test 'eq)
+  "NAME symbol -> AOT defcustom metadata descriptor.
+Doc 129.3J uses this as the runtime-side customization metadata store
+for Phase 47 AOT modules.  It intentionally stores metadata only, not
+native call-boundary context pointers.")
+
+(defvar nelisp-cc-runtime--aot-handler-stack nil
+  "Innermost-first handler stack for Doc 129.8 AOT exception machinery.
+Each entry is a plist with `:kind' (`catch', `condition', or `unwind'),
+plus kind-specific fields such as `:tag', `:conditions',
+`:landing-pad', `:saved-sp', and `:cleanup'.  The elisp runtime bridge
+uses this as a deterministic simulator for the native handler-stack ABI;
+native code will use the same logical record shape but jump to landing
+pads instead of returning descriptors.")
 
 ;;; Errors ----------------------------------------------------------
 
@@ -1482,6 +1498,898 @@ bridge-only via the `nl-jit-call-format-float' primitive in
     (signal 'nelisp-cc-runtime-error
             (list :unknown-entry-abi mode
                   :valid nelisp-cc-runtime--entry-abi-modes))))
+
+(defun nelisp-cc-runtime-aot-root-vector-from-slots (frame-values root-slots)
+  "Build an AOT root vector from FRAME-VALUES at ROOT-SLOTS.
+FRAME-VALUES is the boundary-visible frame vector for a compiled
+function invocation.  ROOT-SLOTS is the `:slots' list from a Phase 47
+GC root descriptor.  The returned vector is suitable for
+`nelisp-cc-runtime-call-with-aot-roots'."
+  (unless (vectorp frame-values)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-frame-values-not-vector frame-values)))
+  (unless (listp root-slots)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-root-slots-not-list root-slots)))
+  (vconcat
+   (mapcar
+    (lambda (slot)
+      (unless (and (integerp slot)
+                   (<= 0 slot)
+                   (< slot (length frame-values)))
+        (signal 'nelisp-cc-runtime-error
+                (list :aot-root-slot-out-of-range
+                      slot :frame-size (length frame-values))))
+      (aref frame-values slot))
+    root-slots)))
+
+(defun nelisp-cc-runtime-call-with-aot-roots (roots thunk)
+  "Call THUNK while ROOTS is registered as an active AOT GC frame.
+This is the Emacs-side call-boundary hook for Doc 129.5C.  Native
+prologue/epilogue emission can later lower to equivalent push/pop
+hooks, but the dynamic extent and root-set contract are fixed here."
+  (unless (vectorp roots)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-roots-not-vector roots)))
+  (unless (functionp thunk)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-root-thunk-not-function thunk)))
+  (nelisp-gc--with-active-aot-frame roots
+    (funcall thunk)))
+
+(defun nelisp-cc-runtime--aot-default-builtin-dispatch1 (builtin arg)
+  "Dispatch one-argument BUILTIN to ARG through the host/NeLisp function table."
+  (let ((fn nil)
+        (found nil))
+    (when (and (boundp 'nelisp--functions)
+               (hash-table-p (symbol-value 'nelisp--functions)))
+      (let ((candidate (gethash builtin (symbol-value 'nelisp--functions)
+                                :nelisp-cc-runtime--missing)))
+        (unless (eq candidate :nelisp-cc-runtime--missing)
+          (setq fn candidate
+                found t))))
+    (unless found
+      (if (fboundp builtin)
+          (setq fn (symbol-function builtin)
+                found t)
+        (signal 'nelisp-cc-runtime-error
+                (list :aot-builtin-not-found builtin))))
+    (if (fboundp 'nelisp--apply)
+        (funcall (symbol-function 'nelisp--apply) fn (list arg))
+      (funcall fn arg))))
+
+(defun nelisp-cc-runtime-aot-builtin-call1
+    (mirror frames name arg out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.6 `nelisp_aot_builtin_call1' ABI.
+MIRROR, FRAMES, NAME, ARG, OUT, and SCRATCH mirror the native ABI order:
+
+  nelisp_aot_builtin_call1(mirror, frames, name, arg, out, scratch)
+
+NAME must be the builtin symbol materialized by compiled code.  OUT is
+represented on the Emacs side as a caller-owned vector with at least one
+slot.  The dispatcher result is written to `(aref OUT 0)' and OUT is
+returned, matching the native boxed-boundary convention.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER NAME ARG CONTEXT)' where CONTEXT carries the six boundary
+values.  When DISPATCHER is nil, host/NeLisp function lookup is used."
+  (unless (symbolp name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-builtin-name-not-symbol name)))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-builtin-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-builtin-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :name name
+                        :arg arg
+                        :out out
+                        :scratch scratch))
+         (result (if dispatcher
+                     (funcall dispatcher name arg context)
+                   (nelisp-cc-runtime--aot-default-builtin-dispatch1
+                    name arg))))
+    (aset out 0 result)
+    out))
+
+(defun nelisp-cc-runtime--aot-default-funcall-dispatch1 (fn arg)
+  "Dispatch one-argument FN to ARG using NeLisp-aware apply when available."
+  (cond
+   ((fboundp 'nelisp--apply)
+    (funcall (symbol-function 'nelisp--apply) fn (list arg)))
+   ((symbolp fn)
+    (if (fboundp fn)
+        (funcall (symbol-function fn) arg)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-funcall-function-not-found fn))))
+   ((functionp fn)
+    (funcall fn arg))
+   (t
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-not-function fn)))))
+
+(defun nelisp-cc-runtime-aot-funcall1
+    (mirror frames fn arg out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_funcall1' ABI.
+MIRROR, FRAMES, FN, ARG, OUT, and SCRATCH mirror the native ABI order:
+
+  nelisp_aot_funcall1(mirror, frames, fn, arg, out, scratch)
+
+FN is the function designator/value supplied by compiled code.  OUT is
+represented on the Emacs side as a caller-owned vector with at least one
+slot.  The dispatch result is written to `(aref OUT 0)' and OUT is
+returned.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER FN ARG CONTEXT)' where CONTEXT carries the six boundary
+values.  When DISPATCHER is nil, `nelisp--apply' is used if available,
+with host `funcall' as the fallback."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :fn fn
+                        :arg arg
+                        :out out
+                        :scratch scratch))
+         (result (if dispatcher
+                     (funcall dispatcher fn arg context)
+                   (nelisp-cc-runtime--aot-default-funcall-dispatch1
+                    fn arg))))
+    (aset out 0 result)
+    out))
+
+(defun nelisp-cc-runtime--aot-default-funcall-dispatch2 (fn arg0 arg1)
+  "Dispatch two-argument FN to ARG0 and ARG1."
+  (cond
+   ((fboundp 'nelisp--apply)
+    (funcall (symbol-function 'nelisp--apply) fn (list arg0 arg1)))
+   ((symbolp fn)
+    (if (fboundp fn)
+        (funcall (symbol-function fn) arg0 arg1)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-funcall-function-not-found fn))))
+   ((functionp fn)
+    (funcall fn arg0 arg1))
+   (t
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-not-function fn)))))
+
+(defun nelisp-cc-runtime-aot-funcall2
+    (mirror frames fn arg0 arg1 out &optional dispatcher)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_funcall2' ABI.
+MIRROR, FRAMES, FN, ARG0, ARG1, and OUT mirror the native ABI order:
+
+  nelisp_aot_funcall2(mirror, frames, fn, arg0, arg1, out)
+
+This fixed-arity bridge deliberately omits SCRATCH so it stays inside
+the current six-GP-argument Phase 47 extern-call budget.  OUT is an
+Emacs-side caller-owned vector with at least one slot; the dispatch
+result is written to `(aref OUT 0)' and OUT is returned.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER FN ARG0 ARG1 CONTEXT)'."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-funcall-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :fn fn
+                        :arg0 arg0
+                        :arg1 arg1
+                        :out out))
+         (result (if dispatcher
+                     (funcall dispatcher fn arg0 arg1 context)
+                   (nelisp-cc-runtime--aot-default-funcall-dispatch2
+                    fn arg0 arg1))))
+    (aset out 0 result)
+    out))
+
+(defun nelisp-cc-runtime--aot-default-apply-dispatch (fn args-list)
+  "Dispatch FN to ARGS-LIST using NeLisp-aware apply when available."
+  (unless (listp args-list)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-apply-args-not-list args-list)))
+  (cond
+   ((fboundp 'nelisp--apply)
+    (funcall (symbol-function 'nelisp--apply) fn args-list))
+   ((symbolp fn)
+    (if (fboundp fn)
+        (apply (symbol-function fn) args-list)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-apply-function-not-found fn))))
+   ((functionp fn)
+    (apply fn args-list))
+   (t
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-apply-not-function fn)))))
+
+(defun nelisp-cc-runtime-aot-apply
+    (mirror frames fn args-list out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.7 `nelisp_aot_apply' ABI.
+MIRROR, FRAMES, FN, ARGS-LIST, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_apply(mirror, frames, fn, args_list, out, scratch)
+
+ARGS-LIST is the already-materialized argument list supplied by compiled
+code.  OUT is an Emacs-side caller-owned vector with at least one slot;
+the dispatch result is written to `(aref OUT 0)' and OUT is returned.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER FN ARGS-LIST CONTEXT)'."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-apply-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-apply-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :fn fn
+                        :args-list args-list
+                        :out out
+                        :scratch scratch))
+         (result (if dispatcher
+                     (funcall dispatcher fn args-list context)
+                    (nelisp-cc-runtime--aot-default-apply-dispatch
+                     fn args-list))))
+    (aset out 0 result)
+    out))
+
+;;; Doc 129.8A — AOT exception handler-stack substrate ---------------
+
+(defun nelisp-cc-runtime-aot-handler-stack-snapshot ()
+  "Return a shallow snapshot of the current Doc 129.8 AOT handler stack."
+  (copy-sequence nelisp-cc-runtime--aot-handler-stack))
+
+(defun nelisp-cc-runtime-aot-reset-handler-stack ()
+  "Clear the Doc 129.8 AOT handler stack and return nil."
+  (setq nelisp-cc-runtime--aot-handler-stack nil))
+
+(defun nelisp-cc-runtime--aot-push-handler (handler)
+  "Push HANDLER on the AOT handler stack and return HANDLER."
+  (push handler nelisp-cc-runtime--aot-handler-stack)
+  handler)
+
+(defun nelisp-cc-runtime-aot-push-catch
+    (tag landing-pad saved-sp &optional metadata)
+  "Push a Doc 129.8 catch handler.
+TAG is compared with `eq' by `nelisp-cc-runtime-aot-throw'.
+LANDING-PAD and SAVED-SP are opaque simulator values that mirror the
+native landing address and stack pointer restore point.  METADATA is
+threaded through unchanged for compiler/runtime diagnostics."
+  (nelisp-cc-runtime--aot-push-handler
+   (list :kind 'catch
+         :tag tag
+         :landing-pad landing-pad
+         :saved-sp saved-sp
+         :metadata metadata)))
+
+(defun nelisp-cc-runtime-aot-push-condition
+    (conditions landing-pad saved-sp &optional metadata)
+  "Push a Doc 129.8 condition handler.
+CONDITIONS is a symbol, a list of symbols, or t, matching the handler
+specifier accepted by `condition-case'."
+  (unless (or (eq conditions t)
+              (symbolp conditions)
+              (and (listp conditions)
+                   (cl-every #'symbolp conditions)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-condition-handler-bad-conditions conditions)))
+  (nelisp-cc-runtime--aot-push-handler
+   (list :kind 'condition
+         :conditions conditions
+         :landing-pad landing-pad
+         :saved-sp saved-sp
+         :metadata metadata)))
+
+(defun nelisp-cc-runtime-aot-push-unwind
+    (cleanup landing-pad saved-sp &optional metadata)
+  "Push a Doc 129.8 unwind-protect cleanup handler.
+CLEANUP must be a function called with one context plist when a
+non-local exit crosses this handler.  The context includes `:reason',
+`:tag', `:data', and `:handler' when applicable."
+  (unless (functionp cleanup)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-unwind-cleanup-not-function cleanup)))
+  (nelisp-cc-runtime--aot-push-handler
+   (list :kind 'unwind
+         :cleanup cleanup
+         :landing-pad landing-pad
+         :saved-sp saved-sp
+         :metadata metadata)))
+
+(defun nelisp-cc-runtime-aot-pop-handler (&optional expected-kind)
+  "Pop and return the innermost AOT handler.
+When EXPECTED-KIND is non-nil, signal if the popped handler has a
+different `:kind'."
+  (unless nelisp-cc-runtime--aot-handler-stack
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-handler-pop-empty)))
+  (let ((handler (pop nelisp-cc-runtime--aot-handler-stack)))
+    (when (and expected-kind
+               (not (eq (plist-get handler :kind) expected-kind)))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-handler-pop-kind-mismatch
+                    :expected expected-kind
+                    :actual (plist-get handler :kind))))
+    handler))
+
+(defun nelisp-cc-runtime--aot-run-cleanup (handler context)
+  "Run HANDLER's cleanup with CONTEXT and return its result."
+  (let ((cleanup (plist-get handler :cleanup)))
+    (unless (functionp cleanup)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-unwind-cleanup-not-function cleanup)))
+    (funcall cleanup (append context (list :handler handler)))))
+
+(defun nelisp-cc-runtime-aot-push-catch-boundary
+    (mirror frames tag landing-pad saved-sp scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.8 `nelisp_aot_push_catch' ABI.
+MIRROR, FRAMES, TAG, LANDING-PAD, SAVED-SP, and SCRATCH mirror the
+native ABI:
+
+  nelisp_aot_push_catch(mirror, frames, tag, landing_pad, saved_sp, scratch)
+
+The bridge pushes a catch handler on the process-local AOT handler
+stack and returns the handler descriptor.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER TAG LANDING-PAD SAVED-SP CONTEXT)'."
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-catch-dispatcher-not-function dispatcher)))
+  (let ((context (list :mirror mirror
+                       :frames frames
+                       :tag tag
+                       :landing-pad landing-pad
+                       :saved-sp saved-sp
+                       :scratch scratch)))
+    (if dispatcher
+        (funcall dispatcher tag landing-pad saved-sp context)
+      (nelisp-cc-runtime-aot-push-catch
+       tag landing-pad saved-sp context))))
+
+(defun nelisp-cc-runtime-aot-push-condition-boundary
+    (mirror frames conditions landing-pad saved-sp scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.8 `nelisp_aot_push_condition' ABI.
+MIRROR, FRAMES, CONDITIONS, LANDING-PAD, SAVED-SP, and SCRATCH mirror
+the native ABI:
+
+  nelisp_aot_push_condition(mirror, frames, conditions, landing_pad, saved_sp, scratch)
+
+CONDITIONS is forwarded to `nelisp-cc-runtime-aot-push-condition'.
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER CONDITIONS LANDING-PAD SAVED-SP CONTEXT)'."
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-condition-dispatcher-not-function dispatcher)))
+  (let ((context (list :mirror mirror
+                       :frames frames
+                       :conditions conditions
+                       :landing-pad landing-pad
+                       :saved-sp saved-sp
+                       :scratch scratch)))
+    (if dispatcher
+        (funcall dispatcher conditions landing-pad saved-sp context)
+      (nelisp-cc-runtime-aot-push-condition
+       conditions landing-pad saved-sp context))))
+
+(defun nelisp-cc-runtime-aot-push-unwind-boundary
+    (mirror frames cleanup landing-pad saved-sp scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.8 `nelisp_aot_push_unwind' ABI.
+MIRROR, FRAMES, CLEANUP, LANDING-PAD, SAVED-SP, and SCRATCH mirror the
+native ABI:
+
+  nelisp_aot_push_unwind(mirror, frames, cleanup, landing_pad, saved_sp, scratch)
+
+CLEANUP is forwarded to `nelisp-cc-runtime-aot-push-unwind'.  DISPATCHER,
+when non-nil, is called as
+`(DISPATCHER CLEANUP LANDING-PAD SAVED-SP CONTEXT)'."
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-unwind-dispatcher-not-function dispatcher)))
+  (let ((context (list :mirror mirror
+                       :frames frames
+                       :cleanup cleanup
+                       :landing-pad landing-pad
+                       :saved-sp saved-sp
+                       :scratch scratch)))
+    (if dispatcher
+        (funcall dispatcher cleanup landing-pad saved-sp context)
+      (nelisp-cc-runtime-aot-push-unwind
+       cleanup landing-pad saved-sp context))))
+
+(defun nelisp-cc-runtime-aot-pop-handler-boundary
+    (mirror frames expected-kind out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.8 `nelisp_aot_pop_handler' ABI.
+MIRROR, FRAMES, EXPECTED-KIND, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_pop_handler(mirror, frames, expected_kind, out, scratch)
+
+The bridge pops the innermost AOT handler, writes the popped descriptor
+to OUT, and returns OUT.  EXPECTED-KIND is forwarded to
+`nelisp-cc-runtime-aot-pop-handler' and may be nil to skip kind
+checking.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER EXPECTED-KIND CONTEXT)'."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-pop-handler-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-pop-handler-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :expected-kind expected-kind
+                        :out out
+                        :scratch scratch))
+         (handler (if dispatcher
+                      (funcall dispatcher expected-kind context)
+                    (nelisp-cc-runtime-aot-pop-handler expected-kind))))
+    (aset out 0 handler)
+    out))
+
+(defun nelisp-cc-runtime--aot-condition-match-p (spec tag)
+  "Return non-nil when condition handler SPEC catches TAG."
+  (cond
+   ((eq spec t) t)
+   ((symbolp spec)
+    (if (fboundp 'condition-of-p)
+        (funcall (symbol-function 'condition-of-p) spec tag)
+      (or (eq spec tag)
+          (and (eq spec 'error) (not (eq tag 'quit))))))
+   ((listp spec)
+    (catch 'matched
+      (dolist (s spec)
+        (when (nelisp-cc-runtime--aot-condition-match-p s tag)
+          (throw 'matched t)))
+      nil))
+   (t nil)))
+
+(defun nelisp-cc-runtime--aot-landing-descriptor
+    (handler reason payload cleanups)
+  "Build a simulator landing descriptor for HANDLER."
+  (append (list :kind (plist-get handler :kind)
+                :landing-pad (plist-get handler :landing-pad)
+                :saved-sp (plist-get handler :saved-sp)
+                :metadata (plist-get handler :metadata)
+                :reason reason
+                :cleanups (nreverse cleanups))
+          payload))
+
+(defun nelisp-cc-runtime-aot-throw (tag value)
+  "Simulate Doc 129.8 non-local `(throw TAG VALUE)'.
+Walks the innermost-first handler stack, runs crossed unwind cleanups,
+pops all crossed handlers plus the matching catch, and returns a landing
+descriptor.  If no matching catch exists, crossed cleanups still run and
+`nelisp-cc-runtime-error' is signalled with a `:aot-no-catch' payload."
+  (let ((rest nelisp-cc-runtime--aot-handler-stack)
+        (cleanups nil)
+        (matched nil))
+    (while (and rest (not matched))
+      (let ((handler (car rest)))
+        (pcase (plist-get handler :kind)
+          ('unwind
+           (push (nelisp-cc-runtime--aot-run-cleanup
+                  handler
+                  (list :reason 'throw :tag tag :value value))
+                 cleanups)
+           (setq rest (cdr rest)))
+          ('catch
+           (if (eq (plist-get handler :tag) tag)
+               (setq matched handler
+                     rest (cdr rest))
+             (setq rest (cdr rest))))
+          (_
+           (setq rest (cdr rest))))))
+    (setq nelisp-cc-runtime--aot-handler-stack rest)
+    (if matched
+        (nelisp-cc-runtime--aot-landing-descriptor
+         matched 'throw
+         (list :tag tag :value value)
+         cleanups)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-no-catch tag value :cleanups (nreverse cleanups))))))
+
+(defun nelisp-cc-runtime-aot-signal (tag data)
+  "Simulate Doc 129.8 condition signalling.
+TAG is the condition symbol and DATA is the signal data list.  Crossed
+unwind handlers run before the matching condition landing descriptor is
+returned.  Without a matching condition handler, the stack is unwound and
+`nelisp-cc-runtime-error' is signalled."
+  (unless (symbolp tag)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-signal-tag-not-symbol tag)))
+  (let ((rest nelisp-cc-runtime--aot-handler-stack)
+        (cleanups nil)
+        (matched nil))
+    (while (and rest (not matched))
+      (let ((handler (car rest)))
+        (pcase (plist-get handler :kind)
+          ('unwind
+           (push (nelisp-cc-runtime--aot-run-cleanup
+                  handler
+                  (list :reason 'signal :tag tag :data data))
+                 cleanups)
+           (setq rest (cdr rest)))
+          ('condition
+           (if (nelisp-cc-runtime--aot-condition-match-p
+                (plist-get handler :conditions) tag)
+               (setq matched handler
+                     rest (cdr rest))
+             (setq rest (cdr rest))))
+          (_
+           (setq rest (cdr rest))))))
+    (setq nelisp-cc-runtime--aot-handler-stack rest)
+    (if matched
+        (nelisp-cc-runtime--aot-landing-descriptor
+         matched 'signal
+         (list :tag tag :data data :error (cons tag data))
+         cleanups)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-unhandled-signal tag data
+                    :cleanups (nreverse cleanups))))))
+
+(defun nelisp-cc-runtime-aot-throw-boundary
+    (mirror frames tag value out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.8 `nelisp_aot_throw' ABI.
+MIRROR, FRAMES, TAG, VALUE, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_throw(mirror, frames, tag, value, out, scratch)
+
+The elisp bridge writes the simulator landing descriptor into OUT and
+returns OUT.  Native code will eventually use the same logical result to
+restore the saved stack pointer and jump to the landing pad.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER TAG VALUE CONTEXT)'."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-throw-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-throw-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :tag tag
+                        :value value
+                        :out out
+                        :scratch scratch))
+         (landing (if dispatcher
+                      (funcall dispatcher tag value context)
+                    (nelisp-cc-runtime-aot-throw tag value))))
+    (aset out 0 landing)
+    out))
+
+(defun nelisp-cc-runtime-aot-signal-boundary
+    (mirror frames tag data out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.8 `nelisp_aot_signal' ABI.
+MIRROR, FRAMES, TAG, DATA, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_signal(mirror, frames, tag, data, out, scratch)
+
+The elisp bridge writes the simulator landing descriptor into OUT and
+returns OUT.  DISPATCHER, when non-nil, is called as
+`(DISPATCHER TAG DATA CONTEXT)'."
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-signal-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-signal-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :tag tag
+                        :data data
+                        :out out
+                        :scratch scratch))
+         (landing (if dispatcher
+                      (funcall dispatcher tag data context)
+                    (nelisp-cc-runtime-aot-signal tag data))))
+    (aset out 0 landing)
+    out))
+
+(defun nelisp-cc-runtime--validate-aot-init-helper-descriptor (descriptor)
+  "Validate one Doc 129 AOT init helper DESCRIPTOR."
+  (unless (and (listp descriptor)
+               (memq (plist-get descriptor :kind)
+                     '(defvar defconst defcustom))
+               (symbolp (plist-get descriptor :name))
+               (symbolp (plist-get descriptor :helper))
+               (integerp (plist-get descriptor :index))
+               (<= 0 (plist-get descriptor :index)))
+    (signal 'nelisp-cc-runtime-error
+            (list :bad-aot-init-helper-descriptor descriptor)))
+  descriptor)
+
+(defun nelisp-cc-runtime--validate-aot-custom-metadata (descriptor helpers)
+  "Validate one custom metadata DESCRIPTOR against known HELPERS."
+  (unless (and (listp descriptor)
+               (symbolp (plist-get descriptor :name))
+               (symbolp (plist-get descriptor :helper))
+               (stringp (plist-get descriptor :docstring))
+               (listp (plist-get descriptor :options)))
+    (signal 'nelisp-cc-runtime-error
+            (list :bad-aot-custom-metadata descriptor)))
+  (unless (memq (plist-get descriptor :helper) helpers)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-custom-metadata-helper-without-init
+                  (plist-get descriptor :helper))))
+  descriptor)
+
+(defun nelisp-cc-runtime--validate-aot-root-descriptor (descriptor)
+  "Validate one Doc 129.5C root DESCRIPTOR."
+  (unless (and (listp descriptor)
+               (symbolp (plist-get descriptor :name))
+               (listp (plist-get descriptor :slots))
+               (integerp (plist-get descriptor :param-count))
+               (<= 0 (plist-get descriptor :param-count))
+               (integerp (plist-get descriptor :rt-slot-count))
+               (<= 0 (plist-get descriptor :rt-slot-count)))
+    (signal 'nelisp-cc-runtime-error
+            (list :bad-aot-root-descriptor descriptor)))
+  (dolist (slot (plist-get descriptor :slots))
+    (unless (and (integerp slot)
+                 (<= 0 slot)
+                 (< slot (+ (plist-get descriptor :param-count)
+                            (plist-get descriptor :rt-slot-count))))
+      (signal 'nelisp-cc-runtime-error
+              (list :bad-aot-root-slot slot :descriptor descriptor))))
+  descriptor)
+
+(defun nelisp-cc-runtime-aot-module-init-plan
+    (init-helpers &optional custom-metadata root-descriptors)
+  "Build the Doc 99 module-init plan for a Phase 47 AOT module.
+INIT-HELPERS is the ordered list from
+`nelisp-phase47-compiler--init-helper-descriptors'.  CUSTOM-METADATA
+is the list from `nelisp-phase47-compiler--custom-metadata-descriptors'.
+ROOT-DESCRIPTORS is the list from
+`nelisp-phase47-compiler--gc-root-descriptors'.
+
+The returned plist is pure metadata; it does not call native code.
+Doc 99's loader/dispatcher consumes `:helper-order' to run generated
+init helpers, `:custom-by-helper' to attach customization metadata to
+matching helpers, and `:root-descriptors' for call-boundary root
+registration."
+  (unless (listp init-helpers)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-init-helpers-not-list init-helpers)))
+  (unless (listp custom-metadata)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-custom-metadata-not-list custom-metadata)))
+  (unless (listp root-descriptors)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-root-descriptors-not-list root-descriptors)))
+  (let* ((validated-init
+          (mapcar #'nelisp-cc-runtime--validate-aot-init-helper-descriptor
+                  init-helpers))
+         (helpers (mapcar (lambda (d) (plist-get d :helper))
+                          validated-init))
+         (validated-custom
+          (mapcar (lambda (d)
+                    (nelisp-cc-runtime--validate-aot-custom-metadata
+                     d helpers))
+                  custom-metadata))
+         (validated-roots
+          (mapcar #'nelisp-cc-runtime--validate-aot-root-descriptor
+                  root-descriptors)))
+    (list :init-helpers validated-init
+          :helper-order helpers
+          :custom-metadata validated-custom
+          :custom-by-helper
+          (mapcar (lambda (d) (cons (plist-get d :helper) d))
+                  validated-custom)
+          :root-descriptors validated-roots)))
+
+(defun nelisp-cc-runtime-clear-aot-custom-table ()
+  "Clear the runtime AOT custom metadata table."
+  (clrhash nelisp-cc-runtime--aot-custom-table)
+  nil)
+
+(defun nelisp-cc-runtime-aot-custom-metadata (name)
+  "Return stored AOT custom metadata for NAME, or nil."
+  (unless (symbolp name)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-custom-name-not-symbol name)))
+  (let ((entry (gethash name nelisp-cc-runtime--aot-custom-table)))
+    (when entry
+      (copy-sequence entry))))
+
+(defun nelisp-cc-runtime-aot-custom-table-snapshot ()
+  "Return a deterministic snapshot of stored AOT custom metadata."
+  (let (entries)
+    (maphash (lambda (_name descriptor)
+               (push (copy-sequence descriptor) entries))
+             nelisp-cc-runtime--aot-custom-table)
+    (sort entries
+          (lambda (a b)
+            (string< (symbol-name (plist-get a :name))
+                     (symbol-name (plist-get b :name)))))))
+
+(defun nelisp-cc-runtime-register-aot-custom-metadata
+    (custom-descriptor _context init-descriptor)
+  "Store CUSTOM-DESCRIPTOR in the runtime AOT custom metadata table.
+INIT-DESCRIPTOR is the generated helper descriptor that just ran.  The
+stored entry is metadata-only and deliberately omits the transient
+call-boundary CONTEXT."
+  (nelisp-cc-runtime--validate-aot-custom-metadata
+   custom-descriptor (list (plist-get custom-descriptor :helper)))
+  (unless (and (listp init-descriptor)
+               (eq (plist-get init-descriptor :kind) 'defcustom)
+               (eq (plist-get init-descriptor :name)
+                   (plist-get custom-descriptor :name))
+               (eq (plist-get init-descriptor :helper)
+                   (plist-get custom-descriptor :helper)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-custom-init-descriptor-mismatch
+                  :custom custom-descriptor
+                  :init init-descriptor)))
+  (let ((entry (append custom-descriptor nil)))
+    (setq entry (plist-put entry :init-index
+                           (plist-get init-descriptor :index)))
+    (setq entry (plist-put entry :init-kind
+                           (plist-get init-descriptor :kind)))
+    (puthash (plist-get custom-descriptor :name)
+             entry
+             nelisp-cc-runtime--aot-custom-table)
+    (copy-sequence entry)))
+
+(defun nelisp-cc-runtime-resolve-aot-init-helper
+    (descriptor &optional resolver)
+  "Resolve DESCRIPTOR's AOT init helper symbol.
+RESOLVER defaults to `nelisp-cc-runtime-resolve-symbol'.  The returned
+plist contains `:helper', `:status', `:addr', and `:descriptor'."
+  (nelisp-cc-runtime--validate-aot-init-helper-descriptor descriptor)
+  (when (and resolver (not (functionp resolver)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-helper-resolver-not-function resolver)))
+  (let* ((helper (plist-get descriptor :helper))
+         (status-addr (funcall (or resolver
+                                   #'nelisp-cc-runtime-resolve-symbol)
+                               helper))
+         (status (car-safe status-addr))
+         (addr (cdr-safe status-addr)))
+    (unless (memq status '(:resolved :host-stub :not-found))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-helper-resolve-bad-status
+                    helper status-addr)))
+    (when (and (memq status '(:resolved :host-stub))
+               (not (and (integerp addr) (> addr 0))))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-helper-resolve-bad-address
+                    helper status-addr)))
+    (when (and (eq status :not-found) addr)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-helper-resolve-not-found-has-address
+                    helper status-addr)))
+    (list :helper helper
+          :status status
+          :addr addr
+          :descriptor descriptor)))
+
+(defun nelisp-cc-runtime-call-aot-init-helper
+    (helper context descriptor &optional native-call resolver)
+  "Resolve and optionally call one AOT init HELPER.
+CONTEXT is the same boundary context accepted by
+`nelisp-cc-runtime-run-aot-module-init-plan'.  DESCRIPTOR must be the
+matching init-helper descriptor.  NATIVE-CALL, when non-nil, is called
+as `(NATIVE-CALL RESOLUTION CONTEXT DESCRIPTOR)' after successful
+resolution.  RESOLVER defaults to `nelisp-cc-runtime-resolve-symbol'."
+  (unless (symbolp helper)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-helper-not-symbol helper)))
+  (nelisp-cc-runtime--validate-aot-init-context context)
+  (nelisp-cc-runtime--validate-aot-init-helper-descriptor descriptor)
+  (unless (eq helper (plist-get descriptor :helper))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-helper-descriptor-mismatch
+                  :helper helper
+                  :descriptor descriptor)))
+  (when (and native-call (not (functionp native-call)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-native-call-not-function native-call)))
+  (let ((resolution
+         (nelisp-cc-runtime-resolve-aot-init-helper descriptor resolver)))
+    (when (eq (plist-get resolution :status) :not-found)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-init-helper-symbol-not-found helper)))
+    (if native-call
+        (funcall native-call resolution context descriptor)
+      resolution)))
+
+(defun nelisp-cc-runtime-aot-init-helper-caller
+    (&optional native-call resolver)
+  "Return a `run-aot-module-init-plan' CALL-HELPER callback.
+NATIVE-CALL and RESOLVER are forwarded to
+`nelisp-cc-runtime-call-aot-init-helper'."
+  (when (and native-call (not (functionp native-call)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-native-call-not-function native-call)))
+  (when (and resolver (not (functionp resolver)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-helper-resolver-not-function resolver)))
+  (lambda (helper context descriptor)
+    (nelisp-cc-runtime-call-aot-init-helper
+     helper context descriptor native-call resolver)))
+
+(defun nelisp-cc-runtime--validate-aot-init-context (context)
+  "Validate CONTEXT for running Doc 129 AOT init helpers."
+  (unless (and (listp context)
+               (plist-member context :out)
+               (plist-member context :mirror)
+               (plist-member context :frames)
+               (plist-member context :scratch)
+               (plist-member context :name-slot))
+    (signal 'nelisp-cc-runtime-error
+            (list :bad-aot-init-context context)))
+  context)
+
+(defun nelisp-cc-runtime-run-aot-module-init-plan
+    (plan context call-helper &optional register-custom)
+  "Run a Doc 129 AOT module-init PLAN through callback hooks.
+PLAN is the plist returned by `nelisp-cc-runtime-aot-module-init-plan'.
+CONTEXT must carry `:out', `:mirror', `:frames', `:scratch', and
+`:name-slot'; these are the boundary values passed to every generated
+init helper.  CALL-HELPER is called as
+
+  (CALL-HELPER HELPER-SYMBOL CONTEXT INIT-DESCRIPTOR)
+
+for each helper in plan order.  REGISTER-CUSTOM, when non-nil, is
+called after a matching `defcustom' helper succeeds:
+
+  (REGISTER-CUSTOM CUSTOM-DESCRIPTOR CONTEXT INIT-DESCRIPTOR)
+
+When REGISTER-CUSTOM is nil, custom metadata is stored via
+`nelisp-cc-runtime-register-aot-custom-metadata'.
+
+The function returns a plist with ordered `:init-results' and
+`:custom-results'.  It does not resolve or call native code itself;
+that remains the Doc 99 loader's responsibility."
+  (unless (listp plan)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-module-init-plan-not-plist plan)))
+  (nelisp-cc-runtime--validate-aot-init-context context)
+  (unless (functionp call-helper)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-call-helper-not-function call-helper)))
+  (when (and register-custom (not (functionp register-custom)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-register-custom-not-function register-custom)))
+  (let* ((normalized-plan
+          (nelisp-cc-runtime-aot-module-init-plan
+           (plist-get plan :init-helpers)
+           (plist-get plan :custom-metadata)
+          (plist-get plan :root-descriptors)))
+         (custom-by-helper (plist-get normalized-plan :custom-by-helper))
+         (register-custom-fn
+          (or register-custom
+              #'nelisp-cc-runtime-register-aot-custom-metadata))
+         (init-results nil)
+         (custom-results nil))
+    (dolist (descriptor (plist-get normalized-plan :init-helpers))
+      (let* ((helper (plist-get descriptor :helper))
+             (result (funcall call-helper helper context descriptor))
+             (custom (cdr (assq helper custom-by-helper))))
+        (push (cons helper result) init-results)
+        (when custom
+          (push (cons helper
+                      (funcall register-custom-fn custom context descriptor))
+                custom-results))))
+    (list :plan normalized-plan
+          :init-results (nreverse init-results)
+          :custom-results (nreverse custom-results))))
 
 (cl-defun nelisp-cc-runtime-compile-and-allocate
     (lambda-form &optional backend exec-args &key (entry-abi :host-int))

@@ -102,6 +102,47 @@ the cleanup regardless of how control leaves the body."
     (catch 'nelisp-gc-test--tag (nelisp-bc-run thrower))
     (should (equal before nelisp-gc--active-vms))))
 
+;;; AOT frame roots ---------------------------------------------------
+
+(ert-deftest nelisp-gc-no-aot-frame-outside-registration ()
+  "With no compiled frame in flight, `aot-frame' root entries are absent."
+  (let ((nelisp-gc--active-aot-frames nil))
+    (should-not
+     (cl-find 'aot-frame (nelisp-gc-root-set)
+              :key (lambda (r) (plist-get r :kind))))))
+
+(ert-deftest nelisp-gc-active-aot-frame-surfaces-in-root-set ()
+  "A root vector bound as an AOT frame becomes an `aot-frame' root entry."
+  (let* ((root-1 (cons 'aot 'root-1))
+         (root-2 (vector 'aot 'root-2))
+         (root-vector (vector root-1 root-2))
+         (nelisp-gc--active-aot-frames nil))
+    (nelisp-gc--with-active-aot-frame root-vector
+      (let ((aot-roots (cl-remove-if-not
+                        (lambda (r) (eq (plist-get r :kind) 'aot-frame))
+                        (nelisp-gc-root-set))))
+        (should (= 1 (length aot-roots)))
+        (should (eq root-vector (plist-get (car aot-roots) :value)))))))
+
+(ert-deftest nelisp-gc-active-aot-frame-reachable-set-walks-root-vector ()
+  "AOT root vectors are walked by the normal reachable-set traversal."
+  (let* ((live-cell (cons 'aot 'live))
+         (root-vector (vector live-cell))
+         (nelisp-gc--active-aot-frames nil))
+    (nelisp-gc--with-active-aot-frame root-vector
+      (let ((live (nelisp-gc-reachable-set)))
+        (should (gethash root-vector live))
+        (should (gethash live-cell live))))))
+
+(ert-deftest nelisp-gc-aot-frame-pops-on-non-local-exit ()
+  "A `throw' past `nelisp-gc--with-active-aot-frame' still pops the root."
+  (let ((before nelisp-gc--active-aot-frames)
+        (root-vector (vector 'aot 'root)))
+    (catch 'nelisp-gc-test--aot-tag
+      (nelisp-gc--with-active-aot-frame root-vector
+        (throw 'nelisp-gc-test--aot-tag 'ok)))
+    (should (equal before nelisp-gc--active-aot-frames))))
+
 ;;; Mark pass (3c.2) -------------------------------------------------
 
 (defun nelisp-gc-test--root-of (value)

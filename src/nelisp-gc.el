@@ -31,6 +31,12 @@
 `unwind-protect', so at GC scan time this holds only in-flight
 stacks.  Leaf = outermost call; top-of-list = innermost.")
 
+(defvar nelisp-gc--active-aot-frames nil
+  "Stack of AOT frame-local root vectors currently executing.
+Phase 47 compiled functions can expose their live Sexp spill slots as
+a vector and push it here while the native frame is active.  Each
+entry is treated as one `aot-frame' root by `nelisp-gc-root-set'.")
+
 (defun nelisp-gc--globals-root ()
   "Return the four NeLisp-level global hash tables as a single plist root.
 Each element of the returned list is `(:kind K :value HT)' so downstream
@@ -50,6 +56,13 @@ bcl-run and JIT-marker bcl, though JIT stacks never push onto
   (mapcar (lambda (vm) (list :kind 'vm-stack :value vm))
           nelisp-gc--active-vms))
 
+(defun nelisp-gc--aot-frames-root ()
+  "Return each live AOT root vector as its own root entry.
+Empty list when no Phase 47 compiled function has registered a
+frame-local root vector."
+  (mapcar (lambda (frame) (list :kind 'aot-frame :value frame))
+          nelisp-gc--active-aot-frames))
+
 (defun nelisp-gc-root-set ()
   "Return the current NeLisp root set as a list of `(:kind K :value V)' plists.
 The set is recomputed on every call — call sites that scan repeatedly
@@ -61,6 +74,7 @@ Root categories (Phase 3c.1):
   `nelisp--macros'      — defmacro cells
   `nelisp--specials'    — dynamic-scope marker table
   `vm-stack'            — each active bytecode-VM state vector
+  `aot-frame'           — each active Phase 47 frame-local root vector
 
 specpdl is deliberately NOT a top-level root — it lives inside each
 VM state vector (slot 8) and is already reached via `vm-stack'.  JIT
@@ -68,7 +82,8 @@ closure constants pools are host-Elisp-reachable; re-walking them
 here would duplicate work the host GC already handles (design doc
 §2.2 decision A)."
   (append (nelisp-gc--globals-root)
-          (nelisp-gc--vm-stacks-root)))
+          (nelisp-gc--vm-stacks-root)
+          (nelisp-gc--aot-frames-root)))
 
 (defmacro nelisp-gc--with-active-vm (vm &rest body)
   "Execute BODY with VM pushed onto `nelisp-gc--active-vms'.
@@ -77,6 +92,16 @@ consistent with actual dispatch depth.  Called by `nelisp-bc-run'
 via bytecode.el to keep that file's external surface unchanged."
   (declare (indent 1))
   `(let ((nelisp-gc--active-vms (cons ,vm nelisp-gc--active-vms)))
+     ,@body))
+
+(defmacro nelisp-gc--with-active-aot-frame (roots &rest body)
+  "Execute BODY with ROOTS pushed onto `nelisp-gc--active-aot-frames'.
+ROOTS is normally a vector containing the live Sexp spill slots for
+one Phase 47 compiled frame.  Dynamic binding pops the frame on both
+normal and non-local exit."
+  (declare (indent 1))
+  `(let ((nelisp-gc--active-aot-frames
+          (cons ,roots nelisp-gc--active-aot-frames)))
      ,@body))
 
 ;;; Mark pass (Phase 3c.2) --------------------------------------------

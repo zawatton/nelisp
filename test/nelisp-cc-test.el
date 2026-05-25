@@ -38,6 +38,7 @@
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
 (require 'nelisp-cc-runtime)
+(require 'nelisp-gc)
 
 ;;; (1) entry block ---------------------------------------------------
 
@@ -1173,6 +1174,781 @@ exit points were emitted; call-points were missing."
                       sps)))
     ;; Two arithmetic primitives in the form ⇒ ≥ 2 call safe-points.
     (should (>= n-call-pts 2))))
+
+;;; (46b) AOT root-vector bridge for Doc 129.5C --------------------
+
+(ert-deftest nelisp-cc-runtime-aot-root-vector-from-slots ()
+  "Doc 129.5C — materialize a root vector from compiler slot metadata."
+  (let* ((root-a (cons 'aot 'a))
+         (root-b (vector 'aot 'b))
+         (frame (vector root-a 'non-root root-b))
+         (roots (nelisp-cc-runtime-aot-root-vector-from-slots
+                 frame '(0 2))))
+    (should (equal roots (vector root-a root-b)))))
+
+(ert-deftest nelisp-cc-runtime-call-with-aot-roots-registers-frame ()
+  "Doc 129.5C — the runtime call-boundary wrapper exposes AOT roots."
+  (let* ((root (cons 'aot 'live))
+         (roots (vector root))
+         (nelisp-gc--active-aot-frames nil)
+         (result
+          (nelisp-cc-runtime-call-with-aot-roots
+           roots
+           (lambda ()
+             (let* ((aot-roots
+                     (cl-remove-if-not
+                      (lambda (r) (eq (plist-get r :kind) 'aot-frame))
+                      (nelisp-gc-root-set)))
+                    (live (nelisp-gc-reachable-set)))
+               (should (= 1 (length aot-roots)))
+               (should (eq roots (plist-get (car aot-roots) :value)))
+               (should (gethash root live)))
+             'ok))))
+    (should (eq result 'ok))
+    (should (null nelisp-gc--active-aot-frames))))
+
+(ert-deftest nelisp-cc-runtime-aot-builtin-call1-host-dispatch ()
+  "Doc 129.6C — builtin call1 writes the dispatcher result to OUT."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-builtin-call1
+               'mirror 'frames 'symbol-name 'doc129 out 'scratch)))
+    (should (eq ret out))
+    (should (equal (aref out 0) "doc129"))))
+
+(ert-deftest nelisp-cc-runtime-aot-builtin-call1-host-unary-table ()
+  "Doc 129.6E — host dispatch covers representative unary builtins."
+  (let ((out (vector nil)))
+    (nelisp-cc-runtime-aot-builtin-call1
+     'mirror 'frames 'length '(a b c) out 'scratch)
+    (should (= (aref out 0) 3))
+    (nelisp-cc-runtime-aot-builtin-call1
+     'mirror 'frames 'car '(head tail) out 'scratch)
+    (should (eq (aref out 0) 'head))
+    (nelisp-cc-runtime-aot-builtin-call1
+     'mirror 'frames 'number-to-string 129 out 'scratch)
+    (should (equal (aref out 0) "129"))))
+
+(ert-deftest nelisp-cc-runtime-aot-builtin-call1-custom-dispatch ()
+  "Doc 129.6C — callers can inject the native/Doc99 dispatcher body."
+  (let* ((out (vector nil))
+         (events nil)
+         (ret (nelisp-cc-runtime-aot-builtin-call1
+               'mirror 'frames 'doc129-upper "abc" out 'scratch
+               (lambda (name arg context)
+                 (push (list name arg
+                             (plist-get context :mirror)
+                             (plist-get context :out))
+                       events)
+                 (upcase arg)))))
+    (should (eq ret out))
+    (should (equal (aref out 0) "ABC"))
+    (should (equal events
+                   `((doc129-upper "abc" mirror ,out))))))
+
+(ert-deftest nelisp-cc-runtime-aot-builtin-call1-validates-boundary ()
+  "Doc 129.6C — builtin call1 rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-builtin-call1
+    'mirror 'frames "symbol-name" 'x (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-builtin-call1
+    'mirror 'frames 'symbol-name 'x nil 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-builtin-call1
+    'mirror 'frames 'symbol-name 'x (vector nil) 'scratch :not-a-function)
+   :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall1-host-dispatch ()
+  "Doc 129.7A — funcall1 writes the dispatch result to OUT."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-funcall1
+               'mirror 'frames '1+ 40 out 'scratch)))
+    (should (eq ret out))
+    (should (= (aref out 0) 41))
+    (nelisp-cc-runtime-aot-funcall1
+     'mirror 'frames (lambda (x) (* x 2)) 21 out 'scratch)
+    (should (= (aref out 0) 42))))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall1-custom-dispatch ()
+  "Doc 129.7A — callers can inject the native/Doc99 funcall body."
+  (let* ((out (vector nil))
+         (events nil)
+         (ret (nelisp-cc-runtime-aot-funcall1
+               'mirror 'frames 'doc129-fn 7 out 'scratch
+               (lambda (fn arg context)
+                 (push (list fn arg
+                             (plist-get context :frames)
+                             (plist-get context :out))
+                       events)
+                 (+ arg 35)))))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (should (equal events
+                   `((doc129-fn 7 frames ,out))))))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall1-validates-boundary ()
+  "Doc 129.7A — funcall1 rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-funcall1
+    'mirror 'frames '1+ 1 nil 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcall1
+    'mirror 'frames '1+ 1 (vector nil) 'scratch :not-a-function)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcall1
+    'mirror 'frames 'nelisp-doc129-missing-fn 1 (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall2-host-dispatch ()
+  "Doc 129.7B — funcall2 writes the two-arg dispatch result to OUT."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-funcall2
+               'mirror 'frames '+ 19 23 out)))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (nelisp-cc-runtime-aot-funcall2
+     'mirror 'frames (lambda (a b) (concat a b)) "doc" "129" out)
+    (should (equal (aref out 0) "doc129"))))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall2-custom-dispatch ()
+  "Doc 129.7B — callers can inject the native/Doc99 funcall2 body."
+  (let* ((out (vector nil))
+         (events nil)
+         (ret (nelisp-cc-runtime-aot-funcall2
+               'mirror 'frames 'doc129-fn 20 22 out
+               (lambda (fn arg0 arg1 context)
+                 (push (list fn arg0 arg1
+                             (plist-get context :mirror)
+                             (plist-get context :out))
+                       events)
+                 (+ arg0 arg1)))))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (should (equal events
+                   `((doc129-fn 20 22 mirror ,out))))))
+
+(ert-deftest nelisp-cc-runtime-aot-funcall2-validates-boundary ()
+  "Doc 129.7B — funcall2 rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-funcall2
+    'mirror 'frames '+ 1 2 nil)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcall2
+    'mirror 'frames '+ 1 2 (vector nil) :not-a-function)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-funcall2
+    'mirror 'frames 'nelisp-doc129-missing-fn 1 2 (vector nil))
+   :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-aot-apply-host-dispatch ()
+  "Doc 129.7C — apply bridge writes the dispatch result to OUT."
+  (let* ((out (vector nil))
+         (ret (nelisp-cc-runtime-aot-apply
+               'mirror 'frames '+ '(19 23) out 'scratch)))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (nelisp-cc-runtime-aot-apply
+     'mirror 'frames (lambda (&rest xs) (mapconcat #'identity xs ":"))
+     '("doc" "129" "apply") out 'scratch)
+    (should (equal (aref out 0) "doc:129:apply"))))
+
+(ert-deftest nelisp-cc-runtime-aot-apply-custom-dispatch ()
+  "Doc 129.7C — callers can inject the native/Doc99 apply body."
+  (let* ((out (vector nil))
+         (events nil)
+         (ret (nelisp-cc-runtime-aot-apply
+               'mirror 'frames 'doc129-fn '(20 22) out 'scratch
+               (lambda (fn args-list context)
+                 (push (list fn args-list
+                             (plist-get context :scratch)
+                             (plist-get context :out))
+                       events)
+                 (apply #'+ args-list)))))
+    (should (eq ret out))
+    (should (= (aref out 0) 42))
+    (should (equal events
+                   `((doc129-fn (20 22) scratch ,out))))))
+
+(ert-deftest nelisp-cc-runtime-aot-apply-validates-boundary ()
+  "Doc 129.7C — apply bridge rejects malformed ABI arguments."
+  (should-error
+   (nelisp-cc-runtime-aot-apply
+    'mirror 'frames '+ '(1 2) nil 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-apply
+    'mirror 'frames '+ '(1 2) (vector nil) 'scratch :not-a-function)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-apply
+    'mirror 'frames '+ 1 (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-apply
+    'mirror 'frames 'nelisp-doc129-missing-fn '(1 2) (vector nil) 'scratch)
+   :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-aot-handler-stack-push-pop ()
+  "Doc 129.8A — handler stack push/pop is explicit and typed."
+  (unwind-protect
+      (progn
+        (nelisp-cc-runtime-aot-reset-handler-stack)
+        (nelisp-cc-runtime-aot-push-catch 'tag 'catch-pad 80)
+        (nelisp-cc-runtime-aot-push-condition 'error 'cc-pad 72)
+        (should (= (length (nelisp-cc-runtime-aot-handler-stack-snapshot))
+                   2))
+        (should (eq (plist-get (nelisp-cc-runtime-aot-pop-handler
+                                'condition)
+                               :landing-pad)
+                    'cc-pad))
+        (should (eq (plist-get (nelisp-cc-runtime-aot-pop-handler
+                                'catch)
+                               :tag)
+                    'tag))
+        (should-error (nelisp-cc-runtime-aot-pop-handler)
+                      :type 'nelisp-cc-runtime-error))
+    (nelisp-cc-runtime-aot-reset-handler-stack)))
+
+(ert-deftest nelisp-cc-runtime-aot-throw-runs-crossed-cleanups ()
+  "Doc 129.8A — throw unwinds through cleanup handlers to a catch pad."
+  (let ((events nil))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-aot-reset-handler-stack)
+          (nelisp-cc-runtime-aot-push-catch 'outer 'outer-pad 64)
+          (nelisp-cc-runtime-aot-push-condition 'error 'ignored-cc 56)
+          (nelisp-cc-runtime-aot-push-unwind
+           (lambda (ctx)
+             (push (list (plist-get ctx :reason)
+                         (plist-get ctx :tag)
+                         (plist-get ctx :value))
+                   events)
+             'cleanup-ok)
+           'cleanup-pad 48)
+          (let ((landing (nelisp-cc-runtime-aot-throw 'outer 42)))
+            (should (eq (plist-get landing :kind) 'catch))
+            (should (eq (plist-get landing :landing-pad) 'outer-pad))
+            (should (= (plist-get landing :saved-sp) 64))
+            (should (equal (plist-get landing :value) 42))
+            (should (equal (plist-get landing :cleanups)
+                           '(cleanup-ok)))))
+      (nelisp-cc-runtime-aot-reset-handler-stack))
+    (should (equal events '((throw outer 42))))
+    (should (null (nelisp-cc-runtime-aot-handler-stack-snapshot)))))
+
+(ert-deftest nelisp-cc-runtime-aot-signal-condition-handler ()
+  "Doc 129.8A — signal matches condition handlers and binds error data."
+  (let ((events nil))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-aot-reset-handler-stack)
+          (nelisp-cc-runtime-aot-push-condition
+           '(wrong-type-argument arith-error) 'handler-pad 40)
+          (nelisp-cc-runtime-aot-push-unwind
+           (lambda (ctx)
+             (push (list (plist-get ctx :reason)
+                         (plist-get ctx :tag)
+                         (plist-get ctx :data))
+                   events)
+             'signal-cleanup)
+           'cleanup-pad 32)
+          (let ((landing
+                 (nelisp-cc-runtime-aot-signal
+                  'wrong-type-argument '(integerp "x"))))
+            (should (eq (plist-get landing :kind) 'condition))
+            (should (eq (plist-get landing :landing-pad) 'handler-pad))
+            (should (equal (plist-get landing :error)
+                           '(wrong-type-argument integerp "x")))
+            (should (equal (plist-get landing :cleanups)
+                           '(signal-cleanup)))))
+      (nelisp-cc-runtime-aot-reset-handler-stack))
+    (should (equal events
+                   '((signal wrong-type-argument (integerp "x")))))))
+
+(ert-deftest nelisp-cc-runtime-aot-exception-validates-boundary ()
+  "Doc 129.8A — handler-stack helpers reject malformed inputs."
+  (unwind-protect
+      (progn
+        (nelisp-cc-runtime-aot-reset-handler-stack)
+        (should-error
+         (nelisp-cc-runtime-aot-push-condition '(error "bad") 'pad 0)
+         :type 'nelisp-cc-runtime-error)
+        (should-error
+         (nelisp-cc-runtime-aot-push-unwind :not-a-function 'pad 0)
+         :type 'nelisp-cc-runtime-error)
+        (should-error
+         (nelisp-cc-runtime-aot-signal "error" nil)
+         :type 'nelisp-cc-runtime-error)
+        (should-error
+         (nelisp-cc-runtime-aot-throw 'missing 1)
+         :type 'nelisp-cc-runtime-error))
+    (nelisp-cc-runtime-aot-reset-handler-stack)))
+
+(ert-deftest nelisp-cc-runtime-aot-throw-boundary ()
+  "Doc 129.8B — throw boundary bridge writes landing descriptor to OUT."
+  (unwind-protect
+      (let ((out (vector nil)))
+        (nelisp-cc-runtime-aot-reset-handler-stack)
+        (nelisp-cc-runtime-aot-push-catch 'tag 'catch-pad 88)
+        (should (eq (nelisp-cc-runtime-aot-throw-boundary
+                     'mirror 'frames 'tag 42 out 'scratch)
+                    out))
+        (let ((landing (aref out 0)))
+          (should (eq (plist-get landing :kind) 'catch))
+          (should (eq (plist-get landing :landing-pad) 'catch-pad))
+          (should (= (plist-get landing :saved-sp) 88))
+          (should (= (plist-get landing :value) 42))))
+    (nelisp-cc-runtime-aot-reset-handler-stack)))
+
+(ert-deftest nelisp-cc-runtime-aot-signal-boundary ()
+  "Doc 129.8B — signal boundary bridge writes landing descriptor to OUT."
+  (unwind-protect
+      (let ((out (vector nil)))
+        (nelisp-cc-runtime-aot-reset-handler-stack)
+        (nelisp-cc-runtime-aot-push-condition 'error 'cc-pad 72)
+        (should (eq (nelisp-cc-runtime-aot-signal-boundary
+                     'mirror 'frames 'arith-error '("bad") out 'scratch)
+                    out))
+        (let ((landing (aref out 0)))
+          (should (eq (plist-get landing :kind) 'condition))
+          (should (eq (plist-get landing :landing-pad) 'cc-pad))
+          (should (equal (plist-get landing :error)
+                         '(arith-error "bad")))))
+    (nelisp-cc-runtime-aot-reset-handler-stack)))
+
+(ert-deftest nelisp-cc-runtime-aot-exception-boundary-custom-dispatch ()
+  "Doc 129.8B — callers can inject native throw/signal bridge bodies."
+  (let ((throw-out (vector nil))
+        (signal-out (vector nil))
+        (events nil))
+    (should (eq (nelisp-cc-runtime-aot-throw-boundary
+                 'mirror 'frames 'tag 7 throw-out 'scratch
+                 (lambda (tag value context)
+                   (push (list :throw tag value
+                               (plist-get context :scratch))
+                         events)
+                   (list :kind 'catch :value value)))
+                throw-out))
+    (should (equal (aref throw-out 0)
+                   '(:kind catch :value 7)))
+    (should (eq (nelisp-cc-runtime-aot-signal-boundary
+                 'mirror 'frames 'error '("x") signal-out 'scratch
+                 (lambda (tag data context)
+                   (push (list :signal tag data
+                               (plist-get context :out))
+                         events)
+                   (list :kind 'condition :error (cons tag data))))
+                signal-out))
+    (should (equal (aref signal-out 0)
+                   '(:kind condition :error (error "x"))))
+    (should (equal events
+                   `((:signal error ("x") ,signal-out)
+                     (:throw tag 7 scratch))))))
+
+(ert-deftest nelisp-cc-runtime-aot-exception-boundary-validates ()
+  "Doc 129.8B — throw/signal boundary bridges reject malformed inputs."
+  (should-error
+   (nelisp-cc-runtime-aot-throw-boundary
+    'mirror 'frames 'tag 1 nil 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-throw-boundary
+    'mirror 'frames 'tag 1 (vector nil) 'scratch :not-a-function)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-signal-boundary
+    'mirror 'frames 'error nil nil 'scratch)
+   :type 'nelisp-cc-runtime-error)
+  (should-error
+   (nelisp-cc-runtime-aot-signal-boundary
+    'mirror 'frames 'error nil (vector nil) 'scratch :not-a-function)
+   :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-aot-push-handler-boundaries ()
+  "Doc 129.8C — push handler bridges install stack records."
+  (let ((cleanup (lambda (_ctx) :cleanup)))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-aot-reset-handler-stack)
+          (nelisp-cc-runtime-aot-push-catch-boundary
+           'mirror 'frames 'tag 'catch-pad 96 'scratch)
+          (nelisp-cc-runtime-aot-push-condition-boundary
+           'mirror 'frames '(error arith-error) 'cc-pad 88 'scratch)
+          (nelisp-cc-runtime-aot-push-unwind-boundary
+           'mirror 'frames cleanup 'cleanup-pad 80 'scratch)
+          (let ((stack (nelisp-cc-runtime-aot-handler-stack-snapshot)))
+            (should (= (length stack) 3))
+            (should (eq (plist-get (nth 0 stack) :kind) 'unwind))
+            (should (eq (plist-get (nth 1 stack) :kind) 'condition))
+            (should (eq (plist-get (nth 2 stack) :kind) 'catch))
+            (should (eq (plist-get (nth 2 stack) :landing-pad)
+                        'catch-pad))))
+      (nelisp-cc-runtime-aot-reset-handler-stack))))
+
+(ert-deftest nelisp-cc-runtime-aot-push-handler-boundary-custom-dispatch ()
+  "Doc 129.8C — push handler bridges accept injected native bodies."
+  (let ((events nil))
+    (should (equal
+             (nelisp-cc-runtime-aot-push-catch-boundary
+              'mirror 'frames 'tag 'pad 64 'scratch
+              (lambda (tag landing saved context)
+                (push (list tag landing saved
+                            (plist-get context :scratch))
+                      events)
+                (list :ok tag landing saved)))
+             '(:ok tag pad 64)))
+    (should (equal events '((tag pad 64 scratch))))))
+
+(ert-deftest nelisp-cc-runtime-aot-push-handler-boundary-validates ()
+  "Doc 129.8C — push handler bridges reject malformed inputs."
+  (unwind-protect
+      (progn
+        (nelisp-cc-runtime-aot-reset-handler-stack)
+        (should-error
+         (nelisp-cc-runtime-aot-push-catch-boundary
+          'mirror 'frames 'tag 'pad 64 'scratch :not-a-function)
+         :type 'nelisp-cc-runtime-error)
+        (should-error
+         (nelisp-cc-runtime-aot-push-condition-boundary
+          'mirror 'frames '(error "bad") 'pad 64 'scratch)
+         :type 'nelisp-cc-runtime-error)
+        (should-error
+         (nelisp-cc-runtime-aot-push-unwind-boundary
+          'mirror 'frames :not-a-function 'pad 64 'scratch)
+         :type 'nelisp-cc-runtime-error))
+    (nelisp-cc-runtime-aot-reset-handler-stack)))
+
+(ert-deftest nelisp-cc-runtime-aot-pop-handler-boundary ()
+  "Doc 129.8D — pop handler bridge writes the popped descriptor to OUT."
+  (unwind-protect
+      (let ((out (vector nil)))
+        (nelisp-cc-runtime-aot-reset-handler-stack)
+        (nelisp-cc-runtime-aot-push-catch 'tag 'pad 64)
+        (should (eq (nelisp-cc-runtime-aot-pop-handler-boundary
+                     'mirror 'frames 'catch out 'scratch)
+                    out))
+        (should (eq (plist-get (aref out 0) :kind) 'catch))
+        (should (null (nelisp-cc-runtime-aot-handler-stack-snapshot))))
+    (nelisp-cc-runtime-aot-reset-handler-stack)))
+
+(ert-deftest nelisp-cc-runtime-aot-pop-handler-boundary-custom-dispatch ()
+  "Doc 129.8D — pop handler bridge accepts an injected native body."
+  (let ((out (vector nil))
+        (events nil))
+    (should (eq (nelisp-cc-runtime-aot-pop-handler-boundary
+                 'mirror 'frames 'catch out 'scratch
+                 (lambda (expected-kind context)
+                   (push (list expected-kind
+                               (plist-get context :scratch))
+                         events)
+                   (list :kind expected-kind :native t)))
+                out))
+    (should (equal (aref out 0)
+                   '(:kind catch :native t)))
+    (should (equal events '((catch scratch))))))
+
+(ert-deftest nelisp-cc-runtime-aot-pop-handler-boundary-validates ()
+  "Doc 129.8D — pop handler bridge rejects malformed inputs."
+  (unwind-protect
+      (progn
+        (nelisp-cc-runtime-aot-reset-handler-stack)
+        (should-error
+         (nelisp-cc-runtime-aot-pop-handler-boundary
+          'mirror 'frames 'catch nil 'scratch)
+         :type 'nelisp-cc-runtime-error)
+        (should-error
+         (nelisp-cc-runtime-aot-pop-handler-boundary
+          'mirror 'frames 'catch (vector nil) 'scratch :not-a-function)
+         :type 'nelisp-cc-runtime-error)
+        (nelisp-cc-runtime-aot-push-catch 'tag 'pad 64)
+        (should-error
+         (nelisp-cc-runtime-aot-pop-handler-boundary
+          'mirror 'frames 'condition (vector nil) 'scratch)
+         :type 'nelisp-cc-runtime-error))
+    (nelisp-cc-runtime-aot-reset-handler-stack)))
+
+(ert-deftest nelisp-cc-runtime-aot-module-init-plan ()
+  "Doc 129.3H — runtime normalizes compiler metadata for Doc 99."
+  (let* ((init-helpers
+          '((:kind defvar
+             :name x
+             :helper nelisp_aot_var_0_x
+             :index 0)
+            (:kind defcustom
+             :name z
+             :helper nelisp_aot_custom_1_z
+             :index 1)))
+         (custom-metadata
+          '((:name z
+             :helper nelisp_aot_custom_1_z
+             :standard 9
+             :docstring "doc"
+             :options (:type (quote integer)))))
+         (root-descriptors
+          '((:name make-str
+             :slots (0)
+             :param-count 1
+             :rt-slot-count 0)))
+         (plan
+          (nelisp-cc-runtime-aot-module-init-plan
+           init-helpers custom-metadata root-descriptors)))
+    (should (equal (plist-get plan :helper-order)
+                   '(nelisp_aot_var_0_x nelisp_aot_custom_1_z)))
+    (should (equal (plist-get plan :init-helpers) init-helpers))
+    (should (equal (plist-get plan :custom-by-helper)
+                   `((nelisp_aot_custom_1_z . ,(car custom-metadata)))))
+    (should (equal (plist-get plan :root-descriptors)
+                   root-descriptors))))
+
+(ert-deftest nelisp-cc-runtime-aot-module-init-plan-rejects-orphan-custom ()
+  "Doc 129.3H — custom metadata must point at an emitted init helper."
+  (should-error
+   (nelisp-cc-runtime-aot-module-init-plan
+    '((:kind defvar
+       :name x
+       :helper nelisp_aot_var_0_x
+       :index 0))
+    '((:name z
+       :helper nelisp_aot_custom_1_z
+       :standard 9
+       :docstring "doc"
+       :options nil)))
+   :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-run-aot-module-init-plan ()
+  "Doc 129.3I — runtime executes init helpers in module-plan order."
+  (let* ((init-helpers
+          '((:kind defvar
+             :name x
+             :helper nelisp_aot_var_0_x
+             :index 0)
+            (:kind defcustom
+             :name z
+             :helper nelisp_aot_custom_1_z
+             :index 1)))
+         (custom-metadata
+          '((:name z
+             :helper nelisp_aot_custom_1_z
+             :standard 9
+             :docstring "doc"
+             :options (:type (quote integer)))))
+         (plan (nelisp-cc-runtime-aot-module-init-plan
+                init-helpers custom-metadata nil))
+         (context (list :out 'out-slot
+                        :mirror 'mirror
+                        :frames 'frames
+                        :scratch 'scratch
+                        :name-slot 'name-slot))
+         (events nil)
+         (result
+          (nelisp-cc-runtime-run-aot-module-init-plan
+           plan context
+           (lambda (helper ctx descriptor)
+             (push (list :call helper
+                         (plist-get ctx :out)
+                         (plist-get descriptor :kind))
+                   events)
+             (list :ok helper))
+           (lambda (custom ctx descriptor)
+             (push (list :custom
+                         (plist-get custom :name)
+                         (plist-get ctx :name-slot)
+                         (plist-get descriptor :helper))
+                   events)
+             :registered))))
+    (should (equal (nreverse events)
+                   '((:call nelisp_aot_var_0_x out-slot defvar)
+                     (:call nelisp_aot_custom_1_z out-slot defcustom)
+                     (:custom z name-slot nelisp_aot_custom_1_z))))
+    (should (equal (plist-get result :init-results)
+                   '((nelisp_aot_var_0_x . (:ok nelisp_aot_var_0_x))
+                     (nelisp_aot_custom_1_z . (:ok nelisp_aot_custom_1_z)))))
+    (should (equal (plist-get result :custom-results)
+                   '((nelisp_aot_custom_1_z . :registered))))))
+
+(ert-deftest nelisp-cc-runtime-run-aot-module-init-plan-requires-context ()
+  "Doc 129.3I — init execution requires all boundary context slots."
+  (let ((plan (nelisp-cc-runtime-aot-module-init-plan
+               '((:kind defvar
+                  :name x
+                  :helper nelisp_aot_var_0_x
+                  :index 0)))))
+    (should-error
+     (nelisp-cc-runtime-run-aot-module-init-plan
+      plan
+      (list :out 'out
+            :mirror 'mirror
+            :frames 'frames
+            :scratch 'scratch)
+      (lambda (_helper _context _descriptor) :ok))
+     :type 'nelisp-cc-runtime-error)))
+
+(ert-deftest nelisp-cc-runtime-aot-custom-table-default-registration ()
+  "Doc 129.3J — module init stores defcustom metadata by default."
+  (let* ((custom-metadata
+          '((:name z
+             :helper nelisp_aot_custom_0_z
+             :standard 9
+             :docstring "doc"
+             :options (:type (quote integer)))))
+         (plan (nelisp-cc-runtime-aot-module-init-plan
+                '((:kind defcustom
+                   :name z
+                   :helper nelisp_aot_custom_0_z
+                   :index 0))
+                custom-metadata nil))
+         (context (list :out 'out-slot
+                        :mirror 'mirror
+                        :frames 'frames
+                        :scratch 'scratch
+                        :name-slot 'name-slot)))
+    (unwind-protect
+        (progn
+          (nelisp-cc-runtime-clear-aot-custom-table)
+          (let ((result
+                 (nelisp-cc-runtime-run-aot-module-init-plan
+                  plan context
+                  (lambda (_helper _ctx _descriptor) :ok)))
+                (expected
+                 '(:name z
+                   :helper nelisp_aot_custom_0_z
+                   :standard 9
+                   :docstring "doc"
+                   :options (:type (quote integer))
+                   :init-index 0
+                   :init-kind defcustom)))
+            (should (equal (plist-get result :custom-results)
+                           `((nelisp_aot_custom_0_z . ,expected))))
+            (should (equal (nelisp-cc-runtime-aot-custom-metadata 'z)
+                           expected))
+            (should (equal (nelisp-cc-runtime-aot-custom-table-snapshot)
+                           (list expected)))
+            (should-not (plist-member
+                         (nelisp-cc-runtime-aot-custom-metadata 'z)
+                         :out))))
+      (nelisp-cc-runtime-clear-aot-custom-table))))
+
+(ert-deftest nelisp-cc-runtime-register-aot-custom-metadata-rejects-mismatch ()
+  "Doc 129.3J — custom metadata must match the helper descriptor."
+  (should-error
+   (nelisp-cc-runtime-register-aot-custom-metadata
+    '(:name z
+      :helper nelisp_aot_custom_0_z
+      :standard 9
+      :docstring "doc"
+      :options nil)
+    nil
+    '(:kind defcustom
+      :name other
+      :helper nelisp_aot_custom_0_z
+      :index 0))
+   :type 'nelisp-cc-runtime-error))
+
+(ert-deftest nelisp-cc-runtime-resolve-aot-init-helper ()
+  "Doc 129.3K — AOT init helpers resolve through the runtime resolver."
+  (let* ((descriptor '(:kind defvar
+                       :name x
+                       :helper nelisp_aot_var_0_x
+                       :index 0))
+         (resolution
+          (nelisp-cc-runtime-resolve-aot-init-helper
+           descriptor
+           (lambda (symbol)
+             (should (eq symbol 'nelisp_aot_var_0_x))
+             (cons :resolved #x400010)))))
+    (should (equal resolution
+                   (list :helper 'nelisp_aot_var_0_x
+                         :status :resolved
+                         :addr #x400010
+                         :descriptor descriptor)))))
+
+(ert-deftest nelisp-cc-runtime-call-aot-init-helper-host-stub ()
+  "Doc 129.3K — host Emacs can inspect unresolved init helper calls."
+  (let* ((descriptor '(:kind defvar
+                       :name x
+                       :helper nelisp_aot_var_0_x
+                       :index 0))
+         (context (list :out 'out
+                        :mirror 'mirror
+                        :frames 'frames
+                        :scratch 'scratch
+                        :name-slot 'name-slot))
+         (resolution
+          (let ((nelisp-cc-runtime-resolve-symbol-function nil))
+            (nelisp-cc-runtime-call-aot-init-helper
+             'nelisp_aot_var_0_x context descriptor))))
+    (should (eq (plist-get resolution :status) :host-stub))
+    (should (= (plist-get resolution :addr)
+               nelisp-cc-runtime--resolve-symbol-stub-addr))))
+
+(ert-deftest nelisp-cc-runtime-aot-init-helper-caller-native-call ()
+  "Doc 129.3K — standard call-helper resolves then invokes native callback."
+  (let* ((init-helpers
+          '((:kind defvar
+             :name x
+             :helper nelisp_aot_var_0_x
+             :index 0)
+            (:kind defconst
+             :name y
+             :helper nelisp_aot_const_1_y
+             :index 1)))
+         (plan (nelisp-cc-runtime-aot-module-init-plan init-helpers nil nil))
+         (context (list :out 'out
+                        :mirror 'mirror
+                        :frames 'frames
+                        :scratch 'scratch
+                        :name-slot 'name-slot))
+         (seen nil)
+         (caller
+          (nelisp-cc-runtime-aot-init-helper-caller
+           (lambda (resolution ctx descriptor)
+             (push (list (plist-get resolution :helper)
+                         (plist-get resolution :addr)
+                         (plist-get ctx :name-slot)
+                         (plist-get descriptor :kind))
+                   seen)
+             (list :called (plist-get resolution :addr)))
+           (lambda (symbol)
+             (pcase symbol
+               ('nelisp_aot_var_0_x (cons :resolved #x401000))
+               ('nelisp_aot_const_1_y (cons :resolved #x402000))
+               (_ (cons :not-found nil))))))
+         (result
+          (nelisp-cc-runtime-run-aot-module-init-plan
+           plan context caller)))
+    (should (equal (nreverse seen)
+                   '((nelisp_aot_var_0_x #x401000 name-slot defvar)
+                     (nelisp_aot_const_1_y #x402000 name-slot defconst))))
+    (should (equal (plist-get result :init-results)
+                   '((nelisp_aot_var_0_x . (:called #x401000))
+                     (nelisp_aot_const_1_y . (:called #x402000)))))))
+
+(ert-deftest nelisp-cc-runtime-aot-init-helper-caller-rejects-not-found ()
+  "Doc 129.3K — missing native helper symbols fail before native call."
+  (let ((descriptor '(:kind defvar
+                      :name x
+                      :helper nelisp_aot_var_0_x
+                      :index 0))
+        (context (list :out 'out
+                       :mirror 'mirror
+                       :frames 'frames
+                       :scratch 'scratch
+                       :name-slot 'name-slot)))
+    (should-error
+     (nelisp-cc-runtime-call-aot-init-helper
+      'nelisp_aot_var_0_x
+      context
+      descriptor
+      (lambda (_resolution _context _descriptor)
+        (ert-fail "native callback should not run"))
+      (lambda (_symbol) (cons :not-found nil)))
+     :type 'nelisp-cc-runtime-error)))
 
 ;;; (47) fib body lowers without spill collision -------------------
 

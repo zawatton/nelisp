@@ -73,49 +73,53 @@ Caller is responsible for `delete-file' on cleanup."
 (ert-deftest nelisp-phase47-compiler/parse-exit-literal ()
   "Parse `(exit 0)' to an exit IR wrapping an imm value node."
   (let ((ir (nelisp-phase47-compiler--parse '(exit 0))))
-    (should (eq (plist-get ir :kind) 'exit))
-    (let ((v (plist-get ir :value)))
-      (should (eq (plist-get v :kind) 'imm))
-      (should (= (plist-get v :value) 0)))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'exit))
+    (let ((v (nelisp-phase47-compiler--ir-get ir :value)))
+      (should (eq (nelisp-phase47-compiler--ir-kind v) 'imm))
+      (should (= (nelisp-phase47-compiler--ir-get v :value) 0)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-write-literal ()
   "Parse `(write \"hi\")' to a write IR node."
   (let ((ir (nelisp-phase47-compiler--parse '(write "hi"))))
-    (should (eq (plist-get ir :kind) 'write))
-    (should (equal (plist-get ir :str) "hi"))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'write))
+    (should (equal (nelisp-phase47-compiler--ir-get ir :str) "hi"))))
 
 (ert-deftest nelisp-phase47-compiler/parse-seq ()
   "Parse a `seq' of two children into nested IR."
   (let ((ir (nelisp-phase47-compiler--parse
              '(seq (write "x") (exit 0)))))
-    (should (eq (plist-get ir :kind) 'seq))
-    (should (= (length (plist-get ir :forms)) 2))
-    (should (eq (plist-get (car (plist-get ir :forms)) :kind) 'write))
-    (should (eq (plist-get (cadr (plist-get ir :forms)) :kind) 'exit))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (= (length (nelisp-phase47-compiler--ir-get ir :forms)) 2))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (car (nelisp-phase47-compiler--ir-get ir :forms)))
+                'write))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (cadr (nelisp-phase47-compiler--ir-get ir :forms)))
+                'exit))))
 
 (ert-deftest nelisp-phase47-compiler/parse-let-arith-fold ()
   "Parse `(let ((x (+ 3 4))) (exit x))' folds arith + lookup."
   (let ((ir (nelisp-phase47-compiler--parse
              '(let ((x (+ 3 4))) (exit x)))))
-    (should (eq (plist-get ir :kind) 'let))
-    (should (eq (plist-get ir :var) 'x))
-    (should (= (plist-get ir :value) 7))
-    (let* ((body (plist-get ir :body))
-           (vnode (plist-get body :value)))
-      (should (eq (plist-get body :kind) 'exit))
-      (should (eq (plist-get vnode :kind) 'imm))
-      (should (= (plist-get vnode :value) 7)))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'let))
+    (should (eq (nelisp-phase47-compiler--ir-get ir :var) 'x))
+    (should (= (nelisp-phase47-compiler--ir-get ir :value) 7))
+    (let* ((body (nelisp-phase47-compiler--ir-get ir :body))
+           (vnode (nelisp-phase47-compiler--ir-get body :value)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'exit))
+      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm))
+      (should (= (nelisp-phase47-compiler--ir-get vnode :value) 7)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-nested-let-arith ()
   "Nested let + chained arithmetic resolves to a single integer."
   (let ((ir (nelisp-phase47-compiler--parse
              '(let ((a 2)) (let ((b (* a 5))) (exit (+ b 1)))))))
-    (should (eq (plist-get ir :kind) 'let))
-    (let* ((body (plist-get ir :body))
-           (inner (plist-get body :body))
-           (vnode (plist-get inner :value)))
-      (should (eq (plist-get vnode :kind) 'imm))
-      (should (= (plist-get vnode :value) 11)))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'let))
+    (let* ((body (nelisp-phase47-compiler--ir-get ir :body))
+           (inner (nelisp-phase47-compiler--ir-get body :body))
+           (vnode (nelisp-phase47-compiler--ir-get inner :value)))
+      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm))
+      (should (= (nelisp-phase47-compiler--ir-get vnode :value) 11)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-free-symbol-errors ()
   "A free symbol reference signals `nelisp-phase47-compiler-error'."
@@ -134,6 +138,40 @@ Caller is responsible for `delete-file' on cleanup."
   (should-error
    (nelisp-phase47-compiler--parse '(exit 300))
    :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-compiler/parse-doc129-when-macro ()
+  "Doc 129.1: host `when' macro expands to Phase 47 `if'."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(exit (when (= 1 1) 7))))
+         (vnode (nelisp-phase47-compiler--ir-get ir :value)))
+    (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'if))
+    (should (= (nelisp-phase47-compiler--ir-get
+                (nelisp-phase47-compiler--ir-get vnode :else) :value)
+               0))))
+
+(ert-deftest nelisp-phase47-compiler/parse-doc129-let*-desugar ()
+  "Doc 129.1: `let*' desugars to nested Phase 47 `let' forms."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(let* ((a 2) (b (+ a 5))) (exit b))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (exit-node (nelisp-phase47-compiler--ir-get body :body))
+         (exit-value (nelisp-phase47-compiler--ir-get exit-node :value)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'let))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let))
+    (should (= (nelisp-phase47-compiler--ir-get exit-value :value) 7))))
+
+(ert-deftest nelisp-phase47-compiler/parse-doc129-top-level-defmacro ()
+  "Doc 129.1: top-level `defmacro' is compile-time-only."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq
+                (defmacro inc (x) (list '+ x 1))
+                (exit (inc 6)))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (exit-node (car forms))
+         (vnode (nelisp-phase47-compiler--ir-get exit-node :value)))
+    (should (= (length forms) 1))
+    (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm))
+    (should (= (nelisp-phase47-compiler--ir-get vnode :value) 7))))
 
 ;; ---- §T.2 emit / byte-length tests ----
 
@@ -243,6 +281,24 @@ Caller is responsible for `delete-file' on cleanup."
             (should (= (plist-get result :exit) 3))))
       (when (file-exists-p path) (delete-file path)))))
 
+(ert-deftest nelisp-phase47-compiler/e2e-doc129-macroexpand-front ()
+  "Doc 129.1: compile host macros and `let*' after frontend expansion."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (let ((path (nelisp-phase47-compiler-test--tmp-binary "doc129-macro")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-sexp
+           '(seq
+             (defmacro inc (x) (list '+ x 1))
+             (let* ((a 3)
+                    (b (inc a)))
+               (exit (unless (= b 0) b))))
+           path)
+          (let ((result (nelisp-phase47-compiler-test--run-binary path)))
+            (should (= (plist-get result :exit) 4))))
+      (when (file-exists-p path) (delete-file path)))))
+
 (ert-deftest nelisp-phase47-compiler/e2e-multi-write ()
   "Compile two-write seq, observe concatenated stdout + exit 0."
   (unless (nelisp-phase47-compiler-test--linux-p)
@@ -285,23 +341,42 @@ Caller is responsible for `delete-file' on cleanup."
 (ert-deftest nelisp-phase47-compiler/parse-defun-zero-arg ()
   "Parse `(defun seven () 7)' to a defun IR node with no params."
   (let ((ir (nelisp-phase47-compiler--parse '(defun seven () 7))))
-    (should (eq (plist-get ir :kind) 'defun))
-    (should (eq (plist-get ir :name) 'seven))
-    (should (null (plist-get ir :params)))
-    (should (null (plist-get ir :param-regs)))
-    (let ((body (plist-get ir :body)))
-      (should (eq (plist-get body :kind) 'imm))
-      (should (= (plist-get body :value) 7)))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-get ir :name) 'seven))
+    (should (null (nelisp-phase47-compiler--ir-get ir :params)))
+    (should (null (nelisp-phase47-compiler--ir-get ir :param-regs)))
+    (let ((body (nelisp-phase47-compiler--ir-get ir :body)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
+      (should (= (nelisp-phase47-compiler--ir-get body :value) 7)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-defun-param-ref ()
   "Parse `(defun id (x) x)' — body becomes a `:kind ref' node."
   (let ((ir (nelisp-phase47-compiler--parse '(defun id (x) x))))
-    (should (eq (plist-get ir :kind) 'defun))
-    (should (equal (plist-get ir :params) '(x)))
-    (should (equal (plist-get ir :param-regs) '(rdi)))
-    (let ((body (plist-get ir :body)))
-      (should (eq (plist-get body :kind) 'ref))
-      (should (eq (plist-get body :reg) 'rdi)))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get ir :params) '(x)))
+    (should (equal (nelisp-phase47-compiler--ir-get ir :param-regs) '(rdi)))
+    (let ((body (nelisp-phase47-compiler--ir-get ir :body)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'ref))
+      (should (eq (nelisp-phase47-compiler--ir-get body :reg) 'rdi)))))
+
+(ert-deftest nelisp-phase47-compiler/parse-doc129-sexp-param-root-map ()
+  "Doc 129.5A: `:type sexp' params become static GC root slots when allocating."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun make-str ((slot :type sexp) bytes len)
+                 (sexp-write-str slot bytes len))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (slot-ref (nelisp-phase47-compiler--ir-get body :slot))
+         (bytes-ref (nelisp-phase47-compiler--ir-get body :bytes-ptr)))
+    (should (eq (nelisp-phase47-compiler--ir-get ir :param-class) 'gp))
+    (should (equal (nelisp-phase47-compiler--ir-get ir :gc-root-slots) '(0)))
+    (should (nelisp-phase47-compiler--ir-get slot-ref :root-p))
+    (should-not (nelisp-phase47-compiler--ir-get bytes-ref :root-p))))
+
+(ert-deftest nelisp-phase47-compiler/parse-doc129-no-allocation-no-root-map ()
+  "Doc 129.5A: annotated Sexp refs do not create a root map without allocation."
+  (let ((ir (nelisp-phase47-compiler--parse
+             '(defun tag-of ((x :type sexp)) (sexp-tag x)))))
+    (should (null (nelisp-phase47-compiler--ir-get ir :gc-root-slots)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-defun-too-many-params ()
   "Defun with > 6 params signals (= 7+ args deferred to Doc 97.c)."
@@ -321,23 +396,27 @@ Caller is responsible for `delete-file' on cleanup."
   "Parse `(+ a b)' inside a defun yields a `:kind arith' node."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun add (a b) (+ a b))))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get body :kind) 'arith))
-    (should (eq (plist-get body :op) '+))
-    (should (eq (plist-get (plist-get body :a) :kind) 'ref))
-    (should (eq (plist-get (plist-get body :b) :kind) 'ref))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
+    (should (eq (nelisp-phase47-compiler--ir-get body :op) '+))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (nelisp-phase47-compiler--ir-get body :a))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (nelisp-phase47-compiler--ir-get body :b))
+                'ref))))
 
 (ert-deftest nelisp-phase47-compiler/parse-call-in-exit ()
   "Parse `(exit (id 7))' yields an exit IR wrapping a call value."
   (let ((ir (nelisp-phase47-compiler--parse
              '(seq (defun id (x) x) (exit (id 7))))))
-    (should (eq (plist-get ir :kind) 'seq))
-    (let* ((forms (plist-get ir :forms))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (let* ((forms (nelisp-phase47-compiler--ir-get ir :forms))
            (exit-node (nth 1 forms))
-           (vnode (plist-get exit-node :value)))
-      (should (eq (plist-get exit-node :kind) 'exit))
-      (should (eq (plist-get vnode :kind) 'call))
-      (should (eq (plist-get vnode :name) 'id)))))
+           (vnode (nelisp-phase47-compiler--ir-get exit-node :value)))
+      (should (eq (nelisp-phase47-compiler--ir-kind exit-node) 'exit))
+      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'call))
+      (should (eq (nelisp-phase47-compiler--ir-get vnode :name) 'id)))))
 
 (ert-deftest nelisp-phase47-compiler/collect-defuns ()
   "`--collect-defuns' extracts every defun in encounter order."
@@ -345,8 +424,8 @@ Caller is responsible for `delete-file' on cleanup."
               '(seq (defun a () 1) (defun b (x) x) (exit (a)))))
          (defuns (nelisp-phase47-compiler--collect-defuns ir)))
     (should (= (length defuns) 2))
-    (should (eq (plist-get (nth 0 defuns) :name) 'a))
-    (should (eq (plist-get (nth 1 defuns) :name) 'b))))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 0 defuns) :name) 'a))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 1 defuns) :name) 'b))))
 
 (ert-deftest nelisp-phase47-compiler/parse-duplicate-defun-errors ()
   "Two `(defun NAME ...)` with the same name signals."
@@ -486,18 +565,18 @@ Caller is responsible for `delete-file' on cleanup."
   (dolist (op '(logior logand logxor))
     (let* ((ir (nelisp-phase47-compiler--parse
                 (list 'defun 'f '(a b) (list op 'a 'b))))
-           (body (plist-get ir :body)))
-      (should (eq (plist-get body :kind) 'arith))
-      (should (eq (plist-get body :op) op)))))
+           (body (nelisp-phase47-compiler--ir-get ir :body)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
+      (should (eq (nelisp-phase47-compiler--ir-get body :op) op)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-shift-ops ()
   "`(shl N C)' / `(sar N C)' parse to a `:kind shift' node."
   (dolist (op '(shl sar))
     (let* ((ir (nelisp-phase47-compiler--parse
                 (list 'defun 'f '(n c) (list op 'n 'c))))
-           (body (plist-get ir :body)))
-      (should (eq (plist-get body :kind) 'shift))
-      (should (eq (plist-get body :op) op)))))
+           (body (nelisp-phase47-compiler--ir-get ir :body)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'shift))
+      (should (eq (nelisp-phase47-compiler--ir-get body :op) op)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-shift-arity ()
   "Shift with wrong arg count signals."
@@ -575,20 +654,26 @@ Caller is responsible for `delete-file' on cleanup."
 (ert-deftest nelisp-phase47-compiler/parse-if-imm-branches ()
   "Parse `(if 1 7 9)' to an if IR node with imm THEN/ELSE."
   (let ((ir (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
-    (let* ((vnode (plist-get ir :value)))
-      (should (eq (plist-get vnode :kind) 'if))
-      (should (eq (plist-get (plist-get vnode :test) :kind) 'imm))
-      (should (= (plist-get (plist-get vnode :then) :value) 7))
-      (should (= (plist-get (plist-get vnode :else) :value) 9)))))
+    (let* ((vnode (nelisp-phase47-compiler--ir-get ir :value)))
+      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'if))
+      (should (eq (nelisp-phase47-compiler--ir-kind
+                   (nelisp-phase47-compiler--ir-get vnode :test))
+                  'imm))
+      (should (= (nelisp-phase47-compiler--ir-get
+                  (nelisp-phase47-compiler--ir-get vnode :then) :value)
+                 7))
+      (should (= (nelisp-phase47-compiler--ir-get
+                  (nelisp-phase47-compiler--ir-get vnode :else) :value)
+                 9)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-cmp-ops ()
   "Each of `< > <= >= =' parses to a `:kind cmp' node with right op."
   (dolist (op '(< > <= >= =))
     (let* ((ir (nelisp-phase47-compiler--parse
                 (list 'exit (list op 3 5))))
-           (vnode (plist-get ir :value)))
-      (should (eq (plist-get vnode :kind) 'cmp))
-      (should (eq (plist-get vnode :op) op)))))
+           (vnode (nelisp-phase47-compiler--ir-get ir :value)))
+      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'cmp))
+      (should (eq (nelisp-phase47-compiler--ir-get vnode :op) op)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-cmp-arity ()
   "Comparison with wrong arg count signals."
@@ -600,20 +685,20 @@ Caller is responsible for `delete-file' on cleanup."
   "`(while T B1 B2 B3)' captures all three body forms."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(seq (while 1 0 0 0) (exit 0))))
-         (forms (plist-get ir :forms))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
          (while-node (car forms)))
-    (should (eq (plist-get while-node :kind) 'while))
-    (should (= (length (plist-get while-node :body)) 3))))
+    (should (eq (nelisp-phase47-compiler--ir-kind while-node) 'while))
+    (should (= (length (nelisp-phase47-compiler--ir-get while-node :body)) 3))))
 
 (ert-deftest nelisp-phase47-compiler/parse-cond-clauses ()
   "`(cond (P1 B1) (t B2))' parses with `always' sentinel."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(exit (cond ((= 1 2) 9) (t 5)))))
-         (vnode (plist-get ir :value))
-         (clauses (plist-get vnode :clauses)))
-    (should (eq (plist-get vnode :kind) 'cond))
+         (vnode (nelisp-phase47-compiler--ir-get ir :value))
+         (clauses (nelisp-phase47-compiler--ir-get vnode :clauses)))
+    (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'cond))
     (should (= (length clauses) 2))
-    (should (eq (plist-get (car (car clauses)) :kind) 'cmp))
+    (should (eq (nelisp-phase47-compiler--ir-kind (car (car clauses))) 'cmp))
     (should (eq (car (cadr clauses)) 'always))))
 
 (ert-deftest nelisp-phase47-compiler/parse-cond-empty-errors ()
@@ -626,9 +711,15 @@ Caller is responsible for `delete-file' on cleanup."
   "`(and 1 2)' and `(or 0 5)' both parse to `:kind logic' nodes."
   (let* ((ir1 (nelisp-phase47-compiler--parse '(exit (and 1 2))))
          (ir2 (nelisp-phase47-compiler--parse '(exit (or 0 5)))))
-    (should (eq (plist-get (plist-get ir1 :value) :kind) 'logic))
-    (should (eq (plist-get (plist-get ir1 :value) :op) 'and))
-    (should (eq (plist-get (plist-get ir2 :value) :op) 'or))))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (nelisp-phase47-compiler--ir-get ir1 :value))
+                'logic))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nelisp-phase47-compiler--ir-get ir1 :value) :op)
+                'and))
+    (should (eq (nelisp-phase47-compiler--ir-get
+                 (nelisp-phase47-compiler--ir-get ir2 :value) :op)
+                'or))))
 
 (ert-deftest nelisp-phase47-compiler/parse-logic-empty-errors ()
   "`(and)' / `(or)' with no operands signal."
@@ -643,10 +734,14 @@ Caller is responsible for `delete-file' on cleanup."
   "Two compiles in a row reset the label counter (= deterministic)."
   (let ((nelisp-phase47-compiler--label-counter 0))
     (let* ((ir1 (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
-      (should (eq (plist-get (plist-get ir1 :value) :id) 'if-1))))
+      (should (eq (nelisp-phase47-compiler--ir-get
+                   (nelisp-phase47-compiler--ir-get ir1 :value) :id)
+                  'if-1))))
   (let ((nelisp-phase47-compiler--label-counter 0))
     (let* ((ir2 (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
-      (should (eq (plist-get (plist-get ir2 :value) :id) 'if-1)))))
+      (should (eq (nelisp-phase47-compiler--ir-get
+                   (nelisp-phase47-compiler--ir-get ir2 :value) :id)
+                  'if-1)))))
 
 ;; ---- §T.7 §97.c emit pass-1/pass-2 invariance ----
 
@@ -1191,31 +1286,39 @@ correctly."
   (let* ((sexp '(defun probe (p) (sexp-tag p)))
          (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
     ;; Top-level program is a seq containing one defun.
-    (should (eq (plist-get program :kind) 'seq))
-    (let* ((forms (plist-get program :forms))
+    (should (eq (nelisp-phase47-compiler--ir-kind program) 'seq))
+    (let* ((forms (nelisp-phase47-compiler--ir-get program :forms))
            (defun-node (car forms))
-           (body (plist-get defun-node :body)))
-      (should (eq (plist-get body :kind) 'sexp-tag))
-      (should (eq (plist-get (plist-get body :ptr) :kind) 'ref)))))
+           (body (nelisp-phase47-compiler--ir-get defun-node :body)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-tag))
+      (should (eq (nelisp-phase47-compiler--ir-kind
+                   (nelisp-phase47-compiler--ir-get body :ptr))
+                  'ref)))))
 
 (ert-deftest nelisp-phase47-compiler/sexp-int-unwrap-parse-shape ()
   "Doc 100 §100.B: (sexp-int-unwrap PTR) parses to (:kind sexp-int-unwrap :ptr REF)."
   (let* ((sexp '(defun probe (p) (sexp-int-unwrap p)))
          (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
-    (let* ((defun-node (car (plist-get program :forms)))
-           (body (plist-get defun-node :body)))
-      (should (eq (plist-get body :kind) 'sexp-int-unwrap))
-      (should (eq (plist-get (plist-get body :ptr) :kind) 'ref)))))
+    (let* ((defun-node (car (nelisp-phase47-compiler--ir-get program :forms)))
+           (body (nelisp-phase47-compiler--ir-get defun-node :body)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-int-unwrap))
+      (should (eq (nelisp-phase47-compiler--ir-kind
+                   (nelisp-phase47-compiler--ir-get body :ptr))
+                  'ref)))))
 
 (ert-deftest nelisp-phase47-compiler/sexp-int-make-parse-shape ()
   "Doc 100 §100.B: (sexp-int-make SLOT N) parses to (:kind sexp-int-make :slot :val)."
   (let* ((sexp '(defun probe (slot n) (sexp-int-make slot n)))
          (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
-    (let* ((defun-node (car (plist-get program :forms)))
-           (body (plist-get defun-node :body)))
-      (should (eq (plist-get body :kind) 'sexp-int-make))
-      (should (eq (plist-get (plist-get body :slot) :kind) 'ref))
-      (should (eq (plist-get (plist-get body :val) :kind) 'ref)))))
+    (let* ((defun-node (car (nelisp-phase47-compiler--ir-get program :forms)))
+           (body (nelisp-phase47-compiler--ir-get defun-node :body)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-int-make))
+      (should (eq (nelisp-phase47-compiler--ir-kind
+                   (nelisp-phase47-compiler--ir-get body :slot))
+                  'ref))
+      (should (eq (nelisp-phase47-compiler--ir-kind
+                   (nelisp-phase47-compiler--ir-get body :val))
+                  'ref)))))
 
 (ert-deftest nelisp-phase47-compiler/sexp-abi-ops-reject-bad-arity ()
   "Doc 100 §100.B: each Sexp ABI op rejects wrong-arity invocations."
@@ -1437,9 +1540,10 @@ with rax (= the round-tripped 77) as status."
   "Literal string in `(symbol-name-eq P LIT)' is UTF-8 byte-encoded at parse."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun probe (p) (symbol-name-eq p "read"))))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get body :kind) 'symbol-name-eq))
-    (should (equal (plist-get body :bytes) '(114 101 97 100)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'symbol-name-eq))
+    (should (equal (nelisp-phase47-compiler--ir-get body :bytes)
+                   '(114 101 97 100)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-rejects-non-string ()
   "Second argument must be a string literal."
@@ -1459,9 +1563,9 @@ with rax (= the round-tripped 77) as status."
   "Empty literal string is a legal zero-byte comparison (= length-check only)."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun probe (p) (symbol-name-eq p ""))))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get body :kind) 'symbol-name-eq))
-    (should (equal (plist-get body :bytes) '()))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'symbol-name-eq))
+    (should (equal (nelisp-phase47-compiler--ir-get body :bytes) '()))))
 
 (ert-deftest nelisp-phase47-compiler/emit-symbol-name-eq-produces-bytes ()
   "Emit phase for `symbol-name-eq' produces a non-empty byte string and
@@ -1491,11 +1595,11 @@ inline more `cmp imm32' instructions)."
   "Parse `(sexp-float-unwrap PTR)' to an IR node with :kind sexp-float-unwrap."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun probe (p) (sexp-float-unwrap p))))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get body :kind) 'sexp-float-unwrap))
-    (let ((ptr (plist-get body :ptr)))
-      (should (eq (plist-get ptr :kind) 'ref))
-      (should (eq (plist-get ptr :var) 'p)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-float-unwrap))
+    (let ((ptr (nelisp-phase47-compiler--ir-get body :ptr)))
+      (should (eq (nelisp-phase47-compiler--ir-kind ptr) 'ref))
+      (should (eq (nelisp-phase47-compiler--ir-get ptr :var) 'p)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-sexp-float-unwrap-arity-error ()
   "`(sexp-float-unwrap)' (= no arg) raises arity error."
@@ -1535,50 +1639,80 @@ with a slot index beyond the param count."
               '(seq (defun id (x) x)
                     (defun f (x) (let ((y (id x))) y)))))
          ;; `seq' → second form is the `f' defun.
-         (f-ir (nth 1 (plist-get ir :forms)))
-         (body (plist-get f-ir :body)))
-    (should (eq (plist-get f-ir :kind) 'defun))
+         (f-ir (nth 1 (nelisp-phase47-compiler--ir-get ir :forms)))
+         (body (nelisp-phase47-compiler--ir-get f-ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind f-ir) 'defun))
     ;; body is a `let-rt' node (= non-foldable value).
-    (should (eq (plist-get body :kind) 'let-rt))
-    (should (eq (plist-get body :var) 'y))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
+    (should (eq (nelisp-phase47-compiler--ir-get body :var) 'y))
     ;; Slot must be ≥ arity (= 1 for `f (x)').
-    (should (>= (plist-get body :slot) 1))
+    (should (>= (nelisp-phase47-compiler--ir-get body :slot) 1))
     ;; value-ir is a `call' to `id'.
-    (let ((val-ir (plist-get body :value-ir)))
-      (should (eq (plist-get val-ir :kind) 'call))
-      (should (eq (plist-get val-ir :name) 'id)))
+    (let ((val-ir (nelisp-phase47-compiler--ir-get body :value-ir)))
+      (should (eq (nelisp-phase47-compiler--ir-kind val-ir) 'call))
+      (should (eq (nelisp-phase47-compiler--ir-get val-ir :name) 'id)))
     ;; body body is a `ref' for `y' via the rt slot.
-    (let* ((body-ir (plist-get body :body))
-           (slot (plist-get body :slot)))
-      (should (eq (plist-get body-ir :kind) 'ref))
-      (should (eq (plist-get body-ir :var) 'y))
-      (should (= (plist-get body-ir :slot) slot)))))
+    (let* ((body-ir (nelisp-phase47-compiler--ir-get body :body))
+           (slot (nelisp-phase47-compiler--ir-get body :slot)))
+      (should (eq (nelisp-phase47-compiler--ir-kind body-ir) 'ref))
+      (should (eq (nelisp-phase47-compiler--ir-get body-ir :var) 'y))
+      (should (= (nelisp-phase47-compiler--ir-get body-ir :slot) slot)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-let-rt-slot-beyond-params ()
   "Runtime let slot is param-count + rt-let-index."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun g (a b) (let ((t1 (+ a b))) t1))))
-         (body (plist-get ir :body)))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
     ;; `g' has 2 params (slots 0, 1); runtime let must use slot >= 2.
-    (should (eq (plist-get body :kind) 'let-rt))
-    (should (>= (plist-get body :slot) 2))))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
+    (should (>= (nelisp-phase47-compiler--ir-get body :slot) 2))))
 
 (ert-deftest nelisp-phase47-compiler/parse-let-rt-rt-slot-count ()
   "`defun' IR carries `:rt-slot-count' equal to number of runtime lets."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(seq (defun id (x) x)
                     (defun f (x) (let ((y (id x))) y))))))
-    (let ((f-ir (nth 1 (plist-get ir :forms))))
-      (should (= (plist-get f-ir :rt-slot-count) 1)))))
+    (let ((f-ir (nth 1 (nelisp-phase47-compiler--ir-get ir :forms))))
+      (should (= (nelisp-phase47-compiler--ir-get f-ir :rt-slot-count) 1)))))
 
 (ert-deftest nelisp-phase47-compiler/parse-let-ct-in-defun-body-no-let-rt ()
   "Compile-time `let' inside defun body does NOT produce `let-rt'."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun f (x) (let ((k 7)) (+ x k)))))
-         (body (plist-get ir :body)))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
     ;; Compile-time fold: body is `arith', no `let-rt'.
-    (should (eq (plist-get body :kind) 'arith))
-    (should (= (plist-get ir :rt-slot-count) 0))))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
+    (should (= (nelisp-phase47-compiler--ir-get ir :rt-slot-count) 0))))
+
+(ert-deftest nelisp-phase47-compiler/parse-doc129-multi-let-rt ()
+  "Doc 129.4: multi-binding runtime `let' parses to `let-rt-n'."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(seq (defun id (x) x)
+                    (defun f (x y)
+                      (let ((a (id x))
+                            (b (+ y 10)))
+                        (+ a b))))))
+         (f-ir (nth 1 (nelisp-phase47-compiler--ir-get ir :forms)))
+         (body (nelisp-phase47-compiler--ir-get f-ir :body))
+         (bindings (nelisp-phase47-compiler--ir-get body :bindings)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt-n))
+    (should (= (length bindings) 2))
+    (should (equal (mapcar #'car bindings) '(a b)))
+    (should (equal (mapcar #'cadr bindings) '(2 3)))
+    (should (= (nelisp-phase47-compiler--ir-get f-ir :rt-slot-count) 2))
+    (should (eq (nelisp-phase47-compiler--ir-kind
+                 (nelisp-phase47-compiler--ir-get body :body))
+                'arith))))
+
+(ert-deftest nelisp-phase47-compiler/parse-doc129-multi-let-is-parallel ()
+  "Doc 129.4: later `let' initializers cannot see earlier bindings."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun f (x)
+       (let ((a (+ x 1))
+             (b a))
+         b)))
+   :type 'nelisp-phase47-compiler-error))
 
 (ert-deftest nelisp-phase47-compiler/let-rt-requires-defun-context ()
   "Runtime `let' outside any defun context signals an error."
@@ -1637,6 +1771,22 @@ with a slot index beyond the param count."
     ;; a = id(5) = 5; b = a + 10 = 15; result = a + b = 20.
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 20)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-doc129-multi-let-rt ()
+  "Doc 129.4: multi-binding runtime `let' executes through `let-rt-n'."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "doc129-multi-let"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun id (x) x)
+           (defun f (x y)
+             (let ((a (id x))
+                   (b (+ y 10)))
+               (+ a b)))
+           (exit (f 5 7)))
+     path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 22)))))
 
 ;; ---- Doc 101 §101.B Wave 5 — Win64 ABI emit tests ----
 ;;

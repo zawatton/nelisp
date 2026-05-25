@@ -835,13 +835,13 @@ epilogue layout."
 
 ;; Parser accepts annotated f64 params and tags FENV cells.
 (ert-deftest nelisp-asm-x86_64-f64/parser-accepts-typed-params ()
-  (let ((ir (nelisp-phase47-compiler--parse-stmt
+    (let ((ir (nelisp-phase47-compiler--parse-stmt
              '(defun fn ((a :type f64) (b :type f64)) (f64-add a b))
              nil nil nil)))
-    (should (eq (plist-get ir :kind) 'defun))
-    (should (eq (plist-get ir :param-class) 'f64))
-    (should (equal (plist-get ir :params) '(a b)))
-    (should (equal (plist-get ir :param-regs) '(xmm0 xmm1)))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-get ir :param-class) 'f64))
+    (should (equal (nelisp-phase47-compiler--ir-get ir :params) '(a b)))
+    (should (equal (nelisp-phase47-compiler--ir-get ir :param-regs) '(xmm0 xmm1)))))
 
 ;; Parser rejects mixed-class params.
 (ert-deftest nelisp-asm-x86_64-f64/parser-rejects-mixed-class ()
@@ -851,7 +851,7 @@ epilogue layout."
     nil nil nil)
    :type 'nelisp-phase47-compiler-error))
 
-;; Parser rejects unknown class (= only `f64' / `gp' supported).
+;; Parser rejects unknown class (= only `f64' / `gp' / `sexp' supported).
 (ert-deftest nelisp-asm-x86_64-f64/parser-rejects-unknown-class ()
   (should-error
    (nelisp-phase47-compiler--parse-stmt
@@ -864,9 +864,9 @@ epilogue layout."
   (let* ((ir (nelisp-phase47-compiler--parse-stmt
               '(defun fn ((a :type f64) (b :type f64)) (f64-add a b))
               nil nil nil))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get body :kind) 'f64-binop))
-    (should (eq (plist-get body :op) 'f64-add))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'f64-binop))
+    (should (eq (nelisp-phase47-compiler--ir-get body :op) 'f64-add))))
 
 ;; Nested f64-binop rejected at emit time (= MVP scope).
 (ert-deftest nelisp-asm-x86_64-f64/emit-rejects-nested-f64-binop ()
@@ -975,9 +975,9 @@ epilogue layout."
   (let* ((ir (nelisp-phase47-compiler--parse-stmt
               '(defun fn ((a :type f64) (b :type f64)) (f64-lt a b))
               nil nil nil))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get body :kind) 'f64-cmp))
-    (should (eq (plist-get body :op) 'f64-lt))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'f64-cmp))
+    (should (eq (nelisp-phase47-compiler--ir-get body :op) 'f64-lt))))
 
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-cmp-arity ()
   (should-error
@@ -1245,9 +1245,9 @@ epilogue layout."
   (let* ((ir (nelisp-phase47-compiler--parse-stmt
               '(defun fn ((a :type f64) (b :type f64)) (f64-eq-eps a b))
               nil nil nil))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get body :kind) 'f64-cmp))
-    (should (eq (plist-get body :op) 'f64-eq-eps))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'f64-cmp))
+    (should (eq (nelisp-phase47-compiler--ir-get body :op) 'f64-eq-eps))))
 
 ;; Total byte length:
 ;;   prologue 21 + body 63 + epilogue 5 = 89 bytes
@@ -1304,9 +1304,9 @@ epilogue layout."
   (let* ((ir (nelisp-phase47-compiler--parse-stmt
               '(defun fn ((x :type f64)) (f64-call exp x))
               nil nil nil))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get body :kind) 'f64-call))
-    (should (eq (plist-get body :name) 'exp))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'f64-call))
+    (should (eq (nelisp-phase47-compiler--ir-get body :name) 'exp))))
 
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-call-arity ()
   (should-error
