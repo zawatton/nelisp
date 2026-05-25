@@ -3036,6 +3036,42 @@ simulated non-local exit."
              (equal (nth 1 (car body-forms)) tag))
     (car body-forms)))
 
+(defun nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+    (tag branch)
+  "Return non-nil when BRANCH is a direct throw targeting TAG."
+  (and (consp branch)
+       (eq (car branch) 'throw)
+       (= (length branch) 3)
+       (equal (nth 1 branch) tag)))
+
+(defun nelisp-phase47-compiler--aot-catch-conditional-throw-form
+    (tag body-forms)
+  "Return a conditional direct throw body shape for TAG, or nil.
+The accepted shape is a single `(if TEST THEN ELSE)' whose throwing
+branch is a direct `(throw TAG VALUE)' and whose non-throwing branch
+contains no unresolved non-local source form."
+  (when (and (= (length body-forms) 1)
+             (consp (car body-forms))
+             (eq (caar body-forms) 'if)
+             (= (length (car body-forms)) 4))
+    (let* ((form (car body-forms))
+           (then (nth 2 form))
+           (else (nth 3 form))
+           (then-throw
+            (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+             tag then))
+           (else-throw
+            (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+             tag else)))
+      (when (and (or then-throw else-throw)
+                 (or then-throw
+                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                           then)))
+                 (or else-throw
+                     (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                           else))))
+        form))))
+
 (defun nelisp-phase47-compiler--aot-direct-condition-tag (body)
   "Return BODY's static condition tag, or nil when it is not direct."
   (when (consp body)
@@ -3199,8 +3235,13 @@ saved BODY value."
          (body-forms (cddr sexp))
          (direct-throw
           (nelisp-phase47-compiler--aot-catch-direct-throw-form
-           tag body-forms)))
+           tag body-forms))
+         (conditional-throw
+          (and (not direct-throw)
+               (nelisp-phase47-compiler--aot-catch-conditional-throw-form
+                tag body-forms))))
     (when (and (not direct-throw)
+               (not conditional-throw)
                (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
                         body-forms))
       (signal 'nelisp-phase47-compiler-error
@@ -3216,17 +3257,41 @@ saved BODY value."
            ,direct-throw
            (aot-landing-value out))
          env fenv defuns)
-      (let ((value-slot (nelisp-phase47-compiler--gensym
-                         "aot-catch-value"))
-            (body (nelisp-phase47-compiler--body->form body-forms)))
-        (nelisp-phase47-compiler--parse-value
-         `(seq
-           (aot-push-catch ,tag 0 0)
-           (let (((,value-slot :type sexp) ,body))
-             (seq
-              (aot-pop-handler 'catch)
-              ,value-slot)))
-         env fenv defuns)))))
+      (if conditional-throw
+          (let* ((value-slot (nelisp-phase47-compiler--gensym
+                              "aot-catch-value"))
+                 (test (nth 1 conditional-throw))
+                 (then (nth 2 conditional-throw))
+                 (else (nth 3 conditional-throw))
+                 (branch-form
+                  (lambda (branch)
+                    (if (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+                         tag branch)
+                        `(seq
+                          ,branch
+                          (aot-landing-value out))
+                      `(let (((,value-slot :type sexp) ,branch))
+                         (seq
+                          (aot-pop-handler 'catch)
+                          ,value-slot))))))
+            (nelisp-phase47-compiler--parse-value
+             `(seq
+               (aot-push-catch ,tag 0 0)
+               (if ,test
+                   ,(funcall branch-form then)
+                 ,(funcall branch-form else)))
+             env fenv defuns))
+        (let ((value-slot (nelisp-phase47-compiler--gensym
+                           "aot-catch-value"))
+              (body (nelisp-phase47-compiler--body->form body-forms)))
+          (nelisp-phase47-compiler--parse-value
+           `(seq
+             (aot-push-catch ,tag 0 0)
+             (let (((,value-slot :type sexp) ,body))
+               (seq
+                (aot-pop-handler 'catch)
+                ,value-slot)))
+           env fenv defuns))))))
 
 (defun nelisp-phase47-compiler--aot-condition-case-selectors (sexp)
   "Return condition symbols handled by source condition-case SEXP.

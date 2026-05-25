@@ -3847,8 +3847,33 @@ materialized closure temporary."
     (should (member 'nelisp_aot_landing_value externs))
     (should-not (member 'nelisp_aot_pop_handler externs))))
 
+(ert-deftest nelisp-phase47-doc129/parse-catch-conditional-throw ()
+  "Doc 129.8N: conditional direct catch throw lowers both branches."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun catch_if_throw
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (catch 'done
+                   (if value
+                       (throw 'done value)
+                     value)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body))
+         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (if-node (nth 1 forms))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind if-node) 'if))
+    (should (member 'nelisp_aot_push_catch externs))
+    (should (member 'nelisp_aot_throw externs))
+    (should (member 'nelisp_aot_landing_value externs))
+    (should (member 'nelisp_aot_pop_handler externs))))
+
 (ert-deftest nelisp-phase47-doc129/catch-nested-nonlocal-still-pending ()
-  "Doc 129.8L: nested non-local catch bodies still wait for landing jumps."
+  "Doc 129.8N: deeper nested catch non-local bodies still wait for landing jumps."
   (should-error
    (nelisp-phase47-compiler--parse
     '(defun catch_nested
@@ -3860,7 +3885,9 @@ materialized closure temporary."
           (value :type sexp))
        (catch 'done
          (if value
-             (throw 'done value)
+             (if value
+                 (throw 'done value)
+               value)
            value))))
    :type 'nelisp-phase47-compiler-error))
 
@@ -3913,6 +3940,35 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_push_catch" out))
             (should (string-match-p "nelisp_aot_throw" out))
             (should (string-match-p "nelisp_aot_landing_value" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-catch-conditional-throw ()
+  "Doc 129.8N: source conditional catch throw exposes both branch relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-catch-if-throw-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun catch_if_throw
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (catch 'done
+                (if value
+                    (throw 'done value)
+                  value)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "catch_if_throw" out))
+            (should (string-match-p "nelisp_aot_push_catch" out))
+            (should (string-match-p "nelisp_aot_throw" out))
+            (should (string-match-p "nelisp_aot_landing_value" out))
+            (should (string-match-p "nelisp_aot_pop_handler" out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-doc129/parse-condition-case-normal-exit ()
