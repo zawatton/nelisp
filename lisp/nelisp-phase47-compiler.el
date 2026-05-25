@@ -2212,20 +2212,26 @@ native landing-pad jump path is available."
             ,value-slot)))
        env fenv defuns))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-selector (sexp)
-  "Return the single condition symbol handled by source condition-case SEXP.
-Doc 129.8F deliberately accepts only the common `(condition BODY...)'
-handler shape with a symbol condition.  List condition specs and real
-handler landing pads remain later exception work."
+(defun nelisp-phase47-compiler--aot-condition-case-selectors (sexp)
+  "Return condition symbols handled by source condition-case SEXP.
+Doc 129.8F started with the common `(condition BODY...)' handler shape;
+Doc 129.8J also accepts `(CONDITION...)' list specs by installing one
+condition handler per symbol with the same landing metadata."
   (let ((clauses (nthcdr 3 sexp)))
     (unless clauses
       (signal 'nelisp-phase47-compiler-error
               (list :aot-condition-case-no-handlers sexp)))
     (let ((selector (caar clauses)))
-      (unless (symbolp selector)
+      (cond
+       ((symbolp selector)
+        (list selector))
+       ((and (consp selector)
+             (cl-every #'symbolp selector))
+        selector)
+       (t
         (signal 'nelisp-phase47-compiler-error
-                (list :aot-condition-case-handler-shape (car clauses))))
-      selector)))
+                (list :aot-condition-case-handler-shape
+                      (car clauses))))))))
 
 (defun nelisp-phase47-compiler--parse-aot-condition-case-normal-exit
     (sexp env fenv defuns)
@@ -2249,14 +2255,17 @@ landing-pad jumps for signalled conditions remain later Doc 129.8 work."
     (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
     (let ((value-slot (nelisp-phase47-compiler--gensym
                        "aot-condition-value"))
-          (selector
-           (nelisp-phase47-compiler--aot-condition-case-selector sexp)))
+          (selectors
+           (nelisp-phase47-compiler--aot-condition-case-selectors sexp)))
       (nelisp-phase47-compiler--parse-value
        `(seq
-         (aot-push-condition ',selector 0 0)
+         ,@(mapcar (lambda (selector)
+                     `(aot-push-condition ',selector 0 0))
+                   selectors)
          (let (((,value-slot :type sexp) ,body))
            (seq
-            (aot-pop-handler 'condition)
+            ,@(make-list (length selectors)
+                         `(aot-pop-handler 'condition))
             ,value-slot)))
        env fenv defuns))))
 

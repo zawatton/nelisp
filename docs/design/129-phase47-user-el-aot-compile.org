@@ -41,7 +41,8 @@
   source-level =condition-case= normal-exit lowering, and Stage
   129.8G source-level =unwind-protect= normal-exit lowering, and
   Stage 129.8H single-argument =error= lowering, and Stage 129.8I
-  formatted =error= varargs bridge have implementations in
+  formatted =error= varargs bridge, and Stage 129.8J
+  =condition-case= list condition specs have implementations in
   =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
   =nelisp-cc-runtime.el=.
   Supported in this first cut: host macro expansion in value/call
@@ -303,8 +304,9 @@
   HANDLER...))= now has the same normal-exit path for a single symbol
   condition selector.  BODY is saved through a runtime Sexp frame slot,
   =aot-pop-handler 'condition= removes the handler on normal exit, and
-  the saved BODY result is returned.  Signalled handler dispatch, list
-  condition specs, and native landing-pad jumps remain pending.
+  the saved BODY result is returned.  Signalled handler dispatch,
+  binding =VAR= to error data, and native landing-pad jumps remain
+  pending; list condition specs are covered by 129.8J.
 - *129.8G MVP*: source-level =(unwind-protect BODY CLEANUP...)= now
   supports the normal-exit path.  BODY's result is saved in a runtime
   Sexp frame slot, cleanup forms run in order, and the saved BODY value
@@ -322,6 +324,13 @@
   to the signal boundary, writes =OUT=, and returns =OUT=.  Literal
   format strings such as =(error "%s" value)= materialize through
   =sexp-write-str-lit= into the caller-owned =scratch= slot.
+- *129.8J MVP*: source-level =condition-case= normal-exit lowering now
+  accepts list condition specs such as =((error quit) HANDLER...)=.
+  The compiler emits one =aot-push-condition= per selector with the same
+  placeholder landing metadata, then emits a matching number of
+  =aot-pop-handler 'condition= forms on the normal path.  Handler-body
+  dispatch for signalled conditions remains pending on native landing
+  pads.
 - *Previous state*: DRAFT 2026-05-25 — design only.
   Scoping doc for the long-horizon "compile arbitrary user elisp to
   native code" track.  Authored after a 2026-05-25 session that
@@ -1342,10 +1351,31 @@ lowers as if it had written:
 #+end_src
 
 The handler body is intentionally not compiled as a landing pad yet.
-This stage accepts only the common single-symbol handler selector
-shape, e.g. =(error ...)=.  List selectors such as =((error quit)
-...)=, signalled handler dispatch, binding =VAR= to the error data, and
-native jump-to-handler emission remain later 129.8 work.
+Stage 129.8J extends the accepted selector shape to condition lists:
+
+#+begin_src elisp
+(condition-case err
+    value
+  ((error quit) out))
+#+end_src
+
+This normal path lowers as two condition pushes with the same
+placeholder landing metadata followed by two condition pops after BODY
+returns:
+
+#+begin_src elisp
+(seq
+ (aot-push-condition 'error 0 0)
+ (aot-push-condition 'quit 0 0)
+ (let (((aot-condition-value-N :type sexp) value))
+   (seq
+    (aot-pop-handler 'condition)
+    (aot-pop-handler 'condition)
+    aot-condition-value-N)))
+#+end_src
+
+Signalled handler dispatch, binding =VAR= to the error data, and native
+jump-to-handler emission remain later 129.8 work.
 
 *** §1.F.7 Shipped MVP: source =unwind-protect= normal-exit lowering
 
@@ -1617,7 +1647,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge SHIPPED 2026-05-25; closure allocation/capture and source rest params pending |
-| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
+| 129.8   | §1.F exception machinery       | 129.5      | high | 129.8A runtime handler-stack substrate + 129.8B throw/signal bridge lowering + 129.8C handler-push bridge lowering + 129.8D handler-pop bridge lowering + 129.8E source catch normal-exit lowering + 129.8F source condition-case normal-exit lowering + 129.8G source unwind-protect normal-exit lowering + 129.8H single-argument error lowering + 129.8I formatted error varargs bridge + 129.8J condition-case list specs SHIPPED 2026-05-25; catch/condition-case/unwind-protect non-local exit and native landing-pad jumps pending |
 
 Spike target: 129.1 + 129.2 + 129.3 + a hand-picked leaf =defun= from
 =anvil-server.el= that uses only those (= prove the pipeline end to

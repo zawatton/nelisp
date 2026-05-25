@@ -5,6 +5,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'nelisp-elf-write)
 (require 'nelisp-phase47-compiler)
 
@@ -1999,21 +2000,22 @@
          (error out))))
    :type 'nelisp-phase47-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/condition-case-list-spec-still-pending ()
-  "Doc 129.8F: list condition specs wait for handler selector materialization."
-  (should-error
-   (nelisp-phase47-compiler--parse
-    '(defun cc_list_spec
-         ((out :type sexp)
-          (mirror :type sexp)
-          (frames :type sexp)
-          (scratch :type sexp)
-          (name_slot :type sexp)
-          (value :type sexp))
-       (condition-case err
-           value
-         ((error quit) out))))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-phase47-doc129/parse-condition-case-list-spec-normal-exit ()
+  "Doc 129.8J: list condition specs push one handler per selector."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun cc_list_spec
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (value :type sexp))
+                 (condition-case err
+                     value
+                   ((error quit) out)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
+    (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))))
 
 (ert-deftest nelisp-phase47-doc129/object-condition-case-normal-exit ()
   "Doc 129.8F: source condition-case exposes condition push/pop relocs."
@@ -2037,6 +2039,33 @@
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "cc_value" out))
+            (should (string-match-p "nelisp_aot_push_condition" out))
+            (should (string-match-p "nelisp_aot_pop_handler" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-condition-case-list-spec-normal-exit ()
+  "Doc 129.8J: list condition specs compile through condition push/pop."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cc-list-normal-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun cc_list_spec
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (value :type sexp))
+              (condition-case err
+                  value
+                ((error quit) out)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "cc_list_spec" out))
             (should (string-match-p "nelisp_aot_push_condition" out))
             (should (string-match-p "nelisp_aot_pop_handler" out))
             (should (string-match-p "nl_alloc_symbol" out))))
