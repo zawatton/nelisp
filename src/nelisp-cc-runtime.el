@@ -1537,6 +1537,92 @@ hooks, but the dynamic extent and root-set contract are fixed here."
   (nelisp-gc--with-active-aot-frame roots
     (funcall thunk)))
 
+(defun nelisp-cc-runtime-aot-root-stack-snapshot ()
+  "Return a shallow snapshot of the active Doc 129.5 AOT root stack."
+  (copy-sequence nelisp-gc--active-aot-frames))
+
+(defun nelisp-cc-runtime-aot-reset-root-stack ()
+  "Clear the Doc 129.5 AOT root stack and return nil."
+  (setq nelisp-gc--active-aot-frames nil))
+
+(defun nelisp-cc-runtime-aot-push-roots-boundary
+    (mirror frames roots out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.5 `nelisp_aot_push_roots' ABI.
+MIRROR, FRAMES, ROOTS, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_push_roots(mirror, frames, roots, out, scratch)
+
+ROOTS must be a vector containing the live Sexp roots for one native
+Phase 47 frame.  The bridge pushes ROOTS onto the active AOT root stack,
+writes ROOTS to OUT[0], and returns OUT.
+
+DISPATCHER, when non-nil, is called as `(DISPATCHER ROOTS CONTEXT)'."
+  (unless (vectorp roots)
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-roots-not-vector roots)))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-roots-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-push-roots-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :roots roots
+                        :out out
+                        :scratch scratch))
+         (pushed (if dispatcher
+                     (funcall dispatcher roots context)
+                   (nelisp-gc--push-active-aot-frame roots))))
+    (unless (eq pushed roots)
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-push-roots-dispatcher-mismatch
+                    :expected roots :actual pushed)))
+    (aset out 0 roots)
+    out))
+
+(defun nelisp-cc-runtime-aot-pop-roots-boundary
+    (mirror frames expected-roots out scratch &optional dispatcher)
+  "Runtime bridge for the Doc 129.5 `nelisp_aot_pop_roots' ABI.
+MIRROR, FRAMES, EXPECTED-ROOTS, OUT, and SCRATCH mirror the native ABI:
+
+  nelisp_aot_pop_roots(mirror, frames, expected_roots, out, scratch)
+
+The bridge pops the innermost AOT root vector, verifies that it is
+EXPECTED-ROOTS when EXPECTED-ROOTS is non-nil, writes the popped vector
+to OUT[0], and returns OUT.
+
+DISPATCHER, when non-nil, is called as
+`(DISPATCHER EXPECTED-ROOTS CONTEXT)'."
+  (when (and expected-roots (not (vectorp expected-roots)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-pop-roots-expected-not-vector expected-roots)))
+  (unless (and (vectorp out) (> (length out) 0))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-pop-roots-out-not-vector out)))
+  (when (and dispatcher (not (functionp dispatcher)))
+    (signal 'nelisp-cc-runtime-error
+            (list :aot-pop-roots-dispatcher-not-function dispatcher)))
+  (let* ((context (list :mirror mirror
+                        :frames frames
+                        :expected-roots expected-roots
+                        :out out
+                        :scratch scratch))
+         (popped
+          (condition-case err
+              (if dispatcher
+                  (funcall dispatcher expected-roots context)
+                (nelisp-gc--pop-active-aot-frame expected-roots))
+            (error
+             (signal 'nelisp-cc-runtime-error
+                     (list :aot-pop-roots-error err))))))
+    (when (and expected-roots (not (eq popped expected-roots)))
+      (signal 'nelisp-cc-runtime-error
+              (list :aot-pop-roots-mismatch
+                    :expected expected-roots :actual popped)))
+    (aset out 0 popped)
+    out))
+
 (defun nelisp-cc-runtime--aot-default-builtin-dispatch1 (builtin arg)
   "Dispatch one-argument BUILTIN to ARG through the host/NeLisp function table."
   (let ((fn nil)

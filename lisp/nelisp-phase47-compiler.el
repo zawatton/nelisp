@@ -2166,6 +2166,62 @@ Accepted forms:
        ,out)
      env fenv defuns)))
 
+(defun nelisp-phase47-compiler--aot-root-boundary-symbols (fenv sexp)
+  "Return boundary symbols for Doc 129.5 AOT root push/pop lowering."
+  (let ((missing nil))
+    (dolist (sym '(out mirror frames scratch))
+      (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+        (push sym missing)))
+    (when missing
+      (signal 'nelisp-phase47-compiler-error
+              (list :aot-root-boundary-missing
+                    (nreverse missing)
+                    :form sexp)))
+    (list :out 'out
+          :mirror 'mirror
+          :frames 'frames
+          :scratch 'scratch)))
+
+(defun nelisp-phase47-compiler--parse-aot-push-roots
+    (sexp env fenv defuns)
+  "Lower `(aot-push-roots ROOTS)' through the Doc 129.5 push bridge."
+  (unless (= (length sexp) 2)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-push-roots-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-root-boundary-symbols fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (roots (nth 1 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       (extern-call nelisp_aot_push_roots
+                    ,mirror ,frames ,roots ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
+(defun nelisp-phase47-compiler--parse-aot-pop-roots
+    (sexp env fenv defuns)
+  "Lower `(aot-pop-roots ROOTS)' through the Doc 129.5 pop bridge."
+  (unless (= (length sexp) 2)
+    (signal 'nelisp-phase47-compiler-error
+            (list :aot-pop-roots-arity sexp)))
+  (let* ((boundary
+          (nelisp-phase47-compiler--aot-root-boundary-symbols fenv sexp))
+         (out (plist-get boundary :out))
+         (mirror (plist-get boundary :mirror))
+         (frames (plist-get boundary :frames))
+         (scratch (plist-get boundary :scratch))
+         (roots (nth 1 sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(seq
+       (extern-call nelisp_aot_pop_roots
+                    ,mirror ,frames ,roots ,out ,scratch)
+       ,out)
+     env fenv defuns)))
+
 (defun nelisp-phase47-compiler--aot-nonlocal-source-form-p (sexp)
   "Return non-nil when SEXP contains a not-yet-safe non-local form.
 Doc 129.8E only synthesizes balanced handler push/pop for bodies that
@@ -2658,6 +2714,17 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (eq (car sexp) 'aot-pop-handler))
     (nelisp-phase47-compiler--parse-aot-pop-handler
+     sexp env fenv defuns))
+   ;; Doc 129.5E — explicit native root-frame push/pop bridge forms.
+   ;; Automatic prologue/epilogue insertion is a later backend step;
+   ;; these internal forms make the ABI and relocations visible now.
+   ((and (consp sexp)
+         (eq (car sexp) 'aot-push-roots))
+    (nelisp-phase47-compiler--parse-aot-push-roots
+     sexp env fenv defuns))
+   ((and (consp sexp)
+         (eq (car sexp) 'aot-pop-roots))
+    (nelisp-phase47-compiler--parse-aot-pop-roots
      sexp env fenv defuns))
    ;; Doc 100 v2 §100.B Sexp ABI direct-access ops.  Each maps to a
    ;; fixed instruction template against `[base]' / `[base + 8]', with

@@ -104,6 +104,26 @@ normal and non-local exit."
           (cons ,roots nelisp-gc--active-aot-frames)))
      ,@body))
 
+(defun nelisp-gc--push-active-aot-frame (roots)
+  "Push ROOTS onto `nelisp-gc--active-aot-frames' and return ROOTS.
+This is the function-shaped sibling of
+`nelisp-gc--with-active-aot-frame' for native prologue bridges that
+must pair an explicit push with an explicit pop."
+  (push roots nelisp-gc--active-aot-frames)
+  roots)
+
+(defun nelisp-gc--pop-active-aot-frame (&optional expected-roots)
+  "Pop and return the innermost active AOT root vector.
+When EXPECTED-ROOTS is non-nil, signal if the innermost frame is not
+that exact vector."
+  (unless nelisp-gc--active-aot-frames
+    (error "AOT root stack underflow"))
+  (let ((roots (pop nelisp-gc--active-aot-frames)))
+    (when (and expected-roots
+               (not (eq roots expected-roots)))
+      (error "AOT root stack mismatch"))
+    roots))
+
 ;;; Mark pass (Phase 3c.2) --------------------------------------------
 
 (defun nelisp-gc--seed-work (root-override)

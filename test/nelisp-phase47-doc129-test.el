@@ -979,6 +979,61 @@
                      :param-count 1
                      :rt-slot-count 1)))))
 
+(ert-deftest nelisp-phase47-doc129/parse-aot-root-push-pop ()
+  "Doc 129.5E: explicit native root push/pop forms lower to bridges."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun root_frame
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (roots :type sexp))
+                 (seq
+                  (aot-push-roots roots)
+                  (aot-pop-roots roots)))))
+         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+    (should (member 'nelisp_aot_push_roots externs))
+    (should (member 'nelisp_aot_pop_roots externs))))
+
+(ert-deftest nelisp-phase47-doc129/aot-root-push-pop-requires-boundary ()
+  "Doc 129.5E: root push/pop lowering requires boxed boundary params."
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun root_frame
+         ((roots :type sexp))
+       (aot-push-roots roots)))
+   :type 'nelisp-phase47-compiler-error)
+  (should-error
+   (nelisp-phase47-compiler--parse
+    '(defun root_frame
+         ((roots :type sexp))
+       (aot-pop-roots roots)))
+   :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-phase47-doc129/object-aot-root-push-pop ()
+  "Doc 129.5E: object output exposes root push/pop bridge relocs."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-roots-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun root_frame
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (roots :type sexp))
+              (seq
+               (aot-push-roots roots)
+               (aot-pop-roots roots)))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "nelisp_aot_push_roots" out))
+            (should (string-match-p "nelisp_aot_pop_roots" out))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-doc129/top-level-require-provide-stripped ()
   "Doc 129.6A: top-level module forms are compile-time-only."
   (let* ((ir (nelisp-phase47-compiler--parse

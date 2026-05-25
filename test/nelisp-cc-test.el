@@ -1207,6 +1207,51 @@ exit points were emitted; call-points were missing."
     (should (eq result 'ok))
     (should (null nelisp-gc--active-aot-frames))))
 
+(ert-deftest nelisp-cc-runtime-aot-root-push-pop-boundary ()
+  "Doc 129.5E — explicit native root push/pop bridges update root-set."
+  (let* ((root (cons 'aot 'native))
+         (roots (vector root))
+         (out (vector nil))
+         (nelisp-gc--active-aot-frames nil))
+    (should (eq (nelisp-cc-runtime-aot-push-roots-boundary
+                 'mirror 'frames roots out 'scratch)
+                out))
+    (should (eq (aref out 0) roots))
+    (should (eq roots
+                (car (nelisp-cc-runtime-aot-root-stack-snapshot))))
+    (let ((live (nelisp-gc-reachable-set)))
+      (should (gethash root live)))
+    (aset out 0 nil)
+    (should (eq (nelisp-cc-runtime-aot-pop-roots-boundary
+                 'mirror 'frames roots out 'scratch)
+                out))
+    (should (eq (aref out 0) roots))
+    (should (null nelisp-gc--active-aot-frames))))
+
+(ert-deftest nelisp-cc-runtime-aot-root-push-pop-validates-boundary ()
+  "Doc 129.5E — root push/pop bridges reject malformed ABI values."
+  (let ((out (vector nil))
+        (roots (vector 'root))
+        (nelisp-gc--active-aot-frames nil))
+    (should-error
+     (nelisp-cc-runtime-aot-push-roots-boundary
+      'mirror 'frames 'not-a-vector out 'scratch)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-push-roots-boundary
+      'mirror 'frames roots nil 'scratch)
+     :type 'nelisp-cc-runtime-error)
+    (should-error
+     (nelisp-cc-runtime-aot-pop-roots-boundary
+      'mirror 'frames roots out 'scratch)
+     :type 'nelisp-cc-runtime-error)
+    (nelisp-cc-runtime-aot-push-roots-boundary
+     'mirror 'frames roots out 'scratch)
+    (should-error
+     (nelisp-cc-runtime-aot-pop-roots-boundary
+      'mirror 'frames (vector 'other) out 'scratch)
+     :type 'nelisp-cc-runtime-error)))
+
 (ert-deftest nelisp-cc-runtime-aot-builtin-call1-host-dispatch ()
   "Doc 129.6C — builtin call1 writes the dispatcher result to OUT."
   (let* ((out (vector nil))

@@ -20,6 +20,7 @@
   Stage 129.5A static GC root-map MVP, Stage 129.5B AOT root-set
   registration substrate, Stage 129.5C call-boundary root-vector
   bridge, Stage 129.5D runtime =let= Sexp root annotations, Stage
+  129.5E explicit native root push/pop bridges, Stage
   129.6A top-level =require= / =provide= frontend handling, Stage
   129.6B one-argument Sexp builtin delegation helper, Stage
   129.6C runtime builtin-call1 bridge, Stage 129.6D constrained
@@ -169,6 +170,13 @@
   include annotated local slots in =:gc-root-slots= and the 129.5C
   descriptor path.  This is conservative static metadata, not a full
   liveness map.
+- *129.5E MVP*: =nelisp-cc-runtime= now exposes explicit native root
+  stack bridges =nelisp_aot_push_roots= and =nelisp_aot_pop_roots=,
+  and Phase 47 lowers internal =(aot-push-roots ROOTS)= /
+  =(aot-pop-roots ROOTS)= forms to those relocs.  This makes native
+  push/pop expressible in object output and updates
+  =nelisp-gc-root-set= during the active extent.  Automatic defun
+  prologue/epilogue insertion from =:gc-root-slots= remains pending.
 - *129.6A MVP*: top-level =require= and =provide= forms are now
   compile-time-only frontend forms.  =require= runs during compilation
   using literal arguments so needed macro/helper libraries can be
@@ -526,11 +534,11 @@ While the dynamic extent is active, =nelisp-gc-root-set= includes a
 slot in =ROOT-VECTOR= becomes reachable through the same mark path as
 bytecode VM stack roots.
 
-This is still not full native-frame GC integration.  The missing
-bridge is to have Phase 47 / Doc 99 call-boundary code materialize a
-root vector from =:gc-root-slots= and push/pop it around compiled
-function execution, or emit equivalent extern-call hooks from the
-compiled prologue and epilogue.
+This is still not full native-frame GC integration.  Stage 129.5E
+adds explicit native push/pop hooks; the remaining bridge is to have
+Phase 47 / Doc 99 call-boundary code materialize a root vector from
+=:gc-root-slots= and insert those hooks around compiled function
+execution automatically.
 
 *** §1.B.3 Shipped MVP: call-boundary root-vector bridge
 
@@ -556,10 +564,8 @@ Runtime side:
 Inside the dynamic extent, =nelisp-gc-root-set= exposes =roots= as an
 =aot-frame= root and the normal reachable-set walker traverses it.
 This is the Doc 99 handoff contract for the interpreter/compiled-code
-boundary.  The remaining 129.5 work is backend lowering: either emit
-equivalent extern-call hooks in compiled prologue/epilogue, or have
-the final Doc 99 dispatcher build/register the frame before jumping
-into the compiled symbol.
+boundary.  Stage 129.5E gives the backend explicit extern-call hooks
+to use for the prologue/epilogue side.
 
 *** §1.B.4 Shipped MVP: runtime let locals as Sexp roots
 
@@ -580,6 +586,37 @@ example above, slot 1: param slot 0 plus one runtime local).
 This keeps the 129.5C descriptor format unchanged.  It makes the
 descriptor more useful by allowing frame-local Sexp temporaries, not
 just annotated incoming params, to be copied into the AOT root vector.
+
+*** §1.B.5 Shipped MVP: explicit native root push/pop bridges
+
+Stage 129.5E exposes the root-frame operation as ordinary native
+relocs:
+
+#+begin_src elisp
+(aot-push-roots roots)
+...
+(aot-pop-roots roots)
+#+end_src
+
+The compiler lowers these internal forms to:
+
+#+begin_src elisp
+(extern-call nelisp_aot_push_roots mirror frames roots out scratch)
+(extern-call nelisp_aot_pop_roots mirror frames roots out scratch)
+#+end_src
+
+Runtime side, =nelisp-cc-runtime-aot-push-roots-boundary= validates
+that =ROOTS= is a vector, pushes it onto
+=nelisp-gc--active-aot-frames=, writes the pushed vector to =OUT[0]=,
+and returns =OUT=.  =nelisp-cc-runtime-aot-pop-roots-boundary= pops
+the innermost AOT root vector, verifies the expected vector when
+supplied, writes the popped vector to =OUT[0]=, and returns =OUT=.
+
+This is a native ABI surface, not yet automatic root management for
+every allocating defun.  The remaining 129.5 backend step is to
+materialize a root vector from a defun's =:gc-root-slots= and inject
+balanced =nelisp_aot_push_roots= / =nelisp_aot_pop_roots= calls in the
+compiled prologue/epilogue or Doc 99 call dispatcher.
 
 ** §1.C General =let= / =let*= + lexical environment
 
@@ -1709,7 +1746,7 @@ deletion or deferred until the extern can be elisp-emitted.
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
 | 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback SHIPPED 2026-05-25; real native ABI invocation pending |
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP SHIPPED 2026-05-25; lexical/special split pending |
-| 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots SHIPPED 2026-05-25; native push/pop pending |
+| 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges SHIPPED 2026-05-25; automatic prologue/epilogue insertion pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |
 | 129.6   | §1.H builtin delegation        | 129.2,.5   | med  | 129.6B builtin1 helper surface + 129.6C runtime bridge contract + 129.6D constrained direct symbol-name call lowering + 129.6E unary builtin table SHIPPED 2026-05-25; exported C ABI and calln/varargs pending |
 | 129.7   | §1.E closures + funcall/apply  | 129.5,.6   | high | 129.7A funcall1 dispatcher bridge + 129.7B funcall2 fixed ABI + 129.7C apply dispatcher + 129.7D quoted symbol designators + 129.7E SysV first stack-GP arg and funcall3 bridge + 129.7F final non-trivial stack-GP evaluation + 129.7G general outgoing stack-GP call-spill assembly + 129.7H direct funcall calln/rest-list bridge + 129.7I apply splicing bridge + 129.7J source rest parameter binding SHIPPED 2026-05-25; closure allocation/capture pending |
