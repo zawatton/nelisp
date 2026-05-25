@@ -1623,6 +1623,19 @@
                   (cl-position-if 2 (cl-position-if fn xs))
                   (cl-position-if-not 2 (cl-position-if-not fn xs))
                   (cl-reduce 2 (cl-reduce fn xs))
+                  (cl-delete-if 2 (cl-delete-if fn xs))
+                  (cl-delete-if-not 2 (cl-delete-if-not fn xs))
+                  (cl-member-if 2 (cl-member-if fn xs))
+                  (cl-member-if-not 2 (cl-member-if-not fn xs))
+                  (cl-assoc-if 2 (cl-assoc-if fn xs))
+                  (cl-assoc-if-not 2 (cl-assoc-if-not fn xs))
+                  (cl-rassoc-if 2 (cl-rassoc-if fn xs))
+                  (cl-rassoc-if-not 2 (cl-rassoc-if-not fn xs))
+                  (cl-substitute-if 3 (cl-substitute-if seed fn xs))
+                  (cl-substitute-if-not 3 (cl-substitute-if-not seed fn xs))
+                  (cl-nsubstitute-if 3 (cl-nsubstitute-if seed fn xs))
+                  (cl-nsubstitute-if-not 3
+                                         (cl-nsubstitute-if-not seed fn xs))
                   (sort 2 (sort xs fn))))
     (pcase-let ((`(,builtin ,argc ,form) case))
       (let* ((ir (nelisp-phase47-compiler--parse
@@ -1914,6 +1927,70 @@
     (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
+(ert-deftest nelisp-phase47-doc129/parse-cl-lib-predicate-lambda-lift ()
+  "Doc 129.7S: extended cl-lib predicate lambdas lift to defuns."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (xs :type sexp))
+                 (cl-member-if (lambda (x) x) xs))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (fn-symbol (nth 1 body-forms))
+         (call-node (nth 2 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+                   (string-to-list
+                    (symbol-name
+                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+                'scratch))))
+
+(ert-deftest nelisp-phase47-doc129/parse-cl-lib-substitute-lambda-lift ()
+  "Doc 129.7S: cl-substitute-if predicate position lambda-lifts."
+  (let* ((ir (nelisp-phase47-compiler--parse
+              '(defun caller
+                   ((out :type sexp)
+                    (mirror :type sexp)
+                    (frames :type sexp)
+                    (scratch :type sexp)
+                    (name_slot :type sexp)
+                    (new :type sexp)
+                    (xs :type sexp))
+                 (cl-substitute-if new (lambda (x) x) xs))))
+         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (lambda-ir (nth 0 forms))
+         (caller-ir (nth 1 forms))
+         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (call-node (nth 2 body-forms))
+         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                'nelisp_aot_builtin_calln))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+                'new))
+    (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 call-args))
+                'ref))
+    (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
+                'scratch))))
+
 (ert-deftest nelisp-phase47-doc129/parse-sort-lambda-lift ()
   "Doc 129.7N: `sort' predicate lambdas lift to synthetic defuns."
   (let* ((ir (nelisp-phase47-compiler--parse
@@ -2181,6 +2258,31 @@
                        (with-current-buffer standard-output
                          (call-process "readelf" nil t nil "--wide" "-s" path)))))
             (should (string-match-p "call_cl" out))
+            (should (string-match-p "nelisp_aot_builtin_calln" out))
+            (should (string-match-p "nl_alloc_symbol" out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-predicate-designator ()
+  "Doc 129.6P: object output exposes extended cl-lib predicates."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc129-cl-lib-pred-designator-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun call_cl_pred
+                ((out :type sexp)
+                 (mirror :type sexp)
+                 (frames :type sexp)
+                 (scratch :type sexp)
+                 (name_slot :type sexp)
+                 (new :type sexp)
+                 (xs :type sexp))
+              (cl-substitute-if new #'foo xs))
+           path)
+          (let ((out (with-output-to-string
+                       (with-current-buffer standard-output
+                         (call-process "readelf" nil t nil "--wide" "-s" path)))))
+            (should (string-match-p "call_cl_pred" out))
             (should (string-match-p "nelisp_aot_builtin_calln" out))
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))

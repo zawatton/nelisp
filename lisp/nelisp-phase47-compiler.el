@@ -1927,6 +1927,11 @@ the whole program."
                        cl-count-if cl-count-if-not cl-find-if
                        cl-find-if-not cl-remove-if cl-remove-if-not
                        cl-position-if cl-position-if-not cl-reduce
+                       cl-delete-if cl-delete-if-not cl-member-if
+                       cl-member-if-not cl-assoc-if cl-assoc-if-not
+                       cl-rassoc-if cl-rassoc-if-not cl-substitute-if
+                       cl-substitute-if-not cl-nsubstitute-if
+                       cl-nsubstitute-if-not
                        sort))
     (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
    ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
@@ -2079,6 +2084,12 @@ defun is visible in the current compile unit.")
     cl-count-if cl-count-if-not cl-find-if cl-find-if-not
     cl-remove-if cl-remove-if-not cl-position-if cl-position-if-not
     cl-reduce
+    cl-delete-if cl-delete-if-not
+    cl-member-if cl-member-if-not
+    cl-assoc-if cl-assoc-if-not
+    cl-rassoc-if cl-rassoc-if-not
+    cl-substitute-if cl-substitute-if-not
+    cl-nsubstitute-if cl-nsubstitute-if-not
     sort)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
 These names are direct-call candidates only when no same-named Phase 47
@@ -2119,6 +2130,18 @@ defun is visible in the current compile unit.")
     (cl-position-if . 0)
     (cl-position-if-not . 0)
     (cl-reduce . 0)
+    (cl-delete-if . 0)
+    (cl-delete-if-not . 0)
+    (cl-member-if . 0)
+    (cl-member-if-not . 0)
+    (cl-assoc-if . 0)
+    (cl-assoc-if-not . 0)
+    (cl-rassoc-if . 0)
+    (cl-rassoc-if-not . 0)
+    (cl-substitute-if . 1)
+    (cl-substitute-if-not . 1)
+    (cl-nsubstitute-if . 1)
+    (cl-nsubstitute-if-not . 1)
     (sort . 1))
   "Function-designator argument positions for calln builtin lowering.
 The index is zero-based within the source call's ordinary argument
