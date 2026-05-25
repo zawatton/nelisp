@@ -15,7 +15,7 @@
   scheduling descriptors and runtime module-init plan, Stage 129.3I
   runtime module-init plan execution hook, Stage 129.3J runtime
   custom metadata table, Stage 129.3K AOT init helper resolution /
-  call callback,
+  call callback, Stage 129.3L default init boundary context,
   Stage 129.4 multi-binding runtime =let= MVP,
   Stage 129.5A static GC root-map MVP, Stage 129.5B AOT root-set
   registration substrate, Stage 129.5C call-boundary root-vector
@@ -146,6 +146,14 @@
   (= :resolved / :host-stub / :not-found=), and Doc 99 can inject the
   native call function that consumes the resolved address plus the
   validated boundary context.
+- *129.3L MVP*: =nelisp-cc-runtime= now also owns the default
+  init-helper boundary context allocation.  Callers can use
+  =nelisp-cc-runtime-make-aot-init-context= to allocate the standard
+  one-slot =OUT=, =SCRATCH=, and =NAME-SLOT= vectors, or
+  =nelisp-cc-runtime-run-aot-module-init-plan-with-default-context=
+  to run a plan with those slots allocated by the runtime.  Real
+  native ABI invocation and real environment handles remain Doc 99
+  loader work.
 - *129.4 MVP*: multi-binding =let= now supports runtime initializer
   values inside =defun= bodies via =let-rt-n=.  Initializers parse in
   the original environment (=parallel =let= semantics), then the body
@@ -471,7 +479,7 @@ Frequency from a 2026-05-25 grep of the 6 GREEN anvil modules
 | =error= / =condition-case= / =catch= / =throw= / =unwind-protect= | 55+ | ✗ (no non-local exit) |
 | =dolist= / =dotimes= / =mapcar= / =apply= / =funcall= | 50+  | ✗ (no higher-order dispatch) |
 | =make-hash-table= + access        | 11   | partial (desugar only) |
-| =defvar= / =defconst= / =defcustom= | 21   | partial (AOT init helpers + runtime custom metadata table; native helper call pending) |
+| =defvar= / =defconst= / =defcustom= | 21   | partial (AOT init helpers + runtime custom metadata/context table; native helper call pending) |
 | =defmacro= + macro use            | few  | partial (frontend macro expansion MVP) |
 
 * §1 Mechanism groups (= the actual work, grouped by what they share)
@@ -998,12 +1006,30 @@ the default resolver still returns =:host-stub= so ERT can inspect the
 contract without dereferencing a native address.  =:not-found= raises
 before any native-call callback is invoked.
 
+=nelisp-cc-runtime-make-aot-init-context= fills the standard
+helper-call boundary context:
+
+#+begin_src elisp
+(:out OUT :mirror MIRROR :frames FRAMES
+ :scratch SCRATCH :name-slot NAME-SLOT)
+#+end_src
+
+When the caller does not supply =OUT=, =SCRATCH=, or =NAME-SLOT=, the
+runtime allocates fresh one-slot vectors for those values.  The
+convenience wrapper
+=nelisp-cc-runtime-run-aot-module-init-plan-with-default-context=
+uses the same allocation helper before delegating to the ordinary
+module-init plan runner.  This gives Doc 99 a reusable boundary
+context constructor while preserving the explicit callback point for
+native helper invocation.
+
 This still is not full top-level execution inside Phase 47 itself.
 The compiled object exposes the initializer entry points and the
 runtime now has a validated scheduling/execution hook, metadata store,
-and helper resolution/call contract; actual object loading, real
-native ABI invocation, scratch/name/out allocation, and real
-environment passing remain Doc 99 call-boundary responsibilities.
+helper resolution/call contract, and default allocation for the
+standard out/scratch/name slots; actual object loading, real native
+ABI invocation, and real environment passing remain Doc 99
+call-boundary responsibilities.
 Initializer values are currently limited to the same boxed Int
 expression subset accepted by =defun-sexp-int-*= helpers.
 
@@ -1936,7 +1962,7 @@ deletion or deferred until the extern can be elisp-emitted.
 |---------+--------------------------------+------------+------+-------------------------|
 | 129.1   | §1.G macroexpand frontend      | —          | low  | MVP SHIPPED 2026-05-25 |
 | 129.2   | §1.A tagged-value calculus     | 129.1      | high | boxed Int MVP SHIPPED 2026-05-25 |
-| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback SHIPPED 2026-05-25; real native ABI invocation pending |
+| 129.3   | §1.D setq/defvar (symbol cells)| 129.2      | low  | 129.3A boxed setq MVP + 129.3B symbol literal helper + 129.3C defvar conditional helper + 129.3D defconst helper + 129.3E/F top-level init helpers + 129.3G custom metadata descriptors + 129.3H runtime module-init plan + 129.3I execution hook + 129.3J runtime custom metadata table + 129.3K helper resolution callback + 129.3L default init boundary context SHIPPED 2026-05-25; real native ABI invocation / real environment passing pending |
 | 129.4   | §1.C general let/let*          | 129.2      | med  | multi-binding let MVP SHIPPED 2026-05-25; lexical/special split pending |
 | 129.5   | §1.B heap + GC roots           | 129.2      | high | 129.5A static root map + 129.5B aot-frame root-set substrate + 129.5C call-boundary root-vector bridge + 129.5D runtime let roots + 129.5E explicit native root push/pop bridges + 129.5F boundary defun auto root-scope insertion + 129.5G root-vector materialisation bridge SHIPPED 2026-05-25; fully general non-boundary defun root frames pending |
 | 129.6A  | §1.G top-level module forms    | 129.1      | low  | require/provide frontend MVP SHIPPED 2026-05-25 |

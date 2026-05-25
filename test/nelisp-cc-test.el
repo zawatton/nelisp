@@ -2079,6 +2079,57 @@ exit points were emitted; call-points were missing."
       (lambda (_helper _context _descriptor) :ok))
      :type 'nelisp-cc-runtime-error)))
 
+(ert-deftest nelisp-cc-runtime-make-aot-init-context ()
+  "Doc 129.3L — runtime allocates the standard init boundary slots."
+  (let* ((context
+          (nelisp-cc-runtime-make-aot-init-context 'mirror 'frames))
+         (out (plist-get context :out))
+         (scratch (plist-get context :scratch))
+         (name-slot (plist-get context :name-slot)))
+    (should (eq (plist-get context :mirror) 'mirror))
+    (should (eq (plist-get context :frames) 'frames))
+    (should (vectorp out))
+    (should (vectorp scratch))
+    (should (vectorp name-slot))
+    (should (= (length out) 1))
+    (should (= (length scratch) 1))
+    (should (= (length name-slot) 1))
+    (should-not (eq out scratch))
+    (should-not (eq out name-slot))
+    (should-not (eq scratch name-slot))))
+
+(ert-deftest nelisp-cc-runtime-run-aot-module-init-plan-default-context ()
+  "Doc 129.3L — module-init execution can allocate default context slots."
+  (let* ((plan
+          (nelisp-cc-runtime-aot-module-init-plan
+           '((:kind defvar
+              :name x
+              :helper nelisp_aot_var_0_x
+              :index 0))
+           nil nil))
+         (seen nil)
+         (result
+          (nelisp-cc-runtime-run-aot-module-init-plan-with-default-context
+           plan
+           (lambda (helper context descriptor)
+             (push (list helper
+                         (plist-get context :mirror)
+                         (plist-get context :frames)
+                         (vectorp (plist-get context :out))
+                         (vectorp (plist-get context :scratch))
+                         (vectorp (plist-get context :name-slot))
+                         (plist-get descriptor :kind))
+                   seen)
+             :ok)
+           nil
+           'mirror
+           'frames)))
+    (should (equal (nreverse seen)
+                   '((nelisp_aot_var_0_x
+                      mirror frames t t t defvar))))
+    (should (equal (plist-get result :init-results)
+                   '((nelisp_aot_var_0_x . :ok))))))
+
 (ert-deftest nelisp-cc-runtime-aot-custom-table-default-registration ()
   "Doc 129.3J — module init stores defcustom metadata by default."
   (let* ((custom-metadata

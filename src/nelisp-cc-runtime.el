@@ -2661,6 +2661,20 @@ NATIVE-CALL and RESOLVER are forwarded to
     (nelisp-cc-runtime-call-aot-init-helper
      helper context descriptor native-call resolver)))
 
+(defun nelisp-cc-runtime-make-aot-init-context
+    (&optional mirror frames out scratch name-slot)
+  "Return a default Doc 129.3 AOT init boundary context.
+MIRROR and FRAMES are the environment handles forwarded to generated
+init helpers.  OUT, SCRATCH, and NAME-SLOT default to fresh one-slot
+vectors so callers can run module initialization without separately
+allocating the standard boxed-boundary slots."
+  (let ((context (list :out (or out (vector nil))
+                       :mirror mirror
+                       :frames frames
+                       :scratch (or scratch (vector nil))
+                       :name-slot (or name-slot (vector nil)))))
+    (nelisp-cc-runtime--validate-aot-init-context context)))
+
 (defun nelisp-cc-runtime--validate-aot-init-context (context)
   "Validate CONTEXT for running Doc 129 AOT init helpers."
   (unless (and (listp context)
@@ -2672,6 +2686,20 @@ NATIVE-CALL and RESOLVER are forwarded to
     (signal 'nelisp-cc-runtime-error
             (list :bad-aot-init-context context)))
   context)
+
+(defun nelisp-cc-runtime-run-aot-module-init-plan-with-default-context
+    (plan call-helper &optional register-custom mirror frames out scratch name-slot)
+  "Run PLAN with a freshly allocated Doc 129.3 init context.
+CALL-HELPER and REGISTER-CUSTOM have the same meaning as in
+`nelisp-cc-runtime-run-aot-module-init-plan'.  MIRROR, FRAMES, OUT,
+SCRATCH, and NAME-SLOT are forwarded to
+`nelisp-cc-runtime-make-aot-init-context'."
+  (nelisp-cc-runtime-run-aot-module-init-plan
+   plan
+   (nelisp-cc-runtime-make-aot-init-context
+    mirror frames out scratch name-slot)
+   call-helper
+   register-custom))
 
 (defun nelisp-cc-runtime-run-aot-module-init-plan
     (plan context call-helper &optional register-custom)
