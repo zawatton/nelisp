@@ -58,6 +58,54 @@
         (call (format "call %S" (nelisp-sys-ast-prop node :fn)))
         (t (format "%S" k))))))
 
+(defun nelisp-sys-ast-children (node)
+  "Return the immediate child expression nodes of NODE, in evaluation order.
+Used by the analysis passes (unsafe/effect/ownership/borrow) for generic
+traversal.  Type/field/struct slots that are not expression nodes are
+excluded."
+  (cl-case (nelisp-sys-ast-kind node)
+    ((int bool var sizeof alignof offsetof) nil)
+    (binop (nelisp-sys-ast-prop node :args))
+    (not (list (nelisp-sys-ast-prop node :arg)))
+    (cast (list (nelisp-sys-ast-prop node :arg)))
+    (let (append
+          (mapcar (lambda (b) (nth 2 b)) (nelisp-sys-ast-prop node :bindings))
+          (nelisp-sys-ast-prop node :body)))
+    (seq (nelisp-sys-ast-prop node :body))
+    (if (delq nil (list (nelisp-sys-ast-prop node :cond)
+                        (nelisp-sys-ast-prop node :then)
+                        (nelisp-sys-ast-prop node :else))))
+    (cond (apply #'append
+                 (mapcar (lambda (cl)
+                           (append (and (nelisp-sys-ast-node-p (car cl))
+                                        (list (car cl)))
+                                   (cdr cl)))
+                         (nelisp-sys-ast-prop node :clauses))))
+    (while (cons (nelisp-sys-ast-prop node :cond)
+                 (nelisp-sys-ast-prop node :body)))
+    (set! (list (nelisp-sys-ast-prop node :value)))
+    (load-field (list (nelisp-sys-ast-prop node :place)))
+    (store-field! (list (nelisp-sys-ast-prop node :place)
+                        (nelisp-sys-ast-prop node :value)))
+    (slice-len (list (nelisp-sys-ast-prop node :slice)))
+    (slice-ref (list (nelisp-sys-ast-prop node :slice)
+                     (nelisp-sys-ast-prop node :index)))
+    (slice-set! (list (nelisp-sys-ast-prop node :slice)
+                      (nelisp-sys-ast-prop node :index)
+                      (nelisp-sys-ast-prop node :value)))
+    (ptr-load (list (nelisp-sys-ast-prop node :ptr)))
+    (ptr-store! (list (nelisp-sys-ast-prop node :ptr)
+                      (nelisp-sys-ast-prop node :value)))
+    (ptr-add (list (nelisp-sys-ast-prop node :ptr)
+                   (nelisp-sys-ast-prop node :offset)))
+    (exit (list (nelisp-sys-ast-prop node :arg)))
+    (unsafe (nelisp-sys-ast-prop node :body))
+    (with-borrow (cons (nelisp-sys-ast-prop node :place)
+                       (nelisp-sys-ast-prop node :body)))
+    (resource-op (list (nelisp-sys-ast-prop node :arg)))
+    (call (nelisp-sys-ast-prop node :args))
+    (t nil)))
+
 (provide 'nelisp-sys-ast)
 
 ;;; nelisp-sys-ast.el ends here

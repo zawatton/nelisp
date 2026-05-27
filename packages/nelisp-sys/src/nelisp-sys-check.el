@@ -380,9 +380,17 @@ With NEED-MUT, require a (slice-mut T)."
            (puthash name
                     (list :params (mapcar #'cdr (nelisp-sys-ast-prop item :params))
                           :ret (nelisp-sys-ast-prop item :ret)
+                          :effects (nelisp-sys-ast-prop item :effects)
+                          :unsafe (nelisp-sys-ast-prop item :unsafe)
                           :kind (nelisp-sys-ast-kind item))
                     funcs)))))
     (nelisp-sys-check--ctx-make :structs structs :funcs funcs)))
+
+(defun nelisp-sys-check-build-ctx (module)
+  "Public: build the check context (struct env + function table) from MODULE.
+Used by the safety passes (ownership/borrow/unsafe/effect) so they share
+one resolved view of structs and function signatures."
+  (nelisp-sys-check--build-ctx module))
 
 (defun nelisp-sys-check--check-defun (ctx item)
   "Type-check one defun ITEM under CTX."
