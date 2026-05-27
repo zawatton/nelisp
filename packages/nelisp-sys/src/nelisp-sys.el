@@ -20,7 +20,7 @@
 ;; module talks to the backend through the adapter contract so the package
 ;; stays extractable into its own repository later.
 ;;
-;; This file is the public aggregator: requiring `nelisp-sys' pulls in the
+;; This file is the BASE layer (dependency root): it defines only the
 ;; whole front end (types, target model, layout, AST, frontend, checkers)
 ;; but NOT the backend adapter, which is required explicitly by the driver
 ;; so that pure-analysis use (type/borrow checking) never needs a toolchain.
@@ -44,6 +44,8 @@ criterion 15: the release cadence differs from NeLisp core).")
 ;; Front-end modules are required lazily as they are implemented.  During
 ;; the scaffold stage (130.1) only this aggregator and the adapter stub
 ;; exist; later phases add `(require 'nelisp-sys-types)' etc. here.
+
+;; No sibling `require's here on purpose: this file is the dependency root.
 
 (provide 'nelisp-sys)
 
