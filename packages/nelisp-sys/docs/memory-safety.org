@@ -1,0 +1,68 @@
+#+TITLE: nelisp-sys memory-safety model
+#+OPTIONS: toc:2
+
+* Overview
+
+Package-local memory-safety contract (Doc 130 extraction criterion 9,
+derived from Doc 131).  The model applies only to =nelisp-sys= code;
+ordinary dynamic NeLisp/Elisp keeps its current semantics.
+
+Prevented failure modes in safe code: use-after-free, double free/close,
+mutable aliasing, out-of-bounds slice access, raw-pointer deref outside an
+unsafe boundary, and allocation/GC in =:alloc none= functions.
+
+* Memory classes
+
+#+begin_src text
+(owned T)      unique owner, move-only unless T is Copy
+(& T)          shared read-only borrow
+(&mut T)       exclusive mutable borrow
+(ptr T)        raw pointer, deref/store only in sys:unsafe
+(slice T)      safe immutable ptr + len
+(slice-mut T)  safe mutable ptr + len
+#+end_src
+
+Copy: integers, bool, raw pointers, immutable refs, all-Copy plain structs.
+Move-only/drop: owned buffers, mmap regions, file descriptors, sockets.
+
+* Ownership rules (MVP)
+
+1. each move-only value has one owner;
+2. moving invalidates the old binding;
+3. use of a moved binding is a compile-time error;
+4. each drop value is consumed/dropped exactly once;
+5. =sys:forget= is unsafe and suppresses drop;
+6. =sys:dup= requires a type-specific duplication op.
+
+* Borrow rules (MVP, lexical, explicit forms)
+
+1. any number of =(& T)= may coexist;
+2. one =(&mut T)= is exclusive;
+3. no other borrow of a place may coexist with its =&mut=;
+4. borrows end at lexical form exit;
+5. returning/storing a borrow is forbidden in MVP;
+6. borrowing through raw pointers requires =sys:unsafe=.
+
+* Unsafe boundary
+
+Raw pointer load/store, pointer arithmetic, unsafe FFI, volatile, atomics
+(pre-checker), inline asm, =sys:forget=, unchecked casts require an
+enclosing =(sys:unsafe (:reason "...") ...)=.  Unsafe does not disable type
+checking; it only permits operations the checker cannot prove safe.
+
+* Effects
+
+=:alloc none= rejects NeLisp heap allocation and GC safepoints (consing,
+vector/string construction, dynamic closures, Sexp boxing, or calling a
+function without a compatible allocation effect).
+
+* Diagnostics
+
+Stable error codes (=E-SYS-...=) with source span, primary message,
+expected/actual types, and an ownership/borrow/effect trace where relevant.
+
+* Unsafe audit
+
+Each =sys:unsafe= may carry =:reason=; the package can count unsafe forms
+and CI can fail on unreviewed increases.  =:reason= is warned-on-absent in
+MVP and may become required later.

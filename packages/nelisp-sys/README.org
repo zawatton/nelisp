@@ -1,0 +1,85 @@
+#+TITLE: nelisp-sys — typed C-replacement systems subset for NeLisp
+#+OPTIONS: toc:nil
+
+* What it is
+
+=nelisp-sys= is a typed, statically checked systems-programming subset
+hosted on the NeLisp Phase 47 toolchain.  It is designed to replace C for
+selected low-level components while remaining extractable into its own
+repository later.
+
+It is *not* ordinary dynamic Elisp.  Source written in the =sys:= family of
+forms is type checked, ownership/borrow checked, effect checked, and lowered
+to native object code (ELF / Mach-O / PE) through a thin adapter over the
+existing NeLisp compiler, assemblers, object writers, and static linker.
+
+* Status
+
+Early development.  See =nelisp-sys-version= (currently =0.1.0-dev=).
+
+Design specs (in the NeLisp tree, will become package-local on extraction):
+- Doc 130 — extractable C-replacement subset (master plan + extraction criteria)
+- Doc 131 — semantics and safety contract
+- Doc 132 — ABI and platform model
+
+* Layout
+
+#+begin_src text
+packages/nelisp-sys/
+├── README.org
+├── docs/        language.org, abi.org, memory-safety.org, extraction.org
+├── src/         nelisp-sys*.el  (front end + adapter)
+└── test/        nelisp-sys*-test.el + fixtures/*.nl
+#+end_src
+
+* Boundary rule
+
+Only =src/nelisp-sys-adapter-nelisp.el= may call private NeLisp internals
+(=nelisp-phase47-*=, =nelisp-asm-*=, =nelisp-elf-write-*=, =nelisp-link-*=,
+Sexp layout).  Every other module uses the named adapter contract.  This is
+extraction criterion 6 from Doc 130.
+
+* Example (target syntax)
+
+#+begin_src elisp
+(sys:defstruct point
+  (:repr c)
+  (x i32)
+  (y i32))
+
+(sys:defun add ((a i32) (b i32)) i32
+  (:abi c :export "nl_add" :alloc none)
+  (+ a b))
+#+end_src
+
+* Running the tests
+
+From the NeLisp repo root:
+
+#+begin_src sh
+make test                 # runs the whole gated suite, including this package
+#+end_src
+
+Or a single nelisp-sys file:
+
+#+begin_src sh
+emacs --batch -Q -L src -L lisp \
+  -L packages/nelisp-sys/src -L packages/nelisp-sys/test \
+  --eval '(setq load-prefer-newer t)' \
+  -l ert -l packages/nelisp-sys/test/nelisp-sys-test.el \
+  -f ert-run-tests-batch-and-exit
+#+end_src
+
+* Design decisions (resolving Doc 130/131/132 open questions)
+
+- Source uses =sys:= reader-level forms; the package API uses the
+  =nelisp-sys-= / =nelisp-sys--= prefixes.
+- Types are explicit in MVP (no integer-width inference yet); strict from
+  the first stage.
+- The backend is a *separate typed IR* lowered by the adapter, not a direct
+  raw Phase 47 frontend dependency.
+- Borrow checking uses explicit =sys:with-borrow= / =sys:with-borrow-mut=
+  forms in MVP for predictable diagnostics.
+- Hosted C-ABI object generation comes before freestanding mode.
+- *Zero new Rust*: the toolchain is driven entirely from Elisp; the whole
+  point is C replacement without growing the Rust substrate.

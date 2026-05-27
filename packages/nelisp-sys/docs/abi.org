@@ -1,0 +1,58 @@
+#+TITLE: nelisp-sys ABI and platform model
+#+OPTIONS: toc:2
+
+* Overview
+
+Package-local ABI contract (Doc 130 extraction criterion 8, derived from
+Doc 132).  =nelisp-sys= has its own C-replacement ABI; it does NOT reuse or
+blur the NeLisp Sexp runtime ABI.
+
+* Supported targets
+
+| Triple | Arch | OS | Object | C ABI |
+|--------+------+----+--------+-------|
+| =x86_64-unknown-linux-gnu= | x86_64 | linux | ELF64 | SysV AMD64 |
+| =aarch64-unknown-linux-gnu= | aarch64 | linux | ELF64 | AAPCS64 |
+| =x86_64-apple-darwin= | x86_64 | macos | Mach-O 64 | SysV AMD64 / Darwin |
+| =aarch64-apple-darwin= | aarch64 | macos | Mach-O 64 | AAPCS64 / Darwin |
+| =x86_64-pc-windows-msvc= | x86_64 | windows | PE/COFF | Microsoft x64 |
+
+* Scalar layout
+
+| Type | Size | Alignment |
+|------+------+-----------|
+| =i8/u8/bool= | 1 | 1 |
+| =i16/u16= | 2 | 2 |
+| =i32/u32= | 4 | 4 |
+| =i64/u64= | 8 | 8 |
+| =isize/usize/(ptr T)= | pointer width | pointer alignment |
+
+* Struct layout (=:repr c=)
+
+1. fields laid out in source order;
+2. each field starts at the next offset satisfying its alignment;
+3. struct alignment is the max field alignment;
+4. final size rounded up to struct alignment.
+
+=(sys:layout NAME)= returns =(:size N :align A :fields ((F :offset O :size S :align A)...))=.
+
+* Calling convention (MVP)
+
+=:abi c= maps to the target's C ABI.  MVP lowers integer/pointer args and
+returns on linux/x86_64 first; other targets are object-inspection gates
+until a C harness verifies them.
+
+* Object metadata
+
+Emitted ABI summary (sidecar or custom section):
+
+#+begin_src elisp
+(:target "x86_64-unknown-linux-gnu" :object elf64 :c-abi sysv-amd64
+ :pointer-width 64 :exports (("nl_add" :args (i32 i32) :ret i32)))
+#+end_src
+
+* Drift gate
+
+Following the Sexp ABI pattern: human-readable spec (this file) + Elisp
+target constants + generated probe output + a diff test
+(=nelisp-sys-abi-drift-test.el=).

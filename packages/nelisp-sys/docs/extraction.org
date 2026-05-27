@@ -1,0 +1,38 @@
+#+TITLE: nelisp-sys extraction plan and criteria
+#+OPTIONS: toc:2
+
+* Purpose
+
+=nelisp-sys= lives in-tree (=packages/nelisp-sys/=) as a nursery while the
+semantics stabilize, but is written to be extractable from day one (Doc 130).
+
+* Extraction criteria (Doc 130)
+
+Do not split into a separate repository until all of these hold:
+
+1. README explains usage without referencing unrelated NeLisp internals.
+2. =nelisp-sys-compile= can compile at least one source file to an object.
+3. At least one C ABI function can be called from a C harness.
+4. Struct layout tests pass for at least linux/x86_64.
+5. The adapter has fewer than ~20 public adapter calls.
+6. No package file except =nelisp-sys-adapter-nelisp.el= calls private
+   compiler/linker functions.
+7. Package tests can be run as a named subset.
+8. The language and ABI docs are package-local.
+9. The memory-safety docs are package-local.
+10. Safe code rejects raw pointer deref outside =sys:unsafe=.
+11. Move-only resources reject use-after-move and double-consumption.
+12. Lexical borrow tests pass for shared/mutable borrow MVP.
+13. =:alloc none= tests reject heap allocation.
+14. The build flow can be described as a CLI contract.
+15. The desired release cadence differs from NeLisp core.
+
+* Current status
+
+(Updated as phases land — see commit log / worklog.)
+
+* Split rehearsal
+
+Stage 130.7 scripts a copy into =target/nelisp-sys-extract/= and verifies
+that package tests depend only on the adapter contract, producing an
+extraction report listing remaining NeLisp-private imports.

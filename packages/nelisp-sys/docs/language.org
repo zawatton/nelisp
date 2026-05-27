@@ -1,0 +1,60 @@
+#+TITLE: nelisp-sys language reference
+#+OPTIONS: toc:2
+
+* Overview
+
+=nelisp-sys= is a typed systems subset.  This document is the package-local
+language reference (Doc 130 extraction criterion 8).  It is derived from
+design Doc 131 and is the authority once the package is extracted.
+
+* Source namespace
+
+Source forms use the =sys:= prefix.  The compiler API uses =nelisp-sys-=.
+
+* Top-level forms
+
+- =(sys:defstruct NAME (:repr c|sys) (FIELD TYPE)...)= — struct definition.
+- =(sys:defun NAME ((ARG TYPE)...) RET (ATTRS...) BODY...)= — function.
+- =(sys:extern NAME (:symbol S :abi c :unsafe t) (ARGS...) RET (ATTRS...))=
+  — imported C function declaration.
+- =(sys:const NAME TYPE VALUE)= — compile-time constant.
+- =(sys:static-assert FORM MSG)= — compile-time assertion.
+
+* Function attributes
+
+#+begin_src text
+:abi      c | sysv-amd64 | win64 | aapcs64 | nelisp-internal
+:export   "symbol"   | :import "symbol" | :private
+:alloc    none | stack | heap
+:panic    none | abort | unwind
+:unsafe   none | contains
+:syscall  none | may
+:ffi      none | may
+#+end_src
+
+* Types
+
+See =abi.org= for sizes/alignments per target.
+
+#+begin_src text
+i8 u8 i16 u16 i32 u32 i64 u64 isize usize bool void   ; scalars
+f32 f64 char32                                         ; optional scalars
+(array T N) (struct NAME) (ptr T)
+(slice T) (slice-mut T) (owned T) (& T) (&mut T)
+(fn ((ARG TYPE)...) RET EFFECTS)
+(result T E) (option T)
+#+end_src
+
+* Body forms (MVP)
+
+- arithmetic: =+ - * / mod=, comparisons =< <= > >= = /==, =and or not=.
+- =(let ((NAME TYPE EXPR)...) BODY...)= — typed locals.
+- =(if C THEN ELSE)=, =(cond ...)=, =(while C BODY...)=, =(seq ...)=.
+- =(sys:load-field PLACE FIELD)= / =(sys:store-field! PLACE FIELD VALUE)=.
+- =(sys:slice-len S)= / =(sys:slice-ref S I)= / =(sys:slice-set! S I V)=.
+- =(sys:cast TYPE EXPR)= — explicit width/sign conversion.
+- =(sys:unsafe (:reason "...") BODY...)= — unsafe boundary.
+- =(sys:with-borrow ((P (& T) PLACE)) BODY...)= and =-mut= variant.
+- =(sys:sizeof TYPE)= / =(sys:alignof TYPE)= / =(sys:offsetof STRUCT FIELD)=.
+
+Detailed semantics live in =memory-safety.org= and design Doc 131.
