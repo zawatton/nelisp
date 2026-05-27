@@ -45,8 +45,16 @@
   (should (nelisp-sys-type-valid-p '(array (ptr i8) 8)))
   (should (nelisp-sys-type-valid-p '(slice-mut u8)))
   (should-not (nelisp-sys-type-valid-p '(array i32 -1)))
-  (should-not (nelisp-sys-type-valid-p 'not-a-type))
-  (should-not (nelisp-sys-type-valid-p '(ptr not-a-type))))
+  (should (nelisp-sys-type-valid-p 'point))        ; bare named type (no env)
+  (should (nelisp-sys-type-valid-p '(ptr point)))
+  (should-not (nelisp-sys-type-valid-p 42))
+  (should-not (nelisp-sys-type-valid-p nil))
+  ;; with an env, an unregistered named type is rejected
+  (let ((env (nelisp-sys-types-env-make)))
+    (nelisp-sys-types-env-add env 'point 'c '((x i32)))
+    (should (nelisp-sys-type-valid-p 'point env))
+    (should-not (nelisp-sys-type-valid-p 'nope env))
+    (should-not (nelisp-sys-type-valid-p '(ptr nope) env))))
 
 (ert-deftest nelisp-sys-types-struct-env ()
   (let ((env (nelisp-sys-types-env-make)))

@@ -54,7 +54,7 @@
    ((nelisp-sys-type-array-p type)
     (nelisp-sys-layout-alignof (nth 1 type) target env))
    ((nelisp-sys-type-struct-ref-p type)
-    (plist-get (nelisp-sys-layout-struct (nth 1 type) target env) :align))
+    (plist-get (nelisp-sys-layout-struct (nelisp-sys-type-struct-name type) target env) :align))
    (t (signal 'nelisp-sys-layout-error
               (list (format "no alignment for type: %S" type))))))
 
@@ -76,7 +76,7 @@
     ;; C array stride = element sizeof (already includes trailing pad).
     (* (nth 2 type) (nelisp-sys-layout-sizeof (nth 1 type) target env)))
    ((nelisp-sys-type-struct-ref-p type)
-    (plist-get (nelisp-sys-layout-struct (nth 1 type) target env) :size))
+    (plist-get (nelisp-sys-layout-struct (nelisp-sys-type-struct-name type) target env) :size))
    (t (signal 'nelisp-sys-layout-error
               (list (format "no size for type: %S" type))))))
 
@@ -107,12 +107,12 @@ SEEN guards against by-value recursive structs."
         (let* ((ftype (cdr f))
                (fsize (if (nelisp-sys-type-struct-ref-p ftype)
                           (plist-get (nelisp-sys-layout-struct
-                                      (nth 1 ftype) target env seen)
+                                      (nelisp-sys-type-struct-name ftype) target env seen)
                                      :size)
                         (nelisp-sys-layout-sizeof ftype target env)))
                (falign (if (nelisp-sys-type-struct-ref-p ftype)
                            (plist-get (nelisp-sys-layout-struct
-                                       (nth 1 ftype) target env seen)
+                                       (nelisp-sys-type-struct-name ftype) target env seen)
                                       :align)
                          (nelisp-sys-layout-alignof ftype target env))))
           (setq offset (nelisp-sys-layout--round-up offset falign))

@@ -8,14 +8,20 @@
 ;; Types are canonical s-expressions:
 ;;
 ;;   scalars   i8 u8 i16 u16 i32 u32 i64 u64 isize usize bool void f32 f64 char32
+;;   named     point             ; bare symbol = struct/resource reference
+;;   struct    (struct NAME)      ; explicit struct reference (equiv. to bare)
 ;;   pointer   (ptr T)
 ;;   array     (array T N)
-;;   struct    (struct NAME)        ; resolved against a struct env
 ;;   slice     (slice T) (slice-mut T)
 ;;   owned     (owned T)
 ;;   borrow    (& T) (&mut T)
 ;;   function  (fn ((ARG TYPE)...) RET EFFECTS)
 ;;   sum       (result T E) (option T)
+;;
+;; Bare non-scalar symbols (e.g. `point' in (ptr point) or (& point)) are
+;; named-type references — the source syntax Doc 131 uses.  They resolve to
+;; struct/resource definitions in a struct ENV; the explicit (struct NAME)
+;; form is accepted as an equivalent.
 ;;
 ;; This module owns: type predicates, structural equality, validity
 ;; checking, the struct definition environment, and Copy/move
@@ -90,9 +96,26 @@ Signals `nelisp-sys-type-error' if TYPE is not an integer scalar."
   "Return non-nil if TYPE is `(array T N)'."
   (and (consp type) (eq (car type) 'array)))
 
+(defun nelisp-sys-type-named-p (type)
+  "Return non-nil if TYPE is a bare named-type symbol.
+A named type is any non-keyword, non-nil symbol that is not a scalar
+\(a struct or resource name used bare, as in (ptr point))."
+  (and (symbolp type) type (not (keywordp type))
+       (not (nelisp-sys-type-scalar-p type))))
+
 (defun nelisp-sys-type-struct-ref-p (type)
-  "Return non-nil if TYPE is a struct reference `(struct NAME)'."
-  (and (consp type) (eq (car type) 'struct)))
+  "Return non-nil if TYPE refers to a named/struct type.
+Both the bare `point' and the explicit `(struct point)' qualify."
+  (or (nelisp-sys-type-named-p type)
+      (and (consp type) (eq (car type) 'struct))))
+
+(defun nelisp-sys-type-struct-name (type)
+  "Return the struct/named-type name in TYPE, or nil.
+Accepts the bare symbol `point' or the explicit `(struct point)'."
+  (cond
+   ((nelisp-sys-type-named-p type) type)
+   ((and (consp type) (eq (car type) 'struct)) (nth 1 type))
+   (t nil)))
 
 (defun nelisp-sys-type-slice-p (type)
   "Return non-nil if TYPE is `(slice T)' or `(slice-mut T)'."
@@ -174,8 +197,9 @@ Signals on duplicate definition."
 
 (defun nelisp-sys-type-valid-p (type &optional env)
   "Return non-nil if TYPE is a well-formed type.
-Struct references are validated against ENV when ENV is non-nil; with
-no ENV a `(struct NAME)' is accepted structurally (forward reference)."
+Named/struct references are checked against ENV when ENV is non-nil;
+with no ENV a bare name or `(struct NAME)' is accepted structurally
+\(forward reference — the type checker resolves it later)."
   (cond
    ((nelisp-sys-type-scalar-p type) t)
    ((nelisp-sys-type-pointer-p type)
@@ -190,9 +214,9 @@ no ENV a `(struct NAME)' is accepted structurally (forward reference)."
         (nelisp-sys-type-ref-p type))
     (nelisp-sys-type-valid-p (nth 1 type) env))
    ((nelisp-sys-type-struct-ref-p type)
-    (let ((name (nth 1 type)))
-      (and (symbolp name)
-           (or (null env) (nelisp-sys-types-env-get env name) t))))
+    (let ((name (nelisp-sys-type-struct-name type)))
+      (and (symbolp name) name
+           (if env (and (nelisp-sys-types-env-get env name) t) t))))
    ((nelisp-sys-type-fn-p type)
     (and (cl-every (lambda (a) (nelisp-sys-type-valid-p (cadr a) env))
                    (nth 1 type))
@@ -212,11 +236,13 @@ Return TYPE on success."
 ;;; Structural equality.
 
 (defun nelisp-sys-type-equal (a b)
-  "Return non-nil if types A and B are structurally equal."
+  "Return non-nil if types A and B are structurally equal.
+The bare `point' and explicit `(struct point)' compare equal."
   (cond
+   ((and (nelisp-sys-type-struct-ref-p a) (nelisp-sys-type-struct-ref-p b))
+    (eq (nelisp-sys-type-struct-name a) (nelisp-sys-type-struct-name b)))
    ((and (symbolp a) (symbolp b)) (eq a b))
-   ((and (consp a) (consp b))
-    (equal a b))
+   ((and (consp a) (consp b)) (equal a b))
    (t nil)))
 
 ;;; Copy / move classification (Doc 131).
@@ -225,7 +251,8 @@ Return TYPE on success."
   "Return non-nil if TYPE is a Copy type under struct ENV.
 Copy: integers, bool, char, float, raw pointers, immutable borrows,
 immutable slices, fixed arrays of Copy, and all-Copy plain structs.
-Move-only: (owned T), (&mut T), (slice-mut T)."
+Move-only: (owned T), (&mut T), (slice-mut T), and named types not
+resolvable to an all-Copy struct (conservative for resources)."
   (cond
    ((nelisp-sys-type-scalar-p type)
     (not (nelisp-sys-type-void-p type)))
@@ -238,7 +265,8 @@ Move-only: (owned T), (&mut T), (slice-mut T)."
    ((nelisp-sys-type-array-p type)
     (nelisp-sys-type-copy-p (nth 1 type) env))
    ((nelisp-sys-type-struct-ref-p type)
-    (let ((fields (nelisp-sys-types-struct-fields env (nth 1 type))))
+    (let ((fields (nelisp-sys-types-struct-fields
+                   env (nelisp-sys-type-struct-name type))))
       (and fields
            (cl-every (lambda (f) (nelisp-sys-type-copy-p (cdr f) env)) fields))))
    (t nil)))
