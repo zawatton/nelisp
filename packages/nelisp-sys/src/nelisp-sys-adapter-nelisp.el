@@ -77,6 +77,19 @@ is the ONLY adapter call that drives the private Phase 47 compiler
          (fmt (cdr af)))
     (nelisp-phase47-compile-to-object sexp output-path :arch arch :format fmt)))
 
+(defun nelisp-sys-adapter-archive-static-lib (objects output-path)
+  "Archive OBJECTS (a list of object-file paths) into a static library.
+Uses the host `ar'.  Returns OUTPUT-PATH; signals `nelisp-sys-adapter-error'
+when `ar' is missing or fails."
+  (let ((ar (executable-find "ar")))
+    (unless ar
+      (signal 'nelisp-sys-adapter-error (list "ar not found for static-lib archive")))
+    (let ((rc (apply #'call-process ar nil nil nil "rcs" output-path objects)))
+      (unless (eq rc 0)
+        (signal 'nelisp-sys-adapter-error
+                (list (format "ar failed with status %S" rc)))))
+    output-path))
+
 (provide 'nelisp-sys-adapter-nelisp)
 
 ;;; nelisp-sys-adapter-nelisp.el ends here

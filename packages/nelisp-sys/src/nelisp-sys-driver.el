@@ -30,6 +30,8 @@
 ;; Backend is required lazily by the compile entry points.
 (declare-function nelisp-sys-backend-emit-object "nelisp-sys-backend"
                   (module output-path target))
+(declare-function nelisp-sys-adapter-archive-static-lib "nelisp-sys-adapter-nelisp"
+                  (objects output-path))
 
 ;;; Analysis.
 
@@ -81,6 +83,22 @@ not pay for it.  Returns OUTPUT-PATH."
     (nelisp-sys-backend-emit-object
      module output-path (or target (nelisp-sys-target-triple
                                      (nelisp-sys-target-host))))))
+
+(defun nelisp-sys-compile-static-lib (forms output-path &optional target)
+  "Analyze FORMS and compile+archive the module into a static library.
+Compiles the module to a temporary object for TARGET (host default) and
+archives it into OUTPUT-PATH with the host `ar'.  Returns OUTPUT-PATH."
+  (let* ((module (nelisp-sys-frontend-parse-module forms))
+         (tg (or target (nelisp-sys-target-triple (nelisp-sys-target-host))))
+         (objdir (make-temp-file "nelisp-sys-lib" t))
+         (obj (expand-file-name "unit.o" objdir)))
+    (nelisp-sys-check-all module)
+    (require 'nelisp-sys-backend)
+    (unwind-protect
+        (progn
+          (nelisp-sys-backend-emit-object module obj tg)
+          (nelisp-sys-adapter-archive-static-lib (list obj) output-path))
+      (ignore-errors (delete-directory objdir t)))))
 
 (provide 'nelisp-sys-driver)
 
