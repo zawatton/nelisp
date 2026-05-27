@@ -1,0 +1,540 @@
+#+TITLE: Doc 131 — nelisp-sys semantics and safety contract
+#+DATE: 2026-05-27
+#+STATUS: IMPLEMENTED
+
+* Status
+
+- *State*: IMPLEMENTED 2026-05-28 in =packages/nelisp-sys/= (was PROPOSAL
+  2026-05-27).  Type checker + ownership/borrow/unsafe/effect passes ship
+  with stable E-SYS-* diagnostic codes.
+- *Parent*: Doc 130 (=nelisp-sys= extractable C-replacement subset).
+- *Sibling*: Doc 132 (=nelisp-sys= ABI and platform model).
+- *Scope*: Source semantics, static type system, memory-safety contract,
+  effects, errors, FFI safety, diagnostics, and unsafe audit policy.
+- *Non-goal*: Full Rust borrow checker compatibility. The first target is a
+  smaller conservative checker that makes safe =nelisp-sys= code memory-safe
+  enough for runtime and C-replacement work.
+
+* TL;DR
+
+=nelisp-sys= is not ordinary dynamic Elisp. It is a typed systems subset with
+explicit memory and effect contracts:
+
+- safe code has no raw pointer deref, no unchecked pointer arithmetic, no
+  use-after-move, no double resource consumption, and no mutable aliasing;
+- unsafe code is allowed, but only inside syntactic =sys:unsafe= boundaries;
+- =:alloc none= functions cannot allocate NeLisp heap objects or hit GC
+  safepoints;
+- C ABI boundaries must spell out ownership, nullability, length, panic, and
+  allocation behavior;
+- diagnostics are part of the language contract, not an afterthought.
+
+This document specifies the semantics that =packages/nelisp-sys/= should
+implement before any later repository extraction.
+
+* Semantic layers
+
+=nelisp-sys= has three semantic layers.
+
+** Core layer
+
+No heap allocation, no OS dependency, no syscall dependency.
+
+Allowed:
+
+- fixed-width arithmetic;
+- stack locals;
+- structs, arrays, pointers, slices;
+- explicit unsafe blocks;
+- C ABI import/export declarations;
+- compile-time constants and layout queries.
+
+This is the default layer for C-replacement work.
+
+** Alloc layer
+
+Allocator-dependent code.
+
+Allowed in addition to core:
+
+- owned heap buffers;
+- allocation failure handling;
+- allocator traits/capabilities;
+- destructor obligations for owned resources.
+
+No OS dependency is implied.
+
+** Std layer
+
+OS-dependent code.
+
+Allowed in addition to alloc:
+
+- file descriptors / handles;
+- sockets;
+- mmap;
+- process and environment access;
+- platform syscall wrappers.
+
+This split mirrors the design pressure of Rust's =core= / =alloc= / =std=,
+but =nelisp-sys= should keep the API Lisp-shaped and explicit.
+
+* Type system
+
+** Primitive types
+
+Required primitive scalar types:
+
+#+begin_src text
+i8 u8 i16 u16 i32 u32 i64 u64
+isize usize
+bool
+void
+#+end_src
+
+Initial optional scalar types:
+
+#+begin_src text
+f32 f64
+char32
+#+end_src
+
+Rules:
+
+- no implicit signed/unsigned conversion;
+- no implicit width-changing conversion;
+- explicit casts require =sys:cast= or checked conversion forms;
+- pointer-sized types are target-dependent and defined by Doc 132;
+- integer overflow policy is explicit per operator family.
+
+** Compound types
+
+Required compound types:
+
+#+begin_src elisp
+(array T N)
+(struct NAME)
+(ptr T)
+(slice T)
+(slice-mut T)
+(owned T)
+(& T)
+(&mut T)
+(fn ((ARG TYPE) ...) RET EFFECTS)
+#+end_src
+
+Structs must declare representation:
+
+#+begin_src elisp
+(sys:defstruct point
+  (:repr c)
+  (x i32)
+  (y i32))
+#+end_src
+
+MVP supports =:repr c= and internal =:repr sys=. =:repr packed= is deferred
+until unaligned access policy is specified.
+
+** Copy, move-only, and drop
+
+Types are classified as:
+
+- =Copy=: assignment and argument passing copy the value;
+- move-only: assignment and argument passing move the value;
+- drop: the value has a destructor obligation.
+
+Default =Copy= types:
+
+- integers;
+- booleans;
+- raw pointers;
+- immutable references;
+- plain-data structs whose fields are all =Copy=.
+
+Default move-only types:
+
+- =(owned T)=;
+- allocator-owned buffers;
+- mmap regions;
+- file descriptors;
+- sockets;
+- explicit resource handles.
+
+Drop is deterministic at lexical scope exit unless ownership was moved.
+
+* Ownership contract
+
+The ownership checker must enforce:
+
+1. each move-only value has one current owner;
+2. moving invalidates the old binding;
+3. using a moved binding is a compile-time error;
+4. each live drop value is consumed or dropped exactly once;
+5. =sys:forget= is unsafe and suppresses drop;
+6. =sys:dup= requires a type-specific duplication operation.
+
+Example rejection:
+
+#+begin_src elisp
+(sys:defun bad ((fd (owned fd))) i32
+  (:alloc none)
+  (sys:close fd)
+  (sys:close fd)) ; error: fd moved/consumed
+#+end_src
+
+* Borrow contract
+
+MVP borrow checking is lexical and conservative.
+
+Rules:
+
+1. shared borrows =(& T)= may coexist;
+2. mutable borrow =(&mut T)= is exclusive;
+3. while a mutable borrow exists, no other borrow of that place may exist;
+4. borrows end at lexical form exit;
+5. returning a borrow is forbidden in MVP;
+6. storing a borrow in heap/global state is forbidden in MVP;
+7. borrowing through raw pointers requires =sys:unsafe=.
+
+The first implementation may require explicit borrow forms:
+
+#+begin_src elisp
+(sys:with-borrow ((p (& point) point-value))
+  (sys:load-field p x))
+
+(sys:with-borrow-mut ((p (&mut point) point-value))
+  (sys:store-field! p x 10))
+#+end_src
+
+Later inference may map ordinary =let= bindings into borrow scopes, but the
+MVP should prefer explicit forms for predictable diagnostics.
+
+* Memory access
+
+** Raw pointers
+
+Raw pointer operations are unsafe:
+
+#+begin_src elisp
+(sys:unsafe
+  (sys:ptr-add p 4)
+  (sys:load p)
+  (sys:store! p value))
+#+end_src
+
+Safe code may hold or pass raw pointers, but may not dereference, store
+through, or perform pointer arithmetic on them.
+
+** Slices
+
+Safe slices are pointer + length values:
+
+#+begin_src elisp
+(slice u8)
+(slice-mut u8)
+#+end_src
+
+Rules:
+
+- =slice= permits read-only indexed access;
+- =slice-mut= permits read/write indexed access and is exclusive;
+- safe access is checked or statically proven in range;
+- unchecked access requires =sys:unsafe=.
+
+** Struct and array access
+
+Struct field access is safe when the base is a safe value, reference, or
+slice-derived reference. Access through raw pointer is unsafe unless converted
+through a validated safe reference or slice constructor.
+
+* Effects
+
+Effects are part of function type and call compatibility.
+
+Initial effects:
+
+#+begin_src text
+:alloc none | heap
+:panic none | abort | unwind
+:unsafe none | contains
+:syscall none | may
+:ffi none | may
+#+end_src
+
+MVP compatibility:
+
+- a caller with =:alloc none= may call only =:alloc none= callees;
+- C ABI exports default to =:panic abort= unless explicitly proven otherwise;
+- safe functions cannot contain unsafe operations except in nested
+  =sys:unsafe= blocks;
+- syscall and FFI effects must be explicit for auditability.
+
+=:alloc stack= is useful but deferred. Until stack allocation is specified,
+stack locals of fixed-size primitive/struct values are allowed under
+=:alloc none=, while dynamic stack allocation is not.
+
+* Error model
+
+Low-level code cannot rely on ordinary Lisp nonlocal exits crossing every
+native boundary. =nelisp-sys= therefore has three error strategies.
+
+** Return-value errors
+
+Preferred for safe C replacement APIs.
+
+#+begin_src elisp
+(result T E)
+(option T)
+#+end_src
+
+MVP may encode these as explicit tagged structs rather than dynamic Sexp
+values.
+
+** Abort errors
+
+Used when a contract violation cannot be returned safely:
+
+- bounds check failure in =:panic abort= code;
+- impossible internal compiler invariant;
+- allocation failure in no-recovery context.
+
+** Unwind errors
+
+Deferred for C ABI exports. Unwinding across C ABI is forbidden unless the ABI
+contract explicitly defines a compatible personality/runtime.
+
+* Panic contract
+
+Function metadata declares panic behavior:
+
+#+begin_src elisp
+(sys:defun f (...) T
+  (:panic abort)
+  ...)
+#+end_src
+
+Rules:
+
+- C ABI exports default to =:panic abort=;
+- =:panic unwind= is not allowed for C ABI exports in MVP;
+- =:panic none= means the compiler must reject operations that can panic
+  unless their failure is handled explicitly;
+- bounds checks in =:panic none= code must use checked result forms.
+
+* FFI safety contract
+
+Each imported C function must declare:
+
+- symbol name;
+- calling convention;
+- argument and return types;
+- ownership transfer for pointer/resource arguments;
+- nullability;
+- length association for pointer buffers;
+- allocation and panic behavior;
+- thread-safety if relevant;
+- whether the function may retain pointers after return.
+
+Example:
+
+#+begin_src elisp
+(sys:extern memcpy
+  (:symbol "memcpy" :abi c :unsafe t)
+  ((dst (ptr u8) :nonnull :write :len n)
+   (src (ptr u8) :nonnull :read  :len n)
+   (n usize))
+  (ptr u8)
+  (:alloc none :panic none))
+#+end_src
+
+Calling unsafe FFI requires =sys:unsafe=. A later whitelist can mark imports
+safe only when the declaration is strong enough for the checker to verify the
+call.
+
+* Atomics and volatile
+
+Atomics are required for serious C replacement work but should be staged.
+
+MVP:
+
+- volatile load/store are unsafe;
+- atomics are unsafe unless using the initial high-level wrappers;
+- only =seq-cst= ordering is required.
+
+Later:
+
+#+begin_src text
+relaxed
+acquire
+release
+acq-rel
+seq-cst
+#+end_src
+
+Atomic type forms:
+
+#+begin_src elisp
+(atomic u32)
+(atomic usize)
+#+end_src
+
+The memory model must be documented before exposing non-=seq-cst= orderings.
+
+* Compile-time evaluation
+
+C macro replacement requires compile-time evaluation.
+
+Required CTFE forms:
+
+- integer arithmetic;
+- =sizeof=;
+- =alignof=;
+- =offsetof=;
+- target feature predicates;
+- static assertions;
+- constant array lengths;
+- enum discriminants.
+
+Example:
+
+#+begin_src elisp
+(sys:static-assert
+ (= (sys:sizeof point) 8)
+ "point must stay C-compatible")
+#+end_src
+
+CTFE must be deterministic and independent of host process state unless the
+form explicitly asks for target information from Doc 132.
+
+* Diagnostics contract
+
+Diagnostics must include:
+
+- stable error code;
+- source span;
+- primary message;
+- expected vs actual type when relevant;
+- ownership/borrow trace when relevant;
+- effect mismatch path when relevant;
+- suggested fix when obvious.
+
+Example shape:
+
+#+begin_src text
+E-SYS-BORROW-002: mutable borrow conflicts with existing shared borrow
+  at packages/nelisp-sys/test/fixtures/borrow.nl:12:5
+  shared borrow created here: ...:10:3
+  mutable borrow requested here: ...:12:5
+#+end_src
+
+Stable diagnostics matter because =nelisp-sys= is intended to become its own
+repository and toolchain.
+
+* Unsafe audit model
+
+Unsafe is allowed, but it must be auditable.
+
+Initial policy:
+
+- every =sys:unsafe= form may include =:reason= metadata;
+- package tests can count unsafe forms;
+- CI can fail on unreviewed unsafe count increases;
+- unsafe FFI declarations are listed in a generated audit report.
+
+Example:
+
+#+begin_src elisp
+(sys:unsafe (:reason "validated non-null buffer from C harness")
+  (sys:store! p value))
+#+end_src
+
+MVP should warn when =:reason= is absent. Later releases may require it.
+
+* Standard library split
+
+The language must specify which layer owns which functions.
+
+** =nelisp-sys-core=
+
+- arithmetic;
+- casts;
+- layout queries;
+- slices;
+- raw pointer wrappers;
+- result/option structs;
+- atomics once specified.
+
+** =nelisp-sys-alloc=
+
+- allocator interface;
+- owned buffer;
+- dynamic arrays if added;
+- allocation failure strategy.
+
+** =nelisp-sys-std=
+
+- file descriptor / handle wrappers;
+- mmap;
+- process/env;
+- platform syscall wrappers.
+
+No =core= API may depend on =alloc= or =std=.
+
+* Implementation stages
+
+** Stage 131.1: type and effect AST
+
+Add typed AST nodes for primitive/compound types, effects, and function
+signatures.
+
+Gate: parser and AST tests for representative source forms.
+
+** Stage 131.2: type checker MVP
+
+Implement scalar, pointer, slice, struct, and function-call type checking.
+
+Gate: positive/negative tests with stable diagnostic codes.
+
+** Stage 131.3: ownership MVP
+
+Implement =Copy= vs move-only checking and deterministic drop obligations.
+
+Gate: use-after-move and double-consumption negative tests.
+
+** Stage 131.4: borrow MVP
+
+Implement explicit lexical borrow forms.
+
+Gate: shared coexistence, mutable exclusivity, and escape rejection tests.
+
+** Stage 131.5: unsafe/effect checker
+
+Implement =sys:unsafe= boundaries, =:alloc none= checking, and effect
+compatibility.
+
+Gate: raw pointer operations rejected outside unsafe; heap allocation rejected
+from =:alloc none=.
+
+** Stage 131.6: diagnostics and unsafe audit
+
+Add stable error codes and unsafe count reporting.
+
+Gate: golden diagnostic tests and unsafe audit fixture.
+
+* Open questions
+
+- Should result/option be built-in types or ordinary =:repr sys= structs?
+- Should =sys:unsafe= require =:reason= from the first public release?
+- Should checked integer overflow return =result= or abort by default?
+- Should borrow syntax stay explicit permanently, or become inference-driven
+  after MVP?
+- How should destructors interact with C ABI early returns once nonlocal
+  control flow is added?
+
+* Initial recommendation
+
+Implement the safety checker before compiling complex pointer code. The first
+native-code MVP should be a tiny integer function, but the second milestone
+should prove that unsafe/raw pointer operations are rejected unless explicitly
+marked. That prevents =nelisp-sys= from becoming "C with Lisp syntax" before
+its safety contract exists.

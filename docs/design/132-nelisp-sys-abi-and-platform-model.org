@@ -1,0 +1,463 @@
+#+TITLE: Doc 132 — nelisp-sys ABI and platform model
+#+DATE: 2026-05-27
+#+STATUS: IMPLEMENTED
+
+* Status
+
+- *State*: IMPLEMENTED 2026-05-28 in =packages/nelisp-sys/= (was PROPOSAL
+  2026-05-27).  Target descriptors + layout engine + C-ABI lowering +
+  object metadata ship; objects emit for all 5 targets, static lib links.
+- *Parent*: Doc 130 (=nelisp-sys= extractable C-replacement subset).
+- *Sibling*: Doc 131 (=nelisp-sys= semantics and safety contract).
+- *Scope*: Target triples, data layout, calling conventions, symbol/linkage
+  model, object formats, relocation, CRT/entry, syscall surface, and ABI
+  verification gates.
+- *Non-goal*: Replacing the existing NeLisp Sexp ABI. =nelisp-sys= needs its
+  own C-replacement ABI model, while the current Sexp ABI remains the NeLisp
+  runtime object model.
+
+* TL;DR
+
+=nelisp-sys= needs a stable platform model before it can credibly replace C.
+The compiler must know exactly what target it is producing:
+
+- pointer width and endian;
+- integer widths and alignments;
+- struct layout rules;
+- calling convention;
+- object format;
+- symbol visibility;
+- relocation model;
+- entry/CRT strategy;
+- syscall/libc availability.
+
+This document defines the ABI contract that the package-local
+=packages/nelisp-sys/docs/abi.org= should eventually contain.
+
+* Relationship to existing NeLisp ABI
+
+NeLisp already has a frozen Sexp ABI for Phase 47 elisp-emitted objects:
+
+- =docs/arch/sexp-abi.md=
+- =lisp/nelisp-sexp-layout.el=
+- =make sexp-abi-check=
+
+=nelisp-sys= must not blur that contract with its C-replacement ABI.
+
+Two ABI domains exist:
+
+1. *NeLisp runtime ABI*: Sexp values, Env pointers, runtime object layout.
+2. *nelisp-sys ABI*: C-compatible integers, pointers, structs, arrays,
+   function calls, and freestanding entry contracts.
+
+Bridges may exist, but they must be explicit. A =nelisp-sys= function that
+exports C ABI should not accidentally depend on Sexp layout.
+
+* Target model
+
+Targets use an explicit target descriptor.
+
+#+begin_src elisp
+(sys:target
+ :triple "x86_64-unknown-linux-gnu"
+ :arch x86_64
+ :os linux
+ :env gnu
+ :object elf64
+ :endian little
+ :pointer-width 64
+ :c-abi sysv-amd64)
+#+end_src
+
+Initial supported targets should match NeLisp's existing object/asm support:
+
+| Target | Arch | OS | Object | C ABI |
+|--------+------+----+--------+-------|
+| =x86_64-unknown-linux-gnu= | x86_64 | linux | ELF64 | SysV AMD64 |
+| =aarch64-unknown-linux-gnu= | aarch64 | linux | ELF64 | AAPCS64 |
+| =x86_64-apple-darwin= | x86_64 | macos | Mach-O 64 | SysV AMD64 / Darwin |
+| =aarch64-apple-darwin= | aarch64 | macos | Mach-O 64 | AAPCS64 / Darwin |
+| =x86_64-pc-windows-msvc= | x86_64 | windows | PE/COFF | Microsoft x64 |
+
+Support is per target, not per architecture alone.
+
+* Data layout
+
+Each target descriptor must define:
+
+- endian;
+- pointer width;
+- pointer alignment;
+- =isize= / =usize= width;
+- integer size/alignment;
+- float size/alignment;
+- aggregate alignment rules;
+- maximum natural alignment;
+- stack alignment;
+- bool representation.
+
+Initial scalar layout:
+
+| Type | Size | Alignment |
+|------+------+-----------|
+| =i8/u8= | 1 | 1 |
+| =i16/u16= | 2 | 2 |
+| =i32/u32= | 4 | 4 |
+| =i64/u64= | 8 | 8 |
+| =isize/usize= | pointer width | pointer alignment |
+| =(ptr T)= | pointer width | pointer alignment |
+| =bool= | 1 | 1 |
+
+Target-specific exceptions must live in the target descriptor, not scattered
+through the compiler.
+
+* Struct layout
+
+MVP supports =:repr c=.
+
+Rules:
+
+1. fields are laid out in source order;
+2. each field starts at the next offset satisfying its alignment;
+3. struct alignment is max field alignment unless target rules override;
+4. final size is rounded up to struct alignment;
+5. zero-sized fields are deferred;
+6. packed/unaligned structs are deferred.
+
+The layout engine must produce structured metadata:
+
+#+begin_src elisp
+(sys:layout point)
+;; => (:size 8 :align 4
+;;     :fields ((x :offset 0 :size 4 :align 4)
+;;              (y :offset 4 :size 4 :align 4)))
+#+end_src
+
+This metadata is used by CTFE, diagnostics, and ABI tests.
+
+* Calling conventions
+
+Initial ABI names:
+
+#+begin_src text
+c
+sysv-amd64
+win64
+aapcs64
+nelisp-internal
+#+end_src
+
+=:abi c= maps to the platform's C ABI for the selected target. Explicit
+architecture ABI names are allowed for tests and low-level code.
+
+Function declarations must specify:
+
+- argument types;
+- return type;
+- ABI;
+- symbol name / export visibility;
+- effects from Doc 131;
+- varargs status.
+
+Varargs are deferred. The MVP rejects varargs imports/exports.
+
+* Return value lowering
+
+The ABI model must specify how each type returns:
+
+- scalar in register;
+- small aggregate in register;
+- aggregate by hidden sret pointer;
+- void return;
+- platform-specific floating-point register rules.
+
+MVP can restrict C ABI exports to integer/pointer/void returns plus simple
+small structs once tests prove the target lowering.
+
+Do not claim full C ABI compatibility until struct return tests pass against a
+C harness for that target.
+
+* Argument lowering
+
+The ABI model must specify:
+
+- register vs stack argument placement;
+- integer vs floating-point register classes;
+- aggregate splitting rules;
+- stack spill alignment;
+- shadow space for Win64;
+- red-zone availability;
+- callee/caller saved registers.
+
+MVP may start with integer and pointer arguments only.
+
+* Symbol and linkage model
+
+Symbols have visibility and linkage:
+
+#+begin_src elisp
+(sys:defun add ((a i32) (b i32)) i32
+  (:abi c :export "nl_add")
+  (+ a b))
+#+end_src
+
+Initial linkage forms:
+
+#+begin_src text
+:private       file-local/internal
+:export NAME   externally visible symbol
+:import NAME   unresolved external symbol
+#+end_src
+
+Rules:
+
+- exported C ABI symbols must have stable unmangled names unless a mangling
+  mode is explicitly selected;
+- private symbols may be compiler-mangled;
+- duplicate exports are compile-time errors;
+- imports require ABI and effect declarations.
+
+* Object format model
+
+Each object backend must expose a common interface:
+
+#+begin_src elisp
+(nelisp-sys-adapter-emit-object module target output-path)
+(nelisp-sys-adapter-link-executable objects target opts)
+(nelisp-sys-adapter-archive-static-lib objects target output-path)
+#+end_src
+
+Backends:
+
+- ELF64 for Linux;
+- Mach-O 64 for macOS;
+- PE/COFF for Windows.
+
+The object model must specify:
+
+- text/data/rodata/bss sections;
+- symbol table representation;
+- relocation kinds;
+- alignment constraints;
+- debug-info status;
+- metadata section for =nelisp-sys= ABI info.
+
+Debug info is deferred, but the metadata section should be designed early so
+tests and tools can inspect emitted ABI summaries.
+
+* Relocation model
+
+The MVP needs only the relocations required for:
+
+- calls to local functions;
+- calls to imported C symbols;
+- references to static constants;
+- address materialization for globals.
+
+Each target must list supported relocation kinds. Unsupported relocations are
+compile-time errors, not backend panics.
+
+* Entry and CRT model
+
+=nelisp-sys= has two execution modes.
+
+** Hosted C ABI mode
+
+The output is an object or static library consumed by a host linker / C
+harness. No custom entry is required.
+
+This is the first MVP.
+
+** Freestanding executable mode
+
+The output provides its own entry:
+
+#+begin_src text
+_start      ELF/Linux
+__start     Mach-O if required by target/linker mode
+mainCRTStartup / custom PE entry on Windows
+#+end_src
+
+Freestanding mode must specify:
+
+- stack alignment at entry;
+- argc/argv/envp availability;
+- exit syscall/API;
+- panic/abort implementation;
+- zeroing of BSS;
+- static constructor policy;
+- allocator availability.
+
+Freestanding mode is deferred until hosted C ABI object generation is stable.
+
+* Syscall and libc model
+
+Three syscall/libc levels:
+
+#+begin_src text
+:none       no OS calls
+:libc       imported C library calls
+:syscall    direct platform syscall/API wrappers
+#+end_src
+
+Rules:
+
+- =nelisp-sys-core= is =:none=;
+- =nelisp-sys-std= may use =:libc= or =:syscall=;
+- direct syscall numbers are target-specific data;
+- Windows uses OS API imports, not POSIX syscall assumptions.
+
+The compiler must not silently lower a high-level operation to a syscall in
+=:syscall none= code.
+
+* Thread-local and global data
+
+MVP supports:
+
+- immutable static constants;
+- mutable globals only behind explicit unsafe or atomic wrappers;
+- no TLS.
+
+Later:
+
+- TLS model by target;
+- constructor/destructor sections;
+- dynamic library visibility.
+
+* Platform feature predicates
+
+Compile-time predicates:
+
+#+begin_src elisp
+(sys:target-os linux)
+(sys:target-arch x86_64)
+(sys:pointer-width 64)
+(sys:target-feature sse2)
+#+end_src
+
+These are CTFE values and must come from the target descriptor. Host platform
+information must not leak into cross-compilation unless explicitly requested.
+
+* ABI metadata and drift gates
+
+=nelisp-sys= should follow the Sexp ABI pattern:
+
+1. human-readable ABI spec in package docs;
+2. Elisp constants used by the compiler;
+3. generated probe output from backend/target implementation;
+4. test that diffs the two.
+
+Potential files:
+
+#+begin_src text
+packages/nelisp-sys/docs/abi.org
+packages/nelisp-sys/src/nelisp-sys-target.el
+packages/nelisp-sys/src/nelisp-sys-abi-layout.el
+packages/nelisp-sys/test/nelisp-sys-abi-drift-test.el
+#+end_src
+
+The ABI summary should be emitted into object metadata for audit:
+
+#+begin_src elisp
+(:target "x86_64-unknown-linux-gnu"
+ :object elf64
+ :c-abi sysv-amd64
+ :pointer-width 64
+ :exports (("nl_add" :args (i32 i32) :ret i32)))
+#+end_src
+
+* C harness verification
+
+No target is marked "C ABI supported" until a C harness verifies:
+
+- integer argument/return;
+- pointer argument;
+- struct by pointer;
+- simple struct by value if claimed;
+- small struct return if claimed;
+- imported C function call;
+- exported function visibility;
+- object link with system linker.
+
+Harnesses are skipped when no C compiler is available, but CI targets should
+run them where possible.
+
+* Cross-compilation policy
+
+Cross-compilation requires a target descriptor and object writer. It does not
+require executing the target binary.
+
+Cross target gates:
+
+- object metadata inspection;
+- symbol table inspection;
+- relocation inspection;
+- optional emulator/external runner.
+
+Never use host =sizeof=, host endian, or host calling convention to compile a
+different target.
+
+* Implementation stages
+
+** Stage 132.1: target descriptor table
+
+Add structured target descriptors for the five existing NeLisp targets.
+
+Gate: query tests for pointer width, object format, and C ABI.
+
+** Stage 132.2: data layout engine
+
+Implement scalar, pointer, array, and =:repr c= struct layout from target
+descriptor data.
+
+Gate: layout tests for linux/x86_64 and target descriptor snapshot tests for
+all five targets.
+
+** Stage 132.3: C ABI integer/pointer lowering
+
+Lower integer/pointer args and returns for =:abi c= on linux/x86_64 first.
+
+Gate: C harness calls exported =add= and pointer-read functions.
+
+** Stage 132.4: object metadata
+
+Emit =nelisp-sys= ABI summary metadata into produced objects or companion
+metadata files.
+
+Gate: metadata inspection test.
+
+** Stage 132.5: multi-target ABI snapshots
+
+Add ABI lowering snapshots for aarch64 Linux, macOS x86_64/aarch64, and Win64.
+
+Gate: object-level tests; execution only where host supports it.
+
+** Stage 132.6: hosted library packaging
+
+Produce a static library from =nelisp-sys= objects and link it from a C
+harness.
+
+Gate: C harness links against archive.
+
+** Stage 132.7: freestanding design spike
+
+Design but do not yet ship custom CRT/entry support.
+
+Gate: design review plus one non-default experimental fixture.
+
+* Open questions
+
+- Should =:abi c= be the default for exported =nelisp-sys= functions?
+- Should the target descriptor format mirror LLVM triples or remain smaller?
+- Should object metadata be embedded in custom sections or emitted as sidecar
+  files during MVP?
+- Which target gets first full C harness support after linux/x86_64?
+- How much libc dependence is acceptable before freestanding mode lands?
+
+* Initial recommendation
+
+Implement hosted C ABI object generation first, with linux/x86_64 as the
+first executable gate. Treat other targets as snapshot/object-inspection gates
+until the integer/pointer ABI is stable. Freestanding entry, direct syscalls,
+TLS, varargs, and full struct-return compatibility should be later stages, not
+MVP requirements.

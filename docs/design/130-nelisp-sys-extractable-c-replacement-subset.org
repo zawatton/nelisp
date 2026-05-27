@@ -1,0 +1,575 @@
+#+TITLE: Doc 130 — nelisp-sys: extractable C-replacement systems subset
+#+DATE: 2026-05-27
+#+STATUS: IMPLEMENTED
+
+* Status
+
+- *State*: IMPLEMENTED 2026-05-28 in =packages/nelisp-sys/= (was PROPOSAL
+  2026-05-27).  All 15 extraction criteria hold; see
+  =packages/nelisp-sys/docs/extraction.org=.  110/110 ERT, C-ABI =nl_add=
+  callable from a C harness.
+- *Motivation*: Design a NeLisp-hosted systems programming subset that can
+  eventually replace C for selected low-level components, while remaining
+  extractable into a separate repository later.
+- *Follow-up specs*: Doc 131 (=nelisp-sys= semantics and safety contract) and
+  Doc 132 (=nelisp-sys= ABI and platform model).
+- *Scope*: Language subset, package boundary, compiler/ABI boundary, and
+  repository extraction criteria.
+- *Non-goal*: Replacing all C use cases immediately. The first target is
+  small freestanding or C-ABI-compatible object files produced from a typed
+  Lisp subset.
+
+* TL;DR
+
+=nelisp-sys= should start inside this repository as
+=packages/nelisp-sys/=, not as a separate repository. The package uses the
+existing Phase 47 compiler, assemblers, object writers, Sexp ABI tests, and
+test harness while the design is still moving.
+
+However, it must be written as an extractable subproject from day one:
+
+- public APIs live under the =nelisp-sys-= prefix;
+- dependencies on NeLisp internals go through a small adapter layer;
+- test fixtures are self-contained;
+- the language reference and ABI contract live in package-local docs;
+- no code outside =packages/nelisp-sys/= may depend on private package files.
+
+The extraction point is reached when =nelisp-sys= can compile a small typed
+source file to an object/static library/executable through a stable CLI
+without requiring callers to know NeLisp's internal compiler modules.
+
+* Why monorepo first
+
+Starting in this repository is the lowest-risk path because the first
+implementation needs tight iteration against:
+
+- =lisp/nelisp-phase47-compiler.el=
+- =lisp/nelisp-sexp-layout.el=
+- =lisp/nelisp-asm-x86_64.el=
+- =lisp/nelisp-asm-arm64.el=
+- =lisp/nelisp-elf-write.el=
+- =lisp/nelisp-mach-o-write.el=
+- =lisp/nelisp-pe-write.el=
+- =lisp/nelisp-static-linker.el=
+- =lisp/nelisp-crt0*.el=
+- =lisp/nelisp-syscall-table.el=
+
+Duplicating or vendoring those pieces into a new repository now would force a
+premature API boundary around unstable compiler and ABI details. Keeping the
+work in-tree lets =nelisp-sys= prove the semantics first.
+
+* Why extractable from day one
+
+The project goal is broader than "one optional NeLisp package". If
+=nelisp-sys= becomes a credible C-replacement subset, it should be usable as:
+
+- a standalone systems language;
+- a C-compatible object/static-library generator;
+- a low-level substrate for NeLisp runtime components;
+- a language experiment that can evolve without destabilizing Emacs Lisp
+  compatibility.
+
+That requires a clean boundary. The in-tree version is a nursery, not a
+permanent private extension of the core compiler.
+
+* Proposed in-tree layout
+
+#+begin_src text
+packages/nelisp-sys/
+├── README.org
+├── docs/
+│   ├── language.org
+│   ├── abi.org
+│   ├── memory-safety.org
+│   └── extraction.org
+├── src/
+│   ├── nelisp-sys.el
+│   ├── nelisp-sys-types.el
+│   ├── nelisp-sys-ast.el
+│   ├── nelisp-sys-frontend.el
+│   ├── nelisp-sys-memory.el
+│   ├── nelisp-sys-ownership.el
+│   ├── nelisp-sys-borrow.el
+│   ├── nelisp-sys-unsafe.el
+│   ├── nelisp-sys-abi.el
+│   ├── nelisp-sys-backend.el
+│   ├── nelisp-sys-driver.el
+│   └── nelisp-sys-adapter-nelisp.el
+└── test/
+    ├── nelisp-sys-test.el
+    ├── nelisp-sys-types-test.el
+    ├── nelisp-sys-memory-safety-test.el
+    ├── nelisp-sys-abi-test.el
+    ├── nelisp-sys-compile-test.el
+    └── fixtures/
+        ├── add.nl
+        ├── struct.nl
+        └── freestanding-main.nl
+#+end_src
+
+The important file is =nelisp-sys-adapter-nelisp.el=. It is the only layer
+allowed to call private NeLisp compiler/linker functions. All other package
+files call adapter functions such as:
+
+#+begin_src elisp
+(nelisp-sys-adapter-compile-to-object module target)
+(nelisp-sys-adapter-link-executable objects opts)
+(nelisp-sys-adapter-target-triple)
+(nelisp-sys-adapter-abi-layout)
+#+end_src
+
+When the package is extracted, this adapter becomes either:
+
+- a copied stable backend adapter;
+- a small compatibility package depending on NeLisp as a toolchain;
+- or a standalone backend implementation.
+
+* Boundary rules
+
+** Public namespace
+
+All public symbols use the =nelisp-sys-= prefix. Internal symbols use
+=nelisp-sys--=.
+
+Do not expose =nelisp-cc-=, =nelisp-phase47-=, or =nelisp-asm-= details in the
+package API. Those are backend implementation details.
+
+** Dependencies
+
+Allowed direct dependencies outside the package:
+
+- stable Elisp/NeLisp compatibility functions;
+- adapter-only calls into compiler/object/linker internals;
+- test harness helpers.
+
+Forbidden outside the adapter:
+
+- direct calls to Phase 47 lowering internals;
+- direct construction of backend-specific instruction streams;
+- direct references to private Sexp layout constants;
+- direct calls to package-external CLI scripts.
+
+** Data model
+
+=nelisp-sys= must define its own typed IR instead of reusing raw Elisp forms
+as the long-term internal representation.
+
+Initial IR requirements:
+
+- fixed-width integers: =i8/u8/i16/u16/i32/u32/i64/u64/isize/usize=;
+- pointers: =(ptr T)= and opaque =void*= equivalent;
+- arrays with compile-time length;
+- structs with explicit field order, alignment, and padding;
+- tagged enums only after struct layout is proven;
+- function signatures with explicit calling convention;
+- ownership qualifiers: =owned=, shared borrow, mutable borrow, raw pointer;
+- safe slices: immutable =slice= and mutable =slice-mut= as pointer + length;
+- no implicit allocation in =sys/no-gc= functions.
+
+* Language shape
+
+The source syntax should remain Lisp-like, but it is not ordinary dynamic
+Elisp. It is a typed systems subset.
+
+Example target syntax:
+
+#+begin_src elisp
+(sys:defstruct point
+  (:repr c)
+  (x i32)
+  (y i32))
+
+(sys:defun add ((a i32) (b i32)) i32
+  (:abi c)
+  (+ a b))
+
+(sys:defun distance2 ((p (ptr point))) i64
+  (:abi c :alloc none)
+  (let ((x (sys:load-field p x))
+        (y (sys:load-field p y)))
+    (+ (* x x) (* y y))))
+#+end_src
+
+The exact package prefix can change, but the semantic split should not:
+
+- dynamic Elisp remains dynamic Elisp;
+- =nelisp-sys= functions are statically checked;
+- unsafe pointer and raw memory operations are explicit;
+- ownership and borrow rules apply inside =nelisp-sys= functions;
+- allocation and GC behavior are part of the function contract.
+
+* C replacement requirements
+
+The MVP must not try to replace all C features. It should first prove the
+small set C is commonly used for in runtime boundaries:
+
+1. fixed-width arithmetic;
+2. C-compatible function export/import;
+3. C-compatible struct layout;
+4. raw pointer load/store;
+5. stack locals;
+6. explicit alignment;
+7. object-file generation;
+8. static linking into a small executable;
+9. no-GC/no-allocation functions;
+10. deterministic failure diagnostics.
+11. memory-safety checks for safe code.
+
+Later stages can add:
+
+- unions;
+- volatile load/store;
+- atomics and memory ordering;
+- inline asm;
+- varargs;
+- bitfields or an explicit replacement;
+- platform-specific syscall wrappers;
+- freestanding CRT generation.
+
+* Memory safety model
+
+=nelisp-sys= should implement Rust-like memory safety for the systems subset,
+but it should not attempt to clone Rust's full borrow checker in the first
+iteration. The design target is a smaller, explicit, Lisp-shaped safety model
+that prevents the C failure modes most likely to affect runtime code:
+
+- use-after-free;
+- double free / double close;
+- accidental aliasing of mutable memory;
+- out-of-bounds slice access;
+- dereferencing raw pointers outside an unsafe boundary;
+- allocation or GC activity in functions that promised not to allocate.
+
+The model applies only to =nelisp-sys= code. Ordinary dynamic NeLisp/Elisp
+keeps its current semantics.
+
+** Type-level memory classes
+
+The first type system should distinguish these memory classes:
+
+#+begin_src elisp
+(owned T)       ; unique owner, move-only unless T is Copy
+(& T)           ; shared read-only borrow
+(&mut T)        ; exclusive mutable borrow
+(ptr T)         ; raw pointer, usable only in sys:unsafe for deref/store
+(slice T)       ; safe immutable ptr + len
+(slice-mut T)   ; safe mutable ptr + len
+#+end_src
+
+Integers, booleans, raw addresses, and small plain-data structs may be =Copy=.
+Owned buffers, mmap regions, file descriptors, sockets, and handles are
+move-only resources by default.
+
+** Ownership rules
+
+MVP ownership rules:
+
+1. an =(owned T)= value has one owner;
+2. assigning or passing an owned non-Copy value moves it;
+3. using a moved value is a compile-time error;
+4. resources with destructors must be consumed exactly once;
+5. explicit =sys:forget= is unsafe and suppresses destructor obligations;
+6. explicit =sys:dup= is allowed only for types that define a duplication
+   operation.
+
+This is enough to model file descriptors, allocated buffers, and mmap regions
+without permitting accidental double-close/free in safe code.
+
+** Borrow MVP
+
+The first borrow checker should be lexical and deliberately conservative:
+
+1. any number of =(& T)= borrows may coexist;
+2. a single =(&mut T)= borrow is exclusive;
+3. while =(&mut T)= exists, no other borrow of the same place may exist;
+4. borrows end at the end of their lexical form;
+5. returning or storing a borrow is forbidden in MVP;
+6. borrowing through raw pointers is unsafe and outside the safe checker.
+
+Example:
+
+#+begin_src elisp
+(sys:defun fill ((buf (slice-mut u8)) (value u8)) void
+  (:alloc none)
+  (sys:for ((i usize 0 (sys:slice-len buf)))
+    (sys:slice-set! buf i value)))
+#+end_src
+
+The checker can prove this safe because all writes go through =slice-mut= and
+the index is bounded by =sys:slice-len=.
+
+** Unsafe boundary
+
+Unsafe operations must be syntactically explicit:
+
+#+begin_src elisp
+(sys:defun poke ((p (ptr u8)) (value u8)) void
+  (:alloc none)
+  (sys:unsafe
+    (sys:store! p value)))
+#+end_src
+
+Operations requiring =sys:unsafe=:
+
+- raw pointer load/store;
+- pointer arithmetic;
+- C FFI calls not declared memory-safe;
+- volatile load/store;
+- atomic operations before the memory-ordering checker exists;
+- inline asm;
+- =sys:forget= and unchecked transmute/cast operations.
+
+The unsafe block does not disable type checking. It only permits operations
+that cannot be proven safe by the current checker.
+
+** no-GC / no-allocation contract
+
+Functions may declare allocation behavior:
+
+#+begin_src elisp
+(sys:defun f (...) T
+  (:alloc none)
+  ...)
+#+end_src
+
+MVP rule: =:alloc none= rejects forms that allocate NeLisp heap objects or
+require GC roots. That includes consing, vector/string construction, dynamic
+closures, boxing into Sexp, and calling a function without a compatible
+allocation effect.
+
+Effects should be tracked as part of function type:
+
+#+begin_src text
+:alloc none       no NeLisp heap allocation, no GC safepoint
+:alloc stack      stack-only temporaries allowed
+:alloc heap       may allocate and may require GC roots
+#+end_src
+
+The first implementation can support only =none= and =heap=, with =stack=
+reserved for later.
+
+** Bounds checking policy
+
+Safe slices must be bounds-checked unless the compiler can prove the index is
+in range. The source language should make unchecked access explicit:
+
+#+begin_src elisp
+(sys:slice-ref buf i)              ; checked or proven safe
+(sys:unsafe (sys:slice-ref-raw buf i)) ; unchecked
+#+end_src
+
+For C replacement work, predictable behavior matters more than microbenchmark
+speed. The optimization path is proof-based bounds-check elimination, not
+silent unchecked access in safe code.
+
+** Raw pointer escape rules
+
+Safe references and slices may be converted to raw pointers only by an explicit
+operation. Once converted, the raw pointer carries no safety guarantee.
+
+MVP restrictions:
+
+- raw pointers may cross FFI boundaries;
+- raw pointers may be stored;
+- raw pointer deref/store requires =sys:unsafe=;
+- raw pointer arithmetic requires =sys:unsafe=;
+- safe borrow values may not escape through raw pointer casts in safe code.
+
+* Safety implementation stages
+
+Memory safety should be staged independently from backend maturity.
+
+** Stage 130.S1: effect and unsafe syntax
+
+Add AST support for function effects and =sys:unsafe=. Enforce that raw
+pointer load/store forms are rejected outside unsafe blocks.
+
+Gate: negative tests for unsafe-only operations.
+
+** Stage 130.S2: move-only resources
+
+Add =owned= type checking for move-only values. Reject use-after-move and
+double-consumption.
+
+Gate: negative tests for moved file descriptor / buffer handles.
+
+** Stage 130.S3: lexical borrow checker
+
+Add conservative lexical shared/mutable borrow rules. Forbid escaping borrows.
+
+Gate: tests for shared borrow coexistence, mutable borrow exclusivity, and
+borrow escape rejection.
+
+** Stage 130.S4: safe slices
+
+Add =slice= / =slice-mut= with checked access and simple loop-based bounds
+proofs.
+
+Gate: compile checked access, reject obvious out-of-bounds constants, and
+emit no check for a canonical bounded loop only after proof metadata exists.
+
+** Stage 130.S5: no-allocation checker
+
+Enforce =:alloc none= through call graph summaries.
+
+Gate: reject cons/string/vector allocation and calls to heap-allocating
+functions from =:alloc none= functions.
+
+* ABI contract
+
+=nelisp-sys= needs its own ABI document even while it uses NeLisp's backend.
+The ABI document must specify:
+
+- supported targets;
+- calling conventions;
+- integer and pointer widths;
+- struct alignment and padding;
+- return-value lowering;
+- symbol naming;
+- relocation expectations;
+- stack alignment;
+- callee/caller saved registers;
+- panic/error strategy;
+- GC/allocator interaction;
+- safe/unsafe FFI obligations for imported symbols.
+
+The first supported ABI should be C ABI export on the targets NeLisp already
+supports. Freestanding ABI can come after C ABI object generation is stable.
+
+* Testing strategy
+
+Tests must be written so they still make sense after extraction.
+
+Required test groups:
+
+- parser/frontend tests;
+- type checker tests;
+- ownership / borrow checker tests;
+- unsafe-boundary tests;
+- no-allocation effect tests;
+- slice bounds tests;
+- layout tests comparing expected offsets and sizes;
+- ABI lowering tests;
+- object writer smoke tests;
+- executable smoke tests;
+- C interop tests that compile a tiny C harness against a =nelisp-sys=
+  object when a C compiler is available.
+
+Golden tests should assert stable text or structured metadata, not private
+NeLisp implementation details.
+
+* Extraction criteria
+
+Do not split into a separate repository until all of these are true:
+
+1. =packages/nelisp-sys/README.org= explains usage without referencing
+   unrelated NeLisp internals.
+2. =nelisp-sys-compile= can compile at least one source file to an object.
+3. At least one C ABI function can be called from a C harness.
+4. Struct layout tests pass for at least linux/x86_64.
+5. The adapter layer has fewer than roughly 20 public adapter calls.
+6. No package file except =nelisp-sys-adapter-nelisp.el= calls private
+   compiler/linker functions.
+7. Package tests can be run as a named subset.
+8. The language and ABI docs are package-local.
+9. The memory-safety docs are package-local.
+10. Safe code rejects raw pointer deref outside =sys:unsafe=.
+11. Move-only resources reject use-after-move and double-consumption.
+12. Lexical borrow tests pass for shared/mutable borrow MVP.
+13. =:alloc none= tests reject heap allocation.
+14. The build flow can be described as a CLI contract.
+15. The desired release cadence differs from NeLisp core.
+
+* Extraction plan
+
+** Stage 130.1: package scaffold
+
+Create =packages/nelisp-sys/= with README, docs, source entry point, adapter
+stub, and empty ERT files. No compiler behavior yet.
+
+** Stage 130.2: typed AST and layout MVP
+
+Implement typed AST constructors and layout calculation for integers,
+pointers, arrays, C-repr structs, ownership qualifiers, and function effects.
+
+Gate: layout tests for =sizeof=, =alignof=, and field offsets.
+
+** Stage 130.3: C ABI function MVP
+
+Compile a function with integer arguments and integer return to a native
+object through the adapter.
+
+Gate: object smoke test plus direct execution or C harness call.
+
+** Stage 130.4: pointer and struct field MVP
+
+Add pointer load/store and struct field access.
+
+Gate: C harness passes a struct pointer and receives the expected result.
+
+** Stage 130.5: no-allocation contract
+
+Add function attributes for =:alloc none= and reject constructs that would
+allocate or require GC roots.
+
+Gate: negative tests for accidental cons/string/vector allocation.
+
+** Stage 130.6: memory-safety MVP
+
+Implement =sys:unsafe= checking, move-only owned resources, lexical borrow
+rules, and safe slice bounds checks.
+
+Gate: all Stage 130.S1-S5 safety gates pass.
+
+** Stage 130.7: split rehearsal
+
+Run a scripted copy into =target/nelisp-sys-extract/= and verify that package
+tests only depend on the adapter contract.
+
+Gate: extraction report with the list of remaining NeLisp-private imports.
+
+* Repository split shape
+
+When extraction becomes justified, the new repository should look like:
+
+#+begin_src text
+nelisp-sys/
+├── README.org
+├── docs/
+│   ├── language.org
+│   ├── abi.org
+│   ├── memory-safety.org
+│   └── design/
+├── src/
+├── test/
+├── examples/
+├── tools/
+└── vendor-or-adapters/
+#+end_src
+
+The first extracted release can still depend on NeLisp as a toolchain. Full
+backend independence is a later milestone, not a prerequisite for repository
+split.
+
+* Open questions
+
+- Should source use =sys:= names, =nelisp-sys-= forms, or a reader-level
+  package namespace?
+- Should type checking be strict from the first stage, or should the first MVP
+  infer only integer widths?
+- Is the initial backend a direct Phase 47 lowering path, or a separate
+  typed IR that Phase 47 consumes?
+- Should freestanding mode be designed before or after C ABI object export?
+- How much Rust/Zig/C bootstrap code is acceptable for the eventual
+  standalone toolchain?
+- Should the borrow MVP use explicit =sys:with-borrow= forms, or infer borrow
+  scopes from ordinary =let= bindings?
+- Which resource types are built in initially: malloc buffer, mmap region,
+  file descriptor, or all three?
+
+* Initial recommendation
+
+Start with =packages/nelisp-sys/= and implement only layout plus one exported
+integer function first. Keep all backend calls behind
+=nelisp-sys-adapter-nelisp.el=. This gives fast access to the existing
+NeLisp toolchain while preserving a credible path to a standalone repository.
