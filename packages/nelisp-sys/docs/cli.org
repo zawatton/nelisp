@@ -1,0 +1,57 @@
+#+TITLE: nelisp-sys build-flow / CLI contract
+#+OPTIONS: toc:nil
+
+* Purpose
+
+Doc 130 extraction criterion 14: the build flow must be describable as a
+CLI contract.  nelisp-sys is driven from Emacs Lisp today; this document
+fixes the stable entry points and their batch invocation, which a thin
+=nelisp-sys= wrapper script will expose verbatim after extraction.
+
+* Entry points (stable API)
+
+| Function | Effect |
+|----------+--------|
+| =(nelisp-sys-analyze FORMS)= | parse + type/ownership/borrow/unsafe check; t or signal |
+| =(nelisp-sys-analyze-collect FORMS)= | same, returns a diagnostics list (nil = clean) |
+| =(nelisp-sys-compile-object FORMS OUT &optional TARGET)= | analyze, then emit a native object at OUT (+ OUT.abi) |
+| =(nelisp-sys-compile-static-lib FORMS OUT &optional TARGET)= | analyze, emit, archive into a static library OUT |
+
+FORMS is a list of =sys:= top-level forms.  TARGET is a triple string
+(default: host).  All live in =nelisp-sys-driver=.
+
+* Batch invocation (the CLI contract)
+
+#+begin_src sh
+emacs --batch -Q \
+  -L lisp -L src \
+  -L packages/nelisp-sys/src \
+  --eval "(require 'nelisp-sys-driver)" \
+  --eval "(nelisp-sys-compile-object
+            '((sys:defun add ((a i32) (b i32)) i32
+                (:abi c :export \"nl_add\" :alloc none) (+ a b)))
+            \"/tmp/nl_add.o\")"
+#+end_src
+
+Produces =/tmp/nl_add.o= (ELF relocatable, exporting =nl_add= with the C
+ABI) and =/tmp/nl_add.o.abi= (the ABI summary).  Link it from C:
+
+#+begin_src sh
+cc main.c /tmp/nl_add.o -o main   # main.c: long nl_add(long,long);
+#+end_src
+
+=-L lisp= is required only for codegen (it brings in the Phase 47 backend);
+analysis-only use needs just =-L packages/nelisp-sys/src=.
+
+* Targets
+
+Pass any triple from =nelisp-sys-target-list=:
+=x86_64-unknown-linux-gnu=, =aarch64-unknown-linux-gnu=,
+=x86_64-apple-darwin=, =aarch64-apple-darwin=, =x86_64-pc-windows-msvc=.
+
+* Extraction rehearsal
+
+=scripts/nelisp-sys-extract-rehearsal.sh= copies the package to
+=target/nelisp-sys-extract/= and audits that only the adapter touches the
+private backend (criterion 6) and that the adapter stays under the call
+budget (criterion 5).

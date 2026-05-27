@@ -27,9 +27,30 @@ Do not split into a separate repository until all of these hold:
 14. The build flow can be described as a CLI contract.
 15. The desired release cadence differs from NeLisp core.
 
-* Current status
+* Current status (2026-05-28)
 
-(Updated as phases land — see commit log / worklog.)
+All 15 extraction criteria hold:
+
+| # | Criterion | Evidence |
+|---+-----------+----------|
+| 1 | README without unrelated internals | =README.org= |
+| 2 | compile a source to an object | =nelisp-sys-compile-object=; backend e2e test emits =nl_add.o= |
+| 3 | a C ABI fn callable from a C harness | backend e2e: C harness returns 42 |
+| 4 | struct layout tests (linux/x86_64) | =nelisp-sys-abi-layout-test= |
+| 5 | adapter < ~20 public calls | rehearsal: 4 public adapter calls |
+| 6 | only the adapter calls private backend | =nelisp-sys-extraction-test= (no leaks) |
+| 7 | tests runnable as a named subset | =packages/nelisp-sys/test/nelisp-sys*-test.el= glob |
+| 8 | language + ABI docs package-local | =docs/language.org=, =docs/abi.org= |
+| 9 | memory-safety docs package-local | =docs/memory-safety.org= |
+| 10 | safe code rejects raw deref outside unsafe | =nelisp-sys-unsafe-test= (E-SYS-UNSAFE-001) |
+| 11 | move-only rejects use-after-move/double | =nelisp-sys-ownership-test= (E-SYS-OWN-001) |
+| 12 | lexical borrow tests pass | =nelisp-sys-borrow-test= (E-SYS-BORROW-001/002) |
+| 13 | =:alloc none= rejects heap alloc | =nelisp-sys-unsafe-test= (E-SYS-ALLOC-001) |
+| 14 | build flow as a CLI contract | =docs/cli.org= |
+| 15 | release cadence differs from core | =nelisp-sys-version= independent of NeLisp |
+
+The package is extraction-ready; it stays in-tree as the nursery until a
+separate release cadence is actually desired.
 
 * Split rehearsal
 

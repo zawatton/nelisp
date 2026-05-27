@@ -1,0 +1,56 @@
+#+TITLE: nelisp-sys freestanding mode — design spike (Stage 132.7)
+#+OPTIONS: toc:nil
+
+* Status
+
+DESIGNED, not shipped.  Hosted C-ABI object generation (the MVP) is the
+shipped path; freestanding executable mode is a later milestone.  This
+document is the design review required by Doc 132 Stage 132.7; the
+experimental fixture is =test/fixtures/freestanding-main.nl=.
+
+* Two execution modes
+
+1. *Hosted C-ABI* (shipped): output is an object / static library consumed
+   by a host linker or C harness.  No custom entry.  See =abi.org=.
+2. *Freestanding* (this spike): the output provides its own entry and does
+   not rely on a host CRT.
+
+* Entry symbol per target
+
+Taken from the target descriptor (=:entry-symbol=):
+
+| Target | Entry |
+|--------+-------|
+| =*-unknown-linux-gnu= | =_start= |
+| =*-apple-darwin= | =start= |
+| =*-pc-windows-msvc= | =mainCRTStartup= |
+
+* Freestanding contract (to specify before shipping)
+
+- stack alignment at entry (16 on all current targets);
+- =argc= / =argv= / =envp= availability and location;
+- the exit path (Linux: =exit_group= syscall; Windows: =ExitProcess=);
+- panic/abort implementation;
+- BSS zeroing responsibility;
+- static constructor policy (none in MVP);
+- allocator availability (none in =:alloc none= entries).
+
+* Why deferred
+
+The MVP backend lowers to the Phase 47 integer subset and emits relocatable
+objects.  A freestanding =_start= needs syscall emission and an entry/CRT
+stub.  The toolchain already has =nelisp-crt0= entry stubs and a syscall
+table, so the path is open, but shipping it requires the syscall/effect
+surface (=:syscall may=) to be wired through the backend.  Until then the
+backend raises =nelisp-sys-backend-error= on =sys:exit= rather than
+miscompiling — see =nelisp-sys-freestanding-test.el=.
+
+* Experimental fixture
+
+#+begin_src elisp
+(sys:defun _start () void
+  (:abi nelisp-internal :alloc none :panic abort :syscall may)
+  (sys:exit 0))
+#+end_src
+
+This parses and type-checks today; codegen is intentionally gated off.
