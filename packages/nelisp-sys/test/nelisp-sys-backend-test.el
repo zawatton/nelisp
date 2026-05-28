@@ -28,6 +28,22 @@
                   '((sys:defun add ((a i32) (b i32)) i32
                       (:abi c :export "nl_add") (+ a b)))))))
 
+(ert-deftest nelisp-sys-backend-lower-call-ptr ()
+  ;; Doc 133 P0: (sys:call-ptr p x) -> Phase 47 (call-ptr p x).
+  (should (equal '(defun via (p x) (call-ptr p x))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun via ((p i64) (x i64)) i64 ()
+                      (sys:call-ptr p x)))))))
+
+(ert-deftest nelisp-sys-backend-lower-addr-of-and-call-ptr ()
+  ;; Doc 133 P0: addr-of + call-ptr compose for indirect dispatch.
+  (should (equal '(seq (defun tgt (x) (+ x 100))
+                       (defun via (x) (call-ptr (addr-of tgt) x)))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun tgt ((x i64)) i64 () (+ x 100))
+                    (sys:defun via ((x i64)) i64 ()
+                      (sys:call-ptr (sys:addr-of tgt) x)))))))
+
 (ert-deftest nelisp-sys-backend-lower-control-flow ()
   (should (equal '(defun mx (a b) (if (< a b) b a))
                  (nelisp-sys-backend-test--lower

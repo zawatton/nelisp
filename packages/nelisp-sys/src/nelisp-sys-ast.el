@@ -104,6 +104,9 @@ excluded."
                        (nelisp-sys-ast-prop node :body)))
     (resource-op (list (nelisp-sys-ast-prop node :arg)))
     (call (nelisp-sys-ast-prop node :args))
+    (call-ptr (cons (nelisp-sys-ast-prop node :fn-expr)
+                    (nelisp-sys-ast-prop node :args)))
+    (addr-of nil)
     (t nil)))
 
 (provide 'nelisp-sys-ast)

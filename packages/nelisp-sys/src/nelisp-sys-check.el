@@ -209,8 +209,24 @@ non-literal argument; else i32."
                                          (nelisp-sys-ast-prop node :arg) nil)))
          (if (eq (nelisp-sys-ast-prop node :op) 'sys:dup) at 'void)))
       (call (nelisp-sys-check--infer-call ctx locals node))
+      (call-ptr (nelisp-sys-check--infer-call-ptr ctx locals node))
+      (addr-of 'i64)
       (t (nelisp-sys-check--fail 'E-SYS-TYPE-099 form
                                  "cannot type-check node kind: %S" kind)))))
+
+(defun nelisp-sys-check--infer-call-ptr (ctx locals node)
+  "Type (sys:call-ptr FN ARG...) (Doc 133 Phase 0 indirect call).
+MVP contract: FN is a raw code address (integer/usize typed) and the
+result is `i64' (the GP return register).  Each ARG is type-checked
+as a scalar expression.  Signals E-SYS-TYPE-013 via `--expect-int'
+when FN is not address-typed.  (A future refinement carries the full
+\(fn ...) signature for arg/return checking with E-SYS-FNPTR-* codes.)"
+  (let ((form (nelisp-sys-ast-prop node :form)))
+    (nelisp-sys-check--expect-int
+     ctx locals (nelisp-sys-ast-prop node :fn-expr) form)
+    (dolist (a (nelisp-sys-ast-prop node :args))
+      (nelisp-sys-check--expr ctx locals a nil))
+    'i64))
 
 (defun nelisp-sys-check--expect-int (ctx locals node form)
   "Check NODE is an integer-typed expression; signal E-SYS-TYPE-013 if not."

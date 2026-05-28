@@ -109,6 +109,10 @@ A single node lowers directly; multiple are wrapped in `seq'."
                (nelisp-sys-backend-ctx-target ctx)
                (nelisp-sys-backend-ctx-structs ctx)))
     (call (nelisp-sys-backend--lower-call ctx node))
+    (call-ptr (nelisp-sys-backend--lower-call-ptr ctx node))
+    (addr-of
+     (let ((nm (nelisp-sys-ast-prop node :name)))
+       (list 'addr-of (or (gethash nm (nelisp-sys-backend-ctx-names ctx)) nm))))
     (exit (nelisp-sys-backend--unsupported node "sys:exit (freestanding)"))
     (load-field (nelisp-sys-backend--lower-load-field ctx node))
     (store-field! (nelisp-sys-backend--lower-store-field ctx node))
@@ -323,6 +327,16 @@ Same addressing as `nelisp-sys-backend--lower-slice-ref'."
          (args (mapcar (lambda (a) (nelisp-sys-backend--lower ctx a))
                        (nelisp-sys-ast-prop node :args))))
     (cons sym args)))
+
+(defun nelisp-sys-backend--lower-call-ptr (ctx node)
+  "Lower (sys:call-ptr FN ARG...) to the Phase 47 (call-ptr FN ARG...)
+form (Doc 133 Phase 0).  FN lowers to the code-address expression; the
+Phase 47 backend emits the indirect CALL through a scratch register."
+  (cons 'call-ptr
+        (cons (nelisp-sys-backend--lower
+               ctx (nelisp-sys-ast-prop node :fn-expr))
+              (mapcar (lambda (a) (nelisp-sys-backend--lower ctx a))
+                      (nelisp-sys-ast-prop node :args)))))
 
 (defun nelisp-sys-backend--lower-defun (ctx item)
   "Lower defun ITEM to a plain Phase 47 (defun SYM (PARAMS) BODY)."

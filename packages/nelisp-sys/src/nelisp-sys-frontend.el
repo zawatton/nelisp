@@ -326,6 +326,23 @@ FORM is the enclosing source form for diagnostics."
       (nelisp-sys-ast-make 'resource-op :op head
                            :arg (nelisp-sys-frontend--parse-expr (car args))
                            :form form))
+     ((eq head 'sys:addr-of)
+      ;; (sys:addr-of NAME) — the runtime address of function NAME as a
+      ;; raw code pointer (i64); companion of sys:call-ptr (Doc 133 P0).
+      (unless (and (= (length args) 1) (symbolp (car args)))
+        (nelisp-sys-frontend--err form "sys:addr-of needs a function name"))
+      (nelisp-sys-ast-make 'addr-of :name (car args) :form form))
+     ((eq head 'sys:call-ptr)
+      ;; (sys:call-ptr FN-EXPR ARG...) — indirect call through a code
+      ;; address (Doc 133 Phase 0).  FN-EXPR is a raw i64/usize address
+      ;; (e.g. from a dispatch table); ARGs follow the C ABI.
+      (unless args
+        (nelisp-sys-frontend--err form "sys:call-ptr needs a function value"))
+      (nelisp-sys-ast-make 'call-ptr
+                           :fn-expr (nelisp-sys-frontend--parse-expr (car args))
+                           :args (mapcar #'nelisp-sys-frontend--parse-expr
+                                         (cdr args))
+                           :form form))
      ((symbolp head)
       ;; Generic function/intrinsic call.
       (nelisp-sys-ast-make 'call :fn head
