@@ -63,9 +63,10 @@
 
 (ert-deftest nelisp-sys-backend-lowers-struct-field ()
   "A struct field load through a (ptr S) place lowers to a ptr-read of the
-field width at its offset (Stage 130.4)."
+field width at its offset (Stage 130.4).  Signed fields use the
+sign-extending `ptr-read-sN' read."
   (should (equal '(defun nl_distance2 (p)
-                    (let ((x (ptr-read-u32 p 0)) (y (ptr-read-u32 p 4)))
+                    (let ((x (ptr-read-s32 p 0)) (y (ptr-read-s32 p 4)))
                       (+ (* x x) (* y y))))
                  (nelisp-sys-backend-test--lower
                   '((sys:defstruct point (:repr c) (x i32) (y i32))
@@ -78,9 +79,13 @@ field width at its offset (Stage 130.4)."
 
 (ert-deftest nelisp-sys-backend-lowers-raw-pointer ()
   "Raw pointer load/store lower to ptr-read/-write of the pointee width."
-  (should (equal '(defun rd (p) (ptr-read-u32 p 0))
+  ;; signed pointee read sign-extends (ptr-read-sN); the store stays uN.
+  (should (equal '(defun rd (p) (ptr-read-s32 p 0))
                  (nelisp-sys-backend-test--lower
                   '((sys:defun rd ((p (ptr i32))) i32 () (sys:load p))))))
+  (should (equal '(defun rdu (p) (ptr-read-u32 p 0))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun rdu ((p (ptr u32))) u32 () (sys:load p))))))
   (should (equal '(defun wr (p v) (ptr-write-u32 p 0 v))
                  (nelisp-sys-backend-test--lower
                   '((sys:defun wr ((p (ptr i32)) (v i32)) void ()
@@ -104,6 +109,12 @@ field width at its offset (Stage 130.4)."
                     (ptr-read-u32 (+ (ptr-read-u64 s 0) (* i 4)) 0))
                  (nelisp-sys-backend-test--lower
                   '((sys:defun g2 ((s (slice u32)) (i usize)) u32 ()
+                      (sys:slice-ref s i))))))
+  ;; a signed element type uses the sign-extending read (ptr-read-sN).
+  (should (equal '(defun g3 (s i)
+                    (ptr-read-s32 (+ (ptr-read-u64 s 0) (* i 4)) 0))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun g3 ((s (slice i32)) (i usize)) i32 ()
                       (sys:slice-ref s i)))))))
 
 (ert-deftest nelisp-sys-backend-lower-slice-set ()
@@ -221,6 +232,38 @@ int main(void){
   nl_set(&s,1,99u);
   if (a[1]!=99u) return 3;
   if (nl_get(&s,1)!=99) return 4;
+  return 42;
+}
+"))
+          (should (= 0 (call-process "cc" nil nil nil cfile obj "-o" exe)))
+          (should (= 42 (call-process exe nil nil nil))))
+      (ignore-errors (delete-directory tmp t)))))
+
+(ert-deftest nelisp-sys-backend-signed-read-from-c ()
+  "ptr-read-sN e2e: a signed slice element round-trips through C with its
+sign preserved (a negative i32 must come back negative, not zero-extended)."
+  (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (executable-find "cc")))
+  (let* ((tmp (make-temp-file "nelisp-sys-sgn" t))
+         (obj (expand-file-name "sgn.o" tmp))
+         (cfile (expand-file-name "harness.c" tmp))
+         (exe (expand-file-name "harness" tmp))
+         (forms '((sys:defun classify ((s (slice i32)) (i usize)) i64
+                    (:abi c :export "nl_classify" :alloc none)
+                    (sys:cast i64 (sys:slice-ref s i))))))
+    (unwind-protect
+        (progn
+          (nelisp-sys-compile-object forms obj)
+          (should (file-exists-p obj))
+          (with-temp-file cfile
+            (insert "#include <stddef.h>
+struct sl { int *p; size_t n; };
+long nl_classify(struct sl*, size_t);
+int main(void){
+  int a[2] = {-5, 100};
+  struct sl s = {a, 2};
+  if (nl_classify(&s,0) != -5)  return 1;
+  if (nl_classify(&s,1) != 100) return 2;
   return 42;
 }
 "))

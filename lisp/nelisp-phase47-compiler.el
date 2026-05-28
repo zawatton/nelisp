@@ -8849,6 +8849,27 @@ functions `((NAME . ARITY) ...)'."
                    (nth 2 sexp) env fenv defuns)
           :val (nelisp-phase47-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
+   ;; `(ptr-read-sN PTR OFFSET)' — signed N-bit read; sign-extends to i64.
+   ;; Desugars at parse time to the unsigned read of the same width plus a
+   ;; left-shift / arithmetic-right-shift pair, so it needs no new opcode or
+   ;; asm and is correct on every target (`shl'/`sar' lower per arch).  The
+   ;; s64 case is the identity unsigned read (already full width).  PTR and
+   ;; OFFSET appear once in the rewrite, so they are evaluated once.
+   ((and (consp sexp) (memq (car sexp)
+                            '(ptr-read-s8 ptr-read-s16 ptr-read-s32 ptr-read-s64)))
+    (unless (= (length sexp) 3)
+      (signal 'nelisp-phase47-compiler-error
+              (list :ptr-read-sN-arity sexp)))
+    (let* ((spec (pcase (car sexp)
+                   ('ptr-read-s8  '(ptr-read-u8  . 56))
+                   ('ptr-read-s16 '(ptr-read-u16 . 48))
+                   ('ptr-read-s32 '(ptr-read-u32 . 32))
+                   ('ptr-read-s64 '(ptr-read-u64 . 0))))
+           (raw (list (car spec) (nth 1 sexp) (nth 2 sexp)))
+           (shift (cdr spec)))
+      (nelisp-phase47-compiler--parse-value
+       (if (zerop shift) raw (list 'sar (list 'shl raw shift) shift))
+       env fenv defuns)))
    ;; Doc 122 §122.J — struct-by-value sugar.  Desugar to existing
    ;; primitives at parse time:
    ;;

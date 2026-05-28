@@ -17,9 +17,9 @@
 ;; the Phase 47 `ptr-read-uN'/`ptr-write-uN' primitives.
 ;; Still deferred (clear `nelisp-sys-backend-error', never a silent
 ;; miscompile): borrows, field/slice access through a non-var place, and
-;; `sys:exit' (freestanding).  Field and slice-element reads zero-extend
-;; (signed-negative loads are an MVP gap until `ptr-read-sN'), and slice
-;; access has no runtime bounds check yet.
+;; `sys:exit' (freestanding).  Signed scalar field/slice reads sign-extend
+;; via the Phase 47 `ptr-read-sN' primitive; slice access has no runtime
+;; bounds check yet.
 ;;
 ;; All integer values are 64-bit words in registers (SysV AMD64 / AAPCS64);
 ;; width casts are identity at this level for the MVP.
@@ -170,16 +170,21 @@ MVP: only a bare `var' place is resolved (against the dynamic locals)."
            (nelisp-sys-type-struct-name el)))))
 
 (defun nelisp-sys-backend--mem-op (kind type ctx node)
-  "Return the Phase 47 `ptr-KIND-uN' symbol for value TYPE.
-N follows sizeof(TYPE) in {1,2,4,8}; other sizes are unsupported.
-Note: reads zero-extend (signed-negative field loads are an MVP gap)."
+  "Return the Phase 47 `ptr-KIND-{u,s}N' symbol for value TYPE.
+N follows sizeof(TYPE) in {1,2,4,8}; other sizes are unsupported.  A read of
+a signed integer scalar uses the sign-extending `ptr-read-sN'; writes and
+unsigned/pointer/float reads use the `uN' form."
   (let* ((bytes (nelisp-sys-layout-sizeof
                  type (nelisp-sys-backend-ctx-target ctx)
                  (nelisp-sys-backend-ctx-structs ctx)))
-         (bits (cl-case bytes (1 8) (2 16) (4 32) (8 64) (t nil))))
+         (bits (cl-case bytes (1 8) (2 16) (4 32) (8 64) (t nil)))
+         (meta (nelisp-sys-type-scalar-meta type))
+         (signed (and (string= kind "read")
+                      (eq (plist-get meta :class) 'int)
+                      (plist-get meta :signed))))
     (unless bits
       (nelisp-sys-backend--unsupported node "non-word-size memory access"))
-    (intern (format "ptr-%s-u%d" kind bits))))
+    (intern (format "ptr-%s-%s%d" kind (if signed "s" "u") bits))))
 
 (defun nelisp-sys-backend--lower-load-field (ctx node)
   "Lower (sys:load-field PLACE FIELD) to a ptr-read of the field width."
@@ -273,8 +278,8 @@ The len field lives at offset = pointer size in the {data,len} header."
   "Lower (sys:slice-ref S I) to a read of element I from slice S.
 Loads the data pointer (header offset 0), adds I*sizeof(T), then reads the
 element width.  MVP: no runtime bounds check (documented gap); the checked
-and `-raw' forms lower identically, and signed elements zero-extend until
-the Phase 47 `ptr-read-sN' primitive lands."
+and `-raw' forms lower identically.  Signed elements sign-extend through the
+element read op (`ptr-read-sN')."
   (let* ((elem (nelisp-sys-backend--slice-elem-type node))
          (esize (nelisp-sys-layout-sizeof
                  elem (nelisp-sys-backend-ctx-target ctx)

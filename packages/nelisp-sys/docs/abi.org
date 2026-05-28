@@ -65,8 +65,9 @@ Access lowering (Stage 130.5):
 MVP gaps (clear errors or documented behaviour, never silent miscompiles):
 - no runtime bounds check yet; the checked and =sys:slice-ref-raw= forms lower
   identically (static safety only);
-- element reads zero-extend, so a signed element holding a negative value is a
-  gap until the Phase 47 =ptr-read-sN= primitive lands;
+- signed element reads sign-extend via the Phase 47 =ptr-read-sN= primitive
+  (which desugars to an unsigned read + =shl=/=sar= pair); unsigned reads
+  zero-extend;
 - the slice operand must be a bare slice-typed variable -- a slice op through a
   non-var place is a clear =nelisp-sys-backend-error=.
 
