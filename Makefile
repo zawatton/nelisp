@@ -85,6 +85,11 @@ sexp-abi-check:
 	  --eval '(with-temp-file "target/sexp-abi-check/elisp.txt" (dolist (e nelisp-sexp--abi-export) (insert (format "%s=%d\n" (car e) (cdr e)))))'
 	@diff -u target/sexp-abi-check/elisp.txt target/sexp-abi-check/rust.txt \
 	  && echo "sexp-abi-check: Rust and elisp constants match"
+	@echo "sexp-abi-check: verifying nelisp-sys :repr c shadow (Doc 133 P1)"
+	$(EMACS) --batch -Q -L packages/nelisp-sys/src -L packages/nelisp-sys/test \
+	  -L lisp -L src -l ert -l nelisp-sys-sexp-abi-test \
+	  -f ert-run-tests-batch-and-exit \
+	  && echo "sexp-abi-check: nelisp-sys shadow layout matches frozen ABI"
 
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
 # Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).
