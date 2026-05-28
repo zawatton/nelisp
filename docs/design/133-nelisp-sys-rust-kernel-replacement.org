@@ -1,0 +1,343 @@
+#+TITLE: Doc 133 — Replacing the Rust kernel with nelisp-sys
+#+DATE: 2026-05-29
+#+STATUS: PROPOSAL
+
+* Status
+
+- *State*: PROPOSAL 2026-05-29.  Design only; no code ships with this doc.
+- *Parent*: Doc 130 (=nelisp-sys= extractable C-replacement subset, IMPLEMENTED),
+  Doc 131 (semantics + safety contract, IMPLEMENTED), Doc 132 (ABI + platform
+  model, IMPLEMENTED).
+- *Consumes*: Doc 122.E (atomic + raw-mem grammar ops, SHIPPED =9b69096c=),
+  Doc 124 (NlBox clone/drop elisp kernel, DRAFT), Doc 125 (alloc/dealloc
+  grammar, §125.A in-flight), Doc 100/101/110/111 (Sexp ABI, SHIPPED),
+  Doc 102 (env.rs → elisp, Phase 1-8 SHIPPED incl. §111.E cutover).
+- *Scope*: the path from "today's Rust kernel" to "the production =nelisp=
+  binary is a nelisp-sys-compiled native object with ~0 Rust", staged so that
+  every stage is net-negative on Rust LOC (the repo's sole evaluation axis).
+- *Non-goal*: rewriting the already-elisp logic (special forms, reader,
+  builtins, env mirror/lexframe are already Phase-47 =.o=).  This doc targets
+  only the *remaining Rust* (the kernel + its FFI plumbing + the entry point).
+- *Hard rule binding*: every stage MUST be net-negative on Rust LOC
+  (=feedback_nelisp_rust_loc_never_increase=).  nelisp-sys is the vehicle that
+  makes this achievable where the per-builtin Phase-47-swap approach hit the
+  net-positive wall (each swap needed Rust extern wrappers).
+
+* TL;DR
+
+The interpreter's *logic* is already Elisp.  What remains in Rust
+(~99.7K chars of production code in =build-tool/src/=) is the irreducible
+kernel: the Sexp data model, refcount/atomic boxes, the allocator, the
+dispatch/eval core, the reader slot-pool shim, the OS layer (TTY / signals /
+JIT / syscall), and — the largest single category — the *FFI plumbing*
+(~18.5K chars) that exists *only* because the Rust kernel calls into
+Elisp-compiled =.o= objects across an =extern "C"= boundary.
+
+The thesis of this doc:
+
+#+begin_quote
+Rewrite the remaining Rust kernel as =nelisp-sys= source.  nelisp-sys
+compiles it to native =.o= through the existing *Elisp* codegen
+(=nelisp-phase47-compiler.el= + =nelisp-asm-*= + =nelisp-elf-write= +
+=crt0= + =static-linker=).  Because that codegen is Elisp, every component
+moved deletes Rust (the component *and* its FFI wrappers) and adds Elisp
+(nelisp-sys source, plus any one-time codegen extension).  When the whole
+kernel is nelisp-sys =.o=, the Rust↔Elisp FFI boundary disappears entirely
+and the entry point becomes a nelisp-sys freestanding =main=.  The
+=nelisp= binary becomes a pure nelisp-sys-compiled native executable;
+=build-tool/src/= goes to ~0 Rust.
+#+end_quote
+
+This is net-negative *by construction*: nelisp-sys code lives in Elisp, the
+deletions are Rust.
+
+* §1 The remaining Rust (inventory, 2026-05-29)
+
+Production Rust totals (=#[cfg(test)]= excluded): =eval/mod.rs= ≈ 71,549 chars
+(1 minified line, ~181 fns), =lib.rs= ≈ 27,372 chars (8 lines, ~121 fns),
+=bin/nelisp.rs= 715, =bin/sexp-abi-emit.rs= 109.
+
+| Cat | Component | Approx chars | nelisp-sys layer | Notes |
+|-----+-----------+--------------+------------------+-------|
+| 1 | Sexp ADT (=enum Sexp= 13 variants, =CharTableInner=, =ABI_EXPORT=, box-ptr accessors, =nl_sexp_clone_into=, =tag()=, ctors) | ~6,229 | core (struct + ptr) | layout already frozen by =sexp-abi.md= |
+| 2 | Refcount / atomic (=nl_ref_common!=, =define_nlbox!= ×7, =nlrc_payload_drop=, =drop_inner_extern!=, slot-set fns; +14 lib.rs clone/drop wrappers) | ~8,550 | alloc (atomics) | Doc 124/125 territory |
+| 3 | Allocator (=nl_alloc_bytes=, =nl_dealloc_bytes=, =nl_layout=, =nl_alloc_cell= extern) | ~637 | alloc | Doc 125 grammar |
+| 4 | Dispatch / bootstrap (=builtin_dispatch!= 11,854, =is_bi= 3,220, =new_global= 1,612, =bi_globals_op= 1,658, =install_builtins=, Env accessors) | ~22,097 | core + std | biggest block |
+| 5 | Reader / eval kernel (=nl_eval_inner_cons=, =apply_special=, =apply_function=, =nl_let_setup=, =nl_bf_bind_*=, =nl_env_*=, reader slot-pool) | ~15,168 | core | calls Elisp =.o= today |
+| 6 | *FFI plumbing* (=elisp_cc_spike=: 86 =extern "C"= decls + =cc_wrap_batch!= 57 wrappers + 9 helpers) | ~18,492 | — (collapses) | exists only for the boundary |
+| 7a | TTY / signals (termios, SIGINT/SIGWINCH/SIGTSTP/SIGCONT, =#[cfg(unix)]=) | ~4,497 | std + unsafe | |
+| 7b | JIT dispatch (=unified_fn_ptr=, =libc::dlsym=, 11 call shims) | ~4,744 | std + unsafe | needs fn-ptr + dlsym |
+| 7c | Float / numeric (=nl_f64_bits_append_to_mut_str=, =nl_jit_format_float=, …) | ~3,280 | core | pure compute |
+| 7d | MutStr mutation (=push_byte=, =push_codepoint=, =set_codepoint_raw=) | ~972 | alloc | |
+| 7e | Error types (=EvalError=, =stash_err=, =consume_stashed_error=) | ~2,001 | core | |
+| - | Entry point (=bin/nelisp.rs=) | 715 | std (freestanding main) | |
+
+Off-limits-for-naive-swap flags (refcount-bump / heap-alloc / String-mut /
+symbol-identity / env-mutation) concentrate in Cat 2, 3, 4, 5 — exactly the
+categories the per-builtin swap approach could not touch without adding Rust
+extern helpers.  nelisp-sys dissolves that constraint: the unsafe / raw-mem /
+atomic operations live in nelisp-sys *source*, not in new Rust.
+
+* §2 nelisp-sys capability surface (today) and the one gap
+
+From Doc 130/131/132 + =packages/nelisp-sys/= (all IMPLEMENTED 2026-05-28):
+
+- typed scalars =i8..u64 isize usize bool void f32 f64 char32=; =(array T N)=,
+  =(struct NAME)=, =(ptr T)=, =(slice T)=/=(slice-mut T)=, =(owned T)=,
+  =(& T)=/=(&mut T)=, =(fn ...)=, =(result T E)=, =(option T)=;
+- =sys:defstruct= (=:repr c=), =sys:defun= (full attr set incl. =:abi=,
+  =:alloc=, =:syscall=, =:unsafe=), =sys:extern=, =sys:const=,
+  =sys:static= (mutable global), =sys:static-assert=;
+- body: arithmetic / comparisons, =let=, =if=/=cond=/=while=/=seq=,
+  =sys:load-field= / =sys:store-field!=, =sys:slice-*=, =sys:cast=,
+  =sys:unsafe=, =sys:with-borrow=, =sys:sizeof=/=alignof=/=offsetof=;
+- ownership / borrow / unsafe / =:alloc none= static checks with stable
+  =E-SYS-*= diagnostics;
+- 5 targets emit objects, static lib links, C-ABI fn callable from a C harness;
+- *memory primitives just landed*: struct-field codegen + raw-pointer memory
+  (Stage 130.4), slice ABI ptr+len (Stage 130.5), =ptr-read-sN= signed loads
+  (commit =7f9ddbca=) — i.e. exactly what reading the Sexp payload + boxes needs;
+- atomics: =sys:cas= + =lisp/nelisp-cc-atomic-raw-mem.el= (Doc 122.E SHIPPED);
+- heap: =lisp/nelisp-cc-alloc-dealloc.el= (Doc 125 §125.A in-flight).
+
+Capability *gaps* that block the kernel rewrite (each closed in Elisp codegen,
+0 Rust delta):
+
+1. *Indirect call through a function pointer* — REQUIRED by Cat 4 dispatch,
+   Cat 7b JIT, and the =extern_builtins= registry.  No =sys:call-ptr= /
+   indirect-call form exists today.  This is the single hard gap.
+2. *Atomic fetch-add/sub convenience* — =sys:cas= exists; refcount inc/dec is
+   expressible as a CAS loop, but a direct =sys:atomic-add!= lowering to the
+   Doc 122.E raw-mem op is cleaner.  Minor.
+3. *Tagged-union ergonomics* — NOT a blocker.  =Sexp= is already a
+   discriminant byte + payload word (frozen =ABI_EXPORT=); model it as a
+   =sys:defstruct :repr c= of =(tag u8)= + =(payload u64)= and dispatch on
+   =tag= with =cond= + raw-ptr reads.  A future =sys:defenum= sugar is
+   optional, not required.
+
+* §3 Core insight — the FFI boundary collapse
+
+Today the dependency is one-directional with a hard boundary:
+
+#+begin_src text
+  Rust kernel (dispatch / eval / Sexp / refcount)
+        |  extern "C"  (86 decls + 57 wrappers = Cat 6, ~18.5K chars)
+        v
+  Elisp .o objects (special forms, reader, builtins, env mirror/lexframe)
+#+end_src
+
+Every Phase-47 swap so far *added* to Cat 6 (a wrapper per swapped builtin) —
+which is why mid-size swaps trend net-positive once you count the wrapper.
+
+Once the *kernel itself* is nelisp-sys =.o=, both sides are the same kind of
+native object, linked directly:
+
+#+begin_src text
+  nelisp-sys .o kernel  -->  nelisp-sys/elisp .o leaves   (one link graph, no extern "C" shim)
+#+end_src
+
+So Cat 6 is not migrated — it is *deleted*.  ~18.5K chars of pure FFI plumbing
+vanish the moment the last Rust caller is gone.  This is the largest
+single net-negative event in the plan and it is *free* (no replacement code).
+
+* §4 Net-LOC discipline
+
+Per-stage accounting, in the spirit of Doc 79's monotonic-shrink rule
+(=test_count_unchanged_or_grow= ∧ Rust LOC monotonically non-increasing):
+
+- Each "move" stage: =−(component Rust)= =−(its share of Cat 6 wrappers)=
+  =+(nelisp-sys source, in Elisp)= =+(one-time Elisp codegen ext, amortized)=.
+  Net Rust is strongly negative because both the component and its FFI share
+  are Rust deletions, while the additions are Elisp.
+- Phase 0 (capability) is net-0 on Rust (pure Elisp codegen).
+- No stage may add a Rust extern helper to enable an Elisp path — that is the
+  anti-pattern (=feedback_nelisp_rust_loc_never_increase=, the Phase B trap).
+  If a stage seems to need new Rust, it is mis-scoped: the missing capability
+  belongs in nelisp-sys codegen (Elisp), not in a Rust shim.
+
+* §5 Staged plan
+
+Ordering is bottom-up by data dependency, but uses *shadow-then-cutover* so
+the Rust stays canonical until its nelisp-sys replacement is byte/behaviour
+verified.  Each phase is independently shippable and net-negative (except
+Phase 0 = net-0).
+
+** Phase 0 — Capability closure (Elisp codegen; net-0 Rust)
+
+Close the §2 gaps in nelisp-sys, all in Elisp:
+
+- =sys:call-ptr= / indirect call: lower a =(fn ...)=-typed value to a
+  =call *reg= in =nelisp-asm-x86_64.el= / =nelisp-asm-arm64.el=; type-check the
+  callee signature in =nelisp-sys-frontend=.  Add =E-SYS-FNPTR-*= diagnostics.
+- =sys:atomic-add!= / =sys:atomic-sub!= convenience forms over the Doc 122.E
+  raw-mem ops (optional; CAS loop works meanwhile).
+- A =sys:defstruct=-of-=Sexp= idiom doc + helper macro in
+  =nelisp-sys-adapter-nelisp.el= that re-uses the frozen =ABI_EXPORT= offsets
+  so the nelisp-sys Sexp struct cannot drift from the Rust one.
+
+Gate: =packages/nelisp-sys/test/= new fn-ptr + atomic tests green; existing
+110/110 ERT unchanged; =make compile= green; 0 Rust touched.
+
+** Phase 1 — Sexp ADT + boxes as nelisp-sys structs (shadow; net-0)
+
+Express the 13-variant =Sexp= and the 7 =Nl*Inner= boxes as
+=sys:defstruct :repr c= matching =ABI_EXPORT= exactly.  Do NOT delete the Rust
+yet.  Extend =make sexp-abi-check= into a *4-artifact* gate:
+=sexp-abi.md= ∧ =nelisp-sexp-layout.el= ∧ Rust =sexp_abi_assert.rs= ∧ the new
+nelisp-sys structs all agree (size / align / offset / tag).
+
+Gate: 4-artifact =sexp-abi-check= green; 0 Rust deleted (shadow only).
+
+** Phase 2 — Refcount + box clone/drop + allocator (cutover Cat 2 + 3)
+
+Rewrite =nl_*_clone= / =nl_*_drop= / =nlrc_payload_drop= / the
+=define_nlbox!=-generated =new= / set ops / =nl_alloc_bytes= / =nl_dealloc_bytes=
+as nelisp-sys =:alloc heap= functions using =sys:cas= (refcount) and the
+Doc 125 alloc/dealloc grammar.  The Elisp =.o= leaves already call these by
+symbol via =extern=; *repoint those symbols* from the Rust =#[no_mangle]= fns
+to the nelisp-sys =.o= exports, then delete Cat 2 + 3 Rust (~9.2K) and their
+14 lib.rs wrappers.
+
+This is where Doc 124 / Doc 125 *land net-negative*: their goal (refcount /
+alloc kernel in Elisp) is reached by writing it as nelisp-sys, with no Rust
+extern helpers — sidestepping the §125.A "+~100 LOC Rust investment phase".
+
+Gate: =.o= byte-diff where stable + targeted ERT (alloc round-trip,
+clone/drop refcount, set/get); =feedback_nelisp_wave_skip_full_ert= applies
+(no full sweep).  Net Rust: ≈ −9.5K chars.
+
+** Phase 3 — MutStr + float/numeric utilities (cutover Cat 7c + 7d)
+
+Pure-compute + buffer-mutation; straightforward nelisp-sys core/alloc.
+Repoint =nelisp_mut_str_*= / float-format symbols; delete ~4.2K Rust.
+
+Gate: targeted ERT (string mutation, float formatting parity).  Net: ≈ −4.5K.
+
+** Phase 4 — Reader shim + eval kernel (cutover Cat 5)
+
+=nl_eval_inner_cons=, =apply_special=, =apply_function=, =nl_let_setup=,
+=nl_bf_bind_*=, =nl_env_*=, the reader slot-pool.  These *call* the Elisp =.o=
+leaves today; once they are nelisp-sys, the calls are intra-=.o= and require
+*no* =extern "C"= — so deleting them also deletes their Cat 6 wrapper share.
+
+Gate: self-host parity (=make test= self-host probes), targeted eval ERT.
+Net: ≈ −15K (Cat 5) plus the freed Cat 6 wrappers.
+
+** Phase 5 — Dispatch + bootstrap (cutover Cat 4)
+
+The largest block.  =builtin_dispatch!= (11.8K) becomes a nelisp-sys =cond= on
+the builtin name dispatching to nelisp-sys/elisp =.o= (now co-resident, no
+shim).  =is_bi=, =install_builtins=, =new_global= (the =.el= bootstrap loop —
+needs Phase 4 reader/eval + std file I/O), =bi_globals_op= (env mutation, now
+plain nelisp-sys with the Sexp structs from Phase 1).
+
+Gate: full boot parity (=(+ 1 2 3)= and the self-host suite boot identically
+from the nelisp-sys binary); =make test= green.  Net: ≈ −22K.
+
+** Phase 6 — OS layer: TTY / signals / JIT (cutover Cat 7a + 7b)
+
+=std=-layer + =sys:unsafe= work: termios + signal handlers via raw syscalls
+(=sys:syscall may=), =libc::dlsym= replaced by a nelisp-sys symbol-resolve
+(or a ≤3-line C =extern= if =dlsym= cannot be expressed — that single
+allowed-exception wrapper is the *only* permitted Rust residue and must be
+documented as such).  JIT indirect calls use the Phase-0 =sys:call-ptr=.
+
+Gate: TTY raw-mode round-trip, SIGINT quit-flag, JIT smoke parity.
+Net: ≈ −9K minus at most one ≤3-line =dlsym= extern.
+
+** Phase 7 — FFI plumbing collapse + entry point (delete Cat 6 + bin/nelisp.rs)
+
+With every Rust caller gone, delete the entire =elisp_cc_spike= module
+(86 externs + 57 wrappers + 9 helpers, ~18.5K) and =bin/nelisp.rs=.  Replace
+the entry point with a nelisp-sys freestanding =main= (=crt0= +
+=static-linker= + =elf-write= already exist; =freestanding-main.nl= fixture
+proves the path).  =build-tool/src/= → ~0 Rust.
+
+Gate: the produced =nelisp= binary is a nelisp-sys-linked native executable;
+=make test= + self-host green; =cargo= no longer required to build the
+interpreter (or reduced to a thin invoker of the Elisp build).  Net: ≈ −18.5K
++ entry point.
+
+** Phase 8 — Error types + residue + crate teardown
+
+=EvalError= / =stash_err= / =consume_stashed_error= (Cat 7e) move to
+nelisp-sys.  Tear down the =build-tool= crate's remaining Rust (ideally to
+nothing; at most a documented build-orchestration shim if =make= cannot drive
+the Elisp build directly).  Final =make sexp-abi-check= + full self-host.
+
+* §6 Bootstrap / self-host model (no circularity)
+
+Build-time vs run-time are distinct:
+
+- *Build time*: the HOST (the current =nelisp= binary, or Emacs running the
+  Elisp codegen) compiles the nelisp-sys kernel source → =kernel.o= → link →
+  the *new* =nelisp= binary.  This is exactly today's Phase-47 =.o= flow,
+  scaled from "leaves only" to "leaves + kernel + entry".
+- *Run time*: the new binary is pure native code; it does not invoke Emacs or
+  any Rust.
+
+There is no bootstrap circularity: a run-N binary (or Emacs) builds the
+run-(N+1) binary.  The frozen Sexp ABI (Phase 1's 4-artifact gate) guarantees
+the shadow and cutover stages cannot silently diverge.
+
+* §7 Verification gates (every stage)
+
+- =make sexp-abi-check= (4-artifact after Phase 1) — layout drift.
+- =make compile= green (=byte-compile-error-on-warn t=) —
+  =feedback_nelisp_ci_make_compile_gate=.
+- =.o= byte-identity diff where the object is stable (the "208 .o cmp -l"
+  pattern), else targeted ERT only — =feedback_nelisp_wave_skip_full_ert=.
+- Self-host boot parity (=(+ 1 2 3)=, fact, the self-host probe set) at every
+  cutover that touches eval/dispatch/bootstrap.
+- Net Rust LOC strictly decreasing per commit (mechanical char/line count of
+  =build-tool/src/*.rs= recorded in each commit message).
+
+* §8 Relationship to Doc 122 / 124 / 125
+
+Doc 122.E (atomic + raw-mem), Doc 124 (NlBox clone/drop), Doc 125 (alloc/
+dealloc) are the *low-level grammar* for heap + refcount.  This doc is the
+*umbrella* that consumes them: Phase 2 here is the net-negative realisation of
+Doc 124/125's goal, achieved by writing the clone/drop/alloc kernel as
+nelisp-sys (Elisp source) rather than as raw Phase-47 grammar plus Rust
+extern helpers.  Where Doc 125 §125.A currently shows "+~100 LOC Rust
+investment", the nelisp-sys framing removes that investment: the alloc kernel
+*is* the Elisp =.o=, with no Rust side.
+
+If Doc 124/125 land first in their raw form, Phase 2 reuses their =.o=; if this
+doc's Phase 0/1/2 land first, Doc 124/125 become thin language-doc notes over
+the nelisp-sys alloc layer.  Either order is net-negative; this doc is the
+preferred framing because it never enters a +Rust phase.
+
+* §9 Risks and open questions
+
+1. *Indirect-call codegen* (Phase 0) is the critical-path capability; if
+   =sys:call-ptr= proves hard on one target, JIT/dispatch (Phase 4/5) stall.
+   Mitigation: it is well-scoped Elisp asm work with x86_64 +
+   arm64 precedent in =nelisp-asm-*.el=.
+2. *=dlsym= / runtime symbol resolution* (Phase 6) may be the one place a
+   ≤3-line C =extern= survives.  Acceptable under CLAUDE.md exception (b);
+   must be documented and counted.
+3. *Signal handlers* require async-signal-safe codegen; nelisp-sys =sys:unsafe=
+   + raw syscall should cover it, but needs a dedicated safety review
+   (Doc 131 effect contract).
+4. *Build orchestration*: ideally =make= drives the Elisp build directly so
+   =cargo= disappears for the interpreter; confirm no Rust build-script
+   dependency survives (=build.rs= is 421 chars — audit it into Phase 7/8).
+5. *Self-host performance*: the nelisp-sys-compiled kernel must match the
+   Rust kernel's eval-loop speed (=feedback_nelisp_perf_not_elisp_interpreter=
+   — this is native code, not interpreted Elisp).  Add a =bench= gate at
+   Phase 5 cutover.
+
+* Appendix — sequencing summary
+
+| Phase | Touches | Net Rust | Gate |
+|-------+---------+----------+------|
+| 0 | nelisp-sys codegen (fn-ptr, atomics, Sexp-struct idiom) | 0 | fn-ptr/atomic ERT |
+| 1 | Sexp ADT + boxes as nelisp-sys structs (shadow) | 0 | 4-artifact sexp-abi-check |
+| 2 | refcount + box clone/drop + allocator | ≈ −9.5K | alloc/clone ERT |
+| 3 | MutStr + float/numeric | ≈ −4.5K | string/float parity |
+| 4 | reader shim + eval kernel | ≈ −15K (+freed wrappers) | self-host parity |
+| 5 | dispatch + bootstrap | ≈ −22K | full boot parity |
+| 6 | TTY / signals / JIT | ≈ −9K (−≤3 line dlsym) | OS-layer ERT |
+| 7 | FFI plumbing collapse + entry point | ≈ −18.5K + entry | native binary boots |
+| 8 | error types + crate teardown | remainder → ~0 | full self-host |
