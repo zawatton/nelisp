@@ -600,6 +600,7 @@ at its kind-fixed offset since per-kind layout is constant."
 
 (defconst nelisp-phase47-compiler--ir-kind-tags
   '((alloc-bytes . 0)
+    (addr-of . 97)
     (arith . 1)
     (aot-root-scope . 92)
     (atomic-compare-exchange . 2)
@@ -9070,6 +9071,33 @@ functions `((NAME . ARITY) ...)'."
    ;; (= SysV ABI: AL = number of vector args for variadic
    ;; functions).  Return type is i64 (= read from rax); use
    ;; `extern-call-f64' for f64 return (= read from xmm0).
+   ;; (call-ptr FN-EXPR ARG...) — indirect call through a function
+   ;; pointer (Doc 133 Phase 0, `sys:call-ptr').  FN-EXPR evaluates to a
+   ;; raw code address (i64); ARGs follow the current ABI.  Reuses the
+   ;; `call' IR kind with a `:fn-value' field (and `:name' nil) so the
+   ;; whole emit/dispatch/byte-length machinery stays unchanged — only
+   ;; `--emit-call' branches on `:fn-value'.
+   ((and (consp sexp) (eq (car sexp) 'call-ptr))
+    (when (< (length sexp) 2)
+      (signal 'nelisp-phase47-compiler-error
+              (list :call-ptr-needs-fn sexp)))
+    (nelisp-phase47-compiler--make-ir 'call
+          :name nil
+          :fn-value (nelisp-phase47-compiler--parse-value
+                     (nth 1 sexp) env fenv defuns)
+          :args (mapcar (lambda (a)
+                          (nelisp-phase47-compiler--parse-value
+                           a env fenv defuns))
+                        (nthcdr 2 sexp))))
+   ;; (addr-of NAME) — load the runtime address of function NAME as an
+   ;; i64 value (Doc 133 Phase 0).  The companion of `call-ptr': a
+   ;; fn-ptr is materialised by taking a function's address, then
+   ;; called indirectly.  x86_64 only (RIP-relative LEA).
+   ((and (consp sexp) (eq (car sexp) 'addr-of))
+    (unless (and (= (length sexp) 2) (symbolp (nth 1 sexp)))
+      (signal 'nelisp-phase47-compiler-error
+              (list :addr-of-needs-symbol sexp)))
+    (nelisp-phase47-compiler--make-ir 'addr-of :name (nth 1 sexp)))
    ((and (consp sexp) (memq (car sexp) '(extern-call extern-call-f64)))
     (when (< (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
@@ -10467,6 +10495,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-arith node buf))
       ((= tag 67)               ; shift
        (nelisp-phase47-compiler--emit-shift node buf))
+      ((= tag 97)               ; addr-of
+       (nelisp-phase47-compiler--emit-addr-of node buf))
       ((= tag 5)                ; call
        (nelisp-phase47-compiler--emit-call node buf))
       ((= tag 23)               ; extern-call
@@ -10820,6 +10850,18 @@ NODE must satisfy `nelisp-phase47-compiler--call-arg-trivial-p'."
       (signal 'nelisp-phase47-compiler-error
               (list :trivial-emit-unexpected-kind kind))))))
 
+(defun nelisp-phase47-compiler--emit-addr-of (node buf)
+  "Emit `LEA rax, [rip + NAME]' — load function NAME's address into
+rax (Doc 133 Phase 0 `addr-of').  Produces an i64 value (a code
+pointer) that `call-ptr' can invoke.  x86_64 only; signals on
+aarch64 (RIP-relative LEA has no single-instruction aarch64 form —
+ADRP+ADD lowering is deferred)."
+  (let ((name (nelisp-phase47-compiler--ir-get node :name)))
+    (when (eq nelisp-phase47-compiler--arch 'aarch64)
+      (signal 'nelisp-phase47-compiler-error
+              (list :addr-of-aarch64-unsupported name)))
+    (nelisp-asm-x86_64-lea-reg-rip-label buf 'rax name)))
+
 (defun nelisp-phase47-compiler--emit-call (node buf)
   "Emit a call to NODE's named function using the current ABI.
 
@@ -10846,10 +10888,16 @@ NODE, pass1 and pass2 traverse the same branch (each arg's kind /
 class / slot / value is parse-time fixed) and emit the same byte
 count."
   (let* ((name (nelisp-phase47-compiler--ir-get node :name))
+         (fn-value (nelisp-phase47-compiler--ir-get node :fn-value))
          (args (nelisp-phase47-compiler--ir-get node :args))
          (n (length args))
          (cur-arg-regs (nelisp-phase47-compiler--current-arg-regs))
          (reg-budget (length cur-arg-regs)))
+    ;; Doc 133 P0: indirect (fn-ptr) calls only support register-args
+    ;; (nelisp-sys caps functions at 6 params anyway).
+    (when (and fn-value (> n reg-budget))
+      (signal 'nelisp-phase47-compiler-error
+              (list :call-ptr-stack-args-unsupported n)))
     (if (> n reg-budget)
         (progn
           (unless (and (eq nelisp-phase47-compiler--arch 'x86_64)
@@ -10913,6 +10961,12 @@ count."
          (trivial-args (cl-subseq args complex-count))
          (complex-regs (cl-subseq regs 0 complex-count))
          (trivial-regs (cl-subseq regs complex-count)))
+    ;; (0) Indirect call (Doc 133 P0): evaluate the fn-ptr and stash it
+    ;; on the stack BELOW the args, so the arg-reg shuffle below cannot
+    ;; clobber it.  Net rsp change stays zero (popped at step 2b).
+    (when fn-value
+      (nelisp-phase47-compiler--emit-value fn-value buf)
+      (nelisp-asm-x86_64-push buf 'rax))
     ;; (1) Complex prefix: evaluate -> push rax.
     (dolist (a complex-args)
       (nelisp-phase47-compiler--emit-value a buf)
@@ -10920,6 +10974,11 @@ count."
     ;; (2) Pop complex args into their target regs in reverse order.
     (dolist (r (reverse complex-regs))
       (nelisp-asm-x86_64-pop buf r))
+    ;; (2b) Indirect call: the fn-ptr is now back on top of the stack
+    ;; -> r11 (not an ABI arg reg, so the trivial-suffix emits below
+    ;; cannot clobber it; r11 is caller-saved on both SysV and Win64).
+    (when fn-value
+      (nelisp-asm-x86_64-pop buf 'r11))
     ;; (3) Trivial suffix: emit each directly into its target reg.
     ;; Order is free since trivial emits never clobber other arg regs;
     ;; we walk source order for deterministic byte layout.
@@ -10931,8 +10990,11 @@ count."
     ;; Allocate Win64 shadow space (0 for SysV).
     (when (> shadow 0)
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow))
-    ;; call <NAME> — intra-text rel32 resolved at finalize time.
-    (nelisp-asm-x86_64-call-rel32 buf name)
+    ;; call <NAME> — intra-text rel32 resolved at finalize time, or
+    ;; CALL r11 (indirect through the fn-ptr stashed at step 2b).
+    (if fn-value
+        (nelisp-asm-x86_64-call-reg buf 'r11)
+      (nelisp-asm-x86_64-call-rel32 buf name))
     ;; Reclaim shadow space.
     (when (> shadow 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow))

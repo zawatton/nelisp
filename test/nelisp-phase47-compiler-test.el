@@ -497,6 +497,36 @@ Caller is responsible for `delete-file' on cleanup."
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
+(ert-deftest nelisp-phase47-compiler/e2e-call-ptr-via-addr-of ()
+  "Doc 133 Phase 0: indirect call through a function pointer.
+`via' receives `target's address (via `addr-of') and calls it
+through `call-ptr'.  target(5) = 5 + 100 = 105 -> exit 105."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "callptr"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun target (x) (+ x 100))
+           (defun via (p x) (call-ptr p x))
+           (exit (via (addr-of target) 5)))
+     path)
+    (should (file-executable-p path))
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 105)))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-call-ptr-zero-arg ()
+  "Doc 133 Phase 0: indirect call with no args.
+`via' calls a zero-arg `answer' through its address. answer() = 42."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "callptr0"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun answer () 42)
+           (defun via (p) (call-ptr p))
+           (exit (via (addr-of answer))))
+     path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 42)))))
+
 (ert-deftest nelisp-phase47-compiler/e2e-defun-sub-two ()
   "`(seq (defun sub (a b) (- a b)) (exit (sub 10 3)))' exits 7."
   (unless (nelisp-phase47-compiler-test--linux-p)

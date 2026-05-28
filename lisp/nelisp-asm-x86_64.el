@@ -1564,6 +1564,24 @@ patches the rel32 = `(label-pos - (slot + 4))'."
      buf (unibyte-string #xE8 0 0 0 0))
     (nelisp-asm-x86_64-emit-fixup buf slot label)))
 
+(defun nelisp-asm-x86_64-lea-reg-rip-label (buf reg label)
+  "Emit `LEA REG, [rip + disp32]' (= REX.W 0x8D /r, 7 bytes) with a
+fixup against LABEL.  Loads the runtime address of LABEL into REG —
+the address-taking primitive behind Doc 133 Phase 0 `addr-of', used
+to materialise a function pointer for indirect dispatch.  ModRM =
+mod=00, reg=REG, rm=101 (RIP-relative); REX.W (+ REX.R for r8-r15).
+The disp32 = `(label-pos - (slot + 4))' is patched by
+`resolve-fixups', i.e. relative to the next instruction — exactly
+the RIP base the CPU uses."
+  (let* ((ext (nelisp-asm-x86_64--reg-ext reg))
+         (low (nelisp-asm-x86_64--reg-low3 reg))
+         (rex (nelisp-asm-x86_64--rex 1 ext 0 0))
+         (modrm (nelisp-asm-x86_64--modrm 0 low 5))
+         (slot (+ 3 (nelisp-asm-x86_64-buffer-pos buf))))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string rex #x8D modrm 0 0 0 0))
+    (nelisp-asm-x86_64-emit-fixup buf slot label)))
+
 (defun nelisp-asm-x86_64-call-reg (buf reg)
   "Emit `CALL r/m64' indirect through REG (= 0xFF /2, 2 or 3 bytes).
 Calls the absolute address held in REG.  ModRM = mod=11, reg=2 (the

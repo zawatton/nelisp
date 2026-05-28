@@ -366,6 +366,28 @@
                      (nelisp-asm-x86_64-test--ub
                       #xE8 #x00 #x00 #x00 #x00 #xC3))))))
 
+(ert-deftest nelisp-asm-x86_64-lea-rip-label-rax-zero-disp ()
+  ;; lea rax, [rip+foo]; foo: ret -> disp32 = label(7) - (slot(3)+4) = 0
+  ;; 48 8D 05 00 00 00 00 (lea) + C3 (ret)
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-lea-reg-rip-label b 'rax 'foo)
+    (nelisp-asm-x86_64-define-label b 'foo)
+    (nelisp-asm-x86_64-ret b)
+    (should (equal (nelisp-asm-x86_64-resolve-fixups b)
+                   (nelisp-asm-x86_64-test--ub
+                    #x48 #x8D #x05 #x00 #x00 #x00 #x00 #xC3)))))
+
+(ert-deftest nelisp-asm-x86_64-lea-rip-label-r8-rex-r ()
+  ;; lea r8, [rip+foo]; foo: ret -> REX.W+REX.R = 4C
+  ;; 4C 8D 05 00 00 00 00 + C3
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-lea-reg-rip-label b 'r8 'foo)
+    (nelisp-asm-x86_64-define-label b 'foo)
+    (nelisp-asm-x86_64-ret b)
+    (should (equal (nelisp-asm-x86_64-resolve-fixups b)
+                   (nelisp-asm-x86_64-test--ub
+                    #x4C #x8D #x05 #x00 #x00 #x00 #x00 #xC3)))))
+
 (ert-deftest nelisp-asm-x86_64-jmp-forward ()
   ;; jmp foo; nop; foo: ret  -> jmp rel32 = 1 (= one nop between)
   (let* ((b (nelisp-asm-x86_64-make-buffer)))
