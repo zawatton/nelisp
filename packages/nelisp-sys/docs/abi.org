@@ -36,6 +36,40 @@ blur the NeLisp Sexp runtime ABI.
 
 =(sys:layout NAME)= returns =(:size N :align A :fields ((F :offset O :size S :align A)...))=.
 
+* Slice ABI (=(slice T)= / =(slice-mut T)=)
+
+A slice value is a *pointer to a two-word header* laid out as a =:repr c=
+struct of =data= (a =(ptr T)=) followed by =len= (a =usize=):
+
+| Field | Offset | Size |
+|-------+--------+------|
+| =data= (=(ptr T)=) | 0 | pointer width |
+| =len= (=usize=) | pointer width | pointer width |
+
+So =sizeof(slice T)= = 2 x pointer width and =alignof= = pointer alignment.
+A function taking =(slice T)= receives, in one integer register, a pointer to
+this header -- it is *not* split into two registers.  The equivalent C surface
+on lp64 is:
+
+#+begin_src c
+struct nl_slice_T { T *data; size_t len; };
+RET f(struct nl_slice_T *s, ...);
+#+end_src
+
+Access lowering (Stage 130.5):
+- =(sys:slice-len S)= -> read =usize= at offset = pointer width;
+- =(sys:slice-ref S I)= -> read =data= (offset 0), then read =sizeof(T)= bytes
+  at =data + I*sizeof(T)=;
+- =(sys:slice-set! S I V)= -> same address, write =sizeof(T)= bytes.
+
+MVP gaps (clear errors or documented behaviour, never silent miscompiles):
+- no runtime bounds check yet; the checked and =sys:slice-ref-raw= forms lower
+  identically (static safety only);
+- element reads zero-extend, so a signed element holding a negative value is a
+  gap until the Phase 47 =ptr-read-sN= primitive lands;
+- the slice operand must be a bare slice-typed variable -- a slice op through a
+  non-var place is a clear =nelisp-sys-backend-error=.
+
 * Calling convention (MVP)
 
 =:abi c= maps to the target's C ABI.  MVP lowers integer/pointer args and

@@ -11,13 +11,15 @@
 ;;
 ;; Scope of the codegen: C-ABI integer/word functions — fixed-width
 ;; integer arithmetic, comparisons, logical ops, let/if/cond/while/seq,
-;; set!, calls, compile-time sizeof/alignof/offsetof folding, and (Stage
+;; set!, calls, compile-time sizeof/alignof/offsetof folding, (Stage
 ;; 130.4) struct-field + raw-pointer load/store through a pointer/ref
-;; place, lowered to the Phase 47 `ptr-read-uN'/`ptr-write-uN' primitives.
+;; place, and slice-len/ref/set! over a {data,len} header -- all lowered to
+;; the Phase 47 `ptr-read-uN'/`ptr-write-uN' primitives.
 ;; Still deferred (clear `nelisp-sys-backend-error', never a silent
-;; miscompile): slice access, borrows, field access through a non-var
-;; place, and `sys:exit' (freestanding).  Field reads zero-extend, so a
-;; signed field holding a negative value is an MVP gap.
+;; miscompile): borrows, field/slice access through a non-var place, and
+;; `sys:exit' (freestanding).  Field and slice-element reads zero-extend
+;; (signed-negative loads are an MVP gap until `ptr-read-sN'), and slice
+;; access has no runtime bounds check yet.
 ;;
 ;; All integer values are 64-bit words in registers (SysV AMD64 / AAPCS64);
 ;; width casts are identity at this level for the MVP.
@@ -115,8 +117,9 @@ A single node lowers directly; multiple are wrapped in `seq'."
     (ptr-add (list '+
                    (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))
                    (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :offset))))
-    ((slice-len slice-ref slice-set!)
-     (nelisp-sys-backend--unsupported node "slice access"))
+    (slice-len (nelisp-sys-backend--lower-slice-len ctx node))
+    (slice-ref (nelisp-sys-backend--lower-slice-ref ctx node))
+    (slice-set! (nelisp-sys-backend--lower-slice-set ctx node))
     (with-borrow (nelisp-sys-backend--unsupported node "borrow"))
     (resource-op (nelisp-sys-backend--unsupported node "resource op"))
     (t (nelisp-sys-backend--unsupported node
@@ -237,6 +240,65 @@ Note: reads zero-extend (signed-negative field loads are an MVP gap)."
           (nelisp-sys-backend--lower ctx ptr)
           0
           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :value)))))
+
+(defun nelisp-sys-backend--slice-elem-type (node)
+  "Resolve NODE's :slice operand to its element type T.
+The slice place must be a bare slice-typed `var' (MVP); otherwise signal
+`nelisp-sys-backend-error' rather than risk a silent miscompile."
+  (let* ((slice (nelisp-sys-ast-prop node :slice))
+         (sty (nelisp-sys-backend--place-type slice)))
+    (unless (and sty (nelisp-sys-type-slice-p sty))
+      (nelisp-sys-backend--unsupported node "slice op through a non-slice var place"))
+    (nelisp-sys-type-element sty)))
+
+(defun nelisp-sys-backend--slice-data-ptr (ctx node elem)
+  "Lower a read of the data pointer (header offset 0) of NODE's slice.
+A slice value is a pointer to a 2-word {data:(ptr ELEM), len:usize} header;
+the data field is word-sized at offset 0."
+  (list (nelisp-sys-backend--mem-op "read" (list 'ptr elem) ctx node)
+        (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :slice))
+        0))
+
+(defun nelisp-sys-backend--lower-slice-len (ctx node)
+  "Lower (sys:slice-len S) to a read of the len word from the slice header.
+The len field lives at offset = pointer size in the {data,len} header."
+  (nelisp-sys-backend--slice-elem-type node) ; validate S is a slice var
+  (list (nelisp-sys-backend--mem-op "read" 'usize ctx node)
+        (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :slice))
+        (/ (nelisp-sys-target-pointer-width
+            (nelisp-sys-backend-ctx-target ctx))
+           8)))
+
+(defun nelisp-sys-backend--lower-slice-ref (ctx node)
+  "Lower (sys:slice-ref S I) to a read of element I from slice S.
+Loads the data pointer (header offset 0), adds I*sizeof(T), then reads the
+element width.  MVP: no runtime bounds check (documented gap); the checked
+and `-raw' forms lower identically, and signed elements zero-extend until
+the Phase 47 `ptr-read-sN' primitive lands."
+  (let* ((elem (nelisp-sys-backend--slice-elem-type node))
+         (esize (nelisp-sys-layout-sizeof
+                 elem (nelisp-sys-backend-ctx-target ctx)
+                 (nelisp-sys-backend-ctx-structs ctx)))
+         (idx (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :index))))
+    (list (nelisp-sys-backend--mem-op "read" elem ctx node)
+          (list '+ (nelisp-sys-backend--slice-data-ptr ctx node elem)
+                (list '* idx esize))
+          0)))
+
+(defun nelisp-sys-backend--lower-slice-set (ctx node)
+  "Lower (sys:slice-set! S I V) to a write of V into element I of slice S.
+Same addressing as `nelisp-sys-backend--lower-slice-ref'."
+  (let* ((elem (nelisp-sys-backend--slice-elem-type node))
+         (esize (nelisp-sys-layout-sizeof
+                 elem (nelisp-sys-backend-ctx-target ctx)
+                 (nelisp-sys-backend-ctx-structs ctx)))
+         (idx (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :index)))
+         (val (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :value))))
+    (list (nelisp-sys-backend--mem-op "write" elem ctx node)
+          (list '+ (nelisp-sys-backend--slice-data-ptr ctx node elem)
+                (list '* idx esize))
+          0
+          val)))
 
 (defun nelisp-sys-backend--lower-cond (ctx node)
   "Lower a cond NODE to (cond (TEST BODY)...)."

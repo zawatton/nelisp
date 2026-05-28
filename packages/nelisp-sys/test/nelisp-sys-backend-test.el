@@ -86,11 +86,40 @@ field width at its offset (Stage 130.4)."
                   '((sys:defun wr ((p (ptr i32)) (v i32)) void ()
                       (sys:store! p v)))))))
 
-(ert-deftest nelisp-sys-backend-rejects-slice-ops ()
-  "Slice access is still outside the MVP integer/memory codegen."
+(ert-deftest nelisp-sys-backend-lower-slice-len ()
+  "(sys:slice-len S) reads the len word at offset = pointer size (8 on lp64)."
+  (should (equal '(defun f (s) (ptr-read-u64 s 8))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun f ((s (slice u8))) usize () (sys:slice-len s)))))))
+
+(ert-deftest nelisp-sys-backend-lower-slice-ref ()
+  "(sys:slice-ref S I) loads the data ptr (offset 0) then reads elem at I*size."
+  (should (equal '(defun g (s i)
+                    (ptr-read-u8 (+ (ptr-read-u64 s 0) (* i 1)) 0))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun g ((s (slice u8)) (i usize)) u8 ()
+                      (sys:slice-ref s i))))))
+  ;; element stride follows sizeof(T): u32 -> *4 with a u32-wide read.
+  (should (equal '(defun g2 (s i)
+                    (ptr-read-u32 (+ (ptr-read-u64 s 0) (* i 4)) 0))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun g2 ((s (slice u32)) (i usize)) u32 ()
+                      (sys:slice-ref s i)))))))
+
+(ert-deftest nelisp-sys-backend-lower-slice-set ()
+  "(sys:slice-set! S I V) writes V into element I of a mutable slice."
+  (should (equal '(defun h (s i v)
+                    (ptr-write-u32 (+ (ptr-read-u64 s 0) (* i 4)) 0 v))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun h ((s (slice-mut u32)) (i usize) (v u32)) u32 ()
+                      (sys:slice-set! s i v)))))))
+
+(ert-deftest nelisp-sys-backend-rejects-slice-through-non-var ()
+  "A slice op through a non-var place is a clear error, not a miscompile."
   (should-error
    (nelisp-sys-backend-test--lower
-    '((sys:defun f ((s (slice u8))) usize () (sys:slice-len s))))
+    '((sys:defun f ((p (ptr u8))) usize ()
+        (sys:slice-len (sys:load p)))))
    :type 'nelisp-sys-backend-error))
 
 (ert-deftest nelisp-sys-backend-rejects-too-many-params ()
@@ -153,6 +182,50 @@ int main(void){struct point p={3,4};return (int)nl_distance2(&p);}
 "))
           (should (= 0 (call-process "cc" nil nil nil cfile obj "-o" exe)))
           (should (= 25 (call-process exe nil nil nil)))) ; 3*3 + 4*4
+      (ignore-errors (delete-directory tmp t)))))
+
+(ert-deftest nelisp-sys-backend-slice-from-c ()
+  "Slice ABI e2e: a slice is a pointer to a {data,len} header.  A getter,
+length, and setter compile and behave correctly when called from C with a
+real header over a u32 array."
+  (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (executable-find "cc")))
+  (let* ((tmp (make-temp-file "nelisp-sys-slice" t))
+         (obj (expand-file-name "slice.o" tmp))
+         (cfile (expand-file-name "harness.c" tmp))
+         (exe (expand-file-name "harness" tmp))
+         (forms '((sys:defun slice_get ((s (slice u32)) (i usize)) u32
+                    (:abi c :export "nl_get" :alloc none)
+                    (sys:slice-ref s i))
+                  (sys:defun slice_len ((s (slice u32))) usize
+                    (:abi c :export "nl_len" :alloc none)
+                    (sys:slice-len s))
+                  (sys:defun slice_set ((s (slice-mut u32)) (i usize) (v u32)) u32
+                    (:abi c :export "nl_set" :alloc none)
+                    (seq (sys:slice-set! s i v) v)))))
+    (unwind-protect
+        (progn
+          (nelisp-sys-compile-object forms obj)
+          (should (file-exists-p obj))
+          (with-temp-file cfile
+            (insert "#include <stddef.h>
+struct sl { unsigned int *p; size_t n; };
+unsigned long nl_get(struct sl*, size_t);
+unsigned long nl_len(struct sl*);
+unsigned long nl_set(struct sl*, size_t, unsigned int);
+int main(void){
+  unsigned int a[4]={10u,20u,30u,40u};
+  struct sl s={a,4};
+  if (nl_len(&s)!=4) return 1;
+  if (nl_get(&s,2)!=30) return 2;
+  nl_set(&s,1,99u);
+  if (a[1]!=99u) return 3;
+  if (nl_get(&s,1)!=99) return 4;
+  return 42;
+}
+"))
+          (should (= 0 (call-process "cc" nil nil nil cfile obj "-o" exe)))
+          (should (= 42 (call-process exe nil nil nil))))
       (ignore-errors (delete-directory tmp t)))))
 
 ;;; nelisp-sys-backend-test.el ends here
