@@ -2508,7 +2508,8 @@ DISPATCHER, when non-nil, is called as
 MIRROR, FRAMES, CONDITIONS, LANDING-PAD, SAVED-SP, and SCRATCH mirror
 the native ABI:
 
-  nelisp_aot_push_condition(mirror, frames, conditions, landing_pad, saved_sp, scratch)
+  nelisp_aot_push_condition(mirror, frames, conditions,
+                            landing_pad, saved_sp, scratch)
 
 CONDITIONS is forwarded to `nelisp-cc-runtime-aot-push-condition'.
 DISPATCHER, when non-nil, is called as
@@ -2533,7 +2534,8 @@ DISPATCHER, when non-nil, is called as
 MIRROR, FRAMES, CLEANUP, LANDING-PAD, SAVED-SP, and SCRATCH mirror the
 native ABI:
 
-  nelisp_aot_push_unwind(mirror, frames, cleanup, landing_pad, saved_sp, scratch)
+  nelisp_aot_push_unwind(mirror, frames, cleanup,
+                         landing_pad, saved_sp, scratch)
 
 CLEANUP is forwarded to `nelisp-cc-runtime-aot-push-unwind'.  DISPATCHER,
 when non-nil, is called as
