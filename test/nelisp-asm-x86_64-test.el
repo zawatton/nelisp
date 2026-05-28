@@ -326,6 +326,32 @@
                   (lambda (b) (nelisp-asm-x86_64-pop b 'r15)))
                  (nelisp-asm-x86_64-test--ub #x41 #x5F))))
 
+;; ---- CALL reg (= indirect, 0xFF /2, Doc 133 Phase 0) ----
+
+(ert-deftest nelisp-asm-x86_64-call-reg-rax ()
+  ;; `call rax' = FF D0  (ModRM mod=11 reg=2 rm=0)
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-call-reg b 'rax)))
+                 (nelisp-asm-x86_64-test--ub #xFF #xD0))))
+
+(ert-deftest nelisp-asm-x86_64-call-reg-rcx ()
+  ;; `call rcx' = FF D1
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-call-reg b 'rcx)))
+                 (nelisp-asm-x86_64-test--ub #xFF #xD1))))
+
+(ert-deftest nelisp-asm-x86_64-call-reg-r12 ()
+  ;; `call r12' = 41 FF D4  (REX.B + FF + ModRM mod=11 reg=2 rm=4)
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-call-reg b 'r12)))
+                 (nelisp-asm-x86_64-test--ub #x41 #xFF #xD4))))
+
+(ert-deftest nelisp-asm-x86_64-call-reg-r15 ()
+  ;; `call r15' = 41 FF D7
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b) (nelisp-asm-x86_64-call-reg b 'r15)))
+                 (nelisp-asm-x86_64-test--ub #x41 #xFF #xD7))))
+
 ;; ---- label + fixup (= rel32 resolution) ----
 
 (ert-deftest nelisp-asm-x86_64-call-to-immediately-following-label ()

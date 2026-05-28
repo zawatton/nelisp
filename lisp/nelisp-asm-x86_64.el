@@ -1564,6 +1564,21 @@ patches the rel32 = `(label-pos - (slot + 4))'."
      buf (unibyte-string #xE8 0 0 0 0))
     (nelisp-asm-x86_64-emit-fixup buf slot label)))
 
+(defun nelisp-asm-x86_64-call-reg (buf reg)
+  "Emit `CALL r/m64' indirect through REG (= 0xFF /2, 2 or 3 bytes).
+Calls the absolute address held in REG.  ModRM = mod=11, reg=2 (the
+/2 opcode extension), rm = the low 3 bits of REG; REX.B lights up for
+r8-r15.  This is the function-pointer / indirect-dispatch primitive
+required by Doc 133 Phase 0 (`sys:call-ptr')."
+  (let ((ext (nelisp-asm-x86_64--reg-ext reg))
+        (low (nelisp-asm-x86_64--reg-low3 reg)))
+    (if (zerop ext)
+        (nelisp-asm-x86_64--append-bytes
+         buf (unibyte-string #xFF (nelisp-asm-x86_64--modrm 3 2 low)))
+      (nelisp-asm-x86_64--append-bytes
+       buf (unibyte-string (nelisp-asm-x86_64--rex 0 0 0 1)
+                           #xFF (nelisp-asm-x86_64--modrm 3 2 low))))))
+
 (defun nelisp-asm-x86_64-jmp-rel32 (buf label)
   "Emit `JMP rel32' (opcode 0xE9) with a fixup against LABEL.
 Writes 0xE9 + 4 zero placeholder bytes (5 bytes total), then

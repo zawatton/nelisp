@@ -509,6 +509,16 @@ low 26 bits."
     (nelisp-asm-arm64--emit-word buf #x94000000)
     (nelisp-asm-arm64-emit-fixup buf slot label 'bl26)))
 
+(defun nelisp-asm-arm64-blr (buf reg)
+  "Emit `BLR Xn' (= branch with link to register, indirect call).
+Base 0xD63F0000 | (Xn << 5).  Calls the absolute address held in
+REG, setting X30 to the return address.  This is the function-
+pointer / indirect-dispatch primitive required by Doc 133 Phase 0
+\(`sys:call-ptr'); the arm64 counterpart of x86_64 `call-reg'."
+  (let* ((n (logand (nelisp-asm-arm64--reg-num reg) #x1F))
+         (word (logior #xD63F0000 (ash n 5))))
+    (nelisp-asm-arm64--emit-word buf word)))
+
 (defun nelisp-asm-arm64-b (buf label)
   "Emit `B imm26' (= unconditional branch) with a fixup against LABEL.
 Writes a 4-byte placeholder = base 0x14000000 (imm26 field = 0),

@@ -109,6 +109,18 @@
                   (lambda (b) (nelisp-asm-arm64-ret b 'x16)))
                  (nelisp-asm-arm64-test--ub #x00 #x02 #x5F #xD6))))
 
+(ert-deftest nelisp-asm-arm64-blr-x0 ()
+  ;; BLR X0 = 0xD63F0000 (Doc 133 Phase 0 indirect call)
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-blr b 'x0)))
+                 (nelisp-asm-arm64-test--word #xD63F0000))))
+
+(ert-deftest nelisp-asm-arm64-blr-x16 ()
+  ;; BLR X16 = 0xD63F0000 | (16 << 5) = 0xD63F0200
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-blr b 'x16)))
+                 (nelisp-asm-arm64-test--word #xD63F0200))))
+
 (ert-deftest nelisp-asm-arm64-svc-zero-encoding ()
   ;; SVC #0 = 0xD4000001 -> LE bytes 01 00 00 D4
   (should (equal (nelisp-asm-arm64-test--bytes
