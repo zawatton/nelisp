@@ -9,12 +9,15 @@
 ;; existing Phase 47 compiler accepts, then drives object emission through
 ;; the adapter (the only module allowed to touch the private backend).
 ;;
-;; Scope of the MVP codegen: C-ABI integer/word functions — fixed-width
+;; Scope of the codegen: C-ABI integer/word functions — fixed-width
 ;; integer arithmetic, comparisons, logical ops, let/if/cond/while/seq,
-;; set!, calls, and compile-time sizeof/alignof/offsetof folding.  Memory
-;; operations (field/slice/raw-pointer load-store) are deferred (Stage
-;; 130.4) and raise a clear `nelisp-sys-backend-error' so the boundary is
-;; explicit rather than silently miscompiled.
+;; set!, calls, compile-time sizeof/alignof/offsetof folding, and (Stage
+;; 130.4) struct-field + raw-pointer load/store through a pointer/ref
+;; place, lowered to the Phase 47 `ptr-read-uN'/`ptr-write-uN' primitives.
+;; Still deferred (clear `nelisp-sys-backend-error', never a silent
+;; miscompile): slice access, borrows, field access through a non-var
+;; place, and `sys:exit' (freestanding).  Field reads zero-extend, so a
+;; signed field holding a negative value is an MVP gap.
 ;;
 ;; All integer values are 64-bit words in registers (SysV AMD64 / AAPCS64);
 ;; width casts are identity at this level for the MVP.
@@ -38,6 +41,11 @@
   structs   ; struct env (for sizeof/offsetof folding)
   target    ; resolved target descriptor
   names)    ; hash: source fn name (symbol) -> emitted symbol
+
+(defvar nelisp-sys-backend--locals nil
+  "Dynamic alist NAME -> TYPE of in-scope locals during lowering.
+Bound per function from its params and extended inside `let'/`with-borrow'
+so memory-op lowering can resolve a place's struct/pointee type.")
 
 (defun nelisp-sys-backend--emit-symbol (item)
   "Return the emitted native symbol for defun ITEM.
@@ -100,12 +108,15 @@ A single node lowers directly; multiple are wrapped in `seq'."
                (nelisp-sys-backend-ctx-structs ctx)))
     (call (nelisp-sys-backend--lower-call ctx node))
     (exit (nelisp-sys-backend--unsupported node "sys:exit (freestanding)"))
-    (load-field (nelisp-sys-backend--unsupported node "struct field load"))
-    (store-field! (nelisp-sys-backend--unsupported node "struct field store"))
+    (load-field (nelisp-sys-backend--lower-load-field ctx node))
+    (store-field! (nelisp-sys-backend--lower-store-field ctx node))
+    (ptr-load (nelisp-sys-backend--lower-ptr-load ctx node))
+    (ptr-store! (nelisp-sys-backend--lower-ptr-store ctx node))
+    (ptr-add (list '+
+                   (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))
+                   (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :offset))))
     ((slice-len slice-ref slice-set!)
      (nelisp-sys-backend--unsupported node "slice access"))
-    ((ptr-load ptr-store! ptr-add)
-     (nelisp-sys-backend--unsupported node "raw pointer access"))
     (with-borrow (nelisp-sys-backend--unsupported node "borrow"))
     (resource-op (nelisp-sys-backend--unsupported node "resource op"))
     (t (nelisp-sys-backend--unsupported node
@@ -125,12 +136,107 @@ A single node lowers directly; multiple are wrapped in `seq'."
      (t (cons op args)))))
 
 (defun nelisp-sys-backend--lower-let (ctx node)
-  "Lower a let NODE to (let ((NAME INIT)...) BODY)."
-  (list 'let
-        (mapcar (lambda (b)
-                  (list (nth 0 b) (nelisp-sys-backend--lower ctx (nth 2 b))))
-                (nelisp-sys-ast-prop node :bindings))
-        (nelisp-sys-backend--lower-body ctx (nelisp-sys-ast-prop node :body))))
+  "Lower a let NODE to (let ((NAME INIT)...) BODY).
+Binding inits are lowered in the enclosing scope; the body is lowered
+with locals extended by the new bindings so memory-op lowering can
+resolve their types."
+  (let* ((binds (nelisp-sys-ast-prop node :bindings))
+         (emitted (mapcar (lambda (b)
+                            (list (nth 0 b)
+                                  (nelisp-sys-backend--lower ctx (nth 2 b))))
+                          binds))
+         (nelisp-sys-backend--locals
+          (append (mapcar (lambda (b) (cons (nth 0 b) (nth 1 b))) binds)
+                  nelisp-sys-backend--locals)))
+    (list 'let emitted
+          (nelisp-sys-backend--lower-body ctx (nelisp-sys-ast-prop node :body)))))
+
+(defun nelisp-sys-backend--place-type (place-node)
+  "Return the declared type of PLACE-NODE, or nil if not resolvable.
+MVP: only a bare `var' place is resolved (against the dynamic locals)."
+  (when (eq (nelisp-sys-ast-kind place-node) 'var)
+    (cdr (assq (nelisp-sys-ast-prop place-node :name)
+               nelisp-sys-backend--locals))))
+
+(defun nelisp-sys-backend--pointee-struct (type)
+  "Return struct name S when TYPE is (ptr S)/(& S)/(&mut S) with S named."
+  (when (and type (or (nelisp-sys-type-pointer-p type)
+                      (nelisp-sys-type-ref-p type)))
+    (let ((el (nelisp-sys-type-element type)))
+      (and (nelisp-sys-type-struct-ref-p el)
+           (nelisp-sys-type-struct-name el)))))
+
+(defun nelisp-sys-backend--mem-op (kind type ctx node)
+  "Return the Phase 47 `ptr-KIND-uN' symbol for value TYPE.
+N follows sizeof(TYPE) in {1,2,4,8}; other sizes are unsupported.
+Note: reads zero-extend (signed-negative field loads are an MVP gap)."
+  (let* ((bytes (nelisp-sys-layout-sizeof
+                 type (nelisp-sys-backend-ctx-target ctx)
+                 (nelisp-sys-backend-ctx-structs ctx)))
+         (bits (cl-case bytes (1 8) (2 16) (4 32) (8 64) (t nil))))
+    (unless bits
+      (nelisp-sys-backend--unsupported node "non-word-size memory access"))
+    (intern (format "ptr-%s-u%d" kind bits))))
+
+(defun nelisp-sys-backend--lower-load-field (ctx node)
+  "Lower (sys:load-field PLACE FIELD) to a ptr-read of the field width."
+  (let* ((place (nelisp-sys-ast-prop node :place))
+         (field (nelisp-sys-ast-prop node :field))
+         (sname (nelisp-sys-backend--pointee-struct
+                 (nelisp-sys-backend--place-type place))))
+    (unless sname
+      (nelisp-sys-backend--unsupported
+       node "field load through a non-pointer-to-struct place"))
+    (let ((ftype (nelisp-sys-types-struct-field-type
+                  (nelisp-sys-backend-ctx-structs ctx) sname field)))
+      (unless ftype
+        (nelisp-sys-backend--unsupported node "load of unknown struct field"))
+      (list (nelisp-sys-backend--mem-op "read" ftype ctx node)
+            (nelisp-sys-backend--lower ctx place)
+            (nelisp-sys-layout-offsetof sname field
+                                        (nelisp-sys-backend-ctx-target ctx)
+                                        (nelisp-sys-backend-ctx-structs ctx))))))
+
+(defun nelisp-sys-backend--lower-store-field (ctx node)
+  "Lower (sys:store-field! PLACE FIELD VAL) to a ptr-write of the field width."
+  (let* ((place (nelisp-sys-ast-prop node :place))
+         (field (nelisp-sys-ast-prop node :field))
+         (sname (nelisp-sys-backend--pointee-struct
+                 (nelisp-sys-backend--place-type place))))
+    (unless sname
+      (nelisp-sys-backend--unsupported
+       node "field store through a non-pointer-to-struct place"))
+    (let ((ftype (nelisp-sys-types-struct-field-type
+                  (nelisp-sys-backend-ctx-structs ctx) sname field)))
+      (unless ftype
+        (nelisp-sys-backend--unsupported node "store to unknown struct field"))
+      (list (nelisp-sys-backend--mem-op "write" ftype ctx node)
+            (nelisp-sys-backend--lower ctx place)
+            (nelisp-sys-layout-offsetof sname field
+                                        (nelisp-sys-backend-ctx-target ctx)
+                                        (nelisp-sys-backend-ctx-structs ctx))
+            (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :value))))))
+
+(defun nelisp-sys-backend--lower-ptr-load (ctx node)
+  "Lower (sys:load PTR) to a ptr-read of the pointee width at offset 0."
+  (let* ((ptr (nelisp-sys-ast-prop node :ptr))
+         (pt (nelisp-sys-backend--place-type ptr)))
+    (unless (and pt (nelisp-sys-type-pointer-p pt))
+      (nelisp-sys-backend--unsupported node "raw load through a non-pointer var"))
+    (list (nelisp-sys-backend--mem-op "read" (nelisp-sys-type-element pt) ctx node)
+          (nelisp-sys-backend--lower ctx ptr)
+          0)))
+
+(defun nelisp-sys-backend--lower-ptr-store (ctx node)
+  "Lower (sys:store! PTR VAL) to a ptr-write of the pointee width at offset 0."
+  (let* ((ptr (nelisp-sys-ast-prop node :ptr))
+         (pt (nelisp-sys-backend--place-type ptr)))
+    (unless (and pt (nelisp-sys-type-pointer-p pt))
+      (nelisp-sys-backend--unsupported node "raw store through a non-pointer var"))
+    (list (nelisp-sys-backend--mem-op "write" (nelisp-sys-type-element pt) ctx node)
+          (nelisp-sys-backend--lower ctx ptr)
+          0
+          (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :value)))))
 
 (defun nelisp-sys-backend--lower-cond (ctx node)
   "Lower a cond NODE to (cond (TEST BODY)...)."
@@ -158,10 +264,13 @@ A single node lowers directly; multiple are wrapped in `seq'."
             (list (format "function %S has >6 params; MVP C-ABI codegen \
 supports register args only" (nelisp-sys-ast-prop item :name))
                   :form (nelisp-sys-ast-prop item :form))))
-  (list 'defun
-        (nelisp-sys-backend--emit-symbol item)
-        (mapcar #'car (nelisp-sys-ast-prop item :params))
-        (nelisp-sys-backend--lower-body ctx (nelisp-sys-ast-prop item :body))))
+  (let ((nelisp-sys-backend--locals
+         (mapcar (lambda (p) (cons (car p) (cdr p)))
+                 (nelisp-sys-ast-prop item :params))))
+    (list 'defun
+          (nelisp-sys-backend--emit-symbol item)
+          (mapcar #'car (nelisp-sys-ast-prop item :params))
+          (nelisp-sys-backend--lower-body ctx (nelisp-sys-ast-prop item :body)))))
 
 (defun nelisp-sys-backend--build-ctx (module target)
   "Build a backend lowering context for MODULE targeting TARGET."

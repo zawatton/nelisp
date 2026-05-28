@@ -61,11 +61,36 @@
                   '((sys:defstruct point (:repr c) (x i32) (y i32))
                     (sys:defun oy () usize () (sys:offsetof point y)))))))
 
-(ert-deftest nelisp-sys-backend-rejects-memory-ops ()
+(ert-deftest nelisp-sys-backend-lowers-struct-field ()
+  "A struct field load through a (ptr S) place lowers to a ptr-read of the
+field width at its offset (Stage 130.4)."
+  (should (equal '(defun nl_distance2 (p)
+                    (let ((x (ptr-read-u32 p 0)) (y (ptr-read-u32 p 4)))
+                      (+ (* x x) (* y y))))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defstruct point (:repr c) (x i32) (y i32))
+                    (sys:defun distance2 ((p (ptr point))) i64
+                      (:abi c :export "nl_distance2")
+                      (let ((x i32 (sys:load-field p x))
+                            (y i32 (sys:load-field p y)))
+                        (+ (* (sys:cast i64 x) (sys:cast i64 x))
+                           (* (sys:cast i64 y) (sys:cast i64 y))))))))))
+
+(ert-deftest nelisp-sys-backend-lowers-raw-pointer ()
+  "Raw pointer load/store lower to ptr-read/-write of the pointee width."
+  (should (equal '(defun rd (p) (ptr-read-u32 p 0))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun rd ((p (ptr i32))) i32 () (sys:load p))))))
+  (should (equal '(defun wr (p v) (ptr-write-u32 p 0 v))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun wr ((p (ptr i32)) (v i32)) void ()
+                      (sys:store! p v)))))))
+
+(ert-deftest nelisp-sys-backend-rejects-slice-ops ()
+  "Slice access is still outside the MVP integer/memory codegen."
   (should-error
    (nelisp-sys-backend-test--lower
-    '((sys:defstruct point (:repr c) (x i32))
-      (sys:defun f ((p (ptr point))) i32 () (sys:load-field p x))))
+    '((sys:defun f ((s (slice u8))) usize () (sys:slice-len s))))
    :type 'nelisp-sys-backend-error))
 
 (ert-deftest nelisp-sys-backend-rejects-too-many-params ()
@@ -99,6 +124,35 @@
                     "int main(void){return (int)nl_add(40,2);}\n"))
           (should (= 0 (call-process "cc" nil nil nil cfile obj "-o" exe)))
           (should (= 42 (call-process exe nil nil nil))))
+      (ignore-errors (delete-directory tmp t)))))
+
+(ert-deftest nelisp-sys-backend-struct-pointer-from-c ()
+  "Stage 130.4 e2e: a struct-pointer reader compiles and returns the right
+value when called from C with a real struct."
+  (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (executable-find "cc")))
+  (let* ((tmp (make-temp-file "nelisp-sys-d2" t))
+         (obj (expand-file-name "d2.o" tmp))
+         (cfile (expand-file-name "harness.c" tmp))
+         (exe (expand-file-name "harness" tmp))
+         (forms '((sys:defstruct point (:repr c) (x i32) (y i32))
+                  (sys:defun distance2 ((p (ptr point))) i64
+                    (:abi c :export "nl_distance2" :alloc none)
+                    (let ((x i32 (sys:load-field p x))
+                          (y i32 (sys:load-field p y)))
+                      (+ (* (sys:cast i64 x) (sys:cast i64 x))
+                         (* (sys:cast i64 y) (sys:cast i64 y))))))))
+    (unwind-protect
+        (progn
+          (nelisp-sys-compile-object forms obj)
+          (should (file-exists-p obj))
+          (with-temp-file cfile
+            (insert "struct point{int x,y;};
+long nl_distance2(struct point*);
+int main(void){struct point p={3,4};return (int)nl_distance2(&p);}
+"))
+          (should (= 0 (call-process "cc" nil nil nil cfile obj "-o" exe)))
+          (should (= 25 (call-process exe nil nil nil)))) ; 3*3 + 4*4
       (ignore-errors (delete-directory tmp t)))))
 
 ;;; nelisp-sys-backend-test.el ends here
