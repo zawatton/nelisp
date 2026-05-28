@@ -113,6 +113,17 @@ A single node lowers directly; multiple are wrapped in `seq'."
     (addr-of
      (let ((nm (nelisp-sys-ast-prop node :name)))
        (list 'addr-of (or (gethash nm (nelisp-sys-backend-ctx-names ctx)) nm))))
+    (atomic-add
+     (let ((p (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr)))
+           (d (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :delta))))
+       ;; fetch-sub = fetch-add of the negated delta.
+       (list 'atomic-fetch-add p
+             (if (eq (nelisp-sys-ast-prop node :op) 'sub) (list '- 0 d) d))))
+    (atomic-cas
+     (list 'atomic-compare-exchange
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :expected))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :new))))
     (exit (nelisp-sys-backend--unsupported node "sys:exit (freestanding)"))
     (load-field (nelisp-sys-backend--lower-load-field ctx node))
     (store-field! (nelisp-sys-backend--lower-store-field ctx node))

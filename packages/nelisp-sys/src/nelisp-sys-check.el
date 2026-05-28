@@ -211,6 +211,20 @@ non-literal argument; else i32."
       (call (nelisp-sys-check--infer-call ctx locals node))
       (call-ptr (nelisp-sys-check--infer-call-ptr ctx locals node))
       (addr-of 'i64)
+      (atomic-add
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :ptr) form)
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :delta) form)
+       'i64)
+      (atomic-cas
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :ptr) form)
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :expected) form)
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :new) form)
+       'i64)
       (t (nelisp-sys-check--fail 'E-SYS-TYPE-099 form
                                  "cannot type-check node kind: %S" kind)))))
 

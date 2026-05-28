@@ -307,6 +307,23 @@ FORM is the enclosing source form for diagnostics."
                            :ptr (nelisp-sys-frontend--parse-expr (nth 0 args))
                            :offset (nelisp-sys-frontend--parse-expr (nth 1 args))
                            :form form))
+     ((memq head '(sys:atomic-add! sys:atomic-sub!))
+      ;; (sys:atomic-add!/sub! PTR DELTA) — SeqCst fetch-add/sub on the
+      ;; *mut i64 at PTR; returns the previous value (Doc 133 P0, feeds
+      ;; the Phase 2 refcount inc/dec).
+      (nelisp-sys-ast-make 'atomic-add
+                           :op (if (eq head 'sys:atomic-sub!) 'sub 'add)
+                           :ptr (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :delta (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :form form))
+     ((eq head 'sys:cas)
+      ;; (sys:cas PTR EXPECTED NEW) — SeqCst compare-exchange; returns
+      ;; 1 on success, 0 on mismatch.
+      (nelisp-sys-ast-make 'atomic-cas
+                           :ptr (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :expected (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :new (nelisp-sys-frontend--parse-expr (nth 2 args))
+                           :form form))
      ((eq head 'sys:sizeof)
       (nelisp-sys-ast-make 'sizeof
                            :type (nelisp-sys-frontend--parse-type (car args) form)

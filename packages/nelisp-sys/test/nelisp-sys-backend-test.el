@@ -44,6 +44,19 @@
                     (sys:defun via ((x i64)) i64 ()
                       (sys:call-ptr (sys:addr-of tgt) x)))))))
 
+(ert-deftest nelisp-sys-backend-lower-atomics ()
+  ;; Doc 133 P0: atomic sugar -> Phase 47 atomic ops.
+  (should (equal '(defun inc (p) (atomic-fetch-add p 1))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun inc ((p i64)) i64 () (sys:atomic-add! p 1))))))
+  (should (equal '(defun dec (p) (atomic-fetch-add p (- 0 1)))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun dec ((p i64)) i64 () (sys:atomic-sub! p 1))))))
+  (should (equal '(defun cas (p e n) (atomic-compare-exchange p e n))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun cas ((p i64) (e i64) (n i64)) i64 ()
+                      (sys:cas p e n)))))))
+
 (ert-deftest nelisp-sys-backend-lower-control-flow ()
   (should (equal '(defun mx (a b) (if (< a b) b a))
                  (nelisp-sys-backend-test--lower

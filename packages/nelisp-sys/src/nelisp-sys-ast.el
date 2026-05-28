@@ -107,6 +107,11 @@ excluded."
     (call-ptr (cons (nelisp-sys-ast-prop node :fn-expr)
                     (nelisp-sys-ast-prop node :args)))
     (addr-of nil)
+    (atomic-add (list (nelisp-sys-ast-prop node :ptr)
+                      (nelisp-sys-ast-prop node :delta)))
+    (atomic-cas (list (nelisp-sys-ast-prop node :ptr)
+                      (nelisp-sys-ast-prop node :expected)
+                      (nelisp-sys-ast-prop node :new)))
     (t nil)))
 
 (provide 'nelisp-sys-ast)
