@@ -1,0 +1,12 @@
+#+TITLE: nelisp-sys Examples
+#+AUTHOR: nelisp-sys
+
+This directory contains a gallery of self-contained =nelisp-sys= programs that exercise the
+compiler end-to-end on realistic integer-subset programs: =factorial.nl= implements iterative
+factorial via =let=/=while=/=set!=; =max3.nl= returns the maximum of three =i32= values using
+=if= and =cond=; =gcd.nl= computes the Euclidean GCD with =while= and =mod=; and =point.nl=
+defines a C-repr struct and reads its fields through a pointer via =sys:load-field=.  Each
+file exports a single C-ABI function (=nl_fact=, =nl_max3=, =nl_gcd=, =nl_point_sum=) that
+can be linked directly from C harnesses; the companion integration test in
+=../test/nelisp-sys-examples-test.el= compiles each example, links a small C driver, and
+asserts the correct exit code.

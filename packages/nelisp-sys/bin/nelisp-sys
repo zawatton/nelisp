@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# nelisp-sys --- CLI wrapper for the nelisp-sys build-flow (Doc 130 criterion 14)
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -euo pipefail
+
+# Resolve repo root: script lives at <repo>/packages/nelisp-sys/bin/nelisp-sys
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
+EMACS="${EMACS:-emacs}"
+
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  nelisp-sys analyze    SRC.nl
+  nelisp-sys compile    SRC.nl -o OUT.o   [--target TRIPLE]
+  nelisp-sys static-lib SRC.nl -o OUT.a   [--target TRIPLE]
+EOF
+    exit 1
+}
+
+# Read-forms elisp fragment (safe, uses SRC variable set in the eval string)
+read_forms_el() {
+    local src="$1"
+    printf '(with-temp-buffer (insert-file-contents "%s") (goto-char (point-min)) (let ((fs nil)) (condition-case nil (while t (push (read (current-buffer)) fs)) (end-of-file nil)) (nreverse fs)))' \
+        "$src"
+}
+
+[ $# -lt 1 ] && usage
+
+SUBCMD="$1"
+shift
+
+case "$SUBCMD" in
+    analyze)
+        [ $# -lt 1 ] && { echo "nelisp-sys analyze: missing SRC.nl" >&2; usage; }
+        SRC="$1"
+        FORMS_EL="$(read_forms_el "${SRC}")"
+        cd "${REPO_ROOT}"
+        "${EMACS}" --batch -Q \
+            -L lisp -L src -L packages/nelisp-sys/src \
+            --eval "(require 'nelisp-sys-driver)" \
+            --eval "(let ((forms ${FORMS_EL}))
+                      (nelisp-sys-analyze forms)
+                      (princ \"OK\n\"))"
+        ;;
+
+    compile)
+        [ $# -lt 3 ] && { echo "nelisp-sys compile: usage: compile SRC.nl -o OUT.o [--target TRIPLE]" >&2; usage; }
+        SRC="$1"; shift
+        if [ "$1" != "-o" ]; then
+            echo "nelisp-sys compile: expected -o, got '$1'" >&2; usage
+        fi
+        shift
+        OUT="$1"; shift
+        TARGET=""
+        if [ $# -ge 2 ] && [ "$1" = "--target" ]; then
+            TARGET="$2"; shift; shift
+        fi
+        FORMS_EL="$(read_forms_el "${SRC}")"
+        if [ -n "$TARGET" ]; then
+            TARGET_EL="\"${TARGET}\""
+        else
+            TARGET_EL="nil"
+        fi
+        cd "${REPO_ROOT}"
+        "${EMACS}" --batch -Q \
+            -L lisp -L src -L packages/nelisp-sys/src \
+            --eval "(require 'nelisp-sys-driver)" \
+            --eval "(let ((forms ${FORMS_EL})
+                         (out \"${OUT}\")
+                         (tgt ${TARGET_EL}))
+                      (nelisp-sys-compile-object forms out tgt)
+                      (princ (format \"compiled: %s\n\" out)))"
+        ;;
+
+    static-lib)
+        [ $# -lt 3 ] && { echo "nelisp-sys static-lib: usage: static-lib SRC.nl -o OUT.a [--target TRIPLE]" >&2; usage; }
+        SRC="$1"; shift
+        if [ "$1" != "-o" ]; then
+            echo "nelisp-sys static-lib: expected -o, got '$1'" >&2; usage
+        fi
+        shift
+        OUT="$1"; shift
+        TARGET=""
+        if [ $# -ge 2 ] && [ "$1" = "--target" ]; then
+            TARGET="$2"; shift; shift
+        fi
+        FORMS_EL="$(read_forms_el "${SRC}")"
+        if [ -n "$TARGET" ]; then
+            TARGET_EL="\"${TARGET}\""
+        else
+            TARGET_EL="nil"
+        fi
+        cd "${REPO_ROOT}"
+        "${EMACS}" --batch -Q \
+            -L lisp -L src -L packages/nelisp-sys/src \
+            --eval "(require 'nelisp-sys-driver)" \
+            --eval "(let ((forms ${FORMS_EL})
+                         (out \"${OUT}\")
+                         (tgt ${TARGET_EL}))
+                      (nelisp-sys-compile-static-lib forms out tgt)
+                      (princ (format \"archived: %s\n\" out)))"
+        ;;
+
+    *)
+        echo "nelisp-sys: unknown subcommand '${SUBCMD}'" >&2
+        usage
+        ;;
+esac
