@@ -921,4 +921,164 @@ Builds MAX(MIN(42,50), 40): MIN(42,50)=42, MAX(42,40)=42 -> exit 42."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-reader-ops-runs ()
+  "Doc 133 eval-kernel e2e: extended reader with / < > = operators and
+negative integer literals.  nl_optag maps +/-/*//</>=/= to tags 100-110.
+nl_digits is a pure tail-recursive accumulator (no arena); nl_pint_neg
+consumes a leading '-' and negates; nl_pint dispatches on peek==45.
+nl_eval handles INT=2, ADD=100, SUB=101, MUL=102, DIV=110, LT=106,
+GT=108, EQ=107.  Parses '(/ (+ -42 126) 2)':
++(-42, 126)=84; /(84, 2)=42 -> exit 42.  text -> Sexp -> native eval."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-reader-ops")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '(;; --- reader primitives ---
+             ;; read current char: *(*cur)
+             (sys:defun nl_peek ((cur usize)) i64 (:alloc none)
+               (sys:peek-u64 (sys:cast usize (sys:peek-u64 cur))))
+             ;; advance the cursor by one char slot (8 bytes)
+             (sys:defun nl_adv ((cur usize)) void (:alloc none)
+               (sys:poke-u64 cur (+ (sys:peek-u64 cur) 8)))
+             ;; skip ASCII spaces
+             (sys:defun nl_skipws ((cur usize)) void (:alloc none)
+               (while (= (nl_peek cur) 32) (nl_adv cur)))
+             ;; digit predicate -> i32 flag
+             (sys:defun nl_isdig ((c i64)) i32 (:alloc none)
+               (if (>= c 48) (if (<= c 57) 1 0) 0))
+             ;; extended operator char -> Sexp tag (i32)
+             ;; + -> 100 ADD, - -> 101 SUB, * -> 102 MUL,
+             ;; / -> 110 DIV, < -> 106 LT, = -> 107 EQ, > -> 108 GT
+             (sys:defun nl_optag ((op i64)) i32 (:alloc none)
+               (if (= op 43) 100
+                 (if (= op 45) 101
+                   (if (= op 42) 102
+                     (if (= op 47) 110
+                       (if (= op 60) 106
+                         (if (= op 62) 108
+                           (if (= op 61) 107
+                             -1))))))))
+             ;; bump-allocate a 32-byte node from the arena cell, return its addr
+             (sys:defun nl_alloc ((arena usize)) usize (:alloc none)
+               (let ((node usize (sys:cast usize (sys:peek-u64 arena))))
+                 (sys:poke-u64 arena (+ node 32))
+                 node))
+             ;; build an INT node holding VAL
+             (sys:defun nl_make_int ((arena usize) (val i64)) usize (:alloc none)
+               (let ((node usize (nl_alloc arena)))
+                 (sys:poke-u64 node 2)
+                 (sys:poke-u64 (+ node 8) val)
+                 node))
+             ;; accumulate decimal digits, tail-recursive, no arena.
+             ;; Stops when peek is not a digit, returns accumulated i64 value.
+             (sys:defun nl_digits ((cur usize) (acc i64)) i64 (:alloc none)
+               (if (/= (nl_isdig (nl_peek cur)) 0)
+                   (let ((d i64 (- (nl_peek cur) 48)))
+                     (nl_adv cur)
+                     (nl_digits cur (+ (* acc 10) d)))
+                 acc))
+             ;; parse a negative integer literal (leading '-' already peeked)
+             (sys:defun nl_pint_neg ((cur usize) (arena usize)) usize (:alloc none)
+               (nl_adv cur)
+               (nl_make_int arena (- 0 (nl_digits cur 0))))
+             ;; parse an integer literal (positive or negative) -> INT node
+             (sys:defun nl_pint ((cur usize) (arena usize)) usize (:alloc none)
+               (if (= (nl_peek cur) 45)
+                   (nl_pint_neg cur arena)
+                 (nl_make_int arena (nl_digits cur 0))))
+             ;; parse a `(' OP A B `)' list -> binary op node
+             (sys:defun nl_plist ((cur usize) (arena usize)) usize (:alloc none)
+               (nl_adv cur)
+               (nl_skipws cur)
+               (let ((op i64 (nl_peek cur)))
+                 (nl_adv cur)
+                 (let ((l usize (nl_parse cur arena)))
+                   (let ((rr usize (nl_parse cur arena)))
+                     (nl_skipws cur)
+                     (nl_adv cur)
+                     (let ((node usize (nl_alloc arena)))
+                       (sys:poke-u64 node (nl_optag op))
+                       (sys:poke-u64 (+ node 8) l)
+                       (sys:poke-u64 (+ node 16) rr)
+                       node)))))
+             ;; parse any expression (mutually recursive with nl_plist)
+             (sys:defun nl_parse ((cur usize) (arena usize)) usize (:alloc none)
+               (nl_skipws cur)
+               (if (= (nl_peek cur) 40)
+                   (nl_plist cur arena)
+                 (nl_pint cur arena)))
+             ;; tree-walking evaluator: INT/ADD/SUB/MUL/DIV/LT/EQ/GT
+             (sys:defun nl_eval ((node usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 100)
+                   (+ (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                      (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  ((= tag 101)
+                   (- (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                      (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  ((= tag 102)
+                   (* (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                      (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  ((= tag 110)
+                   (/ (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                      (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  ((= tag 106)
+                   (if (< (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                          (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       1 0))
+                  ((= tag 108)
+                   (if (> (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                          (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       1 0))
+                  ((= tag 107)
+                   (if (= (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                          (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       1 0))
+                  (else -1))))
+             ;; main: build "(/ (+ -42 126) 2)" as char-per-word array, parse, eval
+             ;; Char sequence: ( / sp ( + sp - 4 2 sp 1 2 6 ) sp 2 ) NUL
+             ;; Codes:        40 47 32 40 43 32 45 52 50 32 49 50 54 41 32 50 41  0
+             ;; Offsets:       0  8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136
+             ;; Evaluation:  +(- 42,126)=84; /(84,2)=42
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0)   40)   ; (
+                 (sys:poke-u64 (+ r 8)   47)   ; /
+                 (sys:poke-u64 (+ r 16)  32)   ; space
+                 (sys:poke-u64 (+ r 24)  40)   ; (
+                 (sys:poke-u64 (+ r 32)  43)   ; +
+                 (sys:poke-u64 (+ r 40)  32)   ; space
+                 (sys:poke-u64 (+ r 48)  45)   ; -
+                 (sys:poke-u64 (+ r 56)  52)   ; 4
+                 (sys:poke-u64 (+ r 64)  50)   ; 2
+                 (sys:poke-u64 (+ r 72)  32)   ; space
+                 (sys:poke-u64 (+ r 80)  49)   ; 1
+                 (sys:poke-u64 (+ r 88)  50)   ; 2
+                 (sys:poke-u64 (+ r 96)  54)   ; 6
+                 (sys:poke-u64 (+ r 104) 41)   ; )
+                 (sys:poke-u64 (+ r 112) 32)   ; space
+                 (sys:poke-u64 (+ r 120) 50)   ; 2
+                 (sys:poke-u64 (+ r 128) 41)   ; )
+                 (sys:poke-u64 (+ r 136) 0)    ; NUL
+                 ;; cursor cell @512 -> text start; arena cell @520 -> node region
+                 (sys:poke-u64 (+ r 512) (+ r 0))
+                 (sys:poke-u64 (+ r 520) (+ r 1024))
+                 (nl_eval (nl_parse (+ r 512) (+ r 520)))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
