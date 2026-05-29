@@ -714,4 +714,211 @@ Builds `(mod 142 100)' (=42) -> exit 42 on a standalone binary."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+;; --- codex spark parallel batch (Doc 133): LE/NE, NOT/NEG, MIN/MAX nodes ---
+;; Drafted concurrently by three gpt-5.3-codex-spark agents; lowering tests
+;; used as drafted (correct), e2e fixtures paren-fixed by the integrator:
+;;   evk-le-ne:   tag-103 cond clause missing closing ), main missing sys:exit
+;;   evk-not-neg: let-bindings for tag-114/115 missing closing ), main missing
+;;                sys:exit, path arg missing in compile-executable call
+;;   evk-min-max: if-comparison missing closing ) for inner (</>) call in
+;;                tag-116/117 clauses, main missing sys:exit, path arg missing
+
+(ert-deftest nelisp-sys-eval-kernel-lower-le ()
+  "LE comparison node lowers (if (<= a b) 1 0)."
+  (should (equal '(defun leq (a b) (if (<= a b) 1 0))
+                 (nelisp-sys-backend-lower-module
+                  (nelisp-sys-frontend-parse-module
+                   '((sys:defun leq ((a i64) (b i64)) i32 (:alloc none)
+                       (if (<= a b) 1 0))))
+                  "x86_64-unknown-linux-gnu"))))
+
+(ert-deftest nelisp-sys-eval-kernel-le-ne-runs ()
+  "Doc 133 eval-kernel e2e: comparison nodes LE=112 and NE=113.
+Builds `(if (<= 4 4) (if (/= 3 8) 42 0)':
+LE(4,4)=true -> inner IF; NE(3,8)=true -> 42."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-le-ne")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_eval ((node usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 103)
+                   (if (/= (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8)))) 0)
+                       (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))
+                     (nl_eval (sys:cast usize (sys:peek-u64 (+ node 24))))))
+                  ((= tag 112)
+                   (if (<= (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                           (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       1 0))
+                  ((= tag 113)
+                   (if (/= (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                           (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       1 0))
+                  (else -1))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0) 103)
+                 (sys:poke-u64 (+ r 8) (+ r 32))    ; root.cond = LE
+                 (sys:poke-u64 (+ r 16) (+ r 64))   ; root.then = IF
+                 (sys:poke-u64 (+ r 24) (+ r 96))   ; root.else = INT 0
+                 (sys:poke-u64 (+ r 32) 112)        ; LE @32
+                 (sys:poke-u64 (+ r 40) (+ r 128))  ;  left  = INT 4
+                 (sys:poke-u64 (+ r 48) (+ r 160))  ;  right = INT 4
+                 (sys:poke-u64 (+ r 64) 103)        ; IF @64
+                 (sys:poke-u64 (+ r 72) (+ r 192))  ;  cond = NE
+                 (sys:poke-u64 (+ r 80) (+ r 224))  ;  then = INT 42
+                 (sys:poke-u64 (+ r 88) (+ r 256))  ;  else = INT 0
+                 (sys:poke-u64 (+ r 96) 2)  (sys:poke-u64 (+ r 104) 0)    ; INT 0 @96
+                 (sys:poke-u64 (+ r 128) 2) (sys:poke-u64 (+ r 136) 4)    ; INT 4 @128
+                 (sys:poke-u64 (+ r 160) 2) (sys:poke-u64 (+ r 168) 4)    ; INT 4 @160
+                 (sys:poke-u64 (+ r 192) 113)        ; NE @192
+                 (sys:poke-u64 (+ r 200) (+ r 288))  ;  left  = INT 3
+                 (sys:poke-u64 (+ r 208) (+ r 320))  ;  right = INT 8
+                 (sys:poke-u64 (+ r 224) 2) (sys:poke-u64 (+ r 232) 42)   ; INT 42 @224
+                 (sys:poke-u64 (+ r 256) 2) (sys:poke-u64 (+ r 264) 0)    ; INT 0 @256
+                 (sys:poke-u64 (+ r 288) 2) (sys:poke-u64 (+ r 296) 3)    ; INT 3 @288
+                 (sys:poke-u64 (+ r 320) 2) (sys:poke-u64 (+ r 328) 8)    ; INT 8 @320
+                 (nl_eval (+ r 0))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-sys-eval-kernel-lower-neg ()
+  "NEG node lowers (- 0 a)."
+  (should (equal '(defun neg1 (a) (- 0 a))
+                 (nelisp-sys-backend-lower-module
+                  (nelisp-sys-frontend-parse-module
+                   '((sys:defun neg1 ((a i64)) i64 (:alloc none)
+                       (- 0 a))))
+                  "x86_64-unknown-linux-gnu"))))
+
+(ert-deftest nelisp-sys-eval-kernel-not-neg-runs ()
+  "Doc 133 eval-kernel e2e: unary nodes NOT=114 and NEG=115.
+Builds IF(NOT(INT 0), NEG(INT -42), INT 0):
+NOT(0)=1 -> true -> NEG(-42)=42 -> exit 42."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-not-neg")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_eval ((node usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 114)
+                   (let ((C i64 (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))))
+                     (if (= C 0) 1 0)))
+                  ((= tag 115)
+                   (let ((C i64 (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))))
+                     (- 0 C)))
+                  ((= tag 103)
+                   (if (/= (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8)))) 0)
+                       (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))
+                     (nl_eval (sys:cast usize (sys:peek-u64 (+ node 24))))))
+                  (else -1))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0) 103)
+                 (sys:poke-u64 (+ r 8) (+ r 32))
+                 (sys:poke-u64 (+ r 16) (+ r 64))
+                 (sys:poke-u64 (+ r 24) (+ r 96))
+                 (sys:poke-u64 (+ r 32) 114)
+                 (sys:poke-u64 (+ r 40) (+ r 128))
+                 (sys:poke-u64 (+ r 64) 115)
+                 (sys:poke-u64 (+ r 72) (+ r 160))
+                 (sys:poke-u64 (+ r 96) 2)
+                 (sys:poke-u64 (+ r 104) 0)
+                 (sys:poke-u64 (+ r 128) 2)
+                 (sys:poke-u64 (+ r 136) 0)
+                 (sys:poke-u64 (+ r 160) 2)
+                 (sys:poke-u64 (+ r 168) -42)
+                 (nl_eval (+ r 0))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-sys-eval-kernel-lower-max ()
+  "MAX node lowers (if (> a b) a b)."
+  (should (equal '(defun mx (a b) (if (> a b) a b))
+                 (nelisp-sys-backend-lower-module
+                  (nelisp-sys-frontend-parse-module
+                   '((sys:defun mx ((a i64) (b i64)) i64 (:alloc none)
+                       (if (> a b) a b))))
+                  "x86_64-unknown-linux-gnu"))))
+
+(ert-deftest nelisp-sys-eval-kernel-min-max-runs ()
+  "Doc 133 eval-kernel e2e: binary nodes MIN=116 and MAX=117.
+Builds MAX(MIN(42,50), 40): MIN(42,50)=42, MAX(42,40)=42 -> exit 42."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-min-max")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_eval ((node usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 116)
+                   (if (< (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                          (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                       (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  ((= tag 117)
+                   (if (> (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                          (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                       (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  (else -1))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0) 117)
+                 (sys:poke-u64 (+ r 8) (+ r 32))
+                 (sys:poke-u64 (+ r 16) (+ r 104))
+                 (sys:poke-u64 (+ r 32) 116)
+                 (sys:poke-u64 (+ r 40) (+ r 64))
+                 (sys:poke-u64 (+ r 48) (+ r 84))
+                 (sys:poke-u64 (+ r 64) 2)
+                 (sys:poke-u64 (+ r 72) 42)
+                 (sys:poke-u64 (+ r 84) 2)
+                 (sys:poke-u64 (+ r 92) 50)
+                 (sys:poke-u64 (+ r 104) 2)
+                 (sys:poke-u64 (+ r 112) 40)
+                 (nl_eval (+ r 0))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
