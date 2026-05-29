@@ -45,13 +45,14 @@
               (nelisp-sys-freestanding-test--fixture-forms))))
     (should (nelisp-sys-check-module mod))))
 
-(ert-deftest nelisp-sys-freestanding-codegen-deferred ()
-  "The hosted MVP backend refuses to lower the freestanding entry (sys:exit)."
-  (should-error
-   (nelisp-sys-backend-lower-module
-    (nelisp-sys-frontend-parse-module
-     (nelisp-sys-freestanding-test--fixture-forms))
-    "x86_64-unknown-linux-gnu")
-   :type 'nelisp-sys-backend-error))
+(ert-deftest nelisp-sys-freestanding-lowers-exit ()
+  "Doc 133 Phase 7: sys:exit now lowers to the Phase 47 (exit ...) form.
+The _start entry `(sys:exit 0)' lowers to `(defun _start () (exit 0))',
+the Phase 47 program shape the standalone-binary emitter consumes."
+  (should (equal '(defun _start () (exit 0))
+                 (nelisp-sys-backend-lower-module
+                  (nelisp-sys-frontend-parse-module
+                   (nelisp-sys-freestanding-test--fixture-forms))
+                  "x86_64-unknown-linux-gnu"))))
 
 ;;; nelisp-sys-freestanding-test.el ends here

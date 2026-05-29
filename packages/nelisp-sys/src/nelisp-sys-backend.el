@@ -124,7 +124,8 @@ A single node lowers directly; multiple are wrapped in `seq'."
            (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))
            (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :expected))
            (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :new))))
-    (exit (nelisp-sys-backend--unsupported node "sys:exit (freestanding)"))
+    (exit (list 'exit (nelisp-sys-backend--lower
+                       ctx (nelisp-sys-ast-prop node :arg))))
     (load-field (nelisp-sys-backend--lower-load-field ctx node))
     (store-field! (nelisp-sys-backend--lower-store-field ctx node))
     (ptr-load (nelisp-sys-backend--lower-ptr-load ctx node))
