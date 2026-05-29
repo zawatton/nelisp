@@ -57,4 +57,39 @@ f32 f64 char32                                         ; optional scalars
 - =(sys:with-borrow ((P (& T) PLACE)) BODY...)= and =-mut= variant.
 - =(sys:sizeof TYPE)= / =(sys:alignof TYPE)= / =(sys:offsetof STRUCT FIELD)=.
 
+* Runtime / ABI intrinsics
+
+These lower to existing Phase 47 grammar ops (zero new Rust); raw box/slot
+operands are passed as =usize= / =i64= addresses (the same convention the
+atomics, =sys:peek-u64=, and =sys:alloc= use), not =(ptr T)= values.
+
+Floating point (Phase 47 f64 SSE grammar):
+- =(sys:f64+ A B)= =(sys:f64- A B)= =(sys:f64* A B)= =(sys:f64/ A B)= —
+  binary f64 arithmetic, =f64 x f64 -> f64=.  Plain =+ - * /= reject float
+  operands (=E-SYS-TYPE-008=); use these forms.
+- =(sys:f64< A B)= =(sys:f64<= A B)= =(sys:f64> A B)= =(sys:f64>= A B)=
+  =(sys:f64= A B)= — f64 comparison, =-> bool=.
+- =(sys:i64->f64 X)= signed int -> f64; =(sys:f64->i64 X)= f64 -> i64
+  (truncating); =(sys:bits->f64 X)= reinterpret an i64 IEEE-754 word as f64.
+- =(sys:str-to-float BYTES LEN OUT)= -> i64 (1 ok / 0 fail).  Delegates to the
+  =nl_str_to_float= extern (=str::parse::<f64>=), writing =Sexp::Float= to OUT.
+
+Heap-growing mutable strings (Doc 122 §122.B grammar):
+- =(sys:mut-str-make-empty SLOT CAP)= -> usize — fresh =Sexp::MutStr= into SLOT.
+- =(sys:mut-str-push-byte PTR BYTE)= / =(sys:mut-str-push-codepoint PTR CP)= —
+  in-place append (byte / UTF-8 codepoint); return an i64 sentinel.
+- =(sys:mut-str-len PTR)= -> i64 byte length.
+- =(sys:mut-str-finalize PTR SLOT)= -> usize — clone the inner String into a
+  fresh =Sexp::Str= in SLOT (source stays live + push-able).
+
+Sparse char-table access (Doc 120.B residual):
+- =(sys:char-table-get TBL IDX OUT)= -> i64 (0 ok / 1 err).  Delegates to the
+  =nl_char_table_get_raw= extern (parent-table recursion + default_val).
+- =(sys:char-table-set! TBL IDX VAL OUT)= -> i64 — delegates to
+  =nl_char_table_set_raw= (entries update + value echo to OUT).
+
+MVP note: f64 values flow through the SSE/f64-leaf domain; passing/returning
+=f64= across the C ABI (xmm parameter classification) is an end-to-end gate
+deferred past the lowering MVP, like the slice runtime-bounds-check gap.
+
 Detailed semantics live in =memory-safety.org= and design Doc 131.
