@@ -261,4 +261,67 @@ loop now carries a lexical environment, no Rust runtime."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-lower-apply ()
+  "A CALL node applies a stored function pointer to an evaluated arg.
+Lowers (sys:call-ptr FN ARG) to the Phase 47 (call-ptr FN ARG) — the
+Doc 133 Phase 0 indirect-call capability, now driving the eval loop's
+function-application path."
+  (should (equal '(defun nl_apply (node)
+                    (call-ptr (ptr-read-u64 (+ node 8) 0)
+                              (ptr-read-u64 (+ node 16) 0)))
+                 (nelisp-sys-backend-lower-module
+                  (nelisp-sys-frontend-parse-module
+                   '((sys:defun nl_apply ((node usize)) i64 (:alloc none)
+                       (sys:call-ptr (sys:peek-u64 (+ node 8))
+                                     (sys:peek-u64 (+ node 16))))))
+                  "x86_64-unknown-linux-gnu"))))
+
+(ert-deftest nelisp-sys-eval-kernel-apply-runs ()
+  "Doc 133 eval-kernel e2e: function application through a code pointer.
+A CALL node (tag 105) stores a raw function pointer at offset 8 and an
+argument sub-node at offset 16.  nl_eval evaluates the argument tree,
+then applies the stored pointer via (sys:call-ptr ...) — the Phase 0
+fn-ptr capability inside the interpreter.  Builds CALL{fn=&nl_double,
+arg=INT 21}, evals it (nl_double(21) = 21*2) -> exit 42.  Native-verified
+apply, no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-apply")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '(;; a builtin the interpreter can apply via its address.
+             (sys:defun nl_double ((x i64)) i64 (:alloc none)
+               (* x 2))
+             ;; nl_eval: INT self-evals; CALL evaluates its arg sub-tree and
+             ;; applies the stored fn-ptr (Doc 133 apply via Phase 0 call-ptr).
+             (sys:defun nl_eval ((node usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 105)
+                   (sys:call-ptr
+                    (sys:peek-u64 (+ node 8))
+                    (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  (else -1))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0) 2)   (sys:poke-u64 (+ r 8) 21)   ; INT 21 @0
+                 (sys:poke-u64 (+ r 32) 105)                            ; CALL  @32
+                 (sys:poke-u64 (+ r 40) (sys:addr-of nl_double))        ;  fn-ptr
+                 (sys:poke-u64 (+ r 48) (+ r 0))                        ;  arg = INT 21
+                 (nl_eval (+ r 32))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
