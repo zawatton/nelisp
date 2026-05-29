@@ -1487,4 +1487,101 @@ quote 1 = 1 (non-nil) -> eval then = 42 -> exit 42.  Native-verified."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-cons-progn-runs ()
+  "Doc 133 eval-kernel step 3: add `progn' special form to the real
+cons-form evaluator.  `progn' evaluates body forms in sequence and returns
+the last value.  nl_eval_body is defined before nl_eval (mutual recursion).
+Dispatch: progn='p'(112)/len5.  Evaluates `(progn 1 2 42)': evals 1, 2, 42
+in sequence, returns 42 -> exit 42.  Native-verified; no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-cons-progn")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_symname_byte ((slot usize)) i64 (:alloc none)
+               (let ((s usize (sys:cast usize (sys:peek-u64 (+ slot 8)))))
+                 (let ((np usize (sys:cast usize (sys:peek-u64 (+ s 8)))))
+                   (mod (sys:peek-u64 np) 256))))
+             (sys:defun nl_symname_len ((slot usize)) i64 (:alloc none)
+               (let ((s usize (sys:cast usize (sys:peek-u64 (+ slot 8)))))
+                 (sys:peek-u64 (+ s 16))))
+             (sys:defun nl_op_is ((box usize) (b i64) (len i64)) i64 (:alloc none)
+               (if (= (nl_symname_byte box) b)
+                   (if (= (nl_symname_len box) len) (sys:cast i64 1) (sys:cast i64 0))
+                 (sys:cast i64 0)))
+             (sys:defun nl_env_get ((env usize) (b i64) (len i64)) i64 (:alloc none)
+               (if (= (sys:peek-u64 env) 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ env 8)))))
+                     (let ((pair usize (sys:cast usize (sys:peek-u64 (+ box 8)))))
+                       (if (= (nl_symname_byte pair) b)
+                           (if (= (nl_symname_len pair) len)
+                               (sys:peek-u64 (+ pair 40))
+                             (nl_env_get (+ box 32) b len))
+                         (nl_env_get (+ box 32) b len))))
+                 (sys:cast i64 -1)))
+             (sys:defun nl_eval_body ((blist usize) (env usize)) i64 (:alloc none)
+               (if (= (sys:peek-u64 blist) 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ blist 8)))))
+                     (let ((v i64 (nl_eval box env)))
+                       (if (= (sys:peek-u64 (+ box 32)) 7)
+                           (nl_eval_body (+ box 32) env)
+                         v)))
+                 (sys:cast i64 -1)))
+             (sys:defun nl_eval ((sx usize) (env usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 sx)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ sx 8)))
+                  ((= tag 4) (nl_env_get env (nl_symname_byte sx) (nl_symname_len sx)))
+                  ((= tag 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ sx 8)))))
+                     (let ((b2 usize (sys:cast usize (sys:peek-u64 (+ box 40)))))
+                       (if (/= (nl_op_is box 113 5) 0)
+                           (sys:peek-u64 (+ b2 8))
+                         (if (/= (nl_op_is box 105 2) 0)
+                             (let ((c i64 (nl_eval b2 env)))
+                               (let ((b3 usize (sys:cast usize (sys:peek-u64 (+ b2 40)))))
+                                 (if (/= c 0)
+                                     (nl_eval b3 env)
+                                   (let ((b4 usize (sys:cast usize (sys:peek-u64 (+ b3 40)))))
+                                     (nl_eval b4 env)))))
+                           (if (/= (nl_op_is box 112 5) 0)
+                               (nl_eval_body (+ box 32) env)
+                             (let ((opb i64 (nl_symname_byte box)))
+                               (let ((a1 i64 (nl_eval b2 env)))
+                                 (let ((b3 usize (sys:cast usize (sys:peek-u64 (+ b2 40)))))
+                                   (let ((a2 i64 (nl_eval b3 env)))
+                                     (if (= opb 43) (+ a1 a2)
+                                       (if (= opb 45) (- a1 a2)
+                                         (if (= opb 42) (* a1 a2)
+                                           (sys:cast i64 -1))))))))))))))
+                  (else (sys:cast i64 -1)))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 ;; form (progn 1 2 42): form slot @r+0 -> box1
+                 (sys:poke-u64 (+ r 0) 7)    (sys:poke-u64 (+ r 8) (+ r 64))     ; form CONS -> box1
+                 (sys:poke-u64 (+ r 64) 4)   (sys:poke-u64 (+ r 72) (+ r 320))   ; box1.car "progn"
+                 (sys:poke-u64 (+ r 96) 7)   (sys:poke-u64 (+ r 104) (+ r 128))  ; box1.cdr -> box2
+                 (sys:poke-u64 (+ r 128) 2)  (sys:poke-u64 (+ r 136) 1)          ; box2.car INT 1
+                 (sys:poke-u64 (+ r 160) 7)  (sys:poke-u64 (+ r 168) (+ r 192))  ; box2.cdr -> box3
+                 (sys:poke-u64 (+ r 192) 2)  (sys:poke-u64 (+ r 200) 2)          ; box3.car INT 2
+                 (sys:poke-u64 (+ r 224) 7)  (sys:poke-u64 (+ r 232) (+ r 256))  ; box3.cdr -> box4
+                 (sys:poke-u64 (+ r 256) 2)  (sys:poke-u64 (+ r 264) 42)         ; box4.car INT 42
+                 (sys:poke-u64 (+ r 288) 0)                                      ; box4.cdr NIL
+                 (sys:poke-u64 (+ r 320) 5)  (sys:poke-u64 (+ r 328) (+ r 352))  (sys:poke-u64 (+ r 336) 5)  ; Str "progn"
+                 (sys:poke-u64 (+ r 352) 112)                                    ; 'p'
+                 (nl_eval (+ r 0) 0)))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
