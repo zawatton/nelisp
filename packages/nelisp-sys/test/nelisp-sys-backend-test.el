@@ -178,6 +178,95 @@ sign-extending `ptr-read-sN' read."
         i32 () a)))
    :type 'nelisp-sys-backend-error))
 
+;;; char-table get/set lowering (Doc 120.B residual surface).
+
+(ert-deftest nelisp-sys-backend-lower-char-table-get ()
+  "(sys:char-table-get TBL IDX OUT) lowers to the Phase 47 extern-call that
+the `nl_jit_char_table_aref' swap delegates to."
+  (should (equal '(defun ctg (tbl idx out)
+                    (extern-call nl_char_table_get_raw tbl idx out))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun ctg ((tbl usize) (idx i64) (out usize)) i64 ()
+                      (sys:char-table-get tbl idx out)))))))
+
+(ert-deftest nelisp-sys-backend-lower-char-table-set ()
+  (should (equal '(defun cts (tbl idx val out)
+                    (extern-call nl_char_table_set_raw tbl idx val out))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun cts ((tbl usize) (idx i64) (val usize) (out usize))
+                                i64 ()
+                      (sys:char-table-set! tbl idx val out)))))))
+
+;;; Mutable-string builder lowering (Doc 122 §122.B grammar ops).
+
+(ert-deftest nelisp-sys-backend-lower-mut-str-ops ()
+  (should (equal '(defun mk (slot) (mut-str-make-empty slot 0))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun mk ((slot usize)) usize ()
+                      (sys:mut-str-make-empty slot 0))))))
+  (should (equal '(defun pb (p b) (mut-str-push-byte p b))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun pb ((p usize) (b i64)) i64 ()
+                      (sys:mut-str-push-byte p b))))))
+  (should (equal '(defun pc (p cp) (mut-str-push-codepoint p cp))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun pc ((p usize) (cp i64)) i64 ()
+                      (sys:mut-str-push-codepoint p cp))))))
+  (should (equal '(defun ln (p) (mut-str-len p))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun ln ((p usize)) i64 () (sys:mut-str-len p))))))
+  (should (equal '(defun fin (p slot) (mut-str-finalize p slot))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun fin ((p usize) (slot usize)) usize ()
+                      (sys:mut-str-finalize p slot)))))))
+
+;;; Floating-point lowering (Phase 47 f64 SSE grammar).
+
+(ert-deftest nelisp-sys-backend-lower-f64-arith ()
+  (should (equal '(defun fa (a b) (f64-add a b))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun fa ((a f64) (b f64)) f64 () (sys:f64+ a b))))))
+  (should (equal '(defun fs (a b) (f64-sub a b))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun fs ((a f64) (b f64)) f64 () (sys:f64- a b))))))
+  (should (equal '(defun fm (a b) (f64-mul a b))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun fm ((a f64) (b f64)) f64 () (sys:f64* a b))))))
+  (should (equal '(defun fd (a b) (f64-div a b))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun fd ((a f64) (b f64)) f64 () (sys:f64/ a b)))))))
+
+(ert-deftest nelisp-sys-backend-lower-f64-cmp ()
+  (should (equal '(defun lt (a b) (f64-lt a b))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun lt ((a f64) (b f64)) bool () (sys:f64< a b))))))
+  (should (equal '(defun ge (a b) (f64-ge a b))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun ge ((a f64) (b f64)) bool () (sys:f64>= a b))))))
+  (should (equal '(defun eq (a b) (f64-eq a b))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun eq ((a f64) (b f64)) bool () (sys:f64= a b)))))))
+
+(ert-deftest nelisp-sys-backend-lower-f64-conversions ()
+  (should (equal '(defun i2f (x) (i64-to-f64 x))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun i2f ((x i64)) f64 () (sys:i64->f64 x))))))
+  (should (equal '(defun f2i (x) (f64-to-i64-trunc x))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun f2i ((x f64)) i64 () (sys:f64->i64 x))))))
+  (should (equal '(defun b2f (x) (bits-to-f64 x))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun b2f ((x i64)) f64 () (sys:bits->f64 x)))))))
+
+(ert-deftest nelisp-sys-backend-lower-str-to-float ()
+  "(sys:str-to-float BYTES LEN OUT) lowers to the `nl_str_to_float' extern,
+the same primitive the reader's Float-token path calls."
+  (should (equal '(defun s2f (bytes len out)
+                    (extern-call nl_str_to_float bytes len out))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun s2f ((bytes usize) (len usize) (out usize)) i64 ()
+                      (sys:str-to-float bytes len out)))))))
+
 ;;; End-to-end: object emission + C harness (needs toolchain + cc).
 
 (ert-deftest nelisp-sys-backend-emit-object-and-call-from-c ()

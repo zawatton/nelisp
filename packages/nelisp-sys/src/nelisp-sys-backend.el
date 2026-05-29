@@ -156,6 +156,52 @@ A single node lowers directly; multiple are wrapped in `seq'."
     (slice-len (nelisp-sys-backend--lower-slice-len ctx node))
     (slice-ref (nelisp-sys-backend--lower-slice-ref ctx node))
     (slice-set! (nelisp-sys-backend--lower-slice-set ctx node))
+    (char-table-get
+     (list 'extern-call 'nl_char_table_get_raw
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :table))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :index))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :out))))
+    (char-table-set!
+     (list 'extern-call 'nl_char_table_set_raw
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :table))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :index))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :value))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :out))))
+    (mut-str-make-empty
+     (list 'mut-str-make-empty
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :slot))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :cap))))
+    (mut-str-push-byte
+     (list 'mut-str-push-byte
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :byte))))
+    (mut-str-push-codepoint
+     (list 'mut-str-push-codepoint
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :codepoint))))
+    (mut-str-len
+     (list 'mut-str-len
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))))
+    (mut-str-finalize
+     (list 'mut-str-finalize
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :slot))))
+    (f64-arith (nelisp-sys-backend--lower-f64-arith ctx node))
+    (f64-cmp (nelisp-sys-backend--lower-f64-cmp ctx node))
+    (i64->f64
+     (list 'i64-to-f64
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :arg))))
+    (f64->i64
+     (list 'f64-to-i64-trunc
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :arg))))
+    (bits->f64
+     (list 'bits-to-f64
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :arg))))
+    (str-to-float
+     (list 'extern-call 'nl_str_to_float
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :bytes))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :len))
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :out))))
     (with-borrow (nelisp-sys-backend--unsupported node "borrow"))
     (resource-op (nelisp-sys-backend--unsupported node "resource op"))
     (t (nelisp-sys-backend--unsupported node
@@ -173,6 +219,31 @@ A single node lowers directly; multiple are wrapped in `seq'."
         (nelisp-sys-backend--unsupported node "n-ary /="))
       (list 'not (cons '= args)))
      (t (cons op args)))))
+
+(defun nelisp-sys-backend--lower-f64-arith (ctx node)
+  "Lower an f64 arith NODE to the Phase 47 `f64-add'/`-sub'/`-mul'/`-div' op."
+  (let ((op (cl-case (nelisp-sys-ast-prop node :op)
+              (sys:f64+ 'f64-add)
+              (sys:f64- 'f64-sub)
+              (sys:f64* 'f64-mul)
+              (sys:f64/ 'f64-div)
+              (t (nelisp-sys-backend--unsupported node "f64 arith op"))))
+        (args (mapcar (lambda (a) (nelisp-sys-backend--lower ctx a))
+                      (nelisp-sys-ast-prop node :args))))
+    (cons op args)))
+
+(defun nelisp-sys-backend--lower-f64-cmp (ctx node)
+  "Lower an f64 comparison NODE to its Phase 47 `f64-lt'/`-le'/... op."
+  (let ((op (cl-case (nelisp-sys-ast-prop node :op)
+              (sys:f64<  'f64-lt)
+              (sys:f64<= 'f64-le)
+              (sys:f64>  'f64-gt)
+              (sys:f64>= 'f64-ge)
+              (sys:f64=  'f64-eq)
+              (t (nelisp-sys-backend--unsupported node "f64 compare op"))))
+        (args (mapcar (lambda (a) (nelisp-sys-backend--lower ctx a))
+                      (nelisp-sys-ast-prop node :args))))
+    (cons op args)))
 
 (defun nelisp-sys-backend--lower-let (ctx node)
   "Lower a let NODE to (let ((NAME INIT)...) BODY).

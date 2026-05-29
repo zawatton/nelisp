@@ -253,6 +253,64 @@ non-literal argument; else i32."
        (dolist (a (nelisp-sys-ast-prop node :args))
          (nelisp-sys-check--expect-int ctx locals a form))
        'usize)
+      ;; char-table get/set: raw Sexp addresses (usize) + i64 char code;
+      ;; result is the extern's i64 status (0 OK / 1 ERR).
+      (char-table-get
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :table) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :index) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :out) form)
+       'i64)
+      (char-table-set!
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :table) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :index) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :value) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :out) form)
+       'i64)
+      ;; mutable-string builder ops: SLOT/PTR are raw Sexp addresses (usize).
+      (mut-str-make-empty
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :slot) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :cap) form)
+       'usize)
+      (mut-str-push-byte
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :ptr) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :byte) form)
+       'i64)
+      (mut-str-push-codepoint
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :ptr) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :codepoint) form)
+       'i64)
+      (mut-str-len
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :ptr) form)
+       'i64)
+      (mut-str-finalize
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :ptr) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :slot) form)
+       'usize)
+      ;; float arithmetic / comparison / conversion.
+      (f64-arith
+       (dolist (a (nelisp-sys-ast-prop node :args))
+         (nelisp-sys-check--expect-float ctx locals a form))
+       'f64)
+      (f64-cmp
+       (dolist (a (nelisp-sys-ast-prop node :args))
+         (nelisp-sys-check--expect-float ctx locals a form))
+       'bool)
+      (i64->f64
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :arg) form)
+       'f64)
+      (f64->i64
+       (nelisp-sys-check--expect-float ctx locals (nelisp-sys-ast-prop node :arg) form)
+       'i64)
+      (bits->f64
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :arg) form)
+       'f64)
+      ;; str-to-float: byte-pointer (usize) + length + Sexp out-slot ->
+      ;; i64 status (1 success / 0 parse failure).
+      (str-to-float
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :bytes) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :len) form)
+       (nelisp-sys-check--expect-int ctx locals (nelisp-sys-ast-prop node :out) form)
+       'i64)
       (t (nelisp-sys-check--fail 'E-SYS-TYPE-099 form
                                  "cannot type-check node kind: %S" kind)))))
 
@@ -286,6 +344,15 @@ when FN is not address-typed.  (A future refinement carries the full
                               "expected pointer, got %S" ty))
     ty))
 
+(defun nelisp-sys-check--expect-float (ctx locals node form)
+  "Check NODE is a float-typed (f32/f64) expression.
+Signal E-SYS-TYPE-016 if not.  Return its type."
+  (let ((ty (nelisp-sys-check--expr ctx locals node nil)))
+    (unless (nelisp-sys-type-float-p ty)
+      (nelisp-sys-check--fail 'E-SYS-TYPE-016 form
+                              "expected float, got %S" ty))
+    ty))
+
 (defun nelisp-sys-check--slice-elem (ctx locals node form &optional need-mut)
   "Check NODE is a slice; return its element type.  E-SYS-TYPE-012 if not.
 With NEED-MUT, require a (slice-mut T)."
@@ -309,12 +376,23 @@ With NEED-MUT, require a (slice-mut T)."
        'bool)
       (cmp
        (let ((opnd (nelisp-sys-check--operand-type ctx locals args nil)))
+         ;; Float compares would silently lower to an integer compare; route
+         ;; them to the dedicated SSE forms instead.
+         (when (nelisp-sys-type-float-p opnd)
+           (nelisp-sys-check--fail 'E-SYS-TYPE-008 form
+                                   "float comparison uses sys:f64</<=/>/>=/=, not %S"
+                                   (nelisp-sys-ast-prop node :op)))
          (dolist (a args) (nelisp-sys-check--expr ctx locals a opnd))
          'bool))
       (arith
        (let ((opnd (nelisp-sys-check--operand-type ctx locals args expected)))
-         (unless (or (nelisp-sys-type-integer-p opnd)
-                     (nelisp-sys-type-float-p opnd))
+         ;; `+ - * /' lower to the integer-word ops; a float operand would be
+         ;; a silent miscompile, so require the explicit `sys:f64+' family.
+         (when (nelisp-sys-type-float-p opnd)
+           (nelisp-sys-check--fail 'E-SYS-TYPE-008 form
+                                   "float arithmetic uses sys:f64+/-/*//, not %S"
+                                   (nelisp-sys-ast-prop node :op)))
+         (unless (nelisp-sys-type-integer-p opnd)
            (nelisp-sys-check--fail 'E-SYS-TYPE-008 form
                                    "arithmetic on non-numeric type %S" opnd))
          (dolist (a args) (nelisp-sys-check--expr ctx locals a opnd))

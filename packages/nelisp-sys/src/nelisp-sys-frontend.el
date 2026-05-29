@@ -397,6 +397,129 @@ FORM is the enclosing source form for diagnostics."
                            :args (mapcar #'nelisp-sys-frontend--parse-expr
                                          (cdr args))
                            :form form))
+     ;; --- char-table get/set (Doc 120.B residual surface) -------------
+     ((eq head 'sys:char-table-get)
+      ;; (sys:char-table-get TBL IDX OUT) -> i64 (0 OK / 1 ERR).  Delegates
+      ;; to the `nl_char_table_get_raw' runtime extern (parent-table
+      ;; recursion + default_val), the same primitive the Phase 47
+      ;; `nl_jit_char_table_aref' swap calls.  TBL/OUT are raw Sexp
+      ;; addresses (usize), IDX an i64 char code.
+      (unless (= (length args) 3)
+        (nelisp-sys-frontend--err form "sys:char-table-get needs TBL IDX OUT"))
+      (nelisp-sys-ast-make 'char-table-get
+                           :table (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :index (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :out   (nelisp-sys-frontend--parse-expr (nth 2 args))
+                           :form form))
+     ((eq head 'sys:char-table-set!)
+      ;; (sys:char-table-set! TBL IDX VAL OUT) -> i64 (0 OK / 1 ERR).
+      ;; Delegates to `nl_char_table_set_raw' (entries update + val echo).
+      (unless (= (length args) 4)
+        (nelisp-sys-frontend--err form
+                                  "sys:char-table-set! needs TBL IDX VAL OUT"))
+      (nelisp-sys-ast-make 'char-table-set!
+                           :table (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :index (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :value (nelisp-sys-frontend--parse-expr (nth 2 args))
+                           :out   (nelisp-sys-frontend--parse-expr (nth 3 args))
+                           :form form))
+     ;; --- heap-growing mutable strings (Doc 122 §122.B grammar) -------
+     ((eq head 'sys:mut-str-make-empty)
+      ;; (sys:mut-str-make-empty SLOT CAP) -> usize (SLOT addr).  Writes a
+      ;; fresh Sexp::MutStr(String::with_capacity CAP) into SLOT.
+      (unless (= (length args) 2)
+        (nelisp-sys-frontend--err form "sys:mut-str-make-empty needs SLOT CAP"))
+      (nelisp-sys-ast-make 'mut-str-make-empty
+                           :slot (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :cap  (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :form form))
+     ((eq head 'sys:mut-str-push-byte)
+      ;; (sys:mut-str-push-byte PTR BYTE) -> i64 sentinel.  Appends BYTE's
+      ;; low 8 bits to PTR's MutStr in place.
+      (unless (= (length args) 2)
+        (nelisp-sys-frontend--err form "sys:mut-str-push-byte needs PTR BYTE"))
+      (nelisp-sys-ast-make 'mut-str-push-byte
+                           :ptr  (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :byte (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :form form))
+     ((eq head 'sys:mut-str-push-codepoint)
+      ;; (sys:mut-str-push-codepoint PTR CP) -> i64 sentinel.  UTF-8 encodes
+      ;; CP (1-4 bytes; surrogate/out-of-range clamp to U+FFFD) and appends.
+      (unless (= (length args) 2)
+        (nelisp-sys-frontend--err form
+                                  "sys:mut-str-push-codepoint needs PTR CP"))
+      (nelisp-sys-ast-make 'mut-str-push-codepoint
+                           :ptr       (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :codepoint (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :form form))
+     ((eq head 'sys:mut-str-len)
+      ;; (sys:mut-str-len PTR) -> i64 byte length of PTR's MutStr.
+      (unless (= (length args) 1)
+        (nelisp-sys-frontend--err form "sys:mut-str-len needs PTR"))
+      (nelisp-sys-ast-make 'mut-str-len
+                           :ptr (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :form form))
+     ((eq head 'sys:mut-str-finalize)
+      ;; (sys:mut-str-finalize PTR SLOT) -> usize (SLOT addr).  Clones PTR's
+      ;; MutStr inner String into a fresh Sexp::Str written to SLOT; the
+      ;; source MutStr stays live and push-able (clone, not move).
+      (unless (= (length args) 2)
+        (nelisp-sys-frontend--err form "sys:mut-str-finalize needs PTR SLOT"))
+      (nelisp-sys-ast-make 'mut-str-finalize
+                           :ptr  (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :slot (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :form form))
+     ;; --- floating-point arithmetic (Phase 47 f64 grammar) ------------
+     ((memq head '(sys:f64+ sys:f64- sys:f64* sys:f64/))
+      ;; binary f64 arithmetic, f64 x f64 -> f64.  Both operands must be
+      ;; f64-typed (use sys:i64->f64 / sys:bits->f64 / an f64 param to make
+      ;; one); lowers to the Phase 47 f64-add/sub/mul/div SSE ops.
+      (unless (= (length args) 2)
+        (nelisp-sys-frontend--err form "%S needs exactly two operands" head))
+      (nelisp-sys-ast-make 'f64-arith :op head
+                           :args (mapcar #'nelisp-sys-frontend--parse-expr args)
+                           :form form))
+     ((memq head '(sys:f64< sys:f64<= sys:f64> sys:f64>= sys:f64=))
+      ;; binary f64 comparison, f64 x f64 -> bool.
+      (unless (= (length args) 2)
+        (nelisp-sys-frontend--err form "%S needs exactly two operands" head))
+      (nelisp-sys-ast-make 'f64-cmp :op head
+                           :args (mapcar #'nelisp-sys-frontend--parse-expr args)
+                           :form form))
+     ((eq head 'sys:i64->f64)
+      ;; (sys:i64->f64 X) — signed integer -> f64 (CVTSI2SD).
+      (unless (= (length args) 1)
+        (nelisp-sys-frontend--err form "sys:i64->f64 needs one operand"))
+      (nelisp-sys-ast-make 'i64->f64
+                           :arg (nelisp-sys-frontend--parse-expr (car args))
+                           :form form))
+     ((eq head 'sys:f64->i64)
+      ;; (sys:f64->i64 X) — f64 -> i64 truncating toward zero.
+      (unless (= (length args) 1)
+        (nelisp-sys-frontend--err form "sys:f64->i64 needs one operand"))
+      (nelisp-sys-ast-make 'f64->i64
+                           :arg (nelisp-sys-frontend--parse-expr (car args))
+                           :form form))
+     ((eq head 'sys:bits->f64)
+      ;; (sys:bits->f64 X) — reinterpret an i64 bit pattern as f64 (no
+      ;; numeric conversion); the bridge for a raw IEEE-754 word.
+      (unless (= (length args) 1)
+        (nelisp-sys-frontend--err form "sys:bits->f64 needs one operand"))
+      (nelisp-sys-ast-make 'bits->f64
+                           :arg (nelisp-sys-frontend--parse-expr (car args))
+                           :form form))
+     ((eq head 'sys:str-to-float)
+      ;; (sys:str-to-float BYTES LEN OUT) -> i64 (1 success / 0 fail).
+      ;; Delegates to the `nl_str_to_float' extern (str::parse::<f64>),
+      ;; which writes Sexp::Float(parsed) into the OUT slot.  BYTES is a
+      ;; usize byte-pointer, LEN the byte length, OUT a Sexp result slot.
+      (unless (= (length args) 3)
+        (nelisp-sys-frontend--err form "sys:str-to-float needs BYTES LEN OUT"))
+      (nelisp-sys-ast-make 'str-to-float
+                           :bytes (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :len   (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :out   (nelisp-sys-frontend--parse-expr (nth 2 args))
+                           :form form))
      ((symbolp head)
       ;; Generic function/intrinsic call.
       (nelisp-sys-ast-make 'call :fn head
