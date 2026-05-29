@@ -328,6 +328,43 @@ this is the intended mode-shift from Doc 134's "don't touch eval/*.rs" guard.
   self-host 37/37; full eval smoke test (~(fact 5)~ etc.) returns correct value;
   net Rust LOC ≤ pre-fa8932eb baseline (campaign invariant).
 
+* 5.5 Stage 135.C — cutover precisely scoped (2026-05-30)
+
+KEY FINDING: the ~sf_*~ special-form .o files thread ~env~ PURELY OPAQUELY —
+verified (grep): they only forward ~env~ to ~nelisp_eval_call~ (recursive eval)
+and to the env-leaf helpers (~nl_env_set_value~, ~nl_let_setup~, ~nl_env_pop_frame~,
+~nl_cc_match_and_bind~, ~nl_eval_is_truthy~). NO ~sf_*~ ever ~ptr-read~/~load-field~
+on ~env~. → the ~sf_*~ need NO change for the cutover (they thread ~ctx~ unchanged).
+The earlier "10 sf_* re-points / fan-out" idea is DROPPED.
+
+So the cutover (135.E) is exactly three things, landing atomically:
+1. Re-provide the 14 env-leaf symbols as ctx-accessors (deref ctx → C-ABI).
+2. Port the env-DEREFERENCING Rust driver: ~nl_eval_inner_cons~ (the combiner) +
+   ~eval~ / ~apply_function~ / ~apply_special~ / ~eval_arg_list~ / ~eval_stash_err~.
+3. Construct an EvalCtx in ~nelisp_eval_call~ + thread it (replacing ~*mut Env~).
+
+** 5.5.1 The 14 env-leaves — complexity taxonomy (from fa8932eb^ bodies)
+
+| cluster | symbols | shape |
+|---------+---------+-------|
+| SIMPLE  | nl_env_set_value(env,sym,val) ; nl_env_lookup_val(name,env,out) ; nl_env_pop_frame(env) | deref ctx.mirror/frames → 1 C-ABI call (nelisp_env_set_value / _lookup_value / nelisp_frame_pop). Wrinkles: set/lookup need an 11-slot scratch vector; lookup_val keyword(`:x`) special-case clones name via nl_sexp_clone_into. |
+| FRAME-COMPOSE | nl_push_and_bind(formals,args,env) ; nl_env_push_captured(env,alist) | frame_push(ctx.frames,scratch) + bind (bind_formals_impl_call, itself env-opaque) + conditional frame_pop on err. push_captured = push frame from an alist. |
+| REAL-LOGIC | nl_let_setup(bindings,env,seq) ; nl_cc_match_and_bind(clauses,err,var,env) | let_setup: parse bindings + eval each value (recursive nelisp_eval_call) + frame_push + bind each. cc_match_and_bind: condition-case clause-walk + tag match + frame_push + var-bind. These carry the most logic. |
+| BIND+STASH | nl_bf_bind_sym/optional/rest ; nl_bf_err_arity/type/dangling_rest | bind_* = list-walk args + nelisp_env_bind_local. err_* = build an EvalError signal Sexp + nelisp_env_set_value("nelisp--last-signal-data", …). Need a zero-Rust signal-data constructor (check the `signal` builtin / signal_data shape). |
+| MAYBE-DEAD | nl_env_capture_lexical(env,out) | 134.C found no live caller → likely droppable; confirm at cutover. |
+
+** 5.5.2 The combiner (the core intellectual work)
+
+~nl_eval_inner_cons(head, tail, env, out)~ (Rust) is the apply-combiner: eval head →
+~e.lookup_function(name)~ → if special-form → ~apply_special~ (calls the sf_* .o) ; if
+macro → expand ; else eval args (~eval_arg_list~) → ~apply_function~. It derefs ~env~ for
+~lookup_function~, ~use_elisp_apply~, ~delegation_depth~, and error-stash. Porting it to
+nelisp-sys threading ctx (using the existing elisp apply stack in
+~lisp/nelisp-stdlib-eval-core.el~ + the ~nelisp--apply-builtin-dispatch~ bridge §3.0) is
+the largest remaining piece. apply_function: builtin → bridge ; closure → the shipped
+~apply_lambda_inner~ .o (env-opaque). Build order: env-leaves (SIMPLE→BIND+STASH→
+FRAME-COMPOSE→REAL-LOGIC) then the combiner, then the atomic 135.E swap.
+
 * 6. Zero-Rust accounting
 
 - New Rust: ZERO. The only Rust-source changes are *deletions* (135.E removes the
