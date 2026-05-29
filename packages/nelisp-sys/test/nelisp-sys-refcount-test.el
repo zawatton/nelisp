@@ -86,14 +86,46 @@ ops, composing with the usize field-offset arithmetic."
                               (sys:poke-u64
                                (+ p (sys:offsetof nlconsbox refcount)) 1))))))))
 
-;; NOTE (Doc 133 P2 finding): the full alloc->clone->drop->read e2e in a
-;; *freestanding* standalone binary is blocked because `alloc-bytes'
-;; calls the Rust runtime's `nl_alloc_bytes', which a freestanding binary
-;; does not link (no heap allocator outside the Rust runtime).  A native
-;; refcount e2e therefore needs either (a) an mmap-syscall freestanding
-;; allocator, or (b) static-data addressing — a Phase 2/3 sub-task.  The
-;; refcount/peek/poke/alloc *lowering* is pinned above + in the backend
-;; tests; the native codegen for each underlying Phase 47 op is already
-;; shipped + tested at the grammar layer.
+(ert-deftest nelisp-sys-refcount-e2e-mmap-runs ()
+  "Doc 133 P2 e2e: the nelisp-sys refcount kernel runs natively.
+A freestanding standalone binary cannot use the Rust-runtime allocator
+\(`nl_alloc_bytes'), so `main' gets a page via the raw mmap syscall
+\(NR=9, MAP_PRIVATE|MAP_ANONYMOUS), inits refcount=1, clones (rc=2),
+drops (rc=1), reads it back -> exit 1.  First fully self-host-verified
+refcount kernel: nelisp-sys -> native binary, no cargo, no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-rc")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           (append
+            nelisp-sys-refcount-test--boxes
+            '((sys:defun rc_inc ((p usize)) i64 (:alloc none)
+                (sys:atomic-add!
+                 (+ p (sys:offsetof nlconsbox refcount)) 1))
+              (sys:defun rc_dec ((p usize)) i64 (:alloc none)
+                (sys:atomic-sub!
+                 (+ p (sys:offsetof nlconsbox refcount)) 1))
+              ;; main: mmap a page (freestanding allocator), run the
+              ;; refcount kernel, return the read-back count.
+              (sys:defun main () i64 (:syscall may :alloc none)
+                (let ((p usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                  (sys:poke-u64 (+ p (sys:offsetof nlconsbox refcount)) 1)
+                  (rc_inc p)
+                  (rc_dec p)
+                  (sys:peek-u64 (+ p (sys:offsetof nlconsbox refcount)))))
+              (sys:defun _start () void
+                (:abi nelisp-internal :syscall may :alloc none)
+                (sys:exit (main)))))
+           path)
+          (should (file-executable-p path))
+          (should (= 1 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
 
 ;;; nelisp-sys-refcount-test.el ends here

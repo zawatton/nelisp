@@ -352,6 +352,15 @@ FORM is the enclosing source form for diagnostics."
                            :ptr (nelisp-sys-frontend--parse-expr (nth 0 args))
                            :val (nelisp-sys-frontend--parse-expr (nth 1 args))
                            :form form))
+     ((eq head 'sys:syscall)
+      ;; (sys:syscall NR A0 A1 A2 A3 A4 A5) — Linux x86_64 raw SYSCALL,
+      ;; returns the kernel result as usize.  Used e.g. for a freestanding
+      ;; mmap allocator (Doc 133 P2/P3).  Requires :syscall may.
+      (unless (= (length args) 7)
+        (nelisp-sys-frontend--err form "sys:syscall needs NR + 6 args"))
+      (nelisp-sys-ast-make 'syscall
+                           :args (mapcar #'nelisp-sys-frontend--parse-expr args)
+                           :form form))
      ((eq head 'sys:sizeof)
       (nelisp-sys-ast-make 'sizeof
                            :type (nelisp-sys-frontend--parse-type (car args) form)
