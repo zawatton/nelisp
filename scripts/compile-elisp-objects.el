@@ -885,6 +885,17 @@
      :source-var nelisp-cc-nlconsbox-drop--source
      :output "nelisp_nlconsbox_drop.o"
      :requires-arch x86_64)
+    ;; nl_consbox_set_car Phase 47 cutover spike — copies the 32-byte
+    ;; Sexp at VAL into the car slot (offset 0) of the NlConsBox at BOX
+    ;; via four ptr-write-u64 / ptr-read-u64 word-copy pairs.  Resolves
+    ;; the PLT reloc emitted by the `cons-set-car' grammar op and the
+    ;; 28-symbol undefined list introduced when commit fa8932eb deleted
+    ;; the Rust `nl_consbox_set_car' body.  x86_64 only (= same gate as
+    ;; other ptr-read/write-u64 consumers).
+    (nelisp-cc-nlconsbox-set-car
+     :source-var nelisp-cc-nlconsbox-set-car--source
+     :output "nl_consbox_set_car.o"
+     :requires-arch x86_64)
     ;; nl_alloc_consbox elisp swap — allocates a fresh NlConsBox
     ;; (car=Nil, cdr=Nil, refcount=1) using alloc-bytes + sexp-write-nil
     ;; + ptr-write-u64.  Replaces the Rust `nl_alloc_consbox' body in

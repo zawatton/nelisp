@@ -47,7 +47,10 @@ fn main() {
 /// holding the emit-value leaf-arm kernels (`nelisp_emit_value_imm' +
 /// `nelisp_emit_value_ref_gp').  Pure data add; over-shooting the chunk
 /// count is harmless (elisp clamps the range).
-const N_MANIFEST_ENTRIES: usize = 215;
+///
+/// Phase 47 cutover spike — bumped to 216 for `nl_consbox_set_car.o'
+/// (= first of the 28 undefined nl_* symbols resolved from elisp).
+const N_MANIFEST_ENTRIES: usize = 216;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -229,6 +232,11 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // existing Phase 47 grammar (no new opcode, no new Rust extern);
         // pure data add to the manifest_sources list.  Linux-x86_64 only.
         "nelisp-cc-bi-emit-value.el",
+        // Phase 47 cutover spike — nl_consbox_set_car: copies 32 bytes
+        // (4 × u64) from val into box+0..+31 (= car slot).  Resolves
+        // the first of the 28 undefined `nl_*' symbols introduced when
+        // commit fa8932eb deleted the Rust nlconsbox.rs bodies.
+        "nelisp-cc-nlconsbox-set-car.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
