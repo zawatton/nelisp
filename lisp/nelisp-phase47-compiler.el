@@ -421,7 +421,7 @@ because §97.b only folds the same shapes v1 did."
    ((symbolp sexp)
     (and (not (assq sexp fenv))
          (assq sexp env)))
-   ((and (consp sexp) (memq (car sexp) '(+ - * mod))
+   ((and (consp sexp) (memq (car sexp) '(+ - * / mod))
          (= (length sexp) 3))
     (and (nelisp-phase47-compiler--int-foldable-p (nth 1 sexp) env fenv)
          (nelisp-phase47-compiler--int-foldable-p (nth 2 sexp) env fenv)))
@@ -443,6 +443,7 @@ Caller has already verified foldability via
        ((eq op '+) (+ a b))
        ((eq op '-) (- a b))
        ((eq op '*) (* a b))
+       ((eq op '/) (/ a b))
        ((eq op 'mod) (mod a b)))))))
 
 (defconst nelisp-phase47-compiler--cmp-ops
@@ -7617,7 +7618,7 @@ functions `((NAME . ARITY) ...)'."
    ;; §100.D extends the op set with 3 bitwise binops (logior /
    ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
    ;; the same MR-form emit shape so no new IR kind is needed.
-   ((and (consp sexp) (memq (car sexp) '(+ - * mod logior logand logxor)))
+   ((and (consp sexp) (memq (car sexp) '(+ - * / mod logior logand logxor)))
     (unless (= (length sexp) 3)
       (signal 'nelisp-phase47-compiler-error
               (list :arith-arity (car sexp) sexp)))
@@ -9875,6 +9876,15 @@ Uses `emit-bytes' for the 0F-prefix opcode form."
                        #x49 #xF7 #xFA))  ; idiv r10
   (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdx))
 
+(defun nelisp-phase47-compiler--emit-x86_64-div-r10 (buf)
+  "Emit signed integer quotient RAX / R10, leaving the result in RAX.
+Mirrors `--emit-x86_64-mod-r10' but keeps IDIV's quotient (rax) rather
+than the remainder (rdx) — so no trailing `mov rax, rdx'.  Truncating
+(toward-zero) division, matching Emacs Lisp `/' on integers."
+  (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #x48 #x99          ; cqo
+                       #x49 #xF7 #xFA)))  ; idiv r10  (quotient stays in rax)
+
 (defun nelisp-phase47-compiler--emit-aarch64-unsupported (kind &optional detail)
   "Signal that KIND is not yet emitted on aarch64 in Phase 47.
 DETAIL carries the offending IR node or operator when useful."
@@ -10717,6 +10727,7 @@ chained calls where rcx held both `d' param and a scratch value)."
            ((eq op '+) (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x9))
            ((eq op '-) (nelisp-asm-arm64-sub-reg-reg buf 'x0 'x0 'x9))
            ((eq op '*) (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9))
+           ((eq op '/) (nelisp-asm-arm64-sdiv-reg-reg buf 'x0 'x0 'x9))
            ((eq op 'mod)
             (nelisp-asm-arm64-sdiv-reg-reg buf 'x10 'x0 'x9)
             (nelisp-asm-arm64-msub-reg-reg buf 'x0 'x10 'x9 'x0))
@@ -10739,6 +10750,8 @@ chained calls where rcx held both `d' param and a scratch value)."
        ((eq op '-) (nelisp-asm-x86_64-sub-reg-reg buf 'rax 'r10))
        ((eq op '*)
         (nelisp-phase47-compiler--imul-reg-reg buf 'rax 'r10))
+       ((eq op '/)
+        (nelisp-phase47-compiler--emit-x86_64-div-r10 buf))
        ((eq op 'mod)
         (nelisp-phase47-compiler--emit-x86_64-mod-r10 buf))
        ;; Doc 100 §100.D bitwise binops.  Same MR-form shape as ADD/SUB,

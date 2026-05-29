@@ -546,6 +546,18 @@ through `call-ptr'.  target(5) = 5 + 100 = 105 -> exit 105."
      '(seq (defun mul (a b) (* a b)) (exit (mul 6 7))) path)
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
+(ert-deftest nelisp-phase47-compiler/e2e-defun-div-two ()
+  "`(seq (defun dv (a b) (/ a b)) (exit (dv 84 2)))' exits 42.
+Doc 133: integer division (/) emits as a value expression (idiv, keeping
+the quotient in rax — the companion of the `mod' remainder path)."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "div2"
+    (nelisp-phase47-compile-sexp
+     '(seq (defun dv (a b) (/ a b)) (exit (dv 84 2))) path)
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 42)))))
+
 
 (ert-deftest nelisp-phase47-compiler/e2e-defun-six-arg ()
   "6-arg call exercises all SysV AMD64 arg registers — sum = 21."

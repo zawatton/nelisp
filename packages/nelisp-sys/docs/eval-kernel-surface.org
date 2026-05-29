@@ -115,14 +115,13 @@ to =(+ ptr N)=.  =sys:ptr-add= REQUIRES a typed =(ptr T)=; for a bare
      ref), as =examples/gcd.nl= does (=tmp= inits from =a=, not 0).
    A bare top-level =(set! v 0)= before the loop does NOT rescue it — the
    init is still foldable and the scan still misses the loop-body write.
-7. *Not every arithmetic op emits as a value.*  =+= =-= =*= =mod= emit
-   fine in value position (=mod= is used by =examples/gcd.nl= and the
-   eval-kernel MOD node).  But =/= (integer division) currently raises
-   =:not-value-expr= in the Phase 47 *value* emitter — it lowers fine
-   (so a lowering test of =(/ a b)= passes) but a native build using =/=
-   as a cond-branch / return value fails to compile.  Treat =/= as
-   not-yet-emittable until the Phase 47 value emitter grows it; use
-   =mod= or repeated subtraction if you need it before then.
+7. *Arithmetic value-ops =+= =-= =*= =/= =mod= all emit* (=/= and =mod=
+   need dedicated idiv emit — =/= keeps the quotient in rax, =mod= the
+   remainder in rdx).  Historical note: =/= used to raise
+   =:not-value-expr= in the Phase 47 *value* emitter (it lowered fine but
+   would not compile natively); Doc 133 added the quotient emit, so on
+   current builds =/= works as a cond-branch / return value.  If you hit
+   =:not-value-expr= on =/= against an older compiler, that is the cause.
 
 * Node / env layout conventions used by the eval kernel
 32-byte nodes (room for a tag + up to three slots):

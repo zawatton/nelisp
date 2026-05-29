@@ -556,46 +556,44 @@ exit 42.  text -> Sexp -> native evaluation, no Rust runtime."
                        (/ a b))))
                   "x86_64-unknown-linux-gnu"))))
 
-;; NOTE: Phase 47 does not emit integer division (/) as a value expression;
-;; nelisp-phase47-compiler-error :not-value-expr is raised at compile time.
-;; Commented out until / is supported as a cond-body value expr in Phase 47.
-;; (ert-deftest nelisp-sys-eval-kernel-div-runs ()
-;;   "Doc 133 eval-kernel e2e: integer division node DIV=110.
-;; Builds `(/ 84 2)' (84/2=42) -> exit 42 on a standalone binary."
-;;   (unless (and (eq system-type 'gnu/linux)
-;;                (string-prefix-p "x86_64" system-configuration))
-;;     (ert-skip "requires x86_64 Linux"))
-;;   (require 'nelisp-sys-adapter-nelisp)
-;;   (unless (nelisp-sys-adapter-available-p)
-;;     (ert-skip "NeLisp toolchain not available"))
-;;   (let ((path (make-temp-file "nelisp-sys-eval-div")))
-;;     (unwind-protect
-;;         (progn
-;;           (delete-file path)
-;;           (nelisp-sys-compile-executable
-;;            '((sys:defun nl_eval ((node usize)) i64 (:alloc none)
-;;                (let ((tag i64 (sys:peek-u64 node)))
-;;                  (cond
-;;                   ((= tag 2) (sys:peek-u64 (+ node 8)))
-;;                   ((= tag 110)
-;;                    (/ (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
-;;                       (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
-;;                   (else -1))))
-;;              (sys:defun main () i64 (:syscall may :alloc none)
-;;                (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
-;;                  (sys:poke-u64 (+ r 0) 110)
-;;                  (sys:poke-u64 (+ r 8) (+ r 32))
-;;                  (sys:poke-u64 (+ r 16) (+ r 64))
-;;                  (sys:poke-u64 (+ r 32) 2)  (sys:poke-u64 (+ r 40) 84)
-;;                  (sys:poke-u64 (+ r 64) 2)  (sys:poke-u64 (+ r 72) 2)
-;;                  (nl_eval (+ r 0))))
-;;              (sys:defun _start () void
-;;                (:abi nelisp-internal :syscall may :alloc none)
-;;                (sys:exit (main))))
-;;            path)
-;;           (should (file-executable-p path))
-;;           (should (= 42 (call-process path nil nil nil))))
-;;       (ignore-errors (delete-file path)))))
+(ert-deftest nelisp-sys-eval-kernel-div-runs ()
+  "Doc 133 eval-kernel e2e: integer division node DIV=110.
+Builds `(/ 84 2)' (84/2=42) -> exit 42 on a standalone binary.  Enabled
+once the Phase 47 value emitter learned to emit `/' (idiv quotient)."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-div")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_eval ((node usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 110)
+                   (/ (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                      (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  (else -1))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0) 110)
+                 (sys:poke-u64 (+ r 8) (+ r 32))
+                 (sys:poke-u64 (+ r 16) (+ r 64))
+                 (sys:poke-u64 (+ r 32) 2)  (sys:poke-u64 (+ r 40) 84)
+                 (sys:poke-u64 (+ r 64) 2)  (sys:poke-u64 (+ r 72) 2)
+                 (nl_eval (+ r 0))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-sys-eval-kernel-lower-gt ()
   "GT comparison node lowers (if (> a b) 1 0)."
