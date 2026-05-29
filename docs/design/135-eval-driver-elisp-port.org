@@ -30,10 +30,18 @@ The driver port is written in the *typed nelisp-sys DSL*, not hand-written
 - The ~type checker~ (~E-SYS-*~) catches at COMPILE time the bug class that has been
   the campaign's main pain (offset/i32-i64/ABI mistakes are otherwise latent
   until the build is green — untestable, crash-prone). This is the decisive win.
-- *The 6 non-env symbols are already nelisp-sys grammar ops*: ~sys:str-to-float~,
-  ~sys:char-table-get/set~, ~sys:mut-str-push-byte/codepoint~ → ~nl_str_to_float~,
-  ~nl_char_table_get/set_raw~, ~nl_mut_str_push_byte/codepoint/set_codepoint_raw~
-  are emittable directly from nelisp-sys.
+- *CORRECTION (Stage 135.0)*: the earlier claim "the 6 non-env symbols are
+  already nelisp-sys grammar ops" is MISLEADING. The ops ~sys:str-to-float~ /
+  ~sys:char-table-get,set~ / ~sys:mut-str-push-byte,codepoint~ exist, but each
+  *lowers to a `(extern-call nl_…)` / `(mut-str-push-byte …)` that CALLS the very
+  deleted symbol* (verified: ~lisp/nelisp-phase47-compiler.el:10604~ emits
+  ~call nl_mut_str_push_byte~; backend ~nelisp-sys-backend.el:159-204~ emits
+  ~extern-call nl_char_table_*~ / ~nl_str_to_float~). So the ops are CALLERS,
+  not definitions — using them to define the symbol is self-recursive. All 6
+  non-env symbols need REAL low-level implementations (push needs Vec realloc-
+  grow; set-codepoint needs char-count + UTF-8; str-to-float is strtod;
+  char-table is a tree-walk). nelisp-sys still helps (type-checked low-level
+  code) but they are NOT free.
 
 Scope = *B1* (on-ramp to B2): write the DRIVER + the remaining symbols in
 nelisp-sys over the existing data model. DO NOT rewrite the ~200 working
@@ -43,10 +51,32 @@ each pinned by ~sys:static-assert~ to keep C-ABI compat during transition. B2 is
 NOT a from-scratch big-bang (the self-host PoC's simplified i64/alist model is a
 pattern source, not the production target).
 
-One open risk to clear in Stage 135.0: confirm a nelisp-sys ~sys:defun~ emits a
-~.o~ exporting the EXACT C-ABI symbol name the linker needs, and how a
-nelisp-sys-compiled ~.o~ is wired into the build (same ~compile-elisp-objects.el~
-manifest + ~build.rs~ as cc-files, or a distinct path).
+*VEHICLE VALIDATED (Stage 135.0, 2026-05-30)*: a nelisp-sys ~sys:defun~ DOES
+lower to the exact phase47 form the cc-file manifest consumes, exporting the
+exact C-ABI symbol. Proven with a throwaway identity probe
+(~(sys:defun nl_b1_vehicle_probe ((x i64)) i64 (:export …) x)~ →
+~nelisp-sys-backend-lower-module~ → ~(defun nl_b1_vehicle_probe (x) x)~ →
+manifest defconst → archived → ~nm~ shows ~T nl_b1_vehicle_probe~ in
+~libnelisp_elisp_spike.a~; self-host 37/37; zero Rust diff). Probe reverted
+(unreferenced).
+
+*REUSABLE B1 CUTOVER RECIPE* (every nelisp-sys-authored symbol follows this):
+1. Author ~(sys:defun NAME ((p TYPE)…) RET (:export NAME :abi c [:unsafe unsafe]) BODY)~.
+2. Type-check via ~nelisp-sys-driver~ (~nelisp-sys-check-all~ → E-SYS-* clean).
+3. ~(nelisp-sys-backend-lower-module (nelisp-sys-frontend-parse-module '(FORM))
+   "x86_64-unknown-linux-gnu")~ → the phase47 sexp.
+4. Store that sexp as ~(defconst nelisp-cc-NAME--source '…)~ in
+   ~lisp/nelisp-cc-NAME.el~ + ~(provide 'nelisp-cc-NAME)~.
+5. Add manifest entry ~(nelisp-cc-NAME :source-var nelisp-cc-NAME--source :output
+   "NAME.o" [:requires-arch x86_64])~ to ~scripts/compile-elisp-objects.el~.
+6. Add ~"nelisp-cc-NAME.el"~ to ~build-tool/build.rs~ ~manifest_sources~ + bump
+   ~N_MANIFEST_ENTRIES~.
+7. Gate: ~nm~ shows the symbol ~T~ in the archive + all callees resolve ~T~;
+   self-host 37/37; ~git diff -- build-tool/src/eval/ lib.rs~ empty.
+
+(Lower step can also be done once and the phase47 sexp pasted directly; the
+nelisp-sys SOURCE should be kept in the file's commentary for provenance +
+re-lowering when the symbol changes.)
 
 * 1. Why Doc 134's per-symbol re-provision fails for the env group
 
@@ -181,13 +211,14 @@ resolve T); self-host eval-kernel suite 37/37; ~git status~ review before commit
 Stages that DELETE Rust from ~eval/mod.rs~ are the cutover (net-negative Rust) —
 this is the intended mode-shift from Doc 134's "don't touch eval/*.rs" guard.
 
-- *135.0 — nelisp-sys emission spike* (the vehicle linchpin). Ship ONE of the
-  6 non-env symbols (simplest: ~nl_mut_str_push_byte~ or ~nl_str_to_float~) as a
-  nelisp-sys ~sys:defun~ compiled to a ~.o~ that exports the EXACT C-ABI name +
-  is wired into the build; ~nm~ shows it T, the undefined ref resolves. Proves
-  nelisp-sys can emit + wire exact C-ABI symbols and establishes the
-  nelisp-sys cutover pattern + the build-wiring path. GATE: symbol T, no new
-  undefined, self-host 37/37, zero new Rust.
+- *135.0 — nelisp-sys emission spike* — ✅ DONE (2026-05-30). Vehicle validated
+  with the ~nl_b1_vehicle_probe~ identity fn (see §0.5 VEHICLE VALIDATED + the
+  REUSABLE B1 CUTOVER RECIPE). lower-module → manifest defconst → archive works
+  directly; ~nm~ T confirmed; self-host 37/37; zero Rust. Probe reverted. Found:
+  the 6 non-env ops are CIRCULAR (callers), so those symbols need real low-level
+  impls — they are NOT quick wins. NEXT therefore goes straight to 135.A (the
+  driver port is the path to green); non-env symbols are implemented with the
+  recipe as they become needed by the eval port (or opportunistically).
 - *135.A — EvalCtx constructor + builtin-resolution spike* (no deletion yet).
   New elisp ~.o~: ~nl_eval_ctx_make(mirror, frames, unbound, out)~ building the
   Record; ~nl_eval_ctx_mirror(ctx)~ / ~_frames(ctx)~ slot accessors. Prove one
