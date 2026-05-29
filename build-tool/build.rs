@@ -53,7 +53,9 @@ fn main() {
 /// Doc 133 batch — bumped to 221 for the 5-symbol memcpy batch:
 /// nl_consbox_set_cdr / nl_cell_set_value / nl_cell_get_value /
 /// nl_vector_set_slot / nl_record_set_slot.
-const N_MANIFEST_ENTRIES: usize = 221;
+/// Doc 133 cutover — bumped to 222 for `nl_tty_read_byte.o'
+/// (= re-provides the no-arg read(0,buf,1) function deleted by fa8932eb).
+const N_MANIFEST_ENTRIES: usize = 222;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -252,6 +254,11 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-nlvector-set-slot.el",
         // nl_record_set_slot: Vec.data_ptr@record+40 + n<<5 + copy.
         "nelisp-cc-nlrecord-set-slot.el",
+        // Doc 133 cutover — nl_tty_read_byte: re-provides the no-arg
+        // C-ABI function deleted by fa8932eb.  Heap-allocates a 1-byte
+        // buffer (alloc-bytes 1 1), calls read(0,buf,1) via extern-call,
+        // extracts the byte with ptr-read-u8, frees on both paths.
+        "nelisp-cc-tty-read-byte.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

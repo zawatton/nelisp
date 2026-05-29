@@ -1481,6 +1481,17 @@
     (nelisp-cc-bi-emit-value
      :source-var nelisp-cc-bi-emit-value--source
      :output "nelisp_emit_value.o"
+     :requires-arch x86_64)
+    ;; Doc 133 cutover — nl_tty_read_byte: re-provides the no-arg
+    ;; C-ABI function deleted by fa8932eb.  Allocates a 1-byte heap
+    ;; buffer (alloc-bytes 1 1), calls read(0, buf, 1) via extern-call,
+    ;; reads the byte with ptr-read-u8, frees the buffer on both
+    ;; success and error paths, returns byte (0..255) or -1.
+    ;; Three-entry seq: nl_tty_rb_prog1 / nl_tty_rb_dispatch /
+    ;; nl_tty_read_byte.  Linux-x86_64 only.
+    (nelisp-cc-tty-read-byte
+     :source-var nelisp-cc-tty-read-byte--source
+     :output "nl_tty_read_byte.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
