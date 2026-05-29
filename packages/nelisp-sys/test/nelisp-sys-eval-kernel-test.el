@@ -179,4 +179,86 @@ as nelisp-sys-emitted native code, no Rust runtime."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-lower-lookup ()
+  "nl_lookup lowers to a while-loop scan over an env of (sym,val) pairs.
+Env layout: count@0, then 16-byte (sym,val) pairs from offset 8.  This is
+the variable-environment core of the interpreter (Doc 133 env)."
+  (should (equal '(defun nl_lookup (p n sym)
+                    (if (= n 0)
+                        -1
+                      (if (= (ptr-read-u64 p 0) sym)
+                          (ptr-read-u64 (+ p 8) 0)
+                        (nl_lookup (+ p 16) (- n 1) sym))))
+                 (nelisp-sys-backend-lower-module
+                  (nelisp-sys-frontend-parse-module
+                   '((sys:defun nl_lookup ((p usize) (n i64) (sym i64)) i64 (:alloc none)
+                       (if (= n 0)
+                           (sys:cast i64 -1)
+                         (if (= (sys:peek-u64 p) sym)
+                             (sys:peek-u64 (+ p 8))
+                           (nl_lookup (+ p 16) (- n 1) sym))))))
+                  "x86_64-unknown-linux-gnu"))))
+
+(ert-deftest nelisp-sys-eval-kernel-env-runs ()
+  "Doc 133 eval-kernel e2e: a variable environment + VAR lookup.
+Env at the mmap base: count@0, then (sym,val) pairs (16B each) from
+offset 8.  Nodes (32B): INT=2 (payload@8), ADD=100 (left@8,right@16),
+VAR=104 (sym-id@8).  nl_eval threads `env' through the recursion; a VAR
+node resolves via nl_lookup's while-loop scan.  Builds `(+ x y)' under
+env {x->40, y->2} and evals it -> exit 42.  Native-verified: the eval
+loop now carries a lexical environment, no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-env")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '(;; nl_lookup: recursive scan of the (sym,val) env; -1 if absent.
+             ;; p = current pair ptr, n = remaining count, sym = key.  Every
+             ;; `if' sits in tail position (Phase 47 if/cond are tail-only:
+             ;; they cannot nest as a setq value or call argument).
+             (sys:defun nl_lookup ((p usize) (n i64) (sym i64)) i64 (:alloc none)
+               (if (= n 0)
+                   (sys:cast i64 -1)   ; literal in tail-then defaults to i32; pin i64
+                 (if (= (sys:peek-u64 p) sym)
+                     (sys:peek-u64 (+ p 8))
+                   (nl_lookup (+ p 16) (- n 1) sym))))
+             ;; nl_eval: tree-walk, threading the lexical env through recursion.
+             (sys:defun nl_eval ((node usize) (env usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 104)
+                   (nl_lookup (+ env 8) (sys:peek-u64 env)
+                              (sys:peek-u64 (+ node 8))))
+                  ((= tag 100)
+                   (+ (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))) env)
+                      (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))) env)))
+                  (else -1))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 ;; env: count=2, (sym 1 -> 40), (sym 2 -> 2)
+                 (sys:poke-u64 (+ r 0) 2)
+                 (sys:poke-u64 (+ r 8) 1)   (sys:poke-u64 (+ r 16) 40)
+                 (sys:poke-u64 (+ r 24) 2)  (sys:poke-u64 (+ r 32) 2)
+                 ;; nodes: VAR x @64, VAR y @96, ADD @128
+                 (sys:poke-u64 (+ r 64) 104) (sys:poke-u64 (+ r 72) 1)
+                 (sys:poke-u64 (+ r 96) 104) (sys:poke-u64 (+ r 104) 2)
+                 (sys:poke-u64 (+ r 128) 100)
+                 (sys:poke-u64 (+ r 136) (+ r 64))
+                 (sys:poke-u64 (+ r 144) (+ r 96))
+                 (nl_eval (+ r 128) r)))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
