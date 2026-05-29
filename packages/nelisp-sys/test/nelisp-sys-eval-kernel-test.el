@@ -324,4 +324,88 @@ apply, no Rust runtime."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-lower-cmp ()
+  "A comparison node lowers `(if (< a b) 1 0)' — the comparison yields an
+i64 1/0 so it composes with the rest of the eval dispatch (Doc 133 cmp
+nodes).  Drafted by codex (gpt-5.3-codex-spark) from the surface
+cheat-sheet; lowering verified by the integrator."
+  (should (equal '(defun cmp_lt (a b) (if (< a b) 1 0))
+                 (nelisp-sys-backend-lower-module
+                  (nelisp-sys-frontend-parse-module
+                   '((sys:defun cmp_lt ((a i64) (b i64)) i64 (:alloc none)
+                       (if (< a b) 1 0))))
+                  "x86_64-unknown-linux-gnu"))))
+
+(ert-deftest nelisp-sys-eval-kernel-cmp-runs ()
+  "Doc 133 eval-kernel e2e: comparison nodes LT=106 and EQ=107.
+Both are binary (left@8, right@16) and yield i64 1/0.  Evaluates
+`(if (< (- 5 2) 4) (if (= 7 7) 42 99) 99)': LT(SUB(5,2)=3, 4)=true ->
+inner IF; EQ(7,7)=true -> 42.  Exercises LT and EQ at runtime (plus
+SUB/IF/INT) -> exit 42 on a standalone binary, no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-cmp")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_eval ((node usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 101)
+                   (- (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                      (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  ((= tag 106)
+                   (if (< (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                          (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       1 0))
+                  ((= tag 107)
+                   (if (= (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                          (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16)))))
+                       1 0))
+                  ((= tag 103)
+                   (if (/= (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8)))) 0)
+                       (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))
+                     (nl_eval (sys:cast usize (sys:peek-u64 (+ node 24))))))
+                  (else -1))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0) 103)            ; IF   @0
+                 (sys:poke-u64 (+ r 8) (+ r 32))       ;  cond = LT  @32
+                 (sys:poke-u64 (+ r 16) (+ r 64))      ;  then = IF2 @64
+                 (sys:poke-u64 (+ r 24) (+ r 96))      ;  else = INT 99 @96
+                 (sys:poke-u64 (+ r 32) 106)           ; LT   @32
+                 (sys:poke-u64 (+ r 40) (+ r 128))     ;  left  = SUB @128
+                 (sys:poke-u64 (+ r 48) (+ r 160))     ;  right = INT 4 @160
+                 (sys:poke-u64 (+ r 64) 103)           ; IF2  @64
+                 (sys:poke-u64 (+ r 72) (+ r 192))     ;  cond = EQ  @192
+                 (sys:poke-u64 (+ r 80) (+ r 224))     ;  then = INT 42 @224
+                 (sys:poke-u64 (+ r 88) (+ r 96))      ;  else = INT 99 @96
+                 (sys:poke-u64 (+ r 96) 2)   (sys:poke-u64 (+ r 104) 99)  ; INT 99
+                 (sys:poke-u64 (+ r 128) 101)          ; SUB  @128
+                 (sys:poke-u64 (+ r 136) (+ r 256))    ;  left  = INT 5 @256
+                 (sys:poke-u64 (+ r 144) (+ r 288))    ;  right = INT 2 @288
+                 (sys:poke-u64 (+ r 160) 2)  (sys:poke-u64 (+ r 168) 4)   ; INT 4
+                 (sys:poke-u64 (+ r 192) 107)          ; EQ   @192
+                 (sys:poke-u64 (+ r 200) (+ r 320))    ;  left  = INT 7 @320
+                 (sys:poke-u64 (+ r 208) (+ r 352))    ;  right = INT 7 @352
+                 (sys:poke-u64 (+ r 224) 2)  (sys:poke-u64 (+ r 232) 42)  ; INT 42
+                 (sys:poke-u64 (+ r 256) 2)  (sys:poke-u64 (+ r 264) 5)   ; INT 5
+                 (sys:poke-u64 (+ r 288) 2)  (sys:poke-u64 (+ r 296) 2)   ; INT 2
+                 (sys:poke-u64 (+ r 320) 2)  (sys:poke-u64 (+ r 328) 7)   ; INT 7
+                 (sys:poke-u64 (+ r 352) 2)  (sys:poke-u64 (+ r 360) 7)   ; INT 7
+                 (nl_eval (+ r 0))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
