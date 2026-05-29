@@ -1,6 +1,6 @@
 #+TITLE: Doc 135 — Eval-Driver elisp Port (env = threaded EvalCtx Sexp, dissolves the env-group)
 #+AUTHOR: zawatton + Claude
-#+STATUS: DRAFT (design-first, awaiting review before Stage 135.A)
+#+STATUS: DRAFT — implementation vehicle = nelisp-sys (B1, user decision 2026-05-30); next = Stage 135.0 spike
 #+DATE: 2026-05-29
 
 * 0. One-line
@@ -12,6 +12,41 @@ known offsets), and port the eval *driver* (~nelisp_eval_call~ /
 ~eval_arg_list~) to elisp that threads it. This *dissolves* the 14
 env-group undefined symbols (they become ~EvalCtx~-slot accessors), deletes
 the Rust eval driver (net-negative Rust), and adds ZERO new Rust.
+
+* 0.5 Implementation vehicle — nelisp-sys, NOT raw phase47 cc-files (B1, user decision 2026-05-30)
+
+The driver port is written in the *typed nelisp-sys DSL*, not hand-written
+~lisp/nelisp-cc-*.el~ phase47. Rationale + capability (grep-confirmed in
+~packages/nelisp-sys/src/~):
+
+- ~sys:extern~ (+ ~nelisp-sys-frontend--parse-extern~) declares/calls the EXISTING
+  C-ABI accessors (~nelisp_env_lookup_value~, ~nelisp_frame_push/pop~, …) → the
+  current Sexp/mirror/frames data model is REUSED, no model rewrite.
+- ~sys:defstruct~ + ~sys:load-field~/~sys:store-field~ defines ~EvalCtx~ as a TYPED
+  struct → slot offsets known by construction (solves the non-repr-C blocker),
+  pinned to the C-ABI Record layout via ~sys:static-assert~.
+- ~sys:alloc~/~sys:addr-of~/~sys:ptr-add~/~sys:peek-u64~/~ptr-read,write~ + ~sys:call-ptr~
+  cover all raw-memory / indirect-call needs.
+- The ~type checker~ (~E-SYS-*~) catches at COMPILE time the bug class that has been
+  the campaign's main pain (offset/i32-i64/ABI mistakes are otherwise latent
+  until the build is green — untestable, crash-prone). This is the decisive win.
+- *The 6 non-env symbols are already nelisp-sys grammar ops*: ~sys:str-to-float~,
+  ~sys:char-table-get/set~, ~sys:mut-str-push-byte/codepoint~ → ~nl_str_to_float~,
+  ~nl_char_table_get/set_raw~, ~nl_mut_str_push_byte/codepoint/set_codepoint_raw~
+  are emittable directly from nelisp-sys.
+
+Scope = *B1* (on-ramp to B2): write the DRIVER + the remaining symbols in
+nelisp-sys over the existing data model. DO NOT rewrite the ~200 working
+~nelisp-cc-*.el~ phase47 files (no churn). After green, the data model +
+builtins migrate into nelisp-sys ~sys:defstruct~ incrementally (= B2 endgame),
+each pinned by ~sys:static-assert~ to keep C-ABI compat during transition. B2 is
+NOT a from-scratch big-bang (the self-host PoC's simplified i64/alist model is a
+pattern source, not the production target).
+
+One open risk to clear in Stage 135.0: confirm a nelisp-sys ~sys:defun~ emits a
+~.o~ exporting the EXACT C-ABI symbol name the linker needs, and how a
+nelisp-sys-compiled ~.o~ is wired into the build (same ~compile-elisp-objects.el~
+manifest + ~build.rs~ as cc-files, or a distinct path).
 
 * 1. Why Doc 134's per-symbol re-provision fails for the env group
 
@@ -146,6 +181,13 @@ resolve T); self-host eval-kernel suite 37/37; ~git status~ review before commit
 Stages that DELETE Rust from ~eval/mod.rs~ are the cutover (net-negative Rust) —
 this is the intended mode-shift from Doc 134's "don't touch eval/*.rs" guard.
 
+- *135.0 — nelisp-sys emission spike* (the vehicle linchpin). Ship ONE of the
+  6 non-env symbols (simplest: ~nl_mut_str_push_byte~ or ~nl_str_to_float~) as a
+  nelisp-sys ~sys:defun~ compiled to a ~.o~ that exports the EXACT C-ABI name +
+  is wired into the build; ~nm~ shows it T, the undefined ref resolves. Proves
+  nelisp-sys can emit + wire exact C-ABI symbols and establishes the
+  nelisp-sys cutover pattern + the build-wiring path. GATE: symbol T, no new
+  undefined, self-host 37/37, zero new Rust.
 - *135.A — EvalCtx constructor + builtin-resolution spike* (no deletion yet).
   New elisp ~.o~: ~nl_eval_ctx_make(mirror, frames, unbound, out)~ building the
   Record; ~nl_eval_ctx_mirror(ctx)~ / ~_frames(ctx)~ slot accessors. Prove one
