@@ -1302,4 +1302,92 @@ run -> exit 42.  C-ABI object emit + cc link + run, no Rust runtime."
           (should (= 42 (call-process exe nil nil nil))))
       (ignore-errors (delete-directory tmp t)))))
 
+(ert-deftest nelisp-sys-eval-kernel-cons-env-runs ()
+  "Doc 133 eval-kernel step 1: the real cons-form evaluator with an ENVIRONMENT.
+A SYMBOL form is looked up in an alist env: ((sym . val) ...) represented as a
+CONS list of pair boxes.  Sexp slot layout: 32B, tag@0, payload@8.  Tags:
+NIL=0, INT=2, SYMBOL=4, CONS=7.  NlConsBox: car slot at box+0..31, cdr slot at
+box+32..63; cdr's payload is at box+40.  A SYMBOL's payload@8 -> Rust String
+{cap@0, ptr@8, len@16}; name bytes at String.ptr.  An alist CONS node: car
+points to a pair box whose car = sym slot and cdr = value slot; cdr points to
+the next node (or NIL).  nl_env_get scans the alist comparing the first name
+byte and length.  nl_eval dispatches: INT -> payload; SYMBOL -> env lookup;
+CONS -> operator-name dispatch on first byte (+ - *).  Evaluates symbol `x'
+against env ((x . 42)) -> exit 42.  Native-verified; no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-cons-env")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '(;; nl_symname_byte: payload@8 -> String -> ptr@8 -> low byte of name
+             (sys:defun nl_symname_byte ((slot usize)) i64 (:alloc none)
+               (let ((s usize (sys:cast usize (sys:peek-u64 (+ slot 8)))))
+                 (let ((np usize (sys:cast usize (sys:peek-u64 (+ s 8)))))
+                   (mod (sys:peek-u64 np) 256))))
+             ;; nl_symname_len: payload@8 -> String -> len@16
+             (sys:defun nl_symname_len ((slot usize)) i64 (:alloc none)
+               (let ((s usize (sys:cast usize (sys:peek-u64 (+ slot 8)))))
+                 (sys:peek-u64 (+ s 16))))
+             ;; nl_env_get: scan alist env CONS list; return cdr payload when sym matches
+             (sys:defun nl_env_get ((env usize) (b i64) (len i64)) i64 (:alloc none)
+               (if (= (sys:peek-u64 env) 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ env 8)))))
+                     (let ((pair usize (sys:cast usize (sys:peek-u64 (+ box 8)))))
+                       (if (= (nl_symname_byte pair) b)
+                           (if (= (nl_symname_len pair) len)
+                               (sys:peek-u64 (+ pair 40))
+                             (nl_env_get (+ box 32) b len))
+                         (nl_env_get (+ box 32) b len))))
+                 (sys:cast i64 -1)))
+             ;; nl_eval: INT self-evals; SYMBOL -> env lookup; CONS -> op dispatch
+             (sys:defun nl_eval ((sx usize) (env usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 sx)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ sx 8)))
+                  ((= tag 4) (nl_env_get env (nl_symname_byte sx) (nl_symname_len sx)))
+                  ((= tag 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ sx 8)))))
+                     (let ((sstr usize (sys:cast usize (sys:peek-u64 (+ box 8)))))
+                       (let ((nptr usize (sys:cast usize (sys:peek-u64 (+ sstr 8)))))
+                         (let ((op i64 (mod (sys:peek-u64 nptr) 256)))
+                           (let ((b2 usize (sys:cast usize (sys:peek-u64 (+ box 40)))))
+                             (let ((a1 i64 (nl_eval b2 env)))
+                               (let ((b3 usize (sys:cast usize (sys:peek-u64 (+ b2 40)))))
+                                 (let ((a2 i64 (nl_eval b3 env)))
+                                   (if (= op 43) (+ a1 a2)
+                                     (if (= op 45) (- a1 a2)
+                                       (if (= op 42) (* a1 a2)
+                                         (sys:cast i64 -1)))))))))))))
+                  (else (sys:cast i64 -1)))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 ;; form: the symbol x @ r+0 (String "x" @ r+512, name @ r+544)
+                 (sys:poke-u64 (+ r 0) 4)    (sys:poke-u64 (+ r 8) (+ r 512))
+                 (sys:poke-u64 (+ r 512) 1)  (sys:poke-u64 (+ r 520) (+ r 544))  (sys:poke-u64 (+ r 528) 1)
+                 (sys:poke-u64 (+ r 544) 120)                                     ; 'x'
+                 ;; env @ r+64: CONS -> box0 @ r+128
+                 (sys:poke-u64 (+ r 64) 7)   (sys:poke-u64 (+ r 72) (+ r 128))
+                 ;; box0 @ r+128: car -> pair box @ r+256 ; cdr (box0+32 = r+160) = NIL
+                 (sys:poke-u64 (+ r 128) 7)  (sys:poke-u64 (+ r 136) (+ r 256))
+                 (sys:poke-u64 (+ r 160) 0)
+                 ;; pair box @ r+256: car = sym x (String "x2" @ r+576) ; cdr (pair+32 = r+288) = INT 42
+                 (sys:poke-u64 (+ r 256) 4)  (sys:poke-u64 (+ r 264) (+ r 576))
+                 (sys:poke-u64 (+ r 288) 2)  (sys:poke-u64 (+ r 296) 42)
+                 (sys:poke-u64 (+ r 576) 1)  (sys:poke-u64 (+ r 584) (+ r 608))  (sys:poke-u64 (+ r 592) 1)
+                 (sys:poke-u64 (+ r 608) 120)                                     ; 'x'
+                 (nl_eval (+ r 0) (+ r 64))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
