@@ -76,4 +76,47 @@ dispatch — with no Rust runtime."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-recursive-eval-runs ()
+  "Doc 133 eval-kernel e2e: a recursive tree-walking evaluator.
+Node layout: tag@0, field1@8, field2@16.  INT node = (tag 2, value);
+ADD node = (tag 100, left-ptr, right-ptr).  nl_eval dispatches on tag:
+INT -> self (payload), ADD -> eval(left) + eval(right) (recursion).
+Builds `(+ 40 2)' as an ADD of two INT nodes, evals it -> exit 42.
+This is the essence of the eval loop (recursion over a Sexp tree with
+variant dispatch), native-verified with no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-rec")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_eval ((node usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 node)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ node 8)))
+                  ((= tag 100)
+                   (+ (nl_eval (sys:cast usize (sys:peek-u64 (+ node 8))))
+                      (nl_eval (sys:cast usize (sys:peek-u64 (+ node 16))))))
+                  (else -1))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0) 2)   (sys:poke-u64 (+ r 8) 40)  ; INT 40 @0
+                 (sys:poke-u64 (+ r 24) 2)  (sys:poke-u64 (+ r 32) 2)  ; INT 2  @24
+                 (sys:poke-u64 (+ r 48) 100)                           ; ADD    @48
+                 (sys:poke-u64 (+ r 56) (+ r 0))                       ;  left = INT 40
+                 (sys:poke-u64 (+ r 64) (+ r 24))                      ;  right = INT 2
+                 (nl_eval (+ r 48))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
