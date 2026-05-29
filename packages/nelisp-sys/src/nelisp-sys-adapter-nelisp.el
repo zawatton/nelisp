@@ -34,6 +34,8 @@
 ;; The private Phase 47 backend is loaded lazily by the codegen calls below.
 (declare-function nelisp-phase47-compile-to-object "nelisp-phase47-compiler"
                   (sexp file-path &rest keys))
+(declare-function nelisp-phase47-compile-sexp "nelisp-phase47-compiler"
+                  (sexp file-path &rest keys))
 
 (define-error 'nelisp-sys-adapter-error
   "nelisp-sys backend adapter error" 'nelisp-sys-error)
@@ -76,6 +78,24 @@ is the ONLY adapter call that drives the private Phase 47 compiler
          (arch (car af))
          (fmt (cdr af)))
     (nelisp-phase47-compile-to-object sexp output-path :arch arch :format fmt)))
+
+(defun nelisp-sys-adapter-compile-executable (program output-path target)
+  "Compile Phase 47 PROGRAM to a static-linked native executable.
+PROGRAM is a single top-level Phase 47 form (typically a `seq' of
+helper `defun's ending in an `exit'); the standalone-binary emitter
+generates `_start' and links a freestanding ELF64.  Drives the private
+Phase 47 compiler (Doc 130 extraction criterion 6).  Returns OUTPUT-PATH.
+
+Doc 133 Phase 7: this is the freestanding-executable adapter call that
+lets cutover work be e2e-verified by emitting + running standalone
+binaries (the self-host verification model), with no cargo/Rust build."
+  (unless (nelisp-sys-adapter-available-p)
+    (signal 'nelisp-sys-adapter-error
+            (list "NeLisp toolchain not available for executable codegen")))
+  (require 'nelisp-phase47-compiler)
+  (nelisp-phase47-compile-sexp
+   program output-path :arch (nelisp-sys-target-arch target))
+  output-path)
 
 (defun nelisp-sys-adapter-archive-static-lib (objects output-path)
   "Archive OBJECTS (a list of object-file paths) into a static library.

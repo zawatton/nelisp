@@ -14,6 +14,8 @@
 (require 'nelisp-sys-frontend)
 (require 'nelisp-sys-check)
 (require 'nelisp-sys-backend)
+(require 'nelisp-sys-driver)
+(require 'nelisp-sys-adapter-nelisp)
 
 (defconst nelisp-sys-freestanding-test--dir
   (file-name-directory (or load-file-name buffer-file-name default-directory)))
@@ -54,5 +56,24 @@ the Phase 47 program shape the standalone-binary emitter consumes."
                   (nelisp-sys-frontend-parse-module
                    (nelisp-sys-freestanding-test--fixture-forms))
                   "x86_64-unknown-linux-gnu"))))
+
+(ert-deftest nelisp-sys-freestanding-exit0-runs ()
+  "Doc 133 Phase 7 e2e: the nelisp-sys `_start' fixture `(sys:exit 0)'
+compiles to a standalone native binary that runs and exits 0.
+First nelisp-sys -> native executable e2e (self-host verification path)."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-exec")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           (nelisp-sys-freestanding-test--fixture-forms) path)
+          (should (file-executable-p path))
+          (should (= 0 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
 
 ;;; nelisp-sys-freestanding-test.el ends here

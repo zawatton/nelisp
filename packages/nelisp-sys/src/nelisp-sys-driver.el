@@ -30,8 +30,12 @@
 ;; Backend is required lazily by the compile entry points.
 (declare-function nelisp-sys-backend-emit-object "nelisp-sys-backend"
                   (module output-path target))
+(declare-function nelisp-sys-backend-lower-module "nelisp-sys-backend"
+                  (module target))
 (declare-function nelisp-sys-adapter-archive-static-lib "nelisp-sys-adapter-nelisp"
                   (objects output-path))
+(declare-function nelisp-sys-adapter-compile-executable "nelisp-sys-adapter-nelisp"
+                  (program output-path target))
 
 ;;; Analysis.
 
@@ -99,6 +103,40 @@ archives it into OUTPUT-PATH with the host `ar'.  Returns OUTPUT-PATH."
           (nelisp-sys-backend-emit-object module obj tg)
           (nelisp-sys-adapter-archive-static-lib (list obj) output-path))
       (ignore-errors (delete-directory objdir t)))))
+
+(defun nelisp-sys--entry-program (lowered entry-name)
+  "Reshape a LOWERED module into a Phase 47 standalone program.
+ENTRY-NAME's defun body becomes the top-level program form; every other
+defun is kept as a helper, emitted before the entry body in a `seq'.
+The Phase 47 standalone emitter generates `_start' from this program."
+  (let* ((defuns (if (eq (car-safe lowered) 'seq) (cdr lowered) (list lowered)))
+         (entry-body nil)
+         (helpers '()))
+    (dolist (d defuns)
+      (if (and (eq (car-safe d) 'defun) (eq (nth 1 d) entry-name))
+          (setq entry-body (nth 3 d))
+        (push d helpers)))
+    (unless entry-body
+      (signal 'nelisp-sys-error
+              (list (format "no entry function %S in module" entry-name))))
+    (if helpers
+        (cons 'seq (append (nreverse helpers) (list entry-body)))
+      entry-body)))
+
+(defun nelisp-sys-compile-executable (forms output-path &optional target entry)
+  "Analyze FORMS and compile to a freestanding native executable.
+ENTRY (default `_start') names the entry function whose body becomes the
+program; other functions are emitted as helpers.  TARGET is a triple
+string (host default).  Doc 133 Phase 7 — the self-host verification
+path: emit a standalone binary (no cargo) that can be run to verify
+cutover behaviour.  Returns OUTPUT-PATH."
+  (let* ((module (nelisp-sys-frontend-parse-module forms))
+         (tg (or target (nelisp-sys-target-triple (nelisp-sys-target-host)))))
+    (nelisp-sys-check-all module)
+    (require 'nelisp-sys-backend)
+    (let* ((lowered (nelisp-sys-backend-lower-module module tg))
+           (program (nelisp-sys--entry-program lowered (or entry '_start))))
+      (nelisp-sys-adapter-compile-executable program output-path tg))))
 
 (provide 'nelisp-sys-driver)
 
