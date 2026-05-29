@@ -324,6 +324,21 @@ FORM is the enclosing source form for diagnostics."
                            :expected (nelisp-sys-frontend--parse-expr (nth 1 args))
                            :new (nelisp-sys-frontend--parse-expr (nth 2 args))
                            :form form))
+     ((eq head 'sys:alloc)
+      ;; (sys:alloc SIZE ALIGN) — raw heap allocation, returns a usize
+      ;; address (or 0 on failure).  Doc 133 Phase 2/3 allocator surface
+      ;; over the Phase 47 nl_alloc_bytes primitive.
+      (nelisp-sys-ast-make 'alloc
+                           :size (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :align (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :form form))
+     ((eq head 'sys:dealloc)
+      ;; (sys:dealloc PTR SIZE ALIGN) — free a sys:alloc block.
+      (nelisp-sys-ast-make 'dealloc
+                           :ptr (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :size (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :align (nelisp-sys-frontend--parse-expr (nth 2 args))
+                           :form form))
      ((eq head 'sys:sizeof)
       (nelisp-sys-ast-make 'sizeof
                            :type (nelisp-sys-frontend--parse-type (car args) form)

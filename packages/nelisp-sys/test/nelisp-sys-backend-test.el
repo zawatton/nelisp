@@ -57,6 +57,15 @@
                   '((sys:defun cas ((p i64) (e i64) (n i64)) i64 ()
                       (sys:cas p e n)))))))
 
+(ert-deftest nelisp-sys-backend-lower-alloc-dealloc ()
+  ;; Doc 133 P2/P3: sys:alloc/sys:dealloc -> Phase 47 alloc-bytes/dealloc-bytes.
+  (should (equal '(defun mk () (alloc-bytes 72 8))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun mk () usize () (sys:alloc 72 8))))))
+  (should (equal '(defun fr (p) (dealloc-bytes p 72 8))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun fr ((p usize)) void () (sys:dealloc p 72 8)))))))
+
 (ert-deftest nelisp-sys-backend-lower-control-flow ()
   (should (equal '(defun mx (a b) (if (< a b) b a))
                  (nelisp-sys-backend-test--lower

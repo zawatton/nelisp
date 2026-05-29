@@ -112,6 +112,11 @@ excluded."
     (atomic-cas (list (nelisp-sys-ast-prop node :ptr)
                       (nelisp-sys-ast-prop node :expected)
                       (nelisp-sys-ast-prop node :new)))
+    (alloc (list (nelisp-sys-ast-prop node :size)
+                 (nelisp-sys-ast-prop node :align)))
+    (dealloc (list (nelisp-sys-ast-prop node :ptr)
+                   (nelisp-sys-ast-prop node :size)
+                   (nelisp-sys-ast-prop node :align)))
     (t nil)))
 
 (provide 'nelisp-sys-ast)

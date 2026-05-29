@@ -225,6 +225,20 @@ non-literal argument; else i32."
        (nelisp-sys-check--expect-int ctx locals
                                      (nelisp-sys-ast-prop node :new) form)
        'i64)
+      (alloc
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :size) form)
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :align) form)
+       'usize)
+      (dealloc
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :ptr) form)
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :size) form)
+       (nelisp-sys-check--expect-int ctx locals
+                                     (nelisp-sys-ast-prop node :align) form)
+       'void)
       (t (nelisp-sys-check--fail 'E-SYS-TYPE-099 form
                                  "cannot type-check node kind: %S" kind)))))
 
