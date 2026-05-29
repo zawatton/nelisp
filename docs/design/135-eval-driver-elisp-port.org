@@ -156,6 +156,54 @@ directly — so most deleted helpers are no longer referenced at all:
 
 All become *direct ctx-slot operations over already-shipped C-ABI*, zero Rust.
 
+** 2.3 LOCKED EvalCtx + nelisp-sys idioms (Stage 135.B, type-checked 2026-05-30)
+
+The EvalCtx representation is type-checked (E-SYS-* clean) and LOCKED. Model A
+(by-value Sexp fields — nelisp-sys DOES support by-value aggregate struct
+fields). Supersedes the §2.1 proposal (no separate type-tag/builtin-registry
+slots: extern_builtins has only 1 entry per §3.0, so no registry slot needed).
+
+#+begin_src elisp
+;; 32-byte runtime Sexp value (tag@0, payload@8, pad@16..31).
+(sys:defstruct sexp (:repr c)
+  (tag u8) (payload u64) (pad (array u8 16)))
+
+;; EvalCtx — replaces the Rust Env. 120 bytes, align 8 (x86_64):
+;;   mirror@0  frames@32  unbound@64  rec_cur@96  rec_max@104  flags@112
+;; flags bit0 = use_elisp_apply, bits 1.. = delegation_depth.
+(sys:defstruct eval_ctx (:repr c)
+  (mirror sexp) (frames sexp) (unbound sexp)
+  (rec_cur i64) (rec_max i64) (flags i64))
+
+;; C-ABI accessor (shipped, defined): mirror+frames are separate Sexp ptrs.
+(sys:extern nelisp_env_lookup_value
+  (:symbol "nelisp_env_lookup_value" :abi c :unsafe t)
+  ((mirror_ptr usize) (frames_ptr usize) (name_ptr usize) (out_ptr usize))
+  i64 (:alloc none :ffi may :unsafe may))
+
+;; Accessor proof — the ctx→C-ABI path (this is the shape every env-group
+;; symbol takes post-cutover; adjust arg order to match each deleted sig).
+(sys:defun nl_eval_ctx_lookup
+    ((ctx (ptr eval_ctx)) (name usize) (out usize)) i64
+  (:alloc none :ffi may :unsafe may)
+  (let ((mirror_ptr usize (+ (sys:cast usize ctx) (sys:offsetof eval_ctx mirror)))
+        (frames_ptr usize (+ (sys:cast usize ctx) (sys:offsetof eval_ctx frames))))
+    (sys:unsafe (nelisp_env_lookup_value mirror_ptr frames_ptr name out))))
+#+end_src
+
+Lowers to (validated): ~(defun nl_eval_ctx_lookup (ctx name out) (let ((mirror_ptr
+(+ ctx 0)) (frames_ptr (+ ctx 32))) (nelisp_env_lookup_value mirror_ptr frames_ptr
+name out)))~ — sys:offsetof folds to 0/32, sys:cast/sys:unsafe erase, extern emits a
+direct ~call~. nelisp_env_lookup_value is a defined shipped symbol → resolves.
+
+*nelisp-sys idioms LOCKED for all driver code* (reuse these):
+- By-value 32-byte Sexp field: define a ~sexp~ ~sys:defstruct (:repr c)~, embed by name.
+- Field address (→ ~*const Sexp~ = usize): ~(+ (sys:cast usize PTR) (sys:offsetof STRUCT FIELD))~.
+  (~sys:addr-of~ is for FUNCTION names only, not struct fields.)
+- Call a shipped C-ABI symbol: ~sys:extern~ decl with ~:abi c :unsafe t~, args as ~usize~
+  for every pointer; CALL inside ~(sys:unsafe …)~; the wrapper defun MUST carry
+  ~:unsafe may :ffi may~ and match the extern's ~:alloc~ (none) or hit E-SYS-ALLOC-001.
+
 * 3. The hard sub-problem — extern_builtins (the Rust builtin registry)
 
 ** 3.0 RESOLVED (Stage 135.A, 2026-05-30) — VERDICT-B: mirror resolves, existing bridge dispatches
