@@ -127,17 +127,28 @@ these *needs the Env*.  Three ways to satisfy that, in preference order:
 - self-host eval-kernel suite (37 tests) + nelisp-sys frontend/check/
   backend suites stay green; =make compile= clean.
 
-* Open decisions for the user
+* Resolved (user 2026-05-29): ZERO-RUST IS ABSOLUTE
 
-1. *Env path* (Stage 134.B outcome): if the C-ABI env accessors exist →
-   path 1 (zero-Rust wrappers).  If not → accept path 2 (expose Env as a
-   Sexp alist, a bounded Rust refactor) or path 3 (standalone kernel)?
-2. *=nl_tty_memcpy_to_saved=*: a nelisp-sys =.bss= global for SAVED_TERMIOS,
-   or accept a ~5-line Rust static as a sanctioned exception?
-3. *=nl_str_to_float=*: gate on the deferred f64 cross-ABI work (Doc 110),
-   or accept it as a sanctioned exception until then?
-4. *Self-host evaluator*: freeze it as the PoC/pattern-library at 37 tests,
-   or keep maturing it as the path-3 standalone-kernel seed?
+The user settled every open item with one directive: *zero-Rust, no
+exceptions* — there are no Rust tradeoffs to weigh.  Consequences:
+
+1. *Env path*: path 1 (thin nelisp-sys wrappers over the existing C-ABI
+   env accessors) IF Stage 134.B confirms they exist & are callable.  If
+   they do NOT, path 2 (a Rust refactor) is *OFF the table*; the zero-Rust
+   answer is path 3 (port the env ops / promote the standalone nelisp-sys
+   kernel).  No "sanctioned Rust exception" anywhere.
+2. *=nl_tty_memcpy_to_saved=*: a nelisp-sys =.bss= (or fixed-page) global
+   for SAVED_TERMIOS — no Rust static.
+3. *=nl_str_to_float=*: implement in nelisp-sys via the f64 grammar
+   (commit 5370d963); if the f64 cross-ABI gate (Doc 110) blocks the =.o=
+   path, close that gate in elisp/Phase-47 (claude's own lisp work, 0
+   Rust) rather than taking a Rust exception.
+4. *Self-host evaluator*: keep maturing it — it is the path-3 standalone
+   kernel seed, and zero-Rust to grow.
+
+So the only thing that remains to *discover* (not decide) is Stage 134.B's
+fact: do the C-ABI env accessors exist?  That gates path-1-vs-path-3, both
+of which are zero-Rust.
 
 * Notes
 
