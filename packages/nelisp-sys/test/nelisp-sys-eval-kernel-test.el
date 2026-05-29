@@ -1147,4 +1147,75 @@ cutover: the evaluator now walks an NlConsBox chain, not a fabricated flat AST."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-cons-symbol-runs ()
+  "Doc 133 eval-kernel e2e: dispatch on the operator's REAL symbol NAME byte.
+NlConsBox layout: car = Sexp slot at box+0..31, cdr = Sexp slot at box+32..63.
+A Sexp slot is 32B: tag@0, payload@8.  Tags: NIL=0, INT=2, SYMBOL=4, CONS=7.
+A SYMBOL's payload@8 points to a Rust String struct laid out {cap@0, ptr@8,
+len@16}; the actual name bytes live at String.ptr.  To read the operator's
+first name byte: nptr = String.ptr; first_byte = (mod (sys:peek-u64 nptr) 256)
+(peek reads 8 bytes little-endian; low byte = first char).
+The cons chain for `(+ 40 2)' is: box1.car = SYMBOL '+' with String at r+576
+(cap=1, ptr=r+608, len=1), name byte 43 ('+') at r+608; box1.cdr = CONS ->
+box2; box2.car = INT 40, box2.cdr = CONS -> box3; box3.car = INT 2, cdr = NIL.
+nl_eval reads the operator's first byte via the String deref chain and
+dispatches on it.  Expected: (+ 40 2) = 42 -> exit 42.
+This is the fidelity step: the evaluator now reads the operator name from a
+real String (not a bare char-code payload), bridging toward real Rust-evaluator
+cutover."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-cons-sym")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_eval ((sx usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 sx)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ sx 8)))
+                  ((= tag 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ sx 8)))))
+                     (let ((sstr usize (sys:cast usize (sys:peek-u64 (+ box 8)))))
+                       (let ((nptr usize (sys:cast usize (sys:peek-u64 (+ sstr 8)))))
+                         (let ((op i64 (mod (sys:peek-u64 nptr) 256)))
+                           (let ((box2 usize (sys:cast usize (sys:peek-u64 (+ box 40)))))
+                             (let ((a1 i64 (nl_eval box2)))
+                               (let ((box3 usize (sys:cast usize (sys:peek-u64 (+ box2 40)))))
+                                 (let ((a2 i64 (nl_eval box3)))
+                                   (if (= op 43) (+ a1 a2)
+                                     (if (= op 45) (- a1 a2)
+                                       (if (= op 42) (* a1 a2)
+                                         (sys:cast i64 -1)))))))))))))
+                  (else (sys:cast i64 -1)))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 ;; box1 @ r+0: car = SYMBOL (payload = String @ r+576), cdr = CONS -> box2 @ r+128
+                 (sys:poke-u64 (+ r 0) 4)    (sys:poke-u64 (+ r 8) (+ r 576))
+                 (sys:poke-u64 (+ r 32) 7)   (sys:poke-u64 (+ r 40) (+ r 128))
+                 ;; box2 @ r+128: car = INT 40, cdr = CONS -> box3 @ r+256
+                 (sys:poke-u64 (+ r 128) 2)  (sys:poke-u64 (+ r 136) 40)
+                 (sys:poke-u64 (+ r 160) 7)  (sys:poke-u64 (+ r 168) (+ r 256))
+                 ;; box3 @ r+256: car = INT 2, cdr = NIL
+                 (sys:poke-u64 (+ r 256) 2)  (sys:poke-u64 (+ r 264) 2)
+                 (sys:poke-u64 (+ r 288) 0)
+                 ;; String "+" @ r+576: cap=1, ptr=r+608, len=1
+                 (sys:poke-u64 (+ r 576) 1)  (sys:poke-u64 (+ r 584) (+ r 608))  (sys:poke-u64 (+ r 592) 1)
+                 ;; name bytes @ r+608: '+' = 43
+                 (sys:poke-u64 (+ r 608) 43)
+                 ;; top-level form slot @ r+512: CONS -> box1
+                 (sys:poke-u64 (+ r 512) 7)  (sys:poke-u64 (+ r 520) (+ r 0))
+                 (nl_eval (+ r 512))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
