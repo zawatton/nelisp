@@ -122,6 +122,14 @@ to =(+ ptr N)=.  =sys:ptr-add= REQUIRES a typed =(ptr T)=; for a bare
    would not compile natively); Doc 133 added the quotient emit, so on
    current builds =/= works as a cond-branch / return value.  If you hit
    =:not-value-expr= on =/= against an older compiler, that is the cause.
+8. *=usize + i64-VARIABLE= mismatches; a literal would not.*  Binop
+   operand type = the first non-literal arg's type (footnote ²), so
+   =(+ ptr n)= with =ptr: usize= demands =n: usize=.  An integer
+   *literal* in that position adopts =usize= and is fine, but an =i64=
+   *variable* (e.g. a =size= param) does NOT unify and raises
+   =E-SYS-TYPE-002 "expected usize, got i64"=.  Wrap it:
+   =(+ ptr (sys:cast usize size))=.  (Hit while writing the let-frame
+   bump allocator: =(+ n size)= with =n: usize, size: i64= → cast size.)
 
 * Node / env layout conventions used by the eval kernel
 32-byte nodes (room for a tag + up to three slots):
