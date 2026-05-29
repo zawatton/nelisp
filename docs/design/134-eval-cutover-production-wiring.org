@@ -1,0 +1,149 @@
+#+TITLE: Doc 134 — Eval-cutover production wiring (re-provisioning the 23 deleted helper symbols)
+#+DATE: 2026-05-29
+#+STATUS: PROPOSAL
+
+* Status
+
+- *State*: PROPOSAL 2026-05-29.  Design only; no code ships with this doc.
+- *Parent*: Doc 133 (Rust-kernel → nelisp-sys replacement, PROPOSAL).  This
+  doc is the *tactical endgame* of Doc 133's eval-core stage: it plans the
+  concrete path from "today's RED build" to "the elisp =.o= eval core is
+  self-sufficient with ~0 Rust".
+- *Consumes*: the nelisp-sys surface shipped this session — char-table /
+  mut-str / f64 grammar (commit =5370d963=), the C-ABI relocatable
+  =.o= emit (=nelisp-phase47-compile-to-object= + the manifest/build.rs
+  wiring proven in =be2f9a0a= / =c6d2105b= / =2cd2d578=).
+- *Hard rule binding*: every step MUST be net-negative-or-zero on Rust LOC
+  (=feedback_nelisp_rust_loc_never_increase=).  build.rs manifest plumbing
+  (the established mechanism for all ~215 elisp =.o= leaves) is the only
+  Rust that may grow, and only by data-array lines.
+
+* TL;DR — the situation we actually found
+
+The interpreter's *logic* is already Elisp =.o= (Doc 133 §Non-goal): the
+elisp archive =libnelisp_elisp_spike.a= already defines =nl_eval_inner=, the
+11 special forms (=nl_sf_quote/if/setq/progn/while/let/let_star/lambda/
+function/condition_case/unwind_protect=), =nl_apply_lambda_inner=, and
+=nl_eval_inner_cons=.
+
+The build is RED for a narrow, fixable reason: commit *fa8932eb*
+(2026-05-29 08:59) deleted ~30 Rust =#[no_mangle]= helpers believing the
+elisp =.o= already provided them.  For *23* of them that was wrong — the
+elisp =.o= eval core *calls* these helpers but does not define them
+(=nm= shows them =U=, never =T= — see =project_doc133_cargo_broken_by_fa8932eb=).
+So the eval =.o= is *not yet self-sufficient*: it still needs these 23
+symbols to exist.  This doc plans re-providing all 23 as nelisp-sys =.o=
+(zero Rust), which makes the elisp eval core self-sufficient and turns the
+build GREEN — completing the eval-core cutover.
+
+* The self-host evaluator (this session) — what it is and is not
+
+Across 18 loop iterations this session a *complete functional Lisp
+evaluator* was built in nelisp-sys and native-verified (37 ERT tests in
+=packages/nelisp-sys/test/nelisp-sys-eval-kernel-test.el=): quote / if /
+progn / let / setq / while / cond / lambda (immediate + closure-as-value) /
+arithmetic (+,-,*,<) / env lookup+mutation / a bump allocator, all over the
+*real* cons-form Sexp layout (=NlConsBox= car@0/cdr@32; tags from
+=lisp/nelisp-sexp-layout.el=).
+
+*Its role*: a PARALLEL proof-of-concept + a *pattern library*, NOT a
+drop-in replacement.  It uses a simplified value model (i64 values +
+ad-hoc closure boxes) and =(first-byte,length)= symbol dispatch, and the
+production =Env= is an *opaque Rust struct* (passed =*mut c_void=, accessed
+only via C-ABI =nelisp_env_*= functions) — incompatible with the PoC's
+Sexp-alist env.  So the PoC does not directly satisfy the production
+contract.  BUT its validated techniques (real-cons walking, env-alist
+lookup, special-form dispatch, bump-allocated frames) are exactly what the
+*bind-formals* group (D below) needs, and it is the seed of a fallback
+standalone kernel (path C).
+
+* The 23 symbols, grouped by re-provisioning strategy
+
+| Group | Symbols | Strategy | Rust? | Status |
+|-------+---------+----------+-------+--------|
+| A Truthy | =nl_eval_is_truthy= | read Sexp tag, nil/t→0/1, else 1 | 0 | READY (≈20 LOC nelisp-sys .o) |
+| B Sexp accessors | =nl_cons_car_ptr= =nl_cons_cdr_ptr= =nl_cell_get_value= | pure box-offset reads (car@0/cdr@32; cell value@0) | 0 | READY (same memcpy pattern as the 7 already shipped) |
+| B' Heap string | =nl_mut_str_push_byte= =nl_mut_str_push_codepoint= =nl_mut_str_set_codepoint_raw= | the mut-str grammar (commit 5370d963) | 0 | READY-pending-wire |
+| E Float | =nl_str_to_float= | the f64 grammar (commit 5370d963) + byte→f64 parse | 0 | NEEDS the f64 cross-ABI gate (Doc 110 deferred) — assess |
+| C Env access | =nl_env_lookup_val= =nl_env_pop_frame= =nl_env_push_captured= =nl_env_capture_lexical= =nl_let_setup= =nl_push_and_bind= | thin nelisp-sys .o calling the EXISTING C-ABI =nelisp_env_lookup_value/ set_value/ bind_local/ frame_push/ frame_pop= | 0 *iff* those accessors are defined (elisp .o or Rust-not-deleted) | DECISION — verify the accessors exist & are callable |
+| D Bind formals | =nl_bf_bind_sym= =nl_bf_bind_optional= =nl_bf_bind_rest= =nl_bf_err_arity= =nl_bf_err_type= =nl_bf_err_dangling_rest= | walk the lambda-list (cons navigation — the PoC proves nelisp-sys can do this) + call env-bind accessors; errors via the existing error-signal C-ABI | 0 if error-signal + env-bind are C-ABI; else DECISION | DESIGN — biggest unknown |
+| E' OS static | =nl_tty_memcpy_to_saved= | memcpy 60 bytes into a SAVED_TERMIOS buffer | needs a global symbol | DECISION (nelisp-sys .bss global, or a tiny Rust static) |
+
+* The architectural fork (the decision this doc exists to settle)
+
+Groups A, B, B' are *unconditionally* zero-Rust and can ship immediately
+(same proven pattern as the 7 data-op symbols already re-provided).  They
+drop the undefined count 23 → ~16.
+
+The crux is Groups C and D (the env + binding core, 11 symbols).  Each of
+these *needs the Env*.  Three ways to satisfy that, in preference order:
+
+1. *Call existing C-ABI env accessors* (preferred, zero-Rust).  The
+   production Env is reached through C-ABI functions
+   (=nelisp_env_lookup_value=, =_set_value=, =_bind_local=, frame
+   push/pop).  IF those are defined and callable from a nelisp-sys =.o=
+   (via =sys:call-ptr= / extern-call), then =nl_env_*= and =nl_bf_*=
+   become THIN nelisp-sys wrappers that marshal arguments and call them —
+   zero new Rust.  *Open item*: confirm each accessor exists (defined, not
+   also-deleted) and its exact signature.  This is the make-or-break
+   verification before any code.
+
+2. *Expose Env as a walkable Sexp alist* (medium Rust refactor).  If the
+   accessors are missing, change the env representation so elisp/nelisp-sys
+   can walk it directly (the PoC's nl_env_get works on a Sexp alist).  This
+   is a real Rust change but is "convert opaque→transparent", not "grow the
+   evaluator".  Weigh against the hard rule.
+
+3. *Standalone nelisp-sys kernel* (largest).  Promote the self-host
+   evaluator to the production eval, replacing =nl_eval_inner= itself and
+   the whole env subsystem.  This deletes the most Rust but requires the
+   real value model + symbol interning the PoC currently fakes.  Reserve as
+   the long-horizon path / fallback.
+
+* Recommended staging (each step: 0 Rust, rebuild, undefined-count drops, tests green)
+
+1. *Stage 134.A* — ship Groups A + B + B' (=nl_eval_is_truthy=, the cons /
+   cell accessors, the mut-str pushers) as nelisp-sys =.o= via the proven
+   manifest+build.rs wiring.  Net: 23 → ~16 undefined, 0 Rust.
+2. *Stage 134.B* — VERIFY the C-ABI env accessors (path 1).  Read
+   =build-tool/src/lib.rs= extern block + the elisp =.o= exports; produce
+   the exact callable signatures.  This is read-only and gates everything.
+3. *Stage 134.C* — if path 1 holds: re-provide Group C (env access) as thin
+   nelisp-sys wrappers calling the accessors.  23 → ~10, 0 Rust.
+4. *Stage 134.D* — re-provide Group D (bind-formals) — the lambda-list walk
+   in nelisp-sys (PoC pattern) + env-bind calls + error signal.  → ~4.
+5. *Stage 134.E* — Group E/E' (=nl_str_to_float= float gate,
+   =nl_tty_memcpy_to_saved= global).  → 0 undefined → *build GREEN*.
+6. *Stage 134.F* — only once green: measure net Rust delta; the eval-core
+   cutover is complete when build is green with net-negative Rust vs the
+   pre-fa8932eb baseline.
+
+* Definition of done
+
+- =cd build-tool && cargo build= succeeds (link clean, 0 undefined =nl_*=).
+- All 23 symbols defined by nelisp-sys =.o= (or, for any that genuinely
+  cannot be, an explicitly-approved minimal exception).
+- net Rust LOC ≤ the pre-fa8932eb baseline (the hard rule).
+- self-host eval-kernel suite (37 tests) + nelisp-sys frontend/check/
+  backend suites stay green; =make compile= clean.
+
+* Open decisions for the user
+
+1. *Env path* (Stage 134.B outcome): if the C-ABI env accessors exist →
+   path 1 (zero-Rust wrappers).  If not → accept path 2 (expose Env as a
+   Sexp alist, a bounded Rust refactor) or path 3 (standalone kernel)?
+2. *=nl_tty_memcpy_to_saved=*: a nelisp-sys =.bss= global for SAVED_TERMIOS,
+   or accept a ~5-line Rust static as a sanctioned exception?
+3. *=nl_str_to_float=*: gate on the deferred f64 cross-ABI work (Doc 110),
+   or accept it as a sanctioned exception until then?
+4. *Self-host evaluator*: freeze it as the PoC/pattern-library at 37 tests,
+   or keep maturing it as the path-3 standalone-kernel seed?
+
+* Notes
+
+- fa8932eb's commit message ("superseded by elisp .o") is inaccurate for
+  these 23; the eval =.o= consumes them.  Corrected in
+  =project_doc133_cargo_broken_by_fa8932eb=.
+- The 7 data-op symbols already re-provided (=be2f9a0a= / =c6d2105b= /
+  =2cd2d578=) prove the manifest+build.rs wiring end-to-end; Stage 134.A is
+  the same pattern.
