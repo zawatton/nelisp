@@ -1,0 +1,206 @@
+#+TITLE: Doc 135 — Eval-Driver elisp Port (env = threaded EvalCtx Sexp, dissolves the env-group)
+#+AUTHOR: zawatton + Claude
+#+STATUS: DRAFT (design-first, awaiting review before Stage 135.A)
+#+DATE: 2026-05-29
+
+* 0. One-line
+
+Replace the opaque Rust ~*mut Env~ threaded through the elisp eval core
+with an ~EvalCtx~ *Sexp Record we define* (slot layout under our control →
+known offsets), and port the eval *driver* (~nelisp_eval_call~ /
+~nl_eval_inner_cons~ / ~apply_special~ / ~eval~ / ~apply_function~ /
+~eval_arg_list~) to elisp that threads it. This *dissolves* the 14
+env-group undefined symbols (they become ~EvalCtx~-slot accessors), deletes
+the Rust eval driver (net-negative Rust), and adds ZERO new Rust.
+
+* 1. Why Doc 134's per-symbol re-provision fails for the env group
+
+Doc 134 re-provided deleted helpers as standalone zero-Rust ~.o~ (succeeded for
+the 7 data-ops + ~nl_eval_is_truthy~ + ~nl_sexp_clone_into~). Stage 134.C
+proved the remaining ~14 env-group symbols CANNOT be done that way:
+
+- ~nelisp_eval_call(form, env, out)~ and ~nl_eval_inner_cons(head, tail, env, out)~
+  both do ~let r = &mut *(env as *mut Env)~ (~env as *mut Env~ appears 9× in
+  ~build-tool/src/eval/mod.rs~). So the ~env~ threaded through the WHOLE elisp
+  eval core (~nl_eval_inner~ → ~nl_env_lookup_val~; ~nl_sf_setq~ → ~nl_env_set_value~;
+  ~nl_apply_lambda_inner~ → ~nl_push_and_bind~ / ~nl_env_pop_frame~; …) is the
+  *opaque Rust ~Env~ struct pointer*.
+- ~Env~ is *NOT ~#[repr(C)]~*:
+  ~{max_recursion:u32, current_recursion:u32, extern_builtins:HashMap, use_elisp_apply:bool, delegation_depth:u32, globals_record:Sexp (=mirror), unbound_marker:Sexp, frames_record:Sexp (=frames)}~.
+  Its field offsets are rustc-chosen and not stable.
+- The shipped C-ABI accessors (~nelisp_env_lookup_value(mirror_ptr, frames_ptr, name, out)~,
+  ~nelisp_env_set_value~, ~nelisp_env_bind_local~, ~nelisp_frame_push~) take
+  mirror+frames as *separate Sexp pointers*. To re-provide e.g.
+  ~nl_env_lookup_val(name, env, out)~ as elisp we'd need ~&env.globals_record~ +
+  ~&env.frames_record~ — field addresses inside a non-repr-C Rust struct.
+- All three ways to get those are closed: (a) ~#[repr(C)]~ + offset arithmetic
+  = a forbidden ~eval/mod.rs~ edit; (b) offset-read a repr(Rust) struct =
+  build-dependent + unverifiable until the build is green (latent crash);
+  (c) a Rust accessor ~nelisp_env_globals_ptr(env)~ = forbidden new Rust.
+
+Conclusion: ~fa8932eb~ deleted helpers that are an *inseparable coupling to
+the Rust ~Env~*. They are not "fillable" in isolation. The build reaches green
+only by changing what ~env~ *is*.
+
+* 2. The fix — env becomes an EvalCtx Sexp Record we control
+
+Define an ~EvalCtx~ as a ~Sexp::Record~ whose slots WE lay out, threaded as the
+single ~env~ Sexp pointer through the elisp eval core. Because it is a Record,
+slot access is the established ~record-slot-ref~ / ~nlrecord-set-slot~ idiom at
+*known* offsets — exactly the pattern the env group needs and the Rust struct
+denied us.
+
+** 2.1 EvalCtx slot layout (proposed)
+
+| slot | name              | type   | replaces (Env field)              |
+|------+-------------------+--------+-----------------------------------|
+|    0 | type-tag          | Symbol | (record type marker, "eval-ctx")  |
+|    1 | mirror            | Record | globals_record                    |
+|    2 | frames            | Record | frames_record                     |
+|    3 | unbound-marker    | Sexp   | unbound_marker                    |
+|    4 | recursion-cur     | Int    | current_recursion                 |
+|    5 | recursion-max     | Int    | max_recursion                     |
+|    6 | flags             | Int    | use_elisp_apply | delegation_depth<<1 (bitpacked) |
+|    7 | builtin-registry  | Sexp   | extern_builtins (see §3)          |
+
+Mirror+frames already exist as Records (constructed by the shipped
+~nelisp_env_install_empty_globals_frames(globals_out, frames_out, scratch, _pad)~).
+EvalCtx just *holds* them in slots 1/2, so any elisp ~.o~ recovers them with
+~record-slot-ref ctx 1~ / ~record-slot-ref ctx 2~ and feeds the existing
+~nelisp_env_lookup_value~ / ~_set_value~ / ~_bind_local~ accessors unchanged.
+
+** 2.2 How each env-group symbol dissolves (no more standalone re-provision)
+
+After the port, the *callers* (eval-inner, sf-*, apply-lambda-inner) thread
+~ctx~ and call the C-ABI accessors with ~(record-slot-ref ctx 1)~ / ~(… ctx 2)~
+directly — so most deleted helpers are no longer referenced at all:
+
+| deleted symbol            | post-port disposition                                              |
+|---------------------------+--------------------------------------------------------------------|
+| nl_env_lookup_val         | caller calls nelisp_env_lookup_value(ctx.mirror, ctx.frames, …)    |
+| nl_env_set_value          | caller calls nelisp_env_set_value(ctx.mirror, ctx.frames, …)       |
+| nl_bf_bind_sym            | caller calls nelisp_env_bind_local(ctx.mirror, ctx.frames, …)      |
+| nl_env_pop_frame          | caller calls the shipped elisp nelisp_frame_pop(ctx.frames, …)     |
+| nl_push_and_bind          | thin elisp: frame_push(ctx.frames) + bind-formals loop (ctx)       |
+| nl_let_setup              | thin elisp: frame_push(ctx.frames) + bind-all loop (ctx)           |
+| nl_cc_match_and_bind      | thin elisp: clause-match + frame_push + var-bind (ctx)             |
+| nl_bf_bind_optional/rest  | thin elisp: list-walk + nelisp_env_bind_local (ctx)                |
+| nl_bf_err_arity/type/dangling_rest | thin elisp: build signal + nelisp_env_set_value(ctx, "nelisp--last-signal-data", …) |
+| nl_env_push_captured      | thin elisp: frame_push(ctx.frames) + bind captured alist          |
+| nl_env_capture_lexical    | DEAD-REF (no live caller found in 134.C) → drops out               |
+
+All become *direct ctx-slot operations over already-shipped C-ABI*, zero Rust.
+
+* 3. The hard sub-problem — extern_builtins (the Rust builtin registry)
+
+~extern_builtins: HashMap<String, Rc<dyn Fn(&[Sexp], &mut Env)>>~ is Rust
+closures = the dispatch table for Rust-implemented builtins. It cannot live in
+a Sexp slot as-is. Two facts make this tractable:
+
+1. Most builtins are ALREADY elisp ~.o~ (the ~bi_*~ family: ~bi_make_vector~,
+   ~bi_string_bytes~, …) — invoked today through the Rust ~builtin_dispatch!~
+   macro. The registry is largely a *name → which ~.o~* table.
+2. Function resolution already has an elisp path: ~nelisp_env_lookup_function~ +
+   the mirror function-cells (~nelisp_mirror_set_function~ etc.).
+
+Plan: builtins resolve via the *mirror function-cells*, not a Rust HashMap.
+Slot 7 (builtin-registry) holds the mirror-backed builtin table (or is simply
+folded into the mirror). During transition, ~apply_function~'s builtin path may
+call a *stable C-ABI builtin dispatcher* ~nelisp_builtin_dispatch(name_ptr,
+args_ptr, ctx_ptr, out)~ that fans out to the existing ~bi_*~ ~.o~. This
+dispatcher is itself an elisp ~.o~ (a name→.o switch), NOT new Rust. Porting
+the long tail of ~bi_*~ that are still Rust is *out of scope for Doc 135* —
+they remain callable via their existing C-ABI symbols (already defined), and
+Doc 136+ ports them. Doc 135 only needs them *reachable* from the elisp driver.
+
+NOTE: this is the riskiest area; Stage 135.A produces a focused spike proving
+one builtin resolves through the ctx-threaded path before the full cutover.
+
+* 4. Driver surface to port (Rust → elisp, then delete the Rust)
+
+From ~build-tool/src/eval/mod.rs~ (all own ~&mut Env~):
+
+- ~eval(form, env) -> Result<Sexp, EvalError>~ — main tag dispatch (atom →
+  self; symbol → lookup; cons → ~nl_eval_inner_cons~). ~nl_eval_inner~ elisp ~.o~
+  already does the atom/symbol/cons split; extend it to own the cons handling.
+- ~eval_arg_list(args, env) -> Vec<Sexp>~ — map eval over an arg list (cons-walk).
+- ~apply_function(func, args, env)~ — closure vs builtin application.
+- ~apply_special(name, args, env) -> Option<Sexp>~ — 10-way string dispatch:
+  quote/function/if/let/let*/lambda/setq/while/condition-case/unwind-protect/progn.
+  *Each arm already calls a shipped elisp ~.o~* (~sf_quote_call~, ~sf_if_call~, …)
+  passing ~env~ — so this is a name-dispatch + ctx-threading port, the bodies
+  are done.
+- ~eval_stash_err(env, result, out) -> i64~ — error→out marshalling.
+- C-ABI entries: ~nelisp_eval_call(form, env, out)~, ~nl_eval_inner_cons(head,
+  tail, env, out)~ — the boundary that casts ~env as *mut Env~ today.
+
+The special-form ~.o~ (~sf_*~) and bind-formals ~.o~ currently take ~env~ as
+~*mut c_void~ (= ~*mut Env~). After the port they take ~ctx~ (= ~*mut Sexp~ to the
+EvalCtx Record). Their bodies change only where they touch env (lookup/bind):
+those become ctx-slot + C-ABI accessor calls.
+
+* 5. Staged cutover plan
+
+All stages: zero NEW Rust; deterministic ~nm~ gate (new symbol T + callees
+resolve T); self-host eval-kernel suite 37/37; ~git status~ review before commit.
+Stages that DELETE Rust from ~eval/mod.rs~ are the cutover (net-negative Rust) —
+this is the intended mode-shift from Doc 134's "don't touch eval/*.rs" guard.
+
+- *135.A — EvalCtx constructor + builtin-resolution spike* (no deletion yet).
+  New elisp ~.o~: ~nl_eval_ctx_make(mirror, frames, unbound, out)~ building the
+  Record; ~nl_eval_ctx_mirror(ctx)~ / ~_frames(ctx)~ slot accessors. Prove one
+  builtin resolves through a ctx-threaded ~nelisp_builtin_dispatch~ spike. Add a
+  Rust *adapter* (transitional, in a NON-eval test harness, or via the existing
+  ~nelisp_env_install_empty_globals_frames~) so the spike runs while the Rust
+  Env still owns evaluation. GATE: spike binary returns correct value.
+- *135.B — port ~apply_special~ to elisp* threading ctx. New ~nl_apply_special(name,
+  args, ctx, out)~: 10-way dispatch calling the existing ~sf_*~ ~.o~ (themselves
+  re-pointed to ctx). Keep Rust ~apply_special~ alive in parallel until 135.E.
+- *135.C — port ~eval~ + ~eval_arg_list~* to elisp (extend ~nl_eval_inner~ to own
+  cons handling + arg-list cons-walk), threading ctx.
+- *135.D — port ~apply_function~* (closure apply via ~nl_push_and_bind~/bind-formals
+  on ctx; builtin apply via ~nelisp_builtin_dispatch~).
+- *135.E — cutover + delete*: re-point ~nelisp_eval_call~ / ~nl_eval_inner_cons~ to
+  construct/thread EvalCtx and call the elisp driver; DELETE the Rust ~eval~ /
+  ~apply_special~ / ~apply_function~ / ~eval_arg_list~ / Env-struct (the
+  net-negative Rust). Re-home the 14 env symbols as ctx-slot ops (most just
+  vanish from the undefined list because callers now call C-ABI directly);
+  drop ~nl_env_capture_lexical~ (dead).
+- *135.F — green*: cargo build GREEN; ~nm~ shows no undefined ~nl_*~/~nelisp_*~;
+  self-host 37/37; full eval smoke test (~(fact 5)~ etc.) returns correct value;
+  net Rust LOC ≤ pre-fa8932eb baseline (campaign invariant).
+
+* 6. Zero-Rust accounting
+
+- New Rust: ZERO. The only Rust-source changes are *deletions* (135.E removes the
+  Env struct + the Rust eval driver) → strictly net-negative, satisfies
+  [[file:../../../.claude/...][feedback_nelisp_rust_loc_never_increase]].
+- ~build.rs~ manifest data-array lines grow by the number of new ~.o~ (the
+  permitted mechanism).
+- The "don't touch ~eval/*.rs~" rule from the Doc 134 wrapper iterations is
+  *superseded* for Stage 135.E specifically: that rule guarded against *adding*
+  Rust during helper-fill; the cutover legitimately *removes* Rust. No additions.
+
+* 7. Risks & open questions (resolve during 135.A)
+
+1. *extern_builtins re-homing* (§3) — biggest risk. 135.A spike must prove a
+   builtin resolves through the ctx path before committing to the cutover.
+2. *Dual-state transition* — 135.B–D keep Rust + elisp drivers in parallel;
+   need a clean switch in 135.E with no half-threaded state (the env boundary is
+   all-or-nothing: a Sexp-EvalCtx cannot be read by a Rust ~*mut Env~ cast).
+3. *EvalCtx lifetime / ownership* — who allocates/frees the Record (refcount via
+   the shipped ~nl_sexp_clone_into~ / drop machinery)? Confirm in 135.A.
+4. *Recursion guard + signal stashing* now live in ctx slots — verify the
+   ~nelisp--last-signal-data~ stash path (used by ~nl_bf_err_*~) works via
+   ~nelisp_env_set_value(ctx.mirror, …)~.
+5. *Codex fan-out* ([[feedback_doc134_codex_fanout_trigger]]): once 135.B's
+   ~sf_*~ re-pointing pattern is fixed, the 10 special-form re-points + the
+   thin env-helper bodies are a ≥5 near-identical fan-out → orchestrator +
+   gpt-5.3-codex-spark drafts in parallel, sonnet integrates + nm-verifies.
+
+* 8. Relationship to prior docs
+
+- Doc 133 — the strategic campaign (delete the Rust evaluator). Doc 135 is its core.
+- Doc 134 — per-symbol re-provision; SHIPPED for non-env helpers, SUPERSEDED for
+  the env group by this driver port.
+- ~project_doc133_cargo_broken_by_fa8932eb~ — the broken-build root cause.
