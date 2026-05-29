@@ -2057,4 +2057,169 @@ Native-verified; no Rust runtime."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-cons-while-runs ()
+  "Doc 133 eval-kernel step 8: add the `while' loop + the `<' operator.
+Builds on `nelisp-sys-eval-kernel-cons-setq-runs'.  Adds nl_eval_while,
+which evaluates the condition slot; while it is non-nil, it discards the
+result of nl_eval_body on the body list then recurses, else returns 0.
+A while dispatch (op `w' (119) / len 5) is added in the SYMBOL-operator
+path before arithmetic: condslot = cadr, bodylist = cddr (b2+32).  `<'
+\(opb 60) is added to the arithmetic dispatch as (if (< a1 a2) 1 0).  The
+env ((x . 0)) is pre-built in memory.  Evaluates
+`(progn (while (< x 42) (setq x (+ x 1))) x)': the loop increments x from
+0 to 42 (stops when (< x 42) is false), then x reads 42 -> exit 42.
+Native-verified; no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-cons-while")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_symname_byte ((slot usize)) i64 (:alloc none)
+               (let ((s usize (sys:cast usize (sys:peek-u64 (+ slot 8)))))
+                 (let ((np usize (sys:cast usize (sys:peek-u64 (+ s 8)))))
+                   (mod (sys:peek-u64 np) 256))))
+             (sys:defun nl_symname_len ((slot usize)) i64 (:alloc none)
+               (let ((s usize (sys:cast usize (sys:peek-u64 (+ slot 8)))))
+                 (sys:peek-u64 (+ s 16))))
+             (sys:defun nl_op_is ((box usize) (b i64) (len i64)) i64 (:alloc none)
+               (if (= (nl_symname_byte box) b)
+                   (if (= (nl_symname_len box) len) (sys:cast i64 1) (sys:cast i64 0))
+                 (sys:cast i64 0)))
+             (sys:defun nl_env_get ((env usize) (b i64) (len i64)) i64 (:alloc none)
+               (if (= (sys:peek-u64 env) 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ env 8)))))
+                     (let ((pair usize (sys:cast usize (sys:peek-u64 (+ box 8)))))
+                       (if (= (nl_symname_byte pair) b)
+                           (if (= (nl_symname_len pair) len)
+                               (sys:peek-u64 (+ pair 40))
+                             (nl_env_get (+ box 32) b len))
+                         (nl_env_get (+ box 32) b len))))
+                 (sys:cast i64 -1)))
+             (sys:defun nl_env_set ((env usize) (b i64) (len i64) (val i64)) i64 (:alloc none)
+               (if (= (sys:peek-u64 env) 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ env 8)))))
+                     (let ((pair usize (sys:cast usize (sys:peek-u64 (+ box 8)))))
+                       (if (= (nl_symname_byte pair) b)
+                           (if (= (nl_symname_len pair) len)
+                               (let ((d i64 (sys:poke-u64 (+ pair 40) val)))
+                                 val)
+                             (nl_env_set (+ box 32) b len val))
+                         (nl_env_set (+ box 32) b len val))))
+                 val))
+             (sys:defun nl_eval_body ((blist usize) (env usize) (acell usize)) i64 (:alloc none)
+               (if (= (sys:peek-u64 blist) 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ blist 8)))))
+                     (let ((v i64 (nl_eval box env acell)))
+                       (if (= (sys:peek-u64 (+ box 32)) 7)
+                           (nl_eval_body (+ box 32) env acell)
+                         v)))
+                 (sys:cast i64 -1)))
+             (sys:defun nl_eval_while ((condslot usize) (bodylist usize) (env usize) (acell usize)) i64 (:alloc none)
+               (if (/= (nl_eval condslot env acell) 0)
+                   (let ((d i64 (nl_eval_body bodylist env acell)))
+                     (nl_eval_while condslot bodylist env acell))
+                 (sys:cast i64 0)))
+             (sys:defun nl_eval ((sx usize) (env usize) (acell usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 sx)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ sx 8)))
+                  ((= tag 4) (nl_env_get env (nl_symname_byte sx) (nl_symname_len sx)))
+                  ((= tag 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ sx 8)))))
+                     (let ((b2 usize (sys:cast usize (sys:peek-u64 (+ box 40)))))
+                       (if (/= (nl_op_is box 113 5) 0)
+                           (sys:peek-u64 (+ b2 8))
+                         (if (/= (nl_op_is box 105 2) 0)
+                             (let ((c i64 (nl_eval b2 env acell)))
+                               (let ((b3 usize (sys:cast usize (sys:peek-u64 (+ b2 40)))))
+                                 (if (/= c 0)
+                                     (nl_eval b3 env acell)
+                                   (let ((b4 usize (sys:cast usize (sys:peek-u64 (+ b3 40)))))
+                                     (nl_eval b4 env acell)))))
+                           (if (/= (nl_op_is box 112 5) 0)
+                               (nl_eval_body (+ box 32) env acell)
+                             (if (/= (nl_op_is box 115 4) 0)
+                                 (let ((b3 usize (sys:cast usize (sys:peek-u64 (+ b2 40)))))
+                                   (let ((v i64 (nl_eval b3 env acell)))
+                                     (nl_env_set env (nl_symname_byte b2) (nl_symname_len b2) v)))
+                               (if (/= (nl_op_is box 119 5) 0)
+                                   (nl_eval_while b2 (+ b2 32) env acell)
+                                 (let ((opb i64 (nl_symname_byte box)))
+                                   (let ((a1 i64 (nl_eval b2 env acell)))
+                                     (let ((b3 usize (sys:cast usize (sys:peek-u64 (+ b2 40)))))
+                                       (let ((a2 i64 (nl_eval b3 env acell)))
+                                         (if (= opb 43) (+ a1 a2)
+                                           (if (= opb 45) (- a1 a2)
+                                             (if (= opb 42) (* a1 a2)
+                                               (if (= opb 60) (if (< a1 a2) (sys:cast i64 1) (sys:cast i64 0))
+                                                 (sys:cast i64 -1)))))))))))))))))
+                  (else (sys:cast i64 -1)))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 (sys:poke-u64 (+ r 0) 7)     (sys:poke-u64 (+ r 8) (+ r 128))    ; form -> pgbox
+                 (sys:poke-u64 (+ r 128) 4)   (sys:poke-u64 (+ r 136) (+ r 2432)) ; pgbox.car "progn"
+                 (sys:poke-u64 (+ r 160) 7)   (sys:poke-u64 (+ r 168) (+ r 256))  ; pgbox.cdr -> pg2
+                 (sys:poke-u64 (+ r 256) 7)   (sys:poke-u64 (+ r 264) (+ r 512))  ; pg2.car (while...) -> whbox
+                 (sys:poke-u64 (+ r 288) 7)   (sys:poke-u64 (+ r 296) (+ r 384))  ; pg2.cdr -> pg3
+                 (sys:poke-u64 (+ r 384) 4)   (sys:poke-u64 (+ r 392) (+ r 2560)) ; pg3.car x
+                 (sys:poke-u64 (+ r 416) 0)                                       ; pg3.cdr NIL
+                 (sys:poke-u64 (+ r 512) 4)   (sys:poke-u64 (+ r 520) (+ r 2496)) ; whbox.car "while"
+                 (sys:poke-u64 (+ r 544) 7)   (sys:poke-u64 (+ r 552) (+ r 640))  ; whbox.cdr -> wh2
+                 (sys:poke-u64 (+ r 640) 7)   (sys:poke-u64 (+ r 648) (+ r 896))  ; wh2.car (< x 42) -> ltbox
+                 (sys:poke-u64 (+ r 672) 7)   (sys:poke-u64 (+ r 680) (+ r 768))  ; wh2.cdr -> wh3
+                 (sys:poke-u64 (+ r 768) 7)   (sys:poke-u64 (+ r 776) (+ r 1024)) ; wh3.car (setq...) -> sqbox
+                 (sys:poke-u64 (+ r 800) 0)                                       ; wh3.cdr NIL
+                 (sys:poke-u64 (+ r 896) 4)   (sys:poke-u64 (+ r 904) (+ r 2624)) ; ltbox.car "<"
+                 (sys:poke-u64 (+ r 928) 7)   (sys:poke-u64 (+ r 936) (+ r 1152)) ; ltbox.cdr -> lt2
+                 (sys:poke-u64 (+ r 1152) 4)  (sys:poke-u64 (+ r 1160) (+ r 2560)); lt2.car x
+                 (sys:poke-u64 (+ r 1184) 7)  (sys:poke-u64 (+ r 1192) (+ r 1280)); lt2.cdr -> lt3
+                 (sys:poke-u64 (+ r 1280) 2)  (sys:poke-u64 (+ r 1288) 42)        ; lt3.car INT 42
+                 (sys:poke-u64 (+ r 1312) 0)                                      ; lt3.cdr NIL
+                 (sys:poke-u64 (+ r 1024) 4)  (sys:poke-u64 (+ r 1032) (+ r 2688)); sqbox.car "setq"
+                 (sys:poke-u64 (+ r 1056) 7)  (sys:poke-u64 (+ r 1064) (+ r 1408)); sqbox.cdr -> sq2
+                 (sys:poke-u64 (+ r 1408) 4)  (sys:poke-u64 (+ r 1416) (+ r 2560)); sq2.car x
+                 (sys:poke-u64 (+ r 1440) 7)  (sys:poke-u64 (+ r 1448) (+ r 1536)); sq2.cdr -> sq3
+                 (sys:poke-u64 (+ r 1536) 7)  (sys:poke-u64 (+ r 1544) (+ r 1664)); sq3.car (+ x 1) -> plbox
+                 (sys:poke-u64 (+ r 1568) 0)                                      ; sq3.cdr NIL
+                 (sys:poke-u64 (+ r 1664) 4)  (sys:poke-u64 (+ r 1672) (+ r 2752)); plbox.car "+"
+                 (sys:poke-u64 (+ r 1696) 7)  (sys:poke-u64 (+ r 1704) (+ r 1792)); plbox.cdr -> pl2
+                 (sys:poke-u64 (+ r 1792) 4)  (sys:poke-u64 (+ r 1800) (+ r 2560)); pl2.car x
+                 (sys:poke-u64 (+ r 1824) 7)  (sys:poke-u64 (+ r 1832) (+ r 1920)); pl2.cdr -> pl3
+                 (sys:poke-u64 (+ r 1920) 2)  (sys:poke-u64 (+ r 1928) 1)         ; pl3.car INT 1
+                 (sys:poke-u64 (+ r 1952) 0)                                      ; pl3.cdr NIL
+                 ;; env ((x . 0)): envslot @2048 -> ebox @2176 -> pairbox @2304
+                 (sys:poke-u64 (+ r 2048) 7)  (sys:poke-u64 (+ r 2056) (+ r 2176)); envslot CONS -> ebox
+                 (sys:poke-u64 (+ r 2176) 7)  (sys:poke-u64 (+ r 2184) (+ r 2304)); ebox.car -> pairbox
+                 (sys:poke-u64 (+ r 2208) 0)                                      ; ebox.cdr NIL
+                 (sys:poke-u64 (+ r 2304) 4)  (sys:poke-u64 (+ r 2312) (+ r 2560)); pairbox.car x
+                 (sys:poke-u64 (+ r 2336) 2)  (sys:poke-u64 (+ r 2344) 0)         ; pairbox.cdr INT 0 (mutable)
+                 ;; strings
+                 (sys:poke-u64 (+ r 2432) 5)  (sys:poke-u64 (+ r 2440) (+ r 2464)) (sys:poke-u64 (+ r 2448) 5) ; "progn"
+                 (sys:poke-u64 (+ r 2464) 112)
+                 (sys:poke-u64 (+ r 2496) 5)  (sys:poke-u64 (+ r 2504) (+ r 2528)) (sys:poke-u64 (+ r 2512) 5) ; "while"
+                 (sys:poke-u64 (+ r 2528) 119)
+                 (sys:poke-u64 (+ r 2560) 1)  (sys:poke-u64 (+ r 2568) (+ r 2592)) (sys:poke-u64 (+ r 2576) 1) ; "x"
+                 (sys:poke-u64 (+ r 2592) 120)
+                 (sys:poke-u64 (+ r 2624) 1)  (sys:poke-u64 (+ r 2632) (+ r 2656)) (sys:poke-u64 (+ r 2640) 1) ; "<"
+                 (sys:poke-u64 (+ r 2656) 60)
+                 (sys:poke-u64 (+ r 2688) 4)  (sys:poke-u64 (+ r 2696) (+ r 2720)) (sys:poke-u64 (+ r 2704) 4) ; "setq"
+                 (sys:poke-u64 (+ r 2720) 115)
+                 (sys:poke-u64 (+ r 2752) 1)  (sys:poke-u64 (+ r 2760) (+ r 2784)) (sys:poke-u64 (+ r 2768) 1) ; "+"
+                 (sys:poke-u64 (+ r 2784) 43)
+                 (sys:poke-u64 (+ r 2848) (+ r 2880))                             ; bump cell (unused this test) -> arena
+                 (nl_eval (+ r 0) (+ r 2048) (+ r 2848))))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
