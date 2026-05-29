@@ -896,6 +896,39 @@
      :source-var nelisp-cc-nlconsbox-set-car--source
      :output "nl_consbox_set_car.o"
      :requires-arch x86_64)
+    ;; Doc 133 batch — nl_consbox_set_cdr: copies 32 bytes (4 × u64)
+    ;; from val into box+32..+63 (= cdr slot, offset 32 per NlConsBox
+    ;; layout).  Same raw-copy spike scope as nl_consbox_set_car.
+    (nelisp-cc-nlconsbox-set-cdr
+     :source-var nelisp-cc-nlconsbox-set-cdr--source
+     :output "nl_consbox_set_cdr.o"
+     :requires-arch x86_64)
+    ;; Doc 133 batch — nl_cell_set_value: copies 32 bytes (4 × u64)
+    ;; from val into cell+0..+31 (= NlCell.value, offset 0).
+    (nelisp-cc-nlcell-set-value
+     :source-var nelisp-cc-nlcell-set-value--source
+     :output "nl_cell_set_value.o"
+     :requires-arch x86_64)
+    ;; Doc 133 batch — nl_cell_get_value: two-hop — reads NlCell* from
+    ;; cell_ptr+8 (Sexp::Cell payload), copies NlCell.value (offset 0,
+    ;; 32 bytes) into *out, returns 0.
+    (nelisp-cc-nlcell-get-value
+     :source-var nelisp-cc-nlcell-get-value--source
+     :output "nl_cell_get_value.o"
+     :requires-arch x86_64)
+    ;; Doc 133 batch — nl_vector_set_slot: peeks Vec.data_ptr from
+    ;; vec_ptr+8, writes 32 bytes to data_ptr + n*32 (= n << 5).
+    (nelisp-cc-nlvector-set-slot
+     :source-var nelisp-cc-nlvector-set-slot--source
+     :output "nl_vector_set_slot.o"
+     :requires-arch x86_64)
+    ;; Doc 133 batch — nl_record_set_slot: peeks Vec.data_ptr from
+    ;; record+40 (= NlRecord.slots.ptr), writes 32 bytes to
+    ;; data_ptr + n*32 (= n << 5).
+    (nelisp-cc-nlrecord-set-slot
+     :source-var nelisp-cc-nlrecord-set-slot--source
+     :output "nl_record_set_slot.o"
+     :requires-arch x86_64)
     ;; nl_alloc_consbox elisp swap — allocates a fresh NlConsBox
     ;; (car=Nil, cdr=Nil, refcount=1) using alloc-bytes + sexp-write-nil
     ;; + ptr-write-u64.  Replaces the Rust `nl_alloc_consbox' body in

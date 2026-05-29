@@ -50,7 +50,10 @@ fn main() {
 ///
 /// Phase 47 cutover spike — bumped to 216 for `nl_consbox_set_car.o'
 /// (= first of the 28 undefined nl_* symbols resolved from elisp).
-const N_MANIFEST_ENTRIES: usize = 216;
+/// Doc 133 batch — bumped to 221 for the 5-symbol memcpy batch:
+/// nl_consbox_set_cdr / nl_cell_set_value / nl_cell_get_value /
+/// nl_vector_set_slot / nl_record_set_slot.
+const N_MANIFEST_ENTRIES: usize = 221;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -237,6 +240,18 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // the first of the 28 undefined `nl_*' symbols introduced when
         // commit fa8932eb deleted the Rust nlconsbox.rs bodies.
         "nelisp-cc-nlconsbox-set-car.el",
+        // Doc 133 batch — 5-symbol memcpy batch resolving the next set
+        // of undefined nl_* symbols from the fa8932eb deletion.
+        // nl_consbox_set_cdr: cdr slot (offset 32) raw 4×u64 copy.
+        "nelisp-cc-nlconsbox-set-cdr.el",
+        // nl_cell_set_value: NlCell.value (offset 0) raw 4×u64 copy.
+        "nelisp-cc-nlcell-set-value.el",
+        // nl_cell_get_value: two-hop (sexp→NlCell*@payload+8) + copy.
+        "nelisp-cc-nlcell-get-value.el",
+        // nl_vector_set_slot: Vec.data_ptr@vec+8 + n<<5 index + copy.
+        "nelisp-cc-nlvector-set-slot.el",
+        // nl_record_set_slot: Vec.data_ptr@record+40 + n<<5 + copy.
+        "nelisp-cc-nlrecord-set-slot.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
