@@ -1390,4 +1390,101 @@ against env ((x . 42)) -> exit 42.  Native-verified; no Rust runtime."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-cons-special-runs ()
+  "Doc 133 eval-kernel step 2: add `quote' and `if' special forms to the
+real cons-form evaluator.  Operators are dispatched by (first-name-byte,
+length): quote='q'(113)/len5, if='i'(105)/len2, +=43/len1, -=45/len1,
+*=42/len1.  nl_op_is checks both the first name byte and the symbol name
+length.  nl_env_get scans an alist CONS list.  nl_eval dispatches: INT ->
+payload; SYMBOL -> env lookup; CONS -> operator dispatch via nl_op_is:
+quote returns its argument unevaluated; if evaluates the condition and
+branches; +/-/* perform arithmetic.  Evaluates `(if (quote 1) 42 0)':
+quote 1 = 1 (non-nil) -> eval then = 42 -> exit 42.  Native-verified."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (nelisp-sys-adapter-available-p)
+    (ert-skip "NeLisp toolchain not available"))
+  (let ((path (make-temp-file "nelisp-sys-eval-cons-special")))
+    (unwind-protect
+        (progn
+          (delete-file path)
+          (nelisp-sys-compile-executable
+           '((sys:defun nl_symname_byte ((slot usize)) i64 (:alloc none)
+               (let ((s usize (sys:cast usize (sys:peek-u64 (+ slot 8)))))
+                 (let ((np usize (sys:cast usize (sys:peek-u64 (+ s 8)))))
+                   (mod (sys:peek-u64 np) 256))))
+             (sys:defun nl_symname_len ((slot usize)) i64 (:alloc none)
+               (let ((s usize (sys:cast usize (sys:peek-u64 (+ slot 8)))))
+                 (sys:peek-u64 (+ s 16))))
+             (sys:defun nl_op_is ((box usize) (b i64) (len i64)) i64 (:alloc none)
+               (if (= (nl_symname_byte box) b)
+                   (if (= (nl_symname_len box) len) (sys:cast i64 1) (sys:cast i64 0))
+                 (sys:cast i64 0)))
+             (sys:defun nl_env_get ((env usize) (b i64) (len i64)) i64 (:alloc none)
+               (if (= (sys:peek-u64 env) 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ env 8)))))
+                     (let ((pair usize (sys:cast usize (sys:peek-u64 (+ box 8)))))
+                       (if (= (nl_symname_byte pair) b)
+                           (if (= (nl_symname_len pair) len)
+                               (sys:peek-u64 (+ pair 40))
+                             (nl_env_get (+ box 32) b len))
+                         (nl_env_get (+ box 32) b len))))
+                 (sys:cast i64 -1)))
+             (sys:defun nl_eval ((sx usize) (env usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 sx)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ sx 8)))
+                  ((= tag 4) (nl_env_get env (nl_symname_byte sx) (nl_symname_len sx)))
+                  ((= tag 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ sx 8)))))
+                     (let ((b2 usize (sys:cast usize (sys:peek-u64 (+ box 40)))))
+                       (if (/= (nl_op_is box 113 5) 0)
+                           (sys:peek-u64 (+ b2 8))
+                         (if (/= (nl_op_is box 105 2) 0)
+                             (let ((c i64 (nl_eval b2 env)))
+                               (let ((b3 usize (sys:cast usize (sys:peek-u64 (+ b2 40)))))
+                                 (if (/= c 0)
+                                     (nl_eval b3 env)
+                                   (let ((b4 usize (sys:cast usize (sys:peek-u64 (+ b3 40)))))
+                                     (nl_eval b4 env)))))
+                           (let ((opb i64 (nl_symname_byte box)))
+                             (let ((a1 i64 (nl_eval b2 env)))
+                               (let ((b3 usize (sys:cast usize (sys:peek-u64 (+ b2 40)))))
+                                 (let ((a2 i64 (nl_eval b3 env)))
+                                   (if (= opb 43) (+ a1 a2)
+                                     (if (= opb 45) (- a1 a2)
+                                       (if (= opb 42) (* a1 a2)
+                                         (sys:cast i64 -1)))))))))))))
+                  (else (sys:cast i64 -1)))))
+             (sys:defun main () i64 (:syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 ;; form (if (quote 1) 42 0): form slot @r+0 -> box1
+                 (sys:poke-u64 (+ r 0) 7)    (sys:poke-u64 (+ r 8) (+ r 64))     ; form CONS -> box1
+                 (sys:poke-u64 (+ r 64) 4)   (sys:poke-u64 (+ r 72) (+ r 448))   ; box1.car "if"
+                 (sys:poke-u64 (+ r 96) 7)   (sys:poke-u64 (+ r 104) (+ r 128))  ; box1.cdr -> box2
+                 (sys:poke-u64 (+ r 128) 7)  (sys:poke-u64 (+ r 136) (+ r 320))  ; box2.car (quote 1) -> qbox1
+                 (sys:poke-u64 (+ r 160) 7)  (sys:poke-u64 (+ r 168) (+ r 192))  ; box2.cdr -> box3
+                 (sys:poke-u64 (+ r 192) 2)  (sys:poke-u64 (+ r 200) 42)         ; box3.car INT 42 (then)
+                 (sys:poke-u64 (+ r 224) 7)  (sys:poke-u64 (+ r 232) (+ r 256))  ; box3.cdr -> box4
+                 (sys:poke-u64 (+ r 256) 2)  (sys:poke-u64 (+ r 264) 0)          ; box4.car INT 0 (else)
+                 (sys:poke-u64 (+ r 288) 0)                                      ; box4.cdr NIL
+                 (sys:poke-u64 (+ r 320) 4)  (sys:poke-u64 (+ r 328) (+ r 480))  ; qbox1.car "quote"
+                 (sys:poke-u64 (+ r 352) 7)  (sys:poke-u64 (+ r 360) (+ r 384))  ; qbox1.cdr -> qbox2
+                 (sys:poke-u64 (+ r 384) 2)  (sys:poke-u64 (+ r 392) 1)          ; qbox2.car INT 1
+                 (sys:poke-u64 (+ r 416) 0)                                      ; qbox2.cdr NIL
+                 (sys:poke-u64 (+ r 448) 2)  (sys:poke-u64 (+ r 456) (+ r 512))  (sys:poke-u64 (+ r 464) 2)  ; Str "if"
+                 (sys:poke-u64 (+ r 512) 105)                                    ; 'i'
+                 (sys:poke-u64 (+ r 480) 5)  (sys:poke-u64 (+ r 488) (+ r 520))  (sys:poke-u64 (+ r 496) 5)  ; Str "quote"
+                 (sys:poke-u64 (+ r 520) 113)                                    ; 'q'
+                 (nl_eval (+ r 0) 0)))
+             (sys:defun _start () void
+               (:abi nelisp-internal :syscall may :alloc none)
+               (sys:exit (main))))
+           path)
+          (should (file-executable-p path))
+          (should (= 42 (call-process path nil nil nil))))
+      (ignore-errors (delete-file path)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
