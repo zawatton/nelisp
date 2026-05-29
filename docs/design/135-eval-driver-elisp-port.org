@@ -158,6 +158,43 @@ All become *direct ctx-slot operations over already-shipped C-ABI*, zero Rust.
 
 * 3. The hard sub-problem — extern_builtins (the Rust builtin registry)
 
+** 3.0 RESOLVED (Stage 135.A, 2026-05-30) — VERDICT-B: mirror resolves, existing bridge dispatches
+
+Read-only investigation answered the #1 risk. Findings (build-tool/src/eval/mod.rs):
+- ~install_builtins(env)~ registers ALL 61 builtins into the mirror function-cells
+  as ~(builtin NAME)~ sentinels (~mirror_set_function~). ~Env::lookup_function~ →
+  ~nelisp_env_lookup_function(globals, unbound, name, out)~ (shipped, works) returns
+  that sentinel TODAY. So *function resolution is already mirror-based + zero-Rust-
+  reachable* — no Rust HashMap needed for resolution.
+- ~extern_builtins~ has exactly ONE real entry (~nelisp--env-globals-op~); the other
+  60 builtins live in the Rust ~builtin_dispatch!~ macro (58 arms). The HashMap is a
+  near-empty fallback, NOT the main registry. → it collapses into EvalCtx slot 7 /
+  or is dropped (only the 1 entry needs a home).
+- The DISPATCH BRIDGE ALREADY EXISTS: ~nelisp--apply-builtin-dispatch(name, args)~ is
+  itself a registered builtin (a ~builtin_dispatch!~ arm) that fans out to
+  ~builtins::dispatch(name, args, env)~. The elisp driver invokes any builtin by
+  calling it — *no new Rust*; the 58-arm dispatcher is existing Rust that stays
+  until Doc 136+ ports its arms (21 are already ~bi_*~ .o; ~37 are Rust-only).
+- An ELISP APPLY STACK ALREADY EXISTS: ~lisp/nelisp-stdlib-eval-core.el~ has
+  ~nelisp--apply-fn~ / ~nelisp--builtinp~ / ~nelisp--closurep~ / ~nelisp--apply-closure~
+  / ~nelisp--apply-lambda~, dispatching ~(builtin NAME)~ → ~nelisp--apply-builtin-dispatch~
+  and closures → ~nelisp--apply-lambda-inner~. The 135.B port can build on this.
+
+⚠️ CAVEAT for 135.B/E (the agent's VERDICT-B glossed this): every ~builtin_dispatch!~
+arm takes ~&mut Env~. The env-INDEPENDENT arms (make-vector, string-bytes, truncate,
+syscalls, I/O, JIT…) ignore env and are safe to call across the cutover. But the
+env-USING arms (~eval~, ~funcall~, ~apply~, ~nelisp--push/pop-frame~, ~nelisp--bind-local~,
+~nelisp--apply-lambda-inner~, ~nelisp--env-globals-op~) deref ~env as *mut Env~. After
+135.E (env = EvalCtx Sexp) those would receive an EvalCtx and mis-cast. RESOLUTION:
+the env-USING ones are EITHER the driver itself (eval/funcall/apply = ported, not
+dispatched) OR the frame/bind ops the env-group symbols already replace — so they do
+NOT go through ~nelisp--apply-builtin-dispatch~ post-cutover; only env-independent
+builtins are dispatched through the bridge. 135.B must split the dispatch accordingly
+(env-independent → bridge; env-using → driver/ctx-ops). This is tractable but is the
+real shape of the cutover, to be pinned in 135.B.
+
+** 3.1 (original framing, superseded by 3.0)
+
 ~extern_builtins: HashMap<String, Rc<dyn Fn(&[Sexp], &mut Env)>>~ is Rust
 closures = the dispatch table for Rust-implemented builtins. It cannot live in
 a Sexp slot as-is. Two facts make this tractable:
