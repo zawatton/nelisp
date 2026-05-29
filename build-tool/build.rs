@@ -55,7 +55,10 @@ fn main() {
 /// nl_vector_set_slot / nl_record_set_slot.
 /// Doc 133 cutover — bumped to 222 for `nl_tty_read_byte.o'
 /// (= re-provides the no-arg read(0,buf,1) function deleted by fa8932eb).
-const N_MANIFEST_ENTRIES: usize = 222;
+/// Doc 134 Stage 134.A — bumped to 223 for `nl_eval_is_truthy.o'
+/// (= extern-call-eval re-provision: alloc-scratch + nelisp_eval_call +
+///    sexp-tag nil-check + dealloc, zero Rust).
+const N_MANIFEST_ENTRIES: usize = 223;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -259,6 +262,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // buffer (alloc-bytes 1 1), calls read(0,buf,1) via extern-call,
         // extracts the byte with ptr-read-u8, frees on both paths.
         "nelisp-cc-tty-read-byte.el",
+        // Doc 134 Stage 134.A — nl_eval_is_truthy: extern-call-eval
+        // re-provision.  Alloc-bytes 32-byte scratch, calls
+        // nelisp_eval_call(form,env,scratch), checks sexp-tag for
+        // Nil(0)→0 / other→1 / error→-1, dealloc-bytes on all paths.
+        // Five-entry seq (nl_eit_prog1 / nl_eit_tag_check /
+        // nl_eit_rc_check / nl_eit_with_scratch / nl_eval_is_truthy).
+        "nelisp-cc-eval-is-truthy.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

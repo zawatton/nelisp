@@ -1492,6 +1492,17 @@
     (nelisp-cc-tty-read-byte
      :source-var nelisp-cc-tty-read-byte--source
      :output "nl_tty_read_byte.o"
+     :requires-arch x86_64)
+    ;; Doc 134 Stage 134.A — nl_eval_is_truthy: re-provides the
+    ;; fa8932eb-deleted Rust body.  Evaluates FORM via
+    ;; nelisp_eval_call (extern-call), checks the Sexp::Nil tag
+    ;; (tag=0 → falsy), frees the 32-byte scratch slot on all paths.
+    ;; Five-entry seq: nl_eit_prog1 / nl_eit_tag_check /
+    ;; nl_eit_rc_check / nl_eit_with_scratch / nl_eval_is_truthy.
+    ;; Linux-x86_64 only.
+    (nelisp-cc-eval-is-truthy
+     :source-var nelisp-cc-eval-is-truthy--source
+     :output "nl_eval_is_truthy.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
