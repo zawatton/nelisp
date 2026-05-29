@@ -1503,6 +1503,18 @@
     (nelisp-cc-eval-is-truthy
      :source-var nelisp-cc-eval-is-truthy--source
      :output "nl_eval_is_truthy.o"
+     :requires-arch x86_64)
+    ;; Phase 47 swap — `nl_sexp_clone_into(src, dst)' re-provides the
+    ;; deleted Rust `core::ptr::write(dst, (*src).clone())' from sexp.rs.
+    ;; 3-way tag dispatch: inline atoms (tags 0..3) → 4×u64 bit-copy;
+    ;; Str(5)/Symbol(4) → deep String copy via nl_alloc_str/symbol;
+    ;; boxed (tags 6..12) → per-type nelisp_nl*_clone rc-bump + bit-copy.
+    ;; Six-entry seq: nl_sci_prog2 / nl_sci_copy / nl_sci_bump /
+    ;; nl_sci_rc / nl_sci_dispatch / nl_sexp_clone_into.
+    ;; Linux-x86_64 only.
+    (nelisp-cc-sexp-clone-into
+     :source-var nelisp-cc-sexp-clone-into--source
+     :output "nl_sexp_clone_into.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

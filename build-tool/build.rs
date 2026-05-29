@@ -58,7 +58,10 @@ fn main() {
 /// Doc 134 Stage 134.A — bumped to 223 for `nl_eval_is_truthy.o'
 /// (= extern-call-eval re-provision: alloc-scratch + nelisp_eval_call +
 ///    sexp-tag nil-check + dealloc, zero Rust).
-const N_MANIFEST_ENTRIES: usize = 223;
+/// Phase 47 swap — bumped to 224 for `nl_sexp_clone_into.o'
+/// (= re-provides core::ptr::write(dst,(*src).clone()) deleted from sexp.rs;
+///    3-way tag dispatch: inline copy / String deep copy / boxed rc-bump+copy).
+const N_MANIFEST_ENTRIES: usize = 224;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -269,6 +272,13 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // Five-entry seq (nl_eit_prog1 / nl_eit_tag_check /
         // nl_eit_rc_check / nl_eit_with_scratch / nl_eval_is_truthy).
         "nelisp-cc-eval-is-truthy.el",
+        // Phase 47 swap — nl_sexp_clone_into: re-provides the deleted
+        // Rust core::ptr::write(dst, (*src).clone()) from sexp.rs.
+        // 3-way tag dispatch: inline atoms (0..3) → 4×u64 bit-copy;
+        // Str(5)/Symbol(4) → deep copy via nl_alloc_str/symbol;
+        // boxed (6..12) → per-type nelisp_nl*_clone rc-bump + bit-copy.
+        // Six-entry seq: nl_sci_prog2/copy/bump/rc/dispatch + public entry.
+        "nelisp-cc-sexp-clone-into.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
