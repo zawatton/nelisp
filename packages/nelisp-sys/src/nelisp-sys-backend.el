@@ -133,6 +133,13 @@ A single node lowers directly; multiple are wrapped in `seq'."
            (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr))
            (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :size))
            (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :align))))
+    (peek-u64
+     (list 'ptr-read-u64
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr)) 0))
+    (poke-u64
+     (list 'ptr-write-u64
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :ptr)) 0
+           (nelisp-sys-backend--lower ctx (nelisp-sys-ast-prop node :val))))
     (exit (list 'exit (nelisp-sys-backend--lower
                        ctx (nelisp-sys-ast-prop node :arg))))
     (load-field (nelisp-sys-backend--lower-load-field ctx node))

@@ -117,6 +117,9 @@ excluded."
     (dealloc (list (nelisp-sys-ast-prop node :ptr)
                    (nelisp-sys-ast-prop node :size)
                    (nelisp-sys-ast-prop node :align)))
+    (peek-u64 (list (nelisp-sys-ast-prop node :ptr)))
+    (poke-u64 (list (nelisp-sys-ast-prop node :ptr)
+                    (nelisp-sys-ast-prop node :val)))
     (t nil)))
 
 (provide 'nelisp-sys-ast)

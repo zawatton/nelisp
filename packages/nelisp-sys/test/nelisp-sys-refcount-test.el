@@ -45,7 +45,7 @@ rc-inc(p) -> atomic-fetch-add(*(p + offsetof(nlconsbox,refcount)), 1)
                   (append nelisp-sys-refcount-test--boxes
                           '((sys:defun rc_inc ((p usize)) i64 ()
                               (sys:atomic-add!
-                               (sys:ptr-add p (sys:offsetof nlconsbox refcount))
+                               (+ p (sys:offsetof nlconsbox refcount))
                                1))))))))
 
 (ert-deftest nelisp-sys-refcount-drop-dec ()
@@ -56,7 +56,7 @@ caller frees when it observes 1.  rc-dec(p) -> (atomic-fetch-add (+ p 64) (- 0 1
                   (append nelisp-sys-refcount-test--boxes
                           '((sys:defun rc_dec ((p usize)) i64 ()
                               (sys:atomic-sub!
-                               (sys:ptr-add p (sys:offsetof nlconsbox refcount))
+                               (+ p (sys:offsetof nlconsbox refcount))
                                1))))))))
 
 (ert-deftest nelisp-sys-refcount-cas-promote ()
@@ -66,7 +66,34 @@ caller frees when it observes 1.  rc-dec(p) -> (atomic-fetch-add (+ p 64) (- 0 1
                   (append nelisp-sys-refcount-test--boxes
                           '((sys:defun rc_cas ((p usize) (e i64) (n i64)) i64 ()
                               (sys:cas
-                               (sys:ptr-add p (sys:offsetof nlconsbox refcount))
+                               (+ p (sys:offsetof nlconsbox refcount))
                                e n))))))))
+
+(ert-deftest nelisp-sys-refcount-peek-poke-lower ()
+  "Doc 133 P2: raw u64 box-field read/write (sys:peek-u64 / sys:poke-u64)
+on a usize address lower to the Phase 47 ptr-read-u64 / ptr-write-u64
+ops, composing with the usize field-offset arithmetic."
+  (should (equal '(defun rd (p) (ptr-read-u64 (+ p 64) 0))
+                 (nelisp-sys-refcount-test--lower
+                  (append nelisp-sys-refcount-test--boxes
+                          '((sys:defun rd ((p usize)) i64 ()
+                              (sys:peek-u64
+                               (+ p (sys:offsetof nlconsbox refcount)))))))))
+  (should (equal '(defun wr (p) (ptr-write-u64 (+ p 64) 0 1))
+                 (nelisp-sys-refcount-test--lower
+                  (append nelisp-sys-refcount-test--boxes
+                          '((sys:defun wr ((p usize)) i64 ()
+                              (sys:poke-u64
+                               (+ p (sys:offsetof nlconsbox refcount)) 1))))))))
+
+;; NOTE (Doc 133 P2 finding): the full alloc->clone->drop->read e2e in a
+;; *freestanding* standalone binary is blocked because `alloc-bytes'
+;; calls the Rust runtime's `nl_alloc_bytes', which a freestanding binary
+;; does not link (no heap allocator outside the Rust runtime).  A native
+;; refcount e2e therefore needs either (a) an mmap-syscall freestanding
+;; allocator, or (b) static-data addressing — a Phase 2/3 sub-task.  The
+;; refcount/peek/poke/alloc *lowering* is pinned above + in the backend
+;; tests; the native codegen for each underlying Phase 47 op is already
+;; shipped + tested at the grammar layer.
 
 ;;; nelisp-sys-refcount-test.el ends here

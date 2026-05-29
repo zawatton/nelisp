@@ -339,6 +339,19 @@ FORM is the enclosing source form for diagnostics."
                            :size (nelisp-sys-frontend--parse-expr (nth 1 args))
                            :align (nelisp-sys-frontend--parse-expr (nth 2 args))
                            :form form))
+     ((eq head 'sys:peek-u64)
+      ;; (sys:peek-u64 ADDR) — raw u64 read at a usize address (offset 0).
+      ;; Same usize-address convention as the atomics; callers compose
+      ;; field offsets via sys:ptr-add (Doc 133 P2 box field access).
+      (nelisp-sys-ast-make 'peek-u64
+                           :ptr (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :form form))
+     ((eq head 'sys:poke-u64)
+      ;; (sys:poke-u64 ADDR VAL) — raw u64 store at a usize address.
+      (nelisp-sys-ast-make 'poke-u64
+                           :ptr (nelisp-sys-frontend--parse-expr (nth 0 args))
+                           :val (nelisp-sys-frontend--parse-expr (nth 1 args))
+                           :form form))
      ((eq head 'sys:sizeof)
       (nelisp-sys-ast-make 'sizeof
                            :type (nelisp-sys-frontend--parse-type (car args) form)
