@@ -1,0 +1,163 @@
+#+TITLE: nelisp-sys → Phase 47 surface cheat-sheet (Doc 133 eval-kernel)
+#+OPTIONS: toc:2
+
+* Why this file exists
+Doc 133 builds the NeLisp evaluator in nelisp-sys and verifies it by
+emitting standalone native binaries (no Rust runtime).  Each increment
+re-derives the same facts: which surface forms exist, what they lower to
+in Phase 47, what types they yield, and which Phase 47 limitations bite.
+This is the lookup table so that future increments (reader, eval
+dispatch, bootstrap) do not re-grep =nelisp-sys-frontend.el= /
+=nelisp-sys-backend.el= / =nelisp-sys-check.el= every session.
+
+*Source of truth* (re-grep these when in doubt):
+- surface forms: =src/nelisp-sys-frontend.el= (parse dispatch)
+- lowering: =src/nelisp-sys-backend.el= (=nelisp-sys-backend--lower=)
+- result types + rules: =src/nelisp-sys-check.el= (=nelisp-sys-check--infer=)
+- worked examples: =test/nelisp-sys-eval-kernel-test.el=, =examples/*.nl=
+
+* Function table — surface form → result type → Phase 47 lowered form
+Address arithmetic note: =(+ ptr N)= and =(sys:ptr-add ptr N)= both lower
+to =(+ ptr N)=.  =sys:ptr-add= REQUIRES a typed =(ptr T)=; for a bare
+=usize= address use plain =(+ p N)=.
+
+| surface form                         | result type | Phase 47 lowered form                  |
+|--------------------------------------+-------------+----------------------------------------|
+| /literal/ =42=                       | i32¹        | =42=                                   |
+| =(+ - * / mod a b)=                  | operand²    | =(+ a b)= …                            |
+| =(< <= > >= = a b)=                  | bool        | =(< a b)= …                            |
+| =(/= a b)=                           | bool        | =(not (= a b))=                        |
+| =(and or a b)=                       | bool        | =(and a b)= / =(or a b)=               |
+| =(if c t e)=                         | type(t)³    | =(if c t e)= (no else ⇒ =(if c t 0)=)  |
+| =(cond (c b…)… (else b…))=           | type(b₁)³   | =(cond …)=                             |
+| =(let ((n TY init)…) body…)=         | type(last)  | =(let ((n init)…) body)=               |
+| =(while c body…)=                    | void        | =(while c (seq body…))=                |
+| =(set! n v)=                         | void        | =(setq n v)=                           |
+| =(seq body…)=                        | type(last)  | =(seq body…)=                          |
+| =(sys:cast TY x)=                    | TY          | /x/ (cast erased — pure retype)        |
+| =(sys:peek-u64 p)=                   | i64         | =(ptr-read-u64 p 0)=                   |
+| =(sys:poke-u64 p v)=                 | i64         | =(ptr-write-u64 p 0 v)=                |
+| =(sys:syscall NR a0…a5)=             | usize       | =(syscall-direct NR a0…)=              |
+| =(sys:alloc TY)= / =(sys:alloc-bytes sz al)= | usize | =(alloc-bytes sz al)= (NOT freestanding⁴) |
+| =(sys:dealloc p sz al)=              | void        | =(dealloc-bytes p sz al)=              |
+| =(sys:atomic-add! p d)=              | i64         | =(atomic-fetch-add p d)=               |
+| =(sys:atomic-sub! p d)=              | i64         | =(atomic-fetch-add p (- 0 d))=         |
+| =(sys:cas p exp new)=                | i64         | =(atomic-compare-exchange p exp new)=  |
+| =(sys:addr-of NAME)=                 | i64         | =(addr-of NAME)=                       |
+| =(sys:call-ptr fn arg…)=             | i64         | =(call-ptr fn arg…)= (n≤6 args⁵)       |
+| =(NAME arg…)= (direct call)          | callee :ret | =(NAME arg…)=                          |
+| =(sys:sizeof TY)= / =(sys:alignof TY)= | usize     | /integer constant/ (compile-time fold) |
+| =(sys:offsetof STRUCT FIELD)=        | usize       | /integer constant/ (compile-time fold) |
+| =(sys:ptr-add p n)=                  | type(p)     | =(+ p n)=                              |
+| =(sys:load p)= / =(sys:store! p v)=  | elem / void | typed =ptr-read/write-{u,s}N=          |
+| =(sys:load-field pl F)=              | field TY    | typed =ptr-read-…= at field offset     |
+| =(sys:store-field! pl F v)=          | void        | typed =ptr-write-…= at field offset    |
+| =(sys:slice-len s)=                  | usize       | header read                            |
+| =(sys:slice-ref s i)= / =-set!=      | elem / void | header data + index                    |
+| =(sys:exit n)=                       | void        | =(exit n)=                             |
+
+¹ Integer literals adopt the *expected* type when one is supplied
+  (=int (if (integer-p expected) expected 'i32)=); with no expected hint
+  they default to =i32=.  See gotcha #2.
+² Operand type = expected-if-scalar, else the first non-literal arg's
+  type, else =i32= (=nelisp-sys-check--operand-type=).  This is why
+  =(+ usize-ptr i64-offset)= stays =usize=: the ptr is the first
+  non-literal.
+³ =if= checks =then= against =expected=, then =else= against =type(then)=;
+  no else ⇒ =void=.  =cond= takes the *first* clause body's type as the
+  whole expression's type.
+⁴ Freestanding binaries link no Rust allocator → =alloc-bytes= segfaults.
+  Use mmap: =(sys:syscall 9 0 SIZE 3 34 -1 0)= = =mmap(NULL,SIZE,
+  PROT_READ|WRITE=3, MAP_PRIVATE|ANON=34, -1, 0)=.
+⁵ More than 6 args exceeds the GP-arg registers and is rejected.
+
+* Phase 47 limitations that bite (ranked by how often)
+1. *if / cond are TAIL-ONLY value forms.*  They may be a function body,
+   a branch of another tail if/cond, or a cond-clause body — but they
+   CANNOT nest as a =setq= value or a call argument.  Both of these are
+   rejected with =:not-value-expr=:
+   : (set! r (if c a b))        ; if as setq value — REJECTED
+   : (if c (set! r a))          ; setq as if-then statement — REJECTED
+   ⇒ For conditional accumulation in a loop, *use recursion* (each =if=
+     in tail position), not a =while= + =set!= loop.  Unconditional
+     =set!= in a =while= body is fine (see =examples/gcd.nl=).
+2. *Function return type is NOT propagated as the expected hint.*
+   =nelisp-sys-check--check-defun= runs the body through
+   =--infer-body=, which passes =expected = nil=.  So a bare integer
+   literal sitting in a tail =if=-then defaults to =i32= and then
+   mismatches an =i64= sibling branch:
+   : (if (= n 0) -1 (if … (sys:peek-u64 p) …))   ; -1⇒i32, peek⇒i64: E-SYS-TYPE-002
+   ⇒ Pin the literal: =(sys:cast i64 -1)= (the cast is erased in
+     lowering, so it costs nothing at runtime).  Or arrange for the
+     i64-typed expression to be the =then= branch (literal in =else=
+     adopts =then='s type) — that is why =eval_int='s
+     =(if c (peek …) 0)= type-checks with no cast.
+3. *Entry point cannot contain =let=.*  =_start= rejects a =let= body
+   with =:let-rt-requires-defun-context=.  Put all logic in a =main=
+   defun; keep =_start= = =(sys:exit (main))=.
+4. *=:alloc= effect must compose.*  An atomic-only / mmap-only callee
+   should declare =(:alloc none)= so that an =(:alloc none)= caller
+   (e.g. a freestanding =main=) may call it.
+5. =sys:peek-u64= yields =i64=; passing it where a =usize= is required
+   (a pointer param, a recursive node arg) needs =(sys:cast usize …)=.
+
+* Node / env layout conventions used by the eval kernel
+32-byte nodes (room for a tag + up to three slots):
+| offset | field            |
+|--------+------------------|
+|      0 | tag              |
+|      8 | a / payload      |
+|     16 | b                |
+|     24 | c                |
+
+| tag | node | slots                                  |
+|-----+------+----------------------------------------|
+|   2 | INT  | payload@8 (self-evaluating)            |
+| 100 | ADD  | left@8, right@16                       |
+| 101 | SUB  | left@8, right@16                       |
+| 102 | MUL  | left@8, right@16                       |
+| 103 | IF   | cond@8, then@16, else@24               |
+| 104 | VAR  | sym-id@8 (resolved against env)        |
+| 105 | CALL | fn-ptr@8, arg-node@16                   |
+
+Environment (variable lookup): =count@0=, then 16-byte =(sym,val)= pairs
+from offset 8.  =nl_lookup(p,n,sym)= is a recursive tail-if scan
+(p = first pair = env+8, n = count = peek(env)).  -1 = unbound.
+
+These tag numbers are local to the eval-kernel test fixtures, not the
+real =nelisp-sexp--tag-*= constants (INT=2 happens to coincide).  Wire
+to the real Sexp ADT (Phase 1 shadow) when the kernel graduates from
+fixtures to the actual reader output.
+
+* Extending nelisp-sys — the 4-site pattern
+A new =sys:= primitive touches exactly four files, then a lowering test:
+1. =frontend= — parse the form to an AST node (=nelisp-sys-ast-make=).
+2. =ast= — register the node's children for traversal.
+3. =check= — infer/validate its type in =nelisp-sys-check--infer=.
+4. =backend= — lower it to a Phase 47 form in =nelisp-sys-backend--lower=.
+5. add a lowering =should equal= + (if it runs) a native e2e.
+*Confirm Phase 47 already has the target op before adding the surface.*
+env + apply needed NO new primitives — they compose existing
+=while/if/cond/set!/peek/poke/syscall/call-ptr/addr-of=.
+
+* Dev loop (fast, cargo-free)
+Load path for every batch command:
+: -L lisp -L src -L packages/nelisp-sys/src -L packages/nelisp-sys/test
+
+Lowering test (no toolchain, microseconds):
+: emacs --batch -Q <loadpath> -l ert -l nelisp-sys-eval-kernel-test \
+:   --eval '(ert-run-tests-batch-and-exit "TEST-NAME")'
+
+Native e2e adds =compile-executable= + =call-process= and is skipped
+off x86_64 Linux / without the NeLisp toolchain.
+
+Byte-compile gate (=make compile= treats =packages/*/src= warnings as
+errors):
+: emacs --batch -Q <loadpath> --eval '(setq byte-compile-error-on-warn t)' \
+:   -f batch-byte-compile FILE.el
+Then *delete the stray =.elc=* — a leftover =.elc= silently shadows the
+=.el= in later subprocess loads and yields wrong results.
+
+The MCP host Emacs has no nelisp load-path, so =elisp-ert-run= /
+=elisp-byte-compile-file= fail with "Cannot open load file:
+nelisp-sys-driver" — use the Bash batch commands above instead.
