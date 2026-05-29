@@ -100,6 +100,21 @@ to =(+ ptr N)=.  =sys:ptr-add= REQUIRES a typed =(ptr T)=; for a bare
    (e.g. a freestanding =main=) may call it.
 5. =sys:peek-u64= yields =i64=; passing it where a =usize= is required
    (a pointer param, a recursive node arg) needs =(sys:cast usize …)=.
+6. *A mutable local with a foldable (constant) init, assigned only
+   inside a loop, is constant-folded — not given a runtime slot.*  The
+   in-loop =set!= is then rejected (=:not-value-expr=), because the slot
+   the assignment targets was never allocated.  Phase 47 decides
+   slot-vs-fold from the binding's INIT (=--int-foldable-p=) plus a
+   top-level =setq= scan that does NOT see writes nested in a loop body.
+   Fixes, cleanest first:
+   - Avoid mutable locals: use *tail recursion with an accumulator
+     param* (params are always slots) and *nested single-assignment
+     =let=s bound from calls* (a call init is non-foldable => slotted).
+     The reader (=nl_pint= / =nl_plist=) uses exactly this, set!-free.
+   - Or init the mutable local from a non-foldable expression (a param
+     ref), as =examples/gcd.nl= does (=tmp= inits from =a=, not 0).
+   A bare top-level =(set! v 0)= before the loop does NOT rescue it — the
+   init is still foldable and the scan still misses the loop-body write.
 
 * Node / env layout conventions used by the eval kernel
 32-byte nodes (room for a tag + up to three slots):
