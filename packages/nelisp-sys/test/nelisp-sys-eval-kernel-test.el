@@ -1218,4 +1218,88 @@ cutover."
           (should (= 42 (call-process path nil nil nil))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-sys-eval-kernel-cons-object-cc-runs ()
+  "Doc 133 eval-kernel: the real cons-form evaluator as a C-ABI RELOCATABLE
+OBJECT (.o), linked with a C harness via `cc' and run — the exact artifact
+needed to replace a Rust eval symbol.
+
+Two defuns: (1) `nl_eval' — the cons-form evaluator copied verbatim from
+`nelisp-sys-eval-kernel-cons-symbol-runs' (walks a real NlConsBox chain:
+car@0/cdr@32; tags NIL=0/INT=2/SYMBOL=4/CONS=7; reads the operator's first
+name byte from a real Rust String {cap@0,ptr@8,len@16} via a pointer deref
+chain, dispatching + - *).  (2) `nl_demo_eval' — a C-ABI global entry
+(:abi c :export \"nl_demo_eval\") that mmaps a page, builds `(+ 40 2)' as the
+SAME cons chain + String \"+\" that `cons-symbol-runs' builds, and returns
+`(nl_eval (+ r 512))'.  No `_start': this is a linkable object, not a
+freestanding executable.
+
+The evaluator reads strings from RUNTIME memory (mmap'd page, pointers/peek),
+NOT rodata literals, so the Doc-99 \"object defun bodies must not reference
+rodata strings\" constraint does not apply.  Emitted with
+`nelisp-sys-compile-object' (forms .o), linked `cc harness.c demo.o -o exe',
+run -> exit 42.  C-ABI object emit + cc link + run, no Rust runtime."
+  (unless (and (eq system-type 'gnu/linux)
+               (string-prefix-p "x86_64" system-configuration))
+    (ert-skip "requires x86_64 Linux"))
+  (require 'nelisp-sys-adapter-nelisp)
+  (unless (and (nelisp-sys-adapter-available-p) (executable-find "cc"))
+    (ert-skip "NeLisp toolchain or cc not available"))
+  (let* ((tmp (make-temp-file "nelisp-sys-eval-cons-obj" t))
+         (obj (expand-file-name "demo.o" tmp))
+         (cfile (expand-file-name "harness.c" tmp))
+         (exe (expand-file-name "harness" tmp)))
+    (unwind-protect
+        (progn
+          (nelisp-sys-compile-object
+           '(;; nl_eval: copied verbatim from cons-symbol-runs — walks the real
+             ;; NlConsBox chain, reads the operator's first name byte from a
+             ;; real Rust String (runtime memory, not rodata), dispatches + - *.
+             (sys:defun nl_eval ((sx usize)) i64 (:alloc none)
+               (let ((tag i64 (sys:peek-u64 sx)))
+                 (cond
+                  ((= tag 2) (sys:peek-u64 (+ sx 8)))
+                  ((= tag 7)
+                   (let ((box usize (sys:cast usize (sys:peek-u64 (+ sx 8)))))
+                     (let ((sstr usize (sys:cast usize (sys:peek-u64 (+ box 8)))))
+                       (let ((nptr usize (sys:cast usize (sys:peek-u64 (+ sstr 8)))))
+                         (let ((op i64 (mod (sys:peek-u64 nptr) 256)))
+                           (let ((box2 usize (sys:cast usize (sys:peek-u64 (+ box 40)))))
+                             (let ((a1 i64 (nl_eval box2)))
+                               (let ((box3 usize (sys:cast usize (sys:peek-u64 (+ box2 40)))))
+                                 (let ((a2 i64 (nl_eval box3)))
+                                   (if (= op 43) (+ a1 a2)
+                                     (if (= op 45) (- a1 a2)
+                                       (if (= op 42) (* a1 a2)
+                                         (sys:cast i64 -1)))))))))))))
+                  (else (sys:cast i64 -1)))))
+             ;; nl_demo_eval: C-ABI global entry.  Builds the SAME cons chain +
+             ;; String "+" as cons-symbol-runs, then evaluates the top-level slot.
+             (sys:defun nl_demo_eval () i64
+               (:abi c :export "nl_demo_eval" :syscall may :alloc none)
+               (let ((r usize (sys:syscall 9 0 4096 3 34 -1 0)))
+                 ;; box1 @ r+0: car = SYMBOL (payload = String @ r+576), cdr = CONS -> box2 @ r+128
+                 (sys:poke-u64 (+ r 0) 4)    (sys:poke-u64 (+ r 8) (+ r 576))
+                 (sys:poke-u64 (+ r 32) 7)   (sys:poke-u64 (+ r 40) (+ r 128))
+                 ;; box2 @ r+128: car = INT 40, cdr = CONS -> box3 @ r+256
+                 (sys:poke-u64 (+ r 128) 2)  (sys:poke-u64 (+ r 136) 40)
+                 (sys:poke-u64 (+ r 160) 7)  (sys:poke-u64 (+ r 168) (+ r 256))
+                 ;; box3 @ r+256: car = INT 2, cdr = NIL
+                 (sys:poke-u64 (+ r 256) 2)  (sys:poke-u64 (+ r 264) 2)
+                 (sys:poke-u64 (+ r 288) 0)
+                 ;; String "+" @ r+576: cap=1, ptr=r+608, len=1
+                 (sys:poke-u64 (+ r 576) 1)  (sys:poke-u64 (+ r 584) (+ r 608))  (sys:poke-u64 (+ r 592) 1)
+                 ;; name bytes @ r+608: '+' = 43
+                 (sys:poke-u64 (+ r 608) 43)
+                 ;; top-level form slot @ r+512: CONS -> box1
+                 (sys:poke-u64 (+ r 512) 7)  (sys:poke-u64 (+ r 520) (+ r 0))
+                 (nl_eval (+ r 512)))))
+           obj)
+          (should (file-exists-p obj))
+          (with-temp-file cfile
+            (insert "extern long nl_demo_eval(void);\n"
+                    "int main(void){ return (int)nl_demo_eval(); }\n"))
+          (should (= 0 (call-process "cc" nil nil nil cfile obj "-o" exe)))
+          (should (= 42 (call-process exe nil nil nil))))
+      (ignore-errors (delete-directory tmp t)))))
+
 ;;; nelisp-sys-eval-kernel-test.el ends here
