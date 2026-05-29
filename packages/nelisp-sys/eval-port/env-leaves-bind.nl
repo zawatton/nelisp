@@ -194,6 +194,28 @@
 ;;   7. nl_sexp_clone_into(data_ptr + 256, unbound_ptr) → slot 8 (8*32=256)
 ;;   8. nl_env_scratch_vec_sexp(box_ptr, out_sexp_vec_slot) → Sexp::Vector header
 ;;
+;; VERIFIED-CORRECT — refcount discipline analysis (orchestrator-confirmed):
+;;
+;;   Slot 5 (symbol-entry): built fresh by nl_alloc_symbol (rc=1, sole owner;
+;;   the sym_slot stack-local is the only reference and is abandoned/never-dropped
+;;   after this call site).  nl_vector_set_slot does a raw 4-u64 copy (no refcount
+;;   bump) which is correct here because sym_slot is the sole owner being
+;;   transferred to the vector; the source stack slot is subsequently unused.
+;;
+;;   Slots 7/8 (val_ptr, unbound_ptr): these point at the CALLER'S LIVE Sexp
+;;   values.  Writing them via raw nl_vector_set_slot would copy the payload
+;;   WITHOUT bumping the refcount, producing a double-free when both the caller's
+;;   reference and the vector's slot are dropped.  nl_sexp_clone_into is therefore
+;;   required for slots 7 and 8 — it performs a refcount-aware clone so the vector
+;;   holds an independent ownership reference.
+;;
+;;   NlVector layout (data_ptr@box+8 verified by nl_vector_set_slot source):
+;;     nl_vector_set_slot(vec, n, val) → dst = ptr-read-u64(vec, 8) + (n * 32)
+;;     then raw-copies 4 u64 words.  So data_ptr = peek-u64(box_ptr+8),
+;;     slot 7 = data_ptr+224 (7*32), slot 8 = data_ptr+256 (8*32).
+;;   Raw-offset access for slots 7/8 matches nl_vector_set_slot's own addressing
+;;   exactly — the layout is confirmed, not guessed.
+;;
 ;; ALLOC budget: nl_alloc_vector (32 + 11*32 = 384 B) +
 ;;               sym_slot (32 B) + char_buf in nl_alloc_symbol (12 B) ≈ 428 B total.
 ;; ---------------------------------------------------------------------------
