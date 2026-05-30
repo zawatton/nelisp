@@ -1615,6 +1615,16 @@
     (nelisp-cc-evalport-aot-builtin-call1
      :source-var nelisp-cc-evalport-aot-builtin-call1--source
      :output "evalport-aot-builtin-call1.o"
+     :requires-arch x86_64)
+    ;; Doc 135 Stage 135.E (M2 swap) — the elisp cons-form evaluator
+    ;; (nl_eval_inner_cons + nl_apply_special + nl_sp_eq_* / nl_cons_* helpers),
+    ;; delegating to the wired nl_sf_* special-form impls.  DEFINES
+    ;; nl_eval_inner_cons; the Rust #[no_mangle] nl_eval_inner_cons was DELETED
+    ;; from build-tool/src/eval/mod.rs (zero callers — reached only via the elisp
+    ;; nl_eval_inner.o) so there is no duplicate symbol.
+    (nelisp-cc-evalport-combiner-cons
+     :source-var nelisp-cc-evalport-combiner-cons--source
+     :output "evalport-combiner-cons.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
