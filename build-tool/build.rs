@@ -66,12 +66,13 @@ fn main() {
 /// evalport-env-leaves-frame.o / evalport-env-leaves-logic.o /
 /// evalport-nonenv-char-table.o / evalport-nonenv-mut-str-push.o /
 /// evalport-nonenv-mut-str-set-cp.o (resolves env-leaf + non-env symbols).
-/// Doc 135 Stage 135.D — bumped to 236 for 5 combiner eval-port modules:
-/// evalport-str-to-float.o / evalport-combiner-arglist.o /
-/// evalport-combiner-apply.o / evalport-combiner-entry.o /
-/// evalport-bootstrap.o (resolves nl_str_to_float / nl_eval_arg_list /
-/// nl_apply_function / nl_eval / nl_eval_ctx_make / nl_install_builtins).
-const N_MANIFEST_ENTRIES: usize = 236;
+/// Doc 135 Stage 135.E — bumped to 234 for the 3 link-green resolvers:
+/// evalport-str-to-float.o / evalport-tty-memcpy.o / evalport-capture-lexical.o
+/// (resolves nl_str_to_float / nl_tty_memcpy_to_saved / nl_env_capture_lexical —
+/// the last 3 undefined symbols, Rust eval driver still active pre-cutover).
+/// The combiner + bootstrap modules are staged but NOT wired here: they would
+/// introduce nelisp_aot_builtin_call1 (undefined) and belong to the 135.E cutover.
+const N_MANIFEST_ENTRIES: usize = 233;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -299,12 +300,10 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-evalport-nonenv-char-table.el",
         "nelisp-cc-evalport-nonenv-mut-str-push.el",
         "nelisp-cc-evalport-nonenv-mut-str-set-cp.el",
-        // Doc 135 Stage 135.D — 5 combiner eval-port modules.
+        // Doc 135 Stage 135.E — the 3 link-green resolvers (Rust driver still active).
         "nelisp-cc-evalport-str-to-float.el",
-        "nelisp-cc-evalport-combiner-arglist.el",
-        "nelisp-cc-evalport-combiner-apply.el",
-        "nelisp-cc-evalport-combiner-entry.el",
-        "nelisp-cc-evalport-bootstrap.el",
+        "nelisp-cc-evalport-tty-memcpy.el",
+        "nelisp-cc-evalport-capture-lexical.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

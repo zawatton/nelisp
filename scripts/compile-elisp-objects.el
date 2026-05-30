@@ -1571,29 +1571,18 @@
      :source-var nelisp-cc-evalport-str-to-float--source
      :output "evalport-str-to-float.o"
      :requires-arch x86_64)
-    ;; Doc 135 Stage 135.D — nl_eval_arg_list: left-to-right arg eval walker.
-    ;;   Resolves nl_eval_arg_list undefined from fa8932eb deletion.
-    (nelisp-cc-evalport-combiner-arglist
-     :source-var nelisp-cc-evalport-combiner-arglist--source
-     :output "evalport-combiner-arglist.o"
+    ;; Doc 135 Stage 135.E — nl_tty_memcpy_to_saved: termios save-buffer memcpy.
+    ;;   Resolves nl_tty_memcpy_to_saved undefined from fa8932eb deletion.
+    (nelisp-cc-evalport-tty-memcpy
+     :source-var nelisp-cc-evalport-tty-memcpy--source
+     :output "evalport-tty-memcpy.o"
      :requires-arch x86_64)
-    ;; Doc 135 Stage 135.D — nl_apply_function: builtin/closure/lambda dispatch.
-    ;;   Resolves nl_apply_function undefined from fa8932eb deletion.
-    (nelisp-cc-evalport-combiner-apply
-     :source-var nelisp-cc-evalport-combiner-apply--source
-     :output "evalport-combiner-apply.o"
-     :requires-arch x86_64)
-    ;; Doc 135 Stage 135.D — nl_eval + nl_eval_ctx_make + nl_eval_in_ctx.
-    ;;   Resolves nl_eval / nl_eval_ctx_make undefined from fa8932eb deletion.
-    (nelisp-cc-evalport-combiner-entry
-     :source-var nelisp-cc-evalport-combiner-entry--source
-     :output "evalport-combiner-entry.o"
-     :requires-arch x86_64)
-    ;; Doc 135 Stage 135.D — nl_install_builtins: 60-builtin mirror bootstrap.
-    ;;   Resolves nl_install_builtins undefined from fa8932eb deletion.
-    (nelisp-cc-evalport-bootstrap
-     :source-var nelisp-cc-evalport-bootstrap--source
-     :output "evalport-bootstrap.o"
+    ;; Doc 135 Stage 135.E — nl_env_capture_lexical: closure lexical-env snapshot.
+    ;;   Resolves nl_env_capture_lexical undefined from fa8932eb deletion
+    ;;   (delegates to nl_capture_descend_native, T in nelisp_frame_stack_find.o).
+    (nelisp-cc-evalport-capture-lexical
+     :source-var nelisp-cc-evalport-capture-lexical--source
+     :output "evalport-capture-lexical.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where
