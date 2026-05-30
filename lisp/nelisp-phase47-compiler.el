@@ -10465,15 +10465,24 @@ the node's class to consume the result correctly."
     (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
      (cond
       ((= tag 30)               ; imm
-       ;; mov rax, imm32                                = 7 bytes
-       ;; A33.N — on standalone NeLisp emit the 7 bytes via the Phase 47
-       ;; `nelisp_emit_value_imm' kernel; fall back to the legacy
-       ;; `mov-imm32' on host Emacs / bridge miss (byte-identical).
-       (let ((native (nelisp-phase47-compiler--emit-value-native-bytes
-                      "nelisp_emit_value_imm" node 7)))
-         (if native
-             (nelisp-asm-x86_64-emit-bytes buf native)
-           (nelisp-asm-x86_64-mov-imm32 buf 'rax (nelisp-phase47-compiler--ir-get node :value)))))
+       ;; Value-dependent emit: small values (fits mov-imm32 range
+       ;; [-2^31, 2^32-1]) use the 7-byte `mov rax, imm32' path;
+       ;; large values (e.g. u64 symbol-name tags > 2^32-1) use the
+       ;; 10-byte `movabs rax, imm64' path.  Both passes see the same
+       ;; :value, so pass-1 and pass-2 emit the same byte count for any
+       ;; given node — the byte-length invariant is preserved.
+       ;; A33.N — `nelisp_emit_value_imm' kernel covers only the small
+       ;; (7-byte) arm; the large arm skips the native kernel entirely.
+       (let ((v (nelisp-phase47-compiler--ir-get node :value)))
+         (if (and (integerp v) (>= v (- (ash 1 31))) (< v (ash 1 32)))
+             ;; Small: 7-byte mov rax, imm32 — native kernel or legacy.
+             (let ((native (nelisp-phase47-compiler--emit-value-native-bytes
+                            "nelisp_emit_value_imm" node 7)))
+               (if native
+                   (nelisp-asm-x86_64-emit-bytes buf native)
+                 (nelisp-asm-x86_64-mov-imm32 buf 'rax v)))
+           ;; Large: 10-byte movabs rax, imm64 — no native kernel.
+           (nelisp-asm-x86_64-mov-imm64 buf 'rax v))))
       ((= tag 53)               ; ref
        ;; gp class → `mov rax, [rbp - 8*(slot+1)]'; f64 class →
        ;; `movsd xmm0, [rbp - 8*(slot+1)]'.  Both read the spilled
@@ -10853,8 +10862,15 @@ NODE must satisfy `nelisp-phase47-compiler--call-arg-trivial-p'."
   (let ((kind (nelisp-phase47-compiler--ir-kind node)))
     (cond
      ((eq kind 'imm)
-      ;; mov TARGET, imm32   = 7 bytes (REX.W + 0xC7 /0 + imm32)
-      (nelisp-asm-x86_64-mov-imm32 buf target (nelisp-phase47-compiler--ir-get node :value)))
+      ;; Value-dependent: small → 7-byte mov TARGET, imm32;
+      ;; large (> imm32 range) → 10-byte movabs TARGET, imm64.
+      ;; `--call-arg-trivial-p' already gates large values out, so the
+      ;; large arm is a safety net only — byte-length invariant holds
+      ;; because both passes see the same :value for the same node.
+      (let ((v (nelisp-phase47-compiler--ir-get node :value)))
+        (if (and (integerp v) (>= v (- (ash 1 31))) (< v (ash 1 32)))
+            (nelisp-asm-x86_64-mov-imm32 buf target v)
+          (nelisp-asm-x86_64-mov-imm64 buf target v))))
      ((eq kind 'ref)
       ;; mov TARGET, [rbp - 8*(slot+1)]  = 4 bytes (REX.W + 0x8B + ModR/M + disp8)
       (let ((disp (- (* 8 (1+ (nelisp-phase47-compiler--ir-get node :slot))))))
