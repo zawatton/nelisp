@@ -1515,6 +1515,55 @@
     (nelisp-cc-sexp-clone-into
      :source-var nelisp-cc-sexp-clone-into--source
      :output "nl_sexp_clone_into.o"
+     :requires-arch x86_64)
+    ;; Doc 135 Stage 135.C — eval-port env-leaf wiring (7 entries).
+    ;; Lowered from packages/nelisp-sys/eval-port/*.nl via nelisp-sys-backend.
+    ;; Resolves the env-leaf + non-env undefined link symbols introduced when
+    ;; commit fa8932eb deleted the Rust bodies from build-tool/src/eval/mod.rs
+    ;; and nlchartable.rs / nlstr.rs.
+    ;;
+    ;; env-leaves-simple: nl_env_lookup_val / nl_env_set_value(6-arg) /
+    ;;   nl_env_pop_frame — 3 simple EvalCtx accessors.
+    (nelisp-cc-evalport-env-leaves-simple
+     :source-var nelisp-cc-evalport-env-leaves-simple--source
+     :output "evalport-env-leaves-simple.o"
+     :requires-arch x86_64)
+    ;; env-leaves-bind: nl_env_set_value(3-arg FIXED) / nl_bf_bind_sym /
+    ;;   nl_bf_bind_optional / nl_bf_bind_rest / nl_bf_err_arity /
+    ;;   nl_bf_err_type / nl_bf_err_dangling_rest — bind+stash helpers.
+    (nelisp-cc-evalport-env-leaves-bind
+     :source-var nelisp-cc-evalport-env-leaves-bind--source
+     :output "evalport-env-leaves-bind.o"
+     :requires-arch x86_64)
+    ;; env-leaves-frame: nl_push_and_bind / nl_env_push_captured
+    ;;   — frame-compose helpers.
+    (nelisp-cc-evalport-env-leaves-frame
+     :source-var nelisp-cc-evalport-env-leaves-frame--source
+     :output "evalport-env-leaves-frame.o"
+     :requires-arch x86_64)
+    ;; env-leaves-logic: nl_let_setup / nl_cc_match_and_bind
+    ;;   — let + condition-case env helpers.
+    (nelisp-cc-evalport-env-leaves-logic
+     :source-var nelisp-cc-evalport-env-leaves-logic--source
+     :output "evalport-env-leaves-logic.o"
+     :requires-arch x86_64)
+    ;; nonenv-char-table: nl_char_table_get_raw / nl_char_table_set_raw
+    ;;   — CharTable Vec search + push helpers.
+    (nelisp-cc-evalport-nonenv-char-table
+     :source-var nelisp-cc-evalport-nonenv-char-table--source
+     :output "evalport-nonenv-char-table.o"
+     :requires-arch x86_64)
+    ;; nonenv-mut-str-push: nl_mut_str_push_byte / nl_mut_str_push_codepoint
+    ;;   — MutStr append + UTF-8 encode helpers.
+    (nelisp-cc-evalport-nonenv-mut-str-push
+     :source-var nelisp-cc-evalport-nonenv-mut-str-push--source
+     :output "evalport-nonenv-mut-str-push.o"
+     :requires-arch x86_64)
+    ;; nonenv-mut-str-set-cp: nl_mut_str_set_codepoint_raw
+    ;;   — MutStr in-place codepoint replacement.
+    (nelisp-cc-evalport-nonenv-mut-str-set-cp
+     :source-var nelisp-cc-evalport-nonenv-mut-str-set-cp--source
+     :output "evalport-nonenv-mut-str-set-cp.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

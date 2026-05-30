@@ -10426,6 +10426,9 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-f64-cmp node buf))
         ((= tag 25)             ; f64-call
          (nelisp-phase47-compiler--emit-f64-call node buf))
+        ((= tag 28)             ; i64-to-f64 — aarch64: unsupported (x86_64-only)
+         (nelisp-phase47-compiler--emit-aarch64-unsupported
+          'i64-to-f64 node))
         ((memq tag '(5 23 61 57 56 55 27 ; call extern-call sexp-tag sexp-int-unwrap sexp-int-make sexp-float-unwrap f64-to-i64-trunc
                      17 12 13 14         ; cons-null-p cons-car cons-cdr cons-cdr-raw
                      59 60               ; sexp-payload-ptr sexp-payload-ptr-record
@@ -10510,6 +10513,16 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-f64-cmp node buf))
       ((= tag 25)               ; f64-call
        (nelisp-phase47-compiler--emit-f64-call node buf))
+      ((= tag 28)               ; i64-to-f64 — CVTSI2SD xmm0, rax (result in xmm0)
+       ;; Doc 136: allow i64-to-f64 as a top-level value expression (= if-arm
+       ;; result, function return, or call arg).  The int-expr is evaluated into
+       ;; rax via emit-value; CVTSI2SD converts it to f64 in xmm0.  Callers that
+       ;; expect rax (gp path) will read stale rax — this is Approximation Flag
+       ;; [D] (= f64 ABI mismatch for call-arg position).  Correct for if-arm /
+       ;; function-return contexts where the caller knows the result is f64.
+       (nelisp-phase47-compiler--emit-value
+        (nelisp-phase47-compiler--ir-get node :int-expr) buf)
+       (nelisp-asm-x86_64-cvtsi2sd-xmm-r64 buf 'xmm0 'rax))
       ((= tag 1)                ; arith
        (nelisp-phase47-compiler--emit-arith node buf))
       ((= tag 67)               ; shift

@@ -1,0 +1,81 @@
+;;; nelisp-cc-evalport-nonenv-mut-str-set-cp.el --- Phase 47 nl_mut_str_set_codepoint_raw  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton
+
+;; This file is not part of GNU Emacs.
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+
+;; Doc XX §nonenv — nl_mut_str_set_codepoint_raw: in-place codepoint replacement.
+;;
+;; Lowered from packages/nelisp-sys/eval-port/nonenv-mut-str-set-cp.nl via
+;; `nelisp-sys-backend-lower-module' targeting x86_64-unknown-linux-gnu.
+;;
+;; Exports 1 C-ABI symbol deleted from nlstr.rs:
+;;   nl_mut_str_set_codepoint_raw(arg, idx, val_cp, out) -> i64
+;;
+;; Private helpers:
+;;   nl_msscp_write_int_out, nl_msscp_swap_fields,
+;;   nl_msscp_walk, nl_msscp_do_build
+;;
+;; Linux-x86_64 only — alloc-bytes / ptr-read-u64 / extern-call ABI.
+
+;;; Code:
+
+(defconst nelisp-cc-evalport-nonenv-mut-str-set-cp--source
+  '(seq
+    (defun nl_msscp_write_int_out (out val_cp)
+      (seq (ptr-write-u64 out 0 2)
+           (ptr-write-u64 (+ out 8) 0 val_cp)
+           0))
+    (defun nl_msscp_swap_fields (arg new_nlstr)
+      (let ((arg_nlstr (ptr-read-u64 (+ arg 8) 0)))
+        (seq (ptr-write-u64 arg_nlstr 0 (ptr-read-u64 new_nlstr 0))
+             (ptr-write-u64 (+ arg_nlstr 8) 0 (ptr-read-u64 (+ new_nlstr 8) 0))
+             (ptr-write-u64 (+ arg_nlstr 16) 0 (ptr-read-u64 (+ new_nlstr 16) 0))
+             0)))
+    (defun nl_msscp_walk (arg new_slot byte_idx char_j idx val_cp)
+      (let ((ok (nl_str_codepoint_at arg byte_idx (+ new_slot 8) (+ new_slot 16))))
+        (if (= ok 0)
+            0
+          (let ((orig_cp (ptr-read-u64 (+ new_slot 8) 0))
+                (width (ptr-read-u64 (+ new_slot 16) 0)))
+            (seq (nl_mut_str_push_codepoint new_slot
+                                            (if (= char_j idx) val_cp orig_cp))
+                 (nl_msscp_walk arg new_slot
+                                (+ byte_idx width)
+                                (+ char_j 1)
+                                idx val_cp))))))
+    (defun nl_msscp_do_build (arg new_slot char_count idx val_cp)
+      (seq (nl_alloc_mut_str char_count new_slot)
+           (nl_msscp_walk arg new_slot 0 0 idx val_cp)
+           (nl_msscp_swap_fields arg (ptr-read-u64 (+ new_slot 8) 0))))
+    (defun nl_mut_str_set_codepoint_raw (arg idx val_cp out)
+      (if (= (nelisp_ptr_read_u8 arg 0) 6)
+          (if (< val_cp 0)
+              1
+            (if (> val_cp 1114111)
+                1
+              (if (and (>= val_cp 55296) (<= val_cp 57343))
+                  1
+                (let ((char_count (nl_str_char_count arg)))
+                  (if (>= idx char_count)
+                      1
+                    (let ((new_slot (alloc-bytes 32 8)))
+                      (seq (nl_msscp_do_build arg new_slot char_count idx val_cp)
+                           (nl_msscp_write_int_out out val_cp))))))))
+        1)))
+  "Doc XX §nonenv Phase 47 source for nl_mut_str_set_codepoint_raw.
+
+Multi-entry `(seq DEFUN ...)' manifest.
+
+Lowered from packages/nelisp-sys/eval-port/nonenv-mut-str-set-cp.nl.
+
+Public exports: nl_mut_str_set_codepoint_raw.
+Net Rust delta: zero.  Resolves 1 undefined symbol.")
+
+(provide 'nelisp-cc-evalport-nonenv-mut-str-set-cp)
+
+;;; nelisp-cc-evalport-nonenv-mut-str-set-cp.el ends here

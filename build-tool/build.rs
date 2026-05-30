@@ -61,7 +61,12 @@ fn main() {
 /// Phase 47 swap — bumped to 224 for `nl_sexp_clone_into.o'
 /// (= re-provides core::ptr::write(dst,(*src).clone()) deleted from sexp.rs;
 ///    3-way tag dispatch: inline copy / String deep copy / boxed rc-bump+copy).
-const N_MANIFEST_ENTRIES: usize = 224;
+/// Doc 135 Stage 135.C — bumped to 231 for the 7 eval-port modules:
+/// evalport-env-leaves-simple.o / evalport-env-leaves-bind.o /
+/// evalport-env-leaves-frame.o / evalport-env-leaves-logic.o /
+/// evalport-nonenv-char-table.o / evalport-nonenv-mut-str-push.o /
+/// evalport-nonenv-mut-str-set-cp.o (resolves env-leaf + non-env symbols).
+const N_MANIFEST_ENTRIES: usize = 231;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -279,6 +284,16 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         // boxed (6..12) → per-type nelisp_nl*_clone rc-bump + bit-copy.
         // Six-entry seq: nl_sci_prog2/copy/bump/rc/dispatch + public entry.
         "nelisp-cc-sexp-clone-into.el",
+        // Doc 135 Stage 135.C — eval-port env-leaf + non-env wiring (7 entries).
+        // Lowered from packages/nelisp-sys/eval-port/*.nl.
+        // Resolves env-leaf + non-env undefined symbols from fa8932eb deletion.
+        "nelisp-cc-evalport-env-leaves-simple.el",
+        "nelisp-cc-evalport-env-leaves-bind.el",
+        "nelisp-cc-evalport-env-leaves-frame.el",
+        "nelisp-cc-evalport-env-leaves-logic.el",
+        "nelisp-cc-evalport-nonenv-char-table.el",
+        "nelisp-cc-evalport-nonenv-mut-str-push.el",
+        "nelisp-cc-evalport-nonenv-mut-str-set-cp.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());

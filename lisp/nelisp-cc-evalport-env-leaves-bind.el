@@ -1,0 +1,221 @@
+;;; nelisp-cc-evalport-env-leaves-bind.el --- Phase 47 env-leaf bind+stash ctx-accessors  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton
+
+;; This file is not part of GNU Emacs.
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+
+;; Doc 135 Stage 135.C — BIND+STASH env-leaf ctx-accessors.
+;;
+;; Lowered from packages/nelisp-sys/eval-port/env-leaves-bind.nl via
+;; `nelisp-sys-backend-lower-module' targeting x86_64-unknown-linux-gnu.
+;;
+;; Exports 7 C-ABI symbols deleted by commit fa8932eb:
+;;   nl_env_set_value(env, sym_ptr, val_ptr) -> i64        [3-arg FIXED]
+;;   nl_bf_bind_sym(env, name_ptr, val_ptr) -> i64
+;;   nl_bf_bind_optional(env, name_ptr, args_ptr, idx) -> i64
+;;   nl_bf_bind_rest(env, name_ptr, args_ptr, idx) -> i64
+;;   nl_bf_err_arity(env, required, got) -> i64
+;;   nl_bf_err_type(env, name_ptr) -> i64
+;;   nl_bf_err_dangling_rest(env) -> i64
+;;
+;; Private helpers (also defined in this .o):
+;;   nl_env_scratch_write_symentry, nl_env_scratch_vec_sexp,
+;;   nl_env_build_scratch, nl_bf_bind_opt_walk, nl_bf_bind_rest_tail,
+;;   nl_env_stash_write_name_sym, nl_env_stash_signal,
+;;   nl_env_write_nil_slot, nl_bf_err_arity_write_wna_sym,
+;;   nl_bf_err_arity_write_lambda_sym, nl_bf_err_type_write_wta_sym,
+;;   nl_bf_err_type_write_symbol_sym, nl_bf_err_dangling_rest_write_sym_after,
+;;   nl_bf_err_dangling_rest_write_amp_rest
+;;
+;; Linux-x86_64 only — alloc-bytes / ptr-read-u64 / extern-call ABI.
+
+;;; Code:
+
+(defconst nelisp-cc-evalport-env-leaves-bind--source
+  '(seq
+    (defun nl_env_scratch_write_symentry (sym_slot)
+      (let ((buf (alloc-bytes 16 1)))
+        (seq (ptr-write-u64 buf 0 7290602597431212403)
+             (ptr-write-u64 (+ buf 8) 0 2037544046)
+             (nl_alloc_symbol buf 12 sym_slot))))
+    (defun nl_env_scratch_vec_sexp (box_ptr sexp_slot)
+      (seq (ptr-write-u64 sexp_slot 0 8)
+           (ptr-write-u64 (+ sexp_slot 8) 0 box_ptr)
+           (ptr-write-u64 (+ sexp_slot 16) 0 0)
+           (ptr-write-u64 (+ sexp_slot 24) 0 0)
+           sexp_slot))
+    (defun nl_env_build_scratch (val_ptr unbound_ptr out_sexp_vec_slot)
+      (let ((box_ptr (nl_alloc_vector 11))
+            (sym_slot (alloc-bytes 32 8)))
+        (let ((data_ptr (ptr-read-u64 (+ box_ptr 8) 0)))
+          (seq (nl_env_scratch_write_symentry sym_slot)
+               (nl_vector_set_slot box_ptr 5 sym_slot)
+               (nl_sexp_clone_into (+ data_ptr 224) val_ptr)
+               (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+               (nl_env_scratch_vec_sexp box_ptr out_sexp_vec_slot)))))
+    (defun nl_env_set_value (env sym_ptr val_ptr)
+      (let ((mirror_ptr (+ env 0))
+            (frames_ptr (+ env 32))
+            (unbound_ptr (+ env 64))
+            (out_vec_slot (alloc-bytes 32 8)))
+        (seq (nl_env_build_scratch val_ptr unbound_ptr out_vec_slot)
+             (nelisp_env_set_value mirror_ptr frames_ptr sym_ptr val_ptr out_vec_slot 0))))
+    (defun nl_bf_bind_sym (env name_ptr val_ptr)
+      (let ((mirror_ptr (+ env 0))
+            (frames_ptr (+ env 32))
+            (unbound_ptr (+ env 64))
+            (out_vec_slot (alloc-bytes 32 8)))
+        (seq (nl_env_build_scratch val_ptr unbound_ptr out_vec_slot)
+             (nelisp_env_bind_local mirror_ptr frames_ptr name_ptr val_ptr out_vec_slot 0))))
+    (defun nl_bf_bind_opt_walk (cons_ptr idx)
+      (if (= (ptr-read-u64 cons_ptr 0) 7)
+          (if (= idx 0)
+              (nl_cons_car_ptr cons_ptr)
+            (nl_bf_bind_opt_walk (nl_cons_cdr_ptr cons_ptr) (+ idx -1)))
+        0))
+    (defun nl_bf_bind_optional (env name_ptr args_ptr idx)
+      (let ((elem_ptr (nl_bf_bind_opt_walk args_ptr idx))
+            (mirror_ptr (+ env 0))
+            (frames_ptr (+ env 32))
+            (unbound_ptr (+ env 64))
+            (out_vec_slot (alloc-bytes 32 8))
+            (nil_slot (alloc-bytes 32 8)))
+        (seq (seq (ptr-write-u64 nil_slot 0 0)
+                  (ptr-write-u64 (+ nil_slot 8) 0 0)
+                  (ptr-write-u64 (+ nil_slot 16) 0 0)
+                  (ptr-write-u64 (+ nil_slot 24) 0 0))
+             (if (= elem_ptr 0)
+                 (seq (nl_env_build_scratch nil_slot unbound_ptr out_vec_slot)
+                      (nelisp_env_bind_local mirror_ptr frames_ptr name_ptr nil_slot out_vec_slot 0)
+                      idx)
+               (seq (nl_env_build_scratch elem_ptr unbound_ptr out_vec_slot)
+                    (nelisp_env_bind_local mirror_ptr frames_ptr name_ptr elem_ptr out_vec_slot 0)
+                    (+ idx 1))))))
+    (defun nl_bf_bind_rest_tail (cons_ptr idx)
+      (if (= idx 0)
+          cons_ptr
+        (if (= (ptr-read-u64 cons_ptr 0) 7)
+            (nl_bf_bind_rest_tail (nl_cons_cdr_ptr cons_ptr) (+ idx -1))
+          cons_ptr)))
+    (defun nl_bf_bind_rest (env name_ptr args_ptr idx)
+      (let ((tail_ptr (nl_bf_bind_rest_tail args_ptr idx))
+            (mirror_ptr (+ env 0))
+            (frames_ptr (+ env 32))
+            (unbound_ptr (+ env 64))
+            (out_vec_slot (alloc-bytes 32 8)))
+        (seq (nl_env_build_scratch tail_ptr unbound_ptr out_vec_slot)
+             (nelisp_env_bind_local mirror_ptr frames_ptr name_ptr tail_ptr out_vec_slot 0))))
+    (defun nl_env_stash_write_name_sym (sym_slot)
+      (let ((buf (alloc-bytes 24 1)))
+        (seq (ptr-write-u64 buf 0 3255381746650998126)
+             (ptr-write-u64 (+ buf 8) 0 7451613697525637484)
+             (ptr-write-u64 (+ buf 16) 0 7022344801864147310)
+             (nl_alloc_symbol buf 24 sym_slot))))
+    (defun nl_env_stash_signal (env signal_slot)
+      (let ((name_sym_slot (alloc-bytes 32 8)))
+        (seq (nl_env_stash_write_name_sym name_sym_slot)
+             (nl_env_set_value env name_sym_slot signal_slot))))
+    (defun nl_env_write_nil_slot (slot)
+      (seq (ptr-write-u64 slot 0 0)
+           (ptr-write-u64 (+ slot 8) 0 0)
+           (ptr-write-u64 (+ slot 16) 0 0)
+           (ptr-write-u64 (+ slot 24) 0 0)))
+    (defun nl_bf_err_arity_write_wna_sym (sym_slot)
+      (let ((buf (alloc-bytes 32 1)))
+        (seq (ptr-write-u64 buf 0 8461750672133419639)
+             (ptr-write-u64 (+ buf 8) 0 3271424420314702445)
+             (ptr-write-u64 (+ buf 16) 0 8389754676633367137)
+             (ptr-write-u64 (+ buf 24) 0 115)
+             (nl_alloc_symbol buf 25 sym_slot))))
+    (defun nl_bf_err_arity_write_lambda_sym (sym_slot)
+      (let ((buf (alloc-bytes 8 1)))
+        (seq (ptr-write-u64 buf 0 107083775959404)
+             (nl_alloc_symbol buf 6 sym_slot))))
+    (defun nl_bf_err_arity (env required got)
+      (let ((tag_slot (alloc-bytes 32 8))
+            (lambda_slot (alloc-bytes 32 8))
+            (int_slot (alloc-bytes 32 8))
+            (nil_slot (alloc-bytes 32 8))
+            (inner_cdr (alloc-bytes 32 8))
+            (lambda_pair (alloc-bytes 32 8))
+            (signal_slot (alloc-bytes 32 8)))
+        (seq (nl_bf_err_arity_write_wna_sym tag_slot)
+             (nl_bf_err_arity_write_lambda_sym lambda_slot)
+             (seq (ptr-write-u64 int_slot 0 2)
+                  (ptr-write-u64 (+ int_slot 8) 0 got)
+                  (ptr-write-u64 (+ int_slot 16) 0 0)
+                  (ptr-write-u64 (+ int_slot 24) 0 0))
+             (nl_env_write_nil_slot nil_slot)
+             (seq (nelisp_cons_construct int_slot nil_slot inner_cdr)
+                  (nelisp_cons_construct lambda_slot inner_cdr lambda_pair)
+                  (nelisp_cons_construct tag_slot lambda_pair signal_slot))
+             (nl_env_stash_signal env signal_slot))))
+    (defun nl_bf_err_type_write_wta_sym (sym_slot)
+      (let ((buf (alloc-bytes 24 1)))
+        (seq (ptr-write-u64 buf 0 8751669898145395319)
+             (ptr-write-u64 (+ buf 8) 0 7887324063363589488)
+             (ptr-write-u64 (+ buf 16) 0 7630437)
+             (nl_alloc_symbol buf 19 sym_slot))))
+    (defun nl_bf_err_type_write_symbol_sym (sym_slot)
+      (let ((buf (alloc-bytes 8 1)))
+        (seq (ptr-write-u64 buf 0 119225648511347)
+             (nl_alloc_symbol buf 6 sym_slot))))
+    (defun nl_bf_err_type (env name_ptr)
+      (let ((tag_slot (alloc-bytes 32 8))
+            (symbol_slot (alloc-bytes 32 8))
+            (name_clone (alloc-bytes 32 8))
+            (nil_slot (alloc-bytes 32 8))
+            (inner_cdr (alloc-bytes 32 8))
+            (symbol_pair (alloc-bytes 32 8))
+            (signal_slot (alloc-bytes 32 8)))
+        (seq (nl_bf_err_type_write_wta_sym tag_slot)
+             (nl_bf_err_type_write_symbol_sym symbol_slot)
+             (nl_sexp_clone_into name_clone name_ptr)
+             (nl_env_write_nil_slot nil_slot)
+             (seq (nelisp_cons_construct name_clone nil_slot inner_cdr)
+                  (nelisp_cons_construct symbol_slot inner_cdr symbol_pair)
+                  (nelisp_cons_construct tag_slot symbol_pair signal_slot))
+             (nl_env_stash_signal env signal_slot))))
+    (defun nl_bf_err_dangling_rest_write_sym_after (sym_slot)
+      (let ((buf (alloc-bytes 24 1)))
+        (seq (ptr-write-u64 buf 0 6998713046582262131)
+             (ptr-write-u64 (+ buf 8) 0 7309947065975796838)
+             (ptr-write-u64 (+ buf 16) 0 29811)
+             (nl_alloc_symbol buf 18 sym_slot))))
+    (defun nl_bf_err_dangling_rest_write_amp_rest (sym_slot)
+      (let ((buf (alloc-bytes 8 1)))
+        (seq (ptr-write-u64 buf 0 500152234534)
+             (nl_alloc_symbol buf 5 sym_slot))))
+    (defun nl_bf_err_dangling_rest (env)
+      (let ((tag_slot (alloc-bytes 32 8))
+            (sym_after (alloc-bytes 32 8))
+            (amp_rest_slot (alloc-bytes 32 8))
+            (nil_slot (alloc-bytes 32 8))
+            (inner_cdr (alloc-bytes 32 8))
+            (after_pair (alloc-bytes 32 8))
+            (signal_slot (alloc-bytes 32 8)))
+        (seq (nl_bf_err_type_write_wta_sym tag_slot)
+             (nl_bf_err_dangling_rest_write_sym_after sym_after)
+             (nl_bf_err_dangling_rest_write_amp_rest amp_rest_slot)
+             (nl_env_write_nil_slot nil_slot)
+             (seq (nelisp_cons_construct amp_rest_slot nil_slot inner_cdr)
+                  (nelisp_cons_construct sym_after inner_cdr after_pair)
+                  (nelisp_cons_construct tag_slot after_pair signal_slot))
+             (nl_env_stash_signal env signal_slot)))))
+  "Doc 135 Stage 135.C Phase 47 source for bind+stash env-leaf ctx-accessors.
+
+Multi-entry `(seq DEFUN ...)' manifest.
+
+Lowered from packages/nelisp-sys/eval-port/env-leaves-bind.nl.
+
+Public exports: nl_env_set_value / nl_bf_bind_sym / nl_bf_bind_optional /
+nl_bf_bind_rest / nl_bf_err_arity / nl_bf_err_type / nl_bf_err_dangling_rest.
+Net Rust delta: zero.  Resolves 7 undefined symbols.")
+
+(provide 'nelisp-cc-evalport-env-leaves-bind)
+
+;;; nelisp-cc-evalport-env-leaves-bind.el ends here
