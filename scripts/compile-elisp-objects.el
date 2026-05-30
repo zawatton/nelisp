@@ -1583,6 +1583,38 @@
     (nelisp-cc-evalport-capture-lexical
      :source-var nelisp-cc-evalport-capture-lexical--source
      :output "evalport-capture-lexical.o"
+     :requires-arch x86_64)
+    ;; Doc 135 Stage 135.E (M2 swap) — the elisp COMBINER (re-wired aot-free).
+    ;;   combiner-arglist: nl_eval_arg_list (+ walk).
+    ;;   combiner-apply:   nl_apply_function + nl_apply_* helpers + special-form arms.
+    ;;   combiner-entry:   nl_eval recursion-wrapper + nl_eval_ctx_make/in_ctx.
+    ;;   bootstrap:        nl_install_builtins (60 builtins) + nl_install_one.
+    ;; Externs nelisp_eval_call/nelisp_apply_function (Rust) KEPT; nl_eval_inner_cons
+    ;; stays Rust (combiner-cons NOT wired here → no duplicate symbol).
+    (nelisp-cc-evalport-combiner-arglist
+     :source-var nelisp-cc-evalport-combiner-arglist--source
+     :output "evalport-combiner-arglist.o"
+     :requires-arch x86_64)
+    (nelisp-cc-evalport-combiner-apply
+     :source-var nelisp-cc-evalport-combiner-apply--source
+     :output "evalport-combiner-apply.o"
+     :requires-arch x86_64)
+    (nelisp-cc-evalport-combiner-entry
+     :source-var nelisp-cc-evalport-combiner-entry--source
+     :output "evalport-combiner-entry.o"
+     :requires-arch x86_64)
+    (nelisp-cc-evalport-bootstrap
+     :source-var nelisp-cc-evalport-bootstrap--source
+     :output "evalport-bootstrap.o"
+     :requires-arch x86_64)
+    ;; Doc 135 Stage 135.E (M2) — native nelisp_aot_builtin_call1 provider.
+    ;;   The combiner (nl_eval / nl_apply_do_fset) lowers a 1-arg env-independent
+    ;;   builtin via Doc 129.6 AOT delegation; Doc 129 shipped only an in-Emacs
+    ;;   bridge, never a native symbol.  This builds the (builtin NAME) sentinel
+    ;;   + (ARG) list and forwards to the kept Rust nelisp_apply_function.
+    (nelisp-cc-evalport-aot-builtin-call1
+     :source-var nelisp-cc-evalport-aot-builtin-call1--source
+     :output "evalport-aot-builtin-call1.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

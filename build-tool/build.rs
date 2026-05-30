@@ -72,7 +72,7 @@ fn main() {
 /// the last 3 undefined symbols, Rust eval driver still active pre-cutover).
 /// The combiner + bootstrap modules are staged but NOT wired here: they would
 /// introduce nelisp_aot_builtin_call1 (undefined) and belong to the 135.E cutover.
-const N_MANIFEST_ENTRIES: usize = 233;
+const N_MANIFEST_ENTRIES: usize = 238;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -304,6 +304,15 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-evalport-str-to-float.el",
         "nelisp-cc-evalport-tty-memcpy.el",
         "nelisp-cc-evalport-capture-lexical.el",
+        // Doc 135 Stage 135.E (M2 swap) — elisp combiner (aot-free, dup-free:
+        // combiner-cons NOT wired, so Rust nl_eval_inner_cons stays).
+        "nelisp-cc-evalport-combiner-arglist.el",
+        "nelisp-cc-evalport-combiner-apply.el",
+        "nelisp-cc-evalport-combiner-entry.el",
+        "nelisp-cc-evalport-bootstrap.el",
+        // Doc 135 Stage 135.E (M2) — native nelisp_aot_builtin_call1 provider
+        // (the combiner's only AOT-delegation dependency).
+        "nelisp-cc-evalport-aot-builtin-call1.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
