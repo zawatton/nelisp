@@ -1564,6 +1564,36 @@
     (nelisp-cc-evalport-nonenv-mut-str-set-cp
      :source-var nelisp-cc-evalport-nonenv-mut-str-set-cp--source
      :output "evalport-nonenv-mut-str-set-cp.o"
+     :requires-arch x86_64)
+    ;; Doc 136 — nl_str_to_float: decimal float string parser.
+    ;;   Resolves nl_str_to_float undefined from fa8932eb deletion.
+    (nelisp-cc-evalport-str-to-float
+     :source-var nelisp-cc-evalport-str-to-float--source
+     :output "evalport-str-to-float.o"
+     :requires-arch x86_64)
+    ;; Doc 135 Stage 135.D — nl_eval_arg_list: left-to-right arg eval walker.
+    ;;   Resolves nl_eval_arg_list undefined from fa8932eb deletion.
+    (nelisp-cc-evalport-combiner-arglist
+     :source-var nelisp-cc-evalport-combiner-arglist--source
+     :output "evalport-combiner-arglist.o"
+     :requires-arch x86_64)
+    ;; Doc 135 Stage 135.D — nl_apply_function: builtin/closure/lambda dispatch.
+    ;;   Resolves nl_apply_function undefined from fa8932eb deletion.
+    (nelisp-cc-evalport-combiner-apply
+     :source-var nelisp-cc-evalport-combiner-apply--source
+     :output "evalport-combiner-apply.o"
+     :requires-arch x86_64)
+    ;; Doc 135 Stage 135.D — nl_eval + nl_eval_ctx_make + nl_eval_in_ctx.
+    ;;   Resolves nl_eval / nl_eval_ctx_make undefined from fa8932eb deletion.
+    (nelisp-cc-evalport-combiner-entry
+     :source-var nelisp-cc-evalport-combiner-entry--source
+     :output "evalport-combiner-entry.o"
+     :requires-arch x86_64)
+    ;; Doc 135 Stage 135.D — nl_install_builtins: 60-builtin mirror bootstrap.
+    ;;   Resolves nl_install_builtins undefined from fa8932eb deletion.
+    (nelisp-cc-evalport-bootstrap
+     :source-var nelisp-cc-evalport-bootstrap--source
+     :output "evalport-bootstrap.o"
      :requires-arch x86_64))
   "Build-time manifest of elisp features → ET_REL output files.
 Each entry is `(FEATURE :source-var SYM :output BASENAME)' where

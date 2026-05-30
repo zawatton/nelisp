@@ -66,7 +66,12 @@ fn main() {
 /// evalport-env-leaves-frame.o / evalport-env-leaves-logic.o /
 /// evalport-nonenv-char-table.o / evalport-nonenv-mut-str-push.o /
 /// evalport-nonenv-mut-str-set-cp.o (resolves env-leaf + non-env symbols).
-const N_MANIFEST_ENTRIES: usize = 231;
+/// Doc 135 Stage 135.D — bumped to 236 for 5 combiner eval-port modules:
+/// evalport-str-to-float.o / evalport-combiner-arglist.o /
+/// evalport-combiner-apply.o / evalport-combiner-entry.o /
+/// evalport-bootstrap.o (resolves nl_str_to_float / nl_eval_arg_list /
+/// nl_apply_function / nl_eval / nl_eval_ctx_make / nl_install_builtins).
+const N_MANIFEST_ENTRIES: usize = 236;
 
 fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
     let repo_root = std::path::Path::new(manifest_dir).join("..");
@@ -294,6 +299,12 @@ fn link_elisp_cc_spike(manifest_dir: &str, target_os: &str, target_arch: &str) {
         "nelisp-cc-evalport-nonenv-char-table.el",
         "nelisp-cc-evalport-nonenv-mut-str-push.el",
         "nelisp-cc-evalport-nonenv-mut-str-set-cp.el",
+        // Doc 135 Stage 135.D — 5 combiner eval-port modules.
+        "nelisp-cc-evalport-str-to-float.el",
+        "nelisp-cc-evalport-combiner-arglist.el",
+        "nelisp-cc-evalport-combiner-apply.el",
+        "nelisp-cc-evalport-combiner-entry.el",
+        "nelisp-cc-evalport-bootstrap.el",
     ];
 
     println!("cargo:rerun-if-changed={}", script.display());
