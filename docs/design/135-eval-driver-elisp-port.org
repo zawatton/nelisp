@@ -399,3 +399,77 @@ FRAME-COMPOSE→REAL-LOGIC) then the combiner, then the atomic 135.E swap.
 - Doc 134 — per-symbol re-provision; SHIPPED for non-env helpers, SUPERSEDED for
   the env group by this driver port.
 - ~project_doc133_cargo_broken_by_fa8932eb~ — the broken-build root cause.
+
+* 9. Stage 135.E execution log + blocker audit (2026-05-30)
+
+** 9.1 LINK-GREEN milestone — SHIPPED (commit 0e7db686)
+
+~cargo build~ EXIT=0, ZERO undefined symbols. All ~20 eval symbols deleted by
+fa8932eb are now resolved by elisp/nelisp-sys eval-port .o. Wiring (10 evalport
+modules): env-leaves ×4 + nonenv-{char-table,mut-str-push,mut-str-set-cp} +
+str-to-float + tty-memcpy + capture-lexical. (combiner ×4 + bootstrap staged but
+NOT wired — they introduce ~nelisp_aot_builtin_call1~ undefined; deferred to the
+cutover.) Verified: ~nl_str_to_float~/~nl_tty_memcpy_to_saved~/~nl_env_capture_lexical~
+T in archive; ~nl_capture_descend_native~ T in nelisp_frame_stack_find.o; no stale
+combiner .o archived; build.rs N_MANIFEST=233; ~ar~ glob-archives the out-dir so
+stale .o must be deleted on manifest shrink.
+
+** 9.2 LINK-GREEN ≠ WORKING EVAL — the all-or-nothing wall (Risk #2 realised)
+
+The link-green binary SEGFAULTS on *every* eval (even ~--help~), as soon as the
+first special form is evaluated (= during ~Env::new_global()~ stdlib load). Root
+cause CONFIRMED from source: ~nelisp_eval_call(form, env: *mut c_void, out)~ does
+~let r = &mut *(env as *mut Env); eval(&*form, r)~ → Rust ~eval~ → ~apply_special~ →
+forwards ~*mut Env~ to the compiled elisp ~sf_*~ .o → which thread it to env-leaves
+(~nl_let_setup~ etc.) that read it as ~*mut EvalCtx~ (120-B Sexp Record). ~*mut Env~
+≠ ~*mut EvalCtx~ → crash. There is NO working intermediate: the cutover is atomic.
+
+** 9.3 BLOCKERS surfaced by the review fleet (must resolve for the (Y) cutover)
+
+- *B1 (central)*: ~nelisp_eval_call~ Rust body casts ~env as *mut Env~ and calls Rust
+  ~eval~. The elisp combiner calls ~nelisp_eval_call~ recursively threading an
+  EvalCtx. The plan never says who rewrites ~nelisp_eval_call~'s body to build/thread
+  EvalCtx. Deleting only Rust ~nl_eval_inner_cons~ (the sole true dup-symbol collision)
+  just relocates the crash.
+- *B2*: ~nelisp_apply_function~ also casts ~env as *mut Env~; combiner-apply.nl routes
+  env-independent builtins through it. Safe only because those arms never deref env
+  (technically UB, untested/fragile).
+- *B3*: ~bin/nelisp.rs~ main builds ~Env::new_global()~ (loads stdlib via Rust eval) +
+  calls Rust ~apply_function~. No specified path to enter the elisp eval via EvalCtx;
+  the EvalCtx bootstrap (who calls ~nl_eval_ctx_make~ with which globals/frames/unbound
+  pointers, and how the stdlib load itself runs through the elisp driver) is the
+  missing piece. Bootstrap is circular: stdlib-load needs eval, eval needs the driver.
+- *S1*: combiner-cons never reads ~flags~ (~use_elisp_apply~ bit0 / ~delegation_depth~
+  bits1+); macro-expansion + non-Symbol-head delegation are DEFERRED → ported eval
+  behaves as ~use_elisp_apply=false, delegation_depth=0~ → ~defun~ (a macro) may not
+  expand → ~(fact 5)~ at risk. Confirm the combiner's inline macro-expand path covers
+  ~defun~.
+
+** 9.4 env-leaf / nonenv correctness bugs (re-lower the .nl before/at cutover)
+
+- 🔴 nonenv-mut-str-set-cp ~nl_msscp_walk~: SIGSEGV — uses ~new_slot+8~ (NlStr* payload)
+  as scratch; fix cp_slot=~new_slot+16~, width_slot=~+24~. (off fact-5 path)
+- 🔴 env-leaves-simple ~nl_env_pop_frame~: ~sys:alloc~ scratch not zero-init; add 4×
+  ~(poke-u64 +{0,8,16,24} 0)~ before ~nelisp_frame_pop~. (on let/cc path)
+- 🔴 env-leaves-bind ~nl_env_stash_signal~: returns ~nl_env_set_value~ rc (0) not 1 →
+  nl_bf_err_* mis-signal; wrap ~(seq (nl_env_set_value …) 1)~.
+- 🟡 env-leaves-simple ~nl_env_lookup_val~: add unbound-var signal stash on rc≠0.
+- 🟡 combiner-entry ~nl_entry_stash_max_depth~: wrong LE-u64 for "error"/"max-lisp-eval-depth".
+- FLAGGED (combiner-apply): fset return-value parity (audit env_shim_set_op);
+  bind-local missing Symbol guard; several env-arms missing arity checks.
+- CORRECT (verified): nl_eval, nl_eval_ctx_make, nl_install_builtins (60),
+  nl_apply_function dispatch, nl_eval_inner_cons paths, nl_push_and_bind,
+  nl_let_setup (let/let* preserved), nl_cc_match_and_bind, char-table, mut-str-push.
+
+** 9.5 Two coherent end-states (the (X)/(Y) fork)
+
+- (X) unwire all elisp eval-port .o → pure Rust eval: WORKS but is a regression
+  (defeats Doc 135's 純elisp化 purpose). Not acceptable as an endpoint.
+- (Y) delete the Rust eval driver + thread EvalCtx from bin/main down: the goal.
+  Steps: (1) provide ~nelisp_aot_builtin_call1~; (2) fix §9.4 bugs (re-lower);
+  (3) resolve S1 (macro-expand for defun); (4) wire combiner ×4 + bootstrap;
+  (5) EvalCtx bootstrap — rewrite ~nelisp_eval_call~ to build+thread EvalCtx & call
+  elisp ~nl_eval~, route ~new_global~ stdlib-load + ~bin/main~ through it, DELETE Rust
+  ~eval~/~apply_special~/~eval_arg_list~/~nl_eval_inner_cons~ (net-NEGATIVE Rust);
+  (6) rebuild → link-green → ~(fact 5)~→120. Step 5 is the crux + highest risk
+  (the stdlib bootstrap is the foundation).
