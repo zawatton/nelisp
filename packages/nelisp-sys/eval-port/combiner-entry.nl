@@ -90,7 +90,8 @@
 ;;   nl_alloc_vector       T 0x01f4 (libnelisp_elisp_spike.a)
 ;;   nl_vector_set_slot    T 0x0000 (libnelisp_elisp_spike.a)
 ;;   nelisp_env_bind_local T 0x0171 (libnelisp_elisp_spike.a)
-;;   nl_quit_flag_ptr      U  (Rust binary; needed for deferred quit-flag check)
+;;   nl_quit_flag_ptr      T  (Rust binary #[no_mangle]; returns QUIT_FLAG.as_ptr())
+;;   nelisp_tty_take_atomic T 0x0016 (archive; AtomicI64::swap(0,SeqCst) on ptr)
 ;;
 ;; String LE-u64 encodings used in this file:
 ;;   "error"                     [ 5]: 547519316581
@@ -98,6 +99,7 @@
 ;;   "nelisp--last-signal-data"  [24]: 3255381746650998126, 7451613697525637484,
 ;;                                     7022344801864147310
 ;;   "symbol-entry"              [12]: 7290602597431212403, 2037544046
+;;   "quit"                      [ 4]: 1953068401
 
 ;; ---------------------------------------------------------------------------
 ;; Struct declarations (LOCKED §2.3 layout)
@@ -175,6 +177,24 @@
   (:symbol "nelisp_env_bind_local" :abi c :unsafe t)
   ((mirror_ptr usize) (frames_ptr usize) (name_ptr usize)
    (val_ptr usize) (scratch_ptr usize) (_pad i64))
+  i64
+  (:alloc none :ffi may :unsafe may))
+
+;; nl_quit_flag_ptr() -> *mut i64
+;; #[no_mangle] Rust export; returns QUIT_FLAG.as_ptr() (AtomicI64 address).
+;; T in Rust binary; U in archive (resolved at link from binary).
+(sys:extern nl_quit_flag_ptr
+  (:symbol "nl_quit_flag_ptr" :abi c :unsafe t)
+  ()
+  usize
+  (:alloc none :ffi may :unsafe may))
+
+;; nelisp_tty_take_atomic(flag_ptr: *mut i64) -> i64
+;; T 0x0016 in archive. Performs AtomicI64::swap(0, SeqCst); returns OLD value.
+;; Semantically identical to take_quit_flag() when passed nl_quit_flag_ptr().
+(sys:extern nelisp_tty_take_atomic
+  (:symbol "nelisp_tty_take_atomic" :abi c :unsafe t)
+  ((flag_ptr usize))
   i64
   (:alloc none :ffi may :unsafe may))
 
@@ -290,11 +310,69 @@
           (sys:cast i64 1))))))
 
 ;; ---------------------------------------------------------------------------
+;; QUIT SIGNAL STASH HELPER
+;;
+;; nl_entry_stash_quit(env) -> i64
+;; Build signal = cons(Symbol("quit"), Nil).
+;; Install into env via nelisp_env_bind_local under "nelisp--last-signal-data".
+;; Returns 1 (= error code for nl_eval callers).
+;;
+;; "quit" [4]: 1953068401
+;; "nelisp--last-signal-data" [24]: 3255381746650998126, 7451613697525637484, 7022344801864147310
+;; ---------------------------------------------------------------------------
+(sys:defun nl_entry_stash_quit
+    ((env (ptr eval_ctx)))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((quit_buf usize (sys:alloc 8 1))
+        (quit_slot usize (sys:alloc 32 8))
+        (nil_slot usize (sys:alloc 32 8))
+        (signal_slot usize (sys:alloc 32 8)))
+    ;; Build Symbol("quit")
+    (sys:unsafe
+     (sys:poke-u64 quit_buf 1953068401)
+     (nl_alloc_symbol quit_buf 4 quit_slot))
+    ;; Build Nil
+    (nl_entry_write_nil nil_slot)
+    ;; cons(Symbol("quit"), Nil) → signal_slot
+    (sys:unsafe (nelisp_cons_construct quit_slot nil_slot signal_slot))
+    ;; Install: nelisp--last-signal-data = signal_slot
+    (let ((name_sym_slot usize (sys:alloc 32 8))
+          (name_buf usize (sys:alloc 24 1))
+          (mirror_ptr usize (+ (sys:cast usize env)
+                               (sys:offsetof eval_ctx mirror)))
+          (frames_ptr usize (+ (sys:cast usize env)
+                               (sys:offsetof eval_ctx frames)))
+          (unbound_ptr usize (+ (sys:cast usize env)
+                                (sys:offsetof eval_ctx unbound)))
+          (sym5_slot usize (sys:alloc 32 8))
+          (vec_slot usize (sys:alloc 32 8)))
+      (sys:unsafe
+       (sys:poke-u64 name_buf 3255381746650998126)
+       (sys:poke-u64 (+ name_buf 8) 7451613697525637484)
+       (sys:poke-u64 (+ name_buf 16) 7022344801864147310)
+       (nl_alloc_symbol name_buf 24 name_sym_slot))
+      ;; Build scratch vector for env_bind_local
+      (let ((box_ptr usize (nl_entry_build_scratch_box sym5_slot unbound_ptr)))
+        (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
+          (sys:unsafe
+           (nl_sexp_clone_into (+ data_ptr 224) signal_slot)
+           (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+           (sys:poke-u64 vec_slot 8)
+           (sys:poke-u64 (+ vec_slot 8) box_ptr)
+           (sys:poke-u64 (+ vec_slot 16) 0)
+           (sys:poke-u64 (+ vec_slot 24) 0))
+          (sys:unsafe
+           (nelisp_env_bind_local mirror_ptr frames_ptr
+                                  name_sym_slot signal_slot vec_slot 0))
+          (sys:cast i64 1))))))
+
+;; ---------------------------------------------------------------------------
 ;; (a) nl_eval(form_ptr, env, out) -> i64
 ;;
 ;; Rust eval() body port (build-tool/src/eval/mod.rs):
 ;;   pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-;;     if take_quit_flag() { return Err(EvalError::Quit); }        // ← DEFERRED
+;;     if take_quit_flag() { return Err(EvalError::Quit); }        // ← IMPLEMENTED
 ;;     if env.current_recursion >= env.max_recursion {             // ← rec_cur@96, rec_max@104
 ;;       return Err(EvalError::internal("max-lisp-eval-depth exceeded ..."));
 ;;     }
@@ -304,15 +382,12 @@
 ;;     if rc == 0 { Ok(out) } else { Err(consume_stashed_error(env, "eval_inner")) }
 ;;   }
 ;;
-;; DEFERRED: quit-flag check.
-;;   take_quit_flag() is not C-ABI exported.  The only exported primitive is:
-;;     nl_quit_flag_ptr() -> *mut i64   (#[no_mangle], returns QUIT_FLAG.as_ptr())
-;;   The swap (AtomicI64::swap(0, SeqCst)) requires either a dedicated C-ABI shim
-;;   (nl_take_quit_flag — 1 Rust LOC, net zero with the swap) or reusing
-;;   nelisp_tty_take_atomic(flag_ptr) which performs the same SeqCst swap.
-;;   Neither is unambiguously safe without user sign-off (tty_take_atomic is
-;;   semantically TTY-specific in name).  The check is omitted; the
-;;   depth-limit guard still catches runaway recursion.
+;; QUIT-FLAG CHECK:
+;;   take_quit_flag() in Rust is not C-ABI exported, but:
+;;     nl_quit_flag_ptr() -> *mut i64   (#[no_mangle]) returns QUIT_FLAG.as_ptr()
+;;     nelisp_tty_take_atomic(ptr) -> i64  performs AtomicI64::swap(0, SeqCst)
+;;   Combining both replicates take_quit_flag() exactly.
+;;   On nonzero return: stash signal cons(Symbol("quit"), Nil) via nl_entry_stash_quit.
 ;;
 ;; rec_cur is at offset 96; rec_max at offset 104 (verified §2.3).
 ;; Both are i64 in EvalCtx (Rust Env uses u32 but §2.3 promotes to i64).
@@ -322,27 +397,34 @@
     ((form_ptr usize) (env (ptr eval_ctx)) (out usize))
   i64
   (:alloc may :ffi may :unsafe may)
-  ;; TODO DEFERRED: quit-flag check.
-  ;; When nl_take_quit_flag C-ABI is available, add:
-  ;;   if (= (nl_take_quit_flag) 1) → stash Quit signal + return 1.
-  (let ((ctx_base usize (sys:cast usize env))
+  ;; QUIT-FLAG CHECK (matches Rust eval(): `if take_quit_flag() { return Err(Quit); }`)
+  ;; nl_quit_flag_ptr() -> *mut i64 (ptr to QUIT_FLAG AtomicI64)
+  ;; nelisp_tty_take_atomic(ptr) -> i64: AtomicI64::swap(0, SeqCst); returns old value.
+  ;; Nonzero old value = quit pending.
+  (let ((quit_flag_ptr usize (sys:unsafe (nl_quit_flag_ptr)))
+        (ctx_base usize (sys:cast usize env))
         (env_ptr usize (sys:cast usize env)))
-    (let ((rec_cur_addr usize (+ ctx_base 96))
-          (rec_max_addr usize (+ ctx_base 104)))
-      (let ((rec_cur i64 (sys:unsafe (sys:cast i64 (sys:peek-u64 rec_cur_addr))))
-            (rec_max i64 (sys:unsafe (sys:cast i64 (sys:peek-u64 rec_max_addr)))))
-        ;; Depth guard
-        (if (>= rec_cur rec_max)
-            ;; max-lisp-eval-depth exceeded: stash error signal, return 1
-            (nl_entry_stash_max_depth env)
-          ;; Increment rec_cur
-          (sys:unsafe (sys:poke-u64 rec_cur_addr (sys:cast u64 (+ rec_cur 1))))
-          ;; Delegate to nl_eval_inner (the Phase 47 elisp .o for Symbol/Cons/Cell dispatch)
-          (let ((rc i64 (sys:unsafe (nl_eval_inner form_ptr env_ptr out 0))))
-            ;; Decrement rec_cur
-            (sys:unsafe (sys:poke-u64 rec_cur_addr (sys:cast u64 rec_cur)))
-            ;; Propagate rc: 0=ok, 1=error-stashed-by-inner
-            rc))))))
+    (let ((quit_val i64 (sys:unsafe (nelisp_tty_take_atomic quit_flag_ptr))))
+      (if (/= quit_val 0)
+          ;; Quit pending: stash signal cons(Symbol("quit"), Nil) and return 1
+          (nl_entry_stash_quit env)
+        ;; No quit: proceed with rec-depth guard
+        (let ((rec_cur_addr usize (+ ctx_base 96))
+              (rec_max_addr usize (+ ctx_base 104)))
+          (let ((rec_cur i64 (sys:unsafe (sys:cast i64 (sys:peek-u64 rec_cur_addr))))
+                (rec_max i64 (sys:unsafe (sys:cast i64 (sys:peek-u64 rec_max_addr)))))
+            ;; Depth guard
+            (if (>= rec_cur rec_max)
+                ;; max-lisp-eval-depth exceeded: stash error signal, return 1
+                (nl_entry_stash_max_depth env)
+              ;; Increment rec_cur
+              (sys:unsafe (sys:poke-u64 rec_cur_addr (sys:cast u64 (+ rec_cur 1))))
+              ;; Delegate to nl_eval_inner (Phase 47 elisp .o: Symbol/Cons/Cell dispatch)
+              (let ((rc i64 (sys:unsafe (nl_eval_inner form_ptr env_ptr out 0))))
+                ;; Decrement rec_cur
+                (sys:unsafe (sys:poke-u64 rec_cur_addr (sys:cast u64 rec_cur)))
+                ;; Propagate rc: 0=ok, 1=error-stashed-by-inner
+                rc))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; (b) nl_eval_ctx_make(globals_ptr, frames_ptr, unbound_ptr, rec_max, out_ctx_slot) -> i64

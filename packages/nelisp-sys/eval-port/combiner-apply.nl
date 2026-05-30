@@ -52,8 +52,10 @@
 ;;       "nelisp--bind-local"         → nelisp_env_bind_local via nl_logic_bind_local pattern
 ;;       "nelisp--push-captured"      → nl_env_push_captured(ctx, args[0])
 ;;       "nelisp--set-use-elisp-apply" → set ctx.flags bit0 from args[0]; return T/Nil
+;;       "symbol-function"            → nelisp_env_lookup_function(mirror, unbound, args[0], out)
+;;       "fset"                       → build fn scratch; nelisp_mirror_set_function_or_insert; return args[1]
 ;;     DEFERRED env-using names (need ctx-globals-op / platform logic):
-;;       "symbol-function" / "fset" / "nelisp--syscall-canonicalize" /
+;;       "nelisp--syscall-canonicalize" /
 ;;       "nelisp--syscall-stat" / "nelisp--syscall-readdir" /
 ;;       "nelisp--syscall-read-file" / "nelisp--apply-lambda-inner" /
 ;;       "nelisp--apply-builtin-dispatch" / "signal"
@@ -251,6 +253,16 @@
 (sys:extern nl_env_push_captured
   (:symbol "nl_env_push_captured" :abi c :unsafe t)
   ((env_ptr usize) (alist_ptr usize))
+  i64
+  (:alloc may :ffi may :unsafe may))
+
+;; nelisp_mirror_set_function_or_insert(mirror_ptr, sym_ptr, scratch_vec_ptr, _pad) -> i64
+;; T 0x01e5 in archive. Installs a function-variant scratch into the mirror.
+;; scratch_vec_ptr: 11-slot Sexp::Vector with slot5=Symbol("symbol-entry"),
+;;   slot7=unbound_marker (clone), slot8=function_sexp (clone).
+(sys:extern nelisp_mirror_set_function_or_insert
+  (:symbol "nelisp_mirror_set_function_or_insert" :abi c :unsafe t)
+  ((mirror_ptr usize) (sym_ptr usize) (scratch_vec_ptr usize) (_pad i64))
   i64
   (:alloc may :ffi may :unsafe may))
 
@@ -604,12 +616,13 @@
                   (sys:cast i64 1)
                 (if (= (nl_apply_name_eq_set_use_elisp name_ptr) 1)
                     (sys:cast i64 1)
-                  ;; Not in handled set. Check deferred set (exact-match each).
-                  (if (= (nl_apply_deferred_signal name_ptr) 1)
-                      (sys:cast i64 2)
-                    (if (= (nl_apply_deferred_symbol_function name_ptr) 1)
-                        (sys:cast i64 2)
-                      (if (= (nl_apply_deferred_fset name_ptr) 1)
+                  ;; symbol-function and fset: now handled (class 1)
+                  (if (= (nl_apply_deferred_symbol_function name_ptr) 1)
+                      (sys:cast i64 1)
+                    (if (= (nl_apply_deferred_fset name_ptr) 1)
+                        (sys:cast i64 1)
+                      ;; Not in handled set. Check deferred set (exact-match each).
+                      (if (= (nl_apply_deferred_signal name_ptr) 1)
                           (sys:cast i64 2)
                         (if (= (nl_apply_deferred_syscall_stat name_ptr) 1)
                             (sys:cast i64 2)
@@ -624,7 +637,7 @@
                                   (if (= (nl_apply_deferred_apply_builtin name_ptr) 1)
                                       (sys:cast i64 2)
                                     ;; Not deferred: env-independent, safe to forward
-                                    (sys:cast i64 0)))))))))))))))))
+                                    (sys:cast i64 0)))))))))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; WRONG-TYPE-ARGUMENT signal helper
@@ -715,7 +728,7 @@
          (sys:poke-u64 (+ sym_buf 8) 2037544046)
          (nl_alloc_symbol sym_buf 12 sym_slot)
          (nl_vector_set_slot box_ptr 5 sym_slot))
-        (let ((data_ptr usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8)))))
+        (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
           (sys:unsafe
            (nl_sexp_clone_into (+ data_ptr 224) signal_slot)
            (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
@@ -818,7 +831,7 @@
      (sys:poke-u64 (+ sym_buf 8) 2037544046)
      (nl_alloc_symbol sym_buf 12 sym_slot)
      (nl_vector_set_slot box_ptr 5 sym_slot))
-    (let ((data_ptr usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8)))))
+    (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
       (sys:unsafe
        (nl_sexp_clone_into (+ data_ptr 224) val_ptr)
        (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
@@ -1136,6 +1149,111 @@
                  (sys:cast i64 0))))))))))
 
 ;; ---------------------------------------------------------------------------
+;; SYMBOL-FUNCTION / FSET HELPERS
+;;
+;; nl_apply_build_fn_scratch(unbound_ptr, definition_ptr, out_slot) -> out_slot
+;; Builds an 11-slot function-variant Sexp::Vector scratch.
+;; Mirrors Rust build_or_insert_scratch_vec(unbound, definition, Nil, Nil):
+;;   slot5 = Symbol("symbol-entry"), slot7 = unbound (clone), slot8 = definition (clone).
+;; Slots 0-4,6,9-10 stay Nil (nl_alloc_vector initialises all to Nil).
+;;
+;; "symbol-entry" [12]: 7290602597431212403, 2037544046
+;; NlVector data_ptr = peek-u64(box_ptr+8). Slot N at data_ptr + N*32.
+;; ---------------------------------------------------------------------------
+(sys:defun nl_apply_build_fn_scratch
+    ((unbound_ptr usize) (definition_ptr usize) (out_slot usize))
+  usize
+  (:alloc may :ffi may :unsafe may)
+  (let ((box_ptr usize (sys:unsafe (nl_alloc_vector 11)))
+        (sym_slot usize (sys:alloc 32 8))
+        (sym_buf usize (sys:alloc 16 1)))
+    ;; "symbol-entry" [12]
+    (sys:unsafe
+     (sys:poke-u64 sym_buf 7290602597431212403)
+     (sys:poke-u64 (+ sym_buf 8) 2037544046)
+     (nl_alloc_symbol sym_buf 12 sym_slot)
+     (nl_vector_set_slot box_ptr 5 sym_slot))
+    (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
+      (sys:unsafe
+       (nl_sexp_clone_into (+ data_ptr 224) unbound_ptr)
+       (nl_sexp_clone_into (+ data_ptr 256) definition_ptr)
+       ;; Wrap box_ptr as Sexp::Vector in out_slot (tag=8, payload=box_ptr)
+       (sys:poke-u64 out_slot 8)
+       (sys:poke-u64 (+ out_slot 8) box_ptr)
+       (sys:poke-u64 (+ out_slot 16) 0)
+       (sys:poke-u64 (+ out_slot 24) 0)
+       out_slot))))
+
+;; nl_apply_do_symbol_function(args_list_ptr, env, out) -> i64
+;; "symbol-function" (1 arg: a symbol):
+;;   Rust: bi_globals_op(&[Symbol("get-function"), sym], env)
+;;   Direct path: nelisp_env_lookup_function(mirror, unbound, args[0], out) -> rc.
+;;   rc 0 = ok (out holds function), nonzero = error (unbound / stash already set by callee).
+;;   Returns the rc from nelisp_env_lookup_function directly.
+(sys:defun nl_apply_do_symbol_function
+    ((args_list_ptr usize) (env (ptr eval_ctx)) (out usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((arg0_ptr usize (nl_apply_list_nth args_list_ptr 0)))
+    (if (= arg0_ptr 0)
+        (nl_apply_stash_wta env args_list_ptr)
+      (let ((mirror_ptr usize (+ (sys:cast usize env)
+                                 (sys:offsetof eval_ctx mirror)))
+            (unbound_ptr usize (+ (sys:cast usize env)
+                                  (sys:offsetof eval_ctx unbound))))
+        (sys:unsafe
+         (nelisp_env_lookup_function mirror_ptr unbound_ptr arg0_ptr out))))))
+
+;; nl_apply_do_fset(args_list_ptr, env, out) -> i64
+;; "fset" (2 args: symbol, definition):
+;;   Rust: resolved = if Symbol(s) → lookup_function(s) else args[1].clone()
+;;         bi_globals_op(&[Symbol("set-function"), args[0], resolved], env)
+;;   Direct path:
+;;     1. Resolve args[1]: if tag==4 (Symbol), lookup function-cell.
+;;        If not Symbol, use args[1] directly.
+;;     2. Build 11-slot function-variant scratch (symbol-entry@5, unbound@7, resolved@8).
+;;     3. nelisp_mirror_set_function_or_insert(mirror, args[0], scratch, 0).
+;;     4. Clone args[1] (original, not resolved) into out — fset returns the definition arg.
+;;     Returns 0.
+(sys:defun nl_apply_do_fset
+    ((args_list_ptr usize) (env (ptr eval_ctx)) (out usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((sym_ptr usize (nl_apply_list_nth args_list_ptr 0))
+        (def_ptr usize (nl_apply_list_nth args_list_ptr 1)))
+    (if (= sym_ptr 0)
+        (nl_apply_stash_wta env args_list_ptr)
+      (if (= def_ptr 0)
+          (nl_apply_stash_wta env args_list_ptr)
+        ;; Resolve def_ptr: if Symbol, lookup its function-cell; otherwise use directly.
+        (let ((mirror_ptr usize (+ (sys:cast usize env)
+                                   (sys:offsetof eval_ctx mirror)))
+              (unbound_ptr usize (+ (sys:cast usize env)
+                                    (sys:offsetof eval_ctx unbound)))
+              (def_tag usize (sys:cast usize (sys:peek-u64 def_ptr))))
+          (let ((resolved_slot usize (sys:alloc 32 8)))
+            (let ((resolve_rc i64
+                   (if (= def_tag 4)
+                       ;; Symbol: lookup its function-cell
+                       (sys:unsafe
+                        (nelisp_env_lookup_function mirror_ptr unbound_ptr def_ptr resolved_slot))
+                     ;; Not Symbol: clone def_ptr as-is
+                     (sys:unsafe (nl_sexp_clone_into resolved_slot def_ptr)))))
+              (if (/= resolve_rc 0)
+                  ;; lookup error (unbound function): propagate
+                  resolve_rc
+                ;; Build scratch and call mirror_set_function_or_insert
+                (let ((scratch_slot usize (sys:alloc 32 8)))
+                  (nl_apply_build_fn_scratch unbound_ptr resolved_slot scratch_slot)
+                  (let ((set_rc i64 (sys:unsafe
+                                     (nelisp_mirror_set_function_or_insert
+                                      mirror_ptr sym_ptr scratch_slot 0))))
+                    (if (/= set_rc 0)
+                        set_rc
+                      ;; fset returns args[1] (the original definition, not resolved)
+                      (sys:unsafe (nl_sexp_clone_into out def_ptr)))))))))))))
+
+;; ---------------------------------------------------------------------------
 ;; BUILTIN DISPATCH
 ;;
 ;; nl_apply_builtin(func_ptr, args_list_ptr, env, out) -> i64
@@ -1156,7 +1274,7 @@
         (let ((name_ptr usize (sys:unsafe (nl_cons_car_ptr func_cdr))))
           ;; name_ptr must be Symbol(4) or Str(5)
           (let ((name_tag usize (sys:cast usize (sys:peek-u64 name_ptr))))
-            (if (if (= name_tag 4) 1 (if (= name_tag 5) 1 0))
+            (if (if (= name_tag 4) (= name_tag 4) (= name_tag 5))
                 ;; tag is 4 or 5 — ok (Symbol or Str)
                 (let ((cls i64 (nl_apply_name_classify name_ptr)))
                   (if (= cls 1)
@@ -1175,8 +1293,12 @@
                                     (nl_apply_do_bind_local args_list_ptr env out)
                                   (if (= (nl_apply_name_eq_push_captured name_ptr) 1)
                                       (nl_apply_do_push_captured args_list_ptr env out)
-                                    ;; must be nelisp--set-use-elisp-apply
-                                    (nl_apply_do_set_use_elisp args_list_ptr env out))))))))
+                                    (if (= (nl_apply_name_eq_set_use_elisp name_ptr) 1)
+                                        (nl_apply_do_set_use_elisp args_list_ptr env out)
+                                      (if (= (nl_apply_deferred_symbol_function name_ptr) 1)
+                                          (nl_apply_do_symbol_function args_list_ptr env out)
+                                        ;; must be fset
+                                        (nl_apply_do_fset args_list_ptr env out))))))))))
                     (if (= cls 2)
                         ;; Deferred: stash not-yet-implemented error and return 1
                         (nl_apply_stash_wta env name_ptr)
