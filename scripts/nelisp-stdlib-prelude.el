@@ -557,17 +557,23 @@ expansion rather than a runtime error)."
       (list 'cl-block nil
             (cons 'while
                   (cons t bodyless-forms))))
-     ;; Numeric `for VAR from N {to,below} M' [do FORM ...]
+     ;; Numeric `for VAR from N {to,below} M' [sum FORM | do FORM ...]
+     ;; (Task 2: thread the sum accumulator the numeric branch used to drop).
      ((and numeric-from (or numeric-to numeric-below))
       (let ((cmp (if numeric-to '<= '<))
             (limit (or numeric-to numeric-below))
-            (rev nil))
+            (rev nil)
+            (acc (and sum-form (make-symbol "--loop-sum--"))))
         (while do-forms (setq rev (cons (car do-forms) rev))
                (setq do-forms (cdr do-forms)))
-        (list 'let (cons (list var numeric-from) with-bindings)
+        (when acc
+          (setq rev (cons (list 'setq acc (list '+ acc sum-form)) rev)))
+        (list 'let (cons (list var numeric-from)
+                         (if acc (cons (list acc 0) with-bindings) with-bindings))
               (list 'while (list cmp var limit)
                     (cons 'progn rev)
-                    (list 'setq var (list '1+ var))))))
+                    (list 'setq var (list '1+ var)))
+              (if acc acc var))))
      ;; While / until plain loops (= no iterator).
      (while-cond
       (let ((rev nil))

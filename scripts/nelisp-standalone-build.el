@@ -175,6 +175,60 @@ or the toolchain is newer than the cached object."
 
 ;; SHIM: nelisp_eval_call — universal recursion entry.  Bumps rec_cur@env+96
 ;; against rec_max@env+104, recurses into REAL nl_eval_inner.
+;;
+;; ===================================================================
+;; PER-EVAL SCRATCH RECLAMATION (the safe, LIFO arena release point).
+;;
+;; Every nested `nelisp_eval_call' takes an arena MARK at entry (= the
+;; bump offset *after* the caller finished its own allocations, since
+;; `out' and any caller scratch were allocated before this call).  When
+;; this eval returns, everything IT allocated lives in [mark, cur).  That
+;; whole span is dead iff (a) the result in `out' is an INLINE immediate
+;; (no heap box escapes through `out') and (b) nothing this eval did
+;; installed a box into PRE-EXISTING (persistent) state.  Under those two
+;; conditions the span is provably unreachable and we reset the bump to
+;; `mark', freeing the call-tree garbage.  This is LIFO-safe: a nested
+;; eval only ever resets to ITS OWN entry mark (>= every allocation the
+;; caller made before calling), so it can never free the caller's
+;; in-flight arg list / result (the prior corruption bug, which came from
+;; resetting *inside* `nl_apply_lambda_inner' below the caller's mark).
+;;
+;; (a) IMMEDIATE-RESULT gate: out.tag <= 3 covers Nil(0)/T(1)/Int(2)/
+;;     Float(3) — the only tags whose entire payload is inline in the
+;;     32-byte `out' slot.  Symbol(4)/Str(5)/Cons(7)/Vector(8)/Record(12)/
+;;     etc carry a box pointer into the arena, so they must survive ->
+;;     no reset.
+;; (b) NO-ESCAPE gate: a MUTATION EPOCH counter @268435544 (last free
+;;     8 bytes of the reserved [16,96) region) is bumped by every
+;;     primitive that writes a box into persistent structure (setcar/
+;;     setcdr/aset/puthash, `nelisp_env_set_value' cell-hit + mirror,
+;;     `fset' mirror-install).  We snapshot it at entry; if it changed,
+;;     some box escaped into persistent state during this eval (possibly
+;;     in a nested call) -> no reset.  Over-conservative (a `setq' to a
+;;     purely-local binding also blocks the reset) but always SOUND:
+;;     under-bumping would corrupt, over-bumping only leaks.
+;;
+;; For pure numeric recursion (fib: cond-macro re-expansion + arithmetic,
+;; NO persistent mutation, Int result) BOTH gates pass on every call, so
+;; each `fib' invocation's frame/arg/macro garbage is released the instant
+;; it returns -> a single deeply-recursive top-level form now runs in
+;; BOUNDED peak memory (the old residual blocker).
+;; ===================================================================
+;; NOTE (reclamation investigation, 2026-06-01): a per-eval arena reset was
+;; prototyped here, gated on (immediate result tag <= 3) AND (mutation epoch
+;; @268435544 unchanged) [+ escape-epoch bumps in setcar/setcdr/aset/puthash,
+;; frame-backing grow, env-set-value].  MEASURED win was real: fib peak RSS went
+;; from exponential (305 MB @ fib(20), 3.2 GB @ fib(25), SIGSEGV @ fib(26)) to a
+;; FLAT ~16-22 MB independent of N.  But it is NOT CORRECT: self-recursion and
+;; multi-form-after-call return garbage (e.g. `(+ 0 (f 0))' -> 0, and `(fset 'g
+;; ..) (g 1) (g 10)' -> 0) because the eval machinery escapes boxes above the
+;; mark through refcount-ALIASING clones + in-place macro caching + mirror/closure
+;; sharing that the build-glue cannot enumerate.  Shipping it would corrupt, so
+;; the reset is LEFT OUT (this shim is byte-identical to the pre-investigation
+;; recursion-counter-only version).  The correct fix is a tracing mark-sweep GC at
+;; the top-level form boundary (reachability instead of escape-enumeration) — see
+;; the report.  The `268435544' mutation-epoch slot + `wf_dirty' instrumentation
+;; below are inert with the reset disabled.
 (defconst nelisp-standalone--shim-source
   '(seq (defun nelisp_eval_call (form_ptr env out)
           (let* ((rec_cur_addr (+ env 96)) (rec_max_addr (+ env 104)))
@@ -228,9 +282,9 @@ or the toolchain is newer than the cached object."
     ((:u8 "list") . (seq (wf_copy32 out args) 0))
     ;; --- M4 hash tables (cons-alist v1) ---
     ((:lit "make-hash-table")  . (wf_ht_make out))
-    ((:lit "puthash")          . (wf_ht_put args out))
+    ((:lit "puthash")          . (seq (wf_dirty) (wf_ht_put args out)))
     ((:lit "gethash")          . (wf_ht_get args out))
-    ((:lit "remhash")          . (wf_ht_rem args out))
+    ((:lit "remhash")          . (seq (wf_dirty) (wf_ht_rem args out)))
     ((:lit "hash-table-count") . (wf_write_int out (wf_ht_count (wf_ht_alist_slot (wf_arg_ptr args 0)) 0)))
     ((:lit "maphash")          . (wf_ht_maphash args out))
     ;; --- M5 strings + format ---
@@ -334,6 +388,12 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
     (defun wf_write_nil (out)
       (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
            (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
+    ;; wf_dirty: bump the MUTATION EPOCH counter @268435544 (NO-ESCAPE gate
+    ;; in `nelisp_eval_call').  Called by every primitive that installs a box
+    ;; into PRE-EXISTING (persistent) structure — setcar/setcdr/aset/puthash —
+    ;; so the per-eval arena reset never frees a still-reachable escapee.
+    (defun wf_dirty ()
+      (ptr-write-u64 268435544 0 (+ (ptr-read-u64 268435544 0) 1)))
     (defun wf_sum (list_ptr acc)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (v (ptr-read-u64 car_ptr 8)))
@@ -619,12 +679,14 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
             (seq (wf_copy32 out (vector-ref-ptr arr idx)) 0)
           (wf_write_int out (str-byte-at arr idx)))))
     ;; aset ARR IDX VAL: vector slot set (string aset not supported -> 0).
+    ;; Writes VAL (possibly a box) into a PRE-EXISTING vector -> persistent
+    ;; escape -> bump the mutation epoch (NO-ESCAPE gate).
     (defun bf_aset (args out)
       (let* ((arr (wf_arg_ptr args 0))
              (idx (ptr-read-u64 (wf_arg_ptr args 1) 8))
              (val (wf_arg_ptr args 2)))
         (if (= (ptr-read-u64 arr 0) 8)
-            (seq (vector-slot-set arr idx val)
+            (seq (wf_dirty) (vector-slot-set arr idx val)
                  (wf_copy32 out val) 0)
           (seq (wf_copy32 out val) 0))))
     ;; signal/error: NON-CRASHING.  Stash (sym . data) into the catch/throw
@@ -770,10 +832,12 @@ nil-safe car/cdr + tag-aware eq REPLACEMENTS for the buggy stock arms.")
     ;; equal (member/assoc use it).  eq is REPLACED (not appended) in the table.
     ((:lit "equal")       . (bf_equal args out))
     ;; setcar/setcdr: in-place cons mutation (plist-put / nconc need these).
+    ;; Installs V (possibly a box) into a PRE-EXISTING cons -> persistent escape
+    ;; -> bump the mutation epoch (NO-ESCAPE gate in `nelisp_eval_call').
     ((:lit "setcar")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
-                              (seq (cons-set-car c v) (wf_copy32 out v) 0)))
+                              (seq (wf_dirty) (cons-set-car c v) (wf_copy32 out v) 0)))
     ((:lit "setcdr")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
-                              (seq (cons-set-cdr c v) (wf_copy32 out v) 0))))
+                              (seq (wf_dirty) (cons-set-cdr c v) (wf_copy32 out v) 0))))
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
 ops, signal/error stubs, structural equal, setcar/setcdr.")
 
@@ -1212,28 +1276,75 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
     (defun nelisp_aot_builtin_call1 (_a _b _c _d) 1)))
 
 ;; ===================================================================
-;; _start unit (always first): capture the entry stack pointer in rdi
-;; (mov rdi,rsp) BEFORE the call perturbs rsp, call driver(sp); mov edi,eax;
-;; exit(60).  At process entry rsp -> argc, [rsp+8]=argv[0], [rsp+16]=argv[1].
-;; The dual-mode reader driver reads argv[1] = (ptr-read-u64 sp 16); the
-;; baked-form eval `driver' takes no args and simply ignores rdi (ABI-safe).
-;; Byte layout (reloc :offset = 4 because of the 3-byte mov prefix):
-;;   48 89 e7          mov  rdi, rsp     ; rdi = &argc  (driver arg0)
-;;   e8 00 00 00 00    call driver       ; reloc pc32 @ offset 4
-;;   89 c7             mov  edi, eax      ; exit code = driver()
-;;   b8 3c 00 00 00    mov  eax, 60       ; SYS_exit
-;;   0f 05            syscall
+;; _start unit (always first): switch onto a LARGE mmap'd native stack before
+;; calling the driver, so deep eval recursion (the CPS eval chain burns ~5 KiB
+;; of native frames PER eval level) does not overflow the default ~8 MiB kernel
+;; stack.  The OLD `_start' just did (mov rdi,rsp; call driver) on the entry
+;; stack, capping recursion at ~2300 eval levels (cnt(2400) SIGSEGV).
+;;
+;; New sequence (raw x86_64; the mmap syscall clobbers rcx/r11 but NOT the
+;; callee-saved r15, so the entry argv pointer survives across the syscall):
+;;   49 89 e7                   mov  r15, rsp     ; save entry rsp (&argc / argv ptr)
+;;   b8 09 00 00 00             mov  eax, 9       ; SYS_mmap
+;;   31 ff                      xor  edi, edi     ; addr = NULL (kernel picks, high)
+;;   be SS SS SS SS             mov  esi, SIZE    ; length (SIZE < 2^31, zero-ext ok)
+;;   ba 03 00 00 00             mov  edx, 3       ; PROT_READ|PROT_WRITE
+;;   41 ba 22 00 02 00          mov  r10d, 0x20022; MAP_PRIVATE|ANON|STACK
+;;   49 c7 c0 ff ff ff ff       mov  r8, -1       ; fd = -1
+;;   45 31 c9                   xor  r9d, r9d     ; offset = 0
+;;   0f 05                      syscall           ; rax = new stack base
+;;   48 8d a0 DD DD DD DD       lea  rsp,[rax+SIZE-16] ; top of new stack, -16
+;;   48 83 e4 f0                and  rsp, -16     ; force 16-byte alignment
+;;   4c 89 ff                   mov  rdi, r15     ; driver arg0 = entry argv ptr
+;;   e8 00 00 00 00             call driver       ; reloc pc32 @ offset 53
+;;   89 c7                      mov  edi, eax      ; exit code = driver()
+;;   b8 3c 00 00 00             mov  eax, 60       ; SYS_exit
+;;   0f 05                      syscall
+;; SIZE = 0x40000000 (1 GiB), virtual-only (anonymous, untouched pages cost no
+;; RAM), so SIZE/disp fit in a 32-bit field and SS/DD are little-endian SIZE and
+;; SIZE-16.  The reloc :offset is 53 (the rel32 sits right after the `e8').  Raise
+;; rec_max in BOTH driver sources to ~74% of the new ~404k rec-level native ceiling
+;; so deep recursion errors at the guard rather than SIGSEGV (see `... ctx 104').
+;; Anonymous mmap lands high, far from the 0x10000000..0x110000000 arena -> no
+;; collision.  MAP_ANONYMOUS=0x20, MAP_PRIVATE=0x02, MAP_STACK=0x20000 -> 0x20022.
 ;; ===================================================================
+(defconst nelisp-standalone--native-stack-size #x40000000
+  "Size (bytes) of the mmap'd native stack the `_start' trampoline switches to.
+1 GiB, virtual-only (anonymous); must stay < 2^31 so SIZE / SIZE-16 fit the
+32-bit immediate / displacement fields in the hand-assembled `_start'.")
+
+(defun nelisp-standalone--le32 (n)
+  "N as a 4-byte little-endian list (for hand-assembled imm32/disp32 fields)."
+  (list (logand n #xff) (logand (ash n -8) #xff)
+        (logand (ash n -16) #xff) (logand (ash n -24) #xff)))
+
 (defun nelisp-standalone--start-unit ()
-  (nelisp-link-unit-make "start.o"
-   (list (cons 'text (unibyte-string
-                      #x48 #x89 #xe7           ; mov rdi, rsp
-                      #xe8 0 0 0 0              ; call driver  (reloc @4)
-                      #x89 #xc7                 ; mov edi, eax
-                      #xb8 60 0 0 0             ; mov eax, 60
-                      #x0f #x05)))              ; syscall
-   (list (nelisp-link-symbol "_start" 0 :section 'text :bind 'global :type 'func))
-   (list (list :offset 4 :type 'pc32 :symbol "driver" :addend 0 :section 'text))))
+  (let* ((size nelisp-standalone--native-stack-size)
+         (head (append
+                (list #x49 #x89 #xe7)                  ; mov r15, rsp
+                (cons #xb8 (nelisp-standalone--le32 9))      ; mov eax, 9 (SYS_mmap)
+                (list #x31 #xff)                       ; xor edi, edi  (addr=NULL)
+                (cons #xbe (nelisp-standalone--le32 size))   ; mov esi, SIZE
+                (cons #xba (nelisp-standalone--le32 3))      ; mov edx, 3 (RW)
+                (cons #x41 (cons #xba (nelisp-standalone--le32 #x20022))) ; mov r10d, flags
+                (list #x49 #xc7 #xc0 #xff #xff #xff #xff)    ; mov r8, -1 (fd)
+                (list #x45 #x31 #xc9)                  ; xor r9d, r9d (offset=0)
+                (list #x0f #x05)                       ; syscall
+                (cons #x48 (cons #x8d (cons #xa0 (nelisp-standalone--le32 (- size 16))))) ; lea rsp,[rax+SIZE-16]
+                (list #x48 #x83 #xe4 #xf0)             ; and rsp, -16
+                (list #x4c #x89 #xff)                  ; mov rdi, r15
+                (list #xe8)))                          ; call (rel32 follows)
+         (reloc-off (length head))                     ; rel32 offset (= 53 for 1 GiB)
+         (text (apply #'unibyte-string
+                      (append head
+                              (list 0 0 0 0)           ; rel32 placeholder
+                              (list #x89 #xc7)         ; mov edi, eax
+                              (cons #xb8 (nelisp-standalone--le32 60)) ; mov eax, 60
+                              (list #x0f #x05)))))      ; syscall
+    (nelisp-link-unit-make "start.o"
+     (list (cons 'text text))
+     (list (nelisp-link-symbol "_start" 0 :section 'text :bind 'global :type 'func))
+     (list (list :offset reloc-off :type 'pc32 :symbol "driver" :addend 0 :section 'text)))))
 
 ;; ===================================================================
 ;; Parametrized driver (FULL real path).  Bootstrap mirror + 60 system builtins,
@@ -1272,10 +1383,12 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
           (nl_sexp_clone_into globals (+ ctx 0))
           (nl_sexp_clone_into frames (+ ctx 32))
           (nl_sexp_clone_into unbound (+ ctx 64))
-          ;; rec_max 2000: below the ~2500-level native C-stack ceiling (each eval level
-;; is several KB of native frames), so deep recursion errors at the guard rather
-;; than SIGSEGV.  The toolchain recurses by AST-nesting depth (tens), far under this.
-(ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 2000)
+          ;; rec_max 300000: the `_start' trampoline now runs the driver on a 1 GiB
+;; mmap'd native stack whose ceiling is ~404k rec levels (each eval level ~5 KiB of
+;; native frames; a self-recursive call burns ~2 rec increments).  300000 is ~74% of
+;; that ceiling, so deep recursion (cnt(100000) -> 42) succeeds while still erroring
+;; at the guard -- never SIGSEGV -- once it exceeds the budget.
+(ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 300000)
           (nl_alloc_symbol opbuf 1 op_sym)
           (ptr-write-u64 int1 0 2) (ptr-write-u64 int1 8 ,a) (ptr-write-u64 int1 16 0) (ptr-write-u64 int1 24 0)
           (ptr-write-u64 int2 0 2) (ptr-write-u64 int2 8 ,b) (ptr-write-u64 int2 16 0) (ptr-write-u64 int2 24 0)
@@ -1563,10 +1676,12 @@ reused buffer and >8-byte names install correctly."
         (nl_sexp_clone_into globals (+ ctx 0))
         (nl_sexp_clone_into frames (+ ctx 32))
         (nl_sexp_clone_into unbound (+ ctx 64))
-        ;; rec_max 2000: below the ~2500-level native C-stack ceiling (each eval level
-;; is several KB of native frames), so deep recursion errors at the guard rather
-;; than SIGSEGV.  The toolchain recurses by AST-nesting depth (tens), far under this.
-(ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 2000)
+        ;; rec_max 300000: the `_start' trampoline now runs the driver on a 1 GiB
+;; mmap'd native stack whose ceiling is ~404k rec levels (each eval level ~5 KiB of
+;; native frames; a self-recursive call burns ~2 rec increments).  300000 is ~74% of
+;; that ceiling, so deep recursion (cnt(100000) -> 42) succeeds while still erroring
+;; at the guard -- never SIGSEGV -- once it exceeds the budget.
+(ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 300000)
         ;; --- source selection: embedded vs. file (M7 dual mode) ---
         (if (= path 0)
             ;; embedded NELISP_SRC (gate path)
@@ -1581,7 +1696,7 @@ reused buffer and >8-byte names install correctly."
         ;; value.  parse_one advances the shared cursor; it returns 1 per form
         ;; and != 1 (e.g. -1 at EOF) when no more forms remain. ---
         (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)   ; Sexp::Int 0
-        (vector-make 256 pool)                                  ; Sexp::Vector(256) slot-pool
+        (vector-make 8192 pool)                                 ; Sexp::Vector(8192) slot-pool — raised from 256 (Task 1: 3+4*MAX_DEPTH; 8192 => MAX_DEPTH ~2047, well above the rec_max 2000 eval guard so the pool never caps before the recursion guard fires)
         (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
         (let* ((more 1))
           (while (= more 1)
@@ -1877,20 +1992,94 @@ always return 0, so `signal' flows to the builtin applyfn (bf_signal) instead of
                     form))
                 (cdr src))))
 
+;; rc-correct list splice helpers for `apply' (Doc 137 — apply was a no-op).
+;; The shipped `nl_apply_list_init' / `nl_apply_list_append' / `nl_apply_do_apply'
+;; all let a `nelisp_cons_construct' or `nl_sexp_clone_into' fall through as the
+;; return value.  Both ops leave the DST SLOT POINTER (nonzero) in rax, so the
+;; rc-0-means-success callers (`(if (= rc 0) ...)') always saw "error" and apply
+;; produced Nil.  These rewrites force an explicit `0' rc on every success path
+;; (and fix the non-symbol resolve arm, same bug `nl_apply_do_fset' had).
+;; Applied as build-time sexp patches so lisp/ + golden binaries stay untouched.
+(defconst nelisp-standalone--reader-list-init-fixed
+  '(defun nl_apply_list_init (list_ptr out_slot)
+     (if (= (ptr-read-u64 list_ptr 0) 7)
+         (let* ((cdr_ptr (nl_cons_cdr_ptr list_ptr)))
+           (if (= (ptr-read-u64 cdr_ptr 0) 7)
+               (let* ((car_ptr (nl_cons_car_ptr list_ptr))
+                      (rest_slot (alloc-bytes 32 8)))
+                 (let* ((rc (nl_apply_list_init cdr_ptr rest_slot)))
+                   (if (= rc 0)
+                       (seq (nelisp_cons_construct car_ptr rest_slot out_slot) 0)
+                     1)))
+             (seq (nl_apply_write_nil out_slot) 0)))
+       (seq (nl_apply_write_nil out_slot) 0)))
+  "All-but-last of LIST into OUT-SLOT, returning rc 0 on success.")
+
+(defconst nelisp-standalone--reader-list-append-fixed
+  '(defun nl_apply_list_append (head_ptr tail_ptr out_slot)
+     (if (= (ptr-read-u64 head_ptr 0) 7)
+         (let* ((car_ptr (nl_cons_car_ptr head_ptr))
+                (cdr_ptr (nl_cons_cdr_ptr head_ptr))
+                (rest_slot (alloc-bytes 32 8)))
+           (let* ((rc (nl_apply_list_append cdr_ptr tail_ptr rest_slot)))
+             (if (= rc 0)
+                 (seq (nelisp_cons_construct car_ptr rest_slot out_slot) 0)
+               1)))
+       (seq (nl_sexp_clone_into tail_ptr out_slot) 0)))
+  "HEAD ++ TAIL into OUT-SLOT, returning rc 0 on success.")
+
+(defconst nelisp-standalone--reader-do-apply-fixed
+  '(defun nl_apply_do_apply (args_list_ptr env out)
+     (let* ((arg0_ptr (nl_apply_list_nth args_list_ptr 0)))
+       (if (= arg0_ptr 0) (nl_apply_stash_wta env args_list_ptr)
+         (let* ((arg0_tag (ptr-read-u64 arg0_ptr 0))
+                (rest_args (if (= (ptr-read-u64 args_list_ptr 0) 7)
+                               (nl_cons_cdr_ptr args_list_ptr)
+                             args_list_ptr)))
+           (let* ((func_slot (alloc-bytes 32 8)))
+             (let* ((resolve_rc
+                     (if (= arg0_tag 4)
+                         (let* ((mirror_ptr (+ env 0)) (unbound_ptr (+ env 64)))
+                           (nelisp_env_lookup_function mirror_ptr unbound_ptr arg0_ptr func_slot))
+                       (seq (nl_sexp_clone_into arg0_ptr func_slot) 0))))
+               (if (= resolve_rc 0)
+                   (let* ((prefix_slot (alloc-bytes 32 8))
+                          (last_ptr (nl_apply_list_last_cdr rest_args)))
+                     (let* ((rc_init (nl_apply_list_init rest_args prefix_slot)))
+                       (if (= rc_init 0)
+                           (let* ((spliced_slot (alloc-bytes 32 8)))
+                             (let* ((rc_app (nl_apply_list_append prefix_slot last_ptr spliced_slot)))
+                               (if (= rc_app 0)
+                                   (nl_apply_function func_slot spliced_slot env out)
+                                 1)))
+                         1)))
+                 1)))))))
+  "Rc-correct `apply' handler (non-symbol resolve arm forces rc 0).")
+
 (defun nelisp-standalone--patch-combiner-apply (src)
   "Return combiner-apply SRC (a `(seq (defun ...) ...)') with nl_apply_do_fset
-swapped for `nelisp-standalone--reader-do-fset-fixed' (M3) AND
-`nl_apply_deferred_signal' neutralised (WAVE-2 PATCH 3), so condition-case can
-trap `signal'.  Both patches operate on the same combiner-apply source; the
-do_fset swap is applied first, then the deferred-signal neutralisation.  Keeps
-lisp/ pristine."
+swapped for `nelisp-standalone--reader-do-fset-fixed' (M3), the `apply' splice
+helpers (`nl_apply_list_init' / `nl_apply_list_append' / `nl_apply_do_apply')
+swapped for their rc-correct variants, AND `nl_apply_deferred_signal' neutralised
+(WAVE-2 PATCH 3), so condition-case can trap `signal'.  All patches operate on
+the same combiner-apply source.  Keeps lisp/ pristine."
   (nelisp-standalone--patch-combiner-apply-deferred-signal
    (cons (car src)
          (mapcar (lambda (form)
-                   (if (and (consp form) (eq (car form) 'defun)
-                            (eq (cadr form) 'nl_apply_do_fset))
-                       nelisp-standalone--reader-do-fset-fixed
-                     form))
+                   (cond
+                    ((and (consp form) (eq (car form) 'defun)
+                          (eq (cadr form) 'nl_apply_do_fset))
+                     nelisp-standalone--reader-do-fset-fixed)
+                    ((and (consp form) (eq (car form) 'defun)
+                          (eq (cadr form) 'nl_apply_list_init))
+                     nelisp-standalone--reader-list-init-fixed)
+                    ((and (consp form) (eq (car form) 'defun)
+                          (eq (cadr form) 'nl_apply_list_append))
+                     nelisp-standalone--reader-list-append-fixed)
+                    ((and (consp form) (eq (car form) 'defun)
+                          (eq (cadr form) 'nl_apply_do_apply))
+                     nelisp-standalone--reader-do-apply-fixed)
+                    (t form)))
                  (cdr src)))))
 
 ;; WAVE-2 (PATCH 4): condition-case clears the M6 arena signal flag on a clause
@@ -1919,6 +2108,61 @@ on a clause MATCH before running the handler body.  WAVE-2 PATCH 4."
                     1))
              form))
          (cdr src))))
+
+;; PER-EVAL RECLAMATION — escape-site epoch bumps.
+;;
+;; The per-eval arena reset in `nelisp_eval_call' is gated on (immediate result)
+;; AND (mutation epoch @268435544 unchanged).  Besides the user-visible mutators
+;; (setcar/setcdr/aset/puthash, instrumented in the applyfn dispatch), the eval
+;; machinery itself installs boxes into PERSISTENT records that the per-call reset
+;; would otherwise free out from under a still-live root:
+;;
+;;   * `nelisp_frame_stack_ensure_capacity_grow' reallocates the frame-stack
+;;     BACKING vector and installs it into the persistent frames-record slot 0.
+;;     The grown vector is allocated above the current call's mark but stays
+;;     reachable after the call returns -> MUST survive.  (This was the fib
+;;     corruption: a self-recursive call grows the backing, returns an Int, the
+;;     immediate+epoch gate green-lit the reset, freeing the live backing ->
+;;     dangling frames-record slot 0 -> garbage on the next frame op.)
+;;   * `nelisp_env_set_value' cell-hit (setq of an enclosing/global binding) and
+;;     mirror-insert (setq vivifying a new global) write a box into a persistent
+;;     cell / the globals mirror, yet return the assigned value (often an Int).
+;;
+;; Each of these bumps the epoch so a call in whose dynamic extent they ran is
+;; never reset.  `record-slot-set' returns a truthy i64 (= rax 1 sentinel), so
+;; threading the bump through `seq'/`and' preserves the original return value.
+(defun nelisp-standalone--inject-epoch-bump (src defun-name)
+  "Return SRC (a `(seq (defun ...) ...)') with the named DEFUN-NAME rewritten to
+prepend a MUTATION-EPOCH bump (@268435544) before its body.  Wraps the body in
+`(seq (ptr-write-u64 268435544 0 (1+ (ptr-read-u64 268435544 0))) ORIG-BODY)' so
+the original return value is preserved (the bump's own value is discarded by
+`seq')."
+  (cons (car src)
+        (mapcar
+         (lambda (form)
+           (if (and (consp form) (eq (car form) 'defun)
+                    (eq (cadr form) defun-name))
+               (let ((name (cadr form))
+                     (arglist (caddr form))
+                     (body (cdddr form)))   ; list of body forms
+                 `(defun ,name ,arglist
+                    (seq (ptr-write-u64 268435544 0
+                                        (+ (ptr-read-u64 268435544 0) 1))
+                         ,@body)))
+             form))
+         (cdr src))))
+
+(defun nelisp-standalone--reader-extra-unit-epoch (entry defun-names)
+  "Like `nelisp-standalone--reader-extra-unit' but inject an epoch bump into each
+of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
+  (pcase-let ((`(,name ,feat ,src) entry))
+    (require feat)
+    (let ((patched (symbol-value src)))
+      (dolist (dn defun-names)
+        (setq patched (nelisp-standalone--inject-epoch-bump patched dn)))
+      (nelisp-standalone--cached-unit
+       (concat (file-name-sans-extension name) "-epoch.o")
+       patched (locate-library (symbol-name feat))))))
 
 (defun nelisp-standalone--reader-units ()
   "Build the ORDERED reader-path unit list (start first, arena last).
@@ -1980,13 +2224,25 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (float-stub (nelisp-standalone--cached-unit
                       "reader-float-stub.o" nelisp-standalone--reader-float-stub-source
                       nelisp-standalone--this-file))
-         ;; real-sf: all real special-form units EXCEPT sf-cc.o, which is built
-         ;; from the WAVE-2 PATCH-4 source below (flag-clear on clause match).
+         ;; real-sf: all real special-form units EXCEPT sf-cc.o (built from the
+         ;; WAVE-2 PATCH-4 source below) and the two PERSISTENT-INSTALL escape
+         ;; sites (sf-frame-ensure-cap.o / sf-env-set-value2.o), which are built
+         ;; with an injected MUTATION-EPOCH bump so the per-eval arena reset never
+         ;; frees a grown frame-backing or a setq-installed binding (see
+         ;; `nelisp-standalone--inject-epoch-bump').
          (real-sf (delq nil
-                        (mapcar (lambda (entry)
-                                  (unless (string= (car entry) "sf-cc.o")
-                                    (nelisp-standalone--reader-extra-unit entry)))
-                                nelisp-standalone--reader-real-sf-manifest)))
+                        (mapcar
+                         (lambda (entry)
+                           (pcase (car entry)
+                             ("sf-cc.o" nil)
+                             ("sf-frame-ensure-cap.o"
+                              (nelisp-standalone--reader-extra-unit-epoch
+                               entry '(nelisp_frame_stack_ensure_capacity_grow)))
+                             ("sf-env-set-value2.o"
+                              (nelisp-standalone--reader-extra-unit-epoch
+                               entry '(nelisp_env_set_value)))
+                             (_ (nelisp-standalone--reader-extra-unit entry))))
+                         nelisp-standalone--reader-real-sf-manifest)))
          ;; WAVE-2 PATCH 4: sf-condition-case with nl_sf_cc_after_match rewritten
          ;; to clear the M6 arena signal flag on a clause MATCH.
          (sf-cc (progn
