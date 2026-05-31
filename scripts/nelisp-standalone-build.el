@@ -557,6 +557,244 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                  (m5_fmt_loop ms fmt (+ i 1) n argp)))))))
   "M5 string + format helpers (reader-only).")
 
+;; ===================================================================
+;; B-foundation breadth helpers (Wave-1 (B)).  Reader-only: they use the
+;; vector grammar ops (vector-make/-slot-set/-ref-ptr/-len -> nl_vector_*),
+;; symbol-eq / str-eq, nl_alloc_symbol / nl_alloc_str, nelisp_env_lookup_function
+;; and nelisp_mirror_is_bound -- all present only in the reader manifest.  They
+;; back the new predicate / vector / symbol / setcar/setcdr / equal arms AND the
+;; nil-safe car/cdr + tag-aware eq REPLACEMENTS (the two highest-priority fixes:
+;; the stock `car'/`cdr' arms deref nl_cons_car_ptr's 0 on a non-cons -> SIGSEGV;
+;; the stock `eq' arm compares value@8 -> `(eq 'a 'b)' truthy, breaking
+;; assq/memq/plist).
+;; ===================================================================
+(defconst nelisp-standalone--applyfn-bf-helpers
+  '(;; symbol-name str-bytes -> Symbol(tag4).  A Str (tag5) keeps ptr@16/len@24,
+    ;; a MutStr (tag6) wraps NlStr* @8 with ptr@8/len@16.  nl_alloc_symbol takes
+    ;; (bytes-ptr len result-slot).
+    (defun bf_str_ptr (sx)
+      (if (= (ptr-read-u64 sx 0) 6)
+          (ptr-read-u64 (ptr-read-u64 sx 8) 8)
+        (ptr-read-u64 sx 16)))
+    (defun bf_str_len (sx)
+      (if (= (ptr-read-u64 sx 0) 6)
+          (ptr-read-u64 (ptr-read-u64 sx 8) 16)
+        (ptr-read-u64 sx 24)))
+    (defun bf_intern (sx out)
+      (nl_alloc_symbol (bf_str_ptr sx) (bf_str_len sx) out))
+    ;; make-vector LEN INIT -> Vector(tag8) with every slot = INIT (cloned).
+    ;; NB: use the `vector-slot-set' GRAMMAR OP (takes the Sexp ptr, derefs the
+    ;; box internally), NOT the raw nl_vector_set_slot (which wants the box ptr).
+    (defun bf_mv_fill (vec i n init)
+      (if (>= i n) 0
+        (seq (vector-slot-set vec i init)
+             (bf_mv_fill vec (+ i 1) n init))))
+    (defun bf_make_vector (args out)
+      (let* ((n (ptr-read-u64 (wf_arg_ptr args 0) 8))
+             (init (wf_arg_ptr args 1)))
+        (seq (vector-make n out)
+             (bf_mv_fill out 0 n init)
+             0)))
+    ;; vector &rest -> Vector(tag8) from the arg list.
+    (defun bf_vec_fill (vec i node)
+      (if (= (ptr-read-u64 node 0) 7)
+          (seq (vector-slot-set vec i (nl_cons_car_ptr node))
+               (bf_vec_fill vec (+ i 1) (nl_cons_cdr_ptr node)))
+        0))
+    (defun bf_vec_count (node acc)
+      (if (= (ptr-read-u64 node 0) 7)
+          (bf_vec_count (nl_cons_cdr_ptr node) (+ acc 1))
+        acc))
+    (defun bf_vector (args out)
+      (let* ((n (bf_vec_count args 0)))
+        (seq (vector-make n out)
+             (bf_vec_fill out 0 args)
+             0)))
+    ;; aref ARR IDX: vector -> copy slot[idx]; string -> int byte at idx.
+    (defun bf_aref (args out)
+      (let* ((arr (wf_arg_ptr args 0))
+             (idx (ptr-read-u64 (wf_arg_ptr args 1) 8))
+             (tg (ptr-read-u64 arr 0)))
+        (if (= tg 8)
+            (seq (wf_copy32 out (vector-ref-ptr arr idx)) 0)
+          (wf_write_int out (str-byte-at arr idx)))))
+    ;; aset ARR IDX VAL: vector slot set (string aset not supported -> 0).
+    (defun bf_aset (args out)
+      (let* ((arr (wf_arg_ptr args 0))
+             (idx (ptr-read-u64 (wf_arg_ptr args 1) 8))
+             (val (wf_arg_ptr args 2)))
+        (if (= (ptr-read-u64 arr 0) 8)
+            (seq (vector-slot-set arr idx val)
+                 (wf_copy32 out val) 0)
+          (seq (wf_copy32 out val) 0))))
+    ;; signal/error: NON-CRASHING stub.  Stash (sym . data) into the catch/throw
+    ;; region + set the throw flag, then return rc=1 so the rc!=0 propagation
+    ;; unwinds the native stack like an error.  NOTE: condition-case does NOT yet
+    ;; trap this (only `catch'/`throw' inspect the stash) -- full
+    ;; condition-case-trapping is DEFERRED.  At least it does not segfault.
+    ;; Stash layout (reserved arena): flag@268435472, TAG@268435480, VAL@268435512.
+    (defun bf_sig_copy32 (dst src)
+      (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+           (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+           (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+           (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
+    (defun bf_signal (args out)
+      (let* ((sym (wf_arg_ptr args 0)))
+        (seq (bf_sig_copy32 268435480 sym)
+             (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args))
+             (ptr-write-u64 268435472 0 1)
+             1)))
+    (defun bf_error (args out)
+      (let* ((msg (wf_arg_ptr args 0)))
+        (seq (bf_sig_copy32 268435480 msg)
+             (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args))
+             (ptr-write-u64 268435472 0 1)
+             1)))
+    ;; fboundp/boundp: look up in the env mirror.  env+0 = mirror, env+64 = unbound.
+    ;; nelisp_env_lookup_function(mirror, unbound, sym, out_slot) returns 0 if found.
+    (defun bf_fboundp (args env out)
+      (let* ((sym (wf_arg_ptr args 0)) (tmp (alloc-bytes 32 8)) (mirror (+ env 0)) (unbound (+ env 64)))
+        (if (= (nelisp_env_lookup_function mirror unbound sym tmp) 0)
+            (wf_write_t out) (wf_write_nil out))))
+    (defun bf_boundp (args env out)
+      (let* ((sym (wf_arg_ptr args 0)) (mirror (+ env 0)))
+        (if (= (nelisp_mirror_is_bound mirror sym) 1)
+            (wf_write_t out) (wf_write_nil out))))
+    ;; length that also handles vectors (tag 8) -> vector-len; else m5_length.
+    (defun bf_length (p)
+      (if (= (ptr-read-u64 p 0) 8) (vector-len p) (m5_length p)))
+    ;; CORRECT eq: tag-aware identity.  The stock applyfn `eq' arm compared
+    ;; value@8 which is garbage for Symbol/Str (their identity is the name).
+    ;;   Int(2)   -> value@8 equal
+    ;;   Symbol(4)-> symbol-eq (name compare; no interning so name == identity)
+    ;;   Nil(0)/T(1) -> same tag is enough
+    ;;   else (Cons/Vector/Str/...) -> pointer identity (same box@8)
+    (defun bf_eq2 (a b)
+      (let* ((ta (ptr-read-u64 a 0)) (tb (ptr-read-u64 b 0)))
+        (if (= ta tb)
+            (if (= ta 2) (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)
+              (if (= ta 4) (symbol-eq a b)
+                (if (= ta 0) 1
+                  (if (= ta 1) 1
+                    (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))
+          0)))
+    (defun bf_eq (args out)
+      (if (= (bf_eq2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
+          (wf_write_t out) (wf_write_nil out)))
+    ;; equal: like eq but Str(5/6) compared by bytes, and one-level structural
+    ;; for cons (recurses car+cdr).  Enough for member/assoc on flat data.
+    (defun bf_equal2 (a b)
+      (let* ((ta (ptr-read-u64 a 0)) (tb (ptr-read-u64 b 0)))
+        (if (= ta tb)
+            (if (= ta 5) (m5_streq a b)
+              (if (= ta 6) (m5_streq a b)
+                (if (= ta 7)
+                    (if (= (bf_equal2 (nl_cons_car_ptr a) (nl_cons_car_ptr b)) 1)
+                        (bf_equal2 (nl_cons_cdr_ptr a) (nl_cons_cdr_ptr b)) 0)
+                  (bf_eq2 a b))))
+          0)))
+    (defun bf_equal (args out)
+      (if (= (bf_equal2 (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
+          (wf_write_t out) (wf_write_nil out)))
+    ;; nil-safe car/cdr.  The stock arms call nl_cons_car_ptr/cdr_ptr which
+    ;; return 0 for a non-cons, then wf_copy32 derefs address 0 -> SIGSEGV.
+    ;; Real elisp: (car nil)=(cdr nil)=nil.  Guard on tag==7.
+    (defun bf_car (args out)
+      (let* ((a (wf_arg_ptr args 0)))
+        (if (= (ptr-read-u64 a 0) 7) (wf_copy32 out (nl_cons_car_ptr a)) (wf_write_nil out))))
+    (defun bf_cdr (args out)
+      (let* ((a (wf_arg_ptr args 0)))
+        (if (= (ptr-read-u64 a 0) 7) (wf_copy32 out (nl_cons_cdr_ptr a)) (wf_write_nil out)))))
+  "B-foundation breadth helpers (Wave-1 (B), reader-only): predicates, vector /
+symbol ops, setcar/setcdr, structural equal, vector-aware length, plus the
+nil-safe car/cdr + tag-aware eq REPLACEMENTS for the buggy stock arms.")
+
+;; B-foundation breadth dispatch arms (Wave-1 (B)).  APPENDED to the reader
+;; dispatch table (see `nelisp-standalone--applyfn-reader-table').  tag values:
+;;   0 Nil  1 T  2 Int  3 Float  4 Symbol  5 Str  6 MutStr  7 Cons  8 Vector.
+;; All are (:lit ...) because every name is matched by the full-length
+;; `sexp-name-eq' op (some are <=8 bytes but :lit is always correct).
+(defconst nelisp-standalone--applyfn-bf-arms
+  '(;; --- predicates ---
+    ((:lit "consp")    . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 7) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "atom")     . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 7) (wf_write_nil out) (wf_write_t out)))
+    ((:lit "stringp")  . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                           (if (= tg 5) (wf_write_t out) (if (= tg 6) (wf_write_t out) (wf_write_nil out)))))
+    ((:lit "symbolp")  . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                           ;; nil and t are also symbols in elisp
+                           (if (= tg 4) (wf_write_t out) (if (= tg 0) (wf_write_t out) (if (= tg 1) (wf_write_t out) (wf_write_nil out))))))
+    ((:lit "integerp") . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 2) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "natnump")  . (let* ((p (wf_arg_ptr args 0)))
+                           (if (= (ptr-read-u64 p 0) 2)
+                               (if (>= (ptr-read-u64 p 8) 0) (wf_write_t out) (wf_write_nil out))
+                             (wf_write_nil out))))
+    ((:lit "numberp")  . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                           (if (= tg 2) (wf_write_t out) (if (= tg 3) (wf_write_t out) (wf_write_nil out)))))
+    ((:lit "floatp")   . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 3) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "vectorp")  . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 8) (wf_write_t out) (wf_write_nil out)))
+    ((:lit "listp")    . (let* ((tg (ptr-read-u64 (wf_arg_ptr args 0) 0)))
+                           (if (= tg 7) (wf_write_t out) (if (= tg 0) (wf_write_t out) (wf_write_nil out)))))
+    ((:lit "zerop")    . (let* ((p (wf_arg_ptr args 0)))
+                           (if (= (ptr-read-u64 p 0) 2)
+                               (if (= (ptr-read-u64 p 8) 0) (wf_write_t out) (wf_write_nil out))
+                             (wf_write_nil out))))
+    ((:lit "fboundp")  . (bf_fboundp args env out))
+    ((:lit "boundp")   . (bf_boundp args env out))
+    ;; --- symbol ops ---
+    ;; symbol-name: a Symbol (tag 4) already has the str layout (ptr@16/len@24);
+    ;; produce a Str (tag 5) sharing those bytes via nl_alloc_str.
+    ((:lit "symbol-name") . (let* ((s (wf_arg_ptr args 0)))
+                              (seq (nl_alloc_str (ptr-read-u64 s 16) (ptr-read-u64 s 24) out) 0)))
+    ;; intern / make-symbol: take a Str (tag 5/6), build a Symbol (tag 4).
+    ((:lit "intern")      . (seq (bf_intern (wf_arg_ptr args 0) out) 0))
+    ((:lit "make-symbol") . (seq (bf_intern (wf_arg_ptr args 0) out) 0))
+    ;; --- vector ops ---
+    ((:lit "make-vector") . (bf_make_vector args out))
+    ((:lit "vector")      . (bf_vector args out))
+    ((:lit "aref")        . (bf_aref args out))
+    ((:lit "aset")        . (bf_aset args out))
+    ;; --- signal / error (non-crashing stub; condition-case trapping deferred) ---
+    ((:lit "signal")      . (bf_signal args out))
+    ((:lit "error")       . (bf_error args out))
+    ;; equal (member/assoc use it).  eq is REPLACED (not appended) in the table.
+    ((:lit "equal")       . (bf_equal args out))
+    ;; setcar/setcdr: in-place cons mutation (plist-put / nconc need these).
+    ((:lit "setcar")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
+                              (seq (cons-set-car c v) (wf_copy32 out v) 0)))
+    ((:lit "setcdr")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
+                              (seq (cons-set-cdr c v) (wf_copy32 out v) 0))))
+  "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
+ops, signal/error stubs, structural equal, setcar/setcdr.")
+
+(defconst nelisp-standalone--applyfn-bf-builtins
+  '("consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
+    "vectorp" "listp" "zerop" "fboundp" "boundp"
+    "symbol-name" "intern" "make-symbol"
+    "make-vector" "vector" "aref" "aset"
+    "signal" "error" "equal" "setcar" "setcdr")
+  "Builtin names added by Wave-1 (B) breadth glue; appended to
+`nelisp-standalone--reader-builtins'.")
+
+(defun nelisp-standalone--applyfn-reader-table ()
+  "Build the reader dispatch table: the base table with the buggy stock
+`car'/`cdr'/`eq' arms REPLACED (nil-safe car/cdr + tag-aware eq) and `length'
+made vector-aware, then the B-foundation breadth arms APPENDED."
+  (append
+   (mapcar
+    (lambda (entry)
+      (cond
+       ((equal (car entry) '(:lit "length"))
+        '((:lit "length") . (wf_write_int out (bf_length (wf_arg_ptr args 0)))))
+       ((equal (car entry) '(:u8 "eq"))
+        '((:u8 "eq") . (bf_eq args out)))
+       ((equal (car entry) '(:u8 "car"))
+        '((:u8 "car") . (bf_car args out)))
+       ((equal (car entry) '(:u8 "cdr"))
+        '((:u8 "cdr") . (bf_cdr args out)))
+       (t entry)))
+    nelisp-standalone--applyfn-dispatch-table)
+   nelisp-standalone--applyfn-bf-arms))
+
 (defun nelisp-standalone--applyfn-assemble (helper-groups table)
   "Assemble an applyfn `(seq ...)' unit from HELPER-GROUPS (lists of defun forms,
 appended in order) and the dispatch TABLE, ending in nelisp_apply_function."
@@ -577,15 +815,20 @@ appended in order) and the dispatch TABLE, ending in nelisp_apply_function."
    nelisp-standalone--applyfn-dispatch-table-baked)
   "Arithmetic/list-only applyfn for the baked-form eval build.")
 
-;; Reader applyfn: core + HT (M4) + string/format (M5) helpers + the FULL dispatch
-;; table (incl. file-I/O wrf/rdf/slen impls in `nelisp-standalone--fileio-source').
+;; Reader applyfn: core + HT (M4) + string/format (M5) + B-foundation breadth
+;; helpers + the reader dispatch table (= the FULL table with nil-safe car/cdr +
+;; tag-aware eq + vector-aware length REPLACEMENTS and the breadth arms appended;
+;; incl. file-I/O wrf/rdf/slen impls in `nelisp-standalone--fileio-source').
 (defconst nelisp-standalone--applyfn-source
   (nelisp-standalone--applyfn-assemble
    (list nelisp-standalone--applyfn-core-helpers
          nelisp-standalone--applyfn-ht-helpers
-         nelisp-standalone--applyfn-m5-helpers)
-   nelisp-standalone--applyfn-dispatch-table)
-  "Full reader-path applyfn: arithmetic + hash tables + strings/format + file I/O.")
+         nelisp-standalone--applyfn-m5-helpers
+         nelisp-standalone--applyfn-bf-helpers)
+   (nelisp-standalone--applyfn-reader-table))
+  "Full reader-path applyfn: arithmetic + hash tables + strings/format + file I/O
++ B-foundation breadth (predicates / vectors / symbols / equal / setcar-setcdr,
+plus the nil-safe car/cdr and tag-aware eq fixes).")
 
 ;; ===================================================================
 ;; M7 file-I/O glue unit — the impls for the wrf/rdf/slen builtins
@@ -811,6 +1054,105 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
               (push (nelisp-standalone--patch-apply-special form) out))
              (t (push form out))))
           (nreverse out))))
+
+;; ===================================================================
+;; MACRO-EXPANSION IN-PLACE CACHING (Wave-1 (A)).  A second build-time sexp patch
+;; on the combiner-cons unit, COMPOSED AFTER the catch/throw patch above (both
+;; patch the same source, so chain them: catch/throw first, then macro-cache).
+;;
+;; It rewrites two defuns:
+;;   * nl_cons_macro_apply_eval — gains a leading `box_ptr' parameter (the
+;;     original form's NlConsBox pointer = &car @ box+0, &cdr @ box+32).  After
+;;     computing the macro expansion it OVERWRITES the original form box's car+cdr
+;;     (64 bytes) with the expansion box's car+cdr (8x ptr-write-u64), IN PLACE,
+;;     so the form the lambda body holds BECOMES the expansion.  The next time
+;;     that body form is evaluated its head is the expansion's head (if/+/progn/
+;;     ...) not the macro name -> the macro is never re-expanded.  Caching is
+;;     restricted to Cons expansions (cond/when/unless/myif all expand to a Cons);
+;;     non-Cons expansions (macro->constant/symbol) fall back to the un-cached
+;;     eval (provably safe -- overwriting a 64-byte cons box with a 32-byte
+;;     self-eval value would leave a stale cdr / wrong tag).
+;;   * nl_eval_inner_cons — its macro arm threads `head_ptr' (= the box pointer)
+;;     as that new first argument of nl_cons_macro_apply_eval.
+;; ===================================================================
+(defconst nelisp-standalone--macro-cache-apply-eval
+  '(defun nl_cons_macro_apply_eval (box_ptr func_ptr tail_ptr env out)
+     ;; box_ptr: NlConsBox* of the ORIGINAL form (= &car @ box+0, &cdr @ box+32).
+     ;; func_ptr: resolved macro value, shape (macro . (CLOSURE . nil)).
+     ;; tail_ptr: unevaluated arg list (= original box's cdr value).
+     (let* ((func_cdr (nl_cons_cdr_ptr func_ptr)))
+       (if (= (ptr-read-u64 func_cdr 0) 7)
+           (let* ((macrofn_ptr (nl_cons_car_ptr func_cdr))
+                  (exp_slot (alloc-bytes 32 8))
+                  (env_ptr env))
+             (let* ((rc_mac (nl_apply_function macrofn_ptr tail_ptr env_ptr exp_slot)))
+               (if (= rc_mac 0)
+                   ;; Expansion computed.  Cache it in place IFF it is a Cons
+                   ;; (tag 7): copy the expansion box's car+cdr (64 bytes) over
+                   ;; the ORIGINAL form box, then eval the now-rewritten form.
+                   (if (= (ptr-read-u64 exp_slot 0) 7)
+                       (let* ((exp_box (nl_cons_car_ptr exp_slot)))
+                         (seq
+                          ;; original.car (@box_ptr+0..32) <- expansion.car
+                          (ptr-write-u64 box_ptr 0  (ptr-read-u64 exp_box 0))
+                          (ptr-write-u64 box_ptr 8  (ptr-read-u64 exp_box 8))
+                          (ptr-write-u64 box_ptr 16 (ptr-read-u64 exp_box 16))
+                          (ptr-write-u64 box_ptr 24 (ptr-read-u64 exp_box 24))
+                          ;; original.cdr (@box_ptr+32..64) <- expansion.cdr
+                          (ptr-write-u64 box_ptr 32 (ptr-read-u64 exp_box 32))
+                          (ptr-write-u64 box_ptr 40 (ptr-read-u64 exp_box 40))
+                          (ptr-write-u64 box_ptr 48 (ptr-read-u64 exp_box 48))
+                          (ptr-write-u64 box_ptr 56 (ptr-read-u64 exp_box 56))
+                          ;; Now eval the rewritten form: head = box.car (= exp
+                          ;; head), tail = box.cdr.  box_ptr IS &car, box_ptr+32
+                          ;; IS &cdr -- exactly nl_eval_inner_cons's (head,tail).
+                          (nl_eval_inner_cons box_ptr (+ box_ptr 32) env_ptr out)))
+                     ;; Non-Cons expansion: do not cache (the form is a 64-byte
+                     ;; cons box; overwriting it with a 32-byte self-eval value
+                     ;; would leave a stale cdr / wrong tag).  Eval directly.
+                     (nelisp_eval_call exp_slot env_ptr out))
+                 1)))
+         (nl_cons_stash_void_function env func_ptr))))
+  "Macro-caching replacement for nl_cons_macro_apply_eval (gains box_ptr arg).")
+
+(defun nelisp-standalone--macro-cache-patch-eval-inner-cons (form)
+  "Rewrite the nl_eval_inner_cons defun FORM: its macro arm
+`(nl_cons_macro_apply_eval func_slot tail_ptr env out)' gains the leading
+`head_ptr' argument (= the original form's box pointer)."
+  (cl-labels
+      ((rw (node)
+         (cond
+          ((and (consp node) (eq (car node) 'nl_cons_macro_apply_eval))
+           ;; (nl_cons_macro_apply_eval func_slot tail_ptr env out)
+           ;;   -> (nl_cons_macro_apply_eval head_ptr func_slot tail_ptr env out)
+           (cons 'nl_cons_macro_apply_eval (cons 'head_ptr (mapcar #'rw (cdr node)))))
+          ((consp node) (cons (rw (car node)) (rw (cdr node))))
+          (t node))))
+    (rw form)))
+
+(defun nelisp-standalone--patch-macro-cache (src)
+  "Patch combiner-cons SRC: swap nl_cons_macro_apply_eval for the caching version
+and thread head_ptr at its call site in nl_eval_inner_cons.  COMPOSE AFTER
+`nelisp-standalone--patch-combiner-cons' (apply catch/throw first, then this)."
+  (cons (car src)
+        (mapcar
+         (lambda (form)
+           (cond
+            ((and (consp form) (eq (car form) 'defun)
+                  (eq (cadr form) 'nl_cons_macro_apply_eval))
+             nelisp-standalone--macro-cache-apply-eval)
+            ((and (consp form) (eq (car form) 'defun)
+                  (eq (cadr form) 'nl_eval_inner_cons))
+             (nelisp-standalone--macro-cache-patch-eval-inner-cons form))
+            (t form)))
+         (cdr src))))
+
+(defun nelisp-standalone--patch-combiner-cons-full (src)
+  "Apply BOTH combiner-cons build-time patches in order: the catch/throw dispatch
+patch (`--patch-combiner-cons') first, then the macro-expansion in-place caching
+patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
+  (nelisp-standalone--patch-macro-cache
+   (nelisp-standalone--patch-combiner-cons src)))
 
 ;; CORRECTED arg-list walk.  Byte-identical to nelisp-cc-evalport-combiner-arglist
 ;; --source EXCEPT the success tail wraps the constructor in (seq ... 0): the
@@ -1127,7 +1469,14 @@ value (matches the binary's M8 read+eval-loop driver)."
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     ;; M7 file I/O
-    "wrf" "rdf" "slen")
+    "wrf" "rdf" "slen"
+    ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
+    ;; / signal-error (the names back the breadth arms in the reader applyfn).
+    "consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
+    "vectorp" "listp" "zerop" "fboundp" "boundp"
+    "symbol-name" "intern" "make-symbol"
+    "make-vector" "vector" "aref" "aset"
+    "signal" "error" "equal" "setcar" "setcdr")
   "Builtin names installed into the reader binary's mirror; each is dispatched by
 the pure-elisp `nelisp_apply_function' (see `nelisp-standalone--applyfn-source').
 Names > 8 bytes (e.g. \"make-hash-table\") require the full-length name-buffer
@@ -1519,12 +1868,13 @@ genuine general interpreter for the 11 special forms + installed builtins."
                         (nelisp-standalone--patch-eval-inner
                          (symbol-value 'nelisp-cc-eval-inner--source))
                         nelisp-standalone--this-file)))
-         ;; M6: catch/throw dispatch patched combiner-cons.
+         ;; M6 catch/throw dispatch + Wave-1 (A) macro-expansion in-place caching,
+         ;; both patched onto combiner-cons (catch/throw first, then macro cache).
          (combiner-cons (progn
                           (require 'nelisp-cc-evalport-combiner-cons)
                           (nelisp-standalone--cached-unit
-                           "combiner-cons-ct.o"
-                           (nelisp-standalone--patch-combiner-cons
+                           "combiner-cons-ct-mc.o"
+                           (nelisp-standalone--patch-combiner-cons-full
                             (symbol-value 'nelisp-cc-evalport-combiner-cons--source))
                            nelisp-standalone--this-file)))
          ;; M3: do_fset rc-fix patched combiner-apply.
@@ -1589,6 +1939,54 @@ genuine general interpreter for the 11 special forms + installed builtins."
       (message "[standalone-reader] FAIL: %S -> exit %d (expected %d)"
                (nelisp-standalone--reader-src) code expected)
       (kill-emacs 1))))
+
+(defconst nelisp-standalone--prelude-file
+  (expand-file-name "scripts/nelisp-stdlib-prelude.el"
+                    nelisp-standalone--repo-root)
+  "Loadable stdlib prelude (defmacro bootstrap + core macros + list/search/hof/
+plist/backquote lib).  The binary loads it via file-load before user code; see
+its header for the `cat PRELUDE yourfile.el | binary' usage.")
+
+(defun nelisp-standalone--prelude-breadth-test-src ()
+  "Breadth test exercising the Wave-1 (B) primitives + the prelude macros.
+Returns 42: defun+cond, dolist+setq, nth, plist-get, and a backquote `length'
+all combine so a single wrong primitive shifts the result off 42."
+  (concat
+   "(defun bt-f (x) (cond ((< x 0) 0) (t (* x 2))))\n"
+   "(let ((s 0)) (dolist (x (list 10 20 12)) (setq s (+ s x)))\n"
+   "  (let ((b 2) (c (list 3 4)))\n"
+   "    (+ (if (= (bt-f 21) 42) 0 100)\n"          ; defun+cond -> 42 ? +0 : +100
+   "       (if (= s 42) 0 100)\n"                  ; dolist sum 10+20+12 -> 42
+   "       (if (= (nth 2 (list 9 8 42 7)) 42) 0 100)\n"   ; nth -> 42
+   "       (if (= (plist-get (list 'a 1 'b 42) 'b) 42) 0 100)\n" ; plist-get -> 42
+   "       (if (= (length `(1 ,b ,@c 5)) 5) 42 100))))\n")) ; backquote length 5 -> 42
+
+;;;###autoload
+(defun nelisp-standalone-reader-prelude-test ()
+  "Build the reader binary, then run it on a test file = the stdlib prelude
+\(`scripts/nelisp-stdlib-prelude.el') followed by a breadth test, and assert the
+binary's exit code == 42.  This proves the prelude LOADS AS-IS on standalone
+NeLisp and the Wave-1 (B) breadth primitives back the stdlib (cond/dolist/nth/
+plist-get/backquote).  Exits 0/1."
+  (nelisp-standalone-build-reader)
+  (let* ((tmp (make-temp-file "nelisp-prelude-breadth-" nil ".el"))
+         (expected 42))
+    (unwind-protect
+        (progn
+          (with-temp-file tmp
+            (insert-file-contents nelisp-standalone--prelude-file)
+            (goto-char (point-max))
+            (insert "\n" (nelisp-standalone--prelude-breadth-test-src)))
+          (let ((code (call-process nelisp-standalone--reader-out nil nil nil tmp)))
+            (if (= code expected)
+                (progn
+                  (message "[standalone-reader-prelude] PASS: prelude + breadth -> exit %d (expected %d)"
+                           code expected)
+                  (kill-emacs 0))
+              (message "[standalone-reader-prelude] FAIL: prelude + breadth -> exit %d (expected %d)"
+                       code expected)
+              (kill-emacs 1))))
+      (when (file-exists-p tmp) (delete-file tmp)))))
 
 (provide 'nelisp-standalone-build)
 

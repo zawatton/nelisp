@@ -8,7 +8,7 @@
         stage-d-v3-tarball stage-d-v3-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test
+        standalone-reader standalone-reader-test standalone-reader-prelude-test
 
 EMACS ?= emacs
 
@@ -108,6 +108,18 @@ standalone-reader-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-test
+
+# Prelude-load breadth test (Wave-1 (A)+(B)).  Builds the reader binary, then
+# runs it on  scripts/nelisp-stdlib-prelude.el  followed by a breadth test that
+# exercises cond / dolist / nth / plist-get / backquote (all backed by the
+# Wave-1 (B) breadth primitives), asserting exit == 42.  The prelude is just a
+# loadable .el: the binary loads it then user code.  To use it by hand:
+#   cat scripts/nelisp-stdlib-prelude.el yourfile.el > /tmp/prog.el
+#   target/nelisp-standalone-reader /tmp/prog.el   # exit = last form's value
+standalone-reader-prelude-test:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-prelude-test
 
 # Multi-process parallel compile (startup-bound for the current unit set:
 # usually SLOWER than serial `standalone-eval' -- see the script header).
