@@ -44,6 +44,35 @@ hash-tables(equal) x32 · format x42 · pcase x31 · cl-loop x18 · cl-labels x1
 Crucially *string-match only x1* and *cl-defstruct = zero* (plist-in-vector
 structs) — the dreaded regexp engine is a near non-issue; no defstructs to model.
 
+* Progress (2026-06-01) — Wave 1/2 + the THREE confirmed self-host blockers
+After M1-M8 + the compiler fix (committed 1849377b), two parallel waves landed
+(committed e8aa1d3d, 19bc2b6e):
+- *Wave 1*: macro-expansion CACHING (in-place AST rewrite → re-expansion cost 0,
+  ~45-50% per-call cut, fib-via-cond ceiling 21→25) + breadth foundation (fix
+  =(car nil)= segfault + tag-aware =eq=; primitives; the 7 prims that let the
+  repo =nelisp-stdlib-*.el= + =nelisp-cl-macros.el= load AS-IS as elisp preludes).
+- *Wave 2*: =pcase= + =cl-loop=(list clauses) + =cl-labels= + =condition-case=
+  TRAPPING all work (the real =nelisp-cl-macros.el= / =nelisp-pcase.el= load as
+  preludes). The interpreter is now a near-complete Elisp.
+*Self-host (Stage 3/4) is blocked on THREE orthogonal architectural items, each
+real eval-core / reader / compiler work — NOT build patches (confirmed by 5
+independent analyses):*
+1. *Escape-copying GC.* The bump arena never frees; per-call leak (~17-50 KB)
+   is unbounded. Form-boundary reclamation PROTOTYPED → flat ~12.4 MB for a
+   stream of homogeneous pure forms (886,000× per-form cut), gates green — but
+   UNSAFE for general code: when a form installs a definition/closure that
+   escapes into the persistent mirror, resetting the region dangles it. A real
+   fix needs deep-copy-on-escape in =nelisp_cons_construct= / clone helpers /
+   the mirror-install path (lisp/ source).
+2. *Reader form-count ceiling* (~8,200 top-level forms / the 256-slot parse
+   pool) — the GOLDEN binary SIGSEGVs at parse time too; reader/parser work.
+3. *Recursion depth* — rec_max 2000 / native C stack; no TCO. Deep single
+   computations need TCO or an explicit eval stack.
+Known latent interpreter bugs surfaced (for the eval-core owner): the =apply=
+op returns 0; macro closures calling an external helper get corrupted when
+defined mid-prelude (cl-loop needs a final redef workaround); cl-loop numeric+
+accumulator clause unsupported; no error-subtype hierarchy.
+
 * Progress (2026-05-31)
 - *M1 DONE* — reader→eval on the freestanding binary, independently verified
   ((+ 40 2)→42, (- 9 2)→7, (* 7 8)→56, (+ 100 23)→123), static ELF. In-repo as
