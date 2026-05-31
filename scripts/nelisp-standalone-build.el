@@ -627,12 +627,20 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
             (seq (vector-slot-set arr idx val)
                  (wf_copy32 out val) 0)
           (seq (wf_copy32 out val) 0))))
-    ;; signal/error: NON-CRASHING stub.  Stash (sym . data) into the catch/throw
+    ;; signal/error: NON-CRASHING.  Stash (sym . data) into the catch/throw
     ;; region + set the throw flag, then return rc=1 so the rc!=0 propagation
-    ;; unwinds the native stack like an error.  NOTE: condition-case does NOT yet
-    ;; trap this (only `catch'/`throw' inspect the stash) -- full
-    ;; condition-case-trapping is DEFERRED.  At least it does not segfault.
+    ;; unwinds the native stack like an error.
     ;; Stash layout (reserved arena): flag@268435472, TAG@268435480, VAL@268435512.
+    ;;
+    ;; WAVE-2 (PATCH 2): both bf_signal and bf_error stash a CANONICAL Symbol
+    ;; (tag 4) re-allocated from its NAME BYTES via `nl_alloc_symbol' (= the
+    ;; bf_intern / nl_install_one path), so the symbol the condition-case handler
+    ;; matches on (`nelisp_eq_symbol' in nl_cc_match_and_bind) sees the exact box
+    ;; layout nl_alloc_symbol produces.  The OLD raw 32-byte copy of the runtime
+    ;; symbol arg carried a box layout that broke clone/symbol-eq, so
+    ;; condition-case never matched.  bf_signal re-allocs from the passed symbol's
+    ;; name bytes (ptr@16/len@24 of a tag-4 Symbol); bf_error stashes the literal
+    ;; `error' symbol (elisp `(error MSG)' signals the `error' condition).
     (defun bf_sig_copy32 (dst src)
       (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
            (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
@@ -640,16 +648,19 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
            (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
     (defun bf_signal (args out)
       (let* ((sym (wf_arg_ptr args 0)))
-        (seq (bf_sig_copy32 268435480 sym)
-             (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args))
-             (ptr-write-u64 268435472 0 1)
-             1)))
+        (seq
+         (nl_alloc_symbol (ptr-read-u64 sym 16) (ptr-read-u64 sym 24) 268435480)
+         (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args))
+         (ptr-write-u64 268435472 0 1)
+         1)))
     (defun bf_error (args out)
-      (let* ((msg (wf_arg_ptr args 0)))
-        (seq (bf_sig_copy32 268435480 msg)
-             (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args))
-             (ptr-write-u64 268435472 0 1)
-             1)))
+      (let* ((ebuf (alloc-bytes 8 1)))
+        (seq
+         (ptr-write-u64 ebuf 0 491496043109)              ; "error" packed LE
+         (nl_alloc_symbol ebuf 5 268435480)               ; TAG slot <- Symbol "error"
+         (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args)) ; VAL slot <- (MSG ...)
+         (ptr-write-u64 268435472 0 1)                    ; raise flag
+         1)))
     ;; fboundp/boundp: look up in the env mirror.  env+0 = mirror, env+64 = unbound.
     ;; nelisp_env_lookup_function(mirror, unbound, sym, out_slot) returns 0 if found.
     (defun bf_fboundp (args env out)
@@ -1644,12 +1655,38 @@ reused buffer and >8-byte names install correctly."
 
 ;; nelisp_eval_call_with_err(form, env, out, err_out): the condition-case
 ;; error-trapping eval variant has no real elisp `defun' (it was a Rust shim).
-;; The no-error path is behaviourally exact: clear err_out, delegate to the real
-;; nelisp_eval_call.  Full error trapping needs the signal-stash machinery (M6).
+;;
+;; WAVE-2 condition-case trapping (PATCH 1 of 4).  The no-error path stays
+;; behaviourally exact (clear err_out, delegate to the real nelisp_eval_call).
+;; The NEW error path inspects the M6 signal stash shared with catch/throw:
+;;   flag @268435472, stashed TAG @268435480, stashed VAL @268435512.
+;; On rc=1 with the flag set, build err_out = (error_sym . data) from the arena
+;; stash via `nelisp_cons_construct' (cons-ctor.o); the existing
+;; `nl_cc_match_and_bind' (real defun in env-leaves-logic, via sf-let-setup.o)
+;; then matches the handler clause against err_out.car.
+;;
+;; The flag is LEFT SET here (not cleared): a clause MATCH clears it (PATCH 4,
+;; `nl_sf_cc_after_match'); on NO match the still-set flag lets an OUTER
+;; condition-case re-trap the same signal (nested reraise) by rebuilding the
+;; cons from the unchanged arena stash.  rc=1 on a non-signal abort (flag==0)
+;; falls through to `nl_cce_clear' + the original rc, so genuine errors still
+;; propagate.
 (defconst nelisp-standalone--reader-errstub-source
-  '(seq (defun nelisp_eval_call_with_err (form env out err_out)
-          (seq (ptr-write-u64 err_out 0 0)
-               (nelisp_eval_call form env out)))))
+  '(seq
+    (defun nl_cce_clear (err_out)
+      (seq (ptr-write-u64 err_out 0 0) (ptr-write-u64 (+ err_out 8) 0 0)
+           (ptr-write-u64 (+ err_out 16) 0 0) (ptr-write-u64 (+ err_out 24) 0 0) 0))
+    (defun nelisp_eval_call_with_err (form env out err_out)
+      (let* ((rc (nelisp_eval_call form env out)))
+        (if (= rc 0)
+            (nl_cce_clear err_out)
+          (if (= (ptr-read-u64 268435472 0) 1)
+              (seq (nelisp_cons_construct 268435480 268435512 err_out)
+                   1)
+            (seq (nl_cce_clear err_out) rc))))))
+  "WAVE-2 condition-case-trapping nelisp_eval_call_with_err (PATCH 1): on a
+signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
+`nl_cc_match_and_bind' can match the handler; the no-error path is unchanged.")
 
 ;; CORRECTED closure-capture (Doc 137 M3).  The shipped AOT
 ;; `nelisp-cc-evalport-capture-lexical' passes the raw frames-record pointer to
@@ -1819,16 +1856,69 @@ self-eval clause wired in: insert `nl_kw_is_keyword' and rewrite the
              (t (push form out))))
           (nreverse out))))
 
-(defun nelisp-standalone--patch-combiner-apply (src)
-  "Return combiner-apply SRC (a `(seq (defun ...) ...)') with nl_apply_do_fset
-swapped for `nelisp-standalone--reader-do-fset-fixed'.  Keeps lisp/ pristine."
+;; WAVE-2 (PATCH 3): un-defer `signal' in combiner-apply.  The AOT combiner's
+;; `nl_apply_name_classify' tags `signal' as category 2 ("deferred") and routes
+;; it to `nl_apply_stash_wta' (stashes a wrong-type-argument into the env var),
+;; BYPASSING `nelisp_apply_function' so bf_signal never runs and the M6 arena
+;; signal stash is never set -> condition-case (the PATCH-1 arena-stash errstub)
+;; cannot catch it.  Neutralise `nl_apply_deferred_signal' (always return 0) so
+;; `signal' is no longer deferred: it falls through to `nelisp_apply_function' ->
+;; bf_signal (PATCH 2) -> arena stash -> errstub (PATCH 1) -> nl_cc_match_and_bind.
+;; Composed onto the existing do_fset rc-fix below (both patch combiner-apply).
+(defun nelisp-standalone--patch-combiner-apply-deferred-signal (src)
+  "Return combiner-apply SRC with `nl_apply_deferred_signal' neutralised to
+always return 0, so `signal' flows to the builtin applyfn (bf_signal) instead of
+`nl_apply_stash_wta'.  WAVE-2 PATCH 3."
   (cons (car src)
         (mapcar (lambda (form)
                   (if (and (consp form) (eq (car form) 'defun)
-                           (eq (cadr form) 'nl_apply_do_fset))
-                      nelisp-standalone--reader-do-fset-fixed
+                           (eq (cadr form) 'nl_apply_deferred_signal))
+                      '(defun nl_apply_deferred_signal (name_ptr) 0)
                     form))
                 (cdr src))))
+
+(defun nelisp-standalone--patch-combiner-apply (src)
+  "Return combiner-apply SRC (a `(seq (defun ...) ...)') with nl_apply_do_fset
+swapped for `nelisp-standalone--reader-do-fset-fixed' (M3) AND
+`nl_apply_deferred_signal' neutralised (WAVE-2 PATCH 3), so condition-case can
+trap `signal'.  Both patches operate on the same combiner-apply source; the
+do_fset swap is applied first, then the deferred-signal neutralisation.  Keeps
+lisp/ pristine."
+  (nelisp-standalone--patch-combiner-apply-deferred-signal
+   (cons (car src)
+         (mapcar (lambda (form)
+                   (if (and (consp form) (eq (car form) 'defun)
+                            (eq (cadr form) 'nl_apply_do_fset))
+                       nelisp-standalone--reader-do-fset-fixed
+                     form))
+                 (cdr src)))))
+
+;; WAVE-2 (PATCH 4): condition-case clears the M6 arena signal flag on a clause
+;; MATCH.  Pairs with PATCH 1 (the errstub no longer clears flag@268435472), so a
+;; clause MATCH must clear it -- else the next signal-free form would observe a
+;; stale pending-signal flag.  A NO match leaves the flag set so an outer
+;; condition-case re-traps (nested reraise).  `nl_sf_cc_after_match(match-rc, ...)'
+;; receives match-rc=0 when `nl_cc_match_and_bind' matched + pushed the handler
+;; frame; we clear the flag then run the handler body via `nl_sf_cc_body'.
+;; Applied as a build-time sexp patch on the sf-cc.o source (lisp/ stays
+;; pristine; the matcher `nl_cc_match_and_bind' itself is reused unchanged via
+;; sf-let-setup.o = env-leaves-logic).
+(defun nelisp-standalone--patch-sf-cc (src)
+  "Return sf-condition-case SRC (a `(seq (defun ...) ...)') with
+`nl_sf_cc_after_match' rewritten to clear the M6 arena signal flag (@268435472)
+on a clause MATCH before running the handler body.  WAVE-2 PATCH 4."
+  (cons (car src)
+        (mapcar
+         (lambda (form)
+           (if (and (consp form) (eq (car form) 'defun)
+                    (eq (cadr form) 'nl_sf_cc_after_match))
+               '(defun nl_sf_cc_after_match (match-rc env out s1 _p5 _p6)
+                  (if (= match-rc 0)
+                      (seq (ptr-write-u64 268435472 0 0)
+                           (nl_sf_cc_body s1 env out 0))
+                    1))
+             form))
+         (cdr src))))
 
 (defun nelisp-standalone--reader-units ()
   "Build the ORDERED reader-path unit list (start first, arena last).
@@ -1890,8 +1980,22 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (float-stub (nelisp-standalone--cached-unit
                       "reader-float-stub.o" nelisp-standalone--reader-float-stub-source
                       nelisp-standalone--this-file))
-         (real-sf (mapcar #'nelisp-standalone--reader-extra-unit
-                          nelisp-standalone--reader-real-sf-manifest))
+         ;; real-sf: all real special-form units EXCEPT sf-cc.o, which is built
+         ;; from the WAVE-2 PATCH-4 source below (flag-clear on clause match).
+         (real-sf (delq nil
+                        (mapcar (lambda (entry)
+                                  (unless (string= (car entry) "sf-cc.o")
+                                    (nelisp-standalone--reader-extra-unit entry)))
+                                nelisp-standalone--reader-real-sf-manifest)))
+         ;; WAVE-2 PATCH 4: sf-condition-case with nl_sf_cc_after_match rewritten
+         ;; to clear the M6 arena signal flag on a clause MATCH.
+         (sf-cc (progn
+                  (require 'nelisp-cc-sf-condition-case)
+                  (nelisp-standalone--cached-unit
+                   "sf-cc-flagclear.o"
+                   (nelisp-standalone--patch-sf-cc
+                    (symbol-value 'nelisp-cc-sf-condition-case--source))
+                   nelisp-standalone--this-file)))
          (capture (nelisp-standalone--cached-unit
                    "reader-capture.o" nelisp-standalone--reader-capture-source
                    nelisp-standalone--this-file))
@@ -1912,7 +2016,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
             extras (list float-stub) real-sf
-            (list capture errstub fileio catch-throw arena))))
+            (list sf-cc capture errstub fileio catch-throw arena))))
 
 ;;;###autoload
 (defun nelisp-standalone-build-reader ()
