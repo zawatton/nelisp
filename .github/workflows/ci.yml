@@ -40,6 +40,15 @@ jobs:
       - name: Run smoke tests
         shell: bash
         run: make test
+      - name: Standalone NeLisp eval (pure-elisp AOT, zero Rust; x86_64 Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make standalone-eval-test
+      - name: Standalone NeLisp reader->eval (text -> AOT reader, zero Rust; x86_64 Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make standalone-reader-test
+
 
   cargo-build:
     runs-on: ${{ matrix.os }}

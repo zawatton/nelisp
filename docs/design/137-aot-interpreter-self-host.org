@@ -1,0 +1,147 @@
+#+TITLE: Doc 137 — AOT-interpreter self-hosting (Phase 47 path, zero Rust)
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-05-31
+
+* Goal
+Complete *self-hosting*: a standalone =nelisp-cc= binary (no Emacs, no Rust)
+that rebuilds any =.el= — including the compiler/linker themselves and
+=nelisp-cc= itself — to native ELF, and does so using NeLisp-native
+multi-threaded parallelism (Stage 4).
+
+After this, Emacs is needed *exactly once* (Stage 2, the one-time bootstrap
+of =nelisp-cc=); every build thereafter is Emacs-free.
+
+* Strategy decision: interpreter-in-native (Strategy A)
+Two ways to reach an Emacs-free build:
+
+| | A: interpreter-in-native | B: compile compiler.el itself |
+|--+--------------------------+-------------------------------|
+| native binary embeds | runtime + *interpreter loop* | the whole AOT-compiled toolchain |
+| compiler.el kept as | *source* (read + eval'd) | must become AOT-dialect |
+| blocker | grow interpreter to full Elisp | rewrite 14k lines into the 98-op subset |
+
+*Chosen: A.* The reader already exists (=nelisp-cc-reader-lexer/parser.el=,
+~95% complete), the eval core exists (=nelisp-cc-eval-inner.el= + the
+=nelisp-cc-evalport-*= cluster), growth is incremental + testable, and we
+reuse the existing assets instead of making 14k lines AOT-compilable.
+Both strategies need the same runtime growth, so Stage 1 work is identical
+either way — no risk in starting on A.
+
+* Gap ledger (2026-05-31 recon)
+** Already present, AOT-dialect, compilable today
+- Reader: lexer + parser (strings, chars =?x=, vectors =[]=, quote/backquote/
+  unquote, =#'=, radix ints, dotted pairs; only =#[bytecode]= missing).
+- Eval core: 11 special forms (=if let let* setq while lambda function quote
+  progn condition-case unwind-protect=) + apply dispatch + ~61 builtins.
+- Arena allocator, cons/vector/symbol/record alloc, =syscall-direct=,
+  =atomic-fetch-add= / =atomic-compare-exchange= (→ the multi-thread path).
+- Dormant macros in =nelisp-stdlib-eval-special.el=: =cond when unless and or
+  dolist dotimes push pop prog1 cl-defun= (defined, not yet activated).
+
+** What the 14k-line compiler.el actually demands (the bar)
+catch/throw x303 · plist-get x437 · get x764 · nth x577 · mapcar x85 ·
+hash-tables(equal) x32 · format x42 · pcase x31 · cl-loop x18 · cl-labels x15.
+Crucially *string-match only x1* and *cl-defstruct = zero* (plist-in-vector
+structs) — the dreaded regexp engine is a near non-issue; no defstructs to model.
+
+* Progress (2026-05-31)
+- *M1 DONE* — reader→eval on the freestanding binary, independently verified
+  ((+ 40 2)→42, (- 9 2)→7, (* 7 8)→56, (+ 100 23)→123), static ELF. In-repo as
+  =make standalone-reader= / =standalone-reader-test=, CI-gated.
+- *M2 DONE* — un-trapped the REAL special forms (trap.o → 45 real sf/env units)
+  AND extended the builtin dispatcher. The binary now runs 11 special forms + 19
+  builtins. Verified incl. a real lexical loop:
+  =(let ((i 0)(s 0)) (while (< i 6) (setq s (+ s 7)) (setq i (+ i 1))) s)= → 42.
+- *M3 DONE* — full macro layer, in-repo, gates green:
+  - Fixed an AOT capture ABI bug (=nl_env_capture_lexical= passed a record ptr
+    where a 3-slot in-vec was expected) → lambda creation + application work.
+  - Fixed =fset=: real root cause = a Phase47 *compiler* mis-lowering of
+    =(not (= raw-bool 0))= in dispatcher-boundary-available defuns (routes a raw
+    i64 bool into =nelisp_aot_builtin_call1= → NULL deref) + two rc bugs in
+    =nl_apply_do_fset=. Worked around by a build-time sexp patch (lisp/ pristine).
+  - Verified: user fns + recursion =(fact 5)=→120; =&rest=/=&optional=; macro
+    expansion; the =(fset 'defmacro …)= bootstrap → =defmacro= works → the dormant
+    stdlib macros run: =(when (< 1 2) 42)=→42, =(unless (< 5 1) 42)=→42.
+  - DURABLE TODO: fix the compiler =(not (= raw-bool 0))= lowering (will recur
+    when compiling the compiler itself for self-host) — nelisp-phase47-compiler
+    ~L7846/7862 boundary gate.
+
+* Milestone ladder
+** Stage 1 — grow the pure-elisp runtime to interpret the toolchain
+- M1 ✅ text → AOT reader → eval on the native binary (REPL floor). Drove
+  =nelisp_reader_parse_one= from a pure-elisp driver (first non-Rust caller);
+  embed source via =sexp-write-str-lit=, parse one form, eval via existing path.
+- M2 ✅ un-trap real special forms + builtin coverage in =nelisp_apply_function=
+  (+ - * / mod 1+ 1- = < > <= >= eq null not car cdr cons list).
+- M3 ✅ macro layer: =defmacro= + macro expansion via the existing
+  =nl_cons_is_macro=/=macro_apply_eval= machinery; dormant stdlib macros run
+  (=when=/=unless= verified). (=cl-lib=/=pcase= subset still TODO under M3+.)
+- M4 ✅ hash-tables (cons-alist backing; make-hash-table/puthash/gethash/remhash/
+  count; :test 'equal). + general fixes: long-name builtin install, keyword self-eval.
+- M5 ✅ strings + =format= (=%d %s %S %x %%=), concat/substring/make-string/
+  string=/number-to-string/string-to-number. Long names via =sexp-name-eq= dispatch.
+- M6 ✅ =catch= / =throw= — real non-local unwind (rc=1 propagation + arena stash).
+- M7 ✅ file I/O via raw =syscall-direct= (freestanding = no libc, =extern-call=
+  unusable): wrf/rdf/slen.
+- M8 ✅ =load=: multi-form read+eval loop; reads from a real FILE via argv[1]
+  (=_start= passes rsp; dual-mode: argv → file, no-argv → embedded NELISP_SRC).
+- *ALL Stage-1 + compiler-fix integrated into ONE binary (97 units, ZERO Rust).*
+  Verified via file-load: HT/strings/format/catch-throw/recursion/defmacro/
+  when/unless/cond-prelude all pass; both gates green.
+
+** Stage 2 — essentially DONE
+The integrated binary IS =nelisp-cc=-shaped: =./nelisp-standalone-reader FILE.el=
+loads+evals a real file. The interpreter+reader+runtime is already AOT-compiled.
+Remaining: naming/packaging + the breadth to run the toolchain (= Stage 3).
+
+** Stage 3 — self-host  (PATH PROVEN, breadth remaining)
+PROVEN: a stdlib macro (=cond=) defined in elisp via the =defmacro= prelude and
+loaded from a file works → the whole stdlib can be loaded as elisp preludes.
+REMAINING (the mountain): add the builtins compiler.el/linker use (nth/assq/memq/
+mapcar/plist-get/get/vector ops/logand/ash/…), load the macro prelude, and the
+HARD blockers =pcase=/=cl-loop=/=cl-labels=. Then =nelisp-cc= loads compiler.el +
+static-linker.el + asm + elf-write and rebuilds any =.el= → native, zero Emacs.
+Acceptance: rebuilds =target/nelisp-standalone-eval= cmp-identical to the Emacs build.
+
+*** Stage 3 gap — MEASURED (2026-05-31)
+*BLOCKER #0 (the real barrier): no memory reclamation.* The arena is a bump
+allocator that never frees (=nl_dealloc_bytes= is a no-op) and each eval call
+allocates ~hundreds of KB (env/mirror cloning). =fib(9)= exhausted the old 16 MiB
+arena; raising it to 1 GiB reaches =fib(15)= but =fib(20)= still dies. compiler.el
+= millions of eval calls → would exhaust any fixed arena. *Self-host needs a GC or
+a region/mark-release allocator* (with deep-copy of escaping results) — a major
+phase, not just "add primitives". (Two lesser ceilings, NOT self-host blockers:
+=rec_max= guard, set to 2000; native C stack ~2500 levels. The compiler recurses
+by AST-nesting depth = tens, far under both.)
+*Breadth gap (after BLOCKER #0):* ordered plan —
+1. ~10 trivial tag-check/list glue builtins (consp/stringp/symbolp/integerp/
+   vectorp/listp/atom/zerop/aref/aset/make-vector).
+2. Load =lisp/nelisp-stdlib-list.el= + =-plist-str.el= as elisp preludes — unlocks
+   nth/nthcdr/append/assq/memq/reverse/nreverse/mapcar/plist-get/-put in one shot
+   (covers nth×591 + plist-get×251 + … of compiler.el). Needs only the 7
+   primitives consp/aref/signal/fboundp/stringp/vectorp/copy-sequence first.
+3. =append= → fixes the prelude macros prog1/prog2/pop/dolist (their expanders call append).
+4. =signal= wired into the catch/throw stash (trappable errors; ×345 in compiler.el).
+5. =backquote= reader support (=`= / =,= / =,@=; ×306 in compiler.el + asm) — a
+   reader-parser extension; hard, and a hard prerequisite to even READ compiler.el.
+6. no-op stub macros: defconst/defvar/define-error/require/provide/declare-function.
+7. =pcase= / =cl-loop= / =cl-labels= (HARD) — load the real =lisp/nelisp-cl-macros.el=
+   / =nelisp-pcase.el= as preludes once the primitive+backquote floor exists.
+Realistic first toolchain target = static-linker.el (steps 1-4,6; one pcase site
+desugarable to cond, modest backquote). compiler.el additionally needs backquote
++ the cl/pcase prelude. ALL gated behind BLOCKER #0.
+
+** Stage 4 — NeLisp-native multi-threaded build
+=clone(2)= + futex via =syscall-direct=, work-stealing over the unit list with
+=atomic-fetch-add=; per-unit compile dominates → real speedup (the Emacs
+multi-process path was startup-bound, ~no speedup — see worklog 2026-05-30).
+
+* Acceptance criteria
+- Stage 1: each Mn has a byte-level / exit-code test (see =make standalone-eval-test=).
+- Stage 3: =nelisp-cc build= produces a binary =cmp -l=-identical to the Emacs build.
+- Stage 4: wall-clock build time scales with thread count on a many-unit set.
+
+* Invariants (do not regress)
+- Zero =.rs= / cargo / rustc. Every layer is pure elisp compiled by Phase 47.
+- Rust LOC must never increase (it is being driven to zero).
+- The existing 11-special-form eval core + reader stay byte-stable; growth is additive.

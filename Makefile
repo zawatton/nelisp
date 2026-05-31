@@ -6,7 +6,9 @@
         bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
         stage-d-v2-tarball stage-d-v2-tarball-verify \
         stage-d-v3-tarball stage-d-v3-tarball-verify \
-        verify-elisp-fixtures
+        verify-elisp-fixtures \
+        standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
+        standalone-reader standalone-reader-test
 
 EMACS ?= emacs
 
@@ -61,6 +63,57 @@ compile:
 
 clean:
 	find . -name '*.elc' -type f -delete
+
+# ===================================================================
+# Standalone NeLisp eval binary (pure-elisp AOT, ZERO Rust).
+# The REAL evaluator (nl_eval_inner + combiner cons/apply + bootstrap
+# mirror) is compiled by the Phase 47 elisp compiler into relocatable
+# units and linked by the pure-elisp static linker into a freestanding
+# static ELF.  No cargo / rustc / target binary involved.
+#
+#   make standalone-eval         # whole, INCREMENTAL build -> target/nelisp-standalone-eval
+#   make standalone-eval-test    # build, run, assert (+ 1 2) -> exit 3
+#   make standalone-eval-clean   # drop the per-unit object cache
+#
+# Individual .el rebuild: editing one lisp/nelisp-cc-XXX.el invalidates
+# ONLY that unit's cache (target/standalone-units/NAME.unit); the next
+# `make standalone-eval' recompiles just that unit + relinks.
+# Force one unit:  emacs ... --eval '(nelisp-standalone-rebuild-one "eq-symbol.o")'
+# Parametrize the embedded form: NELISP_FORM_OP={+,-,*} NELISP_FORM_A=N NELISP_FORM_B=M.
+standalone-eval:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build
+
+standalone-eval-test:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-test
+
+standalone-eval-clean:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-clean
+
+# Reader path (Doc 137 M1): text -> AOT reader -> eval, ZERO Rust.
+#   make standalone-reader        # build -> target/nelisp-standalone-reader
+#   make standalone-reader-test   # build, run, assert exit == eval(NELISP_SRC)
+# Embedded source via NELISP_SRC (default "(+ 40 2)" -> 42; + - * only for now).
+standalone-reader:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+
+standalone-reader-test:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-test
+
+# Multi-process parallel compile (startup-bound for the current unit set:
+# usually SLOWER than serial `standalone-eval' -- see the script header).
+# JOBS defaults to nproc.
+standalone-eval-j:
+	@JOBS=$(JOBS) ./tools/build-standalone-parallel.sh $(JOBS)
 
 # Doc 126 (2026-05-18): `bake-images' + `bake-check' retired together
 # with the `lisp/*.image' production boot path.  `Env::new_global' now

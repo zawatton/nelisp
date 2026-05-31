@@ -3680,6 +3680,26 @@ boundary slots.")
            (memq (car form)
                  nelisp-phase47-compiler--aot-direct-tag-predicate-symbols))))
 
+(defun nelisp-phase47-compiler--aot-boundary-raw-bool-form-p (form)
+  "Return non-nil when FORM is a raw i64 boolean even with the boundary.
+Unlike `--aot-direct-raw-bool-form-p' (which assumes the boundary-free
+tag-predicate path is taken), this only recognizes forms that stay raw
+i64 when the AOT builtin boundary IS available: the comparison ops emit
+a `cmp' raw bool, and `(not RAW)' over such a form recurses to another
+raw bool.  Tag predicates like `(consp x)' delegate to the builtin1
+dispatcher under an available boundary and return a boxed Sexp, so they
+are deliberately excluded."
+  (and (consp form)
+       (or (and (memq (car form) '(< > <= >= =))
+                ;; Binary comparison emits a single `cmp' raw bool; the
+                ;; chained N-ary form rewrites to `and' (not raw), so
+                ;; restrict to the 2-operand shape.
+                (= (length form) 3))
+           (and (eq (car form) 'not)
+                (= (length form) 2)
+                (nelisp-phase47-compiler--aot-boundary-raw-bool-form-p
+                 (cadr form))))))
+
 (defun nelisp-phase47-compiler--aot-direct-tag-predicate-form (sexp)
   "Return a boundary-free lowering for simple one-argument predicate SEXP."
   (when (and (consp sexp)
@@ -7839,6 +7859,32 @@ functions `((NAME . ARITY) ...)'."
      sexp env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'aot-current-sp))
     (nelisp-phase47-compiler--parse-aot-current-sp sexp))
+   ;; Doc 129.6AT (fix) — `(not RAW-BOOL)' must lower to a raw boolean
+   ;; negation, never to the builtin1 dispatcher.  When the AOT builtin
+   ;; boundary IS available the boundary-free tag-predicate branch below
+   ;; is skipped, which used to route `(not (= X 0))' through
+   ;; `--parse-aot-builtin1-call' / `nelisp_aot_builtin_call1'.  That
+   ;; dispatcher movdqu-reads 32 bytes treating its arg as a `*const
+   ;; Sexp', so passing the raw i64 boolean produced by `='/`<' etc. (= 0
+   ;; or 1) faults on a NULL/near-NULL pointer.  The fix only applies to
+   ;; the boundary-available case (the boundary-free path already lowers
+   ;; `(not raw-bool)' correctly), and only when the argument is a form
+   ;; that is *also* raw-i64 in this same boundary-available context:
+   ;; comparison ops (`< > <= >= =') always emit a `cmp' raw bool, and
+   ;; `(not ...)' over such a form (handled recursively here) likewise
+   ;; stays raw.  Tag predicates like `(consp x)' are intentionally NOT
+   ;; included: with the boundary available they delegate to builtin1 and
+   ;; return a boxed Sexp, so `(not (consp x))' must keep its existing
+   ;; builtin1 routing.
+   ((and (consp sexp)
+         (eq (car sexp) 'not)
+         (= (length sexp) 2)
+         (not (assq 'not defuns))
+         (nelisp-phase47-compiler--aot-builtin-boundary-available-p fenv)
+         (nelisp-phase47-compiler--aot-boundary-raw-bool-form-p
+          (cadr sexp)))
+    (nelisp-phase47-compiler--parse-value
+     `(= ,(cadr sexp) 0) env fenv defuns))
    ;; Doc 129.6AT — boundary-free tag predicate lowering.  Ordinary
    ;; helper functions in user .el often call `(consp x)' / `(not ...)'
    ;; before they have the AOT dispatcher boundary parameters.  These
