@@ -56,6 +56,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: make standalone-selfhost-mt-test
+      - name: Standalone NeLisp PARALLEL BUILD (4 units compiled concurrently via fork(2), zero emacs; x86_64 Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make standalone-parallel-compile-test
 
 
   cargo-build:

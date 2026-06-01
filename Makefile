@@ -8,7 +8,7 @@
         stage-d-v3-tarball stage-d-v3-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test
+        standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
 
 EMACS ?= emacs
 
@@ -133,6 +133,12 @@ standalone-selfhost-test:
 # parallel build capability.
 standalone-selfhost-mt-test:
 	./tools/selfhost-mt-test.sh
+
+# Stage 4 PRODUCTION PARALLEL BUILD: the standalone interpreter compiles N units
+# CONCURRENTLY (fork(2) workers, each running the full Phase-47 compiler, COW-
+# isolated so no shared-state race), joined via a MAP_SHARED atomic counter.
+standalone-parallel-compile-test:
+	./tools/parallel-compile-test.sh
 
 
 # Multi-process parallel compile (startup-bound for the current unit set:

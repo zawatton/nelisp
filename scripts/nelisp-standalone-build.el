@@ -1201,7 +1201,21 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
       (while (< (ptr-read-u64 addr 0) target) 0))
     (defun bf_thread_join (args env out)
       (seq (nl_spin_until (wf_argval args 0) (wf_argval args 1))
-           (wf_write_int out 0))))
+           (wf_write_int out 0)))
+    ;; fork-spawn: fork(2) (syscall 57) a child with a COW-isolated copy of the
+    ;; WHOLE address space (own arena / mirror / frames / env), so N children
+    ;; compiling CONCURRENTLY share NO mutable eval state and cannot race (the
+    ;; clone(2)/CLONE_VM thread path shares all of it).  Child evals FORM (its
+    ;; own COW copy — no box/handshake needed) and exits; join via a MAP_SHARED
+    ;; counter (atomic-fetch-add stays visible across the COW boundary) +
+    ;; thread-join.  fork result branched directly (no spill).
+    (defun bf_fork_spawn (args env out)
+      (let ((form (wf_arg_ptr args 0)))
+        (if (= (syscall-direct 57 0 0 0 0 0 0) 0)
+            (let ((out_slot (alloc-bytes 32 8)))
+              (seq (extern-call nelisp_eval_call form env out_slot)
+                   (syscall-direct 60 0 0 0 0 0 0)))
+          (wf_write_int out 1)))))
   "B-foundation breadth helpers (Wave-1 (B), reader-only): predicates, vector /
 symbol ops, setcar/setcdr, structural equal, vector-aware length, plus the
 nil-safe car/cdr + tag-aware eq REPLACEMENTS for the buggy stock arms.
@@ -1287,7 +1301,8 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "ptr-write-u64") . (seq (ptr-write-u64 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
     ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1))))
     ((:lit "thread-spawn") . (bf_thread_spawn args env out))
-    ((:lit "thread-join") . (bf_thread_join args env out)))
+    ((:lit "thread-join") . (bf_thread_join args env out))
+    ((:lit "fork-spawn") . (bf_fork_spawn args env out)))
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
 ops, signal/error stubs, structural equal, setcar/setcdr.  Wave-2 (C) appends
 ash/logand/logior/logxor/lognot + string<.")
@@ -1300,7 +1315,7 @@ ash/logand/logior/logxor/lognot + string<.")
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
-    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join")
+    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join" "fork-spawn")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
@@ -2086,7 +2101,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
-    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join")
+    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join" "fork-spawn")
   "Builtin names installed into the reader binary's mirror; each is dispatched by
 the pure-elisp `nelisp_apply_function' (see `nelisp-standalone--applyfn-source').
 Names > 8 bytes (e.g. \"make-hash-table\") require the full-length name-buffer
