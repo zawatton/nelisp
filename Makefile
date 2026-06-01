@@ -8,7 +8,7 @@
         stage-d-v3-tarball stage-d-v3-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test
+        standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test
 
 EMACS ?= emacs
 
@@ -125,6 +125,14 @@ standalone-reader-prelude-test:
 # x86_64 ELF with ZERO emacs, then we exec it and assert exit 120 (= 5!).
 standalone-selfhost-test:
 	./tools/selfhost-test.sh
+
+# Stage 4 SELF-HOST MULTI-THREADED test: the standalone interpreter compiles a
+# clone(2)+atomics multi-threaded program to native code with ZERO emacs; the
+# binary spawns 3 OS threads that produce partial results in parallel, joined
+# via a shared SeqCst atomic counter -> exit 42.  Proves NeLisp's multi-threaded
+# parallel build capability.
+standalone-selfhost-mt-test:
+	./tools/selfhost-mt-test.sh
 
 
 # Multi-process parallel compile (startup-bound for the current unit set:
