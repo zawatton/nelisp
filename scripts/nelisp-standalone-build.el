@@ -2052,11 +2052,18 @@ reused buffer and >8-byte names install correctly."
         (vector-make 8192 pool)                                 ; Sexp::Vector(8192) slot-pool — raised from 256 (Task 1: 3+4*MAX_DEPTH; 8192 => MAX_DEPTH ~2047, well above the rec_max 2000 eval guard so the pool never caps before the recursion guard fires)
         (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
         ;; GC trigger: collect at a form boundary once the bump offset
-        ;; crosses this threshold.  Initial 64 MiB keeps small programs
-        ;; GC-free (zero overhead); after each collection the trigger is
-        ;; re-armed to max(live*3, bump) + 16 MiB so frequency adapts to the
-        ;; live working set (a flat live set => bounded, periodic GCs).
-        (ptr-write-u64 268435560 0 4194304)
+        ;; crosses this threshold.  Initial 512 MiB keeps small *and*
+        ;; moderate programs GC-free (zero overhead) — crucially the full
+        ;; 14k-line nelisp-phase47-compiler.el load (420 top-level forms,
+        ;; peak arena only ~53 MB) never crosses it, so loading the whole
+        ;; AOT toolchain is O(N) (one mark+sweep per form, each over the
+        ;; GROWING live set, was O(N^2): a 4 MiB trigger made the load
+        ;; collect on nearly every form past form ~40 and blow past 240s).
+        ;; After each collection the trigger is re-armed to
+        ;; max(live*3, bump) + 1 MiB so frequency adapts to the live
+        ;; working set (a flat live set => bounded, periodic GCs); the
+        ;; free-list reuse independently bounds long single-form compute.
+        (ptr-write-u64 268435560 0 536870912)
         ;; BOOT WATERMARK: freeze the absolute address up to which everything
         ;; was allocated during install + driver setup (the mirror, all 60
         ;; builtins, the env/frame records, the fixed driver scratch slots).
