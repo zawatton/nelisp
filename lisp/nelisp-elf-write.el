@@ -133,44 +133,25 @@ write; `nelisp-elf-buffer-bytes' reverses and concatenates."
 (defun nelisp-elf--coerce-unibyte (str)
   "Return a unibyte copy of STR.
 Idempotent for already-unibyte strings.  For multibyte strings that
-hold raw bytes (= chars in 0..255), each char is collapsed to its
-8-bit byte via a temporary unibyte buffer (= safe across emacs
-versions, unlike the obsolete `string-make-unibyte').
-
-NeLisp standalone has no multibyte/unibyte distinction at the
-string level (= all strings are internally UTF-8) and the buffer
-stubs are no-ops, so the `with-temp-buffer' trick would silently
-return \"\" and starve all downstream writers.  Detect the stub
-environment by checking whether the buffer trick preserved length
-and fall back to returning STR as-is when it did not (= NeLisp
-standalone) — char codes 0..255 stored via `unibyte-string' are
-already byte-equivalent for the ASCII range that the ELF
-infrastructure relies on."
-  (if (multibyte-string-p str)
-      (let ((converted
-             (with-temp-buffer
-               (set-buffer-multibyte nil)
-               (insert str)
-               (buffer-substring-no-properties (point-min) (point-max)))))
-        ;; NeLisp standalone: buffer ops are stubs, conversion produces
-        ;; an empty string regardless of input — keep STR so downstream
-        ;; writers see the original char sequence (char-value == byte
-        ;; for chars 0..127, which covers all ELF header literals).
-        (if (= (length converted) (length str))
-            converted
-          str))
+hold raw bytes (= chars in 0..255), collapse each char to its 8-bit
+byte when the host provides `string-make-unibyte'.  The standalone
+reader load-set does not ship the buffer/string-coding helpers that
+host Emacs has, but its `unibyte-string' builtin already constructs
+raw byte strings directly, so returning STR as-is is correct there."
+  (if (and (fboundp 'multibyte-string-p)
+           (multibyte-string-p str)
+           (fboundp 'string-make-unibyte))
+      (string-make-unibyte str)
     str))
 
 (defun nelisp-elf-buffer-bytes (cbuf)
   "Finalize CBUF and return its accumulated unibyte string.
 Joins the reverse-order chunk list with one `apply' + `concat' after
 `nreverse', so the cost is O(total-bytes) — not O(N²) like
-incremental `concat'.  Coerced to unibyte via
-`nelisp-elf--coerce-unibyte' so callers can safely pass the result
-straight to `write-region' under
-`coding-system-for-write' = no-conversion."
-  (nelisp-elf--coerce-unibyte
-   (apply #'concat (nreverse (plist-get cbuf :chunks)))))
+incremental `concat'.  The writer builds byte strings directly via
+`unibyte-string'/`encode-coding-string', so the joined result is
+already in the exact byte form `write-region' needs."
+  (apply #'concat (nreverse (plist-get cbuf :chunks))))
 
 (defsubst nelisp-elf-buffer-length (cbuf)
   "Return current cumulative byte length of CBUF (= O(1))."
@@ -278,12 +259,17 @@ Bignum-safe: shifts one byte at a time so values above 2^29 work on
 
 (defun nelisp-elf--write-bytes (buf bytes)
   "Append unibyte string BYTES to BUF verbatim.
-Coerces BYTES to unibyte via `nelisp-elf--coerce-unibyte' (=
-round-trips multibyte → unibyte by collapsing each U+00XX char
-to one byte) so user-supplied `:text' / `:rodata' built via
-`make-string' do not poison the chunk-buffer with UTF-8-expanded
-chunks."
-  (nelisp-elf--buf-emit buf (nelisp-elf--coerce-unibyte bytes)))
+The ELF writer constructs its section payloads as raw byte strings
+upstream, so emit them directly here instead of re-coercing through
+host-only unibyte helpers."
+  (if (bufferp buf)
+      (insert bytes)
+    (let ((len (length bytes))
+          (chunks-cell (cdr buf))
+          (length-cell (cdr (cdr (cdr buf)))))
+      (setcar chunks-cell (cons bytes (car chunks-cell)))
+      (setcar length-cell (+ (car length-cell) len))
+      buf)))
 
 (defun nelisp-elf--write-strz (buf s)
   "Append S to BUF followed by a NUL byte (= for .strtab entries).
@@ -299,11 +285,11 @@ values >= #x80, which would poison the chunk-buffer).  VALUE = 0
 is the hot path (= section alignment fillers) and stays unibyte
 without conversion (= `make-string n 0' is unibyte by default)."
   (let ((v (or value 0)))
-    (nelisp-elf--buf-emit
-     buf
-     (if (< v #x80)
-         (make-string nbytes v)
-       (nelisp-elf--coerce-unibyte (make-string nbytes v))))))
+    (let ((payload
+           (if (< v #x80)
+               (make-string nbytes v)
+             (nelisp-elf--coerce-unibyte (make-string nbytes v)))))
+      (nelisp-elf--buf-emit buf payload))))
 
 ;; ---- Ehdr writer (= §3.3 §2.2) ----
 
@@ -1135,34 +1121,99 @@ Doc 91 §91.c."
                              (+ data-off data-size)
                            rx-segment-end))
          (shstrtab-off (nelisp-elf--align-up non-alloc-base 1))
-         ;; Build .shstrtab + indices.
-         (shstrtab (nelisp-elf-strtab-make))
-         (sh-name-text     (nelisp-elf-strtab-add shstrtab ".text"))
-         (sh-name-rodata   (when have-rodata
-                             (nelisp-elf-strtab-add shstrtab ".rodata")))
-         (sh-name-data     (when have-data
-                             (nelisp-elf-strtab-add shstrtab ".data")))
-         (sh-name-bss      (when have-bss
-                             (nelisp-elf-strtab-add shstrtab ".bss")))
-         (sh-name-shstrtab (nelisp-elf-strtab-add shstrtab ".shstrtab"))
-         (sh-name-strtab   (nelisp-elf-strtab-add shstrtab ".strtab"))
-         (sh-name-symtab   (nelisp-elf-strtab-add shstrtab ".symtab"))
-         (sh-name-rela     (when have-rela
-                             (nelisp-elf-strtab-add shstrtab ".rela.text")))
-         (shstrtab-bytes (nelisp-elf-strtab-bytes shstrtab))
-         (shstrtab-size  (length shstrtab-bytes))
+         ;; Build .shstrtab inline (= same direct-chunk path as ET_REL).
+         (shstrtab-chunks (list (unibyte-string 0)))
+         (shstrtab-pos 1)
+         (sh-name-text
+          (let ((off shstrtab-pos) (s ".text"))
+            (push (concat (encode-coding-string s 'utf-8 t)
+                          (unibyte-string 0))
+                  shstrtab-chunks)
+            (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+            off))
+         (sh-name-rodata
+          (when have-rodata
+            (let ((off shstrtab-pos) (s ".rodata"))
+              (push (concat (encode-coding-string s 'utf-8 t)
+                            (unibyte-string 0))
+                    shstrtab-chunks)
+              (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+              off)))
+         (sh-name-data
+          (when have-data
+            (let ((off shstrtab-pos) (s ".data"))
+              (push (concat (encode-coding-string s 'utf-8 t)
+                            (unibyte-string 0))
+                    shstrtab-chunks)
+              (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+              off)))
+         (sh-name-bss
+          (when have-bss
+            (let ((off shstrtab-pos) (s ".bss"))
+              (push (concat (encode-coding-string s 'utf-8 t)
+                            (unibyte-string 0))
+                    shstrtab-chunks)
+              (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+              off)))
+         (sh-name-shstrtab
+          (let ((off shstrtab-pos) (s ".shstrtab"))
+            (push (concat (encode-coding-string s 'utf-8 t)
+                          (unibyte-string 0))
+                  shstrtab-chunks)
+            (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+            off))
+         (sh-name-strtab
+          (let ((off shstrtab-pos) (s ".strtab"))
+            (push (concat (encode-coding-string s 'utf-8 t)
+                          (unibyte-string 0))
+                  shstrtab-chunks)
+            (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+            off))
+         (sh-name-symtab
+          (let ((off shstrtab-pos) (s ".symtab"))
+            (push (concat (encode-coding-string s 'utf-8 t)
+                          (unibyte-string 0))
+                  shstrtab-chunks)
+            (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+            off))
+         (sh-name-rela
+          (when have-rela
+            (let ((off shstrtab-pos) (s ".rela.text"))
+              (push (concat (encode-coding-string s 'utf-8 t)
+                            (unibyte-string 0))
+                    shstrtab-chunks)
+              (setq shstrtab-pos (+ shstrtab-pos (length s) 1))
+              off)))
+         (shstrtab-bytes (apply #'concat (nreverse shstrtab-chunks)))
+         (shstrtab-size  shstrtab-pos)
          (strtab-off (nelisp-elf--align-up
                       (+ shstrtab-off shstrtab-size) 1))
          ;; Build .strtab from the user-provided symbol names.
-         (strtab (nelisp-elf-strtab-make))
+         (strtab-chunks (list (unibyte-string 0)))
+         (strtab-pos 1)
+         (strtab-index (make-hash-table :test 'equal))
          (sym-name-offsets
-          (mapcar (lambda (sym)
-                    (cons (plist-get sym :name)
-                          (nelisp-elf-strtab-add
-                           strtab (plist-get sym :name))))
-                  symbols))
-         (strtab-bytes (nelisp-elf-strtab-bytes strtab))
-         (strtab-size  (length strtab-bytes))
+          (let (acc)
+            (puthash "" 0 strtab-index)
+            (dolist (sym symbols)
+              (let* ((nm (plist-get sym :name))
+                     (cached (gethash nm strtab-index))
+                     (off (cond
+                           (cached cached)
+                           ((string-empty-p nm) 0)
+                           (t
+                            (let ((this-off strtab-pos))
+                              (push (concat
+                                     (encode-coding-string nm 'utf-8 t)
+                                     (unibyte-string 0))
+                                    strtab-chunks)
+                              (setq strtab-pos (+ strtab-pos (length nm) 1))
+                              (puthash nm this-off strtab-index)
+                              this-off)))))
+                (push (cons nm off) acc)))
+            (nreverse acc)))
+         (strtab-bytes (apply #'concat (nreverse strtab-chunks)))
+         (strtab-size  strtab-pos)
          (symtab-off (nelisp-elf--align-up
                       (+ strtab-off strtab-size) 8))
          ;; Symbols: index 0 is the always-zero STN_UNDEF entry,
@@ -1416,29 +1467,29 @@ Doc 91 §91.c."
     (unless (= (nelisp-elf-buffer-length cbuf) text-off)
       (error "nelisp-elf: .text offset drift (length=%d expected=%d)"
              (nelisp-elf-buffer-length cbuf) text-off))
-    (nelisp-elf--write-bytes cbuf text)
+    (nelisp-elf--cbuf-push cbuf text)
     ;; ---- .rodata ----
     (when have-rodata
-      (nelisp-elf--write-bytes cbuf rodata))
+      (nelisp-elf--cbuf-push cbuf rodata))
     ;; ---- .data (= RW segment, on a fresh page) ----
     (when have-data
       (let ((pad (- data-off (nelisp-elf-buffer-length cbuf))))
         (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
-      (nelisp-elf--write-bytes cbuf data))
+      (nelisp-elf--cbuf-push cbuf data))
     ;; .bss contributes no file bytes — it is NOBITS.
     ;; ---- .shstrtab ----
     (let ((pad (- shstrtab-off (nelisp-elf-buffer-length cbuf))))
       (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
-    (nelisp-elf--write-bytes cbuf shstrtab-bytes)
+    (nelisp-elf--cbuf-push cbuf shstrtab-bytes)
     ;; ---- .strtab ----
     (let ((pad (- strtab-off (nelisp-elf-buffer-length cbuf))))
       (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
-    (nelisp-elf--write-bytes cbuf strtab-bytes)
+    (nelisp-elf--cbuf-push cbuf strtab-bytes)
     ;; ---- .symtab ----
     (let ((pad (- symtab-off (nelisp-elf-buffer-length cbuf))))
       (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
     ;; symbol 0 = STN_UNDEF (all zeros).
-    (nelisp-elf-write-sym cbuf '(:name 0 :info 0))
+    (nelisp-elf--cbuf-push cbuf (make-string nelisp-elf--sym-size 0))
     (dolist (sym ordered-symbols)
       (let* ((nm    (plist-get sym :name))
              (sect  (or (plist-get sym :section) 'text))
@@ -1452,131 +1503,99 @@ Doc 91 §91.c."
                      sect text-vaddr rodata-vaddr
                      data-vaddr bss-vaddr))
              (value (+ vaddr (or (plist-get sym :value) 0))))
-        (nelisp-elf-write-sym
-         cbuf
-         (list :name  name-off
-               :info  (nelisp-elf-sym-info
-                       (nelisp-elf--sym-bind-code bind)
-                       (nelisp-elf--sym-type-code type))
-               :other 0
-               :shndx shndx
-               :value value
-               :size  (or (plist-get sym :size) 0)))))
+        (nelisp-elf--build-rel-sym
+         cbuf name-off
+         (nelisp-elf-sym-info
+          (nelisp-elf--sym-bind-code bind)
+          (nelisp-elf--sym-type-code type))
+         0 shndx value (or (plist-get sym :size) 0))))
     ;; ---- .rela.text (optional) ----
     (when have-rela
       (let ((pad (- rela-off (nelisp-elf-buffer-length cbuf))))
         (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
-      (dolist (rel relocs)
-        (let* ((rsym (plist-get rel :symbol))
-               (rtype (plist-get rel :type))
-               (sym-idx
-                (or (let ((i 1) found)
-                      (dolist (s ordered-symbols)
-                        (when (and (not found)
-                                   (equal (plist-get s :name) rsym))
-                          (setq found i))
-                        (setq i (1+ i)))
-                      found)
-                    (error "nelisp-elf: relocation references unknown symbol %S"
-                           rsym))))
-          (nelisp-elf-write-rela
-           cbuf
-           (list :offset (or (plist-get rel :offset) 0)
-                 :info   (nelisp-elf-rela-info
-                          sym-idx
-                          (nelisp-elf--reloc-type-code rtype))
-                 :addend (or (plist-get rel :addend) 0))))))
+      (let ((sym-idx-table (make-hash-table :test 'equal))
+            (sidx 1))
+        (dolist (s ordered-symbols)
+          (puthash (plist-get s :name) sidx sym-idx-table)
+          (setq sidx (1+ sidx)))
+        (dolist (rel relocs)
+          (let* ((rsym (plist-get rel :symbol))
+                 (rtype (plist-get rel :type))
+                 (sym-idx
+                  (or (gethash rsym sym-idx-table)
+                      (error "nelisp-elf: relocation references unknown symbol %S"
+                             rsym))))
+            (nelisp-elf--build-rel-rela
+             cbuf
+             (or (plist-get rel :offset) 0)
+             (nelisp-elf-rela-info
+              sym-idx
+              (nelisp-elf--reloc-type-code rtype))
+             (or (plist-get rel :addend) 0))))))
     ;; ---- Shdr table ----
     (let ((pad (- shoff (nelisp-elf-buffer-length cbuf))))
       (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
     ;; Shdr[0] = SHT_NULL.
-    (nelisp-elf-write-shdr cbuf '(:type 0))
+    (nelisp-elf--cbuf-push cbuf (make-string nelisp-elf--shdr-size 0))
     ;; Shdr[text].
-    (nelisp-elf-write-shdr
-     cbuf
-     (list :name      sh-name-text
-           :type      nelisp-elf--sht-progbits
-           :flags     (logior nelisp-elf--shf-alloc
-                              nelisp-elf--shf-execinstr)
-           :addr      text-vaddr
-           :offset    text-off
-           :size      text-size
-           :addralign 16))
+    (nelisp-elf--build-rel-shdr
+     cbuf sh-name-text
+     nelisp-elf--sht-progbits
+     (logior nelisp-elf--shf-alloc nelisp-elf--shf-execinstr)
+     text-vaddr text-off text-size 0 0 16 0)
     ;; Shdr[rodata] (if present).
     (when have-rodata
-      (nelisp-elf-write-shdr
-       cbuf
-       (list :name      sh-name-rodata
-             :type      nelisp-elf--sht-progbits
-             :flags     nelisp-elf--shf-alloc
-             :addr      rodata-vaddr
-             :offset    rodata-off
-             :size      rodata-size
-             :addralign 8)))
+      (nelisp-elf--build-rel-shdr
+       cbuf sh-name-rodata
+       nelisp-elf--sht-progbits
+       nelisp-elf--shf-alloc
+       rodata-vaddr rodata-off rodata-size 0 0 8 0))
     ;; Shdr[data] (if present).
     (when have-data
-      (nelisp-elf-write-shdr
-       cbuf
-       (list :name      sh-name-data
-             :type      nelisp-elf--sht-progbits
-             :flags     (logior nelisp-elf--shf-write
-                                nelisp-elf--shf-alloc)
-             :addr      data-vaddr
-             :offset    data-off
-             :size      data-size
-             :addralign 8)))
+      (nelisp-elf--build-rel-shdr
+       cbuf sh-name-data
+       nelisp-elf--sht-progbits
+       (logior nelisp-elf--shf-write nelisp-elf--shf-alloc)
+       data-vaddr data-off data-size 0 0 8 0))
     ;; Shdr[bss] (if present) — SHT_NOBITS, no file footprint.
     (when have-bss
-      (nelisp-elf-write-shdr
-       cbuf
-       (list :name      sh-name-bss
-             :type      nelisp-elf--sht-nobits
-             :flags     (logior nelisp-elf--shf-write
-                                nelisp-elf--shf-alloc)
-             :addr      bss-vaddr
-             :offset    bss-off
-             :size      bss-size
-             :addralign 8)))
+      (nelisp-elf--build-rel-shdr
+       cbuf sh-name-bss
+       nelisp-elf--sht-nobits
+       (logior nelisp-elf--shf-write nelisp-elf--shf-alloc)
+       bss-vaddr bss-off bss-size 0 0 8 0))
     ;; Shdr[shstrtab].
-    (nelisp-elf-write-shdr
-     cbuf
-     (list :name      sh-name-shstrtab
-           :type      nelisp-elf--sht-strtab
-           :offset    shstrtab-off
-           :size      shstrtab-size
-           :addralign 1))
+    (nelisp-elf--build-rel-shdr
+     cbuf sh-name-shstrtab
+     nelisp-elf--sht-strtab
+     0 0 shstrtab-off shstrtab-size 0 0 1 0)
     ;; Shdr[strtab].
-    (nelisp-elf-write-shdr
-     cbuf
-     (list :name      sh-name-strtab
-           :type      nelisp-elf--sht-strtab
-           :offset    strtab-off
-           :size      strtab-size
-           :addralign 1))
+    (nelisp-elf--build-rel-shdr
+     cbuf sh-name-strtab
+     nelisp-elf--sht-strtab
+     0 0 strtab-off strtab-size 0 0 1 0)
     ;; Shdr[symtab].
-    (nelisp-elf-write-shdr
-     cbuf
-     (list :name      sh-name-symtab
-           :type      nelisp-elf--sht-symtab
-           :offset    symtab-off
-           :size      symtab-size
-           :link      strtab-shndx
-           :info      local-count
-           :addralign 8
-           :entsize   nelisp-elf--sym-size))
+    (nelisp-elf--build-rel-shdr
+     cbuf sh-name-symtab
+     nelisp-elf--sht-symtab
+     0 0 symtab-off symtab-size strtab-shndx local-count 8 nelisp-elf--sym-size)
     ;; Shdr[rela.text] (if present).
     (when have-rela
-      (nelisp-elf-write-shdr
-       cbuf
-       (list :name      sh-name-rela
-             :type      nelisp-elf--sht-rela
-             :offset    rela-off
-             :size      rela-size
-             :link      symtab-shndx
-             :info      text-shndx
-             :addralign 8
-             :entsize   nelisp-elf--rela-size)))
-    (nelisp-elf-buffer-bytes cbuf)))
+      (nelisp-elf--build-rel-shdr
+       cbuf sh-name-rela
+       nelisp-elf--sht-rela
+       0 0 rela-off rela-size symtab-shndx text-shndx 8 nelisp-elf--rela-size))
+    (let ((bytes (apply #'concat (nreverse (plist-get cbuf :chunks)))))
+      (when nelisp-elf--build-rich-write-target
+        (let ((coding-system-for-write 'no-conversion))
+          (write-region bytes nil nelisp-elf--build-rich-write-target nil 'silent))
+        (set-file-modes nelisp-elf--build-rich-write-target #o755))
+      bytes)))
+
+(defvar nelisp-elf--build-rich-write-target nil
+  "When non-nil, `nelisp-elf--build-rich' writes its bytes directly here.
+This bypasses a standalone return-path bug that can corrupt the large
+ET_EXEC byte string after the helper returns to its caller.")
 
 ;; ---- Doc 99 §99.A ET_REL builder (= relocatable object output) ----
 ;;
@@ -2210,7 +2229,8 @@ page-aligned (= .data + .bss, with .bss declared NOBITS).  The ET_REL
 path emits no program headers at all.
 
 The file is written with mode #o755 (= +x bit set)."
-  (let ((bytes
+  (let ((exec-direct nil)
+        (bytes
          (cond
           ((eq sections 'minimal-exit-0)
            (nelisp-elf--build-minimal-exit-0))
@@ -2219,14 +2239,17 @@ The file is written with mode #o755 (= +x bit set)."
           ((listp sections)
            (if (eq (plist-get sections :e-type) 'rel)
                (nelisp-elf--build-rel sections)
-             (nelisp-elf--build-rich sections)))
+             (let ((nelisp-elf--build-rich-write-target file-path))
+               (setq exec-direct t)
+               (nelisp-elf--build-rich sections))))
           (t
            (error
             "nelisp-elf-write-binary: invalid SECTIONS arg %S"
             sections)))))
-    (let ((coding-system-for-write 'no-conversion))
-      (write-region bytes nil file-path nil 'silent))
-    (set-file-modes file-path #o755)
+    (unless exec-direct
+      (let ((coding-system-for-write 'no-conversion))
+        (write-region bytes nil file-path nil 'silent))
+      (set-file-modes file-path #o755))
     file-path))
 
 ;; ---- read-back helpers (= used by the ert round-trip + future tooling) ----

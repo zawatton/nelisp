@@ -196,7 +196,24 @@ safe — shifts one byte at a time."
     (while (< i 8)
       (aset bytes i (logand (ash imm (- (* i 8))) #xFF))
       (setq i (1+ i)))
-    (apply #'unibyte-string (append bytes nil))))
+    (nelisp-asm-x86_64--byte-vec->string bytes)))
+
+(defun nelisp-asm-x86_64--byte-vec->string (vec)
+  "Convert byte VEC into a unibyte-string without a large-arity `apply'.
+Standalone NeLisp currently mis-handles `(apply #'unibyte-string ...)'
+once the arg list gets large, so emit the bytes in small chunks and
+join them with `concat'."
+  (let ((n (length vec))
+        (i 0)
+        (chunks nil))
+    (while (< i n)
+      (let ((limit (if (< (+ i 32) n) (+ i 32) n))
+            (bytes nil))
+        (while (< i limit)
+          (setq bytes (cons (aref vec i) bytes))
+          (setq i (1+ i)))
+        (push (apply #'unibyte-string (nreverse bytes)) chunks)))
+    (apply #'concat (nreverse chunks))))
 
 ;; ---- buffer abstraction (= §92.a (1)) ----
 ;;
@@ -838,7 +855,7 @@ subsequent `buffer-bytes' calls remain O(total-bytes))."
           (aset vec (+ slot 1)   (logand (ash u  -8) #xFF))
           (aset vec (+ slot 2)   (logand (ash u -16) #xFF))
           (aset vec (+ slot 3)   (logand (ash u -24) #xFF)))))
-    (let ((patched (apply #'unibyte-string (append vec nil))))
+    (let ((patched (nelisp-asm-x86_64--byte-vec->string vec)))
       ;; Collapse chunk list to a single materialized chunk so
       ;; subsequent `buffer-bytes' calls return the patched form.
       (aset buf 0 (list patched))

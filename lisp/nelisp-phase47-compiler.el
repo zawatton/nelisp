@@ -178,6 +178,22 @@ modules.  Static executable output keeps the stricter historical rule:
 ordinary calls must target a same-unit Phase 47 defun unless they use
 the explicit `extern-call' surface.")
 
+(defun nelisp-phase47-compiler--byte-vec->string (vec)
+  "Convert byte VEC into a unibyte-string without large-arity `apply'.
+The standalone interpreter still mis-handles `(apply #'unibyte-string
+...)' on long byte vectors, so emit fixed-size chunks and join them."
+  (let ((n (length vec))
+        (i 0)
+        (chunks nil))
+    (while (< i n)
+      (let ((limit (if (< (+ i 32) n) (+ i 32) n))
+            (bytes nil))
+        (while (< i limit)
+          (setq bytes (cons (aref vec i) bytes))
+          (setq i (1+ i)))
+        (push (apply #'unibyte-string (nreverse bytes)) chunks)))
+    (apply #'concat (nreverse chunks))))
+
 (defconst nelisp-phase47-compiler--external-user-call-reserved-ops
   '(quote function lambda progn seq
     if while cond and or let let*
@@ -10419,7 +10435,7 @@ build never reaches here, keeping the produced `.o' bytes unchanged."
               (while (< i count)
                 (aset bytes i (logand (aref out-vec i) #xFF))
                 (setq i (1+ i)))
-              (apply #'unibyte-string (append bytes nil)))))
+              (nelisp-phase47-compiler--byte-vec->string bytes))))
       (error nil))))
 
 (defun nelisp-phase47-compiler--emit-value (node buf)

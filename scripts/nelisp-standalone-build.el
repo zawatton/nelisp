@@ -988,6 +988,22 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
         (seq (vector-make n out)
              (bf_vec_fill out 0 args)
              0)))
+    ;; unibyte-string &rest BYTES -> raw byte string.  The ELF writer builds
+    ;; buffers from byte values 0..255, so clamp every arg to its low byte and
+    ;; append it directly to a MutStr builder instead of UTF-8 codepoint logic.
+    (defun bf_unibyte_fill (ms node)
+      (if (= (ptr-read-u64 node 0) 7)
+          (seq (mut-str-push-byte ms
+                                  (logand (ptr-read-u64 (nl_cons_car_ptr node) 8)
+                                          255))
+               (bf_unibyte_fill ms (nl_cons_cdr_ptr node)))
+        0))
+    (defun bf_unibyte_string (args out)
+      (let* ((ms (alloc-bytes 32 8)))
+        (seq (mut-str-make-empty ms (bf_vec_count args 0))
+             (bf_unibyte_fill ms args)
+             (mut-str-finalize ms out)
+             0)))
     ;; aref ARR IDX: vector -> copy slot[idx]; string -> int byte at idx.
     (defun bf_aref (args out)
       (let* ((arr (wf_arg_ptr args 0))
@@ -1159,6 +1175,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; intern / make-symbol: take a Str (tag 5/6), build a Symbol (tag 4).
     ((:lit "intern")      . (seq (bf_intern (wf_arg_ptr args 0) out) 0))
     ((:lit "make-symbol") . (seq (bf_intern (wf_arg_ptr args 0) out) 0))
+    ((:lit "unibyte-string") . (bf_unibyte_string args out))
     ;; --- vector ops ---
     ((:lit "make-vector") . (bf_make_vector args out))
     ((:lit "vector")      . (bf_vector args out))
@@ -1193,7 +1210,7 @@ ash/logand/logior/logxor/lognot + string<.")
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
     "vectorp" "listp" "zerop" "fboundp" "boundp"
-    "symbol-name" "intern" "make-symbol"
+    "symbol-name" "intern" "make-symbol" "unibyte-string"
     "make-vector" "vector" "aref" "aset"
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
@@ -1978,7 +1995,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
     "consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
     "vectorp" "listp" "zerop" "fboundp" "boundp"
-    "symbol-name" "intern" "make-symbol"
+    "symbol-name" "intern" "make-symbol" "unibyte-string"
     "make-vector" "vector" "aref" "aset"
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<

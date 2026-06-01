@@ -162,8 +162,20 @@ reporting)."
     (signal 'nelisp-link--rel32-overflow (list sym d))))
 
 (defun nelisp-link--vec->ubstring (vec)
-  "Convert byte VEC into a unibyte-string (= ELF writer input)."
-  (apply #'unibyte-string (append vec nil)))
+  "Convert byte VEC into a unibyte-string (= ELF writer input).
+Uses small `unibyte-string' chunks because standalone NeLisp still
+mis-handles large-arity `(apply #'unibyte-string ...)' calls."
+  (let ((n (length vec))
+        (i 0)
+        (chunks nil))
+    (while (< i n)
+      (let ((limit (if (< (+ i 32) n) (+ i 32) n))
+            (bytes nil))
+        (while (< i limit)
+          (setq bytes (cons (aref vec i) bytes))
+          (setq i (1+ i)))
+        (push (apply #'unibyte-string (nreverse bytes)) chunks)))
+    (apply #'concat (nreverse chunks))))
 
 ;; ---- §93.a (4) apply one + many ----
 

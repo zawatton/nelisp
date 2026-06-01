@@ -1756,6 +1756,55 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 (unless (fboundp 'recordp) (defun recordp (x) nil))
 (unless (fboundp 'nlistp) (defun nlistp (x) (not (listp x))))
 (unless (fboundp 'eql) (defun eql (a b) (if (and (numberp a) (numberp b)) (= a b) (eq a b))))
+(unless (fboundp 'encode-coding-string)
+  (defun encode-coding-string (str coding &optional _nocopy)
+    (when (and coding (not (eq coding 'utf-8)))
+      (signal 'error
+              (list (format "encode-coding-string stub: only utf-8 supported, got %S"
+                            coding))))
+    str))
+(unless (fboundp 'decode-coding-string)
+  (defun decode-coding-string (str coding &optional _nocopy)
+    (when (and coding (not (eq coding 'utf-8)))
+      (signal 'error
+              (list (format "decode-coding-string stub: only utf-8 supported, got %S"
+                            coding))))
+    str))
+(unless (fboundp 'bufferp)
+  (defun bufferp (_obj) nil))
+(unless (fboundp 'multibyte-string-p)
+  (defun multibyte-string-p (obj) (stringp obj)))
+(unless (fboundp 'unibyte-string-p)
+  (defun unibyte-string-p (_obj) nil))
+(unless (fboundp 'string-as-multibyte)
+  (defun string-as-multibyte (s) s))
+(unless (fboundp 'string-as-unibyte)
+  (defun string-as-unibyte (s) s))
+(unless (fboundp 'string-make-multibyte)
+  (defun string-make-multibyte (s) s))
+(unless (fboundp 'string-make-unibyte)
+  (defun string-make-unibyte (s) s))
+(unless (fboundp 'write-region)
+  (defun write-region (start end filename &optional append _visit _lockname _mustbenew)
+    (unless (stringp start)
+      (signal 'wrong-type-argument (list 'stringp start)))
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
+    (when append
+      (signal 'error (list "write-region stub: APPEND not supported")))
+    (let* ((bytes (cond
+                   ((null end) start)
+                   ((integerp end) (substring start 0 end))
+                   (t (signal 'wrong-type-argument
+                              (list '(or null integerp) end)))))
+           (rc (wrf filename bytes)))
+      (unless (= rc (length bytes))
+        (signal 'error
+                (list (format "write-region stub: wrf returned %S (expected %S) path=%s"
+                              rc (length bytes) filename)))))
+    nil))
+(unless (fboundp 'set-file-modes)
+  (defun set-file-modes (_filename _mode) nil))
 
 ;; --- Wave-2 (C): sort (stable merge sort, 2-arg PREDICATE form) ----------
 ;; (sort LIST PREDICATE) -> a new list ordered by PREDICATE (a < b).  Stable.
