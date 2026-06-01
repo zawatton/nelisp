@@ -1153,7 +1153,55 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
           (wf_logand_fold (nl_cons_cdr_ptr lp) (logand acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc))
     (defun wf_logxor_fold (lp acc)
       (if (= (ptr-read-u64 lp 0) 7)
-          (wf_logxor_fold (nl_cons_cdr_ptr lp) (logxor acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc)))
+          (wf_logxor_fold (nl_cons_cdr_ptr lp) (logxor acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc))
+    (defun nl_copy_words (dst src n)
+      (if (= n 0) 0
+        (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+             (nl_copy_words (+ dst 8) (+ src 8) (- n 1)))))
+    ;; Fresh per-thread env: copy mirror/frames/unbound (96 bytes, shared boxes,
+    ;; read-only during a compile), fresh rec_cur@+96=0, copy rec_max@+104.
+    (defun nl_make_thread_env (penv)
+      (let ((e (alloc-bytes 128 8)))
+        (seq (nl_copy_words e penv 12)
+             (ptr-write-u64 (+ e 96) 0 0)
+             (ptr-write-u64 (+ e 104) 0 (ptr-read-u64 (+ penv 104) 0))
+             e)))
+    ;; Child entry (clean frame on the clone stack): read FORM + the ALREADY-
+    ;; BUILT fresh env from the heap box (box[8] is built by the PARENT before
+    ;; the clone, so the child never copies the parent's live ctx — which the
+    ;; parent mutates concurrently as it runs `thread-join').  Eval, exit.
+    (defun nl_thread_run (box)
+      ;; ACK (clear the handshake slot) so the parent may spawn the next thread;
+      ;; box is already captured by value, so this is safe.
+      (seq (ptr-write-u64 268435688 0 0)
+           (let ((out_slot (alloc-bytes 32 8)))
+             (seq (extern-call nelisp_eval_call (ptr-read-u64 box 0) (ptr-read-u64 box 8) out_slot)
+                  (syscall-direct 60 0 0 0 0 0 0)))))
+    ;; spin (COMPILED, iterative) until *ADDR == 0 — the spawn handshake wait.
+    (defun nl_spin_zero (addr)
+      (while (> (ptr-read-u64 addr 0) 0) 0))
+    (defun bf_thread_spawn (args env out)
+      (let ((box (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 box 0 (wf_arg_ptr args 0))
+             ;; build the per-thread env NOW (parent, ctx consistent) — not in
+             ;; the child concurrently with the parent's own ctx mutation.
+             (ptr-write-u64 box 8 (nl_make_thread_env env))
+             (ptr-write-u64 268435688 0 box)
+             (let ((stack (syscall-direct 9 0 67108864 3 34 -1 0)))
+               (if (= (syscall-direct 56 768 (+ stack 67108864) 0 0 0 0) 0)
+                   (nl_thread_run (ptr-read-u64 268435688 0))
+                 ;; parent: wait until the child has captured+acked its box, so
+                 ;; the NEXT spawn does not clobber the shared handshake slot.
+                 (seq (nl_spin_zero 268435688) (wf_write_int out 1)))))))
+    ;; thread-join: spin until *ADDR >= TARGET.  Uses the COMPILED (phase47,
+    ;; iterative) `while' — NOT the interpreter's recursive `while' that
+    ;; overflows the native stack on a long spin — so the parent joins N
+    ;; concurrent threads in O(1) stack.
+    (defun nl_spin_until (addr target)
+      (while (< (ptr-read-u64 addr 0) target) 0))
+    (defun bf_thread_join (args env out)
+      (seq (nl_spin_until (wf_argval args 0) (wf_argval args 1))
+           (wf_write_int out 0))))
   "B-foundation breadth helpers (Wave-1 (B), reader-only): predicates, vector /
 symbol ops, setcar/setcdr, structural equal, vector-aware length, plus the
 nil-safe car/cdr + tag-aware eq REPLACEMENTS for the buggy stock arms.
@@ -1237,7 +1285,9 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "atomic-fetch-add") . (wf_write_int out (atomic-fetch-add (wf_argval args 0) (wf_argval args 1))))
     ((:lit "ptr-read-u64") . (wf_write_int out (ptr-read-u64 (wf_argval args 0) (wf_argval args 1))))
     ((:lit "ptr-write-u64") . (seq (ptr-write-u64 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
-    ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1)))))
+    ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "thread-spawn") . (bf_thread_spawn args env out))
+    ((:lit "thread-join") . (bf_thread_join args env out)))
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
 ops, signal/error stubs, structural equal, setcar/setcdr.  Wave-2 (C) appends
 ash/logand/logior/logxor/lognot + string<.")
@@ -1250,7 +1300,7 @@ ash/logand/logior/logxor/lognot + string<.")
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
-    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes")
+    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
@@ -2036,7 +2086,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
-    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes")
+    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join")
   "Builtin names installed into the reader binary's mirror; each is dispatched by
 the pure-elisp `nelisp_apply_function' (see `nelisp-standalone--applyfn-source').
 Names > 8 bytes (e.g. \"make-hash-table\") require the full-length name-buffer
@@ -2173,8 +2223,8 @@ reused buffer and >8-byte names install correctly."
                             0
                           (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
                                  (bump (ptr-read-u64 268435456 0))
-                                 (lo (+ (* live 3) 1048576))
-                                 (hi (+ bump 1048576)))
+                                 (lo (+ (* live 3) 268435456))
+                                 (hi (+ bump 268435456)))
                             (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))
                  (setq more 0))))))
         (ptr-read-u64 out 8)))))
