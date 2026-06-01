@@ -1556,6 +1556,31 @@ Keeps lisp/ pristine (mirrors `--patch-combiner-apply')."
           (t node))))
     (rw form)))
 
+(defun nelisp-standalone--patch-void-function-miss (form)
+  "Rewrite nl_eval_inner_cons FORM so unbound function lookup stashes.
+
+The shipped eval-port combiner-cons path propagates `rc_lu == 1' from
+`nelisp_env_lookup_function' without materializing the expected
+`void-function' signal payload.  The reader driver then observes a
+non-zero rc with the result slot still nil, so `(missing-fn ...)'
+collapses to nil instead of surfacing an error.  Patch the specific
+`(if (= rc_lu 0) ... 1)' miss arm inside `nl_eval_inner_cons' to call
+`nl_cons_stash_void_function' with the unresolved head symbol."
+  (cl-labels
+      ((rw (node)
+         (cond
+          ((and (consp node)
+                (eq (car node) 'if)
+                (equal (cadr node) '(= rc_lu 0))
+                (equal (cadddr node) 1))
+           (list 'if
+                 '(= rc_lu 0)
+                 (rw (nth 2 node))
+                 '(nl_cons_stash_void_function env head_ptr)))
+          ((consp node) (cons (rw (car node)) (rw (cdr node))))
+          (t node))))
+    (rw form)))
+
 (defun nelisp-standalone--patch-macro-cache (src)
   "Patch combiner-cons SRC: swap nl_cons_macro_apply_eval for the caching version
 and thread head_ptr at its call site in nl_eval_inner_cons.  COMPOSE AFTER
@@ -1569,7 +1594,8 @@ and thread head_ptr at its call site in nl_eval_inner_cons.  COMPOSE AFTER
              nelisp-standalone--macro-cache-apply-eval)
             ((and (consp form) (eq (car form) 'defun)
                   (eq (cadr form) 'nl_eval_inner_cons))
-             (nelisp-standalone--macro-cache-patch-eval-inner-cons form))
+             (nelisp-standalone--macro-cache-patch-eval-inner-cons
+              (nelisp-standalone--patch-void-function-miss form)))
             (t form)))
          (cdr src))))
 
@@ -1938,6 +1964,9 @@ value (matches the binary's M8 read+eval-loop driver)."
 
 (defconst nelisp-standalone--reader-builtins
   '("+" "-" "*" "/" "mod" "1+" "1-" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not"
+    ;; Globals shim bridge for user-loaded .el files (`defvar' / `defconst'
+    ;; in the standalone prelude lower through this entry).
+    "nelisp--env-globals-op"
     ;; M4 hash tables
     "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash"
     ;; M5 strings + format

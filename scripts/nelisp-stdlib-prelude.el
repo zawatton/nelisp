@@ -163,6 +163,66 @@
 	  (cons (cons 'fset (cons qname (cons lambda-form nil)))
 		(cons qname nil)))))
 
+(defmacro declare-function (_fn _file &rest _args)
+  "No-op byte-compiler hint stub for standalone loads."
+  nil)
+
+(defmacro eval-when-compile (&rest body)
+  "Interpreter-mode stub: run BODY immediately."
+  (cons 'progn body))
+
+(defmacro eval-and-compile (&rest body)
+  "Interpreter-mode stub: run BODY immediately."
+  (cons 'progn body))
+
+(defmacro with-no-warnings (&rest body)
+  "Standalone stub: just run BODY."
+  (cons 'progn body))
+
+(defmacro with-suppressed-warnings (_warnings &rest body)
+  "Standalone stub: just run BODY."
+  (cons 'progn body))
+
+(defmacro setq-default (&rest pairs)
+  "NeLisp has no buffer-local distinction; alias to `setq'."
+  (cons 'setq pairs))
+
+(defmacro defvar (name &optional value _docstring)
+  "Define NAME as a global variable, setting VALUE if unbound."
+  (cons 'progn
+        (cons (cons 'if
+                    (cons (cons 'boundp
+                                (cons (cons 'quote (cons name nil)) nil))
+                          (cons nil
+                                (cons (cons 'set
+                                            (cons (cons 'quote (cons name nil))
+                                                  (cons value nil)))
+                                      nil))))
+              (cons (cons 'quote (cons name nil)) nil))))
+
+(defmacro defvar-local (name &optional value docstring)
+  "Alias for `defvar' in the standalone."
+  (cons 'defvar (cons name (cons value (cons docstring nil)))))
+
+(defmacro defconst (name value &optional _docstring)
+  "Define NAME as a constant with VALUE in the standalone."
+  (cons 'progn
+        (cons (cons 'set
+                    (cons (cons 'quote (cons name nil))
+                          (cons value nil)))
+              (cons (cons 'nelisp--env-globals-set-constant
+                          (cons (cons 'quote (cons name nil))
+                                (cons t nil)))
+                    (cons (cons 'quote (cons name nil)) nil)))))
+
+(defmacro defcustom (name value docstring &rest _options)
+  "Standalone stub: behave like `defvar'."
+  (cons 'defvar (cons name (cons value (cons docstring nil)))))
+
+(defmacro defgroup (name _parent _docstring &rest _options)
+  "Standalone stub: return NAME."
+  (cons 'quote (cons name nil)))
+
 (defun nthcdr (n list)
   (if (= n 0) list (if (null list) nil (nthcdr (1- n) (cdr list)))))
 
@@ -1661,6 +1721,28 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; nelisp-pcase.el ends here
 (unless (fboundp 'keywordp)
   (defun keywordp (x) (and (symbolp x) (let ((n (symbol-name x))) (and (> (length n) 0) (= (aref n 0) 58))))))
+(unless (fboundp 'nelisp--env-globals-get-value)
+  (defun nelisp--env-globals-get-value (sym)
+    (nelisp--env-globals-op 'get-value sym)))
+(unless (fboundp 'nelisp--env-globals-set-value)
+  (defun nelisp--env-globals-set-value (sym val)
+    (nelisp--env-globals-op 'set-value sym val)))
+(unless (fboundp 'nelisp--env-globals-is-bound)
+  (defun nelisp--env-globals-is-bound (sym)
+    (nelisp--env-globals-op 'is-bound sym)))
+(unless (fboundp 'nelisp--env-globals-set-constant)
+  (defun nelisp--env-globals-set-constant (sym flag)
+    (nelisp--env-globals-op 'set-constant sym flag)))
+(unless (fboundp 'symbol-value)
+  (defun symbol-value (sym)
+    (nelisp--env-globals-get-value sym)))
+(unless (fboundp 'boundp)
+  (defun boundp (sym)
+    (nelisp--env-globals-is-bound sym)))
+(unless (fboundp 'set)
+  (defun set (sym val)
+    (nelisp--env-globals-set-value sym val)
+    val))
 (unless (fboundp 'defalias) (defun defalias (sym def &rest _) (fset sym def) sym))
 (unless (fboundp 'fmakunbound) (defun fmakunbound (sym) (fset sym nil) sym))
 (unless (fboundp 'functionp) (defun functionp (x) (or (and (consp x) (eq (car x) 'lambda)) (and (symbolp x) (fboundp x)))))
