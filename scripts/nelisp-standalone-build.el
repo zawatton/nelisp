@@ -714,7 +714,9 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
     ;; into PRE-EXISTING (persistent) structure — setcar/setcdr/aset/puthash —
     ;; so the per-eval arena reset never frees a still-reachable escapee.
     (defun wf_dirty ()
-      (ptr-write-u64 268435544 0 (+ (ptr-read-u64 268435544 0) 1)))
+      ;; SeqCst atomic increment so concurrent threads (parallel build) never
+      ;; lose a mutation-epoch bump (the old read;+1;write was a racy RMW).
+      (atomic-fetch-add 268435544 1))
     (defun wf_sum (list_ptr acc)
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (v (ptr-read-u64 car_ptr 8)))
@@ -1223,7 +1225,19 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "lognot")  . (wf_write_int out (- (- 0 (wf_argval args 0)) 1)))
     ;; --- Wave-2 (C) string<: byte-lexicographic less-than ---
     ((:lit "string<") . (if (= (bf_str_lt (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
-                            (wf_write_t out) (wf_write_nil out))))
+                            (wf_write_t out) (wf_write_nil out)))
+    ;; --- §S4 low-level thread / atomic / memory primitives (interpreter
+    ;; dispatch).  These let INTERPRETED driver code spawn clone(2) threads,
+    ;; do SeqCst atomics, raw memory access, and arena allocation — the
+    ;; building blocks of an in-interpreter parallel unit compile.  Args and
+    ;; results are raw i64 (addresses / syscall numbers / counts), carried as
+    ;; Int Sexps via wf_argval / wf_write_int.  The underlying ops are the
+    ;; same Phase-47 grammar ops the compiler emits, so no new Rust.
+    ((:lit "syscall-direct") . (wf_write_int out (syscall-direct (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
+    ((:lit "atomic-fetch-add") . (wf_write_int out (atomic-fetch-add (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "ptr-read-u64") . (wf_write_int out (ptr-read-u64 (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "ptr-write-u64") . (seq (ptr-write-u64 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
+    ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1)))))
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
 ops, signal/error stubs, structural equal, setcar/setcdr.  Wave-2 (C) appends
 ash/logand/logior/logxor/lognot + string<.")
@@ -1235,7 +1249,8 @@ ash/logand/logior/logxor/lognot + string<.")
     "make-vector" "vector" "aref" "aset"
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
-    "ash" "logand" "logior" "logxor" "lognot" "string<")
+    "ash" "logand" "logior" "logxor" "lognot" "string<"
+    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
@@ -2020,7 +2035,8 @@ value (matches the binary's M8 read+eval-loop driver)."
     "make-vector" "vector" "aref" "aset"
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
-    "ash" "logand" "logior" "logxor" "lognot" "string<")
+    "ash" "logand" "logior" "logxor" "lognot" "string<"
+    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes")
   "Builtin names installed into the reader binary's mirror; each is dispatched by
 the pure-elisp `nelisp_apply_function' (see `nelisp-standalone--applyfn-source').
 Names > 8 bytes (e.g. \"make-hash-table\") require the full-length name-buffer
