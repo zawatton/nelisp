@@ -228,6 +228,13 @@
 
 (defun nth (n list) (car (nthcdr n list)))
 
+(defun make-list (length object)
+  (let ((acc nil))
+    (while (> length 0)
+      (setq acc (cons object acc))
+      (setq length (1- length)))
+    acc))
+
 (defun reverse (list)
   (let ((acc nil))
     (while list
