@@ -338,6 +338,49 @@
 
 (defun string-empty-p (s) (= (length s) 0))
 
+;; ---- macroexpand (Doc 47 self-host / compiler frontend) ----
+;;
+;; `defmacro' stores a macro as the function value `(macro CLOSURE)' (= a
+;; two-element list: car `macro', cadr the macro CLOSURE).  `nelisp-phase47-
+;; compiler--preprocess-source' calls `(macroexpand FORM)' on every form it
+;; does not structurally recognise, relying on (equal expanded form) to detect
+;; "no expansion happened".  These reproduce host Emacs's contract:
+;;   macroexpand-1  expands at most ONE level.
+;;   macroexpand    expands repeatedly until the head is no longer a macro.
+;; The macro CLOSURE is applied to FORM's UNEVALUATED args (= (cdr FORM)); the
+;; result is the expansion, which is NOT evaluated.
+(defun nelisp--macro-function (head)
+  "If symbol HEAD names a macro, return its CLOSURE; else nil.
+Guards `symbol-function' behind `fboundp' (calling it on an unbound symbol
+traps), and only recognises the `(macro CLOSURE)' shape."
+  (if (and (symbolp head) (fboundp head))
+      (let ((f (symbol-function head)))
+        (if (and (consp f) (eq (car f) 'macro))
+            (car (cdr f))
+          nil))
+    nil))
+
+(defun macroexpand-1 (form)
+  "Expand FORM by one macro step if its head is a macro; else return FORM."
+  (if (consp form)
+      (let ((mfn (nelisp--macro-function (car form))))
+        (if mfn (apply mfn (cdr form)) form))
+    form))
+
+(defun macroexpand (form &optional _environment)
+  "Repeatedly macroexpand FORM until its head is no longer a macro.
+ENVIRONMENT is accepted for host compatibility and ignored (the standalone
+reader resolves macros through the global function mirror)."
+  (let ((cur form) (again t))
+    (while again
+      (if (consp cur)
+          (let ((mfn (nelisp--macro-function (car cur))))
+            (if mfn
+                (setq cur (apply mfn (cdr cur)))
+              (setq again nil)))
+        (setq again nil)))
+    cur))
+
 (defun nelisp--bq-expand (form)
   "Return the expansion of FORM under `backquote'."
   (cond
