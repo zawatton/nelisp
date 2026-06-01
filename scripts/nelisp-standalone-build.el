@@ -147,31 +147,346 @@ or the toolchain is newer than the cached object."
 ;; The bump offset starts at 96 (was 16) so nl_alloc_bytes never hands out the
 ;; reserved [16,96) bytes.  The extra reservation is harmless to the baked-form
 ;; eval path (it never reads the stash); it only shifts the first allocation up.
+;; --- HEADERED bump arena (GC step 1+2: object headers + free-list). ---
+;;
+;; Every nl_alloc_bytes block now carries a 16-byte HEADER immediately
+;; below the returned object pointer, so the arena is a walkable
+;; [hdr][obj][hdr][obj]... sequence (sweep precondition).  The returned
+;; pointer is unchanged in spirit: all existing ops get the OBJECT
+;; pointer; the header is hidden 16 bytes below and 16-byte aligned.
+;;
+;; Header (at obj-16):
+;;   obj-16 (u64): BLOCK_TOTAL = bytes from this header to the next
+;;                 header = 16 + round_up(size, 8).  Drives the sweep
+;;                 walker (next_hdr = this_hdr + BLOCK_TOTAL) and is the
+;;                 exact-fit key for free-list reuse.
+;;   obj-8  (u64): MARK word.  0 = unmarked live, 1 = marked (set by GC
+;;                 mark), 2 = FREE (on the free-list).  The sweep clears
+;;                 marks back to 0; mark==2 blocks are skipped by mark
+;;                 (already dead) and re-found by alloc.
+;; Free block payload reuse: a free block stores the free-list NEXT
+;; pointer in obj+0 (the object payload, dead while free).
+;;
+;; All allocations use align 1 or 8 (verified across lisp/ + scripts/),
+;; both <= 16, so obj = hdr+16 (16-byte aligned) satisfies every align.
+;;
+;; Fixed GC arena slots (in the reserved region, bump now starts at 256):
+;;   +96  (268435552): free-list head OBJECT pointer (0 = empty)
+;;   +104 (268435560): GC next-trigger bump offset (when bump reaches it,
+;;                     the driver runs a collection at the form boundary)
+;;   +112 (268435568): arena DATA-START absolute addr (first header) for
+;;                     the sweep walker
+;;   +120 (268435576): live-bytes-after-last-gc (advisory)
+;;
+;; The bump allocator still NEVER auto-frees mid-eval; reclamation is the
+;; GC sweep at the top-level form boundary (see the reader driver).
 (defconst nelisp-standalone--arena-source
   '(seq
     (defun nl_seq2 (_a b) b)
     (defun nl_align_up (n a) (logand (+ n (- a 1)) (- 0 a)))
+    ;; BLOCK_TOTAL for a request of SIZE bytes: 16-byte header + object
+    ;; padded up to an 8-byte multiple, with a MINIMUM 8-byte payload so the
+    ;; free-list `next' link (written at obj+0 on free) always lands inside
+    ;; THIS block and never clobbers the next block's header (a size-0 alloc
+    ;; would otherwise have obj+0 == the next header).
+    (defun nl_block_total (size)
+      (let ((p (nl_align_up size 8))) (+ 16 (if (< p 8) 8 p))))
     (defun nl_arena_init ()
-      ;; 4 GiB bump arena (virtual; only TOUCHED pages consume RAM, so the
-      ;; mapping itself is free).  The bump allocator NEVER frees: every nested
-      ;; eval call leaks ~4-5 KiB and a `fib' invocation (which re-expands the
-      ;; `cond' macro + runs ~10 nested calls) leaks a MEASURED 89_024 bytes,
-      ;; so a single deeply-recursive top-level form needs headroom ∝ its whole
-      ;; call count.  The old 1 GiB ceiling SIGSEGV'd at fib(20) (≈13.5k calls ×
-      ;; 89 KiB ≈ 1.2 GiB); 4 GiB lifts the single-form ceiling to ≈fib(21-22).
-      ;; The binary loads at 0x400000 (≈170 KiB) and this region is
-      ;; 0x10000000..0x110000000, far below the high-address stack, so MAP_FIXED
-      ;; is collision-free.  4 GiB = 0x100000000 = 4294967296.
+      ;; 4 GiB bump arena (virtual; only TOUCHED pages consume RAM).
+      ;; 0x10000000..0x110000000, far below the high stack -> MAP_FIXED safe.
       (let ((p (syscall-direct 9 268435456 4294967296 3 50 -1 0)))
-        (nl_seq2 (ptr-write-u64 268435456 0 96)
-                 (nl_seq2 (ptr-write-u64 268435464 0 0)
-                          (nl_seq2 (ptr-write-u64 268435472 0 0) p)))))
+        (nl_seq2 (ptr-write-u64 268435456 0 256)        ; bump starts at 256
+         (nl_seq2 (ptr-write-u64 268435464 0 0)         ; quit flag
+          (nl_seq2 (ptr-write-u64 268435472 0 0)        ; throw flag
+           (nl_seq2 (ptr-write-u64 268435552 0 0)       ; free-list head
+            (nl_seq2 (ptr-write-u64 268435560 0 0)      ; gc trigger (set by driver)
+             (nl_seq2 (ptr-write-u64 268435568 0 (+ 268435456 256)) ; data start
+              (nl_seq2 (ptr-write-u64 268435576 0 0)    ; live bytes
+              (nl_seq2 (ptr-write-u64 268435584 0 0)    ; sweep: free dead blocks (0=free)
+              (nl_seq2 (ptr-write-u64 268435592 0 0)    ; mark phase enabled (0=enabled)
+              ;; RECLAIMER GATE: 268435616 = 1 -> nl_gc_collect is a NO-OP.
+              ;; Now ENABLED (0): the full tracing mark-sweep + free-list REUSE
+              ;; is correct.  The reuse-corruption root cause was dirty-block
+              ;; handout (a reused free block carrying stale rc/child bytes that
+              ;; zero-assuming constructors mis-read); fixed by zeroing the
+              ;; reused payload in `nl_alloc_zero_fill' (see its commentary).
+              ;; All gates + milestones + define-then-compute pass with reuse
+              ;; ON, and multi-form memory is bounded (20000-form stream that
+              ;; used to SIGSEGV ~8500 now completes; peak stays in tens of MB).
+              ;; KNOWN LIMIT: a SINGLE deeply-recursive top-level form (e.g.
+              ;; `(fib 26)') is still memory-unbounded because GC's only safe
+              ;; point is the top-level form boundary -- there is no interior
+              ;; safe point during one form's recursion, so its garbage cannot
+              ;; be reclaimed mid-form.  Set 268435616 back to 1 to disable.
+              (nl_seq2 (ptr-write-u64 268435616 0 0)    ; collect ACTIVE (reclaimer ON)
+              (nl_seq2 (ptr-write-u64 268435624 0 0)    ; free-list reuse (0=on)
+              (nl_seq2 (ptr-write-u64 268435648 0 0)    ; probe off
+              (nl_seq2 (ptr-write-u64 268435656 0 0) ; min reuse block_total (0=all)
+               p)))))))))))))))
+    ;; Pop a free-list block whose BLOCK_TOTAL exactly matches WANT.
+    ;; Returns the object pointer (mark reset to 0) or 0 if none.  PREV is
+    ;; the object pointer whose payload (prev+0) links to CUR, 0 = head.
+    (defun nl_freelist_take (prev cur want)
+      (if (= cur 0)
+          0
+        (if (= (ptr-read-u64 (- cur 16) 0) want)
+            ;; exact fit: unlink CUR, clear FREE sentinel -> live (mark 0)
+            (nl_seq2
+             (if (= prev 0)
+                 (ptr-write-u64 268435552 0 (ptr-read-u64 cur 0))   ; head = cur.next
+               (ptr-write-u64 prev 0 (ptr-read-u64 cur 0)))         ; prev.next = cur.next
+             (nl_seq2 (ptr-write-u64 (- cur 8) 0 0) cur))
+          (nl_freelist_take cur (ptr-read-u64 cur 0) want))))
+    ;; Zero NBYTES (step 8) of the reused block's payload at OBJ.
+    ;;
+    ;; ROOT-CAUSE FIX (reuse correctness).  The tracing mark+sweep is sound:
+    ;; full-payload poisoning of every swept block (reuse OFF) is harmless
+    ;; across all gates + milestones, so no live box is ever freed.  The
+    ;; corruption with reuse ON came purely from HANDING BACK DIRTY MEMORY: a
+    ;; reused free block still carries the BYTES of its previous occupant (its
+    ;; old refcount, child Sexp slots, type-tag, etc.).  Several box / Sexp
+    ;; constructors only write the fields they care about and ASSUME the rest
+    ;; of the block is zero — which is true for a bump block (fresh pages from
+    ;; the MAP_FIXED zero-page mmap) but NOT for a reused one.  A stale
+    ;; refcount makes the rc-aware `cons-set-*' / clone / drop machinery
+    ;; mis-count and free-or-alias a still-live box; a stale child Sexp slot
+    ;; (uninitialised tail/cdr/slot) makes a partially-built structure point
+    ;; at garbage.  Zeroing the whole reused payload here restores the
+    ;; bump-block invariant (object starts all-zero), so every constructor
+    ;; sees the clean memory it relies on.  Bump blocks need no zeroing (the
+    ;; mmap already zero-fills untouched pages).
+    (defun nl_alloc_zero_fill (obj off nbytes)
+      (if (< off nbytes)
+          (nl_seq2 (ptr-write-u64 (+ obj off) 0 0)
+                   (nl_alloc_zero_fill obj (+ off 8) nbytes))
+        0))
     (defun nl_alloc_bytes (size align)
-      (let ((cur (ptr-read-u64 268435456 0)))
-        (let ((a (nl_align_up cur align)))
-          (nl_seq2 (ptr-write-u64 268435456 0 (+ a size)) (+ 268435456 a)))))
+      (let ((want (nl_block_total size)))
+        ;; 1) try exact-fit free-list reuse (sweep populates the list).
+        ;;    DEBUG: slot 268435624 == 1 disables reuse (always bump).
+        (let ((reused (if (= (ptr-read-u64 268435624 0) 1) 0
+                        (if (< want (ptr-read-u64 268435656 0)) 0   ; DEBUG: reuse only want>=slot
+                          (let ((r (nl_freelist_take 0 (ptr-read-u64 268435552 0) want)))
+                            (nl_seq2 (if (= r 0) 0 (nl_alloc_zero_fill r 0 (- want 16))) r))))))
+          (if (= reused 0)
+              ;; 2) bump: header at CUR (16-aligned), object at CUR+16.
+              (let ((cur (ptr-read-u64 268435456 0)))
+                (let ((obj (+ 268435456 (+ cur 16))))
+                  (nl_seq2 (ptr-write-u64 268435456 0 (+ cur want)) ; advance bump
+                   (nl_seq2 (ptr-write-u64 (- obj 16) 0 want)       ; hdr.block_total
+                    (nl_seq2 (ptr-write-u64 (- obj 8) 0 0)          ; hdr.mark = live
+                     obj)))))
+            reused))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
     (defun nl_quit_flag_ptr () 268435464)))
+
+;; ===================================================================
+;; TRACING MARK-SWEEP GC (the correct reclaimer — reachability, not
+;; escape-enumeration).  Runs ONLY at the top-level form boundary in the
+;; reader driver (the safe point: no Sexp pointers are live in mid-eval
+;; native frames).  Marks from a precise root set, recursing into the
+;; SAME per-type child layout the clone helpers encode, then sweeps the
+;; headered arena, pushing unmarked blocks onto the free-list.
+;;
+;; Soundness:
+;;  * Reachability handles refcount-ALIASING clones, in-place macro
+;;    caching, and mirror/closure sharing automatically (a shared box is
+;;    marked once via whichever root reaches it; the mark bit dedups).
+;;  * `nl_gc_in_arena' bounds-checks every box pointer before touching its
+;;    header, so a foreign / reserved-region / mis-tagged pointer is
+;;    SKIPPED (never corrupts random memory).  In-arena live boxes are
+;;    always reached because every box type's exact child layout is
+;;    walked below.
+;;  * cdr-chains are walked ITERATIVELY (loop on cdr, recurse only car),
+;;    so list length does not bound native mark recursion depth.
+;;
+;; Box layouts (from the clone/alloc kernels, byte-exact):
+;;   Cons   (tag 7): box+0 car Sexp, box+32 cdr Sexp, box+64 rc.   [data: box]
+;;   Vector (tag 8): box+0 cap, box+8 data_ptr, box+16 len, box+24 rc.
+;;                   data_ptr -> separate cap*32 buffer of `len' Sexps.
+;;   Record (tag 12): box+0 type_tag Sexp, box+32 slots-Vec
+;;                   (cap@+32,data_ptr@+40,len@+48), box+56 rc.
+;;   Cell   (tag 11): box+0 value Sexp, box+32 rc.
+;;   Str/Symbol (tag 5/4): INLINE String in the Sexp (cap@sp+8, ptr@sp+16,
+;;                   len@sp+24); ptr -> separate char buffer (no Sexp kids).
+;;   MutStr (tag 6): sp+8 NlStr* box (cap@+0,ptr@+8,len@+16); ptr -> buf.
+;; CharTable(9)/BoolVector(10) do not occur in the reader graph (bool-vector
+;; is a plain Vector in the stdlib); a box of those tags is marked but its
+;; children are not walked — documented limitation, gated by the test suite.
+(defconst nelisp-standalone--gc-source
+  '(seq
+    ;; addr in [data_start, bump_abs) ?  (bump_abs = base + bump_offset)
+    (defun nl_gc_in_arena (addr)
+      (if (< addr (ptr-read-u64 268435568 0)) 0
+        (if (< addr (+ 268435456 (ptr-read-u64 268435456 0))) 1 0)))
+    ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
+    ;; should recurse into children), 0 if foreign / already marked / free.
+    (defun nl_gc_mark_block (obj)
+      (if (= (nl_gc_in_arena obj) 0) 0
+        (if (= (ptr-read-u64 (- obj 8) 0) 0)
+            (nl_seq2 (ptr-write-u64 (- obj 8) 0 1) 1)
+          0)))
+    ;; Mark the char buffer of a string (raw byte block, no Sexp children).
+    (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
+    ;; Mark every Sexp slot of a `len'-element buffer starting at data_ptr.
+    (defun nl_gc_mark_vec_slots (data_ptr i len)
+      (if (< i len)
+          (nl_seq2 (nl_gc_mark_slot (+ data_ptr (* i 32)))
+                   (nl_gc_mark_vec_slots data_ptr (+ i 1) len))
+        0))
+    ;; Cons cdr-spine walker (tail-recursive: recurse only on car, loop
+    ;; on cdr) so list LENGTH does not bound native mark depth.  SP points
+    ;; at a Sexp slot known to be tag 7 (Cons).
+    (defun nl_gc_mark_cons (sp)
+      (let ((box (ptr-read-u64 sp 8)))
+        (if (= (nl_gc_mark_block box) 0)
+            0                                      ; foreign / already marked
+          (nl_seq2
+           (nl_gc_mark_slot box)                   ; car @ box+0
+           (if (= (ptr-read-u8 (+ box 32) 0) 7)
+               (nl_gc_mark_cons (+ box 32))        ; cdr is a cons -> tail loop
+             (nl_gc_mark_slot (+ box 32)))))))     ; cdr atom/other
+    ;; Mark one Sexp slot at SP (32 bytes).  Pure recursion per type.
+    (defun nl_gc_mark_slot (sp)
+      (let ((tag (ptr-read-u8 sp 0)))
+        (if (= tag 7)
+            (nl_gc_mark_cons sp)
+          (if (= tag 8)
+              ;; Vector: mark box + data buffer, recurse slots.
+              (let ((box (ptr-read-u64 sp 8)))
+                (if (= (nl_gc_mark_block box) 0) 0
+                  (let ((data_ptr (ptr-read-u64 box 8)) (len (ptr-read-u64 box 16)))
+                    (seq (nl_gc_mark_buf data_ptr)
+                         (nl_gc_mark_vec_slots data_ptr 0 len)))))
+            (if (= tag 12)
+                ;; Record: type_tag@box+0, slots-Vec@box+32 (data@+40,len@+48).
+                (let ((box (ptr-read-u64 sp 8)))
+                  (if (= (nl_gc_mark_block box) 0) 0
+                    (let ((data_ptr (ptr-read-u64 box 40)) (len (ptr-read-u64 box 48)))
+                      (seq (nl_gc_mark_slot box)            ; type_tag @ box+0
+                           (nl_gc_mark_buf data_ptr)
+                           (nl_gc_mark_vec_slots data_ptr 0 len)))))
+              (if (= tag 11)
+                  ;; Cell: value@box+0.
+                  (let ((box (ptr-read-u64 sp 8)))
+                    (if (= (nl_gc_mark_block box) 0) 0
+                      (nl_gc_mark_slot box)))
+                (if (= tag 6)
+                    ;; MutStr: NlStr*@sp+8 (ptr@box+8).
+                    (let ((box (ptr-read-u64 sp 8)))
+                      (if (= (nl_gc_mark_block box) 0) 0
+                        (nl_gc_mark_buf (ptr-read-u64 box 8))))
+                  (if (= tag 5) (nl_gc_mark_buf (ptr-read-u64 sp 16))   ; Str
+                    (if (= tag 4) (nl_gc_mark_buf (ptr-read-u64 sp 16)) ; Symbol
+                      ;; tag 9/10 boxed-no-walk (do not occur); else inline atom.
+                      (if (= tag 9) (nl_seq2 (nl_gc_mark_block (ptr-read-u64 sp 8)) 0)
+                        (if (= tag 10) (nl_seq2 (nl_gc_mark_block (ptr-read-u64 sp 8)) 0)
+                          0)))))))))))
+    ;; Free one dead block (header at HDR): set FREE sentinel, link the
+    ;; object (hdr+16) onto the free-list head.  Returns 0.  Isolated into
+    ;; a helper so the sweep loop body has no nested let + outer setq.
+    (defun nl_gc_free_block (hdr)
+      (if (< hdr (ptr-read-u64 268435664 0)) 0   ; HARD: never free below the boot watermark
+       (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 2)
+        (nl_seq2 (ptr-write-u64 (+ hdr 16) 0 (ptr-read-u64 268435552 0))
+                 (ptr-write-u64 268435552 0 (+ hdr 16))))))
+    ;; Process one block at HDR (mark==1 clear / mark==0 free / mark==2
+    ;; skip); returns the block's live byte contribution (bt if live, else
+    ;; 0).  No control mutation -> safe to call from the iterative loop.
+    ;;
+    ;; BOOT WATERMARK (268435664): the boot image -- the mirror, all builtins,
+    ;; the env/frame records, the source string, the slot pool and the fixed
+    ;; driver scratch slots, everything allocated below the watermark at
+    ;; install + driver setup -- is live for the WHOLE program.  It IS reached
+    ;; by the precise root marker (via the mirror/frames roots), so the
+    ;; reachability sweep alone would already preserve it; this guard is
+    ;; belt-and-suspenders: a block whose header is BELOW the watermark is
+    ;; ALWAYS kept live (clear any mark back to 0 so the mark word is reset for
+    ;; the next cycle, keeping re-marking of its above-watermark children
+    ;; idempotent) and never freed -- a sound "permanent generation" that
+    ;; guarantees no boot-internal raw-pointer edge can ever be reclaimed.
+    ;; Only per-form garbage ABOVE the watermark is collected.  (NOTE: the
+    ;; reuse-correctness fix is the payload zeroing in `nl_alloc_zero_fill';
+    ;; this watermark guard is not required for the gates to pass but makes the
+    ;; permanent generation explicit and robust.)
+    (defun nl_gc_sweep_one (hdr)
+      (if (< hdr (ptr-read-u64 268435664 0))
+          (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 0)          ; boot block: keep live, reset mark
+                   (ptr-read-u64 hdr 0))
+      (let ((m (ptr-read-u64 (+ hdr 8) 0)) (bt (ptr-read-u64 hdr 0)))
+        (if (= m 1)
+            (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 0)        ; survive: clear mark
+             (nl_seq2 (ptr-write-u64 268435640 0 (+ (ptr-read-u64 268435640 0) 1)) bt))
+          (if (= m 0)
+              (if (= (ptr-read-u64 268435584 0) 1)
+                  bt                                       ; DEBUG mark-only
+                (nl_seq2 (ptr-write-u64 268435632 0 (+ (ptr-read-u64 268435632 0) 1))
+                         (nl_seq2 (nl_gc_free_block hdr) 0))) ; dead -> free
+            0)))))                                         ; m==2 already free
+    ;; Sweep: ITERATIVE header walk (arena can hold millions of blocks, so
+    ;; recursion would overflow the stack).  `hdr'/`live' are mutated only
+    ;; at the loop's own scope; all per-block work is in `nl_gc_sweep_one'.
+    ;; A block_total BT at header HDR is well-formed iff >=16, 8-aligned,
+    ;; and does not overshoot END.  Catches any walk desync (a desynced
+    ;; read lands mid-object and almost always fails one of these).
+    (defun nl_gc_bt_ok (hdr bt end)
+      (if (< bt 16) 0
+        (if (= (logand bt 7) 0)
+            (if (< end (+ hdr bt)) 0 1)
+          0)))
+    ;; Step over one block: process it, return the NEXT header address
+    ;; (hdr + block_total), or 0 to signal "stop" (desync / past end).  All
+    ;; reads are within the block; no control state escapes — the loop's
+    ;; setqs stay at its own scope (avoids the Phase-47 nested-let+outer-setq
+    ;; pitfall that silently drops the mutation).
+    (defun nl_gc_sweep_step (hdr end)
+      (if (= (nl_gc_bt_ok hdr (ptr-read-u64 hdr 0) end) 0)
+          0
+        (nl_seq2 (nl_gc_sweep_one hdr) (+ hdr (ptr-read-u64 hdr 0)))))
+    (defun nl_gc_sweep ()
+      (let ((hdr (ptr-read-u64 268435568 0))
+            (end (+ 268435456 (ptr-read-u64 268435456 0))))
+        (while (and (> hdr 0) (< hdr end))
+          (setq hdr (nl_gc_sweep_step hdr end)))
+        0))
+    ;; Full collection at the form boundary.  CTX = the env (mirror@+0,
+    ;; frames@+32, unbound@+64).  The remaining args are the live driver
+    ;; Sexp slots that must survive.  Mark all roots, then sweep.
+    ;; Mark the ROOT BLOCKS themselves (the driver's fixed `alloc-bytes'
+    ;; scratch: ctx/result/out/pool/src/cursor/bsym).  These ARE live arena
+    ;; allocations holding the root Sexps; without marking the block, sweep
+    ;; would free it and `nl_gc_free_block' would clobber its payload (= the
+    ;; root Sexp).  ctx is one block (mirror@+0/frames@+32/unbound@+64 all
+    ;; inside it), so marking ctx covers all three env roots.
+    (defun nl_gc_mark_root_blocks (ctx result out pool src cursor bsym)
+      (nl_seq2 (nl_gc_mark_block ctx)
+       (nl_seq2 (nl_gc_mark_block result)
+        (nl_seq2 (nl_gc_mark_block out)
+         (nl_seq2 (nl_gc_mark_block pool)
+          (nl_seq2 (nl_gc_mark_block src)
+           (nl_seq2 (nl_gc_mark_block cursor)
+                    (nl_gc_mark_block bsym))))))))
+    ;; Mark every root (split out so the DEBUG skip-mark gate is a single if).
+    (defun nl_gc_mark_roots (ctx result out pool src cursor bsym)
+      (nl_seq2 (nl_gc_mark_root_blocks ctx result out pool src cursor bsym)
+       (nl_seq2 (nl_gc_mark_slot (+ ctx 0))      ; mirror / globals
+        (nl_seq2 (nl_gc_mark_slot (+ ctx 32))    ; frame stack
+         (nl_seq2 (nl_gc_mark_slot (+ ctx 64))   ; unbound marker
+          (nl_seq2 (nl_gc_mark_slot result)      ; current parsed form
+           (nl_seq2 (nl_gc_mark_slot out)        ; in-flight / last result
+            (nl_seq2 (nl_gc_mark_slot pool)      ; slot-pool vector
+             (nl_seq2 (nl_gc_mark_slot src)      ; source string
+              (nl_seq2 (nl_gc_mark_slot cursor)  ; reader cursor Sexp
+                       (nl_gc_mark_slot bsym))))))))))) ; builtin symbol slot
+    (defun nl_gc_collect (ctx result out pool src cursor bsym)
+      (if (= (ptr-read-u64 268435616 0) 1) 0    ; DEBUG: collect = pure no-op
+      (seq
+       (if (= (ptr-read-u64 268435592 0) 1) 0   ; DEBUG: skip-mark when slot==1
+         (nl_gc_mark_roots ctx result out pool src cursor bsym))
+       (nl_gc_sweep)))))
+  "Tracing mark-sweep GC for the headered standalone arena.  See the
+preceding commentary for box layouts, root set, and the soundness
+argument (reachability + in-arena bounds checks).")
 
 ;; SHIM: nelisp_eval_call — universal recursion entry.  Bumps rec_cur@env+96
 ;; against rec_max@env+104, recurses into REAL nl_eval_inner.
@@ -1698,6 +2013,21 @@ reused buffer and >8-byte names install correctly."
         (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)   ; Sexp::Int 0
         (vector-make 8192 pool)                                 ; Sexp::Vector(8192) slot-pool — raised from 256 (Task 1: 3+4*MAX_DEPTH; 8192 => MAX_DEPTH ~2047, well above the rec_max 2000 eval guard so the pool never caps before the recursion guard fires)
         (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
+        ;; GC trigger: collect at a form boundary once the bump offset
+        ;; crosses this threshold.  Initial 64 MiB keeps small programs
+        ;; GC-free (zero overhead); after each collection the trigger is
+        ;; re-armed to max(live*3, bump) + 16 MiB so frequency adapts to the
+        ;; live working set (a flat live set => bounded, periodic GCs).
+        (ptr-write-u64 268435560 0 4194304)
+        ;; BOOT WATERMARK: freeze the absolute address up to which everything
+        ;; was allocated during install + driver setup (the mirror, all 60
+        ;; builtins, the env/frame records, the fixed driver scratch slots).
+        ;; The GC never frees blocks below this line — the boot image is live
+        ;; for the whole program, so this is a sound "permanent generation"
+        ;; (leaks only a few KB of install-time scratch) that sidesteps the
+        ;; need to enumerate every boot-internal raw-pointer edge precisely.
+        ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
+        (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
         (let* ((more 1))
           (while (= more 1)
             (seq
@@ -1709,7 +2039,15 @@ reused buffer and >8-byte names install correctly."
                    ;; the per-eval fresh-Nil contract.  Only reset when a form
                    ;; actually parsed, so the EOF iteration keeps the last value.
                    (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                        (nelisp_eval_call result ctx out))
+                        (nelisp_eval_call result ctx out)
+                        ;; --- form-boundary tracing GC (safe point) ---
+                        (if (< (ptr-read-u64 268435456 0) (ptr-read-u64 268435560 0))
+                            0
+                          (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
+                                 (bump (ptr-read-u64 268435456 0))
+                                 (lo (+ (* live 3) 1048576))
+                                 (hi (+ bump 1048576)))
+                            (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))
                  (setq more 0))))))
         (ptr-read-u64 out 8)))))
 
@@ -2267,12 +2605,17 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (catch-throw (nelisp-standalone--cached-unit
                        "reader-catch-throw.o" nelisp-standalone--catch-throw-source
                        nelisp-standalone--this-file))
+         ;; Tracing mark-sweep GC (form-boundary reclaimer).  Compiled from
+         ;; the inline source above; the driver calls `nl_gc_collect'.
+         (gc (nelisp-standalone--cached-unit
+              "reader-gc.o" nelisp-standalone--gc-source
+              nelisp-standalone--this-file))
          (arena (nelisp-standalone--unit-for
                  (assoc "arena.o" nelisp-standalone--manifest))))
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
             extras (list float-stub) real-sf
-            (list sf-cc capture errstub fileio catch-throw arena))))
+            (list sf-cc capture errstub fileio catch-throw gc arena))))
 
 ;;;###autoload
 (defun nelisp-standalone-build-reader ()
