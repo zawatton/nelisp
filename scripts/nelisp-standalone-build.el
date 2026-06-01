@@ -725,7 +725,10 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
       (if (= (ptr-read-u64 list_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (first (ptr-read-u64 car_ptr 8))
                  (rest (nl_cons_cdr_ptr list_ptr)))
-            (if (= (ptr-read-u64 rest 0) 7) (wf_subtail rest first) first)) 0)))
+            ;; elisp `-': 1-arg `(- x)' = NEGATION (-x), not x; n-arg subtracts
+            ;; the tail from the first.  The old `first' fallthrough made `(- 5)'
+            ;; return 5, breaking every `(ash v (- (* i 8)))' byte-extraction.
+            (if (= (ptr-read-u64 rest 0) 7) (wf_subtail rest first) (- 0 first))) 0)))
   "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
 
 ;; M4 hash-table helpers (cons-alist v1).  Reader-only: wf_key_eq uses symbol-eq
@@ -1092,10 +1095,30 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
         (if (= (ptr-read-u64 a 0) 7) (wf_copy32 out (nl_cons_car_ptr a)) (wf_write_nil out))))
     (defun bf_cdr (args out)
       (let* ((a (wf_arg_ptr args 0)))
-        (if (= (ptr-read-u64 a 0) 7) (wf_copy32 out (nl_cons_cdr_ptr a)) (wf_write_nil out)))))
+        (if (= (ptr-read-u64 a 0) 7) (wf_copy32 out (nl_cons_cdr_ptr a)) (wf_write_nil out))))
+    ;; --- Wave-2 (C) bitwise + shift + string-lessp ---
+    ;; ash N C: arithmetic shift.  C>=0 -> logical-left (shl); C<0 -> signed
+    ;; arithmetic-right (sar) by -C.  (shl/sar are the Doc 100 §100.D shift OPs;
+    ;; logand/logior/logxor are binary arith OPs in the applyfn grammar.)
+    (defun bf_ash (n c)
+      (if (< c 0) (sar n (- 0 c)) (shl n c)))
+    ;; string<: byte-lexicographic compare of two Str/MutStr.  Returns 1 if A
+    ;; sorts strictly before B, else 0.  Walk min(lenA,lenB) bytes; first
+    ;; differing byte decides; on common-prefix tie the shorter string is "less".
+    (defun bf_str_lt_bytes (a b i la lb)
+      (if (>= i la)
+          (if (< la lb) 1 0)               ; A exhausted: less iff strictly shorter
+        (if (>= i lb) 0                    ; B exhausted (A not): A is NOT less
+          (let* ((ca (str-byte-at a i)) (cb (str-byte-at b i)))
+            (if (< ca cb) 1
+              (if (> ca cb) 0
+                (bf_str_lt_bytes a b (+ i 1) la lb)))))))
+    (defun bf_str_lt (a b)
+      (bf_str_lt_bytes a b 0 (str-len a) (str-len b))))
   "B-foundation breadth helpers (Wave-1 (B), reader-only): predicates, vector /
 symbol ops, setcar/setcdr, structural equal, vector-aware length, plus the
-nil-safe car/cdr + tag-aware eq REPLACEMENTS for the buggy stock arms.")
+nil-safe car/cdr + tag-aware eq REPLACEMENTS for the buggy stock arms.
+Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
 
 ;; B-foundation breadth dispatch arms (Wave-1 (B)).  APPENDED to the reader
 ;; dispatch table (see `nelisp-standalone--applyfn-reader-table').  tag values:
@@ -1152,16 +1175,29 @@ nil-safe car/cdr + tag-aware eq REPLACEMENTS for the buggy stock arms.")
     ((:lit "setcar")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
                               (seq (wf_dirty) (cons-set-car c v) (wf_copy32 out v) 0)))
     ((:lit "setcdr")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
-                              (seq (wf_dirty) (cons-set-cdr c v) (wf_copy32 out v) 0))))
+                              (seq (wf_dirty) (cons-set-cdr c v) (wf_copy32 out v) 0)))
+    ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
+    ((:lit "ash")     . (wf_write_int out (bf_ash (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "logand")  . (wf_write_int out (logand (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "logior")  . (wf_write_int out (logior (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "logxor")  . (wf_write_int out (logxor (wf_argval args 0) (wf_argval args 1))))
+    ;; lognot X = -X-1 (two's complement bitwise NOT).
+    ((:lit "lognot")  . (wf_write_int out (- (- 0 (wf_argval args 0)) 1)))
+    ;; --- Wave-2 (C) string<: byte-lexicographic less-than ---
+    ((:lit "string<") . (if (= (bf_str_lt (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
+                            (wf_write_t out) (wf_write_nil out))))
   "B-foundation breadth dispatch arms (Wave-1 (B)): predicates, symbol / vector
-ops, signal/error stubs, structural equal, setcar/setcdr.")
+ops, signal/error stubs, structural equal, setcar/setcdr.  Wave-2 (C) appends
+ash/logand/logior/logxor/lognot + string<.")
 
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
     "vectorp" "listp" "zerop" "fboundp" "boundp"
     "symbol-name" "intern" "make-symbol"
     "make-vector" "vector" "aref" "aset"
-    "signal" "error" "equal" "setcar" "setcdr")
+    "signal" "error" "equal" "setcar" "setcdr"
+    ;; Wave-2 (C): bitwise / shift / string<
+    "ash" "logand" "logior" "logxor" "lognot" "string<")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
@@ -1915,7 +1951,9 @@ value (matches the binary's M8 read+eval-loop driver)."
     "vectorp" "listp" "zerop" "fboundp" "boundp"
     "symbol-name" "intern" "make-symbol"
     "make-vector" "vector" "aref" "aset"
-    "signal" "error" "equal" "setcar" "setcdr")
+    "signal" "error" "equal" "setcar" "setcdr"
+    ;; Wave-2 (C): bitwise / shift / string<
+    "ash" "logand" "logior" "logxor" "lognot" "string<")
   "Builtin names installed into the reader binary's mirror; each is dispatched by
 the pure-elisp `nelisp_apply_function' (see `nelisp-standalone--applyfn-source').
 Names > 8 bytes (e.g. \"make-hash-table\") require the full-length name-buffer

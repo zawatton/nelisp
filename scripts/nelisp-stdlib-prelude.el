@@ -1624,4 +1624,79 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 (unless (fboundp 'recordp) (defun recordp (x) nil))
 (unless (fboundp 'nlistp) (defun nlistp (x) (not (listp x))))
 (unless (fboundp 'eql) (defun eql (a b) (if (and (numberp a) (numberp b)) (= a b) (eq a b))))
+
+;; --- Wave-2 (C): sort (stable merge sort, 2-arg PREDICATE form) ----------
+;; (sort LIST PREDICATE) -> a new list ordered by PREDICATE (a < b).  Stable.
+;; Non-destructive (builds fresh cons cells) to avoid setcar/setcdr churn on
+;; the caller's data under the standalone GC.  Only the LIST + 2-arg form is
+;; supported (the static linker calls `(sort (copy-sequence units) #'pred)').
+(unless (fboundp 'sort)
+  (progn
+    (defun nelisp-stdlib--merge (a b pred)
+      (let ((acc nil))
+        (while (and a b)
+          (if (funcall pred (car b) (car a))
+              (progn (setq acc (cons (car b) acc)) (setq b (cdr b)))
+            (setq acc (cons (car a) acc)) (setq a (cdr a))))
+        (while a (setq acc (cons (car a) acc)) (setq a (cdr a)))
+        (while b (setq acc (cons (car b) acc)) (setq b (cdr b)))
+        (nreverse acc)))
+    (defun nelisp-stdlib--msort (list pred)
+      (if (or (null list) (null (cdr list)))
+          list
+        ;; split into halves via slow/fast pointer
+        (let ((slow list) (fast (cdr list)) (left nil))
+          (while (and fast (cdr fast))
+            (setq fast (cdr (cdr fast)))
+            (setq left (cons (car slow) left))
+            (setq slow (cdr slow)))
+          ;; `left' now holds the reversed first half (excludes slow); take
+          ;; slow's car too, then the rest is the right half.
+          (setq left (nreverse (cons (car slow) left)))
+          (let ((right (cdr slow)))
+            (nelisp-stdlib--merge
+             (nelisp-stdlib--msort left pred)
+             (nelisp-stdlib--msort right pred)
+             pred)))))
+    (defun sort (seq pred)
+      (nelisp-stdlib--msort seq pred))))
+
+;; --- Wave-2 (C): symbol plists (put/get) + define-error -----------------
+;; The standalone reader has no per-symbol plist slot, so model the global
+;; symbol-plist store as one hash-table keyed by symbol (gethash/puthash use
+;; symbol-eq on the name).  Each value is a property plist (NAME VAL NAME VAL...).
+(unless (boundp 'nelisp-stdlib--symbol-plists)
+  (setq nelisp-stdlib--symbol-plists (make-hash-table)))
+(unless (fboundp 'symbol-plist)
+  (defun symbol-plist (sym) (gethash sym nelisp-stdlib--symbol-plists)))
+(unless (fboundp 'setplist)
+  (defun setplist (sym plist) (puthash sym plist nelisp-stdlib--symbol-plists) plist))
+(unless (fboundp 'get)
+  (defun get (sym prop) (plist-get (gethash sym nelisp-stdlib--symbol-plists) prop)))
+(unless (fboundp 'put)
+  (defun put (sym prop val)
+    (puthash sym
+             (plist-put (gethash sym nelisp-stdlib--symbol-plists) prop val)
+             nelisp-stdlib--symbol-plists)
+    val))
+;; define-error NAME MESSAGE &optional PARENT: register an error symbol.  In
+;; real elisp this sets `error-conditions'/`error-message' on NAME's plist so
+;; condition-case can match the hierarchy.  Minimal LOAD-correct version: store
+;; the message + the parent's conditions (PARENT defaults to `error') under the
+;; conventional plist props.  No-op-safe if the matcher never consults them.
+(unless (fboundp 'define-error)
+  (defun define-error (name message &optional parent)
+    (let* ((parent (or parent 'error))
+           (conditions
+            (if (consp parent)
+                (apply #'append
+                       (mapcar (lambda (p) (get p 'error-conditions)) parent))
+              (get parent 'error-conditions))))
+      (put name 'error-conditions (cons name conditions))
+      (put name 'error-message message)
+      name)))
+;; Seed the root `error' condition so derived errors inherit it.
+(unless (get 'error 'error-conditions)
+  (put 'error 'error-conditions (list 'error))
+  (put 'error 'error-message "error"))
 (defmacro cl-loop (&rest clauses) (nelisp-cl-macros--loop-build clauses))
