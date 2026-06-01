@@ -8,7 +8,7 @@
         stage-d-v3-tarball stage-d-v3-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-prelude-test
+        standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test
 
 EMACS ?= emacs
 
@@ -120,6 +120,12 @@ standalone-reader-prelude-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-prelude-test
+# Stage 3 SELF-HOST test: the standalone interpreter loads its OWN compiler
+# toolchain as source and compiles a recursive program (fact) to a native
+# x86_64 ELF with ZERO emacs, then we exec it and assert exit 120 (= 5!).
+standalone-selfhost-test:
+	./tools/selfhost-test.sh
+
 
 # Multi-process parallel compile (startup-bound for the current unit set:
 # usually SLOWER than serial `standalone-eval' -- see the script header).

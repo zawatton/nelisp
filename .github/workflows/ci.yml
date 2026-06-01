@@ -48,6 +48,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: make standalone-reader-test
+      - name: Standalone NeLisp SELF-HOST (interpreter compiles recursive fact -> native ELF, zero emacs; x86_64 Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make standalone-selfhost-test
 
 
   cargo-build:
