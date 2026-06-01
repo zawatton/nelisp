@@ -1130,7 +1130,22 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
               (if (> ca cb) 0
                 (bf_str_lt_bytes a b (+ i 1) la lb)))))))
     (defun bf_str_lt (a b)
-      (bf_str_lt_bytes a b 0 (str-len a) (str-len b))))
+      (bf_str_lt_bytes a b 0 (str-len a) (str-len b)))
+    ;; n-ary bitwise folds (elisp logior/logand/logxor are &rest variadic;
+    ;; the 2-arg primitives dropped args 3+ and SIGSEGV'd on <2 args, which
+    ;; broke every (logior (ash..) (ash..) (logand..)) ModRM/REX byte = all
+    ;; register encoding = all codegen).  Mirror wf_sum: fold over the args
+    ;; cons-list (tag 7 = more), seeded with the elisp identity (ior/xor=0,
+    ;; and=-1) so (logior)=0 (logand)=-1 (logior X)=X all match host.
+    (defun wf_logior_fold (lp acc)
+      (if (= (ptr-read-u64 lp 0) 7)
+          (wf_logior_fold (nl_cons_cdr_ptr lp) (logior acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc))
+    (defun wf_logand_fold (lp acc)
+      (if (= (ptr-read-u64 lp 0) 7)
+          (wf_logand_fold (nl_cons_cdr_ptr lp) (logand acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc))
+    (defun wf_logxor_fold (lp acc)
+      (if (= (ptr-read-u64 lp 0) 7)
+          (wf_logxor_fold (nl_cons_cdr_ptr lp) (logxor acc (ptr-read-u64 (nl_cons_car_ptr lp) 8))) acc)))
   "B-foundation breadth helpers (Wave-1 (B), reader-only): predicates, vector /
 symbol ops, setcar/setcdr, structural equal, vector-aware length, plus the
 nil-safe car/cdr + tag-aware eq REPLACEMENTS for the buggy stock arms.
@@ -1195,9 +1210,9 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
                               (seq (wf_dirty) (cons-set-cdr c v) (wf_copy32 out v) 0)))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ((:lit "ash")     . (wf_write_int out (bf_ash (wf_argval args 0) (wf_argval args 1))))
-    ((:lit "logand")  . (wf_write_int out (logand (wf_argval args 0) (wf_argval args 1))))
-    ((:lit "logior")  . (wf_write_int out (logior (wf_argval args 0) (wf_argval args 1))))
-    ((:lit "logxor")  . (wf_write_int out (logxor (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "logand")  . (wf_write_int out (wf_logand_fold args (- 0 1))))
+    ((:lit "logior")  . (wf_write_int out (wf_logior_fold args 0)))
+    ((:lit "logxor")  . (wf_write_int out (wf_logxor_fold args 0)))
     ;; lognot X = -X-1 (two's complement bitwise NOT).
     ((:lit "lognot")  . (wf_write_int out (- (- 0 (wf_argval args 0)) 1)))
     ;; --- Wave-2 (C) string<: byte-lexicographic less-than ---
