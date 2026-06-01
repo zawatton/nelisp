@@ -10412,6 +10412,18 @@ When ROOTS-RSP-DISP is non-nil, load the roots argument from
 ;; A `condition-case' guards the bridge: on dlsym miss / arity mismatch
 ;; the wrapper falls back to the legacy arm rather than mis-emitting.
 
+(defvar nelisp-phase47-compiler--native-emit-enabled nil
+  "When non-nil, route `imm'/`ref' value emit through the standalone
+NeLisp JIT kernels (`nl-jit-call-out-2', A33.N).  Default nil: that JIT
+bridge corrupts interpreter eval/arena state on the self-host path — the
+produced ELF bytes are correct but the surrounding eval continuation is
+clobbered, so any value computed AFTER an `emit-value' call (e.g. the next
+`let*' binding in `compile-sexp') reads garbage and the compile aborts.
+The legacy elisp arm is byte-identical and correct, so it is used instead.
+Re-enable once the bridge corruption is root-caused.  No effect on host
+Emacs (where `nl-jit-call-out-2' is unbound and the legacy arm already
+runs).")
+
 (defun nelisp-phase47-compiler--emit-value-native-bytes (kernel node n-slots)
   "Dispatch the Phase 47 leaf-arm KERNEL for IR NODE; return the bytes.
 KERNEL is the extern symbol name string (= `\"nelisp_emit_value_imm\"'
@@ -10424,7 +10436,8 @@ the caller falls back to the legacy elisp arm.
 
 A33.N — only invoked on standalone NeLisp; the host-Emacs reference
 build never reaches here, keeping the produced `.o' bytes unchanged."
-  (when (fboundp 'nl-jit-call-out-2)
+  (when (and nelisp-phase47-compiler--native-emit-enabled
+             (fboundp 'nl-jit-call-out-2))
     (condition-case _err
         (let* ((out-vec (make-vector n-slots 0))
                (count (funcall (intern "nl-jit-call-out-2")

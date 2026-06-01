@@ -1159,6 +1159,18 @@ byte-compiler so defsubst is a strict synonym for `defun'."
       (setq cur (cdr cur)))
     all))
 
+(defun cl-some (pred seq)
+  "Return the first non-nil (PRED ELT) over SEQ, else nil.
+Used by the Phase 47 compiler's `--emit-defun' gp prologue gate
+\(`(cl-some #'consp param-regs)').  Its absence made every defun-emit on
+standalone NeLisp hit a void-function — which, under the void-function-
+miss bug, returns garbage instead of signalling and corrupts the compile."
+  (let ((res nil) (cur seq))
+    (while (and cur (not res))
+      (setq res (funcall pred (car cur)))
+      (setq cur (cdr cur)))
+    res))
+
 ;; ---------------------------------------------------------------------------
 ;; Doc 49 Wave 7 R6c (2026-05-22) — minimal `backquote' macro.
 ;;
