@@ -270,12 +270,18 @@ or the toolchain is newer than the cached object."
                             (nl_seq2 (if (= r 0) 0 (nl_alloc_zero_fill r 0 (- want 16))) r))))))
           (if (= reused 0)
               ;; 2) bump: header at CUR (16-aligned), object at CUR+16.
-              (let ((cur (ptr-read-u64 268435456 0)))
+              ;; ATOMIC bump reserve: `atomic-fetch-add' returns the OLD bump
+              ;; offset and advances it in one SeqCst RMW, so N clone(2)
+              ;; threads can `nl_alloc_bytes' concurrently — each gets a
+              ;; disjoint [cur,cur+want) region; the header writes below land
+              ;; in this thread's own reservation.  (Free-list reuse + GC are
+              ;; the non-lock-free paths; the parallel-build driver disables
+              ;; both via slots 268435624=1 / 268435616=1 during the fan-out.)
+              (let ((cur (atomic-fetch-add 268435456 want)))
                 (let ((obj (+ 268435456 (+ cur 16))))
-                  (nl_seq2 (ptr-write-u64 268435456 0 (+ cur want)) ; advance bump
-                   (nl_seq2 (ptr-write-u64 (- obj 16) 0 want)       ; hdr.block_total
-                    (nl_seq2 (ptr-write-u64 (- obj 8) 0 0)          ; hdr.mark = live
-                     obj)))))
+                  (nl_seq2 (ptr-write-u64 (- obj 16) 0 want)       ; hdr.block_total
+                   (nl_seq2 (ptr-write-u64 (- obj 8) 0 0)          ; hdr.mark = live
+                    obj))))
             reused))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
     (defun nl_quit_flag_ptr () 268435464)))
