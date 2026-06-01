@@ -84,16 +84,46 @@
                              (ptr-write-u64 (+ pop_scratch 24) 0 0)
                              (nelisp_frame_pop frames_ptr pop_scratch))
                         rc)))))))
+    ;; Bind ONE captured (NAME . CELL) entry into the pushed frame.
+    ;;
+    ;; *** Double-wrap fix (capture path correctness) ***
+    ;; The captured alist's pair cdr is ALREADY a `Sexp::Cell' (built by
+    ;; `nl_capture_emit_one', whose cell-ptr = the live frame bucket's cell
+    ;; slot).  The frame binder (`nelisp_frame_bind') stores its cell-ptr
+    ;; VERBATIM (matching `nelisp-lexframe-make-from-alist': "CELL is stored
+    ;; verbatim — callers pre-wrap bare values in Sexp::Cell").  So the cell
+    ;; must be bound directly; routing through `nelisp_env_bind_local' (which
+    ;; unconditionally `cell-make's a FRESH NlCell around its val-ptr) would
+    ;; produce a DOUBLY-wrapped Cell(Cell(VAL)) — lookup's single
+    ;; `nl_cell_get_value' deref then yields the inner `Sexp::Cell' (tag 11)
+    ;; instead of VAL, returning garbage (the pre-existing capture bug).
+    ;;
+    ;; This mirrors the Rust `push_captured' -> `wrap_alist_cells'
+    ;; idempotency: if the value is already a Cell (tag 11) bind it verbatim;
+    ;; otherwise wrap a bare value in a fresh Cell (`cell-make') exactly once,
+    ;; then bind that.  Frame depth is > 0 here (the captured frame was just
+    ;; pushed by `nl_env_push_captured'), so `nelisp_frame_bind' takes the
+    ;; frame path unconditionally.
+    (defun nl_pc_bind_one (frames_ptr name_ptr val_ptr)
+      (let ((cell_slot (alloc-bytes 32 8))
+            (pair_scratch (alloc-bytes 32 8))
+            (outer_scratch (alloc-bytes 32 8))
+            (count_scratch (alloc-bytes 32 8)))
+        (seq
+         (if (= (ptr-read-u64 val_ptr 0) 11)
+             (nl_sexp_clone_into val_ptr cell_slot)   ; already a Cell -> verbatim
+           (cell-make val_ptr cell_slot))             ; bare value -> wrap once
+         (nelisp_frame_bind frames_ptr name_ptr cell_slot
+                            pair_scratch outer_scratch count_scratch)
+         1)))
     (defun nl_push_captured_walk (alist_ptr mirror_ptr frames_ptr unbound_ptr)
       (if (= (ptr-read-u64 alist_ptr 0) 7)
           (let ((pair_ptr (nl_cons_car_ptr alist_ptr))
                 (rest_ptr (nl_cons_cdr_ptr alist_ptr)))
             (if (= (ptr-read-u64 pair_ptr 0) 7)
                 (let ((name_ptr (nl_cons_car_ptr pair_ptr))
-                      (val_ptr (nl_cons_cdr_ptr pair_ptr))
-                      (bind_scratch (alloc-bytes 32 8)))
-                  (seq (nl_frame_build_bind_scratch val_ptr unbound_ptr bind_scratch)
-                       (nelisp_env_bind_local mirror_ptr frames_ptr name_ptr val_ptr bind_scratch 0)
+                      (val_ptr (nl_cons_cdr_ptr pair_ptr)))
+                  (seq (nl_pc_bind_one frames_ptr name_ptr val_ptr)
                        (nl_push_captured_walk rest_ptr mirror_ptr frames_ptr unbound_ptr)))
               (nl_push_captured_walk rest_ptr mirror_ptr frames_ptr unbound_ptr)))
         0))
