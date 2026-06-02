@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -51,6 +51,8 @@
 ;; byte buffer in .data, which is the hand-off shape the reader/file path needs.
 ;; Stage 25 lets linked driver units call Win32 file APIs through correctly
 ;; based IAT-relative calls, then reads one byte from argv1 as a file path.
+;; Stage 26 makes that startup path dual-mode: no argv1 takes the embedded
+;; source branch, argv1 takes the file-load branch.
 
 ;;; Code:
 
@@ -950,6 +952,97 @@ link-units."
          driver-rva iat-rvas)
         (nelisp-windows-build--argv1-file-data-unit))))))
 
+(defun nelisp-windows-build--standalone-commandline-dual-source-byte-bytes ()
+  "Return a PE32+ EXE proving embedded-vs-file source selection."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "GetCommandLineW" "lstrlenW"
+     "CreateFileA" "ReadFile" "CloseHandle")
+   (lambda (text-rva iat-rvas _rdata-rva _data-rva)
+     (let* ((start (nelisp-windows-build--standalone-commandline-file-start-unit
+                    text-rva
+                    (cdr (assoc "ExitProcess" iat-rvas))
+                    (cdr (assoc "GetCommandLineW" iat-rvas))
+                    (cdr (assoc "lstrlenW" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start))))
+       (list
+        start
+        (nelisp-windows-build--compile-defuns-to-unit
+         "driver.o"
+         '(seq
+           (defun wargv_copy_argv1 (cmdline len out)
+             (let* ((i 0)
+                    (ch 0)
+                    (start 0)
+                    (end 0)
+                    (j 0))
+               (seq
+                (setq ch (ptr-read-u16 cmdline 0))
+                (if (= ch 34)
+                    (seq
+                     (setq i 1)
+                     (while (and (< i len)
+                                 (= (= (ptr-read-u16 cmdline (* i 2)) 34) 0))
+                       (setq i (+ i 1)))
+                     (if (< i len) (setq i (+ i 1)) 0))
+                  (while (and (< i len)
+                              (and (= (= (ptr-read-u16 cmdline (* i 2)) 32) 0)
+                                   (= (= (ptr-read-u16 cmdline (* i 2)) 9) 0)))
+                    (setq i (+ i 1))))
+                (while (and (< i len)
+                            (or (= (ptr-read-u16 cmdline (* i 2)) 32)
+                                (= (ptr-read-u16 cmdline (* i 2)) 9)))
+                  (setq i (+ i 1)))
+                (if (< i len)
+                    (seq
+                     (if (= (ptr-read-u16 cmdline (* i 2)) 34)
+                         (seq
+                          (setq i (+ i 1))
+                          (setq start i)
+                          (while (and (< i len)
+                                      (= (= (ptr-read-u16 cmdline (* i 2)) 34) 0))
+                            (setq i (+ i 1)))
+                          (setq end i))
+                       (seq
+                        (setq start i)
+                        (while (and (< i len)
+                                    (and (= (= (ptr-read-u16 cmdline (* i 2)) 32) 0)
+                                         (= (= (ptr-read-u16 cmdline (* i 2)) 9) 0)))
+                          (setq i (+ i 1)))
+                        (setq end i)))
+                     (while (< start end)
+                       (seq
+                        (ptr-write-u8 out j (ptr-read-u16 cmdline (* start 2)))
+                        (setq start (+ start 1))
+                        (setq j (+ j 1))))
+                     (ptr-write-u8 out j 0)
+                     1)
+                  17))))
+           (defun driver (cmdline len path-buf file-buf)
+             (if (= cmdline 0)
+                 13
+               (if (= len 0)
+                   14
+                 (if (= path-buf 0)
+                     15
+                   (if (= file-buf 0)
+                       16
+                     (let* ((copied (wargv_copy_argv1 cmdline len path-buf)))
+                       (if (= copied 17)
+                           42
+                         (if (= copied 1)
+                             (let* ((fd (syscall-direct 2 path-buf 0 0 0 0 0)))
+                               (if (< fd 0)
+                                   18
+                                 (let* ((n (syscall-direct 0 fd file-buf 1 0 0 0))
+                                        (b (ptr-read-u8 file-buf 0)))
+                                   (seq
+                                    (syscall-direct 3 fd 0 0 0 0 0)
+                                    (if (= n 1) b 19)))))
+                           copied)))))))))
+         driver-rva iat-rvas)
+        (nelisp-windows-build--argv1-file-data-unit))))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1067,6 +1160,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (argv1 path -> first byte)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-commandline-dual-source-byte ()
+  "Batch entry: build the standalone command-line dual source probe."
+  (let ((bytes (nelisp-windows-build--standalone-commandline-dual-source-byte-bytes))
+        (out-path "target/nelisp-windows-standalone-commandline-dual-source-byte.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (embedded-or-file source byte)"
              out-path)
     out-path))
 

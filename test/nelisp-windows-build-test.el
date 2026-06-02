@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -867,6 +867,78 @@
              (regexp-quote (unibyte-string #x48 #x0f #xb6 #x04 #x37))
              text))
     (dolist (status '(#x0d #x0e #x0f #x10 #x11 #x12 #x13))
+      (should (string-match-p
+               (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                              status #x00 #x00 #x00))
+               text)))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-standalone-commandline-dual-source-imports-apis ()
+  "Stage 26 dual-mode source bridge imports command-line and file APIs."
+  (let* ((bytes (nelisp-windows-build--standalone-commandline-dual-source-byte-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports
+                   '("ExitProcess" "GetCommandLineW" "lstrlenW"
+                     "CreateFileA" "ReadFile" "CloseHandle")))))
+
+(ert-deftest nelisp-windows-build-standalone-commandline-dual-source-data-buffers ()
+  "Stage 26 PE carries argv1 path and file read buffers in .data."
+  (let* ((bytes (nelisp-windows-build--standalone-commandline-dual-source-byte-bytes))
+         (peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (sect0 (+ opt 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (data-rva (nelisp-windows-build-test--read-le32 bytes (+ sect2 12)))
+         (data-raw (nelisp-windows-build-test--read-le32 bytes (+ sect2 20)))
+         (data-size (nelisp-windows-build-test--read-le32 bytes (+ sect2 16))))
+    (should (= (nelisp-windows-build-test--read-le16 bytes (+ peoff 6)) 3))
+    (should (string-prefix-p ".data" (substring bytes sect2 (+ sect2 8))))
+    (should (= data-rva #x3000))
+    (should (> data-raw 0))
+    (should (>= data-size 276))
+    (should (equal (substring bytes data-raw (+ data-raw 16))
+                   (make-string 16 0)))
+    (should (equal (substring bytes (+ data-raw 260) (+ data-raw 276))
+                   (make-string 16 0)))))
+
+(ert-deftest nelisp-windows-build-standalone-commandline-dual-source-calls-file-apis ()
+  "Stage 26 dual-mode driver branches to embedded or Win32 file-load paths."
+  (let* ((bytes (nelisp-windows-build--standalone-commandline-dual-source-byte-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (data-rva #x3000)
+         (text-end (min (length bytes) (+ text-raw 3800)))
+         (text (substring bytes text-raw text-end))
+         (lea-r8-off (string-match-p
+                      (regexp-quote (unibyte-string #x4c #x8d #x05))
+                      text))
+         (r8-target (and lea-r8-off
+                         (+ text-rva lea-r8-off 7
+                            (nelisp-windows-build-test--read-le32
+                             text (+ lea-r8-off 3)))))
+         (lea-r9-off (string-match-p
+                      (regexp-quote (unibyte-string #x4c #x8d #x0d))
+                      text))
+         (r9-target (and lea-r9-off
+                         (+ text-rva lea-r9-off 7
+                            (nelisp-windows-build-test--read-le32
+                             text (+ lea-r9-off 3)))))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw text-end)))
+    (should lea-r8-off)
+    (should lea-r9-off)
+    (should (= r8-target data-rva))
+    (should (= r9-target (+ data-rva 260)))
+    (dolist (name '("GetCommandLineW" "lstrlenW" "ExitProcess"
+                    "CreateFileA" "ReadFile" "CloseHandle"))
+      (should (member (cdr (assoc name iat-map)) targets)))
+    (dolist (status '(#x0d #x0e #x0f #x10 #x11 #x12 #x13 #x2a))
       (should (string-match-p
                (regexp-quote (unibyte-string #x48 #xc7 #xc0
                                               status #x00 #x00 #x00))

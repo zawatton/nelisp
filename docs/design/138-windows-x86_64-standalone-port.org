@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 25 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 26 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -67,7 +67,9 @@
   reader/file-load driver.  Stage 25 compiles a linked driver unit at its
   final =.text= RVA when it needs Win32 IAT calls, then uses the argv1 C-string
   as a file path and reads one byte via =CreateFileA= / =ReadFile= /
-  =CloseHandle=.
+  =CloseHandle=.  Stage 26 makes the Windows startup path dual-mode like the
+  standalone reader driver: no argv1 takes the embedded source branch, while
+  argv1 takes the file-load branch.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
