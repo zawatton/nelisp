@@ -27,6 +27,8 @@
 ;; table lookup users no longer trip the Windows table rejection gate.
 ;; Stage 13 proves multiple linked Phase47 units can feed a PE32+ EXE,
 ;; which is the bridge from single-probe PE emit toward standalone units.
+;; Stage 14 carries linked-unit .rodata through the PE writer so static
+;; linker rodata sections can ship in PE .rdata.
 
 ;;; Code:
 
@@ -236,6 +238,7 @@ IMPORTS is the KERNEL32 import list.  UNIT-BUILDER is called as
             (link-result (nelisp-link-units-2pass units layout))
             (bytes (plist-get link-result :bytes))
             (text (nelisp-link--bytes-or-empty bytes 'text))
+            (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
             (data (nelisp-link--bytes-or-empty bytes 'data))
             (bss-size (or (cdr (assq 'bss bytes)) 0)))
        (unless (= (length data) 0)
@@ -245,7 +248,9 @@ IMPORTS is the KERNEL32 import list.  UNIT-BUILDER is called as
        (unless (= bss-size 0)
          (signal 'nelisp-link-error
                  (list :windows-pe-linked-bss-not-yet-supported bss-size)))
-       text))
+       (if (> (length rodata) 0)
+           (list :text text :extra-rdata rodata)
+         text)))
    extra-rdata))
 
 (defun nelisp-windows-build--linked-call42-bytes ()
@@ -259,6 +264,33 @@ IMPORTS is the KERNEL32 import list.  UNIT-BUILDER is called as
       (nelisp-windows-build--compile-defuns-to-unit
        "helper.o" '(defun add40 (x) (+ x 40)))))))
 
+(defun nelisp-windows-build--linked-rodata42-bytes ()
+  "Return a PE32+ EXE proving linked-unit .rodata is emitted."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (list
+      (nelisp-windows-build--linked-start-unit
+       text-rva (cdr (assoc "ExitProcess" iat-rvas)))
+      (let* ((rodata (unibyte-string #x2a #x00 #x00 #x00))
+             (helper-text
+              (let ((buf (nelisp-asm-x86_64-make-buffer 'win64)))
+                ;; mov eax, dword ptr [rip+disp32], resolved by static linker.
+                (nelisp-asm-x86_64-emit-bytes
+                 buf (unibyte-string #x8b #x05 #x00 #x00 #x00 #x00))
+                (nelisp-asm-x86_64-ret buf)
+                (nelisp-asm-x86_64-buffer-bytes buf))))
+        (nelisp-link-unit-make
+         "rodata-helper.o"
+         (list (cons 'text helper-text)
+               (cons 'rodata rodata))
+         (list (nelisp-link-symbol
+                "add40" 0 :section 'text :bind 'global :type 'func)
+               (nelisp-link-symbol
+                "answer" 0 :section 'rodata :bind 'global :type 'object))
+         (list (list :offset 2 :type 'pc32 :symbol "answer"
+                     :addend 0 :section 'text))))))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -266,6 +298,16 @@ IMPORTS is the KERNEL32 import list.  UNIT-BUILDER is called as
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (linked add40 -> ExitProcess)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-linked-rodata42 ()
+  "Batch entry: build target/nelisp-windows-linked-rodata42.exe."
+  (let ((bytes (nelisp-windows-build--linked-rodata42-bytes))
+        (out-path "target/nelisp-windows-linked-rodata42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (linked rodata -> ExitProcess)"
              out-path)
     out-path))
 

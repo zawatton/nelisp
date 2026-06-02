@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 13 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 14 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -36,7 +36,9 @@
   rejection gate.  Stage 13 adds a linked-unit PE probe: multiple Phase47
   link-units are resolved through the static linker, then emitted as a PE32+
   EXE, proving the bridge needed before the full standalone manifest can move
-  off ELF-only output.
+  off ELF-only output.  Stage 14 carries linked-unit =.rodata= through the PE
+  writer into =.rdata=, proving cross-section linked constants can ship with
+  the PE image instead of only single-probe extra rodata.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the

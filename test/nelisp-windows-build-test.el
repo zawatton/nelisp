@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -251,6 +251,43 @@
     (should (string-match-p
              (regexp-quote (unibyte-string #x48 #x89 #xc1 #xff #x15))
              text))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-linked-rodata-imports-exitprocess ()
+  "Stage 14 linked-unit rodata PE imports ExitProcess."
+  (let* ((bytes (nelisp-windows-build--linked-rodata42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess")))))
+
+(ert-deftest nelisp-windows-build-linked-rodata-carries-and-loads-rodata ()
+  "Stage 14 linked-unit PE carries .rodata and patches its RIP load."
+  (let* ((bytes (nelisp-windows-build--linked-rodata42-bytes))
+         (peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-size (nelisp-windows-build-test--read-le32 bytes (+ opt 124)))
+         (rdata-rva #x2000)
+         (rdata-raw #x400)
+         (answer-rva (+ rdata-rva import-size))
+         (answer-raw (+ rdata-raw import-size))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (text (substring bytes text-raw (+ text-raw 160)))
+         (load-off (string-match-p
+                    (regexp-quote (unibyte-string #x8b #x05))
+                    text))
+         (disp (and load-off
+                    (nelisp-windows-build-test--read-le32
+                     text (+ load-off 2))))
+         (target-rva (and disp (+ text-rva load-off 6 disp)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 160))))
+    (should (equal (substring bytes answer-raw (+ answer-raw 4))
+                   (unibyte-string #x2a #x00 #x00 #x00)))
+    (should load-off)
+    (should (= target-rva answer-rva))
+    (should (member #x2038 targets))
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))
                  text))))

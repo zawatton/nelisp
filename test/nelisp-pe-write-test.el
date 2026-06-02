@@ -342,6 +342,40 @@
                    (unibyte-string #xff #x15)))
     (should (= (+ text-rva exit-call-off 6 exit-disp) exit-iat-rva))))
 
+(ert-deftest nelisp-pe-write-kernel32-builder-plist-extra-rdata ()
+  "KERNEL32 EXE builder accepts text-builder plist extra .rdata."
+  (let* ((extra (unibyte-string #xde #xad #xbe #xef))
+         (captured-rdata-rva nil)
+         (bytes
+          (nelisp-pe-write-build-kernel32-executable
+           '("ExitProcess")
+           (lambda (_text-rva _iat-rvas rdata-rva)
+             (setq captured-rdata-rva rdata-rva)
+             (list :text (unibyte-string #xcc)
+                   :extra-rdata extra))))
+         (peoff (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-size (nelisp-pe-write-test--read-le32 bytes (+ opt 124)))
+         (rdata-rva #x2000)
+         (rdata-raw #x400)
+         (extra-rva (+ rdata-rva import-size))
+         (extra-raw (+ rdata-raw import-size)))
+    (should (= captured-rdata-rva extra-rva))
+    (should (= (aref bytes #x200) #xcc))
+    (should (equal (substring bytes extra-raw (+ extra-raw (length extra)))
+                   extra))))
+
+(ert-deftest nelisp-pe-write-kernel32-builder-plist-extra-rdata-conflict ()
+  "KERNEL32 EXE builder rejects ambiguous double extra .rdata sources."
+  (should-error
+   (nelisp-pe-write-build-kernel32-executable
+    '("ExitProcess")
+    (lambda (_text-rva _iat-rvas _rdata-rva)
+      (list :text (unibyte-string #xcc)
+            :extra-rdata (unibyte-string #x01)))
+    (unibyte-string #x02))
+   :type 'error))
+
 (provide 'nelisp-pe-write-test)
 
 ;;; nelisp-pe-write-test.el ends here

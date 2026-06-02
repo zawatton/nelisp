@@ -1085,19 +1085,32 @@ FAILURE-CODE otherwise.  IAT-RVAS maps imported function names to RVAs."
     (names text-builder &optional extra-rdata)
   "Build a PE32+ console EXE importing KERNEL32.dll NAMES.
 TEXT-BUILDER is called as `(TEXT-BUILDER TEXT-RVA IAT-RVAS RDATA-RVA)'
-and must return the .text bytes.  IAT-RVAS is an alist mapping each
-imported function name to its IAT slot RVA.  RDATA-RVA is the RVA where
-EXTRA-RDATA will be appended after the import blob."
+and must return the .text bytes, or a plist `(:text TEXT :extra-rdata BYTES)'.
+IAT-RVAS is an alist mapping each imported function name to its IAT slot
+RVA.  RDATA-RVA is the RVA where EXTRA-RDATA will be appended after the
+import blob.  When TEXT-BUILDER returns :extra-rdata, the optional
+EXTRA-RDATA argument must be nil or empty so RDATA-RVA remains unambiguous."
   (unless (functionp text-builder)
     (error "nelisp-pe: text-builder must be callable"))
   (let* ((text-rva nelisp-pe--section-alignment)
          (rdata-rva (* 2 nelisp-pe--section-alignment))
          (imports (nelisp-pe--build-kernel32-imports rdata-rva names))
          (extra-rdata-rva (+ rdata-rva (length (plist-get imports :bytes))))
-         (text (funcall text-builder text-rva
-                        (plist-get imports :iat-rvas)
-                        extra-rdata-rva)))
-    (nelisp-pe--build-executable-with-imports text imports extra-rdata)))
+         (built (funcall text-builder text-rva
+                         (plist-get imports :iat-rvas)
+                         extra-rdata-rva))
+         (raw-builder-extra (and (consp built)
+                                 (plist-get built :extra-rdata)))
+         (builder-extra (and raw-builder-extra
+                             (> (length raw-builder-extra) 0)
+                             raw-builder-extra))
+         (text (if (and (consp built) (plist-member built :text))
+                   (plist-get built :text)
+                 built)))
+    (when (and builder-extra extra-rdata (> (length extra-rdata) 0))
+      (error "nelisp-pe: text-builder :extra-rdata cannot combine with argument EXTRA-RDATA"))
+    (nelisp-pe--build-executable-with-imports
+     text imports (or builder-extra extra-rdata))))
 
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
