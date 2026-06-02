@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-40-WINDOWS-FILE-BACKED-MMAP
+#+STATUS: STAGE-41-WINDOWS-MMAP-RELEASE-FAILURE-SAFETY
 
 * Status
 
-- *State*: STAGE 40 Windows file-backed mmap
+- *State*: STAGE 41 Windows mmap release failure safety
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -33,6 +33,10 @@
   =nelisp-os-mprotect= to =VirtualProtect=, anonymous =nelisp-os-munmap= to
   =VirtualFree(MEM_RELEASE)=, and file-backed =MAP_PRIVATE= mappings through
   =CreateFileMappingW= / =MapViewOfFile= with =UnmapViewOfFile= cleanup.
+  Windows =munmap= now forgets mapping-kind bookkeeping only after
+  =VirtualFree= / =UnmapViewOfFile= succeeds, preserving the table on native
+  release failure so callers can retry or still report the correct release
+  path.
   The minimal process surface now routes Windows =nelisp-os-exit= through
   =kernel32!ExitProcess= and =nelisp-os-getpid= through
   =kernel32!GetCurrentProcessId=, removing another raw Linux syscall / POSIX
@@ -218,6 +222,8 @@
   Stage 40 coverage verifies Windows file-backed =mmap= dispatch through
   =CreateFileMappingW= / =MapViewOfFile=, mapping handle cleanup, mapping-kind
   tracking, and =munmap= dispatch through =UnmapViewOfFile= for file views.
+  Stage 41 coverage verifies failed Windows =VirtualFree= /
+  =UnmapViewOfFile= calls keep mapping-kind tracking intact.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -627,6 +633,10 @@ largest uncertainty (B1 + B2) first.
    *Windows file-backed mmap SHIPPED 2026-06-03*: =nelisp-os-mmap= now accepts
    HANDLE-backed =MAP_PRIVATE= mappings via =CreateFileMappingW= /
    =MapViewOfFile=, with =UnmapViewOfFile= cleanup.
+   *Windows mmap release failure safety SHIPPED 2026-06-03*: Windows
+   =munmap= now drops mapping-kind bookkeeping only after native release
+   success, keeping retry state intact after =VirtualFree= /
+   =UnmapViewOfFile= failure.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:

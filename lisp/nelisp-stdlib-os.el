@@ -754,13 +754,17 @@ went through `:string' (= CString::new, NUL-rejecting)."
   (push (cons addr kind) nelisp-os--windows-mmap-table)
   addr)
 
-(defun nelisp-os--windows-take-mmap-kind (addr)
-  "Remove ADDR from the Windows mapping table and return its kind."
+(defun nelisp-os--windows-mmap-kind (addr)
+  "Return the remembered Windows mapping kind for ADDR."
+  (cdr (assq addr nelisp-os--windows-mmap-table)))
+
+(defun nelisp-os--windows-forget-mmap (addr)
+  "Remove ADDR from the Windows mapping table."
   (let ((cell (assq addr nelisp-os--windows-mmap-table)))
     (when cell
       (setq nelisp-os--windows-mmap-table
-            (delq cell nelisp-os--windows-mmap-table))
-      (cdr cell))))
+            (delq cell nelisp-os--windows-mmap-table))))
+  addr)
 
 (defun nelisp-os--windows-u64-high (value)
   "Return high 32 bits of unsigned VALUE."
@@ -843,7 +847,7 @@ went through `:string' (= CString::new, NUL-rejecting)."
   "Windows implementation of `nelisp-os-munmap'."
   (when (or (= addr 0) (<= length 0))
     (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (let ((kind (or (nelisp-os--windows-take-mmap-kind addr) 'virtualalloc)))
+  (let ((kind (or (nelisp-os--windows-mmap-kind addr) 'virtualalloc)))
     (cond
      ((eq kind 'mapped-file)
       (let ((ok (nelisp-os--libc-call
@@ -852,6 +856,7 @@ went through `:string' (= CString::new, NUL-rejecting)."
                  addr)))
         (if (= ok 0)
             (nelisp-os--windows-ffi-error-signal)
+          (nelisp-os--windows-forget-mmap addr)
           0)))
      (t
       (let ((ok (nelisp-os--libc-call
@@ -860,6 +865,7 @@ went through `:string' (= CString::new, NUL-rejecting)."
                  addr 0 nelisp-os-WIN-MEM-RELEASE)))
         (if (= ok 0)
             (nelisp-os--windows-ffi-error-signal)
+          (nelisp-os--windows-forget-mmap addr)
           0))))))
 
 (defun nelisp-os--windows-pipe ()

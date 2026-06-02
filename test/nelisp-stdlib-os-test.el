@@ -509,6 +509,47 @@
                          (list #x71000000))))
     (should-not nelisp-os--windows-mmap-table)))
 
+(ert-deftest nelisp-stdlib-os-munmap-windows-virtualfree-failure-keeps-mapping-table ()
+  "Windows VirtualFree failures keep mmap tracking intact for retry."
+  (let ((call nil)
+        (nelisp-os--windows-mmap-table '((#x70000000 . virtualalloc))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0))
+              ((symbol-function 'nelisp-os--windows-ffi-error-signal)
+               (lambda () (signal 'nelisp-os-error (list 1234)))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-munmap #x70000000 4096)
+                      :type 'nelisp-os-error)))
+    (should (equal call
+                   (list "kernel32" "VirtualFree"
+                         [:sint32 :pointer :uint64 :uint32]
+                         (list #x70000000 0
+                               nelisp-os-WIN-MEM-RELEASE))))
+    (should (equal nelisp-os--windows-mmap-table
+                   '((#x70000000 . virtualalloc))))))
+
+(ert-deftest nelisp-stdlib-os-munmap-windows-file-view-failure-keeps-mapping-table ()
+  "Windows UnmapViewOfFile failures keep mmap tracking intact for retry."
+  (let ((call nil)
+        (nelisp-os--windows-mmap-table '((#x71000000 . mapped-file))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0))
+              ((symbol-function 'nelisp-os--windows-ffi-error-signal)
+               (lambda () (signal 'nelisp-os-error (list 1234)))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-munmap #x71000000 4096)
+                      :type 'nelisp-os-error)))
+    (should (equal call
+                   (list "kernel32" "UnmapViewOfFile"
+                         [:sint32 :pointer]
+                         (list #x71000000))))
+    (should (equal nelisp-os--windows-mmap-table
+                   '((#x71000000 . mapped-file))))))
+
 (ert-deftest nelisp-stdlib-os-pipe-windows-uses-createpipe ()
   "Windows pipe routes through CreatePipe and records both HANDLEs."
   (let ((call nil)
