@@ -385,6 +385,103 @@
                    '((77 . #xabcdef))))
     (should-not called-alloc)))
 
+(ert-deftest nelisp-stdlib-os-windows-join-any-thread-completes-one ()
+  "Windows thread join-any reaps one registered thread."
+  (let ((calls nil)
+        (freed nil)
+        (handle-writes nil)
+        (alloc-next 3000)
+        (nelisp-os--windows-thread-table '((77 . #xaaaa) (88 . #xbbbb))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) handle-writes)
+                 val))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 4000))
+                 (should (= off 0))
+                 13))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForMultipleObjects")
+                   (+ nelisp-os-WIN-WAIT-OBJECT-0 1))
+                  ((equal fn "GetExitCodeThread") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (should (equal (nelisp-os--windows-join-any-thread 0)
+                     '(88 . 13))))
+    (should (equal (nreverse handle-writes)
+                   (list
+                    (list 3000 0 #xaaaa)
+                    (list 3000 8 #xbbbb))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForMultipleObjects"
+                          [:uint32 :uint32 :pointer :sint32 :uint32]
+                          (list 2 3000 0 nelisp-os-WIN-INFINITE))
+                    (list "kernel32" "GetExitCodeThread"
+                          [:sint32 :pointer :pointer]
+                          (list #xbbbb 4000))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xbbbb)))))
+    (should (equal nelisp-os--windows-thread-table
+                   '((77 . #xaaaa))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-windows-join-any-thread-wnohang-keeps-all ()
+  "Windows thread join-any WNOHANG keeps all registered threads on timeout."
+  (let ((calls nil)
+        (freed nil)
+        (handle-writes nil)
+        (nelisp-os--windows-thread-table '((77 . #xaaaa) (88 . #xbbbb))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) handle-writes)
+                 val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForMultipleObjects")
+                   nelisp-os-WIN-WAIT-TIMEOUT)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (should (equal (nelisp-os--windows-join-any-thread nelisp-os-WNOHANG)
+                     '(0 . 0))))
+    (should (equal (nreverse handle-writes)
+                   (list
+                    (list 3000 0 #xaaaa)
+                    (list 3000 8 #xbbbb))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForMultipleObjects"
+                          [:uint32 :uint32 :pointer :sint32 :uint32]
+                          (list 2 3000 0 0)))))
+    (should (equal nelisp-os--windows-thread-table
+                   '((77 . #xaaaa) (88 . #xbbbb))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-windows-join-any-thread-empty-errors ()
+  "Windows thread join-any reports ECHILD when no thread HANDLE is registered."
+  (let ((called nil)
+        (nelisp-os--windows-thread-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (should-error (nelisp-os--windows-join-any-thread 0)
+                    :type 'nelisp-os-error))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-windows-std-handle-selectors ()
   "POSIX-like std fds map to Windows GetStdHandle selector constants."
   (should (= (nelisp-os--windows-std-handle-selector nelisp-os-STDIN)

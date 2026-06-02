@@ -47,6 +47,7 @@
 ;; 51 lets Windows `kill' reuse registered child process HANDLEs too.  Stage
 ;; 52 adds registered-child `wait(-1)' through `WaitForMultipleObjects'.  Stage
 ;; 53 adds internal `CreateThread' / thread-join helpers with HANDLE tracking.
+;; Stage 54 adds registered-thread join-any through `WaitForMultipleObjects'.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFL' / `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on
@@ -568,8 +569,8 @@ Replacing an existing PID closes the old HANDLE before installing HANDLE."
   (when registered
     (nelisp-os--windows-forget-process pid)))
 
-(defun nelisp-os--windows-process-handle-array (cells)
-  "Allocate a HANDLE array for Windows process table CELLS."
+(defun nelisp-os--windows-handle-array (cells)
+  "Allocate a HANDLE array for Windows table CELLS."
   (let ((buf (nelisp-os--alloc (* 8 (length cells))))
         (idx 0))
     (dolist (cell cells)
@@ -599,7 +600,7 @@ Replacing an existing PID closes the old HANDLE before installing HANDLE."
          (handles-buf nil))
     (unwind-protect
         (progn
-          (setq handles-buf (nelisp-os--windows-process-handle-array cells))
+          (setq handles-buf (nelisp-os--windows-handle-array cells))
           (let* ((timeout (if (= options nelisp-os-WNOHANG)
                               0
                             nelisp-os-WIN-INFINITE))
@@ -704,6 +705,53 @@ the thread exits, or (0 . 0) for `WNOHANG' timeout."
           (nelisp-os--free exit-code-buf))))
      (t
       (nelisp-os--windows-ffi-error-signal)))))
+
+(defun nelisp-os--windows-join-any-thread (options)
+  "Join any registered Windows thread with OPTIONS.
+OPTIONS supports 0 and `nelisp-os-WNOHANG'.  Returns (TID . EXIT-CODE) when a
+thread exits, or (0 . 0) for `WNOHANG' timeout."
+  (unless (memq options (list 0 nelisp-os-WNOHANG))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (unless nelisp-os--windows-thread-table
+    (signal 'nelisp-os-error (list 10))) ; ECHILD
+  (let* ((cells nelisp-os--windows-thread-table)
+         (count (length cells))
+         (handles-buf nil))
+    (unwind-protect
+        (progn
+          (setq handles-buf (nelisp-os--windows-handle-array cells))
+          (let* ((timeout (if (= options nelisp-os-WNOHANG)
+                              0
+                            nelisp-os-WIN-INFINITE))
+                 (wait-rc (nelisp-os--libc-call
+                           "kernel32" "WaitForMultipleObjects"
+                           [:uint32 :uint32 :pointer :sint32 :uint32]
+                           count handles-buf 0 timeout)))
+            (cond
+             ((= wait-rc nelisp-os-WIN-WAIT-TIMEOUT)
+              (cons 0 0))
+             ((and (>= wait-rc nelisp-os-WIN-WAIT-OBJECT-0)
+                   (< wait-rc (+ nelisp-os-WIN-WAIT-OBJECT-0 count)))
+              (let* ((idx (- wait-rc nelisp-os-WIN-WAIT-OBJECT-0))
+                     (cell (nth idx cells))
+                     (tid (car cell))
+                     (handle (cdr cell))
+                     (exit-code-buf (nelisp-os--alloc 4)))
+                (unwind-protect
+                    (let ((ok (nelisp-os--libc-call
+                               "kernel32" "GetExitCodeThread"
+                               [:sint32 :pointer :pointer]
+                               handle exit-code-buf)))
+                      (if (= ok 0)
+                          (nelisp-os--windows-ffi-error-signal)
+                        (prog1 (cons tid (nelisp-os-read-u32 exit-code-buf 0))
+                          (nelisp-os--windows-close-resource handle 'handle)
+                          (nelisp-os--windows-forget-thread tid))))
+                  (nelisp-os--free exit-code-buf))))
+             (t
+              (nelisp-os--windows-ffi-error-signal)))))
+      (when handles-buf
+        (nelisp-os--free handles-buf)))))
 
 (defun nelisp-os--windows-alloc-utf16le-z (str)
   "Allocate a UTF-16LE NUL-terminated buffer containing STR."
