@@ -9253,7 +9253,7 @@ functions `((NAME . ARITY) ...)'."
            (args (cdr sexp)))
 	      (when (> arity
 	               (if (and (eq nelisp-phase47-compiler--arch 'x86_64)
-	                        (eq nelisp-phase47-compiler--abi 'sysv))
+	                        (memq nelisp-phase47-compiler--abi '(sysv win64)))
 	                   14
 	                 (length (nelisp-phase47-compiler--current-arg-regs))))
 	        (signal 'nelisp-phase47-compiler-error
@@ -9597,7 +9597,7 @@ Returns one of:
                 (length nelisp-phase47-compiler--xmm-arg-regs))
                ((and (eq uniform-class 'gp)
                      (eq nelisp-phase47-compiler--arch 'x86_64)
-                     (eq nelisp-phase47-compiler--abi 'sysv))
+                     (memq nelisp-phase47-compiler--abi '(sysv win64)))
                 ;; GP ref loads use an rbp+disp8 local slot.  Slot 13
                 ;; is the current compiler-wide upper bound.
                 14)
@@ -9613,7 +9613,7 @@ Returns one of:
              (param-regs
               (if (and (eq uniform-class 'gp)
                        (eq nelisp-phase47-compiler--arch 'x86_64)
-                       (eq nelisp-phase47-compiler--abi 'sysv)
+                       (memq nelisp-phase47-compiler--abi '(sysv win64))
                        (> arity reg-budget))
                   (cl-loop for i below arity
                            collect (if (< i reg-budget)
@@ -11049,12 +11049,16 @@ count."
     (if (> n reg-budget)
         (progn
           (unless (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                       (eq nelisp-phase47-compiler--abi 'sysv))
+                       (memq nelisp-phase47-compiler--abi '(sysv win64)))
             (signal 'nelisp-phase47-compiler-error
                     (list :call-stack-args-unsupported name n)))
           (let* ((stack-count (- n reg-budget))
                  (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-                 (needs-align (= (logand (+ arity n stack-count) 1) 1)))
+                 (win64-p (eq nelisp-phase47-compiler--abi 'win64))
+                 (needs-align
+                  (if win64-p
+                      (= (logand (+ n stack-count) 1) 1)
+                    (= (logand (+ arity n stack-count) 1) 1))))
             ;; Save every arg left-to-right so complex args cannot clobber
             ;; earlier register-bound values while later args are evaluated.
             (dolist (a args)
@@ -11078,7 +11082,11 @@ count."
                              buf 'r10 disp)
                             (nelisp-asm-x86_64-push buf 'r10)
                             (setq pushed-stack (1+ pushed-stack)))))
+            (when win64-p
+              (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
             (nelisp-asm-x86_64-call-rel32 buf name)
+            (when win64-p
+              (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
             (when (> stack-count 0)
               (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-count)))
             (when needs-align
@@ -11087,7 +11095,8 @@ count."
       (let* ((regs (cl-subseq cur-arg-regs 0 n))
          ;; Stack alignment correction (Doc 111 §111.E fix).
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (= (logand arity 1) 1))
+         (needs-align (and (not (eq nelisp-phase47-compiler--abi 'win64))
+                           (= (logand arity 1) 1)))
          ;; Win64 shadow space: 32 bytes reserved by caller before CALL.
          (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0))
          ;; W7.6a: split args into [complex-prefix | trivial-suffix].
@@ -14198,11 +14207,19 @@ return reg, untouched by epilogue)."
               ;; so slot offsets up to 15 args are in range.
               (let ((i 0))
                 (dolist (preg param-regs)
-                  (ignore preg)
-                  (let ((src-reg (nth i win64-arg-regs))
-                        (disp (- (* 8 (1+ i)))))
-                    (nelisp-asm-x86_64-mov-mem-reg-disp8
-                     buf 'rbp disp src-reg))
+                  (let ((disp (- (* 8 (1+ i)))))
+                    (if (or (consp preg) (>= i (length win64-arg-regs)))
+                        (let* ((stack-index (if (consp preg)
+                                                (cadr preg)
+                                              (- i (length win64-arg-regs))))
+                               (src-disp (+ 48 (* 8 stack-index))))
+                          (nelisp-asm-x86_64-mov-reg-mem-disp8
+                           buf 'rax 'rbp src-disp)
+                          (nelisp-asm-x86_64-mov-mem-reg-disp8
+                           buf 'rbp disp 'rax))
+                      (let ((src-reg (nth i win64-arg-regs)))
+                        (nelisp-asm-x86_64-mov-mem-reg-disp8
+                         buf 'rbp disp src-reg))))
                   (setq i (1+ i))))
               ;; Reserve runtime let-rt slots (same as SysV path).
               (when (> rt-slot-count 0)

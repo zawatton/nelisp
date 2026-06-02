@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -57,6 +57,8 @@
 ;; `nl_arena_init' routes its mmap-shaped allocation through VirtualAlloc.
 ;; Stage 28 proves the same arena unit can allocate a real block via
 ;; `nl_alloc_bytes' and preserve the header/bump invariants on Windows.
+;; Stage 29 extends Win64 GP defun/call stack args, then links the standalone
+;; GC unit and proves mark/sweep can free and reuse an arena block.
 
 ;;; Code:
 
@@ -1111,6 +1113,69 @@ link-units."
                     arena-rva iat-rvas)))
        (list start driver arena)))))
 
+(defun nelisp-windows-build--standalone-gc-reuse-driver42-bytes ()
+  "Return a PE32+ EXE proving standalone GC reuse works on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(defun driver ()
+                        (let* ((arena (nl_arena_init)))
+                          (if (= arena 0)
+                              18
+                            (let* ((ctx (nl_alloc_bytes 96 8))
+                                   (result (nl_alloc_bytes 32 8))
+                                   (out (nl_alloc_bytes 32 8))
+                                   (pool (nl_alloc_bytes 32 8))
+                                   (src (nl_alloc_bytes 32 8))
+                                   (cursor (nl_alloc_bytes 32 8))
+                                   (bsym (nl_alloc_bytes 32 8)))
+                              (if (= bsym 0)
+                                  19
+                                (let* ((garbage (nl_alloc_bytes 16 8)))
+                                  (if (= garbage 0)
+                                      20
+                                    (seq
+                                     (nl_gc_mark_block ctx)
+                                     (nl_gc_mark_block result)
+                                     (nl_gc_mark_block out)
+                                     (nl_gc_mark_block pool)
+                                     (nl_gc_mark_block src)
+                                     (nl_gc_mark_block cursor)
+                                     (nl_gc_mark_block bsym)
+                                     (nl_gc_sweep)
+                                     (if (= (ptr-read-u64 268435552 0) garbage)
+                                         (if (= (ptr-read-u64 (- garbage 8) 0) 2)
+                                             (let* ((again (nl_alloc_bytes 16 8)))
+                                               (if (= again garbage)
+                                                   (if (= (ptr-read-u64 268435552 0) 0)
+                                                       (if (= (ptr-read-u64 (- again 8) 0) 0)
+                                                           (if (= (ptr-read-u64 268435456 0) 688)
+                                                               42
+                                                             24)
+                                                         23)
+                                                     22)
+                                                 21))
+                                           23)
+                                       21)))))))))
+                     driver-rva iat-rvas))
+            (arena-rva (+ driver-rva
+                          (nelisp-windows-build--unit-text-length driver)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas))
+            (gc-rva (+ arena-rva
+                       (nelisp-windows-build--unit-text-length arena)))
+            (gc (nelisp-windows-build--compile-defuns-to-unit
+                 "gc.o" nelisp-standalone--gc-source
+                 gc-rva iat-rvas)))
+       (list start driver arena gc)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1258,6 +1323,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone arena allocation)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-gc-reuse-driver42 ()
+  "Batch entry: build the standalone GC free-list reuse probe."
+  (let ((bytes (nelisp-windows-build--standalone-gc-reuse-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-gc-reuse-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone GC reuse)"
              out-path)
     out-path))
 

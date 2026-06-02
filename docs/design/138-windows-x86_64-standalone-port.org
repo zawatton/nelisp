@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 28 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 29 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -73,7 +73,10 @@
   unit into a PE executable and proves =nl_arena_init= lowers its mmap-shaped
   allocation through =VirtualAlloc= rather than a Linux raw syscall.  Stage 28
   calls =nl_alloc_bytes= from that same linked arena unit and checks the bump
-  pointer, block header and byte read/write invariants.
+  pointer, block header and byte read/write invariants.  Stage 29 extends
+  Win64 GP defun/call stack arguments, then links the standalone GC unit and
+  proves mark/sweep can push a dead arena block onto the free-list and reuse it
+  without advancing the bump pointer.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the

@@ -2249,6 +2249,46 @@ SysV would emit `push rdi' = 57 instead."
             (should found-win64-spill)))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-coff-defun-7gp-param-stack-spill ()
+  "Win64 COFF defuns can receive the fifth GP param from the stack."
+  (let ((path (make-temp-file "nelisp-win64-7gp-param-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (require 'nelisp-phase47-compiler)
+          (nelisp-phase47-compile-to-object
+           '(defun fifth (a b c d e f g) e)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (n (length bytes))
+                 (load-fifth
+                  (let ((i 0) (found nil))
+                    (while (and (< (+ i 3) n) (not found))
+                      ;; mov rax, [rbp+48] loads Win64 stack arg #0
+                      ;; (= source-level fifth GP arg) after return addr
+                      ;; and 32-byte shadow space.
+                      (when (and (= (aref bytes i) #x48)
+                                 (= (aref bytes (+ i 1)) #x8b)
+                                 (= (aref bytes (+ i 2)) #x45)
+                                 (= (aref bytes (+ i 3)) #x30))
+                        (setq found i))
+                      (setq i (1+ i)))
+                    found))
+                 (spill-fifth
+                  (let ((i 0) (found nil))
+                    (while (and (< (+ i 3) n) (not found))
+                      ;; mov [rbp-40], rax stores that fifth arg into
+                      ;; the normal local spill slot for source slot 4.
+                      (when (and (= (aref bytes i) #x48)
+                                 (= (aref bytes (+ i 1)) #x89)
+                                 (= (aref bytes (+ i 2)) #x45)
+                                 (= (aref bytes (+ i 3)) #xd8))
+                        (setq found i))
+                      (setq i (1+ i)))
+                    found)))
+            (should load-fifth)
+            (should spill-fifth)))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here
