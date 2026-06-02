@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -77,6 +77,27 @@
       (setq i (1+ i)))
     (or found
         (error "RVA not covered by any section: %#x" rva))))
+
+(defun nelisp-windows-build-test--section-raw-bounds (bytes name)
+  "Return `(RAW-START . RAW-END)' for PE section NAME in BYTES."
+  (let* ((peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (num-sections (logior (aref bytes (+ peoff 6))
+                               (ash (aref bytes (+ peoff 7)) 8)))
+         (opt-size (logior (aref bytes (+ peoff 20))
+                           (ash (aref bytes (+ peoff 21)) 8)))
+         (section-off (+ peoff 24 opt-size))
+         (i 0)
+         (found nil))
+    (while (and (< i num-sections) (not found))
+      (let* ((off (+ section-off (* i 40)))
+             (sect-name (nelisp-windows-build-test--read-cstr bytes off))
+             (raw-size (nelisp-windows-build-test--read-le32 bytes (+ off 16)))
+             (raw-ptr (nelisp-windows-build-test--read-le32 bytes (+ off 20))))
+        (when (equal sect-name name)
+          (setq found (cons raw-ptr (+ raw-ptr raw-size)))))
+      (setq i (1+ i)))
+    (or found
+        (error "PE section not found: %s" name))))
 
 (defun nelisp-windows-build-test--phase47-exe (&optional sexp)
   "Return PE32+ EXE bytes for SEXP, defaulting to `(exit 42)'."
@@ -1164,6 +1185,57 @@
              (regexp-quote (unibyte-string #xf0 #x48 #x0f #xc1 #x07))
              text))
     (dolist (imm '(#x00000002 #x00000020 #x00000040 #x00000048))
+      (should (string-match-p
+               (regexp-quote
+                (unibyte-string (logand imm #xff)
+                                (logand (ash imm -8) #xff)
+                                (logand (ash imm -16) #xff)
+                                (logand (ash imm -24) #xff)))
+               text)))))
+
+(ert-deftest nelisp-windows-build-standalone-sexp-clone-imports-virtualalloc ()
+  "Stage 32 standalone Sexp clone PE imports ExitProcess and VirtualAlloc."
+  (let* ((bytes (nelisp-windows-build--standalone-sexp-clone-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess" "VirtualAlloc")))))
+
+(ert-deftest nelisp-windows-build-standalone-sexp-clone-text-calls-virtualalloc ()
+  "Stage 32 linked Sexp clone calls VirtualAlloc through IAT."
+  (let* ((bytes (nelisp-windows-build--standalone-sexp-clone-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-bounds (nelisp-windows-build-test--section-raw-bounds
+                       bytes ".text"))
+         (text-raw (car text-bounds))
+         (text-end (cdr text-bounds))
+         (text (substring bytes text-raw text-end))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw text-end)))
+    (should (member (cdr (assoc "ExitProcess" iat-map)) targets))
+    (should (member (cdr (assoc "VirtualAlloc" iat-map)) targets))
+    (dolist (status '(#x27 #x28 #x29 #x2a #x2b #x2c #x2d #x2e #x2f #x30))
+      (should (string-match-p
+               (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                              status #x00 #x00 #x00))
+               text)))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-standalone-sexp-clone-checks-invariants ()
+  "Stage 32 driver checks inline Int clone and boxed Cons rc clone."
+  (let* ((bytes (nelisp-windows-build--standalone-sexp-clone-driver42-bytes))
+         (text-bounds (nelisp-windows-build-test--section-raw-bounds
+                       bytes ".text"))
+         (text-raw (car text-bounds))
+         (text-end (cdr text-bounds))
+         (text (substring bytes text-raw text-end)))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xf0 #x48 #x0f #xc1 #x07))
+             text))
+    (dolist (imm '(#x00000002 #x00000007 #x00000040 #x0000007b
+                   #x000001c8 #x00000315))
       (should (string-match-p
                (regexp-quote
                 (unibyte-string (logand imm #xff)
