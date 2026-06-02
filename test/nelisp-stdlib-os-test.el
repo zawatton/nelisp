@@ -3076,6 +3076,77 @@
                     (list "kernel32" "GetTickCount64" [:uint64] nil))))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-timerfd-windows-supports-alarm-clocks ()
+  "Windows timerfd ALARM clocks arm waitable timers with resume enabled."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (clock-reads nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . timerfd)))
+        (nelisp-os--windows-timerfd-table
+         `((3 . [0 0 nil ,nelisp-os-CLOCK-REALTIME-ALARM]))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--windows-timerfd-clock-now-ms)
+               (lambda (clockid)
+                 (push clockid clock-reads)
+                 9000))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "SetWaitableTimer") 1)
+                  ((equal fn "GetTickCount64") 5000)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-timerfd-settime
+                        3 nelisp-os-TFD-TIMER-ABSTIME
+                        0 0
+                        10 0)
+                       '(0 0 0 0)))))
+    (should (equal nelisp-os--windows-timerfd-table
+                   `((3 . [0 6000 t ,nelisp-os-CLOCK-REALTIME-ALARM]))))
+    (should (equal writes '((3000 0 -10000000))))
+    (should (equal clock-reads (list nelisp-os-CLOCK-REALTIME-ALARM)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "SetWaitableTimer"
+                          [:sint32 :pointer :pointer :sint32 :pointer :pointer
+                           :sint32]
+                          (list #xaaaa 3000 0 0 0 1))
+                    (list "kernel32" "GetTickCount64" [:uint64] nil))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-timerfd-windows-create-supports-alarm-clocks ()
+  "Windows timerfd_create accepts supported ALARM clock ids."
+  (let ((calls nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-timerfd-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "CreateWaitableTimerW") #xaaaa)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-timerfd-create
+                    nelisp-os-CLOCK-BOOTTIME-ALARM 0)
+                   3))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . timerfd))))
+    (should (equal nelisp-os--windows-timerfd-table
+                   `((3 . [0 0 nil ,nelisp-os-CLOCK-BOOTTIME-ALARM]))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "CreateWaitableTimerW"
+                          [:pointer :pointer :sint32 :pointer]
+                          (list 0 0 0)))))))
+
 (ert-deftest nelisp-stdlib-os-timerfd-windows-poll-uses-waitforsingleobject ()
   "Windows poll reports timerfd readiness from WaitForSingleObject."
   (let ((calls nil)
@@ -3308,9 +3379,6 @@
                   ((equal fn "CloseHandle") 1)
                   (t (error "unexpected ffi call %S" fn))))))
       (let ((system-type 'windows-nt))
-        (should-error (nelisp-os-timerfd-create
-                       nelisp-os-CLOCK-REALTIME-ALARM 0)
-                      :type 'nelisp-os-error)
         (should-error (nelisp-os-timerfd-create
                        nelisp-os-CLOCK-MONOTONIC #x40000000)
                       :type 'nelisp-os-error)

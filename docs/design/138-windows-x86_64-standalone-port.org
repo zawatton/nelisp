@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-132-WINDOWS-PEERCRED-SOCKETPAIR
+#+STATUS: STAGE-133-WINDOWS-TIMERFD-ALARM
 
 * Status
 
-- *State*: STAGE 132 Windows socketpair peercred compatibility
+- *State*: STAGE 133 Windows timerfd alarm compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -313,7 +313,9 @@
   =read= returns an 8-byte expiration count after =WaitForSingleObject=, and
   =poll= reports =POLLIN= from timer readiness.  Windows timerfd duplicates
   now retain fd-kind / status flag tracking and share timer state across
-  =dup2=, standard fd =dup2= targets, and =F_DUPFD=.  =nelisp-os-eventfd= now has a Windows
+  =dup2=, standard fd =dup2= targets, and =F_DUPFD=.  Windows timerfd alarm
+  clock ids =CLOCK_REALTIME_ALARM= / =CLOCK_BOOTTIME_ALARM= are accepted and
+  arm waitable timers with the resume flag enabled.  =nelisp-os-eventfd= now has a Windows
   compatibility implementation backed by a synthetic fd-kind counter, with
   8-byte little-endian =read/write= counter semantics, =EFD_SEMAPHORE=, and
   =EFD_NONBLOCK= status tracking.  The synthetic eventfd fd also has Windows
@@ -750,6 +752,10 @@
   synthetic peer credentials, =getsockopt-peercred= returns the tracked
   same-process credential, socket =dup2= / =F_DUPFD= preserve peercred state,
   close removes peercred state, and untracked sockets reject before FFI.
+  Stage 133 coverage verifies Windows timerfd creation accepts
+  =CLOCK_REALTIME_ALARM= / =CLOCK_BOOTTIME_ALARM=, absolute realtime alarm
+  expirations convert against the realtime clock, and =SetWaitableTimer= is
+  armed with the resume flag for alarm clocks.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1214,6 +1220,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows timerfd dup progress 2026-06-03*: timerfd duplicates now preserve
   fd-kind/status flag tracking and share timer state across =dup2=, standard
   fd targets, and =F_DUPFD=.
+  *Windows timerfd alarm progress 2026-06-03*: timerfd now accepts
+  =CLOCK_REALTIME_ALARM= / =CLOCK_BOOTTIME_ALARM= on Windows, treats realtime
+  alarm absolute expirations as realtime clock values, and enables the
+  =SetWaitableTimer= resume flag for alarm clock fds.
   *Windows sigprocmask compatibility progress 2026-06-03*: Windows
   =sigprocmask= now tracks an emulated mask for =SIG_BLOCK= /
   =SIG_UNBLOCK= / =SIG_SETMASK= without invoking POSIX signal-mask FFI.
@@ -1690,6 +1700,11 @@ largest uncertainty (B1 + B2) first.
    *Windows timerfd dup compatibility SHIPPED 2026-06-03*: timerfd =dup2=,
    stdout-target =dup2=, and =F_DUPFD= preserve timerfd kind/status flags and
    share timer state with the source descriptor.
+   *Windows timerfd alarm compatibility SHIPPED 2026-06-03*:
+   =timerfd_create= accepts =CLOCK_REALTIME_ALARM= / =CLOCK_BOOTTIME_ALARM=,
+   absolute realtime alarm expirations map through the realtime clock, and
+   =timerfd_settime= arms alarm clock fds with the =SetWaitableTimer= resume
+   flag.
    *Windows inotify synthetic fd compatibility SHIPPED 2026-06-03*:
    =inotify_init= creates event HANDLE-backed fd-kind state,
    =inotify_add_watch= / =inotify_rm_watch= manage synthetic watch

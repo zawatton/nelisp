@@ -112,6 +112,11 @@
 ;; Stage 126 adds an emulated Windows sigprocmask mask tracker.
 ;; Stage 127 adds synthetic Windows signalfd compatibility.
 ;; Stage 128 maps Windows AF_UNIX abstract names to temporary filesystem paths.
+;; Stage 129 adds Windows timerfd absolute-time conversion.
+;; Stage 130 adds synthetic Windows inotify fd compatibility.
+;; Stage 131 preserves Windows inotify state across dup.
+;; Stage 132 tracks synthetic Windows socketpair peer credentials.
+;; Stage 133 accepts Windows timerfd alarm clock ids.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -4556,9 +4561,21 @@ list of signal numbers."
 
 (defun nelisp-os--windows-timerfd-clock-now-ms (clockid)
   "Return the current Windows timerfd CLOCKID time in milliseconds."
-  (if (= clockid nelisp-os-CLOCK-REALTIME)
+  (if (memq clockid (list nelisp-os-CLOCK-REALTIME
+                          nelisp-os-CLOCK-REALTIME-ALARM))
       (nelisp-os--windows-realtime-now-ms)
     (nelisp-os--windows-now-ms)))
+
+(defun nelisp-os--windows-timerfd-alarm-clock-p (clockid)
+  "Return non-nil when CLOCKID is a wake-capable timerfd alarm clock."
+  (memq clockid (list nelisp-os-CLOCK-REALTIME-ALARM
+                      nelisp-os-CLOCK-BOOTTIME-ALARM)))
+
+(defun nelisp-os--windows-timerfd-state-clockid (state)
+  "Return timerfd clock id stored in STATE, or a compatibility default."
+  (if (> (length state) 3)
+      (aref state 3)
+    nelisp-os-CLOCK-MONOTONIC))
 
 (defun nelisp-os--timer-ms (sec nsec)
   "Return milliseconds represented by SEC and NSEC, rounded up."
@@ -4581,7 +4598,7 @@ list of signal numbers."
         value-ms
       (max 0 (- value-ms
                 (nelisp-os--windows-timerfd-clock-now-ms
-                 (aref state 3)))))))
+                 (nelisp-os--windows-timerfd-state-clockid state)))))))
 
 (defun nelisp-os--ms-sec-nsec (ms)
   "Return (SEC . NSEC) for non-negative millisecond duration MS."
@@ -4611,7 +4628,9 @@ list of signal numbers."
   "Windows implementation of `nelisp-os-timerfd-create'."
   (unless (memq clockid (list nelisp-os-CLOCK-REALTIME
                              nelisp-os-CLOCK-MONOTONIC
-                             nelisp-os-CLOCK-BOOTTIME))
+                             nelisp-os-CLOCK-BOOTTIME
+                             nelisp-os-CLOCK-REALTIME-ALARM
+                             nelisp-os-CLOCK-BOOTTIME-ALARM))
     (nelisp-os--windows-unsupported))
   (unless (= (logand flags (lognot (logior nelisp-os-TFD-NONBLOCK
                                            nelisp-os-TFD-CLOEXEC)))
@@ -4677,7 +4696,10 @@ list of signal numbers."
                          interval-ms
                          0
                          0
-                         0)))
+                         (if (nelisp-os--windows-timerfd-alarm-clock-p
+                              (nelisp-os--windows-timerfd-state-clockid state))
+                             1
+                           0))))
                 (if (= ok 0)
                   (nelisp-os--windows-ffi-error-signal)
                   (aset state 0 interval-ms)
