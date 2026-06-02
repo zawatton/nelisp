@@ -242,7 +242,14 @@ FORM is the enclosing source form for diagnostics."
                            :cond (nelisp-sys-frontend--parse-expr (nth 0 args))
                            :then (nelisp-sys-frontend--parse-expr (nth 1 args))
                            :else (and (> (length args) 2)
-                                      (nelisp-sys-frontend--parse-expr (nth 2 args)))
+                                      (if (= (length args) 3)
+                                          (nelisp-sys-frontend--parse-expr
+                                           (nth 2 args))
+                                        (nelisp-sys-ast-make
+                                         'seq
+                                         :body (nelisp-sys-frontend--parse-body
+                                                (nthcdr 2 args) form)
+                                         :form form)))
                            :form form))
      ((eq head 'cond) (nelisp-sys-frontend--parse-cond form))
      ((eq head 'while)

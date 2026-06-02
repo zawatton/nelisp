@@ -156,8 +156,8 @@
       (sys:unsafe
        (nl_bootstrap_write_symentry sym_slot)
        (nl_vector_set_slot box_ptr 5 sym_slot)
-       (nl_sexp_clone_into (+ data_ptr 224) unbound_ptr)
-       (nl_sexp_clone_into (+ data_ptr 256) sentinel_ptr)
+       (nl_sexp_clone_into unbound_ptr (+ data_ptr 224))
+       (nl_sexp_clone_into sentinel_ptr (+ data_ptr 256))
        (nl_bootstrap_scratch_vec_sexp box_ptr out_slot)))))
 
 ;; ---------------------------------------------------------------------------
@@ -232,6 +232,12 @@
     ;; Each let allocates a name buffer, pokes UTF-8 LE words, calls nl_install_one.
     ;; Results are discarded (nelisp_mirror_set_function_or_insert is infallible).
     (seq
+     ;; 0/60: "fset" [4] (Doc 135: was missing from the 60-builtin list -- the
+     ;; first stdlib form `(fset 'cons ...)' could not resolve fset, so the
+     ;; mirror lookup missed and crashed instead of dispatching to nl_apply_do_fset)
+     (let ((bfset usize (sys:alloc 8 1)))
+       (sys:unsafe (sys:poke-u64 (+ bfset 0) 1952805734))
+       (nl_install_one mirror_ptr unbound_ptr bfset 4 builtin_sym_slot))
      ;; 1/60: "vector" [6]
      (let ((b0 usize (sys:alloc 8 1)))
        (sys:unsafe (sys:poke-u64 (+ b0 0) 125823019607414))
@@ -586,3 +592,34 @@
      (sys:cast i64 0))))
 
 ;; End of Doc 135 Stage 135.D -- nl_install_builtins
+
+;; --- Doc 135 Stage 135.E: nl_bootstrap_make_mirror (nelisp-sys, raw leaked scratch) ---
+(sys:extern nelisp_env_install_empty_globals_frames
+  (:symbol "nelisp_env_install_empty_globals_frames" :abi c :unsafe t)
+  ((globals_out usize) (frames_out usize) (scratch_ptr usize) (_pad i64))
+  i64 (:alloc may :ffi may :unsafe may))
+
+(sys:defun nl_bootstrap_make_mirror
+    ((globals_out usize) (frames_out usize) (unbound_out usize))
+  i64
+  (:export "nl_bootstrap_make_mirror" :abi c :alloc may :ffi may :unsafe may)
+  (let ((box_ptr usize (sys:unsafe (nl_alloc_vector 6)))
+        (s0 usize (sys:alloc 32 8)) (s1 usize (sys:alloc 32 8)) (s2 usize (sys:alloc 32 8))
+        (scr usize (sys:alloc 32 8))
+        (buf0 usize (sys:alloc 16 1)) (buf1 usize (sys:alloc 16 1))
+        (buf2 usize (sys:alloc 24 1)) (ubuf usize (sys:alloc 24 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf0 7290607012774962542) (sys:poke-u64 (+ buf0 8) 30318)
+     (nl_alloc_symbol buf0 10 s0) (nl_vector_set_slot box_ptr 0 s0)
+     (sys:poke-u64 buf1 8314040931539181926) (sys:poke-u64 (+ buf1 8) 28548142445374824)
+     (nl_alloc_symbol buf1 15 s1) (nl_vector_set_slot box_ptr 1 s1)
+     (sys:poke-u64 buf2 7795010171040458094) (sys:poke-u64 (+ buf2 8) 3271140969653106789)
+     (sys:poke-u64 (+ buf2 16) 461228831859)
+     (nl_alloc_symbol buf2 21 s2) (nl_vector_set_slot box_ptr 2 s2)
+     (nl_bootstrap_scratch_vec_sexp box_ptr scr)
+     (nelisp_env_install_empty_globals_frames globals_out frames_out scr 0)
+     (sys:poke-u64 ubuf 3255381746650998126) (sys:poke-u64 (+ ubuf 8) 3270860680036773493)
+     (sys:poke-u64 (+ ubuf 16) 125779919921517)
+     (nl_alloc_symbol ubuf 22 unbound_out)
+     (nl_install_builtins globals_out unbound_out)
+     (sys:cast i64 0))))

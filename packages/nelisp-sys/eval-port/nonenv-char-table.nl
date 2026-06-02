@@ -222,7 +222,7 @@
         (if (= (sys:cast i64 parent_ptr) 0)
             ;; No parent: clone default_val (box+32) into out.
             (sys:unsafe
-             (nl_sexp_clone_into out (+ box 32)))
+             (nl_sexp_clone_into (+ box 32) out))
           ;; Parent exists: build a synthetic CharTable Sexp on the stack,
           ;; write tag=9 + payload=parent_ptr, then recurse.
           (let ((tmp usize (sys:alloc 32 8)))
@@ -244,7 +244,7 @@
         (if (= key idx)
             ;; Found: clone entry value (entry_base+8) into out.
             (sys:unsafe
-             (nl_sexp_clone_into out (+ entry_base 8)))
+             (nl_sexp_clone_into (+ entry_base 8) out))
           ;; Not found: continue search.
           (nl_ct_get_search box eptr elen idx out (+ i 1)))))))
 
@@ -305,8 +305,8 @@
           (if (= key idx)
               ;; Found: update in-place (no drop of old — staged limitation).
               (sys:unsafe
-               (nl_sexp_clone_into (+ entry_base 8) val)
-               (nl_sexp_clone_into out val))
+               (nl_sexp_clone_into val (+ entry_base 8))
+               (nl_sexp_clone_into val out))
             ;; Continue.
             (nl_ct_set_step box idx val out (+ i 1))))))))
 
@@ -336,12 +336,12 @@
          (sys:poke-u64 new_entry (sys:cast i64 idx)))
         ;; Clone val into value slot at new_entry+8.
         (sys:unsafe
-         (nl_sexp_clone_into (+ new_entry 8) val))
+         (nl_sexp_clone_into val (+ new_entry 8)))
         ;; Bump len in Vec header.
         (sys:unsafe
          (sys:poke-u64 (+ box 80) (sys:cast i64 (+ elen 1))))
         ;; Clone val into *out + return OK.
         (sys:unsafe
-         (nl_sexp_clone_into out val))))))
+         (nl_sexp_clone_into val out))))))
 
 ;; End of Doc 135 Stage — nl_char_table_get_raw + nl_char_table_set_raw

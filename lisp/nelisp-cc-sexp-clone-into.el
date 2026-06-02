@@ -100,7 +100,13 @@
           (if (< tag 4) (nl_sci_copy src dst)
             (nl_sci_rc src dst tag)))))
 
-    ;; Public C-ABI entry: nl_sexp_clone_into(src, dst).
+    ;; Public C-ABI entry: nl_sexp_clone_into(dst, src) = ptr::write(dst,(*src).clone()).
+    ;; Doc 135 cutover fix: the param order is (DST SRC) to match the Rust
+    ;; signature, the `(sys:extern ...)' decls, and EVERY caller (which all
+    ;; pass dst first).  The prior `(src dst)' defun had params reversed vs.
+    ;; all callers, so every clone wrote the SOURCE slot and read the DEST --
+    ;; corrupting e.g. the bootstrap unbound-marker.  (Latent: the eval
+    ;; driver never reached runtime before this cutover, so it was untested.)
     (defun nl_sexp_clone_into (src dst)
       (nl_sci_dispatch src dst (ptr-read-u8 src 0))))
   "Phase 47 source for nl_sexp_clone_into = ptr::write(dst,(*src).clone()).

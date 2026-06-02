@@ -131,6 +131,18 @@
                        0
                        (vector-ref-ptr scratch-ptr 4))
       ;; Step 11: frames.slot 1 = Sexp::Int(0) — depth.
+      ;;
+      ;; Refcount discipline (Doc 135 cutover fix): `record-slot-set' (=
+      ;; `nl_record_set_slot') is now REFCOUNT-SAFE — it clones the source
+      ;; via `nl_sexp_clone_into' (rc-bump for boxed variants) instead of
+      ;; a raw 4xu64 move.  So after step 7 the fast-hash-table box has
+      ;; rc=2 (scratch[3] + globals.slot[0]) and after step 10 the backing
+      ;; vector box has rc=2 (scratch[4] + frames.slot[0]).  When the Rust
+      ;; safe wrapper `env_install_empty_globals_frames' drops its 6-slot
+      ;; scratch `Sexp::Vector', each box drops rc 2 -> 1, leaving the
+      ;; published owner (globals.slot[0] / frames.slot[0]) intact.  No
+      ;; MOVE-alias remains, so the previous Step-12 raw-zero neutraliser
+      ;; is no longer needed (it would now LEAK scratch[3]/scratch[4]).
       (sexp-int-make (vector-ref-ptr scratch-ptr 5) 0)
       (record-slot-set frames-out
                        1

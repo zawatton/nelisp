@@ -246,19 +246,24 @@ A single node lowers directly; multiple are wrapped in `seq'."
     (cons op args)))
 
 (defun nelisp-sys-backend--lower-let (ctx node)
-  "Lower a let NODE to (let ((NAME INIT)...) BODY).
-Binding inits are lowered in the enclosing scope; the body is lowered
-with locals extended by the new bindings so memory-op lowering can
-resolve their types."
+  "Lower a let NODE to (let* ((NAME INIT)...) BODY).
+`let' bindings in nelisp-sys are SEQUENTIAL (a later init may reference an
+earlier binding, e.g. `(let ((p ..) (q (peek p))) ..)').  So each init is
+lowered with the PRIOR siblings already in `nelisp-sys-backend--locals'
+(otherwise a sibling reference resolves to nothing and the `var' lowering
+emits a bare symbol literal — the Doc 135 reader crash), and the result is
+emitted as Phase 47 `let*' (not `let', which is PARALLEL and would leave
+inter-binding references unbound at the Phase 47 layer too)."
   (let* ((binds (nelisp-sys-ast-prop node :bindings))
-         (emitted (mapcar (lambda (b)
-                            (list (nth 0 b)
-                                  (nelisp-sys-backend--lower ctx (nth 2 b))))
-                          binds))
-         (nelisp-sys-backend--locals
-          (append (mapcar (lambda (b) (cons (nth 0 b) (nth 1 b))) binds)
-                  nelisp-sys-backend--locals)))
-    (list 'let emitted
+         (nelisp-sys-backend--locals nelisp-sys-backend--locals)
+         (emitted '()))
+    (dolist (b binds)
+      (push (list (nth 0 b)
+                  (nelisp-sys-backend--lower ctx (nth 2 b)))
+            emitted)
+      (setq nelisp-sys-backend--locals
+            (cons (cons (nth 0 b) (nth 1 b)) nelisp-sys-backend--locals)))
+    (list 'let* (nreverse emitted)
           (nelisp-sys-backend--lower-body ctx (nelisp-sys-ast-prop node :body)))))
 
 (defun nelisp-sys-backend--place-type (place-node)

@@ -70,11 +70,15 @@
     ;; element address (data_ptr + n*32 = data_ptr + (shl n 5)),
     ;; then copy 4 × u64 words from val into that slot.
     (defun nl_record_set_slot (record n val)
+      ;; Doc 135 cutover fix: refcount-SAFE install -- clone VAL into the slot
+      ;; (rc-bump for boxed variants, deep-copy for strings) via
+      ;; `nl_sexp_clone_into' instead of a raw 4xu64 move.  Without this the
+      ;; bootstrap mirror's fast-hash-table / backing-vector boxes were
+      ;; MOVE-aliased between the Rust scratch `Sexp::Vector' and
+      ;; globals.slot[0] / frames.slot[0]; dropping the scratch then
+      ;; over-freed a still-owned box (= the §9.2 / §9.6.4 bootstrap UAF).
       (let ((dst (+ (ptr-read-u64 record 40) (shl n 5))))
-        (and (ptr-write-u64 dst 0 (ptr-read-u64 val 0))
-             (ptr-write-u64 dst 8 (ptr-read-u64 val 8))
-             (ptr-write-u64 dst 16 (ptr-read-u64 val 16))
-             (ptr-write-u64 dst 24 (ptr-read-u64 val 24))))))
+        (extern-call nl_sexp_clone_into val dst))))
   "Phase 47 source for the `nl_record_set_slot' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:

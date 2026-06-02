@@ -71,6 +71,16 @@
                  (nelisp-sys-backend-test--lower
                   '((sys:defun mx ((a i32) (b i32)) i32 () (if (< a b) b a)))))))
 
+(ert-deftest nelisp-sys-backend-lower-if-multi-else ()
+  "An `if' else branch may contain multiple forms; preserve all of them."
+  (should (equal '(defun f (a) (if a 1 (seq (setq a 2) a)))
+                 (nelisp-sys-backend-test--lower
+                  '((sys:defun f ((a i32)) i32 ()
+                      (if a
+                          1
+                        (set! a 2)
+                        a)))))))
+
 (ert-deftest nelisp-sys-backend-lower-ne-and-cast ()
   (should (equal '(defun ne (a b) (if (not (= a b)) 1 0))
                  (nelisp-sys-backend-test--lower
@@ -82,7 +92,7 @@
                   '((sys:defun w ((a i32)) i64 () (+ (sys:cast i64 a) 1)))))))
 
 (ert-deftest nelisp-sys-backend-lower-let-multibody ()
-  (should (equal '(defun f (n) (let ((s 0) (i 0))
+  (should (equal '(defun f (n) (let* ((s 0) (i 0))
                                  (seq (setq s (+ s i)) s)))
                  (nelisp-sys-backend-test--lower
                   '((sys:defun f ((n i32)) i32 ()
@@ -104,7 +114,7 @@
 field width at its offset (Stage 130.4).  Signed fields use the
 sign-extending `ptr-read-sN' read."
   (should (equal '(defun nl_distance2 (p)
-                    (let ((x (ptr-read-s32 p 0)) (y (ptr-read-s32 p 4)))
+                    (let* ((x (ptr-read-s32 p 0)) (y (ptr-read-s32 p 4)))
                       (+ (* x x) (* y y))))
                  (nelisp-sys-backend-test--lower
                   '((sys:defstruct point (:repr c) (x i32) (y i32))

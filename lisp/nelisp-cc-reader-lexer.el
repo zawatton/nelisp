@@ -287,7 +287,7 @@
     ;; first byte AFTER `?'.  Pushes the body bytes into SCRATCH +
     ;; returns the post-body cursor.  Two shapes:
     ;;
-    ;;   `?X'       — single ASCII byte X (any non-`\\').
+    ;;   `?X'       — one UTF-8 codepoint X (any non-`\\').
     ;;   `?\\X...'  — backslash-prefixed sequence; consume the `\\'
     ;;                + ALL subsequent non-atom-terminator bytes
     ;;                (= covers `\\C-a' / `\\M-a' / `\\xff' / `\\(' /
@@ -313,6 +313,31 @@
            (nelisp_reader_char_body_tail
             str-ptr (+ cursor 1) n scratch)))))
 
+    (defun nelisp_reader_utf8_width (b)
+      ;; Return the UTF-8 byte width for leading byte B.  Invalid leading
+      ;; bytes fall back to one byte so the reader still advances.
+      (if (< b 128)
+          1
+        (if (>= b 240)
+            (if (<= b 247) 4 1)
+          (if (>= b 224)
+              (if (<= b 239) 3 1)
+            (if (>= b 192)
+                (if (<= b 223) 2 1)
+              1)))))
+
+    (defun nelisp_reader_push_plain_char_bytes
+        (str-ptr cursor n scratch width pushed)
+      (if (>= pushed width)
+          (+ cursor pushed)
+        (if (>= (+ cursor pushed) n)
+            -1
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch
+                              (str-byte-at str-ptr (+ cursor pushed)))
+           (nelisp_reader_push_plain_char_bytes
+            str-ptr cursor n scratch width (+ pushed 1))))))
+
     (defun nelisp_reader_char_body (str-ptr cursor n scratch)
       (if (>= cursor n)
           -1
@@ -328,10 +353,11 @@
                 (mut-str-push-byte scratch (str-byte-at str-ptr (+ cursor 1)))
                 (nelisp_reader_char_body_tail
                  str-ptr (+ cursor 2) n scratch))))
-          ;; `?X' — push the one byte, done.
-          (nelisp_reader_prog2
-           (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
-           (+ cursor 1)))))
+          ;; `?X' — push the complete UTF-8 codepoint byte sequence.
+          (nelisp_reader_push_plain_char_bytes
+           str-ptr cursor n scratch
+           (nelisp_reader_utf8_width (str-byte-at str-ptr cursor))
+           0))))
 
     (defun nelisp_reader_lex_char_finalize
         (end-or-err payload-slot cursor-out-slot scratch)

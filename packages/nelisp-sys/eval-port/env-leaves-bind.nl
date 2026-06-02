@@ -229,8 +229,8 @@
       (sys:unsafe
        (nl_env_scratch_write_symentry sym_slot)
        (nl_vector_set_slot box_ptr 5 sym_slot)
-       (nl_sexp_clone_into (+ data_ptr 224) val_ptr)
-       (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+       (nl_sexp_clone_into val_ptr (+ data_ptr 224))
+       (nl_sexp_clone_into unbound_ptr (+ data_ptr 256))
        (nl_env_scratch_vec_sexp box_ptr out_sexp_vec_slot)))))
 
 ;; ---------------------------------------------------------------------------
@@ -556,7 +556,7 @@
         (signal_slot usize (sys:alloc 32 8)))
     (nl_bf_err_type_write_wta_sym tag_slot)
     (nl_bf_err_type_write_symbol_sym symbol_slot)
-    (sys:unsafe (nl_sexp_clone_into name_clone name_ptr))
+    (sys:unsafe (nl_sexp_clone_into name_ptr name_clone))
     (nl_env_write_nil_slot nil_slot)
     (sys:unsafe
      (nelisp_cons_construct name_clone nil_slot inner_cdr)
