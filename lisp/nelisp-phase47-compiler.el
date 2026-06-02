@@ -10539,7 +10539,11 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-cons-make-arm64 node buf))
         ((= tag 59)             ; sexp-payload-ptr — aarch64 Cons->box
          (nelisp-phase47-compiler--emit-sexp-payload-ptr-arm64 node buf))
-        ((memq tag '(23 61 57 55 27      ; extern-call sexp-tag sexp-int-unwrap sexp-float-unwrap f64-to-i64-trunc
+        ((= tag 61)             ; sexp-tag — aarch64 LDRB tag byte
+         (nelisp-phase47-compiler--emit-sexp-tag-arm64 node buf))
+        ((= tag 57)             ; sexp-int-unwrap — aarch64 LDR payload
+         (nelisp-phase47-compiler--emit-sexp-int-unwrap-arm64 node buf))
+        ((memq tag '(23 55 27            ; extern-call sexp-float-unwrap f64-to-i64-trunc
                      14                  ; cons-cdr-raw
                      60                  ; sexp-payload-ptr-record
                      52 48 49            ; record-type-tag record-slot-count record-slot-ref
@@ -13224,6 +13228,19 @@ box pointer into the slot; x0 = slot."
     (nelisp-asm-arm64-define-label buf zero-lbl)
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-sexp-tag-arm64 (node buf)
+  "Emit `sexp-tag' for aarch64 — x0 = zero-extended tag byte at [ptr]."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-ldrb-imm buf 'x0 'x0 nelisp-sexp--offset-tag))
+
+(defun nelisp-phase47-compiler--emit-sexp-int-unwrap-arm64 (node buf)
+  "Emit `sexp-int-unwrap' for aarch64 — x0 = i64 payload at [ptr+8].
+No tag check; caller guarantees :ptr is a `Sexp::Int'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-int-payload))
 
 (defun nelisp-phase47-compiler--emit-call-arm64 (node buf)
   "Emit a fixed-arity direct call for aarch64 (AAPCS64).
