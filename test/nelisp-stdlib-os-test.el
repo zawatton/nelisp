@@ -1081,6 +1081,108 @@
     (should (= nelisp-os--windows-next-fd 5))
     (should (equal (sort freed #'<) '(3000 4000)))))
 
+(ert-deftest nelisp-stdlib-os-bind-inet6-scoped-windows-uses-winsock ()
+  "Windows scoped AF_INET6 bind passes encoded sockaddr_in6 to Winsock."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in6-scoped)
+               (lambda (buf host port flowinfo scope-id)
+                 (setq encoded (list buf host port flowinfo scope-id))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-bind-inet6-scoped
+                    3 nelisp-os-IN6ADDR-LOOPBACK 4444 9 2)
+                   0))))
+    (should (equal encoded
+                   (list 3000 nelisp-os-IN6ADDR-LOOPBACK 4444 9 2)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "bind"
+                          [:sint32 :pointer :pointer :sint32]
+                          (list #xabcdef
+                                3000
+                                nelisp-os--sockaddr-in6-scoped-len)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-connect-inet6-scoped-windows-uses-winsock ()
+  "Windows scoped AF_INET6 connect passes encoded sockaddr_in6 to Winsock."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in6-scoped)
+               (lambda (buf host port flowinfo scope-id)
+                 (setq encoded (list buf host port flowinfo scope-id))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-connect-inet6-scoped
+                    3 nelisp-os-IN6ADDR-LOOPBACK 4444 9 2)
+                   0))))
+    (should (equal encoded
+                   (list 3000 nelisp-os-IN6ADDR-LOOPBACK 4444 9 2)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "connect"
+                          [:sint32 :pointer :pointer :sint32]
+                          (list #xabcdef
+                                3000
+                                nelisp-os--sockaddr-in6-scoped-len)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-accept-inet6-scoped-windows-uses-winsock ()
+  "Windows scoped AF_INET6 accept returns socket-kind fd plus decoded peer."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (decoded (list nelisp-os-IN6ADDR-LOOPBACK 4444 9 2))
+        (nelisp-os--windows-next-fd 4)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n)
+                 (if (= n nelisp-os--sockaddr-in6-scoped-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in6-scoped)
+               (lambda (ptr)
+                 (should (= ptr 3000))
+                 decoded))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 #x123456)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-accept-inet6-scoped 3)
+                       (cons 4 decoded)))))
+    (should (equal len-write
+                   (list 4000 0 nelisp-os--sockaddr-in6-scoped-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "accept"
+                          [:pointer :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((4 . #x123456) (3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((4 . socket) (3 . socket))))
+    (should (= nelisp-os--windows-next-fd 5))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
 (ert-deftest nelisp-stdlib-os-kill-windows-uses-terminateprocess ()
   "Windows kill terminates a single PID through kernel32 process APIs."
   (let ((calls nil))

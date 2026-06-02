@@ -51,8 +51,9 @@
 ;; Stage 27 maps int-valued socket options to Winsock `setsockopt'.  The
 ;; Stage 28 removes the hidden Windows `libc' dependency from sockaddr byte-order
 ;; conversion by using Winsock hton*/ntoh*.  Stage 29 adds Windows AF_INET6
-;; socket / bind / connect / accept routing through Winsock.  The Linux/Darwin
-;; path remains the default until a real Windows standalone runtime selects
+;; socket / bind / connect / accept routing through Winsock.  Stage 30 maps the
+;; scoped IPv6 variants through the same Winsock path.  The Linux/Darwin path
+;; remains the default until a real Windows standalone runtime selects
 ;; `system-type' = `windows-nt'.
 
 ;;; Code:
@@ -2694,10 +2695,22 @@ FLOWINFO, SCOPE-ID).  All extra fields are wire-protocol-aware
     (unwind-protect
         (progn
           (nelisp-os--encode-sockaddr-in6-scoped buf host6 port flowinfo scope-id)
-          (let ((r (nelisp-os--libc-call "libc" "bind"
-                                [:sint32 :sint32 :pointer :uint32]
-                                fd buf nelisp-os--sockaddr-in6-scoped-len)))
-            (if (/= r 0) (nelisp-os--ffi-errno-signal) r)))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "bind"
+                        [:sint32 :pointer :pointer :sint32]
+                        (nelisp-os--windows-socket-for-fd fd)
+                        buf
+                        nelisp-os--sockaddr-in6-scoped-len)
+                     (nelisp-os--libc-call "libc" "bind"
+                                  [:sint32 :sint32 :pointer :uint32]
+                                  fd buf nelisp-os--sockaddr-in6-scoped-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
       (nelisp-os--free buf))))
 
 (defun nelisp-os-connect-inet6-scoped (fd host6 port flowinfo scope-id)
@@ -2706,10 +2719,22 @@ FLOWINFO, SCOPE-ID).  All extra fields are wire-protocol-aware
     (unwind-protect
         (progn
           (nelisp-os--encode-sockaddr-in6-scoped buf host6 port flowinfo scope-id)
-          (let ((r (nelisp-os--libc-call "libc" "connect"
-                                [:sint32 :sint32 :pointer :uint32]
-                                fd buf nelisp-os--sockaddr-in6-scoped-len)))
-            (if (/= r 0) (nelisp-os--ffi-errno-signal) r)))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "connect"
+                        [:sint32 :pointer :pointer :sint32]
+                        (nelisp-os--windows-socket-for-fd fd)
+                        buf
+                        nelisp-os--sockaddr-in6-scoped-len)
+                     (nelisp-os--libc-call "libc" "connect"
+                                  [:sint32 :sint32 :pointer :uint32]
+                                  fd buf nelisp-os--sockaddr-in6-scoped-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
       (nelisp-os--free buf))))
 
 (defun nelisp-os-accept-inet6-scoped (fd)
@@ -2720,10 +2745,19 @@ FLOWINFO, SCOPE-ID).  All extra fields are wire-protocol-aware
     (unwind-protect
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in6-scoped-len)
-          (let ((newfd (nelisp-os--libc-call "libc" "accept"
+          (let ((newfd (if (nelisp-os--windows-p)
+                           (let ((sock (nelisp-os--libc-call
+                                        "ws2_32" "accept"
+                                        [:pointer :pointer :pointer :pointer]
+                                        (nelisp-os--windows-socket-for-fd fd)
+                                        addr-buf len-buf)))
+                             (if (= sock nelisp-os-WIN-INVALID-SOCKET)
+                                 (nelisp-os--windows-winsock-error-signal)
+                               (nelisp-os--windows-fd-alloc sock 'socket)))
+                         (nelisp-os--libc-call "libc" "accept"
                                     [:sint32 :sint32 :pointer :pointer]
-                                    fd addr-buf len-buf)))
-            (if (= newfd -1)
+                                    fd addr-buf len-buf))))
+            (if (and (not (nelisp-os--windows-p)) (= newfd -1))
                 (nelisp-os--ffi-errno-signal)
               (let ((decoded (nelisp-os--decode-sockaddr-in6-scoped addr-buf)))
                 ;; (NEW-FD GROUPS PORT FLOWINFO SCOPE-ID)
