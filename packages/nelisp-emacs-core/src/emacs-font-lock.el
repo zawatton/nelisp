@@ -581,12 +581,17 @@ maximum-END.  No-op when font-lock state is unavailable for BUF.
 Returns the new (BEG . END) interval."
   (let* ((b (or buf (emacs-font-lock--current-buffer))))
     (when b
-      (let* ((existing (emacs-font-lock--state-get b :dirty))
-             (new-start (if existing (min (car existing) start) start))
-             (new-end   (if existing (max (cdr existing) end)   end))
-             (interval  (cons new-start new-end)))
-        (emacs-font-lock--state-set b :dirty interval)
-        interval))))
+      (let ((existing (emacs-font-lock--state-get b :dirty)))
+        (if (consp existing)
+            (progn
+              (when (< start (car existing))
+                (setcar existing start))
+              (when (> end (cdr existing))
+                (setcdr existing end))
+              existing)
+          (let ((interval (cons start end)))
+            (emacs-font-lock--state-set b :dirty interval)
+            interval))))))
 
 (defun emacs-font-lock-pending-dirty-region (&optional buf)
   "Return the pending dirty (BEG . END) interval for BUF, or nil.

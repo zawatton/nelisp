@@ -34,7 +34,7 @@
   (should (featurep 'emacs-mode))
   (dolist (sym '(fundamental-mode text-mode emacs-lisp-mode
                  run-mode-hooks kill-all-local-variables
-                 set-auto-mode))
+                 set-auto-mode define-derived-mode))
     (should (fboundp sym)))
   (dolist (sym '(major-mode mode-name auto-mode-alist
                  fundamental-mode-hook text-mode-hook
@@ -158,11 +158,32 @@
 (ert-deftest emacs-mode-builtins-test/require-is-idempotent ()
   (let ((before-fund (symbol-function 'fundamental-mode))
         (before-text (symbol-function 'text-mode))
-        (before-rmh  (symbol-function 'run-mode-hooks)))
+        (before-rmh  (symbol-function 'run-mode-hooks))
+        (before-set-auto (symbol-function 'set-auto-mode)))
     (require 'emacs-mode-builtins)
     (should (eq before-fund (symbol-function 'fundamental-mode)))
     (should (eq before-text (symbol-function 'text-mode)))
-    (should (eq before-rmh  (symbol-function 'run-mode-hooks)))))
+    (should (eq before-rmh  (symbol-function 'run-mode-hooks)))
+    (should (eq before-set-auto (symbol-function 'set-auto-mode)))))
+
+(ert-deftest emacs-mode-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-mode-builtins--install-function-p))
+  (should-not (emacs-mode-builtins--install-function-p 'fundamental-mode))
+  (let* ((file (locate-library "emacs-mode-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(fundamental-mode text-mode emacs-lisp-mode
+                     run-mode-hooks kill-all-local-variables
+                     set-auto-mode define-derived-mode))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-mode-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 (provide 'emacs-mode-builtins-test)
 

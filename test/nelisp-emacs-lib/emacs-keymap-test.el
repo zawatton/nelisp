@@ -5,14 +5,14 @@
 ;; KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 1 opt-in semantics.
 ;;
 ;; Categories:
-;;   A. constructors / predicates / copy           (4 tests)
-;;   B. mutators / accessors                        (7 tests)
+;;   A. constructors / predicates / copy           (5 tests)
+;;   B. mutators / accessors                        (10 tests)
 ;;   C. global / local / overriding + chain         (8 tests)
 ;;   D. lookup helpers                              (6 tests)
 ;;   E. minimal command-loop scaffolding            (3 tests)
 ;;   F. Doc 41 §2.5 chain inject opt-in             (3 tests)
-;;   G. newer kbd-style API (Phase 1 §4.4)          (14 tests)
-;; Total: 45 tests
+;;   G. newer kbd-style API (Phase 1 §4.4)          (15 tests)
+;; Total: 50 tests
 
 (require 'ert)
 (require 'emacs-keymap)
@@ -105,6 +105,37 @@
     (emacs-keymap-define-key m "a" 'cmd-a)
     (emacs-keymap-define-key m "a" nil)
     (should (null (emacs-keymap-lookup-key m "a")))))
+
+(ert-deftest emacs-keymap-define-key-after-appends-by-default ()
+  (let ((m (emacs-keymap-make-sparse-keymap))
+        (seen '()))
+    (emacs-keymap-define-key m "a" 'cmd-a)
+    (emacs-keymap-define-key m "b" 'cmd-b)
+    (should (eq 'cmd-c (emacs-keymap-define-key-after m "c" 'cmd-c)))
+    (emacs-keymap-map-keymap (lambda (k _v) (push k seen)) m)
+    (should (equal (nreverse seen) (list ?b ?a ?c)))
+    (should (eq 'cmd-c (emacs-keymap-lookup-key m "c")))))
+
+(ert-deftest emacs-keymap-define-key-after-inserts-after-event ()
+  (let ((m (emacs-keymap-make-sparse-keymap))
+        (seen '()))
+    (emacs-keymap-define-key m "a" 'cmd-a)
+    (emacs-keymap-define-key m "b" 'cmd-b)
+    (emacs-keymap-define-key-after m "c" 'cmd-c ?b)
+    (emacs-keymap-map-keymap (lambda (k _v) (push k seen)) m)
+    (should (equal (nreverse seen) (list ?b ?c ?a)))))
+
+(ert-deftest emacs-keymap-define-key-after-multi-key-uses-prefix-map ()
+  (let ((m (emacs-keymap-make-sparse-keymap))
+        (seen '()))
+    (emacs-keymap-define-key m "xa" 'cmd-a)
+    (emacs-keymap-define-key m "xb" 'cmd-b)
+    (emacs-keymap-define-key-after m "xc" 'cmd-c ?b)
+    (should (eq 'cmd-c (emacs-keymap-lookup-key m "xc")))
+    (emacs-keymap-map-keymap
+     (lambda (k _v) (push k seen))
+     (emacs-keymap-lookup-key m "x"))
+    (should (equal (nreverse seen) (list ?b ?c ?a)))))
 
 (ert-deftest emacs-keymap-set-keymap-parent-and-inherit ()
   (let ((parent (emacs-keymap-make-sparse-keymap))
@@ -451,6 +482,15 @@
   (should (eq (key-valid-p "C-x C-f")
               (emacs-keymap-key-valid-p "C-x C-f")))
   (should-not (emacs-keymap-key-valid-p "not a kbd")))
+
+(ert-deftest emacs-keymap-standalone-key-parser-common-keys ()
+  (should (equal [113] (emacs-keymap--standalone-key-parse "q")))
+  (should (equal [24 6] (emacs-keymap--standalone-key-parse "C-x C-f")))
+  (should (equal [32] (emacs-keymap--standalone-key-parse "SPC")))
+  (should (equal [127] (emacs-keymap--standalone-key-parse "DEL")))
+  (should (equal [left] (emacs-keymap--standalone-key-parse "<left>")))
+  (should (emacs-keymap--standalone-key-valid-p "S-SPC"))
+  (should-not (emacs-keymap--standalone-key-valid-p "not a kbd")))
 
 (provide 'emacs-keymap-test)
 ;;; emacs-keymap-test.el ends here

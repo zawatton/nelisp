@@ -39,7 +39,7 @@
   (dolist (sym '(facep make-face face-attribute set-face-attribute
                  face-foreground face-background
                  set-face-foreground set-face-background
-                 face-list))
+                 face-list defface))
     (should (fboundp sym))))
 
 ;;;; B. make-face + facep
@@ -113,6 +113,16 @@
     (should (equal "green" (emacs-faces-attribute 'my-defface :foreground)))
     (should (eq 'bold      (emacs-faces-attribute 'my-defface :weight)))))
 
+;;;; F2. defface macro — nested attrs entry
+
+(ert-deftest emacs-faces-builtins-test/defface-nested-attrs-entry ()
+  (emacs-faces-builtins-test--with-fresh-registry
+    (emacs-faces-defface nested-face
+      '((t (:inherit region)))
+      "Doc string")
+    (should (eq 'nested-face (emacs-faces-facep 'nested-face)))
+    (should (eq 'region (emacs-faces-attribute 'nested-face :inherit)))))
+
 ;;;; G. defface macro — default entry takes precedence over t
 
 (ert-deftest emacs-faces-builtins-test/defface-default-precedence ()
@@ -143,8 +153,9 @@
 (ert-deftest emacs-faces-builtins-test/set-attribute-clears-cache ()
   (emacs-faces-builtins-test--with-fresh-registry
     (emacs-faces-defface c-face '((t :foreground "red")) "doc")
-    ;; Realize once to populate cache.
-    (emacs-redisplay-realize-face 'c-face)
+    ;; Populate the shared realize cache without forcing the redisplay
+    ;; module to load; `emacs-faces' owns invalidation now.
+    (puthash 'c-face '((:foreground . "red")) emacs-redisplay--face-cache)
     (should (= 1 (hash-table-count emacs-redisplay--face-cache)))
     ;; Set attribute → cache cleared.
     (emacs-faces-set-attribute 'c-face nil :background "white")
@@ -154,10 +165,31 @@
 
 (ert-deftest emacs-faces-builtins-test/require-is-idempotent ()
   (let ((before-fp (symbol-function 'facep))
-        (before-fa (symbol-function 'face-attribute)))
+        (before-fa (symbol-function 'face-attribute))
+        (before-defface (symbol-function 'defface)))
     (require 'emacs-faces-builtins)
     (should (eq before-fp (symbol-function 'facep)))
-    (should (eq before-fa (symbol-function 'face-attribute)))))
+    (should (eq before-fa (symbol-function 'face-attribute)))
+    (should (eq before-defface (symbol-function 'defface)))))
+
+(ert-deftest emacs-faces-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-faces-builtins--install-function-p))
+  (should-not (emacs-faces-builtins--install-function-p 'facep))
+  (let* ((file (locate-library "emacs-faces-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(facep make-face face-attribute set-face-attribute
+                     face-foreground face-background set-face-foreground
+                     set-face-background face-list defface))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-faces-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 (provide 'emacs-faces-builtins-test)
 

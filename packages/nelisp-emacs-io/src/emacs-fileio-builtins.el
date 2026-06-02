@@ -27,9 +27,9 @@
 ;;     = `(get-buffer-create NAME)' + `(insert-file-contents)' +
 ;;     `(set-visited-file-name)'.
 ;;
-;; Each definition is gated on `unless (fboundp ...)' / `unless
-;; (boundp ...)' so loading inside a host Emacs is a cheap no-op
-;; (= host's C builtins win).
+;; Loading inside a host Emacs is a cheap no-op (= host's C builtins
+;; win).  Standalone NeLisp deliberately overwrites the earlier
+;; `emacs-stub-bulk.el' no-op shims.
 ;;
 ;; Phase D unblocks the β-stage edit cycle: `nemacs hello.txt' ->
 ;; `(insert "world")' -> `(save-buffer)' -> `(kill-buffer)'.
@@ -42,6 +42,31 @@
 (require 'nelisp-emacs-compat)
 (require 'nelisp-emacs-compat-fileio)
 (require 'emacs-buffer-builtins)
+(require 'emacs-string)
+
+(defconst emacs-fileio-builtins--standalone-overrides
+  '(insert-file-contents
+    write-region
+    file-name-quoted-p
+    file-name-quote
+    file-name-unquote
+    buffer-file-name
+    set-visited-file-name
+    find-file-noselect
+    find-file
+    save-buffer
+    write-file
+    revert-buffer)
+  "Functions this bridge may overwrite under standalone NeLisp.
+Path parsing, predicates, and directory/syscall primitives are left to
+the runtime when they already exist because `load' / `require' depend
+on those semantics during bootstrap.")
+
+(defun emacs-fileio-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed by this bridge."
+  (or (not (fboundp symbol))
+      (and (not (boundp 'emacs-version))
+           (memq symbol emacs-fileio-builtins--standalone-overrides))))
 
 ;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
 ;;
@@ -77,7 +102,7 @@
            rename-file
            ;; --- read / write
            insert-file-contents))
-  (unless (fboundp --name--)
+  (when (emacs-fileio-builtins--install-function-p --name--)
     (defalias --name--
       (intern (concat "nelisp-ec-" (symbol-name --name--))))))
 
@@ -86,6 +111,29 @@
 ;; expand-file-name / file-name-absolute-p / file-name-directory /
 ;; file-name-nondirectory / file-name-as-directory batched into the dolist
 ;; near the top.
+
+(when (emacs-fileio-builtins--install-function-p 'file-name-quoted-p)
+  (defun file-name-quoted-p (name &optional top)
+    "Return non-nil when NAME starts with the Emacs quote prefix `/:'."
+    (ignore top)
+    (and (stringp name)
+         (string-prefix-p "/:" name))))
+
+(when (emacs-fileio-builtins--install-function-p 'file-name-quote)
+  (defun file-name-quote (name &optional top)
+    "Add the Emacs file-name quote prefix `/:` to NAME if needed."
+    (ignore top)
+    (if (file-name-quoted-p name)
+        name
+      (concat "/:" name))))
+
+(when (emacs-fileio-builtins--install-function-p 'file-name-unquote)
+  (defun file-name-unquote (name &optional top)
+    "Remove the Emacs file-name quote prefix `/:` from NAME when present."
+    (ignore top)
+    (if (file-name-quoted-p name)
+        (substring name 2)
+      name)))
 
 ;;;; --- predicates / attributes ----------------------------------------
 
@@ -100,7 +148,7 @@
 
 ;; insert-file-contents batched into the dolist near the top.
 
-(unless (fboundp 'write-region)
+(when (emacs-fileio-builtins--install-function-p 'write-region)
   (defun write-region (start end filename &optional append visit lockname mustbenew)
     "Phase D polyfill: forward to `nelisp-ec-write-region'.
 LOCKNAME / MUSTBENEW are accepted for API parity but ignored —
@@ -125,7 +173,7 @@ are cleaned up by `find-file-noselect' on next visit.")
         (setq live (cons cell live))))
     (setq emacs-fileio--buffer-files (nreverse live))))
 
-(unless (fboundp 'buffer-file-name)
+(when (emacs-fileio-builtins--install-function-p 'buffer-file-name)
   (defun buffer-file-name (&optional buffer)
     "Phase D polyfill: read the visited filename of BUFFER (default = current).
 Returns nil when the buffer is not visiting a file."
@@ -134,7 +182,7 @@ Returns nil when the buffer is not visiting a file."
                  (not (nelisp-ec-buffer-killed-p b)))
         (cdr (assq b emacs-fileio--buffer-files))))))
 
-(unless (fboundp 'set-visited-file-name)
+(when (emacs-fileio-builtins--install-function-p 'set-visited-file-name)
   (defun set-visited-file-name (filename &optional no-query along-with-file)
     "Phase D polyfill: associate the current buffer with FILENAME.
 NO-QUERY / ALONG-WITH-FILE are accepted for API parity but ignored —
@@ -149,7 +197,7 @@ the substrate has no rename-on-visit / lockfile interaction yet."
 
 ;;;; --- find-file / save-buffer / write-file / revert-buffer ----------
 
-(unless (fboundp 'find-file-noselect)
+(when (emacs-fileio-builtins--install-function-p 'find-file-noselect)
   (defun find-file-noselect (filename &optional nowarn rawfile wildcards)
     "Phase D polyfill: return a buffer visiting FILENAME, loading it if needed.
 NOWARN / RAWFILE / WILDCARDS are accepted for API parity but ignored
@@ -177,7 +225,7 @@ NOWARN / RAWFILE / WILDCARDS are accepted for API parity but ignored
                         (assq-delete-all buf emacs-fileio--buffer-files))))
           buf))))))
 
-(unless (fboundp 'find-file)
+(when (emacs-fileio-builtins--install-function-p 'find-file)
   (defun find-file (filename &optional wildcards)
     "Phase D polyfill: visit FILENAME and make it the current buffer."
     (ignore wildcards)
@@ -185,7 +233,7 @@ NOWARN / RAWFILE / WILDCARDS are accepted for API parity but ignored
       (nelisp-ec-set-buffer buf)
       buf)))
 
-(unless (fboundp 'save-buffer)
+(when (emacs-fileio-builtins--install-function-p 'save-buffer)
   (defun save-buffer (&optional arg)
     "Phase D polyfill: write the current buffer to its visited file.
 ARG is accepted for API parity but ignored — the host's prefix-arg
@@ -205,7 +253,7 @@ indicator drops back to `--' after a save."
           (set-buffer-modified-p nil))
         f)))))
 
-(unless (fboundp 'write-file)
+(when (emacs-fileio-builtins--install-function-p 'write-file)
   (defun write-file (filename &optional confirm)
     "Phase D polyfill: write the current buffer to FILENAME and visit it.
 CONFIRM is accepted for API parity but ignored (= no interactive
@@ -221,7 +269,7 @@ takes the buffer's contents to be in-sync with the new path."
         (set-buffer-modified-p nil))
       abs)))
 
-(unless (fboundp 'revert-buffer)
+(when (emacs-fileio-builtins--install-function-p 'revert-buffer)
   (defun revert-buffer (&optional ignore-auto noconfirm preserve-modes)
     "Phase D polyfill: reload the visited file into the current buffer.
 IGNORE-AUTO / NOCONFIRM / PRESERVE-MODES are accepted for API parity

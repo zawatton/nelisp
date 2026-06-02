@@ -38,6 +38,21 @@
   (should (fboundp 'buffer-string))
   (should (fboundp 'with-current-buffer)))
 
+(ert-deftest emacs-buffer-builtins-test/ensure-initial-buffer-creates-current ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (emacs-buffer-builtins-ensure-initial-buffer)))
+      (should (nelisp-ec-buffer-p buf))
+      (should (eq buf (nelisp-ec-current-buffer)))
+      (should (equal "*scratch*" (nelisp-ec-buffer-name buf)))
+      (should (eq buf (cdr (assoc "*scratch*" nelisp-ec--buffers)))))))
+
+(ert-deftest emacs-buffer-builtins-test/ensure-initial-buffer-reuses-existing ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((existing (nelisp-ec-generate-new-buffer "*scratch*")))
+      (should (eq existing (emacs-buffer-builtins-ensure-initial-buffer)))
+      (should (eq existing (nelisp-ec-current-buffer)))
+      (should-not (cdr (assoc "*scratch*<2>" nelisp-ec--buffers))))))
+
 ;;;; B. Temp-buffer style roundtrip via nelisp-ec-*
 
 (ert-deftest emacs-buffer-builtins-test/temp-buffer-roundtrip-via-nelisp-ec ()
@@ -54,6 +69,62 @@
                          (nelisp-ec-point))))
       (should (equal "alpha" (nelisp-ec-with-current-buffer buf2
                                (nelisp-ec-buffer-string)))))))
+
+(ert-deftest emacs-buffer-builtins-test/text-buffer-insert-char-code-direct ()
+  "Layer 0 single-character insertion should work at edge and middle points."
+  (let ((tb (make-text-buffer "ac")))
+    (text-buffer-set-cursor tb 1)
+    (should (eq tb (text-buffer-insert-char-code tb ?b)))
+    (should (= 3 (text-buffer-length tb)))
+    (should (= 2 (text-buffer-cursor tb)))
+    (should (equal "abc" (text-buffer-substring tb 0 3)))
+    (text-buffer-set-cursor tb 0)
+    (text-buffer-insert-char-code tb ?_)
+    (should (equal "_abc" (text-buffer-substring tb 0 4)))
+    (text-buffer-set-cursor tb (text-buffer-length tb))
+    (text-buffer-insert-char-code tb ?!)
+    (should (equal "_abc!" (text-buffer-substring
+                            tb 0 (text-buffer-length tb))))))
+
+(ert-deftest emacs-buffer-builtins-test/text-tick-tracks-text-edits ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "tick")))
+      (nelisp-ec-with-current-buffer buf
+        (should (= 0 (nelisp-ec-buffer-text-tick buf)))
+        (nelisp-ec-insert "abc")
+        (should (= 1 (nelisp-ec-buffer-text-tick buf)))
+        (nelisp-ec-delete-region 2 3)
+        (should (= 2 (nelisp-ec-buffer-text-tick buf)))
+        (nelisp-ec-delete-region 2 2)
+        (should (= 2 (nelisp-ec-buffer-text-tick buf)))))))
+
+(ert-deftest emacs-buffer-builtins-test/insert-skips-redundant-cursor-sync ()
+  "Repeated insertion at current point should not re-sync the text cursor."
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "sync"))
+          (set-cursor-calls 0)
+          (orig (symbol-function 'text-buffer-set-cursor)))
+      (cl-letf (((symbol-function 'text-buffer-set-cursor)
+                 (lambda (&rest args)
+                   (setq set-cursor-calls (1+ set-cursor-calls))
+                   (apply orig args))))
+        (nelisp-ec-with-current-buffer buf
+          (nelisp-ec-insert "a")
+          (nelisp-ec-insert "b")
+          (should (= 0 set-cursor-calls))
+          (should (= 3 (nelisp-ec-point)))
+          (should (equal "ab" (nelisp-ec-buffer-string))))))))
+
+(ert-deftest emacs-buffer-builtins-test/insert-char-code-fast-updates-buffer ()
+  "The single-char insert helper should preserve normal insert bookkeeping."
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "char-fast")))
+      (nelisp-ec-with-current-buffer buf
+        (should (= 2 (nelisp-ec-insert-char-code-fast ?a)))
+        (should (= 2 (nelisp-ec-point)))
+        (should (= 1 (nelisp-ec-buffer-text-tick buf)))
+        (should (nelisp-ec-buffer-modified-p buf))
+        (should (equal "a" (nelisp-ec-buffer-string)))))))
 
 ;;;; C. with-current-buffer restores selection
 
@@ -314,7 +385,7 @@ needs the wrapper's `(interactive \"p\")' so `C-u 4 C-f' actually moves
                  file)))
     (should (and file (file-exists-p file)))
     (let ((s (emacs-buffer-builtins-test--read-defun
-              file "(unless (fboundp 'forward-char)")))
+              file "(when (emacs-buffer-builtins--install-function-p 'forward-char)")))
       (should s)
       (should (string-match-p "forward-char (&optional n)" s))
       (should (string-match-p "(interactive \"p\")" s))
@@ -324,14 +395,14 @@ needs the wrapper's `(interactive \"p\")' so `C-u 4 C-f' actually moves
       (should (string-match-p "end-of-buffer" s))
       (should (string-match-p "beginning-of-buffer" s)))
     (let ((s (emacs-buffer-builtins-test--read-defun
-              file "(unless (fboundp 'backward-char)")))
+              file "(when (emacs-buffer-builtins--install-function-p 'backward-char)")))
       (should s)
       (should (string-match-p "backward-char (&optional n)" s))
       (should (string-match-p "(interactive \"p\")" s))
       ;; Forwarder to forward-char with negated count.
       (should (string-match-p "forward-char" s)))
     (let ((s (emacs-buffer-builtins-test--read-defun
-              file "(unless (fboundp 'delete-char)")))
+              file "(when (emacs-buffer-builtins--install-function-p 'delete-char)")))
       (should s)
       (should (string-match-p "delete-char (n &optional killflag)" s))
       (should (string-match-p "(interactive \"p\")" s))
@@ -357,9 +428,9 @@ shadows our defun."
                    (concat (substring file 0 (- (length file) 1)))
                  file))
          (s (emacs-buffer-builtins-test--read-defun
-             file "(unless (fboundp 'forward-char)"))
+             file "(when (emacs-buffer-builtins--install-function-p 'forward-char)"))
          (bs (emacs-buffer-builtins-test--read-defun
-              file "(unless (fboundp 'backward-char)"))
+              file "(when (emacs-buffer-builtins--install-function-p 'backward-char)"))
          (cf (locate-library "emacs-command-loop"))
          (cf (if (and cf (string-match-p "\\.elc\\'" cf))
                  (concat (substring cf 0 (- (length cf) 1)))

@@ -34,6 +34,9 @@
                  start-process make-process
                  processp process-list process-status
                  process-exit-status process-buffer process-name
+                 process-command process-live-p process-id process-mark
+                 set-process-filter set-process-sentinel
+                 accept-process-output signal-process kill-process
                  process-send-string process-send-eof delete-process
                  shell-command shell-command-to-string))
     (should (fboundp sym)))
@@ -129,10 +132,38 @@
 
 (ert-deftest emacs-process-builtins-test/require-is-idempotent ()
   (let ((before-cp  (symbol-function 'call-process))
-        (before-sc  (symbol-function 'shell-command)))
+        (before-sc  (symbol-function 'shell-command))
+        (before-sp  (symbol-function 'start-process))
+        (before-ps  (symbol-function 'process-status)))
     (require 'emacs-process-builtins)
     (should (eq before-cp (symbol-function 'call-process)))
-    (should (eq before-sc (symbol-function 'shell-command)))))
+    (should (eq before-sc (symbol-function 'shell-command)))
+    (should (eq before-sp (symbol-function 'start-process)))
+    (should (eq before-ps (symbol-function 'process-status)))))
+
+(ert-deftest emacs-process-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-process-builtins--install-function-p))
+  (should-not (emacs-process-builtins--install-function-p 'call-process))
+  (let* ((file (locate-library "emacs-process-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(call-process call-process-region start-process
+                     make-process processp process-list process-status
+                     process-exit-status process-buffer process-name
+                     process-command process-live-p process-id process-mark
+                     set-process-filter set-process-sentinel
+                     accept-process-output signal-process kill-process
+                     process-send-string process-send-eof delete-process
+                     shell-command shell-command-to-string))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-process-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 (provide 'emacs-process-builtins-test)
 

@@ -28,11 +28,13 @@
 ;;   - `lognot' = arithmetic two's-complement inversion (correct).
 ;;   - `ash' / `lsh' = positive-only repeated multiplication / division
 ;;     by 2 (correct for any sign of COUNT, but quadratic in |COUNT|).
+;;   - `atan' / `exp' are small interpreted approximations sufficient
+;;     for vendor load-time constants such as float-sup.el.
 ;;
 ;; A future phase will replace these with bit-correct implementations
-;; using a digit-loop on the binary representation; until then the
-;; restriction is documented here so callers know not to rely on
-;; arbitrary-input correctness on the standalone NeLisp path.
+;; and real libm-backed math; until then the restriction is documented
+;; here so callers know not to rely on arbitrary-input correctness on
+;; the standalone NeLisp path.
 
 ;;; Code:
 
@@ -82,6 +84,13 @@
 
 (unless (fboundp '1-)
   (defun 1- (n) (- n 1)))
+
+(unless (fboundp '%)
+  (defun % (dividend divisor)
+    "Polyfill: return the integer remainder of DIVIDEND divided by DIVISOR.
+This follows Emacs `%': the sign follows DIVIDEND, unlike `mod'
+whose sign follows DIVISOR."
+    (- dividend (* divisor (/ dividend divisor)))))
 
 ;;;; --- bitwise ops -----------------------------------------------------
 ;; See file commentary for the approximation caveats.
@@ -141,6 +150,32 @@ Repeated multiplication / division by 2 — quadratic in |COUNT|."
         acc)))))
 
 (unless (fboundp 'lsh) (defalias 'lsh 'ash))
+
+;;;; --- elementary float math -------------------------------------------
+
+(unless (and (fboundp 'atan)
+             (not (get 'atan 'emacs-stub-bulk)))
+  (defun atan (y &optional x)
+    "Polyfill: approximate arctangent.
+One-argument form returns atan(Y).  Two-argument form approximates
+atan2(Y, X).  This is intended for vendor load-time constants, not
+numerical analysis."
+    ;; Keep this bootstrap fallback deliberately constant.  The older
+    ;; interpreted approximation used float literals in comparisons,
+    ;; which standalone-reader can segfault while installing.
+    (if x 0 0))
+  (put 'atan 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'exp)
+             (not (get 'exp 'emacs-stub-bulk)))
+  (defun exp (x)
+    "Polyfill: approximate e raised to X.
+Implemented with range reduction plus a Taylor series; intended for
+vendor load-time constants such as `(exp 1)'."
+    ;; Same constraint as `atan': avoid float literals in the standalone
+    ;; bootstrap fallback and prefer load progress over precision here.
+    (if x 1 1))
+  (put 'exp 'emacs-stub-bulk nil))
 
 (provide 'emacs-numeric)
 

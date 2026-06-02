@@ -8,40 +8,54 @@
 #   nemacs                          interactive TUI runner
 #   nemacs --batch                  batch entry (= boots, runs --eval/-l, exits)
 #   nemacs --batch -l FILE          batch + load FILE
+#   nemacs --batch --runtime-image FILE load a NeLisp .nlri runtime image first
+#   nemacs --runtime-image auto       choose build/*.nlri by batch/interactive mode
+#   nemacs --batch --load-image FILE legacy: restore Lisp-visible .nli state
 #   nemacs --batch --eval FORM      batch + eval FORM
 #   nemacs --batch -l a -l b --eval '(...)'
-#   nemacs --driver=nelisp ...      use the nelisp Rust runtime as driver
+#   nemacs --driver=nelisp ...      use NeLisp as driver
 #   nemacs --driver=host ...        force host emacs driver (= default)
 #   nemacs --print-paths            dump the resolved load-path / vendor root
+#   nemacs --doctor                 run host/NeLisp driver readiness checks
 #   nemacs --version                print nemacs version + driver
 #   nemacs --help                   this message
 #
 # Environment overrides:
 #   NEMACS_HOME      directory containing src/ (default: this script's parent)
-#   NELISP_HOME      nelisp checkout (default: $NEMACS_HOME/vendor/nelisp)
-#                    — vendored inside this repo; populated by `bin/build-nelisp'
+#   NELISP_HOME      nelisp checkout (default: vendor/nelisp, then ../nelisp)
 #   NEMACS_DRIVER    `host' (default) or `nelisp'
 #   NEMACS_EMACS     emacs binary path (default: emacs)
-#   NEMACS_NELISP    nelisp binary path (default: $NELISP_HOME/target/release/nelisp)
+#   NEMACS_NELISP    nelisp binary path (default: standalone-reader)
+#   NEMACS_NELISP_STACK stack limit for the nelisp driver (default: unlimited)
+#   NEMACS_BOOTSTRAP_BUNDLE optional generated NeLisp preload bundle
+#                    (default: $NEMACS_HOME/build/nemacs-bootstrap.el)
+#   NEMACS_RUNTIME_IMAGE optional NeLisp .nlri runtime image for --driver=nelisp
+#                    (set to `auto' to choose build/*.nlri by mode)
 
 set -euo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
 NEMACS_HOME="${NEMACS_HOME:-$(cd "$SCRIPT_PATH/.." && pwd)}"
 
-# Layer-2 self-containment (2026-05-04): nelisp source/build lives
-# under $NEMACS_HOME/vendor/nelisp by default — populated by
-# `bin/build-nelisp' (= clone + cargo build --release).  Legacy
-# fallback to $HOME/Notes/dev/nelisp is preserved when (a) NELISP_HOME
-# is explicitly exported by the user, or (b) the vendored path does
-# not exist *and* the legacy path does.  Pure source-of-truth for new
-# checkouts: the vendored copy.
+# NeLisp provides a pure-Elisp standalone reader at
+# target/nelisp-standalone-reader.  Prefer this repo's vendored checkout,
+# then the common sibling checkout used during joint development, then
+# the legacy ~/Notes/dev path.
 DEFAULT_VENDOR_NELISP="$NEMACS_HOME/vendor/nelisp"
+DEFAULT_SIBLING_NELISP="$(cd "$NEMACS_HOME/.." && pwd)/nelisp"
 DEFAULT_LEGACY_NELISP="$HOME/Notes/dev/nelisp"
+nelisp_default_bin() {
+  local root="$1"
+  if [[ -x "$root/target/nelisp-standalone-reader" ]]; then
+    printf '%s\n' "$root/target/nelisp-standalone-reader"
+  fi
+}
 if [[ -z "${NELISP_HOME:-}" ]]; then
-  if [[ -d "$DEFAULT_VENDOR_NELISP/target/release" ]]; then
+  if [[ -n "$(nelisp_default_bin "$DEFAULT_VENDOR_NELISP")" ]]; then
     NELISP_HOME="$DEFAULT_VENDOR_NELISP"
-  elif [[ -d "$DEFAULT_LEGACY_NELISP/target/release" ]]; then
+  elif [[ -n "$(nelisp_default_bin "$DEFAULT_SIBLING_NELISP")" ]]; then
+    NELISP_HOME="$DEFAULT_SIBLING_NELISP"
+  elif [[ -n "$(nelisp_default_bin "$DEFAULT_LEGACY_NELISP")" ]]; then
     NELISP_HOME="$DEFAULT_LEGACY_NELISP"
   else
     NELISP_HOME="$DEFAULT_VENDOR_NELISP"
@@ -49,7 +63,17 @@ if [[ -z "${NELISP_HOME:-}" ]]; then
 fi
 NEMACS_DRIVER="${NEMACS_DRIVER:-host}"
 NEMACS_EMACS="${NEMACS_EMACS:-emacs}"
-NEMACS_NELISP="${NEMACS_NELISP:-$NELISP_HOME/target/release/nelisp}"
+NEMACS_NELISP="${NEMACS_NELISP:-$(nelisp_default_bin "$NELISP_HOME")}"
+NEMACS_NELISP="${NEMACS_NELISP:-$NELISP_HOME/target/nelisp-standalone-reader}"
+NEMACS_NELISP_STACK="${NEMACS_NELISP_STACK:-unlimited}"
+NEMACS_BOOTSTRAP_BUNDLE="${NEMACS_BOOTSTRAP_BUNDLE:-$NEMACS_HOME/build/nemacs-bootstrap.el}"
+NEMACS_RUNTIME_IMAGE="${NEMACS_RUNTIME_IMAGE:-}"
+NEMACS_BATCH_RUNTIME_IMAGE="${NEMACS_BATCH_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-runtime.nlri}"
+NEMACS_INTERACTIVE_RUNTIME_IMAGE="${NEMACS_INTERACTIVE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-interactive-runtime.nlri}"
+NEMACS_VENDOR_CORE_RUNTIME_IMAGE="${NEMACS_VENDOR_CORE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-vendor-core-runtime.nlri}"
+if [[ "$NEMACS_BOOTSTRAP_BUNDLE" == "none" ]]; then
+  NEMACS_BOOTSTRAP_BUNDLE=""
+fi
 NEMACS_VERSION="0.1.0-mvp"
 
 usage() {
@@ -64,16 +88,166 @@ nemacs paths:
   NEMACS_DRIVER    = $NEMACS_DRIVER
   NEMACS_EMACS     = $NEMACS_EMACS
   NEMACS_NELISP    = $NEMACS_NELISP
+  NEMACS_NELISP_STACK = $NEMACS_NELISP_STACK
+  NEMACS_BOOTSTRAP_BUNDLE = ${NEMACS_BOOTSTRAP_BUNDLE:-<disabled>}
+  NEMACS_RUNTIME_IMAGE = ${NEMACS_RUNTIME_IMAGE:-<disabled>}
+  NEMACS_BATCH_RUNTIME_IMAGE = $NEMACS_BATCH_RUNTIME_IMAGE
+  NEMACS_INTERACTIVE_RUNTIME_IMAGE = $NEMACS_INTERACTIVE_RUNTIME_IMAGE
+  NEMACS_VENDOR_CORE_RUNTIME_IMAGE = $NEMACS_VENDOR_CORE_RUNTIME_IMAGE
   src/             = $NEMACS_HOME/src
   vendor/          = $NEMACS_HOME/vendor
 EOF
+}
+
+doctor_block() {
+  local text="$1"
+  if [[ -n "$text" ]]; then
+    printf '%s\n' "$text" | sed 's/^/    /'
+  fi
+}
+
+nelisp_driver_kind() {
+  case "$(basename "$NEMACS_NELISP")" in
+    nelisp-standalone-reader) printf '%s\n' "standalone-reader" ;;
+    *) printf '%s\n' "cli" ;;
+  esac
+}
+
+nelisp_standalone_eval_exit() {
+  local form="$1"
+  local expected="$2"
+  local tmp rc out
+  tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-nelisp-form.XXXXXX")"
+  printf '%s\n' "$form" > "$tmp"
+  set +e
+  out=$("$NEMACS_NELISP" "$tmp" 2>&1)
+  rc=$?
+  set -e
+  rm -f "$tmp"
+  if [[ "$rc" == "$expected" ]]; then
+    printf 'exit=%s\n' "$rc"
+    if [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+    fi
+    return 0
+  fi
+  printf 'exit=%s expected=%s\n' "$rc" "$expected"
+  if [[ -n "$out" ]]; then
+    printf '%s\n' "$out"
+  fi
+  return 1
+}
+
+run_doctor() {
+  local failures=0
+  local out
+  local nelisp_kind
+
+  echo "nemacs doctor:"
+  echo "  NEMACS_HOME=$NEMACS_HOME"
+  echo "  NELISP_HOME=$NELISP_HOME"
+  echo "  NEMACS_EMACS=$NEMACS_EMACS"
+  echo "  NEMACS_NELISP=$NEMACS_NELISP"
+
+  if out=$("$NEMACS_EMACS" -Q --batch \
+           --eval '(setq native-comp-enable-subr-trampolines nil comp-enable-subr-trampolines nil)' \
+           --eval '(princ "HOST=ok\n")' 2>&1); then
+    echo "  host-batch: ok"
+  else
+    echo "  host-batch: fail"
+    doctor_block "$out"
+    failures=$((failures + 1))
+  fi
+
+  if out=$(NEMACS_HOME="$NEMACS_HOME" \
+           NEMACS_EMACS="$NEMACS_EMACS" \
+           NEMACS_DRIVER=host \
+           "$SCRIPT_PATH/nemacs" --driver=host --batch --no-banner \
+           --eval '(princ "NEMACS_HOST=ok\n")' 2>&1); then
+    echo "  nemacs-host-batch: ok"
+    doctor_block "$out"
+  else
+    echo "  nemacs-host-batch: fail"
+    doctor_block "$out"
+    failures=$((failures + 1))
+  fi
+
+  if [[ ! -x "$NEMACS_NELISP" ]]; then
+    echo "  nelisp-binary: fail"
+    echo "    not executable: $NEMACS_NELISP"
+    failures=$((failures + 1))
+  else
+    echo "  nelisp-binary: ok"
+    nelisp_kind="$(nelisp_driver_kind)"
+    echo "  nelisp-driver-kind: $nelisp_kind"
+
+    ulimit -s "$NEMACS_NELISP_STACK" 2>/dev/null || true
+    if [[ "$nelisp_kind" == "standalone-reader" ]]; then
+      echo "  nelisp-version: skip"
+      echo "    standalone-reader has no --version command"
+
+      if out=$(nelisp_standalone_eval_exit 42 42); then
+        echo "  nelisp-literal-eval: ok"
+        doctor_block "$out"
+      else
+        echo "  nelisp-literal-eval: fail"
+        doctor_block "$out"
+        failures=$((failures + 1))
+      fi
+
+      if out=$(nelisp_standalone_eval_exit '(+ 40 2)' 42); then
+        echo "  nelisp-list-eval: ok"
+        doctor_block "$out"
+      else
+        echo "  nelisp-list-eval: fail"
+        doctor_block "$out"
+        failures=$((failures + 1))
+      fi
+    else
+      if out=$("$NEMACS_NELISP" --version 2>&1); then
+        echo "  nelisp-version: ok"
+        doctor_block "$out"
+      else
+        echo "  nelisp-version: fail"
+        doctor_block "$out"
+        failures=$((failures + 1))
+      fi
+
+      if out=$("$NEMACS_NELISP" eval 42 2>&1); then
+        echo "  nelisp-literal-eval: ok"
+        doctor_block "$out"
+      else
+        echo "  nelisp-literal-eval: fail"
+        doctor_block "$out"
+        failures=$((failures + 1))
+      fi
+
+      if out=$("$NEMACS_NELISP" eval '(identity 42)' 2>&1); then
+        echo "  nelisp-list-eval: ok"
+        doctor_block "$out"
+      else
+        echo "  nelisp-list-eval: fail"
+        doctor_block "$out"
+        failures=$((failures + 1))
+      fi
+    fi
+  fi
+
+  if (( failures == 0 )); then
+    echo "  summary: ok"
+  else
+    echo "  summary: fail ($failures)"
+  fi
+  return "$failures"
 }
 
 # --- parse args ----------------------------------------------------
 
 BATCH=0
 NO_BANNER=0
+DOCTOR=0
 LOAD_FILES=()
+IMAGE_FILES=()
 EVAL_FORMS=()
 EXTRA_ARGS=()
 
@@ -84,6 +258,7 @@ while (( $# > 0 )); do
       echo "nemacs $NEMACS_VERSION (driver=$NEMACS_DRIVER)"
       exit 0 ;;
     --print-paths) print_paths; exit 0 ;;
+    --doctor) DOCTOR=1; shift ;;
     --batch) BATCH=1; shift ;;
     --no-banner) NO_BANNER=1; shift ;;
     --driver=*) NEMACS_DRIVER="${1#--driver=}"; shift ;;
@@ -92,6 +267,14 @@ while (( $# > 0 )); do
       [[ -n "${2-}" ]] || { echo "nemacs: -l requires an argument" >&2; exit 2; }
       LOAD_FILES+=("$2"); shift 2 ;;
     --load=*) LOAD_FILES+=("${1#--load=}"); shift ;;
+    --load-image|--image)
+      [[ -n "${2-}" ]] || { echo "nemacs: $1 requires an argument" >&2; exit 2; }
+      IMAGE_FILES+=("$2"); shift 2 ;;
+    --load-image=*|--image=*) IMAGE_FILES+=("${1#*=}"); shift ;;
+    --runtime-image)
+      [[ -n "${2-}" ]] || { echo "nemacs: --runtime-image requires an argument" >&2; exit 2; }
+      NEMACS_RUNTIME_IMAGE="$2"; shift 2 ;;
+    --runtime-image=*) NEMACS_RUNTIME_IMAGE="${1#*=}"; shift ;;
     --eval)
       [[ -n "${2-}" ]] || { echo "nemacs: --eval requires an argument" >&2; exit 2; }
       EVAL_FORMS+=("$2"); shift 2 ;;
@@ -100,6 +283,11 @@ while (( $# > 0 )); do
     *) EXTRA_ARGS+=("$1"); shift ;;
   esac
 done
+
+if (( DOCTOR )); then
+  run_doctor
+  exit $?
+fi
 
 # --- bootstrap form ------------------------------------------------
 
@@ -117,12 +305,21 @@ for f in "${LOAD_FILES[@]+"${LOAD_FILES[@]}"}"; do
   LOAD_LIST+=" \"$(shell_quote "$f")\""
 done
 
+IMAGE_LIST=""
+for f in "${IMAGE_FILES[@]+"${IMAGE_FILES[@]}"}"; do
+  IMAGE_LIST+=" \"$(shell_quote "$f")\""
+done
+
 EVAL_LIST=""
 for f in "${EVAL_FORMS[@]+"${EVAL_FORMS[@]}"}"; do
-  # Each --eval is itself elisp source; wrap as (read-from-string)? No — we
-  # ship the raw form inside a (quote ...) and rely on the runner's
-  # (eval form t) call.  The user's responsibility to pass valid syntax.
-  EVAL_LIST+=" (read \"$(shell_quote "$f")\")"
+  # Each --eval is itself elisp source.  Host Emacs can parse it inside
+  # the boot form; standalone NeLisp does not require `read' at boot time
+  # and evaluates string forms through `nelisp--eval-source-string'.
+  if [[ "$NEMACS_DRIVER" == "nelisp" ]]; then
+    EVAL_LIST+=" \"$(shell_quote "$f")\""
+  else
+    EVAL_LIST+=" (read \"$(shell_quote "$f")\")"
+  fi
 done
 
 if (( BATCH )); then
@@ -131,20 +328,63 @@ else
   ENTRY_CALL='(nemacs-main)'
 fi
 
-BOOT_FORM="$(cat <<EOF
-(progn
-  (unless (boundp 'load-path) (defvar load-path nil))
-  (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
+if [[ "$NEMACS_RUNTIME_IMAGE" == "auto" ]]; then
+  if (( BATCH )); then
+    NEMACS_RUNTIME_IMAGE="$NEMACS_BATCH_RUNTIME_IMAGE"
+  else
+    NEMACS_RUNTIME_IMAGE="$NEMACS_INTERACTIVE_RUNTIME_IMAGE"
+  fi
+  if [[ ! -r "$NEMACS_RUNTIME_IMAGE" ]]; then
+    NEMACS_RUNTIME_IMAGE=""
+  fi
+fi
+
+if [[ "$NEMACS_DRIVER" == "host" ]]; then
+  BOOT_HOST_PRELOAD_FORM="$(cat <<EOF
+  (require 'cl-lib)
+  (require 'cl-generic)
+EOF
+)"
+  BOOT_LOAD_PATH_FORM="$(cat <<EOF
+  (setq load-path
+        (append (list "$(shell_quote "$NEMACS_HOME/src")")
+                (and (boundp 'load-path) load-path)
+                (list "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp")"
+                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp")")))
+EOF
+)"
+else
+  BOOT_HOST_PRELOAD_FORM=""
+  BOOT_LOAD_PATH_FORM="$(cat <<EOF
   (setq load-path
         (append (list "$(shell_quote "$NEMACS_HOME/src")"
                       "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp")"
                       "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp")")
                 (and (boundp 'load-path) load-path)))
+EOF
+)"
+fi
+
+BOOTSTRAP_BUNDLE_LOAD=""
+if [[ "$NEMACS_DRIVER" == "nelisp" && -z "$NEMACS_RUNTIME_IMAGE" && -n "$NEMACS_BOOTSTRAP_BUNDLE" && -r "$NEMACS_BOOTSTRAP_BUNDLE" ]]; then
+  BOOTSTRAP_BUNDLE_LOAD="  (load \"$(shell_quote "$NEMACS_BOOTSTRAP_BUNDLE")\" nil 'no-message t t)"
+fi
+
+BOOT_FORM="$(cat <<EOF
+(progn
+  (setq native-comp-enable-subr-trampolines nil
+        comp-enable-subr-trampolines nil)
+  (unless (boundp 'load-path) (defvar load-path nil))
+  (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
+$BOOT_HOST_PRELOAD_FORM
+$BOOT_LOAD_PATH_FORM
+$BOOTSTRAP_BUNDLE_LOAD
   (require 'nemacs-main)
   (setq nemacs-main-options
         (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
               :no-banner $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
               :driver '$NEMACS_DRIVER
+              :images (list$IMAGE_LIST)
               :load (list$LOAD_LIST)
               :eval-forms (list$EVAL_LIST)))
   $ENTRY_CALL)
@@ -156,7 +396,7 @@ EOF
 case "$NEMACS_DRIVER" in
   host)
     if (( BATCH )); then
-      exec "$NEMACS_EMACS" --batch --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+      exec "$NEMACS_EMACS" -Q --batch --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
     else
       # Interactive: -Q keeps user init out of nemacs's way.
       exec "$NEMACS_EMACS" -Q --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
@@ -165,13 +405,33 @@ case "$NEMACS_DRIVER" in
   nelisp)
     if [[ ! -x "$NEMACS_NELISP" ]]; then
       echo "nemacs: nelisp driver requested but $NEMACS_NELISP is not executable" >&2
-      echo "  Set NEMACS_NELISP or build it via: cd $NELISP_HOME && cargo build --release" >&2
+      echo "  Set NEMACS_NELISP, export NELISP_HOME, or build it via: bin/build-nelisp" >&2
+      echo "  Direct build: cd $NELISP_HOME && make standalone-reader" >&2
       exit 1
     fi
-    # nelisp lacks --batch / -e ergonomics; we use eval.  This driver
-    # path is experimental — see Doc 51 Track N' for the reader-incompat
-    # work-list.
-    exec "$NEMACS_NELISP" eval "$BOOT_FORM"
+    if [[ -n "$NEMACS_RUNTIME_IMAGE" && ! -r "$NEMACS_RUNTIME_IMAGE" ]]; then
+      echo "nemacs: runtime image is not readable: $NEMACS_RUNTIME_IMAGE" >&2
+      exit 1
+    fi
+    ulimit -s "$NEMACS_NELISP_STACK" 2>/dev/null || true
+    if [[ "$(nelisp_driver_kind)" == "standalone-reader" ]]; then
+      if [[ -n "$NEMACS_RUNTIME_IMAGE" ]]; then
+        exec "$NEMACS_NELISP" exec-runtime-image "$NEMACS_RUNTIME_IMAGE" "$BOOT_FORM"
+      else
+        tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-boot.XXXXXX.el")"
+        printf '%s\n0\n' "$BOOT_FORM" > "$tmp"
+        set +e
+        "$NEMACS_NELISP" "$tmp"
+        rc=$?
+        set -e
+        rm -f "$tmp"
+        exit "$rc"
+      fi
+    elif [[ -n "$NEMACS_RUNTIME_IMAGE" ]]; then
+      exec "$NEMACS_NELISP" exec-runtime-image "$NEMACS_RUNTIME_IMAGE" "$BOOT_FORM"
+    else
+      exec "$NEMACS_NELISP" eval "$BOOT_FORM"
+    fi
     ;;
   *)
     echo "nemacs: unknown --driver=$NEMACS_DRIVER (expected host or nelisp)" >&2

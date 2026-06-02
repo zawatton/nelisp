@@ -28,7 +28,8 @@
 (ert-deftest emacs-window-builtins-test/require-loads-cleanly ()
   (should (featurep 'emacs-window-builtins))
   (should (featurep 'emacs-window))
-  (dolist (sym '(selected-window windowp window-list
+  (dolist (sym '(selected-window windowp window-live-p window-valid-p
+                 frame-selected-window window-list
                  window-buffer set-window-buffer))
     (should (fboundp sym))))
 
@@ -37,6 +38,25 @@
 (ert-deftest emacs-window-builtins-test/prefixed-selected-window-is-windowp ()
   (emacs-window-builtins-test--with-fresh-world
     (should (emacs-window-windowp (emacs-window-selected-window)))))
+
+(ert-deftest emacs-window-builtins-test/prefixed-window-live-p-tracks-delete ()
+  (emacs-window-builtins-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (emacs-window-split-window-vertically)))
+      (should (emacs-window-window-live-p w1))
+      (should (emacs-window-window-live-p w2))
+      (emacs-window-delete-window w2)
+      (should (emacs-window-window-live-p w1))
+      (should-not (emacs-window-window-live-p w2))
+      (should-not (emacs-window-window-valid-p w2)))))
+
+(ert-deftest emacs-window-builtins-test/prefixed-frame-selected-window-follows-selection ()
+  (emacs-window-builtins-test--with-fresh-world
+    (let ((w1 (emacs-window-selected-window))
+          (w2 (emacs-window-split-window-vertically)))
+      (should (eq w1 (emacs-window-frame-selected-window)))
+      (emacs-window-select-window w2)
+      (should (eq w2 (emacs-window-frame-selected-window 'ignored-frame))))))
 
 ;;;; C. Substrate-direct: window-list returns at least one window
 
@@ -75,6 +95,9 @@
   ;; is exercised by standalone NeLisp's load.  Smoke-test the prefixed
   ;; impls are present.
   (should (fboundp 'emacs-window-windowp))
+  (should (fboundp 'emacs-window-window-live-p))
+  (should (fboundp 'emacs-window-window-valid-p))
+  (should (fboundp 'emacs-window-frame-selected-window))
   (should (fboundp 'emacs-window-window-list))
   (should (fboundp 'emacs-window-window-buffer))
   (should (fboundp 'emacs-window-set-window-buffer))
@@ -85,10 +108,14 @@
 (ert-deftest emacs-window-builtins-test/require-is-idempotent ()
   (let ((before-selected-window (symbol-function 'selected-window))
         (before-windowp         (symbol-function 'windowp))
+        (before-window-live-p   (symbol-function 'window-live-p))
+        (before-frame-selected  (symbol-function 'frame-selected-window))
         (before-window-buffer   (symbol-function 'window-buffer)))
     (require 'emacs-window-builtins)
     (should (eq before-selected-window (symbol-function 'selected-window)))
     (should (eq before-windowp         (symbol-function 'windowp)))
+    (should (eq before-window-live-p   (symbol-function 'window-live-p)))
+    (should (eq before-frame-selected  (symbol-function 'frame-selected-window)))
     (should (eq before-window-buffer   (symbol-function 'window-buffer)))))
 
 ;;;; H. Track V (2026-05-04) — split / select / delete bridges + other-window
@@ -178,13 +205,13 @@ prefix-arg paths (`C-u 10 C-x 2' etc) silently dropped their arg."
                    (concat (substring file 0 (- (length file) 1)))
                  file)))
     (should (and file (file-exists-p file)))
-    (dolist (spec '(("(unless (fboundp 'split-window-below)"
+    (dolist (spec '(("(when (emacs-window-builtins--install-function-p 'split-window-below)"
                      "split-window-below (&optional size)" "P")
-                    ("(unless (fboundp 'split-window-right)"
+                    ("(when (emacs-window-builtins--install-function-p 'split-window-right)"
                      "split-window-right (&optional size)" "P")
-                    ("(unless (fboundp 'delete-window)"
+                    ("(when (emacs-window-builtins--install-function-p 'delete-window)"
                      "delete-window (&optional window)" "")
-                    ("(unless (fboundp 'delete-other-windows)"
+                    ("(when (emacs-window-builtins--install-function-p 'delete-other-windows)"
                      "delete-other-windows (&optional window)" "")))
       (let ((s (emacs-window-builtins-test--read-defun file (nth 0 spec))))
         (should s)

@@ -35,17 +35,12 @@
 
 (ert-deftest emacs-search-builtins-test/require-loads-cleanly ()
   (should (featurep 'emacs-search-builtins))
-  (should (fboundp 're-search-forward))
-  (should (fboundp 're-search-backward))
-  (should (fboundp 'search-forward))
-  (should (fboundp 'search-backward))
-  (should (fboundp 'looking-at))
-  (should (fboundp 'looking-at-p))
-  (should (fboundp 'match-data))
-  (should (fboundp 'match-beginning))
-  (should (fboundp 'match-end))
-  (should (fboundp 'match-string))
-  (should (fboundp 'match-string-no-properties)))
+  (dolist (sym '(string-match string-match-p replace-match
+                 replace-regexp-in-string re-search-forward
+                 re-search-backward search-forward search-backward
+                 looking-at looking-at-p match-data match-beginning
+                 match-end match-string match-string-no-properties))
+    (should (fboundp sym))))
 
 ;;;; B. Literal search moves point and returns the new position
 
@@ -146,12 +141,38 @@
 
 (ert-deftest emacs-search-builtins-test/require-is-idempotent ()
   (let ((before-re-search-forward (symbol-function 're-search-forward))
+        (before-string-match (symbol-function 'string-match))
+        (before-replace-regexp (symbol-function 'replace-regexp-in-string))
         (before-match-data (symbol-function 'match-data))
         (before-match-string (symbol-function 'match-string)))
     (require 'emacs-search-builtins)
     (should (eq before-re-search-forward (symbol-function 're-search-forward)))
+    (should (eq before-string-match (symbol-function 'string-match)))
+    (should (eq before-replace-regexp
+                (symbol-function 'replace-regexp-in-string)))
     (should (eq before-match-data (symbol-function 'match-data)))
     (should (eq before-match-string (symbol-function 'match-string)))))
+
+(ert-deftest emacs-search-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-search-builtins--install-function-p))
+  (should-not (emacs-search-builtins--install-function-p 're-search-forward))
+  (let* ((file (locate-library "emacs-search-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(string-match string-match-p replace-match
+                     replace-regexp-in-string re-search-forward
+                     re-search-backward search-forward search-backward
+                     looking-at looking-at-p match-data match-beginning
+                     match-end match-string match-string-no-properties))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-search-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 ;;;; J. Synthetic polyfill count loop honors COUNT
 

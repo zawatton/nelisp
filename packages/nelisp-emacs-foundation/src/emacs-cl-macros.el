@@ -37,6 +37,15 @@
 
 ;;; Code:
 
+(defun emacs-cl-macros--define-p (symbol)
+  "Return non-nil when SYMBOL should be supplied by this shim.
+Host Emacs often has CL names installed as autoloads before `cl-lib'
+is loaded.  When this local shim wins `load-path', those autoloads
+would otherwise prevent the shim from defining the requested macro."
+  (or (not (fboundp symbol))
+      (and (fboundp 'autoloadp)
+           (autoloadp (symbol-function symbol)))))
+
 ;;;; --- arglist parsing helpers ------------------------------------------
 
 (defun emacs-cl-macros--split-arglist (arglist)
@@ -103,7 +112,8 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
 
 ;;;; --- cl-defun ---------------------------------------------------------
 
-(unless (fboundp 'cl-defun)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-defun))
   ;; cl-defun supporting &optional, &rest, &key (= adequate for
   ;; anvil-memory / anvil-state arglists).
   ;;
@@ -164,14 +174,22 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
 
 ;;;; --- cl-incf / cl-decf ------------------------------------------------
 
-(unless (fboundp 'cl-incf)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-incf))
   (defmacro cl-incf (place &optional delta)
-    "Stub: (setq PLACE (+ PLACE (or DELTA 1)))."
-    (list 'setq place (list '+ place (or delta 1)))))
+    "Stub: increment PLACE by DELTA, defaulting to 1."
+    (let ((value (list '+ place (or delta 1))))
+      (if (symbolp place)
+          (list 'setq place value)
+        (list 'setf place value)))))
 
-(unless (fboundp 'cl-decf)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-decf))
   (defmacro cl-decf (place &optional delta)
-    (list 'setq place (list '- place (or delta 1)))))
+    (let ((value (list '- place (or delta 1))))
+      (if (symbolp place)
+          (list 'setq place value)
+        (list 'setf place value)))))
 
 ;;;; --- cl-some / cl-every / cl-position / cl-find ---------------------
 
@@ -328,7 +346,8 @@ Return the first element of SEQUENCE matching ITEM (= via
 
 ;;;; --- cl-loop ----------------------------------------------------------
 
-(unless (fboundp 'cl-loop)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-loop))
   ;; cl-loop is incredibly complex; provide a minimal version that
   ;; handles the patterns anvil-memory uses (= for X in LIST do/collect).
   (defmacro cl-loop (&rest clauses)
@@ -533,7 +552,8 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
                   (cons (mapcar (lambda (a) (if (consp a) (car a) a)) arglist)
                         body))))))
 
-(unless (fboundp 'cl-defstruct)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-defstruct))
   (defmacro cl-defstruct (name &rest slots)
     "Stub: defstruct → minimal alist-backed accessors.
 
@@ -571,6 +591,25 @@ defaults to `make-NAME')."
                    found)))
            (pred-name (or pred-from-opts
                           (intern (concat (symbol-name sname) "-p"))))
+           (conc-from-opts
+            (and (consp name)
+                 (let ((opts (cdr name)) found seen)
+                   (while (and opts (not seen))
+                     (let ((o (car opts)))
+                       (when (and (consp o) (eq (car o) :conc-name))
+                         (setq seen t)
+                         (setq found (cadr o))))
+                     (setq opts (cdr opts)))
+                   (if seen found :absent))))
+           (conc-name (cond
+                       ((eq conc-from-opts :absent)
+                        (concat (symbol-name sname) "-"))
+                       ((null conc-from-opts) "")
+                       ((symbolp conc-from-opts)
+                        (symbol-name conc-from-opts))
+                       ((stringp conc-from-opts)
+                        conc-from-opts)
+                       (t (concat (symbol-name sname) "-"))))
            ;; If the first element of SLOTS is a string, treat it as
            ;; the struct's docstring and drop it before slot-name
            ;; extraction.
@@ -606,8 +645,8 @@ defaults to `make-NAME')."
         ;; macro can find it via `(get accessor 'cl-struct-setter)`.
         (dolist (slot slot-names)
           (let* ((kw (intern (concat ":" (symbol-name slot))))
-                 (acc (intern (concat (symbol-name sname) "-" (symbol-name slot))))
-                 (setter (intern (concat (symbol-name sname) "-" (symbol-name slot) "--setter"))))
+                 (acc (intern (concat conc-name (symbol-name slot))))
+                 (setter (intern (concat conc-name (symbol-name slot) "--setter"))))
             (push (list 'defun acc
                         '(obj)
                         (list 'cdr (list 'assoc kw '(cdr obj))))
@@ -649,19 +688,62 @@ defaults to `make-NAME')."
         (list 'let (list (list value-sym expr))
               (cons 'cond rev))))))
 
-(unless (fboundp 'cl-pushnew)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-pushnew))
   (defmacro cl-pushnew (item place &rest _keys)
     (list 'unless (list 'member item place)
           (list 'setq place (list 'cons item place)))))
 
 ;;;; --- cl-letf / cl-flet / cl-block -----------------------------------
 
-(unless (fboundp 'cl-letf)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-letf))
   (defmacro cl-letf (bindings &rest body)
-    "Stub: cl-letf → simple let* (= no place mutation tracking)."
-    (cons 'let* (cons bindings body))))
+    "Minimal `cl-letf' for variable and function-cell bindings.
+This covers the common test/vendor pattern of temporarily rebinding
+`(symbol-function 'foo)' while preserving plain lexical `let*'
+bindings."
+    (let (let-bindings
+          setup-forms
+          cleanup-forms)
+      (dolist (binding bindings)
+        (let ((place (car binding))
+              (value (cadr binding)))
+          (cond
+           ((symbolp place)
+            (push binding let-bindings))
+           ((and (consp place)
+                 (eq (car place) 'symbol-function)
+                 (consp (cdr place))
+                 (eq (caadr place) 'quote))
+            (let* ((symbol (cadadr place))
+                   (had (make-symbol "cl-letf-had-function"))
+                   (old (make-symbol "cl-letf-old-function")))
+              (push (list had (list 'fboundp (list 'quote symbol)))
+                    let-bindings)
+              (push (list old
+                          (list 'and had
+                                (list 'symbol-function
+                                      (list 'quote symbol))))
+                    let-bindings)
+              (push (list 'let '((native-comp-enable-subr-trampolines nil))
+                          (list 'fset (list 'quote symbol) value))
+                    setup-forms)
+              (push (list 'if had
+                          (list 'let '((native-comp-enable-subr-trampolines nil))
+                                (list 'fset (list 'quote symbol) old))
+                          (list 'fmakunbound (list 'quote symbol)))
+                    cleanup-forms)))
+           (t
+            (error "cl-letf: unsupported place: %S" place)))))
+      (list 'let* (nreverse let-bindings)
+            (list 'unwind-protect
+                  (cons 'progn
+                        (append (nreverse setup-forms) body))
+                  (cons 'progn cleanup-forms))))))
 
-(unless (fboundp 'cl-letf*)
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-letf*))
   (defalias 'cl-letf* 'cl-letf))
 
 (unless (fboundp 'cl-flet)

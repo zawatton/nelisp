@@ -28,7 +28,11 @@
 
 ;;; Code:
 
-(provide 'cl-lib)
+(defun cl-lib--define-p (symbol)
+  "Return non-nil when SYMBOL should be supplied by this shim."
+  (or (not (fboundp symbol))
+      (and (fboundp 'autoloadp)
+           (autoloadp (symbol-function symbol)))))
 
 ;; Pull in the existing prefixed subset (cl-loop / cl-defun /
 ;; cl-defstruct / cl-letf / cl-flet / cl-block / cl-some / cl-every /
@@ -37,6 +41,49 @@
 (require 'emacs-cl-macros)
 
 ;;;; --- helpers not in emacs-cl-macros --------------------------------
+
+(unless (fboundp 'cl-copy-list)
+  (defun cl-copy-list (list)
+    "Return a shallow copy of LIST."
+    (let (out)
+      (while list
+        (push (car list) out)
+        (setq list (cdr list)))
+      (nreverse out))))
+
+(unless (fboundp 'cl-coerce)
+  (defun cl-coerce (object type)
+    "Coerce OBJECT to TYPE for the sequence shapes used by the shim."
+    (cond
+     ((eq type 'list)
+      (cond
+       ((listp object) object)
+       ((vectorp object) (append object nil))
+       ((stringp object)
+        (let ((i 0) (n (length object)) out)
+          (while (< i n)
+            (push (aref object i) out)
+            (setq i (1+ i)))
+          (nreverse out)))
+       (t (signal 'wrong-type-argument (list 'sequencep object)))))
+     ((eq type 'vector)
+      (cond
+       ((vectorp object) object)
+       ((listp object) (apply #'vector object))
+       ((stringp object) (apply #'vector (cl-coerce object 'list)))
+       (t (signal 'wrong-type-argument (list 'sequencep object)))))
+     ((eq type 'string)
+      (cond
+       ((stringp object) object)
+       ((listp object) (apply #'string object))
+       ((vectorp object) (apply #'string (append object nil)))
+       (t (signal 'wrong-type-argument (list 'sequencep object)))))
+     (t (signal 'wrong-type-argument (list 'type-specifier-p type))))))
+
+(unless (fboundp 'cl-find-class)
+  (defun cl-find-class (_symbol &optional _errorp _environment)
+    "Minimal class lookup stub for code paths that probe EIEIO classes."
+    nil))
 
 (unless (fboundp 'cl-subseq)
   (defun cl-subseq (sequence start &optional end)
@@ -117,7 +164,8 @@ this for sibling-list immutability)."
 ;; では gv.el の `setf' が先に勝つので、`(unless (fboundp 'setf) ...)'
 ;; gate で安全に共存。
 
-(unless (fboundp 'setf)
+(when (or (not (boundp 'emacs-version))
+          (cl-lib--define-p 'setf))
   (defmacro setf (&rest pairs)
     "Minimal setf — handles common places.
 Supported PLACE forms:
@@ -155,9 +203,14 @@ For unrecognised places, signals an error at expansion time."
                        value))
                 ((eq fn 'plist-get)
                  (list 'plist-put (car args) (cadr args) value))
-                ((and (symbolp fn) (get fn 'cl-struct-setter))
-                 (list 'funcall (list 'get (list 'quote fn)
-                                      (list 'quote 'cl-struct-setter))
+                ((symbolp fn)
+                 (list 'funcall
+                       (list 'or
+                             (list 'get (list 'quote fn)
+                                   (list 'quote 'cl-struct-setter))
+                             (list 'quote
+                                   (intern (concat (symbol-name fn)
+                                                   "--setter"))))
                        (car args) value))
                 (t (error "setf: unsupported place form: %S" place))))))
            forms)))
@@ -245,5 +298,7 @@ SPEC is either ((VAR EXPR) ...) or (VAR EXPR) for a single binding."
 
 (defconst cl-lib-version "1.0-nemacs-shim"
   "Version of the nelisp-emacs cl-lib shim (= NOT upstream cl-lib).")
+
+(provide 'cl-lib)
 
 ;;; cl-lib.el ends here

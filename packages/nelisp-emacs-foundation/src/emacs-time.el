@@ -8,9 +8,8 @@
 
 ;; Doc 51 Phase 10 — extracted from `emacs-stub.el' (= the Phase 6
 ;; write-path polyfill).  Wraps the build-tool builtins
-;; `nl-current-unix-time' / `nl-secure-hash' (=
-;; `bi_nl_current_unix_time' / `bi_nl_secure_hash' in
-;; `build-tool/eval/builtins.rs').
+;; `nl-current-unix-time' when present, otherwise the NeLisp
+;; `nelisp--syscall' bridge for Linux `time(2)'.
 ;;
 ;; Real Emacs `current-time' returns a HIGH/LOW/MICRO list — anvil
 ;; callsites only pull `(truncate (float-time))' so we expose that
@@ -24,6 +23,22 @@
 ;; or live-replace check.  Loading under host Emacs is a cheap no-op.
 
 ;;; Code:
+
+(defun emacs-time--standalone-unix-time ()
+  "Return Unix time from the standalone runtime, or nil if unavailable."
+  (cond
+   ((fboundp 'nl-current-unix-time)
+    (nl-current-unix-time))
+   ;; Linux x86_64/aarch64: __NR_time = 201.  Passing NULL avoids any
+   ;; userspace pointer writes and returns the epoch seconds directly.
+   ((fboundp 'nelisp--syscall)
+    (condition-case nil
+        (let ((value (nelisp--syscall 201 0)))
+          (and (integerp value)
+               (>= value 0)
+               value))
+      (error nil)))
+   (t nil)))
 
 ;; Live-replace gate — same pattern as `truncate' below.  We only
 ;; override `float-time' / `current-time' when the host's binding is
@@ -39,10 +54,10 @@
     "Return seconds since the Unix epoch.
 TIME-VALUE is accepted for API compatibility but only a nil value
 is supported (= read current time)."
-    (ignore time-value)
-    (if (fboundp 'nl-current-unix-time)
-        (nl-current-unix-time)
-      0)))
+    ;; Keep the argument for API compatibility.  Do not call `ignore'
+    ;; here: raw NeLisp does not define it before `emacs-stub' loads.
+    (if time-value nil nil)
+    (or (emacs-time--standalone-unix-time) 0)))
 
 (unless (and (fboundp 'current-time)
              (let ((ct (ignore-errors (current-time))))
@@ -58,8 +73,7 @@ integer.  anvil-memory only ever feeds this back into `truncate' /
 
 (unless (and (fboundp 'truncate)
              ;; If truncate is the no-op bulk stub, override with real impl.
-             (let ((t1 (truncate 3.7)))
-               (and (integerp t1) (= t1 3))))
+             (not (get 'truncate 'emacs-stub-bulk)))
   (defun truncate (number &optional divisor)
     "Phase 10 (= ex-Phase 6) polyfill: integer truncation toward zero.
 NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
@@ -68,19 +82,14 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
      (divisor
       (truncate (/ number divisor)))
      ((integerp number) number)
-     ((floatp number)
-      (let ((n (if (>= number 0)
-                   (- number 0.0)
-                 (- 0.0 number)))
-            (sign (if (>= number 0) 1 -1)))
-        ;; floor-by-subtraction (no `floor' builtin available).  Adequate
-        ;; for the timestamp range we care about (< 2^53 seconds).
-        (let ((i 0))
-          (while (>= n 1.0)
-            (setq n (- n 1.0))
-            (setq i (+ i 1)))
-          (* sign i))))
-     (t 0))))
+     ((< number 0)
+      (- (truncate (- number))))
+     ((>= number 1)
+      ;; Avoid float literals and `while' in this early bootstrap body:
+      ;; standalone-reader currently segfaults while installing that shape.
+      (+ 1 (truncate (- number 1))))
+     (t 0)))
+  (put 'truncate 'emacs-stub-bulk nil))
 
 (provide 'emacs-time)
 

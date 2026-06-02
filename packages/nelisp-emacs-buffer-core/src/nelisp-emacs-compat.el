@@ -96,6 +96,7 @@ Slots:
 - NARROW-END   : 1-based exclusive upper bound, or nil = widen.
 - MODIFIED-P   : t once the buffer has been mutated (insert / delete /
   erase).  Reset by `nelisp-ec-erase-buffer' callers as needed.
+- TEXT-TICK    : monotonic text-content version bumped on insert/delete.
 - KILLED-P     : t after `nelisp-ec-kill-buffer'.  Operations on a
   killed buffer signal `nelisp-ec-buffer-killed'."
   (name         ""  :type string)
@@ -104,6 +105,7 @@ Slots:
   (narrow-start nil)
   (narrow-end   nil)
   (modified-p   nil)
+  (text-tick    0   :type integer)
   (killed-p     nil))
 
 ;;; defstruct: marker
@@ -182,8 +184,10 @@ If BASE is free, return it as-is; otherwise append =<2>=, =<3>=, ..."
   "Push BUF's 1-based POINT down into the T36 cursor (0-based).
 Call this immediately before any text mutation on BUF's underlying
 `nelisp-text-buffer', so that the gap is positioned correctly."
-  (text-buffer-set-cursor (nelisp-ec--text buf)
-                          (1- (nelisp-ec-buffer-point buf))))
+  (let* ((tb (nelisp-ec--text buf))
+         (target (1- (nelisp-ec-buffer-point buf))))
+    (unless (= (nelisp-text-buffer-cursor-char tb) target)
+      (text-buffer-set-cursor tb target))))
 
 (defun nelisp-ec--search-region (buf)
   "Return searchable region metadata for BUF as (BASE TEXT POINT-INDEX HI).
@@ -242,6 +246,7 @@ The new buffer is empty, has POINT = 1, and is registered in
                :narrow-start nil
                :narrow-end nil
                :modified-p nil
+               :text-tick 0
                :killed-p nil)))
     (push (cons unique buf) nelisp-ec--buffers)
     buf))
@@ -359,7 +364,34 @@ Ignores narrowing — this is always the underlying text length."
   (let ((b (or buf (nelisp-ec--ensure-current))))
     (text-buffer-length (nelisp-ec--text b))))
 
+(defun nelisp-ec--bump-buffer-text-tick (buf)
+  "Increment BUF's lightweight text-content version."
+  (setf (nelisp-ec-buffer-text-tick buf)
+        (1+ (nelisp-ec-buffer-text-tick buf))))
+
 ;;; C. text editing  (6 APIs)
+
+(defun nelisp-ec-insert-char-code-fast (char)
+  "Insert CHAR at POINT and return the new point.
+This is the single-character event-loop fast path.  It preserves the
+same buffer mutation bookkeeping as `nelisp-ec-insert' while avoiding
+the general `&rest' / `dolist' string-insert path."
+  (unless (integerp char)
+    (signal 'wrong-type-argument (list 'integerp char)))
+  (let* ((buf (nelisp-ec--ensure-current))
+         (insert-point (nelisp-ec-buffer-point buf))
+         (new-point (1+ insert-point))
+         (ne (nelisp-ec-buffer-narrow-end buf)))
+    (nelisp-ec--sync-cursor buf)
+    (if (fboundp 'text-buffer-insert-char-code)
+        (text-buffer-insert-char-code (nelisp-ec--text buf) char)
+      (text-buffer-insert (nelisp-ec--text buf) (string char)))
+    (setf (nelisp-ec-buffer-point buf) new-point)
+    (setf (nelisp-ec-buffer-modified-p buf) t)
+    (nelisp-ec--bump-buffer-text-tick buf)
+    (when (and ne (<= insert-point ne))
+      (setf (nelisp-ec-buffer-narrow-end buf) (1+ ne)))
+    new-point))
 
 ;;;###autoload
 (defun nelisp-ec-insert (&rest strings)
@@ -375,17 +407,17 @@ MVP is forgiving for callers that build arg lists dynamically)."
         (unless (string-empty-p s)
           (let* ((insert-point (nelisp-ec-buffer-point buf))
                  (n-chars (length s))
+                 (new-point (+ insert-point n-chars))
                  (ne (nelisp-ec-buffer-narrow-end buf)))
             (nelisp-ec--sync-cursor buf)
             (text-buffer-insert (nelisp-ec--text buf) s)
-            (let* ((tb (nelisp-ec--text buf))
-                   (new-point (1+ (nelisp-text-buffer-cursor-char tb))))
-              (setf (nelisp-ec-buffer-point buf) new-point)
-              (setf (nelisp-ec-buffer-modified-p buf) t)
-              ;; Push narrow-end out when insertion occurred at or before it.
-              (when (and ne (<= insert-point ne))
-                (setf (nelisp-ec-buffer-narrow-end buf)
-                      (+ ne n-chars))))))))
+            (setf (nelisp-ec-buffer-point buf) new-point)
+            (setf (nelisp-ec-buffer-modified-p buf) t)
+            (nelisp-ec--bump-buffer-text-tick buf)
+            ;; Push narrow-end out when insertion occurred at or before it.
+            (when (and ne (<= insert-point ne))
+              (setf (nelisp-ec-buffer-narrow-end buf)
+                    (+ ne n-chars)))))))
     nil))
 
 ;;;###autoload
@@ -422,7 +454,8 @@ adjusted analogously."
              ((<= ne s) nil)
              ((<= ne e) (setf (nelisp-ec-buffer-narrow-end buf) s))
              (t (setf (nelisp-ec-buffer-narrow-end buf) (- ne n))))))
-        (setf (nelisp-ec-buffer-modified-p buf) t)))
+        (setf (nelisp-ec-buffer-modified-p buf) t)
+        (nelisp-ec--bump-buffer-text-tick buf)))
     nil))
 
 ;;;###autoload

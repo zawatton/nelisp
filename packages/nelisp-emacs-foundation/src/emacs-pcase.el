@@ -194,9 +194,9 @@ See `emacs-pcase--test' for supported pattern shapes."
         (list 'let (list (list value-sym expr))
               (cons 'cond forward))))))
 
-;; Rust-min migration (2026-05-06): NeLisp upstream now ships the
-;; pcase macro as elisp under `lisp/nelisp-pcase.el', loaded as part
-;; of `Env::new_global' STDLIB_SOURCES.  The nelisp driver therefore
+;; NeLisp upstream now ships the pcase macro as Elisp under
+;; `lisp/nelisp-pcase.el', loaded as part of the standalone stdlib
+;; prelude.  The nelisp driver therefore
 ;; exposes the rich grammar (or / and / pred / guard / cons /
 ;; backquote / let) directly — no override hack needed here.
 ;; Under host driver, host emacs's C-native pcase is left intact.

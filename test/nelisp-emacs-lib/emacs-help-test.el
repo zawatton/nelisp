@@ -73,6 +73,18 @@
     (should-error (describe-variable 'emacs-help-test--temporary-unbound)
                   :type 'user-error)))
 
+(ert-deftest describe-symbol-dispatches-to-function-or-variable ()
+  (emacs-help-test--with-fresh-world
+    (describe-symbol 'emacs-help-test--sample-function)
+    (should (string-match-p "is a function" (emacs-help-test--help-string)))
+    (describe-symbol 'emacs-help-test--sample-variable)
+    (should (string-match-p "is a variable" (emacs-help-test--help-string)))))
+
+(ert-deftest help-mode-history-commands-report-unavailable ()
+  (emacs-help-test--with-fresh-world
+    (should-error (help-go-back) :type 'user-error)
+    (should-error (help-go-forward) :type 'user-error)))
+
 (ert-deftest describe-key-resolves-binding ()
   (emacs-help-test--with-fresh-world
     (define-key (current-global-map) (kbd "C-c h")

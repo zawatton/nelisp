@@ -34,6 +34,12 @@
   (let ((sym (make-symbol "emacs-eval-test--ret")))
     (should (eq (defalias sym #'emacs-eval-test--id) sym))))
 
+(ert-deftest emacs-eval-test/defalias-accepts-forward-symbol ()
+  (let ((sym (make-symbol "emacs-eval-test--forward")))
+    (should (eq (defalias sym 'emacs-eval-test--forward-target) sym))
+    (defun emacs-eval-test--forward-target () 42)
+    (should (= (funcall sym) 42))))
+
 
 ;;;; --- declare-function ---------------------------------------------------
 
@@ -41,6 +47,14 @@
   ;; Should expand to nil and produce no error / no side effect.
   (should (null (declare-function nonexistent-fn "imaginary-file" (a b))))
   (should (null (declare-function another-fn "wherever"))))
+
+
+;;;; --- metadata no-ops ----------------------------------------------------
+
+(ert-deftest emacs-eval-test/internal-make-var-non-special-is-callable ()
+  (should (fboundp 'internal-make-var-non-special))
+  (should (null (internal-make-var-non-special
+                 'emacs-eval-test--non-special))))
 
 
 (provide 'emacs-eval-test)

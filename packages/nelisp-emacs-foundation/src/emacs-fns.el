@@ -10,8 +10,8 @@
 ;;
 ;; Ports the standard sequence + property-list primitives that
 ;; `fns.c' provides in Emacs's C core.  These are foundation
-;; functions every Elisp library assumes; they cannot live in the
-;; NeLisp Rust core without violating the "minimal substrate" rule
+;; functions every Elisp library assumes; they cannot be collapsed into
+;; the NeLisp core without violating the "minimal substrate" rule
 ;; (user 2026-05-02 directive), and they cannot live in any single
 ;; application (= anvil.el, etc.) without forcing every other
 ;; nelisp-emacs consumer to duplicate them.
@@ -23,7 +23,7 @@
 ;; being defined here, no `cl-lib', no `subr-x' tricks).
 ;;
 ;; Symbols ported: mapcar, mapconcat, mapc, nreverse, reverse,
-;; plist-get, plist-put, plist-member.
+;; plist-get, plist-put, plist-member, provide.
 ;;
 ;; Out of scope here: cl-* generic versions (= live in
 ;; `nelisp-emacs/src/emacs-cl-seq.el', not yet shipped).  Hash
@@ -33,6 +33,23 @@
 ;;; Code:
 
 ;;;; --- trivial primitives -----------------------------------------------
+
+;; Emacs's C primitive accepts an optional SUBFEATURES argument:
+;; `(provide 'files '(remote-wildcards))' appears in vendored files.el.
+;; NeLisp v2's bootstrap stdlib used to expose a one-argument `provide',
+;; so vendor `require' could load a file and still report "feature not
+;; provided" after arity failure.  Host Emacs keeps its native primitive;
+;; the polyfill is only installed on the standalone NeLisp path, before
+;; `emacs-version' exists.
+(unless (boundp 'emacs-version)
+  (defun provide (feature &optional _subfeatures)
+    "Mark FEATURE as available and return FEATURE.
+Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
+    (unless (boundp 'features)
+      (defvar features nil))
+    (unless (memq feature features)
+      (setq features (cons feature features)))
+    feature))
 
 (unless (fboundp 'ignore)
   (defun ignore (&rest _ignore-args)
@@ -221,8 +238,8 @@ on identity should re-bind the variable holding PLIST."
 ;;;; --- coding-system polyfill (Doc 51 Track B Phase 2) ----------------
 ;;
 ;; Under host Emacs `encode-coding-string' / `decode-coding-string' /
-;; `multibyte-string-p' are C builtins.  Under the nelisp driver the
-;; `Sexp::Str' is internally a Rust `String' = always valid UTF-8, so
+;; `multibyte-string-p' are C builtins.  Under the nelisp driver strings
+;; are internally valid UTF-8, so
 ;; for `'utf-8' / `'utf-8-emacs' / `nil' (= no conversion) the encode/
 ;; decode operations are identity.  We provide minimal polyfills here
 ;; because `nelisp-text-buffer.el' calls them at runtime and we are

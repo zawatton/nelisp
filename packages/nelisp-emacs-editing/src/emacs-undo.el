@@ -110,12 +110,19 @@ collapse)."
   nil)
 
 (defun emacs-undo-record-insert (beg end)
-  "Push (BEG . END) onto the current buffer's undo list.
-Recording the fact that text was just inserted spanning [BEG,END);
-the inverse operation is `delete-region BEG END'."
+  "Record an inserted span [BEG, END) on the current buffer's undo list.
+Adjacent insertion records are coalesced by extending the list head.
+The inverse operation is `delete-region BEG END'."
   (unless (or (emacs-undo-disabled-p) (= beg end))
-    (emacs-undo-set-buffer-undo-list
-     (cons (cons beg end) (emacs-undo-buffer-undo-list))))
+    (let* ((lst (emacs-undo-buffer-undo-list))
+           (head (and (consp lst) (car lst))))
+      (if (and (consp head)
+               (integerp (car head))
+               (integerp (cdr head))
+               (= (cdr head) beg))
+          (setcdr head end)
+        (emacs-undo-set-buffer-undo-list
+         (cons (cons beg end) lst)))))
   nil)
 
 (defun emacs-undo-record-delete (string pos)

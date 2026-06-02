@@ -14,7 +14,7 @@
 ;; Emacs, calls delegate to the host's C primitive; otherwise the
 ;; substrate signals `emacs-*-not-implemented' and stops.  The real
 ;; long-term goal is for those signals to be replaced by dispatches
-;; into NeLisp's Rust-side primitives.
+;; into NeLisp's standalone primitives.
 ;;
 ;; This module provides the *registry* + *detection* layer those
 ;; dispatches will plug into — the actual primitive implementations

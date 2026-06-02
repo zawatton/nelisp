@@ -20,7 +20,8 @@
   (should (featurep 'emacs-keymap-builtins))
   (should (featurep 'emacs-keymap))
   (dolist (sym '(make-keymap make-sparse-keymap keymapp
-                 define-key lookup-key key-binding
+                 define-key define-key-after suppress-keymap
+                 lookup-key key-binding
                  set-keymap-parent keymap-parent
                  current-global-map current-local-map
                  use-global-map use-local-map
@@ -42,6 +43,16 @@
     (emacs-keymap-define-key map "\C-a" 'beginning-of-line)
     (should (eq 'beginning-of-line
                 (emacs-keymap-lookup-key map "\C-a")))))
+
+(ert-deftest emacs-keymap-builtins-test/define-key-after-via-prefixed ()
+  (let ((map (emacs-keymap-make-sparse-keymap))
+        (seen '()))
+    (emacs-keymap-define-key map "a" 'cmd-a)
+    (emacs-keymap-define-key map "b" 'cmd-b)
+    (emacs-keymap-define-key-after map "c" 'cmd-c ?b)
+    (emacs-keymap-map-keymap (lambda (k _v) (push k seen)) map)
+    (should (equal (nreverse seen) (list ?b ?c ?a)))
+    (should (eq 'cmd-c (emacs-keymap-lookup-key map "c")))))
 
 ;;;; D. Substrate-direct: parent chain
 
@@ -69,10 +80,41 @@
         (should (eq 'cmd (funcall wrapper 'KM 'KEY 'cmd t))))
       (should (equal '(KM KEY cmd) received)))))
 
+;;;; E2. Substrate-direct: suppress-keymap body shape
+
+(ert-deftest emacs-keymap-builtins-test/suppress-keymap-body-shape ()
+  (let ((map (emacs-keymap-make-sparse-keymap)))
+    ;; Exercise the bridge semantics directly so host Emacs's own
+    ;; `suppress-keymap' implementation cannot hide regressions.
+    (let ((slot (emacs-keymap--full-slot map)))
+      (unless slot
+        (setq slot (cons t (make-vector 256 nil)))
+        (setcdr map (cons slot (cdr map))))
+      (let ((vec (cdr slot))
+            (i 32))
+        (while (<= i 126)
+          (aset vec i 'undefined)
+          (setq i (1+ i)))
+        (let ((digit ?0))
+          (while (<= digit ?9)
+            (aset vec digit 'digit-argument)
+            (setq digit (1+ digit))))
+        (aset vec ?- 'negative-argument)))
+    (should (eq 'undefined (emacs-keymap-lookup-key map (vector ?a))))
+    (should (eq 'digit-argument (emacs-keymap-lookup-key map (vector ?7))))
+    (should (eq 'negative-argument (emacs-keymap-lookup-key map (vector ?-))))))
+
 ;;;; F. Substrate-direct: current-global-map returns a keymap
 
 (ert-deftest emacs-keymap-builtins-test/current-global-map-via-prefixed ()
   (should (emacs-keymap-keymapp (emacs-keymap-current-global-map))))
+
+;;;; F2. Bridge shape: standard prefix maps exist
+
+(ert-deftest emacs-keymap-builtins-test/standard-prefix-maps-are-bound ()
+  (dolist (sym '(global-map ctl-x-map ctl-x-4-map ctl-x-5-map esc-map help-map))
+    (should (boundp sym))
+    (should (keymapp (symbol-value sym)))))
 
 ;;;; G. Substrate-direct: where-is-internal returns a list
 

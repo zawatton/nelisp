@@ -95,6 +95,19 @@
           (should (string-match-p "^alpha[[:space:]]+5[[:space:]]+text-mode[[:space:]]*$" text))
           (should (string-match-p "^beta[[:space:]]+0[[:space:]]+emacs-lisp-mode[[:space:]]+/tmp/beta.txt$" text)))))))
 
+(ert-deftest list-buffers-renders-files-standalone-visited-file ()
+  (emacs-buffer-ui-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "standalone.txt")))
+      (cl-letf (((symbol-function 'files--buffer-file-name)
+                 (lambda (buffer)
+                   (and (eq buffer buf) "/tmp/standalone.txt"))))
+        (let ((out (emacs-buffer-ui-list-buffers)))
+          (let ((text (nelisp-ec-with-current-buffer out
+                        (nelisp-ec-buffer-string))))
+            (should (string-match-p
+                     "^standalone\\.txt[[:space:]]+0[[:space:]]+fundamental-mode[[:space:]]+/tmp/standalone\\.txt$"
+                     text))))))))
+
 (provide 'emacs-buffer-ui-test)
 
 ;;; emacs-buffer-ui-test.el ends here

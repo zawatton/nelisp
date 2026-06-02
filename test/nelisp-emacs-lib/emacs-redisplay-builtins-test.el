@@ -45,6 +45,34 @@
                  redisplay))
     (should (fboundp sym))))
 
+(ert-deftest emacs-redisplay-builtins-test/require-is-idempotent ()
+  (let ((before-fml (symbol-function 'force-mode-line-update))
+        (before-redraw (symbol-function 'redraw-display))
+        (before-redisplay (symbol-function 'redisplay)))
+    (require 'emacs-redisplay-builtins)
+    (should (eq before-fml (symbol-function 'force-mode-line-update)))
+    (should (eq before-redraw (symbol-function 'redraw-display)))
+    (should (eq before-redisplay (symbol-function 'redisplay)))))
+
+(ert-deftest emacs-redisplay-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-redisplay-builtins--install-function-p))
+  (should-not (emacs-redisplay-builtins--install-function-p
+               'force-mode-line-update))
+  (let* ((file (locate-library "emacs-redisplay-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(force-mode-line-update redraw-display redraw-frame
+                     redisplay))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-redisplay-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
+
 ;;;; B. set-current-handle / current-handle accessors
 
 (ert-deftest emacs-redisplay-builtins-test/set-and-get-current-handle ()
@@ -171,6 +199,7 @@ flush diff savings."
    (let ((sym 'emacs-redisplay--flush-hash-cache))
      (and (boundp sym) (symbol-value sym))))
   (let* ((iterations 200)
+         (emacs-tui-backend-output-fn #'ignore)
          (sample-text (mapconcat #'identity
                                  (cl-loop for i from 1 to 24
                                           collect (format "row %02d sample text foo bar baz" i))

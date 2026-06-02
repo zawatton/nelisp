@@ -3,9 +3,10 @@
 ;;; Commentary:
 
 ;; Tests for the Layer 2 line / column derivation module.  Under host
-;; Emacs the `unless (fboundp ...)' gates skip the polyfills, so the
-;; public unprefixed symbols stay bound to host C builtins that have
-;; no awareness of the `nelisp-ec' substrate.  Therefore behavioural
+;; Emacs the host-aware install gate skips the polyfills, so the public
+;; unprefixed symbols stay bound to host C builtins that have no
+;; awareness of the `nelisp-ec' substrate.  Standalone NeLisp overwrites
+;; bootstrap stubs with the polyfills.  Therefore behavioural
 ;; tests run against:
 ;;
 ;;   (a) The two ungated helpers — `emacs-line--bol-pos' /
@@ -195,10 +196,34 @@
 
 (ert-deftest emacs-line-builtins-test/require-is-idempotent ()
   (let ((before-bol (symbol-function 'emacs-line--bol-pos))
-        (before-eol (symbol-function 'emacs-line--eol-pos)))
+        (before-eol (symbol-function 'emacs-line--eol-pos))
+        (before-forward-line (symbol-function 'forward-line))
+        (before-next-line (symbol-function 'next-line)))
     (require 'emacs-line-builtins)
     (should (eq before-bol (symbol-function 'emacs-line--bol-pos)))
-    (should (eq before-eol (symbol-function 'emacs-line--eol-pos)))))
+    (should (eq before-eol (symbol-function 'emacs-line--eol-pos)))
+    (should (eq before-forward-line (symbol-function 'forward-line)))
+    (should (eq before-next-line (symbol-function 'next-line)))))
+
+(ert-deftest emacs-line-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-line-builtins--install-function-p))
+  (should-not (emacs-line-builtins--install-function-p 'forward-line))
+  (let* ((file (locate-library "emacs-line-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(bobp eobp bolp eolp line-beginning-position
+                     line-end-position beginning-of-line end-of-line
+                     forward-line line-number-at-pos next-line
+                     previous-line))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-line-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 ;;;; J. Doc 51 Track X audit — every keymap-bound cmd has interactive form
 
@@ -229,13 +254,13 @@ silently drops arguments, breaking `C-u 4 C-n' style motion."
                    (concat (substring file 0 (- (length file) 1)))
                  file)))
     (should (and file (file-exists-p file)))
-    (dolist (spec '(("(unless (fboundp 'beginning-of-line)"
+    (dolist (spec '(("(when (emacs-line-builtins--install-function-p 'beginning-of-line)"
                      "beginning-of-line (&optional n)" "p")
-                    ("(unless (fboundp 'end-of-line)"
+                    ("(when (emacs-line-builtins--install-function-p 'end-of-line)"
                      "end-of-line (&optional n)" "p")
-                    ("(unless (fboundp 'next-line)"
+                    ("(when (emacs-line-builtins--install-function-p 'next-line)"
                      "next-line (&optional n _try-vscroll)" "p")
-                    ("(unless (fboundp 'previous-line)"
+                    ("(when (emacs-line-builtins--install-function-p 'previous-line)"
                      "previous-line (&optional n _try-vscroll)" "p")))
       (let ((s (emacs-line-builtins-test--read-defun file (nth 0 spec))))
         (should s)

@@ -274,6 +274,26 @@
       (should (eq ?b (plist-get ev :name))))
     (should (null (emacs-tui-event-poll h)))))
 
+(ert-deftest emacs-tui-event-test-poll-printable-byte-fast-path ()
+  "Printable ASCII can be consumed without allocating a key plist."
+  (let* ((bytes (list ?a))
+         (emacs-tui-event-input-fn (lambda () (pop bytes)))
+         (h (emacs-tui-event-init)))
+    (should (= ?a (emacs-tui-event-poll-printable-byte h)))
+    (should-not (emacs-tui-event-pending-event-p h))
+    (should (equal "" (emacs-tui-event-handle-input-buffer h)))))
+
+(ert-deftest emacs-tui-event-test-poll-printable-byte-queues-control ()
+  "Non-printable bytes fall back through the normal parser."
+  (let* ((bytes (list ?\C-g))
+         (emacs-tui-event-input-fn (lambda () (pop bytes)))
+         (h (emacs-tui-event-init)))
+    (should-not (emacs-tui-event-poll-printable-byte h))
+    (let ((ev (emacs-tui-event-poll h)))
+      (should (eq 'key (plist-get ev :type)))
+      (should (eq ?g (plist-get ev :name)))
+      (should (equal '(control) (plist-get ev :modifiers))))))
+
 (ert-deftest emacs-tui-event-test-poll-rejects-bad-byte ()
   "Pump signals wrong-type-argument on a non-byte input."
   (let* ((emacs-tui-event-input-fn (lambda () 'not-a-byte))
@@ -344,6 +364,30 @@
   (let ((h (emacs-tui-event-init)))
     (should-error (emacs-tui-event-install-sigwinch h 42)
                   :type 'wrong-type-argument)))
+
+(ert-deftest emacs-tui-event-test-terminal-compat-handlers-roundtrip ()
+  "Pure-Elisp terminal signal fallbacks expose the NeLisp builtin shape."
+  (let ((emacs-tui-event--terminal-winsize-handler-installed-p nil)
+        (emacs-tui-event--terminal-jobctrl-handlers-installed-p nil)
+        (emacs-tui-event--terminal-winsize-changed-p nil)
+        (emacs-tui-event--terminal-sigcont-p nil)
+        (emacs-tui-event--terminal-current-winsize nil))
+    (should (eq t (install-winsize-handler)))
+    (should emacs-tui-event--terminal-winsize-handler-installed-p)
+    (should (eq t (install-jobctrl-handlers)))
+    (should emacs-tui-event--terminal-jobctrl-handlers-installed-p)
+    (let ((size (terminal-current-winsize)))
+      (should (consp size))
+      (should (integerp (car size)))
+      (should (integerp (cdr size))))
+    (should-not (terminal-take-winsize-changed))
+    (setq emacs-tui-event--terminal-winsize-changed-p t)
+    (should (terminal-take-winsize-changed))
+    (should-not (terminal-take-winsize-changed))
+    (should-not (terminal-take-sigcont))
+    (setq emacs-tui-event--terminal-sigcont-p t)
+    (should (terminal-take-sigcont))
+    (should-not (terminal-take-sigcont))))
 
 ;;; H. cross-cutting
 

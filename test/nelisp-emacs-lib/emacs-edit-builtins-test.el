@@ -37,6 +37,7 @@ Also resets kill-ring + kill-ring-yank-pointer."
 (ert-deftest emacs-edit-builtins-test/require-loads-cleanly ()
   (should (featurep 'emacs-edit-builtins))
   (dolist (sym '(self-insert-command newline delete-backward-char
+                 ensure-empty-lines
                  kill-new copy-region-as-kill kill-region kill-line
                  yank forward-word backward-word))
     (should (fboundp sym)))
@@ -93,8 +94,8 @@ with a default of 1 so `call-interactively' supplies 0 args
 without erroring, and (b) carry `(interactive \"p\")' so a
 prefix arg actually flows through.  Read the source form
 directly instead of `fboundp'-trampolining since under the
-host driver the upstream `delete-backward-char' wins via
-`(unless (fboundp ...))'."
+host driver the upstream `delete-backward-char' wins via the
+install-function guard."
   (let* ((file (locate-library "emacs-edit-builtins"))
          (file (if (and file (string-match-p "\\.elc\\'" file))
                    (concat (substring file 0 (- (length file) 1)))
@@ -104,7 +105,8 @@ host driver the upstream `delete-backward-char' wins via
       (insert-file-contents file)
       (goto-char (point-min))
       (should (re-search-forward
-               "(unless (fboundp 'delete-backward-char)" nil t))
+               "(when (emacs-edit-builtins--install-function-p 'delete-backward-char)"
+               nil t))
       (let* ((form-start (match-beginning 0))
              (form-end (save-excursion
                          (goto-char form-start)
@@ -146,17 +148,17 @@ checked by its dedicated shape test above)."
                  file)))
     (should (and file (file-exists-p file)))
     (let ((s (emacs-edit-builtins-test--read-defun
-              file "(unless (fboundp 'self-insert-command)")))
+              file "(when (emacs-edit-builtins--install-function-p 'self-insert-command)")))
       (should s)
       (should (string-match-p "self-insert-command (&optional n char)" s))
       (should (string-match-p "(interactive \"p\")" s)))
     (let ((s (emacs-edit-builtins-test--read-defun
-              file "(unless (fboundp 'newline)")))
+              file "(when (emacs-edit-builtins--install-function-p 'newline)")))
       (should s)
       (should (string-match-p "newline (&optional n interactive)" s))
       (should (string-match-p "(interactive \"p\")" s)))
     (let ((s (emacs-edit-builtins-test--read-defun
-              file "(unless (fboundp 'kill-line)")))
+              file "(when (emacs-edit-builtins--install-function-p 'kill-line)")))
       (should s)
       (should (string-match-p "kill-line (&optional arg)" s))
       (should (string-match-p "(interactive \"P\")" s)))))
@@ -235,61 +237,51 @@ checked by its dedicated shape test above)."
 
 ;; Phase 2.AI — overwrite-mode toggles self-insert from insert→replace.
 (ert-deftest emacs-edit-builtins-test/overwrite-mode-replaces ()
-  (skip-unless (eq 'emacs-edit-builtins
-                   (cdr (find-function-library 'self-insert-command))))
   (emacs-edit-builtins-test--with-fresh-buffer "ABCDE"
     (let ((overwrite-mode t)
           (last-command-event ?X))
       (nelisp-ec-goto-char 2)            ; before B
-      (self-insert-command 1)
+      (emacs-edit--self-insert-command 1 nil)
       ;; B is replaced by X, point lands after X
       (should (equal "AXCDE" (nelisp-ec-buffer-string)))
       (should (= 3 (nelisp-ec-point))))))
 
 ;; Phase 2.AI — overwrite-mode does NOT eat the line terminator.
 (ert-deftest emacs-edit-builtins-test/overwrite-mode-skips-newline ()
-  (skip-unless (eq 'emacs-edit-builtins
-                   (cdr (find-function-library 'self-insert-command))))
   (emacs-edit-builtins-test--with-fresh-buffer "AB\nCD"
     (let ((overwrite-mode t)
           (last-command-event ?X))
       (nelisp-ec-goto-char 3)            ; on the \n
-      (self-insert-command 1)
+      (emacs-edit--self-insert-command 1 nil)
       ;; \n preserved; X inserted before it
       (should (equal "ABX\nCD" (nelisp-ec-buffer-string))))))
 
 ;; Phase 2.AA — yank-pop replaces last yank with older entry.
 ;; Only assertable against our polyfill (host's C yank/yank-pop drive the
-;; host buffer not the substrate); skip when fboundp gates picked the C
-;; implementation.
+;; host buffer, not the substrate), so this calls the pure-Elisp bodies
+;; directly.
 (ert-deftest emacs-edit-builtins-test/yank-pop-cycles-kill-ring ()
-  (skip-unless (and (eq 'emacs-edit-builtins
-                        (cdr (find-function-library 'yank)))
-                    (eq 'emacs-edit-builtins
-                        (cdr (find-function-library 'yank-pop)))))
   (emacs-edit-builtins-test--with-fresh-buffer ""
     (let ((kill-ring '("alpha" "beta" "gamma"))
           (kill-ring-yank-pointer nil)
           (emacs-edit--last-yank-bounds nil)
           (interprogram-paste-function nil))
-      (yank)
+      (emacs-edit--yank nil)
       (should (equal "alpha" (nelisp-ec-buffer-string)))
-      (yank-pop 1)
+      (emacs-edit--yank-pop 1)
       (should (equal "beta" (nelisp-ec-buffer-string)))
-      (yank-pop 1)
+      (emacs-edit--yank-pop 1)
       (should (equal "gamma" (nelisp-ec-buffer-string)))
       ;; wraps around modulo length
-      (yank-pop 1)
+      (emacs-edit--yank-pop 1)
       (should (equal "alpha" (nelisp-ec-buffer-string))))))
 
 ;; Phase 2.AA — yank-pop signals when last command wasn't a yank.
 (ert-deftest emacs-edit-builtins-test/yank-pop-rejects-without-yank ()
-  (skip-unless (eq 'emacs-edit-builtins
-                   (cdr (find-function-library 'yank-pop))))
   (emacs-edit-builtins-test--with-fresh-buffer "abc"
     (let ((kill-ring '("X"))
           (emacs-edit--last-yank-bounds nil))
-      (should-error (yank-pop 1) :type 'error))))
+      (should-error (emacs-edit--yank-pop 1) :type 'error))))
 
 ;;;; I. forward-word polyfill body (= ASCII alnum boundary on substrate)
 ;; Under host Emacs the public `forward-word' uses host's syntax-table-
@@ -390,25 +382,23 @@ system clipboard."
   (let ((kill-ring nil)
         (kill-ring-yank-pointer nil)
         (interprogram-cut-function #'emacs-edit-builtins-test--cut-fn))
-    (kill-new "hello")
-    (kill-new "world")
+    (emacs-edit--kill-new "hello")
+    (emacs-edit--kill-new "world")
     (should (equal '("world" "hello") emacs-edit-builtins-test--cut-captured))
     (should (equal '("world" "hello") kill-ring))))
 
 (ert-deftest emacs-edit-builtins-test/kill-new-skips-cut-fn-on-empty ()
   "Polyfill-only: empty strings should not trigger the cut hook
 (= avoid clobbering the system clipboard with stray empty kills).
-Host Emacs's C `kill-new' DOES forward empty strings, hence the
-skip-unless gate."
-  (skip-unless (eq 'emacs-edit-builtins
-                   (cdr (find-function-library 'kill-new))))
+This verifies the pure-Elisp body directly because host Emacs's C
+`kill-new' has different empty-string clipboard semantics."
   (setq emacs-edit-builtins-test--cut-call-count 0)
   (let ((kill-ring nil)
         (kill-ring-yank-pointer nil)
         (interprogram-cut-function #'emacs-edit-builtins-test--cut-fn))
-    (kill-new "")
+    (emacs-edit--kill-new "")
     (should (= 0 emacs-edit-builtins-test--cut-call-count))
-    (kill-new "x")
+    (emacs-edit--kill-new "x")
     (should (= 1 emacs-edit-builtins-test--cut-call-count))))
 
 ;;;; K3. interprogram-paste-function: yank pulls clipboard
@@ -427,16 +417,14 @@ the head of `kill-ring', `yank' must push it onto kill-ring before
 inserting (= GUI clipboard wins, matching Emacs `current-kill').
 
 Only assertable against our polyfill (= host Emacs's C `yank' has
-its own clipboard plumbing); skip when fboundp gates picked the C
-implementation."
-  (skip-unless (eq 'emacs-edit-builtins
-                   (cdr (find-function-library 'yank))))
+its own clipboard plumbing), so this calls the pure-Elisp body
+directly."
   (emacs-edit-builtins-test--with-fresh-buffer ""
     (setq emacs-edit-builtins-test--paste-return "from-clipboard")
     (let ((kill-ring '("local-head"))
           (kill-ring-yank-pointer '("local-head"))
           (interprogram-paste-function #'emacs-edit-builtins-test--paste-fn))
-      (yank)
+      (emacs-edit--yank nil)
       (should (equal "from-clipboard" (car kill-ring)))
       (should (equal "from-clipboard" (nelisp-ec-buffer-string))))))
 
@@ -444,29 +432,25 @@ implementation."
   "When `interprogram-paste-function' returns a string equal to the
 head of `kill-ring', the duplicate must be dropped (= avoid pushing
 our own just-cut text twice)."
-  (skip-unless (eq 'emacs-edit-builtins
-                   (cdr (find-function-library 'yank))))
   (emacs-edit-builtins-test--with-fresh-buffer ""
     (setq emacs-edit-builtins-test--paste-return "same")
     (let ((kill-ring '("same"))
           (kill-ring-yank-pointer '("same"))
           (interprogram-paste-function #'emacs-edit-builtins-test--paste-fn))
-      (yank)
+      (emacs-edit--yank nil)
       (should (= 1 (length kill-ring)))
       (should (equal "same" (nelisp-ec-buffer-string))))))
 
 (ert-deftest emacs-edit-builtins-test/yank-ignores-paste-fn-with-arg ()
   "Non-default `yank' ARG (= older entry) must NOT consult the
 clipboard — `arg' explicitly chose a kill-ring entry."
-  (skip-unless (eq 'emacs-edit-builtins
-                   (cdr (find-function-library 'yank))))
   (emacs-edit-builtins-test--with-fresh-buffer ""
     (setq emacs-edit-builtins-test--paste-call-count 0)
     (setq emacs-edit-builtins-test--paste-return "should-not-appear")
     (let ((kill-ring '("head" "older"))
           (kill-ring-yank-pointer '("head" "older"))
           (interprogram-paste-function #'emacs-edit-builtins-test--paste-fn))
-      (yank 2)
+      (emacs-edit--yank 2)
       (should (= 0 emacs-edit-builtins-test--paste-call-count))
       (should (equal "older" (nelisp-ec-buffer-string))))))
 
