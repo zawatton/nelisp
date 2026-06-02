@@ -13,7 +13,8 @@
 ;; ExitProcess, VirtualAlloc, VirtualProtect / VirtualFree, arena metadata,
 ;; stdout HANDLE I/O via GetStdHandle + WriteFile, and CRT-free command-line
 ;; discovery via GetCommandLineW / CommandLineToArgvW, and Winsock startup via
-;; WS2_32.dll!WSAStartup, plus CreateProcessW child launch / wait.
+;; WS2_32.dll!WSAStartup, plus CreateProcessW child launch / wait and
+;; CreateThread launch / join.
 ;;
 ;; Run on a Windows machine with Emacs installed via:
 ;;
@@ -30,6 +31,7 @@
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-commandlinetoargv
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-wsastartup
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-createprocess
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-createthread
 ;;
 ;; The generated EXEs require no external compiler, linker, CRT, or signing.
 
@@ -95,6 +97,11 @@
                     nelisp-windows-build--repo-root)
   "Default path for the single CreateProcessW smoke EXE.")
 
+(defconst nelisp-windows-build--createthread-out
+  (expand-file-name "target/nelisp-windows-createthread.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single CreateThread smoke EXE.")
+
 (defconst nelisp-windows-build-smoke-specs
   '((exit42 . minimal-exit-42)
     (virtualalloc . virtualalloc-exit-42)
@@ -104,7 +111,8 @@
     (getcommandline . getcommandline-exit-42)
     (commandlinetoargv . commandlinetoargv-exit-42)
     (wsastartup . wsastartup-exit-42)
-    (createprocess . createprocess-wait-exit-42))
+    (createprocess . createprocess-wait-exit-42)
+    (createthread . createthread-wait-exit-42))
   "Named Windows PE32+ smoke specs used by the real-machine script.")
 
 (defun nelisp-windows-build--normalize-spec (spec)
@@ -219,6 +227,13 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
    'createprocess-wait-exit-42
    (or out-path nelisp-windows-build--createprocess-out)
    "CreateProcessW + wait child exit 42"))
+
+(defun nelisp-windows-build-createthread (&optional out-path)
+  "Batch entry: build the Windows CreateThread smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'createthread-wait-exit-42
+   (or out-path nelisp-windows-build--createthread-out)
+   "CreateThread + join thread exit 42"))
 
 (provide 'nelisp-windows-build)
 
