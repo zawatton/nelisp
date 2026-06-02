@@ -90,6 +90,8 @@
 ;; option helpers.
 ;; Stage 109 maps additional `IPPROTO_TCP' int-valued options through the
 ;; Windows socket option helpers.
+;; Stage 110 maps generic/MTU `IPPROTO_IPV6' int-valued options through the
+;; Windows socket option helpers.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -294,7 +296,12 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-IPV6-MULTICAST-IF 9)
 (defconst nelisp-os-WIN-IPV6-MULTICAST-HOPS 10)
 (defconst nelisp-os-WIN-IPV6-MULTICAST-LOOP 11)
+(defconst nelisp-os-WIN-IPV6-DONTFRAG 14)
 (defconst nelisp-os-WIN-IPV6-V6ONLY 27)
+(defconst nelisp-os-WIN-IPV6-TCLASS 39)
+(defconst nelisp-os-WIN-IPV6-RECVTCLASS 40)
+(defconst nelisp-os-WIN-IPV6-MTU-DISCOVER 71)
+(defconst nelisp-os-WIN-IPV6-MTU 72)
 (defconst nelisp-os-WIN-UDP-NOCHECKSUM 1)
 (defconst nelisp-os-WIN-UDP-SEND-MSG-SIZE 2)
 (defconst nelisp-os-WIN-UDP-RECV-MAX-COALESCED-SIZE 3)
@@ -1991,6 +1998,11 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-IPV6-MULTICAST-IF 17)
 (defconst nelisp-os-IPV6-MULTICAST-HOPS 18)
 (defconst nelisp-os-IPV6-MULTICAST-LOOP 19)
+(defconst nelisp-os-IPV6-MTU-DISCOVER 23)
+(defconst nelisp-os-IPV6-MTU 24)
+(defconst nelisp-os-IPV6-DONTFRAG 62)
+(defconst nelisp-os-IPV6-RECVTCLASS 66)
+(defconst nelisp-os-IPV6-TCLASS 67)
 (defconst nelisp-os-IPV6-UNICAST-IF 76)
 (defconst nelisp-os-IPV6-V6ONLY 26)
 (defconst nelisp-os-UDP-NOCHECKSUM 1)
@@ -2560,6 +2572,22 @@ When GETTER-P is non-nil, include get-only options."
    ((and (= level nelisp-os-IPPROTO-IPV6)
          (= optname nelisp-os-IPV6-MULTICAST-LOOP))
     nelisp-os-WIN-IPV6-MULTICAST-LOOP)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-DONTFRAG))
+    nelisp-os-WIN-IPV6-DONTFRAG)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-MTU-DISCOVER))
+    nelisp-os-WIN-IPV6-MTU-DISCOVER)
+   ((and getter-p
+         (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-MTU))
+    nelisp-os-WIN-IPV6-MTU)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-TCLASS))
+    nelisp-os-WIN-IPV6-TCLASS)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-RECVTCLASS))
+    nelisp-os-WIN-IPV6-RECVTCLASS)
    ((and (= level nelisp-os-IPPROTO-IPV6)
          (= optname nelisp-os-IPV6-V6ONLY))
     nelisp-os-WIN-IPV6-V6ONLY)
