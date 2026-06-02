@@ -98,6 +98,7 @@
 ;; Stage 113 adds a Windows eventfd compatibility counter fd.
 ;; Stage 114 adds fcntl duplication and close-on-exec tracking for Windows
 ;; eventfd-compatible fds.
+;; Stage 115 adds dup2 support for Windows eventfd-compatible fds.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -568,20 +569,26 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
 
 (defun nelisp-os--windows-close-std-fd (fd)
   "Close POSIX-like standard FD through the Windows standard HANDLE table."
-  (let* ((selector (nelisp-os--windows-std-handle-selector fd))
-         (handle (nelisp-os--windows-get-std-handle fd))
-         (kind (nelisp-os--windows-fd-kind fd)))
-    (nelisp-os--windows-close-resource handle kind)
-    (let ((ok (nelisp-os--libc-call
-               "kernel32" "SetStdHandle"
-               [:sint32 :sint32 :pointer]
-               selector
-               0)))
-      (if (= ok 0)
-          (nelisp-os--windows-ffi-error-signal)
-        (nelisp-os--windows-fd-set-kind fd nil)
-        (nelisp-os--windows-fd-set-flags fd 0)
-        nil))))
+  (let ((kind (nelisp-os--windows-fd-kind fd)))
+    (if (eq kind 'eventfd)
+        (progn
+          (nelisp-os--windows-eventfd-remove fd)
+          (nelisp-os--windows-fd-set-kind fd nil)
+          (nelisp-os--windows-fd-set-flags fd 0)
+          nil)
+      (let* ((selector (nelisp-os--windows-std-handle-selector fd))
+             (handle (nelisp-os--windows-get-std-handle fd)))
+        (nelisp-os--windows-close-resource handle kind)
+        (let ((ok (nelisp-os--libc-call
+                   "kernel32" "SetStdHandle"
+                   [:sint32 :sint32 :pointer]
+                   selector
+                   0)))
+          (if (= ok 0)
+              (nelisp-os--windows-ffi-error-signal)
+            (nelisp-os--windows-fd-set-kind fd nil)
+            (nelisp-os--windows-fd-set-flags fd 0)
+            nil))))))
 
 (defun nelisp-os--windows-install-std-fd (fd handle flags &optional kind)
   "Install HANDLE as Windows standard FD, replacing the old standard HANDLE.
@@ -607,6 +614,34 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
         (nelisp-os--windows-fd-set-kind fd kind)
         (nelisp-os--windows-fd-set-flags fd flags)
         fd))))
+
+(defun nelisp-os--windows-install-eventfd-fd (fd state flags)
+  "Install Windows eventfd STATE at FD with status FLAGS.
+FD_CLOEXEC is cleared on the installed descriptor, matching dup-style
+descriptor semantics."
+  (if (nelisp-os--windows-std-handle-selector fd)
+      (let ((selector (nelisp-os--windows-std-handle-selector fd))
+            (old-handle (nelisp-os--windows-optional-std-handle fd))
+            (old-kind (nelisp-os--windows-fd-kind fd)))
+        (let ((ok (nelisp-os--libc-call
+                   "kernel32" "SetStdHandle"
+                   [:sint32 :sint32 :pointer]
+                   selector
+                   0)))
+          (if (= ok 0)
+              (nelisp-os--windows-ffi-error-signal)
+            (when old-handle
+              (condition-case nil
+                  (nelisp-os--windows-close-resource old-handle old-kind)
+                (nelisp-os-error nil)))
+            (nelisp-os--windows-eventfd-remove fd)
+            (nelisp-os--windows-fd-set-kind fd 'eventfd)
+            (nelisp-os--windows-fd-set-flags fd flags)
+            (push (cons fd state) nelisp-os--windows-eventfd-table)
+            fd)))
+    (nelisp-os--windows-fd-install fd 0 'eventfd flags)
+    (push (cons fd state) nelisp-os--windows-eventfd-table)
+    fd))
 
 (defun nelisp-os--windows-handle-for-fd (fd)
   "Return a Windows HANDLE for POSIX-like FD."
@@ -1771,21 +1806,30 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
   "Windows implementation of `nelisp-os-dup2' via DuplicateHandle."
   (when (< newfd 0)
     (signal 'nelisp-os-error (list 9))) ; EBADF
-    (if (= oldfd newfd)
+  (if (= oldfd newfd)
       (progn
-        (nelisp-os--windows-handle-for-fd oldfd)
+        (if (eq (nelisp-os--windows-fd-kind oldfd) 'eventfd)
+            (nelisp-os--windows-eventfd-cell oldfd)
+          (nelisp-os--windows-handle-for-fd oldfd))
         newfd)
-    (if (eq (nelisp-os--windows-fd-kind oldfd) 'socket)
-        (let ((target-socket (nelisp-os--windows-duplicate-socket oldfd))
-              (flags (nelisp-os--windows-fd-flags oldfd)))
-          (if (nelisp-os--windows-std-handle-selector newfd)
-              (nelisp-os--windows-install-std-fd
-               newfd target-socket flags 'socket)
-            (nelisp-os--windows-fd-install
-             newfd
-             target-socket
-             'socket
-             flags)))
+    (cond
+     ((eq (nelisp-os--windows-fd-kind oldfd) 'socket)
+      (let ((target-socket (nelisp-os--windows-duplicate-socket oldfd))
+            (flags (nelisp-os--windows-fd-flags oldfd)))
+        (if (nelisp-os--windows-std-handle-selector newfd)
+            (nelisp-os--windows-install-std-fd
+             newfd target-socket flags 'socket)
+          (nelisp-os--windows-fd-install
+           newfd
+           target-socket
+           'socket
+           flags))))
+     ((eq (nelisp-os--windows-fd-kind oldfd) 'eventfd)
+      (nelisp-os--windows-install-eventfd-fd
+       newfd
+       (cdr (nelisp-os--windows-eventfd-cell oldfd))
+       (nelisp-os--windows-fd-flags oldfd)))
+     (t
       (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
             (target-handle-buf (nelisp-os--alloc 8)))
         (unwind-protect
@@ -1817,7 +1861,7 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                      target-handle
                      nil
                      (nelisp-os--windows-fd-flags oldfd))))))
-          (nelisp-os--free target-handle-buf))))))
+          (nelisp-os--free target-handle-buf)))))))
 
 (defun nelisp-os--windows-duplicate-fd (oldfd min-fd)
   "Duplicate OLDFD to a new Windows fd whose number is at least MIN-FD."
@@ -1919,12 +1963,14 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
    ((= cmd nelisp-os-F-SETFD)
     (nelisp-os--windows-setfd-flags fd arg))
    ((= cmd nelisp-os-F-GETFL)
-    (nelisp-os--windows-handle-for-fd fd)
+    (if (eq (nelisp-os--windows-fd-kind fd) 'eventfd)
+        (nelisp-os--windows-eventfd-cell fd)
+      (nelisp-os--windows-handle-for-fd fd))
     (nelisp-os--windows-fd-flags fd))
    ((= cmd nelisp-os-F-SETFL)
-    (nelisp-os--windows-handle-for-fd fd)
     (cond
      ((eq (nelisp-os--windows-fd-kind fd) 'socket)
+      (nelisp-os--windows-handle-for-fd fd)
       (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
         (signal 'nelisp-os-error (list 95))) ; ENOTSUP
       (nelisp-os--windows-set-socket-nonblock
@@ -1933,11 +1979,13 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
       (nelisp-os--windows-fd-set-flags fd arg)
       0)
      ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
+      (nelisp-os--windows-eventfd-cell fd)
       (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
         (signal 'nelisp-os-error (list 95))) ; ENOTSUP
       (nelisp-os--windows-fd-set-flags fd arg)
       0)
      (t
+      (nelisp-os--windows-handle-for-fd fd)
       (let* ((current (nelisp-os--windows-fd-flags fd))
              (requested-append (logand arg nelisp-os-O-APPEND))
              (current-append (logand current nelisp-os-O-APPEND)))

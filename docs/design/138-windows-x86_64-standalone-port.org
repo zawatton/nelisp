@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-114-WINDOWS-EVENTFD-FCNTL
+#+STATUS: STAGE-115-WINDOWS-EVENTFD-DUP2
 
 * Status
 
-- *State*: STAGE 114 Windows eventfd fcntl compatibility
+- *State*: STAGE 115 Windows eventfd dup2 compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -286,7 +286,10 @@
   =EFD_NONBLOCK= status tracking.  The synthetic eventfd fd also has Windows
   =fcntl= compatibility for =F_DUPFD=, =F_GETFD=, and =F_SETFD=: duplicates
   share the same counter state, =EFD_CLOEXEC= maps to tracked descriptor
-  flags, and no fake HANDLE calls are made for descriptor metadata.  The
+  flags, and no fake HANDLE calls are made for descriptor metadata.  Windows
+  =dup2= now also handles eventfd-compatible fds by installing another
+  synthetic fd that shares the counter state, including standard fd targets
+  such as stdout without routing eventfd I/O through HANDLE reads/writes.  The
   Winsock branch has started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
@@ -611,6 +614,10 @@
   =F_DUPFD= without HANDLE duplication, share the eventfd counter state across
   the duplicate, map =EFD_CLOEXEC= through =F_GETFD= / =F_SETFD= descriptor
   flags, and reject unsupported descriptor flag bits before FFI.
+  Stage 115 coverage verifies Windows eventfd-compatible fds support
+  =dup2= to another synthetic fd and to stdout, preserve shared counter
+  semantics, copy tracked =O_NONBLOCK= status, clear target =FD_CLOEXEC=, and
+  clean up eventfd tables when the duplicated descriptors are closed.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1027,6 +1034,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   now support =F_DUPFD= by creating another synthetic fd that shares the same
   counter state, and =F_GETFD= / =F_SETFD= track descriptor =FD_CLOEXEC=
   without calling HANDLE metadata APIs on fd kind =eventfd=.
+  *Windows eventfd dup2 progress 2026-06-03*: Windows =dup2= now supports
+  synthetic eventfd fds by installing another eventfd fd-kind entry sharing
+  the same counter state; stdout/stderr/stdin targets are represented through
+  the fd-kind tables so later =read/write/close= use eventfd semantics rather
+  than HANDLE I/O.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1448,6 +1460,10 @@ largest uncertainty (B1 + B2) first.
    Windows eventfd fds now support =F_DUPFD= with shared counter state and
    =F_GETFD= / =F_SETFD= descriptor flag tracking for =FD_CLOEXEC= without
    fake HANDLE metadata calls.
+   *Windows eventfd dup2 compatibility SHIPPED 2026-06-03*: Windows =dup2=
+   now duplicates synthetic eventfd fds to regular fd numbers and standard
+   fd targets while preserving shared counter state and tracked =O_NONBLOCK=
+   status.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
@@ -1609,7 +1625,7 @@ largest uncertainty (B1 + B2) first.
    IPv4/IPv6 loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=,
    accepted socket nonblock flag tracking, socket close-on-exec support, and
    Windows-compatible =eventfd= counters with synthetic =fcntl= dup/cloexec
-   support; regular
+   plus =dup2= support; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
    those flags through regular =dup2= / =F_DUPFD=, including standard fd

@@ -1512,6 +1512,86 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-dup2-windows-duplicates-eventfd ()
+  "Windows eventfd dup2 installs another synthetic fd sharing the counter."
+  (let ((called nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-eventfd-table nil)
+        (nelisp-os--windows-eventfd-fd-flags-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-eventfd
+                    8
+                    (logior nelisp-os-EFD-NONBLOCK
+                            nelisp-os-EFD-CLOEXEC))
+                   3))
+        (should (= (nelisp-os-dup2 3 5) 5))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFD 0)
+                   nelisp-os-FD-CLOEXEC))
+        (should (= (nelisp-os-fcntl 5 nelisp-os-F-GETFD 0) 0))
+        (should (= (nelisp-os-fcntl 5 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os-write 5 (nelisp-os--u64le-string 2)) 8))
+        (should (= (nelisp-os--u64le-from-string (nelisp-os-read 3 8)) 10))
+        (should-not (nelisp-os-close 5))
+        (should-not (nelisp-os-close 3))))
+    (should-not called)
+    (should-not nelisp-os--windows-fd-table)
+    (should-not nelisp-os--windows-fd-kind-table)
+    (should-not nelisp-os--windows-fd-flags-table)
+    (should-not nelisp-os--windows-eventfd-table)
+    (should-not nelisp-os--windows-eventfd-fd-flags-table)))
+
+(ert-deftest nelisp-stdlib-os-dup2-windows-eventfd-can-target-stdout ()
+  "Windows eventfd dup2 to stdout installs a synthetic standard fd."
+  (let ((calls nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-eventfd-table nil)
+        (nelisp-os--windows-eventfd-fd-flags-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetStdHandle") #xdddd)
+                  ((equal fn "SetStdHandle") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-eventfd 1 nelisp-os-EFD-NONBLOCK) 3))
+        (should (= (nelisp-os-dup2 3 nelisp-os-STDOUT)
+                   nelisp-os-STDOUT))
+        (should (= (nelisp-os-fcntl nelisp-os-STDOUT nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os-write nelisp-os-STDOUT
+                                    (nelisp-os--u64le-string 4))
+                   8))
+        (should (= (nelisp-os--u64le-from-string (nelisp-os-read 3 8)) 5))
+        (should-not (nelisp-os-close nelisp-os-STDOUT))
+        (should-not (nelisp-os-close 3))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "SetStdHandle"
+                          [:sint32 :sint32 :pointer]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE 0))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xdddd)))))
+    (should-not nelisp-os--windows-fd-table)
+    (should-not nelisp-os--windows-fd-kind-table)
+    (should-not nelisp-os--windows-fd-flags-table)
+    (should-not nelisp-os--windows-eventfd-table)
+    (should-not nelisp-os--windows-eventfd-fd-flags-table)))
+
 (ert-deftest nelisp-stdlib-os-dup2-windows-duplicates-socket-fd ()
   "Windows socket fd dup2 uses WSADuplicateSocketW + WSASocketW."
   (let ((calls nil)
