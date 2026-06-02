@@ -45,8 +45,9 @@
 ;; before they can fall through to Linux syscall or libc paths.  Stage 22 starts
 ;; the Winsock branch with `WSAStartup' + `socket' and socket-specific close via
 ;; `closesocket'.  Stage 23 maps AF_INET `bind' / `connect' / `listen' to
-;; Winsock.  The Linux/Darwin path remains the default until a real Windows
-;; standalone runtime selects `system-type' = `windows-nt'.
+;; Winsock.  Stage 24 maps AF_INET `accept' to Winsock and registers accepted
+;; sockets in the Windows fd table.  The Linux/Darwin path remains the default
+;; until a real Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -1469,10 +1470,19 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
     (unwind-protect
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in-len)
-          (let ((newfd (nelisp-os--libc-call "libc" "accept"
-                                    [:sint32 :sint32 :pointer :pointer]
-                                    sockfd addr-buf len-buf)))
-            (if (= newfd -1)
+          (let ((newfd (if (nelisp-os--windows-p)
+                           (let ((sock (nelisp-os--libc-call
+                                        "ws2_32" "accept"
+                                        [:pointer :pointer :pointer :pointer]
+                                        (nelisp-os--windows-socket-for-fd sockfd)
+                                        addr-buf len-buf)))
+                             (if (= sock nelisp-os-WIN-INVALID-SOCKET)
+                                 (nelisp-os--windows-winsock-error-signal)
+                               (nelisp-os--windows-fd-alloc sock 'socket)))
+                         (nelisp-os--libc-call "libc" "accept"
+                                      [:sint32 :sint32 :pointer :pointer]
+                                      sockfd addr-buf len-buf))))
+            (if (and (not (nelisp-os--windows-p)) (= newfd -1))
                 (nelisp-os--ffi-errno-signal)
               (let ((hp (nelisp-os--decode-sockaddr-in addr-buf)))
                 (list newfd (car hp) (cdr hp))))))

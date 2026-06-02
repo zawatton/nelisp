@@ -850,6 +850,43 @@
         (should-error (nelisp-os-listen 3 8) :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-accept-inet-windows-uses-winsock ()
+  "Windows accept returns a socket-kind fd plus decoded peer address."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (nelisp-os--windows-next-fd 4)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n) (if (= n nelisp-os--sockaddr-in-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in)
+               (lambda (ptr)
+                 (should (= ptr 3000))
+                 (cons nelisp-os-INADDR-LOOPBACK 4444)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 #x123456)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-accept-inet 3)
+                       (list 4 nelisp-os-INADDR-LOOPBACK 4444)))))
+    (should (equal len-write (list 4000 0 nelisp-os--sockaddr-in-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "accept"
+                          [:pointer :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((4 . #x123456) (3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((4 . socket) (3 . socket))))
+    (should (= nelisp-os--windows-next-fd 5))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
 (ert-deftest nelisp-stdlib-os-kill-windows-uses-terminateprocess ()
   "Windows kill terminates a single PID through kernel32 process APIs."
   (let ((calls nil))
