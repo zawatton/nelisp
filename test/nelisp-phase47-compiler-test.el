@@ -2519,6 +2519,41 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x89 #xec #x5d #xc3)))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-defun-preserves-xmm6-xmm15 ()
+  "Win64 defuns preserve callee-saved XMM6-XMM15 in private slots."
+  (let ((path (make-temp-file "nelisp-win64-xmm-callee-save-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () 0)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; sub rsp,160 for XMM6-XMM15 save area.
+                     (unibyte-string #x48 #x81 #xec #xa0 #x00 #x00 #x00)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; movdqu [rbp-176],xmm6
+                     (unibyte-string #xf3 #x0f #x7f #xb5 #x50 #xff #xff #xff)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; movdqu [rbp-320],xmm15
+                     (unibyte-string #xf3 #x44 #x0f #x7f #xbd
+                                     #xc0 #xfe #xff #xff)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; movdqu xmm6,[rbp-176]
+                     (unibyte-string #xf3 #x0f #x6f #xb5 #x50 #xff #xff #xff)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; movdqu xmm15,[rbp-320]
+                     (unibyte-string #xf3 #x44 #x0f #x6f #xbd
+                                     #xc0 #xfe #xff #xff)))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-compiler/win64-defun-callee-saves-after-frame-slots ()
   "Win64 callee-save slots live below param and runtime let slots."
   (let ((path (make-temp-file "nelisp-win64-callee-save-frame-" nil ".obj")))

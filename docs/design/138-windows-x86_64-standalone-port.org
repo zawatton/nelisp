@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-64-WIN64-DEFUN-STACK-PARAMS
+#+STATUS: STAGE-65-WIN64-XMM-CALLEE-SAVES
 
 * Status
 
-- *State*: STAGE 64 Win64 defun stack params
+- *State*: STAGE 65 Win64 XMM callee-saves
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -53,7 +53,9 @@
   (=RCX/XMM0=, =RDX/XMM1=, =R8/XMM2=, =R9/XMM3=), and places fifth-and-later
   =extern-call= arguments in the outgoing stack area above shadow space.  Win64
   defuns now also spill fifth-and-later GP/f64/mixed incoming stack params from
-  =[rbp+48]= and later into the normal local frame slots.
+  =[rbp+48]= and later into the normal local frame slots.  Win64 defuns now
+  preserve =XMM6..XMM15= in private 16-byte slots below the GP callee-save
+  slots, closing the remaining B5 callee-save emit diff.
   =lisp/nelisp-stdlib-os.el= now also routes Windows
   stdout/stderr =nelisp-os-write= calls through =kernel32!GetStdHandle= +
   =kernel32!WriteFile= and stdin =nelisp-os-read= calls through
@@ -591,8 +593,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   args in the outgoing stack area.  Stage 63 adds mixed GP/f64 defun register
   params with the same Win64 argument-position pairing.  Stage 64 spills
   fifth-and-later Win64 defun GP/f64/mixed params from the incoming stack area.
-- Remaining diff: XMM6-XMM15 save rules if future emitters use callee-saved
-  XMM scratch registers.
+  Stage 65 adds defun save/restore for Win64 callee-saved =XMM6..XMM15=.
+- Remaining diff: none known for B5 ABI emit; remaining Windows work is
+  B4/B6/B7 wiring and real-machine smoke expansion.
 - *Why Windows is easier than macOS here*: same x86_64 ISA → backend
   instructions are reused.  macOS arm64 needed *75 new ops* (7/82 implemented);
   Windows only needs the win64 ABI emit wired through every call
@@ -942,9 +945,11 @@ largest uncertainty (B1 + B2) first.
    *Win64 defun stack params SHIPPED 2026-06-03*: Phase 47 COFF tests now
    verify fifth-and-later Win64 defun GP, f64, and mixed params spill from the
    incoming stack area starting at =[rbp+48]= into normal local frame slots.
+   *Win64 XMM callee-saves SHIPPED 2026-06-03*: Win64 defuns now preserve
+   =XMM6..XMM15= in private 16-byte frame slots, and COFF tests lock the
+   first/last save/restore byte shape.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
-   Wine, then wire
-   win64 ABI emit through all ops (B5).  *Real-machine script READY
+   Wine, then continue B4/B6/B7 wiring.  *Real-machine script READY
    2026-06-02*:
    =tools/windows-selfhost-test.ps1= drives =scripts/nelisp-windows-build.el=
    to emit =minimal-exit-42=, =virtualalloc-exit-42=,

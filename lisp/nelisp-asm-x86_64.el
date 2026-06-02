@@ -301,11 +301,9 @@ to avoid the plist materialization cost."
 ;;             Callee-saved: RBP RBX RDI RSI R12-R15 (XMM6-XMM15).
 ;;             Caller allocates 32-byte shadow space before CALL.
 ;;
-;; Win64 integer argument remapping and caller shadow-space helpers are
-;; operational.  Remaining Win64-specific expansion is kept explicit at
-;; the compiler call sites, especially XMM callee saves and broader
-;; prologue coverage, so unsupported shapes fail before emitting silently
-;; wrong COFF.
+;; Win64 integer argument remapping, caller shadow-space helpers, and
+;; callee-saved XMM register metadata are operational.  The compiler
+;; call sites choose which saves to materialise for each function body.
 
 (defconst nelisp-asm-x86_64--abi-sysv-arg-regs
   '(rdi rsi rdx rcx r8 r9)
@@ -321,7 +319,11 @@ to avoid the plist materialization cost."
 
 (defconst nelisp-asm-x86_64--abi-win64-callee-saved
   '(rbp rbx rdi rsi r12 r13 r14 r15)
-  "Microsoft x64 ABI callee-saved integer registers (XMM6-XMM15 omitted; GP only).")
+  "Microsoft x64 ABI callee-saved integer registers; XMM list is separate.")
+
+(defconst nelisp-asm-x86_64--abi-win64-xmm-callee-saved
+  '(xmm6 xmm7 xmm8 xmm9 xmm10 xmm11 xmm12 xmm13 xmm14 xmm15)
+  "Microsoft x64 ABI callee-saved XMM registers.")
 
 (defun nelisp-asm-x86_64-abi-arg-regs (abi)
   "Return the integer argument register list for ABI ('sysv or 'win64).
@@ -340,7 +342,7 @@ Signals `nelisp-asm-x86_64-error' with :unknown-abi for any other value."
   "Return the callee-saved integer register list for ABI ('sysv or 'win64).
 Doc 101 §101.B Wave 5: both ABIs fully implemented.
   'sysv  — RBP RBX R12-R15
-  'win64 — RBP RBX RDI RSI R12-R15 (XMM6-XMM15 GP-only list)
+  'win64 — RBP RBX RDI RSI R12-R15 (GP-only list)
 Signals `nelisp-asm-x86_64-error' with :unknown-abi for any other value."
   (cond
    ((eq abi 'sysv)  nelisp-asm-x86_64--abi-sysv-callee-saved)
@@ -1197,15 +1199,17 @@ spill an xmm value to a `[rbp + disp]' stack slot."
 
 (defun nelisp-asm-x86_64-movdqu-xmm-mem-disp8 (buf dst base disp)
   "Emit `MOVDQU DST, XMMWORD PTR [BASE + DISP]'.
-Encoding: F3 [REX?] 0F 6F ModR/M disp8.  Used by Doc 101 §101.B's
-Cons slot copies (= 16-byte unaligned loads from `NlConsBox.car' /
-`cdr' into an xmm scratch register)."
+Encoding: F3 [REX?] 0F 6F ModR/M disp8/disp32.  Used by Doc 101
+§101.B's Cons slot copies (= 16-byte unaligned loads from
+`NlConsBox.car' / `cdr' into an xmm scratch register), and by Win64
+XMM callee-save restore slots."
   (when (memq base '(rsp r12))
     (signal 'nelisp-asm-x86_64-error
             (list :movdqu-rsp-r12-base-needs-sib base)))
-  (unless (and (integerp disp) (<= -128 disp 127))
+  (unless (and (integerp disp)
+               (<= (- (ash 1 31)) disp (1- (ash 1 31))))
     (signal 'nelisp-asm-x86_64-error
-            (list :disp8-out-of-range disp)))
+            (list :disp32-out-of-range disp)))
   (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext dst))
          (ext-b (nelisp-asm-x86_64--reg-ext base))
          (need-rex (or (= ext-r 1) (= ext-b 1)))
@@ -1213,26 +1217,34 @@ Cons slot copies (= 16-byte unaligned loads from `NlConsBox.car' /
                   (unibyte-string
                    (nelisp-asm-x86_64--rex 0 ext-r 0 ext-b))
                 ""))
-         (modrm (nelisp-asm-x86_64--modrm
-                 1
-                 (nelisp-asm-x86_64--xmm-reg-low3 dst)
-                 (nelisp-asm-x86_64--reg-low3 base))))
-    (nelisp-asm-x86_64--append-bytes
-     buf (concat (unibyte-string #xF3)
-                 rex
-                 (unibyte-string #x0F #x6F modrm (logand disp #xFF))))))
+         (reg (nelisp-asm-x86_64--xmm-reg-low3 dst))
+         (rm (nelisp-asm-x86_64--reg-low3 base)))
+    (if (<= -128 disp 127)
+        (nelisp-asm-x86_64--append-bytes
+         buf (concat (unibyte-string #xF3)
+                     rex
+                     (unibyte-string #x0F #x6F
+                                     (nelisp-asm-x86_64--modrm 1 reg rm)
+                                     (logand disp #xFF))))
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string #xF3)
+                   rex
+                   (unibyte-string #x0F #x6F
+                                   (nelisp-asm-x86_64--modrm 2 reg rm))
+                   (nelisp-asm-x86_64--imm32-bytes disp))))))
 
 (defun nelisp-asm-x86_64-movdqu-mem-disp8-xmm (buf base disp src)
   "Emit `MOVDQU XMMWORD PTR [BASE + DISP], SRC'.
-Encoding: F3 [REX?] 0F 7F ModR/M disp8.  Used by Doc 101 §101.B's
-Cons slot copies (= 16-byte unaligned stores into the caller-owned
-32-byte Sexp slot)."
+Encoding: F3 [REX?] 0F 7F ModR/M disp8/disp32.  Used by Doc 101
+§101.B's Cons slot copies (= 16-byte unaligned stores into the
+caller-owned 32-byte Sexp slot), and by Win64 XMM callee-save slots."
   (when (memq base '(rsp r12))
     (signal 'nelisp-asm-x86_64-error
             (list :movdqu-rsp-r12-base-needs-sib base)))
-  (unless (and (integerp disp) (<= -128 disp 127))
+  (unless (and (integerp disp)
+               (<= (- (ash 1 31)) disp (1- (ash 1 31))))
     (signal 'nelisp-asm-x86_64-error
-            (list :disp8-out-of-range disp)))
+            (list :disp32-out-of-range disp)))
   (let* ((ext-r (nelisp-asm-x86_64--xmm-reg-ext src))
          (ext-b (nelisp-asm-x86_64--reg-ext base))
          (need-rex (or (= ext-r 1) (= ext-b 1)))
@@ -1240,14 +1252,21 @@ Cons slot copies (= 16-byte unaligned stores into the caller-owned
                   (unibyte-string
                    (nelisp-asm-x86_64--rex 0 ext-r 0 ext-b))
                 ""))
-         (modrm (nelisp-asm-x86_64--modrm
-                 1
-                 (nelisp-asm-x86_64--xmm-reg-low3 src)
-                 (nelisp-asm-x86_64--reg-low3 base))))
-    (nelisp-asm-x86_64--append-bytes
-     buf (concat (unibyte-string #xF3)
-                 rex
-                 (unibyte-string #x0F #x7F modrm (logand disp #xFF))))))
+         (reg (nelisp-asm-x86_64--xmm-reg-low3 src))
+         (rm (nelisp-asm-x86_64--reg-low3 base)))
+    (if (<= -128 disp 127)
+        (nelisp-asm-x86_64--append-bytes
+         buf (concat (unibyte-string #xF3)
+                     rex
+                     (unibyte-string #x0F #x7F
+                                     (nelisp-asm-x86_64--modrm 1 reg rm)
+                                     (logand disp #xFF))))
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string #xF3)
+                   rex
+                   (unibyte-string #x0F #x7F
+                                   (nelisp-asm-x86_64--modrm 2 reg rm))
+                   (nelisp-asm-x86_64--imm32-bytes disp))))))
 
 (defun nelisp-asm-x86_64-movsd-xmm-rip-disp32 (buf dst disp32)
   "Emit `MOVSD DST, QWORD PTR [RIP + DISP32]' = F2 [REX?] 0F 10 ModR/M disp32.

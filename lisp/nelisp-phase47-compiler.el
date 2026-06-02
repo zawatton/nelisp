@@ -15012,6 +15012,10 @@ return reg, untouched by epilogue)."
                             (1+ rt-slot-count)))
          (win64-callee-save-slot-base
           (+ param-slot-rounded rt-slot-rounded))
+         (win64-xmm-callee-save-regs
+          nelisp-asm-x86_64--abi-win64-xmm-callee-saved)
+         (win64-xmm-callee-save-slot-base
+          (+ win64-callee-save-slot-base 2))
          ;; Track this defun's arity for `--emit-extern-call' (Doc 111
          ;; §111.E #19-#26 stack alignment fix).  Inner emit helpers
          ;; bound under this `let*' see the param count via the dynvar
@@ -15092,8 +15096,9 @@ return reg, untouched by epilogue)."
             ;;
             ;; 3. Callee-saved: RDI and RSI are callee-saved under Win64, while
             ;;    many body emitters use them as scratch / argument registers.
-            ;;    Always save them in two private slots after param + let-rt
-            ;;    storage and restore them immediately before frame teardown.
+            ;;    XMM6-XMM15 are also callee-saved.  Always save them in
+            ;;    private slots after param + let-rt storage and restore them
+            ;;    immediately before frame teardown.
             ;;
             ;; Strategy for GP/f64 params:
             ;;   a. `sub rsp, 8*ROUNDED' to allocate the spill frame.
@@ -15192,7 +15197,18 @@ return reg, untouched by epilogue)."
             (nelisp-asm-x86_64-mov-mem-reg-disp8
              buf 'rbp (- (* 8 (1+ win64-callee-save-slot-base))) 'rdi)
             (nelisp-asm-x86_64-mov-mem-reg-disp8
-             buf 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base))) 'rsi))
+             buf 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base))) 'rsi)
+            (nelisp-asm-x86_64--sub-imm32-inline
+             buf 'rsp (* 16 (length win64-xmm-callee-save-regs)))
+            (cl-loop for xreg in win64-xmm-callee-save-regs
+                     for idx from 0
+                     do
+                     (nelisp-asm-x86_64-movdqu-mem-disp8-xmm
+                      buf 'rbp
+                      (- (* 8 (+ win64-xmm-callee-save-slot-base
+                                  2
+                                  (* 2 idx))))
+                      xreg)))
         ;; ---- SysV ABI prologue (unchanged) ----
         (cond
          ;; GP class — for the original six-register surface, keep the
@@ -15286,6 +15302,14 @@ return reg, untouched by epilogue)."
       ;; spill via mov rsp, rbp; pop rbp; ret.
       ;; Wave 20: same hand-inline rationale as the prologue above.
       (when (eq nelisp-phase47-compiler--abi 'win64)
+        (cl-loop for xreg in win64-xmm-callee-save-regs
+                 for idx from 0
+                 do
+                 (nelisp-asm-x86_64-movdqu-xmm-mem-disp8
+                  buf xreg 'rbp
+                  (- (* 8 (+ win64-xmm-callee-save-slot-base
+                              2
+                              (* 2 idx))))))
         (nelisp-asm-x86_64-mov-reg-mem-disp8
          buf 'rdi 'rbp (- (* 8 (1+ win64-callee-save-slot-base))))
         (nelisp-asm-x86_64-mov-reg-mem-disp8

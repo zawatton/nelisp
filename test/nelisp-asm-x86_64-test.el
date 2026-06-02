@@ -823,6 +823,24 @@
     ;; mov-imm64 = REX.W + opcode + imm64 = 10 bytes.
     (should (= (nelisp-asm-x86_64-buffer-pos b) 111))))
 
+(ert-deftest nelisp-asm-x86_64-movdqu-load-disp32 ()
+  (should (equal
+           (nelisp-asm-x86_64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-movdqu-xmm-mem-disp8
+               b 'xmm8 'rbp -160)))
+           (nelisp-asm-x86_64-test--ub
+            #xf3 #x44 #x0f #x6f #x85 #x60 #xff #xff #xff))))
+
+(ert-deftest nelisp-asm-x86_64-movdqu-store-disp32 ()
+  (should (equal
+           (nelisp-asm-x86_64-test--bytes
+            (lambda (b)
+              (nelisp-asm-x86_64-movdqu-mem-disp8-xmm
+               b 'rbp -160 'xmm8)))
+           (nelisp-asm-x86_64-test--ub
+            #xf3 #x44 #x0f #x7f #x85 #x60 #xff #xff #xff))))
+
 ;; ---- Doc 101 §101.B Wave 5 — Win64 ABI tests ----
 
 (ert-deftest nelisp-asm-x86_64-abi-arg-regs-sysv ()
@@ -853,6 +871,12 @@
     (should (memq 'rsi saved))
     (should (not (memq 'rdi (nelisp-asm-x86_64-abi-callee-saved 'sysv))))
     (should (not (memq 'rsi (nelisp-asm-x86_64-abi-callee-saved 'sysv))))))
+
+(ert-deftest nelisp-asm-x86_64-abi-win64-xmm-callee-saved ()
+  ;; Win64 also requires preserving XMM6-XMM15.
+  (should (equal nelisp-asm-x86_64--abi-win64-xmm-callee-saved
+                 '(xmm6 xmm7 xmm8 xmm9 xmm10
+                   xmm11 xmm12 xmm13 xmm14 xmm15))))
 
 (ert-deftest nelisp-asm-x86_64-abi-shadow-space-sysv ()
   ;; SysV has no shadow space requirement.
