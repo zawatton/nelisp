@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -72,6 +72,8 @@
 ;; vector header, Nil-filled slots, refcount, and element updates.
 ;; Stage 35 links the immutable Str/Symbol allocator plus bytes-pointer
 ;; helper and proves copied byte payloads are readable in Windows PE.
+;; Stage 36 links the MutStr allocator/len/finalize helpers and proves
+;; mutable string boxes can become immutable Str slots in Windows PE.
 
 ;;; Code:
 
@@ -1661,6 +1663,96 @@ link-units."
                     arena-rva iat-rvas)))
        (list start driver alloc bytes arena)))))
 
+(defun nelisp-windows-build--standalone-mut-str-driver42-bytes ()
+  "Return a PE32+ EXE proving MutStr allocation/finalize on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(defun driver ()
+                        (let* ((arena (nl_arena_init)))
+                          (if (= arena 0)
+                              85
+                            (let* ((mut-slot (nl_alloc_bytes 32 8))
+                                   (out-slot (nl_alloc_bytes 32 8)))
+                              (if (= out-slot 0)
+                                  86
+                                (seq
+                                 (nl_alloc_mut_str 5 mut-slot)
+                                 (if (= (ptr-read-u8 mut-slot 0) 6)
+                                     (let* ((box (ptr-read-u64 (+ mut-slot 8) 0))
+                                            (data (ptr-read-u64 (+ box 8) 0)))
+                                       (if (= (ptr-read-u64 box 0) 5)
+                                           (if (= (ptr-read-u64 (+ box 16) 0) 0)
+                                               (if (= (ptr-read-u64 (+ box 24) 0) 1)
+                                                   (seq
+                                                    (ptr-write-u8 data 0 119)
+                                                    (ptr-write-u8 data 1 105)
+                                                    (ptr-write-u8 data 2 110)
+                                                    (ptr-write-u8 data 3 51)
+                                                    (ptr-write-u8 data 4 50)
+                                                    (ptr-write-u64 (+ box 16) 0 5)
+                                                    (if (= (nl_mut_str_len mut-slot) 5)
+                                                        (if (= (nl_str_bytes_ptr mut-slot) data)
+                                                            (seq
+                                                             (nl_mut_str_finalize mut-slot out-slot)
+                                                             (if (= (ptr-read-u8 out-slot 0) 5)
+                                                                 (if (= (ptr-read-u64 (+ out-slot 8) 0) 5)
+                                                                     (if (= (ptr-read-u64 (+ out-slot 24) 0) 5)
+                                                                         (let* ((out-data (ptr-read-u64 (+ out-slot 16) 0)))
+                                                                           (if (= (ptr-read-u8 out-data 0) 119)
+                                                                               (if (= (ptr-read-u8 out-data 1) 105)
+                                                                                   (if (= (ptr-read-u8 out-data 4) 50)
+                                                                                       42
+                                                                                     96)
+                                                                                 95)
+                                                                             94))
+                                                                       93)
+                                                                   92)
+                                                               91))
+                                                          90)
+                                                      89))
+                                                 88)
+                                             87)
+                                         86))
+                                   85)))))))
+                     driver-rva iat-rvas))
+            (alloc-rva (+ driver-rva
+                          (nelisp-windows-build--unit-text-length driver)))
+            (alloc (nelisp-windows-build--compile-defuns-to-unit
+                    "alloc-mut-str.o"
+                    nelisp-cc-nlstr-direct-ops--alloc-mut-str-source
+                    alloc-rva iat-rvas))
+            (len-rva (+ alloc-rva
+                        (nelisp-windows-build--unit-text-length alloc)))
+            (len (nelisp-windows-build--compile-defuns-to-unit
+                  "mut-str-len.o"
+                  nelisp-cc-nlstr-direct-ops--mut-str-len-source
+                  len-rva iat-rvas))
+            (bytes-rva (+ len-rva
+                          (nelisp-windows-build--unit-text-length len)))
+            (bytes (nelisp-windows-build--compile-defuns-to-unit
+                    "str-bytes.o"
+                    nelisp-cc-nlstr-direct-ops--str-bytes-ptr-source
+                    bytes-rva iat-rvas))
+            (finalize-rva (+ bytes-rva
+                             (nelisp-windows-build--unit-text-length bytes)))
+            (finalize (nelisp-windows-build--compile-defuns-to-unit
+                       "mut-str-finalize.o"
+                       nelisp-cc-nlstr-direct-ops--mut-str-finalize-source
+                       finalize-rva iat-rvas))
+            (arena-rva (+ finalize-rva
+                          (nelisp-windows-build--unit-text-length finalize)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver alloc len bytes finalize arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1878,6 +1970,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone Str/Symbol)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-mut-str-driver42 ()
+  "Batch entry: build the standalone MutStr allocation/finalize probe."
+  (let ((bytes (nelisp-windows-build--standalone-mut-str-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-mut-str-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone MutStr)"
              out-path)
     out-path))
 

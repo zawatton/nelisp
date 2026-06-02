@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 35 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 36 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -88,7 +88,9 @@
   allocator/set-slot kernels and proves vector header, Nil-filled slots,
   refcount, and element updates.  Stage 35 links the immutable Str/Symbol
   allocator plus bytes-pointer helper and proves copied byte payloads are
-  readable in Windows PE.
+  readable in Windows PE.  Stage 36 links the MutStr allocator/len/finalize
+  helpers and proves mutable string boxes can become immutable Str slots in
+  Windows PE.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
