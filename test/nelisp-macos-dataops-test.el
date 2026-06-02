@@ -170,6 +170,34 @@ must contain STR{B,H,}/LDR{B,H,} `[X1, X2]' words (val→x3, result→x0)."
                   (exit (run))))))
     (should (> (length bytes) 0))))
 
+;; ---- cons-make-with-clone (fused constructor) --------------------
+
+(ert-deftest nelisp-macos-dataops/cons-make-with-clone-compiles ()
+  "cons-make-with-clone compiles on aarch64 (box alloc + two clone BLs)."
+  (let ((bytes (nelisp-macos-dataops-test--emit
+                '(seq
+                  (defun nl_alloc_bytes (size align)
+                    (atomic-fetch-add 8589934592 size))
+                  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+                  (defun nl_sexp_clone_into (src dst)
+                    (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+                         (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+                         (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+                         (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+                  (defun run ()
+                    (seq
+                     (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+                     (ptr-write-u64 8589934592 0 8589935104)
+                     (sexp-int-make 8589934656 20)
+                     (sexp-int-make 8589934720 3)
+                     (cons-make-with-clone 8589934656 8589934720 8589934784)
+                     (cons-car 8589934784 8589934976)
+                     (cons-cdr 8589934784 8589935040)
+                     (+ (ptr-read-u64 8589934976 8)
+                        (ptr-read-u64 8589935040 8))))
+                  (exit (run))))))
+    (should (> (length bytes) 0))))
+
 (provide 'nelisp-macos-dataops-test)
 
 ;;; nelisp-macos-dataops-test.el ends here
