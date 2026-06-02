@@ -589,12 +589,12 @@ argument (reachability + in-arena bounds checks).")
     ((:u8 "mod")  . (wf_write_int out (mod (wf_argval args 0) (wf_argval args 1))))
     ((:u8 "1+")   . (wf_write_int out (+ (wf_argval args 0) 1)))
     ((:u8 "1-")   . (wf_write_int out (- (wf_argval args 0) 1)))
-    ((:u8 "=")    . (if (= (wf_argval args 0) (wf_argval args 1)) (wf_write_t out) (wf_write_nil out)))
-    ((:u8 "<")    . (if (< (wf_argval args 0) (wf_argval args 1)) (wf_write_t out) (wf_write_nil out)))
-    ((:u8 ">")    . (if (> (wf_argval args 0) (wf_argval args 1)) (wf_write_t out) (wf_write_nil out)))
-    ((:u8 "<=")   . (if (<= (wf_argval args 0) (wf_argval args 1)) (wf_write_t out) (wf_write_nil out)))
-    ((:u8 ">=")   . (if (>= (wf_argval args 0) (wf_argval args 1)) (wf_write_t out) (wf_write_nil out)))
-    ((:u8 "eq")   . (if (= (wf_argval args 0) (wf_argval args 1)) (wf_write_t out) (wf_write_nil out)))
+    ((:u8 "=")    . (if (= (wf_num_eq (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:u8 "<")    . (if (= (wf_num_lt (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:u8 ">")    . (if (= (wf_num_gt (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:u8 "<=")   . (if (= (wf_num_le (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:u8 ">=")   . (if (= (wf_num_ge (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
+    ((:u8 "eq")   . (if (= (wf_raw_eq (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
     ((:u8 "null") . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) (wf_write_t out) (wf_write_nil out)))
     ((:u8 "not")  . (if (= (ptr-read-u64 (wf_arg_ptr args 0) 0) 0) (wf_write_t out) (wf_write_nil out)))
     ((:u8 "car")  . (wf_copy32 out (nl_cons_car_ptr (wf_arg_ptr args 0))))
@@ -697,6 +697,60 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
     (defun wf_arg_ptr (args n)
       (if (= n 0) (nl_cons_car_ptr args) (wf_arg_ptr (nl_cons_cdr_ptr args) (- n 1))))
     (defun wf_argval (args n) (ptr-read-u64 (wf_arg_ptr args n) 8))
+    (defun wf_raw_eq (a b)
+      (if (= (ptr-read-u64 a 0) (ptr-read-u64 b 0))
+          (if (= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)
+        0))
+    (defun wf_num_lt (a b)
+      (let* ((ta (ptr-read-u64 a 0)) (tb (ptr-read-u64 b 0)))
+        (if (= ta 3)
+            (if (= tb 3)
+                (f64-lt (bits-to-f64 (sexp-float-unwrap a))
+                        (bits-to-f64 (sexp-float-unwrap b)))
+              (f64-lt (bits-to-f64 (sexp-float-unwrap a))
+                      (i64-to-f64 (ptr-read-u64 b 8))))
+          (if (= tb 3)
+              (f64-lt (i64-to-f64 (ptr-read-u64 a 8))
+                      (bits-to-f64 (sexp-float-unwrap b)))
+            (if (< (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))
+    (defun wf_num_gt (a b)
+      (let* ((ta (ptr-read-u64 a 0)) (tb (ptr-read-u64 b 0)))
+        (if (= ta 3)
+            (if (= tb 3)
+                (f64-gt (bits-to-f64 (sexp-float-unwrap a))
+                        (bits-to-f64 (sexp-float-unwrap b)))
+              (f64-gt (bits-to-f64 (sexp-float-unwrap a))
+                      (i64-to-f64 (ptr-read-u64 b 8))))
+          (if (= tb 3)
+              (f64-gt (i64-to-f64 (ptr-read-u64 a 8))
+                      (bits-to-f64 (sexp-float-unwrap b)))
+            (if (> (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))
+    (defun wf_num_le (a b)
+      (let* ((ta (ptr-read-u64 a 0)) (tb (ptr-read-u64 b 0)))
+        (if (= ta 3)
+            (if (= tb 3)
+                (f64-le (bits-to-f64 (sexp-float-unwrap a))
+                        (bits-to-f64 (sexp-float-unwrap b)))
+              (f64-le (bits-to-f64 (sexp-float-unwrap a))
+                      (i64-to-f64 (ptr-read-u64 b 8))))
+          (if (= tb 3)
+              (f64-le (i64-to-f64 (ptr-read-u64 a 8))
+                      (bits-to-f64 (sexp-float-unwrap b)))
+            (if (<= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))
+    (defun wf_num_ge (a b)
+      (let* ((ta (ptr-read-u64 a 0)) (tb (ptr-read-u64 b 0)))
+        (if (= ta 3)
+            (if (= tb 3)
+                (f64-ge (bits-to-f64 (sexp-float-unwrap a))
+                        (bits-to-f64 (sexp-float-unwrap b)))
+              (f64-ge (bits-to-f64 (sexp-float-unwrap a))
+                      (i64-to-f64 (ptr-read-u64 b 8))))
+          (if (= tb 3)
+              (f64-ge (i64-to-f64 (ptr-read-u64 a 8))
+                      (bits-to-f64 (sexp-float-unwrap b)))
+            (if (>= (ptr-read-u64 a 8) (ptr-read-u64 b 8)) 1 0)))))
+    (defun wf_num_eq (a b)
+      (if (= (wf_num_le a b) 1) (wf_num_ge a b) 0))
     (defun wf_copy32 (dst src)
       (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0)) (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
            (ptr-write-u64 dst 16 (ptr-read-u64 src 16)) (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
@@ -1075,6 +1129,54 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
       (let* ((sym (wf_arg_ptr args 0)) (mirror (+ env 0)))
         (if (= (nelisp_mirror_is_bound mirror sym) 1)
             (wf_write_t out) (wf_write_nil out))))
+    (defun bf_set (args env out)
+      (let* ((sym (wf_arg_ptr args 0))
+             (val (wf_arg_ptr args 1)))
+        (seq
+         (nl_env_set_value env sym val)
+         (wf_copy32 out val)
+         0)))
+    ;; load FILE &optional ... -> t.  Minimal standalone-reader command surface:
+    ;; read FILE into a Sexp::Str, parse each top-level form with the same pure
+    ;; reader, and evaluate it in the caller's ENV.  This intentionally mirrors
+    ;; the driver's multi-form loop instead of relying on host-side embedding.
+    (defun bf_load_eval_loop (src cursor result pool env out more)
+      (while (= more 1)
+        (seq
+         (ptr-write-u64 result 0 0) (ptr-write-u64 result 8 0)
+         (let* ((prc (nelisp_reader_parse_one src cursor result pool 0)))
+           (if (= prc 1)
+               (seq
+                (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
+                (let* ((rc (nelisp_eval_call result env out)))
+                  (if (= rc 0) 0 (setq more 2))))
+             (setq more 0)))))
+      more)
+    (defun bf_load (args env out)
+      (let* ((src (alloc-bytes 32 8))
+             (cursor (alloc-bytes 32 8))
+             (result (alloc-bytes 32 8))
+             (pool (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 268435624 0 1)
+         (nl_bi_read_file args src)
+         (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+         (vector-make 8192 pool)
+         (if (= (bf_load_eval_loop src cursor result pool env out 1) 2)
+             1
+           (seq (wf_dirty) (wf_write_t out) 0)))))
+    (defun bf_eval_source_string (args env out)
+      (let* ((src (wf_arg_ptr args 0))
+             (cursor (alloc-bytes 32 8))
+             (result (alloc-bytes 32 8))
+             (pool (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 268435624 0 1)
+         (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+         (vector-make 8192 pool)
+         (if (= (bf_load_eval_loop src cursor result pool env out 1) 2)
+             1
+           (seq (wf_dirty) 0)))))
     ;; length that also handles vectors (tag 8) -> vector-len; else m5_length.
     (defun bf_length (p)
       (if (= (ptr-read-u64 p 0) 8) (vector-len p) (m5_length p)))
@@ -1250,8 +1352,12 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
                            (if (= (ptr-read-u64 p 0) 2)
                                (if (= (ptr-read-u64 p 8) 0) (wf_write_t out) (wf_write_nil out))
                              (wf_write_nil out))))
+    ((:lit "set")      . (bf_set args env out))
     ((:lit "fboundp")  . (bf_fboundp args env out))
     ((:lit "boundp")   . (bf_boundp args env out))
+    ((:lit "featurep") . (wf_write_nil out))
+    ((:lit "provide")  . (seq (wf_copy32 out (wf_arg_ptr args 0)) 0))
+    ((:lit "require")  . (seq (wf_copy32 out (wf_arg_ptr args 0)) 0))
     ;; --- symbol ops ---
     ;; symbol-name: a Symbol (tag 4) already has the str layout (ptr@16/len@24);
     ;; produce a Str (tag 5) sharing those bytes via nl_alloc_str.
@@ -1278,6 +1384,15 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
                               (seq (wf_dirty) (cons-set-car c v) (wf_copy32 out v) 0)))
     ((:lit "setcdr")      . (let* ((c (wf_arg_ptr args 0)) (v (wf_arg_ptr args 1)))
                               (seq (wf_dirty) (cons-set-cdr c v) (wf_copy32 out v) 0)))
+    ;; load FILE &optional ...: reader-only absolute-path file load.  The
+    ;; optional args are ignored for now; callers in nelisp-emacs pass absolute
+    ;; paths and use a post-load proof form to verify the file actually ran.
+    ((:lit "load")        . (bf_load args env out))
+    ((:lit "nelisp--eval-source-string") . (bf_eval_source_string args env out))
+    ((:lit "nelisp--syscall-read-file") . (nl_bi_read_file args out))
+    ((:lit "nl-write-file") . (nl_bi_write_file_t args out))
+    ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
+    ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ((:lit "ash")     . (wf_write_int out (bf_ash (wf_argval args 0) (wf_argval args 1))))
     ((:lit "logand")  . (wf_write_int out (wf_logand_fold args (- 0 1))))
@@ -1309,10 +1424,10 @@ ash/logand/logior/logxor/lognot + string<.")
 
 (defconst nelisp-standalone--applyfn-bf-builtins
   '("consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
-    "vectorp" "listp" "zerop" "fboundp" "boundp"
+    "vectorp" "listp" "zerop" "set" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "make-symbol" "unibyte-string"
     "make-vector" "vector" "aref" "aset"
-    "signal" "error" "equal" "setcar" "setcdr"
+    "signal" "error" "equal" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
     "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join" "fork-spawn")
@@ -1426,7 +1541,34 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
                (fd (syscall-direct 2 cpath 0 0 0 0 0)))
           (nl_bi_rf_withfd fd buf out))))
     (defun nl_bi_slen (args out)
-      (wf_write_int out (nl_bi_strlen (wf_arg_ptr args 0)))))
+      (wf_write_int out (nl_bi_strlen (wf_arg_ptr args 0))))
+    (defun nl_bi_write_stdout_bytes (args out)
+      (let* ((sx (wf_arg_ptr args 0)))
+        (seq
+         (syscall-direct 1 1 (nl_bi_strptr sx) (nl_bi_strlen sx) 0 0 0)
+         (wf_write_nil out)
+         0)))
+    (defun nl_bi_write_stderr_line (args out)
+      (let* ((sx (wf_arg_ptr args 0))
+             (nl (alloc-bytes 1 1)))
+        (seq
+         (syscall-direct 1 2 (nl_bi_strptr sx) (nl_bi_strlen sx) 0 0 0)
+         (ptr-write-u8 nl 0 10)
+         (syscall-direct 1 2 nl 1 0 0 0)
+         (wf_write_nil out)
+         0)))
+    (defun nl_bi_write_file_t (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (cont_sx (wf_arg_ptr args 1))
+             (cpath (nl_bi_make_cpath path_sx))
+             (fd (syscall-direct 2 cpath 577 420 0 0 0)))
+        (if (< fd 0)
+            (wf_write_nil out)
+          (let* ((wr (syscall-direct 1 fd (nl_bi_strptr cont_sx)
+                                     (nl_bi_strlen cont_sx) 0 0 0)))
+            (seq
+             (syscall-direct 3 fd 0 0 0 0 0)
+             (if (< wr 0) (wf_write_nil out) (wf_write_t out))))))))
   "M7 file-I/O builtin impls (wrf/rdf/slen).  Uses `nl_seq2' (arena unit),
 `wf_arg_ptr'/`wf_write_int' (applyfn unit) and `nl_alloc_str' (alloc-str.o).")
 
@@ -2062,11 +2204,26 @@ raw-mem u8 ops, alloc/dealloc) lower to runtime extern calls that the
 baked-form path never references; these units resolve them.")
 
 ;; nl_sexp_write_float: runtime symbol with no elisp `defun' (only the
-;; Float-token path calls it via nl_str_to_float).  All arithmetic inputs
-;; are integers, so it never executes -- linked as a never-run stub purely
-;; so the parser's extern resolves.
-(defconst nelisp-standalone--reader-float-stub-source
-  '(seq (defun nl_sexp_write_float (slot _val) (seq (ptr-write-u64 slot 0 9) slot))))
+;; Float-token path calls it via nl_str_to_float).  The helper ABI is
+;; `extern "C" fn(slot: *mut Sexp, val: f64) -> *mut Sexp': slot in
+;; rdi, value in xmm0, return slot in rax.  Keep this as a tiny raw unit
+;; because Phase47 does not expose a direct f64-bit-pattern-to-GP value
+;; form suitable for writing the inline payload here.
+(defun nelisp-standalone--reader-float-unit ()
+  "Return the raw link unit exporting `nl_sexp_write_float'."
+  (let ((text (apply #'unibyte-string
+                     '(#x48 #xc7 #x07 #x03 #x00 #x00 #x00 ; mov qword [rdi], 3
+                       #x66 #x0f #xd6 #x47 #x08           ; movq [rdi+8], xmm0
+                       #x48 #xc7 #x47 #x10 #x00 #x00 #x00 #x00 ; clear +16
+                       #x48 #xc7 #x47 #x18 #x00 #x00 #x00 #x00 ; clear +24
+                       #x48 #x89 #xf8                     ; mov rax, rdi
+                       #xc3))))                            ; ret
+    (nelisp-link-unit-make
+     "reader-float.o"
+     (list (cons 'text text))
+     (list (nelisp-link-symbol "nl_sexp_write_float" 0
+                               :section 'text :bind 'global :type 'func))
+     nil)))
 
 (defun nelisp-standalone--reader-src ()
   "Embedded source text for the reader build (NELISP_SRC; default \"(+ 40 2)\")."
@@ -2091,11 +2248,13 @@ value (matches the binary's M8 read+eval-loop driver)."
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     ;; M7 file I/O
-    "wrf" "rdf" "slen"
+    "wrf" "rdf" "slen" "load"
+    "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
+    "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
     "consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
-    "vectorp" "listp" "zerop" "fboundp" "boundp"
+    "vectorp" "listp" "zerop" "set" "fboundp" "boundp" "featurep" "provide" "require"
     "symbol-name" "intern" "make-symbol" "unibyte-string"
     "make-vector" "vector" "aref" "aset"
     "signal" "error" "equal" "setcar" "setcdr"
@@ -2110,6 +2269,37 @@ arm in `nelisp-standalone--applyfn-dispatch-table'.")
 
 (defconst nelisp-standalone--reader-read-cap 4194304
   "4 MiB read cap for the file-load path (plenty for any single .el).")
+
+(defun nelisp-standalone--runtime-image-command-src ()
+  "Return embedded source implementing standalone-reader runtime-image commands."
+  (concat
+   (with-temp-buffer
+     (insert-file-contents
+      (expand-file-name "scripts/nelisp-stdlib-prelude.el"
+                        nelisp-standalone--repo-root))
+     (buffer-string))
+   "\n"
+   (with-temp-buffer
+     (insert-file-contents
+      (expand-file-name "lisp/nelisp-runtime-image.el"
+                        nelisp-standalone--repo-root))
+     (buffer-string))
+   "\n"
+   "(cond\n"
+   " ((string= (car nelisp-standalone-argv) \"dump-runtime-image\")\n"
+   "  (nelisp-runtime-image-dump-cli nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"extend-runtime-image\")\n"
+   "  (nelisp-runtime-image-extend-cli nelisp-standalone-argv))\n"
+   " ((or (string= (car nelisp-standalone-argv) \"eval-runtime-image\")\n"
+   "      (string= (car nelisp-standalone-argv) \"exec-runtime-image\"))\n"
+   "  (setq nelisp-runtime-image--standalone-next-form\n"
+   "        (car (cdr (cdr nelisp-standalone-argv))))\n"
+   "  (nelisp-runtime-image--eval-source\n"
+   "   (rdf (car (cdr nelisp-standalone-argv))))\n"
+   "  (nelisp-runtime-image--eval-source\n"
+   "   nelisp-runtime-image--standalone-next-form)\n"
+   "  0)\n"
+   " (t 2))\n"))
 
 (defun nelisp-standalone--name-words (nm)
   "Return the little-endian u64 words packing NM's UTF-8 bytes (ceil(len/8) of
@@ -2127,6 +2317,34 @@ from an 8-byte buffer."
         (push w words))
       (setq i (+ i 8)))
     (nreverse words)))
+
+(defun nelisp-standalone--cstr-eq-defun (name string)
+  "Return a Phase47 defun checking whether a C string equals STRING."
+  (let* ((bytes (append (encode-coding-string string 'utf-8 t) nil))
+         (len (length bytes))
+         (body `(if (= (ptr-read-u8 ptr ,len) 0) 1 0)))
+    (let ((i (1- len)))
+      (while (>= i 0)
+        (setq body
+              `(if (= (ptr-read-u8 ptr ,i) ,(nth i bytes))
+                   ,body
+                 0))
+        (setq i (1- i))))
+    `(defun ,name (ptr)
+       (if (= ptr 0) 0 ,body))))
+
+(defun nelisp-standalone--copy-lit-defun (name string)
+  "Return a Phase47 defun copying literal STRING into DST at OFF."
+  (let ((bytes (append (encode-coding-string string 'utf-8 t) nil))
+        (forms nil)
+        (i 0))
+    (dolist (byte bytes)
+      (push `(ptr-write-u8 dst (+ off ,i) ,byte) forms)
+      (setq i (1+ i)))
+    `(defun ,name (dst off)
+       (seq
+        ,@(nreverse forms)
+        (+ off ,(length bytes))))))
 
 (defun nelisp-standalone--reader-install-builtins-forms ()
   "Phase47 forms that install every `nelisp-standalone--reader-builtins' name
@@ -2158,22 +2376,225 @@ Then the SAME multi-form parse+eval loop runs `src'.  argc==1 => argv[1]==NULL==
 (argv is NULL-terminated) so the check is reliable.  Each builtin name installs
 through a fresh, full-length arena buffer so `nl_install_one' never aliases a
 reused buffer and >8-byte names install correctly."
-  `(defun driver (sp)
+  `(seq
+    (defun nl_cstr_len_loop (ptr n)
+      (if (= (ptr-read-u8 ptr n) 0)
+          n
+        (nl_cstr_len_loop ptr (+ n 1))))
+    (defun nl_cstr_len (ptr)
+      (if (= ptr 0) 0 (nl_cstr_len_loop ptr 0)))
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dump_runtime_image
+                                       "dump-runtime-image")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_extend_runtime_image
+                                       "extend-runtime-image")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_eval_runtime_image
+                                       "eval-runtime-image")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_exec_runtime_image
+                                       "exec-runtime-image")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_repl
+                                       "repl")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_prompt
+                                       "--no-prompt")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_comma_quit
+                                       ",quit")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_comma_exit
+                                       ",exit")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_runtime_image_eval_prefix
+      "(let ((v (progn\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_runtime_image_eval_suffix
+      "))) (nelisp--write-stdout-bytes (format \"%S\" v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_runtime_image_success_suffix
+      "0\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_repl_eval_prefix
+      "(let ((v (progn\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_repl_eval_suffix
+      "))) (nelisp--write-stdout-bytes (format \"%S\" v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_repl_prompt
+      "nelisp> ")
+    (defun nl_runtime_image_command_p (ptr)
+      (if (= (nl_cstr_eq_dump_runtime_image ptr) 1)
+          1
+        (if (= (nl_cstr_eq_extend_runtime_image ptr) 1)
+            1
+          (if (= (nl_cstr_eq_eval_runtime_image ptr) 1)
+              1
+            (nl_cstr_eq_exec_runtime_image ptr)))))
+    (defun nl_runtime_image_eval_exec_command_p (ptr)
+      (if (= (nl_cstr_eq_eval_runtime_image ptr) 1)
+          1
+        (nl_cstr_eq_exec_runtime_image ptr)))
+    (defun nl_cstr_copy_into (src dst off)
+      (if (= src 0)
+          off
+        (let* ((ch (ptr-read-u8 src 0)))
+          (if (= ch 0)
+              off
+            (seq
+             (ptr-write-u8 dst off ch)
+             (nl_cstr_copy_into (+ src 1) dst (+ off 1)))))))
+    (defun nl_runtime_image_copy_argv_forms (sp argc i fbuf off)
+      (if (= i argc)
+          off
+        (let* ((form_ptr (ptr-read-u64 sp (* (+ i 1) 8))))
+          (seq
+           (setq off (nl_cstr_copy_into form_ptr fbuf off))
+           (ptr-write-u8 fbuf off 10)
+           (nl_runtime_image_copy_argv_forms sp argc (+ i 1) fbuf (+ off 1))))))
+    (defun nl_runtime_image_read_image_into_source_buf (sp fbuf)
+      (let* ((image_path (ptr-read-u64 sp 24))
+             (fd (syscall-direct 2 image_path 0 0 0 0 0)))
+        (let* ((n (syscall-direct 0 fd fbuf ,nelisp-standalone--reader-read-cap 0 0 0)))
+          (seq
+           (syscall-direct 3 fd 0 0 0 0 0)
+           (if (< n 0) 0 n)))))
+    (defun nl_runtime_image_exec_source (sp argc fbuf src)
+      (let* ((off (nl_runtime_image_read_image_into_source_buf sp fbuf)))
+        (seq
+         (ptr-write-u8 fbuf off 10)
+         (setq off (+ off 1))
+         (setq off (nl_runtime_image_copy_argv_forms sp argc 3 fbuf off))
+         (setq off (nl_runtime_image_success_suffix fbuf off))
+         (nl_alloc_str fbuf off src))))
+    (defun nl_runtime_image_eval_source (sp argc fbuf src)
+      (let* ((off (nl_runtime_image_read_image_into_source_buf sp fbuf)))
+        (seq
+         (ptr-write-u8 fbuf off 10)
+         (setq off (+ off 1))
+         (setq off (nl_runtime_image_eval_prefix fbuf off))
+         (setq off (nl_runtime_image_copy_argv_forms sp argc 3 fbuf off))
+         (setq off (nl_runtime_image_eval_suffix fbuf off))
+         (nl_alloc_str fbuf off src))))
+    (defun nl_copy_bytes_into (src dst i n off)
+      (if (= i n)
+          off
+        (seq
+         (ptr-write-u8 dst off (ptr-read-u8 src i))
+         (nl_copy_bytes_into src dst (+ i 1) n (+ off 1)))))
+    (defun nl_repl_read_line_loop (buf off)
+      (if (> off ,(- nelisp-standalone--reader-read-cap 512))
+          off
+        (let* ((n (syscall-direct 0 0 (+ buf off) 1 0 0 0)))
+          (if (< n 1)
+              (if (= off 0) -1 off)
+            (let* ((ch (ptr-read-u8 buf off)))
+              (if (= ch 10)
+                  off
+                (if (= ch 13)
+                    (nl_repl_read_line_loop buf off)
+                  (nl_repl_read_line_loop buf (+ off 1)))))))))
+    (defun nl_repl_read_line (buf)
+      (let* ((n (nl_repl_read_line_loop buf 0)))
+        (seq
+         (if (< n 0) 0 (ptr-write-u8 buf n 0))
+         n)))
+    (defun nl_repl_quit_line_p (buf n)
+      (seq
+       (ptr-write-u8 buf n 0)
+       (if (= (nl_cstr_eq_comma_quit buf) 1)
+           1
+         (nl_cstr_eq_comma_exit buf))))
+    (defun nl_repl_make_source (line n fbuf src)
+      (let* ((off (nl_repl_eval_prefix fbuf 0)))
+        (seq
+         (setq off (nl_copy_bytes_into line fbuf 0 n off))
+         (ptr-write-u8 fbuf off 10)
+         (setq off (+ off 1))
+         (setq off (nl_repl_eval_suffix fbuf off))
+         (nl_alloc_str fbuf off src))))
+    (defun nl_repl_write_prompt (fbuf)
+      (let* ((n (nl_repl_prompt fbuf 0)))
+        (syscall-direct 1 1 fbuf n 0 0 0)))
+    (defun nl_eval_source_all (src cursor result pool out ctx builtin_sym)
+      (seq
+       (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+       (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
+       (let* ((more 1))
+         (while (= more 1)
+           (seq
+            (ptr-write-u64 result 0 0) (ptr-write-u64 result 8 0)
+            (let* ((prc (nelisp_reader_parse_one src cursor result pool 0)))
+              (if (= prc 1)
+                  (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
+                       (nelisp_eval_call result ctx out)
+                       (if (< (ptr-read-u64 268435456 0) (ptr-read-u64 268435560 0))
+                           0
+                         (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
+                                (bump (ptr-read-u64 268435456 0))
+                                (lo (+ (* live 3) 268435456))
+                                (hi (+ bump 268435456)))
+                           (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))
+                (setq more 0))))))
+       0))
+    (defun nl_repl_loop (prompt_p linebuf fbuf src cursor result pool out ctx builtin_sym)
+      (let* ((done 0)
+             (n 0))
+        (seq
+         (while (= done 0)
+           (seq
+            (if (= prompt_p 1) (nl_repl_write_prompt fbuf) 0)
+            (setq n (nl_repl_read_line linebuf))
+            (if (< n 0)
+                (setq done 1)
+              (if (= (nl_repl_quit_line_p linebuf n) 1)
+                  (setq done 1)
+                (if (= n 0)
+                    0
+                  (seq
+                   (nl_repl_make_source linebuf n fbuf src)
+                   (nl_eval_source_all src cursor result pool out ctx builtin_sym)))))))
+         0)))
+    (defun nl_repl_usage_error_p (argc arg2)
+      (if (< argc 3)
+          0
+        (if (= (nl_cstr_eq_no_prompt arg2) 1) 0 1)))
+    (defun nl_argv_cstr_to_str (ptr out)
+      (nl_alloc_str ptr (nl_cstr_len ptr) out))
+    (defun nl_argv_list_from (argc sp i out)
+      (if (= i argc)
+          (wf_write_nil out)
+        (let* ((str (alloc-bytes 32 8))
+               (rest (alloc-bytes 32 8))
+               (argptr (ptr-read-u64 sp (* (+ i 1) 8))))
+          (seq
+           (nl_argv_cstr_to_str argptr str)
+           (nl_argv_list_from argc sp (+ i 1) rest)
+           (nelisp_cons_construct str rest out)))))
+    (defun driver (sp)
      (let* ((arena (nl_arena_init))
             (globals (alloc-bytes 32 8)) (frames (alloc-bytes 32 8)) (unbound (alloc-bytes 32 8))
             (ctx (alloc-bytes 120 8))
             (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
             (src (alloc-bytes 32 8)) (cursor (alloc-bytes 32 8))
             (result (alloc-bytes 32 8)) (pool (alloc-bytes 32 8)) (out (alloc-bytes 32 8))
+            (argv_list (alloc-bytes 32 8))
+            (argv_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "nelisp-standalone-argv"))) 1))
+            (argv_sym (alloc-bytes 32 8))
+            (argc (ptr-read-u64 sp 0))
             ;; argv[1] = C-string path pointer at [sp + 16] (0 if argc==1).
             (path (ptr-read-u64 sp 16))
+            (arg2 (if (> argc 2) (ptr-read-u64 sp 24) 0))
+            (prompt_p (if (= (nl_cstr_eq_no_prompt arg2) 1) 0 1))
             ;; raw read buffer (bypasses the Rust UTF-8 layer)
-            (fbuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1)))
+            (fbuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1))
+            (linebuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1)))
        (seq
         (nl_bootstrap_make_mirror globals frames unbound)
         (ptr-write-u64 builtin_buf 0 31078196194145634)
         (nl_alloc_symbol builtin_buf 7 builtin_sym)
         ,@(nelisp-standalone--reader-install-builtins-forms)
+        ,@(let ((i 0)
+                (forms nil))
+            (dolist (word (nelisp-standalone--name-words "nelisp-standalone-argv"))
+              (push `(ptr-write-u64 argv_sym_buf ,(* i 8) ,word) forms)
+              (setq i (1+ i)))
+            (nreverse forms))
+        (nl_alloc_symbol argv_sym_buf ,(length (encode-coding-string "nelisp-standalone-argv" 'utf-8 t)) argv_sym)
         (nl_sexp_clone_into globals (+ ctx 0))
         (nl_sexp_clone_into frames (+ ctx 32))
         (nl_sexp_clone_into unbound (+ ctx 64))
@@ -2183,22 +2604,7 @@ reused buffer and >8-byte names install correctly."
 ;; that ceiling, so deep recursion (cnt(100000) -> 42) succeeds while still erroring
 ;; at the guard -- never SIGSEGV -- once it exceeds the budget.
 (ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 300000)
-        ;; --- source selection: embedded vs. file (M7 dual mode) ---
-        (if (= path 0)
-            ;; embedded NELISP_SRC (gate path)
-            (sexp-write-str-lit src ,(nelisp-standalone--reader-src))
-          ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
-          (let* ((fd (syscall-direct 2 path 0 0 0 0 0)))
-            (let* ((n (syscall-direct 0 fd fbuf ,nelisp-standalone--reader-read-cap 0 0 0)))
-              (seq
-               (syscall-direct 3 fd 0 0 0 0 0)
-               (nl_alloc_str fbuf (if (< n 0) 0 n) src)))))
-        ;; --- reader path (M8): read+eval EVERY top-level form, keep the last
-        ;; value.  parse_one advances the shared cursor; it returns 1 per form
-        ;; and != 1 (e.g. -1 at EOF) when no more forms remain. ---
-        (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)   ; Sexp::Int 0
         (vector-make 8192 pool)                                 ; Sexp::Vector(8192) slot-pool — raised from 256 (Task 1: 3+4*MAX_DEPTH; 8192 => MAX_DEPTH ~2047, well above the rec_max 2000 eval guard so the pool never caps before the recursion guard fires)
-        (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
         ;; GC trigger: collect at a form boundary once the bump offset
         ;; crosses this threshold.  Initial 512 MiB keeps small *and*
         ;; moderate programs GC-free (zero overhead) — crucially the full
@@ -2221,28 +2627,47 @@ reused buffer and >8-byte names install correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
-        (let* ((more 1))
-          (while (= more 1)
-            (seq
-             (ptr-write-u64 result 0 0) (ptr-write-u64 result 8 0)
-             (let* ((prc (nelisp_reader_parse_one src cursor result pool 0)))
-               (if (= prc 1)
-                   ;; Reset out to Nil per form: nl_sf_if (no-else, false) and
-                   ;; other forms leave out untouched on a nil result, relying on
-                   ;; the per-eval fresh-Nil contract.  Only reset when a form
-                   ;; actually parsed, so the EOF iteration keeps the last value.
-                   (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                        (nelisp_eval_call result ctx out)
-                        ;; --- form-boundary tracing GC (safe point) ---
-                        (if (< (ptr-read-u64 268435456 0) (ptr-read-u64 268435560 0))
-                            0
-                          (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
-                                 (bump (ptr-read-u64 268435456 0))
-                                 (lo (+ (* live 3) 268435456))
-                                 (hi (+ bump 268435456)))
-                            (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))
-                 (setq more 0))))))
-        (ptr-read-u64 out 8)))))
+        (if (= (nl_cstr_eq_repl path) 1)
+            (if (= (nl_repl_usage_error_p argc arg2) 1)
+                2
+              (seq
+               (sexp-write-str-lit src ,(with-temp-buffer
+                                          (insert-file-contents
+                                           (expand-file-name "scripts/nelisp-stdlib-prelude.el"
+                                                             nelisp-standalone--repo-root))
+                                          (buffer-string)))
+               (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+               (nl_repl_loop prompt_p linebuf fbuf src cursor result pool out ctx builtin_sym)
+               0))
+          (seq
+           ;; --- source selection: embedded vs. file (M7 dual mode) ---
+           (if (= (nl_cstr_eq_eval_runtime_image path) 1)
+               (if (> argc 3)
+                   (nl_runtime_image_eval_source sp argc fbuf src)
+                 (sexp-write-str-lit src "1"))
+             (if (= (nl_cstr_eq_exec_runtime_image path) 1)
+                 (if (> argc 3)
+                     (nl_runtime_image_exec_source sp argc fbuf src)
+                   (sexp-write-str-lit src "1"))
+               (if (= (nl_runtime_image_command_p path) 1)
+                   (seq
+                    (nl_argv_list_from argc sp 1 argv_list)
+                    (nl_env_set_value ctx argv_sym argv_list)
+                    (sexp-write-str-lit src ,(nelisp-standalone--runtime-image-command-src)))
+                 (if (= path 0)
+                     ;; embedded NELISP_SRC (gate path)
+                     (sexp-write-str-lit src ,(nelisp-standalone--reader-src))
+                   ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
+                   (let* ((fd (syscall-direct 2 path 0 0 0 0 0)))
+                     (let* ((n (syscall-direct 0 fd fbuf ,nelisp-standalone--reader-read-cap 0 0 0)))
+                       (seq
+                        (syscall-direct 3 fd 0 0 0 0 0)
+                        (nl_alloc_str fbuf (if (< n 0) 0 n) src))))))))
+           ;; --- reader path (M8): read+eval EVERY top-level form, keep the last
+           ;; value.  parse_one advances the shared cursor; it returns 1 per form
+           ;; and != 1 (e.g. -1 at EOF) when no more forms remain.
+           (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+           (ptr-read-u64 out 8))))))))
 
 ;; REAL special-form + env machinery (Doc 137 M2/M3 un-trap).  Replaces the
 ;; baked path's trap.o stubs so the binary is a GENUINE general interpreter for
@@ -2752,9 +3177,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                       nelisp-standalone--this-file)))
          (extras (mapcar #'nelisp-standalone--reader-extra-unit
                          nelisp-standalone--reader-extra-manifest))
-         (float-stub (nelisp-standalone--cached-unit
-                      "reader-float-stub.o" nelisp-standalone--reader-float-stub-source
-                      nelisp-standalone--this-file))
+         (float-stub (nelisp-standalone--reader-float-unit))
          ;; real-sf: all real special-form units EXCEPT sf-cc.o (built from the
          ;; WAVE-2 PATCH-4 source below) and the two PERSISTENT-INSTALL escape
          ;; sites (sf-frame-ensure-cap.o / sf-env-set-value2.o), which are built
@@ -2829,12 +3252,95 @@ genuine general interpreter for the 11 special forms + installed builtins."
   (let ((code (call-process nelisp-standalone--reader-out nil nil nil))
         (expected (nelisp-standalone--reader-expected)))
     (if (= code expected)
-        (progn (message "[standalone-reader] PASS: %S -> exit %d (expected %d)"
-                        (nelisp-standalone--reader-src) code expected)
-               (kill-emacs 0))
+        (condition-case err
+            (progn
+              (nelisp-standalone--reader-runtime-image-smoke)
+              (nelisp-standalone--reader-repl-smoke)
+              (message "[standalone-reader] PASS: %S -> exit %d (expected %d)"
+                       (nelisp-standalone--reader-src) code expected)
+              (kill-emacs 0))
+          (error
+           (message "[standalone-reader] FAIL: command smoke: %s"
+                    (error-message-string err))
+           (kill-emacs 1)))
       (message "[standalone-reader] FAIL: %S -> exit %d (expected %d)"
                (nelisp-standalone--reader-src) code expected)
       (kill-emacs 1))))
+
+(defun nelisp-standalone--reader-runtime-image-smoke ()
+  "Assert standalone-reader runtime-image eval/exec command semantics."
+  (let ((tmp (make-temp-file "nelisp-runtime-smoke-" nil ".nlri"))
+        (dump-rc nil)
+        (eval-rc nil)
+        (eval-out nil)
+        (exec-rc nil)
+        (exec-out nil)
+        (missing-rc nil))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (setq dump-rc
+                  (call-process nelisp-standalone--reader-out nil t nil
+                                "dump-runtime-image" tmp "(setq base 40)")))
+          (unless (= dump-rc 0)
+            (error "dump-runtime-image exit=%S" dump-rc))
+          (with-temp-buffer
+            (setq eval-rc
+                  (call-process nelisp-standalone--reader-out nil t nil
+                                "eval-runtime-image" tmp
+                                "(setq add 2)" "(+ base add)"))
+            (setq eval-out (buffer-string)))
+          (unless (and (= eval-rc 0) (equal eval-out "42\n"))
+            (error "eval-runtime-image exit=%S stdout=%S" eval-rc eval-out))
+          (with-temp-buffer
+            (setq exec-rc
+                  (call-process nelisp-standalone--reader-out nil t nil
+                                "exec-runtime-image" tmp
+                                "(setq add 2)" "(+ base add)"))
+            (setq exec-out (buffer-string)))
+          (unless (and (= exec-rc 0) (equal exec-out ""))
+            (error "exec-runtime-image exit=%S stdout=%S" exec-rc exec-out))
+          (with-temp-buffer
+            (setq missing-rc
+                  (call-process nelisp-standalone--reader-out nil t nil
+                                "exec-runtime-image" tmp)))
+          (unless (= missing-rc 1)
+            (error "missing-form exec-runtime-image exit=%S" missing-rc))
+          (message "[standalone-reader] runtime-image smoke PASS"))
+      (when (file-exists-p tmp)
+        (delete-file tmp)))))
+
+(defun nelisp-standalone--reader-repl-smoke ()
+  "Assert standalone-reader `repl --no-prompt' keeps one live environment."
+  (let ((stdin (concat
+                "(defun hot () 1)\n"
+                "(hot)\n"
+                "(defun hot () 42)\n"
+                "(hot)\n"
+                "(nelisp--eval-source-string \"(defun hot () 99)\")\n"
+                "(hot)\n"
+                ",quit\n"))
+        (repl-rc nil)
+        (repl-out nil)
+        (bad-rc nil))
+    (with-temp-buffer
+      (insert stdin)
+      (setq repl-rc
+            (call-process-region (point-min) (point-max)
+                                 nelisp-standalone--reader-out
+                                 t t nil
+                                 "repl" "--no-prompt"))
+      (setq repl-out (buffer-string)))
+    (unless (and (= repl-rc 0)
+                 (equal repl-out "hot\n1\nhot\n42\nhot\n99\n"))
+      (error "repl exit=%S stdout=%S" repl-rc repl-out))
+    (with-temp-buffer
+      (setq bad-rc
+            (call-process nelisp-standalone--reader-out nil t nil
+                          "repl" "--bad")))
+    (unless (= bad-rc 2)
+      (error "repl --bad exit=%S" bad-rc))
+    (message "[standalone-reader] repl smoke PASS")))
 
 (defconst nelisp-standalone--prelude-file
   (expand-file-name "scripts/nelisp-stdlib-prelude.el"
@@ -2855,6 +3361,7 @@ all combine so a single wrong primitive shifts the result off 42."
    "       (if (= s 42) 0 100)\n"                  ; dolist sum 10+20+12 -> 42
    "       (if (= (nth 2 (list 9 8 42 7)) 42) 0 100)\n"   ; nth -> 42
    "       (if (= (plist-get (list 'a 1 'b 42) 'b) 42) 0 100)\n" ; plist-get -> 42
+   "       (if (= ?λ 955) 0 100)\n"                 ; UTF-8 char literal -> codepoint
    "       (if (= (length `(1 ,b ,@c 5)) 5) 42 100))))\n")) ; backquote length 5 -> 42
 
 ;;;###autoload

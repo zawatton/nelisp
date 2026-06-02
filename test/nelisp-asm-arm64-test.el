@@ -598,9 +598,11 @@
     (nelisp-asm-arm64-emit-reloc b 'b26-pc 'printf 0)
     (let ((r (car (nelisp-asm-arm64-buffer-relocs b))))
       (should (eq (plist-get r :type) 'b26-pc))
+      (should (equal (plist-get r :symbol) "printf"))
       (should (eq (plist-get r :sym) 'printf))
       (should (= (plist-get r :offset) 0))
-      (should (= (plist-get r :addend) 0)))))
+      (should (= (plist-get r :addend) 0))
+      (should (eq (plist-get r :section) 'text)))))
 
 (ert-deftest nelisp-asm-arm64-emit-reloc-abs64-after-movz-chain ()
   ;; Emit a 4-instr MOVZ/MOVK chain for a 64-bit immediate slot, then
@@ -798,6 +800,101 @@ exec a probe and check exit status."
     ;; mov-imm64 with #xDEADBEEFCAFEBABE = 4 slices = 16 bytes.
     (nelisp-asm-arm64-mov-imm64 b 'x0 #xDEADBEEFCAFEBABE)
     (should (= (nelisp-asm-arm64-buffer-pos b) 420))))
+
+;; ---- §131.A-arm64 width-specific register-offset load/store ----
+;;
+;; Golden encodings for the byte/half/word `[Xn, Xm]' forms.  Rt=X0,
+;; Rn=X1, Rm=X2 contributes (Rm<<16)|(Rn<<5)|Rt = 0x20020 over each
+;; size-specific base.  These back `ptr-{read,write}-u{8,16,32}'.
+
+(ert-deftest nelisp-asm-arm64-ldrb-reg-reg-x0-x1-x2 ()
+  "LDRB W0, [X1, X2] encodes to 0x38626820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-ldrb-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x38626820))))
+
+(ert-deftest nelisp-asm-arm64-strb-reg-reg-x0-x1-x2 ()
+  "STRB W0, [X1, X2] encodes to 0x38226820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-strb-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x38226820))))
+
+(ert-deftest nelisp-asm-arm64-ldrh-reg-reg-x0-x1-x2 ()
+  "LDRH W0, [X1, X2] encodes to 0x78626820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-ldrh-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x78626820))))
+
+(ert-deftest nelisp-asm-arm64-strh-reg-reg-x0-x1-x2 ()
+  "STRH W0, [X1, X2] encodes to 0x78226820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-strh-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x78226820))))
+
+(ert-deftest nelisp-asm-arm64-ldrw-reg-reg-x0-x1-x2 ()
+  "LDR W0, [X1, X2] (= 32-bit, zero-extending) encodes to 0xB8626820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-ldrw-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #xB8626820))))
+
+(ert-deftest nelisp-asm-arm64-strw-reg-reg-x0-x1-x2 ()
+  "STR W0, [X1, X2] (= 32-bit) encodes to 0xB8226820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-strw-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #xB8226820))))
+
+(ert-deftest nelisp-asm-arm64-ldst-reg-reg-register-fields ()
+  "Rm / Rn / Rt land in bits [20:16] / [9:5] / [4:0] (e.g. X3,X5,X7)."
+  ;; LDRB W3, [X5, X7] = 0x38606800 | (7<<16) | (5<<5) | 3 = 0x386768A3.
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-ldrb-reg-reg b 'x3 'x5 'x7)))
+                 (nelisp-asm-arm64-test--word #x386768A3))))
+
+(ert-deftest nelisp-asm-arm64-casal-x2-x3-x1 ()
+  "CASAL X2, X3, [X1] encodes compare/old=x2, new=x3."
+  ;; 64-bit CASAL: base 0xC8E0FC00 | (Rs=2<<16) | (Rn=1<<5) | Rt=3.
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-casal b 'x2 'x3 'x1)))
+                 (nelisp-asm-arm64-test--word #xC8E2FC23))))
+
+(ert-deftest nelisp-asm-arm64-casal-register-fields ()
+  "Rs / Rn / Rt land in bits [20:16] / [9:5] / [4:0]."
+  ;; CASAL X10, X11, [X12] = 0xC8E0FC00 | (10<<16) | (12<<5) | 11.
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-casal b 'x10 'x11 'x12)))
+                 (nelisp-asm-arm64-test--word #xC8EAFD8B))))
+
+;; ---- Doc 133 P0 ADR (addr-of) PC-relative label fixup ------------
+
+(ert-deftest nelisp-asm-arm64-adr-forward-resolves ()
+  "ADR X0, <tgt> 8 bytes ahead resolves to byte-offset +8 = 0x10000040.
+imm byte-offset = 8 -> immlo = 0, immhi = 2 -> (2<<5) = 0x40."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-adr b 'x0 'tgt)        ; slot 0 (4 bytes)
+    (nelisp-asm-arm64-nop b)                  ; pos 4..8 spacer
+    (nelisp-asm-arm64-define-label b 'tgt)    ; tgt = pos 8
+    (nelisp-asm-arm64-nop b)
+    (let ((bytes (nelisp-asm-arm64-resolve-fixups b)))
+      (should (equal (substring bytes 0 4)
+                     (nelisp-asm-arm64-test--word #x10000040))))))
+
+(ert-deftest nelisp-asm-arm64-adr-backward-resolves ()
+  "ADR X3, <tgt> 4 bytes behind resolves to byte-offset -4 = 0x10FFFFE3.
+imm byte-offset = -4 -> immlo = 0, immhi = 0x7FFFF -> (0x7FFFF<<5)|Rd."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-define-label b 'tgt)    ; tgt = pos 0
+    (nelisp-asm-arm64-nop b)                  ; pos 0..4 spacer
+    (nelisp-asm-arm64-adr b 'x3 'tgt)         ; slot 4
+    (let ((bytes (nelisp-asm-arm64-resolve-fixups b)))
+      (should (equal (substring bytes 4 8)
+                     (nelisp-asm-arm64-test--word #x10FFFFE3))))))
+
+(ert-deftest nelisp-asm-arm64-adr-unresolved-label-signals ()
+  "An ADR against a never-defined label signals at finalize."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-adr b 'x0 'nope)
+    (should-error (nelisp-asm-arm64-resolve-fixups b)
+                  :type 'nelisp-asm-arm64-error)))
 
 (provide 'nelisp-asm-arm64-test)
 

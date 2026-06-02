@@ -145,6 +145,10 @@
                   :phnum 0 :shnum 0 :shstrndx 0))))
     (should (= (nelisp-elf--read-le16 s 18) 183))))
 
+(ert-deftest nelisp-elf-write-reloc-type-aarch64-call26 ()
+  "b26-pc relocation keyword maps to R_AARCH64_CALL26."
+  (should (= (nelisp-elf--reloc-type-code 'b26-pc) 283)))
+
 ;; ---------------------------------------------------------------- Phdr L1
 
 (ert-deftest nelisp-elf-write-phdr-shape ()

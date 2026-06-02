@@ -1,6 +1,6 @@
-#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v3.0)
+#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v2.0)
 #+AUTHOR: zawatton
-#+DATE: 2026-06-02 (pure-elisp: Rust = 0 LOC)
+#+DATE: 2026-05-22 (standalone self-host & parallel build: 2026-06-02)
 
 #+begin_quote
 *Note on language:* I'm a non-native English speaker. The phrasing in
@@ -11,30 +11,45 @@ and I'll clarify.
 
 * TL;DR
 
-NeLisp is a from-scratch Emacs Lisp runtime where the entire language
-layer (JIT, allocator, GC, coding-system, evaluator, bytecode interp,
-reader, special forms, builtin dispatcher, object file writers, native
-code emitters) is written in Elisp itself.  As of v3.0 (2026-06-02),
-there are *0 =.rs= files* and no Cargo.toml anywhere in the tree.
-The project is now *100% pure Elisp*.
+NeLisp is a from-scratch Emacs Lisp runtime where essentially the
+entire language layer (JIT, allocator, GC, coding-system, evaluator,
+bytecode interp, reader, special forms, builtin dispatcher, object
+file writers, native code emitters, and standalone OS surface) is
+written in Elisp itself.
 
-v3.0 (2026-06-02) ships:
-- *Zero Rust* — 0 =.rs= files, no Cargo.toml, no =cargo= step in any
-  build path.  The final 11-LOC ABI shell (=build-tool/src/=) that
-  existed in v2.0 has been deleted entirely.
-- *Emacs-batch build* — the standalone interpreter/compiler is built
-  via =make standalone-reader= / =make standalone-eval=, which runs
-  =emacs --batch -l nelisp-standalone-build=.  Zero =rustc=/=cargo=.
-- *Cross-platform native emit* — pure-elisp object-file writers (ELF,
-  Mach-O, PE/COFF) and asm encoders (x86_64 SysV/Win64, AArch64
-  AAPCS) — 4 OS×arch targets proven end-to-end (Windows x86_64 emit
-  implemented but end-to-end link+execute verification pending).
-- *Self-host + parallel build* — =target/nelisp-standalone-reader=
-  loads its own compiler and compiles Elisp source → native ELF with
-  no Emacs in the loop: recursion (=(fact 5)= → exit 120),
+The important claim is not merely "Elisp can call into a runtime".
+NeLisp's runtime implementation is Elisp: the evaluator, reader,
+compiler, allocator, GC, object writers, and native code emitters live
+as Lisp source that the project can load, evaluate, redefine, compile,
+and eventually self-host.  The OS-facing pieces are moving the same
+way: standalone file I/O, stdout/stderr, process exit, raw memory,
+=mmap=-backed allocation, atomics, =clone(2)=, =fork(2)=, and the
+syscall surface used by the standalone reader are expressed from Elisp
+via Phase-47 codegen and =syscall-direct=.
+
+v2.0 (2026-05-22) ships:
+- *Pure-Elisp runtime implementation* — evaluator, reader, special
+  forms, builtins, compiler, allocator, GC, object writers, codegen,
+  and standalone OS interaction all live in Elisp source.
+- *Cross-platform support* on 5 targets — linux/x86_64,
+  linux/aarch64, macos/x86_64, macos/aarch64, windows/x86_64 — with
+  pure-elisp object-file writers (ELF, Mach-O, PE/COFF) and pure-elisp
+  asm encoders (x86_64 with both SysV and Microsoft x64 ABIs, plus
+  AArch64 AAPCS).
+
+2026-06 adds a *standalone self-hosting binary*:
+- *Self-host + parallel build* — a pure-elisp Phase-47-AOT binary
+  (=target/nelisp-standalone-reader=, pure Elisp) loads its own
+  compiler and compiles Elisp source → native ELF *with no Emacs in
+  the loop*, including recursion (=(fact 5)= → exit 120),
   multi-threaded native programs (=clone(2)= + atomics), and *N units
   compiled concurrently* (=fork(2)= workers).  All CI-gated.  See
   =Standalone self-host & parallel build=.
+- *REPL-driven runtime development* — the same pure-Elisp standalone
+  reader exposes =repl [--no-prompt]=.  It keeps one live evaluator
+  environment, so redefining a function and calling it again takes
+  effect immediately, including through persistent
+  =nelisp--eval-source-string=.
 
 Use cases: running Elisp on machines without Emacs, and as a
 substrate for Lisp Machine / new-dialect experiments.
@@ -44,26 +59,17 @@ substrate for Lisp Machine / new-dialect experiments.
 A research project to implement Emacs Lisp on a substrate other than
 the existing Emacs C core — modeled after SBCL (Common Lisp
 implemented in itself, on a small non-Lisp runtime) and deliberately
-*not* a Scheme rewrite (Guile-Emacs) or a Rust rewrite of the entire
-Emacs C core (Remacs).
+*not* a Scheme rewrite or a rewrite of the entire Emacs C core in a
+different systems language.
 
-One layer.  The entire language runtime is implemented in Elisp itself.
-There is no Rust.  The standalone binary is produced by =emacs --batch=
-running =nelisp-standalone-build.el=; the result is an Elisp-emitted
-native x86_64 ELF that runs without any Emacs present.
+The runtime is implemented in Elisp itself.  NeLisp keeps the language
+surface, compiler, memory manager, object writers, OS-facing standalone
+driver, and development REPL in Lisp source so the system can inspect
+and modify itself while it is running.
 
-LoC split (2026-06-02): *~34k Elisp* (=lisp/= ~22k + =packages/= ~12k),
-*0 LOC Rust* (all =.rs= files deleted, no Cargo.toml).
-
-History:
-- v1.0 (2026-04-27): ~54k Elisp vs ~19k Rust.
-- 2026-05-14 (post-v1.0): ~34k Elisp vs ~26k Rust (anvil-runtime
-  crate deleted -5.8k, Phase 47 infrastructure added +7k).
-- v2.0 (2026-05-22): 11 LOC Rust in =build-tool/src/= — 99.8%
-  reduction.  Every function body migrated to elisp-emitted =.o=;
-  only the irreducible ABI link layer remained.
-- v3.0 (2026-06-02): *0 LOC Rust* — final ABI shell deleted entirely.
-  Pure-elisp build via =emacs --batch= only.
+Current source is centered in =lisp/=, =src/=, =packages/=, and
+=scripts/=, with the Phase-47 compiler emitting native object code from
+Elisp forms.
 
 ** Elisp — the language runtime (v1.0 snapshot: 45 files, 54,511 LoC)
 
@@ -87,17 +93,10 @@ for what shifted.
 | Other infrastructure (dev-audit, heap-types, EC bridge, entry point) | 4 | 1,094 | -- |
 | Character tables (JIS, data) | 1 | 20,815 | -- |
 
-** Rust — eliminated (v3.0: 0 LOC, 0 files)
-
-v3.0 (2026-06-02) ships *zero Rust*.  All =.rs= files have been
-deleted; there is no Cargo.toml anywhere in the tree.  The four cores
-Emacs's C core normally gives you — native compile, allocator, GC,
-coding-system — are written in Elisp itself.  Object file writers, asm
-encoders, and ABI-aware codegen are also pure Elisp.
-
-The =nelisp-syscall-*= / =nelisp-sqlite-rs= / =nelisp-runtime= /
-=nelisp-runtime-cli= sibling Cargo packages from earlier versions have
-been removed in full.
+v2.0 ships the four cores Emacs's C core normally gives you — native
+compile, allocator, GC, coding-system — all written in Elisp itself.
+Object file writers, asm encoders, ABI-aware codegen for 5 OS×arch
+targets are also pure Elisp.
 
 ** Two things Emacs proper doesn't ship in the same form
 
@@ -116,9 +115,15 @@ been removed in full.
 
 The pure-Elisp Phase-47 AOT toolchain now produces a *standalone
 interpreter binary* — =target/nelisp-standalone-reader=, built by =make
-standalone-reader=, *zero Rust* — that runs with *no Emacs in the loop
+standalone-reader= — that runs with *no Emacs in the loop
 at all*: it loads an =.el= file via =argv[1]=, evaluates it, and exits
-with the low byte of the last form's integer value.
+with the low byte of the last form's integer value.  It also exposes
+=repl [--no-prompt]= for line-oriented interactive development against
+one live evaluator environment.  Its OS connection is also written on
+the Elisp side: opening and reading files, reading stdin, writing
+stdout/stderr, exiting, allocating memory, spawning OS threads, and
+forking compile workers all flow through Elisp-generated native code
+and raw syscall forms.
 
 Fed its own compiler toolchain as source (=nelisp-phase47-compiler= +
 =nelisp-asm-x86_64= + =nelisp-elf-write= + =nelisp-static-linker=,
@@ -132,10 +137,54 @@ following are all CI-gated (=.github/workflows/ci.yml=):
 | =make standalone-selfhost-mt-test=       | compiles a *multi-threaded* program (=clone(2)= + SeqCst atomics, 3 OS threads) → native ELF → *42* |
 | =make standalone-parallel-compile-test=  | compiles *4 units concurrently* — 4 =fork(2)= workers each running the full compiler → 11,22,33,44  |
 
+** REPL-driven runtime development
+
+The standalone reader is also the development REPL for NeLisp itself.
+The REPL runs in the Phase-47 standalone interpreter and evaluates forms
+through the same reader, evaluator, builtin dispatcher, environment, and
+GC path used by normal file execution.
+
+That makes the core workflow Lisp-native:
+
+1. Start one standalone NeLisp process.
+2. Define or redefine functions in that process.
+3. Call them immediately without restarting the runtime.
+4. Use =nelisp--eval-source-string= to evaluate generated source into
+   the same live environment.
+
+#+begin_src shell
+make standalone-reader
+
+target/nelisp-standalone-reader repl
+nelisp> (defun hot () 1)
+hot
+nelisp> (hot)
+1
+nelisp> (defun hot () 42)
+hot
+nelisp> (hot)
+42
+#+end_src
+
+For editor integration or scripted probes, use =--no-prompt=:
+
+#+begin_src shell
+printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")\n(hot)\n,quit\n' \
+  | target/nelisp-standalone-reader repl --no-prompt
+# => hot
+# => 7
+# => hot
+# => 9
+#+end_src
+
+The last example proves both parts of the development surface:
+top-level REPL input mutates the live environment, and persistent
+source-string evaluation mutates that same environment.
+
 ** Two concurrency paths, exposed to interpreted code
 
-Both are built only from existing Phase-47 grammar ops (=syscall-direct=
-/ =atomic-fetch-add= / raw memory access) — *zero new Rust*.
+Both are built only from existing Phase-47 grammar ops
+(=syscall-direct= / =atomic-fetch-add= / raw memory access).
 
 - =(thread-spawn 'FORM)= / =(thread-join ADDR N)= — true multi-threaded
   *eval* via =clone(2)= (CLONE_VM): OS threads sharing one address
@@ -152,147 +201,111 @@ The standalone arena allocator advances its bump pointer with a SeqCst
 =atomic-fetch-add=, so concurrent allocation is thread-safe by
 construction.
 
+The same pattern is used for ordinary OS interaction in the standalone
+reader: file loading, REPL stdin, stdout/stderr writes, process exit,
+thread creation, and worker forking are runtime behaviors driven from
+Elisp-generated native code.  The point is not merely that Elisp logic
+sits above an OS bridge; the OS bridge itself is now part of the Elisp
+runtime surface for the standalone path.
+
 This is the third rung of the self-host ladder, end to end and with no
 Emacs: =text → (the standalone interpreter running the Phase-47
 compiler) → native ELF=, scaled to *concurrent multi-unit compilation*.
 
-* Pure-Elisp Migration Progress (v3.0, 2026-06-02)
+* Pure-Elisp Substrate (v2.0, 2026-05-22)
 
-The long-term goal was =bin/nelisp= Rust runtime LOC → 0
-(pure-elisp self-host).  v3.0 achieves the goal completely: *0 LOC
-Rust* — all =.rs= files deleted, no Cargo.toml (-100% from
-session-start 5,156 LOC).  Every functional module has been migrated
-to elisp-emitted =.o= files; the irreducible ABI link layer that
-remained in v2.0 has been eliminated in v3.0.
+The implementation center is Elisp source.  The standalone reader runs
+that substrate without a host Emacs process: source text is read,
+parsed, evaluated, compiled, linked, and used to drive OS interaction
+through Elisp-generated native code.
 
-** Rust LOC reductions — the v2.0 march
-The reduction was accomplished over a sustained series of ~80 waves
-(Wave α/β/γ/δ/ε in the May 2026 surgery + Waves a–z, aa–zz, aaaa–qqqq
-in the long-tail compression).  Categories:
-
-- *Structural migration* (Waves a/b/c+/d/e/f/g/h/i/j/k/l/n2/v/w/o/m/q
-  + 18s-O / 18v-FF / 18w-HH families): each Rust function body whose
-  logic could be expressed in Phase 47 elisp was moved to a new
-  =lisp/nelisp-cc-*.el= file; the Rust side kept only an =extern "C"=
-  declaration and a thin =cc_wrap!= wrapper.
-- *Macro consolidation* (Waves α / β / aaaa / cc / r / x / zzz +
-  cc_wrap_batch! Wave qqqq): repeated =cc_wrap!= invocations, NlBox
-  scaffolding, =define_nlbox!=, =mirror_op!=, =sexp_box_ptr_accessor!=,
-  etc. collapsed into single macro expansions.
-- *Dead code removal* (Waves d / 18z-WW / various): functions with
-  zero Rust callers (=mirror_clear_value=, =frame_bind_rust_direct=,
-  =is_fbound=, =set_function=, =intern_constant=, =push_frame=,
-  =pop_frame=, =bind_local=, etc.) deleted after rewiring callers.
-- *Module inlining* (Waves hhhh / kkkk / llll / mmmm / nnnn / oooo /
-  pppp): files reduced to single declarations were inlined into
-  parent modules as =mod foo { ... }= blocks, then the parent itself
-  collapsed to one physical line.
-- *Doc/comment/blank-line strip* (Waves gg / hh / nn): cosmetic
-  compression eliminated -1,795 LOC in a single pass across 103 files.
-
-** Pure-Elisp substrate shipped
+** Shipped substrate
 - *Phase 47 self-emission* (Doc 85 / 91–97):  ~7,550+ LoC of Elisp for
   the x86_64 + arm64 assemblers, ELF + Mach-O + PE/COFF writers,
   static linker, =crt0=, the Sexp DSL, and the Phase 47 compiler.
   600+ ERT.  =(fact 5)= compiles end-to-end to a native =.o=, links,
   and runs.
-- *Sexp ABI freeze* (Doc 100 §100.B/C):  two-artifact contract
-  ( =docs/arch/sexp-abi.md= + =lisp/nelisp-sexp-layout.el= ) kept in
-  sync by =make sexp-abi-check=.  (The former =build-tool/src/bin/sexp-abi-emit.rs=
-  third artifact is gone with the Rust deletion.)
 - *Cross-platform native emit* (May 2026 — see =Cross-Platform Support=
-  below): 4 OS×arch targets proven end-to-end; Windows x86_64 emit
-  implemented but link+execute CI pending.
+  below): 5 OS×arch targets supported entirely from elisp.
 - *GC pure-elisp* (Doc 79 v7 Phase C Stage 5.3):  Bacon-Rajan cycle
   collector at =lisp/nelisp-stdlib-gc.el= ( *806 LoC* ).
 - All special forms, builtins, env / mirror / frame ops, NlBox
   Clone/Drop, reader (lexer + parser), JIT trampolines, syscall
-  handlers — all live in Elisp.
+  handlers — now live in elisp via Phase 47 .o.
 
 ** Test gate
 - ERT coverage for elisp .o emission: 600+ tests including
-  Win64-ABI-specific assertions (Wave 5).  Run via =make test=.
+  Win64-ABI-specific assertions (Wave 5).
 - *Standalone self-host gates* (zero-Emacs, CI, 2026-06):
   =standalone-selfhost-test= (recursion → native ELF → 120),
   =standalone-selfhost-mt-test= (=clone(2)= + atomics multi-thread → 42),
   =standalone-parallel-compile-test= (4 units compiled concurrently via
   =fork(2)= → 11,22,33,44).
 
-* Cross-Platform Support (v3.0, 2026-06-02)
+* Cross-Platform Support (v2.0, 2026-05-22)
 
-NeLisp v3.0 targets 5 OS × architecture combinations, with *all
-object-file writers and asm codegen written in pure Elisp*.  The
-target is selected by a runtime parameter passed to the Elisp compiler,
-not by a Rust build flag.
+NeLisp v2.0 builds and runs across 5 OS × architecture targets, with
+*all object-file writers and asm codegen written in pure Elisp*:
 
 | Target | Object writer | Asm encoder | ABI | gate |
 |--------+---------------+-------------+-----+------|
-| linux/x86_64 | =nelisp-elf-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 | ✓ CI |
-| linux/aarch64 | =nelisp-elf-write.el= | =nelisp-asm-arm64.el= | AAPCS | ✓ CI |
-| macos/aarch64 | =nelisp-mach-o-write.el= | =nelisp-asm-arm64.el= | AAPCS | ✓ CI |
-| macos/x86_64 | =nelisp-mach-o-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 | ✓ CI |
-| windows/x86_64 | =nelisp-pe-write.el= | =nelisp-asm-x86_64.el= | Microsoft x64 | emit ✓, link+exec pending |
+| linux/x86_64 | =nelisp-elf-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 | ✓ |
+| linux/aarch64 | =nelisp-elf-write.el= | =nelisp-asm-arm64.el= | AAPCS | ✓ |
+| macos/aarch64 | =nelisp-mach-o-write.el= | =nelisp-asm-arm64.el= | AAPCS | ✓ |
+| macos/x86_64 | =nelisp-mach-o-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 | ✓ |
+| windows/x86_64 | =nelisp-pe-write.el= | =nelisp-asm-x86_64.el= | Microsoft x64 | ✓ |
 
 The PE/COFF writer (=nelisp-pe-write.el=, 765 LoC) and the
 Windows-specific codegen path (Phase 47 compiler =--abi 'win64= mode
 with shadow space allocation + RCX/RDX/R8/R9 arg-reg remapping +
-RBP/RBX/RDI/RSI/R12-R15 callee-save) are pure Elisp.  Windows
-end-to-end link + execute CI is deferred.
+RBP/RBX/RDI/RSI/R12-R15 callee-save) are pure elisp.
 
-Deferred: aarch64 Windows (=arm64ec=).
+Deferred: aarch64 Windows (=arm64ec=) — currently x86_64 Windows only.
 
-* Status — v3.0 (2026-06-02)
+* Status — v2.0 (2026-05-22)
 
-NeLisp v3.0 — *100% pure Elisp, 0 Rust* — cross-platform native emit
-across 5 OS×arch targets (4 proven end-to-end), standalone deployment:
+NeLisp v2.0 centers the runtime in Elisp and adds cross-platform native
+emit across 5 OS×arch targets.
 
-1. *Stage D v2.0* — bundled-Emacs tarball (~25 MB compressed). =bin/anvil=
-   resolves a stripped Emacs from =$ANVIL_HOME/emacs/bin/emacs= first,
-   so a host without =apt install emacs= can still run NeLisp.  Existing
-   dev checkouts fall through to system PATH unchanged.  See
-   =README-stage-d-v2.0.org= and =RELEASE_NOTES.md=.
-
-2. *MCP stdio server* — =bin/anvil-runtime= is a pure-shell wrapper that
-   drives a persistent UNIX-socket daemon running the MCP loop in Elisp
-   (=scripts/anvil-runtime-server-loop.el=) on top of the standalone
-   =nelisp= binary.  MCP JSON-RPC surface, no Rust.
-
-3. *Standalone self-host + parallel build* (2026-06) — the pure-Elisp
-   Phase-47 AOT toolchain produces =target/nelisp-standalone-reader=
-   (=make standalone-reader=, built by =emacs --batch -l nelisp-standalone-build=),
-   which loads its own compiler and compiles Elisp source → native ELF
-   with no Emacs in the loop: recursion (=(fact 5)= → exit 120),
-   multi-threaded native programs (=clone(2)= + atomics), and *N units
-   compiled concurrently* via =fork(2)= workers.  CI-gated.  See
-   =Standalone self-host & parallel build=.
+1. *Standalone reader* — =target/nelisp-standalone-reader= loads and
+   evaluates =.el= files with no host Emacs process.
+2. *Runtime development REPL* — =target/nelisp-standalone-reader repl=
+   keeps a live evaluator environment for immediate redefinition.
+3. *Standalone self-host + parallel build* (2026-06) — the pure-elisp
+   Phase-47 AOT toolchain loads its own compiler and compiles Elisp
+   source → native ELF *with no Emacs in the loop*: recursion
+   (=(fact 5)= → exit 120), multi-threaded native programs (=clone(2)=
+   + atomics), and *N units compiled concurrently* via =fork(2)= workers.
+   CI-gated.  See =Standalone self-host & parallel build=.
 
 ** Install
 
-Two paths.  No Rust or Cargo needed for either.
+Two paths.
 
-*** Prerequisites
+*** Prerequisites by platform
 
-The only required toolchain is *Emacs 29+*.  No compiler other than
-the Emacs batch process is needed to build the standalone binary.
+The standalone-reader build is driven by host Emacs and the pure-Elisp
+Phase-47 toolchain.  Install a normal native build environment for your
+platform, then run =make standalone-reader=.
 
-Tier guarantees (v3.0):
+Tier guarantees (v2.0):
 - =linux-x86_64= — 1st-class (CI blocker, every release must pass).
 - =linux-aarch64= / =macos-aarch64= / =macos-x86_64= — supported by
-  the elisp object-file writers, CI gate proven end-to-end.
-- =windows-x86_64= — emit implemented (=nelisp-pe-write.el= + Win64
-  ABI codegen); end-to-end link + execute CI pending.
+  the elisp object-file writers, end-to-end CI gate pending.
+- =windows-x86_64= — supported by =nelisp-pe-write.el= + Win64 ABI
+  codegen; end-to-end link + execute verification pending CI setup.
 - =windows-aarch64= (=arm64ec=) — deferred.
 
 Linux (Debian / Ubuntu):
 
 #+begin_src shell
-sudo apt install emacs git
+sudo apt install build-essential git emacs
 #+end_src
 
 Linux (Fedora / RHEL):
 
 #+begin_src shell
-sudo dnf install emacs git
+sudo dnf install gcc make git emacs
 #+end_src
 
 macOS (arm64 or x86_64):
@@ -302,34 +315,27 @@ xcode-select --install              # one-time
 brew install emacs
 #+end_src
 
-Windows: Install Emacs 29+ via https://ftp.gnu.org/gnu/emacs/windows/
-and run from an MSYS2 or WSL2 shell.  Windows standalone link+execute
-verification is pending CI setup.
+Windows — native x86_64 (v2.0 supported):
+The elisp-side PE/COFF writer + Win64 ABI codegen produce native COFF
+=.o= files.  Use a native toolchain with host Emacs, or use WSL2/MSYS2
+with the Linux-style commands above.
 
 *** From source — recommended for hacking and using the Elisp API
 
 #+begin_src shell
 git clone https://github.com/zawatton/nelisp ~/nelisp
 cd ~/nelisp
-make standalone-reader      # emacs --batch -l nelisp-standalone-build
+make standalone-reader
+make standalone-reader-test
 #+end_src
 
-Build output:
-- =target/nelisp-standalone-reader= — standalone interpreter (no Emacs needed at runtime)
-
-The Elisp source stays under =~/nelisp/lisp/= and =~/nelisp/src/=.
-
-To verify self-hosting:
-
-#+begin_src shell
-make standalone-selfhost-test        # (fact 5) → native ELF → exit 120
-make standalone-selfhost-mt-test     # multi-threaded (clone+atomics) → exit 42
-make standalone-parallel-compile-test  # 4 fork workers → 11,22,33,44
-#+end_src
+Build outputs land under =target/=, with
+=target/nelisp-standalone-reader= as the primary no-Emacs runtime.
 
 *** Pre-built standalone tarball — single-binary deployment
 
-For users who want NeLisp without cloning / building:
+For users who want NeLisp without cloning / building.  No Emacs install
+required at runtime:
 
 #+begin_src shell
 curl -fsSL https://github.com/zawatton/nelisp/releases/latest/download/install-v3.sh | bash
@@ -361,26 +367,43 @@ Expected output ends with =Cross-platform verify PASS=.
 
 ** Launch
 
-The pre-built tarball ships a =nelisp= CLI wrapping the pure-Elisp
-standalone interpreter.  No host Emacs needed at runtime:
+For current source checkouts, the primary no-Emacs runtime is the
+pure-Elisp standalone reader:
 
 #+begin_src shell
-nelisp --version                       # nelisp 3.0.0
-nelisp eval "(+ 1 2 3)"                # => 6
-nelisp eval "(mapcar (function (lambda (n) (* n n))) '(1 2 3 4))"
-                                       # => (1 4 9 16)
+make standalone-reader
 
-# load + run a file (last form's value is printed)
-nelisp -l ~/nelisp/examples/hello/hello.el
+# load + run a file; process exit is the low byte of the last integer value
+printf '(+ 40 2)\n' >/tmp/prog.el
+target/nelisp-standalone-reader /tmp/prog.el
+echo $?                                # => 42
 
-# pipe Elisp through stdin
-echo '(defun sq (x) (* x x)) (sq 7)' | nelisp -
-                                       # => 49
+# interactive runtime development
+target/nelisp-standalone-reader repl
 #+end_src
 
-If you built from source, the binary lives at
-=target/nelisp-standalone-reader= (produced by =make standalone-reader=);
-the install tarball puts =nelisp= on =$PATH=.
+The REPL keeps one live evaluator environment.  Redefinitions are
+visible immediately, and generated source can be evaluated into that
+same environment:
+
+#+begin_src shell
+printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")\n(hot)\n,quit\n' \
+  | target/nelisp-standalone-reader repl --no-prompt
+                                       # => hot
+                                       # => 7
+                                       # => hot
+                                       # => 9
+#+end_src
+
+Older install tarballs may also ship a =nelisp= command.  Current source
+checkouts use the pure-Elisp standalone reader above for REPL
+development and file execution.
+
+#+begin_src shell
+nelisp --version                       # nelisp 0.5.0
+nelisp eval "(+ 1 2 3)"                # => 6
+nelisp -l ~/nelisp/examples/hello/hello.el
+#+end_src
 
 ** Quick start
 
@@ -404,22 +427,8 @@ pick the one that matches your context.
 ;; => "Hello, World!"
 #+end_src
 
-The forms go through NeLisp's own reader + evaluator (the pure-Elisp
-runtime, bridged into the host Emacs process).  Host Emacs is a
-launcher only — result and NeLisp evaluator state stay separate.
-
-*** Acceptance demos via ERT
-
-The ERT test suite carries acceptance demos that exercise representative
-Elisp on the runtime end-to-end:
-
-#+begin_src shell
-cd ~/nelisp
-make test
-#+end_src
-
-Covers arithmetic / let / lambda / mapcar / if / condition-case
-and all Phase 47 self-host paths (600+ tests).
+The forms go through NeLisp's own reader + evaluator.  Host Emacs is a
+launcher only — result and host-evaluator state stay separate.
 
 #+begin_quote
 One downstream MCP-server front end that exposes NeLisp's
@@ -431,41 +440,33 @@ self-contained.
 ** Architecture
 
 #+begin_src text
-  ┌──────────────────────────────────────────────────┐
-  │ MCP client (Claude Code / Claude Desktop / …)    │
-  └─────────────────┬────────────────────────────────┘
-                    │ MCP stdio JSON-RPC
-  ┌─────────────────▼────────────────────────────────┐
-  │ bin/anvil-runtime (pure-shell wrapper)           │
-  │   UNIX-socket daemon ⇆ anvil-runtime-server-loop  │
-  ├──────────────────────────────────────────────────┤
-  │ Elisp anvil tool registry + MCP dispatch         │
-  │   (= scripts/anvil-runtime-server-loop.el +       │
-  │    lisp/* MCP handlers)                          │
-  ├──────────────────────────────────────────────────┤
-  │ standalone =nelisp= binary                       │  emacs --batch built
-  │   reader / evaluator / macro / compiler / loader │  target/nelisp-standalone-reader
-  │   (Phase 47 self-emission, 100% Elisp)           │  + STDLIB .image
-  ├──────────────────────────────────────────────────┤
-  │ OS substrate (libc / Linux / macOS syscalls)     │  Phase 7.0 / 9d
-  │   accessed via Phase 47 syscall-direct ops       │  pure Elisp → mmap/clone/fork
-  └──────────────────────────────────────────────────┘
+  +--------------------------------------------------+
+  | Optional front ends / tools                      |
+  +-----------------+--------------------------------+
+                    | source / stdio / files
+  +-----------------v--------------------------------+
+  | target/nelisp-standalone-reader                  |
+  |   reader / evaluator / macro / compiler / loader |
+  |   REPL / persistent eval / runtime-image replay  |
+  +--------------------------------------------------+
+  | Phase-47 Elisp substrate                         |
+  |   allocator / GC / builtins / syscall-direct     |
+  |   asm encoders / object writers / static linker  |
+  +--------------------------------------------------+
+  | OS substrate                                     |
+  |   files / stdio / exit / mmap / atomics / fork   |
+  +--------------------------------------------------+
 #+end_src
 
-Key architecture boundaries (v3.0):
+Two boundaries are pinned:
 
-- *No Rust layer* — the former =build-tool/src/= Rust core, extension
-  crates (=sqlite-rs= / =syscall-fileio= / =syscall-filenotify= /
-  =syscall-process=), and dev-bridge crate (=nelisp-runtime-cli=) are
-  all deleted.  OS access uses Phase 47 =syscall-direct= grammar ops
-  emitted from Elisp.
-- *Doc 46* (=architecture α boundary final=) — no =anvil_*= or =mcp=
-  modules in the standalone binary core.  MCP front end implemented in
-  Elisp (=scripts/anvil-runtime-server-loop.el=) on top of standalone
-  binary.
-- *Doc 49* (=self-host complete=) — reader / evaluator / macro /
-  compiler / stdlib loader all live in native-compiled Elisp seed.
-  No Rust bootstrap reader remains.
+- *Language boundary* -- reader, evaluator, macro expansion, compiler,
+  loader, special forms, builtins, allocator, and GC are runtime
+  behavior implemented as Elisp.
+- *OS boundary* -- file loading, REPL stdin, stdout/stderr writes,
+  process exit, memory mapping, atomics, thread spawning, and worker
+  forking are exposed through Elisp-generated code and raw syscall
+  forms on the standalone path.
 
 ** Soak gate (Doc 32 v2 §2.7)
 
@@ -487,21 +488,24 @@ Tier matrix (Doc 32 v2 §11):
 v1.1+ promotes arm64 to *blocker*; the audit grep guard in
 =test/nelisp-release-test.el= retires at that point.
 
-** What is *not* in v3.0
+** What is *not* in v1.0
 
 Said plainly so expectations are calibrated:
 
 - *No buffer / marker / window primitives.* NeLisp is the language
   runtime, not the editor.  =emacs-nox= is the closest existing
   comparison if scripting is all you need; what's different here is
-  the standalone tarball and a runtime small enough to read end-to-end.
-- The evaluator is a *substantial subset*: GC bridge, bignum, full
-  backquote semantics, full =save-excursion= are deferred.
-- macOS arm64 / Linux arm64 = CI gate proven; Windows arm64
-  (=arm64ec=) deferred.
-- Windows native standalone link+execute CI is post-v3.0 scope.
+  the 624 KB standalone tarball and a runtime small enough to read
+  end-to-end.
+- Phase 8.0 evaluator is a *minimal subset* (25 special forms + 75
+  builtins): GC bridge, bignum, full backquote semantics, full
+  =save-excursion= are deferred to Phase 8.x follow-up patches.
+- Default =--no-emacs= still falls back to =emacs --batch= for cold-init
+  failures (3-year safety window).
+- macOS arm64 / Linux arm64 = best-effort only (= time-boxed for v1.0).
+- Windows native =--no-emacs= is post-v2.0 scope.
 
-** Test status (HEAD, 2026-06-02)
+** Test status (HEAD, 2026-05-14)
 
 - =make test= = *3604 tests / 3562 expected / 5 unexpected (all
   pre-existing flake) / 37 skipped* on linux-x86_64.  See
@@ -515,28 +519,26 @@ Said plainly so expectations are calibrated:
   ~1.5× growth in test count reflects the new sub-systems: Phase 47
   self-emission (600+ ERT), Doc 79 v7 GC, Doc 102 mirror, Doc 100/110
   ABI / arithmetic, Doc 81 cons cluster, Doc 86/87 Tier 1+2 builtins.
-- 3-platform 1-hour soak (Linux x86_64 / macOS M1) passed end-to-end;
-  macOS aarch64 build re-validation pending (Doc 76 M1 verify pause).
-  Windows MSYS2 soak deferred (standalone link+execute CI pending).
+- 3-platform 1-hour soak (Linux x86_64 / macOS M1 / Windows MSYS2)
+  passed end-to-end at v1.0; macOS aarch64 build re-validation is
+  pending a libffi-sys upstream fix (Doc 76 M1 verify pause).
 
 ** Key design documents
 
 | Doc    | Topic                                            | Status               |
 |--------+--------------------------------------------------+----------------------|
 | 18     | Stage D launcher charter                         | LOCKED               |
-| 27     | Phase 7+ self-implemented C runtime              | LOCKED-2026-04-25-v2 |
+| 27     | Phase 7+ self-implemented runtime                | LOCKED-2026-04-25-v2 |
 | 28     | Phase 7.1 NeLisp native compiler                 | LOCKED-2026-04-25-v2 |
 | 32     | Phase 7.5 integration + standalone E2E           | LOCKED-2026-04-25-v2 |
-| 44     | Phase 8.0 Elisp interpreter (Rust path: archived)| LOCKED-2026-04-27    |
 | 76     | Phase 7 elisp-side OS surface migration          | IN PROGRESS          |
-| 77b/c  | Rust min-JIT + Sexp ABI elisp self-host          | SHIPPED partial      |
 | 79 v7  | Pure-elisp GC (Bacon-Rajan cycle collector)      | Phase C Stage 5.3 SHIPPED |
 | 81     | nelisp-cc primitive trampoline extension         | Stage 81.2 SHIPPED   |
 | 85     | Phase 47 feasibility spike                       | VALIDATED            |
 | 91-97  | Phase 47 ELF writer / asm / linker / DSL / build | SHIPPED              |
-| 100    | Sexp ABI freeze (3-artifact contract)            | §B/C SHIPPED         |
-| 102    | env.rs → elisp migration                         | Phase 8 Sprint A SHIPPED, Sprint B/C deferred |
-| 110    | Phase 47 f64 ABI + float.rs/math.rs swap         | SHIPPED              |
+| 100    | Runtime artifact contract                        | §B/C SHIPPED         |
+| 102    | Environment model migration to Elisp             | Phase 8 Sprint A SHIPPED, Sprint B/C deferred |
+| 110    | Phase 47 f64 ABI + float/math migration to Elisp | SHIPPED              |
 
 * Earlier status (Phase 0 — 2026-04-22) — preserved for reference
 
@@ -561,7 +563,7 @@ The roadmap is in =docs/05-roadmap.org=.
 Emacs Lisp is not philosophically cleaner than Scheme or Common Lisp —
 but decades of accumulated, lived-in Elisp is a cultural asset worth
 self-hosting /on its own terms/, rather than porting it to someone
-else's substrate (Scheme, Rust, JavaScript).
+else's substrate.
 
 /Esperanto is a constructed language of philosophical elegance, but
 English is the international language./ Elisp is English here.
@@ -571,10 +573,9 @@ The long form lives in =docs/00-motivation.org=.
 * Non-goals
 
 - Scheme rewrite (Guile-Emacs direction) — rejected
-- Rust rewrite (Remacs direction) — rejected
 - A replacement editor for Emacs — out of scope for NeLisp itself
   (Stage B/C handled by =anvil.el= or successors)
-- Replacing /all/ 3000 C functions — non-goal (Remacs failure pattern).
+- Replacing /all/ 3000 C functions — non-goal.
   NeLisp core team rewrites AI-critical paths, community fills the long
   tail
 
@@ -644,8 +645,6 @@ and =packages/nelisp-json/README.org=.
 
 | Project           | Approach                  | Status / diff with NeLisp                |
 |-------------------+---------------------------+------------------------------------------|
-| Remacs            | Emacs C → Rust            | Archived 2020, scope explosion           |
-| emacs-ng          | Rust + Deno (JS)          | Low activity 2024, JS disabled           |
 | Guile-Emacs       | Elisp on Guile (Scheme)   | 12-year stall, relaunched EmacsConf 2024 |
 | native-comp       | Elisp → libgccjit → .eln  | Shipped in Emacs 28+, does not rewrite VM |
 | SBCL              | CL in CL (CMU CL fork)    | /Methodology source/ (Rhodes 2008)       |

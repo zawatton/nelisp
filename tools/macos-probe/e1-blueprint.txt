@@ -1,0 +1,35 @@
+# e1 = the WORKING minimal native macOS arm64 executable (exit 42 via raw svc).
+# Built on M1 (macOS 26.0, sdk 26.2) as: clang -o e1 -e _main exit42.s ; codesign -f -s - e1
+# This is the blueprint the pure-elisp Mach-O MH_EXECUTE writer must replicate.
+# (no-dyld LC_UNIXTHREAD = e3 was REJECTED by the kernel: "permission denied" / exit 126.)
+#
+# mach_header_64: MH_MAGIC_64, CPU_ARM64 (0x0100000c), MH_EXECUTE (2)
+#
+# LC[0]  LC_SEGMENT_64  __PAGEZERO  vmaddr 0           vmsize 0x100000000  fileoff 0      filesize 0       prot 0/0
+# LC[1]  LC_SEGMENT_64  __TEXT      vmaddr 0x100000000 vmsize 0x4000       fileoff 0      filesize 16384   prot 5/5  nsects 1
+#          __text  addr 0x1000002d8  size 0xc  offset 728  align 2^2  flags 0x80000400 (PURE|SOME_INSTRUCTIONS)
+# LC[2]  LC_SEGMENT_64  __LINKEDIT  vmaddr 0x100004000 vmsize 0x8000       fileoff 16384  filesize 18496   prot 1/1
+# LC[3]  LC_DYLD_CHAINED_FIXUPS   dataoff 16384  datasize 56
+# LC[4]  LC_DYLD_EXPORTS_TRIE     dataoff 16440  datasize 48
+# LC[5]  LC_SYMTAB                symoff 16496  nsyms 2  stroff 16528  strsize 32
+# LC[6]  LC_DYSYMTAB              iextdefsym 0  nextdefsym 2  iundefsym 2  nundefsym 0  (rest 0)
+# LC[7]  LC_LOAD_DYLINKER         name /usr/lib/dyld
+# LC[8]  LC_UUID
+# LC[9]  LC_BUILD_VERSION         platform 1 (macOS)  minos 26.0  sdk 26.2  ntools 1
+# LC[10] LC_SOURCE_VERSION        0.0
+# LC[11] LC_MAIN                  entryoff 728  stacksize 0
+# LC[12] LC_LOAD_DYLIB            name /usr/lib/libSystem.B.dylib  curver 1356.0.0  compat 1.0.0
+# LC[13] LC_FUNCTION_STARTS       dataoff 16488  datasize 8
+# LC[14] LC_DATA_IN_CODE          dataoff 16496  datasize 0
+# LC[15] LC_CODE_SIGNATURE        dataoff 16560  datasize 18320   (codesign adds this; we generate our own)
+#
+# sizeofcmds(LC0..15) = 664 ; header 32 ; code @ file offset 728 (32B slack before code)
+# __TEXT filesize 16384 (one 16KB page) ; __LINKEDIT starts at fileoff 16384
+# code (3 instr): mov x0,#42 (0xD2800540) ; mov x16,#1 (0xD2800030) ; svc #0x80 (0xD4001001)
+#
+# Code signature: CodeDirectory v=20400, adhoc, Hash type=sha256 size=32, hashes = nCodeSlots + special slots.
+#
+# OPAQUE bytes still needed to replicate exactly (request from M1):
+#   [16384,16440) chained-fixups blob (56B)   [16440,16488) exports-trie (48B)
+#   [16488,16496) function-starts (8B)         [16496,16528) symtab 2x nlist_64 (32B)
+#   [16528,16560) string table (32B)           [0,728) header + load commands

@@ -264,11 +264,30 @@
     ;; Char-literal decode (kind 24 payload).
     ;;
     ;; Payload = the body bytes AFTER the leading `?'.  Two shapes:
-    ;;   - Single ASCII byte X        -> codepoint X.
+    ;;   - One UTF-8 codepoint X      -> codepoint X.
     ;;   - `\\X...' escape sequence   -> named escape / hex / C- / M-.
     ;;
     ;; Mirror `build-tool/src/reader/lexer.rs::read_char_literal'.
     ;; ===========================================================
+
+    (defun nelisp_reader_p_decode_utf8_char (payload-slot)
+      (let ((n (str-len payload-slot)))
+        (cond
+         ((= n 1)
+          (str-byte-at payload-slot 0))
+         ((= n 2)
+          (+ (* (logand (str-byte-at payload-slot 0) 31) 64)
+             (logand (str-byte-at payload-slot 1) 63)))
+         ((= n 3)
+          (+ (* (logand (str-byte-at payload-slot 0) 15) 4096)
+             (+ (* (logand (str-byte-at payload-slot 1) 63) 64)
+                (logand (str-byte-at payload-slot 2) 63))))
+         ((= n 4)
+          (+ (* (logand (str-byte-at payload-slot 0) 7) 262144)
+             (+ (* (logand (str-byte-at payload-slot 1) 63) 4096)
+                (+ (* (logand (str-byte-at payload-slot 2) 63) 64)
+                   (logand (str-byte-at payload-slot 3) 63)))))
+         (t 0))))
 
     (defun nelisp_reader_p_decode_char (payload-slot)
       (if (>= (str-len payload-slot) 1)
@@ -278,8 +297,8 @@
                   (nelisp_reader_p_decode_char_escape
                    payload-slot 1 (str-byte-at payload-slot 1))
                 0)
-            ;; Plain `?X' — payload byte 0 is the codepoint.
-            (str-byte-at payload-slot 0))
+            ;; Plain `?X' — payload is one UTF-8 codepoint.
+            (nelisp_reader_p_decode_utf8_char payload-slot))
         0))
 
     (defun nelisp_reader_p_decode_char_escape (payload-slot start esc-byte)

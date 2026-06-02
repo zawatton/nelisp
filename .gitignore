@@ -44,3 +44,4 @@ target/
 # AI-specific drift-prevention rules — lives in personal memory, not the
 # OSS-bound repo (= ad-hoc local file is fine, but never tracked).
 /CLAUDE.md
+dist/

@@ -7,7 +7,9 @@
 ;; Runtime image CLI support intentionally lives in Elisp.  The image is
 ;; a replayable source bundle: loading an image evaluates the stored
 ;; forms in a fresh NeLisp environment.  Extending an image appends a new
-;; source bundle after first validating that base + extension evaluate.
+;; source bundle.  The command CLI validates base + extension before
+;; writing; the standalone-reader command path writes source-v1 directly
+;; and leaves full-image validation to normal file-mode replay.
 
 ;;; Code:
 
@@ -35,10 +37,12 @@
 
 (defun nelisp-runtime-image--ensure-final-newline (source)
   "Return SOURCE with a trailing newline."
-  (if (or (= (length source) 0)
-          (not (= (aref source (- (length source) 1)) ?\n)))
+  (if (fboundp 'nelisp--eval-source-string)
       (concat source "\n")
-    source))
+    (if (or (= (length source) 0)
+          (not (= (aref source (- (length source) 1)) ?\n)))
+        (concat source "\n")
+      source)))
 
 (defun nelisp-runtime-image--wrap-source (source)
   "Wrap SOURCE as a runtime-image source bundle."
@@ -49,7 +53,9 @@
 
 (defun nelisp-runtime-image--read-file (path)
   "Read PATH as a string or signal an error."
-  (let ((source (nelisp--syscall-read-file path)))
+  (let ((source (if (fboundp 'nelisp--eval-source-string)
+                    (rdf path)
+                  (nelisp--syscall-read-file path))))
     (unless (stringp source)
       (error "cannot read runtime image: %s" path))
     source))
@@ -62,12 +68,14 @@
 
 (defun nelisp-runtime-image--eval-source (source)
   "Evaluate all top-level forms in SOURCE and return the last value."
-  (let ((forms (nelisp--read-all-from-string-impl source))
-        (last nil))
-    (while forms
-      (setq last (eval (car forms)))
-      (setq forms (cdr forms)))
-    last))
+  (if (fboundp 'nelisp--eval-source-string)
+      (nelisp--eval-source-string source)
+    (let ((forms (nelisp--read-all-from-string-impl source))
+          (last nil))
+      (while forms
+        (setq last (eval (car forms)))
+        (setq forms (cdr forms)))
+      last)))
 
 (defun nelisp-runtime-image-dump-cli (args)
   "Implement `nelisp dump-runtime-image' for ARGS."
@@ -78,9 +86,13 @@
           2)
       (condition-case err
           (let ((source (nelisp-runtime-image--join-forms (cdr (cdr args)))))
-            (nelisp-runtime-image--eval-source source)
-            (nelisp-runtime-image--write-file
-             path (nelisp-runtime-image--wrap-source source))
+            (if (fboundp 'nelisp--eval-source-string)
+                (progn
+                  (nelisp-runtime-image--write-file
+                   path (nelisp-runtime-image--wrap-source source)))
+              (nelisp-runtime-image--eval-source source)
+              (nelisp-runtime-image--write-file
+               path (nelisp-runtime-image--wrap-source source)))
             0)
         (error
          (nelisp-runtime-image--print-error
@@ -101,8 +113,9 @@
                  (extension-source (nelisp-runtime-image--join-forms forms))
                  (extension-image
                   (nelisp-runtime-image--wrap-source extension-source)))
-            (nelisp-runtime-image--eval-source base-source)
-            (nelisp-runtime-image--eval-source extension-source)
+            (unless (fboundp 'nelisp--eval-source-string)
+              (nelisp-runtime-image--eval-source base-source)
+              (nelisp-runtime-image--eval-source extension-source))
             (nelisp-runtime-image--write-file
              out-path
              (concat (nelisp-runtime-image--ensure-final-newline base-source)
@@ -122,21 +135,29 @@ When PRINT-VALUE is non-nil, print the final form value."
         (progn
           (nelisp-runtime-image--print-error nelisp-runtime-image--usage)
           2)
-      (condition-case err
-          (let ((last nil))
+      (if (fboundp 'nelisp--eval-source-string)
+          (progn
+            (setq nelisp-runtime-image--standalone-next-form (car forms))
             (nelisp-runtime-image--eval-source
              (nelisp-runtime-image--read-file path))
-            (setq last
-                  (nelisp-runtime-image--eval-source
-                   (nelisp-runtime-image--join-forms forms)))
-            (when print-value
-              (nelisp--write-stdout-bytes (prin1-to-string last))
-              (nelisp--write-stdout-bytes "\n"))
+            (nelisp-runtime-image--eval-source
+             nelisp-runtime-image--standalone-next-form)
             0)
-        (error
-         (nelisp-runtime-image--print-error
-          (format "eval-runtime-image: %s" (error-message-string err)))
-         1)))))
+        (condition-case err
+            (let ((last nil))
+              (nelisp-runtime-image--eval-source
+               (nelisp-runtime-image--read-file path))
+              (setq last
+                    (nelisp-runtime-image--eval-source
+                     (nelisp-runtime-image--join-forms forms)))
+              (when print-value
+                (nelisp--write-stdout-bytes (prin1-to-string last))
+                (nelisp--write-stdout-bytes "\n"))
+              0)
+          (error
+           (nelisp-runtime-image--print-error
+            (format "eval-runtime-image: %s" (error-message-string err)))
+           1))))))
 
 (provide 'nelisp-runtime-image)
 

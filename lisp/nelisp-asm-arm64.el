@@ -216,16 +216,18 @@ shadow would mask codegen bugs."
 
 (defun nelisp-asm-arm64-emit-fixup (buf slot-offset label type)
   "Record a 4-byte arm64 branch fixup at SLOT-OFFSET against LABEL.
-TYPE is one of `b26' / `bl26' / `b19'.  The first two share a
-26-bit immediate field at the low end of the instruction word
+TYPE is one of `b26' / `bl26' / `b19' / `adr21'.  `b26'/`bl26' share
+a 26-bit immediate field at the low end of the instruction word
 (= base 0x14000000 for B, 0x94000000 for BL).  `b19' is for
 `B.cond' instructions (= base 0x54000000) where the 19-bit signed
-byte-offset / 4 lives in bits [23:5] of the word.  Resolution
+byte-offset / 4 lives in bits [23:5] of the word.  `adr21' is for
+`ADR' (= base 0x10000000) where the 21-bit *signed byte* offset
+(±1 MiB) lives in immhi:immlo (bits [23:5] and [30:29]).  Resolution
 computes the appropriate imm field at finalize time and ORs it
 into the existing constant base already written; the caller is
 responsible for emitting the 4-byte placeholder (= base only,
 imm field = 0) before recording the fixup."
-  (unless (memq type '(b26 bl26 b19))
+  (unless (memq type '(b26 bl26 b19 adr21))
     (signal 'nelisp-asm-arm64-error
             (list :unknown-fixup-type type)))
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
@@ -248,9 +250,13 @@ r_addend)."
             (list :unknown-reloc-type type)))
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
          (relocs (plist-get plist :relocs))
-         (entry (list :type type :sym sym
+         (sym-name (if (stringp sym) sym (symbol-name sym)))
+         (entry (list :type type
+                      :symbol sym-name
+                      :sym sym
                       :offset (plist-get plist :length)
-                      :addend (or addend 0))))
+                      :addend (or addend 0)
+                      :section 'text)))
     (setq plist (plist-put plist :relocs (append relocs (list entry))))
     (nelisp-asm-arm64--rewrap buf plist)))
 
@@ -332,6 +338,21 @@ O(total-bytes))."
                       (field (ash (logand imm19 #x7FFFF) 5))
                       (new  (logior cur field)))
                  (nelisp-asm-arm64--write-word-le vec slot new))))
+            ('adr21
+             ;; Doc 133 P0 `addr-of': ADR patches a 21-bit *signed byte*
+             ;; offset (NOT /4) into immhi:immlo.  immlo = disp[1:0]
+             ;; (bits [30:29]), immhi = disp[20:2] (bits [23:5]).  PC for
+             ;; ADR is the instruction's own address (= slot).  Range is
+             ;; ±1 MiB — fine for a single intra-text section.
+             (unless (and (>= disp (- (ash 1 20)))
+                          (<  disp (ash 1 20)))
+               (signal 'nelisp-asm-arm64-error
+                       (list :adr-out-of-range disp :at-slot slot)))
+             (let* ((immlo (logand disp #x3))
+                    (immhi (logand (ash disp -2) #x7FFFF))
+                    (cur   (nelisp-asm-arm64--read-word-le vec slot))
+                    (new   (logior cur (ash immlo 29) (ash immhi 5))))
+               (nelisp-asm-arm64--write-word-le vec slot new)))
             (other
              (signal 'nelisp-asm-arm64-error
                      (list :unknown-fixup-type other :at-slot slot)))))))
@@ -508,6 +529,19 @@ low 26 bits."
   (let ((slot (nelisp-asm-arm64-buffer-pos buf)))
     (nelisp-asm-arm64--emit-word buf #x94000000)
     (nelisp-asm-arm64-emit-fixup buf slot label 'bl26)))
+
+(defun nelisp-asm-arm64-adr (buf reg label)
+  "Emit `ADR Xd, LABEL' — PC-relative address of LABEL into REG.
+Writes the 4-byte placeholder = base 0x10000000 | Rd (imm = 0),
+then records an `adr21' fixup at the placeholder offset.
+`resolve-fixups' patches the 21-bit signed byte offset (immhi:immlo,
+±1 MiB) at finalize time.  This materialises a function/data address
+intra-text — the aarch64 counterpart of x86_64 `LEA reg, [rip+sym]'
+\(Doc 133 Phase 0 `addr-of')."
+  (let ((d (logand (nelisp-asm-arm64--reg-num reg) #x1F))
+        (slot (nelisp-asm-arm64-buffer-pos buf)))
+    (nelisp-asm-arm64--emit-word buf (logior #x10000000 d))
+    (nelisp-asm-arm64-emit-fixup buf slot label 'adr21)))
 
 (defun nelisp-asm-arm64-blr (buf reg)
   "Emit `BLR Xn' (= branch with link to register, indirect call).
@@ -714,6 +748,148 @@ Base 0xF84107E0 | Xt.  Stack stays 16-byte aligned per AAPCS."
     (nelisp-asm-arm64--emit-word
      buf (logior #xF84107E0 t-reg))))
 
+;; ---- §125.B-arm64 raw 64-bit load/store + LSE atomics ----
+;;
+;; These back the `ptr-read-u64' / `ptr-write-u64' / `atomic-fetch-add'
+;; substrate ops on aarch64 (= the arena allocator + refcount paths).
+;; Register-offset addressing mirrors the x86_64 `[base+index]' form.
+
+(defun nelisp-asm-arm64-ldr-reg-reg (buf rt rn rm)
+  "Emit `LDR Xt, [Xn, Xm]' (= 64-bit load, register offset, LSL #0).
+Base 0xF8606800 | (Rm<<16) | (Rn<<5) | Rt."
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F))
+        (m-reg (logand (nelisp-asm-arm64--reg-num rm) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF8606800 (ash m-reg 16) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-str-reg-reg (buf rt rn rm)
+  "Emit `STR Xt, [Xn, Xm]' (= 64-bit store, register offset, LSL #0).
+Base 0xF8206800 | (Rm<<16) | (Rn<<5) | Rt."
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F))
+        (m-reg (logand (nelisp-asm-arm64--reg-num rm) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF8206800 (ash m-reg 16) (ash n-reg 5) t-reg))))
+
+;; ---- §131.A-arm64 width-specific register-offset load/store ----
+;;
+;; Back the `ptr-read-u{8,16,32}' / `ptr-write-u{8,16,32}' substrate ops.
+;; The encoding is identical to the 64-bit `ldr-reg-reg' / `str-reg-reg'
+;; forms above; only the `size' field (bits [31:30]) selects the access
+;; width: 00 = byte, 01 = halfword, 10 = word, 11 = doubleword.  Loads
+;; target Wt (= the X register's low 32 bits) and zero-extend the result
+;; into the full Xt, matching the x86_64 MOVZX / 32-bit-MOV contract.
+
+(defun nelisp-asm-arm64--ldst-reg-reg (buf base rt rn rm)
+  "Emit a register-offset load/store: BASE | (Rm<<16) | (Rn<<5) | Rt.
+BASE selects the access width + load/store opcode; addressing is
+`[Xn, Xm]' (option = LSL #0).  Shared by the byte/half/word helpers."
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F))
+        (m-reg (logand (nelisp-asm-arm64--reg-num rm) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior base (ash m-reg 16) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-ldrb-reg-reg (buf rt rn rm)
+  "Emit `LDRB Wt, [Xn, Xm]' (= zero-extending byte load, register offset).
+Base 0x38606800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #x38606800 rt rn rm))
+
+(defun nelisp-asm-arm64-strb-reg-reg (buf rt rn rm)
+  "Emit `STRB Wt, [Xn, Xm]' (= low-byte store, register offset).
+Base 0x38206800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #x38206800 rt rn rm))
+
+(defun nelisp-asm-arm64-ldrh-reg-reg (buf rt rn rm)
+  "Emit `LDRH Wt, [Xn, Xm]' (= zero-extending halfword load, register offset).
+Base 0x78606800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #x78606800 rt rn rm))
+
+(defun nelisp-asm-arm64-strh-reg-reg (buf rt rn rm)
+  "Emit `STRH Wt, [Xn, Xm]' (= low-halfword store, register offset).
+Base 0x78206800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #x78206800 rt rn rm))
+
+(defun nelisp-asm-arm64-ldrw-reg-reg (buf rt rn rm)
+  "Emit `LDR Wt, [Xn, Xm]' (= 32-bit load, zero-extends to Xt, register offset).
+Base 0xB8606800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #xB8606800 rt rn rm))
+
+(defun nelisp-asm-arm64-strw-reg-reg (buf rt rn rm)
+  "Emit `STR Wt, [Xn, Xm]' (= 32-bit store, register offset).
+Base 0xB8206800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #xB8206800 rt rn rm))
+
+(defun nelisp-asm-arm64-ldaddal (buf rs rt rn)
+  "Emit `LDADDAL Xs, Xt, [Xn]' (= LSE atomic add, acquire+release).
+Atomically: Xt = [Xn]; [Xn] = [Xn] + Xs (= fetch-add, returns old value).
+Base 0xF8E00000 | (Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE
+(present on all Apple Silicon)."
+  (let ((s-reg (logand (nelisp-asm-arm64--reg-num rs) #x1F))
+        (t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF8E00000 (ash s-reg 16) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-casal (buf rs rt rn)
+  "Emit `CASAL Xs, Xt, [Xn]' (= LSE compare-and-swap, acquire+release).
+Atomically compares [Xn] with Xs; on success stores Xt; in all cases Xs
+is overwritten with the old memory value.  Base 0xC8E0FC00 |
+(Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE (present on all Apple
+Silicon)."
+  (let ((s-reg (logand (nelisp-asm-arm64--reg-num rs) #x1F))
+        (t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xC8E0FC00 (ash s-reg 16) (ash n-reg 5) t-reg))))
+
+;; ---- §101.B-arm64 immediate-offset load/store (Sexp field access) ----
+;;
+;; Unsigned-offset forms used by the Sexp slot ops (tag byte at +0,
+;; payload at +8, NlConsBox car/cdr at +0/+32).  The 64-bit LDR/STR
+;; scale IMM by 8; LDRB/STRB are unscaled (byte).
+
+(defun nelisp-asm-arm64-ldr-imm (buf rt rn imm)
+  "Emit `LDR Xt, [Xn, #IMM]' (= 64-bit load, unsigned offset).
+IMM must be a multiple of 8 in 0..32760.  Base 0xF9400000."
+  (unless (and (integerp imm) (>= imm 0) (zerop (logand imm 7)) (<= imm 32760))
+    (signal 'nelisp-asm-arm64-error (list :ldr-imm-out-of-range imm)))
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF9400000 (ash (ash imm -3) 10) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-str-imm (buf rt rn imm)
+  "Emit `STR Xt, [Xn, #IMM]' (= 64-bit store, unsigned offset).
+IMM must be a multiple of 8 in 0..32760.  Base 0xF9000000."
+  (unless (and (integerp imm) (>= imm 0) (zerop (logand imm 7)) (<= imm 32760))
+    (signal 'nelisp-asm-arm64-error (list :str-imm-out-of-range imm)))
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF9000000 (ash (ash imm -3) 10) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-ldrb-imm (buf rt rn imm)
+  "Emit `LDRB Wt, [Xn, #IMM]' (= zero-extending byte load).
+IMM in 0..4095 (unscaled).  Base 0x39400000."
+  (unless (and (integerp imm) (>= imm 0) (<= imm 4095))
+    (signal 'nelisp-asm-arm64-error (list :ldrb-imm-out-of-range imm)))
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x39400000 (ash imm 10) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-strb-imm (buf rt rn imm)
+  "Emit `STRB Wt, [Xn, #IMM]' (= low-byte store).
+IMM in 0..4095 (unscaled).  Base 0x39000000."
+  (unless (and (integerp imm) (>= imm 0) (<= imm 4095))
+    (signal 'nelisp-asm-arm64-error (list :strb-imm-out-of-range imm)))
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x39000000 (ash imm 10) (ash n-reg 5) t-reg))))
+
 ;; ---- Doc 110 §110.D AArch64 SIMD/FP scalar-double helpers ----
 ;;
 ;; D-register encoding mirrors the X register table: low 5 bits land
@@ -827,6 +1003,27 @@ pattern (= constructed in Xn via MOV/MOVK) into Dn for FCMP."
          (n (logand (nelisp-asm-arm64--reg-num src) #x1F)))
     (nelisp-asm-arm64--emit-word
      buf (logior #x9E670000 (ash n 5) (logand d #x1F)))))
+
+(defun nelisp-asm-arm64-fmov-x-from-d (buf dst src)
+  "Emit `FMOV Xd, Dn' (= FP→GP 64-bit transfer)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (nelisp-asm-arm64--fp-reg-num src)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9E660000 (ash (logand n #x1F) 5) d))))
+
+(defun nelisp-asm-arm64-scvtf-d-from-x (buf dst src)
+  "Emit `SCVTF Dd, Xn' (= signed i64 to f64)."
+  (let* ((d (nelisp-asm-arm64--fp-reg-num dst))
+         (n (logand (nelisp-asm-arm64--reg-num src) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9E620000 (ash n 5) (logand d #x1F)))))
+
+(defun nelisp-asm-arm64-fcvtzs-x-from-d (buf dst src)
+  "Emit `FCVTZS Xd, Dn' (= f64 to signed i64, truncate toward zero)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (nelisp-asm-arm64--fp-reg-num src)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9E780000 (ash (logand n #x1F) 5) d))))
 
 (defun nelisp-asm-arm64-stur-d-base-disp (buf src base imm9)
   "Emit `STUR Dt, [Xn, #IMM9]' (= unscaled store of low 8 bytes).
