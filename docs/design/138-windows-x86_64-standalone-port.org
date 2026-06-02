@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-35-WINDOWS-TIMERFD-HELPER-GUARD-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-36-WINDOWS-SMOKE-BUILD-MANIFEST-TESTED
 
 * Status
 
-- *State*: STAGE 35 Windows timerfd helper guard + first real Windows smoke VALIDATED
+- *State*: STAGE 36 Windows smoke build manifest tested
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -118,6 +118,9 @@
   POSIX =sigset_t= or calling =libc!pthread_sigmask=.  The public
   =nelisp-os-timerfd-set-relative-ms= helper now also rejects Windows directly
   instead of relying on the lower-level timerfd wrapper to fail first.
+  =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
+  smoke manifest and emits all four PE32+ smoke EXEs on the host side before
+  they are handed to native Windows.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -193,6 +196,9 @@
   POSIX =sigset_t= allocation, libc FFI, or raw syscall entry.
   Stage 35 coverage verifies =nelisp-os-timerfd-set-relative-ms= rejects
   Windows before delegating into timerfd allocation or libc/syscall paths.
+  Stage 36 coverage verifies =scripts/nelisp-windows-build.el= keeps the
+  =exit42= / =virtualalloc= / =arena= / =writefile-stdout= manifest stable and
+  can emit all four PE32+ smoke EXEs from that manifest.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -252,7 +258,9 @@
   peercred helpers on Windows.  Stage 33 routes getsockname / getpeername
   wrappers through Winsock on Windows.  Stage 34 guards =sigprocmask= on
   Windows before POSIX signal-mask allocation or libc calls.  Stage 35 guards
-  the relative-ms timerfd helper directly on Windows.
+  the relative-ms timerfd helper directly on Windows.  Stage 36 adds host-side
+  ERT coverage for the Windows smoke build manifest used by the PowerShell
+  real-machine script.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -458,6 +466,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   abstract namespace / fd-passing / peercred helpers reject Windows before
   libc fallback.  =getsockname= / =getpeername= wrappers now use Winsock for
   IPv4, IPv6, and filesystem AF_UNIX socket-kind fds.
+  *Windows smoke build manifest progress 2026-06-03*:
+  =test/nelisp-windows-build-test.el= now checks that
+  =scripts/nelisp-windows-build.el= exposes the four real-machine smoke specs
+  and can emit each PE32+ image from that manifest.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -564,6 +576,9 @@ largest uncertainty (B1 + B2) first.
    *Windows timerfd helper guard SHIPPED 2026-06-02*:
    =nelisp-os-timerfd-set-relative-ms= now rejects Windows directly before
    delegating into Linux timerfd paths.
+   *Windows smoke build manifest test SHIPPED 2026-06-03*:
+   =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
+   manifest and host-side emission of all four PE32+ smoke EXEs.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
