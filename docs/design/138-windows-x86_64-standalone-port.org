@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-126-WINDOWS-SIGPROCMASK
+#+STATUS: STAGE-127-WINDOWS-SIGNALFD
 
 * Status
 
-- *State*: STAGE 126 Windows sigprocmask compatibility
+- *State*: STAGE 127 Windows signalfd compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -280,11 +280,17 @@
   =nelisp-os-pidfd-send-signal= uses =TerminateProcess= for =SIGTERM= /
   =SIGKILL= and validates the fd kind before FFI.  Synthetic process fds now
   also avoid regular HANDLE file APIs for =read/write/lseek/fstat/poll=.
-  =fork= plus Linux-only event fd APIs still reject Windows before reaching Linux syscall or Linux libc paths:
-  =fork=, =inotify_*=, and =signalfd= signal =nelisp-os-error= with
-  =ENOTSUP= on Windows.  Windows =sigprocmask= now tracks an emulated signal
-  mask for =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK= without POSIX
-  =sigset_t= allocation or libc FFI.  Windows =timerfd_create= now
+  =fork= plus remaining Linux-only APIs still reject Windows before reaching
+  Linux syscall or Linux libc paths: =fork=, =inotify_*=, fd-passing
+  =sendmsg= / =recvmsg= requests, and =getsockopt-peercred= signal
+  =nelisp-os-error= with =ENOTSUP= on Windows.  Windows =sigprocmask= now
+  tracks an emulated signal mask for =SIG_BLOCK= / =SIG_UNBLOCK= /
+  =SIG_SETMASK= without POSIX =sigset_t= allocation or libc FFI.  Windows
+  =signalfd= now creates synthetic fd-kind entries with tracked normalized mask,
+  =SFD_NONBLOCK= status, =SFD_CLOEXEC= descriptor flags, shared state across
+  =dup2= / =F_DUPFD=, zero-size =0600= =fstat= metadata, =ESPIPE= =lseek=,
+  empty =signalfd-read= results, and no HANDLE/Linux syscall fallback.
+  Windows =timerfd_create= now
   creates a waitable-timer HANDLE-backed fd-kind entry, =timerfd_settime= /
   =timerfd_set_relative_ms= arm relative timers through =SetWaitableTimer=,
   =timerfd_gettime= derives tracked remaining time from =GetTickCount64=,
@@ -694,6 +700,12 @@
   Stage 126 coverage verifies Windows =sigprocmask= tracks an emulated mask
   across =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK=, returns the previous
   mask, rejects invalid arguments, and avoids syscall/libc/allocation paths.
+  Stage 127 coverage verifies Windows =signalfd= creates and updates synthetic
+  fd state, tracks =SFD_NONBLOCK= / =SFD_CLOEXEC= through =F_GETFL= /
+  =F_GETFD=, supports =F_SETFL= / =F_SETFD=, shares state across =F_DUPFD=,
+  returns empty high-level reads, exposes poll/fstat/lseek/read/write behavior
+  without HANDLE/Linux syscall fallback, validates invalid inputs, and removes
+  signalfd tables on close.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1056,7 +1068,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =signalfd=, =sigprocmask=, and the then-unimplemented =timerfd= entry
   points reject Windows before reaching Linux syscall/libc paths.  The
   timerfd portion was superseded on 2026-06-03 by waitable timer-backed
-  compatibility.
+  compatibility; =sigprocmask= and =signalfd= were superseded on 2026-06-03 by
+  emulated mask / synthetic fd compatibility.
   *Windows Winsock progress 2026-06-02*: =nelisp-os-socket= now initializes
   Winsock, creates =AF_INET= sockets through =ws2_32!socket=, tracks socket fds
   separately from HANDLE fds, and =nelisp-os-close= dispatches socket fds to
@@ -1156,6 +1169,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows sigprocmask compatibility progress 2026-06-03*: Windows
   =sigprocmask= now tracks an emulated mask for =SIG_BLOCK= /
   =SIG_UNBLOCK= / =SIG_SETMASK= without invoking POSIX signal-mask FFI.
+  *Windows signalfd compatibility progress 2026-06-03*: Windows =signalfd=
+  now creates synthetic fd-kind entries, tracks normalized masks plus
+  =SFD_NONBLOCK= / =SFD_CLOEXEC= state, supports high-level empty reads and
+  fd metadata/dup/poll/lseek behavior, and keeps the path out of HANDLE/Linux
+  syscall fallback.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1620,6 +1638,10 @@ largest uncertainty (B1 + B2) first.
    *Windows sigprocmask compatibility SHIPPED 2026-06-03*: =sigprocmask=
    now maintains an emulated Windows signal mask and returns previous masks
    for =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK= without POSIX FFI.
+   *Windows signalfd compatibility SHIPPED 2026-06-03*: =signalfd= now returns
+   synthetic Windows fd-kind entries with tracked masks, status/descriptor
+   flags, shared dup state, empty high-level reads, and fd operation behavior
+   that avoids HANDLE/Linux syscall fallback.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
@@ -1781,7 +1803,9 @@ largest uncertainty (B1 + B2) first.
    IPv4/IPv6 loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=,
    accepted socket nonblock flag tracking, socket close-on-exec support, and
    Windows-compatible =eventfd= counters with synthetic =fcntl= dup/cloexec
-   plus =dup2= / =fstat= / =poll= support; regular
+   plus =dup2= / =fstat= / =poll= support, and synthetic =signalfd=
+   compatibility for mask tracking, descriptor/status flags, dup, metadata, and
+   empty reads; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
    those flags through regular =dup2= / =F_DUPFD=, including standard fd
