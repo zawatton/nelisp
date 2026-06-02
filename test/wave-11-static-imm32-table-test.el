@@ -82,9 +82,10 @@
   "`static-imm32-table-define' parses into a table-define IR node."
   (let ((ir (nelisp-phase47-compiler--parse
              '(static-imm32-table-define "t" (10 20 30)))))
-    (should (eq (plist-get ir :kind) 'table-define))
-    (should (equal (plist-get ir :name) "t"))
-    (should (equal (plist-get ir :elements) '(10 20 30)))))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'table-define))
+    (should (equal (nelisp-phase47-compiler--ir-get ir :name) "t"))
+    (should (equal (nelisp-phase47-compiler--ir-get ir :elements)
+                   '(10 20 30)))))
 
 (ert-deftest wave-11-static-imm32-table/parse-define-rejects-non-int ()
   "Non-integer element signals."
@@ -104,13 +105,13 @@
   "`static-imm32-table-lookup' inside a defun parses into a table-lookup IR."
   (let* ((ir (nelisp-phase47-compiler--parse
               '(defun look (i) (static-imm32-table-lookup "t" i))))
-         (body (plist-get ir :body)))
-    (should (eq (plist-get ir :kind) 'defun))
-    (should (eq (plist-get body :kind) 'table-lookup))
-    (should (equal (plist-get body :name) "t"))
-    (let ((idx (plist-get body :index)))
-      (should (eq (plist-get idx :kind) 'ref))
-      (should (eq (plist-get idx :var) 'i)))))
+         (body (nelisp-phase47-compiler--ir-get ir :body)))
+    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-phase47-compiler--ir-kind body) 'table-lookup))
+    (should (equal (nelisp-phase47-compiler--ir-get body :name) "t"))
+    (let ((idx (nelisp-phase47-compiler--ir-get body :index)))
+      (should (eq (nelisp-phase47-compiler--ir-kind idx) 'ref))
+      (should (eq (nelisp-phase47-compiler--ir-get idx :var) 'i)))))
 
 ;; ---- §T.2 collector tests ----
 
