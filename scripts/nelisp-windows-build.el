@@ -12,7 +12,7 @@
 ;; PE writer.  These are deliberately small de-risk artifacts for Doc 138:
 ;; ExitProcess, VirtualAlloc, arena metadata, stdout HANDLE I/O via
 ;; GetStdHandle + WriteFile, and CRT-free command-line discovery via
-;; GetCommandLineW.
+;; GetCommandLineW, and Winsock startup via WS2_32.dll!WSAStartup.
 ;;
 ;; Run on a Windows machine with Emacs installed via:
 ;;
@@ -25,6 +25,7 @@
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-arena
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-writefile-stdout
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getcommandline
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-wsastartup
 ;;
 ;; The generated EXEs require no external compiler, linker, CRT, or signing.
 
@@ -70,12 +71,18 @@
                     nelisp-windows-build--repo-root)
   "Default path for the single GetCommandLineW smoke EXE.")
 
+(defconst nelisp-windows-build--wsastartup-out
+  (expand-file-name "target/nelisp-windows-wsastartup.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single WSAStartup smoke EXE.")
+
 (defconst nelisp-windows-build-smoke-specs
   '((exit42 . minimal-exit-42)
     (virtualalloc . virtualalloc-exit-42)
     (arena . virtualalloc-arena-exit-42)
     (writefile-stdout . writefile-stdout-exit-42)
-    (getcommandline . getcommandline-exit-42))
+    (getcommandline . getcommandline-exit-42)
+    (wsastartup . wsastartup-exit-42))
   "Named Windows PE32+ smoke specs used by the real-machine script.")
 
 (defun nelisp-windows-build--normalize-spec (spec)
@@ -162,6 +169,13 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
    'getcommandline-exit-42
    (or out-path nelisp-windows-build--getcommandline-out)
    "GetCommandLineW + ExitProcess 42"))
+
+(defun nelisp-windows-build-wsastartup (&optional out-path)
+  "Batch entry: build the Windows WSAStartup smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'wsastartup-exit-42
+   (or out-path nelisp-windows-build--wsastartup-out)
+   "WSAStartup + ExitProcess 42"))
 
 (provide 'nelisp-windows-build)
 

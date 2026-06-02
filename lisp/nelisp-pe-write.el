@@ -43,7 +43,9 @@
 ;; the allocated arena base/cursor/end triple into a PE .data section.  Stage 4
 ;; adds a HANDLE-based stdout smoke via `GetStdHandle' + `WriteFile'.  This is
 ;; intentionally small.  Stage 42 adds `GetCommandLineW' so CRT-free startup
-;; can prove command-line discovery through the PE import table.  Production
+;; can prove command-line discovery through the PE import table.  Stage 43
+;; broadens the import writer to more than one DLL and adds a `WS2_32.dll'
+;; `WSAStartup' smoke for the standalone Winsock import path.  Production
 ;; standalone wiring still needs the wider OS import surface.
 
 ;;; Code:
@@ -883,69 +885,119 @@ Section numbers (1-based, per COFF spec §4):
          :num-relocs 0
          :characteristics (or (plist-get fields :characteristics) 0))))
 
+(defun nelisp-pe--build-idata (idata-rva imports)
+  "Build .idata bytes for IMPORTS.
+IMPORTS is a list of (DLL-NAME . FUNCTION-NAMES) entries.  Returns a plist with
+:bytes, :import-rva, :import-size, :iat-rva and :iat-size.  It also returns
+:iat-rva-alist mapping function names to their IAT slot RVAs.  All RVA values
+are relative to the image base."
+  (let* ((dll-count (length imports))
+         (descriptor-size (* 20 (1+ dll-count)))
+         (records nil)
+         (cursor descriptor-size)
+         (iat-start nil)
+         (iat-size 0)
+         (iat-rva-alist nil)
+         (cbuf (nelisp-pe--make-buffer)))
+    (dolist (import imports)
+      (let* ((dll-name (car import))
+             (function-names (cdr import))
+             (func-count (length function-names))
+             (ilt-off cursor)
+             (ilt-rva (+ idata-rva ilt-off))
+             (ilt-size (* 8 (1+ func-count))))
+        (push (list :dll-name dll-name
+                    :function-names function-names
+                    :ilt-rva ilt-rva
+                    :ilt-size ilt-size)
+              records)
+        (setq cursor (+ cursor ilt-size))))
+    (setq records (nreverse records))
+    (setq iat-start cursor)
+    (let ((updated nil))
+      (dolist (record records)
+        (let* ((function-names (plist-get record :function-names))
+               (func-count (length function-names))
+               (iat-off cursor)
+               (iat-rva (+ idata-rva iat-off))
+               (this-iat-size (* 8 (1+ func-count))))
+          (push (append record
+                        (list :iat-rva iat-rva
+                              :iat-size this-iat-size))
+                updated)
+          (setq cursor (+ cursor this-iat-size))
+          (setq iat-size (+ iat-size this-iat-size))))
+      (setq records (nreverse updated)))
+    (let ((updated nil))
+      (dolist (record records)
+        (let ((hint-entries nil)
+              (slot 0))
+          (dolist (func-name (plist-get record :function-names))
+            (let* ((entry-bytes (concat (unibyte-string 0 0)
+                                        (encode-coding-string func-name 'utf-8 t)
+                                        (unibyte-string 0)))
+                   (entry-rva (+ idata-rva cursor)))
+              (push (list :name func-name :rva entry-rva :bytes entry-bytes)
+                    hint-entries)
+              (push (cons func-name
+                          (+ (plist-get record :iat-rva) (* slot 8)))
+                    iat-rva-alist)
+              (setq cursor (+ cursor (length entry-bytes)))
+              (setq slot (1+ slot))))
+          (push (append record (list :hint-entries (nreverse hint-entries)))
+                updated)))
+      (setq records (nreverse updated))
+      (setq iat-rva-alist (nreverse iat-rva-alist)))
+    (let ((updated nil))
+      (dolist (record records)
+        (let ((dll-name-rva (+ idata-rva cursor)))
+          (push (append record (list :dll-name-rva dll-name-rva))
+                updated)
+          (setq cursor (+ cursor
+                          (length (encode-coding-string
+                                   (plist-get record :dll-name) 'utf-8 t))
+                          1))))
+      (setq records (nreverse updated)))
+    ;; IMAGE_IMPORT_DESCRIPTOR entries followed by a null descriptor.
+    (dolist (record records)
+      (nelisp-pe--write-le32 cbuf (plist-get record :ilt-rva))
+      (nelisp-pe--write-le32 cbuf 0)
+      (nelisp-pe--write-le32 cbuf 0)
+      (nelisp-pe--write-le32 cbuf (plist-get record :dll-name-rva))
+      (nelisp-pe--write-le32 cbuf (plist-get record :iat-rva)))
+    (nelisp-pe--write-pad cbuf 20)
+    ;; Import Lookup Tables.
+    (dolist (record records)
+      (dolist (entry (plist-get record :hint-entries))
+        (nelisp-pe--write-le64 cbuf (plist-get entry :rva)))
+      (nelisp-pe--write-le64 cbuf 0))
+    ;; Import Address Tables.
+    (dolist (record records)
+      (dolist (entry (plist-get record :hint-entries))
+        (nelisp-pe--write-le64 cbuf (plist-get entry :rva)))
+      (nelisp-pe--write-le64 cbuf 0))
+    ;; IMAGE_IMPORT_BY_NAME entries + DLL names.
+    (dolist (record records)
+      (dolist (entry (plist-get record :hint-entries))
+        (nelisp-pe--write-bytes cbuf (plist-get entry :bytes))))
+    (dolist (record records)
+      (nelisp-pe--write-bytes
+       cbuf (encode-coding-string (plist-get record :dll-name) 'utf-8 t))
+      (nelisp-pe--write-u8 cbuf 0))
+    (list :bytes (nelisp-pe--buffer-bytes cbuf)
+          :import-rva idata-rva
+          :import-size descriptor-size
+          :iat-rva (+ idata-rva iat-start)
+          :iat-size iat-size
+          :iat-rva-alist iat-rva-alist)))
+
 (defun nelisp-pe--build-kernel32-idata (idata-rva function-names)
   "Build .idata bytes for KERNEL32.dll imports named by FUNCTION-NAMES.
 Returns a plist with :bytes, :import-rva, :import-size, :iat-rva and
 :iat-size.  It also returns :iat-rva-alist mapping function names to their
 IAT slot RVAs.  All RVA values are relative to the image base."
-  (let* ((dll-name "KERNEL32.dll")
-         (func-count (length function-names))
-         (descriptor-size 40) ; one IMAGE_IMPORT_DESCRIPTOR + null
-         (ilt-off descriptor-size)
-         (ilt-size (* 8 (1+ func-count)))
-         (iat-off (+ ilt-off ilt-size))
-         (iat-size (* 8 (1+ func-count)))
-         (hint-name-off (+ iat-off iat-size))
-         (hint-entries nil)
-         (hint-cursor hint-name-off)
-         (iat-rva-alist nil)
-         (slot 0)
-         dll-name-off
-         dll-name-rva
-         (ilt-rva (+ idata-rva ilt-off))
-         (iat-rva (+ idata-rva iat-off))
-         (cbuf (nelisp-pe--make-buffer)))
-    (dolist (func-name function-names)
-      (let* ((entry-bytes (concat (unibyte-string 0 0)
-                                  (encode-coding-string func-name 'utf-8 t)
-                                  (unibyte-string 0)))
-             (entry-rva (+ idata-rva hint-cursor)))
-        (push (list :name func-name :rva entry-rva :bytes entry-bytes)
-              hint-entries)
-        (push (cons func-name (+ iat-rva (* slot 8))) iat-rva-alist)
-        (setq hint-cursor (+ hint-cursor (length entry-bytes)))
-        (setq slot (1+ slot))))
-    (setq hint-entries (nreverse hint-entries))
-    (setq iat-rva-alist (nreverse iat-rva-alist))
-    (setq dll-name-off hint-cursor)
-    (setq dll-name-rva (+ idata-rva dll-name-off))
-    ;; IMAGE_IMPORT_DESCRIPTOR for KERNEL32.dll.
-    (nelisp-pe--write-le32 cbuf ilt-rva)      ; OriginalFirstThunk
-    (nelisp-pe--write-le32 cbuf 0)            ; TimeDateStamp
-    (nelisp-pe--write-le32 cbuf 0)            ; ForwarderChain
-    (nelisp-pe--write-le32 cbuf dll-name-rva) ; Name
-    (nelisp-pe--write-le32 cbuf iat-rva)      ; FirstThunk
-    ;; Null descriptor.
-    (nelisp-pe--write-pad cbuf 20)
-    ;; Import Lookup Table.
-    (dolist (entry hint-entries)
-      (nelisp-pe--write-le64 cbuf (plist-get entry :rva)))
-    (nelisp-pe--write-le64 cbuf 0)
-    ;; Import Address Table.
-    (dolist (entry hint-entries)
-      (nelisp-pe--write-le64 cbuf (plist-get entry :rva)))
-    (nelisp-pe--write-le64 cbuf 0)
-    ;; IMAGE_IMPORT_BY_NAME entries + DLL name.
-    (dolist (entry hint-entries)
-      (nelisp-pe--write-bytes cbuf (plist-get entry :bytes)))
-    (nelisp-pe--write-bytes cbuf (encode-coding-string dll-name 'utf-8 t))
-    (nelisp-pe--write-u8 cbuf 0)
-    (list :bytes (nelisp-pe--buffer-bytes cbuf)
-          :import-rva idata-rva
-          :import-size descriptor-size
-          :iat-rva iat-rva
-          :iat-size iat-size
-          :iat-rva-alist iat-rva-alist)))
+  (nelisp-pe--build-idata idata-rva
+                          (list (cons "KERNEL32.dll" function-names))))
 
 (defun nelisp-pe--build-exitprocess-idata (idata-rva)
   "Build .idata bytes for one import: KERNEL32.dll!ExitProcess."
@@ -1161,6 +1213,46 @@ and exits 1 otherwise."
     (nelisp-pe--write-le32 cbuf 1)
     (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
     (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--minimal-wsastartup-text
+    (text-rva exit-iat-rva wsastartup-iat-rva data-rva)
+  "Return x86_64 entry bytes that call WSAStartup, then ExitProcess.
+The generated code exits 42 when WSAStartup(MAKEWORD(2,2), &WSADATA) succeeds
+and exits 1 otherwise."
+  (let* ((lea-data-off 9)
+         (wsa-call-off 16)
+         (fail-exit-call-off 31)
+         (success-exit-call-off 42)
+         (call-len 6)
+         (lea-len 7)
+         (data-disp (- data-rva (+ text-rva lea-data-off lea-len)))
+         (wsa-disp (- wsastartup-iat-rva
+                      (+ text-rva wsa-call-off call-len)))
+         (fail-exit-disp (- exit-iat-rva
+                            (+ text-rva fail-exit-call-off call-len)))
+         (success-exit-disp (- exit-iat-rva
+                               (+ text-rva success-exit-call-off call-len)))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; Win64 ABI: 32-byte shadow space plus 8 bytes for stack alignment.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x28))
+    (nelisp-pe--write-u8 cbuf #xb9) ; mov ecx, MAKEWORD(2,2)
+    (nelisp-pe--write-le32 cbuf #x0202)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8d #x15)) ; rdx = WSADATA*
+    (nelisp-pe--write-le32-signed cbuf data-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf wsa-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0)) ; test eax,eax
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x74 #x0b)) ; jz success
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
 
@@ -1612,6 +1704,103 @@ and exits 1 otherwise."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--build-wsastartup-exitprocess-exe ()
+  "Build a PE32+ EXE that proves WS2_32.dll WSAStartup import wiring."
+  (let* ((num-sections 3)
+         (wsadata-bytes (make-string 512 0))
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (data-rva (* 2 nelisp-pe--section-alignment))
+         (idata-rva (* 3 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-idata
+           idata-rva
+           (list (cons "KERNEL32.dll" (list "ExitProcess"))
+                 (cons "WS2_32.dll" (list "WSAStartup")))))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-wsastartup-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "WSAStartup" iat-map))
+           data-rva))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length wsadata-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (data-raw-ptr (+ text-raw-ptr text-raw-size))
+         (idata-raw-ptr (+ data-raw-ptr data-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ data-raw-size idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length wsadata-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf wsadata-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length wsadata-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
   "Emit a PE32+/COFF relocatable object file to FILE-PATH.
@@ -1648,9 +1837,9 @@ so raw binary content is preserved.  Returns FILE-PATH."
   "Emit a PE32+ console executable to FILE-PATH.
 SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `virtualalloc-arena-exit-42', `writefile-stdout-exit-42',
-`getcommandline-exit-42', or a plist with :exit-code.  The output imports
-KERNEL32.dll functions through a real PE import directory and writes raw bytes
-with `no-conversion'.  Returns FILE-PATH."
+`getcommandline-exit-42', `wsastartup-exit-42', or a plist with :exit-code.
+The output imports DLL functions through a real PE import directory and writes
+raw bytes with `no-conversion'.  Returns FILE-PATH."
   (let* ((exit-code
           (cond
            ((eq spec 'minimal-exit-42) 42)
@@ -1658,6 +1847,7 @@ with `no-conversion'.  Returns FILE-PATH."
            ((eq spec 'virtualalloc-arena-exit-42) nil)
            ((eq spec 'writefile-stdout-exit-42) nil)
            ((eq spec 'getcommandline-exit-42) nil)
+           ((eq spec 'wsastartup-exit-42) nil)
            ((listp spec) (or (plist-get spec :exit-code) 42))
            (t (error "nelisp-pe-write-exe-binary: invalid SPEC %S" spec))))
          (bytes (cond
@@ -1669,6 +1859,8 @@ with `no-conversion'.  Returns FILE-PATH."
                   (nelisp-pe--build-writefile-stdout-exitprocess-exe))
                  ((eq spec 'getcommandline-exit-42)
                   (nelisp-pe--build-getcommandline-exitprocess-exe))
+                 ((eq spec 'wsastartup-exit-42)
+                  (nelisp-pe--build-wsastartup-exitprocess-exe))
                  (t
                   (nelisp-pe--build-minimal-exitprocess-exe exit-code))))
          (coding-system-for-write 'no-conversion))
