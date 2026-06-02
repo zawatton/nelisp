@@ -1237,7 +1237,9 @@
   "Windows dup2 to stdout uses SetStdHandle for the duplicated HANDLE."
   (let ((calls nil)
         (freed nil)
-        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-flags-table
+         `((3 . ,(logior nelisp-os-O-WRONLY nelisp-os-O-APPEND)))))
     (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
               ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
               ((symbol-function 'nelisp-os-read-i64)
@@ -1249,10 +1251,13 @@
                   ((equal fn "GetCurrentProcess") #x9999)
                   ((equal fn "DuplicateHandle") 1)
                   ((equal fn "SetStdHandle") 1)
+                  ((equal fn "GetStdHandle") #xbbbb)
                   (t (error "unexpected ffi call %S" fn))))))
       (let ((system-type 'windows-nt))
         (should (= (nelisp-os-dup2 3 nelisp-os-STDOUT)
-                   nelisp-os-STDOUT))))
+                   nelisp-os-STDOUT))
+        (should (= (nelisp-os-fcntl nelisp-os-STDOUT nelisp-os-F-GETFL 0)
+                   (logior nelisp-os-O-WRONLY nelisp-os-O-APPEND)))))
     (should (equal (nreverse calls)
                    (list
                     (list "kernel32" "GetCurrentProcess"
@@ -1265,8 +1270,16 @@
                                 nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
                     (list "kernel32" "SetStdHandle"
                           [:sint32 :sint32 :pointer]
-                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE #xbbbb)))))
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE #xbbbb))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE)))))
     (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((,nelisp-os-STDOUT . ,(logior nelisp-os-O-WRONLY
+                                                   nelisp-os-O-APPEND))
+                     (3 . ,(logior nelisp-os-O-WRONLY
+                                   nelisp-os-O-APPEND)))))
     (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-dup2-windows-same-fd-validates-oldfd ()

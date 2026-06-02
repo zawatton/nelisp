@@ -1457,6 +1457,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                                "kernel32" "CloseHandle"
                                [:sint32 :pointer] target-handle)
                               (nelisp-os--windows-ffi-error-signal))
+                          (nelisp-os--windows-fd-set-flags
+                           newfd
+                           (nelisp-os--windows-fd-flags oldfd))
                           newfd))
                     (nelisp-os--windows-fd-install
                      newfd

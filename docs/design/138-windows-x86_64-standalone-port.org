@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-76-WINDOWS-REGULAR-DUP-STATUS-FLAGS
+#+STATUS: STAGE-77-WINDOWS-STANDARD-DUP-STATUS-FLAGS
 
 * Status
 
-- *State*: STAGE 76 Windows regular dup status flags
+- *State*: STAGE 77 Windows standard dup status flags
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -94,8 +94,8 @@
   =nelisp-os-dup2= now routes Windows fd duplication through
   =DuplicateHandle=; regular targets update the Windows fd table while
   preserving tracked access / =O_APPEND= status flags, and standard targets use
-  =SetStdHandle=, which is the next required piece for =CreateProcess=
-  redirection.  Regular =F_DUPFD= now preserves the same tracked status flags.
+  =SetStdHandle= while also preserving tracked status flags for =F_GETFL= on
+  the standard fd.  Regular =F_DUPFD= now preserves the same tracked status flags.
   Socket-kind fds now use
   =WSADuplicateSocketW= / =WSASocketW= for =F_DUPFD= and non-standard-target
   =dup2=, while socket-to-standard-fd =dup2= remains explicitly unsupported
@@ -371,6 +371,9 @@
   state changes that would desynchronize tracking from the HANDLE.
   Stage 76 coverage verifies Windows regular =dup2= and =F_DUPFD= preserve
   tracked access / =O_APPEND= status flags for the duplicated fd.
+  Stage 77 coverage verifies Windows regular =dup2= to a standard fd preserves
+  tracked access / =O_APPEND= status flags for later =F_GETFL= on that standard
+  fd.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -724,6 +727,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows regular dup status flag progress 2026-06-03*: regular HANDLE-backed
   =dup2= and =F_DUPFD= now carry the source fd's tracked access / =O_APPEND=
   status flags to the duplicated fd.
+  *Windows standard dup status flag progress 2026-06-03*: regular =dup2= to a
+  standard fd now records the source fd's tracked access / =O_APPEND= status
+  flags so =F_GETFL= on stdout/stderr/stdin remains coherent after
+  =SetStdHandle=.
   *Windows Linux-only guard progress 2026-06-02*: =fork=, =pidfd=, =inotify=,
   =eventfd=, =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
   Windows before reaching Linux syscall/libc paths, including the relative-ms
@@ -912,6 +919,9 @@ largest uncertainty (B1 + B2) first.
    *Windows regular dup status flags SHIPPED 2026-06-03*: regular
    HANDLE-backed =dup2= and =F_DUPFD= now preserve source fd access /
    =O_APPEND= status tracking on the duplicated fd.
+   *Windows standard dup status flags SHIPPED 2026-06-03*: regular =dup2= to
+   standard fds now preserves source fd access / =O_APPEND= tracking for
+   subsequent =F_GETFL=.
    *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
    fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
    fallback.
@@ -1120,8 +1130,8 @@ largest uncertainty (B1 + B2) first.
    socket nonblock flag tracking, and socket close-on-exec support; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
-   those flags through regular =dup2= / =F_DUPFD=.  Broader socket extensions
-   remain pending.
+   those flags through regular =dup2= / =F_DUPFD=, including standard fd
+   targets.  Broader socket extensions remain pending.
    Linux-only AF_UNIX
    fd-passing/peercred helpers are guarded, not ported.
 
