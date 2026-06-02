@@ -35,10 +35,11 @@
 ;; `ExitProcess'.  Stage 12 maps `pipe' to `CreatePipe' and stores both HANDLEs
 ;; in the Windows fd table.  Stage 13 maps `lseek' to `SetFilePointerEx'.
 ;; Stage 14 maps the minimal `fstat' shape to `GetFileType' / `GetFileSizeEx'.
-;; Stage 15 maps `dup2' to `DuplicateHandle' / `SetStdHandle'.  The
-;; Stage 16 maps single-PID `kill' to `OpenProcess' / `TerminateProcess'.  The
-;; Linux/Darwin path remains the default until a real Windows standalone
-;; runtime selects `system-type' = `windows-nt'.
+;; Stage 15 maps `dup2' to `DuplicateHandle' / `SetStdHandle'.  Stage 16 maps
+;; single-PID `kill' to `OpenProcess' / `TerminateProcess'.  Stage 17 maps
+;; `execve' to `CreateProcessW' + `ExitProcess'.  The Linux/Darwin path remains
+;; the default until a real Windows standalone runtime selects `system-type' =
+;; `windows-nt'.
 
 ;;; Code:
 
@@ -123,6 +124,13 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 ;; Windows process access constants.
 (defconst nelisp-os-WIN-PROCESS-TERMINATE #x0001)
+
+;; Windows process-launch structure sizes/offsets (x86_64).
+(defconst nelisp-os-WIN-STARTUPINFOW-SIZE 104)
+(defconst nelisp-os-WIN-STARTUPINFOW-CB-OFFSET 0)
+(defconst nelisp-os-WIN-PROCESS-INFORMATION-SIZE 24)
+(defconst nelisp-os-WIN-PROCESS-INFORMATION-HPROCESS-OFFSET 0)
+(defconst nelisp-os-WIN-PROCESS-INFORMATION-HTHREAD-OFFSET 8)
 
 (defvar nelisp-os--windows-next-fd 3
   "Next POSIX-like fd number for Windows HANDLE table entries.")
@@ -279,6 +287,53 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
       (nelisp-os-write-u16 buf (* idx 2) unit)
       (setq idx (1+ idx)))
     (nelisp-os-write-u16 buf (* idx 2) 0)
+    buf))
+
+(defun nelisp-os--windows-quote-command-arg (arg)
+  "Quote one Windows command-line ARG using CreateProcess-compatible rules."
+  (let ((needs-quote (or (= (length arg) 0)
+                         (string-match-p "[ \t\n\v\"]" arg)))
+        (slashes 0)
+        (out nil))
+    (if (not needs-quote)
+        arg
+      (push ?\" out)
+      (dotimes (i (length arg))
+        (let ((ch (aref arg i)))
+          (cond
+           ((= ch ?\\)
+            (setq slashes (1+ slashes)))
+           ((= ch ?\")
+            (dotimes (_ (* 2 slashes)) (push ?\\ out))
+            (setq slashes 0)
+            (push ?\\ out)
+            (push ch out))
+           (t
+            (dotimes (_ slashes) (push ?\\ out))
+            (setq slashes 0)
+            (push ch out)))))
+      (dotimes (_ (* 2 slashes)) (push ?\\ out))
+      (push ?\" out)
+      (concat (nreverse out)))))
+
+(defun nelisp-os--windows-command-line (path argv)
+  "Return a Windows command line for PATH and ARGV."
+  (mapconcat #'nelisp-os--windows-quote-command-arg
+             (if argv argv (list path))
+             " "))
+
+(defun nelisp-os--windows-env-block (envp)
+  "Return a Windows UTF-16 environment block string from ENVP."
+  (let ((block (mapconcat #'identity envp "\0")))
+    (if envp
+        (concat block "\0")
+      "\0")))
+
+(defun nelisp-os--windows-alloc-utf16le-z (str)
+  "Allocate a UTF-16LE NUL-terminated buffer containing STR."
+  (let* ((units (nelisp-os--windows-utf16-code-units str))
+         (buf (nelisp-os--alloc (* 2 (1+ (length units))))))
+    (nelisp-os--windows-write-utf16le-z buf units)
     buf))
 
 (defun nelisp-os--windows-open (path flags _mode)
@@ -886,22 +941,80 @@ caller can `nelisp-os--free' both the array and each string after use."
     (dolist (sp string-ptrs) (nelisp-os--free sp))
     (nelisp-os--free array)))
 
+(defun nelisp-os--windows-execve (path argv envp)
+  "Windows implementation of `nelisp-os-execve' via CreateProcessW.
+Windows cannot replace the current process image like POSIX execve.  On
+successful launch, this function exits the current process so callers still see
+the execve contract that success does not return."
+  (let ((app-buf nil)
+        (cmd-buf nil)
+        (env-buf nil)
+        (startup-buf nil)
+        (process-info-buf nil))
+    (unwind-protect
+        (progn
+          (setq app-buf (nelisp-os--windows-alloc-utf16le-z path))
+          (setq cmd-buf (nelisp-os--windows-alloc-utf16le-z
+                         (nelisp-os--windows-command-line path argv)))
+          (setq env-buf (nelisp-os--windows-alloc-utf16le-z
+                         (nelisp-os--windows-env-block envp)))
+          (setq startup-buf (nelisp-os--alloc nelisp-os-WIN-STARTUPINFOW-SIZE))
+          (setq process-info-buf
+                (nelisp-os--alloc nelisp-os-WIN-PROCESS-INFORMATION-SIZE))
+          (nelisp-os-write-u32 startup-buf
+                               nelisp-os-WIN-STARTUPINFOW-CB-OFFSET
+                               nelisp-os-WIN-STARTUPINFOW-SIZE)
+          (let ((ok (nelisp-os--libc-call
+                     "kernel32" "CreateProcessW"
+                     [:sint32 :pointer :pointer :pointer :pointer :sint32
+                      :uint32 :pointer :pointer :pointer :pointer]
+                     app-buf
+                     cmd-buf
+                     0
+                     0
+                     1
+                     0
+                     env-buf
+                     0
+                     startup-buf
+                     process-info-buf)))
+            (if (= ok 0)
+                (nelisp-os--windows-ffi-error-signal)
+              (progn
+                (nelisp-os--libc-call
+                 "kernel32" "CloseHandle" [:sint32 :pointer]
+                 (nelisp-os-read-i64 process-info-buf
+                                     nelisp-os-WIN-PROCESS-INFORMATION-HTHREAD-OFFSET))
+                (nelisp-os--libc-call
+                 "kernel32" "CloseHandle" [:sint32 :pointer]
+                 (nelisp-os-read-i64 process-info-buf
+                                     nelisp-os-WIN-PROCESS-INFORMATION-HPROCESS-OFFSET))
+                (nelisp-os--libc-call
+                 "kernel32" "ExitProcess" [:void :uint32] 0)))))
+      (when process-info-buf (nelisp-os--free process-info-buf))
+      (when startup-buf (nelisp-os--free startup-buf))
+      (when env-buf (nelisp-os--free env-buf))
+      (when cmd-buf (nelisp-os--free cmd-buf))
+      (when app-buf (nelisp-os--free app-buf)))))
+
 (defun nelisp-os-execve (path argv envp)
   "POSIX execve(2) — replace current process image with PATH using ARGV
 list and ENVP list of strings.  Only returns on failure (signals
 `nelisp-os-error')."
-  (let ((argv-pair (nelisp-os--build-cstr-array argv))
-        (envp-pair (nelisp-os--build-cstr-array envp)))
-    (unwind-protect
-        (let ((r (nelisp-os--libc-call "libc" "execve"
-                              [:sint32 :string :pointer :pointer]
-                              path (car argv-pair) (car envp-pair))))
-          ;; libc.execve only returns on failure (= -1).
-          (if (= r -1)
-              (nelisp-os--ffi-errno-signal)
-            r))
-      (nelisp-os--free-cstr-array argv-pair)
-      (nelisp-os--free-cstr-array envp-pair))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-execve path argv envp)
+    (let ((argv-pair (nelisp-os--build-cstr-array argv))
+          (envp-pair (nelisp-os--build-cstr-array envp)))
+      (unwind-protect
+          (let ((r (nelisp-os--libc-call "libc" "execve"
+                                [:sint32 :string :pointer :pointer]
+                                path (car argv-pair) (car envp-pair))))
+            ;; libc.execve only returns on failure (= -1).
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              r))
+        (nelisp-os--free-cstr-array argv-pair)
+        (nelisp-os--free-cstr-array envp-pair)))))
 
 (defun nelisp-os-wait (pid options)
   "POSIX wait4(2) — wait for child PID with OPTIONS (= 0, WNOHANG, etc.).
