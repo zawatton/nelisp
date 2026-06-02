@@ -1899,6 +1899,46 @@
     (should (equal (sort freed #'<) '(3000 3000)))
     (should-not nelisp-os--windows-fd-flags-table)))
 
+(ert-deftest nelisp-stdlib-os-fcntl-windows-stdout-socket-setfl-nonblock ()
+  "Windows socket-kind stdout F_SETFL O_NONBLOCK uses ioctlsocket(FIONBIO)."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-fd-kind-table `((,nelisp-os-STDOUT . socket)))
+        (nelisp-os--windows-fd-flags-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetStdHandle") #xabcdef)
+                  ((equal fn "ioctlsocket") 0)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl nelisp-os-STDOUT nelisp-os-F-SETFL
+                                    nelisp-os-O-NONBLOCK)
+                   0))
+        (should (= (nelisp-os-fcntl nelisp-os-STDOUT nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))))
+    (should (equal (nreverse writes) '((3000 0 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetStdHandle" [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "GetStdHandle" [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "ws2_32" "ioctlsocket"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef nelisp-os-WIN-FIONBIO 3000))
+                    (list "kernel32" "GetStdHandle" [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE)))))
+    (should (equal freed '(3000)))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((,nelisp-os-STDOUT . ,nelisp-os-O-NONBLOCK))))))
+
 (ert-deftest nelisp-stdlib-os-fcntl-windows-socket-setfl-extra-flags-error ()
   "Windows socket F_SETFL rejects unsupported flags before Winsock FFI."
   (let ((called nil)

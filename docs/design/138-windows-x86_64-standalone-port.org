@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-88-WINDOWS-FSTAT-HANDLE-TYPES
+#+STATUS: STAGE-89-WINDOWS-STANDARD-SOCKET-FCNTL-SETFL
 
 * Status
 
-- *State*: STAGE 88 Windows fstat handle types
+- *State*: STAGE 89 Windows standard socket fcntl setfl
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -132,6 +132,9 @@
   Windows =GetFileType= =FILE_TYPE_CHAR= and =FILE_TYPE_PIPE= now map to
   zero-size =S_IFCHR= / =S_IFIFO= stats, and =FILE_TYPE_UNKNOWN= checks
   =GetLastError= to distinguish a valid unknown type from a HANDLE API failure.
+  Windows socket-kind standard fds now have explicit coverage that
+  =F_SETFL O_NONBLOCK= routes through =ioctlsocket(FIONBIO)= using the
+  standard HANDLE/SOCKET and updates tracked =F_GETFL= flags.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle= when
@@ -434,6 +437,9 @@
   Stage 88 coverage verifies Windows =fstat= maps =FILE_TYPE_CHAR= /
   =FILE_TYPE_PIPE= to =S_IFCHR= / =S_IFIFO= and checks =GetLastError= for
   =FILE_TYPE_UNKNOWN=.
+  Stage 89 coverage verifies Windows socket-kind standard fds route
+  =F_SETFL O_NONBLOCK= through =ioctlsocket(FIONBIO)= using the current
+  standard HANDLE/SOCKET and preserve =F_GETFL= tracking.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -819,6 +825,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   support =F_SETFL O_NONBLOCK= via =ioctlsocket(FIONBIO)=, and
   =nelisp-os-socket= accepts =SOCK_NONBLOCK= by enabling =FIONBIO= after
   creating the base Winsock socket.
+  *Windows standard socket fcntl progress 2026-06-03*: socket-kind
+  stdin/stdout/stderr now have coverage that =F_SETFL O_NONBLOCK= routes
+  through =ioctlsocket(FIONBIO)= using the standard HANDLE/SOCKET and preserves
+  =F_GETFL= tracking.
   *Windows socket close-on-exec progress 2026-06-03*: Windows
   =nelisp-os-socket= now accepts =SOCK_CLOEXEC= by using =WSASocketW= with
   =WSA_FLAG_NO_HANDLE_INHERIT=, and stream =socketpair= propagates that flag to
@@ -1102,6 +1112,10 @@ largest uncertainty (B1 + B2) first.
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
    same Winsock nonblocking mode after creation.
+   *Windows standard socket F_SETFL SHIPPED 2026-06-03*: socket-kind standard
+   fds now have explicit coverage that =F_SETFL O_NONBLOCK= uses the current
+   standard HANDLE/SOCKET with =ioctlsocket(FIONBIO)= and keeps =F_GETFL=
+   status tracking coherent.
    *Windows socketpair nonblocking SHIPPED 2026-06-03*: stream/datagram
    Windows =socketpair= now accepts =SOCK_NONBLOCK=, applies
    =F_SETFL O_NONBLOCK= to both returned fds after setup.
@@ -1249,7 +1263,9 @@ largest uncertainty (B1 + B2) first.
    after replacement, and non-standard-target =dup2= cleans up its new duplicate
    when replacing an existing target fd fails.  Socket-kind =dup2= now supports
    standard fd targets and routes socket-backed standard fd =read/write/close=
-   through Winsock.  Standard fd =close= now clears the Windows standard HANDLE
+   through Winsock; socket-kind standard fd =F_SETFL O_NONBLOCK= coverage now
+   verifies the same standard HANDLE/SOCKET is used with =ioctlsocket(FIONBIO)=.
+   Standard fd =close= now clears the Windows standard HANDLE
    slot and removes tracked fd status flags.  Disk HANDLE =fstat= now returns
    richer file information from =GetFileInformationByHandle=, and socket-kind
    =fstat= reports =S_IFSOCK=; pipe and character HANDLEs report =S_IFIFO= /
