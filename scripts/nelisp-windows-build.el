@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -53,6 +53,8 @@
 ;; based IAT-relative calls, then reads one byte from argv1 as a file path.
 ;; Stage 26 makes that startup path dual-mode: no argv1 takes the embedded
 ;; source branch, argv1 takes the file-load branch.
+;; Stage 27 links the standalone arena unit as Win64 PE code and proves
+;; `nl_arena_init' routes its mmap-shaped allocation through VirtualAlloc.
 
 ;;; Code:
 
@@ -60,6 +62,7 @@
 (require 'nelisp-asm-x86_64)
 (require 'nelisp-phase47-compiler)
 (require 'nelisp-static-linker)
+(require 'nelisp-standalone-build)
 
 (defun nelisp-windows-build-exitprocess (out-path exit-code)
   "Write OUT-PATH as a PE32+ EXE calling ExitProcess(EXIT-CODE)."
@@ -1043,6 +1046,34 @@ link-units."
          driver-rva iat-rvas)
         (nelisp-windows-build--argv1-file-data-unit))))))
 
+(defun nelisp-windows-build--standalone-arena-driver42-bytes ()
+  "Return a PE32+ EXE proving the standalone arena unit links on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(defun driver ()
+                        (let* ((arena (nl_arena_init)))
+                          (if (= arena 0)
+                              13
+                            (if (= (ptr-read-u64 268435456 0) 256)
+                                (if (= (ptr-read-u64 268435568 0) 268435712)
+                                    42
+                                  15)
+                              14))))
+                     driver-rva iat-rvas))
+            (arena-rva (+ driver-rva
+                          (nelisp-windows-build--unit-text-length driver)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1170,6 +1201,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (embedded-or-file source byte)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-arena-driver42 ()
+  "Batch entry: build the standalone arena initialization probe."
+  (let ((bytes (nelisp-windows-build--standalone-arena-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-arena-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone arena -> VirtualAlloc)"
              out-path)
     out-path))
 

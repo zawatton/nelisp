@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 26 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 27 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -69,7 +69,9 @@
   as a file path and reads one byte via =CreateFileA= / =ReadFile= /
   =CloseHandle=.  Stage 26 makes the Windows startup path dual-mode like the
   standalone reader driver: no argv1 takes the embedded source branch, while
-  argv1 takes the file-load branch.
+  argv1 takes the file-load branch.  Stage 27 links the real standalone arena
+  unit into a PE executable and proves =nl_arena_init= lowers its mmap-shaped
+  allocation through =VirtualAlloc= rather than a Linux raw syscall.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
