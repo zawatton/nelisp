@@ -1,23 +1,34 @@
-# NeLisp Stage D v2.0 Release Notes
+# NeLisp v3.0 Release Notes — Pure-Elisp (0 Rust)
 
-Phase 7.5 (Doc 32 v2 LOCKED) ships `stage-d-v2.0`, the first NeLisp
-distribution that runs without a host Emacs install on the target
-machine.  This document describes the artifact, the per-platform tier
-matrix, and how to verify a download.
+v3.0 (2026-06-02) completes the pure-elisp migration: all `.rs` files
+and Cargo.toml have been removed.  The standalone interpreter/compiler
+is now built entirely by `emacs --batch` (`make standalone-reader`),
+with zero Rust or Cargo involved.  This document describes the artifact,
+the per-platform tier matrix, and how to verify a download.
 
-## Highlights
+Prior release notes for the v2.0 Stage D bundled-Emacs tarball are
+preserved below for reference.
+
+---
+
+# NeLisp Stage D v2.0 Release Notes (archived)
+
+Phase 7.5 (Doc 32 v2 LOCKED) shipped `stage-d-v2.0`, the first NeLisp
+distribution that ran without a host Emacs install on the target
+machine.  As of v3.0 the Rust runtime substrate has been deleted
+entirely; these notes are preserved for historical reference.
+
+## Highlights (v2.0, archived)
 
 - *Phase 7+ NeLisp purity max path 完遂* — syscall surface trimmed to
   ~819 LOC of Rust (Phase 7.0 SHIPPED) + the remaining 3-core
   (allocator / GC inner / coding) ported into NeLisp itself.
+  (v3.0: the remaining Rust is also gone — 0 LOC total.)
 - *`bin/anvil --strict-no-emacs` mode* gives a truly standalone binary
   path; the default `--no-emacs` mode falls back to the host Emacs path
   on cold-init failure (Doc 32 v2 §2.6).
 - *4-stage cold-init bootstrap protocol* (Doc 28 §3.5) — stage0 embed
   → stage1 native compile → stage2 semantic diff → stage3 self-recompile.
-- *Staticlib static-link binary* (Doc 32 v2 §2.1) — `libnelisp_runtime.a`
-  is linked statically; cdylib remains as an opt-in sidecar for
-  embedders who want a shared object instead.
 - *MCP server compatibility* — `bin/anvil mcp serve` exposes the
   headless profile (~28 tools) without any change to the existing
   `claude-code-ide` / Claude Code MCP client integration.
@@ -60,13 +71,24 @@ sha256sum --check stage-d-v2.0-linux-x86_64.tar.gz.sha256
 cat stage-d-v2.0-linux-x86_64.tar.gz.sig
 ```
 
-## Building from source
+## Building from source (v3.0)
+
+Requires: Emacs 29+.  No Rust/Cargo needed.
 
 ```bash
-# Single platform
-make release-artifact PLATFORM=linux-x86_64 RELEASE_VERSION=stage-d-v2.0
+# Build the standalone interpreter (emacs --batch, zero cargo)
+make standalone-reader
 
-# Verify the freshly built tarball
+# Self-host verification
+make standalone-selfhost-test        # (fact 5) → native ELF → exit 120
+make standalone-selfhost-mt-test     # clone+atomics → exit 42
+make standalone-parallel-compile-test  # 4 fork workers → 11,22,33,44
+
+# Full test suite
+make test
+
+# Release artifact (Stage D tarball, archival)
+make release-artifact PLATFORM=linux-x86_64 RELEASE_VERSION=stage-d-v2.0
 make release-checksum PLATFORM=linux-x86_64 RELEASE_VERSION=stage-d-v2.0
 
 # 1h blocker soak

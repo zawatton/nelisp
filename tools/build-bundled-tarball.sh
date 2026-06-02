@@ -1,29 +1,26 @@
 #!/usr/bin/env bash
-# tools/build-bundled-tarball.sh — Phase 7.5.3 stage-d-v2.0 bundled-Emacs tarball
+# tools/build-bundled-tarball.sh — zero-Rust bundled-Emacs tarball
 #
 # Doc 32 v2 LOCKED §3.3 release-artifact path.  Produces a self-contained
 # tarball that includes:
 #
-#   bin/anvil                 (= bash launcher updated for bundled emacs)
+#   bin/anvil                 (= bash launcher)
+#   bin/nelisp-standalone-reader  (= pure-elisp standalone binary)
 #   emacs/bin/emacs           (= stripped host Emacs binary)
 #   emacs/lib/...             (= NeLisp's runtime-required .elc subset)
 #   emacs/etc/charsets/...    (= coding-system data, needed for utf-8 codecs)
 #   src/nelisp*.el            (= NeLisp Elisp source)
-#   nelisp-runtime/...        (= cdylib + optional staticlib)
 #   README-stage-d-v2.0.org   (= bundled-emacs install docs)
 #   install.sh                (= bundled-tarball-aware installer)
-#   VERSION / PLATFORM        (= release manifest stamps)
+#   VERSION / PLATFORM / MANIFEST.txt
 #
 # After install (= `tar -xzf` + chmod +x), `bin/anvil` works on a host
 # with NO system Emacs install.  Host Emacs path remains backward-
 # compatible for dev environments (= `bin/anvil` falls through to PATH
 # when the bundled `emacs/bin/emacs` is absent).
 #
-# Doc 32 v2 §6.2 size-budget reality: a stripped Emacs 30 binary is
-# ~11 MB on Debian; the *runtime-required* `.elc' subset (= cl-lib +
-# json + a few core libs that anvil.el's headless profile ends up
-# loading) totals ~8 MB; `etc/charsets' ~3 MB.  Total ~22-25 MB
-# compressed, well under the §3.3 informal 50 MB cap.
+# Caller must have already run `make standalone-reader` before invoking
+# this script so that target/nelisp-standalone-reader is present.
 #
 # Usage:
 #   tools/build-bundled-tarball.sh [VERSION] [PLATFORM]
@@ -37,7 +34,7 @@
 #
 # Exit codes:
 #   0  success
-#   1  prerequisite missing (host emacs, cdylib, etc.)
+#   1  prerequisite missing (host emacs, standalone binary, etc.)
 #   2  tarball assembly failure
 
 set -euo pipefail
@@ -56,7 +53,7 @@ ARTIFACT_NAME="anvil-${VERSION}-${PLATFORM}"
 STAGE_DIR="dist/${ARTIFACT_NAME}"
 TAR_FILE="dist/${ARTIFACT_NAME}.tar.gz"
 
-log "Phase 7.5.3 stage-d-v2.0 bundled-Emacs tarball"
+log "zero-Rust bundled-Emacs tarball"
 log "  version : $VERSION"
 log "  platform: $PLATFORM"
 log "  staging : $STAGE_DIR"
@@ -75,13 +72,11 @@ EMACS_PROBE_OUT=$("$HOST_EMACS" --batch -Q --eval \
   '(princ (format "%s\n%s\n%s\n%s\n" emacs-version (car load-path) data-directory exec-directory))' \
   2>/dev/null)
 EMACS_VERSION=$(printf '%s\n' "$EMACS_PROBE_OUT" | sed -n '1p')
-EMACS_LISP_DIR=$(printf '%s\n' "$EMACS_PROBE_OUT" | sed -n '3p')   # data-directory ≠ lisp-dir actually
 EMACS_DATA_DIR=$(printf '%s\n' "$EMACS_PROBE_OUT" | sed -n '3p')   # data-directory
 EMACS_EXEC_DIR=$(printf '%s\n' "$EMACS_PROBE_OUT" | sed -n '4p')   # exec-directory
 
 # Re-derive the canonical lisp dir from the version (data-directory is
-# actually `etc/'; lisp/ is the sibling).  This avoids depending on
-# `(car load-path)` which can be nil under emacs --batch -Q.
+# actually `etc/'; lisp/ is the sibling).
 EMACS_PARENT_SHARE="$(dirname "$EMACS_DATA_DIR")"
 EMACS_LISP_DIR="$EMACS_PARENT_SHARE/lisp"
 EMACS_ETC_DIR="$EMACS_PARENT_SHARE/etc"
@@ -94,49 +89,15 @@ log "host emacs $EMACS_VERSION ($HOST_EMACS_REAL)"
 log "  lisp dir: $EMACS_LISP_DIR"
 log "  etc dir : $EMACS_ETC_DIR"
 
-# 2. Check Rust runtime artifacts.  cdylib + staticlib live in the
-#    nelisp-runtime crate (Emacs `(module-load ...)' path); the
-#    `anvil-runtime' binary lives in the sibling anvil-runtime crate
-#    (architecture α Wave 3, 2026-04-29).  Both must be present so the
-#    bundled tarball supports both serve modes — Emacs path (default)
-#    and `--no-emacs' Rust path.
-RUNTIME_DIR="nelisp-runtime/target/release"
-ANVIL_RUNTIME_DIR="anvil-runtime/target/release"
-RUNTIME_CDYLIB=""
-for cand in "$RUNTIME_DIR/libnelisp_runtime.so" \
-            "$RUNTIME_DIR/libnelisp_runtime.dylib" \
-            "$RUNTIME_DIR/nelisp_runtime.dll" ; do
-  if [[ -f "$cand" ]]; then
-    RUNTIME_CDYLIB="$cand"
-    break
-  fi
-done
-if [[ -z "$RUNTIME_CDYLIB" ]]; then
-  err "nelisp-runtime cdylib missing at $RUNTIME_DIR — run 'make runtime' first."
-  exit 1
+# 2. Ensure the pure-elisp standalone binary is built.
+STANDALONE_BIN="target/nelisp-standalone-reader"
+if [[ ! -x "$STANDALONE_BIN" ]]; then
+  log "standalone binary not found — running make standalone-reader"
+  make standalone-reader
 fi
-RUNTIME_STATICLIB="$RUNTIME_DIR/libnelisp_runtime.a"
+[[ -x "$STANDALONE_BIN" ]] || { err "standalone binary missing: $STANDALONE_BIN"; exit 1; }
 
-# `anvil-runtime' Rust binary backs `bin/anvil mcp serve --no-emacs'.
-# Falls back to the legacy pre-Wave-3 location so a tree that has not
-# yet been rebuilt against the split crates still produces a working
-# bundle.
-ANVIL_RUNTIME_BIN=""
-for cand in "$ANVIL_RUNTIME_DIR/anvil-runtime" \
-            "$RUNTIME_DIR/anvil-runtime" ; do
-  if [[ -x "$cand" ]]; then
-    ANVIL_RUNTIME_BIN="$cand"
-    break
-  fi
-done
-if [[ -z "$ANVIL_RUNTIME_BIN" ]]; then
-  err "anvil-runtime binary missing under $ANVIL_RUNTIME_DIR / $RUNTIME_DIR — run 'make runtime' first."
-  exit 1
-fi
-
-log "cdylib       : $RUNTIME_CDYLIB"
-log "anvil-runtime: $ANVIL_RUNTIME_BIN"
-[[ -f "$RUNTIME_STATICLIB" ]] && log "staticlib    : $RUNTIME_STATICLIB"
+log "standalone: $STANDALONE_BIN"
 
 # 3. Probe the .elc subset that anvil.el's headless profile actually
 #    loads at runtime.  We spawn emacs once with the standard lib deps
@@ -174,21 +135,13 @@ mkdir -p "$STAGE_DIR/bin" \
          "$STAGE_DIR/src" \
          "$STAGE_DIR/emacs/bin" \
          "$STAGE_DIR/emacs/share/emacs/$EMACS_VERSION_TAG/lisp" \
-         "$STAGE_DIR/emacs/share/emacs/$EMACS_VERSION_TAG/etc" \
-         "$STAGE_DIR/nelisp-runtime/target/release"
+         "$STAGE_DIR/emacs/share/emacs/$EMACS_VERSION_TAG/etc"
 
-# 4a. bin/anvil launcher + bundled anvil-runtime binary (Rust path).
-#     bin/anvil's `bundled_runtime_present' / `anvil_runtime_bin' helpers
-#     look for `$ANVIL_HOME/bin/anvil-runtime' first, so dropping the
-#     binary here lights up `anvil mcp serve --no-emacs' on a host that
-#     has only extracted the tarball (no system Emacs / no cargo build).
+# 4a. bin/anvil launcher + pure-elisp standalone binary.
 cp bin/anvil "$STAGE_DIR/bin/"
 [[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$STAGE_DIR/bin/" || true
-cp "$ANVIL_RUNTIME_BIN" "$STAGE_DIR/bin/anvil-runtime"
-chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/anvil-runtime"
-if command -v strip >/dev/null 2>&1; then
-  strip --strip-unneeded "$STAGE_DIR/bin/anvil-runtime" 2>/dev/null || true
-fi
+cp "$STANDALONE_BIN" "$STAGE_DIR/bin/nelisp-standalone-reader"
+chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/nelisp-standalone-reader"
 
 # 4b. nelisp src.
 cp src/nelisp*.el "$STAGE_DIR/src/"
@@ -289,13 +242,7 @@ for opt in DOC HELLO nxml; do
   fi
 done
 
-# 4f. nelisp-runtime cdylib + optional staticlib.
-cp "$RUNTIME_CDYLIB" "$STAGE_DIR/nelisp-runtime/target/release/"
-if [[ -f "$RUNTIME_STATICLIB" ]]; then
-  cp "$RUNTIME_STATICLIB" "$STAGE_DIR/nelisp-runtime/target/release/"
-fi
-
-# 4g. Documentation + license + version stamps.
+# 4f. Documentation + license + version stamps.
 [[ -f LICENSE ]] && cp LICENSE "$STAGE_DIR/"
 if [[ -f README-stage-d-v2.0.org ]]; then
   cp README-stage-d-v2.0.org "$STAGE_DIR/README.org"
@@ -308,11 +255,12 @@ printf "%s\n" "$VERSION"  > "$STAGE_DIR/VERSION"
 printf "%s\n" "$PLATFORM" > "$STAGE_DIR/PLATFORM"
 {
   printf "stage-d-v2.0 bundle manifest\n"
-  printf "version  %s\n" "$VERSION"
-  printf "platform %s\n" "$PLATFORM"
-  printf "emacs    %s (bundled)\n" "$EMACS_VERSION"
-  printf "lisp     %s files\n" "$LISP_COUNT"
-  printf "built    %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf "version    %s\n" "$VERSION"
+  printf "platform   %s\n" "$PLATFORM"
+  printf "emacs      %s (bundled)\n" "$EMACS_VERSION"
+  printf "lisp       %s files\n" "$LISP_COUNT"
+  printf "standalone %s\n" "$(basename "$STANDALONE_BIN")"
+  printf "built      %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$STAGE_DIR/MANIFEST.txt"
 
 # 5. Sanity check: bundled emacs boots and finds its lisp dir.

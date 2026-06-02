@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# tools/build-standalone-tarball.sh — stage-d-v3.0 true standalone tarball
+# tools/build-standalone-tarball.sh — zero-Rust standalone tarball
 #
-# Produces a no-Emacs runtime bundle:
+# Produces a no-Rust bundle containing the pure-elisp standalone binary:
 #   bin/anvil
-#   bin/anvil-runtime
+#   bin/nelisp-standalone-reader   (built by `make standalone-reader`)
 #   src/nelisp*.el
-#   anvil-lib/{anvil-host,anvil-shell-filter,anvil-data,...deps}.el
-#   lib/libnelisp_runtime.{so,dylib,dll}
-#   README-stage-d-v3.0.org
-#   install-v3.sh
+#   scripts/*.el
+#   lisp/*.el
+#   README.org (or README-stage-d.org)
+#   install.sh
 #   VERSION / PLATFORM / MANIFEST.txt
+#
+# Caller must have already run `make standalone-reader` before invoking
+# this script so that target/nelisp-standalone-reader is present.
 
 set -euo pipefail
 
@@ -27,103 +30,59 @@ ARTIFACT_NAME="anvil-${VERSION}-${PLATFORM}"
 STAGE_DIR="dist/${ARTIFACT_NAME}"
 TAR_FILE="dist/${ARTIFACT_NAME}.tar.gz"
 
-ANVIL_EL_SOURCE="${ANVIL_EL_SOURCE:-$HOME/Notes/dev/anvil.el}"
-ANVIL_FILES=(
-  anvil-data.el
-  anvil-disk.el
-  anvil-file.el
-  anvil-host.el
-  anvil-server-metrics.el
-  anvil-server.el
-  anvil-shell-filter.el
-  anvil-state.el
-)
-
-log "stage-d-v3.0 standalone tarball"
+log "zero-Rust standalone tarball"
 log "  version : $VERSION"
 log "  platform: $PLATFORM"
-log "  source  : $ANVIL_EL_SOURCE"
 
-# Architecture α Wave 3 (2026-04-29) — `anvil-runtime' binary lives in its
-# own crate, but Doc 47 Stage 5a moved both crates under a single Cargo
-# workspace, so `cargo build' from any member dir writes artifacts to
-# `<workspace>/target/release/' rather than a per-member `target/'.
-# Probe the workspace dir first; fall back to the legacy per-member paths
-# so pre-workspace dev checkouts still build.
-RUNTIME_DIR="target/release"
-LEGACY_RUNTIME_DIR="nelisp-runtime/target/release"
-LEGACY_ANVIL_RUNTIME_DIR="anvil-runtime/target/release"
-RUNTIME_BIN="$RUNTIME_DIR/anvil-runtime"
-[[ -x "$RUNTIME_BIN" ]] || RUNTIME_BIN="$LEGACY_ANVIL_RUNTIME_DIR/anvil-runtime"
-[[ -x "$RUNTIME_BIN" ]] || RUNTIME_BIN="$LEGACY_RUNTIME_DIR/anvil-runtime"
+# 1. Ensure the standalone binary is built.
+STANDALONE_BIN="target/nelisp-standalone-reader"
+if [[ ! -x "$STANDALONE_BIN" ]]; then
+  log "standalone binary not found — running make standalone-reader"
+  make standalone-reader
+fi
+[[ -x "$STANDALONE_BIN" ]] || { err "standalone binary missing: $STANDALONE_BIN"; exit 1; }
 
-# Issue #4 (2026-05-09 vonHabsi): the README documents `nelisp ...' CLI
-# usage, but earlier tarballs only shipped `anvil-runtime'.  Probe for
-# the `nelisp' binary built by build-tool (Phase B SHIPPED 2026-05-09:
-# binary lives at target/release/nelisp regardless of legacy crate dirs)
-# and bundle it alongside anvil-runtime so the README's
-#   nelisp --version / nelisp eval / nelisp -l FILE
-# entry points work directly from the tarball install.
-NELISP_BIN="$RUNTIME_DIR/nelisp"
-[[ -x "$NELISP_BIN" ]] || NELISP_BIN="$LEGACY_RUNTIME_DIR/nelisp"
-RUNTIME_CDYLIB=""
-for dir in "$RUNTIME_DIR" "$LEGACY_RUNTIME_DIR"; do
-  for cand in "$dir/libnelisp_runtime.so" \
-              "$dir/libnelisp_runtime.dylib" \
-              "$dir/nelisp_runtime.dll"; do
-    if [[ -f "$cand" ]]; then
-      RUNTIME_CDYLIB="$cand"
-      break 2
-    fi
-  done
-done
-RUNTIME_STATICLIB="$RUNTIME_DIR/libnelisp_runtime.a"
-[[ -f "$RUNTIME_STATICLIB" ]] || RUNTIME_STATICLIB="$LEGACY_RUNTIME_DIR/libnelisp_runtime.a"
-
-[[ -x "$RUNTIME_BIN" ]] || { err "runtime binary missing: $RUNTIME_BIN"; exit 1; }
-[[ -x "$NELISP_BIN" ]] || { err "nelisp binary missing: $NELISP_BIN (build with 'cargo build --release --bin nelisp')"; exit 1; }
-[[ -n "$RUNTIME_CDYLIB" ]] || { err "runtime cdylib missing under $RUNTIME_DIR"; exit 1; }
-[[ -f "$RUNTIME_STATICLIB" ]] || { err "runtime staticlib missing: $RUNTIME_STATICLIB"; exit 1; }
-
-for file in "${ANVIL_FILES[@]}"; do
-  [[ -f "$ANVIL_EL_SOURCE/$file" ]] || { err "missing anvil.el source file: $ANVIL_EL_SOURCE/$file"; exit 1; }
-done
-
+# 2. Stage the tarball directory.
 rm -rf "$STAGE_DIR"
-mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/anvil-lib" "$STAGE_DIR/lib"
+mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/scripts" "$STAGE_DIR/lisp"
 
+# bin/ — anvil launcher + standalone binary.
 cp bin/anvil "$STAGE_DIR/bin/"
-cp "$RUNTIME_BIN" "$STAGE_DIR/bin/anvil-runtime"
-cp "$NELISP_BIN" "$STAGE_DIR/bin/nelisp"
-chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/anvil-runtime" "$STAGE_DIR/bin/nelisp"
+[[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$STAGE_DIR/bin/" || true
+cp "$STANDALONE_BIN" "$STAGE_DIR/bin/nelisp-standalone-reader"
+chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/nelisp-standalone-reader"
 
+# Elisp sources.
 cp src/nelisp*.el "$STAGE_DIR/src/"
-for file in "${ANVIL_FILES[@]}"; do
-  cp "$ANVIL_EL_SOURCE/$file" "$STAGE_DIR/anvil-lib/"
-done
-cp "$RUNTIME_CDYLIB" "$STAGE_DIR/lib/"
+[[ -d scripts ]] && cp scripts/*.el "$STAGE_DIR/scripts/" 2>/dev/null || true
+[[ -d lisp ]] && cp lisp/*.el "$STAGE_DIR/lisp/" 2>/dev/null || true
 
+# Docs + version stamps.
 [[ -f LICENSE ]] && cp LICENSE "$STAGE_DIR/"
-cp README-stage-d-v3.0.org "$STAGE_DIR/README.org"
-cp release/stage-d-v3.0/install-v3.sh "$STAGE_DIR/install-v3.sh"
-chmod +x "$STAGE_DIR/install-v3.sh"
+if [[ -f README-stage-d-v3.0.org ]]; then
+  cp README-stage-d-v3.0.org "$STAGE_DIR/README.org"
+elif [[ -f README-stage-d.org ]]; then
+  cp README-stage-d.org "$STAGE_DIR/README.org"
+elif [[ -f README.org ]]; then
+  cp README.org "$STAGE_DIR/README.org"
+fi
+[[ -f install.sh ]] && cp install.sh "$STAGE_DIR/install.sh" && chmod +x "$STAGE_DIR/install.sh" || true
 printf "%s\n" "$VERSION" > "$STAGE_DIR/VERSION"
 printf "%s\n" "$PLATFORM" > "$STAGE_DIR/PLATFORM"
 
 {
-  printf "stage-d-v3.0 standalone manifest\n"
-  printf "version  %s\n" "$VERSION"
-  printf "platform %s\n" "$PLATFORM"
-  printf "runtime  %s\n" "$(basename "$RUNTIME_BIN")"
-  printf "nelisp   %s\n" "$(basename "$NELISP_BIN")"
-  printf "cdylib   %s\n" "$(basename "$RUNTIME_CDYLIB")"
-  printf "anvil-el %s files\n" "${#ANVIL_FILES[@]}"
-  printf "built    %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf "zero-Rust standalone manifest\n"
+  printf "version    %s\n" "$VERSION"
+  printf "platform   %s\n" "$PLATFORM"
+  printf "standalone %s\n" "$(basename "$STANDALONE_BIN")"
+  printf "built      %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$STAGE_DIR/MANIFEST.txt"
 
+# 3. Assemble tarball.
 log "assembling tarball"
 ( cd dist && tar -czf "${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}/" )
 
+# 4. SHA-256 checksum.
 ( cd dist && \
     if command -v sha256sum >/dev/null 2>&1; then \
       sha256sum "${ARTIFACT_NAME}.tar.gz" > "${ARTIFACT_NAME}.tar.gz.sha256"; \
@@ -134,6 +93,7 @@ log "assembling tarball"
       exit 1; \
     fi )
 
+# 5. Size cap check (15 MB).
 SIZE_BYTES=$(wc -c < "$TAR_FILE" | tr -d ' ')
 SIZE_MB=$(( (SIZE_BYTES + 1048575) / 1048576 ))
 if (( SIZE_BYTES >= 15 * 1024 * 1024 )); then
@@ -146,4 +106,3 @@ rm -rf "$STAGE_DIR"
 log "built $TAR_FILE ($(du -h "$TAR_FILE" | cut -f1))"
 log "checksum: $TAR_FILE.sha256"
 log "size cap: OK (< 15 MB; rounded=${SIZE_MB} MiB)"
-

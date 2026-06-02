@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/build-release-artifact.sh — Phase 7.5.3 stage-d-v2.0 release artifact builder
+# tools/build-release-artifact.sh — zero-Rust release artifact builder
 #
 # Doc 32 v2 LOCKED §3.3 / §2.3 採用 A (tarball + checksum + signature) /
 # §2.5 (ad-hoc signature、real GPG / notarization は v2.1+ scope per §8).
@@ -13,6 +13,9 @@
 #     - linux-arm64   (non-blocker v1.0 時限、§11、v1.1+ で blocker promote 想定)
 #
 #   VERSION defaults to stage-d-v2.0.
+#
+# Caller must have already run `make standalone-reader` before invoking this
+# script so that target/nelisp-standalone-reader is present.
 #
 # Outputs (under dist/):
 #   <VERSION>-<PLATFORM>.tar.gz         — release tarball (Doc 32 v2 §2.3 採用 A)
@@ -36,51 +39,48 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "Phase 7.5.3 release artifact builder"
+log() { printf "  \033[1;34m==>\033[0m %s\n" "$*"; }
+err() { printf "  \033[1;31merror:\033[0m %s\n" "$*" >&2; }
+
+echo "zero-Rust release artifact builder"
 echo "  version : $VERSION"
 echo "  platform: $PLATFORM"
 echo "  repo    : $REPO_ROOT"
 
-# 1. Build static binary + staticlib (Doc 32 v2 §2.1 staticlib link).
-#    `make runtime-staticlib` produces nelisp-runtime/target/release/
-#    libnelisp_runtime.a; `make stage-d-v2-bin` is the release-binary
-#    edge (Phase 7.5.1 partial scaffold today、Phase 7.5.2 cold-init
-#    embed が landing 後 real binary 生成).
-echo "  -> make runtime-staticlib stage-d-v2-bin"
-make runtime-staticlib stage-d-v2-bin
+# 1. Build the pure-elisp standalone binary if not already present.
+STANDALONE_BIN="target/nelisp-standalone-reader"
+if [[ ! -x "$STANDALONE_BIN" ]]; then
+  log "standalone binary not found — running make standalone-reader"
+  make standalone-reader
+fi
+[[ -x "$STANDALONE_BIN" ]] || { err "standalone binary still missing after build: $STANDALONE_BIN"; exit 1; }
 
-# 2. Stage artifact directory under dist/.  Layout matches stage-d-tarball
-#    so install.sh and downstream scripts share the same shape.
+# 2. Stage artifact directory under dist/.
 ARTIFACT_NAME="${VERSION}-${PLATFORM}"
 ARTIFACT_DIR="dist/${ARTIFACT_NAME}"
 
 rm -rf "$ARTIFACT_DIR"
-mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/src"
+mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/src" "$ARTIFACT_DIR/lisp" "$ARTIFACT_DIR/scripts"
 
-# Required artifacts.
+# bin/anvil launcher.
 cp bin/anvil "$ARTIFACT_DIR/bin/"
-[ -f bin/anvil.cmd ] && cp bin/anvil.cmd "$ARTIFACT_DIR/bin/" || true
+[[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$ARTIFACT_DIR/bin/" || true
 
-# nelisp src bundle (Stage D shape).
+# Pure-elisp standalone binary.
+cp "$STANDALONE_BIN" "$ARTIFACT_DIR/bin/nelisp-standalone-reader"
+chmod +x "$ARTIFACT_DIR/bin/nelisp-standalone-reader"
+
+# Elisp sources.
 cp src/nelisp*.el "$ARTIFACT_DIR/src/"
-
-# Rust artifacts (cdylib + staticlib + binary、§2.1 staticlib link path).
-RUNTIME_BIN="nelisp-runtime/target/release/nelisp-runtime"
-RUNTIME_STATICLIB="nelisp-runtime/target/release/libnelisp_runtime.a"
-if [ -f "$RUNTIME_BIN" ]; then
-  cp "$RUNTIME_BIN" "$ARTIFACT_DIR/bin/"
-fi
-if [ -f "$RUNTIME_STATICLIB" ]; then
-  mkdir -p "$ARTIFACT_DIR/lib"
-  cp "$RUNTIME_STATICLIB" "$ARTIFACT_DIR/lib/"
-fi
+[[ -d lisp ]] && cp lisp/*.el "$ARTIFACT_DIR/lisp/" 2>/dev/null || true
+[[ -d scripts ]] && cp scripts/*.el "$ARTIFACT_DIR/scripts/" 2>/dev/null || true
 
 # Documentation + license + version stamp.
-[ -f LICENSE ] && cp LICENSE "$ARTIFACT_DIR/" || true
-[ -f README.org ] && cp README.org "$ARTIFACT_DIR/" || true
-[ -f README-stage-d.org ] && cp README-stage-d.org "$ARTIFACT_DIR/" || true
-[ -f RELEASE_NOTES.md ] && cp RELEASE_NOTES.md "$ARTIFACT_DIR/" || true
-[ -f install.sh ] && cp install.sh "$ARTIFACT_DIR/" || true
+[[ -f LICENSE ]] && cp LICENSE "$ARTIFACT_DIR/" || true
+[[ -f README.org ]] && cp README.org "$ARTIFACT_DIR/" || true
+[[ -f README-stage-d.org ]] && cp README-stage-d.org "$ARTIFACT_DIR/" || true
+[[ -f RELEASE_NOTES.md ]] && cp RELEASE_NOTES.md "$ARTIFACT_DIR/" || true
+[[ -f install.sh ]] && cp install.sh "$ARTIFACT_DIR/" || true
 printf "%s\n" "$VERSION" > "$ARTIFACT_DIR/VERSION"
 printf "%s\n" "$PLATFORM" > "$ARTIFACT_DIR/PLATFORM"
 

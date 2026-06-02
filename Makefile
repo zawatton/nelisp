@@ -1,11 +1,8 @@
-.PHONY: test compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker stage-d-tarball \
-        runtime runtime-test runtime-cli runtime-core-min runtime-core-min-test runtime-clean test-runtime \
-        runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
+.PHONY: test compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
-        bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
-        stage-d-v2-tarball stage-d-v2-tarball-verify \
-        stage-d-v3-tarball stage-d-v3-tarball-verify \
+        bench-actual bench-allocator bench-allocator-heavy \
+        stage-d-tarball \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
         standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
@@ -154,28 +151,6 @@ standalone-eval-j:
 # no bake mode.  `verify-elisp-fixtures' below is the only surviving
 # baker invocation (= Doc 95 §95.e cross-impl gate).
 
-# Doc 100 v2 §100.B (2026-05-12) — Sexp ABI cross-side drift gate.
-# Builds the `sexp-abi-emit' driver to print the Rust-side `ABI_EXPORT'
-# rows, dumps the elisp-side `nelisp-sexp--abi-export' alist to the
-# same `NAME=VALUE' form, and diffs the two.  Drift fails the build.
-# Pairs with the compile-time `const _: ()' assertions in
-# `build-tool/src/eval/sexp_abi_assert.rs' — together they guarantee
-# Phase 47-compiled `.o' objects (`lisp/nelisp-cc-*.el') see the same
-# byte layout the Rust evaluator sees.
-sexp-abi-check:
-	cargo build --release --manifest-path build-tool/Cargo.toml --bin sexp-abi-emit
-	@mkdir -p target/sexp-abi-check
-	./target/release/sexp-abi-emit > target/sexp-abi-check/rust.txt
-	$(EMACS) --batch -Q -L lisp -l nelisp-sexp-layout \
-	  --eval '(with-temp-file "target/sexp-abi-check/elisp.txt" (dolist (e nelisp-sexp--abi-export) (insert (format "%s=%d\n" (car e) (cdr e)))))'
-	@diff -u target/sexp-abi-check/elisp.txt target/sexp-abi-check/rust.txt \
-	  && echo "sexp-abi-check: Rust and elisp constants match"
-	@echo "sexp-abi-check: verifying nelisp-sys :repr c shadow (Doc 133 P1)"
-	$(EMACS) --batch -Q -L packages/nelisp-sys/src -L packages/nelisp-sys/test \
-	  -L lisp -L src -l ert -l nelisp-sys-sexp-abi-test \
-	  -f ert-run-tests-batch-and-exit \
-	  && echo "sexp-abi-check: nelisp-sys shadow layout matches frozen ABI"
-
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
 # Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).
 # Exit code 0 = all pass / pending、1 = any gate fires.
@@ -242,13 +217,10 @@ bench-allocator-heavy:
 	  -l nelisp-allocator-bench \
 	  -f nelisp-allocator-bench-batch
 
-# Phase 7.5.3 (Doc 32 v2 §3.3) — integration soak harness wrapper.
-# `soak'      = short smoke (~10 min equivalent: ~600 cold-init iterations).
-# `soak-full' = production 24h run (= --full-24h flag).
-# `soak-worker' preserves the legacy Phase 5-D.6 3-lane worker pool soak
-#               (= the previous default `soak' target) for those who need
-#               cross-lane starvation testing rather than the integration
-#               cold-init/RSS metric collection of Phase 7.5.3.
+# Phase 7.5.3 (Doc 32 v2 §2.7 + §7).  blocker = CI 1h、
+# post-ship = release-audit 24h.  Both wrap `tools/soak-test.sh` with
+# the right SOAK_DURATION_HOURS env so the threshold logic stays
+# co-located with the harness.
 soak:
 	@./test/nelisp-soak-test.sh
 
@@ -268,206 +240,21 @@ soak-worker:
 	  -l test/nelisp-worker-soak-test.el \
 	  -f ert-run-tests-batch-and-exit
 
-# Phase 7.0 (Doc 27 §3 7.0) Rust syscall stub.  `nelisp-runtime/` is a
-# self-contained Cargo crate (cdylib + bin) that ships ~10 OS syscall
-# thin wrappers under the `nelisp_syscall_*` C ABI prefix.  Phase 7.5
-# wires NeLisp's FFI to those symbols; Phase 7.0 only proves the
-# binary builds, links, and runs `--syscall-smoke' green.
-NELISP_RUNTIME_DIR := nelisp-runtime
-# Doc 47 Stage 5a — Cargo workspace at repo root.  `cargo build' from any
-# member dir writes artifacts to `<workspace>/target/`, not to the member's
-# own `target/`.  All release artifact paths reference this workspace dir.
-WORKSPACE_TARGET_DIR := target
-NELISP_RUNTIME_BIN := $(WORKSPACE_TARGET_DIR)/release/nelisp-runtime
-# Pick the first cargo on $PATH, fall back to a rustup default install
-# path so a non-login shell (e.g. `make' invoked from a daemon) still
-# finds the toolchain without forcing the user to source `~/.cargo/env'.
-CARGO ?= $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
+soak-blocker:
+	@SOAK_DURATION_HOURS=1 ./tools/soak-test.sh
 
-# Architecture α Wave 3 (2026-04-29) — `anvil-runtime/' is a sibling
-# crate that holds the MCP server spine + anvil_*_registry +
-# `bin/anvil-{runtime,mcp-demo}' binaries.  `runtime' builds both so a
-# single make target produces the full release artifact set
-# (nelisp-runtime cdylib/staticlib + anvil-runtime binaries).
-ANVIL_RUNTIME_DIR := anvil-runtime
-# Doc 49 Phase 49.2 — `exec-bytes` developer bridge moved out of the
-# Rust-min `nelisp-runtime` core into a sibling CLI crate.
-NELISP_RUNTIME_CLI_DIR := nelisp-runtime-cli
-# Doc 49 Phase 49.3 — optional FFI surfaces (sqlite + 3 syscall sets)
-# extracted from the Rust-min runtime core into sibling extension
-# crates.  `nelisp-runtime` keeps the original `*-syscalls` /
-# `sqlite-ffi` features as default-ON compatibility shims that
-# re-export the symbols, but the implementation now lives here.
-NELISP_SQLITE_RS_DIR := nelisp-sqlite-rs
-NELISP_SYSCALL_FILEIO_DIR := nelisp-syscall-fileio
-NELISP_SYSCALL_FILENOTIFY_DIR := nelisp-syscall-filenotify
-NELISP_SYSCALL_PROCESS_DIR := nelisp-syscall-process
+soak-post-ship:
+	@SOAK_DURATION_HOURS=24 ./tools/soak-test.sh
 
-runtime:
-	cd $(NELISP_RUNTIME_DIR) && $(CARGO) build --release
-	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) build --release
-	cd $(NELISP_SQLITE_RS_DIR) && $(CARGO) build --release
-	cd $(NELISP_SYSCALL_FILEIO_DIR) && $(CARGO) build --release
-	cd $(NELISP_SYSCALL_FILENOTIFY_DIR) && $(CARGO) build --release
-	cd $(NELISP_SYSCALL_PROCESS_DIR) && $(CARGO) build --release
-	# Issue #4 (2026-05-09): build the `nelisp' CLI binary so
-	# stage-d-v3-tarball can bundle it.  The README's quick-start
-	# (= `nelisp --version` / `nelisp eval EXPR`) assumes this binary
-	# is on $PATH after install.  Pre-Phase-B builds shipped
-	# `anvil-runtime` only and the binary was missing from the tarball.
-	$(CARGO) build --release --manifest-path build-tool/Cargo.toml --bin nelisp
-	# Phase B Final B Stage 2 (2026-05-09): anvil-runtime Rust crate
-	# was deleted entirely; bin/anvil-runtime is now a pure-shell
-	# wrapper around the standalone `nelisp' binary.  No crate to build.
-
-runtime-test:
-	cd $(NELISP_RUNTIME_DIR) && $(CARGO) test --release
-	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) test --release
-	cd $(NELISP_SQLITE_RS_DIR) && $(CARGO) test --release
-	cd $(NELISP_SYSCALL_FILEIO_DIR) && $(CARGO) test --release
-	cd $(NELISP_SYSCALL_FILENOTIFY_DIR) && $(CARGO) test --release
-	cd $(NELISP_SYSCALL_PROCESS_DIR) && $(CARGO) test --release
-	# Phase B Final B Stage 2 (2026-05-09): anvil-runtime crate deleted.
-	# Its tests live in test/ ERT (= nelisp/test/) now and run via `make test'.
-
-runtime-cli:
-	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) build --release
-
-# Doc 49 Phase 49.1 — Rust-min core gate.  This is the canonical
-# "Rust only does OS ABI + executable-memory substrate" build: no
-# sqlite, no process substrate, no file-notify, no high-level file I/O.
-# Build/test this target whenever feature-gated code moves so optional
-# packages cannot silently become runtime-core dependencies.
-runtime-core-min:
-	$(CARGO) build --release --no-default-features -p nelisp-runtime
-
-runtime-core-min-test:
-	$(CARGO) test --no-default-features -p nelisp-runtime
-
-runtime-clean:
-	cd $(NELISP_RUNTIME_DIR) && $(CARGO) clean
-	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) clean
-	cd $(NELISP_SQLITE_RS_DIR) && $(CARGO) clean
-	cd $(NELISP_SYSCALL_FILEIO_DIR) && $(CARGO) clean
-	cd $(NELISP_SYSCALL_FILENOTIFY_DIR) && $(CARGO) clean
-	cd $(NELISP_SYSCALL_PROCESS_DIR) && $(CARGO) clean
-	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) clean
-
-# `test-runtime' depends on `runtime' so a fresh checkout that runs
-# only this target still proves the ERT + cargo + binary chain.  The
-# ERT layer (`test/nelisp-runtime-test.el') skips cleanly when the
-# binary is missing, so plain `make test' stays green for hosts
-# without a Rust toolchain.
-test-runtime: runtime
-	$(EMACS) --batch -Q -L src -L test \
+# Phase 7.1 完遂 gate 3-axis bench actual measurement (Doc 28 v2 §5.2).
+# Runs `bench/nelisp-cc-bench-actual.el' end-to-end and exits with
+# code 0 when all three §5.2 gates PASS (fib(30) 30x / fact-iter 20x
+# / alloc-heavy 5x speedup vs bytecode VM), 1 otherwise.
+bench-actual:
+	$(EMACS) --batch -Q -L src -L bench \
 	  --eval '(setq load-prefer-newer t)' \
-	  -l ert \
-	  -l test/nelisp-runtime-test.el \
-	  -f ert-run-tests-batch-and-exit
-
-# Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — staticlib build.  Cargo.toml
-# declares cdylib + rlib + staticlib in parallel, so a single
-# `cargo build --release' produces all three artifacts; this target
-# exists primarily so the Makefile names the staticlib path and the
-# Phase 7.5.2 `stage-d-v2-bin' rule has a clean dependency edge.
-NELISP_RUNTIME_STATICLIB := $(WORKSPACE_TARGET_DIR)/release/libnelisp_runtime.a
-
-runtime-staticlib:
-	cd $(NELISP_RUNTIME_DIR) && $(CARGO) build --release
-	@if [ -f "$(NELISP_RUNTIME_STATICLIB)" ]; then \
-	    printf "  \033[1;32m✓\033[0m staticlib built: %s ($$(du -h "$(NELISP_RUNTIME_STATICLIB)" | cut -f1))\n" "$(NELISP_RUNTIME_STATICLIB)"; \
-	else \
-	    printf "  \033[1;33m!\033[0m staticlib NOT produced — check Cargo.toml crate-type contains \"staticlib\"\n"; \
-	    exit 1; \
-	fi
-	@# CI smoke (Doc 32 v2 §3.1 ERT smoke #2 sibling): assert the
-	@# archive header is intact so a corrupted ar(1) artifact never
-	@# slips past the build step into a downstream link rule.  `file'
-	@# is in coreutils on every supported host (Linux/macOS/MSYS).
-	@if command -v file >/dev/null 2>&1; then \
-	    out=$$(file "$(NELISP_RUNTIME_STATICLIB)"); \
-	    case "$$out" in \
-	      *"current ar archive"*|*"ar archive"*) \
-	        printf "  \033[1;32m✓\033[0m staticlib smoke (file): %s\n" "$$out" ;; \
-	      *) \
-	        printf "  \033[1;31m✗\033[0m staticlib smoke FAIL — expected ar archive, got: %s\n" "$$out" >&2; \
-	        exit 1 ;; \
-	    esac; \
-	else \
-	    printf "  \033[1;33m!\033[0m skipping file(1) smoke — file command not on PATH\n"; \
-	fi
-
-# Doc 32 v2 §3.1 task spec naming alias.  Some Phase 7.5.1 callers
-# (briefing, CI scripts, doctor probe) refer to the staticlib build
-# as `runtime-static'; this alias forwards to the canonical
-# `runtime-staticlib' rule so we keep one source of truth.
-runtime-static: runtime-staticlib
-
-# Phase 7.5.4 (Doc 32 v2 §7 / T33) — Emacs module wrapper for in-process
-# FFI.  Built on top of the cdylib (`libnelisp_runtime.so`); the C
-# wrapper `nelisp-runtime-module.c` dlopens the cdylib at module init
-# time so a single `make runtime-module' produces an artifact that
-# loads cleanly via (module-load ...) without further setup.  ~10 µs /
-# call vs ~1 ms for the subprocess path — Doc 32 v2 §7 bench gate
-# (≥100 tool calls/sec) reachable without per-call subprocess budget.
-NELISP_RUNTIME_MODULE_SRC := $(NELISP_RUNTIME_DIR)/c-bindings/nelisp-runtime-module.c
-NELISP_RUNTIME_MODULE     := $(WORKSPACE_TARGET_DIR)/release/nelisp-runtime-module.so
-EMACS_MODULE_INC ?= $(shell pkg-config --cflags emacs-module 2>/dev/null || echo "-I/usr/include")
-
-runtime-module: runtime
-	cc -shared -fPIC -Wall -Wextra \
-	  $(EMACS_MODULE_INC) \
-	  -L $(WORKSPACE_TARGET_DIR)/release \
-	  -o $(NELISP_RUNTIME_MODULE) \
-	  $(NELISP_RUNTIME_MODULE_SRC) \
-	  -ldl
-	@if [ -f "$(NELISP_RUNTIME_MODULE)" ]; then \
-	    printf "  \033[1;32m✓\033[0m runtime-module built: %s ($$(du -h "$(NELISP_RUNTIME_MODULE)" | cut -f1))\n" "$(NELISP_RUNTIME_MODULE)"; \
-	else \
-	    printf "  \033[1;33m!\033[0m runtime-module NOT produced — check cc + emacs-module.h availability\n"; \
-	    exit 1; \
-	fi
-
-runtime-module-clean:
-	rm -f $(NELISP_RUNTIME_MODULE)
-
-# T77 (Wave 1 agent C) — SQLite Emacs module wrapper.  Same dlopen-at-init
-# pattern as runtime-module; built on top of the cdylib produced by
-# `make runtime'.  Loaded via `(module-load <path>)' and wired into
-# `nelisp-sqlite.el' so the Emacs 30 `sqlite-*' compat layer can
-# dlsym the `nl_sqlite_*' Rust symbols.
-NELISP_SQLITE_MODULE_SRC := $(NELISP_RUNTIME_DIR)/c-bindings/nelisp-sqlite-module.c
-NELISP_SQLITE_MODULE     := $(WORKSPACE_TARGET_DIR)/release/nelisp-sqlite-module.so
-
-sqlite-module: runtime
-	cc -shared -fPIC -Wall -Wextra \
-	  $(EMACS_MODULE_INC) \
-	  -L $(WORKSPACE_TARGET_DIR)/release \
-	  -o $(NELISP_SQLITE_MODULE) \
-	  $(NELISP_SQLITE_MODULE_SRC) \
-	  -ldl
-	@if [ -f "$(NELISP_SQLITE_MODULE)" ]; then \
-	    printf "  \033[1;32m✓\033[0m sqlite-module built: %s ($$(du -h "$(NELISP_SQLITE_MODULE)" | cut -f1))\n" "$(NELISP_SQLITE_MODULE)"; \
-	else \
-	    printf "  \033[1;33m!\033[0m sqlite-module NOT produced — check cc + emacs-module.h availability\n"; \
-	    exit 1; \
-	fi
-
-sqlite-module-clean:
-	rm -f $(NELISP_SQLITE_MODULE)
-
-# Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — stage-d-v2.0 candidate binary
-# scaffold.  This target reserves the build edge for Phase 7.5.2 where
-# the real cold-init embed lands; for now it just proves the staticlib
-# is reachable from the bin/anvil launcher path.  The real link step
-# (bin/anvil rewrite + libnelisp_runtime.a static link) is intentional
-# scope-out of Phase 7.5.1 partial — see Doc 32 v2 §3.2.
-stage-d-v2-bin: runtime-staticlib
-	@echo "stage-d-v2-bin (Phase 7.5.1 partial scaffold)"
-	@echo "  staticlib    : $(NELISP_RUNTIME_STATICLIB)"
-	@echo "  bin/anvil    : $$(pwd)/bin/anvil (--strict-no-emacs scaffold only)"
-	@echo "  next phase   : 7.5.2 — real cold-init + 4-stage bootstrap embed"
-	@echo "  Doc 32 v2 §3.2 で real bin/anvil + libnelisp_runtime.a static link 完成予定"
+	  -l nelisp-cc-bench-actual \
+	  -f nelisp-cc-bench-actual-run-3-axis
 
 # Phase 6.3 (Stage D, Doc 18) distribution tarball.  Bundles only what
 # `bin/anvil mcp serve' needs at runtime — bin/, src/*.el, README,
@@ -533,80 +320,3 @@ release-checksum:
 	  else \
 	    shasum -a 256 --check $(RELEASE_VERSION)-$(PLATFORM).tar.gz.sha256; \
 	  fi
-
-# Phase 7.5.3 soak gates (Doc 32 v2 §2.7 + §7).  blocker = CI 1h、
-# post-ship = release-audit 24h.  Both wrap `tools/soak-test.sh` with
-# the right SOAK_DURATION_HOURS env so the threshold logic stays
-# co-located with the harness.
-soak-blocker:
-	@SOAK_DURATION_HOURS=1 ./tools/soak-test.sh
-
-soak-post-ship:
-	@SOAK_DURATION_HOURS=24 ./tools/soak-test.sh
-
-# Phase 7.1 完遂 gate 3-axis bench actual measurement (Doc 28 v2 §5.2).
-# Runs `bench/nelisp-cc-bench-actual.el' end-to-end and exits with
-# code 0 when all three §5.2 gates PASS (fib(30) 30x / fact-iter 20x
-# / alloc-heavy 5x speedup vs bytecode VM), 1 otherwise.
-#
-# Depends on `runtime-module' so the in-process FFI bridge is built —
-# without it the Lisp-side bench skips the native axes and reports
-# `:native-skip-reason module-not-built'.
-bench-actual: runtime-module
-	$(EMACS) --batch -Q -L src -L bench \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-cc-bench-actual \
-	  -f nelisp-cc-bench-actual-run-3-axis
-
-# Phase 7.1 cargo-side FFI overhead bench (Doc 28 v2 §5.1 secondary
-# baseline).  Quantifies the mmap_jit + mprotect + call + munmap
-# round-trip cost in isolation so the §5.2 report can subtract it.
-bench-actual-cargo:
-	cd $(NELISP_RUNTIME_DIR) && $(CARGO) bench --bench nelisp_cc_bench
-
-# Phase 7.5.3 (Doc 32 v2 LOCKED §3.3) — stage-d-v2.0 bundled-Emacs
-# release tarball.  Self-contained artifact: bundles the host Emacs
-# binary + the runtime-required `.elc' subset + nelisp-runtime cdylib +
-# NeLisp src so a user can run `bin/anvil' on a host with NO system
-# Emacs install.  Backward-compatible: when the bundled `emacs/bin/emacs'
-# is absent the launcher falls through to the system PATH (= dev
-# checkout / Stage D Phase 6.x tarball).
-#
-# Depends on `runtime' (cdylib must exist before bundling).  Defaults to
-# stage-d-v2.0 / linux-x86_64; override with VERSION / PLATFORM env.
-#
-#   make stage-d-v2-tarball
-#   make stage-d-v2-tarball VERSION=stage-d-v2.0 PLATFORM=linux-x86_64
-#
-# Output: dist/anvil-<VERSION>-<PLATFORM>.tar.gz + .sha256
-STAGE_D_V2_VERSION  ?= stage-d-v2.0
-STAGE_D_V2_PLATFORM ?= linux-x86_64
-STAGE_D_V2_TARBALL  := dist/anvil-$(STAGE_D_V2_VERSION)-$(STAGE_D_V2_PLATFORM).tar.gz
-
-stage-d-v2-tarball: runtime
-	@./tools/build-bundled-tarball.sh \
-	    $(STAGE_D_V2_VERSION) $(STAGE_D_V2_PLATFORM)
-
-# Phase 7.5.3 — end-to-end smoke verifier.  Extracts the tarball into a
-# fresh /tmp/test-anvil-$$ dir and asserts `bin/anvil version' reports
-# the bundled emacs (= regression catch for bundled-emacs detection
-# logic in `bin/anvil').
-stage-d-v2-tarball-verify:
-	@./tools/verify-bundled-tarball.sh \
-	    $(STAGE_D_V2_VERSION) $(STAGE_D_V2_PLATFORM)
-
-# Phase 8.1 — stage-d-v3.0 true standalone tarball.  Bundles only the
-# bash launcher, Rust runtime binary, runtime cdylib, NeLisp src, and
-# the minimal anvil.el subset needed by the runtime-side anvil-host /
-# shell-filter / data helpers.  No bundled Emacs is shipped.
-STAGE_D_V3_VERSION  ?= stage-d-v3.0
-STAGE_D_V3_PLATFORM ?= linux-x86_64
-STAGE_D_V3_TARBALL  := dist/anvil-$(STAGE_D_V3_VERSION)-$(STAGE_D_V3_PLATFORM).tar.gz
-
-stage-d-v3-tarball: runtime runtime-staticlib
-	@./tools/build-standalone-tarball.sh \
-	    $(STAGE_D_V3_VERSION) $(STAGE_D_V3_PLATFORM)
-
-stage-d-v3-tarball-verify:
-	@./tools/verify-standalone-tarball.sh \
-	    $(STAGE_D_V3_VERSION) $(STAGE_D_V3_PLATFORM)

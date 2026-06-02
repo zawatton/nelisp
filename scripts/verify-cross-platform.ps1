@@ -8,18 +8,7 @@ Set-Location $RepoRoot
 
 Write-Host "--- Platform info ---"
 [System.Environment]::OSVersion | Format-List
-rustc --version
 emacs --version | Select-Object -First 1
-
-Write-Host ""
-Write-Host "--- cargo build --release -p nelisp-build-tool ---"
-cargo build --release -p nelisp-build-tool
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-
-Write-Host ""
-Write-Host "--- cargo test --release -p nelisp-build-tool --lib ---"
-cargo test --release -p nelisp-build-tool --lib
-if ($LASTEXITCODE -ne 0) { throw "cargo test failed" }
 
 Write-Host ""
 Write-Host "--- make compile (byte-compile elisp) ---"
@@ -37,13 +26,15 @@ if (Get-Command make -ErrorAction SilentlyContinue) {
 }
 
 Write-Host ""
-Write-Host "--- smoke: target\release\nelisp.exe --eval '(+ 1 2)' ---"
-$nbin = "target\release\nelisp.exe"
-if (Test-Path $nbin) {
-    & $nbin --eval "(+ 1 2)"
-    if ($LASTEXITCODE -ne 0) { Write-Host "Smoke: expected 3" }
+Write-Host "--- standalone gate (zero-Rust) ---"
+# NOTE: The standalone gate is 'make standalone-reader-test'.
+# PowerShell 'make' availability is environment-dependent; if make is
+# present it will run the gate, otherwise invoke emacs --batch directly.
+if (Get-Command make -ErrorAction SilentlyContinue) {
+    make standalone-reader-test
 } else {
-    Write-Host "Smoke: $nbin not found (build-tool only mode), skipping"
+    Write-Host "make not available — standalone-reader-test gate skipped on this host."
+    Write-Host "Run 'make standalone-reader-test' in a POSIX shell to verify."
 }
 
 Write-Host ""
