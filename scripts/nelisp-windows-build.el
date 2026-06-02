@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -33,6 +33,8 @@
 ;; linker data sections no longer block PE manifest assembly.
 ;; Stage 16 adds a standalone-shaped PE start unit that calls `driver' and
 ;; exits through ExitProcess, replacing the Linux raw-syscall `_start' shape.
+;; Stage 17 proves a freestanding PE entry can recover the process command
+;; line through GetCommandLineW without relying on CRT argv startup.
 
 ;;; Code:
 
@@ -164,6 +166,58 @@ successfully recovered through GetExitCodeThread."
   "Batch entry: build target/nelisp-windows-createthread42.exe."
   (nelisp-windows-build-createthread-probe
    "target/nelisp-windows-createthread42.exe"))
+
+(defun nelisp-windows-build--commandline-probe-text
+    (text-rva iat-rvas _rdata-rva)
+  "Return .text bytes for the Stage 17 GetCommandLineW probe.
+The program exits 42 when GetCommandLineW returns a non-empty UTF-16
+command line, and 13 otherwise."
+  (let ((exit-process (cdr (assoc "ExitProcess" iat-rvas)))
+        (get-command-line (cdr (assoc "GetCommandLineW" iat-rvas)))
+        (lstrlenw (cdr (assoc "lstrlenW" iat-rvas))))
+    (unless (and exit-process get-command-line lstrlenw)
+      (error "nelisp-windows-build: missing command-line probe import"))
+    (let ((nelisp-phase47-compiler--windows-text-rva text-rva)
+          (buf (nelisp-asm-x86_64-make-buffer 'win64)))
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp #x28)
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva
+       buf get-command-line)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva buf lstrlenw)
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #x85 #xc0)) ; test eax, eax
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #x74 #x0c)) ; jz fail
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #xb9 #x2a #x00 #x00 #x00)) ; mov ecx, 42
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva buf exit-process)
+      (nelisp-asm-x86_64-int3 buf)
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #xb9 #x0d #x00 #x00 #x00)) ; mov ecx, 13
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva buf exit-process)
+      (nelisp-asm-x86_64-int3 buf)
+      (nelisp-asm-x86_64-resolve-fixups buf))))
+
+(defun nelisp-windows-build--commandline-probe-bytes ()
+  "Return a PE32+ EXE byte string for the Stage 17 command-line probe."
+  (nelisp-pe-write-build-kernel32-executable
+   '("ExitProcess" "GetCommandLineW" "lstrlenW")
+   #'nelisp-windows-build--commandline-probe-text))
+
+(defun nelisp-windows-build-commandline-probe (out-path)
+  "Write OUT-PATH as a PE32+ EXE probing GetCommandLineW.
+The program exits 42 when the process command line is visible through
+KERNEL32.dll!GetCommandLineW."
+  (let ((bytes (nelisp-windows-build--commandline-probe-bytes))
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent))
+  (message "nelisp-windows-build: wrote %s (GetCommandLineW probe)" out-path)
+  out-path)
+
+(defun nelisp-windows-build-commandline42 ()
+  "Batch entry: build target/nelisp-windows-commandline42.exe."
+  (nelisp-windows-build-commandline-probe
+   "target/nelisp-windows-commandline42.exe"))
 
 (defun nelisp-windows-build--compile-defuns-to-unit (name source)
   "Compile Phase47 defun SOURCE to a Win64 link-unit named NAME."

@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -223,6 +223,41 @@
              text))
     (should (string-match-p
              (regexp-quote (unibyte-string #xb8 #x2a #x00 #x00 #x00 #xc3))
+             text))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-commandline-probe-imports-commandline-apis ()
+  "Stage 17 GetCommandLineW probe imports the required KERNEL32 APIs."
+  (let* ((bytes (nelisp-windows-build--commandline-probe-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess" "GetCommandLineW" "lstrlenW")))))
+
+(ert-deftest nelisp-windows-build-commandline-probe-text-calls-commandline-apis ()
+  "Stage 17 GetCommandLineW probe calls command-line APIs and exits."
+  (let* ((bytes (nelisp-windows-build--commandline-probe-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 96)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 96))))
+    (should (member (cdr (assoc "GetCommandLineW" iat-map)) targets))
+    (should (member (cdr (assoc "lstrlenW" iat-map)) targets))
+    (should (member (cdr (assoc "ExitProcess" iat-map)) targets))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #x89 #xc1))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x85 #xc0 #x74 #x0c))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xb9 #x2a #x00 #x00 #x00))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xb9 #x0d #x00 #x00 #x00))
              text))
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))
