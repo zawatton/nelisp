@@ -6,6 +6,10 @@
 #
 #   .\tools\windows-selfhost-test.ps1
 #
+# To run only one smoke:
+#
+#   .\tools\windows-selfhost-test.ps1 -Smoke virtualalloc
+#
 # To validate generation without running the EXEs:
 #
 #   .\tools\windows-selfhost-test.ps1 -EmitOnly
@@ -15,6 +19,7 @@
 [CmdletBinding()]
 param(
     [switch]$EmitOnly,
+    [string[]]$Smoke = @("all"),
     [string]$Emacs = $env:EMACS
 )
 
@@ -57,6 +62,20 @@ $Smokes = @(
         ExpectedStdout = "hello from nelisp windows"
     }
 )
+
+$SmokeNames = @($Smokes | ForEach-Object { [string]$_.Name })
+if ($Smoke -contains "all") {
+    $SelectedSmokeNames = $SmokeNames
+} else {
+    $SelectedSmokeNames = @()
+    foreach ($Name in $Smoke) {
+        if (-not ($SmokeNames -contains $Name)) {
+            throw ("unknown smoke '" + $Name + "'; expected one of: all, " + ($SmokeNames -join ", "))
+        }
+        $SelectedSmokeNames += $Name
+    }
+}
+$SmokesToRun = @($Smokes | Where-Object { $SelectedSmokeNames -contains ([string]$_.Name) })
 
 $Failed = $false
 
@@ -145,13 +164,14 @@ Write-Host "--- Windows x86_64 PE32+ self-host smoke ---"
 [System.Environment]::OSVersion | Format-List
 & $Emacs --version | Select-Object -First 1
 Write-Host ("output: " + $OutDir)
+Write-Host ("smokes: " + ($SelectedSmokeNames -join ", "))
 Write-Host ""
 
-foreach ($Smoke in $Smokes) {
-    $Name = [string]$Smoke.Name
-    $Spec = [string]$Smoke.Spec
-    $ExpectedExit = [int]$Smoke.ExpectedExit
-    $ExpectedStdout = $Smoke.ExpectedStdout
+foreach ($SmokeItem in $SmokesToRun) {
+    $Name = [string]$SmokeItem.Name
+    $Spec = [string]$SmokeItem.Spec
+    $ExpectedExit = [int]$SmokeItem.ExpectedExit
+    $ExpectedStdout = $SmokeItem.ExpectedStdout
     $ExePath = Join-Path $OutDir ("nelisp-windows-" + $Name + ".exe")
 
     if (-not (Build-SmokeExe -Name $Name -Spec $Spec -OutPath $ExePath)) {

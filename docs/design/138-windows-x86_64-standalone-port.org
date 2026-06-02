@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-36-WINDOWS-SMOKE-BUILD-MANIFEST-TESTED
+#+STATUS: STAGE-37-WINDOWS-SMOKE-SELECTOR-READY
 
 * Status
 
-- *State*: STAGE 36 Windows smoke build manifest tested
+- *State*: STAGE 37 Windows smoke selector ready
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -120,7 +120,10 @@
   instead of relying on the lower-level timerfd wrapper to fail first.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
   smoke manifest and emits all four PE32+ smoke EXEs on the host side before
-  they are handed to native Windows.
+  they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
+  accepts =-Smoke exit42|virtualalloc|arena|writefile-stdout|all= so the
+  remaining native Windows checks can be re-run individually after a partial
+  pass.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -198,7 +201,9 @@
   Windows before delegating into timerfd allocation or libc/syscall paths.
   Stage 36 coverage verifies =scripts/nelisp-windows-build.el= keeps the
   =exit42= / =virtualalloc= / =arena= / =writefile-stdout= manifest stable and
-  can emit all four PE32+ smoke EXEs from that manifest.
+  can emit all four PE32+ smoke EXEs from that manifest.  Stage 37 coverage
+  checks that the PowerShell real-machine script exposes a =-Smoke= selector
+  with the same smoke names.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -260,7 +265,7 @@
   Windows before POSIX signal-mask allocation or libc calls.  Stage 35 guards
   the relative-ms timerfd helper directly on Windows.  Stage 36 adds host-side
   ERT coverage for the Windows smoke build manifest used by the PowerShell
-  real-machine script.
+  real-machine script.  Stage 37 lets that script run a selected smoke by name.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -470,6 +475,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the four real-machine smoke specs
   and can emit each PE32+ image from that manifest.
+  *Windows smoke selector progress 2026-06-03*:
+  =tools/windows-selfhost-test.ps1= now supports =-Smoke NAME= for selected
+  real-machine reruns, with host-side ERT coverage that the selector names
+  match the elisp build manifest.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -579,6 +588,9 @@ largest uncertainty (B1 + B2) first.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
    manifest and host-side emission of all four PE32+ smoke EXEs.
+   *Windows smoke selector SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
+   accepts =-Smoke NAME= so the already-passing =exit42= smoke does not have to
+   be re-run when checking =virtualalloc=, =arena=, or =writefile-stdout=.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:

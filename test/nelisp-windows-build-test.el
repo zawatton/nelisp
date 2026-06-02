@@ -17,11 +17,18 @@
 
 (require 'ert)
 
+(defconst nelisp-windows-build-test--repo-root
+  (file-name-directory
+   (directory-file-name
+    (file-name-directory (or load-file-name buffer-file-name))))
+  "Repository root for Windows build-entry tests.")
+
 (let* ((this (or load-file-name buffer-file-name))
        (test-dir (and this (file-name-directory this)))
-       (repo-root (and test-dir
-                       (file-name-directory
-                        (directory-file-name test-dir))))
+       (repo-root (or nelisp-windows-build-test--repo-root
+                      (and test-dir
+                           (file-name-directory
+                            (directory-file-name test-dir)))))
        (lisp-dir (and repo-root (expand-file-name "lisp" repo-root)))
        (scripts-dir (and repo-root (expand-file-name "scripts" repo-root))))
   (when (and lisp-dir (file-directory-p lisp-dir))
@@ -39,6 +46,12 @@
       (insert-file-contents-literally path))
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun nelisp-windows-build-test--read-file-text (path)
+  "Return PATH as plain text."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
 (ert-deftest nelisp-windows-build-smoke-specs-are-stable ()
   "The Windows real-machine smoke manifest covers the expected four PE specs."
   (should (equal nelisp-windows-build-smoke-specs
@@ -52,6 +65,18 @@
     (should (eq (nelisp-windows-build--normalize-spec
                  (symbol-name (car entry)))
                 (cdr entry)))))
+
+(ert-deftest nelisp-windows-build-powershell-smoke-selector-matches-manifest ()
+  "The PowerShell real-machine script exposes the same smoke names."
+  (let* ((script-path (expand-file-name "tools/windows-selfhost-test.ps1"
+                                        nelisp-windows-build-test--repo-root))
+         (script (nelisp-windows-build-test--read-file-text script-path)))
+    (should (string-match-p "\\[string\\[\\]\\]\\$Smoke" script))
+    (should (string-match-p "-Smoke virtualalloc" script))
+    (dolist (entry nelisp-windows-build-smoke-specs)
+      (should (string-match-p
+               (regexp-quote (format "Name = \"%s\"" (car entry)))
+               script)))))
 
 (ert-deftest nelisp-windows-build-smoke-exes-emits-all-pe-images ()
   "The Windows smoke build entry can emit every real-machine smoke EXE."
