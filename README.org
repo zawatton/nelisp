@@ -226,6 +226,11 @@ in the long-tail compression).  Categories:
   shrunk to fit the 11 LOC core).
 - ERT coverage for elisp .o emission: 600+ tests including
   Win64-ABI-specific assertions (Wave 5).
+- *Standalone self-host gates* (zero-Emacs, CI, 2026-06):
+  =standalone-selfhost-test= (recursion → native ELF → 120),
+  =standalone-selfhost-mt-test= (=clone(2)= + atomics multi-thread → 42),
+  =standalone-parallel-compile-test= (4 units compiled concurrently via
+  =fork(2)= → 11,22,33,44).
 
 * Cross-Platform Support (v2.0, 2026-05-22)
 
@@ -272,6 +277,16 @@ across 5 OS×arch targets — and v1.0's standalone deployment paths:
    running the MCP loop in Elisp (=scripts/anvil-runtime-server-loop.el=)
    on top of the standalone =nelisp= binary.  Same MCP JSON-RPC surface,
    no Rust crate.
+
+3. *Standalone self-host + parallel build* (2026-06) — the pure-elisp
+   Phase-47 AOT toolchain produces =target/nelisp-standalone-reader=
+   (=make standalone-reader=, *zero Rust*), which loads its own compiler
+   and compiles Elisp source → native ELF *with no Emacs in the loop*:
+   recursion (=(fact 5)= → exit 120), multi-threaded native programs
+   (=clone(2)= + atomics), and *N units compiled concurrently* via
+   =fork(2)= workers (=(thread-spawn …)= / =(fork-spawn …)= built only
+   from existing grammar ops — zero new Rust).  CI-gated.  See
+   =Standalone self-host & parallel build=.
 
 ** Install
 
@@ -553,6 +568,11 @@ Said plainly so expectations are calibrated:
 - =make test= = *3604 tests / 3562 expected / 5 unexpected (all
   pre-existing flake) / 37 skipped* on linux-x86_64.  See
   =Pure-Elisp Migration Progress= section above for the flake breakdown.
+- *Standalone self-host gates* (2026-06, all green, zero-Emacs):
+  =standalone-{reader,eval,reader-prelude,selfhost,selfhost-mt,parallel-compile}-test=
+  — the standalone =target/nelisp-standalone-reader= binary self-hosts
+  the Phase-47 compiler (recursion → native ELF → 120) and compiles N
+  units concurrently via =fork(2)= workers (4-/5-way verified 100%).
 - The previous 2026-04-29 baseline was 2452 / 2409 / 0 unexpected.  The
   ~1.5× growth in test count reflects the new sub-systems: Phase 47
   self-emission (600+ ERT), Doc 79 v7 GC, Doc 102 mirror, Doc 100/110
