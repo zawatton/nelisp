@@ -95,6 +95,7 @@
 ;; Stage 111 maps IPv6 header/control metadata options through the Windows
 ;; socket option helpers.
 ;; Stage 112 supports AF_INET6 loopback-backed Windows socketpair.
+;; Stage 113 adds a Windows eventfd compatibility counter fd.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -252,6 +253,11 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 ;; POSIX wait options.
 (defconst nelisp-os-WNOHANG 1)
 
+;; eventfd flags.
+(defconst nelisp-os-EFD-SEMAPHORE #x1)
+(defconst nelisp-os-EFD-NONBLOCK  #x800)          ; O_NONBLOCK
+(defconst nelisp-os-EFD-CLOEXEC   #x80000)        ; O_CLOEXEC
+
 ;; Windows Tool Help constants and PROCESSENTRY32W layout for x86_64.
 (defconst nelisp-os-WIN-TH32CS-SNAPPROCESS #x00000002)
 (defconst nelisp-os-WIN-ERROR-NO-MORE-FILES 18)
@@ -355,6 +361,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 (defvar nelisp-os--windows-thread-table nil
   "Alist mapping Windows thread IDs to thread HANDLE values.")
+
+(defvar nelisp-os--windows-eventfd-table nil
+  "Alist mapping Windows eventfd-compatible fds to (COUNTER . FLAGS).")
 
 (defvar nelisp-os--windows-winsock-started-p nil
   "Non-nil after this process successfully calls WSAStartup.")
@@ -503,6 +512,10 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (when flag-cell
         (setq nelisp-os--windows-fd-flags-table
               (delq flag-cell nelisp-os--windows-fd-flags-table))))
+    (let ((eventfd-cell (assq fd nelisp-os--windows-eventfd-table)))
+      (when eventfd-cell
+        (setq nelisp-os--windows-eventfd-table
+              (delq eventfd-cell nelisp-os--windows-eventfd-table))))
     (cdr cell)))
 
 (defun nelisp-os--windows-close-resource (handle kind)
@@ -514,6 +527,8 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (if (= ok -1)
           (nelisp-os--windows-winsock-error-signal)
         nil)))
+   ((eq kind 'eventfd)
+    nil)
    (t
     (let ((ok (nelisp-os--libc-call
                "kernel32" "CloseHandle" [:sint32 :pointer] handle)))
@@ -1177,6 +1192,70 @@ thread HANDLE from `PROCESS_INFORMATION' is closed before returning."
               sent)))
       (nelisp-os--free buf))))
 
+(defconst nelisp-os--eventfd-max-counter (- (ash 1 64) 2))
+(defconst nelisp-os--eventfd-invalid-value (1- (ash 1 64)))
+
+(defun nelisp-os--u64le-string (value)
+  "Return VALUE encoded as an unsigned 64-bit little-endian byte string."
+  (unibyte-string
+   (logand value #xff)
+   (logand (ash value -8) #xff)
+   (logand (ash value -16) #xff)
+   (logand (ash value -24) #xff)
+   (logand (ash value -32) #xff)
+   (logand (ash value -40) #xff)
+   (logand (ash value -48) #xff)
+   (logand (ash value -56) #xff)))
+
+(defun nelisp-os--u64le-from-string (str)
+  "Decode STR as an unsigned 64-bit little-endian byte string."
+  (let ((s (encode-coding-string str 'no-conversion t)))
+    (unless (= (string-bytes s) 8)
+      (signal 'nelisp-os-error (list 22))) ; EINVAL
+    (let ((value 0))
+      (dotimes (idx 8)
+        (setq value (logior value (ash (aref s idx) (* idx 8)))))
+      value)))
+
+(defun nelisp-os--windows-eventfd-cell (fd)
+  "Return the Windows eventfd state cell for FD, or signal EBADF."
+  (unless (eq (nelisp-os--windows-fd-kind fd) 'eventfd)
+    (signal 'nelisp-os-error (list 9))) ; EBADF
+  (let ((cell (assq fd nelisp-os--windows-eventfd-table)))
+    (if cell
+        cell
+      (signal 'nelisp-os-error (list 9)))))
+
+(defun nelisp-os--windows-read-eventfd (fd nbytes)
+  "Read an 8-byte eventfd counter value from Windows eventfd-compatible FD."
+  (unless (= nbytes 8)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let* ((cell (nelisp-os--windows-eventfd-cell fd))
+         (state (cdr cell))
+         (counter (car state))
+         (flags (cdr state)))
+    (when (= counter 0)
+      (signal 'nelisp-os-error (list 11))) ; EAGAIN
+    (if (/= (logand flags nelisp-os-EFD-SEMAPHORE) 0)
+        (progn
+          (setcar state (1- counter))
+          (nelisp-os--u64le-string 1))
+      (setcar state 0)
+      (nelisp-os--u64le-string counter))))
+
+(defun nelisp-os--windows-write-eventfd (fd str)
+  "Add an 8-byte counter value to Windows eventfd-compatible FD."
+  (let* ((value (nelisp-os--u64le-from-string str))
+         (cell (nelisp-os--windows-eventfd-cell fd))
+         (state (cdr cell))
+         (counter (car state)))
+    (when (= value nelisp-os--eventfd-invalid-value)
+      (signal 'nelisp-os-error (list 22))) ; EINVAL
+    (when (> (+ counter value) nelisp-os--eventfd-max-counter)
+      (signal 'nelisp-os-error (list 11))) ; EAGAIN
+    (setcar state (+ counter value))
+    8))
+
 (defun nelisp-os-open (path flags mode)
   "POSIX open(2) — return integer fd, or signal `nelisp-os-error'.
 PATH is a string, FLAGS / MODE are integers."
@@ -1199,6 +1278,9 @@ PATH is a string, FLAGS / MODE are integers."
     (signal 'nelisp-os-error (list 22)))     ; EINVAL
   (cond
    ((= nbytes 0) "")
+   ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'eventfd))
+    (nelisp-os--windows-read-eventfd fd nbytes))
    ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'socket))
     (nelisp-os--windows-read-socket fd nbytes))
@@ -1231,6 +1313,9 @@ exact bytes (= `string-bytes' worth) reach libc.write — matching old
 Path A's `as_bytes()' semantics rather than the broken Path B that
  went through `:string' (= CString::new, NUL-rejecting)."
   (cond
+   ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'eventfd))
+    (nelisp-os--windows-write-eventfd fd str))
    ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'socket))
     (nelisp-os--windows-write-socket fd str))
@@ -1787,15 +1872,21 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
     (nelisp-os--windows-fd-flags fd))
    ((= cmd nelisp-os-F-SETFL)
     (nelisp-os--windows-handle-for-fd fd)
-    (if (eq (nelisp-os--windows-fd-kind fd) 'socket)
-        (progn
-          (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
-            (signal 'nelisp-os-error (list 95))) ; ENOTSUP
-          (nelisp-os--windows-set-socket-nonblock
-           (nelisp-os--windows-socket-for-fd fd)
-           (/= (logand arg nelisp-os-O-NONBLOCK) 0))
-          (nelisp-os--windows-fd-set-flags fd arg)
-          0)
+    (cond
+     ((eq (nelisp-os--windows-fd-kind fd) 'socket)
+      (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
+        (signal 'nelisp-os-error (list 95))) ; ENOTSUP
+      (nelisp-os--windows-set-socket-nonblock
+       (nelisp-os--windows-socket-for-fd fd)
+       (/= (logand arg nelisp-os-O-NONBLOCK) 0))
+      (nelisp-os--windows-fd-set-flags fd arg)
+      0)
+     ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
+      (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
+        (signal 'nelisp-os-error (list 95))) ; ENOTSUP
+      (nelisp-os--windows-fd-set-flags fd arg)
+      0)
+     (t
       (let* ((current (nelisp-os--windows-fd-flags fd))
              (requested-append (logand arg nelisp-os-O-APPEND))
              (current-append (logand current nelisp-os-O-APPEND)))
@@ -1806,7 +1897,7 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
         (nelisp-os--windows-fd-set-flags
          fd
          (logior (logand current 3) current-append))
-        0)))
+        0))))
    (t
     (signal 'nelisp-os-error (list 22))))) ; EINVAL
 
@@ -3126,12 +3217,6 @@ host byte order."
 (defconst nelisp-os-IN-NONBLOCK #x800)            ; O_NONBLOCK
 (defconst nelisp-os-IN-CLOEXEC  #x80000)          ; O_CLOEXEC
 
-;; ----- eventfd flags -----
-
-(defconst nelisp-os-EFD-SEMAPHORE #x1)
-(defconst nelisp-os-EFD-NONBLOCK  #x800)          ; O_NONBLOCK
-(defconst nelisp-os-EFD-CLOEXEC   #x80000)        ; O_CLOEXEC
-
 ;; ----- pidfd wrappers -----
 
 (defun nelisp-os-pidfd-open (pid flags)
@@ -3253,7 +3338,21 @@ are ready (only possible when FD was opened `IN-NONBLOCK')."
 counter and FLAGS (OR of `EFD-*').  Read/write are 8-byte uint64
 counters; use `nelisp-os-write' / `nelisp-os-read' on the returned fd."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (let ((allowed (logior nelisp-os-EFD-SEMAPHORE
+                             nelisp-os-EFD-NONBLOCK
+                             nelisp-os-EFD-CLOEXEC)))
+        (when (or (< initval 0)
+                  (/= (logand flags (lognot allowed)) 0))
+          (signal 'nelisp-os-error (list 22))) ; EINVAL
+        (let ((fd (nelisp-os--windows-fd-alloc
+                   0
+                   'eventfd
+                   (if (/= (logand flags nelisp-os-EFD-NONBLOCK) 0)
+                       nelisp-os-O-NONBLOCK
+                     0))))
+          (push (cons fd (cons initval flags))
+                nelisp-os--windows-eventfd-table)
+          fd))
     (nelisp-os--check-errno (nelisp--syscall 'eventfd2 initval flags))))
 
 ;; ---------------------------------------------------------------------------

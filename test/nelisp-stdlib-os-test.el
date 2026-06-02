@@ -1965,7 +1965,6 @@
           (lambda () (nelisp-os-inotify-add-watch 3 "x" nelisp-os-IN-ALL-EVENTS))
           (lambda () (nelisp-os-inotify-rm-watch 3 1))
           (lambda () (nelisp-os-inotify-read 3 1))
-          (lambda () (nelisp-os-eventfd 0 0))
           (lambda () (nelisp-os-signalfd -1 (list nelisp-os-SIGTERM) 0))
           (lambda () (nelisp-os-signalfd-read 3 1))
           (lambda () (nelisp-os-sigprocmask nelisp-os-SIG-BLOCK
@@ -1989,6 +1988,67 @@
         (dolist (fn forms)
           (should-error (funcall fn) :type 'nelisp-os-error))))
     (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-eventfd-windows-supports-counter-read-write ()
+  "Windows eventfd compatibility tracks counter fd read/write state."
+  (let ((called nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-eventfd-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-eventfd 5 nelisp-os-EFD-NONBLOCK) 3))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os--u64le-from-string (nelisp-os-read 3 8)) 5))
+        (should-error (nelisp-os-read 3 8) :type 'nelisp-os-error)
+        (should (= (nelisp-os-write 3 (nelisp-os--u64le-string 7)) 8))
+        (should (= (nelisp-os--u64le-from-string (nelisp-os-read 3 8)) 7))
+        (should-not (nelisp-os-close 3))))
+    (should-not called)
+    (should-not nelisp-os--windows-fd-table)
+    (should-not nelisp-os--windows-fd-kind-table)
+    (should-not nelisp-os--windows-fd-flags-table)
+    (should-not nelisp-os--windows-eventfd-table)))
+
+(ert-deftest nelisp-stdlib-os-eventfd-windows-supports-semaphore-mode ()
+  "Windows eventfd compatibility honors EFD_SEMAPHORE read semantics."
+  (let ((nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-eventfd-table nil))
+    (let ((system-type 'windows-nt))
+      (should (= (nelisp-os-eventfd 2 nelisp-os-EFD-SEMAPHORE) 3))
+      (should (= (nelisp-os--u64le-from-string (nelisp-os-read 3 8)) 1))
+      (should (= (nelisp-os--u64le-from-string (nelisp-os-read 3 8)) 1))
+      (should-error (nelisp-os-read 3 8) :type 'nelisp-os-error))
+    (should (equal nelisp-os--windows-eventfd-table
+                   `((3 . (0 . ,nelisp-os-EFD-SEMAPHORE)))))))
+
+(ert-deftest nelisp-stdlib-os-eventfd-windows-validates-operations ()
+  "Windows eventfd compatibility validates flags, sizes, and overflow."
+  (let ((nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-eventfd-table nil))
+    (let ((system-type 'windows-nt))
+      (should-error (nelisp-os-eventfd -1 0) :type 'nelisp-os-error)
+      (should-error (nelisp-os-eventfd 0 #x40000000) :type 'nelisp-os-error)
+      (should (= (nelisp-os-eventfd nelisp-os--eventfd-max-counter 0) 3))
+      (should-error (nelisp-os-read 3 4) :type 'nelisp-os-error)
+      (should-error (nelisp-os-write 3 "short") :type 'nelisp-os-error)
+      (should-error
+       (nelisp-os-write 3 (nelisp-os--u64le-string
+                           nelisp-os--eventfd-invalid-value))
+       :type 'nelisp-os-error)
+      (should-error
+       (nelisp-os-write 3 (nelisp-os--u64le-string 1))
+       :type 'nelisp-os-error))))
 
 (ert-deftest nelisp-stdlib-os-socketpair-windows-uses-loopback-stream ()
   "Windows socketpair uses a temporary loopback listener and returns peers."

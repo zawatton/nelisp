@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-112-WINDOWS-IPV6-SOCKETPAIR
+#+STATUS: STAGE-113-WINDOWS-EVENTFD
 
 * Status
 
-- *State*: STAGE 112 Windows IPv6 socketpair
+- *State*: STAGE 113 Windows eventfd compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -277,10 +277,13 @@
   =ws2_32!ioctlsocket(FIONBIO)= while regular HANDLE fds still reject nonzero
   flag changes.  Linux-only process/event fd APIs now reject Windows before
   reaching Linux syscall or Linux libc paths: =fork=, =pidfd_*=, =inotify_*=,
-  =eventfd=, =signalfd=, =sigprocmask=, and =timerfd_*= signal
+  =signalfd=, =sigprocmask=, and =timerfd_*= signal
   =nelisp-os-error= with =ENOTSUP= on Windows.  This does not implement Windows
   replacements for those Linux facilities; it removes another class of
-  impossible raw-syscall fallbacks.  The Winsock branch has started:
+  impossible raw-syscall fallbacks.  =nelisp-os-eventfd= now has a Windows
+  compatibility implementation backed by a synthetic fd-kind counter, with
+  8-byte little-endian =read/write= counter semantics, =EFD_SEMAPHORE=, and
+  =EFD_NONBLOCK= status tracking.  The Winsock branch has started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
@@ -596,6 +599,10 @@
   =AF_INET6= for stream and datagram socket pairs, using IPv6 loopback
   =bind= / =connect= / =accept= / =getsockname= setup while preserving the
   existing stream/datagram cleanup and flag paths.
+  Stage 113 coverage verifies Windows =nelisp-os-eventfd= creates synthetic
+  eventfd-compatible fds, tracks =EFD_NONBLOCK= through =F_GETFL=, supports
+  8-byte counter =read/write=, honors =EFD_SEMAPHORE= decrement-by-one reads,
+  and removes all eventfd table state on close.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -955,7 +962,7 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   flags so =F_GETFL= on stdout/stderr/stdin remains coherent after
   =SetStdHandle=.
   *Windows Linux-only guard progress 2026-06-02*: =fork=, =pidfd=, =inotify=,
-  =eventfd=, =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
+  =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
   Windows before reaching Linux syscall/libc paths, including the relative-ms
   timerfd helper.
   *Windows Winsock progress 2026-06-02*: =nelisp-os-socket= now initializes
@@ -1004,6 +1011,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows IPv6 socketpair progress 2026-06-03*: Windows
   =nelisp-os-socketpair= now accepts =AF_INET6= for stream and datagram pairs
   by using IPv6 loopback setup with the existing socket-kind fd tracking.
+  *Windows eventfd progress 2026-06-03*: =nelisp-os-eventfd= now creates a
+  Windows synthetic counter fd whose =nelisp-os-read/write= implement 8-byte
+  eventfd counter transfers, including =EFD_SEMAPHORE= and =EFD_NONBLOCK=
+  tracking.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1254,9 +1265,9 @@ largest uncertainty (B1 + B2) first.
    *Windows smoke list runner SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    now accepts =-List= and reports every available smoke name, PE spec, expected
    exit code, and stdout expectation before native reruns.
-   *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
-   fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
-   fallback.
+   *Windows Linux-only guard SHIPPED 2026-06-02*: remaining Linux-specific
+   process/event fd APIs now return explicit =ENOTSUP= on Windows before raw
+   syscall/libc fallback.
    *Windows Winsock socket branch SHIPPED 2026-06-02*: =nelisp-os-socket=
    calls =WSAStartup= + =socket= and socket fds close with =closesocket=.
    *Windows Winsock bind/connect/listen SHIPPED 2026-06-02*: =AF_INET=
@@ -1417,6 +1428,10 @@ largest uncertainty (B1 + B2) first.
    *Windows IPv6 socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair= now
    supports =AF_INET6= stream pairs via a temporary IPv6 loopback TCP listener
    and =AF_INET6= datagram pairs via connected IPv6 UDP loopback sockets.
+   *Windows eventfd compatibility SHIPPED 2026-06-03*: =nelisp-os-eventfd=
+   now returns synthetic Windows fd-kind counter fds with 8-byte
+   =nelisp-os-read/write= counter semantics, =EFD_SEMAPHORE= reads, tracked
+   =EFD_NONBLOCK= status, and close-time table cleanup.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
@@ -1576,7 +1591,8 @@ largest uncertainty (B1 + B2) first.
    including =TCP_NODELAY= / =TCP_KEEPIDLE= / =TCP_KEEPINTVL= /
    =TCP_KEEPCNT= / =TCP_MAXSEG= / =TCP_TIMESTAMPS= / =TCP_FASTOPEN=, and
    IPv4/IPv6 loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=,
-   accepted socket nonblock flag tracking, and socket close-on-exec support; regular
+   accepted socket nonblock flag tracking, socket close-on-exec support, and
+   Windows-compatible =eventfd= counters; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
    those flags through regular =dup2= / =F_DUPFD=, including standard fd
