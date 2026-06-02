@@ -105,6 +105,7 @@
 ;; Stage 119 maps common Winsock errors to Linux/POSIX errno payloads.
 ;; Stage 120 adds Windows pidfd compatibility backed by process HANDLE fds.
 ;; Stage 121 adds non-file behavior for Windows process fd compatibility.
+;; Stage 122 preserves Windows process fd kind across dup2 / F_DUPFD.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -539,13 +540,13 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (push (cons fd flags) nelisp-os--windows-fd-flags-table))
     fd))
 
-(defun nelisp-os--windows-fd-alloc-at-least (handle min-fd &optional flags)
+(defun nelisp-os--windows-fd-alloc-at-least (handle min-fd &optional flags kind)
   "Allocate a POSIX-like fd for Windows HANDLE with fd number >= MIN-FD."
   (when (< min-fd 0)
     (signal 'nelisp-os-error (list 22))) ; EINVAL
   (when (< nelisp-os--windows-next-fd min-fd)
     (setq nelisp-os--windows-next-fd min-fd))
-  (nelisp-os--windows-fd-alloc handle nil flags))
+  (nelisp-os--windows-fd-alloc handle kind flags))
 
 (defun nelisp-os--windows-fd-flags (fd)
   "Return POSIX-style status flags tracked for Windows FD."
@@ -620,7 +621,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
   "Return the process HANDLE tracked for Windows pidfd-compatible FD."
   (unless (eq (nelisp-os--windows-fd-kind fd) 'process)
     (signal 'nelisp-os-error (list 9))) ; EBADF
-  (nelisp-os--windows-fd-handle fd))
+  (nelisp-os--windows-handle-for-fd fd))
 
 (defun nelisp-os--windows-fd-handle (fd)
   "Return the Windows HANDLE for FD, or signal EBADF."
@@ -1956,7 +1957,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
        (cdr (nelisp-os--windows-eventfd-cell oldfd))
        (nelisp-os--windows-fd-flags oldfd)))
      (t
-      (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
+      (let ((kind (nelisp-os--windows-fd-kind oldfd))
+            (source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
             (target-handle-buf (nelisp-os--alloc 8)))
         (unwind-protect
             (let* ((current-process
@@ -1981,11 +1983,11 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                        newfd
                        target-handle
                        (nelisp-os--windows-fd-flags oldfd)
-                       nil)
+                       kind)
                     (nelisp-os--windows-fd-install
                      newfd
                      target-handle
-                     nil
+                     kind
                      (nelisp-os--windows-fd-flags oldfd))))))
           (nelisp-os--free target-handle-buf)))))))
 
@@ -2012,7 +2014,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
         (push (cons fd state) nelisp-os--windows-eventfd-table)
         fd)))
    (t
-    (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
+    (let ((kind (nelisp-os--windows-fd-kind oldfd))
+          (source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
           (target-process (nelisp-os--libc-call
                            "kernel32" "GetCurrentProcess"
                            [:pointer]))
@@ -2034,7 +2037,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
               (nelisp-os--windows-fd-alloc-at-least
                (nelisp-os-read-i64 target-buf 0)
                min-fd
-               (nelisp-os--windows-fd-flags oldfd))))
+               (nelisp-os--windows-fd-flags oldfd)
+               kind)))
         (nelisp-os--free target-buf))))))
 
 (defun nelisp-os--windows-getfd-flags (fd)

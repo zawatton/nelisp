@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-121-WINDOWS-PROCESSFD-NONFILE
+#+STATUS: STAGE-122-WINDOWS-PROCESSFD-DUP
 
 * Status
 
-- *State*: STAGE 121 Windows process fd non-file compatibility
+- *State*: STAGE 122 Windows process fd dup compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -307,7 +307,11 @@
   stay off regular HANDLE file I/O paths as well: =read/write= signal
   =EINVAL=, =lseek= signals =ESPIPE=, =fstat= returns Linux pidfd-like
   zero-size =0700= metadata, and =poll= synthesizes =POLLIN= readiness from
-  =WaitForSingleObject(..., 0)=.  The Winsock branch has started:
+  =WaitForSingleObject(..., 0)=.  Windows process fd duplicates now preserve
+  process-kind and tracked status flags through =dup2=, standard fd =dup2=
+  targets, and =F_DUPFD=, so duplicated process fds keep pidfd-like non-file
+  behavior instead of falling back to regular HANDLE file paths.
+  The Winsock branch has started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
@@ -658,6 +662,9 @@
   =ESPIPE=, =fstat= returns Linux pidfd-like =0700= metadata, and =poll=
   derives readiness from =WaitForSingleObject= while preserving mixed
   process/socket result ordering.
+  Stage 122 coverage verifies Windows process-kind fd tracking and status
+  flags survive =dup2=, =dup2= to stdout, and =F_DUPFD=, and that duplicated
+  fds continue to expose pidfd-like non-file =read/write/lseek= behavior.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1102,6 +1109,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   now match Linux pidfd non-file behavior for =read/write/lseek/fstat= and
   expose process completion readiness through =poll= via
   =WaitForSingleObject(..., 0)=.
+  *Windows process fd dup progress 2026-06-03*: process-kind fd duplication
+  now preserves the process-kind table entry and tracked =F_GETFL= status
+  through =dup2=, standard fd =dup2= targets, and =F_DUPFD=.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1546,6 +1556,10 @@ largest uncertainty (B1 + B2) first.
    *Windows process fd non-file compatibility SHIPPED 2026-06-03*: synthetic
    process fds no longer fall through regular file HANDLE paths for
    =read/write/lseek/fstat/poll=.
+   *Windows process fd dup compatibility SHIPPED 2026-06-03*: process-kind
+   fds duplicated through =dup2=, standard fd targets, and =F_DUPFD= retain
+   process-kind tracking plus status flags, preserving pidfd-like non-file
+   behavior on the duplicate.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
