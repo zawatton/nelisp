@@ -50,6 +50,32 @@
     (should (equal call
                    (list "kernel32" "GetLastError" [:uint32] nil)))))
 
+(ert-deftest nelisp-stdlib-os-exit-windows-uses-exitprocess ()
+  "Windows process exit routes through kernel32 ExitProcess."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 :unreachable)))
+      (let ((system-type 'windows-nt))
+        (should (eq (nelisp-os-exit 42) :unreachable))))
+    (should (equal call
+                   (list "kernel32" "ExitProcess"
+                         [:void :uint32]
+                         (list 42))))))
+
+(ert-deftest nelisp-stdlib-os-getpid-windows-uses-getcurrentprocessid ()
+  "Windows getpid routes through kernel32 GetCurrentProcessId."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 98765)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getpid) 98765))))
+    (should (equal call
+                   (list "kernel32" "GetCurrentProcessId" [:uint32] nil)))))
+
 (ert-deftest nelisp-stdlib-os-windows-std-handle-selectors ()
   "POSIX-like std fds map to Windows GetStdHandle selector constants."
   (should (= (nelisp-os--windows-std-handle-selector nelisp-os-STDIN)

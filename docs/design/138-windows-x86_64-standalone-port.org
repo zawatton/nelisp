@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-10-VIRTUALALLOC-OS-MEMORY-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-11-MINIMAL-PROCESS-API-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 10 VirtualAlloc OS memory + first real Windows smoke VALIDATED
+- *State*: STAGE 11 minimal process API + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -33,6 +33,10 @@
   =nelisp-os-mprotect= to =VirtualProtect=, and =nelisp-os-munmap= to
   =VirtualFree(MEM_RELEASE)=.  File-backed mappings remain unsupported on
   Windows until the separate =CreateFileMappingW= / =MapViewOfFile= path lands.
+  The minimal process surface now routes Windows =nelisp-os-exit= through
+  =kernel32!ExitProcess= and =nelisp-os-getpid= through
+  =kernel32!GetCurrentProcessId=, removing another raw Linux syscall / POSIX
+  libc dependency from Windows execution.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -51,7 +55,9 @@
   failures call =kernel32!GetLastError= and propagate that DWORD through
   =nelisp-os-error=.  Stage 10 coverage verifies Windows PAGE_* protection
   translation plus =VirtualAlloc= / =VirtualProtect= / =VirtualFree= argument
-  shape for =nelisp-os-mmap/mprotect/munmap=.
+  shape for =nelisp-os-mmap/mprotect/munmap=.  Stage 11 coverage verifies
+  =ExitProcess= and =GetCurrentProcessId= argument shape for
+  =nelisp-os-exit/getpid=.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -83,7 +89,8 @@
   branch plus regular file HANDLE fd table; Stage 9 adds native Windows error
   reporting through =GetLastError=; Stage 10 adds the anonymous
   =mmap/mprotect/munmap= compatibility branch over Windows virtual memory APIs.
-  These stages do not yet replace the Linux standalone allocator, complete real
+  Stage 11 adds minimal =exit/getpid= process API wiring over kernel32.  These
+  stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, support all Windows OS APIs, or cover the
   rest of the stdlib OS surface.
 
@@ -189,6 +196,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
 - Windows has no fork → full replacement with =CreateProcess= (process
   parallelism) / =CreateThread= (threads).  The "parallel build" and "true
   multi-threaded eval" features are rewritten wholesale for Windows.
+- *Minimal process progress 2026-06-02*: =nelisp-os-exit= now uses
+  =ExitProcess= and =nelisp-os-getpid= now uses =GetCurrentProcessId= on
+  Windows.  =fork/execve/wait/kill/getppid= still require the broader
+  =CreateProcess= / HANDLE-based process model.
 
 * Tier 2 — scaffolded but incomplete (Doc 101 / Doc 132 already started)
 
@@ -234,6 +245,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows memory progress 2026-06-02*: anonymous =mmap/mprotect/munmap= now
   routes through =VirtualAlloc= / =VirtualProtect= / =VirtualFree= with
   host-side ERT coverage.
+  *Windows process progress 2026-06-02*: =nelisp-os-exit/getpid= now route
+  through =ExitProcess= / =GetCurrentProcessId= with host-side ERT coverage.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -288,6 +301,9 @@ largest uncertainty (B1 + B2) first.
    =nelisp-windows-build-writefile-stdout=.
 5. Replace parallel/MT with =CreateProcess= / =CreateThread= (B4) — last,
    since it is a feature extension, not a boot blocker.
+   *Minimal process API SHIPPED 2026-06-02*: =nelisp-os-exit= and
+   =nelisp-os-getpid= route to =ExitProcess= / =GetCurrentProcessId= on
+   Windows; the rest of the process model remains pending.
 
 * One-line summary
 

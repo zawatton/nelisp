@@ -30,9 +30,10 @@
 ;; adds a small Windows fd->HANDLE table for regular file I/O via `CreateFileW'
 ;; / `CloseHandle'.  Stage 9 reports Windows HANDLE failures through
 ;; `GetLastError'.  Stage 10 maps the anonymous mmap/mprotect/munmap surface to
-;; `VirtualAlloc' / `VirtualProtect' / `VirtualFree'.  The Linux/Darwin path
-;; remains the default until a real Windows standalone runtime selects
-;; `system-type' = `windows-nt'.
+;; `VirtualAlloc' / `VirtualProtect' / `VirtualFree'.  Stage 11 routes the
+;; minimal process identity/exit surface through `GetCurrentProcessId' and
+;; `ExitProcess'.  The Linux/Darwin path remains the default until a real
+;; Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -410,9 +411,13 @@ went through `:string' (= CString::new, NUL-rejecting)."
 
 (defun nelisp-os-exit (code)
   "POSIX exit_group(2) — terminate process with CODE.  Never returns."
-  (if nelisp-os--use-direct-syscall
-      (nelisp--syscall 'exit_group code)
-    (nelisp-os--libc-call "libc" "_exit" [:void :int] code)))
+  (cond
+   ((nelisp-os--windows-p)
+    (nelisp-os--libc-call "kernel32" "ExitProcess" [:void :uint32] code))
+   (nelisp-os--use-direct-syscall
+    (nelisp--syscall 'exit_group code))
+   (t
+    (nelisp-os--libc-call "libc" "_exit" [:void :int] code))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 54 Phase 3 — Core-12 additions.
@@ -773,7 +778,9 @@ returns (0 . 0)."
 
 (defun nelisp-os-getpid ()
   "POSIX getpid(2) — return current process id."
-  (nelisp-os--check-errno (nelisp--syscall 'getpid)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--libc-call "kernel32" "GetCurrentProcessId" [:uint32])
+    (nelisp-os--check-errno (nelisp--syscall 'getpid))))
 
 (defun nelisp-os-getppid ()
   "POSIX getppid(2) — return parent process id."
