@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-119-WINDOWS-WINSOCK-ERRNO
+#+STATUS: STAGE-120-WINDOWS-PIDFD-COMPAT
 
 * Status
 
-- *State*: STAGE 119 Windows Winsock errno compatibility
+- *State*: STAGE 120 Windows pidfd compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -275,12 +275,13 @@
   =SetHandleInformation=, =F_GETFL= validates the fd and returns tracked status flags, and
   =F_SETFL= supports socket-fd =O_NONBLOCK= through
   =ws2_32!ioctlsocket(FIONBIO)= while regular HANDLE fds still reject nonzero
-  flag changes.  Linux-only process/event fd APIs now reject Windows before
-  reaching Linux syscall or Linux libc paths: =fork=, =pidfd_*=, =inotify_*=,
-  =signalfd=, =sigprocmask=, and =timerfd_*= signal
-  =nelisp-os-error= with =ENOTSUP= on Windows.  This does not implement Windows
-  replacements for those Linux facilities; it removes another class of
-  impossible raw-syscall fallbacks.  =nelisp-os-eventfd= now has a Windows
+  flag changes.  =nelisp-os-pidfd-open= now has a Windows compatibility branch
+  that opens a process HANDLE and returns a synthetic process fd; matching
+  =nelisp-os-pidfd-send-signal= uses =TerminateProcess= for =SIGTERM= /
+  =SIGKILL= and validates the fd kind before FFI.  =fork= plus Linux-only
+  event fd APIs still reject Windows before reaching Linux syscall or Linux libc paths:
+  =fork=, =inotify_*=, =signalfd=, =sigprocmask=, and =timerfd_*= signal
+  =nelisp-os-error= with =ENOTSUP= on Windows.  =nelisp-os-eventfd= now has a Windows
   compatibility implementation backed by a synthetic fd-kind counter, with
   8-byte little-endian =read/write= counter semantics, =EFD_SEMAPHORE=, and
   =EFD_NONBLOCK= status tracking.  The synthetic eventfd fd also has Windows
@@ -299,8 +300,10 @@
   signal =ESPIPE= and eventfd-kind fds return 0, matching Linux host behavior
   observed locally.  Winsock failure reporting now maps common =WSAE*= errors
   to the POSIX errno payloads used by the Linux path, so nonblocking socket
-  errors such as =WSAEWOULDBLOCK= surface as =EAGAIN=.  The Winsock branch has
-  started:
+  errors such as =WSAEWOULDBLOCK= surface as =EAGAIN=.  Windows =pidfd_open=
+  now returns synthetic process HANDLE fds, and =pidfd_send_signal= terminates
+  only those process-kind fds after argument validation.  The Winsock branch
+  has started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
@@ -428,9 +431,9 @@
   parent-PID extraction, no-more-files handling, and snapshot HANDLE cleanup.
   Stage 20 coverage verifies Windows =F_DUPFD= HANDLE duplication and fd-table
   allocation, =F_GETFL= / regular-fd =F_SETFL= no-op behavior, and unsupported
-  regular-fd =F_SETFL= flag rejection before FFI.  Stage 21 coverage verifies Linux-only
-  process/event fd APIs reject Windows before invoking raw syscall, libc FFI, or
-  allocation helpers.  Stage 22 coverage verifies Winsock initialization,
+  regular-fd =F_SETFL= flag rejection before FFI.  Stage 21 coverage verifies
+  =fork= plus remaining Linux-only event fd APIs reject Windows before invoking raw
+  syscall, libc FFI, or allocation helpers.  Stage 22 coverage verifies Winsock initialization,
   =socket= argument shape, socket-kind fd table registration, =SOCK_CLOEXEC=
   rejection before Winsock FFI, and socket close via =closesocket=.  Stage 23
   coverage verifies Windows =bind= / =connect= / =listen= argument shape,
@@ -642,6 +645,10 @@
   Stage 119 coverage verifies common Winsock =WSAE*= failures are translated
   to the POSIX errno payloads expected by the rest of the OS surface, while
   unknown Winsock codes remain available as raw diagnostics.
+  Stage 120 coverage verifies Windows =pidfd_open= opens a process HANDLE into
+  a synthetic process fd, tracks =PIDFD_NONBLOCK= through =F_GETFL=, closes the
+  HANDLE through the normal fd close path, and validates =pidfd_send_signal=
+  fd kind / signal / flags before =TerminateProcess=.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -756,7 +763,7 @@
   path over =OpenProcess= / =WaitForSingleObject= / =GetExitCodeProcess=.
   Stage 19 adds Windows =getppid= through Tool Help process snapshots.
   Stage 20 adds a minimal Windows =fcntl= branch for =F_DUPFD= / =F_GETFL= /
-  =F_SETFL=.  Stage 21 guards Linux-only process/event fd APIs on Windows so
+  =F_SETFL=.  Stage 21 guards =fork= plus remaining Linux-only event fd APIs on Windows so
   they signal =ENOTSUP= instead of entering Linux syscall/libc code.  Stage 22
   starts Winsock support with =WSAStartup=, =socket=, socket-kind fd tracking,
   and =closesocket= close semantics.  Stage 23 adds Winsock =bind= / =connect=
@@ -1000,7 +1007,7 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   standard fd now records the source fd's tracked access / =O_APPEND= status
   flags so =F_GETFL= on stdout/stderr/stdin remains coherent after
   =SetStdHandle=.
-  *Windows Linux-only guard progress 2026-06-02*: =fork=, =pidfd=, =inotify=,
+  *Windows Linux-only guard progress 2026-06-02*: =fork= plus =inotify=,
   =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
   Windows before reaching Linux syscall/libc paths, including the relative-ms
   timerfd helper.
@@ -1078,6 +1085,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   translates common =WSAE*= codes into the POSIX errno payloads used by the
   Linux path, including =WSAEWOULDBLOCK= to =EAGAIN= and connection errors to
   their matching =ECONN*= values.
+  *Windows pidfd compatibility progress 2026-06-03*: =pidfd_open= now opens
+  a Windows process HANDLE into a synthetic process fd, and
+  =pidfd_send_signal= validates process fd kind plus signal/flags before
+  routing =SIGTERM= / =SIGKILL= through =TerminateProcess=.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1328,8 +1339,8 @@ largest uncertainty (B1 + B2) first.
    *Windows smoke list runner SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    now accepts =-List= and reports every available smoke name, PE spec, expected
    exit code, and stdout expectation before native reruns.
-   *Windows Linux-only guard SHIPPED 2026-06-02*: remaining Linux-specific
-   process/event fd APIs now return explicit =ENOTSUP= on Windows before raw
+   *Windows Linux-only guard SHIPPED 2026-06-02*: =fork= plus remaining Linux-specific
+   event fd APIs now return explicit =ENOTSUP= on Windows before raw
    syscall/libc fallback.
    *Windows Winsock socket branch SHIPPED 2026-06-02*: =nelisp-os-socket=
    calls =WSAStartup= + =socket= and socket fds close with =closesocket=.
@@ -1516,6 +1527,9 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock errno compatibility SHIPPED 2026-06-03*: common Winsock
    =WSAE*= failures now surface as POSIX errno payloads, preserving raw unknown
    codes only as fallback diagnostics.
+   *Windows pidfd compatibility SHIPPED 2026-06-03*: =pidfd_open= now returns
+   synthetic process HANDLE fds and =pidfd_send_signal= terminates only
+   process-kind fds after validating signal and flags.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the

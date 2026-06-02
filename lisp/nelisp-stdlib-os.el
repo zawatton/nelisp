@@ -103,6 +103,7 @@
 ;; Stage 117 adds poll readiness for Windows eventfd-compatible fds.
 ;; Stage 118 adds lseek behavior for Windows socket and eventfd fds.
 ;; Stage 119 maps common Winsock errors to Linux/POSIX errno payloads.
+;; Stage 120 adds Windows pidfd compatibility backed by process HANDLE fds.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -613,6 +614,12 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
   (unless (eq (nelisp-os--windows-fd-kind fd) 'socket)
     (signal 'nelisp-os-error (list 9))) ; EBADF
   (nelisp-os--windows-handle-for-fd fd))
+
+(defun nelisp-os--windows-processfd-handle (fd)
+  "Return the process HANDLE tracked for Windows pidfd-compatible FD."
+  (unless (eq (nelisp-os--windows-fd-kind fd) 'process)
+    (signal 'nelisp-os-error (list 9))) ; EBADF
+  (nelisp-os--windows-fd-handle fd))
 
 (defun nelisp-os--windows-fd-handle (fd)
   "Return the Windows HANDLE for FD, or signal EBADF."
@@ -3468,20 +3475,57 @@ host byte order."
 
 ;; ----- pidfd wrappers -----
 
+(defun nelisp-os--windows-pidfd-open (pid flags)
+  "Windows compatibility implementation of `nelisp-os-pidfd-open'."
+  (unless (and (> pid 0)
+               (= (logand flags (lognot nelisp-os-PIDFD-NONBLOCK)) 0))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let* ((access (logior nelisp-os-WIN-PROCESS-TERMINATE
+                         nelisp-os-WIN-SYNCHRONIZE
+                         nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION))
+         (handle (nelisp-os--libc-call
+                  "kernel32" "OpenProcess"
+                  [:pointer :uint32 :sint32 :uint32]
+                  access 0 pid)))
+    (if (= handle 0)
+        (nelisp-os--windows-ffi-error-signal)
+      (nelisp-os--windows-fd-alloc
+       handle
+       'process
+       (if (/= (logand flags nelisp-os-PIDFD-NONBLOCK) 0)
+           nelisp-os-O-NONBLOCK
+         0)))))
+
 (defun nelisp-os-pidfd-open (pid flags)
   "Linux pidfd_open(2) — return a file descriptor referring to PID, or
 signal `nelisp-os-error'.  FLAGS is currently 0 or
 `nelisp-os-PIDFD-NONBLOCK'."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-pidfd-open pid flags)
     (nelisp-os--check-errno (nelisp--syscall 'pidfd_open pid flags))))
+
+(defun nelisp-os--windows-pidfd-send-signal (pidfd sig flags)
+  "Windows compatibility implementation of `nelisp-os-pidfd-send-signal'."
+  (unless (and (= flags 0)
+               (memq sig (list 0 nelisp-os-SIGTERM nelisp-os-SIGKILL)))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((handle (nelisp-os--windows-processfd-handle pidfd)))
+    (if (= sig 0)
+        0
+      (let ((ok (nelisp-os--libc-call
+                 "kernel32" "TerminateProcess"
+                 [:sint32 :pointer :uint32]
+                 handle sig)))
+        (if (= ok 0)
+            (nelisp-os--windows-ffi-error-signal)
+          0)))))
 
 (defun nelisp-os-pidfd-send-signal (pidfd sig flags)
   "Linux pidfd_send_signal(2) — send SIG to the process referenced by
 PIDFD.  Phase 4.3 only supports `info = NULL', so siginfo_t is left
 zero; pass FLAGS = 0 unless you know better."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-pidfd-send-signal pidfd sig flags)
     (nelisp-os--check-errno
      (nelisp--syscall 'pidfd_send_signal pidfd sig 0 flags))))
 

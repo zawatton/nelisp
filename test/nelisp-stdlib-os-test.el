@@ -2119,13 +2119,11 @@
     (should-not called)))
 
 (ert-deftest nelisp-stdlib-os-linux-only-apis-windows-error-before-syscall ()
-  "Linux-only event/process fd APIs reject Windows before raw syscall/libc."
+  "Linux-only fork/event fd APIs reject Windows before raw syscall/libc."
   (let ((called nil)
         (forms
          (list
           (lambda () (nelisp-os-fork))
-          (lambda () (nelisp-os-pidfd-open 1234 0))
-          (lambda () (nelisp-os-pidfd-send-signal 3 nelisp-os-SIGTERM 0))
           (lambda () (nelisp-os-inotify-init 0))
           (lambda () (nelisp-os-inotify-add-watch 3 "x" nelisp-os-IN-ALL-EVENTS))
           (lambda () (nelisp-os-inotify-rm-watch 3 1))
@@ -2152,6 +2150,83 @@
       (let ((system-type 'windows-nt))
         (dolist (fn forms)
           (should-error (funcall fn) :type 'nelisp-os-error))))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-pidfd-open-windows-opens-process-handle ()
+  "Windows pidfd_open returns a process HANDLE-backed fd."
+  (let ((calls nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "OpenProcess") #xabcdef)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-pidfd-open 1234 nelisp-os-PIDFD-NONBLOCK) 3))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should-not (nelisp-os-close 3))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "OpenProcess"
+                          [:pointer :uint32 :sint32 :uint32]
+                          (list (logior
+                                 nelisp-os-WIN-PROCESS-TERMINATE
+                                 nelisp-os-WIN-SYNCHRONIZE
+                                 nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION)
+                                0 1234))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xabcdef)))))
+    (should-not nelisp-os--windows-fd-table)
+    (should-not nelisp-os--windows-fd-kind-table)
+    (should-not nelisp-os--windows-fd-flags-table)))
+
+(ert-deftest nelisp-stdlib-os-pidfd-send-signal-windows-uses-terminateprocess ()
+  "Windows pidfd_send_signal terminates process HANDLE-backed fds."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . process))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "TerminateProcess") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-pidfd-send-signal 3 0 0) 0))
+        (should (= (nelisp-os-pidfd-send-signal 3 nelisp-os-SIGTERM 0) 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "TerminateProcess"
+                          [:sint32 :pointer :uint32]
+                          (list #xabcdef nelisp-os-SIGTERM)))))))
+
+(ert-deftest nelisp-stdlib-os-pidfd-windows-validates-before-ffi ()
+  "Windows pidfd compatibility rejects invalid args before FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef) (4 . #xbbbb)))
+        (nelisp-os--windows-fd-kind-table '((3 . process))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-pidfd-open 0 0) :type 'nelisp-os-error)
+        (should-error (nelisp-os-pidfd-open 1234 #x40000000)
+                      :type 'nelisp-os-error)
+        (should-error
+         (nelisp-os-pidfd-send-signal 3 nelisp-os-SIGHUP 0)
+         :type 'nelisp-os-error)
+        (should-error
+         (nelisp-os-pidfd-send-signal 3 nelisp-os-SIGTERM 1)
+         :type 'nelisp-os-error)
+        (should-error
+         (nelisp-os-pidfd-send-signal 4 nelisp-os-SIGTERM 0)
+         :type 'nelisp-os-error)))
     (should-not called)))
 
 (ert-deftest nelisp-stdlib-os-eventfd-windows-supports-counter-read-write ()
