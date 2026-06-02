@@ -12,6 +12,7 @@
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualprotect-free
 #   .\tools\windows-selfhost-test.ps1 -Smoke readfile-stdin
 #   .\tools\windows-selfhost-test.ps1 -Smoke createfile-write
+#   .\tools\windows-selfhost-test.ps1 -Smoke setfilepointer
 #   .\tools\windows-selfhost-test.ps1 -Smoke createprocess
 #   .\tools\windows-selfhost-test.ps1 -Smoke createthread
 #
@@ -86,6 +87,12 @@ $Smokes = @(
     @{
         Name = "createfile-write"
         Spec = "createfile-write-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
+    },
+    @{
+        Name = "setfilepointer"
+        Spec = "setfilepointer-exit-42"
         ExpectedExit = 42
         ExpectedStdout = $null
     },

@@ -1236,6 +1236,97 @@
              bytes (unibyte-string #x85 #xc0 #x74 #x0b)))
     (should (= (aref bytes (+ text-off (1- text-size))) #xcc))))
 
+(ert-deftest nelisp-pe-write-exe-binary-setfilepointer-section-table ()
+  "The SetFilePointerEx smoke EXE has path rdata, data, and imports."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'setfilepointer-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (file-off (+ pe-off 4))
+         (opt-off (+ file-off 20))
+         (sect0 (+ pe-off 4 20 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (sect3 (+ sect2 40))
+         (text-raw #x400)
+         (rdata-raw #x600)
+         (data-raw #x800)
+         (idata-raw #xa00)
+         (path-bytes
+          (nelisp-pe--utf16le-z-bytes
+           "target\\windows-smoke\\nelisp-windows-setfilepointer.tmp")))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ file-off 2)) 4))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 4)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 8)) #x600))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 56)) #x5000))
+    (should (string-prefix-p ".text" (substring bytes sect0 (+ sect0 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 20)) text-raw))
+    (should (string-prefix-p ".rdata" (substring bytes sect1 (+ sect1 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x2000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 20)) rdata-raw))
+    (should (string-prefix-p ".data" (substring bytes sect2 (+ sect2 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 8)) 16))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 12)) #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 20)) data-raw))
+    (should (string-prefix-p ".idata" (substring bytes sect3 (+ sect3 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect3 12)) #x4000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect3 20)) idata-raw))
+    (should (equal (substring bytes rdata-raw (+ rdata-raw (length path-bytes)))
+                   path-bytes))
+    (dotimes (i 16)
+      (should (= (aref bytes (+ data-raw i)) 0)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-setfilepointer-import-directory ()
+  "The SetFilePointerEx smoke EXE imports file seek lifecycle APIs."
+  (let ((bytes (nelisp-pe-write-test--emit-exe 'setfilepointer-exit-42)))
+    (dolist (name '("KERNEL32.dll"
+                    "ExitProcess"
+                    "CreateFileW"
+                    "SetFilePointerEx"
+                    "CloseHandle"
+                    "DeleteFileW"))
+      (should (nelisp-pe-write-test--contains-p bytes name)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-setfilepointer-entry-code ()
+  "The SetFilePointerEx smoke EXE seeks to FILE_BEGIN and cleans up."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'setfilepointer-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (sect0 (+ pe-off 4 20 240))
+         (text-size (nelisp-pe-write-test--read-le32 bytes (+ sect0 8)))
+         (text-off #x400))
+    (should (equal (substring bytes text-off (+ text-off 4))
+                   (unibyte-string #x48 #x83 #xec #x48)))
+    (should (equal (substring bytes (+ text-off 4) (+ text-off 7))
+                   (unibyte-string #x48 #x8d #x0d)))
+    (should (equal (substring bytes (+ text-off 11) (+ text-off 16))
+                   (unibyte-string #xba #x00 #x00 #x00 #x40)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x45 #x31 #xc0 #x45 #x31 #xc9)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xc7 #x44 #x24 #x20
+                                   #x02 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xc7 #x44 #x24 #x28
+                                   #x80 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #xc7 #x44 #x24 #x30
+                                   #x00 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x83 #xf8 #xff #x74 #x4d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x89 #x05)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x31 #xd2)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x4c #x8d #x05)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x45 #x31 #xc9)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x85 #xc0 #x74 #x2d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x85 #xc0 #x74 #x1c)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x85 #xc0 #x74 #x0b)))
+    (should (= (aref bytes (+ text-off (1- text-size))) #xcc))))
+
 (provide 'nelisp-pe-write-test)
 
 ;;; nelisp-pe-write-test.el ends here
