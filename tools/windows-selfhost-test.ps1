@@ -17,11 +17,16 @@
 #
 #   .\tools\windows-selfhost-test.ps1 -EmitOnly
 #
+# To list available smoke names:
+#
+#   .\tools\windows-selfhost-test.ps1 -List
+#
 # No external compiler, linker, CRT, or code signing is required.
 
 [CmdletBinding()]
 param(
     [switch]$EmitOnly,
+    [switch]$List,
     [string[]]$Smoke = @("all"),
     [string]$Emacs = $env:EMACS
 )
@@ -103,6 +108,21 @@ $Smokes = @(
 )
 
 $SmokeNames = @($Smokes | ForEach-Object { [string]$_.Name })
+if ($List) {
+    Write-Host "available smokes:"
+    Write-Host "  all"
+    foreach ($SmokeItem in $Smokes) {
+        $Line = "  " + [string]$SmokeItem.Name +
+            " -> " + [string]$SmokeItem.Spec +
+            " exit " + [int]$SmokeItem.ExpectedExit
+        if ($null -ne $SmokeItem.ExpectedStdout) {
+            $Line += " stdout `"" + [string]$SmokeItem.ExpectedStdout + "`""
+        }
+        Write-Host $Line
+    }
+    exit 0
+}
+
 if ($Smoke -contains "all") {
     $SelectedSmokeNames = $SmokeNames
 } else {

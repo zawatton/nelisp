@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-81-WINDOWS-SOCKET-STANDARD-DUP2
+#+STATUS: STAGE-82-WINDOWS-SMOKE-LIST-RUNNER
 
 * Status
 
-- *State*: STAGE 81 Windows socket standard dup2
+- *State*: STAGE 82 Windows smoke list runner
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -111,6 +111,9 @@
   tracking, so socket-backed stdin/stdout/stderr route subsequent
   =read/write/close= through =recv= / =send= / =closesocket= instead of HANDLE
   I/O.
+  The native Windows smoke runner now also accepts =-List= to print available
+  smoke names, PE specs, expected exit codes, and stdout expectations before a
+  real-machine rerun.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle= when
@@ -395,6 +398,8 @@
   Stage 81 coverage verifies Windows socket-kind =dup2= can target stdout,
   records standard fd socket-kind / status tracking, and routes socket-kind
   standard fd =read/write/close= through Winsock.
+  Stage 82 coverage verifies the PowerShell real-machine smoke runner exposes a
+  =-List= mode covering the same smoke manifest as =scripts/nelisp-windows-build.el=.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -955,6 +960,9 @@ largest uncertainty (B1 + B2) first.
    *Windows socket standard dup2 SHIPPED 2026-06-03*: socket-kind =dup2= can
    now target standard fds, records socket-kind standard fd tracking, and keeps
    socket-backed standard fd =read/write/close= on Winsock.
+   *Windows smoke list runner SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
+   now accepts =-List= and reports every available smoke name, PE spec, expected
+   exit code, and stdout expectation before native reruns.
    *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
    fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
    fallback.
@@ -1169,8 +1177,9 @@ largest uncertainty (B1 + B2) first.
    when replacing an existing target fd fails.  Socket-kind =dup2= now supports
    standard fd targets and routes socket-backed standard fd =read/write/close=
    through Winsock.  Standard fd =close= now clears the Windows standard HANDLE
-   slot and removes tracked fd status flags.  Broader socket extensions remain
-   pending.
+   slot and removes tracked fd status flags.  The native Windows smoke runner
+   can list its full smoke manifest with =-List=.  Broader socket extensions
+   remain pending.
    Linux-only AF_UNIX
    fd-passing/peercred helpers are guarded, not ported.
 

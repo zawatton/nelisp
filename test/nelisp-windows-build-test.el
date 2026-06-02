@@ -84,6 +84,22 @@
                (regexp-quote (format "Name = \"%s\"" (car entry)))
                script)))))
 
+(ert-deftest nelisp-windows-build-powershell-list-covers-manifest ()
+  "The PowerShell real-machine script can list available smoke specs."
+  (let* ((script-path (expand-file-name "tools/windows-selfhost-test.ps1"
+                                        nelisp-windows-build-test--repo-root))
+         (script (nelisp-windows-build-test--read-file-text script-path)))
+    (should (string-match-p "\\[switch\\]\\$List" script))
+    (should (string-match-p "-List" script))
+    (should (string-match-p "available smokes:" script))
+    (dolist (entry nelisp-windows-build-smoke-specs)
+      (should (string-match-p
+               (regexp-quote (format "\" -> \" + [string]$SmokeItem.Spec"))
+               script))
+      (should (string-match-p
+               (regexp-quote (format "Spec = \"%s\"" (cdr entry)))
+               script)))))
+
 (ert-deftest nelisp-windows-build-smoke-exes-emits-all-pe-images ()
   "The Windows smoke build entry can emit every real-machine smoke EXE."
   (let ((out-dir (make-temp-file "nelisp-windows-smoke-" t)))
