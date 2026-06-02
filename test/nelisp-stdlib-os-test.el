@@ -2669,6 +2669,36 @@
                                3000
                                4))))))
 
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-ipv6-v6only ()
+  "Windows IPV6_V6ONLY translates through Winsock setsockopt."
+  (let ((call nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-IPV6 nelisp-os-IPV6-V6ONLY 1)
+                   0))))
+    (should (equal writes '((3000 0 1))))
+    (should (equal call
+                   (list "ws2_32" "setsockopt"
+                         [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                         (list #xabcdef
+                               nelisp-os-WIN-IPPROTO-IPV6
+                               nelisp-os-WIN-IPV6-V6ONLY
+                               3000
+                               4))))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-buffer-options ()
   "Windows SOL_SOCKET int options translate through Winsock."
   (let ((calls nil)
@@ -2822,6 +2852,38 @@
                                nelisp-os-WIN-TCP-NODELAY
                                3000
                                4000))))))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-ipv6-v6only ()
+  "Windows IPV6_V6ONLY translates through Winsock getsockopt."
+  (let ((alloc-next 3000)
+        (call nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os-read-i32) (lambda (_ptr _off) 1))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-IPV6 nelisp-os-IPV6-V6ONLY)
+                   1))))
+    (should (equal call
+                   (list "ws2_32" "getsockopt"
+                         [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                         (list #xabcdef
+                               nelisp-os-WIN-IPPROTO-IPV6
+                               nelisp-os-WIN-IPV6-V6ONLY
+                               3000
+                               4000))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
 
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-buffer-options ()
   "Windows SOL_SOCKET int options translate through getsockopt."

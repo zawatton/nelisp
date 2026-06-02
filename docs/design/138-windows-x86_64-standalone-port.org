@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-89-WINDOWS-STANDARD-SOCKET-FCNTL-SETFL
+#+STATUS: STAGE-90-WINDOWS-IPV6-V6ONLY-SOCKOPT
 
 * Status
 
-- *State*: STAGE 89 Windows standard socket fcntl setfl
+- *State*: STAGE 90 Windows IPv6 v6only sockopt
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -135,6 +135,10 @@
   Windows socket-kind standard fds now have explicit coverage that
   =F_SETFL O_NONBLOCK= routes through =ioctlsocket(FIONBIO)= using the
   standard HANDLE/SOCKET and updates tracked =F_GETFL= flags.
+  Windows int-valued socket option helpers now translate
+  =IPPROTO_IPV6= / =IPV6_V6ONLY= through Winsock =setsockopt= /
+  =getsockopt=, using the Windows-specific option number while keeping the
+  POSIX-like public constant separate from the Winsock translation.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle= when
@@ -440,6 +444,9 @@
   Stage 89 coverage verifies Windows socket-kind standard fds route
   =F_SETFL O_NONBLOCK= through =ioctlsocket(FIONBIO)= using the current
   standard HANDLE/SOCKET and preserve =F_GETFL= tracking.
+  Stage 90 coverage verifies Windows =setsockopt-int= / =getsockopt-int=
+  translate =IPPROTO_IPV6= / =IPV6_V6ONLY= through Winsock with the Windows
+  option number.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -868,6 +875,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows Winsock debug/oobinline socket options progress 2026-06-03*:
   =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =SO_DEBUG= and
   =SO_OOBINLINE= through Winsock.
+  *Windows Winsock IPv6 v6only socket option progress 2026-06-03*:
+  =nelisp-os-setsockopt-int= / =getsockopt-int= now translate
+  =IPPROTO_IPV6= / =IPV6_V6ONLY= through Winsock.
   *Windows fstat file information progress 2026-06-03*: disk HANDLE-backed
   =nelisp-os-fstat= now decodes =BY_HANDLE_FILE_INFORMATION= for mode, size,
   timestamps, link count, file index, and volume serial number.
@@ -1095,6 +1105,9 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock debug/oobinline options SHIPPED 2026-06-03*: int-valued
    socket option helpers now support =SO_DEBUG= and =SO_OOBINLINE= set/get on
    Windows.
+   *Windows Winsock IPv6 v6only option SHIPPED 2026-06-03*: int-valued socket
+   option helpers now support =IPPROTO_IPV6= / =IPV6_V6ONLY= set/get on
+   Windows, translating to the Winsock option number.
    *Windows fstat file information SHIPPED 2026-06-03*: disk HANDLE-backed
    =nelisp-os-fstat= now uses =GetFileInformationByHandle= to return richer
    positional stat fields, including directory mode, timestamps, link count,
@@ -1253,7 +1266,7 @@ largest uncertainty (B1 + B2) first.
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
    getname, read/write, poll, expanded int socket options including
    =SO_ERROR= / =SO_TYPE= / =SO_DONTROUTE= / =SO_ACCEPTCONN= / =SO_DEBUG= /
-   =SO_OOBINLINE=, and
+   =SO_OOBINLINE= / =IPV6_V6ONLY=, and
    loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=, accepted
    socket nonblock flag tracking, and socket close-on-exec support; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance

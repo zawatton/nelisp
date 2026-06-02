@@ -50,6 +50,8 @@
 ;; 53 adds internal `CreateThread' / thread-join helpers with HANDLE tracking.
 ;; Stage 54 adds registered-thread join-any through `WaitForMultipleObjects'.
 ;; Stage 55 guards Windows wait-many HANDLE counts before allocation / FFI.
+;; Stage 90 maps `IPPROTO_IPV6' / `IPV6_V6ONLY' through the Windows
+;; int-valued socket option helpers.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -235,6 +237,8 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-SO-RCVBUF #x1002)
 (defconst nelisp-os-WIN-SO-ERROR #x1007)
 (defconst nelisp-os-WIN-SO-TYPE #x1008)
+(defconst nelisp-os-WIN-IPPROTO-IPV6 41)
+(defconst nelisp-os-WIN-IPV6-V6ONLY 27)
 (defconst nelisp-os-WIN-TCP-NODELAY #x0001)
 (defconst nelisp-os-WIN-FIONBIO #x8004667e)
 
@@ -1886,6 +1890,7 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-IPPROTO-IP   0)
 (defconst nelisp-os-IPPROTO-TCP  6)
 (defconst nelisp-os-IPPROTO-UDP 17)
+(defconst nelisp-os-IPPROTO-IPV6 41)
 
 ;; INADDR helpers — host byte order (Rust side does htonl on the wire).
 (defconst nelisp-os-INADDR-ANY      0)
@@ -1904,6 +1909,7 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-SO-KEEPALIVE  9)
 (defconst nelisp-os-SO-OOBINLINE 10)
 (defconst nelisp-os-SO-ACCEPTCONN 30)
+(defconst nelisp-os-IPV6-V6ONLY 26)
 (defconst nelisp-os-TCP-NODELAY   1)
 
 ;; ----- Poll events -----
@@ -2331,6 +2337,7 @@ host byte order."
   (cond
    ((= level nelisp-os-SOL-SOCKET) nelisp-os-WIN-SOL-SOCKET)
    ((= level nelisp-os-IPPROTO-TCP) nelisp-os-IPPROTO-TCP)
+   ((= level nelisp-os-IPPROTO-IPV6) nelisp-os-WIN-IPPROTO-IPV6)
    (t (nelisp-os--windows-unsupported))))
 
 (defun nelisp-os--windows-sockopt-option (level optname &optional getter-p)
@@ -2376,6 +2383,9 @@ When GETTER-P is non-nil, include get-only options."
    ((and (= level nelisp-os-IPPROTO-TCP)
          (= optname nelisp-os-TCP-NODELAY))
     nelisp-os-WIN-TCP-NODELAY)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-V6ONLY))
+    nelisp-os-WIN-IPV6-V6ONLY)
    (t (nelisp-os--windows-unsupported))))
 
 (defun nelisp-os--windows-setsockopt-int (fd level optname value)
