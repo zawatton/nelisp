@@ -1341,6 +1341,38 @@
         (should (= (nelisp-os-stat-nlink st) 1))))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-fstat-windows-eventfd-returns-compat-stat ()
+  "Windows fstat on eventfd-kind fd returns Linux-compatible stat metadata."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . 0)))
+        (nelisp-os--windows-fd-kind-table '((3 . eventfd)))
+        (nelisp-os--windows-eventfd-table '((3 . (7 . 0)))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let* ((system-type 'windows-nt)
+             (st (nelisp-os-fstat 3)))
+        (should (= (nelisp-os-stat-size st) 0))
+        (should (= (nelisp-os-stat-mode st) nelisp-os--eventfd-stat-mode))
+        (should (= (logand (nelisp-os-stat-mode st) nelisp-os-S-IFMT) 0))
+        (should (= (nelisp-os-stat-nlink st) 1))))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-fstat-windows-stdout-eventfd-skips-handle-ffi ()
+  "Windows fstat on a standard eventfd-kind fd does not call HANDLE APIs."
+  (let ((called nil)
+        (nelisp-os--windows-fd-kind-table
+         `((,nelisp-os-STDOUT . eventfd)))
+        (nelisp-os--windows-eventfd-table
+         `((,nelisp-os-STDOUT . (0 . 0)))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let* ((system-type 'windows-nt)
+             (st (nelisp-os-fstat nelisp-os-STDOUT)))
+        (should (= (nelisp-os-stat-size st) 0))
+        (should (= (nelisp-os-stat-mode st) nelisp-os--eventfd-stat-mode))
+        (should (= (nelisp-os-stat-nlink st) 1))))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-dup2-windows-duplicates-regular-fd ()
   "Windows dup2 duplicates a HANDLE and installs it in the fd table."
   (let ((calls nil)

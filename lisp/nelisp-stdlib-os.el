@@ -99,6 +99,7 @@
 ;; Stage 114 adds fcntl duplication and close-on-exec tracking for Windows
 ;; eventfd-compatible fds.
 ;; Stage 115 adds dup2 support for Windows eventfd-compatible fds.
+;; Stage 116 adds fstat support for Windows eventfd-compatible fds.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -1260,6 +1261,7 @@ thread HANDLE from `PROCESS_INFORMATION' is closed before returning."
 
 (defconst nelisp-os--eventfd-max-counter (- (ash 1 64) 2))
 (defconst nelisp-os--eventfd-invalid-value (1- (ash 1 64)))
+(defconst nelisp-os--eventfd-stat-mode 384) ; 0o600
 
 (defun nelisp-os--u64le-string (value)
   "Return VALUE encoded as an unsigned 64-bit little-endian byte string."
@@ -1773,10 +1775,14 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
 
 (defun nelisp-os--windows-fstat (fd)
   "Windows implementation of `nelisp-os-fstat' for HANDLE-backed fds."
-  (if (eq (nelisp-os--windows-fd-kind fd) 'socket)
-      (progn
-        (nelisp-os--windows-socket-for-fd fd)
-        (nelisp-os--windows-stat-list 0 nelisp-os-S-IFSOCK))
+  (cond
+   ((eq (nelisp-os--windows-fd-kind fd) 'socket)
+    (nelisp-os--windows-socket-for-fd fd)
+    (nelisp-os--windows-stat-list 0 nelisp-os-S-IFSOCK))
+   ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
+    (nelisp-os--windows-eventfd-cell fd)
+    (nelisp-os--windows-stat-list 0 nelisp-os--eventfd-stat-mode))
+   (t
     (let* ((handle (nelisp-os--windows-handle-for-fd fd))
            (file-type (nelisp-os--libc-call
                        "kernel32" "GetFileType" [:uint32 :pointer] handle)))
@@ -1800,7 +1806,7 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
          ((= file-type nelisp-os-WIN-FILE-TYPE-UNKNOWN)
           (nelisp-os--windows-unknown-file-type-stat))
          (t
-          (nelisp-os--windows-stat-list 0 0)))))))
+          (nelisp-os--windows-stat-list 0 0))))))))
 
 (defun nelisp-os--windows-dup2 (oldfd newfd)
   "Windows implementation of `nelisp-os-dup2' via DuplicateHandle."
