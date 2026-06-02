@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-97-WINDOWS-IPV6-MULTICAST-IF-SOCKOPT
+#+STATUS: STAGE-98-WINDOWS-IPV6-UNICAST-IF-SOCKOPT
 
 * Status
 
-- *State*: STAGE 97 Windows IPv6 multicast interface sockopt
+- *State*: STAGE 98 Windows IPv6 unicast interface sockopt
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -165,6 +165,10 @@
   POSIX-like public constant separate from the Winsock translation.
   Windows int-valued socket option helpers now also translate
   =IPPROTO_IPV6= / =IPV6_MULTICAST_IF= through Winsock =setsockopt= /
+  =getsockopt=, using the Windows-specific option number while keeping the
+  POSIX-like public constant separate from the Winsock translation.
+  Windows int-valued socket option helpers now also translate
+  =IPPROTO_IPV6= / =IPV6_UNICAST_IF= through Winsock =setsockopt= /
   =getsockopt=, using the Windows-specific option number while keeping the
   POSIX-like public constant separate from the Winsock translation.
   =nelisp-os-kill= now supports single-PID
@@ -495,6 +499,9 @@
   Windows option number.
   Stage 97 coverage verifies Windows =setsockopt-int= / =getsockopt-int=
   translate =IPPROTO_IPV6= / =IPV6_MULTICAST_IF= through Winsock with the
+  Windows option number.
+  Stage 98 coverage verifies Windows =setsockopt-int= / =getsockopt-int=
+  translate =IPPROTO_IPV6= / =IPV6_UNICAST_IF= through Winsock with the
   Windows option number.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
@@ -948,6 +955,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows Winsock IPv6 multicast interface socket option progress 2026-06-03*:
   =nelisp-os-setsockopt-int= / =getsockopt-int= now translate
   =IPPROTO_IPV6= / =IPV6_MULTICAST_IF= through Winsock.
+  *Windows Winsock IPv6 unicast interface socket option progress 2026-06-03*:
+  =nelisp-os-setsockopt-int= / =getsockopt-int= now translate
+  =IPPROTO_IPV6= / =IPV6_UNICAST_IF= through Winsock.
   *Windows fstat file information progress 2026-06-03*: disk HANDLE-backed
   =nelisp-os-fstat= now decodes =BY_HANDLE_FILE_INFORMATION= for mode, size,
   timestamps, link count, file index, and volume serial number.
@@ -1200,6 +1210,10 @@ largest uncertainty (B1 + B2) first.
    int-valued socket option helpers now support =IPPROTO_IPV6= /
    =IPV6_MULTICAST_IF= set/get on Windows, translating to the Winsock option
    number.
+   *Windows Winsock IPv6 unicast interface option SHIPPED 2026-06-03*:
+   int-valued socket option helpers now support =IPPROTO_IPV6= /
+   =IPV6_UNICAST_IF= set/get on Windows, translating to the Winsock option
+   number.
    *Windows fstat file information SHIPPED 2026-06-03*: disk HANDLE-backed
    =nelisp-os-fstat= now uses =GetFileInformationByHandle= to return richer
    positional stat fields, including directory mode, timestamps, link count,
@@ -1359,7 +1373,8 @@ largest uncertainty (B1 + B2) first.
    getname, read/write, poll, expanded int socket options including
    =SO_ERROR= / =SO_TYPE= / =SO_DONTROUTE= / =SO_ACCEPTCONN= / =SO_DEBUG= /
    =SO_OOBINLINE= / =IP_TTL= / =IP_MULTICAST_TTL= / =IP_MULTICAST_LOOP= /
-   =IPV6_UNICAST_HOPS= / =IPV6_MULTICAST_IF= / =IPV6_MULTICAST_HOPS= /
+   =IPV6_UNICAST_HOPS= / =IPV6_UNICAST_IF= / =IPV6_MULTICAST_IF= /
+   =IPV6_MULTICAST_HOPS= /
    =IPV6_MULTICAST_LOOP= / =IPV6_V6ONLY=, and
    loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=, accepted
    socket nonblock flag tracking, and socket close-on-exec support; regular
