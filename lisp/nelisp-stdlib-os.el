@@ -119,6 +119,7 @@
 ;; Stage 133 accepts Windows timerfd alarm clock ids.
 ;; Stage 135 adds same-process Windows socketpair fd-passing compatibility.
 ;; Stage 136 maps Windows AF_UNIX SOCK_SEQPACKET socketpair to stream pairs.
+;; Stage 137 maps Windows AF_UNIX SOCK_SEQPACKET sockets to stream sockets.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -2712,6 +2713,7 @@ primitive; not supported in Phase 3."
 
 (defconst nelisp-os-SOCK-STREAM   1)
 (defconst nelisp-os-SOCK-DGRAM    2)
+(defconst nelisp-os-SOCK-SEQPACKET 5)             ; AF_UNIX boundary-preserving stream
 (defconst nelisp-os-SOCK-NONBLOCK 2048)        ; 0o4000 — OR-able into SOCK_*
 (defconst nelisp-os-SOCK-CLOEXEC  524288)      ; 0o2000000 — OR-able into SOCK_*
 
@@ -3116,12 +3118,21 @@ Winsock socket mode while keeping `F_GETFL' coherent for the new fd."
          (nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
          (base-type (logand type (lognot (logior nelisp-os-SOCK-NONBLOCK
                                                  nelisp-os-SOCK-CLOEXEC))))
+         (socket-type (if (and (= domain nelisp-os-AF-UNIX)
+                               (= base-type nelisp-os-SOCK-SEQPACKET))
+                          nelisp-os-SOCK-STREAM
+                        base-type))
          (flags (if nonblock-p nelisp-os-O-NONBLOCK 0)))
-    (unless (memq base-type (list nelisp-os-SOCK-STREAM nelisp-os-SOCK-DGRAM))
+    (unless (memq base-type (list nelisp-os-SOCK-STREAM
+                                  nelisp-os-SOCK-DGRAM
+                                  nelisp-os-SOCK-SEQPACKET))
       (signal 'nelisp-os-error (list 22))) ; EINVAL
+    (when (and (= base-type nelisp-os-SOCK-SEQPACKET)
+               (/= domain nelisp-os-AF-UNIX))
+      (nelisp-os--windows-unsupported))
     (nelisp-os--windows-winsock-ensure)
     (let ((sock (nelisp-os--windows-create-socket
-                 domain base-type proto cloexec-p))
+                 domain socket-type proto cloexec-p))
           (installed nil))
       (if (= sock nelisp-os-WIN-INVALID-SOCKET)
           (nelisp-os--windows-winsock-error-signal)
@@ -4941,9 +4952,8 @@ value=MS-as-(sec . nsec)."
 ;;     sin6_addr@8 16 bytes (8 BE u16 groups), sin6_scope_id@24 u32 host order
 ;; ---------------------------------------------------------------------------
 
-;; ----- Extra socket type / cmsg / sockopt constants -----
+;; ----- Extra cmsg / sockopt constants -----
 
-(defconst nelisp-os-SOCK-SEQPACKET 5)              ; AF_UNIX boundary-preserving stream
 (defconst nelisp-os-SCM-RIGHTS     1)              ; SOL_SOCKET cmsg type — fd passing
 (defconst nelisp-os-SO-PEERCRED    17)             ; getsockopt option — struct ucred
 

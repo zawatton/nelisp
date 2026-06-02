@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-136-WINDOWS-SEQPACKET-SOCKETPAIR
+#+STATUS: STAGE-137-WINDOWS-SEQPACKET-SOCKET
 
 * Status
 
-- *State*: STAGE 136 Windows seqpacket socketpair compatibility
+- *State*: STAGE 137 Windows seqpacket socket compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -305,9 +305,9 @@
   explicit =ENOTSUP=.  The same tracked socketpair endpoints now queue
   synthetic same-process fd-passing messages so descriptor lists can round-trip
   through =sendmsg-fds= / =recvmsg-fds= without Linux =SCM_RIGHTS= libc paths.
-  =SOCK_SEQPACKET= AF_UNIX socketpair requests are accepted on Windows and
-  mapped to the existing stream-pair compatibility path; non-AF_UNIX
-  =SOCK_SEQPACKET= remains explicitly unsupported.
+  =SOCK_SEQPACKET= AF_UNIX socket and socketpair requests are accepted on
+  Windows and mapped to the existing stream compatibility paths; non-AF_UNIX
+  =SOCK_SEQPACKET= remains explicitly unsupported before Winsock FFI.
   =tools/windows-os-compat-test.ps1= now provides a Windows real-machine
   PowerShell entry for the Emacs-side OS compatibility ERT suite, with focused
   selectors for timerfd, socketpair, peercred, inotify, signals, eventfd, fd,
@@ -779,6 +779,10 @@
   requests dispatch through stream-pair compatibility, still track peercred and
   fd-passing state, support =SOCK_NONBLOCK= post-setup, and reject non-AF_UNIX
   seqpacket requests before opening sockets.
+  Stage 137 coverage verifies Windows AF_UNIX =SOCK_SEQPACKET= socket
+  requests dispatch Winsock =socket= / =WSASocketW= with =SOCK_STREAM=,
+  preserve =SOCK_NONBLOCK= / =SOCK_CLOEXEC= handling, and reject non-AF_UNIX
+  seqpacket sockets before Winsock FFI.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1260,6 +1264,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =SOCK_SEQPACKET= socketpair requests now use stream-pair compatibility,
   including =SOCK_NONBLOCK= post-setup handling, while non-AF_UNIX seqpacket
   requests remain unsupported.
+  *Windows seqpacket socket progress 2026-06-03*: Windows AF_UNIX
+  =SOCK_SEQPACKET= socket requests now use stream socket compatibility while
+  preserving =SOCK_NONBLOCK= / =SOCK_CLOEXEC= behavior; non-AF_UNIX seqpacket
+  sockets still reject before Winsock FFI.
   *Windows sigprocmask compatibility progress 2026-06-03*: Windows
   =sigprocmask= now tracks an emulated mask for =SIG_BLOCK= /
   =SIG_UNBLOCK= / =SIG_SETMASK= without invoking POSIX signal-mask FFI.
@@ -1756,6 +1764,10 @@ largest uncertainty (B1 + B2) first.
    AF_UNIX =SOCK_SEQPACKET= socketpairs now map to stream-pair compatibility
    and keep peercred/fd-passing tracking; non-AF_UNIX seqpacket requests reject
    before opening sockets.
+   *Windows seqpacket socket compatibility SHIPPED 2026-06-03*:
+   AF_UNIX =SOCK_SEQPACKET= sockets now map to =SOCK_STREAM= Winsock creation
+   and retain nonblocking / close-on-exec setup; non-AF_UNIX seqpacket sockets
+   reject before Winsock FFI.
    *Windows inotify synthetic fd compatibility SHIPPED 2026-06-03*:
    =inotify_init= creates event HANDLE-backed fd-kind state,
    =inotify_add_watch= / =inotify_rm_watch= manage synthetic watch

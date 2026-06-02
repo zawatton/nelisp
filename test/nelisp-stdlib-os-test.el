@@ -4135,6 +4135,45 @@
     (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
     (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))))
 
+(ert-deftest nelisp-stdlib-os-socket-windows-seqpacket-uses-af-unix-stream ()
+  "Windows AF_UNIX SOCK_SEQPACKET socket maps to a stream Winsock socket."
+  (let ((call nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-winsock-started-p t))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 #xabcdef)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-socket nelisp-os-AF-UNIX
+                                     nelisp-os-SOCK-SEQPACKET
+                                     0)
+                   3))))
+    (should (equal call
+                   (list "ws2_32" "socket"
+                         [:pointer :sint32 :sint32 :sint32]
+                         (list nelisp-os-AF-UNIX
+                               nelisp-os-SOCK-STREAM
+                               0))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))))
+
+(ert-deftest nelisp-stdlib-os-socket-windows-seqpacket-rejects-non-unix ()
+  "Windows non-AF_UNIX SOCK_SEQPACKET sockets reject before Winsock FFI."
+  (let ((called nil)
+        (nelisp-os--windows-winsock-started-p t))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-socket nelisp-os-AF-INET
+                           nelisp-os-SOCK-SEQPACKET
+                           nelisp-os-IPPROTO-TCP)
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-socket-windows-supports-sock-nonblock ()
   "Windows SOCK_NONBLOCK creates a socket then sets FIONBIO."
   (let ((alloc-next 3000)
@@ -4182,6 +4221,50 @@
                    `((3 . ,nelisp-os-O-NONBLOCK))))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-socket-windows-seqpacket-supports-nonblock ()
+  "Windows AF_UNIX SOCK_SEQPACKET socket supports SOCK_NONBLOCK."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-winsock-started-p t))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "socket") #xabcdef)
+                  ((equal fn "ioctlsocket") 0)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-socket nelisp-os-AF-UNIX
+                                     (logior nelisp-os-SOCK-SEQPACKET
+                                             nelisp-os-SOCK-NONBLOCK)
+                                     0)
+                   3))))
+    (should (equal (nreverse writes) '((3000 0 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "socket"
+                          [:pointer :sint32 :sint32 :sint32]
+                          (list nelisp-os-AF-UNIX
+                                nelisp-os-SOCK-STREAM
+                                0))
+                    (list "ws2_32" "ioctlsocket"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef nelisp-os-WIN-FIONBIO 3000)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-socket-windows-supports-sock-cloexec ()
   "Windows SOCK_CLOEXEC uses WSASocketW with NO_HANDLE_INHERIT."
   (let ((call nil)
@@ -4206,6 +4289,39 @@
                          [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
                          (list nelisp-os-AF-INET nelisp-os-SOCK-STREAM
                                nelisp-os-IPPROTO-TCP
+                               0
+                               0
+                               (logior
+                                nelisp-os-WIN-WSA-FLAG-OVERLAPPED
+                                nelisp-os-WIN-WSA-FLAG-NO-HANDLE-INHERIT)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))))
+
+(ert-deftest nelisp-stdlib-os-socket-windows-seqpacket-supports-cloexec ()
+  "Windows AF_UNIX SOCK_SEQPACKET socket supports SOCK_CLOEXEC."
+  (let ((call nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-winsock-started-p t))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 (cond
+                  ((equal fn "WSASocketW") #xabcdef)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-socket nelisp-os-AF-UNIX
+                                     (logior nelisp-os-SOCK-SEQPACKET
+                                             nelisp-os-SOCK-CLOEXEC)
+                                     0)
+                   3))))
+    (should (equal call
+                   (list "ws2_32" "WSASocketW"
+                         [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
+                         (list nelisp-os-AF-UNIX
+                               nelisp-os-SOCK-STREAM
+                               0
                                0
                                0
                                (logior
