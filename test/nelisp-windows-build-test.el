@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -247,11 +247,15 @@
                     (nelisp-windows-build-test--read-le32
                      text (+ call-off 1))))
          (target-rva (and disp (+ text-rva call-off 5 disp)))
+         (helper-off (and target-rva (- target-rva text-rva)))
          (targets (nelisp-windows-build-test--iat-call-targets
                    bytes text-raw (+ text-raw 120))))
     (should call-off)
+    (should helper-off)
     (should (> target-rva text-rva))
     (should (< target-rva (+ text-rva 120)))
+    (should (equal (substring text helper-off (+ helper-off 4))
+                   (unibyte-string #x55 #x48 #x89 #xe5)))
     (should (member #x2038 targets))
     (should (string-match-p
              (regexp-quote (unibyte-string #x48 #x89 #xc1 #xff #x15))
@@ -333,6 +337,44 @@
                    (unibyte-string #x28 #x00 #x00 #x00)))
     (should load-off)
     (should (= target-rva data-rva))
+    (should (member #x2038 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-standalone-start-imports-exitprocess ()
+  "Stage 16 standalone-shaped PE start imports ExitProcess."
+  (let* ((bytes (nelisp-windows-build--standalone-start-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess")))))
+
+(ert-deftest nelisp-windows-build-standalone-start-calls-driver ()
+  "Stage 16 PE `_start' calls `driver' and exits with its return value."
+  (let* ((bytes (nelisp-windows-build--standalone-start-driver42-bytes))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (text (substring bytes text-raw (+ text-raw 120)))
+         (call-off (string-match-p
+                    (regexp-quote (unibyte-string #xe8))
+                    text))
+         (disp (and call-off
+                    (nelisp-windows-build-test--read-le32
+                     text (+ call-off 1))))
+         (target-rva (and disp (+ text-rva call-off 5 disp)))
+         (driver-off (and target-rva (- target-rva text-rva)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 120))))
+    (should call-off)
+    (should driver-off)
+    (should (equal (substring text driver-off (+ driver-off 4))
+                   (unibyte-string #x55 #x48 #x89 #xe5)))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                            #x2a #x00 #x00 #x00))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #x89 #xc1 #xff #x15))
+             text))
     (should (member #x2038 targets))
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))

@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 15 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 16 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -40,7 +40,10 @@
   writer into =.rdata=, proving cross-section linked constants can ship with
   the PE image instead of only single-probe extra rodata.  Stage 15 carries
   linked-unit =.data= through the PE writer into a read/write PE =.data=
-  section, including zero-fill virtual tail support via =:bss-size=.
+  section, including zero-fill virtual tail support via =:bss-size=.  Stage 16
+  adds a standalone-shaped PE =_start= unit that calls =driver= and exits
+  through =ExitProcess=, replacing the Linux raw-syscall start/exit shape for
+  the manifest bridge.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the

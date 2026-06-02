@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -31,6 +31,8 @@
 ;; linker rodata sections can ship in PE .rdata.
 ;; Stage 15 carries linked-unit .data through the PE writer so read-write
 ;; linker data sections no longer block PE manifest assembly.
+;; Stage 16 adds a standalone-shaped PE start unit that calls `driver' and
+;; exits through ExitProcess, replacing the Linux raw-syscall `_start' shape.
 
 ;;; Code:
 
@@ -214,7 +216,26 @@ successfully recovered through GetExitCodeThread."
     (nelisp-asm-x86_64-emit-bytes
      buf (unibyte-string #xb9 #x02 #x00 #x00 #x00)) ; mov ecx, 2
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xe8))
-    (nelisp-asm-x86_64-reloc-plt32-here buf "add40" -4 'text)
+    (nelisp-asm-x86_64-reloc-plt32-here buf "add40" 0 'text)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf exitprocess-iat-rva)
+    (nelisp-asm-x86_64-int3 buf)
+    (nelisp-link-unit-make
+     "start.o"
+     (list (cons 'text (nelisp-asm-x86_64-buffer-bytes buf)))
+     (list (nelisp-link-symbol "_start" 0 :section 'text
+                               :bind 'global :type 'func))
+     (nelisp-asm-x86_64-extract-relocs buf))))
+
+(defun nelisp-windows-build--standalone-start-unit (text-rva exitprocess-iat-rva)
+  "Return a PE `_start' unit that calls `driver', then ExitProcess(result)."
+  (let ((nelisp-phase47-compiler--windows-text-rva text-rva)
+        (buf (nelisp-asm-x86_64-make-buffer 'win64)))
+    ;; Keep `_start' at byte 0; the PE executable entry is .text RVA 0.
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp #x28)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xe8))
+    (nelisp-asm-x86_64-reloc-plt32-here buf "driver" 0 'text)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
     (nelisp-phase47-compiler--emit-windows-call-iat-rva
      buf exitprocess-iat-rva)
@@ -329,6 +350,17 @@ link-units."
          (list (list :offset 4 :type 'pc32 :symbol "delta"
                      :addend 0 :section 'text))))))))
 
+(defun nelisp-windows-build--standalone-start-driver42-bytes ()
+  "Return a PE32+ EXE proving standalone-shaped `_start' calls `driver'."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (list
+      (nelisp-windows-build--standalone-start-unit
+       text-rva (cdr (assoc "ExitProcess" iat-rvas)))
+      (nelisp-windows-build--compile-defuns-to-unit
+       "driver.o" '(defun driver () 42))))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -356,6 +388,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (linked data -> ExitProcess)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-start-driver42 ()
+  "Batch entry: build target/nelisp-windows-standalone-start-driver42.exe."
+  (let ((bytes (nelisp-windows-build--standalone-start-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-start-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone start -> driver)"
              out-path)
     out-path))
 
