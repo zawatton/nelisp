@@ -195,6 +195,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-INVALID-SOCKET -1)
 (defconst nelisp-os-WIN-FROM-PROTOCOL-INFO -1)
 (defconst nelisp-os-WIN-WSA-FLAG-OVERLAPPED #x01)
+(defconst nelisp-os-WIN-WSA-FLAG-NO-HANDLE-INHERIT #x80)
 (defconst nelisp-os-WIN-SOL-SOCKET #xffff)
 (defconst nelisp-os-WIN-SO-REUSEADDR #x0004)
 (defconst nelisp-os-WIN-SO-KEEPALIVE #x0008)
@@ -1972,24 +1973,36 @@ returns (0 . 0)."
               rc)))
       (nelisp-os--free arg-buf))))
 
+(defun nelisp-os--windows-create-socket (domain base-type proto cloexec-p)
+  "Create a Windows socket, optionally non-inheritable when CLOEXEC-P."
+  (if cloexec-p
+      (nelisp-os--libc-call
+       "ws2_32" "WSASocketW"
+       [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
+       domain base-type proto 0 0
+       (logior nelisp-os-WIN-WSA-FLAG-OVERLAPPED
+               nelisp-os-WIN-WSA-FLAG-NO-HANDLE-INHERIT))
+    (nelisp-os--libc-call
+     "ws2_32" "socket"
+     [:pointer :sint32 :sint32 :sint32]
+     domain base-type proto)))
+
 (defun nelisp-os--windows-socket (domain type proto)
   "Windows implementation of `nelisp-os-socket' via Winsock."
   (unless (memq domain (list nelisp-os-AF-INET
                              nelisp-os-AF-INET6
                              nelisp-os-AF-UNIX))
     (nelisp-os--windows-unsupported))
-  (when (/= 0 (logand type nelisp-os-SOCK-CLOEXEC))
-    (nelisp-os--windows-unsupported))
-  (let* ((nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
-         (base-type (logand type (lognot nelisp-os-SOCK-NONBLOCK)))
+  (let* ((cloexec-p (/= 0 (logand type nelisp-os-SOCK-CLOEXEC)))
+         (nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
+         (base-type (logand type (lognot (logior nelisp-os-SOCK-NONBLOCK
+                                                 nelisp-os-SOCK-CLOEXEC))))
          (flags (if nonblock-p nelisp-os-O-NONBLOCK 0)))
     (unless (memq base-type (list nelisp-os-SOCK-STREAM nelisp-os-SOCK-DGRAM))
       (signal 'nelisp-os-error (list 22))) ; EINVAL
     (nelisp-os--windows-winsock-ensure)
-    (let ((sock (nelisp-os--libc-call
-                 "ws2_32" "socket"
-                 [:pointer :sint32 :sint32 :sint32]
-                 domain base-type proto))
+    (let ((sock (nelisp-os--windows-create-socket
+                 domain base-type proto cloexec-p))
           (installed nil))
       (if (= sock nelisp-os-WIN-INVALID-SOCKET)
           (nelisp-os--windows-winsock-error-signal)
@@ -3236,9 +3249,10 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
 
 ;; ----- socketpair -----
 
-(defun nelisp-os--windows-socketpair-stream ()
+(defun nelisp-os--windows-socketpair-stream (&optional type)
   "Create a Windows stream socket pair via a temporary TCP loopback listener."
-  (let ((listener nil)
+  (let ((socket-type (or type nelisp-os-SOCK-STREAM))
+        (listener nil)
         (client nil)
         (server nil)
         (success nil))
@@ -3246,14 +3260,14 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
         (progn
           (setq listener (nelisp-os-socket
                           nelisp-os-AF-INET
-                          nelisp-os-SOCK-STREAM
+                          socket-type
                           nelisp-os-IPPROTO-TCP))
           (nelisp-os-bind-inet listener nelisp-os-INADDR-LOOPBACK 0)
           (nelisp-os-listen listener 1)
           (let ((bound (nelisp-os-getsockname-inet listener)))
             (setq client (nelisp-os-socket
                           nelisp-os-AF-INET
-                          nelisp-os-SOCK-STREAM
+                          socket-type
                           nelisp-os-IPPROTO-TCP))
             (nelisp-os-connect-inet client nelisp-os-INADDR-LOOPBACK
                                     (cadr bound))
@@ -3270,21 +3284,22 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
         (when server
           (ignore-errors (nelisp-os-close server)))))))
 
-(defun nelisp-os--windows-socketpair-dgram ()
+(defun nelisp-os--windows-socketpair-dgram (&optional type)
   "Create a Windows datagram socket pair via connected UDP loopback sockets."
-  (let ((left nil)
+  (let ((socket-type (or type nelisp-os-SOCK-DGRAM))
+        (left nil)
         (right nil)
         (success nil))
     (unwind-protect
         (progn
           (setq left (nelisp-os-socket
                       nelisp-os-AF-INET
-                      nelisp-os-SOCK-DGRAM
+                      socket-type
                       nelisp-os-IPPROTO-UDP))
           (nelisp-os-bind-inet left nelisp-os-INADDR-LOOPBACK 0)
           (setq right (nelisp-os-socket
                        nelisp-os-AF-INET
-                       nelisp-os-SOCK-DGRAM
+                       socket-type
                        nelisp-os-IPPROTO-UDP))
           (nelisp-os-bind-inet right nelisp-os-INADDR-LOOPBACK 0)
           (let ((left-bound (nelisp-os-getsockname-inet left))
@@ -3320,20 +3335,23 @@ Windows has no POSIX socketpair(2).  Stream pairs use a temporary TCP listener;
 datagram pairs use two connected UDP sockets bound to loopback ephemeral ports."
   (unless (memq domain (list nelisp-os-AF-UNIX nelisp-os-AF-INET))
     (nelisp-os--windows-unsupported))
-  (when (/= 0 (logand type nelisp-os-SOCK-CLOEXEC))
-    (nelisp-os--windows-unsupported))
-  (let* ((nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
-         (base-type (logand type (lognot nelisp-os-SOCK-NONBLOCK)))
+  (let* ((cloexec-p (/= 0 (logand type nelisp-os-SOCK-CLOEXEC)))
+         (nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
+         (base-type (logand type (lognot (logior nelisp-os-SOCK-NONBLOCK
+                                                 nelisp-os-SOCK-CLOEXEC))))
+         (create-type (if cloexec-p
+                          (logior base-type nelisp-os-SOCK-CLOEXEC)
+                        base-type))
          (pair
           (cond
            ((= base-type nelisp-os-SOCK-STREAM)
             (unless (memq protocol (list 0 nelisp-os-IPPROTO-TCP))
               (signal 'nelisp-os-error (list 22))) ; EINVAL
-            (nelisp-os--windows-socketpair-stream))
+            (nelisp-os--windows-socketpair-stream create-type))
            ((= base-type nelisp-os-SOCK-DGRAM)
             (unless (memq protocol (list 0 nelisp-os-IPPROTO-UDP))
               (signal 'nelisp-os-error (list 22))) ; EINVAL
-            (nelisp-os--windows-socketpair-dgram))
+            (nelisp-os--windows-socketpair-dgram create-type))
            (t
             (nelisp-os--windows-unsupported)))))
     (if nonblock-p

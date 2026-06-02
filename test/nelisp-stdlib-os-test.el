@@ -1725,25 +1725,67 @@
                     (list 'fcntl 3 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
                     (list 'fcntl 4 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK))))))
 
-(ert-deftest nelisp-stdlib-os-socketpair-windows-rejects-cloexec-before-ffi ()
-  "Windows socketpair rejects SOCK_CLOEXEC before opening sockets."
-  (let ((called nil))
+(ert-deftest nelisp-stdlib-os-socketpair-windows-propagates-cloexec ()
+  "Windows socketpair propagates SOCK_CLOEXEC to internal socket creation."
+  (let ((calls nil)
+        (socket-fds '(3 4)))
     (cl-letf (((symbol-function 'nelisp-os-socket)
-               (lambda (&rest _args) (setq called t))))
+               (lambda (domain type proto)
+                 (push (list 'socket domain type proto) calls)
+                 (pop socket-fds)))
+              ((symbol-function 'nelisp-os-bind-inet)
+               (lambda (fd host port)
+                 (push (list 'bind fd host port) calls)
+                 0))
+              ((symbol-function 'nelisp-os-listen)
+               (lambda (fd backlog)
+                 (push (list 'listen fd backlog) calls)
+                 0))
+              ((symbol-function 'nelisp-os-getsockname-inet)
+               (lambda (fd)
+                 (push (list 'getsockname fd) calls)
+                 (list nelisp-os-INADDR-LOOPBACK 54321)))
+              ((symbol-function 'nelisp-os-connect-inet)
+               (lambda (fd host port)
+                 (push (list 'connect fd host port) calls)
+                 0))
+              ((symbol-function 'nelisp-os-accept-inet)
+               (lambda (fd)
+                 (push (list 'accept fd) calls)
+                 (list 5 nelisp-os-INADDR-LOOPBACK 60000)))
+              ((symbol-function 'nelisp-os-close)
+               (lambda (fd)
+                 (push (list 'close fd) calls)
+                 0)))
       (let ((system-type 'windows-nt))
-        (should-error
-         (nelisp-os-socketpair nelisp-os-AF-UNIX
-                               (logior nelisp-os-SOCK-STREAM
-                                       nelisp-os-SOCK-CLOEXEC)
-                               0)
-         :type 'nelisp-os-error)))
-    (should-not called)))
+        (should (equal (nelisp-os-socketpair
+                        nelisp-os-AF-UNIX
+                        (logior nelisp-os-SOCK-STREAM
+                                nelisp-os-SOCK-CLOEXEC)
+                        0)
+                       '(4 . 5)))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list 'socket nelisp-os-AF-INET
+                          (logior nelisp-os-SOCK-STREAM
+                                  nelisp-os-SOCK-CLOEXEC)
+                          nelisp-os-IPPROTO-TCP)
+                    (list 'bind 3 nelisp-os-INADDR-LOOPBACK 0)
+                    (list 'listen 3 1)
+                    (list 'getsockname 3)
+                    (list 'socket nelisp-os-AF-INET
+                          (logior nelisp-os-SOCK-STREAM
+                                  nelisp-os-SOCK-CLOEXEC)
+                          nelisp-os-IPPROTO-TCP)
+                    (list 'connect 4 nelisp-os-INADDR-LOOPBACK 54321)
+                    (list 'accept 3)
+                    (list 'close 3))))))
 
 (ert-deftest nelisp-stdlib-os-socketpair-windows-nonblock-cleans-up-on-fcntl-error ()
   "Windows socketpair closes both fds when post-setup nonblocking fails."
   (let ((calls nil))
     (cl-letf (((symbol-function 'nelisp-os--windows-socketpair-stream)
-               (lambda ()
+               (lambda (&optional _type)
                  (push '(socketpair-stream) calls)
                  '(4 . 5)))
               ((symbol-function 'nelisp-os-fcntl)
@@ -1905,21 +1947,91 @@
                    `((3 . ,nelisp-os-O-NONBLOCK))))
     (should (equal freed '(3000)))))
 
-(ert-deftest nelisp-stdlib-os-socket-windows-rejects-cloexec-before-ffi ()
-  "Windows socket rejects SOCK_CLOEXEC before Winsock FFI."
-  (let ((called nil))
+(ert-deftest nelisp-stdlib-os-socket-windows-supports-sock-cloexec ()
+  "Windows SOCK_CLOEXEC uses WSASocketW with NO_HANDLE_INHERIT."
+  (let ((call nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-winsock-started-p t))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
-               (lambda (&rest _args) (setq called t)))
-              ((symbol-function 'nelisp-os--alloc)
-               (lambda (&rest _args) (setq called t))))
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 (cond
+                  ((equal fn "WSASocketW") #xabcdef)
+                  (t (error "unexpected ffi call %S" fn))))))
       (let ((system-type 'windows-nt))
-        (should-error
-         (nelisp-os-socket nelisp-os-AF-INET
-                           (logior nelisp-os-SOCK-STREAM
-                                   nelisp-os-SOCK-CLOEXEC)
-                           nelisp-os-IPPROTO-TCP)
-         :type 'nelisp-os-error)))
-    (should-not called)))
+        (should (= (nelisp-os-socket nelisp-os-AF-INET
+                                     (logior nelisp-os-SOCK-STREAM
+                                             nelisp-os-SOCK-CLOEXEC)
+                                     nelisp-os-IPPROTO-TCP)
+                   3))))
+    (should (equal call
+                   (list "ws2_32" "WSASocketW"
+                         [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
+                         (list nelisp-os-AF-INET nelisp-os-SOCK-STREAM
+                               nelisp-os-IPPROTO-TCP
+                               0
+                               0
+                               (logior
+                                nelisp-os-WIN-WSA-FLAG-OVERLAPPED
+                                nelisp-os-WIN-WSA-FLAG-NO-HANDLE-INHERIT)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))))
+
+(ert-deftest nelisp-stdlib-os-socket-windows-supports-nonblock-cloexec ()
+  "Windows SOCK_NONBLOCK plus SOCK_CLOEXEC uses WSASocketW then FIONBIO."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-winsock-started-p t))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WSASocketW") #xabcdef)
+                  ((equal fn "ioctlsocket") 0)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-socket
+                    nelisp-os-AF-INET
+                    (logior nelisp-os-SOCK-STREAM
+                            nelisp-os-SOCK-NONBLOCK
+                            nelisp-os-SOCK-CLOEXEC)
+                    nelisp-os-IPPROTO-TCP)
+                   3))))
+    (should (equal (nreverse writes) '((3000 0 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "WSASocketW"
+                          [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
+                          (list nelisp-os-AF-INET nelisp-os-SOCK-STREAM
+                                nelisp-os-IPPROTO-TCP
+                                0
+                                0
+                                (logior
+                                 nelisp-os-WIN-WSA-FLAG-OVERLAPPED
+                                 nelisp-os-WIN-WSA-FLAG-NO-HANDLE-INHERIT)))
+                    (list "ws2_32" "ioctlsocket"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef nelisp-os-WIN-FIONBIO 3000)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-setsockopt-int-windows-uses-winsock ()
   "Windows int-valued socket options translate to Winsock setsockopt."
