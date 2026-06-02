@@ -2239,6 +2239,59 @@ with a slot index beyond the param count."
           (should (file-exists-p path)))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-parse-mixed-defun-param-regs ()
+  "Win64 mixed defun params use position-paired GP/XMM registers."
+  (let ((nelisp-phase47-compiler--arch 'x86_64)
+        (nelisp-phase47-compiler--abi 'win64))
+    (let ((ir (nelisp-phase47-compiler--parse
+               '(defun probe (a (b :type f64) c (d :type f64)) b))))
+      (should (eq (nelisp-phase47-compiler--ir-get ir :param-class) 'mixed))
+      (should (equal (nelisp-phase47-compiler--ir-get ir :param-classes)
+                     '(gp f64 gp f64)))
+      (should (equal (nelisp-phase47-compiler--ir-get ir :param-regs)
+                     '(rcx xmm1 r8 xmm3)))
+      (let ((body (nelisp-phase47-compiler--ir-get ir :body)))
+        (should (eq (nelisp-phase47-compiler--ir-kind body) 'ref))
+        (should (eq (nelisp-phase47-compiler--ir-get body :class) 'f64))
+        (should (= (nelisp-phase47-compiler--ir-get body :slot) 1))))))
+
+(ert-deftest nelisp-phase47-compiler/win64-defun-mixed-param-spills ()
+  "Win64 mixed defun params spill GP/XMM registers by argument position."
+  (let ((path (make-temp-file "nelisp-win64-mixed-defun-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe (a (b :type f64) c (d :type f64)) b)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; sub rsp,32; mov [rbp-8],rcx; movsd [rbp-16],xmm1;
+                     ;; mov [rbp-24],r8; movsd [rbp-32],xmm3
+                     (unibyte-string #x48 #x81 #xec #x20 #x00 #x00 #x00
+                                     #x48 #x89 #x4d #xf8
+                                     #xf2 #x0f #x11 #x4d #xf0
+                                     #x4c #x89 #x45 #xe8
+                                     #xf2 #x0f #x11 #x5d #xe0)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; body return: movsd xmm0,[rbp-16]
+                     (unibyte-string #xf2 #x0f #x10 #x45 #xf0)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-defun-rejects-fifth-mixed-param ()
+  "Win64 mixed defuns currently cover the four register argument slots."
+  (let ((path (make-temp-file "nelisp-win64-mixed-defun5-" nil ".obj")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object
+          '(defun probe (a (b :type f64) c (d :type f64) e) a)
+          path :arch 'x86_64 :format 'coff)
+         :type 'nelisp-phase47-compiler-error)
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-compiler/win64-extern-call-places-fifth-f64-arg-on-stack ()
   "Win64 extern-call places a fifth f64 arg in the outgoing stack area."
   (let ((path (make-temp-file "nelisp-win64-f64-extern5-" nil ".obj")))

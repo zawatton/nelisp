@@ -9535,10 +9535,9 @@ Returns one of:
    ;;
    ;; Doc 110 §110.E.1: PARAMS accept either bare symbols (= GP /
    ;; i64 class, existing) or annotated plists `(SYM :type f64)'
-   ;; (= xmm register class).  Mixed-class defuns are rejected at
-   ;; MVP scope — all params must share one class.  The defun's
-   ;; class governs which reg pool the prologue allocates from
-   ;; (`--arg-regs' for GP, `--current-xmm-arg-regs' for f64).
+   ;; (= xmm register class).  SysV/AAPCS defuns still require one
+   ;; uniform class.  Win64 permits a four-arg mixed GP/f64 register
+   ;; window, assigned by argument position.
    ((and (consp sexp) (eq (car sexp) 'defun))
     (unless (>= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
@@ -9571,16 +9570,22 @@ Returns one of:
            (params (mapcar #'car param-pairs))
            (classes (mapcar #'cadr param-pairs))
            (root-flags (mapcar (lambda (p) (nth 2 p)) param-pairs))
-           (uniform-class (car classes)))
+           (uniform-class (car classes))
+           (mixed-win64-p nil))
       (let ((all-uniform t) (cs classes))
         (while (and all-uniform cs)
           (unless (eq (car cs) uniform-class) (setq all-uniform nil))
           (setq cs (cdr cs)))
         (unless all-uniform
-          (signal 'nelisp-phase47-compiler-error
-                  (list :defun-mixed-param-classes name classes))))
+          (if (and (eq nelisp-phase47-compiler--arch 'x86_64)
+                   (eq nelisp-phase47-compiler--abi 'win64))
+              (setq mixed-win64-p t)
+            (signal 'nelisp-phase47-compiler-error
+                    (list :defun-mixed-param-classes name classes)))))
       (let* ((max-arity
               (cond
+               (mixed-win64-p
+                4)
                ((eq uniform-class 'f64)
                 (length (nelisp-phase47-compiler--current-xmm-arg-regs)))
                ((and (eq uniform-class 'gp)
@@ -9594,20 +9599,29 @@ Returns one of:
         (when (> arity max-arity)
           (signal 'nelisp-phase47-compiler-error
                   (list :defun-too-many-params name arity uniform-class))))
-      (let* ((reg-pool (if (eq uniform-class 'f64)
+      (let* ((param-class (if mixed-win64-p 'mixed uniform-class))
+             (reg-pool (if (eq uniform-class 'f64)
                            (nelisp-phase47-compiler--current-xmm-arg-regs)
                          (nelisp-phase47-compiler--current-arg-regs)))
              (reg-budget (length reg-pool))
              (param-regs
-              (if (and (eq uniform-class 'gp)
-                       (eq nelisp-phase47-compiler--arch 'x86_64)
-                       (eq nelisp-phase47-compiler--abi 'sysv)
-                       (> arity reg-budget))
-                  (cl-loop for i below arity
-                           collect (if (< i reg-budget)
-                                       (nth i reg-pool)
-                                     (list :stack (- i reg-budget))))
-                (cl-subseq reg-pool 0 arity)))
+              (cond
+               (mixed-win64-p
+                (cl-loop for cls in classes
+                         for i from 0
+                         collect (if (eq cls 'f64)
+                                     (nth i (nelisp-phase47-compiler--current-xmm-arg-regs))
+                                   (nth i (nelisp-phase47-compiler--current-arg-regs)))))
+               ((and (eq uniform-class 'gp)
+                     (eq nelisp-phase47-compiler--arch 'x86_64)
+                     (eq nelisp-phase47-compiler--abi 'sysv)
+                     (> arity reg-budget))
+                (cl-loop for i below arity
+                         collect (if (< i reg-budget)
+                                     (nth i reg-pool)
+                                   (list :stack (- i reg-budget)))))
+               (t
+                (cl-subseq reg-pool 0 arity))))
              ;; FENV: each param maps to plist
              ;;   `(:reg R :slot S :class CLASS)'
              ;; where SLOT is the param's 0-based index, used by
@@ -9618,12 +9632,12 @@ Returns one of:
              (new-fenv
               (let ((idx -1))
                 (cl-mapcar
-                 (lambda (p r)
+                 (lambda (p r cls)
                    (setq idx (1+ idx))
                    (cons p (list :reg r :slot idx
-                                 :class uniform-class
+                                 :class cls
                                  :root-p (nth idx root-flags))))
-                 params param-regs)))
+                 params param-regs classes)))
              (hidden-boundary
               (nelisp-phase47-compiler--object-hidden-boundary-fenv
                new-fenv arity))
@@ -9649,7 +9663,8 @@ Returns one of:
               :name name
               :params params
               :param-regs param-regs
-              :param-class uniform-class
+              :param-class param-class
+              :param-classes classes
               :rest-p (plist-get param-info :rest-p)
               :fixed-param-count (plist-get param-info :fixed-count)
               :rt-slot-count rt-slot-count
@@ -14969,6 +14984,7 @@ return reg, untouched by epilogue)."
   (let* ((name (nelisp-phase47-compiler--ir-get defun-ir :name))
          (param-regs (nelisp-phase47-compiler--ir-get defun-ir :param-regs))
          (param-class (or (nelisp-phase47-compiler--ir-get defun-ir :param-class) 'gp))
+         (param-classes (nelisp-phase47-compiler--ir-get defun-ir :param-classes))
          (body (nelisp-phase47-compiler--ir-get defun-ir :body))
          (rt-slot-count (or (nelisp-phase47-compiler--ir-get defun-ir :rt-slot-count) 0))
          (param-slot-rounded (if (zerop (logand (length param-regs) 1))
@@ -15062,11 +15078,13 @@ return reg, untouched by epilogue)."
             ;;    Always save them in two private slots after param + let-rt
             ;;    storage and restore them immediately before frame teardown.
             ;;
-            ;; Strategy for GP params:
+            ;; Strategy for GP/f64 params:
             ;;   a. `sub rsp, 8*ROUNDED' to allocate the spill frame.
-            ;;   b. `mov [rbp - 8*(i+1)], rcx/rdx/r8/r9' per param.
+            ;;   b. Store each arg-position register into its frame slot:
+            ;;      GP uses RCX/RDX/R8/R9; f64 uses XMM0..XMM3.
             ;;   The frame layout matches the SysV path so `--emit-ref-load'
-            ;;   (= `[rbp - 8*(slot+1)]') reads the right value.
+            ;;   / `--emit-f64-ref-load' (= `[rbp - 8*(slot+1)]') read the
+            ;;   right value.
             ;;
             ;; Stack alignment (Win64): call sets rsp ≡ 8 mod 16 (= return
             ;; addr pushed).  `push rbp' brings rsp to 0 mod 16.  Every local
@@ -15105,6 +15123,25 @@ return reg, untouched by epilogue)."
                   (setq slot-idx (1+ slot-idx))
                   (nelisp-asm-x86_64-movsd-mem-disp8-xmm
                    buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
+             ;; Mixed Win64 register params: each arg position has a paired
+             ;; GP/XMM register.  Spill the selected class for each position
+             ;; into the normal rbp-negative frame slot.
+             ((eq param-class 'mixed)
+              (let* ((arity (length param-regs))
+                     (frame-bytes (* 8 param-slot-rounded))
+                     (slot-idx -1))
+                (when (> arity 0)
+                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
+                (cl-mapc
+                 (lambda (preg cls)
+                   (setq slot-idx (1+ slot-idx))
+                   (let ((disp (- (* 8 (1+ slot-idx)))))
+                     (if (eq cls 'f64)
+                         (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+                          buf 'rbp disp preg)
+                       (nelisp-asm-x86_64-mov-mem-reg-disp8
+                        buf 'rbp disp preg))))
+                 param-regs param-classes)))
              (t
               (signal 'nelisp-phase47-compiler-error
                       (list :unknown-defun-param-class param-class))))

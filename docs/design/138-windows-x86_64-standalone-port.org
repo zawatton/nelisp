@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-62-WIN64-MIXED-F64-EXTERN-CALL
+#+STATUS: STAGE-63-WIN64-MIXED-F64-DEFUN-PARAMS
 
 * Status
 
-- *State*: STAGE 62 Win64 mixed f64 extern-call
+- *State*: STAGE 63 Win64 mixed f64 defun params
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -48,8 +48,8 @@
   private frame slots below param and runtime-let storage, matching Microsoft
   x64 GP callee-save requirements even when body emitters use those registers
   as scratch / argument registers.  Win64 f64 argument coverage now limits
-  defun parameter registers to =XMM0..XMM3=, assigns mixed =extern-call=
-  register arguments by Microsoft x64 argument position
+  defun parameter registers to =XMM0..XMM3=, assigns mixed defun and
+  =extern-call= register arguments by Microsoft x64 argument position
   (=RCX/XMM0=, =RDX/XMM1=, =R8/XMM2=, =R9/XMM3=), and places fifth-and-later
   f64 =extern-call= arguments in the outgoing stack area above shadow space.
   =lisp/nelisp-stdlib-os.el= now also routes Windows
@@ -367,7 +367,8 @@
   =XMM0..XMM3= and reject a fifth f64 argument before invalid XMM selection.
   Stage 62 supersedes the =extern-call= half by verifying mixed GP/f64 args
   are assigned by Win64 argument position and fifth-and-later f64 args are
-  copied to the outgoing stack area.
+  copied to the outgoing stack area.  Stage 63 adds the matching mixed GP/f64
+  Win64 defun register-param path for the four argument slots.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -584,9 +585,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   frame slots below param and runtime-let storage.  Stage 61 limits Win64 f64
   defun params to =XMM0..XMM3=.  Stage 62 assigns mixed =extern-call= GP/f64
   register args by Win64 argument position and supports fifth-and-later f64
-  args in the outgoing stack area.
+  args in the outgoing stack area.  Stage 63 adds mixed GP/f64 defun register
+  params with the same Win64 argument-position pairing.
 - Remaining diff: XMM6-XMM15 save rules if future emitters use callee-saved
-  XMM scratch registers, plus broader mixed GP/f64 defun/call coverage.
+  XMM scratch registers, plus fifth-and-later mixed defun stack params.
 - *Why Windows is easier than macOS here*: same x86_64 ISA → backend
   instructions are reused.  macOS arm64 needed *75 new ops* (7/82 implemented);
   Windows only needs the win64 ABI emit wired through every call
@@ -930,6 +932,9 @@ largest uncertainty (B1 + B2) first.
    verify mixed GP/f64 =extern-call= assigns register args by Microsoft x64
    argument position and copies fifth-and-later f64 args to the outgoing stack
    area above shadow space.
+   *Win64 mixed f64 defun params SHIPPED 2026-06-03*: Phase 47 COFF tests now
+   verify mixed GP/f64 defun params in the four Win64 register slots spill from
+   the paired =RCX/XMM0=, =RDX/XMM1=, =R8/XMM2=, and =R9/XMM3= positions.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
