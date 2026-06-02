@@ -579,8 +579,10 @@ already distinguishes `extern-call' (i64 return) from
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-too-many-gp-args name
                       (length gp-args))))
-      (when (> (length f64-args)
-               (length (nelisp-phase47-compiler--current-xmm-arg-regs)))
+      (when (and (> (length f64-args)
+                    (length (nelisp-phase47-compiler--current-xmm-arg-regs)))
+                 (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
+                           (eq nelisp-phase47-compiler--abi 'win64))))
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-too-many-f64-args name
                       (length f64-args))))
@@ -11405,7 +11407,10 @@ Arg placement strategy (W7.6b trivial-suffix opt):
      rax' save.  This keeps the spill pipeline uniform so the next
      arg's emit can clobber xmm0 / rax freely.
   3. Pop the complex prefix in reverse, dispatching each value into
-     rdi-r9 (gp args) or xmm0-7 (f64 args) per its `:cls' tag.  f64
+     the target ABI register.  SysV uses independent GP/f64 pools
+     (= rdi-r9 and xmm0-7).  Win64 uses positional slots:
+     arg0..arg3 land in RCX/RDX/R8/R9 or XMM0..XMM3 according to
+     each arg's `:cls'; arg4+ land in the outgoing stack area.  f64
      pops first land in rax, then MOVQ rax → target xmm reg.
   4. Trivial suffix: emit each directly into its target gp-reg via
      `mov target, imm32' (= imm) or `mov target, [rbp - disp8]'
@@ -11440,18 +11445,18 @@ same branch and emit the same byte count."
          (arg-count (length args))
          (win64-p (eq nelisp-phase47-compiler--abi 'win64))
          (sysv-p (eq nelisp-phase47-compiler--abi 'sysv))
-         ;; Per-class register pools, sliced to the number of args
-         ;; of that class.  Iteration order matches source order:
-         ;; the Nth gp arg → Nth GP reg, the Nth f64 arg → Nth xmm
-         ;; reg, both pools indexed independently.
+         ;; Per-class register pools.  SysV indexes both pools
+         ;; independently.  Win64 uses positional slots for register
+         ;; args and sends arg4+ to the outgoing stack area.
          (gp-args (cl-remove-if-not
                    (lambda (a) (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp))
                    args))
          (f64-args (cl-remove-if-not
                     (lambda (a) (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64))
                     args))
-         (gp-reg-budget (length (nelisp-phase47-compiler--current-arg-regs)))
-         (gp-regs (cl-subseq (nelisp-phase47-compiler--current-arg-regs)
+         (gp-arg-regs (nelisp-phase47-compiler--current-arg-regs))
+         (gp-reg-budget (length gp-arg-regs))
+         (gp-regs (cl-subseq gp-arg-regs
                              0 (min (length gp-args) gp-reg-budget)))
          (xmm-arg-regs (nelisp-phase47-compiler--current-xmm-arg-regs))
          (xmm-reg-budget (length xmm-arg-regs))
@@ -11462,20 +11467,29 @@ same branch and emit the same byte count."
          ;; beyond the register budget become `(:stack N)' outgoing
          ;; stack targets; those are emitted per ABI after register args
          ;; are in place.
-         (gp-cursor 0)
-         (f64-cursor 0)
          (arg-targets
-          (mapcar (lambda (a)
-                    (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
-                        (let ((r (nth f64-cursor xmm-regs)))
-                          (setq f64-cursor (1+ f64-cursor))
-                          r)
-                      (let ((r (if (< gp-cursor gp-reg-budget)
-                                   (nth gp-cursor gp-regs)
-                                 (list :stack (- gp-cursor gp-reg-budget)))))
-                        (setq gp-cursor (1+ gp-cursor))
-                        r)))
-                  args))
+          (if win64-p
+              (cl-loop for a in args
+                       for idx from 0
+                       collect
+                       (if (< idx 4)
+                           (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+                               (nth idx xmm-arg-regs)
+                             (nth idx gp-arg-regs))
+                         (list :stack (- idx 4))))
+            (let ((gp-cursor 0)
+                  (f64-cursor 0))
+              (mapcar (lambda (a)
+                        (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+                            (let ((r (nth f64-cursor xmm-regs)))
+                              (setq f64-cursor (1+ f64-cursor))
+                              r)
+                          (let ((r (if (< gp-cursor gp-reg-budget)
+                                       (nth gp-cursor gp-regs)
+                                     (list :stack (- gp-cursor gp-reg-budget)))))
+                            (setq gp-cursor (1+ gp-cursor))
+                            r)))
+                      args))))
          (register-args
           (cl-loop for a in args
                    for target in arg-targets
@@ -11536,7 +11550,8 @@ same branch and emit the same byte count."
           (= (logand (+ arity (length stack-args) arg-count) 1) 1))
          (call-temp-save-count 0)
          (call-needs-align needs-align))
-    (when (> (length f64-args) xmm-reg-budget)
+    (when (and (not win64-p)
+               (> (length f64-args) xmm-reg-budget))
       (signal 'nelisp-phase47-compiler-error
               (list :extern-call-too-many-f64-args name
                     (length f64-args))))
@@ -11547,10 +11562,11 @@ same branch and emit the same byte count."
               (list :extern-call-stack-gp-args-unsupported name
                     nelisp-phase47-compiler--arch
                     nelisp-phase47-compiler--abi)))
-    (dolist (a stack-args)
-      (unless (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
-        (signal 'nelisp-phase47-compiler-error
-                (list :extern-call-stack-arg-not-trivial name))))
+    (unless win64-p
+      (dolist (a stack-args)
+        (unless (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :extern-call-stack-arg-not-trivial name)))))
     (if general-stack-spill-p
         (progn
           (setq call-temp-save-count arg-count
@@ -11560,7 +11576,9 @@ same branch and emit the same byte count."
           ;; CALL returns; only the actual outgoing stack args are pushed
           ;; below them.
           (dolist (a args)
-            (nelisp-phase47-compiler--emit-value a buf)
+            (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+                (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
+              (nelisp-phase47-compiler--emit-value a buf))
             (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
               (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
             (nelisp-asm-x86_64-push buf 'rax))
@@ -11596,11 +11614,13 @@ same branch and emit the same byte count."
         (unless (nelisp-phase47-compiler--call-arg-trivial-p a)
           (signal 'nelisp-phase47-compiler-error
                   (list :extern-call-stack-arg-not-trivial name))))
-      ;; (1) Complex prefix: push each evaluated arg.  f64 args land
-      ;; in xmm0 (per `--emit-value' contract for f64 nodes) so we
-      ;; transfer to rax first before the unified push.
+      ;; (1) Complex prefix: push each evaluated arg.  f64 args are
+      ;; evaluated into xmm0 via `--emit-f64-leaf-into', then transferred
+      ;; to rax before the unified push.
       (dolist (a complex-args)
-        (nelisp-phase47-compiler--emit-value a buf)
+        (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+            (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
+          (nelisp-phase47-compiler--emit-value a buf))
         (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
           ;; xmm0 → rax (64-bit bit pattern, preserves the f64 value).
           (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))

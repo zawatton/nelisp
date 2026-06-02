@@ -2239,21 +2239,67 @@ with a slot index beyond the param count."
           (should (file-exists-p path)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-extern-call-rejects-fifth-f64-arg ()
-  "Win64 extern-call rejects a fifth f64 arg before reaching XMM4+."
+(ert-deftest nelisp-phase47-compiler/win64-extern-call-places-fifth-f64-arg-on-stack ()
+  "Win64 extern-call places a fifth f64 arg in the outgoing stack area."
   (let ((path (make-temp-file "nelisp-win64-f64-extern5-" nil ".obj")))
     (unwind-protect
-        (should-error
-         (nelisp-phase47-compile-to-object
-          '(defun probe ()
-             (extern-call ext
-                          (:f64 (bits-to-f64 1))
-                          (:f64 (bits-to-f64 2))
-                          (:f64 (bits-to-f64 3))
-                          (:f64 (bits-to-f64 4))
-                          (:f64 (bits-to-f64 5))))
-          path :arch 'x86_64 :format 'coff)
-         :type 'nelisp-phase47-compiler-error)
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe ()
+              (extern-call ext
+                           (:f64 (bits-to-f64 1))
+                           (:f64 (bits-to-f64 2))
+                           (:f64 (bits-to-f64 3))
+                           (:f64 (bits-to-f64 4))
+                           (:f64 (bits-to-f64 5))))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; sub rsp, 40; mov r10,[rsp+40]; mov [rsp+32],r10;
+                     ;; call rel32; add rsp,40.  The copied 8 bytes are
+                     ;; the fifth f64 bit pattern saved by the spill path.
+                     (unibyte-string #x48 #x81 #xec #x28 #x00 #x00 #x00
+                                     #x4c #x8b #x54 #x24 #x28
+                                     #x4c #x89 #x54 #x24 #x20
+                                     #xe8 #x00 #x00 #x00 #x00
+                                     #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-extern-call-mixed-f64-slots ()
+  "Win64 mixed extern-call assigns f64 registers by argument position."
+  (let ((path (make-temp-file "nelisp-win64-f64-mixed-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe ()
+              (extern-call ext
+                           1
+                           (:f64 (bits-to-f64 2))
+                           3
+                           (:f64 (bits-to-f64 4))))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; pop rax; movq xmm3,rax
+                     (unibyte-string #x58 #x66 #x48 #x0f #x6e #xd8)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; pop r8
+                     (unibyte-string #x41 #x58)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; pop rax; movq xmm1,rax
+                     (unibyte-string #x58 #x66 #x48 #x0f #x6e #xc8)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; pop rcx
+                     (unibyte-string #x59)))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-compiler/win64-coff-smoke ()
