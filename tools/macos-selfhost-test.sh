@@ -57,6 +57,20 @@ build_run fact '(seq
   (defun fact (n) (if (< n 1) 1 (* n (fact (- n 1)))))
   (exit (fact 5)))' 120
 
+# arena allocator: nl_alloc_bytes (atomic-bump) + the `alloc-bytes` op.
+# mmap a 1 MiB arena at 8 GiB (above __PAGEZERO); reserve arena[0] as the
+# bump pointer (init = arena+16); alloc 16 bytes (-> arena+16), store 99,
+# read it back.  Exercises alloc-bytes -> BL nl_alloc_bytes end to end.
+build_run alloc '(seq
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 0 (+ 8589934592 16))
+      (ptr-write-u64 (alloc-bytes 16 8) 0 99)
+      (ptr-read-u64 8589934592 16)))
+  (exit (run)))' 99
+
 if [ "$fail" = 0 ]; then
   echo "[macos] all PASS — pure-elisp aarch64 -> native macOS arm64 self-host smoke OK"
   exit 0

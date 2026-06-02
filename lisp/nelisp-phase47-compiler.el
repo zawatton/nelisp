@@ -10523,6 +10523,8 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-while node buf))
         ((= tag 5)              ; call — aarch64 direct BL (fixed arity)
          (nelisp-phase47-compiler--emit-call-arm64 node buf))
+        ((= tag 0)              ; alloc-bytes — aarch64 BL nl_alloc_bytes
+         (nelisp-phase47-compiler--emit-alloc-bytes-arm64 node buf))
         ((memq tag '(23 61 57 56 55 27   ; extern-call sexp-tag sexp-int-unwrap sexp-int-make sexp-float-unwrap f64-to-i64-trunc
                      17 12 13 14         ; cons-null-p cons-car cons-cdr cons-cdr-raw
                      59 60               ; sexp-payload-ptr sexp-payload-ptr-record
@@ -10543,7 +10545,7 @@ the node's class to consume the result correctly."
                      42 46               ; ptr-read-u8 ptr-write-u8
                      39 43               ; ptr-read-u16 ptr-write-u16
                      40 44               ; ptr-read-u32 ptr-write-u32
-                     0 20                ; alloc-bytes dealloc-bytes
+                     20                  ; dealloc-bytes
                      15 16 18 19         ; cons-make cons-make-with-clone cons-set-car cons-set-cdr
                      11 33               ; cond logic
                      89                  ; let-rt-n
@@ -13103,6 +13105,22 @@ ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = delta (Xs)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Xn)
   (nelisp-asm-arm64-ldaddal buf 'x2 'x0 'x1))        ; x0 = old [x1]
+
+(defun nelisp-phase47-compiler--emit-alloc-bytes-arm64 (node buf)
+  "Emit `alloc-bytes' for aarch64 — call `nl_alloc_bytes(size, align)'.
+size -> x0, align -> x1, BL nl_alloc_bytes; the allocated pointer (or 0
+on OOM) is returned in x0.  `nl_alloc_bytes' is a defun linked into the
+program (the atomic-bump arena allocator), so the BL resolves like any
+intra-text call."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :size) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push size
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :align) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push align
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = align
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = size
+  (nelisp-asm-arm64-bl buf 'nl_alloc_bytes))         ; x0 = ptr
 
 (defun nelisp-phase47-compiler--emit-call-arm64 (node buf)
   "Emit a fixed-arity direct call for aarch64 (AAPCS64).
