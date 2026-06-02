@@ -792,6 +792,31 @@
     (should nelisp-os--windows-winsock-started-p)
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-socket-windows-allows-af-inet6 ()
+  "Windows AF_INET6 socket uses Winsock and returns a socket fd."
+  (let ((call nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-winsock-started-p t))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 #xabcdef)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-socket nelisp-os-AF-INET6
+                                     nelisp-os-SOCK-STREAM
+                                     nelisp-os-IPPROTO-TCP)
+                   3))))
+    (should (equal call
+                   (list "ws2_32" "socket"
+                         [:pointer :sint32 :sint32 :sint32]
+                         (list nelisp-os-AF-INET6
+                               nelisp-os-SOCK-STREAM
+                               nelisp-os-IPPROTO-TCP))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))))
+
 (ert-deftest nelisp-stdlib-os-socket-windows-rejects-linux-socket-flags ()
   "Windows socket rejects SOCK_NONBLOCK/SOCK_CLOEXEC before Winsock FFI."
   (let ((called nil))
@@ -957,6 +982,93 @@
         (should (equal (nelisp-os-accept-inet 3)
                        (list 4 nelisp-os-INADDR-LOOPBACK 4444)))))
     (should (equal len-write (list 4000 0 nelisp-os--sockaddr-in-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "accept"
+                          [:pointer :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((4 . #x123456) (3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((4 . socket) (3 . socket))))
+    (should (= nelisp-os--windows-next-fd 5))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-bind-inet6-windows-uses-winsock ()
+  "Windows AF_INET6 bind passes encoded sockaddr_in6 to Winsock."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in6)
+               (lambda (buf host port) (setq encoded (list buf host port))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-bind-inet6 3 nelisp-os-IN6ADDR-LOOPBACK 4444) 0))))
+    (should (equal encoded (list 3000 nelisp-os-IN6ADDR-LOOPBACK 4444)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "bind"
+                          [:sint32 :pointer :pointer :sint32]
+                          (list #xabcdef 3000 nelisp-os--sockaddr-in6-len)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-connect-inet6-windows-uses-winsock ()
+  "Windows AF_INET6 connect passes encoded sockaddr_in6 to Winsock."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in6)
+               (lambda (buf host port) (setq encoded (list buf host port))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-connect-inet6 3 nelisp-os-IN6ADDR-LOOPBACK 4444) 0))))
+    (should (equal encoded (list 3000 nelisp-os-IN6ADDR-LOOPBACK 4444)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "connect"
+                          [:sint32 :pointer :pointer :sint32]
+                          (list #xabcdef 3000 nelisp-os--sockaddr-in6-len)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-accept-inet6-windows-uses-winsock ()
+  "Windows AF_INET6 accept returns a socket-kind fd plus decoded peer."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (nelisp-os--windows-next-fd 4)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n) (if (= n nelisp-os--sockaddr-in6-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in6)
+               (lambda (ptr)
+                 (should (= ptr 3000))
+                 (cons nelisp-os-IN6ADDR-LOOPBACK 4444)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 #x123456)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-accept-inet6 3)
+                       (list 4 nelisp-os-IN6ADDR-LOOPBACK 4444)))))
+    (should (equal len-write (list 4000 0 nelisp-os--sockaddr-in6-len)))
     (should (equal (nreverse calls)
                    (list
                     (list "ws2_32" "accept"

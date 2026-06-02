@@ -50,9 +50,10 @@
 ;; to Winsock `recv' / `send'.  Stage 26 maps socket fd `poll' to `WSAPoll'.
 ;; Stage 27 maps int-valued socket options to Winsock `setsockopt'.  The
 ;; Stage 28 removes the hidden Windows `libc' dependency from sockaddr byte-order
-;; conversion by using Winsock hton*/ntoh*.  The Linux/Darwin path remains the
-;; default until a real Windows standalone runtime selects `system-type' =
-;; `windows-nt'.
+;; conversion by using Winsock hton*/ntoh*.  Stage 29 adds Windows AF_INET6
+;; socket / bind / connect / accept routing through Winsock.  The Linux/Darwin
+;; path remains the default until a real Windows standalone runtime selects
+;; `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -1041,6 +1042,8 @@ primitive; not supported in Phase 3."
 ;; ----- Network (AF_INET only in Phase 4) -----
 
 (defconst nelisp-os-AF-INET 2)
+(defconst nelisp-os-AF-UNIX  1)
+(defconst nelisp-os-AF-INET6 10)
 
 (defconst nelisp-os-SOCK-STREAM   1)
 (defconst nelisp-os-SOCK-DGRAM    2)
@@ -1401,7 +1404,7 @@ returns (0 . 0)."
 
 (defun nelisp-os--windows-socket (domain type proto)
   "Windows implementation of `nelisp-os-socket' via Winsock."
-  (when (/= domain nelisp-os-AF-INET)
+  (unless (memq domain (list nelisp-os-AF-INET nelisp-os-AF-INET6))
     (nelisp-os--windows-unsupported))
   (when (/= 0 (logand type (logior nelisp-os-SOCK-NONBLOCK
                                    nelisp-os-SOCK-CLOEXEC)))
@@ -1700,10 +1703,6 @@ blocks indefinitely; 0 polls without blocking."
 ;; sockaddr families.
 ;; ---------------------------------------------------------------------------
 
-;; Address families
-(defconst nelisp-os-AF-UNIX  1)
-(defconst nelisp-os-AF-INET6 10)
-
 ;; sockaddr_un.sun_path capacity (Linux glibc).  Reference value — the
 ;; primitive enforces this internally and signals an error if exceeded.
 (defconst nelisp-os-SUN-PATH-MAX 108)
@@ -1852,10 +1851,22 @@ host byte order (e.g. `nelisp-os-IN6ADDR-LOOPBACK')."
     (unwind-protect
         (progn
           (nelisp-os--encode-sockaddr-in6 buf host6 port)
-          (let ((r (nelisp-os--libc-call "libc" "bind"
-                                [:sint32 :sint32 :pointer :uint32]
-                                fd buf nelisp-os--sockaddr-in6-len)))
-            (if (= r -1) (nelisp-os--ffi-errno-signal) r)))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "bind"
+                        [:sint32 :pointer :pointer :sint32]
+                        (nelisp-os--windows-socket-for-fd fd)
+                        buf
+                        nelisp-os--sockaddr-in6-len)
+                     (nelisp-os--libc-call "libc" "bind"
+                                  [:sint32 :sint32 :pointer :uint32]
+                                  fd buf nelisp-os--sockaddr-in6-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
       (nelisp-os--free buf))))
 
 (defun nelisp-os-connect-inet6 (fd host6 port)
@@ -1865,10 +1876,22 @@ host byte order (e.g. `nelisp-os-IN6ADDR-LOOPBACK')."
     (unwind-protect
         (progn
           (nelisp-os--encode-sockaddr-in6 buf host6 port)
-          (let ((r (nelisp-os--libc-call "libc" "connect"
-                                [:sint32 :sint32 :pointer :uint32]
-                                fd buf nelisp-os--sockaddr-in6-len)))
-            (if (= r -1) (nelisp-os--ffi-errno-signal) r)))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "connect"
+                        [:sint32 :pointer :pointer :sint32]
+                        (nelisp-os--windows-socket-for-fd fd)
+                        buf
+                        nelisp-os--sockaddr-in6-len)
+                     (nelisp-os--libc-call "libc" "connect"
+                                  [:sint32 :sint32 :pointer :uint32]
+                                  fd buf nelisp-os--sockaddr-in6-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
       (nelisp-os--free buf))))
 
 (defun nelisp-os-accept-inet6 (sockfd)
@@ -1880,10 +1903,19 @@ host byte order."
     (unwind-protect
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in6-len)
-          (let ((newfd (nelisp-os--libc-call "libc" "accept"
+          (let ((newfd (if (nelisp-os--windows-p)
+                           (let ((sock (nelisp-os--libc-call
+                                        "ws2_32" "accept"
+                                        [:pointer :pointer :pointer :pointer]
+                                        (nelisp-os--windows-socket-for-fd sockfd)
+                                        addr-buf len-buf)))
+                             (if (= sock nelisp-os-WIN-INVALID-SOCKET)
+                                 (nelisp-os--windows-winsock-error-signal)
+                               (nelisp-os--windows-fd-alloc sock 'socket)))
+                         (nelisp-os--libc-call "libc" "accept"
                                     [:sint32 :sint32 :pointer :pointer]
-                                    sockfd addr-buf len-buf)))
-            (if (= newfd -1)
+                                    sockfd addr-buf len-buf))))
+            (if (and (not (nelisp-os--windows-p)) (= newfd -1))
                 (nelisp-os--ffi-errno-signal)
               (let ((gp (nelisp-os--decode-sockaddr-in6 addr-buf)))
                 (list newfd (car gp) (cdr gp))))))

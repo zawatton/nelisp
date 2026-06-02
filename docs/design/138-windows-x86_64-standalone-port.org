@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-28-WINSOCK-BYTE-ORDER-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-29-WINSOCK-AF-INET6-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 28 Winsock byte-order conversion + first real Windows smoke VALIDATED
+- *State*: STAGE 29 Winsock AF_INET6 + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -95,7 +95,10 @@
   The sockaddr byte-order helpers now call Winsock =htons= / =htonl= /
   =ntohs= / =ntohl= on Windows instead of assuming a POSIX =libc= provider,
   so Windows =bind= / =connect= / =accept= no longer retain that hidden libc
-  dependency.
+  dependency.  =nelisp-os-socket= now also accepts =AF_INET6= on Windows, and
+  =nelisp-os-bind-inet6= / =connect-inet6= / =accept-inet6= route socket-kind
+  Windows fds through =ws2_32!bind= / =connect= / =accept= with the existing
+  =sockaddr_in6= encoder and decoder.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -154,7 +157,9 @@
   =SOL_SOCKET= / =SO_REUSEADDR= translation, cleanup, and non-socket fd
   rejection before Winsock FFI.  Stage 28 coverage verifies Windows sockaddr
   byte-order helpers dispatch to =ws2_32= while non-Windows hosts keep the
-  existing =libc= provider.
+  existing =libc= provider.  Stage 29 coverage verifies Windows =AF_INET6=
+  socket creation, IPv6 =bind= / =connect= argument shape, accepted IPv6 socket
+  fd allocation, socket-kind registration, peer decoding, and buffer cleanup.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -206,13 +211,14 @@
   =read/write= via Winsock =recv= / =send=.  Stage 26 adds socket fd =poll=
   via =WSAPoll=.  Stage 27 adds int-valued socket option setting via Winsock
   =setsockopt= for =SO_REUSEADDR= / =SO_KEEPALIVE=.  Stage 28 routes
-  sockaddr byte-order conversion through Winsock on Windows.
+  sockaddr byte-order conversion through Winsock on Windows.  Stage 29 adds
+  Winsock =AF_INET6= socket / bind / connect / accept support.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
   Windows OS APIs, cover Winsock extensions such as broader socket options /
-  IPv6 / UNIX-domain sockets / scoped IPv6, or cover the rest of the stdlib OS
-  surface.
+  UNIX-domain sockets / scoped IPv6 / descriptor-passing helpers, or cover the
+  rest of the stdlib OS surface.
 
 * TL;DR
 
@@ -405,6 +411,7 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =nelisp-os-setsockopt-int= now translates supported =SOL_SOCKET= options to
   Winsock and calls =ws2_32!setsockopt=.  sockaddr byte-order conversion now
   uses Winsock hton*/ntoh* functions on Windows rather than POSIX =libc=.
+  =AF_INET6= socket / bind / connect / accept now route through Winsock too.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -490,6 +497,9 @@ largest uncertainty (B1 + B2) first.
    =SO_REUSEADDR= / =SO_KEEPALIVE= options.
    *Windows Winsock byte-order SHIPPED 2026-06-02*: sockaddr encoders and
    decoders now call =ws2_32!htons= / =htonl= / =ntohs= / =ntohl= on Windows.
+   *Windows Winsock AF_INET6 SHIPPED 2026-06-02*: IPv6 socket creation plus
+   =nelisp-os-bind-inet6= / =connect-inet6= / =accept-inet6= now route through
+   =ws2_32= and preserve socket-kind fd tracking for accepted sockets.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
@@ -509,8 +519,8 @@ largest uncertainty (B1 + B2) first.
    are also covered, and =getppid= now uses Tool Help snapshots.
    =fork/clone/CreateThread= and full child tracking remain pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
-   plus bind/connect/listen/accept/read/write/poll/setsockopt-int; broader
-   socket extensions remain pending.
+   plus IPv4/IPv6 bind/connect/accept, read/write, poll, and setsockopt-int;
+   broader socket extensions remain pending.
 
 * One-line summary
 
