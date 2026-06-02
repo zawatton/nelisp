@@ -92,6 +92,8 @@
 ;; Windows socket option helpers.
 ;; Stage 110 maps generic/MTU `IPPROTO_IPV6' int-valued options through the
 ;; Windows socket option helpers.
+;; Stage 111 maps IPv6 header/control metadata options through the Windows
+;; socket option helpers.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -291,12 +293,15 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-IP-MTU-DISCOVER 71)
 (defconst nelisp-os-WIN-IP-MTU 73)
 (defconst nelisp-os-WIN-IPPROTO-IPV6 41)
+(defconst nelisp-os-WIN-IPV6-HDRINCL 2)
 (defconst nelisp-os-WIN-IPV6-UNICAST-HOPS 4)
 (defconst nelisp-os-WIN-IPV6-UNICAST-IF 31)
 (defconst nelisp-os-WIN-IPV6-MULTICAST-IF 9)
 (defconst nelisp-os-WIN-IPV6-MULTICAST-HOPS 10)
 (defconst nelisp-os-WIN-IPV6-MULTICAST-LOOP 11)
 (defconst nelisp-os-WIN-IPV6-DONTFRAG 14)
+(defconst nelisp-os-WIN-IPV6-PKTINFO 19)
+(defconst nelisp-os-WIN-IPV6-HOPLIMIT 21)
 (defconst nelisp-os-WIN-IPV6-V6ONLY 27)
 (defconst nelisp-os-WIN-IPV6-TCLASS 39)
 (defconst nelisp-os-WIN-IPV6-RECVTCLASS 40)
@@ -2000,6 +2005,9 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-IPV6-MULTICAST-LOOP 19)
 (defconst nelisp-os-IPV6-MTU-DISCOVER 23)
 (defconst nelisp-os-IPV6-MTU 24)
+(defconst nelisp-os-IPV6-HDRINCL 36)
+(defconst nelisp-os-IPV6-RECVPKTINFO 49)
+(defconst nelisp-os-IPV6-RECVHOPLIMIT 51)
 (defconst nelisp-os-IPV6-DONTFRAG 62)
 (defconst nelisp-os-IPV6-RECVTCLASS 66)
 (defconst nelisp-os-IPV6-TCLASS 67)
@@ -2572,6 +2580,15 @@ When GETTER-P is non-nil, include get-only options."
    ((and (= level nelisp-os-IPPROTO-IPV6)
          (= optname nelisp-os-IPV6-MULTICAST-LOOP))
     nelisp-os-WIN-IPV6-MULTICAST-LOOP)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-HDRINCL))
+    nelisp-os-WIN-IPV6-HDRINCL)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-RECVPKTINFO))
+    nelisp-os-WIN-IPV6-PKTINFO)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-RECVHOPLIMIT))
+    nelisp-os-WIN-IPV6-HOPLIMIT)
    ((and (= level nelisp-os-IPPROTO-IPV6)
          (= optname nelisp-os-IPV6-DONTFRAG))
     nelisp-os-WIN-IPV6-DONTFRAG)

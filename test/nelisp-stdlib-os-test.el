@@ -3229,6 +3229,51 @@
                                 nelisp-os-WIN-IPV6-RECVTCLASS 3000 4)))))
     (should (equal freed '(3000 3000 3000 3000)))))
 
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-ipv6-metadata-options ()
+  "Windows IPv6 metadata int options translate through Winsock setsockopt."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-IPV6 nelisp-os-IPV6-HDRINCL 1)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-IPV6 nelisp-os-IPV6-RECVPKTINFO 1)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-IPV6 nelisp-os-IPV6-RECVHOPLIMIT 1)
+                   0))))
+    (should (equal (nreverse writes)
+                   '((3000 0 1)
+                     (3000 0 1)
+                     (3000 0 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-WIN-IPPROTO-IPV6
+                                nelisp-os-WIN-IPV6-HDRINCL 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-WIN-IPPROTO-IPV6
+                                nelisp-os-WIN-IPV6-PKTINFO 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-WIN-IPPROTO-IPV6
+                                nelisp-os-WIN-IPV6-HOPLIMIT 3000 4)))))
+    (should (equal freed '(3000 3000 3000)))))
+
 (ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-ipv6-unicast-hops ()
   "Windows IPV6_UNICAST_HOPS translates through Winsock setsockopt."
   (let ((call nil)
@@ -4173,6 +4218,55 @@
     (should (equal (sort freed #'<)
                    '(3000 4000 5000 6000 7000 8000 9000 10000
                      11000 12000)))))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-ipv6-metadata-options ()
+  "Windows IPv6 metadata int options translate through Winsock getsockopt."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr _off)
+                 (cdr (assq ptr '((3000 . 1)
+                                  (5000 . 1)
+                                  (7000 . 1))))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-IPV6 nelisp-os-IPV6-HDRINCL)
+                   1))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-IPV6 nelisp-os-IPV6-RECVPKTINFO)
+                   1))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-IPV6 nelisp-os-IPV6-RECVHOPLIMIT)
+                   1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-WIN-IPPROTO-IPV6
+                                nelisp-os-WIN-IPV6-HDRINCL 3000 4000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-WIN-IPPROTO-IPV6
+                                nelisp-os-WIN-IPV6-PKTINFO 5000 6000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-WIN-IPPROTO-IPV6
+                                nelisp-os-WIN-IPV6-HOPLIMIT 7000 8000)))))
+    (should (equal (sort freed #'<)
+                   '(3000 4000 5000 6000 7000 8000)))))
 
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-ipv6-unicast-hops ()
   "Windows IPV6_UNICAST_HOPS translates through Winsock getsockopt."
