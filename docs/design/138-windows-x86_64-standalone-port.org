@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-52-WINDOWS-WAIT-ANY-REGISTERED
+#+STATUS: STAGE-53-WINDOWS-CREATETHREAD-HELPERS
 
 * Status
 
-- *State*: STAGE 52 Windows wait any registered child
+- *State*: STAGE 53 Windows CreateThread helpers
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -97,8 +97,13 @@
   =wait(-1)= meaningful on Windows: it builds a HANDLE array, waits with
   =WaitForMultipleObjects=, reaps the signaled child, and leaves other
   registered children tracked.  =wait(-1 WNOHANG)= returns =(0 . 0)= while
-  keeping all registered handles when no child is ready.  The =CreateProcessW=
-  setup is now
+  keeping all registered handles when no child is ready.  Internal Windows
+  thread helpers now exist for the future =clone= / =thread-spawn= replacement:
+  =nelisp-os--windows-create-thread= calls =CreateThread=, returns the thread
+  id, and registers the thread HANDLE; =nelisp-os--windows-join-thread= waits
+  with =WaitForSingleObject=, reads =GetExitCodeThread=, closes/forgets the
+  thread HANDLE on completion, and preserves it across =WNOHANG= timeout.  The
+  =CreateProcessW= setup is now
   factored into =nelisp-os--windows-create-process=, a parent-surviving helper
   that returns =PROCESS_INFORMATION.dwProcessId=, closes the temporary thread
   HANDLE, and registers the process HANDLE for later =wait=.  Windows
@@ -310,7 +315,9 @@
   keeps the HANDLE registered for later =wait=.  Stage 52 coverage verifies
   Windows =wait(-1)= uses =WaitForMultipleObjects= over registered child
   HANDLEs, reaps only the signaled child, preserves all children on =WNOHANG=
-  timeout, and reports =ECHILD= when no registered child exists.
+  timeout, and reports =ECHILD= when no registered child exists.  Stage 53
+  coverage verifies =CreateThread= registration plus thread join completion and
+  =WNOHANG= timeout HANDLE retention.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -645,6 +652,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   termination.
   *Windows wait-any registered progress 2026-06-03*: Windows =wait(-1)= now
   waits over registered child process HANDLEs with =WaitForMultipleObjects=.
+  *Windows CreateThread helper progress 2026-06-03*: internal Windows thread
+  helpers now register =CreateThread= HANDLEs and join them with
+  =WaitForSingleObject= / =GetExitCodeThread=.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -805,6 +815,10 @@ largest uncertainty (B1 + B2) first.
    uses =WaitForMultipleObjects= over registered child HANDLEs, reaps only the
    signaled child, preserves all children on =WNOHANG= timeout, and returns
    =ECHILD= when no registered child exists.
+   *Windows CreateThread helpers SHIPPED 2026-06-03*: internal Windows thread
+   helpers now call =CreateThread=, register thread HANDLEs, join with
+   =WaitForSingleObject= / =GetExitCodeThread=, close/forget completed threads,
+   and retain thread HANDLEs across =WNOHANG= timeouts.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
@@ -832,8 +846,9 @@ largest uncertainty (B1 + B2) first.
    reopening by PID, the shared =CreateProcessW= helper can now spawn and
    register child HANDLEs without exiting the parent, =kill= now reuses those
    registered child HANDLEs, =wait(-1)= can now reap any registered child, and
-   =getppid= now uses Tool Help snapshots.  =fork/clone/CreateThread= remain
-   pending; Linux-only
+   internal =CreateThread= helpers can create and join Windows thread HANDLEs.
+   =getppid= now uses Tool Help snapshots.  Full =fork/clone= integration
+   remains pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
    getname, read/write, poll, and setsockopt-int; broader socket extensions

@@ -44,11 +44,13 @@
 ;; `wait' reuse registered child process HANDLEs and retain them across
 ;; `WNOHANG' timeouts.  Stage 50 factors Windows `CreateProcessW' into a
 ;; parent-surviving spawn helper that registers child process HANDLEs.  Stage
-;; 51 lets Windows `kill' reuse registered child process HANDLEs too.  Stage 19
+;; 51 lets Windows `kill' reuse registered child process HANDLEs too.  Stage
 ;; 52 adds registered-child `wait(-1)' through `WaitForMultipleObjects'.  Stage
-;; 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20 adds a
-;; minimal Windows `fcntl' compatibility branch for `F_DUPFD' / `F_GETFL' /
-;; `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on Windows
+;; 53 adds internal `CreateThread' / thread-join helpers with HANDLE tracking.
+;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
+;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
+;; `F_GETFL' / `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on
+;; Windows
 ;; before they can fall through to Linux syscall or libc paths.  Stage 22 starts
 ;; the Winsock branch with `WSAStartup' + `socket' and socket-specific close via
 ;; `closesocket'.  Stage 23 maps AF_INET `bind' / `connect' / `listen' to
@@ -223,6 +225,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 (defvar nelisp-os--windows-process-table nil
   "Alist mapping Windows child PIDs to process HANDLE values.")
+
+(defvar nelisp-os--windows-thread-table nil
+  "Alist mapping Windows thread IDs to thread HANDLE values.")
 
 (defvar nelisp-os--windows-winsock-started-p nil
   "Non-nil after this process successfully calls WSAStartup.")
@@ -617,6 +622,88 @@ Replacing an existing PID closes the old HANDLE before installing HANDLE."
               (nelisp-os--windows-ffi-error-signal)))))
       (when handles-buf
         (nelisp-os--free handles-buf)))))
+
+(defun nelisp-os--windows-register-thread (tid handle)
+  "Remember Windows thread HANDLE for TID and return TID.
+Replacing an existing TID closes the old HANDLE before installing HANDLE."
+  (let ((cell (assq tid nelisp-os--windows-thread-table)))
+    (when cell
+      (nelisp-os--windows-close-resource (cdr cell) 'handle)
+      (setq nelisp-os--windows-thread-table
+            (delq cell nelisp-os--windows-thread-table)))
+    (push (cons tid handle) nelisp-os--windows-thread-table)
+    tid))
+
+(defun nelisp-os--windows-forget-thread (tid)
+  "Forget a registered Windows thread TID without closing its HANDLE."
+  (let ((cell (assq tid nelisp-os--windows-thread-table)))
+    (when cell
+      (setq nelisp-os--windows-thread-table
+            (delq cell nelisp-os--windows-thread-table)))))
+
+(defun nelisp-os--windows-thread-handle (tid)
+  "Return registered Windows thread HANDLE for TID, or signal ECHILD."
+  (let ((cell (assq tid nelisp-os--windows-thread-table)))
+    (if cell
+        (cdr cell)
+      (signal 'nelisp-os-error (list 10))))) ; ECHILD
+
+(defun nelisp-os--windows-create-thread (entry-ptr parameter-ptr)
+  "Create a Windows thread at ENTRY-PTR with PARAMETER-PTR.
+Return the Windows thread ID and register the thread HANDLE for join."
+  (let ((tid-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (let ((handle (nelisp-os--libc-call
+                       "kernel32" "CreateThread"
+                       [:pointer :pointer :uint64 :pointer :pointer :uint32
+                        :pointer]
+                       0
+                       0
+                       entry-ptr
+                       parameter-ptr
+                       0
+                       tid-buf)))
+          (if (= handle 0)
+              (nelisp-os--windows-ffi-error-signal)
+            (nelisp-os--windows-register-thread
+             (nelisp-os-read-u32 tid-buf 0)
+             handle)))
+      (nelisp-os--free tid-buf))))
+
+(defun nelisp-os--windows-join-thread (tid options)
+  "Join registered Windows thread TID with OPTIONS.
+OPTIONS supports 0 and `nelisp-os-WNOHANG'.  Returns (TID . EXIT-CODE) when
+the thread exits, or (0 . 0) for `WNOHANG' timeout."
+  (unless (memq options (list 0 nelisp-os-WNOHANG))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (when (<= tid 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let* ((handle (nelisp-os--windows-thread-handle tid))
+         (timeout (if (= options nelisp-os-WNOHANG)
+                      0
+                    nelisp-os-WIN-INFINITE))
+         (wait-rc (nelisp-os--libc-call
+                   "kernel32" "WaitForSingleObject"
+                   [:uint32 :pointer :uint32]
+                   handle timeout)))
+    (cond
+     ((= wait-rc nelisp-os-WIN-WAIT-TIMEOUT)
+      (cons 0 0))
+     ((= wait-rc nelisp-os-WIN-WAIT-OBJECT-0)
+      (let ((exit-code-buf (nelisp-os--alloc 4)))
+        (unwind-protect
+            (let ((ok (nelisp-os--libc-call
+                       "kernel32" "GetExitCodeThread"
+                       [:sint32 :pointer :pointer]
+                       handle exit-code-buf)))
+              (if (= ok 0)
+                  (nelisp-os--windows-ffi-error-signal)
+                (prog1 (cons tid (nelisp-os-read-u32 exit-code-buf 0))
+                  (nelisp-os--windows-close-resource handle 'handle)
+                  (nelisp-os--windows-forget-thread tid))))
+          (nelisp-os--free exit-code-buf))))
+     (t
+      (nelisp-os--windows-ffi-error-signal)))))
 
 (defun nelisp-os--windows-alloc-utf16le-z (str)
   "Allocate a UTF-16LE NUL-terminated buffer containing STR."

@@ -294,6 +294,97 @@
     (should u32-writes)
     (should i64-writes)))
 
+(ert-deftest nelisp-stdlib-os-windows-create-thread-registers-handle ()
+  "Windows CreateThread helper returns TID and registers the thread HANDLE."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-thread-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 0))
+                 77))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "CreateThread") #xabcdef)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (should (= (nelisp-os--windows-create-thread #x11112222 #x33334444)
+                 77)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "CreateThread"
+                          [:pointer :pointer :uint64 :pointer :pointer :uint32
+                           :pointer]
+                          (list 0 0 #x11112222 #x33334444 0 3000)))))
+    (should (equal nelisp-os--windows-thread-table
+                   '((77 . #xabcdef))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-windows-join-thread-completes-and-forgets ()
+  "Windows thread join waits, reads exit code, closes, and forgets HANDLE."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-thread-table '((77 . #xabcdef))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 0))
+                 12))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForSingleObject") nelisp-os-WIN-WAIT-OBJECT-0)
+                  ((equal fn "GetExitCodeThread") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (should (equal (nelisp-os--windows-join-thread 77 0)
+                     '(77 . 12))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef nelisp-os-WIN-INFINITE))
+                    (list "kernel32" "GetExitCodeThread"
+                          [:sint32 :pointer :pointer]
+                          (list #xabcdef 3000))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xabcdef)))))
+    (should-not nelisp-os--windows-thread-table)
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-windows-join-thread-wnohang-keeps-handle ()
+  "Windows thread join WNOHANG keeps registered HANDLE on timeout."
+  (let ((calls nil)
+        (called-alloc nil)
+        (nelisp-os--windows-thread-table '((77 . #xabcdef))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called-alloc t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForSingleObject") nelisp-os-WIN-WAIT-TIMEOUT)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (should (equal (nelisp-os--windows-join-thread
+                      77 nelisp-os-WNOHANG)
+                     '(0 . 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef 0)))))
+    (should (equal nelisp-os--windows-thread-table
+                   '((77 . #xabcdef))))
+    (should-not called-alloc)))
+
 (ert-deftest nelisp-stdlib-os-windows-std-handle-selectors ()
   "POSIX-like std fds map to Windows GetStdHandle selector constants."
   (should (= (nelisp-os--windows-std-handle-selector nelisp-os-STDIN)
