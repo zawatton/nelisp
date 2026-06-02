@@ -101,6 +101,13 @@ build_run sexp '(seq
       (+ (* (sexp-tag 8589934656) 100) (sexp-int-unwrap 8589934656))))
   (exit (run)))' 242
 
+# local variables: f(x) = let y = x+1 in y+y -> f(5) = 12.  Exercises
+# let-rt (frame-slot reservation in the prologue + STUR spill + LDUR
+# reload), which the reader relies on for parser state.
+build_run let '(seq
+  (defun f (x) (let ((y (+ x 1))) (+ y y)))
+  (exit (f 5)))' 12
+
 if [ "$fail" = 0 ]; then
   echo "[macos] all PASS — pure-elisp aarch64 -> native macOS arm64 self-host smoke OK"
   exit 0

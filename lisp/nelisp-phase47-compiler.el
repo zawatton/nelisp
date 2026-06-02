@@ -9980,6 +9980,21 @@ IMM9 is a signed unscaled byte offset in the range -256..255."
                  (ash n-reg 5)
                  t-reg))))
 
+(defun nelisp-phase47-compiler--arm64-emit-stur (buf src base imm9)
+  "Emit `STUR SRC, [BASE, #IMM9]' into BUF.
+IMM9 is a signed unscaled byte offset in the range -256..255."
+  (unless (and (integerp imm9) (<= -256 imm9) (<= imm9 255))
+    (signal 'nelisp-phase47-compiler-error
+            (list :arm64-stur-imm9-out-of-range imm9)))
+  (let* ((t-reg (logand (nelisp-asm-arm64--reg-num src) #x1F))
+         (n-reg (logand (nelisp-asm-arm64--reg-num base) #x1F))
+         (imm9-u (logand imm9 #x1FF)))
+    (nelisp-phase47-compiler--arm64-emit-word
+     buf (logior #xF8000000
+                 (ash imm9-u 12)
+                 (ash n-reg 5)
+                 t-reg))))
+
 (defun nelisp-phase47-compiler--emit-ref-load (buf slot)
   "Emit `mov rax, [rbp - 8*(SLOT+1)]'.
 Used by `:kind ref' (GP class) to load a spilled parameter off
@@ -10295,13 +10310,20 @@ mask is needed):
     (nelisp-asm-x86_64-movzx-eax-al buf)))
 
 (defun nelisp-phase47-compiler--emit-let-rt-n-bindings (node buf)
-  "Emit NODE's runtime `let-rt-n' initializers and spill them to slots."
+  "Emit NODE's runtime `let-rt-n' initializers and spill them to slots.
+aarch64 spills to `[x29 - 16*(slot+1)]' (STUR); x86_64 to
+`[rbp - 8*(slot+1)]'.  The defun prologue reserves the slot frame."
   (dolist (binding (nelisp-phase47-compiler--ir-get node :bindings))
     (let* ((slot (nth 1 binding))
-           (value-ir (nth 2 binding))
-           (disp (- (* 8 (1+ slot)))))
+           (value-ir (nth 2 binding)))
       (nelisp-phase47-compiler--emit-value value-ir buf)
-      (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax))))
+      (if (eq nelisp-phase47-compiler--arch 'aarch64)
+          (let ((disp (- (* 16 (1+ slot)))))
+            (unless (<= -256 disp 255)
+              (signal 'nelisp-phase47-compiler-error
+                      (list :let-slot-out-of-range slot)))
+            (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
+        (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp (- (* 8 (1+ slot))) 'rax)))))
 
 (defun nelisp-phase47-compiler--emit-frame-slot-into-reg (buf slot reg)
   "Emit a GP load from frame SLOT into REG."
@@ -10543,6 +10565,21 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-sexp-tag-arm64 node buf))
         ((= tag 57)             ; sexp-int-unwrap — aarch64 LDR payload
          (nelisp-phase47-compiler--emit-sexp-int-unwrap-arm64 node buf))
+        ((= tag 89)             ; let-rt-n — spill bindings to slots, emit body
+         (nelisp-phase47-compiler--emit-let-rt-n-bindings node buf)
+         (nelisp-phase47-compiler--emit-value
+          (nelisp-phase47-compiler--ir-get node :body) buf))
+        ((= tag 32)             ; let-rt — single runtime binding then body
+         (nelisp-phase47-compiler--emit-value
+          (nelisp-phase47-compiler--ir-get node :value-ir) buf)
+         (let ((disp (- (* 16 (1+ (nelisp-phase47-compiler--ir-get node :slot))))))
+           (unless (<= -256 disp 255)
+             (signal 'nelisp-phase47-compiler-error
+                     (list :let-rt-slot-out-of-range
+                           (nelisp-phase47-compiler--ir-get node :slot))))
+           (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
+         (nelisp-phase47-compiler--emit-value
+          (nelisp-phase47-compiler--ir-get node :body) buf))
         ((memq tag '(23 55 27            ; extern-call sexp-float-unwrap f64-to-i64-trunc
                      14                  ; cons-cdr-raw
                      60                  ; sexp-payload-ptr-record
@@ -10566,7 +10603,6 @@ the node's class to consume the result correctly."
                      20                  ; dealloc-bytes
                      16 18 19            ; cons-make-with-clone cons-set-car cons-set-cdr
                      11 33               ; cond logic
-                     89                  ; let-rt-n
                      94 95               ; aot-machine-landing-jump aot-current-sp
                      92))                ; aot-root-scope
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -13871,7 +13907,12 @@ return reg, untouched by epilogue)."
           (cond
            ((eq param-class 'gp)
             (dotimes (i (length param-regs))
-              (nelisp-asm-arm64-str-pre-sp-16 buf (nth i gp-arg-regs))))
+              (nelisp-asm-arm64-str-pre-sp-16 buf (nth i gp-arg-regs)))
+            ;; Reserve the runtime let-rt-n slot frame below the params
+            ;; (let slots are numbered from param-count).  Each slot is
+            ;; 16 bytes, so SP stays 16-byte aligned without rounding.
+            (when (> rt-slot-count 0)
+              (nelisp-asm-arm64-sub-imm buf 'sp 'sp (* 16 rt-slot-count))))
            ((eq param-class 'f64)
             ;; Allocate `arity*16' bytes (= 16-byte slot per f64
             ;; param matching the GP path's `str-pre-sp-16'
