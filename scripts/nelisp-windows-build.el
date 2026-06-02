@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -25,12 +25,15 @@
 ;; probe for de-risking Windows thread API mechanics before replacing clone(2).
 ;; Stage 12 carries Phase47 static imm32 table rodata into PE .rdata so
 ;; table lookup users no longer trip the Windows table rejection gate.
+;; Stage 13 proves multiple linked Phase47 units can feed a PE32+ EXE,
+;; which is the bridge from single-probe PE emit toward standalone units.
 
 ;;; Code:
 
 (require 'nelisp-pe-write)
 (require 'nelisp-asm-x86_64)
 (require 'nelisp-phase47-compiler)
+(require 'nelisp-static-linker)
 
 (defun nelisp-windows-build-exitprocess (out-path exit-code)
   "Write OUT-PATH as a PE32+ EXE calling ExitProcess(EXIT-CODE)."
@@ -155,6 +158,116 @@ successfully recovered through GetExitCodeThread."
   "Batch entry: build target/nelisp-windows-createthread42.exe."
   (nelisp-windows-build-createthread-probe
    "target/nelisp-windows-createthread42.exe"))
+
+(defun nelisp-windows-build--compile-defuns-to-unit (name source)
+  "Compile Phase47 defun SOURCE to a Win64 link-unit named NAME."
+  (let* ((nelisp-phase47-compiler--label-counter 0)
+         (nelisp-phase47-compiler--arch 'x86_64)
+         (nelisp-phase47-compiler--os 'windows)
+         (nelisp-phase47-compiler--abi 'win64)
+         (nelisp-phase47-compiler--allow-external-user-calls t)
+         (ir (nelisp-phase47-compiler--parse source nil))
+         (defuns (nelisp-phase47-compiler--collect-defuns ir))
+         (buf (nelisp-asm-x86_64-make-buffer 'win64)))
+    (unless defuns
+      (signal 'nelisp-phase47-compiler-error
+              (list :windows-link-unit-needs-defuns source)))
+    (dolist (d defuns)
+      (nelisp-phase47-compiler--emit-defun d buf))
+    (let* ((text (nelisp-asm-x86_64-resolve-fixups buf))
+           (labels (nelisp-asm-x86_64-buffer-labels buf))
+           (relocs0 (nelisp-asm-x86_64-extract-relocs buf))
+           (exported
+            (mapcar (lambda (d)
+                      (let ((nm (nelisp-phase47-compiler--ir-get d :name)))
+                        (if (stringp nm) nm (symbol-name nm))))
+                    defuns))
+           (symbols nil)
+           (relocs
+            (mapcar (lambda (r)
+                      (list :offset (plist-get r :offset)
+                            :type (plist-get r :type)
+                            :symbol (plist-get r :symbol)
+                            :addend (or (plist-get r :addend) 0)
+                            :section 'text))
+                    relocs0)))
+      (dolist (cell labels)
+        (let ((nm (if (stringp (car cell)) (car cell)
+                    (symbol-name (car cell)))))
+          (when (member nm exported)
+            (push (nelisp-link-symbol
+                   nm (cdr cell) :section 'text :bind 'global :type 'func)
+                  symbols))))
+      (nelisp-link-unit-make name (list (cons 'text text))
+                             (nreverse symbols) relocs))))
+
+(defun nelisp-windows-build--linked-start-unit (text-rva exitprocess-iat-rva)
+  "Return a `_start' unit that calls add40(2), then ExitProcess(result)."
+  (let ((nelisp-phase47-compiler--windows-text-rva text-rva)
+        (buf (nelisp-asm-x86_64-make-buffer 'win64)))
+    ;; Keep `_start' at byte 0; the PE executable entry is .text RVA 0.
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp #x28)
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #xb9 #x02 #x00 #x00 #x00)) ; mov ecx, 2
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xe8))
+    (nelisp-asm-x86_64-reloc-plt32-here buf "add40" -4 'text)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf exitprocess-iat-rva)
+    (nelisp-asm-x86_64-int3 buf)
+    (nelisp-link-unit-make
+     "start.o"
+     (list (cons 'text (nelisp-asm-x86_64-buffer-bytes buf)))
+     (list (nelisp-link-symbol "_start" 0 :section 'text
+                               :bind 'global :type 'func))
+     (nelisp-asm-x86_64-extract-relocs buf))))
+
+(defun nelisp-windows-build--link-units-executable-bytes
+    (imports unit-builder &optional extra-rdata)
+  "Return a PE32+ EXE from linked units produced by UNIT-BUILDER.
+IMPORTS is the KERNEL32 import list.  UNIT-BUILDER is called as
+`(UNIT-BUILDER TEXT-RVA IAT-RVAS RDATA-RVA)' and returns link-units."
+  (nelisp-pe-write-build-kernel32-executable
+   imports
+   (lambda (text-rva iat-rvas rdata-rva)
+     (let* ((units (funcall unit-builder text-rva iat-rvas rdata-rva))
+            (layout `((text . ,(+ nelisp-pe--image-base-x86-64 text-rva))
+                      (rodata . ,(+ nelisp-pe--image-base-x86-64 rdata-rva))))
+            (link-result (nelisp-link-units-2pass units layout))
+            (bytes (plist-get link-result :bytes))
+            (text (nelisp-link--bytes-or-empty bytes 'text))
+            (data (nelisp-link--bytes-or-empty bytes 'data))
+            (bss-size (or (cdr (assq 'bss bytes)) 0)))
+       (unless (= (length data) 0)
+         (signal 'nelisp-link-error
+                 (list :windows-pe-linked-data-not-yet-supported
+                       (length data))))
+       (unless (= bss-size 0)
+         (signal 'nelisp-link-error
+                 (list :windows-pe-linked-bss-not-yet-supported bss-size)))
+       text))
+   extra-rdata))
+
+(defun nelisp-windows-build--linked-call42-bytes ()
+  "Return a PE32+ EXE proving multi-unit PE linking."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (list
+      (nelisp-windows-build--linked-start-unit
+       text-rva (cdr (assoc "ExitProcess" iat-rvas)))
+      (nelisp-windows-build--compile-defuns-to-unit
+       "helper.o" '(defun add40 (x) (+ x 40)))))))
+
+(defun nelisp-windows-build-linked-call42 ()
+  "Batch entry: build target/nelisp-windows-linked-call42.exe."
+  (let ((bytes (nelisp-windows-build--linked-call42-bytes))
+        (out-path "target/nelisp-windows-linked-call42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (linked add40 -> ExitProcess)"
+             out-path)
+    out-path))
 
 (defun nelisp-windows-build--sexp-contains-symbol-p (sexp symbol)
   "Return non-nil when SEXP contains SYMBOL as a list head."

@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -218,6 +218,38 @@
              text))
     (should (string-match-p
              (regexp-quote (unibyte-string #xb8 #x2a #x00 #x00 #x00 #xc3))
+             text))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-linked-call-imports-exitprocess ()
+  "Stage 13 linked-unit PE imports ExitProcess."
+  (let* ((bytes (nelisp-windows-build--linked-call42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess")))))
+
+(ert-deftest nelisp-windows-build-linked-call-text-links-helper ()
+  "Stage 13 linked-unit PE resolves a rel32 helper call in .text."
+  (let* ((bytes (nelisp-windows-build--linked-call42-bytes))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (text (substring bytes text-raw (+ text-raw 120)))
+         (call-off (string-match-p
+                    (regexp-quote (unibyte-string #xe8))
+                    text))
+         (disp (and call-off
+                    (nelisp-windows-build-test--read-le32
+                     text (+ call-off 1))))
+         (target-rva (and disp (+ text-rva call-off 5 disp)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 120))))
+    (should call-off)
+    (should (> target-rva text-rva))
+    (should (< target-rva (+ text-rva 120)))
+    (should (member #x2038 targets))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #x89 #xc1 #xff #x15))
              text))
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))
