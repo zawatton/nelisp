@@ -751,6 +751,30 @@
     (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-dup2-windows-same-fd-validates-oldfd ()
+  "Windows dup2(oldfd, oldfd) validates OLDFD before returning."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 3) 3))
+        (should-error (nelisp-os-dup2 4 4)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-dup2-windows-rejects-socket-fd-before-ffi ()
+  "Windows socket fd dup2 does not incorrectly use DuplicateHandle."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-dup2 3 5)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-duplicates-handle ()
   "Windows F_DUPFD duplicates a HANDLE into the fd table at or above ARG."
   (let ((calls nil)
@@ -786,6 +810,18 @@
     (should (equal nelisp-os--windows-fd-table '((10 . #xbbbb) (3 . #xaaaa))))
     (should (= nelisp-os--windows-next-fd 11))
     (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-rejects-socket-fd-before-ffi ()
+  "Windows F_DUPFD for socket fd waits for a Winsock-specific duplicate path."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-fcntl 3 nelisp-os-F-DUPFD 10)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
 
 (ert-deftest nelisp-stdlib-os-fcntl-windows-getfl-and-setfl-noop ()
   "Windows F_GETFL returns 0 and F_SETFL 0 validates the fd as a no-op."

@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-45-WINDOWS-VIRTUALPROTECT-FREE-SMOKE
+#+STATUS: STAGE-46-WINDOWS-SOCKET-DUP-GUARD
 
 * Status
 
-- *State*: STAGE 45 Windows VirtualProtect / VirtualFree smoke
+- *State*: STAGE 46 Windows socket dup guard
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -66,7 +66,10 @@
   =nelisp-os-dup2= now routes Windows fd duplication through
   =DuplicateHandle=; regular targets update the Windows fd table and standard
   targets use =SetStdHandle=, which is the next required piece for
-  =CreateProcess= redirection.  =nelisp-os-kill= now supports single-PID
+  =CreateProcess= redirection.  Socket-kind fds now reject =dup2= / =F_DUPFD=
+  before FFI instead of incorrectly flowing through =DuplicateHandle=; a future
+  Winsock-specific duplicate path remains required for socket fd duplication.
+  =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle=.
   =nelisp-os-execve= now has a Windows branch that builds UTF-16LE
@@ -265,6 +268,9 @@
   =GetCommandLineW= / =CommandLineToArgvW= / =LocalFree=.
   Stage 45 coverage verifies PE-level Windows memory lifecycle wiring through
   =VirtualAlloc= / =VirtualProtect= / =VirtualFree=.
+  Stage 46 coverage verifies Windows socket-kind fds reject =dup2= and
+  =F_DUPFD= before any =DuplicateHandle= FFI call, and that
+  =dup2(oldfd, oldfd)= still validates =oldfd= before returning.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -582,6 +588,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows VirtualProtect / VirtualFree smoke progress 2026-06-03*:
   =virtualprotect-free-exit-42= imports =VirtualAlloc= / =VirtualProtect= /
   =VirtualFree= and proves the native memory protect/release lifecycle.
+  *Windows socket dup guard progress 2026-06-03*: socket-kind fds now reject
+  =dup2= / =F_DUPFD= before FFI so SOCKET duplication cannot silently use the
+  HANDLE-only =DuplicateHandle= path.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -719,6 +728,9 @@ largest uncertainty (B1 + B2) first.
    *Windows VirtualProtect / VirtualFree smoke SHIPPED 2026-06-03*:
    =virtualprotect-free-exit-42= proves PE-level memory lifecycle wiring
    through =VirtualAlloc= / =VirtualProtect= / =VirtualFree=.
+   *Windows socket dup guard SHIPPED 2026-06-03*: socket-kind fds now reject
+   =dup2= / =F_DUPFD= before =DuplicateHandle=; Winsock-specific socket
+   duplication remains a separate follow-up.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY

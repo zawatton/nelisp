@@ -61,9 +61,10 @@
 ;; helper the same early Windows guard.  Stage 38 maps int-valued socket option
 ;; reads to Winsock `getsockopt'.  Stage 39 adds TCP_NODELAY translation to the
 ;; int-valued socket option helpers.  Stage 40 maps file-backed Windows `mmap'
-;; to CreateFileMappingW / MapViewOfFile.  The Linux/Darwin path remains the
-;; default until a real Windows standalone runtime selects `system-type' =
-;; `windows-nt'.
+;; to CreateFileMappingW / MapViewOfFile.  Stage 46 keeps Windows socket fd
+;; duplication from incorrectly flowing through `DuplicateHandle'.  The
+;; Linux/Darwin path remains the default until a real Windows standalone
+;; runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -331,6 +332,14 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
   (if (nelisp-os--windows-std-handle-selector fd)
       (nelisp-os--windows-get-std-handle fd)
     (nelisp-os--windows-fd-handle fd)))
+
+(defun nelisp-os--windows-duplicable-handle-for-fd (fd)
+  "Return a Windows HANDLE for FD when it can be duplicated as a HANDLE.
+Winsock SOCKET duplication needs a dedicated Winsock path and must not be
+silently sent through `DuplicateHandle'."
+  (if (eq (nelisp-os--windows-fd-kind fd) 'socket)
+      (nelisp-os--windows-unsupported)
+    (nelisp-os--windows-handle-for-fd fd)))
 
 (defun nelisp-os--windows-fd-install (fd handle)
   "Install HANDLE at POSIX-like FD, replacing any existing HANDLE."
@@ -974,11 +983,13 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
   (when (< newfd 0)
     (signal 'nelisp-os-error (list 9))) ; EBADF
   (if (= oldfd newfd)
-      newfd
-    (let ((target-handle-buf (nelisp-os--alloc 8)))
+      (progn
+        (nelisp-os--windows-handle-for-fd oldfd)
+        newfd)
+    (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
+          (target-handle-buf (nelisp-os--alloc 8)))
       (unwind-protect
-          (let* ((source-handle (nelisp-os--windows-handle-for-fd oldfd))
-                 (current-process
+          (let* ((current-process
                   (nelisp-os--libc-call "kernel32" "GetCurrentProcess" [:pointer]))
                  (ok (nelisp-os--libc-call
                       "kernel32" "DuplicateHandle"
@@ -1012,7 +1023,7 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
 
 (defun nelisp-os--windows-duplicate-fd (oldfd min-fd)
   "Duplicate OLDFD to a new Windows fd whose number is at least MIN-FD."
-  (let ((source-handle (nelisp-os--windows-handle-for-fd oldfd))
+  (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
         (target-process (nelisp-os--libc-call
                          "kernel32" "GetCurrentProcess"
                          [:pointer]))
