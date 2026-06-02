@@ -20,6 +20,7 @@ NEMACS_VENDOR_CORE_RUNTIME_REPLAY_TIMEOUT ?= 1200s
 NELISP_STACK_LIMIT ?= unlimited
 BUILD_DIR ?= build
 NEMACS_BOOTSTRAP_BUNDLE ?= $(BUILD_DIR)/nemacs-bootstrap.el
+NEMACS_BOOTSTRAP_REPL ?= $(BUILD_DIR)/nemacs-bootstrap.repl
 NEMACS_IMAGE ?= $(BUILD_DIR)/nemacs-loadup.nli
 NEMACS_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-runtime.nlri
 NEMACS_INTERACTIVE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-interactive-runtime.nlri
@@ -57,7 +58,7 @@ help:
 	@echo "  make test            run ERT under host emacs"
 	@echo "  make test-redisplay-core-smoke  run isolated lightweight redisplay core smoke"
 	@echo "  make doctor          run host/NeLisp driver readiness checks"
-	@echo "  make build-nelisp-bootstrap  generate build/nemacs-bootstrap.el"
+	@echo "  make build-nelisp-bootstrap  generate build/nemacs-bootstrap.el and .repl"
 	@echo "  make bake-image      legacy .nli state image via emacs-dump"
 	@echo "  make bake-runtime-image  generate build/nemacs-runtime.nlri via standalone reader"
 	@echo "  make bake-interactive-runtime-image  generate image with TUI/editor features"
@@ -117,6 +118,7 @@ build-nelisp-bootstrap: $(NEMACS_BOOTSTRAP_BUNDLE)
 $(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(SRC_FILES)
 	$(EMACS) -L src -L scripts $(NELISP_LOAD_PATH) \
 		--eval '(setq nelisp-bootstrap-output-file "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
+		--eval '(setq nelisp-bootstrap-repl-output-file "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \
 		-l scripts/build-nelisp-bootstrap.el \
 		-f nelisp-bootstrap-build-batch
 
@@ -168,20 +170,21 @@ test-nelisp: build-nelisp-bootstrap
 	    set +e; timeout $(NELISP_BOOT_TIMEOUT) "$(NELISP_BIN)" "$$tmp"; rc=$$?; set -e; \
 	    rm -f "$$tmp"; \
 	    if [ "$$rc" -eq 42 ]; then echo "STANDALONE-READER=ok exit=42"; else echo "STANDALONE-READER=fail exit=$$rc expected=42"; exit 1; fi; \
-	    timeout $(NELISP_BOOT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
+	    out=$$(timeout $(NELISP_BOOT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
 	      NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
 	      NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 	      NEMACS_RUNTIME_IMAGE= \
 	      ./bin/nemacs --driver=nelisp --batch --no-banner \
-	      --eval '(+ 40 2)'; \
-	    echo "NEMACS-STANDALONE-BOOT=ok exit=0" ;; \
+	      --eval '(if (and (fboundp (quote nemacs-batch-main)) (featurep (quote nemacs-main))) (nelisp--write-stdout-bytes "NEMACS-STANDALONE-BOOT=ok\n") (nelisp--write-stdout-bytes "NEMACS-STANDALONE-BOOT=fail\n"))'); \
+	    printf '%s\n' "$$out"; \
+	    printf '%s\n' "$$out" | grep -q '^NEMACS-STANDALONE-BOOT=ok$$' ;; \
 	  *) \
 	    timeout $(NELISP_BOOT_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
 	      NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
 	      NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 	      NEMACS_RUNTIME_IMAGE= \
 	      ./bin/nemacs --driver=nelisp --batch --no-banner \
-	      --eval '(princ (format "BOOT=%S\n" t))' ;; \
+	      --eval '(if (fboundp (quote nelisp--write-stdout-bytes)) (nelisp--write-stdout-bytes "BOOT=t\n") (princ "BOOT=t\n"))' ;; \
 	esac
 
 test-nelisp-runtime-image: bake-runtime-image

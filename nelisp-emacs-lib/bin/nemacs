@@ -29,6 +29,8 @@
 #   NEMACS_NELISP_STACK stack limit for the nelisp driver (default: unlimited)
 #   NEMACS_BOOTSTRAP_BUNDLE optional generated NeLisp preload bundle
 #                    (default: $NEMACS_HOME/build/nemacs-bootstrap.el)
+#   NEMACS_BOOTSTRAP_REPL optional generated NeLisp REPL bootstrap input
+#                    (default: $NEMACS_HOME/build/nemacs-bootstrap.repl)
 #   NEMACS_RUNTIME_IMAGE optional NeLisp .nlri runtime image for --driver=nelisp
 #                    (set to `auto' to choose build/*.nlri by mode)
 
@@ -67,6 +69,7 @@ NEMACS_NELISP="${NEMACS_NELISP:-$(nelisp_default_bin "$NELISP_HOME")}"
 NEMACS_NELISP="${NEMACS_NELISP:-$NELISP_HOME/target/nelisp-standalone-reader}"
 NEMACS_NELISP_STACK="${NEMACS_NELISP_STACK:-unlimited}"
 NEMACS_BOOTSTRAP_BUNDLE="${NEMACS_BOOTSTRAP_BUNDLE:-$NEMACS_HOME/build/nemacs-bootstrap.el}"
+NEMACS_BOOTSTRAP_REPL="${NEMACS_BOOTSTRAP_REPL:-$NEMACS_HOME/build/nemacs-bootstrap.repl}"
 NEMACS_RUNTIME_IMAGE="${NEMACS_RUNTIME_IMAGE:-}"
 NEMACS_BATCH_RUNTIME_IMAGE="${NEMACS_BATCH_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-runtime.nlri}"
 NEMACS_INTERACTIVE_RUNTIME_IMAGE="${NEMACS_INTERACTIVE_RUNTIME_IMAGE:-$NEMACS_HOME/build/nemacs-interactive-runtime.nlri}"
@@ -90,6 +93,7 @@ nemacs paths:
   NEMACS_NELISP    = $NEMACS_NELISP
   NEMACS_NELISP_STACK = $NEMACS_NELISP_STACK
   NEMACS_BOOTSTRAP_BUNDLE = ${NEMACS_BOOTSTRAP_BUNDLE:-<disabled>}
+  NEMACS_BOOTSTRAP_REPL = ${NEMACS_BOOTSTRAP_REPL:-<disabled>}
   NEMACS_RUNTIME_IMAGE = ${NEMACS_RUNTIME_IMAGE:-<disabled>}
   NEMACS_BATCH_RUNTIME_IMAGE = $NEMACS_BATCH_RUNTIME_IMAGE
   NEMACS_INTERACTIVE_RUNTIME_IMAGE = $NEMACS_INTERACTIVE_RUNTIME_IMAGE
@@ -297,7 +301,12 @@ fi
 
 shell_quote() {
   # Emacs/nelisp string literal escaping for filenames + sexps.
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+  printf '%s' "$1" | perl -0777 -pe 's/\\/\\\\/g; s/"/\\"/g; s/\r/\\r/g; s/\n/\\n/g'
+}
+
+one_line_form() {
+  # The standalone reader REPL consumes one input form per line.
+  printf '%s' "$1" | perl -0777 -pe 's/\r?\n/ /g'
 }
 
 LOAD_LIST=""
@@ -366,7 +375,7 @@ EOF
 fi
 
 BOOTSTRAP_BUNDLE_LOAD=""
-if [[ "$NEMACS_DRIVER" == "nelisp" && -z "$NEMACS_RUNTIME_IMAGE" && -n "$NEMACS_BOOTSTRAP_BUNDLE" && -r "$NEMACS_BOOTSTRAP_BUNDLE" ]]; then
+if [[ "$NEMACS_DRIVER" == "nelisp" && -z "$NEMACS_RUNTIME_IMAGE" && -n "$NEMACS_BOOTSTRAP_BUNDLE" && -r "$NEMACS_BOOTSTRAP_BUNDLE" && ! -r "$NEMACS_BOOTSTRAP_REPL" ]]; then
   BOOTSTRAP_BUNDLE_LOAD="  (load \"$(shell_quote "$NEMACS_BOOTSTRAP_BUNDLE")\" nil 'no-message t t)"
 fi
 
@@ -417,6 +426,41 @@ case "$NEMACS_DRIVER" in
     if [[ "$(nelisp_driver_kind)" == "standalone-reader" ]]; then
       if [[ -n "$NEMACS_RUNTIME_IMAGE" ]]; then
         exec "$NEMACS_NELISP" exec-runtime-image "$NEMACS_RUNTIME_IMAGE" "$BOOT_FORM"
+      elif [[ -r "$NEMACS_BOOTSTRAP_REPL" ]]; then
+        tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-repl-boot.XXXXXX.el")"
+        cat "$NEMACS_BOOTSTRAP_REPL" > "$tmp"
+        REPL_BOOT_FORM="$(cat <<EOF
+(progn
+  (setq native-comp-enable-subr-trampolines nil
+        comp-enable-subr-trampolines nil)
+  (unless (boundp 'load-path) (defvar load-path nil))
+  (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
+$BOOT_LOAD_PATH_FORM
+  (require 'nemacs-main)
+  (setq nemacs-main-options
+        (cons :batch (cons $([ "$BATCH" = "1" ] && echo t || echo nil)
+        (cons :no-banner (cons $([ "$NO_BANNER" = "1" ] && echo t || echo nil)
+        (cons :driver (cons '$NEMACS_DRIVER
+        (cons :images (cons nil
+        (cons :load (cons nil
+        (cons :eval-forms (cons nil nil))))))))))))
+  $ENTRY_CALL)
+EOF
+)"
+        printf '%s\n' "$(one_line_form "$REPL_BOOT_FORM")" >> "$tmp"
+        for f in "${LOAD_FILES[@]+"${LOAD_FILES[@]}"}"; do
+          printf '%s\n' "(load \"$(shell_quote "$f")\" nil 'no-message 'no-suffix)" >> "$tmp"
+        done
+        for f in "${EVAL_FORMS[@]+"${EVAL_FORMS[@]}"}"; do
+          printf '%s\n' "(nelisp--eval-source-string \"$(shell_quote "$f")\")" >> "$tmp"
+        done
+        printf '%s\n' ",quit" >> "$tmp"
+        set +e
+        "$NEMACS_NELISP" repl --no-prompt < "$tmp"
+        rc=$?
+        set -e
+        rm -f "$tmp"
+        exit "$rc"
       else
         tmp="$(mktemp "${TMPDIR:-/tmp}/nemacs-boot.XXXXXX.el")"
         printf '%s\n0\n' "$BOOT_FORM" > "$tmp"

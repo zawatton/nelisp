@@ -36,6 +36,13 @@
 
 ;; Emacs's C primitive accepts an optional SUBFEATURES argument:
 ;; `(provide 'files '(remote-wildcards))' appears in vendored files.el.
+;; NeLisp's standalone prelude may expose `provide' / `featurep' before it
+;; has created the user-visible `features' variable.  Define the registry
+;; at top level first: some standalone eval paths do not reliably handle
+;; `defvar' inside a function body before the following `setq'.
+(unless (boundp 'features)
+  (defvar features nil))
+
 ;; NeLisp v2's bootstrap stdlib used to expose a one-argument `provide',
 ;; so vendor `require' could load a file and still report "feature not
 ;; provided" after arity failure.  Host Emacs keeps its native primitive;
@@ -45,11 +52,14 @@
   (defun provide (feature &optional _subfeatures)
     "Mark FEATURE as available and return FEATURE.
 Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
-    (unless (boundp 'features)
-      (defvar features nil))
     (unless (memq feature features)
       (setq features (cons feature features)))
-    feature))
+    feature)
+
+  (defun featurep (feature &optional _subfeature)
+    "Return non-nil if FEATURE has been provided.
+Optional SUBFEATURE is accepted for Emacs compatibility and ignored."
+    (if (memq feature features) t nil)))
 
 (unless (fboundp 'ignore)
   (defun ignore (&rest _ignore-args)
