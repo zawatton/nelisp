@@ -8,11 +8,12 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 
 (let* ((this (or load-file-name buffer-file-name))
        (test-dir (and this (file-name-directory this)))
@@ -98,6 +99,23 @@
       (setq cursor (+ cursor 8)))
     (nreverse names)))
 
+(defun nelisp-windows-build-test--kernel32-iat-rvas (bytes)
+  "Return KERNEL32 IAT slot RVAs from EXE BYTES."
+  (let* ((peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-rva (nelisp-windows-build-test--read-le32 bytes (+ opt 120)))
+         (import-off (nelisp-windows-build-test--rva-to-raw bytes import-rva))
+         (iat-rva (nelisp-windows-build-test--read-le32 bytes (+ import-off 16)))
+         (iat-off (nelisp-windows-build-test--rva-to-raw bytes iat-rva))
+         (rvas nil)
+         (cursor iat-off)
+         (slot-rva iat-rva))
+    (while (not (zerop (nelisp-windows-build-test--read-le64 bytes cursor)))
+      (push slot-rva rvas)
+      (setq cursor (+ cursor 8))
+      (setq slot-rva (+ slot-rva 8)))
+    (nreverse rvas)))
+
 (defun nelisp-windows-build-test--iat-call-targets (bytes start end)
   "Return target RVAs for `call qword [rip+disp32]' between START and END."
   (let ((targets nil)
@@ -167,6 +185,39 @@
              text))
     (should (string-match-p
              (regexp-quote (unibyte-string #xff #x15))
+             text))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-createthread-probe-imports-thread-apis ()
+  "Stage 11 CreateThread probe imports the required KERNEL32 APIs."
+  (let* ((bytes (nelisp-windows-build--createthread-probe-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports
+                   '("ExitProcess" "CreateThread" "WaitForSingleObject"
+                     "GetExitCodeThread" "CloseHandle")))))
+
+(ert-deftest nelisp-windows-build-createthread-probe-text-calls-thread-apis ()
+  "Stage 11 CreateThread probe calls thread APIs and avoids Linux syscall."
+  (let* ((bytes (nelisp-windows-build--createthread-probe-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 180)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 180))))
+    (should (member (cdr (assoc "CreateThread" iat-map)) targets))
+    (should (member (cdr (assoc "WaitForSingleObject" iat-map)) targets))
+    (should (member (cdr (assoc "GetExitCodeThread" iat-map)) targets))
+    (should (member (cdr (assoc "CloseHandle" iat-map)) targets))
+    (should (member (cdr (assoc "ExitProcess" iat-map)) targets))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x4c #x8d #x05))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xb8 #x2a #x00 #x00 #x00 #xc3))
              text))
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))

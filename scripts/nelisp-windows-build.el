@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -21,10 +21,13 @@
 ;; VirtualAlloc/VirtualFree.
 ;; Stage 10 maps exit/exit_group-shaped `syscall-direct' calls to
 ;; ExitProcess.
+;; Stage 11 adds a native CreateThread/WaitForSingleObject/GetExitCodeThread
+;; probe for de-risking Windows thread API mechanics before replacing clone(2).
 
 ;;; Code:
 
 (require 'nelisp-pe-write)
+(require 'nelisp-asm-x86_64)
 (require 'nelisp-phase47-compiler)
 
 (defun nelisp-windows-build-exitprocess (out-path exit-code)
@@ -49,6 +52,107 @@ The program exits 42 on allocation success and 13 on failure."
   "Batch entry: build target/nelisp-windows-virtualalloc42.exe."
   (nelisp-windows-build-virtualalloc-probe
    "target/nelisp-windows-virtualalloc42.exe"))
+
+(defun nelisp-windows-build--emit-mov-qword-rsp-imm32 (buf disp imm)
+  "Emit `mov qword ptr [rsp+DISP], IMM32' to BUF."
+  (unless (and (integerp disp) (<= 0 disp 127))
+    (error "nelisp-windows-build: rsp disp8 required: %S" disp))
+  (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #x48 #xc7 #x44 #x24 disp))
+  (nelisp-phase47-compiler--emit-le32-signed buf imm))
+
+(defun nelisp-windows-build--emit-mov-dword-rsp-imm32 (buf disp imm)
+  "Emit `mov dword ptr [rsp+DISP], IMM32' to BUF."
+  (unless (and (integerp disp) (<= 0 disp 127))
+    (error "nelisp-windows-build: rsp disp8 required: %S" disp))
+  (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #xc7 #x44 #x24 disp))
+  (nelisp-phase47-compiler--emit-le32-signed buf imm))
+
+(defun nelisp-windows-build--emit-mov-qword-rsp-rax (buf disp)
+  "Emit `mov qword ptr [rsp+DISP], rax' to BUF."
+  (unless (and (integerp disp) (<= 0 disp 127))
+    (error "nelisp-windows-build: rsp disp8 required: %S" disp))
+  (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #x48 #x89 #x44 #x24 disp)))
+
+(defun nelisp-windows-build--emit-lea-reg-rsp-disp (buf reg disp)
+  "Emit `lea REG, [rsp+DISP]' to BUF for the small probe subset."
+  (unless (memq reg '(rax rdx))
+    (error "nelisp-windows-build: unsupported lea rsp register: %S" reg))
+  (unless (and (integerp disp) (<= 0 disp 127))
+    (error "nelisp-windows-build: rsp disp8 required: %S" disp))
+  (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #x48 #x8d
+                       (if (eq reg 'rax) #x44 #x54)
+                       #x24 disp)))
+
+(defun nelisp-windows-build--createthread-probe-text
+    (text-rva iat-rvas _rdata-rva)
+  "Return .text bytes for the Stage 11 CreateThread probe."
+  (let ((create-thread (cdr (assoc "CreateThread" iat-rvas)))
+        (wait (cdr (assoc "WaitForSingleObject" iat-rvas)))
+        (get-exit-code (cdr (assoc "GetExitCodeThread" iat-rvas)))
+        (close-handle (cdr (assoc "CloseHandle" iat-rvas)))
+        (exit-process (cdr (assoc "ExitProcess" iat-rvas))))
+    (unless (and create-thread wait get-exit-code close-handle exit-process)
+      (error "nelisp-windows-build: missing CreateThread probe import"))
+    (let ((nelisp-phase47-compiler--windows-text-rva text-rva)
+          (buf (nelisp-asm-x86_64-make-buffer 'win64)))
+      ;; Frame layout after `sub rsp, 0x50':
+      ;;   +20 arg5 dwCreationFlags, +28 arg6 lpThreadId,
+      ;;   +30 DWORD exit code, +38 DWORD thread id, +40 HANDLE thread.
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp #x50)
+      (nelisp-asm-x86_64-xor-reg-reg buf 'rcx 'rcx)
+      (nelisp-asm-x86_64-xor-reg-reg buf 'rdx 'rdx)
+      (nelisp-asm-x86_64-lea-reg-rip-label buf 'r8 'thread-entry)
+      (nelisp-asm-x86_64-xor-reg-reg buf 'r9 'r9)
+      (nelisp-windows-build--emit-mov-qword-rsp-imm32 buf #x20 0)
+      (nelisp-windows-build--emit-lea-reg-rsp-disp buf 'rax #x38)
+      (nelisp-windows-build--emit-mov-qword-rsp-rax buf #x28)
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva buf create-thread)
+      (nelisp-windows-build--emit-mov-qword-rsp-rax buf #x40)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #xba #xff #xff #xff #xff)) ; mov edx, INFINITE
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva buf wait)
+      (nelisp-windows-build--emit-mov-dword-rsp-imm32 buf #x30 0)
+      (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rcx #x40)
+      (nelisp-windows-build--emit-lea-reg-rsp-disp buf 'rdx #x30)
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva buf get-exit-code)
+      (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rcx #x40)
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva buf close-handle)
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #x8b #x4c #x24 #x30)) ; mov ecx, [rsp+0x30]
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva buf exit-process)
+      (nelisp-asm-x86_64-int3 buf)
+      (nelisp-asm-x86_64-define-label buf 'thread-entry)
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #xb8 #x2a #x00 #x00 #x00)) ; mov eax, 42
+      (nelisp-asm-x86_64-ret buf)
+      (nelisp-asm-x86_64-resolve-fixups buf))))
+
+(defun nelisp-windows-build--createthread-probe-bytes ()
+  "Return a PE32+ EXE byte string for the Stage 11 CreateThread probe."
+  (nelisp-pe-write-build-kernel32-executable
+   '("ExitProcess" "CreateThread" "WaitForSingleObject"
+     "GetExitCodeThread" "CloseHandle")
+   #'nelisp-windows-build--createthread-probe-text))
+
+(defun nelisp-windows-build-createthread-probe (out-path)
+  "Write OUT-PATH as a PE32+ EXE probing CreateThread.
+The program exits 42 when the thread entry runs and its exit code is
+successfully recovered through GetExitCodeThread."
+  (let ((bytes (nelisp-windows-build--createthread-probe-bytes))
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent))
+  (message "nelisp-windows-build: wrote %s (CreateThread probe)" out-path)
+  out-path)
+
+(defun nelisp-windows-build-createthread42 ()
+  "Batch entry: build target/nelisp-windows-createthread42.exe."
+  (nelisp-windows-build-createthread-probe
+   "target/nelisp-windows-createthread42.exe"))
 
 (defun nelisp-windows-build--sexp-contains-symbol-p (sexp symbol)
   "Return non-nil when SEXP contains SYMBOL as a list head."
