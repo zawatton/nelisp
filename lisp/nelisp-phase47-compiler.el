@@ -10559,6 +10559,8 @@ the node's class to consume the result correctly."
           node buf nelisp-nlconsbox--offset-cdr))
         ((= tag 15)             ; cons-make — aarch64 box alloc + copy
          (nelisp-phase47-compiler--emit-cons-make-arm64 node buf))
+        ((= tag 16)             ; cons-make-with-clone — aarch64 box + 2 clones
+         (nelisp-phase47-compiler--emit-cons-make-with-clone-arm64 node buf))
         ((= tag 59)             ; sexp-payload-ptr — aarch64 Cons->box
          (nelisp-phase47-compiler--emit-sexp-payload-ptr-arm64 node buf))
         ((= tag 61)             ; sexp-tag — aarch64 LDRB tag byte
@@ -10631,7 +10633,6 @@ the node's class to consume the result correctly."
                      35 34               ; mut-str-len mut-str-finalize
                      71 72 74            ; str-char-count str-codepoint-at str-is-alphanumeric-at
                      2                   ; atomic-compare-exchange
-                     16                  ; cons-make-with-clone (deferred — nested clone calls)
                      94 95               ; aot-machine-landing-jump aot-current-sp
                      92))                ; aot-root-scope
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -13349,6 +13350,47 @@ box pointer into the slot; x0 = slot."
   (nelisp-asm-arm64-strb-imm buf 'x4 'x1 0)          ; slot tag = Cons
   (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload) ; slot payload = box
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))        ; return slot
+
+(defun nelisp-phase47-compiler--emit-cons-make-with-clone-arm64 (node buf)
+  "Emit Doc 120.E fused `cons-make-with-clone' for aarch64.
+Parallels `--emit-cons-make-arm64' but deep-clones each field via the
+refcount-aware `nl_sexp_clone_into' instead of a raw 32-byte copy.
+car-ptr/cdr-ptr/slot/box are spilled to the stack so they survive the
+two clone BL calls and are read back SP-relative.  Layout after the four
+16-byte pushes (from SP): [SP+0]=box [SP+16]=slot [SP+32]=cdr-ptr
+[SP+48]=car-ptr.  `nl_sexp_clone_into(src, dst)' copies `*src' into
+`*dst'; box->car is at offset 0, box->cdr at `offset-cdr'.  The fresh
+NlConsBox starts at refcount 1 and the clone bumps refs / deep-copies
+Strings itself, so no extra refcount work is needed here.  Returns the
+slot pointer in x0 (matches the `cons-make' ABI)."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :car-ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push car-ptr  -> [SP+48]
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :cdr-ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push cdr-ptr  -> [SP+32]
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push slot     -> [SP+16]
+  (nelisp-asm-arm64-bl buf 'nl_alloc_consbox)        ; x0 = box
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push box      -> [SP+0]
+  ;; clone car: nl_sexp_clone_into(car-ptr, &box->car = box + 0).
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'sp 48)          ; x0 = car-ptr (src)
+  (nelisp-asm-arm64-ldr-imm buf 'x1 'sp 0)           ; x1 = box (dst)
+  (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)
+  ;; clone cdr: nl_sexp_clone_into(cdr-ptr, &box->cdr = box + offset-cdr).
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'sp 32)          ; x0 = cdr-ptr (src)
+  (nelisp-asm-arm64-ldr-imm buf 'x1 'sp 0)           ; x1 = box
+  (nelisp-asm-arm64-add-imm buf 'x1 'x1 nelisp-nlconsbox--offset-cdr) ; x1 = &box->cdr
+  (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)
+  ;; write Sexp::Cons(box) into the slot.
+  (nelisp-asm-arm64-ldr-imm buf 'x1 'sp 16)          ; x1 = slot
+  (nelisp-asm-arm64-ldr-imm buf 'x10 'sp 0)          ; x10 = box
+  (nelisp-asm-arm64-mov-imm64 buf 'x2 nelisp-sexp--tag-cons)
+  (nelisp-asm-arm64-strb-imm buf 'x2 'x1 0)          ; slot tag = Cons
+  (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload) ; slot payload = box
+  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1)         ; return slot
+  (nelisp-asm-arm64-add-imm buf 'sp 'sp 64))         ; pop the 4 spill slots
 
 (defun nelisp-phase47-compiler--emit-sexp-payload-ptr-arm64 (node buf)
   "Emit `sexp-payload-ptr' for aarch64 — Cons -> box ptr, else 0."

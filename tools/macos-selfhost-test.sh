@@ -200,6 +200,31 @@ build_run logic '(seq
   (defun run () (+ (if (and 1 1) 10 0) (if (or 0 1) 5 0)))
   (exit (run)))' 15
 
+# cons-make-with-clone: fused (alloc box + deep-clone car/cdr).  Clone
+# Int(20) into car and Int(3) into cdr, read both back -> 20 + 3 = 23.
+# nl_sexp_clone_into is stubbed here as a 32-byte copy (the real one is
+# refcount/String aware); box->car @0, box->cdr @offset-cdr(32).
+build_run cons-clone '(seq
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+  (defun nl_sexp_clone_into (src dst)
+    (seq
+      (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+      (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+      (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+      (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 0 8589935104)
+      (sexp-int-make 8589934656 20)
+      (sexp-int-make 8589934720 3)
+      (cons-make-with-clone 8589934656 8589934720 8589934784)
+      (cons-car 8589934784 8589934976)
+      (cons-cdr 8589934784 8589935040)
+      (+ (ptr-read-u64 8589934976 8) (ptr-read-u64 8589935040 8))))
+  (exit (run)))' 23
+
 if [ "$fail" = 0 ]; then
   echo "[macos] all PASS — pure-elisp aarch64 -> native macOS arm64 self-host smoke OK"
   exit 0
