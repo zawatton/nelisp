@@ -2629,7 +2629,7 @@
     (should (equal nelisp-os--windows-fd-flags-table
                    `((3 . ,nelisp-os-O-NONBLOCK))))
     (should (equal nelisp-os--windows-timerfd-table
-                   '((3 . [0 0 nil]))))
+                   `((3 . [0 0 nil ,nelisp-os-CLOCK-MONOTONIC]))))
     (should (equal (nreverse calls)
                    (list
                     (list "kernel32" "CreateWaitableTimerW"
@@ -2684,6 +2684,50 @@
                     (list "kernel32" "WaitForSingleObject"
                           [:uint32 :pointer :uint32]
                           (list #xaaaa 0)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-timerfd-windows-settime-supports-abstime ()
+  "Windows timerfd converts TFD_TIMER_ABSTIME into a relative wait."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (clock-reads nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . timerfd)))
+        (nelisp-os--windows-timerfd-table
+         `((3 . [0 0 nil ,nelisp-os-CLOCK-REALTIME]))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--windows-timerfd-clock-now-ms)
+               (lambda (clockid)
+                 (push clockid clock-reads)
+                 9000))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "SetWaitableTimer") 1)
+                  ((equal fn "GetTickCount64") 5000)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-timerfd-settime
+                        3 nelisp-os-TFD-TIMER-ABSTIME
+                        0 0
+                        10 0)
+                       '(0 0 0 0)))))
+    (should (equal nelisp-os--windows-timerfd-table
+                   `((3 . [0 6000 t ,nelisp-os-CLOCK-REALTIME]))))
+    (should (equal writes '((3000 0 -10000000))))
+    (should (equal clock-reads (list nelisp-os-CLOCK-REALTIME)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "SetWaitableTimer"
+                          [:sint32 :pointer :pointer :sint32 :pointer :pointer
+                           :sint32]
+                          (list #xaaaa 3000 0 0 0 0))
+                    (list "kernel32" "GetTickCount64" [:uint64] nil))))
     (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-timerfd-windows-poll-uses-waitforsingleobject ()

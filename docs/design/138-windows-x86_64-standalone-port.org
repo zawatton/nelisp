@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-128-WINDOWS-AFUNIX-ABSTRACT
+#+STATUS: STAGE-129-WINDOWS-TIMERFD-ABSTIME
 
 * Status
 
-- *State*: STAGE 128 Windows AF_UNIX abstract compatibility
+- *State*: STAGE 129 Windows timerfd absolute-time compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -296,7 +296,8 @@
   Windows =timerfd_create= now
   creates a waitable-timer HANDLE-backed fd-kind entry, =timerfd_settime= /
   =timerfd_set_relative_ms= arm relative timers through =SetWaitableTimer=,
-  =timerfd_gettime= derives tracked remaining time from =GetTickCount64=,
+  =TFD_TIMER_ABSTIME= is converted to a relative wait against the timer
+  clock, =timerfd_gettime= derives tracked remaining time from =GetTickCount64=,
   =read= returns an 8-byte expiration count after =WaitForSingleObject=, and
   =poll= reports =POLLIN= from timer readiness.  Windows timerfd duplicates
   now retain fd-kind / status flag tracking and share timer state across
@@ -394,7 +395,8 @@
   and =libc!pthread_sigmask= by maintaining a Windows-local emulated mask.
   Windows timerfd
   compatibility now uses waitable timers for relative one-shot / interval
-  timers and keeps absolute =TFD_TIMER_ABSTIME= explicitly unsupported.
+  timers and converts =TFD_TIMER_ABSTIME= absolute expirations into Windows
+  relative waits.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
   smoke manifest and emits all ten PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
@@ -714,6 +716,10 @@
   to the same hashed temporary filesystem path, delete stale bind paths before
   rebinding, validate NUL-containing names before delegation, and keep the path
   out of Linux syscall/libc/allocation fallback.
+  Stage 129 coverage verifies Windows =TFD_TIMER_ABSTIME= converts an absolute
+  =CLOCK_REALTIME= expiration into a relative =SetWaitableTimer= due time,
+  keeps timer state armed, and preserves the timerfd clock id created by
+  =timerfd_create=.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1170,8 +1176,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   passing.
   *Windows timerfd compatibility progress 2026-06-03*: Windows timerfd now
   creates waitable timer HANDLE-backed fds, arms relative timers with
-  =SetWaitableTimer=, reports readiness through =WaitForSingleObject= in
-  =read= / =poll=, and tracks remaining time for =timerfd_gettime=.
+  =SetWaitableTimer=, converts =TFD_TIMER_ABSTIME= into relative waits, reports
+  readiness through =WaitForSingleObject= in =read= / =poll=, and tracks
+  remaining time for =timerfd_gettime=.
   *Windows timerfd dup progress 2026-06-03*: timerfd duplicates now preserve
   fd-kind/status flag tracking and share timer state across =dup2=, standard
   fd targets, and =F_DUPFD=.
@@ -1645,8 +1652,9 @@ largest uncertainty (B1 + B2) first.
    *Windows timerfd compatibility SHIPPED 2026-06-03*: =timerfd_create= now
    returns waitable timer HANDLE-backed timerfd fds, relative
    =timerfd_settime= / =timerfd_set_relative_ms= arm through
-   =SetWaitableTimer=, =timerfd_gettime= reports tracked remaining time, and
-   =read= / =poll= use =WaitForSingleObject= readiness.
+   =SetWaitableTimer=, =TFD_TIMER_ABSTIME= absolute expirations convert to
+   relative Windows waits, =timerfd_gettime= reports tracked remaining time,
+   and =read= / =poll= use =WaitForSingleObject= readiness.
    *Windows timerfd dup compatibility SHIPPED 2026-06-03*: timerfd =dup2=,
    stdout-target =dup2=, and =F_DUPFD= preserve timerfd kind/status flags and
    share timer state with the source descriptor.

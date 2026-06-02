@@ -4346,6 +4346,26 @@ list of signal numbers."
   "Return a monotonic-ish Windows millisecond tick count."
   (nelisp-os--libc-call "kernel32" "GetTickCount64" [:uint64]))
 
+(defun nelisp-os--windows-realtime-now-ms ()
+  "Return the current Windows system time in Unix-epoch milliseconds."
+  (let ((buf (nelisp-os--alloc 8)))
+    (unwind-protect
+        (progn
+          (nelisp-os--libc-call "kernel32" "GetSystemTimeAsFileTime"
+                                [:void :pointer]
+                                buf)
+          (/ (- (nelisp-os--windows-read-u64-pair buf 4 0)
+                (* nelisp-os-WIN-FILETIME-UNIX-EPOCH-SECONDS
+                   10000000))
+             10000))
+      (nelisp-os--free buf))))
+
+(defun nelisp-os--windows-timerfd-clock-now-ms (clockid)
+  "Return the current Windows timerfd CLOCKID time in milliseconds."
+  (if (= clockid nelisp-os-CLOCK-REALTIME)
+      (nelisp-os--windows-realtime-now-ms)
+    (nelisp-os--windows-now-ms)))
+
 (defun nelisp-os--timer-ms (sec nsec)
   "Return milliseconds represented by SEC and NSEC, rounded up."
   (when (or (< sec 0) (< nsec 0) (>= nsec 1000000000))
@@ -4359,6 +4379,15 @@ list of signal numbers."
     (signal 'nelisp-os-error (list 22))) ; EINVAL
   (+ (* sec 10000000)
      (ceiling nsec 100)))
+
+(defun nelisp-os--windows-timerfd-value-ms (state flags sec nsec)
+  "Return Windows timerfd relative delay for STATE, FLAGS, SEC, and NSEC."
+  (let ((value-ms (nelisp-os--timer-ms sec nsec)))
+    (if (= (logand flags nelisp-os-TFD-TIMER-ABSTIME) 0)
+        value-ms
+      (max 0 (- value-ms
+                (nelisp-os--windows-timerfd-clock-now-ms
+                 (aref state 3)))))))
 
 (defun nelisp-os--ms-sec-nsec (ms)
   "Return (SEC . NSEC) for non-negative millisecond duration MS."
@@ -4406,7 +4435,8 @@ list of signal numbers."
                  (if (/= (logand flags nelisp-os-TFD-NONBLOCK) 0)
                      nelisp-os-O-NONBLOCK
                    0))))
-        (push (cons fd (vector 0 0 nil)) nelisp-os--windows-timerfd-table)
+        (push (cons fd (vector 0 0 nil clockid))
+              nelisp-os--windows-timerfd-table)
         (if (= (logand flags nelisp-os-TFD-CLOEXEC) 0)
             fd
           (condition-case err
@@ -4422,16 +4452,15 @@ list of signal numbers."
   "Windows implementation of `nelisp-os-timerfd-settime'."
   (unless (= (logand flags (lognot nelisp-os-TFD-TIMER-ABSTIME)) 0)
     (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (when (/= (logand flags nelisp-os-TFD-TIMER-ABSTIME) 0)
-    (nelisp-os--windows-unsupported))
   (let* ((cell (nelisp-os--windows-timerfd-cell fd))
          (state (cdr cell))
          (handle (nelisp-os--windows-timerfd-handle fd))
          (old (nelisp-os--windows-timerfd-state-itimerspec state))
          (interval-ms (nelisp-os--timer-ms it-int-s it-int-ns))
-         (value-ms (nelisp-os--timer-ms it-val-s it-val-ns))
-         (value-100ns (nelisp-os--timer-100ns it-val-s it-val-ns)))
-    (if (= value-ms 0)
+         (value-ms (nelisp-os--windows-timerfd-value-ms
+                    state flags it-val-s it-val-ns))
+         (value-100ns (* value-ms 10000)))
+    (if (and (= it-val-s 0) (= it-val-ns 0))
         (progn
           (nelisp-os--libc-call
            "kernel32" "CancelWaitableTimer"
@@ -4456,7 +4485,7 @@ list of signal numbers."
                          0
                          0)))
                 (if (= ok 0)
-                    (nelisp-os--windows-ffi-error-signal)
+                  (nelisp-os--windows-ffi-error-signal)
                   (aset state 0 interval-ms)
                   (aset state 1 (+ (nelisp-os--windows-now-ms) value-ms))
                   (aset state 2 t)
