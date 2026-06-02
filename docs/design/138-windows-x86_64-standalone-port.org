@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-59-WIN64-EXTERN-CALL-STACK-ARGS
+#+STATUS: STAGE-60-WIN64-GP-CALLEE-SAVE-COVERAGE
 
 * Status
 
-- *State*: STAGE 59 Win64 extern-call stack args
+- *State*: STAGE 60 Win64 GP callee-save coverage
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -44,6 +44,10 @@
   verifies =extern-call= emits four GP arguments in =RCX/RDX/R8/R9=, surrounds
   the call with the required 32-byte caller shadow space, and places fifth and
   later GP arguments in the Win64 outgoing stack area above shadow space.
+  Win64 defun prologue/epilogue coverage now also preserves =RDI/RSI= in
+  private frame slots below param and runtime-let storage, matching Microsoft
+  x64 GP callee-save requirements even when body emitters use those registers
+  as scratch / argument registers.
   =lisp/nelisp-stdlib-os.el= now also routes Windows
   stdout/stderr =nelisp-os-write= calls through =kernel32!GetStdHandle= +
   =kernel32!WriteFile= and stdin =nelisp-os-read= calls through
@@ -353,7 +357,8 @@
   window before invalid object emission.  Stage 59 coverage supersedes that
   rejection by verifying trivial and computed Win64 GP stack arguments are
   written at =[rsp+32]= and later after allocating shadow plus outgoing stack
-  space.
+  space.  Stage 60 coverage verifies Win64 defuns save and restore =RDI/RSI=
+  in private frame slots after param and runtime-let storage.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -566,9 +571,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   Stage 58 locked =extern-call= COFF emission to =RCX/RDX/R8/R9= plus 32-byte
   caller shadow space.  Stage 59 adds fifth-and-later GP stack arguments in the
   Win64 outgoing area above shadow space, including computed stack args copied
-  from temporary spills.
-- Remaining diff: prologue/epilogue coverage for the different callee-saved set
-  and xmm save rules.
+  from temporary spills.  Stage 60 adds Win64 =RDI/RSI= save/restore in private
+  frame slots below param and runtime-let storage.
+- Remaining diff: XMM6-XMM15 save rules and broader f64/cross-class coverage.
 - *Why Windows is easier than macOS here*: same x86_64 ISA → backend
   instructions are reused.  macOS arm64 needed *75 new ops* (7/82 implemented);
   Windows only needs the win64 ABI emit wired through every call
@@ -902,6 +907,9 @@ largest uncertainty (B1 + B2) first.
    *Win64 extern-call stack args SHIPPED 2026-06-03*: Phase 47 COFF tests now
    verify fifth-and-later Win64 GP args are written above the 32-byte shadow
    space, including computed stack args copied from temporary spills.
+   *Win64 GP callee-save coverage SHIPPED 2026-06-03*: Win64 defuns now save
+   and restore =RDI/RSI= in private frame slots below param/runtime-let storage,
+   and COFF tests lock the prologue/epilogue byte shape.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY

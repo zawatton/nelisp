@@ -14935,6 +14935,14 @@ return reg, untouched by epilogue)."
          (param-class (or (nelisp-phase47-compiler--ir-get defun-ir :param-class) 'gp))
          (body (nelisp-phase47-compiler--ir-get defun-ir :body))
          (rt-slot-count (or (nelisp-phase47-compiler--ir-get defun-ir :rt-slot-count) 0))
+         (param-slot-rounded (if (zerop (logand (length param-regs) 1))
+                                 (length param-regs)
+                               (1+ (length param-regs))))
+         (rt-slot-rounded (if (zerop (logand rt-slot-count 1))
+                              rt-slot-count
+                            (1+ rt-slot-count)))
+         (win64-callee-save-slot-base
+          (+ param-slot-rounded rt-slot-rounded))
          ;; Track this defun's arity for `--emit-extern-call' (Doc 111
          ;; §111.E #19-#26 stack alignment fix).  Inner emit helpers
          ;; bound under this `let*' see the param count via the dynvar
@@ -14999,82 +15007,80 @@ return reg, untouched by epilogue)."
       (nelisp-asm-x86_64--push-inline buf 'rbp)
       (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rbp 'rsp)
       (if (eq nelisp-phase47-compiler--abi 'win64)
-          ;; ---- Win64 ABI prologue ----
-          ;;
-          ;; Microsoft x64 ABI differs from SysV in three ways:
-          ;;
-          ;; 1. Argument registers: RCX RDX R8 R9 (not RDI RSI RDX RCX R8 R9).
-          ;;    The first 4 integer args arrive in RCX/RDX/R8/R9 which we
-          ;;    must move into our SysV-convention stack slots so the body's
-          ;;    `ref' loads from `[rbp - 8*(slot+1)]' still work correctly.
-          ;;
-          ;; 2. Shadow space: caller already reserved 32 bytes below RSP
-          ;;    for the register home area.  We don't use those bytes but
-          ;;    the epilogue's `mov rsp, rbp' pops them for free.
-          ;;
-          ;; 3. Callee-saved: RDI and RSI are callee-saved under Win64
-          ;;    (they are caller-saved in SysV).  Since our arg-pushing
-          ;;    strategy pushes the incoming Win64 regs (RCX/RDX/R8/R9)
-          ;;    we never write to RDI/RSI in the prologue, so no extra
-          ;;    save/restore is needed for them in this simple prologue.
-          ;;
-          ;; Strategy for GP params:
-          ;;   a. `sub rsp, 8*ROUNDED' to allocate the spill frame.
-          ;;   b. `mov [rbp - 8*(i+1)], rcx/rdx/r8/r9' per param.
-          ;;   The frame layout matches the SysV path so `--emit-ref-load'
-          ;;   (= `[rbp - 8*(slot+1)]') reads the right value.
-          ;;
-          ;; Stack alignment (Win64): call sets rsp ≡ 8 mod 16 (= return
-          ;; addr pushed).  `push rbp' brings rsp to 0 mod 16.  We then
-          ;; allocate spill slots via `sub rsp, 8*ROUNDED'; ROUNDED must
-          ;; be even (= 16-byte aligned allocation) — same rounding rule
-          ;; as SysV but win64 arg regs differ.
-          (cond
-           ((eq param-class 'gp)
-            (let* ((arity (length param-regs))
-                   (rounded (if (zerop (logand arity 1)) arity (1+ arity)))
-                   (frame-bytes (* 8 rounded))
-                   (win64-arg-regs nelisp-asm-x86_64--abi-win64-arg-regs))
-              ;; Allocate the spill frame in one shot (= deterministic
-              ;; byte count regardless of arity, matching pass-1 = pass-2).
-              (when (> arity 0)
-                (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
-              ;; Spill each incoming Win64 arg register to its frame slot
-              ;; via `mov [rbp - 8*(i+1)], REG'.  disp8 covers [-128,127]
-              ;; so slot offsets up to 15 args are in range.
-              (let ((i 0))
-                (dolist (preg param-regs)
-                  (ignore preg)
-                  (let ((src-reg (nth i win64-arg-regs))
-                        (disp (- (* 8 (1+ i)))))
-                    (nelisp-asm-x86_64-mov-mem-reg-disp8
-                     buf 'rbp disp src-reg))
-                  (setq i (1+ i))))
-              ;; Reserve runtime let-rt slots (same as SysV path).
-              (when (> rt-slot-count 0)
-                (let ((rt-rounded (if (zerop (logand rt-slot-count 1))
-                                      rt-slot-count
-                                    (1+ rt-slot-count))))
-                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 rt-rounded))))))
-           ;; f64 class under Win64: XMM0-XMM3 carry the first 4 float args
-           ;; (same xmm reg numbers as SysV, just fewer GP-class args allowed
-           ;; concurrently).  The MOVSD spill layout is identical to SysV.
-           ((eq param-class 'f64)
-            (let* ((arity (length param-regs))
-                   (arity-rounded (if (zerop (logand arity 1))
-                                      arity
-                                    (1+ arity)))
-                   (frame-bytes (* 8 arity-rounded))
-                   (slot-idx -1))
-              (when (> arity 0)
-                (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
-              (dolist (xreg param-regs)
-                (setq slot-idx (1+ slot-idx))
-                (nelisp-asm-x86_64-movsd-mem-disp8-xmm
-                 buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
-           (t
-            (signal 'nelisp-phase47-compiler-error
-                    (list :unknown-defun-param-class param-class))))
+          (progn
+            ;; ---- Win64 ABI prologue ----
+            ;;
+            ;; Microsoft x64 ABI differs from SysV in three ways:
+            ;;
+            ;; 1. Argument registers: RCX RDX R8 R9 (not RDI RSI RDX RCX R8 R9).
+            ;;    The first 4 integer args arrive in RCX/RDX/R8/R9 which we
+            ;;    must move into our SysV-convention stack slots so the body's
+            ;;    `ref' loads from `[rbp - 8*(slot+1)]' still work correctly.
+            ;;
+            ;; 2. Shadow space: caller already reserved 32 bytes below RSP
+            ;;    for the register home area.  We don't use those bytes but
+            ;;    the epilogue's `mov rsp, rbp' tears down our local frame.
+            ;;
+            ;; 3. Callee-saved: RDI and RSI are callee-saved under Win64, while
+            ;;    many body emitters use them as scratch / argument registers.
+            ;;    Always save them in two private slots after param + let-rt
+            ;;    storage and restore them immediately before frame teardown.
+            ;;
+            ;; Strategy for GP params:
+            ;;   a. `sub rsp, 8*ROUNDED' to allocate the spill frame.
+            ;;   b. `mov [rbp - 8*(i+1)], rcx/rdx/r8/r9' per param.
+            ;;   The frame layout matches the SysV path so `--emit-ref-load'
+            ;;   (= `[rbp - 8*(slot+1)]') reads the right value.
+            ;;
+            ;; Stack alignment (Win64): call sets rsp ≡ 8 mod 16 (= return
+            ;; addr pushed).  `push rbp' brings rsp to 0 mod 16.  Every local
+            ;; allocation below is rounded to an even slot count, so body calls
+            ;; observe 16-byte alignment.
+            (cond
+             ((eq param-class 'gp)
+              (let* ((arity (length param-regs))
+                     (frame-bytes (* 8 param-slot-rounded))
+                     (win64-arg-regs nelisp-asm-x86_64--abi-win64-arg-regs))
+                ;; Allocate the spill frame in one shot (= deterministic
+                ;; byte count regardless of arity, matching pass-1 = pass-2).
+                (when (> arity 0)
+                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
+                ;; Spill each incoming Win64 arg register to its frame slot
+                ;; via `mov [rbp - 8*(i+1)], REG'.  disp8 covers [-128,127]
+                ;; so slot offsets up to 15 args are in range.
+                (let ((i 0))
+                  (dolist (preg param-regs)
+                    (ignore preg)
+                    (let ((src-reg (nth i win64-arg-regs))
+                          (disp (- (* 8 (1+ i)))))
+                      (nelisp-asm-x86_64-mov-mem-reg-disp8
+                       buf 'rbp disp src-reg))
+                    (setq i (1+ i))))))
+             ;; f64 class under Win64: XMM0-XMM3 carry the first 4 float args
+             ;; (same xmm reg numbers as SysV, just fewer GP-class args allowed
+             ;; concurrently).  The MOVSD spill layout is identical to SysV.
+             ((eq param-class 'f64)
+              (let* ((arity (length param-regs))
+                     (frame-bytes (* 8 param-slot-rounded))
+                     (slot-idx -1))
+                (when (> arity 0)
+                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
+                (dolist (xreg param-regs)
+                  (setq slot-idx (1+ slot-idx))
+                  (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+                   buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
+             (t
+              (signal 'nelisp-phase47-compiler-error
+                      (list :unknown-defun-param-class param-class))))
+            ;; Reserve runtime let-rt slots, then two private Win64
+            ;; callee-save slots for RDI/RSI below every public frame slot.
+            (when (> rt-slot-rounded 0)
+              (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 rt-slot-rounded)))
+            (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 16)
+            (nelisp-asm-x86_64-mov-mem-reg-disp8
+             buf 'rbp (- (* 8 (1+ win64-callee-save-slot-base))) 'rdi)
+            (nelisp-asm-x86_64-mov-mem-reg-disp8
+             buf 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base))) 'rsi))
         ;; ---- SysV ABI prologue (unchanged) ----
         (cond
          ;; GP class — for the original six-register surface, keep the
@@ -15164,9 +15170,14 @@ return reg, untouched by epilogue)."
                   (list :unknown-defun-param-class param-class)))))
       ;; Body — value walked into rax (gp class) or xmm0 (f64 class).
       (nelisp-phase47-compiler--emit-value body buf)
-      ;; Epilogue: deallocate param spill via mov rsp, rbp; pop rbp; ret.
-      ;; (Identical for SysV and Win64 — frame pointer teardown is ABI-agnostic.)
+      ;; Epilogue: restore Win64 GP callee-saves, then deallocate param
+      ;; spill via mov rsp, rbp; pop rbp; ret.
       ;; Wave 20: same hand-inline rationale as the prologue above.
+      (when (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-asm-x86_64-mov-reg-mem-disp8
+         buf 'rdi 'rbp (- (* 8 (1+ win64-callee-save-slot-base))))
+        (nelisp-asm-x86_64-mov-reg-mem-disp8
+         buf 'rsi 'rbp (- (* 8 (+ 2 win64-callee-save-slot-base)))))
       (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rsp 'rbp)
       (nelisp-asm-x86_64--pop-inline buf 'rbp)
       (nelisp-asm-x86_64--ret-inline buf))))

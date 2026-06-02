@@ -2291,6 +2291,54 @@ SysV would emit `push rdi' = 57 instead."
             (should found-win64-spill)))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-defun-preserves-rdi-rsi ()
+  "Win64 defuns preserve RDI/RSI in private callee-save frame slots."
+  (let ((path (make-temp-file "nelisp-win64-callee-save-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () 0)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; mov [rbp-152],rdi; mov [rbp-160],rsi
+                     (unibyte-string #x48 #x89 #xbd #x68 #xff #xff #xff
+                                     #x48 #x89 #xb5 #x60 #xff #xff #xff)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; mov rdi,[rbp-152]; mov rsi,[rbp-160]; mov rsp,rbp; pop rbp; ret
+                     (unibyte-string #x48 #x8b #xbd #x68 #xff #xff #xff
+                                     #x48 #x8b #xb5 #x60 #xff #xff #xff
+                                     #x48 #x89 #xec #x5d #xc3)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-defun-callee-saves-after-frame-slots ()
+  "Win64 callee-save slots live below param and runtime let slots."
+  (let ((path (make-temp-file "nelisp-win64-callee-save-frame-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe (x) (let ((y (extern-call ext_y))) (+ x y)))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; mov [rbp-168],rdi; mov [rbp-176],rsi
+                     (unibyte-string #x48 #x89 #xbd #x58 #xff #xff #xff
+                                     #x48 #x89 #xb5 #x50 #xff #xff #xff)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; Restore from the same private slots before frame teardown.
+                     (unibyte-string #x48 #x8b #xbd #x58 #xff #xff #xff
+                                     #x48 #x8b #xb5 #x50 #xff #xff #xff
+                                     #x48 #x89 #xec #x5d #xc3)))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-compiler/win64-extern-call-gp-args-and-shadow ()
   "Win64 extern-call uses RCX/RDX/R8/R9 and 32-byte caller shadow space."
   (let ((path (make-temp-file "nelisp-win64-extern-call-" nil ".obj")))
