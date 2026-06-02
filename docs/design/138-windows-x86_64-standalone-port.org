@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-8-CREATEFILEW-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-9-GETLASTERROR-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 8 CreateFileW + first real Windows smoke VALIDATED
+- *State*: STAGE 9 GetLastError + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -24,7 +24,11 @@
   Windows files now use a small POSIX-like fd table over kernel32 HANDLEs:
   =nelisp-os-open= writes a UTF-16LE path buffer and calls =CreateFileW=,
   regular fd read/write use =ReadFile= / =WriteFile=, and =nelisp-os-close=
-  calls =CloseHandle=.
+  calls =CloseHandle=.  Windows HANDLE/API failures now signal
+  =nelisp-os-error= with the raw =GetLastError= DWORD instead of a fixed
+  placeholder value, preserving native Windows diagnostics across
+  =GetStdHandle=, =CreateFileW=, =ReadFile=, =WriteFile=, and =CloseHandle=
+  failures.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -39,7 +43,9 @@
   fallbacks to =libc.read/write=, UTF-16 path conversion including surrogate
   pairs, =CreateFileW= flag translation, Windows fd-table allocation, regular fd
   =ReadFile= / =WriteFile= / =CloseHandle=, and that unknown Windows fds do not
-  silently fall through to POSIX libc.
+  silently fall through to POSIX libc.  It also verifies that Windows FFI
+  failures call =kernel32!GetLastError= and propagate that DWORD through
+  =nelisp-os-error=.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -68,7 +74,8 @@
 - *Non-goal*: Production standalone wiring.  Stage 1-8 prove the PE EXE
   container, import-table path, =VirtualAlloc= call shape, first arena metadata
   write path, HANDLE stdout write path, and first stdlib Windows stdio read/write
-  branch plus regular file HANDLE fd table; they do not yet replace the Linux
+  branch plus regular file HANDLE fd table; Stage 9 adds native Windows error
+  reporting through =GetLastError=.  These stages do not yet replace the Linux
   standalone allocator, complete real Windows execution of every smoke, support
   all Windows OS APIs, or cover the rest of the stdlib OS surface.
 
@@ -209,6 +216,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =CreateFileW=, a small fd->HANDLE table, =ReadFile=, =WriteFile=, and
   =CloseHandle= for regular files.  *Real Windows progress 2026-06-02*:
   =minimal-exit-42= has executed on native Windows and returned exit code 42.
+  *Windows error progress 2026-06-02*: HANDLE/API failures now report
+  =kernel32!GetLastError= through =nelisp-os-error= instead of a placeholder.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -246,6 +255,8 @@ largest uncertainty (B1 + B2) first.
    2026-06-02*: Windows stdin =nelisp-os-read= routes through =ReadFile=.
    *Regular file HANDLE branch SHIPPED 2026-06-02*: Windows regular file
    =open/read/write/close= routes through =CreateFileW= + fd table + HANDLE I/O.
+   *Windows error branch SHIPPED 2026-06-02*: HANDLE/API failures route through
+   =kernel32!GetLastError= so callers receive the raw Windows error code.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:

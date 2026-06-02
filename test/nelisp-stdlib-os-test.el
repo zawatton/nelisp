@@ -34,6 +34,22 @@
   (should-error (signal 'nelisp-os-error (list 9))
                 :type 'nelisp-os-error))
 
+(ert-deftest nelisp-stdlib-os-windows-ffi-error-uses-getlasterror ()
+  "Windows FFI failures report the raw kernel32 GetLastError value."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 12345)))
+      (condition-case err
+          (progn
+            (nelisp-os--windows-ffi-error-signal)
+            (ert-fail "expected nelisp-os-error"))
+        (nelisp-os-error
+         (should (equal (cdr err) '(12345))))))
+    (should (equal call
+                   (list "kernel32" "GetLastError" [:uint32] nil)))))
+
 (ert-deftest nelisp-stdlib-os-windows-std-handle-selectors ()
   "POSIX-like std fds map to Windows GetStdHandle selector constants."
   (should (= (nelisp-os--windows-std-handle-selector nelisp-os-STDIN)

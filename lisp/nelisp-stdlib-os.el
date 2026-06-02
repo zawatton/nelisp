@@ -28,7 +28,8 @@
 ;; through kernel32 HANDLE I/O (`GetStdHandle' + `WriteFile') instead of POSIX
 ;; integer fd `write'.  Stage 6 adds stdin reads through `ReadFile'.  Stage 7
 ;; adds a small Windows fd->HANDLE table for regular file I/O via `CreateFileW'
-;; / `CloseHandle'.  The Linux/Darwin path remains the default until a real
+;; / `CloseHandle'.  Stage 9 reports Windows HANDLE failures through
+;; `GetLastError'.  The Linux/Darwin path remains the default until a real
 ;; Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
@@ -124,9 +125,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 (defun nelisp-os--windows-ffi-error-signal ()
   "Signal `nelisp-os-error' for a Windows FFI failure.
-Until `GetLastError' is wired through the Windows import surface, use a stable
-placeholder errno value so callers still get the project-local OS condition."
-  (signal 'nelisp-os-error (list 5))) ; ERROR_ACCESS_DENIED as conservative placeholder.
+The payload is the raw `GetLastError' DWORD, not a POSIX errno."
+  (signal 'nelisp-os-error
+          (list (nelisp-os--libc-call "kernel32" "GetLastError" [:uint32]))))
 
 (defun nelisp-os--windows-std-handle-selector (fd)
   "Return GetStdHandle selector for POSIX-like FD, or nil if unsupported."
