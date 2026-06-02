@@ -772,6 +772,52 @@
          :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-uses-winsock ()
+  "Windows int-valued socket options translate to Winsock setsockopt."
+  (let ((call nil)
+        (write nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-REUSEADDR 1)
+                   0))))
+    (should (equal write (list 3000 0 1)))
+    (should (equal call
+                   (list "ws2_32" "setsockopt"
+                         [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                         (list #xabcdef
+                               nelisp-os-WIN-SOL-SOCKET
+                               nelisp-os-WIN-SO-REUSEADDR
+                               3000
+                               4))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-rejects-non-socket-fd-before-ffi ()
+  "Windows setsockopt rejects regular HANDLE fds before Winsock FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-setsockopt-int
+          3 nelisp-os-SOL-SOCKET nelisp-os-SO-KEEPALIVE 1)
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-bind-inet-windows-uses-winsock ()
   "Windows AF_INET bind passes encoded sockaddr_in to Winsock."
   (let ((calls nil)

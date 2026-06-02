@@ -48,8 +48,9 @@
 ;; Winsock.  Stage 24 maps AF_INET `accept' to Winsock and registers accepted
 ;; sockets in the Windows fd table.  Stage 25 maps socket fd `read' / `write'
 ;; to Winsock `recv' / `send'.  Stage 26 maps socket fd `poll' to `WSAPoll'.
-;; The Linux/Darwin path remains the default until a real Windows standalone
-;; runtime selects `system-type' = `windows-nt'.
+;; Stage 27 maps int-valued socket options to Winsock `setsockopt'.  The
+;; Linux/Darwin path remains the default until a real Windows standalone runtime
+;; selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -154,6 +155,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-WINSOCK-VERSION-2-2 #x0202)
 (defconst nelisp-os-WIN-WSADATA-SIZE 408)
 (defconst nelisp-os-WIN-INVALID-SOCKET -1)
+(defconst nelisp-os-WIN-SOL-SOCKET #xffff)
+(defconst nelisp-os-WIN-SO-REUSEADDR #x0004)
+(defconst nelisp-os-WIN-SO-KEEPALIVE #x0008)
 
 ;; Windows process-launch structure sizes/offsets (x86_64).
 (defconst nelisp-os-WIN-STARTUPINFOW-SIZE 104)
@@ -1447,22 +1451,59 @@ host byte order."
          (addr    (nelisp-os--libc-call "libc" "ntohl" [:uint32 :uint32] addr-be)))
     (cons addr port)))
 
+(defun nelisp-os--windows-sockopt-level (level)
+  "Translate supported POSIX-like socket option LEVEL to Winsock."
+  (cond
+   ((= level nelisp-os-SOL-SOCKET) nelisp-os-WIN-SOL-SOCKET)
+   (t (nelisp-os--windows-unsupported))))
+
+(defun nelisp-os--windows-sockopt-option (level optname)
+  "Translate supported POSIX-like OPTNAME at LEVEL to Winsock."
+  (cond
+   ((and (= level nelisp-os-SOL-SOCKET)
+         (= optname nelisp-os-SO-REUSEADDR))
+    nelisp-os-WIN-SO-REUSEADDR)
+   ((and (= level nelisp-os-SOL-SOCKET)
+         (= optname nelisp-os-SO-KEEPALIVE))
+    nelisp-os-WIN-SO-KEEPALIVE)
+   (t (nelisp-os--windows-unsupported))))
+
+(defun nelisp-os--windows-setsockopt-int (fd level optname value)
+  "Windows implementation of `nelisp-os-setsockopt-int'."
+  (let ((sock (nelisp-os--windows-socket-for-fd fd))
+        (win-level (nelisp-os--windows-sockopt-level level))
+        (win-optname (nelisp-os--windows-sockopt-option level optname))
+        (buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (nelisp-os-write-i32 buf 0 value)
+          (let ((r (nelisp-os--libc-call
+                    "ws2_32" "setsockopt"
+                    [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                    sock win-level win-optname buf 4)))
+            (if (= r -1)
+                (nelisp-os--windows-winsock-error-signal)
+              r)))
+      (nelisp-os--free buf))))
+
 (defun nelisp-os-setsockopt-int (fd level optname value)
   "POSIX setsockopt(2) for an int-valued option (e.g. SO_REUSEADDR).
 Returns 0 on success."
   ;; libc::setsockopt(int sockfd, int level, int optname,
   ;;                  const void *optval, socklen_t optlen) → int.
-  (let ((buf (nelisp-os--alloc 4)))
-    (unwind-protect
-        (progn
-          (nelisp-os-write-i32 buf 0 value)
-          (let ((r (nelisp-os--libc-call "libc" "setsockopt"
-                                [:sint32 :sint32 :sint32 :sint32 :pointer :uint32]
-                                fd level optname buf 4)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              r)))
-      (nelisp-os--free buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-setsockopt-int fd level optname value)
+    (let ((buf (nelisp-os--alloc 4)))
+      (unwind-protect
+          (progn
+            (nelisp-os-write-i32 buf 0 value)
+            (let ((r (nelisp-os--libc-call "libc" "setsockopt"
+                                  [:sint32 :sint32 :sint32 :sint32 :pointer :uint32]
+                                  fd level optname buf 4)))
+              (if (= r -1)
+                  (nelisp-os--ffi-errno-signal)
+                r)))
+        (nelisp-os--free buf)))))
 
 (defun nelisp-os-bind-inet (fd host-int port)
   "POSIX bind(2) for AF_INET.  HOST-INT is a 32-bit IPv4 address in
