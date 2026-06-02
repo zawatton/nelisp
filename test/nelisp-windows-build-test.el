@@ -65,6 +65,7 @@
                    (setfilepointer . setfilepointer-exit-42)
                    (getfiletype . getfiletype-exit-42)
                    (getfileinformation . getfileinformation-exit-42)
+                   (filemapping . filemapping-exit-42)
                    (getcommandline . getcommandline-exit-42)
                    (commandlinetoargv . commandlinetoargv-exit-42)
                    (wsastartup . wsastartup-exit-42)
@@ -136,6 +137,7 @@
                            "nelisp-windows-setfilepointer.exe"
                            "nelisp-windows-getfiletype.exe"
                            "nelisp-windows-getfileinformation.exe"
+                           "nelisp-windows-filemapping.exe"
                            "nelisp-windows-getcommandline.exe"
                            "nelisp-windows-commandlinetoargv.exe"
                            "nelisp-windows-wsastartup.exe"

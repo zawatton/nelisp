@@ -13,10 +13,10 @@
 ;; ExitProcess, VirtualAlloc, VirtualProtect / VirtualFree, arena metadata,
 ;; stdout/stdin HANDLE I/O via GetStdHandle + WriteFile / ReadFile,
 ;; CreateFileW file lifecycle, SetFilePointerEx seek wiring, GetFileType HANDLE
-;; classification, and GetFileInformationByHandle metadata queries, CRT-free
-;; command-line discovery via GetCommandLineW / CommandLineToArgvW, and Winsock
-;; startup via WS2_32.dll!WSAStartup, plus CreateProcessW child launch / wait
-;; and CreateThread launch / join.
+;; classification, GetFileInformationByHandle metadata queries, and file-backed
+;; mapping lifecycle wiring, CRT-free command-line discovery via GetCommandLineW
+;; / CommandLineToArgvW, and Winsock startup via WS2_32.dll!WSAStartup, plus
+;; CreateProcessW child launch / wait and CreateThread launch / join.
 ;;
 ;; Run on a Windows machine with Emacs installed via:
 ;;
@@ -34,6 +34,7 @@
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-setfilepointer
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getfiletype
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getfileinformation
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-filemapping
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getcommandline
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-commandlinetoargv
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-wsastartup
@@ -109,6 +110,11 @@
                     nelisp-windows-build--repo-root)
   "Default path for the single GetFileInformationByHandle smoke EXE.")
 
+(defconst nelisp-windows-build--filemapping-out
+  (expand-file-name "target/nelisp-windows-filemapping.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single file mapping smoke EXE.")
+
 (defconst nelisp-windows-build--getcommandline-out
   (expand-file-name "target/nelisp-windows-getcommandline.exe"
                     nelisp-windows-build--repo-root)
@@ -145,6 +151,7 @@
     (setfilepointer . setfilepointer-exit-42)
     (getfiletype . getfiletype-exit-42)
     (getfileinformation . getfileinformation-exit-42)
+    (filemapping . filemapping-exit-42)
     (getcommandline . getcommandline-exit-42)
     (commandlinetoargv . commandlinetoargv-exit-42)
     (wsastartup . wsastartup-exit-42)
@@ -273,6 +280,13 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
    'getfileinformation-exit-42
    (or out-path nelisp-windows-build--getfileinformation-out)
    "CreateFileW + GetFileInformationByHandle + CloseHandle + DeleteFileW + ExitProcess 42"))
+
+(defun nelisp-windows-build-filemapping (&optional out-path)
+  "Batch entry: build the Windows file mapping lifecycle smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'filemapping-exit-42
+   (or out-path nelisp-windows-build--filemapping-out)
+   "CreateFileMappingW + MapViewOfFile + UnmapViewOfFile + ExitProcess 42"))
 
 (defun nelisp-windows-build-getcommandline (&optional out-path)
   "Batch entry: build the Windows GetCommandLineW smoke EXE."

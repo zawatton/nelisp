@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-143-WINDOWS-READFILE-STDIN-RUNNER-FIX
+#+STATUS: STAGE-144-WINDOWS-FILEMAPPING-SMOKE
 
 * Status
 
-- *State*: STAGE 143 Windows ReadFile stdin runner fix
+- *State*: STAGE 144 Windows file mapping PE smoke
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -64,7 +64,13 @@
   =target\windows-smoke\nelisp-windows-getfileinformation.tmp=, writes
   =BY_HANDLE_FILE_INFORMATION= into writable =.data= storage, closes the
   HANDLE, deletes the file, and exits 42 only when the information lifecycle
-  succeeds.  Win64 COFF object coverage now also
+  succeeds.  The sixteenth EXE spec, =filemapping-exit-42=, imports
+  =CreateFileW= / =CreateFileMappingW= / =MapViewOfFile= /
+  =UnmapViewOfFile= / =CloseHandle= / =DeleteFileW=, creates
+  =target\windows-smoke\nelisp-windows-filemapping.tmp=, creates a writable
+  4096-byte file mapping, maps and unmaps a view, closes the mapping and file
+  HANDLEs, deletes the file, and exits 42 only when the full file-mapping
+  lifecycle succeeds.  Win64 COFF object coverage now also
   verifies =extern-call= emits four GP arguments in =RCX/RDX/R8/R9=, surrounds
   the call with the required 32-byte caller shadow space, and places fifth and
   later GP arguments in the Win64 outgoing stack area above shadow space.
@@ -452,9 +458,9 @@
   normalized events, and poll readiness; native =ReadDirectoryChangesW= event
   production remains the follow-up.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
-  smoke manifest and emits all fifteen PE32+ smoke EXEs on the host side before
+  smoke manifest and emits all sixteen PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
-  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|readfile-stdin|createfile-write|setfilepointer|getfiletype|getfileinformation|getcommandline|commandlinetoargv|wsastartup|createprocess|createthread|all= so the
+  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|readfile-stdin|createfile-write|setfilepointer|getfiletype|getfileinformation|filemapping|getcommandline|commandlinetoargv|wsastartup|createprocess|createthread|all= so the
   remaining native Windows checks can be re-run individually after a partial
   pass.  =nelisp-os-getsockopt-int= now routes socket-kind Windows fds through
   =ws2_32!getsockopt= for the same supported =SOL_SOCKET= int options as
@@ -560,8 +566,8 @@
   =exit42= / =virtualalloc= / =virtualprotect-free= / =arena= /
   =writefile-stdout= / =readfile-stdin= / =createfile-write= /
   =setfilepointer= / =getfiletype= / =getfileinformation= /
-  =getcommandline= / =commandlinetoargv= / =wsastartup= / =createprocess= /
-  =createthread= manifest stable and can emit all fifteen
+  =filemapping= / =getcommandline= / =commandlinetoargv= / =wsastartup= /
+  =createprocess= / =createthread= manifest stable and can emit all sixteen
   PE32+ smoke EXEs from that manifest.
   Stage 37 coverage
   checks that the PowerShell real-machine script exposes a =-Smoke= selector
@@ -872,6 +878,11 @@
   Stage 143 coverage verifies the PowerShell real-machine smoke runner feeds a
   small stdin payload to =readfile-stdin= so =STD_INPUT_HANDLE= is a readable
   pipe during the native =ReadFile= smoke run.
+  Stage 144 coverage verifies the =filemapping-exit-42= PE layout, UTF-16LE
+  path data, writable file/mapping/view storage, =CreateFileW= /
+  =CreateFileMappingW= / =MapViewOfFile= / =UnmapViewOfFile= / =CloseHandle= /
+  =DeleteFileW= imports, Win64 mapping/view argument setup, and cleanup success
+  checks.
   Stage 58 coverage verifies Win64 =extern-call= COFF
   emit uses =RCX/RDX/R8/R9= for four GP arguments, emits 32-byte caller shadow
   space around =CALL=, and rejects GP stack arguments beyond that register
@@ -898,6 +909,7 @@
   =setfilepointer-exit-42=,
   =getfiletype-exit-42=,
   =getfileinformation-exit-42=,
+  =filemapping-exit-42=,
   =getcommandline-exit-42=,
   =commandlinetoargv-exit-42=, =wsastartup-exit-42=,
   =createprocess-wait-exit-42=, and =createthread-wait-exit-42=.  They can now
@@ -911,6 +923,7 @@
   =nelisp-windows-build-setfilepointer=, and
   =nelisp-windows-build-getfiletype=, and
   =nelisp-windows-build-getfileinformation=, and
+  =nelisp-windows-build-filemapping=, and
   =nelisp-windows-build-getcommandline=,
   =nelisp-windows-build-commandlinetoargv=, and
   =nelisp-windows-build-wsastartup=, and
@@ -925,13 +938,14 @@
   =target/nelisp-windows-setfilepointer.exe=, and
   =target/nelisp-windows-getfiletype.exe=, and
   =target/nelisp-windows-getfileinformation.exe=, and
+  =target/nelisp-windows-filemapping.exe=, and
   =target/nelisp-windows-getcommandline.exe=,
   =target/nelisp-windows-commandlinetoargv.exe=, and
   =target/nelisp-windows-wsastartup.exe=, and
   =target/nelisp-windows-createprocess.exe=, and
   =target/nelisp-windows-createthread.exe=.  This Linux host does not have
   =wine=.  The real-machine smoke entry is =tools/windows-selfhost-test.ps1=;
-  it builds and runs the fifteen PE32+ smoke EXEs on native Windows, checking exit
+  it builds and runs the sixteen PE32+ smoke EXEs on native Windows, checking exit
   code 42 and the =WriteFile= stdout payload.  A native Windows full-smoke run
   on 2026-06-03 passed =exit42=, =virtualalloc=, =virtualprotect-free=,
   =arena=, =writefile-stdout=, =createfile-write=, =setfilepointer=,
@@ -1532,10 +1546,16 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =GetFileInformationByHandle= into writable =BY_HANDLE_FILE_INFORMATION=
   storage, closes/deletes the file, and is wired into the native Windows
   PowerShell smoke runner.
+  *Windows file mapping PE smoke progress 2026-06-03*: pure-Elisp PE emit now
+  has a =filemapping-exit-42= smoke that creates a temporary file under
+  =target\windows-smoke=, creates a writable file mapping, maps/unmaps a view,
+  closes the mapping and file HANDLEs, deletes the file, and is wired into the
+  native Windows PowerShell smoke runner.
   *Windows ReadFile stdin runner progress 2026-06-03*: native full-smoke
-  execution passed fourteen of fifteen smokes; =readfile-stdin= returned exit
-  1 when launched without stdin.  =tools/windows-selfhost-test.ps1= now pipes a
-  small stdin payload for that smoke so =STD_INPUT_HANDLE= is a readable pipe.
+  execution passed fourteen of the then-fifteen smokes; =readfile-stdin=
+  returned exit 1 when launched without stdin.  =tools/windows-selfhost-test.ps1=
+  now pipes a small stdin payload for that smoke so =STD_INPUT_HANDLE= is a
+  readable pipe.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -1685,13 +1705,13 @@ largest uncertainty (B1 + B2) first.
    timer-backed timerfd compatibility.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
-   manifest and host-side emission of all fifteen PE32+ smoke EXEs.
+   manifest and host-side emission of all sixteen PE32+ smoke EXEs.
    *Windows smoke selector SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    accepts =-Smoke NAME= so the already-passing =exit42= smoke does not have to
    be re-run when checking =virtualalloc=, =virtualprotect-free=, =arena=,
    =writefile-stdout=, =readfile-stdin=, =createfile-write=,
-   =setfilepointer=, =getfiletype=, =getfileinformation=, =getcommandline=,
-   =commandlinetoargv=, or =wsastartup=.
+   =setfilepointer=, =getfiletype=, =getfileinformation=, =filemapping=,
+   =getcommandline=, =commandlinetoargv=, or =wsastartup=.
    *Windows SetFilePointerEx PE smoke SHIPPED 2026-06-03*:
    =setfilepointer-exit-42= creates a temporary file, seeks to offset 0 through
    =SetFilePointerEx= with a writable new-position slot, closes/deletes the
@@ -1704,6 +1724,10 @@ largest uncertainty (B1 + B2) first.
    =getfileinformation-exit-42= creates a temporary file, calls
    =GetFileInformationByHandle= into writable =BY_HANDLE_FILE_INFORMATION=
    storage, closes/deletes the file, and exits 42 on success.
+   *Windows file mapping PE smoke SHIPPED 2026-06-03*:
+   =filemapping-exit-42= creates a temporary file, creates/maps/unmaps a
+   writable file mapping, closes the mapping and file HANDLEs, deletes the
+   file, and exits 42 on success.
    *Windows ReadFile stdin runner fix SHIPPED 2026-06-03*:
    =tools/windows-selfhost-test.ps1= now pipes a small stdin payload when
    running =readfile-stdin=, matching the smoke's =STD_INPUT_HANDLE= dependency
@@ -2120,8 +2144,8 @@ writer (import directory).  That single coupling (B1+B2) is the whole game.
 - =lisp/nelisp-pe-write.el= — PE32+ console EXE smoke specs for ExitProcess,
   VirtualAlloc, VirtualProtect / VirtualFree, arena metadata, WriteFile
   stdout, ReadFile stdin, CreateFileW, SetFilePointerEx, GetFileType,
-  GetFileInformationByHandle, GetCommandLineW, CommandLineToArgvW, and
-  WSAStartup.
+  GetFileInformationByHandle, CreateFileMappingW / MapViewOfFile,
+  GetCommandLineW, CommandLineToArgvW, and WSAStartup.
 - =lisp/nelisp-asm-x86_64.el= — =('sysv | 'win64)= ABI slot.
 - =lisp/nelisp-phase47-compiler.el:149= — =--abi= dynvar (sysv/win64).
 - =lisp/nelisp-stdlib-os.el= — Linux/Darwin POSIX-like path plus Windows
