@@ -10521,7 +10521,9 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-atomic-fetch-add-arm64 node buf))
         ((= tag 86)             ; while — aarch64 loop (cmp/b.eq/b)
          (nelisp-phase47-compiler--emit-while node buf))
-        ((memq tag '(5 23 61 57 56 55 27 ; call extern-call sexp-tag sexp-int-unwrap sexp-int-make sexp-float-unwrap f64-to-i64-trunc
+        ((= tag 5)              ; call — aarch64 direct BL (fixed arity)
+         (nelisp-phase47-compiler--emit-call-arm64 node buf))
+        ((memq tag '(23 61 57 56 55 27   ; extern-call sexp-tag sexp-int-unwrap sexp-int-make sexp-float-unwrap f64-to-i64-trunc
                      17 12 13 14         ; cons-null-p cons-car cons-cdr cons-cdr-raw
                      59 60               ; sexp-payload-ptr sexp-payload-ptr-record
                      52 48 49            ; record-type-tag record-slot-count record-slot-ref
@@ -13102,6 +13104,32 @@ ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Xn)
   (nelisp-asm-arm64-ldaddal buf 'x2 'x0 'x1))        ; x0 = old [x1]
 
+(defun nelisp-phase47-compiler--emit-call-arm64 (node buf)
+  "Emit a fixed-arity direct call for aarch64 (AAPCS64).
+Each arg is evaluated left-to-right into x0 and spilled (STR
+[SP,#-16]!); the n spills are then popped into x0..x(n-1) so later
+args cannot clobber earlier arg registers; then `BL <name>'.  The
+result is already in x0.  Only named (non-pointer) targets with
+<= 6 register args are supported (nelisp-sys caps params at 6)."
+  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
+         (fn-value (nelisp-phase47-compiler--ir-get node :fn-value))
+         (args (nelisp-phase47-compiler--ir-get node :args))
+         (n (length args))
+         (gp-arg-regs '(x0 x1 x2 x3 x4 x5)))
+    (when fn-value
+      (signal 'nelisp-phase47-compiler-error
+              (list :call-ptr-aarch64-unsupported name)))
+    (when (> n (length gp-arg-regs))
+      (signal 'nelisp-phase47-compiler-error
+              (list :call-too-many-args-aarch64 name n)))
+    (dolist (a args)
+      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
+    ;; Pop in reverse: top of stack (last arg) -> highest reg.
+    (cl-loop for i from (1- n) downto 0
+             do (nelisp-asm-arm64-ldr-post-sp-16 buf (nth i gp-arg-regs)))
+    (nelisp-asm-arm64-bl buf name)))
+
 ;; ---- Doc 101 §101.D Cons construction ops ----
 
 (defun nelisp-phase47-compiler--emit-cons-make (node buf)
@@ -13563,23 +13591,30 @@ the absolute virtual address of byte 0 of .rodata."
 VALUE-NODE is a value-producing IR node.  If it's an `imm', emit
 the legacy fixed-status path (= 16 bytes).  Otherwise compute the
 value into rax then `mov rdi, rax' + syscall."
-  ;; A33.3 — integer-tag dispatch (`pcase' arm → `cond' over
-  ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-  (let ((tag (nelisp-phase47-compiler--ir-kind-tag value-node)))
-   (cond
-    ((= tag 30)                 ; imm
-     (let ((status (nelisp-phase47-compiler--ir-get value-node :value)))
+  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      ;; aarch64: status -> x0 (already the syscall arg0); NR -> x8
+      ;; (Linux exit=93, SVC #0) or x16 (Darwin exit=1, SVC #0x80).
+      (let ((darwin (eq nelisp-phase47-compiler--os 'darwin)))
+        (nelisp-phase47-compiler--emit-value value-node buf)
+        (nelisp-asm-arm64-mov-imm64 buf (if darwin 'x16 'x8) (if darwin 1 93))
+        (nelisp-asm-arm64-svc buf (if darwin #x80 0)))
+    ;; A33.3 — integer-tag dispatch (`pcase' arm → `cond' over
+    ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+    (let ((tag (nelisp-phase47-compiler--ir-kind-tag value-node)))
+     (cond
+      ((= tag 30)                 ; imm
+       (let ((status (nelisp-phase47-compiler--ir-get value-node :value)))
+         (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
+         (nelisp-asm-x86_64-mov-imm32 buf 'rdi status)
+         (nelisp-asm-x86_64-syscall buf)))
+      (t
+       ;; Compute value into rax (= might call functions).
+       (nelisp-phase47-compiler--emit-value value-node buf)
+       ;; mov rdi, rax (= exit status from computed value).
+       (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+       ;; mov rax, 60 (SYS_exit).
        (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
-       (nelisp-asm-x86_64-mov-imm32 buf 'rdi status)
-       (nelisp-asm-x86_64-syscall buf)))
-    (t
-     ;; Compute value into rax (= might call functions).
-     (nelisp-phase47-compiler--emit-value value-node buf)
-     ;; mov rdi, rax (= exit status from computed value).
-     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-     ;; mov rax, 60 (SYS_exit).
-     (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
-     (nelisp-asm-x86_64-syscall buf)))))
+       (nelisp-asm-x86_64-syscall buf))))))
 
 (defun nelisp-phase47-compiler--emit-stmt (ir buf str-offsets rodata-vaddr)
   "Walk statement IR appending instructions to BUF.
@@ -13691,7 +13726,10 @@ return reg, untouched by epilogue)."
           ;; Save LR for forward compatibility, then establish x29.
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x30)
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x29)
-          (nelisp-asm-arm64-mov-reg-reg buf 'x29 'sp)
+          ;; x29 = sp : MUST use `ADD x29, sp, #0' — `mov-reg-reg' is
+          ;; ORR Xd,XZR,Xm where reg 31 = XZR (not SP), so it would set
+          ;; x29 = 0 and every frame-relative `ref' would fault.
+          (nelisp-asm-arm64-add-imm buf 'x29 'sp 0)
           (cond
            ((eq param-class 'gp)
             (dotimes (i (length param-regs))
@@ -13715,7 +13753,8 @@ return reg, untouched by epilogue)."
             (signal 'nelisp-phase47-compiler-error
                     (list :unknown-defun-param-class param-class))))
           (nelisp-phase47-compiler--emit-value body buf)
-          (nelisp-asm-arm64-mov-reg-reg buf 'sp 'x29)
+          ;; sp = x29 : same SP-vs-XZR caveat — use `ADD sp, x29, #0'.
+          (nelisp-asm-arm64-add-imm buf 'sp 'x29 0)
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x29)
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x30)
           (nelisp-asm-arm64-ret buf))

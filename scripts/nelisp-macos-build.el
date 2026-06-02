@@ -32,15 +32,32 @@
 (require 'nelisp-asm-arm64)
 
 (defun nelisp-macos-build--emit-text (sexp)
-  "Compile top-level SEXP to aarch64 / Darwin __text bytes.
-Returns a unibyte string whose first instruction is the program entry."
-  (let ((nelisp-phase47-compiler--arch 'aarch64)
-        (nelisp-phase47-compiler--os 'darwin)
-        (buf (nelisp-asm-arm64-make-buffer)))
-    (let ((ir (nelisp-phase47-compiler--parse-value sexp nil nil nil)))
-      (nelisp-phase47-compiler--emit-value ir buf))
-    ;; Resolve B / B.cond label fixups before materialising — without
-    ;; this every branch keeps its placeholder offset 0 (= self-loop).
+  "Compile a full program SEXP to aarch64 / Darwin __text bytes.
+SEXP may contain `defun' forms.  The main body (entry point) is
+emitted first so it runs at the Mach-O `LC_MAIN' offset, then each
+defun is appended after; their labels are forward-resolved by
+`resolve-fixups' (also required for B / B.cond — without it every
+branch keeps its placeholder offset 0 = self-loop).  Returns a
+unibyte string.  String/rodata literals are not yet wired into the
+Mach-O image (code-only programs)."
+  (let* ((nelisp-phase47-compiler--arch 'aarch64)
+         (nelisp-phase47-compiler--os 'darwin)
+         (nelisp-phase47-compiler--label-counter 0)
+         (buf (nelisp-asm-arm64-make-buffer))
+         ;; Statement grammar (`exit'/`write'/`seq'/`defun'/...) accepts
+         ;; programs with function definitions; a bare value expression
+         ;; (e.g. ending in `syscall-direct') is `:unknown-form' there, so
+         ;; fall back to the value grammar for those.
+         (stmt-ir (condition-case nil
+                      (nelisp-phase47-compiler--parse sexp nil)
+                    (nelisp-phase47-compiler-error nil))))
+    (if stmt-ir
+        (let ((defuns (nelisp-phase47-compiler--collect-defuns stmt-ir)))
+          (nelisp-phase47-compiler--emit-stmt stmt-ir buf nil 0)
+          (dolist (d defuns)
+            (nelisp-phase47-compiler--emit-defun d buf)))
+      (nelisp-phase47-compiler--emit-value
+       (nelisp-phase47-compiler--parse-value sexp nil nil nil) buf))
     (let ((bytes (nelisp-asm-arm64-resolve-fixups buf)))
       (if (multibyte-string-p bytes)
           (apply #'unibyte-string (append bytes nil))
