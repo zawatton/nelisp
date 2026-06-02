@@ -3435,6 +3435,38 @@
                                4000))))
     (should (equal (sort freed #'<) '(3000 4000)))))
 
+(ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-ip-mtu ()
+  "Windows IP_MTU translates through Winsock getsockopt."
+  (let ((alloc-next 3000)
+        (call nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os-read-i32) (lambda (_ptr _off) 1500))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-IP nelisp-os-IP-MTU)
+                   1500))))
+    (should (equal call
+                   (list "ws2_32" "getsockopt"
+                         [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                         (list #xabcdef
+                               nelisp-os-WIN-IPPROTO-IP
+                               nelisp-os-WIN-IP-MTU
+                               3000
+                               4000))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-ip-multicast-if ()
   "Windows IP_MULTICAST_IF translates through Winsock getsockopt."
   (let ((alloc-next 3000)
@@ -3821,6 +3853,22 @@
         (should-error
          (nelisp-os-setsockopt-int
           3 nelisp-os-SOL-SOCKET nelisp-os-SO-ACCEPTCONN 1)
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-rejects-ip-mtu ()
+  "Windows setsockopt rejects get-only IP_MTU before Winsock FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-setsockopt-int
+          3 nelisp-os-IPPROTO-IP nelisp-os-IP-MTU 1500)
          :type 'nelisp-os-error)))
     (should-not called)))
 
