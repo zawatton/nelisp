@@ -719,6 +719,59 @@
           (should-error (funcall fn) :type 'nelisp-os-error))))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-socket-windows-uses-winsock ()
+  "Windows AF_INET socket initializes Winsock and returns a socket fd."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-winsock-started-p nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WSAStartup") 0)
+                  ((equal fn "socket") #xabcdef)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-socket nelisp-os-AF-INET
+                                     nelisp-os-SOCK-STREAM
+                                     nelisp-os-IPPROTO-TCP)
+                   3))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "WSAStartup"
+                          [:sint32 :uint16 :pointer]
+                          (list nelisp-os-WIN-WINSOCK-VERSION-2-2 3000))
+                    (list "ws2_32" "socket"
+                          [:pointer :sint32 :sint32 :sint32]
+                          (list nelisp-os-AF-INET
+                                nelisp-os-SOCK-STREAM
+                                nelisp-os-IPPROTO-TCP)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (should nelisp-os--windows-winsock-started-p)
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-socket-windows-rejects-linux-socket-flags ()
+  "Windows socket rejects SOCK_NONBLOCK/SOCK_CLOEXEC before Winsock FFI."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-socket nelisp-os-AF-INET
+                           (logior nelisp-os-SOCK-STREAM
+                                   nelisp-os-SOCK-NONBLOCK)
+                           nelisp-os-IPPROTO-TCP)
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-kill-windows-uses-terminateprocess ()
   "Windows kill terminates a single PID through kernel32 process APIs."
   (let ((calls nil))
@@ -1002,6 +1055,24 @@
                    (list "kernel32" "CloseHandle"
                          [:sint32 :pointer]
                          (list #x778899aa))))))
+
+(ert-deftest nelisp-stdlib-os-close-windows-socket-fd-uses-closesocket ()
+  "Windows socket fd close removes fd tables and calls closesocket."
+  (let ((call nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should-not (nelisp-os-close 3))))
+    (should-not nelisp-os--windows-fd-table)
+    (should-not nelisp-os--windows-fd-kind-table)
+    (should (equal call
+                   (list "ws2_32" "closesocket"
+                         [:sint32 :pointer]
+                         (list #xabcdef))))))
 
 (ert-deftest nelisp-stdlib-os-read-windows-stdin-uses-kernel32 ()
   "On Windows, stdin read routes through GetStdHandle + ReadFile."

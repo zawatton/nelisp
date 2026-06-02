@@ -42,9 +42,10 @@
 ;; maps `getppid' to the Tool Help process snapshot APIs.  Stage 20 adds a
 ;; minimal Windows `fcntl' compatibility branch for `F_DUPFD' / `F_GETFL' /
 ;; `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on Windows
-;; before they can fall through to Linux syscall or libc paths.  The
-;; Linux/Darwin path remains the default until a real Windows standalone runtime
-;; selects `system-type' = `windows-nt'.
+;; before they can fall through to Linux syscall or libc paths.  Stage 22 starts
+;; the Winsock branch with `WSAStartup' + `socket' and socket-specific close via
+;; `closesocket'.  The Linux/Darwin path remains the default until a real
+;; Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -145,6 +146,11 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-PROCESSENTRY32W-PID-OFFSET 8)
 (defconst nelisp-os-WIN-PROCESSENTRY32W-PPID-OFFSET 32)
 
+;; Windows Winsock constants.
+(defconst nelisp-os-WIN-WINSOCK-VERSION-2-2 #x0202)
+(defconst nelisp-os-WIN-WSADATA-SIZE 408)
+(defconst nelisp-os-WIN-INVALID-SOCKET -1)
+
 ;; Windows process-launch structure sizes/offsets (x86_64).
 (defconst nelisp-os-WIN-STARTUPINFOW-SIZE 104)
 (defconst nelisp-os-WIN-STARTUPINFOW-CB-OFFSET 0)
@@ -157,6 +163,12 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 (defvar nelisp-os--windows-fd-table nil
   "Alist mapping POSIX-like fds to Windows HANDLE values.")
+
+(defvar nelisp-os--windows-fd-kind-table nil
+  "Alist mapping POSIX-like Windows fds to resource kind symbols.")
+
+(defvar nelisp-os--windows-winsock-started-p nil
+  "Non-nil after this process successfully calls WSAStartup.")
 
 ;; ---------------------------------------------------------------------------
 ;; Error helpers.  syscall return convention: negative integer = -errno.
@@ -188,6 +200,11 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
   (signal 'nelisp-os-error
           (list (nelisp-os--libc-call "kernel32" "GetLastError" [:uint32]))))
 
+(defun nelisp-os--windows-winsock-error-signal ()
+  "Signal `nelisp-os-error' with the current Winsock error code."
+  (signal 'nelisp-os-error
+          (list (nelisp-os--libc-call "ws2_32" "WSAGetLastError" [:sint32]))))
+
 (defun nelisp-os--windows-unsupported ()
   "Signal ENOTSUP for a POSIX/Linux API with no Windows branch yet."
   (signal 'nelisp-os-error (list 95)))
@@ -213,11 +230,14 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
           (nelisp-os--windows-ffi-error-signal)
         handle))))
 
-(defun nelisp-os--windows-fd-alloc (handle)
-  "Allocate a POSIX-like fd for Windows HANDLE."
+(defun nelisp-os--windows-fd-alloc (handle &optional kind)
+  "Allocate a POSIX-like fd for Windows HANDLE.
+KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
   (let ((fd nelisp-os--windows-next-fd))
     (setq nelisp-os--windows-next-fd (1+ nelisp-os--windows-next-fd))
     (push (cons fd handle) nelisp-os--windows-fd-table)
+    (when kind
+      (push (cons fd kind) nelisp-os--windows-fd-kind-table))
     fd))
 
 (defun nelisp-os--windows-fd-alloc-at-least (handle min-fd)
@@ -227,6 +247,11 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
   (when (< nelisp-os--windows-next-fd min-fd)
     (setq nelisp-os--windows-next-fd min-fd))
   (nelisp-os--windows-fd-alloc handle))
+
+(defun nelisp-os--windows-fd-kind (fd)
+  "Return the Windows resource kind for FD."
+  (or (cdr (assq fd nelisp-os--windows-fd-kind-table))
+      'handle))
 
 (defun nelisp-os--windows-fd-handle (fd)
   "Return the Windows HANDLE for FD, or signal EBADF."
@@ -242,7 +267,27 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
       (signal 'nelisp-os-error (list 9)))
     (setq nelisp-os--windows-fd-table
           (delq cell nelisp-os--windows-fd-table))
+    (let ((kind-cell (assq fd nelisp-os--windows-fd-kind-table)))
+      (when kind-cell
+        (setq nelisp-os--windows-fd-kind-table
+              (delq kind-cell nelisp-os--windows-fd-kind-table))))
     (cdr cell)))
+
+(defun nelisp-os--windows-close-resource (handle kind)
+  "Close Windows HANDLE according to KIND."
+  (cond
+   ((eq kind 'socket)
+    (let ((ok (nelisp-os--libc-call
+               "ws2_32" "closesocket" [:sint32 :pointer] handle)))
+      (if (= ok -1)
+          (nelisp-os--windows-winsock-error-signal)
+        nil)))
+   (t
+    (let ((ok (nelisp-os--libc-call
+               "kernel32" "CloseHandle" [:sint32 :pointer] handle)))
+      (if (= ok 0)
+          (nelisp-os--windows-ffi-error-signal)
+        nil)))))
 
 (defun nelisp-os--windows-handle-for-fd (fd)
   "Return a Windows HANDLE for POSIX-like FD."
@@ -254,10 +299,13 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
   "Install HANDLE at POSIX-like FD, replacing any existing HANDLE."
   (let ((cell (assq fd nelisp-os--windows-fd-table)))
     (when cell
-      (let ((ok (nelisp-os--libc-call
-                 "kernel32" "CloseHandle" [:sint32 :pointer] (cdr cell))))
-        (if (= ok 0)
-            (nelisp-os--windows-ffi-error-signal)))
+      (nelisp-os--windows-close-resource
+       (cdr cell)
+       (nelisp-os--windows-fd-kind fd))
+      (let ((kind-cell (assq fd nelisp-os--windows-fd-kind-table)))
+        (when kind-cell
+          (setq nelisp-os--windows-fd-kind-table
+                (delq kind-cell nelisp-os--windows-fd-kind-table))))
       (setq nelisp-os--windows-fd-table
             (delq cell nelisp-os--windows-fd-table)))
     (push (cons fd handle) nelisp-os--windows-fd-table)
@@ -522,12 +570,9 @@ went through `:string' (= CString::new, NUL-rejecting)."
 (defun nelisp-os-close (fd)
   "POSIX close(2) — close FD, return nil or signal `nelisp-os-error'."
   (if (nelisp-os--windows-p)
-      (let* ((handle (nelisp-os--windows-fd-remove fd))
-             (ok (nelisp-os--libc-call
-                  "kernel32" "CloseHandle" [:sint32 :pointer] handle)))
-        (if (= ok 0)
-            (nelisp-os--windows-ffi-error-signal)
-          nil))
+      (let* ((kind (nelisp-os--windows-fd-kind fd))
+             (handle (nelisp-os--windows-fd-remove fd)))
+        (nelisp-os--windows-close-resource handle kind))
     (if nelisp-os--use-direct-syscall
       (progn (nelisp-os--check-errno (nelisp--syscall 'close fd)) nil)
     (progn
@@ -1284,9 +1329,44 @@ returns (0 . 0)."
 
 ;; ----- Network wrappers (AF_INET) -----
 
+(defun nelisp-os--windows-winsock-ensure ()
+  "Initialize Winsock for this process if needed."
+  (unless nelisp-os--windows-winsock-started-p
+    (let ((wsa-data (nelisp-os--alloc nelisp-os-WIN-WSADATA-SIZE)))
+      (unwind-protect
+          (let ((rc (nelisp-os--libc-call
+                     "ws2_32" "WSAStartup"
+                     [:sint32 :uint16 :pointer]
+                     nelisp-os-WIN-WINSOCK-VERSION-2-2
+                     wsa-data)))
+            (if (/= rc 0)
+                (signal 'nelisp-os-error (list rc))
+              (setq nelisp-os--windows-winsock-started-p t)))
+        (nelisp-os--free wsa-data)))))
+
+(defun nelisp-os--windows-socket (domain type proto)
+  "Windows implementation of `nelisp-os-socket' via Winsock."
+  (when (/= domain nelisp-os-AF-INET)
+    (nelisp-os--windows-unsupported))
+  (when (/= 0 (logand type (logior nelisp-os-SOCK-NONBLOCK
+                                   nelisp-os-SOCK-CLOEXEC)))
+    (nelisp-os--windows-unsupported))
+  (unless (memq type (list nelisp-os-SOCK-STREAM nelisp-os-SOCK-DGRAM))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (nelisp-os--windows-winsock-ensure)
+  (let ((sock (nelisp-os--libc-call
+               "ws2_32" "socket"
+               [:pointer :sint32 :sint32 :sint32]
+               domain type proto)))
+    (if (= sock nelisp-os-WIN-INVALID-SOCKET)
+        (nelisp-os--windows-winsock-error-signal)
+      (nelisp-os--windows-fd-alloc sock 'socket))))
+
 (defun nelisp-os-socket (domain type proto)
   "POSIX socket(2) — return new fd or signal `nelisp-os-error'."
-  (nelisp-os--check-errno (nelisp--syscall 'socket domain type proto)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-socket domain type proto)
+    (nelisp-os--check-errno (nelisp--syscall 'socket domain type proto))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 76 Stage C (2026-05-08) — sockaddr_in encode/decode + pollfd[]
