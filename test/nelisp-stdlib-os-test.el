@@ -1263,6 +1263,20 @@
                           [:uint32 :pointer]
                           (list #x55667788)))))))
 
+(ert-deftest nelisp-stdlib-os-fstat-windows-socket-returns-socket-mode ()
+  "Windows fstat on socket-kind fd returns S_IFSOCK before kernel32 FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let* ((system-type 'windows-nt)
+             (st (nelisp-os-fstat 3)))
+        (should (= (nelisp-os-stat-size st) 0))
+        (should (= (nelisp-os-stat-mode st) nelisp-os-S-IFSOCK))
+        (should (= (nelisp-os-stat-nlink st) 1))))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-dup2-windows-duplicates-regular-fd ()
   "Windows dup2 duplicates a HANDLE and installs it in the fd table."
   (let ((calls nil)

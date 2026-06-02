@@ -1435,6 +1435,7 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
 (defconst nelisp-os-S-IFREG 32768)          ; 0o100000
 (defconst nelisp-os-S-IFDIR 16384)          ; 0o040000
 (defconst nelisp-os-S-IFLNK 40960)          ; 0o120000
+(defconst nelisp-os-S-IFSOCK 49152)         ; 0o140000
 
 ;; ----- Wrappers -----
 
@@ -1527,22 +1528,26 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
 
 (defun nelisp-os--windows-fstat (fd)
   "Windows implementation of `nelisp-os-fstat' for HANDLE-backed fds."
-  (let* ((handle (nelisp-os--windows-handle-for-fd fd))
-         (file-type (nelisp-os--libc-call
-                     "kernel32" "GetFileType" [:uint32 :pointer] handle)))
-    (if (= file-type nelisp-os-WIN-FILE-TYPE-DISK)
-        (let ((info-buf (nelisp-os--alloc
-                         nelisp-os-WIN-BY-HANDLE-FILE-INFORMATION-SIZE)))
-          (unwind-protect
-              (let ((ok (nelisp-os--libc-call
-                         "kernel32" "GetFileInformationByHandle"
-                         [:sint32 :pointer :pointer]
-                         handle info-buf)))
-                (if (= ok 0)
-                    (nelisp-os--windows-ffi-error-signal)
-                  (nelisp-os--windows-stat-from-file-information info-buf)))
-            (nelisp-os--free info-buf)))
-      (nelisp-os--windows-stat-list 0 0))))
+  (if (eq (nelisp-os--windows-fd-kind fd) 'socket)
+      (progn
+        (nelisp-os--windows-socket-for-fd fd)
+        (nelisp-os--windows-stat-list 0 nelisp-os-S-IFSOCK))
+    (let* ((handle (nelisp-os--windows-handle-for-fd fd))
+           (file-type (nelisp-os--libc-call
+                       "kernel32" "GetFileType" [:uint32 :pointer] handle)))
+      (if (= file-type nelisp-os-WIN-FILE-TYPE-DISK)
+          (let ((info-buf (nelisp-os--alloc
+                           nelisp-os-WIN-BY-HANDLE-FILE-INFORMATION-SIZE)))
+            (unwind-protect
+                (let ((ok (nelisp-os--libc-call
+                           "kernel32" "GetFileInformationByHandle"
+                           [:sint32 :pointer :pointer]
+                           handle info-buf)))
+                  (if (= ok 0)
+                      (nelisp-os--windows-ffi-error-signal)
+                    (nelisp-os--windows-stat-from-file-information info-buf)))
+              (nelisp-os--free info-buf)))
+        (nelisp-os--windows-stat-list 0 0)))))
 
 (defun nelisp-os--windows-dup2 (oldfd newfd)
   "Windows implementation of `nelisp-os-dup2' via DuplicateHandle."
