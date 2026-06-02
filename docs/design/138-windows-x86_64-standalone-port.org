@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-130-WINDOWS-INOTIFY-SYNTHETIC-FD
+#+STATUS: STAGE-131-WINDOWS-INOTIFY-DUP
 
 * Status
 
-- *State*: STAGE 130 Windows inotify synthetic fd compatibility
+- *State*: STAGE 131 Windows inotify dup compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -295,6 +295,9 @@
   watch descriptors through =inotify_add_watch= / =inotify_rm_watch=, exposes
   queued high-level =inotify_read= events plus =poll= readiness, and avoids
   regular HANDLE/Linux syscall fallback for raw =read/write/lseek/fstat=.
+  Windows inotify duplicates now retain fd-kind / status flag tracking and
+  share watch/queue state across =dup2=, standard fd =dup2= targets, and
+  =F_DUPFD=.
   Windows abstract AF_UNIX =bind= / =connect= now map abstract names to stable
   hashed temporary filesystem socket paths and reuse the existing Winsock
   filesystem AF_UNIX path.
@@ -734,6 +737,10 @@
   descriptors, exposes fstat/lseek/read/write behavior without HANDLE fallback,
   drains queued events through =inotify_read=, reports queued readiness through
   =poll=, and cleans up state on close.
+  Stage 131 coverage verifies Windows inotify duplicates preserve inotify
+  kind/status flags and share watch/queue state across =dup2=, stdout =dup2=,
+  and =F_DUPFD=, including draining queued events from duplicated descriptors
+  and adding watches through duplicated descriptors.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1678,6 +1685,9 @@ largest uncertainty (B1 + B2) first.
    =inotify_add_watch= / =inotify_rm_watch= manage synthetic watch
    descriptors, =inotify_read= drains queued normalized events, =poll= reports
    queued readiness, and close removes inotify state.
+   *Windows inotify dup compatibility SHIPPED 2026-06-03*: inotify =dup2=,
+   stdout-target =dup2=, and =F_DUPFD= preserve inotify kind/status flags and
+   share watch/queue state with the source descriptor.
    *Windows sigprocmask compatibility SHIPPED 2026-06-03*: =sigprocmask=
    now maintains an emulated Windows signal mask and returns previous masks
    for =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK= without POSIX FFI.

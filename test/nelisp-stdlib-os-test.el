@@ -2399,6 +2399,183 @@
                           [:sint32 :pointer]
                           (list #xaaaa)))))))
 
+(ert-deftest nelisp-stdlib-os-dup2-windows-duplicates-inotify-kind ()
+  "Windows inotify dup2 preserves inotify kind and shared state."
+  (let ((calls nil)
+        (freed nil)
+        (state (vector 2
+                       (list (list 1 "C:/tmp" nelisp-os-IN-ALL-EVENTS))
+                       (list (list 1 nelisp-os-IN-CREATE 0 "a.txt"))))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . inotify)))
+        (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
+        (nelisp-os--windows-inotify-table nil))
+    (setq nelisp-os--windows-inotify-table (list (cons 3 state)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (_ptr _off) #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  ((equal fn "ResetEvent") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 5) 5))
+        (should (= (nelisp-os-fcntl 5 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (equal (nelisp-os-inotify-read 5 4)
+                       (list (list 1 nelisp-os-IN-CREATE 0 "a.txt"))))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((5 . #xbbbb) (3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((5 . inotify) (3 . inotify))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((5 . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
+    (should (eq (cdr (assq 3 nelisp-os--windows-inotify-table))
+                (cdr (assq 5 nelisp-os--windows-inotify-table))))
+    (should (equal (aref (cdr (assq 3 nelisp-os--windows-inotify-table)) 2)
+                   nil))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess" [:pointer] nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "ResetEvent"
+                          [:sint32 :pointer]
+                          (list #xbbbb)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-duplicates-inotify-kind ()
+  "Windows F_DUPFD preserves inotify kind and shared watch state."
+  (let ((calls nil)
+        (freed nil)
+        (state (vector 2
+                       (list (list 1 "C:/tmp" nelisp-os-IN-ALL-EVENTS))
+                       nil))
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . inotify)))
+        (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
+        (nelisp-os--windows-inotify-table nil))
+    (setq nelisp-os--windows-inotify-table (list (cons 3 state)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (_ptr _off) #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-DUPFD 10) 10))
+        (should (= (nelisp-os-fcntl 10 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os-inotify-add-watch 10 "C:/next"
+                                                nelisp-os-IN-CREATE)
+                   2))))
+    (should (equal nelisp-os--windows-next-fd 11))
+    (should (equal nelisp-os--windows-fd-table
+                   '((10 . #xbbbb) (3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((10 . inotify) (3 . inotify))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((10 . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
+    (should (eq (cdr (assq 3 nelisp-os--windows-inotify-table))
+                (cdr (assq 10 nelisp-os--windows-inotify-table))))
+    (should (equal (aref (cdr (assq 3 nelisp-os--windows-inotify-table)) 0)
+                   3))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess" [:pointer] nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-dup2-windows-inotify-can-target-stdout ()
+  "Windows inotify dup2 to stdout preserves inotify standard fd behavior."
+  (let ((calls nil)
+        (freed nil)
+        (state (vector 2
+                       (list (list 1 "C:/tmp" nelisp-os-IN-ALL-EVENTS))
+                       (list (list 1 nelisp-os-IN-DELETE 0 "old.txt"))))
+        (std-handles '(#xdddd #xbbbb))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . inotify)))
+        (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
+        (nelisp-os--windows-inotify-table nil))
+    (setq nelisp-os--windows-inotify-table (list (cons 3 state)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (_ptr _off) #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  ((equal fn "GetStdHandle") (pop std-handles))
+                  ((equal fn "SetStdHandle") 1)
+                  ((equal fn "CloseHandle") 1)
+                  ((equal fn "ResetEvent") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 nelisp-os-STDOUT)
+                   nelisp-os-STDOUT))
+        (should (= (nelisp-os-fcntl nelisp-os-STDOUT nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (equal (nelisp-os-inotify-read nelisp-os-STDOUT 4)
+                       (list (list 1 nelisp-os-IN-DELETE 0 "old.txt"))))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   `((,nelisp-os-STDOUT . inotify) (3 . inotify))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((,nelisp-os-STDOUT . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
+    (should (eq (cdr (assq 3 nelisp-os--windows-inotify-table))
+                (cdr (assq nelisp-os-STDOUT
+                           nelisp-os--windows-inotify-table))))
+    (should (equal (aref (cdr (assq 3 nelisp-os--windows-inotify-table)) 2)
+                   nil))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess" [:pointer] nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "SetStdHandle"
+                          [:sint32 :sint32 :pointer]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE #xbbbb))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xdddd))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "ResetEvent"
+                          [:sint32 :pointer]
+                          (list #xbbbb)))))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-sendmsg-fds-windows-empty-fds-uses-send ()
   "Windows sendmsg-fds with no fd passing uses Winsock send for payload."
   (let ((calls nil)
