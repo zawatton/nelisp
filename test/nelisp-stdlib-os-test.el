@@ -2219,6 +2219,106 @@
     (should (equal nelisp-os--windows-process-table
                    '((1234 . #xabcdef))))))
 
+(ert-deftest nelisp-stdlib-os-wait-windows-any-registered-child ()
+  "Windows wait(-1) reaps one registered child through WaitForMultipleObjects."
+  (let ((calls nil)
+        (freed nil)
+        (handle-writes nil)
+        (alloc-next 3000)
+        (nelisp-os--windows-process-table '((111 . #xaaaa) (222 . #xbbbb))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) handle-writes)
+                 val))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 4000))
+                 (should (= off 0))
+                 12))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForMultipleObjects")
+                   (+ nelisp-os-WIN-WAIT-OBJECT-0 1))
+                  ((equal fn "GetExitCodeProcess") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-wait -1 0)
+                       (cons 222 (ash 12 8))))))
+    (should (equal (nreverse handle-writes)
+                   (list
+                    (list 3000 0 #xaaaa)
+                    (list 3000 8 #xbbbb))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForMultipleObjects"
+                          [:uint32 :uint32 :pointer :sint32 :uint32]
+                          (list 2 3000 0 nelisp-os-WIN-INFINITE))
+                    (list "kernel32" "GetExitCodeProcess"
+                          [:sint32 :pointer :pointer]
+                          (list #xbbbb 4000))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xbbbb)))))
+    (should (equal nelisp-os--windows-process-table
+                   '((111 . #xaaaa))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-wait-windows-any-registered-wnohang-timeout ()
+  "Windows wait(-1 WNOHANG) keeps all registered children on timeout."
+  (let ((calls nil)
+        (freed nil)
+        (handle-writes nil)
+        (nelisp-os--windows-process-table '((111 . #xaaaa) (222 . #xbbbb))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) handle-writes)
+                 val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForMultipleObjects")
+                   nelisp-os-WIN-WAIT-TIMEOUT)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-wait -1 nelisp-os-WNOHANG)
+                       '(0 . 0)))))
+    (should (equal (nreverse handle-writes)
+                   (list
+                    (list 3000 0 #xaaaa)
+                    (list 3000 8 #xbbbb))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForMultipleObjects"
+                          [:uint32 :uint32 :pointer :sint32 :uint32]
+                          (list 2 3000 0 0)))))
+    (should (equal nelisp-os--windows-process-table
+                   '((111 . #xaaaa) (222 . #xbbbb))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-wait-windows-any-registered-empty-errors ()
+  "Windows wait(-1) reports ECHILD when no child HANDLE is registered."
+  (let ((called nil)
+        (nelisp-os--windows-process-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-wait -1 0)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)
