@@ -62,9 +62,10 @@
 ;; reads to Winsock `getsockopt'.  Stage 39 adds TCP_NODELAY translation to the
 ;; int-valued socket option helpers.  Stage 40 maps file-backed Windows `mmap'
 ;; to CreateFileMappingW / MapViewOfFile.  Stage 46 keeps Windows socket fd
-;; duplication from incorrectly flowing through `DuplicateHandle'.  The
-;; Linux/Darwin path remains the default until a real Windows standalone
-;; runtime selects `system-type' = `windows-nt'.
+;; duplication from incorrectly flowing through `DuplicateHandle'.  Stage 47
+;; duplicates socket-kind fds through `WSADuplicateSocketW' / `WSASocketW' for
+;; non-standard fd targets.  The Linux/Darwin path remains the default until a
+;; real Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -174,7 +175,10 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 ;; Windows Winsock constants.
 (defconst nelisp-os-WIN-WINSOCK-VERSION-2-2 #x0202)
 (defconst nelisp-os-WIN-WSADATA-SIZE 408)
+(defconst nelisp-os-WIN-WSAPROTOCOL-INFOW-SIZE 628)
 (defconst nelisp-os-WIN-INVALID-SOCKET -1)
+(defconst nelisp-os-WIN-FROM-PROTOCOL-INFO -1)
+(defconst nelisp-os-WIN-WSA-FLAG-OVERLAPPED #x01)
 (defconst nelisp-os-WIN-SOL-SOCKET #xffff)
 (defconst nelisp-os-WIN-SO-REUSEADDR #x0004)
 (defconst nelisp-os-WIN-SO-KEEPALIVE #x0008)
@@ -341,8 +345,9 @@ silently sent through `DuplicateHandle'."
       (nelisp-os--windows-unsupported)
     (nelisp-os--windows-handle-for-fd fd)))
 
-(defun nelisp-os--windows-fd-install (fd handle)
-  "Install HANDLE at POSIX-like FD, replacing any existing HANDLE."
+(defun nelisp-os--windows-fd-install (fd handle &optional kind)
+  "Install HANDLE at POSIX-like FD, replacing any existing HANDLE.
+KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
   (let ((cell (assq fd nelisp-os--windows-fd-table)))
     (when cell
       (nelisp-os--windows-close-resource
@@ -355,6 +360,8 @@ silently sent through `DuplicateHandle'."
       (setq nelisp-os--windows-fd-table
             (delq cell nelisp-os--windows-fd-table)))
     (push (cons fd handle) nelisp-os--windows-fd-table)
+    (when kind
+      (push (cons fd kind) nelisp-os--windows-fd-kind-table))
     (when (>= fd nelisp-os--windows-next-fd)
       (setq nelisp-os--windows-next-fd (1+ fd)))
     fd))
@@ -986,66 +993,82 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
       (progn
         (nelisp-os--windows-handle-for-fd oldfd)
         newfd)
-    (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
-          (target-handle-buf (nelisp-os--alloc 8)))
-      (unwind-protect
-          (let* ((current-process
-                  (nelisp-os--libc-call "kernel32" "GetCurrentProcess" [:pointer]))
-                 (ok (nelisp-os--libc-call
-                      "kernel32" "DuplicateHandle"
-                      [:sint32 :pointer :pointer :pointer :pointer
-                       :uint32 :sint32 :uint32]
-                      current-process
-                      source-handle
-                      current-process
-                      target-handle-buf
-                      0
-                      1
-                      nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))
-            (if (= ok 0)
-                (nelisp-os--windows-ffi-error-signal)
-              (let ((target-handle (nelisp-os-read-i64 target-handle-buf 0))
-                    (selector (nelisp-os--windows-std-handle-selector newfd)))
-                (if selector
-                    (let ((set-ok (nelisp-os--libc-call
-                                   "kernel32" "SetStdHandle"
-                                   [:sint32 :sint32 :pointer]
-                                   selector target-handle)))
-                      (if (= set-ok 0)
-                          (progn
-                            (nelisp-os--libc-call
-                             "kernel32" "CloseHandle"
-                             [:sint32 :pointer] target-handle)
-                            (nelisp-os--windows-ffi-error-signal))
-                        newfd))
-                  (nelisp-os--windows-fd-install newfd target-handle)))))
-        (nelisp-os--free target-handle-buf)))))
+    (if (eq (nelisp-os--windows-fd-kind oldfd) 'socket)
+        (if (nelisp-os--windows-std-handle-selector newfd)
+            (nelisp-os--windows-unsupported)
+          (nelisp-os--windows-fd-install
+           newfd
+           (nelisp-os--windows-duplicate-socket oldfd)
+           'socket))
+      (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
+            (target-handle-buf (nelisp-os--alloc 8)))
+        (unwind-protect
+            (let* ((current-process
+                    (nelisp-os--libc-call "kernel32" "GetCurrentProcess" [:pointer]))
+                   (ok (nelisp-os--libc-call
+                        "kernel32" "DuplicateHandle"
+                        [:sint32 :pointer :pointer :pointer :pointer
+                         :uint32 :sint32 :uint32]
+                        current-process
+                        source-handle
+                        current-process
+                        target-handle-buf
+                        0
+                        1
+                        nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))
+              (if (= ok 0)
+                  (nelisp-os--windows-ffi-error-signal)
+                (let ((target-handle (nelisp-os-read-i64 target-handle-buf 0))
+                      (selector (nelisp-os--windows-std-handle-selector newfd)))
+                  (if selector
+                      (let ((set-ok (nelisp-os--libc-call
+                                     "kernel32" "SetStdHandle"
+                                     [:sint32 :sint32 :pointer]
+                                     selector target-handle)))
+                        (if (= set-ok 0)
+                            (progn
+                              (nelisp-os--libc-call
+                               "kernel32" "CloseHandle"
+                               [:sint32 :pointer] target-handle)
+                              (nelisp-os--windows-ffi-error-signal))
+                          newfd))
+                    (nelisp-os--windows-fd-install newfd target-handle)))))
+          (nelisp-os--free target-handle-buf))))))
 
 (defun nelisp-os--windows-duplicate-fd (oldfd min-fd)
   "Duplicate OLDFD to a new Windows fd whose number is at least MIN-FD."
-  (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
-        (target-process (nelisp-os--libc-call
-                         "kernel32" "GetCurrentProcess"
-                         [:pointer]))
-        (target-buf (nelisp-os--alloc 8)))
-    (unwind-protect
-        (let ((ok (nelisp-os--libc-call
-                   "kernel32" "DuplicateHandle"
-                   [:sint32 :pointer :pointer :pointer :pointer
-                    :uint32 :sint32 :uint32]
-                   target-process
-                   source-handle
-                   target-process
-                   target-buf
-                   0
-                   1
-                   nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))
-          (if (= ok 0)
-              (nelisp-os--windows-ffi-error-signal)
-            (nelisp-os--windows-fd-alloc-at-least
-             (nelisp-os-read-i64 target-buf 0)
-             min-fd)))
-      (nelisp-os--free target-buf))))
+  (when (< min-fd 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (if (eq (nelisp-os--windows-fd-kind oldfd) 'socket)
+      (progn
+        (when (< nelisp-os--windows-next-fd min-fd)
+          (setq nelisp-os--windows-next-fd min-fd))
+        (nelisp-os--windows-fd-alloc
+         (nelisp-os--windows-duplicate-socket oldfd)
+         'socket))
+    (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
+          (target-process (nelisp-os--libc-call
+                           "kernel32" "GetCurrentProcess"
+                           [:pointer]))
+          (target-buf (nelisp-os--alloc 8)))
+      (unwind-protect
+          (let ((ok (nelisp-os--libc-call
+                     "kernel32" "DuplicateHandle"
+                     [:sint32 :pointer :pointer :pointer :pointer
+                      :uint32 :sint32 :uint32]
+                     target-process
+                     source-handle
+                     target-process
+                     target-buf
+                     0
+                     1
+                     nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))
+            (if (= ok 0)
+                (nelisp-os--windows-ffi-error-signal)
+              (nelisp-os--windows-fd-alloc-at-least
+               (nelisp-os-read-i64 target-buf 0)
+               min-fd)))
+        (nelisp-os--free target-buf)))))
 
 (defun nelisp-os--windows-fcntl (fd cmd arg)
   "Windows implementation of the int-only `nelisp-os-fcntl' subset."
@@ -1062,6 +1085,35 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
       0))
    (t
     (signal 'nelisp-os-error (list 22))))) ; EINVAL
+
+(defun nelisp-os--windows-duplicate-socket (fd)
+  "Duplicate Windows socket-kind FD with WSADuplicateSocketW / WSASocketW."
+  (let ((source-socket (nelisp-os--windows-socket-for-fd fd))
+        (protocol-info (nelisp-os--alloc nelisp-os-WIN-WSAPROTOCOL-INFOW-SIZE)))
+    (unwind-protect
+        (progn
+          (nelisp-os--windows-winsock-ensure)
+          (let* ((process-id (nelisp-os--libc-call
+                              "kernel32" "GetCurrentProcessId" [:uint32]))
+                 (dup-ok (nelisp-os--libc-call
+                          "ws2_32" "WSADuplicateSocketW"
+                          [:sint32 :pointer :uint32 :pointer]
+                          source-socket process-id protocol-info)))
+            (if (= dup-ok -1)
+                (nelisp-os--windows-winsock-error-signal)
+              (let ((sock (nelisp-os--libc-call
+                           "ws2_32" "WSASocketW"
+                           [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
+                           nelisp-os-WIN-FROM-PROTOCOL-INFO
+                           nelisp-os-WIN-FROM-PROTOCOL-INFO
+                           nelisp-os-WIN-FROM-PROTOCOL-INFO
+                           protocol-info
+                           0
+                           nelisp-os-WIN-WSA-FLAG-OVERLAPPED)))
+                (if (= sock nelisp-os-WIN-INVALID-SOCKET)
+                    (nelisp-os--windows-winsock-error-signal)
+                  sock)))))
+      (nelisp-os--free protocol-info))))
 
 (defun nelisp-os-fstat (fd)
   "POSIX fstat(2) — return positional list of stat fields, or signal

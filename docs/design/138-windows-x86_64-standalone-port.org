@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-46-WINDOWS-SOCKET-DUP-GUARD
+#+STATUS: STAGE-47-WINDOWS-SOCKET-DUP
 
 * Status
 
-- *State*: STAGE 46 Windows socket dup guard
+- *State*: STAGE 47 Windows socket fd dup
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -66,9 +66,10 @@
   =nelisp-os-dup2= now routes Windows fd duplication through
   =DuplicateHandle=; regular targets update the Windows fd table and standard
   targets use =SetStdHandle=, which is the next required piece for
-  =CreateProcess= redirection.  Socket-kind fds now reject =dup2= / =F_DUPFD=
-  before FFI instead of incorrectly flowing through =DuplicateHandle=; a future
-  Winsock-specific duplicate path remains required for socket fd duplication.
+  =CreateProcess= redirection.  Socket-kind fds now use
+  =WSADuplicateSocketW= / =WSASocketW= for =F_DUPFD= and non-standard-target
+  =dup2=, while socket-to-standard-fd =dup2= remains explicitly unsupported
+  until standard fd routing can represent socket-kind replacements.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle=.
@@ -268,9 +269,13 @@
   =GetCommandLineW= / =CommandLineToArgvW= / =LocalFree=.
   Stage 45 coverage verifies PE-level Windows memory lifecycle wiring through
   =VirtualAlloc= / =VirtualProtect= / =VirtualFree=.
-  Stage 46 coverage verifies Windows socket-kind fds reject =dup2= and
-  =F_DUPFD= before any =DuplicateHandle= FFI call, and that
-  =dup2(oldfd, oldfd)= still validates =oldfd= before returning.
+  Stage 46 guarded Windows socket-kind fds from flowing through
+  =DuplicateHandle=, and kept =dup2(oldfd, oldfd)= validating =oldfd= before
+  returning.  Stage 47 coverage supersedes that guard for socket-kind
+  =F_DUPFD= and non-standard-target =dup2= by verifying they now duplicate
+  through =WSADuplicateSocketW= / =WSASocketW= and preserve socket-kind fd
+  table entries.  It also verifies negative =F_DUPFD= minimum fd values reject
+  before any native duplicate call.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -588,9 +593,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows VirtualProtect / VirtualFree smoke progress 2026-06-03*:
   =virtualprotect-free-exit-42= imports =VirtualAlloc= / =VirtualProtect= /
   =VirtualFree= and proves the native memory protect/release lifecycle.
-  *Windows socket dup guard progress 2026-06-03*: socket-kind fds now reject
-  =dup2= / =F_DUPFD= before FFI so SOCKET duplication cannot silently use the
-  HANDLE-only =DuplicateHandle= path.
+  *Windows socket dup progress 2026-06-03*: socket-kind =F_DUPFD= and
+  non-standard-target =dup2= now duplicate through =WSADuplicateSocketW= /
+  =WSASocketW= instead of the HANDLE-only =DuplicateHandle= path.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -728,9 +733,9 @@ largest uncertainty (B1 + B2) first.
    *Windows VirtualProtect / VirtualFree smoke SHIPPED 2026-06-03*:
    =virtualprotect-free-exit-42= proves PE-level memory lifecycle wiring
    through =VirtualAlloc= / =VirtualProtect= / =VirtualFree=.
-   *Windows socket dup guard SHIPPED 2026-06-03*: socket-kind fds now reject
-   =dup2= / =F_DUPFD= before =DuplicateHandle=; Winsock-specific socket
-   duplication remains a separate follow-up.
+   *Windows socket dup SHIPPED 2026-06-03*: socket-kind =F_DUPFD= and
+   non-standard-target =dup2= now duplicate through =WSADuplicateSocketW= /
+   =WSASocketW= and preserve socket-kind fd tracking.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY

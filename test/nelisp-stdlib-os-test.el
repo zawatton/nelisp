@@ -763,15 +763,56 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
-(ert-deftest nelisp-stdlib-os-dup2-windows-rejects-socket-fd-before-ffi ()
-  "Windows socket fd dup2 does not incorrectly use DuplicateHandle."
+(ert-deftest nelisp-stdlib-os-dup2-windows-duplicates-socket-fd ()
+  "Windows socket fd dup2 uses WSADuplicateSocketW + WSASocketW."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-winsock-started-p t)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcessId") 222)
+                  ((equal fn "WSADuplicateSocketW") 0)
+                  ((equal fn "WSASocketW") #x123456)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 5) 5))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcessId"
+                          [:uint32]
+                          nil)
+                    (list "ws2_32" "WSADuplicateSocketW"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef 222 3000))
+                    (list "ws2_32" "WSASocketW"
+                          [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
+                          (list nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                3000
+                                0
+                                nelisp-os-WIN-WSA-FLAG-OVERLAPPED)))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((5 . #x123456) (3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((5 . socket) (3 . socket))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-dup2-windows-rejects-socket-to-std-fd-before-ffi ()
+  "Windows socket dup2 to a standard HANDLE fd is not routed through Winsock."
   (let ((called nil)
         (nelisp-os--windows-fd-table '((3 . #xabcdef)))
         (nelisp-os--windows-fd-kind-table '((3 . socket))))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
                (lambda (&rest _args) (setq called t))))
       (let ((system-type 'windows-nt))
-        (should-error (nelisp-os-dup2 3 5)
+        (should-error (nelisp-os-dup2 3 nelisp-os-STDOUT)
                       :type 'nelisp-os-error)))
     (should-not called)))
 
@@ -811,15 +852,73 @@
     (should (= nelisp-os--windows-next-fd 11))
     (should (equal freed '(3000)))))
 
-(ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-rejects-socket-fd-before-ffi ()
-  "Windows F_DUPFD for socket fd waits for a Winsock-specific duplicate path."
+(ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-negative-min-errors-before-ffi ()
+  "Windows F_DUPFD rejects negative MIN-FD before duplicating a HANDLE."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-fcntl 3 nelisp-os-F-DUPFD -1)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-duplicates-socket-fd ()
+  "Windows F_DUPFD for socket fd creates a new socket-kind fd."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-next-fd 4)
+        (nelisp-os--windows-winsock-started-p t)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcessId") 222)
+                  ((equal fn "WSADuplicateSocketW") 0)
+                  ((equal fn "WSASocketW") #x123456)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-DUPFD 10) 10))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcessId"
+                          [:uint32]
+                          nil)
+                    (list "ws2_32" "WSADuplicateSocketW"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef 222 3000))
+                    (list "ws2_32" "WSASocketW"
+                          [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
+                          (list nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                3000
+                                0
+                                nelisp-os-WIN-WSA-FLAG-OVERLAPPED)))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((10 . #x123456) (3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((10 . socket) (3 . socket))))
+    (should (= nelisp-os--windows-next-fd 11))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-socket-negative-min-errors-before-ffi ()
+  "Windows F_DUPFD rejects negative MIN-FD before duplicating a socket."
   (let ((called nil)
         (nelisp-os--windows-fd-table '((3 . #xabcdef)))
         (nelisp-os--windows-fd-kind-table '((3 . socket))))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--alloc)
                (lambda (&rest _args) (setq called t))))
       (let ((system-type 'windows-nt))
-        (should-error (nelisp-os-fcntl 3 nelisp-os-F-DUPFD 10)
+        (should-error (nelisp-os-fcntl 3 nelisp-os-F-DUPFD -1)
                       :type 'nelisp-os-error)))
     (should-not called)))
 
