@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -74,6 +74,8 @@
 ;; helper and proves copied byte payloads are readable in Windows PE.
 ;; Stage 36 links the MutStr allocator/len/finalize helpers and proves
 ;; mutable string boxes can become immutable Str slots in Windows PE.
+;; Stage 37 links the NlRecord allocator/set-slot kernels and proves
+;; Record type-tag clone, slots Vec header, refcount, and slot updates.
 
 ;;; Code:
 
@@ -98,7 +100,9 @@
 (require 'nelisp-cc-nlcell-clone)
 (require 'nelisp-cc-nlchartable-clone)
 (require 'nelisp-cc-nlboolvector-clone)
+(require 'nelisp-cc-nlrecord-alloc)
 (require 'nelisp-cc-nlrecord-clone)
+(require 'nelisp-cc-nlrecord-set-slot)
 
 (defun nelisp-windows-build-exitprocess (out-path exit-code)
   "Write OUT-PATH as a PE32+ EXE calling ExitProcess(EXIT-CODE)."
@@ -1753,6 +1757,142 @@ link-units."
                     arena-rva iat-rvas)))
        (list start driver alloc len bytes finalize arena)))))
 
+(defun nelisp-windows-build--standalone-record-driver42-bytes ()
+  "Return a PE32+ EXE proving NlRecord allocation and set-slot on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(seq
+                       (defun nl_win_record_header_ok (rec)
+                         (let* ((data (ptr-read-u64 (+ rec 40) 0)))
+                           (and (= (ptr-read-u64 rec 0) 2)
+                                (= (ptr-read-u64 (+ rec 8) 0) 77)
+                                (= (ptr-read-u64 (+ rec 16) 0) 88)
+                                (= (ptr-read-u64 (+ rec 24) 0) 99)
+                                (= (ptr-read-u64 (+ rec 32) 0) 2)
+                                (= (ptr-read-u64 (+ rec 48) 0) 2)
+                                (= (ptr-read-u64 (+ rec 56) 0) 1)
+                                (= (ptr-read-u64 data 0) 0)
+                                (= (ptr-read-u64 (+ data 32) 0) 0))))
+                       (defun nl_win_record_set_ok (data)
+                         (and (= (ptr-read-u64 (+ data 32) 0) 2)
+                              (= (ptr-read-u64 (+ data 40) 0) 1234)
+                              (= (ptr-read-u64 (+ data 48) 0) 5678)
+                              (= (ptr-read-u64 (+ data 56) 0) 9012)))
+                       (defun driver ()
+                         (let* ((arena (nl_arena_init)))
+                           (if (= arena 0)
+                               97
+                             (let* ((tag-slot (nl_alloc_bytes 32 8))
+                                    (val-slot (nl_alloc_bytes 32 8)))
+                               (if (= val-slot 0)
+                                   98
+                                 (seq
+                                  (ptr-write-u64 tag-slot 0 2)
+                                  (ptr-write-u64 (+ tag-slot 8) 0 77)
+                                  (ptr-write-u64 (+ tag-slot 16) 0 88)
+                                  (ptr-write-u64 (+ tag-slot 24) 0 99)
+                                  (let* ((rec (nl_alloc_record tag-slot 2)))
+                                    (if (= rec 0)
+                                        99
+                                      (let* ((data (ptr-read-u64 (+ rec 40) 0)))
+                                        (if (= (nl_win_record_header_ok rec) 1)
+                                            (seq
+                                             (ptr-write-u64 val-slot 0 2)
+                                             (ptr-write-u64 (+ val-slot 8) 0 1234)
+                                             (ptr-write-u64 (+ val-slot 16) 0 5678)
+                                             (ptr-write-u64 (+ val-slot 24) 0 9012)
+                                             (nl_record_set_slot rec 1 val-slot)
+                                             (if (= (nl_win_record_set_ok data) 1)
+                                                 42
+                                               100))
+                                          101)))))))))))
+                     driver-rva iat-rvas))
+            (record-rva (+ driver-rva
+                           (nelisp-windows-build--unit-text-length driver)))
+            (record (nelisp-windows-build--compile-defuns-to-unit
+                     "record-alloc.o" nelisp-cc-nlrecord-alloc--source
+                     record-rva iat-rvas))
+            (record-set-rva (+ record-rva
+                               (nelisp-windows-build--unit-text-length record)))
+            (record-set (nelisp-windows-build--compile-defuns-to-unit
+                         "record-set.o" nelisp-cc-nlrecord-set-slot--source
+                         record-set-rva iat-rvas))
+            (clone-rva (+ record-set-rva
+                          (nelisp-windows-build--unit-text-length record-set)))
+            (clone (nelisp-windows-build--compile-defuns-to-unit
+                    "clone.o" nelisp-cc-sexp-clone-into--source
+                    clone-rva iat-rvas))
+            (consbox-clone-rva
+             (+ clone-rva (nelisp-windows-build--unit-text-length clone)))
+            (consbox-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "consbox-clone.o" nelisp-cc-nlconsbox-clone--source
+              consbox-clone-rva iat-rvas))
+            (str-clone-rva
+             (+ consbox-clone-rva
+                (nelisp-windows-build--unit-text-length consbox-clone)))
+            (str-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "str-clone.o" nelisp-cc-nlstr-clone--source
+              str-clone-rva iat-rvas))
+            (vector-clone-rva
+             (+ str-clone-rva
+                (nelisp-windows-build--unit-text-length str-clone)))
+            (vector-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "vec-clone.o" nelisp-cc-nlvector-clone--source
+              vector-clone-rva iat-rvas))
+            (chartable-clone-rva
+             (+ vector-clone-rva
+                (nelisp-windows-build--unit-text-length vector-clone)))
+            (chartable-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "chartable-clone.o" nelisp-cc-nlchartable-clone--source
+              chartable-clone-rva iat-rvas))
+            (boolvector-clone-rva
+             (+ chartable-clone-rva
+                (nelisp-windows-build--unit-text-length chartable-clone)))
+            (boolvector-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "boolvec-clone.o" nelisp-cc-nlboolvector-clone--source
+              boolvector-clone-rva iat-rvas))
+            (cell-clone-rva
+             (+ boolvector-clone-rva
+                (nelisp-windows-build--unit-text-length boolvector-clone)))
+            (cell-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "cell-clone.o" nelisp-cc-nlcell-clone--source
+              cell-clone-rva iat-rvas))
+            (record-clone-rva
+             (+ cell-clone-rva
+                (nelisp-windows-build--unit-text-length cell-clone)))
+            (record-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "record-clone.o" nelisp-cc-nlrecord-clone--source
+              record-clone-rva iat-rvas))
+            (alloc-str-rva
+             (+ record-clone-rva
+                (nelisp-windows-build--unit-text-length record-clone)))
+            (alloc-str
+             (nelisp-windows-build--compile-defuns-to-unit
+              "alloc-str.o" nelisp-cc-nlstr-direct-ops--alloc-str-source
+              alloc-str-rva iat-rvas))
+            (arena-rva (+ alloc-str-rva
+                          (nelisp-windows-build--unit-text-length alloc-str)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver record record-set clone consbox-clone str-clone
+             vector-clone chartable-clone boolvector-clone cell-clone
+             record-clone alloc-str arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1980,6 +2120,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone MutStr)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-record-driver42 ()
+  "Batch entry: build the standalone NlRecord allocation/set probe."
+  (let ((bytes (nelisp-windows-build--standalone-record-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-record-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone NlRecord)"
              out-path)
     out-path))
 
