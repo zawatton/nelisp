@@ -64,6 +64,8 @@
 ;; int-valued socket option helpers.
 ;; Stage 96 maps `IPPROTO_IPV6' / `IPV6_MULTICAST_LOOP' through the Windows
 ;; int-valued socket option helpers.
+;; Stage 97 maps `IPPROTO_IPV6' / `IPV6_MULTICAST_IF' through the Windows
+;; int-valued socket option helpers.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -255,6 +257,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-IP-MULTICAST-LOOP 11)
 (defconst nelisp-os-WIN-IPPROTO-IPV6 41)
 (defconst nelisp-os-WIN-IPV6-UNICAST-HOPS 4)
+(defconst nelisp-os-WIN-IPV6-MULTICAST-IF 9)
 (defconst nelisp-os-WIN-IPV6-MULTICAST-HOPS 10)
 (defconst nelisp-os-WIN-IPV6-MULTICAST-LOOP 11)
 (defconst nelisp-os-WIN-IPV6-V6ONLY 27)
@@ -1932,6 +1935,7 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-IP-MULTICAST-TTL 33)
 (defconst nelisp-os-IP-MULTICAST-LOOP 34)
 (defconst nelisp-os-IPV6-UNICAST-HOPS 16)
+(defconst nelisp-os-IPV6-MULTICAST-IF 17)
 (defconst nelisp-os-IPV6-MULTICAST-HOPS 18)
 (defconst nelisp-os-IPV6-MULTICAST-LOOP 19)
 (defconst nelisp-os-IPV6-V6ONLY 26)
@@ -2421,6 +2425,9 @@ When GETTER-P is non-nil, include get-only options."
    ((and (= level nelisp-os-IPPROTO-IPV6)
          (= optname nelisp-os-IPV6-UNICAST-HOPS))
     nelisp-os-WIN-IPV6-UNICAST-HOPS)
+   ((and (= level nelisp-os-IPPROTO-IPV6)
+         (= optname nelisp-os-IPV6-MULTICAST-IF))
+    nelisp-os-WIN-IPV6-MULTICAST-IF)
    ((and (= level nelisp-os-IPPROTO-IPV6)
          (= optname nelisp-os-IPV6-MULTICAST-HOPS))
     nelisp-os-WIN-IPV6-MULTICAST-HOPS)
