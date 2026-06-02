@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-117-WINDOWS-EVENTFD-POLL
+#+STATUS: STAGE-118-WINDOWS-NONHANDLE-LSEEK
 
 * Status
 
-- *State*: STAGE 117 Windows eventfd poll compatibility
+- *State*: STAGE 118 Windows non-HANDLE lseek compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -294,8 +294,10 @@
   synthetic eventfd fds, including standard fd targets, without entering
   HANDLE =GetFileType= paths.  Windows =poll= now recognizes eventfd-kind fds
   and synthesizes =POLLIN= / =POLLOUT= readiness from the counter state while
-  preserving existing =WSAPoll= behavior for socket-kind fds.  The Winsock
-  branch has started:
+  preserving existing =WSAPoll= behavior for socket-kind fds.  Windows
+  =lseek= now keeps non-HANDLE fds out of =SetFilePointerEx=: socket-kind fds
+  signal =ESPIPE= and eventfd-kind fds return 0, matching Linux host behavior
+  observed locally.  The Winsock branch has started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
@@ -631,6 +633,9 @@
   readable/writable readiness from the counter state, treats a full counter as
   not writable, preserves input ordering when eventfd and socket fds are mixed,
   and polls socket fds with timeout 0 when an eventfd is already ready.
+  Stage 118 coverage verifies Windows =lseek= rejects socket-kind fds with
+  =ESPIPE= before HANDLE allocation/FFI, and returns 0 for eventfd-kind fds
+  before =SetFilePointerEx=, including arbitrary offsets.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1060,6 +1065,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =POLLOUT= while the counter is below the maximum, and keeps mixed
   socket/eventfd result ordering stable while preserving the =WSAPoll= path for
   socket fds.
+  *Windows non-HANDLE lseek progress 2026-06-03*: Windows =lseek= now handles
+  non-HANDLE fd kinds before =SetFilePointerEx=: socket-kind fds signal
+  =ESPIPE= and synthetic eventfd fds return 0 like Linux eventfd.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1491,6 +1499,10 @@ largest uncertainty (B1 + B2) first.
    *Windows eventfd poll compatibility SHIPPED 2026-06-03*: Windows =poll=
    now reports synthetic eventfd readiness from counter state and combines it
    with existing socket =WSAPoll= results in input order.
+   *Windows non-HANDLE lseek compatibility SHIPPED 2026-06-03*: Windows
+   =lseek= now keeps socket/eventfd fd kinds off the HANDLE
+   =SetFilePointerEx= path, returning =ESPIPE= for sockets and 0 for
+   synthetic eventfd fds.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the

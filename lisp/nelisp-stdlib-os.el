@@ -101,6 +101,7 @@
 ;; Stage 115 adds dup2 support for Windows eventfd-compatible fds.
 ;; Stage 116 adds fstat support for Windows eventfd-compatible fds.
 ;; Stage 117 adds poll readiness for Windows eventfd-compatible fds.
+;; Stage 118 adds lseek behavior for Windows socket and eventfd fds.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -1657,17 +1658,25 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
                              nelisp-os-SEEK-CUR
                              nelisp-os-SEEK-END))
     (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (let ((new-pos-buf (nelisp-os--alloc 8)))
-    (unwind-protect
-        (let* ((handle (nelisp-os--windows-handle-for-fd fd))
-               (ok (nelisp-os--libc-call
-                    "kernel32" "SetFilePointerEx"
-                    [:sint32 :pointer :sint64 :pointer :uint32]
-                    handle offset new-pos-buf whence)))
-          (if (= ok 0)
-              (nelisp-os--windows-ffi-error-signal)
-            (nelisp-os-read-i64 new-pos-buf 0)))
-      (nelisp-os--free new-pos-buf))))
+  (cond
+   ((eq (nelisp-os--windows-fd-kind fd) 'socket)
+    (nelisp-os--windows-socket-for-fd fd)
+    (signal 'nelisp-os-error (list 29))) ; ESPIPE
+   ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
+    (nelisp-os--windows-eventfd-cell fd)
+    0)
+   (t
+    (let ((new-pos-buf (nelisp-os--alloc 8)))
+      (unwind-protect
+          (let* ((handle (nelisp-os--windows-handle-for-fd fd))
+                 (ok (nelisp-os--libc-call
+                      "kernel32" "SetFilePointerEx"
+                      [:sint32 :pointer :sint64 :pointer :uint32]
+                      handle offset new-pos-buf whence)))
+            (if (= ok 0)
+                (nelisp-os--windows-ffi-error-signal)
+              (nelisp-os-read-i64 new-pos-buf 0)))
+        (nelisp-os--free new-pos-buf))))))
 
 ;; struct stat st_mode bits
 (defconst nelisp-os-S-IFMT  61440)          ; 0o170000

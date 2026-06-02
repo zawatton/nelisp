@@ -1131,6 +1131,35 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-lseek-windows-socket-signals-espipe-before-ffi ()
+  "Windows lseek on socket-kind fd signals ESPIPE before HANDLE FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (let ((err (should-error (nelisp-os-lseek 3 0 nelisp-os-SEEK-SET)
+                                 :type 'nelisp-os-error)))
+          (should (equal (cdr err) '(29))))))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-lseek-windows-eventfd-returns-zero-before-ffi ()
+  "Windows lseek on eventfd-kind fd matches Linux eventfd's zero result."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . 0)))
+        (nelisp-os--windows-fd-kind-table '((3 . eventfd)))
+        (nelisp-os--windows-eventfd-table '((3 . (1 . 0)))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-lseek 3 120 nelisp-os-SEEK-SET) 0))))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-fstat-windows-disk-uses-file-information ()
   "Windows fstat on disk HANDLE decodes BY_HANDLE_FILE_INFORMATION."
   (let* ((mtime-sec 1700000000)
