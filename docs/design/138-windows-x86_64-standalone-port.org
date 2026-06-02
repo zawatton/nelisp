@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 19 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 20 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -52,7 +52,9 @@
   argv.  Stage 19 extends that bridge to =driver(cmdline, len)= by preserving
   the =GetCommandLineW= pointer, calling =lstrlenW=, and passing the UTF-16
   length as the second Win64 argument, preparing argv parsing without CRT
-  startup.
+  startup.  Stage 20 has the Phase47 =driver= dereference the command-line
+  buffer with =ptr-read-u16=, proving the Windows startup pointer is not only
+  transported but readable by the standalone manifest bridge.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the

@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -39,6 +39,8 @@
 ;; `_start' -> `driver' bridge.
 ;; Stage 19 passes both the command-line pointer and its UTF-16 length through
 ;; that bridge.
+;; Stage 20 proves the Phase47 driver can dereference the UTF-16 command-line
+;; buffer via `ptr-read-u16'.
 
 ;;; Code:
 
@@ -502,6 +504,26 @@ link-units."
               13
             (if (= len 0) 14 42))))))))
 
+(defun nelisp-windows-build--standalone-commandline-read-driver42-bytes ()
+  "Return a PE32+ EXE proving `driver' can read the UTF-16 command line."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "GetCommandLineW" "lstrlenW")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (list
+      (nelisp-windows-build--standalone-commandline-len-start-unit
+       text-rva
+       (cdr (assoc "ExitProcess" iat-rvas))
+       (cdr (assoc "GetCommandLineW" iat-rvas))
+       (cdr (assoc "lstrlenW" iat-rvas)))
+      (nelisp-windows-build--compile-defuns-to-unit
+       "driver.o"
+       '(defun driver (cmdline len)
+          (if (= cmdline 0)
+              13
+            (if (= len 0)
+                14
+              (if (= (ptr-read-u16 cmdline 0) 0) 15 42)))))))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -559,6 +581,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (GetCommandLineW/lstrlenW -> driver)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-commandline-read-driver42 ()
+  "Batch entry: build the standalone command-line read probe."
+  (let ((bytes (nelisp-windows-build--standalone-commandline-read-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-commandline-read-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (read UTF-16 command line)"
              out-path)
     out-path))
 
