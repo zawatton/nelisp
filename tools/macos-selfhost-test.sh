@@ -71,6 +71,25 @@ build_run alloc '(seq
       (ptr-read-u64 8589934592 16)))
   (exit (run)))' 99
 
+# cons round-trip: build a cons cell whose car is Int(7), read the car
+# back -> 7.  Exercises sexp-int-make, cons-make (nl_alloc_consbox + box
+# copies), cons-car (boxed-slot copy), and the Sexp 32-byte layout.
+# Manual 32-byte slots live in [arena+64 .. arena+512); the bump
+# allocator hands out boxes from arena+512 on.
+build_run cons '(seq
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 0 8589935104)
+      (sexp-int-make 8589934656 7)
+      (sexp-int-make 8589934720 0)
+      (cons-make 8589934656 8589934720 8589934784)
+      (cons-car 8589934784 8589934848)
+      (ptr-read-u64 8589934848 8)))
+  (exit (run)))' 7
+
 if [ "$fail" = 0 ]; then
   echo "[macos] all PASS — pure-elisp aarch64 -> native macOS arm64 self-host smoke OK"
   exit 0
