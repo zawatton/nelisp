@@ -58,6 +58,7 @@
 ;; Stage 141 adds a `GetFileType' smoke for HANDLE-backed fstat wiring.
 ;; Stage 142 adds `GetFileInformationByHandle' for rich fstat metadata wiring.
 ;; Stage 144 adds file mapping smoke for file-backed mmap wiring.
+;; Stage 145 adds `GetCurrentProcessId' smoke for getpid wiring.
 ;; Production standalone wiring still needs the wider OS import surface.
 
 ;;; Code:
@@ -1870,6 +1871,41 @@ and exits 1 otherwise."
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--minimal-getcurrentprocessid-text
+    (text-rva exit-iat-rva get-current-process-id-iat-rva)
+  "Return x86_64 entry bytes that call GetCurrentProcessId, then ExitProcess.
+The generated code exits 42 when GetCurrentProcessId returns a nonzero process
+id and exits 1 otherwise."
+  (let* ((get-call-off 4)
+         (success-exit-call-off 20)
+         (fail-off 26)
+         (fail-exit-call-off 31)
+         (call-len 6)
+         (get-disp (- get-current-process-id-iat-rva
+                      (+ text-rva get-call-off call-len)))
+         (success-exit-disp (- exit-iat-rva
+                               (+ text-rva success-exit-call-off call-len)))
+         (fail-exit-disp (- exit-iat-rva
+                            (+ text-rva fail-exit-call-off call-len)))
+         (jz-disp (- fail-off (+ 13 2)))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; Win64 ABI: reserve the 32-byte shadow space and keep call alignment.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x28))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf get-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x85 #xc0)) ; test rax,rax
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x74 (logand jz-disp #xff)))
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--minimal-wsastartup-text
     (text-rva exit-iat-rva wsastartup-iat-rva data-rva)
   "Return x86_64 entry bytes that call WSAStartup, then ExitProcess.
@@ -3444,6 +3480,85 @@ when the thread reported exit code 42."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--build-getcurrentprocessid-exitprocess-exe ()
+  "Build a PE32+ EXE that proves GetCurrentProcessId import wiring."
+  (let* ((num-sections 2)
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (idata-rva (* 2 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva (list "ExitProcess" "GetCurrentProcessId")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-getcurrentprocessid-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "GetCurrentProcessId" iat-map))))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (idata-raw-ptr (+ text-raw-ptr text-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data idata-raw-size
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--build-wsastartup-exitprocess-exe ()
   "Build a PE32+ EXE that proves WS2_32.dll WSAStartup import wiring."
   (let* ((num-sections 3)
@@ -3888,7 +4003,8 @@ SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `writefile-stdout-exit-42', `readfile-stdin-exit-42',
 `createfile-write-exit-42', `setfilepointer-exit-42',
 `getfiletype-exit-42', `getfileinformation-exit-42',
-`filemapping-exit-42', `getcommandline-exit-42', `wsastartup-exit-42',
+`filemapping-exit-42', `getcurrentprocessid-exit-42',
+`getcommandline-exit-42', `wsastartup-exit-42',
 `commandlinetoargv-exit-42', `createprocess-wait-exit-42',
 `createthread-wait-exit-42', or a plist with :exit-code.  The output imports
 DLL functions through a real PE import directory and writes raw bytes with
@@ -3906,6 +4022,7 @@ DLL functions through a real PE import directory and writes raw bytes with
            ((eq spec 'getfiletype-exit-42) nil)
            ((eq spec 'getfileinformation-exit-42) nil)
            ((eq spec 'filemapping-exit-42) nil)
+           ((eq spec 'getcurrentprocessid-exit-42) nil)
            ((eq spec 'getcommandline-exit-42) nil)
            ((eq spec 'wsastartup-exit-42) nil)
            ((eq spec 'commandlinetoargv-exit-42) nil)
@@ -3934,6 +4051,8 @@ DLL functions through a real PE import directory and writes raw bytes with
                   (nelisp-pe--build-getfileinformation-exitprocess-exe))
                  ((eq spec 'filemapping-exit-42)
                   (nelisp-pe--build-filemapping-exitprocess-exe))
+                 ((eq spec 'getcurrentprocessid-exit-42)
+                  (nelisp-pe--build-getcurrentprocessid-exitprocess-exe))
                  ((eq spec 'getcommandline-exit-42)
                   (nelisp-pe--build-getcommandline-exitprocess-exe))
                  ((eq spec 'wsastartup-exit-42)

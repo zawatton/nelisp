@@ -512,6 +512,36 @@
     (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 33)) #x101b))
     (should (= (aref bytes (+ text-off 37)) #xcc))))
 
+(ert-deftest nelisp-pe-write-exe-binary-getcurrentprocessid-import-directory ()
+  "The GetCurrentProcessId smoke EXE imports the process id API."
+  (let ((bytes (nelisp-pe-write-test--emit-exe
+                'getcurrentprocessid-exit-42)))
+    (dolist (name '("KERNEL32.dll"
+                    "ExitProcess"
+                    "GetCurrentProcessId"))
+      (should (nelisp-pe-write-test--contains-p bytes name)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-getcurrentprocessid-entry-code ()
+  "The GetCurrentProcessId smoke EXE exits 42 when the process id is nonzero."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe
+                 'getcurrentprocessid-exit-42))
+         (text-off #x200))
+    (should (equal (substring bytes text-off (+ text-off 4))
+                   (unibyte-string #x48 #x83 #xec #x28)))
+    (should (equal (substring bytes (+ text-off 4) (+ text-off 6))
+                   (unibyte-string #xff #x15)))
+    (should (equal (substring bytes (+ text-off 10) (+ text-off 15))
+                   (unibyte-string #x48 #x85 #xc0 #x74 #x0b)))
+    (should (= (aref bytes (+ text-off 15)) #xb9))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 16)) 42))
+    (should (equal (substring bytes (+ text-off 20) (+ text-off 22))
+                   (unibyte-string #xff #x15)))
+    (should (= (aref bytes (+ text-off 26)) #xb9))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 27)) 1))
+    (should (equal (substring bytes (+ text-off 31) (+ text-off 33))
+                   (unibyte-string #xff #x15)))
+    (should (= (aref bytes (+ text-off 37)) #xcc))))
+
 (ert-deftest nelisp-pe-write-exe-binary-wsastartup-section-table ()
   "The WSAStartup smoke EXE has .data WSADATA bytes and multi-DLL .idata."
   (let* ((bytes (nelisp-pe-write-test--emit-exe 'wsastartup-exit-42))
