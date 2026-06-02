@@ -122,6 +122,84 @@ build_run str '(seq
       (+ (str-len 8589934656) (str-byte-at 8589934656 1))))
   (exit (run)))' 107
 
+# width-specific pointer load/store: write a u32 (= 0x030201, LE bytes
+# [01 02 03 00]) then pick its bytes back with u8 reads (1,2,3); plus a
+# u16 round-trip (40), a u8 round-trip (5) and a u32 round-trip (10).
+# 1 + 2*2 + 4*3 + 40 + 5 + 10 = 72.  Exercises ptr-{read,write}-u{8,16,32}.
+build_run ptr '(seq
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u32 8589934592 256 197121)
+      (ptr-write-u16 8589934592 260 40)
+      (ptr-write-u8 8589934592 262 5)
+      (ptr-write-u32 8589934592 264 10)
+      (+ (ptr-read-u8 8589934592 256)
+         (+ (* 2 (ptr-read-u8 8589934592 257))
+            (+ (* 4 (ptr-read-u8 8589934592 258))
+               (+ (ptr-read-u16 8589934592 260)
+                  (+ (ptr-read-u8 8589934592 262)
+                     (ptr-read-u32 8589934592 264))))))))
+  (exit (run)))' 72
+
+# dealloc-bytes: alloc 16 bytes then free them; dealloc returns the 1
+# sentinel (the bump arena makes free a no-op) -> 1 + 41 = 42.
+build_run dealloc '(seq
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_dealloc_bytes (ptr size align) 0)
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 0 (+ 8589934592 16))
+      (+ (dealloc-bytes (alloc-bytes 16 8) 16 8) 41)))
+  (exit (run)))' 42
+
+# mutable cons: build (1 . 2), then overwrite car := Int(30) via
+# cons-set-car and cdr := Int(4) via cons-set-cdr, read both back ->
+# 30 + 4 = 34.  Manual 32-byte Sexp slots live at arena+64..+448; the
+# bump allocator (cons-make's box) starts at arena+512.
+build_run cons-set '(seq
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+  (defun nl_consbox_set_car (box valptr)
+    (seq
+      (ptr-write-u64 box 0 (ptr-read-u64 valptr 0))
+      (ptr-write-u64 box 8 (ptr-read-u64 valptr 8))
+      (ptr-write-u64 box 16 (ptr-read-u64 valptr 16))
+      (ptr-write-u64 box 24 (ptr-read-u64 valptr 24))))
+  (defun nl_consbox_set_cdr (box valptr)
+    (seq
+      (ptr-write-u64 box 32 (ptr-read-u64 valptr 0))
+      (ptr-write-u64 box 40 (ptr-read-u64 valptr 8))
+      (ptr-write-u64 box 48 (ptr-read-u64 valptr 16))
+      (ptr-write-u64 box 56 (ptr-read-u64 valptr 24))))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 0 8589935104)
+      (sexp-int-make 8589934656 1)
+      (sexp-int-make 8589934720 2)
+      (cons-make 8589934656 8589934720 8589934784)
+      (sexp-int-make 8589934848 30)
+      (sexp-int-make 8589934912 4)
+      (cons-set-car 8589934784 8589934848)
+      (cons-set-cdr 8589934784 8589934912)
+      (cons-car 8589934784 8589934976)
+      (cons-cdr 8589934784 8589935040)
+      (+ (ptr-read-u64 8589934976 8) (ptr-read-u64 8589935040 8))))
+  (exit (run)))' 34
+
+# cond first-match dispatch: classify(2) hits the 2nd clause -> 50.
+build_run cond '(seq
+  (defun classify (x)
+    (cond ((= x 1) 100) ((= x 2) 50) (t 7)))
+  (exit (classify 2)))' 50
+
+# and/or short-circuit: (and 1 1) -> 1 -> 10 ; (or 0 1) -> 1 -> 5 ; = 15.
+build_run logic '(seq
+  (defun run () (+ (if (and 1 1) 10 0) (if (or 0 1) 5 0)))
+  (exit (run)))' 15
+
 if [ "$fail" = 0 ]; then
   echo "[macos] all PASS — pure-elisp aarch64 -> native macOS arm64 self-host smoke OK"
   exit 0
