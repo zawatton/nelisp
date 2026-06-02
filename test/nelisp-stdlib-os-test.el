@@ -421,6 +421,61 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-fstat-windows-disk-uses-getfilesizeex ()
+  "Windows fstat on disk HANDLE returns size and regular-file mode."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #x44556677))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 0))
+                 987654321))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetFileType") nelisp-os-WIN-FILE-TYPE-DISK)
+                  ((equal fn "GetFileSizeEx") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let* ((system-type 'windows-nt)
+             (st (nelisp-os-fstat 3)))
+        (should (= (nelisp-os-stat-size st) 987654321))
+        (should (= (nelisp-os-stat-mode st) nelisp-os-S-IFREG))
+        (should (= (nelisp-os-stat-nlink st) 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetFileType"
+                          [:uint32 :pointer]
+                          (list #x44556677))
+                    (list "kernel32" "GetFileSizeEx"
+                          [:sint32 :pointer :pointer]
+                          (list #x44556677 3000)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-fstat-windows-pipe-skips-getfilesizeex ()
+  "Windows fstat on pipe HANDLE returns a zero-size non-regular stat."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((4 . #x55667788))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetFileType") nelisp-os-WIN-FILE-TYPE-PIPE)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let* ((system-type 'windows-nt)
+             (st (nelisp-os-fstat 4)))
+        (should (= (nelisp-os-stat-size st) 0))
+        (should (= (nelisp-os-stat-mode st) 0))
+        (should (= (nelisp-os-stat-nlink st) 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetFileType"
+                          [:uint32 :pointer]
+                          (list #x55667788)))))))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)

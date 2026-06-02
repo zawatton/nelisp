@@ -33,9 +33,10 @@
 ;; `VirtualAlloc' / `VirtualProtect' / `VirtualFree'.  Stage 11 routes the
 ;; minimal process identity/exit surface through `GetCurrentProcessId' and
 ;; `ExitProcess'.  Stage 12 maps `pipe' to `CreatePipe' and stores both HANDLEs
-;; in the Windows fd table.  Stage 13 maps `lseek' to `SetFilePointerEx'.  The
-;; Linux/Darwin path remains the default until a real Windows standalone runtime
-;; selects `system-type' = `windows-nt'.
+;; in the Windows fd table.  Stage 13 maps `lseek' to `SetFilePointerEx'.
+;; Stage 14 maps the minimal `fstat' shape to `GetFileType' / `GetFileSizeEx'.
+;; The Linux/Darwin path remains the default until a real Windows standalone
+;; runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -108,6 +109,12 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-PAGE-EXECUTE           #x10)
 (defconst nelisp-os-WIN-PAGE-EXECUTE-READ      #x20)
 (defconst nelisp-os-WIN-PAGE-EXECUTE-READWRITE #x40)
+
+;; Windows GetFileType constants.
+(defconst nelisp-os-WIN-FILE-TYPE-UNKNOWN 0)
+(defconst nelisp-os-WIN-FILE-TYPE-DISK    1)
+(defconst nelisp-os-WIN-FILE-TYPE-CHAR    2)
+(defconst nelisp-os-WIN-FILE-TYPE-PIPE    3)
 
 (defvar nelisp-os--windows-next-fd 3
   "Next POSIX-like fd number for Windows HANDLE table entries.")
@@ -188,6 +195,12 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
     (setq nelisp-os--windows-fd-table
           (delq cell nelisp-os--windows-fd-table))
     (cdr cell)))
+
+(defun nelisp-os--windows-handle-for-fd (fd)
+  "Return a Windows HANDLE for POSIX-like FD."
+  (if (nelisp-os--windows-std-handle-selector fd)
+      (nelisp-os--windows-get-std-handle fd)
+    (nelisp-os--windows-fd-handle fd)))
 
 (defun nelisp-os--windows-open-access (flags)
   "Translate POSIX-like FLAGS to a CreateFileW desired-access mask."
@@ -542,9 +555,7 @@ went through `:string' (= CString::new, NUL-rejecting)."
     (signal 'nelisp-os-error (list 22))) ; EINVAL
   (let ((new-pos-buf (nelisp-os--alloc 8)))
     (unwind-protect
-        (let* ((handle (if (nelisp-os--windows-std-handle-selector fd)
-                           (nelisp-os--windows-get-std-handle fd)
-                         (nelisp-os--windows-fd-handle fd)))
+        (let* ((handle (nelisp-os--windows-handle-for-fd fd))
                (ok (nelisp-os--libc-call
                     "kernel32" "SetFilePointerEx"
                     [:sint32 :pointer :sint64 :pointer :uint32]
@@ -594,32 +605,58 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
 (defconst nelisp-os--stat-offset-ctime     104)
 (defconst nelisp-os--stat-offset-ctime-nsec 112)
 
+(defun nelisp-os--windows-stat-list (size mode)
+  "Return a `nelisp-os-fstat' positional stat list for Windows."
+  (list size mode 0 0 0 0 0 0 1 0 0 0 0))
+
+(defun nelisp-os--windows-fstat (fd)
+  "Windows implementation of `nelisp-os-fstat' for HANDLE-backed fds."
+  (let* ((handle (nelisp-os--windows-handle-for-fd fd))
+         (file-type (nelisp-os--libc-call
+                     "kernel32" "GetFileType" [:uint32 :pointer] handle)))
+    (if (= file-type nelisp-os-WIN-FILE-TYPE-DISK)
+        (let ((size-buf (nelisp-os--alloc 8)))
+          (unwind-protect
+              (let ((ok (nelisp-os--libc-call
+                         "kernel32" "GetFileSizeEx"
+                         [:sint32 :pointer :pointer]
+                         handle size-buf)))
+                (if (= ok 0)
+                    (nelisp-os--windows-ffi-error-signal)
+                  (nelisp-os--windows-stat-list
+                   (nelisp-os-read-i64 size-buf 0)
+                   nelisp-os-S-IFREG)))
+            (nelisp-os--free size-buf)))
+      (nelisp-os--windows-stat-list 0 0))))
+
 (defun nelisp-os-fstat (fd)
   "POSIX fstat(2) — return positional list of stat fields, or signal
 `nelisp-os-error'.  Order matches `nelisp-os-stat-*' accessors below
 and the old `nelisp--syscall-fstat' Rust primitive (Doc 54 Phase 3)."
   ;; libc::fstat: int(int fd, struct stat *buf) → 0 / -1.
-  (let ((buf (nelisp-os--alloc nelisp-os--stat-buflen)))
-    (unwind-protect
-        (let ((r (nelisp-os--libc-call "libc" "fstat"
-                              [:sint32 :sint32 :pointer]
-                              fd buf)))
-          (if (= r -1)
-              (nelisp-os--ffi-errno-signal)
-            (list (nelisp-os-read-i64 buf nelisp-os--stat-offset-size)
-                  (nelisp-os-read-i32 buf nelisp-os--stat-offset-mode)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-mtime)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-mtime-nsec)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-atime)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-atime-nsec)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-ctime)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-ctime-nsec)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-nlink)
-                  (nelisp-os-read-i32 buf nelisp-os--stat-offset-uid)
-                  (nelisp-os-read-i32 buf nelisp-os--stat-offset-gid)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-ino)
-                  (nelisp-os-read-i64 buf nelisp-os--stat-offset-dev))))
-      (nelisp-os--free buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-fstat fd)
+    (let ((buf (nelisp-os--alloc nelisp-os--stat-buflen)))
+      (unwind-protect
+          (let ((r (nelisp-os--libc-call "libc" "fstat"
+                                [:sint32 :sint32 :pointer]
+                                fd buf)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (list (nelisp-os-read-i64 buf nelisp-os--stat-offset-size)
+                    (nelisp-os-read-i32 buf nelisp-os--stat-offset-mode)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-mtime)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-mtime-nsec)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-atime)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-atime-nsec)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-ctime)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-ctime-nsec)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-nlink)
+                    (nelisp-os-read-i32 buf nelisp-os--stat-offset-uid)
+                    (nelisp-os-read-i32 buf nelisp-os--stat-offset-gid)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-ino)
+                    (nelisp-os-read-i64 buf nelisp-os--stat-offset-dev))))
+        (nelisp-os--free buf)))))
 
 ;; struct stat positional accessors (= same field order the Rust
 ;; primitive emits).  Add named getters as the substrate needs them.
