@@ -433,6 +433,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defvar nelisp-os--windows-signalfd-fd-flags-table nil
   "Alist mapping Windows signalfd-compatible fds to descriptor flags.")
 
+(defvar nelisp-os--windows-inotify-table nil
+  "Alist mapping Windows inotify-compatible fds to state vectors.")
+
 (defvar nelisp-os--windows-signal-mask nil
   "Emulated Windows signal mask used by `nelisp-os-sigprocmask'.")
 
@@ -648,6 +651,13 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (setq nelisp-os--windows-signalfd-fd-flags-table
             (delq desc-cell nelisp-os--windows-signalfd-fd-flags-table)))))
 
+(defun nelisp-os--windows-inotify-remove (fd)
+  "Remove Windows inotify-specific state tracked for FD."
+  (let ((cell (assq fd nelisp-os--windows-inotify-table)))
+    (when cell
+      (setq nelisp-os--windows-inotify-table
+            (delq cell nelisp-os--windows-inotify-table)))))
+
 (defun nelisp-os--windows-fd-kind (fd)
   "Return the Windows resource kind for FD."
   (or (cdr (assq fd nelisp-os--windows-fd-kind-table))
@@ -703,6 +713,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
     (nelisp-os--windows-eventfd-remove fd)
     (nelisp-os--windows-timerfd-remove fd)
     (nelisp-os--windows-signalfd-remove fd)
+    (nelisp-os--windows-inotify-remove fd)
     (cdr cell)))
 
 (defun nelisp-os--windows-close-resource (handle kind)
@@ -718,6 +729,12 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
     nil)
    ((eq kind 'signalfd)
     nil)
+   ((eq kind 'inotify)
+    (let ((ok (nelisp-os--libc-call
+               "kernel32" "CloseHandle" [:sint32 :pointer] handle)))
+      (if (= ok 0)
+          (nelisp-os--windows-ffi-error-signal)
+        nil)))
    (t
     (let ((ok (nelisp-os--libc-call
                "kernel32" "CloseHandle" [:sint32 :pointer] handle)))
@@ -751,6 +768,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
             (nelisp-os--windows-fd-set-flags fd 0)
             (nelisp-os--windows-timerfd-remove fd)
             (nelisp-os--windows-signalfd-remove fd)
+            (nelisp-os--windows-inotify-remove fd)
             nil))))))
 
 (defun nelisp-os--windows-install-std-fd (fd handle flags &optional kind)
@@ -777,6 +795,7 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
         (nelisp-os--windows-eventfd-remove fd)
         (nelisp-os--windows-timerfd-remove fd)
         (nelisp-os--windows-signalfd-remove fd)
+        (nelisp-os--windows-inotify-remove fd)
         (nelisp-os--windows-fd-set-kind fd kind)
         (nelisp-os--windows-fd-set-flags fd flags)
         fd))))
@@ -801,6 +820,9 @@ descriptor semantics."
                   (nelisp-os--windows-close-resource old-handle old-kind)
                 (nelisp-os-error nil)))
             (nelisp-os--windows-eventfd-remove fd)
+            (nelisp-os--windows-timerfd-remove fd)
+            (nelisp-os--windows-signalfd-remove fd)
+            (nelisp-os--windows-inotify-remove fd)
             (nelisp-os--windows-fd-set-kind fd 'eventfd)
             (nelisp-os--windows-fd-set-flags fd flags)
             (push (cons fd state) nelisp-os--windows-eventfd-table)
@@ -831,6 +853,7 @@ descriptor semantics."
             (nelisp-os--windows-eventfd-remove fd)
             (nelisp-os--windows-timerfd-remove fd)
             (nelisp-os--windows-signalfd-remove fd)
+            (nelisp-os--windows-inotify-remove fd)
             (nelisp-os--windows-fd-set-kind fd 'signalfd)
             (nelisp-os--windows-fd-set-flags fd flags)
             (push (cons fd state) nelisp-os--windows-signalfd-table)
@@ -879,6 +902,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (nelisp-os--windows-eventfd-remove fd)
       (nelisp-os--windows-timerfd-remove fd)
       (nelisp-os--windows-signalfd-remove fd)
+      (nelisp-os--windows-inotify-remove fd)
       (setq nelisp-os--windows-fd-table
             (delq cell nelisp-os--windows-fd-table)))
     (push (cons fd handle) nelisp-os--windows-fd-table)
@@ -1481,6 +1505,7 @@ the useful payload path when FDS is empty and reject real fd passing explicitly.
 (defconst nelisp-os--eventfd-stat-mode 384) ; 0o600
 (defconst nelisp-os--timerfd-stat-mode 384) ; 0o600
 (defconst nelisp-os--signalfd-stat-mode 384) ; 0o600
+(defconst nelisp-os--inotify-stat-mode 384) ; 0o600
 (defconst nelisp-os--pidfd-stat-mode 448) ; 0o700
 
 (defun nelisp-os--u64le-string (value)
@@ -1519,6 +1544,15 @@ the useful payload path when FDS is empty and reject real fd passing explicitly.
   (unless (eq (nelisp-os--windows-fd-kind fd) 'signalfd)
     (signal 'nelisp-os-error (list 9))) ; EBADF
   (let ((cell (assq fd nelisp-os--windows-signalfd-table)))
+    (if cell
+        cell
+      (signal 'nelisp-os-error (list 9)))))
+
+(defun nelisp-os--windows-inotify-cell (fd)
+  "Return the Windows inotify state cell for FD, or signal EBADF."
+  (unless (eq (nelisp-os--windows-fd-kind fd) 'inotify)
+    (signal 'nelisp-os-error (list 9))) ; EBADF
+  (let ((cell (assq fd nelisp-os--windows-inotify-table)))
     (if cell
         cell
       (signal 'nelisp-os-error (list 9)))))
@@ -1586,6 +1620,10 @@ PATH is a string, FLAGS / MODE are integers."
     (nelisp-os--windows-signalfd-cell fd)
     (signal 'nelisp-os-error (list 11))) ; EAGAIN
    ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'inotify))
+    (nelisp-os--windows-inotify-cell fd)
+    (signal 'nelisp-os-error (list 11))) ; EAGAIN
+   ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'process))
     (nelisp-os--windows-processfd-handle fd)
     (signal 'nelisp-os-error (list 22))) ; EINVAL
@@ -1631,6 +1669,10 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
    ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'signalfd))
     (nelisp-os--windows-signalfd-cell fd)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+   ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'inotify))
+    (nelisp-os--windows-inotify-cell fd)
     (signal 'nelisp-os-error (list 22))) ; EINVAL
    ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'process))
@@ -1921,6 +1963,9 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
    ((eq (nelisp-os--windows-fd-kind fd) 'signalfd)
     (nelisp-os--windows-signalfd-cell fd)
     (signal 'nelisp-os-error (list 29))) ; ESPIPE
+   ((eq (nelisp-os--windows-fd-kind fd) 'inotify)
+    (nelisp-os--windows-inotify-cell fd)
+    (signal 'nelisp-os-error (list 29))) ; ESPIPE
    ((eq (nelisp-os--windows-fd-kind fd) 'timerfd)
     (nelisp-os--windows-timerfd-handle fd)
     (signal 'nelisp-os-error (list 29))) ; ESPIPE
@@ -2057,6 +2102,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
    ((eq (nelisp-os--windows-fd-kind fd) 'signalfd)
     (nelisp-os--windows-signalfd-cell fd)
     (nelisp-os--windows-stat-list 0 nelisp-os--signalfd-stat-mode))
+   ((eq (nelisp-os--windows-fd-kind fd) 'inotify)
+    (nelisp-os--windows-inotify-cell fd)
+    (nelisp-os--windows-stat-list 0 nelisp-os--inotify-stat-mode))
    ((eq (nelisp-os--windows-fd-kind fd) 'process)
     (nelisp-os--windows-processfd-handle fd)
     (nelisp-os--windows-stat-list 0 nelisp-os--pidfd-stat-mode))
@@ -2097,6 +2145,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
           (nelisp-os--windows-eventfd-cell oldfd))
          ((eq (nelisp-os--windows-fd-kind oldfd) 'signalfd)
           (nelisp-os--windows-signalfd-cell oldfd))
+         ((eq (nelisp-os--windows-fd-kind oldfd) 'inotify)
+          (nelisp-os--windows-inotify-cell oldfd))
          (t
           (nelisp-os--windows-handle-for-fd oldfd)))
         newfd)
@@ -2126,6 +2176,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
       (let ((kind (nelisp-os--windows-fd-kind oldfd))
             (timer-state (and (eq (nelisp-os--windows-fd-kind oldfd) 'timerfd)
                               (cdr (nelisp-os--windows-timerfd-cell oldfd))))
+            (inotify-state
+             (and (eq (nelisp-os--windows-fd-kind oldfd) 'inotify)
+                  (cdr (nelisp-os--windows-inotify-cell oldfd))))
             (source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
             (target-handle-buf (nelisp-os--alloc 8)))
         (unwind-protect
@@ -2156,6 +2209,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                         (when timer-state
                           (push (cons newfd timer-state)
                                 nelisp-os--windows-timerfd-table))
+                        (when inotify-state
+                          (push (cons newfd inotify-state)
+                                nelisp-os--windows-inotify-table))
                         newfd)
                     (progn
                       (nelisp-os--windows-fd-install
@@ -2166,6 +2222,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                       (when timer-state
                         (push (cons newfd timer-state)
                               nelisp-os--windows-timerfd-table))
+                      (when inotify-state
+                        (push (cons newfd inotify-state)
+                              nelisp-os--windows-inotify-table))
                       newfd)))))
           (nelisp-os--free target-handle-buf)))))))
 
@@ -2205,6 +2264,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
     (let ((kind (nelisp-os--windows-fd-kind oldfd))
           (timer-state (and (eq (nelisp-os--windows-fd-kind oldfd) 'timerfd)
                             (cdr (nelisp-os--windows-timerfd-cell oldfd))))
+          (inotify-state (and (eq (nelisp-os--windows-fd-kind oldfd) 'inotify)
+                              (cdr (nelisp-os--windows-inotify-cell oldfd))))
           (source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
           (target-process (nelisp-os--libc-call
                            "kernel32" "GetCurrentProcess"
@@ -2232,6 +2293,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                 (when timer-state
                   (push (cons fd timer-state)
                         nelisp-os--windows-timerfd-table))
+                (when inotify-state
+                  (push (cons fd inotify-state)
+                        nelisp-os--windows-inotify-table))
                 fd)))
         (nelisp-os--free target-buf))))))
 
@@ -2301,6 +2365,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
       (nelisp-os--windows-eventfd-cell fd))
      ((eq (nelisp-os--windows-fd-kind fd) 'signalfd)
       (nelisp-os--windows-signalfd-cell fd))
+     ((eq (nelisp-os--windows-fd-kind fd) 'inotify)
+      (nelisp-os--windows-inotify-cell fd))
      (t
       (nelisp-os--windows-handle-for-fd fd)))
     (nelisp-os--windows-fd-flags fd))
@@ -2323,6 +2389,12 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
       0)
      ((eq (nelisp-os--windows-fd-kind fd) 'signalfd)
       (nelisp-os--windows-signalfd-cell fd)
+      (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
+        (signal 'nelisp-os-error (list 95))) ; ENOTSUP
+      (nelisp-os--windows-fd-set-flags fd arg)
+      0)
+     ((eq (nelisp-os--windows-fd-kind fd) 'inotify)
+      (nelisp-os--windows-inotify-cell fd)
       (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
         (signal 'nelisp-os-error (list 95))) ; ENOTSUP
       (nelisp-os--windows-fd-set-flags fd arg)
@@ -3380,6 +3452,14 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
   (nelisp-os--windows-signalfd-cell fd)
   0)
 
+(defun nelisp-os--windows-inotify-revents (fd events)
+  "Return synthetic poll revents for Windows inotify-compatible FD."
+  (let* ((state (cdr (nelisp-os--windows-inotify-cell fd)))
+         (queue (aref state 2)))
+    (if (and queue (/= (logand events nelisp-os-POLLIN) 0))
+        nelisp-os-POLLIN
+      0)))
+
 (defun nelisp-os--windows-poll (pfds timeout-ms)
   "Windows implementation of `nelisp-os-poll' for sockets and synthetic fds."
   (let ((socket-pfds nil)
@@ -3397,6 +3477,9 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
             (setq ready-p t)))
          ((eq (nelisp-os--windows-fd-kind fd) 'signalfd)
           (when (/= (nelisp-os--windows-signalfd-revents fd (cdr entry)) 0)
+            (setq ready-p t)))
+         ((eq (nelisp-os--windows-fd-kind fd) 'inotify)
+          (when (/= (nelisp-os--windows-inotify-revents fd (cdr entry)) 0)
             (setq ready-p t)))
          ((eq (nelisp-os--windows-fd-kind fd) 'process)
           (when (/= (nelisp-os--windows-processfd-revents fd (cdr entry)) 0)
@@ -3421,6 +3504,8 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
              (cons fd (nelisp-os--windows-timerfd-revents fd events)))
             ((eq (nelisp-os--windows-fd-kind fd) 'signalfd)
              (cons fd (nelisp-os--windows-signalfd-revents fd events)))
+            ((eq (nelisp-os--windows-fd-kind fd) 'inotify)
+             (cons fd (nelisp-os--windows-inotify-revents fd events)))
             ((eq (nelisp-os--windows-fd-kind fd) 'process)
              (cons fd (nelisp-os--windows-processfd-revents fd events)))
             ((eq (nelisp-os--windows-fd-kind fd) 'socket)
@@ -3871,11 +3956,83 @@ zero; pass FLAGS = 0 unless you know better."
 ;; Empty result list = no events ready (only possible when FD opened
 ;; with IN-NONBLOCK).
 
+(defun nelisp-os--windows-inotify-status-flags (flags)
+  "Return POSIX status flags represented by Windows inotify FLAGS."
+  (unless (= (logand flags (lognot (logior nelisp-os-IN-NONBLOCK
+                                           nelisp-os-IN-CLOEXEC)))
+             0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (if (/= (logand flags nelisp-os-IN-NONBLOCK) 0)
+      nelisp-os-O-NONBLOCK
+    0))
+
+(defun nelisp-os--windows-inotify-init (flags)
+  "Windows synthetic implementation of `nelisp-os-inotify-init'."
+  (let* ((status-flags (nelisp-os--windows-inotify-status-flags flags))
+         (handle (nelisp-os--libc-call
+                  "kernel32" "CreateEventW"
+                  [:pointer :pointer :sint32 :sint32 :pointer]
+                  0 1 0 0)))
+    (if (= handle 0)
+        (nelisp-os--windows-ffi-error-signal)
+      (let ((fd (nelisp-os--windows-fd-alloc handle 'inotify status-flags)))
+        (push (cons fd (vector 1 nil nil)) nelisp-os--windows-inotify-table)
+        (if (= (logand flags nelisp-os-IN-CLOEXEC) 0)
+            fd
+          (condition-case err
+              (progn
+                (nelisp-os--windows-setfd-flags fd nelisp-os-FD-CLOEXEC)
+                fd)
+            (nelisp-os-error
+             (ignore-errors (nelisp-os-close fd))
+             (signal (car err) (cdr err)))))))))
+
+(defun nelisp-os--windows-inotify-add-watch (fd path mask)
+  "Windows synthetic implementation of `nelisp-os-inotify-add-watch'."
+  (unless (and (stringp path) (integerp mask) (/= mask 0))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let* ((cell (nelisp-os--windows-inotify-cell fd))
+         (state (cdr cell))
+         (wd (aref state 0)))
+    (aset state 0 (1+ wd))
+    (aset state 1 (cons (list wd path mask) (aref state 1)))
+    wd))
+
+(defun nelisp-os--windows-inotify-rm-watch (fd wd)
+  "Windows synthetic implementation of `nelisp-os-inotify-rm-watch'."
+  (let* ((cell (nelisp-os--windows-inotify-cell fd))
+         (state (cdr cell))
+         (watches (aref state 1))
+         (match (assq wd watches)))
+    (unless match
+      (signal 'nelisp-os-error (list 22))) ; EINVAL
+    (aset state 1 (delq match watches))
+    0))
+
+(defun nelisp-os--windows-inotify-read (fd max-events)
+  "Windows synthetic implementation of `nelisp-os-inotify-read'."
+  (when (< max-events 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let* ((cell (nelisp-os--windows-inotify-cell fd))
+         (state (cdr cell))
+         (queue (aref state 2))
+         (events nil)
+         (n 0))
+    (while (and queue (< n max-events))
+      (push (car queue) events)
+      (setq queue (cdr queue))
+      (setq n (1+ n)))
+    (aset state 2 queue)
+    (when (and (> n 0) (not queue))
+      (nelisp-os--libc-call "kernel32" "ResetEvent" [:sint32 :pointer]
+                            (nelisp-os--windows-handle-for-fd fd)))
+    (nreverse events)))
+
 (defun nelisp-os-inotify-init (flags)
   "Linux inotify_init1(2) — return a new inotify fd.  FLAGS is OR of
 `nelisp-os-IN-NONBLOCK' / `nelisp-os-IN-CLOEXEC' (or 0)."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-inotify-init flags)
     (nelisp-os--check-errno (nelisp--syscall 'inotify_init1 flags))))
 
 (defun nelisp-os-inotify-add-watch (fd path mask)
@@ -3885,7 +4042,7 @@ integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
   ;; → int.  Returns -1 on error and sets errno; the wd is a positive
   ;; per-fd integer otherwise.
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-inotify-add-watch fd path mask)
     (let ((r (nelisp-os--libc-call "libc" "inotify_add_watch"
                           [:sint32 :sint32 :string :uint32]
                           fd path mask)))
@@ -3896,7 +4053,7 @@ integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
 (defun nelisp-os-inotify-rm-watch (fd wd)
   "Linux inotify_rm_watch(2) — remove the watch identified by WD."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-inotify-rm-watch fd wd)
     (nelisp-os--check-errno (nelisp--syscall 'inotify_rm_watch fd wd))))
 
 (defun nelisp-os-inotify-read (fd max-events)
@@ -3906,7 +4063,7 @@ are ready (only possible when FD was opened `IN-NONBLOCK')."
   ;; Doc 76 Stage E: was a Rust specialized primitive; now elisp-side
   ;; libc.read + nelisp-os-read-i32/u32/bytes-at parse loop.
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-inotify-read fd max-events)
     (let* ((per-event-cap (+ 16 256))             ; sizeof(header) + NAME_MAX+1
            (cap           (* max-events per-event-cap))
            (buf           (nelisp-os--alloc cap)))

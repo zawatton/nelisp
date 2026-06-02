@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-129-WINDOWS-TIMERFD-ABSTIME
+#+STATUS: STAGE-130-WINDOWS-INOTIFY-SYNTHETIC-FD
 
 * Status
 
-- *State*: STAGE 129 Windows timerfd absolute-time compatibility
+- *State*: STAGE 130 Windows inotify synthetic fd compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -281,7 +281,7 @@
   =SIGKILL= and validates the fd kind before FFI.  Synthetic process fds now
   also avoid regular HANDLE file APIs for =read/write/lseek/fstat/poll=.
   =fork= plus remaining Linux-only APIs still reject Windows before reaching
-  Linux syscall or Linux libc paths: =fork=, =inotify_*=, fd-passing
+  Linux syscall or Linux libc paths: =fork=, fd-passing
   =sendmsg= / =recvmsg= requests, and =getsockopt-peercred= signal
   =nelisp-os-error= with =ENOTSUP= on Windows.  Windows =sigprocmask= now
   tracks an emulated signal mask for =SIG_BLOCK= / =SIG_UNBLOCK= /
@@ -290,6 +290,11 @@
   =SFD_NONBLOCK= status, =SFD_CLOEXEC= descriptor flags, shared state across
   =dup2= / =F_DUPFD=, zero-size =0600= =fstat= metadata, =ESPIPE= =lseek=,
   empty =signalfd-read= results, and no HANDLE/Linux syscall fallback.
+  Windows =inotify_init= now creates an inotify fd-kind entry backed by a
+  waitable event HANDLE, tracks =IN_NONBLOCK= / =IN_CLOEXEC=, manages synthetic
+  watch descriptors through =inotify_add_watch= / =inotify_rm_watch=, exposes
+  queued high-level =inotify_read= events plus =poll= readiness, and avoids
+  regular HANDLE/Linux syscall fallback for raw =read/write/lseek/fstat=.
   Windows abstract AF_UNIX =bind= / =connect= now map abstract names to stable
   hashed temporary filesystem socket paths and reuse the existing Winsock
   filesystem AF_UNIX path.
@@ -397,6 +402,10 @@
   compatibility now uses waitable timers for relative one-shot / interval
   timers and converts =TFD_TIMER_ABSTIME= absolute expirations into Windows
   relative waits.
+  Windows inotify now has synthetic fd-kind/watch/queue compatibility so
+  callers can create watchers, register/remove watch descriptors, drain queued
+  normalized events, and poll readiness; native =ReadDirectoryChangesW= event
+  production remains the follow-up.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
   smoke manifest and emits all ten PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
@@ -720,6 +729,11 @@
   =CLOCK_REALTIME= expiration into a relative =SetWaitableTimer= due time,
   keeps timer state armed, and preserves the timerfd clock id created by
   =timerfd_create=.
+  Stage 130 coverage verifies Windows inotify creates event HANDLE-backed
+  fd-kind state, tracks nonblocking/close-on-exec flags, manages watch
+  descriptors, exposes fstat/lseek/read/write behavior without HANDLE fallback,
+  drains queued events through =inotify_read=, reports queued readiness through
+  =poll=, and cleans up state on close.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1083,7 +1097,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   points reject Windows before reaching Linux syscall/libc paths.  The
   timerfd portion was superseded on 2026-06-03 by waitable timer-backed
   compatibility; =sigprocmask= and =signalfd= were superseded on 2026-06-03 by
-  emulated mask / synthetic fd compatibility.
+  emulated mask / synthetic fd compatibility; =inotify= was superseded on
+  2026-06-03 by synthetic fd/watch/queue compatibility.
   *Windows Winsock progress 2026-06-02*: =nelisp-os-socket= now initializes
   Winsock, creates =AF_INET= sockets through =ws2_32!socket=, tracks socket fds
   separately from HANDLE fds, and =nelisp-os-close= dispatches socket fds to
@@ -1658,6 +1673,11 @@ largest uncertainty (B1 + B2) first.
    *Windows timerfd dup compatibility SHIPPED 2026-06-03*: timerfd =dup2=,
    stdout-target =dup2=, and =F_DUPFD= preserve timerfd kind/status flags and
    share timer state with the source descriptor.
+   *Windows inotify synthetic fd compatibility SHIPPED 2026-06-03*:
+   =inotify_init= creates event HANDLE-backed fd-kind state,
+   =inotify_add_watch= / =inotify_rm_watch= manage synthetic watch
+   descriptors, =inotify_read= drains queued normalized events, =poll= reports
+   queued readiness, and close removes inotify state.
    *Windows sigprocmask compatibility SHIPPED 2026-06-03*: =sigprocmask=
    now maintains an emulated Windows signal mask and returns previous masks
    for =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK= without POSIX FFI.

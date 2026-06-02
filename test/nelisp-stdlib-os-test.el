@@ -2294,15 +2294,11 @@
     (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-linux-only-apis-windows-error-before-syscall ()
-  "Linux-only fork/event fd APIs reject Windows before raw syscall/libc."
+  "Linux-only fork/fd-passing/peercred APIs reject Windows before FFI."
   (let ((called nil)
         (forms
          (list
           (lambda () (nelisp-os-fork))
-          (lambda () (nelisp-os-inotify-init 0))
-          (lambda () (nelisp-os-inotify-add-watch 3 "x" nelisp-os-IN-ALL-EVENTS))
-          (lambda () (nelisp-os-inotify-rm-watch 3 1))
-          (lambda () (nelisp-os-inotify-read 3 1))
           (lambda () (nelisp-os-sendmsg-fds 3 (list 4) "x"))
           (lambda () (nelisp-os-recvmsg-fds 3 1 1))
           (lambda () (nelisp-os-getsockopt-peercred 3)))))
@@ -2316,6 +2312,92 @@
         (dolist (fn forms)
           (should-error (funcall fn) :type 'nelisp-os-error))))
     (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-inotify-windows-creates-watches-and-cleans-up ()
+  "Windows inotify creates synthetic fd-kind state and manages watches."
+  (let ((calls nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-inotify-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "CreateEventW") #xaaaa)
+                  ((equal fn "SetHandleInformation") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-inotify-init
+                    (logior nelisp-os-IN-NONBLOCK nelisp-os-IN-CLOEXEC))
+                   3))
+        (should (= (nelisp-os-inotify-add-watch
+                    3 "C:/tmp" nelisp-os-IN-ALL-EVENTS)
+                   1))
+        (should (equal (nelisp-os-inotify-read 3 4) nil))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os-stat-mode (nelisp-os-fstat 3))
+                   nelisp-os--inotify-stat-mode))
+        (should-error (nelisp-os-read 3 8) :type 'nelisp-os-error)
+        (should-error (nelisp-os-write 3 "x") :type 'nelisp-os-error)
+        (should-error (nelisp-os-lseek 3 0 nelisp-os-SEEK-SET)
+                      :type 'nelisp-os-error)
+        (should (= (nelisp-os-inotify-rm-watch 3 1) 0))
+        (should-not (nelisp-os-close 3))))
+    (should-not nelisp-os--windows-fd-table)
+    (should-not nelisp-os--windows-fd-kind-table)
+    (should-not nelisp-os--windows-fd-flags-table)
+    (should-not nelisp-os--windows-inotify-table)
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "CreateEventW"
+                          [:pointer :pointer :sint32 :sint32 :pointer]
+                          (list 0 1 0 0))
+                    (list "kernel32" "SetHandleInformation"
+                          [:sint32 :pointer :uint32 :uint32]
+                          (list #xaaaa
+                                nelisp-os-WIN-HANDLE-FLAG-INHERIT
+                                0))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xaaaa)))))))
+
+(ert-deftest nelisp-stdlib-os-inotify-windows-reads-queued-events ()
+  "Windows inotify read/poll consume queued compatibility events."
+  (let ((calls nil)
+        (state (vector 2
+                       (list (list 1 "C:/tmp" nelisp-os-IN-ALL-EVENTS))
+                       (list (list 1 nelisp-os-IN-CREATE 0 "a.txt")
+                             (list 1 nelisp-os-IN-DELETE 0 "b.txt"))))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . inotify)))
+        (nelisp-os--windows-inotify-table nil))
+    (setq nelisp-os--windows-inotify-table (list (cons 3 state)))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "ResetEvent") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-poll (list (cons 3 nelisp-os-POLLIN)) 0)
+                       (list (cons 3 nelisp-os-POLLIN))))
+        (should (equal (nelisp-os-inotify-read 3 1)
+                       (list (list 1 nelisp-os-IN-CREATE 0 "a.txt"))))
+        (should (equal (nelisp-os-inotify-read 3 4)
+                       (list (list 1 nelisp-os-IN-DELETE 0 "b.txt"))))
+        (should (equal (nelisp-os-poll (list (cons 3 nelisp-os-POLLIN)) 0)
+                       (list (cons 3 0))))))
+    (should (equal (aref (cdr (assq 3 nelisp-os--windows-inotify-table)) 2)
+                   nil))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "ResetEvent"
+                          [:sint32 :pointer]
+                          (list #xaaaa)))))))
 
 (ert-deftest nelisp-stdlib-os-sendmsg-fds-windows-empty-fds-uses-send ()
   "Windows sendmsg-fds with no fd passing uses Winsock send for payload."
