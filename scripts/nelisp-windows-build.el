@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -49,6 +49,8 @@
 ;; exactly the marker.
 ;; Stage 24 copies argv1 from the UTF-16 command line into a NUL-terminated
 ;; byte buffer in .data, which is the hand-off shape the reader/file path needs.
+;; Stage 25 lets linked driver units call Win32 file APIs through correctly
+;; based IAT-relative calls, then reads one byte from argv1 as a file path.
 
 ;;; Code:
 
@@ -233,12 +235,31 @@ KERNEL32.dll!GetCommandLineW."
   (nelisp-windows-build-commandline-probe
    "target/nelisp-windows-commandline42.exe"))
 
-(defun nelisp-windows-build--compile-defuns-to-unit (name source)
+(defun nelisp-windows-build--compile-defuns-to-unit (name source
+                                                         &optional text-rva
+                                                         iat-rvas)
   "Compile Phase47 defun SOURCE to a Win64 link-unit named NAME."
   (let* ((nelisp-phase47-compiler--label-counter 0)
          (nelisp-phase47-compiler--arch 'x86_64)
          (nelisp-phase47-compiler--os 'windows)
          (nelisp-phase47-compiler--abi 'win64)
+         (nelisp-phase47-compiler--windows-text-rva (or text-rva 0))
+         (nelisp-phase47-compiler--windows-exitprocess-iat-rva
+          (cdr (assoc "ExitProcess" iat-rvas)))
+         (nelisp-phase47-compiler--windows-getstdhandle-iat-rva
+          (cdr (assoc "GetStdHandle" iat-rvas)))
+         (nelisp-phase47-compiler--windows-writefile-iat-rva
+          (cdr (assoc "WriteFile" iat-rvas)))
+         (nelisp-phase47-compiler--windows-readfile-iat-rva
+          (cdr (assoc "ReadFile" iat-rvas)))
+         (nelisp-phase47-compiler--windows-createfilea-iat-rva
+          (cdr (assoc "CreateFileA" iat-rvas)))
+         (nelisp-phase47-compiler--windows-closehandle-iat-rva
+          (cdr (assoc "CloseHandle" iat-rvas)))
+         (nelisp-phase47-compiler--windows-virtualalloc-iat-rva
+          (cdr (assoc "VirtualAlloc" iat-rvas)))
+         (nelisp-phase47-compiler--windows-virtualfree-iat-rva
+          (cdr (assoc "VirtualFree" iat-rvas)))
          (nelisp-phase47-compiler--allow-external-user-calls t)
          (ir (nelisp-phase47-compiler--parse source nil))
          (defuns (nelisp-phase47-compiler--collect-defuns ir))
@@ -401,6 +422,56 @@ KERNEL32.dll!GetCommandLineW."
      (list (nelisp-link-symbol "_start" 0 :section 'text
                                :bind 'global :type 'func))
      (nelisp-asm-x86_64-extract-relocs buf))))
+
+(defun nelisp-windows-build--standalone-commandline-file-start-unit
+    (text-rva exitprocess-iat-rva getcommandline-iat-rva lstrlenw-iat-rva)
+  "Return a PE `_start' unit calling `driver(cmdline, len, path_buf, file_buf)'."
+  (let ((nelisp-phase47-compiler--windows-text-rva text-rva)
+        (buf (nelisp-asm-x86_64-make-buffer 'win64)))
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp #x38)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf getcommandline-iat-rva)
+    (nelisp-windows-build--emit-mov-qword-rsp-rax buf #x28)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva buf lstrlenw-iat-rva)
+    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rcx #x28)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rax)
+    ;; lea r8, [rip+argv1_cstr]
+    (let ((reloc-off (nelisp-asm-x86_64-buffer-pos buf)))
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #x4c #x8d #x05 0 0 0 0))
+      (nelisp-asm-x86_64-emit-reloc
+       buf 'pc32 "argv1_cstr" 0 :section 'text)
+      (let* ((relocs (aref buf 4))
+             (last (car (last relocs))))
+        (setq last (plist-put last :offset (+ reloc-off 3)))
+        (aset buf 4 (append (butlast relocs) (list last)))))
+    ;; lea r9, [rip+file_read_buf]
+    (let ((reloc-off (nelisp-asm-x86_64-buffer-pos buf)))
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #x4c #x8d #x0d 0 0 0 0))
+      (nelisp-asm-x86_64-emit-reloc
+       buf 'pc32 "file_read_buf" 0 :section 'text)
+      (let* ((relocs (aref buf 4))
+             (last (car (last relocs))))
+        (setq last (plist-put last :offset (+ reloc-off 3)))
+        (aset buf 4 (append (butlast relocs) (list last)))))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xe8))
+    (nelisp-asm-x86_64-reloc-plt32-here buf "driver" 0 'text)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf exitprocess-iat-rva)
+    (nelisp-asm-x86_64-int3 buf)
+    (nelisp-link-unit-make
+     "start.o"
+     (list (cons 'text (nelisp-asm-x86_64-buffer-bytes buf)))
+     (list (nelisp-link-symbol "_start" 0 :section 'text
+                               :bind 'global :type 'func))
+     (nelisp-asm-x86_64-extract-relocs buf))))
+
+(defun nelisp-windows-build--unit-text-length (unit)
+  "Return the length of UNIT's .text payload."
+  (length (or (cdr (assq 'text (plist-get unit :sections))) "")))
 
 (defun nelisp-windows-build--link-units-executable-bytes
     (imports unit-builder &optional extra-rdata)
@@ -710,6 +781,17 @@ link-units."
           "argv1_cstr" 0 :section 'data :bind 'global :type 'object))
    nil))
 
+(defun nelisp-windows-build--argv1-file-data-unit ()
+  "Return a .data unit containing argv1 path and file read buffers."
+  (nelisp-link-unit-make
+   "argv1-file-bufs.o"
+   (list (cons 'data (make-string 276 0)))
+   (list (nelisp-link-symbol
+          "argv1_cstr" 0 :section 'data :bind 'global :type 'object)
+         (nelisp-link-symbol
+          "file_read_buf" 260 :section 'data :bind 'global :type 'object))
+   nil))
+
 (defun nelisp-windows-build--standalone-commandline-argv1-cstr-driver-bytes ()
   "Return a PE32+ EXE proving argv1 can be copied to a C string buffer."
   (nelisp-windows-build--link-units-executable-bytes
@@ -778,6 +860,95 @@ link-units."
                         (ptr-read-u8 out 0))
                      17))))))))
       (nelisp-windows-build--argv1-cstr-data-unit)))))
+
+(defun nelisp-windows-build--standalone-commandline-file-read-byte-bytes ()
+  "Return a PE32+ EXE that reads one byte from the argv1 file path."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "GetCommandLineW" "lstrlenW"
+     "CreateFileA" "ReadFile" "CloseHandle")
+   (lambda (text-rva iat-rvas _rdata-rva _data-rva)
+     (let* ((start (nelisp-windows-build--standalone-commandline-file-start-unit
+                    text-rva
+                    (cdr (assoc "ExitProcess" iat-rvas))
+                    (cdr (assoc "GetCommandLineW" iat-rvas))
+                    (cdr (assoc "lstrlenW" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start))))
+       (list
+        start
+        (nelisp-windows-build--compile-defuns-to-unit
+         "driver.o"
+         '(seq
+           (defun wargv_copy_argv1 (cmdline len out)
+             (let* ((i 0)
+                    (ch 0)
+                    (start 0)
+                    (end 0)
+                    (j 0))
+               (seq
+                (setq ch (ptr-read-u16 cmdline 0))
+                (if (= ch 34)
+                    (seq
+                     (setq i 1)
+                     (while (and (< i len)
+                                 (= (= (ptr-read-u16 cmdline (* i 2)) 34) 0))
+                       (setq i (+ i 1)))
+                     (if (< i len) (setq i (+ i 1)) 0))
+                  (while (and (< i len)
+                              (and (= (= (ptr-read-u16 cmdline (* i 2)) 32) 0)
+                                   (= (= (ptr-read-u16 cmdline (* i 2)) 9) 0)))
+                    (setq i (+ i 1))))
+                (while (and (< i len)
+                            (or (= (ptr-read-u16 cmdline (* i 2)) 32)
+                                (= (ptr-read-u16 cmdline (* i 2)) 9)))
+                  (setq i (+ i 1)))
+                (if (< i len)
+                    (seq
+                     (if (= (ptr-read-u16 cmdline (* i 2)) 34)
+                         (seq
+                          (setq i (+ i 1))
+                          (setq start i)
+                          (while (and (< i len)
+                                      (= (= (ptr-read-u16 cmdline (* i 2)) 34) 0))
+                            (setq i (+ i 1)))
+                          (setq end i))
+                       (seq
+                        (setq start i)
+                        (while (and (< i len)
+                                    (and (= (= (ptr-read-u16 cmdline (* i 2)) 32) 0)
+                                         (= (= (ptr-read-u16 cmdline (* i 2)) 9) 0)))
+                          (setq i (+ i 1)))
+                        (setq end i)))
+                     (while (< start end)
+                       (seq
+                        (ptr-write-u8 out j (ptr-read-u16 cmdline (* start 2)))
+                        (setq start (+ start 1))
+                        (setq j (+ j 1))))
+                     (ptr-write-u8 out j 0)
+                     1)
+                  17))))
+           (defun driver (cmdline len path-buf file-buf)
+             (if (= cmdline 0)
+                 13
+               (if (= len 0)
+                   14
+                 (if (= path-buf 0)
+                     15
+                   (if (= file-buf 0)
+                       16
+                     (let* ((copied (wargv_copy_argv1 cmdline len path-buf)))
+                       (if (= copied 1)
+                           (let* ((fd (syscall-direct 2 path-buf 0 0 0 0 0)))
+                             (if (< fd 0)
+                                 18
+                               (let* ((n (syscall-direct 0 fd file-buf 1 0 0 0))
+                                      (b (ptr-read-u8 file-buf 0)))
+                                 (seq
+                                  (syscall-direct 3 fd 0 0 0 0 0)
+                                  (if (= n 1) b 19)))))
+                         copied))))))))
+         driver-rva iat-rvas)
+        (nelisp-windows-build--argv1-file-data-unit))))))
 
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
@@ -886,6 +1057,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (argv1 UTF-16 -> C string)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-commandline-file-read-byte ()
+  "Batch entry: build the standalone command-line file-read probe."
+  (let ((bytes (nelisp-windows-build--standalone-commandline-file-read-byte-bytes))
+        (out-path "target/nelisp-windows-standalone-commandline-file-read-byte.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (argv1 path -> first byte)"
              out-path)
     out-path))
 
