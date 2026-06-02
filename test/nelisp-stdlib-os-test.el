@@ -2475,7 +2475,7 @@
                                4))))))
 
 (ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-buffer-options ()
-  "Windows SOL_SOCKET buffer/broadcast/route options translate through Winsock."
+  "Windows SOL_SOCKET int options translate through Winsock."
   (let ((calls nil)
         (writes nil)
         (nelisp-os--windows-fd-table '((3 . #xabcdef)))
@@ -2490,6 +2490,9 @@
                  0)))
       (let ((system-type 'windows-nt))
         (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-DEBUG 1)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
                     3 nelisp-os-SOL-SOCKET nelisp-os-SO-SNDBUF 4096)
                    0))
         (should (= (nelisp-os-setsockopt-int
@@ -2500,14 +2503,23 @@
                    0))
         (should (= (nelisp-os-setsockopt-int
                     3 nelisp-os-SOL-SOCKET nelisp-os-SO-DONTROUTE 1)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-OOBINLINE 1)
                    0))))
     (should (equal (nreverse writes)
-                   '((3000 0 4096)
+                   '((3000 0 1)
+                     (3000 0 4096)
                      (3000 0 8192)
+                     (3000 0 1)
                      (3000 0 1)
                      (3000 0 1))))
     (should (equal (nreverse calls)
                    (list
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-DEBUG 3000 4))
                     (list "ws2_32" "setsockopt"
                           [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
                           (list #xabcdef nelisp-os-WIN-SOL-SOCKET
@@ -2523,7 +2535,11 @@
                     (list "ws2_32" "setsockopt"
                           [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
                           (list #xabcdef nelisp-os-WIN-SOL-SOCKET
-                                nelisp-os-WIN-SO-DONTROUTE 3000 4)))))))
+                                nelisp-os-WIN-SO-DONTROUTE 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-OOBINLINE 3000 4)))))))
 
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-uses-winsock ()
   "Windows int-valued socket options translate to Winsock getsockopt."
@@ -2613,10 +2629,10 @@
                                4000))))))
 
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-buffer-options ()
-  "Windows SOL_SOCKET buffer/broadcast/route options translate through getsockopt."
+  "Windows SOL_SOCKET int options translate through getsockopt."
   (let ((alloc-next 3000)
         (calls nil)
-        (reads '(4096 8192 1 1))
+        (reads '(1 4096 8192 1 1 1))
         (nelisp-os--windows-fd-table '((3 . #xabcdef)))
         (nelisp-os--windows-fd-kind-table '((3 . socket))))
     (cl-letf (((symbol-function 'nelisp-os--alloc)
@@ -2633,6 +2649,9 @@
                  0)))
       (let ((system-type 'windows-nt))
         (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-DEBUG)
+                   1))
+        (should (= (nelisp-os-getsockopt-int
                     3 nelisp-os-SOL-SOCKET nelisp-os-SO-SNDBUF)
                    4096))
         (should (= (nelisp-os-getsockopt-int
@@ -2643,25 +2662,36 @@
                    1))
         (should (= (nelisp-os-getsockopt-int
                     3 nelisp-os-SOL-SOCKET nelisp-os-SO-DONTROUTE)
+                   1))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-OOBINLINE)
                    1))))
     (should (equal (nreverse calls)
                    (list
                     (list "ws2_32" "getsockopt"
                           [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
                           (list #xabcdef nelisp-os-WIN-SOL-SOCKET
-                                nelisp-os-WIN-SO-SNDBUF 3000 4000))
+                                nelisp-os-WIN-SO-DEBUG 3000 4000))
                     (list "ws2_32" "getsockopt"
                           [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
                           (list #xabcdef nelisp-os-WIN-SOL-SOCKET
-                                nelisp-os-WIN-SO-RCVBUF 5000 6000))
+                                nelisp-os-WIN-SO-SNDBUF 5000 6000))
                     (list "ws2_32" "getsockopt"
                           [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
                           (list #xabcdef nelisp-os-WIN-SOL-SOCKET
-                                nelisp-os-WIN-SO-BROADCAST 7000 8000))
+                                nelisp-os-WIN-SO-RCVBUF 7000 8000))
                     (list "ws2_32" "getsockopt"
                           [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
                           (list #xabcdef nelisp-os-WIN-SOL-SOCKET
-                                nelisp-os-WIN-SO-DONTROUTE 9000 10000)))))))
+                                nelisp-os-WIN-SO-BROADCAST 9000 10000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-DONTROUTE 11000 12000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-OOBINLINE 13000 14000)))))))
 
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-error-and-type ()
   "Windows get-only SOL_SOCKET options translate through getsockopt."
