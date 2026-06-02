@@ -4,13 +4,15 @@
 
 * Status
 
-- *State*: STAGE 4 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 5 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
   wires Phase47's =(exit ...)= emit path to Win64 =ExitProcess= through the
   PE import address table.  Stage 4 adds Phase47 =(write "...")= via
   =GetStdHandle= / =WriteFile= and appends string rodata to the PE image.
+  Stage 5 maps Phase47 =alloc-bytes= to =VirtualAlloc= for Windows PE EXEs
+  while keeping =dealloc-bytes= explicitly rejected until =VirtualFree= lands.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the

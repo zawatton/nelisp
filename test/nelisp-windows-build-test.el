@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -58,6 +58,21 @@
         (rdata-raw #x400))
     (nelisp-windows-build-test--read-cstr
      bytes (+ rdata-raw (- rva rdata-rva) 2))))
+
+(defun nelisp-windows-build-test--iat-call-targets (bytes start end)
+  "Return target RVAs for `call qword [rip+disp32]' between START and END."
+  (let ((targets nil)
+        (i start)
+        (text-rva #x1000)
+        (text-raw #x200))
+    (while (< (+ i 6) end)
+      (when (and (= (aref bytes i) #xff)
+                 (= (aref bytes (+ i 1)) #x15))
+        (let* ((disp (nelisp-windows-build-test--read-le32 bytes (+ i 2)))
+               (text-off (- i text-raw)))
+          (push (+ text-rva text-off 6 disp) targets)))
+      (setq i (1+ i)))
+    (nreverse targets)))
 
 (ert-deftest nelisp-windows-build-phase47-exit42-imports-exitprocess ()
   "Phase47 Windows EXE imports KERNEL32.dll!ExitProcess."
@@ -187,6 +202,58 @@
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))
                  text))))
+
+(ert-deftest nelisp-windows-build-phase47-alloc-imports-virtualalloc ()
+  "Phase47 Windows `alloc-bytes' EXE imports VirtualAlloc."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(exit (if (= (alloc-bytes 4096 8) 0) 13 42))))
+         (peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-rva (nelisp-windows-build-test--read-le32 bytes (+ opt 120)))
+         (rdata-rva #x2000)
+         (rdata-raw #x400)
+         (import-off (+ rdata-raw (- import-rva rdata-rva)))
+         (oft (nelisp-windows-build-test--read-le32 bytes import-off))
+         (iat-rva (nelisp-windows-build-test--read-le32 bytes (+ import-off 16)))
+         (name0-rva (nelisp-windows-build-test--read-le64
+                     bytes (+ rdata-raw (- oft rdata-rva))))
+         (name1-rva (nelisp-windows-build-test--read-le64
+                     bytes (+ rdata-raw (- oft rdata-rva) 8))))
+    (should (= iat-rva #x2040))
+    (should (equal (nelisp-windows-build-test--import-name-at bytes name0-rva)
+                   "ExitProcess"))
+    (should (equal (nelisp-windows-build-test--import-name-at bytes name1-rva)
+                   "VirtualAlloc"))))
+
+(ert-deftest nelisp-windows-build-phase47-alloc-text-calls-virtualalloc ()
+  "Phase47 Windows `alloc-bytes' emits a VirtualAlloc IAT call."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(exit (if (= (alloc-bytes 4096 8) 0) 13 42))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 120)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 120))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x31 #xc9))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x41 #xb8 #x00 #x30 #x00 #x00))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x41 #xb9 #x04 #x00 #x00 #x00))
+             text))
+    (should (member #x2048 targets))
+    (should (member #x2040 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-phase47-dealloc-rejected ()
+  "Windows Phase47 EXE path rejects `dealloc-bytes' until VirtualFree lands."
+  (should-error
+   (nelisp-windows-build--phase47-executable-bytes
+    '(exit (dealloc-bytes 0 1 1)))
+   :type 'nelisp-phase47-compiler-error))
 
 (provide 'nelisp-windows-build-test)
 

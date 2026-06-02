@@ -8,10 +8,11 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
-;; KERNEL32.dll!ExitProcess and `(write ...)' through WriteFile.
+;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
+;; `alloc-bytes' through VirtualAlloc.
 
 ;;; Code:
 
@@ -41,11 +42,27 @@ The program exits 42 on allocation success and 13 on failure."
   (nelisp-windows-build-virtualalloc-probe
    "target/nelisp-windows-virtualalloc42.exe"))
 
-(defun nelisp-windows-build--phase47-import-names (str-rodata-bytes)
-  "Return KERNEL32 import names needed by STR-RODATA-BYTES."
-  (if (> (length str-rodata-bytes) 0)
-      '("ExitProcess" "GetStdHandle" "WriteFile")
-    '("ExitProcess")))
+(defun nelisp-windows-build--sexp-contains-symbol-p (sexp symbol)
+  "Return non-nil when SEXP contains SYMBOL as a list head."
+  (cond
+   ((atom sexp) nil)
+   ((eq (car sexp) symbol) t)
+   (t (let ((tail sexp)
+            (found nil))
+        (while (and tail (not found))
+          (setq found (nelisp-windows-build--sexp-contains-symbol-p
+                       (car tail) symbol))
+          (setq tail (cdr tail)))
+        found))))
+
+(defun nelisp-windows-build--phase47-import-names (sexp str-rodata-bytes)
+  "Return KERNEL32 import names needed by SEXP and STR-RODATA-BYTES."
+  (let ((names '("ExitProcess")))
+    (when (> (length str-rodata-bytes) 0)
+      (setq names (append names '("GetStdHandle" "WriteFile"))))
+    (when (nelisp-windows-build--sexp-contains-symbol-p sexp 'alloc-bytes)
+      (setq names (append names '("VirtualAlloc"))))
+    names))
 
 (defun nelisp-windows-build--phase47-rodata-bytes (sexp)
   "Return Phase47 string rodata bytes for SEXP."
@@ -71,6 +88,8 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
            (nelisp-phase47-compiler--windows-exitprocess-iat-rva exitprocess-iat)
            (nelisp-phase47-compiler--windows-getstdhandle-iat-rva getstdhandle-iat)
            (nelisp-phase47-compiler--windows-writefile-iat-rva writefile-iat)
+           (nelisp-phase47-compiler--windows-virtualalloc-iat-rva
+            (cdr (assoc "VirtualAlloc" iat-rvas)))
            (ir (nelisp-phase47-compiler--parse sexp nil))
            (collected (nelisp-phase47-compiler--collect-strings ir))
            (str-offsets (car collected))
@@ -105,7 +124,7 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
 (defun nelisp-windows-build--phase47-executable-bytes (sexp)
   "Return a PE32+ EXE byte string for Phase47 SEXP."
   (let* ((rodata-bytes (nelisp-windows-build--phase47-rodata-bytes sexp))
-         (imports (nelisp-windows-build--phase47-import-names rodata-bytes)))
+         (imports (nelisp-windows-build--phase47-import-names sexp rodata-bytes)))
     (nelisp-pe-write-build-kernel32-executable
      imports
      (lambda (text-rva iat-rvas rodata-rva)
@@ -132,6 +151,12 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
   (nelisp-windows-build-phase47-exe
    '(seq (write "hello\n") (exit 42))
    "target/nelisp-windows-phase47-hello.exe"))
+
+(defun nelisp-windows-build-phase47-alloc42 ()
+  "Batch entry: build target/nelisp-windows-phase47-alloc42.exe."
+  (nelisp-windows-build-phase47-exe
+   '(exit (if (= (alloc-bytes 4096 8) 0) 13 42))
+   "target/nelisp-windows-phase47-alloc42.exe"))
 
 (provide 'nelisp-windows-build)
 
