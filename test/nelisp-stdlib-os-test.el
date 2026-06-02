@@ -3555,6 +3555,41 @@
                     (list 'accept 3)
                     (list 'close 3))))))
 
+(ert-deftest nelisp-stdlib-os-socketpair-windows-seqpacket-uses-stream-pair ()
+  "Windows AF_UNIX SOCK_SEQPACKET socketpair uses stream-pair compatibility."
+  (let ((calls nil)
+        (nelisp-os--windows-socket-peercred-table nil)
+        (nelisp-os--windows-socket-fdpass-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--windows-socketpair-stream)
+               (lambda (type domain)
+                 (push (list 'socketpair-stream type domain) calls)
+                 (cons 3 4))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-socketpair
+                        nelisp-os-AF-UNIX nelisp-os-SOCK-SEQPACKET 0)
+                       '(3 . 4)))))
+    (should (equal calls
+                   (list
+                    (list 'socketpair-stream
+                          nelisp-os-SOCK-STREAM
+                          nelisp-os-AF-UNIX))))
+    (should (assq 3 nelisp-os--windows-socket-peercred-table))
+    (should (assq 4 nelisp-os--windows-socket-fdpass-table))))
+
+(ert-deftest nelisp-stdlib-os-socketpair-windows-seqpacket-rejects-non-unix ()
+  "Windows SOCK_SEQPACKET socketpair is limited to AF_UNIX compatibility."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'nelisp-os--windows-socketpair-stream)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--windows-socketpair-dgram)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-socketpair nelisp-os-AF-INET
+                               nelisp-os-SOCK-SEQPACKET 0)
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-socketpair-windows-cleans-up-on-connect-error ()
   "Windows socketpair closes already-created fds when setup fails."
   (let ((calls nil)
@@ -3845,6 +3880,34 @@
                     (list 'close 3)
                     (list 'fcntl 4 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
                     (list 'fcntl 5 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK))))))
+
+(ert-deftest nelisp-stdlib-os-socketpair-windows-seqpacket-supports-nonblock ()
+  "Windows SOCK_SEQPACKET compatibility applies SOCK_NONBLOCK after setup."
+  (let ((calls nil)
+        (nelisp-os--windows-socket-peercred-table nil)
+        (nelisp-os--windows-socket-fdpass-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--windows-socketpair-stream)
+               (lambda (type domain)
+                 (push (list 'socketpair-stream type domain) calls)
+                 (cons 3 4)))
+              ((symbol-function 'nelisp-os-fcntl)
+               (lambda (fd cmd arg)
+                 (push (list 'fcntl fd cmd arg) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-socketpair
+                        nelisp-os-AF-UNIX
+                        (logior nelisp-os-SOCK-SEQPACKET
+                                nelisp-os-SOCK-NONBLOCK)
+                        0)
+                       '(3 . 4)))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list 'socketpair-stream
+                          nelisp-os-SOCK-STREAM
+                          nelisp-os-AF-UNIX)
+                    (list 'fcntl 3 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
+                    (list 'fcntl 4 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK))))))
 
 (ert-deftest nelisp-stdlib-os-socketpair-windows-dgram-supports-nonblock ()
   "Windows datagram socketpair applies SOCK_NONBLOCK after setup succeeds."

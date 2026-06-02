@@ -118,6 +118,7 @@
 ;; Stage 132 tracks synthetic Windows socketpair peer credentials.
 ;; Stage 133 accepts Windows timerfd alarm clock ids.
 ;; Stage 135 adds same-process Windows socketpair fd-passing compatibility.
+;; Stage 136 maps Windows AF_UNIX SOCK_SEQPACKET socketpair to stream pairs.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -5174,6 +5175,16 @@ datagram pairs use two connected UDP sockets bound to loopback ephemeral ports."
             (unless (memq protocol (list 0 nelisp-os-IPPROTO-TCP))
               (signal 'nelisp-os-error (list 22))) ; EINVAL
             (nelisp-os--windows-socketpair-stream create-type domain))
+           ((= base-type nelisp-os-SOCK-SEQPACKET)
+            (unless (= domain nelisp-os-AF-UNIX)
+              (nelisp-os--windows-unsupported))
+            (unless (= protocol 0)
+              (signal 'nelisp-os-error (list 22))) ; EINVAL
+            (nelisp-os--windows-socketpair-stream
+             (if cloexec-p
+                 (logior nelisp-os-SOCK-STREAM nelisp-os-SOCK-CLOEXEC)
+               nelisp-os-SOCK-STREAM)
+             domain))
            ((= base-type nelisp-os-SOCK-DGRAM)
             (unless (memq protocol (list 0 nelisp-os-IPPROTO-UDP))
               (signal 'nelisp-os-error (list 22))) ; EINVAL
