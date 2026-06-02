@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-31-WINSOCK-AF-UNIX-FILESYSTEM-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-32-WINDOWS-AF-UNIX-LINUX-ONLY-GUARDS-AND-EXIT42-VALIDATED
 
 * Status
 
-- *State*: STAGE 31 Winsock AF_UNIX filesystem + first real Windows smoke VALIDATED
+- *State*: STAGE 32 AF_UNIX Linux-only guards + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -107,7 +107,10 @@
   =nelisp-os-bind-unix= / =connect-unix= / =accept-unix= call =ws2_32!bind= /
   =connect= / =accept= with the existing =sockaddr_un= encoder and peer-path
   decoder.  Linux abstract namespace AF_UNIX remains explicitly unsupported on
-  Windows.
+  Windows.  Linux-only AF_UNIX helpers now reject Windows before libc or
+  allocation: =bind-unix-abstract=, =connect-unix-abstract=, =socketpair=,
+  =sendmsg-fds=, =recvmsg-fds=, and =getsockopt-peercred= signal
+  =nelisp-os-error= with =ENOTSUP=.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -174,7 +177,9 @@
   registration, scoped peer decoding, and buffer cleanup.  Stage 31 coverage
   verifies Windows =AF_UNIX= socket creation, filesystem =bind= / =connect=
   argument shape, accepted socket-kind fd allocation, peer-path decoding, and
-  buffer cleanup.
+  buffer cleanup.  Stage 32 coverage verifies Linux-only AF_UNIX abstract,
+  socketpair, SCM_RIGHTS send/recv, and peercred helpers reject Windows before
+  invoking allocation helpers or libc FFI.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -230,12 +235,14 @@
   Winsock =AF_INET6= socket / bind / connect / accept support.  Stage 30 adds
   scoped IPv6 bind / connect / accept over Winsock.  Stage 31 adds
   filesystem-path =AF_UNIX= socket / bind / connect / accept over Winsock.
+  Stage 32 guards Linux-only AF_UNIX abstract namespace / descriptor-passing /
+  peercred helpers on Windows.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
   Windows OS APIs, cover Winsock extensions such as broader socket options /
-  AF_UNIX abstract namespace / descriptor-passing helpers, or cover the rest of
-  the stdlib OS surface.
+  Windows replacements for descriptor-passing helpers, or cover the rest of the
+  stdlib OS surface.
 
 * TL;DR
 
@@ -430,7 +437,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   uses Winsock hton*/ntoh* functions on Windows rather than POSIX =libc=.
   =AF_INET6= socket / bind / connect / accept now route through Winsock too,
   including scoped IPv6 variants that preserve flowinfo and scope-id.
-  Filesystem-path =AF_UNIX= sockets now use Winsock as well.
+  Filesystem-path =AF_UNIX= sockets now use Winsock as well, while Linux-only
+  abstract namespace / fd-passing / peercred helpers reject Windows before
+  libc fallback.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -525,6 +534,9 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock AF_UNIX filesystem SHIPPED 2026-06-02*: filesystem-path
    Unix sockets now use Winsock for =socket= / =bind= / =connect= / =accept=,
    with accepted sockets registered as socket-kind fds.
+   *Windows AF_UNIX Linux-only guards SHIPPED 2026-06-02*: abstract namespace,
+   =socketpair=, =sendmsg/recvmsg= fd passing, and =SO_PEERCRED= helpers now
+   return =ENOTSUP= on Windows before allocation or libc FFI.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
@@ -546,7 +558,8 @@ largest uncertainty (B1 + B2) first.
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
    read/write, poll, and setsockopt-int; broader socket extensions remain
-   pending.
+   pending.  Linux-only AF_UNIX fd-passing/peercred helpers are guarded, not
+   ported.
 
 * One-line summary
 

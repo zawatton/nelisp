@@ -53,9 +53,10 @@
 ;; conversion by using Winsock hton*/ntoh*.  Stage 29 adds Windows AF_INET6
 ;; socket / bind / connect / accept routing through Winsock.  Stage 30 maps the
 ;; scoped IPv6 variants through the same Winsock path.  Stage 31 maps filesystem
-;; AF_UNIX bind / connect / accept through Winsock.  The Linux/Darwin path
-;; remains the default until a real Windows standalone runtime selects
-;; `system-type' = `windows-nt'.
+;; AF_UNIX bind / connect / accept through Winsock.  Stage 32 makes Linux-only
+;; AF_UNIX abstract namespace / fd-passing / peercred helpers reject Windows
+;; before libc allocation.  The Linux/Darwin path remains the default until a
+;; real Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -2137,25 +2138,29 @@ counters; use `nelisp-os-write' / `nelisp-os-read' on the returned fd."
   "Linux-specific bind(2) for an AF_UNIX abstract-namespace socket.
 NAME is a NUL-free string; the kernel name is `\\0' + NAME and is
 auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
-  (let ((buf (nelisp-os--alloc nelisp-os--sockaddr-un-len)))
-    (unwind-protect
-        (let* ((alen (nelisp-os--encode-sockaddr-un-abstract buf name))
-               (r (nelisp-os--libc-call "libc" "bind"
-                               [:sint32 :sint32 :pointer :uint32]
-                               fd buf alen)))
-          (if (= r -1) (nelisp-os--ffi-errno-signal) r))
-      (nelisp-os--free buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-unsupported)
+    (let ((buf (nelisp-os--alloc nelisp-os--sockaddr-un-len)))
+      (unwind-protect
+          (let* ((alen (nelisp-os--encode-sockaddr-un-abstract buf name))
+                 (r (nelisp-os--libc-call "libc" "bind"
+                                 [:sint32 :sint32 :pointer :uint32]
+                                 fd buf alen)))
+            (if (= r -1) (nelisp-os--ffi-errno-signal) r))
+        (nelisp-os--free buf)))))
 
 (defun nelisp-os-connect-unix-abstract (fd name)
   "Linux-specific connect(2) for an AF_UNIX abstract-namespace socket."
-  (let ((buf (nelisp-os--alloc nelisp-os--sockaddr-un-len)))
-    (unwind-protect
-        (let* ((alen (nelisp-os--encode-sockaddr-un-abstract buf name))
-               (r (nelisp-os--libc-call "libc" "connect"
-                               [:sint32 :sint32 :pointer :uint32]
-                               fd buf alen)))
-          (if (= r -1) (nelisp-os--ffi-errno-signal) r))
-      (nelisp-os--free buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-unsupported)
+    (let ((buf (nelisp-os--alloc nelisp-os--sockaddr-un-len)))
+      (unwind-protect
+          (let* ((alen (nelisp-os--encode-sockaddr-un-abstract buf name))
+                 (r (nelisp-os--libc-call "libc" "connect"
+                                 [:sint32 :sint32 :pointer :uint32]
+                                 fd buf alen)))
+            (if (= r -1) (nelisp-os--ffi-errno-signal) r))
+        (nelisp-os--free buf)))))
 
 ;; getsockname / getpeername — three families × two ops = six wrappers.
 ;; `_inet'  → list (HOST-INT PORT)             both host byte order
@@ -2576,16 +2581,18 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
 Typical use: (nelisp-os-socketpair AF-UNIX SOCK-STREAM 0).  Signals
 `nelisp-os-error' on failure."
   ;; libc::socketpair(int domain, int type, int protocol, int sv[2]) → int.
-  (let ((sv-buf (nelisp-os--alloc 8)))         ; 2 × sizeof(int)
-    (unwind-protect
-        (let ((r (nelisp-os--libc-call "libc" "socketpair"
-                              [:sint32 :sint32 :sint32 :sint32 :pointer]
-                              domain type protocol sv-buf)))
-          (if (/= r 0)
-              (nelisp-os--ffi-errno-signal)
-            (cons (nelisp-os-read-i32 sv-buf 0)
-                  (nelisp-os-read-i32 sv-buf 4))))
-      (nelisp-os--free sv-buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-unsupported)
+    (let ((sv-buf (nelisp-os--alloc 8)))         ; 2 × sizeof(int)
+      (unwind-protect
+          (let ((r (nelisp-os--libc-call "libc" "socketpair"
+                                [:sint32 :sint32 :sint32 :sint32 :pointer]
+                                domain type protocol sv-buf)))
+            (if (/= r 0)
+                (nelisp-os--ffi-errno-signal)
+              (cons (nelisp-os-read-i32 sv-buf 0)
+                    (nelisp-os-read-i32 sv-buf 4))))
+        (nelisp-os--free sv-buf)))))
 
 ;; ----- SCM_RIGHTS fd passing -----
 
@@ -2593,53 +2600,55 @@ Typical use: (nelisp-os-socketpair AF-UNIX SOCK-STREAM 0).  Signals
   "Send PAYLOAD plus FDS (list of int file descriptors) over UDS FD
 via sendmsg(2) + SCM_RIGHTS cmsg.  PAYLOAD must be a string ≥ 1 byte
 (the kernel rejects cmsg-only sendmsg).  Returns bytes_sent."
-  (when (= (length payload) 0)
-    (signal 'nelisp-os-error (list 22)))     ; EINVAL — cmsg-only rejected
-  (let* ((nfds          (length fds))
-         (fds-bytes     (* nfds nelisp-os--sizeof-fd))
-         (cmsg-len      (nelisp-os--cmsg-len fds-bytes))
-         (cmsg-space    (nelisp-os--cmsg-space fds-bytes))
-         (payload-bytes (length payload))
-         (payload-buf   (nelisp-os--alloc payload-bytes))
-         (iov-buf       (nelisp-os--alloc nelisp-os--iovec-len))
-         (cmsg-buf      (nelisp-os--alloc cmsg-space))
-         (msg-buf       (nelisp-os--alloc nelisp-os--msghdr-len)))
-    (unwind-protect
-        (progn
-          (nelisp-os--write-bytes payload-buf payload)
-          ;; iovec[0] = {payload-buf, payload-bytes}
-          (nelisp-os-write-i64 iov-buf 0 payload-buf)
-          (nelisp-os-write-i64 iov-buf 8 payload-bytes)
-          ;; cmsg header = {cmsg_len, SOL_SOCKET, SCM_RIGHTS}
-          (nelisp-os-write-i64 cmsg-buf 0 cmsg-len)
-          (nelisp-os-write-i32 cmsg-buf 8  nelisp-os-SOL-SOCKET)
-          (nelisp-os-write-i32 cmsg-buf 12 nelisp-os-SCM-RIGHTS)
-          ;; cmsg payload = fds[] starting at offset cmsghdr_len (= 16).
-          (let ((idx 0))
-            (dolist (one-fd fds)
-              (nelisp-os-write-i32 cmsg-buf
-                                (+ nelisp-os--cmsghdr-len
-                                   (* idx nelisp-os--sizeof-fd))
-                                one-fd)
-              (setq idx (1+ idx))))
-          ;; msghdr — name=NULL, iov=&iov, controllen=cmsg-space.
-          (nelisp-os-write-i64 msg-buf 0  0)              ; msg_name
-          (nelisp-os-write-i32 msg-buf 8  0)              ; msg_namelen
-          (nelisp-os-write-i64 msg-buf 16 iov-buf)        ; msg_iov
-          (nelisp-os-write-i64 msg-buf 24 1)              ; msg_iovlen
-          (nelisp-os-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
-          (nelisp-os-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
-          (nelisp-os-write-i32 msg-buf 48 0)              ; msg_flags
-          (let ((r (nelisp-os--libc-call "libc" "sendmsg"
-                                [:sint64 :sint32 :pointer :sint32]
-                                fd msg-buf 0)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              r)))
-      (nelisp-os--free msg-buf)
-      (nelisp-os--free cmsg-buf)
-      (nelisp-os--free iov-buf)
-      (nelisp-os--free payload-buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-unsupported)
+    (when (= (length payload) 0)
+      (signal 'nelisp-os-error (list 22)))     ; EINVAL — cmsg-only rejected
+    (let* ((nfds          (length fds))
+           (fds-bytes     (* nfds nelisp-os--sizeof-fd))
+           (cmsg-len      (nelisp-os--cmsg-len fds-bytes))
+           (cmsg-space    (nelisp-os--cmsg-space fds-bytes))
+           (payload-bytes (length payload))
+           (payload-buf   (nelisp-os--alloc payload-bytes))
+           (iov-buf       (nelisp-os--alloc nelisp-os--iovec-len))
+           (cmsg-buf      (nelisp-os--alloc cmsg-space))
+           (msg-buf       (nelisp-os--alloc nelisp-os--msghdr-len)))
+      (unwind-protect
+          (progn
+            (nelisp-os--write-bytes payload-buf payload)
+            ;; iovec[0] = {payload-buf, payload-bytes}
+            (nelisp-os-write-i64 iov-buf 0 payload-buf)
+            (nelisp-os-write-i64 iov-buf 8 payload-bytes)
+            ;; cmsg header = {cmsg_len, SOL_SOCKET, SCM_RIGHTS}
+            (nelisp-os-write-i64 cmsg-buf 0 cmsg-len)
+            (nelisp-os-write-i32 cmsg-buf 8  nelisp-os-SOL-SOCKET)
+            (nelisp-os-write-i32 cmsg-buf 12 nelisp-os-SCM-RIGHTS)
+            ;; cmsg payload = fds[] starting at offset cmsghdr_len (= 16).
+            (let ((idx 0))
+              (dolist (one-fd fds)
+                (nelisp-os-write-i32 cmsg-buf
+                                  (+ nelisp-os--cmsghdr-len
+                                     (* idx nelisp-os--sizeof-fd))
+                                  one-fd)
+                (setq idx (1+ idx))))
+            ;; msghdr — name=NULL, iov=&iov, controllen=cmsg-space.
+            (nelisp-os-write-i64 msg-buf 0  0)              ; msg_name
+            (nelisp-os-write-i32 msg-buf 8  0)              ; msg_namelen
+            (nelisp-os-write-i64 msg-buf 16 iov-buf)        ; msg_iov
+            (nelisp-os-write-i64 msg-buf 24 1)              ; msg_iovlen
+            (nelisp-os-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
+            (nelisp-os-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
+            (nelisp-os-write-i32 msg-buf 48 0)              ; msg_flags
+            (let ((r (nelisp-os--libc-call "libc" "sendmsg"
+                                  [:sint64 :sint32 :pointer :sint32]
+                                  fd msg-buf 0)))
+              (if (= r -1)
+                  (nelisp-os--ffi-errno-signal)
+                r)))
+        (nelisp-os--free msg-buf)
+        (nelisp-os--free cmsg-buf)
+        (nelisp-os--free iov-buf)
+        (nelisp-os--free payload-buf)))))
 
 (defun nelisp-os-recvmsg-fds (fd max-fds max-bytes)
   "Receive up to MAX-BYTES of payload + up to MAX-FDS file descriptors
@@ -2647,77 +2656,81 @@ over UDS FD via recvmsg(2).  Returns (PAYLOAD-STRING . FDS-LIST).
 PAYLOAD-STRING is truncated to the actual bytes_received; FDS-LIST is
 all descriptors collected from SCM_RIGHTS cmsgs (may be fewer than
 MAX-FDS, never more)."
-  (when (<= max-bytes 0)
-    (signal 'nelisp-os-error (list 22)))     ; EINVAL
-  (let* ((fds-bytes  (* max-fds nelisp-os--sizeof-fd))
-         (cmsg-space (if (= max-fds 0)
-                         0
-                       (nelisp-os--cmsg-space fds-bytes)))
-         (payload-buf (nelisp-os--alloc max-bytes))
-         (iov-buf     (nelisp-os--alloc nelisp-os--iovec-len))
-         ;; Always allocate at least 1 byte (nelisp-os--alloc 0 is undefined).
-         (cmsg-buf    (nelisp-os--alloc (max cmsg-space 1)))
-         (msg-buf     (nelisp-os--alloc nelisp-os--msghdr-len)))
-    (unwind-protect
-        (progn
-          (nelisp-os-write-i64 iov-buf 0 payload-buf)
-          (nelisp-os-write-i64 iov-buf 8 max-bytes)
-          (nelisp-os-write-i64 msg-buf 0  0)              ; msg_name
-          (nelisp-os-write-i32 msg-buf 8  0)              ; msg_namelen
-          (nelisp-os-write-i64 msg-buf 16 iov-buf)        ; msg_iov
-          (nelisp-os-write-i64 msg-buf 24 1)              ; msg_iovlen
-          (nelisp-os-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
-          (nelisp-os-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
-          (nelisp-os-write-i32 msg-buf 48 0)              ; msg_flags
-          (let ((r (nelisp-os--libc-call "libc" "recvmsg"
-                                [:sint64 :sint32 :pointer :sint32]
-                                fd msg-buf 0)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              (let* ((bytes-received r)
-                     (payload (if (= bytes-received 0)
-                                  ""
-                                (nelisp-os--read-bytes-at payload-buf 0 bytes-received)))
-                     ;; Kernel may shrink controllen below cmsg-space.
-                     (actual-controllen (nelisp-os-read-i64 msg-buf 40))
-                     (fds-out nil))
-                (nelisp-os--cmsg-iterate
-                 cmsg-buf actual-controllen
-                 (lambda (len level type data-off)
-                   (when (and (= level nelisp-os-SOL-SOCKET)
-                              (= type  nelisp-os-SCM-RIGHTS))
-                     (let* ((payload-len (- len nelisp-os--cmsghdr-len))
-                            (n-fds (/ payload-len nelisp-os--sizeof-fd)))
-                       (dotimes (i n-fds)
-                         (push (nelisp-os-read-i32
-                                cmsg-buf
-                                (+ data-off (* i nelisp-os--sizeof-fd)))
-                               fds-out))))))
-                (cons payload (nreverse fds-out))))))
-      (nelisp-os--free msg-buf)
-      (nelisp-os--free cmsg-buf)
-      (nelisp-os--free iov-buf)
-      (nelisp-os--free payload-buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-unsupported)
+    (when (<= max-bytes 0)
+      (signal 'nelisp-os-error (list 22)))     ; EINVAL
+    (let* ((fds-bytes  (* max-fds nelisp-os--sizeof-fd))
+           (cmsg-space (if (= max-fds 0)
+                           0
+                         (nelisp-os--cmsg-space fds-bytes)))
+           (payload-buf (nelisp-os--alloc max-bytes))
+           (iov-buf     (nelisp-os--alloc nelisp-os--iovec-len))
+           ;; Always allocate at least 1 byte (nelisp-os--alloc 0 is undefined).
+           (cmsg-buf    (nelisp-os--alloc (max cmsg-space 1)))
+           (msg-buf     (nelisp-os--alloc nelisp-os--msghdr-len)))
+      (unwind-protect
+          (progn
+            (nelisp-os-write-i64 iov-buf 0 payload-buf)
+            (nelisp-os-write-i64 iov-buf 8 max-bytes)
+            (nelisp-os-write-i64 msg-buf 0  0)              ; msg_name
+            (nelisp-os-write-i32 msg-buf 8  0)              ; msg_namelen
+            (nelisp-os-write-i64 msg-buf 16 iov-buf)        ; msg_iov
+            (nelisp-os-write-i64 msg-buf 24 1)              ; msg_iovlen
+            (nelisp-os-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
+            (nelisp-os-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
+            (nelisp-os-write-i32 msg-buf 48 0)              ; msg_flags
+            (let ((r (nelisp-os--libc-call "libc" "recvmsg"
+                                  [:sint64 :sint32 :pointer :sint32]
+                                  fd msg-buf 0)))
+              (if (= r -1)
+                  (nelisp-os--ffi-errno-signal)
+                (let* ((bytes-received r)
+                       (payload (if (= bytes-received 0)
+                                    ""
+                                  (nelisp-os--read-bytes-at payload-buf 0 bytes-received)))
+                       ;; Kernel may shrink controllen below cmsg-space.
+                       (actual-controllen (nelisp-os-read-i64 msg-buf 40))
+                       (fds-out nil))
+                  (nelisp-os--cmsg-iterate
+                   cmsg-buf actual-controllen
+                   (lambda (len level type data-off)
+                     (when (and (= level nelisp-os-SOL-SOCKET)
+                                (= type  nelisp-os-SCM-RIGHTS))
+                       (let* ((payload-len (- len nelisp-os--cmsghdr-len))
+                              (n-fds (/ payload-len nelisp-os--sizeof-fd)))
+                         (dotimes (i n-fds)
+                           (push (nelisp-os-read-i32
+                                  cmsg-buf
+                                  (+ data-off (* i nelisp-os--sizeof-fd)))
+                                 fds-out))))))
+                  (cons payload (nreverse fds-out))))))
+        (nelisp-os--free msg-buf)
+        (nelisp-os--free cmsg-buf)
+        (nelisp-os--free iov-buf)
+        (nelisp-os--free payload-buf)))))
 
 ;; ----- SO_PEERCRED -----
 
 (defun nelisp-os-getsockopt-peercred (fd)
   "Retrieve the peer's `struct ucred' on AF_UNIX FD via getsockopt
 SO_PEERCRED.  Returns (PID UID GID) on success."
-  (let ((cred-buf (nelisp-os--alloc nelisp-os--ucred-len))
-        (len-buf  (nelisp-os--alloc 4)))
-    (unwind-protect
-        (progn
-          (nelisp-os-write-i32 len-buf 0 nelisp-os--ucred-len)
-          (let ((r (nelisp-os--libc-call "libc" "getsockopt"
-                                [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
-                                fd nelisp-os-SOL-SOCKET nelisp-os-SO-PEERCRED
-                                cred-buf len-buf)))
-            (if (/= r 0)
-                (nelisp-os--ffi-errno-signal)
-              (nelisp-os--decode-ucred cred-buf))))
-      (nelisp-os--free len-buf)
-      (nelisp-os--free cred-buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-unsupported)
+    (let ((cred-buf (nelisp-os--alloc nelisp-os--ucred-len))
+          (len-buf  (nelisp-os--alloc 4)))
+      (unwind-protect
+          (progn
+            (nelisp-os-write-i32 len-buf 0 nelisp-os--ucred-len)
+            (let ((r (nelisp-os--libc-call "libc" "getsockopt"
+                                  [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                                  fd nelisp-os-SOL-SOCKET nelisp-os-SO-PEERCRED
+                                  cred-buf len-buf)))
+              (if (/= r 0)
+                  (nelisp-os--ffi-errno-signal)
+                (nelisp-os--decode-ucred cred-buf))))
+        (nelisp-os--free len-buf)
+        (nelisp-os--free cred-buf)))))
 
 ;; ----- IPv6 scoped (full sockaddr_in6 surface) -----
 
