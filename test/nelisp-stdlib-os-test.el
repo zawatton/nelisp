@@ -2680,6 +2680,186 @@
                           [:uint32 :pointer :uint32]
                           (list #xaaaa 0)))))))
 
+(ert-deftest nelisp-stdlib-os-dup2-windows-duplicates-timerfd-kind ()
+  "Windows timerfd dup2 preserves timerfd kind and shared state."
+  (let ((calls nil)
+        (freed nil)
+        (state [0 1000 t])
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . timerfd)))
+        (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
+        (nelisp-os--windows-timerfd-table nil))
+    (setq nelisp-os--windows-timerfd-table (list (cons 3 state)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (_ptr _off) #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  ((equal fn "WaitForSingleObject")
+                   nelisp-os-WIN-WAIT-OBJECT-0)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 5) 5))
+        (should (= (nelisp-os-fcntl 5 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os--u64le-from-string (nelisp-os-read 5 8)) 1))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((5 . #xbbbb) (3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((5 . timerfd) (3 . timerfd))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((5 . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal nelisp-os--windows-timerfd-table
+                   '((5 . [0 0 nil]) (3 . [0 0 nil]))))
+    (should (eq (cdr (assq 3 nelisp-os--windows-timerfd-table))
+                (cdr (assq 5 nelisp-os--windows-timerfd-table))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess" [:pointer] nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xbbbb 0)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-duplicates-timerfd-kind ()
+  "Windows F_DUPFD preserves timerfd kind and shared timer state."
+  (let ((calls nil)
+        (freed nil)
+        (state [0 1000 t])
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . timerfd)))
+        (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
+        (nelisp-os--windows-timerfd-table nil))
+    (setq nelisp-os--windows-timerfd-table (list (cons 3 state)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (_ptr _off) #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  ((equal fn "WaitForSingleObject")
+                   nelisp-os-WIN-WAIT-OBJECT-0)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-DUPFD 10) 10))
+        (should (= (nelisp-os-fcntl 10 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os--u64le-from-string (nelisp-os-read 10 8)) 1))))
+    (should (equal nelisp-os--windows-next-fd 11))
+    (should (equal nelisp-os--windows-fd-table
+                   '((10 . #xbbbb) (3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((10 . timerfd) (3 . timerfd))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((10 . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal nelisp-os--windows-timerfd-table
+                   '((10 . [0 0 nil]) (3 . [0 0 nil]))))
+    (should (eq (cdr (assq 3 nelisp-os--windows-timerfd-table))
+                (cdr (assq 10 nelisp-os--windows-timerfd-table))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess" [:pointer] nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xbbbb 0)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-dup2-windows-timerfd-can-target-stdout ()
+  "Windows timerfd dup2 to stdout preserves timerfd standard fd behavior."
+  (let ((calls nil)
+        (freed nil)
+        (state [0 1000 t])
+        (std-handles '(#xdddd #xbbbb #xbbbb))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . timerfd)))
+        (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
+        (nelisp-os--windows-timerfd-table nil))
+    (setq nelisp-os--windows-timerfd-table (list (cons 3 state)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (_ptr _off) #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  ((equal fn "GetStdHandle") (pop std-handles))
+                  ((equal fn "SetStdHandle") 1)
+                  ((equal fn "CloseHandle") 1)
+                  ((equal fn "WaitForSingleObject")
+                   nelisp-os-WIN-WAIT-OBJECT-0)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 nelisp-os-STDOUT)
+                   nelisp-os-STDOUT))
+        (should (= (nelisp-os-fcntl nelisp-os-STDOUT nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os--u64le-from-string
+                    (nelisp-os-read nelisp-os-STDOUT 8))
+                   1))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   `((,nelisp-os-STDOUT . timerfd) (3 . timerfd))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((,nelisp-os-STDOUT . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal nelisp-os--windows-timerfd-table
+                   `((,nelisp-os-STDOUT . [0 0 nil])
+                     (3 . [0 0 nil]))))
+    (should (eq (cdr (assq 3 nelisp-os--windows-timerfd-table))
+                (cdr (assq nelisp-os-STDOUT
+                           nelisp-os--windows-timerfd-table))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess" [:pointer] nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "SetStdHandle"
+                          [:sint32 :sint32 :pointer]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE #xbbbb))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xdddd))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xbbbb 0)))))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-timerfd-windows-validates-and-cleans-up ()
   "Windows timerfd validates arguments and removes timer state on close."
   (let ((calls nil)

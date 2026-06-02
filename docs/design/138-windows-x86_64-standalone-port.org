@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-124-WINDOWS-TIMERFD
+#+STATUS: STAGE-125-WINDOWS-TIMERFD-DUP
 
 * Status
 
-- *State*: STAGE 124 Windows timerfd compatibility
+- *State*: STAGE 125 Windows timerfd dup compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -287,7 +287,9 @@
   =timerfd_set_relative_ms= arm relative timers through =SetWaitableTimer=,
   =timerfd_gettime= derives tracked remaining time from =GetTickCount64=,
   =read= returns an 8-byte expiration count after =WaitForSingleObject=, and
-  =poll= reports =POLLIN= from timer readiness.  =nelisp-os-eventfd= now has a Windows
+  =poll= reports =POLLIN= from timer readiness.  Windows timerfd duplicates
+  now retain fd-kind / status flag tracking and share timer state across
+  =dup2=, standard fd =dup2= targets, and =F_DUPFD=.  =nelisp-os-eventfd= now has a Windows
   compatibility implementation backed by a synthetic fd-kind counter, with
   8-byte little-endian =read/write= counter semantics, =EFD_SEMAPHORE=, and
   =EFD_NONBLOCK= status tracking.  The synthetic eventfd fd also has Windows
@@ -682,6 +684,9 @@
   flag handling, relative arming through =SetWaitableTimer=, tracked
   =gettime= remaining time, =read= expiration counts, =poll= readiness,
   validation, =fstat= metadata, and cleanup of timer state on close.
+  Stage 125 coverage verifies Windows timerfd duplicates preserve timerfd
+  kind/status flags and share timer state across =dup2=, stdout =dup2=, and
+  =F_DUPFD=, including reads from duplicated timer fds.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1138,6 +1143,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   creates waitable timer HANDLE-backed fds, arms relative timers with
   =SetWaitableTimer=, reports readiness through =WaitForSingleObject= in
   =read= / =poll=, and tracks remaining time for =timerfd_gettime=.
+  *Windows timerfd dup progress 2026-06-03*: timerfd duplicates now preserve
+  fd-kind/status flag tracking and share timer state across =dup2=, standard
+  fd targets, and =F_DUPFD=.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1595,6 +1603,9 @@ largest uncertainty (B1 + B2) first.
    =timerfd_settime= / =timerfd_set_relative_ms= arm through
    =SetWaitableTimer=, =timerfd_gettime= reports tracked remaining time, and
    =read= / =poll= use =WaitForSingleObject= readiness.
+   *Windows timerfd dup compatibility SHIPPED 2026-06-03*: timerfd =dup2=,
+   stdout-target =dup2=, and =F_DUPFD= preserve timerfd kind/status flags and
+   share timer state with the source descriptor.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the

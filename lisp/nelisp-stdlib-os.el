@@ -108,6 +108,7 @@
 ;; Stage 122 preserves Windows process fd kind across dup2 / F_DUPFD.
 ;; Stage 123 adds payload-only Windows sendmsg/recvmsg compatibility.
 ;; Stage 124 adds Windows waitable-timer backed timerfd compatibility.
+;; Stage 125 verifies Windows timerfd kind/state preservation across dup.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
