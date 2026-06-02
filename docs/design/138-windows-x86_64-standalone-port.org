@@ -1,11 +1,11 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-57-WINDOWS-CREATETHREAD-PE-SMOKE
+#+STATUS: STAGE-58-WIN64-EXTERN-CALL-ABI-COVERAGE
 
 * Status
 
-- *State*: STAGE 57 Windows CreateThread PE smoke
-  2026-06-02.  The first de-risk slices now exist in
+- *State*: STAGE 58 Win64 extern-call ABI coverage
+  2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
   import directory for =KERNEL32.dll!ExitProcess= and entry code that exits
@@ -40,7 +40,10 @@
   =WaitForSingleObject= / =GetExitCodeThread= / =CloseHandle= /
   =ExitProcess=, starts an in-image thread routine that returns 42, joins the
   thread, checks its exit code, closes the thread HANDLE, and exits 42 only
-  when the full thread lifecycle succeeds.
+  when the full thread lifecycle succeeds.  Win64 COFF object coverage now also
+  verifies =extern-call= emits four GP arguments in =RCX/RDX/R8/R9=, surrounds
+  the call with the required 32-byte caller shadow space, and rejects GP stack
+  arguments beyond the four Win64 register arguments before writing bad COFF.
   =lisp/nelisp-stdlib-os.el= now also routes Windows
   stdout/stderr =nelisp-os-write= calls through =kernel32!GetStdHandle= +
   =kernel32!WriteFile= and stdin =nelisp-os-read= calls through
@@ -344,7 +347,10 @@
   =CreateProcessW= / wait / exit-code validation.  Stage 57 coverage verifies
   the =createthread-wait-exit-42= PE layout, thread API imports, writable
   thread-id / exit-code data, in-image thread entry address setup, wait, and
-  exit-code validation.
+  exit-code validation.  Stage 58 coverage verifies Win64 =extern-call= COFF
+  emit uses =RCX/RDX/R8/R9= for four GP arguments, emits 32-byte caller shadow
+  space around =CALL=, and rejects GP stack arguments beyond that register
+  window before invalid object emission.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -552,10 +558,13 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
 
 ** B5. Win64 calling convention (Microsoft x64 ABI) emit completion
 
-- *Scaffold present*: =nelisp-asm-x86_64.el= ABI slot =('sysv | 'win64)=;
-  =nelisp-phase47-compiler--abi= dynvar.
-- Remaining diff: integer args *RCX/RDX/R8/R9* (SysV: RDI/RSI/RDX/RCX/R8/R9),
-  *32-byte shadow space*, different callee-saved set, xmm save rules.
+- *Progress*: =nelisp-asm-x86_64.el= ABI slot =('sysv | 'win64)= and
+  =nelisp-phase47-compiler--abi= dynvar now drive Win64 GP register selection.
+  Stage 58 locks =extern-call= COFF emission to =RCX/RDX/R8/R9= plus 32-byte
+  caller shadow space, and rejects GP stack arguments beyond four until the
+  stack-argument path is implemented.
+- Remaining diff: full Win64 stack-argument emission, prologue/epilogue coverage
+  for the different callee-saved set, and xmm save rules.
 - *Why Windows is easier than macOS here*: same x86_64 ISA → backend
   instructions are reused.  macOS arm64 needed *75 new ops* (7/82 implemented);
   Windows only needs the win64 ABI emit wired through every call
@@ -882,6 +891,10 @@ largest uncertainty (B1 + B2) first.
    has a native =CreateThread= smoke that starts an in-image thread entry,
    waits, validates the thread exit code, closes the HANDLE, and is included in
    =tools/windows-selfhost-test.ps1=.
+   *Win64 extern-call ABI coverage SHIPPED 2026-06-03*: Phase 47 COFF tests now
+   verify Win64 =extern-call= uses =RCX/RDX/R8/R9=, emits 32-byte shadow space
+   around =CALL=, and rejects unsupported GP stack arguments before bad object
+   emission.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY

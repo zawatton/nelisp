@@ -1004,6 +1004,48 @@ the quotient in rax — the companion of the `mod' remainder path)."
       (insert-file-contents-literally path))
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun nelisp-phase47-compiler-test--read-le16 (bytes offset)
+  "Read unsigned 16-bit little-endian integer from BYTES at OFFSET."
+  (logior (aref bytes offset)
+          (ash (aref bytes (+ offset 1)) 8)))
+
+(defun nelisp-phase47-compiler-test--read-le32 (bytes offset)
+  "Read unsigned 32-bit little-endian integer from BYTES at OFFSET."
+  (logior (aref bytes offset)
+          (ash (aref bytes (+ offset 1)) 8)
+          (ash (aref bytes (+ offset 2)) 16)
+          (ash (aref bytes (+ offset 3)) 24)))
+
+(defun nelisp-phase47-compiler-test--coff-section-bytes (bytes name)
+  "Return raw section bytes for COFF section NAME."
+  (let* ((section-count
+          (nelisp-phase47-compiler-test--read-le16 bytes 2))
+         (optional-size
+          (nelisp-phase47-compiler-test--read-le16 bytes 16))
+         (section-base (+ 20 optional-size))
+         (found nil)
+         (idx 0))
+    (while (and (< idx section-count) (null found))
+      (let* ((base (+ section-base (* idx 40)))
+             (raw-name (substring bytes base (+ base 8)))
+             (nul-pos (cl-position 0 raw-name))
+             (section-name (if nul-pos
+                               (substring raw-name 0 nul-pos)
+                             raw-name)))
+        (when (equal section-name name)
+          (let ((raw-size
+                 (nelisp-phase47-compiler-test--read-le32 bytes (+ base 16)))
+                (raw-ptr
+                 (nelisp-phase47-compiler-test--read-le32 bytes (+ base 20))))
+            (setq found (substring bytes raw-ptr (+ raw-ptr raw-size))))))
+      (setq idx (1+ idx)))
+    (or found
+        (error "COFF section %s not found" name))))
+
+(defun nelisp-phase47-compiler-test--bytes-contain-p (bytes needle)
+  "Return non-nil when BYTES contains NEEDLE."
+  (not (null (cl-search needle bytes :test #'eql))))
+
 (defun nelisp-phase47-compiler-test--elf-section-header (bytes index)
   "Return plist for section header INDEX in ELF BYTES."
   (let* ((shoff (nelisp-elf--read-le64 bytes 40))
@@ -2247,6 +2289,43 @@ SysV would emit `push rdi' = 57 instead."
                     found)))
             ;; The Win64 `mov [rbp-8], rcx' sequence must appear in the COFF.
             (should found-win64-spill)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-extern-call-gp-args-and-shadow ()
+  "Win64 extern-call uses RCX/RDX/R8/R9 and 32-byte caller shadow space."
+  (let ((path (make-temp-file "nelisp-win64-extern-call-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () (extern-call ext4 1 2 3 4))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; mov rcx,1; mov rdx,2; mov r8,3; mov r9,4
+                     (unibyte-string #x48 #xc7 #xc1 #x01 #x00 #x00 #x00
+                                     #x48 #xc7 #xc2 #x02 #x00 #x00 #x00
+                                     #x49 #xc7 #xc0 #x03 #x00 #x00 #x00
+                                     #x49 #xc7 #xc1 #x04 #x00 #x00 #x00)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; sub rsp, 32; call rel32; add rsp, 32
+                     (unibyte-string #x48 #x81 #xec #x20 #x00 #x00 #x00
+                                     #xe8 #x00 #x00 #x00 #x00
+                                     #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-extern-call-rejects-stack-gp-args ()
+  "Win64 extern-call rejects GP args beyond RCX/RDX/R8/R9 before bad emit."
+  (let ((path (make-temp-file "nelisp-win64-extern-call-stack-" nil ".obj")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object
+          '(defun probe () (extern-call ext5 1 2 3 4 5))
+          path :arch 'x86_64 :format 'coff)
+         :type 'nelisp-phase47-compiler-error)
       (ignore-errors (delete-file path)))))
 
 (provide 'nelisp-phase47-compiler-test)

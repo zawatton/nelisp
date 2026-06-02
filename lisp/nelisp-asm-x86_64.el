@@ -301,11 +301,10 @@ to avoid the plist materialization cost."
 ;;             Callee-saved: RBP RBX RDI RSI R12-R15 (XMM6-XMM15).
 ;;             Caller allocates 32-byte shadow space before CALL.
 ;;
-;; Wave 4 ships the framework skeleton only: 'sysv passes through
-;; unchanged; 'win64 signals :abi-not-implemented so that callers
-;; obtain a clear BLOCKER rather than silently wrong code.
-;; Full Win64 ABI emission (shadow space alloc, callee-save push/pop,
-;; register remapping) is deferred to a subsequent Wave.
+;; Win64 integer argument remapping and caller shadow-space helpers are
+;; operational.  Remaining Win64-specific expansion is kept explicit at
+;; the compiler call sites, especially GP stack arguments and XMM callee
+;; saves, so unsupported shapes fail before emitting silently wrong COFF.
 
 (defconst nelisp-asm-x86_64--abi-sysv-arg-regs
   '(rdi rsi rdx rcx r8 r9)
