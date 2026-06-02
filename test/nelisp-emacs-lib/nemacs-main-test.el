@@ -522,25 +522,31 @@
         (when (file-exists-p stub)
           (delete-file stub))))))
 
-(ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-receives-batch-script ()
-  "The pure standalone reader path should receive a file-based boot script."
+(ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-receives-repl-input ()
+  "The pure standalone reader path should receive REPL bootstrap input."
   (when (file-executable-p nemacs-main-test--bin)
     (let* ((nelisp-dir (make-temp-file "nemacs-main-test-nelisp-" t))
            (nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir))
            (capture (make-temp-file "nemacs-main-test-boot-" nil ".el"))
+           (bootstrap-repl (make-temp-file "nemacs-main-test-bootstrap-" nil ".repl"))
            (load-file (make-temp-file "nemacs-main-test-load-" nil ".el")))
       (unwind-protect
           (progn
             (with-temp-file nelisp-stub
               (insert "#!/usr/bin/env sh\n")
-              (insert "cp \"$1\" \"$NEMACS_TEST_CAPTURE\"\n")
+              (insert "printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE.args\"\n")
+              (insert "cat > \"$NEMACS_TEST_CAPTURE\"\n")
               (insert "exit 0\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; test repl bootstrap\n")
+              (insert "(setq nemacs-main-test--bootstrap-repl t)\n"))
             (with-temp-file load-file
               (insert "(setq nemacs-main-test--loaded t)\n"))
             (set-file-modes nelisp-stub #o755)
             (let* ((process-environment
                     (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
                                   (format "NEMACS_TEST_CAPTURE=%s" capture)
+                                  (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
                                   "NEMACS_BOOTSTRAP_BUNDLE=none"
                                   "NELISP_HOME=/tmp/nemacs-test-nelisp")
                             process-environment))
@@ -555,21 +561,31 @@
             (with-temp-buffer
               (insert-file-contents capture)
               (let ((boot (buffer-string)))
+                (should (string-match-p "test repl bootstrap" boot))
                 (should (string-match-p "(require 'nemacs-main)" boot))
                 (should (string-match-p "(nemacs-batch-main)" boot))
                 (should (string-match-p
-                         (regexp-quote (format ":load (list \"%s\")" load-file))
+                         (regexp-quote
+                          (format "(load \"%s\" nil 'no-message 'no-suffix)"
+                                  load-file))
                          boot))
                 (should (string-match-p
                          (regexp-quote
-                          ":eval-forms (list \"(setq nemacs-main-test--standalone 42)\")")
-                         boot)))))
+                          "(nelisp--eval-source-string \"(setq nemacs-main-test--standalone 42)\")")
+                         boot))))
+            (with-temp-buffer
+              (insert-file-contents (concat capture ".args"))
+              (should (string-match-p "\\`repl\n--no-prompt\n" (buffer-string)))))
         (when (file-exists-p nelisp-stub)
           (delete-file nelisp-stub))
         (when (file-exists-p nelisp-dir)
           (delete-directory nelisp-dir))
         (when (file-exists-p capture)
           (delete-file capture))
+        (when (file-exists-p (concat capture ".args"))
+          (delete-file (concat capture ".args")))
+        (when (file-exists-p bootstrap-repl)
+          (delete-file bootstrap-repl))
         (when (file-exists-p load-file)
           (delete-file load-file))))))
 
@@ -625,21 +641,26 @@
           (delete-file capture))))))
 
 (ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-cleans-temp-on-nonzero ()
-  "The file-based standalone-reader path should remove its boot script on failure."
+  "The REPL standalone-reader path should remove its boot input on failure."
   (when (file-executable-p nemacs-main-test--bin)
     (let* ((nelisp-dir (make-temp-file "nemacs-main-test-nelisp-" t))
            (nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir))
+           (bootstrap-repl (make-temp-file "nemacs-main-test-bootstrap-" nil ".repl"))
            (seen-path (make-temp-file "nemacs-main-test-seen-" nil ".txt")))
       (unwind-protect
           (progn
             (with-temp-file nelisp-stub
               (insert "#!/usr/bin/env sh\n")
-              (insert "printf '%s\\n' \"$1\" > \"$NEMACS_TEST_SEEN_PATH\"\n")
+              (insert "readlink /proc/$$/fd/0 > \"$NEMACS_TEST_SEEN_PATH\" 2>/dev/null || printf 'unknown\\n' > \"$NEMACS_TEST_SEEN_PATH\"\n")
+              (insert "cat >/dev/null\n")
               (insert "exit 42\n"))
+            (with-temp-file bootstrap-repl
+              (insert ";;; test repl bootstrap\n"))
             (set-file-modes nelisp-stub #o755)
             (let* ((process-environment
                     (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
                                   (format "NEMACS_TEST_SEEN_PATH=%s" seen-path)
+                                  (format "NEMACS_BOOTSTRAP_REPL=%s" bootstrap-repl)
                                   "NEMACS_BOOTSTRAP_BUNDLE=none"
                                   "NELISP_HOME=/tmp/nemacs-test-nelisp")
                             process-environment))
@@ -653,12 +674,14 @@
               (insert-file-contents seen-path)
               (let ((boot-path (replace-regexp-in-string
                                 "\n\\'" "" (buffer-string))))
-                (should (string-match-p "nemacs-boot\\." boot-path))
+                (should (string-match-p "nemacs-repl-boot\\." boot-path))
                 (should-not (file-exists-p boot-path)))))
         (when (file-exists-p nelisp-stub)
           (delete-file nelisp-stub))
         (when (file-exists-p nelisp-dir)
           (delete-directory nelisp-dir))
+        (when (file-exists-p bootstrap-repl)
+          (delete-file bootstrap-repl))
         (when (file-exists-p seen-path)
           (delete-file seen-path))))))
 
