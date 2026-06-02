@@ -1958,6 +1958,27 @@
                           [:sint32 :pointer]
                           (list #xabcdef)))))))
 
+(ert-deftest nelisp-stdlib-os-kill-windows-uses-registered-child-handle ()
+  "Windows kill reuses a registered child process HANDLE and keeps it waitable."
+  (let ((calls nil)
+        (nelisp-os--windows-process-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "TerminateProcess") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (nelisp-os--windows-register-process 1234 #xabcdef)
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-kill 1234 nelisp-os-SIGKILL) 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "TerminateProcess"
+                          [:sint32 :pointer :uint32]
+                          (list #xabcdef nelisp-os-SIGKILL)))))
+    (should (equal nelisp-os--windows-process-table
+                   '((1234 . #xabcdef))))))
+
 (ert-deftest nelisp-stdlib-os-kill-windows-invalid-signal-errors ()
   "Windows kill rejects unsupported signals before FFI."
   (let ((called nil))

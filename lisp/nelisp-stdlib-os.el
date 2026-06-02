@@ -44,7 +44,8 @@
 ;; `wait' reuse registered child process HANDLEs and retain them across
 ;; `WNOHANG' timeouts.  Stage 50 factors Windows `CreateProcessW' into a
 ;; parent-surviving spawn helper that registers child process HANDLEs.  Stage
-;; 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20 adds a
+;; 51 lets Windows `kill' reuse registered child process HANDLEs too.  Stage 19
+;; maps `getppid' to the Tool Help process snapshot APIs.  Stage 20 adds a
 ;; minimal Windows `fcntl' compatibility branch for `F_DUPFD' / `F_GETFL' /
 ;; `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on Windows
 ;; before they can fall through to Linux syscall or libc paths.  Stage 22 starts
@@ -530,6 +531,21 @@ Replacing an existing PID closes the old HANDLE before installing HANDLE."
                      [:pointer :uint32 :sint32 :uint32]
                      (logior nelisp-os-WIN-SYNCHRONIZE
                              nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION)
+                     0
+                     pid)))
+        (if (= handle 0)
+            (nelisp-os--windows-ffi-error-signal)
+          (cons handle nil))))))
+
+(defun nelisp-os--windows-kill-handle (pid)
+  "Return (HANDLE . REGISTERED-P) for Windows kill on PID."
+  (let ((cell (assq pid nelisp-os--windows-process-table)))
+    (if cell
+        (cons (cdr cell) t)
+      (let ((handle (nelisp-os--libc-call
+                     "kernel32" "OpenProcess"
+                     [:pointer :uint32 :sint32 :uint32]
+                     nelisp-os-WIN-PROCESS-TERMINATE
                      0
                      pid)))
         (if (= handle 0)
@@ -1552,28 +1568,22 @@ returns (0 . 0)."
   (when (or (<= pid 0)
             (not (memq sig (list nelisp-os-SIGTERM nelisp-os-SIGKILL))))
     (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (let ((handle (nelisp-os--libc-call
-                 "kernel32" "OpenProcess"
-                 [:pointer :uint32 :sint32 :uint32]
-                 nelisp-os-WIN-PROCESS-TERMINATE
-                 0
-                 pid)))
-    (if (= handle 0)
-        (nelisp-os--windows-ffi-error-signal)
-      (unwind-protect
-          (let ((ok (nelisp-os--libc-call
-                     "kernel32" "TerminateProcess"
-                     [:sint32 :pointer :uint32]
-                     handle sig)))
-            (if (= ok 0)
-                (nelisp-os--windows-ffi-error-signal)
-              0))
-        (let ((close-ok (nelisp-os--libc-call
-                         "kernel32" "CloseHandle"
-                         [:sint32 :pointer]
-                         handle)))
-          (if (= close-ok 0)
-              (nelisp-os--windows-ffi-error-signal)))))))
+  (let* ((handle-info (nelisp-os--windows-kill-handle pid))
+         (handle (car handle-info))
+         (registered (cdr handle-info))
+         (ok (nelisp-os--libc-call
+              "kernel32" "TerminateProcess"
+              [:sint32 :pointer :uint32]
+              handle sig)))
+    (if (= ok 0)
+        (let ((err (nelisp-os--libc-call "kernel32" "GetLastError" [:uint32])))
+          (unless registered
+            (nelisp-os--windows-close-resource handle 'handle))
+          (signal 'nelisp-os-error (list err)))
+      (progn
+        (unless registered
+          (nelisp-os--windows-close-resource handle 'handle))
+        0))))
 
 (defun nelisp-os-kill (pid sig)
   "POSIX kill(2) — send SIG to PID; returns 0 on success."
