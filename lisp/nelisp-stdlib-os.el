@@ -52,7 +52,8 @@
 ;; Stage 28 removes the hidden Windows `libc' dependency from sockaddr byte-order
 ;; conversion by using Winsock hton*/ntoh*.  Stage 29 adds Windows AF_INET6
 ;; socket / bind / connect / accept routing through Winsock.  Stage 30 maps the
-;; scoped IPv6 variants through the same Winsock path.  The Linux/Darwin path
+;; scoped IPv6 variants through the same Winsock path.  Stage 31 maps filesystem
+;; AF_UNIX bind / connect / accept through Winsock.  The Linux/Darwin path
 ;; remains the default until a real Windows standalone runtime selects
 ;; `system-type' = `windows-nt'.
 
@@ -1405,7 +1406,9 @@ returns (0 . 0)."
 
 (defun nelisp-os--windows-socket (domain type proto)
   "Windows implementation of `nelisp-os-socket' via Winsock."
-  (unless (memq domain (list nelisp-os-AF-INET nelisp-os-AF-INET6))
+  (unless (memq domain (list nelisp-os-AF-INET
+                             nelisp-os-AF-INET6
+                             nelisp-os-AF-UNIX))
     (nelisp-os--windows-unsupported))
   (when (/= 0 (logand type (logior nelisp-os-SOCK-NONBLOCK
                                    nelisp-os-SOCK-CLOEXEC)))
@@ -1795,10 +1798,21 @@ sockets use `nelisp-os-bind-unix-abstract'."
   (let ((buf (nelisp-os--alloc nelisp-os--sockaddr-un-len)))
     (unwind-protect
         (let* ((alen (nelisp-os--encode-sockaddr-un buf path))
-               (r (nelisp-os--libc-call "libc" "bind"
-                               [:sint32 :sint32 :pointer :uint32]
-                               fd buf alen)))
-          (if (= r -1) (nelisp-os--ffi-errno-signal) r))
+               (r (if (nelisp-os--windows-p)
+                      (nelisp-os--libc-call
+                       "ws2_32" "bind"
+                       [:sint32 :pointer :pointer :sint32]
+                       (nelisp-os--windows-socket-for-fd fd)
+                       buf alen)
+                    (nelisp-os--libc-call "libc" "bind"
+                                 [:sint32 :sint32 :pointer :uint32]
+                                 fd buf alen))))
+          (cond
+           ((and (nelisp-os--windows-p) (= r -1))
+            (nelisp-os--windows-winsock-error-signal))
+           ((= r -1)
+            (nelisp-os--ffi-errno-signal))
+           (t r)))
       (nelisp-os--free buf))))
 
 (defun nelisp-os-connect-unix (fd path)
@@ -1806,10 +1820,21 @@ sockets use `nelisp-os-bind-unix-abstract'."
   (let ((buf (nelisp-os--alloc nelisp-os--sockaddr-un-len)))
     (unwind-protect
         (let* ((alen (nelisp-os--encode-sockaddr-un buf path))
-               (r (nelisp-os--libc-call "libc" "connect"
-                               [:sint32 :sint32 :pointer :uint32]
-                               fd buf alen)))
-          (if (= r -1) (nelisp-os--ffi-errno-signal) r))
+               (r (if (nelisp-os--windows-p)
+                      (nelisp-os--libc-call
+                       "ws2_32" "connect"
+                       [:sint32 :pointer :pointer :sint32]
+                       (nelisp-os--windows-socket-for-fd fd)
+                       buf alen)
+                    (nelisp-os--libc-call "libc" "connect"
+                                 [:sint32 :sint32 :pointer :uint32]
+                                 fd buf alen))))
+          (cond
+           ((and (nelisp-os--windows-p) (= r -1))
+            (nelisp-os--windows-winsock-error-signal))
+           ((= r -1)
+            (nelisp-os--ffi-errno-signal))
+           (t r)))
       (nelisp-os--free buf))))
 
 (defun nelisp-os-accept-unix (sockfd)
@@ -1820,10 +1845,19 @@ peer is typically anonymous on a listening server."
     (unwind-protect
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-un-len)
-          (let ((newfd (nelisp-os--libc-call "libc" "accept"
+          (let ((newfd (if (nelisp-os--windows-p)
+                           (let ((sock (nelisp-os--libc-call
+                                        "ws2_32" "accept"
+                                        [:pointer :pointer :pointer :pointer]
+                                        (nelisp-os--windows-socket-for-fd sockfd)
+                                        addr-buf len-buf)))
+                             (if (= sock nelisp-os-WIN-INVALID-SOCKET)
+                                 (nelisp-os--windows-winsock-error-signal)
+                               (nelisp-os--windows-fd-alloc sock 'socket)))
+                         (nelisp-os--libc-call "libc" "accept"
                                     [:sint32 :sint32 :pointer :pointer]
-                                    sockfd addr-buf len-buf)))
-            (if (= newfd -1)
+                                    sockfd addr-buf len-buf))))
+            (if (and (not (nelisp-os--windows-p)) (= newfd -1))
                 (nelisp-os--ffi-errno-signal)
               (let* ((socklen (nelisp-os-read-i32 len-buf 0))
                      ;; accept-unix legacy: peer string-only (= matches

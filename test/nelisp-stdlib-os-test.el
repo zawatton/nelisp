@@ -817,6 +817,31 @@
     (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
     (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))))
 
+(ert-deftest nelisp-stdlib-os-socket-windows-allows-af-unix ()
+  "Windows AF_UNIX socket uses Winsock and returns a socket fd."
+  (let ((call nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-winsock-started-p t))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 #xabcdef)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-socket nelisp-os-AF-UNIX
+                                     nelisp-os-SOCK-STREAM
+                                     0)
+                   3))))
+    (should (equal call
+                   (list "ws2_32" "socket"
+                         [:pointer :sint32 :sint32 :sint32]
+                         (list nelisp-os-AF-UNIX
+                               nelisp-os-SOCK-STREAM
+                               0))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))))
+
 (ert-deftest nelisp-stdlib-os-socket-windows-rejects-linux-socket-flags ()
   "Windows socket rejects SOCK_NONBLOCK/SOCK_CLOEXEC before Winsock FFI."
   (let ((called nil))
@@ -1069,6 +1094,104 @@
         (should (equal (nelisp-os-accept-inet6 3)
                        (list 4 nelisp-os-IN6ADDR-LOOPBACK 4444)))))
     (should (equal len-write (list 4000 0 nelisp-os--sockaddr-in6-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "accept"
+                          [:pointer :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((4 . #x123456) (3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   '((4 . socket) (3 . socket))))
+    (should (= nelisp-os--windows-next-fd 5))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-bind-unix-windows-uses-winsock ()
+  "Windows AF_UNIX filesystem bind passes encoded sockaddr_un to Winsock."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-un)
+               (lambda (buf path) (setq encoded (list buf path)) 9))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-bind-unix 3 "sockpath") 0))))
+    (should (equal encoded (list 3000 "sockpath")))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "bind"
+                          [:sint32 :pointer :pointer :sint32]
+                          (list #xabcdef 3000 9)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-connect-unix-windows-uses-winsock ()
+  "Windows AF_UNIX filesystem connect passes encoded sockaddr_un to Winsock."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-un)
+               (lambda (buf path) (setq encoded (list buf path)) 9))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-connect-unix 3 "sockpath") 0))))
+    (should (equal encoded (list 3000 "sockpath")))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "connect"
+                          [:sint32 :pointer :pointer :sint32]
+                          (list #xabcdef 3000 9)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-accept-unix-windows-uses-winsock ()
+  "Windows AF_UNIX accept returns a socket-kind fd plus decoded peer path."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (nelisp-os--windows-next-fd 4)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n) (if (= n nelisp-os--sockaddr-un-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (should (= ptr 4000))
+                 (should (= off 0))
+                 7))
+              ((symbol-function 'nelisp-os-read-u8)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (if (and (>= off 2) (<= off 6)) ?x 0)))
+              ((symbol-function 'nelisp-os--read-bytes-at)
+               (lambda (ptr off n)
+                 (should (= ptr 3000))
+                 (should (= off 2))
+                 (should (= n 5))
+                 "sockp"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 #x123456)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-accept-unix 3)
+                       (cons 4 "sockp")))))
+    (should (equal len-write (list 4000 0 nelisp-os--sockaddr-un-len)))
     (should (equal (nreverse calls)
                    (list
                     (list "ws2_32" "accept"

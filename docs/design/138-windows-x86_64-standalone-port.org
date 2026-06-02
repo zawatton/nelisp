@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-30-WINSOCK-SCOPED-AF-INET6-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-31-WINSOCK-AF-UNIX-FILESYSTEM-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 30 Winsock scoped AF_INET6 + first real Windows smoke VALIDATED
+- *State*: STAGE 31 Winsock AF_UNIX filesystem + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -102,7 +102,12 @@
   =nelisp-os-bind-inet6-scoped= / =connect-inet6-scoped= /
   =accept-inet6-scoped= now use the same Winsock route while preserving
   flowinfo and scope-id fields through the scoped =sockaddr_in6= encoder and
-  decoder.
+  decoder.  Filesystem-path =AF_UNIX= sockets are now also on the Windows
+  Winsock path: =nelisp-os-socket= accepts =AF_UNIX=, and
+  =nelisp-os-bind-unix= / =connect-unix= / =accept-unix= call =ws2_32!bind= /
+  =connect= / =accept= with the existing =sockaddr_un= encoder and peer-path
+  decoder.  Linux abstract namespace AF_UNIX remains explicitly unsupported on
+  Windows.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -166,7 +171,10 @@
   fd allocation, socket-kind registration, peer decoding, and buffer cleanup.
   Stage 30 coverage verifies Windows scoped IPv6 =bind= / =connect= argument
   shape, flowinfo/scope-id encoder arguments, accepted socket-kind fd
-  registration, scoped peer decoding, and buffer cleanup.
+  registration, scoped peer decoding, and buffer cleanup.  Stage 31 coverage
+  verifies Windows =AF_UNIX= socket creation, filesystem =bind= / =connect=
+  argument shape, accepted socket-kind fd allocation, peer-path decoding, and
+  buffer cleanup.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -220,13 +228,14 @@
   =setsockopt= for =SO_REUSEADDR= / =SO_KEEPALIVE=.  Stage 28 routes
   sockaddr byte-order conversion through Winsock on Windows.  Stage 29 adds
   Winsock =AF_INET6= socket / bind / connect / accept support.  Stage 30 adds
-  scoped IPv6 bind / connect / accept over Winsock.
+  scoped IPv6 bind / connect / accept over Winsock.  Stage 31 adds
+  filesystem-path =AF_UNIX= socket / bind / connect / accept over Winsock.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
   Windows OS APIs, cover Winsock extensions such as broader socket options /
-  UNIX-domain sockets / descriptor-passing helpers, or cover the rest of the
-  stdlib OS surface.
+  AF_UNIX abstract namespace / descriptor-passing helpers, or cover the rest of
+  the stdlib OS surface.
 
 * TL;DR
 
@@ -421,6 +430,7 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   uses Winsock hton*/ntoh* functions on Windows rather than POSIX =libc=.
   =AF_INET6= socket / bind / connect / accept now route through Winsock too,
   including scoped IPv6 variants that preserve flowinfo and scope-id.
+  Filesystem-path =AF_UNIX= sockets now use Winsock as well.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -512,6 +522,9 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock scoped AF_INET6 SHIPPED 2026-06-02*: scoped IPv6
    =bind= / =connect= / =accept= now use Winsock while carrying flowinfo and
    scope-id through the existing sockaddr_in6 scoped encoder.
+   *Windows Winsock AF_UNIX filesystem SHIPPED 2026-06-02*: filesystem-path
+   Unix sockets now use Winsock for =socket= / =bind= / =connect= / =accept=,
+   with accepted sockets registered as socket-kind fds.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
@@ -531,8 +544,9 @@ largest uncertainty (B1 + B2) first.
    are also covered, and =getppid= now uses Tool Help snapshots.
    =fork/clone/CreateThread= and full child tracking remain pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
-   plus IPv4/IPv6/scoped-IPv6 bind/connect/accept, read/write, poll, and
-   setsockopt-int; broader socket extensions remain pending.
+   plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
+   read/write, poll, and setsockopt-int; broader socket extensions remain
+   pending.
 
 * One-line summary
 
