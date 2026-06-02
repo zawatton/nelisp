@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -248,12 +248,64 @@
                  (regexp-quote (unibyte-string #x0f #x05))
                  text))))
 
-(ert-deftest nelisp-windows-build-phase47-dealloc-rejected ()
-  "Windows Phase47 EXE path rejects `dealloc-bytes' until VirtualFree lands."
-  (should-error
-   (nelisp-windows-build--phase47-executable-bytes
-    '(exit (dealloc-bytes 0 1 1)))
-   :type 'nelisp-phase47-compiler-error))
+(ert-deftest nelisp-windows-build-phase47-dealloc-imports-virtualfree ()
+  "Windows Phase47 `dealloc-bytes' imports VirtualFree."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun alloc_free_probe ()
+                     (let* ((p (alloc-bytes 4096 8)))
+                       (if (= p 0)
+                           13
+                         (seq (dealloc-bytes p 4096 8) 42))))
+                   (exit (alloc_free_probe)))))
+         (peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-rva (nelisp-windows-build-test--read-le32 bytes (+ opt 120)))
+         (rdata-rva #x2000)
+         (rdata-raw #x400)
+         (import-off (+ rdata-raw (- import-rva rdata-rva)))
+         (oft (nelisp-windows-build-test--read-le32 bytes import-off))
+         (iat-rva (nelisp-windows-build-test--read-le32 bytes (+ import-off 16)))
+         (name0-rva (nelisp-windows-build-test--read-le64
+                     bytes (+ rdata-raw (- oft rdata-rva))))
+         (name1-rva (nelisp-windows-build-test--read-le64
+                     bytes (+ rdata-raw (- oft rdata-rva) 8)))
+         (name2-rva (nelisp-windows-build-test--read-le64
+                     bytes (+ rdata-raw (- oft rdata-rva) 16))))
+    (should (= iat-rva #x2048))
+    (should (equal (nelisp-windows-build-test--import-name-at bytes name0-rva)
+                   "ExitProcess"))
+    (should (equal (nelisp-windows-build-test--import-name-at bytes name1-rva)
+                   "VirtualAlloc"))
+    (should (equal (nelisp-windows-build-test--import-name-at bytes name2-rva)
+                   "VirtualFree"))))
+
+(ert-deftest nelisp-windows-build-phase47-dealloc-text-calls-virtualfree ()
+  "Phase47 Windows `dealloc-bytes' emits a VirtualFree IAT call."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun alloc_free_probe ()
+                     (let* ((p (alloc-bytes 4096 8)))
+                       (if (= p 0)
+                           13
+                         (seq (dealloc-bytes p 4096 8) 42))))
+                   (exit (alloc_free_probe)))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 260)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 260))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #x31 #xd2))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x41 #xb8 #x00 #x80 #x00 #x00))
+             text))
+    (should (member #x2050 targets))
+    (should (member #x2058 targets))
+    (should (member #x2048 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
 
 (provide 'nelisp-windows-build-test)
 

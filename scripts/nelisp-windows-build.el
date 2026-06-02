@@ -8,11 +8,11 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
-;; `alloc-bytes' through VirtualAlloc.
+;; `alloc-bytes' / `dealloc-bytes' through VirtualAlloc / VirtualFree.
 
 ;;; Code:
 
@@ -62,6 +62,8 @@ The program exits 42 on allocation success and 13 on failure."
       (setq names (append names '("GetStdHandle" "WriteFile"))))
     (when (nelisp-windows-build--sexp-contains-symbol-p sexp 'alloc-bytes)
       (setq names (append names '("VirtualAlloc"))))
+    (when (nelisp-windows-build--sexp-contains-symbol-p sexp 'dealloc-bytes)
+      (setq names (append names '("VirtualFree"))))
     names))
 
 (defun nelisp-windows-build--phase47-rodata-bytes (sexp)
@@ -90,6 +92,8 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
            (nelisp-phase47-compiler--windows-writefile-iat-rva writefile-iat)
            (nelisp-phase47-compiler--windows-virtualalloc-iat-rva
             (cdr (assoc "VirtualAlloc" iat-rvas)))
+           (nelisp-phase47-compiler--windows-virtualfree-iat-rva
+            (cdr (assoc "VirtualFree" iat-rvas)))
            (ir (nelisp-phase47-compiler--parse sexp nil))
            (collected (nelisp-phase47-compiler--collect-strings ir))
            (str-offsets (car collected))
@@ -157,6 +161,18 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
   (nelisp-windows-build-phase47-exe
    '(exit (if (= (alloc-bytes 4096 8) 0) 13 42))
    "target/nelisp-windows-phase47-alloc42.exe"))
+
+(defun nelisp-windows-build-phase47-alloc-free42 ()
+  "Batch entry: build target/nelisp-windows-phase47-alloc-free42.exe."
+  (nelisp-windows-build-phase47-exe
+   '(seq
+     (defun alloc_free_probe ()
+       (let* ((p (alloc-bytes 4096 8)))
+         (if (= p 0)
+             13
+           (seq (dealloc-bytes p 4096 8) 42))))
+     (exit (alloc_free_probe)))
+   "target/nelisp-windows-phase47-alloc-free42.exe"))
 
 (provide 'nelisp-windows-build)
 

@@ -174,6 +174,9 @@ ignores this var (= AAPCS64 only).")
 (defvar nelisp-phase47-compiler--windows-virtualalloc-iat-rva nil
   "RVA of KERNEL32.dll!VirtualAlloc IAT slot for Windows executable emit.")
 
+(defvar nelisp-phase47-compiler--windows-virtualfree-iat-rva nil
+  "RVA of KERNEL32.dll!VirtualFree IAT slot for Windows executable emit.")
+
 (defvar nelisp-phase47-compiler--next-rt-let-slot nil
   "Cons cell `(N)' holding the next free runtime-let frame slot index.
 Bound by the `defun' parser around body parsing; N starts at the
@@ -12987,27 +12990,26 @@ on layout error or OOM)."
   "Emit `dealloc-bytes' — 3-arg call to `nl_dealloc_bytes(ptr, size, align)'.
 Returns rax = 1 sentinel for `and'-chain composition (= underlying
 extern is `void')."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (size (nelisp-phase47-compiler--ir-get node :size))
-        (align (nelisp-phase47-compiler--ir-get node :align)))
-    (when (eq nelisp-phase47-compiler--os 'windows)
-      (signal 'nelisp-phase47-compiler-error
-              (list :windows-dealloc-bytes-not-yet-supported)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value size buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value align buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_dealloc_bytes" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)
-    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
+  (if (eq nelisp-phase47-compiler--os 'windows)
+      (nelisp-phase47-compiler--emit-windows-dealloc-bytes node buf)
+    (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+          (size (nelisp-phase47-compiler--ir-get node :size))
+          (align (nelisp-phase47-compiler--ir-get node :align)))
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value size buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value align buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-pop buf 'rdx)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_dealloc_bytes" -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11)
+      (nelisp-asm-x86_64-mov-imm32 buf 'rax 1))))
 
 ;; ---- Doc 125 §125.B inline syscall op ----
 
@@ -13594,6 +13596,36 @@ the absolute virtual address of byte 0 of .rodata."
     (nelisp-phase47-compiler--emit-windows-call-iat-rva
      buf nelisp-phase47-compiler--windows-virtualalloc-iat-rva)
     (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow)))
+
+(defun nelisp-phase47-compiler--emit-windows-dealloc-bytes (node buf)
+  "Emit Windows `dealloc-bytes' through KERNEL32.dll!VirtualFree."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-virtualfree-iat-rva)
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-virtualfree-import-missing)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (size (nelisp-phase47-compiler--ir-get node :size))
+        (align (nelisp-phase47-compiler--ir-get node :align))
+        (shadow (nelisp-phase47-compiler--windows-api-shadow-size)))
+    ;; Preserve source evaluation order: ptr, size, then align.  For
+    ;; MEM_RELEASE, Win32 VirtualFree requires dwSize=0, so SIZE/ALIGN are
+    ;; evaluated for side effects but are not passed through to the API.
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value size buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value align buf)
+    (nelisp-asm-x86_64-pop buf 'r10) ; discard evaluated size
+    (nelisp-asm-x86_64-pop buf 'rcx) ; lpAddress
+    (nelisp-asm-x86_64-xor-reg-reg buf 'rdx 'rdx) ; dwSize = 0
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x41 #xb8)) ; mov r8d, MEM_RELEASE
+    (nelisp-phase47-compiler--emit-le32-signed buf #x8000)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-virtualfree-iat-rva)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
 (defun nelisp-phase47-compiler--emit-windows-exit (buf value-node)
   "Emit Win64 KERNEL32.dll!ExitProcess call for VALUE-NODE."
