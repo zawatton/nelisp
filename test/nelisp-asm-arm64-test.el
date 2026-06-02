@@ -598,9 +598,11 @@
     (nelisp-asm-arm64-emit-reloc b 'b26-pc 'printf 0)
     (let ((r (car (nelisp-asm-arm64-buffer-relocs b))))
       (should (eq (plist-get r :type) 'b26-pc))
+      (should (equal (plist-get r :symbol) "printf"))
       (should (eq (plist-get r :sym) 'printf))
       (should (= (plist-get r :offset) 0))
-      (should (= (plist-get r :addend) 0)))))
+      (should (= (plist-get r :addend) 0))
+      (should (eq (plist-get r :section) 'text)))))
 
 (ert-deftest nelisp-asm-arm64-emit-reloc-abs64-after-movz-chain ()
   ;; Emit a 4-instr MOVZ/MOVK chain for a 64-bit immediate slot, then
@@ -847,6 +849,20 @@ exec a probe and check exit status."
   (should (equal (nelisp-asm-arm64-test--bytes
                   (lambda (b) (nelisp-asm-arm64-ldrb-reg-reg b 'x3 'x5 'x7)))
                  (nelisp-asm-arm64-test--word #x386768A3))))
+
+(ert-deftest nelisp-asm-arm64-casal-x2-x3-x1 ()
+  "CASAL X2, X3, [X1] encodes the 64-bit acquire+release LSE CAS."
+  ;; 64-bit CASAL: base 0xC8E0FC00 | (Rs=2<<16) | (Rn=1<<5) | Rt=3.
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-casal b 'x2 'x3 'x1)))
+                 (nelisp-asm-arm64-test--word #xC8E2FC23))))
+
+(ert-deftest nelisp-asm-arm64-casal-register-fields ()
+  "Rs / Rn / Rt land in bits [20:16] / [9:5] / [4:0]."
+  ;; CASAL X10, X11, [X12] = 0xC8E0FC00 | (10<<16) | (12<<5) | 11.
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-casal b 'x10 'x11 'x12)))
+                 (nelisp-asm-arm64-test--word #xC8EAFD8B))))
 
 ;; ---- Doc 133 P0 ADR (addr-of) PC-relative label fixup ------------
 

@@ -1,0 +1,68 @@
+;;; nelisp-macos-selfhost-test.el --- macOS smoke harness tests  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton
+
+;; This file is not part of GNU Emacs.
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+
+;; Host-side guard for `tools/macos-selfhost-test.sh --emit-only'.
+;; The script's normal path still needs Apple Silicon + codesign; this
+;; test locks the pre-execution invariant that every smoke program can
+;; be compiled to a Mach-O image on any host running Emacs.
+
+;;; Code:
+
+(require 'ert)
+
+(defconst nelisp-macos-selfhost-test--file
+  (or load-file-name buffer-file-name)
+  "Absolute path to this test file captured at load time.")
+
+(defconst nelisp-macos-selfhost-test--smoke-names
+  '("exit42" "loop" "fact" "alloc" "cons" "sexp" "let" "str"
+    "setq-local" "ptr" "cas" "dealloc" "cons-set" "cond" "logic"
+    "cons-clone" "boxed" "names" "str-helpers" "lits" "extern"
+    "aot-jump" "aot-roots" "f64-sexp" "callptr")
+  "Smoke case names expected from `tools/macos-selfhost-test.sh'.")
+
+(defun nelisp-macos-selfhost-test--repo-root ()
+  "Return the repository root inferred from this test file."
+  (expand-file-name
+   ".." (file-name-directory nelisp-macos-selfhost-test--file)))
+
+(defun nelisp-macos-selfhost-test--current-emacs ()
+  "Return the current Emacs executable path for child smoke builds."
+  (expand-file-name invocation-name invocation-directory))
+
+(ert-deftest nelisp-macos-selfhost/emit-only-script-builds-all-smokes ()
+  "The macOS self-host smoke harness builds every case in emit-only mode."
+  (let* ((root (nelisp-macos-selfhost-test--repo-root))
+         (script (expand-file-name "tools/macos-selfhost-test.sh" root))
+         (buf (generate-new-buffer " *nelisp-macos-selfhost-emit-only*"))
+         (process-environment
+          (cons (format "EMACS=%s"
+                        (nelisp-macos-selfhost-test--current-emacs))
+                process-environment)))
+    (unwind-protect
+        (let ((status (call-process "bash" nil buf nil script "--emit-only")))
+          (with-current-buffer buf
+            (let ((out (buffer-string)))
+              (should (= status 0))
+              (dolist (name nelisp-macos-selfhost-test--smoke-names)
+                (should (string-match-p
+                         (regexp-quote
+                          (format "[macos] PASS: %s -> built" name))
+                         out)))
+              (should
+               (string-match-p
+                (regexp-quote
+                 "[macos] all PASS — pure-elisp aarch64 -> Mach-O emit-only smoke OK")
+                out)))))
+      (kill-buffer buf))))
+
+(provide 'nelisp-macos-selfhost-test)
+
+;;; nelisp-macos-selfhost-test.el ends here

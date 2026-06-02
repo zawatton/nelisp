@@ -250,9 +250,9 @@ ALIGN)` adds a third arg for rdx and matches the §122.E `(ptr-write-
 u64 PTR OFFSET VAL)` emit shape exactly (= 3 pushes, pops to rdi/rsi/
 rdx, extern-call, restore stack, `mov rax, 1` sentinel).
 
-The aarch64 unsupported list (= `--emit-aarch64-unsupported` switch
-at line ~1843) gets two new entries so non-x86_64-linux builds give
-a clear error instead of a silent codegen miss.
+Current Phase-47 aarch64 emit wires both ops as normal GP helper-call
+paths, so macOS arm64 builds compile them directly instead of routing
+through `--emit-aarch64-unsupported`.
 
 ** §3.2 §125.B-F per-type externs
 
