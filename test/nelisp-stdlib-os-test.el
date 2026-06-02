@@ -552,6 +552,41 @@
     (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-kill-windows-uses-terminateprocess ()
+  "Windows kill terminates a single PID through kernel32 process APIs."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "OpenProcess") #xabcdef)
+                  ((equal fn "TerminateProcess") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-kill 1234 nelisp-os-SIGTERM) 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "OpenProcess"
+                          [:pointer :uint32 :sint32 :uint32]
+                          (list nelisp-os-WIN-PROCESS-TERMINATE 0 1234))
+                    (list "kernel32" "TerminateProcess"
+                          [:sint32 :pointer :uint32]
+                          (list #xabcdef nelisp-os-SIGTERM))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xabcdef)))))))
+
+(ert-deftest nelisp-stdlib-os-kill-windows-invalid-signal-errors ()
+  "Windows kill rejects unsupported signals before FFI."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-kill 1234 nelisp-os-SIGHUP)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)

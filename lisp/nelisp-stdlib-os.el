@@ -36,8 +36,9 @@
 ;; in the Windows fd table.  Stage 13 maps `lseek' to `SetFilePointerEx'.
 ;; Stage 14 maps the minimal `fstat' shape to `GetFileType' / `GetFileSizeEx'.
 ;; Stage 15 maps `dup2' to `DuplicateHandle' / `SetStdHandle'.  The
-;; Linux/Darwin path remains the default until a real Windows standalone runtime
-;; selects `system-type' = `windows-nt'.
+;; Stage 16 maps single-PID `kill' to `OpenProcess' / `TerminateProcess'.  The
+;; Linux/Darwin path remains the default until a real Windows standalone
+;; runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -119,6 +120,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 ;; Windows DuplicateHandle constants.
 (defconst nelisp-os-WIN-DUPLICATE-SAME-ACCESS #x2)
+
+;; Windows process access constants.
+(defconst nelisp-os-WIN-PROCESS-TERMINATE #x0001)
 
 (defvar nelisp-os--windows-next-fd 3
   "Next POSIX-like fd number for Windows HANDLE table entries.")
@@ -916,9 +920,39 @@ returns (0 . 0)."
             (cons r (nelisp-os-read-i32 status-buf 0))))
       (nelisp-os--free status-buf))))
 
+(defun nelisp-os--windows-kill (pid sig)
+  "Windows implementation of single-PID `nelisp-os-kill'."
+  (when (or (<= pid 0)
+            (not (memq sig (list nelisp-os-SIGTERM nelisp-os-SIGKILL))))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((handle (nelisp-os--libc-call
+                 "kernel32" "OpenProcess"
+                 [:pointer :uint32 :sint32 :uint32]
+                 nelisp-os-WIN-PROCESS-TERMINATE
+                 0
+                 pid)))
+    (if (= handle 0)
+        (nelisp-os--windows-ffi-error-signal)
+      (unwind-protect
+          (let ((ok (nelisp-os--libc-call
+                     "kernel32" "TerminateProcess"
+                     [:sint32 :pointer :uint32]
+                     handle sig)))
+            (if (= ok 0)
+                (nelisp-os--windows-ffi-error-signal)
+              0))
+        (let ((close-ok (nelisp-os--libc-call
+                         "kernel32" "CloseHandle"
+                         [:sint32 :pointer]
+                         handle)))
+          (if (= close-ok 0)
+              (nelisp-os--windows-ffi-error-signal)))))))
+
 (defun nelisp-os-kill (pid sig)
   "POSIX kill(2) — send SIG to PID; returns 0 on success."
-  (nelisp-os--check-errno (nelisp--syscall 'kill pid sig)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-kill pid sig)
+    (nelisp-os--check-errno (nelisp--syscall 'kill pid sig))))
 
 (defun nelisp-os-getpid ()
   "POSIX getpid(2) — return current process id."

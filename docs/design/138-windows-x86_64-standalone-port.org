@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-15-DUPLICATEHANDLE-DUP2-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-16-TERMINATEPROCESS-KILL-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 15 DuplicateHandle dup2 + first real Windows smoke VALIDATED
+- *State*: STAGE 16 TerminateProcess kill + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -48,7 +48,9 @@
   =nelisp-os-dup2= now routes Windows fd duplication through
   =DuplicateHandle=; regular targets update the Windows fd table and standard
   targets use =SetStdHandle=, which is the next required piece for
-  =CreateProcess= redirection.
+  =CreateProcess= redirection.  =nelisp-os-kill= now supports single-PID
+  Windows termination for =SIGTERM= / =SIGKILL= via
+  =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle=.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -76,7 +78,9 @@
   =GetFileSizeEx= argument shape and the minimal positional stat list for disk
   and pipe HANDLEs.  Stage 15 coverage verifies =DuplicateHandle= argument
   shape, regular-fd table replacement, old HANDLE close, and =SetStdHandle= for
-  stdout redirection.
+  stdout redirection.  Stage 16 coverage verifies =OpenProcess= /
+  =TerminateProcess= / =CloseHandle= argument shape and unsupported signal
+  rejection before FFI.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -112,10 +116,11 @@
   12 adds anonymous pipe creation through =CreatePipe=.  Stage 13 adds
   HANDLE-backed =lseek= through =SetFilePointerEx=.  Stage 14 adds minimal
   HANDLE-backed =fstat= through =GetFileType= / =GetFileSizeEx=.  Stage 15 adds
-  fd duplication through =DuplicateHandle= / =SetStdHandle=.  These stages do
-  not yet replace the Linux standalone allocator, complete real Windows
-  execution of every smoke, support all Windows OS APIs, or cover the rest of
-  the stdlib OS surface.
+  fd duplication through =DuplicateHandle= / =SetStdHandle=.  Stage 16 adds
+  single-PID termination through =OpenProcess= / =TerminateProcess=.  These
+  stages do not yet replace the Linux standalone allocator, complete real
+  Windows execution of every smoke, support all Windows OS APIs, or cover the
+  rest of the stdlib OS surface.
 
 * TL;DR
 
@@ -279,6 +284,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows dup progress 2026-06-02*: =nelisp-os-dup2= now routes through
   =DuplicateHandle=, updating regular fd-table targets and std targets via
   =SetStdHandle=.
+  *Windows kill progress 2026-06-02*: =nelisp-os-kill= now supports
+  single-PID =SIGTERM= / =SIGKILL= via =OpenProcess= + =TerminateProcess=.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -329,6 +336,9 @@ largest uncertainty (B1 + B2) first.
    *Windows dup branch SHIPPED 2026-06-02*: =nelisp-os-dup2= uses
    =DuplicateHandle= and can retarget stdout/stderr/stdin through
    =SetStdHandle=.
+   *Windows kill branch SHIPPED 2026-06-02*: =nelisp-os-kill= uses
+   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= for single positive
+   PIDs and =SIGTERM= / =SIGKILL=.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
