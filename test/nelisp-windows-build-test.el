@@ -69,6 +69,7 @@
                    (filemapping . filemapping-exit-42)
                    (getcurrentprocessid . getcurrentprocessid-exit-42)
                    (duplicatehandle . duplicatehandle-exit-42)
+                   (sethandleinformation . sethandleinformation-exit-42)
                    (getlasterror . getlasterror-exit-42)
                    (getcommandline . getcommandline-exit-42)
                    (commandlinetoargv . commandlinetoargv-exit-42)
@@ -145,6 +146,7 @@
                            "nelisp-windows-filemapping.exe"
                            "nelisp-windows-getcurrentprocessid.exe"
                            "nelisp-windows-duplicatehandle.exe"
+                           "nelisp-windows-sethandleinformation.exe"
                            "nelisp-windows-getlasterror.exe"
                            "nelisp-windows-getcommandline.exe"
                            "nelisp-windows-commandlinetoargv.exe"

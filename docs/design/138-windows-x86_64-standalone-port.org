@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-148-WINDOWS-DUPLICATEHANDLE-SMOKE
+#+STATUS: STAGE-149-WINDOWS-SETHANDLEINFORMATION-SMOKE
 
 * Status
 
-- *State*: STAGE 148 Windows DuplicateHandle PE smoke
+- *State*: STAGE 149 Windows SetHandleInformation PE smoke
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -83,7 +83,12 @@
   twentieth EXE spec, =duplicatehandle-exit-42=, imports =GetCurrentProcess= /
   =DuplicateHandle= / =CloseHandle=, duplicates the current-process pseudo
   HANDLE with =DUPLICATE_SAME_ACCESS=, closes the real duplicate, and exits 42
-  only when the full duplication lifecycle succeeds.
+  only when the full duplication lifecycle succeeds.  The twenty-first EXE
+  spec, =sethandleinformation-exit-42=, imports =GetCurrentProcess= /
+  =DuplicateHandle= / =SetHandleInformation= / =GetHandleInformation= /
+  =CloseHandle=, duplicates the current-process pseudo HANDLE, clears
+  =HANDLE_FLAG_INHERIT=, verifies the flag is clear, closes the duplicate, and
+  exits 42 only when the close-on-exec flag lifecycle succeeds.
   Win64 COFF object
   coverage now also
   verifies =extern-call= emits four GP arguments in =RCX/RDX/R8/R9=, surrounds
@@ -473,9 +478,9 @@
   normalized events, and poll readiness; native =ReadDirectoryChangesW= event
   production remains the follow-up.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
-  smoke manifest and emits all twenty PE32+ smoke EXEs on the host side before
+  smoke manifest and emits all twenty-one PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
-  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|readfile-stdin|createpipe|createfile-write|setfilepointer|getfiletype|getfileinformation|filemapping|getcurrentprocessid|duplicatehandle|getlasterror|getcommandline|commandlinetoargv|wsastartup|createprocess|createthread|all= so the
+  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|readfile-stdin|createpipe|createfile-write|setfilepointer|getfiletype|getfileinformation|filemapping|getcurrentprocessid|duplicatehandle|sethandleinformation|getlasterror|getcommandline|commandlinetoargv|wsastartup|createprocess|createthread|all= so the
   remaining native Windows checks can be re-run individually after a partial
   pass.  =nelisp-os-getsockopt-int= now routes socket-kind Windows fds through
   =ws2_32!getsockopt= for the same supported =SOL_SOCKET= int options as
@@ -582,9 +587,9 @@
   =writefile-stdout= / =readfile-stdin= / =createpipe= / =createfile-write= /
   =setfilepointer= / =getfiletype= / =getfileinformation= /
   =filemapping= / =getcurrentprocessid= / =duplicatehandle= /
-  =getlasterror= / =getcommandline= /
+  =sethandleinformation= / =getlasterror= / =getcommandline= /
   =commandlinetoargv= / =wsastartup= / =createprocess= / =createthread=
-  manifest stable and can emit all twenty
+  manifest stable and can emit all twenty-one
   PE32+ smoke EXEs from that manifest.
   Stage 37 coverage
   checks that the PowerShell real-machine script exposes a =-Smoke= selector
@@ -915,6 +920,10 @@
   =CloseHandle= imports, seven-argument Win64 =DuplicateHandle= setup with
   =DUPLICATE_SAME_ACCESS=, duplicate non-NULL validation, and close success
   checks.
+  Stage 149 coverage verifies the =sethandleinformation-exit-42= PE layout,
+  writable duplicate-HANDLE / handle-flags storage, =SetHandleInformation= /
+  =GetHandleInformation= imports, =HANDLE_FLAG_INHERIT= clearing, flag
+  verification, and duplicate close success checks.
   Stage 58 coverage verifies Win64 =extern-call= COFF
   emit uses =RCX/RDX/R8/R9= for four GP arguments, emits 32-byte caller shadow
   space around =CALL=, and rejects GP stack arguments beyond that register
@@ -939,17 +948,19 @@
   =setfilepointer=, =getfiletype=, =getfileinformation=, =filemapping=,
   =getcurrentprocessid=, =getlasterror=, =getcommandline=,
   =commandlinetoargv=, =wsastartup=, =createprocess=, and =createthread= all
-  reported =PASS=.  Stages 147-148 expand the real-machine smoke entry to
-  twenty PE32+ EXEs by adding =createpipe= / =createpipe-exit-42= and
-  =duplicatehandle= / =duplicatehandle-exit-42=; those new smokes can now be
-  built with =nelisp-windows-build-createpipe= /
-  =nelisp-windows-build-duplicatehandle= to
-  =target/nelisp-windows-createpipe.exe= /
-  =target/nelisp-windows-duplicatehandle.exe= and should be run on native
-  Windows with =tools/windows-selfhost-test.ps1 -Smoke createpipe= and
-  =tools/windows-selfhost-test.ps1 -Smoke duplicatehandle=, or as part of the
-  full twenty-smoke runner.  Use =-EmitOnly= to validate EXE generation without
-  executing them.
+  reported =PASS=.  Stages 147-149 expand the real-machine smoke entry to
+  twenty-one PE32+ EXEs by adding =createpipe= / =createpipe-exit-42=,
+  =duplicatehandle= / =duplicatehandle-exit-42=, and
+  =sethandleinformation= / =sethandleinformation-exit-42=; those new smokes can
+  now be built with =nelisp-windows-build-createpipe= /
+  =nelisp-windows-build-duplicatehandle= /
+  =nelisp-windows-build-sethandleinformation= to the matching
+  =target/nelisp-windows-*.exe= paths and should be run on native Windows with
+  =tools/windows-selfhost-test.ps1 -Smoke createpipe=,
+  =tools/windows-selfhost-test.ps1 -Smoke duplicatehandle=, and
+  =tools/windows-selfhost-test.ps1 -Smoke sethandleinformation=, or as part of
+  the full twenty-one-smoke runner.  Use =-EmitOnly= to validate EXE generation
+  without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
   in a *separate* session — Windows is the next target after macOS lands.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
@@ -1555,6 +1566,12 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   pseudo HANDLE, duplicates it through =DuplicateHandle(DUPLICATE_SAME_ACCESS)=,
   closes the real duplicate, and is wired into the native Windows PowerShell
   smoke runner.
+  *Windows SetHandleInformation PE smoke progress 2026-06-03*: pure-Elisp PE
+  emit now has a =sethandleinformation-exit-42= smoke that duplicates the
+  current-process pseudo HANDLE, clears =HANDLE_FLAG_INHERIT= through
+  =SetHandleInformation=, verifies the cleared flag through
+  =GetHandleInformation=, closes the duplicate, and is wired into the native
+  Windows PowerShell smoke runner.
   *Windows GetLastError PE smoke progress 2026-06-03*: pure-Elisp PE emit now
   has a =getlasterror-exit-42= smoke that fails =DeleteFileW= with an invalid
   filename, verifies =GetLastError= returns a nonzero error code, and is wired
@@ -1572,9 +1589,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Native Windows validation 2026-06-03*: after the stdin runner fix, native
   Windows 10.0.26200.0 / GNU Emacs 30.2 full-smoke execution passed all
   eighteen then-current smokes.  The newly added =createpipe= and
-  =duplicatehandle= smokes remain the next native real-machine checks.
-  *Next*: execute the =createpipe= / =duplicatehandle= PE smokes on real
-  Windows, then broaden the remaining OS APIs.
+  =duplicatehandle= / =sethandleinformation= smokes remain the next native
+  real-machine checks.
+  *Next*: execute the =createpipe= / =duplicatehandle= /
+  =sethandleinformation= PE smokes on real Windows, then broaden the remaining
+  OS APIs.
 
 * Tier 3 — relatively easy / non-blockers (good news)
 
@@ -1722,14 +1741,14 @@ largest uncertainty (B1 + B2) first.
    timer-backed timerfd compatibility.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
-   manifest and host-side emission of all twenty PE32+ smoke EXEs.
+   manifest and host-side emission of all twenty-one PE32+ smoke EXEs.
    *Windows smoke selector SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    accepts =-Smoke NAME= so the already-passing =exit42= smoke does not have to
    be re-run when checking =virtualalloc=, =virtualprotect-free=, =arena=,
    =writefile-stdout=, =readfile-stdin=, =createpipe=, =createfile-write=,
    =setfilepointer=, =getfiletype=, =getfileinformation=, =filemapping=,
-   =getcurrentprocessid=, =duplicatehandle=, =getlasterror=, =getcommandline=,
-   =commandlinetoargv=, or =wsastartup=.
+   =getcurrentprocessid=, =duplicatehandle=, =sethandleinformation=,
+   =getlasterror=, =getcommandline=, =commandlinetoargv=, or =wsastartup=.
    *Windows SetFilePointerEx PE smoke SHIPPED 2026-06-03*:
    =setfilepointer-exit-42= creates a temporary file, seeks to offset 0 through
    =SetFilePointerEx= with a writable new-position slot, closes/deletes the
@@ -1753,6 +1772,10 @@ largest uncertainty (B1 + B2) first.
    =duplicatehandle-exit-42= duplicates the current-process pseudo HANDLE with
    =DuplicateHandle(DUPLICATE_SAME_ACCESS)=, closes the real duplicate, and
    exits 42 on success.
+   *Windows SetHandleInformation PE smoke SHIPPED 2026-06-03*:
+   =sethandleinformation-exit-42= clears =HANDLE_FLAG_INHERIT= on a duplicated
+   current-process HANDLE, verifies the flag is clear through
+   =GetHandleInformation=, closes the duplicate, and exits 42 on success.
    *Windows GetLastError PE smoke SHIPPED 2026-06-03*:
    =getlasterror-exit-42= fails =DeleteFileW= with an invalid filename, verifies
    =GetLastError= returns a nonzero error code, and exits 42 on success.
@@ -2177,8 +2200,9 @@ writer (import directory).  That single coupling (B1+B2) is the whole game.
   VirtualAlloc, VirtualProtect / VirtualFree, arena metadata, WriteFile
   stdout, ReadFile stdin, CreatePipe, CreateFileW, SetFilePointerEx, GetFileType,
   GetFileInformationByHandle, CreateFileMappingW / MapViewOfFile,
-  GetCurrentProcessId, DuplicateHandle, GetLastError, GetCommandLineW,
-  CommandLineToArgvW, and WSAStartup.
+  GetCurrentProcessId, DuplicateHandle, SetHandleInformation,
+  GetHandleInformation, GetLastError, GetCommandLineW, CommandLineToArgvW, and
+  WSAStartup.
 - =lisp/nelisp-asm-x86_64.el= — =('sysv | 'win64)= ABI slot.
 - =lisp/nelisp-phase47-compiler.el:149= — =--abi= dynvar (sysv/win64).
 - =lisp/nelisp-stdlib-os.el= — Linux/Darwin POSIX-like path plus Windows
