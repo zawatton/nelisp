@@ -10584,6 +10584,36 @@ the node's class to consume the result correctly."
            (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
          (nelisp-phase47-compiler--emit-value
           (nelisp-phase47-compiler--ir-get node :body) buf))
+        ((= tag 42)             ; ptr-read-u8 — aarch64 LDRB w0,[x1,x2]
+         (nelisp-phase47-compiler--emit-ptr-read-width-arm64
+          node buf #'nelisp-asm-arm64-ldrb-reg-reg))
+        ((= tag 39)             ; ptr-read-u16 — aarch64 LDRH w0,[x1,x2]
+         (nelisp-phase47-compiler--emit-ptr-read-width-arm64
+          node buf #'nelisp-asm-arm64-ldrh-reg-reg))
+        ((= tag 40)             ; ptr-read-u32 — aarch64 LDR w0,[x1,x2]
+         (nelisp-phase47-compiler--emit-ptr-read-width-arm64
+          node buf #'nelisp-asm-arm64-ldrw-reg-reg))
+        ((= tag 46)             ; ptr-write-u8 — aarch64 STRB w3,[x1,x2]
+         (nelisp-phase47-compiler--emit-ptr-write-width-arm64
+          node buf #'nelisp-asm-arm64-strb-reg-reg))
+        ((= tag 43)             ; ptr-write-u16 — aarch64 STRH w3,[x1,x2]
+         (nelisp-phase47-compiler--emit-ptr-write-width-arm64
+          node buf #'nelisp-asm-arm64-strh-reg-reg))
+        ((= tag 44)             ; ptr-write-u32 — aarch64 STR w3,[x1,x2]
+         (nelisp-phase47-compiler--emit-ptr-write-width-arm64
+          node buf #'nelisp-asm-arm64-strw-reg-reg))
+        ((= tag 20)             ; dealloc-bytes — aarch64 BL nl_dealloc_bytes
+         (nelisp-phase47-compiler--emit-dealloc-bytes-arm64 node buf))
+        ((= tag 18)             ; cons-set-car — aarch64 BL nl_consbox_set_car
+         (nelisp-phase47-compiler--emit-cons-set-slot-arm64
+          node buf 'nl_consbox_set_car))
+        ((= tag 19)             ; cons-set-cdr — aarch64 BL nl_consbox_set_cdr
+         (nelisp-phase47-compiler--emit-cons-set-slot-arm64
+          node buf 'nl_consbox_set_cdr))
+        ((= tag 11)             ; cond — aarch64 first-match dispatch
+         (nelisp-phase47-compiler--emit-cond node buf))
+        ((= tag 33)             ; logic — aarch64 and/or short-circuit
+         (nelisp-phase47-compiler--emit-logic node buf))
         ((memq tag '(23 55 27            ; extern-call sexp-float-unwrap f64-to-i64-trunc
                      14                  ; cons-cdr-raw
                      60                  ; sexp-payload-ptr-record
@@ -10601,12 +10631,7 @@ the node's class to consume the result correctly."
                      35 34               ; mut-str-len mut-str-finalize
                      71 72 74            ; str-char-count str-codepoint-at str-is-alphanumeric-at
                      2                   ; atomic-compare-exchange
-                     42 46               ; ptr-read-u8 ptr-write-u8
-                     39 43               ; ptr-read-u16 ptr-write-u16
-                     40 44               ; ptr-read-u32 ptr-write-u32
-                     20                  ; dealloc-bytes
-                     16 18 19            ; cons-make-with-clone cons-set-car cons-set-cdr
-                     11 33               ; cond logic
+                     16                  ; cons-make-with-clone (deferred — nested clone calls)
                      94 95               ; aot-machine-landing-jump aot-current-sp
                      92))                ; aot-root-scope
          (nelisp-phase47-compiler--emit-aarch64-unsupported
@@ -13152,6 +13177,78 @@ ptr → x1, offset → x2, val → x3; stores then leaves x0 = 1 sentinel."
   (nelisp-asm-arm64-str-reg-reg buf 'x3 'x1 'x2)     ; [x1+x2] = x3
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))            ; rax-style sentinel
 
+(defun nelisp-phase47-compiler--emit-ptr-read-width-arm64 (node buf load-fn)
+  "Emit `ptr-read-u{8,16,32}' for aarch64 — inline `LOAD-FN x0,[x1,x2]'.
+LOAD-FN is one of the width-specific register-offset loaders
+(`nelisp-asm-arm64-ldrb-reg-reg' / `-ldrh-reg-reg' / `-ldrw-reg-reg');
+the Wt destination zero-extends to x0, matching the i64 contract of the
+u64 path.  ptr → x1, offset → x2; result *(uN*)(ptr+offset) lands in x0."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = offset
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
+  (funcall load-fn buf 'x0 'x1 'x2))                 ; x0 = [x1+x2]
+
+(defun nelisp-phase47-compiler--emit-ptr-write-width-arm64 (node buf store-fn)
+  "Emit `ptr-write-u{8,16,32}' for aarch64 — inline `STORE-FN x3,[x1,x2]'.
+STORE-FN is one of the width-specific register-offset stores
+(`nelisp-asm-arm64-strb-reg-reg' / `-strh-reg-reg' / `-strw-reg-reg');
+the low byte/half/word of x3 is stored.  ptr → x1, offset → x2,
+val → x3; leaves x0 = 1 sentinel for `and'-chain composition."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push offset
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :val) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x3 'x0)         ; x3 = val
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = offset
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
+  (funcall store-fn buf 'x3 'x1 'x2)                 ; [x1+x2] = x3 (low N)
+  (nelisp-asm-arm64-mov-imm64 buf 'x0 1))            ; rax-style sentinel
+
+(defun nelisp-phase47-compiler--emit-dealloc-bytes-arm64 (node buf)
+  "Emit `dealloc-bytes' for aarch64 — `BL nl_dealloc_bytes(ptr,size,align)'.
+ptr → x0, size → x1, align → x2.  The underlying defun is `void'
+(arena bump allocator: dealloc is a no-op), so x0 = 1 sentinel is
+returned for `and'-chain composition, matching the x86_64 contract."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :size) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push size
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :align) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = align
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = size
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = ptr
+  (nelisp-asm-arm64-bl buf 'nl_dealloc_bytes)
+  (nelisp-asm-arm64-mov-imm64 buf 'x0 1))            ; void → 1 sentinel
+
+(defun nelisp-phase47-compiler--emit-cons-set-slot-arm64 (node buf helper-sym)
+  "Emit `cons-set-car'/`cons-set-cdr' for aarch64 via HELPER-SYM.
+NODE carries `:handle' (= a Cons-tagged `Sexp' slot) and `:val-ptr'
+(= a `*const Sexp').  Resolve the `NlConsBox*' payload from the handle
+into x0, forward (box, val-ptr) to the refcount-aware drop-then-write
+helper, and return the original handle in x0 (matches the x86_64 ABI)."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :handle) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push handle
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)         ; x1 = val-ptr (arg2)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = handle
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; preserve handle for return
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload) ; x0 = box (arg1)
+  (nelisp-asm-arm64-bl buf helper-sym)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))         ; x0 = handle (return)
+
 (defun nelisp-phase47-compiler--emit-atomic-fetch-add-arm64 (node buf)
   "Emit `atomic-fetch-add' for aarch64 — inline `LDADDAL x2, x0, [x1]'.
 ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
@@ -13646,27 +13743,48 @@ body straight; `end-LABEL' is then defined immediately after."
          (end-lbl (intern (format "%s-end" id)))
          (clauses (nelisp-phase47-compiler--ir-get node :clauses))
          (k 0))
-    (dolist (cl clauses)
-      (setq k (1+ k))
-      (let ((pred (car cl))
-            (body (cdr cl)))
-        (cond
-         ((eq pred 'always)
-          ;; Unconditional clause (= t / fallthrough).
-          (nelisp-phase47-compiler--emit-value body buf))
-         (t
-          (let ((next-lbl (intern (format "%s-next-%d" id k))))
-            (nelisp-phase47-compiler--emit-value pred buf)
-            (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-            (nelisp-asm-x86_64-jz-rel32 buf next-lbl)
-            (nelisp-phase47-compiler--emit-value body buf)
-            (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
-            (nelisp-asm-x86_64-define-label buf next-lbl))))))
-    ;; If no `always' clause and every predicate failed, fall
-    ;; through to a 0 sentinel so rax is always defined.
-    (unless (eq (car (car (last clauses))) 'always)
-      (nelisp-asm-x86_64-mov-imm32 buf 'rax 0))
-    (nelisp-asm-x86_64-define-label buf end-lbl)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        ;; aarch64: cmp x0,xzr / b.eq next / ... / b end ; x0 = 0 sentinel.
+        (progn
+          (dolist (cl clauses)
+            (setq k (1+ k))
+            (let ((pred (car cl))
+                  (body (cdr cl)))
+              (cond
+               ((eq pred 'always)
+                (nelisp-phase47-compiler--emit-value body buf))
+               (t
+                (let ((next-lbl (intern (format "%s-next-%d" id k))))
+                  (nelisp-phase47-compiler--emit-value pred buf)
+                  (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
+                  (nelisp-asm-arm64-b-cond buf 'eq next-lbl)
+                  (nelisp-phase47-compiler--emit-value body buf)
+                  (nelisp-asm-arm64-b buf end-lbl)
+                  (nelisp-asm-arm64-define-label buf next-lbl))))))
+          (unless (eq (car (car (last clauses))) 'always)
+            (nelisp-asm-arm64-mov-imm64 buf 'x0 0))
+          (nelisp-asm-arm64-define-label buf end-lbl))
+      (dolist (cl clauses)
+        (setq k (1+ k))
+        (let ((pred (car cl))
+              (body (cdr cl)))
+          (cond
+           ((eq pred 'always)
+            ;; Unconditional clause (= t / fallthrough).
+            (nelisp-phase47-compiler--emit-value body buf))
+           (t
+            (let ((next-lbl (intern (format "%s-next-%d" id k))))
+              (nelisp-phase47-compiler--emit-value pred buf)
+              (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+              (nelisp-asm-x86_64-jz-rel32 buf next-lbl)
+              (nelisp-phase47-compiler--emit-value body buf)
+              (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
+              (nelisp-asm-x86_64-define-label buf next-lbl))))))
+      ;; If no `always' clause and every predicate failed, fall
+      ;; through to a 0 sentinel so rax is always defined.
+      (unless (eq (car (car (last clauses))) 'always)
+        (nelisp-asm-x86_64-mov-imm32 buf 'rax 0))
+      (nelisp-asm-x86_64-define-label buf end-lbl))))
 
 (defun nelisp-phase47-compiler--emit-logic (node buf)
   "Emit `and'/`or' short-circuit evaluation; result in rax.
@@ -13682,25 +13800,41 @@ Final emit:
          (op (nelisp-phase47-compiler--ir-get node :op))
          (end-lbl (intern (format "%s-end" id)))
          (forms (nelisp-phase47-compiler--ir-get node :forms)))
-    (dolist (f forms)
-      (nelisp-phase47-compiler--emit-value f buf)
-      ;; Short-circuit test: cmp rax, 0; then jump on the
-      ;; condition that ends the eval chain.
-      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-      (cond
-       ((eq op 'and)
-        ;; rax = 0 means failure; jump to end with rax already 0.
-        (nelisp-asm-x86_64-jz-rel32 buf end-lbl))
-       ((eq op 'or)
-        ;; rax non-zero means success; jump to end with rax kept.
-        (nelisp-asm-x86_64-jnz-rel32 buf end-lbl))
-       (t
-        (signal 'nelisp-phase47-compiler-error
-                (list :unknown-logic-op op)))))
-    ;; If no early-exit fired, fall through: rax holds the last
-    ;; evaluated value (= last operand for `and' = non-zero last,
-    ;; for `or' = 0 last).  No additional emit needed.
-    (nelisp-asm-x86_64-define-label buf end-lbl)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        ;; aarch64: cmp x0,xzr ; `and' short-circuits on eq (= 0),
+        ;; `or' on ne (non-zero); x0 holds the live value at end.
+        (progn
+          (dolist (f forms)
+            (nelisp-phase47-compiler--emit-value f buf)
+            (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
+            (cond
+             ((eq op 'and)
+              (nelisp-asm-arm64-b-cond buf 'eq end-lbl))
+             ((eq op 'or)
+              (nelisp-asm-arm64-b-cond buf 'ne end-lbl))
+             (t
+              (signal 'nelisp-phase47-compiler-error
+                      (list :unknown-logic-op op)))))
+          (nelisp-asm-arm64-define-label buf end-lbl))
+      (dolist (f forms)
+        (nelisp-phase47-compiler--emit-value f buf)
+        ;; Short-circuit test: cmp rax, 0; then jump on the
+        ;; condition that ends the eval chain.
+        (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+        (cond
+         ((eq op 'and)
+          ;; rax = 0 means failure; jump to end with rax already 0.
+          (nelisp-asm-x86_64-jz-rel32 buf end-lbl))
+         ((eq op 'or)
+          ;; rax non-zero means success; jump to end with rax kept.
+          (nelisp-asm-x86_64-jnz-rel32 buf end-lbl))
+         (t
+          (signal 'nelisp-phase47-compiler-error
+                  (list :unknown-logic-op op)))))
+      ;; If no early-exit fired, fall through: rax holds the last
+      ;; evaluated value (= last operand for `and' = non-zero last,
+      ;; for `or' = 0 last).  No additional emit needed.
+      (nelisp-asm-x86_64-define-label buf end-lbl))))
 
 (defun nelisp-phase47-compiler--emit-aot-landing-label (node buf)
   "Define NODE's landing label and emit its value body."

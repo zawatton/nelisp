@@ -738,6 +738,55 @@ Base 0xF8206800 | (Rm<<16) | (Rn<<5) | Rt."
     (nelisp-asm-arm64--emit-word
      buf (logior #xF8206800 (ash m-reg 16) (ash n-reg 5) t-reg))))
 
+;; ---- §131.A-arm64 width-specific register-offset load/store ----
+;;
+;; Back the `ptr-read-u{8,16,32}' / `ptr-write-u{8,16,32}' substrate ops.
+;; The encoding is identical to the 64-bit `ldr-reg-reg' / `str-reg-reg'
+;; forms above; only the `size' field (bits [31:30]) selects the access
+;; width: 00 = byte, 01 = halfword, 10 = word, 11 = doubleword.  Loads
+;; target Wt (= the X register's low 32 bits) and zero-extend the result
+;; into the full Xt, matching the x86_64 MOVZX / 32-bit-MOV contract.
+
+(defun nelisp-asm-arm64--ldst-reg-reg (buf base rt rn rm)
+  "Emit a register-offset load/store: BASE | (Rm<<16) | (Rn<<5) | Rt.
+BASE selects the access width + load/store opcode; addressing is
+`[Xn, Xm]' (option = LSL #0).  Shared by the byte/half/word helpers."
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F))
+        (m-reg (logand (nelisp-asm-arm64--reg-num rm) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior base (ash m-reg 16) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-ldrb-reg-reg (buf rt rn rm)
+  "Emit `LDRB Wt, [Xn, Xm]' (= zero-extending byte load, register offset).
+Base 0x38606800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #x38606800 rt rn rm))
+
+(defun nelisp-asm-arm64-strb-reg-reg (buf rt rn rm)
+  "Emit `STRB Wt, [Xn, Xm]' (= low-byte store, register offset).
+Base 0x38206800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #x38206800 rt rn rm))
+
+(defun nelisp-asm-arm64-ldrh-reg-reg (buf rt rn rm)
+  "Emit `LDRH Wt, [Xn, Xm]' (= zero-extending halfword load, register offset).
+Base 0x78606800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #x78606800 rt rn rm))
+
+(defun nelisp-asm-arm64-strh-reg-reg (buf rt rn rm)
+  "Emit `STRH Wt, [Xn, Xm]' (= low-halfword store, register offset).
+Base 0x78206800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #x78206800 rt rn rm))
+
+(defun nelisp-asm-arm64-ldrw-reg-reg (buf rt rn rm)
+  "Emit `LDR Wt, [Xn, Xm]' (= 32-bit load, zero-extends to Xt, register offset).
+Base 0xB8606800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #xB8606800 rt rn rm))
+
+(defun nelisp-asm-arm64-strw-reg-reg (buf rt rn rm)
+  "Emit `STR Wt, [Xn, Xm]' (= 32-bit store, register offset).
+Base 0xB8206800."
+  (nelisp-asm-arm64--ldst-reg-reg buf #xB8206800 rt rn rm))
+
 (defun nelisp-asm-arm64-ldaddal (buf rs rt rn)
   "Emit `LDADDAL Xs, Xt, [Xn]' (= LSE atomic add, acquire+release).
 Atomically: Xt = [Xn]; [Xn] = [Xn] + Xs (= fetch-add, returns old value).

@@ -799,6 +799,55 @@ exec a probe and check exit status."
     (nelisp-asm-arm64-mov-imm64 b 'x0 #xDEADBEEFCAFEBABE)
     (should (= (nelisp-asm-arm64-buffer-pos b) 420))))
 
+;; ---- §131.A-arm64 width-specific register-offset load/store ----
+;;
+;; Golden encodings for the byte/half/word `[Xn, Xm]' forms.  Rt=X0,
+;; Rn=X1, Rm=X2 contributes (Rm<<16)|(Rn<<5)|Rt = 0x20020 over each
+;; size-specific base.  These back `ptr-{read,write}-u{8,16,32}'.
+
+(ert-deftest nelisp-asm-arm64-ldrb-reg-reg-x0-x1-x2 ()
+  "LDRB W0, [X1, X2] encodes to 0x38626820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-ldrb-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x38626820))))
+
+(ert-deftest nelisp-asm-arm64-strb-reg-reg-x0-x1-x2 ()
+  "STRB W0, [X1, X2] encodes to 0x38226820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-strb-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x38226820))))
+
+(ert-deftest nelisp-asm-arm64-ldrh-reg-reg-x0-x1-x2 ()
+  "LDRH W0, [X1, X2] encodes to 0x78626820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-ldrh-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x78626820))))
+
+(ert-deftest nelisp-asm-arm64-strh-reg-reg-x0-x1-x2 ()
+  "STRH W0, [X1, X2] encodes to 0x78226820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-strh-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #x78226820))))
+
+(ert-deftest nelisp-asm-arm64-ldrw-reg-reg-x0-x1-x2 ()
+  "LDR W0, [X1, X2] (= 32-bit, zero-extending) encodes to 0xB8626820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-ldrw-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #xB8626820))))
+
+(ert-deftest nelisp-asm-arm64-strw-reg-reg-x0-x1-x2 ()
+  "STR W0, [X1, X2] (= 32-bit) encodes to 0xB8226820."
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-strw-reg-reg b 'x0 'x1 'x2)))
+                 (nelisp-asm-arm64-test--word #xB8226820))))
+
+(ert-deftest nelisp-asm-arm64-ldst-reg-reg-register-fields ()
+  "Rm / Rn / Rt land in bits [20:16] / [9:5] / [4:0] (e.g. X3,X5,X7)."
+  ;; LDRB W3, [X5, X7] = 0x38606800 | (7<<16) | (5<<5) | 3 = 0x386768A3.
+  (should (equal (nelisp-asm-arm64-test--bytes
+                  (lambda (b) (nelisp-asm-arm64-ldrb-reg-reg b 'x3 'x5 'x7)))
+                 (nelisp-asm-arm64-test--word #x386768A3))))
+
 (provide 'nelisp-asm-arm64-test)
 
 ;;; nelisp-asm-arm64-test.el ends here
