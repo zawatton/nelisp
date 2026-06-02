@@ -29,6 +29,13 @@
 
 (require 'nelisp-stdlib-os)
 
+(defun nelisp-stdlib-os-test--windows-cells (count)
+  "Return COUNT synthetic Windows ID . HANDLE cells."
+  (let (cells)
+    (dotimes (idx count)
+      (push (cons (1+ idx) (+ #x1000 idx)) cells))
+    (nreverse cells)))
+
 (ert-deftest nelisp-stdlib-os-error-condition-is-defined ()
   "`nelisp-os-error' is a catchable project-local condition."
   (should-error (signal 'nelisp-os-error (list 9))
@@ -474,6 +481,20 @@
   "Windows thread join-any reports ECHILD when no thread HANDLE is registered."
   (let ((called nil)
         (nelisp-os--windows-thread-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (should-error (nelisp-os--windows-join-any-thread 0)
+                    :type 'nelisp-os-error))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-windows-join-any-thread-too-many-errors ()
+  "Windows thread join-any rejects HANDLE counts above the native wait limit."
+  (let ((called nil)
+        (nelisp-os--windows-thread-table
+         (nelisp-stdlib-os-test--windows-cells
+          (1+ nelisp-os-WIN-MAXIMUM-WAIT-OBJECTS))))
     (cl-letf (((symbol-function 'nelisp-os--alloc)
                (lambda (&rest _args) (setq called t)))
               ((symbol-function 'nelisp-os--libc-call)
@@ -2498,6 +2519,21 @@
   "Windows wait(-1) reports ECHILD when no child HANDLE is registered."
   (let ((called nil)
         (nelisp-os--windows-process-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-wait -1 0)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-wait-windows-any-registered-too-many-errors ()
+  "Windows wait(-1) rejects child HANDLE counts above the native wait limit."
+  (let ((called nil)
+        (nelisp-os--windows-process-table
+         (nelisp-stdlib-os-test--windows-cells
+          (1+ nelisp-os-WIN-MAXIMUM-WAIT-OBJECTS))))
     (cl-letf (((symbol-function 'nelisp-os--alloc)
                (lambda (&rest _args) (setq called t)))
               ((symbol-function 'nelisp-os--libc-call)

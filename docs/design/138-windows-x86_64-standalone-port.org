@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-54-WINDOWS-THREAD-JOIN-ANY
+#+STATUS: STAGE-55-WINDOWS-WAIT-MANY-LIMIT
 
 * Status
 
-- *State*: STAGE 54 Windows thread join-any
+- *State*: STAGE 55 Windows wait-many HANDLE limit
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -105,7 +105,11 @@
   thread HANDLE on completion, and preserves it across =WNOHANG= timeout.
   =nelisp-os--windows-join-any-thread= now waits across registered thread
   HANDLEs with =WaitForMultipleObjects=, reaps only the signaled thread, and
-  preserves all registered threads across =WNOHANG= timeout.  The
+  preserves all registered threads across =WNOHANG= timeout.  Windows
+  wait-many paths now reject more than
+  =nelisp-os-WIN-MAXIMUM-WAIT-OBJECTS= registered HANDLEs before allocating a
+  HANDLE array or calling =WaitForMultipleObjects=, covering both process
+  =wait(-1)= and internal thread join-any.  The
   =CreateProcessW= setup is now
   factored into =nelisp-os--windows-create-process=, a parent-surviving helper
   that returns =PROCESS_INFORMATION.dwProcessId=, closes the temporary thread
@@ -322,7 +326,9 @@
   coverage verifies =CreateThread= registration plus thread join completion and
   =WNOHANG= timeout HANDLE retention.  Stage 54 coverage verifies thread
   join-any over registered thread HANDLEs, timeout retention, and =ECHILD= when
-  no registered thread exists.
+  no registered thread exists.  Stage 55 coverage verifies process
+  =wait(-1)= and thread join-any both reject more than 64 registered HANDLEs
+  before HANDLE-array allocation or FFI.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -663,6 +669,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows thread join-any progress 2026-06-03*: internal Windows thread
   join-any now waits over registered thread HANDLEs with
   =WaitForMultipleObjects=.
+  *Windows wait-many limit progress 2026-06-03*: process =wait(-1)= and
+  internal thread join-any now reject more than 64 registered HANDLEs before
+  allocation / FFI, matching =WaitForMultipleObjects= limits.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -832,6 +841,10 @@ largest uncertainty (B1 + B2) first.
    =WaitForMultipleObjects=, reaps only the signaled thread, preserves all
    registered threads across =WNOHANG= timeout, and returns =ECHILD= when no
    registered thread exists.
+   *Windows wait-many limit SHIPPED 2026-06-03*: process =wait(-1)= and
+   internal thread join-any now reject registered HANDLE counts above the
+   =WaitForMultipleObjects= limit before allocating the HANDLE array or calling
+   kernel32.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
@@ -860,7 +873,9 @@ largest uncertainty (B1 + B2) first.
    register child HANDLEs without exiting the parent, =kill= now reuses those
    registered child HANDLEs, =wait(-1)= can now reap any registered child, and
    internal =CreateThread= helpers can create, join, and join-any Windows
-   thread HANDLEs.  =getppid= now uses Tool Help snapshots.  Full =fork/clone=
+   thread HANDLEs.  Both process/thread wait-many paths now guard the native
+   64-HANDLE limit before FFI.  =getppid= now uses Tool Help snapshots.  Full
+   =fork/clone=
    integration remains pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,

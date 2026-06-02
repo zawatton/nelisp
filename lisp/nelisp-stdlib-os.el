@@ -48,6 +48,7 @@
 ;; 52 adds registered-child `wait(-1)' through `WaitForMultipleObjects'.  Stage
 ;; 53 adds internal `CreateThread' / thread-join helpers with HANDLE tracking.
 ;; Stage 54 adds registered-thread join-any through `WaitForMultipleObjects'.
+;; Stage 55 guards Windows wait-many HANDLE counts before allocation / FFI.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFL' / `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on
@@ -174,6 +175,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-WAIT-OBJECT-0 #x00000000)
 (defconst nelisp-os-WIN-WAIT-TIMEOUT #x00000102)
 (defconst nelisp-os-WIN-WAIT-FAILED #xffffffff)
+(defconst nelisp-os-WIN-MAXIMUM-WAIT-OBJECTS 64)
 
 ;; POSIX wait options.
 (defconst nelisp-os-WNOHANG 1)
@@ -578,6 +580,11 @@ Replacing an existing PID closes the old HANDLE before installing HANDLE."
       (setq idx (1+ idx)))
     buf))
 
+(defun nelisp-os--windows-check-wait-many-count (count)
+  "Signal EINVAL when COUNT exceeds Windows wait-many HANDLE limit."
+  (when (> count nelisp-os-WIN-MAXIMUM-WAIT-OBJECTS)
+    (signal 'nelisp-os-error (list 22)))) ; EINVAL
+
 (defun nelisp-os--windows-process-exit-status (pid handle)
   "Return POSIX-style wait result for PID using process HANDLE."
   (let ((exit-code-buf (nelisp-os--alloc 4)))
@@ -598,6 +605,7 @@ Replacing an existing PID closes the old HANDLE before installing HANDLE."
   (let* ((cells nelisp-os--windows-process-table)
          (count (length cells))
          (handles-buf nil))
+    (nelisp-os--windows-check-wait-many-count count)
     (unwind-protect
         (progn
           (setq handles-buf (nelisp-os--windows-handle-array cells))
@@ -717,6 +725,7 @@ thread exits, or (0 . 0) for `WNOHANG' timeout."
   (let* ((cells nelisp-os--windows-thread-table)
          (count (length cells))
          (handles-buf nil))
+    (nelisp-os--windows-check-wait-many-count count)
     (unwind-protect
         (progn
           (setq handles-buf (nelisp-os--windows-handle-array cells))
