@@ -1463,14 +1463,100 @@
                     (list 'close 3)
                     (list 'close 4))))))
 
-(ert-deftest nelisp-stdlib-os-socketpair-windows-rejects-dgram-before-ffi ()
-  "Windows socketpair currently supports only stream pairs."
+(ert-deftest nelisp-stdlib-os-socketpair-windows-uses-connected-udp-pair ()
+  "Windows datagram socketpair uses connected UDP loopback sockets."
+  (let ((calls nil)
+        (socket-fds '(3 4)))
+    (cl-letf (((symbol-function 'nelisp-os-socket)
+               (lambda (domain type proto)
+                 (push (list 'socket domain type proto) calls)
+                 (pop socket-fds)))
+              ((symbol-function 'nelisp-os-bind-inet)
+               (lambda (fd host port)
+                 (push (list 'bind fd host port) calls)
+                 0))
+              ((symbol-function 'nelisp-os-getsockname-inet)
+               (lambda (fd)
+                 (push (list 'getsockname fd) calls)
+                 (list nelisp-os-INADDR-LOOPBACK
+                       (if (= fd 3) 50001 50002))))
+              ((symbol-function 'nelisp-os-connect-inet)
+               (lambda (fd host port)
+                 (push (list 'connect fd host port) calls)
+                 0))
+              ((symbol-function 'nelisp-os-close)
+               (lambda (fd)
+                 (push (list 'close fd) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-socketpair
+                        nelisp-os-AF-UNIX nelisp-os-SOCK-DGRAM 0)
+                       '(3 . 4)))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list 'socket nelisp-os-AF-INET
+                          nelisp-os-SOCK-DGRAM nelisp-os-IPPROTO-UDP)
+                    (list 'bind 3 nelisp-os-INADDR-LOOPBACK 0)
+                    (list 'socket nelisp-os-AF-INET
+                          nelisp-os-SOCK-DGRAM nelisp-os-IPPROTO-UDP)
+                    (list 'bind 4 nelisp-os-INADDR-LOOPBACK 0)
+                    (list 'getsockname 3)
+                    (list 'getsockname 4)
+                    (list 'connect 3 nelisp-os-INADDR-LOOPBACK 50002)
+                    (list 'connect 4 nelisp-os-INADDR-LOOPBACK 50001))))))
+
+(ert-deftest nelisp-stdlib-os-socketpair-windows-dgram-cleans-up-on-connect-error ()
+  "Windows datagram socketpair closes fds when setup fails."
+  (let ((calls nil)
+        (socket-fds '(3 4)))
+    (cl-letf (((symbol-function 'nelisp-os-socket)
+               (lambda (domain type proto)
+                 (push (list 'socket domain type proto) calls)
+                 (pop socket-fds)))
+              ((symbol-function 'nelisp-os-bind-inet)
+               (lambda (fd host port)
+                 (push (list 'bind fd host port) calls)
+                 0))
+              ((symbol-function 'nelisp-os-getsockname-inet)
+               (lambda (fd)
+                 (push (list 'getsockname fd) calls)
+                 (list nelisp-os-INADDR-LOOPBACK
+                       (if (= fd 3) 50001 50002))))
+              ((symbol-function 'nelisp-os-connect-inet)
+               (lambda (fd host port)
+                 (push (list 'connect fd host port) calls)
+                 (signal 'nelisp-os-error (list 10061))))
+              ((symbol-function 'nelisp-os-close)
+               (lambda (fd)
+                 (push (list 'close fd) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-socketpair nelisp-os-AF-INET nelisp-os-SOCK-DGRAM 0)
+         :type 'nelisp-os-error)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list 'socket nelisp-os-AF-INET
+                          nelisp-os-SOCK-DGRAM nelisp-os-IPPROTO-UDP)
+                    (list 'bind 3 nelisp-os-INADDR-LOOPBACK 0)
+                    (list 'socket nelisp-os-AF-INET
+                          nelisp-os-SOCK-DGRAM nelisp-os-IPPROTO-UDP)
+                    (list 'bind 4 nelisp-os-INADDR-LOOPBACK 0)
+                    (list 'getsockname 3)
+                    (list 'getsockname 4)
+                    (list 'connect 3 nelisp-os-INADDR-LOOPBACK 50002)
+                    (list 'close 3)
+                    (list 'close 4))))))
+
+(ert-deftest nelisp-stdlib-os-socketpair-windows-rejects-bad-protocol-before-ffi ()
+  "Windows socketpair rejects mismatched protocol before opening sockets."
   (let ((called nil))
     (cl-letf (((symbol-function 'nelisp-os-socket)
                (lambda (&rest _args) (setq called t))))
       (let ((system-type 'windows-nt))
         (should-error
-         (nelisp-os-socketpair nelisp-os-AF-UNIX nelisp-os-SOCK-DGRAM 0)
+         (nelisp-os-socketpair nelisp-os-AF-UNIX
+                               nelisp-os-SOCK-DGRAM nelisp-os-IPPROTO-TCP)
          :type 'nelisp-os-error)))
     (should-not called)))
 

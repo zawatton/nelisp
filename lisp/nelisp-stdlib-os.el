@@ -3163,17 +3163,8 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
 
 ;; ----- socketpair -----
 
-(defun nelisp-os--windows-socketpair (domain type protocol)
-  "Windows `nelisp-os-socketpair' implementation via TCP loopback.
-Windows has no POSIX socketpair(2).  For the stream subset, create a
-temporary AF_INET loopback listener, connect one socket to it, accept the peer,
-then close the listener and return the connected fd pair."
-  (unless (memq domain (list nelisp-os-AF-UNIX nelisp-os-AF-INET))
-    (nelisp-os--windows-unsupported))
-  (unless (= type nelisp-os-SOCK-STREAM)
-    (nelisp-os--windows-unsupported))
-  (unless (memq protocol (list 0 nelisp-os-IPPROTO-TCP))
-    (signal 'nelisp-os-error (list 22))) ; EINVAL
+(defun nelisp-os--windows-socketpair-stream ()
+  "Create a Windows stream socket pair via a temporary TCP loopback listener."
   (let ((listener nil)
         (client nil)
         (server nil)
@@ -3205,6 +3196,55 @@ then close the listener and return the connected fd pair."
           (ignore-errors (nelisp-os-close client)))
         (when server
           (ignore-errors (nelisp-os-close server)))))))
+
+(defun nelisp-os--windows-socketpair-dgram ()
+  "Create a Windows datagram socket pair via connected UDP loopback sockets."
+  (let ((left nil)
+        (right nil)
+        (success nil))
+    (unwind-protect
+        (progn
+          (setq left (nelisp-os-socket
+                      nelisp-os-AF-INET
+                      nelisp-os-SOCK-DGRAM
+                      nelisp-os-IPPROTO-UDP))
+          (nelisp-os-bind-inet left nelisp-os-INADDR-LOOPBACK 0)
+          (setq right (nelisp-os-socket
+                       nelisp-os-AF-INET
+                       nelisp-os-SOCK-DGRAM
+                       nelisp-os-IPPROTO-UDP))
+          (nelisp-os-bind-inet right nelisp-os-INADDR-LOOPBACK 0)
+          (let ((left-bound (nelisp-os-getsockname-inet left))
+                (right-bound (nelisp-os-getsockname-inet right)))
+            (nelisp-os-connect-inet left nelisp-os-INADDR-LOOPBACK
+                                    (cadr right-bound))
+            (nelisp-os-connect-inet right nelisp-os-INADDR-LOOPBACK
+                                    (cadr left-bound))
+            (setq success t)
+            (cons left right)))
+      (unless success
+        (when left
+          (ignore-errors (nelisp-os-close left)))
+        (when right
+          (ignore-errors (nelisp-os-close right)))))))
+
+(defun nelisp-os--windows-socketpair (domain type protocol)
+  "Windows `nelisp-os-socketpair' implementation via loopback sockets.
+Windows has no POSIX socketpair(2).  Stream pairs use a temporary TCP listener;
+datagram pairs use two connected UDP sockets bound to loopback ephemeral ports."
+  (unless (memq domain (list nelisp-os-AF-UNIX nelisp-os-AF-INET))
+    (nelisp-os--windows-unsupported))
+  (cond
+   ((= type nelisp-os-SOCK-STREAM)
+    (unless (memq protocol (list 0 nelisp-os-IPPROTO-TCP))
+      (signal 'nelisp-os-error (list 22))) ; EINVAL
+    (nelisp-os--windows-socketpair-stream))
+   ((= type nelisp-os-SOCK-DGRAM)
+    (unless (memq protocol (list 0 nelisp-os-IPPROTO-UDP))
+      (signal 'nelisp-os-error (list 22))) ; EINVAL
+    (nelisp-os--windows-socketpair-dgram))
+   (t
+    (nelisp-os--windows-unsupported))))
 
 (defun nelisp-os-socketpair (domain type protocol)
   "POSIX socketpair(2) — returns (FD1 . FD2) on success.

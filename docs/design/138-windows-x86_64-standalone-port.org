@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-67-WINDOWS-SOCKET-OPTIONS
+#+STATUS: STAGE-68-WINDOWS-DGRAM-SOCKETPAIR
 
 * Status
 
-- *State*: STAGE 67 Windows socket option expansion
+- *State*: STAGE 68 Windows datagram socketpair
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -191,7 +191,9 @@
   decoder.  =nelisp-os-socketpair= now supports Windows stream pairs by
   creating a temporary AF_INET loopback listener, connecting a client socket,
   accepting the server peer, closing the listener, and returning the two
-  socket-kind fds with setup-failure cleanup.  Linux abstract namespace AF_UNIX
+  socket-kind fds.  It also supports datagram pairs with two connected UDP
+  loopback sockets bound to ephemeral ports, with setup-failure cleanup in
+  both paths.  Linux abstract namespace AF_UNIX
   remains explicitly unsupported on Windows.  Linux-only AF_UNIX helpers now
   reject Windows before libc or allocation: =bind-unix-abstract=,
   =connect-unix-abstract=, =sendmsg-fds=, =recvmsg-fds=, and
@@ -683,7 +685,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   libc fallback.  =getsockname= / =getpeername= wrappers now use Winsock for
   IPv4, IPv6, and filesystem AF_UNIX socket-kind fds.  =nelisp-os-socketpair=
   now synthesizes Windows stream pairs through a temporary AF_INET loopback
-  listener and returns the connected socket-kind fd pair.
+  listener and datagram pairs through connected UDP loopback sockets.
+  *Windows datagram socketpair progress 2026-06-03*:
+  =nelisp-os-socketpair= now supports =SOCK_DGRAM= on Windows by binding two
+  UDP loopback sockets to ephemeral ports and connecting each socket to the
+  other endpoint.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -875,6 +881,9 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock buffer/broadcast options SHIPPED 2026-06-03*: int-valued
    socket option helpers now support =SO_SNDBUF=, =SO_RCVBUF=, and
    =SO_BROADCAST= on Windows.
+   *Windows datagram socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair=
+   now supports =SOCK_DGRAM= by creating connected UDP loopback socket-kind
+   fd pairs with setup-failure cleanup.
    *Windows file-backed mmap SHIPPED 2026-06-03*: =nelisp-os-mmap= now accepts
    HANDLE-backed =MAP_PRIVATE= mappings via =CreateFileMappingW= /
    =MapViewOfFile=, with =UnmapViewOfFile= cleanup.
@@ -1004,7 +1013,7 @@ largest uncertainty (B1 + B2) first.
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
    getname, read/write, poll, expanded int socket options, and
-   loopback-backed stream socketpair; broader socket extensions remain
+   loopback-backed stream/datagram socketpair; broader socket extensions remain
    pending.  Linux-only AF_UNIX
    fd-passing/peercred helpers are guarded, not ported.
 
