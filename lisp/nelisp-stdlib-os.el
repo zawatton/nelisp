@@ -37,11 +37,13 @@
 ;; Stage 14 maps the minimal `fstat' shape to `GetFileType' / `GetFileSizeEx'.
 ;; Stage 15 maps `dup2' to `DuplicateHandle' / `SetStdHandle'.  Stage 16 maps
 ;; single-PID `kill' to `OpenProcess' / `TerminateProcess'.  Stage 17 maps
-;; `execve' to `CreateProcessW' + `ExitProcess'.  Stage 18 maps `wait' to
-;; `OpenProcess' / `WaitForSingleObject' / `GetExitCodeProcess'.  Stage 19
-;; maps `getppid' to the Tool Help process snapshot APIs.  Stage 20 adds a
-;; minimal Windows `fcntl' compatibility branch for `F_DUPFD' / `F_GETFL' /
-;; `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on Windows
+;; `execve' to `CreateProcessW' + `ExitProcess'.  Stage 48 fills
+;; `STARTUPINFOW' standard handles when available so Windows execve preserves
+;; stdio redirection explicitly.  Stage 18 maps `wait' to `OpenProcess' /
+;; `WaitForSingleObject' / `GetExitCodeProcess'.  Stage 19 maps `getppid' to
+;; the Tool Help process snapshot APIs.  Stage 20 adds a minimal Windows
+;; `fcntl' compatibility branch for `F_DUPFD' / `F_GETFL' / `F_SETFL'.
+;; Stage 21 rejects Linux-only event/process fd APIs on Windows
 ;; before they can fall through to Linux syscall or libc paths.  Stage 22 starts
 ;; the Winsock branch with `WSAStartup' + `socket' and socket-specific close via
 ;; `closesocket'.  Stage 23 maps AF_INET `bind' / `connect' / `listen' to
@@ -187,6 +189,11 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 ;; Windows process-launch structure sizes/offsets (x86_64).
 (defconst nelisp-os-WIN-STARTUPINFOW-SIZE 104)
 (defconst nelisp-os-WIN-STARTUPINFOW-CB-OFFSET 0)
+(defconst nelisp-os-WIN-STARTUPINFOW-DWFLAGS-OFFSET 60)
+(defconst nelisp-os-WIN-STARTUPINFOW-HSTDINPUT-OFFSET 80)
+(defconst nelisp-os-WIN-STARTUPINFOW-HSTDOUTPUT-OFFSET 88)
+(defconst nelisp-os-WIN-STARTUPINFOW-HSTDERROR-OFFSET 96)
+(defconst nelisp-os-WIN-STARTF-USESTDHANDLES #x100)
 (defconst nelisp-os-WIN-PROCESS-INFORMATION-SIZE 24)
 (defconst nelisp-os-WIN-PROCESS-INFORMATION-HPROCESS-OFFSET 0)
 (defconst nelisp-os-WIN-PROCESS-INFORMATION-HTHREAD-OFFSET 8)
@@ -461,6 +468,31 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
     (if envp
         (concat block "\0")
       "\0")))
+
+(defun nelisp-os--windows-optional-std-handle (fd)
+  "Return current Windows standard HANDLE for FD, or nil if unavailable."
+  (condition-case nil
+      (nelisp-os--windows-get-std-handle fd)
+    (nelisp-os-error nil)))
+
+(defun nelisp-os--windows-fill-startup-std-handles (startup-buf)
+  "Fill STARTUP-BUF STARTUPINFOW standard handles when all are available."
+  (let ((stdin-handle (nelisp-os--windows-optional-std-handle nelisp-os-STDIN))
+        (stdout-handle (nelisp-os--windows-optional-std-handle nelisp-os-STDOUT))
+        (stderr-handle (nelisp-os--windows-optional-std-handle nelisp-os-STDERR)))
+    (when (and stdin-handle stdout-handle stderr-handle)
+      (nelisp-os-write-u32 startup-buf
+                           nelisp-os-WIN-STARTUPINFOW-DWFLAGS-OFFSET
+                           nelisp-os-WIN-STARTF-USESTDHANDLES)
+      (nelisp-os-write-i64 startup-buf
+                           nelisp-os-WIN-STARTUPINFOW-HSTDINPUT-OFFSET
+                           stdin-handle)
+      (nelisp-os-write-i64 startup-buf
+                           nelisp-os-WIN-STARTUPINFOW-HSTDOUTPUT-OFFSET
+                           stdout-handle)
+      (nelisp-os-write-i64 startup-buf
+                           nelisp-os-WIN-STARTUPINFOW-HSTDERROR-OFFSET
+                           stderr-handle))))
 
 (defun nelisp-os--windows-alloc-utf16le-z (str)
   "Allocate a UTF-16LE NUL-terminated buffer containing STR."
@@ -1338,6 +1370,7 @@ the execve contract that success does not return."
           (nelisp-os-write-u32 startup-buf
                                nelisp-os-WIN-STARTUPINFOW-CB-OFFSET
                                nelisp-os-WIN-STARTUPINFOW-SIZE)
+          (nelisp-os--windows-fill-startup-std-handles startup-buf)
           (let ((ok (nelisp-os--libc-call
                      "kernel32" "CreateProcessW"
                      [:sint32 :pointer :pointer :pointer :pointer :sint32

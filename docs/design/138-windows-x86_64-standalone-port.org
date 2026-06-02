@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-47-WINDOWS-SOCKET-DUP
+#+STATUS: STAGE-48-WINDOWS-CREATEPROCESS-STD-HANDLES
 
 * Status
 
-- *State*: STAGE 47 Windows socket fd dup
+- *State*: STAGE 48 Windows CreateProcess std handles
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -77,7 +77,11 @@
   application / command-line / environment-block buffers, calls
   =CreateProcessW= with =STARTUPINFOW= / =PROCESS_INFORMATION=, closes the
   returned process/thread HANDLEs, then calls =ExitProcess(0)= so successful
-  exec still does not return to the caller.  =nelisp-os-wait= now has a
+  exec still does not return to the caller.  When current stdin/stdout/stderr
+  HANDLEs are all available, the Windows branch now also writes
+  =STARTF_USESTDHANDLES= plus hStdInput/hStdOutput/hStdError into
+  =STARTUPINFOW= so =CreateProcessW= receives explicit standard I/O handles.
+  =nelisp-os-wait= now has a
   Windows branch for positive PIDs: it opens the process with
   =OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION)=, waits via
   =WaitForSingleObject=, reads the exit code with =GetExitCodeProcess=, closes
@@ -275,7 +279,10 @@
   =F_DUPFD= and non-standard-target =dup2= by verifying they now duplicate
   through =WSADuplicateSocketW= / =WSASocketW= and preserve socket-kind fd
   table entries.  It also verifies negative =F_DUPFD= minimum fd values reject
-  before any native duplicate call.
+  before any native duplicate call.  Stage 48 coverage verifies Windows
+  =execve= writes =STARTF_USESTDHANDLES= and the three hStd* fields into
+  =STARTUPINFOW= when standard HANDLEs are available, and skips that block
+  without failing when a standard HANDLE is unavailable.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -596,6 +603,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows socket dup progress 2026-06-03*: socket-kind =F_DUPFD= and
   non-standard-target =dup2= now duplicate through =WSADuplicateSocketW= /
   =WSASocketW= instead of the HANDLE-only =DuplicateHandle= path.
+  *Windows CreateProcess std handles progress 2026-06-03*: =nelisp-os-execve=
+  now fills =STARTUPINFOW= standard handles with =STARTF_USESTDHANDLES= when
+  stdin/stdout/stderr HANDLEs are available.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -736,6 +746,10 @@ largest uncertainty (B1 + B2) first.
    *Windows socket dup SHIPPED 2026-06-03*: socket-kind =F_DUPFD= and
    non-standard-target =dup2= now duplicate through =WSADuplicateSocketW= /
    =WSASocketW= and preserve socket-kind fd tracking.
+   *Windows CreateProcess std handles SHIPPED 2026-06-03*:
+   =nelisp-os-execve= now writes =STARTF_USESTDHANDLES= plus
+   hStdInput/hStdOutput/hStdError into =STARTUPINFOW= when current standard
+   HANDLEs are available.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY

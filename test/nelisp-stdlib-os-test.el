@@ -96,7 +96,8 @@
   (let ((alloc-next 1000)
         (freed nil)
         (wide-writes nil)
-        (startup-cb nil)
+        (startup-u32-writes nil)
+        (startup-handle-writes nil)
         (calls nil))
     (cl-letf (((symbol-function 'nelisp-os--alloc)
                (lambda (_n)
@@ -110,7 +111,11 @@
                  val))
               ((symbol-function 'nelisp-os-write-u32)
                (lambda (ptr off val)
-                 (setq startup-cb (list ptr off val))
+                 (push (list ptr off val) startup-u32-writes)
+                 val))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) startup-handle-writes)
                  val))
               ((symbol-function 'nelisp-os-read-i64)
                (lambda (ptr off)
@@ -126,6 +131,18 @@
                  (push (list dll fn sig args) calls)
                  (cond
                   ((equal fn "CreateProcessW") 1)
+                  ((equal fn "GetStdHandle")
+                   (pcase (car args)
+                     ((pred (lambda (selector)
+                              (= selector nelisp-os-WIN-STD-INPUT-HANDLE)))
+                      #x1010)
+                     ((pred (lambda (selector)
+                              (= selector nelisp-os-WIN-STD-OUTPUT-HANDLE)))
+                      #x2020)
+                     ((pred (lambda (selector)
+                              (= selector nelisp-os-WIN-STD-ERROR-HANDLE)))
+                      #x3030)
+                     (_ (error "unexpected GetStdHandle selector %S" args))))
                   ((equal fn "CloseHandle") 1)
                   ((equal fn "ExitProcess") :exited)
                   (t (error "unexpected ffi call %S" fn))))))
@@ -134,12 +151,36 @@
                                       '("prog.exe" "two words")
                                       '("A=1"))
                     :exited))))
-    (should (equal startup-cb
-                   (list 4000
-                         nelisp-os-WIN-STARTUPINFOW-CB-OFFSET
-                         nelisp-os-WIN-STARTUPINFOW-SIZE)))
+    (should (equal (nreverse startup-u32-writes)
+                   (list
+                    (list 4000
+                          nelisp-os-WIN-STARTUPINFOW-CB-OFFSET
+                          nelisp-os-WIN-STARTUPINFOW-SIZE)
+                    (list 4000
+                          nelisp-os-WIN-STARTUPINFOW-DWFLAGS-OFFSET
+                          nelisp-os-WIN-STARTF-USESTDHANDLES))))
+    (should (equal (nreverse startup-handle-writes)
+                   (list
+                    (list 4000
+                          nelisp-os-WIN-STARTUPINFOW-HSTDINPUT-OFFSET
+                          #x1010)
+                    (list 4000
+                          nelisp-os-WIN-STARTUPINFOW-HSTDOUTPUT-OFFSET
+                          #x2020)
+                    (list 4000
+                          nelisp-os-WIN-STARTUPINFOW-HSTDERROR-OFFSET
+                          #x3030))))
     (should (equal (nreverse calls)
                    (list
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-INPUT-HANDLE))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-ERROR-HANDLE))
                     (list "kernel32" "CreateProcessW"
                           [:sint32 :pointer :pointer :pointer :pointer :sint32
                            :uint32 :pointer :pointer :pointer :pointer]
@@ -165,6 +206,47 @@
   (should (= (nelisp-os--windows-std-handle-selector nelisp-os-STDERR)
              nelisp-os-WIN-STD-ERROR-HANDLE))
   (should-not (nelisp-os--windows-std-handle-selector 99)))
+
+(ert-deftest nelisp-stdlib-os-windows-startup-std-handles-skip-when-unavailable ()
+  "STARTUPINFOW std handles are optional when a host has no std HANDLE."
+  (let ((calls nil)
+        (u32-writes nil)
+        (i64-writes nil))
+    (cl-letf (((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val)
+                 (push (list ptr off val) u32-writes)
+                 val))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) i64-writes)
+                 val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetStdHandle")
+                   (if (= (car args) nelisp-os-WIN-STD-OUTPUT-HANDLE)
+                       0
+                     #x1111))
+                  ((equal fn "GetLastError") 6)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (nelisp-os--windows-fill-startup-std-handles 4000))
+    (should-not u32-writes)
+    (should-not i64-writes)
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-INPUT-HANDLE))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "GetLastError"
+                          [:uint32]
+                          nil)
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-ERROR-HANDLE)))))))
 
 (ert-deftest nelisp-stdlib-os-write-windows-stdout-uses-kernel32 ()
   "On Windows, stdout write routes through GetStdHandle + WriteFile."
